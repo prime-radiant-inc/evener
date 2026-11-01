@@ -3,7 +3,10 @@ package agent
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
+
+	"primeradiant.com/evener/agent/schema"
 )
 
 // inputRunning is the comm-level effect of one input on a session: it starts
@@ -13,7 +16,9 @@ func inputRunning(s *Session, reply string) {
 	s.comm = communicateResult{}
 	s.mu.Unlock()
 	if reply != "" {
-		s.acceptCommunicateTerminal(context.Background(), reply, reply, reply, nil, "")
+		if accepted, err := s.acceptCommunicateTerminal(context.Background(), schema.CommunicateInfo{Message: reply, EndTurn: true}, reply, reply, nil); err != nil || !accepted {
+			panic(fmt.Sprintf("input report acceptance: accepted=%v err=%v", accepted, err))
+		}
 	}
 }
 
@@ -26,11 +31,11 @@ func TestDrainTurnKeepsTheLatestAcceptedReport(t *testing.T) {
 	output := map[string]any{"message": "SUMMARY_B", "data": map[string]any{"generation": 2}}
 	process := s.keepingReport(func(context.Context, string, []ImageAttachment, EntryKind) (string, error) {
 		inputRunning(s, "")
-		if !s.acceptCommunicateTerminal(context.Background(), "REPORT_B", "REPLY_B", "OUTPUT_B", output, "") {
-			t.Fatal("report B was not accepted")
+		if accepted, err := s.acceptCommunicateTerminal(context.Background(), schema.CommunicateInfo{Message: "REPORT_B", EndTurn: true}, "REPLY_B", "OUTPUT_B", output); err != nil || !accepted {
+			t.Fatalf("report B acceptance: accepted=%v err=%v", accepted, err)
 		}
-		if s.acceptCommunicateTerminal(context.Background(), "LOSING_REPORT", "LOSING_REPLY", "LOSING_OUTPUT", map[string]any{"lost": true}, "") {
-			t.Fatal("competing report was accepted")
+		if accepted, err := s.acceptCommunicateTerminal(context.Background(), schema.CommunicateInfo{Message: "LOSING_REPORT", EndTurn: true}, "LOSING_REPLY", "LOSING_OUTPUT", map[string]any{"lost": true}); err != nil || accepted {
+			t.Fatalf("competing report acceptance: accepted=%v err=%v", accepted, err)
 		}
 		inputRunning(s, "")
 		return "", errBareTextWithoutResultTool

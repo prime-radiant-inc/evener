@@ -64,15 +64,22 @@ func traceFireSteps(jm *jobManager) *fireStepTrace {
 			enqueue(n)
 		}
 	}
+	traceEvent := func(event jobstore.Event) {
+		if event.Kind == jobstore.EventWatchSendPending && event.WatchSend != nil && event.WatchSend.CallbackFrame {
+			trace.add("append:callback_frame_pending")
+			return
+		}
+		trace.add("append:" + string(event.Kind))
+	}
 	appendEvent := jm.appendEvent
 	jm.appendEvent = func(event jobstore.Event) error {
-		trace.add("append:" + string(event.Kind))
+		traceEvent(event)
 		return appendEvent(event)
 	}
 	appendEvents := jm.appendEvents
 	jm.appendEvents = func(batch []jobstore.Event) error {
 		for _, event := range batch {
-			trace.add("append:" + string(event.Kind))
+			traceEvent(event)
 		}
 		return appendEvents(batch)
 	}

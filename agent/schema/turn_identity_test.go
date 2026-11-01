@@ -126,7 +126,7 @@ func TestLegacyTurnCarriesNoIdentity(t *testing.T) {
 }
 
 func TestTranscriptOnlyKinds(t *testing.T) {
-	for _, kind := range []TurnKind{TurnCompletion, TurnReopen, TurnCommunicate, TurnNotice} {
+	for _, kind := range []TurnKind{TurnCompletion, TurnReopen, TurnWaitCheckpoint, TurnCommunicate, TurnNotice} {
 		if !kind.TranscriptOnly() {
 			t.Errorf("%s is not transcript-only", kind)
 		}
@@ -150,7 +150,7 @@ func TestHarnessContextKindsAreClassified(t *testing.T) {
 		TurnToolResults: false, TurnSystem: false, TurnCheckpoint: false, TurnSummary: false,
 		TurnModelSwitch: false, TurnFailure: false, TurnHookCompleted: false,
 		TurnAttentionResolution: false, TurnCompletion: false, TurnReopen: false,
-		TurnCommunicate: false, TurnNotice: false,
+		TurnCommunicate: false, TurnNotice: false, TurnWaitCheckpoint: false,
 	}
 	for kind, classified := range want {
 		if kind.HarnessContext() != classified {

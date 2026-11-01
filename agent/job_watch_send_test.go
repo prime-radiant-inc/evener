@@ -81,21 +81,21 @@ func TestWatchSendFrameIndentsUntrustedContent(t *testing.T) {
 	}
 }
 
-func TestWatchSendTokenResolvesAndSettlesByDurableKey(t *testing.T) {
+func TestWatchSendSettlesByDurableKey(t *testing.T) {
 	t.Parallel()
 	jm := newTestJM(t)
-	_, key, deliveryID := installCallerSendWatchWithCurrentFrame(t, jm, "frame-v2")
-	s := &Session{id: jm.sessionID, jobManager: jm, subagents: newSubagentManager(0)}
-
-	resolvedJM, cfg, state, ok := s.resolveWatchSendToken(&watchSendToken{Key: key, UpdateSeq: 2, DeliveryID: deliveryID})
-	if !ok || state.Frame != "frame-v2" || resolvedJM != jm {
-		t.Fatalf("resolved token = manager:%t state:%#v ok:%t", resolvedJM == jm, state, ok)
+	cfg, key, _ := installCallerSendWatchWithCurrentFrame(t, jm, "frame-v2")
+	state := *cfg.pending[key]
+	if state.Frame != "frame-v2" || !jm.isCurrentPendingWatchSend(cfg, state) {
+		t.Fatal("current source frame missing")
 	}
-	if _, _, _, ok := s.resolveWatchSendToken(&watchSendToken{Key: key, UpdateSeq: 1, DeliveryID: deliveryID}); ok {
-		t.Fatal("stale update token resolved")
+	stale := state
+	stale.UpdateSeq--
+	if jm.isCurrentPendingWatchSend(cfg, stale) {
+		t.Fatal("stale source cursor accepted")
 	}
-	if err := resolvedJM.settleWatchSendDelivered(cfg, state); err != nil {
-		t.Fatalf("settle watch send: %v", err)
+	if err := jm.settleWatchSendDelivered(cfg, state); err != nil {
+		t.Fatal(err)
 	}
 	for _, event := range loadJobStoreEvents(t, jm) {
 		if event.Kind == jobstore.EventWatchSendDelivered && event.WatchSend != nil && event.WatchSend.Key == key {
@@ -186,8 +186,8 @@ func TestSendWatchBudgetTripsWhenFramesNeverSettle(t *testing.T) {
 			fires, live, count, watchDeliveryBudget)
 	}
 	// The teardown detaches the config but does not drop what it already
-	// produced: the one coalesced frame moves off the live watch onto the
-	// terminal-flush rail, still there for a receiver that comes back for it.
+	// produced: the last coalesced firing and its separate budget notice move
+	// onto the terminal-flush rail for a receiver that comes back for them.
 	jm.mu.Lock()
 	livePending, flushPending := 0, 0
 	for _, live := range jm.watches {
@@ -197,8 +197,8 @@ func TestSendWatchBudgetTripsWhenFramesNeverSettle(t *testing.T) {
 		flushPending += len(flushing.pendingOrder)
 	}
 	jm.mu.Unlock()
-	if livePending != 0 || flushPending != 1 {
-		t.Fatalf("pending frames after the teardown = live:%d flushing:%d, want the budget-crossing frame flushing and nothing live", livePending, flushPending)
+	if livePending != 0 || flushPending != 2 {
+		t.Fatalf("pending frames after the teardown = live:%d flushing:%d, want the budget-crossing firing and budget notice flushing and nothing live", livePending, flushPending)
 	}
 	cleared := 0
 	for _, notification := range notified {

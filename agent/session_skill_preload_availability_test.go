@@ -213,21 +213,66 @@ func TestRestoredDelegateDropsUnfollowablePreloadRecord(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CommitStart: %v", err)
 	}
+	var ready bool
+	var restoredSession *Session
 	defer func() {
-		_, _ = root.delegateController.FailCommittedRestart(started.lease, delegatePermanentStartFailure(context.Canceled, "test_cleanup"))
+		var plans delegateMutationPlans
+		var err error
+		if ready {
+			plans, err = root.delegateController.finishUnlaunchedGeneration(started.lease, context.Canceled)
+		} else {
+			plans, err = root.delegateController.FailCommittedRestart(started.lease, delegatePermanentStartFailure(context.Canceled, "test_cleanup"))
+		}
+		if err != nil {
+			t.Errorf("finish test generation: %v", err)
+		}
+		if err := root.executeDelegateMutationPlans(plans); err != nil {
+			t.Errorf("execute cleanup plans: %v", err)
+		}
+		if ready {
+			root.releaseFinishedGeneration(started.lease, restoredSession)
+		}
 	}()
-	sub, restored, err := (delegateRuntime{owner: root}).restoreIdle(started)
+	sub, restored, recheck, err := (delegateRuntime{owner: root}).restoreIdle(started)
+	t.Cleanup(func() { recheckNotificationsForTest(root.delegateController, recheck) })
 	if err != nil {
 		t.Fatalf("restoreIdle: %v", err)
 	}
 	if !restored {
 		t.Fatal("cold idle delegate was reported retained")
 	}
+	restoredSession = sub.sess
 	defer sub.sess.discardRestoredCandidate()
+	released, err := root.delegateController.AttachRuntime(started.lease, sub.sess)
+	recheck = recheck || released
+	if err != nil {
+		t.Fatalf("AttachRuntime: %v", err)
+	}
 	if sub.sess.skillAvailableToSession(gardeningMemorySkillName) {
 		t.Fatal("restored delegate unexpectedly can save memory")
 	}
-	if _, err := sub.sess.ProcessInput(context.Background(), "restored task", nil); err != nil {
+	const input = "restored task"
+	claim, err := root.delegateController.BeginStartInput(started.lease)
+	if err != nil {
+		t.Fatalf("BeginStartInput: %v", err)
+	}
+	if err := (delegateRuntime{owner: root}).preseedInput(sub.sess, input, started.transcriptPath, root.transcriptAuthor()); err != nil {
+		_, completeErr := root.delegateController.CompleteStartInput(claim, false, delegatePermanentStartFailure(err, "input_persist_failed"))
+		t.Fatalf("preseedInput: %v, CompleteStartInput: %v", err, completeErr)
+	}
+	plans, err := root.delegateController.CompleteStartInput(claim, true, delegateFinish{})
+	if err != nil {
+		t.Fatalf("CompleteStartInput: %v", err)
+	}
+	ready = true
+	recheck = recheck || plans.recheckNotifications
+	plans.recheckNotifications = false
+	if err := root.executeDelegateMutationPlans(plans); err != nil {
+		t.Fatalf("execute start plans: %v", err)
+	}
+	runCtx := context.WithValue(started.ctx, delegateRunLeaseContextKey{}, started.lease)
+	runCtx = context.WithValue(runCtx, delegatePreseededInputContextKey{}, delegatePreseededInput{sessionID: sub.sess.id, input: input})
+	if _, err := sub.sess.ProcessInput(runCtx, input, nil); err != nil {
 		t.Fatalf("ProcessInput: %v", err)
 	}
 	requests := fixture.adapter.Requests()

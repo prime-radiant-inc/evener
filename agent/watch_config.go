@@ -338,8 +338,7 @@ func (jm *jobManager) replaceWatch(key watchKey, existing, cfg *watchConfig, det
 		jm.mu.Unlock()
 		return watchResult{}, err
 	}
-	jm.recordWatchEndedLocked(key, existing, "replaced")
-	closeWatchConfig(existing)
+	jm.detachWatchConfigSnapshotLocked(targets[0])
 	stop := cfg.initProgressStop()
 	jm.watches[key] = cfg
 	result := watchResultFromConfig(cfg, true)
@@ -465,10 +464,6 @@ func validateWatchTriggerShape(a watchArgs) error {
 			{len(a.Events) > 0, "events"},
 			{a.Every > 0, "every"},
 			{a.EventFilter != nil, "event_filter"},
-			// A timer has no send rail: watchSendSnapshot and
-			// isCurrentPendingWatchSendLocked rebuild the watch key without the
-			// slot, so a timer's sends would be silently dropped as stale.
-			{a.Send != nil, "send"},
 		} {
 			if other.set {
 				return fmt.Errorf("invalid_request: %s and %s are mutually exclusive", name, other.name)

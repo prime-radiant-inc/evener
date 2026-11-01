@@ -1,13 +1,17 @@
 package agent
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
+	"io"
 	"os"
+	"strings"
 
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/internal/artifactstore"
 	"primeradiant.com/evener/agent/internal/tool"
+	"primeradiant.com/evener/llm"
 )
 
 type artifactStore interface {
@@ -101,9 +105,53 @@ func (s *Session) retainToolArtifact(res *tool.ExecResult) string {
 		res.Output += "\n[retention_failed: full output could not be retained]"
 		return ""
 	}
-	res.Output += "\nFull output: " + ref +
-		"\nRead with: read_transcript(transcript_ref=\"" + ref + "\")"
+	res.Output += artifactRecoveryFooter(ref)
 	return ref
+}
+
+func artifactRecoveryFooter(ref string) string {
+	return "\nFull output: " + ref +
+		"\nRead with: read_transcript(transcript_ref=\"" + ref + "\")"
+}
+
+// retainedDelegateInlineBodyPresented verifies the existing registry's exact
+// 50,000-rune TruncTail presentation, not arbitrary shaping or a ref alone.
+// The capability must still resolve to the complete aggregate in this tree.
+func (s *Session) retainedDelegateInlineBodyPresented(result *llm.ToolResultData, complete string) bool {
+	if s.artifactStore == nil || result.Name != "delegate_send" || result.ToolCallID == "" || result.IsError {
+		return false
+	}
+	body, ok := result.Content.(string)
+	if !ok {
+		return false
+	}
+	runes := []rune(complete)
+	if len(runes) <= delegateReportWholeMaxChars {
+		return false
+	}
+	const recoveryPrefix = "\nFull output: "
+	footerAt := strings.LastIndex(body, recoveryPrefix)
+	if footerAt < 0 {
+		return false
+	}
+	footer := body[footerAt+len(recoveryPrefix):]
+	ref, _, _ := strings.Cut(footer, "\n")
+	if !validArtifactTranscriptRef(ref) {
+		return false
+	}
+	// Keep this equality aligned with internal/tool's TruncTail framing. The
+	// entire body, including both recovery lines, must survive unchanged.
+	want := fmt.Sprintf("[Output truncated: %d characters removed from the beginning.]\n\n%s\n[Tool output was truncated.]", len(runes)-delegateReportWholeMaxChars, string(runes[len(runes)-delegateReportWholeMaxChars:])) + artifactRecoveryFooter(ref)
+	if body != want {
+		return false
+	}
+	file, err := s.artifactStore.Open(ref)
+	if err != nil {
+		return false
+	}
+	defer func() { _ = file.Close() }()
+	data, err := io.ReadAll(io.LimitReader(file, int64(len(complete))+1))
+	return err == nil && bytes.Equal(data, []byte(complete))
 }
 
 // putArtifact stores recoverable output, reporting a degraded session (no

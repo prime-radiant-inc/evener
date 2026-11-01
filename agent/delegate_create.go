@@ -77,6 +77,12 @@ func (runtime delegateRuntime) create(ctx context.Context, args delegateArgs) de
 	if s == nil || s.delegateController == nil {
 		return delegateStartFailed(errors.New("delegate controller is unavailable"))
 	}
+	var recheck bool
+	defer func() {
+		if recheck {
+			s.delegateController.recheckNotificationReceivers()
+		}
+	}()
 	retirementRelease, retirementErr := s.beginRetirementMutation("delegate")
 	if retirementErr != nil {
 		return delegateStartFailed(retirementErr)
@@ -136,7 +142,9 @@ func (runtime delegateRuntime) create(ctx context.Context, args delegateArgs) de
 	if err != nil {
 		return delegateStartFailed(err)
 	}
-	if err := s.reclaimDelegateRuntimeCapacity(1); err != nil {
+	reclaimed, err := s.reclaimDelegateRuntimeCapacity(1)
+	recheck = recheck || reclaimed
+	if err != nil {
 		return delegateStartFailed(err)
 	}
 	// Read the overlap before this delegate is prepared or tracked, while the
@@ -189,6 +197,7 @@ func (runtime delegateRuntime) create(ctx context.Context, args delegateArgs) de
 	// rollback actually starts.
 	isolation.laneAdmission, isolation.laneFenced = laneAdmission, laneFenced
 	started, err := s.delegateController.CommitStart(reservation)
+	recheck = recheck || started.recheckNotifications
 	if err != nil {
 		isolation.cleanup(s, reservation.delegateID)
 		return delegateStartFailed(err)
@@ -233,32 +242,39 @@ func (runtime delegateRuntime) create(ctx context.Context, args delegateArgs) de
 		result.ArtifactsDir = advertiseArtifactsDir(artifactsDir)
 		return result
 	}
+	failedResult := func(result delegateResult, released bool) delegateResult {
+		recheck = recheck || released
+		return createResult(result)
+	}
 	// ReserveCreate always mints a child session id, so an empty one is a bug:
 	// fail closed rather than silently skip the per-delegation artifacts dir.
 	artifactsDir, err = ensureDelegateArtifactsDir(s.stateDir, started.descriptor.ChildSessionID)
 	if err != nil {
-		return createResult(runtime.failCommittedStart(started, isolation, nil, false, err, "artifacts_dir_failed"))
+		return failedResult(runtime.failCommittedStart(started, isolation, nil, false, err, "artifacts_dir_failed"))
 	}
 	s.delegateController.emitDelegateUpdate(started.plan)
 	prepared, err := runtime.construct(ctx, args, selection, started, isolation)
 	if err != nil {
 		removeArtifacts()
-		return createResult(runtime.failCommittedStart(started, isolation, nil, false, err, "construction_failed"))
+		return failedResult(runtime.failCommittedStart(started, isolation, nil, false, err, "construction_failed"))
 	}
-	if err := s.delegateController.AttachRuntime(started.lease, prepared.sub.sess); err != nil {
-		return createResult(runtime.failCommittedStart(started, isolation, prepared, false, err, "construction_failed"))
+	released, err := s.delegateController.AttachRuntime(started.lease, prepared.sub.sess)
+	recheck = recheck || released
+	if err != nil {
+		return failedResult(runtime.failCommittedStart(started, isolation, prepared, false, err, "construction_failed"))
 	}
 	if err := runtime.adopt(prepared); err != nil {
-		return createResult(runtime.failCommittedStart(started, isolation, prepared, true, err, "construction_failed"))
+		return failedResult(runtime.failCommittedStart(started, isolation, prepared, true, err, "construction_failed"))
 	}
 	claim, err := s.delegateController.BeginStartInput(started.lease)
 	if err != nil {
-		return createResult(runtime.failAdoptedStart(started, isolation, prepared, err, "input_admission_failed"))
+		return failedResult(runtime.failAdoptedStart(started, isolation, prepared, err, "input_admission_failed"))
 	}
 	preseedErr := runtime.preseedInput(prepared.sub.sess, task, started.transcriptPath, s.transcriptAuthor())
 	if preseedErr != nil {
 		finish := delegatePermanentStartFailure(preseedErr, "input_persist_failed")
 		plans, completeErr := s.delegateController.CompleteStartInput(claim, false, finish)
+		recheck = recheck || plans.recheckNotifications
 		s.delegateController.emitDelegateUpdates(plans)
 		if completeErr != nil {
 			runtime.retainAdoptedWithoutLaunch(prepared)
@@ -268,6 +284,7 @@ func (runtime delegateRuntime) create(ctx context.Context, args delegateArgs) de
 		return createResult(startedDelegateResult(started.descriptor, started.lease.delegateID, started.plan, plans, preseedErr))
 	}
 	plans, err := s.delegateController.CompleteStartInput(claim, true, delegateFinish{})
+	recheck = recheck || plans.recheckNotifications
 	s.delegateController.emitDelegateUpdates(plans)
 	if err != nil {
 		runtime.retainAdoptedWithoutLaunch(prepared)
@@ -293,7 +310,8 @@ func (s *Session) delegateActor(ctx context.Context) (delegateActor, error) {
 		if s.owningDelegateID == "" || lease.delegateID != s.owningDelegateID {
 			return delegateActor{}, errDelegateStaleLease
 		}
-		return delegateActor{lease: &lease}, nil
+		batch, _ := ctx.Value(delegateToolBatchContextKey{}).(*delegateToolBatch)
+		return delegateActor{lease: &lease, batch: batch}, nil
 	}
 	if s.owningDelegateID != "" {
 		return delegateActor{}, errDelegateStaleLease
@@ -702,7 +720,7 @@ func (runtime delegateRuntime) preseedInput(child *Session, input, transcriptPat
 	return errors.New("read back child input transcript: user input is absent")
 }
 
-func (runtime delegateRuntime) failCommittedStart(started delegateStartCommit, isolation delegateIsolation, prepared *preparedSubagentRun, controllerAttached bool, constructionErr error, reason string) delegateResult {
+func (runtime delegateRuntime) failCommittedStart(started delegateStartCommit, isolation delegateIsolation, prepared *preparedSubagentRun, controllerAttached bool, constructionErr error, reason string) (delegateResult, bool) {
 	finish := delegatePermanentStartFailure(constructionErr, reason)
 	var runtimeForClose *Session
 	if controllerAttached && prepared != nil {
@@ -723,18 +741,18 @@ func (runtime delegateRuntime) failCommittedStart(started delegateStartCommit, i
 			}
 			isolation.cleanup(runtime.owner, started.lease.delegateID)
 		}
-		return startedDelegateResult(started.descriptor, started.lease.delegateID, started.plan, plans, constructionErr)
+		return startedDelegateResult(started.descriptor, started.lease.delegateID, started.plan, plans, constructionErr), plans.recheckNotifications
 	}
 	if finishErr != nil {
 		retainErr := runtime.retainFailedStartCandidate(prepared)
-		return startedDelegateResult(started.descriptor, started.lease.delegateID, started.plan, plans, errors.Join(constructionErr, finishErr, retainErr))
+		return startedDelegateResult(started.descriptor, started.lease.delegateID, started.plan, plans, errors.Join(constructionErr, finishErr, retainErr)), plans.recheckNotifications
 	}
 	if prepared != nil {
 		prepared.runCancel()
 		prepared.disposeUnadopted()
 	}
 	isolation.cleanup(runtime.owner, started.lease.delegateID)
-	return startedDelegateResult(started.descriptor, started.lease.delegateID, started.plan, plans, constructionErr)
+	return startedDelegateResult(started.descriptor, started.lease.delegateID, started.plan, plans, constructionErr), plans.recheckNotifications
 }
 
 func (runtime delegateRuntime) retainFailedStartCandidate(prepared *preparedSubagentRun) error {
@@ -754,17 +772,17 @@ func (runtime delegateRuntime) retainFailedStartCandidate(prepared *preparedSuba
 	return errDelegateTargetBusy
 }
 
-func (runtime delegateRuntime) failAdoptedStart(started delegateStartCommit, isolation delegateIsolation, prepared *preparedSubagentRun, startErr error, reason string) delegateResult {
+func (runtime delegateRuntime) failAdoptedStart(started delegateStartCommit, isolation delegateIsolation, prepared *preparedSubagentRun, startErr error, reason string) (delegateResult, bool) {
 	finish := delegatePermanentStartFailure(startErr, reason)
 	plans, _, finishErr := runtime.owner.delegateController.FailCommittedStart(started.lease, finish, reason, nil)
 	runtime.owner.delegateController.emitDelegateUpdates(plans)
 	if finishErr != nil {
 		runtime.retainAdoptedWithoutLaunch(prepared)
-		return startedDelegateResult(started.descriptor, started.lease.delegateID, started.plan, plans, errors.Join(startErr, finishErr))
+		return startedDelegateResult(started.descriptor, started.lease.delegateID, started.plan, plans, errors.Join(startErr, finishErr)), plans.recheckNotifications
 	}
 	runtime.discardAdopted(prepared)
 	isolation.cleanup(runtime.owner, started.lease.delegateID)
-	return startedDelegateResult(started.descriptor, started.lease.delegateID, started.plan, plans, startErr)
+	return startedDelegateResult(started.descriptor, started.lease.delegateID, started.plan, plans, startErr), plans.recheckNotifications
 }
 
 func (runtime delegateRuntime) retainAdoptedWithoutLaunch(prepared *preparedSubagentRun) {

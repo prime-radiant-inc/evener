@@ -140,6 +140,7 @@ func TestQueuedModelSwitchAppliesAfterTheFailedTurnSettlesAttention(t *testing.T
 		}
 	}
 	serveSession(t, s)
+	s.SetNotifyFunc(func() {})
 
 	armOneRootAttention(t, s, "dlg_pick401", "delegate:dlg_pick401/delivery/1")
 	if _, err := s.ProcessInputKind(context.Background(), "", nil, EntryNotification); err == nil {

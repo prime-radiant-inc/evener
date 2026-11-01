@@ -34,7 +34,9 @@ func TestInterruptedSessionEndCarriesTheWireState(t *testing.T) {
 	_ = sess.reg.Register(tool.RegisteredTool{
 		Definition: llm.ToolDefinition{Name: "slow", Description: "Wait for cancellation."},
 		Exec: func(ctx context.Context, _ execenv.ExecutionEnvironment, _ map[string]any) (any, error) {
-			sess.enqueueJobNotification(jobNotification{JobID: "job_during_turn"})
+			if err := sess.enqueueNotification(notification{ID: "during-turn", Message: llm.User("interrupted-payload-5")}); err != nil {
+				t.Errorf("accept notification during tool: %v", err)
+			}
 			started <- struct{}{}
 			<-ctx.Done()
 			return "", ctx.Err()
@@ -57,6 +59,7 @@ func TestInterruptedSessionEndCarriesTheWireState(t *testing.T) {
 	}
 	cancelTurn()
 	<-finished
+	assertNotificationPending(t, sess, []string{"during-turn"})
 	want := sess.WireState()
 	sess.Close()
 	<-done

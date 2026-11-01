@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"strings"
 	"time"
 
@@ -142,6 +143,14 @@ func (s *Session) releaseFinishedGeneration(lease delegateLease, runtime *Sessio
 
 func (runtime delegateRuntime) send(ctx context.Context, delegateID, message string, maxWaitMS int) delegateSendOutcome {
 	s := runtime.owner
+	var recheck bool
+	consumeRecheck := func() {
+		if recheck {
+			recheck = false
+			s.delegateController.recheckNotificationReceivers()
+		}
+	}
+	defer consumeRecheck()
 	failed := func(err error) delegateSendOutcome {
 		return delegateSendOutcome{result: sendMessageFailed(delegateID, err)}
 	}
@@ -152,7 +161,7 @@ func (runtime delegateRuntime) send(ctx context.Context, delegateID, message str
 	if retirementErr != nil {
 		return failed(retirementErr)
 	}
-	defer retirementRelease()
+	defer func() { retirementRelease() }()
 	if delegateID == "" || message == "" {
 		return failed(errors.New("invalid_request: delegate_id and message are required"))
 	}
@@ -166,8 +175,37 @@ func (runtime delegateRuntime) send(ctx context.Context, delegateID, message str
 		}
 	}
 	if maxWaitMS == 0 {
+		// Actual parent input may restore an open wait without a notification ID.
+		// Keep the existing restore gate/drive guard until steering is admitted.
+		c := s.delegateController
+		c.mu.Lock()
+		authorizeErr := c.authorizeMutationLocked(actor, delegateID)
+		run, live := c.durable[delegateID], c.live[delegateID]
+		coldWait := authorizeErr == nil && run != nil && run.CurrentRunOpen && run.Phase == delegatestore.PhaseRunning && (live == nil || live.runtime == nil && live.binding == nil)
+		c.mu.Unlock()
+		if authorizeErr != nil {
+			return failed(authorizeErr)
+		}
+		if coldWait {
+			_, finish, restoreErr := s.restoreWaitingDelegateGuarded(delegateID)
+			defer func() {
+				retirementRelease()
+				retirementRelease = func() {}
+				if err := finish(); err != nil {
+					s.emit(warningDataFromError("restored delegate side effects incomplete", err))
+				}
+			}()
+			if restoreErr != nil {
+				return failed(restoreErr)
+			}
+		}
 		if plans, steerErr := s.delegateController.Steer(ctx, actor, delegateID, message); steerErr == nil {
 			_ = s.executeDelegateMutationPlans(plans)
+			if childID, ok := c.childSessionIDFor(delegateID); ok {
+				if err := c.requestSessionWake(childID); err != nil {
+					slog.Warn("notification wake failed", "session_id", childID, "error", err)
+				}
+			}
 			name := ""
 			for _, update := range plans.updates {
 				for _, row := range update.rows {
@@ -218,24 +256,12 @@ func (runtime delegateRuntime) send(ctx context.Context, delegateID, message str
 	defer func() {
 		if committedClaimHeld {
 			s.releaseChildCommittedSendStart(committedChildID)
-			// The claim refused every drive for the claimed child that landed
-			// while it was held -- a child notification arriving mid-window runs
-			// the child's notify, driveChildIfNotStopGated, which returns early on
-			// the claim, and driveDelegateAttention refuses the stable
-			// attention the same way -- so that wake is DROPPED. The run about to
-			// launch would have drained the child's queue, but this exit did not
-			// hand a run over (the claim is still held here), so re-drive the
-			// claimed child's queued notifications, watch sends and armed stable
-			// attention or the dropped wake can sit undriven forever. The re-drive
-			// is scoped to committedChildID because the claim only gated that
-			// child, so only that child can hold a wake it swallowed. The hand-off
-			// path clears committedClaimHeld before this defer runs, so it never
-			// re-drives: the handed-over run drains the queue itself, and
-			// re-driving there would launch the second turn this claim prevents.
-			// This runs from the deferred rollback after every failure exit
-			// (aborted reservation, failed commit, failed restore, blocked
-			// hand-off, start-input failure), and send holds no lock here.
-			s.redriveLiveChild(committedChildID)
+			// Rollback released the exact child without handing an executor over.
+			// Recheck its common readiness outside all send locks. Successful
+			// handoff clears committedClaimHeld and leaves recovery to the run.
+			if err := s.delegateController.requestSessionWake(committedChildID); err != nil {
+				slog.Warn("notification wake failed", "session_id", committedChildID, "error", err)
+			}
 		}
 	}()
 	if observer := s.cfg.testOnly.delegateSendStartClaimed; observer != nil {
@@ -248,6 +274,24 @@ func (runtime delegateRuntime) send(ctx context.Context, delegateID, message str
 	// guarded holds the guard until the run takes it over; every other exit
 	// releases it here, before the claim's rollback re-drives the child.
 	var guarded *subagent
+	releaseSendOwnership := func() {
+		rollback := committedClaimHeld
+		if guarded != nil {
+			releaseDriveGuard(guarded)
+			guarded = nil
+		}
+		if committedClaimHeld {
+			s.releaseChildCommittedSendStart(committedChildID)
+			committedClaimHeld = false
+		}
+		retirementRelease()
+		retirementRelease = func() {}
+		if rollback {
+			if err := s.delegateController.requestSessionWake(committedChildID); err != nil {
+				slog.Warn("notification wake failed", "session_id", committedChildID, "error", err)
+			}
+		}
+	}
 	defer func() {
 		if guarded != nil {
 			releaseDriveGuard(guarded)
@@ -271,24 +315,49 @@ func (runtime delegateRuntime) send(ctx context.Context, delegateID, message str
 		}
 	}
 	started, err := s.delegateController.CommitStart(reservation)
+	recheck = recheck || started.recheckNotifications
 	if err != nil {
 		return failed(err)
 	}
+	failStart := func(cause error, publish func()) delegateSendOutcome {
+		return runtime.failStableSendStartAfterDispatch(ctx, started, delegateID, waiter, maxWaitMS, cause, func() {
+			if publish != nil {
+				publish()
+			}
+			releaseSendOwnership()
+			consumeRecheck()
+		})
+	}
+	failOutcome := func(plans delegateMutationPlans, cause error, afterRollback func()) delegateSendOutcome {
+		return runtime.stableSendFailureOutcomeAfterDispatch(ctx, started, waiter, maxWaitMS, plans, cause, func() {
+			releaseSendOwnership()
+			if afterRollback != nil {
+				afterRollback()
+			}
+			consumeRecheck()
+		})
+	}
 	sub, restored, finishRestore, err := runtime.restoreIdleForSend(started)
+	finishRestoration := func(sub *subagent, restoreErr error) {
+		released := finishRestore(sub, restoreErr)
+		recheck = recheck || released
+	}
 	if err != nil {
-		return runtime.failStableSendStartAfterDispatch(ctx, started, delegateID, waiter, maxWaitMS, err, func() {
-			finishRestore(nil, err)
+		return failStart(err, func() {
+			finishRestoration(nil, err)
 		})
 	}
 	if restored {
 		candidate := sub
 		tracked, inserted, trackErr := s.subagents.admitReconstructed(candidate, func(selected *subagent) error {
-			return s.delegateController.AttachRuntime(started.lease, selected.sess)
+			released, err := s.delegateController.AttachRuntime(started.lease, selected.sess)
+			recheck = recheck || released
+			return err
 		})
 		if trackErr != nil {
 			candidate.sess.discardRestoredCandidate()
-			return runtime.failStableSendStartAfterDispatch(ctx, started, delegateID, waiter, maxWaitMS, trackErr, func() {
-				finishRestore(nil, trackErr)
+			return failStart(trackErr, func() {
+				finishRestoration(nil, trackErr)
 			})
 		}
 		if !inserted {
@@ -302,14 +371,16 @@ func (runtime delegateRuntime) send(ctx context.Context, delegateID, message str
 	}
 	if sub == nil || sub.sess == nil {
 		cause := errors.New("delegate runtime is unavailable")
-		return runtime.failStableSendStartAfterDispatch(ctx, started, delegateID, waiter, maxWaitMS, cause, func() {
-			finishRestore(nil, cause)
+		return failStart(cause, func() {
+			finishRestoration(nil, cause)
 		})
 	}
 	if !restored {
-		if err := s.delegateController.AttachRuntime(started.lease, sub.sess); err != nil {
-			return runtime.failStableSendStartAfterDispatch(ctx, started, delegateID, waiter, maxWaitMS, err, func() {
-				finishRestore(nil, err)
+		released, err := s.delegateController.AttachRuntime(started.lease, sub.sess)
+		recheck = recheck || released
+		if err != nil {
+			return failStart(err, func() {
+				finishRestoration(nil, err)
 			})
 		}
 	}
@@ -318,12 +389,8 @@ func (runtime delegateRuntime) send(ctx context.Context, delegateID, message str
 	// consumed the reservation, but sub.running stays false through the restored
 	// side effects and the start-input mutation plans (BeginStartInput,
 	// preseedInput, CompleteStartInput); the run goroutine only sets running at
-	// the far end of it. A wake-edge drive landing in that gap reads an idle
-	// child, and driveChildIfNotStopGated falls through to
-	// driveSubagentNotificationTurn, which launches a second, UNLEASED
-	// EntryNotification turn on the session this generation is about to run. The
-	// two turns then share one drain ladder and the queue pop (a destructive pop
-	// with no owner check) lets the unleased turn steal the run's queued input.
+	// the far end of it. An overlapping wake must not admit another executor
+	// into that committed-start gap or consume this run's follow-up.
 	// sub.driving is the flag every other guard already reads as "a turn is in
 	// flight on this idle child"; it is handed to the run under the same sub.mu
 	// hold that sets running.
@@ -340,8 +407,8 @@ func (runtime delegateRuntime) send(ctx context.Context, delegateID, message str
 		}
 		if !s.takeSendDriveGuard(sub) {
 			cause := errDelegateTargetBusy
-			return runtime.failStableSendStartAfterDispatch(ctx, started, delegateID, waiter, maxWaitMS, cause, func() {
-				finishRestore(sub, nil)
+			return failStart(cause, func() {
+				finishRestoration(sub, nil)
 			})
 		}
 		guarded = sub
@@ -356,36 +423,38 @@ func (runtime delegateRuntime) send(ctx context.Context, delegateID, message str
 	if s.closingOrClosedLocked() {
 		s.mu.Unlock()
 		cause := errors.New("session is closed")
-		return runtime.failStableSendStartAfterDispatch(ctx, started, delegateID, waiter, maxWaitMS, cause, func() {
-			finishRestore(sub, nil)
+		return failStart(cause, func() {
+			finishRestoration(sub, nil)
 		})
 	}
 	s.sendersWG.Add(1)
 	s.mu.Unlock()
-	finishRestore(sub, nil)
+	finishRestoration(sub, nil)
 	if observer := s.cfg.testOnly.delegateSendStartCommitted; observer != nil {
 		observer(sub)
 	}
 	claim, err := s.delegateController.BeginStartInput(started.lease)
 	if err != nil {
 		s.sendersWG.Done()
-		return runtime.failStableSendStartAfterDispatch(ctx, started, delegateID, waiter, maxWaitMS, err, nil)
+		return failStart(err, nil)
 	}
 	if err := runtime.preseedInput(sub.sess, message, started.transcriptPath, s.transcriptAuthor()); err != nil {
 		plans, completeErr := s.delegateController.CompleteStartInput(claim, false, delegatePermanentStartFailure(err, "input_persist_failed"))
 		s.sendersWG.Done()
-		return runtime.stableSendFailureOutcomeAfterDispatch(ctx, started, waiter, maxWaitMS, plans, errors.Join(err, completeErr), nil)
+		return failOutcome(plans, errors.Join(err, completeErr), nil)
 	}
 	plans, err := s.delegateController.CompleteStartInput(claim, true, delegateFinish{})
 	if err != nil {
 		s.sendersWG.Done()
-		return runtime.stableSendFailureOutcomeAfterDispatch(ctx, started, waiter, maxWaitMS, plans, err, nil)
+		return failOutcome(plans, err, nil)
 	}
+	recheck = recheck || plans.recheckNotifications
+	plans.recheckNotifications = false
 	if err := s.executeDelegateMutationPlans(plans); err != nil {
 		s.sendersWG.Done()
 		failurePlans, finishErr := s.delegateController.finishUnlaunchedGeneration(started.lease, err)
 		// The release runs once the failure is announced, whatever that did.
-		return runtime.stableSendFailureOutcomeAfterDispatch(ctx, started, waiter, maxWaitMS, failurePlans, errors.Join(err, finishErr), func() {
+		return failOutcome(failurePlans, errors.Join(err, finishErr), func() {
 			s.releaseFinishedGeneration(started.lease, sub.sess)
 		})
 	}
@@ -409,6 +478,8 @@ func (runtime delegateRuntime) send(ctx context.Context, delegateID, message str
 	}
 	s.launchSubagentRun(runCtx, sub, runCancel, message, descriptorProvenance(started.descriptor))
 	s.startDelegateQuietWatchdog(started.ctx, started.lease)
+	releaseSendOwnership()
+	consumeRecheck()
 	result := sendMessageResult{
 		Target:              delegateID,
 		DelegateID:          delegateID,
@@ -425,6 +496,13 @@ func (runtime delegateRuntime) send(ctx context.Context, delegateID, message str
 		return delegateSendOutcome{result: result}
 	}
 	resolution := runtime.waitInline(ctx, waiter, maxWaitMS)
+	if resolution.readiness != "" {
+		result.Readiness = resolution.readiness
+		result.Action = "ready"
+		result.Status = jobstore.StatusRunning
+		result.RunningInBackground = false
+		return delegateSendOutcome{result: result}
+	}
 	if resolution.fallback || resolution.packet == nil || resolution.commit == nil {
 		result.TimedOut = true
 		return delegateSendOutcome{result: result}
@@ -497,6 +575,9 @@ func populateDelegateSendResult(result *sendMessageResult, packet delegatestore.
 				Dirty:   metadata.Worktree.Dirty,
 			}
 		}
+		if metadata.Report != nil {
+			result.ReportSummary = metadata.Report
+		}
 	}
 }
 
@@ -559,9 +640,14 @@ func (runtime delegateRuntime) failStableSendStartAfterDispatch(ctx context.Cont
 }
 
 func (runtime delegateRuntime) stableSendFailureOutcomeAfterDispatch(ctx context.Context, started delegateStartCommit, waiter *delegateInlineWaiter, maxWaitMS int, plans delegateMutationPlans, cause error, afterDispatch func()) delegateSendOutcome {
+	recheck := plans.recheckNotifications
+	plans.recheckNotifications = false
 	executeErr := runtime.owner.executeDelegateMutationPlans(plans)
 	if afterDispatch != nil {
 		afterDispatch()
+	}
+	if recheck {
+		runtime.owner.delegateController.recheckNotificationReceivers()
 	}
 	result := delegateFailedSendResult(started, plans, errors.Join(cause, executeErr))
 	if waiter == nil || result.Action == "recovery_required" {

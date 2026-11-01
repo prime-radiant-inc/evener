@@ -173,8 +173,11 @@ func effectiveReasoningEffort(cfg, override string, escalated bool) string {
 // cut from. That list is the round's, not the request's: the retry after a
 // rejected anchor rebuilds from it, and nothing on the wire ever carries it.
 func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t *events.RoundTimings) (profile *provider.Profile, sys string, history []llm.Message, req llm.Request, fullHistory []llm.Message, reasoningEffort string, err error) {
-	if err := s.flushPendingDelegateDeliveries(); err != nil {
-		return nil, "", nil, llm.Request{}, nil, "", err
+	if err := s.replayDelegateDeliveries(); err != nil {
+		// Replay spans every receiver sharing the controller. Its source-owned
+		// retry must not fail this executor because a sibling is unavailable.
+		// This receiver's own history and writer checks remain authoritative.
+		s.emit(warningDataFromError("replay delegate deliveries", err))
 	}
 	// A skill-bearing steering message whose admission never reached durable
 	// obligations is retained in memory (admitPreparedSkillSelection). Retry it
@@ -275,13 +278,32 @@ func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t
 	// rather than taking another one. Do not drop the copy above as redundant
 	// work — it is what keeps the boundary paired with the history this round
 	// actually expands (see the G4 note there).
+	// History expansion and response staging share this selected-snapshot
+	// decision, including the capability check. Private state alone never
+	// establishes presentation, and changed bodies get a fresh decision.
+	type inlineBodyKey struct {
+		callID, name, body, state string
+		isError                   bool
+	}
+	inlineBodies := make(map[inlineBodyKey]bool)
+	verifyInline := func(result *llm.ToolResultData) bool {
+		body, _ := result.Content.(string)
+		key := inlineBodyKey{result.ToolCallID, result.Name, body, string(result.ToolState), result.IsError}
+		if presented, ok := inlineBodies[key]; ok {
+			return presented
+		}
+		presented := s.delegateInlineBodyPresented(result)
+		inlineBodies[key] = presented
+		return presented
+	}
 	scope := replayScope{
-		Instance:       profile.ID(),
-		Model:          profile.Model(),
-		Protocol:       profile.Protocol(),
-		InFlightFrom:   inFlightFrom,
-		protocolOf:     s.instanceProtocol,
-		canonicalModel: func(model string) string { return s.canonicalModelID(profile.ID(), model) },
+		Instance:            profile.ID(),
+		Model:               profile.Model(),
+		Protocol:            profile.Protocol(),
+		InFlightFrom:        inFlightFrom,
+		protocolOf:          s.instanceProtocol,
+		canonicalModel:      func(model string) string { return s.canonicalModelID(profile.ID(), model) },
+		inlineBodyPresented: verifyInline,
 	}
 	// presentedTurns is the history this request projects: a leased delegate
 	// turn projects the controller's own later snapshot, which can hold turns
@@ -410,7 +432,27 @@ func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t
 	// inside is the single gate, whichever path built the history; staging
 	// follows the skill rebuilds because credit belongs to what the request
 	// actually carries.
-	s.stagePresentedAttentionCoverage(ctx, presentedTurns)
+	if req.HistoryMode == llm.HistoryModeResponsesDelta {
+		pending, pendingErr := s.pendingNotificationIDs()
+		if pendingErr != nil {
+			return profile, sys, history, req, fullHistory, reasoningEffort, pendingErr
+		}
+		if len(pending) != 0 {
+			// Unknown server-side prefix coverage must not run a successful
+			// delta over and over while these notifications remain pending.
+			req.Messages = fullHistory
+			req.PreviousResponseID = ""
+			req.ConversationID = ""
+			req.Continuation = nil
+			req.HistoryMode = llm.HistoryModeFullHistory
+			fullHistory = nil
+			req = responsesContinuationFullHistoryWithInputEstimate(resolvedTargetOf(profile), req)
+			if req, _, err = budgetModelDispatchRequestWithBudget(profile, req); err != nil {
+				return profile, sys, history, req, fullHistory, reasoningEffort, err
+			}
+		}
+	}
+	s.stagePresentedAttentionCoverage(ctx, presentedTurns, verifyInline)
 	return profile, sys, history, req, fullHistory, reasoningEffort, nil
 }
 
@@ -1025,7 +1067,7 @@ func effectiveRecordedInputTokens(usage llm.Usage, fullHistoryEstimate int, hasS
 // /delta/end, skipping start/delta when the assistant already streamed) and appends
 // the assistant turn to history unless the response was empty without phase metadata.
 // It runs under withResponseSideEffects and returns its abort error.
-func (s *Session) emitAssistantResponse(ctx context.Context, resp llm.Response, modelResp sessionModelResponse, txt string, skipHistory bool, finalAttempt ModelAttemptMetadata) error {
+func (s *Session) emitAssistantResponse(ctx context.Context, resp llm.Response, modelResp sessionModelResponse, txt string, skipHistory bool, finalAttempt ModelAttemptMetadata, settled llm.Request) error {
 	var persistErr error
 	if err := s.withResponseSideEffects(ctx, func() {
 		if !modelResp.StreamedAssistant {
@@ -1033,11 +1075,13 @@ func (s *Session) emitAssistantResponse(ctx context.Context, resp llm.Response, 
 				Model: resp.Model,
 			})
 		}
-		if !skipHistory {
-			persistErr = s.appendAssistantTurn(resp, finalAttempt)
+		observed := s.stagedNotificationObservationIDs(settled)
+		if !skipHistory || len(observed) != 0 {
+			persistErr = s.appendAssistantTurn(resp, finalAttempt, observed...)
 			if persistErr != nil {
 				return
 			}
+			s.promoteStagedAttentionCoverage(settled)
 		}
 		if !modelResp.StreamedAssistant && strings.TrimSpace(txt) != "" {
 			s.emit(events.AssistantTextDeltaData{Delta: txt})
@@ -1616,6 +1660,10 @@ type replayScope struct {
 	// notesSelfEchoFiltered marks a delta slice whose self-echo TurnNotesContext
 	// turns were already filtered against the full history slice.
 	notesSelfEchoFiltered bool
+	// inlineBodyPresented checks exact whole or recovery-backed positive-wait
+	// carriers in this request's selected snapshot. Nil keeps pure whole-only
+	// replay behavior, including unverified continuation deltas.
+	inlineBodyPresented func(*llm.ToolResultData) bool
 }
 
 // active reports whether the scope enforces the N4 replay-provenance rules. An
@@ -1735,6 +1783,13 @@ func (rs replayScope) projectTurnMessage(t schema.Turn, inFlight bool) llm.Messa
 // outgoing request while staying untouched in the stored transcript.
 func expandHistory(historyTurns []schema.Turn, scope replayScope) []llm.Message {
 	history := make([]llm.Message, 0, len(historyTurns))
+	inline := inlineNotificationPresentations(historyTurns, scope.inlineBodyPresented)
+	canonical := make(map[string]bool)
+	for _, turn := range historyTurns {
+		if turn.AttentionID != "" {
+			canonical[turn.AttentionID] = true
+		}
+	}
 	pendingToolCalls := map[string]struct{}{}
 	var deferredSteering []llm.Message
 
@@ -1780,6 +1835,9 @@ func expandHistory(historyTurns []schema.Turn, scope replayScope) []llm.Message 
 		}
 		switch t.Kind {
 		case schema.TurnSteering:
+			if _, presentedInline := inline[t.AttentionID]; presentedInline {
+				continue
+			}
 			if len(pendingToolCalls) > 0 {
 				deferredSteering = append(deferredSteering, t.Message)
 			} else {
@@ -1789,6 +1847,15 @@ func expandHistory(historyTurns []schema.Turn, scope replayScope) []llm.Message 
 			// Expand aggregated tool results into individual messages.
 			for _, p := range t.Message.Content {
 				if p.Kind == llm.ContentToolResult && p.ToolResult != nil {
+					for _, binding := range t.DelegateDeliveryCommits {
+						id := delegateAttentionID(binding.DeliveryID)
+						if _, presented := inline[id]; !presented && canonical[id] && binding.ToolCallID == p.ToolResult.ToolCallID {
+							// History reduction changed this carrier. Its ordinary
+							// canonical body is authoritative, not a partial result.
+							p.ToolResult = delegateInlineStatusResult(p.ToolResult)
+							break
+						}
+					}
 					history = append(history, llm.Message{
 						Role:       llm.RoleTool,
 						ToolCallID: p.ToolResult.ToolCallID,

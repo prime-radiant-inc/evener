@@ -387,24 +387,7 @@ func watchKeyForConfigLocked(jm *jobManager, cfg *watchConfig) (watchKey, bool) 
 // cfg is detached, a later in-flight settle that increments past the budget
 // finds no live key and returns without re-notifying.
 func (jm *jobManager) autoClearWatchOverBudgetNotification(cfg *watchConfig) (jobNotification, bool) {
-	defer jm.publishWatchActivity()
-	jm.mu.Lock()
-	key, ok := watchKeyForConfigLocked(jm, cfg)
-	if !ok {
-		jm.mu.Unlock()
-		return jobNotification{}, false
-	}
-	targets := []watchConfigTerminalSnapshot{{key: key, cfg: cfg, endReason: "budget_exhausted"}}
-	markWatchConfigSnapshotsRejectingLocked(targets)
-	jm.mu.Unlock()
-
-	if err := jm.appendWatchTeardownBatch(nil, targets); err != nil {
-		jm.rollbackWatchBudgetTeardown(targets, cfg)
-		return jobNotification{}, false
-	}
-	jm.detachOverBudgetWatch(targets[0])
-
-	return jm.watchNotificationFromWatch(cfg, "", watchBudgetClearedMessage(cfg.target), nil), true
+	return jm.autoClearWatchOverBudgetNotificationForOwner(cfg, "")
 }
 
 // detachOverBudgetWatch removes the over-budget config from the live set and, in
@@ -474,11 +457,6 @@ func (jm *jobManager) autoClearWatchOverBudget(cfg *watchConfig) {
 // autoClearOverBudgetWatches runs autoClearWatchOverBudget for each cfg that
 // crossed the budget during a single observation pass. Call it AFTER releasing
 // the observation's jm.mu critical section, alongside enqueueWatchNotifications.
-func (jm *jobManager) autoClearOverBudgetWatches(cfgs []*watchConfig) {
-	for _, cfg := range cfgs {
-		jm.autoClearWatchOverBudget(cfg)
-	}
-}
 
 func (jm *jobManager) hasWatchClearState(key watchKey) bool {
 	jm.mu.Lock()
@@ -566,4 +544,31 @@ func closeWatchConfig(cfg *watchConfig) {
 	}
 	close(cfg.progressStop)
 	cfg.progressStop = nil
+}
+
+func (jm *jobManager) autoClearWatchOverBudgetNotificationForOwner(cfg *watchConfig, owner string) (jobNotification, bool) {
+	defer jm.publishWatchActivity()
+	jm.mu.Lock()
+	if cfg == nil || (cfg.callbackBudgetOwner != "" && cfg.callbackBudgetOwner != owner) {
+		jm.mu.Unlock()
+		return jobNotification{}, false
+	}
+	key, ok := watchKeyForConfigLocked(jm, cfg)
+	if !ok {
+		jm.mu.Unlock()
+		return jobNotification{}, false
+	}
+	targets := []watchConfigTerminalSnapshot{{key: key, cfg: cfg, endReason: "budget_exhausted"}}
+	markWatchConfigSnapshotsRejectingLocked(targets)
+	jm.mu.Unlock()
+
+	if err := jm.appendWatchTeardownBatch(nil, targets); err != nil {
+		jm.rollbackWatchBudgetTeardown(targets, cfg)
+		return jobNotification{}, false
+	}
+	jm.detachOverBudgetWatch(targets[0])
+
+	n := jm.watchNotificationFromWatch(cfg, "", watchBudgetClearedMessage(cfg.target), nil)
+	n.callbackTrigger = watchBudgetEndTrigger
+	return n, true
 }

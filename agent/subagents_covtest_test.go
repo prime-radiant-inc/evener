@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/internal/tool"
 	"primeradiant.com/evener/agent/provenance"
 )
@@ -314,13 +315,28 @@ func TestCovDelegateFatalRun2(t *testing.T) {
 
 // ---- session_attention.go ----
 
-// TestCovHasPendingDelegateAttentionArmRetry covers
-// hasPendingDelegateAttentionArmRetry.
-func TestCovHasPendingDelegateAttentionArmRetry_NilSession(t *testing.T) {
+func TestCovNotificationWorkPending_AdmissionRetry(t *testing.T) {
 	t.Parallel()
-	var s *Session
-	if s.hasPendingDelegateAttentionArmRetry() {
-		t.Fatal("nil session should return false")
+	clock := agenttest.NewFakeClock()
+	s := newSession(t, withConfig(SessionConfig{clock: clock}), withoutGitSnapshot())
+	if s.notificationWorkPending() {
+		t.Fatal("empty receiver reports notification work")
+	}
+	baselineCallbacks := clock.PendingCallbacks()
+	s.deferNotificationAdmission()
+	if !s.notificationWorkPending() {
+		t.Fatal("admission retry is absent from notification readiness")
+	}
+	if got := clock.PendingCallbacks(); got != baselineCallbacks+1 {
+		t.Fatalf("admission retry callbacks=%d, want %d", got, baselineCallbacks+1)
+	}
+	clock.Advance(jobNotificationRetryInitialDelay)
+	clock.Drain()
+	if s.notificationWorkPending() {
+		t.Fatal("settled empty receiver still reports notification work")
+	}
+	if got := clock.PendingCallbacks(); got != baselineCallbacks {
+		t.Fatalf("settled retry callbacks=%d, want %d", got, baselineCallbacks)
 	}
 }
 
@@ -328,7 +344,7 @@ func TestCovHasPendingDelegateAttentionArmRetry_NilSession(t *testing.T) {
 func TestCovHasPendingDelegateAttentionArmRetry_NoArms(t *testing.T) {
 	t.Parallel()
 	s := &Session{}
-	if s.hasPendingDelegateAttentionArmRetry() {
+	if s.notificationWorkPending() {
 		t.Fatal("no arms should return false")
 	}
 }

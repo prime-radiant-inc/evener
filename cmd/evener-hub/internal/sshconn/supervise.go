@@ -47,7 +47,7 @@ func (t *lossWatchingTransport) Close() error {
 // It holds the host lock only around state inspection, channel teardown, and
 // one attach attempt. The backoff sleep happens with the lock released, so a
 // concurrent Ensure never waits behind a delay that can reach BackoffMax.
-func (m *Manager) supervise(ctx context.Context, host hostreg.Host, ch *Channel, lock *hostLockGate) {
+func (m *Manager) supervise(ctx context.Context, host hostreg.Host, ch *Channel, lock *hostLockGate, loop *supervisorLoop) {
 	select {
 	case <-ch.lost:
 	case <-ctx.Done():
@@ -57,17 +57,9 @@ func (m *Manager) supervise(ctx context.Context, host hostreg.Host, ch *Channel,
 	if m.opts.beforeSuperviseGate != nil {
 		m.opts.beforeSuperviseGate(host.Name, ch)
 	}
-	// A canceled loop no longer owns the host, and standing down needs no gate:
-	// return before contending for it. This covers the teardown ordering this
-	// path exists for — a loop is canceled, then its link is dropped, so the loop
-	// wakes on the drop with its context already canceled — and it stands down
-	// here instead of taking (or parking on) the gate it no longer owns. A loop
-	// canceled while already parked on Lock still takes the gate once, and the
-	// post-acquire check below returns it.
-	if ctx.Err() != nil {
+	if !m.acquireSupervisorGate(ctx, host.Name, lock, loop, false) {
 		return
 	}
-	lock.Lock()
 	lock.holdAs(hostops.Holder{Kind: hostops.HolderManager, Activity: "reconnect"})
 	// Ownership, not liveness, decides whether this supervisor still has work: the
 	// manager closing ends it, and a replaced channel means the replacement's
@@ -104,7 +96,7 @@ func (m *Manager) supervise(ctx context.Context, host hostreg.Host, ch *Channel,
 			// after the replacement's Attached.
 			return
 		}
-		if !m.reconnectOnce(ctx, host, lock) {
+		if !m.reconnectOnce(ctx, host, lock, loop) {
 			return
 		}
 		delay = nextBackoff(delay, m.opts.backoffMax())
@@ -219,7 +211,7 @@ func (m *Manager) startSupervise(host hostreg.Host, ch *Channel, lock *hostLockG
 				m.opts.superviseExited(host.Name)
 			}
 		}()
-		m.supervise(ctx, host, ch, lock)
+		m.supervise(ctx, host, ch, lock, loop)
 	})
 	m.mu.Unlock()
 	return true
@@ -255,8 +247,10 @@ func (m *Manager) stopSupervisor(name string) {
 // reconnectOnce runs one re-attach attempt with the host lock held, and reports
 // whether another attempt is worth making. Every outcome that ends the
 // supervisor emits its own state event first.
-func (m *Manager) reconnectOnce(ctx context.Context, host hostreg.Host, lock *hostLockGate) bool {
-	lock.Lock()
+func (m *Manager) reconnectOnce(ctx context.Context, host hostreg.Host, lock *hostLockGate, loop *supervisorLoop) bool {
+	if !m.acquireSupervisorGate(ctx, host.Name, lock, loop, true) {
+		return false
+	}
 	lock.holdAs(hostops.Holder{Kind: hostops.HolderManager, Activity: "reconnect"})
 	defer lock.Unlock()
 
@@ -451,3 +445,34 @@ func (l *linkMonitor) Write(p []byte) (int, error) {
 }
 
 func (l *linkMonitor) Close() error { return l.rw.Close() }
+
+func (m *Manager) acquireSupervisorGate(ctx context.Context, name string, lock *hostLockGate, loop *supervisorLoop, retry bool) bool {
+	for {
+		released := lock.releaseGeneration()
+		if m.opts.beforeSuperviseClaim != nil {
+			m.opts.beforeSuperviseClaim(name, retry)
+		}
+		m.mu.Lock()
+		_, eligible := m.supervisors[name][loop]
+		if m.closed || ctx.Err() != nil || !eligible {
+			m.mu.Unlock()
+			return false
+		}
+		acquired := lock.TryLock()
+		m.mu.Unlock()
+		if acquired {
+			if m.opts.afterSuperviseClaim != nil {
+				m.opts.afterSuperviseClaim(name, retry)
+			}
+			return true
+		}
+		if m.opts.superviseGateWaiting != nil {
+			m.opts.superviseGateWaiting(name)
+		}
+		select {
+		case <-ctx.Done():
+			return false
+		case <-released:
+		}
+	}
+}

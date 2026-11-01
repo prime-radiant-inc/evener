@@ -26,28 +26,6 @@ func parkedEscalationStandsDown(err error) bool {
 
 // escalateUnreachableDelegateAttention transfers permanently fenced wakes to
 // the root, preserving identity/content and idempotent crash replay.
-func (s *Session) escalateUnreachableDelegateAttention() bool {
-	progressed, failed := false, false
-	for _, plan := range s.delegateController.permanentlyFencedDelegateAttention() {
-		readFold := readDelegateAttentionFold
-		if plan.parked {
-			readFold = readExistingDelegateAttentionFold
-		}
-		if err := s.escalateOneUnreachableDelegateAttention(plan, readFold); err != nil {
-			s.warnDelegateAttentionFailed(delegateAttentionEscalateLabel, plan.delegateID, err)
-			failed = failed || !plan.parked || !parkedEscalationStandsDown(err)
-			continue
-		}
-		s.delegateAttentionWarningResolved(delegateAttentionEscalateLabel, plan.delegateID)
-		progressed = true
-	}
-	if failed {
-		s.scheduleDelegateAttentionRetry()
-	} else if progressed {
-		s.resetDelegateAttentionRetryDelay()
-	}
-	return progressed
-}
 
 // escalateOneUnreachableDelegateAttention transfers plan's attention to the
 // root, reading the source transcript's fold with readFold.
@@ -74,7 +52,7 @@ func (s *Session) escalateOneUnreachableDelegateAttention(plan delegateFencedAtt
 		if _, err := s.appendDelegateAttentionMessageDurably(attentionID, message); err != nil {
 			return err
 		}
-		if err := s.armDelegateAttention(attentionID); err != nil {
+		if err := s.requestNotificationWake(); err != nil {
 			return err
 		}
 		if err := s.delegateController.resolveDelegateAttentionDurably(plan.runtime, plan.transcriptRef, []string{attentionID}, delegateAttentionDiscarded); err != nil {

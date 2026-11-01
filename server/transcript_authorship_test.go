@@ -4,12 +4,14 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"path/filepath"
 	"reflect"
 	"slices"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"primeradiant.com/evener/agent"
 	"primeradiant.com/evener/agent/events"
@@ -239,8 +241,12 @@ type namedParentAuthorshipProvider struct {
 	finishPreview, sendCompleted      chan struct{}
 	finishMiddle, finishRoot          chan struct{}
 	middleFinalStarted                chan struct{}
+	postIdle                          bool
+	postIdleObserved, finishPostIdle  chan struct{}
 	requests                          []string
 	unexpected                        func(string)
+	diagnoseMiddle                    func(llm.Request) string
+	notificationAfter                 func(string, llm.Request) bool
 }
 
 func authorshipGate(ctx context.Context, gate <-chan struct{}) error {
@@ -274,11 +280,23 @@ func (p *namedParentAuthorshipProvider) Complete(ctx context.Context, req llm.Re
 	}
 	request := fmt.Sprintf("role=%s call=%d messages=%d last-role=%s", role, call, len(req.Messages), req.Messages[len(req.Messages)-1].Role)
 	p.requests = append(p.requests, request)
+	diagnose := p.diagnoseMiddle
+	after := p.notificationAfter
 	p.scriptMu.Unlock()
+	if role == "middle" && call == 5 && diagnose != nil {
+		diagnostic := diagnose(req)
+		p.scriptMu.Lock()
+		p.requests = append(p.requests, "middle diagnostic="+diagnostic)
+		p.scriptMu.Unlock()
+	}
 	switch role {
 	case "root":
 		if call == 1 {
-			return parityResponse(parityCall("create-middle", "delegate", map[string]any{"prompt": "middle-task", "name": "Middle", "delegation_allowance": 1})), nil
+			args := map[string]any{"prompt": "middle-task", "name": "Middle", "delegation_allowance": 1}
+			if p.postIdle {
+				args["watch_parent"] = true
+			}
+			return parityResponse(parityCall("create-middle", "delegate", args)), nil
 		}
 		if call == 2 {
 			if err := authorshipGate(ctx, p.finishRoot); err != nil {
@@ -286,8 +304,11 @@ func (p *namedParentAuthorshipProvider) Complete(ctx context.Context, req llm.Re
 			}
 			return parityCommunicate("root-final", "root finished", true), nil
 		}
-		if call == 3 && authorshipNotificationAfter(req, "root-final") {
+		if call == 3 && after("root", req) {
 			return parityCommunicate("root-notification", "root acknowledged middle completion", true), nil
+		}
+		if p.postIdle && call == 4 {
+			return parityCommunicate("post-idle-publication", "post-idle source publication", true), nil
 		}
 	case "middle":
 		switch call {
@@ -316,14 +337,33 @@ func (p *namedParentAuthorshipProvider) Complete(ctx context.Context, req llm.Re
 			}
 			return parityCommunicate("middle-final", "middle finished", true), nil
 		case 5:
-			if authorshipNotificationAfter(req, "middle-final") {
+			if after("middle", req) {
+				if p.postIdle {
+					return parityResponse(parityCall("post-idle-watch", "job_watch", map[string]any{
+						"operation": "create", "source": "parent", "events": []string{"communicate"}, "every": 3,
+					})), nil
+				}
 				return parityCommunicate("middle-notification", "middle acknowledged leaf completion", true), nil
+			}
+		case 6:
+			// job_watch is nonterminal. Its checked result gets one ordinary
+			// continuation inside this same notification input, not another run.
+			if p.postIdle && after("watch-created", req) {
+				return parityCommunicate("middle-notification", "middle acknowledged leaf completion", true), nil
+			}
+		case 7:
+			if p.postIdle && authorshipNotificationAfter(req, "middle-notification") && after("post-idle", req) {
+				close(p.postIdleObserved)
+				if err := authorshipGate(ctx, p.finishPostIdle); err != nil {
+					return llm.Response{}, err
+				}
+				return parityCommunicate("post-idle-observed", "middle observed post-idle publication", true), nil
 			}
 		}
 	case "leaf":
 		if call == 2 {
-			// The test expects a successor middle generation. Its last request
-			// must precede this report, or that request can consume the attention.
+			// Publish after the middle's last ordinary request starts. The real
+			// delivery is pending when its accepted terminal enters finalization.
 			if err := authorshipGate(ctx, p.middleFinalStarted); err != nil {
 				return llm.Response{}, err
 			}
@@ -353,6 +393,429 @@ func authorshipNotificationAfter(req llm.Request, callID string) bool {
 		}
 	}
 	return false
+}
+
+// Read the real journals without importing the agent's internal folds. These
+// wire coordinates independently bind canonical custody to source settlement.
+type namedParentWatchKey struct {
+	VisibleSessionID        string `json:"visible_session_id"`
+	WatchID                 string `json:"watch_id"`
+	WatchTarget             string `json:"watch_target"`
+	ResolvedWatchedIdentity string `json:"resolved_watched_identity"`
+	ResolvedSendTo          string `json:"resolved_send_to"`
+	WatchGeneration         string `json:"watch_generation"`
+	RestartSeq              int64  `json:"restart_seq"`
+}
+
+type namedParentWatchRegistration struct {
+	Generation       string `json:"generation"`
+	OwnerSessionID   string `json:"owner_session_id"`
+	VisibleSessionID string `json:"visible_session_id"`
+	Target           string `json:"target"`
+	SendTo           string `json:"send_to"`
+	ConfigHash       string `json:"config_hash"`
+	Config           *struct {
+		Target                   string   `json:"target"`
+		Events                   []string `json:"events"`
+		Every                    int      `json:"every"`
+		ReceiverSessionID        string   `json:"receiver_session_id"`
+		ReceiverDelegateID       string   `json:"receiver_delegate_id"`
+		Source                   string   `json:"source"`
+		SourceDelegateID         string   `json:"source_delegate_id"`
+		SourceDelegateGeneration uint64   `json:"source_delegate_generation"`
+		StableReceiver           bool     `json:"stable_receiver"`
+	} `json:"config"`
+}
+
+type namedParentWatchSend struct {
+	Key                      namedParentWatchKey `json:"key"`
+	DeliveryID               string              `json:"delivery_id"`
+	UpdateSeq                uint64              `json:"update_seq"`
+	Frame                    string              `json:"frame"`
+	ReceiverSessionID        string              `json:"receiver_session_id"`
+	ReceiverDelegateID       string              `json:"receiver_delegate_id"`
+	SourceDelegateID         string              `json:"source_delegate_id"`
+	SourceDelegateGeneration uint64              `json:"source_delegate_generation"`
+	StableReceiver           bool                `json:"stable_receiver"`
+	CallbackFrame            bool                `json:"callback_frame"`
+	EndNotice                bool                `json:"end_notice"`
+}
+
+type namedParentWatchBinding struct {
+	watchID      string
+	registration namedParentWatchRegistration
+	key          namedParentWatchKey
+}
+
+type namedParentSourceEvent struct {
+	Kind       string                        `json:"kind"`
+	DelegateID string                        `json:"delegate_id"`
+	WatchID    string                        `json:"watch_id"`
+	Watch      *namedParentWatchRegistration `json:"watch"`
+	RunStarted *struct {
+		Generation uint64 `json:"generation"`
+	} `json:"run_started"`
+	RunFinished *struct {
+		Generation uint64 `json:"generation"`
+		DeliveryID string `json:"delivery_id"`
+	} `json:"run_finished"`
+	DeliveryAcknowledged *struct {
+		DeliveryID string `json:"delivery_id"`
+	} `json:"delivery_acknowledged"`
+	WatchSend *namedParentWatchSend `json:"watch_send"`
+}
+
+func namedParentJournal(t *testing.T, path string) []namedParentSourceEvent {
+	t.Helper()
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var events []namedParentSourceEvent
+	for _, line := range strings.Split(string(raw), "\n") {
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		var event namedParentSourceEvent
+		if err := json.Unmarshal([]byte(line), &event); err != nil {
+			t.Fatal(err)
+		}
+		events = append(events, event)
+	}
+	return events
+}
+
+func namedParentRuns(t *testing.T, journal, delegateID string, starts, finishes uint64) map[uint64]string {
+	t.Helper()
+	var gotStarts, gotFinishes []uint64
+	deliveries := make(map[uint64]string)
+	for _, event := range namedParentJournal(t, journal) {
+		if event.DelegateID != delegateID {
+			continue
+		}
+		if event.RunStarted != nil {
+			gotStarts = append(gotStarts, event.RunStarted.Generation)
+		}
+		if event.RunFinished != nil {
+			gotFinishes = append(gotFinishes, event.RunFinished.Generation)
+			deliveries[event.RunFinished.Generation] = event.RunFinished.DeliveryID
+		}
+	}
+	sequence := func(n uint64) []uint64 {
+		var generations []uint64
+		for generation := uint64(1); generation <= n; generation++ {
+			generations = append(generations, generation)
+		}
+		return generations
+	}
+	if !reflect.DeepEqual(gotStarts, sequence(starts)) || !reflect.DeepEqual(gotFinishes, sequence(finishes)) {
+		t.Errorf("%s starts=%v finishes=%v, want %v/%v", delegateID, gotStarts, gotFinishes, sequence(starts), sequence(finishes))
+	}
+	return deliveries
+}
+
+// This is not a broadened last-role classifier. Only an accepted terminal plus
+// the exact genuine canonical delivery, actually covered and not yet receipted,
+// admits the one independently specified finalization request.
+func namedParentPendingAfterTerminal(t *testing.T, req llm.Request, callID, path, id string) bool {
+	t.Helper()
+	accepted := false
+	for _, message := range req.Messages {
+		for _, part := range message.Content {
+			result := part.ToolResult
+			if result == nil || result.ToolCallID != callID || result.IsError {
+				continue
+			}
+			raw, _ := json.Marshal(result.Content)
+			if text, ok := result.Content.(string); ok {
+				raw = []byte(text)
+			}
+			var outcome struct {
+				Accepted bool `json:"accepted"`
+				EndTurn  bool `json:"end_turn"`
+			}
+			if json.Unmarshal(raw, &outcome) == nil && outcome.Accepted && outcome.EndTurn {
+				accepted = true
+			}
+		}
+	}
+	carriers, receipts := 0, 0
+	covered := false
+	for _, turn := range transcriptTurns(t, path) {
+		if id != "" && turn.AttentionID == id {
+			carriers++
+			if text := turn.Message.Text(); text != "" {
+				for _, message := range req.Messages {
+					covered = covered || strings.Contains(message.Text(), text)
+				}
+			}
+		}
+		for _, observed := range turn.ObservedNotificationIDs {
+			if observed == id {
+				receipts++
+			}
+		}
+	}
+	if !accepted || carriers != 1 || !covered || receipts != 0 {
+		t.Errorf("%s pending finalization proof: accepted=%t id=%q carriers=%d covered=%t receipts=%d", callID, accepted, id, carriers, covered, receipts)
+		return false
+	}
+	return true
+}
+
+func requireNamedParentObservedOnce(t *testing.T, path, id string) {
+	t.Helper()
+	carriers, receipts, consumed := 0, 0, 0
+	for _, turn := range transcriptTurns(t, path) {
+		if turn.AttentionID == id {
+			carriers++
+		}
+		for _, observed := range turn.ObservedNotificationIDs {
+			if observed == id {
+				if turn.Kind != schema.TurnAssistant || turn.TurnID == "" {
+					t.Errorf("receipt for %s lacks successful assistant identity: %+v", id, turn)
+				}
+				receipts++
+			}
+		}
+		if resolution := turn.AttentionResolution; resolution != nil && resolution.AttentionID == id {
+			if resolution.Disposition != "consumed" {
+				t.Errorf("%s disposition = %s", id, resolution.Disposition)
+			}
+			consumed++
+		}
+	}
+	if id == "" || carriers != 1 || receipts != 1 || consumed != 1 {
+		t.Fatalf("%s carriers=%d receipts=%d consumed=%d, want one each", id, carriers, receipts, consumed)
+	}
+}
+
+func requireNamedParentSourceAck(t *testing.T, journal, id string) {
+	t.Helper()
+	acks := 0
+	for _, event := range namedParentJournal(t, journal) {
+		if event.DeliveryAcknowledged != nil && event.DeliveryAcknowledged.DeliveryID == id {
+			acks++
+		}
+	}
+	if id == "" || acks != 1 {
+		t.Fatalf("source %q acknowledgments=%d, want one", id, acks)
+	}
+}
+
+func namedParentCreatedWatch(t *testing.T, req llm.Request, journal, ownerID, receiverSessionID, receiverDelegateID string) namedParentWatchBinding {
+	t.Helper()
+	var result struct {
+		WatchID          string   `json:"watch_id"`
+		Source           string   `json:"source"`
+		Watching         bool     `json:"watching"`
+		Events           []string `json:"events"`
+		ReplacedExisting bool     `json:"replaced_existing"`
+		Fired            bool     `json:"fired"`
+	}
+	results := 0
+	for _, message := range req.Messages {
+		for _, part := range message.Content {
+			toolResult := part.ToolResult
+			if toolResult == nil || toolResult.ToolCallID != "post-idle-watch" {
+				continue
+			}
+			results++
+			// job_watch renders prose in Content and puts its public structured
+			// result in ToolState, unlike communicate's JSON response Content.
+			if toolResult.Name != "job_watch" || toolResult.IsError || json.Unmarshal(toolResult.ToolState, &result) != nil {
+				t.Fatalf("post-idle watch creation failed: %+v", toolResult)
+			}
+		}
+	}
+	if results != 1 || result.WatchID == "" || result.Source != "parent" || !result.Watching || !slices.Equal(result.Events, []string{"communicate"}) || result.ReplacedExisting || result.Fired {
+		t.Fatalf("post-idle watch results=%d state=%+v", results, result)
+	}
+	binding := namedParentWatchBinding{watchID: result.WatchID}
+	registrations := 0
+	for _, event := range namedParentJournal(t, journal) {
+		if event.WatchID != result.WatchID || event.Watch == nil {
+			continue
+		}
+		if event.Kind != "watch_registered" {
+			t.Fatalf("watch ended during installation: %s", event.Kind)
+		}
+		registrations++
+		binding.registration = *event.Watch
+	}
+	registration := binding.registration
+	config := registration.Config
+	if registrations != 1 || registration.Generation == "" || registration.ConfigHash == "" || registration.OwnerSessionID != ownerID || registration.VisibleSessionID != ownerID || registration.Target != "caller" || registration.SendTo != "stable_watch_receiver" || config == nil {
+		t.Fatalf("post-idle registration count=%d value=%+v", registrations, registration)
+	}
+	if config.Target != registration.Target || config.Source != "parent" || !config.StableReceiver || config.ReceiverSessionID != receiverSessionID || config.ReceiverDelegateID != receiverDelegateID || config.SourceDelegateID != "" || config.SourceDelegateGeneration != 0 || config.Every != 3 || !slices.Equal(config.Events, []string{"communicate"}) {
+		t.Fatalf("post-idle watcher ownership/source mismatch: %+v", config)
+	}
+	binding.key = namedParentWatchKey{
+		VisibleSessionID: registration.VisibleSessionID, WatchID: binding.watchID,
+		WatchTarget: registration.Target, ResolvedWatchedIdentity: registration.Target,
+		ResolvedSendTo: registration.SendTo, WatchGeneration: registration.Generation,
+	}
+	return binding
+}
+
+// Before publication there must be no frame. At provider entry the canonical
+// wake may precede source acknowledgement. After the publisher returns the same
+// pending identity must have exactly one delivered transition, never a drop.
+func namedParentPostIdleSource(t *testing.T, journal string, binding namedParentWatchBinding, phase string) string {
+	t.Helper()
+	pending, delivered, registrations := 0, 0, 0
+	var admitted namedParentWatchSend
+	for _, event := range namedParentJournal(t, journal) {
+		if event.WatchID == binding.watchID && event.Watch != nil {
+			if event.Kind != "watch_registered" || !reflect.DeepEqual(*event.Watch, binding.registration) {
+				t.Fatalf("post-idle watch changed: %+v", event)
+			}
+			registrations++
+		}
+		state := event.WatchSend
+		if state == nil || state.Key.WatchID != binding.watchID && state.ReceiverSessionID != binding.registration.Config.ReceiverSessionID {
+			continue
+		}
+		if state.Key != binding.key || state.ReceiverSessionID != binding.registration.Config.ReceiverSessionID || state.ReceiverDelegateID != binding.registration.Config.ReceiverDelegateID || !state.StableReceiver || state.SourceDelegateID != "" || state.SourceDelegateGeneration != 0 || state.CallbackFrame || state.EndNotice || state.DeliveryID == "" || state.UpdateSeq != 1 || state.Frame == "" {
+			t.Fatalf("post-idle frame has wrong watch/receiver/source identity: %+v", state)
+		}
+		switch event.Kind {
+		case "watch_send_pending":
+			pending++
+			if pending != 1 || delivered != 0 {
+				t.Fatalf("duplicate or out-of-order pending frame: %+v", state)
+			}
+			admitted = *state
+		case "watch_send_delivered":
+			delivered++
+			if pending != 1 || delivered != 1 || *state != admitted {
+				t.Fatalf("duplicate, unmatched or out-of-order delivered frame: %+v", state)
+			}
+		default:
+			t.Fatalf("unexpected post-idle source transition %s", event.Kind)
+		}
+	}
+	wantPending := 1
+	if phase == "before" {
+		wantPending = 0
+	}
+	if registrations != 1 || pending != wantPending || phase == "before" && delivered != 0 || phase == "settled" && delivered != 1 {
+		t.Fatalf("post-idle source phase=%s registrations=%d pending=%d delivered=%d", phase, registrations, pending, delivered)
+	}
+	if pending == 0 {
+		return ""
+	}
+	return fmt.Sprintf("watch:%s:%d", admitted.DeliveryID, admitted.UpdateSeq)
+}
+
+// Log only fixture outcome fields and causal coordinates, never request bodies.
+// Request indices show which accepted notification carriers this request held;
+// observed IDs distinguish those carriers from a durable response receipt.
+func namedParentMiddleDiagnostic(req llm.Request, turns []schema.Turn) string {
+	outcomes := []map[string]any{}
+	for index, message := range req.Messages {
+		for _, part := range message.Content {
+			result := part.ToolResult
+			if result == nil || result.ToolCallID != "middle-final" || len(outcomes) >= 4 {
+				continue
+			}
+			outcome := map[string]any{"request_index": index, "is_error": result.IsError}
+			// The response fields live in Content. ToolState separately carries
+			// the accepted end reason and must not hide the response outcome.
+			var raw []byte
+			if text, ok := result.Content.(string); ok {
+				raw = []byte(text)
+			} else {
+				raw, _ = json.Marshal(result.Content)
+			}
+			var fields map[string]any
+			outcome["structured"] = json.Unmarshal(raw, &fields) == nil
+			for _, key := range []string{"accepted", "end_turn"} {
+				if value, ok := fields[key].(bool); ok {
+					outcome[key] = value
+				}
+			}
+			for _, key := range []string{"reason", "delivery"} {
+				if value, ok := fields[key].(string); ok {
+					outcome[key] = value[:min(len(value), 128)]
+				}
+			}
+			outcomes = append(outcomes, outcome)
+		}
+	}
+	carriers, receipts := []map[string]any{}, []map[string]any{}
+	for index, turn := range turns {
+		if turn.AttentionID != "" && len(carriers) < 32 {
+			coverage := []int{}
+			if text := turn.Message.Text(); text != "" {
+				for requestIndex, message := range req.Messages {
+					if strings.Contains(message.Text(), text) && len(coverage) < 16 {
+						coverage = append(coverage, requestIndex)
+					}
+				}
+			}
+			carriers = append(carriers, map[string]any{
+				"entry": index + 1, "id": turn.AttentionID, "request_indices": coverage,
+			})
+		}
+		if len(turn.ObservedNotificationIDs) != 0 && len(receipts) < 32 {
+			receipts = append(receipts, map[string]any{
+				"entry": index + 1, "ids": turn.ObservedNotificationIDs[:min(len(turn.ObservedNotificationIDs), 16)],
+			})
+		}
+	}
+	raw, _ := json.Marshal(map[string]any{"middle_final": outcomes, "carriers": carriers, "receipts": receipts})
+	return string(raw)
+}
+
+func TestNamedParentMiddleDiagnosticResponseContent(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		content any
+		state   json.RawMessage
+		isError bool
+		want    map[string]any
+	}{
+		{
+			name:    "accepted_with_end_state",
+			content: `{"accepted":true,"end_turn":true,"delivery":"delivered"}`,
+			state:   json.RawMessage(`{"communicate_end_reason":"done"}`),
+			want: map[string]any{
+				"request_index": float64(0), "is_error": false, "structured": true,
+				"accepted": true, "end_turn": true, "delivery": "delivered",
+			},
+		},
+		{
+			name:    "refused",
+			content: map[string]any{"accepted": false, "end_turn": false, "reason": "stale_wait_target"},
+			want: map[string]any{
+				"request_index": float64(0), "is_error": false, "structured": true,
+				"accepted": false, "end_turn": false, "reason": "stale_wait_target",
+			},
+		},
+		{
+			name:    "error",
+			content: "opaque-error",
+			isError: true,
+			want:    map[string]any{"request_index": float64(0), "is_error": true, "structured": false},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			message := llm.ToolResult("middle-final", tc.content, tc.isError)
+			message.Content[0].ToolResult.ToolState = tc.state
+			raw := namedParentMiddleDiagnostic(llm.Request{Messages: []llm.Message{message}}, nil)
+			var got struct {
+				MiddleFinal []map[string]any `json:"middle_final"`
+			}
+			if err := json.Unmarshal([]byte(raw), &got); err != nil {
+				t.Fatal(err)
+			}
+			if !reflect.DeepEqual(got.MiddleFinal, []map[string]any{tc.want}) {
+				t.Fatalf("middle-final outcome=%v want=%v", got.MiddleFinal, tc.want)
+			}
+		})
+	}
 }
 
 func (p *namedParentAuthorshipProvider) Stream(ctx context.Context, req llm.Request) (llm.Stream, error) {
@@ -391,7 +854,15 @@ func (p *namedParentAuthorshipProvider) Stream(ctx context.Context, req llm.Requ
 }
 
 func TestTranscriptAuthorshipNamedParentPublication(t *testing.T) {
-	p := &namedParentAuthorshipProvider{identity: make(chan string, 1), leafStarted: make(chan struct{}), steered: make(chan struct{}), finishPreview: make(chan struct{}), sendCompleted: make(chan struct{}), finishMiddle: make(chan struct{}), finishRoot: make(chan struct{}), middleFinalStarted: make(chan struct{})}
+	testTranscriptAuthorshipNamedParentPublication(t, false)
+}
+
+func TestTranscriptAuthorshipNamedParentPostIdlePublication(t *testing.T) {
+	testTranscriptAuthorshipNamedParentPublication(t, true)
+}
+
+func testTranscriptAuthorshipNamedParentPublication(t *testing.T, postIdle bool) {
+	p := &namedParentAuthorshipProvider{identity: make(chan string, 1), leafStarted: make(chan struct{}), steered: make(chan struct{}), finishPreview: make(chan struct{}), sendCompleted: make(chan struct{}), finishMiddle: make(chan struct{}), finishRoot: make(chan struct{}), middleFinalStarted: make(chan struct{}), postIdle: postIdle, postIdleObserved: make(chan struct{}), finishPostIdle: make(chan struct{})}
 	ctx, cancel := context.WithCancel(context.Background())
 	p.unexpected = func(message string) {
 		t.Error(message)
@@ -420,6 +891,38 @@ func TestTranscriptAuthorshipNamedParentPublication(t *testing.T) {
 		return ev.Data.(events.DelegateUpdatedData)
 	}
 	middle, leaf := created("create-middle"), created("create-leaf")
+	journal := filepath.Join(sess.StateDir(), "sessions", sess.ID(), "delegates.jsonl")
+	watchJournal := filepath.Join(sess.StateDir(), "sessions", sess.ID(), "jobs.jsonl")
+	var postIdleWatch namedParentWatchBinding
+	var postIdleID string
+	p.scriptMu.Lock()
+	p.diagnoseMiddle = func(req llm.Request) string {
+		return namedParentMiddleDiagnostic(req, transcriptTurns(t, path(middle.ChildSessionID)))
+	}
+	p.notificationAfter = func(role string, req llm.Request) bool {
+		switch role {
+		case "middle":
+			namedParentRuns(t, journal, middle.DelegateID, 1, 0)
+			deliveries := namedParentRuns(t, journal, leaf.DelegateID, 2, 2)
+			return namedParentPendingAfterTerminal(t, req, "middle-final", path(middle.ChildSessionID), "delegate:"+deliveries[2])
+		case "root":
+			deliveries := namedParentRuns(t, journal, middle.DelegateID, 1, 1)
+			return namedParentPendingAfterTerminal(t, req, "root-final", sess.TranscriptPath(), "delegate:"+deliveries[1])
+		case "watch-created":
+			namedParentRuns(t, journal, middle.DelegateID, 1, 0)
+			postIdleWatch = namedParentCreatedWatch(t, req, watchJournal, sess.ID(), middle.ChildSessionID, middle.DelegateID)
+			namedParentPostIdleSource(t, watchJournal, postIdleWatch, "before")
+			return true
+		case "post-idle":
+			namedParentRuns(t, journal, middle.DelegateID, 2, 1)
+			// The watch's canonical arm precedes its delivered append. A provider
+			// can see zero or one ack here, but never a second identity/transition.
+			postIdleID = namedParentPostIdleSource(t, watchJournal, postIdleWatch, "provider")
+			return namedParentPendingAfterTerminal(t, req, "middle-notification", path(middle.ChildSessionID), postIdleID)
+		}
+		return false
+	}
+	p.scriptMu.Unlock()
 	ps.await(t, events.EventRoundStarted, func(ev events.SessionEvent) bool { return ev.SessionID == leaf.ChildSessionID })
 	if middle.OwnerSessionID != sess.ID() || leaf.OwnerSessionID != sess.ID() || leaf.ParentDelegateID != middle.DelegateID || middle.ChildSessionID == sess.ID() {
 		t.Fatalf("physical/logical tree mismatch: middle=%+v leaf=%+v", middle, leaf)
@@ -524,10 +1027,76 @@ func TestTranscriptAuthorshipNamedParentPublication(t *testing.T) {
 	awaitIdle(leaf.DelegateID, 2)
 	close(p.finishMiddle)
 	awaitIdle(middle.DelegateID, 1)
-	awaitIdle(middle.DelegateID, 2)
 	close(p.finishRoot)
 	if err := <-done; err != nil {
 		t.Fatal(err)
+	}
+	sourceWake := make(chan struct{}, 1)
+	sess.SetNotifyFunc(func() {
+		select {
+		case sourceWake <- struct{}{}:
+		default:
+		}
+	})
+	if _, err := sess.DrainJobTree(ctx, sourceWake); err != nil {
+		t.Fatalf("settle already-observed source debt: %v", err)
+	}
+	// Accepted end_turn did not finish the middle's generation before its
+	// pending leaf delivery was observed in call 5. Root call 3 likewise covers
+	// the middle's genuine result after its accepted terminal.
+	leafDeliveries := namedParentRuns(t, journal, leaf.DelegateID, 2, 2)
+	middleDeliveries := namedParentRuns(t, journal, middle.DelegateID, 1, 1)
+	requireNamedParentObservedOnce(t, path(middle.ChildSessionID), "delegate:"+leafDeliveries[2])
+	requireNamedParentSourceAck(t, journal, leafDeliveries[2])
+	requireNamedParentObservedOnce(t, sess.TranscriptPath(), "delegate:"+middleDeliveries[1])
+	requireNamedParentSourceAck(t, journal, middleDeliveries[1])
+	if postIdle {
+		rootCommunicates := func(want []string) {
+			t.Helper()
+			var got []string
+			for _, turn := range transcriptTurns(t, sess.TranscriptPath()) {
+				if turn.Kind == schema.TurnCommunicate && turn.Communicate != nil {
+					got = append(got, turn.Communicate.CallID)
+				}
+			}
+			if !slices.Equal(got, want) {
+				t.Fatalf("root communicate sequence=%v want=%v", got, want)
+			}
+		}
+		// The middle installed its own parent watch in generation 1. Its every:3
+		// condition suppresses these two root communicates, with no early frame
+		// or generation 2. Only the third, published after actual idle, can fire.
+		rootCommunicates([]string{"root-final", "root-notification"})
+		namedParentPostIdleSource(t, watchJournal, postIdleWatch, "before")
+		for _, turn := range transcriptTurns(t, path(middle.ChildSessionID)) {
+			if strings.HasPrefix(turn.AttentionID, "watch:") {
+				t.Fatalf("watch carrier preceded post-idle publication: %s", turn.AttentionID)
+			}
+		}
+		if _, err := sess.ProcessInput(ctx, "publish after middle idle", nil); err != nil {
+			t.Fatal(err)
+		}
+		select {
+		case <-p.postIdleObserved:
+		case <-time.After(30 * time.Second): // TRIPWIRE: only a missing real post-idle provider request reaches this guard.
+			t.Fatal("middle did not receive post-idle source publication")
+		}
+		// Publisher return fences the source acknowledgement, not provider entry.
+		// Keep the middle response gated until the SAME source identity settles.
+		if id := namedParentPostIdleSource(t, watchJournal, postIdleWatch, "settled"); id != postIdleID {
+			t.Fatalf("post-idle source identity changed: provider=%s settled=%s", postIdleID, id)
+		}
+		rootCommunicates([]string{"root-final", "root-notification", "post-idle-publication"})
+		close(p.finishPostIdle)
+		awaitIdle(middle.DelegateID, 2)
+		namedParentRuns(t, journal, middle.DelegateID, 2, 2)
+		if id := namedParentPostIdleSource(t, watchJournal, postIdleWatch, "settled"); id != postIdleID {
+			t.Fatalf("post-idle source identity changed after idle: provider=%s settled=%s", postIdleID, id)
+		}
+		requireNamedParentObservedOnce(t, path(middle.ChildSessionID), postIdleID)
+		for _, turns := range [][]appwire.Turn{readWholeThread(t, ps.srv, middle.ChildSessionID).Thread.Turns, fileHistoryTurns(t, path(middle.ChildSessionID))} {
+			assertItems(turns, []string{"middle observed post-idle publication"}, parentAuthor)
+		}
 	}
 	inputs := []string{"leaf-create", "leaf-active-steer", "leaf-completed-send"}
 	outputs := []string{"leaf answer", "leaf thought", "leaf progress", "leaf final 1", "leaf final 2"}
@@ -572,7 +1141,11 @@ func TestTranscriptAuthorshipNamedParentPublication(t *testing.T) {
 	}
 	p.scriptMu.Lock()
 	defer p.scriptMu.Unlock()
-	if p.rootCalls != 3 || p.middleCalls != 5 || p.leafCalls != 2 || !p.streamed {
+	wantRoot, wantMiddle := 3, 5
+	if postIdle {
+		wantRoot, wantMiddle = 4, 7
+	}
+	if p.rootCalls != wantRoot || p.middleCalls != wantMiddle || p.leafCalls != 2 || !p.streamed {
 		t.Fatalf("script calls root=%d middle=%d leaf=%d streamed=%v", p.rootCalls, p.middleCalls, p.leafCalls, p.streamed)
 	}
 }

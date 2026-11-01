@@ -407,7 +407,8 @@ func TestDelegateWorktree_SandboxRestoreUsesDescriptorNotLegacyJob(t *testing.T)
 	if err != nil {
 		t.Fatalf("CommitStart: %v", err)
 	}
-	sub, restored, err := (delegateRuntime{owner: root}).restoreIdle(started)
+	sub, restored, recheck, err := (delegateRuntime{owner: root}).restoreIdle(started)
+	t.Cleanup(func() { recheckNotificationsForTest(root.delegateController, recheck) })
 	if err != nil {
 		t.Fatalf("stable descriptor restore without delegate JobRecord: %v", err)
 	}

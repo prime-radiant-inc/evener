@@ -234,11 +234,11 @@ func FuzzRunCoverage(f *testing.F) {
 				t.Fatal("want process error")
 			}
 			runProcessInput = func(*agent.Session, context.Context, string) (string, error) { return "first", nil }
-			runDrainJobTree = func(*agent.Session, context.Context) (string, error) { return "", errors.New("drain") }
+			runDrainJobTree = func(*agent.Session, context.Context, <-chan struct{}) (string, error) { return "", errors.New("drain") }
 			if err := run(context.Background(), base(t)); err == nil {
 				t.Fatal("want drain error")
 			}
-			runDrainJobTree = func(*agent.Session, context.Context) (string, error) { return "final", nil }
+			runDrainJobTree = func(*agent.Session, context.Context, <-chan struct{}) (string, error) { return "final", nil }
 			if err := run(context.Background(), base(t)); err != nil {
 				t.Fatal(err)
 			}

@@ -1,3 +1,4 @@
+import reportProducers from "../../../agent/testdata/notificationwire/reports.json";
 import { expect, test } from "vitest";
 import type { SessionActivityContext, SessionDelegate, ThreadReadResponse } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
@@ -343,4 +344,83 @@ test("client replacement restores the loaded third-page Jobs boundary without ne
 		release();
 		await tree.setClient(null);
 	}
+});
+
+test("real later-page report generations survive refresh, reconnect and shared-holder disposal", async () => {
+	const recorded = reportProducers.find((row) => row.case === "done");
+	if (!recorded?.activity || !recorded.nextActivity) throw new Error("missing actual generation records");
+	let current: typeof recorded.activity | typeof recorded.nextActivity = recorded.activity;
+	const client = hub();
+	client.on("evener/thread/delegates/list", ({ cursor, scope }) => ({
+		context,
+		scope: scope ?? "subtree",
+		delegates: [
+			cursor === "third"
+				? { ...current, ownerRef: context.ref, rootRef: context.ref, childRef: "remote:worker" }
+				: delegate(cursor === "second" ? "second" : "first"),
+		],
+		page: {
+			complete: cursor === "third",
+			issues: [],
+			...(cursor !== "third" ? { nextCursor: cursor ? "third" : "second" } : {}),
+		},
+	}));
+	const { subagentTree, holdSubagentTree, forgetSubagentTrees } = await import("./subagentTree");
+	const tree = subagentTree("real-generation", context.ref, "root");
+	const badge = holdSubagentTree(tree, { collections: false });
+	const detail = holdSubagentTree(tree);
+	await tree.setClient(client);
+	await tree.loadMore("delegates");
+	await tree.loadMore("delegates");
+	const later = () => {
+		const entry = tree
+			.getSnapshot()
+			.tree?.root.entries.find((entry) => entry.kind === "delegate" && entry.delegate.delegateId === "dlg_projection");
+		return entry?.kind === "delegate" ? entry.delegate : undefined;
+	};
+	const until = (predicate: () => boolean) =>
+		predicate()
+			? Promise.resolve()
+			: new Promise<void>((resolve) => {
+					const stop = tree.subscribe(() => {
+						if (predicate()) {
+							stop();
+							resolve();
+						}
+					});
+				});
+	expect(later()).toMatchObject({ runGeneration: 1, reportPreview: "payload-done-9c2f" });
+	const visible: boolean[] = [];
+	const stop = tree.subscribe(() => visible.push(later() !== undefined));
+	current = recorded.nextActivity;
+	const changed = until(() => later()?.runGeneration === 2);
+	await tree.reload();
+	await changed;
+	expect(later()).toMatchObject({ runGeneration: 2, terminal: false, status: "running" });
+	expect(later()?.outcome).toBeUndefined();
+	expect(later()?.reportPreview).toBeUndefined();
+	await tree.setClient(null);
+	expect(later()?.runGeneration).toBe(2);
+	await tree.setClient(client);
+	await until(() => !tree.getSnapshot().hasMore);
+	expect(later()?.runGeneration).toBe(2);
+	expect(visible.every(Boolean)).toBe(true);
+	expect(
+		client.calls
+			.filter((call) => call.method === "evener/thread/delegates/list")
+			.every((call) => (call.params as { scope: string }).scope === "subtree"),
+	).toBe(true);
+	stop();
+	detail();
+	const before = client.calls.filter((call) => call.method === "thread/unsubscribe").length;
+	const unsubscribed = new Promise<void>((resolve) =>
+		client.on("thread/unsubscribe", () => {
+			resolve();
+			return {};
+		}),
+	);
+	badge();
+	await unsubscribed;
+	expect(client.calls.filter((call) => call.method === "thread/unsubscribe")).toHaveLength(before + 1);
+	forgetSubagentTrees("real-generation");
 });

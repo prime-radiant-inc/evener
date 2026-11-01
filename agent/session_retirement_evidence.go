@@ -20,17 +20,15 @@ import (
 func (s *Session) retirementEvidence() ([]RetirementBlocker, error) {
 	blockers := s.retirementLocalBlockers()
 	blockers = append(blockers, s.retirementDelegateBlockers()...)
-	// Root attention cached behind a Stop's park or a permanent provider
-	// failure's pause is not work this process can do: it waits for the user,
-	// and both the attention (transcript fold) and the park (the durable
-	// queue/steering holds) are restored by the next resume. A fresh delegate
-	// wake or a paced retry is still work. This is pendingRootDelegateAttention's
-	// rule, applied inside the one attentionMu section below rather than
-	// through it: an arm-retry callback moves IDs from delegateAttentionArmIDs
-	// to rootAttentionWakeIDs under attentionMu, and only a single section sees
-	// that handoff atomically. The park is read first, the lock order
-	// rootAttentionRailParked documents.
-	if s.retirementAttentionBlocked(s.rootAttentionRailParked()) {
+	// Runnable messages, scoped recovery and callbacks are distinct obligations.
+	pending, err := s.notificationWorkState()
+	if err != nil {
+		return blockers, err
+	}
+	s.attentionMu.Lock()
+	callbacks := s.attentionCallbacks != 0
+	s.attentionMu.Unlock()
+	if pending || callbacks {
 		blockers = append(blockers, RetirementBlocker{Category: "notification", SessionID: s.id})
 	}
 	if state, ok := s.getOrCreateGoalStore().Snapshot(); ok && state.Status == goal.StatusActive {
@@ -84,47 +82,27 @@ func (s *Session) retirementNonBlockingEvidenceWithNaming(includeNaming bool) []
 	return blockers
 }
 
-// retirementAttentionBlocked reports whether the attention registry holds an
-// obligation. parked is rootAttentionRailParked's answer, read before
-// attentionMu per the lock order that function documents. It takes attentionMu.
-func (s *Session) retirementAttentionBlocked(parked bool) bool {
-	s.attentionMu.Lock()
-	defer s.attentionMu.Unlock()
-	return s.retirementAttentionBlockedLocked(parked)
-}
-
-// retirementAttentionBlockedLocked is the one attention predicate shared by the
-// full and non-blocking reads, so the two cannot drift. Callers hold
-// attentionMu; parked is the durable rail hold, read before the lock. It never
-// calls rootAttentionRailParked itself, so it cannot invert that lock order.
-// stableAttentionRetry is deliberately absent: the full read does not count it,
-// so counting it here would change the decision read.
-func (s *Session) retirementAttentionBlockedLocked(parked bool) bool {
-	deferred := s.rootAttentionPaused && !s.rootAttentionWake && !s.rootAttentionRetry.active
-	rootAttentionPending := len(s.rootAttentionWakeIDs) != 0 && !parked && !deferred
-	return rootAttentionPending || s.rootAttentionRetry.active || s.attentionCallbacks != 0 || len(s.delegateAttentionArmIDs) != 0 || s.delegateAttentionArmRetry.active
-}
-
 // retirementNonBlockingAttention reads the attention registry without waiting
 // on admitted transcript work. attentionMu is held across a durable transcript
-// fold (rearmRootDelegateAttentionFromTranscript), so the read uses TryLock,
+// fold, so the read uses TryLock,
 // mirroring the tree read's owner TryLock branch (#4055). A busy lock reports
 // nothing for the manual retire's wait pre-check, so the retire keeps waiting
 // rather than treating contention as clear; reportUnreadable adds the
-// shape-honest "notification" caution the diagnostic snapshot uses. parked is
-// read before the lock, the order rootAttentionRailParked documents.
+// shape-honest "notification" caution the diagnostic snapshot uses. The cached
+// fold is only evidence of observed membership, never authority to retire.
+// The full read refreshes the transcript before the actual decision.
 func (s *Session) retirementNonBlockingAttention(reportUnreadable bool) []RetirementBlocker {
 	if s == nil {
 		return nil
 	}
-	parked := s.rootAttentionRailParked()
+	state := s.notificationExecutionState()
 	if !s.attentionMu.TryLock() {
 		if !reportUnreadable {
 			return nil
 		}
 		return []RetirementBlocker{{Category: "notification", SessionID: s.id}}
 	}
-	blocked := s.retirementAttentionBlockedLocked(parked)
+	blocked := state.recovering || s.attentionCallbacks != 0 || (!state.held && len(s.attentionFoldCursor.fold.pendingIDs()) != 0)
 	s.attentionMu.Unlock()
 	if !blocked {
 		return nil

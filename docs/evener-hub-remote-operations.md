@@ -115,6 +115,15 @@ If the operation store cannot be opened, the hub keeps serving the hosts in `hub
 
 The [hub deployment reference](evener-hub.md#deploying-to-remote-hosts) retains the exact artifact, dirty-build, atomic replacement, identity, and retry rules. After an interrupted deployment, the connection manager reconciles the pending replacement against its captured requested build and predecessor process. A compatible handshake alone cannot settle that operation, and later disk changes cannot redefine its target. Inspect the operation's status when recovery remains unresolved; response loss does not prove the remote write failed.
 
+The current attachment's supervisor owns automatic reconnect. When another
+operation holds the host gate, recovery waits for release or cancellation without
+queuing a stale lock claim. A committed replacement retires predecessor loops
+before handing recovery to its own supervisor. A replacement that drops before
+attachment commits leaves its predecessor eligible to recover after rollback.
+Restart admission remains immediate and nonblocking: an active reconnect still
+excludes a competing operation, but a retired predecessor cannot claim the gate.
+This adds neither a public waiting queue nor a fairness guarantee.
+
 Automatic recovery retains the host-entry check that authorized the unfinished
 work. If that entry changes, it refuses further writes or restarts while keeping
 the pending work. Restore the entry and retry, or issue a fresh Restart to accept

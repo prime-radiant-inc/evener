@@ -132,14 +132,20 @@ type WatchSendKey struct {
 	ResolvedWatchedIdentity string `json:"resolved_watched_identity"`
 	ResolvedSendTo          string `json:"resolved_send_to"`
 	WatchGeneration         string `json:"watch_generation"`
+	// RestartSeq separates a restart cancellation notice from condition frames
+	// of the same watch. It is the runtime_lost source batch's first sequence.
+	RestartSeq int64 `json:"restart_seq,omitempty"`
 }
 
 // WatchSendState is the durable payload for a pending or terminal watch-send
 // delivery state.
 type WatchSendState struct {
-	Key                      WatchSendKey       `json:"key"`
-	DeliveryID               string             `json:"delivery_id"`
-	UpdateSeq                uint64             `json:"update_seq,omitempty"`
+	Key        WatchSendKey `json:"key"`
+	DeliveryID string       `json:"delivery_id"`
+	UpdateSeq  uint64       `json:"update_seq,omitempty"`
+	// CallbackFrame uses the same source obligation for a callback-only firing.
+	CallbackFrame            bool               `json:"callback_frame,omitempty"`
+	TimerSlot                string             `json:"timer_slot,omitempty"`
 	Message                  string             `json:"message,omitempty"`
 	Frame                    string             `json:"frame,omitempty"`
 	TriggerIdentity          string             `json:"trigger_identity,omitempty"`
@@ -164,9 +170,14 @@ type WatchSendState struct {
 	EndNotice bool `json:"end_notice,omitempty"`
 }
 
-// WatchSendRecord is the folded durable state for pending watch-send frames.
+// WatchSendRecord projects pending heads and superseded custody candidates from
+// the existing watch-send journal. Only Pending entries may be delivered.
 type WatchSendRecord struct {
 	Pending map[WatchSendKey]*WatchSendState
+	// Superseded contains earlier pending payloads without their own terminal
+	// event. They are not deliverable heads: only canonical receiver custody
+	// can prove that one still owes a source acknowledgement.
+	Superseded map[string]*WatchSendState
 }
 
 // JobRecord is the durable storage shape reconstructed from the job event log.

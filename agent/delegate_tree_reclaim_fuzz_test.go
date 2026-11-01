@@ -31,8 +31,12 @@ func FuzzDelegateReclaimStopRestart(f *testing.F) {
 			for _, entry := range claim.entries {
 				closed[entry.delegateID] = entry.runtime
 			}
-			if err := controller.CompleteRuntimeReclamation(claim, closed); err != nil {
-				t.Fatalf("CompleteRuntimeReclamation: %v", err)
+			{
+				recheck, err := controller.CompleteRuntimeReclamation(claim, closed)
+				recheckNotificationsForTest(controller, recheck)
+				if err != nil {
+					t.Fatalf("CompleteRuntimeReclamation: %v", err)
+				}
 			}
 		} else if err := controller.AbortRuntimeReclamation(claim); err != nil {
 			t.Fatalf("AbortRuntimeReclamation: %v", err)

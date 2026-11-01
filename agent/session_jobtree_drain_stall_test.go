@@ -4,11 +4,14 @@ import (
 	"context"
 	"strings"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/internal/jobstore"
+	"primeradiant.com/evener/agent/transcript"
+	"primeradiant.com/evener/llm"
 )
 
 // collectStallWarnings drains the buffered event channel and returns warning
@@ -43,7 +46,7 @@ func stallProcess(context.Context, string, []ImageAttachment, EntryKind) (string
 type stallDriver struct {
 	top     chan struct{}
 	release chan struct{}
-	recheck chan time.Time
+	hint    func()
 	done    chan struct{}
 	res     string
 	err     error
@@ -69,8 +72,14 @@ func newStallDriverWithProcess(ctx context.Context, sess *Session, process func(
 	d := &stallDriver{
 		top:     make(chan struct{}),
 		release: make(chan struct{}),
-		recheck: make(chan time.Time),
 		done:    make(chan struct{}),
+	}
+	wake := drainWakeForTest(sess)
+	d.hint = func() {
+		select {
+		case wake <- struct{}{}:
+		default:
+		}
 	}
 	kick := func(context.Context) error {
 		d.top <- struct{}{}
@@ -78,7 +87,7 @@ func newStallDriverWithProcess(ctx context.Context, sess *Session, process func(
 		return nil
 	}
 	go func() {
-		d.res, d.err = sess.drainJobTreeWith(ctx, d.recheck, kick, process)
+		d.res, d.err = sess.drainJobTreeWith(ctx, wake, nil, kick, process)
 		close(d.done)
 	}()
 	return d
@@ -116,6 +125,26 @@ func (d *stallDriver) releaseKickSend(t *testing.T) {
 	}
 }
 
+// advanceClock holds an existing producer pass while time moves, then raises
+// one confirming hint. Grace classification precedes kick, so the confirming
+// pass reads the advanced time. The held edge also prevents a deadline return
+// from racing the test's next barrier. Neither hint is a periodic pump.
+func (d *stallDriver) advanceClock(t *testing.T, sess *Session, clk *agenttest.FakeClock, delta time.Duration) {
+	t.Helper()
+	sess.notify()
+	select {
+	case <-d.top:
+	case <-d.done:
+		t.Fatal("drain returned before the controlled resource deadline step")
+	case <-time.After(stallHandshakeTimeout):
+		t.Fatal("drain did not reach the held producer pass")
+	}
+	clk.Advance(delta)
+	sess.notify()
+	d.releaseKickSend(t)
+	d.releaseKick(t)
+}
+
 // TestDrainStallWatchdogFiresOnGenuineStall verifies the defense-in-depth
 // backstop: a subtree that stays outstanding with no live/deliverable component
 // (h8mq-style durable-only pending, self-heal disabled) is cut once it has been
@@ -148,8 +177,11 @@ func TestDrainStallWatchdogFiresOnGenuineStall(t *testing.T) {
 			d.releaseKick(t)
 			d.assertParked(t, "iteration 1 must park, not fire before the timeout")
 
-			clk.Advance(DrainStallTimeout + time.Second)
-			d.recheck <- time.Time{}
+			clk.Advance(DrainStallTimeout - time.Nanosecond)
+			d.assertParked(t, "the actual resource deadline has not elapsed")
+			// The production resource timer, not a synthetic notification tick,
+			// wakes the expired pass for its one final source-repair attempt.
+			clk.Advance(time.Nanosecond)
 			d.releaseKick(t)
 
 			select {
@@ -290,21 +322,31 @@ func TestDrainStallWatchdogSparePendingWatchSend(t *testing.T) {
 // wedge. Its three siblings cover a running managed job, a driving child, and a
 // pending watch send; this is the hasPendingDelegateDeliveries signal.
 func TestDrainStallWatchdogSparePendingDelegateDelivery(t *testing.T) {
-	t.Parallel()
+	// Serial: seedPendingDeliverySource captures process-wide diagnostics.
 	clk := agenttest.NewFakeClock()
-	sess := newSession(t, withConfig(SessionConfig{clock: clk}))
+	adapter := &fakeAdapter{name: "openai"}
+	sess := newSession(t, withAdapter(adapter), withConfig(SessionConfig{clock: clk}))
+	sess.stopLaneResidueSweepTimer()
 
-	// Seed the queue the way acceptDelegateDeliveryPlan does (append under
-	// delegateDeliveryMu), so the test pins the signal subtreeHasLiveComponent
-	// reads rather than a production deferral path.
-	sess.delegateDeliveryMu.Lock()
-	sess.pendingDelegateDeliveries = append(sess.pendingDelegateDeliveries, delegateDeliveryPlan{})
-	sess.delegateDeliveryMu.Unlock()
-	defer func() {
-		sess.delegateDeliveryMu.Lock()
-		sess.pendingDelegateDeliveries = nil
-		sess.delegateDeliveryMu.Unlock()
-	}()
+	deliveryID := seedPendingDeliverySource(t, sess, clk)
+	c := sess.delegateController
+	c.mu.Lock()
+	descriptor := c.durable["dlg_pending"].Descriptor
+	c.mu.Unlock()
+	path, _, err := delegateTranscriptPathFromRef(c.stateDir, descriptor.TranscriptRef)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Scoped wake recovery may inspect this receiver while the fake clock
+	// advances. No accepted attention exists, so a real empty fold must resolve
+	// that hint without trying to reconstruct a nonexistent runtime.
+	w, err := transcript.NewWriter(path, transcript.Header{SessionID: descriptor.ChildSessionID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
 
 	if !sess.hasPendingDelegateDeliveries() {
 		t.Fatal("precondition: expected a pending delegate delivery")
@@ -313,33 +355,29 @@ func TestDrainStallWatchdogSparePendingDelegateDelivery(t *testing.T) {
 		t.Fatalf("a pending delegate delivery must not be a stall, got stalled=%v err=%v", stalled, err)
 	}
 	assertDrainNotCut(t, sess, clk)
+	aggregate := delegateAggregateSnapshot(t, c, "dlg_pending")
+	if len(aggregate.PendingDeliveries) != 1 || aggregate.PendingDeliveries[0].DeliveryID != deliveryID || len(adapter.Requests()) != 0 {
+		t.Fatalf("injected scans changed source custody or ran model: pending=%+v requests=%d", aggregate.PendingDeliveries, len(adapter.Requests()))
+	}
 }
 
-// TestDrainStallWatchdogSparePendingDelegateAttentionArmRetry verifies a
-// delegate attention arm awaiting its retry (hasPendingDelegateAttentionArmRetry)
-// keeps the drain alive past the timeout. The failure that arms the retry wakes
-// the root runtime, not necessarily this session, so this test deliberately
-// never calls notify(): the session reads the retry set directly and its own
-// drain loop rechecks on the unconditional drainRecheckInterval ticker, so the
-// drain must classify itself live and keep waiting regardless of the wake
-// routing (issue #179 item a).
-func TestDrainStallWatchdogSparePendingDelegateAttentionArmRetry(t *testing.T) {
+// TestDrainEntryRepairsOrphanNotificationRetryHint characterizes a hint with no
+// durable notification or executor-release obligation. The pre-entry predicates
+// count it as live, but receipt reconciliation must repair that projection,
+// not manufacture a provider request or keep an empty drain alive.
+func TestDrainEntryRepairsOrphanNotificationRetryHint(t *testing.T) {
 	t.Parallel()
 	clk := agenttest.NewFakeClock()
-	sess := newSession(t, withConfig(SessionConfig{clock: clk}))
+	adapter := &fakeAdapter{name: "openai"}
+	sess := newSession(t, withAdapter(adapter), withConfig(SessionConfig{clock: clk, StateDir: t.TempDir()}))
 
-	// Seed the retry set the way armDelegateAttention's entering-retry
-	// transition does, without ever delivering the (misrouted) wake.
-	sess.attentionMu.Lock()
-	sess.delegateAttentionArmIDs = map[string]struct{}{"quiet:dlg_child:1:1": {}}
-	sess.attentionMu.Unlock()
-	defer func() {
-		sess.attentionMu.Lock()
-		sess.delegateAttentionArmIDs = nil
-		sess.attentionMu.Unlock()
-	}()
+	// Deliberately seed only the disposable hint, not a failed release or an
+	// accepted message. The common schedule is guarded by sess.mu.
+	sess.mu.Lock()
+	sess.notificationSchedule.retry.active = true
+	sess.mu.Unlock()
 
-	if !sess.hasPendingDelegateAttentionArmRetry() {
+	if !sess.notificationWorkPending() {
 		t.Fatal("precondition: expected a pending delegate attention arm retry")
 	}
 	if stalled, err := sess.drainSubtreeIsStalled(); err != nil || stalled {
@@ -348,7 +386,23 @@ func TestDrainStallWatchdogSparePendingDelegateAttentionArmRetry(t *testing.T) {
 	if outstanding, err := sess.treeHasOutstandingWork(); err != nil || !outstanding {
 		t.Fatalf("a pending delegate attention arm retry must keep the tree outstanding, got outstanding=%v err=%v", outstanding, err)
 	}
-	assertDrainNotCut(t, sess, clk)
+	if result, err := sess.DrainJobTree(t.Context(), drainWakeForTest(sess)); err != nil || result != "" {
+		t.Fatalf("empty drain = %q, %v, want quiet success", result, err)
+	}
+	sess.mu.Lock()
+	retrying := sess.notificationSchedule.retry.active
+	sess.mu.Unlock()
+	if outstanding, err := sess.treeHasOutstandingWork(); err != nil || outstanding || retrying || len(adapter.Requests()) != 0 {
+		t.Fatalf("reconciled empty drain: outstanding=%t err=%v retrying=%t requests=%d", outstanding, err, retrying, len(adapter.Requests()))
+	}
+	for _, entry := range notificationRawEntries(t, sess.TranscriptPath()) {
+		if entry.Turn.AttentionID != "" || len(entry.Turn.ObservedNotificationIDs) != 0 || entry.Turn.AttentionResolution != nil {
+			t.Fatal("orphan hint produced notification custody, observation or resolution")
+		}
+	}
+	if warnings := collectStallWarnings(sess); len(warnings) != 0 {
+		t.Fatalf("empty drain emitted warnings: %+v", warnings)
+	}
 }
 
 // TestDrainCountsStrandedDelegateFinalizationRecoveryAsOutstanding pins issue
@@ -429,10 +483,11 @@ func assertDrainNotCut(t *testing.T, sess *Session, clk *agenttest.FakeClock) {
 	d.releaseKick(t)
 	d.assertParked(t, "drain must keep waiting on live work")
 
-	// Advance far past the timeout and run another iteration: live work still
-	// resets the stall clock, so the drain must NOT fire.
+	// Advance far past the timeout and hint the injected scan directly. This
+	// predicate fixture deliberately does not dispatch its seeded source; the
+	// production transport/readiness path is checked by notification tests.
 	clk.Advance(DrainStallTimeout * 10)
-	d.recheck <- time.Time{}
+	d.hint()
 	d.releaseKick(t)
 	d.assertParked(t, "live work must never be cut even past the timeout")
 
@@ -477,24 +532,25 @@ func TestDrainStallGiveUpRechecksTheWakeEdge(t *testing.T) {
 	d.releaseKick(t)
 	d.assertParked(t, "iteration 1 must park, not fire before the timeout")
 
-	clk.Advance(DrainStallTimeout + time.Second)
-	select {
-	case d.recheck <- time.Time{}:
-	case <-d.done:
-		t.Fatal("drain returned before consuming the recheck tick")
-	case <-time.After(stallHandshakeTimeout):
-		t.Fatal("drain did not consume the recheck tick")
-	}
-	// Release the pass whose stall check will read the expired clock, raising a
-	// wake AFTER the pass consumed its top-of-loop edge (the kick blocks after
-	// takeDrainWake) and BEFORE its stall check runs.
+	// Enter a producer-driven pass before advancing time. Its existing kick
+	// holds the scan while the real deadline expires, so no timer can race the
+	// barrier and return before the mid-pass wake is installed.
+	sess.notify()
 	select {
 	case <-d.top:
 	case <-d.done:
-		t.Fatal("drain returned before reaching the give-up pass")
+		t.Fatal("drain returned before the resource deadline")
 	case <-time.After(stallHandshakeTimeout):
-		t.Fatal("drain did not reach the give-up pass")
+		t.Fatal("drain did not reach the held producer pass")
 	}
+	clk.Advance(DrainStallTimeout - time.Nanosecond)
+	select {
+	case <-d.done:
+		t.Fatal("drain returned before the resource deadline")
+	default:
+	}
+	clk.Advance(time.Nanosecond)
+	// Raise the wake after takeDrainWake and before the expired stall verdict.
 	sess.notify()
 	d.releaseKickSend(t)
 
@@ -509,6 +565,8 @@ func TestDrainStallGiveUpRechecksTheWakeEdge(t *testing.T) {
 		t.Fatal("drain neither returned nor re-ran the pass")
 	}
 	d.releaseKickSend(t)
+	// The confirming verdict owns one final repair, even without another hint.
+	d.releaseKick(t)
 
 	// The confirming pass finds the edge clear and the stall persisting: NOW it
 	// gives up, with the one warning. This select names the state if it does not:
@@ -539,57 +597,88 @@ func TestDrainStallGiveUpRechecksTheWakeEdge(t *testing.T) {
 	}
 }
 
-// A pass whose kick the idle backoff skipped must not give up on a verdict
-// assembled without that kick: it runs one unthrottled kick and re-evaluates,
-// and only the confirming full-rate pass gives up.
-func TestDrainStallGiveUpOnAThrottledPassKicksBeforeReturning(t *testing.T) {
-	t.Parallel()
-	clk := agenttest.NewFakeClock()
-	sess := newSession(t, withConfig(SessionConfig{clock: clk}))
-	seedOwnedDurablePending(t, sess.jobManager, "shell-wedge", jobstore.JobShell)
-
-	d := newStallDriver(t.Context(), sess)
-	sendRecheck := func() {
-		t.Helper()
-		select {
-		case d.recheck <- time.Time{}:
-		case <-d.done:
-			t.Fatal("drain returned before consuming the recheck tick")
-		case <-time.After(stallHandshakeTimeout):
-			t.Fatal("drain did not consume the recheck tick")
-		}
-	}
-	// Pass 0 and the full-rate prefix kick on every pass.
-	d.releaseKick(t)
-	for range drainIdleBackoffFullRatePasses {
-		sendRecheck()
-		d.releaseKick(t)
-	}
-	d.assertParked(t, "the full-rate prefix must keep waiting before the timeout")
-
-	// The next pass is the first throttled one and reads the expired clock.
-	clk.Advance(DrainStallTimeout + time.Second)
-	sendRecheck()
-	select {
-	case <-d.top:
-	case <-d.done:
-		t.Fatal("throttled pass gave up without the unthrottled kick")
-	case <-time.After(stallHandshakeTimeout):
-		t.Fatal("throttled pass neither kicked nor gave up")
-	}
-	d.releaseKickSend(t)
-
-	// The re-run pass kicks at full rate before it may give up.
-	d.releaseKick(t)
-	select {
-	case <-d.done:
-	case <-time.After(stallHandshakeTimeout):
-		t.Fatal("confirming pass did not give up")
-	}
-	if d.err != nil {
-		t.Fatalf("give-up must return nil error, got %v", d.err)
-	}
-	if warnings := collectStallWarnings(sess); len(warnings) != 1 {
-		t.Fatalf("stall warnings = %d, want 1", len(warnings))
+// The actual stall deadline owns one final recovery attempt, not a periodic
+// retry prefix. Its confirming scan must deliver recovered work or give up once.
+func TestDrainStallDeadlineMakesOneFinalRecoveryAttempt(t *testing.T) {
+	for _, outcome := range []string{"recovered", "still-stalled", "wake-straddle"} {
+		t.Run(outcome, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				clk := agenttest.NewFakeClock()
+				adapter := &fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
+					func(req llm.Request) llm.Response {
+						observationRequest(t, req, []string{"shell-final-repair"}, nil)
+						return agenttest.FinalResponse("recovered-final-answer")
+					},
+				}}
+				sess := newSession(t, withoutGitSnapshot(), withAdapter(adapter), withConfig(SessionConfig{clock: clk, StateDir: t.TempDir()}))
+				seedOwnedDurablePending(t, sess.jobManager, "shell-final-repair", jobstore.JobShell)
+				if stalled, err := sess.drainSubtreeIsStalled(); err != nil || !stalled {
+					t.Fatalf("fixture must be stranded: stalled=%t err=%v", stalled, err)
+				}
+				// Deliberately leave source hints disconnected, reproducing the
+				// lost-edge obligation that the final recovery is meant to repair.
+				wake, hint := newDrainWake()
+				started := clk.Now()
+				ctx, cancel := context.WithCancel(t.Context())
+				defer cancel()
+				var kicks int
+				var result string
+				var err error
+				done := make(chan struct{})
+				go func() {
+					defer close(done)
+					result, err = sess.drainJobTreeWith(ctx, wake, nil, func(context.Context) error {
+						kicks++
+						if kicks == 2 {
+							if clk.Now().Before(started.Add(DrainStallTimeout)) {
+								t.Error("final repair ran before the stall deadline")
+							}
+							switch outcome {
+							case "recovered":
+								return sess.rematerializeDurablePendings()
+							case "wake-straddle":
+								hint()
+							}
+						}
+						return nil
+					}, sess.ProcessInputKind)
+				}()
+				synctest.Wait()
+				if kicks != 1 {
+					t.Fatalf("entry recovery attempts=%d, want 1", kicks)
+				}
+				clk.Advance(DrainStallTimeout - time.Nanosecond)
+				synctest.Wait()
+				if kicks != 1 {
+					t.Fatalf("pre-deadline recovery attempts=%d, want entry only", kicks)
+				}
+				clk.Advance(time.Nanosecond)
+				synctest.Wait()
+				select {
+				case <-done:
+				default:
+					t.Fatal("expired stall neither recovered nor gave up")
+				}
+				wantKicks := 2
+				if outcome == "wake-straddle" {
+					wantKicks++ // One real producer hint, never a second final repair.
+				}
+				if err != nil || kicks != wantKicks {
+					t.Fatalf("drain err=%v recovery attempts=%d, want %d", err, kicks, wantKicks)
+				}
+				warnings := collectStallWarnings(sess)
+				if outcome == "recovered" {
+					if result != "recovered-final-answer" || len(adapter.Requests()) != 1 || len(warnings) != 0 {
+						t.Fatalf("recovered drain result=%q requests=%d warnings=%v", result, len(adapter.Requests()), warnings)
+					}
+					recs, loadErr := sess.jobManager.store.Load()
+					if loadErr != nil || recs["shell-final-repair"].NotifyState != jobstore.NotifyDelivered {
+						t.Fatalf("final repair did not settle source custody: %+v %v", recs["shell-final-repair"], loadErr)
+					}
+				} else if result != "" || len(adapter.Requests()) != 0 || len(warnings) != 1 || !strings.Contains(warnings[0].Data.(events.WarningData).Message, "shell-final-repair") {
+					t.Fatalf("still-stalled result=%q requests=%d warnings=%v", result, len(adapter.Requests()), warnings)
+				}
+			})
+		})
 	}
 }

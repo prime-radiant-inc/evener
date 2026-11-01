@@ -62,7 +62,7 @@ func TestParentReadingAChildStopReportRestsByItsOwnEndReason(t *testing.T) {
 				t.Fatalf("StopDelegateRun = %q, %v; want stopping", got, err)
 			}
 			waitForStableSupervisionRun(t, root, fixture.childID)
-			if !root.pendingRootDelegateAttention() {
+			if !root.notificationsRunnable() {
 				t.Fatal("the stopped child's report is not waiting for the parent")
 			}
 			if _, err := root.ProcessInputKind(ctx, "", nil, EntryNotification); err != nil {

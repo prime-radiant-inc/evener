@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -424,9 +425,11 @@ func newRetirementPreservationFixture(t *testing.T) *retirementPreservationFixtu
 	// call routed by the structural request SessionID. This is what actually
 	// reaches depth 2.
 	root.client.Register(&nestedDelegateAdapter{
-		name:             "openai",
-		creatorSessionID: f.childIDs[0],
-		nestedTask:       "retirement-lane-two",
+		name:              "openai",
+		creatorSessionID:  f.childIDs[0],
+		creatorDelegateID: f.delegateIDs[0],
+		creator:           f.childRuntimes[0],
+		nestedTask:        "retirement-lane-two",
 	})
 	outcome := (delegateRuntime{owner: root}).send(context.Background(), f.delegateIDs[0], "create a nested delegate", 0)
 	if outcome.result.Err != nil {
@@ -481,7 +484,7 @@ func awaitTreeQuiesced(t *testing.T, root *Session) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second) // TRIPWIRE: DrainJobTree returns on its real completion signal (no job notification, delegate attention, delivery or running child left); this ceiling sits orders of magnitude above the scripted in-process drain and only fires on a genuinely wedged tree.
 	defer cancel()
-	if _, err := root.DrainJobTree(ctx); err != nil {
+	if _, err := root.DrainJobTree(ctx, drainWakeForTest(root)); err != nil {
 		t.Fatalf("settle delegate tree before retirement: %v", err)
 	}
 }
@@ -502,18 +505,20 @@ func (f *retirementPreservationFixture) nestedDelegateUnder(parentID string) (de
 
 // nestedDelegateAdapter is a scripted provider. For exactly one creator child
 // session it issues a real `delegate` tool call (worktree isolation) on that
-// session's first turn, then ends; every other session ends through the real
-// communicate/result path. Routing is by the structural Request.SessionID, never
-// by prompt prose.
+// session's first turn, then waits for the nested runner before requesting done.
+// Every other session ends through the real communicate/result path. Routing is
+// by the structural Request.SessionID, never by prompt prose.
 type nestedDelegateAdapter struct {
 	fakeAdapter
-	creatorSessionID string
-	nestedTask       string
-	mu               sync.Mutex
-	issued           bool
+	creatorSessionID  string
+	creatorDelegateID string
+	creator           *Session
+	nestedTask        string
+	mu                sync.Mutex
+	issued            bool
 }
 
-func (a *nestedDelegateAdapter) Complete(_ context.Context, req llm.Request) (llm.Response, error) {
+func (a *nestedDelegateAdapter) Complete(ctx context.Context, req llm.Request) (llm.Response, error) {
 	if req.SessionID == a.creatorSessionID {
 		a.mu.Lock()
 		first := !a.issued
@@ -525,6 +530,27 @@ func (a *nestedDelegateAdapter) Complete(_ context.Context, req llm.Request) (ll
 				return llm.Response{}, err
 			}
 			return agenttest.ToolCallResponse(llm.ToolCallData{ID: "nested-create-" + a.nestedTask, Name: "delegate", Arguments: raw}), nil
+		}
+		a.creator.delegateController.mu.Lock()
+		var childSessionID string
+		for _, aggregate := range a.creator.delegateController.durable {
+			if aggregate.Descriptor.ParentDelegateID == a.creatorDelegateID {
+				childSessionID = aggregate.Descriptor.ChildSessionID
+				break
+			}
+		}
+		a.creator.delegateController.mu.Unlock()
+		child := a.creator.subagents.get(childSessionID)
+		if child == nil {
+			return llm.Response{}, fmt.Errorf("nested delegate was not created under %s", a.creatorDelegateID)
+		}
+		child.mu.Lock()
+		done := child.done
+		child.mu.Unlock()
+		select {
+		case <-done:
+		case <-ctx.Done():
+			return llm.Response{}, ctx.Err()
 		}
 	}
 	response := communicateWithDefaultOutput("nested-result")
@@ -935,7 +961,7 @@ func TestRetirementTreeSettleDrainsPendingRootAttention(t *testing.T) {
 	// root's emitters stay unjoined so nothing drains the root attention.
 	joinRetirementTreeEmitters(sub.sess)
 	deadline := time.Now().Add(10 * time.Second)
-	for !root.hasPendingRootDelegateAttention() {
+	for !root.hasPendingNotifications() {
 		if time.Now().After(deadline) {
 			t.Fatal("fixture: the delegate completion armed no pending root attention to drain")
 		}
@@ -949,7 +975,7 @@ func TestRetirementTreeSettleDrainsPendingRootAttention(t *testing.T) {
 	// The production readiness path drains the tree, after which retirement is
 	// claimable.
 	awaitTreeQuiesced(t, root)
-	if root.hasPendingRootDelegateAttention() {
+	if root.hasPendingNotifications() {
 		t.Fatal("tree settle left the root delegate attention pending")
 	}
 	claim, state, err := c.TryClaim(true)

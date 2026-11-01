@@ -202,8 +202,8 @@ func TestDelegateControllerCloseDoesNotRepairLiveShellBeforeFinalizer(t *testing
 		t.Fatal("close repaired the exact live shell as runtime_lost before its finalizer")
 	}
 	records, _ = readDelegateShellStore(t, path)
-	if record := records["job-live"]; record == nil || record.Status != jobstore.StatusCompleted || record.Reason != "exit_zero" || record.NotifyState != jobstore.NotifyConsumed {
-		t.Fatalf("shell after finalizer and covered cleanup = %#v", record)
+	if record := records["job-live"]; record == nil || record.Status != jobstore.StatusCompleted || record.Reason != "exit_zero" || record.TerminalGen != "terminal-live" || record.EndedAt == nil || !record.EndedAt.Equal(ended) || record.NotifyState != jobstore.NotifyPending {
+		t.Fatalf("shell after exact finalizer and preserving Stop = %#v", record)
 	}
 }
 

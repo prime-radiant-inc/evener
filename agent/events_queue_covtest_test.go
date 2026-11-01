@@ -11,6 +11,7 @@ import (
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/internal/delegatestore"
 	"primeradiant.com/evener/agent/plugin"
+	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/agent/task"
 )
 
@@ -365,8 +366,8 @@ func TestCovDelegateFinish_NilSession(t *testing.T) {
 	const report = "accepted human report"
 	const reply = "generic reported result"
 	sess := &Session{}
-	if !sess.acceptCommunicateTerminal(context.Background(), report, reply, "", nil, "") {
-		t.Fatal("terminal report was not accepted")
+	if accepted, err := sess.acceptCommunicateTerminal(context.Background(), schema.CommunicateInfo{Message: report, EndTurn: true}, reply, "", nil); err != nil || !accepted {
+		t.Fatalf("terminal report acceptance: accepted=%v err=%v", accepted, err)
 	}
 	reported := buildDelegateFinish(sess, reply, nil)
 	if reported.outcome != delegatestore.OutcomeCompleted || reported.disposition != delegatestore.DispositionReported || reported.reason != "" {

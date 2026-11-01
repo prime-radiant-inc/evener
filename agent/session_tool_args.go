@@ -1,10 +1,13 @@
 package agent
 
 import (
+	"encoding/json"
 	"fmt"
 	"math"
 	"strings"
 	"time"
+
+	"primeradiant.com/evener/agent/internal/tool"
 )
 
 // Decoders for model-supplied tool arguments, shared by every session tool.
@@ -27,7 +30,7 @@ func optionalIntArg(args map[string]any, key string) *int {
 	if !ok {
 		return nil
 	}
-	if n, ok := v.(float64); ok {
+	if n, ok := approximateToolNumber(v); ok {
 		ni := int(n)
 		return &ni
 	}
@@ -69,6 +72,13 @@ func optionalWholeIntArg(args map[string]any, key string) (*int, error) {
 	v, ok := args[key]
 	if !ok || v == nil {
 		return nil, nil
+	}
+	if number, ok := v.(json.Number); ok {
+		n, whole := tool.WholeNumberInt(number)
+		if !whole || n < 0 || n >= math.MaxInt {
+			return nil, fmt.Errorf("invalid_request: %s must be a non-negative whole number, got %v", key, number)
+		}
+		return &n, nil
 	}
 	n, ok := v.(float64)
 	if !ok {
@@ -126,4 +136,16 @@ func stringListArg[T any](args map[string]any, key string, parse func(string) (T
 		out = append(out, item)
 	}
 	return out, nil
+}
+
+func approximateToolNumber(value any) (float64, bool) {
+	switch n := value.(type) {
+	case float64:
+		return n, true
+	case json.Number:
+		f, _ := n.Float64()
+		return f, true
+	default:
+		return 0, false
+	}
 }

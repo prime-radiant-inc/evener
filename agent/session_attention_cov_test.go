@@ -47,7 +47,7 @@ func TestNewDelegateAttentionFoldAndPendingIDs(t *testing.T) {
 func TestHasPendingRootDelegateAttentionNilGuard(t *testing.T) {
 	t.Parallel()
 	var s *Session
-	if s.hasPendingRootDelegateAttention() {
+	if s.hasPendingNotifications() {
 		t.Fatal("nil session should return false")
 	}
 }
@@ -68,15 +68,6 @@ func TestIsRootDelegateAttentionReceiverNilGuard(t *testing.T) {
 	}
 }
 
-// TestHasPendingDelegateAttentionArmRetryNilGuard covers the nil-session guard.
-func TestHasPendingDelegateAttentionArmRetryNilGuard(t *testing.T) {
-	t.Parallel()
-	var s *Session
-	if s.hasPendingDelegateAttentionArmRetry() {
-		t.Fatal("nil session should return false")
-	}
-}
-
 // TestPendingDelegateAttentionIDsNilGuard covers the nil-session guard.
 func TestPendingDelegateAttentionIDsNilGuard(t *testing.T) {
 	t.Parallel()
@@ -91,10 +82,10 @@ func TestPendingDelegateAttentionIDsNilGuard(t *testing.T) {
 func TestFinishRootDelegateAttentionTurnEmptyIDs(t *testing.T) {
 	t.Parallel()
 	s := newTestSession(t)
-	if err := s.finishRootDelegateAttentionTurn(nil, nil); err != nil {
+	if err := s.finishAttentionTurn(nil, nil); err != nil {
 		t.Fatalf("empty ids: %v", err)
 	}
-	if err := s.finishRootDelegateAttentionTurn([]string{}, nil); err != nil {
+	if err := s.finishAttentionTurn([]string{}, nil); err != nil {
 		t.Fatalf("empty slice: %v", err)
 	}
 }

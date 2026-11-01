@@ -179,31 +179,82 @@ func TestDelegateControllerSettlingReportedPacketOverridesLaterRuntimeError(t *t
 	c, _ := newDelegateControllerTestHarness(t, 1, 1)
 	seedDelegateControllerRunning(t, c, "dlg_target", "")
 	lease := delegateLease{delegateID: "dlg_target", generation: 1}
-	wantPacket := delegateControllerReportedPacket("accepted before runtime error")
+	wantPacket := delegateControllerReportedPacket("report-opaque-84")
+	wantPacket.StructuredResult = json.RawMessage(`{"artifact":"artifact-84"}`)
+	wantPacket.Metadata = json.RawMessage(`{"source":"source-84","blocker":"blocker-84","waiting_on":"target-84","disposition":"done"}`)
 	if _, _, err := c.prepareSettlementForTest(lease, &wantPacket); err != nil {
 		t.Fatalf("BeginSettlement: %v", err)
 	}
+	if aggregate := c.durable["dlg_target"]; aggregate.LatestOutcome != nil || len(aggregate.PendingDeliveries) != 0 {
+		t.Fatalf("preparation published an early terminal outcome: %+v", aggregate)
+	}
 	endedAt := time.Unix(250, 0).UTC()
 	misleadingPacket := delegateTerminalErrorPacket("late runtime error")
-	plans, err := c.FinishGeneration(lease, delegateFinish{
+	finish := delegateFinish{
 		outcome:     delegatestore.OutcomeFailed,
 		disposition: delegatestore.DispositionTerminalError,
 		reason:      "late_runtime_error",
+		errorText:   "error-opaque-84",
 		packet:      &misleadingPacket,
 		endedAt:     endedAt,
-	})
+	}
+	plans, err := c.FinishGeneration(lease, finish)
 	if err != nil {
 		t.Fatalf("FinishGeneration: %v", err)
 	}
 	aggregate := c.durable["dlg_target"]
-	if aggregate.LatestOutcome == nil || aggregate.LatestOutcome.Status != delegatestore.OutcomeCompleted || aggregate.LatestOutcome.Reason != "" || !aggregate.LatestOutcome.EndedAt.Equal(endedAt) {
-		t.Fatalf("reported prepared outcome = %#v, want completed at supplied end time", aggregate.LatestOutcome)
+	if aggregate.LatestOutcome == nil || aggregate.LatestOutcome.Status != delegatestore.OutcomeFailed || aggregate.LatestOutcome.Reason != "late_runtime_error" || aggregate.LatestOutcome.Error != "error-opaque-84" || !aggregate.LatestOutcome.EndedAt.Equal(endedAt) {
+		t.Fatalf("reported prepared outcome = %#v, want failed at supplied end time with actual cause", aggregate.LatestOutcome)
 	}
-	if len(plans.deliveries) != 1 || len(aggregate.PendingDeliveries) != 1 || !reflect.DeepEqual(aggregate.PendingDeliveries[0].Packet, wantPacket) {
+	if len(plans.deliveries) != 1 || len(aggregate.PendingDeliveries) != 1 {
 		t.Fatalf("reported prepared delivery plans=%#v pending=%#v", plans, aggregate.PendingDeliveries)
 	}
-	if finish := latestDelegateControllerRunFinished(t, c, "dlg_target"); finish.Disposition != delegatestore.DispositionReported {
-		t.Fatalf("reported prepared disposition = %q", finish.Disposition)
+	packet := aggregate.PendingDeliveries[0].Packet
+	var metadata map[string]string
+	if err := json.Unmarshal(packet.Metadata, &metadata); err != nil {
+		t.Fatal(err)
+	}
+	for key, want := range map[string]string{
+		"source": "source-84", "blocker": "blocker-84", "waiting_on": "target-84", "disposition": "done",
+		"outcome": "failed", "reason": "late_runtime_error", "error": "error-opaque-84",
+	} {
+		if metadata[key] != want {
+			t.Errorf("terminal metadata[%s]=%q, want %q", key, metadata[key], want)
+		}
+	}
+	// Kind and failure metadata describe the actual ending. All other accepted
+	// opaque fields must survive, rather than being replaced by the late error.
+	packet.Kind, packet.Metadata = wantPacket.Kind, wantPacket.Metadata
+	if !reflect.DeepEqual(packet, wantPacket) {
+		t.Fatalf("accepted report content changed: got=%+v want=%+v", packet, wantPacket)
+	}
+	if aggregate.PendingDeliveries[0].Packet.Kind != delegatestore.PacketTerminalError {
+		t.Fatal("late failure retained a successful terminal kind")
+	}
+	if recorded := latestDelegateControllerRunFinished(t, c, "dlg_target"); recorded.Disposition != delegatestore.DispositionTerminalError || recorded.Generation != 1 || recorded.DeliveryID != aggregate.PendingDeliveries[0].DeliveryID {
+		t.Fatalf("reported failed finish = %+v", recorded)
+	}
+	if _, err := c.FinishGeneration(lease, finish); err != nil {
+		t.Fatalf("finish retry: %v", err)
+	}
+	if _, err := c.Reconcile(emptyDelegateReconcileEvidence(c)); err != nil {
+		t.Fatalf("delivery reconciliation retry: %v", err)
+	}
+	if pending := c.durable["dlg_target"].PendingDeliveries; len(pending) != 1 || pending[0].DeliveryID != aggregate.PendingDeliveries[0].DeliveryID {
+		t.Fatalf("retry changed generation-scoped terminal delivery: %+v", pending)
+	}
+	events, err := c.store.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	finished := 0
+	for _, event := range events {
+		if event.DelegateID == lease.delegateID && event.RunFinished != nil && event.RunFinished.Generation == 1 {
+			finished++
+		}
+	}
+	if finished != 1 {
+		t.Fatalf("generation terminal events=%d, want 1", finished)
 	}
 }
 

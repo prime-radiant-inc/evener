@@ -93,8 +93,8 @@ var (
 	runProcessInput     = func(sess *agent.Session, ctx context.Context, prompt string) (string, error) {
 		return sess.ProcessInput(ctx, prompt, nil)
 	}
-	runDrainJobTree = func(sess *agent.Session, ctx context.Context) (string, error) {
-		return sess.DrainJobTree(ctx)
+	runDrainJobTree = func(sess *agent.Session, ctx context.Context, wake <-chan struct{}) (string, error) {
+		return sess.DrainJobTree(ctx, wake)
 	}
 	runResolvePlugins = func(ctx context.Context, explicit []string, enabled *[]string) (plugins.LaunchPluginResolution, error) {
 		return plugins.NewManager("").ResolveForLaunch(ctx, explicit, enabled)
@@ -475,6 +475,13 @@ func run(ctx context.Context, cfg runConfig) error {
 		}
 	}
 	defer sess.Close()
+	wake := make(chan struct{}, 1)
+	sess.SetNotifyFunc(func() {
+		select {
+		case wake <- struct{}{}:
+		default:
+		}
+	})
 	// The session is live, and everything past here is the turn itself. An
 	// interrupt that arrived while it was being built ends the run instead,
 	// and the deferred Close takes the session down on the way out.
@@ -506,7 +513,7 @@ func run(ctx context.Context, cfg runConfig) error {
 		// terminal. The coordinator's real final answer is produced on the
 		// post-completion notification turn, so prefer it over the "waiting on
 		// delegate" turn that ended ProcessInput (PRI-2441).
-		if drained, derr := runDrainJobTree(sess, ctx); derr != nil {
+		if drained, derr := runDrainJobTree(sess, ctx, wake); derr != nil {
 			err = derr
 		} else if drained != "" {
 			result = drained

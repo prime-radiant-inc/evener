@@ -75,7 +75,7 @@ func (s *Session) runDelegateQuietWatchdogTick(lease delegateLease, now time.Tim
 func (s *Session) completeQuietWatchdogClaim(claim *delegateQuietAttentionClaim, appendErr error) error {
 	completionErr := s.delegateController.CompleteQuietAttention(claim, appendErr == nil)
 	if appendErr == nil {
-		completionErr = errors.Join(completionErr, s.armDelegateAttention(claim.attentionID))
+		completionErr = errors.Join(completionErr, s.requestNotificationWake())
 	}
 	return errors.Join(appendErr, completionErr)
 }

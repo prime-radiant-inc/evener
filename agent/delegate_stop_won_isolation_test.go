@@ -53,7 +53,7 @@ func TestDelegateResourceCreate_StopWinningConstructFailureCleansIsolation(t *te
 	executeDelegateCancelPlan(cancelPlan)
 
 	constructErr := errors.New("construct failed under the stop")
-	result := runtime.failCommittedStart(started, isolation, nil, false, constructErr, "construction_failed")
+	result := failCommittedStartWithHandoffForTest(runtime, started, isolation, nil, false, constructErr, "construction_failed")
 
 	if !errors.Is(result.Err, constructErr) {
 		t.Fatalf("failed create error = %v, want the construct failure %v", result.Err, constructErr)

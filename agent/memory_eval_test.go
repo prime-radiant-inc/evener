@@ -688,6 +688,16 @@ func TestMemoryEvalIsolation(t *testing.T) {
 		t.Run(fmt.Sprintf("disabled=%t", disabled), func(t *testing.T) {
 			root, workspace, scratch := t.TempDir(), t.TempDir(), t.TempDir()
 			memoryEvalWrite(t, filepath.Join(workspace, "visible.txt"), "opaque-visible-615")
+			type shellCheck struct {
+				command string
+				exit    int // -1 accepts the real utility's positive failure status.
+			}
+			shellChecks := []shellCheck{
+				{"cat '" + filepath.Join(workspace, "visible.txt") + "'", 0},
+				{"cat '" + authPath + "'; rc=$?; if [ \"$rc\" -ne 0 ]; then exit 1; fi", 1},
+				{"cat '" + verifierPath + "'; rc=$?; if [ \"$rc\" -ne 0 ]; then exit 2; fi", 2},
+				{"cat '" + authPath + "' '" + verifierPath + "'", -1},
+			}
 			memoryEvalWrite(t, filepath.Join(root, "wiki", "memory", "native.md"), "---\ndescription: opaque-native-616\n---\n")
 			b := &memoryEvalAdmission{}
 			b.beginStage(30, time.Now().Add(time.Minute))
@@ -735,13 +745,14 @@ func TestMemoryEvalIsolation(t *testing.T) {
 				case 1:
 					n++
 					return memoryEvalCall("read_file", map[string]any{"file_path": verifierPath}), nil
-				case 2:
+				case 2, 3, 4, 5:
+					command := shellChecks[n-2].command
 					n++
-					return memoryEvalCall("exec_command", map[string]any{"command": "cat '" + authPath + "' '" + verifierPath + "'", "mode": "foreground"}), nil
-				case 3:
+					return memoryEvalCall("exec_command", map[string]any{"command": command, "mode": "foreground"}), nil
+				case 6:
 					n++
 					return memoryEvalCall("read_transcript", map[string]any{"transcript_ref": priorID}), nil
-				case 4:
+				case 7:
 					memoryRequireResult(t, req, "read_transcript", "opaque-history-input-618")
 					n++
 					if !disabled {
@@ -765,6 +776,7 @@ func TestMemoryEvalIsolation(t *testing.T) {
 			stop()
 			denied := 0
 			history := false
+			seenCommands := make(map[string]bool)
 			for _, ev := range *seen {
 				if ev.Kind != events.EventToolCallEnd {
 					continue
@@ -782,14 +794,36 @@ func TestMemoryEvalIsolation(t *testing.T) {
 					if strings.Contains(d.Output, "fixture auth decoy 611") || strings.Contains(d.Output, "fixture verifier decoy 612") {
 						t.Fatal("shell leaked decoy")
 					}
-					// Any nonzero status counts: the missing-file code differs
-					// between GNU coreutils (1) and uutils coreutils (2).
-					var state struct {
-						ExitCode int `json:"exit_code"`
+					var args struct{ Command string }
+					if err := json.Unmarshal([]byte(d.ArgumentsJSON), &args); err != nil {
+						t.Fatal(err)
 					}
-					_ = json.Unmarshal(d.ToolState, &state)
-					if d.Error == "" && state.ExitCode == 0 {
-						t.Errorf("shell refusal not recorded: %+v", d)
+					if seenCommands[args.Command] {
+						t.Fatal("duplicate shell control")
+					}
+					seenCommands[args.Command] = true
+					check := slices.IndexFunc(shellChecks, func(c shellCheck) bool {
+						return c.command == args.Command
+					})
+					if check < 0 {
+						t.Fatal("unexpected shell control")
+					}
+					var result shellToolResult
+					if err := json.Unmarshal(d.ToolState, &result); err != nil {
+						t.Fatalf("decode real shell result: %v", err)
+					}
+					if d.Error != "" || result.Type != "shell" || result.Mode != "foreground" || result.TimedOut || result.ExitCode == nil {
+						t.Fatalf("shell control did not finish a foreground command: %+v error=%q", result, d.Error)
+					}
+					wantExit := shellChecks[check].exit
+					if wantExit == 0 {
+						if result.Status != "completed" || *result.ExitCode != 0 || !strings.Contains(d.Output, "opaque-visible-615") {
+							t.Fatalf("visible workspace read failed: %+v", result)
+						}
+						continue
+					}
+					if result.Status != "command_exited_nonzero" || result.Reason == nil || *result.Reason != "exit_nonzero" || *result.ExitCode <= 0 || (wantExit > 0 && *result.ExitCode != wantExit) {
+						t.Fatalf("private read was not denied by a real nonzero command: %+v", result)
 					}
 					denied++
 				}
@@ -797,8 +831,8 @@ func TestMemoryEvalIsolation(t *testing.T) {
 					history = true
 				}
 			}
-			if denied != 3 || !history {
-				t.Fatalf("denied=%d history=%t", denied, history)
+			if denied != 5 || !history || len(seenCommands) != len(shellChecks) {
+				t.Fatalf("denied=%d history=%t shell_controls=%d", denied, history, len(seenCommands))
 			}
 			if disabled && ioCount.Load() != 0 {
 				t.Fatalf("disabled native I/O=%d", ioCount.Load())

@@ -139,7 +139,32 @@ This reference contract is not itself the runtime system prompt, but the followi
   and may be woken by: delegates send one only when the parent needs to know
   something or act, never as narration, and finish with
   `communicate(end_turn=true)`.
-- When an observer readiness delegate result includes `watching:true` and `watches`, the observer is watching. Continue with the planned watched action and use the later observer `communicate(end_turn=true)` as the callback.
+- A delegate's terminal `communicate` carries an explicit disposition:
+  `done` (the assignment is complete and nothing will wake it), `blocked`
+  (it names a `blocker` and may carry live work), or `waiting_on_work` (it
+  names a live `waiting_on` job, watch, child delegate, or queued input).
+  A valid wait publishes its message and yields execution after a synced
+  checkpoint, keeping the same generation and its resources open. Any addressed
+  notification or admitted input may resume it, not just the named producer.
+  `done` is refused while a child remains live, including a reserved start;
+  unfinished tasks, shell jobs, watches and unread attention are not completion
+  gates. The parent sees the captured versioned task and inventory summary on
+  the durable notification and inline and earlier `delegate_send` results.
+- Every notification is a message into its addressed session. Update, readiness
+  and report are payload labels, not wake policies. Acceptance establishes
+  receiver custody; only a successful response records observation of the
+  exact notifications its request presented, synced when persistence is enabled.
+  Neither custody nor observation means the sender's generation settled.
+- An oversized positive-wait `delegate_send` reply presents the last 50,000
+  characters of the complete formatted reply, including earlier results, plus
+  a verified root-tree recovery link. That exact carrier replaces duplicate
+  canonical bodies only while the link recovers the complete reply. Missing or
+  invalid recovery, or a subsequently reduced carrier, keeps whole canonical
+  presentation. Asynchronous reports remain whole. Root close expires the link;
+  closing a child under the same live root does not.
+- Send observer readiness with `communicate(end_turn=false, readiness="ready")`.
+  It is not completion. Continue with the watched action and use the observer's
+  later final report as the callback.
 - After starting a background job, continue useful work or respond to the user. Do not immediately wait, poll `job_list`, or loop on `job_status`.
 - Evener injects typed terminal attention: `<job-notification>` for owner shell
   jobs and `<delegate-notification delegate_id="dlg_..." kind="report">` for direct delegates.
@@ -379,6 +404,43 @@ Defaults and timeout semantics:
 - A shell command that completes before the tool returns does not inject a terminal notification; the terminal result is already in the tool result. Return field `timed_out`, when present, means the foreground wait expired; it never means the process hit `max_runtime_ms`.
 - To learn when a launch-and-return command reaches a state (e.g. a server printing "ready"), use `job_watch(operation="create", source=<job_id>, output_match=...)` and continue from the notification — an output-match watch catch-up-scans a job's retained output even if it already finished.
 
+For a healthy background completion addressed to its idle owner, matching public
+self `job.notification` watch frames, any co-produced budget notice, and
+terminal-expiry EndNotice frames precede the distinct shell notification in one
+provider request. The notifying
+finalization attempt holds the owner's existing notification wake until watch
+and shell custody are accepted, then the receiver rechecks ordinary execution
+eligibility. Wake callbacks hand off and return, rather than running the turn.
+This applies to persistent and memory-only receivers, not foreign receivers or
+unrelated input already admitted before finalization.
+Grouping excludes a notification dispatcher already past the wake-hold check when
+finalization begins, even before input admission. The hold does not revoke that
+dispatch.
+
+Receipt-index repair can settle already observed notifications without producing
+new model input. The canonical retry and waking completion release share one
+transient publication token for that resource progress. The retry joins before
+clearing its active flag and retains its participation until its entire existing
+attention and retirement release returns. Completion release joins atomically
+with the last hold's decrement. The last eligible participant detaches the token
+before handing off one progress wake outside owner locks, even when no canonical
+IDs remain pending. A real completion hold retains that opportunity until release.
+
+An outstanding canonical or participating legacy input handoff satisfies the
+opportunity instead. Existing running, question, pause, name-recovery, paced retry,
+Stop and Close owners still suppress publication. An absent callback leaves no
+receipt-only replay obligation. Unrelated watch transport neither joins the token
+nor delays its progress wake. This adds no timer, queue, retirement lease or model
+turn, and promises neither global callback coalescing nor revocation of an already
+claimed handoff by a later hold, Stop or Close.
+
+The hold is not a transaction or a recovery owner. Source journals and canonical
+receiver custody retain each ID independently. A failed partition releases
+healthy work, and existing retries preserve the later obligation and terminal
+generation, so partial failure or restart may require another request. A
+foreground result already returned inline still earns no duplicate shell
+notification, and its watch/raw-kick paths have no one-handoff grouping promise.
+
 Foreground-wait bounds:
 
 - The foreground wait is the session command timeout (`DefaultCommandTimeoutMS`, 120000 by default), clamped to `MaxCommandTimeoutMS`. Shell has no per-call wait parameter; `mode` selects foreground (wait, then promote), session-owned background, or immediate detached return where the environment supports detaching.
@@ -526,8 +588,9 @@ Defaults:
   not guaranteed. A generation whose `last_outcome.status="completed"` ended
   normally; that does not by itself assert task success. Inspect its canonical
   terminal packet or conversation for the task-specific result.
-- An observer that installs watches reports readiness through its terminal packet;
-  the stable watch remains active and later frames resume the same `dlg_...`.
+- An observer that installs watches sends readiness as a nonterminal update.
+  A valid `waiting_on_work` yields on its live producer while retaining that
+  generation and its watches; the later report describes actual settlement.
 
 Create return shape:
 
@@ -768,9 +831,9 @@ Practical observer guidance for agents:
 
 - Start the observer with `watch_parent:true` when it needs to observe the parent.
 - Inside the observer, call `job_watch(source:"parent")`; omit trigger fields for the default bounded parent frame stream, or add `events`/`event_filter` for precision.
-- When the readiness delegate result carries `watching:true` and `watches`, treat the observer as watching and perform the planned watched action.
+- Send readiness with `communicate(end_turn=false, readiness="ready")` after installing watches. The parent can perform the planned watched action without treating the observer as complete.
 - Send an update with `communicate(end_turn=false)` only when the parent needs to know something or act: it reaches the parent and may wake it.
-- Report the observer result with `communicate(end_turn=true)`. That terminal communicate is the callback to the parent. The parent receives it as that observer delegate's ordinary terminal frame — a `<delegate-notification delegate_id="dlg_..." kind="report">` block carrying the result packet — which arms delegate attention and wakes the parent.
+- Report the observer result with `communicate(end_turn=true)`. After settlement the parent receives the ordinary `<delegate-notification delegate_id="dlg_..." kind="report">` frame. It schedules through the same addressed readiness as updates and readiness markers, not a separate report-only wake path.
 - Keep observer instructions narrow and frame-driven. Tell the observer what frame fields to read (`watch_id`, `delivery_id`, typed source identity, event kind/status/arguments, and optional excerpt), what action to take, and when to stop.
 - A watch-origin observer delegate's terminal `communicate(end_turn=true)` is delivered to the parent as that generation's owner notification; there is no separate observer-callback frame and no suppression of the owner notification. Other typed terminal notifications remain lifecycle confirmations, not additional watch frames. Clear long-lived session watches before continuing a free-form conversation when later acknowledgements should not themselves be observed.
 
@@ -789,9 +852,11 @@ Rules:
   the separate journal and restart rules below.
 - A structured terminal shell notification names `read_transcript(transcript_ref="job:<job_id>")`. Delegate attention names `delegate_id` and the child session transcript ref, never a job read. References do not widen list/status/stop/watch scope.
 - `SessionMeta.ObservedBy` is append-only, deduplicated UI metadata for hub auto-open. A worker is never recorded as observing itself; metadata failures never change or delay delivery.
-- The watch journal preserves registration configuration, pending/coalesced send
-  deliveries, acknowledgements, and end records. On job-manager restore, pending
-  sends are recovered, but active watch registrations end with `runtime_lost`;
+- The watch journal preserves registration configuration, pending/coalesced
+  callback frames and explicit sends, custody acknowledgements, and end records.
+  A rendered payload is persisted before its firing budget or one-shot end is
+  consumed. Failed production leaves the firing retryable. On job-manager restore,
+  pending frames are recovered, but active registrations end with `runtime_lost`;
   future observation and timer ticks require a new registration. This includes
   saved declarative repeating timers. Callback closures remain process-local.
   A send generation that has already spoken can omit an individual restart-end
@@ -800,7 +865,15 @@ Rules:
   recovery outcome exists but is not implemented: a restart does not yet
   re-establish an active watch, and the owner is told the watch ended rather
   than left to assume it still runs.
-- Already-fired parent-watch frames are durable until delivered, replaced by a newer frame for the same durable key, evicted by watch cleanup, or dropped with a caller-visible diagnostic on hard/non-resumable failure. The durable key includes the `watch_id`, visible session, configured watch source/target, receiver identity, resolved watched identity, and watch generation.
+- Already-produced frames survive clearing or replacing their registration.
+  Before receiver custody, a newer frame may replace a pending frame for the same
+  durable key. Each retained payload version has its own immutable delivery ID,
+  reused on retries. The key includes the `watch_id`, visible session, configured
+  source/target, receiver identity, resolved watched identity, and watch generation.
+  Dispatch uses the host/controller transport without executing the holder's model.
+  Missing or temporarily unavailable receivers remain retryable. Authoritative
+  permanent closure drops only frames not already in receiver custody, with a
+  durable diagnostic. Accepted frames still settle their source acknowledgement.
 - `job_watch(operation="clear", watch_id=...)` is the model-facing unwatch operation; there is no separate unwatch tool.
 
 #### Registration and timers
@@ -812,6 +885,12 @@ identity replaces the existing watch and reports `replaced_existing=true`.
 
 **Timers are additive:** every timer create adds an independent watch, even with
 identical arguments. To replace a timer, clear its `watch_id` and create another.
+Timers may use an explicit send. Pending timer frames retain the registration's
+existing slot identity across restart, so separate registrations remain distinct.
+The timer ranges and registration limits below are unchanged.
+A one-shot persists its firing before attempting its durable end once on that
+tick. If the end fails, the next tick retries only the end, not the firing.
+Transport retries do not make additional one-shot teardown attempts.
 
 #### Output matching
 
@@ -877,16 +956,45 @@ identical arguments. To replace a timer, clear its `watch_id` and create another
   delivery keeps its claim until it finishes. If replaced, it stands down without
   an error, unless the receiver already took the frame and only acknowledgement
   remains to retry.
+- Shell completions, watch frames, delegate packets, and actionable system notices
+  share durable canonical receiver custody. A source acknowledgement proves that
+  custody, not model observation. A successful persisted assistant response records
+  observation of exactly the canonical IDs presented to it. A terminal `communicate`
+  result cannot consume a newly arrived actionable notice as inbox text instead.
+  Passive startup/context snapshots do not independently wake the model.
 - Each watch configuration has a model-facing delivery budget of 50 condition fires:
   output matches and event frames. Periodic ticks, timer or job progress, count as
   deliveries but never trip the budget, so the `deliveries` count `job_list` reports can
   run past the fires the budget counts.
 - A watch that exhausts its budget is auto-cleared with a final notification
-  giving its match count. Re-arm with a tighter condition: higher `every` or
-  narrower `output_match`.
-- Terminal notification ordering: flush any queued watch notification/frame for a
-  concrete job, then deliver the terminal notification. Both are facts about the same
-  completion, so they arrive in one notification turn, watch settlement first.
+  giving its match count. The last permitted firing and the budget notice retain
+  separate delivery identities; the notice cannot replace that firing before
+  receiver custody. Both remain recoverable after temporary receiver failure and
+  source restart under the existing pending-frame limits. A failed budget teardown
+  retries on the next matching condition without producing a 51st firing or
+  resetting the count. Re-arm with a tighter condition: higher `every` or narrower
+  `output_match`.
+  A callback's co-produced budget notice stays in that call's batch, after the
+  final firing. The retained local and supplied-receiver legacy callback rails
+  route that batch under their existing wake holds, without a standalone kick.
+  The live final firing's delivery ID owns budget teardown from source commit
+  through source recording of its notice. Competing source pumps cannot take
+  that teardown or publish its notice separately.
+  This transient owner is released on failure and is not restored from source
+  history, leaving existing standalone and restart recovery responsible for debt.
+  Separately, a notifying completion reserves its exact newly committed,
+  owner-addressed watch IDs through that synchronous producer's custody attempt,
+  including terminal callback and explicit end-notice sends. Competing pumps
+  promptly skip those IDs while unreserved older work and foreign receivers
+  remain independent. Reservations release on return, including partial failure,
+  and are not restored or retained across attempts. Existing recovery owns any
+  remaining debt; no wake hold is extended to wait for it.
+  Canonical custody remains per ID, not a global one-handoff promise for arbitrary
+  watch events outside the notifying-completion hold described above.
+- Healthy automatic terminal notification ordering follows the bounded owner
+  completion contract above: watch facts first, then the distinct shell notice
+  in one request. Foreign canonical receivers, already-entered dispatch and
+  partial failure retain their independent delivery and recovery boundaries.
 - If no watch condition is supplied (`output_match`, `events`, `progress_interval_ms`,
   `after_seconds`, or `repeat_seconds`) for `operation="create"`, the tool fails unless
   the source is a granted cross-session session source such as `parent`, where the

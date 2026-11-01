@@ -62,6 +62,8 @@ const (
 	// tick counts a delivery but is a clock rather than a condition, so it never
 	// counts against this. Hard-coded, no config knob.
 	watchDeliveryBudget = 50
+	// The budget notice must not coalesce with the final condition firing.
+	watchBudgetEndTrigger = "budget_exhausted"
 	// watchDeliveryTimeCap bounds the per-watch ring of recent delivery instants
 	// that feeds the activity panel's delivery timeline. The ring is a display
 	// aid, not an audit log: progress ticks make a watch's delivery count
@@ -237,6 +239,7 @@ type watchConfig struct {
 	generation        string
 	pending           map[jobstore.WatchSendKey]*jobstore.WatchSendState
 	pendingOrder      []jobstore.WatchSendKey
+	producedUpdateSeq map[jobstore.WatchSendKey]uint64
 	settledUpdateSeq  map[jobstore.WatchSendKey]uint64
 	settledOrder      []jobstore.WatchSendKey
 	rejectingDelivery bool
@@ -258,6 +261,10 @@ type watchConfig struct {
 	// budgetTripped latches the breaker to one teardown per config, so a send
 	// watch settling several frames at or past the budget reports it just once.
 	budgetTripped bool
+	// callbackBudgetOwner is the live final firing's delivery ID. Its producer
+	// owns budget teardown through source recording of the distinct notice.
+	// It is transient, never reconstructed from pending callback frames.
+	callbackBudgetOwner string
 	// createdAt is the install time of this live watch config, stamped from
 	// jm.now() in newWatchConfig and surfaced by job_list (spec §4 F2). A
 	// replacement config is a new watch, so it gets a fresh timestamp. Configs
@@ -280,6 +287,12 @@ type watchConfig struct {
 	// fired yet. Restored and detached configs never schedule, so they leave it
 	// zero exactly as they leave createdAt zero.
 	lastClockFire time.Time
+	// testOnlyAfterCallbackPending observes callback source publication with no
+	// manager lock or persistence admission held. It changes no delivery decision.
+	testOnlyAfterCallbackPending func(jobstore.WatchSendState)
+	// These observations run outside manager locks and never change a decision.
+	testOnlyAfterSendPending   func(jobstore.WatchSendState)
+	testOnlyAfterDeliveryClaim func(jobstore.WatchSendState, bool)
 }
 
 type watchArgs struct {
@@ -420,6 +433,7 @@ type watchSendDelivery struct {
 	deliveryID               string
 	message                  string
 	frame                    string
+	callback                 bool
 	visibleSessionID         string
 	watchTarget              string
 	watchedIdentity          string
@@ -434,13 +448,15 @@ type watchSendDelivery struct {
 	eventData  events.EventData
 	// endNotice marks the teardown frame a watch sends when it ends without ever
 	// having fired, so the durable state says what the trigger prose only implies.
-	endNotice bool
+	endNotice  bool
+	restartSeq int64
 	// self-influence classification, stamped at the observation site; fuseDepth
 	// drives the runaway fuse, the rest the gradient inform.
 	selfInfluence bool
 	gradientDepth int
 	fuseDepth     int
 	truncated     bool
+	production    *watchDeliveryProduction
 }
 
 // withSelfInfluence stamps the breaker's classification onto a built delivery.
@@ -462,28 +478,8 @@ type restoredWatchConfigKey struct {
 	stableReceiver     bool
 }
 
-// watchSendToken identifies a pending caller-targeted watch send. Tokens are
-// at-least-once and harmless when stale: render-by-key skips any token whose
-// pending state was replaced, cleared, dropped, or already settled.
-type watchSendToken struct {
-	ChildSessionID string // "" = the session's own jobManager
-	Key            jobstore.WatchSendKey
-	UpdateSeq      uint64
-	DeliveryID     string
-}
-
-func watchSendTokenNotification(childSessionID string, state jobstore.WatchSendState) jobNotification {
-	return jobNotification{
-		Kind:       jobNotificationKindWatch,
-		JobID:      state.Key.ResolvedWatchedIdentity,
-		Status:     jobNotificationEventWatch,
-		Reason:     state.TriggerReason,
-		Provenance: provenance.Clone(state.Provenance),
-		WatchSend: &watchSendToken{
-			ChildSessionID: childSessionID,
-			Key:            state.Key,
-			UpdateSeq:      state.UpdateSeq,
-			DeliveryID:     state.DeliveryID,
-		},
-	}
+type watchDeliveryProduction struct {
+	ownerSessionID  string
+	ownerDelegateID string
+	members         []pendingWatchSendDelivery
 }

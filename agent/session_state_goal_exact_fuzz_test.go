@@ -71,8 +71,13 @@ func fuzzExactGoal(t *testing.T) {
 
 func fuzzExactState(t *testing.T) {
 	t.Helper()
-	s := &Session{state: SessionIdle}
-	s.enqueueJobNotification(jobNotification{JobID: "pending"})
+	s := newSession(t, withoutGitSnapshot())
+	if s.stateDir != "" || s.attachedTranscript() != nil {
+		t.Fatal("notification autonomy fixture is persistent")
+	}
+	if err := s.enqueueNotification(notification{ID: "state-pending-71", Message: llm.User("state-payload-71")}); err != nil {
+		t.Fatal(err)
+	}
 	if !s.autonomyInFlight() {
 		t.Fatal("notification autonomy missing")
 	}
@@ -114,8 +119,11 @@ func fuzzExactState(t *testing.T) {
 	if restored.state != SessionAwaiting {
 		t.Fatalf("restored state = %q", restored.state)
 	}
-	restored = &Session{state: SessionIdle, history: needsResponse}
-	restored.enqueueJobNotification(jobNotification{JobID: "pending"})
+	restored = newSession(t, withoutGitSnapshot())
+	restored.history = needsResponse
+	if err := restored.enqueueNotification(notification{ID: "restored-pending-71", Message: llm.User("restored-payload-71")}); err != nil {
+		t.Fatal(err)
+	}
 	restored.recomputeRestoredState(0, nil)
 	if restored.state != SessionIdle {
 		t.Fatalf("autonomous restored state = %q", restored.state)

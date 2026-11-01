@@ -18,10 +18,10 @@ func registerModelListTool(reg *tool.Registry, s *Session) error {
 			// Zero leaves a bound unspecified, for Page to fill from the
 			// cursor or the defaults.
 			count, bytes := 0, 0
-			if n, ok := args["max_count"].(float64); ok && n > 0 {
+			if n, ok := approximateToolNumber(args["max_count"]); ok && n > 0 {
 				count = int(n)
 			}
-			if n, ok := args["max_bytes"].(float64); ok && n > 0 {
+			if n, ok := approximateToolNumber(args["max_bytes"]); ok && n > 0 {
 				bytes = int(n)
 			}
 			if count > modelavailability.DefaultInlineMaxCount || bytes > modelavailability.DefaultInlineMaxBytes {

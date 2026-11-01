@@ -87,9 +87,14 @@ func delegateSendTool(ctx context.Context, s *Session, args map[string]any, maxC
 			}
 			return nil, errors.New("delegate result cannot be committed outside a tool round")
 		}
-		for _, commit := range commits {
-			s.queueDelegateDeliveryCommit(callID, commit)
+		earlier := outcome.result.Earlier[:0]
+		for i, commit := range outcome.earlierCommits {
+			if s.queueDelegateDeliveryCommit(callID, commit) {
+				earlier = append(earlier, outcome.result.Earlier[i])
+			}
 		}
+		outcome.result.Earlier = earlier
+		s.queueDelegateDeliveryCommit(callID, outcome.commit)
 	}
 	return marshalDelegateSendResult(outcome.result, maxChars)
 }

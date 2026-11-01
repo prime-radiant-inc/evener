@@ -650,6 +650,7 @@ describe("comic conversation projection", () => {
     ];
     const model = fixture();
     model.turns[0]!.items.push(...recorded);
+    const original = JSON.stringify(model);
     const old = subagentOutcomesDelegatesResponse();
     const fresh = subagentResumedDelegatesResponse();
     const tree = parseActivityTree(subagentOutcomesResponse().data);
@@ -663,7 +664,24 @@ describe("comic conversation projection", () => {
     });
     const projected = projectComicConversation(model, { entities });
     const sends = projected.filter((entry) => recorded.slice(1).some((item) => item.id === entry.sourceItemId));
-    expect(sends).toHaveLength(2);
+    expect(sends.map(({ id, sourceItemId, sourceIndex }) => ({ id, sourceItemId, sourceIndex }))).toEqual([
+      { id: "item_tool_1_1", sourceItemId: "item_tool_1_1", sourceIndex: 5 },
+      { id: "item_tool_1_2:earlier:0", sourceItemId: "item_tool_1_2", sourceIndex: 6 },
+      { id: "item_tool_1_2", sourceItemId: "item_tool_1_2", sourceIndex: 6 },
+    ]);
+    // These are the recorded payloads, not a projection-derived reply count.
+    expect(sends.slice(1).map(({ text, delegateResult, persona }) => ({ text, delegateResult, persona }))).toEqual([
+      {
+        text: "Fixed the race between tree settle and the drain.",
+        delegateResult: { kind: "earlierReply", status: "completed" },
+        persona: undefined,
+      },
+      {
+        text: "Yes: tree settle now waits for the drain, and a test pins the order.",
+        delegateResult: { kind: "reply" },
+        persona: undefined,
+      },
+    ]);
     expect(sends.every((entry) => entry.kind === "caption" && entry.speaker === "source")).toBe(true);
     // A new domain snapshot cannot turn a historical send into the current report.
     const freshEntities = buildEntityView({
@@ -702,6 +720,7 @@ describe("comic conversation projection", () => {
         (entry) => entry.text === fresh.delegates.find((d) => d.delegateId === "dlg_reported")?.reportPreview,
       ),
     ).toBe(false);
+    expect(JSON.stringify(model)).toBe(original);
   });
 
   test("historical delegate notifications retain attributed updates and earlier-generation reports", () => {

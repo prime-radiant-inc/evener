@@ -10,3 +10,8 @@ import "os"
 func markLivelockHeld(*os.File) error {
 	return nil
 }
+
+// Darwin's marker is the ownership flock itself, released by the caller.
+func unmarkLivelockHeld(*os.File) error {
+	return nil
+}

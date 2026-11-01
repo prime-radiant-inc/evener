@@ -44,6 +44,9 @@ func AcquireSessionLivelock(dir, id string) (release func(), applied bool, err e
 		return nil, true, err
 	}
 	return func() {
+		// A duplicated/inherited descriptor can outlive this one. Clear the
+		// query marker while the ownership flock still excludes another mint.
+		_ = unmarkLivelockHeld(f)
 		_ = syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
 		_ = f.Close()
 	}, true, nil

@@ -6,6 +6,7 @@ import (
 
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/internal/tool"
+	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/llm/registry"
 )
 
@@ -128,7 +129,7 @@ func TestWithAllowedDecisions_RegistryPreservesDecisionSchema(t *testing.T) {
 		drainSteering:          func() []steeringMessage { return nil },
 		prependSteering:        func([]steeringMessage) {},
 		resultToolName:         func() string { return "communicate" },
-		setCommunicateTerminal: func(context.Context, string, string, string, any, string) bool { return true },
+		setCommunicateTerminal: func(context.Context, schema.CommunicateInfo, string, string, any) (bool, error) { return true, nil },
 	}
 	_ = registerCommunicateTool(reg, deps)
 

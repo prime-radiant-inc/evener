@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"errors"
+	"slices"
 	"sync"
 	"testing"
 	"time"
@@ -12,37 +13,6 @@ import (
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/llm"
 )
-
-// waitForTreeCount polls the tree counter until it reaches want or the deadline
-// elapses. Reservations and releases happen on spawn/resume/drive/finalize
-// goroutines, so the count is observed asynchronously. The 5 s deadline is
-// generous enough to accommodate -race on slow/few-core boxes without being so
-// long that a genuine hang goes undetected.
-func waitForTreeCount(t *testing.T, c *treeCounter, want int64) {
-	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
-	for time.Now().Before(deadline) {
-		if got := c.n.Load(); got == want {
-			return
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	t.Fatalf("tree counter = %d, want %d (timed out)", c.n.Load(), want)
-}
-
-// waitForDriveCount mirrors waitForTreeCount for the drive-down budget
-// counter.
-func waitForDriveCount(t *testing.T, c *treeCounter, want int64) {
-	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
-	for time.Now().Before(deadline) {
-		if got := c.n.Load(); got == want {
-			return
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	t.Fatalf("drive counter = %d, want %d (timed out)", c.n.Load(), want)
-}
 
 // TestTreeCounterReserveRelease verifies the atomic check-and-reserve logic:
 // 16 reservations succeed at cap 16, the 17th fails, releasing one allows
@@ -135,72 +105,110 @@ func TestTreeCounterSharedAcrossTree(t *testing.T) {
 	child.treeCounter.releaseKind(slotKindJob)
 }
 
-// TestDriveAtCapacityDoesNotLaunchOrSettle proves the drive-budget/§3
-// interaction: when the drive budget is at capacity, a drive does NOT launch
-// (driveSubagentNotificationTurn returns false), does NOT settle, and the
-// child's durable signal persists so the next loop boundary retries (spec §3:
-// the ledger is durable; no retry daemon).
+// TestDriveAtCapacityDoesNotLaunchOrSettle checks admission at the controller's
+// leased drive capacity, with canonical custody and actual provider execution.
 func TestDriveAtCapacityDoesNotLaunchOrSettle(t *testing.T) {
 	t.Parallel()
-	c := llm.NewClient()
-	c.Register(&fakeAdapter{
-		name: "openai",
-		steps: []func(req llm.Request) llm.Response{
-			func(_ llm.Request) llm.Response { return agenttest.FinalResponse("coordinator idle") },
-			// A drive turn would consume step 1. At capacity it must never run.
-			func(_ llm.Request) llm.Response { return agenttest.FinalResponse("must not run") },
-		},
-	})
-	sess := newSession(t, withClient(c), withConfig(SessionConfig{MaxSubagentDepth: 2, StateDir: t.TempDir()}), withoutGitSnapshot())
-
-	coord := sess.createDelegate(context.Background(), delegateArgs{
-		Task: "coordinate",
-	})
+	a := finiteUpdateAdapter(t, "CAPACITY-85")
+	gate := make(chan struct{})
+	release := sync.OnceFunc(func() { close(gate) })
+	defer release()
+	a.finiteScript("CAPACITY-85", updateReply(agenttest.FinalResponse("coordinator-idle-85")), updateGate(gate, func(_ context.Context, req llm.Request) (llm.Response, error) {
+		if !requestContainsText(req, "capacity-body-85") {
+			t.Error("released execution omitted accepted payload")
+		}
+		return agenttest.FinalResponse("useful-capacity-result-85"), nil
+	}))
+	root := newMessagingRoot(t, a, nil)
+	coord := root.createDelegate(context.Background(), delegateArgs{Task: "CAPACITY-85"})
 	if coord.Err != nil {
-		t.Fatalf("createDelegate (coordinator): %v", coord.Err)
+		t.Fatal(coord.Err)
 	}
-	waitForRuntimeSubagent(t, sess, coord.ChildSessionID)
-	waitForTreeCount(t, sess.treeCounter, 0)
+	waitForRuntimeSubagent(t, root, coord.ChildSessionID)
+	root.sendersWG.Wait()
+	sub := root.getSub(coord.ChildSessionID)
+	receiver := sub.sess
+	c := root.delegateController
+	before := delegateAggregateSnapshot(t, c, receiver.owningDelegateID)
+	c.mu.Lock()
+	c.driveLimit, c.drivesInUse = 1, 1
+	c.mu.Unlock()
+	const id = "capacity-custody-85"
+	observationEnqueue(t, receiver, id, "capacity-body-85")
+	// The result means handled, not launched. All admission assertions below
+	// inspect the real generation, executor, provider and receipt owners.
+	root.driveDelegateAttention(sub)
+	assertNotificationPending(t, receiver, []string{id})
+	after := delegateAggregateSnapshot(t, c, receiver.owningDelegateID)
+	if after.Generation != before.Generation || after.CurrentRunOpen {
+		t.Fatalf("capacity refusal started generation: before=%+v after=%+v", before, after)
+	}
+	sub.mu.Lock()
+	running, driving := sub.running, sub.driving
+	sub.mu.Unlock()
+	if running || driving || len(a.requestsFor("CAPACITY-85")) != 1 {
+		t.Fatal("capacity refusal executed provider or retained an execution start")
+	}
+	receiver.mu.Lock()
+	executing := receiver.execution.running
+	receiver.mu.Unlock()
+	if executing {
+		t.Fatal("capacity refusal started receiver execution")
+	}
+	fold := rootAttentionFold(t, receiver)
+	if accepted, exists := fold.content[id]; !exists || accepted.Text() != "capacity-body-85" || len(fold.observed) != 0 || len(fold.resolutions) != 0 {
+		t.Fatalf("capacity refusal changed canonical custody: %+v", fold)
+	}
+	c.mu.Lock()
+	held := c.drivesInUse
+	c.mu.Unlock()
+	if held != 1 {
+		t.Fatalf("capacity refusal changed held slots: %d", held)
+	}
 
-	coordSub := sess.subagents.get(coord.ChildSessionID)
-	if coordSub == nil || coordSub.sess == nil {
-		t.Fatalf("coordinator subagent %q not found", coord.ChildSessionID)
+	c.mu.Lock()
+	c.drivesInUse--
+	c.mu.Unlock()
+	c.recheckNotificationReceivers()
+	a.waitForRequests(t, "CAPACITY-85", 2)
+	assertLeasedDriveCount(t, c, 1)
+	assertNotificationPending(t, receiver, []string{id})
+	fold = rootAttentionFold(t, receiver)
+	if len(fold.observed) != 0 {
+		t.Fatal("request admission invented successful observation")
 	}
-	enqueueCompletedJobNotification(t, coordSub.sess, "worker-1")
-	if got := coordSub.sess.peekNotifications(); got == 0 {
-		t.Fatal("coordinator has no pending notification; test setup failed")
+	release()
+	root.sendersWG.Wait() // Joins provider, generation settlement and capacity release.
+	assertNotificationPending(t, receiver, []string{})
+	incidentNotificationFacts(t, root.stateDir, receiver.ID(), id)
+	data, err := readTranscriptFull(t.Context(), transcriptPath(root.stateDir, receiver.ID()), "")
+	if err != nil {
+		t.Fatal(err)
 	}
-
-	// Saturate the drive budget directly so the drive cannot claim a slot.
-	sess.driveCounter = newTreeCounter(1)
-	if !sess.driveCounter.reserve(slotKindDrive) {
-		t.Fatal("manual saturating drive reserve failed")
+	receipts := 0
+	for _, entry := range data.Entries {
+		if slices.Contains(entry.Turn.ObservedNotificationIDs, id) {
+			receipts++
+			if !slices.Equal(entry.Turn.ObservedNotificationIDs, []string{id}) {
+				t.Fatalf("response covered unexpected IDs: %v", entry.Turn.ObservedNotificationIDs)
+			}
+		}
 	}
-
-	if sess.driveSubagentNotificationTurn(coordSub) {
-		t.Fatal("driveSubagentNotificationTurn returned true at capacity; the drive must not launch")
+	if receipts != 1 {
+		t.Fatalf("physical response receipts = %d want1", receipts)
 	}
-	// No slot was consumed by the (rejected) drive — still exactly 1 held.
-	if got := sess.driveCounter.n.Load(); got != 1 {
-		t.Fatalf("drive counter = %d after rejected drive, want 1 (drive reserved nothing)", got)
+	after = delegateAggregateSnapshot(t, c, receiver.owningDelegateID)
+	if after.Generation != before.Generation+1 || after.CurrentRunOpen {
+		t.Fatalf("released generation not settled: %+v", after)
 	}
-	// The durable signal persists: the coordinator's queued notification is not
-	// drained or settled, so a later boundary (with a free slot) can retry.
-	if got := coordSub.sess.peekNotifications(); got == 0 {
-		t.Fatal("coordinator's pending notification was drained by a drive that should not have launched")
+	if got := len(a.requestsFor("CAPACITY-85")); got != 2 {
+		t.Fatalf("provider requests=%d want2", got)
 	}
-
-	// Free one slot; the retry now launches and drains the signal.
-	sess.driveCounter.releaseKind(slotKindDrive)
-	if !sess.driveSubagentNotificationTurn(coordSub) {
-		t.Fatal("driveSubagentNotificationTurn returned false after a slot freed; the retry should launch")
-	}
-	deadline := time.Now().Add(5 * time.Second)
-	for time.Now().Before(deadline) && coordSub.sess.peekNotifications() != 0 {
-		time.Sleep(10 * time.Millisecond)
-	}
-	if got := coordSub.sess.peekNotifications(); got != 0 {
-		t.Fatalf("coordinator still has %d pending after the retry drive drained it", got)
+	c.mu.Lock()
+	held = c.drivesInUse
+	c.mu.Unlock()
+	if held != 0 {
+		t.Fatalf("settled drive retained capacity: %d", held)
 	}
 }
 
@@ -372,54 +380,41 @@ func TestDriveBudgetIndependentOfSpawnBudget(t *testing.T) {
 // and releases it at turn end.
 func TestDriveTurnReservesFromDriveCounter(t *testing.T) {
 	t.Parallel()
-	release := make(chan struct{})
-	var releaseOnce sync.Once
-	c := llm.NewClient()
-	c.Register(&fakeAdapter{
-		name: "openai",
-		steps: []func(req llm.Request) llm.Response{
-			func(_ llm.Request) llm.Response { return agenttest.FinalResponse("coordinator idle") },
-			func(_ llm.Request) llm.Response {
-				<-release
-				return agenttest.FinalResponse("drive done")
-			},
-		},
-	})
-	t.Cleanup(func() { releaseOnce.Do(func() { close(release) }) })
-	sess := newSession(t, withClient(c), withConfig(SessionConfig{MaxSubagentDepth: 2, StateDir: t.TempDir()}), withoutGitSnapshot())
-
-	coord := sess.createDelegate(context.Background(), delegateArgs{
-		Task: "coordinate",
-	})
-	if coord.Err != nil {
-		t.Fatalf("createDelegate (coordinator): %v", coord.Err)
+	entered, gate := make(chan struct{}), make(chan struct{})
+	release := sync.OnceFunc(func() { close(gate) })
+	defer release()
+	returns := newActivationReturns()
+	fixture := newColdDelegateFixture(t, "")
+	fixture.adapter.steps = []func(llm.Request) llm.Response{func(llm.Request) llm.Response {
+		close(entered)
+		<-gate
+		return agenttest.FinalResponse("drive-result-71af")
+	}}
+	root := restoreSupervisionRoot(t, fixture, nil)
+	returns.configure(&root.cfg)
+	t.Cleanup(func() { returns.close(t, root) })
+	root.delegateController.mu.Lock()
+	root.delegateController.turnLimit = 1
+	if !root.delegateController.reserveCapacityLocked(delegateTurnCapacity) {
+		t.Fatal("setup: turn reserve failed")
 	}
-	waitForRuntimeSubagent(t, sess, coord.ChildSessionID)
-	waitForTreeCount(t, sess.treeCounter, 0)
-
-	coordSub := sess.subagents.get(coord.ChildSessionID)
-	if coordSub == nil || coordSub.sess == nil {
-		t.Fatalf("coordinator subagent %q not found", coord.ChildSessionID)
+	root.delegateController.mu.Unlock()
+	if err := root.delegateController.enqueueNotification(fixture.childID, notification{ID: "drive-budget-71af", Message: llm.User("drive-budget-body-71af")}); err != nil {
+		t.Fatal(err)
 	}
-	enqueueCompletedJobNotification(t, coordSub.sess, "worker-1")
-
-	// Saturate the spawn budget: the drive must still launch.
-	sess.treeCounter = newTreeCounter(1)
-	if !sess.treeCounter.reserve(slotKindJob) {
-		t.Fatal("setup: tree reserve failed")
+	waitForTestSignal(t, entered, "drive provider entry with return held")
+	activation := returns.take(t, fixture.childID)
+	assertLeasedDriveCount(t, root.delegateController, 1)
+	root.delegateController.mu.Lock()
+	got := root.delegateController.turnsInUse
+	root.delegateController.mu.Unlock()
+	if got != 1 {
+		t.Fatalf("spawn budget moved to %d during notification, want pinned 1", got)
 	}
-	if !sess.driveSubagentNotificationTurn(coordSub) {
-		t.Fatal("drive did not launch with the spawn budget saturated")
-	}
-	// While the drive turn runs, the drive counter holds the slot and the
-	// spawn budget is untouched (still exactly its pinned 1).
-	waitForDriveCount(t, sess.driveCounter, 1)
-	if got := sess.treeCounter.n.Load(); got != 1 {
-		t.Fatalf("spawn budget moved to %d during drive, want pinned 1", got)
-	}
-
-	releaseOnce.Do(func() { close(release) })
-	waitForDriveCount(t, sess.driveCounter, 0)
+	release()
+	waitForTestSignal(t, activation.generationDone, "drive terminal generation")
+	waitForTestSignal(t, activation.returned, "drive executor tail")
+	assertLeasedDriveCount(t, root.delegateController, 0)
 }
 
 // firstCompleteThenBlockAdapter completes the first request (the coordinator's
@@ -427,8 +422,13 @@ func TestDriveTurnReservesFromDriveCounter(t *testing.T) {
 // context is done, modeling a hung provider call that only a context cancel
 // can interrupt.
 type firstCompleteThenBlockAdapter struct {
-	mu sync.Mutex
-	i  int
+	mu                  sync.Mutex
+	i                   int
+	entered, returnGate chan struct{}
+	result              struct {
+		err  error
+		done chan struct{}
+	}
 }
 
 func (a *firstCompleteThenBlockAdapter) Name() string { return "openai" }
@@ -443,8 +443,13 @@ func (a *firstCompleteThenBlockAdapter) Complete(ctx context.Context, req llm.Re
 		resp.Model = req.Model
 		return resp, nil
 	}
+	close(a.entered)
+	// Keep the reservation observable even if the real deadline has expired.
+	<-a.returnGate
 	<-ctx.Done()
-	return llm.Response{}, ctx.Err()
+	a.result.err = ctx.Err()
+	close(a.result.done)
+	return llm.Response{}, a.result.err
 }
 func (a *firstCompleteThenBlockAdapter) Stream(ctx context.Context, req llm.Request) (llm.Stream, error) {
 	return nil, llm.ErrStreamUnsupported
@@ -454,108 +459,76 @@ func (a *firstCompleteThenBlockAdapter) Stream(ctx context.Context, req llm.Requ
 // cancelled at driveTurnTimeout and its drive-budget slot is freed — a hung
 // child cannot pin the budget until parent close.
 func TestDriveTurnTimeoutFreesSlot(t *testing.T) {
-	// NOT parallel: this test shrinks a package-level timing var; parallel
-	// siblings must never observe the mutated value.
 	old := driveTurnTimeout
 	driveTurnTimeout = 100 * time.Millisecond
 	t.Cleanup(func() { driveTurnTimeout = old })
-
-	c := llm.NewClient()
-	c.Register(&firstCompleteThenBlockAdapter{})
-	sess := newSession(t, withClient(c), withConfig(SessionConfig{MaxSubagentDepth: 2, StateDir: t.TempDir()}), withoutGitSnapshot())
-
-	coord := sess.createDelegate(context.Background(), delegateArgs{
-		Task: "coordinate",
-	})
-	if coord.Err != nil {
-		t.Fatalf("createDelegate (coordinator): %v", coord.Err)
+	fixture := newColdDelegateFixture(t, "")
+	adapter := &firstCompleteThenBlockAdapter{entered: make(chan struct{}), returnGate: make(chan struct{})}
+	adapter.result.done = make(chan struct{})
+	release := sync.OnceFunc(func() { close(adapter.returnGate) })
+	defer release()
+	fixture.client.Register(adapter)
+	root := restoreSupervisionRoot(t, fixture, nil)
+	returns := newActivationReturns()
+	returns.configure(&root.cfg)
+	t.Cleanup(func() { returns.close(t, root) })
+	warmStableSupervisionDelegate(t, root, fixture)
+	warm := returns.take(t, fixture.childID)
+	waitForTestSignal(t, warm.generationDone, "warm generation")
+	waitForTestSignal(t, warm.returned, "warm executor tail")
+	if err := root.delegateController.enqueueNotification(fixture.childID, notification{ID: "drive-deadline-71af", Message: llm.User("drive-deadline-body-71af")}); err != nil {
+		t.Fatal(err)
 	}
-	waitForRuntimeSubagent(t, sess, coord.ChildSessionID)
-	coordSub := sess.subagents.get(coord.ChildSessionID)
-	if coordSub == nil || coordSub.sess == nil {
-		t.Fatalf("coordinator subagent %q not found", coord.ChildSessionID)
+	waitForTestSignal(t, adapter.entered, "deadline drive provider entry")
+	activation := returns.take(t, fixture.childID)
+	if activation.lease != (delegateLease{delegateID: fixture.delegateID, generation: warm.lease.generation + 1}) || activation.generationDone == warm.generationDone {
+		t.Fatalf("deadline activation=%+v warm=%+v", activation, warm)
 	}
-	enqueueCompletedJobNotification(t, coordSub.sess, "worker-1")
-
-	if !sess.driveSubagentNotificationTurn(coordSub) {
-		t.Fatal("drive did not launch")
+	assertLeasedDriveCount(t, root.delegateController, 1)
+	release()
+	waitForTestSignal(t, adapter.result.done, "actual drive context expiry")
+	if !errors.Is(adapter.result.err, context.DeadlineExceeded) {
+		t.Fatalf("drive provider error=%v, want real deadline expiry", adapter.result.err)
 	}
-	waitForDriveCount(t, sess.driveCounter, 1)
-	// The child hangs; the timeout must cancel the turn and free the slot.
-	waitForDriveCount(t, sess.driveCounter, 0)
+	waitForTestSignal(t, activation.generationDone, "deadline drive terminal generation")
+	waitForTestSignal(t, activation.returned, "deadline drive executor tail")
+	assertLeasedDriveCount(t, root.delegateController, 0)
 }
 
-// TestDriveRedriveIsPaced proves the post-turn re-drive waits
-// driveRedriveMinInterval instead of launching immediately: with attention
-// still queued on the child, no drive is in flight shortly after the re-check
-// begins, but one launches after the interval.
-func TestDriveRedriveIsPaced(t *testing.T) {
-	// NOT parallel: this test shrinks a package-level timing var; parallel
-	// siblings must never observe the mutated value.
-	old := driveRedriveMinInterval
-	driveRedriveMinInterval = 300 * time.Millisecond
-	t.Cleanup(func() { driveRedriveMinInterval = old })
+// The removed unleased redrive's pacing guarantee belongs to common readiness.
+func TestNotificationRetryPacesCommonDispatch(t *testing.T) {
+	s := observationSession(t, &skillContinuationAdapter{}, false)
+	clock := agenttest.NewFakeClock()
+	s.clock = clock
+	wakes := make(chan struct{}, 2)
+	s.SetNotifyFunc(func() { wakes <- struct{}{} })
+	if _, err := s.appendDelegateNotificationDurably("paced-529a", "payload-529a"); err != nil {
+		t.Fatal(err)
+	}
+	s.scheduleNotificationRetry()
+	clock.Advance(jobNotificationRetryInitialDelay - time.Nanosecond)
+	clock.Drain()
+	select {
+	case <-wakes:
+		t.Fatal("retry fired before pacing interval")
+	default:
+	}
+	clock.Advance(time.Nanosecond)
+	clock.Drain()
+	select {
+	case <-wakes:
+	default:
+		t.Fatal("paced retry did not publish receiver readiness")
+	}
+}
 
-	c := llm.NewClient()
-	c.Register(&fakeAdapter{
-		name: "openai",
-		steps: []func(req llm.Request) llm.Response{
-			func(_ llm.Request) llm.Response { return agenttest.FinalResponse("coordinator idle") },
-			func(_ llm.Request) llm.Response { return agenttest.FinalResponse("drive done") },
-		},
-	})
-	sess := newSession(t, withClient(c), withConfig(SessionConfig{MaxSubagentDepth: 2, StateDir: t.TempDir()}), withoutGitSnapshot())
-
-	coord := sess.createDelegate(context.Background(), delegateArgs{
-		Task: "coordinate",
-	})
-	if coord.Err != nil {
-		t.Fatalf("createDelegate (coordinator): %v", coord.Err)
+// assertLeasedDriveCount follows held provider entry or exact executor return.
+func assertLeasedDriveCount(t *testing.T, c *delegateTreeController, want int) {
+	t.Helper()
+	c.mu.Lock()
+	got := c.drivesInUse
+	c.mu.Unlock()
+	if got != want {
+		t.Fatalf("leased notification capacity=%d, want %d", got, want)
 	}
-	waitForRuntimeSubagent(t, sess, coord.ChildSessionID)
-	coordSub := sess.subagents.get(coord.ChildSessionID)
-	if coordSub == nil || coordSub.sess == nil {
-		t.Fatalf("coordinator subagent %q not found", coord.ChildSessionID)
-	}
-	// Queue attention on the child but drive nothing: the re-check owns the
-	// (paced) launch.
-	enqueueCompletedJobNotification(t, coordSub.sess, "worker-1")
-
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		sess.redriveChildIfAttentionRemains(context.Background(), coordSub, coordSub.sess)
-	}()
-	// Inside the pacing interval, no drive may be in flight.
-	time.Sleep(100 * time.Millisecond)
-	if got := sess.driveCounter.n.Load(); got != 0 {
-		t.Fatalf("re-drive launched inside the pacing interval: drive counter = %d", got)
-	}
-	// The counter check alone is necessary but not sufficient: a full pacing
-	// removal launches the fast fake drive at ~0ms, which reserves AND
-	// releases the counter back to 0 well before this 100ms sample — so
-	// counter==0 passes whether the re-drive never launched OR already
-	// launched and finished. An early drive would also have drained the
-	// child's queued notification, so peekNotifications() staying > 0 at the
-	// same sample point is the necessary companion: it can only hold if the
-	// re-drive genuinely has not run yet.
-	if got := coordSub.sess.peekNotifications(); got == 0 {
-		t.Fatalf("re-drive already drained notifications inside the pacing interval: peekNotifications = %d", got)
-	}
-	// After the interval, the paced re-drive launches, runs, and drains the
-	// child's queued attention. Awaiting the drain (peek→0) is the reliable
-	// completion signal that the paced drive actually ran — a drive turn is the
-	// only path that drains the child's notifications. The live drive-slot gauge
-	// peaks at 1 for only the turn's brief duration, so sampling it for ==1
-	// races the reserve→release and is the source of the historical flake.
-	<-done
-	deadline := time.Now().Add(5 * time.Second)
-	for time.Now().Before(deadline) && coordSub.sess.peekNotifications() != 0 {
-		time.Sleep(10 * time.Millisecond)
-	}
-	if got := coordSub.sess.peekNotifications(); got != 0 {
-		t.Fatalf("paced re-drive left %d notifications undrained", got)
-	}
-	// The drive released its budget slot once the turn completed.
-	waitForDriveCount(t, sess.driveCounter, 0)
 }

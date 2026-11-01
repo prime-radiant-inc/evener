@@ -98,6 +98,10 @@ func decideProgressTick(snap progressTickSnapshot) progressTickDecision {
 }
 
 func (jm *jobManager) fireProgressTick(key watchKey, cfg *watchConfig) bool {
+	if !jm.enterWatchCallback() {
+		return false
+	}
+	defer jm.leaveWatchCallback()
 	defer jm.publishWatchActivity()
 	release, err := jm.beginRetirementMutation("watch")
 	if err != nil {
@@ -149,10 +153,30 @@ func (jm *jobManager) fireProgressTick(key watchKey, cfg *watchConfig) bool {
 			n.WatchID, n.Fires, n.IntervalSeconds, n.Terminal = cfg.watchID, 1, cfg.timerSeconds, cfg.oneShot
 		}
 		notifications = append(notifications, n)
-		// Periodic ticks never trip the condition-fire budget.
-		jm.countWatchDeliveryLocked(cfg)
 	}
 	jm.mu.Unlock()
+
+	// Source production precedes spending the one-shot or its delivery budget.
+	// A refused append leaves the same registration eligible for its next tick.
+	var productionErr error
+	notifications, productionErr = jm.produceCallbackNotifications(notifications)
+	if productionErr != nil {
+		jm.dispatchProducedWatchSends()
+		if jm.retirementOwner == nil && jm.delegateController == nil {
+			jm.enqueueNotifications(notifications)
+		}
+		return true
+	}
+	for _, d := range jm.snapshotWatchSendFrames(deliveries) {
+		if _, _, ok, err := jm.recordWatchSend(d); err != nil || !ok {
+			return true
+		}
+	}
+	if dec.fire {
+		jm.mu.Lock()
+		cfg.firedPendingEnd = cfg.oneShot
+		jm.mu.Unlock()
+	}
 
 	// A one-shot ends on the tick that fires it, or on a later tick retrying an
 	// end that did not persist. An end that lands stops the ticker with the
@@ -163,8 +187,10 @@ func (jm *jobManager) fireProgressTick(key watchKey, cfg *watchConfig) bool {
 			jm.markOneShotFiredPendingEnd(cfg)
 		}
 	}
-	jm.enqueueWatchNotifications(notifications)
-	jm.recordWatchSendsAndKick(deliveries)
+	jm.dispatchProducedWatchSends()
+	if jm.retirementOwner == nil && jm.delegateController == nil {
+		jm.enqueueNotifications(notifications)
+	}
 	return dec.keepAlive
 }
 

@@ -13,6 +13,10 @@ independent lifetime — retirement does not sweep them away. Session scratch is
 kept across retirement, with its regenerable caches pruned, and the resumed
 session reopens it. It is deleted when the hub archives or deletes the session.
 
+A successful retirement commit records its trigger in the session metadata as
+`retirement_reason` (`idle`, `manual`, or `archive`). `updated_at` is the
+record time; retirement adds no second timestamp.
+
 ## Configuration
 
 The Hub's timeout lives in `hub.toml`:

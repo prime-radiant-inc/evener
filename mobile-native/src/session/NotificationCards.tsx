@@ -36,13 +36,21 @@ export function NotificationCards({
 				// frame's text nor a text span is a safe key. fragments is an
 				// order-stable parse of this one row's text, so its position is.
 				const key = `${disclosureId}:${index}`;
+				const result =
+					fragment.kind === "notification" && fragment.notification.structuredResult !== undefined
+						? JSON.stringify(fragment.notification.structuredResult, null, 2)
+						: undefined;
 				return fragment.kind === "notification" ? (
-					<NotificationCard
-						key={key}
-						line={notificationLine(fragment.notification, delegates)}
-						openSubagent={openSubagent}
-						disclosureId={key}
-					/>
+					<View key={key}>
+						<NotificationCard
+							line={notificationLine(fragment.notification, delegates)}
+							openSubagent={openSubagent}
+							disclosureId={key}
+						/>
+						{result !== undefined ? (
+							<EvidenceView evidence={{ kind: "output", text: result, lines: lineCount(result) }} title="Result" />
+						) : null}
+					</View>
 				) : (
 					<QuietText
 						key={key}

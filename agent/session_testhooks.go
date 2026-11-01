@@ -25,6 +25,9 @@ import (
 // deterministic. Never set by app callers; never persisted (json:"-" on the
 // parent field).
 type testConfig struct {
+	// These observe drain ownership boundaries without providing work or clocks.
+	jobTreeDrainEntered  func()
+	jobTreeDrainReturned func()
 	// worktree injects failures at the manage_worktree filesystem and sandbox
 	// boundaries (see worktreeTestSeams).
 	worktree worktreeTestSeams
@@ -71,6 +74,10 @@ type testConfig struct {
 	// test cannot produce one without closing the session, which closes the
 	// claim path too. Nil in production.
 	failTurnBeforeRecording func() error
+	// notificationExecutionRelease observes either side of the common input
+	// release lock, before readiness dispatch. Both calls are outside s.mu.
+	// Tests block one side to place a concurrent append at this exact boundary.
+	notificationExecutionRelease func(released bool)
 	// clientMutationStartAnnounced observes a start that has claimed and
 	// announced, immediately before the turn runs -- the window a close lands in,
 	// where the post-run give-back decides whether the claim goes back. Nil in
@@ -144,7 +151,11 @@ type testConfig struct {
 	// delegateAttentionOpenWriter replaces only transcript resume for attention
 	// repair. Nil preserves the production transcript opener.
 	delegateAttentionOpenWriter delegateAttentionWriterOpener
-	// rootAttentionRetryCallback observes a root attention retry callback that
+	// afterSessionWakeRecoveryScheduled observes a cold receiver failure after
+	// scheduling, including an already-active retry. It runs outside c.mu and
+	// receives the unchanged error returned by that wake pass. Nil in production.
+	afterSessionWakeRecoveryScheduled func(sessionID string, recoveryErr error)
+	// notificationRetryCallback observes a root attention retry callback that
 	// has passed scheduleRootAttentionRetryLocked's early returns: it took
 	// ownership (beginAttentionCallback succeeded), its generation is still
 	// current, and the rail is not parked. It fires whether or not that callback
@@ -152,7 +163,7 @@ type testConfig struct {
 	// lease, not by the notify -- so a test that pauses here holds exactly the
 	// live retry, and a stale or parked timer never reaches it. A notify hook
 	// cannot identify the caller. Nil in production.
-	rootAttentionRetryCallback func()
+	notificationRetryCallback func()
 	// delegateRuntimeReclaimClose replaces only the external Session close
 	// boundary used by admission-triggered stable-runtime reclamation.
 	delegateRuntimeReclaimClose func(*Session)
@@ -163,6 +174,9 @@ type testConfig struct {
 	// subagentRunIteration observes each production subagent input iteration.
 	// Tests use it only as a deterministic barrier around continuation decisions.
 	subagentRunIteration func(*subagent, int)
+	// subagentActivationReturn observes one executor's return after owner cleanup.
+	// Installed before launch, nil in production. Neither callback may block.
+	subagentActivationReturn func(*subagent, delegateLease) func()
 	// subagentBeforeSettlement observes the final unlocked boundary before a
 	// stable generation enters controller settlement.
 	subagentBeforeSettlement func(*subagent)
@@ -198,6 +212,9 @@ type testConfig struct {
 	// released. An inline result can be acknowledged while this seam is held.
 	// Nil in production.
 	subagentBeforeGenerationReleased func(*subagent, delegateLease)
+	// notificationRecheckBeforeDispatch observes the unlocked receiver snapshot.
+	// Nil in production, tests attribute the finalization release's handoff here.
+	notificationRecheckBeforeDispatch func()
 	// delegateFinalizationWaitCeiling overrides how long a send waits for a
 	// finished generation's finalize tail to release the delegate
 	// (delegateFinalizationWaitCeiling), so a test can exercise a tail that

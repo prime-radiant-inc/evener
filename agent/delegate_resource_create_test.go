@@ -1097,7 +1097,7 @@ func TestDelegateResourceCreate_StopBeforeAttachDisposesUnadoptedSession(t *test
 	}
 	executeDelegateCancelPlan(cancelPlan)
 
-	result := runtime.failCommittedStart(started, isolation, prepared, true, context.Canceled, "construction_failed")
+	result := failCommittedStartWithHandoffForTest(runtime, started, isolation, prepared, true, context.Canceled, "construction_failed")
 	if result.DelegateID != started.lease.delegateID {
 		t.Fatalf("failed create delegate ID = %q, want %q", result.DelegateID, started.lease.delegateID)
 	}
@@ -1134,7 +1134,7 @@ func TestDelegateResourceCreate_StopBeforeAttachDisposesUnadoptedSession(t *test
 		t.Fatalf("CommitStart replacement: %v", err)
 	}
 	replacement := newTestSession(t)
-	if err := root.delegateController.AttachRuntime(replacementStart.lease, replacement); err != nil {
+	if err := attachRuntimeWithHandoffForTest(root.delegateController, replacementStart.lease, replacement); err != nil {
 		t.Fatalf("AttachRuntime replacement after stopped-start cleanup: %v", err)
 	}
 	t.Cleanup(func() {
@@ -1167,7 +1167,7 @@ func TestDelegateResourceCreate_StopSettlementTransfersRuntimeBeforeUpdateEmissi
 	constructionErr := errors.New("construction failed after controller attachment")
 	resultCh := make(chan delegateResult, 1)
 	go func() {
-		resultCh <- runtime.failCommittedStart(started, isolation, prepared, true, constructionErr, "construction_failed")
+		resultCh <- failCommittedStartWithHandoffForTest(runtime, started, isolation, prepared, true, constructionErr, "construction_failed")
 	}()
 	<-updateEntered
 
@@ -1199,7 +1199,7 @@ func TestDelegateResourceCreate_StopSettlementTransfersRuntimeBeforeUpdateEmissi
 			replacementStart, commitErr = root.delegateController.CommitStart(reservation)
 			if commitErr == nil {
 				replacement = newTestSession(t)
-				attachErr = root.delegateController.AttachRuntime(replacementStart.lease, replacement)
+				attachErr = attachRuntimeWithHandoffForTest(root.delegateController, replacementStart.lease, replacement)
 				if attachErr == nil {
 					t.Cleanup(func() {
 						if _, err := root.delegateController.FailCommittedRestart(replacementStart.lease, delegatePermanentStartFailure(errors.New("test complete"), "test_cleanup")); err != nil {
@@ -1246,7 +1246,7 @@ func TestDelegateResourceCreate_CloseAfterDrainRefusesFailedStartRetention(t *te
 	}
 
 	constructionErr := errors.New("construction failed after controller attachment")
-	result := runtime.failCommittedStart(started, isolation, prepared, true, constructionErr, "construction_failed")
+	result := failCommittedStartWithHandoffForTest(runtime, started, isolation, prepared, true, constructionErr, "construction_failed")
 	if !errors.Is(result.Err, constructionErr) || !errors.Is(result.Err, delegatestore.ErrStoreClosed) {
 		t.Fatalf("failed create error = %v, want construction and append failures", result.Err)
 	}
@@ -1407,7 +1407,7 @@ func buildCommittedDelegate(root *Session, args delegateArgs, lane committedDele
 	if err != nil {
 		return runtime, started, isolation, nil, fmt.Errorf("construct: %w", err)
 	}
-	if err := root.delegateController.AttachRuntime(started.lease, prepared.sub.sess); err != nil {
+	if err := attachRuntimeWithHandoffForTest(root.delegateController, started.lease, prepared.sub.sess); err != nil {
 		prepared.disposeUnadopted()
 		return runtime, started, isolation, nil, fmt.Errorf("AttachRuntime: %w", err)
 	}

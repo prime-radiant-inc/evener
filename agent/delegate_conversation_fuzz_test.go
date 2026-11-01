@@ -55,7 +55,7 @@ func FuzzDelegateConversationTransitions(f *testing.F) {
 				if err != nil {
 					break
 				}
-				if c.AttachRuntime(started.lease, runtime) == nil {
+				if attachRuntimeWithHandoffForTest(c, started.lease, runtime) == nil {
 					_, _ = c.AdmitStartInput(started.lease, func() error { return nil })
 				}
 

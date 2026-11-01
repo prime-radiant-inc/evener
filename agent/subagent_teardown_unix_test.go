@@ -186,8 +186,12 @@ func TestReclaimedDelegateRuntimeLeavesTheRootEnvironmentAlone(t *testing.T) {
 	root.delegateController.maxRetainedTerminal = 1
 	seedDelegateReclaimRuntimeSession(t, root.delegateController, "dlg_old", "", time.Unix(5, 0).UTC(), false, false, resident)
 
-	if err := root.reclaimDelegateRuntimeCapacity(1); err != nil {
-		t.Fatalf("reclaimDelegateRuntimeCapacity: %v", err)
+	{
+		recheck, err := root.reclaimDelegateRuntimeCapacity(1)
+		recheckNotificationsForTest(root.delegateController, recheck)
+		if err != nil {
+			t.Fatalf("reclaimDelegateRuntimeCapacity: %v", err)
+		}
 	}
 
 	if got := resident.State(); got != SessionClosed {
@@ -453,7 +457,8 @@ func restoreDelegateRuntimeOnAClone(t *testing.T) restoredCloneRuntime {
 	if err != nil {
 		t.Fatalf("CommitStart: %v", err)
 	}
-	sub, restored, err := (delegateRuntime{owner: root}).restoreIdle(started)
+	sub, restored, recheck, err := (delegateRuntime{owner: root}).restoreIdle(started)
+	t.Cleanup(func() { recheckNotificationsForTest(root.delegateController, recheck) })
 	if err != nil {
 		t.Fatalf("restoreIdle: %v", err)
 	}

@@ -252,6 +252,9 @@ func (r *hubRelay) acquireRelaySession(
 		}
 		release := func() {
 			var closeHandle bool
+			if r.cfg.RelayHooks.BeforeCommandRelease != nil {
+				r.cfg.RelayHooks.BeforeCommandRelease(relayKey)
+			}
 			r.mu.Lock()
 			if state.commands > 0 && handle.commandOwners > 0 {
 				state.commands--
@@ -271,6 +274,9 @@ func (r *hubRelay) acquireRelaySession(
 			}
 			closeHandle = r.maybeFinishHandleLocked(handle)
 			r.mu.Unlock()
+			if r.cfg.RelayHooks.AfterCommandRelease != nil {
+				r.cfg.RelayHooks.AfterCommandRelease(relayKey)
+			}
 			if closeHandle {
 				r.closeRelayHandle(handle)
 			}

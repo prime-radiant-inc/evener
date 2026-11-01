@@ -61,15 +61,6 @@ func (jm *jobManager) rememberStableWatchSettlementRetryLocked(retry pendingWatc
 	jm.stableWatchSettlementRetries[retry.state.DeliveryID] = retry
 }
 
-func (jm *jobManager) forgetStableWatchSettlementRetry(state jobstore.WatchSendState) {
-	jm.mu.Lock()
-	retry, ok := jm.stableWatchSettlementRetries[state.DeliveryID]
-	if ok && retry.state.UpdateSeq == state.UpdateSeq {
-		delete(jm.stableWatchSettlementRetries, state.DeliveryID)
-	}
-	jm.mu.Unlock()
-}
-
 func (jm *jobManager) claimStableWatchSettlementRetries() ([]pendingWatchSendDelivery, bool) {
 	jm.mu.Lock()
 	if jm.stableWatchSettlementRetrying {
@@ -139,31 +130,14 @@ func (jm *jobManager) retryStableWatchSettlements() (bool, error) {
 	}()
 	for {
 		for _, retry := range retries {
-			controller := jm.delegateController
-			if controller == nil {
-				return true, errors.New("stable watch controller is unavailable")
+			if !jm.claimWatchSendDelivery(retry.state.DeliveryID) {
+				// The active owner will finish or retain the obligation. Do not
+				// spin on this batch or advance a newer current head past it.
+				return false, nil
 			}
-			receiver, err := controller.stableWatchReceiver(retry.state.ReceiverSessionID, retry.state.ReceiverDelegateID)
+			err := jm.retryClaimedStableWatchSettlement(retry)
+			jm.releaseWatchSendDeliveryClaim(retry.state.DeliveryID)
 			if err != nil {
-				return true, err
-			}
-			attentionID := stableWatchAttentionID(retry.state)
-			// A frame whose arm failed is armed before it is acknowledged:
-			// acknowledging releases its receipt and its retry, after which
-			// nothing would arm it.
-			if retry.unarmed {
-				if err := jm.armStableWatchFrame(controller, receiver, retry.state.ReceiverDelegateID, attentionID); err != nil {
-					return true, err
-				}
-			}
-			if err := jm.settleWatchSendDelivered(retry.cfg, retry.state); err != nil {
-				return true, err
-			}
-			jm.forgetStableWatchSettlementRetry(retry.state)
-			if retry.unarmed {
-				continue
-			}
-			if err := jm.armStableWatchFrame(controller, receiver, retry.state.ReceiverDelegateID, attentionID); err != nil {
 				return true, err
 			}
 		}
@@ -174,4 +148,48 @@ func (jm *jobManager) retryStableWatchSettlements() (bool, error) {
 			return true, nil
 		}
 	}
+}
+
+func (jm *jobManager) forgetStableWatchSettlementRetryLocked(state jobstore.WatchSendState) {
+	retry, ok := jm.stableWatchSettlementRetries[state.DeliveryID]
+	if ok && retry.state.UpdateSeq == state.UpdateSeq {
+		delete(jm.stableWatchSettlementRetries, state.DeliveryID)
+	}
+}
+
+func (jm *jobManager) retryClaimedStableWatchSettlement(retry pendingWatchSendDelivery) error {
+	if jm.watchSendDelivered(retry.state.DeliveryID) {
+		return jm.settleWatchSendDelivered(retry.cfg, retry.state)
+	}
+	if !retry.state.StableReceiver {
+		if retry.unarmed {
+			if err := jm.acceptWatchFrame(retry.state); err != nil {
+				return err
+			}
+		}
+		return jm.settleWatchSendDelivered(retry.cfg, retry.state)
+	}
+	controller := jm.delegateController
+	if controller == nil {
+		return errors.New("stable watch controller is unavailable")
+	}
+	receiver, err := controller.stableWatchReceiver(retry.state.ReceiverSessionID, retry.state.ReceiverDelegateID)
+	if err != nil {
+		return err
+	}
+	attentionID := stableWatchAttentionID(retry.state)
+	// A failed arm must recover before acknowledgment releases its receipt and
+	// retry. Candidate recovery obeys the same order as the existing batch.
+	if retry.unarmed {
+		if err := jm.armStableWatchFrame(controller, receiver, retry.state.ReceiverDelegateID, attentionID); err != nil {
+			return err
+		}
+	}
+	if err := jm.settleWatchSendDelivered(retry.cfg, retry.state); err != nil {
+		return err
+	}
+	if retry.unarmed {
+		return nil
+	}
+	return jm.armStableWatchFrame(controller, receiver, retry.state.ReceiverDelegateID, attentionID)
 }

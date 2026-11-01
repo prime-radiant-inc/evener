@@ -162,7 +162,10 @@ type Aggregate struct {
 	LatestOutcome      *Outcome          `json:"latest_outcome,omitempty"`
 	LatestPacket       *TerminalPacket   `json:"latest_packet,omitempty"`
 	PendingDeliveries  []PendingDelivery `json:"pending_deliveries,omitempty"`
-	PendingStopSeq     uint64            `json:"pending_stop_seq,omitempty"`
+	// PublicationIDs is rebuilt from this generation's update events, including acknowledged calls.
+	PublicationIDs                    map[string]string `json:"publication_ids,omitempty"`
+	PendingStopSeq                    uint64            `json:"pending_stop_seq,omitempty"`
+	PendingStopPreservesNotifications bool              `json:"pending_stop_preserves_notifications,omitempty"`
 	// PendingStopAt is when the pending subtree stop was REQUESTED, taken from
 	// the request event's own timestamp, and zero whenever PendingStopSeq is.
 	// PendingStopSeq answers "was a stop asked for"; only this answers "how long
@@ -199,6 +202,35 @@ type TerminalPacket struct {
 	StructuredResultSource StructuredResultSource `json:"structured_result_source,omitempty"`
 	Warnings               []string               `json:"warnings,omitempty"`
 	Metadata               json.RawMessage        `json:"metadata,omitempty"`
+}
+
+// UpdateMetadata is the existing communicate tuple carried by an update.
+// Readiness labels the payload, not its delivery policy.
+type UpdateMetadata struct {
+	CallID      string `json:"call_id,omitempty"`
+	EndTurn     bool   `json:"end_turn,omitempty"`
+	Disposition string `json:"disposition,omitempty"`
+	Blocker     string `json:"blocker,omitempty"`
+	WaitingOn   string `json:"waiting_on,omitempty"`
+	Readiness   string `json:"readiness,omitempty"`
+}
+
+// ProjectUpdatePacket applies the event's readiness to a captured packet.
+// Empty readiness leaves optional fields untouched, including old bare events.
+// Only the readiness field is owned here: unknown metadata is retained.
+func ProjectUpdatePacket(packet TerminalPacket, readiness string) TerminalPacket {
+	if readiness == "" {
+		return packet
+	}
+	fields := map[string]json.RawMessage{}
+	_ = json.Unmarshal(packet.Metadata, &fields)
+	if fields == nil {
+		fields = map[string]json.RawMessage{}
+	}
+	projection := UpdateMetadata{Readiness: readiness}
+	fields["readiness"], _ = json.Marshal(projection.Readiness)
+	packet.Metadata, _ = json.Marshal(fields)
+	return packet
 }
 
 type PendingDelivery struct {

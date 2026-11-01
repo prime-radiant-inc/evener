@@ -5,8 +5,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"io/fs"
+	"log/slog"
 	"reflect"
+	"runtime/pprof"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -16,6 +21,7 @@ import (
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/internal/delegatestore"
+	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/llm"
 )
 
@@ -77,12 +83,108 @@ func TestDelegateRuntimeReclaim_SubtreeWithANeverRunMemberIsRefused(t *testing.T
 }
 
 func TestDelegateRuntimeReclaim_ClosesPostorderAfterUnlock(t *testing.T) {
+	// Serial: this fixture owns the process-wide logger until all retries drain.
+	logged := &reclaimLogCapture{Handler: slog.NewTextHandler(io.Discard, nil)}
+	previous := slog.Default()
+	slog.SetDefault(slog.New(logged))
+	t.Cleanup(func() { slog.SetDefault(previous) })
+	snapshot := func() []slog.Record {
+		logged.mu.Lock()
+		defer logged.mu.Unlock()
+		return append([]slog.Record(nil), logged.records...)
+	}
 	c, _ := newDelegateControllerTestHarness(t, 8, 4)
+	clk := agenttest.NewFakeClock()
+	root := &Session{delegateController: c, clock: clk}
+	c.rootRuntime = root
+	sessionIDs := make(map[string]string)
+	checkDiagnostics := func(records []slog.Record) {
+		t.Helper()
+		if len(records) != 4 {
+			t.Errorf("initial diagnostics = %d, want exactly four", len(records))
+		}
+		restored := make(map[string]string)
+		woken := make(map[string]error)
+		for _, record := range records {
+			if record.Level != slog.LevelWarn {
+				t.Errorf("diagnostic level = %v, want WARN", record.Level)
+			}
+			attrs := make(map[string]any)
+			var keys []string
+			record.Attrs(func(attr slog.Attr) bool {
+				keys = append(keys, attr.Key)
+				attrs[attr.Key] = attr.Value.Any()
+				return true
+			})
+			sort.Strings(keys)
+			switch {
+			case reflect.DeepEqual(keys, []string{"action", "delegate", "error", "session"}):
+				action, actionOK := attrs["action"].(string)
+				session, sessionOK := attrs["session"].(string)
+				id, idOK := attrs["delegate"].(string)
+				cause, causeOK := attrs["error"].(string)
+				_, duplicate := restored[id]
+				if !actionOK || action == "" || !sessionOK || session != root.ID() || !idOK ||
+					(id != "dlg_child" && id != "dlg_parent") || !causeOK || duplicate {
+					t.Errorf("unexpected restore diagnostic attributes: %#v", attrs)
+				}
+				restored[id] = cause
+			case reflect.DeepEqual(keys, []string{"error", "session_id"}):
+				id, idOK := attrs["session_id"].(string)
+				cause, causeOK := attrs["error"].(error)
+				_, duplicate := woken[id]
+				if !idOK || (id != sessionIDs["dlg_child"] && id != sessionIDs["dlg_parent"]) || !causeOK || duplicate {
+					t.Errorf("unexpected wake diagnostic attributes: %#v", attrs)
+				}
+				var pathErr *fs.PathError
+				if !errors.Is(cause, fs.ErrNotExist) || !errors.As(cause, &pathErr) ||
+					pathErr.Path != schema.SessionTranscriptPath(c.stateDir, id) {
+					t.Errorf("wake cause for %q = %v, want typed missing transcript at its source path", id, cause)
+				}
+				woken[id] = cause
+			default:
+				t.Errorf("unexpected diagnostic attributes: %#v", attrs)
+			}
+		}
+		for _, id := range []string{"dlg_child", "dlg_parent"} {
+			text, restoredOK := restored[id]
+			cause, wokenOK := woken[sessionIDs[id]]
+			if !restoredOK || !wokenOK || cause == nil || text != cause.Error() {
+				t.Errorf("unpaired restore/wake cause for %s: restore=%q wake=%v", id, text, cause)
+			}
+		}
+	}
+	// Registered after the harness so retries drain before its store/temp cleanup.
+	t.Cleanup(func() {
+		before := snapshot()
+		if err := c.Close(context.Background()); err != nil {
+			t.Errorf("controller Close: %v", err)
+		}
+		c.mu.Lock()
+		closing := c.closing
+		c.mu.Unlock()
+		if !closing {
+			t.Error("controller did not enter closing state")
+		}
+		if got := clk.PendingCallbacks(); got != 2 {
+			t.Errorf("callbacks after Close = %d, want two armed retries", got)
+		}
+		clk.Advance(jobNotificationRetryMaxDelay)
+		clk.Drain()
+		if got := clk.PendingCallbacks(); got != 0 {
+			t.Errorf("callbacks after drain = %d, want zero", got)
+		}
+		after := snapshot()
+		if !reflect.DeepEqual(after, before) {
+			t.Error("Close/drain produced additional diagnostics")
+		}
+		checkDiagnostics(after)
+	})
 	c.maxRetainedTerminal = 2
 	parent := seedDelegateReclaimRuntime(t, c, "dlg_parent", "", time.Unix(10, 0).UTC(), false, false)
 	child := seedDelegateReclaimRuntime(t, c, "dlg_child", "dlg_parent", time.Unix(20, 0).UTC(), false, false)
-	root := &Session{delegateController: c}
-	c.rootRuntime = root
+	sessionIDs["dlg_parent"] = parent.ID()
+	sessionIDs["dlg_child"] = child.ID()
 	byRuntime := map[*Session]string{parent: "dlg_parent", child: "dlg_child"}
 	var closed []string
 	root.cfg.testOnly.delegateRuntimeReclaimClose = func(runtime *Session) {
@@ -93,11 +195,19 @@ func TestDelegateRuntimeReclaim_ClosesPostorderAfterUnlock(t *testing.T) {
 		closed = append(closed, byRuntime[runtime])
 	}
 
-	if err := root.reclaimDelegateRuntimeCapacity(1); err != nil {
-		t.Fatalf("reclaimDelegateRuntimeCapacity: %v", err)
+	{
+		recheck, err := root.reclaimDelegateRuntimeCapacity(1)
+		recheckNotificationsForTest(root.delegateController, recheck)
+		if err != nil {
+			t.Fatalf("reclaimDelegateRuntimeCapacity: %v", err)
+		}
 	}
 	if !reflect.DeepEqual(closed, []string{"dlg_child", "dlg_parent"}) {
 		t.Fatalf("close order = %v, want postorder [dlg_child dlg_parent]", closed)
+	}
+	checkDiagnostics(snapshot())
+	if got := clk.PendingCallbacks(); got != 2 {
+		t.Fatalf("callbacks before Close = %d, want two real retries", got)
 	}
 }
 
@@ -110,8 +220,12 @@ func TestDelegateRuntimeReclaim_ClearsOnlyExactResidentPointers(t *testing.T) {
 		if err != nil {
 			t.Fatalf("ClaimRuntimeReclamation: %v", err)
 		}
-		if err := c.CompleteRuntimeReclamation(claim, map[string]*Session{"dlg_target": runtime}); err != nil {
-			t.Fatalf("CompleteRuntimeReclamation: %v", err)
+		{
+			recheck, err := c.CompleteRuntimeReclamation(claim, map[string]*Session{"dlg_target": runtime})
+			recheckNotificationsForTest(c, recheck)
+			if err != nil {
+				t.Fatalf("CompleteRuntimeReclamation: %v", err)
+			}
 		}
 		c.mu.Lock()
 		got := c.live["dlg_target"].runtime
@@ -133,8 +247,12 @@ func TestDelegateRuntimeReclaim_ClearsOnlyExactResidentPointers(t *testing.T) {
 		c.mu.Lock()
 		c.live["dlg_target"].runtime = replacement
 		c.mu.Unlock()
-		if err := c.CompleteRuntimeReclamation(claim, map[string]*Session{"dlg_target": oldRuntime}); err != nil {
-			t.Fatalf("CompleteRuntimeReclamation: %v", err)
+		{
+			recheck, err := c.CompleteRuntimeReclamation(claim, map[string]*Session{"dlg_target": oldRuntime})
+			recheckNotificationsForTest(c, recheck)
+			if err != nil {
+				t.Fatalf("CompleteRuntimeReclamation: %v", err)
+			}
 		}
 		c.mu.Lock()
 		got := c.live["dlg_target"].runtime
@@ -179,8 +297,12 @@ func TestDelegateRuntimeReclaim_InsufficientCapacityFailsBeforeIDMintOrConstruct
 	constructed := 0
 	root.cfg.testOnly.delegateRuntimeReclaimClose = func(*Session) { constructed++ }
 
-	if err := root.reclaimDelegateRuntimeCapacity(1); err == nil || !strings.Contains(err.Error(), "retained delegate limit reached") {
-		t.Fatalf("reclamation error = %v, want retained-limit refusal", err)
+	{
+		recheck, err := root.reclaimDelegateRuntimeCapacity(1)
+		recheckNotificationsForTest(root.delegateController, recheck)
+		if err == nil || !strings.Contains(err.Error(), "retained delegate limit reached") {
+			t.Fatalf("reclamation error = %v, want retained-limit refusal", err)
+		}
 	}
 	if minted != 0 || constructed != 0 {
 		t.Fatalf("refused admission minted %d IDs and closed/constructed %d runtimes, want zero side effects", minted, constructed)
@@ -233,7 +355,9 @@ func TestDelegateRuntimeReclaim_CreateAndColdRestoreTriggerReclamation(t *testin
 		}
 		var closed []*Session
 		root.cfg.testOnly.delegateRuntimeReclaimClose = func(runtime *Session) { closed = append(closed, runtime) }
-		if _, _, err := (delegateRuntime{owner: root}).restoreIdle(started); err == nil {
+		_, _, recheck, err := (delegateRuntime{owner: root}).restoreIdle(started)
+		t.Cleanup(func() { recheckNotificationsForTest(root.delegateController, recheck) })
+		if err == nil {
 			t.Fatal("restoreIdle unexpectedly found missing committed session metadata")
 		}
 		if !reflect.DeepEqual(closed, []*Session{resident}) {
@@ -265,8 +389,12 @@ func TestDelegateRuntimeReclaim_NoTimerUnloadEventOrStableDataDeletion(t *testin
 	if err != nil {
 		t.Fatalf("ClaimRuntimeReclamation: %v", err)
 	}
-	if err := c.CompleteRuntimeReclamation(claim, map[string]*Session{"dlg_target": runtime}); err != nil {
-		t.Fatalf("CompleteRuntimeReclamation: %v", err)
+	{
+		recheck, err := c.CompleteRuntimeReclamation(claim, map[string]*Session{"dlg_target": runtime})
+		recheckNotificationsForTest(c, recheck)
+		if err != nil {
+			t.Fatalf("CompleteRuntimeReclamation: %v", err)
+		}
 	}
 	after := readDelegateControllerFile(t, path)
 	if !reflect.DeepEqual(before, after) {
@@ -535,21 +663,42 @@ func TestDelegateIdleRelease_ReleasesWholeSubtreeLeafFirst(t *testing.T) {
 func claimSettledIdleSubtree(t *testing.T, tree *delegateTreeController, delegateID string, members ...*Session) *delegateRuntimeReclamationClaim {
 	t.Helper()
 	var claim *delegateRuntimeReclamationClaim
+	var stage, memberID string
+	var owedCount int
+	var owedIDs [8]string
+	var retryable bool
+	defer func() {
+		if t.Failed() && claim == nil {
+			t.Logf("settlement last rejection: stage=%s member=%q owed_count=%d owed_ids=%q retryable=%t", stage, memberID, owedCount, owedIDs[:min(owedCount, len(owedIDs))], retryable)
+		}
+	}()
 	// TRIPWIRE: the owed generations and the finalize tails settle in well
 	// under a second; 15s only bounds a deadlock.
 	waitForCondition(t, 15*time.Second, "subtree of "+delegateID+" to settle with no delegate attention owed", func() bool {
 		for _, member := range members {
+			stage, memberID, owedCount, owedIDs, retryable = "attention", member.id, 0, [8]string{}, false
 			owed, err := member.pendingDelegateAttentionIDs()
 			if err != nil {
+				stage = "attention-error"
 				t.Fatalf("pendingDelegateAttentionIDs(%s): %v", member.id, err)
 			}
-			if len(owed) != 0 || !member.idleReleasePregatesClear() {
+			if len(owed) != 0 {
+				stage, owedCount = "attention-owed", len(owed)
+				for i, id := range owed[:min(len(owed), len(owedIDs))] {
+					owedIDs[i] = id[:min(len(id), 128)]
+				}
+				return false
+			}
+			stage = "pregate"
+			if !member.idleReleasePregatesClear() {
 				return false
 			}
 		}
+		stage, memberID, owedCount, owedIDs, retryable = "claim", "", 0, [8]string{}, false
 		var err error
-		claim, _, err = tree.ClaimIdleRuntimeRelease(delegateID)
+		claim, retryable, err = tree.ClaimIdleRuntimeRelease(delegateID)
 		if err != nil {
+			stage = "claim-error"
 			t.Fatalf("ClaimIdleRuntimeRelease: %v", err)
 		}
 		return claim != nil
@@ -584,6 +733,13 @@ type wideSubtreeReleaseProbe struct {
 // release fully drained, so the returned state is quiescent.
 func driveWideSubtreeIdleRelease(t *testing.T, wideChildren, limit int, parkDeadline time.Duration) *wideSubtreeReleaseProbe {
 	t.Helper()
+
+	// These existing hooks only record progress, never gate a runner. Keep
+	// stages per runner so a sibling cannot overwrite the awaited member's tail.
+	var runnerStages sync.Map
+	recordStage := func(stage string) func(*subagent) {
+		return func(sub *subagent) { runnerStages.Store(sub, stage) }
+	}
 
 	workspace := t.TempDir()
 	// The adapter scripts the parent's turn as ONE response carrying
@@ -680,12 +836,84 @@ func driveWideSubtreeIdleRelease(t *testing.T, wideChildren, limit int, parkDead
 			idleTeardownConcurrency:    &limit,
 			idleTeardownMemberStarted:  memberStarted,
 			idleTeardownMemberSettled:  memberSettled,
+			subagentRunIteration: func(sub *subagent, iteration int) {
+				runnerStages.Store(sub, fmt.Sprintf("run iteration %d", iteration))
+			},
+			subagentBeforeSettlement:          recordStage("before settlement"),
+			subagentAfterFinalStatePublish:    recordStage("after final state publish"),
+			subagentBeforeGenerationAnnounced: recordStage("before generation announcement"),
+			subagentBeforeGenerationReleased: func(sub *subagent, _ delegateLease) {
+				runnerStages.Store(sub, "before generation release")
+			},
 		},
 	})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
 	t.Cleanup(sess.Close)
+
+	waitForRunner := func(label, delegateID string, sub *subagent) {
+		t.Helper()
+		sub.mu.Lock()
+		done := sub.done
+		sub.mu.Unlock()
+		tree := sess.delegateController
+		generation := "unavailable, tree.mu busy"
+		if tree.mu.TryLock() {
+			generation = strconv.FormatUint(tree.durable[delegateID].Generation, 10)
+			tree.mu.Unlock()
+		}
+		select {
+		case <-done:
+			return
+		case <-time.After(20 * time.Second): // TRIPWIRE: scripted turns take seconds; this only bounds a deadlock.
+		}
+
+		// Capture stacks before cleanup or optional state reads. A busy runtime
+		// lock must not prevent the original timeout from reporting its evidence.
+		var stacks strings.Builder
+		if err := pprof.Lookup("goroutine").WriteTo(&stacks, 2); err != nil {
+			t.Logf("goroutine dump: %v", err)
+		}
+		t.Logf("runner timeout goroutines:\n%s", stacks.String())
+		t.Logf("awaited delegate=%s session=%s sub=%p generation=%s done=%p", delegateID, sub.id, sub, generation, done)
+		runnerStages.Range(func(key, value any) bool {
+			runner := key.(*subagent)
+			t.Logf("runner stage session=%s sub=%p stage=%s", runner.id, runner, value)
+			return true
+		})
+		if sub.mu.TryLock() {
+			state := fmt.Sprintf("current done=%p running=%t driving=%t finalizing=%t settlementClaimed=%t status=%s err=%v", sub.done, sub.running, sub.driving, sub.finalizing, sub.settlementClaimed, sub.status, sub.err)
+			sub.mu.Unlock()
+			t.Log(state)
+		} else {
+			t.Log("runner state unavailable: sub.mu busy")
+		}
+		if tree.mu.TryLock() {
+			var state strings.Builder
+			fmt.Fprintf(&state, "current generation=%d", tree.durable[delegateID].Generation)
+			if live := tree.live[delegateID]; live != nil {
+				fmt.Fprintf(&state, " binding=%p finalizing=%p", live.binding, live.finalizing)
+			}
+			for sourceID, aggregate := range tree.durable {
+				for _, pending := range aggregate.PendingDeliveries {
+					receiverID := tree.rootSessionID
+					if owner := tree.durable[pending.OwnerDelegateID]; owner != nil {
+						receiverID = owner.Descriptor.ChildSessionID
+					}
+					fmt.Fprintf(&state, "\npending delivery=%s generation=%d source=%s source_session=%s owner=%q receiver_session=%s observed=unknown, transcript not read", pending.DeliveryID, pending.Generation, sourceID, aggregate.Descriptor.ChildSessionID, pending.OwnerDelegateID, receiverID)
+					if receipt := tree.deliveryReceiptLocked(pending.DeliveryID); receipt != nil {
+						fmt.Fprintf(&state, " receipt=%+v", *receipt)
+					}
+				}
+			}
+			tree.mu.Unlock()
+			t.Log(state.String())
+		} else {
+			t.Log("controller state unavailable: tree.mu busy")
+		}
+		t.Fatalf("%s did not finish", label)
+	}
 
 	allowance := wideChildren
 	parentRes := sess.createDelegate(context.Background(), delegateArgs{
@@ -699,14 +927,7 @@ func driveWideSubtreeIdleRelease(t *testing.T, wideChildren, limit int, parkDead
 	if sub == nil {
 		t.Fatalf("parent delegate missing from root manager: %+v", parentRes)
 	}
-	sub.mu.Lock()
-	done := sub.done
-	sub.mu.Unlock()
-	select {
-	case <-done:
-	case <-time.After(20 * time.Second): // TRIPWIRE: the scripted turn takes seconds; this only bounds a deadlock.
-		t.Fatal("parent delegate runner did not finish")
-	}
+	waitForRunner("parent delegate runner", parentRes.DelegateID, sub)
 
 	// The parent's single scripted turn spawned the whole wave, so the
 	// tree's shape is already fixed; the children finish on their own
@@ -736,14 +957,7 @@ func driveWideSubtreeIdleRelease(t *testing.T, wideChildren, limit int, parkDead
 		if childSub == nil {
 			t.Fatalf("child %s missing from the parent runtime's manager", csid)
 		}
-		childSub.mu.Lock()
-		childDone := childSub.done
-		childSub.mu.Unlock()
-		select {
-		case <-childDone:
-		case <-time.After(20 * time.Second): // TRIPWIRE: the children's scripted turns take seconds; this only bounds a deadlock.
-			t.Fatalf("child delegate runner %d did not finish", i)
-		}
+		waitForRunner(fmt.Sprintf("child delegate runner %d", i), childIDs[i], childSub)
 	}
 
 	childRuntimes := make(map[string]*Session, wideChildren)
@@ -847,6 +1061,357 @@ func TestDelegateIdleRelease_TeardownsSameDepthMembersConcurrently(t *testing.T)
 		t.Fatalf("idle release settled the same-depth members serially: max concurrent child teardowns = %d, want %d", probe.maxInFlight, wideChildren)
 	}
 	assertWideSubtreeReleaseSettled(t, probe)
+}
+
+func TestDelegateDrainPendingColdReceiver(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name, receiver, gate string
+		outstanding, live    bool
+	}{
+		{"own", "dlg_parent", "", true, true},
+		{"cold descendant", "dlg_receiver", "", true, true},
+		{"cold grandchild", "dlg_receiver", "grandchild", true, true},
+		{"cold grandchild, closed retained boundary", "dlg_receiver", "grandchild closed", true, true},
+		{"cold grandchild stopped ancestor", "dlg_receiver", "grandchild stop", false, false},
+		{"live descendant", "dlg_receiver", "resident", true, true},
+		{"closed retained descendant", "dlg_receiver", "resident closed", true, true},
+		{"historical receiver, source now elsewhere", "dlg_parent", "", true, true},
+		{"ancestor", "", "", false, false},
+		{"sibling", "dlg_sibling", "", false, false},
+		{"source child, recorded receiver root", "", "source child", false, false},
+		{"source child, recorded receiver sibling", "dlg_sibling", "source child", false, false},
+		{"cold stopped", "dlg_receiver", "stop", false, false},
+		{"cold abandoned", "dlg_receiver", "abandoned", false, false},
+		{"cold grace", "dlg_receiver", "grace", true, false},
+		{"live fatal", "dlg_receiver", "fatal", false, false},
+		{"live stopped", "dlg_receiver", "resident stop", false, false},
+		{"live abandoned", "dlg_receiver", "resident abandoned", false, false},
+		{"live grace", "dlg_receiver", "resident grace", true, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c, _ := newDelegateControllerTestHarness(t, 8, 4)
+			seedDelegateControllerIdle(t, c, "dlg_parent", "")
+			seedDelegateControllerIdle(t, c, "dlg_receiver", "dlg_parent")
+			seedDelegateControllerIdle(t, c, "dlg_source", "")
+			seedDelegateControllerIdle(t, c, "dlg_sibling", "")
+			if strings.HasPrefix(tc.gate, "grandchild") {
+				seedDelegateControllerIdle(t, c, "dlg_middle", "dlg_parent")
+			}
+			parent := &Session{id: c.durable["dlg_parent"].Descriptor.ChildSessionID, owningDelegateID: "dlg_parent", delegateController: c}
+			receiver := c.durable["dlg_receiver"]
+			receiver.Descriptor.OwnerSessionID = parent.id
+			if tc.name == "own" || tc.gate == "source child" {
+				c.durable["dlg_source"].Descriptor.ParentDelegateID = "dlg_parent"
+				c.durable["dlg_source"].Descriptor.OwnerSessionID = parent.id
+			}
+			c.durable["dlg_source"].PendingDeliveries = []delegatestore.PendingDelivery{{DeliveryID: "pending-delivery", OwnerDelegateID: tc.receiver}}
+			if !c.delegateIsAncestorLocked("dlg_parent", "dlg_receiver") || len(parent.liveDirectSubagents()) != 0 {
+				t.Fatal("fixture must have a canonical descendant receiver but no resident child runtime")
+			}
+			if strings.Contains(tc.gate, "stop") {
+				receiver.LatestOutcome = &delegatestore.Outcome{Status: delegatestore.OutcomeStopped, Reason: delegatestore.ReasonStoppedByParent}
+			}
+			if strings.HasPrefix(tc.gate, "grandchild") {
+				middle := c.durable["dlg_middle"]
+				middle.Descriptor.OwnerSessionID = parent.id
+				receiver.Descriptor.ParentDelegateID = "dlg_middle"
+				receiver.Descriptor.OwnerSessionID = middle.Descriptor.ChildSessionID
+				if tc.gate == "grandchild stop" {
+					middle.LatestOutcome, receiver.LatestOutcome = receiver.LatestOutcome, nil
+				}
+				if tc.gate == "grandchild closed" {
+					child := &Session{id: middle.Descriptor.ChildSessionID, owningDelegateID: "dlg_middle", delegateController: c}
+					c.live["dlg_middle"] = &delegateLiveState{runtime: child}
+					parent.subagents = &subagentManager{subs: map[string]*subagent{child.id: {sess: child, closed: true}}}
+				}
+			}
+			if strings.Contains(tc.gate, "abandoned") {
+				parent.drainAbandonedChildren = map[string]drainAbandonedChild{receiver.Descriptor.ChildSessionID: {delegateID: "dlg_receiver", generation: receiver.Generation}}
+			}
+			if strings.Contains(tc.gate, "grace") {
+				receiver.CurrentRunOpen = true
+				parent.drainGraceChildren = map[string]drainGraceChild{receiver.Descriptor.ChildSessionID: {delegateID: "dlg_receiver", generation: receiver.Generation}}
+			}
+			if strings.HasPrefix(tc.gate, "resident") || tc.gate == "fatal" {
+				child := &Session{id: receiver.Descriptor.ChildSessionID, owningDelegateID: "dlg_receiver", delegateController: c}
+				c.live["dlg_receiver"] = &delegateLiveState{runtime: child}
+				parent.subagents = &subagentManager{subs: map[string]*subagent{child.id: {sess: child, fatalRunGated: tc.gate == "fatal", closed: tc.gate == "resident closed"}}}
+			}
+			for _, check := range []struct {
+				name string
+				fn   func() (bool, error)
+				want bool
+			}{{"outstanding", parent.treeHasOutstandingWork, tc.outstanding}, {"live", parent.subtreeHasLiveComponent, tc.live}} {
+				got, err := check.fn()
+				if err != nil || got != check.want {
+					t.Errorf("receiver %s = %t, err=%v, want %t", check.name, got, err, check.want)
+				}
+			}
+			if !parent.hasPendingDelegateDeliveries() {
+				t.Error("scoped drain accounting changed global transport inventory")
+			}
+			if tc.name == "ancestor" {
+				root := &Session{id: c.rootSessionID, delegateController: c}
+				if !root.hasPendingDrainDelegateDeliveries(false, nil) || !root.hasPendingDrainDelegateDeliveries(true, nil) {
+					t.Error("root receiver lost its own pending delivery")
+				}
+			}
+		})
+	}
+}
+
+type reclaimLogCapture struct {
+	slog.Handler
+	mu      sync.Mutex
+	records []slog.Record
+}
+
+func (h *reclaimLogCapture) Handle(_ context.Context, record slog.Record) error {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.records = append(h.records, record.Clone())
+	return nil
+}
+
+func TestDelegateLeafFinalizationDoesNotWaitForForeignReceiverDelivery(t *testing.T) {
+	// Serial: this test replaces the process-wide default logger.
+	logged := &reclaimLogCapture{Handler: slog.NewTextHandler(io.Discard, nil)}
+	previous := slog.Default()
+	slog.SetDefault(slog.New(logged))
+	t.Cleanup(func() { slog.SetDefault(previous) })
+	foreignBeforeAnnouncement := make(chan struct{})
+	allowForeignAnnouncement := make(chan struct{})
+	leafDrainEntered := make(chan struct{})
+	foreignResourceWakeDone := make(chan struct{})
+	leafResourceWakeDone := make(chan struct{})
+	var announcementSeen, failRootRead atomic.Bool
+	var drainEntries, rootReadFailures atomic.Int32
+	var recoveredRequests atomic.Int32
+	var rootID atomic.Value
+	clock := agenttest.NewFakeClock()
+	root := newSession(t, withoutGitSnapshot(), withClock(clock), withConfig(SessionConfig{
+		StateDir: t.TempDir(), MaxSubagentDepth: 1, ForceRealIO: true,
+		testOnly: testConfig{
+			minimalSystemPrompt: true, disableDelegateIdleRelease: true,
+			subagentBeforeGenerationAnnounced: func(sub *subagent) {
+				wakeDone := leafResourceWakeDone
+				if announcementSeen.CompareAndSwap(false, true) {
+					wakeDone = foreignResourceWakeDone
+					close(foreignBeforeAnnouncement)
+					<-allowForeignAnnouncement
+				}
+				// done closes before the parent-resource wake. Observe that real
+				// callback too, before registering the receiver's recovery callback.
+				parentWake := sub.parentResourceWake
+				sub.parentResourceWake = func() {
+					parentWake()
+					close(wakeDone)
+				}
+			},
+			jobTreeDrainEntered: func() {
+				if drainEntries.Add(1) == 2 {
+					close(leafDrainEntered)
+				}
+			},
+			delegateAttentionReadFold: func(path, sessionID string) (delegateAttentionFold, error) {
+				if sessionID == rootID.Load() && failRootRead.Load() {
+					rootReadFailures.Add(1)
+					return delegateAttentionFold{}, errInjectedTranscriptWrite
+				}
+				return readDelegateAttentionFold(path, sessionID)
+			},
+		},
+	}), withSteps(func(llm.Request) llm.Response { return agenttest.FinalResponse("foreign result") }, func(llm.Request) llm.Response { return agenttest.FinalResponse("leaf result") }, func(req llm.Request) llm.Response {
+		recoveredRequests.Add(1)
+		if !requestMessagesContainText(req.Messages, "foreign result") || !requestMessagesContainText(req.Messages, "leaf result") {
+			t.Error("recovery request lost a delegate result")
+		}
+		return agenttest.FinalResponse("root observed both results")
+	}))
+	rootID.Store(root.id)
+	var releaseForeign sync.Once
+	unblockForeign := func() { releaseForeign.Do(func() { close(allowForeignAnnouncement) }) }
+	t.Cleanup(unblockForeign)
+	await := func(ch <-chan struct{}, boundary string) {
+		t.Helper()
+		select {
+		case <-ch:
+		case <-time.After(20 * time.Second): // TRIPWIRE: bounds a deadlock, not normal work.
+			var stacks strings.Builder
+			if err := pprof.Lookup("goroutine").WriteTo(&stacks, 2); err != nil {
+				t.Logf("goroutine dump: %v", err)
+			}
+			t.Logf("goroutines:\n%s", stacks.String())
+			t.Fatalf("%s did not finish", boundary)
+		}
+	}
+	create := func(task string) (delegateResult, *subagent, <-chan struct{}) {
+		t.Helper()
+		result := root.createDelegate(context.Background(), delegateArgs{Task: task})
+		if result.Err != nil {
+			t.Fatalf("createDelegate: %v", result.Err)
+		}
+		sub := root.subagents.get(result.ChildSessionID)
+		sub.mu.Lock()
+		done := sub.done
+		sub.mu.Unlock()
+		return result, sub, done
+	}
+	foreign, _, foreignDone := create("foreign root receiver sentinel")
+	await(foreignBeforeAnnouncement, "foreign pre-announcement")
+	failRootRead.Store(true)
+	unblockForeign()
+	await(foreignDone, "foreign runner")
+	await(foreignResourceWakeDone, "foreign post-completion resource wake")
+	if rootReadFailures.Load() == 0 {
+		t.Fatal("foreign delivery did not exercise the real receiver failure")
+	}
+	c := root.delegateController
+	plans := c.ReplayDeliveries()
+	if len(plans) != 1 || plans[0].delegateID != foreign.DelegateID || plans[0].ownerDelegateID != "" {
+		t.Fatalf("foreign pending plans = %+v", plans)
+	}
+	// Retain an actual in-flight admission, so the leaf cannot accidentally
+	// repair the foreign receiver's fault and erase the premise during its kick.
+	token, admitted, err := c.BeginDelivery(plans[0])
+	if err != nil || !admitted {
+		t.Fatalf("BeginDelivery foreign: admitted=%t err=%v", admitted, err)
+	}
+	t.Cleanup(func() { _, _ = c.CompleteDelivery(token, false) })
+	leaf, leafSub, leafDone := create("independent leaf sentinel")
+	await(leafDrainEntered, "leaf drain entry")
+	assertForeignStillOwed := func() {
+		t.Helper()
+		ids := pendingDeliveryIDs(c, foreign.DelegateID)
+		fold, err := readDelegateAttentionFold(transcriptPath(root.stateDir, root.id), root.id)
+		attentionID := delegateAttentionID(plans[0].deliveryID)
+		_, observed := fold.observed[attentionID]
+		_, accepted := fold.content[attentionID]
+		if err != nil || len(ids) != 1 || ids[0] != plans[0].deliveryID || observed || accepted {
+			t.Errorf("foreign custody changed: pending=%v accepted=%t observed=%t err=%v", ids, accepted, observed, err)
+		}
+		t.Logf("foreign delivery=%s source=%s receiver=%s pending=%v accepted=%t observed=%t", plans[0].deliveryID, foreign.DelegateID, root.id, ids, accepted, observed)
+	}
+	t.Cleanup(func() {
+		if t.Failed() {
+			assertForeignStillOwed()
+		}
+	})
+	t.Logf("leaf=%s session=%s must finish independently of foreign delivery=%s receiver=%s", leaf.DelegateID, leaf.ChildSessionID, plans[0].deliveryID, root.id)
+	await(leafDone, "independent leaf runner")
+	await(leafResourceWakeDone, "leaf post-completion resource wake")
+	leafSub.mu.Lock()
+	status, runErr := leafSub.status, leafSub.err
+	leafSub.mu.Unlock()
+	if status != SubagentCompleted || runErr != nil {
+		t.Fatalf("leaf outcome: status=%s err=%v", status, runErr)
+	}
+	assertForeignStillOwed()
+	// Use the server's registered, coalesced input wake pattern. The input
+	// owner starts after the retry callback finishes so both recovered results
+	// share one request, without racing that callback's delivery batch.
+	wakes := make(chan struct{}, 1)
+	startOwner := make(chan struct{})
+	ownerDone := make(chan struct{})
+	turnDone := make(chan error, 1)
+	ctx, cancelOwner := context.WithCancel(context.Background())
+	go func() {
+		defer close(ownerDone)
+		select {
+		case <-ctx.Done():
+			return
+		case <-startOwner:
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-wakes:
+			_, turnErr := root.ProcessInputKind(ctx, "", nil, EntryNotification)
+			turnDone <- turnErr
+		}
+	}()
+	t.Cleanup(func() {
+		cancelOwner()
+		<-ownerDone
+	})
+	root.SetNotifyFunc(func() {
+		select {
+		case wakes <- struct{}{}:
+		default:
+		}
+	})
+	select {
+	case <-wakes:
+		t.Fatal("receiver woke before the foreign fault was released")
+	default:
+	}
+	root.delegateDeliveryMu.Lock()
+	retryArmed := root.delegateDeliveryRetry.active
+	root.delegateDeliveryMu.Unlock()
+	if !retryArmed {
+		t.Fatal("failed delivery did not retain its automatic transport retry")
+	}
+	failRootRead.Store(false)
+	if _, err := c.CompleteDelivery(token, false); err != nil {
+		t.Fatal(err)
+	}
+	clock.Advance(jobNotificationRetryInitialDelay)
+	clock.Drain()
+	if ids := pendingDeliveryIDs(c, foreign.DelegateID); len(ids) != 0 {
+		t.Fatalf("automatic retry left foreign source acknowledgment pending: %v", ids)
+	}
+	if len(wakes) != 1 {
+		t.Fatal("automatic retry did not wake the registered receiver input owner")
+	}
+	close(startOwner)
+	await(ownerDone, "automatically woken receiver input owner")
+	if err := <-turnDone; err != nil {
+		t.Fatalf("automatic notification turn: %v", err)
+	}
+	fold, err := readDelegateAttentionFold(transcriptPath(root.stateDir, root.id), root.id)
+	attentionID := delegateAttentionID(plans[0].deliveryID)
+	_, accepted := fold.content[attentionID]
+	_, observed := fold.observed[attentionID]
+	if err != nil || !accepted || !observed || recoveredRequests.Load() != 1 {
+		t.Fatalf("recovery: accepted=%t observed=%t requests=%d err=%v", accepted, observed, recoveredRequests.Load(), err)
+	}
+	assertAttentionResponseReceipts(t, root, attentionID, 1)
+	// Manual replay is only an idempotency check AFTER automatic observation.
+	if err := root.replayDelegateDeliveries(); err != nil {
+		t.Fatalf("duplicate recovery: %v", err)
+	}
+	acceptedCount := 0
+	for _, entry := range readAttentionTranscriptEntries(t, root.TranscriptPath()) {
+		if entry.Turn.AttentionID == attentionID {
+			acceptedCount++
+		}
+	}
+	if acceptedCount != 1 {
+		t.Fatalf("foreign notification transcript records = %d, want 1", acceptedCount)
+	}
+	logged.mu.Lock()
+	defer logged.mu.Unlock()
+	warnings := 0
+	for _, record := range logged.records {
+		var sessionID string
+		var warningErr error
+		record.Attrs(func(attr slog.Attr) bool {
+			switch attr.Key {
+			case "session_id":
+				sessionID = attr.Value.String()
+			case "error":
+				warningErr, _ = attr.Value.Any().(error)
+			}
+			return true
+		})
+		if record.Level == slog.LevelWarn && sessionID == root.id && errors.Is(warningErr, errInjectedTranscriptWrite) {
+			warnings++
+		}
+	}
+	if warnings != 1 {
+		t.Fatalf("injected receiver warning records = %d, want 1", warnings)
+	}
 }
 
 // TestDelegateIdleRelease_CapsConcurrentMemberTeardown pins the bound
@@ -1485,16 +2050,16 @@ func TestDelegateIdleRelease_PregateRefusesLocalRetirementResidue(t *testing.T) 
 	// Virtual time has not moved, so the finalize-armed grace timer cannot
 	// fire behind the plant.
 	runtime.delegateDeliveryMu.Lock()
-	runtime.pendingDelegateDeliveries = append(runtime.pendingDelegateDeliveries, delegateDeliveryPlan{})
+	runtime.delegateDeliveryPumping = true
 	runtime.delegateDeliveryMu.Unlock()
 	if runtime.releaseIdleRuntimeAfterFinalize() {
-		t.Fatal("release succeeded with a queued delegate delivery; the pre-gate must refuse")
+		t.Fatal("release succeeded with an active delivery pass; the pre-gate must refuse")
 	}
 	if !stillResident() {
 		t.Fatal("refused release released the runtime anyway")
 	}
 	runtime.delegateDeliveryMu.Lock()
-	runtime.pendingDelegateDeliveries = nil
+	runtime.delegateDeliveryPumping = false
 	runtime.delegateDeliveryMu.Unlock()
 
 	// Residue 2: restore side effects still settling on this manager.
@@ -1630,7 +2195,28 @@ func TestDelegateAttentionRestore_HoldsOffIdleReleaseMidWake(t *testing.T) {
 		// must count, so this pass's exit cannot drop the other pass's hold.
 		tree.holdAttentionRestore(res.DelegateID)
 	}
-	sess.drivePendingDelegateAttention()
+	// An index entry alone is not receiver custody and must not restore a runtime.
+	sess.delegateController.recheckNotificationReceivers()
+	if hookFired {
+		t.Fatal("attention index restored a runtime without canonical receiver custody")
+	}
+	const attentionID = "delegate:mid-wake-sentinel"
+	const content = "inspect the mid-wake sentinel"
+	receiver := coldDelegateDeliveryReceiver{stateDir: sess.cfg.StateDir, transcriptRef: res.TranscriptRef, now: tree.now}
+	if appended, err := receiver.appendDelegateNotificationDurably(attentionID, content); err != nil || !appended {
+		t.Fatalf("append cold receiver custody = %t, %v", appended, err)
+	}
+	fold, err := readExistingDelegateAttentionFold(runtime.TranscriptPath(), res.ChildSessionID)
+	if err != nil {
+		t.Fatalf("read cold receiver custody: %v", err)
+	}
+	if ids := fold.pendingIDs(); len(ids) != 1 || ids[0] != attentionID || fold.content[attentionID].Text() != content {
+		t.Fatalf("cold custody = %v, content %q, want exact sentinel", ids, fold.content[attentionID].Text())
+	}
+	if _, err := tree.openDelegateAttention(res.DelegateID, attentionID); err != nil {
+		t.Fatalf("open canonical delegate attention: %v", err)
+	}
+	sess.delegateController.recheckNotificationReceivers()
 	if !hookFired {
 		t.Fatal("wake pass restored nothing; fixture setup broken")
 	}
@@ -1684,7 +2270,7 @@ func TestDelegateAttentionRestoreHold_RefusesSubtreeBeforeLiveEntry(t *testing.T
 	if err != nil {
 		t.Fatalf("commit parent start: %v", err)
 	}
-	if err := c.AttachRuntime(parentStarted.lease, &Session{}); err != nil {
+	if err := attachRuntimeWithHandoffForTest(c, parentStarted.lease, &Session{}); err != nil {
 		t.Fatalf("attach parent runtime: %v", err)
 	}
 	if _, err := c.AdmitStartInput(parentStarted.lease, func() error { return nil }); err != nil {
@@ -1786,7 +2372,7 @@ func finishHarnessDelegateGeneration(t *testing.T, c *delegateTreeController, ac
 	if err != nil {
 		t.Fatalf("commit %s start: %v", id, err)
 	}
-	if err := c.AttachRuntime(started.lease, &Session{}); err != nil {
+	if err := attachRuntimeWithHandoffForTest(c, started.lease, &Session{}); err != nil {
 		t.Fatalf("attach %s runtime: %v", id, err)
 	}
 	if _, err := c.AdmitStartInput(started.lease, func() error { return nil }); err != nil {

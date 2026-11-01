@@ -53,13 +53,9 @@ func TestReleaseRunningTurnIDRecoversFromARefusedWrite(t *testing.T) {
 	}
 }
 
-// TestReleaseRunningTurnIDGivesUpLoudlyWhenTheStoreNeverRecovers bounds the
-// other end of the retry. A state dir that will never be writable — a
-// read-only mount, a full disk, a deleted directory — cannot hand the name
-// back at any pace, and a session whose name can never be released is a
-// session that can never start another turn. Retrying that forever hides it
-// behind a timer; saying so once and stopping is the honest failure.
-func TestReleaseRunningTurnIDGivesUpLoudlyWhenTheStoreNeverRecovers(t *testing.T) {
+// The bounded fast retry warns once, then retains one paced common recovery
+// obligation. A failed write never frees the durable name early.
+func TestReleaseRunningTurnIDHandsExhaustionToCommonRecovery(t *testing.T) {
 	t.Parallel()
 	h := newStandDownHarness(t)
 	turnID, refusal := h.sess.mintRunningTurnID()
@@ -94,9 +90,8 @@ func TestReleaseRunningTurnIDGivesUpLoudlyWhenTheStoreNeverRecovers(t *testing.T
 
 	h.awaitWarning(t, "could not be released")
 
-	if got := h.clock.BlockedCount(); got != timersBefore {
-		t.Fatalf("armed timers after the budget ran out = %d, want the baseline %d: a name that can never be released must stop retrying, not retry forever",
-			got, timersBefore)
+	if got := h.clock.BlockedCount(); got != timersBefore+1 {
+		t.Fatalf("armed timers after the fast budget = %d, want baseline %d plus one common recovery", got, timersBefore)
 	}
 	if got := len(writes); got != 0 {
 		t.Fatalf("%d release writes beyond the budget of %d attempts", got, runningTurnReleaseRetryLimit)
@@ -104,10 +99,7 @@ func TestReleaseRunningTurnIDGivesUpLoudlyWhenTheStoreNeverRecovers(t *testing.T
 	if got := h.warningsMatching("could not be released"); got != 1 {
 		t.Fatalf("terminal release warnings = %d, want exactly 1: exhausting the budget is one event, and it fires the user's Notification hook", got)
 	}
-	// The message has to report what actually happened (the real attempt
-	// count, not a placeholder) and name the daemon reload -- the only thing
-	// that clears a stranded name -- rather than a "session restart", which
-	// isn't a real operation on a session.
+	// Report the real attempt count and the retained recovery obligation.
 	if got := h.warningsMatching(fmt.Sprintf("could not be released after %d attempts", runningTurnReleaseRetryLimit)); got != 1 {
 		t.Fatalf("terminal warning with the true attempt count %d = %d matches, want exactly 1", runningTurnReleaseRetryLimit, got)
 	}
@@ -115,7 +107,7 @@ func TestReleaseRunningTurnIDGivesUpLoudlyWhenTheStoreNeverRecovers(t *testing.T
 		t.Fatalf("terminal warning still claims a bare session restart clears the name; only the daemon reloading (forgetRunningTurnNoOneOwns, at load) does")
 	}
 	if got := h.warningsMatching("daemon"); got != 1 {
-		t.Fatalf("terminal warning does not mention the daemon reload/load path that actually clears the stranded name")
+		t.Fatalf("exhaustion warning does not explain that a daemon restart is unnecessary")
 	}
 	// The per-failure diagnostic is latched to the store's unhealthy episode,
 	// like mint's. Warning per re-attempt would cost a hook subprocess apiece.
@@ -123,8 +115,7 @@ func TestReleaseRunningTurnIDGivesUpLoudlyWhenTheStoreNeverRecovers(t *testing.T
 		t.Fatalf("store-failure warnings across %d re-attempts = %d, want 1: one unhealthy episode is one diagnostic",
 			runningTurnReleaseRetryLimit, got)
 	}
-	// The name is still held, and the session says so rather than pretending
-	// otherwise: nothing but a restart clears a write the store never took.
+	// The name remains held until the store accepts the recovery write.
 	if got := h.sess.clientMutations.snapshot().ActiveTurnID; got != turnID {
 		t.Fatalf("ActiveTurnID = %q, want the unreleasable %q: the in-memory slot must not diverge from what the store holds", got, turnID)
 	}
@@ -169,8 +160,8 @@ func TestReleaseRunningTurnIDResetsRetryBudgetOnExhaustion(t *testing.T) {
 	if got := h.warningsMatching("could not be released"); got != 1 {
 		t.Fatalf("episode 1 terminal warnings = %d, want 1", got)
 	}
-	if got := h.clock.BlockedCount(); got != timersBefore {
-		t.Fatalf("armed timers after episode 1 exhaustion = %d, want the baseline %d", got, timersBefore)
+	if got := h.clock.BlockedCount(); got != timersBefore+1 {
+		t.Fatalf("armed timers after episode 1 exhaustion = %d, want baseline %d plus common recovery", got, timersBefore)
 	}
 
 	// The store recovers, and the slot is cleared -- the interrupt path lands a

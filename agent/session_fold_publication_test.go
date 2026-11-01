@@ -1625,7 +1625,7 @@ func TestRootDelegateAttention_PendingContentSurvivesCompactionRestart(t *testin
 			t.Fatal("a RESOLVED attention turn resurrected into the resumed history")
 		}
 		restored.attentionMu.Lock()
-		_, armed := restored.rootAttentionWakeIDs[pendingID]
+		_, armed := notificationTestPending(t, restored)[pendingID]
 		restored.attentionMu.Unlock()
 		if !armed {
 			t.Fatal("test fixture: the pending attention did not re-arm")

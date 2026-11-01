@@ -421,3 +421,128 @@ describe("waitForReply brings a virtualized transcript tail into view", () => {
     expect(document.querySelector("[data-testid='turn-block']")?.getAttribute("data-turn-id")).toBe("turn_m12");
   });
 });
+
+// Script only the Runtime.evaluate transport boundary, as budgets.test.mjs
+// does, so the real waitPage loop and reaction observations own the verdict.
+describe("waitPage composed deadlines", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(0);
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  function pageDriver(read) {
+    const d = new Driver({ url: "http://127.0.0.1/", artifactDir: "", controlPath: "", milestonePath: "" });
+    d.page = {
+      send: vi.fn(async (_method, { expression }) => ({ result: { result: { value: await read(expression) } } })),
+    };
+    return d;
+  }
+
+  test("spends the original adaptive allowance across a 1000ms open action", async () => {
+    const d = pageDriver((expression) => expression === "prior" && Date.now() >= 10000 ? true : null);
+    const prior = d.waitPage("prior", { timeoutMs: 60000 });
+    await vi.advanceTimersByTimeAsync(10000);
+    await expect(prior).resolves.toBe(true);
+    expect(d.reactions.slowestMs).toBe(10000);
+
+    const startedAt = Date.now();
+    const deadlineAt = startedAt + d.reactions.deadline(60000);
+    expect(deadlineAt - startedAt).toBe(100000);
+    await vi.advanceTimersByTimeAsync(1000); // The new open action's cost.
+    let rejectedAt;
+    const waiting = d.waitPage("gap", { timeoutMs: 60000, deadlineAt }).catch((error) => {
+      rejectedAt = Date.now();
+      return error;
+    });
+    await vi.advanceTimersByTimeAsync(101000);
+    expect(await waiting).toBeInstanceOf(Error);
+    // The existing 80ms polling quantum can cross the tripwire once, but the
+    // new open action cannot buy an extra 1000ms of adaptive waiting.
+    expect(rejectedAt - startedAt).toBeGreaterThan(100000);
+    expect(rejectedAt - startedAt).toBeLessThanOrEqual(100080);
+  });
+
+  test("keeps adaptive expansion for callers without a precomputed deadline", async () => {
+    const d = pageDriver(() => Date.now() >= 90000 ? true : null);
+    d.reactions.observe(10000);
+    const waiting = d.waitPage("condition", { timeoutMs: 60000 });
+    await vi.advanceTimersByTimeAsync(90000);
+    await expect(waiting).resolves.toBe(true);
+    expect(d.reactions.slowestMs).toBe(90000);
+  });
+
+  test.each([
+    { remainder: -1, rejectedAt: 0 },
+    { remainder: 0, rejectedAt: 80 },
+  ])("does not re-expand an exhausted deadline with remainder $remainder", async ({ remainder, rejectedAt }) => {
+    const d = pageDriver(() => null);
+    d.reactions.observe(10000);
+    let finishedAt;
+    const waiting = d.waitPage("condition", { timeoutMs: 60000, deadlineAt: Date.now() + remainder }).catch((error) => {
+      finishedAt = Date.now();
+      return error;
+    });
+    await vi.advanceTimersByTimeAsync(160);
+    expect(await waiting).toBeInstanceOf(Error);
+    expect(finishedAt).toBe(rejectedAt);
+    expect(d.reactions.slowestMs).toBe(10000);
+  });
+
+  test.each([0, ""])("retains the first-poll success predicate for value %j at a zero remainder", async (value) => {
+    const d = pageDriver(() => value);
+    await expect(d.waitPage("condition", { deadlineAt: Date.now() })).resolves.toBe(value);
+  });
+
+  describe.each(["adaptive", "precomputed"])("%s wait behavior", (mode) => {
+    const deadlineOption = (allowance) => mode === "precomputed" ? { deadlineAt: Date.now() + allowance } : {};
+
+    test("retries a transient evaluate error and observes the successful reaction", async () => {
+      let attempts = 0;
+      const d = pageDriver(() => {
+        if (++attempts === 1) throw new Error("SCRIPTED_EVALUATE_FAILURE");
+        return 0;
+      });
+      const waiting = d.waitPage("condition", { timeoutMs: 500, ...deadlineOption(500) });
+      await vi.advanceTimersByTimeAsync(80);
+      await expect(waiting).resolves.toBe(0);
+      expect(attempts).toBe(2);
+      expect(d.reactions.slowestMs).toBe(80);
+    });
+
+    test("keeps the observed settle time across a refunded evaluate failure", async () => {
+      const d = pageDriver(() => {
+        if (Date.now() === 80) throw new Error("SCRIPTED_EVALUATE_FAILURE");
+        return true;
+      });
+      let finishedAt;
+      const waiting = d.waitPage("condition", { timeoutMs: 80, settleMs: 160, ...deadlineOption(80) }).then((value) => {
+        finishedAt = Date.now();
+        return value;
+      });
+      await vi.advanceTimersByTimeAsync(240);
+      await expect(waiting).resolves.toBe(true);
+      expect(finishedAt).toBe(240);
+      expect(d.reactions.slowestMs).toBe(80);
+    });
+
+    test("limits error refunds to one settle window and fails an unobservable condition", async () => {
+      const d = pageDriver(() => {
+        if (Date.now() > 0) throw new Error("SCRIPTED_EVALUATE_FAILURE");
+        return true;
+      });
+      let rejectedAt;
+      const waiting = d.waitPage("condition", { timeoutMs: 80, settleMs: 160, ...deadlineOption(80) }).catch((error) => {
+        rejectedAt = Date.now();
+        return error;
+      });
+      await vi.advanceTimersByTimeAsync(480);
+      expect(await waiting).toBeInstanceOf(Error);
+      expect(rejectedAt).toBe(400);
+      expect(d.reactions.slowestMs).toBe(0);
+    });
+  });
+});

@@ -884,13 +884,13 @@ func TestAskUser_ReplyDrainsRootDelegateAttentionRefusedAtEntryGate(t *testing.T
 	if appended, err := sess.appendDelegateNotificationDurably(firstAttentionID, firstContent); err != nil || !appended {
 		t.Fatalf("append root attention = appended:%t err:%v", appended, err)
 	}
-	if err := sess.armDelegateAttention(firstAttentionID); err != nil {
+	if err := sess.requestNotificationWake(); err != nil {
 		t.Fatalf("arm root attention: %v", err)
 	}
 	select {
 	case <-wakes:
+		t.Fatal("pending question dispatched a background executor wake")
 	default:
-		t.Fatal("root attention emitted no initial wake")
 	}
 
 	if _, err := sess.ProcessInputKind(ctx, "", nil, EntryNotification); err != nil {
@@ -899,7 +899,7 @@ func TestAskUser_ReplyDrainsRootDelegateAttentionRefusedAtEntryGate(t *testing.T
 	if got := len(f.Requests()); got != 1 {
 		t.Fatalf("requests after refused wake = %d, want 1", got)
 	}
-	if !sess.hasPendingRootDelegateAttention() {
+	if !sess.hasPendingNotifications() {
 		t.Fatal("refused wake discarded pending root delegate attention")
 	}
 
@@ -923,7 +923,7 @@ func TestAskUser_ReplyDrainsRootDelegateAttentionRefusedAtEntryGate(t *testing.T
 	if got := fold.resolutions[firstAttentionID]; got != delegateAttentionConsumed {
 		t.Errorf("root attention disposition = %q, want %q", got, delegateAttentionConsumed)
 	}
-	if sess.hasPendingRootDelegateAttention() {
+	if sess.hasPendingNotifications() {
 		t.Error("root delegate attention remains pending after the reply drain")
 	}
 
@@ -934,7 +934,7 @@ func TestAskUser_ReplyDrainsRootDelegateAttentionRefusedAtEntryGate(t *testing.T
 	if appended, err := sess.appendDelegateNotificationDurably(secondAttentionID, secondContent); err != nil || !appended {
 		t.Fatalf("append later root attention = appended:%t err:%v", appended, err)
 	}
-	if err := sess.armDelegateAttention(secondAttentionID); err != nil {
+	if err := sess.requestNotificationWake(); err != nil {
 		t.Fatalf("arm later root attention: %v", err)
 	}
 	select {
@@ -4566,12 +4566,15 @@ func TestAskUser_LiveStateAfterObserverYieldMatchesRestore(t *testing.T) {
 		steps: []func(req llm.Request) llm.Response{
 			func(req llm.Request) llm.Response { return agenttest.ToolCallResponse(ask) },
 			func(req llm.Request) llm.Response { return agenttest.ToolCallResponse(loop) },
+			// Observer custody does not end the source's non-terminal round.
+			func(req llm.Request) llm.Response { return agenttest.FinalResponse("carrier finished") },
 		},
 	})
 	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: dir})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
+	t.Cleanup(sess.Close)
 	// Stand sess in as dlg_source's runtime the way a real delegate child is:
 	// it uses the root's controller but does not own it. Releasing the
 	// controller NewSession built for it, and clearing ownership, is what keeps
@@ -4589,6 +4592,7 @@ func TestAskUser_LiveStateAfterObserverYieldMatchesRestore(t *testing.T) {
 	fixture.controller.mu.Lock()
 	fixture.controller.live["dlg_source"].runtime = sess
 	fixture.controller.live["dlg_source"].binding.runtime = sess
+	lease := fixture.controller.live["dlg_source"].binding.lease
 	fixture.controller.mu.Unlock()
 	if _, err := jobWatchToolWithContext(context.Background(), fixture.root, map[string]any{
 		"operation": "create",
@@ -4603,6 +4607,7 @@ func TestAskUser_LiveStateAfterObserverYieldMatchesRestore(t *testing.T) {
 
 	// TRIPWIRE: scripted model and deterministic local observer harness; this only trips on a genuine lifecycle deadlock.
 	ctx := tripwireCtx(t)
+	ctx = context.WithValue(ctx, delegateRunLeaseContextKey{}, lease)
 	if _, err := sess.ProcessInput(ctx, "which db should we use?", nil); err != nil {
 		t.Fatalf("ProcessInput: %v", err)
 	}
@@ -4613,7 +4618,7 @@ func TestAskUser_LiveStateAfterObserverYieldMatchesRestore(t *testing.T) {
 		t.Fatalf("SetHumanNote: %v", err)
 	}
 	if _, ran, err := sess.ProcessPendingUserInput(ctx, nil); err != nil || !ran {
-		t.Fatalf("ProcessPendingUserInput: ran=%v err=%v, want the carrier round to yield for observer delivery", ran, err)
+		t.Fatalf("ProcessPendingUserInput: ran=%v err=%v, want the carrier round to complete", ran, err)
 	}
 	if got := sess.askPendingCount(); got != 1 {
 		t.Fatalf("live askPendingCount after observer yield = %d, want 1", got)

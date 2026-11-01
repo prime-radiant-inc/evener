@@ -34,6 +34,9 @@ func TestCovAbortOwedDelegateBootstrap(t *testing.T) {
 		subagents:          newSubagentManager(3),
 		events:             make(chan events.SessionEvent, 4),
 	}
+	root.stateDir = controller.stateDir
+	writerRoot := attachDeliveryTestReceiver(t, controller)
+	root.attachTranscript(writerRoot.transcript)
 	controller.rootRuntime = root
 
 	newRestored := func(delegateID string) owedBootstrapRuntime {
@@ -71,16 +74,22 @@ func TestCovAbortOwedDelegateBootstrap(t *testing.T) {
 		restored: []owedBootstrapRuntime{first, {sub: doneSub}, second},
 		done:     map[*subagent]bool{doneSub: true},
 	}
-	if err := root.abortOwedDelegateBootstrap(gate, errors.New("test abort")); err != nil {
+	if err := abortOwedBootstrapWithHandoffForTest(root, gate, errors.New("test abort")); err != nil {
 		t.Fatalf("abort owed bootstrap: %v", err)
 	}
 
-	root.delegateDeliveryMu.Lock()
-	gotOrder := make([]string, 0, len(root.pendingDelegateDeliveries))
-	for _, delivery := range root.pendingDelegateDeliveries {
-		gotOrder = append(gotOrder, delivery.delegateID)
+	fold, err := readDelegateAttentionFold(transcriptPath(controller.stateDir, root.ID()), root.ID())
+	if err != nil {
+		t.Fatal(err)
 	}
-	root.delegateDeliveryMu.Unlock()
+	gotOrder := []string{}
+	for _, id := range fold.order {
+		for _, name := range []string{"dlg_second", "dlg_first"} {
+			if id == delegateAttentionID(delegateDeliveryID(name, 1)) {
+				gotOrder = append(gotOrder, name)
+			}
+		}
+	}
 	if want := []string{"dlg_second", "dlg_first"}; !reflect.DeepEqual(gotOrder, want) {
 		t.Fatalf("cleanup delivery order = %v, want reverse restored order %v", gotOrder, want)
 	}
@@ -250,7 +259,7 @@ func TestCovRestoreColdDelegateOwnerRuntime_EmptyParentID(t *testing.T) {
 	t.Parallel()
 	s := &Session{}
 	// Empty parentID — returns s itself.
-	got, err := s.restoreColdDelegateOwnerRuntime("")
+	got, _, err := s.restoreColdDelegateOwnerRuntime("")
 	if err != nil {
 		t.Fatalf("empty parentID: %v", err)
 	}
@@ -520,7 +529,7 @@ func TestCovDriveDelegateAttention_NilSubSession(t *testing.T) {
 func TestCovRestoreColdDelegateAttentionRuntime_NilSession(t *testing.T) {
 	t.Parallel()
 	var s *Session
-	_, _, err := s.restoreColdDelegateAttentionRuntime("dlg_1")
+	_, _, err := restoreColdRuntimeWithHandoffForTest(s, "dlg_1")
 	if err == nil {
 		t.Fatal("nil session should return error")
 	}
@@ -531,7 +540,7 @@ func TestCovRestoreColdDelegateAttentionRuntime_NilSession(t *testing.T) {
 func TestCovRestoreColdDelegateAttentionRuntime_EmptyDelegateID(t *testing.T) {
 	t.Parallel()
 	s := &Session{}
-	_, _, err := s.restoreColdDelegateAttentionRuntime("")
+	_, _, err := restoreColdRuntimeWithHandoffForTest(s, "")
 	if err == nil {
 		t.Fatal("empty delegateID should return error")
 	}

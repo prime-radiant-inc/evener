@@ -238,14 +238,14 @@ func (jm *jobManager) findWatchInspectSnapshot(watchID string, visible func(*wat
 			return watchInspectMatch{cfg: snapshotWatchConfigForProjection(cfg)}, true
 		}
 	}
-	for cfg := range jm.terminalFlush {
-		if cfg != nil && cfg.watchID == watchID && visible(cfg) {
-			return watchInspectMatch{cfg: snapshotWatchConfigForProjection(cfg), detached: true}, true
-		}
-	}
 	for i := range slices.Backward(jm.watchHistory) {
 		if jm.watchHistory[i].id == watchID && visibleHistory(jm.watchHistory[i]) {
 			return watchInspectMatch{history: jm.watchHistory[i], fromHistory: true}, true
+		}
+	}
+	for cfg := range jm.terminalFlush {
+		if cfg != nil && cfg.watchID == watchID && visible(cfg) {
+			return watchInspectMatch{cfg: snapshotWatchConfigForProjection(cfg), detached: true}, true
 		}
 	}
 	return watchInspectMatch{}, false

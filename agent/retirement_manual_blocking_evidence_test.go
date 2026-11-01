@@ -9,6 +9,7 @@ import (
 
 	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/internal/jobstore"
+	"primeradiant.com/evener/llm"
 )
 
 // These tests cover issue #4528: the manual retire's wait pre-check must see
@@ -167,24 +168,21 @@ func TestManualRetireDoesNotWaitForAJournalOnlyPendingNotificationBesideTheNamer
 }
 
 // TestManualRetireDoesNotWaitForPendingAttentionBesideTheNamer is #4528's
-// attention case. The registry is set directly, as the attention tests do; the
-// read under attentionMu is the production predicate.
+// attention case. The canonical append refreshes the fold the nonblocking
+// pre-check reads, without introducing another wake-membership registry.
 func TestManualRetireDoesNotWaitForPendingAttentionBesideTheNamer(t *testing.T) {
 	t.Parallel()
 	root, c, clk, release := blockedNamerSession(t)
 	const attentionID = "attention-4528"
-	root.attentionMu.Lock()
-	if root.rootAttentionWakeIDs == nil {
-		root.rootAttentionWakeIDs = make(map[string]struct{})
+	if err := root.enqueueNotification(notification{ID: attentionID, Message: llm.User("pending retirement evidence")}); err != nil {
+		t.Fatal(err)
 	}
-	root.rootAttentionWakeIDs[attentionID] = struct{}{}
-	root.attentionMu.Unlock()
 
 	assertManualRetireRefusedAtOnce(t, c, clk, "notification", root.ID())
 
-	root.attentionMu.Lock()
-	delete(root.rootAttentionWakeIDs, attentionID)
-	root.attentionMu.Unlock()
+	if err := root.resolveAttentionDurably([]string{attentionID}, delegateAttentionDiscarded); err != nil {
+		t.Fatal(err)
+	}
 	assertManualRetireWaitsThenClaims(t, c, clk, release)
 }
 

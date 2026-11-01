@@ -230,8 +230,8 @@ func watchdel_sessionFlow(t *testing.T, data []byte) {
 	watchdel_checkSessionState(t, jm, monotonic)
 
 	// Only the pending-send append is faulted. Creation, output, terminalization,
-	// and restore remain real; an injected failure must roll the in-memory pending
-	// slot back to the same durable fold the oracle reads below.
+	// and restore remain real. A failed append retains the unspent match for
+	// retry, but must not transfer it to the receiver before source persistence.
 	origAppend := jm.appendEvent
 	gate := watchdel_faultGate(r.take(r.intn(5)))
 	jm.appendEvent = func(e jobstore.Event) error {
@@ -258,29 +258,33 @@ func watchdel_sessionFlow(t *testing.T, data []byte) {
 		watchdel_checkSessionState(t, jm, monotonic)
 	}
 	appendOutput("ready one ")
-	appendOutput("READY two ") // same pending key; must coalesce before delivery.
+	appendOutput("READY two ") // May coalesce only while receiver custody is absent.
 	jm.appendEvent = origAppend
-	pendingBeforeAccept, err := jm.store.LoadWatchSends()
-	if err != nil {
-		closeSession()
-		t.Fatalf("watchdel pending before accept: %v", err)
-	}
-	wantWatchDeliveries := make(map[string]bool, len(pendingBeforeAccept.Pending))
-	for _, state := range pendingBeforeAccept.Pending {
-		if state != nil && state.DeliveryID != "" {
-			wantWatchDeliveries[state.DeliveryID] = true
-		}
-	}
-
-	// A real notification turn, not a queue inspection, accepts the caller token
-	// and durably settles its final coalesced delivery ID. A second drain is the
-	// exactly-once check: it must not create another accepted delivery.
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	_, _ = sess.ProcessInputKind(ctx, "", nil, EntryNotification)
-	_, _ = sess.ProcessInputKind(ctx, "", nil, EntryNotification)
+	if err := sess.drainPendingWatchSends(ctx); err != nil {
+		t.Fatalf("watchdel retry source after append recovery: %v", err)
+	}
+	wantWatchDeliveries := make(map[string]bool)
+	for _, event := range producerSourceEvents(t, jm, jobstore.EventWatchSendDelivered) {
+		wantWatchDeliveries[event.WatchSend.DeliveryID] = true
+	}
+	if len(wantWatchDeliveries) == 0 {
+		t.Fatal("recovered source never transferred any matched frame")
+	}
+
+	// Canonical custody already settled transport. Only the real successful
+	// model response may observe those accepted frames.
+	for range 2 {
+		if _, err := sess.ProcessInputKind(ctx, "", nil, EntryNotification); err != nil {
+			t.Fatal(err)
+		}
+	}
 	watchdel_checkSessionState(t, jm, monotonic)
 	watchdel_checkAcceptedWatchDeliveries(t, jm, wantWatchDeliveries)
+	for _, event := range producerSourceEvents(t, jm, jobstore.EventWatchSendDelivered) {
+		assertNotificationObservedOnce(t, transcriptPath(stateDir, sess.ID()), stableWatchAttentionID(*event.WatchSend))
+	}
 
 	if _, err := jm.configureWatch(watchArgs{
 		Target: rec.JobID,
@@ -292,9 +296,8 @@ func watchdel_sessionFlow(t *testing.T, data []byte) {
 	}
 	watchdel_checkSessionState(t, jm, monotonic)
 
-	// Terminalize without accepting its terminal notification. Restore then owns
-	// the actual re-arm path; the restored EntryNotification turn is what marks
-	// the durable terminal delivery accepted exactly once.
+	// Finalization transfers terminal custody without observing it. Restore must
+	// preserve that body and only the subsequent successful request observes it.
 	if err := jm.finalize(rec.JobID, jobstore.StatusCompleted, "watchdel_done", nil); err != nil {
 		closeSession()
 		t.Fatalf("watchdel finalize: %v", err)
@@ -305,7 +308,15 @@ func watchdel_sessionFlow(t *testing.T, data []byte) {
 		t.Fatalf("watchdel: %d running jobs after deterministic finalization", len(running))
 	}
 	watchdel_checkNoLiveWatchForTerminal(t, jm, rec.JobID)
-	watchdel_checkTerminalNotifyState(t, jm, rec.JobID, jobstore.NotifyPending)
+	watchdel_checkTerminalNotifyState(t, jm, rec.JobID, jobstore.NotifyDelivered)
+	terminalRecord, err := jm.store.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	terminalID := stableShellAttentionID(rec.JobID, terminalRecord[rec.JobID].TerminalGen)
+	if fold := rootAttentionFold(t, sess); fold.resolutions[terminalID] == delegateAttentionConsumed || countAttentionEntries(t, transcriptPath(stateDir, sess.ID()), terminalID) != 1 {
+		t.Fatal("terminal source settlement must retain one unobserved receiver body")
+	}
 
 	meta := sess.Meta()
 	closeSession()
@@ -315,10 +326,14 @@ func watchdel_sessionFlow(t *testing.T, data []byte) {
 	if restored.clock != clk || restored.jobManager.clock != clk {
 		t.Fatalf("watchdel: restore lost fake clock boundary")
 	}
-	_, _ = restored.ProcessInputKind(ctx, "", nil, EntryNotification)
-	_, _ = restored.ProcessInputKind(ctx, "", nil, EntryNotification)
+	for range 2 {
+		if _, err := restored.ProcessInputKind(ctx, "", nil, EntryNotification); err != nil {
+			t.Fatal(err)
+		}
+	}
 	watchdel_checkSessionState(t, restored.jobManager, monotonic)
 	watchdel_checkTerminalNotifyState(t, restored.jobManager, rec.JobID, jobstore.NotifyDelivered)
+	assertNotificationObservedOnce(t, transcriptPath(stateDir, restored.ID()), terminalID)
 	if running := restored.jobManager.runningJobIDs(); len(running) != 0 {
 		t.Fatalf("watchdel: restored manager has %d orphaned running jobs", len(running))
 	}
@@ -326,9 +341,6 @@ func watchdel_sessionFlow(t *testing.T, data []byte) {
 
 func watchdel_checkAcceptedWatchDeliveries(t *testing.T, jm *jobManager, want map[string]bool) {
 	t.Helper()
-	if len(want) == 0 {
-		return // The injected append fault intentionally leaves no accepted delivery.
-	}
 	events, err := jm.store.LoadEvents()
 	if err != nil {
 		t.Fatalf("watchdel delivery events: %v", err)
@@ -363,8 +375,8 @@ func watchdel_checkTerminalNotifyState(t *testing.T, jm *jobManager, jobID strin
 
 // watchdel_checkSessionState compares the durable folds with runtime state after
 // every operation. The store is the crash-recovery truth; running records and
-// pending maps are the live truth. They must agree even when the fault gate
-// rejects a watch-send append.
+// pending maps are the live truth. Persisted frames must match exactly, while
+// a source append rejected by the fault gate retains unspent, unaccepted debt.
 func watchdel_checkSessionState(t *testing.T, jm *jobManager, terminal map[string]string) {
 	t.Helper()
 	if jm == nil || jm.store == nil {
@@ -375,6 +387,7 @@ func watchdel_checkSessionState(t *testing.T, jm *jobManager, terminal map[strin
 		t.Fatalf("watchdel Load: %v", err)
 	}
 	livePending := map[jobstore.WatchSendKey]jobstore.WatchSendState{}
+	producedSequence := map[jobstore.WatchSendKey]uint64{}
 	jm.mu.Lock()
 	for id, run := range jm.running {
 		if run == nil || run.rec == nil {
@@ -398,6 +411,7 @@ func watchdel_checkSessionState(t *testing.T, jm *jobManager, terminal map[strin
 		for key, state := range cfg.pending {
 			if state != nil {
 				livePending[key] = *state
+				producedSequence[key] = cfg.producedUpdateSeq[key]
 			}
 		}
 	}
@@ -426,13 +440,24 @@ func watchdel_checkSessionState(t *testing.T, jm *jobManager, terminal map[strin
 	if err != nil {
 		t.Fatalf("watchdel LoadWatchSends: %v", err)
 	}
-	if len(livePending) != len(pending.Pending) {
-		t.Fatalf("watchdel: live pending=%d durable pending=%d", len(livePending), len(pending.Pending))
-	}
+	receiver := rootAttentionFold(t, jm.retirementOwner)
 	for key, live := range livePending {
 		folded := pending.Pending[key]
+		if folded == nil && producedSequence[key] < live.UpdateSeq {
+			// A failed source append retains the matched firing for retry, but
+			// cannot spend it or transfer its body to the receiver.
+			if _, accepted := receiver.content[stableWatchAttentionID(live)]; accepted {
+				t.Fatal("watchdel: unpersisted source frame reached receiver")
+			}
+			continue
+		}
 		if folded == nil || folded.DeliveryID != live.DeliveryID || folded.UpdateSeq != live.UpdateSeq || folded.CoalescedCount != live.CoalescedCount {
 			t.Fatalf("watchdel: durable/live pending mismatch for %+v: durable=%+v live=%+v", key, folded, live)
+		}
+	}
+	for key, folded := range pending.Pending {
+		if live, ok := livePending[key]; !ok || live.DeliveryID != folded.DeliveryID || live.UpdateSeq != folded.UpdateSeq {
+			t.Fatalf("watchdel: durable source frame has no exact live retry: %+v", folded)
 		}
 	}
 
@@ -588,7 +613,7 @@ func watchdel_driveClearByID(t *testing.T, r *watchdel_reader, jm *jobManager) {
 func FuzzWatchdelWatchOps(f *testing.F) {
 	f.Add([]byte{})
 	// The session-backed flow reads this as a one-byte fault plan containing an
-	// injected failure, then proves the rollback agrees with the durable fold.
+	// injected failure, then proves unpersisted matches cannot reach the receiver.
 	f.Add([]byte{7, 1, 0, 9, 11})
 	f.Add([]byte{1, 2, 3, 4, 5, 6, 7, 8})
 	f.Add([]byte{0, 1, 0, 3, 0, 2, 1, 1, 4, 4, 0, 0})

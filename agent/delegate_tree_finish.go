@@ -46,6 +46,7 @@ type delegateSettlementClaim struct {
 	lease         delegateLease
 	mode          delegateSettlementMode
 	ready         <-chan struct{}
+	batchReady    <-chan struct{}
 	runErrorKnown bool
 	runErr        error
 }
@@ -104,6 +105,17 @@ func (c *delegateTreeController) CompleteSettlement(claim *delegateSettlementCla
 	return plans, err
 }
 
+// ReleaseSettlementClaim drops a claim whose terminal candidate was refused
+// before publication, leaving the generation open for the next report.
+func (c *delegateTreeController) ReleaseSettlementClaim(claim *delegateSettlementClaim) {
+	if c == nil || claim == nil {
+		return
+	}
+	c.mu.Lock()
+	c.releaseSettlementClaimLocked(claim.token)
+	c.mu.Unlock()
+}
+
 func (c *delegateTreeController) AttentionResolutionsForFinalization(claim *delegateSettlementClaim) (delegateMutationPlans, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -153,13 +165,17 @@ func (c *delegateTreeController) RequireFinalizationRecovery(claim *delegateSett
 // the finalization's release: the delegate takes its next start from here.
 func (c *delegateTreeController) ReportFinalizationQuiesced(lease delegateLease, runtime *Session) error {
 	c.mu.Lock()
-	defer c.mu.Unlock()
+	var recheck bool
 	// The finished generation's lease is no longer exact here, so the
 	// finalizing runtime is released by identity before the lease check.
 	if live := c.live[lease.delegateID]; live != nil && live.finalizing != nil && live.finalizing.runtime == runtime && live.finalizing.generation == lease.generation {
-		c.releaseFinalizationLocked(live)
+		recheck = c.releaseFinalizationLocked(live)
 	}
 	decision := c.reduceReportQuiescedIntent(finishIntent{lease: lease, runtime: runtime, stalePolicy: finishStaleSwallow})
+	c.mu.Unlock()
+	if recheck {
+		c.recheckNotificationReceivers()
+	}
 	return decision.err
 }
 
@@ -189,6 +205,13 @@ func (c *delegateTreeController) finalizationReadyLocked(claim *delegateSettleme
 	case <-claim.ready:
 	default:
 		return errDelegateTargetBusy
+	}
+	if claim.batchReady != nil {
+		select {
+		case <-claim.batchReady:
+		default:
+			return errDelegateTargetBusy
+		}
 	}
 	live := c.live[claim.lease.delegateID]
 	if live == nil || live.binding == nil || live.binding.lease != claim.lease {
@@ -247,11 +270,13 @@ func (c *delegateTreeController) hasSteeringClaimLocked(lease delegateLease) boo
 // generation still finalizing on the runtime it replaces no longer holds the
 // delegate (see finalizingLocked), so its finalization is released here and
 // a send waiting on it tries again at once. The caller holds c.mu.
-func (c *delegateTreeController) setResidentRuntimeLocked(live *delegateLiveState, runtime *Session) {
+func (c *delegateTreeController) setResidentRuntimeLocked(live *delegateLiveState, runtime *Session) bool {
+	var recheck bool
 	if live.finalizing != nil && live.finalizing.runtime != runtime {
-		c.releaseFinalizationLocked(live)
+		recheck = c.releaseFinalizationLocked(live)
 	}
 	live.runtime = runtime
+	return recheck
 }
 
 // stillFinalizing reports whether delegateID's finished generation is still
@@ -291,20 +316,16 @@ func (c *delegateTreeController) finalizationRecoveryHolds(delegateID string) bo
 // every send waiting on it. The root's attention drive skips a delegate
 // while it finalizes, and nothing else wakes the drive for attention it
 // skipped, so a release that leaves attention owed to the delegate wakes the
-// drive here. The caller holds c.mu, and the drive re-enters the controller,
-// so the wake runs on its own goroutine.
-func (c *delegateTreeController) releaseFinalizationLocked(live *delegateLiveState) {
+// drive here. The caller carries the returned effect past its enclosing locks,
+// publication and admissions before synchronously rechecking receivers.
+func (c *delegateTreeController) releaseFinalizationLocked(live *delegateLiveState) bool {
 	finalizing := live.finalizing
 	if finalizing == nil {
-		return
+		return false
 	}
 	close(finalizing.released)
 	live.finalizing = nil
-	if state := c.attention[finalizing.delegateID]; state != nil && len(state.wakeIDs) != 0 {
-		if root := c.rootRuntime; root != nil {
-			go root.notify()
-		}
-	}
+	return true
 }
 
 // finalizingLocked is delegateID's finished generation still finalizing on
@@ -334,7 +355,8 @@ func (c *delegateTreeController) finishGenerationLocked(intent finishIntent) (de
 	plans, cancel, err := c.executeFinishDecisionLocked(decision)
 	if err == nil && runtime != nil && decision.releaseGeneration && decision.events != nil {
 		if live := c.live[intent.lease.delegateID]; live != nil {
-			c.releaseFinalizationLocked(live)
+			recheck := c.releaseFinalizationLocked(live)
+			plans.recheckNotifications = plans.recheckNotifications || recheck
 			live.finalizing = &delegateFinalization{
 				delegateID: intent.lease.delegateID,
 				runtime:    runtime,
@@ -432,10 +454,10 @@ func delegateFinishMetadataEvents(events []delegatestore.Event, lease delegateLe
 func (c *delegateTreeController) generationFinishedPlansLocked(lease delegateLease, deliveryID string) (delegateMutationPlans, context.CancelFunc) {
 	c.releaseSettlementClaimsForLeaseLocked(lease)
 	untrackStopLocked(c, func(s *delegateStopState) map[delegateLease]struct{} { return s.active }, lease)
-	cancel := c.releaseGenerationLocked(lease)
+	cancel, recheck := c.releaseGenerationLocked(lease)
 	c.evidenceVersion++
 	plan := c.capturedPlanLocked(lease.delegateID)
-	plans := delegateMutationPlans{updates: []delegateUpdatePlan{plan}}
+	plans := delegateMutationPlans{updates: []delegateUpdatePlan{plan}, recheckNotifications: recheck}
 	if delivery := c.newHeadDeliveryPlanLocked(lease.delegateID, deliveryID); delivery != nil {
 		plans.deliveries = append(plans.deliveries, *delivery)
 	}

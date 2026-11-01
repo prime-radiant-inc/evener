@@ -589,9 +589,9 @@ func TestCovHasPendingDelegateAttentionArmRetry_WithArms(t *testing.T) {
 	t.Parallel()
 	s := &Session{}
 	s.attentionMu.Lock()
-	s.delegateAttentionArmIDs = map[string]struct{}{"arm_1": {}}
+	s.notificationSchedule.retry.active = true
 	s.attentionMu.Unlock()
-	if !s.hasPendingDelegateAttentionArmRetry() {
+	if !s.notificationWorkPending() {
 		t.Fatal("with arms should return true")
 	}
 }
@@ -602,16 +602,16 @@ func TestCovResetDelegateAttentionArmRetryLocked(t *testing.T) {
 	t.Parallel()
 	s := &Session{}
 	s.attentionMu.Lock()
-	s.delegateAttentionArmRetry.active = true
-	s.delegateAttentionArmRetry.generation = 8
+	s.notificationSchedule.retry.active = true
+	s.notificationSchedule.retry.generation = 8
 	s.attentionMu.Unlock()
 	s.attentionMu.Lock()
-	s.resetDelegateAttentionArmRetryLocked()
-	if s.delegateAttentionArmRetry.active {
+	s.suspendNotificationWake()
+	if s.notificationSchedule.retry.active {
 		t.Fatal("active should be false")
 	}
-	if s.delegateAttentionArmRetry.generation != 9 {
-		t.Fatalf("generation = %d, want 9", s.delegateAttentionArmRetry.generation)
+	if s.notificationSchedule.retry.generation != 9 {
+		t.Fatalf("generation = %d, want 9", s.notificationSchedule.retry.generation)
 	}
 	s.attentionMu.Unlock()
 }
@@ -642,16 +642,16 @@ func TestCovResetDelegateAttentionRetry(t *testing.T) {
 	t.Parallel()
 	s := &Session{}
 	s.attentionMu.Lock()
-	s.stableAttentionRetry.active = true
-	s.stableAttentionRetry.generation = 4
+	s.notificationSchedule.retry.active = true
+	s.notificationSchedule.retry.generation = 4
 	s.attentionMu.Unlock()
-	s.resetDelegateAttentionRetry()
+	s.suspendNotificationWake()
 	s.attentionMu.Lock()
-	if s.stableAttentionRetry.active {
+	if s.notificationSchedule.retry.active {
 		t.Fatal("should be inactive after reset")
 	}
-	if s.stableAttentionRetry.generation != 5 {
-		t.Fatalf("generation = %d, want 5", s.stableAttentionRetry.generation)
+	if s.notificationSchedule.retry.generation != 5 {
+		t.Fatalf("generation = %d, want 5", s.notificationSchedule.retry.generation)
 	}
 	s.attentionMu.Unlock()
 }

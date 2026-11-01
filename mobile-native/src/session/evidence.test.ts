@@ -282,13 +282,16 @@ describe("each tool's evidence, as the tools print it", () => {
 
 	it("shows a send that waited as its message and the delegate's reply", () => {
 		const waited = subagentWireStep("call_send_2");
-		expect(stepEvidence({ label: "delegate_send", detail: activityDetail(waited) })).toEqual([
-			{ kind: "markdown", title: "Message", markdown: "Is drain ordering safe now?" },
-			{
-				kind: "markdown",
-				title: "Reply",
-				markdown: "Yes: tree settle now waits for the drain, and a test pins the order.",
-			},
+		const recorded = waited.raw as { earlier_results: { status: string; output: string }[]; output: string };
+		const sent = JSON.parse(waited.argumentsJSON ?? "{}") as { message: string };
+		expect(recorded.earlier_results).toHaveLength(1);
+		expect(recorded.earlier_results[0]?.status).toBe("completed");
+		const evidence = stepEvidence({ label: "delegate_send", detail: activityDetail(waited) });
+		expect(evidence.map((block) => block.kind)).toEqual(["markdown", "markdown", "markdown"]);
+		expect(evidence.map((block) => (block.kind === "markdown" ? block.markdown : undefined))).toEqual([
+			sent.message,
+			recorded.earlier_results[0]?.output,
+			recorded.output,
 		]);
 	});
 

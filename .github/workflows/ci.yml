@@ -4,7 +4,12 @@ on:
   push:
     branches: [main]
   pull_request:
-    branches: [main]
+    branches:
+      - main
+      - unified-session-notifications
+      - notification-repair-execution
+      - notification-repair-receiver
+      - notification-repair-stop
   # The merge queue tests each queued PR on top of main and the PRs ahead of
   # it, and main requires the same checks on that candidate.
   merge_group:
@@ -404,7 +409,12 @@ jobs:
           go-cache-kind: race-${{ matrix.scope }}
 
       - name: Test (race detector — ${{ matrix.scope }})
-        run: make test-race RACE_SCOPE=${{ matrix.scope }}
+        run: |
+          if [ "${{ matrix.scope }}" = agent ]; then
+            flags="$(go env GOFLAGS 2>/dev/null || printf '%s' "${GOFLAGS:-}")"
+            export GOFLAGS="${flags:+$flags }-v"
+          fi
+          make test-race RACE_SCOPE=${{ matrix.scope }}
 
       - uses: ./.github/actions/go-cache-save
 

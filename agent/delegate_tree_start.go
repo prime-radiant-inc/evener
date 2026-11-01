@@ -53,13 +53,14 @@ type delegateStartRecord struct {
 }
 
 type delegateStartCommit struct {
-	lease          delegateLease
-	plan           delegateUpdatePlan
-	ctx            context.Context
-	descriptor     delegatestore.Descriptor
-	startedAt      time.Time
-	transcriptPath string
-	worktreePath   string
+	recheckNotifications bool
+	lease                delegateLease
+	plan                 delegateUpdatePlan
+	ctx                  context.Context
+	descriptor           delegatestore.Descriptor
+	startedAt            time.Time
+	transcriptPath       string
+	worktreePath         string
 }
 
 type delegateFinish struct {
@@ -125,6 +126,11 @@ func (c *delegateTreeController) ReserveCreate(actor delegateActor, descriptor d
 	} else {
 		if _, _, err := c.admitLeaseLocked(*actor.lease, delegatestore.PhaseRunning); err != nil {
 			return nil, err
+		}
+		if evidence, err := c.completionEvidenceLocked(*actor.lease); err != nil {
+			return nil, err
+		} else if evidence.completionAdmitted {
+			return nil, errDelegateTargetBusy
 		}
 		parentID = actor.lease.delegateID
 	}
@@ -383,33 +389,33 @@ func (c *delegateTreeController) reserveAttentionStartLocked(aggregate *delegate
 	return reservation, nil
 }
 
-func (c *delegateTreeController) AttachRuntime(lease delegateLease, runtime *Session) error {
+func (c *delegateTreeController) AttachRuntime(lease delegateLease, runtime *Session) (bool, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.closing {
-		return errDelegateTargetBusy
+		return false, errDelegateTargetBusy
 	}
 	if c.laneHandoffCoversLocked(lease.delegateID) {
-		return errDelegateTargetBusy
+		return false, errDelegateTargetBusy
 	}
 	aggregate, live, err := c.exactLeaseLocked(lease)
 	if err != nil {
-		return err
+		return false, err
 	}
 	if runtime == nil || aggregate.Phase != delegatestore.PhaseRunning || aggregate.PendingStopSeq != 0 || live.recoveryRequired || live.binding.ready && aggregate.Trigger != delegatestore.TriggerAttention {
-		return errDelegateTargetBusy
+		return false, errDelegateTargetBusy
 	}
 	if live.runtime != nil && live.runtime != runtime || live.binding.runtime != nil && live.binding.runtime != runtime {
-		return errDelegateTargetBusy
+		return false, errDelegateTargetBusy
 	}
 	ownerID, _, err := c.runtimeOwnerLocked(runtime)
 	if err != nil || ownerID != "" && ownerID != lease.delegateID {
-		return errDelegateTargetBusy
+		return false, errDelegateTargetBusy
 	}
-	c.setResidentRuntimeLocked(live, runtime)
+	recheck := c.setResidentRuntimeLocked(live, runtime)
 	live.binding.runtime = runtime
 	c.evidenceVersion++
-	return nil
+	return recheck, nil
 }
 
 func (c *delegateTreeController) runtimeOwnerLocked(runtime *Session) (string, *delegateLiveState, error) {
@@ -622,6 +628,11 @@ func (c *delegateTreeController) ReserveStart(actor delegateActor, delegateID st
 	if actor.lease != nil {
 		if _, _, err := c.admitLeaseLocked(*actor.lease, delegatestore.PhaseRunning); err != nil {
 			return nil, err
+		}
+		if evidence, err := c.completionEvidenceLocked(*actor.lease); err != nil {
+			return nil, err
+		} else if evidence.completionAdmitted {
+			return nil, errDelegateTargetBusy
 		}
 	}
 	aggregate := c.durable[delegateID]
@@ -844,8 +855,9 @@ func (c *delegateTreeController) commitStart(reservation *delegateStartReservati
 	if record.trigger == delegatestore.TriggerAttention {
 		c.replaceDelegateAttentionLocked(record.delegateID, record.attentionPendingIDs)
 	}
+	var recheck bool
 	if record.runtime != nil {
-		c.setResidentRuntimeLocked(live, record.runtime)
+		recheck = c.setResidentRuntimeLocked(live, record.runtime)
 	}
 	if record.waiter != nil {
 		if live.waiters == nil {
@@ -862,28 +874,31 @@ func (c *delegateTreeController) commitStart(reservation *delegateStartReservati
 	live.intent = ""
 	c.evidenceVersion++
 	return delegateStartCommit{
-		lease:          lease,
-		plan:           c.capturedPlanLocked(record.delegateID),
-		ctx:            record.ctx,
-		descriptor:     cloneDelegateStartDescriptor(record.descriptor),
-		startedAt:      startedAt,
-		transcriptPath: record.transcriptPath,
-		worktreePath:   record.worktreePath,
+		recheckNotifications: recheck,
+		lease:                lease,
+		plan:                 c.capturedPlanLocked(record.delegateID),
+		ctx:                  record.ctx,
+		descriptor:           cloneDelegateStartDescriptor(record.descriptor),
+		startedAt:            startedAt,
+		transcriptPath:       record.transcriptPath,
+		worktreePath:         record.worktreePath,
 	}, nil
 }
 
-func (c *delegateTreeController) releaseGenerationLocked(lease delegateLease) context.CancelFunc {
+func (c *delegateTreeController) releaseGenerationLocked(lease delegateLease) (context.CancelFunc, bool) {
 	live := c.live[lease.delegateID]
 	if live == nil || live.binding == nil || live.binding.lease != lease {
-		return nil
+		return nil, false
 	}
 	cancel := live.binding.cancel
 	if live.binding.inputClaim != 0 {
 		delete(c.inputClaims, live.binding.inputClaim)
 	}
 	c.dropRuntimeClaimsForMembersLocked(map[string]struct{}{lease.delegateID: {}})
+	yielded := live.binding.yielded
+	var recheck bool
 	if live.binding.runtime != nil {
-		c.setResidentRuntimeLocked(live, live.binding.runtime)
+		recheck = c.setResidentRuntimeLocked(live, live.binding.runtime)
 	}
 	live.binding = nil
 	// A steer accepted under the covering stop outlives the generation it was
@@ -902,12 +917,15 @@ func (c *delegateTreeController) releaseGenerationLocked(lease delegateLease) co
 	live.quietNotified = false
 	live.quietNotifiedAt = time.Time{}
 	live.quietClaim = nil
+	if yielded {
+		return cancel, recheck
+	}
 	if c.durable[lease.delegateID].Trigger == delegatestore.TriggerAttention {
 		c.releaseCapacityLocked(delegateDriveCapacity)
 	} else {
 		c.releaseCapacityLocked(delegateTurnCapacity)
 	}
-	return cancel
+	return cancel, recheck
 }
 
 func (c *delegateTreeController) beginRuntimeBoundary(lease delegateLease) error {

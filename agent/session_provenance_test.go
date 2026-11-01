@@ -5,6 +5,9 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
+
+	"primeradiant.com/evener/agent/internal/agenttest"
 
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/execenv"
@@ -225,12 +228,11 @@ func TestCommunicateInboxDrainUnionsProvenance(t *testing.T) {
 
 func TestAcceptNotificationInputAdoptsNotificationProvenance(t *testing.T) {
 	t.Parallel()
-	s := newTestSession(t)
-	s.events = make(chan events.SessionEvent, 4)
-	// The notification turn rebuilds the delivered notification from the durable
-	// record (filterDeliverableJobNotifications), so the adopted provenance is the
-	// record's notification provenance. Persist a terminal record whose pending
-	// event carries watch_A/wg_1 and enqueue the wake token for it.
+	a := &skillContinuationAdapter{}
+	s := observationSession(t, a, false)
+	evs, mu, done := collectEvents(s)
+	// Terminal source migration preserves lineage in canonical custody. Request
+	// selection, not the earlier turn boundary, adopts that lineage for output.
 	appendPendingJobNotificationRecordWithProvenance(t, s.jobManager, s.ID(), "job_A", testProvenance("watch_A", "wg_1"))
 	s.enqueueJobNotification(jobNotification{
 		JobID:      "job_A",
@@ -238,118 +240,111 @@ func TestAcceptNotificationInputAdoptsNotificationProvenance(t *testing.T) {
 		Status:     string(jobstore.StatusCompleted),
 		Provenance: testProvenance("watch_A", "wg_1"),
 	})
-
-	if proceed := s.acceptNotificationInput(context.Background(), ""); !proceed {
-		t.Fatal("notification input should proceed")
+	s.replaceActiveProvenance(testProvenance("watch_stale", "wg_old"))
+	var id string
+	a.steps = []func(llm.Request) (llm.Response, error){func(req llm.Request) (llm.Response, error) {
+		observationRequest(t, req, []string{"job_A"}, nil)
+		if !provenance.ContainsWatch(s.activeCausalProvenance(), "watch_A", "wg_1") || provenance.ContainsWatch(s.activeCausalProvenance(), "watch_stale", "wg_old") {
+			t.Errorf("request-selected provenance=%+v", s.activeCausalProvenance())
+		}
+		ids, err := s.pendingNotificationIDs()
+		if err != nil || len(ids) != 1 {
+			t.Fatalf("accepted pending=%v error=%v", ids, err)
+		}
+		id = ids[0]
+		for _, entry := range notificationRawEntries(t, s.TranscriptPath()) {
+			if entry.Turn.AttentionID == id && !provenance.ContainsWatch(entry.Turn.NotificationProvenance, "watch_A", "wg_1") {
+				t.Error("canonical custody lost source lineage")
+			}
+			if len(entry.Turn.ObservedNotificationIDs) != 0 {
+				t.Error("acceptance granted observation before a response")
+			}
+		}
+		return agenttest.ToolCallResponse(communicateCallArgs("causal-output", map[string]any{"message": "provenance-output-5", "end_turn": true})), nil
+	}}
+	if _, err := s.ProcessInputKind(context.Background(), "", nil, EntryNotification); err != nil {
+		t.Fatal(err)
 	}
-	if !provenance.ContainsWatch(s.activeCausalProvenance(), "watch_A", "wg_1") {
-		t.Fatalf("active provenance = %+v, want notification provenance", s.activeCausalProvenance())
+	assertNotificationObservedOnce(t, s.TranscriptPath(), id)
+	assertNotificationPending(t, s, []string{})
+	if len(a.Requests()) != 1 || producerRecordCount(t, s) != 1 {
+		t.Fatal("provenance delivery duplicated its record or provider request")
 	}
-	boundary := <-s.events
-	if boundary.Kind != events.EventTurnStarted {
-		t.Fatalf("first event = %s, want TURN_STARTED", boundary.Kind)
+	s.Close()
+	<-done
+	mu.Lock()
+	defer mu.Unlock()
+	counts := map[events.EventKind]int{}
+	for _, ev := range *evs {
+		if ev.Kind == events.EventToolCallStart || ev.Kind == events.EventCommunicate {
+			counts[ev.Kind]++
+			if !provenance.ContainsWatch(ev.Provenance, "watch_A", "wg_1") || provenance.ContainsWatch(ev.Provenance, "watch_stale", "wg_old") {
+				t.Errorf("model output %s provenance=%+v", ev.Kind, ev.Provenance)
+			}
+		}
 	}
-	if !provenance.ContainsWatch(boundary.Provenance, "watch_A", "wg_1") {
-		t.Fatalf("boundary event provenance = %+v, want watch_A/wg_1", boundary.Provenance)
-	}
-	ev := <-s.events
-	if ev.Kind != events.EventSteeringInjected {
-		t.Fatalf("second event = %s, want STEERING_INJECTED", ev.Kind)
-	}
-	if !provenance.ContainsWatch(ev.Provenance, "watch_A", "wg_1") {
-		t.Fatalf("steering event provenance = %+v, want watch_A/wg_1", ev.Provenance)
+	if counts[events.EventToolCallStart] != 1 || counts[events.EventCommunicate] != 1 {
+		t.Fatalf("real output event counts=%v, want one tool call and one communicate", counts)
 	}
 }
 
 func TestAcceptNotificationInputAdoptsCallerWatchSendStateProvenance(t *testing.T) {
 	t.Parallel()
-	s := newTestSession(t)
-	s.events = make(chan events.SessionEvent, 8)
-	cfg, _, _ := installCallerSendWatchWithCurrentFrame(t, s.jobManager, "frame-v2")
+	a := &skillContinuationAdapter{}
+	s := observationSession(t, a, false)
+	s.jobManager.retirementOwner, s.jobManager.delegateController = nil, nil
+	cfg, key, _ := installCallerSendWatchWithCurrentFrame(t, s.jobManager, "frame-v2")
+	s.jobManager.retirementOwner, s.jobManager.delegateController = s, s.delegateController
+	cfg.pending[key].ReceiverSessionID = s.ID()
 	beforeSeq := cfg.nextUpdateSeq
-
-	if proceed := s.acceptNotificationInput(context.Background(), ""); !proceed {
-		t.Fatal("notification input should proceed")
+	s.jobManager.dispatchProducedWatchSends()
+	a.steps = []func(llm.Request) (llm.Response, error){func(req llm.Request) (llm.Response, error) {
+		observationRequest(t, req, []string{"frame-v2"}, nil)
+		if !provenance.ContainsWatch(s.activeCausalProvenance(), cfg.watchID, cfg.generation) {
+			t.Fatal("provider call lost caller watch provenance")
+		}
+		return llm.Response{Message: llm.Assistant("observed")}, nil
+	}}
+	if _, err := s.ProcessInputKind(context.Background(), "", nil, EntryNotification); err != nil {
+		t.Fatal(err)
 	}
-	if !provenance.ContainsWatch(s.activeCausalProvenance(), cfg.watchID, cfg.generation) {
-		t.Fatalf("active provenance = %+v, want caller watch-send state provenance", s.activeCausalProvenance())
-	}
-	boundary := <-s.events
-	if boundary.Kind != events.EventTurnStarted {
-		t.Fatalf("first event = %s, want TURN_STARTED", boundary.Kind)
-	}
-	if !provenance.ContainsWatch(boundary.Provenance, cfg.watchID, cfg.generation) {
-		t.Fatalf("boundary event provenance = %+v, want %s/%s", boundary.Provenance, cfg.watchID, cfg.generation)
-	}
-	ev := <-s.events
-	if ev.Kind != events.EventSteeringInjected {
-		t.Fatalf("second event = %s, want STEERING_INJECTED", ev.Kind)
-	}
-	if !provenance.ContainsWatch(ev.Provenance, cfg.watchID, cfg.generation) {
-		t.Fatalf("steering event provenance = %+v, want %s/%s", ev.Provenance, cfg.watchID, cfg.generation)
-	}
-
-	// The helper's watch listens for communicate events; the acknowledgement
-	// must be one to be the watch's own echo. Under the breaker policy the echo
-	// is delivered (not suppressed) and classified self-influenced — it re-fires
-	// exactly once.
 	s.emit(events.CommunicateData{Message: "watch-send acknowledgement", EndTurn: false})
 	if cfg.nextUpdateSeq != beforeSeq+1 {
-		t.Fatalf("nextUpdateSeq = %d after acknowledgement, want %d (self-echo delivered + classified self-influenced, re-fires once)", cfg.nextUpdateSeq, beforeSeq+1)
+		t.Fatalf("echo sequence = %d, want %d", cfg.nextUpdateSeq, beforeSeq+1)
 	}
 }
 
 func TestAcceptNotificationInputAdoptsRestoredCallerWatchSendProvenance(t *testing.T) {
 	t.Parallel()
-	s := newTestSession(t)
-	s.events = make(chan events.SessionEvent, 8)
-	p := testProvenance("watch_restore", "wg_restore")
-	key := jobstore.WatchSendKey{
-		VisibleSessionID:        s.ID(),
-		WatchID:                 "watch_restore",
-		WatchTarget:             "job_restore",
-		ResolvedWatchedIdentity: "job_restore",
-		ResolvedSendTo:          runtimeMessageAliasCaller,
-		WatchGeneration:         "wg_restore",
+	a := &skillContinuationAdapter{}
+	s := observationSession(t, a, false)
+	state := jobstore.WatchSendState{
+		Key:        jobstore.WatchSendKey{VisibleSessionID: s.ID(), WatchID: "watch_restore", WatchTarget: "job_restore", ResolvedWatchedIdentity: "job_restore", ResolvedSendTo: runtimeMessageAliasCaller, WatchGeneration: "wg_restore"},
+		DeliveryID: "delivery_restore", UpdateSeq: 1, Frame: "restored frame", ReceiverSessionID: s.ID(), Provenance: testProvenance("watch_restore", "wg_restore"),
 	}
-	cfg := &watchConfig{
-		watchID:    "watch_restore",
-		target:     "job_restore",
-		send:       &watchSendArgs{To: runtimeMessageAliasCaller},
-		generation: "wg_restore",
-		pending: map[jobstore.WatchSendKey]*jobstore.WatchSendState{
-			key: {
-				Key:           key,
-				DeliveryID:    "delivery_restore",
-				UpdateSeq:     1,
-				Frame:         "restored frame",
-				TriggerReason: "output_match: ready",
-				Provenance:    p,
-			},
-		},
-		pendingOrder: []jobstore.WatchSendKey{key},
+	if err := s.jobManager.appendWatchSendEvents([]jobstore.Event{{Kind: jobstore.EventWatchSendPending, TS: time.Now(), WatchSend: &state}}); err != nil {
+		t.Fatal(err)
 	}
-	s.jobManager.terminalFlush = map[*watchConfig]bool{cfg: true}
-
-	if proceed := s.acceptNotificationInput(context.Background(), ""); !proceed {
-		t.Fatal("notification input should proceed for restored caller watch send")
+	if err := s.jobManager.store.Close(); err != nil {
+		t.Fatal(err)
 	}
-	if !provenance.ContainsWatch(s.activeCausalProvenance(), "watch_restore", "wg_restore") {
-		t.Fatalf("active provenance = %+v, want restored watch-send state provenance", s.activeCausalProvenance())
+	jm, err := newJobManager(s.stateDir, s.ID(), s.enqueueJobNotificationAndNotify)
+	if err != nil {
+		t.Fatal(err)
 	}
-	boundary := <-s.events
-	if boundary.Kind != events.EventTurnStarted {
-		t.Fatalf("first event = %s, want TURN_STARTED", boundary.Kind)
+	s.jobManager, jm.retirementOwner, jm.delegateController = jm, s, s.delegateController
+	if err := s.retryRestoredPendingWatchSends(context.Background()); err != nil {
+		t.Fatal(err)
 	}
-	if !provenance.ContainsWatch(boundary.Provenance, "watch_restore", "wg_restore") {
-		t.Fatalf("boundary event provenance = %+v, want restored watch provenance", boundary.Provenance)
-	}
-	ev := <-s.events
-	if ev.Kind != events.EventSteeringInjected {
-		t.Fatalf("second event = %s, want STEERING_INJECTED", ev.Kind)
-	}
-	if !provenance.ContainsWatch(ev.Provenance, "watch_restore", "wg_restore") {
-		t.Fatalf("steering event provenance = %+v, want restored watch provenance", ev.Provenance)
+	a.steps = []func(llm.Request) (llm.Response, error){func(req llm.Request) (llm.Response, error) {
+		observationRequest(t, req, []string{"restored frame"}, nil)
+		if !provenance.ContainsWatch(s.activeCausalProvenance(), "watch_restore", "wg_restore") {
+			t.Fatal("provider call lost restored caller provenance")
+		}
+		return llm.Response{Message: llm.Assistant("observed")}, nil
+	}}
+	if _, err := s.ProcessInputKind(context.Background(), "", nil, EntryNotification); err != nil {
+		t.Fatal(err)
 	}
 }
 

@@ -184,29 +184,32 @@ func (c *delegateTreeController) ClaimRuntimeReclamation(required int) (*delegat
 
 // CompleteRuntimeReclamation clears only the exact runtime pointers that the
 // caller reports closed. A replacement installed after the claim survives.
-func (c *delegateTreeController) CompleteRuntimeReclamation(claim *delegateRuntimeReclamationClaim, closed map[string]*Session) error {
+// The caller carries the recheck past its enclosing operation's admissions.
+func (c *delegateTreeController) CompleteRuntimeReclamation(claim *delegateRuntimeReclamationClaim, closed map[string]*Session) (bool, error) {
+	var recheck bool
 	defer c.retirementChanged()
 	if c == nil {
-		return errors.New("delegate controller is unavailable")
+		return false, errors.New("delegate controller is unavailable")
 	}
 	if claim == nil {
-		return nil
+		return false, nil
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.reclamations[claim.token] != claim {
-		return errDelegateStaleLease
+		return false, errDelegateStaleLease
 	}
 	for _, entry := range claim.entries {
 		if closed[entry.delegateID] != entry.runtime {
 			continue
 		}
 		if live := c.live[entry.delegateID]; live != nil && live.binding == nil && live.runtime == entry.runtime {
-			c.setResidentRuntimeLocked(live, nil)
+			released := c.setResidentRuntimeLocked(live, nil)
+			recheck = recheck || released
 		}
 	}
 	c.releaseRuntimeReclamationLocked(claim)
-	return nil
+	return recheck, nil
 }
 
 func (c *delegateTreeController) AbortRuntimeReclamation(claim *delegateRuntimeReclamationClaim) error {
@@ -443,13 +446,13 @@ func unhookReclaimedRuntimeRecord(entry delegateRuntimeReclamationEntry) {
 	}
 }
 
-func (s *Session) reclaimDelegateRuntimeCapacity(required int) (err error) {
+func (s *Session) reclaimDelegateRuntimeCapacity(required int) (recheck bool, err error) {
 	if s == nil || s.delegateController == nil {
-		return errors.New("delegate controller is unavailable")
+		return false, errors.New("delegate controller is unavailable")
 	}
 	claim, err := s.delegateController.ClaimRuntimeReclamation(required)
 	if err != nil || claim == nil {
-		return err
+		return false, err
 	}
 	completed := false
 	defer func() {
@@ -471,11 +474,12 @@ func (s *Session) reclaimDelegateRuntimeCapacity(required int) (err error) {
 		}
 		closed[entry.delegateID] = entry.runtime
 	}
-	if err := s.delegateController.CompleteRuntimeReclamation(claim, closed); err != nil {
-		return err
+	recheck, err = s.delegateController.CompleteRuntimeReclamation(claim, closed)
+	if err != nil {
+		return recheck, err
 	}
 	completed = true
-	return nil
+	return recheck, nil
 }
 
 // ClaimIdleRuntimeRelease reserves one named quiescent terminal delegate's
@@ -672,7 +676,13 @@ func (s *Session) releaseIdleRuntimeAfterFinalize() bool {
 		closed[entry.delegateID] = entry.runtime
 		unhookReclaimedRuntimeRecord(entry)
 	}
-	if err := s.delegateController.CompleteRuntimeReclamation(claim, closed); err != nil {
+	recheck, err := s.delegateController.CompleteRuntimeReclamation(claim, closed)
+	defer func() {
+		if recheck {
+			s.delegateController.recheckNotificationReceivers()
+		}
+	}()
+	if err != nil {
 		s.emit(warningDataFromError("idle runtime release completion failed", err))
 		return false
 	}

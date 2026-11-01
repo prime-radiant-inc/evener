@@ -112,12 +112,30 @@ func renderMarkdown(header transcript.Header, entries []transcript.Entry, startS
 	return b.String()
 }
 
+// renderMarkdownFits probes byte size without retaining output or evidence.
+func renderMarkdownFits(header transcript.Header, entries []transcript.Entry, startSeq int, opt renderOpts, byteLimit int) bool {
+	opt.evidence = nil
+	var b strings.Builder
+	writeDocumentHeader(&b, header, opt)
+	return writeEntriesBodyLimited(&b, entries, startSeq, opt, byteLimit)
+}
+
 // writeEntriesBody renders the conversation body for entries[0:] (each at
 // startSeq+i) without the document header: the per-entry markdown plus any
 // trailing "Tool results without a shown call" section. Pairing is built over
 // exactly this slice. Splitting this out of renderMarkdown lets the pinned-turn
 // append (renderOutOfRangePin) reuse the same rendering without a second header.
 func writeEntriesBody(b *strings.Builder, entries []transcript.Entry, startSeq int, opt renderOpts) {
+	writeEntriesBodyLimited(b, entries, startSeq, opt, 0)
+}
+
+// writeEntriesBodyLimited shares the full renderer's formatting and pairing.
+// A zero byte limit leaves output unlimited. Once appended output exceeds a
+// positive limit, later entries cannot make it fit, so the probe can stop.
+func writeEntriesBodyLimited(b *strings.Builder, entries []transcript.Entry, startSeq int, opt renderOpts, byteLimit int) bool {
+	if byteLimit > 0 && b.Len() > byteLimit {
+		return false
+	}
 	resultTool := effectiveResultToolName(opt)
 	idx := buildResultIndex(entries, startSeq)
 
@@ -137,9 +155,13 @@ func writeEntriesBody(b *strings.Builder, entries []transcript.Entry, startSeq i
 		if opt.evidence != nil && e.Turn.Kind == schema.TurnUserInput {
 			opt.evidence.spans = append(opt.evidence.spans, transcriptEvidenceSpan{seq, first, b.Len(), complete})
 		}
+		if byteLimit > 0 && b.Len() > byteLimit {
+			return false
+		}
 	}
 
 	writeUnpairedResults(b, &idx, opt)
+	return byteLimit == 0 || b.Len() <= byteLimit
 }
 
 // defaultRangeTurns is the smart-default window: the last N turns when no range
@@ -862,8 +884,7 @@ func budgetedEnd(header transcript.Header, entries []transcript.Entry, start, en
 	}
 	last := end
 	for last > start {
-		body := renderMarkdown(header, entries[start:last+1], start, opt)
-		if len(body) <= convBudgetChars {
+		if renderMarkdownFits(header, entries[start:last+1], start, opt, convBudgetChars) {
 			break
 		}
 		if last <= pinFloor {
@@ -1424,6 +1445,9 @@ func jobResultStatus(r jobResult, raw string) string {
 	if r.Reason != "" {
 		statusParts = append(statusParts, "reason="+r.Reason)
 	}
+	if r.Readiness != "" {
+		statusParts = append(statusParts, "readiness="+r.Readiness)
+	}
 	statusParts = append(statusParts, "transcript_ref="+ref)
 	if len(r.Tools) > 0 {
 		// The capability ceiling is frozen at delegate creation/send time. Keep
@@ -1447,6 +1471,10 @@ func jobResultOutput(r jobResult) string {
 	var b strings.Builder
 	if r.Output != "" {
 		b.WriteString(r.Output) // already de-escaped (real newlines) by the JSON decoder
+		b.WriteString("\n")
+	}
+	if r.ReportSummary != "" {
+		b.WriteString(r.ReportSummary)
 		b.WriteString("\n")
 	}
 	if r.StructuredResult != nil {
@@ -1523,6 +1551,8 @@ var jobResultKnownKeys = map[string]bool{
 	"tools":               true, // delegateCreateResult, delegateSendResult
 	"artifacts_dir":       true, // delegateCreateResult
 	"earlier_results":     true, // delegateSendResult, each rendered as a reply is
+	"readiness":           true, // delegateSendResult
+	"report_summary":      true, // delegateSendResult
 }
 
 var jobResultMetadataKeys = []string{

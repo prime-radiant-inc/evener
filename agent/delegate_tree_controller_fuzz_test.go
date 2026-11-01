@@ -41,7 +41,7 @@ func FuzzDelegateControllerTransitions(f *testing.F) {
 			case 3:
 				if lease, ok := firstDelegateControllerBinding(c, false); ok {
 					runtime := &Session{}
-					if c.AttachRuntime(lease, runtime) == nil {
+					if attachRuntimeWithHandoffForTest(c, lease, runtime) == nil {
 						runtimes[lease.delegateID] = runtime
 					}
 				}

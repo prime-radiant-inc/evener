@@ -2562,7 +2562,8 @@ func TestInitializeHandshakeIsBoundedByInitTimeout(t *testing.T) {
 func TestReconnectStandsDownForAMappedDroppedChannel(t *testing.T) {
 	host := hostreg.Host{Name: "alpha", SSH: "alpha.example"}
 	fr := &fakeRunner{runFn: cannedRun(nil), startFn: goodStartFn(t)}
-	m := newTestManager(t, testRegistry(t, host), fr, Options{})
+	var claims atomic.Int32
+	m := newTestManager(t, testRegistry(t, host), fr, Options{afterSuperviseClaim: func(string, bool) { claims.Add(1) }})
 
 	ch := &Channel{lost: make(chan struct{}), done: make(chan struct{})}
 	ch.markLost()
@@ -2571,15 +2572,38 @@ func TestReconnectStandsDownForAMappedDroppedChannel(t *testing.T) {
 	}
 	hostGate := m.hostLock("alpha")
 	defer m.releaseHostLock("alpha")
-	if got := m.reconnectOnce(context.Background(), host, hostGate); got {
+	if got := m.reconnectOnce(context.Background(), host, hostGate, registeredReconnectLoop(t, m, host, hostGate)); got {
 		t.Fatal("reconnectOnce reported work to do for a host another channel owns")
 	}
 	if starts := len(fr.recordedStarts()); starts != 0 {
 		t.Fatalf("Start calls = %d, want 0: the mapped channel still owns the host", starts)
 	}
+	if claims.Load() != 1 {
+		t.Fatal("mapped-channel check did not reach eligible gate admission")
+	}
 	if cur := m.currentChannel("alpha"); cur != ch {
 		t.Fatalf("currentChannel = %v, want the mapped channel left alone", cur)
 	}
+}
+
+// registeredReconnectLoop gives direct iteration tests a token owned by an
+// actual startSupervise registration and goroutine. Its idle source never
+// drops, so only the explicitly driven iteration can perform remote work.
+func registeredReconnectLoop(t *testing.T, m *Manager, host hostreg.Host, gate *hostLockGate) *supervisorLoop {
+	t.Helper()
+	source := &Channel{lost: make(chan struct{}), done: make(chan struct{})}
+	if !m.startSupervise(host, source, gate) {
+		t.Fatal("could not register recovery loop")
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if len(m.supervisors[host.Name]) != 1 {
+		t.Fatalf("registered recovery loops = %d, want 1", len(m.supervisors[host.Name]))
+	}
+	for loop := range m.supervisors[host.Name] {
+		return loop
+	}
+	panic("unreachable")
 }
 
 // waitClosed fails unless ch reaches the closed state within the deadline. A

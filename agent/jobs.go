@@ -27,6 +27,7 @@ import (
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/envvars"
 	"primeradiant.com/evener/identifier"
+	"primeradiant.com/evener/llm"
 )
 
 var errJobManagerClosing = errors.New("job manager is closing")
@@ -70,6 +71,9 @@ type jobManager struct {
 	watchActivityMu        sync.Mutex
 	watchActivityReceivers map[string]struct{}
 	watchNotifyMu          sync.Mutex
+	watchCallbackMu        sync.Mutex
+	watchProductionFenced  bool
+	watchCallbacksDone     chan struct{}
 	watchPersistMu         sync.Mutex
 	// watchPersistDone is non-nil while one watch-journal transition owns the
 	// process-local serialization token. Waiters observe it under watchPersistMu
@@ -81,7 +85,10 @@ type jobManager struct {
 	store            *jobstore.Store
 	running          map[string]*runningJob
 	watches          map[watchKey]*watchConfig
-	terminalFlush    map[*watchConfig]bool
+	// watchCallbacks counts entered source callbacks through persistence and
+	// routing. Guarded by jm.mu, with entry/exit serialized by watchCallbackMu.
+	watchCallbacks int
+	terminalFlush  map[*watchConfig]bool
 	// watchHistory is a bounded, latest-trimmed ring of watches that have left
 	// the active set, surfaced by job_list so a fired-then-removed watch stays
 	// legible. Guarded by jm.mu.
@@ -219,6 +226,11 @@ type jobManager struct {
 	// process-only settlement batch. Other drains must wait for that batch before
 	// visiting current cursors so one source acknowledgement is charged once.
 	stableWatchSettlementRetrying bool
+	// Transport retry is only a paced hint to replay the source journal. It owns
+	// neither receiver custody nor model execution, and stops with this manager.
+	watchTransportRetry       backoffTimer
+	watchTransportRetryTimer  clock.Timer
+	watchTransportRetryClosed bool
 }
 
 // defaultCloseGrace is the graceful-shutdown window closeRuntimeState gives a
@@ -406,8 +418,9 @@ func (r *treeReservation) release() {
 }
 
 type finalizeAttempt struct {
-	done chan struct{}
-	err  error
+	done       chan struct{}
+	err        error
+	production *watchDeliveryProduction
 }
 
 type runningJobCompletion uint32
@@ -484,17 +497,19 @@ func (jm *jobManager) liveShellHandles() []liveWorkHandle {
 }
 
 type terminalJob struct {
-	status                       jobstore.Status
-	reason                       string
-	exhaustionBudget             string
-	exhaustionLimit              int
-	exitCode                     *int
-	endedAt                      time.Time
-	outputBytes                  int64
-	generation                   string
-	finished                     jobstore.Event
-	finishedForwarded            bool
-	finishedEmitted              bool
+	status            jobstore.Status
+	reason            string
+	exhaustionBudget  string
+	exhaustionLimit   int
+	exitCode          *int
+	endedAt           time.Time
+	outputBytes       int64
+	generation        string
+	finished          jobstore.Event
+	finishedForwarded bool
+	finishedEmitted   bool
+	// Non-nil only across this exact terminal's synchronous JOB_FINISHED emit.
+	emittingProduction           *watchDeliveryProduction
 	notificationPending          jobstore.Event
 	notificationPendingAppended  bool
 	notificationPendingForwarded bool
@@ -538,10 +553,6 @@ type jobNotification struct {
 	// triggering watch's lineage so the notification turn it drives stamps the
 	// same origin and a same-watch retrigger is suppressed.
 	Provenance *provenance.Causal
-	// WatchSend marks this entry as a watch-send wake token: render-by-key
-	// against the owning jobManager's CURRENT pending state at accept time
-	// (spec §4.3). The frame text is deliberately NOT carried here.
-	WatchSend *watchSendToken
 	// Watch fields (in-memory only). WatchID identifies the firing timer so
 	// the session can fold repeated ticks; Fires is how many folded into this
 	// entry; IntervalSeconds and Terminal carry what the timer block needs.
@@ -571,9 +582,9 @@ type jobNotification struct {
 	receiverSessionID string
 	receiverNotify    func(jobNotification)
 	receiverHoldWake  func() func()
-	// watchSendFrame is the rendered frame, populated only between filter and
-	// format inside one accept pass (never persisted, never enqueued).
-	watchSendFrame string
+	callbackConfig    *watchConfig
+	callbackTrigger   string
+	production        *watchDeliveryProduction
 }
 
 func (n jobNotification) isWatch() bool {
@@ -785,6 +796,16 @@ waitLoop:
 func (jm *jobManager) closeStoreOnly() error {
 	if jm == nil || jm.store == nil {
 		return nil
+	}
+	jm.mu.Lock()
+	jm.watchTransportRetryClosed = true
+	jm.watchTransportRetry.generation++
+	jm.watchTransportRetry.active = false
+	timer := jm.watchTransportRetryTimer
+	jm.watchTransportRetryTimer = nil
+	jm.mu.Unlock()
+	if timer != nil {
+		timer.Stop()
 	}
 	if err := jm.store.Close(); err != nil {
 		return fmt.Errorf("close store: %w", err)
@@ -1514,6 +1535,7 @@ func (jm *jobManager) finalizeKeptSync(run *runningJob, status jobstore.Status, 
 	_ = run.output.Close()
 	run.delegateShell.finish()
 	run.closeDoneDurable()
+	jm.kick()
 	return nil
 }
 
@@ -1535,9 +1557,20 @@ func (jm *jobManager) finalizeWithRunMode(jobID string, prepare func(*runningJob
 		return attempt.err
 	}
 	attempt := &finalizeAttempt{done: make(chan struct{})}
+	if armNotification {
+		attempt.production = jm.newWatchDeliveryProductionLocked()
+	}
 	run.finalize = attempt
 	terminal := run.terminal
 	jm.mu.Unlock()
+
+	// The notifying attempt owns initial and retried publication, including the
+	// earlier completion event. Kept-sync keeps its existing no-owner-notice policy.
+	// Release only after attempt bookkeeping unlocks.
+	if armNotification && jm.holdWake != nil {
+		release := jm.holdWake()
+		defer release()
+	}
 
 	var err error
 	if terminal == nil {
@@ -1670,6 +1703,21 @@ func (jm *jobManager) emitFinishedJob(run *runningJob, terminal *terminalJob) {
 	if terminal == nil || terminal.finishedEmitted {
 		return
 	}
+	jm.mu.Lock()
+	var production *watchDeliveryProduction
+	if jm.running[run.rec.JobID] == run && run.terminal == terminal && run.finalize != nil {
+		production = run.finalize.production
+		terminal.emittingProduction = production
+	}
+	jm.mu.Unlock()
+	defer func() {
+		jm.mu.Lock()
+		if terminal.emittingProduction == production {
+			terminal.emittingProduction = nil
+		}
+		jm.mu.Unlock()
+		jm.drainWatchDeliveryProduction(production)
+	}()
 	jm.emitJobFinished(terminal.finished, run)
 	jm.mu.Lock()
 	if jm.running[run.rec.JobID] == run && run.terminal == terminal {
@@ -1784,11 +1832,18 @@ func (jm *jobManager) enqueueNotifications(notifs []jobNotification) bool {
 
 func (jm *jobManager) armFinalizedJob(run *runningJob, terminal *terminalJob) error {
 	defer jm.publishWatchActivity()
+	// A single terminal publication includes canonical watch and shell custody.
+	if jm.holdWake != nil {
+		release := jm.holdWake()
+		defer release()
+	}
 	jm.mu.Lock()
 	if jm.running[run.rec.JobID] != run || run.terminal != terminal {
 		jm.mu.Unlock()
 		return nil
 	}
+	production := jm.newWatchDeliveryProductionLocked()
+	defer jm.drainWatchDeliveryProduction(production)
 	pendingAppended := terminal.notificationPendingAppended
 	var watchNotifications []jobNotification
 	var watchDeliveries []watchSendDelivery
@@ -1821,11 +1876,16 @@ func (jm *jobManager) armFinalizedJob(run *runningJob, terminal *terminalJob) er
 			return err
 		}
 		watchNotifications, watchDeliveries = jm.completeExpiredJobWatchesLocked(run.rec.JobID, expiredWatches, watchRootProvenance)
+		for i := range watchNotifications {
+			watchNotifications[i].production = production
+		}
+		for i := range watchDeliveries {
+			watchDeliveries[i].production = production
+		}
 		jm.mu.Unlock()
 		ownNotices = jm.routeWatchNotifications(watchNotifications)
-		var tokens []jobNotification
-		tokens, watchSendRecorded = jm.recordWatchSends(watchDeliveries)
-		ownNotices = append(ownNotices, tokens...)
+		watchSendRecorded = jm.recordWatchSends(watchDeliveries)
+		jm.drainWatchDeliveryProduction(production)
 	} else {
 		jm.mu.Unlock()
 	}
@@ -1910,8 +1970,11 @@ func (jm *jobManager) persistStableShellAttention(jobID string) (string, *Sessio
 	jm.mu.Lock()
 	owner := jm.stableOwner
 	parentDelegateID := jm.parentDelegateID
+	if owner == nil {
+		owner = jm.retirementOwner
+	}
 	jm.mu.Unlock()
-	if owner == nil || parentDelegateID == "" {
+	if owner == nil {
 		return "", nil, nil
 	}
 	records, err := jm.store.Load()
@@ -1919,16 +1982,13 @@ func (jm *jobManager) persistStableShellAttention(jobID string) (string, *Sessio
 		return "", owner, err
 	}
 	record := records[jobID]
-	if record == nil || record.Type != jobstore.JobShell || record.ParentDelegateID != parentDelegateID || record.TerminalGen == "" || !record.Status.IsTerminal() {
+	if record == nil || record.Type != jobstore.JobShell || (parentDelegateID != "" && record.ParentDelegateID != parentDelegateID) || record.TerminalGen == "" || !record.Status.IsTerminal() {
 		return "", owner, errors.New("stable shell attention source is incomplete")
 	}
 	attentionID := stableShellAttentionID(record.JobID, record.TerminalGen)
-	notification := jobNotificationFromRecord(record)
-	content := owner.formatJobNotificationReminder([]deliverableJobNotification{{notification: notification, terminalGen: record.TerminalGen}})
-	if _, err := owner.appendDelegateNotificationDurably(attentionID, content); err != nil {
-		return "", owner, err
-	}
-	if err := owner.armDelegateAttention(attentionID); err != nil {
+	notice := jobNotificationFromRecord(record)
+	content := owner.formatJobNotificationReminder([]deliverableJobNotification{{notification: notice, terminalGen: record.TerminalGen}})
+	if err := owner.enqueueNotification(notification{ID: attentionID, Message: llm.UserMachinery(content), Provenance: notice.Provenance}); err != nil {
 		return "", owner, err
 	}
 	if record.NotifyState != jobstore.NotifyDelivered {
@@ -1979,6 +2039,9 @@ func (jm *jobManager) forwardDisabled(run *runningJob) bool {
 // enqueued; appendEvent reports whether a fresh pending event must first be
 // persisted (only for a not-yet-armed record). appendEvent implies rearm.
 func rearmTerminalNotificationDecision(rec *jobstore.JobRecord, sessionID string) (rearm, appendEvent bool) {
+	if string(rec.Type) == delegateResourceType {
+		return false, false
+	}
 	if rec.OwnerSessionID != "" && rec.OwnerSessionID != sessionID {
 		return false, false
 	}

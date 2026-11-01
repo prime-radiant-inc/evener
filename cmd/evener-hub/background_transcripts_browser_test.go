@@ -183,8 +183,23 @@ func TestBackgroundTranscriptsEntrySliceBrowser(t *testing.T) {
 		}
 	})
 	handler.Handle("/", web.Handler())
-	hub := httptest.NewServer(handler)
+	gate := newBackgroundTransportGate(handler, backgroundTransportRecorder(fixture))
+	hub := httptest.NewServer(gate)
 	defer hub.Close()
+	// Drain before hub.Close and before trace/fixture cleanup, including when
+	// the Node owner fails. Reuse the existing helper-cleanup reserve.
+	drainCtx := ctx
+	if deadline, ok := t.Deadline(); ok {
+		var drainCancel context.CancelFunc
+		drainCtx, drainCancel = context.WithDeadline(ctx, deadline.Add(-backgroundHelperCleanupReserve))
+		defer drainCancel()
+	}
+	drain := func() {
+		if err := gate.close(drainCtx, true); err != nil {
+			t.Errorf("terminal transport drain: %v", err)
+		}
+	}
+	defer drain()
 	milestones := filepath.Join(fixture.artifact, "milestones.jsonl")
 	if err := os.WriteFile(milestones, nil, 0o600); err != nil {
 		t.Fatalf("create milestone file: %v", err)
@@ -193,6 +208,7 @@ func TestBackgroundTranscriptsEntrySliceBrowser(t *testing.T) {
 	deadline, hasDeadline := t.Deadline()
 	launch := backgroundDriverLaunchForMode(t, fixture, hub.URL, hubedge.AuthURLFor(hub.URL, hex.EncodeToString(tokenBytes)), milestones, entries, true)
 	driverErr := runOwnedBackgroundDriver(t, deadline, hasDeadline, lt, launch)
+	drain()
 	for i := range entries {
 		skillGuardStopHelper(t, i)
 	}
@@ -1033,6 +1049,7 @@ func assertBackgroundEntryTwoTabFencing(t *testing.T, milestones []skillGuardMil
 // turn inside the raw trace.
 func assertBackgroundEntryPagingAndReconnect(t *testing.T, fixture *skillGuardFixture, ref string, milestones []skillGuardMilestone) {
 	t.Helper()
+	assertBackgroundTransportInterval(t, fixture, ref)
 	trace, err := os.ReadFile(filepath.Join(fixture.artifact, "appwire-trace.jsonl"))
 	if err != nil {
 		t.Fatalf("read real AppWire trace for paging/reconnect: %v", err)

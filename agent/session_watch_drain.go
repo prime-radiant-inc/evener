@@ -3,13 +3,8 @@ package agent
 import (
 	"context"
 	"errors"
-	"fmt"
-	"strings"
 
-	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/internal/delegatestore"
-	"primeradiant.com/evener/agent/internal/jobstore"
-	"primeradiant.com/evener/agent/provenance"
 )
 
 // drainPendingWatchSends is the ONLY executor of watch-send delivery. Call it
@@ -31,7 +26,7 @@ func (s *Session) drainPendingWatchSendsReport(ctx context.Context) (watchSendDr
 	var result watchSendDrainResult
 	var errs []error
 	if s.jobManager != nil {
-		drained, err := s.drainJobManagerWatchSends(ctx, s.jobManager, "")
+		drained, err := s.drainJobManagerWatchSends(ctx, s.jobManager)
 		result.observerHandoff = result.observerHandoff || drained.observerHandoff
 		errs = append(errs, err)
 	}
@@ -41,12 +36,11 @@ func (s *Session) drainPendingWatchSendsReport(ctx context.Context) (watchSendDr
 			if child.jobManager == nil {
 				continue
 			}
-			drained, err := child.drainJobManagerWatchSends(ctx, child.jobManager, child.id)
+			drained, err := child.drainJobManagerWatchSends(ctx, child.jobManager)
 			result.observerHandoff = result.observerHandoff || drained.observerHandoff
 			errs = append(errs, err)
 		}
 	}
-	s.driveChildrenWithUndeliveredAttention()
 	return result, errors.Join(errs...)
 }
 
@@ -66,33 +60,6 @@ func (s *Session) drainPendingWatchSendsReport(ctx context.Context) (watchSendDr
 // onto the parent's rail. A deliberately stopped child is stop-gated (no
 // resurrection); a successful handoff settles the parent's forwarded drive
 // signal; a child that cannot be driven escalates as "child unreachable:".
-func (s *Session) driveChildrenWithUndeliveredAttention() {
-	live := make(map[string]bool)
-	for _, sub := range s.liveDirectSubagents() {
-		child := sub.sess
-		// liveDirectSubagents filters nil subagents and sessions.
-		live[child.id] = true
-		// Stop-gating (spec §3): a deliberately stopped child is never resurrected
-		// by a drive for attention that predates the stop. New work clears the gate.
-		// A child the one-shot drain has given up on is skipped for the same
-		// reason and, additionally, for consistency: the drain declares it not
-		// live work, so driving it here would have the drain kicking a child it
-		// has already told the operator it abandoned — and abandoning a queued
-		// notification the drive loop was mid-way through delivering.
-		if s.childDriveGated(child.id) {
-			continue
-		}
-		if child.peekNotifications() > 0 || child.jobManager.hasPendingWatchSends() {
-			if s.driveSubagentNotificationTurn(sub) {
-				// Settle the parent's forwarded drive signal on a successful
-				// handoff so the same stale pending does not re-drive forever; the
-				// child's own ledger stays the source of truth.
-				s.settleDrivenChildForwardedPendings(child.id)
-			}
-		}
-	}
-	s.renderUnreachableChildPendings(live)
-}
 
 // redriveLiveChild re-drives the ONE live direct child whose wake a held
 // claim or guard dropped, once that claim or guard is let go and no run took
@@ -122,38 +89,12 @@ func (s *Session) driveChildrenWithUndeliveredAttention() {
 // guard is released before this call, so driveChildIfNotStopGated's own
 // childDriveGated check is the same stop/fatal/drain gate every other drive
 // reads.
-func (s *Session) redriveLiveChild(childSessionID string) {
-	if s == nil || childSessionID == "" {
-		return
-	}
-	for _, sub := range s.liveDirectSubagents() {
-		if sub == nil || sub.sess == nil || sub.sess.id != childSessionID {
-			continue
-		}
-		s.driveChildIfNotStopGated(sub)
-		return
-	}
-}
 
 // driveChildIfNotStopGated is the wake-edge drive: it skips a stop-gated child so
 // a deliberately stopped child is not resurrected by its own pre-stop notify
 // (spec §3 stop-gating), and a child the one-shot drain has abandoned for the
 // same reason driveChildrenWithUndeliveredAttention does. On a successful
 // handoff it settles the parent's forwarded drive signal for that child.
-func (s *Session) driveChildIfNotStopGated(sub *subagent) {
-	if sub == nil || sub.sess == nil {
-		return
-	}
-	if s.childDriveGated(sub.sess.id) {
-		return
-	}
-	if s.driveDelegateAttention(sub) {
-		return
-	}
-	if s.driveSubagentNotificationTurn(sub) {
-		s.settleDrivenChildForwardedPendings(sub.sess.id)
-	}
-}
 
 // renderUnreachableChildPendings is the failure fallback (spec §3): a forwarded
 // pending in the parent's store whose owner child cannot be driven — the child is
@@ -163,77 +104,6 @@ func (s *Session) driveChildIfNotStopGated(sub *subagent) {
 // is the set of session ids that ARE live direct subagents this pass (those are
 // driven, not rendered here). A child that is terminal-but-resumable is left
 // pending for its own future drive/resume turn — not falsely escalated.
-func (s *Session) renderUnreachableChildPendings(live map[string]bool) {
-	if s == nil || s.jobManager == nil {
-		return
-	}
-	jm := s.jobManager
-	s.renderUnreachableChildPendingsWithLoaders(live, jm.store.Load, jm.store.LoadWatchSends)
-}
-
-func (s *Session) renderUnreachableChildPendingsWithLoaders(
-	live map[string]bool,
-	loadJobs func() (map[string]*jobstore.JobRecord, error),
-	loadWatchSends watchSendLoader,
-) {
-	jm := s.jobManager
-	recs, err := loadJobs()
-	if err != nil {
-		return
-	}
-	for _, rec := range recs {
-		if rec == nil ||
-			rec.OwnerSessionID == "" ||
-			rec.OwnerSessionID == jm.sessionID ||
-			rec.VisibleToSession != jm.sessionID ||
-			rec.TerminalGen == "" ||
-			rec.NotifyState != jobstore.NotifyPending {
-			continue
-		}
-		if live[rec.OwnerSessionID] {
-			continue // driven, not rendered
-		}
-		if s.childResumable(rec.OwnerSessionID) {
-			continue // resumable but idle: left for its own future drive/resume turn
-		}
-		n := jobNotificationFromRecord(rec)
-		n.Reason = strings.TrimSpace("child unreachable: " + rec.Reason)
-		s.enqueueJobNotification(n)
-	}
-	watchSends, err := loadWatchSends()
-	if err != nil {
-		return
-	}
-	for _, state := range watchSends.Pending {
-		if state == nil ||
-			state.Key.ResolvedSendTo != runtimeMessageAliasCaller ||
-			state.Key.VisibleSessionID == "" ||
-			state.Key.VisibleSessionID == jm.sessionID {
-			continue
-		}
-		childSessionID := state.Key.VisibleSessionID
-		if live[childSessionID] {
-			continue // driven, not rendered
-		}
-		if s.childResumable(childSessionID) {
-			continue // resumable but idle: left for its own future drive/resume turn
-		}
-		dropped := *state
-		dropped.DiagnosticReason = limitWatchText("child unreachable: "+state.TriggerReason, watchReadErrorMaxChars)
-		if err := jm.appendWatchSendEvents([]jobstore.Event{{
-			Kind:      jobstore.EventWatchSendDropped,
-			TS:        jm.now(),
-			WatchSend: &dropped,
-		}}); err != nil {
-			s.emit(events.WarningData{Message: fmt.Sprintf("watch-send fallback drop failed: %v", err)})
-			continue
-		}
-		jm.removeRuntimePendingWatchSend(dropped)
-		n := watchSendDiagnosticNotification(state.Key.WatchID, state.Key.ResolvedWatchedIdentity, dropped.DiagnosticReason)
-		n.Provenance = provenance.Clone(state.Provenance)
-		s.enqueueJobNotification(n)
-	}
-}
 
 // childResumable reports whether the stable controller holds a direct child
 // descriptor that is currently resumable.
@@ -284,13 +154,6 @@ func (s *Session) childCommittedSendStart(childSessionID string) bool {
 // one-shot drain has abandoned, a child with a drain grace window pending, and a
 // child holding a committed-send-start claim are each refused a drive. It lives
 // in one place so a new gate cannot be added to some call sites and not others.
-func (s *Session) childDriveGated(childSessionID string) bool {
-	return s.childStopGated(childSessionID) ||
-		s.childFatalRunGated(childSessionID) ||
-		s.childDrainAbandoned(childSessionID) ||
-		s.childDrainGracePending(childSessionID) ||
-		s.childCommittedSendStart(childSessionID)
-}
 
 // claimChildCommittedSendStart takes the id-keyed committed-send-start claim.
 // It returns false when the claim is already held — a second committed start
@@ -340,33 +203,6 @@ func delegateRowStopGated(row delegateSnapshot) bool {
 // enqueue, re-armed at the child's restore) is the ledger, and the no-loss clause
 // keeps its meaning on the owner's copy. Settling the signal stops the same stale
 // pending from re-driving forever; it never touches the child's own store.
-func (s *Session) settleDrivenChildForwardedPendings(childSessionID string) {
-	if s == nil || s.jobManager == nil || childSessionID == "" {
-		return
-	}
-	jm := s.jobManager
-	recs, err := jm.store.Load()
-	if err != nil {
-		return
-	}
-	for _, rec := range recs {
-		if rec == nil ||
-			rec.OwnerSessionID != childSessionID ||
-			rec.VisibleToSession != jm.sessionID ||
-			rec.TerminalGen == "" ||
-			rec.NotifyState != jobstore.NotifyPending {
-			continue
-		}
-		if err := jm.appendEvent(jobstore.Event{
-			Kind:        jobstore.EventJobNotificationDelivered,
-			TS:          jm.now(),
-			JobID:       rec.JobID,
-			TerminalGen: rec.TerminalGen,
-		}); err != nil {
-			s.emit(events.WarningData{Message: fmt.Sprintf("drive settle mark failed: %v", err)})
-		}
-	}
-}
 
 // enqueueOwnCallerWatchSendTokens enqueues this session's pending caller-targeted
 // watch-send tokens onto its OWN rail. A drive turn launched on the
@@ -374,37 +210,29 @@ func (s *Session) settleDrivenChildForwardedPendings(childSessionID string) {
 // puts the caller frames on the rail so they render in the same drive turn. It is
 // caller-only — it does not deliver delegate-targeted observer frames, which the loop
 // boundary handles — so it never duplicates a sidecar delivery.
-func (s *Session) enqueueOwnCallerWatchSendTokens() {
-	if s == nil || s.jobManager == nil || s.jobManager.enqueue == nil {
-		return
-	}
-	for _, delivery := range s.jobManager.pendingWatchSendDeliveries(nil) {
-		if delivery.state.Key.ResolvedSendTo != runtimeMessageAliasCaller {
-			continue
-		}
-		s.jobManager.enqueue(watchSendTokenNotification("", delivery.state))
-	}
-}
 
 func (s *Session) retryRestoredPendingWatchSends(_ context.Context) error {
 	if s == nil || s.jobManager == nil {
 		return nil
 	}
+	return s.retryRestoredPendingWatchSendsFrom(s.jobManager.store.LoadWatchSends)
+}
+
+func (s *Session) retryRestoredPendingWatchSendsFrom(load watchSendLoader) error {
 	deliveries := s.jobManager.pendingWatchSendDeliveries(nil)
+	// Canonical source-receipt work can remain after the current head settles.
+	dispatch := s.jobManager.retirementOwner != nil || s.jobManager.delegateController != nil
 	for _, delivery := range deliveries {
-		if delivery.state.Key.ResolvedSendTo == runtimeMessageAliasCaller {
-			if s.jobManager != nil && s.jobManager.enqueue != nil {
-				s.jobManager.enqueue(watchSendTokenNotification("", delivery.state))
-			}
-			continue
-		}
-		if delivery.state.StableReceiver {
-			s.jobManager.kick()
+		if delivery.state.StableReceiver || delivery.state.CallbackFrame || delivery.state.ReceiverSessionID != "" {
+			dispatch = true
 			continue
 		}
 		if err := s.jobManager.dropWatchSend(delivery.state, delivery.cfg, "retired loose watch receiver"); err != nil {
 			return err
 		}
+	}
+	if dispatch {
+		return s.jobManager.dispatchProducedWatchSendsFrom(load)
 	}
 	return nil
 }

@@ -14,7 +14,7 @@ import { useTranscriptScrollKeys } from "../panes/session/transcript/flow/useTra
 import { useChromeStore } from "../shell/chromeStore";
 import { useIsMobile } from "../shell/useIsMobile";
 import { useWorkspaceStore } from "../shell/workspace";
-import { isEntryTranscriptLocalOpening } from "../stores/entryTranscriptRoutes";
+import { existingEntryRoute, isEntryTranscriptLocalOpening } from "../stores/entryTranscriptRoutes";
 import { threadsStore } from "../stores/threads";
 import { TranscriptRenderProvider, useTranscriptRenderContext } from "../transcriptDisplay/renderContext";
 import {
@@ -86,6 +86,18 @@ function capturePoint(port: HTMLElement, sessionRef: string): ComicReadingPositi
         viewportOffset: point.top - top,
       };
   }
+}
+
+// A readable disk window is not an authoritative exhaustion verdict. Readiness
+// from the live owner cannot authorize destruction of an older captured window.
+// Cached paging remains available while its matching model is published.
+function hasUnverifiedHistory(reader: ComicReaderSnapshot): boolean {
+  const state = threadsStore.getState();
+  return (
+    existingEntryRoute(reader.ref)?.cachedUnverified === true ||
+    state.cacheLifetimes.get(reader.ref)?.shell === true ||
+    state.threads.get(reader.ref) !== reader.history.model
+  );
 }
 
 export function ComicTranscript({
@@ -189,7 +201,14 @@ export function ComicTranscript({
   useLayoutEffect(
     () =>
       threadsStore.subscribe((state, previous) => {
-        if ([...openingRefs()].some((ref) => state.localOpenings.has(ref) !== previous.localOpenings.has(ref))) {
+        if (
+          [...openingRefs()].some(
+            (ref) =>
+              state.localOpenings.has(ref) !== previous.localOpenings.has(ref) ||
+              state.threads.get(ref) !== previous.threads.get(ref) ||
+              state.cacheLifetimes.get(ref) !== previous.cacheLifetimes.get(ref),
+          )
+        ) {
           // Retry through React's committed rows, never the previous DOM in this publication callback.
           retryOpeningPlacement();
         }
@@ -594,7 +613,7 @@ export function ComicTranscript({
           }
           return;
         }
-        if (target.history.loadingOlder) return;
+        if (target.history.loadingOlder || hasUnverifiedHistory(target)) return;
         save({ mode: "end", sessionRef: target.ref, path: target.path });
         restoring.current = false;
         return;
@@ -637,7 +656,7 @@ export function ComicTranscript({
         lastPage.current = page;
         history.loadOlderReportingError();
       }
-    } else if (!history.loadingOlder) {
+    } else if (!history.loadingOlder && !hasUnverifiedHistory(target)) {
       const first = target.entries.find((entry) => entry.id === nearest.current) ?? target.entries[0];
       if (first) save({ ...position, sessionRef: target.ref, path: target.path, entryId: first.id, offset: 0 });
       restoring.current = false;

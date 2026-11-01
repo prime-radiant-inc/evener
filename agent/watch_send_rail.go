@@ -3,9 +3,12 @@ package agent
 import (
 	"context"
 	"errors"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
+
+	"primeradiant.com/evener/llm"
 
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/internal/jobstore"
@@ -56,49 +59,12 @@ func (jm *jobManager) snapshotWatchSendFrame(d watchSendDelivery) watchSendDeliv
 // map can be reconciled against it instead of a ghost ok=false.
 // Pure observation: no delivery, no Session calls (spec §3).
 func (jm *jobManager) recordWatchSend(d watchSendDelivery) (state jobstore.WatchSendState, cfg *watchConfig, ok bool, err error) {
-	if d.cfg == nil || d.send == nil || !jm.isCurrentWatchSendDelivery(d) {
-		return jobstore.WatchSendState{}, nil, false, nil
+	state, cfg, ok, notice, err := jm.recordWatchSendForBatch(d)
+	if notice != nil {
+		jm.enqueueWatchNotifications([]jobNotification{*notice})
+		jm.kick()
 	}
-	target, terr := resolveWatchSendTarget(d.send.To, d.watchedIdentity)
-	notificationJobID := ""
-	if jobID, delegateID, ok := watchFrameJob(d.eventData); ok {
-		d.frame = appendWatchFrameJobRead(d.frame, jobID)
-		notificationJobID = jobID
-		_ = delegateID
-	}
-	state = jm.watchSendState(d, target)
-	state.NotificationJobID = notificationJobID
-	// Coalescing (recordWatchSendPending) unions the superseded pending's
-	// provenance into the survivor and recomputes the self-influence depth on
-	// the union — two below-threshold branches with disjoint delivered priors
-	// can cross the runaway threshold only together. Everything downstream
-	// (the fuse decision and any drop event) uses the PERSISTED coalesced
-	// state so the recorded evidence carries the ancestry that tripped it.
-	persistedState, persisted, perr := jm.persistPendingWatchSend(state, d)
-	if perr != nil {
-		if d.allowAfterTerminalExpiry && !persisted {
-			jm.rememberUnpersistedTerminalPendingWatchSend(d.cfg, state)
-		}
-		if !persisted {
-			return jobstore.WatchSendState{}, nil, false, perr
-		}
-		// The pending event (and any durable prefix of its co-generated
-		// group) is already journaled and committed to the runtime map:
-		// surface the persisted state with ok=true alongside the failure
-		// instead of a ghost ok=false that hides the durable prefix.
-		return persistedState, d.cfg, true, perr
-	}
-	if !persisted {
-		return jobstore.WatchSendState{}, nil, false, nil
-	}
-	state = persistedState
-	if terr != nil {
-		return jobstore.WatchSendState{}, nil, false, jm.dropWatchSend(state, d.cfg, terr.Error())
-	}
-	if state.SelfInfluenceDepth >= runawaySelfInfluenceDepth {
-		return jobstore.WatchSendState{}, nil, false, jm.dropWatchSend(state, d.cfg, "runaway")
-	}
-	return state, d.cfg, true, nil
+	return state, cfg, ok, err
 }
 
 // recordWatchSendsAndKick is the observation-side half of watch delivery:
@@ -106,10 +72,9 @@ func (jm *jobManager) recordWatchSend(d watchSendDelivery) (state jobstore.Watch
 // never delivers (spec §3); the owner's loop drains and delivers on wake. With
 // nothing recorded there is nothing to drain, so the owner is left undisturbed.
 func (jm *jobManager) recordWatchSendsAndKick(deliveries []watchSendDelivery) {
-	tokens, recorded := jm.recordWatchSends(deliveries)
-	// A queued token wakes the owner by itself; a kick is what covers a
-	// recorded send that queued nothing.
-	if queued := jm.enqueueNotifications(tokens); recorded && !queued {
+	recorded := jm.recordWatchSends(deliveries)
+	jm.dispatchProducedWatchSends()
+	if recorded {
 		jm.kick()
 	}
 }
@@ -119,28 +84,15 @@ func (jm *jobManager) recordWatchSendsAndKick(deliveries []watchSendDelivery) {
 // them, so a caller with more to say about the same event can wake the owner
 // once for all of it. recorded reports whether anything was persisted at all —
 // with tokens empty, that is what still owes the owner a kick.
-func (jm *jobManager) recordWatchSends(deliveries []watchSendDelivery) (tokens []jobNotification, recorded bool) {
-	if len(deliveries) == 0 {
-		return nil, false
-	}
-	deliveries = jm.snapshotWatchSendFrames(deliveries)
-	for _, d := range deliveries {
-		state, _, ok, _ := jm.recordWatchSend(d)
-		if !ok {
-			continue // recordWatchSend already produced diagnostics/drops
+func (jm *jobManager) recordWatchSends(deliveries []watchSendDelivery) (recorded bool) {
+	for _, d := range jm.snapshotWatchSendFrames(deliveries) {
+		_, _, ok, err := jm.recordWatchSend(d)
+		if err != nil && !ok {
+			jm.kick()
 		}
-		// A partial-persist failure still returns ok=true with the persisted
-		// state: the pending frame is already journaled and committed to the
-		// runtime map, so it owes the owner a wake like any recorded send —
-		// otherwise the frame stalls until unrelated activity. The failure
-		// itself is already queued as a diagnostic at the persist site, so it
-		// coexists with the token/kick below.
-		recorded = true
-		if state.Key.ResolvedSendTo == runtimeMessageAliasCaller {
-			tokens = append(tokens, watchSendTokenNotification("", state))
-		}
+		recorded = recorded || ok
 	}
-	return tokens, recorded
+	return recorded
 }
 
 func (jm *jobManager) watchSendState(d watchSendDelivery, resolvedSendTo string) jobstore.WatchSendState {
@@ -148,7 +100,7 @@ func (jm *jobManager) watchSendState(d watchSendDelivery, resolvedSendTo string)
 	if deliveryID == "" {
 		deliveryID = jobstore.NewWatchSendDeliveryID()
 	}
-	return jobstore.WatchSendState{
+	state := jobstore.WatchSendState{
 		Key: jobstore.WatchSendKey{
 			VisibleSessionID:        d.visibleSessionID,
 			WatchID:                 d.cfg.watchID,
@@ -156,8 +108,11 @@ func (jm *jobManager) watchSendState(d watchSendDelivery, resolvedSendTo string)
 			ResolvedWatchedIdentity: d.watchedIdentity,
 			ResolvedSendTo:          resolvedSendTo,
 			WatchGeneration:         d.generation,
+			RestartSeq:              d.restartSeq,
 		},
 		DeliveryID:               deliveryID,
+		CallbackFrame:            d.callback,
+		TimerSlot:                d.cfg.slot,
 		UpdateSeq:                d.updateSeq,
 		Message:                  d.message,
 		Frame:                    d.frame,
@@ -172,6 +127,10 @@ func (jm *jobManager) watchSendState(d watchSendDelivery, resolvedSendTo string)
 		SelfInfluenceDepth:       d.fuseDepth,
 		EndNotice:                d.endNotice,
 	}
+	if state.ReceiverSessionID == "" && resolvedSendTo == runtimeMessageAliasCaller {
+		state.ReceiverSessionID = jm.sessionID
+	}
+	return state
 }
 
 // watchTargetSessionID resolves a delegate target to its child session.
@@ -192,25 +151,17 @@ func jobFinishedEventData(data events.EventData) (events.JobFinishedData, bool) 
 }
 
 func (jm *jobManager) deliverPendingWatchSend(cfg *watchConfig, state jobstore.WatchSendState, ensurePending bool) (bool, error) {
-	if !jm.claimWatchSendDelivery(state.DeliveryID) {
+	claimed := jm.claimWatchSendDelivery(state.DeliveryID)
+	jm.mu.Lock()
+	afterClaim := cfg.testOnlyAfterDeliveryClaim
+	jm.mu.Unlock()
+	if afterClaim != nil {
+		afterClaim(state, claimed)
+	}
+	if !claimed {
 		return false, nil
 	}
-	defer jm.releaseWatchSendDeliveryClaim(state.DeliveryID)
-	if !jm.isCurrentPendingWatchSend(cfg, state) {
-		return false, nil
-	}
-	if ensurePending {
-		if err := jm.appendWatchSendPendingState(cfg, state); err != nil {
-			jm.enqueueWatchNotifications([]jobNotification{
-				watchSendDiagnosticNotification(state.Key.WatchID, state.Key.ResolvedWatchedIdentity, "watch send pending state failed: "+limitWatchText(err.Error(), watchReadErrorMaxChars)),
-			})
-			return false, err
-		}
-	}
-	if state.StableReceiver {
-		return jm.deliverStableWatchSend(cfg, state)
-	}
-	return false, jm.dropWatchSend(state, cfg, "retired loose watch receiver")
+	return jm.deliverClaimedPendingWatchSend(cfg, state, ensurePending)
 }
 
 func (jm *jobManager) dropWatchSend(state jobstore.WatchSendState, cfg *watchConfig, reason string) error {
@@ -294,7 +245,7 @@ func (jm *jobManager) deliverStableWatchSend(cfg *watchConfig, state jobstore.Wa
 		return false, err
 	}
 	attentionID := stableWatchAttentionID(state)
-	_, appendErr := receiver.appendDelegateNotificationDurably(attentionID, stableWatchNotificationContent(state))
+	appendErr := jm.acceptWatchFrame(state)
 	if !jm.isCurrentPendingWatchSend(cfg, state) {
 		if appendErr != nil {
 			// A frame the receiver took on an earlier attempt keeps its
@@ -343,7 +294,7 @@ func (jm *jobManager) noteUnsettledWatchSend(cfg *watchConfig, state jobstore.Wa
 	defer jm.mu.Unlock()
 	// A frame whose receipt is gone was retired meanwhile (its watch cleared
 	// or the frame dropped); nothing would ever clear a note for it.
-	if _, held := jm.stableWatchReceipts[state.DeliveryID]; !held {
+	if _, held := jm.stableWatchReceipts[state.DeliveryID]; state.StableReceiver && !held {
 		return
 	}
 	if jm.unsettledWatchSends == nil {
@@ -378,7 +329,7 @@ func (jm *jobManager) armStableWatchFrame(controller *delegateTreeController, re
 func armStableWatchAttention(controller *delegateTreeController, receiver delegateDeliveryReceiver, receiverDelegateID, attentionID string) error {
 	switch receiver := receiver.(type) {
 	case *Session:
-		return receiver.armDelegateAttention(attentionID)
+		return receiver.requestNotificationWake()
 	case coldDelegateDeliveryReceiver:
 		return controller.armColdDelegateAttention(receiverDelegateID, attentionID)
 	}
@@ -418,7 +369,7 @@ func (jm *jobManager) isCurrentPendingWatchSendLocked(cfg *watchConfig, state jo
 	if jm.terminalFlush != nil && jm.terminalFlush[cfg] {
 		return true
 	}
-	key := watchKey{VisibleSessionID: state.Key.VisibleSessionID, Target: state.Key.WatchTarget, SendTo: cfg.sendTo(), ReceiverSessionID: cfg.receiverSessionID, ReceiverDelegateID: cfg.receiverDelegateID}
+	key := watchKey{VisibleSessionID: state.Key.VisibleSessionID, Target: state.Key.WatchTarget, Slot: state.TimerSlot, SendTo: cfg.sendTo(), ReceiverSessionID: cfg.receiverSessionID, ReceiverDelegateID: cfg.receiverDelegateID}
 	return jm.watches[key] == cfg
 }
 
@@ -475,6 +426,10 @@ func (jm *jobManager) persistPendingWatchSend(state jobstore.WatchSendState, d w
 	if len(record.pendingEvents) == 0 {
 		return state, false, nil
 	}
+	// Only this live producer can own its budget tail, not replay or the pure
+	// runtime-state helper, even when their source frame is a callback.
+	record.callbackProduction = d.callback
+	record.production = d.production
 	enqueueReceipt, err := jm.beginStableWatchEnqueue(record.persisted)
 	if err != nil {
 		return state, false, err
@@ -638,11 +593,13 @@ func (jm *jobManager) beginStableWatchEnqueue(state jobstore.WatchSendState) (*d
 }
 
 type watchSendPendingRecord struct {
-	pendingEvents []jobstore.Event
-	evictions     []watchSendEviction
-	cfg           *watchConfig
-	key           jobstore.WatchSendKey
-	previous      *jobstore.WatchSendState
+	pendingEvents      []jobstore.Event
+	evictions          []watchSendEviction
+	cfg                *watchConfig
+	key                jobstore.WatchSendKey
+	previous           *jobstore.WatchSendState
+	callbackProduction bool
+	production         *watchDeliveryProduction
 	// persisted is the exact state written to the pending map and event log
 	// (post-coalescing: unioned provenance, recomputed self-influence depth).
 	persisted jobstore.WatchSendState
@@ -662,6 +619,9 @@ func (jm *jobManager) planWatchSendPending(state jobstore.WatchSendState, d watc
 		return watchSendPendingRecord{}
 	}
 	cfg := d.cfg
+	if (cfg.budgetTripped || cfg.conditionFires >= watchDeliveryBudget) && (strings.HasPrefix(state.TriggerReason, "event: ") || strings.HasPrefix(state.TriggerReason, "output_match: ")) {
+		return watchSendPendingRecord{}
+	}
 	if settled, ok := cfg.settledUpdateSeq[state.Key]; ok && state.UpdateSeq <= settled {
 		return watchSendPendingRecord{}
 	}
@@ -776,6 +736,16 @@ func (jm *jobManager) storeWatchSendPendingRecord(record watchSendPendingRecord,
 		}
 	}
 	persisted := record.persisted
+	if jm.noteProducedWatchFiringLocked(cfg, persisted) && record.callbackProduction && cfg.callbackBudgetOwner == "" {
+		cfg.callbackBudgetOwner = persisted.DeliveryID
+	}
+	if p := record.production; p != nil && persisted.DeliveryID != "" &&
+		persisted.ReceiverSessionID == p.ownerSessionID &&
+		(persisted.ReceiverDelegateID == "" || persisted.ReceiverDelegateID == p.ownerDelegateID) &&
+		(current == nil || current.DeliveryID != persisted.DeliveryID) &&
+		jm.claimWatchSendDeliveryLocked(persisted.DeliveryID) {
+		p.members = append(p.members, pendingWatchSendDelivery{cfg: cfg, state: persisted})
+	}
 	cfg.pending[record.key] = &persisted
 	if detached || cfg.rejectingDelivery || jm.closing {
 		jm.rememberDetachedPendingLocked(cfg)
@@ -969,6 +939,10 @@ func (jm *jobManager) detachWatchConfigSnapshotLocked(target watchConfigTerminal
 	}
 	closeWatchConfig(target.cfg)
 	delete(jm.watches, target.key)
+	if len(target.cfg.pending) != 0 {
+		target.cfg.rejectingDelivery = false
+		jm.rememberDetachedPendingLocked(target.cfg)
+	}
 	return true
 }
 
@@ -981,6 +955,9 @@ func watchSendTerminalSnapshotsLocked(cfg *watchConfig, kind jobstore.EventKind,
 	for _, key := range cfg.pendingOrder {
 		state := cfg.pending[key]
 		if state == nil {
+			continue
+		}
+		if preserveProducedWatchSend(*state, reason) {
 			continue
 		}
 		terminal := *state
@@ -1049,6 +1026,9 @@ func watchSendTerminalSnapshotMatchingKeyLocked(cfg *watchConfig, key watchKey, 
 		}
 		state := cfg.pending[pendingKey]
 		if state == nil {
+			continue
+		}
+		if preserveProducedWatchSend(*state, reason) {
 			continue
 		}
 		terminal := *state
@@ -1145,6 +1125,9 @@ func (jm *jobManager) forgetDetachedWatchSendConfigsIfEmpty(cfgs []*watchConfig)
 	jm.mu.Lock()
 	defer jm.mu.Unlock()
 	for _, cfg := range cfgs {
+		if len(cfg.pending) != 0 {
+			cfg.rejectingDelivery = false
+		}
 		jm.forgetTerminalFlushIfEmptyLocked(cfg)
 	}
 }
@@ -1236,8 +1219,12 @@ type pendingWatchSendDelivery struct {
 // drainJobManagerWatchSends drains jm through the session that owns jm. The
 // receiver is the control surface for delegate-targeted sends; childSessionID is
 // only the caller-token routing marker used when a parent scans a child store.
-func (s *Session) drainJobManagerWatchSends(ctx context.Context, jm *jobManager, childSessionID string) (watchSendDrainResult, error) {
-	var result watchSendDrainResult
+func (s *Session) drainJobManagerWatchSends(ctx context.Context, jm *jobManager) (result watchSendDrainResult, err error) {
+	defer func() {
+		if err != nil {
+			jm.scheduleWatchTransportRetry()
+		}
+	}()
 	var errs []error
 	retrySettled, err := jm.retryStableWatchSettlements()
 	if err != nil {
@@ -1246,25 +1233,16 @@ func (s *Session) drainJobManagerWatchSends(ctx context.Context, jm *jobManager,
 	if !retrySettled {
 		return result, nil
 	}
-	for _, delivery := range jm.pendingWatchSendDeliveries(nil) {
-		target := delivery.state.Key.ResolvedSendTo
-		if target == runtimeMessageAliasCaller {
-			// Caller sends render on the OWNING session's own rail. Tokens are
-			// enqueued at observation time; this re-token covers restored /
-			// crash-recovered pendings. Duplicates are harmless (render-by-key +
-			// batch dedupe). A mid-level owner's caller frame renders in the mid's
-			// OWN drive turn (spec §3 mid-owner caller sends): the parent drives
-			// the mid on the pending-watch-send signal, and the mid renders here
-			// against its own rail (childSessionID == "" from the mid's view). The
-			// v2 child-iteration re-route — re-tokening a child's caller pending
-			// onto the PARENT's rail with ChildSessionID set — is deleted; the
-			// drive signal replaces it, so only the owning session enqueues its
-			// own caller token.
-			if jm.enqueue != nil && childSessionID == "" {
-				jm.enqueue(watchSendTokenNotification("", delivery.state))
-			}
-			continue
+	if jm.retirementOwner != nil || jm.delegateController != nil {
+		// An accepted predecessor may outlive its replacement head. Query the
+		// source candidates even when there is no current send left to drain.
+		fold, err := jm.store.LoadWatchSends()
+		if err != nil {
+			return result, err
 		}
+		errs = append(errs, jm.settleSupersededWatchSends(fold.Superseded))
+	}
+	for _, delivery := range jm.pendingWatchSendDeliveries(nil) {
 		delivered, err := jm.deliverPendingWatchSend(delivery.cfg, delivery.state, true)
 		result.observerHandoff = result.observerHandoff || delivered
 		if err != nil {
@@ -1374,4 +1352,348 @@ func resolveWatchSendTarget(target, watchedJobID string) (string, error) {
 		return "", errors.New("watched_unresolved")
 	}
 	return watchedJobID, nil
+}
+
+func (jm *jobManager) newWatchDeliveryProductionLocked() *watchDeliveryProduction {
+	owner := jm.stableOwner
+	if owner == nil {
+		owner = jm.retirementOwner
+	}
+	if owner == nil {
+		return nil
+	}
+	return &watchDeliveryProduction{ownerSessionID: owner.ID(), ownerDelegateID: jm.parentDelegateID}
+}
+
+func (jm *jobManager) drainWatchDeliveryProduction(production *watchDeliveryProduction) {
+	if production == nil {
+		return
+	}
+	failed := false
+	for {
+		jm.mu.Lock()
+		if len(production.members) == 0 {
+			jm.mu.Unlock()
+			break
+		}
+		member := production.members[0]
+		production.members[0] = pendingWatchSendDelivery{}
+		production.members = production.members[1:]
+		jm.mu.Unlock()
+		if _, err := jm.deliverClaimedPendingWatchSend(member.cfg, member.state, false); err != nil {
+			failed = true
+		}
+	}
+	if failed {
+		// The delivery helper has released every claim before existing recovery
+		// can run. A retry must not spend its only opportunity on our own claim.
+		jm.scheduleWatchTransportRetry()
+		jm.kick()
+	}
+}
+
+func (jm *jobManager) recordWatchSendForBatch(d watchSendDelivery) (state jobstore.WatchSendState, cfg *watchConfig, ok bool, notice *jobNotification, err error) {
+	if d.cfg == nil || (d.send == nil && !d.callback) || !jm.isCurrentWatchSendDelivery(d) {
+		return jobstore.WatchSendState{}, nil, false, nil, nil
+	}
+	target := runtimeMessageAliasCaller
+	var terr error
+	if d.send != nil {
+		target, terr = resolveWatchSendTarget(d.send.To, d.watchedIdentity)
+	}
+	notificationJobID := ""
+	if jobID, delegateID, ok := watchFrameJob(d.eventData); ok {
+		d.frame = appendWatchFrameJobRead(d.frame, jobID)
+		notificationJobID = jobID
+		_ = delegateID
+	}
+	state = jm.watchSendState(d, target)
+	state.NotificationJobID = notificationJobID
+	// Coalescing (recordWatchSendPending) unions the superseded pending's
+	// provenance into the survivor and recomputes the self-influence depth on
+	// the union — two below-threshold branches with disjoint delivered priors
+	// can cross the runaway threshold only together. Everything downstream
+	// (the fuse decision and any drop event) uses the PERSISTED coalesced
+	// state so the recorded evidence carries the ancestry that tripped it.
+	persistedState, persisted, perr := jm.persistPendingWatchSend(state, d)
+	if perr != nil {
+		if !persisted {
+			jm.rememberUnpersistedTerminalPendingWatchSend(d.cfg, state)
+		}
+		if !persisted {
+			return jobstore.WatchSendState{}, nil, false, nil, perr
+		}
+		// The pending event (and any durable prefix of its co-generated
+		// group) is already journaled and committed to the runtime map:
+		// surface the persisted state with ok=true alongside the failure
+		// instead of a ghost ok=false that hides the durable prefix.
+		return persistedState, d.cfg, true, nil, perr
+	}
+	if !persisted {
+		return jobstore.WatchSendState{}, nil, false, nil, nil
+	}
+	state = persistedState
+	jm.mu.Lock()
+	afterPending := d.cfg.testOnlyAfterCallbackPending
+	afterSendPending := d.cfg.testOnlyAfterSendPending
+	jm.mu.Unlock()
+	if d.callback && afterPending != nil {
+		afterPending(state)
+	}
+	if afterSendPending != nil {
+		afterSendPending(state)
+	}
+	jm.mu.Lock()
+	budget := d.cfg.budgetTripped
+	jm.mu.Unlock()
+	if budget {
+		owner := ""
+		if d.callback {
+			owner = d.deliveryID
+		}
+		if n, ended := jm.autoClearWatchOverBudgetNotificationForOwner(d.cfg, owner); ended {
+			n.production = d.production
+			notice = &n
+		}
+	}
+	if terr != nil {
+		return jobstore.WatchSendState{}, nil, false, notice, jm.dropWatchSend(state, d.cfg, terr.Error())
+	}
+	if rejected, err := jm.rejectRunawayWatchSend(d.cfg, state); rejected {
+		return jobstore.WatchSendState{}, nil, false, notice, err
+	}
+	return state, d.cfg, true, notice, nil
+}
+
+func (jm *jobManager) rejectRunawayWatchSend(cfg *watchConfig, state jobstore.WatchSendState) (bool, error) {
+	if state.SelfInfluenceDepth < runawaySelfInfluenceDepth {
+		return false, nil
+	}
+	return true, jm.dropWatchSend(state, cfg, "runaway")
+}
+
+func (jm *jobManager) deliverClaimedPendingWatchSend(cfg *watchConfig, state jobstore.WatchSendState, ensurePending bool) (bool, error) {
+	defer jm.releaseWatchSendDeliveryClaim(state.DeliveryID)
+	if !jm.isCurrentPendingWatchSend(cfg, state) {
+		return false, nil
+	}
+	if ensurePending {
+		if err := jm.appendWatchSendPendingState(cfg, state); err != nil {
+			jm.enqueueWatchNotifications([]jobNotification{
+				watchSendDiagnosticNotification(state.Key.WatchID, state.Key.ResolvedWatchedIdentity, "watch send pending state failed: "+limitWatchText(err.Error(), watchReadErrorMaxChars)),
+			})
+			return false, err
+		}
+		jm.mu.Lock()
+		jm.noteProducedWatchFiringLocked(cfg, state)
+		jm.mu.Unlock()
+	}
+	jm.finishProducedWatchFiring(cfg)
+	if rejected, err := jm.rejectRunawayWatchSend(cfg, state); rejected {
+		return false, err
+	}
+	if state.ReceiverDelegateID != "" && jm.delegateController != nil {
+		accepted, closed, err := jm.delegateController.notificationCustodyAndClosure(state.ReceiverSessionID, stableWatchAttentionID(state))
+		if err != nil {
+			return false, err
+		}
+		if closed {
+			if accepted {
+				return true, jm.settleAcceptedWatchSend(cfg, state)
+			}
+			return false, jm.dropWatchSend(state, cfg, "receiver permanently closed before custody")
+		}
+	}
+	if state.StableReceiver {
+		return jm.deliverStableWatchSend(cfg, state)
+	}
+	if state.CallbackFrame || state.Key.ResolvedSendTo == runtimeMessageAliasCaller {
+		if err := jm.acceptWatchFrame(state); err != nil {
+			return false, err
+		}
+		return true, jm.settleAcceptedWatchSend(cfg, state)
+	}
+	return false, jm.dropWatchSend(state, cfg, "retired loose watch receiver")
+}
+
+func (jm *jobManager) settleAcceptedWatchSend(cfg *watchConfig, state jobstore.WatchSendState) error {
+	err := jm.settleWatchSendDelivered(cfg, state)
+	if err != nil {
+		jm.noteUnsettledWatchSend(cfg, state, false)
+	}
+	return err
+}
+
+func (jm *jobManager) acceptWatchFrame(state jobstore.WatchSendState) error {
+	n := notification{ID: stableWatchAttentionID(state), Message: llm.UserMachinery(stableWatchNotificationContent(state)), Provenance: state.Provenance}
+	if jm.delegateController != nil {
+		return jm.delegateController.enqueueNotification(state.ReceiverSessionID, n)
+	}
+	if owner := jm.retirementOwner; owner != nil && owner.ID() == state.ReceiverSessionID {
+		return owner.enqueueNotification(n)
+	}
+	return errDelegateDeliveryReceiverUnavailable
+}
+
+func (jm *jobManager) dispatchProducedWatchSends() {
+	// The pump itself retains every failure in the paced source retry below.
+	_ = jm.dispatchProducedWatchSendsFrom(jm.store.LoadWatchSends)
+}
+
+func (jm *jobManager) dispatchProducedWatchSendsFrom(load watchSendLoader) (err error) {
+	defer func() {
+		if err != nil {
+			jm.scheduleWatchTransportRetry()
+		}
+	}()
+	var errs []error
+	retrySettled, err := jm.retryStableWatchSettlements()
+	if err != nil {
+		jm.kick()
+		errs = append(errs, err)
+	}
+	if !retrySettled {
+		return errors.Join(errs...)
+	}
+	fold, err := load()
+	if err != nil {
+		jm.kick()
+		return errors.Join(append(errs, err)...)
+	}
+	errs = append(errs, jm.settleSupersededWatchSends(fold.Superseded))
+	for _, d := range jm.pendingWatchSendDeliveries(nil) {
+		pending := fold.Pending[d.state.Key]
+		ensurePending := pending == nil || pending.DeliveryID != d.state.DeliveryID || pending.UpdateSeq != d.state.UpdateSeq
+		if _, err := jm.deliverPendingWatchSend(d.cfg, d.state, ensurePending); err != nil {
+			jm.kick()
+			errs = append(errs, err)
+		}
+	}
+	return errors.Join(errs...)
+}
+
+func (jm *jobManager) scheduleWatchTransportRetry() {
+	owner := jm.retirementOwner
+	if owner == nil {
+		return // Restore-only managers have no live session lifetime to schedule.
+	}
+	jm.mu.Lock()
+	defer jm.mu.Unlock()
+	if jm.closing || jm.watchTransportRetryClosed || jm.watchTransportRetry.active {
+		return
+	}
+	r := &jm.watchTransportRetry
+	delay := r.delay
+	if delay <= 0 {
+		delay = jobNotificationRetryInitialDelay
+	}
+	r.active = true
+	r.generation++
+	generation := r.generation
+	jm.watchTransportRetryTimer = jm.clock.AfterFunc(delay, func() {
+		release, admissionErr := owner.beginAttentionCallback()
+		if release != nil {
+			defer release()
+		}
+		jm.mu.Lock()
+		current := !jm.closing && !jm.watchTransportRetryClosed && jm.watchTransportRetry.generation == generation
+		if current {
+			jm.watchTransportRetry.active = false
+			jm.watchTransportRetry.delay = min(delay*2, jobNotificationRetryMaxDelay)
+		}
+		jm.mu.Unlock()
+		if !current {
+			return
+		}
+		if admissionErr != nil {
+			jm.scheduleWatchTransportRetry()
+			return
+		}
+		if err := jm.dispatchProducedWatchSendsFrom(jm.store.LoadWatchSends); err == nil {
+			jm.mu.Lock()
+			jm.watchTransportRetry.delay = jobNotificationRetryInitialDelay
+			jm.mu.Unlock()
+		}
+	})
+}
+
+func (jm *jobManager) settleSupersededWatchSends(candidates map[string]*jobstore.WatchSendState) error {
+	if len(candidates) == 0 {
+		return nil
+	}
+	retired, err := jm.retiredDelegateJobIDs()
+	if err != nil {
+		return err
+	}
+	var errs []error
+	states := make([]*jobstore.WatchSendState, 0, len(candidates))
+	for _, state := range candidates {
+		if addressedThroughRetiredDelegate(state.Key, retired) {
+			continue
+		}
+		states = append(states, state)
+	}
+	sort.SliceStable(states, func(i, j int) bool { return watchSendStateLess(states[i], states[j]) })
+	for _, state := range states {
+		if !jm.claimWatchSendDelivery(state.DeliveryID) {
+			continue
+		}
+		err := jm.settleSupersededWatchSend(*state)
+		jm.releaseWatchSendDeliveryClaim(state.DeliveryID)
+		if err != nil {
+			jm.kick()
+			errs = append(errs, err)
+		}
+	}
+	return errors.Join(errs...)
+}
+
+func (jm *jobManager) settleSupersededWatchSend(state jobstore.WatchSendState) error {
+	if jm.watchSendDelivered(state.DeliveryID) {
+		return nil
+	}
+	var accepted bool
+	var err error
+	if jm.delegateController != nil {
+		accepted, _, err = jm.delegateController.notificationCustodyAndClosure(state.ReceiverSessionID, stableWatchAttentionID(state))
+	} else if owner := jm.retirementOwner; owner != nil && owner.ID() == state.ReceiverSessionID {
+		accepted, err = owner.notificationSourceAccepted(stableWatchAttentionID(state))
+	} else {
+		return errDelegateDeliveryReceiverUnavailable
+	}
+	if err != nil {
+		return err
+	}
+	if !accepted {
+		// The exact delivery claim excludes an in-flight handoff. Re-read the
+		// source too: another pump may have settled a previously loaded candidate
+		// before this claim, and must not get a second terminal event.
+		fold, err := jm.store.LoadWatchSends()
+		if err != nil {
+			return err
+		}
+		candidate := fold.Superseded[state.DeliveryID]
+		if candidate == nil || candidate.UpdateSeq != state.UpdateSeq {
+			return nil
+		}
+		state.DiagnosticReason = "superseded before receiver custody"
+		if err := jm.appendWatchSendEvents([]jobstore.Event{{Kind: jobstore.EventWatchSendDropped, TS: jm.now(), WatchSend: &state}}); err != nil {
+			return err
+		}
+		jm.releaseStableWatchReceipt(state.DeliveryID)
+		return nil
+	}
+	jm.mu.Lock()
+	retry, retrying := jm.stableWatchSettlementRetries[state.DeliveryID]
+	cfg := jm.watchConfigForKeyLocked(state.Key)
+	jm.mu.Unlock()
+	if retrying {
+		// Custody alone cannot bypass a live retry's required arming. Its
+		// original config also owns accounting after the newer head settles.
+		return jm.retryClaimedStableWatchSettlement(retry)
+	}
+	if cfg == nil {
+		cfg = &watchConfig{watchID: state.Key.WatchID, generation: state.Key.WatchGeneration}
+	}
+	return jm.settleWatchSendDelivered(cfg, state)
 }

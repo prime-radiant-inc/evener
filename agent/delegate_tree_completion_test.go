@@ -172,7 +172,7 @@ func TestDelegateGenerationEvidenceSnapshotDeepClonesFallback(t *testing.T) {
 
 func startDelegateAttentionEvidenceGeneration(t *testing.T, c *delegateTreeController, delegateID string) delegateLease {
 	t.Helper()
-	runtime := &Session{id: "child-" + delegateID, stateDir: c.stateDir, delegateController: c}
+	runtime := &Session{id: "child-" + delegateID, stateDir: c.stateDir, delegateController: c, owningDelegateID: delegateID, delegateRootSessionID: c.rootSessionID}
 	c.mu.Lock()
 	if _, err := c.appendLocked(delegatestore.Event{
 		Kind:       delegatestore.EventDelegateAttentionChanged,

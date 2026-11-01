@@ -73,6 +73,10 @@ type hostLockGate struct {
 	mu     sync.Mutex
 	held   atomic.Bool
 	holder atomic.Pointer[hostops.Holder]
+	// releaseMu protects only the zero-value-safe release generation. Neither
+	// snapshot nor notification waits for the host gate or takes m.mu.
+	releaseMu sync.Mutex
+	released  chan struct{}
 }
 
 // isHeld reports whether the gate is currently held, without disturbing the
@@ -106,6 +110,14 @@ func (g *hostLockGate) Unlock() {
 	g.holder.Store(nil)
 	g.held.Store(false)
 	g.mu.Unlock()
+	// Notify only after the raw unlock: a woken contender must see availability
+	// or a new holder whose later release will wake its next attempt.
+	g.releaseMu.Lock()
+	if g.released != nil {
+		close(g.released)
+	}
+	g.released = nil
+	g.releaseMu.Unlock()
 }
 
 // holdAs registers the holder of the current hold. Callers call it immediately
@@ -269,4 +281,13 @@ func (m *Manager) HoldAs(host string, holder hostops.Holder) error {
 	entry.gate.holdAs(holder)
 	m.releaseHostLock(name)
 	return nil
+}
+
+func (g *hostLockGate) releaseGeneration() <-chan struct{} {
+	g.releaseMu.Lock()
+	defer g.releaseMu.Unlock()
+	if g.released == nil {
+		g.released = make(chan struct{})
+	}
+	return g.released
 }

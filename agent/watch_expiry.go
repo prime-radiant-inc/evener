@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"time"
 
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/internal/jobstore"
@@ -126,24 +127,24 @@ func watchEverDelivered(cfg *watchConfig) bool {
 // already terminal, and it is idempotent — the notice it appends is itself a
 // watch-send frame, so a repeat pass reads that watch as having spoken.
 func (jm *jobManager) noticeUnrestoredWatchEnds() error {
-	if len(jm.watchesLostAtRestore) == 0 {
-		return nil
+	stored, err := jm.store.LoadEvents()
+	if err != nil {
+		return err
 	}
 	// A receiver that can't be routed to — its Session not yet reconstructed,
 	// or gone for good — must not hold every OTHER lost watch's end notice
 	// hostage. Log the aggregate and keep going; restore itself never fails on
 	// a notification-delivery miss.
-	if err := jm.notifyRestartCancelledCallbackWatches(); err != nil && jm.emit != nil {
+	if err := jm.notifyRestartCancelledCallbackWatches(stored); err != nil && jm.emit != nil {
 		jm.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("restart callback cancellation: %v", err)}, nil)
+	}
+	if len(jm.watchesLostAtRestore) == 0 {
+		return nil
 	}
 	// One journal read for both consumers: LoadEvents returns the raw events
 	// and Fold derives the same job records Load would fold from them, so this
 	// path does one readAllLocked+fold instead of two. No cache is added — the
 	// events are a local of this call only.
-	stored, err := jm.store.LoadEvents()
-	if err != nil {
-		return err
-	}
 	recs := jobstore.Fold(stored)
 	spoke := watchGenerationsThatSpoke(stored)
 	for _, watch := range jm.watchesLostAtRestore {
@@ -201,7 +202,10 @@ func (jm *jobManager) noticeUnrestoredWatchEnds() error {
 	return nil
 }
 
-func (jm *jobManager) notifyRestartCancelledCallbackWatches() error {
+func (jm *jobManager) notifyRestartCancelledCallbackWatches(stored []jobstore.Event) error {
+	if jm.retirementOwner != nil || jm.delegateController != nil {
+		return jm.produceRestartCallbackNotices(stored)
+	}
 	receivers := make(map[string]struct{})
 	for _, watch := range jm.watchesLostAtRestore {
 		if watch == nil || watch.SendTo != "" {
@@ -278,4 +282,59 @@ func (jm *jobManager) terminalJobFactsLocked(jobID string) (status jobstore.Stat
 		return "", "", 0
 	}
 	return run.terminal.status, run.terminal.reason, run.terminal.outputBytes
+}
+
+func (jm *jobManager) produceRestartCallbackNotices(stored []jobstore.Event) error {
+	watches := jobstore.FoldWatches(stored)
+	recorded := make(map[string]bool)
+	for _, event := range stored {
+		if event.WatchSend != nil {
+			recorded[event.WatchSend.DeliveryID] = true
+		}
+	}
+	var batchSeq, previousSeq int64
+	var batchTime time.Time
+	var errs []error
+	for _, event := range stored {
+		if event.Kind != jobstore.EventWatchCleared || event.Watch == nil || event.Watch.EndReason != "runtime_lost" {
+			continue
+		}
+		if previousSeq+1 != event.Seq || !batchTime.Equal(event.TS) {
+			batchSeq, batchTime = event.Seq, event.TS
+		}
+		previousSeq = event.Seq
+		watch := watches[event.WatchID]
+		if watch == nil || watch.Generation != event.Watch.Generation || watch.SendTo != "" {
+			continue
+		}
+		receiver := watch.ReceiverSessionID
+		if receiver == "" {
+			receiver = jm.sessionID
+		}
+		id := fmt.Sprintf("restart-%s-%d-%s", jm.sessionID, batchSeq, receiver)
+		if recorded[id] {
+			continue
+		}
+		recorded[id] = true // one notice per receiver in this restart batch
+		cfg := &watchConfig{
+			watchID: watch.WatchID, generation: watch.Generation,
+			target: watch.Target, receiverSessionID: receiver,
+			receiverDelegateID: watch.ReceiverDelegateID,
+			pending:            make(map[jobstore.WatchSendKey]*jobstore.WatchSendState),
+		}
+		jm.mu.Lock()
+		d := jm.watchSendSnapshot(cfg, watch.Target, "runtime_lost", events.SessionEvent{SessionID: jm.sessionID})
+		d.restartSeq = batchSeq
+		d.deliveryID = id
+		d.provenance = provenance.WithWatch(nil, cfg.watchID, cfg.generation, id, jm.sessionID, watch.Target)
+		d.callback, d.endNotice, d.allowAfterTerminalExpiry = true, true, true
+		jm.rememberDetachedPendingLocked(cfg)
+		jm.mu.Unlock()
+		d.frame = systemNotification(callbackWatchesCancelledAtRestartMessage)
+		if _, _, _, err := jm.recordWatchSend(d); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	jm.dispatchProducedWatchSends()
+	return errors.Join(errs...)
 }

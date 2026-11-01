@@ -46,7 +46,7 @@ func deliverAndConsumeRootAttention(tb testing.TB, root *Session, attentionID st
 	if _, err := root.appendDelegateNotificationDurably(attentionID, "<delegate-notification>done</delegate-notification>"); err != nil {
 		tb.Fatalf("append %s: %v", attentionID, err)
 	}
-	if err := root.armDelegateAttention(attentionID); err != nil {
+	if err := root.requestNotificationWake(); err != nil {
 		tb.Fatalf("arm %s: %v", attentionID, err)
 	}
 	if err := root.resolveAttentionDurably([]string{attentionID}, delegateAttentionConsumed); err != nil {

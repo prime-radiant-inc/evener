@@ -827,19 +827,18 @@ func (h *delegateLifecycleHarness) opOrdinaryFinish(op lifecycleOp) string {
 		finish.outcome = delegatestore.OutcomeFailed
 		finish.disposition = delegatestore.DispositionTerminalError
 	}
-	// The arg's deferred bit makes the root receiver "processing" during the
-	// finish, so the finish's delivery plans are deferred into the root's
-	// delivery queue (acceptDelegateDeliveryPlan's processing path) instead
-	// of acknowledging inline — the state op 12 pumps.
-	deferredReceiver := (op.arg/3)%2 == 1
-	if deferredReceiver {
+	// The busy-receiver bit exercises canonical custody during processing.
+	// The independently modeled finish and source acknowledgment still run
+	// through the same real transport path.
+	busyReceiver := (op.arg/3)%2 == 1
+	if busyReceiver {
 		h.root.mu.Lock()
 		h.root.state = SessionProcessing
 		h.root.mu.Unlock()
 	}
 	finishPlans, err := h.c.FinishGeneration(lease, finish)
 	if err != nil {
-		h.resetRootProcessing(deferredReceiver)
+		h.resetRootProcessing(busyReceiver)
 		return "finish-rejected"
 	}
 	// The finish's delivery plans are the parent-visible half of the
@@ -847,7 +846,7 @@ func (h *delegateLifecycleHarness) opOrdinaryFinish(op lifecycleOp) string {
 	// (full BeginDelivery → durable append → CompleteDelivery path) instead
 	// of leaving a claim orphaned.
 	acknowledged, execErr := h.executeLifecyclePlans(finishPlans)
-	h.resetRootProcessing(deferredReceiver)
+	h.resetRootProcessing(busyReceiver)
 	if execErr != nil {
 		h.t.Fatalf("lifecycle finish: execute plans: %v", execErr)
 	}
@@ -881,16 +880,16 @@ func (h *delegateLifecycleHarness) opOrdinaryFinish(op lifecycleOp) string {
 		// keeping the stopped outcome.
 		h.model.completeStop()
 	}
-	if deferredReceiver {
-		return "ordinary-finish-deferred-delivery"
+	if busyReceiver {
+		return "ordinary-finish-busy-receiver"
 	}
 	return "ordinary-finish"
 }
 
 // resetRootProcessing restores the root receiver's idle state after a
-// deferred finish, so subsequent operations see an idle receiver.
-func (h *delegateLifecycleHarness) resetRootProcessing(deferred bool) {
-	if !deferred {
+// busy-receiver finish, so subsequent operations see an idle receiver.
+func (h *delegateLifecycleHarness) resetRootProcessing(busy bool) {
+	if !busy {
 		return
 	}
 	h.root.mu.Lock()
@@ -1001,27 +1000,8 @@ func (h *delegateLifecycleHarness) opDelivery() string {
 	if deliveries == 0 {
 		return "delivery-none-pending"
 	}
-	// A pending delivery deferred by a processing receiver is pumped by the
-	// root's delivery queue (flushPendingDelegateDeliveries); a fresh head
-	// delivery is re-issued by ReplayDeliveries. Try the root's deferred
-	// queue first (op 10 may have deferred the finish's delivery when the
-	// root was processing), then ReplayDeliveries.
+	// Retry inventory belongs only to the durable producer journal.
 	before := h.acknowledgedDeliveryCount()
-	h.root.delegateDeliveryMu.Lock()
-	deferred := append([]delegateDeliveryPlan(nil), h.root.pendingDelegateDeliveries...)
-	h.root.delegateDeliveryMu.Unlock()
-	if len(deferred) != 0 {
-		// The root's flush pumps the deferred queue through the production
-		// delivery path (BeginDelivery → durable append → CompleteDelivery).
-		if err := h.root.flushPendingDelegateDeliveries(); err != nil {
-			return "delivery-rejected"
-		}
-		h.model.delivered += h.acknowledgedDeliveryCount() - before
-		if h.acknowledgedDeliveryCount() == before {
-			return "delivery-not-acknowledged"
-		}
-		return "delivery-acknowledged"
-	}
 	plans := h.c.ReplayDeliveries()
 	if len(plans) == 0 {
 		return "delivery-none-replayable"
@@ -1220,12 +1200,9 @@ var delegateLifecycleSeedCorpus = []lifecycleSeed{
 		// delivery execute+ack: after a reported finish (op 10), the pending
 		// delivery is executed and acknowledged exactly once (op 12) (I4).
 		name: "delivery-execute-ack",
-		// Op 10 with the deferred-receiver bit (arg 3: flavor 0 + deferred)
-		// leaves the finish's delivery in the root's deferred queue; op 12
-		// then pumps it through the production delivery path
-		// (BeginDelivery → durable append → CompleteDelivery), exercising
-		// I4's parent-visible half in op 12's own right. The second op-12
-		// byte proves no second acknowledgement occurs.
+		// Op 10 with the busy-receiver bit (arg 3: flavor 0 + busy)
+		// transfers canonical custody during processing. Both op-12 retries
+		// must preserve the single source acknowledgment (I4).
 		program:       []byte{op1(5), opArg(10, 3), op1(12), op1(12)},
 		legacyBinding: false,
 		targets:       "delivery uniqueness (I4)",

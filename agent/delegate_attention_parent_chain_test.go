@@ -6,8 +6,7 @@ import "testing"
 // it can do that only for an idle one (idleDelegateRestoreCommit). A parent
 // that is running without a resident runtime (after a restart, until its
 // generation is recovered) makes every restore of the child fail target_busy.
-// So a child whose chain can't be made resident waits, neither selected nor
-// runnable but still pending, until its parent is resident or idle.
+// The production ancestor gate must wait without losing pending membership.
 func TestAChildWaitsWhileItsParentIsRunningWithoutARuntime(t *testing.T) {
 	t.Parallel()
 	c, _ := newDelegateControllerTestHarness(t, 4, 2)
@@ -17,11 +16,11 @@ func TestAChildWaitsWhileItsParentIsRunningWithoutARuntime(t *testing.T) {
 		t.Fatal("note child attention")
 	}
 
-	if delegateID, _, pending := c.nextIdleDelegateAttention(); pending {
-		t.Fatalf("selected %s while its parent runs with no resident runtime; its restore can only fail", delegateID)
-	}
-	if c.hasRunnableDelegateAttention() {
-		t.Fatal("attention under a non-resident running parent reads as runnable, so the drive keeps attempting it")
+	c.mu.Lock()
+	ready, closed := c.attentionWakeAncestorGateLocked("dlg_child")
+	c.mu.Unlock()
+	if ready || closed != "" {
+		t.Fatalf("running cold parent gate: ready=%t closed=%q, want temporary refusal", ready, closed)
 	}
 	if !c.hasPendingDelegateAttention() {
 		t.Fatal("the child's attention stopped reading as pending; the retry must keep waiting for the parent")
@@ -30,9 +29,10 @@ func TestAChildWaitsWhileItsParentIsRunningWithoutARuntime(t *testing.T) {
 	// Once the parent's runtime is resident, the child restores under it.
 	c.mu.Lock()
 	c.live["dlg_parent"].runtime = &Session{}
+	ready, closed = c.attentionWakeAncestorGateLocked("dlg_child")
 	c.mu.Unlock()
-	if delegateID, _, pending := c.nextIdleDelegateAttention(); !pending || delegateID != "dlg_child" {
-		t.Fatalf("with the parent resident: selected %q pending=%t, want dlg_child", delegateID, pending)
+	if !ready || closed != "" {
+		t.Fatalf("resident parent gate: ready=%t closed=%q", ready, closed)
 	}
 }
 
@@ -46,8 +46,11 @@ func TestAChildUnderAnIdleColdParentIsSelected(t *testing.T) {
 	if !c.noteDelegateAttention("dlg_child", "delegate:dlg_child") {
 		t.Fatal("note child attention")
 	}
-	if delegateID, _, pending := c.nextIdleDelegateAttention(); !pending || delegateID != "dlg_child" {
-		t.Fatalf("under an idle cold parent: selected %q pending=%t, want dlg_child", delegateID, pending)
+	c.mu.Lock()
+	ready, closed := c.attentionWakeAncestorGateLocked("dlg_child")
+	c.mu.Unlock()
+	if !ready || closed != "" {
+		t.Fatalf("idle cold parent gate: ready=%t closed=%q", ready, closed)
 	}
 }
 
@@ -65,11 +68,11 @@ func TestAGrandchildWaitsWhileItsGrandparentIsRunningWithoutARuntime(t *testing.
 		t.Fatal("note child attention")
 	}
 
-	if delegateID, _, pending := c.nextIdleDelegateAttention(); pending {
-		t.Fatalf("selected %s under a grandparent running with no resident runtime; its restore can only fail", delegateID)
-	}
-	if c.hasRunnableDelegateAttention() {
-		t.Fatal("attention under a non-resident running grandparent reads as runnable")
+	c.mu.Lock()
+	ready, closed := c.attentionWakeAncestorGateLocked("dlg_child")
+	c.mu.Unlock()
+	if ready || closed != "" {
+		t.Fatalf("running cold grandparent gate: ready=%t closed=%q, want temporary refusal", ready, closed)
 	}
 	if !c.hasPendingDelegateAttention() {
 		t.Fatal("the child's attention stopped reading as pending; the retry must keep waiting")
@@ -77,8 +80,9 @@ func TestAGrandchildWaitsWhileItsGrandparentIsRunningWithoutARuntime(t *testing.
 
 	c.mu.Lock()
 	c.live["dlg_grandparent"].runtime = &Session{}
+	ready, closed = c.attentionWakeAncestorGateLocked("dlg_child")
 	c.mu.Unlock()
-	if delegateID, _, pending := c.nextIdleDelegateAttention(); !pending || delegateID != "dlg_child" {
-		t.Fatalf("with the grandparent resident: selected %q pending=%t, want dlg_child", delegateID, pending)
+	if !ready || closed != "" {
+		t.Fatalf("resident grandparent gate: ready=%t closed=%q", ready, closed)
 	}
 }

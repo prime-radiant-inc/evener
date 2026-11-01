@@ -501,7 +501,7 @@ func TestDrainJobTreeDoesNotHangWithAHeldSteer(t *testing.T) {
 	var result string
 	var err error
 	go func() {
-		result, err = sess.DrainJobTree(ctx)
+		result, err = sess.DrainJobTree(ctx, drainWakeForTest(sess))
 		close(done)
 	}()
 	select {

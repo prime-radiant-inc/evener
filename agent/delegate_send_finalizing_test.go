@@ -269,7 +269,7 @@ func finishGenerationOn(t *testing.T, c *delegateTreeController, runtime *Sessio
 	if err != nil {
 		t.Fatalf("CommitStart: %v", err)
 	}
-	if err := c.AttachRuntime(started.lease, runtime); err != nil {
+	if err := attachRuntimeWithHandoffForTest(c, started.lease, runtime); err != nil {
 		t.Fatalf("AttachRuntime: %v", err)
 	}
 	if _, err := c.AdmitStartInput(started.lease, func() error { return nil }); err != nil {
@@ -353,7 +353,7 @@ func TestDelegateControllerIgnoresAnEarlierGenerationsQuiescence(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CommitStart second: %v", err)
 	}
-	if err := c.AttachRuntime(second.lease, runtime); err != nil {
+	if err := attachRuntimeWithHandoffForTest(c, second.lease, runtime); err != nil {
 		t.Fatalf("AttachRuntime second: %v", err)
 	}
 	if _, err := c.AdmitStartInput(second.lease, func() error { return nil }); err != nil {
@@ -374,8 +374,11 @@ func TestDelegateControllerAdmitsAStartOnceTheFinishedRuntimeIsReplaced(t *testi
 	c, _, _ := finishedDelegateStillFinalizing(t)
 	assertStartRefused(t, c, "dlg_target", "while the finished runtime is resident")
 	c.mu.Lock()
-	c.setResidentRuntimeLocked(c.live["dlg_target"], &Session{})
+	recheck := c.setResidentRuntimeLocked(c.live["dlg_target"], &Session{})
 	c.mu.Unlock()
+	if recheck {
+		c.recheckNotificationReceivers()
+	}
 	assertStartAdmitted(t, c, "dlg_target", "once another runtime is resident")
 }
 
@@ -504,8 +507,11 @@ func TestDelegateControllerReleasesAFinalizationWhoseRuntimeIsReplaced(t *testin
 		t.Fatalf("ReserveStart while finalizing = %v, want a finalizing refusal", err)
 	}
 	c.mu.Lock()
-	c.setResidentRuntimeLocked(c.live["dlg_target"], &Session{})
+	recheck := c.setResidentRuntimeLocked(c.live["dlg_target"], &Session{})
 	c.mu.Unlock()
+	if recheck {
+		c.recheckNotificationReceivers()
+	}
 	select {
 	case <-finalizing.released:
 	default:
@@ -514,17 +520,15 @@ func TestDelegateControllerReleasesAFinalizationWhoseRuntimeIsReplaced(t *testin
 	assertStartAdmitted(t, c, "dlg_target", "once the finalizing runtime was replaced")
 }
 
-// sessionOnHarness is a session whose delegate controller is the harness's,
-// for driving the send's reservation directly. Its own controller goes back
-// before it closes (cleanups run last-registered first), or closing would
-// tear down the harness tree.
+// sessionOnHarness borrows the harness's controller for its entire lifetime.
+// Constructor inheritance leaves tree ownership with the harness, so Close
+// does not tear down that tree or replace a pointer still used by a wake.
 func sessionOnHarness(t *testing.T, c *delegateTreeController) *Session {
 	t.Helper()
-	s := newSession(t)
-	own := s.delegateController
-	s.delegateController = c
-	t.Cleanup(func() { s.delegateController = own })
-	return s
+	cfg := minimalTestSessionConfig(t)
+	cfg.spawn.delegateController = c
+	cfg.spawn.delegateRootSessionID = c.rootSessionID
+	return newSession(t, withConfig(cfg))
 }
 
 // A send that waited out one finalization and finds the delegate finalizing
@@ -611,38 +615,69 @@ func TestDelegateControllerWakesTheAttentionDriveWhenAFinalizationIsReleased(t *
 		release func(t *testing.T, c *delegateTreeController, lease delegateLease, runtime *Session)
 	}{
 		{"the finished runtime reports quiescence", reportFinalizeTailDone},
-		{"another runtime becomes resident", func(_ *testing.T, c *delegateTreeController, _ delegateLease, _ *Session) {
+		{"another runtime becomes resident", func(_ *testing.T, c *delegateTreeController, lease delegateLease, runtime *Session) {
 			c.mu.Lock()
-			c.setResidentRuntimeLocked(c.live["dlg_target"], &Session{})
+			recheck := c.setResidentRuntimeLocked(c.live[lease.delegateID], runtime)
 			c.mu.Unlock()
+			if recheck {
+				c.recheckNotificationReceivers()
+			}
 		}},
-		{"the resident runtime is dropped", func(_ *testing.T, c *delegateTreeController, _ delegateLease, _ *Session) {
+		{"the resident runtime is dropped", func(_ *testing.T, c *delegateTreeController, lease delegateLease, _ *Session) {
 			c.mu.Lock()
-			c.setResidentRuntimeLocked(c.live["dlg_target"], nil)
+			recheck := c.setResidentRuntimeLocked(c.live[lease.delegateID], nil)
 			c.mu.Unlock()
+			if recheck {
+				c.recheckNotificationReceivers()
+			}
 		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			c, lease, runtime := finishedDelegateStillFinalizing(t)
-			wakes := make(chan struct{}, 1)
-			root := &Session{}
-			root.notifyFunc = func() {
-				select {
-				case wakes <- struct{}{}:
-				default:
-				}
+			fixture := newColdDelegateFixture(t, "")
+			attentionRequested := make(chan struct{})
+			var attentionRequest llm.Request
+			fixture.adapter.steps = []func(llm.Request) llm.Response{
+				func(llm.Request) llm.Response { return agenttest.FinalResponse("warm-result-57") },
+				func(req llm.Request) llm.Response {
+					attentionRequest = req
+					close(attentionRequested)
+					return agenttest.FinalResponse("released-result-57")
+				},
 			}
+			root := restoreSupervisionRoot(t, fixture, nil)
+			sub := warmDelegateUnservedRoot(t, root, fixture)
+			waitForStableSupervisionRun(t, root, fixture.childID)
+			c, runtime := root.delegateController, sub.sess
+			lease := delegateLease{delegateID: fixture.delegateID, generation: delegateAggregateSnapshot(t, c, fixture.delegateID).Generation}
+			previous := runtime
+			if tc.name == "another runtime becomes resident" {
+				// Only identity is inspected for the obsolete generation. It is
+				// never installed as a runnable root or notification receiver.
+				previous = newDelegateAttentionTestSession(t)
+			}
+			released := make(chan struct{})
 			c.mu.Lock()
-			c.rootRuntime = root
-			c.attentionStateLocked("dlg_target").wakeIDs = map[string]struct{}{"attention-owed": {}}
+			c.live[fixture.delegateID].finalizing = &delegateFinalization{runtime: previous, generation: lease.generation, delegateID: lease.delegateID, released: released}
 			c.mu.Unlock()
+			if _, err := runtime.appendDelegateNotificationDurably("release-notification-57", "release-payload-57"); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := c.openDelegateAttention(fixture.delegateID, "release-notification-57"); err != nil {
+				t.Fatal(err)
+			}
 			tc.release(t, c, lease, runtime)
-			select {
-			case <-wakes:
-			// TRIPWIRE: a hang guard only; the wake is handed off at the
-			// release, with no timer in between.
-			case <-time.After(10 * time.Second):
-				t.Fatal("the release left attention owed to the delegate with no wake for the root's drive")
+			waitForTestSignal(t, released, "finalization fence release")
+			waitForTestSignal(t, attentionRequested, "second provider request after finalization release")
+			if !requestContainsText(attentionRequest, "release-payload-57") {
+				t.Fatal("released receiver request omitted its accepted message")
+			}
+			waitForStableSupervisionRun(t, root, fixture.childID)
+			if got := supervisionRequestCount(fixture.adapter); got != 2 {
+				t.Fatalf("provider requests = %d, want 2", got)
+			}
+			assertAttentionResponseReceipts(t, runtime, "release-notification-57", 1)
+			if starts := attentionRunStarts(t, fixture); starts != 1 {
+				t.Fatalf("released receiver generations = %d, want one", starts)
 			}
 		})
 	}

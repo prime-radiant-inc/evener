@@ -155,12 +155,12 @@ func nbdExerciseOutstandingCounts(t *testing.T) {
 
 func nbdExerciseDrainWaitBranches(t *testing.T, mode uint8) {
 	t.Helper()
-	if result, err := (&Session{}).DrainJobTree(context.Background()); err != nil || result != "" {
+	if result, err := (&Session{}).DrainJobTree(context.Background(), nil); err != nil || result != "" {
 		t.Fatalf("nil-manager drain = %q, %v", result, err)
 	}
 
 	quiescent := newSession(t)
-	if result, err := quiescent.DrainJobTree(context.Background()); err != nil || result != "" {
+	if result, err := quiescent.DrainJobTree(context.Background(), drainWakeForTest(quiescent)); err != nil || result != "" {
 		t.Fatalf("quiescent drain = %q, %v", result, err)
 	}
 	if outstanding, err := (&Session{}).treeHasOutstandingWork(); err != nil || outstanding {
@@ -186,7 +186,7 @@ func nbdExerciseDrainWaitBranches(t *testing.T, mode uint8) {
 		recheck <- frozenTestTime
 	}
 	cancel()
-	if result, err := stuck.drainJobTree(ctx, recheck); err != context.Canceled || result != "" {
+	if result, err := stuck.drainJobTree(ctx, drainWakeForTest(stuck), recheck); err != context.Canceled || result != "" {
 		t.Fatalf("cancelled drain = %q, %v; want context.Canceled", result, err)
 	}
 

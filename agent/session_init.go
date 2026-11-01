@@ -693,10 +693,10 @@ func NewSession(client *llm.Client, profile *provider.Profile, env execenv.Execu
 		}
 	}
 	s.attachTranscript(tw)
-	if err := s.flushPendingDelegateDeliveries(); err != nil {
+	if err := s.replayDelegateDeliveries(); err != nil {
 		return nil, fmt.Errorf("replay delegate deliveries: %w", err)
 	}
-	if err := s.rearmRootDelegateAttentionFromTranscript(nil); err != nil {
+	if err := s.restorePendingNotifications(nil); err != nil {
 		return nil, fmt.Errorf("rearm root delegate attention: %w", err)
 	}
 
@@ -1426,8 +1426,7 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	// replay appended turns it did not decode: the retained entry list would
 	// otherwise end at the last pre-append entry, and serve (which projects
 	// exactly this list) would seed its turn snapshot and live-turn-id fence
-	// one turn behind the file. Both refresh triggers share it so there is
-	// one refresh, not two mechanisms.
+	// one turn behind the file. All restore-time appenders share this path.
 	refreshFromDisk := func(reason string) error {
 		refreshed, err := readTranscriptFull(context.Background(), transcriptPath(s.stateDir, s.id), s.stateDir)
 		if err != nil {
@@ -1437,8 +1436,20 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 			return fmt.Errorf("refresh transcript after %s: header session %q does not match %q", reason, refreshed.Header.SessionID, s.id)
 		}
 		transcriptEntries = refreshed.Entries
+		if transcriptEntries == nil {
+			// A validated header-only transcript is opened, not absent.
+			transcriptEntries = []transcript.Entry{}
+		}
 		restoredTranscriptHeader = refreshed.Header
 		return nil
+	}
+	// Bootstrap may recover descendant source debt into this transcript
+	// after its initial decode. Refresh before folding or publishing entries,
+	// even when no later restore-time recovery has work to append.
+	if tw != nil {
+		if err := refreshFromDisk("delegate resource bootstrap"); err != nil {
+			return nil, err
+		}
 	}
 	// An execution the crashed process left open ended when it died: record
 	// it interrupted, unless recovery is about to run it again.
@@ -1447,10 +1458,8 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 			return nil, err
 		}
 	}
-	s.delegateDeliveryMu.Lock()
-	hadPendingDelegateDeliveries := len(s.pendingDelegateDeliveries) != 0
-	s.delegateDeliveryMu.Unlock()
-	if err := s.flushPendingDelegateDeliveries(); err != nil {
+	hadPendingDelegateDeliveries := s.hasPendingDelegateDeliveries()
+	if err := s.replayDelegateDeliveries(); err != nil {
 		return nil, fmt.Errorf("replay delegate deliveries: %w", err)
 	}
 	if tw != nil && hadPendingDelegateDeliveries {
@@ -1499,7 +1508,7 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	if restoreCfg.OnRestoredTranscript != nil {
 		restoreCfg.OnRestoredTranscript(restoredTranscriptHeader, transcriptEntries, restoredTranscriptOpened)
 	}
-	if err := s.rearmRootDelegateAttentionFromTranscript(transcriptEntries); err != nil {
+	if err := s.restorePendingNotifications(transcriptEntries); err != nil {
 		return nil, fmt.Errorf("rearm root delegate attention: %w", err)
 	}
 

@@ -317,7 +317,8 @@ func TestRestoreDelegate_ReadOnlyRoleSandboxFloor(t *testing.T) {
 				_, _ = root.delegateController.FailCommittedRestart(started.lease, delegatePermanentStartFailure(context.Canceled, "test_complete"))
 			}()
 
-			sub, restored, restoreErr := (delegateRuntime{owner: root}).restoreIdle(started)
+			sub, restored, recheck, restoreErr := (delegateRuntime{owner: root}).restoreIdle(started)
+			t.Cleanup(func() { recheckNotificationsForTest(root.delegateController, recheck) })
 			if !tc.allowed {
 				if restoreErr == nil || !strings.Contains(restoreErr.Error(), "invalid_request:") {
 					t.Fatalf("unsafe restored role policy error = %v, want structured invalid_request", restoreErr)
@@ -430,7 +431,8 @@ func TestRestoreDelegate_WriteBlockedParentCannotBeRelaxed(t *testing.T) {
 	defer func() {
 		_, _ = root.delegateController.FailCommittedRestart(started.lease, delegatePermanentStartFailure(context.Canceled, "test_complete"))
 	}()
-	sub, restored, restoreErr := (delegateRuntime{owner: root}).restoreIdle(started)
+	sub, restored, recheck, restoreErr := (delegateRuntime{owner: root}).restoreIdle(started)
+	t.Cleanup(func() { recheckNotificationsForTest(root.delegateController, recheck) })
 	if restoreErr == nil || !strings.Contains(restoreErr.Error(), "invalid_request:") {
 		t.Fatalf("restored write-block relaxation error = %v, want structured invalid_request", restoreErr)
 	}

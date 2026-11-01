@@ -679,6 +679,12 @@ func watchIntArg(args map[string]any, key string) (int, bool, error) {
 		return 0, false, nil
 	}
 	switch v := raw.(type) {
+	case json.Number:
+		n, ok := tool.WholeNumberInt(v)
+		if !ok {
+			return 0, false, fmt.Errorf("invalid_request: %s must be an integer", key)
+		}
+		return n, true, nil
 	case int:
 		return v, true, nil
 	case float64:
@@ -869,6 +875,12 @@ func watchTriggerArgumentIsNeutral(name string, value any, a watchArgs) bool {
 
 func watchIntegerValue(value any) int {
 	switch v := value.(type) {
+	case json.Number:
+		n, ok := tool.WholeNumberInt(v)
+		if !ok {
+			return -1
+		}
+		return n
 	case int:
 		return v
 	case float64:

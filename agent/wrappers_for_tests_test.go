@@ -158,15 +158,6 @@ func (c *delegateTreeController) noteDelegateAttention(delegateID, attentionID s
 	return c.noteDelegateAttentionLocked(delegateID, attentionID)
 }
 
-func (c *delegateTreeController) nextIdleDelegateAttention() (string, string, bool) {
-	if c == nil {
-		return "", "", false
-	}
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return c.nextIdleDelegateAttentionLocked()
-}
-
 func asideSessionFS(fs afero.Fs, stateDir, parentID string) (string, error) {
 	return asideSessionFSWithConfig(fs, stateDir, parentID, nil)
 }

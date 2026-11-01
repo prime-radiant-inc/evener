@@ -15,7 +15,7 @@ import { projectComicConversation } from "./projection";
 const delegateId = "dlg_02wMz5TxvSettleRace001";
 const childId = "02wMz5TxvChildSession1";
 
-function activity(ownerRef: string, id: string, childRef: string): DelegateEntityView {
+function activity(ownerRef: string, id: string, childRef: string, name: string): DelegateEntityView {
   const entities = buildEntityView({
     sessionRef: "local:root",
     tree: parseActivityTree(subagentOutcomesResponse().data) ?? undefined,
@@ -24,7 +24,14 @@ function activity(ownerRef: string, id: string, childRef: string): DelegateEntit
     ended: false,
   });
   const entity = [...entities.values()].find((entity) => entity.kind === "delegate")!;
-  return { ...entity, id: `${ownerRef}/${id}`, logicalId: id, ownerRef, open: { ref: childRef, parentRef: ownerRef } };
+  return {
+    ...entity,
+    id: `${ownerRef}/${id}`,
+    logicalId: id,
+    name,
+    ownerRef,
+    open: { ref: childRef, parentRef: ownerRef },
+  };
 }
 
 function recordedItems(kind: "launch" | "reply" | "notification", transcriptRef: string): ThreadItem[] {
@@ -82,8 +89,8 @@ for (const kind of ["launch", "reply", "notification"] as const) {
         `${host}:routing-alias`,
         0,
       );
-      const entity = activity(ownerRef, id, `${ownerHost}:${childId}`);
-      const otherOwner = activity(`${host}:unrelated`, id, `${host}:${childId}`);
+      const entity = activity(ownerRef, id, `${ownerHost}:${childId}`, "Canonical delegate");
+      const otherOwner = activity(`${host}:unrelated`, id, `${host}:${childId}`, "Unrelated delegate");
       const entities = new Map([
         [otherOwner.id, otherOwner],
         [entity.id, entity],
@@ -102,11 +109,58 @@ for (const kind of ["launch", "reply", "notification"] as const) {
       }
       if (kind !== "launch") {
         const entries = projectComicConversation(model, { ownerRef, entities });
-        expect(entries).toHaveLength(1);
-        expect(entries[0]!.persona?.key).toBe(matches ? JSON.stringify([ownerRef, id]) : undefined);
-        expect(
-          projectComicConversation(model, { ownerRef, entities: new Map([[otherOwner.id, otherOwner]]) })[0]!.persona,
-        ).toBeUndefined();
+        if (kind === "reply") {
+          expect(
+            entries.map(({ id, sourceItemId, sourceIndex, text, kind, speaker, delegateResult }) => ({
+              id,
+              sourceItemId,
+              sourceIndex,
+              text,
+              kind,
+              speaker,
+              delegateResult,
+            })),
+          ).toEqual([
+            {
+              id: "item_tool_1_2:earlier:0",
+              sourceItemId: "item_tool_1_2",
+              sourceIndex: 0,
+              text: "Fixed the race between tree settle and the drain.",
+              kind: "caption",
+              speaker: "source",
+              delegateResult: { kind: "earlierReply", status: "completed" },
+            },
+            {
+              id: "item_tool_1_2",
+              sourceItemId: "item_tool_1_2",
+              sourceIndex: 0,
+              text: "Yes: tree settle now waits for the drain, and a test pins the order.",
+              kind: "caption",
+              speaker: "source",
+              delegateResult: { kind: "reply" },
+            },
+          ]);
+        } else {
+          expect(entries).toHaveLength(1);
+        }
+        for (const entry of entries) {
+          if (matches) {
+            expect(entry.persona).toMatchObject({
+              key: JSON.stringify([ownerRef, id]),
+              ownerRef,
+              badge: id,
+              name: entity.name,
+            });
+          } else {
+            expect(entry.persona).toBeUndefined();
+          }
+        }
+        const unrelated = projectComicConversation(model, {
+          ownerRef,
+          entities: new Map([[otherOwner.id, otherOwner]]),
+        });
+        expect(unrelated.map((entry) => entry.id)).toEqual(entries.map((entry) => entry.id));
+        for (const entry of unrelated) expect(entry.persona).toBeUndefined();
       }
       // Qualification is comparison-only: literal output, notification text, raw
       // results, authorship and source coordinates all remain unchanged.
@@ -151,7 +205,7 @@ test.each(["local", "east"])("recorded modern notifications retain owned identit
     ownerRef,
     0,
   );
-  const entity = activity(ownerRef, "dlg_1", `${host}:${childId}`);
+  const entity = activity(ownerRef, "dlg_1", `${host}:${childId}`, "Canonical delegate");
   const entities = new Map([[entity.id, entity]]);
   const before = JSON.stringify(model);
   expect(projectComicDelegates(model, entities)[0]!.source).toBeUndefined();

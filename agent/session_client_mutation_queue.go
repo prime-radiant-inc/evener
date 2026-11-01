@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"maps"
 	"slices"
 	"strings"
@@ -161,7 +162,9 @@ func (s *Session) AcceptClientMutationQueue(params appwire.TurnQueueParams) (app
 	// callback, so it releases no QueueHeld, and a Stop that landed after the
 	// original must keep the rail parked.
 	if lookup.Disposition != clientMutationDispositionReplayed {
-		s.unparkRootDelegateAttention()
+		if err := s.requestNotificationWake(); err != nil {
+			slog.Warn("notification wake failed", "session_id", s.ID(), "error", err)
+		}
 	}
 	if lookup.Disposition == clientMutationDispositionReplayed {
 		// A retry of a queue that was accepted but never run -- the process died
@@ -868,7 +871,9 @@ func (s *Session) AcceptClientMutationDrainAsSteer(params appwire.TurnDrainAsSte
 	}
 	// Only a FRESH application unparks (see the queue accept's note).
 	if lookup.Disposition != clientMutationDispositionReplayed {
-		s.unparkRootDelegateAttention()
+		if err := s.requestNotificationWake(); err != nil {
+			slog.Warn("notification wake failed", "session_id", s.ID(), "error", err)
+		}
 	}
 	if lookup.Disposition == clientMutationDispositionReplayed {
 		var replayed appwire.TurnDrainAsSteerResponse
@@ -977,7 +982,9 @@ func (s *Session) AcceptClientMutationPromoteQueuedAsSteer(params appwire.TurnPr
 	}
 	// Only a FRESH application unparks (see the queue accept's note).
 	if lookup.Disposition != clientMutationDispositionReplayed {
-		s.unparkRootDelegateAttention()
+		if err := s.requestNotificationWake(); err != nil {
+			slog.Warn("notification wake failed", "session_id", s.ID(), "error", err)
+		}
 	}
 	if lookup.Disposition == clientMutationDispositionReplayed {
 		var replayed appwire.TurnPromoteQueuedAsSteerResponse
@@ -1556,7 +1563,9 @@ func (s *Session) recoverClientMutationFailures(publishEnvironment bool) error {
 		// that lets this branch complete the turn has actually succeeded.
 		wasOpen := idle && s.hasOpenPendingExecution(pending.TurnID)
 		if own {
-			s.beginExecution(pending.TurnID)
+			if err := s.beginExecution(pending.TurnID); err != nil {
+				return err
+			}
 		}
 		err := s.recordClientMutationFailure(id, pending, *record.Failure, publishEnvironment)
 		switch {

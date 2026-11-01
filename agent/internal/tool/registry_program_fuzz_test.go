@@ -144,7 +144,10 @@ func toolProgramRegistry(t *testing.T) (*Registry, *int, *bool) {
 				return nil, errors.New("intent leaked to non-read_file executor")
 			}
 			value, _ := args["value"].(string)
-			mode, _ := args["mode"].(float64)
+			mode, err := args["mode"].(json.Number).Int64()
+			if err != nil {
+				t.Fatalf("invalid mode: %v", err)
+			}
 			switch int(mode) {
 			case 1:
 				return StateResult{Output: "state:" + value, State: map[string]string{"value": value}}, nil

@@ -10,41 +10,9 @@ import (
 )
 
 // jobManagerForToken resolves which jobManager owns a token's pending state.
-func (s *Session) jobManagerForToken(tok *watchSendToken) *jobManager {
-	if tok == nil {
-		return nil
-	}
-	if tok.ChildSessionID == "" {
-		return s.jobManager
-	}
-	if s.subagents == nil {
-		return nil
-	}
-	if sub := s.subagents.get(tok.ChildSessionID); sub != nil && sub.sess != nil {
-		return sub.sess.jobManager
-	}
-	return nil
-}
 
 // resolveWatchSendToken returns the CURRENT frame for a token, or ok=false if
 // the token is stale (latest-frame-wins; also covers delivery-after-drop).
-func (s *Session) resolveWatchSendToken(tok *watchSendToken) (jm *jobManager, cfg *watchConfig, state jobstore.WatchSendState, ok bool) {
-	jm = s.jobManagerForToken(tok)
-	if jm == nil {
-		return nil, nil, jobstore.WatchSendState{}, false
-	}
-	jm.mu.Lock()
-	defer jm.mu.Unlock()
-	cfg = jm.watchConfigForKeyLocked(tok.Key)
-	if cfg == nil {
-		return nil, nil, jobstore.WatchSendState{}, false
-	}
-	cur := cfg.pending[tok.Key]
-	if cur == nil || cur.UpdateSeq != tok.UpdateSeq {
-		return nil, nil, jobstore.WatchSendState{}, false
-	}
-	return jm, cfg, *cur, true
-}
 
 // watchConfigForKeyLocked returns the live or terminal-flush watch config that
 // currently holds a pending entry for key, or nil. Caller holds jm.mu.
@@ -74,6 +42,13 @@ func (jm *jobManager) watchConfigForKeyLocked(key jobstore.WatchSendKey) *watchC
 // to one teardown.
 func (jm *jobManager) settleWatchSendDelivered(cfg *watchConfig, state jobstore.WatchSendState) error {
 	defer jm.publishWatchActivity()
+	jm.mu.Lock()
+	if jm.watchSendDeliveredLocked(state.DeliveryID) {
+		jm.forgetStableWatchSettlementRetryLocked(state)
+		jm.mu.Unlock()
+		return nil
+	}
+	jm.mu.Unlock()
 	delivered := state
 	if err := jm.appendWatchSendEvents([]jobstore.Event{{
 		Kind:      jobstore.EventWatchSendDelivered,
@@ -82,14 +57,21 @@ func (jm *jobManager) settleWatchSendDelivered(cfg *watchConfig, state jobstore.
 	}}); err != nil {
 		return err
 	}
-	jm.removePendingWatchSend(cfg, delivered.Key, delivered.UpdateSeq)
-	jm.releaseStableWatchReceipt(delivered.DeliveryID)
 	jm.mu.Lock()
+	removePendingWatchSendLocked(cfg, delivered.Key, delivered.UpdateSeq)
+	jm.forgetTerminalFlushIfEmptyLocked(cfg)
 	if delivered.DeliveryID != "" {
 		jm.deliveredWatchSendIDs[delivered.DeliveryID] = struct{}{}
 	}
-	crossedBudget := jm.recordWatchDeliveryLocked(cfg)
+	jm.forgetStableWatchSettlementRetryLocked(delivered)
+	crossedBudget := false
+	if !state.CallbackFrame {
+		crossedBudget = jm.recordWatchDeliveryLocked(cfg)
+	}
 	jm.mu.Unlock()
+	// Publish completion before releasing the controller receipt, whose callbacks
+	// may reenter the source pump. Neither callback nor source I/O holds jm.mu.
+	jm.releaseStableWatchReceipt(delivered.DeliveryID)
 	if crossedBudget {
 		jm.autoClearWatchOverBudget(cfg)
 	}
@@ -116,19 +98,9 @@ func (jm *jobManager) watchSendDelivered(deliveryID string) bool {
 // second caller stands down instead of racing the same store write. Mirrors
 // claimStableWatchSettlementRetries. Guarded by jm.mu.
 func (jm *jobManager) claimWatchSendDelivery(deliveryID string) bool {
-	if deliveryID == "" {
-		return true
-	}
 	jm.mu.Lock()
 	defer jm.mu.Unlock()
-	if _, held := jm.deliveringWatchSends[deliveryID]; held {
-		return false
-	}
-	if jm.deliveringWatchSends == nil {
-		jm.deliveringWatchSends = make(map[string]struct{})
-	}
-	jm.deliveringWatchSends[deliveryID] = struct{}{}
-	return true
+	return jm.claimWatchSendDeliveryLocked(deliveryID)
 }
 
 // releaseWatchSendDeliveryClaim releases a claim taken by
@@ -185,7 +157,7 @@ func (jm *jobManager) watchSendSnapshot(cfg *watchConfig, jobID, trigger string,
 	deliveryID := jobstore.NewWatchSendDeliveryID()
 	return watchSendDelivery{
 		cfg:               cfg,
-		key:               watchKey{VisibleSessionID: jm.sessionID, Target: cfg.target, SendTo: sendTo, ReceiverSessionID: cfg.receiverSessionID, ReceiverDelegateID: cfg.receiverDelegateID},
+		key:               watchKey{VisibleSessionID: jm.sessionID, Target: cfg.target, Slot: cfg.slot, SendTo: sendTo, ReceiverSessionID: cfg.receiverSessionID, ReceiverDelegateID: cfg.receiverDelegateID},
 		generation:        cfg.generation,
 		updateSeq:         cfg.nextUpdateSeq,
 		send:              cloneWatchSendArgs(cfg.send),
@@ -281,6 +253,7 @@ func (jm *jobManager) restoreWatchSendPendingFrom(load watchSendLoader) error {
 				sourcePublic = "parent"
 			}
 			cfg = &watchConfig{
+				slot:               state.TimerSlot,
 				watchID:            key.WatchID,
 				sourcePublic:       sourcePublic,
 				receiverSessionID:  cfgKey.receiverSessionID,
@@ -292,6 +265,9 @@ func (jm *jobManager) restoreWatchSendPendingFrom(load watchSendLoader) error {
 				sourceDelegateID:   cfgKey.sourceDelegateID,
 				sourceGeneration:   cfgKey.sourceGeneration,
 				stableReceiver:     cfgKey.stableReceiver,
+			}
+			if state.CallbackFrame {
+				cfg.send = nil
 			}
 			cfgs[cfgKey] = cfg
 		}
@@ -342,5 +318,22 @@ func watchSendKeyLess(a, b jobstore.WatchSendKey) bool {
 	if a.WatchID != b.WatchID {
 		return a.WatchID < b.WatchID
 	}
-	return a.WatchGeneration < b.WatchGeneration
+	if a.WatchGeneration != b.WatchGeneration {
+		return a.WatchGeneration < b.WatchGeneration
+	}
+	return a.RestartSeq < b.RestartSeq
+}
+
+func (jm *jobManager) claimWatchSendDeliveryLocked(deliveryID string) bool {
+	if deliveryID == "" {
+		return true
+	}
+	if _, held := jm.deliveringWatchSends[deliveryID]; held {
+		return false
+	}
+	if jm.deliveringWatchSends == nil {
+		jm.deliveringWatchSends = make(map[string]struct{})
+	}
+	jm.deliveringWatchSends[deliveryID] = struct{}{}
+	return true
 }

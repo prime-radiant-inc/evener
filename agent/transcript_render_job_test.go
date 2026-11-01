@@ -612,6 +612,18 @@ func TestJobResultKnownKeysCoversLiveDelegateShapes(t *testing.T) {
 	})
 }
 
+func TestJobResultRendersReadinessAndReportSummary(t *testing.T) {
+	r := jobResult{Readiness: "ready", ReportSummary: "Generation final (blocked). Blocker: access."}
+	status := jobResultStatus(r, "{}")
+	if !strings.Contains(status, "readiness=ready") {
+		t.Fatalf("status = %q, want readiness", status)
+	}
+	output := jobResultOutput(r)
+	if !strings.Contains(output, "Generation final (blocked)") {
+		t.Fatalf("output = %q, want the report summary", output)
+	}
+}
+
 // TestJobResultToolsSurviveTranscriptProjections uses both production delegate
 // marshalers and drives the renderer modes used by a condensed read, an exact
 // expansion, and a bounded continuation preview. The capability list is

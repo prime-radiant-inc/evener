@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/internal/jobstore"
 )
 
@@ -1098,11 +1099,16 @@ func TestKeptSyncTerminalWatchAppendFailureKeepsRetryState(t *testing.T) {
 
 func TestKeptSyncRetryDoesNotArmOwnerNotification(t *testing.T) {
 	t.Parallel()
-	jm := newTestJM(t)
+	proof := newWatchCustodyProof(t)
+	jm := proof.jm
 	var notified []jobNotification
 	jm.enqueue = func(n jobNotification) { notified = append(notified, n) }
-	rec, _ := jm.createShell(createShellOpts{Command: "x"})
-	if _, err := jm.configureWatch(watchArgs{Target: rec.JobID, OutputMatch: "ready"}); err != nil {
+	rec, err := jm.createShell(createShellOpts{Command: "x"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { finishRunningTestJob(t, jm, rec.JobID) })
+	if _, err := jm.configureWatch(proof.callbackArgs(watchArgs{Target: rec.JobID, OutputMatch: "ready"})); err != nil {
 		t.Fatalf("install: %v", err)
 	}
 	jm.mu.Lock()
@@ -1125,31 +1131,43 @@ func TestKeptSyncRetryDoesNotArmOwnerNotification(t *testing.T) {
 		return realAppendEvents(events)
 	}
 
+	cfg := onlyWatchConfigForTest(t, jm)
+	clock := jm.clock.(*agenttest.FakeClock)
+	done := make(chan struct{})
 	code := 0
-	jm.finalizeKeptSyncUntilDurable(run, jobstore.StatusCompleted, "exit_zero", &code)
+	t.Cleanup(func() { clock.Advance(shellFinalizeRetryDelay); <-done })
+	go func() {
+		jm.finalizeKeptSyncUntilDurable(run, jobstore.StatusCompleted, "exit_zero", &code)
+		close(done)
+	}()
+	clock.BlockUntil(1) // The injected clear failure parked the real retry loop.
+	clock.Advance(shellFinalizeRetryDelay)
+	<-done
 	if !failed {
 		t.Fatal("test did not exercise the kept-sync retry path")
 	}
-	// The retried finalize produces exactly ONE watch notification: the
-	// never-fired end notice (this watch's "ready" can never match a job that
-	// completed with zero output — kata y0re). One, not two, is the retry
-	// half of the contract: the failed first attempt must not double the
-	// notice. Owner-notification arming stays at zero either way, which is
-	// what this test's name promises.
-	if len(notified) != 1 {
-		t.Fatalf("kept-sync retry enqueued %d notifications, want exactly the one end notice: %+v", len(notified), notified)
+	// Exactly one durable callback end notice survives the retried finalize.
+	// No matched output existed, and no legacy owner callback is a substitute.
+	if len(notified) != 0 || cfg.send != nil || cfg.conditionFires != 0 {
+		t.Fatalf("owner callbacks=%d send=%v condition fires=%d", len(notified), cfg.send, cfg.conditionFires)
 	}
-	if notified[0].JobType != "watch" || !strings.HasPrefix(notified[0].Reason, "watch ended: ") {
-		t.Fatalf("kept-sync retry's one notification is not the watch end notice: %+v", notified[0])
+	state := proof.pending(t, cfg, 1, 0)
+	if !state.CallbackFrame || state.Key.WatchTarget != rec.JobID || jm.watchCount() != 0 {
+		t.Fatalf("never-fired end notice = %+v, live=%d", state, jm.watchCount())
+	}
+	if len(producerSourceEvents(t, jm, jobstore.EventJobFinished)) != 1 || len(producerSourceEvents(t, jm, jobstore.EventWatchCleared)) != 1 {
+		t.Fatal("retry duplicated terminal or watch-end production")
+	}
+	ended := producerSourceEvents(t, jm, jobstore.EventWatchCleared)[0]
+	if ended.WatchID != cfg.watchID || ended.Watch.Generation != cfg.generation || ended.Watch.Deliveries != 0 || ended.Watch.EndReason != "auto_removed_terminal" {
+		t.Fatalf("never-fired callback termination = %+v", ended)
 	}
 	for _, event := range loadJobStoreEvents(t, jm) {
 		if event.Kind == jobstore.EventJobNotificationPending {
 			t.Fatalf("kept-sync retry armed owner notification: %+v", event)
 		}
 	}
-	if pending := loadWatchSendRecord(t, jm).Pending; len(pending) != 0 {
-		t.Fatalf("pending watch sends = %+v, want none", pending)
-	}
+	proof.observe(t, state)
 	jm.mu.Lock()
 	_, running := jm.running[rec.JobID]
 	jm.mu.Unlock()

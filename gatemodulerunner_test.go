@@ -1,6 +1,7 @@
 package evener_test
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -29,6 +30,103 @@ import (
 // left to the root module's own suites: exercising them would re-enter the real
 // test tree or npm, not a bounded fixture.
 const moduleRunnerScript = "scripts/gate/run-module-tests.sh"
+
+func TestModuleRunnerVerboseReplay(t *testing.T) {
+	for _, fail := range []bool{false, true} {
+		t.Run(strconv.FormatBool(fail), func(t *testing.T) {
+			root, modules, ctrl := newRunnerFixture(t)
+			record := filepath.Join(root, "executed")
+			writeRunnerFixtureModule(t, modules, "verbose", fmt.Sprintf(`package fixture
+
+import (
+	"fmt"
+	"os"
+	"testing"
+)
+
+func observe(t *testing.T) {
+	t.Helper()
+	if os.Getenv("GOFLAGS") != "-p=1 -v" || !testing.Verbose() {
+		t.Fatalf("GOFLAGS=%%q verbose=%%t", os.Getenv("GOFLAGS"), testing.Verbose())
+	}
+	for _, key := range []string{"EVENER_GATE_TIMING_TSV", "EVENER_SHARD_JSON_DIR", "EVENER_SHARD_JSON_PACKAGE", "EVENER_WEB_VITEST_JSON"} {
+		if _, set := os.LookupEnv(key); set { t.Fatalf("%%s is set", key) }
+	}
+	f, err := os.OpenFile(%q, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600)
+	if err != nil { t.Fatal(err) }
+	_, err = fmt.Fprintln(f, t.Name())
+	closeErr := f.Close()
+	if err != nil { t.Fatal(err) }
+	if closeErr != nil { t.Fatal(closeErr) }
+}
+
+func TestSuccessful(t *testing.T) {
+	observe(t)
+	t.Log("fixture-data-7f035a")
+}
+
+func TestVerdict(t *testing.T) {
+	observe(t)
+	if %t { t.Error("fixture-data-29c4a1") }
+}
+`, record, fail))
+			env := append(controlledScratchEnv(ctrl), "MODULES=verbose", "GOFLAGS=-p=1 -v")
+			result := runModuleRunner(t, modules, env...)
+			t.Logf("runner exit=%d\n%s", result.exitCode, result.output)
+			wantExit := 0
+			if fail {
+				wantExit = 1
+			}
+			if result.exitCode != wantExit {
+				t.Fatalf("runner exit=%d, want %d\n%s", result.exitCode, wantExit, result.output)
+			}
+			executed, err := os.ReadFile(record)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(executed) != "TestSuccessful\nTestVerdict\n" {
+				t.Fatalf("executed tests = %q", executed)
+			}
+			if !fail {
+				if dirs := runnerScratchDirs(t, ctrl); len(dirs) != 0 {
+					t.Fatalf("successful run retained scratch: %v", dirs)
+				}
+				return
+			}
+			logdir := runnerRetainedLogDir(t, result.output)
+			if _, err := os.Stat(filepath.Join(logdir, "json")); !os.IsNotExist(err) {
+				t.Fatalf("timing directory exists or cannot be checked: %v", err)
+			}
+			cmd := exec.Command("go", "tool", "test2json")
+			cmd.Stdin = strings.NewReader(result.output)
+			data, err := cmd.Output()
+			if err != nil {
+				t.Fatalf("test2json: %v", err)
+			}
+			counts := map[string]int{}
+			var output strings.Builder
+			dec := json.NewDecoder(strings.NewReader(string(data)))
+			for dec.More() {
+				var event struct{ Action, Test, Output string }
+				if err := dec.Decode(&event); err != nil {
+					t.Fatal(err)
+				}
+				counts[event.Action+"/"+event.Test]++
+				output.WriteString(event.Output)
+			}
+			for _, event := range []string{"run/TestSuccessful", "pass/TestSuccessful", "run/TestVerdict", "fail/TestVerdict"} {
+				if counts[event] != 1 {
+					t.Errorf("replayed %s count=%d, want 1", event, counts[event])
+				}
+			}
+			for _, marker := range []string{"fixture-data-7f035a", "fixture-data-29c4a1"} {
+				if !strings.Contains(output.String(), marker) {
+					t.Errorf("replay lost test data %q", marker)
+				}
+			}
+		})
+	}
+}
 
 // controlledScratchEnv makes the runner's scratch deterministic and test-owned.
 // An impossibly large minimum forces gate_scratch_root's fallback to TMPDIR, so

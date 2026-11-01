@@ -13,23 +13,27 @@ import (
 
 // ---- session_attention.go nil guards ----
 
-// TestCovArmDelegateAttention_NilSession covers armDelegateAttention nil guard.
+// A nil receiver is rejected before any readiness work or callback.
 func TestCovArmDelegateAttention_NilSession(t *testing.T) {
 	t.Parallel()
 	var s *Session
-	err := s.armDelegateAttention("")
-	if err == nil || err.Error() != "delegate attention wake identity is incomplete" {
-		t.Fatalf("nil session empty id: %v", err)
+	err := s.requestNotificationWake()
+	if err == nil {
+		t.Fatal("nil notification receiver was accepted")
 	}
 }
 
-// TestCovArmDelegateAttention_EmptyID covers armDelegateAttention empty ID.
+// Readiness is receiver-wide, so an empty session with no pending IDs is a noop.
 func TestCovArmDelegateAttention_EmptyID(t *testing.T) {
 	t.Parallel()
-	s := &Session{}
-	err := s.armDelegateAttention("")
-	if err == nil || err.Error() != "delegate attention wake identity is incomplete" {
-		t.Fatalf("empty id: %v", err)
+	wakes := 0
+	s := &Session{notifyFunc: func() { wakes++ }}
+	err := s.requestNotificationWake()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if wakes != 0 || s.notificationSchedule.hinted || s.notificationSchedule.retry.active {
+		t.Fatalf("empty receiver fabricated work: wakes=%d schedule=%+v", wakes, s.notificationSchedule)
 	}
 }
 

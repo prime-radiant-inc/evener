@@ -134,8 +134,8 @@ func TestRunExitsWhenADelegateIsWedgedInAnUncancellableToolCall(t *testing.T) {
 	shrinkCloseBudget(t, 3*time.Second)
 	drainReturned := make(chan time.Time, 1)
 	oldDrain := runDrainJobTree
-	runDrainJobTree = func(sess *agent.Session, ctx context.Context) (string, error) {
-		result, err := oldDrain(sess, ctx)
+	runDrainJobTree = func(sess *agent.Session, ctx context.Context, wake <-chan struct{}) (string, error) {
+		result, err := oldDrain(sess, ctx, wake)
 		drainReturned <- time.Now()
 		return result, err
 	}

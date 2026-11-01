@@ -52,11 +52,19 @@ func TestUserStopCancelsOnlyTheTargetsRun(t *testing.T) {
 
 // A run that is not running, or is already settling, has nothing to stop.
 func TestUserStopRefusesARunThatIsNotRunning(t *testing.T) {
-	idle := &subagent{id: "idle"}
-	if _, err := idle.requestRunCancel(true); !errors.Is(err, errSubagentNotRunning) {
+	// Production subagents always have a session, including idle residents.
+	// Yielded runs consult that session's controller before refusing Stop.
+	idleCtx, cancelIdle := context.WithCancel(context.Background())
+	defer cancelIdle()
+	idleDone := make(chan struct{})
+	idle := &subagent{id: "idle", sess: newTestSession(t), done: idleDone, cancel: cancelIdle}
+	if done, err := idle.requestRunCancel(true); done != nil || !errors.Is(err, errSubagentNotRunning) {
 		t.Fatalf("idle requestRunCancel = %v, want errSubagentNotRunning", err)
 	}
-	settling := &subagent{id: "settling", running: true, settlementClaimed: true}
+	if idleCtx.Err() != nil || idle.cancelRequested || idle.userStopRequested || idle.running || idle.done != idleDone {
+		t.Fatal("idle Stop cancelled or mutated an unadmitted run")
+	}
+	settling := &subagent{id: "settling", sess: newTestSession(t), running: true, settlementClaimed: true}
 	if _, err := settling.requestRunCancel(true); !errors.Is(err, errSubagentSettling) {
 		t.Fatalf("settling requestRunCancel = %v, want errSubagentSettling", err)
 	}
@@ -64,7 +72,7 @@ func TestUserStopRefusesARunThatIsNotRunning(t *testing.T) {
 	// already stopping, so a retry answers notRunning rather than stopping.
 	_, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	stopping := &subagent{id: "stopping", running: true, cancel: cancel}
+	stopping := &subagent{id: "stopping", sess: newTestSession(t), running: true, cancel: cancel}
 	if _, err := stopping.requestRunCancel(true); err != nil {
 		t.Fatalf("first requestRunCancel = %v", err)
 	}

@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"primeradiant.com/evener/agent/events"
+	"primeradiant.com/evener/agent/internal/jobstore"
 )
 
 // FuzzWatchPendingStateProgram keeps the generic pending-state target on the
@@ -18,13 +19,21 @@ func FuzzWatchPendingStateProgram(f *testing.F) {
 			Message: fmt.Sprintf("pending-%d", variant),
 		})
 
-		pending := fixture.sourceJM.pendingWatchSendDeliveries(nil)
-		if len(pending) != 1 {
-			t.Fatalf("stable pending deliveries = %d, want 1", len(pending))
+		produced := producerSourceEvents(t, fixture.sourceJM, jobstore.EventWatchSendPending)
+		if len(produced) != 1 {
+			t.Fatalf("stable produced deliveries = %d, want 1", len(produced))
 		}
-		state := pending[0].state
+		state := *produced[0].WatchSend
 		if !state.StableReceiver || state.SourceDelegateID != "dlg_source" || state.SourceDelegateGeneration != 1 {
 			t.Fatalf("stable pending identity = %#v", state)
 		}
+		if len(fixture.sourceJM.pendingWatchSendDeliveries(nil)) != 0 || len(producerSourceEvents(t, fixture.sourceJM, jobstore.EventWatchSendDelivered)) != 1 {
+			t.Fatal("immediate canonical custody must settle the source once")
+		}
+		id := stableWatchAttentionID(state)
+		if countAttentionEntries(t, fixture.rootTranscriptPath, id) != 1 {
+			t.Fatal("source settlement lost or duplicated receiver custody")
+		}
+		assertNotificationPending(t, fixture.root, []string{id})
 	})
 }

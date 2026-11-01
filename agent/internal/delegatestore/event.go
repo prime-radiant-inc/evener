@@ -1,6 +1,10 @@
 package delegatestore
 
-import "time"
+import (
+	"time"
+
+	"primeradiant.com/evener/agent/schema"
+)
 
 const CurrentVersion = 1
 
@@ -76,7 +80,8 @@ type ResumabilityClosed struct {
 }
 
 type SubtreeStopRequested struct {
-	TargetDelegateID string `json:"target_delegate_id"`
+	TargetDelegateID      string `json:"target_delegate_id"`
+	PreserveNotifications bool   `json:"preserve_notifications,omitempty"`
 }
 
 type SubtreeStopCompleted struct {
@@ -102,8 +107,11 @@ type DelegateAttentionChanged struct {
 // is presented, as a notification frame, as an earlier result carried into a
 // delegate_send reply, or in a client, belongs to those renderers.
 type UpdatePosted struct {
-	Generation uint64 `json:"generation"`
-	Message    string `json:"message"`
+	Generation  uint64                  `json:"generation"`
+	Message     string                  `json:"message"`
+	Readiness   string                  `json:"readiness,omitempty"`
+	Communicate *schema.CommunicateInfo `json:"communicate,omitempty"`
+	Packet      *TerminalPacket         `json:"packet,omitempty"`
 }
 
 // IntentStated is a running generation's newest tool-call intent, journaled

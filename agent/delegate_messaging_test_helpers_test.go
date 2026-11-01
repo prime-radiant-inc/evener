@@ -24,13 +24,16 @@ import (
 // on a channel the test controls: steps run outside the adapter's lock. An
 // unscripted request is answered with a plain final report.
 type messagingAdapter struct {
-	mu       sync.Mutex
-	rootID   string
-	markers  []string
-	scripts  map[string][]func(llm.Request) llm.Response
-	sessions map[string]string
-	requests map[string][]llm.Request
-	arrived  chan struct{}
+	mu           sync.Mutex
+	rootID       string
+	markers      []string
+	scripts      map[string][]func(llm.Request) llm.Response
+	sessions     map[string]string
+	requests     map[string][]llm.Request
+	arrived      chan struct{}
+	finite       map[string][]func(context.Context, llm.Request) (llm.Response, error)
+	answered     map[string][]llm.Response
+	onUnexpected func(string)
 }
 
 func newMessagingAdapter(markers ...string) *messagingAdapter {
@@ -62,7 +65,7 @@ func (a *messagingAdapter) requestsFor(key string) []llm.Request {
 	return slices.Clone(a.requests[key])
 }
 
-// waitForRequests waits until key's script has answered at least n requests.
+// waitForRequests waits until key's script has received at least n requests.
 func (a *messagingAdapter) waitForRequests(t *testing.T, key string, n int) []llm.Request {
 	t.Helper()
 	// TRIPWIRE: every answer is scripted in process; only a hang reaches it.
@@ -100,10 +103,28 @@ func (a *messagingAdapter) keyLocked(req llm.Request) string {
 	return ""
 }
 
-func (a *messagingAdapter) Complete(_ context.Context, req llm.Request) (llm.Response, error) {
+// finiteScript opts this adapter into bounded scripts. Exhaustion cancels the
+// provider call instead of manufacturing another successful done response.
+func (a *messagingAdapter) finiteScript(key string, steps ...func(context.Context, llm.Request) (llm.Response, error)) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.finite == nil {
+		a.finite = make(map[string][]func(context.Context, llm.Request) (llm.Response, error))
+		a.answered = make(map[string][]llm.Response)
+	}
+	a.finite[key] = append(a.finite[key], steps...)
+}
+
+func (a *messagingAdapter) Complete(ctx context.Context, req llm.Request) (llm.Response, error) {
 	a.mu.Lock()
 	key := a.keyLocked(req)
 	a.requests[key] = append(a.requests[key], req)
+	n := len(a.requests[key])
+	finite := a.finite != nil
+	var finiteStep func(context.Context, llm.Request) (llm.Response, error)
+	if steps := a.finite[key]; len(steps) > 0 {
+		finiteStep, a.finite[key] = steps[0], steps[1:]
+	}
 	var step func(llm.Request) llm.Response
 	if steps := a.scripts[key]; len(steps) > 0 {
 		step, a.scripts[key] = steps[0], steps[1:]
@@ -112,6 +133,24 @@ func (a *messagingAdapter) Complete(_ context.Context, req llm.Request) (llm.Res
 	select {
 	case a.arrived <- struct{}{}:
 	default:
+	}
+	if finite {
+		if finiteStep == nil {
+			if a.onUnexpected != nil {
+				a.onUnexpected(fmt.Sprintf("unexpected provider request session=%s script=%s request=%d", req.SessionID, key, n))
+			}
+			return llm.Response{}, context.Canceled
+		}
+		response, err := finiteStep(ctx, req)
+		if err != nil {
+			return llm.Response{}, err
+		}
+		response.ID = fmt.Sprintf("fixture-%s-%s-%d", req.SessionID, key, n)
+		response.Provider, response.Model = a.Name(), req.Model
+		a.mu.Lock()
+		a.answered[key] = append(a.answered[key], response)
+		a.mu.Unlock()
+		return response, nil
 	}
 	response := agenttest.FinalResponse("done")
 	if step != nil {
@@ -241,6 +280,98 @@ func awaitSignal(t *testing.T, ch <-chan struct{}, what string) {
 	}
 }
 
+// Each factory invocation gets its own token, even when a resume keeps the
+// lease and generation done. Only the test goroutine matches registrations.
+type activationReturn struct {
+	sessionID, delegateID string
+	lease                 delegateLease
+	generationDone        <-chan struct{}
+	returned              chan struct{}
+}
+
+type activationReturns struct {
+	registered chan *activationReturn
+	pending    []*activationReturn
+	all        []*activationReturn
+}
+
+func activationStillOpen(t *testing.T, ch <-chan struct{}) {
+	t.Helper()
+	select {
+	case <-ch:
+		t.Fatal("held activation completed")
+	default:
+	}
+}
+
+func newActivationReturns() *activationReturns {
+	// The bounded scripts below create fewer than 128 activations, including
+	// cancellation cleanup. Overflow is an invariant failure, never a lost join.
+	return &activationReturns{registered: make(chan *activationReturn, 128)}
+}
+
+func (r *activationReturns) configure(cfg *SessionConfig) {
+	cfg.testOnly.subagentActivationReturn = r.capture
+}
+
+func (r *activationReturns) capture(sub *subagent, lease delegateLease) func() {
+	sub.mu.Lock()
+	done := sub.done
+	sub.mu.Unlock()
+	receipt := &activationReturn{
+		sessionID: sub.sess.ID(), delegateID: sub.sess.owningDelegateID,
+		lease: lease, generationDone: done, returned: make(chan struct{}),
+	}
+	select {
+	case r.registered <- receipt:
+	default:
+		panic("activation registration capacity exceeded")
+	}
+	// This runs after WG.Done, so it must not access the session or recorder.
+	return func() { close(receipt.returned) }
+}
+
+func (r *activationReturns) collect() {
+	for {
+		select {
+		case receipt := <-r.registered:
+			r.pending = append(r.pending, receipt)
+			r.all = append(r.all, receipt)
+		default:
+			return
+		}
+	}
+}
+
+// take follows a known causal boundary (normally held provider entry). The
+// factory runs before execution, so no polling or registration timeout is needed.
+func (r *activationReturns) take(t *testing.T, sessionID string) *activationReturn {
+	t.Helper()
+	r.collect()
+	for i, receipt := range r.pending {
+		if receipt.sessionID == sessionID {
+			r.pending = append(r.pending[:i], r.pending[i+1:]...)
+			if receipt.lease.delegateID != receipt.delegateID || receipt.lease.generation == 0 {
+				t.Fatalf("activation identity = %+v", receipt)
+			}
+			return receipt
+		}
+	}
+	t.Fatalf("no activation registered for session %s", sessionID)
+	return nil
+}
+
+// Call after stopping wake producers and releasing provider gates. Close fences
+// future admission and cancels/joins execution, then receipts join its final tail.
+func (r *activationReturns) close(t *testing.T, root *Session) {
+	t.Helper()
+	root.Close()
+	r.collect()
+	for _, receipt := range r.all {
+		awaitSignal(t, receipt.returned, "activation cleanup")
+	}
+}
+
 // waitForRootAttention waits until root holds at least n unresolved
 // attention items and returns them in transcript order.
 func waitForRootAttention(t *testing.T, root *Session, n int) []string {
@@ -252,4 +383,165 @@ func waitForRootAttention(t *testing.T, root *Session, n int) []string {
 		return len(pending) >= n
 	})
 	return pending
+}
+
+// notificationReportWakesParent uses real delegate creation, delivery and
+// provider requests. Worker B cannot send any stimulus until A's report has
+// reached the coordinator and its successful request has consumed that report.
+func notificationReportWakesParent(t *testing.T, _ bool) {
+	t.Helper()
+	const payload = "c18f90d2-45ca-4c50-b17b-a67fb0e92783"
+	adapter := newMessagingAdapter("COORD-BRIEF", "WORKER-A", "WORKER-B")
+	reportGate, siblingGate := make(chan struct{}), make(chan struct{})
+	releaseReport := sync.OnceFunc(func() { close(reportGate) })
+	releaseSibling := sync.OnceFunc(func() { close(siblingGate) })
+	defer releaseReport()
+	defer releaseSibling()
+	returns := newActivationReturns()
+	initialGate, observedGate, terminalGate := make(chan struct{}), make(chan struct{}), make(chan struct{})
+	terminalEntered := make(chan struct{})
+	releaseInitial := sync.OnceFunc(func() { close(initialGate) })
+	releaseObserved := sync.OnceFunc(func() { close(observedGate) })
+	releaseTerminal := sync.OnceFunc(func() { close(terminalGate) })
+	defer releaseInitial()
+	defer releaseObserved()
+	defer releaseTerminal()
+	workerIDs := make(chan string, 2)
+	presented := make(chan llm.Request, 1)
+	var siblingID string
+	waitResponse := func() llm.Response {
+		// Done with live children is now refused at admission. The old
+		// ordinary-drain route therefore converges on the same valid wait.
+		return agenttest.ToolCallResponse(communicateCallArgs("wait", map[string]any{
+			"message": "waiting", "end_turn": true,
+			"end_reason": "waiting_on_work", "waiting_on": siblingID,
+		}))
+	}
+	adapter.script("root",
+		func(llm.Request) llm.Response {
+			return delegateToolResponse("coord", "COORD-BRIEF: coordinate two workers.")
+		},
+		func(llm.Request) llm.Response { return agenttest.FinalResponse("waiting") },
+	)
+	adapter.script("COORD-BRIEF",
+		func(llm.Request) llm.Response { return delegateToolResponse("a", "WORKER-A: report.") },
+		func(req llm.Request) llm.Response {
+			workerIDs <- deferredHeadDelegateID.FindString(lastToolResultText(req.Messages))
+			return delegateToolResponse("b", "WORKER-B: report.")
+		},
+		func(req llm.Request) llm.Response {
+			siblingID = deferredHeadDelegateID.FindString(lastToolResultText(req.Messages))
+			workerIDs <- siblingID
+			awaitSignal(t, initialGate, "initial coordinator activation capture")
+			return waitResponse()
+		},
+		func(req llm.Request) llm.Response {
+			presented <- req
+			awaitSignal(t, observedGate, "observing coordinator activation capture")
+			return waitResponse()
+		},
+		func(llm.Request) llm.Response {
+			close(terminalEntered)
+			awaitSignal(t, terminalGate, "terminal coordinator activation capture")
+			return agenttest.FinalResponse("coordinator finished")
+		},
+	)
+	adapter.script("WORKER-A", func(llm.Request) llm.Response {
+		awaitSignal(t, reportGate, "the coordinator to wait")
+		return agenttest.FinalResponse(payload)
+	})
+	adapter.script("WORKER-B", func(llm.Request) llm.Response {
+		awaitSignal(t, siblingGate, "A's report to be observed")
+		return agenttest.FinalResponse("sibling finished")
+	})
+	root := newMessagingRoot(t, adapter, returns.configure)
+	t.Cleanup(func() { returns.close(t, root) })
+	serveSupervisionRootWakes(t, root)
+	// TRIPWIRE: every answer is scripted in process; only a hang reaches it.
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if _, err := root.ProcessInput(ctx, "start", nil); err != nil {
+		t.Fatalf("ProcessInput: %v", err)
+	}
+	adapter.waitForRequests(t, "COORD-BRIEF", 3)
+	children := root.subagents.sessions()
+	if len(children) != 1 {
+		t.Fatalf("coordinator children = %d", len(children))
+	}
+	coordinator := children[0]
+	initial := returns.take(t, coordinator.ID())
+	releaseInitial()
+	waitForTestSignal(t, initial.returned, "initial coordinator yield")
+	if coordinator.State() != SessionIdle {
+		t.Fatalf("coordinator state = %s", coordinator.State())
+	}
+	workerID, sibling := <-workerIDs, <-workerIDs
+	if workerID == "" || sibling == "" || workerID == sibling {
+		t.Fatalf("worker identities = %q, %q", workerID, sibling)
+	}
+	releaseReport()
+	var req llm.Request
+	select {
+	case req = <-presented:
+	case <-ctx.Done():
+		t.Fatalf("report did not wake coordinator before sibling release: coordinator requests=%d, error=%v", len(adapter.requestsFor("COORD-BRIEF")), ctx.Err())
+	}
+	if text := messagesText(req.Messages); strings.Count(text, payload) != 1 || !strings.Contains(text, `delegate_id="`+workerID+`"`) {
+		t.Fatalf("coordinator request did not carry worker A's payload exactly once: %s", text)
+	}
+	observed := returns.take(t, coordinator.ID())
+	if observed.lease != initial.lease || observed.generationDone != initial.generationDone {
+		t.Fatalf("coordinator resumed a different generation: %+v -> %+v", initial, observed)
+	}
+	releaseObserved()
+	waitForTestSignal(t, observed.returned, "coordinator response and yield while B remains held")
+	attentionID := "delegate:" + workerID + "/delivery/1"
+	fold := rootAttentionFold(t, coordinator)
+	if fold.resolutions[attentionID] != delegateAttentionConsumed {
+		t.Fatalf("report resolution = %s", fold.resolutions[attentionID])
+	}
+	if !slices.Equal(fold.order, []string{attentionID}) || fold.resumeGenerations[attentionID] != 0 {
+		t.Fatalf("report delivery fold = order %v generations %v, want the presenting generation only", fold.order, fold.resumeGenerations)
+	}
+	if got := len(adapter.requestsFor("COORD-BRIEF")); got != 4 {
+		t.Fatalf("coordinator requests = %d, want 4 without a duplicate observation", got)
+	}
+	coordRows := delegateRowsForSession(root, false)
+	if len(coordRows) != 1 || !coordRows[0].snapshot.currentRunOpen {
+		t.Fatalf("coordinator settled while B remained live: %#v", coordRows)
+	}
+	if row := delegateAggregateSnapshot(t, root.delegateController, sibling); !row.CurrentRunOpen {
+		t.Fatal("worker B stopped before it was released")
+	}
+	ownerFold := rootAttentionFold(t, root)
+	for _, id := range ownerFold.order {
+		if !strings.HasPrefix(id, "delegate:"+coordinator.owningDelegateID+"/update/") || !strings.Contains(ownerFold.content[id].Text(), `kind="update"`) {
+			t.Fatalf("coordinator published a terminal report while B remained live: %s", id)
+		}
+	}
+	for _, event := range publicationEvents(t, root) {
+		if event.DelegateID == coordinator.owningDelegateID && event.RunFinished != nil {
+			t.Fatal("coordinator RunFinished while B remained live")
+		}
+		if update := event.UpdatePosted; event.DelegateID == coordinator.owningDelegateID && update != nil {
+			if update.Communicate == nil || update.Communicate.EndReason != "waiting_on_work" || update.Communicate.WaitingOn != sibling {
+				t.Fatalf("coordinator publication is not its valid wait: %+v", update)
+			}
+		}
+	}
+	releaseSibling()
+	waitForTestSignal(t, terminalEntered, "terminal coordinator provider")
+	terminal := returns.take(t, coordinator.ID())
+	if terminal.lease != initial.lease || terminal.generationDone != initial.generationDone {
+		t.Fatalf("terminal coordinator generation = %+v", terminal)
+	}
+	releaseTerminal()
+	waitForTestSignal(t, initial.generationDone, "captured coordinator generation done")
+	waitForTestSignal(t, terminal.returned, "terminal coordinator owner cleanup")
+	for _, event := range publicationEvents(t, root) {
+		if event.DelegateID == coordinator.owningDelegateID && event.RunFinished != nil {
+			return
+		}
+	}
+	t.Fatal("coordinator did not publish RunFinished after sibling release")
 }

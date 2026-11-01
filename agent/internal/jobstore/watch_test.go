@@ -1,6 +1,7 @@
 package jobstore
 
 import (
+	"path/filepath"
 	"reflect"
 	"regexp"
 	"strings"
@@ -8,6 +9,36 @@ import (
 
 	"primeradiant.com/evener/agent/provenance"
 )
+
+func TestCallbackFrameProductionSurvivesWatchEndUntilCustody(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "jobs.jsonl")
+	store := openStore(t, path)
+	state := WatchSendState{
+		Key:           WatchSendKey{VisibleSessionID: "holder", WatchID: "watch_callback", WatchTarget: "caller", ResolvedSendTo: "caller", WatchGeneration: "generation"},
+		CallbackFrame: true, TimerSlot: "timer-slot", DeliveryID: "payload-identity", UpdateSeq: 1,
+		ReceiverSessionID: "receiver", Frame: "immutable rendered payload",
+		Provenance: provenance.WithWatch(nil, "watch_callback", "generation", "payload-identity", "holder", "caller"),
+	}
+	appendEvent(t, store, Event{Kind: EventWatchSendPending, WatchSend: &state})
+	appendEvent(t, store, Event{Kind: EventWatchCleared, WatchID: state.Key.WatchID, Watch: &WatchEvent{Generation: state.Key.WatchGeneration}})
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	reopened := openStore(t, path)
+	fold, err := reopened.LoadWatchSends()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(fold.Pending[state.Key], &state) {
+		t.Fatalf("reopened callback = %#v, want %#v", fold.Pending[state.Key], &state)
+	}
+	// Delivered is the source's receiver-custody receipt, not a model receipt.
+	appendEvent(t, reopened, Event{Kind: EventWatchSendDelivered, WatchSend: &state})
+	fold, err = reopened.LoadWatchSends()
+	if err != nil || len(fold.Pending) != 0 {
+		t.Fatalf("after custody pending=%v err=%v", fold.Pending, err)
+	}
+}
 
 func TestFoldWatchSendPendingLatestWinsAndTerminalRemoves(t *testing.T) {
 	key := WatchSendKey{
@@ -28,6 +59,62 @@ func TestFoldWatchSendPendingLatestWinsAndTerminalRemoves(t *testing.T) {
 	events = append(events, Event{Kind: EventWatchSendDelivered, Seq: 3, WatchSend: &WatchSendState{Key: key, DeliveryID: "d2"}})
 	if got := FoldWatchSends(events).Pending; len(got) != 0 {
 		t.Fatalf("pending after delivered = %+v", got)
+	}
+}
+
+func TestWatchSendSupersededCandidatesSurviveCacheAndReopen(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "jobs.jsonl")
+	store := openStore(t, path)
+	key := WatchSendKey{VisibleSessionID: "root", WatchID: "watch_A", WatchTarget: "caller", ResolvedSendTo: "caller", WatchGeneration: "wg_1"}
+	a := WatchSendState{Key: key, DeliveryID: "accepted-A", UpdateSeq: 1, Frame: "immutable A", Provenance: provenance.WithWatch(nil, "watch_A", "wg_1", "accepted-A", "root", "caller")}
+	b := WatchSendState{Key: key, DeliveryID: "pending-B", UpdateSeq: 2, Frame: "immutable B"}
+	appendEvent(t, store, Event{Kind: EventWatchSendPending, WatchSend: &a})
+	appendEvent(t, store, Event{Kind: EventWatchSendPending, WatchSend: &b})
+	check := func(rec WatchSendRecord, pending bool) {
+		t.Helper()
+		if len(rec.Superseded) != 1 || !reflect.DeepEqual(rec.Superseded[a.DeliveryID], &a) {
+			t.Fatalf("exact predecessor candidate lost or aliased: %+v", rec.Superseded)
+		}
+		if pending && (len(rec.Pending) != 1 || !reflect.DeepEqual(rec.Pending[key], &b)) {
+			t.Fatalf("newer current pending changed: %+v", rec.Pending)
+		}
+		if !pending && len(rec.Pending) != 0 {
+			t.Fatalf("terminal B left current pending: %+v", rec.Pending)
+		}
+	}
+	load := func() WatchSendRecord {
+		t.Helper()
+		rec, err := store.LoadWatchSends()
+		if err != nil {
+			t.Fatal(err)
+		}
+		return rec
+	}
+	for range 2 { // Fresh fold, then cached fold: neither may alias the next load.
+		rec := load()
+		check(rec, true)
+		rec.Pending[key].Frame = "caller mutated B"
+		rec.Superseded[a.DeliveryID].Frame = "caller mutated A"
+		rec.Superseded[a.DeliveryID].Provenance.WatchKeys[0].WatchID = "caller mutation"
+		delete(rec.Pending, key)
+		delete(rec.Superseded, a.DeliveryID)
+	}
+	check(load(), true)
+	appendEvent(t, store, Event{Kind: EventWatchSendDelivered, WatchSend: &b})
+	check(load(), false) // B's terminal is not A's source receipt.
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	store = openStore(t, path)
+	check(load(), false)
+	onlyCandidates := cloneFoldSends(WatchSendRecord{Superseded: load().Superseded})
+	if onlyCandidates.Pending != nil || !reflect.DeepEqual(onlyCandidates.Superseded[a.DeliveryID], &a) {
+		t.Fatal("nil pending skipped or changed the candidate projection")
+	}
+	appendEvent(t, store, Event{Kind: EventWatchSendDelivered, WatchSend: &a})
+	final := load()
+	if len(final.Pending) != 0 || len(final.Superseded) != 0 {
+		t.Fatalf("A's exact receipt did not settle only A: %+v", final)
 	}
 }
 

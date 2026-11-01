@@ -214,6 +214,12 @@ type Options struct {
 	// a dropped channel's supervisor, so a concurrent Ensure's retire-and-attach
 	// interleaving is exact rather than a race the sleep had to bias.
 	beforeSuperviseGate func(name string, ch *Channel)
+	// Admission observations run without manager/gate locks, except the
+	// successful-claim hook, which runs with the gate held and m.mu released.
+	beforeSuperviseClaim func(name string, retry bool)
+	afterSuperviseClaim  func(name string, retry bool)
+	// superviseGateWaiting runs after a failed claim, before the release select.
+	superviseGateWaiting func(name string)
 	// superviseExited, when set, runs after a supervisor goroutine has returned
 	// and released any gate it held. Tests use it to observe "the supervisor
 	// stood down" instead of sleeping long enough to hope it did.
@@ -1822,7 +1828,15 @@ func (m *Manager) attachEvent(name string, ch *Channel, s State) {
 	// it as soon as a consumer does, so it can pair the events.
 	m.mu.Lock()
 	m.announced[name] = ch
+	// Attachment has committed, so every preexisting loop is superseded. The
+	// new loop is registered only after this announcement. Provisional publish
+	// and rollback deliberately leave the predecessor eligible to recover.
+	loops := m.supervisors[name]
+	delete(m.supervisors, name)
 	m.mu.Unlock()
+	for loop := range loops {
+		loop.cancel()
+	}
 	m.emit(Event{Host: name, Kind: EventAttached, State: s})
 }
 

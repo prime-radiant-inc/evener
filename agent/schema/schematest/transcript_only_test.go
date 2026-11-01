@@ -48,7 +48,7 @@ func TestTranscriptOnlySamplesCoverEveryKindAndCarryNothingCountable(t *testing.
 			t.Fatalf("sample %s lacks identity", sample.Kind)
 		}
 	}
-	for _, kind := range []schema.TurnKind{schema.TurnCompletion, schema.TurnReopen, schema.TurnCommunicate, schema.TurnNotice} {
+	for _, kind := range []schema.TurnKind{schema.TurnCompletion, schema.TurnReopen, schema.TurnWaitCheckpoint, schema.TurnCommunicate, schema.TurnNotice} {
 		if !kinds[kind] {
 			t.Errorf("no sample of %s", kind)
 		}

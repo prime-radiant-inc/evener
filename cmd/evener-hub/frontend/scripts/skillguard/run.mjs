@@ -698,15 +698,17 @@ export class Driver {
   // loaded moment the wait was widened to survive. It is accounted for ONCE:
   // re-extending on every hold would let a flapping condition postpone the
   // deadline indefinitely, and a wait that cannot fail is worse than a slow one.
-  async waitPage(exprSource, { timeoutMs = 15000, label, settleMs = 0 } = {}) {
+  async waitPage(exprSource, { timeoutMs = 15000, label, settleMs = 0, deadlineAt } = {}) {
     const startedAt = Date.now();
     // The caller's timeoutMs is the FLOOR of a hang tripwire, not a fixed
     // budget: a run that has already proven this machine slow widens it (up to
     // the ceiling), so a correct-but-slow reaction under load is not read as a
     // wedged page. The wait is still released ONLY by the awaited condition --
     // the budget decides only how long silence is tolerated (see budgets.mjs).
-    const budgetMs = this.reactions.deadline(timeoutMs);
-    let deadline = startedAt + budgetMs;
+    // Composed operations may size the adaptive allowance before their first
+    // action, then spend the remainder here without another adaptive expansion.
+    const budgetMs = deadlineAt === undefined ? this.reactions.deadline(timeoutMs) : Math.max(0, deadlineAt - startedAt);
+    let deadline = deadlineAt ?? startedAt + budgetMs;
     let heldSince = null;
     // A completed wait is the driver's observation of how slow the app is on
     // this machine. With settleMs the reaction is the time to the FIRST hold --
