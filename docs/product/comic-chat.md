@@ -39,9 +39,15 @@ noninteractive.
 
 ## Presentation and accessibility
 
-At 760 CSS pixels and below, panels recompose into one column rather than
-shrinking a desktop strip. Ordinary panels stop at 26rem or the available width,
-leaving unused space as gutter. Paired panels retain their 15px gap when they fit.
+Rows fill the available width: a row holds as many panel-sized panels as fit
+side by side with their 15px gap, so a wide window packs three or four panels
+where a narrow one recomposes to a single column rather than shrinking a
+desktop strip. The column count follows the panel size token, not a fixed
+breakpoint. Ordinary panels stop at 26rem or the available width, leaving
+unused space as gutter. Consecutive short messages from one party compose
+into one panel whose balloons stack in source order, before the run continues
+in the next panel; every balloon keeps its own source anchor. Paired panels
+retain their 15px gap when they fit.
 Headings, emphasis, lists, quotations, safe links and inline code render through
 the shared Markdown renderer. Available thought content is expanded in source
 order; missing or redacted content is not invented.
@@ -137,7 +143,10 @@ and geometry to detect theme leakage. The default guard loads the bundled font;
 ## Shared input and recovery
 
 The conversation pane uses its existing composer source, structured editor, attachments,
-queue and `useComposerActions` owner. Send, Queue and Stop keep ordinary-client
+queue and `useComposerActions` owner, and Comic mounts the same standard Composer
+component the ordinary client uses, with its attach control and in-card session menu.
+The composer inherits the Comic lettering through the root's font tokens; it owns no
+font of its own. Send, Queue and Stop keep ordinary-client
 admission and durable mutation identities. A transport failure does not mean an
 accepted input should be sent again: canonical transcript reconciliation can
 settle an unacknowledged mutation. Newer edits remain separately owned through
@@ -202,10 +211,18 @@ activity owner. `buildEntityView` chooses generation and revision precedence;
 `projectComicDelegates` qualifies owner, delegate ID and authoritative child ref.
 A matching recorded delegate-creation output supplies placement, not membership,
 current status or a later completion. Meanwhile follows that launch in the
-parent's source order. Until the launch is loaded, its strip stays after the
-reader's history boundary and before its messages. Loading the creation output
-moves the strip without changing its key or committed child lifetime. Ambiguous
-identity remains readable as attributed source, without an invented child route.
+parent's source order. A delegate's mid-work updates fold into its strip
+instead of rendering as caption panels, and the strip's heading counts them;
+replies and failures still render as their own captions. When the launch is
+outside the loaded window, the strip anchors at the earliest loaded folded
+update, so a background conversation appears where its traffic sits. Loading
+the creation output moves the strip without changing its key or committed
+child lifetime. A strip with neither a loaded launch nor loaded updates
+renders no row, and there is no separate trailing group of unplaced
+delegates. Daemon `<SYSTEM-REMINDER>` steering renders no panel of its own;
+notification cards it carries still render, and human-authored steering keeps
+its dialogue. Ambiguous identity remains readable as attributed source,
+without an invented child route.
 
 Routing keeps the workspace address; delegate membership and personas use the
 resolved session's source-qualified identity. Activity and transcript reads can
@@ -235,9 +252,9 @@ fork preservation and SDK normalization belong to the shared
 `composeComicFlow` interleaves each reader's panels, headings and bounded paging
 controls. Both presentations use one `VirtualList`; grandchildren have no nested
 scrollbox or compounded mobile indentation. Each reader's itemless turn errors
-remain separate from chronology and unplaced delegates. Root history controls
-remain available above the virtual flow, while child history controls belong to
-their reader's rows.
+remain separate from chronology and from the strips anchored in it. Root history
+controls remain available above the virtual flow, while child history controls
+belong to their reader's rows.
 
 An expanded child shows a bounded loading, repair, disconnected or unavailable
 row using the shared connection and thread signals. Cached content remains

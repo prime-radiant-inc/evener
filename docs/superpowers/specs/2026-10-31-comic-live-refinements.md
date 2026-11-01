@@ -8,8 +8,9 @@ Jesse's live-testing feedback on the merged Comic presentation (#5441), with his
 1. **Pack panels by width.** A row holds as many panel-sized panels as the
    conversation width fits: `n = floor((width + 15px) / (26rem + 15px))`,
    clamped to at least 1. Panels stay at their 26rem bound; spare width stays
-   gutter (existing ruling: never stretch a lone panel). Below ~866px this is
-   one column; at 761–866px the old shrinking 2-up pairing is gone, which the
+   gutter (existing ruling: never stretch a lone panel). Below ~847px (16px
+   root) this is one column; at 761–847px the old shrinking 2-up pairing is
+   gone, which the
    panel-size ruling prefers. Inserts keep their own 40rem rows; spotlight and
    continuation invariants are unchanged.
 2. **Stack same-party runs.** Consecutive short single-prose messages from the
