@@ -65,7 +65,7 @@ afterEach(() => {
 });
 
 let fixtureId = 0;
-function setup(messageCount = 30, olderCursor?: string, stripAnchor = false) {
+function setup(messageCount = 30, olderCursor?: string, stripAnchor = false, closedUnsendable = false) {
   const root = `local:keyboard-clear-${++fixtureId}`;
   const child = `local:keyboard-child-${fixtureId}`;
   const fixture = subagentOutcomesDelegatesResponse();
@@ -76,7 +76,12 @@ function setup(messageCount = 30, olderCursor?: string, stripAnchor = false) {
     wireThread(ref, {
       id: "stable-wire-thread",
       sessionId: ref === root ? sessionId : child.slice(child.indexOf(":") + 1),
-      evener: { ...wireThread(ref).evener, instanceId },
+      evener: {
+        ...wireThread(ref).evener,
+        instanceId,
+        ...(closedUnsendable ? { capabilities: { ...wireThread(ref).evener.capabilities, send: false } } : {}),
+      },
+      ...(closedUnsendable ? { status: { type: "closed" as const } } : {}),
       turns: [
         {
           id: "turn",
@@ -376,6 +381,16 @@ test("comic mode mounts the shared Composer with attach and the in-card menu", a
   // comic root swaps, so the input surface renders in the comic face.
   const css = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "comic.module.css"), "utf8");
   expect(css).toMatch(/--font-sans:\s*var\(--comic-font\)/);
+});
+
+test("a closed unsendable session keeps its session menu reachable", async () => {
+  const { mount } = setup(2, undefined, false, true);
+  const mounted = mount("closed-menu");
+  // The composer renders no follow-up card without a Send capability or recovery
+  // fence, but the session menu must stay mounted: it carries Verbosity and the
+  // other session actions for the pane.
+  await waitFor(() => expect(mounted.container.querySelector('[data-testid="session-chrome-inline"]')).not.toBeNull());
+  mounted.unmount();
 });
 
 test("Comic registers focused-seat transcript actions outside its scroll port", async () => {

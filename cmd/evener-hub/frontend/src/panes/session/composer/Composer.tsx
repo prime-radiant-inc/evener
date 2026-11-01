@@ -841,7 +841,10 @@ export function Composer({ ref, paneId, focused, mountAutofocus = true, source, 
           }
         }}
       />
-      {askPending && sessionChrome}
+      {/* No card means no in-card menu: keep the session actions mounted (Verbosity
+          lives there) whenever ask is pending or a shut-down session cannot show
+          its follow-up card. */}
+      {(askPending || (ended && !showFollowUpCard)) && sessionChrome}
       {/* Staged attachments. One rendering for every state, so nothing here
           swaps element types under a user mid-gesture - AttachmentTile.tsx's
           own header comment has the mechanism and the bug it closed. */}
