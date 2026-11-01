@@ -2210,6 +2210,12 @@ const resumeRetries = new Map<string, { attempt: number; cancel?: () => void }>(
 function scheduleResumeRetryForFence(ref: string): void {
   if (resumeRetries.get(ref)?.cancel) return;
   const attempt = (resumeRetries.get(ref)?.attempt ?? 0) + 1;
+  // The ref's Stop generation at arm time. cancelPendingUserIntents retires
+  // the armed retry at the Stop itself; this fire-time check is the race
+  // backstop - a Stop that lands between the arm and this wake must not let
+  // the drive run, because the drive takes a fresh stop baseline and would
+  // not see it.
+  const armedStopGeneration = userIntentStopGenerations.get(ref) ?? 0;
   const cancel = resumeRetryScheduler(attempt, () => {
     // Drop only the handle, not the entry: the pace count persists so the
     // next failure schedules at the next step, and the re-check below still
@@ -2218,6 +2224,10 @@ function scheduleResumeRetryForFence(ref: string): void {
     if (fired) resumeRetries.set(ref, { attempt: fired.attempt });
     const state = threadsStore.getState();
     if (!state.threads.has(ref) || !state.restartBlockingObligations.has(ref)) {
+      retireResumeRetry(ref);
+      return;
+    }
+    if ((userIntentStopGenerations.get(ref) ?? 0) !== armedStopGeneration) {
       retireResumeRetry(ref);
       return;
     }
@@ -3051,6 +3061,12 @@ const userIntentStopGenerations = new Map<string, number>();
 let userIntentStopSequence = 0;
 
 function cancelPendingUserIntents(ref: string): void {
+  // A user Stop reverses the Send intent the armed resume retry serves, so
+  // the retry must die here too - at the one bump every Stop path (interrupt,
+  // forceStop, shutdown) shares - or a fired drive would take a fresh stop
+  // baseline, blind to this Stop, and restart the daemon the user just
+  // stopped.
+  retireResumeRetry(ref);
   userIntentStopGenerations.set(ref, ++userIntentStopSequence);
 }
 
@@ -3283,27 +3299,39 @@ function waitForStopDrain(ref: string): Promise<void> {
 // `automatic` marks the retry owner's re-drive (not a user press). Its failure
 // updates the existing resumeFailures record in place - without a new seq - so
 // the press surface toasts the press's own failure once and the paced retries
-// behind it stay quiet.
+// behind it stay quiet. A press that JOINS an in-flight automatic drive marks
+// the drive here, so that drive's failure mints a fresh seq - the joined press
+// still hears the failure as its own.
+const pressJoinedResumes = new Set<string>();
+
 async function resumeFencedForSend(ref: string, automatic = false): Promise<void> {
   const existing = inFlightResumes.get(ref);
-  if (existing !== undefined) return existing;
+  if (existing !== undefined) {
+    if (!automatic) pressJoinedResumes.add(ref);
+    return existing;
+  }
   const drive = runResumeFencedForSend(ref, automatic);
   inFlightResumes.set(ref, drive);
   try {
     await drive;
   } finally {
     if (inFlightResumes.get(ref) === drive) inFlightResumes.delete(ref);
+    pressJoinedResumes.delete(ref);
   }
 }
 
 async function runResumeFencedForSend(ref: string, automatic: boolean): Promise<void> {
   // Hoisted for the catch: which identity this drive reached, what its first
-  // retarget moved, whether a Stop won the identity fence, and whether this
-  // drive registered a swap (it only does when the resume changed the ref).
+  // retarget moved, whether a Stop won the identity fence, whether this
+  // drive registered a swap (it only does when the resume changed the ref),
+  // the drive's own stop baseline, and whether its resume request ever went
+  // out.
   let resumedRef: string | undefined;
   let movedFirst: RetargetedMutations | null = null;
   let stopWon = false;
   let swapRegistered = false;
+  let stopBaseline: ((ref?: string) => void) | undefined;
+  let requestIssued = false;
   try {
     const client = wiredClient;
     if (client === null || client.state !== "ready")
@@ -3312,7 +3340,8 @@ async function runResumeFencedForSend(ref: string, automatic: boolean): Promise<
     // wait is a person canceling the message this drive would send, and a
     // baseline captured after it would treat that Stop as already accounted for
     // and resume anyway.
-    const stopBaseline = resumeStopBaseline();
+    const driveStopBaseline = resumeStopBaseline();
+    stopBaseline = driveStopBaseline;
     // A Stop this page started holds Stopping > 0 and the hub refuses even
     // turn/start for that window, so wait the drain out before resuming. Send
     // stays the single recovery action: the press parks its row and this drive
@@ -3320,7 +3349,8 @@ async function runResumeFencedForSend(ref: string, automatic: boolean): Promise<
     // Only a drain in progress defers the RPC; with none, the resume starts in
     // this same tick so a Send still issues it on the press's own turn.
     while (threadsStore.getState().stoppingRefs.has(ref)) await waitForStopDrain(ref);
-    const { thread } = await client.resumeThread(ref, { beforeRequest: stopBaseline });
+    requestIssued = true;
+    const { thread } = await client.resumeThread(ref, { beforeRequest: driveStopBaseline });
     resumedRef = thread.evener.ref;
     // The token the daemon's instance fence compares (server/appwire_thread_settings.go's
     // expectedInstanceID vs appThreadID), read the same fused way a fresh send
@@ -3337,8 +3367,8 @@ async function runResumeFencedForSend(ref: string, automatic: boolean): Promise<
     // matching error text.
     const identityFence = () => {
       try {
-        stopBaseline(ref);
-        stopBaseline(resumedRef);
+        driveStopBaseline(ref);
+        driveStopBaseline(resumedRef);
       } catch (error) {
         stopWon = true;
         throw error;
@@ -3410,14 +3440,28 @@ async function runResumeFencedForSend(ref: string, automatic: boolean): Promise<
     }
     if (swapRegistered) endResumeSwap(ref);
     const message = error instanceof Error ? error.message : String(error);
-    const stopCanceled = error instanceof StopCanceledError;
+    let stopCanceled = error instanceof StopCanceledError;
+    // A Stop that lands mid-drive can surface here as a plain transport
+    // failure - the Stop is killing the very daemon the resume reaches - so
+    // the error type alone cannot be the Stop signal. Whatever the error, a
+    // drive that got as far as its baseline re-runs it: a Stop generation that
+    // moved since the drive started is a Stop that won, and re-driving the
+    // resume would fight it.
+    if (!stopCanceled && stopBaseline !== undefined) {
+      try {
+        stopBaseline(ref);
+      } catch {
+        stopCanceled = true;
+      }
+    }
     // An automatic retry's failure keeps the record - and its seq, the press
     // surface's toast identity - updating only what it learned. A press's own
-    // failure (or the first failure after a success cleared the record) is
-    // the one that mints a new record and a new seq. The seq is read and
-    // minted outside the setter so the updater stays pure.
+    // failure (or the first failure after a success cleared the record) mints
+    // a new record and a new seq - and so does an automatic drive a press
+    // joined, because that press still expects to hear the failure as its own.
+    // The seq is read and minted outside the setter so the updater stays pure.
     const existing = threadsStore.getState().resumeFailures.get(ref);
-    const seq = automatic && existing !== undefined ? existing.seq : ++resumeFailureSeq;
+    const seq = automatic && !pressJoinedResumes.has(ref) && existing !== undefined ? existing.seq : ++resumeFailureSeq;
     threadsStore.setState((state) => {
       const resumeFailures = new Map(state.resumeFailures);
       resumeFailures.set(ref, { seq, message, stopCanceled });
@@ -3428,12 +3472,14 @@ async function runResumeFencedForSend(ref: string, automatic: boolean): Promise<
     // armed while the obligation stands. The fire-time re-check retires the
     // retry if the fence cleared some other way first.
     if (!stopCanceled) scheduleResumeRetryForFence(ref);
-    // Either way the drive failed while the ref holds delivery-uncertain rows:
-    // the resume was the reconciliation's precondition, so each standing row
-    // just survived one more failed opportunity to check its fate. Counted per
-    // row, so a row that parked later still earns its own escape.
-    for (const clientMutationId of blockedUnknownIdsOf(ref)) {
-      noteUncertainRecheckFailure(clientMutationId);
+    // The escape counter counts failed opportunities to CHECK a standing row's
+    // fate. A drive whose resume request went out and failed checked; one
+    // that never reached the hub, or that the user's own Stop reversed,
+    // checked nothing and must not grow any row's discard threshold.
+    if (requestIssued && !stopCanceled) {
+      for (const clientMutationId of blockedUnknownIdsOf(ref)) {
+        noteUncertainRecheckFailure(clientMutationId);
+      }
     }
   }
 }
@@ -8965,6 +9011,7 @@ export function resetThreadsStoreForTests(): void {
   activeStops.clear();
   shutdownDispatchGates.clear();
   inFlightResumes.clear();
+  pressJoinedResumes.clear();
   resumeSwapTargets.clear();
   resetHumanNoteDrafts();
   notesLatestIntentSequences.clear();

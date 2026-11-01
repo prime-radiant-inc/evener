@@ -21,7 +21,7 @@ import { FakeClient, type RequestHandler } from "@evener/appwire-client/testing/
 import { nextMacrotask } from "@evener/appwire-client/testing/macrotask";
 import { act, cleanup, renderHook, waitFor } from "@testing-library/react";
 import { IDBDatabase, IDBFactory, IDBKeyRange, IDBVersionChangeEvent } from "fake-indexeddb";
-import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, onTestFinished, test, vi } from "vitest";
 import {
   pendingTurnEntries,
   refreshPendingTurnsProjection,
@@ -52,6 +52,7 @@ import {
   hasQueuedNonSend,
   installBackpressureRetrySchedulerForTests,
   installHydrationRetrySchedulerForTests,
+  installResumeRetrySchedulerForTests,
   notifyReadyForMutationDispatch,
   putThreadModel,
   readMutationPersistence,
@@ -2230,6 +2231,55 @@ test("repeatedly uncheckable delivery unlocks the uncertain discard and removes 
   expect(await discardUncertainMutation(row.clientMutationId, ref)).toBe(true);
   expect(await storage.getOutbox(row.clientMutationId)).toBeUndefined();
   expect(threadsStore.getState().uncertainRecheckFailures.has(row.clientMutationId)).toBe(false);
+});
+
+// The escape counter counts FAILED FATE CHECKS, not failed drives: a drive
+// that never reached the hub - no ready client - checked nothing, so it must
+// not grow any row's discard threshold. A drive whose resume request went
+// out and the hub refused is a real failed check, and counts.
+test("a resume failure that never reached the hub counts as no failed delivery check", async () => {
+  const restoreResumeScheduler = installResumeRetrySchedulerForTests(() => () => undefined);
+  onTestFinished(restoreResumeScheduler);
+  const ref = "local:uncertain-unreached-resume";
+  const storage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(storage);
+  const row = await storage.enqueueIntent({
+    targetRef: ref,
+    threadId: `thr_${ref}`,
+    method: "turn/queue",
+    payload: { ref, input: [{ type: "text", text: "fate unknown" }] },
+    attachments: [],
+    optimisticDisplay: { text: "fate unknown" },
+  });
+  await storage.markAttempted(row.clientMutationId);
+  await storage.markUnknown(row.clientMutationId, "blockedUnknown");
+  const fake = connectFakeClient();
+  fake.on("thread/read", () => {
+    const response = readResponse(ref);
+    response.thread.evener.mutationStateAuthoritative = false;
+    return response;
+  });
+  await threadsStore.getState().ensureThread(ref);
+  await refreshPendingTurnsProjection(ref);
+  await flushIndexedDBUntil(() => false);
+  // With the hub reachable, the drive's resume request goes out and the hub
+  // refuses it: that is one failed opportunity to check the row's fate.
+  fake.on("thread/resume", () => {
+    throw new Error("rendezvous timed out");
+  });
+  await threadsStore.getState().resumeSession(ref);
+  expect(threadsStore.getState().resumeFailures.get(ref)?.message).toBe("rendezvous timed out");
+  expect(threadsStore.getState().uncertainRecheckFailures.get(row.clientMutationId)).toBe(1);
+  // Then, with no ready client, a later drive fails before any request goes
+  // out. It checked nothing, so the row's count must stay where the real check
+  // left it - a hub outage between checks never advances the discard
+  // threshold.
+  connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
+  await threadsStore.getState().resumeSession(ref);
+  expect(threadsStore.getState().resumeFailures.get(ref)?.message).toBe(
+    "Connect to the hub before resuming this session.",
+  );
+  expect(threadsStore.getState().uncertainRecheckFailures.get(row.clientMutationId)).toBe(1);
 });
 
 test("a healthy authoritative refresh releases the fence after refused force stop", async () => {

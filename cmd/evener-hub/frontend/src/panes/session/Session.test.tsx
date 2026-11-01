@@ -5957,6 +5957,153 @@ test("a Stop that cancels the resume drive arms no automatic retry", async () =>
   expect(scheduledResumeRetries).toHaveLength(0);
 });
 
+// The armed retry must die at the user's own hand: a Stop during the backoff
+// window is the user reversing the Send intent the retry serves, and a drive
+// fired after it would take a fresh stop baseline - blind to that Stop - and
+// restart the daemon the user just stopped. forceStop is the sharp case: it
+// re-arms the recovery obligation itself, so the fire-time fence alone would
+// let the armed drive through.
+test("a Stop during the armed backoff retires the pending resume retry", async () => {
+  const scheduledResumeRetries: { attempt: number; fire: () => void; cancelled: boolean }[] = [];
+  const restoreResumeScheduler = installResumeRetrySchedulerForTests((attempt, retry) => {
+    const scheduled = { attempt, fire: retry, cancelled: false };
+    scheduledResumeRetries.push(scheduled);
+    return () => {
+      scheduled.cancelled = true;
+    };
+  });
+  onTestFinished(restoreResumeScheduler);
+  const fake = connectReadyFakeClient();
+  const ref = "local:resume-retry-stopped-mid-backoff";
+  fake.on("thread/read", () => {
+    const response = readResponse(ref, { status: { type: "notLoaded" } });
+    response.thread.evener.resumeRequired = true;
+    return response;
+  });
+  fake.on("thread/resume", () => {
+    throw new Error("rendezvous timed out");
+  });
+  fake.on("evener/thread/forceStop", () => ({}));
+  render(
+    <ClientProvider client={fake}>
+      <Session params={{ ref }} paneId="p1" focused={true} />
+    </ClientProvider>,
+  );
+  await waitFor(() => expect(threadsStore.getState().restartBlockingObligations.has(ref)).toBe(true));
+  await resumeViaSend(ref, "the pressed text");
+  await waitFor(() => expect(scheduledResumeRetries).toHaveLength(1));
+  await act(async () => {
+    await threadsStore.getState().forceStop(ref);
+  });
+  expect(scheduledResumeRetries[0]?.cancelled).toBe(true);
+});
+
+// A Stop that lands on the drive's own ref while the resume RPC is on the
+// wire can surface in the catch as a plain transport failure - the Stop is
+// killing the very daemon the resume reaches - so the error's type cannot be
+// the only Stop signal: the drive re-checks its own stop baseline on failure,
+// arms no automatic retry, and - because the Stop reversed the drive before
+// any fate was checked - grows no row's discard threshold.
+test("a Stop followed by a rejected resume RPC arms no automatic retry and counts no failed check", async () => {
+  const scheduledResumeRetries: { attempt: number; fire: () => void }[] = [];
+  const restoreResumeScheduler = installResumeRetrySchedulerForTests((attempt, retry) => {
+    scheduledResumeRetries.push({ attempt, fire: retry });
+    return () => undefined;
+  });
+  onTestFinished(restoreResumeScheduler);
+  const fake = connectReadyFakeClient();
+  const ref = "local:resume-retry-rejected-after-stop";
+  const standingRow = await mutationStorage.enqueueIntent({
+    targetRef: ref,
+    threadId: `thr_${ref}`,
+    method: "turn/queue",
+    payload: { ref, input: [{ type: "text", text: "standing uncertain row" }] },
+    attachments: [],
+    optimisticDisplay: { text: "standing uncertain row" },
+  });
+  await mutationStorage.markAttempted(standingRow.clientMutationId);
+  await mutationStorage.markUnknown(standingRow.clientMutationId, "blockedUnknown");
+  let rejectResume!: (error: Error) => void;
+  const resumeHeld = new Promise<ThreadReadResponse>((_, reject) => {
+    rejectResume = reject;
+  });
+  fake.on("thread/read", (params) => {
+    if (!params.ref) throw new Error("thread/read test request requires ref");
+    const response = readResponse(params.ref, { status: { type: "notLoaded" } });
+    response.thread.evener.resumeRequired = params.ref === ref;
+    return response;
+  });
+  fake.on("thread/resume", () => resumeHeld);
+  fake.on("thread/shutdown", () => ({}));
+  render(
+    <ClientProvider client={fake}>
+      <Session params={{ ref }} paneId="p1" focused={true} />
+    </ClientProvider>,
+  );
+  await waitFor(() => expect(threadsStore.getState().restartBlockingObligations.has(ref)).toBe(true));
+  await resumeViaSend(ref, "the pressed text");
+  await act(async () => {
+    await threadsStore.getState().shutdown(ref);
+    rejectResume(new Error("connection reset by peer"));
+  });
+  await waitFor(() => expect(threadsStore.getState().resumeFailures.get(ref)?.stopCanceled).toBe(true));
+  expect(scheduledResumeRetries).toHaveLength(0);
+  expect(threadsStore.getState().uncertainRecheckFailures.size).toBe(0);
+});
+
+// A Send press that joins an in-flight drive still owns a toast for that
+// drive's failure: the joined press marks the drive, and its failure mints a
+// fresh seq - a fresh toast identity - instead of the quiet in-place update
+// the retry owner's own failures keep.
+test("a Send press that joins an in-flight automatic drive still hears that drive's failure", async () => {
+  const scheduledResumeRetries: { attempt: number; fire: () => void }[] = [];
+  const restoreResumeScheduler = installResumeRetrySchedulerForTests((attempt, retry) => {
+    scheduledResumeRetries.push({ attempt, fire: retry });
+    return () => undefined;
+  });
+  onTestFinished(restoreResumeScheduler);
+  const fake = connectReadyFakeClient();
+  const ref = "local:resume-press-joins-drive";
+  let resumeAttempts = 0;
+  let rejectHeldResume!: (error: Error) => void;
+  const heldResume = new Promise<ThreadReadResponse>((_, reject) => {
+    rejectHeldResume = reject;
+  });
+  fake.on("thread/read", () => {
+    const response = readResponse(ref, { status: { type: "notLoaded" } });
+    response.thread.evener.resumeRequired = true;
+    return response;
+  });
+  fake.on("thread/resume", () => {
+    resumeAttempts += 1;
+    if (resumeAttempts === 1) throw new Error("rendezvous timed out (attempt 1)");
+    return heldResume;
+  });
+  render(
+    <ClientProvider client={fake}>
+      <Session params={{ ref }} paneId="p1" focused={true} />
+    </ClientProvider>,
+  );
+  await waitFor(() => expect(threadsStore.getState().restartBlockingObligations.has(ref)).toBe(true));
+  await resumeViaSend(ref, "the pressed text");
+  const firstFailure = await waitFor(() => threadsStore.getState().resumeFailures.get(ref));
+  const firstFailureSeq = firstFailure?.seq ?? 0;
+  // The paced retry's drive is in flight - its resume RPC is held - when a
+  // second Send press joins it.
+  act(() => {
+    scheduledResumeRetries[0]?.fire();
+  });
+  await waitFor(() => expect(resumeAttempts).toBe(2));
+  await resumeViaSend(ref, "a second pressed text");
+  await act(async () => {
+    rejectHeldResume(new Error("rendezvous timed out (attempt 2)"));
+  });
+  await waitFor(() =>
+    expect(threadsStore.getState().resumeFailures.get(ref)?.message).toBe("rendezvous timed out (attempt 2)"),
+  );
+  expect(threadsStore.getState().resumeFailures.get(ref)?.seq).not.toBe(firstFailureSeq);
+});
+
 test.each(["pending", "failed"])(
   "saved session retains confirmed recovery when resumed daemon read is %s",
   async (outcome) => {
