@@ -137,6 +137,50 @@ func TestWorktreePrune_OrphanArmCollectsUnchangedStaleParentLane(t *testing.T) {
 	}
 }
 
+// A held livelock is the one durable witness that a live process owns the
+// session id, and it outranks the transcript clock: a daemon from before the
+// activity-evidence refresh leaves a live tree's transcript stale for a whole
+// long command's run, so inactivity alone must not release a live owner's
+// lane. Crashes release the flock with the process, so once the livelock is
+// gone the same stale parent is reclaimable again.
+func TestWorktreePrune_OrphanArmWithholdsReleaseWhileLivelockHeld(t *testing.T) {
+	t.Parallel()
+	r := newWorktreeRepo(t)
+	const parentSID = "034livestaleparent00000001"
+	const dlg = "dlg_034livestaleparent000"
+	lane := r.delegateLane(t, "orphan-live-owner", dlg, parentSID)
+	seedOrphanParent(t, r, parentSID, dlg, "", time.Now().Add(-30*24*time.Hour))
+	release, applied, err := schema.AcquireSessionLivelock(r.stateDir, parentSID)
+	if err != nil || !applied || release == nil {
+		t.Fatalf("hold parent livelock: applied=%t err=%v", applied, err)
+	}
+
+	out, err := r.pruneOrphanedOp(t, 7)
+	if err != nil {
+		t.Fatalf("prune with live owner: %v", err)
+	}
+	if findPruneEntry(t, pruneEntries(t, out, "removed"), "orphan-live-owner") != nil {
+		t.Fatalf("a live owner's lane was collected on stale-evidence inactivity: %+v", out)
+	}
+	if e := findPruneEntry(t, pruneEntries(t, out, "unlocked"), "orphan-live-owner"); e != nil {
+		t.Fatalf("a live owner's lane was reported unlocked: %+v", e)
+	}
+	if _, locked, reason := r.laneLocked(t, lane); !locked {
+		t.Errorf("a live owner's lane was released: %q", reason)
+	}
+
+	// The flock dies with the process: once released, the same stale parent
+	// is the crash residue the arm exists for.
+	release()
+	out, err = r.pruneOrphanedOp(t, 7)
+	if err != nil {
+		t.Fatalf("prune after livelock release: %v", err)
+	}
+	if findPruneEntry(t, pruneEntries(t, out, "removed"), "orphan-live-owner") == nil {
+		t.Fatalf("stale parent's lane not collected after the livelock released: %+v", out)
+	}
+}
+
 // The unlock is the deliverable for an orphan holding work: the branch
 // stays, the worktree stays, but the lock goes, so the lane is visible to
 // the merge and force paths that were the only cleanup before — and to a
@@ -1778,16 +1822,15 @@ func TestWorktreePrune_OrphanArmRestoresWhenParentWakesDuringRelease(t *testing.
 	}
 }
 
-// A child-only wake is still parent activity. A notification drive runs the
-// child's turn on the parent's own machinery and never touches the parent's
-// transcript — the child's session writes the turn, and the parent runs no
-// turn of its own — so the inactivity evidence the arm reads stays stale
-// while the parent is demonstrably alive. An automatic launch therefore
-// records its activity in that evidence before it validates the lane: a real
-// notification drive interleaved between the prune's eligibility check and
-// its lock claim leaves the release-time recheck seeing a live parent, and
-// the lane is spared with the running child's lock intact.
-func TestWorktreePrune_OrphanArmSparesLaneWhenWakeInterleavesRelease(t *testing.T) {
+// A child-only wake is still parent activity, and it must not cost the lane.
+// A notification drive runs the child's turn on the parent's own machinery,
+// and a daemon from before the activity refresh leaves the parent's
+// inactivity evidence stale even while the tree is demonstrably alive — its
+// wake just ran. The parent's held livelock, not a release-window interleave,
+// is the protection: a live owner's lane is never planned for release, so no
+// release exists for a wake to race, and the prune leaves the tree's own
+// machinery unharmed.
+func TestWorktreePrune_OrphanArmSparesLiveOwnerWhileWakeRuns(t *testing.T) {
 	t.Parallel()
 	r := newWorktreeRepo(t)
 	var lanePath string
@@ -1826,45 +1869,64 @@ func TestWorktreePrune_OrphanArmSparesLaneWhenWakeInterleavesRelease(t *testing.
 	if sub == nil || sub.sess == nil {
 		t.Fatalf("delegate %s is not retained after its run", fixture.childID)
 	}
-	// The parent session is long-idle: its transcript has not been touched
-	// since the fixture created it, which is what the orphan arm reads.
+	// The tree's own wake runs on the parent's machinery: the drive launches
+	// the child's notification turn, and its launch refresh and reports are
+	// the parent's activity evidence. The turn must finish before the
+	// evidence is backdated, so the backdate is the last write the evidence
+	// carries — the shape a daemon from before the activity refresh leaves
+	// behind.
+	fixture.adapter.steps = []func(llm.Request) llm.Response{finish}
+	driveDone := make(chan bool, 1)
+	go func() { driveDone <- root.driveSubagentNotificationTurn(sub) }()
+	select {
+	case drove := <-driveDone:
+		if !drove {
+			t.Fatal("the tree's own notification wake did not drive its turn")
+		}
+	// TRIPWIRE: the scripted drive launches in-process in milliseconds; 10s only fires on a genuine hang.
+	case <-time.After(10 * time.Second):
+		t.Fatal("the notification drive never reported its handoff")
+	}
+	// TRIPWIRE: the scripted drive turn settles within seconds; 30s only fires on a genuine hang.
+	waitForCondition(t, 30*time.Second, "the wake's drive turn to finish", func() bool {
+		sub.mu.Lock()
+		defer sub.mu.Unlock()
+		return !sub.driving
+	})
+	// The parent session now looks long-idle — the inactivity evidence the
+	// arm reads is stale while the tree is demonstrably alive, its wake just
+	// run. The parent's held livelock, not a release-window interleave, is
+	// the protection: a live owner's lane is never planned for release, so
+	// no release exists for a wake to race, and the prune leaves the tree's
+	// own machinery unharmed. The release seam is the tripwire: no release
+	// may even be attempted for a live owner's lane.
 	parentTranscript := schema.SessionTranscriptPath(fixture.stateDir, fixture.meta.ID)
 	stale := time.Now().Add(-30 * 24 * time.Hour)
 	if err := os.Chtimes(parentTranscript, stale, stale); err != nil {
 		t.Fatalf("backdate the parent's transcript: %v", err)
 	}
-	// The wake interleaves with the release: the seam fires after the
-	// eligibility plan, before the claim, and a real notification drive runs
-	// there — the child's turn, launched by the parent's own machinery, with
-	// no parent turn to touch the transcript.
-	driveLaunched := make(chan bool)
-	wakeLaunched := false
+	releaseAttempted := false
 	r.s.worktreeBeforeStrandedMarkerRelease = func(p string) {
-		if p != lanePath {
-			return
+		if p == lanePath {
+			releaseAttempted = true
 		}
-		go func() {
-			fixture.adapter.steps = []func(llm.Request) llm.Response{finish}
-			driveLaunched <- root.driveSubagentNotificationTurn(sub)
-		}()
-		wakeLaunched = <-driveLaunched
 	}
 
 	out, err := r.pruneOrphanedOp(t, 7)
 	if err != nil {
 		t.Fatalf("prune: %v", err)
 	}
-	if !wakeLaunched {
-		t.Fatalf("the notification wake never launched its turn: %+v", out)
+	if releaseAttempted {
+		t.Fatal("a live owner's lane was planned for release on stale-evidence inactivity")
 	}
 	if findPruneEntry(t, pruneEntries(t, out, "removed"), "orphan-wake-interleaved") != nil {
-		t.Fatalf("a lane with a running child was collected: %+v", out)
+		t.Fatalf("a live owner's running lane was collected: %+v", out)
 	}
 	if e := findPruneEntry(t, pruneEntries(t, out, "unlocked"), "orphan-wake-interleaved"); e != nil {
-		t.Fatalf("a lane with a running child was reported unlocked: %+v", e)
+		t.Fatalf("a live owner's running lane was reported unlocked: %+v", e)
 	}
 	if _, locked, reason := r.laneLocked(t, lanePath); !locked {
-		t.Errorf("the running child's lock was not restored: %q", reason)
+		t.Errorf("the live owner's lock was not kept: %q", reason)
 	}
 }
 

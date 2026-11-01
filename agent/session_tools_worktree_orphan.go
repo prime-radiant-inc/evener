@@ -34,8 +34,9 @@ import (
 // through dispose, which can still act). The parent's transcript is checked
 // first: a parent whose session directory is gone, or whose transcript has
 // been inactive at least minInactivity (the activity signal the session
-// listings read), cannot act as the disposer by definition, and settling that
-// costs one stat. The parent's delegates store is consulted only for a parent
+// listings read) without its livelock held, cannot act as the disposer by
+// definition, and settling that costs one stat plus a livelock probe. The
+// parent's delegates store is consulted only for a parent
 // that is still active, where the store is the remaining authority: it proves
 // the delegate reclaimable exactly when the parent's own disposal lifecycle
 // already ran — the store records the delegate's isolation disposal — even
@@ -63,9 +64,12 @@ func (s *Session) orphanedDelegateMarker(ctx context.Context, reason string, min
 	}
 	// The cheap activity signal first: a parent whose session directory is
 	// gone, or whose transcript has been inactive past the operator's
-	// threshold, cannot act as the disposer.
+	// threshold, cannot act as the disposer — unless its livelock is held:
+	// the livelock is the one durable witness that a live process owns the
+	// session id, and a daemon from before the evidence refresh leaves a
+	// live tree's transcript stale for a whole long command's run.
 	if info, err := os.Stat(schema.SessionTranscriptPath(s.stateDir, m.SessionID)); err == nil {
-		if now.Sub(info.ModTime()) >= minInactivity {
+		if now.Sub(info.ModTime()) >= minInactivity && !s.parentLivelockHeld(m.SessionID) {
 			return m, orphanedByInactivity, true
 		}
 	} else if os.IsNotExist(err) {
@@ -160,11 +164,11 @@ func isExpectedDelegateMarker(lockFileContents []byte, expectedDlg, expectedSID 
 // whether it did. The claim-rename-verify-restore protocol is the shared
 // releaseClaimedLock's, for the same reason git's own unlock is not usable
 // here: see releaseStrandedOwnMarker. An inactivity-based verdict is
-// re-derived at release time (parentStillInactive) — the parent can wake
-// between the plan and the release, and its revival adopts the marker in
-// place, so the marker comparison alone cannot tell a dead parent from one
-// that just resumed. The control policy's write authority applies exactly as
-// it does to the sandboxed git calls that follow.
+// re-derived at release time (parentStillInactive) — the parent can be live
+// or wake between the plan and the release, and its revival adopts the
+// marker in place, so the marker comparison alone cannot tell a dead parent
+// from one that just resumed. The control policy's write authority applies
+// exactly as it does to the sandboxed git calls that follow.
 func (s *Session) releaseOrphanedDelegateMarker(files execenv.FileMutator, lanePath string, expected worktree.Marker, basis orphanedBasis, minInactivity time.Duration) (released bool, err error) {
 	if s.occupiesManagedLane(lanePath) {
 		return false, nil
@@ -184,11 +188,30 @@ func (s *Session) releaseOrphanedDelegateMarker(files execenv.FileMutator, laneP
 // with the lock held by the claim, is what catches a parent that resumed
 // between the plan and the release; its lock is then put back untouched.
 func (s *Session) parentStillInactive(parentSID string, minInactivity time.Duration) bool {
+	if s.parentLivelockHeld(parentSID) {
+		return false
+	}
 	info, err := os.Stat(schema.SessionTranscriptPath(s.stateDir, parentSID))
 	if err != nil {
 		return os.IsNotExist(err)
 	}
 	return time.Since(info.ModTime()) >= minInactivity
+}
+
+// parentLivelockHeld reports whether the parent session's livelock is held —
+// the one durable witness that a live process owns the session id. Crashes
+// release the flock with the process, so crash residue stays reclaimable; a
+// livelock whose state cannot be read is not a license to release, so it
+// reads as held.
+func (s *Session) parentLivelockHeld(parentSID string) bool {
+	if s == nil || s.stateDir == "" || parentSID == "" {
+		return false
+	}
+	held, _, err := schema.SessionLivelockHeld(s.stateDir, parentSID)
+	if err != nil {
+		return true
+	}
+	return held
 }
 
 // restoreOrphanedDelegateMarker puts the marker back after a release whose

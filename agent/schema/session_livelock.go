@@ -42,9 +42,16 @@ func SessionLivelockPath(dir, id string) string {
 // AcquireSessionLivelock reports not-applied and SessionLivelockHeld reports
 // absent, so callers degrade to "unknown" rather than guessing.
 //
-// Reporting only: nothing may collect, gate or reclaim on a livelock
-// verdict. This primitive exists so a prune can REPORT whether a locked
+// One automated use is allowed, and it withholds rather than takes: a HELD
+// livelock stops the prune's orphan arm from releasing a live owner's lane on
+// stale-evidence inactivity — a daemon from before the activity-evidence
+// refresh leaves a live tree's transcript stale for a whole long command's
+// run, and the livelock is the one durable witness against that clock. The
+// opposite direction stays forbidden: a livelock that answers "not held" or
+// "unknown" is not a death verdict, and no automated path may collect,
+// unlock or reclaim a lane because the livelock is absent or unreadable.
+// Everything else is reporting — a prune can REPORT whether a locked
 // delegate lane's owner tree still has a live process, and the manual
 // recovery recipe in docs/developing-evener/worktrees.md can be applied with
-// evidence; acting on the verdict stays a human or model decision, and the
-// documented recipe carries the cautions.
+// evidence; other acting on the verdict stays a human or model decision, and
+// the documented recipe carries the cautions.
