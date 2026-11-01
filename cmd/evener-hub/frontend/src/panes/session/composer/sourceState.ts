@@ -29,6 +29,7 @@ import {
   subscribeComposerSubmissionCommitted,
   updateRecoveryPendingTurn,
 } from "./queue/pendingTurnsStore";
+import type { RecoveredComposerDraft } from "./recovery/recoveryDraft";
 import { mergeRecoveryComposerDraft, recoveryComposerDraft } from "./recovery/recoveryDraft";
 import {
   materializeSelectionReferences,
@@ -120,6 +121,10 @@ export interface ComposerSourceState {
   /** Preserve the current composition under a fresh owner at a consumed
    * resend outcome, then adopt the preserved row by lease transfer alone. */
   preserveConsumedRecovery(clientMutationId: string): Promise<void>;
+  /** Adopt a mount-restored recovery row. The restored row already holds this
+   * composition on the durable side, so a close that finds the pane unchanged
+   * owes no final write. */
+  adoptRestoredRecovery(record: MutationRecoveryRecord, restored: RecoveredComposerDraft): void;
   flushRecoveryWrites(): Promise<void>;
   tryAcquireRecoveryOperation(): (() => void) | null;
   tryAcquireBuiltinOperation(): (() => void) | null;
@@ -500,8 +505,10 @@ export function createComposerSourceState(ref: string, ownerId?: string): Compos
                 // Own the returned row, including the identical-composition
                 // fast path and its current revision: later edits update it,
                 // Send consumes it, and a reload restores its attachment
-                // bytes.
-                setActiveRecoveryId(preserved);
+                // bytes. The row already holds the preserved composition, so
+                // an unchanged close owes no final write.
+                setActiveRecoveryId(preserved.record);
+                committedRecoveryComposition = preserved.fingerprint;
               } else {
                 // Preservation failed, so nothing durable carries the images.
                 // Fall back to the ordinary draft and retire the lease.
@@ -563,21 +570,31 @@ export function createComposerSourceState(ref: string, ownerId?: string): Compos
   async function preserveStaleRecovery(
     clientMutationId: string,
     localDraftRevisionId?: string,
-  ): Promise<MutationRecoveryRecord | undefined> {
+  ): Promise<{ record: MutationRecoveryRecord; fingerprint: string } | undefined> {
     const base = recoveryBaseRecord;
     if (!base || base.clientMutationId !== clientMutationId) return undefined;
+    // Capture the composition synchronously: the preserved row holds exactly
+    // these refs as they stand now, and the fingerprint lets adoption record
+    // the row's content as the lease's committed state.
+    const text = textRef.current;
+    const attachments = operations.toInputAttachments();
+    const skillNames = [...skillNamesRef.current];
+    const commandNames = [...selectionMetaRef.current.commandNames];
+    const mentions = selectionMetaRef.current.mentions;
+    const fingerprint = recoveryCompositionFingerprint({ text, attachments, skillNames, commandNames, mentions });
     try {
-      return await preserveRecoveryPendingTurn(
+      const record = await preserveRecoveryPendingTurn(
         base,
         ref,
-        textRef.current,
-        operations.toInputAttachments(),
-        skillNamesRef.current,
-        selectionMetaRef.current.commandNames,
-        selectionMetaRef.current.mentions,
+        text,
+        attachments,
+        skillNames,
+        commandNames,
+        mentions,
         compositionOwnerId,
         localDraftRevisionId,
       );
+      return record ? { record, fingerprint } : undefined;
     } catch (error) {
       if (!disposed)
         pushToast(
@@ -611,14 +628,36 @@ export function createComposerSourceState(ref: string, ownerId?: string): Compos
     if (currentRecoveryId() !== clientMutationId) return;
     if (preserved) {
       // Adoption is a lease transfer only: the live refs stay the content's
-      // only home, and no content is written back into the composer.
-      setActiveRecoveryId(preserved);
+      // only home, and no content is written back into the composer. The
+      // preserved row already holds the composition, so an unchanged close
+      // owes no final write.
+      setActiveRecoveryId(preserved.record);
+      committedRecoveryComposition = preserved.fingerprint;
       return;
     }
     // Preservation failed: fall back to the ordinary draft and retire the
     // dead lease, exactly as the save path's preserve fallback does.
     persistDraft(textRef.current);
     setActiveRecoveryId(null);
+  }
+
+  function adoptRestoredRecovery(record: MutationRecoveryRecord, restored: RecoveredComposerDraft): void {
+    if (disposed) return;
+    setActiveRecoveryId(record);
+    if (disposed) return;
+    // The restored row already holds this composition on the durable side, so
+    // a close that finds the pane unchanged owes no final write.
+    committedRecoveryComposition = recoveryCompositionFingerprint({
+      text: restored.text,
+      attachments: restored.attachments.flatMap((item) =>
+        item.data === undefined
+          ? []
+          : [{ marker: item.marker, name: item.name, mediaType: item.mediaType, data: item.data }],
+      ),
+      skillNames: restoredSkillNames(restored),
+      commandNames: restored.commandNames ?? [],
+      mentions: restored.mentions,
+    });
   }
 
   // The disposal capture: the live refs are the content's only home until
@@ -629,23 +668,42 @@ export function createComposerSourceState(ref: string, ownerId?: string): Compos
   function enqueueDisposalFlush(): void {
     const lease = recoveryOwnerLeaseRef.current;
     const clientMutationId = lease?.clientMutationId ?? null;
-    const text = textRef.current;
+    const base = recoveryBaseRecord;
+    // A pane holding no lease has already persisted every keystroke to its
+    // draft (writeDraft persists exactly when no lease is held); nothing new
+    // is owed.
+    if (clientMutationId === null || lease === null) return;
+    // An image still mid-encode has no bytes to write: its marker reference
+    // would restore as a literal orphan, so the final write strips it where
+    // the gated autosave paths simply wait out the encode instead.
+    let text = textRef.current;
+    for (const marker of operations.items.filter((item) => item.pending).map((item) => item.marker)) {
+      text = text.split(`[image ${marker}]`).join("");
+    }
     const attachments = operations.toInputAttachments();
     const skillNames = [...skillNamesRef.current];
     const commandNames = [...selectionMetaRef.current.commandNames];
     const mentions = selectionMetaRef.current.mentions;
-    const base = recoveryBaseRecord;
+    // The durable row already holds exactly this composition - the pane has
+    // no unsaved work. Closing writes nothing: an unchanged echo would stale
+    // every peer lease on the row, and a write after another tab sent or
+    // dismissed the row would resurrect a settled message.
+    if (
+      recoveryCompositionFingerprint({ text, attachments, skillNames, commandNames, mentions }) ===
+      committedRecoveryComposition
+    )
+      return;
     const localDraftRevisionId =
       ownsDraft() &&
       boundDraftRevisionIdRef.current !== undefined &&
       boundDraftRevisionIdRef.current === readComposerDraftRevisionId(ref)
         ? boundDraftRevisionIdRef.current
         : undefined;
-    // A pane holding no lease has already persisted every keystroke to its
-    // draft (writeDraft persists exactly when no lease is held); nothing new
-    // is owed.
-    if (clientMutationId === null || lease === null) return;
     const expectedRevision = lease.compositionRevision;
+    // The pane's own submission still in flight owns the content: its resend
+    // consumes the row, so a failed CAS at close must not mint a rejected
+    // copy of the message it is sending.
+    const submissionInFlight = recoverySubmissionsInFlight.has(clientMutationId);
     const isEmpty =
       text.trim() === "" &&
       attachments.length === 0 &&
@@ -689,10 +747,10 @@ export function createComposerSourceState(ref: string, ownerId?: string): Compos
           compositionOwnerId,
         );
         if (updated) return;
+        if (submissionInFlight) return;
         if (base === null || base.clientMutationId !== clientMutationId) return;
         // The CAS failed: the row moved under another writer. The captured
-        // composition still needs a durable home, under this pane's own seat,
-        // and the preserved write consumes the base row it names by identity.
+        // composition still needs a durable home, under this pane's own seat.
         await preserveRecoveryPendingTurn(
           base,
           ref,
@@ -993,6 +1051,7 @@ export function createComposerSourceState(ref: string, ownerId?: string): Compos
     compositionOwnerId,
     runRecoveryOperation,
     preserveConsumedRecovery,
+    adoptRestoredRecovery,
     flushRecoveryWrites: () => recoveryWrites.catch(() => undefined),
     tryAcquireRecoveryOperation,
     tryAcquireBuiltinOperation,

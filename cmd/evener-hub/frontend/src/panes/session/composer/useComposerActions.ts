@@ -91,7 +91,7 @@ export function useComposerActions(source: ComposerSourceState, externalBusy = f
     updateSkillNames,
     editSkillNames,
     updateSelectionMeta,
-    setActiveRecoveryId,
+    adoptRestoredRecovery,
     markRestore,
     queueRecoveryPersistence,
     clearIfUnchanged,
@@ -230,7 +230,9 @@ export function useComposerActions(source: ComposerSourceState, externalBusy = f
     const visible = materializeSelectionReferences({ ...recovered, skillNames: restoredSkillNames(recovered) });
     Object.assign(recovered, visible);
     recoveryOwnsLocalDraftRef.current = false;
-    setActiveRecoveryId(record);
+    // The restored row already holds this composition on the durable side;
+    // adopting it records that, so an unchanged close owes no final write.
+    adoptRestoredRecovery(record, recovered);
     // Restoration replaces this mount's local owner without editing the
     // shared recovery draft that an earlier mount may still be submitting.
     draftEditRevisionRef.current += 1;
@@ -247,6 +249,7 @@ export function useComposerActions(source: ComposerSourceState, externalBusy = f
   }, [
     activeRecoveryId,
     attachments.replaceWithSettled,
+    adoptRestoredRecovery,
     boundDraftRevisionIdRef,
     draftEditRevisionRef,
     freshRecoveryRef,
@@ -255,7 +258,6 @@ export function useComposerActions(source: ComposerSourceState, externalBusy = f
     recoveryEntries,
     recoveryOwnsLocalDraftRef,
     ref,
-    setActiveRecoveryId,
     skillNamesRef,
     selectionMetaRef,
     source.compositionOwnerId,

@@ -80,15 +80,26 @@ synchronous: a closing pane snapshots its composition and enqueues exactly one
 final durable write on the same serialized recovery-write chain its saves use.
 Close flushes, never drops - a close during a pending write keeps every
 keystroke, because the final write carries the closing snapshot rather than an
-older capture some in-flight write holds. An empty composition closes through
-the guarded discard, a leased composition through the save CAS, and a CAS
-another writer advanced through a preserve under the pane's own seat. A pane
-holding no lease persists its keystrokes to its draft as they are typed, so its
-close owes nothing. The preserved write consumes its base row in the same
-transaction when that row is still the exact durable state the pane last knew
-- the same id, target ref, seat and composition revision - so a preserved copy
-and a live base row are not restorable together, while a row a peer advanced
-keeps that peer's work intact.
+older capture some in-flight write holds. A close whose composition the durable
+row already holds writes nothing: an unchanged echo would stale every peer
+lease on the row, and writing after another tab sent or dismissed the row would
+resurrect a settled message. An empty composition closes through the guarded
+discard, a leased composition through the save CAS, and a CAS another writer
+advanced through a preserve under the pane's own seat - except while the pane's
+own submission is still in flight, whose resend owns the content and whose row a
+close must not duplicate. An image still mid-encode has no bytes to write, so
+the final write strips its marker reference rather than restoring a literal
+orphan. A pane holding no lease persists its keystrokes to its draft as they
+are typed, so its close owes nothing.
+
+A preserve follows its row's own durable identity: a row a resume retargeted
+preserves under the resumed ref - the ref every live pane and projection names
+- and the update and preserve paths notify and refresh the row's ref rather
+than the closing pane's. A preserve never duplicates content the durable row
+already holds: a row already carrying the identical composition is reused as
+the preserved row, an unchanged close writes nothing, and where a peer's
+advanced row and a pane's preserved composition do coexist, the peer's row
+keeps that peer's work and the newest composition wins automatic restoration.
 
 A resend that finds its recovery row already consumed preserves the current
 composition at the outcome itself, under a fresh owner, and adopts the

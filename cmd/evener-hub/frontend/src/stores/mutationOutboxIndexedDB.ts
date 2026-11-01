@@ -1052,7 +1052,6 @@ export class MutationOutboxIndexedDB implements QueuedMessageStorage<MutationAtt
     composerMentions?: readonly ComposerMention[],
     compositionOwnerId?: string,
     localDraftRevisionId?: string,
-    consumeRecoveryIds?: readonly string[],
   ): Promise<MutationRecoveryRecord | undefined> {
     return this.#write(ENQUEUE_STORES, "preserveRecoveryComposition", async (transaction) => {
       const recoveryStore = transaction.objectStore(RECOVERY_STORE);
@@ -1060,7 +1059,11 @@ export class MutationOutboxIndexedDB implements QueuedMessageStorage<MutationAtt
         recoveryStore.get(base.clientMutationId),
       );
       if (stale && sameRecoveryComposition(stale, input, composerText, composerMentions, attachments)) return stale;
-      const intentSequence = await this.#allocateSequence(transaction, base.targetRef);
+      // A resume may retarget the base row after this pane captured it: the
+      // preserved row follows the row's own durable identity, so its content
+      // stays reachable from the ref every live pane and projection names.
+      const targetRef = stale?.targetRef ?? base.targetRef;
+      const intentSequence = await this.#allocateSequence(transaction, targetRef);
       const clientMutationId = this.#createMutationId();
       await this.#assertMutationIdAvailable(transaction, clientMutationId);
       const record: VersionedMutationRecoveryRecord = {
@@ -1069,11 +1072,11 @@ export class MutationOutboxIndexedDB implements QueuedMessageStorage<MutationAtt
         originClientId: ownClientId(),
         intentSequence,
         createdAt: this.#now(),
-        targetRef: base.targetRef,
-        threadId: base.threadId,
-        instanceId: base.instanceId,
+        targetRef,
+        threadId: stale?.threadId ?? base.threadId,
+        instanceId: stale?.instanceId ?? base.instanceId,
         method: base.method,
-        payload: { ...base.payload, ref: base.targetRef, input },
+        payload: { ...(stale?.payload ?? base.payload), ref: targetRef, input },
         attachments,
         optimisticDisplay: { method: base.method, input },
         composerText,
@@ -1088,29 +1091,9 @@ export class MutationOutboxIndexedDB implements QueuedMessageStorage<MutationAtt
         state: "submitting",
         attempted: false,
         unresolvedAttempts: 0,
-        stopEpochAtEnqueue: await this.#stopEpochOf(transaction, base.targetRef),
+        stopEpochAtEnqueue: await this.#stopEpochOf(transaction, targetRef),
       };
       await requestResult(recoveryStore.put(record));
-      // The preserved write consumes its base row in the same transaction, so
-      // a preserved copy and a live base row can never both be restorable.
-      // The consume names the row by the exact durable state the preserver
-      // last knew - the id, the target ref, the composition owner, and the
-      // composition revision - so a base row another seat owns, one a peer
-      // advanced, or one a resume retargeted is not the preserver's to take.
-      const consumeIds = [...new Set([...(consumeRecoveryIds ?? []), base.clientMutationId])];
-      const consumeOwner = compositionOwnerId ?? base.compositionOwnerId;
-      const consumeRevision = (base as VersionedMutationRecoveryRecord).compositionRevision ?? 0;
-      for (const id of consumeIds) {
-        const row = await requestResult<VersionedMutationRecoveryRecord | undefined>(recoveryStore.get(id));
-        if (
-          !row ||
-          row.targetRef !== base.targetRef ||
-          (row.compositionOwnerId ?? undefined) !== (consumeOwner ?? undefined) ||
-          (row.compositionRevision ?? 0) !== consumeRevision
-        )
-          continue;
-        await requestResult(recoveryStore.delete(id));
-      }
       return record;
     });
   }
