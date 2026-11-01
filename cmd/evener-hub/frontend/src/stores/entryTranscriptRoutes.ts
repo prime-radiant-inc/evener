@@ -440,63 +440,99 @@ export function publishEntryTranscriptModel(ref: string): void {
   );
 }
 
+/** The repository side of the owed-range verdict: a windowed baseline's
+ * outstanding recorded identities, or undefined when the repository owes
+ * nothing below its baseline. */
+export interface EntryRecordedRangeSource {
+  owedRecorded(): { unknown: true } | { identities: ReadonlyMap<string, ThreadItemPosition> } | undefined;
+  holdsWindowedBaseline(): boolean;
+}
+
+// The opening verdict's owed-range term, on its own: every identity the
+// durable record still owes below a plain windowed baseline must be presented
+// with a real body before the range counts as satisfied. The term is
+// deliberately independent of the open's own status and cache proof — the
+// verdict sites below run it for every status — because a window certified
+// complete while recorded-range debt is outstanding would clear the route's
+// outstanding miss and strand the pane on the wire window with no recovery
+// ever scheduled. The owed range is measured in the record's own item
+// identities, never in the snapshot's length: that number is a byte boundary,
+// so an item count demanded from it would require 200 rows of a record that
+// only has 80 and call a degraded one-blip window complete whenever bytes
+// stayed small. A capture the record could not answer is unknown debt: treat
+// it as owed rather than accept a view that might still be missing its
+// recorded range. Only a windowed baseline can owe a recorded range: an
+// authoritative or cursorless baseline speaks for everything below it, and a
+// repository that never windowed cannot have the debt the arming note stands
+// for, so repositories without the windowed shape stay satisfied.
+export function holdsSatisfiedRecordedRange(
+  model: ThreadModel | undefined,
+  repository?: EntryRecordedRangeSource,
+): boolean {
+  const owed = repository?.holdsWindowedBaseline() ? repository.owedRecorded() : undefined;
+  if (owed === undefined) return true;
+  if ("unknown" in owed) return false;
+  const displayed = new Map(
+    model?.turns.flatMap((turn) => turn.items.map((item) => [item.transcriptKey ?? item.id, item] as const)),
+  );
+  // Bound the demand to the promotion window: the newest 200 identities of
+  // what the model presents together with what the record still owes.
+  // Identities below that boundary are older demand, not debt — the same
+  // line holdsResidentForegroundRange draws for its own interval.
+  const positions = [
+    ...[...displayed.values()].flatMap((item) => (item.position ? [item.position] : [])),
+    ...owed.identities.values(),
+  ].sort(comparePositions);
+  const floor = positions.slice(-200)[0];
+  for (const [key, position] of owed.identities) {
+    if (floor && comparePositions(position, floor) < 0) continue;
+    const restored = displayed.get(key);
+    if (restored === undefined || encodeTranscriptItem(restored).identityOnly) return false;
+  }
+  return true;
+}
+
+// The usable verdict every opening records for its route. The owed-range term
+// above runs for every status: a certify-only open may be quick and its cache
+// proof may say current, but the timing envelope of a certification must not
+// also shortcut its completeness duty, so no cache status can certify an
+// opening usable over outstanding recorded-range debt. The window term stays
+// gated on recovery-needed: a healthy current or stale answer keeps a usable
+// partial display (a previously loaded range can exceed the initial
+// promotion), and only an answer that itself reports recovery must prove the
+// whole requested window.
+export function entryOpeningUsableVerdict(
+  result: { status: "current" | "stale" | "recovery-needed"; retainedRangeComplete?: boolean; model?: ThreadModel },
+  repository?: EntryRecordedRangeSource,
+): boolean {
+  return (
+    result.retainedRangeComplete !== false &&
+    holdsSatisfiedRecordedRange(result.model, repository) &&
+    (result.status !== "recovery-needed" || holdsCompleteForegroundWindow(result.model, repository))
+  );
+}
+
 // The complete-requested-window standard a local open tolerates without a
 // cache certificate: every foreground item the model expects is present with
-// at least its version and a real body — and every identity the durable record
-// still owes below a plain windowed baseline is presented with a real body.
-// The daemon answers thread/read with the latest item window (the client
-// requests 40 items) plus a server cursor, so an accepted fresh-baseline read
-// leaves the model holding only that wire window, and the recorded cache —
-// not the wire — is the display's source for the older bodies of the 200-row
-// promotion. The owed range is measured in the record's own item identities,
-// never in the snapshot's length: that number is a byte boundary, so an item
-// count demanded from it would require 200 rows of a record that only has 80
-// and call a degraded one-blip window complete whenever bytes stayed small.
-// Without the owed-identity clause every disarm point below would treat a
-// one-blip open's degraded wire window as converged and never restore the
-// recorded rows.
+// at least its version and a real body — and the owed range above is
+// satisfied. The daemon answers thread/read with the latest item window (the
+// client requests 40 items) plus a server cursor, so an accepted
+// fresh-baseline read leaves the model holding only that wire window, and the
+// recorded cache — not the wire — is the display's source for the older
+// bodies of the 200-row promotion. Without these clauses every disarm point
+// below would treat a one-blip open's degraded wire window as converged and
+// never restore the recorded rows.
 export function holdsCompleteForegroundWindow(
   model: ThreadModel | undefined,
-  repository?: {
-    owedRecorded(): { unknown: true } | { identities: ReadonlyMap<string, ThreadItemPosition> } | undefined;
-    holdsWindowedBaseline(): boolean;
-  },
+  repository?: EntryRecordedRangeSource,
 ): boolean {
+  if (!holdsSatisfiedRecordedRange(model, repository)) return false;
   const displayed = new Map(
     model?.turns.flatMap((turn) => turn.items.map((item) => [item.transcriptKey ?? item.id, item] as const)),
   );
   // Legacy reads keep their recorded bodies in turns, without versioned
   // history. Do not mistake that nonempty accepted window for an empty one.
   const requested = (model?.history?.turns ?? model?.turns)?.flatMap((turn) => turn.items).slice(-200) ?? [];
-  // The record's owed identities — resolved from the durable record where
-  // the miss was declared, preserved across merge reads and repository
-  // replacement — must each be presented with a real body before the view
-  // counts as healed. A capture the record could not answer is unknown debt:
-  // treat it as owed rather than accept a view that might still be missing
-  // its recorded range.
-  // Only a windowed baseline can owe a recorded range: an authoritative or
-  // cursorless baseline speaks for everything below it, and a repository
-  // that never windowed cannot have the debt the arming note stands for.
-  // Repositories without the windowed shape keep the model-only verdict, so
-  // the arming note never changes a non-windowed pane's convergence.
-  const owed = repository?.holdsWindowedBaseline() ? repository.owedRecorded() : undefined;
-  if (owed !== undefined) {
-    if ("unknown" in owed) return false;
-    // Bound the demand to the promotion window: the newest 200 identities of
-    // what the model presents together with what the record still owes.
-    // Identities below that boundary are older demand, not debt — the same
-    // line holdsResidentForegroundRange draws for its own interval.
-    const positions = [
-      ...[...displayed.values()].flatMap((item) => (item.position ? [item.position] : [])),
-      ...owed.identities.values(),
-    ].sort(comparePositions);
-    const floor = positions.slice(-200)[0];
-    for (const [key, position] of owed.identities) {
-      if (floor && comparePositions(position, floor) < 0) continue;
-      const restored = displayed.get(key);
-      if (restored === undefined || encodeTranscriptItem(restored).identityOnly) return false;
-    }
-  }
   return (
     requested.length > 0 &&
     requested.every((item) => {
@@ -756,9 +792,7 @@ export async function openEntryTranscript(
           .then(async (settled) => {
             if (!stillOwnsLateResult()) return;
             fixture.lastLocalOpenStatus = settled.status;
-            const usable =
-              settled.retainedRangeComplete !== false &&
-              (settled.status !== "recovery-needed" || holdsCompleteForegroundWindow(settled.model, repository));
+            const usable = entryOpeningUsableVerdict(settled, repository);
             if (usable) {
               fixture.lastLocalOpenUsable = true;
               fixture.unresolvedOpenMiss = false;
@@ -820,9 +854,7 @@ export async function openEntryTranscript(
     // the complete requested window. Recover missing bodies, not merely a
     // missing certificate, which would replace usable paged history with a
     // latest read.
-    const usable =
-      result.retainedRangeComplete !== false &&
-      (result.status !== "recovery-needed" || holdsCompleteForegroundWindow(result.model, repository));
+    const usable = entryOpeningUsableVerdict(result, repository);
     if (openingOwned()) fixture.lastLocalOpenUsable = usable;
     // A quiet certification that establishes the display takes exclusive
     // ownership of the route's opening: the older published opening it

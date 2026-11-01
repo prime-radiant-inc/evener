@@ -9,6 +9,7 @@ import { SESSION_CACHE_DATABASE_NAME } from "./sessionCacheSchema";
 import { SessionEntryCache } from "./sessionEntryCache";
 
 const ref = "local:identity-regression";
+type EntryRecordedRangeSource = import("./entryTranscriptRoutes").EntryRecordedRangeSource;
 const tabs: Array<{
   threads: typeof import("./threads");
   routes: typeof import("./entryTranscriptRoutes");
@@ -556,4 +557,76 @@ it("rejects a pre-deletion hydration and repopulates only from a subsequent sour
   expect(tab.client.calls.filter((call) => call.method === "thread/read")).toHaveLength(readsBefore + 1);
   expect((await sibling.getLatest(historyKey, 10)).map((row) => row.transcriptKey)).toEqual(["row-3"]);
   expect(tab.commits.mock.calls.every(([batch]) => batch.historyGeneration === 1)).toBe(true);
+});
+
+// The opening verdict's owed-range rule, constructed directly: a committed
+// windowed cut — a fresh-baseline read whose cache proof says current — must
+// not report an opening usable while the repository still owes a recorded
+// range below that cut, whatever the cache status says. A usable verdict
+// there is what clears the route's outstanding miss, and a miss cleared over
+// outstanding debt never schedules recovery, so the pane stays stranded on
+// the wire window. The end-to-end interleaving (a close and reopen around the
+// hydration's mutation-reconciliation commit) is exercised in the production
+// suite; this pins the verdict rule itself, by construction, for every status.
+it("an opening's usable verdict never certifies a windowed cut complete over outstanding recorded-range debt", async () => {
+  const routes = await import("./entryTranscriptRoutes");
+  const { hydrateThread } = await import("@evener/appwire-client");
+  const base = currentRead(ref);
+  const windowedCut = {
+    ...base,
+    olderCursor: "opaque-server-cursor",
+    overlay: [],
+    snapshot: { incarnation: "inc-1", length: 226 },
+    thread: {
+      ...base.thread,
+      turns: [
+        {
+          id: "turn_1",
+          status: "completed" as const,
+          itemsView: "full" as const,
+          version: 226,
+          items: Array.from({ length: 40 }, (_, index) => item(187 + index)),
+        },
+      ],
+    },
+  };
+  const model = hydrateThread(windowedCut, ref, 0);
+  expect(model.turns.flatMap((turn) => turn.items)).toHaveLength(40);
+  const owedRange: EntryRecordedRangeSource = {
+    holdsWindowedBaseline: () => true,
+    owedRecorded: () => ({ identities: new Map([["row-100", { entry: 100, item: 0 }]]) }),
+  };
+  const unknownRange: EntryRecordedRangeSource = {
+    holdsWindowedBaseline: () => true,
+    owedRecorded: () => ({ unknown: true }),
+  };
+  const debtFree: EntryRecordedRangeSource = {
+    holdsWindowedBaseline: () => true,
+    owedRecorded: () => undefined,
+  };
+  // A current cache proof over a fresh committed cut is the certification's
+  // own best answer; the debt below the cut still refuses it.
+  expect(routes.entryOpeningUsableVerdict({ status: "current", retainedRangeComplete: true, model }, owedRange)).toBe(
+    false,
+  );
+  expect(routes.entryOpeningUsableVerdict({ status: "stale", retainedRangeComplete: true, model }, owedRange)).toBe(
+    false,
+  );
+  // A capture the record could not answer is unknown debt, not proof of
+  // satisfaction.
+  expect(
+    routes.entryOpeningUsableVerdict({ status: "current", retainedRangeComplete: true, model }, unknownRange),
+  ).toBe(false);
+  // The debt-free controls keep the verdict's healthy answers exactly: a
+  // current or stale cut with nothing owed stays usable, and only an answer
+  // that itself reports recovery must prove the whole requested window.
+  expect(routes.entryOpeningUsableVerdict({ status: "current", retainedRangeComplete: true, model }, debtFree)).toBe(
+    true,
+  );
+  expect(routes.entryOpeningUsableVerdict({ status: "current", retainedRangeComplete: false, model }, debtFree)).toBe(
+    false,
+  );
+  expect(
+    routes.entryOpeningUsableVerdict({ status: "recovery-needed", retainedRangeComplete: true, model }, owedRange),
+  ).toBe(false);
 });

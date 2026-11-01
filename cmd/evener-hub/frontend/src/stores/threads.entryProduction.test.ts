@@ -12,7 +12,7 @@ import { deferred } from "@evener/appwire-client/testing/deferred";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { act, render } from "@testing-library/react";
 import { IDBFactory, IDBIndex, IDBKeyRange, IDBObjectStore } from "fake-indexeddb";
-import { createElement, createRef } from "react";
+import { createElement, createRef, useEffect } from "react";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { useStore } from "zustand";
 import { appliedReceipt } from "../mutationReceiptTestUtils";
@@ -3038,6 +3038,142 @@ it("a late reconciliation page does not un-prune a background-only pane's model"
     setSessionCacheOpenBackstopForTests(10000);
     threadsStore.getState().releaseThread(ref);
     await lease.release();
+  }
+});
+
+// The round-5 medium: after a missed open, closing and reopening the pane
+// while its windowed hydration finishes its mutation reconciliation hands the
+// reopened claim's certify-only certification a fresh, committed 40-item cut.
+// The certification must not report that opening usable while the recorded
+// range below the cut is still owed: a usable verdict there clears the route's
+// outstanding miss, no recovery is ever scheduled, and the reopened pane stays
+// stranded on the window with the older recorded rows never restored.
+it("a close and reopen around the committed windowed hydration still restores the recorded range", async () => {
+  const storage = cache();
+  const realGetLatestWindow = storage.getLatestWindow.bind(storage);
+  setProductionEntryCacheForTests(storage);
+  const ref = "local:a";
+  const read = response(
+    ref,
+    Array.from({ length: 225 }, (_, index) => turn(`row-${index + 1}`, index + 1)),
+  );
+  read.snapshot = { incarnation: "inc-a", length: 225 };
+  const client = connect(read);
+  let foregroundReads = 0;
+  let heldGeneration: number | undefined;
+  const heldRead = deferred<ThreadReadResponse>();
+  client.on("thread/read", (params) => {
+    foregroundReads += 1;
+    if (foregroundReads === 1) return read;
+    if (foregroundReads === 2) {
+      heldGeneration = params.requestGeneration;
+      return heldRead.promise;
+    }
+    return { ...latestWindowRead(ref, 226), requestGeneration: params.requestGeneration };
+  });
+  const lease = acquireBackgroundThread(ref);
+  await lease.ready;
+  await settleEntryTranscriptForTests(ref);
+  const key = entryHistoryKey({ ...identity, clientId: location.origin });
+  expect(await storage.getLatest(key, 300)).toHaveLength(225);
+  const bodies = () =>
+    threadsStore
+      .getState()
+      .threads.get(ref)
+      ?.turns.flatMap((turn) => turn.items)
+      .map((item) => item.text)
+      .filter(Boolean);
+  expect(bodies()).toEqual([]);
+
+  let withheldWindowReads = 0;
+  let postReopenLookupDelayMs = 0;
+  (storage as unknown as { getLatestWindow: unknown }).getLatestWindow = (...args: unknown[]) => {
+    if (withheldWindowReads > 0) {
+      withheldWindowReads -= 1;
+      return new Promise(() => {}) as ReturnType<typeof realGetLatestWindow>;
+    }
+    if (postReopenLookupDelayMs > 0) {
+      const delay = postReopenLookupDelayMs;
+      return (async () => {
+        // The reopened pane reads storage slower than the claim's mutation
+        // reconciliation commits — the load condition the round-5 review
+        // names — so the certification's window lookup answers over the
+        // freshly committed cut, inside its own pinned backstop.
+        await new Promise((resolve) => setTimeout(resolve, delay));
+        return realGetLatestWindow(...(args as Parameters<typeof realGetLatestWindow>)) as ReturnType<
+          typeof realGetLatestWindow
+        >;
+      })();
+    }
+    return realGetLatestWindow(...(args as Parameters<typeof realGetLatestWindow>)) as ReturnType<
+      typeof realGetLatestWindow
+    >;
+  };
+  withheldWindowReads = 1;
+  setSessionCacheOpenBackstopForTests(40);
+  try {
+    const listRef = createRef<VirtualListHandle | null>();
+    function Reader() {
+      const model = useStore(threadsStore, (state) => state.threads.get(ref));
+      const turns = model?.turns ?? [];
+      useEffect(() => {
+        void threadsStore.getState().ensureThread(ref);
+        return () => threadsStore.getState().releaseThread(ref);
+      }, []);
+      useTranscriptViewRegistration({
+        enabled: true,
+        id: "m5-close-reopen-reader",
+        logicalRef: ref,
+        listRef,
+        renderedRowCount: turns.length,
+        anchorEntries: turns.flatMap((turn, index) =>
+          turn.items.map((item) => ({ id: item.id, index, sourceIndex: index, isMessage: true })),
+        ),
+      });
+      return createElement(
+        "section",
+        { "data-testid": "m5-reader" },
+        turns.flatMap((turn) => turn.items.map((item) => createElement("div", { key: item.id }, item.text))),
+      );
+    }
+    const mounted = await act(async () => render(createElement(Reader)));
+    // The mounted pane's opening missed its bound — the storage lookup is
+    // withheld and the backstop pinned — arming the owed recorded range, and
+    // the claim's windowed hydration (the held read) is now in flight.
+    await act(async () => {
+      await vi.waitFor(() => expect(foregroundReads).toBe(2));
+    });
+    expect(productionEntryTranscriptForTests(ref).unresolvedOpenMiss).toBe(true);
+    // The pane closes — its background lease ends with it — WHILE the windowed
+    // hydration is still finishing its mutation reconciliation, then reopens
+    // over the dropped model: the reopened claim reads the freshly committed
+    // windowed cut and certifies it.
+    await lease.release();
+    await act(async () => {
+      mounted.unmount();
+    });
+    await act(async () => {
+      heldRead.resolve({ ...latestWindowRead(ref, 226), requestGeneration: heldGeneration });
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    });
+    postReopenLookupDelayMs = 25;
+    const reopened = await act(async () => render(createElement(Reader)));
+    // The reopened pane must converge to the recorded range below the window:
+    // 200 rows ending at the window's newest row, not the 40-row cut the
+    // certification could shortcut as complete.
+    await act(async () => {
+      await vi.waitFor(() => {
+        expect(bodies()).toContain("row-30");
+        expect(bodies()).toEqual(Array.from({ length: 200 }, (_, index) => `row-${index + 27}`));
+      });
+    });
+    await act(async () => {
+      reopened.unmount();
+    });
+  } finally {
+    setSessionCacheStalledOpenForTests(5000);
+    setSessionCacheOpenBackstopForTests(10000);
+    threadsStore.getState().releaseThread(ref);
   }
 });
 
