@@ -641,20 +641,17 @@ describe("Stop cancellation durability across reload, tabs, and resume", () => {
     expect(committedIds).toContain(sentParams?.clientMutationId);
   });
 
-  // RoboRev PR #1873 medium, the fresh review's Retry-path gap: the stop-epoch
-  // barrier was captured and compared only on the enqueue path.
-  // retryBlockedMutation reads the row as canceled and then releases it with
-  // no capture of its own, so a Stop in another tab committing between that
-  // read and the release is silently defeated: its cancel scan skips the row
-  // (isCancelableByStop excludes "canceled"), the release resurrects it to
-  // "submitting", and the dispatch tail sends the message the second Stop
-  // meant to cancel. The release now carries §4's click-time capture - the
-  // row and the ref's stop epoch read in ONE transaction requested in the
-  // click's synchronous prefix, the enqueue barrier's own rule - and a Stop
-  // landing between the capture and the release refuses it: a newer Stop
-  // outranks an earlier Retry, commit-order, the same comparison the enqueue
-  // barrier carries.
-  test("a Retry whose release lands after another tab's Stop stays canceled and never dispatches", async () => {
+  // RoboRev PR #1873 medium, the fresh review's Retry-path gap, under the
+  // mint: the barrier was captured and compared only on the enqueue path.
+  // A Stop in another tab committing between the Retry's capture and its
+  // mint used to be silently defeated - the mint's predecessor re-enabled the
+  // old row in place, and the dispatch tail sent the message the second Stop
+  // meant to cancel. The mint now carries §4's click-time capture - the row
+  // and both stop epochs read in ONE transaction requested in the click's
+  // synchronous prefix, the enqueue barrier's own rule - and a Stop landing
+  // between the capture and the mint is never absorbed: the fresh row
+  // commits born-canceled, the same comparison the enqueue barrier carries.
+  test("a Retry whose mint lands after another tab's Stop re-queues at the tail born-canceled", async () => {
     const storage = new MutationOutboxIndexedDB();
     setMutationStorageForTests(storage);
     const fake = connectMutationClient();
@@ -665,20 +662,20 @@ describe("Stop cancellation durability across reload, tabs, and resume", () => {
     fake.on("turn/queue", (params) => ({ receipt: mutationReceipt(params.clientMutationId) }));
     fake.on("turn/interrupt", (params) => ({ receipt: mutationReceipt(params.clientMutationId) }));
 
-    // The release seam: the retry has read the row and passed its press-time
-    // checks; its release write waits at the seam. The write that lands is
-    // the real one.
-    const realReleaseCanceled = storage.releaseCanceled.bind(storage);
-    const releaseReached = deferred<void>();
-    const releaseGate = deferred<void>();
-    storage.releaseCanceled = (...args: Parameters<typeof realReleaseCanceled>) => {
-      releaseReached.resolve();
-      return releaseGate.promise.then(() => realReleaseCanceled(...args));
+    // The mint seam: the retry has read the row, captured its pair, and
+    // passed its press-time checks; its mint write waits at the seam. The
+    // write that lands is the real one.
+    const realMint = storage.mintRetryFromRow.bind(storage);
+    const mintReached = deferred<void>();
+    const mintGate = deferred<void>();
+    storage.mintRetryFromRow = (...args: Parameters<typeof realMint>) => {
+      mintReached.resolve();
+      return mintGate.promise.then(() => realMint(...args));
     };
 
     // The user's Retry click.
     const retry = retryBlockedMutation(canceled.clientMutationId);
-    await releaseReached.promise;
+    await mintReached.promise;
 
     // The second tab's Stop commits between the retry's read and its release:
     // its cancel scan skips the already-canceled row - exactly the finding's
@@ -694,28 +691,38 @@ describe("Stop cancellation durability across reload, tabs, and resume", () => {
       });
       expect((await tabB.getOutbox(canceled.clientMutationId))?.state).toBe("canceled");
 
-      // The release finally issues - after the Stop, the finding's order. A
-      // newer Stop outranks the earlier Retry: the release refuses, the
-      // retry reports the press-time refusal, and the row stays canceled for
-      // the Stop that claimed it.
-      releaseGate.resolve();
-      expect(await retry).toBe(false);
-      expect((await storage.getOutbox(canceled.clientMutationId))?.state).toBe("canceled");
-      // Nothing re-cancels it, so the dispatch machinery is the only thing
-      // that could resurrect it: the FIFO head is the second Stop's own
-      // interrupt, never the row the Retry tried to release.
-      await flushIndexedDBUntil(() => false);
+      // The mint finally issues - after the Stop, the finding's order. A
+      // newer Stop outranks the earlier Retry: nothing absorbs its bump, and
+      // the fresh row commits born-canceled. The old canceled row is
+      // removed (§6's removal on explicit Retry), so the re-queued send is
+      // never dispatched - the only live row the ref holds is the second
+      // Stop's own interrupt, and the retry's resync-and-dispatch tail
+      // delivers exactly that: the Stop reaches the daemon.
+      mintGate.resolve();
+      expect(await retry).toBe(true);
+      expect(await storage.getOutbox(canceled.clientMutationId)).toBeUndefined();
+      const rows = await storage.listOutbox("ref_a");
+      expect(rows.filter((row) => row.method === "turn/queue")).toHaveLength(1);
+      expect(rows.find((row) => row.method === "turn/queue")).toMatchObject({ state: "canceled" });
+      await flushUntilArrived("the second Stop's own interrupt to be delivered", () =>
+        fake.calls.some((call) => call.method === "turn/interrupt"),
+      );
       expect(fake.calls.filter((call) => call.method === "turn/queue")).toEqual([]);
-      expect((await storage.nextDispatchable("ref_a"))?.clientMutationId).toBe(interrupt.clientMutationId);
+      expect(fake.calls.filter((call) => call.method === "turn/interrupt")).toHaveLength(1);
+      expect(await storage.getOutbox(interrupt.clientMutationId)).toBeUndefined();
+      expect(await storage.nextDispatchable("ref_a")).toBeUndefined();
     } finally {
       tabB.close();
     }
 
-    // Liveness control, so the refusal is the barrier and not a broken
-    // retry: a Retry pressed AFTER the newer Stop - its capture reads the
-    // post-Stop epoch - is §9 item 7's deliberate post-Stop send, and it
-    // must still release and dispatch.
-    expect(await retryBlockedMutation(canceled.clientMutationId)).toBe(true);
+    // Liveness control, so the born-canceled verdict is the barrier and not
+    // a broken retry: the born-canceled chip's own Retry - pressed AFTER the
+    // newer Stop, its capture reading the post-Stop epoch - is §9 item 7's
+    // deliberate post-Stop send, and it must still mint and dispatch.
+    const bornCanceledId = (await storage.listOutbox("ref_a")).find(
+      (row) => row.method === "turn/queue",
+    )!.clientMutationId;
+    expect(await retryBlockedMutation(bornCanceledId)).toBe(true);
     await flushUntilArrived("the deliberate post-Stop retry to dispatch", () =>
       fake.calls.some((call) => call.method === "turn/queue"),
     );
@@ -778,12 +785,189 @@ describe("Stop cancellation durability across reload, tabs, and resume", () => {
       attachments: [],
       optimisticDisplay: { method: "turn/interrupt" },
     });
-    expect(await retry).toBe(false);
-    // The Stop's own cancel scan skipped the canceled row, so the epoch
-    // barrier is the only fence that can still catch it — and must.
-    expect((await storage.getOutbox(canceled.clientMutationId))?.state).toBe("canceled");
+    expect(await retry).toBe(true);
+    // The Stop's own cancel scan skipped the canceled row, so the capture's
+    // commit-order compare is the only fence that can still catch it — and
+    // must: the mint committed the fresh row born-canceled, the old canceled
+    // row is removed, and nothing dispatches.
+    expect(await storage.getOutbox(canceled.clientMutationId)).toBeUndefined();
+    const rows = await storage.listOutbox("ref_a");
+    expect(rows.find((row) => row.method === "turn/queue")).toMatchObject({ state: "canceled" });
     expect(fake.calls.filter((call) => call.method === "turn/queue")).toEqual([]);
     tabB.close();
+  });
+
+  // The retargeted-resend seed the #5182 fence tests share: a recovery row a
+  // peer retargeted to ref_a, resent while its pane still displayed ref_b - the
+  // fresh outbox row crosses both refs, born under the destination identity
+  // the Retry press must match.
+  async function seedRetargetedResendToRefA(
+    storage: MutationOutboxIndexedDB,
+  ): Promise<{ clientMutationId: string; threadId: string }> {
+    const original = await storage.enqueueIntent({
+      targetRef: "ref_b",
+      threadId: "thr_b",
+      method: "turn/start",
+      payload: { ref: "ref_b", input: [{ type: "text", text: "hello" }] },
+      attachments: [],
+      optimisticDisplay: null,
+    });
+    await storage.transferToRecovery(original.clientMutationId, "rejected");
+    await storage.retargetOutbox("ref_b", "ref_a", { threadId: "thr_ref_a" });
+    const sent = await storage.resendRecoveryResult(
+      original.clientMutationId,
+      {
+        targetRef: "ref_a",
+        threadId: "thr_ref_a",
+        method: "turn/start",
+        payload: { ref: "ref_a", input: [{ type: "text", text: "hello" }] },
+        attachments: [],
+        optimisticDisplay: null,
+      },
+      undefined,
+      undefined,
+      undefined,
+      { stopEpoch: 0, displayedRef: "ref_b" },
+    );
+    if (sent.status !== "sent") throw new Error(`resend did not send: ${sent.status}`);
+    return { clientMutationId: sent.record.clientMutationId, threadId: "thr_ref_a" };
+  }
+
+  // #5182 M1, the store-level shape: an attempted retargeted resend parked
+  // blockedUnknown behind a crossed Stop. The reconcile fence holds it
+  // delivery-uncertain on purpose, so when the hub never accepted the
+  // mutation no receipt can ever settle it - the user's explicit Retry click
+  // is the one authorization that may re-queue it, and the send must proceed
+  // and dispatch.
+  test("a Retry mints a fresh row from a Stop-crossed blockedUnknown retargeted resend and dispatches it", async () => {
+    const storage = new MutationOutboxIndexedDB();
+    setMutationStorageForTests(storage);
+    const fake = connectMutationClient();
+    await ensureActiveMutationTarget(fake, "ref_a");
+    onTurnStart(fake);
+    fake.on("turn/interrupt", (params) => ({ receipt: mutationReceipt(params.clientMutationId) }));
+
+    const seeded = await seedRetargetedResendToRefA(storage);
+    const clientMutationId = seeded.clientMutationId;
+
+    // The resend attempts, its outcome goes unknown, and a Stop lands on the
+    // still-displayed ref_b: the cancel scan skips the attempted row and the
+    // reconcile fence holds it - no automatic path reopens it.
+    await storage.markAttempted(clientMutationId);
+    await storage.markUnknown(clientMutationId, "blockedUnknown");
+    await storage.enqueueInterruptAndCancel({
+      targetRef: "ref_b",
+      method: "turn/interrupt",
+      payload: { ref: "ref_b" },
+      attachments: [],
+      optimisticDisplay: { method: "turn/interrupt" },
+    });
+    expect((await storage.getOutbox(clientMutationId))?.state).toBe("blockedUnknown");
+    expect(await storage.restoreProvenAbsent("ref_a", new Set())).not.toContain(clientMutationId);
+
+    // The user's explicit Retry: the click mints a fresh row and the send
+    // proceeds and dispatches. The minted row dispatches under the
+    // PREDECESSOR'S wire id: the daemon journals this composition under it,
+    // and the re-submission replays the first attempt's receipt rather than
+    // double-applying the send.
+    expect(await retryBlockedMutation(clientMutationId)).toBe(true);
+    await flushUntilArrived("the minted resend to dispatch", () =>
+      fake.calls.some(
+        (call) =>
+          call.method === "turn/start" &&
+          (call.params as { clientMutationId?: string }).clientMutationId === clientMutationId,
+      ),
+    );
+    // The old row settles terminal "superseded" - never re-dispatched, its
+    // id and attempt evidence kept for the receipt a real in-flight attempt
+    // can still bring.
+    expect((await storage.getOutbox(clientMutationId))?.state).toBe("superseded");
+  });
+
+  // #5182 M2, the store-level shape: for a canceled retargeted resend, a Stop
+  // on the displayed ref landing inside the Retry's capture-to-mint window.
+  // The cancel scan skips the already-canceled row and the destination epoch
+  // never moved - the mint must compare the displayed half of its capture
+  // pair at birth or the newer Stop is absorbed and the row dispatches
+  // despite it.
+  test("a Retry whose mint lands after a Stop on the displayed ref re-queues born-canceled", async () => {
+    const storage = new MutationOutboxIndexedDB();
+    setMutationStorageForTests(storage);
+    const fake = connectMutationClient();
+    await ensureActiveMutationTarget(fake, "ref_a");
+    onTurnStart(fake);
+    fake.on("turn/interrupt", (params) => ({ receipt: mutationReceipt(params.clientMutationId) }));
+
+    const seeded = await seedRetargetedResendToRefA(storage);
+    const clientMutationId = seeded.clientMutationId;
+
+    // A Stop on the still-displayed ref_b cancels the unattempted resend.
+    await storage.enqueueInterruptAndCancel({
+      targetRef: "ref_b",
+      method: "turn/interrupt",
+      payload: { ref: "ref_b" },
+      attachments: [],
+      optimisticDisplay: { method: "turn/interrupt" },
+    });
+    expect((await storage.getOutbox(clientMutationId))?.state).toBe("canceled");
+
+    // The mint seam: the retry has read the row, captured its pair, and
+    // passed its press-time checks; its mint write waits at the seam.
+    const realMint = storage.mintRetryFromRow.bind(storage);
+    const mintReached = deferred<void>();
+    const mintGate = deferred<void>();
+    storage.mintRetryFromRow = (...args: Parameters<typeof realMint>) => {
+      mintReached.resolve();
+      return mintGate.promise.then(() => realMint(...args));
+    };
+
+    // The user's Retry click.
+    const retry = retryBlockedMutation(clientMutationId);
+    await mintReached.promise;
+
+    // The second tab's Stop lands on the DISPLAYED ref inside the window:
+    // its cancel scan skips the already-canceled row, so the displayed
+    // epoch's bump is the one trace the release must catch.
+    const tabB = new MutationOutboxIndexedDB();
+    try {
+      await tabB.enqueueInterruptAndCancel({
+        targetRef: "ref_b",
+        method: "turn/interrupt",
+        payload: { ref: "ref_b" },
+        attachments: [],
+        optimisticDisplay: { method: "turn/interrupt" },
+      });
+
+      // The mint finally issues - after the Stop, the finding's order. The
+      // displayed half of the capture compare catches it: nothing absorbs
+      // the newer Stop, the old canceled row is removed, and the fresh row
+      // commits born-canceled - never dispatching past it.
+      mintGate.resolve();
+      expect(await retry).toBe(true);
+      expect(await storage.getOutbox(clientMutationId)).toBeUndefined();
+      const rows = await storage.listOutbox("ref_a");
+      expect(rows).toHaveLength(1);
+      expect(rows[0]).toMatchObject({ state: "canceled", targetRef: "ref_a", displayedRef: "ref_b" });
+      await flushIndexedDBUntil(() => false);
+      expect(fake.calls.filter((call) => call.method === "turn/start")).toEqual([]);
+    } finally {
+      tabB.close();
+    }
+
+    // Liveness control: the born-canceled chip's own Retry is pressed AFTER
+    // the newer Stop - its capture reads the post-Stop displayed epoch - and
+    // is the deliberate post-Stop send: it mints born-submitting and
+    // dispatches, under its OWN fresh wire id (a canceled predecessor
+    // provably never left any tab).
+    const bornCanceledId = (await storage.listOutbox("ref_a"))[0]!.clientMutationId;
+    expect(await retryBlockedMutation(bornCanceledId)).toBe(true);
+    await flushUntilArrived("the deliberate post-Stop retry to dispatch", () =>
+      fake.calls.some((call) => call.method === "turn/start"),
+    );
+    const sentParams = fake.calls.find((call) => call.method === "turn/start")?.params as {
+      clientMutationId?: string;
+    };
+    expect(sentParams?.clientMutationId).not.toBe(clientMutationId);
   });
 
   // RoboRev PR #1873 low, the fresh review: cancelUnattemptedMutations

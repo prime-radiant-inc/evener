@@ -171,8 +171,12 @@ describe("MutationOutboxIndexedDB cancellation", () => {
     expect(raced).toMatchObject({ state: "canceled", attempted: false });
     // The FIFO head is the stop's own interrupt, never the canceled row behind it.
     expect(await sender.nextDispatchable(TARGET)).toMatchObject({ clientMutationId: interrupt.clientMutationId });
-    // A canceled row's only release is still the explicit user Retry.
-    expect(await sender.releaseCanceled(raced.clientMutationId)).toBe(true);
+    // A canceled row's only re-queue is still the explicit user Retry: the
+    // mint removes the old row and mints a fresh dispatchable one.
+    const racedCapture = await sender.getOutboxWithStopEpoch(raced.clientMutationId);
+    const remint = await sender.mintRetryFromRow(raced.clientMutationId, racedCapture);
+    expect(remint).toMatchObject({ state: "submitting" });
+    expect(await sender.getOutbox(raced.clientMutationId)).toBeUndefined();
     sender.close();
   });
 
@@ -193,55 +197,43 @@ describe("MutationOutboxIndexedDB cancellation", () => {
     storage.close();
   });
 
-  // §4's stop barrier on the release, the Retry half: the release of a
-  // canceled row is the one transition that can resurrect a row a newer Stop
-  // claimed — the Stop's own cancel scan skips a row already canceled — so it
-  // carries the same click-time capture the enqueue compares. The release
-  // reads the ref's stop epoch inside its own write transaction and refuses
-  // when the stored epoch advanced past the capture: a newer Stop outranks an
-  // earlier Retry, and the row stays canceled for it.
-  test("a release whose capture predates another tab's Stop refuses and leaves the row canceled", async () => {
+  // §4's stop barrier on the mint, the Retry half: the mint of a canceled row
+  // is the one transition that can carry a row a newer Stop claimed back into
+  // play — the Stop's own cancel scan skips a row already canceled — so it
+  // carries the same click-time capture the enqueue compares. The mint reads
+  // both stop epochs inside its own write transaction, and a Stop that landed
+  // between the capture and the mint is never absorbed: the fresh row commits
+  // born-canceled for it, the same comparison the enqueue barrier carries.
+  test("a mint whose capture predates another tab's Stop commits the fresh row born-canceled", async () => {
     const ids = idSequence();
     const retrier = store({ createMutationId: ids });
     const canceled = await retrier.enqueueIntent(intent("canceled by the first stop"));
     await retrier.cancelUnattempted(TARGET);
     // The Retry click's capture: the row and the epoch in one read.
-    const { record, stopEpoch } = await retrier.getOutboxWithStopEpoch(canceled.clientMutationId);
-    expect(record?.state).toBe("canceled");
-    expect(stopEpoch).toBe(1);
+    const capture = await retrier.getOutboxWithStopEpoch(canceled.clientMutationId);
+    expect(capture.record?.state).toBe("canceled");
+    expect(capture.stopEpoch).toBe(1);
 
     // The second tab's Stop: its scan skips the canceled row, and its bump is
-    // the one trace the release must catch.
+    // the one trace the mint's birth compare must catch.
     const stopper = store({ createMutationId: ids });
     const interrupt = await stopper.enqueueInterruptAndCancel(interruptIntent());
     stopper.close();
 
-    expect(await retrier.releaseCanceled(canceled.clientMutationId, { stopEpoch })).toBe(false);
-    expect((await retrier.getOutbox(canceled.clientMutationId))?.state).toBe("canceled");
-    // The row the Retry tried to release is not the queue's head: the Stop's
-    // own interrupt is, and dispatching it must not carry the canceled row.
+    const crossed = await retrier.mintRetryFromRow(canceled.clientMutationId, capture);
+    expect(crossed).toMatchObject({ state: "canceled" });
+    expect(await retrier.getOutbox(canceled.clientMutationId)).toBeUndefined();
+    // The born-canceled row is not the queue's head: the Stop's own interrupt
+    // is, and dispatching it must not carry the canceled row.
     expect(await retrier.nextDispatchable(TARGET)).toMatchObject({ clientMutationId: interrupt.clientMutationId });
 
     // A capture taken after the newer Stop — the deliberate post-Stop Retry,
-    // §9 item 7's protected send — compares equal and releases.
-    expect(
-      await retrier.releaseCanceled(canceled.clientMutationId, { stopEpoch: await retrier.readStopEpoch(TARGET) }),
-    ).toBe(true);
-    expect((await retrier.getOutbox(canceled.clientMutationId))?.state).toBe("submitting");
+    // §9 item 7's protected send — compares equal and mints born-submitting.
+    const fresh = await retrier.getOutboxWithStopEpoch(crossed!.clientMutationId);
+    const remint = await retrier.mintRetryFromRow(crossed!.clientMutationId, fresh);
+    expect(remint).toMatchObject({ state: "submitting" });
+    expect(await retrier.getOutbox(crossed!.clientMutationId)).toBeUndefined();
     retrier.close();
-  });
-
-  // A host that never captured passes no barrier, and the release is
-  // unchanged for it: the fence is opt-in exactly like enqueueIntent's.
-  test("a release without a barrier still releases a canceled row", async () => {
-    const storage = store();
-    const canceled = await storage.enqueueIntent(intent("canceled before the barrierless release"));
-    await storage.cancelUnattempted(TARGET);
-    await storage.cancelUnattempted(TARGET);
-
-    expect(await storage.releaseCanceled(canceled.clientMutationId)).toBe(true);
-    expect((await storage.getOutbox(canceled.clientMutationId))?.state).toBe("submitting");
-    storage.close();
   });
 
   // The epoch rides the sequence row, so every allocation that writes that
@@ -434,33 +426,103 @@ describe("MutationOutboxIndexedDB cancellation", () => {
     expect((failure as DOMException).name).toBe("VersionError");
   });
 
-  // #4342 (round-5 review): an explicit release is the user deliberately
-  // sending after a Stop (§4's exemption), so it re-authorizes the row past
-  // the Stop its fence captured: the released row's capture refreshes to the
-  // current epoch, and its next refusal redelivers instead of re-canceling.
-  test("an explicit release re-authorizes a Stop-interrupted row past its captured Stop", async () => {
+  test("an old tab's version-4 open against the version-5 database fails closed", async () => {
+    const storage = store();
+    await storage.enqueueIntent(intent("a row the old code cannot fence"));
+    storage.close();
+
+    // The pre-fence code opens the database at version 4. The version-5
+    // database this build writes must refuse that open with a VersionError
+    // instead of sharing rows the old code cannot fence honestly: an old
+    // tab's markAttempted commits attempt evidence with no crossed-fence
+    // check, so a mixed-version share would let the old tab redispatch a
+    // row a newer Stop crossed, and its cancel scan misses displayed-ref
+    // rows entirely - the original #5182 High again, mixed-version
+    // (docs/design/stop-cancellation-outbox.md §8). Failing the open is the
+    // safe direction: every outbox read and write in the old tab then
+    // reports a storage error, and projections degrade to "storage
+    // unavailable" - the safe mixed-version state is a reload, never a
+    // silent share.
+    const openRequest = indexedDB.open(databaseName, 4);
+    const failure = await new Promise<unknown>((resolve, reject) => {
+      openRequest.addEventListener("success", () => reject(new Error("the version-4 open unexpectedly succeeded")), {
+        once: true,
+      });
+      openRequest.addEventListener("error", () => resolve(openRequest.error), { once: true });
+    });
+    expect((failure as DOMException).name).toBe("VersionError");
+  });
+
+  // #4342 (round-5 review), under the mint: an explicit Retry is the user
+  // deliberately sending after a Stop (§4's exemption), so it re-queues the
+  // row's work past the Stop its fence held: the fresh row's birth baselines
+  // are the epochs as they stand, and its next refusal redelivers instead of
+  // re-canceling.
+  test("an explicit Retry mints a fresh row past the Stop that held its predecessor", async () => {
     const stopped = store();
     const row = await stopped.enqueueIntent(intent("refused while stopped"));
     await stopped.markAttempted(row.clientMutationId);
     // The Stop lands while the attempt is in flight: the scan skips the
-    // attempted row, the epoch bumps, and the refusal fence-holds the row.
+    // attempted row, the epoch bumps, and the refusal's rollback returns the
+    // row to its never-attempted shape - the pre-transport gate then refuses
+    // the redispatch for the crossed Stop.
     await stopped.enqueueInterruptAndCancel(intent("stop"));
+    // The refusal proves the attempt never landed, so the Stop that landed
+    // while the attempt was in flight is the row's truth: the rollback holds
+    // it canceled (#4342's hold, shared with the host-neutral conformance
+    // suite), never dispatchable ahead of the Stop's interrupt - released
+    // only by the explicit Retry below. The pre-transport gate stays
+    // defense-in-depth for a pass the rollback never sees.
     expect(await stopped.unmarkAttempted(row.clientMutationId)).toBe(false);
     expect((await stopped.getOutbox(row.clientMutationId))?.state).toBe("canceled");
+    expect(await stopped.markAttempted(row.clientMutationId)).toBe(false);
+    expect((await stopped.getOutbox(row.clientMutationId))?.state).toBe("canceled");
 
-    // The user presses Retry after the Stop: the press's barrier is the
-    // post-Stop epoch, the release passes it, and the capture refreshes.
-    const capture = await stopped.readStopEpoch(TARGET);
-    expect(await stopped.releaseCanceled(row.clientMutationId, { stopEpoch: capture })).toBe(true);
-
-    // The released row's next refusal must not see the historical Stop again.
-    await stopped.markAttempted(row.clientMutationId);
-    expect(await stopped.unmarkAttempted(row.clientMutationId)).toBe(true);
-    expect((await stopped.getOutbox(row.clientMutationId))?.state).toBe("submitting");
-    // And without another user action, the ordinary drive settles it.
-    await stopped.markAttempted(row.clientMutationId);
-    expect(await stopped.settleReceipt(row.clientMutationId, "reflected")).toBe(true);
+    // The user presses Retry after the Stop: the press's capture is the
+    // post-Stop epoch, the mint's identity check passes, and the fresh row's
+    // own birth baseline IS that epoch.
+    const capture = await stopped.getOutboxWithStopEpoch(row.clientMutationId);
+    const minted = await stopped.mintRetryFromRow(row.clientMutationId, capture);
+    expect(minted).toMatchObject({ state: "submitting" });
     expect(await stopped.getOutbox(row.clientMutationId)).toBeUndefined();
+
+    // The minted row's next refusal must not see the historical Stop again.
+    await stopped.markAttempted(minted!.clientMutationId);
+    expect(await stopped.unmarkAttempted(minted!.clientMutationId)).toBe(true);
+    expect((await stopped.getOutbox(minted!.clientMutationId))?.state).toBe("submitting");
+    // And without another user action, the ordinary drive settles it.
+    await stopped.markAttempted(minted!.clientMutationId);
+    expect(await stopped.settleReceipt(minted!.clientMutationId, "reflected")).toBe(true);
+    expect(await stopped.getOutbox(minted!.clientMutationId)).toBeUndefined();
+    stopped.close();
+  });
+
+  // RoboRev round-1 H2 (#4342, the concurrent shape): with two attempts
+  // outstanding, a Stop followed by ONE refusal leaves the other attempt in
+  // flight - the refusal proves only its own attempt never landed. The
+  // rollback must preserve the survivor's evidence and park the row with
+  // the Stop-fence stamp, never erase the evidence and cancel the row as if
+  // the whole send were provably unsent.
+  test("a refusal of one of two outstanding attempts parks the row fenced with the survivor's evidence", async () => {
+    const stopped = store();
+    const row = await stopped.enqueueIntent(intent("two attempts in flight"));
+    await stopped.markAttempted(row.clientMutationId);
+    await stopped.markAttempted(row.clientMutationId);
+    await stopped.enqueueInterruptAndCancel(intent("stop"));
+    expect(await stopped.unmarkAttempted(row.clientMutationId)).toBe(false);
+    expect(await stopped.getOutbox(row.clientMutationId)).toMatchObject({
+      state: "blockedUnknown",
+      attempted: true,
+      unresolvedAttempts: 1,
+      stopFenced: true,
+    });
+    // The surviving attempt's own refusal is then the proof that cancels.
+    expect(await stopped.unmarkAttempted(row.clientMutationId)).toBe(false);
+    expect(await stopped.getOutbox(row.clientMutationId)).toMatchObject({
+      state: "canceled",
+      attempted: false,
+      unresolvedAttempts: 0,
+    });
     stopped.close();
   });
 

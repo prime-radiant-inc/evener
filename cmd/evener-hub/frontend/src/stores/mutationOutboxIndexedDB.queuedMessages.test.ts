@@ -2,6 +2,7 @@
 import type { InputItem } from "@evener/appwire-client";
 import {
   describeQueuedMessageStorage,
+  describeWebQueuedMessageStorage,
   queuedIntent,
 } from "@evener/appwire-client/testing/queuedMessageStorageConformance";
 import { IDBFactory, IDBObjectStore } from "fake-indexeddb";
@@ -55,8 +56,15 @@ function fixture() {
       peer.close();
       return open();
     },
-    release: (record: { clientMutationId: string }, barrier: { stopEpoch: number }) =>
-      peer.releaseCanceled(record.clientMutationId, barrier),
+    release: async (record: { clientMutationId: string }, barrier: { stopEpoch: number }) => {
+      const capture = await peer.getOutboxWithStopEpoch(record.clientMutationId);
+      const minted = await peer.mintRetryFromRow(record.clientMutationId, {
+        record: capture.record,
+        stopEpoch: barrier.stopEpoch,
+        displayedStopEpoch: 0,
+      });
+      return minted?.state === "submitting";
+    },
   };
 }
 describeQueuedMessageStorage("IndexedDB", fixture);
@@ -130,6 +138,8 @@ test.each(["put", "add", "delete", "commit"] as const)("resend rolls back at %s 
     intentSequence: 3,
   });
 });
+
+describeWebQueuedMessageStorage("IndexedDB", fixture);
 
 test.each(["put", "delete", "commit"] as const)(
   "consolidation rolls back saved composition and secondary deletion at %s",

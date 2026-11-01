@@ -21,9 +21,12 @@ import type {
   MutationAttachment,
   MutationOutboxRecord,
   MutationRecoveryRecord,
-  MutationStopBarrier,
+  MutationStopCapture,
 } from "../../../../stores/mutationOutbox";
-import type { MutationRecoveryResendResult } from "../../../../stores/mutationOutboxIndexedDB";
+import type {
+  DisplayedRecoveryStopCapture,
+  MutationRecoveryResendResult,
+} from "../../../../stores/mutationOutboxIndexedDB";
 import { clearProjectionWorkForTests, trackProjectionWork } from "../../../../stores/projectionWork";
 import {
   type ComposerMutationRoute,
@@ -622,9 +625,10 @@ export function resendRecoveryPendingTurn(
   skillNames?: readonly string[],
   commandNames?: readonly string[],
   mentions?: readonly ComposerMention[],
-  barrierRead?: Promise<MutationStopBarrier>,
+  barrierRead?: MutationStopCapture | Promise<MutationStopCapture>,
   expectedRecoveryRevisions?: Readonly<Record<string, number>>,
   compositionOwnerId?: string,
+  displayedBarrierRead?: DisplayedRecoveryStopCapture | Promise<DisplayedRecoveryStopCapture>,
 ): Promise<MutationRecoveryResendResult> {
   // Resend publishes its committed handoff directly. Reading the recovery
   // tray again cannot hold up a submission that already has a durable owner.
@@ -642,6 +646,7 @@ export function resendRecoveryPendingTurn(
         barrierRead,
         expectedRecoveryRevisions,
         compositionOwnerId,
+        displayedBarrierRead,
       );
       void refreshPendingTurnsProjection(ref);
       return result;

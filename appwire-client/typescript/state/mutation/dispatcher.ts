@@ -26,7 +26,20 @@ import {
   type ThreadClearResponse,
 } from "../../types.gen";
 import { isClientReady, type MutationOutboxStorage } from "./outbox";
-import type { MutationAttachmentRef, MutationOutboxRecord, MutationRecord } from "./records";
+import { effectiveWireId, type MutationAttachmentRef, type MutationOutboxRecord, type MutationRecord } from "./records";
+
+// The wire id this row dispatches under: the payload's clientMutationId when
+// it carries one, the record's own otherwise. They are the same id for every
+// row an enqueue minted; a row MINTED from a blockedUnknown predecessor
+// deliberately keeps the predecessor's id inside its payload - the daemon
+// journals client mutations by id and renders a re-submission from that
+// record with disposition "replayed" (a replayed disposition carries the same
+// ids the first execution did) - so a receipt or refusal names the wire id,
+// and the dispatch loop must judge and settle the row by it, while every
+// storage settle stays keyed on the row's own (fresh) id.
+function wireMutationId(record: MutationOutboxRecord): string {
+  return effectiveWireId(record);
+}
 
 // The dispatcher always supplies a target ref, so its lookup requires one.
 // That is deliberately narrower than the outbox's ref-less MutationClientLookup
@@ -199,7 +212,7 @@ export class MutationDispatcher<A extends MutationAttachmentRef = MutationAttach
       const receipt = mutationReceipt(result);
       if (
         !receipt ||
-        receipt.clientMutationId !== record.clientMutationId ||
+        receipt.clientMutationId !== wireMutationId(record) ||
         (receipt.disposition !== "applied" && receipt.disposition !== "replayed")
       ) {
         return "stop";
@@ -236,7 +249,7 @@ export class MutationDispatcher<A extends MutationAttachmentRef = MutationAttach
       return "advance";
     } catch (error) {
       const data = mutationErrorData(error);
-      if (data?.clientMutationId !== record.clientMutationId) {
+      if (data?.clientMutationId !== wireMutationId(record)) {
         // A rejection that names a DIFFERENT mutation is not this record's to
         // judge. One that names none can still be terminal: the appwire
         // client correlates this rejection to THIS request, and an

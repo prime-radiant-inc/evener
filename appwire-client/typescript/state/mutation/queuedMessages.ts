@@ -1,7 +1,13 @@
 import type { InputItem } from "../../types.gen";
 import { COMPOSER_METHODS, PENDING_TURN_METHODS } from "./composerMethods";
 import type { MutationStopBarrier } from "./outbox";
-import type { MutationAttachmentRef, MutationIntent, MutationOutboxRecord, MutationRecoveryRecord } from "./records";
+import {
+  effectiveWireId,
+  type MutationAttachmentRef,
+  type MutationIntent,
+  type MutationOutboxRecord,
+  type MutationRecoveryRecord,
+} from "./records";
 
 // Optional composition ownership actions, separate from the dispatcher's port.
 // Lost claims resolve absent/false. Storage failures reject, never enqueue a fallback.
@@ -18,6 +24,32 @@ export interface QueuedMessageStorage<A extends MutationAttachmentRef = Mutation
     barrier: MutationStopBarrier | undefined,
     expectedRecoveryRevisions?: Readonly<Record<string, number>>,
   ): Promise<MutationOutboxRecord<A> | undefined>;
+}
+
+// The capture a Retry's mint carries: the press-time snapshot
+// getOutboxWithStopEpoch read - the row as the click saw it, plus both stop
+// epochs it crosses. The record half is optional exactly as the snapshot
+// returns it: a row another tab settled between the capture and the mint is
+// a refusal the mint's own re-read decides.
+export interface MutationRetryCapture<A extends MutationAttachmentRef = MutationAttachmentRef> {
+  record: MutationOutboxRecord<A> | undefined;
+  stopEpoch: number;
+  displayedStopEpoch: number;
+}
+
+// The web recovery fence's storage surface. The base contract above stays the
+// whole shared surface - hosts without displayed-ref rows implement it alone
+// and are never forced to grow a web-only fence. The web runtime's retargeted
+// resends cross a still-displayed ref whose Stop epoch the click must capture
+// alongside the destination's, and its parked rows re-queue only through the
+// explicit-Retry mint, so the web store declares this extension and the
+// conformance suite's web describe pins it.
+export interface WebQueuedMessageStorage<A extends MutationAttachmentRef = MutationAttachmentRef>
+  extends QueuedMessageStorage<A> {
+  getOutboxWithStopEpoch(
+    id: string,
+  ): Promise<{ record: MutationOutboxRecord<A> | undefined; stopEpoch: number; displayedStopEpoch: number }>;
+  mintRetryFromRow(id: string, capture: MutationRetryCapture<A>): Promise<MutationOutboxRecord<A> | undefined>;
 }
 
 // Called only on a durable read inside the host's write transaction. The
@@ -40,6 +72,16 @@ function hasContradictoryAttemptEvidence(record: MutationOutboxRecord): boolean 
 
 function isSafelyWaiting(record: MutationOutboxRecord): boolean {
   if (hasContradictoryAttemptEvidence(record)) return false;
+  // An inherited wire identity IS uncertainty: a replacement carrying its
+  // predecessor's id inside the payload may already be delivered (the
+  // predecessor's attempt was in flight when the mint ran), so editing it
+  // into a recovery and re-sending would put the composition under a NEW
+  // wire id the daemon's journal has never seen - the replay dedup that
+  // never double-applies would not apply. Such a row is Retry-only: the
+  // mint re-queues it under the SAME inherited id. Ordinary rows - an
+  // enqueue's own id inside its payload, every row a host without the mint
+  // ever writes - carry no inherited id, so this term never fires for them.
+  if (effectiveWireId(record) !== record.clientMutationId) return false;
   if (record.state === "canceled") return true;
   if (record.state !== "submitting") return false;
   return record.attempted === false || record.unresolvedAttempts === 0;

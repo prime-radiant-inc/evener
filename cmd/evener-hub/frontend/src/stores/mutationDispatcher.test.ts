@@ -219,6 +219,55 @@ describe("MutationDispatcher", () => {
     expect(await outbox.getOutbox(record.clientMutationId)).toMatchObject({ state: "submitting" });
   });
 
+  // The wire-id rule of the #5182 mint, at the dispatch seam: a row minted
+  // from a blockedUnknown predecessor re-submits under the PREDECESSOR'S
+  // clientMutationId, because the daemon journals client mutations by id and
+  // renders a re-submission from the existing record with disposition
+  // "replayed" (agent/session_client_mutation.go: the replayed lookup and
+  // replayClientMutation) - never a second application. The dispatcher must
+  // therefore judge and settle the minted row by the wire id its payload
+  // carries, while every storage settle stays keyed on the row's own fresh
+  // storage key.
+  test("a minted row settles from the journal's replay of its inherited wire id, not a double application", async () => {
+    const indexedDB = new IDBFactory();
+    const outbox = storage(indexedDB, "mint-replay", ["mutation-a", "mutation-b"]);
+    const predecessor = await outbox.enqueueIntent(queueIntent());
+    // The attempt's outcome goes unknown - the daemon may already have
+    // applied the mutation - and a Stop crosses the row.
+    await outbox.markAttempted(predecessor.clientMutationId);
+    await outbox.markUnknown(predecessor.clientMutationId, "blockedUnknown");
+    await outbox.cancelUnattempted("ref-a");
+    // The user's explicit Retry mints the fresh row: a fresh storage key,
+    // the predecessor's wire id inherited inside the payload.
+    const capture = await outbox.getOutboxWithStopEpoch(predecessor.clientMutationId);
+    const minted = await outbox.mintRetryFromRow(predecessor.clientMutationId, capture);
+    expect(minted?.clientMutationId).not.toBe(predecessor.clientMutationId);
+    expect(minted?.payload.clientMutationId).toBe(predecessor.clientMutationId);
+
+    // The daemon answers the re-submission from its journal: disposition
+    // "replayed", naming the record's own id - the inherited wire id.
+    let submissions = 0;
+    const client = new FakeClient();
+    client.on("turn/queue", () => {
+      submissions += 1;
+      return { receipt: receipt(predecessor.clientMutationId, "replayed") };
+    });
+    const dispatcher = new MutationDispatcher(outbox, { getClient: () => client });
+
+    await dispatcher.dispatchTargets(["ref-a"]);
+
+    // Exactly one submission, under the inherited wire id, settled by the
+    // replayed receipt: the minted row leaves the outbox keyed on its own
+    // fresh id, and the superseded predecessor keeps its id and evidence for
+    // a receipt the real in-flight attempt could still bring (the wire-pair
+    // settlement that retires completed predecessors lands with PR-B).
+    expect(submissions).toBe(1);
+    expect(queueCalls(client)).toEqual([{ ...minted!.payload }]);
+    expect(await outbox.getOutbox(minted!.clientMutationId)).toBeUndefined();
+    expect(await outbox.getOutbox(predecessor.clientMutationId)).toMatchObject({ state: "superseded" });
+    outbox.close();
+  });
+
   test("lost responses retain submitting and reconnect retries the same clientMutationId", async () => {
     const indexedDB = new IDBFactory();
     const outbox = storage(indexedDB, "lost-response", ["mutation-a"]);
@@ -646,12 +695,15 @@ describe("MutationDispatcher", () => {
     expect(causes.at(-1)).toEqual({ kind: "transientRefusal", projectedShapeUnchanged: false });
   });
 
-  // Live reconciliation reopens unresolved records without changing their
-  // payloads. The daemon's durable journal and original instance fence own
-  // replay safety; omission from the snapshot does not prove non-delivery.
-  test("restoreProvenAbsent returns a blocked head to submitting and the next dispatch drains it", async () => {
+  // Live reconciliation never re-enables a parked row: an innocent blocked
+  // head settles terminal "superseded" (its id and attempt evidence kept for
+  // the receipt a real in-flight attempt can still bring) and the work is
+  // re-queued as a FRESH row at the ref's tail, under the predecessor's wire
+  // id. The daemon's durable journal and original instance fence own replay
+  // safety; omission from the snapshot does not prove non-delivery.
+  test("restoreProvenAbsent re-queues a blocked head as a fresh tail row and the next dispatch drains the ref", async () => {
     const indexedDB = new IDBFactory();
-    const outbox = storage(indexedDB, "restore-absent", ["mutation-a", "mutation-b"]);
+    const outbox = storage(indexedDB, "restore-absent", ["mutation-a", "mutation-b", "mutation-c"]);
     const first = await outbox.enqueueIntent(queueIntent("ref-a", "first"));
     const second = await outbox.enqueueIntent(queueIntent("ref-a", "second"));
     const changes: string[][] = [];
@@ -680,15 +732,31 @@ describe("MutationDispatcher", () => {
 
     await dispatcher.restoreProvenAbsent("ref-a", new Set());
     expect(changes).toContainEqual(["ref-a"]);
-    expect(await outbox.getOutbox(first.clientMutationId)).toMatchObject({ state: "submitting" });
+    // The old row settles terminal; the fresh row is submitting at the tail,
+    // re-submitting under the predecessor's wire id.
+    expect(await outbox.getOutbox(first.clientMutationId)).toMatchObject({
+      state: "superseded",
+      attempted: true,
+    });
+    const rows = await outbox.listOutbox("ref-a");
+    const fresh = rows.find(
+      (row) => row.clientMutationId !== first.clientMutationId && row.clientMutationId !== second.clientMutationId,
+    );
+    expect(fresh).toMatchObject({ state: "submitting", attempted: false });
+    expect(fresh?.payload.clientMutationId).toBe(first.clientMutationId);
+    expect(fresh?.intentSequence).toBeGreaterThan(second.intentSequence);
 
     await dispatcher.dispatchTargets(["ref-a"]);
+    // The tail mint visibly re-queues: the second row (born ahead of the
+    // parked head) dispatches first, then the fresh row under the inherited
+    // wire id. The superseded row is never dispatched again.
     expect(queueCalls(client).map((params) => params.clientMutationId)).toEqual([
       first.clientMutationId,
-      first.clientMutationId,
       second.clientMutationId,
+      first.clientMutationId,
     ]);
-    expect(await outbox.getOutbox(first.clientMutationId)).toBeUndefined();
+    expect(await outbox.getOutbox(first.clientMutationId)).toMatchObject({ state: "superseded" });
+    expect(await outbox.getOutbox(fresh?.clientMutationId ?? "")).toBeUndefined();
     expect(await outbox.getOutbox(second.clientMutationId)).toBeUndefined();
   });
 
@@ -1127,7 +1195,12 @@ test("a client replacement during attempt commit retains evidence and recovers t
   const writer = new MutationOutboxIndexedDB({
     indexedDB,
     databaseName: "rewire-attempt-evidence",
-    createMutationId: () => "mutation-a",
+    // The reconcile's re-queue mints a fresh row, so the storage needs a
+    // second id beyond the original enqueue's.
+    createMutationId: (() => {
+      let minted = 0;
+      return () => (minted++ === 0 ? "mutation-a" : "mutation-b");
+    })(),
     beforeCommit: (operation) => {
       if (operation === "markAttempted") current = replacement;
     },
@@ -1155,7 +1228,14 @@ test("a client replacement during attempt commit retains evidence and recovers t
   await dispatcher.dispatchTargets([record.targetRef]);
 
   expect(replacement.calls).toEqual([{ method: "turn/queue", params: record.payload }]);
-  expect(await inspector.getOutbox(record.clientMutationId)).toBeUndefined();
+  // The replayed receipt settles the FRESH row; the superseded predecessor
+  // keeps its id and evidence, waiting on the real in-flight attempt's own
+  // settlement exactly as before.
+  expect(await inspector.getOutbox(record.clientMutationId)).toMatchObject({
+    state: "superseded",
+    attempted: true,
+  });
+  expect(await inspector.listOutbox(record.targetRef)).toHaveLength(1);
   inspector.close();
   writer.close();
 });

@@ -214,6 +214,11 @@ function outboxEntry(
 ): PendingTurnEntry | undefined {
   const method = composerVerb(record.method);
   if (!method) return undefined;
+  // A superseded row is settled terminal work: its send lives in the fresh
+  // row a mint or reconcile queued (which projects on its own), so the dead
+  // predecessor leaves every pending surface - it is not a pending entry in
+  // any state.
+  if (record.state === "superseded") return undefined;
   const preview = inputPreview(outboxInput(record));
   const queueEntryId = method === "promote" ? record.payload.expectedEntryId : undefined;
   const queueRevision = method === "drain" ? record.payload.expectedQueueRevision : undefined;

@@ -91,3 +91,33 @@ test.each(["turn/start", "turn/steer"])("allows unattempted and canceled %s comp
     expect(canRemoveQueuedMessage(record)).toBe(true);
   }
 });
+
+// RoboRev round-2 H2: an inherited wire identity IS uncertainty. A
+// replacement minted from delivery-uncertain work carries its predecessor's
+// id inside the payload while owning a fresh storage key - the predecessor's
+// attempt may already be delivered, so editing the replacement into a
+// recovery and re-sending would put the composition under a NEW wire id the
+// daemon's journal has never seen, and the replay dedup would not apply: the
+// send could double-apply. Such a row is Retry-only - the mint re-queues it
+// under the SAME inherited id. Ordinary rows (an enqueue's own id inside its
+// payload - every row a host without the mint ever writes, native's
+// included) carry no inherited id, so the term never fires for them.
+test("a replacement carrying an inherited wire id is retry-only, never editable or removable", () => {
+  const input = [{ type: "text" as const, text: "queued input" }];
+  const inheritedReplacement = queuedRecord("turn/start", {
+    state: "canceled",
+    clientMutationId: "mutation-fresh",
+    payload: { ref: "local:thread-1", clientMutationId: "mutation-inherited", input },
+  });
+  expect(canEditQueuedMessage(inheritedReplacement)).toBe(false);
+  expect(canRemoveQueuedMessage(inheritedReplacement)).toBe(false);
+  // The no-op pin: a row whose payload id is its own key keeps its
+  // eligibility - this is every row native ever writes.
+  const ordinaryRow = queuedRecord("turn/start", {
+    state: "canceled",
+    clientMutationId: "mutation-own",
+    payload: { ref: "local:thread-1", clientMutationId: "mutation-own", input },
+  });
+  expect(canEditQueuedMessage(ordinaryRow)).toBe(true);
+  expect(canRemoveQueuedMessage(ordinaryRow)).toBe(true);
+});

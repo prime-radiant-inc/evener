@@ -126,8 +126,10 @@ import {
   type MutationOutboxRecord,
   type MutationRecoveryRecord,
   type MutationStopBarrier,
+  type MutationStopCapture,
 } from "./mutationOutbox";
 import {
+  type DisplayedRecoveryStopCapture,
   MutationOutboxIndexedDB,
   type MutationRecoveryResendResult,
   type RetargetedMutations,
@@ -2091,10 +2093,15 @@ async function refreshMutationPins(runtime: MutationRuntime, targetRefs: Iterabl
     // predates it: discard rather than replace the commit's own ids.
     if ((mutationStateGenerations.get(targetRef) ?? 0) !== generation) continue;
     // A successful read is the authoritative snapshot: the ref's ids are
-    // exactly the non-canceled rows this read observed.
+    // exactly the rows with live work this read observed. A superseded row is
+    // terminal dead work - its send lives in the fresh row a mint queued,
+    // which the snapshot registers on its own - so it must not keep the
+    // fallback refused the way a canceled row never does either.
     replaceUndeliveredMutations(
       targetRef,
-      outbox.filter((record) => record.state !== "canceled").map((record) => record.clientMutationId),
+      outbox
+        .filter((record) => record.state !== "canceled" && record.state !== "superseded")
+        .map((record) => record.clientMutationId),
     );
     if (outbox.length > 0) {
       pinMutationRef(targetRef);
@@ -2135,9 +2142,12 @@ async function refreshMutationPinAfterRemoval(runtime: MutationRuntime, targetRe
   if (!isCurrentMutationRuntime(runtime)) return;
   // As in refreshMutationPins: a commit since the read began outranks it.
   if ((mutationStateGenerations.get(targetRef) ?? 0) !== generation) return;
+  // As above, a superseded row is terminal dead work: only live rows count.
   replaceUndeliveredMutations(
     targetRef,
-    outbox.filter((record) => record.state !== "canceled").map((record) => record.clientMutationId),
+    outbox
+      .filter((record) => record.state !== "canceled" && record.state !== "superseded")
+      .map((record) => record.clientMutationId),
   );
   if (outbox.length > 0 || optimistic.length > 0) {
     pinMutationRef(targetRef);
@@ -2973,23 +2983,28 @@ export async function retryBlockedMutation(
   mode: "user" | "backgroundNote" = "user",
 ): Promise<boolean> {
   const runtime = requireMutationRuntime();
-  // §4's stop barrier on the release path, the click-time capture: REQUESTED
+  // §4's stop barrier on the Retry path, the click-time capture: REQUESTED
   // here, inside the click's own synchronous prefix, before `await
   // runtime.start` and every other wait in the retry chain — the enqueue
   // barrier's own rule. The ref is unknown until the row is read, so the
-  // capture rides that read: one readonly transaction carries the row AND the
-  // ref's stop epoch, making it the click's first storage observation (on a
-  // cold connection the request itself issues the open). A Stop whose cancel
-  // transaction commits after that snapshot bumps the epoch past the capture,
-  // and the release below refuses — a newer Stop outranks an earlier Retry,
-  // the same commit-order comparison the enqueue barrier carries. A Stop
-  // committed before the capture read's transaction can exist is the bounded
-  // residual §4 states for the enqueue, and for the same reason: the
-  // deliberate post-Stop Retry §9 item 7 protects is indistinguishable from
-  // it in the database.
+  // capture rides that read: one readonly transaction carries the row AND
+  // both stop epochs it crosses, making it the click's first storage
+  // observation (on a cold connection the request itself issues the open).
+  // A Stop whose cancel transaction commits after that snapshot bumps an
+  // epoch past its capture half, and the mint below answers it the way the
+  // enqueue barrier does — the fresh row commits born-canceled, never
+  // dispatching past the newer Stop. A Stop committed before the capture
+  // read's transaction can exist is the bounded residual §4 states for the
+  // enqueue, and for the same reason: the deliberate post-Stop Retry §9 item
+  // 7 protects is indistinguishable from it in the database.
   const captureRead = runtime.storage.getOutboxWithStopEpoch(clientMutationId);
   await runtime.start;
-  const { record, stopEpoch } = await captureRead;
+  // The capture is the click's PAIR: the row's destination epoch and, for a
+  // retargeted resend, the still-displayed ref's. A Stop on either ref that
+  // commits after this snapshot and before the release write below compares
+  // newer against its half and the release refuses - the same commit-order
+  // comparison the enqueue barrier carries, now on both refs the row crosses.
+  const { record, stopEpoch, displayedStopEpoch } = await captureRead;
   if (record?.state !== "blockedUnknown" && record?.state !== "canceled") return false;
   // Only an explicit user Retry releases a canceled row (the one reversal the
   // design allows); background retry modes exist for delivery-uncertain rows
@@ -3036,23 +3051,27 @@ export async function retryBlockedMutation(
   if (!client) return false;
   const epoch = dispatchReadyEpoch;
   if (record.state === "canceled") {
-    // The release is durable before any dispatch. A canceled row provably
+    // The mint is durable before any dispatch. A canceled row provably
     // never reached the daemon, so it needs no reconciliation to prove
-    // absence — release, then let the same fenced resync-and-dispatch tail
-    // every user retry uses carry it out. The barrier is the click-time
-    // capture above: a Stop that landed between the capture and this release
-    // outranks the Retry, and the refused release leaves the row canceled
-    // for it — the release returning false is this press's refusal.
-    // Registered around the write: the reopened row is undelivered work, and a
+    // absence — mint, then let the same fenced resync-and-dispatch tail
+    // every user retry uses carry the fresh row out. The mint never reopens
+    // the old row: it removes it (§6's removal on explicit Retry, so its
+    // chip leaves the canceled strip and a second press cannot mint the
+    // same send twice) and queues a FRESH row at the ref's tail, fenced at
+    // birth — a Stop that landed between the capture and this mint
+    // outranks the Retry and the fresh row commits born-canceled for it.
+    // The identity check is the capture's: a row whose durable destination
+    // or instance no longer matches the press refuses, and the mint
+    // returning undefined is this press's refusal.
+    // Registered around the write: the minted row is undelivered work, and a
     // fallback send must see it before the async refresh can.
-    const released = await trackOutboxWrite(
+    const minted = await trackOutboxWrite(
       record.targetRef,
-      () => runtime.storage.releaseCanceled(clientMutationId, { stopEpoch }),
-      // The released row keeps the id it is reopened under, and is undelivered
-      // work: it is reopened for a fresh dispatch.
-      (didRelease) => (didRelease ? { clientMutationId, undelivered: true } : undefined),
+      () => runtime.storage.mintRetryFromRow(clientMutationId, { record, stopEpoch, displayedStopEpoch }),
+      (fresh) =>
+        fresh ? { clientMutationId: fresh.clientMutationId, undelivered: fresh.state !== "canceled" } : undefined,
     );
-    if (!released) return false;
+    if (!minted) return false;
     notifyMutationPersistence([record.targetRef]);
   }
   // Shared storage can become blocked after this tab's authoritative snapshot.
@@ -3070,6 +3089,41 @@ export async function retryBlockedMutation(
   );
   if (!isCurrentMutationRuntime(runtime) || currentDispatchClient() !== client || dispatchReadyEpoch !== epoch)
     return false;
+  // A blockedUnknown row that is STILL parked after the reconciliation above is
+  // one the crossed-Stop fence held - no automatic path may re-queue it, and
+  // the user's Retry click is the one authorization that can. It runs after
+  // the resync deliberately: an innocent parked row is re-queued by that
+  // fresh authoritative read itself (the reconcile mints it a fresh row,
+  // barrier-free like §4's recovery resends), and the crossed row's own
+  // read may still settle it by receipt. Only the still-parked row mints:
+  // the old row settles terminal "superseded" - never dispatched again, its
+  // id and attempt evidence kept so a receipt or in-band refusal from the
+  // real in-flight attempt still settles it exactly as before - and the
+  // FRESH row inherits the predecessor's wire id (the daemon journals this
+  // composition under it; a re-submission replays the first attempt's
+  // receipt instead of double-applying), queues at the ref's tail, and is
+  // fenced at birth: a Stop that landed inside the capture-to-mint window
+  // makes it born-canceled rather than absorbed. A refused mint (the row's
+  // durable destination or instance no longer matches the press) falls
+  // through to the decision read below - the row it left parked reports
+  // itself. Background retry modes never take this branch.
+  if (record.state === "blockedUnknown" && mode === "user") {
+    const stillParked = await runtime.storage.getOutbox(clientMutationId);
+    if (stillParked?.state === "blockedUnknown") {
+      const minted = await trackOutboxWrite(
+        record.targetRef,
+        () => runtime.storage.mintRetryFromRow(clientMutationId, { record, stopEpoch, displayedStopEpoch }),
+        (fresh) =>
+          fresh ? { clientMutationId: fresh.clientMutationId, undelivered: fresh.state !== "canceled" } : undefined,
+      );
+      if (minted) {
+        notifyMutationPersistence([record.targetRef]);
+        // The resync-and-dispatch tail above already ran its dispatch pass, so
+        // the fresh row drives its own - the same kick a resend gives it.
+        handleDiscoveredMutations(runtime, [record.targetRef]);
+      }
+    }
+  }
   const current = await runtime.storage.getOutbox(clientMutationId);
   return current?.state !== "blockedUnknown" && current?.state !== "canceled";
 }
@@ -3149,6 +3203,24 @@ export function captureRecoveryStopBarrier(targetRef: string): Promise<MutationS
   // Keep that rejection for the sender without an unhandled interim promise.
   void barrier.catch(() => undefined);
   return barrier;
+}
+
+/** A recovery row and its durable destination's Stop epoch, from ONE readonly
+ * storage snapshot. The recovery Send press requests this in its own
+ * synchronous prefix - the Retry path's own capture discipline
+ * (getOutboxWithStopEpoch): the snapshot is the press's first storage
+ * observation, so a Stop pressed while the Send waits on persistence or
+ * destination hydration stays in the fence's future, and a peer retarget that
+ * lands inside those waits cannot move the destination under the press. */
+export function readRecoveryWithStopEpoch(
+  clientMutationId: string,
+  displayedRef?: string,
+): Promise<{ record: MutationRecoveryRecord | undefined; stopEpoch: number; displayedStopEpoch: number }> {
+  const capture = requireMutationRuntime().storage.getRecoveryWithStopEpoch(clientMutationId, displayedRef);
+  // The capture can fail while the Send is still awaiting its recovery write.
+  // Keep that rejection for the sender without an unhandled interim promise.
+  void capture.catch(() => undefined);
+  return capture;
 }
 
 export async function updateRecoveryMutation(
@@ -3244,9 +3316,10 @@ export async function resendRecoveryMutation(
   skillNames?: readonly string[],
   commandNames?: readonly string[],
   mentions?: readonly ComposerMention[],
-  barrierRead = captureRecoveryStopBarrier(targetRef),
+  barrierRead: MutationStopCapture | Promise<MutationStopCapture> = captureRecoveryStopBarrier(targetRef),
   expectedRecoveryRevisions?: Readonly<Record<string, number>>,
   compositionOwnerId?: string,
+  displayedBarrierRead?: DisplayedRecoveryStopCapture | Promise<DisplayedRecoveryStopCapture>,
 ): Promise<MutationRecoveryResendResult> {
   const runtime = requireMutationRuntime();
   await runtime.start;
@@ -3260,6 +3333,10 @@ export async function resendRecoveryMutation(
     compositionOwnerId,
   );
   const barrier = await barrierRead;
+  // The displayed ref's fence, captured at the same press: a Stop on the
+  // still-displayed session cancels this resend exactly like one on the
+  // destination.
+  const displayedBarrier = displayedBarrierRead === undefined ? undefined : await displayedBarrierRead;
   // Registered around the write: the resent row is undelivered work, and a
   // fallback send must see it before the async refresh can.
   const result = await trackOutboxWrite(
@@ -3271,6 +3348,7 @@ export async function resendRecoveryMutation(
         barrier,
         expectedRecoveryRevisions,
         compositionOwnerId,
+        displayedBarrier,
       ),
     (outcome) =>
       outcome.status !== "sent"
@@ -4108,8 +4186,8 @@ function releaseInflightDurableEnqueue(ref: string): void {
   else inflightDurableEnqueues.delete(ref);
 }
 
-// Register an outbox write that can create or reopen a row this tab now owes
-// delivery (resendRecovery, releaseCanceled), not only the send funnel. It is
+// Register an outbox write that can create or re-queue a row this tab now owes
+// delivery (resendRecovery, the Retry mint), not only the send funnel. It is
 // counted in flight for the fallback's concurrent-enqueue guard, and the ref is
 // marked as holding undelivered work when the write commits a row that is not
 // canceled. Without this the guard's in-memory state stays stale-empty until an
