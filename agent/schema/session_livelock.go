@@ -42,13 +42,14 @@ func SessionLivelockPath(dir, id string) string {
 // AcquireSessionLivelock reports not-applied and SessionLivelockHeld reports
 // absent, so callers degrade to "unknown" rather than guessing.
 //
-// One automated use is allowed, and it withholds rather than takes: a HELD
-// livelock stops the prune's orphan arm from releasing a live owner's lane on
-// stale-evidence inactivity — a daemon from before the activity-evidence
+// One automated use is allowed, and it withholds rather than takes: an owner
+// proven live — a HELD livelock, or the liveness oracle's rendezvous
+// evidence where no livelock answers, as for a daemon from before livelock
+// support — stops the prune's orphan arm from releasing a live owner's lane
+// on stale-evidence inactivity: a daemon from before the activity-evidence
 // refresh leaves a live tree's transcript stale for a whole long command's
-// run, and the livelock is the one durable witness against that clock. The
-// opposite direction stays forbidden: a livelock that answers "not held" or
-// "unknown" is not a death verdict, and no automated path may collect,
+// run. The opposite direction stays forbidden: an owner not proven live is
+// not a death verdict, and no automated path may collect,
 // unlock or reclaim a lane because the livelock is absent or unreadable.
 // Everything else is reporting — a prune can REPORT whether a locked
 // delegate lane's owner tree still has a live process, and the manual

@@ -64,12 +64,12 @@ func (s *Session) orphanedDelegateMarker(ctx context.Context, reason string, min
 	}
 	// The cheap activity signal first: a parent whose session directory is
 	// gone, or whose transcript has been inactive past the operator's
-	// threshold, cannot act as the disposer — unless its livelock is held:
-	// the livelock is the one durable witness that a live process owns the
-	// session id, and a daemon from before the evidence refresh leaves a
-	// live tree's transcript stale for a whole long command's run.
+	// threshold, cannot act as the disposer — unless a live process is
+	// proven to host its tree: a daemon from before the evidence refresh
+	// leaves a live tree's transcript stale for a whole long command's run,
+	// so inactivity alone must not release a live owner's lane.
 	if info, err := os.Stat(schema.SessionTranscriptPath(s.stateDir, m.SessionID)); err == nil {
-		if now.Sub(info.ModTime()) >= minInactivity && !s.parentLivelockHeld(m.SessionID) {
+		if now.Sub(info.ModTime()) >= minInactivity && !s.parentProvenLive(m) {
 			return m, orphanedByInactivity, true
 		}
 	} else if os.IsNotExist(err) {
@@ -175,7 +175,7 @@ func (s *Session) releaseOrphanedDelegateMarker(files execenv.FileMutator, laneP
 	}
 	var recheck func() bool
 	if basis == orphanedByInactivity {
-		recheck = func() bool { return s.parentStillInactive(expected.SessionID, minInactivity) }
+		recheck = func() bool { return s.parentStillInactive(expected, minInactivity) }
 	}
 	return s.releaseClaimedLock(files, lanePath, func(contents []byte) bool {
 		return isExpectedDelegateMarker(contents, expected.DelegateID, expected.SessionID)
@@ -184,43 +184,50 @@ func (s *Session) releaseOrphanedDelegateMarker(files execenv.FileMutator, laneP
 
 // parentStillInactive re-verifies, at release time, the inactivity the plan
 // was made on: judged against a fresh clock, the parent's transcript must
-// still be missing or inactive past the threshold. This second stat, taken
-// with the lock held by the claim, is what catches a parent that resumed
-// between the plan and the release; its lock is then put back untouched.
-func (s *Session) parentStillInactive(parentSID string, minInactivity time.Duration) bool {
-	if s.parentLivelockHeld(parentSID) {
+// still be missing or inactive past the threshold, with no live process
+// proven to host its tree. This second look, taken with the lock held by the
+// claim, is what catches a parent that resumed between the plan and the
+// release; its lock is then put back untouched.
+func (s *Session) parentStillInactive(m worktree.Marker, minInactivity time.Duration) bool {
+	if s.parentProvenLive(m) {
 		return false
 	}
-	info, err := os.Stat(schema.SessionTranscriptPath(s.stateDir, parentSID))
+	info, err := os.Stat(schema.SessionTranscriptPath(s.stateDir, m.SessionID))
 	if err != nil {
 		return os.IsNotExist(err)
 	}
 	return time.Since(info.ModTime()) >= minInactivity
 }
 
-// parentLivelockHeld reports whether a live process hosts the lane's parent
-// tree — the one durable witness against the inactivity clock. The marker
-// names the immediate parent, but a subagent never takes a livelock: only
-// the hosting root's process does, so the parent is resolved to its tree
-// root and the root's livelock is probed. A parent whose chain cannot be
-// resolved (a missing meta — the seeded residue shape) keeps its own
-// livelock probed: a root parent's livelock is its own, so a held lock still
-// protects and an absent one never does. Crashes release the flock with the
-// process, so crash residue stays reclaimable; a livelock whose state cannot
-// be read is not a license to release, so it reads as held.
-func (s *Session) parentLivelockHeld(parentSID string) bool {
-	if s == nil || s.stateDir == "" || parentSID == "" {
+// parentProvenLive reports whether a live process is proven to host the
+// lane's parent tree — the durable witness against the inactivity clock. The
+// marker names the immediate parent, but a subagent never takes a livelock:
+// only the hosting root's process does, so the parent is resolved to its
+// tree root and the root's livelock is probed. A parent whose chain cannot
+// be resolved (a missing meta — the seeded residue shape) keeps its own
+// livelock probed: a root parent's livelock is its own. A held livelock is
+// conclusive, and a livelock whose state cannot be read is not a license to
+// release, so it reads as held. Without a held livelock — the flock free, or
+// no file at all: a daemon from before livelock support, or a resumed
+// process that could not take the flock — the liveness oracle's rendezvous
+// evidence is the remaining witness, and an owner it proves live withholds
+// the release too.
+func (s *Session) parentProvenLive(m worktree.Marker) bool {
+	if s == nil || s.stateDir == "" || m.SessionID == "" {
 		return false
 	}
-	owner := parentSID
-	if root, ok := s.sessionTreeRootSID(parentSID); ok {
+	owner := m.SessionID
+	if root, ok := s.sessionTreeRootSID(m.SessionID); ok {
 		owner = root
 	}
 	held, _, err := schema.SessionLivelockHeld(s.stateDir, owner)
 	if err != nil {
 		return true
 	}
-	return held
+	if held {
+		return true
+	}
+	return s.delegateLaneOwnerLiveness(m) == ownerLive
 }
 
 // restoreOrphanedDelegateMarker puts the marker back after a release whose
