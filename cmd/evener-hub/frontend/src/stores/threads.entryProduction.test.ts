@@ -4060,24 +4060,43 @@ it("a reconnect heal racing a pending recovery read still converges the display"
   expect(texts()).toHaveLength(0);
 
   // Two withheld reads arm the chain; its own attempt parks on a held read.
+  // Keep IndexedDB's scheduling real, but own the lookup/retry deadlines so
+  // a slow cache cannot expire the recovery's local open behind a reconnect.
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  const firstReadEntered = deferred<void>();
+  const secondReadEntered = deferred<void>();
+  const retryReadEntered = deferred<void>();
+  const localPublished = deferred<void>();
+  const chainReadFinished = deferred<void>();
+  const unsubscribe = threadsStore.subscribe(() => {
+    if (texts().length === 200) localPublished.resolve();
+  });
   let withheldWindowReads = 0;
   let laterWindowReads = 0;
   let holdChainRead = false;
+  let chainReadCompleted = false;
   const chainReadEntered = deferred<void>();
   const chainReadReleased = deferred<void>();
+  const reconnectReleased = deferred<void>();
   (storage as unknown as { getLatestWindow: unknown }).getLatestWindow = (...args: unknown[]) => {
     if (withheldWindowReads > 0) {
       withheldWindowReads -= 1;
+      (withheldWindowReads === 1 ? firstReadEntered : secondReadEntered).resolve();
       return new Promise(() => {}) as ReturnType<typeof realGetLatestWindow>;
     }
     if (holdChainRead) {
       holdChainRead = false;
       chainReadEntered.resolve();
-      return chainReadReleased.promise.then(() =>
-        realGetLatestWindow(...(args as Parameters<typeof realGetLatestWindow>)),
-      ) as ReturnType<typeof realGetLatestWindow>;
+      return chainReadReleased.promise
+        .then(() => realGetLatestWindow(...(args as Parameters<typeof realGetLatestWindow>)))
+        .then((result) => {
+          chainReadCompleted = true;
+          chainReadFinished.resolve();
+          return result;
+        }) as ReturnType<typeof realGetLatestWindow>;
     }
     laterWindowReads += 1;
+    retryReadEntered.resolve();
     return realGetLatestWindow(...(args as Parameters<typeof realGetLatestWindow>)) as ReturnType<
       typeof realGetLatestWindow
     >;
@@ -4085,32 +4104,68 @@ it("a reconnect heal racing a pending recovery read still converges the display"
   withheldWindowReads = 2;
   holdChainRead = true;
   setSessionCacheStalledOpenForTests(250);
-  setSessionCacheOpenBackstopForTests(40);
+  setSessionCacheOpenBackstopForTests(250);
   try {
-    await threadsStore.getState().ensureThread(ref);
+    const opening = threadsStore.getState().ensureThread(ref);
+    await firstReadEntered.promise;
+    await vi.advanceTimersByTimeAsync(250);
+    await secondReadEntered.promise;
+    await vi.advanceTimersByTimeAsync(250);
+    await opening;
     await chainReadEntered.promise;
-    // A reconnect whose reply carries the pane's own generation heals the
-    // display through the tracked hydration while the recovery's cache read
-    // is still pending — a read, not recorded input, so the pending attempt's
-    // timeout may still reclaim the repository behind it.
-    const second = connect(read);
-    second.on("thread/read", (params) => ({ ...read, requestGeneration: params.requestGeneration }));
-    await vi.waitFor(() => expect(texts()).toHaveLength(200));
-    // Let the parked attempt's window expire: the timeout disposes the shared
-    // reader, the repository reclaims its bodies without publishing, and the
-    // store keeps showing the healed window the repository no longer backs.
-    await new Promise((resolve) => setTimeout(resolve, 400));
-    await drainSettleSteps();
-    // The parked read's deadline disposed the shared reader, and the
-    // repository reclaimed its bodies behind the still-healed store display —
-    // the mid-chain guard must not end recovery on that snapshot: the chain's
-    // own paced retry re-opens from storage and converges the recorded window.
-    await vi.waitFor(() => expect(laterWindowReads).toBe(1));
+    const heldReader = productionEntryTranscriptForTests(ref)?.reader;
+    if (!heldReader) throw new Error("missing recovery reader");
+    const dispose = vi.spyOn(heldReader, "dispose");
+    // Install the handler before connect issues its read, so the reply echoes
+    // that request's generation. Hold this same reply until the local retry
+    // publishes, rather than letting a complete source window bypass recovery.
+    const second = new FakeClient("ready");
+    second.on("thread/read", async (params) => {
+      await reconnectReleased.promise;
+      return { ...read, requestGeneration: params.requestGeneration };
+    });
+    second.on("thread/unsubscribe", () => ({}));
+    connectionStore.getState().connect(second);
+    expect(second.calls.filter((call) => call.method === "thread/read")).toHaveLength(1);
+    await vi.advanceTimersByTimeAsync(249);
+    expect(dispose).not.toHaveBeenCalled();
+    expect(chainReadCompleted).toBe(false);
+    expect(laterWindowReads).toBe(0);
+    expect(texts()).toHaveLength(0);
+    // The real deadline, not a released cache response, disposes the parked
+    // reader and starts the chain's retry. Freeze there until real IDB and
+    // the tracked recovery publish the 200-row local window.
+    await vi.advanceTimersByTimeAsync(1);
+    await retryReadEntered.promise;
+    expect(dispose).toHaveBeenCalledTimes(1);
+    expect(chainReadCompleted).toBe(false);
+    expect(laterWindowReads).toBe(1);
+    await localPublished.promise;
+    expect(texts()).toHaveLength(200);
+    expect(texts()[0]).toBe("row-26");
+    expect(texts().at(-1)).toBe("row-225");
     chainReadReleased.resolve();
-    await vi.waitFor(() => expect(threadsStore.getState().threads.get(ref)?.olderCursor).toBeDefined());
-    // A later accepted update republishes through the repository: the re-opened
-    // range keeps its deep bodies, and the pane loses no transcript content.
-    const repopulated = rows.slice(-5).flatMap((turn) => (turn.items ?? []).map((item) => ({ ...item, version: 2 })));
+    await chainReadFinished.promise;
+    expect(threadsStore.getState().threads.get(ref)?.olderCursor).toBeDefined();
+    reconnectReleased.resolve();
+    await settleEntryTranscriptForTests(ref);
+    expect(second.calls.filter((call) => call.method === "thread/read")).toHaveLength(1);
+    const displayedItem = (id: string) =>
+      threadsStore
+        .getState()
+        .threads.get(ref)
+        ?.turns.flatMap((turn) => turn.items)
+        .find((item) => item.id === id);
+    expect(displayedItem("row-224")).toMatchObject({ version: 1, text: "row-224" });
+    // The correctly healed baseline must accept this update, not merely keep
+    // displaying old bodies when the repository rejects input on an invalid baseline.
+    const repopulated = rows.slice(-5).flatMap((turn) =>
+      (turn.items ?? []).map((item) => ({
+        ...item,
+        version: 2,
+        text: item.id === "row-224" ? "updated-row-224" : item.text,
+      })),
+    );
     second.emitNotification({
       method: "history/updated",
       params: {
@@ -4122,12 +4177,18 @@ it("a reconnect heal racing a pending recovery read still converges the display"
         items: repopulated,
       },
     });
-    await vi.waitFor(() => expect(texts()).toContain("row-26"));
+    await settleEntryTranscriptForTests(ref);
+    expect(displayedItem("row-224")).toMatchObject({ version: 2, text: "updated-row-224" });
+    expect(displayedItem("row-225")?.version).toBe(2);
+    expect(texts()).toContain("row-26");
     expect(texts()).toContain("row-225");
   } finally {
+    unsubscribe();
+    vi.useRealTimers();
     setSessionCacheOpenBackstopForTests(10000);
     setSessionCacheStalledOpenForTests(5000);
     chainReadReleased.resolve();
+    reconnectReleased.resolve();
     threadsStore.getState().releaseThread(ref);
     await lease.release();
   }

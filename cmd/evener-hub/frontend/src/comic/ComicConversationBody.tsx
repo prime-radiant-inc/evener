@@ -9,6 +9,7 @@ import { navigate, paneToURL } from "../shell/routing";
 import { cadenceStateFor } from "../shell/sessionStatus";
 import { useIsMobile } from "../shell/useIsMobile";
 import { useThreadsStore } from "../stores/threads";
+import { TranscriptRenderProvider } from "../transcriptDisplay/renderContext";
 import { Cadence, InlineNotice, Select } from "../widgets";
 import { ComicComposer } from "./ComicComposer";
 import { ComicInteractions } from "./ComicInteractions";
@@ -81,32 +82,34 @@ export function ComicConversationBody({
                     : "Comic Sans could not load. The conversation remains available in the fallback font."}
                 </InlineNotice>
               )}
-              <ComicSessionContent
-                sessionRef={ref}
-                model={model}
-                history={history}
-                reader={reader}
-                keyboardScrollPaneId={seat.keyboardScrollPaneId}
-                mode={mode}
-                appearanceView={
-                  <label htmlFor={viewId}>
-                    View
-                    <Select
-                      id={viewId}
-                      value={mode}
-                      options={[
-                        { value: "comic", label: "Comic" },
-                        { value: "plain", label: "Plain" },
-                      ]}
-                      onChange={(event) => setMode(event.target.value as "comic" | "plain")}
-                    />
-                  </label>
-                }
-                onOpen={(target) => {
-                  const url = paneToURL("session", { ref: target });
-                  if (url !== null) navigate(url);
-                }}
-              />
+              <TranscriptRenderProvider sourcePaneId={seat.viewFallbackId}>
+                <ComicSessionContent
+                  sessionRef={ref}
+                  model={model}
+                  history={history}
+                  reader={reader}
+                  keyboardScrollPaneId={seat.keyboardScrollPaneId}
+                  mode={mode}
+                  appearanceView={
+                    <label htmlFor={viewId}>
+                      View
+                      <Select
+                        id={viewId}
+                        value={mode}
+                        options={[
+                          { value: "comic", label: "Comic" },
+                          { value: "plain", label: "Plain" },
+                        ]}
+                        onChange={(event) => setMode(event.target.value as "comic" | "plain")}
+                      />
+                    </label>
+                  }
+                  onOpen={(target) => {
+                    const url = paneToURL("session", { ref: target });
+                    if (url !== null) navigate(url);
+                  }}
+                />
+              </TranscriptRenderProvider>
               <ComicInteractions sessionRef={ref} paneId={seat.viewFallbackId} />
             </div>
           ),

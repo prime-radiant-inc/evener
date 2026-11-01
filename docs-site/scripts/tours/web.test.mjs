@@ -8,6 +8,21 @@ import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
 
+test('new session activates the rail control when the workspace also offers launch',async()=>{
+ const browser=await chromium.launch({headless:true});
+ try {
+  const page=await browser.newPage();
+  await page.setContent('<div data-testid="rail"><button>+ New session</button></div><main data-testid="workspace-host"><button>New session</button></main>');
+  await page.evaluate(()=>{
+   window.activations=[];
+   document.addEventListener('click',event=>window.activations.push({rail:Boolean(event.target.closest('[data-testid="rail"]')),trusted:event.isTrusted}));
+  });
+  assert.equal(await page.getByRole('button',{name:/^(?:\+ )?New session$/}).count(),2);
+  await web.newSessionButton(page).click();
+  assert.deepEqual(await page.evaluate(()=>window.activations),[{rail:true,trusted:true}]);
+ } finally {await browser.close();}
+});
+
 test('real browser launch failure retains private diagnostics without leaking driver inputs',async t=>{
  const root=await mkdtemp(join(tmpdir(),'tour-launch-failure-'));
  t.after(()=>rm(root,{recursive:true,force:true}));

@@ -380,6 +380,14 @@ func (m *hubHostManager) persistHosts(entries, known []hostreg.Host, change host
 	return nil
 }
 
+// persistChange writes change against the live set as the store holds it now,
+// for the callers whose entries are neither edited nor staged. The caller holds
+// the mutation lock.
+func (m *hubHostManager) persistChange(change hostPersistChange) error {
+	entries := m.cfg.store.snapshot()
+	return m.persistHosts(entries, entries, change)
+}
+
 // adoptSpentCounters raises the manager's marks for names with no live record to what the
 // store holds after a refused commit restored its prior family: the counters the
 // refused attempt spent stay spent in the store (keepSpentCounters), and the next

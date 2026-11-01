@@ -1,6 +1,8 @@
 import { ImageGallery } from "../panes/session/transcript/flow/ImageGallery";
+import { ComicMarkdown } from "./ComicMarkdown";
 import styles from "./comic.module.css";
 import type { ComicComposition, ComicSlice } from "./layout";
+import type { ComicMarkdownDocument, ComicMarkdownPart } from "./markdown";
 import type { ComicEntry } from "./projection";
 
 export type ComicScene = "room" | "field" | "white";
@@ -19,12 +21,16 @@ export function ComicPanel({
   entry,
   slice,
   composition,
+  document,
+  part,
   scene,
   expression,
 }: {
   entry: ComicEntry;
   slice: ComicSlice;
   composition: ComicComposition;
+  document: ComicMarkdownDocument;
+  part: ComicMarkdownPart;
   scene: ComicScene;
   expression: ComicExpression;
 }): React.ReactElement {
@@ -33,7 +39,7 @@ export function ComicPanel({
   const continuation = slice.start > 0;
   const spoken = entry.kind === "dialogue" || entry.kind === "thought";
   const source = entry.kind === "caption" || entry.kind === "images";
-  const text = entry.text.slice(slice.start, slice.end);
+  const insert = composition === "insert";
   const author = entry.persona
     ? `${entry.persona.name} · ${entry.persona.badge}${entry.persona.ownerRef ? ` · ${entry.persona.ownerRef}` : ""}`
     : entry.sourceLabel;
@@ -43,6 +49,7 @@ export function ComicPanel({
     <article
       className={[
         styles.panel,
+        insert ? styles.insert : "",
         composition === "spotlight" ? styles.spotlight : "",
         continuation ? styles.continuation : "",
       ]
@@ -69,7 +76,8 @@ export function ComicPanel({
           {"sourceTurnId" in entry && entry.sourceTurnId && <> · {entry.sourceTurnId}</>}
         </div>
       )}
-      {entry.kind !== "images" && (
+      {insert && <ComicMarkdown document={document} part={part} />}
+      {!insert && entry.kind !== "images" && (
         <div
           className={[
             styles.balloon,
@@ -80,9 +88,7 @@ export function ComicPanel({
             .join(" ")}
           data-comic-balloon={entry.kind === "thought" ? "thought" : spoken ? "speech" : "caption"}
         >
-          <p className={styles.balloonText} data-comic-text="">
-            {text}
-          </p>
+          <ComicMarkdown document={document} part={part} />
           {entry.kind === "thought" && (
             <span className={styles.thoughtTrail} data-comic-thought-trail="" aria-hidden="true">
               <span />
@@ -96,9 +102,11 @@ export function ComicPanel({
           <ImageGallery images={entry.images} />
         </div>
       )}
-      <div className={styles.stage} data-comic-scene={scene} aria-hidden="true">
-        {character && <img className={styles.figure} src={`${ART}${character}-${pose}.png`} alt="" />}
-      </div>
+      {!insert && (
+        <div className={styles.stage} data-comic-scene={scene} aria-hidden="true">
+          {character && <img className={styles.figure} src={`${ART}${character}-${pose}.png`} alt="" />}
+        </div>
+      )}
     </article>
   );
 }

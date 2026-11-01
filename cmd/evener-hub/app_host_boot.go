@@ -505,8 +505,7 @@ func (m *hubHostManager) reconcileStoreSyncIntents() {
 			m.logf("boot store-sync intent for %q not applied: %v", name, err)
 			continue
 		}
-		entries := m.cfg.store.snapshot()
-		if err := m.persistHosts(entries, entries, hostPersistChange{dropStoreSync: name}); err != nil {
+		if err := m.persistChange(hostPersistChange{dropStoreSync: name}); err != nil {
 			m.logf("boot store-sync intent for %q not cleared: %v", name, err)
 			continue
 		}

@@ -41,7 +41,11 @@ describe.each(["dialogue", "thought"] as const)("%s partition", (kind) => {
         expect(boundaries.has(part.start)).toBe(true);
         expect(boundaries.has(part.end)).toBe(true);
       }
-      const rows = composeComicRows([entry(`item-${kind}`, kind, original)], 760, (text) => text.length <= 13);
+      const rows = composeComicRows(
+        [entry(`item-${kind}`, kind, original)],
+        760,
+        (_document, part) => part.input.length <= 13,
+      );
       expect(rows.every((row) => row.panels.length === 1)).toBe(true);
       expect(
         rows.flatMap((row) => row.panels.map(({ slice }) => original.slice(slice.start, slice.end))).join(""),
@@ -74,7 +78,11 @@ test("pairs only adjacent single-slice dialogue within a strip", () => {
     entry("long", "dialogue", "abcdefghij"),
     entry("after", "dialogue", "Yes."),
   ];
-  const rows = composeComicRows(entries, 1100, (text, composition) => composition !== "paired" || text.length <= 6);
+  const rows = composeComicRows(
+    entries,
+    1100,
+    (_document, part, composition) => composition !== "paired" || part.input.length <= 6,
+  );
   expect(rows.map((row) => row.panels.map((panel) => panel.slice.entryId))).toEqual([
     ["a", "b"],
     ["c"],
@@ -86,6 +94,13 @@ test("pairs only adjacent single-slice dialogue within a strip", () => {
   expect(composeComicRows(entries, 760, () => true).every((row) => row.panels.length === 1)).toBe(true);
 });
 
+test("pairs two short dialogues above the one-column boundary and keeps a lone dialogue single", () => {
+  const entries = [entry("a", "dialogue", "Hello."), entry("b", "dialogue", "Hi.")];
+  expect(composeComicRows(entries, 761, () => true).map((row) => row.panels.length)).toEqual([2]);
+  expect(composeComicRows(entries.slice(0, 1), 1360, () => true).map((row) => row.panels.length)).toEqual([1]);
+  expect(composeComicRows(entries, 390, () => true).map((row) => row.panels.length)).toEqual([1, 1]);
+});
+
 test("a continuation is wide and a spotlight is settled short dialogue only", () => {
   const entries = [
     entry("first", "dialogue", "x".repeat(85)),
@@ -93,7 +108,7 @@ test("a continuation is wide and a spotlight is settled short dialogue only", ()
     entry("stream", "dialogue", "Working"),
   ];
   entries[2] = { ...entries[2], streaming: true } as ComicEntry;
-  const rows = composeComicRows(entries, 1200, (text) => text.length <= 30);
+  const rows = composeComicRows(entries, 1200, (_document, part) => part.input.length <= 30);
   expect(rows.map((row) => row.panels.map((p) => [p.slice.entryId, p.composition]))).toEqual([
     [["first", "wide"]],
     [["first", "wide"]],
@@ -121,4 +136,66 @@ test("a short image-bearing dialogue never becomes a spotlight", () => {
     images: [{ src: "data:image/png;base64,iVBORw0KGgo=", name: "photo.png" }],
   };
   expect(composeComicRows([mixed], 1200, () => true)[0]?.panels[0]?.composition).toBe("wide");
+});
+
+test("single-prose eligibility gates compact fit calls without limiting pair length", () => {
+  for (const value of [
+    entry("empty", "dialogue", ""),
+    entry("thought", "thought", "x"),
+    { ...entry("stream", "dialogue", "x"), streaming: true },
+    { ...entry("image", "dialogue", "x"), images: [{ src: "fixture.png", name: "fixture.png" }] },
+    entry("insert", "dialogue", "```txt\nx\n```"),
+    entry("mixed", "dialogue", "x\n\n```txt\ny\n```"),
+    entry("long", "dialogue", "x".repeat(81)),
+  ]) {
+    const calls: string[] = [];
+    composeComicRows([value], 1200, (_document, _part, composition) => {
+      calls.push(composition);
+      return true;
+    });
+    expect(calls.filter((composition) => composition === "paired" || composition === "spotlight")).toEqual([]);
+  }
+  const calls: string[] = [];
+  const fit = (_document: unknown, _part: unknown, composition: string) => {
+    calls.push(composition);
+    return true;
+  };
+  expect(composeComicRows([entry("limit", "dialogue", "x".repeat(80))], 1200, fit)[0]?.panels[0]?.composition).toBe(
+    "spotlight",
+  );
+  expect(calls.every((composition) => composition === "spotlight")).toBe(true);
+  calls.length = 0;
+  const rows = composeComicRows([entry("long", "dialogue", "x".repeat(81)), entry("next", "dialogue", "y")], 1200, fit);
+  expect(rows.map((row) => row.panels.length)).toEqual([2]);
+  expect(calls).toEqual(["paired", "paired"]);
+});
+
+test("formatted continuations break between blocks, not inside emphasis or references", () => {
+  const source = "# Heading\n\n**A long intact emphasis**\n\n[link][ref]\n\n[ref]: https://example.com";
+  const rows = composeComicRows(
+    [entry("formatted", "dialogue", source)],
+    390,
+    (_document, part) => part.input.length < 25,
+  );
+  const panels = rows.flatMap((row) => row.panels);
+  expect(panels).toHaveLength(3);
+  expect(panels.map(({ slice }) => source.slice(slice.start, slice.end)).join("")).toBe(source);
+  expect(panels.map(({ slice }) => slice.start)).toEqual([0, 11, 39]);
+  expect(panels.map(({ part }) => part.input.includes("[ref]: https://example.com"))).toEqual([true, true, true]);
+});
+
+test("technical blocks bypass balloon budgets even in a thought and never pair", () => {
+  const source = `\`\`\`ts\n${"X".repeat(400)}\n\`\`\``;
+  const calls: string[] = [];
+  const rows = composeComicRows(
+    [entry("code", "thought", source), entry("next", "dialogue", "Next")],
+    1200,
+    (_document, part) => {
+      calls.push(part.kind);
+      return false;
+    },
+  );
+  expect(rows[0]?.panels.map((panel) => panel.composition)).toEqual(["insert"]);
+  expect(calls).not.toContain("code");
+  expect(rows[0]?.panels[0]?.slice).toEqual({ entryId: "code", start: 0, end: source.length });
 });

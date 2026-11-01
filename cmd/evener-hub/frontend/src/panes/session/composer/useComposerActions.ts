@@ -209,9 +209,20 @@ export function useComposerActions(source: ComposerSourceState, externalBusy = f
     // loads an empty composer and then resends the user's next keystrokes as a
     // turn/start -- a Stop becoming a message. QueueStrip renders it as a
     // failure with its reason instead.
-    const record = recoveryEntries.find(
-      (entry) => entry.recoveryKind === "rejected" && entry.method !== "turn/interrupt" && !entry.preserveComposer,
-    );
+    // Mount restoration is seat-owned: only a row this pane's durable
+    // composer seat authored is a candidate, so a fresh pane never injects
+    // another pane's (or a legacy, ownerless) row. QueueStrip's explicit
+    // Edit/Retry/Send-now still reach every row.
+    // The entries arrive sorted ascending by intent sequence; a pane that
+    // bounced more than one composition restores the NEWEST one - the user's
+    // latest work - not the oldest.
+    let record: (typeof recoveryEntries)[number] | undefined;
+    for (const entry of recoveryEntries) {
+      if (entry.recoveryKind !== "rejected") continue;
+      if (entry.method === "turn/interrupt" || entry.preserveComposer) continue;
+      if (entry.compositionOwnerId !== source.compositionOwnerId) continue;
+      if (record === undefined || (entry.intentSequence ?? 0) > (record.intentSequence ?? 0)) record = entry;
+    }
     if (!record) return;
     const recovered = recoveryComposerDraft(record);
     const visible = materializeSelectionReferences({ ...recovered, skillNames: restoredSkillNames(recovered) });
@@ -239,6 +250,7 @@ export function useComposerActions(source: ComposerSourceState, externalBusy = f
     setActiveRecoveryId,
     skillNamesRef,
     selectionMetaRef,
+    source.compositionOwnerId,
     textRef,
     updateText,
     updateSkillNames,
@@ -528,13 +540,20 @@ export function useComposerActions(source: ComposerSourceState, externalBusy = f
             });
             return;
           }
-          return submitDraftToStore(kind, ref, {
-            text: submittedText,
-            attachments: payload,
-            skillNames: submittedSkillNames,
-            commandNames: submittedCommandNames,
-            mentions: submittedMentions,
-          });
+          return submitDraftToStore(
+            kind,
+            ref,
+            {
+              text: submittedText,
+              attachments: payload,
+              skillNames: submittedSkillNames,
+              commandNames: submittedCommandNames,
+              mentions: submittedMentions,
+            },
+            // This pane's seat rides the send: a refusal's bounced row is
+            // this pane's own work and restores here, never elsewhere.
+            source.compositionOwnerId,
+          );
         },
       );
       if (!source.alive) return;
@@ -654,6 +673,9 @@ export function useComposerActions(source: ComposerSourceState, externalBusy = f
 
   const queueProps: QueueStripProps = {
     ref,
+    // The strip's drain presses submit as this pane, so its sends carry the
+    // same seat the composer's own sends do.
+    compositionOwnerId: source.compositionOwnerId,
     getComposerText,
     onRestoreToComposer: restoreTextToComposer,
     activeRecoveryId: activeRecoveryId ?? undefined,

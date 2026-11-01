@@ -218,15 +218,17 @@ test.each(
     }
     const initial = readers.get(root);
     if (!initial) throw Error("missing root reader");
-    await waitFor(() =>
-      expect(
-        mounted.container.querySelector(`[data-comic-entry][data-comic-session="${path.length ? child : root}"]`),
-      ).not.toBeNull(),
-    );
-    const source = mounted.container.querySelector<HTMLElement>(
-      `[data-comic-entry][data-comic-session="${path.length ? child : root}"]`,
-    );
+    const message = `[data-comic-entry="message-0"][data-comic-session="${path.length ? child : root}"]`;
+    const messageSource = () =>
+      [...mounted.container.querySelectorAll<HTMLElement>(message)].find(
+        (node) => Number(node.dataset.comicStart) <= 7 && Number(node.dataset.comicEnd) > 7,
+      );
+    await waitFor(() => expect(messageSource()).toBeDefined());
+    const source = messageSource();
     if (!source?.dataset.comicEntry) throw Error("missing projected source");
+    expect(source.querySelector("[data-comic-text]")?.textContent?.length).toBeGreaterThan(0);
+    expect(Number(source.dataset.comicStart)).toBeLessThanOrEqual(7);
+    expect(Number(source.dataset.comicEnd)).toBeGreaterThan(7);
     const position: ComicReadingPosition = {
       mode: "away",
       sessionRef: path.length ? child : root,
@@ -348,6 +350,19 @@ test.each(
 );
 
 test("Comic registers focused-seat transcript actions outside its scroll port", async () => {
+  // Initial end-follow must see the same geometry as the keyboard actions.
+  vi.spyOn(HTMLElement.prototype, "scrollHeight", "get").mockReturnValue(1500);
+  const nativeScrollTo = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "scrollTo");
+  Object.defineProperty(HTMLElement.prototype, "scrollTo", {
+    configurable: true,
+    value(this: HTMLElement, options: ScrollToOptions) {
+      this.scrollTop = options.top ?? this.scrollTop;
+    },
+  });
+  onTestFinished(() => {
+    if (nativeScrollTo) Object.defineProperty(HTMLElement.prototype, "scrollTo", nativeScrollTo);
+    else Reflect.deleteProperty(HTMLElement.prototype, "scrollTo");
+  });
   const { root, mount } = setup();
   installKeybindings();
   const first = mount("keyboard-first");
@@ -357,18 +372,24 @@ test("Comic registers focused-seat transcript actions outside its scroll port", 
   const a = first.container.querySelector<HTMLElement>("[data-comic-scroll] > div");
   const b = second.container.querySelector<HTMLElement>("[data-comic-scroll] > div");
   if (!a || !b) throw Error("missing scroll ports");
-  for (const port of [a, b]) {
-    Object.defineProperty(port, "scrollHeight", { configurable: true, value: 1500 });
-    Object.defineProperty(port, "scrollTo", {
-      configurable: true,
-      value(options: ScrollToOptions) {
-        port.scrollTop = options.top ?? port.scrollTop;
-      },
-    });
-  }
-  a.scrollTop = 200;
-  b.scrollTop = 200;
-  workspaceStore.setState({ focusedPaneId: "keyboard-second" });
+  await waitFor(() => {
+    expect(a.scrollTop).toBe(1000);
+    expect(b.scrollTop).toBe(1000);
+  });
+  act(() => {
+    for (const port of [a, b]) {
+      fireEvent.scroll(port);
+      fireEvent.wheel(port, { deltaY: -800 });
+      port.scrollTop = 200;
+      fireEvent.scroll(port);
+    }
+    workspaceStore.setState({ focusedPaneId: "keyboard-second" });
+  });
+  await waitFor(() => {
+    expect(a.scrollTop).toBe(200);
+    expect(b.scrollTop).toBe(200);
+    expect(readComicPosition(root)?.mode).toBe("away");
+  });
   const press = (key: string) =>
     act(() => {
       document.body.dispatchEvent(

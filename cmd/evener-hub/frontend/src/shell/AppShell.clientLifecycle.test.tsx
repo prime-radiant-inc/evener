@@ -394,6 +394,8 @@ test("wires the injected client into connectionStore (connects on mount)", async
 });
 
 test("rerender keeps the injected client's navigation wiring and unmount leaves the client open", async () => {
+  // This test's real handshake, not the shared fixture's seeded v3 mode, owns readiness.
+  resetNavigationStoreForTests();
   const client = navClient();
   const view = render(<AppShell client={client} />);
   await waitFor(() => expect(navigationStore.getState().mode).toBe("v3"));

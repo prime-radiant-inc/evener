@@ -247,6 +247,9 @@ jobs:
           make tools-golangci
 
       - name: Lint (golangci-lint across all go.work modules)
+        # Bound simultaneous cold package loads on the four-CPU hosted runner.
+        env:
+          LINT_PARALLEL: "2"
         run: make lint-golangci
 
       # The tagged compile floors use the same golangci-lint binary, so they

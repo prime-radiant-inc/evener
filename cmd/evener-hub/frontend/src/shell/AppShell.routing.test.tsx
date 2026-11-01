@@ -13,6 +13,7 @@ import userEvent from "@testing-library/user-event";
 import { flushSync } from "react-dom";
 
 import { afterEach, beforeAll, beforeEach, expect, onTestFinished, test, vi } from "vitest";
+import { publishComicPaneCoverage } from "../comic/comicPaneCoverage";
 import { initNotifications, resetNotificationsForTests } from "../notifications";
 import { openDocBeside } from "../panes/doc/openDoc";
 import { enterAgentCascade, returnFromAgentCascade } from "../panes/zoom/actions";
@@ -1796,6 +1797,29 @@ test.each(["local:session-a", "local:child"])(
     expect(window.location.pathname).toBe(`/s/${ref}`);
   },
 );
+
+test("a hosted Comic child document keeps settled route focus after its reader unmounts", async () => {
+  await settledDocumentRoute("local:session-a");
+  const source = workspaceStore.getState().mainPane()!;
+  act(() => {
+    workspaceStore.getState().openPane("session", { ref: "local:child" });
+  });
+  const release = publishComicPaneCoverage(source, "local:session-a", ["local:child"]);
+  onTestFinished(release);
+  await act(async () =>
+    openDocBeside({ session: "local:child", reference: focusFileReference, sourcePaneId: source.id }),
+  );
+  const doc = workspaceStore.getState().panes.find((pane) => pane.type === "doc")!;
+  expect(documentPaneState(doc)?.origin).toBe(source);
+  expect(workspaceStore.getState().mainPane()).toBe(source);
+  expect(workspaceStore.getState().focusedPaneId).toBe(doc.id);
+  release();
+  // Re-publish the settled source route while the document is selected.
+  await act(async () => {
+    installLocationForRoute("local:session-a");
+  });
+  expect(workspaceStore.getState().focusedPaneId).toBe(doc.id);
+});
 
 test("initial filename open survives a synchronous workspace commit before its binding is published", async () => {
   await settledDocumentRoute("local:session-a");

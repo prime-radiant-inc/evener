@@ -70,6 +70,11 @@ export interface MutationIntent<A extends MutationAttachmentRef = MutationAttach
   // records all carry them in the one record they already persist.
   composerText?: string;
   composerMentions?: readonly ComposerMention[];
+  // The composer pane's durable seat that authored this composition. It
+  // rides the outbox record into the recovery row a refusal creates, so the
+  // authoring pane's mount restore can find its own bounced work - and no
+  // other pane's. Absent on non-composer and native enqueues.
+  compositionOwnerId?: string;
   // Native local-draft ownership only. Never copied into the RPC payload;
   // absent on older rows and on hosts that do not use native draft capture.
   draftCaptureToken?: string;

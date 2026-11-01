@@ -1019,7 +1019,9 @@ export class MutationOutboxIndexedDB implements QueuedMessageStorage<MutationAtt
       const next: VersionedMutationRecoveryRecord = {
         ...record,
         compositionRevision: (record.compositionRevision ?? 0) + 1,
-        compositionOwnerId,
+        // The composition owner is durable identity: a write that does not name
+        // a new owner keeps the row's existing seat rather than de-owning it.
+        compositionOwnerId: compositionOwnerId ?? record.compositionOwnerId,
         payload: { ...record.payload, input },
         optimisticDisplay:
           record.optimisticDisplay && typeof record.optimisticDisplay === "object"
@@ -1078,7 +1080,9 @@ export class MutationOutboxIndexedDB implements QueuedMessageStorage<MutationAtt
         recoveryKind: "rejected",
         recoveryReason: base.recoveryReason,
         compositionRevision: 0,
-        compositionOwnerId,
+        // A preserve that does not name a new owner keeps the preserved row
+        // findable by the seat that authored its base composition.
+        compositionOwnerId: compositionOwnerId ?? base.compositionOwnerId,
         localDraftRevisionId,
         state: "submitting",
         attempted: false,

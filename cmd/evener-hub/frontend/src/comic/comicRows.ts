@@ -52,6 +52,11 @@ export function composeComicFlow(
         append(child, [...ancestors, child.ref]);
     };
     rows.push({ ...base, id: id("history"), kind: "history", history: reader.history });
+    const unplaced = reader.activity.strips.filter((strip) => !strip.source);
+    if (unplaced.length) {
+      rows.push({ ...base, id: id("unplaced"), kind: "unplaced-group" });
+      for (const strip of unplaced) stripRow(strip);
+    }
     const items = reader.entries.filter((entry) => entry.sourceIndex !== undefined);
     let cursor = 0;
     for (const { strip, source } of reader.activity.strips
@@ -67,11 +72,6 @@ export function composeComicFlow(
     if (errors.length) {
       rows.push({ ...base, id: id("turn-errors"), kind: "turn-errors-group" });
       panels(errors);
-    }
-    const unplaced = reader.activity.strips.filter((strip) => !strip.source);
-    if (unplaced.length) {
-      rows.push({ ...base, id: id("unplaced"), kind: "unplaced-group" });
-      for (const strip of unplaced) stripRow(strip);
     }
     rows.push({ ...base, id: id("activity"), kind: "activity", activity: reader.activity });
   };

@@ -23,6 +23,10 @@ import { connectionStore, resetConnectionStoreForTests } from "../stores/connect
 import { resetThreadsStoreForTests } from "../stores/threads";
 import { useThreadModel } from "../stores/useThreadModel";
 import { VirtualList } from "../widgets";
+import { ComicTranscript } from "./ComicTranscript";
+import { composeComicFlow } from "./comicRows";
+import { projectComicConversation } from "./projection";
+import { readComicPosition, writeComicPosition } from "./readerPosition";
 import { useComicActivity } from "./useComicActivity";
 import * as comicReader from "./useComicReader";
 import { type ComicSubchatState, useComicSubchats } from "./useComicSubchats";
@@ -32,6 +36,8 @@ const root = fixture.context.ref;
 afterEach(() => {
   cleanup();
   vi.restoreAllMocks();
+  vi.unstubAllGlobals();
+  sessionStorage.clear();
   resetConnectionStoreForTests();
   resetThreadsStoreForTests();
   resetTranscriptPagingForTests();
@@ -168,6 +174,192 @@ test("keeps one owned strip when its causal event arrives", async () => {
   expect(handles.get(strip.childRef)!.reader.alive).toBe(false);
   expect(readComposerDraftSnapshot(root)).toEqual(draft);
   expect(client.calls.some((c) => c.method === "turn/start" || c.method === "thread/resume")).toBe(false);
+  mounted.unmount();
+});
+
+test("late launch relocates the same pending child reader without losing its reading intent or sibling", async () => {
+  vi.stubGlobal(
+    "ResizeObserver",
+    class {
+      observe() {}
+      unobserve() {}
+      disconnect() {}
+    },
+  );
+  vi.spyOn(HTMLElement.prototype, "offsetHeight", "get").mockReturnValue(500);
+  vi.spyOn(HTMLElement.prototype, "offsetWidth", "get").mockReturnValue(760);
+  const actual = comicReader.useComicReader;
+  const handles = new Map<string, ReturnType<typeof actual>>();
+  vi.spyOn(comicReader, "useComicReader").mockImplementation((ref) => {
+    const handle = actual(ref);
+    handles.set(ref, handle);
+    return handle;
+  });
+  const client = clientFor();
+  client.on("thread/read", (p) => ({
+    thread: wireThread(p.ref, {
+      sessionId: p.ref === root ? fixture.context.sessionId : `sess_${p.ref}`,
+      turns: [
+        {
+          id: "current",
+          status: "completed",
+          itemsView: "full",
+          items: [{ id: "child-current", type: "agentMessage", text: "CURRENT" }],
+        },
+      ],
+    }),
+    ...(p.ref === root ? {} : { olderCursor: "older-child" }),
+  }));
+  let releasePage!: (value: ThreadTurnsListResponse) => void;
+  client.on(
+    "thread/turns/list",
+    () =>
+      new Promise<ThreadTurnsListResponse>((resolve) => {
+        releasePage = resolve;
+      }),
+  );
+  let activity!: ReturnType<typeof useComicActivity>;
+  let state!: ComicSubchatState;
+  const model = hydrateThread(
+    {
+      thread: wireThread(root, {
+        sessionId: fixture.context.sessionId,
+        turns: [
+          {
+            id: "parent",
+            status: "completed",
+            itemsView: "full",
+            items: [
+              { id: "before", type: "agentMessage", text: "BEFORE" },
+              { id: "after", type: "agentMessage", text: "AFTER" },
+            ],
+          },
+        ],
+      }),
+    },
+    root,
+    0,
+  );
+  const delegate = fixture.delegates.find((row) => row.delegateId === "dlg_reported")!;
+  const key = JSON.stringify([root, delegate.delegateId]);
+  const childRef = delegate.childRef;
+  const position = {
+    mode: "away" as const,
+    sessionRef: childRef,
+    path: [key],
+    entryId: "older-child-answer",
+    offset: 3,
+    viewportOffset: 24,
+  };
+  writeComicPosition(root, position);
+  function Harness({ parent, showTranscript = true }: { parent: ThreadModel; showTranscript?: boolean }) {
+    activity = useComicActivity(root, parent);
+    const subchats = useComicSubchats(root, undefined);
+    state = subchats.state;
+    const reader = comicReader.useComicReader(root);
+    const history = useTranscriptReader(root, reader.reader);
+    return (
+      <>
+        {subchats.lifetimes}
+        {showTranscript && (
+          <ComicTranscript
+            root={{
+              ref: root,
+              path: [],
+              entries: projectComicConversation(parent, activity.context),
+              history,
+              activity,
+            }}
+            subchats={state}
+            reader={reader}
+            mode="comic"
+            onOpen={() => {}}
+          />
+        )}
+      </>
+    );
+  }
+  const mounted = render(<Harness parent={model} />);
+  await waitFor(() => expect(state.readers.has(JSON.stringify([key]))).toBe(true));
+  expect(readComicPosition(root)).toEqual(position);
+  await waitFor(() => expect(state.readers.get(JSON.stringify([key]))?.history.hasOlder).toBe(true));
+  act(() => state.readers.get(JSON.stringify([key]))!.history.loadOlderReportingError());
+  await waitFor(() => expect(releasePage).toBeDefined());
+  const first = activity.strips.find((strip) => strip.key === key)!;
+  expect(first.source).toBeUndefined();
+  const originalReader = handles.get(childRef)!.reader;
+  const sibling = activity.strips.find((strip) => strip.key !== key)!;
+  act(() => state.expand([], sibling));
+  await waitFor(() => expect(state.readers.has(JSON.stringify([sibling.key]))).toBe(true));
+  const recorded = subagentWireStep("call_delegate_1");
+  const launch = {
+    ...recorded,
+    id: "launch",
+    output: JSON.stringify({
+      ...JSON.parse(recorded.output!),
+      delegate_id: first.delegateId,
+      transcript_ref: first.childRef,
+    }),
+  };
+  const arrived = {
+    ...model,
+    turns: [{ ...model.turns[0]!, items: [model.turns[0]!.items[0]!, launch, model.turns[0]!.items[1]!] }],
+  };
+  mounted.rerender(<Harness parent={arrived} />);
+  await waitFor(() => expect(activity.strips.find((strip) => strip.key === key)?.source?.itemId).toBe(launch.id));
+  const flow = composeComicFlow(
+    {
+      ref: root,
+      path: [],
+      entries: projectComicConversation(arrived, activity.context),
+      history: state.readers.get(JSON.stringify([key]))!.history,
+      activity,
+    },
+    state,
+    390,
+    () => true,
+  );
+  const rootFlow = flow.flatMap((row) =>
+    row.sessionRef !== root
+      ? []
+      : row.kind === "strip"
+        ? [row.strip.key]
+        : row.kind === "panels"
+          ? [row.row.panels[0]?.slice.entryId]
+          : [],
+  );
+  expect(rootFlow).toEqual([
+    JSON.stringify([root, "dlg_stopped"]),
+    JSON.stringify([root, "dlg_failed"]),
+    "before",
+    key,
+    "after",
+  ]);
+  expect(flow.find((row) => row.kind === "strip" && row.strip.key === key)?.id).toBe(JSON.stringify([root, [], key]));
+  expect(handles.get(childRef)!.reader).toBe(originalReader);
+  expect(originalReader.alive).toBe(true);
+  expect(readComicPosition(root)).toEqual(position);
+  await act(async () =>
+    releasePage({
+      data: [
+        {
+          id: "older",
+          status: "completed",
+          itemsView: "full",
+          items: [{ id: "older-child-answer", type: "agentMessage", text: "OLDER_CHILD" }],
+        },
+      ],
+    }),
+  );
+  await waitFor(() =>
+    expect(state.readers.get(JSON.stringify([key]))?.entries.some((entry) => entry.id === position.entryId)).toBe(true),
+  );
+  expect(readComicPosition(root)).toEqual(position);
+  mounted.rerender(<Harness parent={arrived} showTranscript={false} />);
+  act(() => state.collapse([key]));
+  await waitFor(() => expect(state.readers.has(JSON.stringify([key]))).toBe(false));
+  expect(originalReader.alive).toBe(false);
+  expect(state.readers.has(JSON.stringify([sibling.key]))).toBe(true);
   mounted.unmount();
 });
 

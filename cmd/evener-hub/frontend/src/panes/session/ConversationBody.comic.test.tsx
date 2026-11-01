@@ -17,6 +17,7 @@ import { resetTranscriptDisplayStoreForTests, transcriptDisplayStore } from "../
 import { resetAskDockStoreForTests } from "./composer/askDock/askDockStore";
 import { ackAskUserCall } from "./composer/askDock/askDockTestUtils";
 import { requestComposerFocus, resetComposerFocusStoreForTests } from "./composer/composerFocus";
+import { stampRecoveryOwner } from "./composer/composerTestUtils";
 import { readComposerDraft, writeComposerDraft } from "./composer/draft";
 import { resetPendingTurnsStoreForTests } from "./composer/queue/pendingTurnsStore";
 import { flushPendingTurnsProjectionForTests } from "./composer/queue/testing/flushPendingTurnsProjection";
@@ -752,7 +753,11 @@ test("a selected recovery owner and its structured attachment survive both modes
     ],
     optimisticDisplay: { method: "turn/start", input },
   });
-  await storage.transferToRecovery(row.clientMutationId, "rejected");
+  const seeded = await storage.transferToRecovery(row.clientMutationId, "rejected");
+  if (!seeded) throw Error("missing recovery fixture");
+  // The committed pane record carries no composer seat, so the pane id IS
+  // this pane's composition owner; its own bounced row restores to it.
+  await stampRecoveryOwner(storage, seeded, paneId);
   const fake = await setup();
   let view = await mount(fake);
   await waitFor(() => expect(lifetime().composer?.getSnapshot().activeRecoveryId).toBe(row.clientMutationId));

@@ -4,6 +4,7 @@ import { render, screen } from "@testing-library/react";
 import { expect, test } from "vitest";
 import { ComicPanel } from "./ComicPanel";
 import { ComicPlainTranscript } from "./ComicPlainTranscript";
+import { projectComicMarkdown } from "./markdown";
 import { projectComicConversation } from "./projection";
 
 const authorships: (TranscriptAuthorship | undefined)[] = [{ author: { kind: "human" }, inherited: false }, undefined];
@@ -37,11 +38,16 @@ test.each(
   expect(entries).toHaveLength(1);
   const entry = entries[0];
   if (!entry) throw new Error("missing steering entry");
+  const document = projectComicMarkdown(text, false);
+  const part = document.parts[0];
+  if (!part) throw new Error("missing part");
   const { container } = render(
     mode === "plain" ? (
       <ComicPlainTranscript entries={entries} />
     ) : (
       <ComicPanel
+        document={document}
+        part={part}
         entry={entry}
         slice={{ entryId: entry.id, start: 0, end: text.length }}
         composition="wide"

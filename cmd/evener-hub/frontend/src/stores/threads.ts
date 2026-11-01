@@ -396,6 +396,7 @@ export interface ThreadsStoreState {
     skillNames?: readonly string[],
     commandNames?: readonly string[],
     mentions?: readonly ComposerMention[],
+    compositionOwnerId?: string,
   ): Promise<void>;
   // Re-issues the failed turn's continuation. `expectedTurnId` is the failure
   // the rendered action belonged to: activation rechecks the canonical latest
@@ -409,6 +410,7 @@ export interface ThreadsStoreState {
     skillNames?: readonly string[],
     commandNames?: readonly string[],
     mentions?: readonly ComposerMention[],
+    compositionOwnerId?: string,
   ): Promise<void>;
   queue(
     ref: string,
@@ -417,6 +419,7 @@ export interface ThreadsStoreState {
     skillNames?: readonly string[],
     commandNames?: readonly string[],
     mentions?: readonly ComposerMention[],
+    compositionOwnerId?: string,
   ): Promise<void>;
   interrupt(ref: string): Promise<void>;
   // drainAsSteer atomically appends the composer's current text/attachments
@@ -432,6 +435,7 @@ export interface ThreadsStoreState {
     skillNames?: readonly string[],
     commandNames?: readonly string[],
     mentions?: readonly ComposerMention[],
+    compositionOwnerId?: string,
   ): Promise<void>;
   // Removes one queued message by index and injects it as steering into the
   // in-flight turn (issue #22). expectedEntryId, when non-empty, must match
@@ -3246,7 +3250,15 @@ export async function resendRecoveryMutation(
 ): Promise<MutationRecoveryResendResult> {
   const runtime = requireMutationRuntime();
   await runtime.start;
-  const intent = composerMutationIntent(targetRef, route, { text, attachments, skillNames, commandNames, mentions });
+  // The resend is this pane's own send: its intent carries the same seat, so
+  // a row a later refusal bounces from it restores into its authoring pane
+  // instead of landing ownerless.
+  const intent = composerMutationIntent(
+    targetRef,
+    route,
+    { text, attachments, skillNames, commandNames, mentions },
+    compositionOwnerId,
+  );
   const barrier = await barrierRead;
   // Registered around the write: the resent row is undelivered work, and a
   // fallback send must see it before the async refresh can.
@@ -3758,6 +3770,7 @@ function composerMutationIntent(
   ref: string,
   route: ComposerMutationRoute,
   { text, attachments, skillNames, commandNames, mentions }: ComposerSubmission,
+  compositionOwnerId?: string,
 ): MutationIntent {
   const model = trackedThreadModel(ref);
   // The store-side half of the skillInput gate (Task 12 gates the hub's
@@ -3790,6 +3803,9 @@ function composerMutationIntent(
     attachments: durableAttachments(attachments),
     composerText: text,
     composerMentions: mentions,
+    // The acting composer pane's seat, so a refusal's bounced row restores
+    // into the pane that wrote it and no other.
+    compositionOwnerId,
   };
   if (route === "send") {
     return {
@@ -7245,9 +7261,14 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
     }
   },
 
-  async send(ref, text, attachments, skillNames, commandNames, mentions) {
+  async send(ref, text, attachments, skillNames, commandNames, mentions, compositionOwnerId) {
     await sendMutationIntent(
-      composerMutationIntent(ref, "send", { text, attachments, skillNames, commandNames, mentions }),
+      composerMutationIntent(
+        ref,
+        "send",
+        { text, attachments, skillNames, commandNames, mentions },
+        compositionOwnerId,
+      ),
     );
   },
 
@@ -7293,20 +7314,30 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
     }
   },
 
-  async steer(ref, text, attachments, skillNames, commandNames, mentions) {
+  async steer(ref, text, attachments, skillNames, commandNames, mentions, compositionOwnerId) {
     await enqueueMutationIntent(
-      composerMutationIntent(ref, "steer", { text, attachments, skillNames, commandNames, mentions }),
+      composerMutationIntent(
+        ref,
+        "steer",
+        { text, attachments, skillNames, commandNames, mentions },
+        compositionOwnerId,
+      ),
     );
   },
 
-  async queue(ref, text, attachments, skillNames, commandNames, mentions) {
+  async queue(ref, text, attachments, skillNames, commandNames, mentions, compositionOwnerId) {
     // A queue is composer input too: mark the shared guard for the enqueue's
     // window so Retry cannot enqueue a continuation ahead of the queued row
     // becoming visible in the projection.
     const release = markInputSubmission(ref);
     try {
       await enqueueMutationIntent(
-        composerMutationIntent(ref, "queue", { text, attachments, skillNames, commandNames, mentions }),
+        composerMutationIntent(
+          ref,
+          "queue",
+          { text, attachments, skillNames, commandNames, mentions },
+          compositionOwnerId,
+        ),
       );
     } finally {
       release();
@@ -7338,9 +7369,14 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
     );
   },
 
-  async drainAsSteer(ref, text, attachments, skillNames, commandNames, mentions) {
+  async drainAsSteer(ref, text, attachments, skillNames, commandNames, mentions, compositionOwnerId) {
     await enqueueMutationIntent(
-      composerMutationIntent(ref, "drain", { text, attachments, skillNames, commandNames, mentions }),
+      composerMutationIntent(
+        ref,
+        "drain",
+        { text, attachments, skillNames, commandNames, mentions },
+        compositionOwnerId,
+      ),
     );
   },
 

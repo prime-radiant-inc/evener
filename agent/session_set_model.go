@@ -82,12 +82,15 @@ const modelSwitchEnumerationTimeout = 8 * time.Second
 // the network latency/timeout budget per switch and open a TOCTOU window where
 // the provider's model list could change between the metadata-fill call and
 // the membership-check call, letting the two disagree about availability.
+// The instance and listing the enumeration produced are returned alongside the
+// resolved profile so a queueing caller (Session.SetModel's queue path) can
+// carry them to the switch's later application instead of enumerating again.
 // sessionID attributes the canonical API-log attempt this listing produces
 // (llm.WithAPILogContext), matching resolveLiveModelProfileWithEnumerationTimeout's
 // pre-session counterpart — every caller here (SetModel, subagent model
 // selection) runs on an already-existing session, so sessionID is always that
 // session's own id.
-func resolveModelSwitchTarget(client *llm.Client, profile *provider.Profile, sessionID string, timeout llm.AdapterTimeout, primedInstance string, primed *llm.ModelListing) (*provider.Profile, error) {
+func resolveModelSwitchTarget(client *llm.Client, profile *provider.Profile, sessionID string, timeout llm.AdapterTimeout, primedInstance string, primed *llm.ModelListing) (resolved *provider.Profile, listedInstance string, listing *llm.ModelListing, err error) {
 	if primed != nil && primedInstance == profile.ID() {
 		// SetModel already listed this instance before it took the session
 		// lock. Reuse that listing: a second fetch could return empty and clear
@@ -97,9 +100,9 @@ func resolveModelSwitchTarget(client *llm.Client, profile *provider.Profile, ses
 			profile = profile.WithResolved(res)
 		}
 		if err := validateModelSwitchMembership(client, profile, *primed); err != nil {
-			return profile, err
+			return profile, primedInstance, primed, err
 		}
-		return profile, nil
+		return profile, primedInstance, primed, nil
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), modelSwitchEnumerationTimeout)
 	defer cancel()
@@ -111,13 +114,13 @@ func resolveModelSwitchTarget(client *llm.Client, profile *provider.Profile, ses
 	if enumeration.err != nil {
 		// Fail open unconditionally: an instance that cannot be listed at all
 		// and any listing failure (timeout, auth error, etc.) both accept the
-		// switch, with no live metadata to fill.
-		return filled, nil
+		// switch, with no live metadata to fill and no listing to carry.
+		return filled, "", nil, nil
 	}
 	if err := validateModelSwitchMembership(client, filled, enumeration.listing); err != nil {
-		return filled, err
+		return filled, "", nil, err
 	}
-	return filled, nil
+	return filled, profile.ID(), &enumeration.listing, nil
 }
 
 // validateModelSwitchMembership is the switch-time membership policy. The

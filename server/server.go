@@ -499,6 +499,21 @@ func (s *Server) UpdateSessionInfo(sessionID, model, profile string) {
 	s.mu.Unlock()
 }
 
+// UpdateSessionInfoFrom sets session identity fields from a sample that runs
+// under the server lock. A caller whose read raced a newer model-changed
+// projection - the daemon's model-set hook reading the profile while a turn
+// boundary commits a queued switch - would otherwise install a stale snapshot
+// after the projection already installed the new model, regressing the cache
+// with no corrective event behind it. Sampling inside the write's critical
+// section installs whatever the session reports at write time, so the cache
+// can only move forward.
+func (s *Server) UpdateSessionInfoFrom(sessionID string, sample func() (model, profile string)) {
+	s.mu.Lock()
+	model, profile := sample()
+	s.updateSessionInfoLocked(sessionID, model, profile)
+	s.mu.Unlock()
+}
+
 func (s *Server) updateSessionInfoLocked(sessionID, model, profile string) {
 	s.status.SessionID = sessionID
 	s.status.Model = model

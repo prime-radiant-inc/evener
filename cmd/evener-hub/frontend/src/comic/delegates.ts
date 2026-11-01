@@ -3,10 +3,9 @@ import {
   type EntityView,
   findEntityView,
   parseJSONObject,
-  parseSteeringNotifications,
-  pendingTextJoined,
   projectThread,
   type SessionActivityContext,
+  str,
   type ThreadModel,
 } from "@evener/appwire-client";
 import { type ComicPersona, comicDelegateKey, comicDelegatePersona } from "./cast";
@@ -45,7 +44,7 @@ export function projectComicDelegates(
   }
   const place = (id: string | undefined, childRef: string | undefined, itemId: string, sourceIndex: number) => {
     const strip = id ? strips.get(id) : undefined;
-    if (!strip || (childRef && comicTranscriptRef(model, childRef) !== strip.childRef)) return;
+    if (!strip || !childRef || comicTranscriptRef(model, childRef) !== strip.childRef) return;
     if (!strip.source || strip.source.sourceIndex > sourceIndex) strip.source = { itemId, sourceIndex };
   };
   for (const turn of projectThread(model, COMIC_TRANSCRIPT_CONFIG).turns) {
@@ -54,21 +53,7 @@ export function projectComicDelegates(
       const item = entry.item;
       if (item.type === "commandExecution" && item.toolName === "delegate") {
         const parsed = parseJSONObject(item.output);
-        if (typeof parsed?.delegate_id === "string")
-          place(
-            parsed.delegate_id,
-            typeof parsed.transcript_ref === "string" ? parsed.transcript_ref : undefined,
-            item.id,
-            entry.sourceIndex,
-          );
-      } else if (item.type === "steering" && item.steeringKind === "notification") {
-        for (const fragment of parseSteeringNotifications(
-          item.pendingText ? pendingTextJoined(item.pendingText) : item.text,
-        )) {
-          if (fragment.kind === "notification" && fragment.notification.type === "delegate") {
-            place(fragment.notification.delegateId, fragment.notification.transcriptRef, item.id, entry.sourceIndex);
-          }
-        }
+        if (parsed) place(str(parsed, "delegate_id"), str(parsed, "transcript_ref"), item.id, entry.sourceIndex);
       }
     }
   }

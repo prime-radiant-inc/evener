@@ -34,18 +34,20 @@ import (
 )
 
 type worktreeDocumentFixture struct {
-	session         *agent.Session
-	hubClient       *appwire.Client
-	hubURL          string
-	documentURL     string
-	ref             string
-	sessionID       string
-	root            string
-	step            func(t *testing.T, operation, name string) string
-	localRead       func(t *testing.T, path string) (int, []byte)
-	remoteRead      func(t *testing.T, path string) (int, []byte)
-	localImageRead  func(t *testing.T, path string) (int, []byte)
-	remoteImageRead func(t *testing.T, path string) (int, []byte)
+	session           *agent.Session
+	daemonClient      *appwire.Client
+	remoteDocumentURL string
+	hubClient         *appwire.Client
+	hubURL            string
+	documentURL       string
+	ref               string
+	sessionID         string
+	root              string
+	step              func(t *testing.T, operation, name string) string
+	localRead         func(t *testing.T, path string) (int, []byte)
+	remoteRead        func(t *testing.T, path string) (int, []byte)
+	localImageRead    func(t *testing.T, path string) (int, []byte)
+	remoteImageRead   func(t *testing.T, path string) (int, []byte)
 }
 
 var (
@@ -113,7 +115,7 @@ func (a *worktreeDocumentAdapter) Complete(ctx context.Context, req llm.Request)
 	}
 }
 
-func newWorktreeDocumentFixture(t *testing.T) *worktreeDocumentFixture {
+func newWorktreeDocumentFixture(t *testing.T, scripted ...llm.ProviderAdapter) *worktreeDocumentFixture {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(t.Context(), 20*time.Second)
 	t.Cleanup(cancel)
@@ -144,12 +146,16 @@ func newWorktreeDocumentFixture(t *testing.T) *worktreeDocumentFixture {
 	stateDir := filepath.Join(stateRoot, "projects", project.ID)
 	adapter := &worktreeDocumentAdapter{steps: make(chan map[string]any, 1)}
 	llmClient := llm.NewClient()
-	llmClient.Register(adapter)
+	if len(scripted) == 0 {
+		llmClient.Register(adapter)
+	} else {
+		llmClient.Register(scripted[0])
+	}
 	sess, err := agent.NewSession(
 		llmClient,
 		provider.NewOpenAIProfile("gpt-5.2"),
 		execenv.NewLocalExecutionEnvironment(root),
-		agent.SessionConfig{StateDir: stateDir, Sandbox: "off"},
+		agent.SessionConfig{StateDir: stateDir, Sandbox: "off", MaxSubagentDepth: 2},
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -172,6 +178,8 @@ func newWorktreeDocumentFixture(t *testing.T) *worktreeDocumentFixture {
 	daemon.ReplaceAppIdentity(prepared, nil)
 	seedDaemonStatus(daemon, daemonserver.StatusInfo{SessionID: sessionID, State: appwire.ThreadStatusIdle, WorkingDir: root})
 	daemon.WireTranscriptHistory(sess)
+	daemon.SetDescendantTranscriptPathFunc(func(id string) string { return schema.SessionTranscriptPath(stateDir, id) })
+	sess.SetDescendantEventFunc(func(event events.SessionEvent) { daemon.RecordDescendantAppEvent(sessionID, event) })
 	sess.ConsumeEventsLossless(func(event events.SessionEvent) {
 		daemonserver.BridgeEvent(daemon, event, nil)
 	}, func() {})
@@ -179,6 +187,7 @@ func newWorktreeDocumentFixture(t *testing.T) *worktreeDocumentFixture {
 	t.Cleanup(daemonHTTP.Close)
 
 	entry := rendezvous.Entry{
+		PID:          os.Getpid(),
 		Protocol:     appwire.ProtocolVersion,
 		Endpoint:     daemonHTTP.URL,
 		SourceID:     "local",
@@ -188,11 +197,14 @@ func newWorktreeDocumentFixture(t *testing.T) *worktreeDocumentFixture {
 		WorkingDir:   root,
 		StateDir:     stateDir,
 	}
-	source := appsource.NewLocalDaemonSourceWithEntries("local", func() []appsource.LocalDaemonEntry {
-		return []appsource.LocalDaemonEntry{{Entry: entry, SessionID: sessionID}}
-	}, daemonHTTP.Client())
-	sources := appsource.NewRegistry()
-	sources.Add(source)
+	runDir := t.TempDir()
+	if _, err := rendezvous.Write(runDir, entry); err != nil {
+		t.Fatal(err)
+	}
+	roster := hubcore.NewRoster(runDir, &hubcore.StatusProber{})
+	if err := roster.RefreshAndWait(ctx); err != nil {
+		t.Fatal(err)
+	}
 
 	past := newRebuiltPastIndex(t, filepath.Join(stateRoot, "projects", "*"))
 	if cached, ok := past.Find(sessionID); !ok || cached.Meta.EnvInfo.WorkingDir != root {
@@ -200,11 +212,11 @@ func newWorktreeDocumentFixture(t *testing.T) *worktreeDocumentFixture {
 	}
 	cfg := hubcore.WebConfig{
 		HubStateRoot: t.TempDir(),
+		RunDir:       runDir,
 		Past:         past,
-		Roster: hubcore.NewRosterWithEntries(hubcore.LiveEntry{
-			Entry: entry, SessionID: sessionID, Status: appwire.ThreadStatusIdle,
-		}),
+		Roster:       roster,
 	}
+	sources := newHubSourceRegistry(cfg)
 
 	hubServer := newHubAppServer(cfg, sources)
 	hubHTTP := httptest.NewServer(http.HandlerFunc(hubServer.ServeWebSocket))
@@ -246,13 +258,15 @@ func newWorktreeDocumentFixture(t *testing.T) *worktreeDocumentFixture {
 	t.Cleanup(controllerHTTP.Close)
 
 	fixture := &worktreeDocumentFixture{
-		session:     sess,
-		hubClient:   hubClient,
-		hubURL:      hubHTTP.URL,
-		documentURL: localHTTP.URL + "/doc/file",
-		ref:         ref,
-		sessionID:   sessionID,
-		root:        root,
+		session:           sess,
+		daemonClient:      daemonClient,
+		remoteDocumentURL: controllerHTTP.URL + "/doc/file",
+		hubClient:         hubClient,
+		hubURL:            hubHTTP.URL,
+		documentURL:       localHTTP.URL + "/doc/file",
+		ref:               ref,
+		sessionID:         sessionID,
+		root:              root,
 	}
 	fixture.localRead = func(t *testing.T, path string) (int, []byte) {
 		t.Helper()

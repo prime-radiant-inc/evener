@@ -89,6 +89,25 @@ except where a line says so itself.
   measured 399/400px content boxes, a narrow desktop pane, and Send geometry
   at larger font sizes. The default browser guard includes the same checks.
 
+### Recovery selection ownership
+
+- Conversation seats remain as pane identity: placement mints a fresh seat for
+  every new pane, the pane keeps its seat across parking, transcript retypes
+  and live resume round trips, and seats are never part of shared layout
+  geometry. Seats are stored per tab under the pane id only; a restored
+  layout validates a saved pane's seat against the conversation it names
+  before reusing it, and every other restored pane mints fresh, so a
+  restarted pane id cannot lend another conversation's seat. There is no
+  maintained conversation mapping: a mobile route reconstruction mints a
+  fresh seat, and restoring the previous pane's work there takes one tap. A
+  resumed nested session carries the authoring pane's seat to its
+  replacement. Seats do not scope user selections, so no selection ever
+  migrates between seats. A recovery row records the seat that last wrote it
+  as its composition owner, and an empty composer at mount restores only the
+  newest rejected row its own seat owns; explicit queue-strip actions reach
+  every row regardless of owner, and rows recorded before owners existed are
+  never restored automatically.
+
 ### Atomic skill and command selections
 
 - Session and launcher composers share the real ProseMirror editor. Explicit

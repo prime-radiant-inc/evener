@@ -78,6 +78,72 @@ test("positions the first loaded canonical receipt without treating its status a
   expect(projectComicDelegates(m, new Map())).toEqual([]);
 });
 
+test("locates multiple launches in one turn but not a later completion or completion-only history", () => {
+  const m = model();
+  const receipt = subagentWireStep("call_delegate_1");
+  const first = entityMap(m).values().next().value!;
+  if (first.kind !== "delegate") throw new Error("fixture kind");
+  const firstEntity = {
+    ...first,
+    id: "first",
+    logicalId: "dlg_first",
+    open: { ref: "local:child-first", parentRef: m.ref },
+  };
+  const secondEntity = {
+    ...first,
+    id: "second",
+    logicalId: "dlg_second",
+    open: { ref: "local:child-second", parentRef: m.ref },
+  };
+  const entities = new Map([
+    [firstEntity.id, firstEntity],
+    [secondEntity.id, secondEntity],
+  ]);
+  const launch = (id: string, delegateId: string, childRef: string) => ({
+    ...receipt,
+    id,
+    output: JSON.stringify({ ...JSON.parse(receipt.output!), delegate_id: delegateId, transcript_ref: childRef }),
+  });
+  const firstLaunch = launch("first-launch", firstEntity.logicalId, firstEntity.open.ref);
+  const secondLaunch = launch("second-launch", secondEntity.logicalId, secondEntity.open.ref);
+  const completion = {
+    id: "completion",
+    turnId: "turn",
+    type: "steering",
+    steeringKind: "notification",
+    text: `<delegate-notification delegate_id="${firstEntity.logicalId}" transcript_ref="${firstEntity.open.ref}">done</delegate-notification>`,
+  };
+  m.turns = [{ id: "turn", status: "completed", items: [firstLaunch, secondLaunch, completion] }];
+  const strips = projectComicDelegates(m, entities);
+  expect(strips.find((strip) => strip.delegateId === firstEntity.logicalId)?.source?.itemId).toBe(firstLaunch.id);
+  expect(strips.find((strip) => strip.delegateId === secondEntity.logicalId)?.source?.itemId).toBe(secondLaunch.id);
+  m.turns = [{ id: "later", status: "completed", items: [completion] }];
+  expect(projectComicDelegates(m, entities).every((strip) => strip.source === undefined)).toBe(true);
+});
+
+test("bounded creation result retains its child ref while identity-only data cannot locate a strip", () => {
+  const m = model();
+  const receipt = subagentWireStep("call_delegate_1");
+  const recorded = entityMap(m).values().next().value!;
+  if (recorded.kind !== "delegate") throw new Error("fixture kind");
+  const id = "dlg_bounded";
+  const childRef = "local:bounded-child";
+  const entity = { ...recorded, id: "bounded", logicalId: id, open: { ref: childRef, parentRef: m.ref } };
+  const minimal = {
+    delegate_id: id,
+    child_session_id: "bounded-child",
+    type: "delegate",
+    status: "running",
+    transcript_ref: childRef,
+  };
+  const result = { ...receipt, id: "bounded-result", output: JSON.stringify(minimal) };
+  m.turns = [{ id: "turn", status: "completed", items: [result] }];
+  const entities = new Map([[entity.id, entity]]);
+  expect(projectComicDelegates(m, entities)[0]?.source?.itemId).toBe(result.id);
+  m.turns = [{ id: "turn", status: "completed", items: [{ ...result, output: JSON.stringify({ delegate_id: id }) }] }];
+  expect(projectComicDelegates(m, entities)[0]?.source).toBeUndefined();
+});
+
 test("a resumed generation never inherits the recorded previous report", () => {
   const m = model();
   const recorded = subagentOutcomesDelegatesResponse();

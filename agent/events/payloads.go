@@ -16,6 +16,7 @@ import (
 
 // SessionStartData is the payload for an EventSessionStart event.
 type SessionStartData struct {
+	WorkingDir        string `json:"working_dir,omitempty"`
 	Profile           string `json:"profile"`
 	Model             string `json:"model"`
 	Restored          bool   `json:"restored,omitempty"`

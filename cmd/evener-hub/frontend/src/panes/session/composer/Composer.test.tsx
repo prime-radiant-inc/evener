@@ -337,17 +337,18 @@ test("goal replacement preserves a recovery row whose empty-draft discard is alr
 test("goal replacement preserves the consolidated recovery owner while its commit is unobserved", async () => {
   const storage = new MutationOutboxIndexedDB();
   setMutationStorageForTests(storage);
-  const owner = await seedRejectedRecovery(storage, "ref_a", "first recovery");
-  const source = await seedRejectedRecovery(storage, "ref_a", "second recovery");
+  const folded = await seedRejectedRecovery(storage, "ref_a", "first recovery");
+  const owner = await seedRejectedRecovery(storage, "ref_a", "second recovery");
   const user = userEvent.setup();
   await mountComposer("ref_a", {
     status: { type: "idle" },
     evener: currentWorkEvener({ goal: true }),
   });
   await flushPendingTurnsProjectionForTests();
-  expect(textarea().textContent).toBe("first recovery");
-  const sourceRow = screen.getByText("second recovery").closest("li");
-  if (!sourceRow) throw new Error("missing second recovery row");
+  // Mount restore picks the NEWEST rejected composition this seat owns.
+  expect(textarea().textContent).toBe("second recovery");
+  const sourceRow = screen.getByText("first recovery").closest("li");
+  if (!sourceRow) throw new Error("missing first recovery row");
   const hold = holdNextWriteTransaction(["recovery"]);
   try {
     await user.click(within(sourceRow).getByRole("button", { name: "Edit message" }));
@@ -361,9 +362,9 @@ test("goal replacement preserves the consolidated recovery owner while its commi
     try {
       const records = await reopened.listRecovery("ref_a");
       expect(records.map((row) => row.clientMutationId)).toEqual([owner.clientMutationId]);
-      expect(records[0]?.composerText).toBe("first recovery\n\nsecond recovery");
-      expect(records[0]?.payload.input).toEqual([{ type: "text", text: "first recovery\n\nsecond recovery" }]);
-      expect(await reopened.getRecovery(source.clientMutationId)).toBeUndefined();
+      expect(records[0]?.composerText).toBe("second recovery\n\nfirst recovery");
+      expect(records[0]?.payload.input).toEqual([{ type: "text", text: "second recovery\n\nfirst recovery" }]);
+      expect(await reopened.getRecovery(folded.clientMutationId)).toBeUndefined();
       expect(textarea().textContent).toBe("/goal Keep the session focused");
       expect(readDraft("ref_a")).toBe("/goal Keep the session focused");
     } finally {

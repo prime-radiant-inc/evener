@@ -1,6 +1,8 @@
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
+import { ComicMarkdown } from "./ComicMarkdown";
 import styles from "./comic.module.css";
-import type { ComicComposition } from "./layout";
-import type { ComicEntry } from "./projection";
+import type { ComicFits } from "./layout";
 
 const FONT = '"Comic Sans Comic"';
 
@@ -16,10 +18,12 @@ export async function loadComicFonts(): Promise<"ready" | "unavailable"> {
 
 /** Probe shares the rendered panel/balloon/text CSS, including thought padding and mobile breakpoints. */
 export function createComicMeasurer(container: HTMLElement): {
-  fits(text: string, composition: ComicComposition, kind: ComicEntry["kind"]): boolean;
+  fits: ComicFits;
   dispose(): void;
 } {
-  const panel = document.createElement("article");
+  const ownerDocument = container.ownerDocument;
+  const ownerWindow = ownerDocument.defaultView;
+  const panel = ownerDocument.createElement("article");
   panel.className = styles.panel as string;
   panel.setAttribute("data-comic-probe", "");
   panel.setAttribute("aria-hidden", "true");
@@ -27,28 +31,30 @@ export function createComicMeasurer(container: HTMLElement): {
   panel.style.visibility = "hidden";
   panel.style.pointerEvents = "none";
   panel.style.zIndex = "-1";
-  const balloon = document.createElement("div");
+  const balloon = ownerDocument.createElement("div");
   balloon.className = styles.balloon as string;
-  const copy = document.createElement("p");
-  copy.className = styles.balloonText as string;
+  const copy = ownerDocument.createElement("div");
   balloon.append(copy);
   panel.append(balloon);
   container.append(panel);
 
   return {
-    fits(text, composition, kind) {
-      const width = container.getBoundingClientRect().width || container.clientWidth || window.innerWidth;
+    fits(document, part, composition, kind) {
+      if (composition === "insert") return true;
+      const width = container.getBoundingClientRect().width || container.clientWidth || ownerWindow?.innerWidth || 0;
       panel.style.width = `${composition === "paired" && width > 760 ? (width - 15) / 2 : width}px`;
       panel.classList.toggle(styles.spotlight as string, composition === "spotlight");
       balloon.classList.toggle(styles.thought as string, kind === "thought");
       panel.setAttribute("data-comic-kind", kind);
-      copy.textContent = text;
-      const computed = getComputedStyle(copy);
+      // Only React's rendering of the shared safe widgets enters the probe.
+      copy.innerHTML = renderToStaticMarkup(createElement(ComicMarkdown, { document, part }));
+      const content = copy.firstElementChild as HTMLElement;
+      const computed = ownerWindow?.getComputedStyle(content);
       const lineHeight =
-        Number.parseFloat(computed.lineHeight) ||
+        Number.parseFloat(computed?.lineHeight ?? "") ||
         (composition === "spotlight" ? (width <= 760 ? 24 : 30) * 1.3 : (width <= 760 ? 17 : 18) * 1.45);
       return (
-        Math.max(copy.getBoundingClientRect().height, copy.scrollHeight) <=
+        Math.max(content.getBoundingClientRect().height, content.scrollHeight) <=
         lineHeight * (composition === "spotlight" ? 3 : 6) + 1
       );
     },

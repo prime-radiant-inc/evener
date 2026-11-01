@@ -128,7 +128,7 @@ export function ConversationBody({
   seat: ConversationSeat;
   render: (parts: ConversationParts) => React.ReactNode;
 }) {
-  useThreadClaim(ref);
+  useThreadClaim(ref, seat.readView ?? undefined);
 
   // Opening a conversation marks its session seen on the hub, so the
   // session's blue dot clears on the phone too.

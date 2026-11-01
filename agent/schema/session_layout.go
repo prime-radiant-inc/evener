@@ -29,6 +29,7 @@ var SessionArtifactSuffixes = []string{
 	SessionTranscriptSuffix,
 	SessionAPILogSuffix,
 	SessionLogSuffix,
+	SessionLivelockSuffix,
 }
 
 // SessionsDir returns <stateDir>/sessions.

@@ -86,6 +86,11 @@ func comicGuardBrowser(t *testing.T, scenario string) {
 	if err := os.WriteFile(filepath.Join(fixture.workDir[0], "comic-interactions.json"), interactionConfig, 0o600); err != nil {
 		t.Fatal(err)
 	}
+	for _, level := range []string{"root", "child"} {
+		if err := os.WriteFile(filepath.Join(fixture.workDir[0], "comic-document-"+level+".md"), []byte("# COMIC_DOCUMENT_BODY_"+strings.ToUpper(level)+"\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
 	entry := skillGuardStartHelper(t, fixture, 0)
 	ref := skillGuardSessionRef(entry)
 	authorRef := ""
@@ -104,6 +109,9 @@ func comicGuardBrowser(t *testing.T, scenario string) {
 	}
 	defer func() { daemonProcessCommand = oldCommand }()
 	literal := "COMIC_READ_SOURCE_3f " + strings.Repeat("Literal *asterisks*, `code`, and a source-offset reading point. ", 24)
+	code := "  COMIC_CODE_FIRST\n\tCOMIC_CODE_TAB  \n\n" + strings.Repeat("    COMIC_CODE_BODY aligned\n", 12) + "  COMIC_CODE_WIDE_" + strings.Repeat("x", 160) + "\n  COMIC_CODE_LAST  "
+	cells := []string{"COMIC_TABLE_KEY", "COMIC_TABLE_VALUE", "COMIC_CELL_A", "COMIC_CELL_WORDS " + strings.TrimSpace(strings.Repeat("readable cell words ", 12)), "COMIC_CELL_B", "COMIC_CELL_WIDE_" + strings.Repeat("y", 140)}
+	formatted := "## COMIC_FORMATTED_HEADING\n\nCOMIC_FORMATTED_BEFORE 😀 **bold** *emphasis* and `inline`. A   collapsed gap. [safe](https://example.com/comic) [unsafe](javascript:alert%281%29)\n\n> COMIC_FORMATTED_QUOTE\n\n7. COMIC_FORMATTED_LIST\n\n```text\n" + code + "\n```\n\n| " + cells[0] + " | " + cells[1] + " |\n| --- | --- |\n| " + cells[2] + " | " + strings.TrimSpace(cells[3]) + " |\n| " + cells[4] + " | " + cells[5] + " |\n\nCOMIC_FORMATTED_AFTER **settled**."
 	ctx, cancel := comicGuardContext(t)
 	defer cancel()
 	roster := hubcore.NewRoster(fixture.runDir, &hubcore.StatusProber{Timeout: 500 * time.Millisecond})
@@ -255,6 +263,9 @@ func comicGuardBrowser(t *testing.T, scenario string) {
 		EvidenceDir        string   `json:"evidenceDir"`
 		RequireFonts       bool     `json:"requireFonts"`
 		ExpectedSourceText string   `json:"expectedSourceText"`
+		FormattedSource    string   `json:"formattedSource"`
+		FormattedCode      string   `json:"formattedCode"`
+		FormattedCells     []string `json:"formattedCells"`
 		HistoryTexts       []string `json:"historyTexts"`
 		ControlPath        string   `json:"controlPath"`
 		RequestLog         string   `json:"requestLog"`
@@ -264,7 +275,8 @@ func comicGuardBrowser(t *testing.T, scenario string) {
 		CheckpointURL      string   `json:"checkpointURL"`
 	}{BaseURL: hubedge.AuthURLFor(hub.URL, token), EvidenceDir: evidence, ExpectedSourceText: literal,
 		RequireFonts: os.Getenv("EVENER_COMIC_BLOCK_FONTS") != "1", ControlPath: fixture.control[0], RequestLog: fixture.requestLog[0],
-		Scenario: scenario, AuthorshipRef: authorRef, AuthorshipControl: fixture.control[1], AuthorshipLog: fixture.requestLog[1], CheckpointURL: checkpoint.URL}
+		Scenario: scenario, AuthorshipRef: authorRef, AuthorshipControl: fixture.control[1], AuthorshipLog: fixture.requestLog[1], CheckpointURL: checkpoint.URL,
+		FormattedSource: formatted, FormattedCode: code, FormattedCells: cells}
 	for i := range 75 {
 		text := fmt.Sprintf("COMIC_HISTORY_%02d literal history", i)
 		if i == 27 {
@@ -321,6 +333,7 @@ func comicGuardBrowser(t *testing.T, scenario string) {
 		return
 	}
 	comicGuardCheckProviderFailure(t, fixture.stateDir[0], evidence)
+	comicGuardCheckFormatted(t, fixture.stateDir[0], entry.SessionID, formatted, evidence)
 	comicGuardCheckChildren(t, fixture.stateDir[0], evidence)
 	comicGuardCheckRoster(t, fixture.stateDir[0], evidence)
 	comicGuardCheckAuthorship(t, fixture.stateDir[1], evidence)
@@ -345,6 +358,45 @@ func comicGuardCheckRecovery(t *testing.T, stateDir, literal string) {
 		}
 	}
 	t.Log("Durable recovery: exactly one literal seed and one input each for COMIC_RECOVERY_before, COMIC_RECOVERY_after, COMIC_RESUME_SAME, COMIC_RESUME_CHANGED")
+}
+
+func comicGuardCheckFormatted(t *testing.T, stateDir, sessionID, source, evidence string) {
+	t.Helper()
+	count, err := skillGuardCountTranscriptInputs(t, stateDir, source)
+	if err != nil || count != 1 {
+		t.Fatalf("durable formatted source count = %d, want 1: %v", count, err)
+	}
+	data, err := os.ReadFile(filepath.Join(stateDir, "sessions", sessionID+".transcript.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "COMIC_STREAM_BEFORE **bold**\n\n```text\n  COMIC_STREAM_CODE\n\tCOMIC_STREAM_END  \n```\n\n| key | value |\n| --- | --- |\n| COMIC_STREAM_CELL | **settled** |\n\nCOMIC_STREAM_AFTER *done*"
+	answers := 0
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	for {
+		var record struct{ Turn schema.Turn }
+		if err := decoder.Decode(&record); err == io.EOF {
+			break
+		} else if err != nil {
+			t.Fatal(err)
+		}
+		for _, part := range record.Turn.Message.Content {
+			if record.Turn.Kind == schema.TurnAssistant && part.Text == want {
+				answers++
+			}
+		}
+	}
+	if answers != 1 {
+		t.Fatalf("durable formatted stream answers = %d, want 1", answers)
+	}
+	data, err = json.MarshalIndent(map[string]any{"source": source, "stream": want, "inputs": count, "answers": answers}, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(evidence, "formatted-durable.json"), data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Log("Durable formatted Markdown: one untouched original source and one complete streamed answer")
 }
 
 func comicGuardCheckInteractions(t *testing.T, stateDir, sessionID, outside, evidence string) {
@@ -649,6 +701,10 @@ func comicGuardCheckChildren(t *testing.T, stateDir, evidence string) {
 	}
 	counts := make(map[string]map[string]int)
 	for level, ref := range map[string]string{"CHILD": observed.Header.Ref, "GRANDCHILD": observed.Grandchild.Ref} {
+		answer := "COMIC_ANSWER_GRANDCHILD literal attributed answer"
+		if level == "CHILD" {
+			answer = "COMIC_ANSWER_CHILD literal attributed answer [COMIC_DOCUMENT_CHILD](comic-document-child.md)"
+		}
 		id := strings.TrimPrefix(ref, "local:")
 		if id == ref || id == "" || filepath.Base(id) != id {
 			t.Fatalf("expected actual local fixture child, got %q", ref)
@@ -675,7 +731,7 @@ func comicGuardCheckChildren(t *testing.T, stateDir, evidence string) {
 				if part.Thinking != nil && part.Thinking.Text == "COMIC_THOUGHT_"+level+" available literal reasoning" {
 					found["thought"]++
 				}
-				if part.Text == "COMIC_ANSWER_"+level+" literal attributed answer" {
+				if part.Text == answer {
 					found["answer"]++
 				}
 				for index := range 45 {
@@ -781,4 +837,70 @@ func comicGuardCheckProviderFailure(t *testing.T, stateDir, evidence string) {
 		t.Fatal(err)
 	}
 	t.Logf("Durable %s: typed provider failure, one failed completion, no assistant content (not itemless)", failedID)
+}
+
+func TestComicChildDocumentMetadata(t *testing.T) {
+	fixture := skillGuardSetup(t)
+	entry := skillGuardStartHelper(t, fixture, 0)
+	ctx, cancel := context.WithTimeout(t.Context(), 25*time.Second)
+	defer cancel()
+	roster := hubcore.NewRoster(fixture.runDir, &hubcore.StatusProber{Timeout: 500 * time.Millisecond})
+	if err := roster.RefreshAndWait(ctx); err != nil {
+		t.Fatal(err)
+	}
+	past := hubcore.NewPastIndex(filepath.Join(fixture.stateRoot, "projects", "*"))
+	if _, err := past.Rebuild(); err != nil {
+		t.Fatal(err)
+	}
+	cfg := hubcore.WebConfig{Roster: roster, Past: past, StateDir: fixture.stateRoot, RunDir: fixture.runDir, HubStateRoot: filepath.Join(fixture.root, "probe-hub")}
+	web := newWebServer(cfg, nil)
+	_ = web.Handler()
+	for _, cmd := range []map[string]string{{"command": "background-mode"}, {"command": "background-role", "phase": "comic-subchats"}, {"command": "background-start-turn", "phase": "COMIC_SUBCHAT_ROOT"}} {
+		if err := appendFileLine(fixture.control[0], cmd); err != nil {
+			t.Fatal(err)
+		}
+	}
+	ticker := time.NewTicker(100 * time.Millisecond)
+	defer ticker.Stop()
+	var child string
+	for child == "" {
+		if err := roster.RefreshAndWait(ctx); err != nil {
+			t.Fatal(err)
+		}
+		for _, live := range roster.List() {
+			if live.SessionID == entry.SessionID && len(live.RunningSubagentIDs) > 0 {
+				child = live.RunningSubagentIDs[0]
+				break
+			}
+		}
+		if child != "" {
+			break
+		}
+		select {
+		case <-ctx.Done():
+			t.Fatal(ctx.Err())
+		case <-ticker.C:
+		}
+	}
+	state, owned := roster.SubagentState(child)
+	owner, ownerOK := roster.SubagentOwner(child)
+	t.Logf("child=%s state=%s rosterOwned=%v parent=%s ownerOK=%v ownerCrashed=%v", child, state, owned, owner.SessionID, ownerOK, owner.Crashed)
+	if !owned || !ownerOK || owner.Crashed || owner.SessionID != entry.SessionID || state != appwire.ThreadStatusActive {
+		t.Fatal("child does not have its expected live owner")
+	}
+	for _, id := range []string{entry.SessionID, child} {
+		ref := "local:" + id
+		source, err := sourceForThreadWithDeletionFence(ctx, cfg, web.sources, ref, id)
+		t.Logf("id=%s sourceType=%T resolveError=%v", id, source, err)
+		if err != nil {
+			t.Fatal(err)
+		}
+		response, err := source.ReadThread(ctx, appwire.ThreadReadParams{Ref: ref, IncludeTurns: false})
+		t.Logf("id=%s readError=%v responseID=%s cwd=%q status=%s", id, err, response.Thread.ID, response.Thread.CWD, response.Thread.Status.Type)
+		cwd, cwdErr := sessionCWD(ctx, cfg, web.sources, id)
+		t.Logf("id=%s sessionCWD=%q sessionCWDError=%v", id, cwd, cwdErr)
+		if err != nil || cwdErr != nil || response.Thread.ID != id || response.Thread.CWD != fixture.workDir[0] || cwd != fixture.workDir[0] {
+			t.Fatalf("source %s did not return actual shared directory %q", id, fixture.workDir[0])
+		}
+	}
 }

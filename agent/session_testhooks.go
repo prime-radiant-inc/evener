@@ -39,6 +39,12 @@ type testConfig struct {
 	// afterCommunicateBoundary observes the state transition at a completed
 	// communicate boundary. Nil in production.
 	afterCommunicateBoundary func(*Session)
+	// beforeModelSwitchPublish observes a committed switch's publication
+	// phase at its start - after the profile swap released s.mu, before the
+	// marker record and the EventModelChanged emit. It is the window a
+	// concurrent at-rest pick can commit and publish in, so it is the only
+	// place a test can make that interleaving deterministic. Nil in production.
+	beforeModelSwitchPublish func()
 	// steeringCarrierClaimed observes the drain ladder claiming a steering
 	// carrier turn, before that turn is accepted -- the window a Stop or a
 	// write fault can land in. Nil in production.
