@@ -557,7 +557,14 @@ func (jm *jobManager) newDelayedShell(args shellArgs) (*runningJob, error) {
 		return nil, errJobManagerClosing
 	}
 	jm.running[jobID] = run
+	owner := jm.stableOwner
 	jm.mu.Unlock()
+	// A managed job on a delegate child holds the lane-marker parent's
+	// activity evidence from its start until the last running job ends —
+	// the child may settle with this job still live.
+	if owner != nil {
+		owner.managedJobStarted()
+	}
 	return run, nil
 }
 
@@ -648,10 +655,16 @@ func (jm *jobManager) commitDelayedShell(run *runningJob) error {
 			return errors.Join(errDelayedShellStartForwardTerminalFailed, err, terminalErr)
 		}
 		err = errors.Join(errDelayedShellStartForwardFailed, err)
+		leavingRunning := false
 		if jm.running[run.rec.JobID] == run {
 			delete(jm.running, run.rec.JobID)
+			leavingRunning = true
 		}
+		owner := jm.stableOwner
 		jm.mu.Unlock()
+		if leavingRunning && owner != nil {
+			owner.managedJobFinished()
+		}
 		run.delegateShell.abort()
 		run.closeDone()
 		return err
@@ -670,10 +683,16 @@ func (jm *jobManager) commitDelayedShell(run *runningJob) error {
 
 func (jm *jobManager) discardDelayedShell(run *runningJob) {
 	jm.mu.Lock()
+	leavingRunning := false
 	if jm.running[run.rec.JobID] == run {
 		delete(jm.running, run.rec.JobID)
+		leavingRunning = true
 	}
+	owner := jm.stableOwner
 	jm.mu.Unlock()
+	if leavingRunning && owner != nil {
+		owner.managedJobFinished()
+	}
 
 	run.delegateShell.abort()
 	_ = run.output.Close()

@@ -78,14 +78,27 @@ func (l ownerLiveness) String() string {
 // dead-looking report but must never veto conclusive live evidence. A
 // held livelock outranks everything: it is the root's own live process.
 func (s *Session) delegateLaneOwnerLiveness(m worktree.Marker) ownerLiveness {
+	verdict, _ := s.delegateLaneOwnerLivenessDetail(m)
+	return verdict
+}
+
+// delegateLaneOwnerLivenessDetail is delegateLaneOwnerLiveness with its
+// unresolved doubt made visible: liveDoubt reports whether the walk found an
+// attributed rendezvous entry whose pid is alive but whose daemon identity
+// could not be established — a tree that may still have its live daemon and
+// cannot be told from a reused pid. The reporting path answers the verdict
+// alone (doubt vetoes a dead-looking report, never more); the orphan arm's
+// release guard treats the same doubt as a withhold: uncertainty about
+// whether the tree's daemon is live is not permission to release.
+func (s *Session) delegateLaneOwnerLivenessDetail(m worktree.Marker) (ownerLiveness, bool) {
 	root, ok := s.sessionTreeRootSID(m.SessionID)
 	if !ok {
-		return ownerUnknown
+		return ownerUnknown, false
 	}
 	if root == s.id {
 		// Our own tree hosts us: its lanes are ours to dispose or keep, and
 		// their verdict is trivially live.
-		return ownerLive
+		return ownerLive, false
 	}
 	// inconclusive names an attributed entry whose daemon identity could not
 	// be established: a live pid that might still be the daemon that wrote
@@ -147,27 +160,27 @@ func (s *Session) delegateLaneOwnerLiveness(m worktree.Marker) ownerLiveness {
 				// Live pid, and the process that holds it began before the
 				// entry was written: the daemon that wrote the entry is still
 				// running. Conclusive.
-				return ownerLive
+				return ownerLive, inconclusive
 			}
 		}
 	}
 	held, exists, err := schema.SessionLivelockHeld(s.currentStateDir(), root)
 	if err != nil {
-		return ownerUnknown
+		return ownerUnknown, inconclusive
 	}
 	switch {
 	case held:
-		return ownerLive
+		return ownerLive, inconclusive
 	case exists && !inconclusive:
 		// The file is there and its flock is free: the OS released it at
 		// process death. No live signal was found above, so the tree reads
 		// dead-looking — the reporting word, never a collection verdict —
 		// unless an inconclusive rendezvous entry leaves doubt that it is.
-		return ownerDeadLooking
+		return ownerDeadLooking, false
 	default:
 		// No livelock at all: a session from before livelocks, or one that
 		// never hosted a process here. Answers nothing.
-		return ownerUnknown
+		return ownerUnknown, inconclusive
 	}
 }
 

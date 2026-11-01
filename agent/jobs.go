@@ -1510,10 +1510,16 @@ func (jm *jobManager) finalizeKeptSync(run *runningJob, status jobstore.Status, 
 	// jobs completed before the tool returned (spec §6.4d).
 
 	jm.mu.Lock()
+	leavingRunning := false
 	if jm.running[run.rec.JobID] == run && run.terminal == terminal {
 		delete(jm.running, run.rec.JobID)
+		leavingRunning = true
 	}
+	owner := jm.stableOwner
 	jm.mu.Unlock()
+	if leavingRunning && owner != nil {
+		owner.managedJobFinished()
+	}
 	_ = run.output.Close()
 	run.delegateShell.finish()
 	run.closeDoneDurable()
@@ -1875,7 +1881,11 @@ func (jm *jobManager) armFinalizedJob(run *runningJob, terminal *terminalJob) er
 		flushNotices()
 		return nil
 	}
+	owner := jm.stableOwner
 	jm.mu.Unlock()
+	if owner != nil {
+		owner.managedJobFinished()
+	}
 
 	_ = run.output.Close()
 

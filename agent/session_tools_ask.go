@@ -798,10 +798,21 @@ func endedOnNeedsResponse(history []schema.Turn, toolResultsIdx int, attemptStar
 }
 
 // communicateEndReasonOf is the end reason an accepted turn-ending
-// communicate call recorded in its result's tool state, or "".
+// communicate call recorded in its result's tool state, or "". Typed state
+// rides every result path, so a rejected or nonterminal call recording its
+// own requested reason is not restorable evidence: the input settled on the
+// call it accepted. States without explicit verdict fields predate them and
+// were only ever written on the accepted terminal path, so their reason
+// still counts.
 func communicateEndReasonOf(result *llm.ToolResultData) string {
 	var state communicateEndState
 	if json.Unmarshal(result.ToolState, &state) != nil {
+		return ""
+	}
+	if state.Accepted != nil && !*state.Accepted {
+		return ""
+	}
+	if state.EndTurn != nil && !*state.EndTurn {
 		return ""
 	}
 	return state.EndReason

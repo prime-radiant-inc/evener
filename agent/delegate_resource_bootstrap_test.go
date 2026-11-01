@@ -596,7 +596,15 @@ func newDelegateResourceBootstrapSession(t *testing.T) (*Session, *llm.Client, *
 
 func closedDelegateResourceBootstrapFixture(t *testing.T) (schema.SessionMeta, *llm.Client, *provider.Profile, string, string, *fakeAdapter) {
 	t.Helper()
-	stateDir := realTempDirForTest(t)
+	return closedDelegateResourceBootstrapFixtureInState(t, realTempDirForTest(t))
+}
+
+// closedDelegateResourceBootstrapFixtureInState bootstraps the closed parent
+// session inside a caller-chosen state directory — the shared-state-root
+// shape, where the session that later examines this parent resolves its
+// evidence through that same root.
+func closedDelegateResourceBootstrapFixtureInState(t *testing.T, stateDir string) (schema.SessionMeta, *llm.Client, *provider.Profile, string, string, *fakeAdapter) {
+	t.Helper()
 	workspace := t.TempDir()
 	adapter := &fakeAdapter{name: "openai"}
 	client := llm.NewClient()

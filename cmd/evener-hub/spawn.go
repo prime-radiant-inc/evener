@@ -226,10 +226,9 @@ func (h *HubSpawner) Spawn(ctx context.Context, req hubcore.SpawnRequest) (rende
 func (h *HubSpawner) Resume(ctx context.Context, req hubcore.ResumeRequest) (rendezvous.Entry, error) {
 	ctx, trace := withThreadLifecycleLog(ctx, "resume", req.SessionID, nil)
 	prepareDone := trace.stage(ctx, "launch_preparation")
-	timeout := h.Cfg.SpawnTimeout
-	if timeout == 0 {
-		timeout = 30 * time.Second
-	}
+	// The rendezvous wait must cover the daemon's whole state restore, not
+	// just process startup; resumeRendezvousTimeout carries the rationale.
+	timeout := resumeRendezvousTimeout
 	if req.StateDir == "" {
 		var err error
 		if req.Project.ID != "" {
@@ -520,11 +519,13 @@ type waitConfig struct {
 	startedAfter time.Time
 }
 
-// completionOwnedResumeTimeout is the hub-side bound on a completion-owned
-// resume's rendezvous wait, mirroring the client's own RESUME_REQUEST_TIMEOUT_MS
-// (10m): no client waits longer, so the bound only fires for callers with no
-// deadline of their own. A var so tests can shrink it.
-var completionOwnedResumeTimeout = 10 * time.Minute
+// resumeRendezvousTimeout is the hub-side bound on a resume's rendezvous
+// wait. A resumed daemon restores its session's durable state before it can
+// listen and register, so the wait must cover the whole restore, not just
+// process startup; it mirrors the web client's own RESUME_REQUEST_TIMEOUT_MS
+// (10m), and bounds callers with no deadline of their own. A var so tests can
+// shrink it.
+var resumeRendezvousTimeout = 10 * time.Minute
 
 // withRendezvousTimeout applies the production startup budget when it is
 // positive. A non-positive timeout leaves the caller's context as the only
@@ -692,7 +693,7 @@ func resumeDaemonWithProviderConfig(ctx context.Context, evenerBinary, runDir st
 		// own wait at RESUME_REQUEST_TIMEOUT_MS (10m), and a client without a
 		// deadline must not hold the session's ownership aliases forever while
 		// each relay/isLive/workspace read degrades against the lock.
-		timeout = completionOwnedResumeTimeout
+		timeout = resumeRendezvousTimeout
 	}
 	waitCtx, cancel := withRendezvousTimeout(ctx, timeout)
 	defer cancel()

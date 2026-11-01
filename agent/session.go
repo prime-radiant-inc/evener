@@ -423,6 +423,15 @@ type Session struct {
 	// holding a subagent row's lock, and mu sits above those.
 	// LOCK ORDER: drainAbandonedMu is a leaf — nothing is acquired under it.
 	drainAbandonedMu sync.Mutex
+	// laneEvidenceMu guards the managed-job lane-evidence hold: the count of
+	// this session's running managed jobs while it is a delegate child, and
+	// the evidence ticker the first job started. A leaf like drainAbandonedMu —
+	// the job manager calls in and out of it at lifecycle transitions.
+	// LOCK ORDER: laneEvidenceMu is a leaf; the hold's ticker goroutine never
+	// re-enters it.
+	laneEvidenceMu   sync.Mutex
+	laneEvidenceJobs int
+	laneEvidenceStop func()
 	// drainAbandonedChildren maps a direct child SESSION id to the exact
 	// delegate generation the drain gave up waiting on. A resumed generation
 	// under the same child session must not inherit the old gate.
