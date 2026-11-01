@@ -557,7 +557,14 @@ func (jm *jobManager) newDelayedShell(args shellArgs) (*runningJob, error) {
 		return nil, errJobManagerClosing
 	}
 	jm.running[jobID] = run
+	owner := jm.stableOwner
 	jm.mu.Unlock()
+	// A managed job on a delegate child holds the lane-marker parent's
+	// activity evidence from its start until the last running job ends —
+	// the child may settle with this job still live.
+	if owner != nil {
+		owner.managedJobStarted()
+	}
 	return run, nil
 }
 

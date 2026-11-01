@@ -285,7 +285,16 @@ func (s *Session) sharedRestoreEnvironment(descriptor delegatestore.Descriptor) 
 // validates that ancestor's lane; a delegate with no lane of this tree's own
 // and a non-local environment are not gated.
 func (s *Session) reviveValidateIsolationLane(started delegateStartCommit) error {
-	return s.revalidateLaneForLaunch(started.lease.delegateID)
+	if err := s.revalidateLaneForLaunch(started.lease.delegateID); err != nil {
+		return err
+	}
+	// The lane revalidated — including the ungated shapes, where the delegate
+	// now has no lane of its own to fail — so any drain-abandonment stamp a
+	// notification-drive refusal left on this delegate is resolved: drives and
+	// drains wait on the child again instead of skipping it until the next
+	// generation.
+	s.clearDrainAbandonedDelegate(started.lease.delegateID)
+	return nil
 }
 
 func (runtime delegateRuntime) restoreIdleForSend(started delegateStartCommit) (*subagent, bool, func(*subagent, error), error) {

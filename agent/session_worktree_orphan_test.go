@@ -902,7 +902,8 @@ func spawnRetainedDelegateLane(t *testing.T, r *wtRepo, laneName, standInDlg, st
 	// trailing finish covers any completion nudge that follows.
 	steps := []func(llm.Request) llm.Response{finish}
 	steps = append(steps, turns...)
-	steps = append(steps, finish, finish)
+	trailingFinishes := []func(llm.Request) llm.Response{finish, finish}
+	steps = append(steps, trailingFinishes...)
 	fixture.adapter.steps = steps
 	first := (delegateRuntime{owner: root}).send(context.Background(), fixture.delegateID, "first turn", 10_000)
 	if first.result.Err != nil || first.commit == nil {
@@ -954,6 +955,7 @@ func TestWorktreePrune_OrphanArmSparesLaneWhileDelegateReportsActivity(t *testin
 	case <-entered:
 	case outcome := <-sendOutcome:
 		t.Fatalf("the long turn's send returned before it started: %+v", outcome.result)
+	// TRIPWIRE: the scripted wedge turn starts in-process in milliseconds; 10s only fires on a genuine hang.
 	case <-time.After(10 * time.Second):
 		delegateSub := root.subagents.get(fixture.childID)
 		var running, driving, subClosed bool
@@ -1038,6 +1040,7 @@ func TestWorktreePrune_OrphanArmSparesLaneWhileDelegateReportsActivity(t *testin
 				t.Fatalf("apply the long turn's acknowledgment: %v", err)
 			}
 		}
+	// TRIPWIRE: the released wedge returns and the run settles within seconds; 10s only fires on a genuine hang.
 	case <-time.After(10 * time.Second):
 		t.Fatal("the long turn never finished after release")
 	}
@@ -1080,6 +1083,7 @@ func TestWorktreePrune_OrphanArmSparesLaneWhileRetainedChildNotifies(t *testing.
 	}()
 	select {
 	case <-entered:
+	// TRIPWIRE: the notification drive launches within a few drain ticks; 12s only fires on a genuine hang.
 	case <-time.After(12 * time.Second):
 		t.Fatal("the retained child's notification turn never started")
 	}
@@ -1137,6 +1141,7 @@ func TestWorktreePrune_OrphanArmSparesLaneWhileRetainedChildNotifies(t *testing.
 	close(release)
 	select {
 	case <-driveDone:
+	// TRIPWIRE: the released drive turn returns within seconds; 10s only fires on a genuine hang.
 	case <-time.After(10 * time.Second):
 		t.Fatal("the notification turn never finished after release")
 	}
@@ -1174,6 +1179,7 @@ func TestWorktreePrune_OrphanArmSparesLaneThroughSilentToolCall(t *testing.T) {
 		sendOutcome <- outcome
 	}()
 	// The shell is live: it signaled its start and now waits silently.
+	// TRIPWIRE: the real shell touches its start file in milliseconds; 30s only fires on a genuine hang under a loaded suite.
 	waitForCondition(t, 30*time.Second, "the silent shell call to start", func() bool {
 		_, err := os.Stat(entered)
 		return err == nil
@@ -1189,6 +1195,7 @@ func TestWorktreePrune_OrphanArmSparesLaneThroughSilentToolCall(t *testing.T) {
 
 	// The turn's own machinery must keep the evidence fresh through the
 	// silent wait.
+	// TRIPWIRE: the turn ticker refreshes evidence every second, so the first refresh lands within about one; 10s only fires on a genuine hang.
 	waitForCondition(t, 10*time.Second, "the silent tool call to keep the lane owner's evidence fresh", func() bool {
 		info, err := os.Stat(parentTranscript)
 		return err == nil && info.ModTime().After(stale)
@@ -1234,6 +1241,7 @@ func TestWorktreePrune_OrphanArmSparesLaneThroughSilentToolCall(t *testing.T) {
 				t.Fatalf("apply the silent turn's acknowledgment: %v", err)
 			}
 		}
+	// TRIPWIRE: the released silent turn settles within seconds; 10s only fires on a genuine hang.
 	case <-time.After(10 * time.Second):
 		t.Fatal("the silent turn never finished after release")
 	}
@@ -1293,7 +1301,8 @@ func TestWorktreePrune_OrphanArmSparesLaneWhileCoordinatorDrainsForDescendant(t 
 		}
 		return agenttest.ToolCallResponse(llm.ToolCallData{ID: "call_descendant_shell", Name: "shell", Arguments: shellArgs, Type: "function"})
 	}
-	fixture, root, lanePath := spawnRetainedDelegateLane(t, r, "drain-wait-lane", "dlg_orphanactive000003", "034orphanactive0003", spawnB, router, router)
+	drainTurns := []func(llm.Request) llm.Response{spawnB, router, router}
+	fixture, root, lanePath := spawnRetainedDelegateLane(t, r, "drain-wait-lane", "dlg_orphanactive000003", "034orphanactive0003", drainTurns...)
 	parentTranscript := schema.SessionTranscriptPath(fixture.stateDir, fixture.meta.ID)
 
 	sendOutcome := make(chan delegateSendOutcome, 1)
@@ -1304,6 +1313,7 @@ func TestWorktreePrune_OrphanArmSparesLaneWhileCoordinatorDrainsForDescendant(t 
 	// The descendant's shell is live and the coordinator's turn has finished:
 	// its generation now sits in the finalization drain, awaiting the
 	// descendant.
+	// TRIPWIRE: the scripted turns and the drain complete within seconds; 30s only fires on a genuine hang.
 	waitForCondition(t, 30*time.Second, "the coordinator to finish while the descendant works", func() bool {
 		if _, err := os.Stat(enteredB); err != nil {
 			return false
@@ -1330,6 +1340,7 @@ func TestWorktreePrune_OrphanArmSparesLaneWhileCoordinatorDrainsForDescendant(t 
 
 	// The finalization drain is active delegate work: its wait must keep
 	// the evidence fresh.
+	// TRIPWIRE: the drain ticker refreshes evidence every second, so the first refresh lands within about one; 10s only fires on a genuine hang.
 	waitForCondition(t, 10*time.Second, "the drain wait to keep the lane owner's evidence fresh", func() bool {
 		info, err := os.Stat(parentTranscript)
 		return err == nil && info.ModTime().After(stale)
@@ -1376,6 +1387,7 @@ func TestWorktreePrune_OrphanArmSparesLaneWhileCoordinatorDrainsForDescendant(t 
 				t.Fatalf("apply the coordinator's acknowledgment: %v", err)
 			}
 		}
+	// TRIPWIRE: the drain completes within seconds of the descendant's release; 10s only fires on a genuine hang.
 	case <-time.After(10 * time.Second):
 		t.Fatal("the coordinator never settled after the descendant finished")
 	}
@@ -1432,8 +1444,8 @@ func TestWorktreePrune_OrphanArmSparesLaneWhileWokenDescendantWorks(t *testing.T
 			return agenttest.FinalResponse("descendant done")
 		}
 	}
-	fixture, root, lanePath := spawnRetainedDelegateLane(t, r, "woken-descendant-lane", "dlg_orphanactive000004", "034orphanactive0004",
-		route, route, route, route, route, route, route, route)
+	routes := []func(llm.Request) llm.Response{route, route, route, route, route, route, route, route}
+	fixture, root, lanePath := spawnRetainedDelegateLane(t, r, "woken-descendant-lane", "dlg_orphanactive000004", "034orphanactive0004", routes...)
 	parentTranscript := schema.SessionTranscriptPath(fixture.stateDir, fixture.meta.ID)
 
 	// The coordinator's second turn spawns the isolated descendant, whose
@@ -1495,6 +1507,7 @@ func TestWorktreePrune_OrphanArmSparesLaneWhileWokenDescendantWorks(t *testing.T
 				t.Fatalf("apply the coordinator's acknowledgment: %v", err)
 			}
 		}
+	// TRIPWIRE: the whole scripted sequence settles in seconds, and 70s sits above the send's own 60s budget so the send's error surfaces first; only a genuine hang reaches this arm.
 	case <-time.After(70 * time.Second):
 		t.Fatalf("the coordinator never settled; %s", dumpState())
 	}
@@ -1541,6 +1554,7 @@ func TestWorktreePrune_OrphanArmSparesLaneWhileWokenDescendantWorks(t *testing.T
 	if descendantSub == nil || descendantSub.sess == nil {
 		t.Fatalf("the descendant %s is not retained after its run", descendantChildID)
 	}
+	// TRIPWIRE: the quick scripted turn settles within seconds; 10s only fires on a genuine hang.
 	waitForCondition(t, 10*time.Second, "the descendant to settle after its quick turn", func() bool {
 		descendantSub.mu.Lock()
 		running, finalizing := descendantSub.running, descendantSub.finalizing
@@ -1606,6 +1620,7 @@ func TestWorktreePrune_OrphanArmSparesLaneWhileWokenDescendantWorks(t *testing.T
 
 	// The woken descendant's activity is the tree's life now: it must keep
 	// the settled coordinator's lane evidence fresh.
+	// TRIPWIRE: the woken turn's ticker refreshes the ancestors' evidence within a second; 10s only fires on a genuine hang.
 	waitForCondition(t, 10*time.Second, "the woken descendant to keep the coordinator's lane evidence fresh", func() bool {
 		info, err := os.Stat(parentTranscript)
 		return err == nil && info.ModTime().After(stale)
@@ -1637,6 +1652,7 @@ func TestWorktreePrune_OrphanArmSparesLaneWhileWokenDescendantWorks(t *testing.T
 	if err := os.WriteFile(releaseB, nil, 0o644); err != nil {
 		t.Fatalf("release the woken descendant: %v", err)
 	}
+	// TRIPWIRE: the released shell returns and the turn settles within seconds; 30s only fires on a genuine hang.
 	waitForCondition(t, 30*time.Second, "the woken turn to finish after release", func() bool {
 		descendantSub.mu.Lock()
 		running := descendantSub.running
@@ -1847,5 +1863,238 @@ func TestWorktreePrune_OrphanArmSparesLaneWhenWakeInterleavesRelease(t *testing.
 	}
 	if _, locked, reason := r.laneLocked(t, lanePath); !locked {
 		t.Errorf("the running child's lock was not restored: %q", reason)
+	}
+}
+
+// The evidence tickers fire every second, so the transcript rewrite is the
+// hot path for a busy tree — and the mtime is the change stamp every reader
+// downstream keys on: a same-size mtime move makes the foldcache refold a
+// session's whole transcript and the hub's message search reindex. A
+// transcript already touched within the refresh floor is as fresh as every
+// consumer's threshold needs, so the rewrite must leave it alone, while a
+// stale transcript is still rewritten immediately.
+func TestRefreshActivityEvidenceLeavesFreshTranscriptAlone(t *testing.T) {
+	t.Parallel()
+	fixture := newColdDelegateFixtureConfigured(t, "", func(d *delegatestore.Descriptor) {})
+	root, err := restoreDelegateResourceBootstrapSession(fixture.client, fixture.profile, fixture.workspace, fixture.meta, fixture.stateDir)
+	if err != nil {
+		t.Fatalf("restore root: %v", err)
+	}
+	defer root.Close()
+	finish := func(llm.Request) llm.Response {
+		return agenttest.FinalResponse("done")
+	}
+	fixture.adapter.steps = []func(llm.Request) llm.Response{finish}
+	first := (delegateRuntime{owner: root}).send(context.Background(), fixture.delegateID, "first turn", 10_000)
+	if first.result.Err != nil || first.commit == nil {
+		t.Fatalf("first send: %+v", first.result)
+	}
+	plans, err := first.commit.Complete(true)
+	if err != nil {
+		t.Fatalf("acknowledge the first turn: %v", err)
+	}
+	if err := root.executeDelegateMutationPlans(plans); err != nil {
+		t.Fatalf("apply the first turn's acknowledgment: %v", err)
+	}
+
+	transcript := schema.SessionTranscriptPath(fixture.stateDir, fixture.meta.ID)
+	stale := time.Now().Add(-30 * 24 * time.Hour)
+	if err := os.Chtimes(transcript, stale, stale); err != nil {
+		t.Fatalf("backdate the transcript: %v", err)
+	}
+	root.refreshActivityEvidence(fixture.meta.ID)
+	info, err := os.Stat(transcript)
+	if err != nil {
+		t.Fatalf("stat the transcript: %v", err)
+	}
+	if !info.ModTime().After(stale) {
+		t.Fatal("a transcript idle past the floor was not refreshed")
+	}
+
+	// Inside the floor the mtime is the readers' change stamp: the refresh
+	// must not move it.
+	recent := time.Now().Add(-2 * time.Second)
+	if err := os.Chtimes(transcript, recent, recent); err != nil {
+		t.Fatalf("freshen the transcript: %v", err)
+	}
+	root.refreshActivityEvidence(fixture.meta.ID)
+	info, err = os.Stat(transcript)
+	if err != nil {
+		t.Fatalf("stat the transcript: %v", err)
+	}
+	if !info.ModTime().Equal(recent) {
+		t.Fatal("a transcript inside the refresh floor had its mtime rewritten")
+	}
+}
+
+// A settled delegate that holds a running background job produces no turn,
+// drain, or phase report for as long as the job waits silently — every
+// existing evidence carrier is gone — so the lane's marker parent would go
+// stale enough for a foreign prune to release the lane under the running
+// job. The job itself must hold the evidence: the hold starts with the first
+// running managed job and is released when the last one leaves the running
+// set.
+func TestWorktreePrune_OrphanArmSparesLaneWhileSettledJobRuns(t *testing.T) {
+	t.Parallel()
+	r := newWorktreeRepo(t)
+	fixture, root, lanePath := spawnRetainedDelegateLane(t, r, "settled-job-lane", "dlg_orphanactive000004", "034orphanactive000004")
+	parentTranscript := schema.SessionTranscriptPath(fixture.stateDir, fixture.meta.ID)
+	sub := root.subagents.get(fixture.childID)
+	if sub == nil || sub.sess == nil {
+		t.Fatalf("delegate %s is not retained", fixture.childID)
+	}
+	child := sub.sess
+	// The controller refuses shell work on a settled delegate's stale
+	// lease, so a live job on a settled child is always one a run started
+	// and outlived — the shape the job manager's start hook and the last
+	// completion's finish hook manage, both scoped to the job's life, not
+	// the run's. Engage the hold the way the start hook does.
+	child.managedJobStarted()
+
+	// The marker parent has now been idle past the operator's threshold —
+	// the only live work is the settled child's running job.
+	stale := time.Now().Add(-30 * 24 * time.Hour)
+	if err := os.Chtimes(parentTranscript, stale, stale); err != nil {
+		t.Fatalf("backdate the parent's transcript: %v", err)
+	}
+
+	// The job's own hold must keep the evidence fresh through the silent
+	// wait.
+	// TRIPWIRE: the job-held ticker refreshes evidence every second, so the first refresh lands within about one; 10s only fires on a genuine hang.
+	waitForCondition(t, 10*time.Second, "the settled background job to keep the lane owner's evidence fresh", func() bool {
+		info, err := os.Stat(parentTranscript)
+		return err == nil && info.ModTime().After(stale)
+	})
+
+	// A foreign session's prune — armed with a threshold the backdate
+	// crosses but the refresh does not — must not release or collect the
+	// lane while the job is still running.
+	out, err := r.pruneOrphanedOp(t, 7)
+	if err != nil {
+		t.Fatalf("prune: %v", err)
+	}
+	if findPruneEntry(t, pruneEntries(t, out, "removed"), "settled-job-lane") != nil {
+		t.Fatalf("a settled child's running job had its lane reclaimed mid-activity: %+v", out)
+	}
+	if findPruneEntry(t, pruneEntries(t, out, "unlocked"), "settled-job-lane") != nil {
+		t.Fatalf("a settled child's running job had its lane released by the orphan arm: %+v", out)
+	}
+	_, locked, reason := r.laneLocked(t, lanePath)
+	if !locked {
+		t.Fatalf("the settled child's job lane lost its lock: %q", reason)
+	}
+	m, ok := worktree.ParseMarker(reason)
+	if !ok || m.DelegateID != fixture.delegateID || m.SessionID != fixture.meta.ID {
+		t.Fatalf("the settled child's job lane lock = %q, want the delegate marker naming its parent session", reason)
+	}
+
+	// The last job ends and the hold is released with it — no ticker
+	// outlives the last running job.
+	child.managedJobFinished()
+	child.laneEvidenceMu.Lock()
+	jobs, stop := child.laneEvidenceJobs, child.laneEvidenceStop
+	child.laneEvidenceMu.Unlock()
+	if jobs != 0 || stop != nil {
+		t.Fatalf("the finished job left its evidence hold behind: jobs=%d stop=%v", jobs, stop != nil)
+	}
+}
+
+// A notification drive whose lane revalidation refuses — the lane removed,
+// foreign-held, or unverifiable — can never deliver the notification it was
+// kicked for, and the child's settled run gives the drain's grace machinery
+// nothing to arm on. Without a stamp the drain keeps counting the queued
+// notification as deliverable work and blocks until its context is
+// cancelled; the refusal must mark the child given-up so the drain's
+// liveness walks skip it, and a later revive that revalidates the lane
+// successfully clears the stamp.
+func TestDrainSkipsChildWhoseLaneRefusedDriveValidation(t *testing.T) {
+	t.Parallel()
+	r := newWorktreeRepo(t)
+	gate := t.TempDir()
+	entered := gate + "/job-entered"
+	release := gate + "/job-release"
+	blockCmd := "sh -c 'touch " + entered + "; while [ ! -e " + release + " ]; do sleep 0.2; done'"
+	args, err := json.Marshal(map[string]any{"command": blockCmd, "mode": "background"})
+	if err != nil {
+		t.Fatalf("marshal shell args: %v", err)
+	}
+	bgCall := func(llm.Request) llm.Response {
+		return agenttest.ToolCallResponse(llm.ToolCallData{ID: "call_bg_shell", Name: "shell", Arguments: args, Type: "function"})
+	}
+	fixture, root, lanePath := spawnRetainedDelegateLane(t, r, "refused-drive-lane", "dlg_orphanactive000005", "034orphanactive0005", bgCall)
+
+	// The child's turn spawns the background job and finishes; cancelling the
+	// generation's send ctx settles it the way every bounded drain ctx does
+	// in a real tree, leaving the job running with no generation, no drain,
+	// and a settled child.
+	sendCtx, sendCancel := context.WithCancel(context.Background())
+	defer sendCancel()
+	sendOutcome := make(chan delegateSendOutcome, 1)
+	go func() {
+		sendOutcome <- (delegateRuntime{owner: root}).send(sendCtx, fixture.delegateID, "background work", 60_000)
+	}()
+	// TRIPWIRE: the scripted turn and the job's start complete within seconds; 30s only fires on a genuine hang.
+	waitForCondition(t, 30*time.Second, "the background job to start and its turn to finish", func() bool {
+		if _, err := os.Stat(entered); err != nil {
+			return false
+		}
+		return len(fixture.adapter.Requests()) >= 3
+	})
+	sendCancel()
+	select {
+	case <-sendOutcome:
+		// The cancel cuts the generation's drain mid-wait; either outcome
+		// leaves the state this test needs — settled child, live job, no
+		// drain holding the completion notification's delivery.
+	// TRIPWIRE: the cancelled generation settles within seconds; 10s only fires on a genuine hang.
+	case <-time.After(10 * time.Second):
+		t.Fatal("the cancelled send never settled")
+	}
+
+	// A foreign session takes the lane before the job completes, so the
+	// completion's wake cannot re-take it: every revalidation the wake and
+	// the drain would run now refuses.
+	const foreignSID = "034somebodyelse00000000009"
+	wtGit(t, r.mainRoot, "worktree", "unlock", lanePath)
+	wtGit(t, r.mainRoot, "worktree", "lock", "--reason", worktree.FormatSessionMarker(foreignSID), lanePath)
+
+	// The job finishes and arms its completion attention on the settled
+	// child. The attention can never be delivered while the lane is
+	// foreign-held, and the child's settled run gives the drain's grace
+	// machinery nothing to arm on — without a stamp the drain keeps counting
+	// the owed attention as deliverable work.
+	if err := os.WriteFile(release, nil, 0o644); err != nil {
+		t.Fatalf("release the background job: %v", err)
+	}
+	// TRIPWIRE: the job exits and its completion attention arms within seconds of release; 10s only fires on a genuine hang.
+	waitForCondition(t, 10*time.Second, "the finished job to arm its completion attention", func() bool {
+		sub := root.subagents.get(fixture.childID)
+		if sub == nil || sub.sess == nil {
+			return false
+		}
+		ids, err := sub.sess.pendingDelegateAttentionIDs()
+		return err == nil && len(ids) > 0
+	})
+
+	// The parent's drain must give up on the child it can no longer deliver
+	// to instead of holding every future drain open.
+	// TRIPWIRE: the stamped child is skipped within seconds, far inside the drain's own grace windows; 10s only fires on a genuine hang.
+	drainCtx, drainCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer drainCancel()
+	if _, err := root.DrainJobTree(drainCtx); err != nil {
+		t.Fatalf("the drain blocked on a child whose lane refused revalidation: %v", err)
+	}
+
+	// The refused child is stamped given-up — the gate every drain walk and
+	// drive loop reads — and the foreign lock was never displaced.
+	if !root.childDriveGated(fixture.childID) {
+		t.Fatal("a refused lane validation left the child counted as deliverable drain work")
+	}
+	_, locked, reason := r.laneLocked(t, lanePath)
+	if !locked {
+		t.Fatalf("the drain displaced the foreign lock: %q", reason)
+	}
+	if m, ok := worktree.ParseMarker(reason); !ok || m.SessionID != foreignSID {
+		t.Fatalf("foreign lock = %q, want the other session's marker", reason)
 	}
 }

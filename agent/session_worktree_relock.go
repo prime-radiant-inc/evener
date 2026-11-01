@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"time"
 
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/execenv"
@@ -304,6 +305,17 @@ func (s *Session) revalidateLaneForLaunch(delegateID string) error {
 	return s.reviveRevalidateDelegateLane(local, lane)
 }
 
+// activityEvidenceRefreshFloor bounds how fresh the transcript mtime must be
+// before a refresh rewrites it. The evidence tickers fire every second, so
+// the rewrite is the hot path for a busy tree — and the mtime IS the change
+// stamp every reader downstream keys on: a same-size mtime move makes the
+// foldcache refold a session's whole transcript from zero and the hub's
+// message search reindex. The smallest freshness threshold any consumer
+// applies — the orphan reclaim's 0.001-day arm — sits far above this floor,
+// so a transcript touched within it is already as fresh as any consumer
+// needs, while a stale transcript is still rewritten immediately.
+const activityEvidenceRefreshFloor = time.Minute
+
 // refreshActivityEvidence records activity in the last-activity signal the
 // session listings and the orphan reclaim both read — the named session's
 // transcript mtime (the doctor's LastActivity). An automatic launch runs on
@@ -317,8 +329,12 @@ func (s *Session) refreshActivityEvidence(sessionID string) {
 	if s == nil || sessionID == "" {
 		return
 	}
+	path := schema.SessionTranscriptPath(s.stateDir, sessionID)
 	now := s.sclock().Now()
-	_ = os.Chtimes(schema.SessionTranscriptPath(s.stateDir, sessionID), now, now)
+	if info, err := os.Stat(path); err == nil && now.Sub(info.ModTime()) < activityEvidenceRefreshFloor {
+		return
+	}
+	_ = os.Chtimes(path, now, now)
 }
 
 // startLaneEvidenceTicker keeps the lane-marker parent's activity evidence
@@ -354,6 +370,45 @@ func (s *Session) startLaneEvidenceTicker(ctx context.Context) (stop func()) {
 		cancel()
 		<-done
 	}
+}
+
+// managedJobStarted and managedJobFinished hold the lane-marker parent's
+// activity evidence for the life of this delegate child's running managed
+// jobs, not just its turns and drains. A settled delegate with a live
+// background job produces no phase reports and runs no turn — the two
+// carriers every other refresh rides — so a job that waits silently for
+// hours would leave the evidence stale enough for a foreign prune to
+// release the lane under the running work. The hold begins with the first
+// running job and is released when the last one leaves the running set; the
+// tick itself is the turn ticker's (startLaneEvidenceTicker) parented to
+// the session lifetime, so close tears it down even if a completion path
+// never runs.
+func (s *Session) managedJobStarted() {
+	if s == nil || s.owningDelegateID == "" || s.delegateController == nil {
+		return
+	}
+	s.laneEvidenceMu.Lock()
+	s.laneEvidenceJobs++
+	if s.laneEvidenceJobs == 1 {
+		s.laneEvidenceStop = s.startLaneEvidenceTicker(s.sessionCtx)
+	}
+	s.laneEvidenceMu.Unlock()
+}
+
+func (s *Session) managedJobFinished() {
+	if s == nil {
+		return
+	}
+	s.laneEvidenceMu.Lock()
+	if s.laneEvidenceJobs > 0 {
+		s.laneEvidenceJobs--
+	}
+	if s.laneEvidenceJobs == 0 && s.laneEvidenceStop != nil {
+		stop := s.laneEvidenceStop
+		s.laneEvidenceStop = nil
+		stop()
+	}
+	s.laneEvidenceMu.Unlock()
 }
 
 // retryPendingReLocks re-attempts the resume re-lock for lanes whose first
