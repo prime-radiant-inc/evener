@@ -101,8 +101,12 @@ func TestLongRunningResumeStopAwaitsCleanupThenUsesProcessProof(t *testing.T) {
 
 // Fake only the external child process. The real Resume launcher owns log
 // setup, deadline selection, rendezvous matching, failure wrapping and reaping.
+// The "budgeted timeout" outcome pins the launcher's deadline mechanics — a
+// non-completion-owned resume settles at the budget it was given. The budget
+// production resumes actually get is pinned by the HubSpawner resume tests in
+// spawn_test.go.
 func TestLongRunningResumeCompletionPolicyAndLateOutcome(t *testing.T) {
-	for _, outcome := range []string{"ready", "failed", "automatic timeout"} {
+	for _, outcome := range []string{"ready", "failed", "budgeted timeout"} {
 		t.Run(outcome, func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
 				runDir := t.TempDir()
@@ -142,7 +146,7 @@ func TestLongRunningResumeCompletionPolicyAndLateOutcome(t *testing.T) {
 				budget := DefaultConfig().SpawnTimeout
 				go func() {
 					entry, err := resumeDaemon(t.Context(), "fixture-evener", runDir, hubcore.ResumeRequest{
-						SessionID: sessionID, CompletionOwned: outcome != "automatic timeout",
+						SessionID: sessionID, CompletionOwned: outcome != "budgeted timeout",
 					}, budget, io.Discard)
 					completed <- result{entry, err}
 				}()
@@ -154,11 +158,11 @@ func TestLongRunningResumeCompletionPolicyAndLateOutcome(t *testing.T) {
 					t.Fatalf("launcher returned before readiness/exit/reaping: %+v", got)
 				default:
 				}
-				if outcome == "automatic timeout" {
+				if outcome == "budgeted timeout" {
 					<-killed
 					exit <- nil
 					if got := <-completed; !errors.Is(got.err, errRendezvousTimeout) {
-						t.Fatalf("automatic Resume lost startup budget: %v", got.err)
+						t.Fatalf("budgeted resume lost its budget: %v", got.err)
 					}
 					return
 				}
@@ -1106,7 +1110,7 @@ func TestShutdownUncertainOwnershipRefusesRegisteredResume(t *testing.T) {
 // The Low RoboRev reported against resumeDaemon's CompletionOwned timeout=0:
 // a completion-owned resume whose client never cancels held the session's
 // ownership aliases indefinitely while the child never published rendezvous.
-// The hub now bounds the wait itself (completionOwnedResumeTimeout, mirroring
+// The hub now bounds the wait itself (resumeRendezvousTimeout, mirroring
 // the client's RESUME_REQUEST_TIMEOUT_MS), so the lock lifetime does not
 // depend on caller behavior.
 func TestCompletionOwnedResumeRendezvousWaitIsHubBounded(t *testing.T) {
@@ -1128,9 +1132,9 @@ func TestCompletionOwnedResumeRendezvousWaitIsHubBounded(t *testing.T) {
 				return <-exit
 			}}, nil
 		}
-		originalBudget := completionOwnedResumeTimeout
-		defer func() { completionOwnedResumeTimeout = originalBudget }()
-		completionOwnedResumeTimeout = time.Second
+		originalBudget := resumeRendezvousTimeout
+		defer func() { resumeRendezvousTimeout = originalBudget }()
+		resumeRendezvousTimeout = time.Second
 		type result struct {
 			entry rendezvous.Entry
 			err   error
