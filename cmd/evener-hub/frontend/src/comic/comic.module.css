@@ -163,7 +163,6 @@
 .thought {
   border-radius: 45% 43% 47% 41% / 37% 44% 39% 43%;
   padding: 24px 33px;
-  box-shadow: 7px -5px 0 -3px var(--comic-paper), 9px -6px 0 -3px var(--comic-ink);
 }
 
 .thoughtTrail {

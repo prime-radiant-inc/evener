@@ -222,6 +222,16 @@ test("row columns stay bounded by the panel size token", () => {
   expect(css).not.toContain("repeat(2,");
 });
 
+test("a thought bubble paints one cloud, not a shadow duplicate beside it", () => {
+  const css = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "./comic.module.css"), "utf8");
+  const thought = /\.thought \{[^}]*\}/.exec(css)?.[0];
+  expect(thought).toBeDefined();
+  // The cloud keeps its own outline; a box-shadow would paint a second,
+  // offset balloon silhouette that reads as a duplicated message bubble.
+  expect(thought).not.toContain("box-shadow");
+  expect(thought).toContain("border-radius");
+});
+
 test("a continuation is wide and a spotlight is settled short dialogue only", () => {
   const entries = [
     entry("first", "dialogue", "x".repeat(85)),
