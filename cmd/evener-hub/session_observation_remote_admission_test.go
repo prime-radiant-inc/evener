@@ -20,10 +20,10 @@ func TestManagerRemoteWatchAdmissionUsesThreadReadTargetSupport(t *testing.T) {
 		completion  bool
 		wantRefusal bool
 	}{
-		{name: "unsupported target", support: boolPointer(false), completion: true, wantRefusal: true},
+		{name: "unsupported target", support: new(false), completion: true, wantRefusal: true},
 		{name: "old hub omits target support", support: nil, completion: true, wantRefusal: true},
-		{name: "supported target", support: boolPointer(true), completion: true},
-		{name: "status remains available", support: boolPointer(false)},
+		{name: "supported target", support: new(true), completion: true},
+		{name: "status remains available", support: new(false)},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
@@ -81,5 +81,3 @@ func TestManagerRemoteWatchAdmissionUsesThreadReadTargetSupport(t *testing.T) {
 		})
 	}
 }
-
-func boolPointer(value bool) *bool { return &value }
