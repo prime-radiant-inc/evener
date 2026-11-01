@@ -144,19 +144,19 @@ function relocationDOM(shape, mutate = () => {}) {
       `<section data-comic-row="${id}" data-comic-session="parent" data-comic-path="[]"><div data-comic-entry="${id}" data-comic-session="parent" data-comic-path="[]">${text}</div></section>`,
     );
   const history = row('<div data-comic-flow="history" data-comic-session="parent" data-comic-path="[]"></div>');
-  const marker = row('<div data-comic-flow="unplaced-group" data-comic-session="parent" data-comic-path="[]"></div>');
   // The production strip folds its counted mid-work updates into the header:
   // ComicSubchatHeader renders span[data-comic-updates=N] only for N > 0.
   const strip = (updates) =>
     row(
       `<div data-comic-flow="strip" data-comic-session="parent" data-comic-path="[]"><div data-comic-entry="child" data-comic-session="parent" data-comic-path="[]"><div data-comic-delegate="child" data-comic-child-ref="grandchild">${
-        updates > 0 ? `<span data-comic-updates="${updates}">${updates} update${updates === 1 ? "" : "s"} folded into this strip</span>` : ""
+        updates > 0
+          ? `<span data-comic-updates="${updates}">${updates} update${updates === 1 ? "" : "s"} folded into this strip</span>`
+          : ""
       }<button aria-expanded="true"></button></div></div></div>`,
     );
   const shapes = {
     launch: entry("input", "COMIC_SUBCHAT_CHILD") + strip(1) + entry("continuation", "COMIC_CHILD_SOURCE_00"),
-    anchored:
-      history + entry("thought", "COMIC_THOUGHT_CHILD") + strip(1) + entry("report", "BACKGROUND_TURN_DONE"),
+    anchored: history + entry("thought", "COMIC_THOUGHT_CHILD") + strip(1) + entry("report", "BACKGROUND_TURN_DONE"),
     absent: history + entry("thought", "COMIC_THOUGHT_CHILD") + entry("report", "BACKGROUND_TURN_DONE"),
   };
   const shaped = shapes[shape];
@@ -383,7 +383,16 @@ const transition = {
     },
   ],
   single: { panel: 416, probe: 416, left: 15, right: 431 },
-  paired: { rowId: "real-pair-1", panels: 2, panel: 416, probe: 416, left: 15, firstRight: 431, secondLeft: 446, right: 862 },
+  paired: {
+    rowId: "real-pair-1",
+    panels: 2,
+    panel: 416,
+    probe: 416,
+    left: 15,
+    firstRight: 431,
+    secondLeft: 446,
+    right: 862,
+  },
 };
 
 test("rejects a paired row that stretched into its gutter instead of keeping the cap", () => {
@@ -401,15 +410,27 @@ test("rejects a paired checkpoint row that is not exactly two articles", () => {
 });
 
 for (const [name, row] of [
-  ["more declared columns than the width fits", { width: 884, grid: "repeat(3, minmax(0, var(--comic-panel-max-width)))", panels: 2 }],
-  ["more articles than declared columns", { width: 884, grid: "repeat(1, minmax(0, var(--comic-panel-max-width)))", panels: 2 }],
+  [
+    "more declared columns than the width fits",
+    { width: 884, grid: "repeat(3, minmax(0, var(--comic-panel-max-width)))", panels: 2 },
+  ],
+  [
+    "more articles than declared columns",
+    { width: 884, grid: "repeat(1, minmax(0, var(--comic-panel-max-width)))", panels: 2 },
+  ],
   ["a foreign grid token", { width: 884, grid: "repeat(2, minmax(0, var(--comic-wide-max-width)))", panels: 2 }],
-  ["insert columns that ignore the 40rem unit", { width: 884, grid: "repeat(2, minmax(0, var(--comic-insert-max-width)))", panels: 2 }],
+  [
+    "insert columns that ignore the 40rem unit",
+    { width: 884, grid: "repeat(2, minmax(0, var(--comic-insert-max-width)))", panels: 2 },
+  ],
 ])
   test(`rejects a mounted row with ${name}`, () => {
-    assert.throws(() => guard.verifyPanelWidths({ ...transition, rowPacking: [...transition.rowPacking, row] }, "transition"), {
-      name: "Error",
-    });
+    assert.throws(
+      () => guard.verifyPanelWidths({ ...transition, rowPacking: [...transition.rowPacking, row] }, "transition"),
+      {
+        name: "Error",
+      },
+    );
   });
 
 test("accepts independently measured single and real packed geometry at the transition width", () => {
