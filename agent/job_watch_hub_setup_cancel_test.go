@@ -181,8 +181,10 @@ func TestManagerWatchSetupCancellationAfterRegistrationDurablyEndsWatch(t *testi
 		result <- err
 	}()
 	var watchCtx context.Context
+	// TRIPWIRE: local Watch entry takes well under a second; only a wedged setup should reach this bound.
 	awaitWithin(t, 10*time.Second, "client.Watch setup beginning", func() { watchCtx = <-client.watchCtx })
 	go func() { <-watchCtx.Done(); close(watchCtxDone) }()
+	// TRIPWIRE: once the append is released, the canceled setup returns locally, well below this deadlock bound.
 	awaitWithin(t, 10*time.Second, "canceled setup returning", func() {
 		err := <-result
 		if !errors.Is(err, context.Canceled) {
