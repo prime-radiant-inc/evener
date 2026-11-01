@@ -4,6 +4,7 @@ import { subagentOutcomesResponse } from "@evener/appwire-client/testing/subagen
 import { expect, test } from "vitest";
 import { composeComicFlow, findComicFlowAnchorRow } from "./comicRows";
 import { projectComicDelegates } from "./delegates";
+import type { ComicReadingPosition } from "./readerPosition";
 import type { ComicReaderSnapshot, ComicSubchatState } from "./useComicSubchats";
 
 const model = hydrateThread({ thread: wireThread("local:root", { sessionId: "root" }) }, "local:root", 0);
@@ -211,6 +212,25 @@ test("a superseded childRef still folds through the delegateId fallback", () => 
   expect(stripSequence(rows)).toEqual(["before", strip.key, "after"]);
   expect(entryIds(rows)).toEqual(["before", "after"]);
   expect(rows.find((row) => row.kind === "strip")?.updateCount).toBe(1);
+});
+test("a saved position anchored on a folded update resolves to its strip row", () => {
+  const rows = composeComicFlow(
+    { ...root, entries: folded(), activity: { ...activity, strips: [strip] } },
+    collapsed,
+    390,
+    () => true,
+  );
+  const stripRow = rows.findIndex((row) => row.kind === "strip");
+  expect(stripRow).toBeGreaterThan(-1);
+  const position: ComicReadingPosition = {
+    mode: "away",
+    sessionRef: root.ref,
+    path: [],
+    entryId: "mid-update",
+    offset: 0,
+    viewportOffset: 24,
+  };
+  expect(findComicFlowAnchorRow(rows, position)).toBe(stripRow);
 });
 test("flow rows carry the packed column count from the width formula", () => {
   const packed: ComicReaderSnapshot = {

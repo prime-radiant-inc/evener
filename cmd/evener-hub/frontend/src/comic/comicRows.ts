@@ -8,7 +8,7 @@ import type { useComicActivity } from "./useComicActivity";
 import type { ComicChildAvailability, ComicReaderSnapshot, ComicSubchatState } from "./useComicSubchats";
 export type ComicFlowRow = { id: string; sessionRef: string; path: readonly string[] } & (
   | { kind: "panels"; row: ComicRow }
-  | { kind: "strip"; strip: ComicDelegateStrip; updateCount: number }
+  | { kind: "strip"; strip: ComicDelegateStrip; updateCount: number; foldedEntryIds: readonly string[] }
   | { kind: "turn-errors-group" }
   | { kind: "history"; history: UseTranscriptResult }
   | { kind: "activity"; activity: ReturnType<typeof useComicActivity> }
@@ -29,8 +29,8 @@ export function composeComicFlow(
       for (const row of composeComicRows(entries, viewportWidth, fits, panelMaxWidth))
         rows.push({ ...base, id: id(row.id), kind: "panels", row });
     };
-    const stripRow = (strip: ComicDelegateStrip, updateCount: number) => {
-      rows.push({ ...base, id: id(strip.key), kind: "strip", strip, updateCount });
+    const stripRow = (strip: ComicDelegateStrip, updateCount: number, foldedEntryIds: readonly string[]) => {
+      rows.push({ ...base, id: id(strip.key), kind: "strip", strip, updateCount, foldedEntryIds });
       const path = [...reader.path, strip.key];
       if (!subchats.expandedPaths.some((p) => JSON.stringify(p) === JSON.stringify(path))) return;
       const availability = subchats.availability?.get(JSON.stringify(path));
@@ -65,14 +65,15 @@ export function composeComicFlow(
       }
       return target.delegateId ? strips.find((strip) => strip.delegateId === target.delegateId) : undefined;
     };
-    const folded = new Map<string, { count: number; first: number }>();
+    const folded = new Map<string, { count: number; first: number; entryIds: string[] }>();
     const items: ComicEntry[] = [];
     for (const entry of reader.entries) {
       if (entry.sourceIndex === undefined) continue;
       const strip = entry.delegateUpdate ? stripForUpdate(entry.delegateUpdate) : undefined;
       if (strip) {
-        const record = folded.get(strip.key) ?? { count: 0, first: entry.sourceIndex };
+        const record = folded.get(strip.key) ?? { count: 0, first: entry.sourceIndex, entryIds: [] };
         record.count += 1;
+        record.entryIds.push(entry.id);
         if (record.first > entry.sourceIndex) record.first = entry.sourceIndex;
         folded.set(strip.key, record);
         continue;
@@ -80,17 +81,19 @@ export function composeComicFlow(
       items.push(entry);
     }
     let cursor = 0;
-    for (const { strip, updateCount, anchor } of strips
+    for (const { strip, updateCount, anchor, entryIds } of strips
       .flatMap((strip) => {
         const record = folded.get(strip.key);
         const anchor = strip.source?.sourceIndex ?? record?.first;
-        return anchor === undefined ? [] : [{ strip, updateCount: record?.count ?? 0, anchor }];
+        return anchor === undefined
+          ? []
+          : [{ strip, updateCount: record?.count ?? 0, anchor, entryIds: record?.entryIds ?? [] }];
       })
       .sort((a, b) => a.anchor - b.anchor)) {
       const start = cursor;
       while (cursor < items.length && (items[cursor]?.sourceIndex ?? Infinity) <= anchor) cursor += 1;
       panels(items.slice(start, cursor));
-      stripRow(strip, updateCount);
+      stripRow(strip, updateCount, entryIds);
     }
     panels(items.slice(cursor));
     const errors = reader.entries.filter((entry) => entry.sourceTurnId !== undefined);
@@ -115,7 +118,11 @@ export function findComicFlowAnchorRow(
       if (flow.kind === "panels" || last === undefined) last = index;
       continue;
     }
-    if (flow.kind === "strip" && position.entryId === flow.strip.key) return index;
+    if (
+      flow.kind === "strip" &&
+      (position.entryId === flow.strip.key || flow.foldedEntryIds.includes(position.entryId))
+    )
+      return index;
     if (flow.kind !== "panels") continue;
     for (const { slice } of flow.row.panels.flatMap((panel) => panel.balloons)) {
       if (slice.entryId !== position.entryId) continue;
