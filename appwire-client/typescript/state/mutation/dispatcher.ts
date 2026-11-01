@@ -26,7 +26,7 @@ import {
   type ThreadClearResponse,
 } from "../../types.gen";
 import { isClientReady, type MutationOutboxStorage } from "./outbox";
-import type { MutationAttachmentRef, MutationOutboxRecord, MutationRecord } from "./records";
+import { effectiveWireId, type MutationAttachmentRef, type MutationOutboxRecord, type MutationRecord } from "./records";
 
 // The wire id this row dispatches under: the payload's clientMutationId when
 // it carries one, the record's own otherwise. They are the same id for every
@@ -38,8 +38,7 @@ import type { MutationAttachmentRef, MutationOutboxRecord, MutationRecord } from
 // and the dispatch loop must judge and settle the row by it, while every
 // storage settle stays keyed on the row's own (fresh) id.
 function wireMutationId(record: MutationOutboxRecord): string {
-  const payloadId = record.payload.clientMutationId;
-  return typeof payloadId === "string" && payloadId !== "" ? payloadId : record.clientMutationId;
+  return effectiveWireId(record);
 }
 
 // The dispatcher always supplies a target ref, so its lookup requires one.

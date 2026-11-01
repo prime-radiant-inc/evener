@@ -497,6 +497,35 @@ describe("MutationOutboxIndexedDB cancellation", () => {
     stopped.close();
   });
 
+  // RoboRev round-1 H2 (#4342, the concurrent shape): with two attempts
+  // outstanding, a Stop followed by ONE refusal leaves the other attempt in
+  // flight - the refusal proves only its own attempt never landed. The
+  // rollback must preserve the survivor's evidence and park the row with
+  // the Stop-fence stamp, never erase the evidence and cancel the row as if
+  // the whole send were provably unsent.
+  test("a refusal of one of two outstanding attempts parks the row fenced with the survivor's evidence", async () => {
+    const stopped = store();
+    const row = await stopped.enqueueIntent(intent("two attempts in flight"));
+    await stopped.markAttempted(row.clientMutationId);
+    await stopped.markAttempted(row.clientMutationId);
+    await stopped.enqueueInterruptAndCancel(intent("stop"));
+    expect(await stopped.unmarkAttempted(row.clientMutationId)).toBe(false);
+    expect(await stopped.getOutbox(row.clientMutationId)).toMatchObject({
+      state: "blockedUnknown",
+      attempted: true,
+      unresolvedAttempts: 1,
+      stopFenced: true,
+    });
+    // The surviving attempt's own refusal is then the proof that cancels.
+    expect(await stopped.unmarkAttempted(row.clientMutationId)).toBe(false);
+    expect(await stopped.getOutbox(row.clientMutationId)).toMatchObject({
+      state: "canceled",
+      attempted: false,
+      unresolvedAttempts: 0,
+    });
+    stopped.close();
+  });
+
   test("discardCanceledOfInstance removes only the superseded instance's canceled rows", async () => {
     const storage = store();
     const deadRow = await storage.enqueueIntent({ ...intent("superseded instance's row"), threadId: "thr-old" });

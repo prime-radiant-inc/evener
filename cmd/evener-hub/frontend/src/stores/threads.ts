@@ -2433,12 +2433,27 @@ export async function readMutationPersistence(targetRef?: string): Promise<Mutat
   const runtime = getMutationRuntime();
   if (!runtime) return { outbox: [], optimistic: [], recovery: [] };
   await runtime.start;
-  const [outbox, optimistic, recovery] = await Promise.all([
+  const [outbox, displayed, optimistic, recovery] = await Promise.all([
     runtime.storage.listOutbox(targetRef),
+    // A retargeted row's durable destination is the resumed ref while the
+    // pane the user watches is the displayed one - the canceled strip
+    // surfaces such rows under the displayed ref, so the persistence read
+    // must load them too or the strip that names them never fills. Rows
+    // the main read already returned (the destination ref's own rows)
+    // win; the merge stays sorted by intentSequence like both reads.
+    targetRef === undefined ? Promise.resolve([]) : runtime.storage.listOutboxDisplayedAt(targetRef),
     runtime.storage.listOptimistic(targetRef),
     runtime.storage.listRecovery(targetRef),
   ]);
-  return { outbox, optimistic, recovery };
+  const seen = new Set(outbox.map((record) => record.clientMutationId));
+  const merged = [...outbox];
+  for (const record of displayed) {
+    if (seen.has(record.clientMutationId)) continue;
+    seen.add(record.clientMutationId);
+    merged.push(record);
+  }
+  merged.sort((left, right) => left.intentSequence - right.intentSequence);
+  return { outbox: merged, optimistic, recovery };
 }
 
 const userIntentStopGenerations = new Map<string, number>();

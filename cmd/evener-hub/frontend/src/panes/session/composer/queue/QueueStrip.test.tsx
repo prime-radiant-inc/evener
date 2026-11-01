@@ -583,6 +583,93 @@ describe("durable recovery rows", () => {
     expect(isDisabled(retry)).toBe(true);
   });
 
+  // RoboRev round-1 M5: the canceled strip surfaces a retargeted resend's
+  // born-canceled row under the displayed ref (its durable destination is the
+  // resumed session). The controls that row exposes must operate through the
+  // row's OWN destination identity - the sending pane's ref is the displayed
+  // one, and identity checks keyed on it would leave the surfaced row inert.
+  async function seedRetargetedCanceled(text: string): Promise<MutationOutboxRecord> {
+    const storage = new MutationOutboxIndexedDB();
+    const input = [{ type: "text", text }];
+    const original = await storage.enqueueIntent({
+      targetRef: "ref_a",
+      threadId: "thr_ref_a",
+      method: "turn/start",
+      payload: { ref: "ref_a", input },
+      attachments: [],
+      optimisticDisplay: { method: "turn/start", input },
+    });
+    await storage.transferToRecovery(original.clientMutationId, "rejected");
+    await storage.retargetOutbox("ref_a", "ref_b", { threadId: "thr_ref_b" });
+    const sent = await storage.resendRecoveryResult(
+      original.clientMutationId,
+      {
+        targetRef: "ref_b",
+        threadId: "thr_ref_b",
+        method: "turn/start",
+        payload: { ref: "ref_b", input },
+        attachments: [],
+        optimisticDisplay: { method: "turn/start", input },
+      },
+      undefined,
+      undefined,
+      undefined,
+      { stopEpoch: 0, displayedRef: "ref_a" },
+    );
+    if (sent.status !== "sent") throw new Error(`resend did not send: ${sent.status}`);
+    // The Stop lands on the still-displayed session and cancels the
+    // unattempted resend - the finding's born-canceled shape.
+    await storage.enqueueInterruptAndCancel({
+      targetRef: "ref_a",
+      threadId: "thr_ref_a",
+      method: "turn/interrupt",
+      payload: { ref: "ref_a" },
+      attachments: [],
+      optimisticDisplay: { method: "turn/interrupt" },
+    });
+    const row = await storage.getOutbox(sent.record.clientMutationId);
+    storage.close();
+    if (!row) throw new Error("missing retargeted row");
+    if (row.state !== "canceled") throw new Error("retargeted row did not cancel");
+    await refreshPendingTurnsProjection("ref_a");
+    return row;
+  }
+
+  test("a retargeted canceled row surfaced in the sending pane edits and removes under its own destination", async () => {
+    const user = userEvent.setup();
+    const fake = connectReadyFakeClient();
+    await hydrate(fake, "ref_a");
+    await hydrate(fake, "ref_b");
+    const row = await seedRetargetedCanceled("retargeted then stopped");
+    const onEditRecovery = vi.fn();
+    renderStrip(defaultProps({ onEditRecovery }));
+    await flushPendingTurnsProjectionForTests();
+    const canceledRow = await findRow("canceled");
+    expect(within(canceledRow).getByText("retargeted then stopped")).toBeTruthy();
+
+    await user.click(within(canceledRow).getByRole("button", { name: "Edit message" }));
+    // The edit moves the row to recovery through the row's own destination
+    // identity - the sending pane's ref would strand the surfaced row inert.
+    expect(onEditRecovery).toHaveBeenCalledTimes(1);
+    expect(onEditRecovery.mock.calls[0]?.[0]).toMatchObject({
+      clientMutationId: row.clientMutationId,
+      targetRef: "ref_b",
+    });
+    expect(getToasts()).toEqual([]);
+
+    let fresh: MutationOutboxRecord | undefined;
+    await act(async () => {
+      fresh = await seedRetargetedCanceled("retargeted again");
+    });
+    expect(fresh?.state).toBe("canceled");
+    await flushPendingTurnsProjectionForTests();
+    const recanceledRow = await findRow("canceled");
+    await user.click(within(recanceledRow).getByRole("button", { name: "Remove from queue" }));
+    await flushPendingTurnsProjectionForTests();
+    expect(queryRow("canceled")).toBeNull();
+    expect(getToasts()).toEqual([]);
+  });
+
   test("blocked unknown has Retry but no sendable action", async () => {
     const user = userEvent.setup();
     const fake = connectReadyFakeClient();

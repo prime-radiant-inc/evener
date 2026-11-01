@@ -603,7 +603,14 @@ export function createComposerSourceState(ref: string, ownerId?: string): Compos
       const operation = recoveryWrites
         .catch(() => undefined)
         .then(async () => {
-          if (disposed || operations.hasPending || record.targetRef !== ref) return false;
+          // The record's durable destination may be a resumed ref while the
+          // composer in front of the user is the displayed one the row was
+          // retargeted from - the strip surfaces such rows under the
+          // displayed ref, so the displayed composer must be able to open
+          // its associated record. The row's own targetRef still governs
+          // every durable operation; this gate is association only.
+          const associatedHere = record.targetRef === ref || record.displayedRef === ref;
+          if (disposed || operations.hasPending || !associatedHere) return false;
           if (currentRecoveryId() === record.clientMutationId) return false;
           // Keep this object: the recovery wrapper carries older-record image
           // reference provenance by identity, not in enumerable properties.

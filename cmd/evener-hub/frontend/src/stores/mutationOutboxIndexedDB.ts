@@ -19,7 +19,7 @@ import type {
   MutationStopBarrier,
   MutationStopCapture,
 } from "./mutationOutbox";
-import { acceptedRecord, retainsAcceptedCopy, settlementRetiresRecovery } from "./mutationOutbox";
+import { acceptedRecord, effectiveWireId, retainsAcceptedCopy, settlementRetiresRecovery } from "./mutationOutbox";
 import { trackProjectionWork } from "./projectionWork";
 import { createSecureUUID } from "./secureUUID";
 
@@ -561,7 +561,6 @@ export class MutationOutboxIndexedDB implements WebQueuedMessageStorage<Mutation
         stopEpoch,
         displayedStopEpoch,
         bornCanceled,
-        inheritWireId: record.state === "blockedUnknown",
       });
     });
   }
@@ -571,6 +570,22 @@ export class MutationOutboxIndexedDB implements WebQueuedMessageStorage<Mutation
       const records = await requestResult<MutationOutboxRecord[]>(transaction.objectStore(OUTBOX_STORE).getAll());
       return records
         .filter((record) => targetRef === undefined || record.targetRef === targetRef)
+        .sort((left, right) => left.intentSequence - right.intentSequence);
+    });
+  }
+
+  // The displayed-ref half of the persistence read: a retargeted row's
+  // durable destination is the resumed ref, but the pane that surfaces it -
+  // the canceled strip's projection - is the displayed one it was
+  // retargeted from. This read lists the outbox rows whose displayedRef
+  // names the given ref, whatever their destination; rows whose own
+  // targetRef is the ref are listOutbox's, so callers merge without
+  // duplicating them.
+  async listOutboxDisplayedAt(targetRef: string): Promise<MutationOutboxRecord[]> {
+    return this.#read(OUTBOX_STORE, async (transaction) => {
+      const records = await requestResult<MutationOutboxRecord[]>(transaction.objectStore(OUTBOX_STORE).getAll());
+      return records
+        .filter((record) => record.displayedRef === targetRef)
         .sort((left, right) => left.intentSequence - right.intentSequence);
     });
   }
@@ -715,21 +730,51 @@ export class MutationOutboxIndexedDB implements WebQueuedMessageStorage<Mutation
           requestResult<MutationOptimisticRecord | undefined>(optimistic.get(clientMutationId)),
           requestResult<MutationRecoveryRecord | undefined>(recovery.get(clientMutationId)),
         ]);
-        const source = outboxRecord ?? recoveryRecord ?? optimisticRecord;
-        if (!source) return false;
-        await this.#discardSupersededNoteRecovery(transaction, source);
-        settledSource = source;
-
-        if (retainsAcceptedCopy(source, projectionState)) {
+        const named = outboxRecord ?? recoveryRecord ?? optimisticRecord;
+        // The wire id the settlement travels under: the daemon journals the
+        // composition by it, so a receipt proves EVERY record sharing it -
+        // the superseded predecessor behind a settled replacement, or the
+        // replacement carrying a predecessor's id when the feed names the
+        // predecessor's own record. Resolve the pair by effective wire
+        // identity, or one side lingers retained and pinning its ref after
+        // delivery.
+        const wireId = named ? effectiveWireId(named) : clientMutationId;
+        const [outboxRecords, optimisticRecords] = await Promise.all([
+          requestResult<MutationOutboxRecord[]>(outbox.getAll()),
+          requestResult<MutationOptimisticRecord[]>(optimistic.getAll()),
+        ]);
+        const siblings = [...outboxRecords, ...optimisticRecords].filter(
+          (record) => record.clientMutationId !== clientMutationId && effectiveWireId(record) === wireId,
+        );
+        if (!named && siblings.length === 0) return false;
+        // The named record settles with today's semantics; when the receipt
+        // names a wire id whose own record is already gone, the replacement
+        // carrying that wire id is the subject. Every other sibling only
+        // retires - the composition settled once, and one accepted copy is
+        // enough.
+        const subject = (named ?? siblings[0]) as MutationRecord;
+        settledSource = subject;
+        await this.#discardSupersededNoteRecovery(transaction, subject);
+        if (retainsAcceptedCopy(subject, projectionState)) {
           // The accepted whitelist lives in the package's acceptedRecord so
           // this adapter and native's build the same row.
-          await requestResult(optimistic.put(acceptedRecord(source)));
-        } else if (optimisticRecord) {
-          await requestResult(optimistic.delete(clientMutationId));
+          await requestResult(optimistic.put(acceptedRecord(subject)));
+        } else {
+          await requestResult(optimistic.delete(subject.clientMutationId));
         }
-        if (outboxRecord) await requestResult(outbox.delete(clientMutationId));
-        if (recoveryRecord && settlementRetiresRecovery(recoveryRecord))
-          await requestResult(recovery.delete(clientMutationId));
+        if (named) {
+          if (outboxRecord) await requestResult(outbox.delete(clientMutationId));
+          if (optimisticRecord) await requestResult(optimistic.delete(clientMutationId));
+          if (recoveryRecord && settlementRetiresRecovery(recoveryRecord))
+            await requestResult(recovery.delete(clientMutationId));
+        } else {
+          await requestResult(outbox.delete(subject.clientMutationId));
+        }
+        for (const sibling of siblings) {
+          if (sibling.clientMutationId === subject.clientMutationId) continue;
+          await requestResult(outbox.delete(sibling.clientMutationId));
+          await requestResult(optimistic.delete(sibling.clientMutationId));
+        }
         return true;
       },
     );
@@ -753,14 +798,37 @@ export class MutationOutboxIndexedDB implements WebQueuedMessageStorage<Mutation
           requestResult<MutationOptimisticRecord | undefined>(optimistic.get(clientMutationId)),
           requestResult<MutationRecoveryRecord | undefined>(recovery.get(clientMutationId)),
         ]);
-        if (!outboxRecord && !optimisticRecord && !recoveryRecord) return false;
-        const source = outboxRecord ?? optimisticRecord ?? recoveryRecord;
-        await this.#discardSupersededNoteRecovery(transaction, source);
-        if (outboxRecord) await requestResult(outbox.delete(clientMutationId));
-        if (optimisticRecord) await requestResult(optimistic.delete(clientMutationId));
-        if (recoveryRecord && settlementRetiresRecovery(recoveryRecord))
-          await requestResult(recovery.delete(clientMutationId));
-        settledSource = source;
+        const named = outboxRecord ?? optimisticRecord ?? recoveryRecord;
+        // The same wire-identity resolution as settleReceipt: an applied
+        // settlement proves the whole wire pair, and retiring the other side
+        // is what keeps a superseded predecessor from lingering retained
+        // and pinned after its replacement is applied.
+        const wireId = named ? effectiveWireId(named) : clientMutationId;
+        const [outboxRecords, optimisticRecords] = await Promise.all([
+          requestResult<MutationOutboxRecord[]>(outbox.getAll()),
+          requestResult<MutationOptimisticRecord[]>(optimistic.getAll()),
+        ]);
+        const siblings = [...outboxRecords, ...optimisticRecords].filter(
+          (record) => record.clientMutationId !== clientMutationId && effectiveWireId(record) === wireId,
+        );
+        if (!named && siblings.length === 0) return false;
+        const subject = (named ?? siblings[0]) as MutationRecord;
+        await this.#discardSupersededNoteRecovery(transaction, subject);
+        if (named) {
+          if (outboxRecord) await requestResult(outbox.delete(clientMutationId));
+          if (optimisticRecord) await requestResult(optimistic.delete(clientMutationId));
+          if (recoveryRecord && settlementRetiresRecovery(recoveryRecord))
+            await requestResult(recovery.delete(clientMutationId));
+        } else {
+          await requestResult(outbox.delete(subject.clientMutationId));
+          await requestResult(optimistic.delete(subject.clientMutationId));
+        }
+        for (const sibling of siblings) {
+          if (sibling.clientMutationId === subject.clientMutationId) continue;
+          await requestResult(outbox.delete(sibling.clientMutationId));
+          await requestResult(optimistic.delete(sibling.clientMutationId));
+        }
+        settledSource = subject;
         return true;
       },
     );
@@ -964,6 +1032,23 @@ export class MutationOutboxIndexedDB implements WebQueuedMessageStorage<Mutation
       if (record?.state === "submitting") {
         const unresolvedAttempts = Math.max(0, priorAttempts - 1);
         if (await this.#fenceCrossedSinceEnqueue(transaction, record)) {
+          // #4342's rollback hold: the refusal proves only ITS OWN attempt
+          // never landed. With other attempts still outstanding the row
+          // stays delivery-uncertain - the survivors keep their evidence and
+          // the Stop's fence stamps the park so the interrupt proceeds - so
+          // only a fully drained row takes the Stop's cancellation here.
+          if (unresolvedAttempts > 0) {
+            await requestResult(
+              store.put({
+                ...record,
+                state: "blockedUnknown",
+                attempted: true,
+                unresolvedAttempts,
+                stopFenced: true,
+              }),
+            );
+            return false;
+          }
           await requestResult(store.put({ ...record, state: "canceled", attempted: false, unresolvedAttempts: 0 }));
           return false;
         }
@@ -972,11 +1057,21 @@ export class MutationOutboxIndexedDB implements WebQueuedMessageStorage<Mutation
       }
       if (record?.state === "blockedUnknown") {
         const unresolvedAttempts = priorAttempts;
+        const fenceCrossed = await this.#fenceCrossedSinceEnqueue(transaction, record);
         if (unresolvedAttempts > 1) {
-          await requestResult(store.put({ ...record, unresolvedAttempts: unresolvedAttempts - 1 }));
+          // The same #4342 hold: one refusal proves one attempt. The
+          // survivors keep their evidence, and a crossed fence stamps the
+          // park so the interrupt proceeds.
+          await requestResult(
+            store.put({
+              ...record,
+              unresolvedAttempts: unresolvedAttempts - 1,
+              ...(fenceCrossed ? { stopFenced: true } : {}),
+            }),
+          );
           return false;
         }
-        if (await this.#fenceCrossedSinceEnqueue(transaction, record)) {
+        if (fenceCrossed) {
           await requestResult(store.put({ ...record, state: "canceled", attempted: false, unresolvedAttempts: 0 }));
           return false;
         }
@@ -1085,7 +1180,6 @@ export class MutationOutboxIndexedDB implements WebQueuedMessageStorage<Mutation
           stopEpoch: targetStopEpoch,
           displayedStopEpoch,
           bornCanceled: false,
-          inheritWireId: true,
         });
         restored.push(fresh.clientMutationId);
       }
@@ -1664,17 +1758,28 @@ export class MutationOutboxIndexedDB implements WebQueuedMessageStorage<Mutation
       stopEpoch: number;
       displayedStopEpoch: number | undefined;
       bornCanceled: boolean;
-      inheritWireId: boolean;
     },
   ): Promise<MutationOutboxRecord> {
     const intentSequence = await this.#allocateSequence(transaction, source.targetRef);
     const clientMutationId = this.#createMutationId();
     await this.#assertMutationIdAvailable(transaction, clientMutationId);
+    // The payload id IS the uncertainty marker. Inherit the EFFECTIVE wire
+    // id whenever the source carries delivery-uncertain ancestry: a
+    // blockedUnknown source may already be delivered, and a source whose
+    // effective wire id differs from its own storage key carries an id
+    // inherited from an uncertain predecessor - a replacement born canceled
+    // by a Stop crossing at mint time is exactly that. Only a source whose
+    // effective wire id is its own key - an ordinary canceled row that
+    // provably never left any tab - takes a fresh id, so repeated mints
+    // never lose the original wire identity the daemon's replay journal
+    // knows.
+    const inheritedWireId = effectiveWireId(source);
+    const inheritWireId = source.state === "blockedUnknown" || inheritedWireId !== source.clientMutationId;
     const record: MutationOutboxRecord = {
       ...source,
       payload: {
         ...source.payload,
-        clientMutationId: fresh.inheritWireId ? source.clientMutationId : clientMutationId,
+        clientMutationId: inheritWireId ? inheritedWireId : clientMutationId,
       },
       clientMutationId,
       originClientId: ownClientId(),

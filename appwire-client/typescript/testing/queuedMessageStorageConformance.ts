@@ -356,6 +356,93 @@ export function describeWebQueuedMessageStorage(name: string, create: () => WebQ
       expect(fresh?.stopEpochAtEnqueue).toBe(0);
     });
 
+    // RoboRev round-1 H1: repeated retries must keep the ORIGINAL wire id.
+    // A replacement minted from a blockedUnknown row carries its wire id, a
+    // Stop can commit that replacement born-canceled, and a later Retry of
+    // THAT row mints a second generation. The inheritance decision keys on
+    // delivery-uncertain ancestry - the payload id IS the uncertainty
+    // marker - not on the immediate predecessor's own state, or the second
+    // generation discards the inherited id and the daemon executes the
+    // composition again under a new one.
+    test("aMintFromAMintedRowKeepsTheOriginalWireId", async () => {
+      const f = create();
+      const original = await f.storage.enqueueIntent(queuedIntent());
+      await f.storage.markAttempted(original.clientMutationId);
+      await f.storage.markUnknown(original.clientMutationId, "blockedUnknown");
+      const capture = await f.storage.getOutboxWithStopEpoch(original.clientMutationId);
+      // A Stop crosses inside the first capture-to-mint window: the first
+      // replacement commits born-canceled, still carrying the original id.
+      await f.storage.enqueueInterruptAndCancel({ ...queuedIntent(), method: "turn/interrupt" });
+      const first = await f.storage.mintRetryFromRow(original.clientMutationId, capture);
+      if (!first) throw new Error("first mint refused");
+      expect(first.state).toBe("canceled");
+      expect(first.payload.clientMutationId).toBe(original.clientMutationId);
+      // A Retry of the born-canceled replacement mints a second generation:
+      // the original's work is still delivery-uncertain, so the second
+      // generation carries the SAME wire id.
+      const recapture = await f.storage.getOutboxWithStopEpoch(first.clientMutationId);
+      const second = await f.storage.mintRetryFromRow(first.clientMutationId, recapture);
+      expect(second?.state).toBe("submitting");
+      expect(second?.payload.clientMutationId).toBe(original.clientMutationId);
+    });
+
+    // RoboRev round-1 H1, the reconcile side: an innocent blocked replacement
+    // mints its own successor, and the successor inherits the ORIGINAL wire
+    // id - the effective wire identity travels, never the immediate
+    // predecessor's storage key.
+    test("aReconcileMintFromAMintedRowKeepsTheOriginalWireId", async () => {
+      const f = create();
+      const original = await f.storage.enqueueIntent(queuedIntent());
+      await f.storage.markAttempted(original.clientMutationId);
+      await f.storage.markUnknown(original.clientMutationId, "blockedUnknown");
+      const capture = await f.storage.getOutboxWithStopEpoch(original.clientMutationId);
+      const first = await f.storage.mintRetryFromRow(original.clientMutationId, capture);
+      if (!first) throw new Error("first mint refused");
+      // The replacement parks delivery-uncertain; reconciliation proves it
+      // absent and re-queues it as a second minted generation.
+      await f.storage.markAttempted(first.clientMutationId);
+      await f.storage.markUnknown(first.clientMutationId, "blockedUnknown");
+      const restored = await f.storage.restoreProvenAbsent("local:queued", new Set());
+      expect(restored).toHaveLength(1);
+      const second = await f.storage.getOutbox(restored[0] ?? "");
+      expect(second?.payload.clientMutationId).toBe(original.clientMutationId);
+    });
+
+    // RoboRev round-1 M3, interleaving one: the replacement earned an
+    // accepted-but-pending receipt and lives in the optimistic store under
+    // its own key while the authoritative feed names the WIRE id. The feed
+    // must reach the replacement and retire the settled pair.
+    test("aFeedNamingTheWireIdSettlesTheReplacementAndRetiresThePredecessor", async () => {
+      const f = create();
+      const original = await f.storage.enqueueIntent(queuedIntent());
+      await f.storage.markAttempted(original.clientMutationId);
+      await f.storage.markUnknown(original.clientMutationId, "blockedUnknown");
+      const capture = await f.storage.getOutboxWithStopEpoch(original.clientMutationId);
+      const fresh = await f.storage.mintRetryFromRow(original.clientMutationId, capture);
+      if (!fresh) throw new Error("mint refused");
+      expect(await f.storage.settleReceipt(fresh.clientMutationId, "pending")).toBe(true);
+      expect(await f.storage.getOptimistic(fresh.clientMutationId)).toBeDefined();
+      expect(await f.storage.settleApplied(original.clientMutationId)).toBe(true);
+      expect(await f.storage.getOptimistic(fresh.clientMutationId)).toBeUndefined();
+      expect(await f.storage.getOutbox(original.clientMutationId)).toBeUndefined();
+    });
+
+    // RoboRev round-1 M3, interleaving two: a reflected replay settles the
+    // replacement, and the predecessor's outcome is proven by the same wire
+    // id - it must not linger superseded, retained and pinning the ref, once
+    // the replacement is reflected.
+    test("aReflectedReplacementSettlesItsSupersededPredecessorToo", async () => {
+      const f = create();
+      const original = await f.storage.enqueueIntent(queuedIntent());
+      await f.storage.markAttempted(original.clientMutationId);
+      await f.storage.markUnknown(original.clientMutationId, "blockedUnknown");
+      const capture = await f.storage.getOutboxWithStopEpoch(original.clientMutationId);
+      const fresh = await f.storage.mintRetryFromRow(original.clientMutationId, capture);
+      if (!fresh) throw new Error("mint refused");
+      expect(await f.storage.settleReceipt(fresh.clientMutationId, "reflected")).toBe(true);
+      expect(await f.storage.getOutbox(original.clientMutationId)).toBeUndefined();
+    });
+
     test("aMintCrossedByANewerStopCommitsBornCanceled", async () => {
       const f = create();
       const original = await f.storage.enqueueIntent(queuedIntent());

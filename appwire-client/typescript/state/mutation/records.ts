@@ -34,6 +34,20 @@ export interface MutationAttachmentRef {
   mediaType: string;
 }
 
+// The wire id a composition travels under: the payload's clientMutationId
+// when it carries one (a minted row re-submitting under its predecessor's
+// id), the record's own storage key otherwise. This is the id the daemon
+// journals the composition under - receipts, refusals, and authoritative
+// feeds all name it - so every identity comparison that meets the wire uses
+// this, while storage operations stay keyed on the record's own id. The
+// difference between the two is exactly the inherited-uncertainty marker a
+// mint leaves: a row whose effective wire id differs from its own key is a
+// replacement of possibly-delivered work.
+export function effectiveWireId(record: { clientMutationId: string; payload: { clientMutationId?: unknown } }): string {
+  const payloadId = record.payload.clientMutationId;
+  return typeof payloadId === "string" && payloadId !== "" ? payloadId : record.clientMutationId;
+}
+
 // "canceled" is the durable record of a user's Stop: the row was never
 // attempted, so cancellation is a fact about the client, not a guess about
 // the daemon. Only an explicit user Retry re-queues its work; no scan,

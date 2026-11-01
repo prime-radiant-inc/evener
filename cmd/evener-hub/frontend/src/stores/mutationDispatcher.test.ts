@@ -258,12 +258,13 @@ describe("MutationDispatcher", () => {
 
     // Exactly one submission, under the inherited wire id, settled by the
     // replayed receipt: the minted row leaves the outbox keyed on its own
-    // fresh id, and the superseded predecessor keeps its id and evidence for
-    // a receipt the real in-flight attempt could still bring.
+    // fresh id, and the receipt settles the WHOLE wire pair - the completed
+    // predecessor retires with it (RoboRev round-1 M3), never lingering
+    // retained and pinned once the composition's outcome is proven.
     expect(submissions).toBe(1);
     expect(queueCalls(client)).toEqual([{ ...minted!.payload }]);
     expect(await outbox.getOutbox(minted!.clientMutationId)).toBeUndefined();
-    expect(await outbox.getOutbox(predecessor.clientMutationId)).toMatchObject({ state: "superseded" });
+    expect(await outbox.getOutbox(predecessor.clientMutationId)).toBeUndefined();
     outbox.close();
   });
 
@@ -754,7 +755,9 @@ describe("MutationDispatcher", () => {
       second.clientMutationId,
       first.clientMutationId,
     ]);
-    expect(await outbox.getOutbox(first.clientMutationId)).toMatchObject({ state: "superseded" });
+    // The fresh row's settlement retires the completed predecessor with it
+    // (RoboRev round-1 M3): the ref drains to empty, nothing lingers pinned.
+    expect(await outbox.getOutbox(first.clientMutationId)).toBeUndefined();
     expect(await outbox.getOutbox(fresh?.clientMutationId ?? "")).toBeUndefined();
     expect(await outbox.getOutbox(second.clientMutationId)).toBeUndefined();
   });
@@ -1227,14 +1230,11 @@ test("a client replacement during attempt commit retains evidence and recovers t
   await dispatcher.dispatchTargets([record.targetRef]);
 
   expect(replacement.calls).toEqual([{ method: "turn/queue", params: record.payload }]);
-  // The replayed receipt settles the FRESH row; the superseded predecessor
-  // keeps its id and evidence, waiting on the real in-flight attempt's own
-  // settlement exactly as before.
-  expect(await inspector.getOutbox(record.clientMutationId)).toMatchObject({
-    state: "superseded",
-    attempted: true,
-  });
-  expect(await inspector.listOutbox(record.targetRef)).toHaveLength(1);
+  // The replayed receipt settles the FRESH row and retires the completed
+  // predecessor with it (RoboRev round-1 M3) - the one journal entry proves
+  // the whole wire pair, so nothing of the composition lingers pinned.
+  expect(await inspector.getOutbox(record.clientMutationId)).toBeUndefined();
+  expect(await inspector.listOutbox(record.targetRef)).toHaveLength(0);
   inspector.close();
   writer.close();
 });
