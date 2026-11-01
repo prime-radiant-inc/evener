@@ -317,11 +317,13 @@ func (s *Session) revalidateLaneForLaunch(delegateID string) error {
 const activityEvidenceRefreshFloor = time.Minute
 
 // minOrphanedDelegateDays is the smallest positive orphaned_delegate_days
-// the prune tool accepts, derived from the refresh floor: the evidence a
-// live tree refreshes is only as fresh as that window, so a shorter
-// threshold could judge a running delegate's parent inactive on evidence
-// the tree is still within its rights to leave untouched.
-var minOrphanedDelegateDays = activityEvidenceRefreshFloor.Hours() / 24
+// the prune tool accepts, derived from the refresh cadence: a live tree's
+// evidence is never older than the refresh floor plus the tick interval (a
+// tick skips a transcript inside the floor; the next one refreshes it), so
+// the minimum sits a full tick-window above the floor with margin for
+// scheduling jitter. A shorter threshold could observe evidence older than
+// the cadence delivers and release a lane under a running delegate.
+var minOrphanedDelegateDays = (activityEvidenceRefreshFloor + 2*delegateActivityPublishInterval).Hours() / 24
 
 // refreshActivityEvidence records activity in the last-activity signal the
 // session listings and the orphan reclaim both read — the named session's

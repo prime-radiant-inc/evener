@@ -655,10 +655,16 @@ func (jm *jobManager) commitDelayedShell(run *runningJob) error {
 			return errors.Join(errDelayedShellStartForwardTerminalFailed, err, terminalErr)
 		}
 		err = errors.Join(errDelayedShellStartForwardFailed, err)
+		leavingRunning := false
 		if jm.running[run.rec.JobID] == run {
 			delete(jm.running, run.rec.JobID)
+			leavingRunning = true
 		}
+		owner := jm.stableOwner
 		jm.mu.Unlock()
+		if leavingRunning && owner != nil {
+			owner.managedJobFinished()
+		}
 		run.delegateShell.abort()
 		run.closeDone()
 		return err

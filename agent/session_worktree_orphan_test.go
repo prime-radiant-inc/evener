@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -14,6 +15,7 @@ import (
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/internal/delegatestore"
+	"primeradiant.com/evener/agent/internal/jobstore"
 	"primeradiant.com/evener/agent/internal/worktree"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/llm"
@@ -2157,5 +2159,79 @@ func TestDiscardedShellResultReleasesEvidenceHold(t *testing.T) {
 	_, locked, reason := r.laneLocked(t, lanePath)
 	if !locked {
 		t.Fatalf("the retained child's lane lost its lock: %q", reason)
+	}
+}
+
+// The accepted orphan threshold must sit above the whole refresh cadence —
+// the floor plus the tick interval and margin — or a prune armed at the
+// a live tree's evidence as long-idle.
+func TestOrphanThresholdMinimumCoversRefreshCadence(t *testing.T) {
+	t.Parallel()
+	// The minimum is not just the floor: a tick observing a transcript aged
+	// just inside the floor skips it, and the refresh lands on the next
+	// tick, so the accepted minimum must clear the floor by more than a
+	// full tick.
+	floorPlusTick := (activityEvidenceRefreshFloor + delegateActivityPublishInterval).Hours() / 24
+	if minOrphanedDelegateDays <= floorPlusTick {
+		t.Fatalf("the accepted minimum %.6g days does not exceed the refresh floor plus one tick %.6g days", minOrphanedDelegateDays, floorPlusTick)
+	}
+
+	// The cadence delivers its side of the bound: a live tree's evidence,
+	// aged past the floor, is refreshed within the next ticks — never older
+	// than the cadence allows.
+	r := newWorktreeRepo(t)
+	fixture, root, _ := spawnRetainedDelegateLane(t, r, "cadence-lane", "dlg_orphanactive000007", "034orphanactive0007")
+	sub := root.subagents.get(fixture.childID)
+	if sub == nil || sub.sess == nil {
+		t.Fatalf("delegate %s is not retained", fixture.childID)
+	}
+	child := sub.sess
+	child.managedJobStarted()
+	defer child.managedJobFinished()
+	transcript := schema.SessionTranscriptPath(fixture.stateDir, fixture.meta.ID)
+	aged := time.Now().Add(-(activityEvidenceRefreshFloor + 2*delegateActivityPublishInterval))
+	if err := os.Chtimes(transcript, aged, aged); err != nil {
+		t.Fatalf("age the parent's transcript past the floor: %v", err)
+	}
+	// TRIPWIRE: the hold's ticker fires every second, so the first refresh past the floor lands within a couple of ticks; 10s only fires on a genuine hang.
+	waitForCondition(t, 10*time.Second, "evidence aged past the floor to be refreshed by the next tick", func() bool {
+		info, err := os.Stat(transcript)
+		return err == nil && info.ModTime().After(aged)
+	})
+}
+
+// A shell whose start event persists locally but fails to forward is
+// removed by commitDelayedShell itself — the one running-set exit the
+// discard path does not cover — and that removal must release the evidence
+// hold the job's start took.
+func TestFailedShellStartForwardReleasesEvidenceHold(t *testing.T) {
+	t.Parallel()
+	r := newWorktreeRepo(t)
+	fixture, root, _ := spawnRetainedDelegateLane(t, r, "failed-forward-lane", "dlg_orphanactive000008", "034orphanactive0008")
+	sub := root.subagents.get(fixture.childID)
+	if sub == nil || sub.sess == nil {
+		t.Fatalf("delegate %s is not retained", fixture.childID)
+	}
+	child := sub.sess
+	jm := child.jobManager
+	// Take the job manager out of the delegate shell-work accounting (its
+	// settled lease cannot admit new shell work) and rig the start event's
+	// forward to fail while its local durable write still succeeds.
+	jm.mu.Lock()
+	jm.delegateController = nil
+	jm.forward = func(jobstore.Event) error { return errors.New("forward unavailable") }
+	jm.mu.Unlock()
+	run, err := jm.newDelayedShell(shellArgs{Command: "true", Background: true})
+	if err != nil {
+		t.Fatalf("start the delayed shell: %v", err)
+	}
+	if err := jm.commitDelayedShell(run); !errors.Is(err, errDelayedShellStartForwardFailed) {
+		t.Fatalf("the rigged forward did not fail the commit: %v", err)
+	}
+	child.laneEvidenceMu.Lock()
+	jobs, stop := child.laneEvidenceJobs, child.laneEvidenceStop
+	child.laneEvidenceMu.Unlock()
+	if jobs != 0 || stop != nil {
+		t.Fatalf("a failed start forward left its evidence hold behind: jobs=%d stop=%v", jobs, stop != nil)
 	}
 }
