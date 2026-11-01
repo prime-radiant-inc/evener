@@ -89,16 +89,16 @@ func resolveSessionFile(ctx context.Context, cfg hubcore.WebConfig, sources *app
 	// when the other root holds it.
 	containedMiss := false
 	if absolute && !isTargetDeletedError(cwdErr) {
-		if root, resolved, contained, ok := artifactsDocTarget(ctx, cfg, session, rel); ok {
+		root, resolved, contained, ok := artifactsDocTarget(ctx, cfg, session, rel)
+		if ok {
 			return root, resolved, nil
-		} else {
-			containedMiss = contained
 		}
-		if root, resolved, contained, ok := scratchDocTarget(ctx, cfg, session, rel); ok {
+		containedMiss = contained
+		root, resolved, contained, ok = scratchDocTarget(ctx, cfg, session, rel)
+		if ok {
 			return root, resolved, nil
-		} else {
-			containedMiss = containedMiss || contained
 		}
+		containedMiss = containedMiss || contained
 	}
 	if containedMiss {
 		// The path belongs to a retained root but names no readable file
