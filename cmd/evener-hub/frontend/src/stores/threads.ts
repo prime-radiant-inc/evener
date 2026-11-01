@@ -3227,14 +3227,18 @@ async function runResumeFencedForSend(
       // has superseded it. An identity the drive adopted only after the press
       // joined is not in the snapshot - the Stop that canceled on it may
       // predate the press, unknowably - so that press stays canceled.
+      // A drive whose resume never answered has adopted nothing, so
+      // resumedRef is undefined - that is the ORIGINAL ref for this check,
+      // not a third identity.
+      const joinIdentity = resumedRef ?? ref;
       if (
         join !== undefined &&
         join.generation === (userIntentStopGenerations.get(ref) ?? 0) &&
-        (resumedRef === ref
+        (joinIdentity === ref
           ? join.target === undefined
           : join.target !== undefined &&
-            join.target.ref === resumedRef &&
-            join.target.generation === (userIntentStopGenerations.get(resumedRef) ?? 0))
+            join.target.ref === joinIdentity &&
+            join.target.generation === (userIntentStopGenerations.get(joinIdentity) ?? 0))
       ) {
         drive.restartAfterSettle = true;
       }
