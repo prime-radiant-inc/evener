@@ -688,6 +688,7 @@ func comicGuardCheckRoster(t *testing.T, stateDir, evidence string) {
 
 func comicGuardCheckChildren(t *testing.T, stateDir, evidence string) {
 	t.Helper()
+	const comicGrandchildUpdate = "COMIC_UPDATE_GRANDCHILD literal folded update"
 	data, err := os.ReadFile(filepath.Join(evidence, "children.json"))
 	if err != nil {
 		t.Fatal(err)
@@ -724,6 +725,24 @@ func comicGuardCheckChildren(t *testing.T, stateDir, evidence string) {
 			} else if err != nil {
 				t.Fatal(err)
 			}
+			// The one mid-work update the browser journey folds into the
+			// grandchild's strip: the grandchild records it as an end_turn=false
+			// communicate, and the child as a kind="update" delegate-notification
+			// steering item at its recorded position.
+			if level == "GRANDCHILD" &&
+				record.Turn.Kind == schema.TurnCommunicate &&
+				record.Turn.Communicate != nil &&
+				!record.Turn.Communicate.EndTurn &&
+				record.Turn.Communicate.Message == comicGrandchildUpdate {
+				found["folded_update"]++
+			}
+			if level == "CHILD" && record.Turn.Kind == schema.TurnSteering {
+				for _, part := range record.Turn.Message.Content {
+					if strings.Contains(part.Text, `kind="update"`) && strings.Contains(part.Text, comicGrandchildUpdate) {
+						found["folded_update"]++
+					}
+				}
+			}
 			if record.Turn.Kind != schema.TurnAssistant {
 				continue
 			}
@@ -747,6 +766,9 @@ func comicGuardCheckChildren(t *testing.T, stateDir, evidence string) {
 		}
 		if found["thought"] != 1 || found["answer"] != 1 {
 			t.Fatalf("%s durable thought/answer counts = %v, want exactly one each", ref, found)
+		}
+		if found["folded_update"] != 1 {
+			t.Fatalf("%s durable folded update count = %d, want exactly one", ref, found["folded_update"])
 		}
 		if level == "CHILD" {
 			for index := range 45 {

@@ -816,6 +816,7 @@ func (a *skillBrowserAdapter) scriptComicSubchats(ctx context.Context, st *llm.C
 	launched, answered, instructed := false, false, false
 	grandchildID := ""
 	historyCalls := 0
+	updated := false
 	for _, message := range req.Messages {
 		for _, part := range message.Content {
 			if part.ToolResult != nil && part.ToolResult.ToolCallID == "comic_delegate_GRANDCHILD" {
@@ -835,6 +836,9 @@ func (a *skillBrowserAdapter) scriptComicSubchats(ctx context.Context, st *llm.C
 			if part.ToolCall != nil && strings.HasPrefix(part.ToolCall.ID, "comic_delegate_") {
 				launched = true
 			}
+			if part.ToolCall != nil && part.ToolCall.ID == "comic_grandchild_update" {
+				updated = true
+			}
 			if part.ToolCall != nil && strings.HasPrefix(part.ToolCall.ID, "comic_history_") {
 				historyCalls++
 			}
@@ -848,6 +852,27 @@ func (a *skillBrowserAdapter) scriptComicSubchats(ctx context.Context, st *llm.C
 	}
 	if answered {
 		sendScriptedCommunicate(st)
+		return
+	}
+	if level == "GRANDCHILD" && !updated {
+		// One mid-work update, gated so the browser journey controls exactly
+		// where the folded delegate notification lands in the child's loaded
+		// window: with the launch still on an unloaded page, this update is the
+		// strip's only anchor until the origin page releases.
+		if !a.waitBackgroundPhase(ctx, "comic-grandchild-update") {
+			_ = a.writeEvent("comic-grandchild-cancelled-before-update")
+			return
+		}
+		_ = a.writeEvent("comic-grandchild-update-released")
+		args, _ := json.Marshal(map[string]any{
+			"message":  "COMIC_UPDATE_GRANDCHILD literal folded update",
+			"end_turn": false,
+			"output":   map[string]any{"message": "", "data": map[string]any{}, "artifacts": []string{}},
+		})
+		call := llm.ToolCallData{ID: "comic_grandchild_update", Name: "communicate", Arguments: args, Type: "function"}
+		st.Send(llm.StreamEvent{Type: llm.StreamEventToolCallStart, ToolCall: &call})
+		st.Send(llm.StreamEvent{Type: llm.StreamEventToolCallEnd, ToolCall: &call})
+		st.Send(llm.StreamEvent{Type: llm.StreamEventFinish, FinishReason: &llm.FinishReason{Reason: llm.FinishReasonToolCalls}})
 		return
 	}
 	if level == "CHILD" && launched && historyCalls < 45 {
