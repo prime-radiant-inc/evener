@@ -1641,7 +1641,12 @@ test.each(["collapse", "reopen"] as const)(
       ended: false,
     });
     const original = projectComicDelegates(model, entities)[0]!;
-    const strip = { ...original, ownerRef: "local:test", childRef: `local:toggle-child-${boundary}` };
+    const strip = {
+      ...original,
+      ownerRef: "local:test",
+      childRef: `local:toggle-child-${boundary}`,
+      source: { itemId: entry.sourceItemId!, sourceIndex: 0 },
+    };
     const leafRef = `local:toggle-leaf-${boundary}`;
     const leafKey = JSON.stringify([strip.childRef, "dlg_nested"]);
     const client = new FakeClient("ready");
@@ -1659,6 +1664,17 @@ test.each(["collapse", "reopen"] as const)(
                 type: "agentMessage",
                 text: "LITERAL_NESTED_SOURCE",
               },
+              ...(p.ref === strip.childRef
+                ? [
+                    {
+                      id: "nested-update",
+                      type: "steering" as const,
+                      source: "daemon" as const,
+                      steeringKind: "notification" as const,
+                      text: '<delegate-notification delegate_id="dlg_nested" kind="update">Working.</delegate-notification>',
+                    },
+                  ]
+                : []),
             ],
           },
         ],
@@ -1772,6 +1788,7 @@ test.each([
       ...projectComicDelegates(model, entities)[0]!,
       ownerRef: "local:test",
       childRef: `local:continuation-${intent}-${recorded}-${opening}-${delivery}`,
+      source: { itemId: entry.sourceItemId!, sourceIndex: 0 },
     };
     const turn = (id: string, entry: number) => ({
       id: recorded ? "child-turn" : id,
