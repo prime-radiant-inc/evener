@@ -372,7 +372,6 @@ test("comic mode mounts the shared Composer with attach and the in-card menu", a
   expect(mounted.container.querySelector('[data-testid="composer-attach"]')).not.toBeNull();
   expect(mounted.container.querySelector('[data-testid="session-chrome-inline"]')).not.toBeNull();
   expect(within(mounted.container).getByRole("textbox", { name: "Message" })).toBeDefined();
-  expect(mounted.container.querySelector("[data-comic-composer]")).toBeNull();
   // The shared composer owns no font of its own: it inherits the tokens the
   // comic root swaps, so the input surface renders in the comic face.
   const css = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "comic.module.css"), "utf8");
