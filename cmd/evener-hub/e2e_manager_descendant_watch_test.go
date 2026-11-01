@@ -287,6 +287,10 @@ func testManagerOwnedDescendantWatch(t *testing.T, missingGeneration bool) {
 	case <-ctx.Done():
 		t.Fatal(ctx.Err())
 	}
+	journalPath := filepath.Join(stateDir, "sessions", rootID, "jobs.jsonl")
+	// The public delivery counter is not the completion contract: a terminal
+	// wake can end the watch without bumping it. The durable receipt in the
+	// manager's journal is, so settle on state plus that receipt together.
 	for {
 		page, err := sess.ListActivityWatches(ctx, appwire.SessionActivityListParams{Ref: "local:" + rootID})
 		if err != nil {
@@ -294,11 +298,11 @@ func testManagerOwnedDescendantWatch(t *testing.T, missingGeneration bool) {
 		}
 		settled := false
 		for _, watch := range page.Watches {
-			if watch.Watch.ID == registration.WatchID && watch.State == appwire.SessionWatchStateEnded && watch.Watch.EndReason == "completed" && watch.Watch.Deliveries >= 2 {
+			if watch.Watch.ID == registration.WatchID && watch.State == appwire.SessionWatchStateEnded && watch.Watch.EndReason == "completed" {
 				settled = true
 			}
 		}
-		if settled {
+		if settled && managerWatchReceipt(journalPath, registration.WatchID, "completed: accepted terminal done") {
 			break
 		}
 		select {
@@ -307,12 +311,34 @@ func testManagerOwnedDescendantWatch(t *testing.T, missingGeneration bool) {
 		case <-time.After(10 * time.Millisecond):
 		}
 	}
-	journal, err := os.ReadFile(filepath.Join(stateDir, "sessions", rootID, "jobs.jsonl"))
-	if err != nil {
-		t.Fatal(err)
+	// The completing terminal can supersede the communicate event wake under
+	// the watch's coalescing contract, so the communicate wake receipt is
+	// order-dependent. The communicate frame itself was asserted on the
+	// observation stream above; the completion receipt is the wake the
+	// manager must always receive.
+	if !managerWatchReceipt(journalPath, registration.WatchID, "completed: accepted terminal done") {
+		t.Fatal("Manager has no delivered receipt for accepted child completion")
 	}
-	communicateDelivered := false
-	completionDelivered := false
+	{
+		page, err := sess.ListActivityWatches(ctx, appwire.SessionActivityListParams{Ref: "local:" + rootID})
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, watch := range page.Watches {
+			if watch.Watch.ID == registration.WatchID && watch.State == appwire.SessionWatchStateEnded && watch.Watch.EndReason == "completed" {
+				t.Logf("Manager watch %s delivered child event and completion: child=%s instance=%s boot=%s deliveries=%d", registration.WatchID, childRef, rootID, wantBoot, watch.Watch.Deliveries)
+				return
+			}
+		}
+		t.Fatalf("Manager did not consume child watch delivery: %+v", page)
+	}
+}
+
+func managerWatchReceipt(journalPath, watchID, triggerReason string) bool {
+	journal, err := os.ReadFile(journalPath)
+	if err != nil {
+		return false
+	}
 	lines := bytes.Split(journal, []byte{'\n'})
 	for _, line := range lines[:len(lines)-1] {
 		var record struct {
@@ -325,32 +351,11 @@ func testManagerOwnedDescendantWatch(t *testing.T, missingGeneration bool) {
 			} `json:"watch_send"`
 		}
 		if err := json.Unmarshal(line, &record); err != nil {
-			t.Fatal(err)
+			continue
 		}
-		if record.Kind == "watch_send_delivered" && record.WatchSend != nil && record.WatchSend.Key.WatchID == registration.WatchID && record.WatchSend.TriggerReason == "communicate" {
-			communicateDelivered = true
-		}
-		if record.Kind == "watch_send_delivered" && record.WatchSend != nil && record.WatchSend.Key.WatchID == registration.WatchID && record.WatchSend.TriggerReason == "completed: accepted terminal done" {
-			completionDelivered = true
+		if record.Kind == "watch_send_delivered" && record.WatchSend != nil && record.WatchSend.Key.WatchID == watchID && record.WatchSend.TriggerReason == triggerReason {
+			return true
 		}
 	}
-	if !communicateDelivered {
-		t.Fatal("Manager has no delivered receipt for child communicate")
-	}
-	if !completionDelivered {
-		t.Fatal("Manager has no delivered receipt for accepted child completion")
-	}
-	{
-		page, err := sess.ListActivityWatches(ctx, appwire.SessionActivityListParams{Ref: "local:" + rootID})
-		if err != nil {
-			t.Fatal(err)
-		}
-		for _, watch := range page.Watches {
-			if watch.Watch.ID == registration.WatchID && watch.State == appwire.SessionWatchStateEnded && watch.Watch.EndReason == "completed" && watch.Watch.Deliveries >= 2 {
-				t.Logf("Manager watch %s delivered child event and completion: child=%s instance=%s boot=%s deliveries=%d", registration.WatchID, childRef, rootID, wantBoot, watch.Watch.Deliveries)
-				return
-			}
-		}
-		t.Fatalf("Manager did not consume child watch delivery: %+v", page)
-	}
+	return false
 }

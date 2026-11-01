@@ -409,7 +409,7 @@ func managerWatchDefinition(def llm.ToolDefinition) llm.ToolDefinition {
 	encoded, _ := json.Marshal(def.Parameters)
 	_ = json.Unmarshal(encoded, &params)
 	params["properties"].(map[string]any)["hub"] = hubWatchSelectorSchema(map[string]any{"ref": map[string]any{"type": "string"}}, []string{"ref"})
-	def.Description += " In a Manager session, operation=create and hub={ref,events,completion} watches local or remote sessions through the shared hub subscription path. Completion requires accepted terminal done for the watched execution. Active or question-pending watches retain their turn across reconnect; fresh idle watches catch up only with the latest recorded work. Connection loss suspends, target replacement ends the watch, and Manager runtime restart requires re-registration."
+	def.Description += " In a Manager session, operation=create and hub={ref,events,completion} watches local or remote sessions through the shared hub subscription path. Completion fires when the watched turn is accepted as ended, including targets that do not offer an end reason, such as delegates and headless sessions. Active or question-pending watches retain their turn across reconnect; fresh idle watches catch up only with the latest recorded work. Connection loss suspends, target replacement ends the watch, and Manager runtime restart requires re-registration."
 	def.Parameters = params
 	return def
 }
