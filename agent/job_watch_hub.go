@@ -284,7 +284,7 @@ func (jm *jobManager) onHubObservationLookup(watchID string, update appwire.Sess
 		trigger = "completed: accepted terminal done"
 	}
 	root := events.SessionEvent{SessionID: jm.sessionID, Kind: events.EventCommunicate, Provenance: m.Causal}
-	delivery := jm.watchSendSnapshot(cfg, identity, trigger, root)
+	delivery := jm.watchSendSnapshot(cfg, identity, trigger, root).withSelfInfluence(jm.classifySelfInfluenceLocked(cfg, m.Causal))
 	jm.mu.Unlock()
 	if complete {
 		return jm.endHubWatch(watchID, "completed", &delivery)

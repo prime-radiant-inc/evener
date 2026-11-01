@@ -4,10 +4,13 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"sync"
 	"sync/atomic"
 	"testing"
 
+	"primeradiant.com/evener/agent/internal/jobstore"
+	"primeradiant.com/evener/agent/provenance"
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/llm"
 )
@@ -31,6 +34,58 @@ type managerRecoverClient struct {
 type managerRejectedRebindClient struct {
 	*managerRecoverClient
 	attempts atomic.Int32
+}
+
+func TestHubWatchDeliveryStampsSelfInfluenceAndTripsRunawayFuse(t *testing.T) {
+	t.Parallel()
+	jm := newTestJM(t)
+	watch, err := jm.configureHubWatch("local:worker", "worker-instance", "7@worker", "local:manager", []string{"communicate"}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	jm.mu.Lock()
+	_, cfg, ok := jm.watchConfigByIDLocked(watch.WatchID)
+	if !ok {
+		jm.mu.Unlock()
+		t.Fatal("configured hub watch is missing")
+	}
+	priorIDs := make(map[string]struct{}, runawaySelfInfluenceDepth)
+	chain := make([]provenance.Entry, 0, runawaySelfInfluenceDepth)
+	for i := range runawaySelfInfluenceDepth {
+		id := fmt.Sprintf("wd_hub_prior_%d", i)
+		priorIDs[id] = struct{}{}
+		chain = append(chain, provenance.Entry{Kind: "watch", WatchID: watch.WatchID, WatchGeneration: cfg.generation, DeliveryID: id})
+	}
+	jm.deliveredWatchSendIDs = priorIDs
+	jm.mu.Unlock()
+
+	causal := &provenance.Causal{
+		WatchKeys: []provenance.WatchKey{{WatchID: watch.WatchID, WatchGeneration: cfg.generation}},
+		Chain:     chain,
+	}
+	if err := jm.onHubObservation(watch.WatchID, appwire.SessionWatchUpdate{
+		Event: "communicate",
+		Metadata: appwire.SessionObservationMetadata{
+			Ref: "local:worker", InstanceID: "worker-instance", GenerationID: "7@worker",
+			EntryID: "hub-self-influenced-entry", CausalKnown: true, Causal: causal,
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	var dropped *jobstore.WatchSendState
+	for _, event := range loadJobStoreEvents(t, jm) {
+		if event.Kind == jobstore.EventWatchSendDropped && event.WatchSend != nil && event.WatchSend.DiagnosticReason == "runaway" {
+			state := *event.WatchSend
+			dropped = &state
+		}
+	}
+	if dropped == nil {
+		t.Fatal("hub self-influenced delivery did not trip the runaway drop at eight prior hops")
+	}
+	if dropped.SelfInfluenceDepth != runawaySelfInfluenceDepth {
+		t.Fatalf("dropped SelfInfluenceDepth = %d, want %d", dropped.SelfInfluenceDepth, runawaySelfInfluenceDepth)
+	}
 }
 
 func (c *managerRejectedRebindClient) Watch(ctx context.Context, request appwire.SessionWatchRequest) (<-chan appwire.SessionWatchUpdate, error) {
