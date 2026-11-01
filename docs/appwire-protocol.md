@@ -4563,6 +4563,7 @@ Underlying Go kind: `string` (no struct fields).
 | Field | Go type | Omitempty | Embedded |
 |-------|---------|-----------|----------|
 | `thread` | [appwire.Thread](#thread) |  |  |
+| `targetSessionToolsSupported` | \*bool | yes |  |
 | `latestExecutionTurnId` | string | yes |  |
 | `answerContinuation` | \*[appwire.AnswerContinuationVerdict](#answercontinuationverdict) | yes |  |
 | `olderCursor` | string | yes |  |

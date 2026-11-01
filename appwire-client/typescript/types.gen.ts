@@ -4587,6 +4587,11 @@ export interface ThreadReadParams {
 export interface ThreadReadResponse {
   thread: Thread;
   /**
+   * TargetSessionToolsSupported reports whether the daemon serving this thread
+   * negotiated session tools. Omission means the serving hub cannot attest it.
+   */
+  targetSessionToolsSupported?: boolean;
+  /**
    * LatestExecutionTurnID is the newest recorded execution span at Snapshot,
    * regardless of later non-execution history turns.
    */

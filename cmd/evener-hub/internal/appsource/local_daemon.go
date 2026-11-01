@@ -591,6 +591,13 @@ func (s *LocalDaemonSource) ReadThread(ctx context.Context, params appwire.Threa
 			lease.Close()
 			return appwire.ThreadReadResponse{}, err
 		}
+		target, parseErr := appwire.ParseRef(result.Response.Thread.Evener.Ref)
+		if parseErr != nil {
+			target, parseErr = appwire.ParseRef(params.Ref)
+		}
+		if supported, known := s.SessionToolsSupported(target); parseErr == nil && known {
+			result.Response.TargetSessionToolsSupported = &supported
+		}
 		key := result.Response.Thread.Evener.Ref
 		if key == "" {
 			key = relaySessionKey(s.sourceID, params.Ref, params.ThreadID)
@@ -635,6 +642,10 @@ func (s *LocalDaemonSource) ReadThreadAtEntry(ctx context.Context, entry rendezv
 	err := s.withClient(ctx, entry, func(ctx context.Context, client *appwire.Client) error {
 		var callErr error
 		out, callErr = client.ThreadRead(ctx, params)
+		if callErr == nil {
+			supported := client.Features().SessionTools
+			out.TargetSessionToolsSupported = &supported
+		}
 		return callErr
 	})
 	return out, err

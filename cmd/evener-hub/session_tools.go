@@ -611,6 +611,13 @@ func (o *sessionOperations) read(ctx context.Context, params appwire.ThreadReadP
 	// Local forks copy persisted history in the hub. A live daemon's
 	// own unsupported fork flag does not describe this hub-owned action.
 	resp.Thread = applyHubCapabilities(cfg, resp.Thread)
+	if daemon, ok := source.(*appsource.LocalDaemonSource); ok {
+		if target, parseErr := appwire.ParseRef(resp.Thread.Evener.Ref); parseErr == nil {
+			if supported, known := daemon.SessionToolsSupported(target); known {
+				resp.TargetSessionToolsSupported = &supported
+			}
+		}
+	}
 	resp.RequestGeneration = params.RequestGeneration
 	if err := appwire.ValidateThreadReadItemResponse(resp); err != nil {
 		read.finish(false)

@@ -342,6 +342,7 @@ func relayOnThreadRead(source appsource.Source) bool {
 // identity of the read its items came from: what the client merges or
 // replaces by.
 func withReadHistoryIdentity(response, from appwire.ThreadReadResponse) appwire.ThreadReadResponse {
+	response.TargetSessionToolsSupported = from.TargetSessionToolsSupported
 	response.BootGeneration = from.BootGeneration
 	response.Epoch = from.Epoch
 	response.Snapshot = from.Snapshot

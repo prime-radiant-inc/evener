@@ -123,7 +123,7 @@ func TestManagerRemoteObservationWatchRequiresNegotiatedSessionTools(t *testing.
 				case appwire.MethodInitialize:
 					return appwire.InitializeResponse{ProtocolVersion: appwire.ProtocolVersion, SourceID: "local", Features: appwire.FeatureSet{SessionTools: supported}}
 				case appwire.MethodThreadRead:
-					return appwire.ThreadReadResponse{Thread: appwire.Thread{ID: "target", SessionID: "target", Evener: appwire.EvenerThread{Ref: "local:target", InstanceID: "target"}}}
+					return appwire.ThreadReadResponse{Thread: appwire.Thread{ID: "target", SessionID: "target", Evener: appwire.EvenerThread{Ref: "local:target", InstanceID: "target"}}, TargetSessionToolsSupported: boolPointer(supported)}
 				default:
 					return appwire.EmptyResponse{}
 				}

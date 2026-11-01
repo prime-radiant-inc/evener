@@ -189,14 +189,8 @@ func (b *boundSessionOperations) Watch(ctx context.Context, request appwire.Sess
 					}
 				}
 			}
-		} else if source, ok := b.owner.sources.Source(ref.SourceID); ok {
-			if remote, isRemote := source.(*appsource.RemoteHubSource); isRemote {
-				supported, known := remote.SessionToolsSupported(watchCtx)
-				if !known || !supported {
-					cleanup()
-					return nil, appwire.InvalidRequest("target cannot report recorded-observation support")
-				}
-			} else {
+		} else if _, ok := b.owner.sources.Source(ref.SourceID); ok {
+			if read.TargetSessionToolsSupported == nil || !*read.TargetSessionToolsSupported {
 				cleanup()
 				return nil, appwire.InvalidRequest("target cannot report recorded-observation support")
 			}

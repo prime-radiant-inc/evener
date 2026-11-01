@@ -364,6 +364,9 @@ func (p ThreadReadParams) ValidateAnswerContinuation() error {
 
 type ThreadReadResponse struct {
 	Thread Thread `json:"thread"`
+	// TargetSessionToolsSupported reports whether the daemon serving this thread
+	// negotiated session tools. Omission means the serving hub cannot attest it.
+	TargetSessionToolsSupported *bool `json:"targetSessionToolsSupported,omitempty"`
 	// LatestExecutionTurnID is the newest recorded execution span at Snapshot,
 	// regardless of later non-execution history turns.
 	LatestExecutionTurnID string                     `json:"latestExecutionTurnId,omitempty"`
