@@ -38,15 +38,19 @@ const SETTLED_ELSEWHERE_STATUS =
   "Note is still unsaved: the blocked save it was waiting on is no longer pending in this tab";
 // The state and status text a retained row maps to on the draft's submitted
 // record: a row in the recovery store is a refusal (its reason when the daemon
-// gave one), a blocked row is still waiting on session recovery, any other
-// state is taken as-is. refreshPersistence applies this on a persistence
-// notification; the blur-save retry path applies the same mapping to the row
-// its post-retry read observes.
+// gave one), a blocked row is still waiting on session recovery, a superseded
+// row's save is in flight under the fresh row a mint or reconcile queued, and
+// any other state is taken as-is. The superseded mapping is about STATUS only:
+// the draft's submitted identity keeps the WIRE id it saved under (a minted
+// row re-submits under its predecessor's payload id), because the daemon's
+// acknowledgement names that id. refreshPersistence applies this on a
+// persistence notification; the blur-save retry path applies the same mapping
+// to the row its post-retry read observes.
 function submittedStatusFor(
   record: MutationOutboxRecord,
   refused: MutationRecoveryRecord | undefined,
 ): { state: "submitting" | "blockedUnknown" | "canceled" | "rejected"; error: string | null } {
-  const state = refused ? "rejected" : record.state;
+  const state = refused ? "rejected" : record.state === "superseded" ? "submitting" : record.state;
   const error = refused
     ? (refused.recoveryReason ?? "Note could not be saved")
     : state === "blockedUnknown"
@@ -69,6 +73,10 @@ function refreshPersistence(): void {
       const latest = new Map<string, MutationOutboxRecord>();
       for (const record of [...outbox, ...recovery]) {
         if (record.method !== "notes/human/set") continue;
+        // A superseded row is dead work: the fresh row a mint or reconcile
+        // queued speaks for the save, so the dead predecessor never becomes
+        // a draft's adopted or latest identity.
+        if ("state" in record && record.state === "superseded") continue;
         if (record.intentSequence > (latest.get(record.targetRef)?.intentSequence ?? -1))
           latest.set(record.targetRef, record);
       }
@@ -81,20 +89,27 @@ function refreshPersistence(): void {
           draft.generation === 0 &&
           typeof record.payload.note === "string"
         ) {
+          const adopted = submittedStatusFor(record, undefined);
           draft = {
             ...draft,
             generation: 1,
             text: record.payload.note,
             dirty: true,
-            submitted: { generation: 1, id: record.clientMutationId, text: record.payload.note, state: record.state },
+            submitted: {
+              generation: 1,
+              id: record.clientMutationId,
+              text: record.payload.note,
+              state: adopted.state,
+            },
           };
           put(record.targetRef, draft);
         }
-        if (draft?.submitted?.id !== record.clientMutationId || draft.generation !== draft.submitted.generation)
-          continue;
-        const refused = recovery.find((item) => item.clientMutationId === record.clientMutationId);
-        const { state, error } = submittedStatusFor(record, refused);
-        put(record.targetRef, { ...draft, submitted: { ...draft.submitted, state }, error, saved: false });
+        if (!draft?.submitted || draft.generation !== draft.submitted.generation) continue;
+        if (draft.submitted.id === record.clientMutationId) {
+          const refused = recovery.find((item) => item.clientMutationId === record.clientMutationId);
+          const { state, error } = submittedStatusFor(record, refused);
+          put(record.targetRef, { ...draft, submitted: { ...draft.submitted, state }, error, saved: false });
+        }
       }
       // The optimistic store holds accepted-but-unreflected rows: another
       // connection's "pending" receipt moved this tab's blocked note out of

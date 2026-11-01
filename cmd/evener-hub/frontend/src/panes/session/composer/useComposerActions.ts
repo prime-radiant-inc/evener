@@ -489,7 +489,6 @@ export function useComposerActions(source: ComposerSourceState, externalBusy = f
       submittedRecoveryId === null ? undefined : captureRecoverySendIntent(ref, submittedRecoveryId);
     let recoveryResendRefused = false;
     let recoveryAlreadySent = false;
-    let recoveryFenced = false;
     const recoveryWriteRefusal = new Error("Recovery persistence was refused");
     const recoveryAlreadySentRefusal = new Error("Recovery source was already consumed");
     // The UI-side half of the skillInput gate (threads.ts's composerMutationIntent
@@ -587,13 +586,12 @@ export function useComposerActions(source: ComposerSourceState, externalBusy = f
                 );
                 if (outcome.status !== "sent") {
                   // A not-sent outcome answers the press as a refusal: the
-                  // composition never left the recovery tray (a fenced
-                  // resend's source rows stayed put), so the composer must
-                  // not take the success path - no clear, no consumed guard.
+                  // composition never left the recovery tray, so the composer
+                  // must not take the success path - no clear, no consumed
+                  // guard.
                   recoveryResendRefused = outcome.status === "refused";
                   recoveryAlreadySent = outcome.status === "consumed";
-                  recoveryFenced = outcome.status === "fenced";
-                  throw recoveryResendRefused || recoveryFenced ? recoveryWriteRefusal : recoveryAlreadySentRefusal;
+                  throw recoveryResendRefused ? recoveryWriteRefusal : recoveryAlreadySentRefusal;
                 }
                 // The resend transaction consumed the recovery row, so a remount
                 // can no longer restore it. Keep the guard until here rather than
@@ -652,8 +650,7 @@ export function useComposerActions(source: ComposerSourceState, externalBusy = f
       submissionFailed = true;
       // A refused recovery resend keeps its composer payload. Ordinary sends
       // retain the store's existing eligible direct-dispatch fallback policy.
-      if (source.alive && recoveryFenced) pushRecoveryRefusal("fenced");
-      else if (source.alive && recoveryResendRefused) pushRecoveryRefusal("changed");
+      if (source.alive && recoveryResendRefused) pushRecoveryRefusal("changed");
       else if (source.alive && recoveryAlreadySent) pushRecoveryRefusal("consumed");
       else if (error instanceof DestinationRouteRefused) {
         // The press could not route on the destination: the composition is

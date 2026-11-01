@@ -56,8 +56,15 @@ function fixture() {
       peer.close();
       return open();
     },
-    release: (record: { clientMutationId: string }, barrier: { stopEpoch: number }) =>
-      peer.releaseCanceled(record.clientMutationId, barrier),
+    release: async (record: { clientMutationId: string }, barrier: { stopEpoch: number }) => {
+      const capture = await peer.getOutboxWithStopEpoch(record.clientMutationId);
+      const minted = await peer.mintRetryFromRow(record.clientMutationId, {
+        record: capture.record,
+        stopEpoch: barrier.stopEpoch,
+        displayedStopEpoch: 0,
+      });
+      return minted?.state === "submitting";
+    },
   };
 }
 describeQueuedMessageStorage("IndexedDB", fixture);

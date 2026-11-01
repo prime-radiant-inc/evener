@@ -110,17 +110,20 @@ export function describeQueuedMessageStorage(name: string, create: () => QueuedS
       expect(await f.release(held.record, held)).toBe(true);
       expect(await f.release(held.record, held)).toBe(false);
       expect(await f.storage.editQueuedMessage(held.record, held)).toBeUndefined();
-      expect(await f.storage.getOutbox(original.clientMutationId)).toMatchObject({
-        state: "submitting",
-        clientMutationId: original.clientMutationId,
-      });
+      // The re-queued work is dispatchable under whatever identity the host's
+      // release re-queues it as: the same row reopened in place, or the fresh
+      // row a host whose explicit Retry mints one carries.
+      const requeued = (await f.storage.listOutbox("local:queued")).find(
+        (row) => row.method === "turn/queue" && row.state === "submitting",
+      );
+      if (!requeued) throw new Error("missing requeued row");
       await f.peer.enqueueInterruptAndCancel({ ...queuedIntent(), method: "turn/interrupt" });
-      const heldAgain = await f.storage.getOutboxWithStopEpoch(original.clientMutationId);
+      const heldAgain = await f.storage.getOutboxWithStopEpoch(requeued.clientMutationId);
       if (!heldAgain.record) throw new Error("missing held row");
       await f.peer.enqueueInterruptAndCancel({ ...queuedIntent(), method: "turn/interrupt" });
       expect(await f.storage.editQueuedMessage(heldAgain.record, heldAgain)).toBeUndefined();
       expect(await f.storage.removeQueuedMessage(heldAgain.record, heldAgain)).toBe(false);
-      const fresh = await f.storage.getOutboxWithStopEpoch(original.clientMutationId);
+      const fresh = await f.storage.getOutboxWithStopEpoch(requeued.clientMutationId);
       if (!fresh.record) throw new Error("missing held row");
       expect(await f.storage.editQueuedMessage(fresh.record, fresh)).toMatchObject({ recoveryKind: "editing" });
       expect(await f.release(fresh.record, fresh)).toBe(false);
@@ -263,16 +266,19 @@ export function describeQueuedMessageStorage(name: string, create: () => QueuedS
 // getOutboxWithStopEpoch an intersection would see: intersecting the two
 // signatures instead makes them overloads, and the base's narrower return
 // would win every call.
-type WebStorage = Omit<Storage, "getOutboxWithStopEpoch"> & WebQueuedMessageStorage;
+type WebStorage = Omit<Storage, "getOutboxWithStopEpoch"> &
+  WebQueuedMessageStorage & {
+    cancelUnattempted(targetRef: string): Promise<string[]>;
+  };
 
 export interface WebQueuedStorageFixture {
   storage: WebStorage;
 }
 
-// The web recovery fence's storage surface, as a contract: the capture pair a
-// reauthorizing click reads, and the blockedUnknown release only an explicit
-// user Retry may perform. Hosts without the surface run the base describe
-// alone; the web runtime runs this one against the same real storage.
+// The web recovery fence's storage surface, as a contract: the capture pair
+// a Retry's click reads, and the mint only an explicit user Retry may
+// perform. Hosts without the surface run the base describe alone; the web
+// runtime runs this one against the same real storage.
 export function describeWebQueuedMessageStorage(name: string, create: () => WebQueuedStorageFixture): void {
   describe(`${name} web stop-fence surface`, () => {
     test("capturePairAnswersBothHalves", async () => {
@@ -290,7 +296,7 @@ export function describeWebQueuedMessageStorage(name: string, create: () => WebQ
       expect(stopped.displayedStopEpoch).toBe(0);
     });
 
-    test("reauthorizeBlockedAnswersTheCapture", async () => {
+    test("mintRequeuesFreshAndSettlesTheOldRowTerminal", async () => {
       const f = create();
       const original = await f.storage.enqueueIntent(queuedIntent());
       await f.storage.markAttempted(original.clientMutationId);
@@ -298,34 +304,77 @@ export function describeWebQueuedMessageStorage(name: string, create: () => WebQ
       // A Stop lands while the attempt's outcome is unknown: the cancel scan
       // skips the attempted row and bumps the ref's epoch past its baseline,
       // so the crossed fence parks it beyond every automatic reopen.
-      await f.storage.enqueueInterruptAndCancel({ ...queuedIntent(), method: "turn/interrupt" });
+      const interrupt = await f.storage.enqueueInterruptAndCancel({ ...queuedIntent(), method: "turn/interrupt" });
       expect((await f.storage.getOutbox(original.clientMutationId))?.state).toBe("blockedUnknown");
       const capture = await f.storage.getOutboxWithStopEpoch(original.clientMutationId);
-      // A second Stop outranks the earlier capture: the reauthorization
-      // refuses and the row stays parked.
-      await f.storage.enqueueInterruptAndCancel({ ...queuedIntent(), method: "turn/interrupt" });
-      expect(
-        await f.storage.reauthorizeBlockedMutation(original.clientMutationId, {
-          stopEpoch: capture.stopEpoch,
-          displayedStopEpoch: capture.displayedStopEpoch,
-        }),
-      ).toBe(false);
-      expect((await f.storage.getOutbox(original.clientMutationId))?.state).toBe("blockedUnknown");
-      // The post-Stop capture is the explicit Retry outranking the crossed
-      // Stop: the row reopens under its ORIGINAL mutation ID with its attempt
-      // evidence preserved.
-      const fresh = await f.storage.getOutboxWithStopEpoch(original.clientMutationId);
-      expect(
-        await f.storage.reauthorizeBlockedMutation(original.clientMutationId, {
-          stopEpoch: fresh.stopEpoch,
-          displayedStopEpoch: fresh.displayedStopEpoch,
-        }),
-      ).toBe(true);
+      // The explicit Retry outranks the crossed Stop: the mint settles the
+      // old row terminal "superseded" - its id and attempt evidence kept, so a
+      // receipt from the real in-flight attempt still settles it - and queues
+      // the work as a FRESH row that inherits the predecessor's wire id.
+      const minted = await f.storage.mintRetryFromRow(original.clientMutationId, capture);
+      expect(minted?.state).toBe("submitting");
+      expect(minted?.clientMutationId).not.toBe(original.clientMutationId);
+      expect(minted?.payload.clientMutationId).toBe(original.clientMutationId);
       expect(await f.storage.getOutbox(original.clientMutationId)).toMatchObject({
-        state: "submitting",
-        clientMutationId: original.clientMutationId,
+        state: "superseded",
         attempted: true,
       });
+      // The Stop's own interrupt row still heads the queue ahead of the tail
+      // mint; retire it the way its dispatch would, then the old row is never
+      // dispatched again: only the fresh row is dispatchable.
+      expect(await f.storage.settleApplied(interrupt.clientMutationId)).toBe(true);
+      expect(await f.storage.nextDispatchable("local:queued")).toMatchObject({
+        clientMutationId: minted?.clientMutationId,
+      });
+      // The capture's identity is the mint's one check: a row whose durable
+      // world no longer matches it refuses.
+      expect(await f.storage.mintRetryFromRow(original.clientMutationId, capture)).toBeUndefined();
+    });
+
+    // The reconcile's re-queue is a mint too - reconciliation NEVER re-enables
+    // a parked row: an innocent blocked row settles terminal "superseded"
+    // (its id and attempt evidence kept for the receipt its real in-flight
+    // attempt can still bring) and a FRESH row carries the work, inheriting
+    // the predecessor's wire id, queued at the ref's tail, fenced at birth by
+    // construction - barrier-free like §4's recovery resends. The returned id
+    // is the fresh row's: the row that dispatches.
+    test("aProvenAbsentRequeueMintsAFreshRowAndSettlesThePredecessor", async () => {
+      const f = create();
+      const original = await f.storage.enqueueIntent(queuedIntent());
+      await f.storage.markAttempted(original.clientMutationId);
+      await f.storage.markUnknown(original.clientMutationId, "blockedUnknown");
+      const restored = await f.storage.restoreProvenAbsent("local:queued", new Set());
+      expect(restored).toHaveLength(1);
+      expect(await f.storage.getOutbox(original.clientMutationId)).toMatchObject({
+        state: "superseded",
+        attempted: true,
+      });
+      expect(restored[0]).not.toBe(original.clientMutationId);
+      const fresh = await f.storage.getOutbox(restored[0] ?? "");
+      expect(fresh).toMatchObject({ state: "submitting", attempted: false });
+      expect(fresh?.payload.clientMutationId).toBe(original.clientMutationId);
+      expect(fresh?.stopEpochAtEnqueue).toBe(0);
+    });
+
+    test("aMintCrossedByANewerStopCommitsBornCanceled", async () => {
+      const f = create();
+      const original = await f.storage.enqueueIntent(queuedIntent());
+      await f.storage.cancelUnattempted("local:queued");
+      expect((await f.storage.getOutbox(original.clientMutationId))?.state).toBe("canceled");
+      const capture = await f.storage.getOutboxWithStopEpoch(original.clientMutationId);
+      // A Stop lands inside the capture-to-mint window: its scan skips the
+      // already-canceled row, so the mint's birth compare is the only thing
+      // that can catch the bump - and it does, by never absorbing it: the
+      // fresh row commits born-canceled and the old canceled row is removed.
+      const interrupt = await f.storage.enqueueInterruptAndCancel({ ...queuedIntent(), method: "turn/interrupt" });
+      const crossed = await f.storage.mintRetryFromRow(original.clientMutationId, capture);
+      expect(crossed?.state).toBe("canceled");
+      expect(await f.storage.getOutbox(original.clientMutationId)).toBeUndefined();
+      // Retire the Stop's own interrupt row the way its dispatch would; with
+      // it gone nothing on the ref is dispatchable - the fresh row was born
+      // canceled and the old canceled row is removed.
+      expect(await f.storage.settleApplied(interrupt.clientMutationId)).toBe(true);
+      expect(await f.storage.nextDispatchable("local:queued")).toBeUndefined();
     });
   });
 }

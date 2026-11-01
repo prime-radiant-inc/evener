@@ -39,15 +39,13 @@ export function pushSelectionRefusal(refusal: SelectionRefusal): void {
 }
 
 // A recovery row that another surface changed ("changed") or already sent
-// ("consumed") under this one, or a Stop that crossed the send before it
-// left ("fenced") - the press answered not-sent and the composition stayed
-// in the recovery tray.
-export type RecoveryRefusal = "changed" | "consumed" | "fenced";
+// ("consumed") under this one. A resend a Stop crossed answers "sent" with a
+// born-canceled row - the composition's durable copy - so no distinct fenced
+// refusal exists.
+export type RecoveryRefusal = "changed" | "consumed";
 
 export function pushRecoveryRefusal(refusal: RecoveryRefusal): void {
   if (refusal === "changed") pushToast("info", "This message changed in another tab. Refresh and try again.", refusal);
-  else if (refusal === "fenced")
-    pushToast("info", "A Stop crossed this send; it is still in the recovery tray.", refusal);
   else pushToast("info", "This message was already sent in another tab.", refusal);
 }
 

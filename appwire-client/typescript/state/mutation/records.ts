@@ -36,9 +36,15 @@ export interface MutationAttachmentRef {
 
 // "canceled" is the durable record of a user's Stop: the row was never
 // attempted, so cancellation is a fact about the client, not a guess about
-// the daemon. Only an explicit user Retry releases it; no scan, reopen, or
-// reclassification path may move it.
-export type MutationOutboxState = "submitting" | "blockedUnknown" | "canceled";
+// the daemon. Only an explicit user Retry re-queues its work; no scan,
+// reopen, or reclassification path may move it. "superseded" is the terminal
+// settlement of a blockedUnknown row an explicit Retry or a proven-absent
+// reconcile re-queued as a FRESH row: never dispatched again
+// (nextDispatchable returns only submitting rows), never reopened - but its
+// id and attempt evidence stay, so a receipt or in-band refusal from the real
+// in-flight attempt still settles it exactly as before. The mint creates
+// sibling work; it never claims to replace the predecessor's outcome.
+export type MutationOutboxState = "submitting" | "blockedUnknown" | "canceled" | "superseded";
 export type MutationRecoveryKind = "rejected" | "orphaned" | "editing";
 
 // One submission as the client made it. The attachment type is a parameter so

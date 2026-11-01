@@ -862,10 +862,11 @@ test.each(["remove", "retry", "dispatch", "stop"] as const)(
     try {
       const editing = editQueuedMutation(original.clientMutationId, "root");
       await hold.reached;
-      const { record, stopEpoch } = await sibling.getOutboxWithStopEpoch(original.clientMutationId);
+      const siblingCapture = await sibling.getOutboxWithStopEpoch(original.clientMutationId);
+      const record = siblingCapture.record;
       if (!record) throw new Error("missing race fixture");
-      if (winner === "remove") await sibling.removeQueuedMessage(record, { stopEpoch });
-      else if (winner === "retry") await sibling.releaseCanceled(record.clientMutationId, { stopEpoch });
+      if (winner === "remove") await sibling.removeQueuedMessage(record, { stopEpoch: siblingCapture.stopEpoch });
+      else if (winner === "retry") await sibling.mintRetryFromRow(record.clientMutationId, siblingCapture);
       else if (winner === "stop") await sibling.cancelUnattempted("root");
       else await sibling.markAttempted(record.clientMutationId);
       hold.release();

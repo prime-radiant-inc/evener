@@ -24,6 +24,7 @@ import {
   settleEntryTranscriptForTests,
   threadsStore,
 } from "./threads";
+import { flushIndexedDBUntil } from "./threadsSessionActionsTestUtils";
 
 let storage: MutationOutboxIndexedDB;
 let entryCache: SessionEntryCache;
@@ -155,8 +156,27 @@ async function advance(ms: number): Promise<void> {
 
 // Waits for the save to settle either way, so a failing assertion reports the
 // refusal itself rather than racing the debounce.
+// The save rides IndexedDB, and fake-indexeddb delivers every IDB event on
+// a real macrotask (Node's setImmediate) - while waitFor's fake-timer spin
+// advances only fake time and never yields a macrotask. A save whose enqueue
+// queues behind a wider durable transaction (the hydration's reconcile pass
+// carries the Retry mint's cross-store scope) starves inside that spin: its
+// commit event never gets a turn and the wait outlives the truth. Yield one
+// real macrotask per unsatisfied check so the storage chain always
+// progresses between checks; the assertions themselves are unchanged.
+// The save rides IndexedDB, and fake-indexeddb delivers every IDB event on a
+// real macrotask (Node's setImmediate) - while waitFor's fake-timer spin
+// advances only fake time and never yields one. A save whose enqueue queues
+// behind a wider durable transaction (the hydration's reconcile pass carries
+// the Retry mint's cross-store scope) starves inside that spin: its commit
+// event never gets a turn. Pump the storage queue directly inside act so the
+// save's commit and the React updates it drives land deterministically, then
+// assert - the assertions themselves are unchanged.
 async function settled(result: { current: { submitted?: unknown; error?: string | null } | undefined }) {
-  await waitFor(() => expect(result.current?.submitted ?? result.current?.error).toBeTruthy());
+  await act(async () => {
+    await flushIndexedDBUntil(() => Boolean(result.current?.submitted ?? result.current?.error));
+  });
+  expect(result.current?.submitted ?? result.current?.error).toBeTruthy();
 }
 
 for (const state of ["submitting", "blockedUnknown", "rejected"] as const) {
@@ -452,9 +472,12 @@ test("a background save whose blocked row settles elsewhere mid-retry ends in th
 });
 
 // The same mid-retry window with the row still present but no longer blocked:
-// another connection reconciled it back to submitting, so its resend belongs
-// to that connection's outbox lifecycle. The draft must take the row's actual
-// state - the stale blocked status is as wrong here as the absent row's was.
+// another connection re-queued it - a mint now, so the old row settles
+// terminal "superseded" and the save travels under a FRESH row that inherits
+// the predecessor's wire id. The draft must take the row's actual state: not
+// the stale blocked status, and not a claim that the old row is live either -
+// its status follows the in-flight save while its submitted identity KEEPS
+// the wire id, because the daemon's acknowledgement names that id.
 test("a background save whose blocked row is restored elsewhere mid-retry takes the row's actual state", async () => {
   vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
   const ref = "ref-a";
@@ -496,7 +519,22 @@ test("a background save whose blocked row is restored elsewhere mid-retry takes 
     await saving;
   });
   expect(restoredMidRetry).toBe(true);
-  expect((await storage.getOutbox(original.clientMutationId))?.state).toBe("submitting");
+  // The old row settles terminal, keeping its id and attempt evidence; the
+  // save travels under a fresh row that inherited the wire id.
+  expect(await storage.getOutbox(original.clientMutationId)).toMatchObject({
+    state: "superseded",
+    attempted: true,
+  });
+  const rows = await storage.listOutbox(ref);
+  // The fresh row is the one whose OWN id differs; its payload carries the
+  // inherited wire id.
+  const fresh = rows.find((row) => row.clientMutationId !== original.clientMutationId);
+  expect(fresh).toMatchObject({
+    state: "submitting",
+    attempted: false,
+  });
+  expect(fresh?.payload.clientMutationId).toBe(original.clientMutationId);
+  expect(rows.find((row) => row.state === "superseded")?.clientMutationId).toBe(original.clientMutationId);
   expect(result.current).toMatchObject({
     text: "retained blocked note",
     dirty: true,

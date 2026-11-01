@@ -95,7 +95,7 @@ describe("retargeted resend rows' displayed-ref fence", () => {
     storage.close();
   });
 
-  test("a refusal rollback holds the attempted row canceled after a Stop on the displayed ref", async () => {
+  test("a refusal's rollback across a displayed-ref Stop holds the row canceled", async () => {
     const storage = store();
     const row = await seedRetargetedResend(storage);
     await storage.markAttempted(row.clientMutationId);
@@ -105,9 +105,19 @@ describe("retargeted resend rows' displayed-ref fence", () => {
       state: "submitting",
       attempted: true,
     });
-    // The refusal proves the attempt never landed; the rollback must not make
-    // the row dispatchable across the Stop that landed while it was in flight.
+    // The refusal proves the attempt never landed; the Stop that landed
+    // while the attempt was in flight is the row's truth, so the rollback
+    // settles it canceled right there - #4342's hold, dual-ref: a Stop on
+    // the still-displayed session holds the row the same way one on the
+    // destination does, never dispatchable ahead of the Stop's interrupt,
+    // released only by an explicit Retry. The pre-transport gate remains
+    // defense-in-depth for a pass the rollback never sees.
     expect(await storage.unmarkAttempted(row.clientMutationId)).toBe(false);
+    expect(await storage.getOutbox(row.clientMutationId)).toMatchObject({
+      state: "canceled",
+      attempted: false,
+    });
+    expect(await storage.markAttempted(row.clientMutationId)).toBe(false);
     expect(await storage.getOutbox(row.clientMutationId)).toMatchObject({
       state: "canceled",
       attempted: false,
@@ -124,6 +134,8 @@ describe("retargeted resend rows' displayed-ref fence", () => {
       state: "submitting",
       attempted: false,
     });
+    // No Stop crossed the row, so the gate lets the paced retry through.
+    expect(await storage.markAttempted(row.clientMutationId)).toBe(true);
     storage.close();
   });
 
@@ -155,74 +167,88 @@ describe("retargeted resend rows' displayed-ref fence", () => {
     storage.close();
   });
 
-  test("a reconcile reopen of an innocent parked row still reopens it", async () => {
+  test("a reconcile re-queues an innocent parked row as a fresh row and settles the old one terminal", async () => {
     const storage = store();
     const row = await seedRetargetedResend(storage);
     await storage.markAttempted(row.clientMutationId);
     await storage.markUnknown(row.clientMutationId, "blockedUnknown");
+    // Reconciliation NEVER re-enables the old row: an innocent parked row
+    // mints a FRESH row in the background - barrier-free like §4's recovery
+    // resends, fenced at birth by construction - and the old row settles
+    // terminal "superseded", keeping its id and attempt evidence for the
+    // receipt a real in-flight attempt can still bring.
     const restored = await storage.restoreProvenAbsent(DESTINATION, new Set());
-    expect(restored).toContain(row.clientMutationId);
-    expect(await storage.getOutbox(row.clientMutationId)).toMatchObject({ state: "submitting" });
+    expect(restored).toHaveLength(1);
+    const freshId = restored[0]!;
+    expect(freshId).not.toBe(row.clientMutationId);
+    expect(await storage.getOutbox(row.clientMutationId)).toMatchObject({
+      state: "superseded",
+      attempted: true,
+    });
+    // The fresh row is born dispatchable at the ref's tail, both epochs
+    // stamped at its own birth, and inherits the predecessor's wire id: the
+    // daemon journals this composition under that id, and a re-submission
+    // under it replays rather than double-applies.
+    const fresh = await storage.getOutbox(freshId);
+    expect(fresh).toMatchObject({
+      state: "submitting",
+      targetRef: DESTINATION,
+      displayedRef: DISPLAYED,
+      attempted: false,
+    });
+    expect(fresh?.payload.clientMutationId).toBe(row.clientMutationId);
+    expect(await storage.nextDispatchable(DESTINATION)).toMatchObject({ clientMutationId: freshId });
     storage.close();
   });
 
-  test("an explicit Retry refreshes the displayed epoch so a refused retry paces instead of re-canceling", async () => {
+  test("a Retry of a canceled row mints a fresh row whose own birth baselines let a later refusal pace", async () => {
     const storage = store();
     const row = await seedRetargetedResend(storage);
     // A Stop cancels the unattempted resend; the user explicitly retries it.
     await storage.enqueueInterruptAndCancel(interruptIntent(DISPLAYED));
     expect(await storage.getOutbox(row.clientMutationId)).toMatchObject({ state: "canceled" });
     const capture = await storage.getOutboxWithStopEpoch(row.clientMutationId);
-    expect(await storage.releaseCanceled(row.clientMutationId, { stopEpoch: capture.stopEpoch })).toBe(true);
-    const retried = await storage.getOutbox(row.clientMutationId);
-    // The reauthorization refreshes BOTH fence baselines: the destination's,
-    // and the displayed ref's - whose Stop this explicit Retry outranked. A
-    // stale displayed capture would make the row's next refusal rollback
-    // re-cancel it against that very Stop.
-    expect(retried).toMatchObject({
-      state: "submitting",
-      stopEpochAtEnqueue: capture.stopEpoch,
-      displayedStopEpochAtEnqueue: 1,
-    });
+    const fresh = await storage.mintRetryFromRow(row.clientMutationId, capture);
+    expect(fresh).toMatchObject({ state: "submitting", targetRef: DESTINATION, displayedRef: DISPLAYED });
+    expect(fresh?.clientMutationId).not.toBe(row.clientMutationId);
+    // A canceled predecessor provably never left any tab, so the fresh row
+    // carries its OWN wire id, and the old row is removed - §6's removal on
+    // explicit Retry - so its chip leaves the canceled strip and a second
+    // press cannot mint the same send twice.
+    expect(fresh?.payload.clientMutationId).toBe(fresh?.clientMutationId);
+    expect(await storage.getOutbox(row.clientMutationId)).toBeUndefined();
     // The retried row attempts, and the hub answers with an automatic
-    // backpressure refusal: the refusal must reopen the row for its paced
-    // retry, not re-cancel it.
-    await storage.markAttempted(row.clientMutationId);
-    expect(await storage.unmarkAttempted(row.clientMutationId)).toBe(true);
-    expect(await storage.getOutbox(row.clientMutationId)).toMatchObject({
+    // backpressure refusal: the refusal reopens the FRESH row for its paced
+    // retry - its baselines are its own birth's, so no crossed Stop
+    // re-cancels it.
+    await storage.markAttempted(fresh!.clientMutationId);
+    expect(await storage.unmarkAttempted(fresh!.clientMutationId)).toBe(true);
+    expect(await storage.getOutbox(fresh!.clientMutationId)).toMatchObject({
       state: "submitting",
       attempted: false,
     });
     storage.close();
   });
 
-  test("an explicit Retry of an ordinary recovery send keeps both baselines consistent", async () => {
+  test("a Retry of an ordinary canceled row mints a fresh row with a single birth baseline", async () => {
     const storage = store();
-    // An ordinary (non-retargeted) recovery send: the displayed ref IS the
-    // destination, so the two baselines must move together.
-    const original = await storage.enqueueIntent(intent("hello", DISPLAYED));
-    await storage.transferToRecovery(original.clientMutationId, "rejected");
-    const sent = await storage.resendRecoveryResult(
-      original.clientMutationId,
-      intent("hello", DISPLAYED),
-      undefined,
-      undefined,
-      undefined,
-      { stopEpoch: 0, displayedRef: DISPLAYED },
-    );
-    if (sent.status !== "sent") throw new Error(`resend did not send: ${sent.status}`);
-    await storage.enqueueInterruptAndCancel(interruptIntent(DISPLAYED));
-    const capture = await storage.getOutboxWithStopEpoch(sent.record.clientMutationId);
-    expect(await storage.releaseCanceled(sent.record.clientMutationId, { stopEpoch: capture.stopEpoch })).toBe(true);
-    const retried = await storage.getOutbox(sent.record.clientMutationId);
-    expect(retried?.state).toBe("submitting");
-    expect(retried?.displayedStopEpochAtEnqueue).toBe(retried?.stopEpochAtEnqueue);
-    await storage.markAttempted(sent.record.clientMutationId);
-    expect(await storage.unmarkAttempted(sent.record.clientMutationId)).toBe(true);
+    // An ordinary (non-retargeted) row crosses one ref: the minted row
+    // carries no displayed half, and its one baseline is its own birth's.
+    const original = await storage.enqueueIntent(intent("hello", DESTINATION));
+    await storage.enqueueInterruptAndCancel(interruptIntent(DESTINATION));
+    expect(await storage.getOutbox(original.clientMutationId)).toMatchObject({ state: "canceled" });
+    const capture = await storage.getOutboxWithStopEpoch(original.clientMutationId);
+    const minted = await storage.mintRetryFromRow(original.clientMutationId, capture);
+    expect(minted).toMatchObject({ state: "submitting", targetRef: DESTINATION });
+    expect(minted?.displayedRef).toBeUndefined();
+    expect(minted?.displayedStopEpochAtEnqueue).toBeUndefined();
+    expect(minted?.stopEpochAtEnqueue).toBe(capture.stopEpoch);
+    expect(await storage.markAttempted(minted!.clientMutationId)).toBe(true);
+    expect(await storage.unmarkAttempted(minted!.clientMutationId)).toBe(true);
     storage.close();
   });
 
-  test("a release whose displayed capture went stale inside the click's window refuses instead of absorbing the newer Stop", async () => {
+  test("a Retry whose window a newer displayed Stop crosses mints the fresh row born-canceled", async () => {
     const storage = store();
     const row = await seedRetargetedResend(storage);
     // A Stop on the displayed ref cancels the unattempted resend.
@@ -232,29 +258,24 @@ describe("retargeted resend rows' displayed-ref fence", () => {
     // displayed ref's post-Stop epoch.
     const capture = await storage.getOutboxWithStopEpoch(row.clientMutationId);
     expect(capture).toMatchObject({ stopEpoch: 0, displayedStopEpoch: 1 });
-    // A second Stop lands on the displayed ref inside the capture-to-release
+    // A second Stop lands on the displayed ref inside the capture-to-mint
     // window: its cancel scan skips the already-canceled row, and the
     // destination epoch never moved - the displayed epoch's bump is the one
-    // trace the release must catch.
+    // trace the mint's birth compare must catch. Nothing absorbs the newer
+    // Stop: the fresh row commits born-canceled for it, and the old row is
+    // removed (§6's removal on explicit Retry).
     await storage.enqueueInterruptAndCancel(interruptIntent(DISPLAYED));
-    expect(
-      await storage.releaseCanceled(row.clientMutationId, {
-        stopEpoch: capture.stopEpoch,
-        displayedStopEpoch: capture.displayedStopEpoch,
-      }),
-    ).toBe(false);
-    expect(await storage.getOutbox(row.clientMutationId)).toMatchObject({ state: "canceled" });
-    // Liveness control: a Retry clicked after the newer Stop captures its
-    // epoch and is the deliberate post-Stop send - it releases, and the
-    // refresh absorbs nothing: both baselines read the epochs as they stand.
-    const fresh = await storage.getOutboxWithStopEpoch(row.clientMutationId);
-    expect(
-      await storage.releaseCanceled(row.clientMutationId, {
-        stopEpoch: fresh.stopEpoch,
-        displayedStopEpoch: fresh.displayedStopEpoch,
-      }),
-    ).toBe(true);
-    expect(await storage.getOutbox(row.clientMutationId)).toMatchObject({
+    const crossed = await storage.mintRetryFromRow(row.clientMutationId, capture);
+    expect(crossed).toMatchObject({ state: "canceled", targetRef: DESTINATION, displayedRef: DISPLAYED });
+    expect(await storage.getOutbox(row.clientMutationId)).toBeUndefined();
+    // The born-canceled row never dispatches.
+    expect(await storage.nextDispatchable(DESTINATION)).toBeUndefined();
+    // Liveness control: that canceled chip's own Retry is the deliberate
+    // post-Stop send - a fresh capture mints born-submitting under the
+    // epochs as they stand.
+    const after = await storage.getOutboxWithStopEpoch(crossed!.clientMutationId);
+    const minted = await storage.mintRetryFromRow(crossed!.clientMutationId, after);
+    expect(minted).toMatchObject({
       state: "submitting",
       stopEpochAtEnqueue: 0,
       displayedStopEpochAtEnqueue: 2,
@@ -262,7 +283,7 @@ describe("retargeted resend rows' displayed-ref fence", () => {
     storage.close();
   });
 
-  test("an explicit reauthorization reopens a Stop-crossed blockedUnknown row under its original mutation ID with its attempt evidence", async () => {
+  test("an explicit Retry mints a fresh row from a Stop-crossed blockedUnknown row, inheriting its wire id", async () => {
     const storage = store();
     const row = await seedRetargetedResend(storage);
     await storage.markAttempted(row.clientMutationId);
@@ -277,86 +298,73 @@ describe("retargeted resend rows' displayed-ref fence", () => {
       state: "blockedUnknown",
       attempted: true,
     });
-    // The user's click: its capture reads the post-Stop epochs, and the
-    // reauthorization deliberately outranks the crossed Stop - under the
-    // ORIGINAL mutation ID, with the attempt evidence preserved.
+    // The user's click: its capture reads the post-Stop epochs and the mint
+    // deliberately outranks the crossed Stop - as a FRESH row. The old row
+    // settles terminal "superseded", keeping its id and attempt evidence for
+    // the receipt the real in-flight attempt can still bring; the fresh row
+    // inherits the predecessor's wire id so the daemon's journal replays the
+    // first attempt's receipt instead of double-applying the send.
     const capture = await storage.getOutboxWithStopEpoch(row.clientMutationId);
-    expect(
-      await storage.reauthorizeBlockedMutation(row.clientMutationId, {
-        stopEpoch: capture.stopEpoch,
-        displayedStopEpoch: capture.displayedStopEpoch,
-      }),
-    ).toBe(true);
+    const fresh = await storage.mintRetryFromRow(row.clientMutationId, capture);
+    expect(fresh).toMatchObject({ state: "submitting", targetRef: DESTINATION, displayedRef: DISPLAYED });
+    expect(fresh?.clientMutationId).not.toBe(row.clientMutationId);
+    expect(fresh?.payload.clientMutationId).toBe(row.clientMutationId);
     expect(await storage.getOutbox(row.clientMutationId)).toMatchObject({
-      state: "submitting",
-      clientMutationId: row.clientMutationId,
+      state: "superseded",
       attempted: true,
-      stopEpochAtEnqueue: capture.stopEpoch,
-      displayedStopEpochAtEnqueue: capture.displayedStopEpoch,
     });
-    // The row proceeds: it is the ref's dispatchable head again.
+    // The fresh row proceeds: it is the ref's dispatchable head again.
     expect(await storage.nextDispatchable(DESTINATION)).toMatchObject({
-      clientMutationId: row.clientMutationId,
+      clientMutationId: fresh?.clientMutationId,
     });
     storage.close();
   });
 
-  test("a reauthorization whose capture a newer displayed Stop outranks refuses and keeps the row parked", async () => {
+  test("a Retry of a blockedUnknown row whose window a newer displayed Stop crosses mints born-canceled", async () => {
     const storage = store();
     const row = await seedRetargetedResend(storage);
     await storage.markAttempted(row.clientMutationId);
     await storage.markUnknown(row.clientMutationId, "blockedUnknown");
     await storage.enqueueInterruptAndCancel(interruptIntent(DISPLAYED));
-    // The click's capture, then a second Stop inside the capture-to-release
-    // window: the reauthorization must refuse the click for the newer Stop.
+    // The click's capture, then a second Stop inside the capture-to-mint
+    // window: the mint never absorbs the newer Stop - the fresh row commits
+    // born-canceled for it, and the old row still settles terminal with its
+    // evidence intact for the receipt a real attempt can still bring.
     const capture = await storage.getOutboxWithStopEpoch(row.clientMutationId);
     await storage.enqueueInterruptAndCancel(interruptIntent(DISPLAYED));
-    expect(
-      await storage.reauthorizeBlockedMutation(row.clientMutationId, {
-        stopEpoch: capture.stopEpoch,
-        displayedStopEpoch: capture.displayedStopEpoch,
-      }),
-    ).toBe(false);
-    expect(await storage.getOutbox(row.clientMutationId)).toMatchObject({ state: "blockedUnknown" });
-    expect(await storage.nextDispatchable(DESTINATION)).toBeUndefined();
-    // Liveness control: a click whose capture reads the newer Stop still
-    // reauthorizes - it is the deliberate post-Stop send.
-    const fresh = await storage.getOutboxWithStopEpoch(row.clientMutationId);
-    expect(
-      await storage.reauthorizeBlockedMutation(row.clientMutationId, {
-        stopEpoch: fresh.stopEpoch,
-        displayedStopEpoch: fresh.displayedStopEpoch,
-      }),
-    ).toBe(true);
-    expect(await storage.getOutbox(row.clientMutationId)).toMatchObject({ state: "submitting" });
-    storage.close();
-  });
-
-  test("markAttempted refuses a reauthorized row a newer Stop crosses and keeps it delivery-uncertain", async () => {
-    const storage = store();
-    const row = await seedRetargetedResend(storage);
-    await storage.markAttempted(row.clientMutationId);
-    await storage.markUnknown(row.clientMutationId, "blockedUnknown");
-    await storage.enqueueInterruptAndCancel(interruptIntent(DISPLAYED));
-    // The explicit Retry reauthorizes the row past the crossed Stop.
-    const capture = await storage.getOutboxWithStopEpoch(row.clientMutationId);
-    expect(
-      await storage.reauthorizeBlockedMutation(row.clientMutationId, {
-        stopEpoch: capture.stopEpoch,
-        displayedStopEpoch: capture.displayedStopEpoch,
-      }),
-    ).toBe(true);
-    // A NEWER Stop lands on the displayed ref while the reauthorized row waits
-    // for its dispatch: the cancel scan skips the row (attempt evidence is
-    // preserved), so the pre-transport gate is the only fence left.
-    await storage.enqueueInterruptAndCancel(interruptIntent(DISPLAYED));
-    // The gate must refuse the redispatch: the row parks delivery-uncertain
-    // with its attempt evidence, never dispatching past the newer Stop.
-    expect(await storage.markAttempted(row.clientMutationId)).toBe(false);
+    const minted = await storage.mintRetryFromRow(row.clientMutationId, capture);
+    expect(minted).toMatchObject({ state: "canceled", targetRef: DESTINATION, displayedRef: DISPLAYED });
+    expect(minted?.payload.clientMutationId).toBe(row.clientMutationId);
     expect(await storage.getOutbox(row.clientMutationId)).toMatchObject({
-      state: "blockedUnknown",
+      state: "superseded",
       attempted: true,
     });
+    expect(await storage.nextDispatchable(DESTINATION)).toBeUndefined();
+    // Liveness control: the born-canceled chip's own Retry is the deliberate
+    // post-Stop send - a fresh capture mints born-submitting.
+    const after = await storage.getOutboxWithStopEpoch(minted!.clientMutationId);
+    const remint = await storage.mintRetryFromRow(minted!.clientMutationId, after);
+    expect(remint).toMatchObject({ state: "submitting" });
+    storage.close();
+  });
+
+  test("a minted row a newer displayed Stop crosses is canceled by that Stop's own scan", async () => {
+    const storage = store();
+    const row = await seedRetargetedResend(storage);
+    await storage.markAttempted(row.clientMutationId);
+    await storage.markUnknown(row.clientMutationId, "blockedUnknown");
+    await storage.enqueueInterruptAndCancel(interruptIntent(DISPLAYED));
+    // The explicit Retry mints the fresh row past the crossed Stop.
+    const capture = await storage.getOutboxWithStopEpoch(row.clientMutationId);
+    const minted = await storage.mintRetryFromRow(row.clientMutationId, capture);
+    expect(minted).toMatchObject({ state: "submitting" });
+    // A NEWER Stop lands on the displayed ref while the minted row waits for
+    // its dispatch: the fresh row is submitting and unattempted, so the
+    // Stop's cancel scan matches it on the displayed ref and cancels it
+    // directly - fencing at birth makes every later Stop's scan the fence.
+    await storage.enqueueInterruptAndCancel(interruptIntent(DISPLAYED));
+    expect(await storage.getOutbox(minted!.clientMutationId)).toMatchObject({ state: "canceled" });
+    expect(await storage.markAttempted(minted!.clientMutationId)).toBe(false);
     expect(await storage.nextDispatchable(DESTINATION)).toBeUndefined();
     storage.close();
   });
@@ -404,31 +412,28 @@ describe("retargeted resend rows' displayed-ref fence", () => {
     storage.close();
   });
 
-  test("markAttempted clears a row an explicit Retry released past its captured Stop", async () => {
+  test("markAttempted clears a row an explicit Retry minted past its captured Stop", async () => {
     const storage = store();
     const original = await storage.enqueueIntent(intent("hello", DESTINATION));
     await storage.enqueueInterruptAndCancel(interruptIntent(DESTINATION));
     expect(await storage.getOutbox(original.clientMutationId)).toMatchObject({ state: "canceled" });
     // The Retry pressed after the Stop is §9 item 7's deliberate post-Stop
-    // send: its release refreshes the baseline to the Stop's own epoch.
+    // send: its capture reads the Stop's own epoch and the mint commits the
+    // fresh row born-submitting - its birth baseline IS that epoch.
     const capture = await storage.getOutboxWithStopEpoch(original.clientMutationId);
-    expect(
-      await storage.releaseCanceled(original.clientMutationId, {
-        stopEpoch: capture.stopEpoch,
-        displayedStopEpoch: capture.displayedStopEpoch,
-      }),
-    ).toBe(true);
-    // The pre-transport fence must let the deliberate send through: the
-    // baselines the release refreshed are current.
-    expect(await storage.markAttempted(original.clientMutationId)).toBe(true);
-    expect(await storage.getOutbox(original.clientMutationId)).toMatchObject({
+    const minted = await storage.mintRetryFromRow(original.clientMutationId, capture);
+    expect(minted).toMatchObject({ state: "submitting" });
+    // The pre-transport gate must let the deliberate send through: the
+    // fresh row's birth baseline is current.
+    expect(await storage.markAttempted(minted!.clientMutationId)).toBe(true);
+    expect(await storage.getOutbox(minted!.clientMutationId)).toMatchObject({
       state: "submitting",
       attempted: true,
     });
     storage.close();
   });
 
-  test("a fence-stopped retargeted resend keeps its source recovery rows and answers not-sent", async () => {
+  test("a retargeted resend crossed at enqueue commits born-canceled, visible under the displayed ref", async () => {
     const storage = store();
     // The reviewer's shape up to the resend: a rejected recovery row a peer
     // retargeted to DESTINATION, its pane still displaying DISPLAYED.
@@ -446,13 +451,19 @@ describe("retargeted resend rows' displayed-ref fence", () => {
       undefined,
       { stopEpoch: 0, displayedRef: DISPLAYED },
     );
-    // The press answers a distinct not-sent outcome: no destination row
-    // exists, and the composition's only durable copy stays in the recovery
-    // tray on the session the user is looking at, with its existing
-    // affordances - never a canceled row invisible to its author.
-    expect(result).toEqual({ status: "fenced" });
-    expect(await storage.listOutbox(DESTINATION)).toEqual([]);
-    expect(await storage.getRecovery(original.clientMutationId)).toBeDefined();
+    // The retargeted-fenced carve-out is deleted: a crossed resend still
+    // mints its row - born-canceled, keyed to the destination, carrying the
+    // displayed ref - so the canceled strip's displayedRef match keeps the
+    // composition visible in the session the user is looking at, and the
+    // press answers sent with the recovery row consumed.
+    expect(result.status).toBe("sent");
+    if (result.status !== "sent") throw new Error("unreachable");
+    expect(result.record).toMatchObject({
+      state: "canceled",
+      targetRef: DESTINATION,
+      displayedRef: DISPLAYED,
+    });
+    expect(await storage.getRecovery(original.clientMutationId)).toBeUndefined();
     storage.close();
   });
 
@@ -546,14 +557,17 @@ describe("retargeted resend rows' displayed-ref fence", () => {
       stopFenced: true,
     });
     // The user's click is the one authorization that outranks the crossed
-    // Stop: explicit Retry reauthorizes under the original mutation ID, and
-    // the refreshed baselines pass the pre-transport gate - the resend goes.
+    // Stop: the mint settles the held row terminal and queues the send as a
+    // FRESH row - born under the epochs as they stand, inheriting the wire id
+    // so the daemon's journal replays rather than double-applies - and the
+    // gate lets it through.
     const capture = await storage.getOutboxWithStopEpoch(original.clientMutationId);
-    expect(await storage.reauthorizeBlockedMutation(original.clientMutationId, { stopEpoch: capture.stopEpoch })).toBe(
-      true,
-    );
-    expect(await storage.getOutbox(original.clientMutationId)).toMatchObject({ state: "submitting" });
-    expect(await storage.markAttempted(original.clientMutationId)).toBe(true);
+    const minted = await storage.mintRetryFromRow(original.clientMutationId, capture);
+    expect(minted).toMatchObject({ state: "submitting" });
+    expect(minted?.clientMutationId).not.toBe(original.clientMutationId);
+    expect(minted?.payload.clientMutationId).toBe(original.clientMutationId);
+    expect(await storage.getOutbox(original.clientMutationId)).toMatchObject({ state: "superseded" });
+    expect(await storage.markAttempted(minted!.clientMutationId)).toBe(true);
     storage.close();
   });
 
@@ -573,14 +587,43 @@ describe("retargeted resend rows' displayed-ref fence", () => {
       attempted: true,
       unresolvedAttempts: 1,
     });
-    // The real attempt's in-band refusal proves the truth: the count reads
-    // one-for-one and the row cancels for the Stop - no phantom attempt
-    // keeps a provably unsent row delivery-uncertain forever.
+    // The real attempt's in-band refusal proves the truth: the rollback
+    // settles the row canceled for the crossed Stop (#4342's hold) - the
+    // count reads one-for-one and no phantom attempt keeps a provably unsent
+    // row delivery-uncertain forever.
     expect(await storage.unmarkAttempted(original.clientMutationId)).toBe(false);
     expect(await storage.getOutbox(original.clientMutationId)).toMatchObject({
       state: "canceled",
       attempted: false,
     });
+    storage.close();
+  });
+
+  test("a mint refuses a row a peer retargeted inside the capture-to-mint window", async () => {
+    const storage = store();
+    const row = await seedRetargetedResend(storage);
+    await storage.markAttempted(row.clientMutationId);
+    await storage.markUnknown(row.clientMutationId, "blockedUnknown");
+    // The click's capture: the row on DESTINATION under the seed's identity.
+    const capture = await storage.getOutboxWithStopEpoch(row.clientMutationId);
+    // A peer retargets the row to another destination inside the window: the
+    // world the capture vouched for is gone, and the mint refuses as ONE
+    // identity check - the row's durable destination and instance must still
+    // match the capture (the park record's survivor, dead by construction:
+    // no stored past travels with the mint, so no release transaction can
+    // compare a captured epoch against a retargeted row).
+    await storage.retargetOutbox(DESTINATION, "local:elsewhere", { threadId: "thread-c" });
+    expect(await storage.mintRetryFromRow(row.clientMutationId, capture)).toBeUndefined();
+    // The row itself is untouched: still parked, still holding its evidence.
+    expect(await storage.getOutbox(row.clientMutationId)).toMatchObject({
+      state: "blockedUnknown",
+      attempted: true,
+    });
+    // A fresh capture mints under the row's new world.
+    const fresh = await storage.getOutboxWithStopEpoch(row.clientMutationId);
+    const minted = await storage.mintRetryFromRow(row.clientMutationId, fresh);
+    expect(minted).toMatchObject({ state: "submitting", targetRef: "local:elsewhere" });
+    expect(await storage.getOutbox(row.clientMutationId)).toMatchObject({ state: "superseded" });
     storage.close();
   });
 

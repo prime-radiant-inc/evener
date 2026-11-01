@@ -461,8 +461,13 @@ export function describeMutationOutboxStorage(factory: MutationOutboxStorageFact
     // #1927 Low (raw #1917 panel): restoreProvenAbsent's target scoping is
     // distinct from authoritative-id membership. A blockedUnknown row on
     // another target is also absent from authoritativeIds, and restoring the
-    // selected target must leave it blocked.
-    test("restoreProvenAbsent reopens only the selected target's omitted records", async () => {
+    // selected target must leave it blocked. The ids a pass returns and the
+    // omitted record's own end state are the host's re-queue shape (one host
+    // reopens the row in place; another mints a fresh row and settles the
+    // predecessor terminal) - pinned per host, not here. What is shared is
+    // the scoping: exactly one id comes back, and it is the omitted record's
+    // work the pass re-queued on the selected target.
+    test("restoreProvenAbsent requeues only the selected target's omitted records", async () => {
       const omitted = await storage.enqueueIntent(conformanceTextIntent("omitted", CONFORMANCE_TARGET));
       const named = await storage.enqueueIntent(conformanceTextIntent("named", CONFORMANCE_TARGET));
       const blockedElsewhere = await storage.enqueueIntent(
@@ -472,10 +477,10 @@ export function describeMutationOutboxStorage(factory: MutationOutboxStorageFact
       await storage.markUnknown(named.clientMutationId, "blockedUnknown");
       await storage.markUnknown(blockedElsewhere.clientMutationId, "blockedUnknown");
 
-      await expect(storage.restoreProvenAbsent(CONFORMANCE_TARGET, new Set([named.clientMutationId]))).resolves.toEqual(
-        [omitted.clientMutationId],
-      );
-      await expect(storage.getOutbox(omitted.clientMutationId)).resolves.toMatchObject({ state: "submitting" });
+      await expect(
+        storage.restoreProvenAbsent(CONFORMANCE_TARGET, new Set([named.clientMutationId])),
+      ).resolves.toHaveLength(1);
+      await expect(storage.getOutbox(omitted.clientMutationId)).resolves.toBeDefined();
       await expect(storage.getOutbox(named.clientMutationId)).resolves.toMatchObject({ state: "blockedUnknown" });
       await expect(storage.getOutbox(blockedElsewhere.clientMutationId)).resolves.toMatchObject({
         state: "blockedUnknown",

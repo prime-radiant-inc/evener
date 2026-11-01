@@ -32,6 +32,7 @@ export type MutationCommit = PackageMutationCommit<MutationAttachment>;
 export type {
   MutationClientLookup,
   MutationOutboxOptions,
+  MutationRetryCapture,
   MutationStopBarrier,
   MutationStopCapture,
 } from "@evener/appwire-client/state/mutation";

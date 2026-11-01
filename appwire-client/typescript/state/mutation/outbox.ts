@@ -153,8 +153,10 @@ export interface MutationOutboxStorage<A extends MutationAttachmentRef = Mutatio
   // Records an authoritative apply, with the same notes/human/set supersede
   // side effect as settleReceipt.
   settleApplied(clientMutationId: string): Promise<boolean>;
-  // Records the authoritative snapshot proves never landed, restored for
-  // another dispatch attempt; returns the ids restored.
+  // Records the authoritative snapshot proves never landed, re-queued for
+  // another dispatch attempt; returns the ids of the records this pass
+  // re-queued (a host may reopen the record in place or mint a fresh row
+  // for its work - the returned id is the row that dispatches).
   restoreProvenAbsent(targetRef: string, authoritativeIds: ReadonlySet<string>): Promise<string[]>;
   transferToRecovery(
     clientMutationId: string,

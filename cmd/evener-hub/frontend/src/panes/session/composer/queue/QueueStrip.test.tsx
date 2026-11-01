@@ -1,5 +1,5 @@
 import type { InputItem, Thread, ThreadReadResponse } from "@evener/appwire-client";
-import { NO_ACTIVE_TURN } from "@evener/appwire-client";
+import { NO_ACTIVE_TURN, WireError } from "@evener/appwire-client";
 import type { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -599,7 +599,16 @@ describe("durable recovery rows", () => {
     await user.click(retry);
     const storage = new MutationOutboxIndexedDB();
     await flushPendingTurnsProjectionForTests();
-    expect((await storage.listOutbox("ref_a"))[0]?.state).toBe("submitting");
+    // The press mints: the blocked predecessor settles terminal "superseded"
+    // (kept for the receipt its real in-flight attempt can still bring) and a
+    // FRESH row carries the send, re-submitting under the inherited wire id -
+    // stuck in flight here, since the scripted transport never answers.
+    const rows = await storage.listOutbox("ref_a");
+    expect(rows).toHaveLength(2);
+    expect(rows[0]).toMatchObject({ state: "superseded" });
+    expect(rows[1]).toMatchObject({ state: "submitting" });
+    expect(rows[1]?.clientMutationId).not.toBe(rows[0]?.clientMutationId);
+    expect(rows[1]?.payload.clientMutationId).toBe(rows[0]?.clientMutationId);
     storage.close();
   });
 
@@ -625,6 +634,11 @@ describe("durable recovery rows", () => {
       if (!original) throw new Error("missing seeded blocked mutation");
       // Commit from another handle without notifying this tab's projection:
       // the visible Retry is stale, but its real lookup must see the new state.
+      // The other tab's re-queue is a MINT: the old row settles terminal
+      // "superseded" and a fresh row carries the send. Keep the fresh row in
+      // flight (a transport that never answers) so the strip keeps showing
+      // its preview and no dispatch-side noise enters the no-op assertions.
+      fake.on("turn/start", () => new Promise<never>(() => undefined));
       if (outcome === "settled") await otherTab.settleApplied(original.clientMutationId);
       else await otherTab.restoreProvenAbsent("ref_a", new Set());
       const afterOtherTab = await otherTab.getOutbox(original.clientMutationId);
@@ -639,8 +653,13 @@ describe("durable recovery rows", () => {
         expect(afterOtherTab).toMatchObject({
           clientMutationId: original.clientMutationId,
           payload: original.payload,
-          state: "submitting",
+          state: "superseded",
         });
+        const rows = await otherTab.listOutbox("ref_a");
+        expect(rows).toHaveLength(2);
+        expect(rows[1]).toMatchObject({ state: "submitting" });
+        expect(rows[1]?.clientMutationId).not.toBe(original.clientMutationId);
+        expect(rows[1]?.payload.clientMutationId).toBe(original.clientMutationId);
         expect(screen.getByText("other-tab uncertain input")).toBeTruthy();
       }
       expect(fake.calls.filter(({ method }) => method === "thread/resume" || method === "turn/start")).toEqual([]);
@@ -649,10 +668,14 @@ describe("durable recovery rows", () => {
 
   // Regression for the review finding on the reduced branch: handleRetry used to
   // read the record BEFORE refreshing the projection and decide on that
-  // pre-refresh snapshot, so a settle from another tab landing between the two
-  // reported "Delivery still cannot be checked" for a row the retry had already
-  // made moot. The decision must be made on the post-refresh state.
-  test("a settle landing in Retry's read/refresh window leaves no error for the row", async ({ onTestFinished }) => {
+  // pre-refresh snapshot, so a re-queue from another tab landing between the
+  // two reported "Delivery still cannot be checked" for a row the retry had
+  // already made moot. The decision must be made on the post-refresh state.
+  // The window's re-queue is a MINT now: the old row settles terminal
+  // "superseded" and the fresh row carries the send, so the row that returns
+  // is the FRESH one - and a lingering error from the window must not land on
+  // it either.
+  test("a re-queue landing in Retry's read/refresh window leaves no error for the row", async ({ onTestFinished }) => {
     const ref = "ref_a";
     const storage = new SettleAfterRetryLookup();
     setMutationStorageForTests(storage);
@@ -663,44 +686,60 @@ describe("durable recovery rows", () => {
     await flushPendingTurnsProjectionForTests();
     // Keep the record blocked through the retry's own reconciliation - the same
     // fixture the genuinely-blocked case uses - so the decision read still sees
-    // it blocked whenever the settle has not landed.
+    // it blocked whenever the re-queue has not landed.
     fake.on("thread/read", () =>
       readResponse(ref, {
         evener: { ref, capabilities: CAPABILITIES, mutationStateAuthoritative: false, queue: { revision: 0 } },
       }),
     );
+    // The fresh row's dispatch fails with an uncertain outcome, so the
+    // re-queued send re-parks blocked - the row that must return with no
+    // error on it.
+    fake.on("turn/start", (params) => {
+      throw new WireError("journal unavailable", -32014, {
+        evenerErrorInfo: "mutationOutcomeUnknown",
+        clientMutationId: params.clientMutationId,
+        mutationOutcome: "unknown",
+        retryDisposition: "blocked",
+        cause: "persistenceUnavailable",
+      });
+    });
     const otherTab = new MutationOutboxIndexedDB();
     onTestFinished(() => otherTab.close());
     const original = (await otherTab.listOutbox(ref))[0];
     if (!original) throw new Error("missing seeded blocked mutation");
-    // The other tab reopens the record inside the retry window (the barrier
+    // The other tab re-queues the record inside the retry window (the barrier
     // class above arms on the retry flow's own reads, so persistence-read
-    // shifts elsewhere in the flow cannot misplace the settle - issue #1723).
+    // shifts elsewhere in the flow cannot misplace the re-queue - issue #1723).
     storage.settleOnRetryRefresh(async () => {
       await otherTab.restoreProvenAbsent(ref, new Set());
     });
     await userEvent.setup().click(screen.getByRole("button", { name: "Retry" }));
     await flushPendingTurnsProjectionForTests();
-    // Block the same record again so the row returns: a lingering error state
-    // from the window would now be visible on it.
     await act(async () => {
-      await otherTab.markUnknown(original.clientMutationId, "blockedUnknown");
       await refreshPendingTurnsProjection(ref);
     });
     await flushPendingTurnsProjectionForTests();
+    // The old row is terminal "superseded" - dropped from every pending
+    // surface - and the fresh row carries the send, re-parked blocked by its
+    // own uncertain dispatch. No error, no toast: the press was a benign
+    // no-op for a row the other tab had already re-queued.
+    expect(await otherTab.getOutbox(original.clientMutationId)).toMatchObject({ state: "superseded" });
     const row = (await screen.findByText("uncertain input")).closest("li");
-    if (!row) throw new Error("missing blocked row after the settle window");
+    if (!row) throw new Error("missing re-queued row after the settle window");
     await within(row).findByRole("button", { name: "Retry" });
     expect(within(row).queryAllByRole("alert")).toEqual([]);
     expect(getToasts()).toEqual([]);
   });
 
-  // Issue #1722: handleRetry awaited refreshPendingTurnsProjection(sessionRef)
-  // even though retryBlockedPendingTurn's own mutateThenRefresh had already
-  // awaited that same refresh before its promise resolved, so every Retry paid a
-  // second, unread IndexedDB round trip. The decision read that follows it uses
-  // readMutationPersistence directly, so the dropped refresh fed nothing.
-  test("a retry that stays blocked refreshes the pending-turns projection once", async () => {
+  // Issue #1722's surviving shape under the mint: handleRetry's own redundant
+  // second refresh stays gone (it re-read the same durable rows and fed
+  // neither the projection nor the decision). What the retry pays now: the
+  // refresh retryBlockedPendingTurn's mutateThenRefresh awaits, the decision
+  // read, and the ONE refresh the mint's own commit notification lands - the
+  // refresh that publishes the tail re-queue the press just made, so it feeds
+  // the projection rather than nothing.
+  test("a retry that re-queues refreshes the pending-turns projection exactly for what feeds it", async () => {
     const ref = "ref_a";
     const storage = new RetryPersistenceReadCounter();
     setMutationStorageForTests(storage);
@@ -710,25 +749,46 @@ describe("durable recovery rows", () => {
     renderStrip(defaultProps());
     await flushPendingTurnsProjectionForTests();
     // Keep the record blocked through the retry's own reconciliation, the
-    // fixture the genuinely-blocked case above uses: the retry then reports the
-    // row still cannot be checked and reaches its decision read -
-    // the path the redundant refresh lived on.
+    // same fixture the re-queued case above uses, and give the fresh row's
+    // dispatch an uncertain outcome so it re-parks blocked - the shape where
+    // the retry's reads end.
     fake.on("thread/read", () =>
       readResponse(ref, {
         evener: { ref, capabilities: CAPABILITIES, mutationStateAuthoritative: false, queue: { revision: 0 } },
       }),
     );
+    fake.on("turn/start", (params) => {
+      throw new WireError("journal unavailable", -32014, {
+        evenerErrorInfo: "mutationOutcomeUnknown",
+        clientMutationId: params.clientMutationId,
+        mutationOutcome: "unknown",
+        retryDisposition: "blocked",
+        cause: "persistenceUnavailable",
+      });
+    });
     const retry = screen.getByRole("button", { name: "Retry" });
     await userEvent.setup().click(retry);
     await flushPendingTurnsProjectionForTests();
-    // Two target-scoped reads: the refresh retryBlockedPendingTurn's own
-    // mutateThenRefresh awaits, then the retry's decision read. A third is the
-    // redundant second refresh #1722 removed - it re-read the same durable rows
-    // and fed neither the projection nor the decision.
-    expect(storage.readRefs()).toEqual(["ref_a", "ref_a"]);
+    // Four target-scoped reads: the mutateThenRefresh refresh, the decision
+    // read, the mint's own commit-notification refresh (which publishes the
+    // tail re-queue), and the re-parked fresh row's notification refresh
+    // (which publishes its blockedUnknown verdict). The #1722 redundant
+    // refresh - a second read that fed neither the projection nor the
+    // decision - is still gone: each of these four lands a row state the
+    // press needs to see.
+    expect(storage.readRefs()).toEqual(["ref_a", "ref_a", "ref_a", "ref_a"]);
   });
 
-  test("a genuinely blocked Retry reports one inline error without a duplicate toast", async ({ onTestFinished }) => {
+  // The endpoint's honest shape for this fixture: a user Retry of a blocked
+  // row is never refused as "still cannot be checked" - the refusal was the
+  // in-place reauthorization's innocent precondition, deleted with it. The
+  // press MINTS a fresh row that carries the send under the predecessor's
+  // wire id; when that re-queued send's own dispatch fails with an uncertain
+  // outcome, the FRESH row parks blockedUnknown with its Retry affordance -
+  // the row's own state is the surface, one row, no error, no toast.
+  test("a Retry that re-queues an uncertain send parks the fresh row blocked once, with no duplicate toast", async ({
+    onTestFinished,
+  }) => {
     vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
     const fake = connectReadyFakeClient();
     await hydrate(fake, "ref_a");
@@ -743,15 +803,37 @@ describe("durable recovery rows", () => {
         evener: { ref: "ref_a", capabilities: CAPABILITIES, mutationStateAuthoritative: false, queue: { revision: 0 } },
       }),
     );
+    fake.on("turn/start", (params) => {
+      throw new WireError("journal unavailable", -32014, {
+        evenerErrorInfo: "mutationOutcomeUnknown",
+        clientMutationId: params.clientMutationId,
+        mutationOutcome: "unknown",
+        retryDisposition: "blocked",
+        cause: "persistenceUnavailable",
+      });
+    });
     await userEvent.setup().click(screen.getByRole("button", { name: "Retry" }));
     await flushPendingTurnsProjectionForTests();
+    // The press re-queued: the old row settled terminal and the fresh row -
+    // dispatched exactly once, under the inherited wire id - parked blocked.
+    const rows = await storage.listOutbox("ref_a");
+    expect(rows).toHaveLength(2);
+    expect(rows[0]).toMatchObject({ state: "superseded", clientMutationId: before[0]?.clientMutationId });
+    expect(rows[1]).toMatchObject({ state: "blockedUnknown" });
+    expect(rows[1]?.clientMutationId).not.toBe(before[0]?.clientMutationId);
+    expect(rows[1]?.payload.clientMutationId).toBe(before[0]?.clientMutationId);
+    const starts = fake.calls.filter(({ method }) => method === "turn/start");
+    expect(starts).toHaveLength(1);
+    const start = starts[0];
+    if (!start) throw new Error("missing the fresh row's dispatch");
+    expect((start.params as { clientMutationId?: string }).clientMutationId).toBe(before[0]?.clientMutationId);
+    // One blocked row - the fresh one, by the strip's own kind - with its
+    // Retry affordance and no inline error, and no duplicate toast.
     const row = await findRow("blocked");
+    expect(within(row).getByText("still uncertain input")).toBeTruthy();
     await within(row).findByRole("button", { name: "Retry" });
-    expect(within(row).getAllByRole("alert")).toHaveLength(1);
-    expect(within(row).getByRole("alert").textContent).not.toBe("");
+    expect(within(row).queryAllByRole("alert")).toEqual([]);
     expect(getToasts()).toEqual([]);
-    expect(await storage.listOutbox("ref_a")).toEqual(before);
-    expect(fake.calls.filter(({ method }) => method === "turn/start")).toEqual([]);
   });
 
   test("active recovery is omitted while later and orphaned records retain order", async () => {
@@ -964,9 +1046,13 @@ describe("canceled rows", () => {
     onTestFinished(() => otherTab.close());
     const original = (await otherTab.listOutbox("ref_a"))[0];
     if (!original) throw new Error("missing seeded canceled mutation");
-    // Another tab's explicit user Retry: the same durable release this tab's
-    // button would have performed.
-    expect(await otherTab.releaseCanceled(original.clientMutationId)).toBe(true);
+    // Another tab's explicit user Retry: the same durable mint this tab's
+    // button would have performed - the old canceled row leaves, and a fresh
+    // submitting row takes its place at the tail.
+    const otherTabCapture = await otherTab.getOutboxWithStopEpoch(original.clientMutationId);
+    expect(await otherTab.mintRetryFromRow(original.clientMutationId, otherTabCapture)).toMatchObject({
+      state: "submitting",
+    });
     const afterOtherTab = await otherTab.getOutbox(original.clientMutationId);
     expect(screen.getByRole("button", { name: "Retry" })).toBe(retry);
     await userEvent.setup().click(retry);

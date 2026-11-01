@@ -7,8 +7,8 @@
 // released exactly when it was acquired.
 
 import type { Thread, ThreadReadResponse } from "@evener/appwire-client";
-import { canceledEntries } from "@evener/appwire-client/state/mutation";
 import { WireError } from "@evener/appwire-client";
+import { canceledEntries } from "@evener/appwire-client/state/mutation";
 import { deferred } from "@evener/appwire-client/testing/deferred";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { act, cleanup, fireEvent, render, waitFor } from "@testing-library/react";
