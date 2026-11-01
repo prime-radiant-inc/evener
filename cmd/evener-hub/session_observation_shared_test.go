@@ -63,7 +63,9 @@ func testManagerWatchSharedRemoteSubscribersAndAliases(t *testing.T, malformed *
 	}}
 	remoteSources := appsource.NewRegistry()
 	remoteSources.Add(source)
-	remoteServer := newHubAppServer(hubcore.WebConfig{HubStateRoot: t.TempDir(), Past: hubcore.NewPastIndex("")}, remoteSources)
+	// The remote peer is a current hub, so it carries a hub identity and
+	// advertises session tools over Initialize.
+	remoteServer := newHubAppServer(hubcore.WebConfig{HubStateRoot: t.TempDir(), Past: hubcore.NewPastIndex(""), HubID: "hub-test"}, remoteSources)
 	defer remoteServer.Shutdown(ctx)
 	remoteHTTP := httptest.NewServer(http.HandlerFunc(remoteServer.ServeWebSocket))
 	defer remoteHTTP.Close()

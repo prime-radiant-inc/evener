@@ -639,7 +639,9 @@ func newHubRelayProgressFixture(t *testing.T, hooks hubcore.RelayLifecycleHooks)
 	hooks.AfterIdleDelete = func(id string) { idleDeleted <- id }
 	hubServer := newHubAppServer(hubcore.WebConfig{
 		HubStateRoot: t.TempDir(), Past: hubcore.NewPastIndex(""),
-		RelayHooks: hooks,
+		// A real hub has a durable identity, which is what makes it advertise
+		// session tools to peers: remote completion watches are refused without it.
+		HubID: "hub-test", RelayHooks: hooks,
 	}, sources)
 	hubHTTP := httptest.NewServer(http.HandlerFunc(hubServer.ServeWebSocket))
 	t.Cleanup(hubHTTP.Close)
