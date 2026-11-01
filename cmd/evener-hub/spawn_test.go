@@ -197,6 +197,90 @@ exit 2
 	}
 }
 
+// A resumed daemon restores its session's durable state before it can listen
+// and register, so an automatic resume's rendezvous wait is bounded by the
+// resume budget, not the fresh-spawn budget: a restore that outlasts
+// SpawnTimeout still hands off instead of being killed mid-restore.
+func TestHubSpawnerAutomaticResumeWaitsForSlowRestore(t *testing.T) {
+	dir := t.TempDir()
+	runDir := filepath.Join(dir, "run")
+	bin := filepath.Join(dir, "fake-evener")
+	script := `#!/bin/sh
+if [ "$1" = "launch-check" ]; then
+  printf '{"protocol":"evener-appwire-v7","launch_flags":["api-log"]}\n'
+  exit 0
+fi
+if [ "$1" = "serve" ]; then
+  sleep 1
+  mkdir -p "$EVENER_RUN_DIR"
+  cat > "$EVENER_RUN_DIR/$$.json" <<EOF
+{"pid":$$,"address":"127.0.0.1:1","started_at":"2999-01-01T00:00:00Z"}
+EOF
+  sleep 5
+  exit 0
+fi
+exit 2
+`
+	writeFakeEvener(t, bin, script)
+
+	cfg := DefaultConfig()
+	cfg.SpawnTimeout = 100 * time.Millisecond
+	spawner := HubSpawner{Cfg: cfg, EvenerBinary: bin, RunDir: runDir, HubToken: "generated-token"}
+	entry, err := spawner.Resume(context.Background(), hubcore.ResumeRequest{
+		SessionID:  "01JRESUME",
+		Resolved:   launchconfig.Resolved{Effective: launchconfig.Layer{Model: "openai/gpt-5"}},
+		WorkingDir: dir,
+	})
+	if err != nil {
+		t.Fatalf("Resume: %v", err)
+	}
+	if entry.PID == 0 {
+		t.Fatalf("Resume returned no rendezvous entry: %+v", entry)
+	}
+}
+
+// The same automatic resume stays bounded: a child that never registers is
+// killed at the resume budget even when SpawnTimeout would have waited
+// longer, so a hung restore cannot hold the session's ownership aliases
+// indefinitely.
+func TestHubSpawnerAutomaticResumeBoundByResumeBudget(t *testing.T) {
+	dir := t.TempDir()
+	runDir := filepath.Join(dir, "run")
+	bin := filepath.Join(dir, "fake-evener")
+	script := `#!/bin/sh
+if [ "$1" = "launch-check" ]; then
+  printf '{"protocol":"evener-appwire-v7","launch_flags":["api-log"]}\n'
+  exit 0
+fi
+if [ "$1" = "serve" ]; then
+  sleep 30
+  exit 0
+fi
+exit 2
+`
+	writeFakeEvener(t, bin, script)
+
+	originalBudget := resumeRendezvousTimeout
+	defer func() { resumeRendezvousTimeout = originalBudget }()
+	resumeRendezvousTimeout = 500 * time.Millisecond
+
+	cfg := DefaultConfig()
+	cfg.SpawnTimeout = 10 * time.Second
+	spawner := HubSpawner{Cfg: cfg, EvenerBinary: bin, RunDir: runDir, HubToken: "generated-token"}
+	started := time.Now()
+	_, err := spawner.Resume(context.Background(), hubcore.ResumeRequest{
+		SessionID:  "01JRESUME",
+		Resolved:   launchconfig.Resolved{Effective: launchconfig.Layer{Model: "openai/gpt-5"}},
+		WorkingDir: dir,
+	})
+	if !errors.Is(err, errRendezvousTimeout) {
+		t.Fatalf("Resume err = %v, want errRendezvousTimeout", err)
+	}
+	if elapsed := time.Since(started); elapsed >= cfg.SpawnTimeout {
+		t.Fatalf("automatic resume settled on the spawn budget after %s, want the resume budget", elapsed)
+	}
+}
+
 func TestBuildSpawnArgsNonInteractiveOnlyWhenRequested(t *testing.T) {
 	interactive := buildSpawnArgs(hubcore.SpawnRequest{Resolved: launchconfig.Resolved{Effective: launchconfig.Layer{Model: "openai/gpt-5"}}})
 	if hasArg(interactive, "--non-interactive") {
