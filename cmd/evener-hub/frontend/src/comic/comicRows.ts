@@ -56,12 +56,15 @@ export function composeComicFlow(
     // captions, so a strip whose launch is outside the loaded window still
     // anchors inline at the earliest update it kept.
     const strips = reader.activity.strips;
-    const stripForUpdate = (target: NonNullable<ComicEntry["delegateUpdate"]>) =>
-      target.childRef
-        ? strips.find((strip) => strip.childRef === target.childRef)
-        : target.delegateId
-          ? strips.find((strip) => strip.delegateId === target.delegateId)
-          : undefined;
+    const stripForUpdate = (target: NonNullable<ComicEntry["delegateUpdate"]>) => {
+      // The ref a delegate_send recorded can name a superseded incarnation of
+      // the child, so an unmatched childRef falls through to the stable id.
+      if (target.childRef) {
+        const byChildRef = strips.find((strip) => strip.childRef === target.childRef);
+        if (byChildRef) return byChildRef;
+      }
+      return target.delegateId ? strips.find((strip) => strip.delegateId === target.delegateId) : undefined;
+    };
     const folded = new Map<string, { count: number; first: number }>();
     const items: ComicEntry[] = [];
     for (const entry of reader.entries) {

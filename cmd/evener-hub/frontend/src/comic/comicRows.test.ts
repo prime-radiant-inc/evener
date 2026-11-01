@@ -193,6 +193,25 @@ test("update captions without a matching strip still render as panels", () => {
   expect(rows.filter((row) => row.kind === "strip")).toHaveLength(0);
   expect(entryIds(rows)).toEqual(["before", "orphan-update", "after"]);
 });
+test("a superseded childRef still folds through the delegateId fallback", () => {
+  const rows = composeComicFlow(
+    {
+      ...root,
+      entries: [
+        entry("before", 0),
+        update("stale-update", 2, { childRef: "local:superseded-incarnation", delegateId: strip.delegateId }),
+        entry("after", 4),
+      ],
+      activity: { ...activity, strips: [strip] },
+    },
+    collapsed,
+    390,
+    () => true,
+  );
+  expect(stripSequence(rows)).toEqual(["before", strip.key, "after"]);
+  expect(entryIds(rows)).toEqual(["before", "after"]);
+  expect(rows.find((row) => row.kind === "strip")?.updateCount).toBe(1);
+});
 test("flow rows carry the packed column count from the width formula", () => {
   const packed: ComicReaderSnapshot = {
     ...root,
