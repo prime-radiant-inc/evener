@@ -150,6 +150,9 @@ export function composeComicRows(
   // Phase 1: classify each entry as stackable run, packed singleton, or its own rows.
   const units: Unit[] = [];
   let previousPack = false;
+  // The party of a run the STACK_MAX cap just cut short: its next member continues
+  // the run in a following panel, even alone, instead of regaining a spotlight chance.
+  let continuedParty: string | undefined;
   let index = 0;
   while (index < entries.length) {
     const current = entries[index];
@@ -162,7 +165,10 @@ export function composeComicRows(
     const nextDocument = documents[index + 1];
     const samePartyStack =
       next && nextDocument && stackableAt(index) && stackableAt(index + 1) && comicParty(current) === comicParty(next);
-    if (samePartyStack) {
+    if (
+      samePartyStack ||
+      (continuedParty !== undefined && stackableAt(index) && comicParty(current) === continuedParty)
+    ) {
       const members: Member[] = [];
       let scan = index;
       while (scan < entries.length && members.length < STACK_MAX) {
@@ -173,10 +179,12 @@ export function composeComicRows(
         scan += 1;
       }
       units.push({ kind: "stack", members });
+      continuedParty = members.length === STACK_MAX ? comicParty(current) : undefined;
       previousPack = true;
       index += members.length;
       continue;
     }
+    continuedParty = undefined;
     // Packing needs a packable neighbour or predecessor; a lone short entry keeps its
     // spotlight chance through the own path, so no packed fit is even asked of it.
     const neighbourPacks = next && nextDocument ? packableAt(index + 1) : false;

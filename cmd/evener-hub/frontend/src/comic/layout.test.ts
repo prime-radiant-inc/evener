@@ -176,6 +176,24 @@ test("a long same-party run continues into a following panel of the same party",
   expect(rows[0]?.columns).toBe(3);
 });
 
+test("a capped run's lone tail continues the party panel instead of going spotlight", () => {
+  const entries = Array.from({ length: 9 }, (_, index) => party(`u${index}`, "dialogue", `line ${index}.`, WORKER));
+  const rows = composeComicRows(entries, 390, () => true, 416);
+  expect(rows.map((row) => row.panels.map((panel) => panel.balloons.map((balloon) => balloon.slice.entryId)))).toEqual([
+    [Array.from({ length: 8 }, (_, index) => `u${index}`)],
+    [["u8"]],
+  ]);
+  expect(rows[1]?.panels[0]?.balloons.every((balloon) => balloon.composition === "packed")).toBe(true);
+});
+
+test("a capped caption run's tail keeps packing at wide widths", () => {
+  const entries = Array.from({ length: 9 }, (_, index) => party(`r${index}`, "caption", `line ${index}.`, WORKER));
+  const rows = composeComicRows(entries, 1290, () => true, 416);
+  expect(rows.map((row) => row.panels.map((panel) => panel.balloons.map((balloon) => balloon.slice.entryId)))).toEqual([
+    [Array.from({ length: 8 }, (_, index) => `r${index}`), ["r8"]],
+  ]);
+});
+
 test("different-party one-liners still pack side by side", () => {
   const entries = [
     party("a", "dialogue", "A.", HUMAN),
