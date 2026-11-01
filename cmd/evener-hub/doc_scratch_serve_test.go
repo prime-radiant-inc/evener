@@ -180,6 +180,58 @@ func TestDocFile_MissingScratchFileIsNotFound(t *testing.T) {
 	}
 }
 
+// A resumed session records the temp base its daemon now runs under, while a
+// retained old scratch directory can still exist in a base the hub tries by
+// default. The recorded base names the directory the session actually uses,
+// so it must win: serving the stale tree would advertise and read files the
+// session no longer writes.
+func TestDocFile_PrefersTheRecordedScratchBaseOverHubDefaults(t *testing.T) {
+	// Not parallel: t.Setenv redirects TMPDIR, which names this process's own
+	// default scratch base, for the duration of the test.
+	recordedBase := t.TempDir()
+	defaultBase := t.TempDir()
+	t.Setenv("TMPDIR", defaultBase)
+	root := t.TempDir()
+	proj := filepath.Join(root, "projects", "project-docs-0000000000")
+	sessionID := "02wMz5Txv1C3Hut0M8GCeB"
+	if err := os.MkdirAll(filepath.Join(proj, "sessions"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := schema.SaveSessionMeta(proj, schema.SessionMeta{
+		ID: sessionID, UpdatedAt: time.Now(), OriginalPrompt: "resumed session",
+		EnvInfo:        schema.EnvironmentInfo{WorkingDir: t.TempDir()},
+		ScratchTempDir: recordedBase,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	stale := agentsandbox.SessionScratchDirPath(defaultBase, sessionID, sessionID)
+	if err := os.MkdirAll(stale, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(stale) })
+	if err := os.WriteFile(filepath.Join(stale, "shot.png"), []byte("STALE TREE"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	current := agentsandbox.SessionScratchDirPath(recordedBase, sessionID, sessionID)
+	if err := os.MkdirAll(current, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	content := []byte("current tree")
+	target := filepath.Join(current, "shot.png")
+	if err := os.WriteFile(target, content, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	idx := newRebuiltPastIndex(t, filepath.Join(root, "projects", "*"))
+	web := NewWebServer(hubcore.WebConfig{HubAddr: "127.0.0.1:9180", Past: idx})
+	rec := docRawRequest(t, web, sessionID, target)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("the recorded base's file should be served, got %d body=%q", rec.Code, rec.Body.String())
+	}
+	if !bytes.Equal(rec.Body.Bytes(), content) {
+		t.Fatalf("body=%q, want the recorded base's %q — the stale tree in a hub default won", rec.Body.Bytes(), content)
+	}
+}
+
 // A session whose scratch directory never existed (an old session, a cleaned
 // tree) advertises no scratch root and serves none: its scratch-shaped paths
 // fall back to the cwd refusal rather than a second root.

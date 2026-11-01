@@ -640,6 +640,15 @@ describe("resolveFileLink", () => {
     });
   });
 
+  it("binds a plain absolute markdown destination against a served root", () => {
+    expect(resolveFileLink(`${scratchDir}/shot-6.png`, cwd, { artifactsDir, scratchDir })).toMatchObject({
+      path: "shot-6.png",
+      cwd: scratchDir,
+      root: "scratch",
+    });
+    expect(resolveFileLink(`${scratchDir}/shot-6.png`, cwd, { artifactsDir })).toBeUndefined();
+  });
+
   it("names nothing for a destination outside every root, a non-file scheme, or a malformed file URL", () => {
     for (const href of [
       "file:///etc/passwd",

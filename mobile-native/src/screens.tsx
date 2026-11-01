@@ -315,8 +315,9 @@ export type Routes = {
 		hubId: string;
 		sessionRef: string;
 		path: string;
-		/** Set for a document the session filed in its retained artifacts. */
-		root?: "artifacts";
+		/** Set for a document the session filed in a retained root
+		 * (artifacts, scratch). */
+		root?: "artifacts" | "scratch";
 		blockIndex: number;
 		blockHash: string;
 		/** The words the comment is on: a selection, or its block's words. */
@@ -345,7 +346,7 @@ type ReviewSheetParams = {
 	sessionRef: string;
 	path: string;
 	sessionTitle: string;
-	root?: "artifacts";
+	root?: "artifacts" | "scratch";
 	readTarget?: string;
 };
 

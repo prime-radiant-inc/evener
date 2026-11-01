@@ -245,7 +245,7 @@ export function fileURLToPath(fileURL: string): string {
 // promising a document. The web transcript and the phone's Reader both bind
 // through this, so the same link opens the same document on either client.
 export function resolveFileLink(href: string, cwd: string, served: ServedRoots | undefined): FileReference | undefined {
-  const reference = parseFileReference(href, "link", cwd);
+  const reference = parseFileReference(href, "link", cwd, served);
   if (reference !== undefined) return reference;
   const filePath = fileURLToPath(href);
   return filePath === "" ? undefined : bindServedPath(filePath, cwd, served);

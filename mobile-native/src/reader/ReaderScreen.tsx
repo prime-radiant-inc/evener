@@ -92,10 +92,11 @@ export function ReaderScreen({ route, navigation }: NativeStackScreenProps<Route
 				: routeReference,
 		[publication, source, routeReference],
 	);
-	// A retained artifact is a different document from a folder file of the same
-	// name, so its root is part of its identity here and in the memory store.
+	// A retained-root document (artifacts, scratch) is a different document
+	// from a folder file of the same name, so its root is part of its identity
+	// here and in the memory store.
 	const key = useMemo(
-		() => ({ sessionRef, path, ...(reference.root === "artifacts" ? { root: "artifacts" as const } : {}) }),
+		() => ({ sessionRef, path, ...(reference.root !== undefined ? { root: reference.root } : {}) }),
 		[sessionRef, path, reference.root],
 	);
 	const { document, notice: refreshNotice, imageAttempt, reload } = useDocument(hubId, sessionRef, reference, inFront);
@@ -435,7 +436,7 @@ export function ReaderScreen({ route, navigation }: NativeStackScreenProps<Route
 		sessionRef,
 		path,
 		sessionTitle,
-		...(reference.root === "artifacts" ? { root: "artifacts" as const, readTarget: reference.readTarget } : {}),
+		...(reference.root !== undefined ? { root: reference.root, readTarget: reference.readTarget } : {}),
 	};
 	// The rows keep one callback; it reaches this render's values through the ref.
 	const act = useRef((_action: BlockAction, _block: DocumentBlock, _words?: string) => {});
@@ -448,7 +449,7 @@ export function ReaderScreen({ route, navigation }: NativeStackScreenProps<Route
 					hubId,
 					sessionRef,
 					path,
-					...(reference.root === "artifacts" ? { root: "artifacts" as const } : {}),
+					...(reference.root !== undefined ? { root: reference.root } : {}),
 					blockIndex: block.index,
 					blockHash: block.hash,
 					quote: selected,

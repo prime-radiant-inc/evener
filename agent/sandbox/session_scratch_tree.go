@@ -259,24 +259,28 @@ func ProcessScratchTempDir() string {
 	return abs
 }
 
-// SessionScratchTreeBases are the bases a tree may live in: the temp dir and
-// the user cache dir, the two OpenSessionScratch chooses between, then extra.
-// A hub serving session scratch reads the same list, so the directory it
+// SessionScratchTreeBases are the bases a tree may live in: the recorded
+// extra bases first — allocation prefers the base a session's daemon asked
+// for, and a hub serving session scratch must prefer the base the session's
+// meta records over its own defaults, or a retained old directory in a
+// default base would shadow the resumed session's current one — then the temp
+// dir and the user cache dir, the two OpenSessionScratch chooses between. A
+// hub serving session scratch reads the same list, so the directory it
 // serves from and the trees the removal path reclaims stay one answer.
 func SessionScratchTreeBases(extra ...string) []string {
 	// A recorded extra base names another process's dir, so a relative one
 	// has no meaning here and is skipped.
 	var candidates []string
+	for _, dir := range extra {
+		if filepath.IsAbs(dir) {
+			candidates = append(candidates, dir)
+		}
+	}
 	if dir := ProcessScratchTempDir(); dir != "" {
 		candidates = append(candidates, dir)
 	}
 	if dir, err := sessionScratchUserCacheDir(); err == nil {
 		candidates = append(candidates, dir)
-	}
-	for _, dir := range extra {
-		if filepath.IsAbs(dir) {
-			candidates = append(candidates, dir)
-		}
 	}
 	var bases []string
 	for _, dir := range candidates {
