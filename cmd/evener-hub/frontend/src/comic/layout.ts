@@ -57,6 +57,13 @@ function comicParty(entry: ComicEntry): string | undefined {
   return entry.persona?.key;
 }
 
+/** The stack a run belongs to: the persona key plus its inherited status, since
+ *  a panel's identity label comes from its first balloon. */
+function comicStackGroup(entry: ComicEntry): string | undefined {
+  const party = comicParty(entry);
+  return party === undefined ? undefined : `${party}|${entry.inherited ? 1 : 0}`;
+}
+
 /** Preserve each source code unit. Intl boundaries prevent slicing inside a visible character. */
 export function splitComicText(text: string, fits: (candidate: string) => boolean): readonly Offset[] {
   if (!text) return [{ start: 0, end: 0 }];
@@ -144,9 +151,10 @@ export function composeComicRows(
   // Phase 1: classify each entry as stackable run, packed singleton, or its own rows.
   const units: Unit[] = [];
   let previousPack = false;
-  // The party of a run the STACK_MAX cap just cut short: its next member continues
-  // the run in a following panel, even alone, instead of regaining a spotlight chance.
-  let continuedParty: string | undefined;
+  // The stack group of a run the STACK_MAX cap just cut short: its next member
+  // continues the run in a following panel, even alone, instead of regaining a
+  // spotlight chance.
+  let continuedGroup: string | undefined;
   let index = 0;
   while (index < entries.length) {
     const current = entries[index];
@@ -157,28 +165,32 @@ export function composeComicRows(
     }
     const next = entries[index + 1];
     const nextDocument = documents[index + 1];
-    const samePartyStack =
-      next && nextDocument && stackableAt(index) && stackableAt(index + 1) && comicParty(current) === comicParty(next);
+    const sameGroupStack =
+      next &&
+      nextDocument &&
+      stackableAt(index) &&
+      stackableAt(index + 1) &&
+      comicStackGroup(current) === comicStackGroup(next);
     if (
-      samePartyStack ||
-      (continuedParty !== undefined && stackableAt(index) && comicParty(current) === continuedParty)
+      sameGroupStack ||
+      (continuedGroup !== undefined && stackableAt(index) && comicStackGroup(current) === continuedGroup)
     ) {
       const members: Member[] = [];
       let scan = index;
       while (scan < entries.length && members.length < STACK_MAX) {
         const value = entries[scan];
         const doc = documents[scan];
-        if (!value || !doc || !stackableAt(scan) || comicParty(value) !== comicParty(current)) break;
+        if (!value || !doc || !stackableAt(scan) || comicStackGroup(value) !== comicStackGroup(current)) break;
         members.push({ value, doc });
         scan += 1;
       }
       units.push({ kind: "stack", members });
-      continuedParty = members.length === STACK_MAX ? comicParty(current) : undefined;
+      continuedGroup = members.length === STACK_MAX ? comicStackGroup(current) : undefined;
       previousPack = true;
       index += members.length;
       continue;
     }
-    continuedParty = undefined;
+    continuedGroup = undefined;
     // Packing needs a packable neighbour or predecessor; a lone short entry keeps its
     // spotlight chance through the own path, so no packed fit is even asked of it.
     const neighbourPacks = next && nextDocument ? packableAt(index + 1) : false;

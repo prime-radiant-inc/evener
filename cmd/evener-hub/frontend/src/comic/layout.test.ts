@@ -164,6 +164,18 @@ test("attributed captions stack, unattributed captions never stack", () => {
   expect(bareRows.every((row) => row.panels[0]?.balloons.length === 1)).toBe(true);
 });
 
+test("an inherited entry and a fresh entry of one party never stack together", () => {
+  const rows = composeComicRows(
+    [{ ...party("a", "dialogue", "A.", WORKER), inherited: true }, party("b", "dialogue", "B.", WORKER)],
+    1290,
+    () => true,
+    416,
+  );
+  expect(rows.map((row) => row.panels.map((panel) => panel.balloons.map((balloon) => balloon.slice.entryId)))).toEqual([
+    [["a"], ["b"]],
+  ]);
+});
+
 test("a long same-party run continues into a following panel of the same party", () => {
   const entries = Array.from({ length: 10 }, (_, index) => party(`u${index}`, "dialogue", `line ${index}.`, WORKER));
   const rows = composeComicRows(entries, 1290, () => true, 416);
