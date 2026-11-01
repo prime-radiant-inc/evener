@@ -1237,12 +1237,16 @@ test("a failed send-resumes resume is re-driven with capped backoff until one la
   await resumeViaSend(ref, "the pressed text");
   // The press drove resume #1, which the hub refused; the failure is published
   // for the press surface and one paced retry is armed.
-  const firstFailure = await waitFor(() => threadsStore.getState().resumeFailures.get(ref));
+  const firstFailure = await waitFor(() => {
+    const record = threadsStore.getState().resumeFailures.get(ref);
+    expect(record).toBeDefined();
+    return record;
+  });
   expect(firstFailure?.message).toBe("rendezvous timed out (attempt 1)");
   const pressFailureSeq = firstFailure?.seq ?? 0;
   expect(resumeAttempts).toBe(1);
-  // Arming reads the ref's durable stop epoch before it paces, so the armed
-  // entry lands asynchronously after the published failure.
+  // The attempt captured the durable stop epoch before it began, so the arm
+  // lands with the published failure itself.
   await waitFor(() => expect(scheduledResumeRetries).toHaveLength(1));
   expect(scheduledResumeRetries[0]?.attempt).toBe(1);
   // The scheduled retry fires with no press: resume #2 also fails, and the
@@ -1318,6 +1322,10 @@ test("a Stop that cancels the resume drive arms no automatic retry", async ({ on
   await waitFor(() => expect(threadsStore.getState().restartBlockingObligations.has(ref)).toBe(true));
   expect(sendResumesModel(ref)).toBe(true);
   await resumeViaSend(ref, "the pressed text");
+  // The drive reads the durable stop epoch before its request goes out, so
+  // wait for the RPC itself: the Stop must land while it is genuinely on the
+  // wire, not while the drive is still reading.
+  await waitFor(() => expect(fake.calls.filter((call) => call.method === "thread/resume")).toHaveLength(1));
   // The Stop lands on the drive's own ref while the resume RPC is still on the
   // wire: the drive's stop baseline records it, so resolving the resume can
   // only fail the identity fence.
@@ -1416,6 +1424,11 @@ test("a Stop followed by a rejected resume RPC arms no automatic retry and count
   );
   await waitFor(() => expect(threadsStore.getState().restartBlockingObligations.has(ref)).toBe(true));
   await resumeViaSend(ref, "the pressed text");
+  // The drive reads the durable stop epoch before its request goes out, so
+  // wait for the RPC itself: the rejection must answer a request that is
+  // genuinely on the wire when the Stop lands, or the held promise rejects
+  // before the drive ever adopts it.
+  await waitFor(() => expect(fake.calls.filter((call) => call.method === "thread/resume")).toHaveLength(1));
   await act(async () => {
     await threadsStore.getState().shutdown(ref);
     rejectResume(new Error("connection reset by peer"));
@@ -1462,7 +1475,11 @@ test("a Send press that joins an in-flight automatic drive still hears that driv
   );
   await waitFor(() => expect(threadsStore.getState().restartBlockingObligations.has(ref)).toBe(true));
   await resumeViaSend(ref, "the pressed text");
-  const firstFailure = await waitFor(() => threadsStore.getState().resumeFailures.get(ref));
+  const firstFailure = await waitFor(() => {
+    const record = threadsStore.getState().resumeFailures.get(ref);
+    expect(record).toBeDefined();
+    return record;
+  });
   const firstFailureSeq = firstFailure?.seq ?? 0;
   // The paced retry's drive is in flight - its resume RPC is held - when a
   // second Send press joins it.
@@ -1479,9 +1496,9 @@ test("a Send press that joins an in-flight automatic drive still hears that driv
   );
   expect(threadsStore.getState().resumeFailures.get(ref)?.seq).not.toBe(firstFailureSeq);
   // The joined press's failure re-arms the retry owner. Await that arm so this
-  // test ends with the drive's whole catch tail settled: the arm lands one
-  // IndexedDB round after the record above, and one that escapes this test
-  // arms through whichever scheduler the NEXT test has installed.
+  // test ends with the drive's whole catch tail settled rather than leaving
+  // the next test to observe it: an arm that escapes this test arms through
+  // whichever scheduler the NEXT test has installed.
   await waitFor(() => expect(scheduledResumeRetries).toHaveLength(2));
 });
 
