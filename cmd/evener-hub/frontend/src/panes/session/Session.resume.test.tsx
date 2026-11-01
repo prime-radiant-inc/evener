@@ -1211,6 +1211,7 @@ test("a failed send-resumes resume is re-driven with capped backoff until one la
   const ref = "local:resume-retry-owner";
   let resumeFails = true;
   let resumeAttempts = 0;
+  const failureTokens: string[] = [];
   fake.on("thread/read", () => {
     const response = readResponse(ref, {
       status: { type: resumeFails ? "notLoaded" : "idle" },
@@ -1220,7 +1221,13 @@ test("a failed send-resumes resume is re-driven with capped backoff until one la
   });
   fake.on("thread/resume", () => {
     resumeAttempts += 1;
-    if (resumeFails) throw new Error(`rendezvous timed out (attempt ${resumeAttempts})`);
+    if (resumeFails) {
+      // A generated opaque sentinel: the assertions check the record carries
+      // THIS attempt's failure, never any particular phrasing.
+      const token = `probe-failure-${crypto.randomUUID()}`;
+      failureTokens.push(token);
+      throw new Error(token);
+    }
     return readResponse(ref, { status: { type: "idle" } });
   });
   fake.on("turn/start", (params) => ({
@@ -1242,7 +1249,7 @@ test("a failed send-resumes resume is re-driven with capped backoff until one la
     expect(record).toBeDefined();
     return record;
   });
-  expect(firstFailure?.message).toBe("rendezvous timed out (attempt 1)");
+  expect(firstFailure?.message).toBe(failureTokens[0]);
   const pressFailureSeq = firstFailure?.seq ?? 0;
   expect(resumeAttempts).toBe(1);
   // The attempt captured the durable stop epoch before it began, so the arm
@@ -1257,7 +1264,7 @@ test("a failed send-resumes resume is re-driven with capped backoff until one la
     scheduledResumeRetries[0]?.fire();
   });
   await waitFor(() => expect(resumeAttempts).toBe(2));
-  expect(threadsStore.getState().resumeFailures.get(ref)?.message).toBe("rendezvous timed out (attempt 2)");
+  expect(threadsStore.getState().resumeFailures.get(ref)?.message).toBe(failureTokens[1]);
   expect(threadsStore.getState().resumeFailures.get(ref)?.seq).toBe(pressFailureSeq);
   await waitFor(() => expect(scheduledResumeRetries).toHaveLength(2));
   expect(scheduledResumeRetries[1]?.attempt).toBe(2);
@@ -1488,12 +1495,14 @@ test("a Send press that joins an in-flight automatic drive still hears that driv
   });
   await waitFor(() => expect(resumeAttempts).toBe(2));
   await resumeViaSend(ref, "a second pressed text");
+  // The joined press surfaces the failure it joined as its own: the record
+  // carries the held resume's rejection (a generated opaque sentinel), and
+  // its toast identity is a fresh seq.
+  const joinedFailureToken = `probe-joined-${crypto.randomUUID()}`;
   await act(async () => {
-    rejectHeldResume(new Error("rendezvous timed out (attempt 2)"));
+    rejectHeldResume(new Error(joinedFailureToken));
   });
-  await waitFor(() =>
-    expect(threadsStore.getState().resumeFailures.get(ref)?.message).toBe("rendezvous timed out (attempt 2)"),
-  );
+  await waitFor(() => expect(threadsStore.getState().resumeFailures.get(ref)?.message).toBe(joinedFailureToken));
   expect(threadsStore.getState().resumeFailures.get(ref)?.seq).not.toBe(firstFailureSeq);
   // The joined press's failure re-arms the retry owner. Await that arm so this
   // test ends with the drive's whole catch tail settled rather than leaving

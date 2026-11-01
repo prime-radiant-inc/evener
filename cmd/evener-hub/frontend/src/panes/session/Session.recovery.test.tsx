@@ -803,12 +803,15 @@ test.each(["pending", "failed"])(
       expect(screen.queryByRole("button", { name: "Resume session" })).toBeNull();
       expect(sendResumesModel(ref)).toBe(true);
       await resumeViaSend(ref);
-      expect(daemonStarted).toBe(true);
+      // The drive runs beside the pressed send; await its request reaching
+      // the resumed daemon read the fixture holds.
+      await waitFor(() => expect(daemonStarted).toBe(true));
       if (outcome === "failed") {
-        act(() => rejectRead(new Error("resumed daemon read failed")));
-        await waitFor(() =>
-          expect(threadsStore.getState().resumeFailures.get(ref)?.message).toBe("resumed daemon read failed"),
-        );
+        // A generated opaque sentinel: the assertion checks the record
+        // carries this staged rejection, never any particular phrasing.
+        const readFailedToken = `probe-read-failed-${crypto.randomUUID()}`;
+        act(() => rejectRead(new Error(readFailedToken)));
+        await waitFor(() => expect(threadsStore.getState().resumeFailures.get(ref)?.message).toBe(readFailedToken));
       } else {
         // The resumed daemon read is still in flight: the pane keeps the Send
         // surface it drives recovery from.

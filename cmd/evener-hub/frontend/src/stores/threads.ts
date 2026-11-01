@@ -2932,8 +2932,12 @@ async function runResumeFencedForSend(
   // same store cannot have recorded the Stop either.
   let attemptStopEpoch = inherited.stopEpoch;
   // The resumed identity's fences this attempt captured at adoption, for the
-  // arm its failure may leave.
-  let attemptResumedFence: ResumedStopFence | undefined;
+  // arm its failure may leave. Seeded from the inherited fence: an attempt
+  // that fails before any resume answer - the hub goes away, the readiness
+  // check throws - never adopts, and its re-arm must keep fencing the
+  // identity the fired arm already carried. A later adoption replaces the
+  // seed with its own fresh captures.
+  let attemptResumedFence: ResumedStopFence | undefined = inherited.resumed;
   try {
     const client = getWiredClient();
     if (client === null || client.state !== "ready")
@@ -2994,11 +2998,17 @@ async function runResumeFencedForSend(
       if (stopEpochMoved(freshEpoch, attemptStopEpoch)) {
         throw new StopCanceledError();
       }
-      if (inherited.resumed === undefined) return;
-      const freshResumedEpoch = await readDurableStopEpoch(mutationRuntime, inherited.resumed.ref);
-      if (stopEpochMoved(freshResumedEpoch, inherited.resumed.epoch)) {
-        throw new StopCanceledError();
+      if (inherited.resumed !== undefined) {
+        const freshResumedEpoch = await readDurableStopEpoch(mutationRuntime, inherited.resumed.ref);
+        if (stopEpochMoved(freshResumedEpoch, inherited.resumed.epoch)) {
+          throw new StopCanceledError();
+        }
       }
+      // A same-page shutdown can commit while those reads are in flight - a
+      // snapshot predating the Stop's own durable write passes the epoch
+      // comparisons above - so the page-local fence runs again here, the
+      // last check before the request it guards.
+      stopBaseline();
     };
     const { thread } = await client.resumeThread(ref, {
       beforeRequest: () => {
