@@ -22,6 +22,7 @@ import {
   pendingTextJoined,
   projectThread,
   steeringLabel,
+  stripSystemReminder,
   type ThreadModel,
   type TranscriptDisplayConfigV1,
 } from "@evener/appwire-client";
@@ -246,6 +247,13 @@ export function projectComicConversation(
           }
         }
       } else if (item.type === "steering") {
+        const raw = textOf(item);
+        // The daemon wraps its steering in <SYSTEM-REMINDER>. Comics tell the
+        // conversation's story, so a wrapped reminder contributes only the
+        // notification cards it carries, never its own prose.
+        const stripped = stripSystemReminder(raw);
+        const reminder = stripped !== raw.trim();
+        const text = reminder ? stripped : raw;
         if (
           item.steeringKind !== "human-note" &&
           (author?.kind === "human" || ((!author || author.kind === "unknown") && isUserAuthoredSteer(item)))
@@ -255,14 +263,14 @@ export function projectComicConversation(
             kind: "dialogue",
             speaker: "human",
             sourceLabel: "Human",
-            text: textOf(item),
+            text,
             persona: ANNA,
             images: item.images,
           });
         } else if (item.steeringKind === "notification" && author?.kind !== "agent") {
           // Parsing runs only for the typed notification kind, not arbitrary text
           // containing XML-looking strings supplied by a human or parent.
-          const fragments = parseSteeringNotifications(textOf(item));
+          const fragments = parseSteeringNotifications(text);
           for (const [index, fragment] of fragments.entries()) {
             if (fragment.kind === "notification") {
               const notification = fragment.notification;
@@ -300,7 +308,7 @@ export function projectComicConversation(
                   ? { delegateUpdate: updateTarget }
                   : {}),
               });
-            } else if (fragment.text) {
+            } else if (fragment.text && !reminder) {
               entries.push({
                 ...base,
                 id: `${base.id}:fragment:${index}`,
@@ -311,6 +319,9 @@ export function projectComicConversation(
               });
             }
           }
+        } else if (reminder && author?.kind !== "human") {
+          // A wrapped daemon reminder without notification cards is daemon
+          // bookkeeping; the comic renders no panel for it.
         } else {
           entries.push({
             ...base,
@@ -322,7 +333,7 @@ export function projectComicConversation(
                 : author?.kind === "system"
                   ? "System"
                   : steeringLabel(item.steeringKind, item.source),
-            text: textOf(item),
+            text,
             persona,
           });
         }

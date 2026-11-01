@@ -811,4 +811,74 @@ describe("comic conversation projection", () => {
       comicTranscriptRef(model, (send.raw as { transcript_ref?: string }).transcript_ref),
     );
   });
+
+  test("wrapped daemon reminders render nothing while their cards survive and humans keep talking", () => {
+    const steer = (id: string, text: string, extra: Record<string, unknown> = {}) => ({
+      id,
+      type: "steering" as const,
+      turnId: "reminders",
+      source: "daemon",
+      text,
+      authorship: { author: { kind: "system" }, inherited: false },
+      ...extra,
+    });
+    const model = base([
+      {
+        id: "reminders",
+        status: "completed",
+        itemsView: "full",
+        items: [
+          steer("pure", "<SYSTEM-REMINDER>\nTask collector went idle.\n</SYSTEM-REMINDER>", {
+            steeringKind: "task-inactive",
+          }),
+          steer(
+            "notified",
+            '<SYSTEM-REMINDER>\n<job-notification job_id="job_9" event="completed">Shore batteries replaced.</job-notification>\nSide note.\n</SYSTEM-REMINDER>',
+            { steeringKind: "notification" },
+          ),
+          steer("agent-wrapped", "<SYSTEM-REMINDER>Hook context.</SYSTEM-REMINDER>", {
+            steeringKind: "hook-context",
+            authorship: { author: { kind: "agent", sessionRef: "local:root" }, inherited: false },
+          }),
+          {
+            id: "human-plain",
+            type: "steering",
+            turnId: "reminders",
+            source: "user",
+            text: "<SYSTEM-REMINDER>Steering while you render.</SYSTEM-REMINDER>",
+            authorship: { author: { kind: "human" }, inherited: false },
+          },
+          {
+            id: "human-note",
+            type: "steering",
+            turnId: "reminders",
+            source: "user",
+            steeringKind: "human-note",
+            text: "<SYSTEM-REMINDER>Whiteboard: 🧪</SYSTEM-REMINDER>",
+            authorship: { author: { kind: "human" }, inherited: false },
+          },
+          steer("unwrapped", "Turn interrupted.", { steeringKind: "interrupted" }),
+        ],
+      },
+    ]);
+    const entries = projectComicConversation(model);
+    const bySource = (id: string) => entries.filter((entry) => entry.sourceItemId === id);
+    expect(bySource("pure")).toHaveLength(0);
+    expect(bySource("agent-wrapped")).toHaveLength(0);
+    const card = bySource("notified");
+    expect(card).toHaveLength(1);
+    expect(card[0]?.text).not.toContain("SYSTEM-REMINDER");
+    expect(card[0]?.text).not.toContain("Side note");
+    const human = bySource("human-plain");
+    expect(human).toHaveLength(1);
+    expect(human[0]).toMatchObject({ kind: "dialogue", speaker: "human" });
+    expect(human[0]?.text).toBe("Steering while you render.");
+    const note = bySource("human-note");
+    expect(note).toHaveLength(1);
+    expect(note[0]?.kind).toBe("caption");
+    expect(note[0]?.text).toBe("Whiteboard: 🧪");
+    expect(bySource("unwrapped")).toHaveLength(1);
+    expect(entries.some((entry) => entry.text.includes("SYSTEM-REMINDER"))).toBe(false);
+    expect(entries.some((entry) => entry.text.includes("Side note"))).toBe(false);
+  });
 });
