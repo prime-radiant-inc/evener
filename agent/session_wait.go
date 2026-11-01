@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strings"
 
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/internal/delegatestore"
@@ -298,7 +299,7 @@ func safeWaitBoundary(checkpoint schema.WaitCheckpointInfo, entries []transcript
 						EndReason string `json:"end_reason"`
 						WaitingOn string `json:"waiting_on"`
 					}
-					if call.Name != resultToolName || json.Unmarshal(call.Arguments, &args) != nil || !args.EndTurn || args.EndReason != "waiting_on_work" || args.WaitingOn != checkpoint.WaitingOn {
+					if call.Name != resultToolName || json.Unmarshal(call.Arguments, &args) != nil || !args.EndTurn || args.EndReason != "waiting_on_work" || strings.TrimSpace(args.WaitingOn) != checkpoint.WaitingOn {
 						return false
 					}
 				}

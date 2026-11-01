@@ -15,7 +15,7 @@ import { projectComicConversation } from "./projection";
 const delegateId = "dlg_02wMz5TxvSettleRace001";
 const childId = "02wMz5TxvChildSession1";
 
-function activity(ownerRef: string, id: string, childRef: string): DelegateEntityView {
+function activity(ownerRef: string, id: string, childRef: string, name: string): DelegateEntityView {
   const entities = buildEntityView({
     sessionRef: "local:root",
     tree: parseActivityTree(subagentOutcomesResponse().data) ?? undefined,
@@ -24,7 +24,14 @@ function activity(ownerRef: string, id: string, childRef: string): DelegateEntit
     ended: false,
   });
   const entity = [...entities.values()].find((entity) => entity.kind === "delegate")!;
-  return { ...entity, id: `${ownerRef}/${id}`, logicalId: id, ownerRef, open: { ref: childRef, parentRef: ownerRef } };
+  return {
+    ...entity,
+    id: `${ownerRef}/${id}`,
+    logicalId: id,
+    name,
+    ownerRef,
+    open: { ref: childRef, parentRef: ownerRef },
+  };
 }
 
 function recordedItems(kind: "launch" | "reply" | "notification", transcriptRef: string): ThreadItem[] {
@@ -82,8 +89,8 @@ for (const kind of ["launch", "reply", "notification"] as const) {
         `${host}:routing-alias`,
         0,
       );
-      const entity = activity(ownerRef, id, `${ownerHost}:${childId}`);
-      const otherOwner = activity(`${host}:unrelated`, id, `${host}:${childId}`);
+      const entity = activity(ownerRef, id, `${ownerHost}:${childId}`, "Canonical delegate");
+      const otherOwner = activity(`${host}:unrelated`, id, `${host}:${childId}`, "Unrelated delegate");
       const entities = new Map([
         [otherOwner.id, otherOwner],
         [entity.id, entity],
@@ -198,7 +205,7 @@ test.each(["local", "east"])("recorded modern notifications retain owned identit
     ownerRef,
     0,
   );
-  const entity = activity(ownerRef, "dlg_1", `${host}:${childId}`);
+  const entity = activity(ownerRef, "dlg_1", `${host}:${childId}`, "Canonical delegate");
   const entities = new Map([[entity.id, entity]]);
   const before = JSON.stringify(model);
   expect(projectComicDelegates(model, entities)[0]!.source).toBeUndefined();

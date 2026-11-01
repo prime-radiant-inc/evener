@@ -7,6 +7,7 @@ import (
 	"maps"
 	"sort"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"primeradiant.com/evener/agent/events"
@@ -981,6 +982,11 @@ func (s *Session) drainJobTree(ctx context.Context, wake <-chan struct{}, rechec
 	return s.drainJobTreeWith(ctx, wake, recheck, s.kickDriveTree, s.ProcessInputKind)
 }
 
+// observeJobTreeDrainWait is test-only observation of the actual blocking
+// select boundary, after all work predicates and deadline setup. Entry hooks
+// cannot prove a drain is about to park with already-observed source debt.
+var observeJobTreeDrainWait atomic.Pointer[func(*Session)]
+
 func (s *Session) drainJobTreeWith(ctx context.Context, wake <-chan struct{}, recheck <-chan time.Time, kick func(context.Context) error, process func(context.Context, string, []ImageAttachment, EntryKind) (string, error)) (string, error) {
 	if hook := s.cfg.testOnly.jobTreeDrainEntered; hook != nil {
 		hook()
@@ -1328,6 +1334,9 @@ func (s *Session) drainJobTreeWith(ctx context.Context, wake <-chan struct{}, re
 		if !deadline.IsZero() {
 			t := s.sclock().NewTimer(deadline.Sub(s.sclock().Now()))
 			timer, resourceDeadline = t, t.C()
+		}
+		if observe := observeJobTreeDrainWait.Load(); observe != nil {
+			(*observe)(s)
 		}
 		select {
 		case <-ctx.Done():

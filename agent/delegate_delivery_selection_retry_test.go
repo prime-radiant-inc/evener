@@ -22,11 +22,13 @@ import (
 
 func TestColdDelegateSourceSelectionReadFailureRetries(t *testing.T) {
 	t.Parallel()
-	t.Run("new_plan_EIO", func(t *testing.T) { testColdDelegateSourceSelection(t, false) })
-	t.Run("retry_plan_busy_control", func(t *testing.T) { testColdDelegateSourceSelection(t, true) })
+	t.Run("new_plan_EIO", func(t *testing.T) { testColdDelegateSourceSelection(t, false, false, false) })
+	t.Run("already_armed_EIO", func(t *testing.T) { testColdDelegateSourceSelection(t, false, true, false) })
+	t.Run("padded_cold_wait_EIO", func(t *testing.T) { testColdDelegateSourceSelection(t, false, false, true) })
+	t.Run("retry_plan_busy_control", func(t *testing.T) { testColdDelegateSourceSelection(t, true, false, false) })
 }
 
-func testColdDelegateSourceSelection(t *testing.T, retryBusyControl bool) {
+func testColdDelegateSourceSelection(t *testing.T, retryBusyControl, alreadyArmed, paddedWait bool) {
 	adapter := newMessagingAdapter("SELECTION-PARENT", "SELECTION-CHILD")
 	returns := newActivationReturns()
 	initialBoundary, terminal := newWaitBoundary(), newWaitBoundary()
@@ -40,7 +42,11 @@ func testColdDelegateSourceSelection(t *testing.T, retryBusyControl bool) {
 	adapter.script("SELECTION-PARENT", func(llm.Request) llm.Response { return delegateToolResponse("selection-child", "SELECTION-CHILD") }, func(req llm.Request) llm.Response {
 		childID = deferredHeadDelegateID.FindString(lastToolResultText(req.Messages))
 		initialBoundary.hold(t)
-		return waitResponseFor("selection-wait", childID)
+		target := childID
+		if paddedWait {
+			target = " \t" + target + "\n "
+		}
+		return waitResponseFor("selection-wait", target)
 	})
 	adapter.script("SELECTION-CHILD", func(llm.Request) llm.Response {
 		close(childEntered)
@@ -56,6 +62,13 @@ func testColdDelegateSourceSelection(t *testing.T, retryBusyControl bool) {
 	previous := initialBoundary.take(t, returns, owner.ID())
 	initialBoundary.release()
 	waitYielded(t, root, previous, "selection-wait", childID)
+	if paddedWait {
+		assertRecordedWaitTarget(t, previous.sessionID, root.stateDir, "selection-wait", " \t"+childID+"\n ", childID)
+	}
+	originalCheckpoint, err := readWaitCheckpoint(transcriptPath(root.stateDir, owner.ID()), owner.ID())
+	if err != nil || originalCheckpoint == nil || originalCheckpoint.ExecutionTurnID == "" || originalCheckpoint.ResumedByTurnID != "" || originalCheckpoint.WaitingOn != childID {
+		t.Fatalf("original wait checkpoint=%+v err=%v", originalCheckpoint, err)
+	}
 	waitForTestSignal(t, childEntered, "original child request")
 	copyDir := copyWaitingState(t, root.stateDir)
 	presented := make(chan llm.Request, 1)
@@ -207,6 +220,15 @@ func testColdDelegateSourceSelection(t *testing.T, retryBusyControl bool) {
 	healthyDeliveryID := delegateDeliveryID(healthyID, 1)
 	faults.Store(0)
 	fail.Store(true)
+	if alreadyArmed {
+		restored.scheduleDelegateDeliveryRetry()
+		restored.delegateDeliveryMu.Lock()
+		armed := restored.delegateDeliveryRetry.active
+		restored.delegateDeliveryMu.Unlock()
+		if !armed {
+			t.Fatal("retry was not armed before the second selection error")
+		}
+	}
 	replayErr := restored.replayDelegateDeliveries()
 	if faults.Load() != 1 {
 		t.Fatalf("selection faults=%d want1", faults.Load())
@@ -235,12 +257,27 @@ func testColdDelegateSourceSelection(t *testing.T, retryBusyControl bool) {
 	if !errors.Is(replayErr, syscall.EIO) {
 		t.Fatalf("selection error was lost: %v", replayErr)
 	}
+	wantFaults := int32(1)
+	retryDelay := jobNotificationRetryInitialDelay
+	if alreadyArmed {
+		clock.Advance(retryDelay)
+		clock.Drain()
+		wantFaults++
+		restored.delegateDeliveryMu.Lock()
+		armed = restored.delegateDeliveryRetry.active
+		restored.delegateDeliveryMu.Unlock()
+		assertCold()
+		if faults.Load() != wantFaults || !armed || !c.deliveryPending(childID, deliveryID) || len(adapter.requestsFor("SELECTION-PARENT")) != 2 {
+			t.Fatalf("timer lost repeated selector debt: faults=%d armed=%t", faults.Load(), armed)
+		}
+		retryDelay *= 2
+	}
 	fail.Store(false)
-	clock.Advance(jobNotificationRetryInitialDelay)
+	clock.Advance(retryDelay)
 	clock.Drain()
 	resumed := terminal.take(t, restoredReturns, owner.ID())
 	req := <-presented
-	if resumed.sessionID != previous.sessionID || resumed.lease != previous.lease {
+	if resumed.sessionID != previous.sessionID || resumed.lease != previous.lease || resumed == previous {
 		t.Fatalf("cold retry changed generation: %+v -> %+v", previous, resumed)
 	}
 	if ids := incidentPresentedIDs(t, copyDir, owner.ID(), req, attentionID); !slices.Equal(ids, []string{attentionID}) {
@@ -264,9 +301,13 @@ func testColdDelegateSourceSelection(t *testing.T, retryBusyControl bool) {
 	}
 	receipts, resolutions := 0, 0
 	path := transcriptPath(copyDir, owner.ID())
+	claimedCheckpoint, err := readWaitCheckpoint(path, owner.ID())
+	if err != nil || claimedCheckpoint == nil || claimedCheckpoint.ExecutionTurnID != originalCheckpoint.ExecutionTurnID || claimedCheckpoint.ResumedByTurnID == "" || claimedCheckpoint.ResumedByTurnID == originalCheckpoint.ExecutionTurnID || claimedCheckpoint.WaitingOn != originalCheckpoint.WaitingOn {
+		t.Fatalf("resumed wait checkpoint=%+v original=%+v err=%v", claimedCheckpoint, originalCheckpoint, err)
+	}
 	for _, entry := range readAttentionTranscriptEntries(t, path) {
 		if slices.Contains(entry.Turn.ObservedNotificationIDs, attentionID) {
-			if entry.Turn.Kind != schema.TurnAssistant || entry.Turn.RoundID == "" || !reflect.DeepEqual(entry.Turn.Message, response.Message) || !slices.Equal(entry.Turn.ObservedNotificationIDs, []string{attentionID}) {
+			if entry.Turn.Kind != schema.TurnAssistant || entry.Turn.RoundID == "" || entry.Turn.TurnID != claimedCheckpoint.ResumedByTurnID || !reflect.DeepEqual(entry.Turn.Message, response.Message) || !slices.Equal(entry.Turn.ObservedNotificationIDs, []string{attentionID}) {
 				t.Fatalf("wrong successful response for %s: %#v", attentionID, entry.Turn)
 			}
 			receipts++
@@ -282,7 +323,7 @@ func testColdDelegateSourceSelection(t *testing.T, retryBusyControl bool) {
 	if err != nil || receipts != 1 || resolutions != 1 || slices.Contains(fold.pendingIDs(), attentionID) || fold.resolutions[attentionID] != delegateAttentionConsumed {
 		t.Fatalf("same-generation receipt unresolved: receipts=%d resolutions=%d pending=%v err=%v", receipts, resolutions, fold.pendingIDs(), err)
 	}
-	if len(delegateAggregateSnapshot(t, c, childID).PendingDeliveries) != 0 || faults.Load() != 1 {
+	if len(delegateAggregateSnapshot(t, c, childID).PendingDeliveries) != 0 || faults.Load() != wantFaults {
 		t.Fatal("source retry did not settle exactly the faulted obligation")
 	}
 }

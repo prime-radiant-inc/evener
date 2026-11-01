@@ -1618,9 +1618,19 @@ func (jm *jobManager) scheduleWatchTransportRetry() {
 }
 
 func (jm *jobManager) settleSupersededWatchSends(candidates map[string]*jobstore.WatchSendState) error {
+	if len(candidates) == 0 {
+		return nil
+	}
+	retired, err := jm.retiredDelegateJobIDs()
+	if err != nil {
+		return err
+	}
 	var errs []error
 	states := make([]*jobstore.WatchSendState, 0, len(candidates))
 	for _, state := range candidates {
+		if addressedThroughRetiredDelegate(state.Key, retired) {
+			continue
+		}
 		states = append(states, state)
 	}
 	sort.SliceStable(states, func(i, j int) bool { return watchSendStateLess(states[i], states[j]) })

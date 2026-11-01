@@ -166,8 +166,8 @@ func TestDelegateResourceBootstrap_RetiredDelegateOutputIsNotRead(t *testing.T) 
 	restored.Close()
 }
 
-// A pending watch frame addressed through a retired delegate job is not
-// restored into the live delivery set, while a frame on a healthy job still is.
+// Retired frames remain source history. Healthy frames recover immediately into
+// canonical custody, with one source acknowledgment and no duplicate pumping.
 func TestDelegateResourceBootstrap_LegacyWatchFramesAreNotRestored(t *testing.T) {
 	meta, client, profile, stateDir, workspace, _ := closedDelegateResourceBootstrapFixture(t)
 	removeDelegateStoreIfPresent(t, stateDir, meta.ID)
@@ -199,18 +199,92 @@ func TestDelegateResourceBootstrap_LegacyWatchFramesAreNotRestored(t *testing.T)
 		frame("delivery_legacy", "job_legacy_delegate"),
 		frame("delivery_shell", "job_shell"),
 	)
+	before, err := os.ReadFile(jobPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	eventsBefore, err := jobstore.ReadEvents(jobPath)
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	restored, err := restoreDelegateResourceBootstrapSession(client, profile, workspace, meta, stateDir)
 	if err != nil {
 		t.Fatalf("restore: %v", err)
 	}
 	defer restored.Close()
-	var restoredFrames []string
-	for _, delivery := range restored.jobManager.pendingWatchSendDeliveries(nil) {
-		restoredFrames = append(restoredFrames, delivery.state.DeliveryID)
+	restored.SetNotifyFunc(func() {})
+	jm := restored.jobManager
+	healthy := *frame("delivery_shell", "job_shell").WatchSend
+	retired := *frame("delivery_legacy", "job_legacy_delegate").WatchSend
+	check := func() []jobstore.Event {
+		t.Helper()
+		after, err := os.ReadFile(jobPath)
+		if err != nil || !bytes.HasPrefix(after, before) {
+			t.Fatalf("existing journal prefix changed: %v", err)
+		}
+		journal, err := jobstore.ReadEvents(jobPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, event := range journal[len(eventsBefore):] {
+			if event.WatchSend != nil && event.WatchSend.DeliveryID == retired.DeliveryID {
+				t.Fatalf("retired frame received new source write: %+v", event)
+			}
+		}
+		delivered, terminals := 0, 0
+		for _, event := range journal {
+			state := event.WatchSend
+			if state == nil {
+				continue
+			}
+			switch event.Kind {
+			case jobstore.EventWatchSendDelivered, jobstore.EventWatchSendDropped, jobstore.EventWatchSendEvicted:
+				if state.Key == healthy.Key {
+					terminals++
+					if event.Kind != jobstore.EventWatchSendDelivered || state.DeliveryID != healthy.DeliveryID || state.UpdateSeq != healthy.UpdateSeq {
+						t.Fatalf("unexpected healthy-key terminal: %+v", event)
+					}
+				}
+				if state.DeliveryID == healthy.DeliveryID && state.UpdateSeq == healthy.UpdateSeq {
+					if state.Key != healthy.Key || event.Kind != jobstore.EventWatchSendDelivered {
+						t.Fatalf("wrong-key or alternate healthy settlement: %+v", event)
+					}
+					delivered++
+				}
+			}
+		}
+		if delivered != 1 || terminals != 1 {
+			t.Fatalf("healthy full-key acknowledgments=%d terminals=%d, want one each", delivered, terminals)
+		}
+		fold := jobstore.FoldWatchSends(journal)
+		if fold.Pending[healthy.Key] != nil || !reflect.DeepEqual(fold.Pending[retired.Key], &retired) {
+			t.Fatalf("healthy debt or changed retired inventory: %+v", fold)
+		}
+		requireWatchDeliveryReceipts(t, restored, map[string]string{"watch:delivery_shell:1": "saved frame"}, nil)
+		attention := rootAttentionFold(t, restored)
+		if !reflect.DeepEqual(attention.pendingIDs(), []string{"watch:delivery_shell:1"}) {
+			t.Fatalf("unobserved healthy custody=%v", attention.pendingIDs())
+		}
+		jm.mu.Lock()
+		retry, claims := jm.watchTransportRetry.active, len(jm.deliveringWatchSends)
+		jm.mu.Unlock()
+		if retry || claims != 0 || jm.hasPendingWatchSends() {
+			t.Fatalf("recovery residue retry=%t claims=%d pending=%t", retry, claims, jm.hasPendingWatchSends())
+		}
+		return journal
 	}
-	if !reflect.DeepEqual(restoredFrames, []string{"delivery_shell"}) {
-		t.Fatalf("restored watch frames = %v, want only the healthy job's", restoredFrames)
+	settled := check()
+	for range 2 {
+		if err := jm.dispatchProducedWatchSendsFrom(jm.store.LoadWatchSends); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := restored.drainJobManagerWatchSends(context.Background(), jm); err != nil {
+			t.Fatal(err)
+		}
+		if journal := check(); len(journal) != len(settled) {
+			t.Fatal("repeated producer/owner pump duplicated source settlement")
+		}
 	}
 }
 

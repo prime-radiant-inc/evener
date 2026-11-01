@@ -302,6 +302,15 @@ func TestFailedWaitSupersessionRequiresSettledBoundary(t *testing.T) {
 
 func TestNotificationResumesYieldedWait(t *testing.T) {
 	t.Parallel()
+	testNotificationResumesYieldedWait(t, false)
+}
+
+func TestNotificationResumesPaddedYieldedWait(t *testing.T) {
+	t.Parallel()
+	testNotificationResumesYieldedWait(t, true)
+}
+
+func testNotificationResumesYieldedWait(t *testing.T, padded bool) {
 	for _, producer := range []string{"child", "shell"} {
 		t.Run(producer, func(t *testing.T) {
 			adapter := newMessagingAdapter("WAIT-OWNER-71", "WAIT-WORKER-71")
@@ -345,7 +354,11 @@ func TestNotificationResumesYieldedWait(t *testing.T) {
 					t.Error("missing real producer identity")
 				}
 				initialBoundary.hold(t)
-				return waitResponseFor("wait-71", target)
+				arg := target
+				if padded {
+					arg = " \t" + arg + "\n "
+				}
+				return waitResponseFor("wait-71", arg)
 			}, func(req llm.Request) llm.Response {
 				resumed <- req
 				terminalBoundary.hold(t)
@@ -386,6 +399,9 @@ func TestNotificationResumesYieldedWait(t *testing.T) {
 			initial := initialBoundary.take(t, returns, owner.ID())
 			initialBoundary.release()
 			waitYielded(t, root, initial, "wait-71", target)
+			if padded {
+				assertRecordedWaitTarget(t, owner.ID(), root.stateDir, "wait-71", " \t"+target+"\n ", target)
+			}
 			checkpoint, err := readWaitCheckpoint(transcriptPath(root.stateDir, owner.ID()), owner.ID())
 			if err != nil || checkpoint == nil || checkpoint.ResumedByTurnID != "" || checkpoint.CommunicateCallID != "wait-71" {
 				t.Fatalf("yield checkpoint=%+v err=%v", checkpoint, err)
@@ -422,7 +438,7 @@ func TestNotificationResumesYieldedWait(t *testing.T) {
 			}
 			release()
 			waitForTestSignal(t, terminalBoundary.entered, "producer resumed yielded generation")
-			<-resumed
+			request := <-resumed
 			terminal := returns.take(t, owner.ID())
 			assertWaitResume(t, initial, terminal)
 			if !<-claimFenced {
@@ -439,7 +455,53 @@ func TestNotificationResumesYieldedWait(t *testing.T) {
 			if err != nil || claimed == nil || claimed.ResumedByTurnID == "" || claimed.ResumedByTurnID == checkpoint.ExecutionTurnID {
 				t.Fatalf("resume claim=%+v err=%v", claimed, err)
 			}
+			attentionID := delegateAttentionID(delegateDeliveryID(target, 1))
+			if producer == "shell" {
+				record := loadShellRecord(t, owner.jobManager, target)
+				attentionID = "shell:" + target + ":" + record.TerminalGen
+			}
+			if ids := incidentPresentedIDs(t, root.stateDir, owner.ID(), request, attentionID); !slices.Equal(ids, []string{attentionID}) {
+				t.Fatalf("resumed request missing producer: %v", ids)
+			}
+			receipts := 0
+			for _, entry := range readAttentionTranscriptEntries(t, transcriptPath(root.stateDir, owner.ID())) {
+				if slices.Contains(entry.Turn.ObservedNotificationIDs, attentionID) {
+					receipts++
+					if entry.Turn.Kind != schema.TurnAssistant || entry.Turn.TurnID != claimed.ResumedByTurnID || !slices.Equal(entry.Turn.ObservedNotificationIDs, []string{attentionID}) {
+						t.Fatalf("wrong resumed receipt: %+v", entry.Turn)
+					}
+				}
+			}
+			if receipts != 1 {
+				t.Fatalf("producer observation receipts=%d want1", receipts)
+			}
 		})
+	}
+}
+
+func assertRecordedWaitTarget(t *testing.T, sessionID, stateDir, callID, original, canonical string) {
+	t.Helper()
+	path := transcriptPath(stateDir, sessionID)
+	checkpoint, err := readWaitCheckpoint(path, sessionID)
+	if err != nil || checkpoint == nil || checkpoint.WaitingOn != canonical {
+		t.Fatalf("canonical checkpoint=%+v err=%v", checkpoint, err)
+	}
+	calls := 0
+	for _, entry := range readAttentionTranscriptEntries(t, path) {
+		for _, part := range entry.Turn.Message.Content {
+			if call := part.ToolCall; call != nil && call.ID == callID {
+				var args struct {
+					WaitingOn string `json:"waiting_on"`
+				}
+				if err := json.Unmarshal(call.Arguments, &args); err != nil || args.WaitingOn != original {
+					t.Fatalf("original wait argument=%q err=%v", args.WaitingOn, err)
+				}
+				calls++
+			}
+		}
+	}
+	if calls != 1 {
+		t.Fatalf("original wait calls=%d want1", calls)
 	}
 }
 

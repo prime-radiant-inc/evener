@@ -98,6 +98,9 @@ type delegateDeliveryPlan struct {
 	claim           delegateDeliveryClaimToken
 	receiver        delegateDeliveryReceiver
 	callerCommitted bool
+	// Selection uncertainty owns no claim or receiver I/O. Carry it through the
+	// finite source pass so the existing transport retry can revisit this head.
+	selectionErr error
 }
 
 type delegateDeliveryReceiver interface {
@@ -189,6 +192,9 @@ func (c *delegateTreeController) waitForDelegateInline(ctx context.Context, wait
 }
 
 func (c *delegateTreeController) BeginDelivery(plan delegateDeliveryPlan) (_ delegateDeliveryToken, admitted bool, _ error) {
+	if plan.selectionErr != nil {
+		return delegateDeliveryToken{}, false, plan.selectionErr
+	}
 	release, err := c.beginRetirementMutation()
 	if err != nil {
 		return delegateDeliveryToken{}, false, err
@@ -262,6 +268,15 @@ func (c *delegateTreeController) deliveryStoppedLocked(delegateID, ownerID strin
 
 func (c *delegateTreeController) CompleteDelivery(token delegateDeliveryToken, committed bool) (delegateMutationPlans, error) {
 	defer c.retirementChanged()
+	var receiver *Session
+	defer func() {
+		// Observation may have already consumed the notification while its
+		// source acknowledgment was held. Discharging that remaining debt is
+		// itself a resource change, even when no notification remains to drive.
+		if receiver != nil {
+			receiver.notify()
+		}
+	}()
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	receipt := c.deliveries[token.processID]
@@ -312,6 +327,11 @@ func (c *delegateTreeController) CompleteDelivery(token delegateDeliveryToken, c
 	delete(c.deliveries, token.processID)
 	untrackStopLocked(c, func(s *delegateStopState) map[delegateDeliveryToken]struct{} { return s.deliveries }, token)
 	c.evidenceVersion++
+	if receipt.ownerID == "" {
+		receiver = c.rootRuntime
+	} else if live := c.live[receipt.ownerID]; live != nil {
+		receiver = live.runtime
+	}
 	plans := delegateMutationPlans{}
 	if ownerChanged {
 		plans.updates = append(plans.updates, c.capturedPlanLocked(receipt.ownerID))
@@ -426,6 +446,10 @@ func prepareColdDelegateDeliveryReplay(c *delegateTreeController, plans []delega
 	for len(queue) != 0 {
 		plan := queue[0]
 		queue = queue[1:]
+		if plan.selectionErr != nil {
+			pending = append(pending, plan)
+			continue
+		}
 		committed, err := callerCommittedDelegateDelivery(c, plan)
 		if err != nil {
 			return nil, err
@@ -717,7 +741,10 @@ func (c *delegateTreeController) newHeadDeliveryPlanLocked(delegateID, deliveryI
 	if _, claimed := c.deliveryClaims[deliveryID]; claimed || c.hasDeliveryReceiptLocked(deliveryID) {
 		return nil
 	}
-	receiver := c.deliveryReceiverLocked(head.OwnerDelegateID)
+	receiver, err := c.deliveryReceiverWithEvidenceLocked(head.OwnerDelegateID)
+	if err != nil && !errors.Is(err, errDelegateTargetBusy) {
+		return &delegateDeliveryPlan{controller: c, delegateID: delegateID, deliveryID: deliveryID, ownerDelegateID: head.OwnerDelegateID, selectionErr: err}
+	}
 	if head.OwnerDelegateID != "" && receiver == nil {
 		return nil
 	}
@@ -822,7 +849,14 @@ func (c *delegateTreeController) retryDeliveryPlanLocked(receipt *delegateDelive
 	if head.DeliveryID != receipt.token.deliveryID || head.OwnerDelegateID != receipt.ownerID {
 		return nil
 	}
-	receiver := c.deliveryReceiverLocked(receipt.ownerID)
+	var receiver delegateDeliveryReceiver
+	if !receipt.inline && !receipt.receiverCommitted {
+		var err error
+		receiver, err = c.deliveryReceiverWithEvidenceLocked(receipt.ownerID)
+		if err != nil && !errors.Is(err, errDelegateTargetBusy) {
+			return &delegateDeliveryPlan{controller: c, delegateID: receipt.delegateID, deliveryID: receipt.token.deliveryID, ownerDelegateID: receipt.ownerID, selectionErr: err}
+		}
+	}
 	if !receipt.inline && !receipt.receiverCommitted && receipt.ownerID != "" && receiver == nil {
 		return nil
 	}
@@ -886,8 +920,6 @@ func (c *delegateTreeController) replayDeliveriesForOwnerLocked(ownerDelegateID 
 }
 
 func (c *delegateTreeController) deliveryReceiverLocked(ownerDelegateID string) delegateDeliveryReceiver {
-	// Existing source delivery retries retain their obligation when selection
-	// fails. Notification admission also needs the underlying uncertainty error.
 	receiver, _ := c.deliveryReceiverWithEvidenceLocked(ownerDelegateID)
 	return receiver
 }

@@ -88,12 +88,15 @@ function capturePoint(port: HTMLElement, sessionRef: string): ComicReadingPositi
   }
 }
 
-// A readable disk window is not an authoritative exhaustion verdict. This
-// observes the existing route/cache owners, without withholding cached paging.
-function hasUnverifiedHistory(ref: string): boolean {
+// A readable disk window is not an authoritative exhaustion verdict. Readiness
+// from the live owner cannot authorize destruction of an older captured window.
+// Cached paging remains available while its matching model is published.
+function hasUnverifiedHistory(reader: ComicReaderSnapshot): boolean {
+  const state = threadsStore.getState();
   return (
-    existingEntryRoute(ref)?.cachedUnverified === true ||
-    threadsStore.getState().cacheLifetimes.get(ref)?.shell === true
+    existingEntryRoute(reader.ref)?.cachedUnverified === true ||
+    state.cacheLifetimes.get(reader.ref)?.shell === true ||
+    state.threads.get(reader.ref) !== reader.history.model
   );
 }
 
@@ -610,7 +613,7 @@ export function ComicTranscript({
           }
           return;
         }
-        if (target.history.loadingOlder || hasUnverifiedHistory(target.ref)) return;
+        if (target.history.loadingOlder || hasUnverifiedHistory(target)) return;
         save({ mode: "end", sessionRef: target.ref, path: target.path });
         restoring.current = false;
         return;
@@ -653,7 +656,7 @@ export function ComicTranscript({
         lastPage.current = page;
         history.loadOlderReportingError();
       }
-    } else if (!history.loadingOlder && !hasUnverifiedHistory(target.ref)) {
+    } else if (!history.loadingOlder && !hasUnverifiedHistory(target)) {
       const first = target.entries.find((entry) => entry.id === nearest.current) ?? target.entries[0];
       if (first) save({ ...position, sessionRef: target.ref, path: target.path, entryId: first.id, offset: 0 });
       restoring.current = false;

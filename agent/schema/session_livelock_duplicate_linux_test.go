@@ -28,13 +28,14 @@ func TestSessionLivelockReleaseClearsMarkerWithDuplicatedDescriptor(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	fds, err := os.ReadDir("/proc/self/fd")
+	const fdDir = "/proc/self/fd"
+	fds, err := os.ReadDir(fdDir)
 	if err != nil {
 		t.Fatal(err)
 	}
 	var minted []int
 	for _, fd := range fds {
-		info, err := os.Stat(filepath.Join("/proc/self/fd", fd.Name()))
+		info, err := os.Stat(filepath.Join(fdDir, fd.Name()))
 		if err != nil || !os.SameFile(marker, info) {
 			continue
 		}
