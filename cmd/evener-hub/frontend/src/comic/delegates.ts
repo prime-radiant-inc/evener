@@ -22,6 +22,23 @@ export type ComicDelegateStrip = {
   source?: { itemId: string; sourceIndex: number };
 };
 
+/**
+ * The strip an update folds into: its recorded childRef when that names the
+ * strip's current child, else the stable delegate id, so an update recorded
+ * against a superseded incarnation still folds. Launch placement stays
+ * stricter: place() requires both identities to match.
+ */
+export function comicStripForUpdate(
+  strips: readonly ComicDelegateStrip[],
+  target: { delegateId?: string; childRef?: string },
+): ComicDelegateStrip | undefined {
+  if (target.childRef) {
+    const byChildRef = strips.find((strip) => strip.childRef === target.childRef);
+    if (byChildRef) return byChildRef;
+  }
+  return target.delegateId ? strips.find((strip) => strip.delegateId === target.delegateId) : undefined;
+}
+
 /** Activity owns membership and current state, transcript evidence owns placement only. */
 export function projectComicDelegates(
   model: ThreadModel,

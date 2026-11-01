@@ -26,15 +26,13 @@ import {
   type VirtualListHandle,
 } from "../widgets";
 import { comicMarkdownPoint } from "./ComicMarkdown";
-import { type ComicExpression, ComicPanel, type ComicScene } from "./ComicPanel";
+import { type ComicExpression, ComicPanel, type ComicScene, comicSourceSliceProps } from "./ComicPanel";
 import { ComicPlainTranscript } from "./ComicPlainTranscript";
 import { ComicSubchatHeader } from "./ComicSubchatHeader";
 import styles from "./comic.module.css";
 import { publishComicPaneCoverage } from "./comicPaneCoverage";
 import { type ComicFlowRow, composeComicFlow, findComicFlowAnchorRow } from "./comicRows";
-import type { ComicBalloon } from "./layout";
 import { createComicMeasurer, loadComicFonts } from "./measure";
-import type { ComicEntry } from "./projection";
 import type { ComicReadingPosition } from "./readerPosition";
 import type { useComicReader } from "./useComicReader";
 import { type ComicReaderSnapshot, type ComicSubchatState, comicPathContains, comicPathKey } from "./useComicSubchats";
@@ -897,11 +895,10 @@ export function ComicTranscript({
                 data-comic-path={comicPathKey(flow.path)}
               >
                 {row.panels.map(({ balloons }, panelIndex) => {
-                  const resolved: { item: ComicBalloon; entry: ComicEntry }[] = [];
-                  for (const item of balloons) {
+                  const resolved = balloons.flatMap((item) => {
                     const entry = byId?.get(item.slice.entryId);
-                    if (entry) resolved.push({ item, entry });
-                  }
+                    return entry ? [{ item, entry }] : [];
+                  });
                   if (!resolved.length) return null;
                   const panelKey = `${resolved[0]?.item.slice.entryId}:${resolved[0]?.item.slice.start}:${panelIndex}`;
                   return (
@@ -926,11 +923,7 @@ export function ComicTranscript({
                             <div
                               className={styles.sourcePanel}
                               key={`${item.slice.entryId}:${item.slice.start}`}
-                              data-comic-entry={item.slice.entryId}
-                              data-comic-session={flow.sessionRef}
-                              data-comic-path={comicPathKey(flow.path)}
-                              data-comic-start={item.slice.start}
-                              data-comic-end={item.slice.end}
+                              {...comicSourceSliceProps(item.slice, flow.sessionRef, comicPathKey(flow.path))}
                             >
                               <ComicPlainTranscript
                                 entries={[

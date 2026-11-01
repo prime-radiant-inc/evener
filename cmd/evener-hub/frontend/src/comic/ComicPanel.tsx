@@ -10,6 +10,21 @@ export type ComicExpression = "neutral" | "happy-wave" | "angry" | "scared" | "p
 /** A balloon plus the entry its source range points into. */
 export type ComicPanelBalloon = ComicBalloon & { entry: ComicEntry };
 
+/** The per-balloon slice attributes the reader, reading anchors and browser guards all query. */
+export function comicSourceSliceProps(
+  slice: { entryId: string; start: number; end: number },
+  sessionRef: string,
+  path: string,
+) {
+  return {
+    "data-comic-entry": slice.entryId,
+    "data-comic-session": sessionRef,
+    "data-comic-path": path,
+    "data-comic-start": slice.start,
+    "data-comic-end": slice.end,
+  };
+}
+
 const ART = "/webassets/comic/sprites/";
 
 function stableXenoPose(id: string): "neutral" | "point" {
@@ -33,8 +48,8 @@ export function ComicPanel({
   path: string;
 }): React.ReactElement {
   const first = balloons[0];
-  const lead = first?.entry;
-  if (!first || !lead) return <article className={styles.panel} />;
+  if (!first) return <article className={styles.panel} />;
+  const lead = first.entry;
   const composition = first.composition;
   const character = lead.persona?.character;
   const pose = character === "anna" ? expression : character === "xeno" ? stableXenoPose(lead.id) : "neutral";
@@ -71,11 +86,7 @@ export function ComicPanel({
           <div
             className={styles.sourcePanel}
             key={`${slice.entryId}:${slice.start}`}
-            data-comic-entry={slice.entryId}
-            data-comic-session={sessionRef}
-            data-comic-path={path}
-            data-comic-start={slice.start}
-            data-comic-end={slice.end}
+            {...comicSourceSliceProps(slice, sessionRef, path)}
           >
             {source && (
               <div className={styles.source} data-comic-source="">

@@ -1,5 +1,5 @@
 import type { UseTranscriptResult } from "../panes/session/transcript/useTranscript";
-import type { ComicDelegateStrip } from "./delegates";
+import { type ComicDelegateStrip, comicStripForUpdate } from "./delegates";
 import { type ComicRow, composeComicRows } from "./layout";
 import type { createComicMeasurer } from "./measure";
 import type { ComicEntry } from "./projection";
@@ -56,23 +56,13 @@ export function composeComicFlow(
     // captions, so a strip whose launch is outside the loaded window still
     // anchors inline at the earliest update it kept.
     const strips = reader.activity.strips;
-    const stripForUpdate = (target: NonNullable<ComicEntry["delegateUpdate"]>) => {
-      // The ref a delegate_send recorded can name a superseded incarnation of
-      // the child, so an unmatched childRef falls through to the stable id.
-      if (target.childRef) {
-        const byChildRef = strips.find((strip) => strip.childRef === target.childRef);
-        if (byChildRef) return byChildRef;
-      }
-      return target.delegateId ? strips.find((strip) => strip.delegateId === target.delegateId) : undefined;
-    };
-    const folded = new Map<string, { count: number; first: number; entryIds: string[] }>();
+    const folded = new Map<string, { first: number; entryIds: string[] }>();
     const items: ComicEntry[] = [];
     for (const entry of reader.entries) {
       if (entry.sourceIndex === undefined) continue;
-      const strip = entry.delegateUpdate ? stripForUpdate(entry.delegateUpdate) : undefined;
+      const strip = entry.delegateUpdate ? comicStripForUpdate(strips, entry.delegateUpdate) : undefined;
       if (strip) {
-        const record = folded.get(strip.key) ?? { count: 0, first: entry.sourceIndex, entryIds: [] };
-        record.count += 1;
+        const record = folded.get(strip.key) ?? { first: entry.sourceIndex, entryIds: [] };
         record.entryIds.push(entry.id);
         if (record.first > entry.sourceIndex) record.first = entry.sourceIndex;
         folded.set(strip.key, record);
@@ -87,7 +77,7 @@ export function composeComicFlow(
         const anchor = strip.source?.sourceIndex ?? record?.first;
         return anchor === undefined
           ? []
-          : [{ strip, updateCount: record?.count ?? 0, anchor, entryIds: record?.entryIds ?? [] }];
+          : [{ strip, updateCount: record?.entryIds.length ?? 0, anchor, entryIds: record?.entryIds ?? [] }];
       })
       .sort((a, b) => a.anchor - b.anchor)) {
       const start = cursor;

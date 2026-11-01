@@ -28,7 +28,7 @@ export type ComicRow = {
 
 const ROW_GAP = 15;
 /** --comic-panel-max-width is 26rem; the px fallback assumes the default root size. */
-const PANEL_REM = 26;
+export const PANEL_REM = 26;
 const DEFAULT_PANEL_WIDTH = PANEL_REM * 16;
 /** Balloons per stacked panel; a longer run continues in the next panel of the same party. */
 const STACK_MAX = 8;
@@ -126,26 +126,20 @@ export function composeComicRows(
     return !!part && value.kind === "dialogue" && fits(doc, part, "packed", value.kind, slotWidth);
   };
   // Each entry's compact verdict is asked for at most once, by index.
-  const stackMemo = new Map<number, boolean>();
-  const packMemo = new Map<number, boolean>();
-  const stackableAt = (index: number): boolean => {
-    const cached = stackMemo.get(index);
-    if (cached !== undefined) return cached;
-    const value = entries[index];
-    const doc = documents[index];
-    const result = !!value && !!doc && stackable(value, doc);
-    stackMemo.set(index, result);
-    return result;
+  const memoized = (verdict: (value: ComicEntry, doc: ComicMarkdownDocument) => boolean) => {
+    const memo = new Map<number, boolean>();
+    return (index: number): boolean => {
+      const cached = memo.get(index);
+      if (cached !== undefined) return cached;
+      const value = entries[index];
+      const doc = documents[index];
+      const result = !!value && !!doc && verdict(value, doc);
+      memo.set(index, result);
+      return result;
+    };
   };
-  const packableAt = (index: number): boolean => {
-    const cached = packMemo.get(index);
-    if (cached !== undefined) return cached;
-    const value = entries[index];
-    const doc = documents[index];
-    const result = !!value && !!doc && packable(value, doc);
-    packMemo.set(index, result);
-    return result;
-  };
+  const stackableAt = memoized(stackable);
+  const packableAt = memoized(packable);
 
   // Phase 1: classify each entry as stackable run, packed singleton, or its own rows.
   const units: Unit[] = [];
@@ -230,11 +224,11 @@ export function composeComicRows(
 }
 
 function packRow(units: readonly Extract<Unit, { kind: "stack" | "singleton" }>[], columns: number): ComicRow {
-  const id = units
-    .flatMap((unit) => (unit.kind === "stack" ? unit.members : [unit.member]).map((member) => member.value.id))
-    .join(":");
+  const membersOf = (unit: Extract<Unit, { kind: "stack" | "singleton" }>) =>
+    unit.kind === "stack" ? unit.members : [unit.member];
+  const id = units.flatMap((unit) => membersOf(unit).map((member) => member.value.id)).join(":");
   const panels = units.map((unit) => ({
-    balloons: (unit.kind === "stack" ? unit.members : [unit.member]).flatMap(({ value, doc }) =>
+    balloons: membersOf(unit).flatMap(({ value, doc }) =>
       doc.parts.map((part) => ({
         slice: { entryId: value.id, start: 0, end: value.text.length },
         composition: "packed" as const,

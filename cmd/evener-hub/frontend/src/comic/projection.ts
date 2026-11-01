@@ -45,6 +45,11 @@ type ComicEntryFields = {
   delegateResult?: { kind: "earlierUpdate" | "earlierReply" | "reply" | "failure"; status?: string };
 };
 
+/** An update folds into its strip only when it names the delegate: either identity field suffices. */
+function delegateUpdateField(target: { delegateId?: string; childRef?: string } | undefined) {
+  return target && (target.delegateId || target.childRef) ? { delegateUpdate: target } : {};
+}
+
 export type ComicItemEntry = ComicEntryFields & {
   sourceItemId: string;
   sourceIndex: number;
@@ -193,9 +198,7 @@ export function projectComicConversation(
               sourceLabel: `${sourceLabel} · ${delegateSendEarlierLabel(result, index, historical.length)}`,
               text: result.text,
               persona,
-              ...(updateTarget && (updateTarget.delegateId || updateTarget.childRef)
-                ? { delegateUpdate: updateTarget }
-                : {}),
+              ...delegateUpdateField(updateTarget),
               delegateResult: result.update
                 ? { kind: "earlierUpdate" }
                 : { kind: "earlierReply", status: result.status },
@@ -304,9 +307,7 @@ export function projectComicConversation(
                     : notification.title,
                 text: notification.message ?? notification.excerpt ?? "",
                 persona,
-                ...(updateTarget && (updateTarget.delegateId || updateTarget.childRef)
-                  ? { delegateUpdate: updateTarget }
-                  : {}),
+                ...delegateUpdateField(updateTarget),
               });
             } else if (fragment.text && !reminder) {
               entries.push({

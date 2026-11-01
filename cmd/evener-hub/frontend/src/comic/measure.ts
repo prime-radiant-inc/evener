@@ -2,7 +2,7 @@ import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { ComicMarkdown } from "./ComicMarkdown";
 import styles from "./comic.module.css";
-import type { ComicFits } from "./layout";
+import { type ComicFits, PANEL_REM } from "./layout";
 
 const FONT = '"Comic Sans Comic"';
 
@@ -64,9 +64,9 @@ export function createComicMeasurer(container: HTMLElement): {
       const computed = ownerWindow?.getComputedStyle(panel).maxWidth ?? "";
       const px = Number.parseFloat(computed);
       if (Number.isFinite(px) && px > 0) return px;
-      // jsdom does not resolve the token; --comic-panel-max-width is 26rem.
+      // jsdom does not resolve the token; PANEL_REM mirrors --comic-panel-max-width.
       const root = Number.parseFloat(ownerWindow?.getComputedStyle(ownerDocument.documentElement).fontSize ?? "") || 16;
-      return 26 * root;
+      return PANEL_REM * root;
     },
     dispose() {
       panel.remove();

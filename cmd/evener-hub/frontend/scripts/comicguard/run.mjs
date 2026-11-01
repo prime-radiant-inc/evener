@@ -2920,6 +2920,9 @@ export function observeDelegateRelocation(parentRef, childRef, origin) {
   };
 }
 
+// Serialize once: the poll loops below ship this source over CDP every tick.
+const observeDelegateRelocationSource = observeDelegateRelocation.toString();
+
 export function recordedRelocationOrigin(held, parentRef, grandchild) {
   const items = held.response.result.data.flatMap((turn) => turn.items);
   const launchIndex = items.findIndex((item) => item.callId === "comic_delegate_GRANDCHILD");
@@ -4133,7 +4136,7 @@ async function childJourney(page, fixture, { command, incoming, outgoing, screen
   await until("folded update anchors the nested strip inline", async () => {
     const value = await evaluateHere(`(() => {
       const port=window.__comicRoot()?.querySelector('[data-comic-scroll]').firstElementChild;
-      const observation=(${observeDelegateRelocation.toString()})(${JSON.stringify(header.ref)},${JSON.stringify(grandchildWire.childRef)},null);
+      const observation=(${observeDelegateRelocationSource})(${JSON.stringify(header.ref)},${JSON.stringify(grandchildWire.childRef)},null);
       if(observation.found&&observation.updates>0&&!observation.unplacedRows){
         const entries=[...port.querySelectorAll('[data-comic-entry]')].filter(node=>node.dataset.comicSession===${JSON.stringify(header.ref)});
         const thought=entries.find(node=>node.dataset.comicEntry===${JSON.stringify(childThought)});
@@ -4363,7 +4366,7 @@ async function childJourney(page, fixture, { command, incoming, outgoing, screen
   );
   const observeRelocation = () =>
     evaluateHere(
-      `(${observeDelegateRelocation.toString()})(${JSON.stringify(header.ref)},${JSON.stringify(grandchild.ref)},${JSON.stringify(relocationOrigin)})`,
+      `(${observeDelegateRelocationSource})(${JSON.stringify(header.ref)},${JSON.stringify(grandchild.ref)},${JSON.stringify(relocationOrigin)})`,
     );
   const pendingRelocation = await observeRelocation();
   if (
