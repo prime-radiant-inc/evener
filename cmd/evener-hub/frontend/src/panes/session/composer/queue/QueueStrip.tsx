@@ -20,6 +20,7 @@ import {
   captureRecoveryStopBarrier,
   retryBlockedBySnapshot,
   threadsStore,
+  UNCERTAIN_DISCARD_THRESHOLD,
   useEditableQueuedMutationEntries,
   useThreadsStore,
 } from "../../../../stores/threads";
@@ -34,6 +35,7 @@ import {
 } from "../submitProtocol";
 import {
   discardRecoveryPendingTurn,
+  discardUncertainPendingTurn,
   editQueuedPendingTurn,
   type PendingTurnEntry,
   removeQueuedPendingTurn,
@@ -215,6 +217,11 @@ export function QueueStrip({
   const recoveryObligated = useThreadsStore((s) => s.restartBlockingObligations.has(sessionRef));
   const reconciliationStorageBlocked = useThreadsStore((s) => s.mutationReconciliationStorageBlocked.has(sessionRef));
   const refusedId = useThreadsStore((s) => s.transientRefusalPaces.get(sessionRef)?.clientMutationId);
+  // The delivery-uncertain escape's gate: per row, how many of that row's fate
+  // checks have failed (Retry presses that could not decide its delivery,
+  // resume drives that died while it stood). Read as one map so each row reads
+  // its own count.
+  const uncertainRecheckFailures = useThreadsStore((s) => s.uncertainRecheckFailures);
   const editableEntries = useEditableQueuedMutationEntries(sessionRef);
   const editableIds = new Set(editableEntries.map((record) => record.clientMutationId));
   const pendingQueueEntries = usePendingTurnEntries(sessionRef, "queue").filter(
@@ -552,7 +559,7 @@ export function QueueStrip({
     }
   }
 
-  async function handleCopy(record: MutationRecoveryRecord): Promise<void> {
+  async function handleCopy(record: MutationOutboxRecord): Promise<void> {
     setRowBusy(record.clientMutationId, true);
     try {
       const { text, skillNames, commandNames } = recordContent(record);
@@ -563,6 +570,23 @@ export function QueueStrip({
       toasts.push("success", "Copied message");
     } catch (error) {
       toasts.push("error", `Couldn't copy message: ${errorText(error)}`);
+    } finally {
+      setRowBusy(record.clientMutationId, false);
+    }
+  }
+
+  // The deliberate discard of a delivery-uncertain row: its fate has stayed
+  // uncheckable across repeated failed checks, so the user is choosing to stop
+  // tracking it despite the possibility it already landed. The storage layer's
+  // own policy (blockedUnknown only, same identity and stop-epoch fences as
+  // remove) is the safety net under this press.
+  async function handleUncertainDiscard(record: MutationOutboxRecord): Promise<void> {
+    setRowBusy(record.clientMutationId, true);
+    try {
+      const discarded = await discardUncertainPendingTurn(record.clientMutationId, sessionRef);
+      if (!discarded) toasts.push("error", "Couldn't discard this message: it changed just now. Nothing was removed.");
+    } catch (error) {
+      toasts.push("error", sessionActionError("Couldn't discard this message", error));
     } finally {
       setRowBusy(record.clientMutationId, false);
     }
@@ -699,6 +723,12 @@ export function QueueStrip({
           const rowBusy = busyEntryIds.has(record.clientMutationId);
           const retryError = retryErrors.get(record.clientMutationId);
           const hubRefused = kind === "waiting" && record.clientMutationId === refusedId;
+          // The delivery-uncertain escape's unlock, per row: only once THIS
+          // row's own fate checks have failed past the threshold. A sibling
+          // row's misfortune never unlocks this row's discard.
+          const uncertainEscape =
+            kind === "blocked" &&
+            (uncertainRecheckFailures.get(record.clientMutationId) ?? 0) >= UNCERTAIN_DISCARD_THRESHOLD;
           if (kind === "blocked" || kind === "canceled" || kind === "waiting") {
             // Delivery-uncertain rows and Stop-canceled rows share one slot
             // (stop-cancellation-outbox §6 Display): both are this client's
@@ -729,6 +759,13 @@ export function QueueStrip({
                   {" — "}
                   <span>{recordPreview(record)}</span>
                   {retryError !== undefined && <span role="alert">{retryError}</span>}
+                  {uncertainEscape && (
+                    <span className={CLASS.rowReason} data-testid="uncertain-discard-warning">
+                      {" "}
+                      — delivery could not be confirmed after repeated checks. This message may already have been
+                      delivered; discarding this record will not unsend it.
+                    </span>
+                  )}
                 </span>
                 <div className={CLASS.rowActions}>
                   {canEditQueuedMessage(record) && (
@@ -748,6 +785,25 @@ export function QueueStrip({
                       variant="danger"
                       disabled={rowBusy || busy}
                       onClick={() => void handleLocalAction(record, "remove")}
+                    />
+                  )}
+                  {uncertainEscape && (
+                    <IconButton
+                      label="Copy message"
+                      icon={<span aria-hidden="true">⧉</span>}
+                      size="sm"
+                      disabled={rowBusy}
+                      onClick={() => void handleCopy(record)}
+                    />
+                  )}
+                  {uncertainEscape && (
+                    <IconButton
+                      label="Discard message"
+                      icon={<span aria-hidden="true">✕</span>}
+                      size="sm"
+                      variant="danger"
+                      disabled={rowBusy}
+                      onClick={() => void handleUncertainDiscard(record)}
                     />
                   )}
                   {kind !== "waiting" && (

@@ -73,3 +73,12 @@ export function canEditQueuedMessage(record: MutationOutboxRecord): boolean {
 export function canRemoveQueuedMessage(record: MutationOutboxRecord): boolean {
   return isSafelyWaiting(record) && PENDING_TURN_METHODS.includes(record.method);
 }
+
+// The delivery-uncertain escape hatch's policy: the one row state neither
+// edit nor remove may ever take (its attempt outcome is unknown, so a hand
+// edit or blind delete could double-send) but the deliberate discard - the
+// store's last resort after repeated failed fate checks, offered beside a
+// may-already-be-delivered warning - exists for.
+export function canDiscardUncertainMessage(record: MutationOutboxRecord): boolean {
+  return record.state === "blockedUnknown";
+}

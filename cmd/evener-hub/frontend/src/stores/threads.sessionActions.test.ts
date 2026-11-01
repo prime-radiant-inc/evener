@@ -26,6 +26,7 @@ import {
   pendingTurnEntries,
   refreshPendingTurnsProjection,
   resetPendingTurnsStoreForTests,
+  retryBlockedPendingTurn,
 } from "../panes/session/composer/queue/pendingTurnsStore";
 import { flushPendingTurnsProjectionForTests } from "../panes/session/composer/queue/testing/flushPendingTurnsProjection";
 import { recoveryComposerDraft } from "../panes/session/composer/recovery/recoveryDraft";
@@ -46,6 +47,7 @@ import {
 } from "./testing/stalledIndexedDB";
 import {
   discardRecoveryMutation,
+  discardUncertainMutation,
   hasBlockedUnknown,
   hasQueuedNonSend,
   installBackpressureRetrySchedulerForTests,
@@ -2184,6 +2186,51 @@ test.each([false, true])(
     );
   },
 );
+
+// The delivery-uncertain escape hatch's store contract: every failed
+// opportunity to check a blocked row's fate (a Retry press that still cannot
+// decide it, a resume drive that died while the row stands) grows that row's
+// own counter; below the threshold the deliberate discard refuses, and once
+// the row's fate has stayed unknown across repeated checks the unlocked
+// discard removes the durable row - with the count clearing with the row.
+test("repeatedly uncheckable delivery unlocks the uncertain discard and removes the row", async () => {
+  const ref = "local:uncertain-discard";
+  const storage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(storage);
+  const row = await storage.enqueueIntent({
+    targetRef: ref,
+    threadId: `thr_${ref}`,
+    method: "turn/queue",
+    payload: { ref, input: [{ type: "text", text: "fate unknown" }] },
+    attachments: [],
+    optimisticDisplay: { text: "fate unknown" },
+  });
+  await storage.markAttempted(row.clientMutationId);
+  await storage.markUnknown(row.clientMutationId, "blockedUnknown");
+  const fake = connectFakeClient();
+  // Non-authoritative snapshots cannot prove the row's fate either way, so the
+  // Retry press cannot settle it.
+  fake.on("thread/read", () => {
+    const response = readResponse(ref);
+    response.thread.evener.mutationStateAuthoritative = false;
+    return response;
+  });
+  await threadsStore.getState().ensureThread(ref);
+  await flushIndexedDBUntil(() => false);
+  // Two failed checks, one per press.
+  await retryBlockedPendingTurn(row.clientMutationId, ref);
+  expect(threadsStore.getState().uncertainRecheckFailures.get(row.clientMutationId)).toBe(1);
+  // Below the threshold the deliberate discard refuses and the row stands.
+  expect(await discardUncertainMutation(row.clientMutationId, ref)).toBe(false);
+  expect(await storage.getOutbox(row.clientMutationId)).toMatchObject({ state: "blockedUnknown" });
+  await retryBlockedPendingTurn(row.clientMutationId, ref);
+  expect(threadsStore.getState().uncertainRecheckFailures.get(row.clientMutationId)).toBe(2);
+  // The unlocked discard removes the durable row, and the count clears with
+  // it.
+  expect(await discardUncertainMutation(row.clientMutationId, ref)).toBe(true);
+  expect(await storage.getOutbox(row.clientMutationId)).toBeUndefined();
+  expect(threadsStore.getState().uncertainRecheckFailures.has(row.clientMutationId)).toBe(false);
+});
 
 test("a healthy authoritative refresh releases the fence after refused force stop", async () => {
   const ref = "local:healthy-owner";

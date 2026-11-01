@@ -9,9 +9,13 @@ Controls follow that ownership, not the preview text or connection status.
   including while offline. Stop-canceled messages keep **Retry** as well.
 - Edit moves the exact durable identity into recovery before opening it in the
   composer. Remove deletes only that identity. Identical previews remain distinct.
-- Attempted, accepted, delivery-uncertain and legacy records with unknown attempt
-  history do not gain these local controls. Accepted daemon queue actions and
-  delivery-uncertain Retry keep their existing rules.
+- Attempted, accepted and legacy records with unknown attempt history do not
+  gain these local controls. Accepted daemon queue actions and
+  delivery-uncertain Retry keep their existing rules. A delivery-uncertain
+  record gains **Copy message** and a deliberate **Discard message** only
+  after repeated failed delivery checks, beside a warning that the message may
+  already have been delivered. Discard removes the local record only; it never
+  unsends an accepted message.
 - Promotion and input-empty drain commands offer Remove only. Editing a
   content-bearing drain restores its composer input, not the daemon queue preview.
 - Unattempted rows appear once in QueueStrip, not also in optimistic send chips
@@ -23,6 +27,8 @@ flowchart LR
   Local[Local unsent identity] -->|Edit transaction| Recovery[Durable editing recovery]
   Local -->|Remove transaction| Removed[Removed identity]
   Local -->|Transport attempt| Flight[In flight, no local Edit or Remove]
+  Flight -->|Attempt outcome unknown| Uncertain[Delivery uncertain, Retry only]
+  Uncertain -->|Repeated failed checks| Escape[Copy plus deliberate Discard]
   Recovery -->|Merge into occupied draft| Owner[One durable recovery owner]
   Owner -->|Send transaction| Fresh[Fresh mutation identity]
   Fresh -->|Newer Stop| Held[Canceled, explicit Retry required]
@@ -204,7 +210,8 @@ duplicate; only a reproduced identity/projection case can establish that cause.
 - Shared policy and composition: `appwire-client/typescript/state/mutation` and
   the shared composer helpers. These do not authorize transport.
 - Browser transactions: `cmd/evener-hub/frontend/src/stores/mutationOutboxIndexedDB.ts`.
-- Browser identity checks and dispatch: `cmd/evener-hub/frontend/src/stores/threads.ts`.
+- Browser identity checks, dispatch, resume-retry pacing and the
+  repeated-failure discard gate: `cmd/evener-hub/frontend/src/stores/threads.ts`.
 - Projection and presentation membership: `composer/queue/pendingTurnsStore.ts`.
   Presentation filtering does not change submission routing.
 - Pane lifetime and durable recovery owner: `composer/sourceState.ts`.

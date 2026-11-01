@@ -194,7 +194,11 @@ resending, and retry the original operation when authoritative state establishes
 that it was not accepted. Preserve stop epochs, stale-client rejection and
 explicit Stop or cancel holds. Unknown outcomes require reconciliation, not
 blind replay. Empty or fully settled outboxes need no added recovery polling.
-Implementation remains pending.
+One browser-side bound is implemented: a failed send-resumes resume drive is
+retried automatically with capped backoff while the restart obligation stands,
+and a delivery-uncertain row that repeatedly fails its delivery checks gains a
+deliberate Discard beside a may-already-be-delivered warning. Native
+convergence itself remains pending.
 
 **Acceptance.** Queue input, leave for Board, reconnect, fail the first proof
 read through a prolonged outage, then let reads succeed without another event.

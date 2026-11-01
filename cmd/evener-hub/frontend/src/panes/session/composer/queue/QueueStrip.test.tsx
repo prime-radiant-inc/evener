@@ -142,7 +142,7 @@ async function seedRecovery(
   return recovery;
 }
 
-async function seedBlockedUnknown(text: string, input?: InputItem[]): Promise<void> {
+async function seedBlockedUnknown(text: string, input?: InputItem[]): Promise<string> {
   const storage = new MutationOutboxIndexedDB();
   const items = input ?? [{ type: "text", text }];
   const outbox = await storage.enqueueIntent({
@@ -156,6 +156,7 @@ async function seedBlockedUnknown(text: string, input?: InputItem[]): Promise<vo
   await storage.markUnknown(outbox.clientMutationId, "blockedUnknown");
   storage.close();
   await refreshPendingTurnsProjection("ref_a");
+  return outbox.clientMutationId;
 }
 
 // The durable Stop cancellation, seeded through the same real write every
@@ -508,6 +509,71 @@ describe("durable recovery rows", () => {
     renderStrip(defaultProps());
     const retry = await screen.findByRole("button", { name: "Retry" });
     expect(isDisabled(retry)).toBe(true);
+  });
+
+  // The delivery-uncertain escape hatch: while its fate might still be
+  // checked, an uncertain row keeps only Retry. Once delivery has stayed
+  // uncheckable across repeated failed checks (the store's counter passing the
+  // discard threshold), the row gains Copy - the full text stays salvageable -
+  // and the deliberate Discard beside a warning that the message may already
+  // have been delivered; pressing it removes the row.
+  test("an uncertain row offers Copy and Discard after repeated failed delivery checks", async () => {
+    const fake = connectFakeClient();
+    await hydrate(fake, "ref_a", { status: { type: "idle" } });
+    const uncertainRowId = await seedBlockedUnknown("fate unknown");
+    renderStrip(defaultProps());
+    const row = await findRow("blocked");
+    expect(within(row).queryByRole("button", { name: "Discard message" })).toBeNull();
+    expect(within(row).queryByRole("button", { name: "Copy message" })).toBeNull();
+    expect(within(row).queryByTestId("uncertain-discard-warning")).toBeNull();
+    // One failed check is not enough: the row's honest reconciliation attempts
+    // come first.
+    act(() => threadsStore.setState({ uncertainRecheckFailures: new Map([[uncertainRowId, 1]]) }));
+    expect(within(row).queryByRole("button", { name: "Discard message" })).toBeNull();
+    // Repeatedly uncheckable delivery unlocks the escape.
+    act(() => threadsStore.setState({ uncertainRecheckFailures: new Map([[uncertainRowId, 2]]) }));
+    const discard = await within(row).findByRole("button", { name: "Discard message" });
+    expect(within(row).getByRole("button", { name: "Copy message" })).toBeTruthy();
+    expect(within(row).getByTestId("uncertain-discard-warning")).toBeTruthy();
+    fireEvent.click(discard);
+    await waitFor(() => expect(queryRow("blocked")).toBeNull());
+    expect(queueStrip()).toBeNull();
+  });
+
+  // The unlock is per row: the counter holds what THIS row's fate checks
+  // accumulated, so a sibling that parked beside it - whose delivery has had
+  // none of its own checks - keeps waiting for its honest attempts and shows
+  // no escape.
+  test("an uncertain row's unlocked escape stays closed for its untouched sibling", async () => {
+    const fake = connectFakeClient();
+    await hydrate(fake, "ref_a", { status: { type: "idle" } });
+    const checkedRowId = await seedBlockedUnknown("checked row text");
+    const siblingRowId = await seedBlockedUnknown("sibling row text");
+    renderStrip(defaultProps());
+    const rowOf = async (text: string): Promise<HTMLElement> =>
+      waitFor(() => {
+        const row = screen.getByText(text).closest("li");
+        if (!row) throw new Error(`missing row for ${text}`);
+        return row;
+      });
+    const checkedRow = await rowOf("checked row text");
+    const siblingRow = await rowOf("sibling row text");
+    // The checked row's failures pass the threshold; the sibling's count is
+    // untouched, so only the checked row's escape opens.
+    act(() => threadsStore.setState({ uncertainRecheckFailures: new Map([[checkedRowId, 2]]) }));
+    expect(await within(checkedRow).findByRole("button", { name: "Discard message" })).toBeTruthy();
+    expect(within(siblingRow).queryByRole("button", { name: "Discard message" })).toBeNull();
+    expect(within(siblingRow).queryByTestId("uncertain-discard-warning")).toBeNull();
+    // The sibling's own repeated failures unlock its own escape.
+    act(() =>
+      threadsStore.setState({
+        uncertainRecheckFailures: new Map([
+          [checkedRowId, 2],
+          [siblingRowId, 2],
+        ]),
+      }),
+    );
+    expect(await within(siblingRow).findByRole("button", { name: "Discard message" })).toBeTruthy();
   });
 
   async function seedBlockedUnknownFor(targetRef: string, text: string): Promise<void> {

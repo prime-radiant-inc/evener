@@ -97,6 +97,33 @@ test.each(["delete", "commit"] as const)(
   },
 );
 
+// The escape hatch for a delivery-uncertain row: unlike removeQueuedMessage,
+// whose policy keeps attempted rows intact because their fate is unknown, this
+// op exists precisely for the row whose fate stayed unknown after repeated
+// reconciliation - and accepts ONLY that row, still owned by this caller,
+// under the same snapshot and stop-epoch fences as remove.
+test("discardUncertainMessage removes only a delivery-uncertain row it still owns", async () => {
+  const f = fixture();
+  const enqueued = await f.storage.enqueueIntent(queuedIntent());
+  await f.storage.markAttempted(enqueued.clientMutationId);
+  await f.storage.markUnknown(enqueued.clientMutationId, "blockedUnknown");
+  const blocked = await f.storage.getOutbox(enqueued.clientMutationId);
+  expect(blocked?.state).toBe("blockedUnknown");
+  const waiting = await f.storage.enqueueIntent(queuedIntent());
+  // A stale snapshot (state has moved on) and a mismatched stop epoch both
+  // refuse, exactly like remove; the row survives either refusal.
+  expect(await f.storage.discardUncertainMessage(enqueued, { stopEpoch: 0 })).toBe(false);
+  expect(await f.storage.discardUncertainMessage(blocked!, { stopEpoch: 1 })).toBe(false);
+  expect(await f.peer.getOutbox(enqueued.clientMutationId)).toMatchObject({ state: "blockedUnknown" });
+  // A safely-waiting row never qualifies: the escape is not a second remove.
+  expect(await f.storage.discardUncertainMessage(waiting, { stopEpoch: 0 })).toBe(false);
+  expect(await f.peer.getOutbox(waiting.clientMutationId)).toBeDefined();
+  // The owned uncertain row discards.
+  expect(await f.storage.discardUncertainMessage(blocked!, { stopEpoch: 0 })).toBe(true);
+  expect(await f.peer.getOutbox(enqueued.clientMutationId)).toBeUndefined();
+  expect(await f.peer.getOutbox(waiting.clientMutationId)).toBeDefined();
+});
+
 test.each(["put", "add", "delete", "commit"] as const)("resend rolls back at %s and retries", async (boundary) => {
   const f = fixture();
   const ids: string[] = [];

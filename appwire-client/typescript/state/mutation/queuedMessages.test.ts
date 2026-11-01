@@ -1,5 +1,5 @@
 import { expect, test } from "vitest";
-import { canEditQueuedMessage, canRemoveQueuedMessage } from "./queuedMessages";
+import { canDiscardUncertainMessage, canEditQueuedMessage, canRemoveQueuedMessage } from "./queuedMessages";
 import type { MutationOutboxRecord } from "./records";
 
 function queuedRecord(method: string, overrides: Partial<MutationOutboxRecord> = {}): MutationOutboxRecord {
@@ -71,6 +71,11 @@ test("queuedMessageActionsRespectOwnership", () => {
   expect(canEditQueuedMessage(contradictoryCanceledQueue)).toBe(false);
   expect(canRemoveQueuedMessage(contradictoryCanceledQueue)).toBe(false);
   expect(canEditQueuedMessage(unknownQueue)).toBe(false);
+  expect(canDiscardUncertainMessage(unknownQueue)).toBe(true);
+  expect(canDiscardUncertainMessage(canceledQueue)).toBe(false);
+  expect(canDiscardUncertainMessage(unattemptedQueue)).toBe(false);
+  expect(canDiscardUncertainMessage(attemptedQueue)).toBe(false);
+  expect(canDiscardUncertainMessage(legacyUnknownQueue)).toBe(false);
   expect(canEditQueuedMessage(legacyUnknownQueue)).toBe(false);
   expect(canEditQueuedMessage(note)).toBe(false);
   expect(canRemoveQueuedMessage(note)).toBe(false);

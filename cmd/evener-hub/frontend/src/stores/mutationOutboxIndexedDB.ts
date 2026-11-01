@@ -1,5 +1,6 @@
 import type { ComposerMention, InputItem } from "@evener/appwire-client";
 import {
+  canDiscardUncertainMessage,
   canEditQueuedMessage,
   canRemoveQueuedMessage,
   matchesQueuedMessageSnapshot,
@@ -37,6 +38,7 @@ type MutationOutboxOperation =
   | "resendRecovery"
   | "editQueuedMessage"
   | "removeQueuedMessage"
+  | "discardUncertainMessage"
   | "retargetOutbox";
 
 type VersionedMutationRecoveryRecord = MutationRecoveryRecord & { compositionRevision?: number };
@@ -951,15 +953,41 @@ export class MutationOutboxIndexedDB implements QueuedMessageStorage<MutationAtt
     });
   }
 
-  async removeQueuedMessage(expected: MutationOutboxRecord, barrier: MutationStopBarrier): Promise<boolean> {
-    return this.#write([OUTBOX_STORE, SEQUENCE_STORE], "removeQueuedMessage", async (transaction) => {
+  // The fenced delete both queued-row removals share: the row must still be
+  // the exact snapshot the caller last saw (so another tab's action is never
+  // undone blindly) and still under the stop epoch the caller captured, and
+  // only the caller's admission policy may then decide it goes. One body so
+  // the two policies built on it cannot drift apart.
+  async #deleteFencedQueuedMessage(
+    operation: MutationOutboxOperation,
+    expected: MutationOutboxRecord,
+    barrier: MutationStopBarrier,
+    admits: (record: MutationOutboxRecord) => boolean,
+  ): Promise<boolean> {
+    return this.#write([OUTBOX_STORE, SEQUENCE_STORE], operation, async (transaction) => {
       const outbox = transaction.objectStore(OUTBOX_STORE);
       const record = await requestResult<MutationOutboxRecord | undefined>(outbox.get(expected.clientMutationId));
-      if (!record || !matchesQueuedMessageSnapshot(record, expected) || !canRemoveQueuedMessage(record)) return false;
+      if (!record || !matchesQueuedMessageSnapshot(record, expected) || !admits(record)) return false;
       if ((await this.#stopEpochOf(transaction, record.targetRef)) !== barrier.stopEpoch) return false;
       await requestResult(outbox.delete(record.clientMutationId));
       return true;
     });
+  }
+
+  async removeQueuedMessage(expected: MutationOutboxRecord, barrier: MutationStopBarrier): Promise<boolean> {
+    return this.#deleteFencedQueuedMessage("removeQueuedMessage", expected, barrier, canRemoveQueuedMessage);
+  }
+
+  // The delivery-uncertain escape hatch: the deliberate inverse of
+  // removeQueuedMessage's policy. remove keeps attempted rows intact because
+  // their fate is unknown and a hand edit could double-send; this op exists for
+  // the row whose fate stayed unknown after repeated reconciliation, where the
+  // store has already decided (with the user warned) to stop tracking it. It
+  // accepts ONLY a blockedUnknown row this caller still owns, under the same
+  // snapshot and stop-epoch fences, so it can never double as a back-door
+  // remove for a safely-waiting one.
+  async discardUncertainMessage(expected: MutationOutboxRecord, barrier: MutationStopBarrier): Promise<boolean> {
+    return this.#deleteFencedQueuedMessage("discardUncertainMessage", expected, barrier, canDiscardUncertainMessage);
   }
 
   async getRecovery(clientMutationId: string): Promise<MutationRecoveryRecord | undefined> {

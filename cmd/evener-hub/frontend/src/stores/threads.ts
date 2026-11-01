@@ -68,6 +68,7 @@ import {
 } from "@evener/appwire-client";
 import {
   COMPOSER_METHODS,
+  canDiscardUncertainMessage,
   canEditQueuedMessage,
   canRemoveQueuedMessage,
   DIRECT_FALLBACK_METHODS,
@@ -204,6 +205,12 @@ interface CacheLifetime {
 export interface ThreadsStoreState {
   threads: Map<string, ThreadModel>;
   mutationWriteStalled: boolean;
+  // Delivery-uncertain escape bookkeeping: per row, how many opportunities to
+  // check that row's fate have failed (a Retry press that still cannot decide
+  // it, a resume drive that died while it stood). The deliberate discard is
+  // offered only once this passes UNCERTAIN_DISCARD_THRESHOLD, so a fresh
+  // uncertain row always gets its honest reconciliation attempts first.
+  uncertainRecheckFailures: ReadonlyMap<string, number>;
   mutationReconciliationFailures: ReadonlySet<string>;
   // Reconciliation failures this page attributes to unavailable storage rather
   // than a mutation-state conflict: the same wedge that fences the durable
@@ -2116,21 +2123,30 @@ const ownedWatchedHydrations = new Map<string, OwnedHydration>();
 
 // A scheduler, not a clock: tests install a manual queue and invoke the retry
 // callback directly, so no assertion in this store's suite depends on elapsed
-// time. The returned function cancels the scheduled callback.
-type HydrationRetryScheduler = (attempt: number, retry: () => void) => () => void;
+// time. The returned function cancels the scheduled callback. Every retry pace
+// below is the same shape: the delay for attempt N is the base doubled N-1
+// times, capped at its ceiling.
+type RetryScheduler = (attempt: number, retry: () => void) => () => void;
+
+function backoffRetrySchedulerFor(baseMs: number, maxMs: number): RetryScheduler {
+  return (attempt, retry) => {
+    const delay = Math.min(maxMs, baseMs * 2 ** Math.max(0, attempt - 1));
+    const timer = setTimeout(retry, delay);
+    return () => clearTimeout(timer);
+  };
+}
 
 const HYDRATION_RETRY_BASE_MS = 500;
 const HYDRATION_RETRY_MAX_MS = 15_000;
 
-const backoffHydrationRetryScheduler: HydrationRetryScheduler = (attempt, retry) => {
-  const delay = Math.min(HYDRATION_RETRY_MAX_MS, HYDRATION_RETRY_BASE_MS * 2 ** Math.max(0, attempt - 1));
-  const timer = setTimeout(retry, delay);
-  return () => clearTimeout(timer);
-};
+const backoffHydrationRetryScheduler: RetryScheduler = backoffRetrySchedulerFor(
+  HYDRATION_RETRY_BASE_MS,
+  HYDRATION_RETRY_MAX_MS,
+);
 
-let hydrationRetryScheduler: HydrationRetryScheduler = backoffHydrationRetryScheduler;
+let hydrationRetryScheduler: RetryScheduler = backoffHydrationRetryScheduler;
 
-export function installHydrationRetrySchedulerForTests(scheduler: HydrationRetryScheduler): () => void {
+export function installHydrationRetrySchedulerForTests(scheduler: RetryScheduler): () => void {
   const previous = hydrationRetryScheduler;
   hydrationRetryScheduler = scheduler;
   return () => {
@@ -2141,28 +2157,78 @@ export function installHydrationRetrySchedulerForTests(scheduler: HydrationRetry
 // #4342's paced re-drive for a mutation the hub refused in band as transient
 // backpressure: the row stays queued, and this paces when the next attempt
 // goes out so a saturated hub is not hammered and a freed hub is re-driven
-// promptly. A scheduler, not a clock, mirroring the hydration retry's
-// injectable seam: tests install a manual queue and invoke the retry
-// directly. The returned function cancels the scheduled callback.
-type BackpressureRetryScheduler = (attempt: number, retry: () => void) => () => void;
-
+// promptly, mirroring the hydration retry's injectable seam.
 const BACKPRESSURE_RETRY_BASE_MS = 500;
 const BACKPRESSURE_RETRY_MAX_MS = 15_000;
 
-const backoffBackpressureRetryScheduler: BackpressureRetryScheduler = (attempt, retry) => {
-  const delay = Math.min(BACKPRESSURE_RETRY_MAX_MS, BACKPRESSURE_RETRY_BASE_MS * 2 ** Math.max(0, attempt - 1));
-  const timer = setTimeout(retry, delay);
-  return () => clearTimeout(timer);
-};
+const backoffBackpressureRetryScheduler: RetryScheduler = backoffRetrySchedulerFor(
+  BACKPRESSURE_RETRY_BASE_MS,
+  BACKPRESSURE_RETRY_MAX_MS,
+);
 
 let backpressureRetryScheduler = backoffBackpressureRetryScheduler;
 
-export function installBackpressureRetrySchedulerForTests(scheduler: BackpressureRetryScheduler): () => void {
+export function installBackpressureRetrySchedulerForTests(scheduler: RetryScheduler): () => void {
   const previous = backpressureRetryScheduler;
   backpressureRetryScheduler = scheduler;
   return () => {
     backpressureRetryScheduler = previous;
   };
+}
+
+// A failed Send-resumes drive is not a dead end: while the ref's restart
+// obligation stands, this owner re-drives the resume with capped backoff and
+// no attempt limit, retiring the moment one resume lands (or the fence clears
+// without it). Native's settle path already retries refused resumes for its
+// parked rows; this is the browser's owner for the same recovery, mirroring
+// the hydration and backpressure seams.
+const RESUME_RETRY_BASE_MS = 5_000;
+const RESUME_RETRY_MAX_MS = 60_000;
+
+const backoffResumeRetryScheduler: RetryScheduler = backoffRetrySchedulerFor(RESUME_RETRY_BASE_MS, RESUME_RETRY_MAX_MS);
+
+let resumeRetryScheduler = backoffResumeRetryScheduler;
+
+export function installResumeRetrySchedulerForTests(scheduler: RetryScheduler): () => void {
+  const previous = resumeRetryScheduler;
+  resumeRetryScheduler = scheduler;
+  return () => {
+    resumeRetryScheduler = previous;
+  };
+}
+
+// Per ref, the armed retry as one entry - its pace count and its cancel handle,
+// one structure, not two kept in sync. Module-side like transientRefusalCancels:
+// an imperative side-channel to timers the reactive state cannot hold. The
+// entry outlives a fired callback (its handle is dropped then) so the pace keeps
+// doubling across the loop; only retire - a landed resume, a cleared fence - may
+// reset it. The cancel handle also retires an armed retry whose fence cleared by
+// other means: the fire-time re-check retires it on the next wake rather than
+// checking on every obligation transition.
+const resumeRetries = new Map<string, { attempt: number; cancel?: () => void }>();
+
+function scheduleResumeRetryForFence(ref: string): void {
+  if (resumeRetries.get(ref)?.cancel) return;
+  const attempt = (resumeRetries.get(ref)?.attempt ?? 0) + 1;
+  const cancel = resumeRetryScheduler(attempt, () => {
+    // Drop only the handle, not the entry: the pace count persists so the
+    // next failure schedules at the next step, and the re-check below still
+    // owns retiring the whole entry when the fence is gone.
+    const fired = resumeRetries.get(ref);
+    if (fired) resumeRetries.set(ref, { attempt: fired.attempt });
+    const state = threadsStore.getState();
+    if (!state.threads.has(ref) || !state.restartBlockingObligations.has(ref)) {
+      retireResumeRetry(ref);
+      return;
+    }
+    void resumeFencedForSend(ref, true);
+  });
+  resumeRetries.set(ref, { attempt, cancel });
+}
+
+function retireResumeRetry(ref: string): void {
+  resumeRetries.get(ref)?.cancel?.();
+  resumeRetries.delete(ref);
 }
 
 // Per ref, the cancel handle of the paced retry the ref's last in-band
@@ -3214,10 +3280,14 @@ function waitForStopDrain(ref: string): Promise<void> {
   });
 }
 
-async function resumeFencedForSend(ref: string): Promise<void> {
+// `automatic` marks the retry owner's re-drive (not a user press). Its failure
+// updates the existing resumeFailures record in place - without a new seq - so
+// the press surface toasts the press's own failure once and the paced retries
+// behind it stay quiet.
+async function resumeFencedForSend(ref: string, automatic = false): Promise<void> {
   const existing = inFlightResumes.get(ref);
   if (existing !== undefined) return existing;
-  const drive = runResumeFencedForSend(ref);
+  const drive = runResumeFencedForSend(ref, automatic);
   inFlightResumes.set(ref, drive);
   try {
     await drive;
@@ -3226,7 +3296,7 @@ async function resumeFencedForSend(ref: string): Promise<void> {
   }
 }
 
-async function runResumeFencedForSend(ref: string): Promise<void> {
+async function runResumeFencedForSend(ref: string, automatic: boolean): Promise<void> {
   // Hoisted for the catch: which identity this drive reached, what its first
   // retarget moved, whether a Stop won the identity fence, and whether this
   // drive registered a swap (it only does when the resume changed the ref).
@@ -3318,7 +3388,9 @@ async function runResumeFencedForSend(ref: string): Promise<void> {
       }));
     }
     // The drive succeeded: drop any earlier failure for this ref so a later
-    // composer mount does not re-toast a superseded one.
+    // composer mount does not re-toast a superseded one, and retire the retry
+    // owner - one landed resume is the whole recovery.
+    retireResumeRetry(ref);
     threadsStore.setState((state) => {
       if (!state.resumeFailures.has(ref)) return {};
       const resumeFailures = new Map(state.resumeFailures);
@@ -3338,14 +3410,31 @@ async function runResumeFencedForSend(ref: string): Promise<void> {
     }
     if (swapRegistered) endResumeSwap(ref);
     const message = error instanceof Error ? error.message : String(error);
-    resumeFailureSeq += 1;
-    threadsStore.setState((state) => ({
-      resumeFailures: new Map(state.resumeFailures).set(ref, {
-        seq: resumeFailureSeq,
-        message,
-        stopCanceled: error instanceof StopCanceledError,
-      }),
-    }));
+    const stopCanceled = error instanceof StopCanceledError;
+    // An automatic retry's failure keeps the record - and its seq, the press
+    // surface's toast identity - updating only what it learned. A press's own
+    // failure (or the first failure after a success cleared the record) is
+    // the one that mints a new record and a new seq. The seq is read and
+    // minted outside the setter so the updater stays pure.
+    const existing = threadsStore.getState().resumeFailures.get(ref);
+    const seq = automatic && existing !== undefined ? existing.seq : ++resumeFailureSeq;
+    threadsStore.setState((state) => {
+      const resumeFailures = new Map(state.resumeFailures);
+      resumeFailures.set(ref, { seq, message, stopCanceled });
+      return { resumeFailures };
+    });
+    // A Stop that won is the user's own reversal of this drive - re-driving it
+    // would fight the Stop - so only every other failure keeps the retry owner
+    // armed while the obligation stands. The fire-time re-check retires the
+    // retry if the fence cleared some other way first.
+    if (!stopCanceled) scheduleResumeRetryForFence(ref);
+    // Either way the drive failed while the ref holds delivery-uncertain rows:
+    // the resume was the reconciliation's precondition, so each standing row
+    // just survived one more failed opportunity to check its fate. Counted per
+    // row, so a row that parked later still earns its own escape.
+    for (const clientMutationId of blockedUnknownIdsOf(ref)) {
+      noteUncertainRecheckFailure(clientMutationId);
+    }
   }
 }
 
@@ -3634,6 +3723,65 @@ export async function removeQueuedMutation(clientMutationId: string, targetRef: 
   noteMutationStateChange(targetRef);
   notifyMutationPersistence([targetRef]);
   return removed;
+}
+
+// How many failed opportunities to check a delivery-uncertain row's fate stand
+// before the deliberate discard is offered. Two keeps a fresh uncertain row's
+// honest reconciliation attempts first: one Retry that proves nothing is a
+// transient answer, two in a row means the system genuinely cannot check it.
+export const UNCERTAIN_DISCARD_THRESHOLD = 2;
+
+// One more failed opportunity to check a row's fate: a Retry press that still
+// cannot decide its delivery, or a resume drive that died while it stood (the
+// resume was the reconciliation's precondition). Keyed by the row, so every
+// uncertain row earns its own escape and a sibling's misfortune never unlocks
+// this row's discard.
+export function noteUncertainRecheckFailure(clientMutationId: string): void {
+  threadsStore.setState((state) => {
+    const uncertainRecheckFailures = new Map(state.uncertainRecheckFailures);
+    uncertainRecheckFailures.set(clientMutationId, (uncertainRecheckFailures.get(clientMutationId) ?? 0) + 1);
+    return { uncertainRecheckFailures };
+  });
+}
+
+// The projection's cleanup: a failure count belongs to a row that still stands
+// uncertain. One that settled (or was discarded) takes its count with it, so a
+// NEW uncertain row starts its own honest reconciliation attempts.
+export function clearUncertainRecheckFailure(clientMutationId: string): void {
+  threadsStore.setState((state) => {
+    if (!state.uncertainRecheckFailures.has(clientMutationId)) return {};
+    const uncertainRecheckFailures = new Map(state.uncertainRecheckFailures);
+    uncertainRecheckFailures.delete(clientMutationId);
+    return { uncertainRecheckFailures };
+  });
+}
+
+// The delivery-uncertain escape hatch's store action: the deliberate discard
+// of a row whose fate stayed unknown after repeated failed checks. Gated on
+// the row's own threshold count, the same identity fence as remove, and the
+// storage op's own blockedUnknown-only policy - this is not a second remove,
+// and it never resends anything. Removing the record only stops tracking it:
+// if the send was actually delivered it stays delivered, which is exactly why
+// the surface offers it with that warning.
+export async function discardUncertainMutation(clientMutationId: string, targetRef: string): Promise<boolean> {
+  const runtime = requireMutationRuntime();
+  if ((threadsStore.getState().uncertainRecheckFailures.get(clientMutationId) ?? 0) < UNCERTAIN_DISCARD_THRESHOLD) {
+    return false;
+  }
+  const capture = runtime.storage.getOutboxWithStopEpoch(clientMutationId);
+  await runtime.start;
+  const { record, stopEpoch } = await capture;
+  if (!record || !canDiscardUncertainMessage(record) || !localMutationIdentityMatches(record, targetRef)) {
+    return false;
+  }
+  const discarded = await runtime.storage.discardUncertainMessage(record, { stopEpoch });
+  if (discarded) {
+    noteHandledMutation(clientMutationId);
+    clearUncertainRecheckFailure(clientMutationId);
+  }
+  noteMutationStateChange(targetRef);
+  notifyMutationPersistence([targetRef]);
+  return discarded;
 }
 
 interface QueuedMutationProjection {
@@ -4358,6 +4506,10 @@ interface ResumeOnlyProjection {
   // this is true, per ref.
   isLoaded(ref: string): boolean;
   hasBlockedUnknown(ref: string): boolean;
+  // The standing delivery-uncertain rows' clientMutationIds - the escape
+  // counter's input, so each standing row can be counted on its own. Unsorted:
+  // no consumer of these ids needs an order.
+  blockedUnknownIds(ref: string): string[];
   // Queued non-turn/start rows (still "submitting", attempted or not): a
   // turn/start queued behind one starves at the target's FIFO, so a ref holding
   // one is not foldable.
@@ -4406,6 +4558,16 @@ export function hasBlockedUnknown(ref: string): boolean {
   return (
     resumeOnlyProjection === null || !resumeOnlyProjection.isLoaded(ref) || resumeOnlyProjection.hasBlockedUnknown(ref)
   );
+}
+
+// The standing delivery-uncertain rows of a loaded ref, as the pending-turns
+// projection last published them - each row's clientMutationId, unsorted.
+// Unlike hasBlockedUnknown this is an enumeration, not a fence predicate: an
+// unloaded ref yields no ids rather than "unknown", so a caller counts only
+// the rows the published read can actually name.
+export function blockedUnknownIdsOf(ref: string): string[] {
+  if (resumeOnlyProjection === null || !resumeOnlyProjection.isLoaded(ref)) return [];
+  return resumeOnlyProjection.blockedUnknownIds(ref);
 }
 
 // Whether ref's durable outbox holds a queued non-turn/start row (still
@@ -7166,6 +7328,7 @@ function replaceThread(
 export const threadsStore = createStore<ThreadsStoreState>(() => ({
   threads: new Map(),
   mutationWriteStalled: false,
+  uncertainRecheckFailures: new Map(),
   mutationReconciliationFailures: new Set(),
   mutationReconciliationStorageBlocked: new Set(),
   restartBlockingObligations: new Map(),
@@ -8829,6 +8992,8 @@ export function resetThreadsStoreForTests(): void {
   dispatchableMutationRefs.clear();
   for (const cancelRetry of transientRefusalCancels.values()) cancelRetry();
   transientRefusalCancels.clear();
+  for (const retry of resumeRetries.values()) retry.cancel?.();
+  resumeRetries.clear();
   dispatchReadyClient = null;
   dispatchReadyEpoch = -1;
   refCounts.clear();
