@@ -13,7 +13,7 @@
 import subagentCalls from "../../../agent/testdata/subagentwire/calls.json?raw";
 import subagentOutcomes from "../../../agent/testdata/subagentwire/outcomes.json?raw";
 import type { ItemModel, ThreadModel } from "../model";
-import { hydrateThread } from "../reducer";
+import { hydrateThread } from "../transcriptHistory";
 import type { JobsListResponse, SessionDelegatesResponse, Thread, ThreadItem } from "../types.gen";
 import { wireThread } from "./notifications";
 

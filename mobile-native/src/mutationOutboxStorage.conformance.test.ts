@@ -4,18 +4,13 @@
 // (cmd/evener-hub/frontend/src/stores/mutationOutboxIndexedDB.conformance.test.ts).
 // One set of contracts, two hosts.
 import { describeMutationOutboxStorage } from "@evener/appwire-client/testing/mutationOutboxStorageConformance";
-import { afterEach, vi } from "vitest";
+import { afterEach } from "vitest";
 import { MutationOutboxSQLite, TABLES } from "./mutationOutboxStorage";
 import { openSqliteSyncDouble, type SqliteDoubleDatabase } from "./sqliteSync.testkit";
 
 // The adapter's default id source is expo-crypto, which is unavailable outside
 // a device or simulator; the injected createMutationId above is what the
 // contracts use, but the constructor still resolves the default source.
-vi.mock("expo-crypto", () => ({
-	randomUUID: () => "expo-crypto-mock",
-	getRandomValues: (array: Uint8Array) => array,
-}));
-
 const databases: SqliteDoubleDatabase[] = [];
 afterEach(() => {
 	for (const database of databases.splice(0)) database.close();

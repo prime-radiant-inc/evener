@@ -317,6 +317,8 @@ export interface TranscriptRepositoryBinding {
   reconcile?: () => void;
   /** Read-only, deadline-owned transport ports for end disposition and final retirement. */
   readHistory?: (held?: SnapshotIdentity, signal?: AbortSignal) => Promise<ThreadReadResponse>;
+  /** Only accepted readHistory responses, never local/cache publication or caller-owned hydration. */
+  onHistoryReadAccepted?: (response: ThreadReadResponse, model: ThreadModel) => void;
   readHistoryPage?: (request: {
     snapshot: SnapshotIdentity;
     cursor: string;
@@ -740,6 +742,9 @@ export class TranscriptRepository {
               )
             : hydrated;
         })();
+    // Local overlay preservation must not turn a rejected server read into
+    // accepted history or recovery authority.
+    if (candidate === before) return false;
     if (request.preserveEnded && before?.overlay) {
       for (const item of Object.values(before.overlay)) {
         if (item.kind !== "notice" && (!item.roundId || !this.#endClaims.has(item.roundId))) continue;
@@ -757,7 +762,6 @@ export class TranscriptRepository {
         );
       }
     }
-    if (candidate === before) return false;
     this.#model = candidate;
     const previousHistory = before?.history;
     const acceptedHistory = candidate.history;
@@ -1341,6 +1345,64 @@ export class TranscriptRepository {
     });
   }
 
+  /**
+   * The most recent window of expected items holds real bodies: every
+   * expected item in the window has a displayed counterpart that is not
+   * identity-only. A model that expects identities it holds only
+   * identity-only — reclaimed rows a pane came to restore — does not, even
+   * when a live update has published a resident tail above them. A model
+   * with no expected items expects nothing, so it is missing nothing.
+   */
+  holdsBodiedForegroundWindow(): boolean {
+    const model = this.#model;
+    if (!model) return false;
+    const historyTurns = model.history?.turns;
+    const expected = (historyTurns !== undefined && historyTurns.length > 0 ? historyTurns : model.turns)
+      .flatMap((turn) => turn.items)
+      .slice(-200);
+    if (expected.length === 0) return true;
+    const displayed = new Map(
+      model.turns.flatMap((turn) => turn.items.map((item) => [item.transcriptKey ?? item.id, item] as const)),
+    );
+    return expected.every((item) => {
+      const restored = displayed.get(item.transcriptKey ?? item.id);
+      return restored !== undefined && !encodeTranscriptItem(restored).identityOnly;
+    });
+  }
+
+  /**
+   * The accepted source window expects no items at all: every expected turn
+   * carries zero items - the shape an in-progress turn with nothing recorded
+   * yet has, not only a zero-turn thread. Such a window never creates the
+   * foreground start the resident-range check requires - only a published
+   * item moves that floor - so it has nothing to restore and nothing a local
+   * open could add. But emptiness alone is not evidence: an unverified cache
+   * shell seeds empty turns from metadata before any source read succeeds,
+   * and rows that disappeared between the metadata lookup and the
+   * restoration are indistinguishable from a genuinely empty transcript. So
+   * only an accepted source read that named an empty window establishes it -
+   * the same provenance openLocal's provenEmptySourceWindow requires
+   * (#coverageReadId set, and a read whose coverage named no rows). And the
+   * expectation it judges is the RECORDED history: an accepted read can
+   * carry history.turns = [] while live overlays contribute display turns,
+   * and those overlay turns are not recorded history to restore - the same
+   * history-first `??` ordering the resident-range and window checks use.
+   * The window check already treats an empty expectation as missing
+   * nothing; this is its range-side complement.
+   */
+  expectsEmptyForegroundWindow(): boolean {
+    if (this.#disposed || this.#invalidated) return false;
+    const model = this.#model;
+    if (!model) return false;
+    const expected = model.history?.turns ?? model.turns;
+    return (
+      expected.every((turn) => turn.items.length === 0) &&
+      this.#coverageReadId !== undefined &&
+      this.#coverageStart === null &&
+      this.#coverageEnd === null
+    );
+  }
+
   attachReader(): TranscriptReader {
     let active = true;
     this.#readerCount++;
@@ -1753,6 +1815,7 @@ export class TranscriptRepository {
         })
       )
         throw new Error("final read was discarded");
+      if (current() && this.#model) this.#binding.onHistoryReadAccepted?.(response, this.#model);
       this.#sealed = true;
       await this.settled(false);
       if (!current()) return { kind: "cancelled" };
@@ -1920,6 +1983,7 @@ export class TranscriptRepository {
       !this.acceptRead(response, { lifetime: this.#binding.lifetime, readId: boundary, boundary, preserveEnded: true })
     )
       throw new Error("end disposition read was discarded");
+    if (current() && this.#model) this.#binding.onHistoryReadAccepted?.(response, this.#model);
     cover(this.#readItems(response));
     const minimum = anchors[0];
     let cursor = response.olderCursor;

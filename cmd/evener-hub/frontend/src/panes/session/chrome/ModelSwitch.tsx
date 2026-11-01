@@ -11,10 +11,10 @@
 //
 // reasoningEffortLevels/supportsReasoning need no special handling here:
 // StatusRow already re-renders from the live ThreadModel on every store
-// change, so once thread/model/changed lands (protocol/reducer.ts's own
-// case, which updates the reasoning ladder alongside modelProvider/model),
-// the existing ReasoningEffortControl picks up the new model's profile
-// for free.
+// change, so once thread/model/changed lands (appwire-client/typescript/
+// reducer.ts's own case, which updates the reasoning ladder alongside
+// modelProvider/model), the existing ReasoningEffortControl picks up the new
+// model's profile for free.
 
 import type { ThreadModel } from "@evener/appwire-client";
 import { sessionActionError } from "@evener/appwire-client";
@@ -39,11 +39,14 @@ export function ModelSwitch({ sessionRef, model }: ModelSwitchProps) {
   // app_threadread.go's pastEntryThread) and resumes the session behind
   // thread/model/set when it has to (app_model.go's setThreadModelWithResume),
   // so a user never has to know whether their session is "running" to pick its
-  // next model. The turn-in-flight refusal stays where it belongs - the daemon
-  // answers Conflict for a switch mid-turn (server/appwire_thread_settings.go's
-  // handleAppThreadModelSet) and handlePick surfaces that as a toast. Gating on
-  // a client-side turn predicate here made the client guess at an answer only
-  // the daemon has, and it took the switch away from every cold session too.
+  // next model. A pick made while a turn runs is accepted and queued by the
+  // session for the turn boundary (agent/session.go's SetModel queue path), so
+  // the next turn - typically the message being typed - runs on it; the label
+  // keeps showing the running turn's model until thread/model/changed lands
+  // from the boundary. A genuinely refused pick (unknown model, unresolvable
+  // ref) still surfaces as a toast from handlePick. Gating on a client-side
+  // turn predicate here made the client guess at an answer only the daemon has,
+  // and it took the switch away from every cold session too.
   const disabled = !model.capabilities.changeModel;
   const currentModelLabel = modelLabel(model.modelProvider, model.model);
 

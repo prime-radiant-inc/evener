@@ -10,6 +10,9 @@ import (
 )
 
 func (r *hubRelay) readThread(ctx context.Context, source appsource.Source, params appwire.ThreadReadParams) (*hubThreadReadResult, error) {
+	if r.cfg.RelayHooks.BeforeReadThread != nil {
+		r.cfg.RelayHooks.BeforeReadThread()
+	}
 	needsRelay := params.Subscribe || relayOnThreadRead(source)
 	relaySource, atomic := source.(appsource.RelaySessionSource)
 	if !atomic || !needsRelay {

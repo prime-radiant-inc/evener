@@ -183,6 +183,7 @@ func (s *Session) recordedUserInputTurn(fallback int) int {
 // it: a closed round has ended only once the next one opens, because its
 // tools and hooks run between the two.
 func (s *Session) roundIDForModelCall() string {
+	author := s.transcriptAuthor()
 	s.mu.Lock()
 	if s.roundID != "" {
 		defer s.mu.Unlock()
@@ -193,13 +194,14 @@ func (s *Session) roundIDForModelCall() string {
 		previous = ""
 	}
 	s.roundID = identifier.MustNewRoundID()
+	s.roundAuthorship = &schema.TranscriptAuthorship{Author: author}
 	s.lastRoundID, s.lastRoundEnded = s.roundID, false
 	roundID := s.roundID
 	s.mu.Unlock()
 	if previous != "" {
 		s.emit(events.RoundEndedData{RoundID: previous})
 	}
-	s.emit(events.RoundStartedData{RoundID: roundID})
+	s.emit(events.RoundStartedData{RoundID: roundID, Authorship: s.roundTranscriptAuthorship()})
 	return roundID
 }
 
@@ -461,7 +463,7 @@ func (s *Session) deliverCommunicate(data events.CommunicateData) error {
 		s.announceFailClosed()
 		return refusal
 	}
-	rec, err := s.recordTranscriptOnlyThrough(schema.Turn{Kind: schema.TurnCommunicate, Communicate: &schema.CommunicateInfo{CallID: data.CallID, EndTurn: data.EndTurn, Message: data.Message, EndReason: data.EndReason}}, transcript.DoorSynced, transcript.PlaceSession)
+	rec, err := s.recordTranscriptOnlyThrough(schema.Turn{Kind: schema.TurnCommunicate, Authorship: s.roundTranscriptAuthorship(), Communicate: &schema.CommunicateInfo{CallID: data.CallID, EndTurn: data.EndTurn, Message: data.Message, EndReason: data.EndReason}}, transcript.DoorSynced, transcript.PlaceSession)
 	if !rec.Recorded && s.servedByDaemon() {
 		switch writer := s.attachedTranscript(); {
 		case writer != nil && writer.Closed():

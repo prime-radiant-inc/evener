@@ -1630,7 +1630,7 @@ func TestDelegateAttentionRestore_HoldsOffIdleReleaseMidWake(t *testing.T) {
 		// must count, so this pass's exit cannot drop the other pass's hold.
 		tree.holdAttentionRestore(res.DelegateID)
 	}
-	sess.drivePendingStableDelegateAttention()
+	sess.drivePendingDelegateAttention()
 	if !hookFired {
 		t.Fatal("wake pass restored nothing; fixture setup broken")
 	}

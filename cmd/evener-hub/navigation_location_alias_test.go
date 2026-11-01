@@ -1,7 +1,9 @@
 package hub
 
 import (
+	"context"
 	"fmt"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -10,6 +12,7 @@ import (
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 	"primeradiant.com/evener/hubapi"
 	"primeradiant.com/evener/identifier"
+	"primeradiant.com/evener/rendezvous"
 )
 
 const (
@@ -26,14 +29,14 @@ const (
 // continuation).
 type aliasParents map[string]string
 
-func (p aliasParents) parent(ref string) (string, string, bool) {
+func (p aliasParents) parent(_ context.Context, ref string) (string, string, error) {
 	ref = hubRefFromTreeNodeID(ref).ThreadID
-	next, ok := p[ref]
+	next := p[ref]
 	kind := "subagent"
 	if ref == aliasForkOrigID {
 		kind = "fork"
 	}
-	return next, kind, ok
+	return next, kind, nil
 }
 
 func aliasNode(id, title string, now time.Time, children ...hubcore.TreeNode) hubcore.TreeNode {
@@ -273,6 +276,14 @@ func TestNavigationLocationAliasMovesWithRootInTheSameInvalidation(t *testing.T)
 	}
 }
 
+func TestWebNavigationSubagentParentRejectsMalformedRef(t *testing.T) {
+	web := &WebServer{}
+	parent, kind, err := web.navigationSubagentParent(t.Context(), ":")
+	if err == nil || parent != "" || kind != "" {
+		t.Fatalf("malformed ancestry lookup = %q, %q, %v", parent, kind, err)
+	}
+}
+
 func TestWebNavigationSubagentParentHops(t *testing.T) {
 	root, sub, orig, cont, lone := identifier.MustNewSessionID(), identifier.MustNewSessionID(), identifier.MustNewSessionID(), identifier.MustNewSessionID(), identifier.MustNewSessionID()
 	live, dead, inproc, stale, unknown := identifier.MustNewSessionID(), identifier.MustNewSessionID(), identifier.MustNewSessionID(), identifier.MustNewSessionID(), identifier.MustNewSessionID()
@@ -306,7 +317,11 @@ func TestWebNavigationSubagentParentHops(t *testing.T) {
 		{"remote:" + sub, "", "", false},
 	}
 	for _, tc := range cases {
-		got, kind, ok := web.navigationSubagentParent(tc.ref)
+		got, kind, err := web.navigationSubagentParent(t.Context(), tc.ref)
+		if err != nil {
+			t.Fatal(err)
+		}
+		ok := got != ""
 		if got != tc.want || ok != tc.ok || (ok && kind != tc.kind) {
 			t.Errorf("navigationSubagentParent(%q) = %q, %q, %v; want %q, %q, %v", tc.ref, got, kind, ok, tc.want, tc.kind, tc.ok)
 		}
@@ -373,5 +388,129 @@ func TestNavigationLocationAliasRevisionSurvivesMemoryOverflow(t *testing.T) {
 	gone := aliasRead(t, service, aliasSubID, aliasBase(alias))
 	if gone.Status != "gone" || gone.Revision <= alias.Revision {
 		t.Fatalf("gone after overflow = %+v, want a revision past alias %d", gone, alias.Revision)
+	}
+}
+
+func TestNavigationLocationCurrentSessionUsesStableWorkspaceRow(t *testing.T) {
+	for _, crashed := range []bool{false, true} {
+		t.Run(fmt.Sprintf("crashed=%t", crashed), func(t *testing.T) {
+			stable, current, child := identifier.MustNewSessionID(), identifier.MustNewSessionID(), identifier.MustNewSessionID()
+			past := hubcore.NewPastIndex("")
+			past.SeedForTest([]schema.SessionMeta{
+				{ID: current, ProfileID: "local", UpdatedAt: time.Now().UTC()},
+				{ID: child, ProfileID: "local", IsSubagent: true, ParentSessionID: current},
+			})
+			entry := liveActivityEntry(1, current, appwire.ThreadStatusActive, nil)
+			entry.SourceID = "local"
+			entry.WorkspaceRef = "local:" + stable
+			entry.Crashed = crashed
+			web := NewWebServer(hubcore.WebConfig{Past: past, Roster: hubcore.NewRosterWithEntries(entry)})
+			t.Cleanup(func() { _ = web.appRPC.Shutdown(context.Background()) })
+			root := remoteLocationData(t, remoteLocationRead(t, web, "local:"+stable, nil))
+			if root.Session.SessionID != stable || !root.TopLevel {
+				t.Fatalf("stable workspace row = %+v", root)
+			}
+			location := remoteLocationData(t, remoteLocationRead(t, web, "local:"+current, nil))
+			if location.Ref != "local:"+current || !location.TopLevel || location.TopLevelRef != root.Ref || location.Session.Kind != "session" || location.Session.SessionID != current {
+				t.Fatalf("current identity alias = %+v, stable row = %+v", location, root)
+			}
+			nested := remoteLocationData(t, remoteLocationRead(t, web, "local:"+child, nil))
+			if nested.TopLevel || nested.TopLevelRef != root.Ref || nested.Session.Kind != "subagent" {
+				t.Fatalf("child of resumed identity = %+v", nested)
+			}
+			if gone := remoteLocationRead(t, web, "remote:"+current, nil); gone.Status != "gone" {
+				t.Fatalf("remote alias borrowed local workspace row: %+v", gone)
+			}
+		})
+	}
+}
+
+func TestNavigationLocationRosterResumeRefresh(t *testing.T) {
+	stable, current := identifier.MustNewSessionID(), identifier.MustNewSessionID()
+	runDir := t.TempDir()
+	entry := rendezvous.Entry{
+		PID: 4242, SourceID: appwire.LocalSourceID, SessionID: current, ThreadID: current,
+		WorkspaceRef: "local:" + stable, StartedAt: time.Now(),
+	}
+	writeRendezvous(t, runDir, entry)
+	var crashed atomic.Bool
+	roster := hubcore.NewRoster(runDir, forceStopProberFunc(func(e rendezvous.Entry) hubcore.ProbeResult {
+		return hubcore.ProbeResult{OK: !crashed.Load(), SessionID: e.SessionID, Status: appwire.ThreadStatusIdle}
+	})).SetProcessIdentity(func(rendezvous.Entry) hubcore.ProcessIdentity { return hubcore.ProcessNotOwner })
+	refresh := func() {
+		t.Helper()
+		if err := roster.RefreshAndWait(t.Context()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	refresh()
+	past := hubcore.NewPastIndex("")
+	past.SeedForTest([]schema.SessionMeta{{ID: current, ProfileID: "local", UpdatedAt: time.Now()}})
+	inputs := &hubcore.InputsVersion{}
+	config := hubcore.WebConfig{Past: past, Roster: roster, Inputs: inputs}
+	// The Comic fixture has two hubs observing this same roster.
+	webs := []*WebServer{NewWebServer(config), NewWebServer(config)}
+	// main.go wires this publication hook before starting the roster watcher.
+	roster.SetOnChange(func() {
+		inputs.Bump()
+		for _, web := range webs {
+			web.navigation.Invalidate(navigationChangeHint{})
+		}
+	})
+	for _, web := range webs {
+		t.Cleanup(func() { _ = web.appRPC.Shutdown(context.Background()) })
+	}
+	assertRoster := func(wantCrashed bool, wantRow string) {
+		t.Helper()
+		rows := roster.Snapshot().Live
+		if len(rows) != 1 || rows[0].SessionID != current || rows[0].Crashed != wantCrashed || rows[0].WorkspaceRef != wantRow {
+			t.Fatalf("roster = %+v, want current=%s crashed=%t row=%s", rows, current, wantCrashed, wantRow)
+		}
+	}
+	assertLocation := func(web *WebServer, wantRow string) appwire.NavigationReadResponse {
+		t.Helper()
+		response := remoteLocationRead(t, web, "local:"+current, nil)
+		location := remoteLocationData(t, response)
+		if location.Ref != "local:"+current || !location.TopLevel || location.TopLevelRef != wantRow {
+			t.Fatalf("location = %+v, want current identity at %s", location, wantRow)
+		}
+		return response
+	}
+	assertRoster(false, "local:"+stable)
+	for _, web := range webs {
+		assertLocation(web, "local:"+stable)
+	}
+	crashed.Store(true)
+	refresh()
+	assertRoster(true, "local:"+stable)
+	before := make([]appwire.NavigationReadResponse, len(webs))
+	for i, web := range webs {
+		before[i] = assertLocation(web, "local:"+stable)
+	}
+	beforeInputs := inputs.Load()
+
+	// An explicit resume replaces the crashed daemon with the same current
+	// session, now registered under its own workspace rather than the old row.
+	if err := rendezvous.RemoveIfOwned(runDir, entry); err != nil {
+		t.Fatal(err)
+	}
+	entry.PID++
+	entry.WorkspaceRef = "local:" + current
+	writeRendezvous(t, runDir, entry)
+	crashed.Store(false)
+	refresh()
+	assertRoster(false, "local:"+current)
+	if inputs.Load() <= beforeInputs {
+		t.Fatal("resume did not publish a roster input change")
+	}
+	for i, web := range webs {
+		after := remoteLocationRead(t, web, "local:"+current, aliasBase(before[i]))
+		if after.Status != "ok" || after.GenerationID != before[i].GenerationID || after.Revision <= before[i].Revision {
+			t.Fatalf("resume response = %+v, want same generation and revision after %d", after, before[i].Revision)
+		}
+		assertLocation(web, "local:"+current)
+		if gone := remoteLocationRead(t, web, "remote:"+current, nil); gone.Status != "gone" {
+			t.Fatalf("foreign ref borrowed local resumed row: %+v", gone)
+		}
 	}
 }

@@ -45,7 +45,7 @@ type hostConfigProbe struct {
 // assert the durable state directly.
 func hubTOMLHostNames(t *testing.T, configPath string) []string {
 	t.Helper()
-	cfg, err := LoadConfig(configPath)
+	cfg, err := loadWithRecords(configPath)
 	if err != nil {
 		t.Fatalf("load hub.toml: %v", err)
 	}
@@ -66,12 +66,38 @@ func storeHas(s *hostStore, name string) bool {
 	return false
 }
 
+// loadedConfig is hub.toml decoded with the reserved record sections it still
+// carries, the shape a manager keeps its records in when no operation store is
+// configured.
+type loadedConfig struct {
+	Config
+	hostRecordSet
+}
+
+func loadWithRecords(path string) (loadedConfig, error) {
+	cfg, err := LoadConfig(path)
+	if err != nil {
+		return loadedConfig{}, err
+	}
+	records, err := readLegacyRecords(path)
+	if err != nil {
+		return loadedConfig{}, err
+	}
+	return loadedConfig{Config: cfg, hostRecordSet: records}, nil
+}
+
+// hostRegistryEntries maps the file's [[hosts]] onto registry values with the
+// identities its record sections persist.
+func hostRegistryEntries(cfg loadedConfig) []hostreg.Host {
+	return hostEntriesWithIdentity(cfg.Hosts, cfg.hostRecordSet)
+}
+
 // bootHostManager mimics production boot for these tests: hub.toml loads
 // through LoadConfig, its entries build the registry, and the host manager
 // gets the same selected path.
 func bootHostManager(t *testing.T, configPath string) *hubHostManager {
 	t.Helper()
-	cfg, err := LoadConfig(configPath)
+	cfg, err := loadWithRecords(configPath)
 	if err != nil {
 		t.Fatalf("LoadConfig(%s): %v", configPath, err)
 	}
@@ -423,7 +449,7 @@ helper_version = 1
 	if err := os.WriteFile(configPath, []byte(legacy), 0o600); err != nil {
 		t.Fatalf("write hub.toml: %v", err)
 	}
-	if _, err := LoadConfig(configPath); err != nil {
+	if _, err := loadWithRecords(configPath); err != nil {
 		t.Fatalf("a hub.toml from the bootstrap build refused to load: %v", err)
 	}
 	m := bootHostManager(t, configPath)

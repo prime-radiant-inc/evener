@@ -7,7 +7,7 @@ import { act, cleanup, renderHook } from "@testing-library/react";
 import { IDBFactory, IDBObjectStore } from "fake-indexeddb";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { appliedReceipt } from "../../../../mutationReceiptTestUtils";
-import { connectionStore } from "../../../../stores/connection";
+import { connectionStore, resetConnectionStoreForTests } from "../../../../stores/connection";
 import { setMutationClientIdentityForTests } from "../../../../stores/mutationClientIdentity";
 import type { MutationOutboxRecord } from "../../../../stores/mutationOutbox";
 import { MutationOutboxIndexedDB } from "../../../../stores/mutationOutboxIndexedDB";
@@ -98,7 +98,7 @@ beforeEach(() => {
   globalThis.indexedDB = new IDBFactory();
   setMutationClientIdentityForTests(undefined);
   localStorage.clear();
-  connectionStore.setState({ state: "idle", client: null, serverInfo: undefined });
+  resetConnectionStoreForTests();
   resetThreadsStoreForTests();
   resetPendingTurnsStoreForTests();
 });

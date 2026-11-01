@@ -13,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -267,6 +268,9 @@ func TestDelegateControllerProductionIntegrationMatchesInventory(t *testing.T) {
 	if err != nil {
 		t.Fatalf("enumerate production files: %v", err)
 	}
+	production = slices.DeleteFunc(production, func(name string) bool {
+		return delegateControllerPlatformExcludedProductionFiles()[name]
+	})
 	loadedFiles := make([]string, 0, len(pkg.Syntax))
 	for _, file := range pkg.Syntax {
 		loadedFiles = append(loadedFiles, filepath.Base(pkg.Fset.Position(file.Package).Filename))
@@ -283,6 +287,15 @@ func TestDelegateControllerProductionIntegrationMatchesInventory(t *testing.T) {
 		t.Error(inventoryError)
 	}
 }
+
+// delegateControllerPlatformExcludedProductionFiles names the top-level
+// production files whose build constraints exclude the CURRENT platform, so
+// packages.Load — which loads for the host GOOS — cannot load them. The set
+// is platform-conditional (the per-GOOS files beside this one, following the
+// for other GOOS families — the process-liveness and start-time arms behind
+// the owner-liveness reporting, issue #5471. Register any new
+// build-tag-excluded top-level production file in the arm for every GOOS that
+// cannot load it, or this inventory fails on the omission.
 
 func TestDelegateControllerDormancyGuardRejectsConstructionAndAliases(t *testing.T) {
 	t.Parallel()
@@ -439,11 +452,10 @@ var delegateControllerDormancyExpectedInventory = map[delegateControllerDormancy
 	{filename: "delegate_send.go", function: "(delegateRuntime).send", kind: "lifecycle method", symbol: "BeginStartInput"}:                                                            1,
 	{filename: "delegate_send.go", function: "(delegateRuntime).send", kind: "lifecycle method", symbol: "CompleteStartInput"}:                                                         2,
 	{filename: "delegate_send.go", function: "(*delegateTreeController).finishUnlaunchedGeneration", kind: "lifecycle method", symbol: "FinishGeneration"}:                             1,
-	{filename: "delegate_send.go", function: "(delegateRuntime).send", kind: "lifecycle method", symbol: "waitForDelegateInline"}:                                                      1,
-	{filename: "delegate_send.go", function: "(delegateRuntime).stableSendFailureOutcomeAfterDispatch", kind: "lifecycle method", symbol: "waitForDelegateInline"}:                     1,
-	{filename: "delegate_attention_drive.go", function: "(*Session).driveStableDelegateAttention", kind: "lifecycle method", symbol: "ReserveAttention"}:                               1,
-	{filename: "delegate_attention_drive.go", function: "(*Session).driveStableDelegateAttention", kind: "lifecycle method", symbol: "CommitStart"}:                                    1,
-	{filename: "delegate_attention_drive.go", function: "(*Session).driveStableDelegateAttention", kind: "lifecycle method", symbol: "FailCommittedRestart"}:                           1,
+	{filename: "delegate_send.go", function: "(delegateRuntime).waitInline", kind: "lifecycle method", symbol: "waitForDelegateInline"}:                                                1,
+	{filename: "delegate_attention_drive.go", function: "(*Session).driveDelegateAttention", kind: "lifecycle method", symbol: "ReserveAttention"}:                                     1,
+	{filename: "delegate_attention_drive.go", function: "(*Session).driveDelegateAttention", kind: "lifecycle method", symbol: "CommitStart"}:                                          1,
+	{filename: "delegate_attention_drive.go", function: "(*Session).driveDelegateAttention", kind: "lifecycle method", symbol: "FailCommittedRestart"}:                                 1,
 	{filename: "delegate_attention_drive.go", function: "(*Session).reconstructDelegateAttentionRuntime", kind: "lifecycle method", symbol: "beginIdleRuntimeInstallation"}:            1,
 	{filename: "delegate_tree_attention.go", function: "(*delegateTreeController).AttachIdleRuntime", kind: "lifecycle method", symbol: "beginIdleRuntimeInstallation"}:                1,
 	{filename: "delegate_attention_drive.go", function: "(*Session).reconstructDelegateAttentionRuntime", kind: "lifecycle method", symbol: "AttachRuntime"}:                           1,
@@ -462,7 +474,7 @@ var delegateControllerDormancyExpectedInventory = map[delegateControllerDormancy
 	{filename: "session_model_call.go", function: "(*Session).prepareModelRequestWithError", kind: "lifecycle method", symbol: "BeginModelRequest"}:                                    1,
 	{filename: "session_model_call.go", function: "(*Session).prepareModelRequestWithError", kind: "lifecycle method", symbol: "CompleteModelRequest"}:                                 1,
 	{filename: "session_model_call.go", function: "(*Session).prepareModelRequestWithError", kind: "lifecycle method", symbol: "AbortModelRequest"}:                                    1,
-	{filename: "session_tools_delegate.go", function: "stableDelegateSendTool", kind: "delivery commit method", symbol: "Complete"}:                                                    1,
+	{filename: "session_tools_delegate.go", function: "delegateSendTool", kind: "delivery commit method", symbol: "Complete"}:                                                          1,
 	{filename: "session_tools.go", function: "abortDelegateToolCallDeliveryCommits", kind: "delivery commit method", symbol: "Complete"}:                                               1,
 	{filename: "session_tools.go", function: "(*Session).abortDelegateDeliveryCommits", kind: "delivery commit method", symbol: "Complete"}:                                            1,
 	{filename: "session_tools.go", function: "(*Session).queueDelegateDeliveryCommit", kind: "delivery commit method", symbol: "Complete"}:                                             1,
@@ -488,18 +500,18 @@ var delegateControllerDormancyExpectedInventory = map[delegateControllerDormancy
 	{filename: "delegate_tree_restore.go", function: "(*delegateTreeController).executeDelegateAttentionCleanup", kind: "lifecycle method", symbol: "ReportAttentionConsumed"}:         1,
 	{filename: "delegate_tree_restore.go", function: "(*delegateTreeController).executeDelegateAttentionCleanup", kind: "lifecycle method", symbol: "ReportAttentionStabilized"}:       1,
 	{filename: "delegate_tree_restore.go", function: "(*delegateTreeController).resolveDelegateAttentionDurably", kind: "session attention method", symbol: "resolveAttentionDurably"}: 1,
-	{filename: "job_shell.go", function: "(*jobManager).beginStableDelegateShellReceipt", kind: "lifecycle method", symbol: "BeginShellWork"}:                                          1,
-	{filename: "job_shell.go", function: "(*stableDelegateShellReceipt).commit", kind: "lifecycle method", symbol: "CommitShellWork"}:                                                  1,
-	{filename: "job_shell.go", function: "(*stableDelegateShellReceipt).abort", kind: "lifecycle method", symbol: "AbortShellWork"}:                                                    1,
-	{filename: "job_shell.go", function: "(*stableDelegateShellReceipt).finish", kind: "lifecycle method", symbol: "AbortShellWork"}:                                                   1,
-	{filename: "job_shell.go", function: "(*stableDelegateShellReceipt).finish", kind: "lifecycle method", symbol: "ReportShellFinished"}:                                              1,
+	{filename: "job_shell.go", function: "(*jobManager).beginDelegateShellReceipt", kind: "lifecycle method", symbol: "BeginShellWork"}:                                                1,
+	{filename: "job_shell.go", function: "(*delegateShellReceipt).commit", kind: "lifecycle method", symbol: "CommitShellWork"}:                                                        1,
+	{filename: "job_shell.go", function: "(*delegateShellReceipt).abort", kind: "lifecycle method", symbol: "AbortShellWork"}:                                                          1,
+	{filename: "job_shell.go", function: "(*delegateShellReceipt).finish", kind: "lifecycle method", symbol: "AbortShellWork"}:                                                         1,
+	{filename: "job_shell.go", function: "(*delegateShellReceipt).finish", kind: "lifecycle method", symbol: "ReportShellFinished"}:                                                    1,
 	{filename: "jobs_activity.go", function: "loadLiveActivityBase", kind: "lifecycle method", symbol: "Snapshot"}:                                                                     1,
 	{filename: "session_attention.go", function: "(*Session).acceptDelegateAttention", kind: "session attention method", symbol: "resolveAttentionDurablyForGeneration"}:               1,
 	{filename: "session_attention.go", function: "(*Session).resolveAttentionDurably", kind: "session attention method", symbol: "resolveAttentionDurablyForGeneration"}:               1,
 	{filename: "session_attention.go", function: "(*Session).finishAttentionTurn", kind: "session attention method", symbol: "resolveAttentionDurably"}:                                1,
 	{filename: "session_attention.go", function: "(*Session).finishRootDelegateAttentionTurn", kind: "session attention method", symbol: "resolveAttentionDurably"}:                    1,
 	{filename: "session_events.go", function: "(*Session).SetDescendantEventFunc", kind: "lifecycle method", symbol: "Snapshot"}:                                                       1,
-	{filename: "session_tools_job_list.go", function: "stableDelegateRowsForSession", kind: "lifecycle method", symbol: "Snapshot"}:                                                    1,
+	{filename: "session_tools_job_list.go", function: "delegateRowsForSession", kind: "lifecycle method", symbol: "Snapshot"}:                                                          1,
 	{filename: "delegate_tree_stop.go", function: "(*delegateTreeController).drainStopAbandonable", kind: "lifecycle method", symbol: "stopReconcileRequirements"}:                     1,
 	{filename: "delegate_tree_stop.go", function: "(*delegateTreeController).drainStopAbandonable", kind: "lifecycle method", symbol: "Reconcile"}:                                     1,
 }

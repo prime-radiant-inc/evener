@@ -20,7 +20,7 @@ import (
 // run, and must not hang behind the very locks a failed run may hold.
 func TestStableSupervisionFailureSnapshotCapturesPendingAttention(t *testing.T) {
 	t.Parallel()
-	fixture := newColdStableDelegateFixture(t, "")
+	fixture := newColdDelegateFixture(t, "")
 	fixture.adapter.steps = []func(llm.Request) llm.Response{
 		func(llm.Request) llm.Response { return agenttest.FinalResponse("warm result") },
 	}
@@ -87,7 +87,7 @@ func TestStableSupervisionFailureSnapshotCapturesPendingAttention(t *testing.T) 
 // lose evidence here even though the previous warm run is already quiescent.
 func TestStableSupervisionFailureSnapshotCapturesAttentionReservation(t *testing.T) {
 	t.Parallel()
-	fixture := newColdStableDelegateFixture(t, "")
+	fixture := newColdDelegateFixture(t, "")
 	fixture.adapter.steps = []func(llm.Request) llm.Response{
 		func(llm.Request) llm.Response { return agenttest.FinalResponse("warm result") },
 		func(llm.Request) llm.Response { return llm.Response{Message: llm.Assistant("no action")} },
@@ -141,7 +141,7 @@ func TestStableSupervisionFailureSnapshotCapturesAttentionReservation(t *testing
 // FinishNoAction, so the observer sees populated evidence rather than a mock.
 func TestStableSupervisionFailureSnapshotCapturesSettlementClaim(t *testing.T) {
 	t.Parallel()
-	fixture := newColdStableDelegateFixture(t, "")
+	fixture := newColdDelegateFixture(t, "")
 	fixture.adapter.steps = []func(llm.Request) llm.Response{
 		func(llm.Request) llm.Response { return agenttest.FinalResponse("warm result") },
 		func(llm.Request) llm.Response { return llm.Response{Message: llm.Assistant("no action")} },
@@ -198,7 +198,7 @@ func TestStableSupervisionFailureSnapshotCapturesSettlementClaim(t *testing.T) {
 
 func TestStableSupervisionFailureSnapshotCapturesArmRetryIDs(t *testing.T) {
 	t.Parallel()
-	fixture := newColdStableDelegateFixture(t, "")
+	fixture := newColdDelegateFixture(t, "")
 	fixture.adapter.steps = []func(llm.Request) llm.Response{
 		func(llm.Request) llm.Response { return agenttest.FinalResponse("warm result") },
 		func(llm.Request) llm.Response { return llm.Response{Message: llm.Assistant("no action")} },
@@ -271,7 +271,7 @@ func TestStableSupervisionFailureSnapshotCapturesArmRetryIDs(t *testing.T) {
 
 func TestStableSupervisionFailureSnapshotCapturesNotificationPayload(t *testing.T) {
 	t.Parallel()
-	fixture := newColdStableDelegateFixture(t, "")
+	fixture := newColdDelegateFixture(t, "")
 	fixture.adapter.steps = []func(llm.Request) llm.Response{
 		func(llm.Request) llm.Response { return agenttest.FinalResponse("warm result") },
 		func(llm.Request) llm.Response {

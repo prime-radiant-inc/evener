@@ -54,8 +54,10 @@ function keys(value: Record<string, unknown>, required: string[], optional: stri
 	valid(hasExactKeys(value, required, optional));
 }
 const text = isNonBlankText;
+/** A category's name is at most this many code points, the journal's own bound. */
+export const CATEGORY_NAME_MAX_CODE_POINTS = 80;
 function name(value: unknown) {
-	return text(value) && Array.from(value.trim()).length <= 80;
+	return text(value) && Array.from(value.trim()).length <= CATEGORY_NAME_MAX_CODE_POINTS;
 }
 function validateOperation(value: unknown): NavigationOperation {
 	const operation = record(value);

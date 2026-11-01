@@ -291,7 +291,7 @@ func TestApplyStoppedDeliverySuppressesCoveredOwnerWithoutDelivery(t *testing.T)
 	}
 }
 
-func TestFoldUsesOneAggregatePerStableDelegate(t *testing.T) {
+func TestFoldUsesOneAggregatePerDelegate(t *testing.T) {
 	events := sequence(
 		createdEvent("dlg_alpha", ""),
 		startedEvent("dlg_alpha", 1, TriggerOwnerInput),

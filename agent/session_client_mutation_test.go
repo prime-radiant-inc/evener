@@ -1204,7 +1204,7 @@ func TestRestoreSession_RestoredTranscriptIncludesClientMutationFailureRecovery(
 			}
 			entries := captured.entries
 			path := transcriptPath(restored.stateDir, restored.id)
-			onDisk, err := readTranscriptFull(path, "")
+			onDisk, err := readTranscriptFull(context.Background(), path, "")
 			if err != nil {
 				t.Fatalf("readTranscriptFull: %v", err)
 			}

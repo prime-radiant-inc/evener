@@ -98,7 +98,7 @@ type shellWaitResult struct {
 	err        error
 }
 
-type stableDelegateShellReceipt struct {
+type delegateShellReceipt struct {
 	mu         sync.Mutex
 	controller *delegateTreeController
 	token      delegateWorkToken
@@ -107,7 +107,7 @@ type stableDelegateShellReceipt struct {
 	resolved   bool
 }
 
-func (receipt *stableDelegateShellReceipt) commit(cancel context.CancelFunc) error {
+func (receipt *delegateShellReceipt) commit(cancel context.CancelFunc) error {
 	if receipt == nil {
 		return nil
 	}
@@ -127,7 +127,7 @@ func (receipt *stableDelegateShellReceipt) commit(cancel context.CancelFunc) err
 	return nil
 }
 
-func (receipt *stableDelegateShellReceipt) abort() {
+func (receipt *delegateShellReceipt) abort() {
 	if receipt == nil {
 		return
 	}
@@ -140,7 +140,7 @@ func (receipt *stableDelegateShellReceipt) abort() {
 	receipt.resolved = true
 }
 
-func (receipt *stableDelegateShellReceipt) finish() {
+func (receipt *delegateShellReceipt) finish() {
 	if receipt == nil {
 		return
 	}
@@ -516,7 +516,7 @@ func (jm *jobManager) newDelayedShell(args shellArgs) (*runningJob, error) {
 		return nil, err
 	}
 	parentJobID, parentDelegateID := jm.currentJobParent()
-	receipt, err := jm.beginStableDelegateShellReceipt(jobID)
+	receipt, err := jm.beginDelegateShellReceipt(jobID)
 	if err != nil {
 		_ = output.Close()
 		_ = jobstore.RemoveOutputArtifacts(outputPath)
@@ -561,7 +561,7 @@ func (jm *jobManager) newDelayedShell(args shellArgs) (*runningJob, error) {
 	return run, nil
 }
 
-func (jm *jobManager) beginStableDelegateShellReceipt(jobID string) (*stableDelegateShellReceipt, error) {
+func (jm *jobManager) beginDelegateShellReceipt(jobID string) (*delegateShellReceipt, error) {
 	jm.mu.Lock()
 	controller := jm.delegateController
 	lease := jm.delegateLease
@@ -573,7 +573,7 @@ func (jm *jobManager) beginStableDelegateShellReceipt(jobID string) (*stableDele
 	if err != nil {
 		return nil, err
 	}
-	return &stableDelegateShellReceipt{controller: controller, token: token, jobID: jobID}, nil
+	return &delegateShellReceipt{controller: controller, token: token, jobID: jobID}, nil
 }
 
 func (jm *jobManager) setShellSignal(run *runningJob, signal func()) {

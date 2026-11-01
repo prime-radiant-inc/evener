@@ -61,7 +61,7 @@ func jobWatchToolWithContext(ctx context.Context, s *Session, args map[string]an
 			res, err = s.configureStableWatchOnSource("parent", binding, a)
 			break
 		}
-		if source.Kind == watchSourceStableDelegate {
+		if source.Kind == watchSourceDelegate {
 			if s.delegateController == nil {
 				return "", errors.New("delegate controller is unavailable")
 			}

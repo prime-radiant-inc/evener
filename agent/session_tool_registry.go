@@ -487,7 +487,7 @@ func registerCoreTools(reg *tool.Registry, s *Session) error {
 	if err := registerJobTools(reg, s, deps); err != nil {
 		return err
 	}
-	if err := registerStableDelegateTool(reg, s); err != nil {
+	if err := registerDelegateTool(reg, s); err != nil {
 		return err
 	}
 	if s.modelSnapshot != nil {

@@ -8,7 +8,7 @@ import { useStore } from "zustand";
 import { ClientProvider } from "../../../shell/clientContext";
 import { conversationPaneLifetime } from "../../../shell/paneLifetime";
 import { type OpenPaneRecord, resetWorkspaceStoreForTests, workspaceStore } from "../../../shell/workspace";
-import { connectionStore } from "../../../stores/connection";
+import { connectionStore, resetConnectionStoreForTests } from "../../../stores/connection";
 import { activityThread, answerActivityRead } from "../../../stores/sessionActivityTestUtils";
 import { resetThreadsStoreForTests } from "../../../stores/threads";
 import { resetTranscriptDisplayStoreForTests, transcriptDisplayStore } from "../../../stores/transcriptDisplay";
@@ -190,7 +190,7 @@ test.each(["input", "close", "reset", "replacement"] as const)(
     } finally {
       mounted.unmount();
       resetWorkspaceStoreForTests();
-      connectionStore.setState({ state: "idle", client: null });
+      resetConnectionStoreForTests();
       resetThreadsStoreForTests();
       resetTranscriptPagingForTests();
       external.restore();

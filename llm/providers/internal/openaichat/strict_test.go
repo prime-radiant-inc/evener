@@ -28,3 +28,12 @@ func TestStrictifyJSONSchemaRewritesObjectsWithoutMutatingInput(t *testing.T) {
 		t.Fatal("not idempotent")
 	}
 }
+
+// A nil schema strictifies to an empty schema rather than panicking: the
+// deep copy normalizes the absent map, and the rewrite is a no-op on it.
+func TestStrictifyJSONSchemaNilSchemaIsSafe(t *testing.T) {
+	got := StrictifyJSONSchema(nil)
+	if len(got) != 0 {
+		t.Fatalf("StrictifyJSONSchema(nil) = %v, want an empty schema", got)
+	}
+}

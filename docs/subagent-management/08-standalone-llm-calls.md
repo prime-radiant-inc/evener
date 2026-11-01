@@ -49,7 +49,7 @@ Session and helper-call anchors:
 - `agent/tool_web_fetch.go`: current side call example. `webFetch` fetches content, builds a cheap-model `llm.Request`, then calls `s.client.Complete` for Q&A.
 - `agent/session_namer.go`: current bounded helper example. `nameSession` uses one cheap-model `llm.GenerateObject` call with a schema, timeout, max tokens, and usage returned in `sessionNameResult`.
 - `agent/internal/hooks/hooks.go`: prompt hooks currently adapt `*llm.Client` to a small `promptHookClient` and execute one `llm.Request` via `Complete`.
-- `agent/internal/contextmgr/fork_summarize.go`, `summarize_fold.go` / `summarizeWithLLM`, `strategy_recursive_distill.go`, `strategy_checkpoint_pred.go`, and `strategy_memory_crystals.go`: current context-management side calls for summaries/checkpoints/crystals.
+- `agent/internal/contextmgr/fork_summarize.go`, `summarize_fold.go` / `summarizeFold`, `strategy_recursive_distill.go`, `strategy_checkpoint_pred.go`, and `strategy_memory_crystals.go`: current context-management side calls for summaries/checkpoints/crystals.
 - `agent/session_tools_vision.go` / `describeImage`: current helper-like side call owned by tool execution diagnostics.
 - `cmd/llmcall/main.go`: dedicated standalone LLM-call command; it builds its client with `cmdutil.LoadClient`, the same registry-backed path every other binary uses (spec §11.3). Include it in inventory or explicitly keep it out of helper extraction if CLI behavior should remain separate.
 - `cmdutil/load_client.go`: config-driven `LoadClient` and provider-config loading. SDK helper construction should reuse or factor this behavior where appropriate, not duplicate credential/config logic in helper code.

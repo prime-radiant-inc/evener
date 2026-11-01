@@ -20,14 +20,14 @@ func TestDelegateName_LabelCarriesToCreateResultAndListings(t *testing.T) {
 	t.Parallel()
 	root, _, _ := newDelegateResourceBootstrapSession(t)
 
-	createOut, err := stableDelegateCreateTool(context.Background(), root, map[string]any{
+	createOut, err := delegateCreateTool(context.Background(), root, map[string]any{
 		"prompt": "labeled unit of work",
 		"name":   "research-label",
 	}, 1<<20)
 	if err != nil {
-		t.Fatalf("stableDelegateCreateTool: %v", err)
+		t.Fatalf("delegateCreateTool: %v", err)
 	}
-	var create stableDelegateCreateResult
+	var create delegateCreateResult
 	if err := json.Unmarshal([]byte(createOut), &create); err != nil {
 		t.Fatalf("create result JSON: %v\n%s", err, createOut)
 	}
@@ -68,17 +68,17 @@ func TestDelegateName_LabelCarriesToCreateResultAndListings(t *testing.T) {
 	}
 
 	// job_status for the delegate surfaces the label too.
-	statusValue, err := stableDelegateStatusTool(root, create.DelegateID, 1<<20)
+	statusValue, err := delegateStatusTool(root, create.DelegateID, 1<<20)
 	if err != nil {
-		t.Fatalf("stableDelegateStatusTool: %v", err)
+		t.Fatalf("delegateStatusTool: %v", err)
 	}
 	statusResult, ok := statusValue.(toolpkg.StateResult)
 	if !ok {
 		t.Fatalf("job_status result = %T, want StateResult", statusValue)
 	}
-	status, ok := statusResult.State.(stableDelegateStatusResult)
+	status, ok := statusResult.State.(delegateStatusResult)
 	if !ok {
-		t.Fatalf("job_status state = %T, want stableDelegateStatusResult", statusResult.State)
+		t.Fatalf("job_status state = %T, want delegateStatusResult", statusResult.State)
 	}
 	if status.Name != "research-label" {
 		t.Fatalf("job_status name = %q, want research-label", status.Name)
@@ -89,11 +89,11 @@ func TestDelegateName_AbsentLabelRendersAsAbsent(t *testing.T) {
 	t.Parallel()
 	root, _, _ := newDelegateResourceBootstrapSession(t)
 
-	createOut, err := stableDelegateCreateTool(context.Background(), root, map[string]any{
+	createOut, err := delegateCreateTool(context.Background(), root, map[string]any{
 		"prompt": "unnamed unit of work",
 	}, 1<<20)
 	if err != nil {
-		t.Fatalf("stableDelegateCreateTool: %v", err)
+		t.Fatalf("delegateCreateTool: %v", err)
 	}
 	if strings.Contains(createOut, `"name"`) {
 		t.Fatalf("unnamed create result carries a name field: %s", createOut)
@@ -168,8 +168,8 @@ func TestDelegateName_DeliveryPlanAndNotificationFrameCarryLabel(t *testing.T) {
 // The send/wait result family surfaces the delegate label the same way the
 // notification frame does: a named delegate's reply carries name, an unnamed
 // delegate's reply omits it. The label flows through the terminal metadata
-// packet (delegateTerminalMetadataFromRun → stableDelegateFinishFromRun) into
-// the send result (populateStableDelegateSendResult → marshalDelegateSendResult).
+// packet (delegateTerminalMetadataFromRun → delegateFinishFromRun) into
+// the send result (populateDelegateSendResult → marshalDelegateSendResult).
 
 // marshalDelegateSendResultWire marshals a send result and returns its wire
 // JSON, following the file's existing helper convention.
@@ -210,7 +210,7 @@ func TestDelegateName_TerminalMetadataCarriesLabel(t *testing.T) {
 
 func TestDelegateName_FinishPacketMetadataCarriesLabel(t *testing.T) {
 	t.Parallel()
-	finish := stableDelegateFinishFromRun(delegateTerminalRunInputs{
+	finish := delegateFinishFromRun(delegateTerminalRunInputs{
 		result:       "completed result",
 		communicated: true,
 		descriptor:   delegatestore.Descriptor{Name: "finish-label", Task: "task"},
@@ -235,7 +235,7 @@ func TestDelegateName_PopulateSendResultCarriesLabel(t *testing.T) {
 		Metadata: metadata,
 	}
 	var result sendMessageResult
-	populateStableDelegateSendResult(&result, packet)
+	populateDelegateSendResult(&result, packet)
 	if result.Name != "populate-label" {
 		t.Fatalf("send result name = %q, want populate-label", result.Name)
 	}
@@ -251,7 +251,7 @@ func TestDelegateName_PopulateSendResultOmitsAbsentLabel(t *testing.T) {
 		Metadata: metadata,
 	}
 	var result sendMessageResult
-	populateStableDelegateSendResult(&result, packet)
+	populateDelegateSendResult(&result, packet)
 	if result.Name != "" {
 		t.Fatalf("unnamed send result name = %q, want empty", result.Name)
 	}
@@ -281,18 +281,18 @@ func TestDelegateName_MarshalSendResultOmitsAbsentLabel(t *testing.T) {
 }
 
 // TestDelegateName_FullChainSendReplyCarriesLabel drives the full chain:
-// stableDelegateFinishFromRun builds the packet with metadata that carries
-// the label, populateStableDelegateSendResult extracts it, and
+// delegateFinishFromRun builds the packet with metadata that carries
+// the label, populateDelegateSendResult extracts it, and
 // marshalDelegateSendResult renders it.
 func TestDelegateName_FullChainSendReplyCarriesLabel(t *testing.T) {
 	t.Parallel()
-	finish := stableDelegateFinishFromRun(delegateTerminalRunInputs{
+	finish := delegateFinishFromRun(delegateTerminalRunInputs{
 		result:       "chain result",
 		communicated: true,
 		descriptor:   delegatestore.Descriptor{Name: "chain-label", Task: "chain task"},
 	})
 	var result sendMessageResult
-	populateStableDelegateSendResult(&result, *finish.packet)
+	populateDelegateSendResult(&result, *finish.packet)
 	wire := marshalDelegateSendResultWire(t, result)
 	if !strings.Contains(wire, `"name":"chain-label"`) {
 		t.Fatalf("full-chain send result JSON omits the label:\n%s", wire)
@@ -307,7 +307,7 @@ func TestDelegateName_SteeredReplyCarriesLabel(t *testing.T) {
 	entered := make(chan struct{})
 	release := make(chan struct{})
 	defer close(release)
-	fixture := newColdStableDelegateFixtureConfigured(t, "", func(d *delegatestore.Descriptor) {
+	fixture := newColdDelegateFixtureConfigured(t, "", func(d *delegatestore.Descriptor) {
 		d.Name = "steer-label"
 	})
 	fixture.adapter.steps = []func(llm.Request) llm.Response{
@@ -348,7 +348,7 @@ func TestDelegateName_PopulateSendResultPreservesDescriptorNameOnNamelessMetadat
 	}
 	var result sendMessageResult
 	result.Name = "descriptor-label"
-	populateStableDelegateSendResult(&result, packet)
+	populateDelegateSendResult(&result, packet)
 	if result.Name != "descriptor-label" {
 		t.Fatalf("name overwritten to %q, want descriptor-label", result.Name)
 	}

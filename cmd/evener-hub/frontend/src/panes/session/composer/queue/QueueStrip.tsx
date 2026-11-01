@@ -69,6 +69,10 @@ const CLASS = {
 // util).
 export interface QueueStripProps {
   ref: string;
+  // The composer pane's durable seat. The strip's drain submits as this
+  // pane, so its sends - and any row a refusal bounces from them - carry the
+  // seat the composer's own sends carry.
+  compositionOwnerId?: string;
   // Returns the composer's CURRENT text/attachments/hasPending at the moment
   // the drain affordance is used - drainAsSteer atomically appends this to
   // the queue before draining the whole thing into the active turn as one
@@ -201,6 +205,7 @@ function editDisabledReason(opts: {
 
 export function QueueStrip({
   ref: sessionRef,
+  compositionOwnerId,
   getComposerText,
   onRestoreToComposer,
   activeRecoveryId,
@@ -484,6 +489,7 @@ export function QueueStrip({
               activeRecoveryId && expectedRecoveryRevision !== undefined
                 ? { [activeRecoveryId]: expectedRecoveryRevision }
                 : undefined,
+              compositionOwnerId,
             );
             if (outcome.status !== "sent") {
               recoveryRefusal = outcome.status === "refused" ? "changed" : "consumed";
@@ -491,7 +497,12 @@ export function QueueStrip({
             }
             return;
           }
-          return submitDraftToStore("drain", sessionRef, { text, attachments, skillNames, commandNames, mentions });
+          return submitDraftToStore(
+            "drain",
+            sessionRef,
+            { text, attachments, skillNames, commandNames, mentions },
+            compositionOwnerId,
+          );
         },
       );
       onDrainSuccess();

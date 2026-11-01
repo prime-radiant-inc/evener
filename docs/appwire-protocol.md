@@ -3345,6 +3345,7 @@ Underlying Go kind: `string` (no struct fields).
 | `ref` | string |  |  |
 | `sessionId` | string |  |  |
 | `delegateId` | string | yes |  |
+| `delegateName` | string | yes |  |
 | `title` | string |  |  |
 
 
@@ -3367,6 +3368,7 @@ Underlying Go kind: `string` (no struct fields).
 | `rootRef` | string |  |  |
 | `parentRef` | string | yes |  |
 | `delegateId` | string | yes |  |
+| `delegateName` | string | yes |  |
 | `ancestors` | [][appwire.SessionActivityAncestor](#sessionactivityancestor) |  |  |
 | `ancestryKnown` | bool |  |  |
 | `epoch` | string |  |  |
@@ -3998,6 +4000,7 @@ Underlying Go kind: `string` (no struct fields).
 
 | Field | Go type | Omitempty | Embedded |
 |-------|---------|-----------|----------|
+| `authorship` | \*[appwire.TranscriptAuthorship](#transcriptauthorship) | yes |  |
 | `type` | string |  |  |
 | `id` | string |  |  |
 | `transcriptKey` | string | yes |  |
@@ -4363,6 +4366,30 @@ Underlying Go kind: `string` (no struct fields).
 |-------|---------|-----------|----------|
 | `ref` | string |  |  |
 | `visionModel` | string |  |  |
+
+
+### `TranscriptAuthor`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `kind` | [appwire.TranscriptAuthorKind](#transcriptauthorkind) |  |  |
+| `sessionRef` | string | yes |  |
+| `ownerRef` | string | yes |  |
+| `delegateId` | string | yes |  |
+| `delegateName` | string | yes |  |
+
+
+### `TranscriptAuthorKind`
+
+Underlying Go kind: `string` (no struct fields).
+
+
+### `TranscriptAuthorship`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `author` | [appwire.TranscriptAuthor](#transcriptauthor) |  |  |
+| `inherited` | bool |  |  |
 
 
 ### `TranscriptContentKind`

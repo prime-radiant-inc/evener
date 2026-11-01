@@ -14,7 +14,7 @@ import (
 	"primeradiant.com/evener/agent/internal/worktree"
 )
 
-func TestStableDelegateWorktree_LiveGuardUsesStableDelegateState(t *testing.T) {
+func TestDelegateWorktree_LiveGuardUsesDelegateState(t *testing.T) {
 	r := newWorktreeRepo(t)
 	id, lanePath, _ := r.seedStableIsolationLane(t)
 	aggregate := delegateAggregateSnapshot(t, r.s.delegateController, id)
@@ -30,7 +30,7 @@ func TestStableDelegateWorktree_LiveGuardUsesStableDelegateState(t *testing.T) {
 	}
 }
 
-func TestStableDelegateWorktree_RootCloseCleansEligibleScratch(t *testing.T) {
+func TestDelegateWorktree_RootCloseCleansEligibleScratch(t *testing.T) {
 	r := newWorktreeRepo(t)
 	id, lanePath, _ := r.seedStableIsolationLane(t)
 
@@ -45,14 +45,14 @@ func TestStableDelegateWorktree_RootCloseCleansEligibleScratch(t *testing.T) {
 	}
 }
 
-// TestStableDelegateWorktree_DisposeGateCatchesReceiverRoutedWatch covers
+// TestDelegateWorktree_DisposeGateCatchesReceiverRoutedWatch covers
 // issue #695: a stable-receiver watch (the observer-sidecar class, #655)
 // synthesizes send.To as the stableWatchReceiverTarget sentinel, never the
 // delegate ID, so the dispose gate's plain send.To/ResolvedSendTo comparison
 // against id misses it. The gate must also catch a watch whose receiver
 // identity (receiverSessionID/receiverDelegateID) names the delegate being
 // disposed.
-func TestStableDelegateWorktree_DisposeGateCatchesReceiverRoutedWatch(t *testing.T) {
+func TestDelegateWorktree_DisposeGateCatchesReceiverRoutedWatch(t *testing.T) {
 	r := newWorktreeRepo(t)
 	id, _, _ := r.seedStableIsolationLane(t)
 
@@ -85,7 +85,7 @@ func TestStableDelegateWorktree_DisposeGateCatchesReceiverRoutedWatch(t *testing
 	}
 }
 
-func TestStableDelegateWorktree_ExplicitDisposalPreservesDirtyAndD0Checks(t *testing.T) {
+func TestDelegateWorktree_ExplicitDisposalPreservesDirtyAndD0Checks(t *testing.T) {
 	t.Run("dirty", func(t *testing.T) {
 		r := newWorktreeRepo(t)
 		id, lanePath, _ := r.seedStableIsolationLane(t)
@@ -117,7 +117,7 @@ func TestStableDelegateWorktree_ExplicitDisposalPreservesDirtyAndD0Checks(t *tes
 	})
 }
 
-func TestStableDelegateWorktree_ForcePreservesLockProvenanceAndEvidence(t *testing.T) {
+func TestDelegateWorktree_ForcePreservesLockProvenanceAndEvidence(t *testing.T) {
 	t.Run("foreign lock still refuses", func(t *testing.T) {
 		r := newWorktreeRepo(t)
 		id, lanePath, _ := r.seedStableIsolationLane(t)
@@ -152,7 +152,7 @@ func TestStableDelegateWorktree_ForcePreservesLockProvenanceAndEvidence(t *testi
 	})
 }
 
-func TestStableDelegateWorktree_ResumabilityClosureFsyncPrecedesDestruction(t *testing.T) {
+func TestDelegateWorktree_ResumabilityClosureFsyncPrecedesDestruction(t *testing.T) {
 	r := newWorktreeRepo(t)
 	id, lanePath, _ := r.seedStableIsolationLane(t)
 	closureVisible := false
@@ -179,7 +179,7 @@ func TestStableDelegateWorktree_ResumabilityClosureFsyncPrecedesDestruction(t *t
 	}
 }
 
-func TestStableDelegateWorktree_ClosureAppendFailureDestroysNothing(t *testing.T) {
+func TestDelegateWorktree_ClosureAppendFailureDestroysNothing(t *testing.T) {
 	r := newWorktreeRepo(t)
 	id, lanePath, _ := r.seedStableIsolationLane(t)
 	before := wtGit(t, r.mainRoot, "worktree", "list", "--porcelain")
@@ -199,7 +199,7 @@ func TestStableDelegateWorktree_ClosureAppendFailureDestroysNothing(t *testing.T
 	}
 }
 
-func TestStableDelegateWorktree_ClosureRejectsDurableRunningDescendantWithoutRuntimeClaims(t *testing.T) {
+func TestDelegateWorktree_ClosureRejectsDurableRunningDescendantWithoutRuntimeClaims(t *testing.T) {
 	r := newWorktreeRepo(t)
 	parentID, lanePath, _ := r.seedStableIsolationLane(t)
 	childID := "dlg_running_descendant"
@@ -229,7 +229,7 @@ func TestStableDelegateWorktree_ClosureRejectsDurableRunningDescendantWithoutRun
 	}
 }
 
-func TestStableDelegateWorktree_DisposeAlreadyClosedLanePreservesReason(t *testing.T) {
+func TestDelegateWorktree_DisposeAlreadyClosedLanePreservesReason(t *testing.T) {
 	r := newWorktreeRepo(t)
 	id, lanePath, _ := r.seedStableIsolationLane(t)
 	const originalReason = "turn_budget_exhausted"
@@ -267,7 +267,7 @@ func TestStableDelegateWorktree_DisposeAlreadyClosedLanePreservesReason(t *testi
 	}
 }
 
-func TestStableDelegateWorktree_AlreadyClosedHalfRemovedCleanupRejectsDurableRunningDescendant(t *testing.T) {
+func TestDelegateWorktree_AlreadyClosedHalfRemovedCleanupRejectsDurableRunningDescendant(t *testing.T) {
 	r := newWorktreeRepo(t)
 	parentID, lanePath, _ := r.seedStableIsolationLane(t)
 	closeStableWorktreeForTest(t, r.s, parentID, stableWorktreeDisposalReason)
@@ -294,7 +294,7 @@ func TestStableDelegateWorktree_AlreadyClosedHalfRemovedCleanupRejectsDurableRun
 	}
 }
 
-func TestStableDelegateWorktree_AlreadyClosedLaneRevalidatesLateDurableRunningDescendant(t *testing.T) {
+func TestDelegateWorktree_AlreadyClosedLaneRevalidatesLateDurableRunningDescendant(t *testing.T) {
 	r := newWorktreeRepo(t)
 	parentID, lanePath, _ := r.seedStableIsolationLane(t)
 	closeStableWorktreeForTest(t, r.s, parentID, stableWorktreeDisposalReason)
@@ -326,7 +326,7 @@ func TestStableDelegateWorktree_AlreadyClosedLaneRevalidatesLateDurableRunningDe
 	}
 }
 
-func TestStableDelegateWorktree_CleanupFailureReportsRetainedResidueWithoutReopen(t *testing.T) {
+func TestDelegateWorktree_CleanupFailureReportsRetainedResidueWithoutReopen(t *testing.T) {
 	r := newWorktreeRepo(t)
 	id, lanePath, _ := r.seedStableIsolationLane(t)
 	r.s.worktreeDisposeBeforeRemove = func(path string) {
@@ -364,7 +364,7 @@ func TestStableDelegateWorktree_CleanupFailureReportsRetainedResidueWithoutReope
 	}
 }
 
-func TestStableDelegateWorktree_DisposalAndRestartAreIdempotent(t *testing.T) {
+func TestDelegateWorktree_DisposalAndRestartAreIdempotent(t *testing.T) {
 	r := newWorktreeRepo(t)
 	id, _, _ := r.seedStableIsolationLane(t)
 
@@ -388,9 +388,9 @@ func TestStableDelegateWorktree_DisposalAndRestartAreIdempotent(t *testing.T) {
 	}
 }
 
-func TestStableDelegateWorktree_SandboxRestoreUsesDescriptorNotLegacyJob(t *testing.T) {
+func TestDelegateWorktree_SandboxRestoreUsesDescriptorNotLegacyJob(t *testing.T) {
 	descriptorDir := t.TempDir()
-	fixture := newColdStableDelegateFixtureConfigured(t, "", func(descriptor *delegatestore.Descriptor) {
+	fixture := newColdDelegateFixtureConfigured(t, "", func(descriptor *delegatestore.Descriptor) {
 		descriptor.WorkingDir = descriptorDir
 		descriptor.LocalEnvPolicy = "default"
 	})

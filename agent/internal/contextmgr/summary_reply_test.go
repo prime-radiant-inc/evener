@@ -30,7 +30,7 @@ func summarizeReplying(t *testing.T, reply, instructions string) ([]schema.Turn,
 		{Kind: schema.TurnAssistant, Message: llm.Assistant("I'll fix it")},
 		{Kind: schema.TurnAssistant, Message: llm.Assistant("recent")},
 	}
-	return cm.summarizeWithLLMSteered(context.Background(), history, 1, instructions)
+	return cm.summarizeFold(context.Background(), history, 1, instructions, nil)
 }
 
 // A reply that is not a summary would be stored as the session's only record of
@@ -64,7 +64,7 @@ func TestSummarizeWithLLM_RejectsNonSummaryReplies(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			result, err := summarizeReplying(t, reply, "")
 			if err == nil {
-				t.Fatalf("summarizeWithLLM stored %q as a summary, want an error", result[0].Message.Text())
+				t.Fatalf("summarizeFold stored %q as a summary, want an error", result[0].Message.Text())
 			}
 		})
 	}
@@ -91,7 +91,7 @@ func TestSummarizeWithLLM_StoresReplyWithRequiredSection(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			result, err := summarizeReplying(t, reply, "")
 			if err != nil {
-				t.Fatalf("summarizeWithLLM: %v", err)
+				t.Fatalf("summarizeFold: %v", err)
 			}
 			if got := result[0].Message.Text(); !strings.Contains(got, reply) {
 				t.Fatalf("summary = %q, want it to hold the reply", got)
@@ -104,10 +104,10 @@ func TestSummarizeWithLLM_StoresReplyWithRequiredSection(t *testing.T) {
 // rejected under them.
 func TestSummarizeWithLLM_InstructionsRequireOnlyANonEmptyReply(t *testing.T) {
 	if _, err := summarizeReplying(t, "Kept: the auth fix and its failing test.", "keep only the auth work"); err != nil {
-		t.Fatalf("summarizeWithLLM: %v", err)
+		t.Fatalf("summarizeFold: %v", err)
 	}
 	if _, err := summarizeReplying(t, "", "keep only the auth work"); err == nil {
-		t.Fatal("summarizeWithLLM stored an empty reply under instructions, want an error")
+		t.Fatal("summarizeFold stored an empty reply under instructions, want an error")
 	}
 }
 
@@ -138,7 +138,7 @@ func TestSummarizeWithLLM_RejectedCheapReplyFallsBackToSessionModel(t *testing.T
 				{Kind: schema.TurnAssistant, Message: llm.Assistant("recent")},
 			}
 
-			result, err := cm.summarizeWithLLM(context.Background(), history, 1)
+			result, err := cm.summarizeFold(context.Background(), history, 1, "", nil)
 
 			var models []string
 			for _, r := range adapter.Requests() {
@@ -154,7 +154,7 @@ func TestSummarizeWithLLM_RejectedCheapReplyFallsBackToSessionModel(t *testing.T
 				return
 			}
 			if err != nil {
-				t.Fatalf("summarizeWithLLM: %v", err)
+				t.Fatalf("summarizeFold: %v", err)
 			}
 			if got := result[0].Message.Text(); !strings.Contains(got, tc.sessionReply) {
 				t.Fatalf("summary = %q, want the session model's reply", got)
@@ -193,8 +193,8 @@ func TestSummarizeWithLLM_LabelsPartnerSteeringAsUser(t *testing.T) {
 		schema.NewTurn(schema.TurnSteering, llm.User("DAEMON_NUDGE_SENTINEL")),
 		schema.NewTurn(schema.TurnAssistant, llm.Assistant("recent")),
 	}
-	if _, err := cm.summarizeWithLLMSteered(context.Background(), history, 1, ""); err != nil {
-		t.Fatalf("summarizeWithLLMSteered: %v", err)
+	if _, err := cm.summarizeFold(context.Background(), history, 1, "", nil); err != nil {
+		t.Fatalf("summarizeFold: %v", err)
 	}
 	if !strings.Contains(prompt, "User: PARTNER_STEER_SENTINEL") || !strings.Contains(prompt, "System: DAEMON_NUDGE_SENTINEL") {
 		t.Fatalf("steering labels wrong in the summarizer input:\n%s", prompt)

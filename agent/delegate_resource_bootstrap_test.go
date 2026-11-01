@@ -53,7 +53,7 @@ func TestDelegateResourceBootstrap_ChildInheritsControllerAndStableOwnerID(t *te
 	if got := delegateControllerPointer(t, child); got != rootController {
 		t.Fatalf("child controller pointer = %#x, want root pointer %#x", got, rootController)
 	}
-	if got := stableDelegateOwnerID(t, child); got != result.DelegateID {
+	if got := delegateOwnerID(t, child); got != result.DelegateID {
 		t.Fatalf("child stable owner ID = %q, want %q", got, result.DelegateID)
 	}
 }
@@ -664,7 +664,7 @@ func delegateControllerPointer(t *testing.T, sess *Session) uintptr {
 	return field.Pointer()
 }
 
-func stableDelegateOwnerID(t *testing.T, sess *Session) string {
+func delegateOwnerID(t *testing.T, sess *Session) string {
 	t.Helper()
 	field := reflect.ValueOf(sess).Elem().FieldByName("owningDelegateID")
 	if !field.IsValid() {

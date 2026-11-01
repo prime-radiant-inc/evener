@@ -422,6 +422,7 @@ type Turn struct {
 	AttentionID string `json:"attention_id,omitempty"`
 	// AttentionResolution is set only on TurnAttentionResolution turns.
 	AttentionResolution *AttentionResolutionInfo `json:"attention_resolution,omitempty"`
+	Authorship          *TranscriptAuthorship    `json:"authorship,omitempty"`
 	// ClientMutationID identifies retry-safe client-authored input. StableTurnID
 	// preserves the logical turn identity across live events and transcript
 	// recovery for both client input and daemon goal continuations.

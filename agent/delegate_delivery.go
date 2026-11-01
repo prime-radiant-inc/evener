@@ -607,10 +607,10 @@ func deliverDelegatePacket(plan delegateDeliveryPlan, receiver delegateDeliveryR
 			err = receiver.armDelegateAttention(attentionID)
 		} else {
 			receiver.notify()
-			plan.controller.notifyStableDelegateAttention()
+			plan.controller.notifyDelegateAttention()
 		}
 	case coldDelegateDeliveryReceiver:
-		plan.controller.notifyStableDelegateAttention()
+		plan.controller.notifyDelegateAttention()
 	}
 	return plans, err
 }
@@ -906,7 +906,7 @@ func (c *delegateTreeController) deliveryReceiverLocked(ownerDelegateID string) 
 	return nil
 }
 
-func (c *delegateTreeController) notifyStableDelegateAttention() {
+func (c *delegateTreeController) notifyDelegateAttention() {
 	if c == nil {
 		return
 	}

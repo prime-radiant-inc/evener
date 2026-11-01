@@ -65,7 +65,7 @@ import {
 import { type BoardItem, groupItems, liveItems, pinnedItems, projectItems } from "./boardItems";
 import type { OrganizeBy, SeenMarkers } from "./boardMemory";
 import { ROW_MOVE } from "./boardMotion";
-import { createSearchController, projectResults, type SearchScope } from "./boardSearch";
+import { projectResults } from "./boardSearch";
 import { documentMemory } from "../reader/nativeDocumentMemory";
 import { openDocumentInSession } from "../reader/openDocument";
 import { BoardNotices, NoticeRow } from "./BoardNotices";
@@ -92,14 +92,7 @@ import { BoardReplay } from "./boardReplay";
 import { BoardStops, stopToast } from "./boardStops";
 import { INCOMPATIBLE_VERSIONS } from "../connectionRecovery";
 import { type HubSeenMarks, hubSeenMarks } from "./hubSeen";
-import {
-	boardHold,
-	foldedSections,
-	organizeByPreference,
-	recentSearches,
-	seenMarkers,
-	useBoardSeen,
-} from "./nativeBoardMemory";
+import { boardHold, foldedSections, organizeByPreference, seenMarkers, useBoardSeen } from "./nativeBoardMemory";
 import { notices } from "./notices";
 import { PinnedEmptyHint, PinnedSection, useBoardFolds, useCategoryFolds } from "./PinnedSections";
 import { journalHoldsProject, PROJECT_MENU_LABELS, type ProjectMenuAction, projectMenuActions } from "./projectMenu";
@@ -136,11 +129,14 @@ import { SearchResults } from "./SearchResults";
 import { listScrollHandlers } from "./settledList";
 import { journalOperation, organizationOpen } from "./organizationCheck";
 import { type BoardOrganization, useBoardOrganization } from "./useBoardOrganization";
+import { useBoardSearch } from "./useBoardSearch";
 import { PROJECT_SECTIONS, showExpanded, useProjectSections } from "./useProjectSections";
 import { useSettledList } from "./useSettledList";
 import { FLOAT_GAP, underBar } from "../design/underBar";
 import { destructiveButton } from "../haptics";
+import { confirmShutDown } from "../session/confirmShutDown";
 import { Button } from "../sheet/Grouped";
+import { CATEGORY_NAME_MAX_CODE_POINTS } from "../navigationActionRepository";
 
 type Props = NativeStackScreenProps<Routes, "Sessions">;
 type Navigation = Props["navigation"];
@@ -310,12 +306,18 @@ function Board({
 	const held = useSyncExternalStore(hold.subscribe, hold.getSnapshot);
 	const holdAction = (action: HeldAction) => hold.hold(action, Date.now());
 	// A press answered later (an alert, a sheet) asks what's true then.
+	// The refs are written after the commit that made them current, not during
+	// render, and before any effect below reads them.
 	const liveNow = useRef(actionsConnected);
-	liveNow.current = actionsConnected;
 	const clientNow = useRef(actionsClient);
-	clientNow.current = actionsClient;
 	const toastNow = useRef(toast);
-	toastNow.current = toast;
+	const organizationNow = useRef(organization);
+	useEffect(() => {
+		liveNow.current = actionsConnected;
+		clientNow.current = actionsClient;
+		toastNow.current = toast;
+		organizationNow.current = organization;
+	});
 	const [replay] = useState(
 		() =>
 			new BoardReplay(hold, {
@@ -331,8 +333,6 @@ function Board({
 	useEffect(() => {
 		if (actionsClient && held.length) void replay.sendImmediate(actionsClient, liveOn(actionsClient));
 	}, [replay, actionsClient, held]);
-	const organizationNow = useRef(organization);
-	organizationNow.current = organization;
 	useEffect(() => {
 		if (focused && organization.ready && held.length)
 			void replay.organize(organizationNow.current, liveOn(clientNow.current));
@@ -385,26 +385,23 @@ function Board({
 	// rule): a reconnect while a pushed screen covers the Board must not send
 	// one `evener/search` for the query the field still holds. A sheet over
 	// the Board is still the Board (ruling 28), so it stays bound then.
-	const search = useSearch(connected && inFront ? client : null);
-	const searchInput = useRef<TextInput>(null);
-	const [searchText, setSearchText] = useState("");
-	// Searching from the moment the field takes focus until Cancel.
-	const [searching, setSearching] = useState(false);
-	const [scope, setScope] = useState<SearchScope>("all");
+	const {
+		search,
+		searchInput,
+		searchText,
+		searching,
+		setSearching,
+		scope,
+		setScope,
+		recentList,
+		typeSearch,
+		leaveSearch,
+		clearRecent,
+		rememberSearch,
+	} = useBoardSearch(hubId, connected && inFront ? client : null);
 	const searchFieldHeight = searchFieldHeightAt(useTextScale());
 	const reduceMotion = useReduceMotion();
 	const { height: windowHeight } = useWindowDimensions();
-	const recent = recentSearches(hubId);
-	const [recentList, setRecentList] = useState(() => recent.list());
-	const typeSearch = (text: string) => {
-		setSearchText(text);
-		search.controller.setQuery(text);
-	};
-	const leaveSearch = () => {
-		typeSearch("");
-		setSearching(false);
-		searchInput.current?.blur?.();
-	};
 	const cancelSearch = () => {
 		leaveSearch();
 		// Tuck the field back out of view, where the Board keeps it.
@@ -424,14 +421,6 @@ function Board({
 		const row = loadedRows.find((loaded) => loaded.ref === result.ref);
 		if (row) openSession(row);
 		else navigation.navigate("Conversation", { hubId, ref: result.ref, title: result.title });
-	};
-	const clearRecent = () => {
-		recent.clear();
-		setRecentList(recent.list());
-	};
-	const rememberSearch = () => {
-		recent.add(search.snapshot.query);
-		setRecentList(recent.list());
 	};
 
 	// Where each section starts in the scroller, for the chips and the
@@ -458,12 +447,14 @@ function Board({
 	// waits until Live and the band have, then scrolls.
 	const pendingJump = useRef<Band | null>(null);
 	const jumpWhenLaidOut = useRef(() => {});
-	jumpWhenLaidOut.current = () => {
-		const band = pendingJump.current;
-		if (band === null || offsets.current.live === undefined || offsets.current[band] === undefined) return;
-		pendingJump.current = null;
-		jumpToBand(band);
-	};
+	useEffect(() => {
+		jumpWhenLaidOut.current = () => {
+			const band = pendingJump.current;
+			if (band === null || offsets.current.live === undefined || offsets.current[band] === undefined) return;
+			pendingJump.current = null;
+			jumpToBand(band);
+		};
+	});
 	useEffect(
 		() =>
 			onBoardJump((section) => {
@@ -639,7 +630,7 @@ function Board({
 	const actOnRow = (item: ClassifiedRow, action: RowAction) => {
 		const { row } = item;
 		if (action === "shutDown")
-			confirmShutDown(row, () => {
+			confirmShutDown(() => {
 				const on = holdsChange(waitsFor(row.ref, "shutDown"), false) ? null : clientNow.current;
 				if (!on) holdAction({ kind: "shutDown", ref: row.ref, title: row.title, seen: turnSeen(row) });
 				else
@@ -647,7 +638,7 @@ function Board({
 						() => toast.show(SHUT_DOWN_DONE),
 						(error: unknown) => toast.show(shutDownFailed(row.title, error)),
 					);
-			});
+			}, row.title);
 		else if (action === "rename")
 			promptRename(row, (name) => {
 				const on = holdsChange(waitsFor(row.ref, "rename"), false) ? null : clientNow.current;
@@ -1263,9 +1254,9 @@ function Board({
 }
 
 /** A category's name is at most 80 characters, the journal's own bound. */
-const CATEGORY_NAME_TOO_LONG = "Category names can be up to 80 characters.";
+const CATEGORY_NAME_TOO_LONG = `Category names can be up to ${CATEGORY_NAME_MAX_CODE_POINTS} characters.`;
 function categoryNameTooLong(name: string): boolean {
-	return Array.from(name).length > 80;
+	return Array.from(name).length > CATEGORY_NAME_MAX_CODE_POINTS;
 }
 
 /** Rename and Delete for the pinned categories (spec 7.1), through the
@@ -1345,8 +1336,8 @@ function pinnedCategoryMenu(organization: BoardOrganization, catalog: () => read
 type PinTarget = { sectionId: string } | { sectionName: string };
 
 /** A row's Pin (ruling 18): the pin catalog's categories, then a new one, as
- * an action sheet. A new category's name is 1-80 characters, the journal's
- * own bound. */
+ * an action sheet. A new category's name must fit the journal's own
+ * bound. */
 function chooseCategory(
 	categories: readonly NavigationPinSectionDescriptor[],
 	toast: Pick<ToastController, "show">,
@@ -1394,15 +1385,6 @@ function menuActionsHere(item: ClassifiedRow, context: RowActionContext): RowAct
 	return Platform.OS === "ios" ? actions : actions.filter((action) => action !== "rename");
 }
 
-/** Shut down from the row menu: asked first, online or offline, then
- * `shutDown` runs (the Session's own request, or a hold). */
-function confirmShutDown(row: NavigationSessionSummary, shutDown: () => void) {
-	Alert.alert(`Shut down “${row.title}”?`, "The agent stops. Send it a message to resume it.", [
-		{ text: "Cancel", style: "cancel" },
-		destructiveButton("Shut down", shutDown),
-	]);
-}
-
 /** Rename from the row menu (iOS only: Alert.prompt), starting from the
  * row's title; `rename` gets the name typed. */
 function promptRename(row: NavigationSessionSummary, rename: (name: string) => void) {
@@ -1447,15 +1429,6 @@ function openProjectMenu(
 		...actions.map((action) => ({ text: PROJECT_MENU_LABELS[action], onPress: () => act(action) })),
 		{ text: "Cancel", style: "cancel" },
 	]);
-}
-
-/** The Board's search controller, bound to the ready client or none. */
-function useSearch(client: ConversationClientLike | null) {
-	const [controller] = useState(createSearchController);
-	useEffect(() => () => controller.dispose(), [controller]);
-	useEffect(() => controller.setClient(client), [controller, client]);
-	const snapshot = useSyncExternalStore(controller.subscribe, controller.getSnapshot);
-	return { controller, snapshot };
 }
 
 /** The chips' panel on the glass: over the Board's top, which runs under it. */
@@ -1579,8 +1552,11 @@ function useShownRows(rows: readonly ShownRow[]): ReadonlyMap<string, ShownRow> 
 		if (!byKey.has(key)) byKey.set(key, shown);
 	}
 	const kept = useRef(byKey);
-	if (!sameShownRows(kept.current, byKey)) kept.current = byKey;
-	return kept.current;
+	const shown = sameShownRows(kept.current, byKey) ? kept.current : byKey;
+	useEffect(() => {
+		kept.current = shown;
+	});
+	return shown;
 }
 
 function sameShownRows(before: ReadonlyMap<string, ShownRow>, after: ReadonlyMap<string, ShownRow>): boolean {

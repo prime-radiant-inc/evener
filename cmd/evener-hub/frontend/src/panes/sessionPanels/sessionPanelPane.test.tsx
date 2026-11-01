@@ -4,7 +4,7 @@ import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
-import { connectionStore } from "../../stores/connection";
+import { connectionStore, resetConnectionStoreForTests } from "../../stores/connection";
 import { activityClient } from "../../stores/sessionActivityTestUtils";
 import { tasksPanelStore } from "../../stores/tasksPanel";
 import { resetThreadsStoreForTests, threadsStore } from "../../stores/threads";
@@ -16,7 +16,7 @@ import { sessionPanelTitle } from "./index";
 import { SessionPanelPane } from "./SessionPanelPane";
 
 beforeEach(() => {
-  connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
+  resetConnectionStoreForTests();
   resetThreadsStoreForTests();
   resetDisclosureStoreForTests();
   // This suite mounts the pane without the app shell that wires the stores.

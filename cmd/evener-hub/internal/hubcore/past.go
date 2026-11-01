@@ -5,7 +5,6 @@ import (
 	"database/sql"
 	"encoding/binary"
 	"errors"
-	"fmt"
 	"hash/fnv"
 	"os"
 	"path/filepath"
@@ -19,6 +18,7 @@ import (
 	_ "modernc.org/sqlite" // registers the "sqlite" driver for database/sql
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/execsupport/componentlog"
 	"primeradiant.com/evener/identifier"
 )
 
@@ -452,10 +452,10 @@ func (i *PastIndex) reportSkips(skipped map[string]string) {
 		named = named[:maxReportedSkips]
 	}
 	for _, path := range named {
-		fmt.Fprintf(os.Stderr, "[hub] past index: skipped %s: %s\n", path, skipped[path])
+		componentlog.New("hub").Warn("past index: skipped", "path", path, "reason", skipped[path])
 	}
 	if len(fresh) > len(named) {
-		fmt.Fprintf(os.Stderr, "[hub] past index: skipped %d more unindexable entries\n", len(fresh)-len(named))
+		componentlog.New("hub").Warn("past index: skipped more unindexable entries", "count", len(fresh)-len(named))
 	}
 }
 
@@ -586,7 +586,7 @@ func (i *PastIndex) RefreshOne(id string) {
 	}
 	meta, err := schema.LoadSessionMeta(entry.StateDir, id)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "[hub] RefreshOne(%s): load meta: %v\n", id, err)
+		componentlog.New("hub").Error("RefreshOne: load meta", "session", id, "err", err)
 		return
 	}
 	i.UpdateMeta(id, meta)

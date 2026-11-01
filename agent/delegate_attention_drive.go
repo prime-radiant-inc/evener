@@ -7,15 +7,15 @@ import (
 	"primeradiant.com/evener/agent/internal/jobstore"
 )
 
-func bindStableDelegateActivity(child *Session, controller *delegateTreeController, lease delegateLease) {
+func bindDelegateActivity(child *Session, controller *delegateTreeController, lease delegateLease) {
 	if child == nil || controller == nil {
 		return
 	}
-	owner := controller.stableDelegateOwnerRuntime(lease)
-	bindStableDelegateActivityToOwner(child, controller, lease, owner)
+	owner := controller.delegateOwnerRuntime(lease)
+	bindDelegateActivityToOwner(child, controller, lease, owner)
 }
 
-func bindStableDelegateActivityToOwner(child *Session, controller *delegateTreeController, lease delegateLease, owner *Session) {
+func bindDelegateActivityToOwner(child *Session, controller *delegateTreeController, lease delegateLease, owner *Session) {
 	if child == nil || controller == nil {
 		return
 	}
@@ -38,11 +38,11 @@ func bindStableDelegateActivityToOwner(child *Session, controller *delegateTreeC
 	jm := child.jobManager
 	child.mu.Unlock()
 	if jm != nil {
-		jm.bindStableDelegateParent(controller, lease, forward, child)
+		jm.bindDelegateParent(controller, lease, forward, child)
 	}
 }
 
-func (s *Session) driveStableDelegateAttention(sub *subagent) bool {
+func (s *Session) driveDelegateAttention(sub *subagent) bool {
 	if s == nil || sub == nil || sub.sess == nil || sub.sess.owningDelegateID == "" || s.delegateController == nil || sub.sess.delegateController != s.delegateController {
 		return false
 	}
@@ -78,7 +78,7 @@ func (s *Session) driveStableDelegateAttention(sub *subagent) bool {
 	// CommitStart, the delegate update emit), and the run goroutine only sets
 	// running at the far end of it. Without the claim a wake-edge drive landing
 	// in that gap reads an idle child: the reservation is already consumed and
-	// the attention is no longer pending, so driveStableDelegateAttention itself
+	// the attention is no longer pending, so driveDelegateAttention itself
 	// declines, and driveChildIfNotStopGated falls through to
 	// driveSubagentNotificationTurn, which starts a second, UNLEASED turn on the
 	// session this generation is about to run. The two turns then share one
@@ -90,7 +90,7 @@ func (s *Session) driveStableDelegateAttention(sub *subagent) bool {
 	// childCommittedSendStart is consulted here, at the decision point, so every
 	// path into the attention drive is gated at the depth the decision is made
 	// rather than relying on each caller to remember (#940).
-	// drivePendingStableDelegateAttention reaches this primitive directly with no
+	// drivePendingDelegateAttention reaches this primitive directly with no
 	// caller-side gate.
 	// startBlockedLocked is the shared drive-guard predicate delegate_send reads
 	// through takeSendDriveGuard, so the two busy lists cannot drift. The
@@ -205,7 +205,7 @@ func (s *Session) launchAcceptedDelegateAttention(sub *subagent, started delegat
 	// harmless because running is already true under this same hold.
 	sub.driving = false
 	sub.mu.Unlock()
-	bindStableDelegateActivity(sub.sess, s.delegateController, started.lease)
+	bindDelegateActivity(sub.sess, s.delegateController, started.lease)
 	s.launchSubagentRun(runCtx, sub, runCancel, "", descriptorProvenance(started.descriptor))
 	s.startDelegateQuietWatchdog(started.ctx, started.lease)
 	return nil
@@ -297,7 +297,7 @@ func (s *Session) reconstructDelegateAttentionRuntime(owner *Session, started de
 	if restored && owner.delegateRestoreBeforeSideEffects != nil {
 		owner.delegateRestoreBeforeSideEffects(sub.sess)
 	}
-	bindStableDelegateActivityToOwner(sub.sess, s.delegateController, started.lease, owner)
+	bindDelegateActivityToOwner(sub.sess, s.delegateController, started.lease, owner)
 	if restored && len(gates) != 0 {
 		if err := gates[0].add(owner, sub, started); err != nil {
 			finishRestore(nil, err)
@@ -328,7 +328,7 @@ func (s *Session) restoreColdDelegateOwnerRuntime(parentID string, gates ...*owe
 	return parent.sess, nil
 }
 
-func (s *Session) drivePendingStableDelegateAttention() bool {
+func (s *Session) drivePendingDelegateAttention() bool {
 	if s == nil || s.delegateController == nil || !s.isRootDelegateAttentionReceiver() {
 		return false
 	}
@@ -348,7 +348,7 @@ func (s *Session) drivePendingStableDelegateAttention() bool {
 	if err != nil {
 		s.warnDelegateAttentionFailed(delegateAttentionRestoreLabel, delegateID, err)
 		s.countDelegateAttentionRestoreFailure(delegateID, err)
-		s.scheduleStableDelegateAttentionRetry()
+		s.scheduleDelegateAttentionRetry()
 		return true
 	}
 	s.delegateController.delegateAttentionRestored(delegateID)
@@ -356,11 +356,11 @@ func (s *Session) drivePendingStableDelegateAttention() bool {
 	if hook := s.cfg.testOnly.afterDelegateAttentionRestore; hook != nil {
 		hook(delegateID, sub)
 	}
-	owner.driveStableDelegateAttention(sub)
+	owner.driveDelegateAttention(sub)
 	if s.delegateController.hasPendingDelegateAttention() {
-		s.scheduleStableDelegateAttentionRetry()
+		s.scheduleDelegateAttentionRetry()
 	} else {
-		s.resetStableDelegateAttentionRetry()
+		s.resetDelegateAttentionRetry()
 	}
 	return true
 }

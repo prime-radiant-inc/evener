@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/cmd/evener-hub/internal/appsource"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 	"primeradiant.com/evener/hubapi"
 )
@@ -107,9 +108,11 @@ type navigationServiceConfig struct {
 	statsSlow time.Duration
 	// SubagentParent names the row a session hangs under and how: kind is
 	// "subagent" for a subagent's parent and "fork" for a fork original's
-	// continuation. The location alias walks it to find the top-level row for
-	// a ref that is not indexed. Nil disables the alias.
-	SubagentParent func(ref string) (parent, kind string, ok bool)
+	// continuation, or "session" for an equivalent stable workspace identity.
+	// The location alias walks local hops to an indexed row; remote sources
+	// resolve the whole ancestry in one hop. An empty parent means no hop;
+	// source failure is an error, not evidence of absence. Nil disables the alias.
+	SubagentParent func(ctx context.Context, ref string) (parent, kind string, err error)
 }
 
 type navigationTimer interface {
@@ -187,7 +190,7 @@ type NavigationService struct {
 	retryAfter   time.Duration
 	history      *navigationHistory
 	// subagentParent is the alias resolver's hop function; nil disables it.
-	subagentParent func(ref string) (string, string, bool)
+	subagentParent func(context.Context, string) (string, string, error)
 	// aliasServed remembers, per location key that is not a present row, the
 	// last revision an alias or gone answer used, so revisions never move
 	// backward when the answer changes shape. It is bounded; entries drop once
@@ -378,7 +381,10 @@ func (s *NavigationService) versionedCore(ctx context.Context, key navigationRes
 		// it is walked without s.mu. It only names candidate ancestors; which
 		// one is indexed, and everything served for it, is decided from the
 		// core selected under the lock on the next pass.
-		chain = s.subagentChain(semantic.ID)
+		chain, err = s.subagentChain(ctx, semantic.ID)
+		if err != nil {
+			return nil, navigationResourceKey{}, navigationProjection{}, navigationUnavailable(err)
+		}
 	}
 }
 
@@ -402,6 +408,11 @@ func (s *NavigationService) selectLocked(key, semantic navigationResourceKey, ch
 		if projection, revision, found := s.aliasProjectionLocked(semantic, state.Revision, chain); found {
 			versioned.Revision = revision
 			return versioned, projection, false, nil
+		}
+		if chain != nil && chain.remote && len(chain.ancestors) != 0 {
+			// The source proved this ref exists. A lagging controller snapshot
+			// cannot turn that positive evidence into an authoritative deletion.
+			return navigationResourceKey{}, navigationProjection{}, false, navigationUnavailable(errors.New("remote navigation root not indexed"))
 		}
 		// A location that is neither indexed nor reachable through a root is
 		// gone, not unavailable: retrying will not change the answer.
@@ -449,20 +460,29 @@ const maxNavigationAliasHops = 32
 
 // navigationAliasChain is the ancestry of a ref that is not an indexed row.
 type navigationAliasChain struct {
-	// kind is how the ref itself hangs under its parent ("subagent" or "fork").
+	// kind is the ref's relation to its row: "subagent", "fork", or an
+	// equivalent current identity of the same top-level "session".
 	kind string
 	// ancestors are the ref's ancestors, nearest first.
 	ancestors []string
+	// remote resolves the whole ancestry at its source, in one location read.
+	remote bool
 }
 
 // subagentChain walks the resolver from ref, ending where it has no further
 // hop or a hop repeats. Without a resolver the chain is empty.
-func (s *NavigationService) subagentChain(ref string) *navigationAliasChain {
-	chain := &navigationAliasChain{}
+func (s *NavigationService) subagentChain(ctx context.Context, ref string) (*navigationAliasChain, error) {
+	ctx, cancel := context.WithTimeout(ctx, s.buildTimeout)
+	defer cancel()
+	parsed, err := navigationRef(ref)
+	chain := &navigationAliasChain{remote: err == nil && parsed.SourceID != appwire.LocalSourceID}
 	seen := map[string]bool{ref: true}
 	for current := ref; s.subagentParent != nil && len(chain.ancestors) < maxNavigationAliasHops; {
-		next, kind, ok := s.subagentParent(current)
-		if !ok {
+		next, kind, err := s.subagentParent(ctx, current)
+		if err != nil {
+			return nil, err
+		}
+		if next == "" {
 			break
 		}
 		parsed, err := navigationRef(next)
@@ -475,8 +495,19 @@ func (s *NavigationService) subagentChain(ref string) *navigationAliasChain {
 		current = parsed.String()
 		seen[current] = true
 		chain.ancestors = append(chain.ancestors, current)
+		if chain.remote {
+			break
+		}
+		// An indexed ancestor already carries its top-level placement.
+		// Do not read past it.
+		s.mu.Lock()
+		_, indexed := s.core.projection.locations[current]
+		s.mu.Unlock()
+		if indexed {
+			break
+		}
 	}
-	return chain
+	return chain, nil
 }
 
 // rememberAliasServedLocked records what a non-row location read was answered
@@ -1584,23 +1615,36 @@ func (key navigationResourceKey) Semantic() navigationResourceKey {
 	return key
 }
 
-// navigationSubagentParent is the location alias's hop function: the row a
-// local session hangs under. A persisted subagent hangs under its parent, a
-// fork-superseded original under the continuation that superseded it, and an
-// in-process child under the live session that runs it. Remote sessions and
-// unknown ids have no hop, so their aliases resolve to gone.
-func (w *WebServer) navigationSubagentParent(ref string) (parent, kind string, ok bool) {
+// navigationSubagentParent names a session's navigation ancestor. Local hops
+// follow stable workspace identities, persisted subagents, fork continuations
+// and live in-process children, including crash-retained workspace identities.
+// A remote hub resolves its own ancestry; the controller owns placement here.
+func (w *WebServer) navigationSubagentParent(ctx context.Context, ref string) (parent, kind string, err error) {
 	parsed, err := appwire.ParseRef(ref)
-	if err != nil || parsed.SourceID != appwire.LocalSourceID {
-		return "", "", false
+	if err != nil {
+		return "", "", err
+	}
+	if parsed.SourceID != appwire.LocalSourceID {
+		return w.navigationRemoteAncestor(ctx, parsed)
 	}
 	id := parsed.ThreadID
+	if w.cfg.Roster != nil {
+		for _, entry := range w.cfg.Roster.Snapshot().Live {
+			if entry.SessionID != id {
+				continue
+			}
+			workspace, err := appwire.ParseRef(hubcore.LiveRowRef(entry))
+			if err == nil && workspace.SourceID == appwire.LocalSourceID && workspace.String() != ref {
+				return workspace.String(), "session", nil
+			}
+		}
+	}
 	if w.cfg.Past != nil {
 		if entry, ok := w.cfg.Past.FindIndexed(id); ok {
 			meta := entry.Meta
 			switch {
 			case meta.IsSubagent && meta.ParentSessionID != "":
-				return meta.ParentSessionID, "subagent", true
+				return meta.ParentSessionID, "subagent", nil
 			case meta.ForkLabel != "":
 				// The tree attaches the original under the latest continuation.
 				continuation := ""
@@ -1609,19 +1653,88 @@ func (w *WebServer) navigationSubagentParent(ref string) (parent, kind string, o
 						continuation = candidate.ID
 					}
 				}
-				return continuation, "fork", continuation != ""
+				return continuation, "fork", nil
 			}
-			return "", "", false
+			return "", "", nil
 		}
 	}
 	if w.cfg.Roster != nil {
 		for _, entry := range w.cfg.Roster.Snapshot().Live {
 			if !entry.Crashed && entry.SessionID != "" && slices.Contains(entry.RunningSubagentIDs, id) {
-				return entry.SessionID, "subagent", true
+				return entry.SessionID, "subagent", nil
 			}
 		}
 	}
-	return "", "", false
+	return "", "", nil
+}
+
+// navigationRemoteAncestor performs one bounded location read, never a thread
+// list or an activity walk. The source's navigation owner distinguishes gone
+// from unavailable and resolves fork placement as well as subagent ancestry.
+func (w *WebServer) navigationRemoteAncestor(ctx context.Context, ref appwire.Ref) (string, string, error) {
+	if w.sources == nil {
+		return "", "", nil
+	}
+	source, exists := w.sources.Source(ref.SourceID)
+	if !exists {
+		return "", "", nil
+	}
+	remote, ok := source.(*appsource.RemoteHubSource)
+	if !ok || !remote.Online() {
+		return "", "", appwire.SessionUnavailable("navigation source unavailable")
+	}
+	localRef := appwire.Ref{SourceID: appwire.LocalSourceID, ThreadID: ref.ThreadID}.String()
+	params, err := json.Marshal(appwire.NavigationReadParams{Resource: "location", Ref: localRef, RepresentationVersion: 3})
+	if err != nil {
+		return "", "", err
+	}
+	var raw json.RawMessage
+	if err := remote.AdminCall(ctx, appwire.MethodEvenerNavigationRead, params, &raw); err != nil {
+		return "", "", err
+	}
+	// Removal or re-registration while the read was in flight retires its
+	// authority. Never use the old source's answer under its replacement.
+	if current, exists := w.sources.Source(ref.SourceID); !exists || current != source {
+		return "", "", appwire.SessionUnavailable("navigation source changed")
+	}
+	var response appwire.NavigationReadResponse
+	if err := json.Unmarshal(raw, &response); err != nil {
+		return "", "", err
+	}
+	if response.Status == "gone" {
+		return "", "", nil
+	}
+	if response.Status != "ok" || response.Representation != appwire.NavigationRepresentationSnapshot {
+		return "", "", appwire.Unavailable("remote location snapshot unavailable")
+	}
+	var snapshot hubapi.NavigationSnapshot
+	if err := json.Unmarshal(response.Data, &snapshot); err != nil {
+		return "", "", err
+	}
+	if err := snapshot.Validate("location"); err != nil {
+		return "", "", err
+	}
+	var location hubapi.NavigationSessionLocation
+	if err := json.Unmarshal(snapshot.Metadata, &location); err != nil {
+		return "", "", err
+	}
+	root, err := appwire.ParseRef(location.TopLevelRef)
+	if err != nil || root.SourceID != appwire.LocalSourceID || location.Ref != localRef {
+		return "", "", appwire.Unavailable("remote location identity mismatch")
+	}
+	if location.TopLevel && root.String() == localRef {
+		return "", "", appwire.Unavailable("remote navigation root not indexed")
+	}
+	for _, entity := range snapshot.Entities {
+		var session hubapi.NavigationSessionSummary
+		if err := json.Unmarshal(entity.Value, &session); err != nil {
+			return "", "", err
+		}
+		if session.Ref == localRef && (session.Kind == "subagent" || session.Kind == "fork" || (location.TopLevel && session.Kind == "session")) {
+			return appwire.Ref{SourceID: ref.SourceID, ThreadID: root.ThreadID}.String(), session.Kind, nil
+		}
+	}
+	return "", "", appwire.Unavailable("remote location session unavailable")
 }
 
 // webNavigationSource takes a fresh deep snapshot at the service clock. It

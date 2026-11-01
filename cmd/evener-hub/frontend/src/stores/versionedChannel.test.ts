@@ -5,6 +5,7 @@ import {
   type ViewportClass,
 } from "@evener/appwire-client";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import type { ConversationPresentation } from "./transcriptDisplay";
 import { createBrowserSync } from "./transcriptDisplay/crossTabSync";
 import { createVersionedChannel, makeSourceId, type VersionedChannelMessage } from "./versionedChannel";
 
@@ -172,6 +173,7 @@ describe("source ids", () => {
 
 function browserFixture() {
   const local: Partial<Record<ViewportClass, TranscriptDisplayConfigV1>> = {};
+  const presentation: Record<ViewportClass, ConversationPresentation> = { desktop: "standard", mobile: "standard" };
   const applyLocal = vi.fn((layout: ViewportClass, config: TranscriptDisplayConfigV1 | undefined) => {
     local[layout] = config;
   });
@@ -179,8 +181,11 @@ function browserFixture() {
   const sync = createBrowserSync({
     channelName: "evener.transcript-display.v1",
     localKeys: { desktop: "display.desktop", mobile: "display.mobile" },
-    getState: () => ({ local }),
+    getState: () => ({ local, presentation }),
     applyLocal,
+    applyPresentation: (layout, value) => {
+      presentation[layout] = value;
+    },
     onDetach,
   });
   return { sync, local, applyLocal, onDetach };
