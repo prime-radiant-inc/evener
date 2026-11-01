@@ -59,10 +59,11 @@ At 1360px the desktop layout must not move. Native viewport behavior is restored
 before the next width.
 
 A separate 360px keyboard sequence also requires a full rendered text line, reachable
-input and restoration on close. The scaffold footer owns clearance. Mobile
-places the existing Session actions menu beside the composer's You heading,
-alongside its long liveness status, while desktop retains its separate footer
-menu/status. View/Scene/expression are behind Appearance at every width;
+input and restoration on close. The scaffold footer owns clearance. Comic mounts
+the standard Composer, so the existing Session actions menu sits inside its
+input card (`session-chrome-inline`) beside the attach control, with the liveness
+status kept in the footer; there is no comic-specific composer surface.
+View/Scene/expression are behind Appearance at every width;
 history/Latest and Send/Stop remain immediate.
 
 CDP `Emulation.setSafeAreaInsetsOverride` supplies an actual 34px browser

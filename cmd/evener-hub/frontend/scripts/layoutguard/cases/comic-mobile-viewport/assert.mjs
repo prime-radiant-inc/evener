@@ -36,10 +36,10 @@ function sessionGeometry() {
     footer: rect(footer),
     footerContentBottom: footer.getBoundingClientRect().bottom - parseFloat(getComputedStyle(footer).paddingBottom),
     bodyChildren: [...document.querySelector('[data-pane-scaffold]')?.firstElementChild?.children ?? []].map(node=>({tag:node.tagName,text:node.textContent.slice(0,100),box:rect(node)})),
-    composer: rect(document.querySelector("[data-comic-composer]")),
+    composer: rect(document.querySelector("[data-composer]")),
     liveness: rect(document.querySelector('[data-testid="liveness-line"]')),
     livenessText: document.querySelector('[data-testid="liveness-line"]')?.textContent,
-    headingColumns: [...document.querySelector('[data-comic-composer]')?.firstElementChild?.children ?? []].map(rect),
+    sessionMenu: rect(document.querySelector('[data-testid="session-chrome-inline"]')),
     readerLineHeight: document.querySelector('[data-comic-text]') ? parseFloat(getComputedStyle(document.querySelector('[data-comic-text]')).lineHeight) : null,
     editor: rect(document.querySelector('[role="textbox"]')),
     submit: rect(document.querySelector('[data-testid="composer-submit"]')),
@@ -276,10 +276,7 @@ export default async function assert(_measurement, { page }) {
     await send("Emulation.setDeviceMetricsOverride", { width, height: 620, deviceScaleFactor: 1, mobile: width < 900 });
     await send("Emulation.setTouchEmulationEnabled", { enabled: width < 900 });
     await evaluate(send, 'window.scrollTo(0, 0); window.comicGeometry.render("session")');
-    await until(
-      send,
-      '!!document.querySelector("[data-comic-composer]") && !!document.querySelector("[data-comic-entry]")',
-    );
+    await until(send, '!!document.querySelector("[data-composer]") && !!document.querySelector("[data-comic-entry]")');
     await evaluate(send, "document.fonts.ready");
     await frame(send);
     const native = await readSession();
