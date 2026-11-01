@@ -468,6 +468,43 @@ test("keeps itemless errors in distinct canonical groups through switching and p
   mounted.unmount();
 });
 
+test("plain view keeps one grid cell per panel when a stack packs beside another panel", async () => {
+  vi.spyOn(HTMLElement.prototype, "clientWidth", "get").mockReturnValue(847);
+  const workerPersona = { key: "worker", character: "xeno", name: "Worker", badge: "delegate" } as const;
+  const humanPersona = { key: "human", character: "anna", name: "Anna", badge: "human" } as const;
+  const workerLine = (id: string, text: string, sourceIndex: number) => ({
+    ...entry,
+    id,
+    sourceItemId: id,
+    sourceIndex,
+    speaker: "assistant" as const,
+    persona: workerPersona,
+    text,
+  });
+  const older = history();
+  const mounted = render(
+    <Reader
+      entries={[
+        workerLine("a", "A1.", 0),
+        workerLine("b", "A2.", 1),
+        { ...entry, id: "c", sourceItemId: "c", sourceIndex: 2, text: "C.", persona: humanPersona },
+      ]}
+      mode="plain"
+      older={older}
+    />,
+  );
+  await waitFor(() => {
+    // Only the packed wide row holds all three entries in one section.
+    const section = [...mounted.container.querySelectorAll<HTMLElement>("section[data-comic-row]")].find(
+      (node) => node.querySelectorAll("[data-comic-entry]").length === 3,
+    );
+    expect(section).toBeDefined();
+    // The two-balloon stack is one grid cell beside the singleton's, not two cells.
+    expect(section!.children).toHaveLength(2);
+  });
+  mounted.unmount();
+});
+
 test("keeps an item-backed point fixed with itemless errors across prepend, resize and views", async ({
   onTestFinished,
 }) => {

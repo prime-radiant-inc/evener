@@ -921,27 +921,29 @@ export function ComicTranscript({
                           />
                         </div>
                       ) : (
-                        resolved.map(({ item, entry }) => (
-                          <div
-                            className={styles.sourcePanel}
-                            key={`${item.slice.entryId}:${item.slice.start}`}
-                            data-comic-entry={item.slice.entryId}
-                            data-comic-session={flow.sessionRef}
-                            data-comic-path={comicPathKey(flow.path)}
-                            data-comic-start={item.slice.start}
-                            data-comic-end={item.slice.end}
-                          >
-                            <ComicPlainTranscript
-                              entries={[
-                                {
-                                  ...entry,
-                                  text: entry.text.slice(item.slice.start, item.slice.end),
-                                  images: item.slice.end === entry.text.length ? entry.images : undefined,
-                                },
-                              ]}
-                            />
-                          </div>
-                        ))
+                        <div className={styles.sourcePanel}>
+                          {resolved.map(({ item, entry }) => (
+                            <div
+                              className={styles.sourcePanel}
+                              key={`${item.slice.entryId}:${item.slice.start}`}
+                              data-comic-entry={item.slice.entryId}
+                              data-comic-session={flow.sessionRef}
+                              data-comic-path={comicPathKey(flow.path)}
+                              data-comic-start={item.slice.start}
+                              data-comic-end={item.slice.end}
+                            >
+                              <ComicPlainTranscript
+                                entries={[
+                                  {
+                                    ...entry,
+                                    text: entry.text.slice(item.slice.start, item.slice.end),
+                                    images: item.slice.end === entry.text.length ? entry.images : undefined,
+                                  },
+                                ]}
+                              />
+                            </div>
+                          ))}
+                        </div>
                       )}
                     </TranscriptRenderProvider>
                   );
