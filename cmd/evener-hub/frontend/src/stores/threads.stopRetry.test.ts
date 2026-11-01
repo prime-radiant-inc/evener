@@ -1749,3 +1749,60 @@ test("a resume failure that never reached the hub counts as no failed delivery c
   );
   expect(threadsStore.getState().uncertainRecheckFailures.get(row.clientMutationId)).toBe(1);
 });
+
+// The armed retry must also honor a Stop this page never saw: another tab's
+// force-stop bumps the ref's DURABLE stop epoch - the same write that cancels
+// the parked rows - not this page's Stop generations, so the fire-time
+// page-local checks alone would re-drive the resume and restart the daemon
+// the other tab's user just stopped. The armed retry carries the epoch it
+// was armed under and retires when it moved.
+test("a durable Stop from outside this page retires the pending resume retry", async ({ onTestFinished }) => {
+  const scheduledResumeRetries: { attempt: number; fire: () => void; cancelled: boolean }[] = [];
+  const restoreResumeScheduler = installResumeRetrySchedulerForTests((attempt, retry) => {
+    const scheduled = { attempt, fire: retry, cancelled: false };
+    scheduledResumeRetries.push(scheduled);
+    return () => {
+      scheduled.cancelled = true;
+    };
+  });
+  onTestFinished(restoreResumeScheduler);
+  const ref = "local:cross-tab-stop-epoch";
+  const storage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(storage);
+  const fake = connectMutationClient();
+  fake.on("thread/read", () => {
+    const response = readResponse(ref, { status: { type: "notLoaded" } });
+    response.thread.evener.resumeRequired = true;
+    response.thread.evener.mutationStateAuthoritative = false;
+    return response;
+  });
+  fake.on("thread/resume", () => {
+    throw new Error("rendezvous timed out");
+  });
+  await threadsStore.getState().ensureThread(ref);
+  await flushIndexedDBUntil(() => false);
+  await threadsStore.getState().resumeSession(ref);
+  await waitFor(() => expect(scheduledResumeRetries).toHaveLength(1));
+  expect(threadsStore.getState().restartBlockingObligations.has(ref)).toBe(true);
+  // Another tab force-stops the session: its cancellation write bumps the
+  // durable stop epoch in the shared store, invisible to this page's Stop
+  // generations.
+  const otherTab = new MutationOutboxIndexedDB();
+  await otherTab.cancelUnattempted(ref);
+  otherTab.close();
+  // The fired retry finds the epoch moved and retires without re-driving: no
+  // second resume reaches the hub and no replacement retry is armed. The
+  // entry's cancel handle was already consumed by the fire itself, so the
+  // retirement is observed through what does not happen next - settled through
+  // the epoch read the fire performs and, had it driven, the failure and
+  // re-arm that would follow.
+  act(() => {
+    scheduledResumeRetries[0]?.fire();
+  });
+  await flushIndexedDBUntil(() => false);
+  await flushMicrotasks();
+  await flushIndexedDBUntil(() => false);
+  await flushMicrotasks();
+  expect(scheduledResumeRetries).toHaveLength(1);
+  expect(fake.calls.filter((call) => call.method === "thread/resume")).toHaveLength(1);
+});

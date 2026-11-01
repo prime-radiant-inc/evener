@@ -10,10 +10,11 @@ import { describe, expect, test, vi } from "vitest";
 import type { ConnectionState } from "../client";
 import { ConnectionClosedError } from "../errors";
 import { createConnectionStore } from "../state/connection/core";
-import type { AnyNotification, InitializeResponse, MethodName } from "../types.gen";
+import type { AnyNotification, InitializeResponse, MethodName, ThreadReadResponse } from "../types.gen";
 import { deferred } from "./deferred";
 import { deferRequest, FakeClient, gateSettlements, type Settlement } from "./fakeClient";
 import { FAKE_INITIALIZE_RESULT } from "./fakeSocket";
+import { testThread } from "./reducerTestKit";
 
 // A name the hub has never served. Cast because MethodName correctly refuses
 // it at compile time — this suite exercises the runtime guard that catches
@@ -600,5 +601,48 @@ describe("FakeClient close lifecycle", () => {
     } as unknown as AnyNotification;
     expect(() => fake.emitNotification(started)).not.toThrow();
     expect(later).toHaveBeenCalledWith(started);
+  });
+});
+
+// The hub echoes ThreadReadParams.requestGeneration onto ThreadReadResponse
+// (types.gen.ts: "RequestGeneration echoes ThreadReadParams.RequestGeneration"),
+// and the client's read discipline (transcriptHistory.ts's readDisposition)
+// discards any response that answers an older generation than the newest
+// issued - a response with no echo reads as generation 0. Without the echo,
+// every read a store issues after its held model first carries history is
+// silently discarded as superseded, which is how Session.resume.test.tsx's
+// backoff test flaked: an extra resync read made the resume drive's own
+// refresh the model's third read, its echo-less response never published,
+// and the recovery obligation never cleared. Handlers script plain
+// responses; the fake owes the same echo the hub sends.
+describe("FakeClient thread/read request generation echo", () => {
+  test("a thread/read response carries the request's requestGeneration when the handler scripted none", async () => {
+    const fake = new FakeClient();
+    fake.on("thread/read", () => ({ thread: testThread() }));
+    const read = fake.request("thread/read", { includeTurns: false, requestGeneration: 3 });
+    await expect(read).resolves.toMatchObject({ requestGeneration: 3 });
+  });
+
+  test("a handler-scripted requestGeneration is preserved", async () => {
+    const fake = new FakeClient();
+    fake.on("thread/read", () => ({ thread: testThread(), requestGeneration: 7 }));
+    const read = fake.request("thread/read", { includeTurns: false, requestGeneration: 3 });
+    await expect(read).resolves.toMatchObject({ requestGeneration: 7 });
+  });
+
+  test("a read whose request carried no generation gains no echo", async () => {
+    const fake = new FakeClient();
+    fake.on("thread/read", () => ({ thread: testThread() }));
+    const response = await fake.request("thread/read", { includeTurns: false });
+    expect("requestGeneration" in response).toBe(false);
+  });
+
+  test("a held thread/read is stamped with the echo when it resolves", async () => {
+    const fake = new FakeClient();
+    const held = deferred<ThreadReadResponse>();
+    fake.on("thread/read", () => held.promise);
+    const read = fake.request("thread/read", { includeTurns: false, requestGeneration: 2 });
+    held.resolve({ thread: testThread() });
+    await expect(read).resolves.toMatchObject({ requestGeneration: 2 });
   });
 });

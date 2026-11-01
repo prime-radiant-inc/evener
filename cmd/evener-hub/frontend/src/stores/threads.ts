@@ -1679,14 +1679,18 @@ export function installResumeRetrySchedulerForTests(scheduler: RetryScheduler): 
 // checking on every obligation transition.
 const resumeRetries = new Map<string, { attempt: number; cancel?: () => void }>();
 
-function scheduleResumeRetryForFence(ref: string): void {
+function scheduleResumeRetryForFence(ref: string, armedStopEpoch: number | undefined): void {
   if (resumeRetries.get(ref)?.cancel) return;
   const attempt = (resumeRetries.get(ref)?.attempt ?? 0) + 1;
-  // The ref's Stop generation at arm time. cancelPendingUserIntents retires
-  // the armed retry at the Stop itself; this fire-time check is the race
-  // backstop - a Stop that lands between the arm and this wake must not let
-  // the drive run, because the drive takes a fresh stop baseline and would
-  // not see it.
+  // Two Stop fences are captured at arm time: the page's Stop generations
+  // (this tab's Stops) and the ref's DURABLE stop epoch - the one a Stop from
+  // ANY tab bumps, including a force-stop this page never sees as a
+  // generation. A fired drive that finds either moved is a drive whose user
+  // intent a Stop has since reversed: retire it instead of re-driving the
+  // resume and restarting the daemon the user stopped. cancelPendingUserIntents
+  // retires the armed retry at this page's own Stops; these fire-time checks
+  // cover a Stop that lands between the arm and this wake, and one from
+  // another tab entirely.
   const armedStopGeneration = userIntentStopGenerations.get(ref) ?? 0;
   const cancel = resumeRetryScheduler(attempt, () => {
     // Drop only the handle, not the entry: the pace count persists so the
@@ -1694,16 +1698,37 @@ function scheduleResumeRetryForFence(ref: string): void {
     // owns retiring the whole entry when the fence is gone.
     const fired = resumeRetries.get(ref);
     if (fired) resumeRetries.set(ref, { attempt: fired.attempt });
-    const state = threadsStore.getState();
-    if (!state.threads.has(ref) || !state.restartBlockingObligations.has(ref)) {
-      retireResumeRetry(ref);
-      return;
-    }
-    if ((userIntentStopGenerations.get(ref) ?? 0) !== armedStopGeneration) {
-      retireResumeRetry(ref);
-      return;
-    }
-    void resumeFencedForSend(ref, true);
+    void (async () => {
+      const state = threadsStore.getState();
+      if (!state.threads.has(ref) || !state.restartBlockingObligations.has(ref)) {
+        retireResumeRetry(ref);
+        return;
+      }
+      if ((userIntentStopGenerations.get(ref) ?? 0) !== armedStopGeneration) {
+        retireResumeRetry(ref);
+        return;
+      }
+      // The durable fence is only as strong as the durable store: a Stop
+      // cannot bump the epoch while that store is unreadable, and an arm that
+      // could not read the epoch carries no fence to compare, so both unread
+      // shapes check as unchanged rather than blocking the re-drive - and a
+      // fire whose own read fails falls through to the drive rather than
+      // silently stranding the retry.
+      const runtime = mutationRuntime;
+      if (runtime !== null && armedStopEpoch !== undefined) {
+        let firedStopEpoch: number | undefined;
+        try {
+          firedStopEpoch = await runtime.storage.readStopEpoch(ref);
+        } catch {
+          firedStopEpoch = undefined;
+        }
+        if (firedStopEpoch !== undefined && firedStopEpoch !== armedStopEpoch) {
+          retireResumeRetry(ref);
+          return;
+        }
+      }
+      void resumeFencedForSend(ref, true);
+    })();
   });
   resumeRetries.set(ref, { attempt, cancel });
 }
@@ -2928,10 +2953,14 @@ async function runResumeFencedForSend(
     // the error type alone cannot be the Stop signal. Whatever the error, the
     // catch re-runs the drive's acquisition-time baseline: a Stop generation
     // that moved since the drive acquired ownership is a Stop that won, and
-    // re-driving the resume would fight it.
+    // re-driving the resume would fight it. An identity-changing resume moved
+    // the user's work under the resumed ref, so BOTH identities are fenced -
+    // a Stop of the resumed ref must not leave the original ref's retry
+    // re-driving a session the user shut down.
     if (!stopCanceled) {
       try {
         stopBaseline(ref);
+        if (resumedRef !== undefined) stopBaseline(resumedRef);
       } catch {
         stopCanceled = true;
       }
@@ -2953,8 +2982,23 @@ async function runResumeFencedForSend(
     // A Stop that won is the user's own reversal of this drive - re-driving it
     // would fight the Stop - so only every other failure keeps the retry owner
     // armed while the obligation stands. The fire-time re-check retires the
-    // retry if the fence cleared some other way first.
-    if (!stopCanceled) scheduleResumeRetryForFence(ref);
+    // retry if the fence cleared some other way first. The armed retry carries
+    // the ref's durable stop epoch, so a Stop from another tab - which bumps
+    // that epoch, never this page's generations - retires it too. An epoch the
+    // wedged store could not read arms without the durable fence: the same
+    // store cannot have recorded the Stop either.
+    if (!stopCanceled) {
+      let armedStopEpoch: number | undefined;
+      const runtime = mutationRuntime;
+      if (runtime !== null) {
+        try {
+          armedStopEpoch = await runtime.storage.readStopEpoch(ref);
+        } catch {
+          armedStopEpoch = undefined;
+        }
+      }
+      scheduleResumeRetryForFence(ref, armedStopEpoch);
+    }
     // The escape counter counts failed opportunities to CHECK a standing row's
     // fate. A drive whose resume request went out and failed checked; one
     // that never reached the hub, or that the user's own Stop reversed,

@@ -8,7 +8,7 @@
 import { APPWIRE_PROTOCOL_VERSION, type AppwireClient, type ConnectionState, type TerminalReason } from "../client";
 import type { AppwireClientLike } from "../clientLike";
 import { ConnectionClosedError } from "../errors";
-import type { AnyNotification, InitializeResponse, MethodName, MethodTypes } from "../types.gen";
+import type { AnyNotification, InitializeResponse, MethodName, MethodTypes, ThreadReadParams } from "../types.gen";
 import { METHOD_NAMES, NOTIFICATION_NAMES } from "../types.gen";
 
 // The hub's real method catalog, as data. MethodName alone is a compile-time
@@ -93,6 +93,16 @@ const TRANSPORT_CLOSED_MESSAGE = "FakeClient: socket closed";
 // `Promise.resolve().then(invoke)` did and only adopt a returned promise.
 function isThenable<T>(value: T | Promise<T>): value is Promise<T> {
   return value !== null && value !== undefined && typeof (value as { then?: unknown }).then === "function";
+}
+
+// Adds the hub's requestGeneration echo to a thread/read response whose
+// scripted shape omitted it. A handler that scripted its own generation -
+// modeling a specific generation on purpose - is returned untouched.
+function stampReadGeneration<T>(response: T, requestGeneration: number): T {
+  if (typeof response !== "object" || response === null) return response;
+  const read = response as T & { requestGeneration?: number };
+  if (read.requestGeneration !== undefined) return response;
+  return { ...read, requestGeneration };
 }
 
 export class FakeClient implements AppwireClientLike {
@@ -317,7 +327,21 @@ export class FakeClient implements AppwireClientLike {
     // never deliver. The cast restores this call site's M-specific result at
     // the boundary: `handler` is erased to RequestHandler<MethodName>, whose
     // result is the union of every method's, not this M's.
-    return this.defer<MethodTypes[M]["result"]>(() => handler(params) as MethodTypes[M]["result"]);
+    // The hub echoes ThreadReadParams.requestGeneration onto ThreadReadResponse
+    // (types.gen.ts: "RequestGeneration echoes ThreadReadParams.RequestGeneration"),
+    // and the client's read discipline (transcriptHistory.ts's readDisposition)
+    // discards a response answering an older generation than the newest issued -
+    // a response with no echo reads as generation 0, so without the echo every
+    // read a store issues after its held model first carries history is silently
+    // discarded as superseded. Handlers script plain responses; the fake adds
+    // the echo itself, and a handler's own scripted generation wins.
+    return this.defer<MethodTypes[M]["result"]>(() => {
+      const result = handler(params) as MethodTypes[M]["result"];
+      if (method !== "thread/read") return result;
+      const requestGeneration = (params as ThreadReadParams).requestGeneration;
+      if (requestGeneration === undefined) return result;
+      return Promise.resolve(result).then((resolved) => stampReadGeneration(resolved, requestGeneration));
+    });
   }
 
   onNotification(cb: (n: AnyNotification) => void): () => void {
