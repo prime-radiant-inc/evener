@@ -427,6 +427,7 @@ func (s *Session) composeHubWatchTool() {
 	} else {
 		registered.Definition = tool.DefJobWatchNamed(availableEventKindNames(), s.resultToolName())
 	}
+	ordinary := s.hubOrdinaryAvailable(name)
 	registered.Definition = managerWatchDefinition(registered.Definition)
 	registered.Schema = nil
 	registered.Execute = nil
@@ -434,7 +435,7 @@ func (s *Session) composeHubWatchTool() {
 		if _, ok := args["hub"]; ok {
 			return s.configureHubWatchRuntime(ctx, args)
 		}
-		if !s.hubOrdinaryAvailable(name) {
+		if !ordinary {
 			return nil, appwire.InvalidRequest("ordinary job_watch is unavailable")
 		}
 		return base.Exec(ctx, env, args)
