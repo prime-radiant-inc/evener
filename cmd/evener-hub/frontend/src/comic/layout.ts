@@ -109,7 +109,9 @@ export function composeComicRows(
 ): readonly ComicRow[] {
   const documents = entries.map((entry) => projectComicMarkdown(entry.text, entry.streaming));
   const columns = comicPanelColumns(viewportWidth, panelMaxWidth);
-  const slotWidth = (viewportWidth - (columns - 1) * ROW_GAP) / columns;
+  // The packed grid caps every track at the panel size token, so measurement
+  // must use the capped width too or budgets can overshoot what renders.
+  const slotWidth = Math.min((viewportWidth - (columns - 1) * ROW_GAP) / columns, panelMaxWidth);
   const stackable = (value: ComicEntry, doc: ComicMarkdownDocument) => {
     const part = prosePart(value, doc);
     return (

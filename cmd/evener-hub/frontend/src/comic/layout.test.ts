@@ -213,7 +213,7 @@ test("packed slots measure at their own column width", () => {
     },
     416,
   );
-  expect(slots).toEqual([420, 420, 420]);
+  expect(slots).toEqual([416, 416, 416]);
 });
 
 test("row columns stay bounded by the panel size token", () => {
