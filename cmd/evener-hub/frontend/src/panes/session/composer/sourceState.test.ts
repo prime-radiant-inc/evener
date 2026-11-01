@@ -293,6 +293,9 @@ test("a stale recovery refusal preserves image-bearing work under a fresh owner"
     await Promise.resolve();
     await source.flushRecoveryWrites();
     source.dispose();
+    // Disposal enqueues one final durable write; a reload reads what the close
+    // flushed, so drain it before the fresh source opens.
+    await source.flushRecoveryWrites();
     reloaded = createTestComposerSource("root");
     const reloadedRow = preserved ? await storage.getRecovery(preserved.clientMutationId) : undefined;
     if (!reloadedRow) throw new Error("missing preserved recovery fixture");
@@ -379,6 +382,9 @@ test("rebound composer adopts and consumes the exact persisted draft revision on
 
     unbind();
     source.dispose();
+    // Disposal enqueues one final durable write; a reload reads what the close
+    // flushed, so drain it before the fresh source opens.
+    await source.flushRecoveryWrites();
     const reopened = createTestComposerSource("root");
     try {
       const reopenedRecovery = await storage.getRecovery(queued.clientMutationId);

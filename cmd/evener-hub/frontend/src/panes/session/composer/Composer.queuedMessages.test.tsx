@@ -441,6 +441,12 @@ test("a second committed consolidation records C before adapter and source reope
   expect(firstCommit.localDraftRevisionId).toBe(revisionA);
   expect(recoveryCompositionRevision(firstCommit)).toBe(1);
   original.dispose();
+  // Disposal enqueues one final durable write (close flushes, never drops),
+  // so the reopened pane reads what the close flushed: drain the write, then
+  // open the replacement on the flushed record.
+  await original.flushRecoveryWrites();
+  const flushedCommit = await storage.getRecovery(queuedRecord.clientMutationId);
+  if (!flushedCommit) throw new Error("missing flushed recovery commit");
 
   const replacement = createTestComposerSource("root");
   replacement.editor.write("C", 1);
@@ -448,19 +454,22 @@ test("a second committed consolidation records C before adapter and source reope
   const revisionC = readComposerDraftRevisionId("root");
   if (!revisionC || revisionC === revisionA) throw new Error("missing distinct draft C revision");
   storage.armPause();
-  const secondActivation = replacement.activateRecovery(firstCommit);
+  const secondActivation = replacement.activateRecovery(flushedCommit);
   let reopened: MutationOutboxIndexedDB | undefined;
   try {
     await storage.committed;
     const secondCommit = await storage.getRecovery(queuedRecord.clientMutationId);
     if (!secondCommit) throw new Error("missing second recovery commit");
     expect(secondCommit.composerText).toBe("C\n\nA\n\nB");
-    expect(recoveryCompositionRevision(secondCommit)).toBe(recoveryCompositionRevision(firstCommit) + 1);
+    expect(recoveryCompositionRevision(secondCommit)).toBe(recoveryCompositionRevision(flushedCommit) + 1);
     expect(secondCommit.localDraftRevisionId).toBe(revisionC);
     storage.releaseContinuation();
     await storage.continued;
     await expect(secondActivation).resolves.toBe(true);
     replacement.dispose();
+    await act(async () => {
+      await replacement.flushRecoveryWrites();
+    });
 
     storage.close();
     resetThreadsStoreForTests();
@@ -1677,13 +1686,20 @@ test("disposing the source cancels its delayed recovery cleanup retry", async ()
     await act(async () => source.queueRecoveryPersistence(record.clientMutationId, "", [], []).catch(() => undefined));
     expect(vi.getTimerCount()).toBe(1);
     await act(async () => source.dispose());
+    // Disposal performs the empty composition's guarded discard itself (close
+    // flushes, never drops): no delayed retry is armed afterwards. Drain the
+    // write and its projection refresh so no transaction deadline is pending
+    // when the timer count is read.
+    await act(async () => {
+      await source.flushRecoveryWrites();
+    });
+    await flushPendingTurnsProjectionForTests();
     expect(vi.getTimerCount()).toBe(0);
     await act(async () => {
       await vi.advanceTimersByTimeAsync(1_000);
     });
-    await flushPendingTurnsProjectionForTests();
-    expect(deleteAttempts).toBe(1);
-    expect((await storage.getRecovery(record.clientMutationId))?.composerText).toBe("completed command");
+    expect(deleteAttempts).toBe(2);
+    expect(await storage.getRecovery(record.clientMutationId)).toBeUndefined();
   } finally {
     failFirstDelete.mockRestore();
     vi.useRealTimers();

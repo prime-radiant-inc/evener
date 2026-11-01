@@ -14,7 +14,7 @@ import {
 import { useToasts } from "../../../widgets";
 import { createAttachmentOperations, useAttachments } from "./attachments/useAttachments";
 import { STEER_RECOVERY_FENCED_REASON } from "./controlTooltips";
-import { clearDraft, clearPersistedDraft, readDraftRevision } from "./draft";
+import { clearDraft, clearPersistedDraftIfRevisionMatches, readDraftRevision } from "./draft";
 import { pendingTurnEntries, type QueueStripProps, submitWithPendingTracking, usePendingTurnEntries } from "./queue";
 import {
   resendRecoveryPendingTurn,
@@ -84,13 +84,14 @@ export function useComposerActions(source: ComposerSourceState, externalBusy = f
     selectionMetaRef,
     recoveryOwnerLeaseRef,
     recoveryOwnsLocalDraftRef,
+    boundDraftRevisionIdRef,
   } = source.continuity;
   const {
     updateText,
     updateSkillNames,
     editSkillNames,
     updateSelectionMeta,
-    setActiveRecoveryId,
+    adoptRestoredRecovery,
     markRestore,
     queueRecoveryPersistence,
     clearIfUnchanged,
@@ -198,6 +199,7 @@ export function useComposerActions(source: ComposerSourceState, externalBusy = f
     if (
       freshRecoveryRef !== ref ||
       activeRecoveryId !== null ||
+      recoveryActivating ||
       textRef.current.trim() !== "" ||
       attachments.items.length > 0 ||
       skillNamesRef.current.length > 0 ||
@@ -228,7 +230,9 @@ export function useComposerActions(source: ComposerSourceState, externalBusy = f
     const visible = materializeSelectionReferences({ ...recovered, skillNames: restoredSkillNames(recovered) });
     Object.assign(recovered, visible);
     recoveryOwnsLocalDraftRef.current = false;
-    setActiveRecoveryId(record);
+    // Adoption is a lease transfer alone; the close's flush reads the
+    // restored row itself to decide whether an unchanged close owes a write.
+    adoptRestoredRecovery(record);
     // Restoration replaces this mount's local owner without editing the
     // shared recovery draft that an earlier mount may still be submitting.
     draftEditRevisionRef.current += 1;
@@ -237,17 +241,23 @@ export function useComposerActions(source: ComposerSourceState, externalBusy = f
     updateSkillNames(restoredSkillNames(recovered));
     updateSelectionMeta(recovered);
     attachments.replaceWithSettled(recovered.attachments);
-    clearPersistedDraft(ref);
+    // Cleanup may only clear a draft this pane can name by identity: the
+    // revision its own editor bound. Another tab's newer draft is not this
+    // pane's to destroy.
+    const boundRevisionId = boundDraftRevisionIdRef.current;
+    if (boundRevisionId !== undefined) clearPersistedDraftIfRevisionMatches(ref, boundRevisionId);
   }, [
     activeRecoveryId,
     attachments.replaceWithSettled,
+    adoptRestoredRecovery,
+    boundDraftRevisionIdRef,
     draftEditRevisionRef,
     freshRecoveryRef,
     markRestore,
+    recoveryActivating,
     recoveryEntries,
     recoveryOwnsLocalDraftRef,
     ref,
-    setActiveRecoveryId,
     skillNamesRef,
     selectionMetaRef,
     source.compositionOwnerId,
@@ -590,8 +600,15 @@ export function useComposerActions(source: ComposerSourceState, externalBusy = f
       // A refused recovery resend keeps its composer payload. Ordinary sends
       // retain the store's existing eligible direct-dispatch fallback policy.
       if (source.alive && recoveryResendRefused) pushRecoveryRefusal("changed");
-      else if (source.alive && recoveryAlreadySent) pushRecoveryRefusal("consumed");
-      else if (error !== recoveryWriteRefusal && error !== recoveryAlreadySentRefusal) return;
+      else if (source.alive && recoveryAlreadySent && submittedRecoveryId !== null) {
+        pushRecoveryRefusal("consumed");
+        // The consumed outcome leaves a dead lease that would trip every
+        // later save. The composition is preserved under a fresh owner at the
+        // outcome and adopted by lease transfer, so it is durable before the
+        // pane can close, and the send-failure persistence below composes
+        // with the preserved row instead of racing a second copy.
+        await source.preserveConsumedRecovery(submittedRecoveryId);
+      } else if (error !== recoveryWriteRefusal && error !== recoveryAlreadySentRefusal) return;
     } finally {
       setBusyAction(null);
       releaseInFlightRecovery();

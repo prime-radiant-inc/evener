@@ -1059,7 +1059,11 @@ export class MutationOutboxIndexedDB implements QueuedMessageStorage<MutationAtt
         recoveryStore.get(base.clientMutationId),
       );
       if (stale && sameRecoveryComposition(stale, input, composerText, composerMentions, attachments)) return stale;
-      const intentSequence = await this.#allocateSequence(transaction, base.targetRef);
+      // A resume may retarget the base row after this pane captured it: the
+      // preserved row follows the row's own durable identity, so its content
+      // stays reachable from the ref every live pane and projection names.
+      const targetRef = stale?.targetRef ?? base.targetRef;
+      const intentSequence = await this.#allocateSequence(transaction, targetRef);
       const clientMutationId = this.#createMutationId();
       await this.#assertMutationIdAvailable(transaction, clientMutationId);
       const record: VersionedMutationRecoveryRecord = {
@@ -1068,11 +1072,11 @@ export class MutationOutboxIndexedDB implements QueuedMessageStorage<MutationAtt
         originClientId: ownClientId(),
         intentSequence,
         createdAt: this.#now(),
-        targetRef: base.targetRef,
-        threadId: base.threadId,
-        instanceId: base.instanceId,
+        targetRef,
+        threadId: stale?.threadId ?? base.threadId,
+        instanceId: stale?.instanceId ?? base.instanceId,
         method: base.method,
-        payload: { ...base.payload, ref: base.targetRef, input },
+        payload: { ...(stale?.payload ?? base.payload), ref: targetRef, input },
         attachments,
         optimisticDisplay: { method: base.method, input },
         composerText,
@@ -1087,7 +1091,7 @@ export class MutationOutboxIndexedDB implements QueuedMessageStorage<MutationAtt
         state: "submitting",
         attempted: false,
         unresolvedAttempts: 0,
-        stopEpochAtEnqueue: await this.#stopEpochOf(transaction, base.targetRef),
+        stopEpochAtEnqueue: await this.#stopEpochOf(transaction, targetRef),
       };
       await requestResult(recoveryStore.put(record));
       return record;

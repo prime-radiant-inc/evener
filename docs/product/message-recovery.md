@@ -69,9 +69,69 @@ left untouched. If the stale row still holds the identical composition, no
 duplicate row is created. The pane then owns the fresh row, so later edits
 update it, Send consumes it, and a reload restores the local composition
 including its images. Two bounds match the platform's existing behavior:
-rows recorded before a resume rewrote the conversation ref do not follow the
-resumed conversation, and keystrokes typed inside a crash window are
-best-effort.
+keystrokes typed inside a crash window are best-effort. A row recorded before
+a resume rewrites the conversation ref follows the resumed conversation: the
+resume's retarget transaction moves every recovery row the superseded ref
+held - a preserved row included - onto the resumed ref with the resumed
+identity, and the replacement pane's seat decides what restores.
+
+The live refs are the content's only home until disposal, and disposal is
+synchronous: a closing pane snapshots its composition and enqueues exactly one
+final durable write on the same serialized recovery-write chain its saves use.
+Close flushes, never drops - a close during a pending write keeps every
+keystroke, because the final write carries the closing snapshot rather than an
+older capture some in-flight write holds. The flush's guard decisions read the
+write chain's state at the flush's own turn: a source-owned write that was
+mid-flight at disposal settles first and records the row and revision it
+committed into the pane's continuity refs, so the flush settles after its own
+writes - onto the very row they advanced - rather than deciding from a
+disposal-time snapshot. Whether the flush owes a write is decided by the
+durable row itself, in the representation the row persists - its composer
+text, so a built-in invocation (/queue, /steer) compares against the
+invocation the row holds rather than the parsed body it submits. The live row
+answers while it still carries the chain's own revision; a row that moved
+under a peer, or no row at all, is answered by the chain's last-known row
+snapshot; and a row the pane's own mid-flight discard deleted as it settled is
+answered by nothing - the flush owes the composition a fresh durable home. A
+close whose composition the durable row already holds writes nothing: an
+unchanged echo would stale every peer lease on the row, and writing after
+another tab sent or dismissed the row would resurrect a settled message. An
+empty composition
+closes through the guarded discard carrying the revision the pane's own
+pending write returned, and the discard's outcome is settled either way: a
+refused discard means the row moved under a writer the closing pane can no
+longer name, and the cleared composition has nothing durable left to remove.
+A leased composition closes through the save CAS, and a CAS another writer
+advanced through a preserve under the pane's own seat. While the pane's own
+submission is still in flight the resend owns the row's consumption, so the
+flush routes around the CAS: an unedited close leaves the sent composition as
+the only copy, and post-submit edits are preserved under the pane's seat
+beside the outbox's submitted snapshot. An image still mid-encode has no bytes
+to write, so the final write strips its marker reference through the same
+text patch every editor write applies - selection offsets follow the shortened
+text - rather than restoring a literal orphan. A pane holding no lease
+persists its keystrokes to its draft as they are typed, so its close owes
+nothing.
+
+A preserve follows its row's own durable identity: a row a resume retargeted
+preserves under the resumed ref - the ref every live pane and projection names
+- and the update and preserve paths notify and refresh the row's ref rather
+than the closing pane's. A preserve never duplicates content the durable row
+already holds: a row already carrying the identical composition is reused as
+the preserved row, an unchanged close writes nothing when the durable row
+answers with the same composition,
+and where a peer's advanced row and a pane's preserved composition do
+coexist, the peer's row keeps that peer's work and the newest composition
+wins automatic restoration. A close that follows the pane's own mid-flight
+write settles onto the row that write advanced in place; the row a peer
+advanced is the only one a close preserves beside.
+
+A resend that finds its recovery row already consumed preserves the current
+composition at the outcome itself, under a fresh owner, and adopts the
+preserved row by lease transfer alone. Adoption never writes content back into
+a live composer: content flows only from the live refs outward through the CAS
+write. The send-failure persistence path composes with the preserved row, so
+edits typed during a failed send land in one durable home.
 
 ### Browser seat and selection ownership
 
@@ -87,8 +147,9 @@ well, so restoring the previous pane's work there takes one tap. Seats do
 not scope user selections; they keep pane identity stable and scope automatic
 restoration: a recovery row records the composer seat that last wrote it as
 its composition owner, and an empty composer at mount restores only the
-newest rejected row its own seat owns - the pane's own bounced work, one tap
-back. Every row stays reachable through QueueStrip's explicit Edit, Retry and
+newest rejected row its own seat owns, and only while no recovery activation
+is in flight - the pane's own bounced work, one tap back. Every row stays
+reachable through QueueStrip's explicit Edit, Retry and
 Send now regardless of owner. A pane's own send carries its seat, so the row
 a refusal bounces from it restores to that pane's next mount under the same
 seat. A resumed nested session carries the authoring pane's seat to its
@@ -96,6 +157,8 @@ replacement pane, so the resumed composer can restore its own work again.
 Rows written before composition owners existed carry no seat and are never
 restored automatically; the explicit actions reach them. A fresh pane holds a
 fresh seat, so it never injects another (or a closed) pane's row at mount.
+The mount restore's draft cleanup clears only the persisted draft revision
+the pane's own editor bound, so another tab's newer draft survives it.
 
 Sending recovery consumes its durable source and creates one fresh outbox
 identity atomically. It never falls back to an ordinary enqueue when the source

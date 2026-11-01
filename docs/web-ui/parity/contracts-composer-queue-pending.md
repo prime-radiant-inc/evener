@@ -108,6 +108,55 @@ except where a line says so itself.
   every row regardless of owner, and rows recorded before owners existed are
   never restored automatically.
 
+### Recovery preservation
+
+- The live refs are the content's only home until disposal, and disposal is
+  synchronous: a closing pane snapshots its composition and enqueues exactly
+  one final durable write on the same serialized recovery-write chain its
+  saves use. Close flushes, never drops - a close during a pending write keeps
+  every keystroke. The flush's guards read the write chain's state at the
+  flush's own turn: a source-owned write mid-flight at disposal settles first
+  and records the row and revision it committed, and the flush settles onto
+  the row its own chain advanced. Whether the flush owes a write is decided
+  by the durable row itself, in the representation the row persists (its
+  composer text, so a built-in /queue or /steer invocation compares as the
+  invocation, not the parsed body): the live row answers while it still
+  carries the chain's own revision; a row that moved under a peer, or no row
+  at all, is answered by the chain's last-known row snapshot; and a row the
+  pane's own mid-flight discard deleted as it settled is answered by nothing -
+  the flush owes the composition a fresh durable home. A close whose
+  composition the durable row already holds writes nothing; an empty
+  composition closes through the guarded discard carrying the pending write's
+  returned revision, its refusal settled (the row belongs to a writer the
+  closing pane cannot name); a leased composition through the save CAS; and a
+  CAS another writer advanced through a preserve under the pane's own seat.
+  While the pane's own submission is in flight the flush routes around the
+  CAS: an unedited close leaves the sent composition as the only copy, and
+  post-submit edits preserve under the pane's seat beside the submitted
+  snapshot. An image still mid-encode has no bytes, so the final write strips
+  its marker through the same text patch editor writes apply, selection
+  offsets included. A pane holding no lease owes nothing at close: its draft
+  already holds every keystroke.
+- A resend that finds its row already consumed preserves the current
+  composition at the outcome itself, under a fresh owner, and adopts the
+  preserved row by lease transfer alone. Adoption never writes content back
+  into a live composer; content flows only from the live refs outward through
+  the CAS write, and the send-failure persistence path composes with the
+  preserved row.
+- A preserve follows its row's own durable identity - a row a resume
+  retargeted preserves under the resumed ref - and never duplicates content
+  the durable row already holds: a row already carrying the identical
+  composition is reused, an unchanged close writes nothing when the durable
+  row answers with the same composition, and where a peer's advanced row and a pane's preserved composition
+  coexist, the peer's row keeps its own work and the newest composition wins
+  automatic restoration. A close that follows the pane's own mid-flight write
+  settles onto the row that write advanced in place; the row a peer advanced
+  is the only one a close preserves beside.
+- An empty composer at mount restores a seat-owned rejected row only while no
+  recovery activation is in flight, and its draft cleanup clears only the
+  persisted draft revision the pane's own editor bound, so another tab's newer
+  draft survives it.
+
 ### Atomic skill and command selections
 
 - Session and launcher composers share the real ProseMirror editor. Explicit

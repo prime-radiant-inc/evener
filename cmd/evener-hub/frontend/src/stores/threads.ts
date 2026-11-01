@@ -3153,7 +3153,6 @@ export function captureRecoveryStopBarrier(targetRef: string): Promise<MutationS
 
 export async function updateRecoveryMutation(
   clientMutationId: string,
-  targetRef: string,
   text: string,
   attachments: InputAttachment[],
   skillNames?: readonly string[],
@@ -3181,7 +3180,10 @@ export async function updateRecoveryMutation(
     compositionOwnerId,
   );
   if (!record) return undefined;
-  notifyMutationPersistence([targetRef]);
+  // The row may carry a ref the caller cannot name (a resume retargets rows
+  // under a closing pane), so the notification follows the row's own durable
+  // identity, not the caller's ref.
+  notifyMutationPersistence([record.targetRef]);
   return record;
 }
 
@@ -3190,7 +3192,6 @@ export async function updateRecoveryMutation(
 // target, and carries the local text, selections and attachment bytes.
 export async function preserveRecoveryMutation(
   base: MutationRecoveryRecord,
-  targetRef: string,
   text: string,
   attachments: InputAttachment[],
   skillNames?: readonly string[],
@@ -3211,7 +3212,7 @@ export async function preserveRecoveryMutation(
     localDraftRevisionId,
   );
   if (!record) return undefined;
-  notifyMutationPersistence([targetRef]);
+  notifyMutationPersistence([record.targetRef]);
   return record;
 }
 

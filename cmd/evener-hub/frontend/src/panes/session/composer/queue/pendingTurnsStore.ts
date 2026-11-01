@@ -542,7 +542,6 @@ export function updateRecoveryPendingTurn(
     (async () => {
       const updated = await updateRecoveryMutation(
         clientMutationId,
-        ref,
         text,
         attachments,
         skillNames,
@@ -555,7 +554,10 @@ export function updateRecoveryPendingTurn(
         compositionOwnerId,
         composerText,
       );
-      void refreshPendingTurnsProjection(ref);
+      // The row may carry a ref the caller cannot name (a resume retargets
+      // rows under a closing pane), so the refresh follows the row's own
+      // durable identity.
+      void refreshPendingTurnsProjection(updated?.targetRef ?? ref);
       return updated;
     })(),
   );
@@ -576,7 +578,6 @@ export function preserveRecoveryPendingTurn(
     (async () => {
       const preserved = await preserveRecoveryMutation(
         base,
-        ref,
         text,
         attachments,
         skillNames,
@@ -585,7 +586,7 @@ export function preserveRecoveryPendingTurn(
         compositionOwnerId,
         localDraftRevisionId,
       );
-      void refreshPendingTurnsProjection(ref);
+      void refreshPendingTurnsProjection(preserved?.targetRef ?? ref);
       return preserved;
     })(),
   );
