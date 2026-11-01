@@ -661,10 +661,10 @@ async function journey(page, fixture, endpoint) {
       verifyCanonicalErrorMounted(value, `${canonicalFailure.items[1].id}:turn-error`, name);
     if (
       value.mode === "comic" &&
-      (name === "initial-end" || name.startsWith("away-width") || name === "real-pair-850")
+      (name === "initial-end" || name.startsWith("away-width") || name === "real-pair-899")
     ) {
       const geometry = await evaluateHere(`(${panelWidthCases.toString()})()`);
-      verifyPanelWidths(geometry, name, name === "real-pair-850");
+      verifyPanelWidths(geometry, name, name === "real-pair-899");
       writeFileSync(`${fixture.evidenceDir}/panel-width-${value.width}.json`, JSON.stringify(geometry, null, 2));
     }
     if (point?.text)
@@ -989,7 +989,8 @@ async function journey(page, fixture, endpoint) {
       // Root identities are intentionally fixed. Stress their actual inherited
       // label CSS in a detached-from-transcript probe, not a fake session entry.
       const identity = await evaluateHere(`(() => {
-      const original = window.__comicRoot()?.querySelector('[data-comic-entry] article');
+      // Panels are the article elements themselves under the stacked markup.
+      const original = window.__comicRoot()?.querySelector('article');
       const panel = original.cloneNode(false);
       const label = original.querySelector('[data-comic-identity]').cloneNode(false);
       label.textContent = 'FIXTURE_LONG_AGENT_NAME_' .repeat(12) + ' · FIXTURE_LONG_BADGE_' .repeat(10);
@@ -1190,7 +1191,10 @@ async function journey(page, fixture, endpoint) {
       await record(`end-width-${width}`, null, true);
     }
     await page.send("Emulation.setDeviceMetricsOverride", {
-      width: 850,
+      // Two 26rem panels with their 15px gap need 847px of row width; the
+      // mobile shell keeps the reader full-bleed, so this window still packs
+      // a genuine 2-up row just above the packing boundary.
+      width: 899,
       height: 900,
       deviceScaleFactor: 1,
       mobile: false,
@@ -1198,7 +1202,7 @@ async function journey(page, fixture, endpoint) {
     await until("genuine paired source row at transition width", async () => {
       const found = await evaluateHere(`(() => {
       const port=window.__comicRoot()?.querySelector('[data-comic-scroll]')?.firstElementChild;
-      const pair=[...port.querySelectorAll('[data-comic-row]')].find(row=>row.querySelectorAll('[data-comic-entry] article').length===2);
+      const pair=[...port.querySelectorAll('[data-comic-row]')].find(row=>row.querySelectorAll('article').length===2);
       if(pair)return pair.dataset.comicRow;
       const deltaY=-Math.max(120,port.clientHeight/2);
       port.dispatchEvent(new WheelEvent('wheel',{bubbles:true,deltaY}));
@@ -1208,7 +1212,7 @@ async function journey(page, fixture, endpoint) {
       if (!found) await evaluateHere("new Promise(resolve=>requestAnimationFrame(resolve))");
       return found;
     });
-    await record("real-pair-850", null);
+    await record("real-pair-899", null);
     writeFileSync(
       `${fixture.evidenceDir}/root-reads.json`,
       JSON.stringify(
@@ -2227,7 +2231,7 @@ async function interactionJourney(page, fixture, { command, wireTrace, screensho
   const snapshot = () =>
     evaluateHere(`(() => {
     const editor = document.querySelector('[role="textbox"][aria-label="Message"]');
-    return {ref:window.__comicRoot()?.dataset.sessionRef, text:editor?.textContent, focused:document.activeElement===editor, selected:document.getSelection()?.toString(), controls:[...(window.__comicRoot()?.querySelectorAll('[data-comic-composer] button') ?? [])].map(button=>({text:button.textContent,disabled:button.disabled})), questions:window.__comicRoot()?.querySelectorAll('[data-ask-response-dock] [role="tab"]').length, approvals:document.querySelectorAll('[aria-label="Sandbox approval"]').length};
+    return {ref:window.__comicRoot()?.dataset.sessionRef, text:editor?.textContent, focused:document.activeElement===editor, selected:document.getSelection()?.toString(), controls:[...(window.__comicRoot()?.querySelectorAll('[data-composer] button') ?? [])].map(button=>({text:button.textContent,disabled:button.disabled})), questions:window.__comicRoot()?.querySelectorAll('[data-ask-response-dock] [role="tab"]').length, approvals:document.querySelectorAll('[aria-label="Sandbox approval"]').length};
   })()`);
   const button = async (selector) =>
     until(`interaction control ${selector}`, () =>
@@ -2244,7 +2248,7 @@ async function interactionJourney(page, fixture, { command, wireTrace, screensho
   const type = async (text) => {
     await until("interactive root composer", () =>
       evaluateHere(
-        `(() => {const editor=document.querySelector('[role="textbox"][aria-label="Message"]');if(!editor||editor.closest('[inert]'))return false;editor.focus();return document.activeElement===editor;})()`,
+        `(() => {const editor=document.querySelector('[role="textbox"][aria-label="Message"]');if(!editor||editor.closest('[inert]')||editor.closest('[hidden]'))return false;editor.focus();return document.activeElement===editor;})()`,
       ),
     );
     await page.send("Input.insertText", { text });
@@ -2266,8 +2270,38 @@ async function interactionJourney(page, fixture, { command, wireTrace, screensho
       `(() => {const dock=window.__comicRoot()?.querySelector('[data-ask-response-dock]');return dock?.querySelectorAll('[role="tab"]').length===2 && dock.querySelector('[role="tabpanel"]')?.textContent.includes('COMIC_QUESTION_SINGLE');})()`,
     ),
   );
-  if (!(await evaluateHere(`window.__comicRoot()?.querySelector('[data-comic-composer] form')?.hasAttribute('inert')`)))
-    throw Error("ordinary input active while answering");
+  // The standard composer removes the ask-pending input surface by hiding the
+  // input card - not by inerting the form - so the answering reader keeps a
+  // live form and an available session menu while no submit control is exposed.
+  const pendingComposer = await evaluateHere(`(() => {
+    const card=document.querySelector('[data-testid="composer-input-card"]');
+    const form=document.querySelector('[data-testid="composer-form"]');
+    const menu=document.querySelector('[data-testid="session-chrome-inline"]');
+    const submit=document.querySelector('[data-testid="composer-submit"]');
+    return {cardHidden:card?.hasAttribute('hidden') ?? null, formMounted:!!form, formInert:form?.hasAttribute('inert') ?? null,
+      submitRendered:!!submit?.getClientRects().length, menuMounted:!!menu, menuInsideCard:!!menu?.closest('[data-testid="composer-input-card"]')};
+  })()`);
+  if (pendingComposer.cardHidden !== true || pendingComposer.formInert !== false || !pendingComposer.formMounted)
+    throw Error(`ordinary input active while answering: ${JSON.stringify(pendingComposer)}`);
+  if (pendingComposer.submitRendered)
+    throw Error(`ask-pending submit control still exposed: ${JSON.stringify(pendingComposer)}`);
+  if (!pendingComposer.menuMounted || pendingComposer.menuInsideCard)
+    throw Error(`session actions unavailable while message input hidden: ${JSON.stringify(pendingComposer)}`);
+  // The live form still submits: the empty composer must mint no turn while
+  // the question is being answered, on any wire method.
+  const refusalStart = wireTrace.length;
+  await evaluateHere(`document.querySelector('[data-testid="composer-form"]')?.requestSubmit()`);
+  await evaluateHere("new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))");
+  if (
+    wireTrace
+      .slice(refusalStart)
+      .some(
+        (row) =>
+          row.event === "Network.webSocketFrameSent" &&
+          ["turn/start", "turn/queue"].includes(JSON.parse(row.frame).method),
+      )
+  )
+    throw Error("ask-pending submission reached the wire");
   await screenshot("interactions-question");
   await pendingViewportJourney(page, fixture, "question", "[data-ask-response-dock]", screenshot);
   if (fixture.requireFonts) {
@@ -4060,27 +4094,61 @@ async function childJourney(page, fixture, { command, incoming, outgoing, screen
     }),
   );
   await reveal(`[data-comic-child-ref=${JSON.stringify(header.ref)}]`, "Meanwhile");
-  // Seek the child's own heading, independently of its parent's mounted header.
-  let grandchild;
-  await until("real nested heading", async () => {
+  // The child's real activity names the grandchild on the wire before any
+  // strip of its can render: its launch still sits on an unloaded page.
+  const grandchildWire = await until("real nested delegate activity row", () =>
+    incoming
+      .map((frame) => JSON.parse(frame).result)
+      .find(
+        (result) => result?.context?.ref === header.ref && Array.isArray(result.delegates) && result.delegates.length,
+      )
+      ?.delegates.find((row) => row.childRef !== header.ref),
+  );
+  // The child's own thought is the last entry its pre-grow round records; the
+  // folded update must land after it to anchor inside the loaded window.
+  const childThought = await until("child thought before the folded update", async () => {
     const value = await evaluateHere(`(() => {
-      const port = window.__comicRoot()?.querySelector('[data-comic-scroll]').firstElementChild;
-      const node = [...port.querySelectorAll('[data-comic-delegate]')].find(node => node.dataset.comicChildRef !== ${JSON.stringify(header.ref)});
-      if (node) {
-        const history=[...port.querySelectorAll('[data-comic-flow="history"]')].find(row=>row.dataset.comicSession===${JSON.stringify(header.ref)});
-        const message=[...port.querySelectorAll('[data-comic-entry]')].find(row=>row.dataset.comicSession===${JSON.stringify(header.ref)}&&row.querySelector('[data-comic-text]'));
-        return {ref:node.dataset.comicChildRef,key:node.dataset.comicDelegate,unplaced:[...port.querySelectorAll('[data-comic-flow="unplaced-group"]')].some(group=>group.dataset.comicSession===${JSON.stringify(header.ref)}),afterHistory:!!history&&!!(history.compareDocumentPosition(node)&Node.DOCUMENT_POSITION_FOLLOWING),beforeMessages:!!message&&!!(node.compareDocumentPosition(message)&Node.DOCUMENT_POSITION_FOLLOWING)};
+      const port=window.__comicRoot()?.querySelector('[data-comic-scroll]')?.firstElementChild;
+      const thought=[...(port?.querySelectorAll('[data-comic-entry]') ?? [])].find(node=>node.dataset.comicSession===${JSON.stringify(header.ref)}&&node.textContent.includes('COMIC_THOUGHT_CHILD'));
+      if(thought)return thought.dataset.comicEntry;
+      if(port){port.dispatchEvent(new WheelEvent('wheel',{bubbles:true,deltaY:300}));port.scrollTop+=300;}
+      return null;
+    })()`);
+    return value;
+  });
+  // A strip with neither a loaded launch nor a folded update renders no row
+  // at all, and the deleted unplaced group must not stand in for one.
+  if (await evaluateHere(`window.__comicRoot()?.querySelectorAll('[data-comic-flow="unplaced-group"]').length`))
+    throw Error("deleted unplaced group rendered");
+  if (
+    await evaluateHere(
+      `!!window.__comicRoot()?.querySelector('[data-comic-child-ref=${JSON.stringify(grandchildWire.childRef)}]')`,
+    )
+  )
+    throw Error("unanchored nested strip rendered a row before any folded update");
+  // Release the grandchild's one mid-work update: the strip must appear
+  // anchored exactly between the child's thought and the grandchild's report.
+  command("background-phase", "comic-grandchild-update");
+  let grandchild;
+  await until("folded update anchors the nested strip inline", async () => {
+    const value = await evaluateHere(`(() => {
+      const port=window.__comicRoot()?.querySelector('[data-comic-scroll]').firstElementChild;
+      const observation=(${observeDelegateRelocation.toString()})(${JSON.stringify(header.ref)},${JSON.stringify(grandchildWire.childRef)},null);
+      if(observation.found&&observation.updates>0&&!observation.unplacedRows){
+        const entries=[...port.querySelectorAll('[data-comic-entry]')].filter(node=>node.dataset.comicSession===${JSON.stringify(header.ref)});
+        const thought=entries.find(node=>node.dataset.comicEntry===${JSON.stringify(childThought)});
+        const report=entries.find(node=>node.textContent.includes('BACKGROUND_TURN_DONE'));
+        const heading=[...port.querySelectorAll('[data-comic-delegate]')].find(node=>node.dataset.comicChildRef===${JSON.stringify(grandchildWire.childRef)});
+        if(observation.beforeId===thought?.dataset.comicEntry&&observation.afterId===report?.dataset.comicEntry)
+          return {ref:${JSON.stringify(grandchildWire.childRef)},key:heading.dataset.comicDelegate,updates:observation.updates,beforeId:observation.beforeId,afterId:observation.afterId};
       }
-      port.dispatchEvent(new WheelEvent('wheel', {bubbles:true, deltaY:400})); port.scrollTop += 400; return null;
+      port.dispatchEvent(new WheelEvent('wheel',{bubbles:true,deltaY:300})); port.scrollTop+=300; return null;
     })()`);
     if (value) grandchild = value;
     return value;
   });
   if (!grandchild.key.includes(header.ref) || grandchild.ref === header.ref)
     throw Error("nested identity is not independently qualified");
-  if (!grandchild.unplaced) throw Error("earlier causal event was not outside loaded child history");
-  if (!grandchild.afterHistory || !grandchild.beforeMessages)
-    throw Error("unknown launch is not between history boundary and messages");
   if (!(await operate(grandchild.ref, "Expand conversation"))) throw Error("missing grandchild expansion");
   const nestedSource = await reveal("[data-comic-entry]", "COMIC_THOUGHT_GRANDCHILD", 1);
   if (nestedSource.sessionRef !== grandchild.ref || nestedSource.path.length !== 2) throw Error("wrong nested source");
@@ -4094,7 +4162,7 @@ async function childJourney(page, fixture, { command, incoming, outgoing, screen
     );
     const nestedGeometry = await evaluateHere(`(() => {
       const port = window.__comicRoot()?.querySelector('[data-comic-scroll]').firstElementChild;
-      return {scrollports:window.__comicRoot()?.querySelectorAll('[data-comic-scroll]').length, editors:port.querySelectorAll('textarea,[contenteditable=true]').length, fullPageEditors:window.__comicRoot()?.querySelectorAll('[data-comic-composer] [contenteditable=true]').length,
+      return {scrollports:window.__comicRoot()?.querySelectorAll('[data-comic-scroll]').length, editors:port.querySelectorAll('textarea,[contenteditable=true]').length, fullPageEditors:window.__comicRoot()?.querySelectorAll('[data-composer] [role="textbox"]').length,
         headers:[...port.querySelectorAll('[data-comic-delegate]')].map(node => ({ref:node.dataset.comicChildRef, width:node.getBoundingClientRect().width, text:node.textContent})),
         thoughts:[...port.querySelectorAll('[data-comic-balloon=thought]')].map(node => { const text = node.querySelector('[data-comic-text]'); const box = node.getBoundingClientRect(); const inside = text.getBoundingClientRect(); return {text:node.textContent, width:node.clientWidth, height:node.clientHeight, overflow:Math.max(text.scrollWidth-text.clientWidth,text.scrollHeight-text.clientHeight), contained:inside.left >= box.left && inside.right <= box.right && inside.top >= box.top && inside.bottom <= box.bottom}; })};
     })()`);
@@ -4298,13 +4366,18 @@ async function childJourney(page, fixture, { command, incoming, outgoing, screen
       `(${observeDelegateRelocation.toString()})(${JSON.stringify(header.ref)},${JSON.stringify(grandchild.ref)},${JSON.stringify(relocationOrigin)})`,
     );
   const pendingRelocation = await observeRelocation();
-  if (!pendingRelocation.found || !pendingRelocation.unplaced || pendingRelocation.atLaunch)
-    throw Error("pending launch was not observed in the sibling unplaced group");
+  if (
+    !pendingRelocation.found ||
+    pendingRelocation.atLaunch ||
+    !(pendingRelocation.updates > 0) ||
+    pendingRelocation.unplacedRows
+  )
+    throw Error("pending launch was not observed anchored at its folded update");
   await evaluateHere("window.__comicReleaseOrigin()");
   const appliedRelocation = await until(
     "origin reply applied without reader input",
     observeRelocation,
-    (value) => value.found && !value.unplaced && value.atLaunch,
+    (value) => value.found && value.atLaunch && value.updates === pendingRelocation.updates && value.unplacedRows === 0,
   );
   await evaluateHere("new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))");
   const relocationAfter = await evaluateHere(

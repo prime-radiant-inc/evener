@@ -99,9 +99,13 @@ The raw source remains unchanged. The guard checks semantic headings, emphasis,
 ordered-list starts, quotations, safe links, complete code whitespace and table
 cells. Technical inserts must fit their 40rem/available-width bound, contain no
 character stage, retain their full height and expose usable horizontal scrolling.
-The ordinary-panel checks retain 1360/850/760/600/390/320 widths and an actual
-paired row at 850px. The formatted journey also sets actual mobile viewports at
-390 and 320px, not merely narrow desktop containers.
+The ordinary-panel checks retain 1360/850/760/600/390/320 widths. Rows pack by
+width - floor((width+15px)/(26rem+15px)) columns - so every mounted row's
+inline grid is checked against its own measured width, panels keep their 26rem
+cap with spare width as gutter, and an actual 2-up row of exactly two articles is
+required at the 899px window just above the 847px packing boundary. The
+formatted journey also sets actual mobile viewports at 390 and 320px, not merely
+narrow desktop containers.
 
 The `comic-formatted` external-provider role pauses at an unfinished fence and a
 partial table before completing them. It uses the real daemon's transcript and
@@ -134,15 +138,23 @@ mandatory.
 parent entries. `creation-chronology-completed.json` rechecks those exact entry IDs
 and strip key after completion and the expanded-reader checks. The disclosure is
 then collapsed solely to mount both original neighbors in one observation.
+Before any of that, the meanwhile journey holds the grandchild's mid-work update
+behind the `comic-grandchild-update` phase: with the launch still on an unloaded
+page and no folded update, the strip renders no row at all, and releasing the
+phase must anchor it inline exactly between the child's thought entry and the
+grandchild's report caption, with the header's `[data-comic-updates]` counting
+the folded update. The deleted trailing unplaced group must never render.
 `late-creation-position.json` records the same independently located source glyph
 before and after the final origin-revealing history page. Only that authentic
 WebSocket reply is held, then released unchanged after pinning the source. No
 scroll, reveal or anchor recapture intervenes before the post-release measurement.
-The pending sample must see the sibling unplaced-group marker. The applied sample
-must see the same strip between both source neighbors of the recorded creation
-output, using its receipt to bind the child and its wire IDs to bind the neighbors.
-The observer follows sibling virtual rows in the owning reader's path, excluding
-nested readers, rather than looking for a group-label ancestor of the strip.
+The pending sample must see the strip anchored at its folded update with its
+count, not at the launch. The applied sample must see the same strip between
+both source neighbors of the recorded creation output, using its receipt to bind
+the child and its wire IDs to bind the neighbors, and the folded update count
+must survive the move unchanged. The observer follows sibling virtual rows in
+the owning reader's path, excluding nested readers, and counts any surviving
+unplaced-group row as a failure.
 `late-creation-relocation.json` also checks that late launch placement retains the
 expanded identity without unsubscribe/re-read. `mounted-collapse.json`
 checks a mounted collapse's successful unsubscribe while its real sibling stays
@@ -164,8 +176,9 @@ Run the direct observation validators with
 repository root. Their negative cases reject missing semantics, wrong source
 order, whitespace loss, unsafe links, clipping, unreadable overflow, replacement
 stream identities, missing prefixes, duplicate code or whole-source identities,
-completion-time loss, shifted relocation glyphs, pending sibling-group strips,
-wrong launch neighbors, moved launch strips and sibling
+completion-time loss, shifted relocation glyphs, rows without folded updates,
+stray unplaced-group rows, grids that ignore the width packing rule, wrong
+launch neighbors, moved launch strips and sibling
 retirement. They supplement, not replace, the
 complete browser journeys and `make test-web`.
 
