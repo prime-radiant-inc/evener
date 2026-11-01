@@ -280,19 +280,39 @@ func testManagerOwnedDescendantWatch(t *testing.T, missingGeneration bool) {
 			t.Fatal(ctx.Err())
 		}
 	}
-	// The actual Manager consumer must also deliver the child's communicate.
-	// Completion remains registered, but delegates do not offer end_reason=done.
-	// Await its runner wake, then inspect the public receiver-owned watch state.
+	// The actual Manager consumer must deliver the child's communicate and
+	// wake on the accepted terminal, even though delegates have no end reason.
 	select {
 	case <-script.advanced:
 	case <-ctx.Done():
 		t.Fatal(ctx.Err())
+	}
+	for {
+		page, err := sess.ListActivityWatches(ctx, appwire.SessionActivityListParams{Ref: "local:" + rootID})
+		if err != nil {
+			t.Fatal(err)
+		}
+		settled := false
+		for _, watch := range page.Watches {
+			if watch.Watch.ID == registration.WatchID && watch.State == appwire.SessionWatchStateEnded && watch.Watch.EndReason == "completed" && watch.Watch.Deliveries >= 2 {
+				settled = true
+			}
+		}
+		if settled {
+			break
+		}
+		select {
+		case <-ctx.Done():
+			t.Fatalf("waiting for completed watch receipts: %v; watches=%+v", ctx.Err(), page.Watches)
+		case <-time.After(10 * time.Millisecond):
+		}
 	}
 	journal, err := os.ReadFile(filepath.Join(stateDir, "sessions", rootID, "jobs.jsonl"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	communicateDelivered := false
+	completionDelivered := false
 	lines := bytes.Split(journal, []byte{'\n'})
 	for _, line := range lines[:len(lines)-1] {
 		var record struct {
@@ -310,9 +330,15 @@ func testManagerOwnedDescendantWatch(t *testing.T, missingGeneration bool) {
 		if record.Kind == "watch_send_delivered" && record.WatchSend != nil && record.WatchSend.Key.WatchID == registration.WatchID && record.WatchSend.TriggerReason == "communicate" {
 			communicateDelivered = true
 		}
+		if record.Kind == "watch_send_delivered" && record.WatchSend != nil && record.WatchSend.Key.WatchID == registration.WatchID && record.WatchSend.TriggerReason == "completed: accepted terminal done" {
+			completionDelivered = true
+		}
 	}
 	if !communicateDelivered {
 		t.Fatal("Manager has no delivered receipt for child communicate")
+	}
+	if !completionDelivered {
+		t.Fatal("Manager has no delivered receipt for accepted child completion")
 	}
 	{
 		page, err := sess.ListActivityWatches(ctx, appwire.SessionActivityListParams{Ref: "local:" + rootID})
@@ -320,8 +346,8 @@ func testManagerOwnedDescendantWatch(t *testing.T, missingGeneration bool) {
 			t.Fatal(err)
 		}
 		for _, watch := range page.Watches {
-			if watch.Watch.ID == registration.WatchID && watch.State == appwire.SessionWatchStateArmed && watch.Watch.Deliveries > 0 {
-				t.Logf("Manager watch %s delivered child event: child=%s instance=%s boot=%s deliveries=%d", registration.WatchID, childRef, rootID, wantBoot, watch.Watch.Deliveries)
+			if watch.Watch.ID == registration.WatchID && watch.State == appwire.SessionWatchStateEnded && watch.Watch.EndReason == "completed" && watch.Watch.Deliveries >= 2 {
+				t.Logf("Manager watch %s delivered child event and completion: child=%s instance=%s boot=%s deliveries=%d", registration.WatchID, childRef, rootID, wantBoot, watch.Watch.Deliveries)
 				return
 			}
 		}

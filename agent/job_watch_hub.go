@@ -217,7 +217,7 @@ func (jm *jobManager) onHubObservationLookup(watchID string, update appwire.Sess
 		cfg.hubTurnID, cfg.hubTurnBound = m.TurnID, true
 	}
 	matchingTurn := !cfg.hubTurnBound || m.TurnID == cfg.hubTurnID
-	terminal := cfg.hubCompletion && m.CausalKnown && m.TerminalAccepted != nil && *m.TerminalAccepted && m.EndTurn && m.EndReason == "done"
+	terminal := cfg.hubCompletion && m.CausalKnown && m.TerminalAccepted != nil && *m.TerminalAccepted && m.EndTurn && (m.EndReason == "done" || m.EndReason == "")
 	if terminal && !matchingTurn && m.TurnID != "" && lookup != nil {
 		bound := cfg.hubTurnID
 		ref, instance, generation := cfg.hubRef, cfg.hubInstance, cfg.hubGeneration

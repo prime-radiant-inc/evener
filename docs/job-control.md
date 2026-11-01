@@ -71,8 +71,10 @@ In a [Manager session](automation.md#manager-sessions), call
 ["communicate"], "completion": true})` to watch the target's recorded observations
 through the Manager's own hub. `status`, `question`, `approval`, and `communicate`
 are supported event selectors; omit `events` to watch only completion.
-Completion means the **accepted** terminal winner for the watched execution
-had `endTurn: true` and `endReason: "done"`. An active or question-pending watch
+Completion means the watched turn was **accepted as ended**. Targets that do
+not offer an end reason, including delegates and headless sessions, complete
+the watch when their accepted terminal end turn arrives with an empty reason.
+An active or question-pending watch
 binds the authoritative active turn and retains it across reconnect, even when
 later work is active. A fresh idle watch may catch up with the latest recorded
 completed work across a daemon restart, but never skip later unfinished work

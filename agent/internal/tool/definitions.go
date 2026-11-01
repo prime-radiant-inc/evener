@@ -450,6 +450,7 @@ func DefJobWatchNamed(eventKinds []string, resultTool string) llm.ToolDefinition
 		"`note` is the watch's own prose payload: any create accepts one, and it comes back with every fire so you know why you armed it. " +
 		"Each `create` installs a new watch; to change a note, clear and create, and clear a timer before you report done. The block shows the note with `<` escaped; `inspect` returns it verbatim. " +
 		"Create, inspect, list, or clear standing triggers on a source you can observe. " +
+		"For a Manager session's `hub` completion watch, completion fires when the watched turn is accepted as ended, including targets that do not offer an end reason, such as delegates and headless sessions. " +
 		"For operation=\"create\", set `source` to `self`, `parent`, a stable delegate ID (`dlg_...`), or a concrete shell `job_id`. " +
 		"`parent` is available only inside a delegate spawned with `watch_parent=true`. " +
 		"Delivery is implicit: matching frames are delivered to the session that created the watch. " +
