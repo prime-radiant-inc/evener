@@ -2,6 +2,9 @@ package hub
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -92,6 +95,68 @@ func TestManagerObservationRecordedCompletionCut(t *testing.T) {
 		case <-ctx.Done():
 			t.Fatal("recorded observation not delivered across relay")
 		}
+	}
+}
+
+func TestManagerRemoteObservationWatchRequiresNegotiatedSessionTools(t *testing.T) {
+	for _, supported := range []bool{false, true} {
+		t.Run(fmt.Sprintf("session-tools-%t", supported), func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+			defer cancel()
+			const managerRef, instance = "local:manager-workspace", "manager-instance"
+			daemon := daemonserver.NewServer(daemonserver.ServerConfig{HubToken: "test-token"})
+			defer daemon.Close()
+			identity, err := daemonserver.PrepareAppIdentityForRef("local", instance, managerRef, "")
+			if err != nil {
+				t.Fatal(err)
+			}
+			daemon.ReplaceAppIdentity(identity.WithBootGeneration("7@manager"), nil)
+			upstream := httptest.NewServer(http.HandlerFunc(daemon.AppServer().ServeWebSocket))
+			defer upstream.Close()
+			entry := rendezvous.Entry{Protocol: appwire.ProtocolVersion, Endpoint: upstream.URL, SourceID: "local", ThreadID: instance, SessionID: instance, WorkspaceRef: managerRef, InstanceID: instance, HubToken: "test-token"}
+			local := appsource.NewLocalDaemonSourceWithEntries("local", func() []appsource.LocalDaemonEntry {
+				return []appsource.LocalDaemonEntry{{Entry: entry, SessionID: instance, Manager: true}}
+			}, upstream.Client())
+			configureObservationTargetSessionTools(daemon, local)
+			remoteClient, _ := newScriptedRemoteHub(t, func(method string, _ json.RawMessage) any {
+				switch method {
+				case appwire.MethodInitialize:
+					return appwire.InitializeResponse{ProtocolVersion: appwire.ProtocolVersion, SourceID: "local", Features: appwire.FeatureSet{SessionTools: supported}}
+				case appwire.MethodThreadRead:
+					return appwire.ThreadReadResponse{Thread: appwire.Thread{ID: "target", SessionID: "target", Evener: appwire.EvenerThread{Ref: "local:target", InstanceID: "target"}}}
+				default:
+					return appwire.EmptyResponse{}
+				}
+			})
+			remote := appsource.NewRemoteHubSource("remote", nil, func(context.Context, string) (*appwire.Client, error) { return remoteClient, nil })
+			sources := appsource.NewRegistry()
+			sources.Add(local)
+			sources.Add(remote)
+			cfg := hubcore.WebConfig{HubStateRoot: t.TempDir(), Past: hubcore.NewPastIndex(""), HubID: "hub-test"}
+			server := newHubAppServer(cfg, sources)
+			defer server.Shutdown(ctx)
+			owner := &sessionOperations{cfg: cfg, sources: sources, server: server}
+			bound := &boundSessionOperations{owner: owner, local: local, binding: appwire.SessionBinding{Ref: managerRef, InstanceID: instance, HubID: "hub-test", BindingID: "binding"}}
+			updates, err := bound.Watch(ctx, appwire.SessionWatchRequest{Ref: "remote:target", Completion: true})
+			if !supported {
+				var wire appwire.WireError
+				if !errors.As(err, &wire) || wire.Code != appwire.CodeInvalidRequest {
+					t.Fatalf("Watch error = %v, want WireError code %d", err, appwire.CodeInvalidRequest)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("supported remote completion watch: %v", err)
+			}
+			select {
+			case initial := <-updates:
+				if initial.Snapshot == nil || initial.Metadata.Ref != "remote:target" {
+					t.Fatalf("initial remote snapshot = %+v", initial)
+				}
+			case <-ctx.Done():
+				t.Fatal("supported remote completion watch did not attach")
+			}
+		})
 	}
 }
 

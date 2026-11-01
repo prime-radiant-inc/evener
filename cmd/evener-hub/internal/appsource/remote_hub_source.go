@@ -169,6 +169,17 @@ func (s *RemoteHubSource) Online() bool {
 	return s.online()
 }
 
+// SessionToolsSupported reports whether the currently attached remote hub
+// negotiated the SessionTools feature. A missing connection is unknown and is
+// treated as unsupported by callers admitting observation watches.
+func (s *RemoteHubSource) SessionToolsSupported(ctx context.Context) (supported, known bool) {
+	client, err := s.resolveClient(ctx)
+	if err != nil || client == nil {
+		return false, false
+	}
+	return client.Features().SessionTools, true
+}
+
 // call forwards one request over the current remote client and translates any
 // refs in the response back into the controller namespace. Errors bypass
 // response translation; StartThread translates its createdRef error evidence

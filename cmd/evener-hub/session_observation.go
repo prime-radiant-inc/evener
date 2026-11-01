@@ -173,8 +173,6 @@ func (b *boundSessionOperations) Watch(ctx context.Context, request appwire.Sess
 		return nil, err
 	}
 	if request.Completion || sessionWatchSelected(request, "communicate") {
-		// Remote peer capabilities are not exposed through the remote source; keep
-		// this gate local rather than inventing a new cross-hub wire surface.
 		if ref.SourceID == appwire.LocalSourceID {
 			servingRef, parseErr := appwire.ParseRef(read.Thread.Evener.Ref)
 			local, ok := b.owner.sources.Source(servingRef.SourceID)
@@ -191,6 +189,20 @@ func (b *boundSessionOperations) Watch(ctx context.Context, request appwire.Sess
 					}
 				}
 			}
+		} else if source, ok := b.owner.sources.Source(ref.SourceID); ok {
+			if remote, isRemote := source.(*appsource.RemoteHubSource); isRemote {
+				supported, known := remote.SessionToolsSupported(watchCtx)
+				if !known || !supported {
+					cleanup()
+					return nil, appwire.InvalidRequest("target cannot report recorded-observation support")
+				}
+			} else {
+				cleanup()
+				return nil, appwire.InvalidRequest("target cannot report recorded-observation support")
+			}
+		} else {
+			cleanup()
+			return nil, appwire.InvalidRequest("target cannot report recorded-observation support")
 		}
 	}
 	notifications := client.Notifications()
