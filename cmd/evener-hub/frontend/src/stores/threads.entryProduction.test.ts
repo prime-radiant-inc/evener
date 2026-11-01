@@ -2601,6 +2601,94 @@ it("a transient storage failure during a missed open's recovery still converges 
   }
 });
 
+it("a stale-cursor hydration that replaces the repository keeps the missed open's owed range armed", async () => {
+  const storage = cache();
+  const realGetLatestWindow = storage.getLatestWindow.bind(storage);
+  setProductionEntryCacheForTests(storage);
+  const ref = "local:a";
+  const read = response(
+    ref,
+    Array.from({ length: 225 }, (_, index) => turn(`row-${index + 1}`, index + 1)),
+  );
+  read.snapshot = { incarnation: "inc-a", length: 225 };
+  const client = connect(read);
+  // The thread grew while the pane was away, so the hub's kept update log no
+  // longer reaches the pane's held snapshot: the tracked read carrying it is
+  // rejected transcriptItemCursorStale and retried with no held snapshot —
+  // the fallback that installs a replacement repository. The rejection is
+  // held until the open's pinned backstop has declared its miss, so the
+  // interleaving is exact: the missed opening arms its current repository,
+  // then the stale-cursor fallback replaces it.
+  let foregroundReads = 0;
+  let heldReadArrived = false;
+  let rejectHeld: ((error: unknown) => void) | undefined;
+  client.on("thread/read", (params) => {
+    foregroundReads += 1;
+    if (foregroundReads === 1) return read;
+    if ((params as { heldSnapshot?: unknown }).heldSnapshot !== undefined) {
+      heldReadArrived = true;
+      return new Promise<ThreadReadResponse>((_resolve, reject) => {
+        rejectHeld = reject;
+      });
+    }
+    return { ...latestWindowRead(ref, 224 + foregroundReads), requestGeneration: params.requestGeneration };
+  });
+  const lease = acquireBackgroundThread(ref);
+  await lease.ready;
+  await settleEntryTranscriptForTests(ref);
+  const key = entryHistoryKey({ ...identity, clientId: location.origin });
+  expect(await storage.getLatest(key, 300)).toHaveLength(225);
+  const bodies = () =>
+    threadsStore
+      .getState()
+      .threads.get(ref)
+      ?.turns.flatMap((turn) => turn.items)
+      .map((item) => item.text)
+      .filter(Boolean);
+  expect(bodies()).toEqual([]);
+
+  let withheldWindowReads = 0;
+  (storage as unknown as { getLatestWindow: unknown }).getLatestWindow = (...args: unknown[]) => {
+    if (withheldWindowReads > 0) {
+      withheldWindowReads -= 1;
+      return new Promise(() => {}) as ReturnType<typeof realGetLatestWindow>;
+    }
+    return realGetLatestWindow(...(args as Parameters<typeof realGetLatestWindow>)) as ReturnType<
+      typeof realGetLatestWindow
+    >;
+  };
+  withheldWindowReads = 1;
+  // Only the open's backstop is pinned: its lookup is withheld forever, so
+  // machine load cannot delay the miss. The recovery chain's stalled-open
+  // window keeps the production default (the load-starvation rule this
+  // family's pinned windows follow).
+  setSessionCacheOpenBackstopForTests(40);
+  try {
+    const opened = threadsStore.getState().ensureThread(ref);
+    await vi.waitFor(() => {
+      expect(productionEntryTranscriptForTests(ref).unresolvedOpenMiss).toBe(true);
+    });
+    expect(heldReadArrived).toBe(true);
+    if (!rejectHeld) throw new Error("the stale-cursor read never arrived");
+    rejectHeld(new WireError("stale", -32000, { evenerErrorInfo: "transcriptItemCursorStale" }));
+    await opened;
+    await settleEntryTranscriptForTests(ref);
+    // The replacement repository adopted the daemon's 40-item window with a
+    // cursor. The missed open's demand must survive the replacement, so the
+    // paced recovery restores the recorded range below the window instead of
+    // certification accepting the bare window and clearing the miss — and the
+    // accepted wire update (its newest row is not on disk) survives.
+    expect(bodies()).toContain("row-227");
+    expect(bodies()).toEqual(Array.from({ length: 200 }, (_, index) => `row-${index + 28}`));
+    expect(threadsStore.getState().threads.get(ref)?.olderCursor).toBeDefined();
+  } finally {
+    setSessionCacheStalledOpenForTests(5000);
+    setSessionCacheOpenBackstopForTests(10000);
+    threadsStore.getState().releaseThread(ref);
+    await lease.release();
+  }
+});
+
 it("a converged pane automatically reconciles its restored older rows against the source", async () => {
   const storage = cache();
   const realGetLatestWindow = storage.getLatestWindow.bind(storage);
@@ -2696,6 +2784,138 @@ it("a converged pane automatically reconciles its restored older rows against th
     );
     expect(listReads.length).toBeGreaterThanOrEqual(1);
     expect(bodies()).toContain("row-226");
+  } finally {
+    setSessionCacheStalledOpenForTests(5000);
+    setSessionCacheOpenBackstopForTests(10000);
+    threadsStore.getState().releaseThread(ref);
+    await lease.release();
+  }
+});
+
+it("a reconciliation page discarded by a competing read is retried after the competing read settles", async () => {
+  const storage = cache();
+  const realGetLatestWindow = storage.getLatestWindow.bind(storage);
+  setProductionEntryCacheForTests(storage);
+  const ref = "local:a";
+  const read = response(
+    ref,
+    Array.from({ length: 225 }, (_, index) => turn(`row-${index + 1}`, index + 1)),
+  );
+  read.snapshot = { incarnation: "inc-a", length: 225 };
+  const client = connect(read);
+  // A competing tracked read arrives while the reconciliation chain's first
+  // page is in the air — the reviewer's interleaving, with the mid-flight
+  // mover a tracked windowed read: held while the page is in the air, then
+  // settled with the daemon's own windowed answer. The chain's page cannot be
+  // accepted under the pending hydration — that discard is a retryable
+  // rejection, not exhaustion — and the settled window keeps the restored
+  // range's reconciliation debt, so the chain's own retry must finish it.
+  let foregroundReads = 0;
+  let competingReadPending = false;
+  const refreshReadArrived = deferred<void>();
+  const refreshReadHeld = deferred<ThreadReadResponse>();
+  let refreshGeneration: number | undefined;
+  client.on("thread/read", (params) => {
+    foregroundReads += 1;
+    if (foregroundReads === 1) return read;
+    if (competingReadPending) {
+      competingReadPending = false;
+      refreshGeneration = params.requestGeneration;
+      refreshReadArrived.resolve();
+      return refreshReadHeld.promise;
+    }
+    return { ...latestWindowRead(ref, 224 + foregroundReads), requestGeneration: params.requestGeneration };
+  });
+  // The source's older pages: page one carries row 160 EDITED at the source
+  // (version 2) — the pre-gap cached version the restore displays until the
+  // chain reconciles it. The first call's response is held while the
+  // competing read is issued; the second call re-serves the same page, which
+  // is what a retry of the discarded cursor must ask for.
+  const listPageFor = (pageNumber: number) => {
+    const first = 188 - pageNumber * 40;
+    const rows = Array.from({ length: 40 }, (_, index) => {
+      const entry = first + index;
+      const pageTurn = turn(`row-${entry}`, entry, entry === 160 ? `row-${entry}-edited` : `row-${entry}`);
+      return entry === 160
+        ? { ...pageTurn, items: (pageTurn.items ?? []).map((item) => ({ ...item, version: 2 })) }
+        : pageTurn;
+    });
+    return {
+      data: rows,
+      nextCursor: pageNumber < 4 ? `opaque-server-page-${pageNumber + 1}` : undefined,
+      bootGeneration: "1",
+      epoch: 1,
+      snapshot: { incarnation: "inc-a", length: 230 },
+    };
+  };
+  const listReads: string[] = [];
+  const heldPage = deferred<ReturnType<typeof listPageFor>>();
+  client.on("thread/turns/list", (params) => {
+    listReads.push(params.cursor ?? "-");
+    if (listReads.length === 1) {
+      competingReadPending = true;
+      void threadsStore
+        .getState()
+        .refreshThread(ref)
+        .catch(() => {});
+      return heldPage.promise;
+    }
+    const pageNumber = Math.min(Math.max(1, listReads.length - 1), 4);
+    return listPageFor(pageNumber);
+  });
+  const lease = acquireBackgroundThread(ref);
+  await lease.ready;
+  await settleEntryTranscriptForTests(ref);
+  const key = entryHistoryKey({ ...identity, clientId: location.origin });
+  expect(await storage.getLatest(key, 300)).toHaveLength(225);
+  const bodies = () =>
+    threadsStore
+      .getState()
+      .threads.get(ref)
+      ?.turns.flatMap((turn) => turn.items)
+      .map((item) => item.text)
+      .filter(Boolean);
+  expect(bodies()).toEqual([]);
+
+  let withheldWindowReads = 0;
+  (storage as unknown as { getLatestWindow: unknown }).getLatestWindow = (...args: unknown[]) => {
+    if (withheldWindowReads > 0) {
+      withheldWindowReads -= 1;
+      return new Promise(() => {}) as ReturnType<typeof realGetLatestWindow>;
+    }
+    return realGetLatestWindow(...(args as Parameters<typeof realGetLatestWindow>)) as ReturnType<
+      typeof realGetLatestWindow
+    >;
+  };
+  withheldWindowReads = 1;
+  setSessionCacheOpenBackstopForTests(40);
+  try {
+    await threadsStore.getState().ensureThread(ref);
+    await settleEntryTranscriptForTests(ref);
+    // The converged display restored every recorded row, with row 160 still
+    // showing its pre-gap cached version, and the chain's first page is now
+    // in the air.
+    expect(bodies()).toEqual(Array.from({ length: 200 }, (_, index) => `row-${index + 27}`));
+    await vi.waitFor(() => expect(listReads).toHaveLength(1));
+    // The competing read is pending; release the chain's page under it, so
+    // the page is discarded — then let the competing read settle with the
+    // daemon's windowed answer, which replaces the baseline (the display
+    // narrows to its wire window) but re-arms nothing: no miss stands, so
+    // nothing but the chain's own retry can reconcile the restored range.
+    await refreshReadArrived.promise;
+    heldPage.resolve(listPageFor(1));
+    refreshReadHeld.resolve({ ...latestWindowRead(ref, 227), requestGeneration: refreshGeneration });
+    // After the competing read settles, the chain must complete: the
+    // discarded page is retried within the same bounded budget, the bounded
+    // pages re-merge the range below the settled window, and row 160's edited
+    // version heals into the display.
+    await vi.waitFor(() => expect(listReads.length).toBeGreaterThanOrEqual(2));
+    await vi.waitFor(() =>
+      expect(bodies()).toEqual(
+        Array.from({ length: 201 }, (_, index) => (index + 27 === 160 ? "row-160-edited" : `row-${index + 27}`)),
+      ),
+    );
+    expect(listReads.length).toBeGreaterThanOrEqual(2);
   } finally {
     setSessionCacheStalledOpenForTests(5000);
     setSessionCacheOpenBackstopForTests(10000);

@@ -91,8 +91,14 @@ export interface EntryRouteHost {
    * One bounded older-range read against the source — the same read a user's
    * scroll issues — so a pane whose restored older rows no current-baseline
    * statement validated can reconcile them against the source automatically.
+   * "accepted" means the page was accepted and its range reconciled;
+   * "discarded" means a competing read moved the baseline while the page was
+   * in the air — a retryable rejection the caller may retry within its own
+   * bounded budget once the competing read settles; "unissued" means no page
+   * could serve the range (no sendable cursor, a failed request, or a page
+   * that merged nothing against an unchanged baseline — genuine exhaustion).
    */
-  reconcileRecordedRange(ref: string): Promise<void>;
+  reconcileRecordedRange(ref: string): Promise<"accepted" | "discarded" | "unissued">;
 }
 
 let installedHost: EntryRouteHost | undefined;
@@ -190,6 +196,7 @@ export function productionEntryTranscriptForTests(ref: string) {
     lastLocalOpenStatus: route?.lastLocalOpenStatus,
     lastLocalOpenUsable: route?.lastLocalOpenUsable,
     localOpenDeadlineMissed: route?.localOpenDeadlineMissed,
+    unresolvedOpenMiss: route?.unresolvedOpenMiss,
   };
 }
 
@@ -1155,8 +1162,17 @@ function scheduleEntryRecordedReconciliation(ref: string): void {
         if (!current) return;
         const owed = current.unreconciledRecorded();
         if (owed.size === 0) return;
-        await routeHost().reconcileRecordedRange(ref);
+        const paged = await routeHost().reconcileRecordedRange(ref);
         if (entryTranscriptRoute(ref) !== route || route.repository !== current) return;
+        // A page a competing read discarded mid-flight — an overlay/end
+        // reconciliation read, a refresh, anything that moved the baseline
+        // while the page was in the air — is a retryable rejection, not
+        // exhaustion: the next iteration re-captures the settled baseline's
+        // own cursor and retries within this same bounded budget. A page
+        // that could not be issued, or an accepted page that reconciles
+        // nothing, ends the chain (offline, exhausted, superseded).
+        if (paged === "unissued") return;
+        if (paged === "discarded") continue;
         if (route.repository?.unreconciledRecorded().size === owed.size) return;
       }
     } catch {

@@ -195,6 +195,68 @@ function rangedRead(first: number, last: number): ThreadReadResponse {
   return response;
 }
 
+// A read whose items sit at SPARSE part positions — the projection's real
+// shape (internal/apptranscript/new_format_projection_test.go): part indices
+// skip merged text runs and hidden communicate calls, an entry can project
+// no items at all (a parts list of length zero), and a numeric item gap is
+// never evidence of a coverage hole.
+function sparseRead(entries: ReadonlyArray<readonly number[]>): ThreadReadResponse {
+  const last = entries.length;
+  const response = read(`row-e${last}`, last);
+  response.thread.turns = [
+    {
+      id: "turn_1",
+      itemsView: "full",
+      status: "completed",
+      version: last,
+      items: entries.flatMap((parts, entryIndex): ThreadItem[] => {
+        const entry = entryIndex + 1;
+        return parts.map((part): ThreadItem => {
+          const transcriptKey = `item-e${entry}p${part}`;
+          return {
+            type: "agentMessage",
+            id: transcriptKey,
+            transcriptKey,
+            turnId: "turn_1",
+            position: { entry, item: part },
+            version: entry * 100 + part,
+            text: `row-e${entry}p${part}`,
+          };
+        });
+      }),
+    },
+  ];
+  response.snapshot = { incarnation: identity.incarnation, length: last };
+  return response;
+}
+
+// The same sparse record answered as the daemon's windowed shape: the
+// newest `window` items by position plus an opaque server cursor, with the
+// epoch bump that forces a replace.
+function sparseWindowedRead(
+  entries: ReadonlyArray<readonly number[]>,
+  window: number,
+  epoch: number,
+): ThreadReadResponse {
+  const response = sparseRead(entries);
+  response.epoch = epoch;
+  const turns = response.thread.turns ?? [];
+  const all = turns[0]?.items ?? [];
+  const newest = [...all]
+    .sort(
+      (left, right) =>
+        (left.position?.entry ?? 0) - (right.position?.entry ?? 0) ||
+        (left.position?.item ?? 0) - (right.position?.item ?? 0),
+    )
+    .slice(-window);
+  if (turns[0]) response.thread.turns = [{ ...turns[0], items: newest }];
+  const firstPosition = newest[0]?.position;
+  response.olderCursor = firstPosition
+    ? `opaque-server-before-e${firstPosition.entry}p${firstPosition.item}`
+    : undefined;
+  return response;
+}
+
 function historyUpdate(label: string, entry: number): AnyNotification {
   return {
     method: "history/updated",
@@ -2176,6 +2238,34 @@ it("a promotion never stitches durable rows across an uncertified gap below the 
   // The disconnected rows are not owed to the display either: the demand
   // resolves against the certified chain and reconciles to nothing.
   expect(owner.owedRecorded()).toBeUndefined();
+  reader.dispose();
+  owner.dispose();
+});
+
+it("a legitimately sparse record restores fully below the window", async () => {
+  const fixture = createEntryCacheFixture();
+  fixtures.push(fixture);
+  const owner = repository(fixture.cache);
+  // The projection's real shape: part indices skip merged text runs and
+  // hidden communicate calls ([0,2,3,5] is a COMPLETE entry), and an entry
+  // can project no items at all. A numeric item gap or a skipped entry
+  // number is never evidence of a coverage hole, so the promotion must
+  // restore the whole recorded range below the windowed answer.
+  const entries = [[0, 2, 3, 5], [], [0, 1]] as const;
+  const expected = ["row-e1p0", "row-e1p2", "row-e1p3", "row-e1p5", "row-e3p0", "row-e3p1"];
+  owner.acceptRead(sparseRead(entries), { lifetime: 1, readId: "read-full", boundary: "boundary-full" });
+  await owner.settled();
+  owner.noteOwedRecordedRange();
+  owner.acceptRead(sparseWindowedRead(entries, 2, 1), {
+    lifetime: 1,
+    readId: "read-window",
+    boundary: "boundary-window",
+  });
+  await owner.settled();
+  const reader = owner.attachReader();
+  const opened = await reader.openLocal(200);
+  const texts = opened.model?.turns.flatMap((turn) => turn.items).map((item) => item.text);
+  expect(texts).toEqual(expected);
   reader.dispose();
   owner.dispose();
 });

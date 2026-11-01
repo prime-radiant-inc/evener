@@ -386,8 +386,14 @@ export interface ThreadsStoreState {
   releaseWatchedThread(ref: string): void;
   loadOlderTurns(ref: string): Promise<void>;
   /** One bounded source page below the wire window, to reconcile restored
-   * older rows no current-baseline statement validated. */
-  reconcileRecordedRange(ref: string): Promise<void>;
+   * older rows no current-baseline statement validated. "accepted" means the
+   * page was accepted and its range reconciled; "discarded" means a competing
+   * read moved the baseline while the page was in the air — a retryable
+   * rejection the caller may retry within its own bounded budget once the
+   * competing read settles; "unissued" means no page could serve the range
+   * (no sendable cursor, a failed request, or a page that merged nothing
+   * against an unchanged baseline — genuine exhaustion). */
+  reconcileRecordedRange(ref: string): Promise<"accepted" | "discarded" | "unissued">;
   // skillNames carries the composer's canonical skill selections for the
   // request. It is gated: a non-empty selection requires the target's
   // advertised capabilities.skillInput to be true, and a refusal throws
@@ -965,6 +971,17 @@ async function acceptEntryTranscriptHydration(
       clearEpoch,
       historyGeneration,
     });
+    // A missed opening armed the route's outstanding miss on the outgoing
+    // repository; the replacement starts with no demand armed, and nothing
+    // else would transfer it. The owed range is the route's fact, not the
+    // repository instance's: the display's convergence debt survives the
+    // repository the stale-cursor fallback retires. Re-arm the replacement so
+    // the recorded range below its baseline still restores before
+    // certification can accept a bare latest window and clear the miss. The
+    // note is synchronous and inert until a windowed baseline exists; an
+    // authoritative full answer below clears it again, exactly as it would
+    // have on the outgoing repository.
+    if (fixture.unresolvedOpenMiss) fixture.repository.noteOwedRecordedRange();
   }
   const repository = fixture.repository;
   fixture.cachedUnverified = false;
@@ -7096,18 +7113,23 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
   // RCA) instead of failing the caller.
   async reconcileRecordedRange(ref: string) {
     await requireReadyClient();
+    // A competing tracked read that started while a page was in the air owns
+    // the ref's convergence until it settles; a retry captured mid-flight
+    // would be discarded again. Wait for the pending settlement, then capture
+    // fresh state.
+    await trackedHydrationCompletions.get(ref);
     const client = getWiredClient();
     const capturedEpoch = getReadyEpoch();
     const fixture = entryTranscriptRoute(ref);
     const fixtureState = fixture?.ref === ref ? fixture : undefined;
     const fixtureRepository = fixtureState?.repository;
     const model = threadsStore.getState().threads.get(ref);
-    if (!client || !fixtureState || !fixtureRepository || !model) return;
+    if (!client || !fixtureState || !fixtureRepository || !model) return "unissued";
     const capturedRef = model.ref;
     const capturedCursor = model.olderCursor;
     // A local-only scheduling key is never an opaque source cursor: send the
     // display key on the wire never; the ordinary paths own that range.
-    if (!capturedCursor || capturedCursor.startsWith("entry-local:")) return;
+    if (!capturedCursor || capturedCursor.startsWith("entry-local:")) return "unissued";
     const capturedAuthority = fixtureRepository.getBaselineIdentity();
     const capturedBefore = fixtureRepository.oldestPosition();
     const capturedHydrations = threadsStore.getState().hydrations.get(ref) ?? 0;
@@ -7128,14 +7150,14 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
         !threadsStore.getState().deletedRefs.has(ref)
       );
     };
-    if (!stillOwned()) return;
+    if (!stillOwned()) return "discarded";
     let resp: ThreadTurnsListResponse;
     try {
       resp = await client.request("thread/turns/list", olderItemsParams(ref, capturedCursor));
     } catch {
-      return;
+      return "unissued";
     }
-    if (!stillOwned()) return;
+    if (!stillOwned()) return "discarded";
     const accepted = fixtureRepository.acceptPage(resp, {
       lifetime: fixtureState.lifetime,
       ...nextTranscriptReadIdentity(),
@@ -7146,7 +7168,11 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
     if (accepted) {
       const snapshot = fixtureRepository.getSnapshot();
       if (snapshot) putThreadModel(ref, snapshot);
+      return "accepted";
     }
+    // A page the baseline moved under is a retryable rejection; a page that
+    // merged nothing against the same baseline is genuine exhaustion.
+    return fixtureRepository.getBaselineIdentity() === capturedAuthority ? "unissued" : "discarded";
   },
 
   async loadOlderTurns(ref) {
