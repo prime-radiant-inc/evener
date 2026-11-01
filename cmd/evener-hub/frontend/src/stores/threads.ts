@@ -7166,8 +7166,14 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
       requestCursor: capturedCursor,
     });
     if (accepted) {
-      const snapshot = fixtureRepository.getSnapshot();
-      if (snapshot) putThreadModel(ref, snapshot);
+      // A late reconciliation page can settle after its pane closed, while a
+      // background lease alone retains the route: the ownership checks above
+      // still pass, so the publication must go through the route's own
+      // prune-aware path — a raw model put would overwrite the background-
+      // pruned store model with the page's bodies, and the repository's own
+      // later reclamation never republishes, retaining those payloads until
+      // an unrelated publication.
+      publishEntryTranscriptModel(ref);
       return "accepted";
     }
     // A page the baseline moved under is a retryable rejection; a page that

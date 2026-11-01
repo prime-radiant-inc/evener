@@ -2924,6 +2924,123 @@ it("a reconciliation page discarded by a competing read is retried after the com
   }
 });
 
+it("a late reconciliation page does not un-prune a background-only pane's model", async () => {
+  const storage = cache();
+  const realGetLatestWindow = storage.getLatestWindow.bind(storage);
+  setProductionEntryCacheForTests(storage);
+  const ref = "local:a";
+  const read = response(
+    ref,
+    Array.from({ length: 225 }, (_, index) => turn(`row-${index + 1}`, index + 1)),
+  );
+  read.snapshot = { incarnation: "inc-a", length: 225 };
+  const client = connect(read);
+  let foregroundReads = 0;
+  client.on("thread/read", (params) => {
+    foregroundReads += 1;
+    return foregroundReads === 1
+      ? read
+      : { ...latestWindowRead(ref, 224 + foregroundReads), requestGeneration: params.requestGeneration };
+  });
+  // The source's older pages: page one carries row 160 EDITED at the source
+  // (version 2). The first page's response is held so the pane can close
+  // while the reconciliation is in flight.
+  const listPageFor = (pageNumber: number) => {
+    const first = 188 - pageNumber * 40;
+    const rows = Array.from({ length: 40 }, (_, index) => {
+      const entry = first + index;
+      const pageTurn = turn(`row-${entry}`, entry, entry === 160 ? `row-${entry}-edited` : `row-${entry}`);
+      return entry === 160
+        ? { ...pageTurn, items: (pageTurn.items ?? []).map((item) => ({ ...item, version: 2 })) }
+        : pageTurn;
+    });
+    return {
+      data: rows,
+      nextCursor: pageNumber < 4 ? `opaque-server-page-${pageNumber + 1}` : undefined,
+      bootGeneration: "1",
+      epoch: 1,
+      snapshot: { incarnation: "inc-a", length: 230 },
+    };
+  };
+  const listReads: string[] = [];
+  const heldPage = deferred<ReturnType<typeof listPageFor>>();
+  client.on("thread/turns/list", (params) => {
+    listReads.push(params.cursor ?? "-");
+    if (listReads.length === 1) return heldPage.promise;
+    return listPageFor(Math.min(listReads.length, 4));
+  });
+  const lease = acquireBackgroundThread(ref);
+  await lease.ready;
+  await settleEntryTranscriptForTests(ref);
+  const key = entryHistoryKey({ ...identity, clientId: location.origin });
+  expect(await storage.getLatest(key, 300)).toHaveLength(225);
+  const bodies = () =>
+    threadsStore
+      .getState()
+      .threads.get(ref)
+      ?.turns.flatMap((turn) => turn.items)
+      .map((item) => item.text)
+      .filter(Boolean);
+  expect(bodies()).toEqual([]);
+
+  let withheldWindowReads = 0;
+  (storage as unknown as { getLatestWindow: unknown }).getLatestWindow = (...args: unknown[]) => {
+    if (withheldWindowReads > 0) {
+      withheldWindowReads -= 1;
+      return new Promise(() => {}) as ReturnType<typeof realGetLatestWindow>;
+    }
+    return realGetLatestWindow(...(args as Parameters<typeof realGetLatestWindow>)) as ReturnType<
+      typeof realGetLatestWindow
+    >;
+  };
+  withheldWindowReads = 1;
+  setSessionCacheOpenBackstopForTests(40);
+  try {
+    await threadsStore.getState().ensureThread(ref);
+    await settleEntryTranscriptForTests(ref);
+    // The converged display restored the recorded range, and the automatic
+    // reconciliation's first page is now in the air.
+    expect(bodies()).toEqual(Array.from({ length: 200 }, (_, index) => `row-${index + 27}`));
+    await vi.waitFor(() => expect(listReads).toHaveLength(1));
+    // The foreground pane closes while the reconciliation page is in flight;
+    // the background lease retains the route, so the page's ownership checks
+    // still pass and its acceptance will publish. The release prunes the
+    // store's model to history identities — a background-only pane's turns
+    // carry no payloads — exactly the state a late response must not un-prune.
+    threadsStore.getState().releaseThread(ref);
+    const storeModel = () => threadsStore.getState().threads.get(ref);
+    const historyIdentities = () => storeModel()?.history?.turns.flatMap((turn) => turn.items) ?? [];
+    await vi.waitFor(() => {
+      expect(storeModel()).toBeDefined();
+      expect(bodies()).toEqual([]);
+      const identities = historyIdentities();
+      expect(identities.length).toBeGreaterThan(0);
+      for (const identity of identities) expect(encodeTranscriptItem(identity).identityOnly).toBe(true);
+    });
+    const unreconciledBefore = productionEntryTranscriptForTests(ref).repository?.unreconciledRecorded().size ?? 0;
+    // The late page settles: it is accepted (its range reconciles against the
+    // source), and its publication must keep the background-only pane's model
+    // pruned — the page's bodies display through a foreground reader, never
+    // through a raw publication that retains them in a released pane's model.
+    heldPage.resolve(listPageFor(1));
+    await settleEntryTranscriptForTests(ref);
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    expect(listReads.length).toBeGreaterThanOrEqual(1);
+    const reconciled = productionEntryTranscriptForTests(ref).repository?.unreconciledRecorded().size ?? 0;
+    expect(reconciled).toBeLessThan(unreconciledBefore);
+    expect(storeModel()).toBeDefined();
+    expect(bodies()).toEqual([]);
+    const identities = historyIdentities();
+    expect(identities.length).toBeGreaterThan(0);
+    for (const identity of identities) expect(encodeTranscriptItem(identity).identityOnly).toBe(true);
+  } finally {
+    setSessionCacheStalledOpenForTests(5000);
+    setSessionCacheOpenBackstopForTests(10000);
+    threadsStore.getState().releaseThread(ref);
+    await lease.release();
+  }
+});
+
 // The source read's bodies make the display complete before the open's
 // give-up bound expires, so the display itself shows no stranding. The
 // miss disposed the pane's reader, though, and the repository then reclaims the
