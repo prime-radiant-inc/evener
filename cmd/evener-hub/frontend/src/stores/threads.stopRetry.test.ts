@@ -1923,3 +1923,67 @@ test("a force-stop landing while the fired retry's epoch read is pending retires
   // not wait out the stop drain and drive a second resume.
   expect(fake.calls.filter((call) => call.method === "thread/resume")).toHaveLength(1);
 });
+
+// A fired retry whose drive cannot even begin - the hub is gone, so the
+// readiness check throws before the attempt captures anything - must re-arm
+// carrying the SAME durable fence the fired entry was armed with. An arm with
+// no fence drops the epoch comparison for the whole backoff chain, so a
+// force-stop from another tab during that window would be ignored and the next
+// retry, once the hub is back, restarts the session the user stopped.
+test("a disconnected retry's re-arm keeps the durable fence for a later foreign Stop", async ({ onTestFinished }) => {
+  const scheduledResumeRetries: { attempt: number; fire: () => void; cancelled: boolean }[] = [];
+  const restoreResumeScheduler = installResumeRetrySchedulerForTests((attempt, retry) => {
+    const scheduled = { attempt, fire: retry, cancelled: false };
+    scheduledResumeRetries.push(scheduled);
+    return () => {
+      scheduled.cancelled = true;
+    };
+  });
+  onTestFinished(restoreResumeScheduler);
+  const ref = "local:offline-retry-keeps-fence";
+  const storage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(storage);
+  const readFenced = (target: FakeClient) => {
+    target.on("thread/read", () => {
+      const response = readResponse(ref, { status: { type: "notLoaded" } });
+      response.thread.evener.resumeRequired = true;
+      response.thread.evener.mutationStateAuthoritative = false;
+      return response;
+    });
+    target.on("thread/resume", () => {
+      throw new Error("rendezvous timed out");
+    });
+  };
+  const first = connectMutationClient();
+  readFenced(first);
+  await threadsStore.getState().ensureThread(ref);
+  await flushIndexedDBUntil(() => false);
+  await threadsStore.getState().resumeSession(ref);
+  await waitFor(() => expect(scheduledResumeRetries).toHaveLength(1));
+  // The hub goes away: the fired retry's drive fails the readiness check
+  // before the attempt captures anything, and its re-arm inherits the fired
+  // entry's durable fence.
+  first.close();
+  act(() => {
+    scheduledResumeRetries[0]?.fire();
+  });
+  await flushMicrotasks();
+  await waitFor(() => expect(scheduledResumeRetries).toHaveLength(2));
+  // Another tab force-stops the session while this page is still offline.
+  const otherTab = new MutationOutboxIndexedDB();
+  await otherTab.cancelUnattempted(ref);
+  otherTab.close();
+  // The hub is back; the next retry fires and the inherited fence must find
+  // the bumped epoch and retire without re-driving the stopped session.
+  const second = connectMutationClient();
+  readFenced(second);
+  act(() => {
+    scheduledResumeRetries[1]?.fire();
+  });
+  await flushIndexedDBUntil(() => false);
+  await flushMicrotasks();
+  await flushIndexedDBUntil(() => false);
+  await flushMicrotasks();
+  expect(second.calls.filter((call) => call.method === "thread/resume")).toHaveLength(0);
+  expect(first.calls.filter((call) => call.method === "thread/resume")).toHaveLength(1);
+});

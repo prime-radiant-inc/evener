@@ -1743,7 +1743,7 @@ function scheduleResumeRetryForFence(ref: string, armedStopEpoch: number | undef
       ) {
         return;
       }
-      void resumeFencedForSend(ref, true);
+      void resumeFencedForSend(ref, true, armedStopEpoch);
     })();
   });
   resumeRetries.set(ref, { attempt, cancel });
@@ -2814,7 +2814,7 @@ function waitForStopDrain(ref: string): Promise<void> {
 // still hears the failure as its own.
 const pressJoinedResumes = new Set<string>();
 
-async function resumeFencedForSend(ref: string, automatic = false): Promise<void> {
+async function resumeFencedForSend(ref: string, automatic = false, inheritedStopEpoch?: number): Promise<void> {
   const existing = inFlightResumes.get(ref);
   if (existing !== undefined) {
     if (!automatic) pressJoinedResumes.add(ref);
@@ -2822,7 +2822,7 @@ async function resumeFencedForSend(ref: string, automatic = false): Promise<void
   }
   const stopBaseline = resumeStopBaseline();
   const drive: ResumeDrive = {
-    promise: Promise.resolve().then(() => runResumeFencedForSend(ref, drive, stopBaseline)),
+    promise: Promise.resolve().then(() => runResumeFencedForSend(ref, drive, stopBaseline, inheritedStopEpoch)),
     targetRef: ref,
     automatic,
   };
@@ -2845,6 +2845,7 @@ async function runResumeFencedForSend(
   ref: string,
   drive: ResumeDrive,
   stopBaseline: (ref?: string) => void,
+  inheritedStopEpoch?: number,
 ): Promise<void> {
   // Hoisted for the catch: which identity this drive reached, what its first
   // retarget moved, whether a Stop won the identity fence, whether this
@@ -2857,14 +2858,16 @@ async function runResumeFencedForSend(
   let stopWon = false;
   let swapRegistered = false;
   let requestIssued = false;
-  // The durable stop epoch this attempt is issued against, captured BEFORE the
-  // resume request goes out: a Stop from another tab that lands while the
-  // attempt is in flight bumps the epoch past this baseline, so the retry armed
-  // from this attempt's failure retires at fire instead of adopting that Stop
-  // as its baseline and re-driving a session the user stopped. An unreadable
-  // store captures no fence: the same store cannot have recorded the Stop
-  // either.
-  let attemptStopEpoch: number | undefined;
+  // The durable stop epoch this attempt is issued against: inherited from the
+  // fired retry's arm (so a drive that cannot even begin - the readiness check
+  // throws before any capture - re-arms with the SAME fence instead of none),
+  // then freshened BEFORE the resume request goes out: a Stop from another tab
+  // that lands while the attempt is in flight bumps the epoch past this
+  // baseline, so the retry armed from this attempt's failure retires at fire
+  // instead of adopting that Stop as its baseline and re-driving a session the
+  // user stopped. An unreadable store leaves the inherited fence in place: the
+  // same store cannot have recorded the Stop either.
+  let attemptStopEpoch = inheritedStopEpoch;
   try {
     const client = getWiredClient();
     if (client === null || client.state !== "ready")
@@ -2874,7 +2877,7 @@ async function runResumeFencedForSend(
       try {
         attemptStopEpoch = await attemptRuntime.storage.readStopEpoch(ref);
       } catch {
-        attemptStopEpoch = undefined;
+        attemptStopEpoch = inheritedStopEpoch;
       }
     }
     // The baseline was taken when the drive acquired ownership, BEFORE the drain wait: a Stop that lands during the
