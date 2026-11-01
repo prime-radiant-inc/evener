@@ -243,9 +243,13 @@ func TestDelegateUpdateNotDeliveredStillSucceeds(t *testing.T) {
 			if err != nil {
 				t.Fatalf("communicate: %v", err)
 			}
+			typed, isTyped := out.(toolpkg.StateResult)
+			if !isTyped {
+				t.Fatalf("communicate result = %#v, want typed state result", out)
+			}
 			var result map[string]any
-			if err := json.Unmarshal([]byte(fmt.Sprint(out)), &result); err != nil {
-				t.Fatalf("decode result %v: %v", out, err)
+			if err := json.Unmarshal([]byte(typed.Output), &result); err != nil {
+				t.Fatalf("decode result %v: %v", typed.Output, err)
 			}
 			if result["accepted"] != true || result["delivery"] != "not_delivered" {
 				t.Fatalf("result = %v, want accepted and not_delivered", result)
