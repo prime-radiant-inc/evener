@@ -165,6 +165,36 @@ function windowedReadWithLength(total: number, epoch: number, bytes: number): Th
   return response;
 }
 
+// An older full read that answered exactly rows `first`..`last`: the shape a
+// client cached in an earlier session before the thread grew far past it,
+// leaving the durable record with an island of rows whose extent ends at
+// `last` while nothing between `last` and the current window is certified.
+function rangedRead(first: number, last: number): ThreadReadResponse {
+  const response = read(`row-${first}`, last);
+  response.thread.turns = [
+    {
+      id: "turn_1",
+      itemsView: "full",
+      status: "completed",
+      version: last,
+      items: Array.from(
+        { length: last - first + 1 },
+        (_, index): ThreadItem => ({
+          type: "agentMessage",
+          id: `item-${first + index}`,
+          transcriptKey: `item-${first + index}`,
+          turnId: "turn_1",
+          position: { entry: first + index, item: 0 },
+          version: first + index,
+          text: `row-${first + index}`,
+        }),
+      ),
+    },
+  ];
+  response.snapshot = { incarnation: identity.incarnation, length: last };
+  return response;
+}
+
 function historyUpdate(label: string, entry: number): AnyNotification {
   return {
     method: "history/updated",
@@ -2117,6 +2147,75 @@ it("an owed fill fenced mid-read does not consume the recorded demand", async ()
   const texts = reopened.model?.turns.flatMap((turn) => turn.items).map((item) => item.text);
   expect(texts).toEqual(Array.from({ length: 83 }, (_, index) => `row-${index + 1}`));
   reopenedReader.dispose();
+  owner.dispose();
+});
+
+it("a promotion never stitches durable rows across an uncertified gap below the window", async () => {
+  const fixture = createEntryCacheFixture();
+  fixtures.push(fixture);
+  const owner = repository(fixture.cache);
+  // The client cached rows 11..50 in an earlier session; the thread grew far
+  // past it while it was away, and a same-incarnation windowed read answers
+  // the newest 40-item window (301..340). The record holds both islands,
+  // and nothing certifies the history between them.
+  owner.acceptRead(rangedRead(11, 50), { lifetime: 1, readId: "read-old", boundary: "boundary-old" });
+  await owner.settled();
+  owner.noteOwedRecordedRange();
+  owner.acceptRead(windowedRead(340, 1), { lifetime: 1, readId: "read-window", boundary: "boundary-window" });
+  await owner.settled();
+  const reader = owner.attachReader();
+  const opened = await reader.openLocal(200);
+  // The owed fill must not present rows 11..50 directly below the window:
+  // nothing certifies the 51..300 gap, and stitching across it would show
+  // row-50 directly followed by row-301 with no sign of the missing
+  // history — later scroll-back pages would land mid-transcript. The
+  // disconnected rows belong to the server-paging machinery that owns
+  // cursors.
+  const texts = opened.model?.turns.flatMap((turn) => turn.items).map((item) => item.text);
+  expect(texts).toEqual(Array.from({ length: 40 }, (_, index) => `row-${index + 301}`));
+  // The disconnected rows are not owed to the display either: the demand
+  // resolves against the certified chain and reconciles to nothing.
+  expect(owner.owedRecorded()).toBeUndefined();
+  reader.dispose();
+  owner.dispose();
+});
+
+it("a fill fenced mid-read does not record keys its discarded presentation never displayed", async () => {
+  const fixture = createEntryCacheFixture();
+  fixtures.push(fixture);
+  const owner = repository(fixture.cache);
+  owner.acceptRead(readMany(400), { lifetime: 1, readId: "read-full", boundary: "boundary-full" });
+  await owner.settled();
+  owner.noteOwedRecordedRange();
+  owner.acceptRead(windowedRead(400, 1), { lifetime: 1, readId: "read-window", boundary: "boundary-window" });
+  await owner.settled();
+  expect(owner.unreconciledRecorded().size).toBe(0);
+  const reader = owner.attachReader();
+  // The certified older query is capped at the window's complement, so the
+  // fill's restore arm can reach rows the query never covered — the rows a
+  // completed presentation would track as unreconciled. Fence the fill
+  // mid-read by disposing the reader, exactly the retirement the
+  // settlement races impose: the assembled presentation is discarded, so no
+  // key it would have tracked may be recorded.
+  const realGetLatest = fixture.cache.getLatest.bind(fixture.cache);
+  const fillEntered = deferred<void>();
+  let releaseFill!: () => void;
+  let fillArgs: unknown[] = [];
+  const heldFill = new Promise<unknown>((resolve) => {
+    releaseFill = () => resolve(realGetLatest(...(fillArgs as Parameters<typeof realGetLatest>)));
+  });
+  (fixture.cache as unknown as { getLatest: unknown }).getLatest = (...args: unknown[]) => {
+    fillArgs = args;
+    fillEntered.resolve();
+    return heldFill;
+  };
+  const fencedOpen = reader.openLocal(200);
+  await fillEntered.promise;
+  reader.dispose();
+  releaseFill();
+  await fencedOpen;
+  (fixture.cache as unknown as { getLatest: unknown }).getLatest = realGetLatest;
+  expect(owner.unreconciledRecorded().size).toBe(0);
   owner.dispose();
 });
 

@@ -100,6 +100,18 @@ function hydratedDisplay(model: ThreadModel): ThreadModel {
   return changed ? { ...model, turns } : model;
 }
 
+// Whether a hole in the recorded history separates two held positions — the
+// promotion's contiguity rule, in position space. Inside one entry, item
+// numbers are dense: a skip is missing history, visible as a gap in what the
+// display would present. Entry numbers are dense the same way, so a skipped
+// entry is missing history too. The step across an entry boundary is held to
+// the record's benefit: an entry's own item count is not recorded, so no hole
+// can be proven at the boundary — but it can never be hidden inside an entry.
+function positionHoleBetween(above: ThreadItemPosition, below: ThreadItemPosition): boolean {
+  if (above.entry === below.entry) return above.item - below.item > 1;
+  return above.entry - below.entry > 1;
+}
+
 /**
  * A nonce unique to this browser lifetime (this page's module evaluation). The
  * baseline identity is minted from the tab-local connection lifetime and source
@@ -1465,12 +1477,20 @@ export class TranscriptRepository {
   /**
    * Resolve the armed demand's identities from durable rows the fill already
    * pulled — no extra read: the identities the record holds below the
-   * model's bodied window that the model does not present with a real body.
-   * A resolution that finds nothing owed clears the demand; a fenced fill
+   * model's bodied window that the model does not present with a real body —
+   * restricted to rows inside the promotion's contiguity floor. Rows past
+   * an uncertified gap are disconnected islands: the display cannot
+   * present them without stitching across the gap, so they are not owed to
+   * the display and the cursor-owning paging machinery speaks for them. A
+   * resolution that finds nothing owed clears the demand; a fenced fill
    * changes nothing, because the resolution reflects the record and the
    * model, not the fill's discarded presentation.
    */
-  #resolveOwedFromRows(rows: readonly TranscriptItemRow<unknown>[], model: ThreadModel | undefined): void {
+  #resolveOwedFromRows(
+    rows: readonly TranscriptItemRow<unknown>[],
+    model: ThreadModel | undefined,
+    connectedToWindow: ReadonlySet<string>,
+  ): void {
     const displayedItems = (model?.history?.turns ?? model?.turns ?? []).flatMap((turn) => turn.items);
     // Presentation means a real body, the same standard the completeness
     // check demands: a body-suppressed shell's identity-only items present
@@ -1490,6 +1510,7 @@ export class TranscriptRepository {
     for (const row of rows) {
       if (presented.has(row.transcriptKey)) continue;
       if (windowStart && !(comparePosition(row.position, windowStart) < 0)) continue;
+      if (!connectedToWindow.has(row.transcriptKey)) continue;
       owed.set(row.transcriptKey, row.position);
     }
     this.#owedRecorded = owed.size > 0 ? { identities: owed } : undefined;
@@ -1739,6 +1760,7 @@ export class TranscriptRepository {
           // fill, or the next open presents the bare wire window with every
           // disarm point reading the debt as already satisfied.
           let owedSatisfiedByFill = false;
+          let unreconciledFromFill: Set<string> | undefined;
           if (
             window.complete &&
             latestStart &&
@@ -1769,11 +1791,42 @@ export class TranscriptRepository {
               if (!older.stale) olderRows = older.rows;
             }
             const durableOlder = await this.#cache.getLatest(this.#binding.historyKey, limit);
+            // The owed fill's contiguity floor: the deepest position the
+            // record holds with no hole between it and the window. A durable
+            // row is connected to the window only when every position step
+            // from the window's oldest row down to it is held — an entry
+            // whose number skips, or an item number that skips inside one
+            // entry, is a hole, and rows past the first hole are disconnected
+            // islands the promotion must not stitch below the window: the
+            // display would show them as if the missing history between them
+            // and the window did not exist. The step across an entry
+            // boundary is held to the benefit of the record (an entry's own
+            // item count is not recorded), so a hole can never be inferred
+            // there — but it can never be hidden inside one entry either.
+            const heldBelowByKey = new Map<string, TranscriptItemRow<unknown>>();
+            for (const row of [...window.rows, ...durableOlder]) {
+              if (comparePosition(row.position, latestStart) >= 0) continue;
+              const held = heldBelowByKey.get(row.transcriptKey);
+              if (!held || held.version <= row.version) heldBelowByKey.set(row.transcriptKey, row);
+            }
+            const heldBelowDescending = [...heldBelowByKey.values()].sort((left, right) =>
+              comparePosition(right.position, left.position),
+            );
+            const connectedToWindow = new Set<string>();
+            let previousPosition = latestStart;
+            for (const row of heldBelowDescending) {
+              if (positionHoleBetween(previousPosition, row.position)) break;
+              connectedToWindow.add(row.transcriptKey);
+              previousPosition = row.position;
+            }
             // The pull the fill already pays resolves the armed demand's
             // identities — the record's own rows are the capture's only
-            // input, so no open ever issues a capture read of its own.
+            // input, so no open ever issues a capture read of its own. Rows
+            // past the contiguity floor are disconnected islands behind an
+            // uncertified gap: they are not owed to the display, and the
+            // server-paging machinery that owns cursors speaks for them.
             if (this.#windowedBaseline && this.#recordedRangeOwed) {
-              this.#resolveOwedFromRows(durableOlder, this.#model);
+              this.#resolveOwedFromRows(durableOlder, this.#model, connectedToWindow);
             }
             // The owed fill is measured from the pull itself: identities the
             // record holds below the window that the model does not present —
@@ -1783,7 +1836,10 @@ export class TranscriptRepository {
               this.#windowedBaseline &&
               this.#recordedRangeOwed &&
               durableOlder.some(
-                (row) => comparePosition(row.position, latestStart) < 0 && !presentedKeys.has(row.transcriptKey),
+                (row) =>
+                  comparePosition(row.position, latestStart) < 0 &&
+                  !presentedKeys.has(row.transcriptKey) &&
+                  connectedToWindow.has(row.transcriptKey),
               );
             const olderByKey = new Map<string, TranscriptItemRow<unknown>>();
             for (const row of [...olderRows, ...durableOlder]) {
@@ -1794,8 +1850,11 @@ export class TranscriptRepository {
               if (comparePosition(row.position, latestStart) >= 0) return false;
               // The floored fill serves the range the opening cut loaded; the
               // owed fill adds the identities the record still holds that the
-              // model does not present. The two compose.
-              if (owedFromRecord && !presentedKeys.has(row.transcriptKey)) return true;
+              // model does not present — but only rows inside the
+              // contiguity floor, never across an uncertified gap. The two
+              // compose.
+              if (owedFromRecord && !presentedKeys.has(row.transcriptKey) && connectedToWindow.has(row.transcriptKey))
+                return true;
               if (!loadedStart) return false;
               return comparePosition(row.position, loadedStart) >= 0;
             });
@@ -1815,7 +1874,12 @@ export class TranscriptRepository {
                 if (certifiedKeys.has(row.transcriptKey) || presentedKeys.has(row.transcriptKey)) continue;
                 nextUnreconciled.add(row.transcriptKey);
               }
-              this.#unreconciledRecorded = nextUnreconciled;
+              // The fences below can still discard this fill's whole
+              // presentation, exactly as they can discard the owed demand's
+              // satisfaction: a discarded presentation displayed nothing, so
+              // it must not record keys as unreconciled either — commit the
+              // set with the presentation, after every fence has passed.
+              unreconciledFromFill = nextUnreconciled;
               // The promotion presents the range the route noted as owed:
               // the demand is satisfied for this baseline — committed with
               // the presentation below, once every fence has passed.
@@ -1888,6 +1952,7 @@ export class TranscriptRepository {
           // re-advertising loaded history only risks a redundant lookup that
           // can reconcile the retained range away.
           if (owedSatisfiedByFill) this.#recordedRangeOwed = false;
+          if (unreconciledFromFill !== undefined) this.#unreconciledRecorded = unreconciledFromFill;
           this.#model = latest;
           const missingFloor = oldestReturned ? this.#missingBodyFloor(latest, oldestReturned) : undefined;
           this.#localOlder =
