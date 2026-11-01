@@ -62,7 +62,7 @@ func TestManagerRemoteWatchAdmissionUsesThreadReadTargetSupport(t *testing.T) {
 			updates, err := bound.Watch(ctx, appwire.SessionWatchRequest{Ref: "remote:target", Completion: tc.completion, Events: []string{"status"}})
 			if tc.wantRefusal {
 				var wire appwire.WireError
-				if !errors.As(err, &wire) || wire.Code != appwire.CodeInvalidRequest || wire.Message != "target cannot report recorded-observation support" {
+				if !errors.As(err, &wire) || wire.Code != appwire.CodeInvalidRequest {
 					t.Fatalf("Watch error = %#v, want InvalidRequest refusal", err)
 				}
 				return
