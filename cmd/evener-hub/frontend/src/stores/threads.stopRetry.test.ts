@@ -1987,3 +1987,70 @@ test("a disconnected retry's re-arm keeps the durable fence for a later foreign 
   expect(second.calls.filter((call) => call.method === "thread/resume")).toHaveLength(0);
   expect(first.calls.filter((call) => call.method === "thread/resume")).toHaveLength(1);
 });
+
+// The fire-time comparison reads the epoch, and the attempt it wakes reads it
+// AGAIN before its request goes out. A Stop from another tab can land between
+// those two reads: the fire's snapshot predates the bump and passes, and an
+// attempt that adopts the bumped value as its own baseline never sees the
+// Stop - it proceeds to resume the session the user stopped, and its re-arm
+// would keep that Stop as the baseline for every retry after it.
+test("a foreign Stop between the fire's read and the attempt's read aborts the attempt", async ({ onTestFinished }) => {
+  const scheduledResumeRetries: { attempt: number; fire: () => void; cancelled: boolean }[] = [];
+  const restoreResumeScheduler = installResumeRetrySchedulerForTests((attempt, retry) => {
+    const scheduled = { attempt, fire: retry, cancelled: false };
+    scheduledResumeRetries.push(scheduled);
+    return () => {
+      scheduled.cancelled = true;
+    };
+  });
+  onTestFinished(restoreResumeScheduler);
+  const ref = "local:two-read-window-stop";
+  const storage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(storage);
+  const fake = connectMutationClient();
+  fake.on("thread/read", () => {
+    const response = readResponse(ref, { status: { type: "notLoaded" } });
+    response.thread.evener.resumeRequired = true;
+    response.thread.evener.mutationStateAuthoritative = false;
+    return response;
+  });
+  fake.on("thread/resume", () => {
+    throw new Error("rendezvous timed out");
+  });
+  // Hold the FIRED retry's own epoch read - the second read the store makes
+  // (the first is the failing attempt's capture): another tab force-stops
+  // while it is in flight, so its snapshot predates the bump and the
+  // fire-time comparison passes against the armed epoch.
+  const realReadStopEpoch = storage.readStopEpoch.bind(storage);
+  let epochReads = 0;
+  let releaseFireRead!: (epoch: number) => void;
+  storage.readStopEpoch = async (targetRef: string) => {
+    epochReads += 1;
+    if (epochReads !== 2) return realReadStopEpoch(targetRef);
+    return new Promise<number>((resolve) => {
+      releaseFireRead = resolve;
+    });
+  };
+  await threadsStore.getState().ensureThread(ref);
+  await flushIndexedDBUntil(() => false);
+  await threadsStore.getState().resumeSession(ref);
+  await waitFor(() => expect(scheduledResumeRetries).toHaveLength(1));
+  act(() => {
+    scheduledResumeRetries[0]?.fire();
+  });
+  await waitFor(() => expect(epochReads).toBe(2));
+  // The other tab force-stops while the fire's read is still in flight.
+  const otherTab = new MutationOutboxIndexedDB();
+  await otherTab.cancelUnattempted(ref);
+  otherTab.close();
+  // The fire's read resolves with the pre-Stop snapshot, so the comparison
+  // passes and the attempt begins - and its OWN read must find the bump and
+  // abort instead of adopting it.
+  releaseFireRead(0);
+  await flushIndexedDBUntil(() => false);
+  await flushMicrotasks();
+  await flushIndexedDBUntil(() => false);
+  await flushMicrotasks();
+  expect(fake.calls.filter((call) => call.method === "thread/resume")).toHaveLength(1);
+  expect(scheduledResumeRetries).toHaveLength(1);
+});

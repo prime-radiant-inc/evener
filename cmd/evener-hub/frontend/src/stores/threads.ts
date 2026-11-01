@@ -2874,11 +2874,23 @@ async function runResumeFencedForSend(
       throw new Error("Connect to the hub before resuming this session.");
     const attemptRuntime = mutationRuntime;
     if (attemptRuntime !== null) {
+      let freshStopEpoch: number | undefined;
       try {
-        attemptStopEpoch = await attemptRuntime.storage.readStopEpoch(ref);
+        freshStopEpoch = await attemptRuntime.storage.readStopEpoch(ref);
       } catch {
-        attemptStopEpoch = inheritedStopEpoch;
+        freshStopEpoch = undefined;
       }
+      // An automatic attempt inherits the fence its fired arm carried, and a
+      // fresh epoch that has moved past that fence is a Stop from another tab
+      // landing between the fire's own read and this one - invisible to this
+      // page's Stop generations. The user already reversed this attempt:
+      // surface it as the Stop cancellation it is (the attempt aborts and arms
+      // nothing) instead of rebasing the fence onto the Stop's own bump and
+      // re-driving the session it stopped.
+      if (drive.automatic && inheritedStopEpoch !== undefined && freshStopEpoch !== inheritedStopEpoch) {
+        throw new StopCanceledError();
+      }
+      attemptStopEpoch = freshStopEpoch ?? inheritedStopEpoch;
     }
     // The baseline was taken when the drive acquired ownership, BEFORE the drain wait: a Stop that lands during the
     // wait is a person canceling the message this drive would send, and a
