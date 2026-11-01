@@ -22,7 +22,7 @@ func TestManagerJobWatchOrdinaryBranchDecidedAtCompose(t *testing.T) {
 	root := newManagerPromptRoot(t, adapter, func(cfg *SessionConfig) { cfg.Manager = true })
 
 	stub := tool.RegisteredTool{}
-	stub.Tool.Definition = llm.ToolDefinition{
+	stub.Definition = llm.ToolDefinition{
 		Name:        "job_watch",
 		Description: "stub ordinary job_watch",
 		Parameters:  map[string]any{"properties": map[string]any{}},
