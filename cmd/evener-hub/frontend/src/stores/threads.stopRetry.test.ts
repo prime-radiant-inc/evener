@@ -1742,17 +1742,18 @@ test("a resume failure that never reached the hub counts as no failed delivery c
     throw new Error("rendezvous timed out");
   });
   await threadsStore.getState().resumeSession(ref);
-  expect(threadsStore.getState().resumeFailures.get(ref)?.message).toBe("rendezvous timed out");
+  // The hub-reachable failure published, and its one refused request is one
+  // failed fate check.
+  expect(threadsStore.getState().resumeFailures.has(ref)).toBe(true);
   expect(threadsStore.getState().uncertainRecheckFailures.get(row.clientMutationId)).toBe(1);
   // Then, with no ready client, a later drive fails before any request goes
   // out. It checked nothing, so the row's count must stay where the real check
   // left it - a hub outage between checks never advances the discard
-  // threshold.
+  // threshold - and no second resume request exists.
   connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
   await threadsStore.getState().resumeSession(ref);
-  expect(threadsStore.getState().resumeFailures.get(ref)?.message).toBe(
-    "Connect to the hub before resuming this session.",
-  );
+  expect(threadsStore.getState().resumeFailures.has(ref)).toBe(true);
+  expect(fake.calls.filter((call) => call.method === "thread/resume")).toHaveLength(1);
   expect(threadsStore.getState().uncertainRecheckFailures.get(row.clientMutationId)).toBe(1);
 });
 
@@ -2453,4 +2454,113 @@ test("a same-page shutdown landing during the reconnect revalidation aborts the 
   expect(fake.calls.filter((call) => call.method === "thread/resume")).toHaveLength(1);
   expect(scheduledResumeRetries).toHaveLength(1);
   expect(threadsStore.getState().resumeFailures.get(ref)?.stopCanceled).toBe(true);
+});
+
+// An automatic attempt that adopts the SAME resumed identity it inherited can
+// have its adoption epoch read fail - the store wedged mid-read - and an
+// unread store is not a Stop: the arm this attempt leaves must keep the
+// inherited identity's KNOWN epoch rather than replace it with unread, or a
+// later Stop from another tab finds no fence to compare at the next fire and
+// the retry restarts the session it stopped.
+test("an adoption whose epoch read fails keeps the inherited resumed epoch for the arm", async ({ onTestFinished }) => {
+  const scheduledResumeRetries = trackScheduledResumeRetries(onTestFinished);
+  const ref = "local:unread-adoption-keeps-epoch";
+  const resumedRef = "local:unread-adoption-keeps-epoch-2";
+  const storage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(storage);
+  const fake = connectMutationClient();
+  const { rejectHydration } = stageResumedIdentityFailure(fake, ref, resumedRef);
+  await threadsStore.getState().ensureThread(ref);
+  await threadsStore.getState().ensureThread(resumedRef);
+  const owner = acquireBackgroundThread(resumedRef);
+  await owner.ready;
+  await flushIndexedDBUntil(() => false);
+  const drive = threadsStore.getState().resumeSession(ref);
+  await waitFor(() => expect(fake.calls.filter((call) => call.method === "thread/resume")).toHaveLength(1));
+  rejectHydration(new Error("connection reset by peer"));
+  await drive;
+  await waitFor(() => expect(scheduledResumeRetries).toHaveLength(1));
+  // The fired attempt adopts the same resumed identity, but its ADOPTION
+  // epoch read fails: the store is momentarily unreadable. The reads this
+  // wrapper sees for that identity, in order, are the fire's own check, the
+  // attempt's pre-request check, the reconnect hook's revalidation, then
+  // the adoption capture - the one that fails.
+  const realReadStopEpoch = storage.readStopEpoch.bind(storage);
+  let resumedEpochReads = 0;
+  storage.readStopEpoch = async (targetRef: string) => {
+    if (targetRef !== resumedRef) return realReadStopEpoch(targetRef);
+    resumedEpochReads += 1;
+    if (resumedEpochReads !== 4) return realReadStopEpoch(targetRef);
+    throw new Error("storage wedged mid-read");
+  };
+  act(() => {
+    scheduledResumeRetries[0]?.fire();
+  });
+  await flushIndexedDBUntil(() => false);
+  await flushMicrotasks();
+  await flushIndexedDBUntil(() => false);
+  await flushMicrotasks();
+  // The attempt drove, adopted, and failed at its hydration: the arm it
+  // leaves carried the inherited resumed epoch.
+  await waitFor(() => expect(scheduledResumeRetries).toHaveLength(2));
+  // Another tab force-stops the resumed identity. The re-armed entry must
+  // find the bump through its carried epoch and retire without re-driving.
+  const otherTab = new MutationOutboxIndexedDB();
+  await otherTab.cancelUnattempted(resumedRef);
+  otherTab.close();
+  act(() => {
+    scheduledResumeRetries[1]?.fire();
+  });
+  await flushIndexedDBUntil(() => false);
+  await flushMicrotasks();
+  await flushIndexedDBUntil(() => false);
+  await flushMicrotasks();
+  // The press and the attempt each drove once (2); the re-armed entry found
+  // the bump through its carried epoch and retired without a third.
+  expect(fake.calls.filter((call) => call.method === "thread/resume")).toHaveLength(2);
+  await owner.release();
+});
+
+// A press that arrives while an older backoff stands brings this page's live
+// intent: its failure must arm with ITS OWN fences, superseding the standing
+// entry - or the old arm's pre-Stop epoch retires the new Send's recovery at
+// the next fire and the pressed row waits for another user action.
+test("a press that fails while an older backoff stands supersedes its fences", async ({ onTestFinished }) => {
+  const scheduledResumeRetries = trackScheduledResumeRetries(onTestFinished);
+  const ref = "local:press-supersedes-stale-arm";
+  const storage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(storage);
+  const fake = connectMutationClient();
+  fake.on("thread/read", () => {
+    const response = readResponse(ref, { status: { type: "notLoaded" } });
+    response.thread.evener.resumeRequired = true;
+    response.thread.evener.mutationStateAuthoritative = false;
+    return response;
+  });
+  fake.on("thread/resume", () => {
+    throw new Error("rendezvous timed out");
+  });
+  await threadsStore.getState().ensureThread(ref);
+  await flushIndexedDBUntil(() => false);
+  await threadsStore.getState().resumeSession(ref);
+  await waitFor(() => expect(scheduledResumeRetries).toHaveLength(1));
+  // Another tab force-stops while the first backoff stands.
+  const otherTab = new MutationOutboxIndexedDB();
+  await otherTab.cancelUnattempted(ref);
+  otherTab.close();
+  // The user presses again: the press adopts the bumped epoch as its own
+  // baseline and fails at the hub, so its arm must supersede the stale one.
+  await threadsStore.getState().resumeSession(ref);
+  await waitFor(() => expect(scheduledResumeRetries).toHaveLength(2));
+  act(() => {
+    scheduledResumeRetries[scheduledResumeRetries.length - 1]?.fire();
+  });
+  await flushIndexedDBUntil(() => false);
+  await flushMicrotasks();
+  await flushIndexedDBUntil(() => false);
+  await flushMicrotasks();
+  // The press's own fences held: each press drove once (2), and the next
+  // fire re-drove the resume (3) instead of retiring on the old pre-Stop
+  // epoch.
+  expect(fake.calls.filter((call) => call.method === "thread/resume")).toHaveLength(3);
 });

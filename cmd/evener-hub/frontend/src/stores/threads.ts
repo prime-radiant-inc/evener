@@ -1703,8 +1703,15 @@ function scheduleResumeRetryForFence(
   armedStopEpoch: number | undefined,
   armedResumedFence: ResumedStopFence | undefined,
 ): void {
-  if (resumeRetries.get(ref)?.cancel) return;
-  const attempt = (resumeRetries.get(ref)?.attempt ?? 0) + 1;
+  const existing = resumeRetries.get(ref);
+  // A prior arm can still stand when a NEW drive fails - a press that arrived
+  // while the old backoff ticked. The standing entry's fences belong to the
+  // drive that armed it; the failure now arming supersedes them with this
+  // drive's fences, or the stale pre-Stop epoch would retire the new Send's
+  // recovery at the next fire and leave its pressed row parked. The pace
+  // count survives the supersession, so the backoff keeps its doubling.
+  existing?.cancel?.();
+  const attempt = (existing?.attempt ?? 0) + 1;
   // The Stop fences travel with the armed retry: the page's Stop generations
   // (this tab's Stops), the original ref's DURABLE stop epoch captured before
   // the attempt that armed it, and - for an identity-changing resume - the
@@ -3043,7 +3050,16 @@ async function runResumeFencedForSend(
       ) {
         throw new StopCanceledError();
       }
-      attemptResumedFence = { ref: resumedRef, generation: resumedGeneration, epoch: resumedEpoch };
+      // An unread store cancels nothing: when this is the identity the
+      // inherited fence already named, its known epoch survives the failed
+      // read, so a Stop another tab lands in this window still has a fence
+      // to compare at the next fire. A genuinely new identity has no known
+      // epoch to keep.
+      let armedResumedEpoch = resumedEpoch;
+      if (armedResumedEpoch === undefined && inherited.resumed !== undefined && inherited.resumed.ref === resumedRef) {
+        armedResumedEpoch = inherited.resumed.epoch;
+      }
+      attemptResumedFence = { ref: resumedRef, generation: resumedGeneration, epoch: armedResumedEpoch };
     }
     // The token the daemon's instance fence compares (server/appwire_thread_settings.go's
     // expectedInstanceID vs appThreadID), read the same fused way a fresh send
