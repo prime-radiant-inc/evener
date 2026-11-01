@@ -181,6 +181,59 @@ func TestWorktreePrune_OrphanArmWithholdsReleaseWhileLivelockHeld(t *testing.T) 
 	}
 }
 
+// A nested lane's marker names its immediate parent subagent, and subagents
+// never take a livelock: only the hosting root's process does. The guard
+// must resolve the parent to its tree root and probe the ROOT's livelock, or
+// a live tree's nested lanes lose the live-owner protection entirely — the
+// upgrade window again, one level down.
+func TestWorktreePrune_OrphanArmSparesNestedLaneWhileRootHoldsLivelock(t *testing.T) {
+	t.Parallel()
+	r := newWorktreeRepo(t)
+	const rootSID = "034nestedroot00000000000000"
+	const parentSID = "034nestedsub000000000000000"
+	const dlg = "dlg_034nestedsub00000000"
+	lane := r.delegateLane(t, "orphan-nested-live", dlg, parentSID)
+	// The immediate parent is a subagent hosted by the tree root: its meta
+	// chains upward, and the root's process is the only thing a livelock can
+	// witness.
+	if err := schema.SaveSessionMeta(r.stateDir, schema.SessionMeta{ID: parentSID, IsSubagent: true, ParentSessionID: rootSID}); err != nil {
+		t.Fatalf("save nested parent meta: %v", err)
+	}
+	if err := schema.SaveSessionMeta(r.stateDir, schema.SessionMeta{ID: rootSID}); err != nil {
+		t.Fatalf("save tree root meta: %v", err)
+	}
+	seedOrphanParent(t, r, parentSID, dlg, "", time.Now().Add(-30*24*time.Hour))
+	release, applied, err := schema.AcquireSessionLivelock(r.stateDir, rootSID)
+	if err != nil || !applied || release == nil {
+		t.Fatalf("hold tree root livelock: applied=%t err=%v", applied, err)
+	}
+
+	out, err := r.pruneOrphanedOp(t, 7)
+	if err != nil {
+		t.Fatalf("prune with live tree root: %v", err)
+	}
+	if findPruneEntry(t, pruneEntries(t, out, "removed"), "orphan-nested-live") != nil {
+		t.Fatalf("a live tree's nested lane was collected on stale-evidence inactivity: %+v", out)
+	}
+	if e := findPruneEntry(t, pruneEntries(t, out, "unlocked"), "orphan-nested-live"); e != nil {
+		t.Fatalf("a live tree's nested lane was reported unlocked: %+v", e)
+	}
+	if _, locked, reason := r.laneLocked(t, lane); !locked {
+		t.Errorf("a live tree's nested lane was released: %q", reason)
+	}
+
+	// The flock dies with the root's process: once released, the same stale
+	// nested parent is reclaimable again.
+	release()
+	out, err = r.pruneOrphanedOp(t, 7)
+	if err != nil {
+		t.Fatalf("prune after the root's livelock released: %v", err)
+	}
+	if findPruneEntry(t, pruneEntries(t, out, "removed"), "orphan-nested-live") == nil {
+		t.Fatalf("stale nested parent's lane not collected after the root's livelock released: %+v", out)
+	}
+}
+
 // The unlock is the deliverable for an orphan holding work: the branch
 // stays, the worktree stays, but the lock goes, so the lane is visible to
 // the merge and force paths that were the only cleanup before — and to a

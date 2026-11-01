@@ -86,11 +86,12 @@ What this means day to day:
   foreign lock `prune` will release is a delegate lane whose parent provably
   cannot act, and only when the caller passes `orphaned_delegate_days`: the
   parent's store records the delegate's isolation disposal, or the parent
-  session is gone or has been inactive at least that many days with its
-  livelock not held. A held livelock is a live process on the session id, and
-  it outranks the transcript clock: a daemon from before the activity
-  refresh leaves a live tree's evidence stale for a whole long command's run,
-  so a live owner never loses its lane to the inactivity clock. The released
+  session is gone or has been inactive at least that many days with its tree
+  root's livelock not held. A held livelock is a live process hosting the
+  parent's tree, and it outranks the transcript clock: a daemon from before
+  the activity refresh leaves a live tree's evidence stale for a whole long
+  command's run, so a live owner never loses its lane to the inactivity
+  clock. The released
   lane still has to pass the ordinary removal gates, and a lane holding
   unmerged work is unlocked but kept.
 
@@ -119,8 +120,8 @@ recipe in the limitations below, never a collection trigger. `prune`
 never takes `force`; anything it declines to remove is `remove`'s job, or a deliberate
   unlock. With `orphaned_delegate_days` it also releases the lock of a delegate
   lane whose parent provably cannot act — the parent's isolation disposal
-  already ran, or the parent session is gone or long-inactive with its
-  livelock not held — and then judges
+  already ran, or the parent session is gone or long-inactive with its tree
+  root's livelock not held — and then judges
   the lane by these same gates; a work-holding orphan is unlocked and reported
   kept.
 

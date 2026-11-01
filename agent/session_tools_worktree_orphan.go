@@ -198,16 +198,25 @@ func (s *Session) parentStillInactive(parentSID string, minInactivity time.Durat
 	return time.Since(info.ModTime()) >= minInactivity
 }
 
-// parentLivelockHeld reports whether the parent session's livelock is held —
-// the one durable witness that a live process owns the session id. Crashes
-// release the flock with the process, so crash residue stays reclaimable; a
-// livelock whose state cannot be read is not a license to release, so it
-// reads as held.
+// parentLivelockHeld reports whether a live process hosts the lane's parent
+// tree — the one durable witness against the inactivity clock. The marker
+// names the immediate parent, but a subagent never takes a livelock: only
+// the hosting root's process does, so the parent is resolved to its tree
+// root and the root's livelock is probed. A parent whose chain cannot be
+// resolved (a missing meta — the seeded residue shape) keeps its own
+// livelock probed: a root parent's livelock is its own, so a held lock still
+// protects and an absent one never does. Crashes release the flock with the
+// process, so crash residue stays reclaimable; a livelock whose state cannot
+// be read is not a license to release, so it reads as held.
 func (s *Session) parentLivelockHeld(parentSID string) bool {
 	if s == nil || s.stateDir == "" || parentSID == "" {
 		return false
 	}
-	held, _, err := schema.SessionLivelockHeld(s.stateDir, parentSID)
+	owner := parentSID
+	if root, ok := s.sessionTreeRootSID(parentSID); ok {
+		owner = root
+	}
+	held, _, err := schema.SessionLivelockHeld(s.stateDir, owner)
 	if err != nil {
 		return true
 	}
