@@ -885,6 +885,7 @@ func (s *Session) AcceptClientMutationDrainAsSteerAs(params appwire.TurnDrainAsS
 		if marshalErr != nil {
 			return marshalErr
 		}
+		// Drain combines entries from potentially different authors into one message, so attribute it to the draining actor.
 		addPendingSteering(snapshot, record, steeringInput)
 		applyClientMutationRecord(record, result, acceptedClientMutationProjection(record.Method))
 		return nil
@@ -1000,7 +1001,7 @@ func (s *Session) AcceptClientMutationPromoteQueuedAsSteerAs(params appwire.Turn
 		if marshalErr != nil {
 			return marshalErr
 		}
-		addPendingSteering(snapshot, record, entry.Input)
+		addPendingSteeringAs(snapshot, record, entry.Input, entry.Actor)
 		applyClientMutationRecord(record, result, acceptedClientMutationProjection(record.Method))
 		return nil
 	})
@@ -1159,8 +1160,12 @@ func applyClientMutationRecord(
 }
 
 func addPendingSteering(snapshot *clientMutationSnapshot, record *clientMutationRecord, input []appwire.InputItem) {
+	addPendingSteeringAs(snapshot, record, input, record.Actor)
+}
+
+func addPendingSteeringAs(snapshot *clientMutationSnapshot, record *clientMutationRecord, input []appwire.InputItem, actor schema.SessionActor) {
 	snapshot.PendingExecutions[record.ClientMutationID] = appwire.PendingMutation{
-		Actor:            wireSessionActor(record.Actor),
+		Actor:            wireSessionActor(actor),
 		ClientMutationID: record.ClientMutationID,
 		Method:           record.Method,
 		Input:            cloneClientMutationInput(input),
