@@ -92,3 +92,43 @@ func TestManagerWatchRebindDeliversNewQuestionAfterEarlierOne(t *testing.T) {
 		t.Fatalf("total non-end deliveries after rebind = %d, want 2", got)
 	}
 }
+
+func TestManagerWatchRecoverySnapshotDeliversReplacementQuestionInSameTurn(t *testing.T) {
+	root := newMessagingRoot(t, newMessagingAdapter(), nil)
+	jm := root.jobManager
+	const ref, instance, generation, turn = "local:worker", "worker-instance", "7@worker", "turn-1"
+	watch, err := jm.configureHubWatch(ref, instance, generation, "local:manager", []string{"question"}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshot := func(question string, count int) appwire.SessionWatchUpdate {
+		return appwire.SessionWatchUpdate{
+			Metadata: appwire.SessionObservationMetadata{Ref: ref, InstanceID: instance, GenerationID: generation},
+			Snapshot: &appwire.ThreadReadResponse{
+				BootGeneration: generation,
+				Thread: appwire.Thread{Evener: appwire.EvenerThread{
+					Ref: ref, InstanceID: instance, ActiveTurnID: turn, AskPending: true,
+					PendingQuestion: &appwire.PendingQuestion{Question: question, Count: count},
+				}},
+			},
+		}
+	}
+	if err := jm.onHubObservation(watch.WatchID, snapshot("Q1", 1)); err != nil {
+		t.Fatal(err)
+	}
+	if err := jm.onHubObservation(watch.WatchID, snapshot("Q2", 1)); err != nil {
+		t.Fatal(err)
+	}
+	if err := jm.onHubObservation(watch.WatchID, snapshot("Q2", 1)); err != nil {
+		t.Fatal(err)
+	}
+	deliveries := 0
+	for _, event := range loadJobStoreEvents(t, jm) {
+		if event.WatchSend != nil && event.WatchSend.Key.WatchID == watch.WatchID && !event.WatchSend.EndNotice {
+			deliveries++
+		}
+	}
+	if deliveries != 2 {
+		t.Fatalf("question deliveries after replacement recovery snapshot = %d, want 2", deliveries)
+	}
+}

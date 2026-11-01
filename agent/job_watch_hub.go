@@ -2,6 +2,8 @@ package agent
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -154,6 +156,10 @@ func (jm *jobManager) onHubObservationLookup(watchID string, update appwire.Sess
 		if update.Snapshot.Thread.Evener.AskPending {
 			question := update.Metadata
 			question.EntryID = "question:" + update.Snapshot.Thread.Evener.ActiveTurnID
+			if pending := update.Snapshot.Thread.Evener.PendingQuestion; pending != nil {
+				identity := sha256.Sum256([]byte(fmt.Sprintf("%s\x00%d", pending.Question, pending.Count)))
+				question.EntryID += ":" + hex.EncodeToString(identity[:])
+			}
 			question.CausalKnown = true
 			if err := jm.onHubObservation(watchID, appwire.SessionWatchUpdate{Metadata: question, Event: "question"}); err != nil {
 				return err
