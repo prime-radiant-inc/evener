@@ -154,7 +154,10 @@ describe("versioned history: resync", () => {
     expect(modelName()).toBe("before");
     expect(threadsStore.getState().threads.get(REF)?.history?.epoch).toBe(0);
 
-    fake.on("thread/read", () => read("after-resync", { epoch: 1, requestGeneration: 1 }));
+    // Echo the generation this re-read was issued with: a resync re-read can
+    // carry any generation (a model seeded across tests issues the next one,
+    // not a fresh 1), and a stale hardcoded answer is dropped as superseded.
+    fake.on("thread/read", (params) => read("after-resync", { epoch: 1, requestGeneration: params.requestGeneration }));
     fake.emitNotification({
       method: "evener/thread/resync",
       params: { threadId: THREAD_ID, ref: REF, bootGeneration: "1", epoch: 1 },
