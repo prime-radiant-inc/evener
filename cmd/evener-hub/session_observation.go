@@ -85,6 +85,11 @@ func observationHistoryContinues(held, fresh appwire.ThreadReadResponse) bool {
 	return held.Snapshot == nil || fresh.Snapshot != nil && held.Snapshot.Incarnation == fresh.Snapshot.Incarnation && fresh.Snapshot.Length >= held.Snapshot.Length && held.Epoch == fresh.Epoch
 }
 
+func observationSnapshotDisposition(initial appwire.SessionObservationMetadata, held, fresh appwire.ThreadReadResponse) (forward, replacement bool) {
+	replacement = fresh.Thread.Evener.Ref != initial.Ref || fresh.Thread.Evener.InstanceID != initial.InstanceID || fresh.BootGeneration != initial.GenerationID
+	return replacement || observationHistoryContinues(held, fresh), replacement
+}
+
 // recoverObservationHistory walks only the gap back to the held window. The
 // public cursor fences the history incarnation and exclusive page boundary,
 // so concurrent appends cannot move the traversal forward. As in apphistory,
@@ -272,15 +277,19 @@ func (b *boundSessionOperations) Watch(ctx context.Context, request appwire.Sess
 					return
 				}
 				if fresh := result.response; fresh != nil {
-					if !observationHistoryContinues(held, *fresh) {
+					meta := appwire.SessionObservationMetadata{Ref: fresh.Thread.Evener.Ref, InstanceID: fresh.Thread.Evener.InstanceID, GenerationID: fresh.BootGeneration}
+					forward, replacement := observationSnapshotDisposition(initial.Metadata, held, *fresh)
+					if !forward {
 						return
 					}
-					meta := appwire.SessionObservationMetadata{Ref: fresh.Thread.Evener.Ref, InstanceID: fresh.Thread.Evener.InstanceID, GenerationID: fresh.BootGeneration}
+					if replacement {
+						if !send(appwire.SessionWatchUpdate{Snapshot: fresh, Metadata: meta}) {
+							return
+						}
+						return // The runtime ends the old watch from this replacement cut.
+					}
 					if !send(appwire.SessionWatchUpdate{Snapshot: fresh, Metadata: meta}) {
 						return
-					}
-					if meta.Ref != initial.Metadata.Ref || meta.InstanceID != initial.Metadata.InstanceID || meta.GenerationID != initial.Metadata.GenerationID {
-						return // The runtime ends the old watch from this replacement cut.
 					}
 					pending = *fresh
 				}

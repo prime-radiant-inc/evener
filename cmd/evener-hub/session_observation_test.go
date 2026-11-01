@@ -5,7 +5,9 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/agent/transcript"
@@ -112,6 +114,143 @@ func (observationTestSessionHubClient) Invoke(context.Context, appwire.SessionOp
 }
 func (observationTestSessionHubClient) Watch(context.Context, appwire.SessionWatchRequest) (<-chan appwire.SessionWatchUpdate, error) {
 	return nil, nil
+}
+
+func TestManagerObservationClearRotatesHistoryAndEndsWatch(t *testing.T) {
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+	defer cancel()
+	const ref, instance = "local:manager-workspace", "manager-instance"
+	daemon := daemonserver.NewServer(daemonserver.ServerConfig{HubToken: "test-token", StateDir: t.TempDir()})
+	defer daemon.Close()
+	initialPath := filepath.Join(t.TempDir(), "initial.transcript.jsonl")
+	initialWriter, err := transcript.NewWriter(initialPath, transcript.Header{SessionID: instance})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := initialWriter.Append(schema.Turn{Format: schema.TurnFormatIdentity, TurnID: "seed-turn", Kind: schema.TurnUserInput, Message: llm.Message{Role: llm.RoleUser, Content: []llm.ContentPart{{Kind: llm.ContentText, Text: "seed history"}}}}); err != nil {
+		t.Fatal(err)
+	}
+	initialLength := initialWriter.RecordedLength()
+	if err := initialWriter.Close(); err != nil {
+		t.Fatal(err)
+	}
+	identity, err := daemonserver.PrepareAppIdentityForRef("local", instance, ref, initialPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	daemon.ReplaceAppIdentity(identity.WithBootGeneration("7@manager").WithRecordedLength(initialLength), nil)
+	upstream := httptest.NewServer(http.HandlerFunc(daemon.AppServer().ServeWebSocket))
+	defer upstream.Close()
+	entry := rendezvous.Entry{Protocol: appwire.ProtocolVersion, Endpoint: upstream.URL, SourceID: "local", ThreadID: instance, SessionID: instance, WorkspaceRef: ref, InstanceID: instance, HubToken: "test-token"}
+	currentInstance := instance
+	source := appsource.NewLocalDaemonSourceWithEntries("local", func() []appsource.LocalDaemonEntry {
+		entry.InstanceID, entry.SessionID, entry.ThreadID = currentInstance, currentInstance, currentInstance
+		return []appsource.LocalDaemonEntry{{Entry: entry, SessionID: currentInstance, Manager: true}}
+	}, upstream.Client())
+	configureObservationTargetSessionTools(daemon, source)
+	replacementPath := filepath.Join(t.TempDir(), "replacement.transcript.jsonl")
+	replacementWriter, err := transcript.NewWriter(replacementPath, transcript.Header{SessionID: "replacement-instance"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	replacementLength := replacementWriter.RecordedLength()
+	if err := replacementWriter.Close(); err != nil {
+		t.Fatal(err)
+	}
+	newIdentity, err := daemonserver.PrepareAppIdentityForRef("local", "replacement-instance", ref, replacementPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	daemon.SetClearFunc(func(context.Context, appwire.ThreadClearParams) error {
+		currentInstance = "replacement-instance"
+		daemon.ReplaceAppIdentity(newIdentity.WithBootGeneration("8@manager").WithRecordedLength(replacementLength), nil)
+		return nil
+	})
+	sources := appsource.NewRegistry()
+	sources.Add(source)
+	cfg := hubcore.WebConfig{HubStateRoot: t.TempDir(), Past: hubcore.NewPastIndex(""), HubID: "hub-test"}
+	server := appserver.NewServer(appserver.ServerConfig{})
+	defer server.Shutdown(ctx)
+	owner := &sessionOperations{cfg: cfg, sources: sources, relays: newHubRelay(server, cfg, sources), server: server}
+	var targetReads atomic.Int32
+	appserver.HandleTyped(server.Router(), appwire.MethodThreadRead, func(ctx context.Context, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
+		targetReads.Add(1)
+		return owner.Read(ctx, params)
+	})
+	appserver.HandleTyped(server.Router(), appwire.MethodThreadClear, func(ctx context.Context, params appwire.ThreadClearParams) (appwire.ThreadClearResponse, error) {
+		return clearThreadControl(ctx, cfg, sources, params)
+	})
+	hubHTTP := httptest.NewServer(http.HandlerFunc(server.ServeWebSocket))
+	defer hubHTTP.Close()
+	binding := &boundSessionOperations{owner: owner, local: source, binding: appwire.SessionBinding{Ref: ref, InstanceID: instance, HubID: "hub-test", BindingID: "binding"}}
+	updates, err := binding.Watch(ctx, appwire.SessionWatchRequest{Ref: ref, Completion: true})
+	if err != nil {
+		t.Fatalf("completion watch: %v", err)
+	}
+	var initial appwire.SessionWatchUpdate
+	select {
+	case initial = <-updates:
+		if initial.Snapshot == nil || initial.Snapshot.Snapshot == nil {
+			t.Fatalf("initial snapshot lacks history identity: %+v", initial)
+		}
+	case <-ctx.Done():
+		t.Fatal("initial observation blocked")
+	}
+	clearClient := dialHubRPC(t, hubHTTP)
+	defer clearClient.Close()
+	if _, err := clearClient.Initialize(ctx, appwire.InitializeParams{}); err != nil {
+		t.Fatal(err)
+	}
+	cleared, err := clearClient.ThreadClear(ctx, appwire.ThreadClearParams{Ref: ref, ClientMutationID: "clear-observation-target", ExpectedInstanceID: instance})
+	if err != nil {
+		t.Fatalf("clear target: %v", err)
+	}
+	if cleared.Thread.Evener.InstanceID != "replacement-instance" {
+		t.Fatalf("clear returned instance %q, want replacement-instance", cleared.Thread.Evener.InstanceID)
+	}
+	replacementRead, err := clearClient.ThreadRead(ctx, appwire.ThreadReadParams{Ref: ref, IncludeTurns: true})
+	if err != nil {
+		t.Fatalf("read replacement history: %v", err)
+	}
+	if replacementRead.Snapshot == nil || replacementRead.Snapshot.Incarnation == initial.Snapshot.Snapshot.Incarnation || replacementRead.Epoch == initial.Snapshot.Epoch {
+		t.Fatalf("clear did not rotate history identity: before=%+v after=%+v", initial.Snapshot, replacementRead)
+	}
+	select {
+	case got, open := <-updates:
+		if open && (got.Snapshot == nil || got.Metadata.InstanceID != cleared.Thread.Evener.InstanceID) {
+			t.Fatalf("clear delivered non-replacement update %+v", got)
+		}
+		if open {
+			select {
+			case _, stillOpen := <-updates:
+				if stillOpen {
+					t.Fatal("replacement watch remained open")
+				}
+			case <-ctx.Done():
+				t.Fatal("replacement watch did not close")
+			}
+		}
+	case <-ctx.Done():
+		t.Fatal("watch did not end after clear")
+	}
+	if targetReads.Load() != 2 {
+		t.Fatalf("hub reads=%d, want initial watch read and independent replacement read only", targetReads.Load())
+	}
+}
+
+func TestObservationSnapshotDispositionPrioritizesReplacement(t *testing.T) {
+	initial := appwire.SessionObservationMetadata{Ref: "local:target", InstanceID: "old", GenerationID: "1"}
+	held := appwire.ThreadReadResponse{Epoch: 3, Snapshot: &appwire.SnapshotIdentity{Incarnation: "old-history", Length: 12}}
+	replacement := appwire.ThreadReadResponse{Epoch: 4, BootGeneration: "2", Snapshot: &appwire.SnapshotIdentity{Incarnation: "new-history", Length: 0}, Thread: appwire.Thread{Evener: appwire.EvenerThread{Ref: initial.Ref, InstanceID: "new"}}}
+	if forward, replaced := observationSnapshotDisposition(initial, held, replacement); !forward || !replaced {
+		t.Fatalf("replacement disposition=(forward %t, replaced %t), want both true despite rotated history", forward, replaced)
+	}
+	rotatedHistory := replacement
+	rotatedHistory.Thread.Evener.InstanceID = initial.InstanceID
+	rotatedHistory.BootGeneration = initial.GenerationID
+	if forward, replaced := observationSnapshotDisposition(initial, held, rotatedHistory); forward || replaced {
+		t.Fatalf("same-target history discontinuity disposition=(forward %t, replaced %t), want both false", forward, replaced)
+	}
 }
 
 func managerEchoObservationItem(t *testing.T, callID, reason string, accepted bool) appwire.ThreadItem {
