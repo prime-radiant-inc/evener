@@ -18,3 +18,11 @@ func markLivelockHeld(f *os.File) error {
 	lock := unix.Flock_t{Type: unix.F_WRLCK, Whence: 0, Start: 0, Len: 0}
 	return unix.FcntlFlock(f.Fd(), unix.F_OFD_SETLK, &lock)
 }
+
+// unmarkLivelockHeld explicitly releases the OFD lock. A forked child can
+// temporarily retain the open file description past the parent's close, so
+// close alone is not enough to make the probe read free synchronously.
+func unmarkLivelockHeld(f *os.File) error {
+	lock := unix.Flock_t{Type: unix.F_UNLCK, Whence: 0, Start: 0, Len: 0}
+	return unix.FcntlFlock(f.Fd(), unix.F_OFD_SETLK, &lock)
+}
