@@ -2098,3 +2098,64 @@ func TestDrainSkipsChildWhoseLaneRefusedDriveValidation(t *testing.T) {
 		t.Fatalf("foreign lock = %q, want the other session's marker", reason)
 	}
 }
+
+// The evidence a live tree refreshes is only as fresh as the refresh floor:
+// a positive orphaned_delegate_days shorter than that window could judge a
+// running delegate's parent inactive on evidence the tree is still within
+// its rights to leave untouched, and release the lane under the running
+// work. The tool must refuse such a threshold before touching any lane.
+func TestWorktreePruneRefusesSubMinuteOrphanThreshold(t *testing.T) {
+	t.Parallel()
+	r := newWorktreeRepo(t)
+	if _, err := r.pruneOrphanedOp(t, 0.0001); err == nil {
+		t.Fatal("a sub-minute orphan threshold was accepted")
+	}
+	// A supported threshold still runs the prune.
+	if _, err := r.pruneOrphanedOp(t, 7); err != nil {
+		t.Fatalf("a supported orphan threshold was refused: %v", err)
+	}
+}
+
+// An ordinary within-bound foreground shell completes inline and discards
+// its delayed job — the ephemeral branch of the complete-or-handle settle —
+// and that discard must release the evidence hold the job's start took, or
+// every small foreground command leaks a ticking hold for the rest of the
+// session, holding a retained child's lane falsely active.
+func TestDiscardedShellResultReleasesEvidenceHold(t *testing.T) {
+	t.Parallel()
+	r := newWorktreeRepo(t)
+	args, err := json.Marshal(map[string]any{"command": "true"})
+	if err != nil {
+		t.Fatalf("marshal shell args: %v", err)
+	}
+	fgCall := func(llm.Request) llm.Response {
+		return agenttest.ToolCallResponse(llm.ToolCallData{ID: "call_fg_true", Name: "shell", Arguments: args, Type: "function"})
+	}
+	fixture, root, lanePath := spawnRetainedDelegateLane(t, r, "inline-discard-lane", "dlg_orphanactive000006", "034orphanactive0006", fgCall)
+	second := (delegateRuntime{owner: root}).send(context.Background(), fixture.delegateID, "run a small command", 10_000)
+	if second.result.Err != nil || second.commit == nil {
+		t.Fatalf("the small-command send: %+v", second.result)
+	}
+	plans, err := second.commit.Complete(true)
+	if err != nil {
+		t.Fatalf("acknowledge the small-command turn: %v", err)
+	}
+	if err := root.executeDelegateMutationPlans(plans); err != nil {
+		t.Fatalf("apply the small-command turn's acknowledgment: %v", err)
+	}
+	sub := root.subagents.get(fixture.childID)
+	if sub == nil || sub.sess == nil {
+		t.Fatalf("delegate %s is not retained", fixture.childID)
+	}
+	child := sub.sess
+	child.laneEvidenceMu.Lock()
+	jobs, stop := child.laneEvidenceJobs, child.laneEvidenceStop
+	child.laneEvidenceMu.Unlock()
+	if jobs != 0 || stop != nil {
+		t.Fatalf("an inline-discarded shell left its evidence hold behind: jobs=%d stop=%v", jobs, stop != nil)
+	}
+	_, locked, reason := r.laneLocked(t, lanePath)
+	if !locked {
+		t.Fatalf("the retained child's lane lost its lock: %q", reason)
+	}
+}

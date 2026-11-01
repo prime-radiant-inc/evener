@@ -316,6 +316,13 @@ func (s *Session) revalidateLaneForLaunch(delegateID string) error {
 // needs, while a stale transcript is still rewritten immediately.
 const activityEvidenceRefreshFloor = time.Minute
 
+// minOrphanedDelegateDays is the smallest positive orphaned_delegate_days
+// the prune tool accepts, derived from the refresh floor: the evidence a
+// live tree refreshes is only as fresh as that window, so a shorter
+// threshold could judge a running delegate's parent inactive on evidence
+// the tree is still within its rights to leave untouched.
+var minOrphanedDelegateDays = activityEvidenceRefreshFloor.Hours() / 24
+
 // refreshActivityEvidence records activity in the last-activity signal the
 // session listings and the orphan reclaim both read — the named session's
 // transcript mtime (the doctor's LastActivity). An automatic launch runs on

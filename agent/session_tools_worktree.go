@@ -542,6 +542,9 @@ func registerWorktreeTool(reg *tool.Registry, deps *toolDeps) {
 				}, nil
 			case "prune":
 				orphanedDays, _ := args["orphaned_delegate_days"].(float64)
+				if orphanedDays > 0 && orphanedDays < minOrphanedDelegateDays {
+					return nil, fmt.Errorf("orphaned_delegate_days %.6g is below the supported minimum %.6g days: a live tree's activity evidence refreshes at most once a minute, so a shorter threshold could release a lane under a running delegate", orphanedDays, minOrphanedDelegateDays)
+				}
 				res, err := deps.worktreeGuard.pruneOp(ctx, orphanedDays)
 				if err != nil {
 					return nil, err
