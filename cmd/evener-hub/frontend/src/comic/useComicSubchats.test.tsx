@@ -328,13 +328,7 @@ test("late launch relocates the same pending child reader without losing its rea
           ? [row.row.panels.flatMap((panel) => panel.balloons)[0]?.slice.entryId]
           : [],
   );
-  expect(rootFlow).toEqual([
-    JSON.stringify([root, "dlg_stopped"]),
-    JSON.stringify([root, "dlg_failed"]),
-    "before",
-    key,
-    "after",
-  ]);
+  expect(rootFlow).toEqual(["before", key, "after"]);
   expect(flow.find((row) => row.kind === "strip" && row.strip.key === key)?.id).toBe(JSON.stringify([root, [], key]));
   expect(handles.get(childRef)!.reader).toBe(originalReader);
   expect(originalReader.alive).toBe(true);

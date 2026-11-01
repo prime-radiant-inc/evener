@@ -68,7 +68,16 @@ test.each(["local", "remote"])(
               id: "turn",
               status: "completed",
               itemsView: "full",
-              items: [{ id: "answer", type: "agentMessage", text: `CONTENT_${p.ref}` }],
+              items: [
+                { id: "answer", type: "agentMessage", text: `CONTENT_${p.ref}` },
+                {
+                  id: "delegate-update",
+                  type: "steering",
+                  source: "daemon",
+                  steeringKind: "notification",
+                  text: `<delegate-notification delegate_id="${fixture.delegates[0]!.delegateId}" kind="update">Working.</delegate-notification>`,
+                },
+              ],
             },
           ],
         }),
@@ -187,6 +196,22 @@ test.each(["local", "remote"])(
           id: "stable-wire-thread",
           sessionId,
           evener: { ...wireThread(root).evener, instanceId: "instance-replacement" },
+          turns: [
+            {
+              id: "replacement-turn",
+              status: "completed",
+              itemsView: "full",
+              items: [
+                {
+                  id: "delegate-update",
+                  type: "steering",
+                  source: "daemon",
+                  steeringKind: "notification",
+                  text: `<delegate-notification delegate_id="${fixture.delegates[0]!.delegateId}" kind="update">Working.</delegate-notification>`,
+                },
+              ],
+            },
+          ],
         }),
       }));
       await act(async () => {
@@ -330,7 +355,18 @@ test.each(["deleted", "recoverable", "repairing", "superseded"] as const)(
             id: `turn-${ref}`,
             status: "completed",
             itemsView: "full",
-            items: [{ id: `item-${ref}`, type: "agentMessage", text: `CONTENT_${ref}` }],
+            items: [
+              { id: `item-${ref}`, type: "agentMessage", text: `CONTENT_${ref}` },
+              ...(ref === root
+                ? (["dlg_failed", "dlg_reported"] as const).map((delegateId) => ({
+                    id: `update-${delegateId}`,
+                    type: "steering" as const,
+                    source: "daemon" as const,
+                    steeringKind: "notification" as const,
+                    text: `<delegate-notification delegate_id="${delegateId}" kind="update">Working.</delegate-notification>`,
+                  }))
+                : []),
+            ],
           },
         ],
       }),

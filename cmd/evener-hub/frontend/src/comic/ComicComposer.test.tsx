@@ -2,6 +2,7 @@ import {
   pruneBackgroundHistoryBodies,
   type Thread,
   type ThreadCapabilities,
+  type ThreadItem,
   type ThreadReadResponse,
 } from "@evener/appwire-client";
 import { deferred } from "@evener/appwire-client/testing/deferred";
@@ -99,7 +100,7 @@ function sourceFor(target = ref, ownerId?: string) {
   sources.push(source);
   return source;
 }
-async function setup(status = "idle", askPending = false) {
+async function setup(status = "idle", askPending = false, extraItems: ThreadItem[] = []) {
   const fake = new FakeClient("ready");
   fake.on("thread/read", (p) => ({
     ...(askPending ? { bootGeneration: "1", epoch: 1, snapshot: { incarnation: "ask-history", length: 1 } } : {}),
@@ -143,7 +144,7 @@ async function setup(status = "idle", askPending = false) {
                   }),
                 },
               ]
-            : [{ id: `item-${p.ref}`, type: "agentMessage", text: `CONTENT_${p.ref}` }],
+            : [{ id: `item-${p.ref}`, type: "agentMessage", text: `CONTENT_${p.ref}` }, ...extraItems],
         },
       ],
       evener: {
@@ -936,11 +937,19 @@ test("inline children stay readers and full-page child send targets only the can
   });
   vi.spyOn(HTMLElement.prototype, "offsetWidth", "get").mockReturnValue(760);
   vi.spyOn(HTMLElement.prototype, "clientHeight", "get").mockReturnValue(1000);
-  const fake = await setup();
   const fixture = subagentOutcomesDelegatesResponse();
   const child = fixture.delegates[0];
   if (!child) throw Error("missing child fixture");
   const root = fixture.context.ref;
+  const fake = await setup("idle", false, [
+    {
+      id: "delegate-update",
+      type: "steering",
+      source: "daemon",
+      steeringKind: "notification",
+      text: `<delegate-notification delegate_id="${child.delegateId}" kind="update">Working.</delegate-notification>`,
+    },
+  ]);
   fake.on("evener/thread/activity/read", (p) => ({
     context: { ...fixture.context, ref: p.ref, sessionId: p.ref.slice(p.ref.indexOf(":") + 1) },
     scope: "session",

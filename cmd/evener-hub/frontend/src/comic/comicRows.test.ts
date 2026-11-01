@@ -36,6 +36,13 @@ const entry = (id: string, sourceIndex: number) => ({
   text: id,
   streaming: false,
 });
+const update = (id: string, sourceIndex: number, target: { delegateId?: string; childRef?: string }) => ({
+  ...entry(id, sourceIndex),
+  kind: "caption" as const,
+  speaker: "source" as const,
+  sourceLabel: `${strip.persona.name} · ${strip.persona.badge}`,
+  delegateUpdate: target,
+});
 const root: ComicReaderSnapshot = {
   ref: model.ref,
   path: [],
@@ -68,7 +75,7 @@ const state: ComicSubchatState = {
   expand() {},
   collapse() {},
 };
-test("flattens causal child rows and isolates itemless errors and unplaced activity", () => {
+test("flattens causal child rows and isolates itemless errors", () => {
   const rows = composeComicFlow(root, state, 390, () => true);
   expect(
     rows
@@ -105,16 +112,86 @@ test("flattens causal child rows and isolates itemless errors and unplaced activ
     ),
   );
   expect(rows.filter((r) => r.kind === "history")).toHaveLength(2);
-  const unplaced = composeComicFlow(
-    { ...root, activity: { ...root.activity, strips: [strip] } },
-    state,
-    320,
+});
+
+const folded = () => [
+  entry("before", 0),
+  update("mid-update", 2, { childRef: strip.childRef }),
+  update("late-update", 3, { delegateId: strip.delegateId }),
+  entry("after", 4),
+];
+const collapsed = { ...state, readers: new Map() as ComicSubchatState["readers"], expandedPaths: [] };
+const entryIds = (rows: ReturnType<typeof composeComicFlow>) =>
+  rows.flatMap((row) =>
+    row.kind === "panels"
+      ? row.row.panels.flatMap((panel) => panel.balloons.map((balloon) => balloon.slice.entryId))
+      : [],
+  );
+const stripSequence = (rows: ReturnType<typeof composeComicFlow>) =>
+  rows
+    .filter((row) => row.kind === "panels" || row.kind === "strip")
+    .map((row) =>
+      row.kind === "strip"
+        ? row.strip.key
+        : row.row.panels.flatMap((panel) => panel.balloons.map((balloon) => balloon.slice.entryId)).join(","),
+    );
+
+test("an unlaunched strip anchors inline at its earliest folded update and folds the updates away", () => {
+  const rows = composeComicFlow(
+    { ...root, entries: folded(), activity: { ...activity, strips: [strip] } },
+    collapsed,
+    390,
     () => true,
   );
-  expect(unplaced.filter((r) => r.kind === "unplaced-group")).toHaveLength(1);
-  expect(unplaced.map((row) => row.kind).slice(0, 4)).toEqual(["history", "unplaced-group", "strip", "history"]);
-  expect(unplaced.find((row) => row.kind === "strip")?.id).toBe(rows.find((row) => row.kind === "strip")?.id);
-  expect(unplaced.every((r) => r.kind !== "panels" || r.row.panels.length === 1)).toBe(true);
+  expect(stripSequence(rows)).toEqual(["before", strip.key, "after"]);
+  expect(entryIds(rows)).toEqual(["before", "after"]);
+  expect(rows.find((row) => row.kind === "strip")?.updateCount).toBe(2);
+});
+
+test("an update-anchored strip keeps its row identity when the launch loads earlier", () => {
+  const unlaunched = composeComicFlow(
+    { ...root, entries: folded(), activity: { ...activity, strips: [strip] } },
+    collapsed,
+    390,
+    () => true,
+  );
+  const launched = composeComicFlow(
+    {
+      ...root,
+      entries: folded(),
+      activity: { ...activity, strips: [{ ...strip, source: { itemId: "receipt", sourceIndex: 1 } }] },
+    },
+    collapsed,
+    390,
+    () => true,
+  );
+  expect(stripSequence(launched)).toEqual(["before", strip.key, "after"]);
+  expect(launched.find((row) => row.kind === "strip")?.id).toBe(unlaunched.find((row) => row.kind === "strip")?.id);
+  expect(launched.find((row) => row.kind === "strip")?.updateCount).toBe(2);
+});
+
+test("a strip with neither a loaded launch nor loaded updates renders no strip row", () => {
+  const rows = composeComicFlow({ ...root, activity: { ...activity, strips: [strip] } }, collapsed, 390, () => true);
+  expect(rows.filter((row) => row.kind === "strip")).toHaveLength(0);
+});
+
+test("update captions without a matching strip still render as panels", () => {
+  const rows = composeComicFlow(
+    {
+      ...root,
+      entries: [
+        entry("before", 0),
+        update("orphan-update", 2, { delegateId: "dlg_unknown", childRef: "local:elsewhere" }),
+        entry("after", 4),
+      ],
+      activity: { ...activity, strips: [strip] },
+    },
+    collapsed,
+    390,
+    () => true,
+  );
+  expect(rows.filter((row) => row.kind === "strip")).toHaveLength(0);
+  expect(entryIds(rows)).toEqual(["before", "orphan-update", "after"]);
 });
 test("flow rows carry the packed column count from the width formula", () => {
   const packed: ComicReaderSnapshot = {

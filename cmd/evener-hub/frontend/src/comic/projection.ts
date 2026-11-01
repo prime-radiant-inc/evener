@@ -39,6 +39,8 @@ type ComicEntryFields = {
   inherited?: boolean;
   persona?: ComicPersona;
   images?: ImageGalleryProps["images"];
+  /** A delegate's mid-work update; the strip it names folds the caption away. */
+  delegateUpdate?: { delegateId?: string; childRef?: string };
   delegateResult?: { kind: "earlierUpdate" | "earlierReply" | "reply" | "failure"; status?: string };
 };
 
@@ -176,6 +178,12 @@ export function projectComicConversation(
               ? `Delegate ${target}`
               : "Delegate";
           historical.forEach((result, index) => {
+            const updateTarget = result.update
+              ? {
+                  delegateId: target || undefined,
+                  childRef: comicTranscriptRef(model, raw?.transcript_ref),
+                }
+              : undefined;
             entries.push({
               ...base,
               id: `${base.id}:earlier:${index}`,
@@ -184,6 +192,9 @@ export function projectComicConversation(
               sourceLabel: `${sourceLabel} · ${delegateSendEarlierLabel(result, index, historical.length)}`,
               text: result.text,
               persona,
+              ...(updateTarget && (updateTarget.delegateId || updateTarget.childRef)
+                ? { delegateUpdate: updateTarget }
+                : {}),
               delegateResult: result.update
                 ? { kind: "earlierUpdate" }
                 : { kind: "earlierReply", status: result.status },
@@ -255,6 +266,15 @@ export function projectComicConversation(
           for (const [index, fragment] of fragments.entries()) {
             if (fragment.kind === "notification") {
               const notification = fragment.notification;
+              const updateTarget =
+                notification.update === true && notification.type === "delegate"
+                  ? {
+                      delegateId: notification.delegateId || undefined,
+                      childRef: notification.transcriptRef
+                        ? comicTranscriptRef(model, notification.transcriptRef)
+                        : undefined,
+                    }
+                  : undefined;
               const persona =
                 notification.type === "delegate"
                   ? delegatePersona(
@@ -276,6 +296,9 @@ export function projectComicConversation(
                     : notification.title,
                 text: notification.message ?? notification.excerpt ?? "",
                 persona,
+                ...(updateTarget && (updateTarget.delegateId || updateTarget.childRef)
+                  ? { delegateUpdate: updateTarget }
+                  : {}),
               });
             } else if (fragment.text) {
               entries.push({

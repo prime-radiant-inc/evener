@@ -22,6 +22,7 @@ import {
 } from "@evener/appwire-client/testing/subagentWireFixtures";
 import { describe, expect, test } from "vitest";
 import { comicDelegatePersona } from "./cast";
+import { comicTranscriptRef } from "./comicSessionIdentity";
 import { type ComicItemEntry, projectComicConversation } from "./projection";
 
 const inputText = "  **Literal** <script>never execute</script>\nline 2 👩🏽‍🚀  ";
@@ -748,5 +749,66 @@ describe("comic conversation projection", () => {
     expect(entries.map((entry) => entry.persona?.ownerRef)).toEqual(["local:root", "local:root"]);
     expect(resumed.delegates.find((delegate) => delegate.delegateId === "dlg_reported")?.runGeneration).toBe(2);
     expect(projectComicConversation(model, { entities }).map((entry) => entry.text)).toEqual([before, report]);
+  });
+
+  test("delegate update captions carry the strip identity that folds them", () => {
+    const old = subagentOutcomesDelegatesResponse();
+    const tree = parseActivityTree(subagentOutcomesResponse().data)!;
+    const before = "Mid-work: inspect drain order.";
+    const recorded = subagentWireStep("call_send_2");
+    const sendUpdate = "Check the drain before I finish.";
+    const send = {
+      ...recorded,
+      id: "recorded-send",
+      raw: {
+        ...(recorded.raw as Record<string, unknown>),
+        earlier_results: [{ action: "update", output: sendUpdate }],
+      },
+    };
+    const model = base([
+      {
+        id: "updates",
+        status: "completed",
+        itemsView: "full",
+        items: [
+          {
+            id: "old-update",
+            type: "steering",
+            turnId: "updates",
+            source: "daemon",
+            steeringKind: "notification",
+            text: `<delegate-notification delegate_id="dlg_reported" kind="update">${before}</delegate-notification>`,
+          },
+          {
+            id: "old-report",
+            type: "steering",
+            turnId: "updates",
+            source: "daemon",
+            steeringKind: "notification",
+            text: `<delegate-notification delegate_id="dlg_reported" name="reported-delegate" kind="report">${JSON.stringify({ kind: "reported", message: "Done.", metadata: { outcome: "completed" } })}</delegate-notification>`,
+          },
+        ],
+      },
+    ]);
+    model.turns[0]!.items.push(send);
+    const entities = buildEntityView({
+      sessionRef: old.context.ref,
+      tree,
+      turns: model.turns,
+      stale: false,
+      ended: false,
+    });
+    const entries = projectComicConversation(model, { entities });
+    const steeringUpdate = entries.find((entry) => entry.sourceItemId === "old-update");
+    const steeringReport = entries.find((entry) => entry.sourceItemId === "old-report");
+    const sendEarlier = entries.find((entry) => entry.sourceItemId === send.id);
+    expect(steeringUpdate?.delegateUpdate).toMatchObject({ delegateId: "dlg_reported" });
+    expect(steeringUpdate?.delegateUpdate?.childRef).toBeUndefined();
+    expect(steeringReport?.delegateUpdate).toBeUndefined();
+    expect(sendEarlier?.delegateResult).toMatchObject({ kind: "earlierUpdate" });
+    expect(sendEarlier?.delegateUpdate).toMatchObject({ delegateId: delegateSendTarget(send) });
+    expect(sendEarlier?.delegateUpdate?.childRef).toBe(
+      comicTranscriptRef(model, (send.raw as { transcript_ref?: string }).transcript_ref),
+    );
   });
 });

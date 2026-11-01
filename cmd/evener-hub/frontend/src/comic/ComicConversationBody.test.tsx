@@ -62,7 +62,7 @@ afterEach(() => {
 });
 
 let fixtureId = 0;
-function setup(messageCount = 30, olderCursor?: string) {
+function setup(messageCount = 30, olderCursor?: string, stripAnchor = false) {
   const root = `local:keyboard-clear-${++fixtureId}`;
   const child = `local:keyboard-child-${fixtureId}`;
   const fixture = subagentOutcomesDelegatesResponse();
@@ -79,11 +79,24 @@ function setup(messageCount = 30, olderCursor?: string) {
           id: "turn",
           status: "completed",
           itemsView: "full",
-          items: Array.from({ length: messageCount }, (_, n) => ({
-            id: `message-${n}`,
-            type: "agentMessage",
-            text: `MESSAGE_${sessionId}_${n}`,
-          })),
+          items: [
+            ...Array.from({ length: messageCount }, (_, n) => ({
+              id: `message-${n}`,
+              type: "agentMessage",
+              text: `MESSAGE_${sessionId}_${n}`,
+            })),
+            ...(stripAnchor
+              ? [
+                  {
+                    id: "delegate-update",
+                    type: "steering" as const,
+                    source: "daemon" as const,
+                    steeringKind: "notification" as const,
+                    text: `<delegate-notification delegate_id="${fixture.delegates[0]!.delegateId}" kind="update">Working.</delegate-notification>`,
+                  },
+                ]
+              : []),
+          ],
         },
       ],
     });
@@ -188,7 +201,7 @@ test.each(
     vi.spyOn(HTMLElement.prototype, "offsetHeight", "get").mockImplementation(function (this: HTMLElement) {
       return this.hasAttribute("data-index") ? 40 : 4000;
     });
-    const { root, child, client, mount, holdRootReads, restart, clear } = setup(2);
+    const { root, child, client, mount, holdRootReads, restart, clear } = setup(2, undefined, true);
     const actual = comicReader.useComicReader;
     const readers = new Map<string, ReturnType<typeof actual>>();
     const allocations: { id: string; sessionRef: string | undefined; position: ComicReadingPosition | undefined }[] =

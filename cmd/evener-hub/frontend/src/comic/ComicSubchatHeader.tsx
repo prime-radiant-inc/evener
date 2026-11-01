@@ -5,11 +5,13 @@ import type { ComicDelegateStrip } from "./delegates";
 
 export function ComicSubchatHeader({
   strip,
+  updateCount,
   expanded,
   onToggle,
   onOpen,
 }: {
   strip: ComicDelegateStrip;
+  updateCount: number;
   expanded: boolean;
   onToggle(): void;
   onOpen(ref: string): void;
@@ -37,6 +39,11 @@ export function ComicSubchatHeader({
           <SubagentDot delegate={delegate} now={Date.now()} labeled /> {stableDelegateDisplayStatus(delegate)}
           {strip.entity.stale ? " · State unavailable" : ""}
         </span>
+        {updateCount > 0 && (
+          <span data-comic-updates={updateCount}>
+            {updateCount} update{updateCount === 1 ? "" : "s"} folded into this strip
+          </span>
+        )}
         <span>{strip.childRef}</span>
       </div>
       <div className={styles.controls}>

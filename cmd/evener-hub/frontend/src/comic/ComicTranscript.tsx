@@ -816,6 +816,7 @@ export function ComicTranscript({
                     >
                       <ComicSubchatHeader
                         strip={flow.strip}
+                        updateCount={flow.updateCount}
                         expanded={subchats.expandedPaths.some(
                           (p) => comicPathKey(p) === comicPathKey([...flow.path, flow.strip.key]),
                         )}
@@ -825,7 +826,6 @@ export function ComicTranscript({
                     </div>
                   )}
                   {flow.kind === "turn-errors-group" && <h2>Turn errors</h2>}
-                  {flow.kind === "unplaced-group" && <h2>Meanwhile… outside loaded history</h2>}
                   {flow.kind === "availability" && (
                     <div role={flow.availability === "unavailable" ? "alert" : "status"}>
                       {flow.availability === "unavailable"
