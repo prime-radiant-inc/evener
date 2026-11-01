@@ -2629,6 +2629,19 @@ export function verifyPanelWidths(geometry, name, requirePaired = false) {
   const cap = 26 * geometry.rootFontSize;
   if (requirePaired && !geometry.paired)
     throw Error(`${name}: real paired row not mounted ${JSON.stringify(geometry)}`);
+  if (requirePaired && geometry.paired?.panels !== 2)
+    throw Error(`${name}: paired row is not exactly two articles ${JSON.stringify(geometry)}`);
+  // Rows pack by width: a row's inline grid declares either the columns its own
+  // measured width fits — floor((width+15px)/(unit+15px)) — or a single column,
+  // and it never holds more article panels than it declared.
+  for (const row of geometry.rowPacking ?? []) {
+    const declared = /^repeat\((\d+),/.exec(row.grid ?? "")?.[1];
+    const unit = /var\(--comic-(panel|insert)-max-width\)/.exec(row.grid ?? "")?.[1];
+    const unitWidth = (unit === "insert" ? 40 : 26) * geometry.rootFontSize;
+    const fitted = Math.max(1, Math.floor((row.width + 15) / (unitWidth + 15)));
+    if (!declared || !unit || row.panels > +declared || (+declared !== 1 && +declared !== fitted))
+      throw Error(`${name}: row grid does not follow the width packing rule ${JSON.stringify(row)}`);
+  }
   for (const [composition, measured] of Object.entries({ single: geometry.single, paired: geometry.paired })) {
     if (!measured) continue;
     if (
@@ -2643,12 +2656,21 @@ export function verifyPanelWidths(geometry, name, requirePaired = false) {
   }
   if (geometry.availableWidth > cap + 1 && geometry.single.right >= geometry.readerRight)
     throw Error(`${name}: single panel stretched into its gutter ${JSON.stringify(geometry)}`);
+  if (geometry.paired && Math.abs(geometry.paired.secondLeft - geometry.paired.firstRight - 15) > 1)
+    throw Error(`${name}: paired panels lost their 15px gap ${JSON.stringify(geometry)}`);
+  // A two-up pair keeps both 26rem caps, so the spare width stays trailing
+  // gutter; a pair that spreads to the reader's right edge is the deleted
+  // shrinking composition. Only a width that packs exactly two columns pins
+  // the pair's right edge this precisely.
+  const packedColumns = Math.max(1, Math.floor((geometry.availableWidth + 15) / (cap + 15)));
+  const spare = geometry.availableWidth - (2 * cap + 15);
   if (
     geometry.paired &&
-    geometry.width > 760 &&
-    Math.abs(geometry.paired.secondLeft - geometry.paired.firstRight - 15) > 1
+    packedColumns === 2 &&
+    spare > 1 &&
+    Math.abs(geometry.paired.right - (geometry.readerRight - spare)) > 1
   )
-    throw Error(`${name}: paired panels lost their 15px gap ${JSON.stringify(geometry)}`);
+    throw Error(`${name}: paired panels stretched into their gutter ${JSON.stringify(geometry)}`);
   if (
     geometry.width <= 760 &&
     (geometry.single.right > geometry.readerRight + 1 ||
@@ -3454,21 +3476,30 @@ function readGeometry(point, ref) {
 function panelWidthCases() {
   const root = window.__comicRoot();
   const port = root?.querySelector("[data-comic-scroll]")?.firstElementChild;
-  const original = port?.querySelector("[data-comic-entry]");
+  // Each balloon entry lives inside its panel article; strip anchors carry the
+  // same attribute without an article, so measure the first real panel entry.
+  const original = [...(port?.querySelectorAll("[data-comic-entry]") ?? [])].find((node) => node.closest("article"));
   const row = original?.closest("[data-comic-row]");
-  const article = original?.querySelector("article");
+  const article = original?.closest("article");
   const probe = root?.querySelector("[data-comic-probe]");
   if (!port || !row || !article || !probe) throw Error("panel geometry fixtures not mounted");
   const availableWidth = row.getBoundingClientRect().width;
   const rootFontSize = parseFloat(getComputedStyle(document.documentElement).fontSize);
+  const panelCap = 26 * rootFontSize;
+  // Rows pack by width: record every mounted row's measured width, inline grid
+  // and article count so the driver can check the packing rule offline.
+  const rowPacking = [...port.querySelectorAll("[data-comic-row]")].map((node) => ({
+    width: node.getBoundingClientRect().width,
+    grid: node.style.gridTemplateColumns,
+    panels: node.querySelectorAll("article").length,
+  }));
   const sample = row.cloneNode(false);
   sample.removeAttribute("data-comic-row");
   sample.style.width = `${availableWidth}px`;
   sample.style.position = "absolute";
   sample.style.visibility = "hidden";
   const append = () => {
-    const wrapper = original.cloneNode(false);
-    wrapper.removeAttribute("data-comic-entry");
+    const wrapper = article.parentElement.cloneNode(false);
     wrapper.append(article.cloneNode(true));
     sample.append(wrapper);
     return wrapper.querySelector("article");
@@ -3476,7 +3507,8 @@ function panelWidthCases() {
   const singleProbe = probe.cloneNode(true);
   singleProbe.style.width = `${availableWidth}px`;
   const pairedProbe = probe.cloneNode(true);
-  pairedProbe.style.width = `${innerWidth > 760 ? (availableWidth - 15) / 2 : availableWidth}px`;
+  // A packed pair keeps the 26rem cap; only a sub-cap slot would shrink it.
+  pairedProbe.style.width = `${Math.min(panelCap, (availableWidth - 15) / 2)}px`;
   root.append(sample, singleProbe, pairedProbe);
   try {
     const first = append();
@@ -3488,13 +3520,14 @@ function panelWidthCases() {
       right: first.getBoundingClientRect().right,
     };
     const pairedRow = [...port.querySelectorAll("[data-comic-row]")].find(
-      (node) => node.querySelectorAll("[data-comic-entry] article").length === 2,
+      (node) => node.querySelectorAll("article").length === 2,
     );
-    const [pairedFirst, pairedSecond] = pairedRow?.querySelectorAll("[data-comic-entry] article") ?? [];
+    const [pairedFirst, pairedSecond] = pairedRow?.querySelectorAll("article") ?? [];
     const paired =
       pairedFirst && pairedSecond
         ? {
             rowId: pairedRow.dataset.comicRow,
+            panels: pairedRow.querySelectorAll("article").length,
             panel: width(pairedFirst),
             probe: width(pairedProbe),
             left: pairedFirst.getBoundingClientRect().left,
@@ -3507,6 +3540,7 @@ function panelWidthCases() {
       width: innerWidth,
       availableWidth,
       rootFontSize,
+      rowPacking,
       readerLeft: row.getBoundingClientRect().left,
       readerRight: row.getBoundingClientRect().right,
       single,

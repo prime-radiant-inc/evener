@@ -355,24 +355,64 @@ test("chronology rejects the same strip moved after the continuation on completi
   assert.throws(() => guard.verifyCreationChronology(before, replaced), Error);
 });
 
+// The packed-row contract: n = floor((width + 15px) / (26rem + 15px)), so the
+// 884px row at a 899px window packs two panels while each panel keeps its 26rem
+// cap and the spare width stays gutter (the old 761-847px shrinking pair is
+// gone; an insert row keeps its own 40rem unit).
 const transition = {
-  width: 850,
-  availableWidth: 835,
+  width: 899,
+  availableWidth: 884,
   rootFontSize: 16,
   readerLeft: 15,
-  readerRight: 850,
+  readerRight: 899,
+  rowPacking: [
+    {
+      width: 884,
+      grid: "repeat(2, minmax(0, var(--comic-panel-max-width)))",
+      panels: 2,
+    },
+    {
+      width: 884,
+      grid: "repeat(1, minmax(0, var(--comic-panel-max-width)))",
+      panels: 1,
+    },
+    {
+      width: 884,
+      grid: "repeat(1, minmax(0, var(--comic-insert-max-width)))",
+      panels: 1,
+    },
+  ],
   single: { panel: 416, probe: 416, left: 15, right: 431 },
-  paired: { rowId: "real-pair-1", panel: 410, probe: 410, left: 15, firstRight: 425, secondLeft: 440, right: 850 },
+  paired: { rowId: "real-pair-1", panels: 2, panel: 416, probe: 416, left: 15, firstRight: 431, secondLeft: 446, right: 862 },
 };
 
-test("rejects a paired panel checked against a reused single probe", () => {
+test("rejects a paired row that stretched into its gutter instead of keeping the cap", () => {
   assert.throws(
-    () => guard.verifyPanelWidths({ ...transition, paired: { ...transition.paired, probe: 416 } }, "transition"),
+    () => guard.verifyPanelWidths({ ...transition, paired: { ...transition.paired, right: 899 } }, "transition", true),
     { name: "Error" },
   );
 });
 
-test("accepts independently measured single and real paired geometry at the transition width", () => {
+test("rejects a paired checkpoint row that is not exactly two articles", () => {
+  assert.throws(
+    () => guard.verifyPanelWidths({ ...transition, paired: { ...transition.paired, panels: 3 } }, "transition", true),
+    { name: "Error" },
+  );
+});
+
+for (const [name, row] of [
+  ["more declared columns than the width fits", { width: 884, grid: "repeat(3, minmax(0, var(--comic-panel-max-width)))", panels: 2 }],
+  ["more articles than declared columns", { width: 884, grid: "repeat(1, minmax(0, var(--comic-panel-max-width)))", panels: 2 }],
+  ["a foreign grid token", { width: 884, grid: "repeat(2, minmax(0, var(--comic-wide-max-width)))", panels: 2 }],
+  ["insert columns that ignore the 40rem unit", { width: 884, grid: "repeat(2, minmax(0, var(--comic-insert-max-width)))", panels: 2 }],
+])
+  test(`rejects a mounted row with ${name}`, () => {
+    assert.throws(() => guard.verifyPanelWidths({ ...transition, rowPacking: [...transition.rowPacking, row] }, "transition"), {
+      name: "Error",
+    });
+  });
+
+test("accepts independently measured single and real packed geometry at the transition width", () => {
   assert.doesNotThrow(() => guard.verifyPanelWidths(transition, "transition", true));
   assert.throws(() => guard.verifyPanelWidths({ ...transition, paired: null }, "transition", true), { name: "Error" });
 });
