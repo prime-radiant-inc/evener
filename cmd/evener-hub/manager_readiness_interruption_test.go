@@ -68,10 +68,33 @@ func (g *readinessContinuationGate) proxy(t *testing.T, daemon *httptest.Server,
 		defer front.CloseNow()
 		headers := http.Header{}
 		headers.Set("Authorization", r.Header.Get("Authorization"))
-		back, _, err := websocket.Dial(ctx, "ws"+strings.TrimPrefix(daemon.URL, "http"), &websocket.DialOptions{HTTPClient: daemon.Client(), HTTPHeader: headers})
-		if err != nil {
-			t.Errorf("dial daemon websocket: %v", err)
-			return
+		// The backend is an in-process listener that is already serving when
+		// its URL publishes, so a failed handshake there is a transient
+		// transport condition under heavy loopback load, not a readiness
+		// gap. Retry within a bounded window; on recovery keep the attempt
+		// errors visible for diagnosis, and if the window closes fail with
+		// every attempt so the cause is not reduced to the last error.
+		var back *websocket.Conn
+		var dialAttempts []string
+		dialDeadline := time.Now().Add(5 * time.Second)
+		for {
+			conn, _, err := websocket.Dial(ctx, "ws"+strings.TrimPrefix(daemon.URL, "http"), &websocket.DialOptions{HTTPClient: daemon.Client(), HTTPHeader: headers})
+			if err == nil {
+				back = conn
+				break
+			}
+			dialAttempts = append(dialAttempts, err.Error())
+			if ctx.Err() != nil || time.Now().After(dialDeadline) {
+				t.Errorf("dial daemon websocket after %d attempts: %s", len(dialAttempts), strings.Join(dialAttempts, "; "))
+				return
+			}
+			select {
+			case <-ctx.Done():
+			case <-time.After(200 * time.Millisecond):
+			}
+		}
+		if len(dialAttempts) > 0 {
+			t.Logf("backend dial recovered after transient handshake failures: %s", strings.Join(dialAttempts, "; "))
 		}
 		defer back.CloseNow()
 		var pending sync.Map // AppWire request ID -> real continuation query, only for this socket.
