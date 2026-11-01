@@ -290,10 +290,46 @@ describe("FakeClient resume ordering", () => {
       order.push("resume RPC");
       return undefined as never;
     });
-    const resume = fake.resumeThread("ref_a", { beforeRequest: () => order.push("beforeRequest") });
+    const resume = fake.resumeThread("ref_a", {
+      beforeRequest: () => {
+        order.push("beforeRequest");
+      },
+    });
     order.push("caller");
     await resume;
     expect(order).toEqual(["caller", "beforeRequest", "resume RPC"]);
+  });
+
+  // The hook can be async: the Stop fence that re-reads durable state after
+  // the reconnect settles needs the request to wait for that read. The RPC
+  // must not leave while the hook's promise is pending, and the hook's own
+  // pushes - not a timer - prove the ordering.
+  test("resumeThread awaits an async beforeRequest and sends the resume RPC only once it settles", async () => {
+    const fake = new FakeClient();
+    const order: string[] = [];
+    fake.on("thread/resume", () => {
+      order.push("resume RPC");
+      return undefined as never;
+    });
+    let releaseHook!: () => void;
+    const resume = fake.resumeThread("ref_a", {
+      beforeRequest: async () => {
+        order.push("beforeRequest start");
+        await new Promise<void>((resolve) => {
+          releaseHook = resolve;
+        });
+        order.push("beforeRequest end");
+      },
+    });
+    order.push("caller");
+    await Promise.resolve();
+    await Promise.resolve();
+    // The reconnect hop has run and the hook has started, but the RPC is
+    // still held: the hook's pending promise is the gate.
+    expect(order).toEqual(["caller", "beforeRequest start"]);
+    releaseHook();
+    await resume;
+    expect(order).toEqual(["caller", "beforeRequest start", "beforeRequest end", "resume RPC"]);
   });
 
   // A close during the reconnect await rejects with ConnectionClosedError and

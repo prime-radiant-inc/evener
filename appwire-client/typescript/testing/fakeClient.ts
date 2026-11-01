@@ -372,8 +372,9 @@ export class FakeClient implements AppwireClientLike {
   // Mirrors AppwireClient.resumeThread's ordering, which is what makes
   // "Stop during the resume's reconnect" a testable state: the real class
   // forces a reconnect, awaits it, and only then runs beforeRequest,
-  // synchronously before the resume RPC (../client.ts). A Stop that lands
-  // inside that await is therefore seen by the guard and cancels the resume.
+  // immediately before the resume RPC - awaited, so the hook may be async
+  // (../client.ts). A Stop that lands inside that await is therefore seen by
+  // the guard and cancels the resume.
   //
   // This fake owns no socket, so there is nothing to reconnect and no
   // `connected` promise to await; "after reconnect settles" here means one
@@ -386,7 +387,10 @@ export class FakeClient implements AppwireClientLike {
   // "during the reconnect" that the guard had already passed, proving nothing
   // about production; a test that needs the full reconnect race still belongs
   // on the real client with FakeSocket (client.test.ts, reconnect.test.ts).
-  async resumeThread(ref: string, options?: { beforeRequest?: () => void }): ReturnType<AppwireClient["resumeThread"]> {
+  async resumeThread(
+    ref: string,
+    options?: { beforeRequest?: () => void | Promise<void> },
+  ): ReturnType<AppwireClient["resumeThread"]> {
     // AppwireClient.resumeThread's own precondition (client.ts): a client that
     // is not ready at call time - including one already closed - throws this
     // plain Error, not ConnectionClosedError. Reporting "closed" here would
@@ -403,7 +407,8 @@ export class FakeClient implements AppwireClientLike {
     // close() staged in the same turn must reject here, not fall through to a
     // guard run followed by a generic closed-state request error.
     if (this.state === "closed") throw new ConnectionClosedError(CLOSED_MESSAGE);
-    options?.beforeRequest?.();
+    const revalidation = options?.beforeRequest?.();
+    if (revalidation) await revalidation;
     return this.request("thread/resume", { ref });
   }
 
