@@ -114,14 +114,22 @@ except where a line says so itself.
   synchronous: a closing pane snapshots its composition and enqueues exactly
   one final durable write on the same serialized recovery-write chain its
   saves use. Close flushes, never drops - a close during a pending write keeps
-  every keystroke. A close whose composition the durable row already holds
-  writes nothing; an empty composition closes through the guarded discard; a
-  leased composition through the save CAS; and a CAS another writer advanced
-  through a preserve under the pane's own seat, unless the pane's own
-  submission is still in flight, whose resend owns the content. An image still
-  mid-encode has no bytes, so the final write strips its marker. A pane
-  holding no lease owes nothing at close: its draft already holds every
-  keystroke.
+  every keystroke. The flush's guards read the write chain's state at the
+  flush's own turn: a source-owned write mid-flight at disposal settles first
+  and records its revision, row and committed composition, and the flush
+  settles onto the row its own chain advanced. A close whose composition the
+  durable row holds at the chain's own turn writes nothing; an empty
+  composition closes through the guarded discard carrying the pending write's
+  returned revision, its refusal settled (the row belongs to a writer the
+  closing pane cannot name); a leased composition through the save CAS; and a
+  CAS another writer advanced through a preserve under the pane's own seat.
+  While the pane's own submission is in flight the flush routes around the
+  CAS: an unedited close leaves the sent composition as the only copy, and
+  post-submit edits preserve under the pane's seat beside the submitted
+  snapshot. An image still mid-encode has no bytes, so the final write strips
+  its marker through the same text patch editor writes apply, selection
+  offsets included. A pane holding no lease owes nothing at close: its draft
+  already holds every keystroke.
 - A resend that finds its row already consumed preserves the current
   composition at the outcome itself, under a fresh owner, and adopts the
   preserved row by lease transfer alone. Adoption never writes content back
@@ -131,9 +139,12 @@ except where a line says so itself.
 - A preserve follows its row's own durable identity - a row a resume
   retargeted preserves under the resumed ref - and never duplicates content
   the durable row already holds: a row already carrying the identical
-  composition is reused, an unchanged close writes nothing, and where a peer's
-  advanced row and a pane's preserved composition coexist, the peer's row
-  keeps its own work and the newest composition wins automatic restoration.
+  composition is reused, an unchanged close writes nothing at the chain's own
+  turn, and where a peer's advanced row and a pane's preserved composition
+  coexist, the peer's row keeps its own work and the newest composition wins
+  automatic restoration. A close that follows the pane's own mid-flight write
+  settles onto the row that write advanced in place; the row a peer advanced
+  is the only one a close preserves beside.
 - An empty composer at mount restores a seat-owned rejected row only while no
   recovery activation is in flight, and its draft cleanup clears only the
   persisted draft revision the pane's own editor bound, so another tab's newer

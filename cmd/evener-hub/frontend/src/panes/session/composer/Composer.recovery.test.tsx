@@ -831,6 +831,9 @@ test("keystrokes typed during a pending preserve are durable after the pane clos
     const rows = await storage.listRecovery("ref_a");
     const newest = rows.at(-1);
     expect(newest?.composerText).toBe("hello world");
+    // The flush is this pane's chain's last writer: the preserved row the
+    // mid-flight write minted is the only row the close leaves behind.
+    expect(rows).toHaveLength(1);
     // Durable means restorable: a remount of the same seat adopts the newest
     // preserved composition, not the snapshot the in-flight preserve held.
     cleanup();
@@ -845,12 +848,11 @@ test("keystrokes typed during a pending preserve are durable after the pane clos
 });
 
 // Same shape against the update write: the pane's own in-flight save CAS has
-// advanced the row when the pane closes, so the final flush cannot CAS onto
-// that revision and preserves the captured composition instead. The keystrokes
-// typed behind the in-flight save are still durable after the close, and the
-// remount restores them; the superseded partial row the in-flight write landed
-// stays behind for the strip, because an advanced row is not the preserver's
-// to consume (a peer may have advanced it with that peer's own work).
+// advanced the row when the pane closes, and the flush settles after it. The
+// advance is this pane's own chain's write, not a peer's, so the flush carries
+// the returned revision into its own CAS and the closing keystrokes land on
+// the same row in place - one row leaves the close, and the remount restores
+// it under the same identity.
 test("keystrokes typed during a pending save CAS are durable after the pane closes", async () => {
   const storage = new MutationOutboxIndexedDB();
   setMutationStorageForTests(storage);
@@ -885,19 +887,151 @@ test("keystrokes typed during a pending save CAS are durable after the pane clos
   await flushPendingTurnsProjectionForTests();
 
   const rows = await storage.listRecovery("ref_a");
-  const newest = rows.at(-1);
-  expect(newest?.composerText).toBe("hello world");
-  expect(newest?.clientMutationId).not.toBe(recovered.clientMutationId);
-  // The partial composition the in-flight save landed stays untouched beside
-  // the preserve: it is this pane's own superseded work, and the newest row
-  // is what a remount restores.
-  expect(await storage.getRecovery(recovered.clientMutationId)).toMatchObject({ composerText: "hello" });
+  expect(rows).toHaveLength(1);
+  expect(rows[0]?.clientMutationId).toBe(recovered.clientMutationId);
+  expect(rows[0]?.composerText).toBe("hello world");
   cleanup();
   const remountSource = createTestComposerSource("ref_a");
   await mountComposerWithHandle("ref_a", { status: { type: "idle" } }, { source: remountSource });
   await flushPendingTurnsProjectionForTests();
-  expect(remountSource.getSnapshot().activeRecoveryId).toBe(newest?.clientMutationId);
+  expect(remountSource.getSnapshot().activeRecoveryId).toBe(recovered.clientMutationId);
   expect(textarea().textContent).toBe("hello world");
+});
+
+// An unchanged close owes nothing - but only once its own pending writes have
+// settled. A save of the newer composition still on the write chain at close
+// commits after the close, so the flush must settle after it and re-evaluate
+// against the chain's state at its own turn, or the row keeps the superseded
+// save and the reopen restores the wrong composition.
+test("an unchanged close settles after its own pending save", async () => {
+  const storage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(storage);
+  const recovered = await seedRejectedRecovery(storage, "ref_a", "retry me");
+  const source = createTestComposerSource("ref_a");
+  const first = await mountComposerWithHandle("ref_a", { status: { type: "idle" } }, { source });
+  await flushPendingTurnsProjectionForTests();
+  expect(source.getSnapshot().activeRecoveryId).toBe(recovered.clientMutationId);
+
+  const hold = holdNextWriteTransaction(["recovery"]);
+  const saveHeld = hold.reached;
+  try {
+    await act(async () => {
+      replaceEditorText(textarea(), "hello");
+    });
+    await act(async () => {
+      await saveHeld;
+    });
+    // Undo back to the restored composition: at close the pane looks
+    // unchanged, while its own save of "hello" is still committing.
+    await act(async () => {
+      replaceEditorText(textarea(), "retry me");
+    });
+    act(() => {
+      source.dispose();
+    });
+    first.unmount();
+  } finally {
+    hold.release();
+  }
+  await act(async () => {
+    await source.flushRecoveryWrites();
+  });
+  await flushPendingTurnsProjectionForTests();
+
+  cleanup();
+  const remountSource = createTestComposerSource("ref_a");
+  await mountComposerWithHandle("ref_a", { status: { type: "idle" } }, { source: remountSource });
+  await flushPendingTurnsProjectionForTests();
+  expect(remountSource.getSnapshot().activeRecoveryId).toBe(recovered.clientMutationId);
+  expect(textarea().textContent).toBe("retry me");
+});
+
+// The final discard must carry the revision this pane's own pending save
+// returned, not the revision captured at disposal: a cleared close whose
+// earlier save is still committing would otherwise CAS against a stale
+// revision, drop the false result, and resurrect the cleared message.
+test("an emptied close discards behind its own pending save", async () => {
+  const storage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(storage);
+  const recovered = await seedRejectedRecovery(storage, "ref_a", "retry me");
+  const source = createTestComposerSource("ref_a");
+  const user = userEvent.setup();
+  const first = await mountComposerWithHandle("ref_a", { status: { type: "idle" } }, { source });
+  await flushPendingTurnsProjectionForTests();
+  expect(source.getSnapshot().activeRecoveryId).toBe(recovered.clientMutationId);
+
+  const hold = holdNextWriteTransaction(["recovery"]);
+  const saveHeld = hold.reached;
+  try {
+    await act(async () => {
+      replaceEditorText(textarea(), "hello");
+    });
+    await act(async () => {
+      await saveHeld;
+    });
+    await user.clear(textarea());
+    act(() => {
+      source.dispose();
+    });
+    first.unmount();
+  } finally {
+    hold.release();
+  }
+  await act(async () => {
+    await source.flushRecoveryWrites();
+  });
+  await flushPendingTurnsProjectionForTests();
+
+  expect(await storage.listRecovery("ref_a")).toHaveLength(0);
+  cleanup();
+  const remountSource = createTestComposerSource("ref_a");
+  await mountComposerWithHandle("ref_a", { status: { type: "idle" } }, { source: remountSource });
+  await flushPendingTurnsProjectionForTests();
+  expect(remountSource.getSnapshot().activeRecoveryId).toBeNull();
+  expect(textarea().textContent).toBe("");
+});
+
+// A discard that is already mid-transaction at close passed its liveness
+// check before disposal and deletes the row as it settles. Work retyped
+// behind it still survives the close: the flush's CAS finds no row and
+// preserves the retyped composition under this pane's seat, one row in, one
+// row out.
+test("work retyped behind a mid-flight discard survives the close", async () => {
+  const storage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(storage);
+  const recovered = await seedRejectedRecovery(storage, "ref_a", "retry me");
+  const source = createTestComposerSource("ref_a");
+  const user = userEvent.setup();
+  const first = await mountComposerWithHandle("ref_a", { status: { type: "idle" } }, { source });
+  await flushPendingTurnsProjectionForTests();
+  expect(source.getSnapshot().activeRecoveryId).toBe(recovered.clientMutationId);
+
+  const hold = holdNextWriteTransaction(["recovery"]);
+  const discardHeld = hold.reached;
+  try {
+    await user.clear(textarea());
+    await act(async () => {
+      await discardHeld;
+    });
+    await act(async () => {
+      replaceEditorText(textarea(), "new work");
+    });
+    act(() => {
+      source.dispose();
+    });
+    first.unmount();
+  } finally {
+    hold.release();
+  }
+  await act(async () => {
+    await source.flushRecoveryWrites();
+  });
+  await flushPendingTurnsProjectionForTests();
+
+  const rows = await storage.listRecovery("ref_a");
+  expect(rows).toHaveLength(1);
+  expect(rows[0]?.composerText).toBe("new work");
+  expect(rows[0]?.clientMutationId).not.toBe(recovered.clientMutationId);
 });
 
 // A resend that finds its row already consumed reports "consumed": the
@@ -985,9 +1119,19 @@ test("edits typed during a consumed send persist into one preserved row, not a s
 
   const otherTab = new MutationOutboxIndexedDB();
   try {
-    let releaseSend!: () => void;
-    const sendGate = new Promise<void>((resolve) => {
-      releaseSend = resolve;
+    let resendEntered!: () => void;
+    const entered = new Promise<void>((resolve) => {
+      resendEntered = resolve;
+    });
+    let releaseResend!: () => void;
+    const releaseGate = new Promise<void>((resolve) => {
+      releaseResend = resolve;
+    });
+    const updateInput = storage.updateRecoveryInput.bind(storage);
+    let updateCalls = 0;
+    vi.spyOn(storage, "updateRecoveryInput").mockImplementation(async (...args) => {
+      updateCalls += 1;
+      return updateInput(...args);
     });
     const resend = storage.resendRecoveryResult.bind(storage);
     vi.spyOn(storage, "resendRecoveryResult").mockImplementation(async (...args) => {
@@ -1007,18 +1151,24 @@ test("edits typed during a consumed send persist into one preserved row, not a s
         { [recovered.clientMutationId]: recoveryCompositionRevision(current) },
       );
       expect(peerResend).toBeDefined();
-      releaseSend();
-      await sendGate;
+      // The resend transaction has consumed the row; the send is genuinely
+      // in flight from here until the release below.
+      resendEntered();
+      await releaseGate;
       return resend(...args);
     });
     const clicked = user.click(submitButton());
     await act(async () => {
-      await sendGate.then(() => undefined);
+      await entered;
     });
+    const updateCallsAtEntry = updateCalls;
     await act(async () => {
       replaceEditorText(textarea(), "retry me edited during the send");
     });
-    releaseSend();
+    // The in-flight fence holds the edit unwritten while the send owns the
+    // row: nothing reaches the durable row mid-send.
+    expect(updateCalls).toBe(updateCallsAtEntry);
+    releaseResend();
     await clicked;
     await flushPendingTurnsProjectionForTests();
     await act(async () => {
@@ -1340,7 +1490,7 @@ test("a close after a resume retarget flushes under the resumed ref", async () =
 // so a close in that window must not mint a rejected copy of the message being
 // sent. (The autosave effect applies the same in-flight guard; the flush is
 // the one path that ran without it.)
-test("a close during an in-flight send leaves no rejected copy of the sent message", async () => {
+test("an unedited close during an in-flight send leaves no duplicate of the sent message", async () => {
   const storage = new MutationOutboxIndexedDB();
   setMutationStorageForTests(storage);
   const recovered = await seedRejectedRecovery(storage, "ref_a", "retry me");
@@ -1370,11 +1520,6 @@ test("a close during an in-flight send leaves no rejected copy of the sent messa
   await act(async () => {
     await committed;
   });
-  // Edits typed during the send are unsaved, so the close still owes a flush -
-  // but the send, not a rejected copy, owns the content's durable home.
-  await act(async () => {
-    replaceEditorText(textarea(), "typed during the send");
-  });
   act(() => {
     source.dispose();
   });
@@ -1389,6 +1534,68 @@ test("a close during an in-flight send leaves no rejected copy of the sent messa
   const outbox = await storage.listOutbox("ref_a");
   expect(outbox).toHaveLength(1);
   expect(outbox[0]?.payload.input).toEqual([{ type: "text", text: "retry me" }]);
+});
+
+// Edits typed after submit are not in the outbox's submitted snapshot, and the
+// send consumed the row they would CAS onto: the flush preserves them under
+// this pane's seat instead of dropping them with the row.
+test("post-submit edits survive a close during the in-flight send", async () => {
+  const storage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(storage);
+  const recovered = await seedRejectedRecovery(storage, "ref_a", "retry me");
+  const source = createTestComposerSource("ref_a");
+  const user = userEvent.setup();
+  await mountComposerWithHandle("ref_a", { status: { type: "idle" } }, { source });
+  await flushPendingTurnsProjectionForTests();
+  expect(source.getSnapshot().activeRecoveryId).toBe(recovered.clientMutationId);
+
+  let resendCommitted!: () => void;
+  const committed = new Promise<void>((resolve) => {
+    resendCommitted = resolve;
+  });
+  let releaseSend: () => void = () => {};
+  const sendGate = new Promise<void>((resolve) => {
+    releaseSend = resolve;
+  });
+  const resend = storage.resendRecoveryResult.bind(storage);
+  vi.spyOn(storage, "resendRecoveryResult").mockImplementation(async (...args) => {
+    const result = await resend(...args);
+    // The resend transaction has consumed the row; the send is still settling.
+    resendCommitted();
+    await sendGate;
+    return result;
+  });
+  const clicked = user.click(submitButton());
+  await act(async () => {
+    await committed;
+  });
+  await act(async () => {
+    replaceEditorText(textarea(), "typed during the send");
+  });
+  act(() => {
+    source.dispose();
+  });
+  releaseSend();
+  await clicked;
+  await act(async () => {
+    await source.flushRecoveryWrites();
+  });
+  await flushPendingTurnsProjectionForTests();
+
+  const rows = await storage.listRecovery("ref_a");
+  expect(rows).toHaveLength(1);
+  expect(rows[0]?.composerText).toBe("typed during the send");
+  const outbox = await storage.listOutbox("ref_a");
+  expect(outbox).toHaveLength(1);
+  expect(outbox[0]?.payload.input).toEqual([{ type: "text", text: "retry me" }]);
+  // Durable means restorable: a fresh pane of the same seat recovers the
+  // post-submit edits.
+  cleanup();
+  const remountSource = createTestComposerSource("ref_a");
+  await mountComposerWithHandle("ref_a", { status: { type: "idle" } }, { source: remountSource });
+  await flushPendingTurnsProjectionForTests();
+  expect(remountSource.getSnapshot().activeRecoveryId).toBe(rows[0]?.clientMutationId);
+  expect(textarea().textContent).toBe("typed during the send");
 });
 
 // An image still mid-encode has no bytes to write, so the final write strips
@@ -1422,6 +1629,63 @@ test("a close during an image encode leaves no orphan marker in the row", async 
   const row = await storage.getRecovery(recovered.clientMutationId);
   expect(row?.composerText).not.toContain("[image");
   expect(row?.composerText).toContain("!");
+});
+
+// Stripping a pending marker shortens the text; the row's selection
+// references must follow through the same patchSelectionText shift every
+// editor write applies, or the restored row points its skill reference at
+// displaced prose.
+test("a close during an image encode keeps the row's selection references aligned", async () => {
+  const storage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(storage);
+  const recovered = await seedRejectedRecovery(storage, "ref_a", "note: /cleanup or /cleanup");
+  const seeded = await storage.getRecovery(recovered.clientMutationId);
+  if (!seeded) throw new Error("recovery fixture missing");
+  const selected = await storage.updateRecoveryInput(
+    recovered.clientMutationId,
+    [...(seeded.payload.input as InputItem[]), { type: "skill", name: "cleanup" }],
+    seeded.attachments,
+    "note: /cleanup or /cleanup",
+    [{ kind: "skill", name: "cleanup", offset: "note: /cleanup or ".length }],
+    undefined,
+    undefined,
+    1,
+  );
+  expect(selected).toBeDefined();
+  const source = createTestComposerSource("ref_a");
+  await mountComposerWithHandle(
+    "ref_a",
+    {
+      status: { type: "idle" },
+      evener: {
+        ref: "ref_a",
+        capabilities: { ...FULL_CAPABILITIES, skillInput: true },
+        mutationStateAuthoritative: true,
+        queue: { revision: 0 },
+      },
+    },
+    { source },
+  );
+  await flushPendingTurnsProjectionForTests();
+  expect(source.getSnapshot().activeRecoveryId).toBe(recovered.clientMutationId);
+  expect(textarea().textContent).toBe("note: /cleanup or /cleanup");
+
+  selectEditorText(textarea(), 0, "note: ".length);
+  installStalledDecodeStub();
+  pastePngInto(textarea());
+  expect(textarea().textContent).toBe("[image 1]/cleanup or /cleanup");
+
+  act(() => {
+    source.dispose();
+  });
+  await act(async () => {
+    await source.flushRecoveryWrites();
+  });
+  await flushPendingTurnsProjectionForTests();
+
+  const row = await storage.getRecovery(recovered.clientMutationId);
+  expect(row?.composerText).toBe("/cleanup or /cleanup");
+  expect(row?.composerMentions).toEqual([{ kind: "skill", name: "cleanup", offset: "/cleanup or ".length }]);
 });
 
 test("mount restore picks the newest rejected row the seat owns", async () => {

@@ -515,6 +515,21 @@ export function createComposerSourceState(ref: string, ownerId?: string): Compos
                 persistDraft(textRef.current);
                 setActiveRecoveryId(null);
               }
+            } else if (preserved && disposed && currentRecoveryId() === clientMutationId) {
+              // The preserve was called before disposal and its transaction
+              // settled after it. A write that started before disposal is
+              // past the disposed fence, and the durable fact it just
+              // committed - the fresh row holding this composition - still
+              // belongs to this pane's write chain. Record the lease, the
+              // row, and the committed fingerprint into the continuity refs
+              // so the disposal flush, the only remaining reader, settles
+              // onto this row instead of minting a second one.
+              recoveryOwnerLeaseRef.current = {
+                clientMutationId: preserved.record.clientMutationId,
+                compositionRevision: recoveryCompositionRevision(preserved.record),
+              };
+              recoveryBaseRecord = preserved.record;
+              committedRecoveryComposition = preserved.fingerprint;
             }
           }
           if (!disposed) {
@@ -529,6 +544,26 @@ export function createComposerSourceState(ref: string, ownerId?: string): Compos
           currentRecoveryId() === clientMutationId &&
           recoveryReplacementEpochRef.current === replacementEpoch
         ) {
+          recoveryOwnerLeaseRef.current = {
+            clientMutationId,
+            compositionRevision: recoveryCompositionRevision(updated),
+          };
+          recoveryBaseRecord = updated;
+          committedRecoveryComposition = recoveryCompositionFingerprint({
+            text: nextText,
+            attachments: nextAttachments,
+            skillNames: nextSkillNames,
+            commandNames: nextCommandNames,
+            mentions: nextMentions,
+          });
+        } else if (disposed && currentRecoveryId() === clientMutationId) {
+          // A save that started before disposal is past the disposed fence,
+          // and the row revision it just committed still belongs to this
+          // pane's write chain. Record the returned revision, the row, and
+          // the committed composition into the continuity refs - never the
+          // state store - so the disposal flush, the only remaining reader,
+          // settles after this write instead of deciding from a
+          // disposal-time snapshot.
           recoveryOwnerLeaseRef.current = {
             clientMutationId,
             compositionRevision: recoveryCompositionRevision(updated),
@@ -622,7 +657,23 @@ export function createComposerSourceState(ref: string, ownerId?: string): Compos
       () => undefined,
     );
     const preserved = await operation;
-    if (disposed) return;
+    if (disposed) {
+      // The outcome's preserve started before disposal and settled after
+      // it: the fresh row it minted is a durable fact of this pane's write
+      // chain, not a stale lease to resurrect. Record it into the
+      // continuity refs - never the state store - so the disposal flush,
+      // the only remaining reader, settles onto it instead of minting a
+      // second row of the same composition.
+      if (preserved && currentRecoveryId() === clientMutationId) {
+        recoveryOwnerLeaseRef.current = {
+          clientMutationId: preserved.record.clientMutationId,
+          compositionRevision: recoveryCompositionRevision(preserved.record),
+        };
+        recoveryBaseRecord = preserved.record;
+        committedRecoveryComposition = preserved.fingerprint;
+      }
+      return;
+    }
     // A concurrent write already re-homed the composition: its durable home
     // is not this call's to replace.
     if (currentRecoveryId() !== clientMutationId) return;
@@ -667,43 +718,46 @@ export function createComposerSourceState(ref: string, ownerId?: string): Compos
   // guard that fences stale user writes never gates this one.
   function enqueueDisposalFlush(): void {
     const lease = recoveryOwnerLeaseRef.current;
-    const clientMutationId = lease?.clientMutationId ?? null;
-    const base = recoveryBaseRecord;
     // A pane holding no lease has already persisted every keystroke to its
     // draft (writeDraft persists exactly when no lease is held); nothing new
     // is owed.
-    if (clientMutationId === null || lease === null) return;
+    if (lease === null) return;
     // An image still mid-encode has no bytes to write: its marker reference
     // would restore as a literal orphan, so the final write strips it where
-    // the gated autosave paths simply wait out the encode instead.
-    let text = textRef.current;
+    // the gated autosave paths simply wait out the encode instead. The
+    // strip goes through patchSelectionText so the selection metadata's
+    // offsets follow the shortened text, exactly as every editor write
+    // shifts them; a raw length change would restore displaced skill
+    // references.
+    let value: SkillEditorValue = {
+      text: textRef.current,
+      skillNames: [...skillNamesRef.current],
+      ...(selectionMetaRef.current.commandNames.length
+        ? { commandNames: [...selectionMetaRef.current.commandNames] }
+        : {}),
+      ...(selectionMetaRef.current.mentions ? { mentions: [...selectionMetaRef.current.mentions] } : {}),
+    };
     for (const marker of operations.items.filter((item) => item.pending).map((item) => item.marker)) {
-      text = text.split(`[image ${marker}]`).join("");
+      value = patchSelectionText(value, value.text.split(`[image ${marker}]`).join(""));
     }
+    const text = value.text;
     const attachments = operations.toInputAttachments();
-    const skillNames = [...skillNamesRef.current];
-    const commandNames = [...selectionMetaRef.current.commandNames];
-    const mentions = selectionMetaRef.current.mentions;
-    // The durable row already holds exactly this composition - the pane has
-    // no unsaved work. Closing writes nothing: an unchanged echo would stale
-    // every peer lease on the row, and a write after another tab sent or
-    // dismissed the row would resurrect a settled message.
-    if (
-      recoveryCompositionFingerprint({ text, attachments, skillNames, commandNames, mentions }) ===
-      committedRecoveryComposition
-    )
-      return;
+    const skillNames = value.skillNames;
+    const commandNames = value.commandNames ?? [];
+    const mentions = value.mentions;
+    const capturedFingerprint = recoveryCompositionFingerprint({
+      text,
+      attachments,
+      skillNames,
+      commandNames,
+      mentions,
+    });
     const localDraftRevisionId =
       ownsDraft() &&
       boundDraftRevisionIdRef.current !== undefined &&
       boundDraftRevisionIdRef.current === readComposerDraftRevisionId(ref)
         ? boundDraftRevisionIdRef.current
         : undefined;
-    const expectedRevision = lease.compositionRevision;
-    // The pane's own submission still in flight owns the content: its resend
-    // consumes the row, so a failed CAS at close must not mint a rejected
-    // copy of the message it is sending.
-    const submissionInFlight = recoverySubmissionsInFlight.has(clientMutationId);
     const isEmpty =
       text.trim() === "" &&
       attachments.length === 0 &&
@@ -713,12 +767,28 @@ export function createComposerSourceState(ref: string, ownerId?: string): Compos
     const operation = recoveryWrites
       .catch(() => undefined)
       .then(async () => {
-        // This continuation writes durable state only: every value it names
-        // was captured synchronously above, before `disposed` flipped, and the
-        // source is frozen for good.
+        // This continuation writes durable state only: every composition
+        // value it names was captured synchronously above, before `disposed`
+        // flipped, and the source is frozen for good. The guard decisions,
+        // though, read the write chain's state at THIS turn: a source-owned
+        // write that was mid-flight at disposal settles first on this chain
+        // and records its revision, its row, and its committed composition,
+        // so the flush settles after its own writes instead of deciding from
+        // a disposal-time snapshot.
+        const turnLease = recoveryOwnerLeaseRef.current;
+        if (turnLease === null) return;
+        // The durable row already holds exactly this composition - the pane
+        // has no unsaved work at the chain's own turn. Closing writes
+        // nothing: an unchanged echo would stale every peer lease on the
+        // row, and a write after another tab sent or dismissed the row would
+        // resurrect a settled message. (A mid-flight save that committed a
+        // newer composition re-recorded the committed fingerprint above, so
+        // an undo-back-to-A close no longer skips over it.)
+        if (capturedFingerprint === committedRecoveryComposition) return;
+        const expectedRevision = turnLease.compositionRevision;
         if (isEmpty) {
-          await discardRecoveryPendingTurn(
-            clientMutationId,
+          const discarded = await discardRecoveryPendingTurn(
+            turnLease.clientMutationId,
             ref,
             () =>
               // The ordinary discard's liveness terms (!disposed, replacement
@@ -726,29 +796,44 @@ export function createComposerSourceState(ref: string, ownerId?: string): Compos
               // lease is frozen, and the captured snapshot answers the emptiness
               // question.
               isEmpty &&
-              currentRecoveryId() === clientMutationId &&
+              currentRecoveryId() === turnLease.clientMutationId &&
               (localDraftRevisionId === undefined || readComposerDraftRevisionId(ref) === localDraftRevisionId),
             expectedRevision,
           );
-          return;
+          // The outcome is carried, never ignored: true removed the row
+          // this pane emptied; false means the row moved under a writer
+          // this pane can no longer name - a peer's send consumed it, or a
+          // peer advanced it with that peer's own work - and the cleared
+          // composition has nothing durable left to remove, so the
+          // surviving row belongs to that writer.
+          return discarded;
         }
-        const updated = await updateRecoveryPendingTurn(
-          clientMutationId,
-          ref,
-          text,
-          attachments,
-          skillNames,
-          commandNames,
-          mentions,
-          [],
-          localDraftRevisionId,
-          expectedRevision,
-          { [clientMutationId]: expectedRevision },
-          compositionOwnerId,
-        );
-        if (updated) return;
-        if (submissionInFlight) return;
-        if (base === null || base.clientMutationId !== clientMutationId) return;
+        // The pane's own submission still in flight owns the row's
+        // consumption, and the outbox snapshot it carries predates the
+        // post-submit edits: an update onto the row would race that
+        // consumption and lose the edits, so the flush routes around the
+        // CAS and preserves the edited composition under this pane's seat.
+        // The turn-time fingerprint skip above already suppresses the
+        // no-edit duplicate of the sent message.
+        if (!recoverySubmissionsInFlight.has(turnLease.clientMutationId)) {
+          const updated = await updateRecoveryPendingTurn(
+            turnLease.clientMutationId,
+            ref,
+            text,
+            attachments,
+            skillNames,
+            commandNames,
+            mentions,
+            [],
+            localDraftRevisionId,
+            expectedRevision,
+            { [turnLease.clientMutationId]: expectedRevision },
+            compositionOwnerId,
+          );
+          if (updated) return;
+        }
+        const base = recoveryBaseRecord;
+        if (base === null || base.clientMutationId !== turnLease.clientMutationId) return;
         // The CAS failed: the row moved under another writer. The captured
         // composition still needs a durable home, under this pane's own seat.
         await preserveRecoveryPendingTurn(
