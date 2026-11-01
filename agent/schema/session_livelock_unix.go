@@ -44,9 +44,18 @@ func AcquireSessionLivelock(dir, id string) (release func(), applied bool, err e
 		return nil, true, err
 	}
 	return func() {
-		_ = syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
-		_ = f.Close()
+		releaseSessionLivelockFile(f)
 	}, true, nil
+}
+
+// releaseSessionLivelockFile explicitly drops the query marker before closing
+// the descriptor. A concurrent fork can temporarily retain a duplicate until
+// exec closes its CLOEXEC copy; closing only our descriptor would leave an OFD
+// marker visible to probes during that window.
+func releaseSessionLivelockFile(f *os.File) {
+	_ = unmarkLivelockHeld(f)
+	_ = syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
+	_ = f.Close()
 }
 
 // SessionLivelockHeld inspects the session's livelock WITHOUT taking it:

@@ -10,3 +10,9 @@ import "os"
 func markLivelockHeld(*os.File) error {
 	return nil
 }
+
+// unmarkLivelockHeld is a no-op on Darwin: the flock itself is the marker and
+// releaseSessionLivelockFile explicitly unlocks it.
+func unmarkLivelockHeld(*os.File) error {
+	return nil
+}
