@@ -281,6 +281,23 @@ describe("MutationOutboxIndexedDB cancellation", () => {
     storage.close();
   });
 
+  test("a bounded cancellation spares a Send whose newer-token barrier predates it", async () => {
+    const storage = store();
+    const superseded = await storage.enqueueIntent(intent("superseded"));
+    // The newer Send's click captured the ref's epoch before the supersession
+    // cancellation committed; its enqueue lands after that write.
+    const clickEpoch = await storage.readStopEpoch(TARGET);
+    const canceled = await storage.cancelUnattempted(TARGET, superseded.intentSequence);
+    const newer = await storage.enqueueIntent(intent("newer"), { stopEpoch: clickEpoch });
+
+    expect(canceled).toEqual([superseded.clientMutationId]);
+    expect((await storage.getOutbox(superseded.clientMutationId))?.state).toBe("canceled");
+    // A bounded cancellation is not a Stop action: the row issued under the
+    // newer token is not born canceled by a barrier it never crossed.
+    expect(newer.state).toBe("submitting");
+    storage.close();
+  });
+
   test("a legacy row without attempted metadata is never canceled by Stop", async () => {
     const storage = store();
     const legacy = await storage.enqueueIntent(intent("legacy row"));

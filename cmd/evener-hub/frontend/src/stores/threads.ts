@@ -2995,6 +2995,10 @@ const pressJoinedResumes = new Map<
     targetEpoch?: Promise<number | undefined>;
     inheritedTargetEpoch?: Promise<number | undefined>;
     recoveryToken?: string;
+    // The ref's intent-sequence bound when the press joined. A press that
+    // joined before observing the Stop's newer token is superseded work too,
+    // so a supersession cancels it along with the drive's own rows.
+    intentBound: Promise<number | undefined>;
   }
 >();
 
@@ -3057,6 +3061,7 @@ async function resumeFencedForSend(ref: string, automatic = false, inherited: In
         // supersession refusal may restart the press's drive only if the
         // press already observed the token that Stop advanced to.
         recoveryToken: recoveryTokenOf(ref),
+        intentBound: readIntentSequenceBound(mutationRuntime, ref),
         epoch: readDurableStopEpoch(mutationRuntime, ref),
         targetEpoch: existing.targetRef !== ref ? readDurableStopEpoch(mutationRuntime, existing.targetRef) : undefined,
         inheritedTargetEpoch:
@@ -3420,11 +3425,21 @@ async function runResumeFencedForSend(
     const supersededToken = recoveryTokenFromError(error);
     if (supersededToken !== undefined) {
       recoveryTokens.set(ref, supersededToken);
+      // A press that joined the drive BEFORE it observed the Stop's newer
+      // token is superseded work too: its bound extends the cancellation to
+      // its row. A press that joined after the newer token was read is fresh
+      // intent and keeps its row.
+      const joined = pressJoinedResumes.get(ref);
+      let cancelBound = attemptCancelBound;
+      if (joined !== undefined && joined.recoveryToken !== supersededToken) {
+        const joinedBound = await joined.intentBound;
+        if (joinedBound !== undefined) cancelBound = Math.max(cancelBound ?? joinedBound, joinedBound);
+      }
       // The Stop superseded this drive's parked work: its unattempted messages
       // must not stay dispatchable, or a foldable read's dispatch would fold a
       // resume past the refusal. Canceled durably, they wait for explicit
       // Retry like any Stop's parked rows.
-      await cancelSupersededMutations(ref, attemptCancelBound);
+      await cancelSupersededMutations(ref, cancelBound);
       if (resumedRef !== undefined) await cancelSupersededMutations(resumedRef, attemptResumedCancelBound);
     }
     // A Stop that lands mid-drive can surface here as a plain transport
@@ -3477,6 +3492,10 @@ async function runResumeFencedForSend(
         resumedCancelBound: attemptResumedCancelBound,
       });
     } else {
+      // Terminal cancellation: no owner is left to re-drive this arm, and a
+      // lingering entry would keep fencing the ref (an outrun token) after a
+      // fresh Send or a Retry press has to start its own drive.
+      retireResumeRetry(ref);
       const join = pressJoinedResumes.get(ref);
       // A press that arrived AFTER the Stop that canceled this drive is
       // fresh user intent: the Send pressed on an already-stopped session

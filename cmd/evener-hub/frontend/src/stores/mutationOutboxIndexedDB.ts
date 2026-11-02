@@ -417,7 +417,11 @@ export class MutationOutboxIndexedDB implements QueuedMessageStorage<MutationAtt
   async cancelUnattempted(targetRef: string, upToSequence?: number): Promise<string[]> {
     return this.#write([OUTBOX_STORE, SEQUENCE_STORE], "cancelUnattempted", async (transaction) => {
       const canceled = await this.#cancelUnattempted(transaction, targetRef, upToSequence);
-      await this.#bumpStopEpoch(transaction, targetRef);
+      // Only a Stop action advances the epoch. A bounded supersession
+      // cancellation is the consequence of a Stop that already bumped it, and
+      // bumping again here would strand a Send whose newer-token barrier
+      // capture predates this write while its enqueue commits after it.
+      if (upToSequence === undefined) await this.#bumpStopEpoch(transaction, targetRef);
       return canceled;
     });
   }
