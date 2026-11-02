@@ -31,11 +31,13 @@ import type {
 import { clearProjectionWorkForTests, trackProjectionWork } from "../../../../stores/projectionWork";
 import {
   type ComposerMutationRoute,
+  clearUncertainRecheckFailure,
   discardRecoveryMutation,
   editQueuedMutation,
   type InputAttachment,
   installQueuedMutationProjection,
   installResumeOnlyProjection,
+  noteUncertainRecheckFailure,
   notifyReadyForMutationDispatch,
   preserveRecoveryMutation,
   readMutationPersistence,
@@ -104,6 +106,18 @@ installQueuedMutationProjection({
 // reset hook too.
 const loadedRefs = new Set<string>();
 
+// The ref's standing delivery-uncertain rows in one pass, unsorted: the fence
+// predicate needs only WHETHER any stand, and the escape counter needs WHICH
+// rows stand - neither needs the order, so this never pays the sorted
+// projection's sort.
+function blockedUnknownRowsFor(ref: string): MutationOutboxRecord[] {
+  const rows: MutationOutboxRecord[] = [];
+  for (const record of pendingTurnsStore.getState().outbox.values()) {
+    if (record.targetRef === ref && record.state === "blockedUnknown") rows.push(record);
+  }
+  return rows;
+}
+
 // Publish this projection's synchronous delivery-uncertain read into the
 // threads store's shared resume-only predicate (installResumeOnlyProjection):
 // the predicate the press, enqueue and dispatch paths share cannot import this
@@ -113,8 +127,8 @@ const loadedRefs = new Set<string>();
 // published, exactly as the composer's own useBlockedMutationEntries does.
 installResumeOnlyProjection({
   isLoaded: (ref) => loadedRefs.has(ref),
-  hasBlockedUnknown: (ref) =>
-    outboxEntriesByState(pendingTurnsStore.getState().outbox, ref, "blockedUnknown").length > 0,
+  hasBlockedUnknown: (ref) => blockedUnknownRowsFor(ref).length > 0,
+  blockedUnknownIds: (ref) => blockedUnknownRowsFor(ref).map((row) => row.clientMutationId),
   // A queued non-turn/start row (still "submitting") parks at the target's
   // FIFO: a turn/start queued behind it never dispatches, so a ref holding one
   // is not the foldable shape. An ATTEMPTED row counts too: the method-aware
@@ -190,6 +204,21 @@ async function readProjectionIntoStore(ref?: string): Promise<boolean> {
   // between, and it must still out-rank this snapshot for that target.
   const targets = accepted.apply();
   pendingTurnsStore.projectSnapshot(targets, snapshot);
+  // Delivery-uncertain bookkeeping: a failure count belongs to a row that
+  // still stands uncertain. One that settled (or was discarded) takes its
+  // count with it, so a NEW uncertain row starts its own honest
+  // reconciliation attempts. One pass over the outbox answers every counted
+  // row.
+  const failures = threadsStore.getState().uncertainRecheckFailures;
+  if (failures.size > 0) {
+    const standing = new Set<string>();
+    for (const record of pendingTurnsStore.getState().outbox.values()) {
+      if (record.state === "blockedUnknown") standing.add(record.clientMutationId);
+    }
+    for (const clientMutationId of failures.keys()) {
+      if (!standing.has(clientMutationId)) clearUncertainRecheckFailure(clientMutationId);
+    }
+  }
   // Readiness follows the fence's own ownership check, at the same moment the
   // snapshot is projected: a read a newer read or a live commit has already
   // superseded is not this ref's current word, so it must not mark the ref
@@ -530,7 +559,11 @@ export function retryBlockedPendingTurn(clientMutationId: string, ref: string): 
     (async (): Promise<BlockedRetryOutcome> => {
       if (await mutateThenRefresh(ref, () => retryBlockedMutation(clientMutationId))) return { released: true };
       const { outbox } = await readMutationPersistence(ref);
-      return { released: false, current: outbox.find((entry) => entry.clientMutationId === clientMutationId) };
+      const current = outbox.find((entry) => entry.clientMutationId === clientMutationId);
+      // The press could not decide the row's fate: one more failed delivery
+      // check recorded for this row's own escape ledger.
+      if (current?.state === "blockedUnknown") noteUncertainRecheckFailure(clientMutationId);
+      return { released: false, current };
     })(),
   );
 }
