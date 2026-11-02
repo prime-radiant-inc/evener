@@ -1076,7 +1076,7 @@ func newHubAppServerWithNavigationAndTrace(cfg hubcore.WebConfig, sources *appso
 				return appserver.SubscriptionAdmissionResolution{Intent: appserver.SubscriptionAdmissionUnresolved}
 			}
 			if msg.Request.Method == appwire.MethodThreadRead && !params.Subscribe &&
-				(!sourceSupportsThreadRelay(source) || !relayOnThreadRead(source)) {
+				(params.AnswerContinuation != nil || !sourceSupportsThreadRelay(source) || !relayOnThreadRead(source)) {
 				return notSubscribe
 			}
 			// Stable refs and current IDs name one pending admission, but

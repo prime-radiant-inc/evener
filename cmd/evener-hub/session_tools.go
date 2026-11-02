@@ -652,10 +652,13 @@ func (o *sessionOperations) read(ctx context.Context, params appwire.ThreadReadP
 		if !relays.captureThreadRead(ctx, params, read) {
 			return appwire.ThreadReadResponse{}, appwire.SessionUnavailable("thread subscription is unavailable")
 		}
-	} else if sourceSupportsThreadRelay(source) && (params.Subscribe || relayOnThreadRead(source)) {
+	} else if params.AnswerContinuation == nil && sourceSupportsThreadRelay(source) && (params.Subscribe || relayOnThreadRead(source)) {
 		// A source with no relay fan-out is never relayed, even for a
 		// Subscribe read: startRelay calls SubscribeThread, so relaying one
 		// would fail the read. Subscribing callers still get the snapshot.
+		// An answer-continuation read is a verdict-only query: it must never
+		// attach a relay, because SubscribeThread reissues the read with a
+		// subscription the query's own validation forbids.
 		if err := relays.startRelay(ctx, source, params, resp.Thread); err != nil {
 			return appwire.ThreadReadResponse{}, err
 		}

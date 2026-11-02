@@ -204,3 +204,93 @@ func TestAnswerContinuationReadRoutes(t *testing.T) {
 		}
 	}
 }
+
+// TestAnswerContinuationFirstQueryWithoutSubscribers pins the first verdict
+// query on a live target with no existing relay: it must succeed on its own
+// and must not attach a subscription. A subscribing read before the query
+// masks the fallback relay start, so this test performs none.
+func TestAnswerContinuationFirstQueryWithoutSubscribers(t *testing.T) {
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+	defer cancel()
+	const id = "02wMz5Txv9aIxgf9yVdd1P"
+	root := t.TempDir()
+	state := filepath.Join(root, "projects", "project-answer-0000000000")
+	if err := os.MkdirAll(filepath.Join(state, "sessions"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := schema.SaveSessionMeta(state, schema.SessionMeta{ID: id}); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(state, "sessions", id+".transcript.jsonl")
+	w, err := transcript.NewWriter(path, transcript.Header{SessionID: id})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, v := range []struct {
+		id    string
+		links []string
+	}{{"A", nil}, {"B", []string{"A"}}, {"X", nil}, {"C", []string{"B"}}} {
+		if err := w.Append(schema.Turn{Format: schema.TurnFormatIdentity, TurnID: v.id, TurnKind: schema.TurnSpanExecution, Kind: schema.TurnUserInput, Message: llm.User(v.id), AnswerToTurnIDs: v.links}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+	daemon := daemonserver.NewServer(daemonserver.ServerConfig{})
+	defer daemon.Close()
+	identity, err := daemonserver.PrepareAppIdentity("local", id, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	daemon.ReplaceAppIdentity(identity.WithBootGeneration("7"), nil)
+	upstream := httptest.NewServer(http.HandlerFunc(daemon.AppServer().ServeWebSocket))
+	defer upstream.Close()
+	source := appsource.NewLocalDaemonSourceWithEntries("local", func() []appsource.LocalDaemonEntry {
+		return []appsource.LocalDaemonEntry{{Entry: rendezvous.Entry{Protocol: appwire.ProtocolVersion, Endpoint: upstream.URL, SourceID: "local", SessionID: id, ThreadID: id, WorkspaceRef: "local:" + id, InstanceID: id}, SessionID: id}}
+	}, upstream.Client())
+	sources := appsource.NewRegistry()
+	sources.Add(source)
+	hub := newHubAppServer(hubcore.WebConfig{Past: hubcore.NewPastIndex("")}, sources)
+	defer hub.Shutdown(ctx)
+	hubTransport, err := hub.NewInProcessTransport(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	hubClient := appwire.NewClient(hubTransport)
+	hubClient.Start(ctx)
+	defer hubClient.Close()
+	if _, err := hubClient.Initialize(ctx, appwire.InitializeParams{}); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, candidate := range []string{"C", "X"} {
+		raw := []byte(`{"ref":"local:` + id + `","includeTurns":false,"answerContinuation":{"ancestorTurnId":"A","candidateTurnId":"` + candidate + `"}}`)
+		var p appwire.ThreadReadParams
+		if err := json.Unmarshal(raw, &p); err != nil {
+			t.Fatal(err)
+		}
+		response, err := hubClient.ThreadRead(ctx, p)
+		if err != nil {
+			t.Fatal(err)
+		}
+		data, _ := json.Marshal(response)
+		var verdict appwire.ThreadReadResponse
+		if err := json.Unmarshal(data, &verdict); err != nil {
+			t.Fatal(err)
+		}
+		v := verdict.AnswerContinuation
+		if v == nil || v.AncestorTurnID != "A" || v.CandidateTurnID != candidate || v.Matches != (candidate == "C") {
+			t.Fatalf("candidate %s verdict=%s", candidate, data)
+		}
+		if response.BootGeneration != "7" {
+			t.Fatalf("live query fell back: ref=%s instance=%s boot=%s", response.Thread.Evener.Ref, response.Thread.Evener.InstanceID, response.BootGeneration)
+		}
+	}
+	if got := daemon.AppServer().SubscriberCount("local:" + id); got != 0 {
+		t.Fatalf("verdict query left upstream subscriptions=%d want 0", got)
+	}
+	if got := hub.SubscriberCount("local:" + id); got != 0 {
+		t.Fatalf("verdict query left hub subscriptions=%d want 0", got)
+	}
+}
