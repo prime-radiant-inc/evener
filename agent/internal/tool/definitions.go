@@ -773,7 +773,7 @@ func WithCommunicateEndReason(def llm.ToolDefinition) llm.ToolDefinition {
 	props["end_reason"] = map[string]any{
 		"type":        "string",
 		"enum":        slices.Clone(CommunicateEndReasons),
-		"description": "Why this message ends your turn; read only when end_turn=true, and done when omitted. `done`: you finished or answered, and nothing waits on your human partner; the session rests idle. `needs_response`: you cannot go on until your human partner answers or acts, such as a decision, a review, or something only they can do; the session shows it is waiting on them. `waiting_on_work`: you are waiting on delegates or background jobs that will wake you; the session rests idle and asks nobody for attention.",
+		"description": "Why this message ends your turn; read only when end_turn=true, and done when omitted. `done`: you finished or answered, and nothing waits on your human partner; the session rests idle. `needs_response`: you cannot go on until your human partner answers or acts, such as a decision, a review, or something only they can do; the session shows it is waiting on them. `waiting_on_work`: you are waiting on delegates or background jobs that will wake you; the session rests idle and asks nobody for attention. The call is refused when nothing can wake the session: use `done` if finished, `needs_response` if your partner must act, or start the work or arm a watch before ending the turn.",
 	}
 	def.Parameters = params
 	return def
