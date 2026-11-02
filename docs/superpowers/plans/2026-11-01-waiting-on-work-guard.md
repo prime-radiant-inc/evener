@@ -78,10 +78,14 @@
 
 **Files:**
 - Modify: `agent/session_state.go` (beside `autonomyInFlight`, :242)
+- Modify: `agent/jobs.go` (live-run and notice-emission helpers, finalization handoff)
+- Modify: `agent/job_watch.go` (timer notification handoff)
 - Test: Create `agent/session_waiting_on_work_test.go`
 
 **Interfaces:**
 - Consumes: Task 1's `hasArmedWatch`.
+- Consumes: `hasRunnableUserSteering`, preserving Stop-held and daemon-only exclusions.
+- Produces: manager `hasLiveRuns`, `hasNoticeEmissionInFlight`, and `noteNoticeEmission(delta int)` helpers under `jm.mu`.
 - Produces: `func (s *Session) hasWakeableWork() bool`
 
 - [ ] **Step 1: Write the failing test.** `TestSessionHasWakeableWork` (`t.Parallel()`), a table over `newTestSessionForState(t)` fixtures (session_awaiting_test.go:21-29). One row per wake source, each asserting `true`, plus the bare session asserting `false`:
@@ -89,10 +93,15 @@
   - pending job notification: `s.enqueueJobNotificationAndNotify(jobNotification{})` (session.go:1201)
   - working subagent: track a running child the way session_awaiting_test.go:216-239 does
   - running managed job: append a `jobstore.EventJobStarted` event to `s.jobManager` with `OwnerSessionID: s.ID()`; a detached process receipt alone does not count because completion sends no notification
+  - live managed run: seed a minimal `jm.running` entry under `jm.mu`, without a journaled running record
+  - runnable user steering: admit through `SteerFromUser`; Stop-held user steering and daemon-only steering are negative controls
   - pending question: under `s.mu`, append a zero-value `askQuestion` to `s.askPending` (session.go:705; `askPendingCount` is length-based)
   - armed watch in own manager: `s.jobManager.configureWatch(watchArgs{Target: runtimeMessageAliasCaller, Source: "self", AfterSeconds: 3600})`, with `defer s.Close()` on this row so the timer goroutine stops (the manager's timer validation requires `Source: "self"`, job_watch.go:1075-1078 — confirmed by Task 1)
+  - armed watch in an idle child's manager, keyed to the root receiver through `ReceiverSessionID` and `ReceiverNotify`; assert the root manager has no armed watch and the child is not working
 
-  `autonomyInFlight`'s remaining terms (queued input, delegate deliveries, delegate attention) already own their tests (`TestAutonomyInFlight*`); the two rows above cover the representative inputs plus every term this change adds.
+  `autonomyInFlight`'s remaining terms (queued input, delegate deliveries, delegate attention) already own their tests (`TestAutonomyInFlight*`).
+
+  Deterministic handoff regressions use the real manager paths: configure a one-shot timer and call `fireProgressTick`, observing a spent watch and an in-flight emission inside the enqueue callback; create a managed shell run through `createShell` and call `finalizeWithRun`, observing wakeability at `testOnlyAfterNotifyPendingAppend` and again inside enqueue after live-run deletion. Both counters return to zero after handoff. Use `t.Parallel()`, no sleeps, and behavior assertions.
 
 - [ ] **Step 2: Run it to verify it fails.**
 
@@ -103,22 +112,22 @@
 
   ```go
   func (s *Session) hasWakeableWork() bool {
-      if s.autonomyInFlight() || s.HasPendingAsk() {
-          return true
-      }
       if len(sessionRunningJobIDs(s)) > 0 {
           return true
       }
       for _, holder := range s.watchHolderSessions() {
-          if holder.jobManager.hasArmedWatch() {
+          jm := holder.jobManager
+          if (jm == s.jobManager && jm.hasLiveRuns()) || jm.hasArmedWatch() || jm.hasNoticeEmissionInFlight() {
               return true
           }
       }
-      return false
+      return s.hasRunnableUserSteering() || s.autonomyInFlight() || s.HasPendingAsk()
   }
   ```
 
-  Comment: used by the communicate handler to refuse `waiting_on_work` when nothing can wake a resting session; the watch term overcounts on purpose (receiver-agnostic, spent one-shots excluded) because refusing too little is the safe direction — see the spec.
+  Read producer liveness before queued work, with notifications last among `sessionWorkPending`'s queue terms. The holder scan includes the own manager. `hasLiveRuns` reads `len(jm.running) > 0`; `hasNoticeEmissionInFlight` reads `noticesInFlight > 0`, both under `jm.mu`. Job finalization increments the counter in the lock block deleting the run, then decrements after `flushNotices`, with no early returns between them. Timer firing increments under the existing lock when notifications were built, then decrements after enqueue and `recordWatchSendsAndKick`. `noteNoticeEmission` locks and adjusts the counter.
+
+  Comment: used by communicate to refuse `waiting_on_work` only when nothing can wake a resting session. Runnable user steering and live finalization count. Watch and emission terms overcount on purpose (receiver-agnostic, settled spent one-shots excluded) because refusing too little is safe. The producer-before-queue order closes retirement-to-enqueue handoffs.
 
 - [ ] **Step 4: Run the test to verify it passes.**
 
@@ -128,7 +137,7 @@
 - [ ] **Step 5: Commit.**
 
   ```bash
-  git add agent/session_state.go agent/session_waiting_on_work_test.go
+  git add agent/session_state.go agent/jobs.go agent/job_watch.go agent/session_waiting_on_work_test.go
   git commit -m "feat(agent): enumerate wakeable work for a resting session"
   ```
 
@@ -202,8 +211,9 @@
 
   ```go
   // wakeableWork reports whether anything can provably wake this session once
-  // its current turn ends and it rests: pending autonomy input, running managed
-  // jobs, a pending question, or an armed watch in any manager that can deliver
+  // its current turn ends and it rests: runnable user steering, pending autonomy
+  // input, running or finalizing managed jobs, in-flight notice emissions,
+  // a pending question, or an armed watch in any manager that can deliver
   // to this session. Detached processes are excluded because their completion
   // sends no notification. The communicate handler refuses end_reason
   // waiting_on_work when it returns false. Nil never refuses.

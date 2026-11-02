@@ -165,7 +165,7 @@ func historyTurnFailure(history []schema.Turn) (schema.Turn, bool) {
 // without user input. Child activity is excluded because it is projected on
 // the child session, while its eventual notification is included once queued.
 func (s *Session) sessionWorkPending() bool {
-	return s.peekNotifications() > 0 || s.pendingQueueDepth() > 0 || s.hasRunnableClientMutationStart() || s.hasPendingDelegateDeliveries() || s.pendingRootDelegateAttention() || s.hasPendingDelegateAttentionArmRetry() || s.hasPendingStableDelegateAttention() || (s.jobManager != nil && s.jobManager.hasPendingStableWatchSettlementRetry())
+	return s.pendingQueueDepth() > 0 || s.hasRunnableClientMutationStart() || s.hasPendingDelegateDeliveries() || s.pendingRootDelegateAttention() || s.hasPendingDelegateAttentionArmRetry() || s.hasPendingStableDelegateAttention() || (s.jobManager != nil && s.jobManager.hasPendingStableWatchSettlementRetry()) || s.peekNotifications() > 0
 }
 
 func (s *Session) hasPendingStableDelegateAttention() bool {
@@ -250,26 +250,26 @@ func (s *Session) autonomyInFlight() bool {
 }
 
 // hasWakeableWork reports whether anything can wake a resting session: its
-// own autonomous work, running managed jobs, a pending question, or an armed
-// watch in any holder manager that can deliver a wake to it. Detached processes
-// are excluded because their completion sends no notification; they remain in
-// the warning-oriented sessionRunningWorkIDs set. Used by the communicate
-// handler to refuse waiting_on_work when nothing can wake a resting session;
-// the watch term overcounts on purpose (receiver-agnostic, spent one-shots
-// excluded) because refusing too little is the safe direction — see the spec.
+// journaled running jobs, own live runs (including finalization), armed watches
+// or in-flight notice emissions in holder managers, runnable user steering,
+// autonomous work, or a pending question. Producers are read before queues,
+// with notifications last among queue terms, so a retirement-to-enqueue handoff
+// cannot fall between reads. Detached processes, Stop-held steering and daemon
+// nudges do not count. Used by communicate to refuse waiting_on_work only when
+// nothing can wake the session. Watch and emission terms are receiver-agnostic
+// on purpose, since refusing too little is safe; settled spent one-shots do
+// not count — see the spec.
 func (s *Session) hasWakeableWork() bool {
-	if s.autonomyInFlight() || s.HasPendingAsk() {
-		return true
-	}
 	if len(sessionRunningJobIDs(s)) > 0 {
 		return true
 	}
 	for _, holder := range s.watchHolderSessions() {
-		if holder.jobManager.hasArmedWatch() {
+		jm := holder.jobManager
+		if (jm == s.jobManager && jm.hasLiveRuns()) || jm.hasArmedWatch() || jm.hasNoticeEmissionInFlight() {
 			return true
 		}
 	}
-	return false
+	return s.hasRunnableUserSteering() || s.autonomyInFlight() || s.HasPendingAsk()
 }
 
 // cumulativeUsageSnapshot converts the context manager's llm.Usage total to

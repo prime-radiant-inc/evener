@@ -31,18 +31,36 @@ refusal cannot trap the model.
 Refuse only when ALL of these are empty — anything non-empty means something
 can move the session without its human partner:
 
-- `autonomyInFlight()`: pending job notifications, queued input, a runnable
-  client start, pending delegate deliveries and attention, watch-send
-  settlement retries, and working children (running/driving/finalizing).
 - This session's own running managed jobs (`sessionRunningJobIDs`), excluding
   detached processes because their completion sends no notification.
-- A pending question (`HasPendingAsk`): the human's answer wakes the session.
+- This session's own manager's live runs (`hasLiveRuns`), including finalizing
+  runs whose journaled records are already terminal.
 - An armed watch registered anywhere it can deliver to this session: this
   session's own job manager plus every holder manager `watchHolderSessions`
   names (self-timers, descendant-job receiver watches). A spent one-shot
   (`watchOneShotHasFired`) does not count; every other registered watch does —
   including one whose receiver is someone else, since overcounting is the
   safe direction.
+- An in-flight notice emission in any holder manager
+  (`hasNoticeEmissionInFlight`), spanning live-run deletion or timer firing
+  through notification enqueue. A settled spent one-shot remains excluded.
+- Runnable user steering (`hasRunnableUserSteering`), excluding steering held
+  by a Stop and daemon-only nudges.
+- `autonomyInFlight()`: pending job notifications, queued input, a runnable
+  client start, pending delegate deliveries and attention, watch-send
+  settlement retries, and working children (running/driving/finalizing).
+- A pending question (`HasPendingAsk`): the human's answer wakes the session.
+
+Read journaled jobs first, then the holder managers (own live runs before
+armed watches and in-flight emissions), then runnable steering, autonomy,
+and pending questions. The own manager is included in the holder scan.
+Autonomy reads working children before queued work, with job notifications
+last among the queue terms. Reading producers before their queues keeps a
+retirement-to-enqueue handoff from falling between reads. The manager's
+`noticesInFlight` counter is guarded by `jm.mu`: job finalization increments
+it in the same lock block that deletes the run and decrements after
+`flushNotices`, while timer firing increments before unlocking a built
+notification and decrements after notification enqueue and watch sends.
 
 False negatives remain possible (a watch registered a moment after the check,
 an exotic race) and are harmless: the session sleeps as it does today. False

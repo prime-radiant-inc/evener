@@ -12,10 +12,10 @@ import (
 
 // TestSessionHasWakeableWork pins every wake source hasWakeableWork counts
 // for a resting session, plus the bare session it must refuse: a wake exists
-// when autonomous work is in flight, a managed job runs, a question waits on
-// the user, or any holder manager keeps an armed watch that can deliver a wake.
-// A detached process receipt does not count because it sends no completion
-// notification.
+// when autonomous work or user steering is runnable, a managed job runs or
+// finalizes, a question waits on the user, or any holder manager keeps an armed
+// watch that can deliver a wake. Detached processes and held or daemon steering
+// do not count.
 func TestSessionHasWakeableWork(t *testing.T) {
 	t.Parallel()
 	cases := []struct {
@@ -67,6 +67,58 @@ func TestSessionHasWakeableWork(t *testing.T) {
 			},
 		},
 		{
+			name: "runnable user steering wakes",
+			want: true,
+			seed: func(t *testing.T, s *Session) {
+				if err := s.SteerFromUser("please continue"); err != nil {
+					t.Fatal(err)
+				}
+				if !s.hasRunnableUserSteering() {
+					t.Fatal("user steering was not admitted")
+				}
+			},
+		},
+		{
+			name: "Stop-held user steering cannot wake",
+			want: false,
+			seed: func(t *testing.T, s *Session) {
+				if err := s.SteerFromUser("please continue"); err != nil {
+					t.Fatal(err)
+				}
+				if err := s.clientMutations.mutate(func(snapshot *clientMutationSnapshot) error {
+					snapshot.SteeringHeld = true
+					return nil
+				}); err != nil {
+					t.Fatal(err)
+				}
+				if !s.hasPendingUserSteering() || s.hasRunnableUserSteering() {
+					t.Fatal("user steering must remain pending but held")
+				}
+			},
+		},
+		{
+			name: "daemon steering alone cannot wake",
+			want: false,
+			seed: func(t *testing.T, s *Session) {
+				if err := s.Steer("context for the next turn"); err != nil {
+					t.Fatal(err)
+				}
+				if !s.hasPendingSteering() || s.hasRunnableUserSteering() {
+					t.Fatal("only daemon steering must be pending")
+				}
+			},
+		},
+		{
+			name: "live managed run wakes without a running journal record",
+			want: true,
+			seed: func(_ *testing.T, s *Session) {
+				jm := s.jobManager
+				jm.mu.Lock()
+				jm.running["job_finalizing"] = &runningJob{}
+				jm.mu.Unlock()
+			},
+		},
+		{
 			name: "pending question wakes",
 			want: true,
 			seed: func(_ *testing.T, s *Session) {
@@ -89,6 +141,27 @@ func TestSessionHasWakeableWork(t *testing.T) {
 				}
 			},
 		},
+		{
+			name: "idle child manager watch wakes root receiver",
+			want: true,
+			seed: func(t *testing.T, s *Session) {
+				child := newTestSessionForState(t)
+				t.Cleanup(child.Close)
+				s.subagents.track(&subagent{id: child.ID(), sess: child})
+				if _, err := child.jobManager.configureWatch(watchArgs{
+					Target: runtimeMessageAliasCaller, Source: "self", AfterSeconds: 3600,
+					ReceiverSessionID: s.ID(), ReceiverNotify: s.enqueueJobNotificationAndNotify,
+				}); err != nil {
+					t.Fatal(err)
+				}
+				if s.hasWorkingSubagent() || child.autonomyInFlight() {
+					t.Fatal("child must be idle")
+				}
+				if s.jobManager.hasArmedWatch() || !child.jobManager.hasArmedWatch() {
+					t.Fatal("only the child's manager must hold an armed watch")
+				}
+			},
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -99,6 +172,105 @@ func TestSessionHasWakeableWork(t *testing.T) {
 				t.Fatalf("hasWakeableWork = %v, want %v", got, tc.want)
 			}
 		})
+	}
+}
+
+func TestSessionHasWakeableWorkTimerHandoff(t *testing.T) {
+	t.Parallel()
+	s := newTestSessionForState(t)
+	t.Cleanup(s.Close)
+	jm := s.jobManager
+	res, err := jm.configureWatch(watchArgs{
+		Target: runtimeMessageAliasCaller, Source: "self", AfterSeconds: 3600,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	jm.mu.Lock()
+	key, cfg, ok := jm.watchConfigByIDLocked(res.WatchID)
+	jm.mu.Unlock()
+	if !ok {
+		t.Fatal("timer was not registered")
+	}
+	enqueue := jm.enqueue
+	observed := false
+	jm.enqueue = func(n jobNotification) {
+		observed = true
+		if !jm.hasNoticeEmissionInFlight() {
+			t.Error("timer emission must remain in flight during enqueue")
+		}
+		if jm.hasArmedWatch() || s.peekNotifications() != 0 {
+			t.Error("timer must be spent before its notification reaches the queue")
+		}
+		if !s.hasWakeableWork() {
+			t.Error("firing timer must remain wakeable until enqueue")
+		}
+		enqueue(n)
+	}
+	if jm.fireProgressTick(key, cfg) {
+		t.Fatal("one-shot timer must retire")
+	}
+	jm.mu.Lock()
+	inFlight := jm.noticesInFlight
+	jm.mu.Unlock()
+	if inFlight != 0 || jm.hasNoticeEmissionInFlight() || jm.hasArmedWatch() {
+		t.Fatal("spent timer must have no remaining producer signal")
+	}
+	if !observed || s.peekNotifications() != 1 || !s.hasWakeableWork() {
+		t.Fatal("timer must hand off to one queued notification")
+	}
+}
+
+func TestSessionHasWakeableWorkJobFinalizationHandoff(t *testing.T) {
+	t.Parallel()
+	s := newTestSessionForState(t)
+	t.Cleanup(s.Close)
+	jm := s.jobManager
+	rec, err := jm.createShell(createShellOpts{Command: "true"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	pendingObserved := false
+	jm.testOnlyAfterNotifyPendingAppend = func(jobID string) {
+		pendingObserved = true
+		if !jm.hasLiveRuns() {
+			t.Error("finalizing run must stay live at the notification-pending seam")
+		}
+		if jobID != rec.JobID || len(sessionRunningJobIDs(s)) != 0 || s.peekNotifications() != 0 {
+			t.Error("terminal job must no longer be journaled running, with notification not yet queued")
+		}
+		if !s.hasWakeableWork() {
+			t.Error("finalizing live run must remain wakeable")
+		}
+	}
+	enqueue := jm.enqueue
+	enqueueObserved := false
+	jm.enqueue = func(n jobNotification) {
+		enqueueObserved = true
+		if !jm.hasNoticeEmissionInFlight() {
+			t.Error("job emission must remain in flight during enqueue")
+		}
+		if jm.hasLiveRuns() || s.peekNotifications() != 0 {
+			t.Error("run must be removed before its notification reaches the queue")
+		}
+		if !s.hasWakeableWork() {
+			t.Error("removed run must remain wakeable until enqueue")
+		}
+		enqueue(n)
+	}
+	if err := jm.finalizeWithRun(rec.JobID, func(*runningJob) (jobstore.Status, string, *int, error) {
+		return jobstore.StatusCompleted, "", nil, nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	jm.mu.Lock()
+	inFlight := jm.noticesInFlight
+	jm.mu.Unlock()
+	if inFlight != 0 || jm.hasNoticeEmissionInFlight() || jm.hasLiveRuns() {
+		t.Fatal("finalized job must have no remaining producer signal")
+	}
+	if !pendingObserved || !enqueueObserved || s.peekNotifications() != 1 || !s.hasWakeableWork() {
+		t.Fatal("job finalization must hand off to one queued notification")
 	}
 }
 
