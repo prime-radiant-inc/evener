@@ -933,6 +933,110 @@ func TestRelaySessionRecoveryKeepsConsumerSubscriptionAfterRetentionRead(t *test
 	recoveryCall.transport.recv <- appwire.ResponseMessage(recoveryCall.request.ID, relaySnapshot("thread-1", "recovered"))
 }
 
+// TestRelaySessionRecoveryRestoresSubscriptionOverwrittenByDescendantSnapshot
+// pins the multi-ref half of recovery's demand rule. A Manager snapshot read
+// of a descendant overwrites the stored read params with the descendant's
+// ref, so recovery must re-read every ref with live demand — the root's
+// consumer subscription — instead of only the last reader's ref.
+func TestRelaySessionRecoveryRestoresSubscriptionOverwrittenByDescendantSnapshot(t *testing.T) {
+	root := relayEntry("thread-1")
+	root.WorkspaceRef = "local:thread-1"
+	daemon := &relayTestDaemon{reads: make(chan relayReadCall, 16), unsubscribes: make(chan appwire.Request, 16)}
+	source := NewLocalDaemonSourceWithEntries("local", func() []LocalDaemonEntry {
+		return []LocalDaemonEntry{
+			{Entry: root},
+			{Entry: root, SessionID: "sess_alias", OwnerSessionID: "thread-1", ReadOnlyAlias: true},
+		}
+	}, nil)
+	source.dial = relayTestDial(daemon)
+	consumerParams := appwire.ThreadReadParams{Ref: "local:thread-1", Subscribe: true}
+	consumer, err := source.acquireRelaySession(consumerParams)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer consumer.Close()
+	ctx := t.Context()
+	deliveries, err := consumer.Listen(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The hub's retention worker only drains and acknowledges; mirror it so
+	// the reconnect's resync publication cannot stall recovery's read.
+	go func() {
+		for delivery := range deliveries {
+			if delivery.Acknowledge != nil {
+				delivery.Acknowledge()
+			}
+		}
+	}()
+
+	read := readRelayAsync(context.Background(), consumer, consumerParams)
+	call := <-daemon.reads
+	call.transport.recv <- appwire.ResponseMessage(call.request.ID, relaySnapshot("thread-1", "snapshot"))
+	result := <-read
+	if result.err != nil {
+		t.Fatal(result.err)
+	}
+	if !result.result.Handoff.Commit() {
+		t.Fatal("consumer handoff commit lost")
+	}
+
+	// A Manager snapshot read of the descendant shares the root's relay
+	// session and overwrites the stored read params with its own ref.
+	snapshot, err := source.acquireRelaySession(appwire.ThreadReadParams{Ref: "local:sess_alias"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer snapshot.Close()
+	snapshotRead := readRelayAsync(context.Background(), snapshot, appwire.ThreadReadParams{Ref: "local:sess_alias"})
+	snapshotCall := <-daemon.reads
+	if snapshotCall.transport != call.transport {
+		t.Fatal("descendant snapshot read did not share the root's relay connection")
+	}
+	var snapshotParams appwire.ThreadReadParams
+	if err := json.Unmarshal(snapshotCall.request.Params, &snapshotParams); err != nil {
+		t.Fatal(err)
+	}
+	if snapshotParams.Ref != "local:sess_alias" {
+		t.Fatalf("descendant snapshot read ref = %q", snapshotParams.Ref)
+	}
+	snapshotCall.transport.recv <- appwire.ResponseMessage(snapshotCall.request.ID, relaySnapshot("sess_alias", "descendant"))
+	snapshotResult := <-snapshotRead
+	if snapshotResult.err != nil {
+		t.Fatal(snapshotResult.err)
+	}
+	if !snapshotResult.result.Handoff.Commit() {
+		t.Fatal("descendant snapshot handoff commit lost")
+	}
+
+	// The shared daemon connection drops while the root consumer listens.
+	if err := call.transport.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	// Recovery must re-read the root's live subscription even though the
+	// descendant's snapshot read was the last to store its params: the
+	// warming read of the last reader's ref may come first, but the root's
+	// subscribing read must follow.
+	restoredRoot := false
+	deadline := time.After(5 * time.Second)
+	for !restoredRoot {
+		select {
+		case recoveryCall := <-daemon.reads:
+			var recoveryParams appwire.ThreadReadParams
+			if err := json.Unmarshal(recoveryCall.request.Params, &recoveryParams); err != nil {
+				t.Fatal(err)
+			}
+			recoveryCall.transport.recv <- appwire.ResponseMessage(recoveryCall.request.ID, relaySnapshot("thread-1", "recovered"))
+			if recoveryParams.Ref == "local:thread-1" && recoveryParams.Subscribe {
+				restoredRoot = true
+			}
+		case <-deadline:
+			t.Fatal("recovery never restored the root's live subscription")
+		}
+	}
+}
+
 // TestRelaySessionReleaseWithdrawsUndemandedSubscription pins the
 // release-side of the demand rule: when the last lease asking for a
 // subscription releases while another lease keeps the canonical relay

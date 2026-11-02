@@ -3,6 +3,7 @@ package appsource
 import (
 	"context"
 	"encoding/json"
+	"sort"
 	"sync"
 	"time"
 
@@ -108,13 +109,16 @@ type relaySessionLease struct {
 	session *relaySession
 	id      uint64
 	once    sync.Once
-	// subscribedRefs records every ref this lease's reads asked the daemon to
-	// subscribe. Recovery re-subscribes the canonical feed only while some
-	// live lease holds demand, and releasing the last demanding lease
-	// withdraws the subscription: a binding-retention lease that never
+	// subscribedRefs records the params of every read that asked the daemon
+	// to subscribe this ref. Recovery re-subscribes the canonical feed only
+	// while some live lease holds demand, and releasing the last demanding
+	// lease withdraws the subscription: a binding-retention lease that never
 	// asked must not keep the daemon counting a consumer that either left
-	// or never existed. Guarded by session.mu.
-	subscribedRefs map[string]struct{}
+	// or never existed. The params are kept, not just the ref, because
+	// recovery must re-issue each demanded read; the last reader's params
+	// alone cannot rebuild a subscription a later snapshot read overwrote.
+	// Guarded by session.mu.
+	subscribedRefs map[string]appwire.ThreadReadParams
 }
 
 type relayHandoff struct {
@@ -298,9 +302,9 @@ func (s *relaySession) readWithRoutePublication(
 	s.readParams = params
 	if lease != nil && params.Subscribe {
 		if lease.subscribedRefs == nil {
-			lease.subscribedRefs = map[string]struct{}{}
+			lease.subscribedRefs = map[string]appwire.ThreadReadParams{}
 		}
-		lease.subscribedRefs[params.Ref] = struct{}{}
+		lease.subscribedRefs[params.Ref] = params
 	}
 	s.mu.Unlock()
 
@@ -607,28 +611,49 @@ func (s *relaySession) recoverCanonicalFeed() {
 			s.mu.Unlock()
 			return
 		}
-		params := s.readParams
-		// The stored params are the LAST reader's, so their Subscribe flag
-		// can misstate current demand in both directions: a retention read
-		// stores false while a consumer is live, and a departed consumer
-		// leaves a stale true behind. Ask the live leases instead.
-		params.Subscribe = s.refDemandedLocked(params.Ref)
+		plan := s.recoveryReadPlanLocked()
 		s.mu.Unlock()
 
-		result, err := s.read(s.ctx, nil, params)
-		if err == nil {
+		backoff := false
+		recovered := true
+		for _, params := range plan {
+			s.mu.Lock()
+			pending := s.resyncPending
+			s.mu.Unlock()
+
+			result, err := s.read(s.ctx, nil, params)
+			if err != nil {
+				backoff = true
+				recovered = false
+				break
+			}
 			handoffResolved := result.Handoff.Abort()
 			s.mu.Lock()
 			live := handoffResolved &&
 				s.connection != nil &&
 				!s.connection.disconnected
-			if live {
-				s.recovering = false
-			}
 			s.mu.Unlock()
-			if live {
-				return
+			if !live {
+				recovered = false
+				break
 			}
+			// The connection-wide pending resync is consumed by whichever
+			// read lands first, here or on a racing command-path read, so
+			// each ref whose listeners stayed behind still owes them its
+			// own resync once that flag is spent.
+			if !pending {
+				s.mu.Lock()
+				s.queueResyncLocked(params)
+				s.mu.Unlock()
+			}
+		}
+		if recovered {
+			s.mu.Lock()
+			s.recovering = false
+			s.mu.Unlock()
+			return
+		}
+		if !backoff {
 			continue
 		}
 
@@ -651,6 +676,42 @@ func (s *relaySession) recoverCanonicalFeed() {
 			return
 		}
 	}
+}
+
+// recoveryReadPlanLocked returns the reads recovery must issue, in order:
+// the last reader's ref first, then every other ref a live lease still
+// demands. The stored params are the LAST reader's, so their Subscribe flag
+// can misstate current demand in both directions: a retention read stores
+// false while a consumer is live, and a departed consumer leaves a stale
+// true behind. Ask the live leases instead — and keep every demanded ref in
+// the plan, because a later snapshot read of some other ref overwrites
+// readParams, and recovery that only re-read the last ref would leave the
+// overwritten subscription unrestored and its listeners never told to
+// re-read. Guarded by s.mu.
+func (s *relaySession) recoveryReadPlanLocked() []appwire.ThreadReadParams {
+	params := s.readParams
+	params.Subscribe = s.refDemandedLocked(params.Ref)
+	plan := []appwire.ThreadReadParams{params}
+
+	refs := make([]string, 0, 4)
+	demanded := make(map[string]appwire.ThreadReadParams, 4)
+	for _, lease := range s.leases {
+		for ref, readParams := range lease.subscribedRefs {
+			if ref != params.Ref {
+				demanded[ref] = readParams
+			}
+		}
+	}
+	for ref := range demanded {
+		refs = append(refs, ref)
+	}
+	sort.Strings(refs)
+	for _, ref := range refs {
+		readParams := demanded[ref]
+		readParams.Subscribe = true
+		plan = append(plan, readParams)
+	}
+	return plan
 }
 
 // refDemandedLocked reports whether any live lease still asks the daemon for
