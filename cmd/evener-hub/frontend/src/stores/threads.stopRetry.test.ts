@@ -1,7 +1,7 @@
 import { deferred } from "@evener/appwire-client/testing/deferred";
 import { ALL_CAPABILITIES as CAPABILITIES, type TestThreadOverrides, testThread } from "../threadTestUtils";
 import "fake-indexeddb/auto";
-import { hydrateThread, type ThreadReadResponse, WireError } from "@evener/appwire-client";
+import { hydrateThread, type ThreadReadResponse, type TurnQueueResponse, WireError } from "@evener/appwire-client";
 import { MutationDispatcher } from "@evener/appwire-client/state/mutation";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { nextMacrotask } from "@evener/appwire-client/testing/macrotask";
@@ -16,6 +16,7 @@ import { resetSubagentModuleStoreForTests } from "../panes/session/transcript/to
 import { resetWorkspaceStoreForTests } from "../shell/workspace";
 import { connectionStore, resetConnectionStoreForTests } from "./connection";
 import { setProductionEntryCacheForTests } from "./entryTranscriptRoutes";
+import type { MutationOutboxRecord } from "./mutationOutbox";
 import { MutationOutboxIndexedDB, MutationStorageTimeoutError } from "./mutationOutboxIndexedDB";
 import { SessionEntryCache } from "./sessionEntryCache";
 import { holdNextWriteTransaction, wedgeDatabaseOpens } from "./testing/stalledIndexedDB";
@@ -210,7 +211,9 @@ describe("Stop cancellation durability across reload, tabs, and resume", () => {
     // The queued send commits and registers its row; its attempt's response
     // carries no receipt (a lost response), so the dispatcher parks the row
     // without settling it and the guard holds its id.
-    fake.on("turn/queue", () => ({}));
+    // A lost response: the reply carries no receipt, so the dispatcher
+    // parks the row delivery-uncertain instead of settling it.
+    fake.on("turn/queue", () => ({}) as TurnQueueResponse);
     await threadsStore.getState().queue("ref_a", "ours");
     for (let i = 0; i < 10; i += 1) await nextMacrotask();
     const rows = await storage.listOutbox("ref_a");
