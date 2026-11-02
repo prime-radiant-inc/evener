@@ -724,7 +724,7 @@ func (s *LocalDaemonSource) StartTurn(ctx context.Context, params appwire.TurnSt
 func (s *LocalDaemonSource) StartTurnAtEntry(ctx context.Context, entry rendezvous.Entry, params appwire.TurnStartParams) (appwire.TurnStartResponse, error) {
 	var out appwire.TurnStartResponse
 	err := s.withMutationClient(ctx, entry, params.ClientMutationID, func(ctx context.Context, client *appwire.Client) error {
-		proof, err := s.targetManagerProof(entry, params.ManagerProof)
+		proof, err := s.targetManagerProof(ctx, entry, params.ManagerProof)
 		if err != nil {
 			return err
 		}
@@ -746,7 +746,7 @@ func (s *LocalDaemonSource) SteerTurn(ctx context.Context, params appwire.TurnSt
 	}
 	var out appwire.TurnSteerResponse
 	err = s.withMutationClient(ctx, entry, params.ClientMutationID, func(ctx context.Context, client *appwire.Client) error {
-		proof, err := s.targetManagerProof(entry, params.ManagerProof)
+		proof, err := s.targetManagerProof(ctx, entry, params.ManagerProof)
 		if err != nil {
 			return err
 		}
@@ -765,7 +765,7 @@ func (s *LocalDaemonSource) ResolveSandboxEscalation(ctx context.Context, params
 		return err
 	}
 	return s.withClient(ctx, entry, func(ctx context.Context, client *appwire.Client) error {
-		proof, err := s.targetManagerProof(entry, params.ManagerProof)
+		proof, err := s.targetManagerProof(ctx, entry, params.ManagerProof)
 		if err != nil {
 			return err
 		}
@@ -776,9 +776,12 @@ func (s *LocalDaemonSource) ResolveSandboxEscalation(ctx context.Context, params
 
 // targetManagerProof binds a hub-authorized caller label to the live target
 // runtime. A missing binding must fail closed, never turn Manager input human.
-func (s *LocalDaemonSource) targetManagerProof(entry rendezvous.Entry, proof *appwire.SessionActorProof) (*appwire.SessionActorProof, error) {
+func (s *LocalDaemonSource) targetManagerProof(ctx context.Context, entry rendezvous.Entry, proof *appwire.SessionActorProof) (*appwire.SessionActorProof, error) {
 	if proof == nil {
 		return nil, nil
+	}
+	if err := s.ensureSessionToolsBinding(ctx, entry); err != nil {
+		return nil, err
 	}
 	ref := localDaemonWorkspaceRef(s.sourceID, entry, entry.SessionID)
 	s.sessionToolsMu.Lock()
@@ -790,6 +793,46 @@ func (s *LocalDaemonSource) targetManagerProof(entry rendezvous.Entry, proof *ap
 	bound := *proof
 	bound.BindingID = connection.binding.BindingID
 	return &bound, nil
+}
+
+// ensureSessionToolsBinding establishes the target's canonical relay binding
+// under the caller's context when Manager input races RunSessionTools's
+// background setup: a newly discovered or resumed worker can receive input
+// before the retained relay finishes binding. The canonical relay's dial
+// installs the binding, and a retention read through the shared session
+// performs or awaits that dial, so the input waits for the same setup
+// instead of being refused by it. Failures surface as themselves: an
+// unreachable daemon is a retryable dial error, not a missing binding.
+func (s *LocalDaemonSource) ensureSessionToolsBinding(ctx context.Context, entry rendezvous.Entry) error {
+	if s.sessionToolsFactory == nil {
+		return nil
+	}
+	raw := localDaemonWorkspaceRef(s.sourceID, entry, entry.SessionID)
+	ref, err := appwire.ParseRef(raw)
+	if err != nil {
+		return err
+	}
+	s.sessionToolsMu.Lock()
+	connection, ok := s.sessionToolsConnections[raw]
+	valid := ok && connection.binding.BindingID != "" && connection.binding.InstanceID == entry.SessionID
+	s.sessionToolsMu.Unlock()
+	if valid {
+		return nil
+	}
+	lease, err := s.AcquireRelaySession(ref)
+	if err != nil {
+		return err
+	}
+	defer lease.Close()
+	read, err := lease.Read(ctx, appwire.ThreadReadParams{Ref: raw})
+	if err != nil {
+		return err
+	}
+	if read.Handoff != nil {
+		read.Handoff.Prepare()
+		read.Handoff.Commit()
+	}
+	return nil
 }
 
 // StopDelegate forwards evener/delegate/stop to the root's daemon. Like every
@@ -843,7 +886,7 @@ func (s *LocalDaemonSource) QueueTurn(ctx context.Context, params appwire.TurnQu
 	}
 	var out appwire.TurnQueueResponse
 	err = s.withMutationClient(ctx, entry, params.ClientMutationID, func(ctx context.Context, client *appwire.Client) error {
-		proof, err := s.targetManagerProof(entry, params.ManagerProof)
+		proof, err := s.targetManagerProof(ctx, entry, params.ManagerProof)
 		if err != nil {
 			return err
 		}
@@ -863,7 +906,7 @@ func (s *LocalDaemonSource) DrainAsSteer(ctx context.Context, params appwire.Tur
 	}
 	var out appwire.TurnDrainAsSteerResponse
 	err = s.withMutationClient(ctx, entry, params.ClientMutationID, func(ctx context.Context, client *appwire.Client) error {
-		proof, err := s.targetManagerProof(entry, params.ManagerProof)
+		proof, err := s.targetManagerProof(ctx, entry, params.ManagerProof)
 		if err != nil {
 			return err
 		}
@@ -883,7 +926,7 @@ func (s *LocalDaemonSource) PromoteQueuedAsSteer(ctx context.Context, params app
 	}
 	var out appwire.TurnPromoteQueuedAsSteerResponse
 	err = s.withMutationClient(ctx, entry, params.ClientMutationID, func(ctx context.Context, client *appwire.Client) error {
-		proof, err := s.targetManagerProof(entry, params.ManagerProof)
+		proof, err := s.targetManagerProof(ctx, entry, params.ManagerProof)
 		if err != nil {
 			return err
 		}

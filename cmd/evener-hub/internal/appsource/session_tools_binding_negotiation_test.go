@@ -335,9 +335,16 @@ func TestSessionToolsRejectedBindRecoversThroughRunOwner(t *testing.T) {
 		ClientMutationID: "manager-mutation", Input: []appwire.InputItem{{Type: "text", Text: "manager"}},
 		ManagerProof: &appwire.SessionActorProof{CallerRef: "local:manager", Actor: appwire.SessionActor{Kind: "manager"}},
 	}
-	if _, err := source.StartTurnAtEntry(t.Context(), entry, managerMutation); err == nil {
-		t.Fatal("Manager mutation accepted before a successful binding")
-	}
+	// Manager input during the recovery window waits for the binding it needs
+	// instead of being refused by it: the mutation stays parked while the
+	// recovered bind is still gated, then succeeds through it. Failing closed
+	// for a target that can never bind stays pinned by the negotiation test.
+	managerWaiting := managerMutation
+	managerQueued := make(chan error, 1)
+	go func() {
+		_, err := source.StartTurnAtEntry(t.Context(), entry, managerWaiting)
+		managerQueued <- err
+	}()
 	managerMutation.ManagerProof = nil
 	managerMutation.ClientMutationID = "human-mutation"
 	if _, err := source.StartTurnAtEntry(t.Context(), entry, managerMutation); err != nil {
@@ -352,11 +359,6 @@ func TestSessionToolsRejectedBindRecoversThroughRunOwner(t *testing.T) {
 	if got := bindingRequests.Load(); got < 2 {
 		t.Fatalf("binding attempts = %d, want recovery attempt", got)
 	}
-	managerMutation.ManagerProof = &appwire.SessionActorProof{CallerRef: "local:manager", Actor: appwire.SessionActor{Kind: "manager"}}
-	managerMutation.ClientMutationID = "manager-after-recovery"
-	if _, err := source.StartTurnAtEntry(t.Context(), entry, managerMutation); err != nil {
-		t.Fatalf("Manager mutation after recovered binding: %v", err)
-	}
 	var publishedBindingID string
 	select {
 	case publishedBindingID = <-secondBindingID:
@@ -370,5 +372,162 @@ func TestSessionToolsRejectedBindRecoversThroughRunOwner(t *testing.T) {
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("recovered Manager mutation was not observed")
+	}
+	select {
+	case err := <-managerQueued:
+		if err != nil {
+			t.Fatalf("Manager mutation after delayed recovery: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Manager mutation parked on the delayed binding never completed")
+	}
+}
+
+// TestManagerQueueInputAwaitsDelayedBinding pins Manager input against a
+// newly discovered worker whose background RunSessionTools binding is still
+// mid-setup: the queue request must establish or await the canonical relay
+// binding under its own context instead of being refused outright.
+func TestManagerQueueInputAwaitsDelayedBinding(t *testing.T) {
+	entry := rendezvous.Entry{
+		Protocol: appwire.ProtocolVersion, Endpoint: "ws://daemon", SourceID: "local",
+		ThreadID: "thread", SessionID: "instance", InstanceID: "instance", WorkspaceRef: "local:thread",
+	}
+	source := NewLocalDaemonSourceWithEntries("local", func() []LocalDaemonEntry {
+		return []LocalDaemonEntry{{Entry: entry}}
+	}, nil)
+	var bindingRequests atomic.Int32
+	bindAttempted := make(chan struct{}, 1)
+	releaseBind := make(chan struct{})
+	boundBindingID := make(chan string, 1)
+	queueProofBindingID := make(chan string, 1)
+	source.SetSessionTools(func(appwire.SessionBinding) (appwire.SessionHubClient, error) {
+		return bindingTestOwner{}, nil
+	}, func() (string, error) { return "hub-local", nil })
+	source.dial = func(context.Context, string, *http.Client, http.Header) (appwire.Transport, error) {
+		transport := newScriptedAppwireTransport(nil)
+		transport.send = func(ctx context.Context, message appwire.Message) error {
+			if message.Request == nil {
+				return nil
+			}
+			var response any
+			switch message.Request.Method {
+			case appwire.MethodInitialize:
+				response = appwire.InitializeResponse{ProtocolVersion: appwire.ProtocolVersion, Features: appwire.FeatureSet{SessionTools: true, TurnStart: true}}
+			case appwire.MethodRuntimeSessionBind:
+				bindingRequests.Add(1)
+				// TRIPWIRE: bound the delayed setup so a broken test cannot hang.
+				select {
+				case bindAttempted <- struct{}{}:
+				default:
+				}
+				select {
+				case <-releaseBind:
+				case <-ctx.Done():
+					return ctx.Err()
+				}
+				var binding appwire.SessionBinding
+				if err := json.Unmarshal(message.Request.Params, &binding); err != nil {
+					return err
+				}
+				response = binding
+				select {
+				case boundBindingID <- binding.BindingID:
+				default:
+				}
+			case appwire.MethodThreadRead:
+				response = appwire.ThreadReadResponse{Thread: appwire.Thread{
+					ID: "instance", Source: "local",
+					Evener: appwire.EvenerThread{Ref: "local:thread", InstanceID: "instance"},
+				}}
+			case appwire.MethodTurnQueue:
+				var params appwire.TurnQueueParams
+				if err := json.Unmarshal(message.Request.Params, &params); err != nil {
+					return err
+				}
+				if params.ManagerProof == nil || params.ManagerProof.BindingID == "" {
+					return errors.New("queued Manager input had no binding proof")
+				}
+				select {
+				case queueProofBindingID <- params.ManagerProof.BindingID:
+				default:
+				}
+				response = appwire.TurnQueueResponse{}
+			default:
+				return errors.New("unexpected AppWire method")
+			}
+			transport.recv <- appwire.ResponseMessage(message.Request.ID, response)
+			return nil
+		}
+		return transport, nil
+	}
+
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	done := make(chan struct{})
+	go func() {
+		source.RunSessionTools(ctx)
+		close(done)
+	}()
+	t.Cleanup(func() {
+		cancel()
+		// TRIPWIRE: every exit cancels and joins the RunSessionTools owner.
+		select {
+		case <-done:
+		case <-time.After(5 * time.Second):
+			t.Error("RunSessionTools did not stop during cleanup")
+		}
+	})
+	// TRIPWIRE: bound event waits; no sleeps or widened deadlines.
+	select {
+	case <-bindAttempted:
+	case <-time.After(5 * time.Second):
+		t.Fatal("RunSessionTools did not reach the delayed binding")
+	}
+
+	// The Manager queues input while the background binding is still gated
+	// mid-setup: the queue must wait for the binding, not be refused by it.
+	queued := make(chan error, 1)
+	go func() {
+		_, err := source.QueueTurn(t.Context(), appwire.TurnQueueParams{
+			Ref: "local:thread", ClientMutationID: "manager-queue",
+			Input:        []appwire.InputItem{{Type: "text", Text: "queued"}},
+			ManagerProof: &appwire.SessionActorProof{CallerRef: "local:manager", Actor: appwire.SessionActor{Kind: "manager"}},
+		})
+		queued <- err
+	}()
+	// Barrier, not a timing sleep: today the refusal returns in microseconds
+	// while the bind is still gated, so the first branch fires; a queue that
+	// awaits the binding instead stays parked and this select falls through
+	// to release the gate.
+	select {
+	case err := <-queued:
+		t.Fatalf("Manager queue input refused during delayed binding: %v", err)
+	case <-time.After(time.Second):
+	}
+	close(releaseBind)
+	select {
+	case err := <-queued:
+		if err != nil {
+			t.Fatalf("Manager queue input against delayed binding: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Manager queue input never completed")
+	}
+	var publishedBindingID string
+	select {
+	case publishedBindingID = <-boundBindingID:
+	case <-time.After(5 * time.Second):
+		t.Fatal("binding request was not observed")
+	}
+	select {
+	case got := <-queueProofBindingID:
+		if got != publishedBindingID {
+			t.Fatalf("queued proof binding = %q, published binding = %q", got, publishedBindingID)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("queued Manager input was not observed")
+	}
+	if got := bindingRequests.Load(); got == 0 {
+		t.Fatal("delayed binding setup never completed")
 	}
 }
