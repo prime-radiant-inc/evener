@@ -6,7 +6,6 @@ import type { AppwireClientLike, NavigationSessionLocation } from "@evener/appwi
 import { ACTIONS } from "@evener/appwire-client";
 import { isNavigationUnavailable, isSettledGone } from "@evener/appwire-client/state/navigation";
 import { useEffect, useLayoutEffect, useReducer, useRef, useState } from "react";
-import { comicDocumentCoversConversation } from "../comic/comicPaneCoverage";
 import { keybindingsRegistry } from "../keybindings/appRegistry";
 import { isEditableTarget } from "../keybindings/dispatcher";
 import { MotionProvider } from "../motion";
@@ -87,7 +86,7 @@ initTranscriptDisplay();
 // requires it before it fetches a continuation page.
 
 // Workspace-only notification election and attention chrome start at module
-// evaluation; the comic entry never imports this module.
+// evaluation.
 initNotifications();
 
 import styles from "./AppShell.module.css";
@@ -294,8 +293,7 @@ function routePlacementIsApplied(
     if (
       typeof sourceSession === "string" &&
       typeof docParams.session === "string" &&
-      (docParams.session === sourceSession ||
-        (focusedPane !== undefined && comicDocumentCoversConversation(focusedPane, main, docParams.session))) &&
+      docParams.session === sourceSession &&
       docParams.path === documentState.reference.path
     ) {
       return true;

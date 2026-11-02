@@ -448,7 +448,7 @@ func TestNavigationLocationRosterResumeRefresh(t *testing.T) {
 	past.SeedForTest([]schema.SessionMeta{{ID: current, ProfileID: "local", UpdatedAt: time.Now()}})
 	inputs := &hubcore.InputsVersion{}
 	config := hubcore.WebConfig{Past: past, Roster: roster, Inputs: inputs}
-	// The Comic fixture has two hubs observing this same roster.
+	// Two hubs observe this same roster.
 	webs := []*WebServer{NewWebServer(config), NewWebServer(config)}
 	// main.go wires this publication hook before starting the roster watcher.
 	roster.SetOnChange(func() {

@@ -43,7 +43,6 @@ beforeEach(() => {
   resetWorkspaceStoreForTests();
   resetNavigationStoreForTests();
   resetTranscriptDisplayStoreForTests();
-  transcriptDisplayStore.setState({ presentation: { desktop: "comic", mobile: "comic" } });
   cache = new SessionEntryCache({ indexedDB, keyRange: IDBKeyRange, databaseName: `claim-${crypto.randomUUID()}` });
   entryRoutes.setProductionEntryCacheForTests(cache);
 });
@@ -217,7 +216,12 @@ test("final visible departure releases completed bodies while background ownersh
     expect(releaseReader).toHaveBeenCalledWith(ref, true);
     expect(pruned.length).toBeGreaterThan(0);
     expect(pruned.map(({ before }) => [before.foreground, before.background])).toEqual(pruned.map(() => [0, 1]));
-    expect(snapshot()).toEqual({ foreground: 0, background: 1, items: [], sources: ["turn:itemless-error:error"] });
+    expect(snapshot()).toEqual({
+      foreground: 0,
+      background: 1,
+      items: [],
+      sources: ["turn:itemless-error:error"],
+    });
     expect(entryRoutes.productionEntryTranscriptForTests(ref).reader).toBeUndefined();
     expect(fixture.route.repository?.retainedInventoryForTesting()).toMatchObject({
       pendingRows: [],
