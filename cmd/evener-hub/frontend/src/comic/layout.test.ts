@@ -206,6 +206,25 @@ test("a capped caption run's tail keeps packing at wide widths", () => {
   ]);
 });
 
+test("a short dialogue packs with the caption stack that follows it, order independently", () => {
+  const dialogueFirst = [party("d", "dialogue", "Hello.", HUMAN)].concat(
+    ["r1", "r2"].map((id) => party(id, "caption", `${id}.`, WORKER)),
+  );
+  const stackFirst = dialogueFirst.slice(1).concat(dialogueFirst.slice(0, 1));
+  const expected = [[["d"], ["r1", "r2"]]];
+  const expectedReversed = [[["r1", "r2"], ["d"]]];
+  expect(
+    composeComicRows(dialogueFirst, 847, () => true, 416).map((row) =>
+      row.panels.map((panel) => panel.balloons.map((balloon) => balloon.slice.entryId)),
+    ),
+  ).toEqual(expected);
+  expect(
+    composeComicRows(stackFirst, 847, () => true, 416).map((row) =>
+      row.panels.map((panel) => panel.balloons.map((balloon) => balloon.slice.entryId)),
+    ),
+  ).toEqual(expectedReversed);
+});
+
 test("different-party one-liners still pack side by side", () => {
   const entries = [
     party("a", "dialogue", "A.", HUMAN),

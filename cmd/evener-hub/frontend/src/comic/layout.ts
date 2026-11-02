@@ -193,7 +193,18 @@ export function composeComicRows(
     continuedGroup = undefined;
     // Packing needs a packable neighbour or predecessor; a lone short entry keeps its
     // spotlight chance through the own path, so no packed fit is even asked of it.
-    const neighbourPacks = next && nextDocument ? packableAt(index + 1) : false;
+    // A following stackable run is a packing neighbour too: the run forms a
+    // stack unit, which packs beside this panel exactly like a packable
+    // dialogue does, so packing does not depend on the panels' order.
+    const afterNext = entries[index + 2];
+    const neighbourPacks =
+      next && nextDocument
+        ? packableAt(index + 1) ||
+          (stackableAt(index + 1) &&
+            !!afterNext &&
+            stackableAt(index + 2) &&
+            comicStackGroup(next) === comicStackGroup(afterNext))
+        : false;
     if (columns > 1 && (previousPack || neighbourPacks) && packableAt(index)) {
       units.push({ kind: "singleton", member: { value: current, doc: document } });
       previousPack = true;
