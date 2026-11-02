@@ -270,9 +270,15 @@ export function projectComicConversation(
             persona: ANNA,
             images: item.images,
           });
-        } else if (item.steeringKind === "notification" && author?.kind !== "agent") {
-          // Parsing runs only for the typed notification kind, not arbitrary text
-          // containing XML-looking strings supplied by a human or parent.
+        } else if (
+          (item.steeringKind === "notification" || (!item.steeringKind && !item.source)) &&
+          author?.kind !== "agent"
+        ) {
+          // Parsing runs only for the typed notification kind and the attention
+          // rail's delivered items, which carry neither a steering kind nor a
+          // steering source — only the product's delivery machinery writes that
+          // shape — never for arbitrary text containing XML-looking strings
+          // supplied by a human or parent.
           const fragments = parseSteeringNotifications(text);
           for (const [index, fragment] of fragments.entries()) {
             if (fragment.kind === "notification") {

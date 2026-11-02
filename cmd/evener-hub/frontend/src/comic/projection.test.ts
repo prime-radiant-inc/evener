@@ -812,6 +812,36 @@ describe("comic conversation projection", () => {
     );
   });
 
+  test("a delivered attention update with no steering kind or source still folds", () => {
+    const update = "COMIC_UPDATE literal delivered attention";
+    const model = base([
+      {
+        id: "delivered",
+        status: "completed",
+        itemsView: "full",
+        items: [
+          {
+            id: "attention-update",
+            turnId: "delivered",
+            type: "steering",
+            // The attention rail's delivered items carry neither a steering
+            // kind nor a steering source: only the product's delivery
+            // machinery writes that shape.
+            text: `<delegate-notification delegate_id="dlg_attention" kind="update">${update}</delegate-notification>`,
+          },
+        ],
+      },
+    ]);
+    expect(projectComicConversation(model)).toMatchObject([
+      {
+        sourceItemId: "attention-update",
+        kind: "caption",
+        text: update,
+        delegateUpdate: { delegateId: "dlg_attention" },
+      },
+    ]);
+  });
+
   test("wrapped daemon reminders render nothing while their cards survive and humans keep talking", () => {
     const steer = (id: string, text: string, extra: Record<string, unknown> = {}) => ({
       id,
