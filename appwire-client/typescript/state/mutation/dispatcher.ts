@@ -278,7 +278,14 @@ export class MutationDispatcher<A extends MutationAttachmentRef = MutationAttach
         // permanently parked thread. Recovery preserves the text
         // and surfaces the failure; the FIFO advances.
         if (data?.clientMutationId === undefined && refusedBeforeRunning(error)) {
-          await this.#storage.transferToRecovery(record.clientMutationId, "rejected", rejectionReason(error, data));
+          // The refusal never reached the daemon - the hub refused the
+          // request's shape before any execution, so the daemon journaled
+          // nothing for the wire and an outstanding attempt of the same wire
+          // can still apply. The recovery carries the uncertainty so its
+          // resend inherits the wire identity and the journal replays.
+          await this.#storage.transferToRecovery(record.clientMutationId, "rejected", rejectionReason(error, data), {
+            wireDeliveryUncertain: true,
+          });
           this.#onStorageChange([record.targetRef]);
           return "advance";
         }

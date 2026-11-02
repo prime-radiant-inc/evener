@@ -304,6 +304,85 @@ describe("Stop cancellation durability across reload, tabs, and resume", () => {
     }
   });
 
+  // Round-5 review Medium: the settlement's runtime wrapper cleared the
+  // in-memory delivery registration for the SUPPLIED id only, while the
+  // settlement's wire sweep deletes the wire's SIBLING rows from storage. A
+  // receipt naming the predecessor then settles and deletes the registered
+  // replacement, whose stale registration keeps the fallback guard armed -
+  // and a following persistence read that fails (a storage hiccup) can never
+  // clear it, so ordinary sends stay refused for a ref with no undelivered
+  // work left. The wrapper must clear every retired sibling id
+  // synchronously, the same shape the resend wrapper gives retiredIds.
+  test("a settlement that retires wire siblings clears their in-memory delivery registrations", async () => {
+    const indexedDB = new IDBFactory();
+    const databaseName = "evener-mutation-outbox-settle-clears-sibling-registrations";
+    const storage = new MutationOutboxIndexedDB({ indexedDB, databaseName });
+    setMutationStorageForTests(storage);
+    const fake = connectMutationClient();
+    await ensureActiveMutationTarget(fake, "ref_a");
+    await nextMacrotask();
+    onTurnStart(fake);
+    fake.on("turn/interrupt", (params) => ({ receipt: mutationReceipt(params.clientMutationId) }));
+    fake.on("turn/queue", () => ({}) as TurnQueueResponse);
+    await threadsStore.getState().queue("ref_a", "ours");
+    for (let i = 0; i < 10; i += 1) await nextMacrotask();
+    const rows = await storage.listOutbox("ref_a");
+    expect(rows).toHaveLength(1);
+    const ours = rows[0]!.clientMutationId;
+    await storage.markUnknown(ours, "blockedUnknown");
+    // A first Stop crosses the row so the explicit Retry's mint arm runs (the
+    // resync's own automatic requeue cannot reach it); the Stop's interrupt
+    // rows park behind the blockedUnknown head and are settled directly.
+    await storage.enqueueInterruptAndCancel({
+      targetRef: "ref_a",
+      method: "turn/interrupt",
+      payload: { ref: "ref_a" },
+      attachments: [],
+      optimisticDisplay: { method: "turn/interrupt" },
+    });
+    const interrupts = (await storage.listOutbox("ref_a")).filter((record) => record.method === "turn/interrupt");
+    for (const interrupt of interrupts)
+      expect(await storage.settleReceipt(interrupt.clientMutationId, "reflected")).toBe(true);
+    // The user's Retry mints the replacement B (wire A): B is registered
+    // undelivered, and the mint clears the predecessor's registration.
+    expect(await retryBlockedMutation(ours)).toBe(true);
+    const afterMint = (await storage.listOutbox("ref_a")).filter((record) => record.method !== "turn/interrupt");
+    expect(afterMint).toHaveLength(2);
+    const replacement = afterMint.find((record) => record.clientMutationId !== ours);
+    if (!replacement) throw new Error("missing minted replacement");
+    // The predecessor's own late receipt arrives (its lost-response attempt
+    // actually landed): the settlement names A, settles the wire, and DELETES
+    // the registered sibling B from storage.
+    expect(await storage.settleReceipt(ours, "reflected")).toBe(true);
+    expect(await storage.getOutbox(replacement.clientMutationId)).toBeUndefined();
+    expect(await storage.getOutbox(ours)).toBeUndefined();
+    // Storage hiccups before any pin refresh can recompute the guard: the
+    // fallback send must proceed on the in-memory registrations alone, and
+    // B's retired id must not keep the ref armed.
+    storage.close();
+    const openSpy = wedgeDatabaseOpens(indexedDB, databaseName);
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
+    try {
+      let failure: unknown;
+      const sendOutcome = threadsStore
+        .getState()
+        .send("ref_a", "after the settlement")
+        .then(
+          () => undefined,
+          (error: unknown) => {
+            failure = error;
+          },
+        );
+      await vi.advanceTimersByTimeAsync(11_000);
+      await sendOutcome;
+      expect(failure).toBeUndefined();
+      expect(fake.calls.filter((call) => call.method === "turn/start")).toHaveLength(1);
+    } finally {
+      vi.useRealTimers();
+      openSpy.mockRestore();
+    }
+  });
+
   // A recovery row leaves the outbox with its id still registered; discarding
   // it resolves that id, so later unreadable storage cannot keep refusing.
   test("a discarded recovery row does not leave its id blocking the fallback", async () => {

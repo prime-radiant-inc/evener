@@ -874,6 +874,91 @@ test("a note row canceled by Stop reports the canceled status and no blur cycle 
 // save's canonical acknowledgement arrives under. The fire-time save must
 // recheck the live same-generation submitted state and refuse exactly as the
 // blur-time guard (humanNoteDrafts.ts) refuses to arm for it.
+// Round-5 review L1: the blur retry path looked its blocked save up by
+// STORAGE key and mapped a superseded row to "submitting" - so a save whose
+// row the newer-note settle-time retirement superseded WITHOUT creating a
+// successor (the newer save already settled) reported an in-flight save that
+// does not exist, and the same-generation blur guard then suppressed every
+// later save indefinitely. No live record of the wire means the save never
+// landed: an unsaved status, never an invented in-flight one.
+test("a superseded blocked save with no successor reports unsaved, never an invented in-flight save", async () => {
+  vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+  const ref = "ref-a";
+  const fake = new FakeClient("ready");
+  fake.on("thread/read", () => hydrationResponse(ref, "instance-a"));
+  connectionStore.getState().connect(fake);
+  await threadsStore.getState().ensureThread(ref);
+  await threadsStore.getState().refreshThread(ref);
+  const original = await persisted("retained blocked note");
+  await storage.markAttempted(original.clientMutationId);
+  await storage.markUnknown(original.clientMutationId, "blockedUnknown");
+  syncHumanNote(ref, "");
+  const { result } = renderHook(() => useHumanNoteDraft(ref));
+  await act(async () => {
+    await storage.listOutbox();
+  });
+  expect(result.current?.submitted?.state).toBe("blockedUnknown");
+  // A newer note save settles: the settle-time retirement supersedes the
+  // older blocked row WITHOUT minting anything - no successor exists.
+  const newer = await persisted("newer note text");
+  await storage.settleReceipt(newer.clientMutationId, "reflected");
+  expect((await storage.getOutbox(original.clientMutationId))?.state).toBe("superseded");
+  let saving: Promise<void> | undefined;
+  act(() => blurHumanNote(ref, Symbol("blur owner")));
+  act(() => {
+    saving = Promise.resolve(result.current?.flush?.());
+  });
+  await act(async () => {
+    await saving;
+  });
+  expect(result.current?.submitted?.state).not.toBe("submitting");
+  expect(result.current).toMatchObject({ text: "retained blocked note", dirty: true, saved: false });
+});
+
+// The same lookup must follow the LIVE successor by wire identity: a
+// superseded predecessor is dead work whose state must never speak for the
+// row that actually carries the composition.
+test("a blur retry follows the live successor under the same wire id, not its superseded predecessor", async () => {
+  vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+  const ref = "ref-a";
+  const fake = new FakeClient("ready");
+  fake.on("thread/read", () => hydrationResponse(ref, "instance-a"));
+  connectionStore.getState().connect(fake);
+  await threadsStore.getState().ensureThread(ref);
+  await threadsStore.getState().refreshThread(ref);
+  const original = await persisted("retained blocked note");
+  await storage.markAttempted(original.clientMutationId);
+  await storage.markUnknown(original.clientMutationId, "blockedUnknown");
+  syncHumanNote(ref, "");
+  const { result } = renderHook(() => useHumanNoteDraft(ref));
+  await act(async () => {
+    await storage.listOutbox();
+  });
+  expect(result.current?.submitted?.state).toBe("blockedUnknown");
+  // A mint replaces the blocked row: the predecessor settles superseded and
+  // the successor carries the wire id under a fresh key - and the successor's
+  // own attempt is delivery-uncertain, NOT in flight.
+  const capture = await storage.getOutboxWithStopEpoch(original.clientMutationId);
+  const minted = await storage.mintRetryFromRow(original.clientMutationId, {
+    record: capture.record,
+    stopEpoch: capture.stopEpoch,
+    displayedStopEpoch: 0,
+  });
+  if (!minted) throw new Error("mint failed");
+  await storage.markAttempted(minted.clientMutationId);
+  await storage.markUnknown(minted.clientMutationId, "blockedUnknown");
+  let saving: Promise<void> | undefined;
+  act(() => blurHumanNote(ref, Symbol("blur owner")));
+  act(() => {
+    saving = Promise.resolve(result.current?.flush?.());
+  });
+  await act(async () => {
+    await saving;
+  });
+  expect(result.current?.submitted?.state).toBe("blockedUnknown");
+  expect(result.current?.error).toBeTruthy();
+});
+
 test("a blur-save timer armed on a blocked note does not duplicate the save another connection accepted", async () => {
   const { fake, seen } = noteHarness();
   const ref = "ref-a";

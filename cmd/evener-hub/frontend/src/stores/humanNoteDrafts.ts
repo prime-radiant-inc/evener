@@ -45,7 +45,11 @@ const SETTLED_ELSEWHERE_STATUS =
 // record: a row in the recovery store is a refusal (its reason when the daemon
 // gave one), a blocked row is still waiting on session recovery, a superseded
 // row's save is in flight under the fresh row a mint or reconcile queued, and
-// any other state is taken as-is. The superseded mapping is about STATUS only:
+// any other state is taken as-is. CALLERS resolve the LIVE record by wire
+// identity first (refreshPersistence skips superseded rows; the blur retry
+// filters them) - a superseded row with no live successor must take the
+// settled-elsewhere path instead, never this mapping, or dead work reports an
+// in-flight save that does not exist. The superseded mapping is about STATUS only:
 // the draft's submitted identity keeps the WIRE id it saved under (a minted
 // row re-submits under its predecessor's payload id), because the daemon's
 // acknowledgement names that id. refreshPersistence applies this on a
@@ -267,12 +271,23 @@ export function blurHumanNote(ref: string, owner: symbol): void {
         // (readMutationPersistence), never a queue-wide freshen, and never a
         // resave.
         const { outbox, optimistic, recovery } = await readMutationPersistence(ref);
-        const refused = recovery.find((record) => record.clientMutationId === blockedId);
-        const record = refused ?? outbox.find((record) => record.clientMutationId === blockedId);
+        // Resolve the save's LIVE record by WIRE identity: the blocked id the
+        // draft holds is the wire id the save traveled under, so a minted
+        // replacement carrying it under a fresh key is the row that speaks
+        // for the save - while a superseded predecessor is dead work whose
+        // state must never masquerade as this save. A superseded row with no
+        // live successor means nothing is left to settle this save: the
+        // unsaved branch below, never an invented in-flight status (round-5
+        // L1: the invented status is what suppressed a generation's blur
+        // saves indefinitely).
+        const refused = recovery.find((record) => effectiveWireId(record) === blockedId);
+        const record =
+          refused ?? outbox.find((record) => effectiveWireId(record) === blockedId && record.state !== "superseded");
         // The optimistic store holds accepted-but-unreflected rows: another
         // dispatcher's receipt (projectionState "pending") moved the row there
-        // while its canonical note state is still on the way.
-        const accepted = optimistic.find((record) => record.clientMutationId === blockedId);
+        // while its canonical note state is still on the way - possibly under
+        // the replacement's fresh key, so match by wire here too.
+        const accepted = optimistic.find((record) => effectiveWireId(record) === blockedId);
         const latest = get(ref);
         // The same generation AND the same submitted identity: a newer edit, or
         // an acknowledgement that landed while the read ran, owns the status now.

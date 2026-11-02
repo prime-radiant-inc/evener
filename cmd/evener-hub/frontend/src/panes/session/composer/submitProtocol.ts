@@ -97,10 +97,18 @@ export interface PressedRecoverySendIntent {
 
 export function captureRecoverySendIntent(displayedRef: string, recoveryId: string): PressedRecoverySendIntent {
   const snapshot = readRecoveryWithStopEpoch(recoveryId, displayedRef);
-  return {
-    displayedBarrier: snapshot.then((capture) => ({ stopEpoch: capture.displayedStopEpoch, displayedRef })),
-    durableSnapshot: snapshot.then((capture) => ({ record: capture.record, stopEpoch: capture.stopEpoch })),
-  };
+  const displayedBarrier = snapshot.then((capture) => ({ stopEpoch: capture.displayedStopEpoch, displayedRef }));
+  const durableSnapshot = snapshot.then((capture) => ({ record: capture.record, stopEpoch: capture.stopEpoch }));
+  // A submission that exits through one half's rejection (the capture read
+  // failed while the Send waited) leaves the other half forever unobserved,
+  // and a rejected promise with no handler of its own surfaces as an unhandled
+  // rejection. Give each half its own inert rejection sink - callers still
+  // observe real rejections through their own await, but the unobserved half
+  // can never surface as an unhandled one (round-5 L2).
+
+  displayedBarrier.catch(() => {});
+  durableSnapshot.catch(() => {});
+  return { displayedBarrier, durableSnapshot };
 }
 
 /** Performs the resend holding the destination claim lease: a destination

@@ -2476,16 +2476,27 @@ function getMutationRuntime(): MutationRuntime | null {
   // invalidation is unconditional and comes with the settled record's own ref,
   // so a settle for a row this tab never registered still invalidates that
   // ref's in-flight reads (see noteMutationStateChange).
-  const settleReceipt = storage.settleReceipt.bind(storage);
+  const settleReceiptResult = storage.settleReceiptResult.bind(storage);
   storage.settleReceipt = async (clientMutationId, projectionState) => {
-    const settled = await settleReceipt(clientMutationId, projectionState);
-    if (settled) noteHandledMutation(clientMutationId);
+    const { settled, retiredIds } = await settleReceiptResult(clientMutationId, projectionState);
+    if (settled) {
+      noteHandledMutation(clientMutationId);
+      // The settlement's wire sweep retired the wire's sibling rows from
+      // storage; their in-memory registrations resolve HERE, synchronously -
+      // the same shape the resend wrapper gives retiredIds - so a persistence
+      // read that fails next (a storage hiccup) cannot leave the fallback
+      // guard armed on rows that no longer exist.
+      for (const retired of retiredIds) noteHandledMutation(retired);
+    }
     return settled;
   };
-  const settleApplied = storage.settleApplied.bind(storage);
+  const settleAppliedResult = storage.settleAppliedResult.bind(storage);
   storage.settleApplied = async (clientMutationId) => {
-    const settled = await settleApplied(clientMutationId);
-    if (settled) noteHandledMutation(clientMutationId);
+    const { settled, retiredIds } = await settleAppliedResult(clientMutationId);
+    if (settled) {
+      noteHandledMutation(clientMutationId);
+      for (const retired of retiredIds) noteHandledMutation(retired);
+    }
     return settled;
   };
   storage.setSettledListener((targetRef) => noteMutationStateChange(targetRef));

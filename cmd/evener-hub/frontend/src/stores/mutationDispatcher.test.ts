@@ -628,6 +628,82 @@ describe("MutationDispatcher", () => {
     expect(changes.flat()).toContain("ref-a");
   });
 
+  // Round-5 review H1 (classification half): the pre-daemon refusal - the hub
+  // refused the request's shape without executing any of it, so the daemon
+  // journaled nothing for the wire - leaves the wire delivery-uncertain, and
+  // the recovery it creates must carry that uncertainty so the resend can
+  // inherit the wire identity (the journal then replays an outstanding
+  // sibling instead of applying the composition twice).
+  test("a pre-daemon refusal marks its recovery's wire delivery-uncertain", async () => {
+    const indexedDB = new IDBFactory();
+    const outbox = storage(indexedDB, "pre-daemon-uncertain", ["mutation-a"]);
+    const record = await outbox.enqueueIntent(queueIntent("ref-a", "shape refused"));
+    const client = new FakeClient();
+    client.on("turn/queue", (params) => {
+      throw new WireError("expectedTurnId is required", -32602, { evenerErrorInfo: "invalidParams" });
+    });
+    const dispatcher = new MutationDispatcher(outbox, { getClient: () => client });
+
+    await dispatcher.dispatchTargets(["ref-a"]);
+
+    const recovery = await outbox.getRecovery(record.clientMutationId);
+    expect(recovery).toMatchObject({ wireDeliveryUncertain: true });
+  });
+
+  // The complementary pin: an in-band rejection the daemon JOURNALED (naming
+  // this mutation, mutationOutcome notAccepted) is authoritative for the wire
+  // - it will never be applied - so the recovery keeps a CERTAIN wire identity
+  // and its resend takes a fresh id. Green before and after.
+  test("a journaled in-band rejection keeps its recovery's wire identity certain", async () => {
+    const indexedDB = new IDBFactory();
+    const outbox = storage(indexedDB, "journaled-certain", ["mutation-a"]);
+    const record = await outbox.enqueueIntent(queueIntent("ref-a", "refused in band"));
+    const client = new FakeClient();
+    client.on("turn/queue", (params) => {
+      throw new WireError("refused", -32010, {
+        clientMutationId: params.clientMutationId,
+        mutationOutcome: "notAccepted",
+        retryDisposition: "blocked",
+      });
+    });
+    const dispatcher = new MutationDispatcher(outbox, { getClient: () => client });
+
+    await dispatcher.dispatchTargets(["ref-a"]);
+
+    const recovery = await outbox.getRecovery(record.clientMutationId);
+    expect(recovery).toMatchObject({ recoveryKind: "rejected" });
+    expect((recovery as { wireDeliveryUncertain?: boolean })?.wireDeliveryUncertain).toBeFalsy();
+  });
+
+  // Round-5 review H1 (replay half): the resent row under an inherited wire id
+  // settles from a REPLAYED receipt naming that wire id, exactly like a minted
+  // replacement - the journal's dedupe is what keeps the outstanding
+  // sibling from double-applying.
+  test("a resent delivery-uncertain recovery settles as a replay under its inherited wire id", async () => {
+    const indexedDB = new IDBFactory();
+    const outbox = storage(indexedDB, "resend-replay", ["mutation-a", "mutation-b"]);
+    const a = await outbox.enqueueIntent(queueIntent("ref-a", "uncertain save"));
+    await outbox.markAttempted(a.clientMutationId);
+    await outbox.markUnknown(a.clientMutationId, "blockedUnknown");
+    const recovery = await outbox.transferToRecovery(a.clientMutationId, "rejected", "invalid params", {
+      wireDeliveryUncertain: true,
+    });
+    if (!recovery) throw new Error("failed to seed recovery");
+    const sent = await outbox.resendRecoveryResult(a.clientMutationId, queueIntent("ref-a", "resent"));
+    if (sent.status !== "sent") throw new Error(`resend did not send: ${sent.status}`);
+    // The inherited wire id is the dedupe contract: the daemon journals this
+    // composition under it, whatever storage key the row carries.
+    expect(sent.record.payload.clientMutationId).toBe(a.clientMutationId);
+    const client = new FakeClient();
+    client.on("turn/queue", (params) => ({ receipt: receipt(params.clientMutationId, "replayed") }));
+    const dispatcher = new MutationDispatcher(outbox, { getClient: () => client });
+
+    await dispatcher.dispatchTargets(["ref-a"]);
+
+    expect(await outbox.getOutbox(sent.record.clientMutationId)).toBeUndefined();
+    expect(await outbox.getRecovery(sent.record.clientMutationId)).toBeUndefined();
+  });
+
   test("an unattributable rejection with a non-deterministic code still retains submitting", async () => {
     const indexedDB = new IDBFactory();
     const outbox = storage(indexedDB, "ambiguous-error", ["mutation-a"]);

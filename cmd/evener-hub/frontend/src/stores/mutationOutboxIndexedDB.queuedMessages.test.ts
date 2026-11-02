@@ -841,6 +841,155 @@ test("a consumed recovery retires its submitting wire sibling, whose late refusa
 // consume time makes its chip leave the canceled strip, the same
 // tail-position surface an explicit requeue already has, and a later press
 // can no longer re-queue delivered work from it.
+// Round-5 review H1: the recovery resend assigned a FRESH wire id even when
+// the consumed recovery's lineage is delivery-uncertain - a refusal that never
+// reached the daemon (the hub refused the shape before any execution, so the
+// daemon journaled nothing for the wire). An outstanding sibling RPC of the
+// same wire can still apply, and a fresh-id resend is a composition the
+// daemon's replay journal cannot dedupe: double application. The resent row
+// must INHERIT the wire id (fresh storage key, inherited payload id) exactly
+// like a mint from blockedUnknown, so the journal replays instead.
+test("a resend of a delivery-uncertain recovery inherits its wire identity so an outstanding sibling cannot double-apply", async () => {
+  const f = fixture();
+  // A: attempted, response lost -> delivery-uncertain.
+  const a = await f.storage.enqueueIntent(queuedIntent());
+  await f.storage.markAttempted(a.clientMutationId);
+  await f.storage.markUnknown(a.clientMutationId, "blockedUnknown");
+  // Retry mints B under A's wire id; B stays submitting - its RPC is the
+  // outstanding attempt that may still apply.
+  const capture = await f.storage.getOutboxWithStopEpoch(a.clientMutationId);
+  const b = await f.storage.mintRetryFromRow(a.clientMutationId, {
+    record: capture.record,
+    stopEpoch: capture.stopEpoch,
+    displayedStopEpoch: 0,
+  });
+  if (!b) throw new Error("mint failed");
+  // B's terminal PRE-DAEMON refusal: the hub refused the request's shape
+  // without running it, so the daemon never journaled a rejection for the
+  // wire - the uncertainty travels into the recovery.
+  await f.storage.markAttempted(b.clientMutationId);
+  await f.storage.markUnknown(b.clientMutationId, "blockedUnknown");
+  const recovery = await f.storage.transferToRecovery(b.clientMutationId, "rejected", "invalid params", {
+    wireDeliveryUncertain: true,
+  });
+  if (!recovery) throw new Error("failed to seed recovery");
+  // The user resends: the fresh row takes a fresh STORAGE key but carries the
+  // inherited WIRE id in its payload, so the daemon's journal replays it
+  // against B's outstanding attempt instead of applying the composition twice.
+  const sent = await f.storage.resendRecoveryResult(b.clientMutationId, queuedIntent());
+  if (sent.status !== "sent") throw new Error(`resend did not send: ${sent.status}`);
+  expect(sent.record.clientMutationId).not.toBe(b.clientMutationId);
+  expect(sent.record.payload.clientMutationId).toBe(a.clientMutationId);
+  // The resent row settles as the wire's one delivery: a receipt naming the
+  // wire id (a replay of B's journaled attempt) settles it exactly like a
+  // minted replacement.
+  await f.storage.markAttempted(sent.record.clientMutationId);
+  expect(await f.storage.settleReceipt(sent.record.clientMutationId, "reflected")).toBe(true);
+  expect(await f.storage.getOutbox(sent.record.clientMutationId)).toBeUndefined();
+});
+
+// The complementary pin: a refusal the daemon JOURNALED (in band, naming this
+// mutation) is authoritative for the wire - the daemon will never apply it -
+// so its recovery resends under a FRESH wire identity. Green before and after.
+test("a resend of a journaled-rejected recovery takes a fresh wire identity", async () => {
+  const f = fixture();
+  const a = await f.storage.enqueueIntent(queuedIntent());
+  await f.storage.markAttempted(a.clientMutationId);
+  await f.storage.transferToRecovery(a.clientMutationId, "rejected", "not accepted");
+  const sent = await f.storage.resendRecoveryResult(a.clientMutationId, queuedIntent());
+  if (sent.status !== "sent") throw new Error(`resend did not send: ${sent.status}`);
+  expect(sent.record.payload.clientMutationId).toBe(sent.record.clientMutationId);
+});
+
+// Round-5 review H2: the settlement's sibling sweep enumerated the outbox and
+// optimistic stores only, so a wire sibling living as an UNEDITED recovery
+// record escaped both the named lookup (the receipt names the predecessor's
+// key) and the sweep - a late receipt for the wire settled its own record and
+// left the sibling's recovery sendable, offering already-delivered work under
+// a fresh id. The sweep must cover the recovery store, preserving edited
+// compositions (settlementRetiresRecovery).
+test("a settled wire retires its unedited recovery sibling, so the tray never offers delivered work", async () => {
+  const f = fixture();
+  // A: the predecessor whose lost-response attempt actually landed.
+  const a = await f.storage.enqueueIntent(queuedIntent());
+  await f.storage.markAttempted(a.clientMutationId);
+  await f.storage.markUnknown(a.clientMutationId, "blockedUnknown");
+  // Retry mints B under A's wire id; B is refused and its unedited recovery
+  // copy (key B, wire A) is the sibling the settlement must reach.
+  const capture = await f.storage.getOutboxWithStopEpoch(a.clientMutationId);
+  const b = await f.storage.mintRetryFromRow(a.clientMutationId, {
+    record: capture.record,
+    stopEpoch: capture.stopEpoch,
+    displayedStopEpoch: 0,
+  });
+  if (!b) throw new Error("mint failed");
+  await f.storage.markAttempted(b.clientMutationId);
+  await f.storage.markUnknown(b.clientMutationId, "blockedUnknown");
+  const recovery = await f.storage.transferToRecovery(b.clientMutationId, "rejected");
+  if (!recovery) throw new Error("failed to seed recovery");
+  // A receipt naming A proves the WIRE delivered: A settles and B's unedited
+  // recovery must retire with it.
+  expect(await f.storage.settleReceipt(a.clientMutationId, "reflected")).toBe(true);
+  expect(await f.storage.getRecovery(b.clientMutationId)).toBeUndefined();
+  expect(await f.storage.listRecovery("local:queued")).toHaveLength(0);
+});
+
+// settleApplied carries the same sweep.
+test("an applied settlement retires its unedited recovery sibling", async () => {
+  const f = fixture();
+  const a = await f.storage.enqueueIntent(queuedIntent());
+  await f.storage.markAttempted(a.clientMutationId);
+  await f.storage.markUnknown(a.clientMutationId, "blockedUnknown");
+  const capture = await f.storage.getOutboxWithStopEpoch(a.clientMutationId);
+  const b = await f.storage.mintRetryFromRow(a.clientMutationId, {
+    record: capture.record,
+    stopEpoch: capture.stopEpoch,
+    displayedStopEpoch: 0,
+  });
+  if (!b) throw new Error("mint failed");
+  await f.storage.markAttempted(b.clientMutationId);
+  await f.storage.markUnknown(b.clientMutationId, "blockedUnknown");
+  const recovery = await f.storage.transferToRecovery(b.clientMutationId, "rejected");
+  if (!recovery) throw new Error("failed to seed recovery");
+  expect(await f.storage.settleApplied(a.clientMutationId)).toBe(true);
+  expect(await f.storage.getRecovery(b.clientMutationId)).toBeUndefined();
+});
+
+// The preserve pin: an independently edited composition (compositionRevision
+// past zero) survives the wire's settlement - its edits are never lost.
+test("a settlement never retires an edited recovery sibling of the settled wire", async () => {
+  const f = fixture();
+  const a = await f.storage.enqueueIntent(queuedIntent());
+  await f.storage.markAttempted(a.clientMutationId);
+  await f.storage.markUnknown(a.clientMutationId, "blockedUnknown");
+  const capture = await f.storage.getOutboxWithStopEpoch(a.clientMutationId);
+  const b = await f.storage.mintRetryFromRow(a.clientMutationId, {
+    record: capture.record,
+    stopEpoch: capture.stopEpoch,
+    displayedStopEpoch: 0,
+  });
+  if (!b) throw new Error("mint failed");
+  await f.storage.markAttempted(b.clientMutationId);
+  await f.storage.markUnknown(b.clientMutationId, "blockedUnknown");
+  const recovery = await f.storage.transferToRecovery(b.clientMutationId, "rejected");
+  if (!recovery) throw new Error("failed to seed recovery");
+  const edited = await f.storage.updateRecoveryInput(
+    b.clientMutationId,
+    [{ type: "text", text: "independently edited" }],
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    0,
+  );
+  if (!edited) throw new Error("failed to edit recovery");
+  expect(await f.storage.settleReceipt(a.clientMutationId, "reflected")).toBe(true);
+  expect(await f.storage.getRecovery(b.clientMutationId)).toMatchObject({
+    compositionRevision: 1,
+  });
+});
+
 test("a consumed recovery retires its canceled wire sibling, whose chip leaves the strip", async () => {
   const f = fixture();
   const a = await f.storage.enqueueIntent(queuedIntent());

@@ -158,10 +158,18 @@ export interface MutationOutboxStorage<A extends MutationAttachmentRef = Mutatio
   // re-queued (a host may reopen the record in place or mint a fresh row
   // for its work - the returned id is the row that dispatches).
   restoreProvenAbsent(targetRef: string, authoritativeIds: ReadonlySet<string>): Promise<string[]>;
+  // The optional marker a refusal that never reached the daemon sets: the
+  // wire may still be applied by an outstanding attempt, so a host that
+  // resends the recovery under a fresh wire identity would let the
+  // composition apply twice. Hosts that resubmit inherit the wire id for
+  // marked recoveries (the daemon's journal replays a re-submission from the
+  // record); a journaled rejection resolves the wire authoritatively and
+  // keeps the fresh id.
   transferToRecovery(
     clientMutationId: string,
     recoveryKind: MutationRecoveryKind,
     recoveryReason?: string,
+    options?: { wireDeliveryUncertain?: boolean },
   ): Promise<MutationRecoveryRecord<A> | undefined>;
 }
 
