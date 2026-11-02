@@ -1941,6 +1941,10 @@ func returnClaimedQueuedMutation(
 		return fmt.Errorf("claimed queue mutation %q has %d queue entry IDs", clientMutationID, len(pending.QueueEntryIDs))
 	}
 	snapshot.InputQueue = append([]clientMutationQueueEntry{{
+		// The journal record is the durable author: the pending entry's copy
+		// is empty after a restart until the codec restores it, but promotion
+		// reads the queue entry, so a returned claim must keep the author.
+		Actor:            record.Actor,
 		ID:               pending.QueueEntryIDs[0],
 		ClientMutationID: clientMutationID,
 		Input:            cloneClientMutationInput(pending.Input),

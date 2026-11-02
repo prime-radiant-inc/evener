@@ -627,6 +627,10 @@ func (s *Session) pushQueueHead(entry queuedInput) error {
 			snapshot.Journal[entry.ClientMutationID] = record
 			delete(snapshot.PendingExecutions, entry.ClientMutationID)
 			snapshot.InputQueue = append([]clientMutationQueueEntry{{
+				// Promotion reads the queue entry's author, so a claim
+				// returned to the queue must keep it (journal record is the
+				// durable source, as in returnClaimedQueuedMutation).
+				Actor:            record.Actor,
 				ID:               entry.ID,
 				ClientMutationID: entry.ClientMutationID,
 				Input:            clientMutationInputWithMentions(entry.Text, entry.Images, entry.SkillNames, entry.Mentions, entry.CommandNames),
