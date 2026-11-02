@@ -550,7 +550,12 @@ export function projectThread(model: ThreadModel, config: TranscriptDisplayConfi
       projectedIndex += 1;
 
       if (entry.kind === "item" && eligibleDisclosure(item)) {
-        eligibleDisclosureIds.push(item.id);
+        // The renderer keys a disclosure by the entry's display key (a
+        // reasoning row by its round key), so the baseline inventory names
+        // that same key - otherwise the open-everything baseline reaches no
+        // disclosure for the row and a reader's earlier close survives a
+        // level switch.
+        eligibleDisclosureIds.push(entryDisplayKey(entry));
         // A commandExecution item's summary line has its own disclosure state
         // (Task 5's two-level summaryOpen), so its summary key is also
         // eligible for the Full-level baseline. Other eligible types

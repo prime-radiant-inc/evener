@@ -857,6 +857,22 @@ describe("transcript projector", () => {
     expect(entriesFor(model, preset("full")).map((entry) => entry.kind)).toEqual(["item"]);
   });
 
+  test("a round-keyed reasoning entry contributes its display key to the expansion baseline", () => {
+    // The thinking disclosure keys by the round display key, so the Full
+    // baseline's open-everything inventory must name that same key - or the
+    // baseline opens nothing for the row and a reader's earlier close
+    // survives a Full level switch.
+    const model = threadWith(
+      item("item_reasoning_1_0", "reasoning", {
+        roundId: "r-thought",
+        status: "completed",
+        reasoningSummaries: [["A"]],
+      }),
+    );
+    expect(projectThread(model, preset("full")).eligibleDisclosureIds).toContain("round:r-thought:reasoning");
+    expect(projectThread(model, preset("full")).eligibleDisclosureIds).not.toContain("item_reasoning_1_0");
+  });
+
   test("keeps settled thoughts as compact trace rows at every reasoning-off level but the chat preset", () => {
     const model = threadWith(
       item("thought-a", "reasoning", { status: "completed", text: "first thought", reasoningSummaries: [["A"]] }),
