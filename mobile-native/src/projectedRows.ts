@@ -343,9 +343,13 @@ export function projectedRow(entry: ProjectedEntry, context: ProjectedRowContext
 			// here rather than re-derived.
 			return intentRow(entry, context);
 		case "thinking":
-			// A content-free placeholder: the reader sees that the agent is
-			// thinking without the thought's stream. Never the thought text.
-			return { ...reasoningPlaceholderRow(entry.item), ...itemIdentity(entry.item) };
+			// A compact trace row (see reasoningPlaceholderRow): the live
+			// current thought stays a content-free placeholder; a settled
+			// thought carries its text as the row's expandable detail.
+			return {
+				...reasoningPlaceholderRow(entry.item, context.turnStatus),
+				...itemIdentity(entry.item),
+			};
 		case "critical":
 			if (entry.item.type === "reasoning") return criticalReasoningRow(entry);
 			return rowForItem(entry.item, context);
@@ -513,27 +517,38 @@ function rowForItem(it: ItemModel, context: ProjectedRowContext): MobileTimeline
 	};
 }
 
-// A content-free activity row for a live current thought whose text the config
-// hides: label and liveness only, no detail body.
-function reasoningPlaceholderRow(it: ItemModel): Extract<MobileTimelineItem, { kind: "activity" }> {
+// A compact trace row for a reasoning item while the `reasoning` content flag
+// is off (the shared projector's "thinking" entries). The LIVE current thought
+// keeps today's content-free placeholder: label and liveness only, no detail
+// body. A SETTLED thought is a completed trace row whose detail carries the
+// thought text (ruling 2026-11-01: traces unfold on demand), the same shape
+// the reasoning-on rows use.
+function reasoningPlaceholderRow(
+	it: ItemModel,
+	turnStatus: string | undefined,
+): Extract<MobileTimelineItem, { kind: "activity" }> {
+	const running = isActiveItem(it, turnStatus);
 	return {
 		kind: "activity",
 		id: it.id,
 		label: "Reasoning",
 		family: "reasoning",
-		state: "running",
-		detail: {},
+		state: running ? "running" : "completed",
+		detail: running ? {} : reasoningDetail(it),
 	};
 }
 
 // A critical reasoning item is always redacted when it reaches here (the
 // projector only routes a reasoning item to critical while the `reasoning`
-// flag is off). It shows a neutral summary, never the thought.
+// flag is off). The neutral summary stays the row's title - the collapsed
+// label (ruling 2026-11-01: the label does not change) - and the thought's
+// text rides in the detail, where TimelineItem unfolds it behind the fold
+// instead of showing it unconditionally.
 function criticalReasoningRow(entry: Extract<ProjectedEntry, { kind: "critical" }>): MobileTimelineItem {
 	const it = entry.item;
 	const identity = itemIdentity(it);
 	if (entry.redacted) {
-		return { kind: "failure", id: it.id, title: entry.summary, detail: "", thought: true, ...identity };
+		return { kind: "failure", id: it.id, title: entry.summary, detail: reasoningText(it), thought: true, ...identity };
 	}
 	// Defensive: a critical reasoning that is not redacted keeps its thought as
 	// a failed reasoning activity.

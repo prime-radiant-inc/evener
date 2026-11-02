@@ -813,7 +813,9 @@ describe("a settled thought", () => {
 		expect(rotation()).toBe("90deg");
 	});
 
-	it("reads a thought it can't show as one quiet line, with no rule", () => {
+	// A redacted thought the projector kept no text for stays one quiet line,
+	// with no rule and nothing to unfold.
+	it("reads a redacted thought with no text as one quiet line, with no rule", () => {
 		const row: TimelineRow = { kind: "failure", id: "r-2", title: "Thought not shown", detail: "", thought: true };
 		const tree = render(<TimelineItem item={row} hubId="hub" sessionRef="thought-hidden" />);
 		expect(renderedText(tree)).toContain("Thought not shown");
@@ -821,6 +823,67 @@ describe("a settled thought", () => {
 		expect(texts(tree.root).find((node) => textOf(node) === "Thought not shown")?.props.style).toMatchObject({
 			color: INK_LOW,
 		});
+	});
+
+	// Ruling 2026-11-01: the neutral label stays the collapsed summary and the
+	// thought sits behind the fold - both for a failed thought and for an
+	// interrupted one. The text never renders while the row is folded.
+	it("unfolds a failed thought's text behind its neutral label", () => {
+		const row: TimelineRow = {
+			kind: "failure",
+			id: "r-3",
+			title: "Thought failed",
+			detail: "the failure reasoning",
+			thought: true,
+		};
+		const tree = render(<TimelineItem item={row} hubId="hub" sessionRef="thought-failed" />);
+		expect(renderedText(tree)).toContain("Thought failed");
+		expect(renderedText(tree)).not.toContain("the failure reasoning");
+		const line = tree.root.findAll((node) => node.props.accessibilityRole === "button")[0];
+		act(() => line.props.onPress());
+		expect(renderedText(tree)).toContain("the failure reasoning");
+	});
+
+	it("unfolds an interrupted thought behind Thought not shown, staying collapsed by default even with thinking open", () => {
+		const row: TimelineRow = {
+			kind: "failure",
+			id: "r-4",
+			title: "Thought not shown",
+			detail: "the interrupted reasoning",
+			thought: true,
+		};
+		const tree = render(<TimelineItem item={row} hubId="hub" sessionRef="thought-interrupted" thinkingOpenByDefault />);
+		expect(renderedText(tree)).not.toContain("the interrupted reasoning");
+		const line = tree.root.findAll((node) => node.props.accessibilityRole === "button")[0];
+		act(() => line.props.onPress());
+		expect(renderedText(tree)).toContain("the interrupted reasoning");
+	});
+
+	// Thinking rows follow their own "Open thinking by default" switch; every
+	// other activity keeps the expand-details posture (ruling 2026-11-01: at
+	// Activity, tool rows open while thinking rows stay collapsed).
+	it("follows the thinking switch for thought rows while tool rows keep expand-details", () => {
+		const toolRow: TimelineRow = {
+			kind: "activity",
+			id: "t-1",
+			label: "Tool",
+			family: "tool",
+			state: "completed",
+			detail: { description: "Ran ls" },
+		};
+		const collapsedTree = render(
+			<TimelineItem item={thought()} hubId="hub" sessionRef="thought-switch-off" expandByDefault />,
+		);
+		expect(renderedText(collapsedTree)).not.toContain("Weigh the options first.");
+		const openTree = render(
+			<TimelineItem item={thought()} hubId="hub" sessionRef="thought-switch-on" thinkingOpenByDefault />,
+		);
+		expect(renderedText(openTree)).toContain("Weigh the options first.");
+		const toolTree = render(<TimelineItem item={toolRow} hubId="hub" sessionRef="tool-expand-on" expandByDefault />);
+		const toolOpen = toolTree.root
+			.findAll((node) => node.props.accessibilityRole === "button")
+			.some((button) => button.props.accessibilityState?.expanded === true);
+		expect(toolOpen).toBe(true);
 	});
 });
 

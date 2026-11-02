@@ -32,6 +32,7 @@ const SHOWS: readonly { key: keyof ContentVector; label: string }[] = [
 	{ key: "toolCalls", label: "Tool calls" },
 	{ key: "reasoning", label: "Reasoning" },
 	{ key: "expandByDefault", label: "Open details by default" },
+	{ key: "thinkingOpenByDefault", label: "Open thinking by default" },
 ];
 const MORE_DETAIL = [
 	["roundTimings", "Timing"],

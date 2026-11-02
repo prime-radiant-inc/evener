@@ -40,7 +40,14 @@ const PRESET: TranscriptDisplayConfigV1 = {
 };
 const CUSTOM: TranscriptDisplayConfigV1 = {
 	version: 1,
-	content: { kind: "custom", toolIntent: true, toolCalls: false, reasoning: false, expandByDefault: false },
+	content: {
+		kind: "custom",
+		toolIntent: true,
+		toolCalls: false,
+		reasoning: false,
+		expandByDefault: false,
+		thinkingOpenByDefault: false,
+	},
 	advanced: ADVANCED,
 };
 
@@ -189,6 +196,7 @@ it("shows Custom's switches and hook events, and saves each change at once", asy
 		"Tool calls",
 		"Reasoning",
 		"Open details by default",
+		"Open thinking by default",
 		"Timing",
 		"Token counts",
 		"Estimated cost",

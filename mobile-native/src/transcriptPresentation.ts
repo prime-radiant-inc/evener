@@ -76,6 +76,9 @@ export interface NativeTranscriptPresentation {
 	items: MobileTimelineItem[];
 	activityPresentation: ReadonlyMap<string, ActivityPresentation>;
 	expandByDefault: boolean;
+	/** The initial state of THINKING disclosures (the "Open thinking by
+	 * default" switch); tool and run rows keep expandByDefault. */
+	thinkingOpenByDefault: boolean;
 	/** The live run shows its steps: at the levels that show tool calls. At
 	 * Chat and Intent the tray shows the live step, so the run keeps to its
 	 * line (S7). */
@@ -220,6 +223,7 @@ export function projectNativeTranscript(
 			items,
 			activityPresentation,
 			expandByDefault: false,
+			thinkingOpenByDefault: false,
 			liveRunsOpen: false,
 			usage: null,
 			showDuration: true,
@@ -229,6 +233,7 @@ export function projectNativeTranscript(
 		items,
 		activityPresentation,
 		expandByDefault: content.expandByDefault,
+		thinkingOpenByDefault: content.thinkingOpenByDefault,
 		liveRunsOpen: content.toolCalls,
 		usage: accountingFor(conversation, config),
 		showDuration: config.advanced.roundTimings,
