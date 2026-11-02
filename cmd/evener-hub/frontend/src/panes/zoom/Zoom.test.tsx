@@ -297,7 +297,25 @@ test("Comic inline children in two real cascade columns retain the secondary ins
                   id: `${ref}-turn`,
                   status: "completed",
                   itemsView: "full",
-                  items: [{ id: `${ref}-file`, type: "agentMessage", text: `[FILE](docs/${ref}.md)` }],
+                  items: [
+                    // The activity declares the inline delegate; its launch
+                    // anchors the strip that renders the inline reader.
+                    ...(["child", "grandchild"].includes(ref!)
+                      ? [
+                          {
+                            id: `${ref}-launch`,
+                            type: "commandExecution" as const,
+                            toolName: "delegate",
+                            callId: `launch-${ref}`,
+                            output: JSON.stringify({
+                              delegate_id: `${ref}-inline-delegate`,
+                              transcript_ref: `${ref}-inline`,
+                            }),
+                          },
+                        ]
+                      : []),
+                    { id: `${ref}-file`, type: "agentMessage", text: `[FILE](docs/${ref}.md)` },
+                  ],
                 },
               ],
       },

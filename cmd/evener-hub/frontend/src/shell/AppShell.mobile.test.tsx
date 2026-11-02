@@ -510,6 +510,22 @@ test("real Comic cascade inline files keep phone inspector ownership through set
                   status: "completed",
                   itemsView: "full",
                   items: [
+                    // The activity declares the inline delegate; its launch
+                    // anchors the strip that renders the inline reader.
+                    ...(ref === "local:column"
+                      ? [
+                          {
+                            id: `${ref}-launch`,
+                            type: "commandExecution" as const,
+                            toolName: "delegate",
+                            callId: `launch-${ref}`,
+                            output: JSON.stringify({
+                              delegate_id: "local:inline-delegate",
+                              transcript_ref: "local:inline",
+                            }),
+                          },
+                        ]
+                      : []),
                     {
                       id: `${ref}-file`,
                       type: "agentMessage",
