@@ -37,6 +37,7 @@ function sessionGeometry() {
     footerContentBottom: footer.getBoundingClientRect().bottom - parseFloat(getComputedStyle(footer).paddingBottom),
     bodyChildren: [...document.querySelector('[data-pane-scaffold]')?.firstElementChild?.children ?? []].map(node=>({tag:node.tagName,text:node.textContent.slice(0,100),box:rect(node)})),
     composer: rect(document.querySelector("[data-composer]")),
+    composerBound: rect(document.querySelector('section[aria-label="Your message"]')),
     liveness: rect(document.querySelector('[data-testid="liveness-line"]')),
     livenessText: document.querySelector('[data-testid="liveness-line"]')?.textContent,
     sessionMenu: rect(document.querySelector('[data-testid="session-chrome-inline"]')),
@@ -350,8 +351,11 @@ export default async function assert(_measurement, { page }) {
         failures.push(`keyboard ${name} ${width}: reader height did not restore`);
       evidence.push({ width, keyboard: name, composerBottom: state.composer.bottom, readerHeight: state.reader.height });
     }
-    // A multiline draft with the keyboard open must stay bounded: the composer's
-    // interaction area caps its height so controls and reader remain usable.
+    // A multiline draft with the keyboard open must stay bounded: the
+    // interaction area's 45dvh cap holds the composer's visible box, and the
+    // reader keeps usable space. The [data-composer] root is the inner,
+    // unclamped content box - the cap is the enclosing section; the draft
+    // scrolls inside it wherever it is taller than the cap allows.
     const tallDraft = Array.from({ length: 18 }, (_, line) => `TALL_LINE_${line}_${width}`).join("\n");
     await replaceDraft(send, tallDraft);
     await evaluate(send, `window.comicGeometry.viewport("resize", ${JSON.stringify({ height: 440, offsetTop: 0, scale: 1 })})`);
@@ -363,10 +367,19 @@ export default async function assert(_measurement, { page }) {
       !tallState.sourceParts ||
       !tallState.editor.hit ||
       !tallState.submit.hit ||
-      ![tallState.composer, tallState.editor, tallState.submit].every((box) => reachable(box, width, 440)) ||
-      tallState.composer.height > 220
+      ![tallState.composer, tallState.editor, tallState.submit].every((box) =>
+        reachable(box, width, width < 900 ? 440 : tallState.footerContentBottom),
+      ) ||
+      !tallState.composerBound ||
+      tallState.composerBound.height > Math.round(0.45 * tallState.height) + 2
     ) failures.push(`keyboard tall ${width}: unbounded composer ${JSON.stringify(tallState)}`);
-    evidence.push({ width, keyboard: "tall", composerHeight: tallState.composer.height, readerHeight: tallState.reader.height });
+    evidence.push({
+      width,
+      keyboard: "tall",
+      composerHeight: tallState.composerBound?.height,
+      draftHeight: tallState.composer.height,
+      readerHeight: tallState.reader.height,
+    });
     await replaceDraft(send, draft);
     await evaluate(send, `window.comicGeometry.viewport("resize", ${JSON.stringify({ height: 620, offsetTop: 0 })})`);
     await frame(send);
