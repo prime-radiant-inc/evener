@@ -6,7 +6,7 @@ import type {
 	TranscriptDisplayStore,
 	TranscriptDraftCheckpoint,
 } from "@evener/appwire-client";
-import { toWireConfig, WireError } from "@evener/appwire-client";
+import { fromWireConfig, makeTranscriptDisplayConfig, toWireConfig, WireError } from "@evener/appwire-client";
 import type { ConversationClientLike } from "./conversation/services/conversation";
 import { NativePreferences } from "./nativePreferences";
 
@@ -121,6 +121,106 @@ describe("NativePreferences", () => {
 			// expandByDefault.
 			thinkingOpenByDefault: false,
 		});
+	});
+
+	it("retains a divergent thinking preference locally when an older hub downgrades the save", async () => {
+		// The compatibility direction: the phone works with an older hub. That
+		// hub stores the four-field custom, so a divergent presentation
+		// preference survives only in the phone's local override - and it must
+		// survive the save, a refresh and a reconnect.
+		const tools = makeTranscriptDisplayConfig({ kind: "preset", level: "tools" });
+		const client = fakeClient();
+		client.handlers.set("evener/settings/keybindings/get", () => keybindings);
+		client.handlers.set("evener/settings/transcriptDisplay/get", () => ({
+			desktop: { revision: 1, config: toWireConfig(tools) },
+			mobile: { revision: 1, config: toWireConfig(tools) },
+		}));
+		client.handlers.set("evener/settings/transcriptDisplay/patch", (params) => {
+			const patch = params as { layout: "mobile"; expectedRevision: number; config: ReturnType<typeof toWireConfig> };
+			const custom = patch.config.content.custom as Record<string, unknown> | undefined;
+			if (custom && "thinkingOpenByDefault" in custom) {
+				throw new WireError("invalid transcript display patch: unknown field", -32602, {
+					evenerErrorInfo: "invalidParams",
+				});
+			}
+			const applied = fromWireConfig(patch.config);
+			if (applied === undefined) throw new Error("unexpected malformed patch config");
+			return { layout: patch.layout, revision: patch.expectedRevision + 1, config: toWireConfig(applied) };
+		});
+		const localStore = {
+			value: null as unknown,
+			load: () => localStore.value,
+			save: (value: unknown) => {
+				localStore.value = value;
+			},
+		};
+		const model = new NativePreferences(client as never, features, undefined, undefined, localStore as never);
+		await model.refresh();
+		const divergent = makeTranscriptDisplayConfig({
+			kind: "custom",
+			toolIntent: true,
+			toolCalls: true,
+			reasoning: false,
+			expandByDefault: false,
+			thinkingOpenByDefault: true,
+		});
+
+		await model.saveTranscript(divergent);
+
+		const mobile = model.getSnapshot().transcriptMobile;
+		expect(mobile.confirmed?.config.content).toMatchObject({ kind: "custom", thinkingOpenByDefault: false });
+		expect(mobile.local?.content).toMatchObject({ kind: "custom", thinkingOpenByDefault: true });
+		expect(localStore.value).not.toBeNull();
+
+		// A reconnect builds a new model over the same storage: the local
+		// preference is still there, and refresh does not erase it.
+		const again = new NativePreferences(client as never, features, undefined, undefined, localStore as never);
+		await again.refresh();
+		expect(again.getSnapshot().transcriptMobile.local?.content).toMatchObject({
+			kind: "custom",
+			thinkingOpenByDefault: true,
+		});
+	});
+
+	it("clears the retained thinking preference once a hub acknowledges it exactly", async () => {
+		const tools = makeTranscriptDisplayConfig({ kind: "preset", level: "tools" });
+		const client = fakeClient();
+		client.handlers.set("evener/settings/keybindings/get", () => keybindings);
+		client.handlers.set("evener/settings/transcriptDisplay/get", () => ({
+			desktop: { revision: 1, config: toWireConfig(tools) },
+			mobile: { revision: 1, config: toWireConfig(tools) },
+		}));
+		client.handlers.set("evener/settings/transcriptDisplay/patch", (params) => {
+			const patch = params as { layout: "mobile"; expectedRevision: number; config: ReturnType<typeof toWireConfig> };
+			const applied = fromWireConfig(patch.config);
+			if (applied === undefined) throw new Error("unexpected malformed patch config");
+			return { layout: patch.layout, revision: patch.expectedRevision + 1, config: toWireConfig(applied) };
+		});
+		const divergent = makeTranscriptDisplayConfig({
+			kind: "custom",
+			toolIntent: true,
+			toolCalls: true,
+			reasoning: false,
+			expandByDefault: false,
+			thinkingOpenByDefault: true,
+		});
+		const localStore = {
+			value: divergent as unknown,
+			load: () => localStore.value,
+			save: (value: unknown) => {
+				localStore.value = value;
+			},
+		};
+		const model = new NativePreferences(client as never, features, undefined, undefined, localStore as never);
+		await model.refresh();
+		expect(model.getSnapshot().transcriptMobile.local?.content).toMatchObject({ thinkingOpenByDefault: true });
+
+		// A hub that carries the field acknowledges the request exactly: the
+		// local override has nothing left to retain.
+		await model.saveTranscript(divergent);
+
+		expect(model.getSnapshot().transcriptMobile.local).toBeNull();
+		expect(localStore.value).toBeNull();
 	});
 
 	it("uses the confirmed revision and retains the draft after an uncertain write", async () => {
