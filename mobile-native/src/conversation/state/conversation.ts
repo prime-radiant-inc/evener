@@ -1745,7 +1745,6 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 				// recovery path consumes it — the merge path keeps the held
 				// model, frames included.
 				const framesDuringRead: AnyNotification[] = [];
-				const priorFrameLog = rehydrateFrameLog;
 				rehydrateFrameLog = framesDuringRead;
 				try {
 					const heldHistory = get().conversation?.history;
@@ -2043,8 +2042,10 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 				} finally {
 					// This read is done: stop recording frames for it. An older
 					// rehydrate whose read a newer one superseded leaves the
-					// newer's log in place.
-					if (rehydrateFrameLog === framesDuringRead) rehydrateFrameLog = priorFrameLog;
+					// newer's log in place, and a superseded read's own log is
+					// never consumed — restoring it would retain every later
+					// frame forever, so it is dropped instead.
+					if (rehydrateFrameLog === framesDuringRead) rehydrateFrameLog = null;
 				}
 			},
 
