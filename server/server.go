@@ -206,6 +206,10 @@ type ServerConfig struct {
 	HubToken      string
 	AllowedHost   string
 	StateDir      string
+	// Logf receives server-initiated diagnostics a peer cannot see from its
+	// side, such as connection eviction. Without it the serve daemon has no
+	// server-side log at all.
+	Logf func(format string, args ...any)
 }
 
 // appDescendantProjection is the in-memory AppWire view of one in-process
@@ -396,6 +400,7 @@ func NewServer(cfg ServerConfig) *Server {
 			ServerName: "evener-serve",
 			Version:    buildinfo.Version(),
 			SourceID:   "local",
+			Logf:       cfg.Logf,
 			SubscriptionAdmissionResolver: func(msg appwire.Message) appserver.SubscriptionAdmissionResolution {
 				return runtime.resolveSubscriptionAdmission(msg)
 			},

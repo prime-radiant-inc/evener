@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"runtime/debug"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -193,6 +194,25 @@ func (c *Connection) closeSessionTools() {
 	installing := c.sessionToolsInstalling
 	c.sessionToolsInstalling = nil
 	c.sessionMu.Unlock()
+	// TEMP-DIAGNOSTIC (PR 5498 binding-lifecycle CI failure): the
+	// TestSessionToolsAutomaticBindingLifecycleAndReconnect failure on CI
+	// shows the binding's connection context dead within ~30ms while every
+	// local reproduction attempt passes. Log which side killed the
+	// connection: a canceled parent means the peer hung up the HTTP request
+	// (hub-side close), while a live parent with a dead session lifetime
+	// names a daemon-internal cancel (shutdown, eviction or keepalive).
+	// Remove once the CI-only killer is identified.
+	if bound != nil || installing != nil {
+		parentState := "unset"
+		if c.sessionToolsDiagParent != nil {
+			parentState = fmt.Sprintf("%v", c.sessionToolsDiagParent.Err())
+		}
+		lifetimeState := "unset"
+		if c.sessionLifetime != nil {
+			lifetimeState = fmt.Sprintf("%v", c.sessionLifetime.Err())
+		}
+		c.server.logf("TEMP-DIAGNOSTIC session-tools binding teardown on %s: lifetime=%s parent=%s\n%s", c.id, lifetimeState, parentState, debug.Stack())
+	}
 	closeSessionBinding(installing)
 	closeSessionBinding(bound)
 }
