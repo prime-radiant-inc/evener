@@ -211,7 +211,13 @@ func TestSessionToolsAutomaticBindingLifecycleAndReconnect(t *testing.T) {
 	upstream := httptest.NewUnstartedServer(http.HandlerFunc(daemon.AppServer().ServeWebSocket))
 	upstream.Config.ConnState = func(c net.Conn, state http.ConnState) {
 		if state == http.StateHijacked {
-			sockets <- c
+			// This callback runs under the httptest server's connection-state
+			// mutex, so a blocking send here wedges the whole server — every
+			// later state transition, including the cleanup Close. Thread
+			// re-reads arrive on fresh connections, so more sockets can be
+			// captured than the channel holds before the drain below takes
+			// one; the capture must never block the server.
+			go func() { sockets <- c }()
 		}
 	}
 	upstream.Start()
@@ -411,7 +417,13 @@ func TestManagerAdmissionRealToolRead(t *testing.T) {
 	}))
 	upstream.Config.ConnState = func(c net.Conn, state http.ConnState) {
 		if state == http.StateHijacked {
-			sockets <- c
+			// This callback runs under the httptest server's connection-state
+			// mutex, so a blocking send here wedges the whole server — every
+			// later state transition, including the cleanup Close. Thread
+			// re-reads arrive on fresh connections, so more sockets can be
+			// captured than the channel holds before the drain below takes
+			// one; the capture must never block the server.
+			go func() { sockets <- c }()
 		}
 	}
 	upstream.Start()
