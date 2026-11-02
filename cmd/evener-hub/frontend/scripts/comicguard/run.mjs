@@ -198,9 +198,16 @@ function repliesSince(trace, start, accept) {
   return replies;
 }
 
-async function nativeClick(page, label, expression) {
-  const point = await until(label, () =>
-    evaluate(
+async function nativeClick(page, label, expression, settle) {
+  const point = await until(label, async () => {
+    // A late position publication (a viewport switch re-anchoring the
+    // reader) can restore the pre-reveal scroll after the caller revealed
+    // the target, leaving it mounted but out of view for the rest of the
+    // poll. The optional settle hook re-scrolls the target into view each
+    // poll, the way a reader re-scrolls after a re-anchor, so a one-shot
+    // restore cannot strand the click.
+    if (settle) await settle();
+    return evaluate(
       page.send,
       `(async () => {
     const node = (${expression});
@@ -212,8 +219,8 @@ async function nativeClick(page, label, expression) {
     const x = r.x + r.width / 2, y = r.y + r.height / 2;
     return r.width && r.height && node.contains(document.elementFromPoint(x, y)) ? {x,y} : null;
   })()`,
-    ),
-  );
+    );
+  });
   await page.send("Input.dispatchMouseEvent", {
     type: "mousePressed",
     ...point,
@@ -4739,7 +4746,9 @@ async function childJourney(page, fixture, { command, incoming, outgoing, screen
         `document.body.textContent.includes(${JSON.stringify(`COMIC_DOCUMENT_BODY_${level}`)}) && !document.querySelector('[data-comic-font][data-session-ref]')`,
       );
     try {
-      await nativeClick(page, `activate ${label}`, linkExpression);
+      // The phone viewport switch can re-anchor the reader after the reveal;
+      // keep re-scrolling the link into view until the click lands.
+      await nativeClick(page, `activate ${label}`, linkExpression, () => reveal("[data-comic-entry]", label, 1));
       await until(`${label} actual file content with Comic unmounted`, documentVisible);
     } finally {
       const activation = await evaluateHere(`(async () => {
