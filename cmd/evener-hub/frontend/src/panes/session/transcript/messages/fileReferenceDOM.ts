@@ -6,6 +6,7 @@ import {
   isImagePath,
   parseFileReference,
   resolveFileLink,
+  type ServedRoots,
 } from "@evener/appwire-client/docContent";
 import { MERMAID_DIAGRAM_ATTR } from "../../../../widgets/mermaid/markers";
 import { browserDocPort } from "../../../doc/browserDocPort";
@@ -29,7 +30,7 @@ interface TextOffset {
  * inline formatting, but ambiguous multi-node references remain unchanged. */
 export function enhanceFileReferences(
   root: HTMLElement,
-  context: { sessionRef: string; cwd: string; sourcePaneId: string; artifactsDir?: string },
+  context: { sessionRef: string; cwd: string; sourcePaneId: string; artifactsDir?: string; scratchDir?: string },
 ): () => void {
   const epoch = {};
   epochs.set(root, epoch);
@@ -38,6 +39,7 @@ export function enhanceFileReferences(
   const owns = (node: Node) => epochs.get(root) === epoch && root.contains(node);
   const qualifiedRef = context.sessionRef.includes(":") ? context.sessionRef : `local:${context.sessionRef}`;
   if (!isValidTranscriptRef(qualifiedRef) || !context.cwd || !context.sourcePaneId) return () => {};
+  const served: ServedRoots = { artifactsDir: context.artifactsDir, scratchDir: context.scratchDir };
 
   function activate(link: HTMLAnchorElement, request: DocumentOpenRequest) {
     const href = link.getAttribute("href");
@@ -61,9 +63,9 @@ export function enhanceFileReferences(
 
   for (const link of root.querySelectorAll<HTMLAnchorElement>("a[href]")) {
     if (link.closest(`pre, [data-entity-host], [${MERMAID_DIAGRAM_ATTR}]`)) continue;
-    const served = resolveAnchorReference(link.getAttribute("href") ?? "", context.cwd, context.artifactsDir);
-    if (served === undefined) continue;
-    activate(link, { session: context.sessionRef, reference: served, sourcePaneId: context.sourcePaneId });
+    const reference = resolveAnchorReference(link.getAttribute("href") ?? "", context.cwd, served);
+    if (reference === undefined) continue;
+    activate(link, { session: context.sessionRef, reference, sourcePaneId: context.sourcePaneId });
   }
 
   // Retain the original Text as an empty anchor, just like the entity pass.
@@ -95,7 +97,7 @@ export function enhanceFileReferences(
   let offsets: TextOffset[] = [];
   const codeElements: Array<{ element: HTMLElement; start: number; end: number }> = [];
   function flush() {
-    const matches = findFileReferences(text, context.cwd);
+    const matches = findFileReferences(text, context.cwd, served);
     for (const offset of offsets) {
       const contained = matches
         .filter((span) => span.start >= offset.start && span.end <= offset.end)
@@ -117,7 +119,7 @@ export function enhanceFileReferences(
         tokenEnds[index] = tokenEnd;
       }
       for (const code of codeElements) {
-        const reference = parseFileReference(code.element.textContent, "code", context.cwd);
+        const reference = parseFileReference(code.element.textContent, "code", context.cwd, served);
         if (!reference) continue;
         // Code is a whole-element surface, not a suffix of a longer token.
         // Only surrounding delimiters may share its whitespace/quote token.
