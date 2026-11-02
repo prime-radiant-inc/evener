@@ -51,6 +51,220 @@ func TestHubRPCThreadReadRoutesToDaemon(t *testing.T) {
 	}
 }
 
+func TestSessionOperationsReadPreservesHumanAndManagerSubscriptionModes(t *testing.T) {
+	daemon := appserver.NewServer(appserver.ServerConfig{ServerName: "daemon", SourceID: "local"})
+	appserver.HandleTyped(daemon.Router(), appwire.MethodThreadRead, func(ctx context.Context, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
+		ref, err := appwire.ParseRef(params.Ref)
+		if err != nil {
+			return appwire.ThreadReadResponse{}, err
+		}
+		if err := appserver.SubscribeWithAdmission(ctx, ref.ThreadID, false); err != nil {
+			return appwire.ThreadReadResponse{}, err
+		}
+		return appwire.ThreadReadResponse{Thread: appwire.Thread{ID: ref.ThreadID, SessionID: ref.ThreadID, Evener: appwire.EvenerThread{Ref: params.Ref}}}, nil
+	})
+	daemonHTTP := httptest.NewServer(http.HandlerFunc(daemon.ServeWebSocket))
+	defer daemonHTTP.Close()
+	endpoint := "ws" + strings.TrimPrefix(daemonHTTP.URL, "http")
+	entries := []appsource.LocalDaemonEntry{
+		{Entry: rendezvous.Entry{Protocol: appwire.ProtocolVersion, Endpoint: endpoint, SourceID: "local", ThreadID: "human", SessionID: "human", WorkspaceRef: "local:human"}},
+		{Entry: rendezvous.Entry{Protocol: appwire.ProtocolVersion, Endpoint: endpoint, SourceID: "local", ThreadID: "manager", SessionID: "manager", WorkspaceRef: "local:manager"}},
+	}
+	source := appsource.NewLocalDaemonSourceWithEntries("local", func() []appsource.LocalDaemonEntry { return entries }, http.DefaultClient)
+	sources := appsource.NewRegistry()
+	sources.Add(source)
+	cfg := hubcore.WebConfig{HubStateRoot: t.TempDir(), Past: hubcore.NewPastIndex("")}
+	server := appserver.NewServer(appserver.ServerConfig{ServerName: "hub", Version: "test", SourceID: "local"})
+	relays := newHubRelay(server, cfg, sources)
+	operations := &sessionOperations{cfg: cfg, sources: sources, relays: relays, server: server}
+	appserver.HandleTyped(server.Router(), appwire.MethodThreadRead, operations.Read)
+	// This test-local route exercises the same internal snapshot-only path used
+	// by Manager operations without adding a production hook.
+	appserver.HandleTyped(server.Router(), "test/managerSnapshotRead", func(ctx context.Context, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
+		return operations.read(ctx, params, false)
+	})
+	hub := httptest.NewServer(http.HandlerFunc(server.ServeWebSocket))
+	defer hub.Close()
+	client := dialHubRPCInitialized(t, hub)
+	defer client.Close()
+	if _, err := client.ThreadRead(context.Background(), appwire.ThreadReadParams{Ref: "local:human"}); err != nil {
+		t.Fatalf("ordinary human ThreadRead: %v", err)
+	}
+	if got := server.SubscriberCount("local:human"); got != 1 {
+		t.Fatalf("ordinary human subscriptions = %d, want 1", got)
+	}
+	var snapshot appwire.ThreadReadResponse
+	if err := client.Request(context.Background(), "test/managerSnapshotRead", appwire.ThreadReadParams{Ref: "local:manager"}, &snapshot); err != nil {
+		t.Fatalf("Manager snapshot read: %v", err)
+	}
+	if got := server.SubscriberCount("local:manager"); got != 0 {
+		t.Fatalf("Manager snapshot subscriptions = %d, want 0", got)
+	}
+}
+
+// TestManagerSnapshotReadDoesNotAskDaemonForSubscription pins the upstream
+// half of the snapshot rule. A Manager status read without a watch has no
+// consumer, so it must not ask the daemon for a subscription: while it did,
+// the daemon counted a subscriber for the read's duration, and a curable
+// sandbox denial in that window raised an approval card nobody received.
+func TestManagerSnapshotReadDoesNotAskDaemonForSubscription(t *testing.T) {
+	var mu sync.Mutex
+	asked := map[string][]bool{}
+	daemon := appserver.NewServer(appserver.ServerConfig{ServerName: "daemon", SourceID: "local"})
+	appserver.HandleTyped(daemon.Router(), appwire.MethodThreadRead, func(ctx context.Context, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
+		ref, err := appwire.ParseRef(params.Ref)
+		if err != nil {
+			return appwire.ThreadReadResponse{}, err
+		}
+		mu.Lock()
+		asked[params.Ref] = append(asked[params.Ref], params.Subscribe)
+		mu.Unlock()
+		if params.Subscribe {
+			if err := appserver.SubscribeWithAdmission(ctx, ref.ThreadID, false); err != nil {
+				return appwire.ThreadReadResponse{}, err
+			}
+		}
+		return appwire.ThreadReadResponse{Thread: appwire.Thread{ID: ref.ThreadID, SessionID: ref.ThreadID, Evener: appwire.EvenerThread{Ref: params.Ref}}}, nil
+	})
+	daemonHTTP := httptest.NewServer(http.HandlerFunc(daemon.ServeWebSocket))
+	defer daemonHTTP.Close()
+	endpoint := "ws" + strings.TrimPrefix(daemonHTTP.URL, "http")
+	entries := []appsource.LocalDaemonEntry{
+		{Entry: rendezvous.Entry{Protocol: appwire.ProtocolVersion, Endpoint: endpoint, SourceID: "local", ThreadID: "human", SessionID: "human", WorkspaceRef: "local:human"}},
+		{Entry: rendezvous.Entry{Protocol: appwire.ProtocolVersion, Endpoint: endpoint, SourceID: "local", ThreadID: "manager", SessionID: "manager", WorkspaceRef: "local:manager"}},
+	}
+	source := appsource.NewLocalDaemonSourceWithEntries("local", func() []appsource.LocalDaemonEntry { return entries }, http.DefaultClient)
+	sources := appsource.NewRegistry()
+	sources.Add(source)
+	cfg := hubcore.WebConfig{HubStateRoot: t.TempDir(), Past: hubcore.NewPastIndex("")}
+	server := appserver.NewServer(appserver.ServerConfig{ServerName: "hub", Version: "test", SourceID: "local"})
+	relays := newHubRelay(server, cfg, sources)
+	operations := &sessionOperations{cfg: cfg, sources: sources, relays: relays, server: server}
+	appserver.HandleTyped(server.Router(), appwire.MethodThreadRead, operations.Read)
+	// This test-local route exercises the same internal snapshot-only path used
+	// by Manager operations without adding a production hook.
+	appserver.HandleTyped(server.Router(), "test/managerSnapshotRead", func(ctx context.Context, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
+		return operations.read(ctx, params, false)
+	})
+	hub := httptest.NewServer(http.HandlerFunc(server.ServeWebSocket))
+	defer hub.Close()
+	client := dialHubRPCInitialized(t, hub)
+	defer client.Close()
+
+	// An ordinary human read captures a downstream subscription, so its
+	// relay read legitimately asks the daemon for the feed.
+	if _, err := client.ThreadRead(context.Background(), appwire.ThreadReadParams{Ref: "local:human"}); err != nil {
+		t.Fatalf("ordinary human ThreadRead: %v", err)
+	}
+	for _, params := range []appwire.ThreadReadParams{
+		{Ref: "local:manager"},
+		// The snapshot path must not subscribe even when the caller's own
+		// params carry a stale Subscribe flag.
+		{Ref: "local:manager", Subscribe: true},
+	} {
+		var snapshot appwire.ThreadReadResponse
+		if err := client.Request(context.Background(), "test/managerSnapshotRead", params, &snapshot); err != nil {
+			t.Fatalf("Manager snapshot read: %v", err)
+		}
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	flags := asked["local:manager"]
+	if len(flags) == 0 {
+		t.Fatal("manager snapshot read never reached the daemon")
+	}
+	for _, f := range flags {
+		if f {
+			t.Fatal("manager snapshot read asked the daemon for a subscription")
+		}
+	}
+	human := asked["local:human"]
+	if len(human) == 0 {
+		t.Fatal("ordinary human read never reached the daemon")
+	}
+	fed := false
+	for _, f := range human {
+		fed = fed || f
+	}
+	if !fed {
+		t.Fatal("ordinary human read no longer asks the daemon for the feed")
+	}
+}
+
+// TestManagerRemoteSnapshotReadLeavesTargetDaemonUnsubscribed is the two-hub
+// half of the snapshot rule pinned above. An unwatched Manager read crosses
+// the hub bridge as an ordinary thread/read whose subscribe flag the remote
+// source strips, so the target hub must treat a bridge-origin read as the
+// snapshot it is. Capturing a downstream subscription there would register a
+// daemon-side feed and a bridge-connection subscription that no hub owns a
+// consumer for and no side can retire.
+func TestManagerRemoteSnapshotReadLeavesTargetDaemonUnsubscribed(t *testing.T) {
+	var mu sync.Mutex
+	asked := map[string][]bool{}
+	daemonB := appserver.NewServer(appserver.ServerConfig{ServerName: "daemon", SourceID: "local"})
+	appserver.HandleTyped(daemonB.Router(), appwire.MethodThreadRead, func(ctx context.Context, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
+		ref, err := appwire.ParseRef(params.Ref)
+		if err != nil {
+			return appwire.ThreadReadResponse{}, err
+		}
+		mu.Lock()
+		asked[params.Ref] = append(asked[params.Ref], params.Subscribe)
+		mu.Unlock()
+		if params.Subscribe {
+			if err := appserver.SubscribeWithAdmission(ctx, ref.ThreadID, false); err != nil {
+				return appwire.ThreadReadResponse{}, err
+			}
+		}
+		return appwire.ThreadReadResponse{Thread: appwire.Thread{ID: ref.ThreadID, SessionID: ref.ThreadID, Evener: appwire.EvenerThread{Ref: params.Ref}}}, nil
+	})
+	daemonHTTP := httptest.NewServer(http.HandlerFunc(daemonB.ServeWebSocket))
+	defer daemonHTTP.Close()
+	endpoint := "ws" + strings.TrimPrefix(daemonHTTP.URL, "http")
+	sourcesB := appsource.NewRegistry()
+	sourcesB.Add(appsource.NewLocalDaemonSourceWithEntries("local", func() []appsource.LocalDaemonEntry {
+		return []appsource.LocalDaemonEntry{{Entry: rendezvous.Entry{Protocol: appwire.ProtocolVersion, Endpoint: endpoint, SourceID: "local", ThreadID: "manager", SessionID: "manager", WorkspaceRef: "local:manager"}}}
+	}, http.DefaultClient))
+	cfgB := hubcore.WebConfig{HubStateRoot: t.TempDir(), Past: hubcore.NewPastIndex("")}
+	serverB := appserver.NewServer(appserver.ServerConfig{ServerName: "hub", Version: "test", SourceID: "local"})
+	relaysB := newHubRelay(serverB, cfgB, sourcesB)
+	operationsB := &sessionOperations{cfg: cfgB, sources: sourcesB, relays: relaysB, server: serverB}
+	appserver.HandleTyped(serverB.Router(), appwire.MethodThreadRead, operationsB.Read)
+	// The target hub's edge stamps the bridge marker on the connection, as
+	// serveAppWireRPC does for `evener hub attach --stdio`.
+	hubB := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		serverB.ServeWebSocket(w, r.WithContext(withHostRoutingOrigin(r.Context(), hostRoutingOriginBridge)))
+	}))
+	defer hubB.Close()
+
+	// The controller hub: a remote source over the bridge connection, and the
+	// same session operations an unwatched Manager status read takes.
+	sourcesA := appsource.NewRegistry()
+	sourcesA.Add(appsource.NewRemoteHubSource("host-b", nil, func(ctx context.Context, host string) (*appwire.Client, error) {
+		return dialHubRPCInitialized(t, hubB), nil
+	}))
+	cfgA := hubcore.WebConfig{HubStateRoot: t.TempDir(), Past: hubcore.NewPastIndex("")}
+	serverA := appserver.NewServer(appserver.ServerConfig{ServerName: "hub", Version: "test", SourceID: "local"})
+	relaysA := newHubRelay(serverA, cfgA, sourcesA)
+	operationsA := &sessionOperations{cfg: cfgA, sources: sourcesA, relays: relaysA, server: serverA}
+	if _, err := operationsA.read(t.Context(), appwire.ThreadReadParams{Ref: "host-b:manager"}, false); err != nil {
+		t.Fatalf("unwatched remote Manager read: %v", err)
+	}
+	if got := daemonB.SubscriberCount("manager"); got != 0 {
+		t.Fatalf("target daemon subscribers after unwatched read = %d, want 0", got)
+	}
+	if got := serverB.SubscriberCount("local:manager"); got != 0 {
+		t.Fatalf("target hub subscribers after unwatched read = %d, want 0", got)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	for _, flag := range asked["local:manager"] {
+		if flag {
+			t.Fatal("unwatched remote Manager read asked the target daemon for a subscription")
+		}
+	}
+}
+
 func TestHubRPCThreadReadRoutesReachableErroredDaemon(t *testing.T) {
 	const sessionID = "02wMz5Txv9yYdSRJat13MZ"
 	daemon := appserver.NewServer(appserver.ServerConfig{ServerName: "daemon", SourceID: "local"})

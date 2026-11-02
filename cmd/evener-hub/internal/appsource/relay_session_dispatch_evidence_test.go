@@ -97,7 +97,7 @@ func TestRelaySessionReadRejectsClosedSessionAfterGate(t *testing.T) {
 	s.closed = true
 	s.mu.Unlock()
 
-	_, err := s.read(context.Background(), appwire.ThreadReadParams{Ref: "local:thread"})
+	_, err := s.read(context.Background(), nil, appwire.ThreadReadParams{Ref: "local:thread"})
 	assertSessionUnavailable(t, err, "read on closed session")
 
 	select {

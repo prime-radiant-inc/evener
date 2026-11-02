@@ -52,13 +52,14 @@ function applyHistoryUpdated<M extends ThreadModel>(model: M, params: HistoryUpd
   return withDisplay(live, { ...held, turns }, model.overlay ?? {});
 }
 
-// evener/thread/resync: the server bumped the thread's epoch (or a hub pushed
-// a resync of its own, which names none). A newer epoch or another generation
-// invalidates the thread; the store re-reads its latest window.
+// Versioned resync invalidates history. A hub's epochless hint only requests
+// a read, whose identity determines whether history changed. Invalidating here
+// would drop all loaded pages.
 function applyResync<M extends ThreadModel>(model: M, params: ThreadResyncParams, now: number): M {
   const held = model.history;
   if (!held) return model;
   const live = { ...model, lastFrameAt: now };
+  if (!params.bootGeneration && params.epoch === undefined) return live;
   const signal: HistorySignal = { bootGeneration: params.bootGeneration || undefined, epoch: params.epoch };
   return classifySignal(held, signal) === "invalidate" ? { ...live, history: invalidated(held, signal) } : live;
 }

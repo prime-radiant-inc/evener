@@ -434,6 +434,7 @@ function mergePageItem(older: ItemModel, newer: ItemModel): ItemModel {
       ...older,
       ...newer,
       authorship: newer.authorship ?? older.authorship,
+      ...((newer.actor ?? older.actor) ? { actor: newer.actor ?? older.actor } : {}),
       text: textSource.text,
       toolName: newer.toolName ?? older.toolName,
       callId: newer.callId ?? older.callId,

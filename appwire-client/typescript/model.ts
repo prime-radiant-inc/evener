@@ -63,6 +63,7 @@ export interface ItemModel {
   // guess (see UserMessageItem.tsx).
   transcriptEntryIndex?: number;
   clientMutationId?: string;
+  actor?: import("./types.gen").SessionActor;
   type: string; // wire ThreadItem.type verbatim
   text: string; // settled text
   pendingText?: string[]; // in-flight delta chunks (join on complete)
@@ -324,6 +325,8 @@ export interface ThreadModel {
   // a daemon on an incompatible protocol. Snapshot-only: a resume that clears
   // the fence re-hydrates the model without it.
   resumeOnlyFoldable?: boolean;
+  /** The session's immutable start-time Manager property, projected by its daemon. */
+  manager?: boolean;
   modelProvider: string;
   model: string;
   reasoningEffort?: string;

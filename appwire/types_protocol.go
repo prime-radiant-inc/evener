@@ -199,6 +199,9 @@ const (
 	// ScopeBoth (the root's daemon serves it; the hub relays). A UI-only
 	// request, never advertised to the model.
 	MethodEvenerDelegateStop = "evener/delegate/stop"
+	// MethodEvenerJobsStop asks the owning session to run its existing job_stop
+	// owner for one typed job or stable owned-delegate target. ScopeBoth.
+	MethodEvenerJobsStop = "evener/jobs/stop"
 	// MethodEvenerHostRequest forwards one hub-scoped admin RPC to a named
 	// remote host's hub (component 07a). Host is the component-03 source ID;
 	// Method must be in the proxy's exact allow-list. See HostRequestParams.

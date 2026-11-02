@@ -730,6 +730,39 @@ func TestClientMutation_QueueHeadReclaimAfterReturnStaysPending(t *testing.T) {
 	}
 }
 
+// TestClientMutation_PushQueueHeadKeepsClaimedAuthor pins the other half of
+// requeue attribution: a Manager-queued claim returned to the queue head must
+// keep its author, because promotion (AcceptClientMutationPromoteQueuedAsSteer)
+// reads the queue entry's actor. A requeue that rebuilt the entry without the
+// author would let the Manager's message be promoted and delivered as human
+// input.
+func TestClientMutation_PushQueueHeadKeepsClaimedAuthor(t *testing.T) {
+	t.Parallel()
+	sess := newTestSession(t)
+	manager := schema.SessionActor{Kind: "manager", ManagerRef: "local:manager"}
+	params := appwire.TurnQueueParams{
+		ClientMutationID: "requeue-author",
+		Input:            []appwire.InputItem{{Type: "text", Text: "manager queued input"}},
+	}
+	if _, err := sess.AcceptClientMutationQueueAs(params, manager); err != nil {
+		t.Fatalf("AcceptClientMutationQueueAs: %v", err)
+	}
+	claimed := sess.popQueueHead()
+	if claimed.ClientMutationID != params.ClientMutationID {
+		t.Fatalf("popQueueHead claimed = %#v, want %q", claimed, params.ClientMutationID)
+	}
+	if err := sess.pushQueueHead(claimed); err != nil {
+		t.Fatal(err)
+	}
+	snapshot := sess.clientMutations.snapshot()
+	if len(snapshot.InputQueue) != 1 || snapshot.InputQueue[0].ClientMutationID != params.ClientMutationID {
+		t.Fatalf("requeued queue = %#v, want the returned claim at the head", snapshot.InputQueue)
+	}
+	if got := snapshot.InputQueue[0].Actor; got != manager {
+		t.Fatalf("requeued entry actor = %#v, want the manager author %#v", got, manager)
+	}
+}
+
 func TestClientMutation_StartClaimedWithTranscriptRestoresRunnableWithoutDuplicateAppend(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()

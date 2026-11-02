@@ -76,7 +76,7 @@ func TestThreadHistoriesReadOfUnhookedDelegateProjectsWholeFile(t *testing.T) {
 	path := writeDelegateTranscript(t, "delegate_x", "first", "second")
 
 	h := r.ensure("delegate_x", "local:delegate_x", path, 0, 0, "1", noopHistoryPublish, noopHistoryResync, nil)
-	turns, _, _, _, err := h.latest(h.capture(), "local:delegate_x", 10)
+	turns, _, _, _, _, err := h.latest(h.capture(), "local:delegate_x", 10)
 	if err != nil {
 		t.Fatalf("latest: %v", err)
 	}
@@ -120,7 +120,7 @@ func TestThreadHistoriesSeventyDelegatesLeaveAtMost64OpenHandles(t *testing.T) {
 		ref := "local:" + threadID
 		path := writeDelegateTranscript(t, threadID, "only")
 		h := r.ensure(threadID, ref, path, 0, 0, "1", noopHistoryPublish, noopHistoryResync, nil)
-		if _, _, _, _, err := h.latest(h.capture(), ref, 10); err != nil {
+		if _, _, _, _, _, err := h.latest(h.capture(), ref, 10); err != nil {
 			t.Fatalf("delegate %d: latest: %v", i, err)
 		}
 	}
@@ -297,7 +297,7 @@ func TestThreadHistoriesReleaseDuringAReadRecoveryKeepsEpochsMonotonic(t *testin
 	<-resyncs // failed
 	read := make(chan error, 1)
 	go func() {
-		_, _, _, _, err := h.latest(h.capture(), "local:child", 10)
+		_, _, _, _, _, err := h.latest(h.capture(), "local:child", 10)
 		read <- err
 	}()
 	awaitClosed(t, parked, "the read's rebuild to park")

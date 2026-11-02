@@ -18,6 +18,17 @@ export interface AgentsDocSetParams {
   content: string;
 }
 
+export interface AnswerContinuationQuery {
+  ancestorTurnId: string;
+  candidateTurnId: string;
+}
+
+export interface AnswerContinuationVerdict {
+  ancestorTurnId: string;
+  candidateTurnId: string;
+  matches: boolean;
+}
+
 export interface ApiKeyConditionalSetParams {
   provider: string;
   value: string;
@@ -380,8 +391,15 @@ export interface AuthTestResponse {
 }
 
 export interface Capabilities {
+  sessionTools?: boolean;
   experimentalApi: boolean;
   optOutNotificationMethods?: string[];
+}
+
+export interface Causal {
+  watch_keys?: WatchKey[];
+  chain?: Entry[];
+  chain_truncated?: boolean;
 }
 
 export interface ClientInfo {
@@ -557,6 +575,15 @@ export interface EmptyParams {
 }
 
 export interface EmptyResponse {
+}
+
+export interface Entry {
+  kind: string;
+  watch_id?: string;
+  watch_generation?: string;
+  delivery_id?: string;
+  session_id?: string;
+  job_id?: string;
 }
 
 export interface EvenerAuthUpdatedParams {
@@ -811,6 +838,12 @@ export interface EvenerSubagentPreviewResponse {
 }
 
 export interface EvenerThread {
+  /**
+   * Manager is the session's start-time Manager property, reported by the
+   * session itself. It is not a runtime setting: nothing can turn it on or
+   * off after the session starts.
+   */
+  manager?: boolean;
   /**
    * ResumeRequired means recovery stopped this session and automatic actions
    * must wait for an explicit thread/resume. Saved transcripts remain readable.
@@ -1154,6 +1187,7 @@ export interface FavoriteSetResponse {
 }
 
 export interface FeatureSet {
+  sessionTools?: boolean;
   threadList: boolean;
   threadTurnsList: boolean;
   turnStart: boolean;
@@ -2226,6 +2260,12 @@ export interface MCPServerSpec {
   args?: string[];
 }
 
+export interface ManagerView {
+  ref: string;
+  instanceId: string;
+  manager?: boolean;
+}
+
 export interface MarketplaceAddParams {
   name?: string;
   source: MarketplaceSourceInput;
@@ -2354,6 +2394,7 @@ export interface ModelListResponse {
 }
 
 export interface MutationReceipt {
+  actor?: SessionActor;
   clientMutationId: string;
   disposition: string;
   threadId: string;
@@ -2783,6 +2824,11 @@ export interface NoticesListResponse {
   notices: HubNotice[];
 }
 
+export interface Notification {
+  method: string;
+  params?: unknown;
+}
+
 export interface OperationProgressEntry {
   ts: string;
   message: string;
@@ -2885,6 +2931,7 @@ export interface PathsCompleteResponse {
 }
 
 export interface PendingMutation {
+  actor?: SessionActor;
   clientMutationId: string;
   method: string;
   input?: InputItem[];
@@ -3163,6 +3210,7 @@ export interface SandboxEscalationRequested {
 }
 
 export interface SandboxEscalationResolveParams {
+  managerProof?: SessionActorProof;
   threadId?: string;
   ref?: string;
   escalationId: string;
@@ -3409,6 +3457,21 @@ export interface SessionActivityReadParams {
   scope?: SessionActivityScope;
 }
 
+export interface SessionActivityRequest {
+  ref: string;
+  resource: SessionActivityResource;
+  scope?: SessionActivityScope;
+  cursor?: string;
+  limit?: number;
+}
+
+export interface SessionActivityResponse {
+  summary?: SessionActivitySummary;
+  delegates?: SessionDelegatesResponse;
+  jobs?: SessionJobsResponse;
+  watches?: SessionWatchesResponse;
+}
+
 export interface SessionActivitySummary {
   /**
    * Issues identify unavailable physical sources; healthy counts retain authority.
@@ -3430,6 +3493,67 @@ export interface SessionActivitySummary {
   delegates: SessionActivityCounts;
   jobs: SessionActivityCounts;
   watches: SessionActivityCounts;
+}
+
+export interface SessionActor {
+  kind: string;
+  managerRef?: string;
+}
+
+export interface SessionActorProof {
+  bindingId: string;
+  callerRef: string;
+  actor: SessionActor;
+}
+
+export interface SessionBinding {
+  ref: string;
+  instanceId: string;
+  hubId: string;
+  bindingId: string;
+}
+
+export interface SessionControlRequest {
+  action: string;
+  approval?: SandboxEscalationResolveParams;
+  resume?: ThreadResumeParams;
+  fork?: ThreadForkParams;
+  clear?: ThreadClearParams;
+  model?: ThreadModelSetParams;
+  vision_model?: ThreadVisionModelSetParams;
+  reasoning_effort?: ThreadReasoningEffortSetParams;
+  compact?: ThreadCompactStartParams;
+  drain_queue?: TurnDrainAsSteerParams;
+  promote_queued?: TurnPromoteQueuedAsSteerParams;
+  cancel_queued?: TurnCancelQueuedParams;
+  rename?: ThreadNameSetParams;
+  goal?: GoalSetParams;
+  human_notes?: NotesHumanSetParams;
+  remove_url?: UrlsRemoveParams;
+  archive?: ArchiveParams;
+  delete?: SessionDeleteParams;
+  pin?: SessionPinAssignParams;
+  unpin?: SessionPinUnpinParams;
+  seen?: SessionSeenSetParams;
+}
+
+export interface SessionControlResponse {
+  result: EmptyResponse;
+  actor: SessionActor;
+  resume?: ThreadResumeResponse;
+  fork?: ThreadForkResponse;
+  clear?: ThreadClearResponse;
+  drain_queue?: TurnDrainAsSteerResponse;
+  promote_queued?: TurnPromoteQueuedAsSteerResponse;
+  cancel_queued?: TurnCancelQueuedResponse;
+  goal?: GoalSetResponse;
+  human_notes?: NotesHumanSetResponse;
+  remove_url?: UrlsRemoveResponse;
+  archive?: ArchiveResponse;
+  delete?: SessionDeleteResponse;
+  pin?: SessionPinAssignResponse;
+  unpin?: SessionPinUnpinResponse;
+  seen?: SessionSeenSetResponse;
 }
 
 export interface SessionDelegate {
@@ -3505,6 +3629,11 @@ export interface SessionDeleteResponse {
   navigation: NavigationMutation;
 }
 
+export interface SessionDiscovery {
+  threads: ThreadListResponse;
+  sources: SessionSource[];
+}
+
 export interface SessionDocumentParams {
   sessionId: string;
   path: string;
@@ -3530,11 +3659,80 @@ export interface SessionImageResponse {
   data: string;
 }
 
+export interface SessionJobStopParams {
+  ref: string;
+  jobId: string;
+  includeChildren?: boolean;
+  maxWaitMs?: number;
+}
+
+export interface SessionJobStopResponse {
+  jobId: string;
+  status: string;
+  outcome: string;
+}
+
 export interface SessionJobsResponse {
   context: SessionActivityContext;
   scope: SessionActivityScope;
   page: SessionActivityPage;
   jobs: JobActivityJob[];
+}
+
+export interface SessionObservationMetadata {
+  ref: string;
+  instanceId?: string;
+  generationId?: string;
+  turnId?: string;
+  answerToTurnIds?: string[];
+  entryId?: string;
+  endTurn?: boolean;
+  endReason?: string;
+  terminalAccepted?: boolean;
+  causalKnown: boolean;
+  causal?: Causal;
+}
+
+export interface SessionOperationRequest {
+  discover?: ThreadListParams;
+  read?: ThreadReadParams;
+  turns?: ThreadTurnsListParams;
+  activity?: SessionActivityRequest;
+  tasks?: SessionTasksRequest;
+  job?: JobsGetParams;
+  jobOutput?: JobsOutputParams;
+  models?: ModelListParams;
+  create?: ThreadStartParams;
+  start?: TurnStartParams;
+  queue?: TurnQueueParams;
+  steer?: TurnSteerParams;
+  control?: SessionControlRequest;
+  stop?: SessionStopRequest;
+}
+
+export interface SessionOperationResponse {
+  actor: SessionActor;
+  discover?: SessionDiscovery;
+  read?: ThreadReadResponse;
+  turns?: ThreadTurnsListResponse;
+  activity?: SessionActivityResponse;
+  tasks?: SessionTasksResponse;
+  job?: JobsGetResponse;
+  jobOutput?: JobsOutputResponse;
+  models?: ModelListResponse;
+  create?: ThreadStartResponse;
+  start?: TurnStartResponse;
+  queue?: TurnQueueResponse;
+  steer?: TurnSteerResponse;
+  control?: SessionControlResponse;
+  stop?: SessionStopResponse;
+  followUps?: SessionStatusFollowUp[];
+}
+
+export interface SessionOwnedDelegateStopParams {
+  ref: string;
+  delegateId: string;
+  maxWaitMs?: number;
 }
 
 export interface SessionPinAssignParams {
@@ -3570,6 +3768,25 @@ export interface SessionPinUnpinResponse {
   navigation: NavigationMutation;
 }
 
+export interface SessionRuntimeCancel {
+  bindingId: string;
+  requestId: number;
+}
+
+export interface SessionRuntimeObservation {
+  bindingId: string;
+  watchId: string;
+  update?: SessionWatchUpdate;
+  ended?: boolean;
+}
+
+export interface SessionRuntimeRequest {
+  bindingId: string;
+  operation?: SessionOperationRequest;
+  watch?: SessionWatchRequest;
+  watchId?: string;
+}
+
 export interface SessionSeenMark {
   ref: string;
   seenThrough?: number;
@@ -3584,6 +3801,79 @@ export interface SessionSeenSetResponse {
   ok: boolean;
   changed: boolean;
   navigation: NavigationMutation;
+}
+
+export interface SessionSource {
+  id: string;
+}
+
+export interface SessionStatusArguments {
+  hub: SessionStatusTarget;
+}
+
+export interface SessionStatusFollowUp {
+  tool: string;
+  arguments: SessionStatusArguments;
+}
+
+export interface SessionStatusTarget {
+  ref: string;
+  mode?: string;
+  resource?: SessionActivityResource;
+  scope?: SessionActivityScope;
+  cursor?: string;
+  limit?: number;
+  itemLimit?: number;
+  offset?: number;
+  snapshot?: string;
+  jobId?: string;
+  beforeBytes?: number;
+  maxBytes?: number;
+}
+
+export interface SessionStopRequest {
+  mode: string;
+  interrupt?: TurnInterruptParams;
+  delegate?: DelegateStopParams;
+  owned_delegate?: SessionOwnedDelegateStopParams;
+  job?: SessionJobStopParams;
+  shutdown?: ThreadShutdownParams;
+  force_stop?: ThreadForceStopParams;
+}
+
+export interface SessionStopResponse {
+  actor: SessionActor;
+  interrupt?: TurnInterruptResponse;
+  delegate?: DelegateStopResponse;
+  job?: SessionJobStopResponse;
+  result: EmptyResponse;
+}
+
+export interface SessionTasksRequest {
+  ref: string;
+  offset?: number;
+  limit?: number;
+  snapshot?: string;
+}
+
+export interface SessionTasksResponse {
+  data: Task[] | null;
+  snapshot?: string;
+  nextOffset?: number;
+}
+
+export interface SessionToolsInput {
+  callerRef: string;
+  method: string;
+  params: unknown;
+}
+
+export interface SessionToolsPeerParams {
+  hubId: string;
+}
+
+export interface SessionToolsPeerResponse {
+  hubId: string;
 }
 
 export interface SessionURL {
@@ -3603,6 +3893,19 @@ export interface SessionWatch {
   receiverRef: string;
   state: SessionWatchState;
   watch: EvenerWatchInfo;
+}
+
+export interface SessionWatchRequest {
+  ref: string;
+  events?: string[];
+  completion?: boolean;
+}
+
+export interface SessionWatchUpdate {
+  snapshot?: ThreadReadResponse;
+  notification?: Notification;
+  event?: string;
+  metadata: SessionObservationMetadata;
 }
 
 export interface SessionWatchesResponse {
@@ -4055,6 +4358,8 @@ export interface ThreadForkResponse {
 }
 
 export interface ThreadItem {
+  actor?: SessionActor;
+  observation?: SessionObservationMetadata;
   authorship?: TranscriptAuthorship;
   type: string;
   id: string;
@@ -4283,10 +4588,26 @@ export interface ThreadReadParams {
    * re-read when nothing outside the client's window changed.
    */
   heldSnapshot?: SnapshotIdentity;
+  /**
+   * AnswerContinuation requests only a recorded ancestry verdict and its
+   * snapshot identity. It cannot subscribe or include a transcript window.
+   */
+  answerContinuation?: AnswerContinuationQuery;
 }
 
 export interface ThreadReadResponse {
   thread: Thread;
+  /**
+   * TargetSessionToolsSupported reports whether the daemon serving this thread
+   * negotiated session tools. Omission means the serving hub cannot attest it.
+   */
+  targetSessionToolsSupported?: boolean;
+  /**
+   * LatestExecutionTurnID is the newest recorded execution span at Snapshot,
+   * regardless of later non-execution history turns.
+   */
+  latestExecutionTurnId?: string;
+  answerContinuation?: AnswerContinuationVerdict;
   /**
    * OlderCursor is set when itemLimit truncated the returned items; pass it
    * to thread/turns/list to fetch the page just before the window. Empty means
@@ -4386,6 +4707,12 @@ export interface ThreadStartParams {
   reasoningEffort?: string;
   nonInteractive?: boolean;
   launchOverrides?: LaunchConfigLayer;
+  /**
+   * Manager starts this session as a Manager of the sessions its hub can
+   * reach. It is a start-time property, not a setting: the daemon persists it
+   * with the session, so a resume keeps it and nothing can turn it off.
+   */
+  manager?: boolean;
 }
 
 export interface ThreadStartResponse {
@@ -4713,6 +5040,7 @@ export interface TurnCancelQueuedResponse {
 }
 
 export interface TurnDrainAsSteerParams {
+  managerProof?: SessionActorProof;
   ref: string;
   clientMutationId: string;
   expectedInstanceId: string;
@@ -4746,6 +5074,7 @@ export interface TurnInterruptResponse {
 }
 
 export interface TurnPromoteQueuedAsSteerParams {
+  managerProof?: SessionActorProof;
   ref: string;
   index: number;
   clientMutationId: string;
@@ -4758,6 +5087,7 @@ export interface TurnPromoteQueuedAsSteerResponse {
 }
 
 export interface TurnQueueParams {
+  managerProof?: SessionActorProof;
   ref: string;
   clientMutationId: string;
   expectedInstanceId: string;
@@ -4769,6 +5099,7 @@ export interface TurnQueueResponse {
 }
 
 export interface TurnStartParams {
+  managerProof?: SessionActorProof;
   ref?: string;
   threadId?: string;
   clientMutationId: string;
@@ -4782,6 +5113,7 @@ export interface TurnStartResponse {
 }
 
 export interface TurnSteerParams {
+  managerProof?: SessionActorProof;
   ref?: string;
   threadId?: string;
   clientMutationId: string;
@@ -4860,6 +5192,9 @@ export interface UrlsUpdatedParams {
   urls?: SessionURL[];
 }
 
+export interface Value {
+}
+
 export interface WarningParams {
   threadId: string;
   ref: string;
@@ -4872,9 +5207,22 @@ export interface WarningParams {
   cause?: DiagnosticCause;
 }
 
+export interface WatchKey {
+  watch_id: string;
+  watch_generation: string;
+}
+
 export const METHOD_NAMES = [
   "initialize",
   "ping",
+  "evener/hub/session-tools/identify",
+  "evener/runtime/session/bind",
+  "evener/runtime/session/state",
+  "evener/runtime/session/invoke",
+  "evener/runtime/session/watch",
+  "evener/runtime/session/unwatch",
+  "evener/runtime/session/cancel",
+  "evener/hub/session-tools/input",
   "thread/list",
   "thread/read",
   "thread/unsubscribe",
@@ -4996,6 +5344,7 @@ export const METHOD_NAMES = [
   "evener/settings/agentsDoc/set",
   "evener/sandbox/escalation/resolve",
   "evener/delegate/stop",
+  "evener/jobs/stop",
   "evener/host/request",
   "evener/host/attach",
   "evener/host/add",
@@ -5071,6 +5420,7 @@ export const HOST_REQUEST_METHODS = [
 export type HostRequestMethod = (typeof HOST_REQUEST_METHODS)[number];
 
 export const NOTIFICATION_NAMES = [
+  "evener/runtime/session/observation",
   "thread/started",
   "thread/closed",
   "thread/status/changed",
@@ -5271,7 +5621,7 @@ export const WIRE_FIELD_KEYS = {
   ThreadItemPosition: ["entry", "item", "sub"],
   TurnError: ["message", "additionalDetails", "codexErrorInfo", "source", "title", "hint", "cause"],
   DiagnosticCause: ["kind", "provider", "model", "status"],
-  ThreadItem: ["authorship", "type", "id", "transcriptKey", "position", "turnId", "transcriptEntryIndex", "text", "delta", "images", "toolName", "callId", "argumentsJson", "description", "output", "error", "outputImages", "status", "prevalOnly", "startedAt", "completedAt", "durationMs", "exitCode", "raw", "eventKind", "source", "steeringKind", "clientMutationId", "version", "roundId", "completedAtEntry"],
+  ThreadItem: ["actor", "observation", "authorship", "type", "id", "transcriptKey", "position", "turnId", "transcriptEntryIndex", "text", "delta", "images", "toolName", "callId", "argumentsJson", "description", "output", "error", "outputImages", "status", "prevalOnly", "startedAt", "completedAt", "durationMs", "exitCode", "raw", "eventKind", "source", "steeringKind", "clientMutationId", "version", "roundId", "completedAtEntry"],
   InputItem: ["type", "text", "mentions", "url", "mediaType", "data", "name", "path", "metadata"],
   InputMention: ["kind", "name", "offset"],
   OutputImage: ["source", "name", "mediaType", "size", "url", "sha", "path"],
@@ -5297,6 +5647,14 @@ export const WIRE_FIELD_KEYS = {
 export interface MethodTypes {
   "initialize": { params: InitializeParams; result: InitializeResponse };
   "ping": { params: EmptyParams; result: EmptyResponse };
+  "evener/hub/session-tools/identify": { params: SessionToolsPeerParams; result: SessionToolsPeerResponse };
+  "evener/runtime/session/bind": { params: SessionBinding; result: SessionBinding };
+  "evener/runtime/session/state": { params: SessionRuntimeRequest; result: ManagerView };
+  "evener/runtime/session/invoke": { params: SessionRuntimeRequest; result: SessionOperationResponse };
+  "evener/runtime/session/watch": { params: SessionRuntimeRequest; result: EmptyResponse };
+  "evener/runtime/session/unwatch": { params: SessionRuntimeRequest; result: EmptyResponse };
+  "evener/runtime/session/cancel": { params: SessionRuntimeCancel; result: EmptyResponse };
+  "evener/hub/session-tools/input": { params: SessionToolsInput; result: Value };
   "thread/list": { params: ThreadListParams; result: ThreadListResponse };
   "thread/read": { params: ThreadReadParams; result: ThreadReadResponse };
   "thread/unsubscribe": { params: ThreadUnsubscribeParams; result: EmptyResponse };
@@ -5418,6 +5776,7 @@ export interface MethodTypes {
   "evener/settings/agentsDoc/set": { params: AgentsDocSetParams; result: AgentsDocResponse };
   "evener/sandbox/escalation/resolve": { params: SandboxEscalationResolveParams; result: EmptyResponse };
   "evener/delegate/stop": { params: DelegateStopParams; result: DelegateStopResponse };
+  "evener/jobs/stop": { params: SessionStopRequest; result: SessionStopResponse };
   "evener/host/request": { params: HostRequestParams; result: HostForwardedResult };
   "evener/host/attach": { params: HostAttachParams; result: HostAttachResponse };
   "evener/host/add": { params: HostAddParams; result: HostMutationCommitted | HostMutationTeardownFailure | HostMutationCollisionDropped | HostMutationAmbiguous };
@@ -5438,6 +5797,7 @@ export interface MethodTypes {
 }
 
 export interface NotificationTypes {
+  "evener/runtime/session/observation": SessionRuntimeObservation;
   "thread/started": ThreadStartedParams;
   "thread/closed": ThreadClosedParams;
   "thread/status/changed": ThreadStatusChangedParams;

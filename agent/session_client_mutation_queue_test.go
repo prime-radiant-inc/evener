@@ -775,6 +775,33 @@ func TestClientMutation_PromoteRejectsShiftedEntryDurably(t *testing.T) {
 	}
 }
 
+func TestClientMutation_PromoteSteeringUsesQueuedAuthor(t *testing.T) {
+	t.Parallel()
+	sess := newTestSession(t)
+	setTestClientMutationActiveTurn(t, sess, "turn-1")
+	queuedBy := schema.SessionActor{Kind: "human"}
+	promotedBy := schema.SessionActor{Kind: "manager", ManagerRef: "local:manager"}
+	queued, err := sess.AcceptClientMutationQueue(appwire.TurnQueueParams{
+		ClientMutationID: "queue-authored",
+		Input:            []appwire.InputItem{{Type: "text", Text: "authored input"}},
+	})
+	if err != nil {
+		t.Fatalf("AcceptClientMutationQueueAs: %v", err)
+	}
+	if _, err := sess.AcceptClientMutationPromoteQueuedAsSteerAs(appwire.TurnPromoteQueuedAsSteerParams{
+		Index:            0,
+		ClientMutationID: "promote-authored",
+		ExpectedEntryID:  queued.Receipt.QueueEntryIDs[0],
+	}, promotedBy); err != nil {
+		t.Fatalf("AcceptClientMutationPromoteQueuedAsSteerAs: %v", err)
+	}
+	pending := sess.clientMutations.snapshot().PendingExecutions["promote-authored"]
+	want := wireSessionActor(queuedBy)
+	if pending.Actor != want {
+		t.Fatalf("pending steering actor = %#v, want queued author %#v", pending.Actor, want)
+	}
+}
+
 func TestClientMutation_QueueReplayReportsRemovedAfterTransform(t *testing.T) {
 	for _, transform := range []string{"cancel", "promote", "drain"} {
 		t.Run(transform, func(t *testing.T) {

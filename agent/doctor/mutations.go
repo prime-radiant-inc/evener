@@ -9,6 +9,8 @@ import (
 	"os"
 	"sort"
 	"strings"
+
+	"primeradiant.com/evener/appwire"
 )
 
 // clientMutationStoreVersion is the only snapshot version the runtime writes
@@ -172,12 +174,14 @@ type clientMutationStoreFile struct {
 }
 
 type clientMutationStoreRecord struct {
+	Actor               clientMutationStoreActor                `json:"actor"`
 	ClientMutationID    string                                  `json:"client_mutation_id"`
 	Method              string                                  `json:"method"`
 	Payload             json.RawMessage                         `json:"payload"`
 	Preconditions       json.RawMessage                         `json:"preconditions"`
 	StableTurnID        string                                  `json:"stable_turn_id"`
 	StableQueueEntryIDs []string                                `json:"stable_queue_entry_ids"`
+	AnswerToTurnIDs     []string                                `json:"answer_to_turn_ids"`
 	PayloadHash         string                                  `json:"payload_hash"`
 	OperationState      string                                  `json:"operation_state"`
 	ExecutionState      string                                  `json:"execution_state"`
@@ -202,20 +206,29 @@ type clientMutationStoreRejection struct {
 	Data    json.RawMessage `json:"data"`
 }
 
+// The forensic reader mirrors the persisted actor shape, rather than dropping
+// a field whose identity distinguishes Manager input from human input.
+type clientMutationStoreActor struct {
+	Kind       string `json:"kind"`
+	ManagerRef string `json:"manager_ref"`
+}
+
 type clientMutationStoreQueueEntry struct {
-	ID               string            `json:"id"`
-	ClientMutationID string            `json:"client_mutation_id"`
-	Input            []json.RawMessage `json:"input"`
+	Actor            clientMutationStoreActor `json:"actor"`
+	ID               string                   `json:"id"`
+	ClientMutationID string                   `json:"client_mutation_id"`
+	Input            []json.RawMessage        `json:"input"`
 }
 
 type clientMutationStorePending struct {
-	ClientMutationID string            `json:"client_mutation_id"`
-	Method           string            `json:"method"`
-	Input            []json.RawMessage `json:"input"`
-	ExecutionState   string            `json:"execution_state"`
-	TurnID           string            `json:"turn_id"`
-	QueueEntryIDs    []string          `json:"queue_entry_ids"`
-	ProjectionState  string            `json:"projection_state"`
+	Actor            appwire.SessionActor `json:"actor"`
+	ClientMutationID string               `json:"client_mutation_id"`
+	Method           string               `json:"method"`
+	Input            []json.RawMessage    `json:"input"`
+	ExecutionState   string               `json:"execution_state"`
+	TurnID           string               `json:"turn_id"`
+	QueueEntryIDs    []string             `json:"queue_entry_ids"`
+	ProjectionState  string               `json:"projection_state"`
 }
 
 func decodeClientMutationStore(data []byte, path, sessionID string) (clientMutationStoreFile, error) {

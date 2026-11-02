@@ -406,7 +406,9 @@ func (s *Server) RecordDescendantAppEvent(ownerThreadID string, event events.Ses
 					ID:        threadID,
 					SessionID: threadID,
 					Source:    sourceID,
-					Evener:    appwire.EvenerThread{Ref: ref, Kind: "subagent", ParentRef: parentRef},
+					// In-process children share the root's serving instance,
+					// matching the hub's live descendant list rows.
+					Evener: appwire.EvenerThread{Ref: ref, InstanceID: ownerThreadID, Kind: "subagent", ParentRef: parentRef},
 				},
 			}
 			s.appDescendants[threadID] = projection
@@ -434,6 +436,7 @@ func (s *Server) RecordDescendantAppEvent(ownerThreadID string, event events.Ses
 				}
 				mergeStartCurrentWork(&params.Thread.Evener, cachedTasks, projection.thread.Evener.Goal, startSeed)
 				params.Thread.Evener.ParentRef = parentRef
+				params.Thread.Evener.InstanceID = ownerThreadID
 				projection.thread = params.Thread
 				projection.thread.Evener.Kind = "subagent"
 				projection.thread.Evener.Access = appwire.SessionAccess(start.Sandbox, start.SandboxNet)

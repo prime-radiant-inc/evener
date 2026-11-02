@@ -319,6 +319,9 @@ func TestDelegateControllerDormancyGuardRejectsConstructionAndAliases(t *testing
 		{name: "lifecycle method expression", source: `package agent; func probe() { commit := (*delegateTreeController).CommitStart; _ = commit }`, symbol: "CommitStart"},
 		{name: "bound lifecycle reference through type alias", source: `package agent; type active = delegateTreeController; func probe(controller *active) { commit := controller.CommitStart; _ = commit }`, symbol: "CommitStart"},
 		{name: "lifecycle method expression through type alias", source: `package agent; type active = delegateTreeController; func probe() { commit := (*active).CommitStart; _ = commit }`, symbol: "CommitStart"},
+		{name: "snapshot helper call", source: `package agent; func probe(controller *delegateTreeController) { controller.captureDelegateSnapshotLocked("id") }`, symbol: "captureDelegateSnapshotLocked"},
+		{name: "bound snapshot helper alias", source: `package agent; func probe(controller *delegateTreeController) { capture := controller.captureDelegateSnapshotLocked; _ = capture }`, symbol: "captureDelegateSnapshotLocked"},
+		{name: "snapshot helper method expression through type alias", source: `package agent; type active = delegateTreeController; func probe() { capture := (*active).captureDelegateSnapshotLocked; _ = capture }`, symbol: "captureDelegateSnapshotLocked"},
 		{name: "session steering call", source: `package agent; func probe(session *Session) { session.appendDelegateSteeringDurably("steer", "turn_id") }`, symbol: "appendDelegateSteeringDurably"},
 		{name: "bound session steering alias", source: `package agent; func probe(session *Session) { appendSteer := session.appendDelegateSteeringDurably; _ = appendSteer }`, symbol: "appendDelegateSteeringDurably"},
 		{name: "session steering method expression", source: `package agent; func probe() { appendSteer := (*Session).appendDelegateSteeringDurably; _ = appendSteer }`, symbol: "appendDelegateSteeringDurably"},
@@ -430,6 +433,7 @@ var delegateControllerLifecycleMethods = map[string]bool{
 	"ReportAttentionConsumed":             true,
 	"ReportAttentionStabilized":           true,
 	"AuthorizeMutation":                   true,
+	"captureDelegateSnapshotLocked":       true,
 	"Snapshot":                            true,
 }
 
@@ -512,6 +516,9 @@ var delegateControllerDormancyExpectedInventory = map[delegateControllerDormancy
 	{filename: "session_attention.go", function: "(*Session).finishRootDelegateAttentionTurn", kind: "session attention method", symbol: "resolveAttentionDurably"}:                    1,
 	{filename: "session_events.go", function: "(*Session).SetDescendantEventFunc", kind: "lifecycle method", symbol: "Snapshot"}:                                                       1,
 	{filename: "session_tools_job_list.go", function: "delegateRowsForSession", kind: "lifecycle method", symbol: "Snapshot"}:                                                          1,
+	{filename: "delegate_tree_controller.go", function: "(*delegateTreeController).capturedPlanLocked", kind: "lifecycle method", symbol: "captureDelegateSnapshotLocked"}:             1,
+	{filename: "delegate_tree_controller.go", function: "(*delegateTreeController).captureDelegateSnapshotsLocked", kind: "lifecycle method", symbol: "captureDelegateSnapshotLocked"}: 1,
+	{filename: "session_tools_hub_job_stop.go", function: "(*Session).StopOwnedDelegateForManager", kind: "lifecycle method", symbol: "captureDelegateSnapshotLocked"}:                 1,
 	{filename: "delegate_tree_stop.go", function: "(*delegateTreeController).drainStopAbandonable", kind: "lifecycle method", symbol: "stopReconcileRequirements"}:                     1,
 	{filename: "delegate_tree_stop.go", function: "(*delegateTreeController).drainStopAbandonable", kind: "lifecycle method", symbol: "Reconcile"}:                                     1,
 }
@@ -720,6 +727,7 @@ type delegateToolResultCommit struct{}
 func openDelegateTreeController(delegateTreeControllerConfig) (*delegateTreeController, error) { return nil, nil }
 func deliverDelegatePacket() {}
 func (*delegateTreeController) CommitStart(*delegateStartReservation) (delegateStartCommit, error) { return delegateStartCommit{}, nil }
+func (*delegateTreeController) captureDelegateSnapshotLocked(string) {}
 func (*delegateTreeController) ReconcileRequirements() delegateReconcileRequirements { return delegateReconcileRequirements{} }
 func (*delegateTreeController) stopReconcileRequirements(*delegateStopState) (delegateReconcileRequirements, bool) { return delegateReconcileRequirements{}, true }
 func (*Session) appendDelegateSteeringDurably(string, string) {}

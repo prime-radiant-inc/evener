@@ -56,12 +56,13 @@ var rosterShownFields = []string{
 // Entry is the rendezvous record and SessionID is the map key the fingerprint
 // already hashes. Activity's bars move every minute a session works, so
 // hashing them would broadcast an invalidation on every probe. Profile and
-// Project reach no row. The rest are the parts of a shown struct that no row
+// Project reach no row. Manager is read from the session, outside navigation.
+// The rest are the parts of a shown struct that no row
 // reads: an escalation card's body (the ID names the card), a job's exit and
 // provenance details, a task list's Remaining (its three counts determine it)
 // and a lifecycle's last retirement attempt.
 var rosterNotShownFields = []string{
-	"Entry", "SessionID", "Activity", "Profile", "Project",
+	"Entry", "SessionID", "Activity", "Profile", "Project", "Manager",
 	"PendingEscalations.ThreadID", "PendingEscalations.Ref", "PendingEscalations.Mode",
 	"PendingEscalations.Tool", "PendingEscalations.Kind", "PendingEscalations.DeniedPath",
 	"PendingEscalations.Command", "PendingEscalations.OutputSoFar", "PendingEscalations.PartiallyRan",

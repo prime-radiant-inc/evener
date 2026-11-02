@@ -13,6 +13,12 @@ changes; keep implementation history in Git and pull requests.
   points, dependencies, and recovery ownership across the product.
 - [Session activity](session-activity.md): scoped delegate, job and watch reads,
   navigation boundaries, pagination and shared recovery ownership.
+- [Manager workflow](../automation.md#manager-sessions): an immutable session
+  start parameter for anyone authorized to start a session. Managers discover,
+  observe and act on sessions reachable through their own hub, with local and
+  remote watches; worker creation remains local-only. The daemon owns status;
+  web and native show a read-only indication. Ownership stays in the existing session, hub, input,
+  history and watch subsystems.
 - [Session pulse meter](pulse-meter.md): the hub's live per-session activity
   read behind the Board meter, quiet time and newest root tool intent.
 - [Remote session actions](remote-sessions.md): the effective capability a

@@ -173,6 +173,7 @@ func ProbeResultFromThread(root appwire.Thread) ProbeResult {
 		Status:             root.Status.Type,
 		ActiveFlags:        append([]string(nil), root.Status.ActiveFlags...),
 		PendingAsk:         root.Evener.AskPending,
+		Manager:            root.Evener.Manager,
 		PendingEscalation:  len(root.Evener.PendingEscalations) > 0,
 		PendingEscalations: root.Evener.PendingEscalations,
 		PendingQuestion:    root.Evener.PendingQuestion,
@@ -205,6 +206,7 @@ func ProbeResultFromThread(root appwire.Thread) ProbeResult {
 func LiveEntryThreadFacts(in LiveEntry, r ProbeResult) LiveEntry {
 	in.Status = r.Status
 	in.PendingAsk = r.PendingAsk
+	in.Manager = r.Manager
 	in.PendingEscalation = r.PendingEscalation
 	in.PendingEscalations = r.PendingEscalations
 	in.PendingQuestion = r.PendingQuestion

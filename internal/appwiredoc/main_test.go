@@ -65,21 +65,42 @@ func TestRun(t *testing.T) {
 
 func TestMainAndRenderFailure(t *testing.T) {
 	oldExit, oldArgs, oldExecute := exitProcess, os.Args, executeTemplate
-	t.Cleanup(func() { exitProcess, os.Args, executeTemplate = oldExit, oldArgs, oldExecute })
+	oldStderr := os.Stderr
+	mainStderr, err := os.CreateTemp(t.TempDir(), "main-stderr")
+	if err != nil {
+		t.Fatal(err)
+	}
+	renderStderr, err := os.CreateTemp(t.TempDir(), "render-stderr")
+	if err != nil {
+		_ = mainStderr.Close()
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		exitProcess, os.Args, executeTemplate, os.Stderr = oldExit, oldArgs, oldExecute, oldStderr
+		_ = mainStderr.Close()
+		_ = renderStderr.Close()
+	})
 	os.Args = []string{"appwiredoc"}
+	os.Stderr = mainStderr
 	var code int
 	exitProcess = func(got int) { code = got }
 	main()
 	if code != 2 {
 		t.Fatalf("main exit=%d", code)
 	}
-	stderr, err := os.CreateTemp(t.TempDir(), "stderr")
-	if err != nil {
-		t.Fatal(err)
+	if info, err := mainStderr.Stat(); err != nil {
+		t.Fatalf("stat main stderr: %v", err)
+	} else if info.Size() == 0 {
+		t.Fatal("main stderr was empty")
 	}
 	executeTemplate = func(*template.Template, *strings.Builder, docData) error { return errors.New("render") }
-	if got := run([]string{"-out", "ignored"}, stderr, os.WriteFile); got != 1 {
+	if got := run([]string{"-out", "ignored"}, renderStderr, os.WriteFile); got != 1 {
 		t.Fatalf("render code=%d", got)
+	}
+	if info, err := renderStderr.Stat(); err != nil {
+		t.Fatalf("stat render stderr: %v", err)
+	} else if info.Size() == 0 {
+		t.Fatal("render stderr was empty")
 	}
 }
 

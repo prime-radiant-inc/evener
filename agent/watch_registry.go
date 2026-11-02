@@ -24,6 +24,11 @@ func watchConfigSnapshot(cfg *watchConfig) *jobstore.WatchConfigSnapshot {
 		SourceDelegateGeneration: cfg.sourceGeneration,
 		StableReceiver:           cfg.stableReceiver,
 		Note:                     cfg.note,
+		HubRef:                   cfg.hubRef,
+		HubInstance:              cfg.hubInstance,
+		HubGeneration:            cfg.hubGeneration,
+		HubCaller:                cfg.hubCaller,
+		HubCompletion:            cfg.hubCompletion,
 	}
 	// A timer keeps only the seconds it derived and which mode derived them, so
 	// the snapshot rebuilds the field the model actually named: inspect and

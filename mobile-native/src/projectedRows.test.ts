@@ -107,6 +107,35 @@ function asksFor(callId: string): ReadonlyMap<string, AskQuestionRef[]> {
 }
 
 describe("projectedRow — item entries", () => {
+	it("SessionActor preserves the human and Manager speakers for input and steering", () => {
+		const human = projectedRow(
+			itemEntry(item({ type: "userMessage", text: "identical", actor: { kind: "human" } }), true),
+		);
+		const manager = projectedRow(
+			itemEntry(
+				item({ type: "userMessage", text: "identical", actor: { kind: "manager", managerRef: "local:manager" } }),
+				true,
+			),
+		);
+		const steer = projectedRow(
+			itemEntry(
+				item({
+					type: "steering",
+					source: "user",
+					text: "identical",
+					actor: { kind: "manager", managerRef: "local:manager" },
+				}),
+				true,
+			),
+		);
+		expect(human).toMatchObject({ kind: "user", actor: { kind: "human" } });
+		expect(manager).toMatchObject({ kind: "user", actor: { kind: "manager", managerRef: "local:manager" } });
+		expect(steer).toMatchObject({
+			kind: "user",
+			origin: "steered",
+			actor: { kind: "manager", managerRef: "local:manager" },
+		});
+	});
 	it("retains a recorded summary failure at every visibility level", () => {
 		const fixture = summaryFailureWireFixture();
 		const model = hydrateThread(summaryFailureWireRead(), "local:summary-fixture", 0);
