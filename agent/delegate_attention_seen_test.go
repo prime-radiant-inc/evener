@@ -21,7 +21,7 @@ import (
 func TestDelegatePresentedAttentionDoesNotEarnSuccessorGeneration(t *testing.T) {
 	fixture := newColdDelegateFixture(t, "")
 	var root *Session
-	fixture.adapter.steps = []func(llm.Request) llm.Response{
+	fixture.adapter.setSteps([]func(llm.Request) llm.Response{
 		func(llm.Request) llm.Response {
 			sub := root.subagents.get(fixture.childID)
 			armStableSupervisionAttention(t, sub, "attention:mid-run", "gate job finished: exit 0")
@@ -39,7 +39,7 @@ func TestDelegatePresentedAttentionDoesNotEarnSuccessorGeneration(t *testing.T) 
 			}
 			return agenttest.FinalResponse("migration checked")
 		},
-	}
+	})
 	root = restoreSupervisionRoot(t, fixture, nil)
 	sub := warmStableSupervisionDelegate(t, root, fixture)
 	waitForStableSupervisionRun(t, root, fixture.childID)
@@ -79,7 +79,7 @@ func TestDelegatePresentedAttentionDoesNotEarnSuccessorGeneration(t *testing.T) 
 func TestDelegateAttentionAfterLastRequestStillWakesTheDelegate(t *testing.T) {
 	fixture := newColdDelegateFixture(t, "")
 	var root *Session
-	fixture.adapter.steps = []func(llm.Request) llm.Response{
+	fixture.adapter.setSteps([]func(llm.Request) llm.Response{
 		func(llm.Request) llm.Response {
 			// This request is already built: the attention lands after the
 			// generation's last model boundary.
@@ -93,7 +93,7 @@ func TestDelegateAttentionAfterLastRequestStillWakesTheDelegate(t *testing.T) {
 			}
 			return agenttest.FinalResponse("the late gate run failed; looking into it")
 		},
-	}
+	})
 	root = restoreSupervisionRoot(t, fixture, nil)
 	sub := warmStableSupervisionDelegate(t, root, fixture)
 	waitForStableSupervisionRun(t, root, fixture.childID)
@@ -114,7 +114,7 @@ func TestDelegateAttentionAfterLastRequestStillWakesTheDelegate(t *testing.T) {
 // starts no successor for it.
 func TestDelegateAttentionLandingBetweenRequestSnapshotsIsConsumed(t *testing.T) {
 	fixture := newColdDelegateFixture(t, "")
-	fixture.adapter.steps = []func(llm.Request) llm.Response{
+	fixture.adapter.setSteps([]func(llm.Request) llm.Response{
 		func(llm.Request) llm.Response { return agenttest.FinalResponse("warm") },
 		func(req llm.Request) llm.Response {
 			if !requestContainsText(req, "review finished: approved") {
@@ -122,7 +122,7 @@ func TestDelegateAttentionLandingBetweenRequestSnapshotsIsConsumed(t *testing.T)
 			}
 			return agenttest.FinalResponse("merged")
 		},
-	}
+	})
 	root := restoreSupervisionRoot(t, fixture, nil)
 	sub := warmStableSupervisionDelegate(t, root, fixture)
 	waitForStableSupervisionRun(t, root, fixture.childID)
@@ -156,7 +156,7 @@ func TestDelegateAttentionLandingBetweenRequestSnapshotsIsConsumed(t *testing.T)
 func TestDelegateConsumingPresentedAttentionClearsNeedsAttentionWithoutAParentDrive(t *testing.T) {
 	fixture := newColdDelegateFixture(t, "")
 	var root *Session
-	fixture.adapter.steps = []func(llm.Request) llm.Response{
+	fixture.adapter.setSteps([]func(llm.Request) llm.Response{
 		func(llm.Request) llm.Response { return agenttest.FinalResponse("warm") },
 		func(llm.Request) llm.Response {
 			armStableSupervisionAttention(t, root.subagents.get(fixture.childID), "attention:unserved", "gate job finished: exit 0")
@@ -168,7 +168,7 @@ func TestDelegateConsumingPresentedAttentionClearsNeedsAttentionWithoutAParentDr
 			}
 			return agenttest.FinalResponse("gates passed")
 		},
-	}
+	})
 	root = restoreSupervisionRoot(t, fixture, nil)
 	sub := warmDelegateUnservedRoot(t, root, fixture)
 	waitForStableSupervisionRun(t, root, fixture.childID)
@@ -200,7 +200,7 @@ func TestDelegateConsumingPresentedAttentionClearsNeedsAttentionWithoutAParentDr
 func TestDelegateStopAfterConsumingPresentedAttentionCompletesWithLaterAttentionPending(t *testing.T) {
 	fixture := newColdDelegateFixture(t, "")
 	var root *Session
-	fixture.adapter.steps = []func(llm.Request) llm.Response{
+	fixture.adapter.setSteps([]func(llm.Request) llm.Response{
 		func(llm.Request) llm.Response { return agenttest.FinalResponse("warm") },
 		func(llm.Request) llm.Response {
 			armStableSupervisionAttention(t, root.subagents.get(fixture.childID), "attention:presented", "gate job finished: exit 0")
@@ -214,7 +214,7 @@ func TestDelegateStopAfterConsumingPresentedAttentionCompletesWithLaterAttention
 			armStableSupervisionAttention(t, root.subagents.get(fixture.childID), "attention:late", "review finished: approved")
 			return agenttest.FinalResponse("gates passed")
 		},
-	}
+	})
 	root = restoreSupervisionRoot(t, fixture, nil)
 	sub := warmStableSupervisionDelegate(t, root, fixture)
 	waitForStableSupervisionRun(t, root, fixture.childID)
@@ -283,14 +283,14 @@ func TestDelegateStopAfterConsumingPresentedAttentionCompletesWithLaterAttention
 func TestDelegateNeedsAttentionClearRecoversFromATransientFailure(t *testing.T) {
 	fixture := newColdDelegateFixture(t, "")
 	var root *Session
-	fixture.adapter.steps = []func(llm.Request) llm.Response{
+	fixture.adapter.setSteps([]func(llm.Request) llm.Response{
 		func(llm.Request) llm.Response { return agenttest.FinalResponse("warm") },
 		func(llm.Request) llm.Response {
 			armStableSupervisionAttention(t, root.subagents.get(fixture.childID), "attention:clear-retry", "gate job finished: exit 0")
 			return agenttest.CommunicateResponse(false, "running gates")
 		},
 		func(llm.Request) llm.Response { return agenttest.FinalResponse("gates passed") },
-	}
+	})
 	root = restoreSupervisionRoot(t, fixture, nil)
 	warmStableSupervisionDelegate(t, root, fixture)
 	waitForStableSupervisionRun(t, root, fixture.childID)
@@ -362,7 +362,7 @@ func childAttentionResolution(t *testing.T, sub *subagent, attentionID string) (
 // presents it.
 func TestDelegateAttentionPendingBeforeASendIsConsumedByThatSend(t *testing.T) {
 	fixture := newColdDelegateFixture(t, "")
-	fixture.adapter.steps = []func(llm.Request) llm.Response{
+	fixture.adapter.setSteps([]func(llm.Request) llm.Response{
 		func(llm.Request) llm.Response { return agenttest.FinalResponse("warm") },
 		func(req llm.Request) llm.Response {
 			if !requestContainsText(req, "review finished: approved") {
@@ -373,7 +373,7 @@ func TestDelegateAttentionPendingBeforeASendIsConsumedByThatSend(t *testing.T) {
 			}
 			return agenttest.FinalResponse("merged")
 		},
-	}
+	})
 	root := restoreSupervisionRoot(t, fixture, nil)
 	sub := warmStableSupervisionDelegate(t, root, fixture)
 	waitForStableSupervisionRun(t, root, fixture.childID)
@@ -405,7 +405,7 @@ func TestDelegateAttentionPendingBeforeASendIsConsumedByThatSend(t *testing.T) {
 func TestDelegateFailedTurnLeavesPresentedAttentionPending(t *testing.T) {
 	fixture := newColdDelegateFixture(t, "")
 	var root *Session
-	fixture.adapter.steps = []func(llm.Request) llm.Response{
+	fixture.adapter.setSteps([]func(llm.Request) llm.Response{
 		func(llm.Request) llm.Response { return agenttest.FinalResponse("warm") },
 		func(llm.Request) llm.Response {
 			sub := root.subagents.get(fixture.childID)
@@ -425,7 +425,7 @@ func TestDelegateFailedTurnLeavesPresentedAttentionPending(t *testing.T) {
 			}
 			return agenttest.FinalResponse("gates passed; committed")
 		},
-	}
+	})
 	// Requests, zero-based: 0 warms the delegate; 1 and 2 are the gate turn's
 	// settled rounds, 2 presenting the attention; 3 is that turn's next
 	// round, which fails.

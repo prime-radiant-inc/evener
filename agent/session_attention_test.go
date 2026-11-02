@@ -2363,7 +2363,7 @@ func TestDelegateAttention_SettledResidentChildStartsExactAttentionGeneration(t 
 	t.Cleanup(func() { releaseOnce.Do(func() { close(releaseAttention) }) })
 	attentionContent := `<job-notification event="watch_send">drive exact attention</job-notification>`
 	attentionSeen := false
-	fixture.adapter.steps = []func(llm.Request) llm.Response{
+	fixture.adapter.setSteps([]func(llm.Request) llm.Response{
 		func(llm.Request) llm.Response { return agenttest.CommunicateResponse(true, "initial run complete") },
 		func(request llm.Request) llm.Response {
 			attentionSeen = requestContainsText(request, attentionContent)
@@ -2371,7 +2371,7 @@ func TestDelegateAttention_SettledResidentChildStartsExactAttentionGeneration(t 
 			<-releaseAttention
 			return agenttest.CommunicateResponse(true, "attention handled")
 		},
-	}
+	})
 	root := restoreSupervisionRoot(t, fixture, nil)
 	// The generation this test asserts is published by the attention wake's
 	// start commit, on the owner's drive path. armDelegateAttention below does
@@ -4155,7 +4155,7 @@ func TestDelegateAttention_RestartRearmsColdChildAndDrainsExactAttention(t *test
 	var releaseOnce sync.Once
 	t.Cleanup(func() { releaseOnce.Do(func() { close(releaseAttention) }) })
 	attentionSeen := false
-	fixture.adapter.steps = []func(llm.Request) llm.Response{
+	fixture.adapter.setSteps([]func(llm.Request) llm.Response{
 		func(request llm.Request) llm.Response {
 			attentionSeen = requestContainsText(request, owedContent)
 			close(attentionEntered)
@@ -4171,7 +4171,7 @@ func TestDelegateAttention_RestartRearmsColdChildAndDrainsExactAttention(t *test
 		func(llm.Request) llm.Response {
 			return agenttest.CommunicateResponse(true, "root drained recovered completions")
 		},
-	}
+	})
 	root := restoreSupervisionRoot(t, fixture, nil)
 	<-attentionEntered
 	root.delegateController.mu.Lock()

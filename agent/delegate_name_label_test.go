@@ -310,14 +310,14 @@ func TestDelegateName_SteeredReplyCarriesLabel(t *testing.T) {
 	fixture := newColdDelegateFixtureConfigured(t, "", func(d *delegatestore.Descriptor) {
 		d.Name = "steer-label"
 	})
-	fixture.adapter.steps = []func(llm.Request) llm.Response{
+	fixture.adapter.setSteps([]func(llm.Request) llm.Response{
 		func(llm.Request) llm.Response {
 			close(entered)
 			<-release
 			return agenttest.FinalResponse("first result")
 		},
 		func(llm.Request) llm.Response { return agenttest.FinalResponse("continued") },
-	}
+	})
 	root := restoreSupervisionRoot(t, fixture, nil)
 	started := (delegateRuntime{owner: root}).send(context.Background(), fixture.delegateID, "start", 0)
 	if started.result.Err != nil {
