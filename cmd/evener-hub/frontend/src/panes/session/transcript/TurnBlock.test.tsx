@@ -156,9 +156,14 @@ test("redacts a critical reasoning row on a terminal turn", () => {
   render(withConfig(config, <TurnBlock turn={projected} />));
   expect(screen.getByTestId("think-block").getAttribute("data-redacted")).toBe("true");
   expect(screen.getByTestId("think-block-redacted").textContent).not.toBe("");
+  // The neutral label is the collapsed summary; the thought sits behind the
+  // unfold and renders nothing while closed.
+  const details = screen.getByRole("group") as HTMLDetailsElement;
+  expect(details.open).toBe(false);
   expect(screen.queryByText("abcdefghijklmnop")).toBeNull();
   expect(screen.queryByTestId("think-block-live-body")).toBeNull();
-  expect(document.querySelector("details")).toBeNull();
+  fireEvent.click(details.querySelector("summary")!);
+  expect(screen.getByText("abcdefghijklmnop")).toBeTruthy();
 });
 
 test("the turn root remains a centered, shrinkable reading column", () => {

@@ -72,6 +72,19 @@ function renderTurnTools(node: ReactElement) {
   );
 }
 
+// The full preset: reasoning on and thinking disclosures open by default, so
+// body-structure tests see the trace without clicking. Tests must pin their
+// own config rather than rely on the ambient default context's stance.
+const fullConfig = makeTranscriptDisplayConfig({ kind: "preset", level: "full" });
+
+function renderFull(node: ReactElement) {
+  return render(
+    <TranscriptRenderProvider config={fullConfig} surface="readOnly" disclosureScope="tb:full">
+      {node}
+    </TranscriptRenderProvider>,
+  );
+}
+
 test('self-registers under the wire\'s reasoning item type ("reasoning")', () => {
   expect(itemRendererFor("reasoning")).toBe(ThinkBlock);
 });
@@ -89,6 +102,48 @@ test("is memoized: the comparator ignores turn identity but tracks the current-t
   // superseded thought would stay open in its draft state forever (the wire
   // never completes a reasoning item mid-turn).
   expect(compare(base, { ...base, turn: { ...turn, items: [think, later] } })).toBe(false);
+  // A compact trace row's turn completes while the stale in-progress item is
+  // still the tail: the live/settled bit flips, and without this comparison
+  // the pulsing loader would keep pulsing on a finished turn.
+  const compactBase = { item: think, turn: { ...turn, items: [think] }, live: true, contentFree: true };
+  expect(compare(compactBase, { ...compactBase, turn: { ...turn, items: [think], status: "completed" } })).toBe(false);
+  // The disclosure keys by the round display key when the projector provides
+  // one, so the row must re-render when that key changes.
+  expect(compare(base, { ...base, displayKey: "round:r1:reasoning" })).toBe(false);
+  expect(compare({ ...base, displayKey: "round:r1:reasoning" }, { ...base, displayKey: "round:r1:reasoning" })).toBe(
+    true,
+  );
+});
+
+test("the reader's open state keys by the round display key, surviving the recorded item's new id", () => {
+  const streaming = item({ id: "stream:r1/0:reasoning", status: "inProgress", reasoningSummaries: [["kept open"]] });
+  const view = renderTools(
+    <ThinkBlock
+      item={streaming}
+      turn={{ ...turn, status: "inProgress", items: [streaming] }}
+      live={true}
+      contentFree={true}
+      displayKey="round:r1:reasoning"
+    />,
+  );
+  const details = screen.getByRole("group") as HTMLDetailsElement;
+  fireEvent.click(details.querySelector("summary")!);
+  expect((screen.getByRole("group") as HTMLDetailsElement).open).toBe(true);
+  // The round records: a fresh item id, the same round display key. The
+  // disclosure id is unchanged, so the reader's open choice survives.
+  const recorded = item({ id: "item_reasoning_1_0", status: "completed", reasoningSummaries: [["kept open"]] });
+  view.rerender(
+    <TranscriptRenderProvider config={toolsConfig} surface="readOnly" disclosureScope="tb:tools">
+      <ThinkBlock
+        item={recorded}
+        turn={{ ...turn, status: "completed", items: [recorded] }}
+        live={false}
+        contentFree={true}
+        displayKey="round:r1:reasoning"
+      />
+    </TranscriptRenderProvider>,
+  );
+  expect((screen.getByRole("group") as HTMLDetailsElement).open).toBe(true);
 });
 
 // --- live: open, Markdown, "Thinking…" ---------------------------------------
@@ -103,7 +158,11 @@ test("live shows a Thinking label and renders the reasoning text open (not colla
   expect(document.querySelector("details")).toBeNull();
 });
 
-// --- content-free: Loader placeholder, no thought text ----------------------
+// --- content-free: the compact thinking row ----------------------------------
+// While the reasoning content flag is off, every thinking row is a compact
+// trace row: the loader placeholder grammar in the DISCLOSURE summary, the
+// thought text only inside the unfoldable body. The chat preset keeps the
+// plain placeholder with no disclosure at all.
 
 test("contentFree renders only the Loader placeholder and an approximate token count, never the thought text", () => {
   render(
@@ -118,16 +177,134 @@ test("contentFree renders only the Loader placeholder and an approximate token c
   // 16 characters -> characters/4 -> 4, marked approximate.
   expect(screen.getByTestId("think-block").dataset.estimatedTokens).toBe("4");
   expect(screen.getByTestId("loader-grid")).toBeTruthy();
-  // No body, no settled disclosure, and above all no thought text.
+  // The trace is unfoldable, but the closed summary renders no thought text.
+  const details = screen.getByRole("group") as HTMLDetailsElement;
+  expect(details.open).toBe(false);
   expect(screen.queryByTestId("think-block-live-body")).toBeNull();
   expect(screen.queryByText("abcdefghijklmnop")).toBeNull();
-  expect(document.querySelector("details")).toBeNull();
 });
 
 test("contentFree with no chunks yet shows the label alone, never a fabricated token count", () => {
   render(<ThinkBlock item={item({ reasoningSummaries: [] })} turn={turn} live={true} contentFree={true} />);
   expect(thinkBlockLive()).toBe("true");
   expect(screen.getByTestId("think-block").dataset.estimatedTokens).toBeUndefined();
+});
+
+test("the chat preset keeps the live compact row a plain placeholder with no disclosure", () => {
+  render(
+    <TranscriptRenderProvider
+      config={makeTranscriptDisplayConfig({ kind: "preset", level: "chat" })}
+      surface="readOnly"
+      disclosureScope="tb:chat"
+    >
+      <ThinkBlock
+        item={item({ reasoningSummaries: [["abcdefghijklmnop"]] })}
+        turn={turn}
+        live={true}
+        contentFree={true}
+      />
+    </TranscriptRenderProvider>,
+  );
+  expect(screen.getByTestId("think-block").dataset.estimatedTokens).toBe("4");
+  expect(screen.getByTestId("loader-grid")).toBeTruthy();
+  // Conversation-only: no trace to unfold at the chat preset.
+  expect(document.querySelector("details")).toBeNull();
+  expect(screen.queryByText("abcdefghijklmnop")).toBeNull();
+});
+
+test("a settled compact thought is a collapsed disclosure whose summary is its token estimate, and unfolding reveals the body", () => {
+  renderTools(
+    <ThinkBlock
+      item={item({ id: "compact_settled", status: "completed", reasoningSummaries: [["the full reasoning text"]] })}
+      turn={turn}
+      live={false}
+      contentFree={true}
+    />,
+  );
+  const details = screen.getByRole("group") as HTMLDetailsElement;
+  expect(details.open).toBe(false);
+  // 22 characters -> characters/4 -> 6, marked approximate.
+  expect(screen.getByTestId("think-block").dataset.estimatedTokens).toBe("6");
+  expect(screen.queryByText("the full reasoning text")).toBeNull();
+  fireEvent.click(details.querySelector("summary")!);
+  expect(details.open).toBe(true);
+  expect(screen.getByText("the full reasoning text")).toBeTruthy();
+});
+
+test("the compact disclosure opens by default when thinking-open-by-default is on", () => {
+  const thinkingOpenConfig = makeTranscriptDisplayConfig({
+    kind: "custom",
+    toolIntent: true,
+    toolCalls: true,
+    reasoning: false,
+    expandByDefault: false,
+    thinkingOpenByDefault: true,
+  });
+  render(
+    <TranscriptRenderProvider config={thinkingOpenConfig} surface="readOnly" disclosureScope="tb:open">
+      <ThinkBlock
+        item={item({ id: "compact_open_default", status: "completed", reasoningSummaries: [["inner reasoning"]] })}
+        turn={turn}
+        live={false}
+        contentFree={true}
+      />
+    </TranscriptRenderProvider>,
+  );
+  const details = screen.getByRole("group") as HTMLDetailsElement;
+  expect(details.open).toBe(true);
+  expect(screen.getByText("inner reasoning")).toBeTruthy();
+});
+
+test("an explicit reader choice on a compact row beats the config default and survives a re-render", () => {
+  const thinkingOpenConfig = makeTranscriptDisplayConfig({
+    kind: "custom",
+    toolIntent: true,
+    toolCalls: true,
+    reasoning: false,
+    expandByDefault: false,
+    thinkingOpenByDefault: true,
+  });
+  const thought = item({ id: "compact_choice", status: "completed", reasoningSummaries: [["deliberately hidden"]] });
+  const view = render(
+    <TranscriptRenderProvider config={thinkingOpenConfig} surface="readOnly" disclosureScope="tb:choice">
+      <ThinkBlock item={thought} turn={turn} live={false} contentFree={true} />
+    </TranscriptRenderProvider>,
+  );
+  const details = screen.getByRole("group") as HTMLDetailsElement;
+  expect(details.open).toBe(true);
+  fireEvent.click(details.querySelector("summary")!);
+  expect((screen.getByRole("group") as HTMLDetailsElement).open).toBe(false);
+  view.rerender(
+    <TranscriptRenderProvider config={thinkingOpenConfig} surface="readOnly" disclosureScope="tb:choice">
+      <ThinkBlock
+        item={{ ...thought, reasoningSummaries: [["deliberately hidden", " more"]] }}
+        turn={turn}
+        live={false}
+        contentFree={true}
+      />
+    </TranscriptRenderProvider>,
+  );
+  expect((screen.getByRole("group") as HTMLDetailsElement).open).toBe(false);
+});
+
+test("a live compact thought streams its body inside the disclosure once opened, and collapses back on click", () => {
+  renderTools(
+    <ThinkBlock
+      item={item({ id: "compact_live", status: "inProgress", reasoningSummaries: [["streaming thought text"]] })}
+      turn={turn}
+      live={true}
+      contentFree={true}
+    />,
+  );
+  const details = screen.getByRole("group") as HTMLDetailsElement;
+  expect(details.open).toBe(false);
+  expect(screen.queryByTestId("think-block-live-body")).toBeNull();
+  fireEvent.click(details.querySelector("summary")!);
+  expect((screen.getByRole("group") as HTMLDetailsElement).open).toBe(true);
+  expect(screen.getByTestId("think-block-live-body").textContent).toContain("streaming thought text");
+  fireEvent.click(document.querySelector("summary")!);
+  expect((screen.getByRole("group") as HTMLDetailsElement).open).toBe(false);
+  expect(screen.queryByTestId("think-block-live-body")).toBeNull();
 });
 
 // The live and settled rows pull their bulb glyph into the icon rail via the
@@ -148,37 +325,53 @@ test("contentFree seats its status glyph in the icon rail like the live and sett
   expect(screen.getByRole("status").className).toContain(loaderStyles.rail);
 });
 
-// --- redacted: critical reasoning on a broken turn, no thought text ---------
+// --- redacted: critical reasoning on a broken turn ----------------------------
+// The neutral label stays the collapsed summary; the thought itself is behind
+// the unfold (ruling 2026-11-01: a broken turn may show its thought on
+// demand - the old never-show stance is reversed).
 
-test("redacted renders the projector's summary and none of the thought text, preview, or body", () => {
-  render(
+test("redacted keeps the projector's summary as the collapsed label and unfolds to the thought", () => {
+  renderTools(
     <ThinkBlock
-      item={item({ status: "failed", reasoningSummaries: [["abcdefghijklmnop"]] })}
+      item={item({ id: "redacted_failed", status: "failed", reasoningSummaries: [["the failure reasoning"]] })}
       turn={turn}
       live={false}
       redacted={true}
       projectedSummary="Thought failed"
     />,
   );
+  const details = screen.getByRole("group") as HTMLDetailsElement;
+  expect(details.open).toBe(false);
   expect(screen.getByTestId("think-block-redacted").textContent).toContain("Thought failed");
-  expect(screen.queryByText("abcdefghijklmnop")).toBeNull();
-  expect(screen.queryByTestId("think-block-live-body")).toBeNull();
-  expect(document.querySelector("details")).toBeNull();
+  expect(screen.queryByText("the failure reasoning")).toBeNull();
+  fireEvent.click(details.querySelector("summary")!);
+  expect((screen.getByRole("group") as HTMLDetailsElement).open).toBe(true);
+  expect(screen.getByText("the failure reasoning")).toBeTruthy();
 });
 
-test("redacted renders the neutral label the projector supplies", () => {
+test("redacted rows stay collapsed by default even with thinking-open-by-default on", () => {
+  const thinkingOpenConfig = makeTranscriptDisplayConfig({
+    kind: "custom",
+    toolIntent: true,
+    toolCalls: true,
+    reasoning: false,
+    expandByDefault: false,
+    thinkingOpenByDefault: true,
+  });
   render(
-    <ThinkBlock
-      item={item({ reasoningSummaries: [["abcdefghijklmnop"]] })}
-      turn={turn}
-      live={false}
-      redacted={true}
-      projectedSummary="Thought not shown"
-    />,
+    <TranscriptRenderProvider config={thinkingOpenConfig} surface="readOnly" disclosureScope="tb:redacted">
+      <ThinkBlock
+        item={item({ id: "redacted_open", status: "failed", reasoningSummaries: [["the failure reasoning"]] })}
+        turn={turn}
+        live={false}
+        redacted={true}
+        projectedSummary="Thought not shown"
+      />
+    </TranscriptRenderProvider>,
   );
+  const details = screen.getByRole("group") as HTMLDetailsElement;
   expect(screen.getByTestId("think-block-redacted").textContent).toContain("Thought not shown");
-  expect(screen.queryByText("abcdefghijklmnop")).toBeNull();
-  expect(document.querySelector("details")).toBeNull();
+  expect(details.open).toBe(false);
 });
 
 // Jesse's review call: a blinking caret inside a read-only reasoning view
@@ -411,7 +604,7 @@ test("emphasis inside a thinking body inverts to roman - live and settled (decla
 });
 
 test("an emphasized span inside a settled thought renders as an em element (the CSS inversion's hook)", () => {
-  const { container } = render(
+  const { container } = renderFull(
     <ThinkBlock item={item({ reasoningSummaries: [["thoughts with *emphasized* words"]] })} turn={turn} live={false} />,
   );
   expect(container.querySelector("em")?.textContent).toBe("emphasized");
@@ -590,7 +783,7 @@ test("settled body holds the full reasoning text (not just the preview) once exp
 // same way AgentMessageItem parses a settled agent message.
 
 test("settled renders the reasoning through Markdown - a heading token becomes a real heading, not literal source", () => {
-  render(
+  renderFull(
     <ThinkBlock item={item({ reasoningSummaries: [["## The plan\n\nfigure it out"]] })} turn={turn} live={false} />,
   );
   expect(screen.getByRole("heading", { level: 2, name: "The plan" })).toBeTruthy();
@@ -598,7 +791,7 @@ test("settled renders the reasoning through Markdown - a heading token becomes a
 });
 
 test("settled parses lists, emphasis and code spans in reasoning text", () => {
-  const { container } = render(
+  const { container } = renderFull(
     <ThinkBlock
       item={item({ reasoningSummaries: [["- check `serve.go`\n- then **commit**"]] })}
       turn={turn}
@@ -614,7 +807,7 @@ test("settled parses lists, emphasis and code spans in reasoning text", () => {
 });
 
 test("settled joins every summaryIndex into ONE markdown document, blank-line separated so each stays its own block", () => {
-  const { container } = render(
+  const { container } = renderFull(
     <ThinkBlock
       item={item({ reasoningSummaries: [["first thought"], ["# second thought"]] })}
       turn={turn}
@@ -628,7 +821,7 @@ test("settled joins every summaryIndex into ONE markdown document, blank-line se
 });
 
 test("settled does not re-wrap markdown output in any paragraph class of its own (Markdown owns its own block layout)", () => {
-  const { container } = render(
+  const { container } = renderFull(
     <ThinkBlock item={item({ reasoningSummaries: [["plain thought"]] })} turn={turn} live={false} />,
   );
   const paragraph = container.querySelector("p");
@@ -677,11 +870,15 @@ test("a genuinely unterminated marker in the SETTLED source stays literal (auto-
 test("markdown in a thought is parsed identically while live and once settled (same item, same text)", () => {
   const markdown = "## Decision\n\n- ship it";
   const liveItem = item({ reasoningSummaries: [[markdown]] });
-  const { container, rerender } = render(<ThinkBlock item={liveItem} turn={turn} live={true} />);
+  const { container, rerender } = renderFull(<ThinkBlock item={liveItem} turn={turn} live={true} />);
   expect(screen.getByRole("heading", { level: 2, name: "Decision" })).toBeTruthy();
   expect(container.querySelector("li")?.textContent?.trim()).toBe("ship it");
 
-  rerender(<ThinkBlock item={liveItem} turn={{ ...turn, status: "completed" }} live={false} />);
+  rerender(
+    <TranscriptRenderProvider config={fullConfig} surface="readOnly" disclosureScope="tb:full">
+      <ThinkBlock item={liveItem} turn={{ ...turn, status: "completed" }} live={false} />
+    </TranscriptRenderProvider>,
+  );
   expect(screen.getByRole("heading", { level: 2, name: "Decision" })).toBeTruthy();
   expect(container.querySelector("li")?.textContent?.trim()).toBe("ship it");
   expect(screen.queryByTestId("think-block-live-body")).toBeNull();
@@ -705,8 +902,8 @@ test("an expanded settled think block stays open across an unmount+remount with 
 
 test("the same settled think item id has independent disclosure state in different sessions", () => {
   const shared = item({ id: "same_item", reasoningSummaries: [["deep thoughts here"]] });
-  // At activity level the disclosure auto-expands; use tools level to test
-  // independent collapsed state. Do NOT set a custom disclosureScope so
+  // Thinking rows start collapsed at every level but full; use tools level to
+  // test independent collapsed state. Do NOT set a custom disclosureScope so
   // disclosureScopeForSession creates per-session scopes.
   const toolsConfigScoped = makeTranscriptDisplayConfig({ kind: "preset", level: "tools" });
   render(
@@ -889,7 +1086,7 @@ test("both live and settled render inside the same stable wrapper testid", () =>
 // above.
 
 test("a headed thought expands into a step trace: one row per heading section, ordinal markers, no leftover single-document render", () => {
-  render(
+  renderFull(
     <ThinkBlock
       item={item({ reasoningSummaries: [["## Survey\n\nlook around\n\n## Decide\n\nship it"]] })}
       turn={turn}
@@ -911,7 +1108,7 @@ test("a headed thought expands into a step trace: one row per heading section, o
 });
 
 test("multiple summaryIndex paragraphs with no heading anywhere fall through to the single-document render - no rail, no reflow risk", () => {
-  render(
+  renderFull(
     <ThinkBlock
       item={item({ reasoningSummaries: [["first thought"], ["second thought"], ["third thought"]] })}
       turn={turn}
@@ -958,7 +1155,9 @@ test("the step marker is mono caption, medium-weight ink-mid - strong enough to 
 });
 
 test("the step marker is decorative - the ordinal is visual chrome, not read out as separate content", () => {
-  render(<ThinkBlock item={item({ reasoningSummaries: [["## One\n\na\n\n## Two\n\nb"]] })} turn={turn} live={false} />);
+  renderFull(
+    <ThinkBlock item={item({ reasoningSummaries: [["## One\n\na\n\n## Two\n\nb"]] })} turn={turn} live={false} />,
+  );
   const marker = screen.getByTestId("think-block-trace").querySelector("li span");
   expect(marker?.getAttribute("aria-hidden")).toBe("true");
 });

@@ -34,17 +34,22 @@ export interface ItemRenderProps {
   // A projector-owned compact summary for a critical entry. When present,
   // renderers must not reconstruct a routine summary from raw tool fields.
   projectedSummary?: string;
-  // True when the projector chose a content-free entry for this item (the
-  // "thinking" projection of a live current reasoning item while the reasoning
-  // content flag is off). The renderer must render only a placeholder and must
-  // not render the item's own text (it may read it for a length estimate). Set
-  // for every entry kind by TurnBlock, so a memoized renderer can compare it by
-  // value.
+  // The entry's stable row key (the projector's round display key when it has
+  // one, otherwise the entry id) - the same value TurnBlock keys the row by.
+  // A thinking row keys its DISCLOSURE by this, so a reader's open/closed
+  // choice survives the stream -> recorded id change at round record.
+  displayKey?: string;
+  // True when the projector chose a content-free entry for this item (a
+  // reasoning item while the reasoning content flag is off). The renderer
+  // renders the compact grammar: the loader placeholder as the closed
+  // summary, the thought's text only inside the unfoldable disclosure - and
+  // at the chat preset, the plain placeholder with no disclosure at all. Set
+  // for every entry kind by TurnBlock, so a memoized renderer can compare it
+  // by value.
   contentFree?: boolean;
-  // True when a critical reasoning row must render with no thought text at all
-  // (the content flag is off and the row is only on the failure path). The
-  // renderer shows a neutral failure summary instead of the thought's body,
-  // preview, or disclosure.
+  // True when a critical reasoning row renders through the neutral failure
+  // summary. The summary stays the collapsed label (ruling 2026-11-01: the
+  // label does not change); the thought's text sits behind the unfold.
   redacted?: boolean;
   /** Snapshot inputs relevant to this item; stable when an unrelated delta lands. */
   threadFingerprint?: string;
@@ -95,6 +100,7 @@ export function ignoringTurn(prev: ItemRenderProps, next: ItemRenderProps): bool
     prev.closesExchange === next.closesExchange &&
     prev.agentLabel === next.agentLabel &&
     prev.projectedSummary === next.projectedSummary &&
+    prev.displayKey === next.displayKey &&
     prev.contentFree === next.contentFree &&
     prev.redacted === next.redacted &&
     prev.renderContext === next.renderContext &&

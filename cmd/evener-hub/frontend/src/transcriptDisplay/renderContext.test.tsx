@@ -18,6 +18,7 @@ import {
   summaryOpenByDefault,
   type TranscriptRenderContextValue,
   TranscriptRenderProvider,
+  thinkingOpenByDefault,
   useTranscriptRenderContext,
 } from "./renderContext";
 
@@ -272,4 +273,20 @@ test("summaryOpenByDefault returns false for chat/intent and true for tools/acti
     true,
   );
   expect(summaryOpenByDefault({ content: { kind: "preset", level: "full" } } as TranscriptDisplayConfigV1)).toBe(true);
+});
+
+test("thinkingOpenByDefault returns true only for the full preset", () => {
+  expect(thinkingOpenByDefault({ content: { kind: "preset", level: "chat" } } as TranscriptDisplayConfigV1)).toBe(
+    false,
+  );
+  expect(thinkingOpenByDefault({ content: { kind: "preset", level: "intent" } } as TranscriptDisplayConfigV1)).toBe(
+    false,
+  );
+  expect(thinkingOpenByDefault({ content: { kind: "preset", level: "tools" } } as TranscriptDisplayConfigV1)).toBe(
+    false,
+  );
+  expect(thinkingOpenByDefault({ content: { kind: "preset", level: "activity" } } as TranscriptDisplayConfigV1)).toBe(
+    false,
+  );
+  expect(thinkingOpenByDefault({ content: { kind: "preset", level: "full" } } as TranscriptDisplayConfigV1)).toBe(true);
 });

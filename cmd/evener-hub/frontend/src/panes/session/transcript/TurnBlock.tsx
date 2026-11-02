@@ -310,6 +310,7 @@ export function TurnBlock({
         turn={shownTurn}
         live={isItemLive(item)}
         sessionRef={sessionRef}
+        displayKey={entryDisplayKey(entry)}
         opensExchange={opensExchange}
         closesExchange={closesExchange}
         agentLabel={agentLabel}

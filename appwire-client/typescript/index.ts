@@ -802,6 +802,7 @@ export {
   fromWireDefault,
   fromWireDefaults,
   HOOK_EXIT_DETAILS,
+  hidesThinkingTraces,
   LEGACY_PREF_KEYS,
   legacyConfigFromValues,
   makeTranscriptDisplayConfig,

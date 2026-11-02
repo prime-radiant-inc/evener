@@ -8,6 +8,20 @@
 // Jesse's pick 2026-07-31), while the full Markdown body remains available
 // at the one disclosure level.
 //
+// COMPACT TRACES (the reasoning content flag off, the "thinking" and
+// redacted-critical entries): every thinking row is an unfoldable
+// Disclosure (Jesse, 2026-11-01) whose closed summary is the placeholder
+// grammar - live: the pulsing Loader label "Thinking… · ~N tokens"; settled:
+// "Thought · ~N tokens"; a broken turn: the projector's neutral summary -
+// and whose body is the same Markdown trace the full grammar renders. The
+// chat preset alone keeps the plain placeholder with no disclosure
+// (conversation-only; see hidesThinkingTraces). Thinking disclosures key by
+// the entry's displayKey, so a reader's choice survives the stream ->
+// recorded id change; their initial state is the "Thinking open by default"
+// switch (thinkingOpenByDefault), with an explicit reader choice always
+// winning. A redacted row stays collapsed until the reader asks (ruling:
+// the neutral label remains the collapsed summary).
+//
 // MARKDOWN, LIVE AND SETTLED: agents write reasoning in markdown, so BOTH
 // states parse it through the same Markdown widget that renders a settled
 // agent message - and from the SAME source (joinedReasoningParagraphs,
@@ -45,11 +59,18 @@
 // Expanded-trace anatomy adapted from Beautiful UI's Thinking component (beautifului.dev, MIT © 2026 Shane Levine) — see LICENSES/beautiful-ui.txt.
 
 import type { ItemModel, TurnModel } from "@evener/appwire-client";
-import { formatDurationMs, formatTokenCount, scopedDisclosureId } from "@evener/appwire-client";
+import {
+  formatDurationMs,
+  formatTokenCount,
+  hidesThinkingTraces,
+  isActiveItem,
+  isInProgressStatus,
+  scopedDisclosureId,
+} from "@evener/appwire-client";
 import { memo } from "react";
 import {
   disclosureScopeForSession,
-  expandDetailsByDefault,
+  thinkingOpenByDefault,
   useTranscriptRenderContext,
 } from "../../../../transcriptDisplay/renderContext";
 import { Disclosure, Loader, Markdown, ToolIcon } from "../../../../widgets";
@@ -173,22 +194,55 @@ function LiveThinkBlock({ item }: { item: ItemModel }) {
   );
 }
 
-// The content-free counterpart to LiveThinkBlock: shown when the reasoning
-// content flag is off, so the reader sees that the agent is thinking - through
-// the catalog Loader's pulsing grid - without any of the thought's text. The
-// brain glyph and body are deliberately absent; only the Loader and its label
-// render.
-//
 // The token figure is an ESTIMATE. The wire carries no live token accounting
 // for a reasoning stream (a turn's usage arrives only when the turn settles -
 // see turnMeta.ts), so this is the conventional characters/4 heuristic over
-// the same joined source the streaming body would have rendered, marked
-// approximate with "~". No count renders until the first chunk lands, so a
-// just-started thought shows the label alone rather than a fabricated "~0".
+// the joined source the body renders, marked approximate with "~". No count
+// renders until the first chunk lands, so a just-started thought shows the
+// label alone rather than a fabricated "~0".
+function estimateThoughtTokens(paragraphs: string[]): number {
+  return Math.round(paragraphs.reduce((total, paragraph) => total + paragraph.length, 0) / 4);
+}
+
+// The shared body every thinking disclosure unfolds into: a step only exists
+// where the text itself already breaks into one via a markdown heading (see
+// segmentReasoningTrace - gated on heading structure only, deliberately not
+// paragraph breaks). A thought with no heading (the common case, a
+// multi-paragraph thought with no structure of that kind) renders as one
+// document - no rail, no divider, no panel.
+function TraceBody({ paragraphs }: { paragraphs: string[] }) {
+  const sections = segmentReasoningTrace(paragraphs);
+  return sections.length > 1 ? (
+    <ol className={CLASS.trace} data-testid="think-block-trace">
+      {sections.map((section, index) => (
+        // biome-ignore lint/suspicious/noArrayIndexKey: sections are a static re-derivation of this settled item's fixed text, not a reorderable or independently-mutating list.
+        <li key={index} className={CLASS.step}>
+          <span className={CLASS.stepMarker} aria-hidden="true">
+            {String(index + 1).padStart(2, "0")}
+          </span>
+          <div className={CLASS.stepBody}>
+            <Markdown source={section} />
+          </div>
+        </li>
+      ))}
+    </ol>
+  ) : (
+    // One document, not one per summaryIndex: a markdown parser needs the
+    // whole text to resolve block structure. Blank-line joined so each index
+    // still starts its own block-level token rather than being folded into
+    // the previous index's paragraph. Markdown owns its own paragraph/
+    // heading/list layout, so nothing re-wraps it in .paragraph.
+    <Markdown source={paragraphs.join("\n\n")} />
+  );
+}
+
+// The content-free counterpart to LiveThinkBlock: the chat preset's plain
+// placeholder (conversation-only - no disclosure to unfold at that level).
+// The brain glyph and body are deliberately absent; only the Loader and its
+// label render.
 function ContentFreeThinkBlock({ item }: { item: ItemModel }) {
   const paragraphs = joinedReasoningParagraphs(item.reasoningSummaries);
-  const characters = paragraphs.reduce((total, paragraph) => total + paragraph.length, 0);
-  const estimatedTokens = Math.round(characters / 4);
+  const estimatedTokens = estimateThoughtTokens(paragraphs);
   const label = estimatedTokens > 0 ? `Thinking… · ~${formatTokenCount(estimatedTokens)} tokens` : "Thinking…";
   return (
     <div
@@ -208,19 +262,132 @@ function ContentFreeThinkBlock({ item }: { item: ItemModel }) {
   );
 }
 
+// The compact trace row (the reasoning content flag off): an unfoldable
+// Disclosure whose closed summary is the placeholder grammar - live: the
+// pulsing Loader label; settled: "Thought · ~N tokens" - and whose body is
+// the same trace the full grammar renders. The reader's explicit choice in
+// the disclosure store beats the config default; the default comes from the
+// "Thinking open by default" switch.
+function CompactThinkBlock({
+  item,
+  isLive,
+  disclosureKey,
+  defaultOpen,
+}: {
+  item: ItemModel;
+  isLive: boolean;
+  disclosureKey: string;
+  defaultOpen: boolean;
+}) {
+  const paragraphs = joinedReasoningParagraphs(item.reasoningSummaries);
+  const estimatedTokens = estimateThoughtTokens(paragraphs);
+  return (
+    <div
+      className={CLASS.block}
+      data-testid="think-block"
+      data-live={isLive ? "true" : "false"}
+      data-content-free="true"
+      data-estimated-tokens={estimatedTokens > 0 ? estimatedTokens : undefined}
+    >
+      <Disclosure
+        variant="quiet"
+        id={disclosureKey}
+        defaultOpen={defaultOpen}
+        summary={
+          isLive ? (
+            // The live summary is today's placeholder row, seated in the
+            // icon rail by the Loader's own rail variant.
+            <Loader
+              label={estimatedTokens > 0 ? `Thinking… · ~${formatTokenCount(estimatedTokens)} tokens` : "Thinking…"}
+              rail
+            />
+          ) : (
+            <>
+              {settledThoughtIcon}
+              {/* The label text in its own shrinkable span: it ellipsizes under
+                  pressure so the Disclosure's chevron stays on screen. */}
+              <span className={CLASS.summaryText}>
+                Thought
+                {estimatedTokens > 0 && (
+                  <>
+                    {" · "}
+                    <span data-slot="tokens">~{formatTokenCount(estimatedTokens)} tokens</span>
+                  </>
+                )}
+              </span>
+            </>
+          )
+        }
+      >
+        {isLive ? (
+          // The live body keeps the no-height-bound rule: a thought that is
+          // still running is shown in full, however long it grows; the
+          // transcript's own scroller is the viewport.
+          <div className={CLASS.liveBody} data-testid="think-block-live-body">
+            {paragraphs.length > 0 && <Markdown source={paragraphs.join("\n\n")} live />}
+          </div>
+        ) : (
+          <div className={CLASS.body}>
+            <TraceBody paragraphs={paragraphs} />
+          </div>
+        )}
+      </Disclosure>
+    </div>
+  );
+}
+
 // The redacted counterpart for a critical reasoning row while the reasoning
-// content flag is off: a failed or interrupted turn still explains itself, but
-// never by showing the thought. Only the icon and the projector's neutral
-// summary render - no preview, no disclosure, and no body. The summary text is
-// owned by the projector (criticalEntry), not re-derived here, so there is one
-// source of truth for it.
-function RedactedThinkBlock({ summary }: { summary: string }) {
+// content flag is off: a failed or interrupted turn still explains itself.
+// The projector's neutral summary stays the COLLAPSED label (ruling
+// 2026-11-01: the label does not change; the never-show stance is reversed)
+// and the thought's text sits behind the unfold - never rendered while the
+// row is closed, and collapsed by default even with "Thinking open by
+// default" on, because a broken turn's thought deserves the deliberate
+// click. The summary text is owned by the projector (criticalEntry), not
+// re-derived here, so there is one source of truth for it.
+function RedactedThinkBlock({
+  item,
+  summary,
+  disclosureKey,
+  defaultOpen,
+}: {
+  item: ItemModel;
+  summary: string;
+  disclosureKey: string;
+  defaultOpen: boolean;
+}) {
+  const paragraphs = joinedReasoningParagraphs(item.reasoningSummaries);
+  // A failed thought with no text keeps the quiet one-line label: there is
+  // nothing to unfold into.
+  if (paragraphs.length === 0) {
+    return (
+      <div className={CLASS.block} data-testid="think-block" data-redacted="true">
+        <span className={CLASS.label} data-testid="think-block-redacted">
+          {thoughtIcon}
+          {summary}
+        </span>
+      </div>
+    );
+  }
   return (
     <div className={CLASS.block} data-testid="think-block" data-redacted="true">
-      <span className={CLASS.label} data-testid="think-block-redacted">
-        {thoughtIcon}
-        {summary}
-      </span>
+      <Disclosure
+        variant="quiet"
+        id={disclosureKey}
+        defaultOpen={defaultOpen}
+        summary={
+          <>
+            {settledThoughtIcon}
+            <span className={CLASS.summaryText} data-testid="think-block-redacted">
+              {summary}
+            </span>
+          </>
+        }
+      >
+        <div className={CLASS.body}>
+          <TraceBody paragraphs={paragraphs} />
+        </div>
+      </Disclosure>
     </div>
   );
 }
@@ -242,14 +409,32 @@ function isCurrentThought(item: ItemModel, turn: TurnModel): boolean {
   return items[items.length - 1]?.id === item.id;
 }
 
+// The compact trace row's live bit: the projector's isLiveCurrentReasoning
+// rule (an in-progress turn, an active item, tail position) shared with the
+// renderer so a stale inProgress item on a completed turn renders settled.
+// Failing toward live (true) matches isCurrentThought's own fallback posture.
+function isCompactTraceLive(item: ItemModel, turn: TurnModel, contentFree: boolean | undefined): boolean {
+  return (
+    !!contentFree && isInProgressStatus(turn.status) && isActiveItem(item, turn.status) && isCurrentThought(item, turn)
+  );
+}
+
 // The memo comparator: ignoringTurn's contract (a fresh turn object on every
-// unrelated delta must not re-render a settled block), plus the one turn-
-// derived bit this renderer reads - isCurrentThought - compared by VALUE, so
-// the single flip from current to superseded re-renders exactly once and
-// every other turn.items append stays skipped. types.ts's ignoringTurn
+// unrelated delta must not re-render a settled block), plus the turn-derived
+// bits this renderer reads - isCurrentThought and the compact live/settled
+// bit - compared by VALUE, so the single flip that matters re-renders exactly
+// once and every other turn.items append stays skipped. types.ts's ignoringTurn
 // comment demands exactly this of a renderer that starts reading `turn`.
+// The disclosure's stable display key is compared too, because the open state
+// keys by it across the stream -> recorded id change.
 function thinkBlockPropsEqual(prev: ItemRenderProps, next: ItemRenderProps): boolean {
-  return ignoringTurn(prev, next) && isCurrentThought(prev.item, prev.turn) === isCurrentThought(next.item, next.turn);
+  return (
+    ignoringTurn(prev, next) &&
+    prev.displayKey === next.displayKey &&
+    isCurrentThought(prev.item, prev.turn) === isCurrentThought(next.item, next.turn) &&
+    isCompactTraceLive(prev.item, prev.turn, prev.contentFree) ===
+      isCompactTraceLive(next.item, next.turn, next.contentFree)
+  );
 }
 
 export const ThinkBlock = memo(function ThinkBlock({
@@ -257,6 +442,7 @@ export const ThinkBlock = memo(function ThinkBlock({
   turn,
   live,
   sessionRef,
+  displayKey,
   contentFree,
   redacted,
   projectedSummary,
@@ -264,25 +450,47 @@ export const ThinkBlock = memo(function ThinkBlock({
   const context = useTranscriptRenderContext();
   const { config } = context;
   const disclosureScope = disclosureScopeForSession(context, sessionRef);
-  const disclosureKey = scopedDisclosureId(disclosureScope, item.id);
-  const disclosureFallback = expandDetailsByDefault(config) || disclosureDefault(disclosureScope, item.id, false);
+  const disclosureId = displayKey ?? item.id;
+  const disclosureKey = scopedDisclosureId(disclosureScope, disclosureId);
+  const disclosureFallback = thinkingOpenByDefault(config) || disclosureDefault(disclosureScope, disclosureId, false);
   // isDisclosureOpen IS a custom hook (it wraps zustand's useStore - see
   // disclosureStore's own note), so it must be called unconditionally before
   // any early return: an entry that toggles contentFree on a mounted row would
   // otherwise change the hook order between renders.
   const open = isDisclosureOpen(disclosureKey, disclosureFallback);
-  // Neither content-free state RENDERS the thought's text. The placeholder
-  // reads it only to estimate a length for its "~N tokens" label; the redacted
-  // state renders the projector's neutral summary and nothing else.
-  if (contentFree) return <ContentFreeThinkBlock item={item} />;
-  if (redacted) return <RedactedThinkBlock summary={projectedSummary ?? "Thought not shown"} />;
+  // The compact family: the reasoning content flag is off. Every thinking row
+  // is an unfoldable disclosure (collapsed by default at non-full levels, open
+  // when "Thinking open by default" is on), except at the chat preset, which
+  // stays conversation-only with the plain placeholder.
+  if (contentFree) {
+    if (hidesThinkingTraces(config.content)) return <ContentFreeThinkBlock item={item} />;
+    const isLive = isCompactTraceLive(item, turn, contentFree);
+    const paragraphs = joinedReasoningParagraphs(item.reasoningSummaries);
+    // Empty settled thoughts render nothing (the full grammar's removal rule);
+    // a live one keeps its label-alone placeholder until the first chunk.
+    if (!isLive && paragraphs.length === 0) return null;
+    return (
+      <CompactThinkBlock item={item} isLive={isLive} disclosureKey={disclosureKey} defaultOpen={disclosureFallback} />
+    );
+  }
+  // A redacted critical row: the projector's neutral summary is the collapsed
+  // label; the thought is behind the unfold, collapsed until the reader asks.
+  if (redacted) {
+    return (
+      <RedactedThinkBlock
+        item={item}
+        summary={projectedSummary ?? "Thought not shown"}
+        disclosureKey={disclosureKey}
+        defaultOpen={disclosureDefault(disclosureScope, disclosureId, false)}
+      />
+    );
+  }
   const isLive = (live || item.status === "inProgress") && isCurrentThought(item, turn);
   if (isLive) return <LiveThinkBlock item={item} />;
 
   const paragraphs = joinedReasoningParagraphs(item.reasoningSummaries);
   if (paragraphs.length === 0) return null; // empty thoughts removed
 
-  const sections = segmentReasoningTrace(paragraphs);
   const durationMs = thoughtDurationMs(
     item.startedAt,
     item.completedAt,
@@ -291,8 +499,9 @@ export const ThinkBlock = memo(function ThinkBlock({
   );
   const preview = lastMeaningfulThoughtLine(paragraphs, THOUGHT_PREVIEW_MAX_LENGTH);
   // Open/closed state lives in the shared disclosureStore keyed by session ref
-  // plus item id, so an expanded thought survives a remount without colliding
-  // with the same item id in another session. Collapsed by default.
+  // plus the round display key (or item id), so an expanded thought survives a
+  // remount - and the round-record id change - without colliding with the
+  // same trace in another session. Collapsed by default.
   return (
     <div className={CLASS.block} data-testid="think-block" data-live="false">
       <Disclosure
@@ -311,39 +520,7 @@ export const ThinkBlock = memo(function ThinkBlock({
         }
       >
         <div className={CLASS.body}>
-          {/* Beautiful UI's Thinking anatomy, ported honestly: a step only
-              exists where the text itself already breaks into one via a
-              markdown heading (see segmentReasoningTrace - gated on heading
-              structure only, deliberately not paragraph breaks). A thought
-              with no heading (the common case, a multi-paragraph thought
-              with no structure of that kind) renders exactly as it always
-              has - no rail, no divider, no panel - so the one-document
-              render below stays the fallback, not a special case. */}
-          {sections.length > 1 ? (
-            <ol className={CLASS.trace} data-testid="think-block-trace">
-              {sections.map((section, index) => (
-                // biome-ignore lint/suspicious/noArrayIndexKey: sections are a static re-derivation of this settled item's fixed text, not a reorderable or independently-mutating list.
-                <li key={index} className={CLASS.step}>
-                  <span className={CLASS.stepMarker} aria-hidden="true">
-                    {String(index + 1).padStart(2, "0")}
-                  </span>
-                  <div className={CLASS.stepBody}>
-                    <Markdown source={section} />
-                  </div>
-                </li>
-              ))}
-            </ol>
-          ) : (
-            // One document, not one per summaryIndex: a markdown parser needs
-            // the whole text to resolve block structure. Blank-line joined so
-            // each index still starts its own block-level token rather than
-            // being folded into the previous index's paragraph. The live and
-            // settled branches use this same complete document; only the
-            // live branch opts into streaming preview behavior. Markdown owns
-            // its own paragraph/heading/list layout, so nothing re-wraps it in
-            // .paragraph.
-            <Markdown source={paragraphs.join("\n\n")} />
-          )}
+          <TraceBody paragraphs={paragraphs} />
         </div>
       </Disclosure>
     </div>

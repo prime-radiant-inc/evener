@@ -161,6 +161,40 @@ test("keeps Custom selected for all 32 explicit Custom vectors", () => {
   }
 });
 
+test("the thinking-open switch toggles only its own content field", async () => {
+  const user = userEvent.setup();
+  let current = makeTranscriptDisplayConfig({
+    kind: "custom",
+    toolIntent: true,
+    toolCalls: true,
+    reasoning: false,
+    expandByDefault: false,
+    thinkingOpenByDefault: false,
+  });
+  const changes: TranscriptDisplayConfigV1[] = [];
+  const view = render(<TranscriptDetailEditor value={current} onChange={(next) => changes.push(next)} />);
+  const owner = (next: TranscriptDisplayConfigV1) => {
+    current = next;
+    view.rerender(<TranscriptDetailEditor value={current} onChange={(next2) => changes.push(next2)} />);
+  };
+
+  await user.click(clickAdvanced());
+  const thinkingOpen = () => screen.getByRole("switch", { name: "Thinking open by default" });
+  expect(thinkingOpen().getAttribute("aria-checked")).toBe("false");
+  const before = changes.length;
+  await user.click(thinkingOpen());
+  owner(changes.at(-1)!);
+  expect(changes.at(-1)?.content).toEqual({ ...currentContentBaseline(), thinkingOpenByDefault: true });
+  await user.click(thinkingOpen());
+  owner(changes.at(-1)!);
+  expect(changes.at(-1)?.content).toEqual({ ...currentContentBaseline(), thinkingOpenByDefault: false });
+  expect(changes).toHaveLength(before + 2);
+
+  function currentContentBaseline() {
+    return { kind: "custom" as const, toolIntent: true, toolCalls: true, reasoning: false, expandByDefault: false };
+  }
+});
+
 test("the six-choice track keeps Arrow, Home, and End selection behavior", async () => {
   const user = userEvent.setup();
   render(<ControlledEditor initial={makeTranscriptDisplayConfig({ kind: "preset", level: "tools" })} />);
