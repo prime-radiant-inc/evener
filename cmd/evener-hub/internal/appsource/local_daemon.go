@@ -328,6 +328,10 @@ func (s *LocalDaemonSource) RunSessionTools(ctx context.Context) {
 				}
 			})
 			workers.Go(func() {
+				// Retention keeps the canonical relay connected without
+				// subscribing: the daemon's subscriber count must stay zero
+				// for a session no one watches, or its curable sandbox
+				// denials raise approval cards nobody can answer.
 				read, err := lease.Read(life, appwire.ThreadReadParams{Ref: raw})
 				if err == nil {
 					if read.Handoff != nil {
@@ -1011,6 +1015,11 @@ func (s *LocalDaemonSource) SubscribeThread(ctx context.Context, params appwire.
 		if err != nil {
 			return nil, err
 		}
+		// This operation's whole contract is to subscribe, so its read
+		// carries the demand itself: the originating consumer read may
+		// reach here with Subscribe false (a relayOnThreadRead history
+		// read), and the relay no longer forces the field.
+		params.Subscribe = true
 		result, readErr := lease.Read(ctx, params)
 		if readErr != nil {
 			lease.Close()

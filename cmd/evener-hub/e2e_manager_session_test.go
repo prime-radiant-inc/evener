@@ -381,6 +381,86 @@ func TestE2E_ManagerNoBrowserSandboxApproval(t *testing.T) {
 	}
 }
 
+// TestE2E_UnwatchedSessionToolsRelayDoesNotRaiseApproval checks that a retained
+// binding relay alone cannot make an unwatched interactive session wait for an
+// approval card that has no consumer.
+func TestE2E_UnwatchedSessionToolsRelayDoesNotRaiseApproval(t *testing.T) {
+	e2ecap.RequireLoopbackBind(t)
+	e2ecap.RequireProcessInspect(t)
+	if testing.Short() {
+		t.Skip("live-stack e2e: builds binaries and runs a hub + daemon")
+	}
+	provider, err := fakellm.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(provider.Close)
+	stack := startHubStack(t, provider)
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+	defer cancel()
+	client := stack.dialRPC(ctx, t)
+	if _, err := clientRequest[appwire.LaunchConfigResolved](ctx, client, appwire.MethodEvenerLaunchSetLayer, appwire.LaunchConfigSetLayerParams{
+		CWD: stack.workDir, Layer: "global", Config: appwire.LaunchConfigLayer{Sandbox: "restricted"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	const opening = "UNWATCHED-RELAY-CURABLE-DENIAL"
+	// thread/start attaches live updates on the STARTING client's connection,
+	// so a session is only genuinely unwatched once that client disconnects:
+	// start through a dedicated client and close it, or the harness itself
+	// would hold the very subscription this test asserts is absent.
+	starter := stack.dialRPC(ctx, t)
+	started, err := clientRequest[appwire.ThreadStartResponse](ctx, starter, appwire.MethodThreadStart, appwire.ThreadStartParams{
+		Harness: "evener", CWD: stack.workDir, Model: stack.model,
+		Input: []appwire.InputItem{{Type: "text", Text: opening}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := starter.Close(); err != nil {
+		t.Fatal(err)
+	}
+	ref := started.Thread.Evener.Ref
+	t.Cleanup(func() {
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 20*time.Second)
+		defer cleanupCancel()
+		if _, err := clientRequest[appwire.EmptyResponse](cleanupCtx, client, appwire.MethodThreadShutdown, appwire.ThreadShutdownParams{Ref: ref}); err != nil {
+			t.Errorf("unwatched session shutdown: %v", err)
+		}
+	})
+	call := typedStopNext(ctx, t, provider)
+	if !call.Contains(opening) {
+		t.Fatalf("interactive session did not reach provider: %v", call.Texts())
+	}
+	outside := filepath.Join(t.TempDir(), "unwatched-denial-target.txt")
+	// The start-attach retires its subscription only after the starter's
+	// disconnect reaches the relay's idle tick (250ms) and the withdrawal
+	// completes; the model round is held until after that, so the denial is
+	// evaluated with the count the unwatched session actually has.
+	time.Sleep(2 * time.Second)
+	call.RespondToolCall("write_file", map[string]any{"file_path": outside, "content": "must remain denied"})
+	// No ThreadRead subscription, browser, or Manager watch is attached while the
+	// denial is evaluated. The next model round proves the denial returned rather
+	// than blocking on an unanswerable approval.
+	resultCtx, resultCancel := context.WithTimeout(ctx, 5*time.Second)
+	defer resultCancel()
+	result, err := provider.Next(resultCtx.Done())
+	if err != nil {
+		snapshot, readErr := client.ThreadRead(ctx, appwire.ThreadReadParams{Ref: ref, IncludeTurns: true})
+		if readErr != nil {
+			t.Fatalf("provider did not resume (%v) and approval state could not be read: %v", err, readErr)
+		}
+		if len(snapshot.Thread.Evener.PendingEscalations) != 1 {
+			t.Fatalf("provider did not resume (%v), but no pending escalation proves the retained relay raised a card: %+v", err, snapshot.Thread.Evener.PendingEscalations)
+		}
+		t.Fatalf("unwatched curable denial blocked with %d pending approval card(s): %v", len(snapshot.Thread.Evener.PendingEscalations), err)
+	}
+	if !result.Contains(opening) {
+		t.Fatalf("interactive session did not resume after denial: %v", result.Texts())
+	}
+	result.RespondToolCall("communicate", communicateArgs("denial returned"))
+}
+
 func workerTerminalAccepted(turns []appwire.Turn, result string) bool {
 	for _, turn := range turns {
 		for _, item := range turn.Items {
