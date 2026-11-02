@@ -169,7 +169,7 @@ func TestNotificationTurnOwnsDurableReminderAndPendingClientSteering(t *testing.
 	var sess *Session
 	steerAccepted := make(chan struct{})
 	adapter := &fakeAdapter{name: "openai"}
-	adapter.steps = []func(req llm.Request) llm.Response{
+	adapter.setSteps([]func(req llm.Request) llm.Response{
 		func(llm.Request) llm.Response { return agenttest.FinalResponse("warmup") },
 		func(llm.Request) llm.Response {
 			if _, err := sess.AcceptClientMutationSteer(appwire.TurnSteerParams{
@@ -183,7 +183,7 @@ func TestNotificationTurnOwnsDurableReminderAndPendingClientSteering(t *testing.
 			return agenttest.CommunicateResponse(false, "notification handled")
 		},
 		func(llm.Request) llm.Response { return agenttest.FinalResponse("steering handled") },
-	}
+	})
 	client := llm.NewClient()
 	client.Register(adapter)
 	dir := t.TempDir()

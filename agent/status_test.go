@@ -233,7 +233,7 @@ func TestDelegateAttention_RestoreAndColdRead(t *testing.T) {
 			if tt.owed {
 				release = make(chan struct{})
 				launchObserved = make(chan error, 1)
-				fixture.adapter.steps = []func(llm.Request) llm.Response{func(llm.Request) llm.Response {
+				fixture.adapter.setSteps([]func(llm.Request) llm.Response{func(llm.Request) llm.Response {
 					events, err := delegatestore.ReadEvents(delegateResourceStorePath(fixture.stateDir, fixture.meta.ID))
 					if err == nil {
 						falseIndex, runIndex := -1, -1
@@ -252,7 +252,7 @@ func TestDelegateAttention_RestoreAndColdRead(t *testing.T) {
 					launchObserved <- err
 					<-release
 					return agenttest.CommunicateResponse(true, "owed attention restored")
-				}}
+				}})
 			}
 			restored, err := restoreDelegateResourceBootstrapSession(fixture.client, fixture.profile, fixture.workspace, fixture.meta, fixture.stateDir)
 			if err != nil {

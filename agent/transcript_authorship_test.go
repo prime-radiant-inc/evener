@@ -363,7 +363,7 @@ func TestTranscriptAuthorshipAcceptedHuman(t *testing.T) {
 func TestTranscriptAuthorshipInternalNudgeAndExplicitHuman(t *testing.T) {
 	fixture := newColdDelegateFixture(t, "")
 	bare := func(llm.Request) llm.Response { return llm.Response{Message: llm.Assistant("bare response")} }
-	fixture.adapter.steps = []func(llm.Request) llm.Response{bare, bare, bare, bare, func(llm.Request) llm.Response { return agenttest.FinalResponse("recovered") }}
+	fixture.adapter.setSteps([]func(llm.Request) llm.Response{bare, bare, bare, bare, func(llm.Request) llm.Response { return agenttest.FinalResponse("recovered") }})
 	root := restoreSupervisionRoot(t, fixture, nil)
 	outcome := (delegateRuntime{owner: root}).send(context.Background(), fixture.delegateID, "inspect", 60_000)
 	abortUnpersistedDelegateOutcome(t, outcome)

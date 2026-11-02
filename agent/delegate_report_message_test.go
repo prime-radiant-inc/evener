@@ -280,18 +280,18 @@ func TestDelegateReportMessageNonReportOutcomes(t *testing.T) {
 func TestDelegateReportMessageReusedRuntime(t *testing.T) {
 	fixture := newColdDelegateFixture(t, "")
 	output := communicateDefaultEnvelope("First summary", map[string]any{"generation": 1})
-	fixture.adapter.steps = []func(llm.Request) llm.Response{
+	fixture.adapter.setSteps([]func(llm.Request) llm.Response{
 		func(llm.Request) llm.Response { return communicateWithStructured("First human report", output) },
-	}
+	})
 	// Exhaust the input and its one delegate nudge's bare-text retries without
 	// reporting, then fail the following generation at the provider boundary.
 	for range 2 * (maxBareTextRetries + 1) {
-		fixture.adapter.steps = append(fixture.adapter.steps, func(llm.Request) llm.Response {
+		fixture.adapter.appendSteps(func(llm.Request) llm.Response {
 			return llm.Response{Message: llm.Assistant("Unreported generation")}
 		})
 	}
 	providerErr := llm.ErrorFromHTTPStatus("openai", 401, "fixture failure", nil, nil)
-	fixture.client.Register(&failingRequestAdapter{fakeAdapter: fixture.adapter, failAt: len(fixture.adapter.steps), err: providerErr})
+	fixture.client.Register(&failingRequestAdapter{fakeAdapter: fixture.adapter, failAt: fixture.adapter.scriptLen(), err: providerErr})
 	root := restoreSupervisionRoot(t, fixture, nil)
 	sub := warmStableSupervisionDelegate(t, root, fixture)
 	waitForStableSupervisionRun(t, root, fixture.childID)

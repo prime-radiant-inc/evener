@@ -80,10 +80,105 @@ func (a *fakeAdapter) Stream(ctx context.Context, req llm.Request) (llm.Stream, 
 	return nil, llm.ErrStreamUnsupported
 }
 
+// setSteps scripts the adapter's response sequence. A retained lane's
+// background drive can call Complete while a test scripts the next turn, so
+// reassignment takes the same mutex Complete reads under; the cursor (i)
+// survives it, which is what lets a test script a turn mid-run.
+// Call it from the test goroutine, never from a scripted step: Complete holds
+// the mutex while it runs the step.
+func (a *fakeAdapter) setSteps(steps []func(req llm.Request) llm.Response) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.steps = steps
+}
+
+// appendSteps adds one step to the end of the script under the same mutex.
+// Like setSteps, it is not callable from a scripted step.
+func (a *fakeAdapter) appendSteps(step func(req llm.Request) llm.Response) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.steps = append(a.steps, step)
+}
+
+// scriptLen reports the scripted turn count for fixtures that key off it.
+// The script is only touched under the mutex, so even a setup-time read goes
+// through here rather than reaching for the field.
+func (a *fakeAdapter) scriptLen() int {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return len(a.steps)
+}
+
 func (a *fakeAdapter) Requests() []llm.Request {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	return append([]llm.Request{}, a.requests...)
+}
+
+// A retained lane's background drive can call Complete at any moment, so
+// scripting the next turn mid-drive must not write the script beside that
+// read: the race detector marks every test running when it catches one.
+func TestFakeAdapterScriptResistsConcurrentDrive(t *testing.T) {
+	t.Parallel()
+	a := &fakeAdapter{name: "race-fixture"}
+	a.setSteps([]func(llm.Request) llm.Response{
+		func(llm.Request) llm.Response { return llm.Response{Message: llm.Assistant("scripted")} },
+	})
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for range 200 {
+			_, _ = a.Complete(context.Background(), llm.Request{})
+		}
+	}()
+	for range 200 {
+		a.setSteps([]func(llm.Request) llm.Response{
+			func(llm.Request) llm.Response { return llm.Response{Message: llm.Assistant("next")} },
+		})
+	}
+	wg.Wait()
+}
+
+// The driver's cursor belongs to the adapter, not the slice: a mid-run
+// replacement keeps serving from the same position in the new sequence, and
+// appendSteps extends it. The lane fixtures script mid-run turns on exactly
+// this contract (the notificationTurn note in session_worktree_orphan_test.go).
+func TestFakeAdapterScriptReplacementPreservesCursor(t *testing.T) {
+	t.Parallel()
+	a := &fakeAdapter{name: "script-fixture"}
+	a.setSteps([]func(llm.Request) llm.Response{
+		func(llm.Request) llm.Response { return llm.Response{Message: llm.Assistant("first")} },
+		func(llm.Request) llm.Response { return llm.Response{Message: llm.Assistant("second")} },
+	})
+	if got := completeText(t, a); got != "first" {
+		t.Fatalf("first completion = %q, want the first scripted step", got)
+	}
+	a.setSteps([]func(llm.Request) llm.Response{
+		func(llm.Request) llm.Response { return llm.Response{Message: llm.Assistant("replacement first")} },
+		func(llm.Request) llm.Response { return llm.Response{Message: llm.Assistant("replacement second")} },
+	})
+	if got := completeText(t, a); got != "replacement second" {
+		t.Fatalf("completion after replacing the script = %q, want the replacement's step at the surviving cursor", got)
+	}
+	a.appendSteps(func(llm.Request) llm.Response { return llm.Response{Message: llm.Assistant("appended")} })
+	if got := a.scriptLen(); got != 3 {
+		t.Fatalf("scriptLen = %d, want 3", got)
+	}
+	if got := completeText(t, a); got != "appended" {
+		t.Fatalf("completion after appending = %q, want the appended step", got)
+	}
+}
+
+// completeText runs one model call through the fake and returns the answer's
+// text.
+func completeText(t *testing.T, a *fakeAdapter) string {
+	t.Helper()
+	resp, err := a.Complete(context.Background(), llm.Request{})
+	if err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+	return resp.Message.Text()
 }
 
 type compactionEventStrategy struct {

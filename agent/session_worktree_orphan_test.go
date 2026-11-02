@@ -581,7 +581,7 @@ func TestDelegateSendReLocksUnlockedLaneForRetainedChild(t *testing.T) {
 	finish := func(llm.Request) llm.Response {
 		return agenttest.FinalResponse("done")
 	}
-	fixture.adapter.steps = []func(llm.Request) llm.Response{finish}
+	fixture.adapter.setSteps([]func(llm.Request) llm.Response{finish})
 	first := (delegateRuntime{owner: root}).send(context.Background(), fixture.delegateID, "first turn", 10_000)
 	if first.result.Err != nil {
 		t.Fatalf("first send: %v", first.result.Err)
@@ -592,7 +592,7 @@ func TestDelegateSendReLocksUnlockedLaneForRetainedChild(t *testing.T) {
 	// The end state the orphan arm and the manual unlock leave.
 	wtGit(t, r.mainRoot, "worktree", "unlock", lanePath)
 
-	fixture.adapter.steps = []func(llm.Request) llm.Response{finish}
+	fixture.adapter.setSteps([]func(llm.Request) llm.Response{finish})
 	second := (delegateRuntime{owner: root}).send(context.Background(), fixture.delegateID, "second turn", 10_000)
 	if second.result.Err != nil {
 		t.Fatalf("second send: %v", second.result.Err)
@@ -669,7 +669,7 @@ func TestDelegateWakeReLocksUnlockedLane(t *testing.T) {
 	finish := func(llm.Request) llm.Response {
 		return agenttest.FinalResponse("done")
 	}
-	fixture.adapter.steps = []func(llm.Request) llm.Response{finish}
+	fixture.adapter.setSteps([]func(llm.Request) llm.Response{finish})
 	first := (delegateRuntime{owner: root}).send(context.Background(), fixture.delegateID, "first turn", 10_000)
 	if first.result.Err != nil {
 		t.Fatalf("first send: %v", first.result.Err)
@@ -681,7 +681,7 @@ func TestDelegateWakeReLocksUnlockedLane(t *testing.T) {
 	// The end state the orphan arm and the manual unlock leave.
 	wtGit(t, r.mainRoot, "worktree", "unlock", lanePath)
 
-	fixture.adapter.steps = []func(llm.Request) llm.Response{finish}
+	fixture.adapter.setSteps([]func(llm.Request) llm.Response{finish})
 	if !root.driveSubagentNotificationTurn(sub) {
 		t.Fatal("notification drive skipped the idle child")
 	}
@@ -718,7 +718,7 @@ func TestDelegateWakeRefusesForeignHeldLane(t *testing.T) {
 	finish := func(llm.Request) llm.Response {
 		return agenttest.FinalResponse("done")
 	}
-	fixture.adapter.steps = []func(llm.Request) llm.Response{finish}
+	fixture.adapter.setSteps([]func(llm.Request) llm.Response{finish})
 	first := (delegateRuntime{owner: root}).send(context.Background(), fixture.delegateID, "first turn", 10_000)
 	if first.result.Err != nil {
 		t.Fatalf("first send: %v", first.result.Err)
@@ -731,7 +731,7 @@ func TestDelegateWakeRefusesForeignHeldLane(t *testing.T) {
 	wtGit(t, r.mainRoot, "worktree", "unlock", lanePath)
 	wtGit(t, r.mainRoot, "worktree", "lock", "--reason", worktree.FormatSessionMarker(foreignSID), lanePath)
 
-	fixture.adapter.steps = []func(llm.Request) llm.Response{finish}
+	fixture.adapter.setSteps([]func(llm.Request) llm.Response{finish})
 	if root.driveSubagentNotificationTurn(sub) {
 		t.Fatal("notification drive launched into a lane held by another session")
 	}
@@ -812,7 +812,7 @@ func spawnSharedDescendantLane(t *testing.T, r *wtRepo, laneName, standInDlg, st
 	// delegate's follow-up turn finishes, and the retained child's next
 	// notification turn answers the scripted step (or the adapter's bare-text
 	// fallback when none is given).
-	fixture.adapter.steps = []func(llm.Request) llm.Response{spawn, finish, finish, notify}
+	fixture.adapter.setSteps([]func(llm.Request) llm.Response{spawn, finish, finish, notify})
 	first := (delegateRuntime{owner: root}).send(context.Background(), fixture.delegateID, "first turn", 10_000)
 	if first.result.Err != nil {
 		t.Fatalf("first send: %v", first.result.Err)
@@ -899,7 +899,7 @@ func TestDelegateWakeRefusesForeignHeldInheritedLane(t *testing.T) {
 		t.Fatalf("the shared child's lane lock before its wake = %q, want the foreign session's marker", reason)
 	}
 
-	lane.fixture.adapter.steps = []func(llm.Request) llm.Response{lane.finish}
+	lane.fixture.adapter.setSteps([]func(llm.Request) llm.Response{lane.finish})
 	if lane.delegateSess.driveSubagentNotificationTurn(lane.sharedSub) {
 		_, locked, reason := r.laneLocked(t, lane.lanePath)
 		revalErr := lane.delegateSess.revalidateLaneForLaunch(lane.sharedDelegateID)
@@ -1003,7 +1003,7 @@ func spawnRetainedDelegateLane(t *testing.T, r *wtRepo, laneName, standInDlg, st
 	steps = append(steps, turns...)
 	trailingFinishes := []func(llm.Request) llm.Response{finish, finish}
 	steps = append(steps, trailingFinishes...)
-	fixture.adapter.steps = steps
+	fixture.adapter.setSteps(steps)
 	first := (delegateRuntime{owner: root}).send(context.Background(), fixture.delegateID, "first turn", 10_000)
 	if first.result.Err != nil || first.commit == nil {
 		t.Fatalf("first send: %+v", first.result)
@@ -1786,7 +1786,7 @@ func TestDelegateWakeReLocksUnlockedInheritedLaneAndRecordsOwnerActivity(t *test
 	// caused it.
 	launched := false
 	for deadline := time.Now().Add(10 * time.Second); !launched && time.Now().Before(deadline); {
-		lane.fixture.adapter.steps = []func(llm.Request) llm.Response{lane.finish}
+		lane.fixture.adapter.setSteps([]func(llm.Request) llm.Response{lane.finish})
 		launched = lane.delegateSess.driveSubagentNotificationTurn(lane.sharedSub)
 		if !launched {
 			time.Sleep(200 * time.Millisecond)
@@ -1913,7 +1913,7 @@ func TestWorktreePrune_OrphanArmSparesLiveOwnerWhileWakeRuns(t *testing.T) {
 	finish := func(llm.Request) llm.Response {
 		return agenttest.FinalResponse("done")
 	}
-	fixture.adapter.steps = []func(llm.Request) llm.Response{finish}
+	fixture.adapter.setSteps([]func(llm.Request) llm.Response{finish})
 	first := (delegateRuntime{owner: root}).send(context.Background(), fixture.delegateID, "first turn", 10_000)
 	if first.result.Err != nil {
 		t.Fatalf("first send: %v", first.result.Err)
@@ -1928,7 +1928,7 @@ func TestWorktreePrune_OrphanArmSparesLiveOwnerWhileWakeRuns(t *testing.T) {
 	// evidence is backdated, so the backdate is the last write the evidence
 	// carries — the shape a daemon from before the activity refresh leaves
 	// behind.
-	fixture.adapter.steps = []func(llm.Request) llm.Response{finish}
+	fixture.adapter.setSteps([]func(llm.Request) llm.Response{finish})
 	driveDone := make(chan bool, 1)
 	go func() { driveDone <- root.driveSubagentNotificationTurn(sub) }()
 	select {
@@ -2001,7 +2001,7 @@ func TestRefreshActivityEvidenceLeavesFreshTranscriptAlone(t *testing.T) {
 	finish := func(llm.Request) llm.Response {
 		return agenttest.FinalResponse("done")
 	}
-	fixture.adapter.steps = []func(llm.Request) llm.Response{finish}
+	fixture.adapter.setSteps([]func(llm.Request) llm.Response{finish})
 	first := (delegateRuntime{owner: root}).send(context.Background(), fixture.delegateID, "first turn", 10_000)
 	if first.result.Err != nil || first.commit == nil {
 		t.Fatalf("first send: %+v", first.result)

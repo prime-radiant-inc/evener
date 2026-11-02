@@ -344,7 +344,7 @@ func TestDelegateShell_ColdRestartRearmsExactCompletionAttention(t *testing.T) {
 	}
 
 	attentionSeen := false
-	fixture.adapter.steps = []func(llm.Request) llm.Response{
+	fixture.adapter.setSteps([]func(llm.Request) llm.Response{
 		func(request llm.Request) llm.Response {
 			attentionSeen = requestContainsText(request, `<job-notification job_id="`+rec.JobID+`"`)
 			return agenttest.CommunicateResponse(true, "cold shell completion handled")
@@ -352,7 +352,7 @@ func TestDelegateShell_ColdRestartRearmsExactCompletionAttention(t *testing.T) {
 		func(llm.Request) llm.Response {
 			return agenttest.CommunicateResponse(true, "root drained cold shell delegate completion")
 		},
-	}
+	})
 	root := restoreSupervisionRoot(t, fixture, nil)
 	if got := len(fixture.adapter.Requests()); got != 0 {
 		t.Fatalf("provider requests during cold shell repair = %d, want 0", got)
