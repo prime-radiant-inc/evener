@@ -411,6 +411,16 @@ func (o *sessionOperations) Read(ctx context.Context, params appwire.ThreadReadP
 	// An ordinary thread/read retains its default downstream subscription when
 	// the source hands off a live relay. Internal Manager snapshot reads call
 	// read(..., false) directly and do not capture.
+	//
+	// A bridge-origin read is snapshot intent by construction: the remote hub's
+	// source strips the subscribe flag before forwarding (a remote
+	// subscription is created only by its explicit subscribe path), so
+	// capturing here would register a daemon-side feed and a
+	// bridge-connection subscription no hub owns a consumer for and no side
+	// can retire.
+	if hostRoutingOrigin(ctx) == hostRoutingOriginBridge && !params.Subscribe {
+		return o.read(ctx, params, false)
+	}
 	return o.read(ctx, params, true)
 }
 

@@ -192,6 +192,79 @@ func TestManagerSnapshotReadDoesNotAskDaemonForSubscription(t *testing.T) {
 	}
 }
 
+// TestManagerRemoteSnapshotReadLeavesTargetDaemonUnsubscribed is the two-hub
+// half of the snapshot rule pinned above. An unwatched Manager read crosses
+// the hub bridge as an ordinary thread/read whose subscribe flag the remote
+// source strips, so the target hub must treat a bridge-origin read as the
+// snapshot it is. Capturing a downstream subscription there would register a
+// daemon-side feed and a bridge-connection subscription that no hub owns a
+// consumer for and no side can retire.
+func TestManagerRemoteSnapshotReadLeavesTargetDaemonUnsubscribed(t *testing.T) {
+	var mu sync.Mutex
+	asked := map[string][]bool{}
+	daemonB := appserver.NewServer(appserver.ServerConfig{ServerName: "daemon", SourceID: "local"})
+	appserver.HandleTyped(daemonB.Router(), appwire.MethodThreadRead, func(ctx context.Context, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
+		ref, err := appwire.ParseRef(params.Ref)
+		if err != nil {
+			return appwire.ThreadReadResponse{}, err
+		}
+		mu.Lock()
+		asked[params.Ref] = append(asked[params.Ref], params.Subscribe)
+		mu.Unlock()
+		if params.Subscribe {
+			if err := appserver.SubscribeWithAdmission(ctx, ref.ThreadID, false); err != nil {
+				return appwire.ThreadReadResponse{}, err
+			}
+		}
+		return appwire.ThreadReadResponse{Thread: appwire.Thread{ID: ref.ThreadID, SessionID: ref.ThreadID, Evener: appwire.EvenerThread{Ref: params.Ref}}}, nil
+	})
+	daemonHTTP := httptest.NewServer(http.HandlerFunc(daemonB.ServeWebSocket))
+	defer daemonHTTP.Close()
+	endpoint := "ws" + strings.TrimPrefix(daemonHTTP.URL, "http")
+	sourcesB := appsource.NewRegistry()
+	sourcesB.Add(appsource.NewLocalDaemonSourceWithEntries("local", func() []appsource.LocalDaemonEntry {
+		return []appsource.LocalDaemonEntry{{Entry: rendezvous.Entry{Protocol: appwire.ProtocolVersion, Endpoint: endpoint, SourceID: "local", ThreadID: "manager", SessionID: "manager", WorkspaceRef: "local:manager"}}}
+	}, http.DefaultClient))
+	cfgB := hubcore.WebConfig{HubStateRoot: t.TempDir(), Past: hubcore.NewPastIndex("")}
+	serverB := appserver.NewServer(appserver.ServerConfig{ServerName: "hub", Version: "test", SourceID: "local"})
+	relaysB := newHubRelay(serverB, cfgB, sourcesB)
+	operationsB := &sessionOperations{cfg: cfgB, sources: sourcesB, relays: relaysB, server: serverB}
+	appserver.HandleTyped(serverB.Router(), appwire.MethodThreadRead, operationsB.Read)
+	// The target hub's edge stamps the bridge marker on the connection, as
+	// serveAppWireRPC does for `evener hub attach --stdio`.
+	hubB := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		serverB.ServeWebSocket(w, r.WithContext(withHostRoutingOrigin(r.Context(), hostRoutingOriginBridge)))
+	}))
+	defer hubB.Close()
+
+	// The controller hub: a remote source over the bridge connection, and the
+	// same session operations an unwatched Manager status read takes.
+	sourcesA := appsource.NewRegistry()
+	sourcesA.Add(appsource.NewRemoteHubSource("host-b", nil, func(ctx context.Context, host string) (*appwire.Client, error) {
+		return dialHubRPCInitialized(t, hubB), nil
+	}))
+	cfgA := hubcore.WebConfig{HubStateRoot: t.TempDir(), Past: hubcore.NewPastIndex("")}
+	serverA := appserver.NewServer(appserver.ServerConfig{ServerName: "hub", Version: "test", SourceID: "local"})
+	relaysA := newHubRelay(serverA, cfgA, sourcesA)
+	operationsA := &sessionOperations{cfg: cfgA, sources: sourcesA, relays: relaysA, server: serverA}
+	if _, err := operationsA.read(t.Context(), appwire.ThreadReadParams{Ref: "host-b:manager"}, false); err != nil {
+		t.Fatalf("unwatched remote Manager read: %v", err)
+	}
+	if got := daemonB.SubscriberCount("manager"); got != 0 {
+		t.Fatalf("target daemon subscribers after unwatched read = %d, want 0", got)
+	}
+	if got := serverB.SubscriberCount("local:manager"); got != 0 {
+		t.Fatalf("target hub subscribers after unwatched read = %d, want 0", got)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	for _, flag := range asked["local:manager"] {
+		if flag {
+			t.Fatal("unwatched remote Manager read asked the target daemon for a subscription")
+		}
+	}
+}
+
 func TestHubRPCThreadReadRoutesReachableErroredDaemon(t *testing.T) {
 	const sessionID = "02wMz5Txv9yYdSRJat13MZ"
 	daemon := appserver.NewServer(appserver.ServerConfig{ServerName: "daemon", SourceID: "local"})
