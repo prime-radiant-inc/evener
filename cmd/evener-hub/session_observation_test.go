@@ -207,10 +207,18 @@ func TestManagerObservationClearRotatesHistoryAndEndsWatch(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(daemon.AppServer().ServeWebSocket))
 	defer upstream.Close()
 	entry := rendezvous.Entry{Protocol: appwire.ProtocolVersion, Endpoint: upstream.URL, SourceID: "local", ThreadID: instance, SessionID: instance, WorkspaceRef: ref, InstanceID: instance, HubToken: "test-token"}
-	currentInstance := instance
+	// The listing closure runs on several goroutines at once (a relay read
+	// and the watch's state read both list entries), and the clear handler
+	// below swaps the instance from its own goroutine, so the current
+	// instance is atomic and the entry template is copied, never mutated:
+	// sharing a mutated capture is a data race the detector caught in CI.
+	var currentInstance atomic.Value
+	currentInstance.Store(instance)
 	source := appsource.NewLocalDaemonSourceWithEntries("local", func() []appsource.LocalDaemonEntry {
-		entry.InstanceID, entry.SessionID, entry.ThreadID = currentInstance, currentInstance, currentInstance
-		return []appsource.LocalDaemonEntry{{Entry: entry, SessionID: currentInstance, Manager: true}}
+		current := currentInstance.Load().(string)
+		listed := entry
+		listed.InstanceID, listed.SessionID, listed.ThreadID = current, current, current
+		return []appsource.LocalDaemonEntry{{Entry: listed, SessionID: current, Manager: true}}
 	}, upstream.Client())
 	configureObservationTargetSessionTools(daemon, source)
 	replacementPath := filepath.Join(t.TempDir(), "replacement.transcript.jsonl")
@@ -227,7 +235,7 @@ func TestManagerObservationClearRotatesHistoryAndEndsWatch(t *testing.T) {
 		t.Fatal(err)
 	}
 	daemon.SetClearFunc(func(context.Context, appwire.ThreadClearParams) error {
-		currentInstance = "replacement-instance"
+		currentInstance.Store("replacement-instance")
 		daemon.ReplaceAppIdentity(newIdentity.WithBootGeneration("8@manager").WithRecordedLength(replacementLength), nil)
 		return nil
 	})
