@@ -249,6 +249,28 @@ func (s *Session) autonomyInFlight() bool {
 	return s.sessionWorkPending()
 }
 
+// hasWakeableWork reports whether anything can wake a resting session: its
+// own autonomous work or a pending question, a detached process whose
+// completion receipt is still open, or an armed watch in any holder manager
+// that can deliver a wake to it. Used by the communicate handler to refuse
+// waiting_on_work when nothing can wake a resting session; the watch term
+// overcounts on purpose (receiver-agnostic, spent one-shots excluded) because
+// refusing too little is the safe direction — see the spec.
+func (s *Session) hasWakeableWork() bool {
+	if s.autonomyInFlight() || s.HasPendingAsk() {
+		return true
+	}
+	if len(sessionRunningWorkIDs(s)) > 0 {
+		return true
+	}
+	for _, holder := range s.watchHolderSessions() {
+		if holder.jobManager.hasArmedWatch() {
+			return true
+		}
+	}
+	return false
+}
+
 // cumulativeUsageSnapshot converts the context manager's llm.Usage total to
 // the lossy schema.CumulativeUsage persisted in SessionMeta (nil pointers→0,
 // Raw dropped).
