@@ -80,8 +80,12 @@ type jobManager struct {
 	transcriptRef    string
 	store            *jobstore.Store
 	running          map[string]*runningJob
-	watches          map[watchKey]*watchConfig
-	terminalFlush    map[*watchConfig]bool
+	// noticesInFlight spans job finalization start or watch retirement through
+	// notification enqueue.
+	// Guarded by jm.mu, like running, which includes runs still finalizing.
+	noticesInFlight int
+	watches         map[watchKey]*watchConfig
+	terminalFlush   map[*watchConfig]bool
 	// watchHistory is a bounded, latest-trimmed ring of watches that have left
 	// the active set, surfaced by job_list so a fired-then-removed watch stays
 	// legible. Guarded by jm.mu.
@@ -1769,6 +1773,24 @@ func validateStructuredResultWithAddResource(value any, resultSchema any, addRes
 	return compiled.Validate(value)
 }
 
+func (jm *jobManager) hasLiveRuns() bool {
+	jm.mu.Lock()
+	defer jm.mu.Unlock()
+	return len(jm.running) > 0
+}
+
+func (jm *jobManager) hasNoticeEmissionInFlight() bool {
+	jm.mu.Lock()
+	defer jm.mu.Unlock()
+	return jm.noticesInFlight > 0
+}
+
+func (jm *jobManager) noteNoticeEmission(delta int) {
+	jm.mu.Lock()
+	jm.noticesInFlight += delta
+	jm.mu.Unlock()
+}
+
 // enqueueNotifications queues a group of notifications onto the owner's rail
 // and wakes it ONCE, reporting whether anything was queued (a manager with no
 // rail wired queues nothing, and its owner still owes a kick). Every notice
@@ -1793,6 +1815,8 @@ func (jm *jobManager) enqueueNotifications(notifs []jobNotification) bool {
 
 func (jm *jobManager) armFinalizedJob(run *runningJob, terminal *terminalJob) error {
 	defer jm.publishWatchActivity()
+	jm.noteNoticeEmission(1)
+	defer jm.noteNoticeEmission(-1)
 	jm.mu.Lock()
 	if jm.running[run.rec.JobID] != run || run.terminal != terminal {
 		jm.mu.Unlock()

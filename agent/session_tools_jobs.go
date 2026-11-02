@@ -278,7 +278,8 @@ func sessionJobManager(s *Session) (*jobManager, error) {
 
 // sessionRunningJobIDs lists this session's own running (session-launched,
 // non-nested) job ids, in job_list's default order. Used by the communicate
-// end_turn running-job warning; returns nil when the session has no job
+// end_turn running-job warning (through sessionRunningWorkIDs) and by the
+// waiting_on_work wake predicate; returns nil when the session has no job
 // manager or no running jobs.
 func sessionRunningJobIDs(s *Session) []string {
 	jm, err := sessionJobManager(s)
