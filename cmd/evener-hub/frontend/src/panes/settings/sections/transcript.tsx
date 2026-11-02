@@ -83,8 +83,9 @@ export function TranscriptSection() {
         throw new StoreMessageError("Hub did not acknowledge this transcript display default.");
       if (configFingerprint(canonical.config) !== configFingerprint(config)) {
         // The hub stored the four-field reading: keep the preference in this
-        // browser's local view instead of letting the switch silently reset.
-        transcriptDisplayStore.getState().setLocal(layout, config);
+        // browser's local view instead of letting the switch silently reset -
+        // but never replace a local choice the reader already made.
+        if (storeState.local[layout] === undefined) transcriptDisplayStore.getState().setLocal(layout, config);
       }
       // patchHubDefault returns only a fully validated canonical response for
       // this layout. Do not inspect store-wide errors: another layout may be

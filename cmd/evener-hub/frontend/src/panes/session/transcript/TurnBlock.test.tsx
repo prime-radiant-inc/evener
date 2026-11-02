@@ -166,6 +166,31 @@ test("redacts a critical reasoning row on a terminal turn", () => {
   expect(screen.getByText("abcdefghijklmnop")).toBeTruthy();
 });
 
+test("a thought whose visible successor is filtered out keeps the projector's settled state", () => {
+  // The projector decides liveness on the SOURCE turn: this thought is
+  // superseded by the described command (the turn's tail) and carries
+  // live:false. The command is hidden at this level, so a renderer deriving
+  // liveness from the FILTERED turn would wrongly see the thought as the tail
+  // and pulse it.
+  const quiet = makeTranscriptDisplayConfig({
+    kind: "custom",
+    toolIntent: false,
+    toolCalls: false,
+    reasoning: false,
+    expandByDefault: false,
+    thinkingOpenByDefault: false,
+  });
+  const items = [
+    item({ id: "think", type: "reasoning", status: "inProgress", reasoningSummaries: [["ongoing"]] }),
+    item({ id: "cmd", type: "commandExecution", description: "Inspect the tree", status: "completed" }),
+  ];
+  render(withConfig(quiet, <TurnBlock turn={turn(items, { status: "inProgress" }, quiet)} />));
+
+  const block = screen.getByTestId("think-block");
+  expect(block.dataset.live).toBe("false");
+  expect(block.querySelector("details")).not.toBeNull();
+});
+
 test("the trace journey: every thought stays readable on demand at tools, the switch opens them, chat stays conversation-only", () => {
   const tools = makeTranscriptDisplayConfig({ kind: "preset", level: "tools" });
   const openThinking = makeTranscriptDisplayConfig({

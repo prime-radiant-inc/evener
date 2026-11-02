@@ -431,11 +431,13 @@ function isCurrentThought(item: ItemModel, turn: TurnModel): boolean {
   return !items.some((candidate) => candidate.id === item.id);
 }
 
-// The compact trace row's live bit: the projector's own exported live rule
-// (turn in progress, active, tail position), so the renderer, the projector
-// and the phone answer from one function.
+// The compact trace row's live bit: the projector's own bit, stamped on the
+// "thinking" entry from the SOURCE turn, so a successor the level hides still
+// supersedes the thought. Direct leaf renders carry no bit and ask the same
+// shared rule themselves.
 function effectiveCompactLive(props: ItemRenderProps): boolean {
-  return !!props.contentFree && isLiveCurrentReasoning(props.item, props.turn);
+  if (!props.contentFree) return false;
+  return props.contentFreeLive ?? isLiveCurrentReasoning(props.item, props.turn);
 }
 
 // The memo comparator: ignoringTurn's contract (a fresh turn object on every
@@ -461,6 +463,7 @@ export const ThinkBlock = memo(function ThinkBlock({
   sessionRef,
   displayKey,
   contentFree,
+  contentFreeLive,
   redacted,
   projectedSummary,
 }: ItemRenderProps) {
@@ -481,7 +484,7 @@ export const ThinkBlock = memo(function ThinkBlock({
   // stays conversation-only with the plain placeholder.
   if (contentFree) {
     if (hidesThinkingTraces(config.content)) return <ContentFreeThinkBlock item={item} />;
-    const isLive = effectiveCompactLive({ item, turn, live, sessionRef, displayKey, contentFree });
+    const isLive = effectiveCompactLive({ item, turn, live, sessionRef, displayKey, contentFree, contentFreeLive });
     const paragraphs = joinedReasoningParagraphs(item.reasoningSummaries);
     // Empty settled thoughts render nothing (the full grammar's removal rule);
     // a live one keeps its label-alone placeholder until the first chunk.
