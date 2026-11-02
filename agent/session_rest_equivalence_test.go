@@ -50,6 +50,13 @@ func TestRestingStateLiveMatchesRestore(t *testing.T) {
 				}
 				steps = append(steps, final.step)
 				live, restored := restoreAfter(t, steps, func(ctx context.Context, sess *Session) {
+					// A turn-ending waiting_on_work call is legitimate only while
+					// something can wake the session; arm a timer so every scripted
+					// ending is admitted. The watch does not affect the settle state
+					// this test compares.
+					if _, err := sess.jobManager.configureWatch(watchArgs{Target: runtimeMessageAliasCaller, Source: "self", AfterSeconds: 3600}); err != nil {
+						t.Fatal(err)
+					}
 					inputs := []string{"final input"}
 					if prelude.step != nil {
 						inputs = []string{"prelude input", "final input"}
