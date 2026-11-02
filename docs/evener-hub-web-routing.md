@@ -7,10 +7,6 @@ health, and subscription-debug surfaces.
 
 - Deep-linkable page routes include `/`, `/new`, `/s/:ref`, `/thread/:ref`,
   `/settings`, `/settings/:section`, and `/credentials`.
-- **Comic** is a whole-conversation presentation selected in **Verbosity**.
-  It retains the ordinary `/s/:ref` route, encoding the complete qualified
-  AppWire ref as one URL component, and shares workspace navigation and connection
-  ownership. See [Comic Chat](product/comic-chat.md).
 - `/s/:ref/images/:sha` serves session images through the
   [session route handler](../cmd/evener-hub/web_workspace.go).
 - `/doc/file` serves one session document in two representations: `format=raw`
