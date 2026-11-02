@@ -195,8 +195,8 @@ func runPluginMarketplace(args []string, stdout, stderr io.Writer) error {
 		if err := fs.Parse(args[1:]); err != nil {
 			return err
 		}
-		name, err := requireSingleArg(fs, "usage: evener plugin marketplace browse <name> [--json]",
-			"name", "plugin marketplace browse <name> --json")
+		name, err := requireSingleArg(fs, "usage: evener plugin marketplace browse [--json] <name>",
+			"name", "plugin marketplace browse --json <name>")
 		if err != nil {
 			return err
 		}
@@ -584,8 +584,8 @@ func runPluginLifecycle(verb string, args []string, _ io.Reader, stdout, stderr 
 		if err := fs.Parse(args); err != nil {
 			return err
 		}
-		spec, err := requireSingleArg(fs, "usage: evener plugin auto-upgrade <plugin>@<marketplace> [--off]",
-			"plugin spec", "plugin auto-upgrade <plugin>@<marketplace> --off")
+		spec, err := requireSingleArg(fs, "usage: evener plugin auto-upgrade [--off] <plugin>@<marketplace>",
+			"plugin spec", "plugin auto-upgrade --off <plugin>@<marketplace>")
 		if err != nil {
 			return err
 		}
