@@ -629,7 +629,7 @@ func TestRunLaunchCheckRejectsDisabledCommandCredentialedModel(t *testing.T) {
 
 // markedInstanceDefaults maps "provider/model" to true for every row carrying
 // the instance-default marker.
-func markedInstanceDefaults(rows []launchCheckModel) map[string]bool {
+func markedInstanceDefaults(rows []appwire.ModelDescriptor) map[string]bool {
 	marked := map[string]bool{}
 	for _, row := range rows {
 		if row.InstanceDefault {
@@ -688,7 +688,7 @@ default_model = "first"
 		t.Fatalf("runLaunchCheck: %v stderr=%s", err, stderr.String())
 	}
 	var out struct {
-		Models []launchCheckModel `json:"models"`
+		Models []appwire.ModelDescriptor `json:"models"`
 	}
 	if err := json.Unmarshal(stdout.Bytes(), &out); err != nil {
 		t.Fatalf("decode stdout %q: %v", stdout.String(), err)
@@ -1096,6 +1096,66 @@ func TestLaunchCheckEffortLevelsSurviveAppWireDecode(t *testing.T) {
 	}
 	if len(noReasoning.ReasoningEffortLevels) != 0 {
 		t.Fatalf("no-reasoning must offer no levels: %+v", noReasoning)
+	}
+}
+
+// The contract's model row is an appwire.ModelDescriptor: a capability the
+// resolved row states — its context window, token limits, tools, vision,
+// costs — must reach the composer through the launch contract with no
+// synchronized field-by-field edit, the way the effort ladder did not before
+// 52315a95de and the rest of the descriptor still does not.
+func TestLaunchCheckModelsCarryEveryDescriptorCapability(t *testing.T) {
+	launchCheckGateway(t, http.StatusOK, `{"data":[
+		{"id":"glm-5.3","context_window":200000,"max_input_tokens":190000,"max_output_tokens":32000,
+		 "supported_parameters":["tools"],
+		 "architecture":{"input_modalities":["text","image"]},
+		 "pricing":{"prompt":"0.000003","completion":"0.000015"}}
+	]}`)
+
+	var stdout, stderr bytes.Buffer
+	err := RunLaunchCheck([]string{
+		"--protocol", appwire.ProtocolVersion,
+		"--models",
+		"--json",
+	}, &stdout, &stderr)
+	if err != nil {
+		t.Fatalf("runLaunchCheck: %v stderr=%s", err, stderr.String())
+	}
+	var out struct {
+		Models []appwire.ModelDescriptor `json:"models"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &out); err != nil {
+		t.Fatalf("decode stdout %q: %v", stdout.String(), err)
+	}
+	var row appwire.ModelDescriptor
+	for _, m := range out.Models {
+		if m.Provider == "gw" && m.Model == "glm-5.3" {
+			row = m
+		}
+	}
+	if row.Model != "glm-5.3" {
+		t.Fatalf("models=%+v, want the served glm-5.3", out.Models)
+	}
+	if row.ContextWindow == nil || *row.ContextWindow != 200000 {
+		t.Fatalf("glm-5.3 contextWindow=%v, want the stated 200000", row.ContextWindow)
+	}
+	if row.MaxInputTokens == nil || *row.MaxInputTokens != 190000 {
+		t.Fatalf("glm-5.3 maxInputTokens=%v, want the stated 190000", row.MaxInputTokens)
+	}
+	if row.MaxOutputTokens == nil || *row.MaxOutputTokens != 32000 {
+		t.Fatalf("glm-5.3 maxOutputTokens=%v, want the stated 32000", row.MaxOutputTokens)
+	}
+	if row.SupportsTools == nil || !*row.SupportsTools {
+		t.Fatalf("glm-5.3 supportsTools=%v, want the advertised tools support", row.SupportsTools)
+	}
+	if row.SupportsVision == nil || !*row.SupportsVision {
+		t.Fatalf("glm-5.3 supportsVision=%v, want the advertised image modality", row.SupportsVision)
+	}
+	if row.InputCostPerMillion == nil || *row.InputCostPerMillion != 3 {
+		t.Fatalf("glm-5.3 inputCostPerMillion=%v, want the stated prompt price per million", row.InputCostPerMillion)
+	}
+	if row.OutputCostPerMillion == nil || *row.OutputCostPerMillion != 15 {
+		t.Fatalf("glm-5.3 outputCostPerMillion=%v, want the stated completion price per million", row.OutputCostPerMillion)
 	}
 }
 
