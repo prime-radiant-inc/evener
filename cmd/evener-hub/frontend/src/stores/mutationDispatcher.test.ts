@@ -650,6 +650,33 @@ describe("MutationDispatcher", () => {
     expect(recovery).toMatchObject({ wireDeliveryUncertain: true });
   });
 
+  // Round-6 review H (dispatcher): a NAMED notAccepted refusal that never
+  // reached the daemon's journal - the server's admission refusals (stale
+  // instance, a clear in progress) - leaves the wire delivery-uncertain, the
+  // same as the unattributable pre-daemon arm: an outstanding attempt of the
+  // same wire can still apply, and a fresh-id resend would double-deliver.
+  test("a server-admission named refusal preserves the wire's uncertainty", async () => {
+    const indexedDB = new IDBFactory();
+    const outbox = storage(indexedDB, "admission-uncertain", ["mutation-a"]);
+    const record = await outbox.enqueueIntent(queueIntent("ref-a", "stale instance"));
+    const client = new FakeClient();
+    client.on("turn/queue", (params) => {
+      throw new WireError("thread instance is stale", -32011, {
+        evenerErrorInfo: "conflict",
+        clientMutationId: params.clientMutationId,
+        mutationOutcome: "notAccepted",
+        retryDisposition: "none",
+        cause: "refusedBeforeJournaling",
+      });
+    });
+    const dispatcher = new MutationDispatcher(outbox, { getClient: () => client });
+
+    await dispatcher.dispatchTargets(["ref-a"]);
+
+    const recovery = await outbox.getRecovery(record.clientMutationId);
+    expect(recovery).toMatchObject({ wireDeliveryUncertain: true });
+  });
+
   // The complementary pin: an in-band rejection the daemon JOURNALED (naming
   // this mutation, mutationOutcome notAccepted) is authoritative for the wire
   // - it will never be applied - so the recovery keeps a CERTAIN wire identity
@@ -675,6 +702,30 @@ describe("MutationDispatcher", () => {
     expect((recovery as { wireDeliveryUncertain?: boolean })?.wireDeliveryUncertain).toBeFalsy();
   });
 
+  // The journaled twin pin: a rejection the daemon journaled carries no
+  // pre-journaling cause, and its recovery keeps a CERTAIN wire identity -
+  // the journal's verdict is authoritative and the resend takes a fresh id.
+  test("a journaled named rejection keeps its recovery's wire identity certain", async () => {
+    const indexedDB = new IDBFactory();
+    const outbox = storage(indexedDB, "journaled-certain-cause", ["mutation-a"]);
+    const record = await outbox.enqueueIntent(queueIntent("ref-a", "journal rejected"));
+    const client = new FakeClient();
+    client.on("turn/queue", (params) => {
+      throw new WireError("turn interrupt is pending", -32011, {
+        evenerErrorInfo: "conflict",
+        clientMutationId: params.clientMutationId,
+        mutationOutcome: "notAccepted",
+        retryDisposition: "none",
+      });
+    });
+    const dispatcher = new MutationDispatcher(outbox, { getClient: () => client });
+
+    await dispatcher.dispatchTargets(["ref-a"]);
+
+    const recovery = await outbox.getRecovery(record.clientMutationId);
+    expect((recovery as { wireDeliveryUncertain?: boolean })?.wireDeliveryUncertain).toBeFalsy();
+  });
+
   // Round-5 review H1 (replay half): the resent row under an inherited wire id
   // settles from a REPLAYED receipt naming that wire id, exactly like a minted
   // replacement - the journal's dedupe is what keeps the outstanding
@@ -689,7 +740,11 @@ describe("MutationDispatcher", () => {
       wireDeliveryUncertain: true,
     });
     if (!recovery) throw new Error("failed to seed recovery");
-    const sent = await outbox.resendRecoveryResult(a.clientMutationId, queueIntent("ref-a", "resent"));
+    // The replay is byte-identical to the wire's original composition: the
+    // daemon journals an id with its method and payload hash, so the resent
+    // row must carry the ORIGINAL text to inherit the wire id (the round-6
+    // refinement - a different payload is new work under a fresh id).
+    const sent = await outbox.resendRecoveryResult(a.clientMutationId, queueIntent("ref-a", "uncertain save"));
     if (sent.status !== "sent") throw new Error(`resend did not send: ${sent.status}`);
     // The inherited wire id is the dedupe contract: the daemon journals this
     // composition under it, whatever storage key the row carries.

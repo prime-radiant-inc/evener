@@ -841,6 +841,40 @@ test("a consumed recovery retires its submitting wire sibling, whose late refusa
 // consume time makes its chip leave the canceled strip, the same
 // tail-position surface an explicit requeue already has, and a later press
 // can no longer re-queue delivered work from it.
+// Round-6 review H:1613 - a preserved composition is NOT a wire sibling. The
+// preserve path copied the predecessor's payload id into the preserved draft,
+// so after another pane advanced recovery A, a locally preserved draft B sat in
+// A's wire family - and a late settlement of A swept B away through the
+// recovery-store sweep, losing the preserved composition and its bytes. The
+// preserved draft is independent work: its payload id must be its OWN fresh
+// key, so predecessor settlements cannot reach it.
+test("a preserved composition is not a wire sibling: predecessor settlements cannot retire it", async () => {
+  const f = fixture();
+  // A: refused, its recovery row the preserve's base.
+  const a = await f.storage.enqueueIntent(queuedIntent());
+  const recovery = await f.storage.transferToRecovery(a.clientMutationId, "rejected");
+  if (!recovery) throw new Error("failed to seed recovery");
+  // Another pane advanced A; this pane preserves its local edits as a fresh
+  // recovery owner B.
+  const preserved = await f.storage.preserveRecoveryComposition(
+    recovery,
+    [{ type: "text", text: "locally preserved edits" }],
+    [],
+    "locally preserved edits",
+  );
+  if (!preserved) throw new Error("failed to preserve composition");
+  // The preserved draft carries its OWN wire identity, never the
+  // predecessor's.
+  expect(preserved.payload.clientMutationId).toBe(preserved.clientMutationId);
+  expect(preserved.payload.clientMutationId).not.toBe(a.clientMutationId);
+  // A late authoritative settlement of the predecessor's wire must not
+  // retire the preserved composition.
+  expect(await f.storage.settleReceipt(a.clientMutationId, "reflected")).toBe(true);
+  expect(await f.storage.getRecovery(preserved.clientMutationId)).toMatchObject({
+    composerText: "locally preserved edits",
+  });
+});
+
 // Round-5 review H1: the recovery resend assigned a FRESH wire id even when
 // the consumed recovery's lineage is delivery-uncertain - a refusal that never
 // reached the daemon (the hub refused the shape before any execution, so the
@@ -886,6 +920,57 @@ test("a resend of a delivery-uncertain recovery inherits its wire identity so an
   await f.storage.markAttempted(sent.record.clientMutationId);
   expect(await f.storage.settleReceipt(sent.record.clientMutationId, "reflected")).toBe(true);
   expect(await f.storage.getOutbox(sent.record.clientMutationId)).toBeUndefined();
+});
+
+// Round-6 review M:1761 - inheritance is only sound for byte-identical
+// replays. The daemon journals a client mutation by id WITH its method and
+// payload hash (agent/session_client_mutation.go: errClientMutationMismatch);
+// resending EDITED content under the inherited id is a mismatch the daemon
+// refuses before journaling, which lands the row back in a marked-uncertain
+// recovery whose resend inherits the same id again - the mismatch loop. An
+// edited or rerouted resend is NEW work: it takes a fresh wire identity.
+test("an edited resend of a delivery-uncertain recovery takes a fresh wire identity", async () => {
+  const f = fixture();
+  const a = await f.storage.enqueueIntent(queuedIntent());
+  await f.storage.markAttempted(a.clientMutationId);
+  const recovery = await f.storage.transferToRecovery(a.clientMutationId, "rejected", "invalid params", {
+    wireDeliveryUncertain: true,
+  });
+  if (!recovery) throw new Error("failed to seed recovery");
+  // The user edits the recovery's input; the resend carries new content.
+  const edited = await f.storage.updateRecoveryInput(
+    a.clientMutationId,
+    [{ type: "text", text: "edited content" }],
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    0,
+  );
+  if (!edited) throw new Error("failed to edit recovery");
+  const sent = await f.storage.resendRecoveryResult(a.clientMutationId, queuedIntent("local:queued"));
+  if (sent.status !== "sent") throw new Error(`resend did not send: ${sent.status}`);
+  // The edited composition is new work: a fresh wire identity, so the
+  // daemon journals it as its own mutation instead of mismatching the
+  // original wire's method-and-payload hash forever.
+  expect(sent.record.payload.clientMutationId).toBe(sent.record.clientMutationId);
+  expect(sent.record.payload.clientMutationId).not.toBe(a.clientMutationId);
+});
+
+// The rerouted half: a different METHOD is different work too.
+test("a rerouted resend of a delivery-uncertain recovery takes a fresh wire identity", async () => {
+  const f = fixture();
+  const a = await f.storage.enqueueIntent(queuedIntent());
+  await f.storage.markAttempted(a.clientMutationId);
+  const recovery = await f.storage.transferToRecovery(a.clientMutationId, "rejected", "invalid params", {
+    wireDeliveryUncertain: true,
+  });
+  if (!recovery) throw new Error("failed to seed recovery");
+  const rerouted = { ...queuedIntent("local:queued"), method: "turn/start" };
+  const sent = await f.storage.resendRecoveryResult(a.clientMutationId, rerouted);
+  if (sent.status !== "sent") throw new Error(`resend did not send: ${sent.status}`);
+  expect(sent.record.payload.clientMutationId).toBe(sent.record.clientMutationId);
 });
 
 // The complementary pin: a refusal the daemon JOURNALED (in band, naming this
@@ -953,6 +1038,41 @@ test("an applied settlement retires its unedited recovery sibling", async () => 
   if (!recovery) throw new Error("failed to seed recovery");
   expect(await f.storage.settleApplied(a.clientMutationId)).toBe(true);
   expect(await f.storage.getRecovery(b.clientMutationId)).toBeUndefined();
+});
+
+// Round-6 review M:776 - a wire whose every outbox and optimistic carrier is
+// gone but whose UNEDITED recovery copy still lives must still settle from a
+// late authoritative event: recovery A consumed into an inherited-id resend,
+// another pre-daemon refusal moving the resent row into recovery - only the
+// recovery carrier holds the wire, and the settlement refused it.
+test("a late settlement for a wire living only as a recovery carrier settles the wire and retires the tray row", async () => {
+  const f = fixture();
+  // A: delivery-uncertain, refused before the daemon.
+  const a = await f.storage.enqueueIntent(queuedIntent());
+  await f.storage.markAttempted(a.clientMutationId);
+  const recovery = await f.storage.transferToRecovery(a.clientMutationId, "rejected", "invalid params", {
+    wireDeliveryUncertain: true,
+  });
+  if (!recovery) throw new Error("failed to seed recovery");
+  // The recovery is consumed by its byte-identical resend, which inherits
+  // the wire id under a fresh storage key.
+  const sent = await f.storage.resendRecoveryResult(a.clientMutationId, queuedIntent());
+  if (sent.status !== "sent") throw new Error(`resend did not send: ${sent.status}`);
+  expect(sent.record.payload.clientMutationId).toBe(a.clientMutationId);
+  // The resent row is refused before the daemon again and moves into
+  // recovery: the wire's ONLY carrier left anywhere is this recovery row.
+  await f.storage.markAttempted(sent.record.clientMutationId);
+  const second = await f.storage.transferToRecovery(sent.record.clientMutationId, "rejected", "invalid params", {
+    wireDeliveryUncertain: true,
+  });
+  if (!second) throw new Error("failed to seed second recovery");
+  expect(await f.storage.getOutbox(a.clientMutationId)).toBeUndefined();
+  expect(await f.storage.getOutbox(sent.record.clientMutationId)).toBeUndefined();
+  // A late authoritative event naming A must settle the wire - and retire
+  // the sendable tray row that claims already-delivered work.
+  expect(await f.storage.settleReceipt(a.clientMutationId, "reflected")).toBe(true);
+  expect(await f.storage.getRecovery(sent.record.clientMutationId)).toBeUndefined();
+  expect(await f.storage.listRecovery("local:queued")).toHaveLength(0);
 });
 
 // The preserve pin: an independently edited composition (compositionRevision

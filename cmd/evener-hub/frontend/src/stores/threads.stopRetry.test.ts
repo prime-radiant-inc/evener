@@ -26,6 +26,7 @@ import {
   installHydrationRetrySchedulerForTests,
   installResumeRetrySchedulerForTests,
   notifyReadyForMutationDispatch,
+  resendRecoveryMutation,
   resetThreadsStoreForTests,
   resumeStopBaseline,
   retryBlockedMutation,
@@ -367,6 +368,73 @@ describe("Stop cancellation durability across reload, tabs, and resume", () => {
       const sendOutcome = threadsStore
         .getState()
         .send("ref_a", "after the settlement")
+        .then(
+          () => undefined,
+          (error: unknown) => {
+            failure = error;
+          },
+        );
+      await vi.advanceTimersByTimeAsync(11_000);
+      await sendOutcome;
+      expect(failure).toBeUndefined();
+      expect(fake.calls.filter((call) => call.method === "turn/start")).toHaveLength(1);
+    } finally {
+      vi.useRealTimers();
+      openSpy.mockRestore();
+    }
+  });
+
+  // Round-6 review M:817 - when the wire's own row is long gone, the
+  // settlement's fallback takes the replacement as its subject and deletes
+  // it, but the subject was excluded from the sweep's retired ids - so the
+  // runtime's in-memory delivery registration for the replacement survived
+  // the settlement that deleted it, and a following persistence read that
+  // fails keeps the fallback guard armed on a row that no longer exists.
+  test("a settlement by fallback subject clears the replacement's in-memory registration", async () => {
+    const indexedDB = new IDBFactory();
+    const databaseName = "evener-mutation-outbox-settle-fallback-clears-registration";
+    const storage = new MutationOutboxIndexedDB({ indexedDB, databaseName });
+    setMutationStorageForTests(storage);
+    const fake = connectMutationClient();
+    await ensureActiveMutationTarget(fake, "ref_a");
+    await nextMacrotask();
+    onTurnStart(fake);
+    fake.on("turn/interrupt", (params) => ({ receipt: mutationReceipt(params.clientMutationId) }));
+    fake.on("turn/queue", () => ({}) as TurnQueueResponse);
+    await threadsStore.getState().queue("ref_a", "ours");
+    for (let i = 0; i < 10; i += 1) await nextMacrotask();
+    const rows = await storage.listOutbox("ref_a");
+    expect(rows).toHaveLength(1);
+    const ours = rows[0]!.clientMutationId;
+    await storage.markUnknown(ours, "blockedUnknown");
+    // The blocked row's pre-daemon refusal moves it into recovery; the
+    // recovery's byte-identical resend (the runtime's own path, which
+    // registers the fresh row undelivered) consumes it, so the wire's
+    // ORIGINAL storage key is gone everywhere - the resent row is its only
+    // carrier.
+    const recovery = await storage.transferToRecovery(ours, "rejected", "invalid params", {
+      wireDeliveryUncertain: true,
+    });
+    if (!recovery) throw new Error("failed to seed recovery");
+    const sent = await resendRecoveryMutation(ours, "ref_a", "queue", "ours", []);
+    if (sent.status !== "sent") throw new Error(`resend did not send: ${sent.status}`);
+    expect(sent.record.payload.clientMutationId).toBe(ours);
+    // The resent row is registered undelivered by the resend wrapper.
+    // A late authoritative event naming the ORIGINAL wire id settles by
+    // fallback: the resent row is the subject and is deleted from storage.
+    expect(await storage.settleReceipt(ours, "reflected")).toBe(true);
+    expect(await storage.getOutbox(sent.record.clientMutationId)).toBeUndefined();
+    // Storage hiccups before any pin refresh can recompute the guard: the
+    // fallback send must proceed on in-memory registrations alone, and the
+    // deleted subject's id must not keep the ref armed.
+    storage.close();
+    const openSpy = wedgeDatabaseOpens(indexedDB, databaseName);
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
+    try {
+      let failure: unknown;
+      const sendOutcome = threadsStore
+        .getState()
+        .send("ref_a", "after the fallback settlement")
         .then(
           () => undefined,
           (error: unknown) => {

@@ -335,7 +335,18 @@ export class MutationDispatcher<A extends MutationAttachmentRef = MutationAttach
         return "stop";
       }
       if (data?.mutationOutcome === "notAccepted") {
-        await this.#storage.transferToRecovery(record.clientMutationId, "rejected", rejectionReason(error, data));
+        // A NAMED refusal that never reached the daemon's journal - the
+        // server's admission refusals (a stale instance, a clear in
+        // progress), marked by their cause - leaves the wire
+        // delivery-uncertain like the unattributable pre-daemon arm: an
+        // outstanding attempt of the same wire can still apply, and a
+        // fresh-id resend would double-deliver (round-6 H). A refusal
+        // without that cause is the daemon's OWN journaled rejection,
+        // authoritative for the wire: the recovery keeps a certain identity
+        // and its resend takes a fresh id.
+        await this.#storage.transferToRecovery(record.clientMutationId, "rejected", rejectionReason(error, data), {
+          wireDeliveryUncertain: data?.cause === "refusedBeforeJournaling",
+        });
         this.#onStorageChange([record.targetRef]);
         return "advance";
       }

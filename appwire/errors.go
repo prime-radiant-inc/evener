@@ -794,6 +794,14 @@ func MutationNotAccepted(clientMutationID, message string) WireError {
 			ClientMutationID: clientMutationID,
 			MutationOutcome:  MutationOutcomeNotAccepted,
 			RetryDisposition: RetryDispositionNone,
+			// Every caller refuses the mutation BEFORE the daemon's journal
+			// can hold a record for it (server admission, a clear in
+			// progress): the journal never saw the wire, so its verdict is
+			// not authoritative and an outstanding attempt of the same wire
+			// can still apply. A journaled rejection (markedNotAccepted,
+			// from the daemon's own records) carries no such cause and IS
+			// authoritative - clients split wire uncertainty on this bit.
+			Cause: "refusedBeforeJournaling",
 		},
 	}
 }

@@ -41,6 +41,23 @@ type MutationOutboxOperation =
   | "removeQueuedMessage"
   | "retargetOutbox";
 
+// A canonical deep-equal for JSON-shaped mutation payloads: object key
+// order is not part of a payload's meaning (the daemon hashes a canonical
+// serialization), so the comparison sorts keys at every depth.
+function canonicalJson(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(canonicalJson);
+  if (typeof value === "object" && value !== null) {
+    const record = value as Record<string, unknown>;
+    const sorted: Record<string, unknown> = {};
+    for (const key of Object.keys(record).sort()) sorted[key] = canonicalJson(record[key]);
+    return sorted;
+  }
+  return value;
+}
+function sameJsonShape(left: unknown, right: unknown): boolean {
+  return JSON.stringify(canonicalJson(left)) === JSON.stringify(canonicalJson(right));
+}
+
 type VersionedMutationRecoveryRecord = MutationRecoveryRecord & {
   compositionRevision?: number;
   // Set only by a refusal that never reached the daemon (the hub refused the
@@ -748,6 +765,7 @@ export class MutationOutboxIndexedDB implements WebQueuedMessageStorage<Mutation
     projectionState: string,
   ): Promise<{ settled: boolean; retiredIds: string[] }> {
     let settledSource: MutationRecord | undefined;
+    let settledWireId: string | undefined;
     const settled = await this.#write<{ settled: boolean; retiredIds: string[] }>(
       [OUTBOX_STORE, OPTIMISTIC_STORE, RECOVERY_STORE],
       "settleReceipt",
@@ -769,20 +787,42 @@ export class MutationOutboxIndexedDB implements WebQueuedMessageStorage<Mutation
         // identity, or one side lingers retained and pinning its ref after
         // delivery.
         const wireId = named ? effectiveWireId(named) : clientMutationId;
+        // The main settle write reads only the outbox and optimistic stores:
+        // a submission's settlement must never WAIT on recovery projection
+        // reads (the composer's committed-send contract, the same shape the
+        // resend's consume sweep pins). The wire's unedited recovery siblings
+        // retire in the sweep the settle initiates on its way out, below.
         const family = await this.#resolveWireFamily(transaction, wireId, {
           readOptimistic: true,
-          readRecovery: true,
+          readRecovery: false,
         });
+        settledWireId = wireId;
         const siblings = [...family.outbox, ...family.optimistic].filter(
           (record) => record.clientMutationId !== clientMutationId,
         );
-        if (!named && siblings.length === 0) return { settled: false, retiredIds: [] };
+        // Round-6 M:776: a wire whose every outbox and optimistic carrier is
+        // gone but whose unedited recovery copy still lives has a subject to
+        // settle - the late authoritative event proves the WIRE delivered,
+        // and the sendable tray row claiming already-delivered work must
+        // retire. This recovery read happens only when nothing else named
+        // the wire, so the ordinary settlement never waits on it. An edited
+        // composition is its own work and survives (settlementRetiresRecovery).
+        let wireCarriers: MutationRecoveryRecord[] = [];
+        if (!named && siblings.length === 0) {
+          const recoveryFamily = await this.#resolveWireFamily(transaction, wireId, { readRecovery: true });
+          wireCarriers = recoveryFamily.recovery.filter(
+            (record) => record.clientMutationId !== clientMutationId && settlementRetiresRecovery(record),
+          );
+          if (wireCarriers.length === 0) return { settled: false, retiredIds: [] };
+        } else if (siblings.length === 0 && !named) {
+          return { settled: false, retiredIds: [] };
+        }
         // The named record settles with today's semantics; when the receipt
         // names a wire id whose own record is already gone, the replacement
         // carrying that wire id is the subject. Every other sibling only
         // retires - the composition settled once, and one accepted copy is
         // enough.
-        const subject = (named ?? siblings[0]) as MutationRecord;
+        const subject = (named ?? siblings[0] ?? wireCarriers[0]) as MutationRecord;
         settledSource = subject;
         await this.#discardSupersededNoteRecovery(transaction, subject);
         await this.#retireOlderBlockedNoteRows(transaction, subject);
@@ -803,25 +843,48 @@ export class MutationOutboxIndexedDB implements WebQueuedMessageStorage<Mutation
           if (outboxRecord) await requestResult(outbox.delete(clientMutationId));
           if (recoveryRecord && settlementRetiresRecovery(recoveryRecord))
             await requestResult(recovery.delete(clientMutationId));
+        } else if (wireCarriers.length > 0) {
+          // The wire lives only as unedited recovery copies: the carrier is
+          // the subject and retires with the settlement.
+          await requestResult(recovery.delete(subject.clientMutationId));
         } else {
           // A receipt for a record already gone settles the replacement
           // that carries its wire id.
           await requestResult(outbox.delete(subject.clientMutationId));
           if (!retained) await requestResult(optimistic.delete(subject.clientMutationId));
         }
-        // The one sibling sweep: the wire family across all three stores,
-        // so an unedited recovery copy of the wire retires with the
-        // settlement too (it is sendable delivered work otherwise) while an
-        // independently edited composition survives it.
+        // The one sibling sweep: the wire family's outbox and optimistic rows
+        // here; an unedited recovery copy of the wire retires with the
+        // settlement too (it is sendable delivered work otherwise) in the
+        // sweep initiated below, while an independently edited composition
+        // survives every sweep.
         const retiredIds = await this.#retireWireFamily(transaction, family, {
           excludeKeys: new Set([clientMutationId, subject.clientMutationId]),
           sweepOptimistic: true,
-          sweepRecovery: true,
+          sweepRecovery: false,
         });
+        // Round-6 M:817: a fallback subject (the replacement the event
+        // settled by wire identity, or a carrier above) was deleted from
+        // storage by this settlement, so its key reaches the retired ids the
+        // runtime clears in-memory registrations from - exactly like the
+        // sweep's own rows. The named record's id the runtime clears itself.
+        if (named === undefined) retiredIds.push(subject.clientMutationId);
         return { settled: true, retiredIds };
       },
     );
     if (!settled.settled) return settled;
+    // The settlement's own write never waits on recovery projection reads;
+    // this sweep - initiated here, fire-and-forget like the supersede
+    // discard - retires the wire's unedited recovery siblings through the
+    // same one-home rules. A later read of the recovery store queues behind
+    // it (same-connection transaction ordering), so observers see the
+    // retired state, never the stale sendable one.
+    if (settledWireId !== undefined) {
+      this.#sweepSettledWireRecoverySiblings(settledWireId, [
+        clientMutationId,
+        settledSource?.clientMutationId ?? clientMutationId,
+      ]);
+    }
     this.#discardSupersededCanceledNotesAfterSettle(settledSource);
     const settledRef = settledSource?.targetRef;
     if (settledRef !== undefined) this.#notifyQuietly(() => this.#settledListener?.(settledRef));
@@ -835,6 +898,7 @@ export class MutationOutboxIndexedDB implements WebQueuedMessageStorage<Mutation
 
   async settleAppliedResult(clientMutationId: string): Promise<{ settled: boolean; retiredIds: string[] }> {
     let settledSource: MutationRecord | undefined;
+    let settledWireId: string | undefined;
     const settled = await this.#write<{ settled: boolean; retiredIds: string[] }>(
       [OUTBOX_STORE, OPTIMISTIC_STORE, RECOVERY_STORE],
       undefined,
@@ -853,15 +917,37 @@ export class MutationOutboxIndexedDB implements WebQueuedMessageStorage<Mutation
         // is what keeps a superseded predecessor from lingering retained
         // and pinned after its replacement is applied.
         const wireId = named ? effectiveWireId(named) : clientMutationId;
+        // The main settle write reads only the outbox and optimistic stores:
+        // a submission's settlement must never WAIT on recovery projection
+        // reads (the composer's committed-send contract, the same shape the
+        // resend's consume sweep pins). The wire's unedited recovery siblings
+        // retire in the sweep the settle initiates on its way out, below.
         const family = await this.#resolveWireFamily(transaction, wireId, {
           readOptimistic: true,
-          readRecovery: true,
+          readRecovery: false,
         });
+        settledWireId = wireId;
         const siblings = [...family.outbox, ...family.optimistic].filter(
           (record) => record.clientMutationId !== clientMutationId,
         );
-        if (!named && siblings.length === 0) return { settled: false, retiredIds: [] };
-        const subject = (named ?? siblings[0]) as MutationRecord;
+        // Round-6 M:776: a wire whose every outbox and optimistic carrier is
+        // gone but whose unedited recovery copy still lives has a subject to
+        // settle - the late authoritative event proves the WIRE delivered,
+        // and the sendable tray row claiming already-delivered work must
+        // retire. This recovery read happens only when nothing else named
+        // the wire, so the ordinary settlement never waits on it. An edited
+        // composition is its own work and survives (settlementRetiresRecovery).
+        let wireCarriers: MutationRecoveryRecord[] = [];
+        if (!named && siblings.length === 0) {
+          const recoveryFamily = await this.#resolveWireFamily(transaction, wireId, { readRecovery: true });
+          wireCarriers = recoveryFamily.recovery.filter(
+            (record) => record.clientMutationId !== clientMutationId && settlementRetiresRecovery(record),
+          );
+          if (wireCarriers.length === 0) return { settled: false, retiredIds: [] };
+        } else if (siblings.length === 0 && !named) {
+          return { settled: false, retiredIds: [] };
+        }
+        const subject = (named ?? siblings[0] ?? wireCarriers[0]) as MutationRecord;
         await this.#discardSupersededNoteRecovery(transaction, subject);
         await this.#retireOlderBlockedNoteRows(transaction, subject);
         if (named) {
@@ -869,21 +955,40 @@ export class MutationOutboxIndexedDB implements WebQueuedMessageStorage<Mutation
           if (optimisticRecord) await requestResult(optimistic.delete(clientMutationId));
           if (recoveryRecord && settlementRetiresRecovery(recoveryRecord))
             await requestResult(recovery.delete(clientMutationId));
+        } else if (wireCarriers.length > 0) {
+          // The wire lives only as unedited recovery copies: the carrier is
+          // the subject and retires with the settlement.
+          await requestResult(recovery.delete(subject.clientMutationId));
         } else {
           await requestResult(outbox.delete(subject.clientMutationId));
           await requestResult(optimistic.delete(subject.clientMutationId));
         }
-        // The same one sibling sweep as settleReceipt, all three stores.
+        // The same one sibling sweep as settleReceipt.
         const retiredIds = await this.#retireWireFamily(transaction, family, {
           excludeKeys: new Set([clientMutationId, subject.clientMutationId]),
           sweepOptimistic: true,
-          sweepRecovery: true,
+          sweepRecovery: false,
         });
+        // The same M:817 rule as settleReceipt: a fallback subject's key
+        // reaches the retired ids.
+        if (named === undefined) retiredIds.push(subject.clientMutationId);
         settledSource = subject;
         return { settled: true, retiredIds };
       },
     );
     if (!settled.settled) return settled;
+    // The settlement's own write never waits on recovery projection reads;
+    // this sweep - initiated here, fire-and-forget like the supersede
+    // discard - retires the wire's unedited recovery siblings through the
+    // same one-home rules. A later read of the recovery store queues behind
+    // it (same-connection transaction ordering), so observers see the
+    // retired state, never the stale sendable one.
+    if (settledWireId !== undefined) {
+      this.#sweepSettledWireRecoverySiblings(settledWireId, [
+        clientMutationId,
+        settledSource?.clientMutationId ?? clientMutationId,
+      ]);
+    }
     this.#discardSupersededCanceledNotesAfterSettle(settledSource);
     const settledRef = settledSource?.targetRef;
     if (settledRef !== undefined) this.#notifyQuietly(() => this.#settledListener?.(settledRef));
@@ -981,6 +1086,29 @@ export class MutationOutboxIndexedDB implements WebQueuedMessageStorage<Mutation
       }
     }
     return retired;
+  }
+
+  // A settlement's recovery-sibling tail: the settle's own write never reads
+  // the recovery store (a submission's settlement must not wait on recovery
+  // projection reads), so the unedited same-wire recovery copies - sendable
+  // delivered work once the wire settles - retire here, initiated with the
+  // settle and fire-and-forget like the supersede discard. An independently
+  // edited composition survives it (settlementRetiresRecovery), and the
+  // retired keys reach the host's bookkeeping through the same listener.
+  #sweepSettledWireRecoverySiblings(wireId: string, exclude: string[]): void {
+    void this.#write([RECOVERY_STORE], undefined, async (transaction) => {
+      const family = await this.#resolveWireFamily(transaction, wireId, { readRecovery: true });
+      const retiredIds = await this.#retireWireFamily(transaction, family, {
+        excludeKeys: new Set(exclude),
+        sweepOptimistic: false,
+        sweepRecovery: true,
+      });
+      if (retiredIds.length > 0) this.#retiredIdsListener?.(retiredIds);
+      return retiredIds;
+    }).catch(() => {
+      // The supersede-discard rule: a failed cleanup leaves the copies for a
+      // later settlement or sweep to retire.
+    });
   }
 
   // Resolve-and-retire for callers that do not already hold the family (the
@@ -1610,7 +1738,12 @@ export class MutationOutboxIndexedDB implements WebQueuedMessageStorage<Mutation
         threadId: base.threadId,
         instanceId: base.instanceId,
         method: base.method,
-        payload: { ...base.payload, ref: base.targetRef, input },
+        // The preserved draft is INDEPENDENT work, not a replay of its base:
+        // its payload id is its OWN fresh key, so the wire family of the
+        // predecessor it was preserved from - whose late settlement sweeps
+        // its own unedited copies - cannot reach it (round-6 H:1613: an
+        // independently preserved composition is not a wire sibling).
+        payload: { ...base.payload, ref: base.targetRef, input, clientMutationId },
         attachments,
         optimisticDisplay: { method: base.method, input },
         composerText,
@@ -1696,6 +1829,7 @@ export class MutationOutboxIndexedDB implements WebQueuedMessageStorage<Mutation
       let refused = false;
       const consumedWireIds = new Set<string>();
       const consumedUncertainWireIds = new Set<string>();
+      const consumedOriginals: Array<{ method: string; payload: Record<string, unknown> }> = [];
       for (const id of ids) {
         const recovery = await requestResult<MutationRecoveryRecord | undefined>(recoveryStore.get(id));
         if (!recovery) {
@@ -1703,6 +1837,7 @@ export class MutationOutboxIndexedDB implements WebQueuedMessageStorage<Mutation
           continue;
         }
         consumedWireIds.add(effectiveWireId(recovery));
+        consumedOriginals.push({ method: recovery.method, payload: { ...recovery.payload } });
         if ((recovery as VersionedMutationRecoveryRecord).wireDeliveryUncertain === true)
           consumedUncertainWireIds.add(effectiveWireId(recovery));
         const durableRevision = (recovery as VersionedMutationRecoveryRecord).compositionRevision ?? 0;
@@ -1748,12 +1883,28 @@ export class MutationOutboxIndexedDB implements WebQueuedMessageStorage<Mutation
       // can still apply - so the resend carries the INHERITED wire id inside
       // its payload under its fresh storage key, and the daemon's journal
       // replays the re-submission instead of applying the composition twice.
-      // A journaled rejection resolved the wire authoritatively (the daemon
+      // Inheritance is only sound for a BYTE-IDENTICAL replay: the daemon
+      // journals a client mutation by id together with its method and payload
+      // hash, and a re-submission carrying either a different method or a
+      // different payload is a MISMATCH it refuses before journaling - which
+      // would land the new row back in a marked-uncertain recovery whose next
+      // resend inherits the same id and mismatches again, forever (round-6
+      // M:1761). Edited or rerouted content is NEW work under a fresh id. A
+      // journaled rejection resolved the wire authoritatively (the daemon
       // will never apply it), and a consolidation of several wires is merged
-      // work the journal never saw as one composition: both take fresh ids.
+      // work the journal never saw as one composition: fresh ids too.
+      const stripPayloadId = (payload: Record<string, unknown>): Record<string, unknown> => {
+        const { clientMutationId: _id, ...rest } = payload;
+        return rest;
+      };
+      const replaysOriginal = consumedOriginals.every(
+        (original) =>
+          intent.method === original.method &&
+          sameJsonShape(stripPayloadId(intent.payload), stripPayloadId(original.payload)),
+      );
       const soleConsumedWireId = consumedWireIds.size === 1 ? [...consumedWireIds][0] : undefined;
       const inheritedWireId =
-        soleConsumedWireId !== undefined && consumedUncertainWireIds.has(soleConsumedWireId)
+        soleConsumedWireId !== undefined && replaysOriginal && consumedUncertainWireIds.has(soleConsumedWireId)
           ? soleConsumedWireId
           : undefined;
       const record: MutationOutboxRecord = {
