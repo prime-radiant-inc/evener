@@ -3,16 +3,19 @@ package agent
 import (
 	"context"
 	"testing"
+	"time"
 
 	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/internal/jobstore"
 	"primeradiant.com/evener/agent/schema"
 )
 
 // TestSessionHasWakeableWork pins every wake source hasWakeableWork counts
 // for a resting session, plus the bare session it must refuse: a wake exists
-// when autonomous work is in flight, a question waits on the user, a detached
-// process still owns an open completion receipt, or any holder manager keeps
-// an armed watch that can deliver a wake.
+// when autonomous work is in flight, a managed job runs, a question waits on
+// the user, or any holder manager keeps an armed watch that can deliver a wake.
+// A detached process receipt does not count because it sends no completion
+// notification.
 func TestSessionHasWakeableWork(t *testing.T) {
 	t.Parallel()
 	cases := []struct {
@@ -41,10 +44,26 @@ func TestSessionHasWakeableWork(t *testing.T) {
 			},
 		},
 		{
-			name: "running detached process wakes",
-			want: true,
+			name: "running detached process alone cannot wake",
+			want: false,
 			seed: func(_ *testing.T, s *Session) {
 				s.recordDetachedProcess(execenv.DetachedProcess{PID: 4321, Done: make(chan struct{})})
+			},
+		},
+		{
+			name: "running managed job wakes",
+			want: true,
+			seed: func(t *testing.T, s *Session) {
+				now := time.Now().UTC()
+				if err := s.jobManager.appendEvent(jobstore.Event{
+					Kind: jobstore.EventJobStarted, TS: now, JobID: "job_x",
+					Type: jobstore.JobShell, OwnerSessionID: s.ID(), StartedAt: &now,
+				}); err != nil {
+					t.Fatal(err)
+				}
+				if ids := sessionRunningJobIDs(s); len(ids) != 1 || ids[0] != "job_x" {
+					t.Fatalf("sessionRunningJobIDs = %v, want [job_x]", ids)
+				}
 			},
 		},
 		{

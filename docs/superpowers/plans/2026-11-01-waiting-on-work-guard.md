@@ -4,7 +4,7 @@
 
 **Goal:** The communicate result tool refuses `end_turn=true` with `end_reason="waiting_on_work"` when nothing can provably wake the resting session, so a session can never rest forever on a claim that background work will wake it.
 
-**Architecture:** One new Session predicate, `hasWakeableWork`, enumerates everything that can wake a resting session: `autonomyInFlight()` (pending notifications, queued input, delegate deliveries and attention, working children), running jobs and detached processes (`sessionRunningWorkIDs`), a pending question (`HasPendingAsk`), and an armed watch in any job manager that can deliver to this session (`watchHolderSessions()` walk + a new `hasArmedWatch`). The communicate Exec consults it through a new `toolDeps.wakeableWork` hook and refuses the call before the first durable write, so the model keeps its turn and corrects itself: `done`, `needs_response`, or actually starting the work.
+**Architecture:** One new Session predicate, `hasWakeableWork`, enumerates everything that can wake a resting session: `autonomyInFlight()` (pending notifications, queued input, delegate deliveries and attention, working children), running managed jobs (`sessionRunningJobIDs`, not detached processes because their completion sends no notification), a pending question (`HasPendingAsk`), and an armed watch in any job manager that can deliver to this session (`watchHolderSessions()` walk + a new `hasArmedWatch`). The communicate Exec consults it through a new `toolDeps.wakeableWork` hook and refuses the call before the first durable write, so the model keeps its turn and corrects itself: `done`, `needs_response`, or actually starting the work.
 
 **Tech Stack:** Go, `agent` package (same-package tests), scripted `llm.ProviderAdapter` (`newExecutionSession`), golden prompt snapshots.
 
@@ -88,7 +88,7 @@
 
   - pending job notification: `s.enqueueJobNotificationAndNotify(jobNotification{})` (session.go:1201)
   - working subagent: track a running child the way session_awaiting_test.go:216-239 does
-  - running work: `s.recordDetachedProcess(execenv.DetachedProcess{PID: 4321, Done: make(chan struct{})})` (session_tools_jobs.go:2166-2178; the open channel receipt is the "still running" signal `runningDetachedProcessIDs` reads)
+  - running managed job: append a `jobstore.EventJobStarted` event to `s.jobManager` with `OwnerSessionID: s.ID()`; a detached process receipt alone does not count because completion sends no notification
   - pending question: under `s.mu`, append a zero-value `askQuestion` to `s.askPending` (session.go:705; `askPendingCount` is length-based)
   - armed watch in own manager: `s.jobManager.configureWatch(watchArgs{Target: runtimeMessageAliasCaller, Source: "self", AfterSeconds: 3600})`, with `defer s.Close()` on this row so the timer goroutine stops (the manager's timer validation requires `Source: "self"`, job_watch.go:1075-1078 — confirmed by Task 1)
 
@@ -106,7 +106,7 @@
       if s.autonomyInFlight() || s.HasPendingAsk() {
           return true
       }
-      if len(sessionRunningWorkIDs(s)) > 0 {
+      if len(sessionRunningJobIDs(s)) > 0 {
           return true
       }
       for _, holder := range s.watchHolderSessions() {
@@ -202,10 +202,11 @@
 
   ```go
   // wakeableWork reports whether anything can provably wake this session once
-  // its current turn ends and it rests: pending autonomy input, running jobs
-  // or detached processes, a pending question, or an armed watch in any
-  // manager that can deliver to this session. The communicate handler refuses
-  // end_reason waiting_on_work when it returns false. Nil never refuses.
+  // its current turn ends and it rests: pending autonomy input, running managed
+  // jobs, a pending question, or an armed watch in any manager that can deliver
+  // to this session. Detached processes are excluded because their completion
+  // sends no notification. The communicate handler refuses end_reason
+  // waiting_on_work when it returns false. Nil never refuses.
   wakeableWork func() bool
   ```
 
