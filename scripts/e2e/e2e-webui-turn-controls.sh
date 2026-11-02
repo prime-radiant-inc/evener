@@ -170,6 +170,10 @@ api_key = "fakellm-not-a-secret"
 session_affinity_headers = true
 EOF
 
+# e2e_isolate_home unsets the operator's provider paths; name the isolated
+# file so the hub cannot fall back to anything else.
+export EVENER_PROVIDERS_CONFIG="$HOME/.config/evener/providers.toml"
+
 echo "==> starting evener hub" >&2
 "$run/evener" hub -addr 127.0.0.1:0 -evener "$run/evener" >"$run/hub.log" 2>&1 &
 hub_pid=$!

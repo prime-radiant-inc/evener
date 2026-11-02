@@ -4,7 +4,6 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
-	"slices"
 	"strings"
 	"testing"
 
@@ -73,62 +72,62 @@ func scriptProvidersTOML(t *testing.T, path string) string {
 	return ""
 }
 
-// TestE2EIsolationPinsProvidersConfig keeps the disposable-hub scripts immune
-// to an ambient EVENER_PROVIDERS_CONFIG: e2e_isolate_home unsets it, but the
-// hub then finds the script's providers.toml only through the HOME-derived
-// default path, so a value re-exported by a wrapper leaves the hub with no
-// providers while every liveness check still passes — exactly the silent
-// failure #4411 shaped this file around. The shared isolation helper owns the
-// pin, so every harness that isolates HOME gets it, and no script can forget
-// it.
-func TestE2EIsolationPinsProvidersConfig(t *testing.T) {
-	const exportLine = `export EVENER_PROVIDERS_CONFIG="$HOME/.config/evener/providers.toml"`
-
-	body, err := os.ReadFile("scripts/lib/e2e-lib.sh")
-	if err != nil {
-		t.Fatalf("read scripts/lib/e2e-lib.sh: %v", err)
-	}
-	lines := strings.Split(string(body), "\n")
-	openAt, closeAt := -1, -1
-	for i, line := range lines {
-		if strings.TrimSpace(line) == "e2e_isolate_home() {" {
-			openAt = i
-			continue
-		}
-		if openAt >= 0 && line == "}" {
-			closeAt = i
-			break
-		}
-	}
-	if openAt < 0 || closeAt < 0 {
-		t.Fatal("scripts/lib/e2e-lib.sh no longer defines e2e_isolate_home as a top-level function this audit can scan")
-	}
-	pinned := false
-	for _, line := range lines[openAt:closeAt] {
-		if strings.TrimSpace(line) == exportLine {
-			pinned = true
-			break
-		}
-	}
-	if !pinned {
-		t.Fatalf("e2e_isolate_home never %s", exportLine)
-	}
-
-	for _, script := range []string{
-		e2eTurnControlsScript,
-		"scripts/e2e/e2e-ratelimited-provider.sh",
+// TestE2EScriptsPinProvidersConfig keeps each disposable-hub script immune to
+// an ambient EVENER_PROVIDERS_CONFIG after isolation: e2e_isolate_home unsets
+// it (and TestDisposableHubRecipeIsolatesTheHubEnvironment requires it to stay
+// unset), so each script names its own isolated providers file before starting
+// the hub. Without that pin the hub rides the HOME-derived default, which a
+// wrapper re-exporting the operator's path would silently outrank — the hub
+// then has no providers while every liveness check still passes, the silent
+// failure #4411 shaped this file around.
+func TestE2EScriptsPinProvidersConfig(t *testing.T) {
+	for _, tc := range []struct {
+		name, source, writeLine string
+	}{
+		{
+			name: "webui-turn-controls", source: e2eTurnControlsScript,
+			writeLine: providersHeredocOpen,
+		},
+		{
+			name: "ratelimited-provider", source: "scripts/e2e/e2e-ratelimited-provider.sh",
+			writeLine: `sed "s|FAKE429_ADDR|$fake429_addr|" "$fixtures_dir/providers.toml" >"$HOME/.config/evener/providers.toml"`,
+		},
 	} {
-		body, err := os.ReadFile(script)
-		if err != nil {
-			t.Fatalf("read %s: %v", script, err)
-		}
-		usesHelper := slices.ContainsFunc(strings.Split(string(body), "\n"), func(line string) bool {
-			trimmed := strings.TrimSpace(line)
-			return strings.HasPrefix(trimmed, "e2e_isolate_home ")
+		t.Run(tc.name, func(t *testing.T) {
+			body, err := os.ReadFile(tc.source)
+			if err != nil {
+				t.Fatalf("read %s: %v", tc.source, err)
+			}
+			lines := strings.Split(string(body), "\n")
+			writeAt, hubAt, exportAt := -1, -1, -1
+			for i, line := range lines {
+				trimmed := strings.TrimSpace(line)
+				if writeAt < 0 && trimmed == tc.writeLine {
+					writeAt = i
+					continue
+				}
+				if exportAt < 0 && trimmed == `export EVENER_PROVIDERS_CONFIG="$HOME/.config/evener/providers.toml"` {
+					exportAt = i
+					continue
+				}
+				if hubAt < 0 && strings.Contains(line, `"$run/evener" hub`) {
+					hubAt = i
+				}
+			}
+			if writeAt < 0 {
+				t.Fatalf("%s no longer writes its providers.toml on the line this audit matches", tc.source)
+			}
+			if hubAt < 0 {
+				t.Fatalf("%s no longer starts its hub via \"$run/evener\" hub", tc.source)
+			}
+			if exportAt < 0 {
+				t.Fatalf("%s never exports EVENER_PROVIDERS_CONFIG at the isolated providers.toml path", tc.source)
+			}
+			if !(writeAt < exportAt && exportAt < hubAt) {
+				t.Fatalf("%s must export EVENER_PROVIDERS_CONFIG between the providers.toml write (line %d) and the hub start (line %d); found at line %d",
+					tc.source, writeAt+1, hubAt+1, exportAt+1)
+			}
 		})
-		if !usesHelper {
-			t.Fatalf("%s no longer calls e2e_isolate_home, so it gets neither HOME isolation nor the providers pin", script)
-		}
 	}
 }
 
