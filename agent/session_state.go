@@ -249,18 +249,18 @@ func (s *Session) autonomyInFlight() bool {
 	return s.sessionWorkPending()
 }
 
-// hasWakeableWork reports whether anything can wake a resting session: its
-// journaled running jobs, own live runs (including finalization), armed watches
-// or in-flight notice emissions in holder managers, runnable user steering,
-// autonomous work, or a pending question. Producers are read before queues,
-// with notifications last among queue terms, so a retirement-to-enqueue handoff
-// cannot fall between reads. Detached processes, Stop-held steering and daemon
-// nudges do not count. Used by communicate to refuse waiting_on_work only when
-// nothing can wake the session. Watch and emission terms are receiver-agnostic
-// on purpose, since refusing too little is safe; settled spent one-shots do
-// not count — see the spec.
+// hasWakeableWork reports whether anything can wake a resting session. Used by
+// communicate to refuse waiting_on_work only when nothing can wake it. Producers
+// are read before queues, with notifications last among queue terms, so a
+// retirement-to-enqueue handoff cannot fall between reads. Detached processes,
+// Stop-held steering, and daemon nudges never count; watch and emission terms
+// overcount on purpose because refusing too little is safe. See the spec for
+// the full source list.
 func (s *Session) hasWakeableWork() bool {
 	if len(sessionRunningJobIDs(s)) > 0 {
+		return true
+	}
+	if s.jobManager != nil && s.jobManager.hasLiveRuns() {
 		return true
 	}
 	if s.hasWorkingSubagent() {
@@ -271,7 +271,7 @@ func (s *Session) hasWakeableWork() bool {
 	}
 	for _, holder := range s.watchHolderSessions() {
 		jm := holder.jobManager
-		if (jm == s.jobManager && jm.hasLiveRuns()) || jm.hasArmedWatch() || jm.hasNoticeEmissionInFlight() {
+		if jm.hasArmedWatch() || jm.hasNoticeEmissionInFlight() {
 			return true
 		}
 	}

@@ -3341,7 +3341,8 @@ func (jm *jobManager) onSessionEvent(ev events.SessionEvent) {
 			overBudget = append(overBudget, cfg)
 		}
 	}
-	if len(notifications) > 0 || len(overBudget) > 0 {
+	emitting := len(notifications) > 0 || len(overBudget) > 0
+	if emitting {
 		jm.noticesInFlight++
 	}
 	jm.mu.Unlock()
@@ -3363,7 +3364,7 @@ func (jm *jobManager) onSessionEvent(ev events.SessionEvent) {
 		}
 	}
 	jm.enqueueWatchNotifications(notifications)
-	if len(notifications) > 0 || len(overBudget) > 0 {
+	if emitting {
 		jm.noteNoticeEmission(-1)
 	}
 }
