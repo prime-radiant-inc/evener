@@ -410,25 +410,42 @@ export class MutationOutboxIndexedDB implements QueuedMessageStorage<MutationAtt
   // write obeys the same rule: rows canceled first, stop action second, so a
   // storage failure aborts the stop instead of orphaning it. Returns the ids
   // that moved to "canceled".
-  async cancelUnattempted(targetRef: string): Promise<string[]> {
+  //
+  // `upToSequence` bounds the write to work issued at or before that intent
+  // sequence: a supersession cancels only the rows its drive spoke for, so a
+  // Send the user pressed afterwards (under the newer fence) survives.
+  async cancelUnattempted(targetRef: string, upToSequence?: number): Promise<string[]> {
     return this.#write([OUTBOX_STORE, SEQUENCE_STORE], "cancelUnattempted", async (transaction) => {
-      const canceled = await this.#cancelUnattempted(transaction, targetRef);
+      const canceled = await this.#cancelUnattempted(transaction, targetRef, upToSequence);
       await this.#bumpStopEpoch(transaction, targetRef);
       return canceled;
     });
   }
 
-  async #cancelUnattempted(transaction: IDBTransaction, targetRef: string): Promise<string[]> {
+  async #cancelUnattempted(transaction: IDBTransaction, targetRef: string, upToSequence?: number): Promise<string[]> {
     const store = transaction.objectStore(OUTBOX_STORE);
     const records = await requestResult<MutationOutboxRecord[]>(store.getAll());
     const canceled: string[] = [];
     for (const record of records) {
       if (record.targetRef !== targetRef) continue;
       if (!isCancelableByStop(record)) continue;
+      if (upToSequence !== undefined && record.intentSequence > upToSequence) continue;
       await requestResult(store.put({ ...record, state: "canceled" }));
       canceled.push(record.clientMutationId);
     }
     return canceled;
+  }
+
+  // The ref's last allocated intent sequence: the boundary between work issued
+  // before this read and a Send issued after it. A supersession scopes its
+  // cancellation to the former.
+  async maxIntentSequence(targetRef: string): Promise<number | undefined> {
+    return this.#read(SEQUENCE_STORE, async (transaction) => {
+      const current = await requestResult<TargetSequence | undefined>(
+        transaction.objectStore(SEQUENCE_STORE).get(targetRef),
+      );
+      return current?.lastSequence ?? 0;
+    });
   }
 
   // A canceled row's only exits are an explicit Retry and the thread going

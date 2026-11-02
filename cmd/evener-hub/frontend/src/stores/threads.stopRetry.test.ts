@@ -3274,3 +3274,197 @@ test("a press that fails while an older backoff stands supersedes its fences", a
   // epoch.
   expect(fake.calls.filter((call) => call.method === "thread/resume")).toHaveLength(3);
 });
+
+// Dispatch of a parked row must wait behind an armed retry's token validation.
+// A reconnect read during backoff can deliver a foreign Stop's newer token with
+// the folded resume still allowed, and a turn/start admitted then folds a
+// resume under that fresh token - restarting the session the other device
+// stopped before the stale-token retry is ever judged by the hub.
+test("a mid-backoff read does not let parked work fold a resume past the armed retry", async ({ onTestFinished }) => {
+  const scheduledResumeRetries = trackScheduledResumeRetries(onTestFinished);
+  const ref = "local:recovery-parked-dispatch";
+  const storage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(storage);
+  const fake = connectMutationClient();
+  let token = "tok-5";
+  let foldable = false;
+  const resumeParams: Array<string | undefined> = [];
+  fake.on("thread/read", () => {
+    const response = readResponse(ref, { status: { type: "notLoaded" } });
+    response.thread.evener.resumeRequired = true;
+    response.thread.evener.resumeOnlyFoldable = foldable;
+    response.thread.evener.mutationStateAuthoritative = false;
+    response.thread.evener.recoveryToken = token;
+    return response;
+  });
+  fake.on("thread/resume", (params) => {
+    resumeParams.push((params as { expectedRecoveryToken?: string }).expectedRecoveryToken);
+    if (resumeParams.length === 1) throw new Error("connection reset by peer");
+    throw new WireError("session recovery canceled this pending action; submit it again", -32000, {
+      evenerErrorInfo: "sessionRecoveryCanceled",
+      recoveryToken: "tok-9",
+    });
+  });
+  await threadsStore.getState().ensureThread(ref);
+  await flushIndexedDBUntil(() => false);
+  await threadsStore.getState().send(ref, "parked");
+  await waitFor(() => expect(scheduledResumeRetries).toHaveLength(1));
+  // Another device stops the session: a reconnect read delivers the newer
+  // token, and the parked row stays foldable while the retry waits.
+  token = "tok-9";
+  foldable = true;
+  await threadsStore.getState().refreshThread(ref);
+  notifyReadyForMutationDispatch([ref]);
+  await flushIndexedDBUntil(() => false);
+  await flushMicrotasks();
+  await flushIndexedDBUntil(() => false);
+  // Nothing reaches the hub while the armed retry still owns the token.
+  expect(fake.calls.filter((call) => call.method === "turn/start")).toHaveLength(0);
+  // The retry names its own now-stale token; the refusal is the Stop's word,
+  // and the parked work is canceled instead of folded past it.
+  act(() => {
+    scheduledResumeRetries[0]?.fire();
+  });
+  await flushIndexedDBUntil(() => false);
+  await flushMicrotasks();
+  await flushIndexedDBUntil(() => false);
+  await flushMicrotasks();
+  expect(resumeParams).toEqual(["tok-5", "tok-5"]);
+  expect(fake.calls.filter((call) => call.method === "turn/start")).toHaveLength(0);
+  expect((await storage.listOutbox(ref)).map((row) => row.state)).toEqual(["canceled"]);
+});
+
+function outboxText(row: { payload: unknown }): string | undefined {
+  const input = (row.payload as { input?: Array<{ text?: string }> }).input;
+  return input?.[0]?.text;
+}
+
+// A Send pressed after a read observed the Stop's newer token is fresh user
+// intent, not superseded work. The supersession's cancellation must leave it
+// queued: canceling it durably strands the message until another explicit
+// Retry, even though the page already read the fence it was issued under.
+test("a Send pressed under the newer token survives the supersession", async ({ onTestFinished }) => {
+  trackScheduledResumeRetries(onTestFinished);
+  const ref = "local:recovery-newer-send";
+  const storage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(storage);
+  const fake = connectMutationClient();
+  let token = "tok-5";
+  const resumeParams: Array<string | undefined> = [];
+  let rejectResume!: (error: Error) => void;
+  const heldResume = new Promise<ThreadReadResponse>((_, reject) => {
+    rejectResume = reject;
+  });
+  fake.on("thread/read", () => {
+    const response = readResponse(ref, { status: { type: "notLoaded" } });
+    response.thread.evener.resumeRequired = true;
+    response.thread.evener.mutationStateAuthoritative = false;
+    response.thread.evener.recoveryToken = token;
+    return response;
+  });
+  fake.on("thread/resume", (params) => {
+    resumeParams.push((params as { expectedRecoveryToken?: string }).expectedRecoveryToken);
+    if (resumeParams.length === 1) return heldResume;
+    return readResponse(ref, { status: { type: "idle" } });
+  });
+  await threadsStore.getState().ensureThread(ref);
+  await flushIndexedDBUntil(() => false);
+  void threadsStore.getState().send(ref, "first");
+  await waitFor(() => expect(resumeParams).toHaveLength(1));
+  // Another device stops the session, and the page reads the newer token while
+  // the older resume is still in flight.
+  token = "tok-9";
+  await threadsStore.getState().refreshThread(ref);
+  await flushIndexedDBUntil(() => false);
+  // The user presses Send again: a newer message under the token just read.
+  await threadsStore.getState().send(ref, "second");
+  await flushIndexedDBUntil(() => false);
+  rejectResume(
+    new WireError("session recovery canceled this pending action; submit it again", -32000, {
+      evenerErrorInfo: "sessionRecoveryCanceled",
+      recoveryToken: "tok-9",
+    }),
+  );
+  await flushIndexedDBUntil(() => false);
+  await flushMicrotasks();
+  await flushIndexedDBUntil(() => false);
+  await flushMicrotasks();
+  const rows = await storage.listOutbox(ref);
+  // The superseded message is canceled; the newer one is not.
+  expect(rows.find((row) => outboxText(row) === "first")?.state).toBe("canceled");
+  expect(rows.find((row) => outboxText(row) === "second")?.state).not.toBe("canceled");
+  // The replacement drive runs under the token the page read, not the stale one.
+  expect(resumeParams.at(-1)).toBe("tok-9");
+});
+
+// A supersession's cancellation is a durable obligation, not best effort: if
+// storage aborts the write, the rows are still dispatchable and must stay
+// behind the ref's fence until a retry commits their cancellation - otherwise a
+// wake after storage recovers delivers the row the Stop superseded.
+test("a refused cancellation keeps the work fenced and retries until it commits", async ({ onTestFinished }) => {
+  const scheduledResumeRetries = trackScheduledResumeRetries(onTestFinished);
+  const ref = "local:recovery-cancel-retries";
+  const storage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(storage);
+  const realCancelUnattempted = storage.cancelUnattempted.bind(storage);
+  let cancelAttempts = 0;
+  storage.cancelUnattempted = async (targetRef: string, upToSequence?: number) => {
+    cancelAttempts += 1;
+    if (cancelAttempts === 1) throw new Error("transaction aborted");
+    return realCancelUnattempted(targetRef, upToSequence);
+  };
+  const fake = connectMutationClient();
+  let foldable = false;
+  const resumeParams: Array<string | undefined> = [];
+  fake.on("thread/read", () => {
+    const response = readResponse(ref, { status: { type: "notLoaded" } });
+    response.thread.evener.resumeRequired = true;
+    response.thread.evener.resumeOnlyFoldable = foldable;
+    response.thread.evener.mutationStateAuthoritative = false;
+    response.thread.evener.recoveryToken = "tok-5";
+    return response;
+  });
+  fake.on("thread/resume", (params) => {
+    resumeParams.push((params as { expectedRecoveryToken?: string }).expectedRecoveryToken);
+    if (resumeParams.length === 1) throw new Error("connection reset by peer");
+    throw new WireError("session recovery canceled this pending action; submit it again", -32000, {
+      evenerErrorInfo: "sessionRecoveryCanceled",
+      recoveryToken: "tok-9",
+    });
+  });
+  await threadsStore.getState().ensureThread(ref);
+  await flushIndexedDBUntil(() => false);
+  await threadsStore.getState().send(ref, "parked");
+  await waitFor(() => expect(scheduledResumeRetries).toHaveLength(1));
+  act(() => {
+    scheduledResumeRetries[0]?.fire();
+  });
+  await flushIndexedDBUntil(() => false);
+  await flushMicrotasks();
+  await flushIndexedDBUntil(() => false);
+  await flushMicrotasks();
+  // The cancellation aborted: the row is still dispatchable, but the fence
+  // holds it off the wire.
+  expect(cancelAttempts).toBe(1);
+  expect((await storage.listOutbox(ref)).map((row) => row.state)).toEqual(["submitting"]);
+  // Storage is healthy again, and a read now advertises the folded resume: the
+  // still-submitting row would restart the stopped session if it were admitted.
+  foldable = true;
+  await threadsStore.getState().refreshThread(ref);
+  notifyReadyForMutationDispatch([ref]);
+  await flushIndexedDBUntil(() => false);
+  await flushMicrotasks();
+  expect(fake.calls.filter((call) => call.method === "turn/start")).toHaveLength(0);
+  // Storage recovers: the paced retry commits the same cancellation.
+  expect(scheduledResumeRetries).toHaveLength(2);
+  act(() => {
+    scheduledResumeRetries[1]?.fire();
+  });
+  await flushIndexedDBUntil(() => false);
+  await flushMicrotasks();
+  await flushIndexedDBUntil(() => false);
+  await flushMicrotasks();
+  expect(cancelAttempts).toBe(2);
+  expect((await storage.listOutbox(ref)).map((row) => row.state)).toEqual(["canceled"]);
+  expect(fake.calls.filter((call) => call.method === "turn/start")).toHaveLength(0);
+});

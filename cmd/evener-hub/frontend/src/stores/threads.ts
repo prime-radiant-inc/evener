@@ -1680,7 +1680,18 @@ export function installResumeRetrySchedulerForTests(scheduler: RetryScheduler): 
 // armed also carries the resumed identity's Stop fences.
 const resumeRetries = new Map<
   string,
-  { attempt: number; cancel?: () => void; resumed?: ResumedStopFence; recoveryToken?: string }
+  {
+    attempt: number;
+    cancel?: () => void;
+    resumed?: ResumedStopFence;
+    recoveryToken?: string;
+    // The ref's intent-sequence bound the arm speaks for, and - for an
+    // identity-changing resume - the resumed identity's: a supersession
+    // cancels the work issued at or before them, leaving a Send pressed
+    // afterwards (under the newer token) queued.
+    cancelBound?: number;
+    resumedCancelBound?: number;
+  }
 >();
 
 // The one read every durable stop fence decision shares: a store that cannot
@@ -1695,6 +1706,18 @@ async function readDurableStopEpoch(runtime: MutationRuntime | null, ref: string
   }
 }
 
+// The ref's intent-sequence bound at this read: work issued at or before it is
+// what a supersession cancels. An unreadable store leaves the caller's bound in
+// place, exactly as an unread epoch keeps its inherited fence.
+async function readIntentSequenceBound(runtime: MutationRuntime | null, ref: string): Promise<number | undefined> {
+  if (runtime === null) return undefined;
+  try {
+    return await runtime.storage.maxIntentSequence(ref);
+  } catch {
+    return undefined;
+  }
+}
+
 // A fence judges only epochs that answered: undefined on either side is an
 // unread store, not a Stop, so it is never a mismatch.
 function stopEpochMoved(fresh: number | undefined, fence: number | undefined): boolean {
@@ -1703,11 +1726,18 @@ function stopEpochMoved(fresh: number | undefined, fence: number | undefined): b
 
 function scheduleResumeRetryForFence(
   ref: string,
-  armedStopEpoch: number | undefined,
-  armedResumedFence: ResumedStopFence | undefined,
-  armedRecoveryToken: string | undefined,
+  armed: {
+    stopEpoch?: number;
+    resumed?: ResumedStopFence;
+    recoveryToken?: string;
+    cancelBound?: number;
+    resumedCancelBound?: number;
+  },
 ): void {
   const existing = resumeRetries.get(ref);
+  const armedStopEpoch = armed.stopEpoch;
+  const armedResumedFence = armed.resumed;
+  const armedRecoveryToken = armed.recoveryToken;
   // A prior arm can still stand when a NEW drive fails - a press that arrived
   // while the old backoff ticked. The standing entry's fences belong to the
   // drive that armed it; the failure now arming supersedes them with this
@@ -1733,7 +1763,7 @@ function scheduleResumeRetryForFence(
     // next failure schedules at the next step, and the re-check below still
     // owns retiring the whole entry when the fence is gone.
     const fired = resumeRetries.get(ref);
-    if (fired) resumeRetries.set(ref, { attempt: fired.attempt, resumed: fired.resumed });
+    if (fired) resumeRetries.set(ref, { ...fired, cancel: undefined });
     void (async () => {
       const state = threadsStore.getState();
       if (!state.threads.has(ref) || !state.restartBlockingObligations.has(ref)) {
@@ -1794,15 +1824,30 @@ function scheduleResumeRetryForFence(
         stopEpoch: armedStopEpoch,
         resumed: armedResumedFence,
         recoveryToken: armedRecoveryToken,
+        cancelBound: armed.cancelBound,
+        resumedCancelBound: armed.resumedCancelBound,
       });
     })();
   });
-  resumeRetries.set(ref, { attempt, cancel, resumed: armedResumedFence, recoveryToken: armedRecoveryToken });
+  resumeRetries.set(ref, {
+    attempt,
+    cancel,
+    resumed: armedResumedFence,
+    recoveryToken: armedRecoveryToken,
+    cancelBound: armed.cancelBound,
+    resumedCancelBound: armed.resumedCancelBound,
+  });
 }
 
 function retireResumeRetry(ref: string): void {
-  resumeRetries.get(ref)?.cancel?.();
+  const entry = resumeRetries.get(ref);
+  if (entry === undefined) return;
+  entry.cancel?.();
   resumeRetries.delete(ref);
+  // An armed retry fences dispatch (currentDispatchClient): retiring it hands
+  // the ref back to the dispatcher, whether the retry landed, a Stop reversed
+  // it, or the fence cleared without it.
+  notifyReadyForMutationDispatch([ref]);
 }
 
 // Per ref, the cancel handle of the paced retry the ref's last in-band
@@ -2091,6 +2136,17 @@ async function applyClearResponse(targetRef: string, response: ThreadClearRespon
   });
 }
 
+// True while an armed retry speaks for the ref - as its own recovery owner, or
+// as the identity an identity-changing arm already adopted. Dispatch reads it
+// to keep parked work behind the retry's token validation.
+function armedResumeRetryHolds(ref: string): boolean {
+  if (resumeRetries.has(ref)) return true;
+  for (const armed of resumeRetries.values()) {
+    if (armed.resumed?.ref === ref) return true;
+  }
+  return false;
+}
+
 // currentDispatchClient is the dispatch admission: the wired client and its
 // epoch must still be current, and the named ref must pass its fences. The
 // `requireArmed` clause is the dispatcher's own precondition - a ref is
@@ -2144,6 +2200,11 @@ function currentDispatchClient(
       // the destination identity and its outbox reconciliation until it ends.
       inFlightResumes.has(targetRef) ||
       Array.from(inFlightResumes.values()).some((drive) => drive.targetRef === targetRef) ||
+      // An armed retry owns the ref's token validation: parked work waits
+      // until it lands or the hub refuses it, so a foldable read that
+      // observed a foreign Stop's newer token cannot fold a resume past the
+      // stale token the retry still has to name.
+      armedResumeRetryHolds(targetRef) ||
       // A graceful shutdown's own cancellation write is in flight: the write is
       // an await and is not itself a fence, so a dispatch already scheduled for
       // the ref could be admitted in that window and put the row the Stop is
@@ -2942,6 +3003,11 @@ interface InheritedStopFences {
   // during backoff: adopting a read that observed a foreign Stop would
   // re-arm the retry past the very Stop the fence exists to catch.
   recoveryToken?: string;
+  // The intent-sequence bounds the fired arm speaks for: a supersession of
+  // this attempt cancels the work issued at or before them, never a Send
+  // pressed afterwards under the token the page had already read.
+  cancelBound?: number;
+  resumedCancelBound?: number;
 }
 
 // The resumed identity's Stop fences, captured when a drive adopts the
@@ -3062,6 +3128,14 @@ async function runResumeFencedForSend(
   // identity the fired arm already carried. A later adoption replaces the
   // seed with its own fresh captures.
   let attemptResumedFence: ResumedStopFence | undefined = inherited.resumed;
+  // The intent-sequence bounds this attempt speaks for: a supersession cancels
+  // only the work issued at or before them. An automatic retry inherits its
+  // arm's bounds; a press captures the ref's current bound before any fallible
+  // step, after its own row is enqueued, so a Send pressed afterwards - a
+  // fresher intent the page issued under the token it had already read -
+  // survives the supersession.
+  let attemptCancelBound = inherited.cancelBound;
+  let attemptResumedCancelBound = inherited.resumedCancelBound;
   // The hub-owned recovery token this drive is issued under: a Stop from
   // another client or device advances it invisibly to this page, and the hub
   // refuses the request when the value it names is stale. A press reads it
@@ -3077,7 +3151,15 @@ async function runResumeFencedForSend(
   try {
     const attemptRuntime = mutationRuntime;
     if (attemptRuntime !== null) {
-      const freshStopEpoch = await readDurableStopEpoch(attemptRuntime, ref);
+      // The epoch read stays its own step (the durable fence every attempt
+      // captures); a press reads its intent-sequence bound alongside it, so a
+      // Send pressed afterwards - under the token the page already read -
+      // survives the supersession. An automatic retry inherits its arm's bound.
+      const [freshStopEpoch, freshBound] = await Promise.all([
+        readDurableStopEpoch(attemptRuntime, ref),
+        drive.automatic ? Promise.resolve(undefined) : readIntentSequenceBound(attemptRuntime, ref),
+      ]);
+      if (freshBound !== undefined) attemptCancelBound = freshBound;
       // An automatic attempt inherits the fence its fired arm carried, and a
       // fresh epoch that has moved past that fence is a Stop from another tab
       // landing between the fire's own read and this one - invisible to this
@@ -3254,6 +3336,15 @@ async function runResumeFencedForSend(
       registerResumeSwap(ref, resumedRef);
       swapRegistered = true;
       movedFirst = await retargetParkedMutations(ref, resumedRef, resumedIdentity);
+      // The rows this move carried are the superseded work a refused resume
+      // cancels under the resumed identity; their sequences are the bound, so
+      // anything the page queues after the move survives.
+      if (movedFirst !== null && movedFirst.outbox.length > 0) {
+        attemptResumedCancelBound = movedFirst.outbox.reduce(
+          (bound, record) => Math.max(bound, record.intentSequence),
+          attemptResumedCancelBound ?? 0,
+        );
+      }
     }
     await threadsStore.getState().refreshThread(resumedRef, identityFence);
     identityFence();
@@ -3325,8 +3416,8 @@ async function runResumeFencedForSend(
       // must not stay dispatchable, or a foldable read's dispatch would fold a
       // resume past the refusal. Canceled durably, they wait for explicit
       // Retry like any Stop's parked rows.
-      await cancelUnattemptedMutations(ref).catch(() => {});
-      if (resumedRef !== undefined) await cancelUnattemptedMutations(resumedRef).catch(() => {});
+      await cancelSupersededMutations(ref, attemptCancelBound);
+      if (resumedRef !== undefined) await cancelSupersededMutations(resumedRef, attemptResumedCancelBound);
     }
     // A Stop that lands mid-drive can surface here as a plain transport
     // failure - the Stop is killing the very daemon the resume reaches - so
@@ -3370,7 +3461,13 @@ async function runResumeFencedForSend(
     // wedged store could not read arms without that durable fence: the same
     // store cannot have recorded the Stop either.
     if (!stopCanceled) {
-      scheduleResumeRetryForFence(ref, attemptStopEpoch, attemptResumedFence, expectedRecoveryToken);
+      scheduleResumeRetryForFence(ref, {
+        stopEpoch: attemptStopEpoch,
+        resumed: attemptResumedFence,
+        recoveryToken: expectedRecoveryToken,
+        cancelBound: attemptCancelBound,
+        resumedCancelBound: attemptResumedCancelBound,
+      });
     } else {
       const join = pressJoinedResumes.get(ref);
       // A press that arrived AFTER the Stop that canceled this drive is
@@ -4314,11 +4411,11 @@ function discardCanceledMutations(targetRef: string): Promise<void> {
 // No store at all (IndexedDB unavailable to this tab) is different: there
 // are no durable rows to cancel and this tab can neither resurrect nor
 // reopen any, so the rule has nothing to protect and the stop proceeds.
-async function cancelUnattemptedMutations(ref: string): Promise<void> {
+async function cancelUnattemptedMutations(ref: string, upToSequence?: number): Promise<void> {
   const runtime = getMutationRuntime();
   if (!runtime) return;
   await runtime.start;
-  const canceled = await runtime.storage.cancelUnattempted(ref);
+  const canceled = await runtime.storage.cancelUnattempted(ref, upToSequence);
   // Rows were canceled in the outbox: in-flight reads for the ref are stale,
   // whether or not their ids were registered here.
   noteMutationStateChange(ref);
@@ -4335,6 +4432,82 @@ async function cancelUnattemptedMutations(ref: string): Promise<void> {
   // than at the next discovery scan. The discard paths carry the same
   // zero-included rule.
   notifyMutationPersistence([ref]);
+}
+
+// A supersession whose cancellation storage refused. The rows it names are
+// still dispatchable, so the ref keeps a restart obligation - the dispatch
+// fence - until the same bounded cancellation commits, and the retry rides the
+// resume retry's pace. One entry per ref: a later supersession supersedes it.
+interface SupersededCancellationRetry {
+  attempt: number;
+  cancel?: () => void;
+  upToSequence?: number;
+  ownObligation?: symbol;
+  previousObligation?: symbol;
+}
+const supersededCancellationRetries = new Map<string, SupersededCancellationRetry>();
+
+// Cancels the work a refused resume supersedes, durably: at or below the
+// attempt's own intent-sequence bound, so a Send pressed afterwards (under the
+// token the page had already read) stays queued. A storage abort keeps the ref
+// fenced and paces the same write until it commits.
+async function cancelSupersededMutations(ref: string, upToSequence?: number): Promise<void> {
+  retireSupersededCancellationRetry(ref);
+  try {
+    await cancelUnattemptedMutations(ref, upToSequence);
+  } catch {
+    armSupersededCancellationRetry(ref, upToSequence);
+  }
+}
+
+function armSupersededCancellationRetry(ref: string, upToSequence: number | undefined): void {
+  const ownObligation = Symbol("superseded-cancellation");
+  const entry: SupersededCancellationRetry = {
+    attempt: 1,
+    upToSequence,
+    ownObligation,
+    previousObligation: threadsStore.getState().restartBlockingObligations.get(ref),
+  };
+  threadsStore.setState((state) => ({
+    restartBlockingObligations: new Map(state.restartBlockingObligations).set(ref, ownObligation),
+  }));
+  supersededCancellationRetries.set(ref, entry);
+  scheduleSupersededCancellationRetry(ref, entry);
+}
+
+function scheduleSupersededCancellationRetry(ref: string, entry: SupersededCancellationRetry): void {
+  entry.cancel = resumeRetryScheduler(entry.attempt, () => {
+    entry.cancel = undefined;
+    void (async () => {
+      if (supersededCancellationRetries.get(ref) !== entry) return;
+      try {
+        await cancelUnattemptedMutations(ref, entry.upToSequence);
+      } catch {
+        entry.attempt += 1;
+        scheduleSupersededCancellationRetry(ref, entry);
+        return;
+      }
+      retireSupersededCancellationRetry(ref);
+      // The rows are durably canceled now: the ref can be dispatched again.
+      notifyReadyForMutationDispatch([ref]);
+    })();
+  });
+}
+
+function retireSupersededCancellationRetry(ref: string): void {
+  const entry = supersededCancellationRetries.get(ref);
+  if (entry === undefined) return;
+  supersededCancellationRetries.delete(ref);
+  entry.cancel?.();
+  if (entry.ownObligation === undefined) return;
+  const { ownObligation, previousObligation } = entry;
+  threadsStore.setState((state) => {
+    if (state.restartBlockingObligations.get(ref) !== ownObligation) return {};
+    const restartBlockingObligations = new Map(state.restartBlockingObligations);
+    if (previousObligation === undefined) restartBlockingObligations.delete(ref);
+    else restartBlockingObligations.set(ref, previousObligation);
+    return { restartBlockingObligations };
+  });
 }
 
 function olderItemsParams(ref: string, cursor: string) {
@@ -8846,6 +9019,8 @@ export function resetThreadsStoreForTests(): void {
   transientRefusalCancels.clear();
   for (const retry of resumeRetries.values()) retry.cancel?.();
   resumeRetries.clear();
+  for (const retry of supersededCancellationRetries.values()) retry.cancel?.();
+  supersededCancellationRetries.clear();
   dispatchReadyClient = null;
   dispatchReadyEpoch = -1;
   resetThreadOwnersForTests();
