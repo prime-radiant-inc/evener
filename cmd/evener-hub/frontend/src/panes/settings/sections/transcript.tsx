@@ -1,5 +1,6 @@
 import {
   acknowledgesConfig,
+  configFingerprint,
   type HubTranscriptDisplayDefault,
   StoreMessageError,
   shippedDefault,
@@ -80,6 +81,11 @@ export function TranscriptSection() {
       // the store's own reconciliation rather than only the literal request.
       if (!acknowledgesConfig(config, canonical.config) || storeState.drafts[layout] !== undefined)
         throw new StoreMessageError("Hub did not acknowledge this transcript display default.");
+      if (configFingerprint(canonical.config) !== configFingerprint(config)) {
+        // The hub stored the four-field reading: keep the preference in this
+        // browser's local view instead of letting the switch silently reset.
+        transcriptDisplayStore.getState().setLocal(layout, config);
+      }
       // patchHubDefault returns only a fully validated canonical response for
       // this layout. Do not inspect store-wide errors: another layout may be
       // settling concurrently.

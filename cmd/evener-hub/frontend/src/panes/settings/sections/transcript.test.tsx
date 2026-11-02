@@ -387,8 +387,53 @@ test("acknowledges an older hub's four-field resolution of a custom save", async
       content: expect.objectContaining({ kind: "custom", thinkingOpenByDefault: true, expandByDefault: false }),
     }),
   );
+  // The hub kept the four-field reading; the preference survives in this
+  // browser's local view instead of silently resetting.
+  expect(transcriptDisplayStore.getState().local.desktop).toMatchObject({
+    content: {
+      kind: "custom",
+      toolIntent: true,
+      toolCalls: true,
+      reasoning: false,
+      expandByDefault: false,
+      thinkingOpenByDefault: true,
+    },
+  });
   expect(successToasts()).toHaveLength(1);
   expect(screen.queryByRole("alert")).toBeNull();
+});
+
+test("does not add a local override when the hub acknowledges the request exactly", async () => {
+  const client = new FakeClient("ready");
+  const confirmed = makeTranscriptDisplayConfig({ kind: "preset", level: "tools" });
+  client.on("evener/settings/transcriptDisplay/get", () => ({
+    desktop: { revision: 1, config: toWireConfig(confirmed) },
+    mobile: { revision: 1, config: toWireConfig(shippedDefault("mobile").config) },
+  }));
+  connectionStore.getState().connect(client);
+  connectionStore.setState({ features: { ...(await client.connect()).features, transcriptDisplaySettings: true } });
+  const divergent = makeTranscriptDisplayConfig({
+    kind: "custom",
+    toolIntent: true,
+    toolCalls: true,
+    reasoning: false,
+    expandByDefault: false,
+    thinkingOpenByDefault: true,
+  });
+  vi.spyOn(transcriptDisplayStore.getState(), "patchHubDefault").mockResolvedValue({
+    revision: 2,
+    config: divergent,
+  });
+  renderWithToasts();
+  await waitFor(() => expect(transcriptDisplayStore.getState().hub.desktop?.revision).toBe(1));
+  await waitFor(() => expect(transcriptDisplayStore.getState().hubLoading).toBe(false));
+
+  const user = userEvent.setup();
+  await user.click(screen.getByText(/Customize & advanced/));
+  await user.click(screen.getByRole("switch", { name: "Thinking open by default" }));
+
+  await savedOnce();
+  expect(transcriptDisplayStore.getState().local.desktop).toBeUndefined();
 });
 
 test("allows the winner-first concurrent save to toast exactly once", async () => {
