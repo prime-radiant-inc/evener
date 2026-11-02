@@ -2158,11 +2158,43 @@ function parkOutranRow(
   return true;
 }
 
-// One rule for "the token this fence names is older than the page's latest
-// read": an absent token on either side names nothing to compare.
+// Whether `token` names a session state a Stop has since superseded, given the
+// page's latest read. The hub mints "<incarnation>:<epoch>" and advances only
+// the epoch, so the comparison is order, never inequality: a token from the
+// SAME incarnation with a SMALLER epoch is superseded, and a token from another
+// incarnation predates a hub recreation - which no Stop caused, so it fences a
+// fold until a fresh read, but it cancels nothing. An unreadable token or an
+// unread page names nothing to compare.
+function tokenSupersededBy(token: string | undefined, read: string | undefined): boolean {
+  if (token === undefined || read === undefined) return false;
+  const minted = parseRecoveryToken(token);
+  const current = parseRecoveryToken(read);
+  if (minted === undefined || current === undefined) return token !== read;
+  return minted.incarnation === current.incarnation && minted.epoch < current.epoch;
+}
+
+function parseRecoveryToken(token: string): { incarnation: string; epoch: number } | undefined {
+  const separator = token.lastIndexOf(":");
+  if (separator <= 0) return undefined;
+  const epoch = Number(token.slice(separator + 1));
+  if (!Number.isSafeInteger(epoch)) return undefined;
+  return { incarnation: token.slice(0, separator), epoch };
+}
+
+// Whether the page's latest read has moved past the token this fence names: the
+// fence may still name it, but the hub would refuse it as superseded.
 function tokenOutranRead(ref: string, token: string | undefined): boolean {
-  const read = recoveryTokenOf(ref);
-  return token !== undefined && read !== undefined && token !== read;
+  return tokenSupersededBy(token, recoveryTokenOf(ref));
+}
+
+// Whether a hub recreation (a new incarnation) left this token behind: the
+// session was not stopped, so the caller re-reads and arms under the new token
+// instead of treating the refusal as a Stop.
+function tokenFromEarlierIncarnation(token: string | undefined, read: string | undefined): boolean {
+  if (token === undefined || read === undefined) return false;
+  const minted = parseRecoveryToken(token);
+  const current = parseRecoveryToken(read);
+  return minted !== undefined && current !== undefined && minted.incarnation !== current.incarnation;
 }
 
 // The resume drive a record's press needs, carrying the record's own intent
@@ -2748,7 +2780,25 @@ function recoveryTokenOf(ref: string): string | undefined {
 // response the store consumes: the hub-owned epoch advances on Stops from any
 // client or device, and the next resume hands this value back for validation.
 function noteRecoveryToken(ref: string, evener: { recoveryToken?: string } | undefined): void {
-  if (typeof evener?.recoveryToken === "string") recoveryTokens.set(ref, evener.recoveryToken);
+  const token = evener?.recoveryToken;
+  if (typeof token !== "string") return;
+  // Reads can complete out of order (a slow pre-Stop read landing after the
+  // Stop's): record only a token at least as new, so the map never rewinds and
+  // a fresh row is not judged against a state the hub has already left.
+  const known = recoveryTokens.get(ref);
+  const knownToken = known === undefined ? undefined : parseRecoveryToken(known);
+  const freshToken = parseRecoveryToken(token);
+  // A hub-minted token carries its epoch, so a read that lost the race can be
+  // recognized as older and dropped. A token this client cannot read names no
+  // order; the newest completion wins, as it always did.
+  if (
+    knownToken !== undefined &&
+    freshToken !== undefined &&
+    knownToken.incarnation === freshToken.incarnation &&
+    freshToken.epoch < knownToken.epoch
+  )
+    return;
+  recoveryTokens.set(ref, token);
 }
 // Stop generations come from one page-wide sequence, never a per-ref counter,
 // and an entry once written persists for the page session - releaseThread
@@ -3487,15 +3537,21 @@ async function runResumeFencedForSend(
     if (swapRegistered) endResumeSwap(ref);
     const message = error instanceof Error ? error.message : String(error);
     let stopCanceled = error instanceof StopCanceledError;
+    // The refusal names the token the session has advanced to: refresh it, so
+    // the press a supersession restarts (or the next Send) arms under the fresh
+    // fence instead of failing against the stale one again.
+    const supersededToken = recoveryTokenFromError(error);
+    // A refusal from a token minted by an EARLIER hub incarnation is a
+    // recreation, not a Stop: nothing stopped the session, so the recovery
+    // re-arms under the fresh token and the parked work stays queued.
+    const supersededByRecreation =
+      isSessionRecoveryCanceled(error) && tokenFromEarlierIncarnation(expectedRecoveryToken, supersededToken);
     // The hub refusing a resume a newer Stop superseded is that Stop's own
     // word: the caller armed before it, and re-driving would restart the
     // session the other client or device stopped.
-    if (!stopCanceled && isSessionRecoveryCanceled(error)) stopCanceled = true;
-    // The refusal names the token the Stop advanced to: refresh it, so the
-    // press a supersession restarts (or the next Send) arms under the fresh
-    // fence instead of failing against the stale one again.
-    const supersededToken = recoveryTokenFromError(error);
-    if (supersededToken !== undefined) {
+    if (!stopCanceled && isSessionRecoveryCanceled(error) && !supersededByRecreation) stopCanceled = true;
+    if (supersededByRecreation) expectedRecoveryToken = supersededToken;
+    if (supersededToken !== undefined && !supersededByRecreation) {
       recoveryTokens.set(ref, supersededToken);
       // A press that joined the drive BEFORE it observed the Stop's newer
       // token is superseded work too: its bound extends the cancellation to
@@ -4542,11 +4598,14 @@ async function cancelUnattemptedMutations(
   ref: string,
   upToSequence?: number,
   includeAttempted?: boolean,
+  // True only for a Stop action's own cancel write; a supersession passes
+  // false, so an unread bound never borrows the Stop's epoch advance.
+  stopAction = true,
 ): Promise<void> {
   const runtime = getMutationRuntime();
   if (!runtime) return;
   await runtime.start;
-  const canceled = await runtime.storage.cancelUnattempted(ref, upToSequence, includeAttempted);
+  const canceled = await runtime.storage.cancelUnattempted(ref, upToSequence, includeAttempted, stopAction);
   // Rows were canceled in the outbox: in-flight reads for the ref are stale,
   // whether or not their ids were registered here.
   noteMutationStateChange(ref);
@@ -4590,7 +4649,7 @@ async function cancelSupersededMutations(
 ): Promise<void> {
   retireSupersededCancellationRetry(ref);
   try {
-    await cancelUnattemptedMutations(ref, upToSequence, includeAttempted);
+    await cancelUnattemptedMutations(ref, upToSequence, includeAttempted, false);
   } catch {
     armSupersededCancellationRetry(ref, upToSequence, includeAttempted);
   }
@@ -4621,8 +4680,14 @@ function scheduleSupersededCancellationRetry(ref: string, entry: SupersededCance
     entry.cancel = undefined;
     void (async () => {
       if (supersededCancellationRetries.get(ref) !== entry) return;
+      // The ref may have been released while storage was wedged: nothing is
+      // waiting on its rows then, and its fence would outlive every reader.
+      if (!threadsStore.getState().threads.has(ref)) {
+        retireSupersededCancellationRetry(ref);
+        return;
+      }
       try {
-        await cancelUnattemptedMutations(ref, entry.upToSequence, entry.includeAttempted);
+        await cancelUnattemptedMutations(ref, entry.upToSequence, entry.includeAttempted, false);
       } catch {
         entry.attempt += 1;
         scheduleSupersededCancellationRetry(ref, entry);
@@ -9164,6 +9229,8 @@ export function resetThreadsStoreForTests(): void {
   resumeRetries.clear();
   for (const retry of supersededCancellationRetries.values()) retry.cancel?.();
   supersededCancellationRetries.clear();
+  recoveryTokens.clear();
+  parkedRowCancels.clear();
   dispatchReadyClient = null;
   dispatchReadyEpoch = -1;
   resetThreadOwnersForTests();

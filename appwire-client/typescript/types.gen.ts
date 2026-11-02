@@ -817,11 +817,6 @@ export interface EvenerThread {
    */
   resumeRequired?: boolean;
   /**
-   * RecoveryEpoch is the session's hub-owned recovery generation: it
-   * advances on every confirmed Stop, from any client or device. A client
-   * that issues a resume from parked state (an automatic retry) carries the
-   * value it last read here as thread/resume's expectedRecoveryEpoch, so the
-   * hub can refuse a resume a newer Stop has superseded.
    * RecoveryToken is the opaque, hub-owned token a client carries across a
    * parked-state resume: the session's recovery epoch bound to the hub's
    * incarnation, so a Stop from any client or device (or a hub recreation)

@@ -162,6 +162,11 @@ func unavailableThreadReadResponse(ctx context.Context, cfg hubcore.WebConfig, s
 		}
 		if matches && thread.Status.Type == appwire.ThreadStatusRestartRequired {
 			thread = applyHubCapabilities(cfg, thread)
+			// Every other read path stamps the recovery token; a client that
+			// consumes this snapshot must still learn the fence its retry names.
+			if cfg.ResumeLocks != nil {
+				thread.Evener.RecoveryToken = cfg.ResumeLocks.RecoveryToken(deletionThreadID(params.Ref, thread.ID))
+			}
 			return appwire.ThreadReadResponse{Thread: thread}, true, nil
 		}
 	}

@@ -3911,3 +3911,94 @@ test("a recovery resend records the token it was issued under", async ({ onTestF
   expect(barrier.recoveryToken).toBe("tok-5");
   expect(record.recoveryTokenAtEnqueue).toBe("tok-5");
 });
+
+// The fence compares ORDER, not inequality: a row issued under a newer token
+// than this tab's last read is fresh work another tab queued after the Stop,
+// not superseded work.
+test("a row issued under a newer token than the page's read survives", async ({ onTestFinished }) => {
+  trackScheduledResumeRetries(onTestFinished);
+  const ref = "local:recovery-newer-row";
+  const storage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(storage);
+  const fake = connectMutationClient();
+  fake.on("thread/read", () => {
+    const response = readResponse(ref, { status: { type: "notLoaded" } });
+    response.thread.evener.resumeRequired = true;
+    response.thread.evener.resumeOnlyFoldable = true;
+    response.thread.evener.mutationStateAuthoritative = false;
+    response.thread.evener.recoveryToken = "inc-a:5";
+    return response;
+  });
+  fake.on("turn/start", (params) => ({
+    receipt: {
+      clientMutationId: params.clientMutationId,
+      threadId: `thr_${ref}`,
+      disposition: "applied",
+      projectionState: "notProjected",
+    },
+    turn: { id: "turn_newer", status: "inProgress", itemsView: "" },
+  }));
+  await storage.enqueueIntent(
+    {
+      targetRef: ref,
+      threadId: `thr_${ref}`,
+      method: "turn/start",
+      payload: { ref, input: [{ type: "text", text: "newer" }] },
+      attachments: [],
+      optimisticDisplay: { text: "newer" },
+    },
+    { stopEpoch: await storage.readStopEpoch(ref), recoveryToken: "inc-a:9" },
+  );
+  await threadsStore.getState().ensureThread(ref);
+  await threadsStore.getState().refreshThread(ref);
+  notifyReadyForMutationDispatch([ref]);
+  await flushIndexedDBUntil(() => false);
+  await flushMicrotasks();
+  await flushIndexedDBUntil(() => false);
+  const rows = await storage.listOutbox(ref);
+  expect(rows[0]?.state).not.toBe("canceled");
+});
+
+// A token minted by an earlier hub incarnation is a recreation, not a Stop:
+// nothing stopped the session, so the recovery re-arms under the fresh token
+// instead of canceling the parked message.
+test("a hub recreation re-arms the retry instead of canceling the parked work", async ({ onTestFinished }) => {
+  const scheduledResumeRetries = trackScheduledResumeRetries(onTestFinished);
+  const ref = "local:recovery-recreated-hub";
+  const storage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(storage);
+  const fake = connectMutationClient();
+  const token = "inc-a:5";
+  const resumeParams: Array<string | undefined> = [];
+  fake.on("thread/read", () => {
+    const response = readResponse(ref, { status: { type: "notLoaded" } });
+    response.thread.evener.resumeRequired = true;
+    response.thread.evener.mutationStateAuthoritative = false;
+    response.thread.evener.recoveryToken = token;
+    return response;
+  });
+  fake.on("thread/resume", (params) => {
+    resumeParams.push((params as { expectedRecoveryToken?: string }).expectedRecoveryToken);
+    if (resumeParams.length === 1) throw new Error("connection reset by peer");
+    throw new WireError("session recovery canceled this pending action; submit it again", -32000, {
+      evenerErrorInfo: "sessionRecoveryCanceled",
+      recoveryToken: "inc-b:0",
+    });
+  });
+  await threadsStore.getState().ensureThread(ref);
+  await flushIndexedDBUntil(() => false);
+  await threadsStore.getState().send(ref, "parked");
+  await waitFor(() => expect(scheduledResumeRetries).toHaveLength(1));
+  act(() => {
+    scheduledResumeRetries[0]?.fire();
+  });
+  await flushIndexedDBUntil(() => false);
+  await flushMicrotasks();
+  await flushIndexedDBUntil(() => false);
+  await flushMicrotasks();
+  // Not a Stop: the parked row survives, and a retry re-arms under the new
+  // incarnation's token.
+  expect((await storage.listOutbox(ref))[0]?.state).not.toBe("canceled");
+  expect(scheduledResumeRetries).toHaveLength(2);
+  expect(scheduledResumeRetries[1]?.attempt).toBeGreaterThan(1);
+});

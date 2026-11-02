@@ -287,7 +287,9 @@ describe("MutationOutboxIndexedDB cancellation", () => {
     // The newer Send's click captured the ref's epoch before the supersession
     // cancellation committed; its enqueue lands after that write.
     const clickEpoch = await storage.readStopEpoch(TARGET);
-    const canceled = await storage.cancelUnattempted(TARGET, superseded.intentSequence);
+    // The supersession's own call: bounded, unattempted rows only, and not the
+    // Stop action whose epoch advance it follows.
+    const canceled = await storage.cancelUnattempted(TARGET, superseded.intentSequence, false, false);
     const newer = await storage.enqueueIntent(intent("newer"), { stopEpoch: clickEpoch });
 
     expect(canceled).toEqual([superseded.clientMutationId]);
