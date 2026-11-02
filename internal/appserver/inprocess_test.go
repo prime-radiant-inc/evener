@@ -88,11 +88,17 @@ func TestInProcessClientAndFailedHandoff(t *testing.T) {
 	if err := client.Request(ctx, "test/failed-capture", struct{}{}, nil); err == nil {
 		t.Fatal("failed read succeeded")
 	}
-	// Closing joins teardown, including any finalizer still completing after
-	// its response was dequeued by the client.
+	// Close joins the connection's teardown, not the serial worker's tail:
+	// the response reached the client the moment it entered the outbound
+	// channel, while the worker still runs the handoff callbacks it owes
+	// after that send. An orphaned handler must not hang teardown, so no
+	// production path joins the worker — wait for it here instead, the same
+	// way the socket tests do, before reading the handoff's outcome.
 	if err := transport.Close(); err != nil {
 		t.Fatal(err)
 	}
+	conn := transport.(*inProcessTransport).conn
+	waitFor(t, "worker to finish the aborted handoff after close", conn.workerExited)
 	if commits.Load() != 0 || aborts.Load() != 1 || server.SubscriberCount("target") != 0 {
 		t.Fatalf("commit=%d abort=%d subscribers=%d", commits.Load(), aborts.Load(), server.SubscriberCount("target"))
 	}
@@ -177,6 +183,10 @@ func TestInProcessAtomicHandoffAndRelease(t *testing.T) {
 	if err := transport.Close(); err != nil {
 		t.Fatal(err)
 	}
+	// The release's commit callback runs on the serial worker after the frames
+	// it released reached the transport, so receiving them does not cover it;
+	// Close joins the connection's teardown, not the worker's tail.
+	waitFor(t, "worker to finish the committed handoff after close", transport.(*inProcessTransport).conn.workerExited)
 	if commits.Load() != 1 || aborts.Load() != 0 || server.SubscriberCount("target") != 0 {
 		t.Fatalf("commit=%d abort=%d subscribers=%d", commits.Load(), aborts.Load(), server.SubscriberCount("target"))
 	}
@@ -214,6 +224,11 @@ func TestInProcessCancellationAbortsCapture(t *testing.T) {
 	case <-ctx.Done():
 		t.Fatal(ctx.Err())
 	}
+	// The handler returning is not the end of its dispatch: the abort the
+	// capture owes runs on the serial worker after the handler's response
+	// enqueue, and Close joins the connection's teardown, not the worker's
+	// tail. Wait for the worker before reading the capture's outcome.
+	waitFor(t, "worker to finish the aborted capture after close", transport.(*inProcessTransport).conn.workerExited)
 	if aborted.Load() != 1 || server.SubscriberCount("target") != 0 {
 		t.Fatalf("abort=%d subscribers=%d", aborted.Load(), server.SubscriberCount("target"))
 	}
