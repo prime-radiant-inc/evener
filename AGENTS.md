@@ -246,10 +246,14 @@ loading them, since each opens a socket the moment its body runs.
   an orphaned job once killed both the comment post and the detector silently.
 - **Green is not clean.** `roborev_check=SUCCESS` says the review *ran*, not
   that it found nothing — the combined comment's body carries the findings.
-  Read it every round, plus the per-commit surface: `roborev list --open` in
-  the checkout; findings against your own commits can sit there unseen. Close
-  a per-commit review only when its findings are genuinely resolved; never
-  blanket-close, and leave other lanes' reviews alone.
+  Read it every round, plus the per-commit surface: `roborev list --open` in the
+  checkout; findings against your own commits can sit there unseen. Close a
+  per-commit review only when its findings are genuinely resolved; never
+  blanket-close, and leave other lanes' reviews alone. RoboRev **edits its
+  combined-review comment in place** — a new verdict is a new body on the same
+  comment id — so a custom watcher dedupes on the comment body (and the reviewed
+  head), never on comment identity or a coarse CI-state string; a verdict on a
+  new head rides the same comment id with an unchanged CI reason.
 - **Triage each finding by evidence, not reflex.** Fix at the root
   red-test-first: watch the reviewer's scenario fail, then pass, and post both
   runs in a PR comment — the repo's convention is one evidence comment per
@@ -293,6 +297,15 @@ loading them, since each opens a socket the moment its body runs.
   keeps its requested changes. That case alone is an admin merge: merge
   `origin/main` if behind, wait for every check to be green on that head, then
   `gh pr merge <N> --repo prime-radiant-inc/evener --squash --admin`.
+
+- **Branch follow-ups start from main's squash commit.** After a squash merge,
+  the feature branch's commits still exist locally and on origin, but main's
+  squash commit has no ancestry link to them. Branch follow-ups from
+  `origin/main`, never from the merged branch's tip (a PR opened from that tip
+  re-opens the already-landed change and conflicts with its own squash commit).
+  A follow-up branch already cut from the old tip is repaired with
+  `git rebase --onto origin/main <old-tip> <branch>`; confirm with
+  `git diff --stat origin/main...HEAD` that only the new work appears.
 
 - **Gates run from the repo root.** `make test-web`'s target lives in the root
   Makefile; running it from `cmd/evener-hub/frontend` dies with "No rule to

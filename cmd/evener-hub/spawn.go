@@ -1198,14 +1198,15 @@ func listEvenerLaunchModelContract(ctx context.Context, evenerBinary string, env
 		if provider == "" || name == "" {
 			continue
 		}
-		models = append(models, appwire.ModelDescriptor{
-			Provider:              provider,
-			Model:                 name,
-			Warnings:              append([]string(nil), model.Warnings...),
-			InstanceDefault:       model.InstanceDefault,
-			ReasoningEffortLevels: append([]string(nil), model.ReasoningEffortLevels...),
-			SupportsReasoning:     model.SupportsReasoning,
-		})
+		// The row is carried wholesale: the contract's model rows are
+		// appwire.ModelDescriptor, additive and omitempty, so a capability the
+		// child's contract states reaches the composer with no synchronized
+		// field-by-field rebuild here (the drift behind 52315a95de). The
+		// normalization this loop still owns is the trim and the empty-identity
+		// skip; the decoded slices are the result's alone once resp goes away.
+		model.Provider = provider
+		model.Model = name
+		models = append(models, model)
 	}
 	diagnostics := make([]appwire.ModelListDiagnostic, 0, len(resp.Diagnostics))
 	for _, diag := range resp.Diagnostics {
