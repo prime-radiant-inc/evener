@@ -481,6 +481,11 @@ func TestThreadHistoryAppendsDuringRepeatedRebuilds(t *testing.T) {
 	}
 	failing.Store(false)
 	final := hx.record(t, "final")
+	// The readers stop with the appends, so the thread may end failed; a failed
+	// thread resumes publishing when a read recovers it, never before.
+	if _, _, _, _, err := hx.history.latest(hx.history.capture(), "local:th_history", 10); err != nil {
+		t.Fatalf("recovering read: %v", err)
+	}
 	hx.awaitPublished(t, final.Offset+final.Length)
 	if err := hx.history.Failed(); err != nil {
 		t.Fatalf("history failed: %v", err)

@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"primeradiant.com/evener/agent/provider"
+	"primeradiant.com/evener/cmdutil"
 	"primeradiant.com/evener/llm"
 )
 
@@ -31,7 +32,7 @@ func clientWithProviders(names ...string) *llm.Client {
 
 func TestApplyFastCheapModel_SameProviderOverridesCheapModel(t *testing.T) {
 	profile := provider.NewOpenAIProfile("gpt-5.2")
-	got, err := applyFastCheapModel(profile, "openai/gpt-4.1-mini", clientWithProviders("openai"))
+	got, err := cmdutil.ApplyFastCheapModel(profile, "openai/gpt-4.1-mini", clientWithProviders("openai"))
 	if err != nil {
 		t.Fatalf("applyFastCheapModel: %v", err)
 	}
@@ -48,7 +49,7 @@ func TestApplyFastCheapModel_SameProviderOverridesCheapModel(t *testing.T) {
 
 func TestApplyFastCheapModel_CrossProviderWhenRegistered(t *testing.T) {
 	profile := provider.NewOpenAIProfile("gpt-5.2")
-	got, err := applyFastCheapModel(profile, "anthropic/claude-haiku-4-5-20251001", clientWithProviders("openai", "anthropic"))
+	got, err := cmdutil.ApplyFastCheapModel(profile, "anthropic/claude-haiku-4-5-20251001", clientWithProviders("openai", "anthropic"))
 	if err != nil {
 		t.Fatalf("applyFastCheapModel: %v", err)
 	}
@@ -64,7 +65,7 @@ func TestApplyFastCheapModel_CrossProviderWhenRegistered(t *testing.T) {
 
 func TestApplyFastCheapModel_CrossProviderRejectedWhenNotRegistered(t *testing.T) {
 	profile := provider.NewOpenAIProfile("gpt-5.2")
-	_, err := applyFastCheapModel(profile, "anthropic/claude-haiku-4-5-20251001", clientWithProviders("openai"))
+	_, err := cmdutil.ApplyFastCheapModel(profile, "anthropic/claude-haiku-4-5-20251001", clientWithProviders("openai"))
 	if err == nil {
 		t.Fatal("expected error for unregistered cheap provider")
 	}
@@ -75,7 +76,7 @@ func TestApplyFastCheapModel_CrossProviderRejectedWhenNotRegistered(t *testing.T
 
 func TestApplyFastCheapModel_BareModelKeepsActiveProvider(t *testing.T) {
 	profile := provider.NewOpenAIProfile("gpt-5.2")
-	got, err := applyFastCheapModel(profile, "gpt-4.1-mini", clientWithProviders("openai"))
+	got, err := cmdutil.ApplyFastCheapModel(profile, "gpt-4.1-mini", clientWithProviders("openai"))
 	if err != nil {
 		t.Fatalf("applyFastCheapModel: %v", err)
 	}
@@ -86,7 +87,7 @@ func TestApplyFastCheapModel_BareModelKeepsActiveProvider(t *testing.T) {
 
 func TestApplyFastCheapModel_BlankUsesPrimaryModel(t *testing.T) {
 	profile := provider.NewOpenAIProfile("gpt-5.2")
-	got, err := applyFastCheapModel(profile, "", clientWithProviders("openai"))
+	got, err := cmdutil.ApplyFastCheapModel(profile, "", clientWithProviders("openai"))
 	if err != nil {
 		t.Fatalf("applyFastCheapModel: %v", err)
 	}

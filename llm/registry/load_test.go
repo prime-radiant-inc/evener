@@ -462,10 +462,7 @@ inherit_models_matching = ["gpt-5*"]
 	if err != nil || kept.Synthesized {
 		t.Fatalf("mine/gpt-5-nano must resolve as an inherited catalog row: res=%+v err=%v", kept, err)
 	}
-	dropped, err := r.Resolve("mine/gpt-4o")
-	if err != nil {
-		t.Fatal(err)
-	}
+	dropped := mustResolve(t, r, "mine/gpt-4o")
 	if !dropped.Synthesized {
 		t.Fatalf("mine/gpt-4o must not resolve as a catalog row once the glob dropped it: %+v", dropped)
 	}
@@ -884,10 +881,7 @@ func TestLoad_UnresolvedUserVarWarnsAndStops(t *testing.T) {
 	if !slices.Contains(warns, "unresolved variable AWS_REGION_PROD") {
 		t.Fatalf("resolveBaseURL warnings = %v", warns)
 	}
-	res, err := r.Resolve("bedrock/anthropic.claude-sonnet-5")
-	if err != nil {
-		t.Fatal(err)
-	}
+	res := mustResolve(t, r, "bedrock/anthropic.claude-sonnet-5")
 	if !slices.Contains(res.Warnings, "unresolved variable AWS_REGION_PROD") {
 		t.Fatalf("Resolve warnings = %v", res.Warnings)
 	}
@@ -1054,5 +1048,56 @@ func TestLoad_WithInstances(t *testing.T) {
 	tiny := r.explicit["tiny"]
 	if tiny == nil || tiny.providerID != "openai" || tiny.head.Protocol != ProtocolOpenAIChat || !tiny.injected {
 		t.Fatalf("tiny: %+v", tiny)
+	}
+}
+
+// With neither XDG_STATE_HOME nor HOME the registry has no state root: it loads
+// from the embedded catalog and never reads a cache or OAuth record from a
+// path relative to the working directory.
+func TestLoadWithoutStateRootOrHomeHasNoStateRoot(t *testing.T) {
+	data, err := os.ReadFile("testdata/models.dev.sample.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cwd := t.TempDir()
+	t.Chdir(cwd)
+	for _, dir := range []string{"catalog", filepath.Join(".local", "state", "evener", "catalog")} {
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, "models.dev.json"), []byte(`{}`), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, "models.dev.meta.json"), []byte(`{"fetched_at":"2999-01-01T00:00:00Z"}`), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	r, err := Load(WithSnapshot(data), WithEnv(mapEnv(nil)), WithNoUserLayer())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.StateRoot() != "" {
+		t.Fatalf("StateRoot = %q, want empty", r.StateRoot())
+	}
+	if tag, _ := r.Catalog(); tag != LayerSnapshot {
+		t.Fatalf("catalog layer = %q, want the snapshot", tag)
+	}
+	if got := r.StrayOAuthRecords(); len(got) != 0 {
+		t.Fatalf("StrayOAuthRecords = %v, want none", got)
+	}
+}
+
+func TestLoadDefaultsStateRootFromInjectedEnv(t *testing.T) {
+	data, err := os.ReadFile("testdata/models.dev.sample.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	home := t.TempDir()
+	r, err := Load(WithSnapshot(data), WithEnv(mapEnv(map[string]string{"HOME": home})), WithNoUserLayer())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := r.StateRoot(), filepath.Join(home, ".local", "state", "evener"); got != want {
+		t.Fatalf("StateRoot = %q, want %q", got, want)
 	}
 }

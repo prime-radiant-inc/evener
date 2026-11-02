@@ -62,10 +62,6 @@ export type { InlineNoticeLive, InlineNoticeProps, InlineNoticeTone } from "./in
 export { InlineNotice } from "./inlinenotice";
 export type { InputProps } from "./input";
 export { Input } from "./input";
-export type { Insight, InsightCardProps } from "./insightcard";
-export { InsightCard } from "./insightcard";
-export type { InspectorCardProperty, InspectorCardProps } from "./inspectorcard";
-export { InspectorCard } from "./inspectorcard";
 export type { KeyHintProps } from "./keyhint";
 export { chordLabel, KeyHint } from "./keyhint";
 export type { ListRowProps, ListRowVariant } from "./listrow";
@@ -100,8 +96,6 @@ export type { PropertyListProps, PropertyListRow, StackedPropertyListRow } from 
 export { PropertyList } from "./propertylist";
 export type { RadioGroupOption, RadioGroupProps } from "./radiogroup";
 export { RadioGroup } from "./radiogroup";
-export type { RecommendationCardAlternative, RecommendationCardProps } from "./recommendationcard";
-export { RecommendationCard } from "./recommendationcard";
 export type { SegmentedControlOption, SegmentedControlProps } from "./segmentedcontrol";
 export { SegmentedControl } from "./segmentedcontrol";
 export type { SelectOption, SelectProps } from "./select";
@@ -122,8 +116,6 @@ export { STATUS_LABEL, StatusDot, SubagentDot } from "./statusdot";
 export { SteeringGlyph } from "./steeringglyph";
 export type { SwitchProps } from "./switch";
 export { Switch } from "./switch";
-export type { TableColumn, TableFilter, TableProps, TableSortDir } from "./table";
-export { Table } from "./table";
 export type { TextareaProps } from "./textarea";
 export { Textarea } from "./textarea";
 export type { TimestampProps } from "./timestamp";

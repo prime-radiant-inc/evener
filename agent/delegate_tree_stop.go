@@ -968,6 +968,19 @@ func (c *delegateTreeController) signalStopProgressLocked() {
 	}
 }
 
+// untrackStopLocked drops key from the stop-state map pick selects, when a stop
+// is in flight and tracks it, and wakes the stop drain so it re-checks.
+func untrackStopLocked[K comparable, V any](c *delegateTreeController, pick func(*delegateStopState) map[K]V, key K) {
+	if c.stop == nil {
+		return
+	}
+	m := pick(c.stop)
+	if _, tracked := m[key]; tracked {
+		delete(m, key)
+		c.signalStopProgressLocked()
+	}
+}
+
 func waitForDelegateStopProgress(ctx context.Context, stop *delegateStopState) error {
 	select {
 	case <-stop.done:
@@ -1002,7 +1015,7 @@ func waitForDelegateStopProgress(ctx context.Context, stop *delegateStopState) e
 // delegate stop progress. Tests store it to prove the reconcile driver is parked
 // before a close wakes it; empty in production. An atomic pointer keeps the read
 // in waitForDelegateStopProgress race-free against a test storing or clearing
-// the hook, the same convention as ObserveCloseStopJoin.
+// the hook, the same convention as ObserveCloseStopJoinBudget.
 var observeDelegateStopWait atomic.Pointer[func()]
 
 func executeDelegateCancelPlan(plan delegateCancelPlan) {

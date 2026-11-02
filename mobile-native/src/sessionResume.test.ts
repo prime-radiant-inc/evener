@@ -1,8 +1,8 @@
 import { APPWIRE_PROTOCOL_VERSION } from "@evener/appwire-client";
 import { describe, expect, it } from "vitest";
-import type { AnyNotification, Thread, WebSocketLike } from "@evener/appwire-client";
-import { createConversationService } from "../../mobile/src/services/conversation";
-import { createConversationStore, type LiveActivitySink } from "../../mobile/src/state/conversation";
+import type { Thread, WebSocketLike } from "@evener/appwire-client";
+import { createConversationService } from "./conversation/services/conversation";
+import { createConversationStore } from "./conversation/state/conversation";
 import { createHubClient } from "./connection";
 import { SessionControls } from "./sessionControls";
 
@@ -132,12 +132,6 @@ class ExternalScriptedWebSocket implements WebSocketLike {
 	}
 }
 
-const sink: LiveActivitySink = {
-	setLiveView: () => true,
-	applyLiveNotification: (_n: AnyNotification, _identity) => "applied",
-	reset: () => {},
-};
-
 async function connectedFixture(readBarrier?: Promise<void>, ackBarrier?: Promise<void>) {
 	const sockets: ExternalScriptedWebSocket[] = [];
 	const state = { readBarrier, ackBarrier, readCount: 0, resumed: false };
@@ -150,7 +144,7 @@ async function connectedFixture(readBarrier?: Promise<void>, ackBarrier?: Promis
 	await client.connect();
 	const service = createConversationService(client);
 	const store = createConversationStore();
-	await store.getState().openProjected(service, sink, "local:thread-1");
+	await store.getState().openProjected(service, "local:thread-1");
 	return { client, service, store, sockets, state };
 }
 
@@ -169,8 +163,8 @@ describe("native resume recovery integration", () => {
 			const bindingGeneration = store.getState().conversationGeneration;
 			const refresh = async () => {
 				refreshes += 1;
-				if (store.getState().status === "open") await store.getState().rehydrate(service, sink);
-				else await store.getState().resumeProjected(service, sink, "local:thread-1");
+				if (store.getState().status === "open") await store.getState().rehydrate(service);
+				else await store.getState().resumeProjected(service, "local:thread-1");
 			};
 			const unsubscribe = client.onStateChange((connectionState) => {
 				if (connectionState === "reconnecting") {

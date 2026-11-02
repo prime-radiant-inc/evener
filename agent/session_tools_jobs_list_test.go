@@ -31,7 +31,7 @@ func jobListState(t *testing.T, s *Session, args map[string]any) jobListResult {
 	return result
 }
 
-func TestJobListIncludesStableDelegateWithoutActivationAlias(t *testing.T) {
+func TestJobListIncludesDelegateWithoutActivationAlias(t *testing.T) {
 	t.Parallel()
 	s := newTestSession(t)
 	started := time.Unix(100, 0).UTC()
@@ -135,13 +135,6 @@ func TestJobListWatchReflectsDeliveries(t *testing.T) {
 	result := jobListState(t, s, nil)
 	if len(result.Watches) != 1 || result.Watches[0].Deliveries != 3 {
 		t.Fatalf("watch deliveries = %#v, want 3", result.Watches)
-	}
-}
-
-func TestDefJobListDescriptionMentionsActiveWatches(t *testing.T) {
-	t.Parallel()
-	if description := toolpkg.DefJobList().Description; !strings.Contains(description, "active watches") {
-		t.Fatalf("DefJobList description = %q", description)
 	}
 }
 

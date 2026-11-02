@@ -2,13 +2,16 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"time"
 
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/internal/worktree"
+	"primeradiant.com/evener/agent/schema"
 )
 
 // Resume re-lock (auto-delegate-lane-disposal spec §P3 "Session resume re-locks
@@ -41,6 +44,80 @@ const (
 	reLockFailed
 )
 
+// delegateLaneLockPlan is the EvDelegateRevive decision for one isolation
+// lane's git lock — the shared classification the resume re-lock and delegate
+// revival both apply, so the two cannot diverge on what an unlocked or
+// foreign-held lane means.
+type delegateLaneLockPlan int
+
+const (
+	// delegateLaneGone: the lane directory no longer exists (disposed or
+	// collected). Nothing to lock; revival's environment reconstruction fails
+	// loudly into the construction-failed closure.
+	delegateLaneGone delegateLaneLockPlan = iota
+	// delegateLaneNoRepo: the directory exists but no longer belongs to a git
+	// repository, so there is no lock to manage.
+	delegateLaneNoRepo
+	// delegateLaneUnlocked: the lane carries no lock — Decide(EvDelegateRevive)
+	// maps it to lock, re-taking this session's delegate marker.
+	delegateLaneUnlocked
+	// delegateLaneAdopt: the lane already carries this session's own delegate
+	// marker.
+	delegateLaneAdopt
+	// delegateLaneRefuse: the lane carries another session's marker (or a
+	// plain session marker) — not this session's to touch.
+	delegateLaneRefuse
+	// delegateLaneUnverifiable: the lane is present but its lock state could
+	// not be read.
+	delegateLaneUnverifiable
+)
+
+// inspectDelegateLaneLock classifies one isolation lane's git lock through the
+// shared EvDelegateRevive core. A present lane whose lock state cannot be read
+// reports delegateLaneUnverifiable with the error.
+func (s *Session) inspectDelegateLaneLock(local *execenv.LocalExecutionEnvironment, lane isolationLane) (delegateLaneLockPlan, error) {
+	lanePath := filepath.Clean(lane.path)
+	if _, err := os.Stat(filepath.Join(lanePath, ".git")); err != nil {
+		return delegateLaneGone, nil
+	}
+	controlEnv, _, done, ok := laneControlEnv(local, lanePath)
+	if !ok {
+		return delegateLaneNoRepo, nil
+	}
+	defer done()
+	run := s.newWorktreeGitRunner(context.Background(), controlEnv)
+	locked, reason, lsErr := lockStateOf(run, lanePath)
+	if lsErr != nil {
+		return delegateLaneUnverifiable, lsErr
+	}
+	st := worktree.Unlocked
+	if locked {
+		st = worktree.ClassifyReason(reason, s.id, lane.delegateID)
+	}
+	switch worktree.Decide(worktree.EvDelegateRevive, st) {
+	case worktree.ActLock:
+		return delegateLaneUnlocked, nil
+	case worktree.ActAdopt:
+		return delegateLaneAdopt, nil
+	default:
+		return delegateLaneRefuse, nil
+	}
+}
+
+// lockDelegateLane takes this session's evener:dlg: marker on an unlocked
+// lane, through the same control env the other lock-taking paths use.
+func (s *Session) lockDelegateLane(local *execenv.LocalExecutionEnvironment, lane isolationLane) error {
+	lanePath := filepath.Clean(lane.path)
+	controlEnv, _, done, ok := laneControlEnv(local, lanePath)
+	if !ok {
+		return errors.New("delegate lane is no longer part of a git repository")
+	}
+	defer done()
+	run := s.newWorktreeGitRunner(context.Background(), controlEnv)
+	_, err := run("worktree", "lock", "--reason", worktree.FormatDelegateMarker(lane.delegateID, lane.markerSessionID), lanePath)
+	return err
+}
+
 // resumeReLockOwnLanes re-locks this restored session's own undisposed isolation
 // lanes (spec §P3 resume re-lock). It runs post-init (the jobstore must exist to
 // enumerate owned lanes) on local exec envs only. Each failed re-lock warns and
@@ -64,7 +141,7 @@ func (s *Session) resumeReLockOwnLanes() {
 	var pending []isolationLane
 	for _, lane := range lanes {
 		if s.reLockOwnLane(local, lane) == reLockFailed {
-			s.emit(events.EventWarning, events.WarningData{
+			s.emit(events.WarningData{
 				Message: fmt.Sprintf("delegate lane %s at %s could not be re-locked on resume; it stays exposed to automatic residue collection until a retry succeeds", lane.delegateID, lane.path),
 			})
 			pending = append(pending, lane)
@@ -98,7 +175,8 @@ func (s *Session) undisposedOwnedLanes() []isolationLane {
 		if !delegate.resumable || delegate.descriptor.WorkingDir == "" {
 			continue
 		}
-		lanes = append(lanes, isolationLane{delegateID: delegate.delegateID, path: delegate.descriptor.WorkingDir})
+		// This session spawned these lanes, so their markers name it.
+		lanes = append(lanes, isolationLane{delegateID: delegate.delegateID, path: delegate.descriptor.WorkingDir, markerSessionID: s.id})
 	}
 	return lanes
 }
@@ -109,37 +187,237 @@ func (s *Session) undisposedOwnedLanes() []isolationLane {
 // OwnDelegate→adopt there. A missing lane directory or a foreign lock is a clean
 // skip; only a present, unverifiable-or-lock-failing lane is a retriable failure.
 func (s *Session) reLockOwnLane(local *execenv.LocalExecutionEnvironment, lane isolationLane) reLockOutcome {
-	lanePath := filepath.Clean(lane.path)
-	if _, err := os.Stat(filepath.Join(lanePath, ".git")); err != nil {
-		return reLockSkipped // lane directory gone (disposed/pruned): nothing to re-lock
-	}
-	controlEnv, _, done, ok := laneControlEnv(local, lanePath)
-	if !ok {
-		return reLockSkipped // no longer part of a git repository
-	}
-	defer done()
-	run := s.newWorktreeGitRunner(context.Background(), controlEnv)
-
-	locked, reason, lsErr := lockStateOf(run, lanePath)
-	if lsErr != nil {
+	plan, inspectErr := s.inspectDelegateLaneLock(local, lane)
+	if inspectErr != nil {
 		return reLockFailed // present but unverifiable: an exposed lane; retry
 	}
-	st := worktree.Unlocked
-	if locked {
-		st = worktree.ClassifyReason(reason, s.id, lane.delegateID)
-	}
-	switch worktree.Decide(worktree.EvDelegateRevive, st) {
-	case worktree.ActLock:
-		marker := worktree.FormatDelegateMarker(lane.delegateID, s.id)
-		if _, err := run("worktree", "lock", "--reason", marker, lanePath); err != nil {
+	switch plan {
+	case delegateLaneAdopt:
+		return reLockDone // already carries our own dlg marker (lock held across resume)
+	case delegateLaneGone, delegateLaneNoRepo, delegateLaneRefuse:
+		// Gone (disposed/pruned), lockless to manage, or someone else's —
+		// not ours to touch, spec §9 Guards.
+		return reLockSkipped
+	case delegateLaneUnlocked:
+		if err := s.lockDelegateLane(local, lane); err != nil {
 			return reLockFailed // still unlocked and exposed: retry
 		}
 		return reLockDone
-	case worktree.ActAdopt:
-		return reLockDone // already carries our own dlg marker (lock held across resume)
-	default: // ActRefuse: foreign / a plain session marker — not ours to touch
-		return reLockSkipped
+	default: // delegateLaneUnverifiable always carries inspectErr above
+		return reLockFailed
 	}
+}
+
+// reviveRevalidateDelegateLane re-establishes this session's evener:dlg:
+// marker on an isolated delegate's lane before a revive hands the lane back to
+// a child runtime — retained runtimes included. Close-time disposal leaves a
+// kept changed lane unlocked ("switch-able until revived", spec §9 Guards),
+// and prune's orphan arm (#5471) and the documented manual unlock can release
+// a resumable delegate's lane; an unlocked lane is re-locked, a lane already
+// carrying this session's marker is adopted, and a lane held by anyone else —
+// or removed outright — is a refusal: revival never runs a child in a
+// checkout another session owns, and never builds one on a directory that is
+// no longer there, because the caller's environment reconstruction cannot be
+// relied on to notice (an unsandboxed clone does not validate its working
+// directory).
+func (s *Session) reviveRevalidateDelegateLane(local *execenv.LocalExecutionEnvironment, lane isolationLane) error {
+	plan, inspectErr := s.inspectDelegateLaneLock(local, lane)
+	if inspectErr != nil {
+		return fmt.Errorf("revalidating delegate lane %s at %s: %w", lane.delegateID, lane.path, inspectErr)
+	}
+	switch plan {
+	case delegateLaneAdopt:
+		return nil
+	case delegateLaneGone:
+		return fmt.Errorf("delegate lane %s at %s is gone; refusing revival into a removed checkout", lane.delegateID, lane.path)
+	case delegateLaneUnlocked:
+		if err := s.lockDelegateLane(local, lane); err != nil {
+			// A sibling launch sharing this lane can take it between this
+			// launch's inspection and its lock attempt — the per-child guards
+			// serialize each child's own drives, not two children sharing an
+			// ancestor's lane — and git then refuses the loser's lock as
+			// already locked. The lane is not lost to the tree: re-inspect,
+			// and a lane now carrying the tree's own marker is an adoption.
+			// Any other state keeps the original error.
+			replan, recheckErr := s.inspectDelegateLaneLock(local, lane)
+			if recheckErr == nil && replan == delegateLaneAdopt {
+				return nil
+			}
+			return fmt.Errorf("re-locking delegate lane %s at %s: %w", lane.delegateID, lane.path, err)
+		}
+		return nil
+	case delegateLaneNoRepo:
+		return fmt.Errorf("delegate lane %s at %s is no longer part of a git repository", lane.delegateID, lane.path)
+	default: // delegateLaneRefuse
+		return fmt.Errorf("delegate lane %s at %s is held by another session", lane.delegateID, lane.path)
+	}
+}
+
+// validateDrivenDelegateLane re-checks the lane a notification-driven drive
+// turn is about to run in before it hands the retained child another turn:
+// the child's own when it is worktree-isolated, and otherwise the isolated
+// ancestor's lane it shares. The releases that threaten revival (close-time
+// disposal, prune's orphan arm, the documented manual unlock) threaten the
+// drive just the same: an unlocked lane is re-locked, and a lane held by
+// anyone else or removed outright refuses the launch — the drive reports
+// not-launched (its notifications stay queued) and the lane is never touched.
+func (s *Session) validateDrivenDelegateLane(sub *subagent) bool {
+	if s == nil || sub == nil || sub.sess == nil || s.delegateController == nil {
+		return true
+	}
+	delegateID := sub.sess.owningDelegateID
+	if delegateID == "" {
+		return true
+	}
+	if err := s.revalidateLaneForLaunch(delegateID); err != nil {
+		s.emit(events.WarningData{
+			Message: fmt.Sprintf("delegate %s's lane failed revalidation before a notification turn: %v", delegateID, err),
+		})
+		return false
+	}
+	return true
+}
+
+// revalidateLaneForLaunch resolves the lane a delegate's next turn edits and
+// re-establishes the tree's claim on it before any launch hands the turn
+// over: the delegate's own when it is worktree-isolated, and otherwise the
+// nearest isolated ancestor's — the checkout a non-isolated descendant
+// shares. The launch itself is activity of the session each isolated lane's
+// marker names — every ancestor the orphan reclaim consults, settled ones
+// included — so it is recorded in each of their evidence before the lane is
+// adopted or re-locked; a launch that interleaves with a prune leaves the
+// release recheck seeing a live parent. A delegate with no lane of this
+// tree's own runs in this session's checkout, which no reclaim can release,
+// and a launch on a non-local environment has no git worktree to validate.
+func (s *Session) revalidateLaneForLaunch(delegateID string) error {
+	if s == nil || s.delegateController == nil || delegateID == "" {
+		return nil
+	}
+	local, ok := s.currentEnv().(*execenv.LocalExecutionEnvironment)
+	if !ok {
+		return nil // local git worktrees are a local-env-only feature
+	}
+	lane, ok := s.delegateController.isolatedLaneForDelegate(delegateID)
+	if !ok {
+		return nil
+	}
+	s.delegateController.refreshLaneParentActivityEvidence(delegateID)
+	return s.reviveRevalidateDelegateLane(local, lane)
+}
+
+// activityEvidenceRefreshFloor bounds how fresh the transcript mtime must be
+// before a refresh rewrites it. The evidence tickers fire every second, so
+// the rewrite is the hot path for a busy tree — and the mtime IS the change
+// stamp every reader downstream keys on: a same-size mtime move makes the
+// foldcache refold a session's whole transcript from zero and the hub's
+// message search reindex. The smallest freshness threshold any consumer
+// applies — the orphan reclaim's 0.001-day arm — sits far above this floor,
+// so a transcript touched within it is already as fresh as any consumer
+// needs, while a stale transcript is still rewritten immediately.
+const activityEvidenceRefreshFloor = time.Minute
+
+// minOrphanedDelegateDays is the smallest positive orphaned_delegate_days
+// the prune tool accepts, derived from the refresh cadence: a live tree's
+// evidence is never older than the refresh floor plus the tick interval (a
+// tick skips a transcript inside the floor; the next one refreshes it), so
+// the minimum sits a full tick-window above the floor with margin for
+// scheduling jitter. A shorter threshold could observe evidence older than
+// the cadence delivers and release a lane under a running delegate.
+var minOrphanedDelegateDays = (activityEvidenceRefreshFloor + 2*delegateActivityPublishInterval).Hours() / 24
+
+// refreshActivityEvidence records activity in the last-activity signal the
+// session listings and the orphan reclaim both read — the named session's
+// transcript mtime (the doctor's LastActivity). An automatic launch runs on
+// the tree's machinery without running a turn of that session's own, so the
+// evidence would otherwise stay stale while the tree is demonstrably alive,
+// and the orphan arm could judge the parent long-inactive and release a
+// child's lane under the running turn. Best-effort: a session with nothing
+// persisted has no evidence to refresh, and the arm disarms without a state
+// directory anyway.
+func (s *Session) refreshActivityEvidence(sessionID string) {
+	if s == nil || sessionID == "" {
+		return
+	}
+	path := schema.SessionTranscriptPath(s.stateDir, sessionID)
+	now := s.sclock().Now()
+	if info, err := os.Stat(path); err == nil && now.Sub(info.ModTime()) < activityEvidenceRefreshFloor {
+		return
+	}
+	_ = os.Chtimes(path, now, now)
+}
+
+// startLaneEvidenceTicker keeps the lane-marker parent's activity evidence
+// fresh for the life of this delegate child's turn. Phase reports fire at
+// transitions only — a long foreground shell call reports once before it
+// starts and then stays silent — so per-report refreshes cannot cover a
+// turn's quiet stretches, and the evidence the orphan reclaim reads would go
+// stale under running work, letting a foreign prune release the lane
+// mid-task. The tick reuses the activity publication floor: no turn keeps
+// the evidence staler than the noisiest legitimate reporter makes it. The
+// returned stop joins the goroutine; a session that is no delegate child, or
+// carries no controller, starts nothing.
+func (s *Session) startLaneEvidenceTicker(ctx context.Context) (stop func()) {
+	if s == nil || s.owningDelegateID == "" || s.delegateController == nil {
+		return func() {}
+	}
+	tickerCtx, cancel := context.WithCancel(ctx)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		ticker := s.sclock().NewTicker(delegateActivityPublishInterval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-tickerCtx.Done():
+				return
+			case <-ticker.C():
+				s.delegateController.refreshLaneParentActivityEvidence(s.owningDelegateID)
+			}
+		}
+	}()
+	return func() {
+		cancel()
+		<-done
+	}
+}
+
+// managedJobStarted and managedJobFinished hold the lane-marker parent's
+// activity evidence for the life of this delegate child's running managed
+// jobs, not just its turns and drains. A settled delegate with a live
+// background job produces no phase reports and runs no turn — the two
+// carriers every other refresh rides — so a job that waits silently for
+// hours would leave the evidence stale enough for a foreign prune to
+// release the lane under the running work. The hold begins with the first
+// running job and is released when the last one leaves the running set; the
+// tick itself is the turn ticker's (startLaneEvidenceTicker) parented to
+// the session lifetime, so close tears it down even if a completion path
+// never runs.
+func (s *Session) managedJobStarted() {
+	if s == nil || s.owningDelegateID == "" || s.delegateController == nil {
+		return
+	}
+	s.laneEvidenceMu.Lock()
+	s.laneEvidenceJobs++
+	if s.laneEvidenceJobs == 1 {
+		s.laneEvidenceStop = s.startLaneEvidenceTicker(s.sessionCtx)
+	}
+	s.laneEvidenceMu.Unlock()
+}
+
+func (s *Session) managedJobFinished() {
+	if s == nil {
+		return
+	}
+	s.laneEvidenceMu.Lock()
+	if s.laneEvidenceJobs > 0 {
+		s.laneEvidenceJobs--
+	}
+	if s.laneEvidenceJobs == 0 && s.laneEvidenceStop != nil {
+		stop := s.laneEvidenceStop
+		s.laneEvidenceStop = nil
+		stop()
+	}
+	s.laneEvidenceMu.Unlock()
 }
 
 // retryPendingReLocks re-attempts the resume re-lock for lanes whose first
@@ -161,7 +439,7 @@ func (s *Session) retryPendingReLocks() {
 	}
 	for _, lane := range pending {
 		if s.reLockOwnLane(local, lane) == reLockFailed {
-			s.emit(events.EventWarning, events.WarningData{
+			s.emit(events.WarningData{
 				Message: fmt.Sprintf("delegate lane %s at %s could not be re-locked on retry; it remains exposed to automatic residue collection", lane.delegateID, lane.path),
 			})
 		}

@@ -13,6 +13,7 @@ import (
 
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/appwire/appwiretest"
 	"primeradiant.com/evener/cmd/evener-hub/internal/appsource"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 	"primeradiant.com/evener/identifier"
@@ -32,10 +33,7 @@ func parityResumeFixture(t *testing.T, register func(daemon *appserver.Server)) 
 	workingDir := t.TempDir()
 	stateDir := filepath.Join(root, "projects", "project-past-0000000000")
 	sessionID = buildRPCParentSessionWithWorkingDir(t, stateDir, workingDir)
-	past := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
-	if _, err := past.Rebuild(); err != nil {
-		t.Fatal(err)
-	}
+	past := newRebuiltPastIndex(t, filepath.Join(root, "projects", "*"))
 
 	daemon := appserver.NewServer(appserver.ServerConfig{ServerName: "daemon", SourceID: "local"})
 	register(daemon)
@@ -98,11 +96,7 @@ func TestHubRPCThreadClearResumesPastThread(t *testing.T) {
 
 	hub := newHubRPCTestServer(t, cfg)
 	defer hub.Close()
-	client := dialHubRPC(t, hub)
-	defer client.Close()
-	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
-		t.Fatalf("Initialize: %v", err)
-	}
+	client := dialHubRPCInitialized(t, hub)
 	response, err := client.ThreadClear(context.Background(), appwire.ThreadClearParams{Ref: "local:" + sessionID, ClientMutationID: "clear-past", ExpectedInstanceID: sessionID})
 	if err != nil {
 		t.Fatalf("ThreadClear: %v", err)
@@ -147,11 +141,7 @@ func TestHubRPCThreadNameSetEditsPastThreadWithoutResume(t *testing.T) {
 
 	hub := newHubRPCTestServer(t, cfg)
 	defer hub.Close()
-	client := dialHubRPC(t, hub)
-	defer client.Close()
-	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
-		t.Fatalf("Initialize: %v", err)
-	}
+	client := dialHubRPCInitialized(t, hub)
 	if err := client.ThreadNameSet(context.Background(), appwire.ThreadNameSetParams{Ref: "local:" + sessionID, Name: "renamed"}); err != nil {
 		t.Fatalf("ThreadNameSet: %v", err)
 	}
@@ -205,11 +195,7 @@ func TestHubRPCGoalSetResumesPastThread(t *testing.T) {
 
 	hub := newHubRPCTestServer(t, cfg)
 	defer hub.Close()
-	client := dialHubRPC(t, hub)
-	defer client.Close()
-	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
-		t.Fatalf("Initialize: %v", err)
-	}
+	client := dialHubRPCInitialized(t, hub)
 	resp, err := client.GoalSet(context.Background(), appwire.GoalSetParams{Ref: "local:" + sessionID, Objective: "ship it"})
 	if err != nil {
 		t.Fatalf("GoalSet: %v", err)
@@ -256,11 +242,7 @@ func TestHubRPCNotesHumanSetResumesPastThread(t *testing.T) {
 
 	hub := newHubRPCTestServer(t, cfg)
 	defer hub.Close()
-	client := dialHubRPC(t, hub)
-	defer client.Close()
-	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
-		t.Fatalf("Initialize: %v", err)
-	}
+	client := dialHubRPCInitialized(t, hub)
 	resp, err := client.NotesHumanSet(context.Background(), appwire.NotesHumanSetParams{Ref: "local:" + sessionID, ClientMutationID: "note-past", ExpectedInstanceID: sessionID, Note: "whiteboard note"})
 	if err != nil {
 		t.Fatalf("NotesHumanSet: %v", err)
@@ -307,11 +289,7 @@ func TestHubRPCUrlsRemoveResumesPastThread(t *testing.T) {
 
 	hub := newHubRPCTestServer(t, cfg)
 	defer hub.Close()
-	client := dialHubRPC(t, hub)
-	defer client.Close()
-	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
-		t.Fatalf("Initialize: %v", err)
-	}
+	client := dialHubRPCInitialized(t, hub)
 	if _, err := client.UrlsRemove(context.Background(), appwire.UrlsRemoveParams{Ref: "local:" + sessionID, ClientMutationID: "url-rm-past", ExpectedInstanceID: sessionID, ID: "u1"}); err != nil {
 		t.Fatalf("UrlsRemove: %v", err)
 	}
@@ -331,10 +309,7 @@ func TestHubRPCThreadShutdownExitedSessionIsNoOpSuccess(t *testing.T) {
 	workingDir := t.TempDir()
 	stateDir := filepath.Join(root, "projects", "project-past-0000000000")
 	sessionID := buildRPCParentSessionWithWorkingDir(t, stateDir, workingDir)
-	past := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
-	if _, err := past.Rebuild(); err != nil {
-		t.Fatal(err)
-	}
+	past := newRebuiltPastIndex(t, filepath.Join(root, "projects", "*"))
 	runDir := t.TempDir()
 	resumeCalled := false
 	spawner := &fakeRPCSpawner{
@@ -346,11 +321,7 @@ func TestHubRPCThreadShutdownExitedSessionIsNoOpSuccess(t *testing.T) {
 	roster := hubcore.NewRoster(runDir, nil)
 	hub := newHubRPCTestServer(t, hubcore.WebConfig{RunDir: runDir, Roster: roster, Spawner: spawner, Past: past})
 	defer hub.Close()
-	client := dialHubRPC(t, hub)
-	defer client.Close()
-	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
-		t.Fatalf("Initialize: %v", err)
-	}
+	client := dialHubRPCInitialized(t, hub)
 	if err := client.ThreadShutdown(context.Background(), appwire.ThreadShutdownParams{Ref: "local:" + sessionID}); err != nil {
 		t.Fatalf("ThreadShutdown on exited session: %v, want no-op success", err)
 	}
@@ -368,10 +339,7 @@ func TestHubRPCThreadForkExitedSessionSucceeds(t *testing.T) {
 	workingDir := t.TempDir()
 	stateDir := filepath.Join(root, "projects", "project-past-0000000000")
 	sessionID := buildRPCParentSessionWithWorkingDir(t, stateDir, workingDir)
-	past := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
-	if _, err := past.Rebuild(); err != nil {
-		t.Fatal(err)
-	}
+	past := newRebuiltPastIndex(t, filepath.Join(root, "projects", "*"))
 	runDir := t.TempDir()
 	resumeCalled := false
 	spawner := &fakeRPCSpawner{
@@ -383,12 +351,8 @@ func TestHubRPCThreadForkExitedSessionSucceeds(t *testing.T) {
 	roster := hubcore.NewRoster(runDir, nil)
 	hub := newHubRPCTestServer(t, hubcore.WebConfig{RunDir: runDir, Roster: roster, Spawner: spawner, Past: past})
 	defer hub.Close()
-	client := dialHubRPC(t, hub)
-	defer client.Close()
-	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
-		t.Fatalf("Initialize: %v", err)
-	}
-	resp, err := client.ThreadFork(context.Background(), appwire.ThreadForkParams{
+	client := dialHubRPCInitialized(t, hub)
+	resp, err := appwiretest.ThreadFork(context.Background(), client, appwire.ThreadForkParams{
 		Ref:           "local:" + sessionID,
 		SourceItemKey: "apptranscript-item-v2:t_1:0:0",
 		EditedInput:   "edited",
@@ -427,16 +391,16 @@ func TestHubRPCTurnControlsDoNotResumeExitedSession(t *testing.T) {
 		call func(*appwire.Client) error
 	}{
 		{"steer", func(c *appwire.Client) error {
-			return c.TurnSteer(ctx, appwire.TurnSteerParams{ClientMutationID: "test-mutation", ExpectedInstanceID: sessionID, Ref: ref, Input: []appwire.InputItem{{Type: "text", Text: "x"}}})
+			return appwiretest.TurnSteer(ctx, c, appwire.TurnSteerParams{ClientMutationID: "test-mutation", ExpectedInstanceID: sessionID, Ref: ref, Input: []appwire.InputItem{{Type: "text", Text: "x"}}})
 		}},
 		{"interrupt", func(c *appwire.Client) error {
-			return c.TurnInterrupt(ctx, appwire.TurnInterruptParams{ClientMutationID: "test-mutation", ExpectedInstanceID: sessionID, Ref: ref})
+			return appwiretest.TurnInterrupt(ctx, c, appwire.TurnInterruptParams{ClientMutationID: "test-mutation", ExpectedInstanceID: sessionID, Ref: ref})
 		}},
 		{"drainAsSteer", func(c *appwire.Client) error {
-			return c.TurnDrainAsSteer(ctx, appwire.TurnDrainAsSteerParams{ClientMutationID: "test-mutation", ExpectedInstanceID: sessionID, ExpectedQueueRevision: 0, Ref: ref, Input: []appwire.InputItem{{Type: "text", Text: "x"}}})
+			return appwiretest.TurnDrainAsSteer(ctx, c, appwire.TurnDrainAsSteerParams{ClientMutationID: "test-mutation", ExpectedInstanceID: sessionID, ExpectedQueueRevision: 0, Ref: ref, Input: []appwire.InputItem{{Type: "text", Text: "x"}}})
 		}},
 		{"promoteQueuedAsSteer", func(c *appwire.Client) error {
-			return c.TurnPromoteQueuedAsSteer(ctx, appwire.TurnPromoteQueuedAsSteerParams{ClientMutationID: "test-mutation", ExpectedInstanceID: sessionID, ExpectedEntryID: "test-entry", Ref: ref, Index: 0})
+			return appwiretest.TurnPromoteQueuedAsSteer(ctx, c, appwire.TurnPromoteQueuedAsSteerParams{ClientMutationID: "test-mutation", ExpectedInstanceID: sessionID, ExpectedEntryID: "test-entry", Ref: ref, Index: 0})
 		}},
 		{"cancelQueued", func(c *appwire.Client) error {
 			_, err := c.TurnCancelQueued(ctx, appwire.TurnCancelQueuedParams{ClientMutationID: "test-mutation", ExpectedInstanceID: sessionID, ExpectedEntryID: "test-entry", Ref: ref, Index: 0})
@@ -465,10 +429,7 @@ func newExitedSessionHub(t *testing.T) (*appwire.Client, *bool) {
 	workingDir := t.TempDir()
 	stateDir := filepath.Join(root, "projects", "project-past-0000000000")
 	buildRPCParentSessionWithWorkingDir(t, stateDir, workingDir)
-	past := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
-	if _, err := past.Rebuild(); err != nil {
-		t.Fatal(err)
-	}
+	past := newRebuiltPastIndex(t, filepath.Join(root, "projects", "*"))
 	runDir := t.TempDir()
 	resumeCalled := false
 	spawner := &fakeRPCSpawner{
@@ -482,9 +443,7 @@ func newExitedSessionHub(t *testing.T) (*appwire.Client, *bool) {
 	t.Cleanup(hub.Close)
 	client := dialHubRPC(t, hub)
 	t.Cleanup(func() { _ = client.Close() })
-	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
-		t.Fatalf("Initialize: %v", err)
-	}
+	mustInitializeHubClient(t, client)
 	return client, &resumeCalled
 }
 
@@ -497,7 +456,7 @@ func newExitedSessionHub(t *testing.T) (*appwire.Client, *bool) {
 func TestHubRPCTurnQueueResumesExitedSession(t *testing.T) {
 	const sessionID = "02wMz5Txv1C3Hut0M8GCeB"
 	client, resumeCalled := newExitedSessionHub(t)
-	err := client.TurnQueue(context.Background(), appwire.TurnQueueParams{
+	err := appwiretest.TurnQueue(context.Background(), client, appwire.TurnQueueParams{
 		ClientMutationID:   "test-mutation",
 		ExpectedInstanceID: sessionID,
 		Ref:                "local:" + sessionID,
@@ -521,10 +480,7 @@ func TestHubRPCConcurrentMutationsResumeExitedSessionOnce(t *testing.T) {
 	workingDir := t.TempDir()
 	stateDir := filepath.Join(root, "projects", "project-past-0000000000")
 	sessionID := buildRPCParentSessionWithWorkingDir(t, stateDir, workingDir)
-	past := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
-	if _, err := past.Rebuild(); err != nil {
-		t.Fatal(err)
-	}
+	past := newRebuiltPastIndex(t, filepath.Join(root, "projects", "*"))
 
 	daemon := appserver.NewServer(appserver.ServerConfig{ServerName: "daemon", SourceID: "local"})
 	appserver.HandleTyped(daemon.Router(), appwire.MethodThreadRead, func(_ context.Context, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
@@ -608,32 +564,16 @@ func TestHubRPCConcurrentMutationsResumeExitedSessionOnce(t *testing.T) {
 //
 // An uncorrelated failure names no clientMutationId, so the caller's mutation
 // dispatcher cannot classify it; it is wrapped as a blocked unknown outcome so
-// the input is retained. A resolution failure proves nothing was dispatched at
-// all -- the attempt could not even resolve the owning source -- but its
-// outcome is reported not-accepted only when the WHOLE operation is proven
-// pre-dispatch: the original attempt AND the retry both failed before reaching a
-// source. A retry that fails source resolution while the original attempt
-// already reached a source proves nothing about what that earlier attempt did
-// (a source call that loses its response does not turn an applied mutation into
-// a known rejection), so it stays blocked-unknown. Every outcome carries the
-// caller's clientMutationId so the browser's outbox, the TUI's draft restore and
-// every other surface can settle the record instead of leaving it submitting
-// forever.
-//
-// The whole-operation not-accepted case is constructed directly here, not
-// reached through a caller: no real caller can satisfy it, because reaching the
-// retry requires a session-unavailable first failure and source resolution never
-// produces one (see preDispatchRefusalError and firstAttemptPreDispatch in
-// app_session_resume.go). The case pins the rule's shape -- it keeps the rule
-// honest if a source resolution that reports session-unavailable ever appears --
-// while TestHubRPCResumeRetrySourceResolutionFailureIsNotAccepted pins the
-// blocked-unknown outcome every real caller gets today.
+// the input is retained. The original attempt reached the owning source by
+// definition (that is what raised the session-unavailable failure), so a retry
+// that fails source resolution proves nothing about what that earlier attempt
+// did: it stays blocked-unknown too. Every outcome carries the caller's
+// clientMutationId so the browser's outbox, the TUI's draft restore and every
+// other surface can settle the record instead of leaving it submitting forever.
 //
 // The once closure is withSessionResume's own seam: it stands in for the
-// relayWithResume / setGoalWithResume / clearThreadWithResume shapes that wrap
-// their sourceForThread failure in preDispatchRefusalError. firstErr is the
-// original attempt's failure -- bare when it stood in for a closure that reached
-// a source, wrapped when the closure failed to resolve one.
+// relayWithResume shape, whose retry failure is whatever sourceForThread
+// returned.
 func TestSessionResumeRetryCorrelation(t *testing.T) {
 	const mutationID = "mutation-session-resume-retry"
 
@@ -652,18 +592,9 @@ func TestSessionResumeRetryCorrelation(t *testing.T) {
 			wantDisposition: appwire.RetryDispositionBlocked,
 		},
 		{
-			// Forward-compatibility shape, not a production outcome: both attempts
-			// are handed the pre-dispatch signal directly (see the doc comment).
-			name:            "forward-compat: a both-pre-dispatch operation is not-accepted",
-			firstErr:        preDispatchRefusalError{appwire.SessionUnavailable("session has exited")},
-			retryErr:        preDispatchRefusalError{errors.New("source registry unavailable")},
-			wantOutcome:     appwire.MutationOutcomeNotAccepted,
-			wantDisposition: appwire.RetryDispositionNone,
-		},
-		{
-			name:            "first attempt reached the source is blocked-unknown",
+			name:            "retry that fails source resolution is blocked-unknown",
 			firstErr:        appwire.SessionUnavailable("session has exited"),
-			retryErr:        preDispatchRefusalError{errors.New("source registry unavailable")},
+			retryErr:        errors.New("source registry unavailable"),
 			wantOutcome:     appwire.MutationOutcomeUnknown,
 			wantDisposition: appwire.RetryDispositionBlocked,
 		},
@@ -1007,13 +938,9 @@ func TestMutationResumeFailureErrorRecognizesResolvedOwnershipTarget(t *testing.
 }
 
 // TestHubRPCResumeRetrySourceResolutionFailureIsNotAccepted pins that a retry
-// which fails source resolution is NOT, by itself, accepted as proof that the
-// whole mutation was rejected. The pre-dispatch rule is decided by the CONCRETE
-// caller wrappers -- clearThreadWithResume, relayWithResume, and turn/queue's
-// own closure -- not only by the shared withSessionResume, and those wrappers
-// are what wrap their own sourceForThread failure in preDispatchRefusalError; a
-// test that injects the signal straight into withSessionResume keeps passing if
-// a caller drops its wrap, so this drives the real RPC surface instead.
+// which fails source resolution is NOT accepted as proof that the whole
+// mutation was rejected, through the real RPC surface of each caller:
+// thread/clear, the relayWithResume shapes and turn/queue.
 //
 // The first attempt reaches the exited session's source and fails there with
 // SessionUnavailable, the hub resumes it, and the retry's sourceForThread then
@@ -1023,8 +950,7 @@ func TestMutationResumeFailureErrorRecognizesResolvedOwnershipTarget(t *testing.
 // not proven pre-dispatch, so the caller must be told the outcome is UNKNOWN and
 // blocked, carrying its own clientMutationId, rather than being told the
 // mutation was rejected (not-accepted) or left submitting because the retry
-// failure names nothing the dispatcher can correlate. The proven-pre-dispatch
-// not-accepted case is pinned by TestSessionResumeRetryCorrelation.
+// failure names nothing the dispatcher can correlate.
 func TestHubRPCResumeRetrySourceResolutionFailureIsNotAccepted(t *testing.T) {
 	cases := []struct {
 		name     string
@@ -1064,7 +990,7 @@ func TestHubRPCResumeRetrySourceResolutionFailureIsNotAccepted(t *testing.T) {
 			name: "turn/queue via withSessionResume",
 			dispatch: func(t *testing.T, client *appwire.Client, ref, sessionID, mutationID string) error {
 				t.Helper()
-				return client.TurnQueue(context.Background(), appwire.TurnQueueParams{
+				return appwiretest.TurnQueue(context.Background(), client, appwire.TurnQueueParams{
 					Ref: ref, ClientMutationID: mutationID, ExpectedInstanceID: sessionID,
 					Input: []appwire.InputItem{{Type: "text", Text: "queue it"}},
 				})

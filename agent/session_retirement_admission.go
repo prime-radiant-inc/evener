@@ -28,7 +28,7 @@ func (s *Session) retirementInputBlockers() []RetirementBlocker {
 	if s.state == SessionProcessing || s.goalInTurn || !s.turnStartedAt.IsZero() {
 		blockers = append(blockers, RetirementBlocker{Category: "turn", SessionID: s.id})
 	}
-	if len(s.inputQueue) != 0 || len(s.steeringQueue) != 0 || len(s.followups) != 0 {
+	if len(s.inputQueue) != 0 || len(s.steeringQueue) != 0 {
 		blockers = append(blockers, RetirementBlocker{Category: "input", SessionID: s.id})
 	}
 	s.mu.Unlock()

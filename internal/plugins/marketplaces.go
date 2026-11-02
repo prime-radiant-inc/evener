@@ -139,6 +139,15 @@ func (m *Manager) stampRefreshed(mk Marketplaces, name string, ref MarketplaceRe
 	return nil
 }
 
+// refuseDirectoryPin rejects a ref or sha on a directory source, which is read
+// in place and has no remote to check one out from.
+func refuseDirectoryPin(src Source) error {
+	if !src.Kind.HasRemote() && (src.Ref != "" || src.Sha != "") {
+		return ErrMarketplaceSourcePinned
+	}
+	return nil
+}
+
 // fetchMarketplaceContainer clones/references src into destDir and returns the
 // directory that contains .claude-plugin/marketplace.json.
 func (m *Manager) fetchMarketplaceContainer(ctx context.Context, src Source, destDir string) (string, error) {
@@ -211,6 +220,9 @@ func (m *Manager) ensureFetched(ctx context.Context, name string) (MarketplaceRe
 // the same name and a different source re-sources that marketplace in place; a
 // failed save leaves the previously recorded clone as it was.
 func (m *Manager) AddMarketplace(ctx context.Context, name string, src Source) (MarketplaceRef, error) {
+	if err := refuseDirectoryPin(src); err != nil {
+		return MarketplaceRef{}, err
+	}
 	release, err := m.lockStore(ctx, marketplaceAcquireLock, 30*time.Second)
 	if err != nil {
 		return MarketplaceRef{}, err
@@ -381,6 +393,8 @@ func editFailureIdentity(err error) error {
 		context.Canceled,
 		context.DeadlineExceeded,
 		ErrMarketplaceSourceInStore,
+		ErrMarketplaceSourcePinned,
+		ErrSourceRefQualified,
 		ErrMarketplaceExists,
 		ErrMarketplaceNotFound,
 		ErrInvalidName,
@@ -835,6 +849,9 @@ func (m *Manager) EditMarketplace(ctx context.Context, name, newName string, src
 		}
 	}
 	if resourcing {
+		if err := refuseDirectoryPin(*src); err != nil {
+			return MarketplaceRef{}, err
+		}
 		if src.Kind == SourceDirectory {
 			// Before the staging directory is cleared, which is itself one of
 			// the paths this refuses.

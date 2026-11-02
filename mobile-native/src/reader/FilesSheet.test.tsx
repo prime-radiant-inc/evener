@@ -18,7 +18,6 @@ vi.mock("react-native", async () => ({
 	...(await import("../renderNative.testkit")).nativeModuleMock(),
 	AppState: { currentState: "active", addEventListener: () => ({ remove: () => {} }) },
 }));
-vi.mock("expo-symbols", () => ({ SymbolView: "SymbolView" }));
 vi.mock("@react-navigation/native", () => ({
 	useNavigation: () => sheetNavigation,
 	usePreventRemove: () => {},

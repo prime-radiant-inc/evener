@@ -1,8 +1,12 @@
 import { resolveEffectiveConfig, type ViewportClass } from "@evener/appwire-client";
 import type { RefObject } from "react";
-import { useRef } from "react";
-import { transcriptDisplayStore, useTranscriptDisplayStore } from "../../../stores/transcriptDisplay";
-import { Button, Dialog, Sheet } from "../../../widgets";
+import { useId, useRef } from "react";
+import {
+  type ConversationPresentation,
+  transcriptDisplayStore,
+  useTranscriptDisplayStore,
+} from "../../../stores/transcriptDisplay";
+import { Button, Dialog, InlineNotice, SegmentedControl, Sheet } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
 import { TranscriptDetailEditor } from "./TranscriptDetailEditor";
 import styles from "./transcriptDisplay.module.css";
@@ -26,6 +30,8 @@ const CLASS = {
 
 interface DetailPanelProps {
   layout: ViewportClass;
+  presentation: ConversationPresentation;
+  onPresentationChange(value: ConversationPresentation): void;
   localExists: boolean;
   effectiveConfig: ReturnType<typeof resolveEffectiveConfig>;
   hubLoading: boolean;
@@ -67,6 +73,8 @@ function DetailActions({ localExists, editButtonRef, onClearLocal, onEditHubDefa
 
 function DetailPanel({
   layout,
+  presentation,
+  onPresentationChange,
   localExists,
   effectiveConfig,
   hubLoading,
@@ -78,6 +86,7 @@ function DetailPanel({
   onEditHubDefaults,
   editButtonRef,
 }: DetailPanelProps) {
+  const presentationHintId = useId();
   const isMobile = layout === "mobile";
   const layoutName = layout === "desktop" ? "Desktop" : "Mobile";
   const statusMessages: { kind: "hub-loading" | "hub-unsupported"; text: string }[] = [];
@@ -97,6 +106,21 @@ function DetailPanel({
       className={isMobile ? CLASS.sheetContent : `${CLASS.panel} ${CLASS.content}`}
       data-testid="transcript-detail-control"
     >
+      <SegmentedControl<ConversationPresentation>
+        label="Presentation"
+        value={presentation}
+        options={[
+          { value: "standard", label: "Standard" },
+          { value: "comic", label: "Comic" },
+        ]}
+        onChange={onPresentationChange}
+        aria-describedby={presentationHintId}
+        fullWidth
+      />
+      <InlineNotice id={presentationHintId} live="off">
+        Presentation is remembered in this browser, separately for Desktop and Mobile.
+        {presentation === "comic" && " Content settings below are retained and apply when you return to Standard."}
+      </InlineNotice>
       <p className={CLASS.scope} data-testid="transcript-detail-scope" data-scope={localExists ? "local" : "hub"}>
         {localExists ? `Local ${layoutName} view` : "Using hub default"}
       </p>
@@ -116,7 +140,7 @@ function DetailPanel({
           ))}
         </div>
       )}
-      <TranscriptDetailEditor value={effectiveConfig} compact onChange={onChange} />
+      <TranscriptDetailEditor value={effectiveConfig} compact disabled={presentation === "comic"} onChange={onChange} />
       {!isMobile && (
         <DetailActions
           localExists={localExists}
@@ -132,6 +156,7 @@ function DetailPanel({
 export function TranscriptDetailControl({ open, onClose, layout, onEditHubDefaults }: TranscriptDetailControlProps) {
   const editButtonRef = useRef<HTMLButtonElement>(null);
   const isMobile = layout === "mobile";
+  const presentation = useTranscriptDisplayStore((state) => state.presentation[layout]);
   const local = useTranscriptDisplayStore((state) => state.local[layout]);
   const hub = useTranscriptDisplayStore((state) => state.hub[layout]);
   const hubLoading = useTranscriptDisplayStore((state) => state.hubLoading);
@@ -157,6 +182,8 @@ export function TranscriptDetailControl({ open, onClose, layout, onEditHubDefaul
   const panel = (
     <DetailPanel
       layout={layout}
+      presentation={presentation}
+      onPresentationChange={(value) => transcriptDisplayStore.getState().setPresentation(layout, value)}
       localExists={localExists}
       effectiveConfig={effectiveConfig}
       hubLoading={hubLoading}

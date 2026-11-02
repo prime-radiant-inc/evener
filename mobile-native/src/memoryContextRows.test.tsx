@@ -27,9 +27,8 @@ import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { wireThread } from "@evener/appwire-client/testing/notifications";
 import { act, type ReactTestInstance, type ReactTestRenderer } from "react-test-renderer";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { createConversationService } from "../../mobile/src/services/conversation";
-import { createActivityStore } from "../../mobile/src/state/activity";
-import { createConversationStore } from "../../mobile/src/state/conversation";
+import { createConversationService } from "./conversation/services/conversation";
+import { createConversationStore } from "./conversation/state/conversation";
 import { markers } from "./markerTestUtils";
 import { nativeDisclosureStore } from "./nativeDisclosure";
 import { MAX_ITEM_BYTES, projectConversation } from "./projectedRows";
@@ -52,9 +51,11 @@ vi.hoisted(() => {
 vi.mock("react-native", async () => ({
 	...(await import("./renderNative.testkit")).nativeModuleMock(),
 }));
-vi.mock("expo-symbols", () => ({ SymbolView: "SymbolView" }));
 vi.mock("react-native-safe-area-context", () => ({ SafeAreaView: "SafeAreaView" }));
 vi.mock("react-native-enriched-markdown", () => ({ EnrichedMarkdownText: "EnrichedMarkdownText" }));
+vi.mock("react-native-gesture-handler", async () =>
+	(await import("./renderNative.testkit")).gestureDetectorModuleMock(),
+);
 vi.mock("expo-clipboard", () => ({ setStringAsync: async () => true }));
 // An external native seam: the real TranscriptImages module reaches SecureStore
 // at import time, so it is faked here rather than mocking the product module.
@@ -62,10 +63,6 @@ vi.mock("expo-secure-store", () => ({
 	getItemAsync: async () => null,
 	setItemAsync: async () => undefined,
 	deleteItemAsync: async () => undefined,
-}));
-vi.mock("expo-crypto", () => ({
-	randomUUID: () => "test-uuid",
-	getRandomValues: (array: Uint8Array) => array,
 }));
 vi.mock("expo-sqlite", () => ({ openDatabaseSync: vi.fn() }));
 vi.mock("expo-sqlite/kv-store", () => {
@@ -646,9 +643,8 @@ describe("a store-bounded refresh keeps the complete original beyond the row bou
 		client.on("thread/unsubscribe", () => ({}));
 		const service = createConversationService(client, { now: () => T0, resolveDisplayConfig: () => config });
 		const store = createConversationStore({ displayConfig: config });
-		const activity = createActivityStore();
 		try {
-			await store.getState().openProjected(service, activity.getState(), "ref-1");
+			await store.getState().openProjected(service, "ref-1");
 			const conversation = store.getState().conversation;
 			if (!conversation) throw new Error("no stored conversation");
 			const presentation = projectNativeTranscript(conversation, config);

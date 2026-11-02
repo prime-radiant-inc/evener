@@ -2,7 +2,8 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { friendlyErrorMessage, WireError } from "../../errors";
 import { deferRequest, FakeClient, failing, gateSettlements } from "../../testing/fakeClient";
 import type { LaunchConfigLayer } from "../../types.gen";
-import { createLaunchLayerStore, LAUNCH_LAYER_REFETCH_DEBOUNCE_MS } from "./launchLayer";
+import { REFETCH_DEBOUNCE_MS } from "../refetchDebounce";
+import { createLaunchLayerStore } from "./launchLayer";
 
 const GET = "evener/launch/getLayer";
 const SET = "evener/launch/setLayer";
@@ -176,10 +177,10 @@ describe("notifications", () => {
     fake.on(GET, () => ({ pluginDirs: ["/opt/plugins", "/opt/more"] }));
 
     fake.emitNotification({ method: "evener/launch/updated", params: { cwd: "/", layer: "global" } });
-    await vi.advanceTimersByTimeAsync(LAUNCH_LAYER_REFETCH_DEBOUNCE_MS - 1);
+    await vi.advanceTimersByTimeAsync(REFETCH_DEBOUNCE_MS - 1);
     expect(store.getState().launchLayer).toEqual(PLUGIN_DIRS);
     fake.emitNotification({ method: "evener/launch/updated", params: { cwd: "/", layer: "global" } });
-    await vi.advanceTimersByTimeAsync(LAUNCH_LAYER_REFETCH_DEBOUNCE_MS - 1);
+    await vi.advanceTimersByTimeAsync(REFETCH_DEBOUNCE_MS - 1);
     expect(store.getState().launchLayer).toEqual(PLUGIN_DIRS); // the second notification reset the window
     await vi.advanceTimersByTimeAsync(1);
     expect(store.getState().launchLayer).toEqual({ pluginDirs: ["/opt/plugins", "/opt/more"] });

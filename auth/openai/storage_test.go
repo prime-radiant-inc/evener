@@ -1,13 +1,10 @@
 package openai
 
 import (
-	"bytes"
 	"errors"
-	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
-	"syscall"
 	"testing"
 	"time"
 )
@@ -51,10 +48,10 @@ func TestDefaultStateDirIsUserScoped(t *testing.T) {
 	xdgStateHome := t.TempDir()
 	t.Setenv("XDG_STATE_HOME", xdgStateHome)
 
-	got := DefaultStateDir()
+	got, err := DefaultStateDir()
 	want := filepath.Join(xdgStateHome, "evener")
-	if got != want {
-		t.Fatalf("DefaultStateDir() = %q, want %q", got, want)
+	if err != nil || got != want {
+		t.Fatalf("DefaultStateDir() = %q, %v, want %q", got, err, want)
 	}
 }
 
@@ -63,10 +60,10 @@ func TestDefaultStateDirWithStateHomeUsesChildEnvStateHome(t *testing.T) {
 	childStateHome := filepath.Join(t.TempDir(), "child")
 	t.Setenv("XDG_STATE_HOME", processStateHome)
 
-	got := DefaultStateDirWithStateHome(childStateHome)
+	got, err := DefaultStateDirWithStateHome(childStateHome)
 	want := filepath.Join(childStateHome, "evener")
-	if got != want {
-		t.Fatalf("DefaultStateDirWithStateHome() = %q, want %q", got, want)
+	if err != nil || got != want {
+		t.Fatalf("DefaultStateDirWithStateHome() = %q, %v, want %q", got, err, want)
 	}
 }
 
@@ -91,64 +88,6 @@ func TestAuthStorageSaveIsAtomic(t *testing.T) {
 		t.Fatalf("loaded.AccessToken = %q, want %q", loaded.AccessToken, "new-access-token")
 	}
 
-	matches, err := filepath.Glob(filepath.Join(stateDir, "auth", "openai.json.*"))
-	if err != nil {
-		t.Fatalf("Glob() error = %v", err)
-	}
-	if len(matches) != 0 {
-		t.Fatalf("temporary files left behind: %v", matches)
-	}
-}
-
-// The replacement is what keeps a reader from ever seeing a partial credential:
-// the temp file is written and synced out of the way, so a write that fails
-// partway leaves the target exactly as it was and takes its temp file with it.
-// Half a record at the path would be read as a corrupt one, and a caller
-// restoring captured bytes would have no way to tell that from a credential
-// that was always broken.
-type failingTempFile struct{ name string }
-
-func (f failingTempFile) Name() string              { return f.name }
-func (f failingTempFile) Chmod(os.FileMode) error   { return nil }
-func (f failingTempFile) Write([]byte) (int, error) { return 0, errors.New("write failed") }
-func (f failingTempFile) Sync() error               { return nil }
-func (f failingTempFile) Close() error              { return nil }
-
-func TestAuthStorageWriteLeavesTheTargetIntactWhenTheWriteFails(t *testing.T) {
-	stateDir := t.TempDir()
-	if err := SaveAuth(stateDir, "openai", sampleAuthRecord()); err != nil {
-		t.Fatalf("SaveAuth() error = %v", err)
-	}
-	path := AuthFilePath(stateDir, "openai")
-	before, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatalf("ReadFile() error = %v", err)
-	}
-
-	originalCreateTemp := authCreateTemp
-	authCreateTemp = func(dir, pattern string) (authTempFile, error) {
-		f, err := os.CreateTemp(dir, pattern)
-		if err != nil {
-			return nil, err
-		}
-		if err := f.Close(); err != nil {
-			return nil, err
-		}
-		return failingTempFile{name: f.Name()}, nil
-	}
-	t.Cleanup(func() { authCreateTemp = originalCreateTemp })
-
-	if err := WriteAuthFile(path, []byte("replacement that never lands\n")); err == nil {
-		t.Fatal("WriteAuthFile() = nil, want the write failure")
-	}
-
-	after, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatalf("ReadFile() after the failed write error = %v", err)
-	}
-	if !bytes.Equal(before, after) {
-		t.Fatalf("the target after a failed write = %q, want the previous %q", after, before)
-	}
 	matches, err := filepath.Glob(filepath.Join(stateDir, "auth", "openai.json.*"))
 	if err != nil {
 		t.Fatalf("Glob() error = %v", err)
@@ -378,111 +317,5 @@ func TestAuthFilePathContainsTraversal(t *testing.T) {
 		if filepath.Dir(got) != authDir {
 			t.Errorf("AuthFilePath(%q) = %q; want a file directly under %q", name, got, authDir)
 		}
-	}
-}
-
-// recordingAuthDir records the directory-handle calls WriteAuthFile makes so a
-// test can pin that the parent directory is flushed after the rename, and
-// inject a sync failure.
-type recordingAuthDir struct {
-	syncErr error
-	synced  bool
-	closed  bool
-}
-
-func (d *recordingAuthDir) Sync() error  { d.synced = true; return d.syncErr }
-func (d *recordingAuthDir) Close() error { d.closed = true; return nil }
-
-// withAuthOpenDir installs fn as the authOpenDir seam for one test, restoring
-// the original on cleanup.
-func withAuthOpenDir(t *testing.T, fn func(string) (authDirFile, error)) {
-	t.Helper()
-	original := authOpenDir
-	authOpenDir = fn
-	t.Cleanup(func() { authOpenDir = original })
-}
-
-// TestWriteAuthFileSyncsTheParentDirectory pins the durability step the audit
-// found missing: a rename is only durable once the directory entry that names
-// the new file is flushed, so WriteAuthFile must open and sync the parent
-// directory after the rename.
-func TestWriteAuthFileSyncsTheParentDirectory(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "auth.json")
-	rec := &recordingAuthDir{}
-	opened := ""
-	withAuthOpenDir(t, func(name string) (authDirFile, error) {
-		opened = name
-		return rec, nil
-	})
-
-	if err := WriteAuthFile(path, []byte("record\n")); err != nil {
-		t.Fatalf("WriteAuthFile() error = %v", err)
-	}
-	if opened != dir {
-		t.Fatalf("authOpenDir opened %q, want the parent directory %q", opened, dir)
-	}
-	if !rec.synced {
-		t.Fatal("the parent directory was not synced after the rename")
-	}
-	if !rec.closed {
-		t.Fatal("the parent directory handle was not closed")
-	}
-	if _, err := os.Stat(path); err != nil {
-		t.Fatalf("the renamed file must remain on disk: %v", err)
-	}
-}
-
-// TestWriteAuthFileToleratesUnsupportedDirSync pins the tolerance the
-// client-mutation store and the hub stores already apply: a filesystem that
-// cannot sync a directory at all reports ENOSYS/ENOTSUP/EINVAL, and the write
-// still succeeds because the file's own contents are already flushed.
-func TestWriteAuthFileToleratesUnsupportedDirSync(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "auth.json")
-	withAuthOpenDir(t, func(string) (authDirFile, error) {
-		return &recordingAuthDir{syncErr: fmt.Errorf("sync auth directory: %w", syscall.ENOSYS)}, nil
-	})
-
-	if err := WriteAuthFile(path, []byte("record\n")); err != nil {
-		t.Fatalf("an unsupported directory sync must be tolerated: %v", err)
-	}
-	if _, err := os.Stat(path); err != nil {
-		t.Fatalf("the renamed file must remain after a tolerated dir-sync failure: %v", err)
-	}
-}
-
-// TestWriteAuthFilePropagatesDirSyncFailure pins the failure half: any other
-// directory-sync failure is reported. The rename already landed, so the file
-// stays for a later reader — the platform's remaining guarantee.
-func TestWriteAuthFilePropagatesDirSyncFailure(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "auth.json")
-	syncErr := errors.New("injected dir-sync failure")
-	withAuthOpenDir(t, func(string) (authDirFile, error) {
-		return &recordingAuthDir{syncErr: syncErr}, nil
-	})
-
-	err := WriteAuthFile(path, []byte("record\n"))
-	if err == nil {
-		t.Fatal("WriteAuthFile() = nil, want the directory-sync failure")
-	}
-	if !errors.Is(err, syncErr) {
-		t.Fatalf("WriteAuthFile() error = %v, want a directory-sync failure", err)
-	}
-	if _, statErr := os.Stat(path); statErr != nil {
-		t.Fatalf("the renamed file must remain after a dir-sync failure: %v", statErr)
-	}
-}
-
-// TestWriteAuthFilePropagatesDirOpenFailure pins that a parent directory that
-// cannot be opened for syncing fails the write, matching the hub stores.
-func TestWriteAuthFilePropagatesDirOpenFailure(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "auth.json")
-	withAuthOpenDir(t, func(string) (authDirFile, error) { return nil, errors.New("injected open failure") })
-
-	if err := WriteAuthFile(path, []byte("record\n")); err == nil {
-		t.Fatal("WriteAuthFile() = nil, want the directory-open failure")
 	}
 }

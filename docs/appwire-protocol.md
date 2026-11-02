@@ -260,6 +260,7 @@ no router (reserved).
 | `evener/upgrade` | hub | [UpgradeParams](#upgradeparams) | [UpgradeResponse](#upgraderesponse) | Performs or reports an Evener binary upgrade. |
 | `evener/update/check` | hub | [UpdateCheckParams](#updatecheckparams) | [UpdateCheckResponse](#updatecheckresponse) | Compares the running hub build against a release channel's current commit; dev builds report applicable=false without a network request. |
 | `evener/update/apply` | hub | [UpdateApplyParams](#updateapplyparams) | [UpdateApplyResponse](#updateapplyresponse) | Downloads and installs a channel's build, then execs it in place of the running hub; refused on dev builds. |
+| `evener/hub/restart` | hub | [HubRestartParams](#hubrestartparams) | [HubRestartResponse](#hubrestartresponse) | Execs the binary at the hub's recorded launch path in place, after verifying it is a working Evener binary; refused when the platform has no in-place exec or the launch path is unusable. |
 | `evener/auth/status` | hub | [AuthStatusParams](#authstatusparams) | [AuthStatusResponse](#authstatusresponse) | Reports auth/credential status for a provider. |
 | `evener/auth/test` | hub | [AuthTestParams](#authtestparams) | [AuthTestResponse](#authtestresponse) | Tests the effective credentials for one configured provider instance without starting a session. |
 | `evener/auth/login/start` | hub | [AuthLoginStartParams](#authloginstartparams) | [AuthLoginStartResponse](#authloginstartresponse) | Begins an OAuth login flow; returns a flow ID and URL. |
@@ -327,7 +328,7 @@ no router (reserved).
 | `evener/host/operations` | hub | [HostOperationsParams](#hostoperationsparams) | [HostOperationsResponse](#hostoperationsresponse) | Reads the operation store's deploy/restart records, one bounded page at a time, ascending by the controller-assigned id and resumed by an opaque cursor: host-pinned pages echo the effective (generation, incarnationId) pair, unfiltered cross-host pages carry the authoritative hostBoundaries map (the triple or the literal "absent" per host in the query), and limit defaults to 50 and caps at 200. Never dials; a remote origin is refused. |
 | `evener/host/running` | hub | [HostRunningParams](#hostrunningparams) | [HostRunningResponse](#hostrunningresponse) | Serves one hub's own running build revision and authoritative health to the controller probing it over an attached session, presenting the caller's required fencing epoch: process start time is present exactly when the hub knows it, and healthy reflects the local restart-required predicate, the owner-set minimum-free-space knob, and the state-root write probe. |
 | `evener/host/pushCredentials` | hub | [HostPushCredentialsParams](#hostpushcredentialsparams) | [HostPushCredentialsResponse](#hostpushcredentialsresponse) | Copies the controller's local provider-instance keys to one named remote host (component 07c): each local store key is joined to the host's own instance by name (the lookup folds case), and the HOST's own spelling of the matched entry is what travels as Provider to evener/auth/status and evener/auth/apiKey/conditionalSet, the host classifies and writes its own store, and each entry reports added/updated/skipped/failed. |
-| `evener/session/image` | hub | [SessionImageParams](#sessionimageparams) | [SessionImageResponse](#sessionimageresponse) | Fetches one image out of the recipient hub's own local session state for the controller's host-qualified image routes (component 05): SHA addresses a replayed transcript image and Path a relative or current-root absolute file inside the session's current working directory; the sha branch enforces the 8 MiB bound while scanning, and the media type is re-derived from the bytes. Never an HTTP route. |
+| `evener/session/image` | hub | [SessionImageParams](#sessionimageparams) | [SessionImageResponse](#sessionimageresponse) | Fetches one image out of the recipient hub's own local session state for the controller's host-qualified image routes (component 05): SHA addresses a replayed transcript image and Path a relative file in the session's current working directory, or an absolute file in that directory or its retained artifacts directory; the sha branch enforces the 8 MiB bound while scanning, and the media type is re-derived from the bytes. Never an HTTP route. |
 | `evener/session/document` | hub | [SessionDocumentParams](#sessiondocumentparams) | [SessionDocumentResponse](#sessiondocumentresponse) | Reads one document out of the recipient hub's own local session state for the controller's host-qualified /doc/file proxy (S7): the path is resolved inside the session's working directory by the local route's rule and refused as pathOutsideSession when it leads out; the answer is the file's first 512 KiB, its true size, the sha256 of the whole file (up to 16 MiB) and its modification time. Never an HTTP route. |
 
 ## Notifications (server → client)
@@ -620,6 +621,7 @@ Underlying Go kind: `string` (no struct fields).
 | Field | Go type | Omitempty | Embedded |
 |-------|---------|-----------|----------|
 | `status` | [appwire.AuthStatusResponse](#authstatusresponse) |  |  |
+| `restart` | bool | yes |  |
 
 
 ### `AuthLoginStartParams`
@@ -975,6 +977,7 @@ Underlying Go kind: `string` (no struct fields).
 |-------|---------|-----------|----------|
 | `provider` | string | yes |  |
 | `activeSource` | string | yes |  |
+| `reason` | string | yes |  |
 | `originClientId` | string | yes |  |
 
 
@@ -1906,6 +1909,21 @@ Underlying Go kind: `string` (no struct fields).
 | `affectedSessions` | int | yes |  |
 
 
+### `HubRestartParams`
+
+Underlying Go kind: `struct` (no struct fields).
+
+
+### `HubRestartResponse`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `restarting` | bool |  |  |
+| `incarnation` | time.Time |  |  |
+| `currentVersion` | string |  |  |
+| `targetVersion` | string |  |  |
+
+
 ### `InitializeParams`
 
 | Field | Go type | Omitempty | Embedded |
@@ -2592,6 +2610,7 @@ Underlying Go kind: `string` (no struct fields).
 | `outputCostPerMillion` | \*float64 | yes |  |
 | `reasoningEffortLevels` | []string | yes |  |
 | `warnings` | []string | yes |  |
+| `instanceDefault` | bool | yes |  |
 
 
 ### `ModelListDiagnostic`
@@ -3326,6 +3345,7 @@ Underlying Go kind: `string` (no struct fields).
 | `ref` | string |  |  |
 | `sessionId` | string |  |  |
 | `delegateId` | string | yes |  |
+| `delegateName` | string | yes |  |
 | `title` | string |  |  |
 
 
@@ -3348,6 +3368,7 @@ Underlying Go kind: `string` (no struct fields).
 | `rootRef` | string |  |  |
 | `parentRef` | string | yes |  |
 | `delegateId` | string | yes |  |
+| `delegateName` | string | yes |  |
 | `ancestors` | [][appwire.SessionActivityAncestor](#sessionactivityancestor) |  |  |
 | `ancestryKnown` | bool |  |  |
 | `epoch` | string |  |  |
@@ -3979,6 +4000,7 @@ Underlying Go kind: `string` (no struct fields).
 
 | Field | Go type | Omitempty | Embedded |
 |-------|---------|-----------|----------|
+| `authorship` | \*[appwire.TranscriptAuthorship](#transcriptauthorship) | yes |  |
 | `type` | string |  |  |
 | `id` | string |  |  |
 | `transcriptKey` | string | yes |  |
@@ -4346,6 +4368,30 @@ Underlying Go kind: `string` (no struct fields).
 | `visionModel` | string |  |  |
 
 
+### `TranscriptAuthor`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `kind` | [appwire.TranscriptAuthorKind](#transcriptauthorkind) |  |  |
+| `sessionRef` | string | yes |  |
+| `ownerRef` | string | yes |  |
+| `delegateId` | string | yes |  |
+| `delegateName` | string | yes |  |
+
+
+### `TranscriptAuthorKind`
+
+Underlying Go kind: `string` (no struct fields).
+
+
+### `TranscriptAuthorship`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `author` | [appwire.TranscriptAuthor](#transcriptauthor) |  |  |
+| `inherited` | bool |  |  |
+
+
 ### `TranscriptContentKind`
 
 Underlying Go kind: `string` (no struct fields).
@@ -4649,6 +4695,15 @@ Underlying Go kind: `string` (no struct fields).
 | `latestCommit` | string | yes |  |
 | `updateAvailable` | bool |  |  |
 | `applicable` | bool |  |  |
+| `onDiskCommit` | string | yes |  |
+| `onDiskError` | string | yes |  |
+| `installAvailable` | bool |  |  |
+| `restartPending` | bool |  |  |
+| `startedAt` | time.Time |  |  |
+| `restartSupported` | bool |  |  |
+| `checkError` | string | yes |  |
+| `installTarget` | string | yes |  |
+| `installTargetMatchesLaunch` | bool |  |  |
 
 
 ### `UpgradeParams`

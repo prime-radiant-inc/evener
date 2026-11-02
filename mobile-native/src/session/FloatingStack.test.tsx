@@ -34,6 +34,24 @@ describe("what floats above the transcript's end", () => {
 		expect(slots.map((slot) => slot.findByType("Text" as never).props.children)).toEqual(["toast", "next", "pill"]);
 		expect(slots.map((slot) => slot.props.style.alignItems)).toEqual(["center", "flex-end", "center"]);
 		expect(slots[1].props.style).toMatchObject({ paddingHorizontal: 16 });
+		// Each takes its own row in the column, never an absolute position.
+		expect(slots.every((slot) => slot.props.style.position === undefined)).toBe(true);
+	});
+
+	it("reports the room it occludes, its height and 10pt lift, so the transcript can keep its newest message clear (#2988)", () => {
+		const onRoom = vi.fn();
+		const tree = render(
+			<FloatingStack
+				toast={<Text>toast</Text>}
+				next={<Text>next</Text>}
+				pill={<Text>pill</Text>}
+				composerFocus={composerFocusedAs(false)}
+				onRoom={onRoom}
+			/>,
+		);
+		const stack = column(tree);
+		act(() => stack.props.onLayout({ nativeEvent: { layout: { x: 0, y: 0, width: 390, height: 148 } } }));
+		expect(onRoom).toHaveBeenCalledWith(158);
 	});
 
 	it("leaves out what doesn't show, so what does keeps its 10pt", () => {

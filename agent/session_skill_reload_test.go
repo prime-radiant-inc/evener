@@ -274,9 +274,9 @@ func TestSkillReload_CurrentSource_ReloadsNewBytes(t *testing.T) {
 	s, main, _ := newReloadSession(t, root, 0, func(llm.Request) llm.Response {
 		calls++
 		if calls == 1 {
-			return toolCallResponse(useSkillCall("skill-1", "opaque"))
+			return agenttest.ToolCallResponse(useSkillCall("skill-1", "opaque"))
 		}
-		return toolCallResponse(communicateCall("done-1", "ok"))
+		return agenttest.ToolCallResponse(communicateCall("done-1", "ok"))
 	}, reloadSummaryResponder("SUMMARY_reload_1", nil))
 	seedNumberedSessionHistory(t, s, 12)
 	s.contextMgr.PreserveRecentTurns = 2
@@ -381,9 +381,9 @@ func TestSkillReload_CurrentSource_MissingReplacedSource(t *testing.T) {
 		s, main, _ := newReloadSession(t, root, 0, func(llm.Request) llm.Response {
 			calls++
 			if calls == 1 {
-				return toolCallResponse(useSkillCall("skill-1", "opaque"))
+				return agenttest.ToolCallResponse(useSkillCall("skill-1", "opaque"))
 			}
-			return toolCallResponse(communicateCall("done-1", "ok"))
+			return agenttest.ToolCallResponse(communicateCall("done-1", "ok"))
 		}, reloadSummaryResponder("SUMMARY_reload_2", nil))
 		seedNumberedSessionHistory(t, s, 12)
 		s.contextMgr.PreserveRecentTurns = 2
@@ -448,9 +448,9 @@ func TestSkillReload_CurrentSource_MissingReplacedSource(t *testing.T) {
 		s, main, _ := newReloadSession(t, root, 0, func(llm.Request) llm.Response {
 			calls++
 			if calls == 1 {
-				return toolCallResponse(useSkillCall("skill-1", "opaque"))
+				return agenttest.ToolCallResponse(useSkillCall("skill-1", "opaque"))
 			}
-			return toolCallResponse(communicateCall("done-1", "ok"))
+			return agenttest.ToolCallResponse(communicateCall("done-1", "ok"))
 		}, reloadSummaryResponder("SUMMARY_reload_3", nil))
 		seedNumberedSessionHistory(t, s, 12)
 		s.contextMgr.PreserveRecentTurns = 2
@@ -512,7 +512,7 @@ func TestSkillReload_Reminder_AbsentSelection(t *testing.T) {
 	writeSkillMD(t, root, "gone", fmt.Sprintf(frontmatter, "gone", "gone", "", strings.Repeat("GONE_5c31\n", 8)))
 
 	s, main, _ := newReloadSession(t, root, 0, func(llm.Request) llm.Response {
-		return toolCallResponse(communicateCall("done-1", "ok"))
+		return agenttest.ToolCallResponse(communicateCall("done-1", "ok"))
 	}, reloadSummaryResponder("SUMMARY_reload_4", nil))
 	seedNumberedSessionHistory(t, s, 12)
 	plantOrdinaryRecord(t, s, root, "plain", false)
@@ -606,7 +606,7 @@ func TestSkillReload_Reminder_InvalidSelection(t *testing.T) {
 	markGitRoot(t, root)
 	writeSkillMD(t, root, "plain", "---\nname: plain\ndescription: plain fixture\n---\n"+strings.Repeat("PLAIN_5c31\n", 8))
 	s, main, _ := newReloadSession(t, root, 0, func(llm.Request) llm.Response {
-		return toolCallResponse(communicateCall("done-1", "ok"))
+		return agenttest.ToolCallResponse(communicateCall("done-1", "ok"))
 	}, reloadSummaryResponder("SUMMARY_reload_5", nil))
 	seedNumberedSessionHistory(t, s, 12)
 	plantOrdinaryRecord(t, s, root, "plain", false)
@@ -642,7 +642,7 @@ func TestSkillReload_Reminder_ExplicitEmptySelection(t *testing.T) {
 	markGitRoot(t, root)
 	writeSkillMD(t, root, "plain", "---\nname: plain\ndescription: plain fixture\n---\n"+strings.Repeat("PLAIN_5c31\n", 8))
 	s, main, _ := newReloadSession(t, root, 0, func(llm.Request) llm.Response {
-		return toolCallResponse(communicateCall("done-1", "ok"))
+		return agenttest.ToolCallResponse(communicateCall("done-1", "ok"))
 	}, reloadSummaryResponder("SUMMARY_reload_6", nil))
 	seedNumberedSessionHistory(t, s, 12)
 	plantOrdinaryRecord(t, s, root, "plain", false)
@@ -694,11 +694,11 @@ func TestSkillReload_Budget_OrderedPriority(t *testing.T) {
 		calls++
 		switch calls {
 		case 1:
-			return toolCallResponse(useSkillCall("skill-1", "newact"))
+			return agenttest.ToolCallResponse(useSkillCall("skill-1", "newact"))
 		case 2:
-			return toolCallResponse(compactContextCall("compact-1", []string{"skA", "skB"}))
+			return agenttest.ToolCallResponse(compactContextCall("compact-1", []string{"skA", "skB"}))
 		default:
-			return toolCallResponse(communicateCall("done-1", "ok"))
+			return agenttest.ToolCallResponse(communicateCall("done-1", "ok"))
 		}
 	}, reloadSummaryResponder("SUMMARY_reload_7", &summarizeCalls))
 	seedNumberedSessionHistory(t, s, 12)
@@ -786,7 +786,7 @@ func TestSkillReload_Budget_MandatoryMetadataExceeds(t *testing.T) {
 	// the current input alone (≈23K tokens mandatory) but no possible version
 	// of the complete reminder metadata below.
 	s, main, _ := newReloadSession(t, root, 60000, func(llm.Request) llm.Response {
-		return toolCallResponse(communicateCall("done-1", "ok"))
+		return agenttest.ToolCallResponse(communicateCall("done-1", "ok"))
 	}, reloadSummaryResponder("SUMMARY_reload_8", &summarizeCalls))
 	seedNumberedSessionHistory(t, s, 12)
 	// A large preload-only inventory: the complete reminder metadata alone is
@@ -1154,7 +1154,7 @@ func TestSkillReload_Preload_OnlySelectionIsNoOp(t *testing.T) {
 	root := t.TempDir()
 	markGitRoot(t, root)
 	s, main, _ := newReloadSession(t, root, 0, func(llm.Request) llm.Response {
-		return toolCallResponse(communicateCall("done-1", "ok"))
+		return agenttest.ToolCallResponse(communicateCall("done-1", "ok"))
 	}, reloadSummaryResponder("SUMMARY_reload_9", nil))
 	seedNumberedSessionHistory(t, s, 12)
 	plantPreloadRecord(t, s, "frozen", "permanent preload")
@@ -1192,7 +1192,7 @@ func TestSkillReload_Preload_DualProvenanceReloadsOrdinary(t *testing.T) {
 	writeSkillMD(t, root, "dual", "---\nname: dual\ndescription: dual fixture\n---\n"+body)
 	source := filepath.Join(root, "skills", "dual", "SKILL.md")
 	s, main, _ := newReloadSession(t, root, 0, func(llm.Request) llm.Response {
-		return toolCallResponse(communicateCall("done-1", "ok"))
+		return agenttest.ToolCallResponse(communicateCall("done-1", "ok"))
 	}, reloadSummaryResponder("SUMMARY_reload_10", nil))
 	seedNumberedSessionHistory(t, s, 12)
 	s.contextMgr.PreserveRecentTurns = 2
@@ -1238,9 +1238,9 @@ func TestSkillReload_Repeated_RetainedContentNotDuplicated(t *testing.T) {
 	s, main, _ := newReloadSession(t, root, 0, func(llm.Request) llm.Response {
 		calls++
 		if calls == 1 {
-			return toolCallResponse(useSkillCall("skill-1", "opaque"))
+			return agenttest.ToolCallResponse(useSkillCall("skill-1", "opaque"))
 		}
-		return toolCallResponse(communicateCall("done-1", "ok"))
+		return agenttest.ToolCallResponse(communicateCall("done-1", "ok"))
 	}, reloadSummaryResponder("SUMMARY_reload_11", nil))
 	seedNumberedSessionHistory(t, s, 12)
 	// Default retention (PreserveRecentTurns=6) keeps the geometry honest:

@@ -1,5 +1,5 @@
-import type { ComposerMention, InputItem } from "@evener/appwire-client";
-import { canonicalSkillNames, markerPattern, markerText } from "@evener/appwire-client";
+import type { ComposerMention } from "@evener/appwire-client";
+import { mergeComposerCompositions, recoverMutationComposition } from "@evener/appwire-client";
 import type { MutationRecoveryRecord } from "../../../../stores/mutationOutbox";
 import type { PendingAttachment } from "../attachments/useAttachments";
 import { parseSkillDocument, skillAtomMentions } from "../skillDocument";
@@ -16,76 +16,27 @@ export interface RecoveredComposerDraft {
   mentions?: ComposerMention[];
 }
 
-function recordInput(record: MutationRecoveryRecord): InputItem[] {
-  return Array.isArray(record.payload.input) ? (record.payload.input as InputItem[]) : [];
-}
+const unavailableImageReferences = new WeakSet<RecoveredComposerDraft>();
 
-function markerNumbers(text: string): number[] {
-  return Array.from(text.matchAll(markerPattern()), (match) => Number(match[1]));
-}
-
-function skillSelections(input: InputItem[]): string[] {
-  return canonicalSkillNames(
-    input
-      .filter((item): item is InputItem & { name: string } => item.type === "skill" && typeof item.name === "string")
-      .map((item) => item.name),
-  );
-}
-
-// The record carries both halves of the pairing the composer needs: the text
-// as it was typed (composerText, marker anchors intact - the payload's own
-// text was translated to prose at the submit boundary) and, on each durable
-// attachment, the marker it was staged under. Neither is inferred here. A
-// record with no recorded marker predates that pairing, so its attachments
-// fall back to their position in the payload, which is the order buildInput
-// and durableAttachments both wrote them in.
+// The shared recovery owns portable record decoding: composer text and marker
+// metadata identify associations, while payload input owns image bytes. This
+// browser wrapper converts those images to settled PendingAttachment tiles and
+// keeps the browser's optional command-list shape.
 export function recoveryComposerDraft(record: MutationRecoveryRecord): RecoveredComposerDraft {
-  const input = recordInput(record);
-  const text =
-    record.composerText ??
-    input
-      .filter((item): item is InputItem & { text: string } => item.type === "text" && typeof item.text === "string")
-      .map((item) => item.text)
-      .join("\n");
-  const images = input.filter(
-    (item): item is InputItem & { data: string } => item.type === "image" && typeof item.data === "string",
-  );
-  const attachments = images.map((image, index): PendingAttachment => {
-    const durableAttachment = record.attachments[index];
-    return {
-      marker: durableAttachment?.marker ?? index + 1,
-      name: image.name ?? durableAttachment?.name ?? "image",
-      mediaType: image.mediaType ?? durableAttachment?.mediaType ?? "image/png",
-      data: image.data,
+  const recovered = recoverMutationComposition(record);
+  const draft: RecoveredComposerDraft = {
+    text: recovered.text,
+    attachments: recovered.attachments.map((attachment) => ({
+      ...attachment,
+      name: attachment.name ?? "image",
       pending: false,
-    };
-  });
-  const commandNames = canonicalSkillNames(
-    input.filter((item) => item.type === "command").map((item) => item.name ?? ""),
-  );
-  let mentions = record.composerMentions;
-  if (mentions === undefined && record.composerText === undefined) {
-    const textItems = input.filter((item) => item.type === "text" && typeof item.text === "string");
-    if (textItems.some((item) => item.mentions !== undefined)) {
-      let offset = 0;
-      mentions = textItems.flatMap((item) => {
-        const locations = (item.mentions ?? []).flatMap((mention): ComposerMention[] =>
-          mention.kind === "skill" || mention.kind === "command"
-            ? [{ ...mention, kind: mention.kind, offset: offset + mention.offset }]
-            : [],
-        );
-        offset += (item.text?.length ?? 0) + 1;
-        return locations;
-      });
-    }
-  }
-  return {
-    text,
-    attachments,
-    skillNames: skillSelections(input),
-    ...(commandNames.length ? { commandNames } : {}),
-    ...(mentions ? { mentions: [...mentions] } : {}),
+    })),
+    skillNames: recovered.skillNames,
+    ...(recovered.commandNames.length ? { commandNames: recovered.commandNames } : {}),
+    ...(recovered.mentions ? { mentions: recovered.mentions } : {}),
   };
+  if (recovered.imageReferences === "unavailable") unavailableImageReferences.add(draft);
+  return draft;
 }
 
 export function mergeRecoveryComposerDraft(
@@ -96,34 +47,13 @@ export function mergeRecoveryComposerDraft(
   currentCommandNames: readonly string[] = [],
   currentMentions?: readonly ComposerMention[],
 ): RecoveredComposerDraft {
-  const usedMarkers = new Set([
-    ...markerNumbers(currentText),
-    ...currentAttachments.map((attachment) => attachment.marker),
-  ]);
-  const markerMapping = new Map<number, number>();
-  const attachments = recovered.attachments.map((attachment) => {
-    let marker = 1;
-    while (usedMarkers.has(marker)) marker += 1;
-    usedMarkers.add(marker);
-    markerMapping.set(attachment.marker, marker);
-    return { ...attachment, marker };
-  });
-  const markerShifts: { offset: number; delta: number }[] = [];
-  const recoveredText = recovered.text.replace(markerPattern(), (match, marker: string, offset: number) => {
-    const replacement = markerMapping.get(Number(marker));
-    const text = replacement === undefined ? match : markerText(replacement);
-    if (text.length !== match.length) markerShifts.push({ offset, delta: text.length - match.length });
-    return text;
-  });
-  const text = [currentText, recoveredText].filter((part) => part.length > 0).join("\n\n");
-  // Selections union the same way the text does, current names first, so a
-  // recovery edit never drops a skill the user already selected - and never
-  // duplicates one the record carries too. The union is canonicalized so a
-  // padded or empty name from either side collapses to the same list.
-  const skillNames = canonicalSkillNames([...currentSkillNames, ...recovered.skillNames]);
-  let mentions: ComposerMention[] | undefined;
+  // skillDocument is browser-owned parsing state. The shared merge accepts
+  // explicit UTF-16 locations, so this wrapper fills either missing side with
+  // the same parser the mounted browser composer uses before delegating.
+  let currentLocations = currentMentions;
+  let recoveredLocations = recovered.mentions;
   if (currentMentions || recovered.mentions) {
-    const currentLocations =
+    currentLocations =
       currentMentions ??
       skillAtomMentions(
         parseSkillDocument({
@@ -132,28 +62,32 @@ export function mergeRecoveryComposerDraft(
           commandNames: [...currentCommandNames],
         }),
       );
-    const recoveredLocations = recovered.mentions ?? skillAtomMentions(parseSkillDocument(recovered));
-    const appendOffset = currentText.length ? currentText.length + 2 : 0;
-    mentions = [
-      ...currentLocations,
-      ...recoveredLocations.map((mention) => ({
-        ...mention,
-        offset:
-          mention.offset +
-          appendOffset +
-          markerShifts
-            .filter((shift) => shift.offset < mention.offset)
-            .reduce((delta, shift) => delta + shift.delta, 0),
-      })),
-    ];
+    recoveredLocations = recovered.mentions ?? skillAtomMentions(parseSkillDocument(recovered));
   }
+
+  const merged = mergeComposerCompositions(
+    {
+      text: currentText,
+      attachments: currentAttachments,
+      skillNames: [...currentSkillNames],
+      commandNames: [...currentCommandNames],
+      ...(currentLocations !== undefined ? { mentions: [...currentLocations] } : {}),
+    },
+    {
+      text: recovered.text,
+      attachments: recovered.attachments,
+      skillNames: recovered.skillNames,
+      commandNames: recovered.commandNames ?? [],
+      ...(recoveredLocations !== undefined ? { mentions: [...recoveredLocations] } : {}),
+      imageReferences: unavailableImageReferences.has(recovered) ? "unavailable" : "recorded",
+    },
+  );
+
   return {
-    text,
-    attachments: [...currentAttachments, ...attachments],
-    skillNames,
-    ...(currentCommandNames.length || recovered.commandNames?.length
-      ? { commandNames: canonicalSkillNames([...currentCommandNames, ...(recovered.commandNames ?? [])]) }
-      : {}),
-    ...(mentions ? { mentions } : {}),
+    text: merged.text,
+    attachments: merged.attachments,
+    skillNames: merged.skillNames,
+    ...(merged.commandNames.length ? { commandNames: merged.commandNames } : {}),
+    ...(merged.mentions ? { mentions: merged.mentions } : {}),
   };
 }

@@ -211,7 +211,17 @@ export function ActivityScreen({ route, navigation }: NativeStackScreenProps<Rou
 	// A subagent's screen is its own session (ruling 30), over this list.
 	const openRow = useCallback(
 		(row: SubagentRow) =>
-			navigation.push("Subagent", { hubId, ref: row.ref, title: row.title, coordinator: { ref, threadId, title } }),
+			navigation.push("Subagent", {
+				hubId,
+				ref: row.ref,
+				title: row.title,
+				coordinator: { ref, threadId, title },
+				// A running row's screen times its run by the same start this row
+				// shows, even before the coordinator's tree reports it (#2988).
+				...(row.state === "running" && row.delegate.runStartedAt !== undefined
+					? { runStartedAt: row.delegate.runStartedAt }
+					: {}),
+			}),
 		[navigation, hubId, ref, threadId, title],
 	);
 

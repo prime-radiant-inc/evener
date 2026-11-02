@@ -14,6 +14,7 @@ import (
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/appwire/appwiretest"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 	"primeradiant.com/evener/identifier"
 	"primeradiant.com/evener/internal/transcriptindex"
@@ -57,22 +58,14 @@ func TestHubRPCThreadForkAtItemKeyCutsThatEntry(t *testing.T) {
 	// Three entries: 1 = USER "first task", 2 = ASSISTANT "first reply",
 	// 3 = USER "second task".
 	parentID := buildRPCParentSession(t, stateDir)
-	past := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
-	if _, err := past.Rebuild(); err != nil {
-		t.Fatal(err)
-	}
+	past := newRebuiltPastIndex(t, filepath.Join(root, "projects", "*"))
 
 	hub := newHubRPCTestServer(t, hubcore.WebConfig{Past: past})
 	defer hub.Close()
-	client := dialHubRPC(t, hub)
-	defer client.Close()
-
-	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
-		t.Fatalf("Initialize: %v", err)
-	}
+	client := dialHubRPCInitialized(t, hub)
 
 	thirdEntryKey := transcriptindex.ItemKey("turn_3", appwire.ThreadItemPosition{Entry: 3, Item: 0})
-	resp, err := client.ThreadFork(context.Background(), appwire.ThreadForkParams{
+	resp, err := appwiretest.ThreadFork(context.Background(), client, appwire.ThreadForkParams{
 		Ref:           "local:" + parentID,
 		SourceItemKey: thirdEntryKey,
 		DeferInput:    true,
@@ -107,7 +100,7 @@ func TestHubRPCThreadForkAtItemKeyCutsThatEntry(t *testing.T) {
 	// hub failure, so it must come back as InvalidParams rather than
 	// InternalError — the same is true of the two refusals below.
 	secondEntryKey := transcriptindex.ItemKey("turn_2", appwire.ThreadItemPosition{Entry: 2, Item: 0})
-	_, err = client.ThreadFork(context.Background(), appwire.ThreadForkParams{
+	_, err = appwiretest.ThreadFork(context.Background(), client, appwire.ThreadForkParams{
 		Ref:           "local:" + parentID,
 		SourceItemKey: secondEntryKey,
 		DeferInput:    true,
@@ -120,7 +113,7 @@ func TestHubRPCThreadForkAtItemKeyCutsThatEntry(t *testing.T) {
 
 	// A key whose ordinal names no entry in the parent transcript is refused.
 	unknownEntryKey := transcriptindex.ItemKey("turn_99", appwire.ThreadItemPosition{Entry: 99, Item: 0})
-	_, err = client.ThreadFork(context.Background(), appwire.ThreadForkParams{
+	_, err = appwiretest.ThreadFork(context.Background(), client, appwire.ThreadForkParams{
 		Ref:           "local:" + parentID,
 		SourceItemKey: unknownEntryKey,
 		DeferInput:    true,
@@ -132,7 +125,7 @@ func TestHubRPCThreadForkAtItemKeyCutsThatEntry(t *testing.T) {
 
 	// The header key names no turn at all.
 	headerKey := transcriptindex.ItemKey("turn_1", appwire.ThreadItemPosition{Entry: 0, Item: 0})
-	_, err = client.ThreadFork(context.Background(), appwire.ThreadForkParams{
+	_, err = appwiretest.ThreadFork(context.Background(), client, appwire.ThreadForkParams{
 		Ref:           "local:" + parentID,
 		SourceItemKey: headerKey,
 		DeferInput:    true,
@@ -172,24 +165,16 @@ func TestHubRPCThreadForkAtItemKeyCutsNewFormatEntry(t *testing.T) {
 	if err := writeNewFormatForkParentSession(t, stateDir, parentID); err != nil {
 		t.Fatal(err)
 	}
-	past := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
-	if _, err := past.Rebuild(); err != nil {
-		t.Fatal(err)
-	}
+	past := newRebuiltPastIndex(t, filepath.Join(root, "projects", "*"))
 
 	hub := newHubRPCTestServer(t, hubcore.WebConfig{Past: past})
 	defer hub.Close()
-	client := dialHubRPC(t, hub)
-	defer client.Close()
-
-	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
-		t.Fatalf("Initialize: %v", err)
-	}
+	client := dialHubRPCInitialized(t, hub)
 
 	// Entry 3 (ordinal 2) is the second USER_INPUT entry, minted under its own
 	// new-format turn id "t_second" rather than a legacy turn_<entryIndex>.
 	thirdEntryKey := transcriptindex.ItemKey("t_second", appwire.ThreadItemPosition{Entry: 3, Item: 0})
-	resp, err := client.ThreadFork(context.Background(), appwire.ThreadForkParams{
+	resp, err := appwiretest.ThreadFork(context.Background(), client, appwire.ThreadForkParams{
 		Ref:           "local:" + parentID,
 		SourceItemKey: thirdEntryKey,
 		DeferInput:    true,

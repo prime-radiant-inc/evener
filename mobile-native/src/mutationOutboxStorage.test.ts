@@ -846,6 +846,72 @@ test("a failed recovery transfer leaves the outbox record durable with no recove
 	expect(rawRow("mutation_recovery", record.clientMutationId)).toBeUndefined();
 });
 
+// Recovery rows keep the wire identity of the row they came from. A resume that
+// changes ref/thread/instance must rewrite that routing identity along with the
+// target, or the resumed screen cannot prove the exact interrupted capture.
+test("retarget moves recovery routing identity and preserves composition and ownership", async () => {
+	const destination = "local:thread-2";
+	const kinds = ["editing", "rejected", "orphaned"] as const;
+	const ids: string[] = [];
+	for (const kind of kinds) {
+		const record = await storage.enqueueIntent(noteIntent(`recovery ${kind}`));
+		await storage.transferToRecovery(record.clientMutationId, kind, `reason ${kind}`);
+		database
+			.prepare(
+				`UPDATE mutation_recovery
+				 SET composer_text = ?, composer_mentions = ?, draft_capture_token = ?, origin_client_id = ?
+				 WHERE client_mutation_id = ?`,
+			)
+			.run(
+				`text ${kind}`,
+				JSON.stringify([{ kind: "skill", name: "skill", offset: 0 }]),
+				`capture-${kind}`,
+				`origin-${kind}`,
+				record.clientMutationId,
+			);
+		ids.push(record.clientMutationId);
+	}
+	const other = await storage.enqueueIntent(noteIntent("other ref", "local:other"));
+	await storage.transferToRecovery(other.clientMutationId, "rejected");
+	const movingOutbox = await storage.enqueueIntent(noteIntent("still queued"));
+
+	expect(
+		storage.retarget(TARGET, {
+			ref: destination,
+			wireRef: "wire-2",
+			threadId: "thread-2",
+			instanceId: "instance-2",
+		}),
+	).toEqual([movingOutbox.clientMutationId]);
+
+	for (const [index, id] of ids.entries()) {
+		const kind = kinds[index];
+		const row = rawRow("mutation_recovery", id)!;
+		expect(row).toMatchObject({
+			target_ref: destination,
+			thread_id: "thread-2",
+			instance_id: "instance-2",
+			composer_text: `text ${kind}`,
+			draft_capture_token: `capture-${kind}`,
+			origin_client_id: `origin-${kind}`,
+			recovery_kind: kind,
+			recovery_reason: `reason ${kind}`,
+			state: "submitting",
+		});
+		expect(JSON.parse(row.composer_mentions!)).toEqual([{ kind: "skill", name: "skill", offset: 0 }]);
+		expect(JSON.parse(row.payload)).toEqual({
+			ref: "wire-2",
+			expectedInstanceId: "instance-2",
+			note: `recovery ${kind}`,
+			clientMutationId: id,
+		});
+	}
+
+	const otherRow = rawRow("mutation_recovery", other.clientMutationId)!;
+	expect(otherRow).toMatchObject({ target_ref: "local:other", thread_id: "thread-1" });
+	expect(JSON.parse(otherRow.payload)).toMatchObject({ ref: "local:other", expectedInstanceId: "instance-1" });
+});
+
 // --- Read path --------------------------------------------------------------
 
 test("listTargetRefs reports every ref with a waiting outbox or optimistic record", async () => {

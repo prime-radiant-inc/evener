@@ -826,6 +826,7 @@ export class Driver {
       const strip = header.closest("section");
       const rows = [...strip.querySelectorAll("li")].map((li) => ({
         text: li.textContent,
+        kind: li.dataset.kind ?? null,
         buttons: [...li.querySelectorAll("button")].map((b) => b.getAttribute("aria-label") ?? b.textContent),
       }));
       return { header: header.textContent, rows };
@@ -1454,6 +1455,35 @@ export class Driver {
     return this.readTurnIdBaseline(this.turnIdsExpr(ref), `turnIds(${ref})`);
   }
 
+  // Every transcript wait below reads rendered turn-blocks. The transcript is
+  // a VIRTUAL list: it mounts the rows near the reader's position plus a small
+  // overscan, and by design it does not follow new rows for a reader who is
+  // away from the bottom (the jump-to-latest pill is the affordance for that
+  // reader). A wait that only polls mounted rows therefore misses a reply the
+  // app really rendered whenever the reader is scrolled back far enough for
+  // the reply's row to fall outside the mounted window -- the reader is not at
+  // fault, but the observation is.
+  //
+  // The correction belongs INSIDE every poll, not in a separate barrier before
+  // the wait. A retained-view restore is applied after its measurements or
+  // opening settlement, so it can land after the reader was first observed at
+  // the bottom and scroll the view back; a barrier that released on that first
+  // observation would leave the later reply unmounted for the rest of the
+  // wait. Correcting on each poll means a restore at any point during the wait
+  // is undone by the next poll (80ms), and the reply row mounts. The at-bottom
+  // threshold is the app's own (4px); the write itself is the reader's own
+  // jump-to-latest destination.
+  withTranscriptTail(ref, conditionExpr) {
+    return `(() => {
+      const pane = ${this.paneScopeExpr(ref)};
+      const section = pane && pane.querySelector("[data-testid='transcript-virtual-list']");
+      const port = section && section.firstElementChild;
+      if (port && port.scrollHeight - port.scrollTop - port.clientHeight > 4) {
+        port.scrollTop = port.scrollHeight;
+      }
+      return ${conditionExpr}; })()`;
+  }
+
   // waitForContinuationReply is the POSITIVE end-of-turn proof for a turn whose
   // last leg is a daemon-dispatched continuation: a drained queue row folded
   // into the running turn, or an interrupt steer. The daemon dispatches that
@@ -1529,7 +1559,7 @@ export class Driver {
         return block.slice(at + ${text.length}).includes(${JSON.stringify(REPLY_TEXT)});
       }) ? true : null; })()`;
     try {
-      await this.waitPage(expr, {
+      await this.waitPage(this.withTranscriptTail(ref, expr), {
         timeoutMs,
         label: `the continuation leg carrying ${JSON.stringify(text)} to complete in its own turn`,
       });
@@ -1579,9 +1609,10 @@ export class Driver {
   // the pane's turn-blocks that share a data-turn-id, concatenated, because a
   // turn can render as several segments (TranscriptBody's turnRow). Scoped to
   // the pane because turn ids are session-local and two sessions are mounted.
-  // Only the rows near the end are mounted, and which ones changes with the
-  // footer's height, so a wait must ask about a turn's own content, never
-  // about which rows exist.
+  // Only the rows near the READER are mounted, and which ones changes with the
+  // footer's height, so every transcript wait first brings the tail into view
+  // (ensureTranscriptTail) and then asks about a turn's own content, never
+  // about which rows happen to exist.
   turnTextsExpr(ref) {
     return `(() => { const byTurn = new Map();
       const pane = ${this.paneScopeExpr(ref)};
@@ -1597,10 +1628,15 @@ export class Driver {
   // prose; a baseline of mounted reply rows cannot tell a new reply from an
   // older row mounting back in.
   async waitForReply(ref, prose, { timeoutMs = 25000 } = {}) {
-    await this.waitPage(
-      `(() => ${this.turnTextsExpr(ref)}.some((text) => text.includes(${JSON.stringify(prose)}) && text.includes(${JSON.stringify(REPLY_TEXT)})) ? true : null)()`,
-      { timeoutMs, label: `the reply to ${JSON.stringify(prose)} in ${ref}` },
-    );
+    const expr = `(() => ${this.turnTextsExpr(ref)}.some((text) => text.includes(${JSON.stringify(prose)}) && text.includes(${JSON.stringify(REPLY_TEXT)})) ? true : null)()`;
+    try {
+      await this.waitPage(
+        this.withTranscriptTail(ref, expr),
+        { timeoutMs, label: `the reply to ${JSON.stringify(prose)} in ${ref}` },
+      );
+    } catch (error) {
+      throw await this.dumpPageState(ref, error);
+    }
   }
 
   // dumpPageState is the failure report both transcript waits owe on a timeout:
@@ -1669,7 +1705,10 @@ export class Driver {
   async waitForTranscriptInput(text, { timeoutMs = STEERED_TURN_INPUT_TIMEOUT_MS, ref = this.sessionA } = {}) {
     try {
       await this.waitPage(
-        `(() => ${this.turnTextsExpr(ref)}.some((turn) => turn.includes(${JSON.stringify(text)})) ? true : null)()`,
+        this.withTranscriptTail(
+          ref,
+          `(() => ${this.turnTextsExpr(ref)}.some((turn) => turn.includes(${JSON.stringify(text)})) ? true : null)()`,
+        ),
         { timeoutMs, label: `input ${JSON.stringify(text)} visible in the transcript` },
       );
     } catch (error) {
@@ -1982,9 +2021,12 @@ async function runScenarios(driver) {
   await driver.typeText(driver.sessionA, PROSE.queue1);
   await driver.selectSkillChip(driver.sessionA);
   await driver.clickSubmit(driver.sessionA, draft(PROSE.queue1));
+  // The strip first shows the submission's own durable "waiting" row; Edit on
+  // that row is refused once the daemon's receipt settles it into the daemon's
+  // queued row (data-kind "queued"), so the press waits for the settled row.
   let queue = await driver.waitPage(
-    `(() => { const strip = ${driver.queueStripExpr()}; return strip && strip.rows.some((row) => row.text.includes(${JSON.stringify(PROSE.queue1)})) ? strip : null; })()`,
-    { label: "queue strip with first pass" },
+    `(() => { const strip = ${driver.queueStripExpr()}; return strip && strip.rows.some((row) => row.kind === "queued" && row.text.includes(${JSON.stringify(PROSE.queue1)})) ? strip : null; })()`,
+    { label: "queue strip with first pass settled" },
   );
   check(
     queue.rows.some((row) => row.text.includes(PROSE.queue1)),

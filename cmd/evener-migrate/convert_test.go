@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"testing"
@@ -219,6 +220,70 @@ func TestExecuteConvertsOldProvidersConfig(t *testing.T) {
 	}
 	if !strings.Contains(stdout.String(), "providers.toml") {
 		t.Fatalf("report must mention the conversion:\n%s", stdout.String())
+	}
+}
+
+func TestExecuteConvertDoesNotFollowSymlinkPlantedAtTempName(t *testing.T) {
+	home := t.TempDir()
+	dir := filepath.Join(home, ".config", "evener")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "providers.toml")
+	src := []byte("default = \"kimi\"\n\n[instances.kimi]\ntype = \"kimi\"\n")
+	if err := os.WriteFile(path, src, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	victim := filepath.Join(home, "victim")
+	if err := os.WriteFile(victim, []byte("untouched"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(victim, path+".tmp"); err != nil {
+		t.Fatal(err)
+	}
+
+	var stdout, stderr bytes.Buffer
+	if code := execute(baseOpts(home, t.TempDir()), &stdout, &stderr); code != 0 {
+		t.Fatalf("code = %d; stderr = %q", code, stderr.String())
+	}
+	if got, _ := os.ReadFile(victim); string(got) != "untouched" {
+		t.Fatalf("conversion followed the planted symlink: victim = %q", got)
+	}
+	converted, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := registry.ParseConfig(converted); err != nil {
+		t.Fatalf("providers.toml must still be converted: %v", err)
+	}
+}
+
+// providers.toml can carry literal API keys, so the conversion keeps the mode
+// the user gave the file instead of widening it.
+func TestExecuteConvertKeepsProvidersConfigMode(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("file modes are not POSIX permission bits on windows")
+	}
+	home := t.TempDir()
+	dir := filepath.Join(home, ".config", "evener")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "providers.toml")
+	src := []byte("default = \"kimi\"\n\n[instances.kimi]\ntype = \"kimi\"\napi_key = \"literal\"\n")
+	if err := os.WriteFile(path, src, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var stdout, stderr bytes.Buffer
+	if code := execute(baseOpts(home, t.TempDir()), &stdout, &stderr); code != 0 {
+		t.Fatalf("code = %d; stderr = %q", code, stderr.String())
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != 0o600 {
+		t.Fatalf("converted mode = %v, want the original 0600", info.Mode().Perm())
 	}
 }
 

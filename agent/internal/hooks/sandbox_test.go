@@ -22,7 +22,7 @@ func TestHookCommandEnvScrubsSecrets(t *testing.T) {
 	t.Setenv("HARMLESS", "keep-me")
 
 	hook := plugin.RegisteredHook{Type: "command", Command: "env", Timeout: 5}
-	res, err := executeCommandHook(context.Background(), hook, Input{CWD: "/tmp", HookEventName: "X"})
+	res, err := executeCommandHook(context.Background(), hook, Input{CWD: "/tmp", HookEventName: "X"}, newSystemCommandHookRuntime())
 	if err != nil {
 		t.Fatalf("executeCommandHook: %v", err)
 	}
@@ -75,7 +75,7 @@ func TestHookCommandConfined(t *testing.T) {
 		Command: "cat " + filepath.Join(home, ".ssh", "id") + " 2>&1 || true; echo comm=$(cat /proc/1/comm)",
 		Timeout: 15,
 	}
-	res, err := executeCommandHook(context.Background(), hook, Input{CWD: cwd, HookEventName: "PreToolUse"}, w)
+	res, err := executeCommandHook(context.Background(), hook, Input{CWD: cwd, HookEventName: "PreToolUse"}, newSystemCommandHookRuntime(), w)
 	if err != nil {
 		t.Fatalf("executeCommandHook: %v", err)
 	}

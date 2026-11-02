@@ -15,7 +15,7 @@ import (
 	"text/tabwriter"
 	"time"
 
-	"primeradiant.com/evener/cmdutil"
+	"primeradiant.com/evener/envvars/userdirs"
 	"primeradiant.com/evener/llm/registry"
 )
 
@@ -244,7 +244,11 @@ func runModelsRefresh(args []string, stdout, stderr io.Writer) error {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
-	res, err := registry.Refresh(ctx, registry.RefreshOptions{StateRoot: cmdutil.DefaultStateRoot(), Fetcher: modelsRefreshFetcher, Force: *force})
+	stateRoot, err := userdirs.DefaultStateRoot()
+	if err != nil {
+		return err
+	}
+	res, err := registry.Refresh(ctx, registry.RefreshOptions{StateRoot: stateRoot, Fetcher: modelsRefreshFetcher, Force: *force})
 	if err != nil {
 		return err
 	}

@@ -11,7 +11,6 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"unicode"
 )
 
 // maxFailureLedgerEntries bounds the ledger's memory. It has room for
@@ -532,8 +531,7 @@ func (l *failureLedger) touch(order []string, entries map[string]*failureEntry, 
 // streak detection across otherwise-identical failures.
 func errorClass(output string) string {
 	line := firstNonBlankLine(output)
-	line = strings.TrimSpace(line)
-	line = collapseWhitespace(line)
+	line = strings.Join(strings.Fields(line), " ")
 	line = strings.ToLower(line)
 	line = replaceDigitRuns(line, "#")
 	line = TruncateRunes(line, 200)
@@ -549,23 +547,6 @@ func firstNonBlankLine(s string) string {
 		}
 	}
 	return ""
-}
-
-func collapseWhitespace(s string) string {
-	var b strings.Builder
-	inSpace := false
-	for _, r := range s {
-		if unicode.IsSpace(r) {
-			if !inSpace {
-				b.WriteByte(' ')
-				inSpace = true
-			}
-			continue
-		}
-		inSpace = false
-		b.WriteRune(r)
-	}
-	return b.String()
 }
 
 func replaceDigitRuns(s, replacement string) string {

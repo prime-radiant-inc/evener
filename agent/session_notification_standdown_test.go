@@ -108,7 +108,7 @@ func (h *standDownHarness) wakeCount() int {
 // hands it back every warning emitted before this call has been counted --
 // which makes the counts exact, not merely eventual.
 func (h *standDownHarness) warningsMatching(substr string) int {
-	h.sess.emit(events.EventPromptLoaded, events.PromptLoadedData{Label: "warningsMatching drain barrier"})
+	h.sess.emit(events.PromptLoadedData{Label: "warningsMatching drain barrier"})
 	<-h.drained
 	h.mu.Lock()
 	defer h.mu.Unlock()

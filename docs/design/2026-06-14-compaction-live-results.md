@@ -1,7 +1,7 @@
 # Live end-to-end compaction comparison: does the note help a real agent?
 
 _Real `evener` CLI sessions on the OAuth OpenAI endpoint (gpt-5.5), isolated `$HOME`/state.
-Harness: `test/live-compaction-retention-eval.sh`._
+Harness: a shell script since removed; the Go eval suites under `agent/internal/contextmgr` (`compaction_*_eval_test.go`) and `agent/forced_note_live_test.go` now cover these scenarios._
 
 ## Design
 
@@ -68,7 +68,7 @@ and authored a sensible note when asked.
 
 Testing the idea of injecting a *mandatory* "you MUST call compact now" turn right before
 a forced compaction, so the agent authors a note instead of getting a blind summary.
-Harness: `test/live-compaction-dense-value-test.sh`. Two arms × 2 trials, **15** clearly-
+Harness: a shell script since removed (see `agent/forced_note_live_test.go`). Two arms × 2 trials, **15** clearly-
 stated facts + heavy filler:
 
 - **mandated**: the agent is told it MUST call `compact` now and chooses what to note.

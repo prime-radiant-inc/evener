@@ -2,13 +2,10 @@ package agent
 
 import (
 	"context"
-	"encoding/json"
 	"os"
 	"path/filepath"
-	"slices"
 	"strings"
 	"testing"
-	"time"
 
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/execenv"
@@ -80,7 +77,8 @@ func TestSpawnAgent_UnknownPluginAgentType(t *testing.T) {
 		name: "openai",
 	})
 
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
+	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
+		StateDir:         t.TempDir(),
 		MaxSubagentDepth: 2,
 	})
 	if err != nil {
@@ -89,12 +87,12 @@ func TestSpawnAgent_UnknownPluginAgentType(t *testing.T) {
 	defer sess.Close()
 
 	// No pluginAgents registered, so any agent_type should fail
-	_, err = sess.spawnAgent(context.Background(), "do something", "", "", 10, "nonexistent:agent", "", nil, nil)
-	if err == nil {
+	result := sess.createDelegate(context.Background(), delegateArgs{Task: "do something", AgentType: "nonexistent:agent"})
+	if result.Err == nil {
 		t.Fatal("expected error for unknown agent_type")
 	}
-	if !strings.Contains(err.Error(), "unknown plugin agent type") {
-		t.Errorf("error = %q, want 'unknown plugin agent type'", err.Error())
+	if result.DelegateID != "" {
+		t.Errorf("a refused create minted delegate %q", result.DelegateID)
 	}
 }
 
@@ -123,7 +121,8 @@ func TestSpawnAgent_PluginAgentType_SystemPrompt(t *testing.T) {
 	}
 	c.Register(adapter)
 
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
+	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
+		StateDir:         t.TempDir(),
 		MaxSubagentDepth: 2,
 	})
 	if err != nil {
@@ -142,25 +141,9 @@ func TestSpawnAgent_PluginAgentType_SystemPrompt(t *testing.T) {
 		},
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second) // TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
-	defer cancel()
-
-	result, err := sess.spawnAgent(ctx, "review this code", "", "", 10, "my-plugin:reviewer", "", nil, nil)
-	if err != nil {
-		t.Fatalf("spawnAgent: %v", err)
-	}
-
-	// Should return JSON with agent_id
-	var parsed map[string]any
-	if err := json.Unmarshal([]byte(result.(string)), &parsed); err != nil {
-		t.Fatalf("parsing result: %v", err)
-	}
-	if parsed["agent_id"] == nil {
-		t.Error("expected agent_id in result")
-	}
+	agentID := spawnRuntimeAgent(t, sess, delegateArgs{Task: "review this code", AgentType: "my-plugin:reviewer"})
 
 	// Wait for the subagent to complete
-	agentID := parsed["agent_id"].(string)
 	waitForRuntimeSubagent(t, sess, agentID)
 
 	// The subagent's system prompt should contain the plugin agent's system prompt
@@ -233,7 +216,8 @@ func TestSpawnAgent_PluginAgentType_Model(t *testing.T) {
 				c.Register(&fakeAdapter{name: "openai", steps: steps})
 			}
 
-			sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
+			sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
+				StateDir:         t.TempDir(),
 				MaxSubagentDepth: 2,
 			})
 			if err != nil {
@@ -251,17 +235,7 @@ func TestSpawnAgent_PluginAgentType_Model(t *testing.T) {
 				},
 			}
 
-			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second) // TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
-			defer cancel()
-
-			result, err := sess.spawnAgent(ctx, tc.prompt, "", "", 10, tc.agentKey, "", nil, nil)
-			if err != nil {
-				t.Fatalf("spawnAgent: %v", err)
-			}
-
-			var parsed map[string]any
-			json.Unmarshal([]byte(result.(string)), &parsed)
-			agentID := parsed["agent_id"].(string)
+			agentID := spawnRuntimeAgent(t, sess, delegateArgs{Task: tc.prompt, AgentType: tc.agentKey})
 			waitForRuntimeSubagent(t, sess, agentID)
 
 			// The subagent's LLM request should use the resolved model.
@@ -290,11 +264,11 @@ func TestSpawnAgent_PluginModelAvailability(t *testing.T) {
 
 		sess, err := NewSession(
 			c,
-			resolveTestProfile("kimi-anthropic-api", map[string]registry.Provider{
+			withTestSessionNamer(c, resolveTestProfile("kimi-anthropic-api", map[string]registry.Provider{
 				"kimi-anthropic-api": {Base: "moonshotai", APIKey: "k", Models: modelRows("k3", "k3-turbo")},
-			}, "k3"),
+			}, "k3")),
 			execenv.NewLocalExecutionEnvironment(dir),
-			SessionConfig{MaxSubagentDepth: 2},
+			SessionConfig{MaxSubagentDepth: 2, StateDir: t.TempDir()},
 		)
 		if err != nil {
 			t.Fatal(err)
@@ -310,19 +284,8 @@ func TestSpawnAgent_PluginModelAvailability(t *testing.T) {
 			},
 		}
 
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second) // TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
-		defer cancel()
-		result, err := sess.spawnAgent(ctx, "review this", "k3", "", 10, agentType, "", nil, nil)
-		if err != nil {
-			t.Fatalf("spawnAgent: %v", err)
-		}
-		var spawned struct {
-			AgentID string `json:"agent_id"`
-		}
-		if err := json.Unmarshal([]byte(result.(string)), &spawned); err != nil {
-			t.Fatalf("parsing result: %v", err)
-		}
-		waitForRuntimeSubagent(t, sess, spawned.AgentID)
+		agentID := spawnRuntimeAgent(t, sess, delegateArgs{Task: "review this", Model: "k3", AgentType: agentType})
+		waitForRuntimeSubagent(t, sess, agentID)
 		return sess, adapter
 	}
 
@@ -405,9 +368,9 @@ func TestSpawnAgent_AvailablePluginModelWins(t *testing.T) {
 
 	sess, err := NewSession(
 		c,
-		newAnthropicProfile("claude-opus-4-6"),
+		withTestSessionNamer(c, newAnthropicProfile("claude-opus-4-6")),
 		execenv.NewLocalExecutionEnvironment(dir),
-		SessionConfig{MaxSubagentDepth: 2},
+		SessionConfig{MaxSubagentDepth: 2, StateDir: t.TempDir()},
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -424,20 +387,8 @@ func TestSpawnAgent_AvailablePluginModelWins(t *testing.T) {
 		},
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second) // TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
-	defer cancel()
-	result, err := sess.spawnAgent(ctx, "review this", "claude-opus-4-6", "", 10, agentType, "", nil, nil)
-	if err != nil {
-		t.Fatalf("spawnAgent: %v", err)
-	}
-
-	var spawned struct {
-		AgentID string `json:"agent_id"`
-	}
-	if err := json.Unmarshal([]byte(result.(string)), &spawned); err != nil {
-		t.Fatalf("parsing result: %v", err)
-	}
-	waitForRuntimeSubagent(t, sess, spawned.AgentID)
+	agentID := spawnRuntimeAgent(t, sess, delegateArgs{Task: "review this", Model: "claude-opus-4-6", AgentType: agentType})
+	waitForRuntimeSubagent(t, sess, agentID)
 
 	requests := adapter.Requests()
 	if len(requests) == 0 {
@@ -472,7 +423,8 @@ func TestSpawnAgent_PluginAgentType_RestrictsTools(t *testing.T) {
 	}
 	c.Register(adapter)
 
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
+	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
+		StateDir:         t.TempDir(),
 		MaxSubagentDepth: 2,
 		testOnly:         testConfig{sandboxProber: bwrapCapableProber(dir)},
 	})
@@ -492,17 +444,7 @@ func TestSpawnAgent_PluginAgentType_RestrictsTools(t *testing.T) {
 		},
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second) // TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
-	defer cancel()
-
-	result, err := sess.spawnAgent(ctx, "read the code", "", "", 10, "my-plugin:reader", "", nil, nil)
-	if err != nil {
-		t.Fatalf("spawnAgent: %v", err)
-	}
-
-	var parsed map[string]any
-	json.Unmarshal([]byte(result.(string)), &parsed)
-	agentID := parsed["agent_id"].(string)
+	agentID := spawnRuntimeAgent(t, sess, delegateArgs{Task: "read the code", AgentType: "my-plugin:reader"})
 	waitForRuntimeSubagent(t, sess, agentID)
 
 	// The subagent should only have read_file, grep, the recovery reader required
@@ -553,7 +495,8 @@ func TestSpawnAgent_PluginAgentType_AllowanceGated(t *testing.T) {
 		c := llm.NewClient()
 		c.Register(&fakeAdapter{name: "openai"})
 
-		sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
+		sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
+			StateDir:         t.TempDir(),
 			MaxSubagentDepth: 1,
 		})
 		if err != nil {
@@ -568,12 +511,12 @@ func TestSpawnAgent_PluginAgentType_AllowanceGated(t *testing.T) {
 
 		sess.pluginAgents = map[string]plugin.Agent{"my-plugin:coordinator": coordinatorAgent}
 
-		_, err = sess.spawnAgent(context.Background(), "try to coordinate", "", "", 10, "my-plugin:coordinator", "", nil, nil)
-		if err == nil {
+		result := sess.createDelegate(context.Background(), delegateArgs{Task: "try to coordinate", AgentType: "my-plugin:coordinator"})
+		if result.Err == nil {
 			t.Fatal("expected delegation rejection at allowance 0")
 		}
-		if !strings.Contains(err.Error(), "delegation not permitted: your delegation_allowance is 0") {
-			t.Fatalf("error = %q, want delegation_allowance=0 rejection message", err)
+		if result.DelegateID != "" {
+			t.Errorf("a refused create minted delegate %q", result.DelegateID)
 		}
 	})
 
@@ -590,7 +533,8 @@ func TestSpawnAgent_PluginAgentType_AllowanceGated(t *testing.T) {
 			},
 		})
 
-		sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
+		sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
+			StateDir:         t.TempDir(),
 			MaxSubagentDepth: 2,
 			testOnly:         testConfig{sandboxProber: bwrapCapableProber(dir)},
 		})
@@ -601,122 +545,9 @@ func TestSpawnAgent_PluginAgentType_AllowanceGated(t *testing.T) {
 
 		sess.pluginAgents = map[string]plugin.Agent{"my-plugin:coordinator": coordinatorAgent}
 
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second) // TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
-		defer cancel()
-
-		result, err := sess.spawnAgent(ctx, "try to coordinate", "", "", 10, "my-plugin:coordinator", "", nil, nil)
-		if err != nil {
-			t.Fatalf("expected spawn to succeed at allowance > 0, got error: %v", err)
-		}
-		var parsed map[string]any
-		if err := json.Unmarshal([]byte(result.(string)), &parsed); err != nil {
-			t.Fatalf("unmarshal result: %v", err)
-		}
-		agentID := parsed["agent_id"].(string)
+		agentID := spawnRuntimeAgent(t, sess, delegateArgs{Task: "try to coordinate", AgentType: "my-plugin:coordinator"})
 		waitForRuntimeSubagent(t, sess, agentID)
 	})
-}
-
-func TestSpawnAgent_PluginAgentType_GrantTools_AddsProviderVisibleTool(t *testing.T) {
-	t.Parallel()
-	dir := t.TempDir()
-	c := llm.NewClient()
-
-	var subagentToolNames []string
-	adapter := &fakeAdapter{
-		name: "openai",
-		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response {
-				for _, td := range req.Tools {
-					subagentToolNames = append(subagentToolNames, td.Name)
-				}
-				return llm.Response{Message: llm.Assistant("done")}
-			},
-		},
-	}
-	c.Register(adapter)
-
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
-		MaxSubagentDepth: 2,
-		testOnly:         testConfig{sandboxProber: bwrapCapableProber(dir)},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer sess.Close()
-
-	sess.pluginAgents = map[string]plugin.Agent{
-		"my-plugin:reader": {
-			Name:         "reader",
-			Description:  "Read-only agent",
-			Model:        "inherit",
-			Tools:        []string{"read_file", "grep"},
-			SystemPrompt: "You only read files.",
-			PluginName:   "my-plugin",
-		},
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second) // TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
-	defer cancel()
-
-	result, err := sess.spawnAgent(ctx, "inspect and optionally shell out", "", "", 10, "my-plugin:reader", "", nil, []string{"exec_command"})
-	if err != nil {
-		t.Fatalf("spawnAgent: %v", err)
-	}
-
-	var parsed map[string]any
-	if err := json.Unmarshal([]byte(result.(string)), &parsed); err != nil {
-		t.Fatalf("unmarshal result: %v", err)
-	}
-	agentID := parsed["agent_id"].(string)
-	waitForRuntimeSubagent(t, sess, agentID)
-
-	sub := sess.getSub(agentID)
-	if sub == nil {
-		t.Fatal("subagent not found")
-	}
-	if sub.sess.reg.Get("shell") == nil {
-		t.Fatalf("granted provider-visible exec_command should map to shell; tools=%v", sub.sess.reg.Names())
-	}
-	hasExecCommand := slices.Contains(subagentToolNames, "exec_command")
-	if !hasExecCommand {
-		t.Fatalf("subagent request should include provider-visible exec_command, got %v", subagentToolNames)
-	}
-}
-
-func TestSpawnAgent_GrantTools_RejectsUnavailableParentTool(t *testing.T) {
-	t.Parallel()
-	dir := t.TempDir()
-	c := llm.NewClient()
-	c.Register(&fakeAdapter{name: "openai"})
-
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
-		MaxSubagentDepth: 2,
-		spawn:            spawnConfig{allowedToolNames: []string{"read_file"}},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer sess.Close()
-
-	sess.pluginAgents = map[string]plugin.Agent{
-		"my-plugin:reader": {
-			Name:         "reader",
-			Description:  "Read-only agent",
-			Model:        "inherit",
-			Tools:        []string{"read_file", "grep"},
-			SystemPrompt: "You only read files.",
-			PluginName:   "my-plugin",
-		},
-	}
-
-	_, err = sess.spawnAgent(context.Background(), "try to escalate", "", "", 10, "my-plugin:reader", "", nil, []string{"write_file"})
-	if err == nil {
-		t.Fatal("expected grant rejection")
-	}
-	if !strings.Contains(err.Error(), "not currently callable") {
-		t.Fatalf("error = %q, want not-currently-callable message", err)
-	}
 }
 
 func TestSpawnAgent_PluginAgentType_InjectsSkillContent(t *testing.T) {
@@ -740,7 +571,8 @@ func TestSpawnAgent_PluginAgentType_InjectsSkillContent(t *testing.T) {
 	}
 	c.Register(adapter)
 
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
+	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
+		StateDir:         t.TempDir(),
 		MaxSubagentDepth: 2,
 	})
 	if err != nil {
@@ -773,17 +605,7 @@ func TestSpawnAgent_PluginAgentType_InjectsSkillContent(t *testing.T) {
 		},
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second) // TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
-	defer cancel()
-
-	result, err := sess.spawnAgent(ctx, "write tests", "", "", 10, "my-plugin:test-eng", "", nil, nil)
-	if err != nil {
-		t.Fatalf("spawnAgent: %v", err)
-	}
-
-	var parsed map[string]any
-	json.Unmarshal([]byte(result.(string)), &parsed)
-	agentID := parsed["agent_id"].(string)
+	agentID := spawnRuntimeAgent(t, sess, delegateArgs{Task: "write tests", AgentType: "my-plugin:test-eng"})
 	waitForRuntimeSubagent(t, sess, agentID)
 
 	// The subagent's system prompt should contain the injected skill body

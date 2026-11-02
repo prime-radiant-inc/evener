@@ -185,7 +185,7 @@ func (s *Session) swapEnvAndRefresh(next *execenv.LocalExecutionEnvironment, rec
 	promptWarning := s.refreshSystemPromptCache(next)
 	installedWorkingDir := s.envInfo.WorkingDir
 	s.mu.Unlock()
-	s.emit(events.EventEnvironmentChanged, events.EnvironmentChangedData{WorkingDir: installedWorkingDir})
+	s.emit(events.EnvironmentChangedData{WorkingDir: installedWorkingDir})
 	s.reportPromptRenderFailure(promptWarning)
 	return nil
 }

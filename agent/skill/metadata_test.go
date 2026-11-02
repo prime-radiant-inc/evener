@@ -294,33 +294,6 @@ func TestSkillControlsPreserveMetadataAndAbsoluteSource(t *testing.T) {
 	}
 }
 
-func TestSkillControlsCatalogEntriesDeepCopyMetadata(t *testing.T) {
-	source := map[string]SkillMeta{
-		"probe": {
-			Name:         "declared",
-			Description:  "fixture",
-			AllowedTools: []string{"read_file"},
-			Metadata: map[string]any{
-				"tags":   []any{"one", map[string]any{"nested": "value"}},
-				"config": map[string]any{"enabled": true},
-			},
-			Dir:       "/source/probe",
-			SkillFile: "/source/probe/SKILL.md",
-		},
-	}
-
-	entries := CatalogEntries(source)
-	if len(entries) != 1 || entries[0].Name != "probe" || entries[0].Dir != "" || entries[0].SkillFile != "" {
-		t.Fatalf("entries=%+v", entries)
-	}
-	entries[0].AllowedTools[0] = "changed"
-	entries[0].Metadata["config"].(map[string]any)["enabled"] = false
-	entries[0].Metadata["tags"].([]any)[1].(map[string]any)["nested"] = "changed"
-	if source["probe"].AllowedTools[0] != "read_file" || source["probe"].Metadata["config"].(map[string]any)["enabled"] != true || source["probe"].Metadata["tags"].([]any)[1].(map[string]any)["nested"] != "value" {
-		t.Fatalf("CatalogEntries aliased source metadata: %+v", source["probe"])
-	}
-}
-
 func assertDiagnostic(t *testing.T, diagnostics []Diagnostic, category, field string) {
 	t.Helper()
 	for _, diagnostic := range diagnostics {

@@ -16,7 +16,7 @@ import (
 )
 
 // TestCovAPITimeoutSourceForTransportNetOpError covers the net.OpError unwrap
-// path (adapter_timeout.go line 60-61). When the transport error wraps a
+// path. When the transport error wraps a
 // net.OpError whose inner error is context.DeadlineExceeded, the function
 // should return APITimeoutTransport.
 func TestCovAPITimeoutSourceForTransportNetOpError(t *testing.T) {

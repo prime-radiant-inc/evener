@@ -9,7 +9,6 @@ import {
 } from "./itemFailure";
 import { MEMORY_CONTEXT_EVENT_KIND } from "./memoryContext";
 import type { ItemModel, ThreadModel, TurnModel } from "./model";
-import { comparePositions } from "./reducer";
 import { isParentSteer } from "./steeringLabels";
 import { ERROR_EVENT_KIND } from "./systemEventCopy";
 import {
@@ -22,6 +21,7 @@ import {
   sharedNotesVisible,
   type TranscriptDisplayConfigV1,
 } from "./transcriptDisplayConfig";
+import { comparePositions } from "./transcriptHistory";
 import { THREAD_ITEM_EVENT_KINDS } from "./types.gen";
 import { isInformationalWarning } from "./warnings";
 import { hasWarningText } from "./warningText";
@@ -34,7 +34,7 @@ export type ProjectedEntry =
       id: string;
       /**
        * The stable key a renderer keys this row by, when it differs from the
-       * source item's id (see displayKeyFor): a streaming reply keeps one key
+       * source item's id (see displayKeyFor): a streaming reply or thought keeps one key
        * from its first streamed frame through the recording of its round. A
        * hand-built entry may leave it off; read it through entryDisplayKey.
        */
@@ -53,6 +53,7 @@ export type ProjectedEntry =
        */
       kind: "thinking";
       id: string;
+      displayKey?: string;
       turnId: string;
       sourceIndex: number;
       item: ItemModel;
@@ -72,6 +73,7 @@ export type ProjectedEntry =
   | {
       kind: "critical";
       id: string;
+      displayKey?: string;
       turnId: string;
       sourceIndex: number;
       sourceItemId?: string;
@@ -193,16 +195,16 @@ function toolSummary(item: ItemModel): string {
   return item.description?.trim() || ACTION_SUMMARY_UNAVAILABLE;
 }
 
-// A streaming reply is an overlay item ("stream:<round>/<attempt>:agentMessage")
+// A streaming reply or reasoning item is an overlay item ("stream:<round>/<attempt>:<type>")
 // until its round is recorded, when it becomes a history item with a new id.
-// Both carry the round's id, so the round's first reply takes a round display
+// Both carry the round's id, so the round's first item of each type takes a round display
 // key that the stream and the recorded item share, and a renderer that keys rows
 // by it reconciles the reply instead of remounting it. Only the first takes it
-// (a round can record two replies); a call-bearing communicate preview takes
+// (a round can record two replies or thoughts); a call-bearing communicate preview takes
 // none (its message records with no round id). Everything else keys by its id.
 function displayKeyFor(item: ItemModel, keyedRounds: Set<string>): string | undefined {
-  if (item.type !== "agentMessage" || !item.roundId || item.callId) return undefined;
-  const key = `round:${item.roundId}:agentMessage`;
+  if ((item.type !== "agentMessage" && item.type !== "reasoning") || !item.roundId || item.callId) return undefined;
+  const key = `round:${item.roundId}:${item.type}`;
   if (keyedRounds.has(key)) return undefined;
   keyedRounds.add(key);
   return key;
@@ -212,7 +214,7 @@ function displayKeyFor(item: ItemModel, keyedRounds: Set<string>): string | unde
 // when it has one, otherwise the entry's own id. A hand-built entry without a
 // displayKey keys by its id.
 export function entryDisplayKey(entry: ProjectedEntry): string {
-  return entry.kind === "item" ? (entry.displayKey ?? entry.id) : entry.id;
+  return entry.kind === "intent" ? entry.id : (entry.displayKey ?? entry.id);
 }
 
 function itemEntry(
@@ -251,6 +253,7 @@ function criticalEntry(
   turnId: string,
   sourceIndex: number,
   redacted: boolean,
+  displayKey?: string,
 ): ProjectedCriticalEntry {
   let summary: string;
   if (item.type === "commandExecution") {
@@ -266,6 +269,7 @@ function criticalEntry(
   return {
     kind: "critical",
     id: item.id,
+    displayKey,
     turnId,
     sourceIndex,
     sourceItemId: item.id,
@@ -508,14 +512,15 @@ export function projectThread(model: ThreadModel, config: TranscriptDisplayConfi
       if (decision === "hidden") continue;
 
       let entry: ProjectedEntry;
+      const displayKey = displayKeyFor(item, keyedRounds);
       if (decision === "item") {
-        entry = itemEntry(item, turn.id, itemSourceIndex, displayKeyFor(item, keyedRounds));
+        entry = itemEntry(item, turn.id, itemSourceIndex, displayKey);
       } else if (decision === "thinking") {
-        entry = { kind: "thinking", id: item.id, turnId: turn.id, sourceIndex: itemSourceIndex, item };
+        entry = { kind: "thinking", id: item.id, displayKey, turnId: turn.id, sourceIndex: itemSourceIndex, item };
       } else if (decision === "intent") {
         entry = intentEntry(item, turn.id, itemSourceIndex);
       } else {
-        entry = criticalEntry(item, turn.id, itemSourceIndex, redactsReasoning(item, vector));
+        entry = criticalEntry(item, turn.id, itemSourceIndex, redactsReasoning(item, vector), displayKey);
       }
       visibleItems.push(item);
       entries.push(entry);

@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"math"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -120,8 +119,7 @@ func findSessionTranscriptsTool(deps *toolDeps) tool.RegisteredTool {
 	return tool.RegisteredTool{
 		Definition: tool.DefFindSessionTranscripts(), ReadOnly: true,
 		Exec: func(ctx context.Context, _ execenv.ExecutionEnvironment, args map[string]any) (any, error) {
-			_ = ctx
-			v, err := execFindSessionTranscripts(deps, args)
+			v, err := execFindSessionTranscripts(ctx, deps, args)
 			if err != nil {
 				return nil, err
 			}
@@ -192,7 +190,7 @@ func formatSessionFindings(env findSessionsEnvelope) string {
 
 // execFindSessionTranscripts dispatches to execFindChildren when children_of is
 // set (it takes precedence over query per spec), otherwise to execFindAcrossSessions.
-func execFindSessionTranscripts(deps *toolDeps, args map[string]any) (any, error) {
+func execFindSessionTranscripts(ctx context.Context, deps *toolDeps, args map[string]any) (any, error) {
 	query := strings.TrimSpace(stringArg(args, "query"))
 	childrenOf := strings.TrimSpace(stringArg(args, "children_of"))
 	limit := clampFindLimit(optionalIntArg(args, "limit"))
@@ -209,7 +207,7 @@ func execFindSessionTranscripts(deps *toolDeps, args map[string]any) (any, error
 	if scope == "" {
 		scope = scopeCurrentProject
 	}
-	return execFindAcrossSessions(deps, query, scope, limit, filters)
+	return execFindAcrossSessions(ctx, deps, query, scope, limit, filters)
 }
 
 // findFilters holds the optional metadata-only narrowing arguments to
@@ -273,72 +271,6 @@ func parseFindFilters(args map[string]any) (findFilters, error) {
 	}
 	f.updatedAfter, f.updatedBefore = after, before
 	return f, nil
-}
-
-// optionalStringArg extracts an optional string argument, rejecting a
-// present-but-wrong-type value rather than silently ignoring it.
-func optionalStringArg(args map[string]any, key string) (string, error) {
-	v, ok := args[key]
-	if !ok || v == nil {
-		return "", nil
-	}
-	s, ok := v.(string)
-	if !ok {
-		return "", fmt.Errorf("invalid_request: %s must be a string, got %T", key, v)
-	}
-	return s, nil
-}
-
-// optionalBoolArg extracts an optional boolean argument, rejecting a
-// present-but-wrong-type value rather than silently ignoring it.
-func optionalBoolArg(args map[string]any, key string) (*bool, error) {
-	v, ok := args[key]
-	if !ok || v == nil {
-		return nil, nil
-	}
-	b, ok := v.(bool)
-	if !ok {
-		return nil, fmt.Errorf("invalid_request: %s must be a boolean, got %T", key, v)
-	}
-	return &b, nil
-}
-
-// optionalWholeIntArg extracts an optional non-negative integer argument,
-// rejecting a fractional, negative, out-of-range, or wrong-typed value with
-// invalid_request rather than silently reshaping or ignoring it.
-func optionalWholeIntArg(args map[string]any, key string) (*int, error) {
-	v, ok := args[key]
-	if !ok || v == nil {
-		return nil, nil
-	}
-	n, ok := v.(float64)
-	if !ok {
-		return nil, fmt.Errorf("invalid_request: %s must be a whole number, got %T", key, v)
-	}
-	if n != math.Trunc(n) || n < 0 || n >= math.MaxInt {
-		return nil, fmt.Errorf("invalid_request: %s must be a non-negative whole number, got %v", key, n)
-	}
-	i := int(n)
-	return &i, nil
-}
-
-// optionalTimeArg extracts an optional RFC3339 timestamp from tool arguments.
-func optionalTimeArg(args map[string]any, key string) (*time.Time, error) {
-	raw, err := optionalStringArg(args, key)
-	if err != nil {
-		return nil, err
-	}
-	raw = strings.TrimSpace(raw)
-	if raw == "" {
-		return nil, nil
-	}
-	// RFC3339Nano also accepts a plain RFC3339 timestamp, so this admits both
-	// whole-second and fractional-second bounds.
-	t, err := time.Parse(time.RFC3339Nano, raw)
-	if err != nil {
-		return nil, fmt.Errorf("invalid_request: %s must be an RFC3339 timestamp: %w", key, err)
-	}
-	return &t, nil
 }
 
 // filterCandidates applies the metadata-only filters before any transcript is
@@ -483,7 +415,7 @@ func recordsUpTo(candidates []findCandidate, snipsFor func(c findCandidate) []sn
 // present) over all buckets in scope. With no query: metadata-only, newest-first,
 // current last, no scan metrics. With a query: metadata match first (cheap, no
 // file open); on miss, bounded raw content scan tracking scanned/scanTruncated.
-func execFindAcrossSessions(deps *toolDeps, query, scope string, limit int, filters findFilters) (any, error) {
+func execFindAcrossSessions(ctx context.Context, deps *toolDeps, query, scope string, limit int, filters findFilters) (any, error) {
 	buckets, scopeApplied, err := findBuckets(deps.stateDir, scope)
 	if err != nil {
 		return nil, err
@@ -509,15 +441,23 @@ func execFindAcrossSessions(deps *toolDeps, query, scope string, limit int, filt
 		trunc := false
 		needle := strings.ToLower(query)
 		for _, c := range candidates {
+			if err := ctx.Err(); err != nil {
+				return nil, err
+			}
 			if len(records) >= limit {
 				break
 			}
 			if !transcriptExists(c.bucketDir, c.meta.ID) {
 				continue
 			}
-			if snips, matched := matchCandidate(c, query, needle, &n, &trunc); matched {
+			if snips, matched := matchCandidate(ctx, c, query, needle, &n, &trunc); matched {
 				records = append(records, buildSessionRecord(c, snips, currentID, deps.currentMeta))
 			}
+		}
+		// A cancellation inside the last candidate's read is swallowed as a
+		// non-match, so the partial result must not be returned as complete.
+		if err := ctx.Err(); err != nil {
+			return nil, err
 		}
 		scanned = &n
 		scanTruncated = &trunc
@@ -652,7 +592,7 @@ func collectCandidates(buckets []string, currentStateDir string) []findCandidate
 		// symlinked directories, so metas from outside the state root would
 		// surface in find + children_of results while read_transcript
 		// rejects them.
-		sessDir := filepath.Join(bucket, sessionsSubdir)
+		sessDir := schema.SessionsDir(bucket)
 		if err := symlinkErrorDeep(sessDir, bucket); err != nil {
 			continue
 		}
@@ -680,7 +620,7 @@ func collectCandidates(buckets []string, currentStateDir string) []findCandidate
 // content scan; scanned/scanTruncated track that coverage. scanned counts only
 // transcripts actually OPENED — a metadata-miss candidate whose transcript file
 // is absent does not consume the budget.
-func matchCandidate(c findCandidate, query, needle string, scanned *int, scanTruncated *bool) ([]snippet, bool) {
+func matchCandidate(ctx context.Context, c findCandidate, query, needle string, scanned *int, scanTruncated *bool) ([]snippet, bool) {
 	if metaMatches(c.meta, needle) {
 		return metadataSnippets(c.meta, query, needle), true
 	}
@@ -690,7 +630,7 @@ func matchCandidate(c findCandidate, query, needle string, scanned *int, scanTru
 		*scanTruncated = true
 		return nil, false
 	}
-	snips, opened := contentSnippets(c.bucketDir, c.meta.ID, query, needle)
+	snips, opened := contentSnippets(ctx, c.bucketDir, c.meta.ID, query, needle)
 	if opened {
 		*scanned++
 	}
@@ -750,7 +690,7 @@ func metaMatches(m schema.SessionMeta, needle string) bool {
 // text and renders snippets for the matching turns. It opens and parses the
 // transcript only when reached; the second return reports whether the file was
 // actually opened, so the caller counts only real opens toward the scan budget.
-func contentSnippets(bucketDir, sessionID, query, needle string) (snips []snippet, opened bool) {
+func contentSnippets(ctx context.Context, bucketDir, sessionID, query, needle string) (snips []snippet, opened bool) {
 	// Validate the layout prefix for in-layout buckets: symlinkErrorDeep
 	// below is rooted at bucketDir, so ancestors above it are not checked.
 	// For sibling buckets from enumerateBuckets, the prefix was already
@@ -764,7 +704,7 @@ func contentSnippets(bucketDir, sessionID, query, needle string) (snips []snippe
 	if err := symlinkErrorDeep(path, bucketDir); err != nil {
 		return nil, false
 	}
-	_, entries, _, err := readTranscript(path, bucketDir)
+	_, entries, _, err := readTranscript(ctx, path, bucketDir)
 	if err != nil {
 		return nil, false
 	}

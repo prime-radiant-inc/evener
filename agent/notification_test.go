@@ -12,6 +12,7 @@ import (
 
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/internal/goal"
 	"primeradiant.com/evener/agent/internal/jobstore"
 	"primeradiant.com/evener/agent/schema"
@@ -96,7 +97,7 @@ func TestNotificationTurn_DrivesModelRequestWithReminder(t *testing.T) {
 	adapter := &fakeAdapter{
 		name: "openai",
 		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response { return finalResponse("ack") },
+			func(req llm.Request) llm.Response { return agenttest.FinalResponse("ack") },
 		},
 	}
 	c.Register(adapter)
@@ -169,7 +170,7 @@ func TestNotificationTurnOwnsDurableReminderAndPendingClientSteering(t *testing.
 	steerAccepted := make(chan struct{})
 	adapter := &fakeAdapter{name: "openai"}
 	adapter.steps = []func(req llm.Request) llm.Response{
-		func(llm.Request) llm.Response { return finalResponse("warmup") },
+		func(llm.Request) llm.Response { return agenttest.FinalResponse("warmup") },
 		func(llm.Request) llm.Response {
 			if _, err := sess.AcceptClientMutationSteer(appwire.TurnSteerParams{
 				ClientMutationID:   "steer_notification_owner",
@@ -179,9 +180,9 @@ func TestNotificationTurnOwnsDurableReminderAndPendingClientSteering(t *testing.
 				panic(fmt.Sprintf("accept client steering: %v", err))
 			}
 			close(steerAccepted)
-			return communicateResponse(false, "notification handled")
+			return agenttest.CommunicateResponse(false, "notification handled")
 		},
-		func(llm.Request) llm.Response { return finalResponse("steering handled") },
+		func(llm.Request) llm.Response { return agenttest.FinalResponse("steering handled") },
 	}
 	client := llm.NewClient()
 	client.Register(adapter)
@@ -210,7 +211,7 @@ func TestNotificationTurnOwnsDurableReminderAndPendingClientSteering(t *testing.
 		t.Fatalf("notification EventTurnStarted = %#v, want one nonempty owner", starts)
 	}
 	owner := starts[0].TurnID
-	data, err := readTranscriptFull(sess.TranscriptPath(), "")
+	data, err := readTranscriptFull(context.Background(), sess.TranscriptPath(), "")
 	if err != nil {
 		t.Fatalf("read transcript: %v", err)
 	}
@@ -239,8 +240,8 @@ func TestNotificationTurnOwnsDaemonSteeringAfterCompletedUserTurn(t *testing.T) 
 	adapter := &fakeAdapter{
 		name: "openai",
 		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response { return finalResponse("warmup") },
-			func(req llm.Request) llm.Response { return finalResponse("notification handled") },
+			func(req llm.Request) llm.Response { return agenttest.FinalResponse("warmup") },
+			func(req llm.Request) llm.Response { return agenttest.FinalResponse("notification handled") },
 		},
 	}
 	sess := newSession(t, withAdapter(adapter), withDir(dir), withConfig(SessionConfig{StateDir: dir}))
@@ -256,7 +257,7 @@ func TestNotificationTurnOwnsDaemonSteeringAfterCompletedUserTurn(t *testing.T) 
 	if len(starts) != 1 || starts[0].TurnID == "" {
 		t.Fatalf("notification EventTurnStarted = %#v, want one nonempty owner", starts)
 	}
-	data, err := readTranscriptFull(sess.TranscriptPath(), "")
+	data, err := readTranscriptFull(context.Background(), sess.TranscriptPath(), "")
 	if err != nil {
 		t.Fatalf("read transcript: %v", err)
 	}
@@ -277,9 +278,9 @@ func TestNotificationTurnOwnsDirectRetrySteering(t *testing.T) {
 	adapter := &fakeAdapter{
 		name: "openai",
 		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response { return finalResponse("warmup") },
+			func(req llm.Request) llm.Response { return agenttest.FinalResponse("warmup") },
 			func(req llm.Request) llm.Response { return llm.Response{} },
-			func(req llm.Request) llm.Response { return finalResponse("notification handled") },
+			func(req llm.Request) llm.Response { return agenttest.FinalResponse("notification handled") },
 		},
 	}
 	sess := newSession(t, withAdapter(adapter), withDir(dir), withConfig(SessionConfig{StateDir: dir}))
@@ -300,7 +301,7 @@ func TestNotificationTurnOwnsDirectRetrySteering(t *testing.T) {
 		t.Fatalf("notification EventTurnStarted = %#v, want one named boundary", starts)
 	}
 
-	data, err := readTranscriptFull(sess.TranscriptPath(), "")
+	data, err := readTranscriptFull(context.Background(), sess.TranscriptPath(), "")
 	if err != nil {
 		t.Fatalf("read transcript: %v", err)
 	}
@@ -367,9 +368,9 @@ func TestNotificationPendingAfterToolRunsBeforeAnotherNormalRound(t *testing.T) 
 	adapter := &fakeAdapter{
 		name: "openai",
 		steps: []func(llm.Request) llm.Response{
-			func(llm.Request) llm.Response { return toolCallResponse(enqueue) },
-			func(llm.Request) llm.Response { return finalResponse("notification handled") },
-			func(llm.Request) llm.Response { return finalResponse("late ordinary round") },
+			func(llm.Request) llm.Response { return agenttest.ToolCallResponse(enqueue) },
+			func(llm.Request) llm.Response { return agenttest.FinalResponse("notification handled") },
+			func(llm.Request) llm.Response { return agenttest.FinalResponse("late ordinary round") },
 		},
 	}
 	sess := newSession(t, withAdapter(adapter), withConfig(SessionConfig{}))
@@ -452,7 +453,7 @@ func TestNotification_EmptyNoOpDoesNotSuppressNextTurnEnd(t *testing.T) {
 	adapter := &fakeAdapter{
 		name: "openai",
 		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response { return finalResponse("queued reply") },
+			func(req llm.Request) llm.Response { return agenttest.FinalResponse("queued reply") },
 		},
 	}
 	c.Register(adapter)
@@ -501,7 +502,7 @@ func TestNotificationTurn_EmptyQueueIsNoOp(t *testing.T) {
 	adapter := &fakeAdapter{
 		name: "openai",
 		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response { return finalResponse("should not be called") },
+			func(req llm.Request) llm.Response { return agenttest.FinalResponse("should not be called") },
 		},
 	}
 	c.Register(adapter)
@@ -583,35 +584,35 @@ func TestNotification_InterleavesWithActiveGoal(t *testing.T) {
 		steps: []func(req llm.Request) llm.Response{
 			// Turn 1 (user "begin"), round 0: mutate (progress).
 			func(req llm.Request) llm.Response {
-				return toolCallResponse(writeFileCall("u1", "u.txt", "user work"))
+				return agenttest.ToolCallResponse(writeFileCall("u1", "u.txt", "user work"))
 			},
 			// Turn 1, round 1: end. Gate resumes the goal, defers continuation #1.
-			func(req llm.Request) llm.Response { return finalResponse("user turn done") },
+			func(req llm.Request) llm.Response { return agenttest.FinalResponse("user turn done") },
 			// Turn 2 (continuation #1), round 0: mutate (progress).
 			func(req llm.Request) llm.Response {
-				return toolCallResponse(writeFileCall("c1", "c.txt", "cont work"))
+				return agenttest.ToolCallResponse(writeFileCall("c1", "c.txt", "cont work"))
 			},
 			// Turn 2, round 1: end. (Wrapped below to enqueue a notification first, so
 			// the tail interleaves a notification turn after continuation #1's fold.)
-			func(req llm.Request) llm.Response { return finalResponse("cont 1 done") },
+			func(req llm.Request) llm.Response { return agenttest.FinalResponse("cont 1 done") },
 			// Turn 3 (notification), round 0: the reminder reaches the model here.
 			// (Wrapped below to snapshot the goal counters.) End the turn.
-			func(req llm.Request) llm.Response { return finalResponse("ack reminder") },
+			func(req llm.Request) llm.Response { return agenttest.FinalResponse("ack reminder") },
 			// Deferred continuation #2, round 0: mutate (progress). (Wrapped below to
 			// snapshot the counters right after the notification turn ended.)
 			func(req llm.Request) llm.Response {
-				return toolCallResponse(writeFileCall("c2", "c2.txt", "resumed work"))
+				return agenttest.ToolCallResponse(writeFileCall("c2", "c2.txt", "resumed work"))
 			},
 			// Continuation #2, round 1: end. The gate folds this turn (Iterations
 			// bumps) and defers continuation #3 within the same call.
-			func(req llm.Request) llm.Response { return finalResponse("resumed work done") },
+			func(req llm.Request) llm.Response { return agenttest.FinalResponse("resumed work done") },
 			// Continuation #3, round 0: declare the goal complete.
 			func(req llm.Request) llm.Response {
-				return toolCallResponse(updateGoalCall("g1", "complete"))
+				return agenttest.ToolCallResponse(updateGoalCall("g1", "complete"))
 			},
 			// Continuation #3, round 1: end. The gate sees the terminal status and
 			// stops the loop, emitting EventGoalEnded{complete}.
-			func(req llm.Request) llm.Response { return finalResponse("goal achieved") },
+			func(req llm.Request) llm.Response { return agenttest.FinalResponse("goal achieved") },
 		},
 	}
 	c.Register(adapter)
@@ -742,7 +743,7 @@ func (a *sustainedNotificationAdapter) Complete(ctx context.Context, req llm.Req
 	if a.sess != nil && !lastMessageIsNotification(req) {
 		enqueueCompletedJobNotification(a.t, a.sess, fmt.Sprintf("job_sustained_%d", n))
 	}
-	resp := finalResponse("work turn (no progress)")
+	resp := agenttest.FinalResponse("work turn (no progress)")
 	resp.Provider = a.name
 	if resp.Model == "" {
 		resp.Model = req.Model
@@ -871,22 +872,22 @@ func TestNotification_GoalContinuesInlineWithoutKickFunc(t *testing.T) {
 			// Turn 1 (user "begin"): mutate (progress), then end. The gate resumes
 			// the goal and arms continuation #1 (without folding the user turn).
 			func(req llm.Request) llm.Response {
-				return toolCallResponse(writeFileCall("u1", "u.txt", "user work"))
+				return agenttest.ToolCallResponse(writeFileCall("u1", "u.txt", "user work"))
 			},
-			func(req llm.Request) llm.Response { return finalResponse("user turn done") },
+			func(req llm.Request) llm.Response { return agenttest.FinalResponse("user turn done") },
 			// Turn 2 (continuation #1): mutate (progress), then end — AND arm a
 			// notification (wrapped below) so it preempts at this continuation's tail.
 			func(req llm.Request) llm.Response {
-				return toolCallResponse(writeFileCall("c1", "c.txt", "cont work"))
+				return agenttest.ToolCallResponse(writeFileCall("c1", "c.txt", "cont work"))
 			},
-			func(req llm.Request) llm.Response { return finalResponse("cont 1 done") },
+			func(req llm.Request) llm.Response { return agenttest.FinalResponse("cont 1 done") },
 			// Turn 3 (notification): ack the reminder and end.
-			func(req llm.Request) llm.Response { return finalResponse("ack reminder") },
+			func(req llm.Request) llm.Response { return agenttest.FinalResponse("ack reminder") },
 			// Turn 4 (deferred continuation #2, run INLINE — no kickFunc): declare complete.
 			func(req llm.Request) llm.Response {
-				return toolCallResponse(updateGoalCall("g1", "complete"))
+				return agenttest.ToolCallResponse(updateGoalCall("g1", "complete"))
 			},
-			func(req llm.Request) llm.Response { return finalResponse("goal achieved") },
+			func(req llm.Request) llm.Response { return agenttest.FinalResponse("goal achieved") },
 		},
 	}
 	c.Register(adapter)
@@ -946,9 +947,9 @@ func TestNotificationNoOpDroppedDeferredGoalContinuationDoesNotSuppressSessionEn
 		name: "openai",
 		steps: []func(req llm.Request) llm.Response{
 			func(req llm.Request) llm.Response {
-				return toolCallResponse(writeFileCall("u1", "u.txt", "user work"))
+				return agenttest.ToolCallResponse(writeFileCall("u1", "u.txt", "user work"))
 			},
-			func(req llm.Request) llm.Response { return finalResponse("user turn done") },
+			func(req llm.Request) llm.Response { return agenttest.FinalResponse("user turn done") },
 		},
 	}
 	c.Register(adapter)
@@ -1033,20 +1034,22 @@ func TestNotification_GoalClearedDuringInterleaveStops(t *testing.T) {
 			// Turn 1 (user "begin"): mutate (progress), then end. The gate resumes
 			// the goal and defers continuation #1.
 			func(req llm.Request) llm.Response {
-				return toolCallResponse(writeFileCall("u1", "u.txt", "user work"))
+				return agenttest.ToolCallResponse(writeFileCall("u1", "u.txt", "user work"))
 			},
-			func(req llm.Request) llm.Response { return finalResponse("user turn done") },
+			func(req llm.Request) llm.Response { return agenttest.FinalResponse("user turn done") },
 			// Turn 2 (continuation #1): mutate (progress), then end — AND arm a
 			// notification (wrapped below) so it interleaves at this continuation's tail.
 			func(req llm.Request) llm.Response {
-				return toolCallResponse(writeFileCall("c1", "c.txt", "cont work"))
+				return agenttest.ToolCallResponse(writeFileCall("c1", "c.txt", "cont work"))
 			},
-			func(req llm.Request) llm.Response { return finalResponse("cont 1 done") },
+			func(req llm.Request) llm.Response { return agenttest.FinalResponse("cont 1 done") },
 			// Turn 3 (notification): clear the goal (wrapped below), then ack and end.
-			func(req llm.Request) llm.Response { return finalResponse("ack reminder") },
+			func(req llm.Request) llm.Response { return agenttest.FinalResponse("ack reminder") },
 			// PRE-FIX ONLY: the stale continuation #2 would run here and end. Post-fix
 			// it is dropped, so this step never runs.
-			func(req llm.Request) llm.Response { return finalResponse("stale cont (should not run post-fix)") },
+			func(req llm.Request) llm.Response {
+				return agenttest.FinalResponse("stale cont (should not run post-fix)")
+			},
 		},
 	}
 	c.Register(adapter)
@@ -1124,23 +1127,23 @@ func TestNotification_GoalRetargetedDuringInterleaveUsesNewObjective(t *testing.
 		steps: []func(req llm.Request) llm.Response{
 			// Turn 1 (user "begin"): mutate (progress), then end. Gate defers cont #1.
 			func(req llm.Request) llm.Response {
-				return toolCallResponse(writeFileCall("u1", "u.txt", "user work"))
+				return agenttest.ToolCallResponse(writeFileCall("u1", "u.txt", "user work"))
 			},
-			func(req llm.Request) llm.Response { return finalResponse("user turn done") },
+			func(req llm.Request) llm.Response { return agenttest.FinalResponse("user turn done") },
 			// Turn 2 (continuation #1, OLD objective): mutate, then end — AND arm a
 			// notification (wrapped below).
 			func(req llm.Request) llm.Response {
-				return toolCallResponse(writeFileCall("c1", "c.txt", "cont work"))
+				return agenttest.ToolCallResponse(writeFileCall("c1", "c.txt", "cont work"))
 			},
-			func(req llm.Request) llm.Response { return finalResponse("cont 1 done") },
+			func(req llm.Request) llm.Response { return agenttest.FinalResponse("cont 1 done") },
 			// Turn 3 (notification): retarget to NEW (wrapped below), then ack and end.
-			func(req llm.Request) llm.Response { return finalResponse("ack reminder") },
+			func(req llm.Request) llm.Response { return agenttest.FinalResponse("ack reminder") },
 			// Turn 4 (continuation after the notification): its request prompt is
 			// captured below; declare the goal complete so the loop stops.
 			func(req llm.Request) llm.Response {
-				return toolCallResponse(updateGoalCall("g1", "complete"))
+				return agenttest.ToolCallResponse(updateGoalCall("g1", "complete"))
 			},
-			func(req llm.Request) llm.Response { return finalResponse("goal achieved") },
+			func(req llm.Request) llm.Response { return agenttest.FinalResponse("goal achieved") },
 		},
 	}
 	c.Register(adapter)

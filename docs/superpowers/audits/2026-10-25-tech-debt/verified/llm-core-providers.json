@@ -1,0 +1,211 @@
+[
+ {
+  "id": "llm-core-providers-1",
+  "title": "Streaming half of the Generate family has no production caller",
+  "category": "dead-code",
+  "verdict": "confirmed",
+  "severity": "high",
+  "note": "Confirmed: StreamGenerate/StreamGenerateObject/StreamObjectResult are referenced only inside llm/ (plus 3 doc-only mentions in docs/). Production callers of the family are agent/session_namer.go:101,107 (GenerateObject), cmd/llmcall/main.go:299,319, tools/tool-fluency/cmd/evener-fluency/respond.go:240; none stream. generate_object.go:23 `streamGenerateObjectStart = StreamGenerate` with RWMutex is used only by generate_object_residual_fuzz_test.go. generate_object.go:137 `_, cancelOut := context.WithCancel(ctx)` discards the derived ctx (confirmed). stream_generate.go is 425 lines; stream_generate_test.go is 1591 lines (audit said 1448). classify.go:11 and generate.go:159 comments mention StreamGenerate and need touching. Deletion needs Jesse's approval since llm is documented as a library."
+ },
+ {
+  "id": "llm-core-providers-2",
+  "title": "Generate's multi-round tool loop is exercised only by tests",
+  "category": "dead-code",
+  "verdict": "confirmed",
+  "severity": "medium",
+  "note": "Confirmed: all production Generate/GenerateObject callers pass no tools (cmd/llmcall/main.go:256 Tools: nil). ToolCallContext/ToolCallContextFromCtx have no caller outside llm/generate.go (git grep). agent/internal/tool/registry.go:440 embeds llm.Tool and bridges Execute at :541, so the Tool type and its Execute field must stay (agent uses them as a definition carrier); only the Generate-internal loop (executeToolCalls, StopWhen, RepairToolCall, MaxToolRounds, ToolCallContext) is removable. Public-API shrink, so discuss with Jesse; doc.go:28 wording needs update."
+ },
+ {
+  "id": "llm-core-providers-3",
+  "title": "SSE read-timeout stack is dead; StreamRunner.SSEOpts never set",
+  "category": "dead-code",
+  "verdict": "partial",
+  "severity": "medium",
+  "note": "Core confirmed: StreamReadSSEOptions is called only from tests (core_contracts_fuzz_test.go, client_config_edges_fuzz_test.go); runner.go:50 SSEOpts is never assigned (only read at :86); ParseSSE's other callers (responses/recompute.go:59,90) pass no options. So parseSSEWithTimeout/sseActivityReader/WithStreamReadTimeout and the sseReadTimeoutError branch are production-dead. But the plan is wrong in two places: (a) APITimeoutSourceForSSE must stay, since its responseIdleTimeoutError branch is live (used at exchange.go, stream.go, runner.go for idle-timeout attribution); only the *sseReadTimeoutError case inside it is dead, not 'three branches'. (b) ErrSSEReadTimeout is consumed in production by agent/failure_steering.go:279, agent/session_stream.go:369 and providers/responses/stream.go:367, and APITimeoutSSERead is switched on at adapter_timeout.go:111, so those symbols cannot simply be deleted without an agent-side decision.",
+  "revised_fix_plan": "Delete parseSSEWithTimeout, sseActivityReader, sseReadTimer, WithStreamReadTimeout, sseOptions/SSEOption (if no other use), StreamReadSSEOptions, StreamRunner.SSEOpts, and the *sseReadTimeoutError case in APITimeoutSourceForSSE (keep the function and its responseIdle case). Keep ErrSSEReadTimeout and APITimeoutSSERead until agent/failure_steering.go, agent/session_stream.go, responses/stream.go:367 and attemptOwnedTimeout are reviewed; either point them at ErrResponseIdleTimeout in a follow-up or leave as inert. Update misc_covtest_test.go:141 and sse_fuzz_test.go. Net about -200 incl. tests."
+ },
+ {
+  "id": "llm-core-providers-4",
+  "title": "Exported helpers and fields with zero production callers",
+  "category": "dead-code",
+  "verdict": "confirmed",
+  "severity": "low",
+  "note": "Confirmed by git grep over the whole repo: MergeHeaders (headers.go:34 only self + 2 test files), IsImageFile, OrderedEffortLevels, (*APIAttempt).SetWireRequestMetadata, ErrorHint, AdapterTransport and BuildAPILogCredentialMaterial have only test/doc callers. clampEffort (anthropic/response.go:246) is a pass-through used only by areq_targets_fuzz_test.go. protocolhttp.Call.Auth (call.go:50) is read at :98 but never set by any non-test code. ApplyAdapterTimeout takes `_ bool` (adapter_timeout.go:128) with callers at client.go:558, exchange.go:37, stream.go:24. All are mechanical deletions; severity is low (small, no behavior). Note BuildAPILogCredentialMaterial interacts with finding 11: delete it or make protocolhttp.credentialMaterial call it."
+ },
+ {
+  "id": "llm-core-providers-5",
+  "title": "Four stream decoders copy the same finish, passthrough and in-band-error code",
+  "category": "duplication",
+  "verdict": "confirmed",
+  "severity": "high",
+  "note": "Confirmed by reading the finish blocks: anthropic/stream.go:410-418, chatcompletions/stream.go:162-172, responses/stream.go:513-521, google/stream.go:200-208 all build a StreamEventFinish and branch on attempt.Active() between finalEvent and s.Send. Signature drift confirmed (anthropic/google take provider,endpointURL,material; chat/responses take res,r). File sizes: stream.go 450/313/561/240 lines. Differences exist (chat does not set finished=true and returns nil after cancel; google asserts invariant on Finish.Reason; responses closes text first) so the helper must be a thin Finish(resp) that owns only the Active/Send branch and cancel, not the per-provider response assembly. Severity high is defensible given streaming bookkeeping bugs hit all providers, but expected net saving is closer to -100 than -250.",
+  "revised_fix_plan": "Add StreamRunner.Finish(resp llm.Response) that owns only the attempt.Active()/Send branch, sets Finished and cancels; unify the decoder parameter list to (sctx, cancel, resp, s, req, res, r, attempt) by passing the Resolved+Result pair everywhere. Defer DecodeObject/passthrough extraction unless it stays under about 15 lines. One provider per commit under providers/difftest and per-package stream tests."
+ },
+ {
+  "id": "llm-core-providers-6",
+  "title": "Giant conversion and decode functions concentrate per-kind copy-paste",
+  "category": "complexity",
+  "verdict": "partial",
+  "severity": "low",
+  "note": "Function sizes not independently re-measured but the files and switch-per-ContentKind structure were seen (anthropic/request.go, google/request.go, responses/input.go). It is a legitimate readability smell but a pure split with neutral LOC and no duplication removed is cosmetic relative to findings 5 and 8; size-only refactors of golden-tested converters carry nonzero regression risk for no deletion. Lowered to low.",
+  "revised_fix_plan": "Do it opportunistically only when a function is already being edited for finding 8 (shared image resolution) or a bug; no standalone PR."
+ },
+ {
+  "id": "llm-core-providers-7",
+  "title": "Per-protocol boilerplate repeated four times, with drift (Vertex listing ignores listing timeout)",
+  "category": "duplication",
+  "verdict": "partial",
+  "severity": "medium",
+  "note": "Real drift confirmed: google/vertex_models.go:110 passes llm.Request{Model: \"*\"} with no AdapterTimeout while anthropic/protocol_transport.go:80, chatcompletions/models.go:102, responses/models.go:140 and google/protocol_transport.go:129 pass llm.ModelListingTimeout(ctx). client.go:listLive applies ApplyAdapterTimeout only for override listers, so the Vertex built-in listing runs unbounded except by caller ctx. Stronger finding than stated: Protocol.PrunablePaths() has no non-test caller (git grep '.PrunablePaths()' finds only registry/prune.go:52 function and tests), so the four prunablePaths tables plus the interface method (registry_shape.go:22) are dead rather than needing a forwarder. However the 'Complete preamble' sharing is overstated: completionCall bodies differ (anthropic reconcileThinkingContract, chat/responses reconcilePreparedOutput, chat has runImageRecovery); only the RequiresStreamingComplete guard is identical. Estimate -200 is optimistic; about -120.",
+  "revised_fix_plan": "TDD: red test that Vertex ListModels carries ModelListingTimeout, then fix. Delete Protocol.PrunablePaths from the llm.Protocol interface, the four prunablePaths tables and their TestPrunablePathsMatchRegistry tests (registry.PrunablePaths stays the single source). Add protocolhttp.ListModels helper only if it removes the four Call literals cleanly. Skip the Complete-preamble consolidation."
+ },
+ {
+  "id": "llm-core-providers-8",
+  "title": "Image part resolution reimplemented per provider with behavioral drift",
+  "category": "duplication",
+  "verdict": "partial",
+  "severity": "low",
+  "note": "Duplication confirmed (anthropic/request.go:259, google/request.go:341, responses/input.go:166 each hand-roll Data|local path|URL). Drift confirmed: google sends raw bytes unnormalized with default image/png; chat messages.go:291 never reads local paths. But the production feed makes most drift latent: agent/input_message.go:78 always builds ImageData with Data+MediaType, so the local-path branch is reached only by direct llm callers/tests. Also anthropic does NOT always re-encode (anthropicImageBytes keeps accepted media types unchanged), so 'drift' is narrower than stated. Behavior unification needs a product decision (Jesse). Severity lowered to low.",
+  "revised_fix_plan": "Only consolidate the shared 'read local path + infer media type' prefix into one llm helper if it stays small; leave per-provider normalization policy alone unless a real google BMP/TIFF failure is reported. TDD before any behavior change."
+ },
+ {
+  "id": "llm-core-providers-9",
+  "title": "Non-stream and stream decode into different number types; four int-coercion helpers",
+  "category": "inconsistency",
+  "verdict": "partial",
+  "severity": "low",
+  "note": "Confirmed: protocolhttp/exchange.go:79 uses json.Unmarshal (float64) while 13 non-test sites use UseNumber; anthropic/stream.go:436 intFromAny and google/stream.go:226 tokenCountInt are byte-identical, and llm.IntFromAny (types.go:816) is the same minus int64; responses/tokens.go:37 asserts float64. The helper duplication is a clean win. The 'precision loss above 2^53' impact is theoretical for token counts. Switching Do to UseNumber changes Result.Raw types for every consumer (recompute, CountTokens, doctor) and is not a pure refactor.",
+  "revised_fix_plan": "Add int64 to llm.IntFromAny, delete intFromAny and tokenCountInt (about -30 LOC, behavior-preserving). Leave Do's float64 decode alone unless a concrete bug appears; if responses CountTokens is touched, make it use IntFromAny so it accepts either number type."
+ },
+ {
+  "id": "llm-core-providers-10",
+  "title": "Reasoning-token estimate and usage invariants copied across providers",
+  "category": "duplication",
+  "verdict": "confirmed",
+  "severity": "low",
+  "note": "Confirmed: ReasoningTokensEstimated fallback blocks at anthropic/response.go:133, anthropic/stream.go:406, chatcompletions/response.go:314, chatcompletions/stream.go:158; invariant.Hold(usage.InputTokens >= 0) at google/response.go:176, openaichat.go:108, responses/response.go:230. Small win."
+ },
+ {
+  "id": "llm-core-providers-11",
+  "title": "Credential-material merge and construction implemented three times",
+  "category": "duplication",
+  "verdict": "confirmed",
+  "severity": "medium",
+  "note": "Confirmed: llm/api_attempt.go:449 mergeAPILogCredentialMaterial and transport/http_attempts.go:215 mergeTransportCredentialMaterial are line-for-line identical. protocolhttp/call.go:157 credentialMaterial reimplements BuildAPILogCredentialMaterial (api_attempt_sanitize.go:42) with different inputs (derives the header from the authenticator-written request header, adds the 'Bearer ' stripped value), so it is not a drop-in call; its own comment cites the other. Since BuildAPILogCredentialMaterial has no production caller (finding 4), consider deleting it rather than reusing. Redaction code, so keep guards (api_attempt_sanitize*_test.go).",
+  "revised_fix_plan": "Add (APILogCredentialMaterial).Merge(other) in llm, delete both private merge copies. Delete BuildAPILogCredentialMaterial (finding 4) and update call.go:159 comment; leave protocolhttp.credentialMaterial as the single builder."
+ },
+ {
+  "id": "llm-core-providers-12",
+  "title": "HTTP-status to kind mapping and ErrorKind taxonomy defined in parallel tables",
+  "category": "duplication",
+  "verdict": "partial",
+  "severity": "low",
+  "note": "The status switch in transport/api_attempt.go:177 does parallel errorFromHTTPStatus, and Kind() (errorkind.go:83) parallels declaredKind(). But the split is deliberate: explicitAPIAttemptErrorClass's doc (api_attempt.go:154-167) says DeclaredKind exists so the API-log path never unwraps or runs caller-supplied code, while Kind walks the chain with errors.As; declaredKind() is intentionally unexported-interface-only (errorkind.go:128-136). Making Kind use kindBearer would change that safety boundary, and ContextBudgetError appears in Kind but not declaredKind (not a kindBearer). Classify (classify.go:57) also adds quota/abort/budget cases the status switch cannot express. High risk to retry behavior for little gain. Only the status fallback switch is a reasonable dedupe.",
+  "revised_fix_plan": "Optional: replace only the status fallback with a table test asserting parity against llm.Kind(llm.ErrorFromHTTPStatus(...)) rather than rewriting; do not touch Kind/declaredKind/Classify. Otherwise skip."
+ },
+ {
+  "id": "llm-core-providers-13",
+  "title": "Request shaping redone downstream of ShapeRequest; ShapeRequest runs twice per dispatch",
+  "category": "inconsistency",
+  "verdict": "partial",
+  "severity": "low",
+  "note": "Double ShapeRequest is deliberate: client.go:341/382 shapes before middleware, and shapeAndApplyTokenBudget (client.go:405) re-shapes inside base after middleware may have mutated the request; ShapeRequest is also called from token_count.go:148 and client.go:655. Moving builder checks into ShapeRequest would change what middleware/override adapters see and BuildBody is also called directly (CountTokens, continuation planning), so builders cannot rely on pre-shaping. Confirmed small duplication: ToolChoiceForcing downgrade identical at chatcompletions/request.go:75 and responses/request.go:73. The StructuredOutput downgrades differ (chat falls to json_object, responses calls toResponsesResponseFormat(structured)) so are not duplicates. chat reconcileOutputField (request.go:155) is a superset of requestutil.ReconcileOutputField (also removes the alternate max_tokens/max_completion_tokens key), so folding it in is not a plain dedupe.",
+  "revised_fix_plan": "Optionally extract the identical ToolChoiceForcing downgrade into a shared helper (about -10 LOC). Leave ShapeRequest placement and reconcile functions as is."
+ },
+ {
+  "id": "llm-core-providers-14",
+  "title": "Client.Complete/Stream preamble twins and a test-only override dispatch path",
+  "category": "duplication",
+  "verdict": "partial",
+  "severity": "low",
+  "note": "Complete (client.go:325) and Stream (:365) preambles are near twins as described. SetDefaultProvider has no non-test caller (git grep), but the override machinery is the sanctioned scripted-provider seam per AGENTS.md. Small win; delete SetDefaultProvider needs Jesse's agreement (public API).",
+  "revised_fix_plan": "Extract prepareDispatch(ctx, req) shared by Complete/Stream (about -25). Leave the override seam; ask before deleting SetDefaultProvider."
+ },
+ {
+  "id": "llm-core-providers-15",
+  "title": "Three hand-written goroutine pump stream wrappers",
+  "category": "duplication",
+  "verdict": "partial",
+  "severity": "low",
+  "note": "Confirmed two near-identical pumps (providerStampStream client.go:835, apiAttemptSettlementStream apilog.go:289) with out/done/closing/once; but they have differing teardown (settlement runs on end/close) and ChanStream has a distinct producer API (Send/CloseSend), so a generic helper saves less than -90 and touches lifecycle-sensitive goroutine code. ChanStream embedding chanStream is odd but harmless. Not worth the risk.",
+  "revised_fix_plan": "Skip, or only collapse chanStream into ChanStream (about -5)."
+ },
+ {
+  "id": "llm-core-providers-16",
+  "title": "Chat stream and non-stream decoders disagree on reasoning precedence and joining",
+  "category": "inconsistency",
+  "verdict": "partial",
+  "severity": "low",
+  "note": "Confirmed code drift: extractReasoning (chatcompletions/response.go:204) prefers reasoning_details and joins pieces with newline; reasoningFromDelta (stream.go region, response.go:171) prefers reasoning_content/reasoning/reasoning_text and concatenates details with no separator. difftest has no reasoning_details coverage (grep). But for the OpenRouter case both fields carry the same text, so user-visible divergence is unproven; stream deltas are naturally concatenated. Needs Jesse's decision on precedence; no evidence of a live bug, so low.",
+  "revised_fix_plan": "Add a difftest case first to see whether text actually differs for real recorded OpenRouter fixtures; only then unify precedence."
+ },
+ {
+  "id": "llm-core-providers-17",
+  "title": "protocolhttp.Do and Stream duplicate exchange/error handling; Do branches on an operation label string",
+  "category": "duplication",
+  "verdict": "confirmed",
+  "severity": "low",
+  "note": "Confirmed: exchange.go:91 `c.Operation == \"models.list\"` branches on a free-text label (set at five sites: anthropic/protocol_transport.go:80, chatcompletions/models.go:102, google/protocol_transport.go:129, google/vertex_models.go:110, responses/models.go:140). Do (exchange.go:46-120) and Stream (stream.go:25-70) repeat transport-error and non-2xx handling with slightly different attempt-completion calls. Modest win; the label check is the sharper item.",
+  "revised_fix_plan": "Replace the Operation string check with an explicit Call field (or drop it if wire tests allow); extract the non-2xx handler only if it removes more than it adds."
+ },
+ {
+  "id": "llm-core-providers-18",
+  "title": "Token estimator mirrors each provider's wire behavior via name heuristics",
+  "category": "architecture",
+  "verdict": "partial",
+  "severity": "low",
+  "note": "Confirmed: token_count.go is 891 lines, with string-contains ladders (e.g. lines 700, 792) and commit 36d50ce494 touched both google/request.go and token_count.go (billsToolResultMedia now includes ProtocolGoogle at :594). But the evidence of harm is one co-edit; the proposal is open-ended design work with Caps changes, which conflicts with 'simplest thing'. Not an actionable debt PR as written.",
+  "revised_fix_plan": "Do not schedule. If drift bites again, add a table test asserting the estimator's delivery decisions match each builder's output for one fixture per protocol."
+ },
+ {
+  "id": "llm-core-providers-19",
+  "title": "Continuation scaffolding with unread rollout flags, proof IDs and test-only helpers",
+  "category": "dead-code",
+  "verdict": "partial",
+  "severity": "low",
+  "note": "Confirmed: ProductionPathProven, StorageShapeProofID, ProductionPathProofID, ProviderOptionKeysByContinuation are never read in production (only StorageShapeProven at agent/session_model_call.go:610). The package-level PlanResponsesContinuation (responses_continuation.go:161) and ClearResponsesContinuationStoreOverride have only test callers (the Client method of the same name at client.go:648 is unrelated). Underestimated cost: agent tests set these fields (agent/session_openai_continuation_phase12_live_test.go:71-75, phase4d_test.go:297, session_turn_completion_program_fuzz_test.go:245, session_model_call_tail_coverage_fuzz_test.go:145), so the deletion also edits agent tests."
+ },
+ {
+  "id": "llm-core-providers-20",
+  "title": "Stale package docs and history-narrating comments",
+  "category": "doc-drift",
+  "verdict": "confirmed",
+  "severity": "low",
+  "note": "Confirmed: openaichat.go:2 refers to 'openai and openaicompat adapters' (providers/ has neither), chatcompletions/protocol.go:5 'builders that existed before the registry', responses/protocol.go:3 'pre-registry' and reasoning.go:9 'kept verbatim from openaicompat'. Quoted counts do not reproduce exactly: I count 52 test comments citing 'lines N-M' (audit said 118) and 16 history-language hits in non-registry production files (audit said 48); the finding stands regardless."
+ },
+ {
+  "id": "llm-core-providers-21",
+  "title": "Test suite weight: coverage-chasing files, copy assertions, fuzz targets keeping dead code alive",
+  "category": "test-debt",
+  "verdict": "partial",
+  "severity": "medium",
+  "note": "Counts: root llm has 132 test files / 30,444 lines vs 10,772 prod (audit 30,288/10,777: close). Root coverage-named test files number 21 (audit said 28 across llm/). Copy assertions confirmed against AGENTS.md: remaining_coverage_test.go:74 stringContains(msg, \"usage limit reached\") and cov_tt_llm_test.go:20 `e.Error() == \"configuration error: bad setup\"`. areq_targets_fuzz_test.go is 504 lines, header line 15 describes the 'anti-collision token' and it fuzzes dead clampEffort. docs/developing-evener/coverage.md ties coverage tracks to fuzz families, so removals must not drop the coverage-floor numbers silently. The -3000 LOC figure is an estimate not verified.",
+  "revised_fix_plan": "First delete tests of code removed by findings 1-4/19. Then fix the two copy assertions to assert Kind/type. Only then consider merging coverage-named files; check make coverage-floor impact in CI."
+ },
+ {
+  "id": "llm-core-providers-22",
+  "title": "API-log attempt machinery lives in root llm package",
+  "category": "architecture",
+  "verdict": "partial",
+  "severity": "low",
+  "note": "Size confirmed: api_attempt*.go + apilog*.go + adapter_timeout.go + response_idle.go + endpoint_url.go = about 2,390 prod lines with 75 exported declarations (git grep count). Importers include more than transport/protocolhttp/cmdutil: agent/doctor/apilog.go, agent/session.go, agent/session_model_call.go, agent/internal/cheapmodel/caller.go and others use llm.APILogger/APIAttempt types, so a move has wide churn. No bug evidence; a 2,400-line move for -300 net is high-risk churn against 'simplest thing'.",
+  "revised_fix_plan": "Skip as a standalone PR; deleting dead symbols (findings 3, 4, 11) first shrinks it. Revisit only if the surface causes a concrete problem."
+ },
+ {
+  "id": "llm-core-providers-23",
+  "title": "copyWithProvider methods and provider-instance stamping at about 14 sites",
+  "category": "duplication",
+  "verdict": "partial",
+  "severity": "low",
+  "note": "Counts: 15 copyWithProvider in errors.go and 7 in sdk_errors.go (grep -c, includes comment lines). The four per-builder `defer func() { err = llm.RewriteErrorProvider(err, res.Instance) }()` exist (anthropic/protocol_request.go:25, chatcompletions/request.go:23, google/protocol.go:42, responses/request.go:24) but BuildBody is also called directly outside Client (continuation planning, wirecapture), so they are not purely redundant. Low value.",
+  "revised_fix_plan": "Skip, or verify callers of Protocol.BuildBody outside Client before removing any defer."
+ },
+ {
+  "id": "llm-core-providers-24",
+  "title": "Model-specific XML tool-argument rescue embedded in the chat protocol package",
+  "category": "complexity",
+  "verdict": "refuted",
+  "severity": "low",
+  "note": "rescue.go is 346 lines and called at response.go:266 / stream.go:91, but the file is guarded by a cheap hint regexp (claudeXMLParamHintRE wake-up gate), so non-affected rows do not pay meaningfully. The audit itself says it is not a deletion candidate; turning it into a Caps flag adds registry surface (new flag, docs, tests) to avoid a gated no-op, contradicting YAGNI."
+ }
+]

@@ -1,10 +1,10 @@
 import type { SpawnSlashCatalogResponse } from "@evener/appwire-client";
+import { SCOPED_HOST_READ_DEBOUNCE_MS } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { act, renderHook } from "@testing-library/react";
 import { useLayoutEffect } from "react";
 import { afterEach, describe, expect, test, vi } from "vitest";
 import {
-  SPAWN_SLASH_CATALOG_DEBOUNCE_MS,
   type SpawnSlashCatalogLoadState,
   type UseSpawnSlashCatalogArgs,
   useSpawnSlashCatalog,
@@ -414,7 +414,7 @@ test("resolves the catalog on the selected remote host through the proxy", async
     useSpawnSlashCatalog({ client, cwd: "/repo", host: "buildbox", launchOverrides: {}, pluginRevision: 0 }),
   );
   await act(async () => {
-    await vi.advanceTimersByTimeAsync(SPAWN_SLASH_CATALOG_DEBOUNCE_MS);
+    await vi.advanceTimersByTimeAsync(SCOPED_HOST_READ_DEBOUNCE_MS);
     await flush();
   });
   expect(result.current.state).toEqual({ status: "ready", response: RESPONSE });

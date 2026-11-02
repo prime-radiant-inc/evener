@@ -17,7 +17,7 @@
 // selecting it renders that host's own refusal/state, never a fallback to the
 // controller's listing.
 import type { HostPushCredentialsResponse } from "@evener/appwire-client";
-import { errorText, RequestTimeoutError } from "@evener/appwire-client";
+import { errorText, isLocalHost, RequestTimeoutError } from "@evener/appwire-client";
 import { type ReactNode, useCallback, useRef, useState } from "react";
 import {
   connectionGeneration,
@@ -27,7 +27,6 @@ import {
   useConnectionGeneration,
   useHostInstances,
 } from "../../../../stores/credentials";
-import { isLocalHost } from "../../../../stores/hostRouting";
 import { hostInstanceIdentity, isConfiguredHost, useHostsStore } from "../../../../stores/hosts";
 import { Button, EmptyState, InlineNotice, Skeleton } from "../../../../widgets";
 import { requireClass } from "../../../../widgets/internal/requireClass";

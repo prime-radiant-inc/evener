@@ -675,16 +675,17 @@ func (x *Index) pendingRegistry(r *reader) (*apptranscript.ToolCallRegistry, err
 		if err != nil {
 			return nil, err
 		}
-		apptranscript.ProjectTurnParts(p.turnID, int(p.pos.Ordinal)+1, *entry, reg, nil, apptranscript.ToolResultOutputImages)
+		apptranscript.ProjectEntryParts(p.turnID, int(p.pos.Ordinal)+1, *entry, reg, nil, apptranscript.ToolResultOutputImages)
 	}
 	// The lastAssistant entry replayed above for its text may itself carry a
 	// communicate call that a later (unreplayed) result entry already
 	// consumed — replaying it in isolation reintroduces that resolved call's
-	// CommRawArgs, since ProjectTurnParts cannot know a later entry deleted
+	// CommRawArgs, since ProjectEntryParts cannot know a later entry deleted
 	// it. Prune to exactly the calls commCalls still tracks as pending.
 	for id := range reg.CommRawArgs {
 		if _, ok := x.builder.commCalls[id]; !ok {
 			delete(reg.CommRawArgs, id)
+			delete(reg.CommAuthorship, id)
 		}
 	}
 	return reg, nil
@@ -959,8 +960,8 @@ func (r *reader) project(c contributor, callID, turnID string) ([]appwire.Thread
 // file order, exactly as the whole-file projection's single threaded
 // registry would have processed them — discarding their own items, then
 // projects Opener with the registry those replays built. Not cached: these
-// items are a small, rare subset of a read. Only ever called for a legacy
-// (non-identity-format) opener: applyLegacy is the only writer of Context.
+// items are a small, rare subset of a read, from legacy or inherited identity
+// calls. Format-aware replay preserves identity text runs for echo suppression.
 func (r *reader) projectWithContext(record itemRecord, turnID string) ([]appwire.ThreadItem, []int, error) {
 	buf, err := r.x.strings.get(record.Context)
 	if err != nil {
@@ -980,13 +981,13 @@ func (r *reader) projectWithContext(record itemRecord, turnID string) ([]appwire
 		if err != nil {
 			return nil, nil, err
 		}
-		apptranscript.ProjectTurnParts(string(turnIDBytes), int(ce.Ordinal)+1, *entry, reg, nil, apptranscript.ToolResultOutputImages)
+		apptranscript.ProjectEntryParts(string(turnIDBytes), int(ce.Ordinal)+1, *entry, reg, nil, apptranscript.ToolResultOutputImages)
 	}
 	entry, err := r.entry(record.Opener.Offset, record.Opener.Length)
 	if err != nil {
 		return nil, nil, err
 	}
-	items, parts := apptranscript.ProjectTurnParts(turnID, int(record.Opener.Ordinal)+1, *entry, reg, nil, apptranscript.ToolResultOutputImages)
+	items, parts := apptranscript.ProjectEntryParts(turnID, int(record.Opener.Ordinal)+1, *entry, reg, nil, apptranscript.ToolResultOutputImages)
 	return items, parts, nil
 }
 

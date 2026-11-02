@@ -45,6 +45,8 @@ var libraryPackages = []string{
 	"primeradiant.com/evener/agent/transcript",
 	"primeradiant.com/evener/llm",
 	"primeradiant.com/evener/llm/registry",
+	"primeradiant.com/evener/execsupport/componentlog",
+	"primeradiant.com/evener/execsupport/fsatomic",
 	"primeradiant.com/evener/execsupport/orphanpipe",
 	"primeradiant.com/evener/execsupport/orphanpipe/orphanpipetest",
 	"primeradiant.com/evener/execsupport/procgroup",

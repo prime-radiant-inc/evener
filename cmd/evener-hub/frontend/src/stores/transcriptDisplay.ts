@@ -19,20 +19,22 @@ import { useStore } from "zustand";
 import { createStore, type StoreApi } from "zustand/vanilla";
 import { isMobileViewport, subscribeMobileViewport } from "../shell/useIsMobile";
 import { connectionStore } from "./connection";
-import { dualWriteTranscriptDisplayLegacy, migrateLegacyTranscriptDisplay, readTranscriptDisplayLocal } from "./prefs";
+import { migrateLegacyTranscriptDisplay, readTranscriptDisplayLocal, retireLegacyTranscriptKeys } from "./prefs";
 import { createReadyGenerationCallback } from "./readyGenerationCallback";
 import { createBrowserSync } from "./transcriptDisplay/crossTabSync";
 import { browserDraftStorage } from "./transcriptDisplay/draftStorage";
 import {
   LOCAL_KEYS,
+  readPresentation,
   removeLocal,
   reportStorageResult,
-  verifyLegacyWrite,
   writeLocal,
+  writePresentation,
 } from "./transcriptDisplay/localStore";
 import { publishEffectiveTransition } from "./transcriptDisplay/transitions";
 
 export const TRANSCRIPT_DISPLAY_CHANNEL = "evener.transcript-display.v1";
+export type ConversationPresentation = "standard" | "comic";
 // This store's own guard: keybindings.ts wires the same connectionStore
 // client through its own instance, so the two never contend over one shared
 // registration slot.
@@ -49,6 +51,7 @@ export interface TranscriptDisplayChange {
 
 export interface TranscriptDisplayStoreState {
   viewport: ViewportClass;
+  presentation: Record<ViewportClass, ConversationPresentation>;
   local: ConfigByLayout;
   hub: HubByLayout;
   drafts: ConfigByLayout;
@@ -65,6 +68,7 @@ export interface TranscriptDisplayStoreState {
   draftConflict: boolean;
   draftError: string | null;
   setViewport(layout: ViewportClass): void;
+  setPresentation(layout: ViewportClass, value: ConversationPresentation): void;
   setLocal(layout: ViewportClass, config: TranscriptDisplayConfigV1): void;
   clearLocal(layout: ViewportClass): void;
   effective(layout?: ViewportClass): TranscriptDisplayConfigV1;
@@ -80,6 +84,7 @@ export interface TranscriptDisplayStoreState {
 function initialState(): Omit<
   TranscriptDisplayStoreState,
   | "setViewport"
+  | "setPresentation"
   | "setLocal"
   | "clearLocal"
   | "effective"
@@ -93,6 +98,7 @@ function initialState(): Omit<
 > {
   return {
     viewport: "desktop",
+    presentation: { desktop: "standard", mobile: "standard" },
     local: {},
     hub: {},
     drafts: {},
@@ -512,6 +518,14 @@ function restoreMalformedPreview(
 export const transcriptDisplayStore: StoreApi<TranscriptDisplayStoreState> = createStore<TranscriptDisplayStoreState>(
   () => ({
     ...initialState(),
+    setPresentation: (layout, value) => {
+      applyPresentation(layout, value);
+      reportStorageResult(
+        (message) => transcriptDisplayStore.setState({ storageWarning: message }),
+        writePresentation(layout, value),
+      );
+      browserSync.broadcastPresentation(layout, value);
+    },
     setViewport: (layout) => {
       const state = transcriptDisplayStore.getState();
       if (state.viewport === layout) return;
@@ -530,9 +544,7 @@ export const transcriptDisplayStore: StoreApi<TranscriptDisplayStoreState> = cre
       publishEffectiveTransition(state, { ...state, local }, () => transcriptDisplayStore.setState({ local }), layout);
       const encoded = encodeLocalConfig(config);
       const localOK = writeLocal(layout, encoded);
-      dualWriteTranscriptDisplayLegacy(config);
-      const legacyOK = verifyLegacyWrite(config);
-      reportStorageResult((message) => transcriptDisplayStore.setState({ storageWarning: message }), localOK, legacyOK);
+      reportStorageResult((message) => transcriptDisplayStore.setState({ storageWarning: message }), localOK);
       browserSync.broadcastLocal(layout, encoded);
     },
     clearLocal: (layout) => {
@@ -541,10 +553,8 @@ export const transcriptDisplayStore: StoreApi<TranscriptDisplayStoreState> = cre
       delete local[layout];
       publishEffectiveTransition(state, { ...state, local }, () => transcriptDisplayStore.setState({ local }), layout);
       const localOK = removeLocal(layout);
-      const fallback = resolveEffectiveConfig({ local: undefined, hub: state.hub[layout], layout });
-      dualWriteTranscriptDisplayLegacy(fallback);
-      const legacyOK = verifyLegacyWrite(fallback);
-      reportStorageResult((message) => transcriptDisplayStore.setState({ storageWarning: message }), localOK, legacyOK);
+      retireLegacyTranscriptKeys();
+      reportStorageResult((message) => transcriptDisplayStore.setState({ storageWarning: message }), localOK);
       browserSync.broadcastLocal(layout, null);
     },
     effective: (layout): TranscriptDisplayConfigV1 => {
@@ -643,11 +653,19 @@ function applyLocalFromBrowserSync(layout: ViewportClass, config: TranscriptDisp
   publishEffectiveTransition(state, { ...state, local }, () => transcriptDisplayStore.setState({ local }), layout);
 }
 
+function applyPresentation(layout: ViewportClass, value: ConversationPresentation): void {
+  const state = transcriptDisplayStore.getState();
+  if (state.presentation[layout] === value) return;
+  // Presentation owns no content configuration or content-view transition.
+  transcriptDisplayStore.setState({ presentation: { ...state.presentation, [layout]: value } });
+}
+
 const browserSync = createBrowserSync({
   channelName: TRANSCRIPT_DISPLAY_CHANNEL,
   localKeys: LOCAL_KEYS,
   getState: () => transcriptDisplayStore.getState(),
   applyLocal: applyLocalFromBrowserSync,
+  applyPresentation,
   onDetach: () => {
     stopViewportSubscription?.();
     stopViewportSubscription = null;
@@ -659,6 +677,7 @@ export function initTranscriptDisplay(): void {
   initialized = true;
   transcriptDisplayStore.setState({
     viewport: isMobileViewport() ? "mobile" : "desktop",
+    presentation: { desktop: readPresentation("desktop"), mobile: readPresentation("mobile") },
     local: {},
     hub: {},
     drafts: {},

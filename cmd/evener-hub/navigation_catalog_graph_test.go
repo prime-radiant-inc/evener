@@ -157,7 +157,7 @@ func TestNavigationCatalogGraphCollapsesDuplicateProjectKeys(t *testing.T) {
 			// location key - so a dropped session surfaces as the "not found" shape
 			// rather than as a silently empty location.
 			for _, id := range []string{"01ARZ3NDEKTSV4RRFFQ69G5FAV", "01ARZ3NDEKTSV4RRFFQ69G5FAW"} {
-				ref := hubapi.LocalRef(id).String()
+				ref := appwire.LocalRef(id).String()
 				object, _, err := projection.Resource(navigationResourceKey{Kind: navigationResourceLocation, ID: ref})
 				if err != nil {
 					t.Errorf("location read for merged session %q: %v", id, err)
@@ -216,7 +216,7 @@ func TestNavigationCatalogGraphKeepsDuplicateKeyPerBucket(t *testing.T) {
 	// first catalog holding it; the location index must still carry every
 	// session of every catalog.
 	for _, id := range []string{"01ARZ3NDEKTSV4RRFFQ69G5FAV", "01ARZ3NDEKTSV4RRFFQ69G5FAW"} {
-		ref := hubapi.LocalRef(id).String()
+		ref := appwire.LocalRef(id).String()
 		object, _, err := projection.Resource(navigationResourceKey{Kind: navigationResourceLocation, ID: ref})
 		if err != nil {
 			t.Errorf("location read for merged session %q: %v", id, err)
@@ -360,7 +360,7 @@ func TestNavigationCatalogGraphMergeCapsTiersAndKeepsRecency(t *testing.T) {
 	// A session that only the retained union reaches keeps its location, so a
 	// direct lookup still resolves it after the merge.
 	last := "a-54"
-	ref := hubapi.LocalRef(last).String()
+	ref := appwire.LocalRef(last).String()
 	object, _, err := projection.Resource(navigationResourceKey{Kind: navigationResourceLocation, ID: ref})
 	if err != nil {
 		t.Fatalf("location for beyond-cap session %q: %v", last, err)

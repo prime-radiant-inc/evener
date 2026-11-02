@@ -211,7 +211,7 @@ func fuzzExactNamer(t *testing.T) {
 	s.reportSessionNamerLogAppend(errors.New("append"))
 	openDir := t.TempDir()
 	s.stateDir, s.id = openDir, "open"
-	logPath := filepath.Join(openDir, sessionsSubdir, "open.log.jsonl")
+	logPath := filepath.Join(openDir, schema.SessionsSubdir, "open.log.jsonl")
 	if err := os.MkdirAll(logPath, 0o755); err != nil {
 		t.Fatal(err)
 	}

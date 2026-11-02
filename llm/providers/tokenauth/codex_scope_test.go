@@ -4,10 +4,12 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"testing"
 	"time"
 
 	authopenai "primeradiant.com/evener/auth/openai"
+	"primeradiant.com/evener/envvars/userdirs"
 	"primeradiant.com/evener/llm/registry"
 )
 
@@ -80,5 +82,18 @@ func TestCodexScopedPreservesCredentialsSeam(t *testing.T) {
 	called = false
 	if _, err := ScopedCodex("root").credentials(context.Background(), "inst"); !called {
 		t.Fatalf("ScopedCodex scope did not use DefaultCodex's Credentials seam: %v", err)
+	}
+}
+
+// With no state directory configured and no home to derive one from, the Codex
+// scope lookup reports that instead of reading a record relative to the working
+// directory.
+func TestCodexAuthScopeWithoutStateHomeIsAnError(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", "")
+	t.Setenv("HOME", "")
+	c := &Codex{}
+	_, _, err := c.AuthScope(context.Background(), registry.Resolved{Instance: "openai-codex", Credential: registry.Credential{Source: "oauth"}})
+	if !errors.Is(err, userdirs.ErrNoStateHome) {
+		t.Fatalf("AuthScope error = %v, want ErrNoStateHome", err)
 	}
 }

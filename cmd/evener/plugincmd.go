@@ -1,6 +1,7 @@
 package main
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -109,18 +110,35 @@ func runPluginMarketplace(args []string, stdout, stderr io.Writer) error {
 		fs := flag.NewFlagSet("marketplace add", flag.ContinueOnError)
 		fs.SetOutput(stderr)
 		yes := fs.Bool("yes", false, "skip the trust confirmation")
+		gitRef := fs.String("ref", "", "git branch or tag to check out")
 		if err := fs.Parse(args[1:]); err != nil {
 			return err
 		}
-		if fs.NArg() < 1 {
-			return errors.New("usage: evener plugin marketplace add <url|owner/repo|path> [--yes]")
-		}
-		src, err := parsePluginMarketplaceSource(fs.Arg(0))
+		srcArg, err := requireSingleArg(fs,
+			"usage: evener plugin marketplace add [--ref <branch|tag>] [--yes] <url|owner/repo|path>",
+			"source", "marketplace add --ref <branch|tag> <source>")
 		if err != nil {
 			return err
 		}
+		if strings.HasPrefix(*gitRef, "refs/") {
+			return errors.New("--ref takes a branch or tag name, not a fully qualified ref")
+		}
+		src, err := parsePluginMarketplaceSource(srcArg)
+		if err != nil {
+			return err
+		}
+		if *gitRef != "" {
+			if !src.Kind.HasRemote() {
+				return errors.New("--ref applies only to git sources, not a local directory")
+			}
+			src.Ref = *gitRef
+		}
 		if !*yes {
-			_, _ = fmt.Fprintf(stderr, "Add marketplace from %s? Marketplaces are arbitrary code repositories.\nPass --yes to confirm.\n", fs.Arg(0))
+			from := fs.Arg(0)
+			if *gitRef != "" {
+				from += " at " + *gitRef
+			}
+			_, _ = fmt.Fprintf(stderr, "Add marketplace from %s? Marketplaces are arbitrary code repositories.\nPass --yes to confirm.\n", from)
 			return errors.New("confirmation required")
 		}
 		ref, err := m.AddMarketplace(context.Background(), "", src)
@@ -135,10 +153,11 @@ func runPluginMarketplace(args []string, stdout, stderr io.Writer) error {
 		if err := fs.Parse(args[1:]); err != nil {
 			return err
 		}
-		if fs.NArg() < 1 {
-			return errors.New("usage: evener plugin marketplace remove <name>")
+		name, err := requireSingleArg(fs, "usage: evener plugin marketplace remove <name>",
+			"name", "plugin marketplace remove <name>")
+		if err != nil {
+			return err
 		}
-		name := fs.Arg(0)
 		if err := m.RemoveMarketplace(context.Background(), name); err != nil {
 			if errors.Is(err, plugins.ErrMarketplaceUnregisteredCloneRemains) {
 				// The unregister already landed - name is gone from the
@@ -159,10 +178,11 @@ func runPluginMarketplace(args []string, stdout, stderr io.Writer) error {
 		if err := fs.Parse(args[1:]); err != nil {
 			return err
 		}
-		if fs.NArg() < 1 {
-			return errors.New("usage: evener plugin marketplace refresh <name>")
+		name, err := requireSingleArg(fs, "usage: evener plugin marketplace refresh <name>",
+			"name", "plugin marketplace refresh <name>")
+		if err != nil {
+			return err
 		}
-		name := fs.Arg(0)
 		if err := m.RefreshMarketplace(context.Background(), name); err != nil {
 			return err
 		}
@@ -175,10 +195,11 @@ func runPluginMarketplace(args []string, stdout, stderr io.Writer) error {
 		if err := fs.Parse(args[1:]); err != nil {
 			return err
 		}
-		if fs.NArg() < 1 {
-			return errors.New("usage: evener plugin marketplace browse <name> [--json]")
+		name, err := requireSingleArg(fs, "usage: evener plugin marketplace browse [--json] <name>",
+			"name", "plugin marketplace browse --json <name>")
+		if err != nil {
+			return err
 		}
-		name := fs.Arg(0)
 		cat, err := m.Browse(context.Background(), name)
 		if err != nil {
 			return err
@@ -273,15 +294,20 @@ func renderMarketplaces(w io.Writer, mk plugins.Marketplaces, asJSON bool) error
 }
 
 func sourceDescription(src plugins.Source) string {
+	pin := cmp.Or(src.Sha, src.Ref)
+	suffix := ""
+	if pin != "" {
+		suffix = "@" + pin
+	}
 	switch src.Kind {
 	case plugins.SourceDirectory:
 		return "directory: " + src.Path
 	case plugins.SourceGitHub:
-		return "github: " + src.Repo
+		return "github: " + src.Repo + suffix
 	case plugins.SourceURL:
-		return "url: " + src.URL
+		return "url: " + src.URL + suffix
 	case plugins.SourceGitSubdir:
-		return "git-subdir: " + src.URL + "/" + src.Path
+		return "git-subdir: " + src.URL + "/" + src.Path + suffix
 	default:
 		return "unknown: " + string(src.Kind)
 	}
@@ -422,10 +448,12 @@ func runPluginLifecycle(verb string, args []string, _ io.Reader, stdout, stderr 
 		if err := fs.Parse(args); err != nil {
 			return err
 		}
-		if fs.NArg() < 1 {
-			return errors.New("usage: evener plugin install <plugin>@<marketplace> [--yes]")
+		spec, err := requireSingleArg(fs, "usage: evener plugin install [--yes] <plugin>@<marketplace>",
+			"plugin spec", "plugin install --yes <plugin>@<marketplace>")
+		if err != nil {
+			return err
 		}
-		plugin, marketplace, err := splitPluginRef(fs.Arg(0))
+		plugin, marketplace, err := splitPluginRef(spec)
 		if err != nil {
 			return err
 		}
@@ -449,10 +477,12 @@ func runPluginLifecycle(verb string, args []string, _ io.Reader, stdout, stderr 
 		if err := fs.Parse(args); err != nil {
 			return err
 		}
-		if fs.NArg() < 1 {
-			return errors.New("usage: evener plugin remove <plugin>@<marketplace>")
+		spec, err := requireSingleArg(fs, "usage: evener plugin remove <plugin>@<marketplace>",
+			"plugin spec", "plugin remove <plugin>@<marketplace>")
+		if err != nil {
+			return err
 		}
-		plugin, marketplace, err := splitPluginRef(fs.Arg(0))
+		plugin, marketplace, err := splitPluginRef(spec)
 		if err != nil {
 			return err
 		}
@@ -468,10 +498,12 @@ func runPluginLifecycle(verb string, args []string, _ io.Reader, stdout, stderr 
 		if err := fs.Parse(args); err != nil {
 			return err
 		}
-		if fs.NArg() < 1 {
-			return errors.New("usage: evener plugin enable <plugin>@<marketplace>")
+		spec, err := requireSingleArg(fs, "usage: evener plugin enable <plugin>@<marketplace>",
+			"plugin spec", "plugin enable <plugin>@<marketplace>")
+		if err != nil {
+			return err
 		}
-		plugin, marketplace, err := splitPluginRef(fs.Arg(0))
+		plugin, marketplace, err := splitPluginRef(spec)
 		if err != nil {
 			return err
 		}
@@ -487,10 +519,12 @@ func runPluginLifecycle(verb string, args []string, _ io.Reader, stdout, stderr 
 		if err := fs.Parse(args); err != nil {
 			return err
 		}
-		if fs.NArg() < 1 {
-			return errors.New("usage: evener plugin disable <plugin>@<marketplace>")
+		spec, err := requireSingleArg(fs, "usage: evener plugin disable <plugin>@<marketplace>",
+			"plugin spec", "plugin disable <plugin>@<marketplace>")
+		if err != nil {
+			return err
 		}
-		plugin, marketplace, err := splitPluginRef(fs.Arg(0))
+		plugin, marketplace, err := splitPluginRef(spec)
 		if err != nil {
 			return err
 		}
@@ -509,6 +543,9 @@ func runPluginLifecycle(verb string, args []string, _ io.Reader, stdout, stderr 
 		}
 
 		if *all {
+			if fs.NArg() > 0 {
+				return unexpectedArguments(fs)
+			}
 			entries, err := m.UpdateAll(ctx)
 			if err != nil {
 				return err
@@ -524,10 +561,12 @@ func runPluginLifecycle(verb string, args []string, _ io.Reader, stdout, stderr 
 			return nil
 		}
 
-		if fs.NArg() < 1 {
-			return errors.New("usage: evener plugin upgrade <plugin>@<marketplace> | upgrade --all")
+		spec, err := requireSingleArg(fs, "usage: evener plugin upgrade <plugin>@<marketplace> | upgrade --all",
+			"plugin spec", "plugin upgrade <plugin>@<marketplace>")
+		if err != nil {
+			return err
 		}
-		plugin, marketplace, err := splitPluginRef(fs.Arg(0))
+		plugin, marketplace, err := splitPluginRef(spec)
 		if err != nil {
 			return err
 		}
@@ -545,10 +584,12 @@ func runPluginLifecycle(verb string, args []string, _ io.Reader, stdout, stderr 
 		if err := fs.Parse(args); err != nil {
 			return err
 		}
-		if fs.NArg() < 1 {
-			return errors.New("usage: evener plugin auto-upgrade <plugin>@<marketplace> [--off]")
+		spec, err := requireSingleArg(fs, "usage: evener plugin auto-upgrade [--off] <plugin>@<marketplace>",
+			"plugin spec", "plugin auto-upgrade --off <plugin>@<marketplace>")
+		if err != nil {
+			return err
 		}
-		plugin, marketplace, err := splitPluginRef(fs.Arg(0))
+		plugin, marketplace, err := splitPluginRef(spec)
 		if err != nil {
 			return err
 		}
@@ -569,6 +610,9 @@ func runPluginLifecycle(verb string, args []string, _ io.Reader, stdout, stderr 
 		asJSON := fs.Bool("json", false, "emit JSON")
 		if err := fs.Parse(args); err != nil {
 			return err
+		}
+		if fs.NArg() > 0 {
+			return unexpectedArguments(fs)
 		}
 		removed, err := m.Gc(context.Background())
 		if err != nil {

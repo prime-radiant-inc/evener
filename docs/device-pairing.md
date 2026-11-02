@@ -79,7 +79,7 @@ are pruned on access. A Hub restart discards all pending invitations. Existing
 saved client credentials remain valid.
 
 The Hub supplies the pairing destination automatically. An optional
-`mobile_base_url` supplies the default; otherwise the Hub uses the browser's
+`public_url` advertised HTTP(S) origin supplies the default; otherwise the Hub uses the browser's
 usable origin, a concrete network listener address, or an interface
 address when listening on all interfaces. Interface selection prefers Tailscale
 IPv4, then the OS's outbound IPv4/IPv6 addresses ahead of container bridges,
@@ -99,6 +99,13 @@ the settings section connects; it does not change saved client destinations.
 Creating an invitation requires a Hub credential of 1–511 non-space printable
 ASCII bytes, matching the envelope receivers. Unsupported credentials are
 reported before an invitation is issued; ordinary Hub authentication is unchanged.
+
+The default advertisement also supplies the hub's browser login origin; it does
+not change its listener or enable TLS. An explicit invitation address still wins
+over the default, and invitations refuse unsafe destinations without disabling
+the hub for direct clients. Browser login links contain the hub credential and
+must be treated as passwords; use `evener hub login-url [--config PATH]` to
+retrieve one deliberately when startup output was redirected.
 
 `tailnet` marks a destination reached through Tailscale. A tailnet locator may
 use MagicDNS. Both direct HTTP and HTTPS accept a reachable DNS or IP origin,

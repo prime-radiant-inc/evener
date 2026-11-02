@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -160,5 +161,55 @@ func TestWSTransportReadLimitCoversMaxComposerImages(t *testing.T) {
 	encodedPayloadBytes := maxImages*encodedImageBytes + jsonHeadroom
 	if appWireWebSocketReadLimit < encodedPayloadBytes {
 		t.Fatalf("appWireWebSocketReadLimit=%d, want at least %d", appWireWebSocketReadLimit, encodedPayloadBytes)
+	}
+}
+
+type wsTransportPingContextKey struct{}
+
+type wsTransportPingError struct{}
+
+func (*wsTransportPingError) Error() string { return "ping failed" }
+
+// TestWSTransportPing pins the WebSocket boundary: Ping must pass its own
+// connection and the caller's context through unchanged, and return the
+// boundary error unchanged.
+func TestWSTransportPing(t *testing.T) {
+	oldPing := pingWebSocket
+	t.Cleanup(func() { pingWebSocket = oldPing })
+
+	conn := &websocket.Conn{}
+	successCtx := context.WithValue(t.Context(), wsTransportPingContextKey{}, "success")
+	errorCtx, cancel := context.WithCancel(t.Context())
+	t.Cleanup(cancel)
+	wantErr := &wsTransportPingError{}
+	wantContexts := []context.Context{successCtx, errorCtx}
+	calls := 0
+	pingWebSocket = func(gotConn *websocket.Conn, gotCtx context.Context) error {
+		if gotConn != conn {
+			t.Fatalf("ping receiver = %p, want %p", gotConn, conn)
+		}
+		if calls >= len(wantContexts) {
+			t.Fatalf("unexpected ping call %d", calls+1)
+		}
+		if gotCtx != wantContexts[calls] {
+			t.Fatalf("ping context on call %d was replaced", calls+1)
+		}
+		calls++
+		if gotCtx == errorCtx {
+			return wantErr
+		}
+		return nil
+	}
+
+	tr := &WSTransport{conn: conn}
+	if err := tr.Ping(successCtx); err != nil {
+		t.Fatalf("Ping success: unexpected error: %v", err)
+	}
+	err := tr.Ping(errorCtx)
+	if reflect.TypeOf(err) != reflect.TypeOf(wantErr) || reflect.ValueOf(err).Pointer() != reflect.ValueOf(wantErr).Pointer() {
+		t.Fatalf("Ping error = %T %v, want exact input error %p", err, err, wantErr)
+	}
+	if calls != 2 {
+		t.Fatalf("ping calls = %d, want 2", calls)
 	}
 }

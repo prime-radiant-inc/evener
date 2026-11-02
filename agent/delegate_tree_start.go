@@ -128,6 +128,9 @@ func (c *delegateTreeController) ReserveCreate(actor delegateActor, descriptor d
 		}
 		parentID = actor.lease.delegateID
 	}
+	if c.laneHandoffCoversLocked(parentID) {
+		return nil, errDelegateTargetBusy
+	}
 	if strings.TrimSpace(descriptor.Task) == "" || strings.TrimSpace(descriptor.AgentType) == "" || !descriptor.Resumable {
 		return nil, errDelegateTargetBusy
 	}
@@ -154,7 +157,7 @@ func (c *delegateTreeController) ReserveCreate(actor delegateActor, descriptor d
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	c.nextToken++
-	transcriptPath := filepath.Join(c.stateDir, sessionsSubdir, childSessionID+".transcript.jsonl")
+	transcriptPath := schema.SessionTranscriptPath(c.stateDir, childSessionID)
 	storedDescriptor := cloneDelegateStartDescriptor(descriptor)
 	reservation := &delegateStartReservation{
 		delegateID:     delegateID,
@@ -223,6 +226,9 @@ func (c *delegateTreeController) ReserveAttention(runtime *Session, attentionID 
 		return nil, errDelegateTargetBusy
 	}
 	if blocked, _ := c.ancestorFenceLocked(aggregate.Descriptor.ParentDelegateID); blocked {
+		return nil, errDelegateTargetBusy
+	}
+	if c.laneHandoffCoversLocked(delegateID) {
 		return nil, errDelegateTargetBusy
 	}
 	return c.reserveAttentionStartLocked(aggregate, attentionID, aggregate.Generation+1, runtime, nil, false)
@@ -320,6 +326,9 @@ func (c *delegateTreeController) reserveOwedAttentionStart(delegateID, attention
 	if blocked, _ := c.ancestorFenceLocked(aggregate.Descriptor.ParentDelegateID); blocked {
 		return nil, errDelegateTargetBusy
 	}
+	if c.laneHandoffCoversLocked(delegateID) {
+		return nil, errDelegateTargetBusy
+	}
 	for _, record := range c.reservations {
 		if record.delegateID == delegateID {
 			return nil, errDelegateTargetBusy
@@ -337,7 +346,7 @@ func (c *delegateTreeController) reserveAttentionStartLocked(aggregate *delegate
 	}
 	delegateID := aggregate.DelegateID
 	descriptor := cloneDelegateStartDescriptor(aggregate.Descriptor)
-	transcriptPath := filepath.Join(c.stateDir, sessionsSubdir, descriptor.ChildSessionID+".transcript.jsonl")
+	transcriptPath := schema.SessionTranscriptPath(c.stateDir, descriptor.ChildSessionID)
 	worktreePath := ""
 	if descriptor.Isolation == "worktree" {
 		worktreePath = descriptor.WorkingDir
@@ -378,6 +387,9 @@ func (c *delegateTreeController) AttachRuntime(lease delegateLease, runtime *Ses
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.closing {
+		return errDelegateTargetBusy
+	}
+	if c.laneHandoffCoversLocked(lease.delegateID) {
 		return errDelegateTargetBusy
 	}
 	aggregate, live, err := c.exactLeaseLocked(lease)
@@ -616,6 +628,9 @@ func (c *delegateTreeController) ReserveStart(actor delegateActor, delegateID st
 	if aggregate.Phase != delegatestore.PhaseIdle || !aggregate.Resumable || aggregate.PendingStopSeq != 0 || c.reclamationCoversLocked(delegateID) {
 		return nil, errDelegateTargetBusy
 	}
+	if c.laneHandoffCoversLocked(delegateID) {
+		return nil, errDelegateTargetBusy
+	}
 	// Idle but still finalizing: the finished generation's runtime has not
 	// reported quiescence, so it can't take another generation yet. Refusing
 	// here, under the lock the start commits under, leaves nothing written.
@@ -633,7 +648,7 @@ func (c *delegateTreeController) ReserveStart(actor delegateActor, delegateID st
 	ctx, cancel := context.WithCancel(context.Background())
 	c.nextToken++
 	descriptor := cloneDelegateStartDescriptor(aggregate.Descriptor)
-	transcriptPath := filepath.Join(c.stateDir, sessionsSubdir, descriptor.ChildSessionID+".transcript.jsonl")
+	transcriptPath := schema.SessionTranscriptPath(c.stateDir, descriptor.ChildSessionID)
 	worktreePath := ""
 	if descriptor.Isolation == "worktree" {
 		worktreePath = descriptor.WorkingDir
@@ -704,12 +719,7 @@ func (c *delegateTreeController) releaseReservationLocked(record *delegateStartR
 		close(record.done)
 		record.done = nil
 	}
-	if c.stop != nil {
-		if _, tracked := c.stop.starts[record.token]; tracked {
-			delete(c.stop.starts, record.token)
-			c.signalStopProgressLocked()
-		}
-	}
+	untrackStopLocked(c, func(s *delegateStopState) map[uint64]struct{} { return s.starts }, record.token)
 	c.releaseCapacityLocked(record.capacityKind)
 	c.evidenceVersion++
 	return record.cancel
@@ -757,6 +767,11 @@ func (c *delegateTreeController) commitStart(reservation *delegateStartReservati
 	} else if blocked, _ := c.ancestorFenceLocked(aggregate.Descriptor.ParentDelegateID); blocked {
 		// Re-check the ancestor chain: an ancestor that closed between reserve
 		// and commit would make every model request of this generation fail.
+		cancel = c.releaseReservationLocked(record)
+		return delegateStartCommit{}, errDelegateTargetBusy
+	}
+	if c.laneHandoffCoversLocked(record.delegateID) ||
+		(record.create && c.laneHandoffCoversLocked(record.descriptor.ParentDelegateID)) {
 		cancel = c.releaseReservationLocked(record)
 		return delegateStartCommit{}, errDelegateTargetBusy
 	}
@@ -808,12 +823,7 @@ func (c *delegateTreeController) commitStart(reservation *delegateStartReservati
 		close(record.done)
 		record.done = nil
 	}
-	if c.stop != nil {
-		if _, tracked := c.stop.starts[record.token]; tracked {
-			delete(c.stop.starts, record.token)
-			c.signalStopProgressLocked()
-		}
-	}
+	untrackStopLocked(c, func(s *delegateStopState) map[uint64]struct{} { return s.starts }, record.token)
 	live := c.live[record.delegateID]
 	if live == nil {
 		live = &delegateLiveState{}
@@ -905,19 +915,6 @@ func (c *delegateTreeController) beginRuntimeBoundary(lease delegateLease) error
 	defer c.mu.Unlock()
 	_, _, err := c.admitLeaseLocked(lease, delegatestore.PhaseRunning)
 	return err
-}
-
-func (c *delegateTreeController) inputPersistFailureBatch(lease delegateLease, inputErr error) (delegatestore.Event, delegatestore.Event) {
-	message := "input persistence failed"
-	if inputErr != nil {
-		message += ": " + inputErr.Error()
-	}
-	if len(message) > 512 {
-		message = message[:512]
-	}
-	raw, _ := json.Marshal(message)
-	packet := delegatestore.TerminalPacket{Kind: delegatestore.PacketTerminalError, Message: raw}
-	return terminalFinishBatch(lease, delegatestore.OutcomeFailed, "input_persist_failed", c.now(), packet)
 }
 
 func (c *delegateTreeController) startInputFailureBatch(lease delegateLease, failure delegateFinish) (delegatestore.Event, delegatestore.Event) {

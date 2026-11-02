@@ -122,7 +122,7 @@ func TestWithAllowedDecisions_RegistryPreservesDecisionSchema(t *testing.T) {
 	// will overwrite the profile's decision-bearing definition with the plain
 	// base, and the assertion below will fail.
 	deps := &toolDeps{
-		emit:                   func(events.EventKind, events.EventData) {},
+		emit:                   func(events.EventData) {},
 		deliverCommunicate:     func(events.CommunicateData) error { return nil },
 		abort:                  func(context.Context) error { return nil },
 		drainSteering:          func() []steeringMessage { return nil },

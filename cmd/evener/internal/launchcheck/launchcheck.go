@@ -15,6 +15,7 @@ import (
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/buildinfo"
 	"primeradiant.com/evener/cmdutil"
+	"primeradiant.com/evener/internal/hubendpoint"
 	"primeradiant.com/evener/llm"
 	"primeradiant.com/evener/llm/registry"
 )
@@ -34,6 +35,15 @@ type launchCheckModel struct {
 	// flag rows the resolver itself warns about (e.g. a global-only model under
 	// a regional Vertex location).
 	Warnings []string `json:"warnings,omitempty"`
+	// The hub decodes this contract directly into appwire.ModelDescriptor,
+	// whose wire field is camelCase (cmd/evener-hub/spawn.go resolves the
+	// launch model list). This is that fixed AppWire JSON contract, not a
+	// local naming choice.
+	InstanceDefault bool `json:"instanceDefault,omitempty"` //nolint:tagliatelle // matches appwire.ModelDescriptor's camelCase wire contract
+	// The resolved row's effort facts, so the composer offers the model's own
+	// levels rather than a generic fallback ladder.
+	ReasoningEffortLevels []string `json:"reasoningEffortLevels,omitempty"` //nolint:tagliatelle // matches appwire.ModelDescriptor's camelCase wire contract
+	SupportsReasoning     *bool    `json:"supportsReasoning,omitempty"`     //nolint:tagliatelle // matches appwire.ModelDescriptor's camelCase wire contract
 }
 
 // supportedLaunchFlags advertises the serve/run flags this binary accepts
@@ -43,6 +53,7 @@ type launchCheckModel struct {
 var supportedLaunchFlags = []string{"api-log"}
 
 type launchCheckResponse struct {
+	HubEndpointSchema int `json:"hub_endpoint_schema"`
 	// LaunchFlags is the CLI-capability half of the launch contract: a
 	// binary predating a flag omits it, which is itself the signal a
 	// launcher needs to reject the pairing up front instead of dying on an
@@ -74,9 +85,10 @@ func RunLaunchCheck(args []string, stdout, stderr io.Writer) error {
 	}
 
 	resp := launchCheckResponse{
-		LaunchFlags: supportedLaunchFlags,
-		Version:     buildinfo.Version(),
-		Protocol:    appwire.ProtocolVersion,
+		HubEndpointSchema: hubendpoint.SchemaVersion,
+		LaunchFlags:       supportedLaunchFlags,
+		Version:           buildinfo.Version(),
+		Protocol:          appwire.ProtocolVersion,
 	}
 	if *modelsOut {
 		models, diagnostics, err := launchCheckModels()
@@ -154,6 +166,7 @@ func launchCheckModels() ([]launchCheckModel, []appwire.ModelListDiagnostic, err
 		if inst.Hidden {
 			continue
 		}
+		defaultModel := strings.TrimSpace(inst.DefaultModel)
 		if client.Registry().LaunchMintsCredentialCommand(inst.Name) {
 			// The hub never executes a credential command (spec
 			// §10.1): a command-credentialed instance's live listing
@@ -174,7 +187,7 @@ func launchCheckModels() ([]launchCheckModel, []appwire.ModelListDiagnostic, err
 				if err != nil || res.Model.Hidden || llm.LiveSaysNoTools(res) {
 					continue
 				}
-				out = append(out, launchCheckModel{Provider: inst.Name, Model: row.ID, Warnings: append([]string(nil), res.Warnings...)})
+				out = append(out, launchCheckModelRow(inst.Name, row.ID, res, false))
 			}
 			continue
 		}
@@ -186,10 +199,28 @@ func launchCheckModels() ([]launchCheckModel, []appwire.ModelListDiagnostic, err
 			continue
 		}
 		for _, m := range listing.Models {
-			out = append(out, launchCheckModel{Provider: inst.Name, Model: m.ModelID, Warnings: append([]string(nil), m.Warnings...)})
+			out = append(out, launchCheckModelRow(inst.Name, m.ModelID, m,
+				listing.Usable && defaultModel != "" && strings.TrimSpace(m.ModelID) == defaultModel))
 		}
 	}
 	return out, diagnostics, nil
+}
+
+// launchCheckModelRow builds one contract row from a resolved record through
+// cmdutil's wire view of the same caps, so this contract and the hub's
+// live-descriptor path cannot state different facts about the same model. The
+// reasoning capability rides only when the row states one; an unstated
+// capability stays absent so the composer's fallback ladder still applies.
+func launchCheckModelRow(provider, modelID string, res registry.Resolved, instanceDefault bool) launchCheckModel {
+	d := cmdutil.ModelDescriptorFromResolved(res)
+	return launchCheckModel{
+		Provider:              provider,
+		Model:                 modelID,
+		Warnings:              d.Warnings,
+		InstanceDefault:       instanceDefault,
+		ReasoningEffortLevels: d.ReasoningEffortLevels,
+		SupportsReasoning:     d.SupportsReasoning,
+	}
 }
 
 func launchCheckModelDiagnostic(provider string, err error) appwire.ModelListDiagnostic {

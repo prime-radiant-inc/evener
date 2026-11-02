@@ -12,7 +12,6 @@ import { StateMark } from "./StateMark";
 vi.mock("react-native", async () => ({
 	...(await import("../renderNative.testkit")).nativeModuleMock(),
 }));
-vi.mock("expo-symbols", () => ({ SymbolView: "SymbolView" }));
 
 const palette = paletteFor("light");
 const result = (id: string, over: Partial<SearchResult> = {}): SearchResult => ({

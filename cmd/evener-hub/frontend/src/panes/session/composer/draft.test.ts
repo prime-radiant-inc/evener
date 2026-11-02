@@ -4,9 +4,11 @@ import {
   type ComposerDraft,
   carryComposerDraft,
   clearDraft,
+  clearPersistedDraftIfRevisionMatches,
   composerDraftStorageKey,
   draftStorageKey,
   readComposerDraft,
+  readComposerDraftRevisionId,
   readDraft,
   readDraftRevision,
   writeComposerDraft,
@@ -92,6 +94,21 @@ test("writeDraft then readDraft round-trips the same ref's text", () => {
   expect(readDraft("local:01AAA")).toBe("hello world");
 });
 
+test("conditional recovery cleanup removes only the exact persisted revision", () => {
+  writeDraft("local:revision", "incorporated");
+  const incorporated = readComposerDraftRevisionId("local:revision");
+  if (!incorporated) throw new Error("missing persisted revision fixture");
+  writeDraft("local:revision", "newer replacement");
+  const newer = readComposerDraftRevisionId("local:revision");
+  expect(newer).toBeDefined();
+  if (!newer) throw new Error("missing replacement revision fixture");
+  expect(newer).not.toBe(incorporated);
+  expect(clearPersistedDraftIfRevisionMatches("local:revision", incorporated)).toBe(false);
+  expect(readComposerDraft("local:revision").text).toBe("newer replacement");
+  expect(clearPersistedDraftIfRevisionMatches("local:revision", newer)).toBe(true);
+  expect(readComposerDraft("local:revision").text).toBe("");
+});
+
 test("writeDraft with blank content stores nothing (readDraft still empty)", () => {
   writeDraft("local:01AAA", "");
   expect(readDraft("local:01AAA")).toBe("");
@@ -175,6 +192,27 @@ test("writing a structured draft stores one atomic v2 record and removes any old
     expect.objectContaining({ text: "new text", skillNames: ["pkg:probe"], editedAt: expect.any(Number) }),
   );
   expect(localStorage.getItem(draftStorageKey("local:01AAA"))).toBeNull();
+});
+
+test("a committed draft retains its revision when legacy cleanup fails", () => {
+  const ref = "local:cleanup-failure";
+  localStorage.setItem(draftStorageKey(ref), "legacy text");
+  const removeItem = localStorage.removeItem.bind(localStorage);
+  vi.spyOn(localStorage, "removeItem").mockImplementation((key) => {
+    if (key === draftStorageKey(ref)) throw new DOMException("", "SecurityError");
+    removeItem(key);
+  });
+
+  const revisionId = writeComposerDraft(ref, { text: "committed text", skillNames: ["pkg:probe"] });
+  const stored = JSON.parse(localStorage.getItem(composerDraftStorageKey(ref)) ?? "null");
+  expect(stored).toMatchObject({
+    text: "committed text",
+    skillNames: ["pkg:probe"],
+    revisionId: expect.any(String),
+  });
+  expect(revisionId).toBe(stored.revisionId);
+  expect(readComposerDraft(ref).text).toBe("committed text");
+  expect(localStorage.getItem(draftStorageKey(ref))).toBe("legacy text");
 });
 
 test("an existing plain-text draft reads back as literal text with an empty selection list", () => {

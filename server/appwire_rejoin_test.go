@@ -20,7 +20,7 @@ func TestAtomicProjectionCommitPreservesProducerOrderAcrossSequenceAllocation(t 
 	st := newServedTranscript(t, NewServer(ServerConfig{}), "th_1", schema.NewTurn(schema.TurnUserInput, llm.User("prompt")))
 	srv := st.srv
 	srv.RecordAppEvent(threadEvent("th_1", events.RoundStartedData{RoundID: "r_1"}))
-	before := srv.appNotifier.RetainedWindow("th_1").UpperSeq
+	before := srv.appNotifier.CurrentSequence()
 
 	projected := make(chan struct{})
 	release := make(chan struct{})

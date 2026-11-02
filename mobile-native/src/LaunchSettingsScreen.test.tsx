@@ -7,7 +7,7 @@ import { act } from "react-test-renderer";
 import { beforeEach, expect, it, vi } from "vitest";
 import type { LaunchOption } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
-import type { ConversationClientLike } from "../../mobile/src/services/conversation";
+import type { ConversationClientLike } from "./conversation/services/conversation";
 import { LaunchSettingsScreen } from "./LaunchSettingsScreen";
 import { markers } from "./markerTestUtils";
 import { alertRequests, offersButton, render, renderedText } from "./renderNative.testkit";

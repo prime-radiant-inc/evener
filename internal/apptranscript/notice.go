@@ -30,12 +30,13 @@ func CommunicateItem(turnID string, entryIndex int, entry schema.Turn) (appwire.
 		return appwire.ThreadItem{}, false
 	}
 	item := appwire.ThreadItem{
-		Type:   "agentMessage",
-		ID:     fmt.Sprintf("item_assistant_%d_0", entryIndex),
-		TurnID: turnID,
-		Text:   entry.Communicate.Message,
-		CallID: entry.Communicate.CallID,
-		Status: appwire.TurnStatusCompleted,
+		Authorship: ProjectAuthorship(entry.Authorship),
+		Type:       "agentMessage",
+		ID:         fmt.Sprintf("item_assistant_%d_0", entryIndex),
+		TurnID:     turnID,
+		Text:       entry.Communicate.Message,
+		CallID:     entry.Communicate.CallID,
+		Status:     appwire.TurnStatusCompleted,
 	}
 	item.StartedAt = entryStartedAt(entry)
 	return item, true

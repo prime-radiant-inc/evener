@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -22,7 +23,7 @@ func TestRefreshLaunchContractUpdatesAbsenceOnlyOnSuccessfulProbe(t *testing.T) 
 				host := hostreg.Host{Name: "alpha", SSH: "alpha.example", EvenerPath: "/opt/evener/bin/evener"}
 				fr := &fakeRunner{runFn: func(_ context.Context, argv []string, _ io.Reader) ([]byte, error) {
 					command := strings.Join(argv, " ")
-					if strings.Contains(command, "if test -x") {
+					if strings.Contains(command, "if test -e") {
 						if probe == "absent" {
 							return nil, absent
 						}
@@ -34,7 +35,9 @@ func TestRefreshLaunchContractUpdatesAbsenceOnlyOnSuccessfulProbe(t *testing.T) 
 					switch probe {
 					case "malformed":
 						return []byte(`{`), nil
-					case "transport", "absent":
+					case "absent":
+						return nil, &RunError{Err: exitStatus(t, 127)}
+					case "transport":
 						return nil, errors.New("interrupted probe")
 					default:
 						return launchContract("dev"), nil
@@ -82,7 +85,7 @@ func TestRecoverDeploymentForRestartRequiresOwnGateAndRegistration(t *testing.T)
 			if err != nil {
 				t.Fatal(err)
 			}
-			if _, _, err := m.DeployForOperation(t.Context(), host, facts, false, nil); err == nil || writes != 1 {
+			if _, _, err := m.DeployForOperation(t.Context(), registeredTestHost(t, m, host), facts, false, nil, nil); err == nil || writes != 1 {
 				t.Fatalf("expected failed acknowledged deployment: writes=%d err=%v", writes, err)
 			}
 			holder := attachUnderGateCaller()
@@ -153,7 +156,7 @@ func TestOperationRestartReconcilesFreshDeploymentDrift(t *testing.T) {
 							if writes == 2 && drift == "repair-wrong-build" {
 								disk = "incorrect-install"
 							}
-						case strings.Contains(command, "systemctl restart"):
+						case strings.Contains(command, "systemctl restart"), strings.Contains(command, "systemctl start"):
 							restarts++
 							running, started = disk, "2026-01-02T00:00:00Z"
 						}
@@ -170,7 +173,7 @@ func TestOperationRestartReconcilesFreshDeploymentDrift(t *testing.T) {
 					if err != nil {
 						t.Fatal(err)
 					}
-					if _, _, err := m.DeployForOperation(t.Context(), host, facts, restart, nil); err == nil {
+					if _, _, err := m.DeployForOperation(t.Context(), registeredTestHost(t, m, host), facts, restart, nil, nil); err == nil {
 						t.Fatal("initial deployment unexpectedly verified")
 					}
 					pending := m.pendingRestart(host.Name)
@@ -186,11 +189,11 @@ func TestOperationRestartReconcilesFreshDeploymentDrift(t *testing.T) {
 							wantWrites = 1
 						}
 					case "protocol":
-						badContract = []byte(`{"protocol":"other-protocol","version":"drifted-build","launch_flags":["api-log"]}`)
+						badContract = []byte(`{"hub_endpoint_schema":1,"protocol":"other-protocol","version":"drifted-build","launch_flags":["api-log"]}`)
 					case "protocol-refusal":
 						protocolRefused = true
 					case "startup-flag":
-						badContract = fmt.Appendf(nil, `{"protocol":%q,"version":"drifted-build","launch_flags":[]}`, appwire.ProtocolVersion)
+						badContract = fmt.Appendf(nil, `{"hub_endpoint_schema":1,"protocol":%q,"version":"drifted-build","launch_flags":[]}`, appwire.ProtocolVersion)
 					case "unreadable":
 						badContract = []byte(`{`)
 					}
@@ -202,7 +205,7 @@ func TestOperationRestartReconcilesFreshDeploymentDrift(t *testing.T) {
 						}
 						return nil
 					}
-					version, err := m.RestartForOperation(t.Context(), host, facts, guard)
+					version, err := m.RestartForOperation(t.Context(), registeredTestHost(t, m, host), facts, guard)
 					if strings.HasPrefix(drift, "guard-") {
 						after := m.pendingRestart(host.Name)
 						wantWrites, wantAcknowledged := 1, acknowledged
@@ -219,23 +222,23 @@ func TestOperationRestartReconcilesFreshDeploymentDrift(t *testing.T) {
 						if !errors.Is(err, refusal) || writes != wantWrites || restarts != 0 || running != "predecessor-build" || started != "2026-01-01T00:00:00Z" || !after.deployment || after.restart != wantRestart || after.start || after.command != "" || after.writeAcknowledged != wantAcknowledged || after.expectedVersion != pending.expectedVersion || after.expectedGitSHA != pending.expectedGitSHA {
 							t.Fatalf("guard changed owned intent or process: err=%v writes=%d restarts=%d pending=%+v", err, writes, restarts, after)
 						}
-						if drift == "guard-before-repair" && after != pending {
+						if drift == "guard-before-repair" && !reflect.DeepEqual(after, pending) {
 							t.Fatalf("refused renewal changed pending effect: before=%+v after=%+v", pending, after)
 						}
 						m.opts.controllerVersionOverride = "later-controller"
 						restored = true
-						version, err = m.RestartForOperation(t.Context(), host, facts, nil)
+						version, err = m.RestartForOperation(t.Context(), registeredTestHost(t, m, host), facts, nil)
 					}
 					if drift == "repair-write-failure" || drift == "repair-wrong-build" {
 						wantErr := ErrDeploy
 						if drift == "repair-wrong-build" {
-							wantErr = errDeployUnstamped
+							wantErr = ErrDeployUnstamped
 						}
 						pending = m.pendingRestart(host.Name)
 						if !errors.Is(err, wantErr) || writes != 2 || restarts != 0 || running != "predecessor-build" || !pending.deployment || !pending.restart || pending.expectedVersion != requested || pending.replaced.startedAt.Format(time.RFC3339) != "2026-01-01T00:00:00Z" || pending.writeAcknowledged != (drift == "repair-wrong-build") {
 							t.Fatalf("failed repair lost intent or replaced predecessor: err=%v writes=%d restarts=%d running=%q pending=%+v", err, writes, restarts, running, pending)
 						}
-						version, err = m.RestartForOperation(t.Context(), host, facts, nil)
+						version, err = m.RestartForOperation(t.Context(), registeredTestHost(t, m, host), facts, nil)
 						wantWrites = 3
 					}
 					if err != nil || version != requested || writes != wantWrites || restarts != 1 || disk != requested || running != requested || m.pendingRestart(host.Name).active() {
@@ -272,7 +275,7 @@ func TestOperationRestartReconcilesDeployment(t *testing.T) {
 						return nil, interrupted
 					}
 					requestedOnDisk = true
-				case strings.Contains(command, "systemctl restart"):
+				case strings.Contains(command, "systemctl restart"), strings.Contains(command, "systemctl start"):
 					restarts++
 					requestedRunning = requestedOnDisk
 					started = "2026-01-02T00:00:00Z"
@@ -289,11 +292,11 @@ func TestOperationRestartReconcilesDeployment(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			_, after, err := m.DeployForOperation(t.Context(), host, facts, scenario != "uncertain-deploy-only", nil)
+			_, after, err := m.DeployForOperation(t.Context(), registeredTestHost(t, m, host), facts, scenario != "uncertain-deploy-only", nil, nil)
 			if (err != nil) != (scenario != "predecessor-probe") {
 				t.Fatalf("deploy: err=%v writes=%d", err, writes)
 			}
-			if _, err := m.RestartForOperation(t.Context(), host, after, nil); err != nil {
+			if _, err := m.RestartForOperation(t.Context(), registeredTestHost(t, m, host), after, nil); err != nil {
 				t.Fatalf("restart: %v", err)
 			}
 			ch, err := m.Ensure(t.Context(), host.Name)

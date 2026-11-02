@@ -3,7 +3,6 @@ package hub
 import (
 	"context"
 	"net/netip"
-	"net/url"
 	"strings"
 
 	"golang.org/x/net/idna"
@@ -12,6 +11,7 @@ import (
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubedge"
 	"primeradiant.com/evener/internal/appserver"
+	"primeradiant.com/evener/internal/hubendpoint"
 )
 
 var mobileHostnameProfile = idna.New(idna.MapForLookup(), idna.StrictDomainName(false), idna.CheckHyphens(false))
@@ -35,14 +35,11 @@ func mobilePairing(cfg hubcore.WebConfig, params appwire.MobilePairingParams) (a
 // unspecified listener address does not identify a destination. Scoped IPv6
 // addresses cannot be represented in browser URLs or shared across devices.
 func safeMobileOrigin(raw string) (string, bool) {
-	if err := validateMobileBaseURL(raw); err != nil {
-		return "", false
-	}
-	u, err := url.Parse(raw)
+	origin, err := hubendpoint.ParseOrigin(raw)
 	if err != nil {
 		return "", false
 	}
-	host := strings.TrimRight(u.Hostname(), ".")
+	host := strings.TrimRight(origin.Hostname(), ".")
 	if _, err := netip.ParseAddr(host); err != nil {
 		// Browsers apply UTS #46 mappings before interpreting a hostname. Do
 		// the same so Unicode spellings of numeric addresses cannot bypass the
@@ -74,7 +71,7 @@ func safeMobileOrigin(raw string) (string, bool) {
 		// the browser; do not publish a numeric spelling as a DNS hostname.
 		return "", false
 	}
-	return strings.TrimRight(raw, "/"), true
+	return origin.String(), true
 }
 
 // hasNumericHostSuffix implements the WHATWG ends-in-a-number check on an

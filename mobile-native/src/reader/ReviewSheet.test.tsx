@@ -29,7 +29,6 @@ const harness = vi.hoisted(() => ({
 	connection: {} as Record<string, unknown>,
 	memory: null as unknown,
 	runtime: null as unknown,
-	uuid: 0,
 }));
 const sheetNavigation = vi.hoisted(() => ({
 	goBack: vi.fn(),
@@ -45,7 +44,6 @@ vi.mock("react-native", async () => ({
 	...(await import("../renderNative.testkit")).nativeModuleMock(),
 	TextInput: "TextInput",
 }));
-vi.mock("expo-symbols", () => ({ SymbolView: "SymbolView" }));
 vi.mock("@react-navigation/native", () => ({
 	useNavigation: () => sheetNavigation,
 	usePreventRemove: (prevent: boolean, onPrevent: (event: { data: { action: unknown } }) => void) => {
@@ -54,13 +52,6 @@ vi.mock("@react-navigation/native", () => ({
 	},
 }));
 vi.mock("expo-sqlite", () => ({ openDatabaseSync: vi.fn() }));
-vi.mock("expo-crypto", () => ({
-	randomUUID: () => {
-		harness.uuid += 1;
-		return `review-uuid-${harness.uuid}`;
-	},
-	getRandomValues: (array: Uint8Array) => array,
-}));
 vi.mock("../ConnectionProvider", () => ({ useConnection: () => harness.connection }));
 vi.mock("./nativeDocumentMemory", () => ({ documentMemory: () => harness.memory }));
 // The app's one runtime is a module singleton; each test gets its own.
@@ -72,7 +63,14 @@ vi.mock("../nativeMutationRuntime", async (original) => ({
 const PLAN = "# Settle the race\n\nThe goal is a clean run.\n\n## Steps\n\n- Reproduce it.\n- Fix it.\n";
 const PATH = "docs/superpowers/plans/settle-race.md";
 const KEY = { sessionRef: "local:fix", path: PATH };
-const PARAMS = {
+const PARAMS: {
+	hubId: string;
+	sessionRef: string;
+	path: string;
+	sessionTitle: string;
+	root?: "artifacts";
+	readTarget?: string;
+} = {
 	hubId: "studio",
 	sessionRef: "local:fix",
 	path: PATH,
@@ -168,6 +166,12 @@ beforeEach(async () => {
 	resumeRequired = false;
 	client = new FakeClient("ready");
 	client.on("thread/read", read);
+	// A resume clears the session's fence, so the read that follows it is the
+	// one that releases a parked review.
+	client.resumeThread = async () => {
+		resumeRequired = false;
+		return read();
+	};
 	client.on("turn/start", applied);
 	client.on("turn/queue", applied);
 	harness.connection = { state: "ready", client };
@@ -186,10 +190,10 @@ afterEach(async () => {
 	vi.restoreAllMocks();
 });
 
-async function mount() {
+async function mount(params: typeof PARAMS = PARAMS) {
 	const tree = render(
 		<ReviewSheet
-			route={{ key: "review", name: "ReviewSheet", params: PARAMS } as never}
+			route={{ key: "review", name: "ReviewSheet", params } as never}
 			navigation={sheetNavigation as never}
 		/>,
 	);
@@ -290,6 +294,27 @@ it("sends the review's message to an idle session, clears the comments, and retu
 	expect(hasTestID(tree, "review-send-failed")).toBe(false);
 });
 
+// An agent files a report in the session's retained artifacts, and the folder
+// holds a report of the same name. The review must name the file that was read,
+// and sending it must not clear the other report's unsent comments.
+it("names an artifacts report by its full path and leaves a same-named folder report's drafts alone", async () => {
+	const artifactsDir = "/state/sessions/local-fix/artifacts";
+	const retainedKey = { sessionRef: "local:fix", path: "report.md", root: "artifacts" as const };
+	memory.addComment(retainedKey, { blockIndex: 1, blockHash: goal.hash, quote: goal.text, text: "Keep this." });
+	const tree = await mount({
+		...PARAMS,
+		path: "report.md",
+		root: "artifacts",
+		readTarget: `${artifactsDir}/report.md`,
+	});
+	choose(tree, "Approve");
+	const drafts = memory.comments(retainedKey);
+	await send(tree);
+	expect(sentText()).toBe(reviewMessage(`${artifactsDir}/report.md`, "approve", drafts, ""));
+	expect(memory.comments(retainedKey)).toEqual([]);
+	expect(memory.comments(KEY).map((comment) => comment.text)).toEqual(["Say which run.", "Name the fix."]);
+});
+
 it("queues the review while the session works, and never steers or interrupts it", async () => {
 	status = "active";
 	const tree = await mount();
@@ -351,16 +376,24 @@ it("resumes a shut-down session with the review", async () => {
 	expect(mutations()).toEqual(["turn/start"]);
 });
 
-it.each([
-	["needs a restart", "restartRequired", false],
-	["is paused", "idle", true],
-])("can't send to a session that %s, and says so", async (_name, next, paused) => {
-	status = next;
-	resumeRequired = paused;
+it("can't send to a session that needs a restart, and says so", async () => {
+	status = "restartRequired";
 	const tree = await mount();
 	choose(tree, "Approve");
 	expect(sendDisabled(tree)).toBe(true);
 	expect(markers(tree, "review-held")).toEqual(["unavailable"]);
+});
+
+// A recovery-fenced session takes the review the way it takes any message:
+// Send parks it durably and the resume behind it releases the message.
+it("sends a review to a paused session by resuming it", async () => {
+	status = "idle";
+	resumeRequired = true;
+	const tree = await mount();
+	choose(tree, "Approve");
+	expect(sendDisabled(tree)).toBe(false);
+	await send(tree);
+	expect(mutations()).toEqual(["turn/start"]);
 });
 
 it("waits for the connection, and reads again when it returns", async () => {

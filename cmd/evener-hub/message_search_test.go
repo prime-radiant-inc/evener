@@ -66,10 +66,7 @@ func TestMessageSearchHitsAreTheItemsAThreadReadShows(t *testing.T) {
 		schema.NewTurn(schema.TurnAssistant, llm.Assistant("The settle pass takes the tree lock first.")),
 		schema.NewTurn(schema.TurnUserInput, llm.User("Then settle it.")),
 	)
-	past := hubcore.NewPastIndex(filepath.Join(projectsRoot, "*"))
-	if _, err := past.Rebuild(); err != nil {
-		t.Fatal(err)
-	}
+	past := newRebuiltPastIndex(t, filepath.Join(projectsRoot, "*"))
 	index, err := hubcore.OpenMessageSearch(filepath.Join(t.TempDir(), "search.db"))
 	if err != nil {
 		t.Fatal(err)
@@ -110,10 +107,7 @@ func TestMessageSearchHitsAreTheItemsAThreadReadShows(t *testing.T) {
 func TestDeletingASessionForgetsItsMessages(t *testing.T) {
 	projectsRoot := filepath.Join(t.TempDir(), "projects")
 	_, sessionID := seedSearchSession(t, projectsRoot, "alpha", time.Now(), schema.NewTurn(schema.TurnUserInput, llm.User("settle the drain")))
-	past := hubcore.NewPastIndex(filepath.Join(projectsRoot, "*"))
-	if _, err := past.Rebuild(); err != nil {
-		t.Fatal(err)
-	}
+	past := newRebuiltPastIndex(t, filepath.Join(projectsRoot, "*"))
 	index, err := hubcore.OpenMessageSearch(filepath.Join(t.TempDir(), "search.db"))
 	if err != nil {
 		t.Fatal(err)

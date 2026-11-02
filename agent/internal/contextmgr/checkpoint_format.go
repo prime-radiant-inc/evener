@@ -668,11 +668,8 @@ func extractCheckpointJSON(text, tag string) []string {
 
 	// Legacy format: "Original task: ..." line (only for user_messages tag).
 	if tag == "user_messages" {
-		if _, rest, found := strings.Cut(text, "Original task: "); found {
-			rest, _, _ = strings.Cut(rest, "\n")
-			if rest != "" {
-				return []string{rest}
-			}
+		if task := extractOriginalPromptLine(text, "Original task: "); task != "" {
+			return []string{task}
 		}
 	}
 

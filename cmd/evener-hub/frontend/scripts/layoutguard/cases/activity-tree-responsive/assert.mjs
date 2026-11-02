@@ -1,3 +1,5 @@
+const TREE_PANE_OVERFLOW_X = ["hidden", "clip"];
+
 export default function assert(measurements) {
   const failures = [];
   const tolerance = 1;
@@ -23,17 +25,18 @@ export default function assert(measurements) {
     ].join(", ");
   }
 
-  function assertNoHorizontalOverflow(fixture, ownerName, box, diagnostics, { expectedOverflowX } = {}) {
+  function assertNoHorizontalOverflow(fixture, ownerName, box, diagnostics, { allowedOverflowX = null } = {}) {
     if (!box) {
       failures.push(`${fixture}: missing ${ownerName}`);
       return;
     }
-    if (expectedOverflowX !== undefined && box.overflowX !== expectedOverflowX) {
-      failures.push(
-        `${fixture}: ${ownerName} overflow-x is ${JSON.stringify(box.overflowX)}, expected ${JSON.stringify(expectedOverflowX)}`,
-      );
-    }
-    if (expectedOverflowX === undefined && /auto|scroll/.test(box.overflowX)) {
+    if (allowedOverflowX !== null) {
+      if (!allowedOverflowX.includes(box.overflowX)) {
+        failures.push(
+          `${fixture}: ${ownerName} overflow-x is ${JSON.stringify(box.overflowX)}, expected one of ${allowedOverflowX.map((value) => JSON.stringify(value)).join(", ")}`,
+        );
+      }
+    } else if (/auto|scroll/.test(box.overflowX)) {
       failures.push(
         `${fixture}: ${ownerName} overflow-x is ${JSON.stringify(box.overflowX)} - non-output owners must not be horizontal scrollers`,
       );
@@ -79,9 +82,11 @@ export default function assert(measurements) {
       assertNoHorizontalOverflow(fixture, ownerName, box, diagnostics);
     }
     // The tree pane is the one sanctioned scroller in this view: it scrolls
-    // vertically, never horizontally.
+    // vertically, never horizontally. clip and hidden both satisfy that;
+    // Chrome versions differ on the computed value overflow-x:clip beside
+    // overflow-y:auto yields, and the CSS deliberately uses clip.
     assertNoHorizontalOverflow(fixture, "tree pane", measurement.treePane, diagnostics, {
-      expectedOverflowX: "hidden",
+      allowedOverflowX: TREE_PANE_OVERFLOW_X,
     });
 
     // The dense tree is a single column in every form factor since the

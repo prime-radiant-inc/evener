@@ -8,12 +8,12 @@ import {
   type FileReference,
   rebindFileReference,
 } from "@evener/appwire-client/docContent";
-import { type ReactNode, useEffect, useLayoutEffect, useState } from "react";
+import { type ReactNode, useLayoutEffect, useState } from "react";
 import type { PaneProps } from "../../shell/paneRegistry";
 import { usePaneVisible } from "../../shell/paneVisibility";
 import { documentPaneState, recordDocumentPaneState, useWorkspaceStore } from "../../shell/workspace";
-import { connectionStore } from "../../stores/connection";
-import { threadsStore, useThreadsStore } from "../../stores/threads";
+import { useThreadsStore } from "../../stores/threads";
+import { useThreadClaim } from "../../stores/useThreadModel";
 import {
   Button,
   Chip,
@@ -159,23 +159,7 @@ export default function DocPane({ params, paneId, focused }: PaneProps<DocParams
   // lands, so the pane stays pending rather than declaring the file gone.
   const shellOnly = useThreadsStore((state) => state.cacheLifetimes.get(params.session)?.shell === true);
 
-  useEffect(() => {
-    let started = false;
-    const tryStart = () => {
-      if (started || connectionStore.getState().state !== "ready") return;
-      started = true;
-      threadsStore
-        .getState()
-        .ensureThread(params.session)
-        .catch(() => {});
-    };
-    tryStart();
-    const unsubscribe = connectionStore.subscribe(tryStart);
-    return () => {
-      unsubscribe();
-      if (started) threadsStore.getState().releaseThread(params.session);
-    };
-  }, [params.session]);
+  useThreadClaim(params.session);
 
   let reference: FileReference | undefined;
   if (retained) {

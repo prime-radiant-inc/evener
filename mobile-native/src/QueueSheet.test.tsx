@@ -5,7 +5,14 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { paletteFor } from "./design/tokens";
 import { markers } from "./markerTestUtils";
 import { type QueueHost, QueueSheet, queueHosts } from "./QueueSheet";
-import { pressable, render, renderedText, settle, unmountMountedTrees } from "./renderNative.testkit";
+import {
+	type PanGestureMock,
+	pressable,
+	render,
+	renderedText,
+	settle,
+	unmountMountedTrees,
+} from "./renderNative.testkit";
 import type { Ghost } from "./session/ghosts";
 import { sheetKey } from "./sheet/sheetHosts";
 
@@ -15,7 +22,6 @@ vi.mock("react-native", async () => ({
 	...(await import("./renderNative.testkit")).nativeModuleMock(),
 	ActionSheetIOS: { showActionSheetWithOptions: vi.fn() },
 }));
-vi.mock("expo-symbols", () => ({ SymbolView: "SymbolView" }));
 vi.mock("react-native-gesture-handler/ReanimatedSwipeable", async () =>
 	(await import("./renderNative.testkit")).gestureHandlerModuleMock(),
 );
@@ -89,6 +95,19 @@ it("paints a swiped message the sheet's canvas, since the bubble itself is unfil
 	const contents = tree.root.findAllByProps({ testID: "swipe-row-content" });
 	expect(contents).toHaveLength(4);
 	for (const content of contents) expect(content.props.style).toEqual({ backgroundColor: paletteFor("light").canvas });
+});
+
+it("starts each message's edge band at the sheet's padded left edge", () => {
+	const tree = mountSheet(host());
+	const scroller = tree.root.findAllByType("ScrollView" as never)[0];
+	expect(scroller?.props.contentContainerStyle).toMatchObject({ padding: 16 });
+	const swipeables = tree.root.findAllByType("ReanimatedSwipeable" as never);
+	expect(swipeables).toHaveLength(4);
+	for (const swipeable of swipeables) {
+		const tracker = swipeable.props.simultaneousWithExternalGesture as PanGestureMock | undefined;
+		expect(swipeable.props.hitSlop).toEqual({ left: -8 });
+		expect(tracker?.config.hitSlop).toEqual({ left: -8 });
+	}
 });
 
 it("offers Steer all now only when the session can drain its queue", async () => {

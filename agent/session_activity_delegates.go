@@ -35,34 +35,14 @@ func deriveSessionActivityDelegateKeys(state delegatestore.State) []sessionActiv
 
 // ListActivityDelegates pages stable logical delegate owners within this controller.
 func (s *Session) ListActivityDelegates(ctx context.Context, params appwire.SessionActivityListParams) (appwire.SessionDelegatesResponse, error) {
-	_, scope, limit, err := normalizeSessionActivity(params.Ref, params.Scope, params.Limit)
-	if err != nil {
-		return appwire.SessionDelegatesResponse{}, err
-	}
-	params.Scope = scope
-	params.Limit = limit
-	read, err := s.activityRead(ctx, appwire.SessionActivityReadParams{Ref: params.Ref, Scope: scope})
-	if err != nil {
-		return appwire.SessionDelegatesResponse{}, err
-	}
-	defer read.index.release()
-	return read.delegatesPage(ctx, params)
+	return withActivityList(ctx, params, s.activityRead, (*sessionActivityRead).delegatesPage)
 }
 
 // LoadSessionActivityDelegates advances bounded retained delegate reconstruction.
 func LoadSessionActivityDelegates(ctx context.Context, stateDir, sessionID string, params appwire.SessionActivityListParams) (appwire.SessionDelegatesResponse, error) {
-	_, scope, limit, err := normalizeSessionActivity(params.Ref, params.Scope, params.Limit)
-	if err != nil {
-		return appwire.SessionDelegatesResponse{}, err
-	}
-	params.Scope = scope
-	params.Limit = limit
-	read, err := retainedActivityRead(ctx, stateDir, sessionID, appwire.SessionActivityReadParams{Ref: params.Ref, Scope: scope})
-	if err != nil {
-		return appwire.SessionDelegatesResponse{}, err
-	}
-	defer read.index.release()
-	return read.delegatesPage(ctx, params)
+	return withActivityList(ctx, params, func(ctx context.Context, read appwire.SessionActivityReadParams) (*sessionActivityRead, error) {
+		return retainedActivityRead(ctx, stateDir, sessionID, read)
+	}, (*sessionActivityRead).delegatesPage)
 }
 func (read *sessionActivityRead) delegatesPage(ctx context.Context, params appwire.SessionActivityListParams) (appwire.SessionDelegatesResponse, error) {
 	result := appwire.SessionDelegatesResponse{Context: read.context, Scope: read.scope}
@@ -221,12 +201,12 @@ func captureSessionActivityDelegate(rootID string, state delegatestore.State, ag
 	if aggregate.Phase == delegatestore.PhaseIdle || aggregate.Phase == delegatestore.PhaseClosed {
 		snapshot.lifecycle = delegateLifecycleIdle
 	}
-	status := projectStableDelegateStatus(now, snapshot)
+	status := projectDelegateStatus(now, snapshot)
 	d := aggregate.Descriptor
-	row := appwire.SessionDelegate{Name: truncateActivityText(d.Name, activityMaxLabelRunes), DelegateID: aggregate.DelegateID, RunGeneration: aggregate.Generation, ProjectionRevision: aggregate.ProjectionRevision, OwnerRef: encodeRef("", sessionActivityDelegateOwner(state, aggregate)), RootRef: encodeRef("", rootID), ChildRef: encodeRef("", d.ChildSessionID), ParentDelegateID: d.ParentDelegateID, Description: truncateActivityText(d.Description, activityMaxDelegateProseRunes), Task: truncateActivityText(d.Task, activityMaxDelegateProseRunes), Type: "delegate", Lifecycle: string(snapshot.lifecycle), Phase: string(aggregate.Phase), Status: string(snapshot.lifecycle), Resumable: aggregate.Resumable, NotResumableReason: truncateActivityText(aggregate.NotResumableReason, activityMaxDelegateProseRunes), Model: truncateActivityText(d.ResolvedModel, activityMaxLabelRunes), ReasoningEffort: d.Config.ReasoningEffort, RunStartedAt: status.RunStartedAt, LatestActivityAt: status.LatestActivityAt, LatestIntent: appwire.Excerpt(aggregate.LatestIntent, appwire.MaxIntentRunes)}
+	row := appwire.SessionDelegate{Name: activitybound.Truncate(d.Name, activityMaxLabelRunes), DelegateID: aggregate.DelegateID, RunGeneration: aggregate.Generation, ProjectionRevision: aggregate.ProjectionRevision, OwnerRef: encodeRef("", sessionActivityDelegateOwner(state, aggregate)), RootRef: encodeRef("", rootID), ChildRef: encodeRef("", d.ChildSessionID), ParentDelegateID: d.ParentDelegateID, Description: activitybound.Truncate(d.Description, activityMaxDelegateProseRunes), Task: activitybound.Truncate(d.Task, activityMaxDelegateProseRunes), Type: "delegate", Lifecycle: string(snapshot.lifecycle), Phase: string(aggregate.Phase), Status: string(snapshot.lifecycle), Resumable: aggregate.Resumable, NotResumableReason: activitybound.Truncate(aggregate.NotResumableReason, activityMaxDelegateProseRunes), Model: activitybound.Truncate(d.ResolvedModel, activityMaxLabelRunes), ReasoningEffort: d.Config.ReasoningEffort, RunStartedAt: status.RunStartedAt, LatestActivityAt: status.LatestActivityAt, LatestIntent: appwire.Excerpt(aggregate.LatestIntent, appwire.MaxIntentRunes)}
 	if outcome := aggregate.LatestOutcome; outcome != nil {
-		row.Reason = truncateActivityText(outcome.Reason, activityMaxDelegateProseRunes)
-		row.Error = truncateActivityText(outcome.Error, activityMaxDelegateProseRunes)
+		row.Reason = activitybound.Truncate(outcome.Reason, activityMaxDelegateProseRunes)
+		row.Error = activitybound.Truncate(outcome.Error, activityMaxDelegateProseRunes)
 		row.Outcome = string(outcome.Status)
 		row.Terminal = delegateRunTerminal(outcome, aggregate.CurrentRunOpen)
 		if !outcome.EndedAt.IsZero() {
@@ -244,7 +224,7 @@ func captureSessionActivityDelegate(rootID string, state delegatestore.State, ag
 		if json.Unmarshal(packet.Metadata, &metadata) == nil {
 			row.Usage = activityUsageFromCumulative(metadata.CumulativeUsage)
 			if wt := metadata.Worktree; wt != nil {
-				row.Worktree = &appwire.JobActivityWorktree{Path: truncateActivityText(wt.Path, activityMaxDelegateProseRunes), Branch: truncateActivityText(wt.Branch, activityMaxLabelRunes), HeadSHA: truncateActivityText(wt.HeadSHA, activityMaxLabelRunes), Ahead: wt.Ahead, Dirty: wt.Dirty}
+				row.Worktree = &appwire.JobActivityWorktree{Path: activitybound.Truncate(wt.Path, activityMaxDelegateProseRunes), Branch: activitybound.Truncate(wt.Branch, activityMaxLabelRunes), HeadSHA: activitybound.Truncate(wt.HeadSHA, activityMaxLabelRunes), Ahead: wt.Ahead, Dirty: wt.Dirty}
 			}
 		}
 	}

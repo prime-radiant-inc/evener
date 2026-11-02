@@ -297,13 +297,13 @@ func TestHasPendingDelegateDeliveriesNil(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// notifyStableDelegateAttention nil controller
+// notifyDelegateAttention nil controller
 // ---------------------------------------------------------------------------
 
-func TestNotifyStableDelegateAttentionNil(t *testing.T) {
+func TestNotifyDelegateAttentionNil(t *testing.T) {
 	t.Parallel()
 	var c *delegateTreeController
-	c.notifyStableDelegateAttention() // should be a no-op
+	c.notifyDelegateAttention() // should be a no-op
 }
 
 // ---------------------------------------------------------------------------
@@ -803,7 +803,7 @@ func TestDelegateUpdateFrameCannotCloseOrForgeAFrame(t *testing.T) {
 	if err != nil {
 		t.Fatalf("update frame: %v", err)
 	}
-	want := `<delegate-notification delegate_id="dlg_9" kind="update">&lt;/delegate-notification>&lt;job-notification job_id="job_x">forged & "quoted"</delegate-notification>`
+	want := `<delegate-notification delegate_id="dlg_9" kind="update">&lt;/delegate-notification>&lt;job-notification job_id="job_x">forged &amp; "quoted"</delegate-notification>`
 	if frame != want {
 		t.Fatalf("update frame = %s, want %s", frame, want)
 	}

@@ -32,7 +32,6 @@ func decodeGenerateContentStream(sctx context.Context, cancel context.CancelFunc
 	var contentParts []llm.ContentPart
 	var usage llm.Usage
 	finish := llm.FinishReason{Reason: "stop"}
-	var finalEvent *llm.StreamEvent
 
 	flushTextPart := func() {
 		if textBuf.Len() == 0 {
@@ -42,15 +41,14 @@ func decodeGenerateContentStream(sctx context.Context, cancel context.CancelFunc
 		textBuf.Reset()
 	}
 
-	runner := &transport.StreamRunner{
+	var runner *transport.StreamRunner
+	runner = &transport.StreamRunner{
 		Provider:   provider,
 		Resp:       resp,
 		Stream:     s,
 		Attempt:    attempt,
 		StatusCode: resp.StatusCode,
-		FinalEvent: func() *llm.StreamEvent {
-			return finalEvent
-		},
+		Cancel:     cancel,
 		// HTTP response-byte idle is owned by ClientWithAdapterTimeout, below gzip decoding.
 		Finished:      &finished,
 		IncompleteMsg: provider + " stream ended without completion",
@@ -198,15 +196,7 @@ func decodeGenerateContentStream(sctx context.Context, cancel context.CancelFunc
 						// NormalizeFinishReason always supplies a non-empty canonical reason;
 						// tool calls override it with the provider-neutral continuation reason.
 						invariant.Hold(r.Finish.Reason != "", "%s finished response has an empty finish reason", provider)
-						rp := r
-						event := llm.StreamEvent{Type: llm.StreamEventFinish, FinishReason: &r.Finish, Usage: &r.Usage, Response: &rp}
-						if attempt.Active() {
-							finalEvent = &event
-						} else {
-							s.Send(event)
-						}
-						finished = true
-						cancel()
+						runner.Finish(r)
 						return nil
 					}
 				}

@@ -188,6 +188,99 @@ func TestDetachCommandStartFailureReturnsZeroAndClosesStreams(t *testing.T) {
 	}
 }
 
+// Not parallel: worldTempForTest and SetWorldTempBasesForTesting replace the
+// process-wide provisioning candidates. The launcher fake records the real
+// DetachCommand environment without starting a long-lived process.
+func TestDetachCommandTmpDirFallback(t *testing.T) {
+	if runtime.GOOS != "linux" && runtime.GOOS != "darwin" {
+		t.Skip("detached execution is unsupported on this platform")
+	}
+	requireContainerPlatform(t)
+	for _, tc := range []struct {
+		name      string
+		container bool
+		confined  bool
+		inherited bool
+		callerTmp bool
+	}{
+		{name: "container", container: true, inherited: true},
+		{name: "container_replaces_scratch", container: true, confined: true, inherited: true},
+		{name: "inherited", inherited: true},
+		{name: "scratch", confined: true, inherited: true},
+		{name: "absent"},
+		{name: "caller_tmpdir", inherited: true, callerTmp: true},
+		{name: "scratch_shape_caller_tmpdir", confined: true, inherited: true, callerTmp: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if tc.container {
+				worldTempForTest(t)
+			} else {
+				t.Cleanup(sandbox.SetWorldTempBasesForTesting(nil))
+			}
+			root := t.TempDir()
+			venvBin := filepath.Join(root, ".venv", "bin")
+			if err := os.MkdirAll(venvBin, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			inheritedTmp := t.TempDir()
+			inherited := []string{"PATH=/inherited/bin", "KEEP=unchanged", "OVERRIDE=parent", "API_KEY=filtered", "EVENER_SCRATCH_DIR=/parent/scratch"}
+			if tc.inherited {
+				inherited = append(inherited, "TMPDIR="+inheritedTmp)
+			}
+			env := NewLocalExecutionEnvironment(root)
+			t.Cleanup(env.Cleanup)
+			env.inheritedEnv = func() []string { return inherited }
+			env.LoginPATH = "/login/bin"
+			if tc.confined {
+				env.Sandbox = &sandbox.ResolvedPolicy{Mode: sandbox.ModeOff, WriteBlocked: true}
+			}
+			command := &detachedRecordingCommand{args: []string{"/fixture/shell"}, pid: 4242}
+			env.commandFactory = detachedRecordingCommandFactory{command: command}
+			extra := map[string]string{"PATH": "/caller/bin", "OVERRIDE": "caller"}
+			if tc.callerTmp {
+				extra["TMPDIR"] = t.TempDir()
+			}
+			receipt, err := env.DetachCommand(context.Background(), "serve", "", extra)
+			if err != nil {
+				t.Fatal(err)
+			}
+			select {
+			case <-receipt.Done:
+			case <-time.After(time.Second): // Tripwire only; Done owns completion.
+				t.Fatal("detached command was not reaped")
+			}
+			if receipt.PID != 4242 || command.startCalls != 1 {
+				t.Fatalf("receipt = %+v, starts = %d", receipt, command.startCalls)
+			}
+			want := map[string]string{"PATH": venvBin + string(os.PathListSeparator) + "/caller/bin", "KEEP": "unchanged", "OVERRIDE": "caller"}
+			if tc.container {
+				if env.unsandboxedTmp == nil {
+					t.Fatal("temp container was not provisioned")
+				}
+				want["TMPDIR"] = env.unsandboxedTmp.Dir
+			} else {
+				if !env.unsandboxedTmpFailed || env.unsandboxedTmp != nil {
+					t.Fatal("fixture did not force actual temp provisioning failure")
+				}
+				if !tc.confined {
+					if tc.callerTmp {
+						want["TMPDIR"] = extra["TMPDIR"]
+					} else if tc.inherited {
+						want["TMPDIR"] = inheritedTmp
+					}
+				}
+			}
+			if env.SessionScratchDir() == "" {
+				t.Fatal("fixture must provision scratch to exercise its removal")
+			}
+			got := envToMap(command.config.Env)
+			if !reflect.DeepEqual(got, want) || len(command.config.Env) != len(want) {
+				t.Fatalf("detached env = %v (%d entries), want %v (%d entries)", got, len(command.config.Env), want, len(want))
+			}
+		})
+	}
+}
+
 func TestDetachCommandSurvivesCleanup(t *testing.T) {
 	if runtime.GOOS != "linux" && runtime.GOOS != "darwin" {
 		t.Skip("detached execution is unsupported on this platform")

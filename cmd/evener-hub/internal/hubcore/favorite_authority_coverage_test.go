@@ -3,7 +3,7 @@ package hubcore
 import (
 	"testing"
 
-	"primeradiant.com/evener/hubapi"
+	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/identifier"
 )
 
@@ -99,7 +99,7 @@ func TestClassifyFavoriteDecisionUnknown(t *testing.T) {
 func TestClassifyFavoriteSessionAliasToCanonicalRef(t *testing.T) {
 	// A session ID that looks like a local ref but isn't in the index.
 	sessionID := "02wMz5Txv1C3Hut0M8GCeB"
-	ref := hubapi.Ref{HostID: "local", SessionID: sessionID}
+	ref := appwire.Ref{SourceID: "local", ThreadID: sessionID}
 	if err := identifier.ValidateSessionID(sessionID); err != nil {
 		t.Skip("session ID doesn't validate on this platform")
 	}

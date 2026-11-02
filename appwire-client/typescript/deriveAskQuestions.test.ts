@@ -192,7 +192,7 @@ test("a steering item with source user AFTER an ask_user ack resolves it", () =>
 });
 
 // A human-note update also carries source "user" (the note text a human
-// wrote, steered in as SteeringKindHumanNote - agent/session_notes_rpc.go's
+// wrote, steered in as SteeringKindHumanNote - agent/session_notes_selfecho.go's
 // steeringOrigin machinery), but writing a note is not answering the
 // question: it must not resolve a pending ask, or the dock disappears while
 // the ask itself stays open on the server (the TS twin of the server's own

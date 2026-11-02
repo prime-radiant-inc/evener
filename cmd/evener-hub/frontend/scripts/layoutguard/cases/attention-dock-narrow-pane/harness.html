@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<title>attention-dock-narrow-pane layoutguard harness</title>
+<link rel="stylesheet" href="tokens.css">
+<link rel="stylesheet" href="resolved.css">
+<style>
+  body {
+    margin: 0;
+    background: var(--surface-1);
+    font-family: var(--font-sans);
+  }
+  /* A narrow dockview column, the shape a two-column cascade leaves beside the
+     rail on a laptop. overflow: hidden is the scaffold's own clip: the dock's
+     overflow is measured off its rects, but the clip is what makes the part
+     past this edge unreachable for a person. */
+  .pane {
+    width: 300px;
+    height: 700px;
+    overflow: hidden;
+    background: var(--surface-2);
+  }
+</style>
+</head>
+<body>
+<div class="pane" id="pane">
+  <!-- The dormant surface: conversation body's content column, no transcript,
+       with the attention dock at its trailing bottom corner. Markup mirrors
+       ConversationBody's attentionDock plus NextNeedsYou's own root/nextSlot. -->
+  <div class="contentColumn">
+    <div class="attentionDock" data-testid="attention-dock">
+      <div class="root" data-testid="next-needs-you">
+        <div class="nextSlot">
+          <button class="button secondary md" type="button" data-testid="next">
+            <span class="nextLead">Next</span>
+            <span class="nextLabel" data-label>Merging the release branch and re-running the browser guard</span>
+          </button>
+        </div>
+        <button class="button secondary squareMd" type="button" aria-label="More needs-you sessions">
+          <span class="ellipsis" aria-hidden="true">…</span>
+        </button>
+      </div>
+    </div>
+  </div>
+</div>
+<script>
+function rectOf(element) {
+  const rect = element.getBoundingClientRect();
+  return { top: rect.top, right: rect.right, bottom: rect.bottom, left: rect.left, width: rect.width, height: rect.height };
+}
+
+window.measure = () => {
+  const label = document.querySelector("[data-label]");
+  return {
+    pane: rectOf(document.getElementById("pane")),
+    dock: rectOf(document.querySelector('[data-testid="attention-dock"]')),
+    control: rectOf(document.querySelector('[data-testid="next-needs-you"]')),
+    next: rectOf(document.querySelector('[data-testid="next"]')),
+    label: { rect: rectOf(label), scrollWidth: label.scrollWidth, clientWidth: label.clientWidth },
+  };
+};
+</script>
+</body>
+</html>

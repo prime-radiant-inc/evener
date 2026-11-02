@@ -100,7 +100,7 @@ export function pinnedItems(
 					item: classify(row),
 					variant: "quiet",
 					moving: false,
-					archived: false,
+					archived: row.archived === true,
 					depth: 0,
 					separated: true,
 				}),

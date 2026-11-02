@@ -2,10 +2,12 @@
 // to the source session, retains the exact source pane for Back, and routes the
 // deduplicated document through the real openBeside action.
 import { bindFilePath, type FileReference, isImagePath } from "@evener/appwire-client/docContent";
+import { captureComicDocumentCoverage, comicPaneCoversConversation } from "../../comic/comicPaneCoverage";
 import * as paneActions from "../../shell/paneActions";
 import {
   documentPaneState,
   type OpenPaneRecord,
+  presentedPanes,
   recordDocumentPaneState,
   sourcePaneSessionRef,
   workspaceStore,
@@ -47,9 +49,10 @@ function paneOwnsSession(pane: OpenPaneRecord, session: string): boolean {
   // An embedded cascade column has no pane of its own: the zoom pane
   // hosting the conversation owns the request when its cascade covers the
   // session.
-  if (pane.type === "sessionZoom") return zoomPaneCoversConversation(pane, session);
+  if (pane.type === "sessionZoom")
+    return zoomPaneCoversConversation(pane, session) || comicPaneCoversConversation(pane, session);
   if (pane.type !== "session" && pane.type !== "transcript") return false;
-  return sourcePaneSessionRef(pane) === session;
+  return sourcePaneSessionRef(pane) === session || comicPaneCoversConversation(pane, session);
 }
 
 function isRequestedDocument(pane: OpenPaneRecord, params: DocParams): boolean {
@@ -87,14 +90,17 @@ export function openDocBeside(request: DocumentOpenRequest): void {
     kind: isImagePath(reference.path) ? "image" : "file",
   };
   const workspace = workspaceStore.getState();
-  const requestedOrigin = workspace.panes.find((pane) => pane.id === request.sourcePaneId);
+  const presented = presentedPanes(workspace.panes);
+  const requestedOrigin = presented.find((pane) => pane.id === request.sourcePaneId);
   const origin =
     (requestedOrigin && paneOwnsSession(requestedOrigin, request.session) ? requestedOrigin : undefined) ??
-    workspace.panes.find((pane) => pane.type === "session" && paneOwnsSession(pane, request.session)) ??
-    workspace.panes.find((pane) => pane.type === "transcript" && paneOwnsSession(pane, request.session));
-  const existingDocument = workspace.panes.find((pane) => isRequestedDocument(pane, params));
+    presented.find((pane) => pane.type === "session" && paneOwnsSession(pane, request.session)) ??
+    presented.find((pane) => pane.type === "transcript" && paneOwnsSession(pane, request.session));
+  const existingDocument = presented.find((pane) => isRequestedDocument(pane, params));
+  const retainComicCoverage = captureComicDocumentCoverage(origin, request.session);
   if (existingDocument) {
     const previous = documentPaneState(existingDocument);
+    retainComicCoverage(existingDocument);
     // Publish a changed binding before openBeside focuses the reused pane, so
     // consumers never observe the newly focused document with its old source.
     recordDocumentPaneState(existingDocument, {
@@ -111,8 +117,9 @@ export function openDocBeside(request: DocumentOpenRequest): void {
   if (origin && origin.type !== "sessionZoom") workspace.promotePane(origin.id);
   paneActions.openBeside({ type: "doc", params });
   if (existingDocument) return;
-  const document = workspaceStore.getState().panes.find((pane) => isRequestedDocument(pane, params));
+  const document = presentedPanes(workspaceStore.getState().panes).find((pane) => isRequestedDocument(pane, params));
   if (!document) return;
+  retainComicCoverage(document);
   recordDocumentPaneState(document, {
     reference,
     origin,

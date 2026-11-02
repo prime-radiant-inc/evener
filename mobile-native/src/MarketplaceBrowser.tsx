@@ -9,7 +9,7 @@ import {
 	type PluginsStore,
 	runGatedMutation,
 } from "@evener/appwire-client/state/extensions";
-import type { ConversationClientLike } from "../../mobile/src/services/conversation";
+import type { ConversationClientLike } from "./conversation/services/conversation";
 import { whenReady, type LiveReadiness } from "./connectionDisplay";
 import { scaledType, space, uiType } from "./design/tokens";
 import { HubPathField } from "./HubPathField";
@@ -665,6 +665,7 @@ export function AddMarketplace({
 	const scale = useTextScale();
 	const [kind, setKind] = useState<MarketplaceKind>("url");
 	const [source, setSource] = useState("");
+	const [ref, setRef] = useState("");
 	const [name, setName] = useState("");
 	const [busy, setBusy] = useState(false);
 	const [error, setError] = useFormError();
@@ -686,15 +687,13 @@ export function AddMarketplace({
 		setBusy(true);
 		setError(null);
 		const value = source.trim();
+		const gitRef = ref.trim();
+		const base: MarketplaceAddParams["source"] =
+			kind === "github" ? { kind, repo: value } : kind === "directory" ? { kind, path: value } : { kind, url: value };
 		const outcome = await runGatedMutation(canUseConnection, () =>
 			onAdd({
 				name: name.trim(),
-				source:
-					kind === "github"
-						? { kind, repo: value }
-						: kind === "directory"
-							? { kind, path: value }
-							: { kind, url: value },
+				source: gitRef ? { ...base, ref: gitRef } : base,
 			}),
 		);
 		if (!alive.current) return;
@@ -719,7 +718,7 @@ export function AddMarketplace({
 	}
 	// Cancel and a swipe down wait out an add in flight, and ask before a
 	// typed source or name goes (spec 6).
-	const leave = () => guardLeave({ busy, dirty: !!(source.trim() || name.trim()) }, onClose);
+	const leave = () => guardLeave({ busy, dirty: !!(source.trim() || ref.trim() || name.trim()) }, onClose);
 	const add = whenReady(canUseConnection, () => {
 		void submit();
 	});
@@ -767,6 +766,7 @@ export function AddMarketplace({
 						if (value === kind) return;
 						setKind(value);
 						setSource("");
+						setRef("");
 					}}
 				/>
 				{kind === "directory" ? (
@@ -785,17 +785,31 @@ export function AddMarketplace({
 						<GroupFooter>This path is on the hub, not this phone.</GroupFooter>
 					</>
 				) : (
-					<Group label={typed?.sourceLabel ?? ""}>
-						<TextFieldRow
-							label="Marketplace source"
-							placeholder={typed?.placeholder}
-							value={source}
-							onChangeText={setSource}
-							disabled={busy}
-							returnKeyType="next"
-							onSubmitEditing={() => nameInput.current?.focus()}
-						/>
-					</Group>
+					<>
+						<Group label={typed?.sourceLabel ?? ""}>
+							<TextFieldRow
+								label="Marketplace source"
+								placeholder={typed?.placeholder}
+								value={source}
+								onChangeText={setSource}
+								disabled={busy}
+								returnKeyType="next"
+								onSubmitEditing={() => nameInput.current?.focus()}
+							/>
+						</Group>
+						<Group label="Branch or tag">
+							<TextFieldRow
+								label="Branch or tag"
+								placeholder="main"
+								value={ref}
+								onChangeText={setRef}
+								disabled={busy}
+								returnKeyType="next"
+								onSubmitEditing={() => nameInput.current?.focus()}
+							/>
+						</Group>
+						<GroupFooter>Optional. Defaults to the repository's default branch.</GroupFooter>
+					</>
 				)}
 				<Group label="Name">
 					<TextFieldRow

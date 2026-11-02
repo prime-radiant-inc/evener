@@ -161,7 +161,10 @@ async function main() {
       // An asynchronous cold-cache/read admission can outlive page boot and
       // fonts. Invoke the actual paged wait while hydration is held, prove it
       // remains pending through ordinary frames, then release the read.
-      const deferredOpen = JSON.parse(await evaluate(send, `(async () => {
+      const deferredOpen = JSON.parse(
+        await evaluate(
+          send,
+          `(async () => {
         let finished = false;
         let failure;
         let failed = false;
@@ -177,7 +180,9 @@ async function main() {
         const result = await pending;
         if (failed) throw failure;
         return JSON.stringify(result);
-      })()`));
+      })()`,
+        ),
+      );
       assertPagedOpenContract(failures, "the deferred cold-read session", deferredOpen);
 
       await navigateTo(page, `http://127.0.0.1:${vitePort}/transcriptscrollguard.html`, BOOT);
@@ -355,7 +360,11 @@ async function main() {
       const recoveredOpened = JSON.parse(
         await evaluate(send, "(async () => JSON.stringify(await window.waitForPagedOpenSettled()))()"),
       );
-      assertPagedOpenContract(failures, "the session-ref transcript pane recovered as the live conversation", recoveredOpened);
+      assertPagedOpenContract(
+        failures,
+        "the session-ref transcript pane recovered as the live conversation",
+        recoveredOpened,
+      );
       // The dock leg's retained-reader guarantees now run on conversation
       // panes too: the harness's openTranscript calls open the live
       // conversation pane for session refs, so the dock group below proves
@@ -390,7 +399,10 @@ async function main() {
         if (missing.includes(call)) continue;
         await navigateTo(page, `http://127.0.0.1:${vitePort}/transcriptscrollguard.html`, BOOT);
         await waitForFonts(send);
-        const unmounted = JSON.parse(await evaluate(send, `(async () => {
+        const unmounted = JSON.parse(
+          await evaluate(
+            send,
+            `(async () => {
           await window.waitForPagedOpenSettled();
           ${setup ?? ""}
           const outcome = window.${call}().then(
@@ -407,7 +419,9 @@ async function main() {
           window.unmountTranscriptScrollGuardPane();
           const gone = document.querySelector('[data-testid="transcript-virtual-list"] > div') === null;
           return JSON.stringify({ gone, ...(await outcome) });
-        })()`));
+        })()`,
+          ),
+        );
         if (!unmounted.gone) {
           failures.push(`unmounting the pane left the transcript mounted (the ${wait})`);
         } else if (!unmounted.rejected) {
@@ -420,10 +434,87 @@ async function main() {
           );
         }
       }
+      // #457: real automatic older demand, successful store prepend, then
+      // measured quiescence with no scroll writes masking anchor drift.
+      await navigateTo(page, `http://127.0.0.1:${vitePort}/transcriptscrollguard.html?ended=1&paged=1&dock=1`, BOOT);
+      await waitForFonts(send);
+      const ended = JSON.parse(
+        await evaluate(
+          send,
+          `(async () => {
+        const opened = await window.waitForPagedOpenSettled();
+        const beforeState = window.endedPageState();
+        const port = document.querySelector('[data-testid="transcript-virtual-list"] > div');
+        const footer = document.querySelector('[data-testid="pane-footer"]');
+        port.scrollTop = 0; // The only scroll write in this prepend pass.
+        await window.waitForEndedPage(false);
+        await window.waitForPagedOpenSettled();
+        const viewport = port.getBoundingClientRect();
+        const row = [...port.querySelectorAll('[data-row-id]')].find(row => {
+          const rect = row.getBoundingClientRect();
+          return rect.bottom > viewport.top && rect.top < viewport.bottom;
+        });
+        if (!row) throw new Error('ended prepend has no viewport-intersecting keyed row');
+        const rowId = row.getAttribute('data-row-id');
+        const top = row.getBoundingClientRect().top - viewport.top;
+        const held = window.endedPageState();
+        window.releaseEndedOlderPage();
+        await window.waitForEndedPage(true);
+        const settled = await window.waitForPagedOpenSettled(260);
+        const state = window.endedPageState();
+        const currentPort = document.querySelector('[data-testid="transcript-virtual-list"] > div');
+        const currentRow = [...port.querySelectorAll('[data-row-id]')].find(row => row.getAttribute('data-row-id') === rowId);
+        const renderedIds = [...port.querySelectorAll('[data-row-id]')].map(r => r.getAttribute('data-row-id'));
+        return JSON.stringify({ opened, beforeState, held, settled, state, rowId,
+          samePort: port.isConnected && port === currentPort,
+          sameRow: row.isConnected && row === currentRow,
+          // A failed sameRow names which way the keyed row was lost: replaced by
+          // a remounted node or gone from the window.
+          rowEvidence: {
+            rowConnected: row.isConnected,
+            rowState: currentRow ? (currentRow === row ? "same" : "replaced") : "absent",
+            renderedRows: renderedIds.length,
+            firstRenderedId: renderedIds[0] ?? null,
+            lastRenderedId: renderedIds[renderedIds.length - 1] ?? null,
+            scrollTop: port.scrollTop,
+          },
+          sameFooter: footer && footer.isConnected && footer === document.querySelector('[data-testid="pane-footer"]'),
+          drift: row.getBoundingClientRect().top - port.getBoundingClientRect().top - top });
+      })()`,
+        ),
+      );
+      console.log("ended automatic prepend geometry", ended);
+      assertPagedOpenContract(failures, "the large ended dock session", ended.opened);
+      if (ended.beforeState.status !== "ended" || ended.state.status !== "ended")
+        failures.push("ended prepend did not exercise an ended model");
+      if (
+        ended.opened.turns !== 240 ||
+        ended.settled.turns !== 260 ||
+        !ended.state.olderMerged ||
+        !ended.state.cursorCleared
+      )
+        failures.push("ended prepend did not merge all unique older IDs and clear the cursor");
+      if (ended.held.listCalls !== 1 || ended.held.olderMerged || ended.held.cursorCleared)
+        failures.push("ended prepend response was not held until automatic demand and anchor capture");
+      if (!ended.samePort || !ended.sameRow || !ended.sameFooter || Math.abs(ended.drift) > BOTTOM_TOLERANCE_PX)
+        failures.push(
+          `ended prepend lost connected scrollport, keyed row, footer, or pixel anchor: ${JSON.stringify(ended)}`,
+        );
+      if (ended.settled.renderedRows <= 0 || ended.settled.renderedRows >= ended.state.turns)
+        failures.push("large ended transcript was not windowed");
+      if (!ended.opened.measuredLayout || !ended.settled.measuredLayout)
+        failures.push("ended prepend settled without measured natural row geometry");
+      if (ended.state.boundaryFallback || ended.state.errors.length > 0)
+        failures.push(
+          `ended prepend reached the workspace fallback or captured errors: ${JSON.stringify(ended.state)}`,
+        );
 
       await navigateTo(page, `http://127.0.0.1:${vitePort}/transcriptscrollguard.html?dock=1`, BOOT);
       await waitForFonts(send);
-      const dock = JSON.parse(await evaluate(send, `(async () => {
+      const dock = JSON.parse(
+        await evaluate(
+          send,
+          `(async () => {
         await window.waitForTranscriptSettled();
         const ports = () => [...document.querySelectorAll('[data-testid="transcript-virtual-list"] > div')];
         const root = ports()[0];
@@ -449,15 +540,22 @@ async function main() {
         click('Focus observer'); await window.waitForTranscriptSettled();
         const observerSelected = [...document.querySelectorAll('.dv-tab.dv-active-tab')].some(tab => tab.textContent.includes('local:observer'));
         return JSON.stringify({ before, after, observerSelected, switchedRoot: geometry(root), switchedRootVisible: visible(root) });
-      })()`));
+      })()`,
+        ),
+      );
       console.log("dock focus geometry", dock);
-      if (!dock.before.visible || !dock.after.visible || !dock.after.connected) failures.push("Dock group focus stranded mounted transcript content");
+      if (!dock.before.visible || !dock.after.visible || !dock.after.connected)
+        failures.push("Dock group focus stranded mounted transcript content");
       for (const pane of ["root", "secondary"]) {
-        if (Math.abs(dock.before[pane].top - dock.after[pane].top) > 1 || dock.before[pane].height !== dock.after[pane].height) failures.push(`Dock group focus changed ${pane} viewport position`);
+        if (
+          Math.abs(dock.before[pane].top - dock.after[pane].top) > 1 ||
+          dock.before[pane].height !== dock.after[pane].height
+        )
+          failures.push(`Dock group focus changed ${pane} viewport position`);
       }
       if (!dock.observerSelected) failures.push("Dock focus did not select the other retained transcript tab");
-      if (!dock.switchedRootVisible || Math.abs(dock.switchedRoot.top - dock.before.root.top) > 1) failures.push("Selecting another secondary tab changed the retained root viewport");
-
+      if (!dock.switchedRootVisible || Math.abs(dock.switchedRoot.top - dock.before.root.top) > 1)
+        failures.push("Selecting another secondary tab changed the retained root viewport");
     } finally {
       await clearViewportOverride(send);
       page.close();
@@ -470,6 +568,7 @@ async function main() {
           `(bottomGap ${landed.bottomGap}px, pill gone, held ${landed.tail.length} frames); ` +
           `post-mount content growth and a scroll-port shrink both re-anchored to the true bottom; ` +
           `a session opened with older history stayed at the bottom without auto-loading a page; ` +
+          `a large ended dock session merged older history and preserved its measured keyed-row geometry; ` +
           `the session-ref transcript pane recovered as the live conversation and did the same; deferred hydration waited for the mounted paged viewport; ` +
           `all ${MID_PASS_UNMOUNT_WAITS.length} post-settle waits named a pane that unmounted under them`,
       );

@@ -21,6 +21,7 @@ import { hasTestID, markers } from "./markerTestUtils";
 import { getNativeMutationRuntime, nativeMutationTargetKey } from "./nativeMutationRuntime";
 import { render, renderedText, screenConnection, settle } from "./renderNative.testkit";
 import { ConversationScreen } from "./screens";
+import { NativeConversationSessionsProvider } from "./session/NativeConversationSessionsProvider";
 
 const harness = vi.hoisted(() => ({
 	connection: {} as Record<string, unknown>,
@@ -68,7 +69,6 @@ vi.mock("react-native-safe-area-context", () => ({
 	SafeAreaProvider: (props: { children?: ReactNode }) => props.children ?? null,
 	useSafeAreaInsets: () => ({ top: 47, bottom: 34, left: 0, right: 0 }),
 }));
-vi.mock("expo-symbols", () => ({ SymbolView: "SymbolView" }));
 vi.mock("react-native-gesture-handler", async () =>
 	(await import("./renderNative.testkit")).gestureDetectorModuleMock(),
 );
@@ -87,14 +87,9 @@ vi.mock("@react-navigation/native", async () => {
 		useNavigationState: <T,>(select: (state: typeof navigationState.state) => T) => select(navigationState.state),
 	};
 });
-vi.mock("expo-symbols", () => ({ SymbolView: "SymbolView" }));
 vi.mock("expo-clipboard", () => ({
 	setStringAsync: vi.fn(async () => {}),
 	getStringAsync: vi.fn(async () => ""),
-}));
-vi.mock("expo-crypto", () => ({
-	randomUUID: () => "recovery-entry-uuid",
-	getRandomValues: (array: Uint8Array) => array,
 }));
 vi.mock("expo-sqlite", async () => {
 	const { openSqliteSyncDouble } = await import("./sqliteSync.testkit");
@@ -145,6 +140,14 @@ vi.mock("./NativePreferencesProvider", () => ({
 
 type ConversationScreenProps = ComponentProps<typeof ConversationScreen>;
 
+function SessionScreen(props: ConversationScreenProps) {
+	return (
+		<NativeConversationSessionsProvider>
+			<ConversationScreen {...props} />
+		</NativeConversationSessionsProvider>
+	);
+}
+
 function conversationRoute(ref: string): ConversationScreenProps["route"] {
 	return {
 		key: `conversation-${ref}`,
@@ -189,7 +192,7 @@ it("asks the outbox flush to look once it lets go of its session, so a message s
 	const runtime = getNativeMutationRuntime();
 	navigationState.state = { index: 0, routes: [conversationRoute(ref)] };
 	outbox.flush.mockClear();
-	const tree = render(<ConversationScreen route={conversationRoute(ref)} navigation={navigation} />);
+	const tree = render(<SessionScreen route={conversationRoute(ref)} navigation={navigation} />);
 	await settle();
 	expect(runtime.targetClient("hub-1", ref)).toBeDefined();
 	expect(outbox.flush).not.toHaveBeenCalled();
@@ -214,7 +217,7 @@ it("shows a refused message as a ghost at the transcript's end, row-conditional 
 	const runtime = getNativeMutationRuntime();
 	navigationState.state = { index: 0, routes: [conversationRoute(ref)] };
 
-	const tree = render(<ConversationScreen route={conversationRoute(ref)} navigation={navigation} />);
+	const tree = render(<SessionScreen route={conversationRoute(ref)} navigation={navigation} />);
 	await settle();
 
 	// PHASE 1 - empty snapshot, connected: no ghost. Positive control first:

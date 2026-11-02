@@ -21,3 +21,29 @@ func TestStream_UsageOnFinishChunk(t *testing.T) {
 			resp.Usage.InputTokens, resp.Usage.OutputTokens, resp.Usage.TotalTokens)
 	}
 }
+
+// TestStream_UsageExcludesCachedContent covers the streaming parseUsage call
+// site with cached usage. Gemini's promptTokenCount includes
+// cachedContentTokenCount, so the accumulated usage must report only the
+// uncached remainder as InputTokens and keep the cached count separate.
+func TestStream_UsageExcludesCachedContent(t *testing.T) {
+	sse := []byte("data: " + `{"candidates":[{"content":{"parts":[{"text":"hi"}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":100,"cachedContentTokenCount":40,"candidatesTokenCount":10,"totalTokenCount":117,"thoughtsTokenCount":7}}` + "\n\n")
+
+	resp, sawErr := accumulateGeminiSSE(sse, false)
+	if sawErr {
+		t.Fatal("unexpected stream error")
+	}
+	if resp == nil {
+		t.Fatal("nil accumulated response")
+	}
+	if resp.Usage.InputTokens != 60 || resp.Usage.OutputTokens != 10 || resp.Usage.TotalTokens != 117 {
+		t.Fatalf("usage = in=%d out=%d total=%d, want 60/10/117",
+			resp.Usage.InputTokens, resp.Usage.OutputTokens, resp.Usage.TotalTokens)
+	}
+	if resp.Usage.CacheReadTokens == nil || *resp.Usage.CacheReadTokens != 40 {
+		t.Fatalf("CacheReadTokens = %v, want 40", resp.Usage.CacheReadTokens)
+	}
+	if got := resp.Usage.InputTokens + *resp.Usage.CacheReadTokens; got != 100 {
+		t.Fatalf("InputTokens + CacheReadTokens = %d, want promptTokenCount 100", got)
+	}
+}

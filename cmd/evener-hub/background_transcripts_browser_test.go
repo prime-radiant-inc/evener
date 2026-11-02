@@ -32,6 +32,7 @@ import (
 	"fmt"
 	"io/fs"
 	"math"
+	"net/http"
 	"net/http/httptest"
 	"os"
 	"os/exec"
@@ -43,8 +44,10 @@ import (
 	"testing"
 	"time"
 
+	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubedge"
+	"primeradiant.com/evener/identifier"
 	"primeradiant.com/evener/internal/appserver"
 	"primeradiant.com/evener/rendezvous"
 )
@@ -103,6 +106,17 @@ func TestBackgroundTranscriptsEntrySliceBrowser(t *testing.T) {
 		t.Fatalf("the production frontend is not built: run `make build-web` first: %v", err)
 	}
 	fixture := skillGuardSetup(t)
+	// Project deletion validates the bucket against its real working directory.
+	// The shared helper fixture's synthetic project ID is sufficient for reads,
+	// but this journey must use the production identity before the daemon starts.
+	project, err := identifier.ResolveProject(fixture.workDir[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	fixture.stateDir[0] = filepath.Join(fixture.stateRoot, "projects", project.ID)
+	if err := os.MkdirAll(fixture.stateDir[0], 0o700); err != nil {
+		t.Fatal(err)
+	}
 	for i, role := range []string{"sustained", "target"} {
 		for _, command := range []map[string]string{{"command": "background-mode"}, {"command": "background-role", "phase": role}} {
 			if err := appendFileLine(fixture.control[i], command); err != nil {
@@ -120,10 +134,7 @@ func TestBackgroundTranscriptsEntrySliceBrowser(t *testing.T) {
 	if err := roster.RefreshAndWait(ctx); err != nil {
 		t.Fatalf("roster refresh: %v", err)
 	}
-	past := hubcore.NewPastIndex(filepath.Join(fixture.stateRoot, "projects", "*"))
-	if _, err := past.Rebuild(); err != nil {
-		t.Fatalf("past index rebuild: %v", err)
-	}
+	past := newRebuiltPastIndex(t, filepath.Join(fixture.stateRoot, "projects", "*"))
 	tokenBytes := make([]byte, 16)
 	if _, err := rand.Read(tokenBytes); err != nil {
 		t.Fatalf("mint auth token: %v", err)
@@ -144,7 +155,35 @@ func TestBackgroundTranscriptsEntrySliceBrowser(t *testing.T) {
 	web := newWebServer(hubcore.WebConfig{AuthToken: hex.EncodeToString(tokenBytes), HubStateRoot: hubStateRoot, RunDir: fixture.runDir, Past: past, Roster: roster, PluginDirs: []string{filepath.Join(fixture.root, "controller-plugin")}, StateDir: fixture.stateRoot, PastIndexPath: filepath.Join(hubStateRoot, "index.db")}, appwireTrace)
 	past.SetOnChange(func() { web.navigation.Invalidate(navigationChangeHint{}) })
 	roster.SetOnChange(func() { web.navigation.Invalidate(navigationChangeHint{}) })
-	hub := httptest.NewServer(web.Handler())
+	// The driver deletes the sustained project after its history journey. Join
+	// its real daemon shutdown before that action, without destroying the target
+	// session's independent producer transcript. No AppWire response is replaced.
+	sustainedProject, ok := past.Find(entries[0].SessionID)
+	if !ok {
+		t.Fatal("sustained session is missing from the real past index")
+	}
+	skillGuardHelperMu.Lock()
+	sustained := skillGuardHelpers[0]
+	skillGuardHelperMu.Unlock()
+	handler := http.NewServeMux()
+	handler.HandleFunc("POST /background-guard/stop-sustained", func(w http.ResponseWriter, r *http.Request) {
+		if err := sustained.stop(0); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		if err := roster.RefreshAndWait(r.Context()); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		if err := json.NewEncoder(w).Encode(appwire.ProjectDeleteParams{
+			Key: projectKeyForStateDir(sustainedProject.StateDir), WorkingDir: fixture.workDir[0],
+		}); err != nil {
+			t.Errorf("write stopped project identity: %v", err)
+		}
+	})
+	handler.Handle("/", web.Handler())
+	hub := httptest.NewServer(handler)
 	defer hub.Close()
 	milestones := filepath.Join(fixture.artifact, "milestones.jsonl")
 	if err := os.WriteFile(milestones, nil, 0o600); err != nil {
@@ -157,14 +196,232 @@ func TestBackgroundTranscriptsEntrySliceBrowser(t *testing.T) {
 	for i := range entries {
 		skillGuardStopHelper(t, i)
 	}
+	assertBackgroundDisplay(t, milestones)
 	assertBackgroundEntrySlice(t, fixture, milestones)
 	if driverErr != nil {
 		t.Errorf("%v\nfull artifacts (logs, screenshots, dumps): %s", driverErr, fixture.artifact)
 	}
 }
 
+type backgroundDisplaySnapshot struct {
+	Local            map[string]json.RawMessage   `json:"local"`
+	Effective        map[string]json.RawMessage   `json:"effective"`
+	Publications     []map[string]json.RawMessage `json:"publications"`
+	Messages         []json.RawMessage            `json:"messages"`
+	Storage          []backgroundDisplayStorage   `json:"storage"`
+	Persisted        map[string]*string           `json:"persisted"`
+	BroadcastChannel string                       `json:"broadcast_channel"`
+	StorageBlocked   bool                         `json:"storage_blocked"`
+	Origin           string                       `json:"origin"`
+	Href             string                       `json:"href"`
+}
+
+type backgroundDisplayStorage struct {
+	Key          string  `json:"key"`
+	OldValue     *string `json:"old_value"`
+	NewValue     *string `json:"new_value"`
+	URL          string  `json:"url"`
+	Trusted      bool    `json:"trusted"`
+	LocalStorage bool    `json:"local_storage"`
+	Blocked      bool    `json:"blocked"`
+}
+
+// Independent literals pin the whole config, not only a preset or driver flag.
+var backgroundDisplayConfigs = [...]json.RawMessage{
+	json.RawMessage(`{"version":1,"content":{"kind":"preset","level":"full"},"advanced":{"roundTimings":true,"tokenCounts":false,"estimatedCost":true,"systemEvents":false,"promptEvents":true,"hookExits":"all"}}`),
+	json.RawMessage(`{"version":1,"content":{"kind":"preset","level":"tools"},"advanced":{"roundTimings":false,"tokenCounts":true,"estimatedCost":false,"systemEvents":true,"promptEvents":false,"hookExits":"successful"}}`),
+	json.RawMessage(`{"version":1,"content":{"kind":"preset","level":"activity"},"advanced":{"roundTimings":false,"tokenCounts":true,"estimatedCost":true,"systemEvents":true,"promptEvents":false,"hookExits":"none"}}`),
+	json.RawMessage(`{"version":1,"content":{"kind":"preset","level":"intent"},"advanced":{"roundTimings":true,"tokenCounts":false,"estimatedCost":false,"systemEvents":false,"promptEvents":true,"hookExits":"all"}}`),
+}
+
+func backgroundDisplayEqual(a, b any) bool {
+	normalize := func(value any) any {
+		encoded, err := json.Marshal(value)
+		if err != nil {
+			return err
+		}
+		var decoded any
+		if err := json.Unmarshal(encoded, &decoded); err != nil {
+			return err
+		}
+		return decoded
+	}
+	return reflect.DeepEqual(normalize(a), normalize(b))
+}
+
+func assertBackgroundDisplay(t *testing.T, milestonesPath string) {
+	t.Helper()
+	milestones, err := backgroundReadMilestones(milestonesPath)
+	if err != nil {
+		t.Fatalf("read display milestones: %v", err)
+	}
+	var nativeSources [2]string
+	var nativeTargets [2]string
+	for _, transport := range []string{"broadcast", "storage"} {
+		var baseline struct {
+			TargetIDs [2]string                    `json:"target_ids"`
+			Tabs      [2]backgroundDisplaySnapshot `json:"tabs"`
+		}
+		if !skillGuardMilestoneDetail(t, milestones, "display-"+transport+"-baseline", &baseline) {
+			t.Errorf("missing mandatory display %s baseline", transport)
+			continue
+		}
+		if baseline.TargetIDs[0] == "" || baseline.TargetIDs[1] == "" || baseline.TargetIDs[0] == baseline.TargetIDs[1] || baseline.Tabs[0].Origin == "" || baseline.Tabs[0].Origin != baseline.Tabs[1].Origin {
+			t.Errorf("display %s did not use distinct same-origin tabs: %+v", transport, baseline)
+		}
+		if transport == "broadcast" {
+			nativeTargets = baseline.TargetIDs
+		} else {
+			for _, target := range baseline.TargetIDs {
+				if target == nativeTargets[0] || target == nativeTargets[1] {
+					t.Error("storage fallback reused a BroadcastChannel document")
+				}
+			}
+		}
+		for n, tab := range baseline.Tabs {
+			wantChannel := "function"
+			if transport == "storage" {
+				wantChannel = "undefined"
+			}
+			if !backgroundDisplayEqual(tab.Local, map[string]json.RawMessage{}) || len(tab.Effective) != 2 || tab.BroadcastChannel != wantChannel || tab.StorageBlocked != (transport == "broadcast") || tab.Href == "" {
+				t.Errorf("display %s tab %d invalid empty/transport baseline: %+v", transport, n, tab)
+			}
+		}
+		expected := map[string]json.RawMessage{}
+		// This list is deliberately not read from the driver's operation table.
+		for _, operation := range []struct {
+			name   string
+			sender int
+			layout string
+			config int
+		}{
+			{"desktop-v1", 0, "desktop", 0}, {"mobile-v1", 1, "mobile", 1},
+			{"desktop-v2", 0, "desktop", 2}, {"mobile-v2", 1, "mobile", 3},
+			{"clear-desktop", 0, "desktop", -1}, {"clear-mobile", 1, "mobile", -1},
+		} {
+			name := "display-" + transport + "-" + operation.name
+			var record struct {
+				Sender int                          `json:"sender"`
+				Layout string                       `json:"layout"`
+				Before [2]backgroundDisplaySnapshot `json:"before"`
+				After  [2]backgroundDisplaySnapshot `json:"after"`
+			}
+			if !skillGuardMilestoneDetail(t, milestones, name, &record) {
+				t.Errorf("missing mandatory display milestone %q", name)
+				continue
+			}
+			if record.Sender != operation.sender || record.Layout != operation.layout {
+				t.Errorf("%s wrong direction/layout: %+v", name, record)
+			}
+			var oldValue, newValue *string
+			if old, ok := expected[operation.layout]; ok {
+				value := string(old)
+				oldValue = &value
+			}
+			for n, before := range record.Before {
+				if !backgroundDisplayEqual(before.Local, expected) || len(before.Publications) != 0 || len(before.Messages) != 0 || len(before.Storage) != 0 {
+					t.Errorf("%s tab %d wrong before state or observations not reset: %+v", name, n, before)
+				}
+			}
+			if operation.config < 0 {
+				delete(expected, operation.layout)
+			} else {
+				config := backgroundDisplayConfigs[operation.config]
+				expected[operation.layout] = config
+				value := string(config)
+				newValue = &value
+			}
+			for n, after := range record.After {
+				if !backgroundDisplayEqual(after.Local, expected) || len(after.Publications) != 1 || !backgroundDisplayEqual(after.Publications[0], expected) {
+					t.Errorf("%s tab %d wrong full local map or publication history: %+v", name, n, after)
+				}
+				for _, layout := range []string{"desktop", "mobile"} {
+					config, present := expected[layout]
+					var persisted *string
+					if present {
+						value := string(config)
+						persisted = &value
+					} else {
+						config = baseline.Tabs[n].Effective[layout]
+					}
+					if !backgroundDisplayEqual(after.Effective[layout], config) || !reflect.DeepEqual(after.Persisted[layout], persisted) {
+						t.Errorf("%s tab %d wrong %s effective/durable config: %+v", name, n, layout, after)
+					}
+				}
+				if n == operation.sender {
+					if len(after.Storage) != 0 {
+						t.Errorf("%s sender received its own storage event: %+v", name, after.Storage)
+					}
+				} else {
+					want := []backgroundDisplayStorage{{Key: "evener.prefs.transcriptDisplay." + operation.layout, OldValue: oldValue, NewValue: newValue, URL: baseline.Tabs[operation.sender].Href, Trusted: true, LocalStorage: true, Blocked: transport == "broadcast"}}
+					if !reflect.DeepEqual(after.Storage, want) {
+						t.Errorf("%s receiver storage events = %+v, want %+v", name, after.Storage, want)
+					}
+				}
+				if transport == "storage" {
+					if len(after.Messages) != 0 {
+						t.Errorf("%s fallback used BroadcastChannel: %s", name, after.Messages)
+					}
+					continue
+				}
+				if len(after.Messages) != 1 {
+					t.Errorf("%s tab %d expected one native envelope, got %s", name, n, after.Messages)
+					continue
+				}
+				var envelope map[string]any
+				if err := json.Unmarshal(after.Messages[0], &envelope); err != nil {
+					t.Errorf("%s malformed envelope: %v", name, err)
+					continue
+				}
+				source, _ := envelope["sourceId"].(string)
+				if source == "" || (nativeSources[operation.sender] != "" && source != nativeSources[operation.sender]) {
+					t.Errorf("%s unstable or empty source ID: %q", name, source)
+				}
+				nativeSources[operation.sender] = source
+				want := map[string]any{"version": 1, "sourceId": source, "layout": operation.layout, "config": newValue, "fingerprint": newValue}
+				if !backgroundDisplayEqual(envelope, want) {
+					t.Errorf("%s tab %d wrong exact five-field envelope: %s", name, n, after.Messages[0])
+				}
+			}
+		}
+	}
+	if nativeSources[0] == "" || nativeSources[1] == "" || nativeSources[0] == nativeSources[1] {
+		t.Errorf("display native senders must have distinct nonempty source IDs: %q", nativeSources)
+	}
+	var fingerprint struct {
+		Invalid  json.RawMessage              `json:"invalid"`
+		Valid    json.RawMessage              `json:"valid"`
+		Before   [2]backgroundDisplaySnapshot `json:"before"`
+		Rejected [2]backgroundDisplaySnapshot `json:"rejected"`
+		Accepted [2]backgroundDisplaySnapshot `json:"accepted"`
+	}
+	if !skillGuardMilestoneDetail(t, milestones, "display-fingerprint", &fingerprint) {
+		t.Error("missing mandatory display fingerprint rejection and positive control")
+		return
+	}
+	source := "display-guard-fingerprint-control"
+	invalid := map[string]any{"version": 1, "sourceId": source, "layout": "desktop", "config": string(backgroundDisplayConfigs[0]), "fingerprint": string(backgroundDisplayConfigs[1])}
+	valid := map[string]any{"version": 1, "sourceId": source, "layout": "desktop", "config": string(backgroundDisplayConfigs[0]), "fingerprint": string(backgroundDisplayConfigs[0])}
+	if source == nativeSources[0] || source == nativeSources[1] || !backgroundDisplayEqual(fingerprint.Invalid, invalid) || !backgroundDisplayEqual(fingerprint.Valid, valid) {
+		t.Errorf("fingerprint control changed more than the fingerprint or used a real sender identity: %+v", fingerprint)
+	}
+	for n := range 2 {
+		before, rejected, accepted := fingerprint.Before[n], fingerprint.Rejected[n], fingerprint.Accepted[n]
+		want := map[string]json.RawMessage{"desktop": backgroundDisplayConfigs[0]}
+		if !backgroundDisplayEqual(before.Local, map[string]json.RawMessage{}) || len(before.Publications) != 0 || !backgroundDisplayEqual(rejected.Local, before.Local) || len(rejected.Publications) != 0 || !backgroundDisplayEqual(rejected.Messages, []any{invalid}) {
+			t.Errorf("fingerprint mismatch was not observed and rejected without transient publication in tab %d: %+v", n, rejected)
+		}
+		if !backgroundDisplayEqual(accepted.Local, want) || !backgroundDisplayEqual(accepted.Publications, []any{want}) || !backgroundDisplayEqual(accepted.Messages, []any{invalid, valid}) || !backgroundDisplayEqual(accepted.Effective["desktop"], backgroundDisplayConfigs[0]) || !backgroundDisplayEqual(accepted.Effective["mobile"], before.Effective["mobile"]) {
+			t.Errorf("corrected fingerprint was not observed and applied exactly once in tab %d: %+v", n, accepted)
+		}
+		if len(rejected.Storage) != 0 || len(accepted.Storage) != 0 || !reflect.DeepEqual(before.Persisted, rejected.Persisted) || !reflect.DeepEqual(before.Persisted, accepted.Persisted) {
+			t.Errorf("fingerprint injection wrote storage in tab %d", n)
+		}
+	}
+}
+
 // runBackgroundDriverMode launches the Node driver. --hub-url is the fixture
-// hub's base URL; the driver sets EVENER_HUB_ADDR from it before starting Vite
+// hub's base URL; the driver sets EVENER_HUB_URL from it before starting Vite
 // so the dev server's proxy forwards /rpc and the hub HTTP routes.
 // --control-path-a/-b are the two helpers' control files, so a phase release
 // reaches the daemon that owns the driven session. entrySlice adds
@@ -326,7 +583,7 @@ func assertBackgroundEntrySlice(t *testing.T, fixture *skillGuardFixture, milest
 		"entry-baseline", "entry-opened", "entry-completed",
 		"history-paging", "reopen-without-read", "further-paging",
 		"ws-broken", "gap-turn-completed", "reconnected-latest-window", "paged-back-sentinel",
-		"narrow-viewport", "two-tab-delete-fence", "two-tab-delete-refusal", "two-tab-clear-fence",
+		"narrow-viewport", "two-tab-delete-fence", "two-tab-delete-source", "two-tab-delete-refusal", "two-tab-clear-fence",
 		"responsive-reading", "new-pane-latest",
 		"done",
 	} {
@@ -634,16 +891,16 @@ func assertBackgroundTwoTabLive(t *testing.T, milestones []skillGuardMilestone, 
 	t.Helper()
 	type renderedRow struct {
 		ID     string `json:"id"`
-		TurnID string `json:"turnId"`
+		TurnID string `json:"turnId"` //nolint:tagliatelle // Matches the recorded JavaScript browser evidence field turnId.
 		Text   string `json:"text"`
 	}
 	var live struct {
 		Tabs []struct {
-			BeforeRows []renderedRow `json:"beforeRows"`
-			AfterRows  []renderedRow `json:"afterRows"`
+			BeforeRows []renderedRow `json:"beforeRows"` //nolint:tagliatelle // Matches the recorded JavaScript browser evidence field beforeRows.
+			AfterRows  []renderedRow `json:"afterRows"`  //nolint:tagliatelle // Matches the recorded JavaScript browser evidence field afterRows.
 			Items      []struct {
 				backgroundItemIdentity
-				CallID string `json:"callId"`
+				CallID string `json:"callId"` //nolint:tagliatelle // Matches the recorded JavaScript browser evidence field callId.
 			} `json:"items"`
 			Output string `json:"output"`
 		} `json:"tabs"`
@@ -656,13 +913,14 @@ func assertBackgroundTwoTabLive(t *testing.T, milestones []skillGuardMilestone, 
 	}
 	for index, tab := range live.Tabs {
 		for phase, rows := range [][]renderedRow{tab.BeforeRows, tab.AfterRows} {
-			var text string
+			var textBuilder strings.Builder
 			for _, row := range rows {
 				if row.ID == "" || row.TurnID != producer.assistantTurnID {
 					t.Errorf("tab %d phase %d rendered a different producer: %+v", index, phase, row)
 				}
-				text += row.Text
+				textBuilder.WriteString(row.Text)
 			}
+			text := textBuilder.String()
 			if strings.Count(text, backgroundBeforeEviction) != 1 || strings.Count(text, backgroundAfterEviction) != phase {
 				t.Errorf("tab %d phase %d has missing or duplicate live output: %q", index, phase, text)
 			}
@@ -711,6 +969,12 @@ func assertBackgroundTwoTabLive(t *testing.T, milestones []skillGuardMilestone, 
 // lease without rebinding its epoch.
 func assertBackgroundEntryTwoTabFencing(t *testing.T, milestones []skillGuardMilestone) {
 	t.Helper()
+	var source struct {
+		SourceReadOutcome string `json:"sourceReadOutcome"` //nolint:tagliatelle // Matches the recorded JavaScript browser evidence field sourceReadOutcome.
+	}
+	if skillGuardMilestoneDetail(t, milestones, "two-tab-delete-source", &source) && source.SourceReadOutcome != "rejected" {
+		t.Errorf("two-tab-delete-source: source read outcome = %q, want rejected", source.SourceReadOutcome)
+	}
 	var delFence struct {
 		ADeletedRefs       bool `json:"aDeletedRefs"`       //nolint:tagliatelle // Matches the recorded JavaScript browser evidence field aDeletedRefs.
 		BSuppressed        bool `json:"bSuppressed"`        //nolint:tagliatelle // Matches the recorded JavaScript browser evidence field bSuppressed.
@@ -1799,8 +2063,7 @@ func TestBackgroundTranscriptTargetTraceEvidenceReusedIDsAcrossConnections(t *te
 
 // TestBackgroundTranscriptDurableTranscriptPath pins that the durable-transcript
 // reader follows the fixture's real layout: the daemons persist to
-// stateRoot/projects/<project>/sessions/<id>.transcript.jsonl
-// (skill_composer_browser_test.go:534-543). A reader that omits the "projects"
+// stateRoot/projects/<project>/sessions/<id>.transcript.jsonl. A reader that omits the "projects"
 // segment silently finds nothing and fails every content assertion regardless of
 // browser success.
 func TestBackgroundTranscriptDurableTranscriptPath(t *testing.T) {
@@ -2077,8 +2340,7 @@ func backgroundMilestonePresent(milestones []skillGuardMilestone, name string) b
 
 // backgroundTranscriptsFor reads exactly the named target session's durable
 // transcript under the fixture's real layout:
-// stateRoot/projects/<project>/sessions/<sessionID>.transcript.jsonl
-// (skill_composer_browser_test.go:534-543). A missing or unreadable expected
+// stateRoot/projects/<project>/sessions/<sessionID>.transcript.jsonl. A missing or unreadable expected
 // file is an error, never empty content, and no other session's transcript is
 // combined in.
 func backgroundTranscriptsFor(t *testing.T, stateRoot, sessionID string) (string, error) {

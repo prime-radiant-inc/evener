@@ -236,7 +236,7 @@ func runGitPathResolutionProgram(t *testing.T, program []byte) gitPathResolution
 			}
 		},
 	}
-	if got, want := ResolveMainRepoRoot(primaryEnv, primaryCWD), resolveClean(primaryCandidate); got != want {
+	if got, want := ResolveMainRepoRoot(primaryEnv, primaryCWD), identifier.ResolveClean(primaryCandidate); got != want {
 		t.Fatalf("primary binary candidate root = %q, want %q", got, want)
 	}
 
@@ -278,7 +278,7 @@ func runGitPathResolutionProgram(t *testing.T, program []byte) gitPathResolution
 	if identifier.GitEntryResolvesToCommon(submodule, ".git/modules/submodule") {
 		t.Fatal("submodule candidate without .git entry unexpectedly resolved to common dir")
 	}
-	if got := resolveClean(filepath.Join(main, "missing", "..", "known")); got != filepath.Join(main, "known") {
+	if got := identifier.ResolveClean(filepath.Join(main, "missing", "..", "known")); got != filepath.Join(main, "known") {
 		t.Fatalf("resolveClean missing path = %q", got)
 	}
 

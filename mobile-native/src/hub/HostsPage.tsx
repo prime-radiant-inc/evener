@@ -3,12 +3,13 @@
 // its live sessions, and its version with a gray tag when it differs from the
 // hub's. The page reads the hub's hosts every 2 seconds while it is on screen,
 // keeps its last rows through a failed read, and reads afresh on a new connection.
+import { LOCAL_HOST } from "@evener/appwire-client";
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
 import { useEffect } from "react";
 import { useConnectionStatusText } from "../board/connectionStatus";
 import { HostsNotListed } from "../hosts/HostsNotListed";
 import { hostStatus, systemLabel, versionDriftTag } from "../hosts/hostStatus";
-import { LOCAL_HOST, liveSessionsText } from "../hosts/liveCounts";
+import { liveSessionsText } from "../hosts/liveCounts";
 import { Group, GroupedPage, GroupFooter, Row, RowValue } from "../sheet/Grouped";
 import { SheetStatus } from "../sheet/SheetStatus";
 import { hubConnectionWord } from "./hubHeader";

@@ -1,0 +1,144 @@
+{
+  "instance": "openai-codex",
+  "provider_id": "openai-codex",
+  "protocol": "openai-responses",
+  "surface": "openai",
+  "transport": {
+    "auth": "oauth-openai-codex",
+    "base_url": "https://chatgpt.com/backend-api/codex",
+    "endpoint": "/responses",
+    "stream_endpoint": "/responses",
+    "models_endpoint": "/models?client_version=0.156.1",
+    "count_tokens_endpoint": "-",
+    "vars": {
+      "BASE_URL": "https://chatgpt.com/backend-api/codex"
+    },
+    "vars_env": {
+      "BASE_URL": "OPENAI_CODEX_BASE_URL"
+    },
+    "body": {
+      "parallel_tool_calls": false,
+      "reasoning.context": "all_turns",
+      "text.verbosity": "low"
+    }
+  },
+  "model_id": "gpt-6.1-sol-1m",
+  "wire_id": "gpt-6.1-sol",
+  "model": {
+    "id": "gpt-6.1-sol-1m",
+    "wire_id": "gpt-6.1-sol",
+    "alias_of": "gpt-6.1-sol",
+    "transport": {
+      "body": {
+        "parallel_tool_calls": false,
+        "reasoning.context": "all_turns",
+        "text.verbosity": "low"
+      }
+    },
+    "surface": "openai",
+    "caps": {}
+  },
+  "caps": {
+    "context_window": 872000,
+    "tools": true,
+    "structured_output": true,
+    "sampling": false,
+    "reasoning": true,
+    "reasoning_controls": [
+      "effort"
+    ],
+    "effort_values": [
+      "low",
+      "medium",
+      "high",
+      "xhigh",
+      "max"
+    ],
+    "default_effort": "low",
+    "input_modalities": [
+      "text",
+      "image"
+    ],
+    "fields": {
+      "background": false,
+      "conversation": false,
+      "include": true,
+      "max_output_tokens": false,
+      "max_tool_calls": false,
+      "metadata": true,
+      "parallel_tool_calls": false,
+      "previous_response_id": false,
+      "prompt_cache_key": true,
+      "prompt_cache_retention": false,
+      "reasoning.context": false,
+      "safety_identifier": false,
+      "service_tier": false,
+      "store": true,
+      "temperature": false,
+      "text.verbosity": false,
+      "top_p": false,
+      "truncation": false
+    },
+    "max_tokens_field": "max_completion_tokens",
+    "thinking_always_on": true,
+    "reasoning_summary": "detailed",
+    "strict_tools": true,
+    "image_detail": "original",
+    "responses_lite": true,
+    "web_search": true
+  },
+  "provenance": {
+    "ContextWindow": "overlay/row",
+    "DefaultEffort": "alias",
+    "EffortValues": "overlay/glob:gpt-6*",
+    "Fields.background": "overlay/provider",
+    "Fields.conversation": "overlay/provider",
+    "Fields.include": "overlay/provider",
+    "Fields.max_output_tokens": "overlay/provider",
+    "Fields.max_tool_calls": "overlay/provider",
+    "Fields.metadata": "overlay/provider",
+    "Fields.previous_response_id": "overlay/provider",
+    "Fields.prompt_cache_key": "overlay/provider",
+    "Fields.prompt_cache_retention": "overlay/provider",
+    "Fields.safety_identifier": "overlay/provider",
+    "Fields.service_tier": "overlay/provider",
+    "Fields.store": "overlay/provider",
+    "Fields.temperature": "overlay/provider",
+    "Fields.top_p": "overlay/provider",
+    "Fields.truncation": "overlay/provider",
+    "ImageDetail": "overlay/glob:gpt-6*",
+    "InputModalities": "overlay/glob:gpt-6*",
+    "MaxTokensField": "overlay/provider",
+    "Reasoning": "overlay/glob:gpt-6*",
+    "ReasoningControls": "alias",
+    "ReasoningSummary": "overlay/glob:gpt-6*",
+    "ResponsesLite": "overlay/glob:gpt-6*",
+    "Sampling": "overlay/glob:gpt-6*",
+    "StrictTools": "overlay/provider",
+    "StructuredOutput": "overlay/glob:gpt-6*",
+    "Surface": "alias",
+    "ThinkingAlwaysOn": "overlay/glob:gpt-6*",
+    "Tools": "overlay/glob:gpt-6*",
+    "WebSearch": "overlay/provider",
+    "model": "row:gpt-6.1-sol-1m"
+  },
+  "default_model": "gpt-5.6",
+  "cheap_model": "gpt-5.6-luna",
+  "credential_source": "oauth",
+  "pruned_fields": [
+    "background",
+    "conversation",
+    "max_output_tokens",
+    "max_tool_calls",
+    "parallel_tool_calls",
+    "previous_response_id",
+    "prompt_cache_retention",
+    "reasoning.context",
+    "safety_identifier",
+    "service_tier",
+    "temperature",
+    "text.verbosity",
+    "top_p",
+    "truncation"
+  ]
+}

@@ -1,5 +1,6 @@
 import { AppwireClient } from "@evener/appwire-client";
 import type { WebSocketLike } from "@evener/appwire-client";
+import { hubRPCURL, parseHubOrigin } from "@evener/appwire-client/hubOrigin";
 
 export interface HubProfile {
 	id: string;
@@ -55,7 +56,11 @@ export function parsePairingURL(input: string): {
 		throw invalidPairingURL();
 	}
 	if (!token || hasPairingControl(token)) throw invalidPairingURL();
-	return { origin: url.origin, token };
+	try {
+		return { origin: parseHubOrigin(`${match[1]}://${match[2]}`), token };
+	} catch {
+		throw invalidPairingURL();
+	}
 }
 export interface SecureStorage {
 	getItemAsync(key: string): Promise<string | null>;
@@ -64,25 +69,7 @@ export interface SecureStorage {
 }
 
 export function connectionTarget(input: string): string {
-	let url: URL;
-	try {
-		url = new URL(input.trim());
-	} catch {
-		throw new Error("Enter a complete http:// or https:// hub address.");
-	}
-	if (
-		!["http:", "https:"].includes(url.protocol) ||
-		!url.hostname ||
-		url.username ||
-		url.password ||
-		url.search ||
-		url.hash ||
-		url.pathname !== "/"
-	)
-		throw new Error("Use the hub origin only, with the token in its separate field.");
-	url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
-	url.pathname = "/rpc";
-	return url.toString();
+	return hubRPCURL(input);
 }
 
 const INDEX = "evener.hubs";
@@ -181,13 +168,13 @@ export class HubProfiles {
 		return this.write(() => this.saveProfile(input));
 	}
 	private async saveProfile(input: HubInput & { id: string }): Promise<HubProfile> {
-		connectionTarget(input.origin);
+		const origin = parseHubOrigin(input.origin);
 		if (!input.name.trim()) throw new Error("Give this hub a name.");
 		if (/[\r\n]/.test(input.token)) throw new Error("The token must be a single line.");
 		const profile = {
 			id: input.id,
 			name: input.name.trim(),
-			origin: new URL(input.origin.trim()).origin,
+			origin,
 		};
 		await this.storage.setItemAsync(key(input.id), JSON.stringify({ ...profile, token: input.token.trim() }));
 		const ids = await this.ids();

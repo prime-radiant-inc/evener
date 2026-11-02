@@ -7,6 +7,7 @@ import (
 
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/internal/jobstore"
 	"primeradiant.com/evener/agent/schema"
 )
@@ -336,8 +337,8 @@ func TestWaitingOnWorkRefusalKeepsTheSessionAlive(t *testing.T) {
 	t.Parallel()
 	s, adapter := newExecutionSession(t)
 	adapter.script(
-		respond(toolCallResponse(communicateCallArgs("comm-1", map[string]any{"message": "starting the rebase now", "end_turn": true, "end_reason": "waiting_on_work"}))),
-		respond(toolCallResponse(communicateCallArgs("comm-2", map[string]any{"message": "done", "end_turn": true}))),
+		respond(agenttest.ToolCallResponse(communicateCallArgs("comm-1", map[string]any{"message": "starting the rebase now", "end_turn": true, "end_reason": "waiting_on_work"}))),
+		respond(agenttest.ToolCallResponse(communicateCallArgs("comm-2", map[string]any{"message": "done", "end_turn": true}))),
 	)
 	if _, err := s.ProcessInput(context.Background(), "talk", nil); err != nil {
 		t.Fatal(err)

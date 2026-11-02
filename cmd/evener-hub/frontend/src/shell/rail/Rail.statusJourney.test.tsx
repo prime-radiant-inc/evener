@@ -6,7 +6,7 @@ import { navigationInvalidatedNotification } from "@evener/appwire-client/testin
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, expect, test } from "vitest";
 import "../../panes/session";
-import { connectionStore } from "../../stores/connection";
+import { resetConnectionStoreForTests } from "../../stores/connection";
 import { initNavigation, navigationStore, resetNavigationStoreForTests } from "../../stores/navigation/store";
 import { resetPrefsStoreForTests } from "../../stores/prefs";
 import { resetThreadsStoreForTests } from "../../stores/threads";
@@ -28,7 +28,7 @@ beforeEach(() => {
 afterEach(() => {
   cleanup();
   resetNavigationStoreForTests();
-  connectionStore.setState({ state: "idle", client: null, serverInfo: undefined });
+  resetConnectionStoreForTests();
 });
 
 test("parent status recovers through navigation updates without losing failed-child access", async () => {

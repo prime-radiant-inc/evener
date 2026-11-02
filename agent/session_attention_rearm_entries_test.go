@@ -2,7 +2,6 @@ package agent
 
 import (
 	"os"
-	"path/filepath"
 	"reflect"
 	"runtime"
 	"testing"
@@ -23,7 +22,7 @@ func rearmFixtureSessionWithConfig(t *testing.T, restoreCfg RestoreSessionConfig
 	t.Helper()
 	stateDir := t.TempDir()
 	rootID := identifier.MustNewSessionID()
-	if err := os.MkdirAll(filepath.Join(stateDir, sessionsSubdir), 0o755); err != nil {
+	if err := os.MkdirAll(schema.SessionsDir(stateDir), 0o755); err != nil {
 		t.Fatalf("mkdir sessions: %v", err)
 	}
 	const pendingID = "delegate:dlg_rearm/delivery/1"
@@ -121,7 +120,7 @@ func TestRestoreSession_RestoredTranscriptOKBoundary(t *testing.T) {
 	t.Run("no transcript on disk", func(t *testing.T) {
 		stateDir := t.TempDir()
 		rootID := identifier.MustNewSessionID()
-		if err := os.MkdirAll(filepath.Join(stateDir, sessionsSubdir), 0o755); err != nil {
+		if err := os.MkdirAll(schema.SessionsDir(stateDir), 0o755); err != nil {
 			t.Fatalf("mkdir sessions: %v", err)
 		}
 		meta := schema.SessionMeta{ID: rootID, ProfileID: "openai", Model: "gpt-5.2"}

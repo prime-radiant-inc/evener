@@ -4,7 +4,7 @@
 // reconnect with backoff. Unlike the legacy client's fixed 250ms retry, it
 // backs off exponentially up to a cap.
 
-import { ConnectionClosedError, RequestTimeoutError, WireError } from "./errors";
+import { CODE_INVALID_REQUEST, ConnectionClosedError, RequestTimeoutError, WireError } from "./errors";
 import { isPlainObject } from "./plainObject";
 import type { WebSocketLike } from "./transport";
 import type { AnyNotification, InitializeResponse, MethodName, MethodTypes } from "./types.gen";
@@ -79,8 +79,6 @@ class HandshakeRejectedError extends Error {
   }
 }
 
-const CODE_INVALID_REQUEST = -32600;
-
 // TerminalReason names a close a human has to resolve, as opposed to an
 // ordinary drop the client retries on its own.
 export type TerminalReason = "protocol" | null;
@@ -94,9 +92,9 @@ export const HEARTBEAT_INTERVAL_MS = 20_000;
 export const HEARTBEAT_TIMEOUT_MS = 10_000;
 
 // Reconnect backoff: doubles from the base up to the cap, then holds there
-// until a successful re-handshake. Unlike legacy appwire.js's fixed 250ms
-// retry (renderer.js scheduleAppwireReconnect), this backs off so a
-// prolonged outage doesn't hammer the hub with reconnect attempts. Each delay
+// until a successful re-handshake. Backing off, rather than retrying at a
+// fixed interval, keeps a prolonged outage from hammering the hub with
+// reconnect attempts. Each delay
 // also carries bounded jitter (see scheduleReconnect) so clients dropped by
 // the same outage spread their retries instead of reconnecting in lockstep.
 export const RECONNECT_BASE_MS = 250;

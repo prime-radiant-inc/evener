@@ -3,7 +3,6 @@ package contextmgr
 import (
 	"context"
 	"fmt"
-	"path/filepath"
 	"strings"
 
 	"primeradiant.com/evener/agent/events"
@@ -28,7 +27,7 @@ type SessionLogStrategy struct {
 // Manager and host. The session log is persisted alongside the
 // session snapshot.
 func NewSessionLogStrategy(cm *Manager, host Host) (*SessionLogStrategy, error) {
-	logPath := filepath.Join(host.StateDir(), "sessions", host.ID()+".log.jsonl")
+	logPath := schema.SessionLogPath(host.StateDir(), host.ID())
 	log, err := sessionlog.NewSessionLog(logPath)
 	if err != nil {
 		return nil, fmt.Errorf("session log strategy: %w", err)
@@ -83,23 +82,14 @@ func (s *SessionLogStrategy) ManageContext(ctx context.Context, history *[]schem
 	// Invalidate API token measurement before running any layer so that
 	// between-layer pressure() calls use char/4 (reflects in-place mutations).
 	if p >= s.cm.ObservationMaskThreshold {
-		s.cm.mu.Lock()
-		s.cm.lastInputTokens = 0
-		s.cm.historyLenAtMeasure = 0
-		s.cm.mu.Unlock()
+		s.cm.resetMeasurement()
 	}
 
 	// Layer 1: Observation masking.
 	if p >= s.cm.ObservationMaskThreshold {
-		before := s.cm.estimateTokensFor(prof, *history)
-		maskObservations(*history, s.cm.PreserveRecentTurns, s.cm.resultToolName())
-		after := s.cm.estimateTokensFor(prof, *history)
-		emitFn(events.EventContextCompaction, events.ContextCompactionData{
-			Layer:           "observation_mask",
-			TurnsBefore:     len(*history),
-			TurnsAfter:      len(*history),
-			EstTokensBefore: before,
-			EstTokensAfter:  after,
+		s.cm.applyLayer(ctx, emitFn, history, prof, "observation_mask", "", func(h []schema.Turn) ([]schema.Turn, error) {
+			maskObservations(h, s.cm.PreserveRecentTurns, s.cm.resultToolName())
+			return h, nil
 		})
 		compacted = true
 		p, prof = estimatePressure()
@@ -107,70 +97,41 @@ func (s *SessionLogStrategy) ManageContext(ctx context.Context, history *[]schem
 
 	// Layer 2: Thinking clearing.
 	if p >= s.cm.ThinkingClearThreshold {
-		before := s.cm.estimateTokensFor(prof, *history)
-		clearThinking(*history, s.cm.PreserveRecentTurns)
-		after := s.cm.estimateTokensFor(prof, *history)
-		emitFn(events.EventContextCompaction, events.ContextCompactionData{
-			Layer:           "thinking_clear",
-			TurnsBefore:     len(*history),
-			TurnsAfter:      len(*history),
-			EstTokensBefore: before,
-			EstTokensAfter:  after,
+		s.cm.applyLayer(ctx, emitFn, history, prof, "thinking_clear", "", func(h []schema.Turn) ([]schema.Turn, error) {
+			clearThinking(h, s.cm.PreserveRecentTurns)
+			return h, nil
 		})
 		compacted = true
 		p, prof = estimatePressure()
 	}
 
-	// Layer 3 (replaced): Session-log checkpoint.
+	// Layer 3 (replaced): Session-log checkpoint. checkpointed is what this
+	// pass's checkpoint folded, which a summary completing the same fold reads
+	// the partner's messages from.
+	var checkpointed []schema.Turn
 	if p >= s.cm.CheckpointThreshold || (tripwire && assumptionStillGoverns(tripwireProf, prof)) {
-		turnsBefore := len(*history)
-		before := s.cm.estimateTokensFor(prof, *history)
-		*history = s.sessionLogCheckpointWithMeta(*history, s.cm.PreserveRecentTurns, s.cm.metaFor(ctx))
-		after := s.cm.estimateTokensFor(prof, *history)
-		emitFn(events.EventContextCompaction, events.ContextCompactionData{
-			Layer:           "session_log_checkpoint",
-			TurnsBefore:     turnsBefore,
-			TurnsAfter:      len(*history),
-			EstTokensBefore: before,
-			EstTokensAfter:  after,
+		s.cm.applyLayer(ctx, emitFn, history, prof, "session_log_checkpoint", schema.TurnCheckpoint, func(h []schema.Turn) ([]schema.Turn, error) {
+			var folded []schema.Turn
+			h, folded = s.sessionLogCheckpointWithMeta(h, s.cm.PreserveRecentTurns, s.cm.metaFor(ctx))
+			checkpointed = folded
+			return h, nil
 		})
-		if len(*history) > 0 && (*history)[0].Kind == schema.TurnCheckpoint {
-			s.cm.handleCompactionTurn(ctx, (*history)[0])
-		}
 		compacted = true
 		p, prof = estimatePressure()
 	}
 
 	// Layer 4: LLM summarization fallback.
 	if p >= s.cm.SummarizeThreshold && s.cm.client != nil {
-		turnsBefore := len(*history)
-		before := s.cm.estimateTokensFor(prof, *history)
-		result, err := s.cm.summarizeWithLLM(ctx, *history, s.cm.PreserveRecentTurns)
-		if err != nil {
-			emitFn(events.EventWarning, summarizerFailureWarning(err))
-		} else {
-			*history = result
-			after := s.cm.estimateTokensFor(prof, *history)
-			emitFn(events.EventContextCompaction, events.ContextCompactionData{
-				Layer:           "summarize",
-				TurnsBefore:     turnsBefore,
-				TurnsAfter:      len(*history),
-				EstTokensBefore: before,
-				EstTokensAfter:  after,
-			})
-			if len(*history) > 0 && (*history)[0].Kind == schema.TurnSummary {
-				s.cm.handleCompactionTurn(ctx, (*history)[0])
-			}
+		if s.cm.applyLayer(ctx, emitFn, history, prof, "summarize", schema.TurnSummary, func(h []schema.Turn) ([]schema.Turn, error) {
+			return s.cm.summarizeFold(ctx, h, s.cm.PreserveRecentTurns, "", checkpointed)
+		}) {
 			compacted = true
 		}
 	}
 
 	// Reset token measurement after compaction since history content changed.
 	if compacted {
-		s.cm.mu.Lock()
-		s.cm.lastInputTokens = 0
-		s.cm.historyLenAtMeasure = 0
-		s.cm.mu.Unlock()
+		s.cm.resetMeasurement()
 	}
 
 	return nil
@@ -185,17 +146,20 @@ func (s *SessionLogStrategy) sessionLogCheckpoint(history []schema.Turn, preserv
 	if s != nil && s.cm != nil {
 		meta = &s.cm.Meta
 	}
-	return s.sessionLogCheckpointWithMeta(history, preserveRecent, meta)
+	result, _ := s.sessionLogCheckpointWithMeta(history, preserveRecent, meta)
+	return result
 }
 
-func (s *SessionLogStrategy) sessionLogCheckpointWithMeta(history []schema.Turn, preserveRecent int, meta *CompactionMeta) []schema.Turn {
+// sessionLogCheckpointWithMeta also returns the turns the checkpoint folded
+// (nil when it folded nothing), for a summary completing the same fold.
+func (s *SessionLogStrategy) sessionLogCheckpointWithMeta(history []schema.Turn, preserveRecent int, meta *CompactionMeta) ([]schema.Turn, []schema.Turn) {
 	if attentionTransparentTurnCount(history) <= preserveRecent {
-		return history
+		return history, nil
 	}
 
-	cutoff := safeCutoff(history, attentionTransparentRecentCutoff(history, preserveRecent))
+	cutoff := foldCutoff(history, preserveRecent)
 	if cutoff < 0 {
-		return history
+		return history, nil
 	}
 
 	// Extract original prompt from old history (same logic as checkpoint()).
@@ -225,7 +189,7 @@ func (s *SessionLogStrategy) sessionLogCheckpointWithMeta(history []schema.Turn,
 	result := make([]schema.Turn, 0, 1+preserveRecent)
 	result = append(result, checkpointTurn)
 	result = append(result, history[cutoff:]...)
-	return result
+	return result, history[:cutoff:cutoff]
 }
 
 // extractOriginalPrompt finds the original user prompt from history, handling

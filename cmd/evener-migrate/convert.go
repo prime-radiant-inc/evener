@@ -12,6 +12,7 @@ import (
 
 	"github.com/BurntSushi/toml"
 
+	"primeradiant.com/evener/execsupport/fsatomic"
 	"primeradiant.com/evener/llm/registry"
 )
 
@@ -214,6 +215,13 @@ func convertProvidersFile(opts options, rep *report, stdout, stderr io.Writer) {
 	if err != nil {
 		return // no file, nothing to convert
 	}
+	info, err := os.Stat(path)
+	if err != nil {
+		return
+	}
+	// The file can hold literal API keys: its backup and its replacement keep
+	// the mode the user gave it.
+	mode := info.Mode().Perm()
 	if !isOldProvidersSchema(src) {
 		return
 	}
@@ -234,19 +242,12 @@ func convertProvidersFile(opts options, rep *report, stdout, stderr io.Writer) {
 		rep.failed++
 		return
 	}
-	if err := os.WriteFile(backup, src, 0o644); err != nil {
+	if err := os.WriteFile(backup, src, mode); err != nil {
 		_, _ = fmt.Fprintf(stderr, "providers.toml: write backup: %v\n", err)
 		rep.failed++
 		return
 	}
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, converted, 0o644); err != nil {
-		_, _ = fmt.Fprintf(stderr, "providers.toml: write converted: %v\n", err)
-		rep.failed++
-		return
-	}
-	if err := os.Rename(tmp, path); err != nil {
-		_ = os.Remove(tmp)
+	if err := fsatomic.Write(path, converted, mode); err != nil {
 		_, _ = fmt.Fprintf(stderr, "providers.toml: replace: %v\n", err)
 		rep.failed++
 		return

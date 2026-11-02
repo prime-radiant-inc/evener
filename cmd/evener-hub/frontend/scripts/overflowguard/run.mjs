@@ -932,7 +932,7 @@ function assertDetail(result, width) {
   if (detail?.mobile !== mobile)
     failures.push(`Verbosity layout mode is ${detail?.mobile}, realized viewport mode is ${mobile}`);
   failures.push(...assertFieldsets(detail, `${width}px Verbosity`));
-  const expectedTargets = 31;
+  const expectedTargets = 33;
   if ((detail?.targets?.length ?? 0) !== expectedTargets) {
     failures.push(
       `Verbosity mounted ${detail?.targets?.length ?? "unknown"} interactive targets, expected ${expectedTargets}`,

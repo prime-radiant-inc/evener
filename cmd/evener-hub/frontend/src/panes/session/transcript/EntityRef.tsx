@@ -1,5 +1,6 @@
 import {
   activityDelegateState,
+  compactDuration,
   delegateModel,
   type EntityView,
   entityKindOf,
@@ -19,7 +20,7 @@ import type { ReactNode } from "react";
 import { useEntityOwnerRef, useEntityViews } from "../../../transcriptDisplay/entityViews";
 import { Eyebrow, HoverCard, OpenButton, PropertyList, type PropertyListRow } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
-import { formatQuietAge, formatUsagePair, jobStatusDisplay } from "../chrome/activityFormat";
+import { formatUsagePair, jobStatusDisplay } from "../chrome/activityFormat";
 import styles from "./entityref.module.css";
 import { openTranscript } from "./openTranscript";
 import { classifyJobStatus } from "./tools/subagentModuleStore";
@@ -155,7 +156,7 @@ function DelegateCard({ view, live }: { view: Extract<EntityView, { kind: "deleg
   const mandate = mandateSource ? plainQuoteLine(mandateSource) : undefined;
   const duration = durationMs == null ? undefined : formatElapsed(durationMs);
   const running = live && duration === undefined && runningForMs != null ? formatElapsed(runningForMs) : undefined;
-  const quiet = live && quietForMs != null ? formatQuietAge(quietForMs) : undefined;
+  const quiet = live && quietForMs != null ? compactDuration(quietForMs) : undefined;
   return (
     <div className={CLASS.card} data-entity-kind="delegate">
       <div className={CLASS.head}>

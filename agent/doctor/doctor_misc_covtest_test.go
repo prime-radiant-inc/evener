@@ -82,10 +82,10 @@ func TestSessionRow_ReadEventsError(t *testing.T) {
 	}
 }
 
-// TestSessionRow_StableDelegateError covers the stableDoctorDelegates error
+// TestSessionRow_DelegateError covers the stableDoctorDelegates error
 // path in sessionRow: a corrupt delegates.jsonl should make the session
 // unreadable.
-func TestSessionRow_StableDelegateError(t *testing.T) {
+func TestSessionRow_DelegateError(t *testing.T) {
 	base := t.TempDir()
 	bucket := stateHomeBucket(base, hash1)
 	sid := sidA

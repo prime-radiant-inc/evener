@@ -14,6 +14,7 @@ import (
 
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 	"primeradiant.com/evener/internal/credentials"
+	"primeradiant.com/evener/internal/hubendpoint"
 )
 
 // kata 68fm: hub ports were handed out in prose (a dispatch prompt listing
@@ -102,7 +103,7 @@ func TestRunMainAddrZeroReportsAndBindsTheRealPort(t *testing.T) {
 		t.Fatal("deps.serve saw a nil hubHTTPServer")
 	}
 
-	// The startup banners (including "listening on") are written to stderr
+	// The startup banners are written to stderr
 	// before deps.serve is called, so they are already there once served
 	// fires. Reading the buffer here is race-free not because of when we read
 	// it but because nothing in this hostless test writes to stderr after the
@@ -111,44 +112,37 @@ func TestRunMainAddrZeroReportsAndBindsTheRealPort(t *testing.T) {
 	// host to log about.
 	captured := stderr.String()
 
-	// The log line must carry a real, non-zero port - not the literal ":0"
-	// the caller asked for.
-	m := hubListeningLine.FindStringSubmatch(captured)
-	if m == nil {
-		t.Fatalf("no 'listening on <addr>' line in stderr:\n%s", captured)
-	}
-	reportedAddr := m[1]
-	if reportedAddr == "127.0.0.1:0" || reportedAddr == ":0" {
-		t.Fatalf("reported address is still the unresolved request %q, want the real bound port", reportedAddr)
-	}
-
-	var browserURL, privateURL *url.URL
+	var browserURL *url.URL
 	for field := range strings.FieldsSeq(captured) {
 		u, err := url.Parse(field)
-		if err != nil || u.Scheme != "http" {
+		if err != nil || (u.Scheme != "http" && u.Scheme != "https") {
 			continue
 		}
 		switch {
 		case u.Path == "" || u.Path == "/":
 			browserURL = u
 		case strings.HasPrefix(u.Path, "/auth/"):
-			if privateURL != nil {
-				t.Fatalf("startup output contains more than one private sign-in URL: %q", captured)
-			}
-			privateURL = u
+			t.Fatal("redirected startup output disclosed a private sign-in URL")
 		}
 	}
-	if browserURL == nil || privateURL == nil {
-		t.Fatalf("startup output URLs = browser %v, private %v; want both address and private sign-in link", browserURL, privateURL)
+	if browserURL == nil {
+		t.Fatal("redirected startup output has no browser address")
 	}
-	if browserURL.Host != reportedAddr || privateURL.Host != reportedAddr {
-		t.Fatalf("startup URL hosts = %q and %q, want reported address %q", browserURL.Host, privateURL.Host, reportedAddr)
+	if browserURL.Scheme != "http" || browserURL.Hostname() != "127.0.0.1" || browserURL.Port() == "" || browserURL.Port() == "0" || browserURL.User != nil || browserURL.RawQuery != "" || browserURL.Fragment != "" {
+		t.Fatalf("browser address is not a resolved, credential-free loopback origin: %v", browserURL)
 	}
-	if privateURL.Path != "/auth/private-credential" || privateURL.RawQuery != "" {
-		t.Fatalf("private sign-in URL path/query = %q, %q; want credential path and no query", privateURL.Path, privateURL.RawQuery)
+	for _, token := range []string{"private-credential", "hub-token"} {
+		if strings.Contains(captured, token) {
+			t.Fatal("redirected startup output disclosed a token")
+		}
 	}
-	if got := strings.Count(captured, "private-credential"); got != 1 {
-		t.Fatalf("credential appears %d times in startup output, want exactly once", got)
+	reportedAddr := browserURL.Host
+	actual, err := hubendpoint.Read(cfg.HubStateRoot)
+	if err != nil {
+		t.Fatalf("published endpoint: %v", err)
+	}
+	if actual.BoundAddr != reportedAddr || actual.RequestedListenAddr != "127.0.0.1:0" || actual.BootID != hubBootID || actual.LocalURL != "http://"+reportedAddr {
+		t.Fatalf("published binding disagrees with requested and actual listener: %+v", actual)
 	}
 	if tokenPath := filepath.Join(cfg.HubStateRoot, "auth-token"); !strings.Contains(captured, tokenPath) {
 		t.Fatalf("startup output does not retain token-file guidance for %s", tokenPath)

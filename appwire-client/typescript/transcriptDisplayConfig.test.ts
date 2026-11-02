@@ -9,14 +9,11 @@ import {
   contentSummary,
   contentVectorForConfig,
   decodeLocalConfig,
-  dualWriteLegacyPreferences,
   encodeLocalConfig,
   fromWireConfig,
   fromWireDefault,
   fromWireDefaults,
-  type LegacyPreferenceKey,
   legacyConfigFromValues,
-  legacyWritesFromConfig,
   makeTranscriptDisplayConfig,
   normalizeConfig,
   normalizeContent,
@@ -28,6 +25,7 @@ import {
   toWireDefaults,
   visibleCategoryInventory,
 } from "./transcriptDisplayConfig";
+import { SHIPPED_TRANSCRIPT_DISPLAY_DEFAULTS } from "./types.gen";
 
 // #1431 retired these three type aliases along with the value aliases below:
 // none had a consumer in any app tree, and none had coverage here. A type
@@ -247,15 +245,8 @@ describe("transcript display config", () => {
     expect(resolveEffectiveConfig(undefined, undefined, shipped)).toEqual(shipped);
   });
 
-  test("ships Desktop Tools and Mobile Intent with Advanced disabled", () => {
-    expect(shippedDefaults.desktop).toEqual({
-      revision: 0,
-      config: makeTranscriptDisplayConfig({ kind: "preset", level: "tools" }),
-    });
-    expect(shippedDefaults.mobile).toEqual({
-      revision: 0,
-      config: makeTranscriptDisplayConfig({ kind: "preset", level: "intent" }),
-    });
+  test("ships the defaults the hub serves, with Advanced disabled", () => {
+    expect(toWireDefaults(shippedDefaults)).toEqual(SHIPPED_TRANSCRIPT_DISPLAY_DEFAULTS);
     expect(advancedEnabledCount(shippedDefaults.desktop.config)).toBe(0);
   });
 
@@ -381,40 +372,5 @@ describe("transcript display config", () => {
       hookExits: "none",
     });
     expect(legacyConfigFromValues({})).toBeUndefined();
-  });
-
-  test("dual-writes every legacy boolean with exact 1/0 semantics", () => {
-    const writes: Partial<Record<LegacyPreferenceKey, boolean>> = {};
-    dualWriteLegacyPreferences(
-      makeTranscriptDisplayConfig(
-        { kind: "preset", level: "activity" },
-        {
-          roundTimings: true,
-          tokenCounts: false,
-          estimatedCost: true,
-          promptEvents: false,
-          hookExits: "all",
-        },
-      ),
-      (key, value) => {
-        writes[key] = value;
-      },
-    );
-    expect(writes).toEqual({
-      transcriptRoundTimings: true,
-      transcriptTokenCounts: false,
-      transcriptHookExitsAll: true,
-      transcriptHookExitsNormal: false,
-      transcriptPromptLoaded: false,
-      showCost: true,
-    });
-    expect(legacyWritesFromConfig(makeTranscriptDisplayConfig())).toEqual({
-      transcriptRoundTimings: false,
-      transcriptTokenCounts: false,
-      transcriptHookExitsAll: false,
-      transcriptHookExitsNormal: false,
-      transcriptPromptLoaded: false,
-      showCost: false,
-    });
   });
 });

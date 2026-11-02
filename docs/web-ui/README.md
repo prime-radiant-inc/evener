@@ -4,6 +4,11 @@ Design documentation for the web hub (`cmd/evener-hub`).
 
 ## Current
 
+- **[Comic Chat](../product/comic-chat.md)**: whole-conversation presentation
+  selected in Verbosity, literal panels and inline child readers, bundled Comic
+  Sans, and existing workspace connection and composer/recovery ownership.
+- **[Message recovery](../product/message-recovery.md)** — local queue Edit/Remove,
+  durable composer ownership, offline recovery and Stop races.
 - **[Session activity](../product/session-activity.md)** — ownership of scoped
   delegate, shell-job and watch reads, compact navigation, pagination and shared
   recovery. Use this contract when changing activity surfaces or subscriptions.
@@ -35,11 +40,12 @@ Design documentation for the web hub (`cmd/evener-hub`).
 - **[parity/](parity/)** — the behaviour-parity checklists the React rewrite was
   graded against, mined from the legacy hub before it was deleted. The code they
   cite is gone, so their `path:line` citations no longer resolve; they survive
-  because thirteen live source comments cite *them* for why a behaviour is the
+  because live source comments cite *them* for why a behaviour is the
   way it is, and every wave plan used them as its acceptance floor.
-- **[specs/](specs/)** — two dated feasibility designs (multi-pane workspace,
-  observer auto-open). Point-in-time; the multi-pane one is still named as
-  source of truth by its implementation plan.
+- **[specs/](specs/)** — dated, point-in-time designs and surveys (multi-pane
+  workspace, observer auto-open, transcript density, steering ghost,
+  keybinding system). The multi-pane one is still named as source of truth by
+  its implementation plan.
 
 ## New session and first-run provider setup
 
@@ -49,13 +55,13 @@ host has no usable provider access, the prerequisite appears before the task
 composer and opens the existing Connect provider dialog. Remote targets name the
 missing remote setup but do not expose the controller's credential editor.
 
-**Save and check** persists resolved host access and requests only that
-connection's model list. A failed check keeps a successfully saved credential and
-offers retry; unsupported listing has an explicit unverified continuation. A
-successful check hands the connection's actual instance name to **Choose model**,
-which scopes the first view to that instance. Failed or empty model reads offer a
-cache-bypassing retry. Local launches may reopen connection settings; remote
-launches cannot write controller credentials.
+**Save and test** persists the credential or resolved host access and requests
+only that connection's model list. A failed check keeps a successfully saved
+credential and offers retry; unsupported listing has an explicit unverified
+continuation. A successful check hands the connection's actual instance name to
+**Choose model**, which scopes the first view to that instance. Failed or empty
+model reads offer a cache-bypassing retry. Local launches may reopen connection
+settings; remote launches cannot write controller credentials.
 
 Provider connection and model choice never start a session. A person explicitly
 chooses the session model and selects **Start**. Start may also create a blank
@@ -206,7 +212,22 @@ retained bodies may also avoid a read under the existing authority rules even
 without a cache certificate. Body restoration alone creates no coverage,
 freshness or server cursor. Missing required bodies or metadata that cannot be
 reconstructed from retained history, failed writes and opening deadline expiry
-fall back to source recovery. The accepted baseline supplies the display and
+fall back to source recovery. An established view, whose last accepted local
+open still holds with no invalidation since, restores on remount without that
+deadline: the local restore keeps waiting, and only a genuinely stalled
+storage read settles the opening early. A settled stall keeps the loaded
+range only while its required bodies stay resident; a view whose release
+reclaimed them hands the open to source recovery, so the display recovers
+even though storage never answered. The late result of a settled stall acts
+only while its opening still owns the route, a live pane and the newest
+opening: it republishes the range when usable and falls back to source
+recovery when it cannot restore the required range, merging into whatever
+the repository published in the meantime — local older pages and accepted
+updates — instead of replacing it with the opening's captured snapshot, and
+the local continuation derives from bodies still missing after the merge,
+so paging that already exhausted stays exhausted. The
+accepted baseline
+supplies the display and
 cursor for subsequent older paging and live updates. Reconnect and source changes
 still reconcile, retiring obsolete cursors. Clear, deletion, final release and
 superseded openings fence late publication, and the opening hold settles on
@@ -238,7 +259,7 @@ usable reading depth, and an entry whose tail is showing keeps that tail in
 place rather than filling the pane. A height-only change, such as later
 composer-height settlement after a pane widens, keeps the reading line where it
 was. The existing
-[transcript registration](../../cmd/evener-hub/frontend/src/panes/session/transcript/flow/useTranscriptScroll.ts)
+[transcript registration](../../cmd/evener-hub/frontend/src/panes/session/transcript/flow/useTranscriptViewRegistration.ts)
 owns that intent; VirtualList owns measurement and committed geometry.
 Mounted and remounted readers use the same reflow policy. Retained placement
 waits while the thread store's ref-scoped local opening restores bodies, then
@@ -253,6 +274,45 @@ owners.
 An explicit display change restores focus to the same entry or its visible proxy,
 even when the viewport also changes. If that entry disappears, focus moves to the
 Transcript region.
+
+## Floating Next-needs-you control
+
+The focused conversation carries one
+[floating attention control](../../cmd/evener-hub/frontend/src/panes/session/NextNeedsYou.tsx)
+above the composer at every width. **Next** moves to the next session that needs a
+person. The horizontal-ellipsis **More** button opens the same queue's list, where
+each row selects that session and **Load more** asks for another page. A row whose
+page is refreshing or failed is refused and says why; a refused row cannot
+navigate. A press held
+for 500 ms opens the list. Movement beyond 10 CSS pixels, release, cancellation,
+lost pointer capture or unmount ends a pending hold without
+opening anything. A completed hold consumes the single click its release emits;
+the next intentional click still runs Next.
+
+The control and the New Content affordance share one measured stack at the
+transcript's trailing bottom edge, with New Content above Next. The stack's
+committed height becomes end clearance inside the virtual list, so the last
+transcript row can scroll clear of both controls and stays readable. A dormant or
+empty transcript floats the same control above the composer in its own dock.
+
+The control hides while an IME composition is in progress, while a question or
+approval is pending in the focused conversation, or while the command palette or
+another blocking modal owns interaction. It returns when that state ends. Editor
+focus and a saved draft never hide it.
+
+Keyboard Next, the palette's needs-you rows and the palette's next-needs-you
+command share the shell's one needs-you controller. The palette renders each row
+from the controller's published choice: a row whose page is refreshing or failed
+is refused, says why, and stays in the palette until the page is current again.
+The floating control changes none of their ordering, validity or navigation
+decisions.
+
+A settled `needs_you` page owns completion: when it reports no remaining rows,
+the queue is finished and neither Next nor **Load more** asks for another page,
+whatever the navigation manifest's own count still says. The manifest total
+justifies demand only before any page has settled. A failed boundary page keeps
+its retry, and a populated page whose retry is in flight keeps the control
+available until that read lands.
 
 ## Session Overview
 

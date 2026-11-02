@@ -100,29 +100,6 @@ func TestSummarizerFailureWarningsLeaveTheProviderBodyOut(t *testing.T) {
 		cm.ForceCompact(context.Background(), &history, "", emit)
 		requireSafeSummarizerWarning(t, *warnings, "summary_failure")
 	})
-	t.Run("predictive checkpoint", func(t *testing.T) {
-		cm := canaryManager(t)
-		cm.SummarizeThreshold = 2.0
-		history := canaryHistory()
-		emit, warnings := warningsFrom()
-		if err := NewCheckpointPredStrategy(cm).ManageContext(context.Background(), &history, 0, emit); err != nil {
-			t.Fatalf("ManageContext: %v", err)
-		}
-		requireSafeSummarizerWarning(t, *warnings, "context_budget")
-		if history[0].Kind != schema.TurnCheckpoint {
-			t.Fatal("deterministic checkpoint was not installed")
-		}
-	})
-	t.Run("predictive summarize", func(t *testing.T) {
-		cm := canaryManager(t)
-		cm.CheckpointThreshold = 2.0
-		history := canaryHistory()
-		emit, warnings := warningsFrom()
-		if err := NewCheckpointPredStrategy(cm).ManageContext(context.Background(), &history, 0, emit); err != nil {
-			t.Fatalf("ManageContext: %v", err)
-		}
-		requireSafeSummarizerWarning(t, *warnings, "summary_failure")
-	})
 	t.Run("session log", func(t *testing.T) {
 		cm := canaryManager(t)
 		cm.CheckpointThreshold = 2.0

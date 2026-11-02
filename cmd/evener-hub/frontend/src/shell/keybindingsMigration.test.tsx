@@ -162,14 +162,32 @@ function focusedInput(): { input: HTMLInputElement; remove: () => void } {
 
 // An [aria-modal="true"] stand-in for an OverlayPanel Dialog/Sheet, with a
 // focusable element inside so chords can be fired from within it.
-function openFakeModal(): { modal: HTMLElement; inside: HTMLButtonElement; close: () => void } {
+async function openFakeModal(): Promise<{
+  modal: HTMLElement;
+  inside: HTMLButtonElement;
+  close: () => Promise<void>;
+}> {
   const modal = document.createElement("div");
   modal.setAttribute("aria-modal", "true");
   const inside = document.createElement("button");
   modal.appendChild(inside);
-  document.body.appendChild(modal);
+  // The shell's needs-you controller observes aria-modal and publishes a
+  // snapshot, so inserting or removing this stand-in updates React. Outside
+  // act that update lands after the test's last flush and React reports it as
+  // an unwrapped update, which fails the test for the harness rather than for
+  // the chord behavior under test.
+  await act(async () => {
+    document.body.appendChild(modal);
+  });
   inside.focus();
-  return { modal, inside, close: () => modal.remove() };
+  return {
+    modal,
+    inside,
+    close: () =>
+      act(async () => {
+        modal.remove();
+      }),
+  };
 }
 
 beforeAll(async () => {
@@ -335,7 +353,7 @@ test("Mod+K fired while the palette is already open re-opens it (the deliberate 
 test("Mod+K and Mod+B still fire while an [aria-modal] dialog is open", async () => {
   render(<AppShell client={new FakeClient("ready")} />);
   await screen.findByText("No session open");
-  const { inside, close } = openFakeModal();
+  const { inside, close } = await openFakeModal();
 
   fireEvent.keyDown(inside, { key: "k", metaKey: true });
   expect(await screen.findByRole("dialog", { name: "Command palette" })).toBeTruthy();
@@ -344,7 +362,7 @@ test("Mod+K and Mod+B still fire while an [aria-modal] dialog is open", async ()
   inside.focus();
   fireEvent.keyDown(inside, { key: "b", metaKey: true });
   expect(prefsStore.getState().sidebarHidden).toBe(true);
-  close();
+  await close();
 });
 
 test("Mod+I and Mod+J are suppressed while an [aria-modal] dialog is open", async () => {
@@ -354,26 +372,26 @@ test("Mod+I and Mod+J are suppressed while an [aria-modal] dialog is open", asyn
   installLocationForRoute("local:ref_abc123");
   render(<AppShell client={navClient()} />);
   await screen.findByText(/loading transcript/i);
-  const { inside, close } = openFakeModal();
+  const { inside, close } = await openFakeModal();
 
   fireEvent.keyDown(inside, { key: "i", metaKey: true });
   fireEvent.keyDown(inside, { key: "j", metaKey: true });
 
   expect(focusSpy).not.toHaveBeenCalled();
   expect(workspaceStore.getState().mainPane()?.params).toMatchObject({ ref: "local:ref_abc123" });
-  close();
+  await close();
 });
 
 test("Mod+, is suppressed while an [aria-modal] dialog is open (allowInModal: false)", async () => {
   render(<AppShell client={new FakeClient("ready")} />);
   await screen.findByText("No session open");
-  const { inside, close } = openFakeModal();
+  const { inside, close } = await openFakeModal();
 
   fireEvent.keyDown(inside, { key: ",", metaKey: true });
 
   expect(workspaceStore.getState().mainPane()?.type).not.toBe("settings");
   expect(window.location.pathname).not.toBe("/settings");
-  close();
+  await close();
 });
 
 // --- claimed events / IME composition ----------------------------------------

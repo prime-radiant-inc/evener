@@ -1,10 +1,10 @@
 import type { MarketplaceEntry } from "@evener/appwire-client";
-import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
-import { connectionStore } from "../../../../stores/connection";
+import { resetConnectionStoreForTests } from "../../../../stores/connection";
 import { extensionsStore, resetExtensionsStoreForTests } from "../../../../stores/extensions";
+import { connectReadyFakeClient } from "../../../../testing/connectionTestUtils";
 import { getToasts, resetToastStoreForTests } from "../../../../widgets/toast/store";
 import { MarketplacesSection } from "./MarketplacesSection";
 import { showsEmptyRow } from "./marketplacesTestUtils";
@@ -15,14 +15,8 @@ const MARKETPLACE_A: MarketplaceEntry = {
   lastUpdated: 1000,
 };
 
-function connectFakeClient(): FakeClient {
-  const fake = new FakeClient("ready");
-  connectionStore.getState().connect(fake);
-  return fake;
-}
-
 beforeEach(() => {
-  connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
+  resetConnectionStoreForTests();
   resetExtensionsStoreForTests();
   resetToastStoreForTests();
 });
@@ -33,7 +27,7 @@ afterEach(() => {
 });
 
 test("renders each marketplace as one tappable row carrying name, kind, and source; tapping selects it", async () => {
-  connectFakeClient();
+  connectReadyFakeClient();
   extensionsStore.setState({ marketplaces: [MARKETPLACE_A] });
   const onSelect = vi.fn();
   render(<MarketplacesSection onSelect={onSelect} />);
@@ -51,7 +45,7 @@ test("renders each marketplace as one tappable row carrying name, kind, and sour
 });
 
 test("shows the empty state when there are no marketplaces", () => {
-  connectFakeClient();
+  connectReadyFakeClient();
   extensionsStore.setState({ marketplaces: [] });
   render(<MarketplacesSection onSelect={vi.fn()} />);
   expect(showsEmptyRow()).toBe(true);
@@ -59,7 +53,7 @@ test("shows the empty state when there are no marketplaces", () => {
 
 test("the Add form and the + Add marketplace button are mutually exclusive", async () => {
   const user = userEvent.setup();
-  connectFakeClient();
+  connectReadyFakeClient();
   extensionsStore.setState({ marketplaces: [] });
   render(<MarketplacesSection onSelect={vi.fn()} />);
   expect(screen.getByRole("button", { name: "+ Add marketplace" })).toBeTruthy();
@@ -70,24 +64,27 @@ test("the Add form and the + Add marketplace button are mutually exclusive", asy
 
 test("only the field matching the checked source radio is shown", async () => {
   const user = userEvent.setup();
-  connectFakeClient();
+  connectReadyFakeClient();
   extensionsStore.setState({ marketplaces: [] });
   render(<MarketplacesSection onSelect={vi.fn()} />);
   await user.click(screen.getByRole("button", { name: "+ Add marketplace" }));
   expect(screen.getByPlaceholderText("https://github.com/owner/repo.git")).toBeTruthy();
+  expect(screen.getByLabelText("Branch or tag (optional)")).toBeTruthy();
   expect(screen.queryByPlaceholderText("owner/repo")).toBeNull();
 
   await user.click(screen.getByRole("radio", { name: "owner/repo" }));
   expect(screen.getByPlaceholderText("owner/repo")).toBeTruthy();
+  expect(screen.getByLabelText("Branch or tag (optional)")).toBeTruthy();
   expect(screen.queryByPlaceholderText("https://github.com/owner/repo.git")).toBeNull();
 
   await user.click(screen.getByRole("radio", { name: "Local path" }));
   expect(screen.getByText("/absolute/path")).toBeTruthy(); // the picker's own empty-value marker
+  expect(screen.queryByLabelText("Branch or tag (optional)")).toBeNull();
 });
 
 test("the local-path field browses real directories and sends the picked one", async () => {
   const user = userEvent.setup();
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   extensionsStore.setState({ marketplaces: [] });
   fake.on("evener/paths/complete", (params) => {
     // Directories only, and the prefix goes over the wire verbatim.
@@ -116,7 +113,7 @@ test("the local-path field browses real directories and sends the picked one", a
 
 test("submitting the github kind sends {kind:github,repo} and closes on success", async () => {
   const user = userEvent.setup();
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   extensionsStore.setState({ marketplaces: [] });
   fake.on("evener/marketplace/add", (params) => {
     expect(params).toEqual({ name: "", source: { kind: "github", repo: "acme/plugins" } });
@@ -131,9 +128,52 @@ test("submitting the github kind sends {kind:github,repo} and closes on success"
   expect(getToasts().some((t) => t.kind === "success" && t.text === "Added marketplace")).toBe(true);
 });
 
+test("a branch or tag is sent as the git source's ref", async () => {
+  const user = userEvent.setup();
+  const fake = connectReadyFakeClient();
+  extensionsStore.setState({ marketplaces: [] });
+  fake.on("evener/marketplace/add", (params) => {
+    expect(params).toEqual({
+      name: "",
+      source: { kind: "github", repo: "acme/plugins", ref: "release/next" },
+    });
+    return { marketplaces: [MARKETPLACE_A] };
+  });
+  render(<MarketplacesSection onSelect={vi.fn()} />);
+  await user.click(screen.getByRole("button", { name: "+ Add marketplace" }));
+  await user.click(screen.getByRole("radio", { name: "owner/repo" }));
+  await user.type(screen.getByPlaceholderText("owner/repo"), "acme/plugins");
+  await user.type(screen.getByLabelText("Branch or tag (optional)"), "release/next");
+  await user.click(screen.getByRole("button", { name: "Add" }));
+  await waitFor(() =>
+    expect(getToasts().some((t) => t.kind === "success" && t.text === "Added marketplace")).toBe(true),
+  );
+});
+
+test("a branch or tag is sent for a git url source", async () => {
+  const user = userEvent.setup();
+  const fake = connectReadyFakeClient();
+  extensionsStore.setState({ marketplaces: [] });
+  fake.on("evener/marketplace/add", (params) => {
+    expect(params).toEqual({
+      name: "",
+      source: { kind: "url", url: "https://example.com/x.git", ref: "v2" },
+    });
+    return { marketplaces: [] };
+  });
+  render(<MarketplacesSection onSelect={vi.fn()} />);
+  await user.click(screen.getByRole("button", { name: "+ Add marketplace" }));
+  await user.type(screen.getByPlaceholderText("https://github.com/owner/repo.git"), "https://example.com/x.git");
+  await user.type(screen.getByLabelText("Branch or tag (optional)"), "v2");
+  await user.click(screen.getByRole("button", { name: "Add" }));
+  await waitFor(() =>
+    expect(getToasts().some((t) => t.kind === "success" && t.text === "Added marketplace")).toBe(true),
+  );
+});
+
 test("a non-empty name is appended to the success toast and sent in the payload", async () => {
   const user = userEvent.setup();
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   extensionsStore.setState({ marketplaces: [] });
   fake.on("evener/marketplace/add", (params) => {
     expect(params).toEqual({ name: "my-name", source: { kind: "url", url: "https://example.com/x.git" } });
@@ -151,7 +191,7 @@ test("a non-empty name is appended to the success toast and sent in the payload"
 
 test("a failed add toasts failure and keeps the form open", async () => {
   const user = userEvent.setup();
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   extensionsStore.setState({ marketplaces: [] });
   fake.on("evener/marketplace/add", () => {
     throw new Error("boom");
@@ -168,7 +208,7 @@ test("a failed add toasts failure and keeps the form open", async () => {
 
 test("Cancel closes the form without calling addMarketplace", async () => {
   const user = userEvent.setup();
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   extensionsStore.setState({ marketplaces: [] });
   const addSpy = vi.fn();
   fake.on("evener/marketplace/add", addSpy);

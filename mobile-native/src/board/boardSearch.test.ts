@@ -7,7 +7,7 @@ import type {
 	SearchResult,
 } from "@evener/appwire-client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { ConversationClientLike } from "../../../mobile/src/services/conversation";
+import type { ConversationClientLike } from "../conversation/services/conversation";
 import { reconnectDelay } from "../hubConnection";
 import { createSearchController, projectResults, searchResultMark, sessionResults } from "./boardSearch";
 
@@ -358,7 +358,8 @@ describe("a search result's mark", () => {
 
 	it("marks a pending question before a pending approval", () => {
 		expect(mark({ state: "awaiting", askPending: true, approvalPending: true })).toBe("question");
-		expect(mark({ state: "active", askPending: true })).toBe("question");
+		// Only an awaiting session holds a question, as on the Board.
+		expect(mark({ state: "active", askPending: true })).toBe("working");
 	});
 
 	it("marks a pending approval, which leaves the state active", () => {

@@ -551,9 +551,9 @@ func TestOutputRetainedStartPartialPersistsAcrossPruneAndSnapshot(t *testing.T) 
 				t.Fatalf("close: %v", err)
 			}
 
-			durable, err := ReadOutputWindowSnapshot(path, tc.wantStart, len("MATCH\n"))
+			durable, err := readOutputWindowSnapshotAtPath(path, tc.wantStart, len("MATCH\n"))
 			if err != nil {
-				t.Fatalf("ReadOutputWindowSnapshot: %v", err)
+				t.Fatalf("readOutputWindowSnapshotAtPath: %v", err)
 			}
 			if durable.RetainedStartPartial != tc.wantPartial {
 				t.Fatalf("durable snapshot = %+v, want partial=%t", durable, tc.wantPartial)
@@ -590,9 +590,9 @@ func TestOutputLegacyMetadataConservativelyMarksPrunedStartPartial(t *testing.T)
 		t.Fatalf("write legacy metadata: %v", err)
 	}
 
-	snapshot, err := ReadOutputWindowSnapshot(path, int64(len("discard\n")), len("MATCH\n"))
+	snapshot, err := readOutputWindowSnapshotAtPath(path, int64(len("discard\n")), len("MATCH\n"))
 	if err != nil {
-		t.Fatalf("ReadOutputWindowSnapshot: %v", err)
+		t.Fatalf("readOutputWindowSnapshotAtPath: %v", err)
 	}
 	if !snapshot.RetainedStartPartial {
 		t.Fatalf("legacy snapshot = %+v, want conservative partial prefix", snapshot)

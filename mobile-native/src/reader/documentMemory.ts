@@ -12,7 +12,12 @@ import type { SyncStringStorage } from "../syncStringStorage";
 export interface DocumentKey {
 	/** The session whose folder holds the file. */
 	sessionRef: string;
+	/** The path inside the root `root` names. */
 	path: string;
+	/** Which of the session's two served roots holds it. Absent means the
+	 * session's working directory, the only root this store knew before
+	 * agents filed reports in the retained artifacts directory. */
+	root?: "artifacts";
 }
 
 export interface ReadingPosition {
@@ -76,7 +81,14 @@ interface DocumentRecord {
 
 const documentsKey = (hubId: string) => `evener.native.documents.${hubId}`;
 const trailKey = (hubId: string) => `evener.native.continue-reading.${hubId}`;
-const recordKey = (key: DocumentKey) => JSON.stringify([key.sessionRef, key.path]);
+// A working-directory document keeps the key it has always had, so positions
+// and unsent comments saved before artifacts documents existed still belong to
+// it. Only a retained artifact, the newcomer, carries its root, and that is
+// what keeps it from answering for a folder file of the same name.
+const recordKey = (key: DocumentKey) =>
+	key.root === "artifacts"
+		? JSON.stringify([key.sessionRef, key.path, key.root])
+		: JSON.stringify([key.sessionRef, key.path]);
 const LIMIT = 100;
 /** How long the Board offers the way back (spec 7.1). */
 export const CONTINUE_READING_MS = 2 * 60 * 60 * 1000;
@@ -162,7 +174,13 @@ function parseTrail(value: unknown): ContinueReading | null {
 	return {
 		sessionRef,
 		path,
-		reference: { path, cwd: reference.cwd, readTarget: reference.readTarget, provenance: reference.provenance },
+		reference: {
+			path,
+			cwd: reference.cwd,
+			readTarget: reference.readTarget,
+			provenance: reference.provenance,
+			...(reference.root === "artifacts" ? { root: "artifacts" as const } : {}),
+		},
 		title,
 		sessionTitle,
 		progress,
@@ -206,7 +224,12 @@ export class DocumentMemory {
 
 	/** You opened a document: the Board's way back to it has done its job. */
 	opened(key: DocumentKey): void {
-		if (this.trail?.sessionRef === key.sessionRef && this.trail.path === key.path) this.setTrail(null);
+		if (
+			this.trail?.sessionRef === key.sessionRef &&
+			this.trail.path === key.path &&
+			this.trail.reference.root === key.root
+		)
+			this.setTrail(null);
 	}
 
 	/** You left a document: this version becomes the one you last read, and
@@ -286,15 +309,12 @@ export class DocumentMemory {
 	private update(key: DocumentKey, change: (record: DocumentRecord) => DocumentRecord): void {
 		const id = recordKey(key);
 		this.documents[id] = { ...change(this.documents[id] ?? { touchedAt: 0 }), touchedAt: this.clock() };
-		const entries = Object.entries(this.documents);
-		if (entries.length > LIMIT) {
-			// Unsent comments are your work: past the limit, the least recently
-			// touched documents without comments go first.
-			entries.sort(
-				([, a], [, b]) =>
-					Number(Boolean(b.comments?.length)) - Number(Boolean(a.comments?.length)) || b.touchedAt - a.touchedAt,
-			);
-			this.documents = Object.fromEntries(entries.slice(0, LIMIT));
+		// Unsent comments are your work, not cache entries. Keep every record
+		// with comments, plus the 100 most recently touched comment-free records.
+		const disposable = Object.entries(this.documents).filter(([, record]) => !record.comments?.length);
+		if (disposable.length > LIMIT) {
+			disposable.sort(([, a], [, b]) => b.touchedAt - a.touchedAt);
+			for (const [discarded] of disposable.slice(LIMIT)) delete this.documents[discarded];
 		}
 		writeJson(this.storage, documentsKey(this.hubId), this.documents);
 		this.changed();

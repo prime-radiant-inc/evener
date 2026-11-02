@@ -3,9 +3,8 @@ import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { createElement, Suspense, useState } from "react";
 import { act } from "react-test-renderer";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
-import { createConversationService } from "../../../mobile/src/services/conversation";
-import { createActivityStore } from "../../../mobile/src/state/activity";
-import { createConversationStore } from "../../../mobile/src/state/conversation";
+import { createConversationService } from "../conversation/services/conversation";
+import { createConversationStore } from "../conversation/state/conversation";
 import { render, renderHook, unmountMountedTrees } from "../renderNative.testkit";
 import { type FindState, newFind } from "./findInSession";
 import { attachHistory, forgetHistoryForHub, historyForSession } from "./historyMemory";
@@ -59,7 +58,6 @@ function historyReader() {
 	client.on("thread/turns/list", () => ({ data: [], nextCursor: undefined }));
 	const service = createConversationService(client);
 	const store = createConversationStore();
-	const sink = createActivityStore().getState();
 	const input = {
 		store,
 		service: service as typeof service | null,
@@ -68,7 +66,7 @@ function historyReader() {
 		ref: "history",
 		binding: undefined as string | undefined,
 	};
-	return { thread, client, store, service, sink, input };
+	return { thread, client, store, service, input };
 }
 
 function mountReader(input: Parameters<typeof useOlderHistory>[0]) {
@@ -94,12 +92,12 @@ function mountReader(input: Parameters<typeof useOlderHistory>[0]) {
 }
 
 it("retains a requested page through the reader's first binding hydration", async () => {
-	const { client, store, service, sink, input } = historyReader();
+	const { client, store, service, input } = historyReader();
 	const hook = renderHook(() => useOlderHistory(input));
 	act(() => hook.result.current.loadOlder());
 	expect(hook.result.current.state.pending).toBe(true);
 	await act(async () => {
-		await store.getState().openProjected(service, sink, "history");
+		await store.getState().openProjected(service, "history");
 	});
 	expect(store.getState().error).toBeNull();
 	expect(store.getState().status).toBe("open");
@@ -117,8 +115,8 @@ it("retains a requested page through the reader's first binding hydration", asyn
 });
 
 it("an abandoned replacement-binding render cannot change the committed reader's retained demand", async () => {
-	const { client, store, service, sink, input } = historyReader();
-	await store.getState().openProjected(service, sink, "history");
+	const { client, store, service, input } = historyReader();
+	await store.getState().openProjected(service, "history");
 	expect(store.getState().error).toBeNull();
 	expect(store.getState().status).toBe("open");
 	expect(store.getState().olderCursor).toBe("page");
@@ -154,8 +152,8 @@ it("an abandoned replacement-binding render cannot change the committed reader's
 });
 
 it("an abandoned service render cannot redirect the committed reader's retry", async () => {
-	const { client, store, service, sink, input } = historyReader();
-	await store.getState().openProjected(service, sink, "history");
+	const { client, store, service, input } = historyReader();
+	await store.getState().openProjected(service, "history");
 	expect(store.getState().error).toBeNull();
 	expect(store.getState().olderCursor).toBe("page");
 	input.binding = store.getState().conversation?.instanceId;
@@ -186,7 +184,7 @@ it("an abandoned service render cannot redirect the committed reader's retry", a
 
 async function openedReader() {
 	const reader = historyReader();
-	await reader.store.getState().openProjected(reader.service, reader.sink, "history");
+	await reader.store.getState().openProjected(reader.service, "history");
 	reader.input.binding = reader.store.getState().conversation?.instanceId;
 	reader.input.active = true;
 	return reader;
@@ -607,7 +605,7 @@ it("forgets the saved page boundary when a reopened reader authoritatively has n
 	expect(held?.requestedPage).not.toBeNull();
 	const returned = historyReader();
 	returned.client.on("thread/read", () => ({ thread: returned.thread }));
-	await returned.store.getState().openProjected(returned.service, returned.sink, "history");
+	await returned.store.getState().openProjected(returned.service, "history");
 	returned.input.binding = returned.store.getState().conversation?.instanceId;
 	returned.input.active = true;
 	const reopened = renderHook(() => useOlderHistory(returned.input));
@@ -644,7 +642,7 @@ it("a committed new session binding retires every old same-session reader's dema
 	oldDetached.unmount();
 	const fresh = historyReader();
 	fresh.thread.evener.instanceId = "new-authoritative-instance";
-	await fresh.store.getState().openProjected(fresh.service, fresh.sink, "history");
+	await fresh.store.getState().openProjected(fresh.service, "history");
 	fresh.input.binding = fresh.store.getState().conversation?.instanceId;
 	fresh.input.active = true;
 	const current = renderHook(() => useOlderHistory(fresh.input));

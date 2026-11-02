@@ -11,7 +11,7 @@ package agent
 //
 // This test is the corpus that closes that gap. Every case builds its frame
 // with the real producer (delegateNotificationContent over the packet
-// stableDelegateFinishFromRun settles, delegateQuietAttentionContent,
+// delegateFinishFromRun settles, delegateQuietAttentionContent,
 // formatJobNotificationBlock), wraps it in a steering turn the way the
 // producers append it, and projects that turn through apptranscript the way
 // history reaches the wire. The AppWire package's steeringNotifications tests
@@ -48,7 +48,7 @@ type notificationWireFixture struct {
 
 func notificationWireDelegateFrame(t *testing.T, delegateID, name string, inputs delegateTerminalRunInputs) string {
 	t.Helper()
-	return notificationWireBarePacketFrame(t, delegateID, name, *stableDelegateFinishFromRun(inputs).packet)
+	return notificationWireBarePacketFrame(t, delegateID, name, *delegateFinishFromRun(inputs).packet)
 }
 
 func notificationWireBarePacketFrame(t *testing.T, delegateID, name string, packet delegatestore.TerminalPacket) string {
@@ -153,12 +153,33 @@ func TestSteeringNotificationWireFixtures(t *testing.T) {
 	frame := func(n jobNotification, excerpt notificationExcerpt) string {
 		return formatJobNotificationBlock(n, excerpt, true)
 	}
+	const entityText = `& < &lt; &amp; &amp;lt; " > ' &quot; &gt; &#39;`
+	entityMessage, err := json.Marshal(entityText)
+	if err != nil {
+		t.Fatal(err)
+	}
+	entityWatch := newTestJM(t).watchNotificationFromWatch(&watchConfig{note: entityText}, "", "entity note", nil)
 
 	cases := []struct {
 		name string
 		note string
 		turn schema.Turn
 	}{
+		{
+			name: "job-literal-entities",
+			note: "Literal sender entities survive a real job excerpt body round trip.",
+			turn: notificationWireReminder(frame(shellCompleted, notificationExcerpt{text: entityText, complete: true})),
+		},
+		{
+			name: "delegate-update-literal-entities",
+			note: "Literal sender entities survive a real delegate update body round trip, while attributes retain their full codec.",
+			turn: notificationWireAttention("entity_update", notificationWireBarePacketFrame(t, "dlg_entities", entityText, delegatestore.TerminalPacket{Kind: delegatestore.PacketUpdate, Message: entityMessage})),
+		},
+		{
+			name: "watch-note-literal-entities",
+			note: "Condition watch notes pass through the central body encoder exactly once.",
+			turn: notificationWireReminder(frame(entityWatch, notificationExcerpt{})),
+		},
 		{
 			name: "delegate-reported",
 			note: "A named subagent communicated its report and finished. The body is the TerminalPacket JSON; message is a JSON string.",
@@ -199,7 +220,7 @@ func TestSteeringNotificationWireFixtures(t *testing.T) {
 		{
 			name: "delegate-stopped-by-parent-mid-run",
 			note: "A parent's stop that cancelled a run which left its own packet: the run loop's packet is carried, metadata outcome cancelled.",
-			turn: notificationWireAttention(notificationWireReport("dlg_6"), notificationWireStopFrame(t, "dlg_6", "Index the docs", stableDelegateFinishFromRun(delegateTerminalRunInputs{
+			turn: notificationWireAttention(notificationWireReport("dlg_6"), notificationWireStopFrame(t, "dlg_6", "Index the docs", delegateFinishFromRun(delegateTerminalRunInputs{
 				runErr:     context.Canceled,
 				descriptor: notificationWireDescriptor("Index the docs"),
 				startedAt:  stoppedStart,

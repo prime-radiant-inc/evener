@@ -29,6 +29,9 @@ export type PropertyListProps =
   | {
       /** Label column beside the value; values truncate unless a row wraps. */
       layout?: "inline";
+      /** Label each row with the eyebrow recipe (design-system §2): the
+       * uppercase-caption idiom a card's read-only fact rows carry. */
+      eyebrowLabels?: boolean;
       rows: PropertyListRow[];
     }
   | {
@@ -43,6 +46,7 @@ const BASE_CLASS = {
   list: requireClass(styles.list, "propertylist.module.css", "list"),
   row: requireClass(styles.row, "propertylist.module.css", "row"),
   label: requireClass(styles.label, "propertylist.module.css", "label"),
+  eyebrowLabel: requireClass(styles.eyebrowLabel, "propertylist.module.css", "eyebrowLabel"),
   value: requireClass(styles.value, "propertylist.module.css", "value"),
   mono: requireClass(styles.mono, "propertylist.module.css", "mono"),
   wrap: requireClass(styles.wrap, "propertylist.module.css", "wrap"),
@@ -82,7 +86,7 @@ export function PropertyList(props: PropertyListProps) {
     <dl className={BASE_CLASS.list}>
       {props.rows.map((row) => (
         <div className={BASE_CLASS.row} key={row.label}>
-          <dt className={BASE_CLASS.label}>{row.label}</dt>
+          <dt className={classes(BASE_CLASS.label, props.eyebrowLabels && BASE_CLASS.eyebrowLabel)}>{row.label}</dt>
           <dd className={classes(BASE_CLASS.value, row.mono && BASE_CLASS.mono, row.wrap && BASE_CLASS.wrap)}>
             {row.value}
           </dd>

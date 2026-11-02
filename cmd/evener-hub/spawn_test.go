@@ -3,8 +3,8 @@ package hub
 import (
 	"context"
 	"errors"
+	"io"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"reflect"
 	"slices"
@@ -19,6 +19,7 @@ import (
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 	"primeradiant.com/evener/cmd/evener-hub/internal/launchconfig"
 	"primeradiant.com/evener/cmdutil"
+	"primeradiant.com/evener/gittest"
 	"primeradiant.com/evener/internal/credentials"
 	"primeradiant.com/evener/llm/registry"
 	"primeradiant.com/evener/rendezvous"
@@ -193,6 +194,89 @@ exit 2
 	args := strings.Fields(string(data))
 	if hasArg(args, "--model") {
 		t.Fatalf("resume launch-check must not pass ambient --model: %v", args)
+	}
+}
+
+// writeResumeFakeEvener writes the fake evener the automatic-resume tests
+// share: launch-check answers the wire contract and serve runs serveScript,
+// which must end with a newline.
+func writeResumeFakeEvener(t *testing.T, path, serveScript string) {
+	t.Helper()
+	script := `#!/bin/sh
+if [ "$1" = "launch-check" ]; then
+  printf '{"protocol":"evener-appwire-v7","launch_flags":["api-log"]}\n'
+  exit 0
+fi
+if [ "$1" = "serve" ]; then
+` + serveScript + `fi
+exit 2
+`
+	writeFakeEvener(t, path, script)
+}
+
+// An automatic resume's rendezvous wait is bounded by the resume budget, not
+// the fresh-spawn budget: a restore that outlasts SpawnTimeout still hands
+// off instead of being killed mid-restore.
+func TestHubSpawnerAutomaticResumeWaitsForSlowRestore(t *testing.T) {
+	dir := t.TempDir()
+	runDir := filepath.Join(dir, "run")
+	bin := filepath.Join(dir, "fake-evener")
+	writeResumeFakeEvener(t, bin, `  sleep 1
+  mkdir -p "$EVENER_RUN_DIR"
+  cat > "$EVENER_RUN_DIR/$$.json" <<EOF
+{"pid":$$,"address":"127.0.0.1:1","started_at":"2999-01-01T00:00:00Z"}
+EOF
+  sleep 1
+  exit 0
+`)
+
+	cfg := DefaultConfig()
+	cfg.SpawnTimeout = 100 * time.Millisecond
+	spawner := HubSpawner{Cfg: cfg, EvenerBinary: bin, RunDir: runDir, HubToken: "generated-token"}
+	entry, err := spawner.Resume(context.Background(), hubcore.ResumeRequest{
+		SessionID:  "01JRESUME",
+		Resolved:   launchconfig.Resolved{Effective: launchconfig.Layer{Model: "openai/gpt-5"}},
+		WorkingDir: dir,
+	})
+	if err != nil {
+		t.Fatalf("Resume: %v", err)
+	}
+	if entry.PID == 0 {
+		t.Fatalf("Resume returned no rendezvous entry: %+v", entry)
+	}
+}
+
+// The same automatic resume stays bounded: a child that never registers is
+// killed at the resume budget even when the spawn budget would have waited
+// longer, so a hung restore cannot hold the session's ownership aliases
+// indefinitely.
+func TestHubSpawnerAutomaticResumeBoundByResumeBudget(t *testing.T) {
+	dir := t.TempDir()
+	runDir := filepath.Join(dir, "run")
+	bin := filepath.Join(dir, "fake-evener")
+	writeResumeFakeEvener(t, bin, `  sleep 30
+  exit 0
+`)
+
+	originalBudget := resumeRendezvousTimeout
+	defer func() { resumeRendezvousTimeout = originalBudget }()
+	resumeRendezvousTimeout = 500 * time.Millisecond
+
+	// The spawn budget is only a stale threshold now: Resume no longer reads
+	// it, and settling before it proves the wait ran on the resume budget.
+	const staleSpawnBudget = 10 * time.Second
+	spawner := HubSpawner{Cfg: DefaultConfig(), EvenerBinary: bin, RunDir: runDir, HubToken: "generated-token"}
+	started := time.Now()
+	_, err := spawner.Resume(context.Background(), hubcore.ResumeRequest{
+		SessionID:  "01JRESUME",
+		Resolved:   launchconfig.Resolved{Effective: launchconfig.Layer{Model: "openai/gpt-5"}},
+		WorkingDir: dir,
+	})
+	if !errors.Is(err, errRendezvousTimeout) {
+		t.Fatalf("Resume err = %v, want errRendezvousTimeout", err)
+	}
+	if elapsed := time.Since(started); elapsed >= staleSpawnBudget {
+		t.Fatalf("automatic resume settled on the spawn budget after %s, want the resume budget", elapsed)
 	}
 }
 
@@ -448,9 +532,9 @@ echo 'evener serve: session creation: plugin initialization: resolving plugin di
 exit 42
 `
 	writeFakeEvener(t, bin, script)
-	_, err := SpawnDaemon(context.Background(), bin, filepath.Join(dir, "run"), hubcore.SpawnRequest{
+	_, err := spawnDaemonWithProviderConfig(context.Background(), bin, filepath.Join(dir, "run"), hubcore.SpawnRequest{
 		Resolved: launchconfig.Resolved{Effective: launchconfig.Layer{Model: "openai/gpt-5.2"}},
-	}, 60*time.Second)
+	}, 60*time.Second, io.Discard, nil)
 	if err == nil {
 		t.Fatal("expected spawn error")
 	}
@@ -491,14 +575,14 @@ sleep 30
 		{
 			name: "spawn",
 			call: func(ctx context.Context, evenerBinary, runDir string, timeout time.Duration) error {
-				_, err := SpawnDaemon(ctx, evenerBinary, runDir, hubcore.SpawnRequest{}, timeout)
+				_, err := spawnDaemonWithProviderConfig(ctx, evenerBinary, runDir, hubcore.SpawnRequest{}, timeout, io.Discard, nil)
 				return err
 			},
 		},
 		{
 			name: "resume",
 			call: func(ctx context.Context, evenerBinary, runDir string, timeout time.Duration) error {
-				_, err := ResumeDaemon(ctx, evenerBinary, runDir, hubcore.ResumeRequest{SessionID: "sess_old"}, timeout)
+				_, err := resumeDaemon(ctx, evenerBinary, runDir, hubcore.ResumeRequest{SessionID: "sess_old"}, timeout, io.Discard)
 				return err
 			},
 		},
@@ -826,6 +910,80 @@ exit 2
 	}
 }
 
+// TestListEvenerLaunchModelContractCarriesInstanceDefault: the launch
+// contract's instance-default marker decides whether onboarding may adopt a
+// model automatically, so the child's JSON must survive the parse instead of
+// being flattened to provider/model.
+func TestListEvenerLaunchModelContractCarriesInstanceDefault(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	bin := filepath.Join(dir, "fake-evener")
+	script := `#!/bin/sh
+if [ "$1" = "launch-check" ]; then
+	  printf '{"protocol":"evener-appwire-v7","models":[{"provider":"team","model":"chosen","instanceDefault":true},{"provider":"team","model":"first"}]}\n'
+  exit 0
+fi
+exit 2
+`
+	writeFakeEvener(t, bin, script)
+
+	resp, err := listEvenerLaunchModelContract(context.Background(), bin, nil)
+	if err != nil {
+		t.Fatalf("listEvenerLaunchModelContract: %v", err)
+	}
+	if len(resp.Data) != 2 {
+		t.Fatalf("data=%+v, want two models", resp.Data)
+	}
+	if got := resp.Data[0]; got.Provider != "team" || got.Model != "chosen" || !got.InstanceDefault {
+		t.Fatalf("descriptor=%+v, want team/chosen marked as the instance default", got)
+	}
+	if got := resp.Data[1]; got.Provider != "team" || got.Model != "first" || got.InstanceDefault {
+		t.Fatalf("descriptor=%+v, want team/first unmarked", got)
+	}
+}
+
+// TestListEvenerLaunchModelContractCarriesEffortLevels: the spawn composer
+// builds its effort options from the served descriptor's ladder
+// (catalogEffortLevels), so the child's reasoning-effort facts must survive
+// the parse instead of being flattened to provider/model - a flattened row
+// falls back to a generic ladder, and the composer's levels stop matching the
+// running session's.
+func TestListEvenerLaunchModelContractCarriesEffortLevels(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	bin := filepath.Join(dir, "fake-evener")
+	script := `#!/bin/sh
+if [ "$1" = "launch-check" ]; then
+	  printf '{"protocol":"evener-appwire-v7","models":[{"provider":"lunaroute","model":"glm-5.3","reasoningEffortLevels":["low","high","max"],"supportsReasoning":true},{"provider":"lunaroute","model":"plain"}]}\n'
+  exit 0
+fi
+exit 2
+`
+	writeFakeEvener(t, bin, script)
+
+	resp, err := listEvenerLaunchModelContract(context.Background(), bin, nil)
+	if err != nil {
+		t.Fatalf("listEvenerLaunchModelContract: %v", err)
+	}
+	if len(resp.Data) != 2 {
+		t.Fatalf("data=%+v, want two models", resp.Data)
+	}
+	glm := resp.Data[0]
+	if glm.Provider != "lunaroute" || glm.Model != "glm-5.3" {
+		t.Fatalf("descriptor=%+v, want lunaroute/glm-5.3", glm)
+	}
+	if !slices.Equal(glm.ReasoningEffortLevels, []string{"low", "high", "max"}) {
+		t.Fatalf("reasoningEffortLevels=%v, want the ladder the contract carried", glm.ReasoningEffortLevels)
+	}
+	if glm.SupportsReasoning == nil || !*glm.SupportsReasoning {
+		t.Fatalf("supportsReasoning=%v, want the carried capability", glm.SupportsReasoning)
+	}
+	plain := resp.Data[1]
+	if len(plain.ReasoningEffortLevels) != 0 || plain.SupportsReasoning != nil {
+		t.Fatalf("plain carries no reasoning facts the contract did not state: %+v", plain)
+	}
+}
+
 func TestValidateEvenerLaunchContractRejectsIncompatibleProtocolBinary(t *testing.T) {
 	evenerBinary := filepath.Join(t.TempDir(), "old-evener")
 	writeFakeEvener(t, evenerBinary, `#!/bin/sh
@@ -1022,41 +1180,6 @@ func TestResolveEvenerStateDirMatchesServeDefaultForWorkingDir(t *testing.T) {
 	}
 }
 
-// runGitForSpawn runs a git command in dir with a fixed identity, failing the
-// test on error. Mirrors cmdutil/statedir_test.go's runGit; a package-main
-// test file cannot import an unexported test helper from another package.
-func runGitForSpawn(t *testing.T, dir string, args ...string) string {
-	t.Helper()
-	if _, err := exec.LookPath("git"); err != nil {
-		t.Skip("git not available")
-	}
-	cmd := exec.Command("git", args...)
-	cmd.Dir = dir
-	cmd.Env = append(os.Environ(),
-		"GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@t",
-		"GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@t",
-	)
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		t.Fatalf("git %v: %v\n%s", args, err, out)
-	}
-	return strings.TrimSpace(string(out))
-}
-
-// newLinkedWorktreeForSpawn builds an origin-less main repo with one commit
-// and a linked worktree, returning their absolute paths. Mirrors
-// cmdutil/statedir_test.go's newLinkedWorktree fixture.
-func newLinkedWorktreeForSpawn(t *testing.T) (main, wt string) {
-	t.Helper()
-	base := t.TempDir()
-	main = filepath.Join(base, "main")
-	runGitForSpawn(t, base, "init", "-q", "main")
-	runGitForSpawn(t, main, "commit", "-q", "--allow-empty", "-m", "init")
-	wt = filepath.Join(base, "wt")
-	runGitForSpawn(t, main, "worktree", "add", "-q", wt, "-b", "feat")
-	return main, wt
-}
-
 // TestResolveEvenerStateDirLinkedWorktreeSameAsMain proves the fix for the bug
 // described in
 // docs/superpowers/specs/2026-07-02-native-worktree-tools-design.md §1
@@ -1067,7 +1190,7 @@ func newLinkedWorktreeForSpawn(t *testing.T) (main, wt string) {
 // the main checkout — the same class of bug Task 3 already fixed in
 // cmdutil.DefaultProjectStateDir for `evener run`/`evener serve`.
 func TestResolveEvenerStateDirLinkedWorktreeSameAsMain(t *testing.T) {
-	main, wt := newLinkedWorktreeForSpawn(t)
+	main, wt := gittest.NewLinkedWorktree(t)
 
 	mainDir, err := resolveEvenerStateDir(main, "")
 	if err != nil {
@@ -1625,5 +1748,52 @@ func TestHubSpawnerNoUserLayerHonoursTheTriState(t *testing.T) {
 	}
 	if got, ok := envLookup(captured, "EVENER_PROVIDERS_CONFIG"); !ok || got != "" {
 		t.Fatalf("EVENER_PROVIDERS_CONFIG = %q (present %v), want present and empty", got, ok)
+	}
+}
+
+// Both launch-check entry points share one subprocess path, so a secret in a
+// failing check's output, an unparseable answer, a wrong-protocol answer and a
+// missing binary must each land the same way through either one.
+func TestEvenerLaunchCheckEntryPointsShareFailureHandling(t *testing.T) {
+	t.Parallel()
+	checks := map[string]func(ctx context.Context, evenerBinary string, env []string) error{
+		"validate": func(ctx context.Context, evenerBinary string, env []string) error {
+			return validateEvenerLaunchContract(ctx, evenerBinary, "openrouter/free", env)
+		},
+		"models": func(ctx context.Context, evenerBinary string, env []string) error {
+			_, err := listEvenerLaunchModelContract(ctx, evenerBinary, env)
+			return err
+		},
+	}
+	env := envFromMap(map[string]string{"OPENROUTER_API_KEY": "super-secret-key"})
+	cases := []struct {
+		name         string
+		script       string // empty means the binary does not exist
+		wantFailed   bool
+		wantNoSecret bool
+	}{
+		{name: "failing check echoes a secret", script: "#!/bin/sh\necho \"$OPENROUTER_API_KEY\" >&2\nexit 2\n", wantFailed: true, wantNoSecret: true},
+		{name: "answer is not JSON", script: "#!/bin/sh\necho not-json\n"},
+		{name: "answer names another protocol", script: "#!/bin/sh\nprintf '{\"protocol\":\"evener-appwire-v2\"}\\n'\n"},
+		{name: "binary is missing", wantFailed: true},
+	}
+	for checkName, call := range checks {
+		for _, tc := range cases {
+			t.Run(checkName+"/"+tc.name, func(t *testing.T) {
+				t.Parallel()
+				bin := filepath.Join(t.TempDir(), "fake-evener")
+				if tc.script != "" {
+					writeFakeEvener(t, bin, tc.script)
+				}
+				err := call(context.Background(), bin, env)
+				assertHubLaunchError(t, err)
+				if errors.Is(err, errLaunchCheckFailed) != tc.wantFailed {
+					t.Fatalf("errLaunchCheckFailed = %v, want %v: %v", !tc.wantFailed, tc.wantFailed, err)
+				}
+				if tc.wantNoSecret && strings.Contains(err.Error(), "super-secret-key") {
+					t.Fatalf("diagnostic leaked secret: %v", err)
+				}
+			})
+		}
 	}
 }

@@ -254,7 +254,7 @@ func TestServerAppWireAbandonedCarrierUsesStatusIdentityBeforeAppIdentity(t *tes
 		t.Run(tc.name, func(t *testing.T) {
 			const threadID = "status-only-abandoned"
 			srv := NewServer(ServerConfig{})
-			srv.SetStatus(StatusInfo{SessionID: threadID, State: "active"})
+			seedStatus(srv, StatusInfo{SessionID: threadID, State: "active"})
 			client := dialServerAppWire(t, srv)
 			if _, err := client.ThreadRead(context.Background(), appwire.ThreadReadParams{Ref: "local:" + threadID, Subscribe: true}); err != nil {
 				t.Fatalf("subscribe: %v", err)
@@ -456,12 +456,6 @@ func TestServerAppWireUnclaimedStableTurnDoesNotKeepSessionBusy(t *testing.T) {
 	read := srv.appThreadReadSnapshot(appwire.ThreadReadParams{Ref: "local:th_unclaimed"})
 	if read.Thread.Evener.ActiveTurnID != "" || read.Thread.Status.Type != appwire.ThreadStatusIdle {
 		t.Fatalf("read = (active %q, status %q), want idle after the failed claim", read.Thread.Evener.ActiveTurnID, read.Thread.Status.Type)
-	}
-	srv.mu.RLock()
-	reserved := srv.appReservedTurnID
-	srv.mu.RUnlock()
-	if reserved != "" {
-		t.Fatalf("admission reservation=%q, want empty after failed claim", reserved)
 	}
 }
 

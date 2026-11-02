@@ -182,6 +182,43 @@ export function resolvedEmptyChoice(opt: LaunchOption, layer: LaunchConfigLayerN
 // that field's own terms and stays verbatim.
 const GENERIC_EMPTY_LABELS: ReadonlySet<string> = new Set(["(default)", "(use global default)"]);
 
+/** resolvedValue is the effective layer's raw value for `option`, or undefined
+ * when no layer sets it (or the resolve has not landed). */
+export function resolvedValue(option: LaunchOption, effective: LaunchConfigLayer | undefined): unknown {
+  if (!effective) return undefined;
+  return (effective as Record<string, unknown>)[option.wireField];
+}
+
+// max_rounds -1 and 0 both mean unlimited: the flag's own "unlimited" sentinel
+// (fs.Int("max-rounds", -1, "... 0=unlimited")), and the agent's applyDefaults
+// converts 0 to -1. Keyed on the wire field, which both surfaces carry verbatim.
+function isUnlimitedMaxRounds(opt: LaunchOption, value: number): boolean {
+  return opt.wireField === "maxRounds" && (value === -1 || value === 0);
+}
+
+/** The longest a resolved default runs in a placeholder before it is clipped:
+ * long free-text values (a system prompt) must not turn a placeholder into a
+ * wall of text. */
+const DEFAULT_PLACEHOLDER_MAX = 60;
+
+/** inputDefaultPlaceholder is the placeholder naming the resolved default for
+ * an input-based control (integer, text, browsable path): "<value> (default)",
+ * with long strings clipped. "" when no layer sets the field, so the input
+ * stays bare. */
+export function inputDefaultPlaceholder(opt: LaunchOption, effective: LaunchConfigLayer | undefined): string {
+  const value = resolvedValue(opt, effective);
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return `${isUnlimitedMaxRounds(opt, value) ? "unlimited" : value} (default)`;
+  }
+  if (typeof value === "string" && value.trim() !== "") {
+    const trimmed = value.trim();
+    const shown =
+      trimmed.length > DEFAULT_PLACEHOLDER_MAX ? `${trimmed.slice(0, DEFAULT_PLACEHOLDER_MAX - 1)}…` : trimmed;
+    return `${shown} (default)`;
+  }
+  return "";
+}
+
 // resolvedDefaultLabel: the "<value> (default)" (global) / "<value> (use
 // global default)" (project) label for a field whose unset marker is the
 // generic one, once a launch/resolve effective layer is known - the value a
@@ -205,21 +242,17 @@ export function resolvedDefaultLabel(
   effective: LaunchConfigLayer | undefined,
 ): string | undefined {
   if (!effective) return undefined;
-  const raw = (effective as Record<string, unknown>)[opt.wireField];
+  const raw = resolvedValue(opt, effective);
   let value: string | undefined;
   if (opt.kind === "boolean") {
     if (raw === true) value = "true";
     else if (raw === false) value = "false";
     else value = undefined;
   } else if (opt.kind === "integer") {
-    // Integers arrive as numbers from the resolved effective layer. The
-    // The max_rounds -1 and 0 sentinels both mean unlimited: the flag's
-    // own "unlimited" wording (fs.Int("max-rounds", -1, "... 0=unlimited")),
-    // and the agent's applyDefaults converts 0 to -1. So the label uses
-    // "unlimited" rather than the opaque number. Keyed on the wire field,
-    // which both surfaces carry verbatim.
+    // Integers arrive as numbers from the resolved effective layer; the
+    // unlimited sentinels read as a word rather than an opaque number.
     if (typeof raw === "number" && Number.isFinite(raw)) {
-      value = opt.wireField === "maxRounds" && (raw === -1 || raw === 0) ? "unlimited" : String(raw);
+      value = isUnlimitedMaxRounds(opt, raw) ? "unlimited" : String(raw);
     } else {
       value = undefined;
     }

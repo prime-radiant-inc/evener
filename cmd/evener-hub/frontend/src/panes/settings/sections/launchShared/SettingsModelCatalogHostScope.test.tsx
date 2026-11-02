@@ -1,9 +1,10 @@
-import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
+import type { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, expect, test } from "vitest";
-import { connectionStore } from "../../../../stores/connection";
+import { resetConnectionStoreForTests } from "../../../../stores/connection";
 import { resetCredentialsStoreForTests, resetHostInstancesForTests } from "../../../../stores/credentials";
+import { connectReadyFakeClient } from "../../../../testing/connectionTestUtils";
 import { SettingsModelCatalog } from "./SettingsModelCatalog";
 
 // The launch/project model picker's host scope (component 07b): the picker
@@ -11,12 +12,6 @@ import { SettingsModelCatalog } from "./SettingsModelCatalog";
 // host-scopes. Under a remote host it must read THAT host's model/list through
 // evener/host/request (and take its revision from that host's own provider
 // instances); the local hub keeps today's plain model/list byte-for-byte.
-
-function connectFakeClient(): FakeClient {
-  const fake = new FakeClient("ready");
-  connectionStore.getState().connect(fake);
-  return fake;
-}
 
 /** True when the section forwarded `method` through evener/host/request. */
 function forwarded(fake: FakeClient, method: string): boolean {
@@ -26,20 +21,20 @@ function forwarded(fake: FakeClient, method: string): boolean {
 }
 
 beforeEach(() => {
-  connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
+  resetConnectionStoreForTests();
   resetCredentialsStoreForTests();
   resetHostInstancesForTests();
 });
 
 afterEach(() => {
   cleanup();
-  connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
+  resetConnectionStoreForTests();
   resetCredentialsStoreForTests();
   resetHostInstancesForTests();
 });
 
 test("with a remote host selected the picker reads THAT host's model/list through the proxy, never the controller's", async () => {
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   // The controller's own model/list is booby-trapped: reaching it under a remote
   // selection IS the defect this pins (the picker used to offer this hub's
   // models for a remote launch/project layer).
@@ -70,7 +65,7 @@ test("with a remote host selected the picker reads THAT host's model/list throug
 });
 
 test("the local hub issues exactly today's plain model/list and never the proxy", async () => {
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   fake.on("model/list", () => ({ data: [{ provider: "local", model: "local-model", displayName: "Local model" }] }));
   fake.on("evener/instance/list", () => ({ instances: [], availableProviders: [] }));
   fake.on("evener/host/request", () => {
@@ -94,7 +89,7 @@ test("the local hub issues exactly today's plain model/list and never the proxy"
 // hook's registry gates, waits for no registry read, and stamps its own
 // revision, won the version race and discarded the hook's own response.
 test("a remote host's instance listing is read once, not twice", async () => {
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   fake.on("evener/host/request", (params) => {
     const forwardedCall = params as { host: string; method: string };
     if (forwardedCall.method === "evener/instance/list") {

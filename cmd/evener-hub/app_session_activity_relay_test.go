@@ -194,7 +194,7 @@ func testSessionActivityRelay(t *testing.T, checkpoint func(activityRelayFixture
 		t.Fatal(err)
 	}
 	daemon.ReplaceAppIdentity(prepared, nil)
-	daemon.SetStatus(daemonserver.StatusInfo{SessionID: rootID, State: "idle", WorkingDir: workDir})
+	seedDaemonStatus(daemon, daemonserver.StatusInfo{SessionID: rootID, State: "idle", WorkingDir: workDir})
 	daemon.WireTranscriptHistory(sess)
 	daemon.SetDescendantTranscriptPathFunc(func(id string) string { return filepath.Join(stateDir, "sessions", id+".transcript.jsonl") })
 	daemon.SetThreadActivityReadFunc(sess.ActivitySummary)

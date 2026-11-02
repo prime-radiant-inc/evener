@@ -14,11 +14,12 @@ import (
 	"time"
 
 	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/appwire/appwiretest"
 	authopenai "primeradiant.com/evener/auth/openai"
 	"primeradiant.com/evener/auth/openai/oaitest"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
-	"primeradiant.com/evener/cmdutil"
 	"primeradiant.com/evener/envvars"
+	"primeradiant.com/evener/envvars/userdirs"
 	"primeradiant.com/evener/internal/credentials"
 )
 
@@ -51,7 +52,7 @@ func TestHubRPCAuthStatusUsesUserScopedOpenAIAuth(t *testing.T) {
 		t.Fatalf("Initialize features=%+v, want auth advertised", init.Features)
 	}
 
-	status, err := client.AuthStatus(context.Background(), appwire.AuthStatusParams{Provider: "openai-codex"})
+	status, err := appwiretest.AuthStatus(context.Background(), client, appwire.AuthStatusParams{Provider: "openai-codex"})
 	if err != nil {
 		t.Fatalf("AuthStatus: %v", err)
 	}
@@ -99,13 +100,9 @@ func TestHubRPCAuthStatusPrefersStoredOAuthOverEnv(t *testing.T) {
 
 	hub := newHubRPCTestServer(t, stateRootAuthConfig(t, stateRoot, map[string]string{"OPENAI_API_KEY": "env-token"}))
 	defer hub.Close()
-	client := dialHubRPC(t, hub)
-	defer client.Close()
-	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
-		t.Fatalf("Initialize: %v", err)
-	}
+	client := dialHubRPCInitialized(t, hub)
 
-	status, err := client.AuthStatus(context.Background(), appwire.AuthStatusParams{Provider: "openai-codex"})
+	status, err := appwiretest.AuthStatus(context.Background(), client, appwire.AuthStatusParams{Provider: "openai-codex"})
 	if err != nil {
 		t.Fatalf("AuthStatus: %v", err)
 	}
@@ -116,7 +113,7 @@ func TestHubRPCAuthStatusPrefersStoredOAuthOverEnv(t *testing.T) {
 	// Positive control: the plain API-key provider is the one that does read
 	// the environment, so an env layer that never reaches the registry fails
 	// here instead of making the Codex assertion above vacuously true.
-	envStatus, err := client.AuthStatus(context.Background(), appwire.AuthStatusParams{Provider: "openai"})
+	envStatus, err := appwiretest.AuthStatus(context.Background(), client, appwire.AuthStatusParams{Provider: "openai"})
 	if err != nil {
 		t.Fatalf("AuthStatus(openai): %v", err)
 	}
@@ -134,13 +131,9 @@ func TestHubRPCAuthStatusIgnoresAPIKeyForTheCodexInstance(t *testing.T) {
 
 	hub := newHubRPCTestServer(t, stateRootAuthConfig(t, stateRoot, map[string]string{"OPENAI_API_KEY": "env-token"}))
 	defer hub.Close()
-	client := dialHubRPC(t, hub)
-	defer client.Close()
-	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
-		t.Fatalf("Initialize: %v", err)
-	}
+	client := dialHubRPCInitialized(t, hub)
 
-	status, err := client.AuthStatus(context.Background(), appwire.AuthStatusParams{Provider: "openai-codex"})
+	status, err := appwiretest.AuthStatus(context.Background(), client, appwire.AuthStatusParams{Provider: "openai-codex"})
 	if err != nil {
 		t.Fatalf("AuthStatus: %v", err)
 	}
@@ -151,7 +144,7 @@ func TestHubRPCAuthStatusIgnoresAPIKeyForTheCodexInstance(t *testing.T) {
 	// Positive control: the plain API-key provider is the one that does read
 	// the environment, so an env layer that never reaches the registry fails
 	// here instead of making the Codex assertion above vacuously true.
-	envStatus, err := client.AuthStatus(context.Background(), appwire.AuthStatusParams{Provider: "openai"})
+	envStatus, err := appwiretest.AuthStatus(context.Background(), client, appwire.AuthStatusParams{Provider: "openai"})
 	if err != nil {
 		t.Fatalf("AuthStatus(openai): %v", err)
 	}
@@ -256,14 +249,14 @@ func TestHubRPCAuthStatusReportsOAuthRefreshAndLoginStates(t *testing.T) {
 
 // TestOpenAIStateDirFromEnvUsesLaunchEnvStateHome pins the one thing the hub
 // auth controller still resolves for itself: XDG_STATE_HOME out of the launch
-// env it is handed, which is not the process env cmdutil.DefaultStateRoot reads.
+// env it is handed, which is not the process env userdirs.DefaultStateRoot reads.
 func TestOpenAIStateDirFromEnvUsesLaunchEnvStateHome(t *testing.T) {
 	t.Setenv(envvars.XDGStateHome.Name, t.TempDir())
 	launchStateHome := t.TempDir()
 
-	got := openAIStateDirFromEnv(map[string]string{envvars.XDGStateHome.Name: launchStateHome})
-	if want := filepath.Join(launchStateHome, "evener"); got != want {
-		t.Fatalf("stateDir=%q, want %q", got, want)
+	got, err := openAIStateDirFromEnv(map[string]string{envvars.XDGStateHome.Name: launchStateHome})
+	if want := filepath.Join(launchStateHome, "evener"); err != nil || got != want {
+		t.Fatalf("stateDir=%q, %v, want %q", got, err, want)
 	}
 }
 
@@ -271,7 +264,7 @@ func TestOpenAIStateDirFromEnvUsesLaunchEnvStateHome(t *testing.T) {
 // launch override: when the launch env redirects the home directory and
 // XDG_STATE_HOME is unset, the home arm must read that supplied home, not the
 // process environment. Delegating the whole arm to the process-based
-// cmdutil.DefaultStateRoot() silently ignored the launch env, so a hub handed a
+// userdirs.DefaultStateRoot() silently ignored the launch env, so a hub handed a
 // redirecting environment read and wrote OAuth state in the ambient home.
 //
 // goos is passed explicitly so the Windows arm is pinned from any host; a test
@@ -289,6 +282,7 @@ func TestOpenAIStateDirFromLookupUsesLaunchEnvHome(t *testing.T) {
 		goos      string
 		env       map[string]string
 		wantParts []string
+		wantErr   bool
 	}{
 		{
 			name:      "unix home",
@@ -304,18 +298,25 @@ func TestOpenAIStateDirFromLookupUsesLaunchEnvHome(t *testing.T) {
 		},
 		{
 			// A launch env that carries only the removed HOMEDRIVE/HOMEPATH
-			// spelling resolves like cmdutil: no profile, so the fallback.
-			name:      "windows homedrive and homepath are not a home",
-			goos:      "windows",
-			env:       map[string]string{envvars.HomeDrive.Name: "D:", envvars.HomePath.Name: `\Users\u`},
-			wantParts: []string{".local", "state", "evener"},
+			// spelling resolves like cmdutil: no profile, so no state root.
+			name:    "windows homedrive and homepath are not a home",
+			goos:    "windows",
+			env:     map[string]string{"HOMEDRIVE": "D:", "HOMEPATH": `\Users\u`},
+			wantErr: true,
 		},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
+			got, err := openAIStateDirFromLookup(tc.goos, lookup(tc.env))
+			if tc.wantErr {
+				if !errors.Is(err, userdirs.ErrNoStateHome) {
+					t.Fatalf("stateDir error = %v, want ErrNoStateHome", err)
+				}
+				return
+			}
 			want := filepath.Join(tc.wantParts...)
-			if got := openAIStateDirFromLookup(tc.goos, lookup(tc.env)); got != want {
-				t.Fatalf("stateDir=%q, want launch home %q", got, want)
+			if err != nil || got != want {
+				t.Fatalf("stateDir=%q, %v, want launch home %q", got, err, want)
 			}
 		})
 	}
@@ -323,35 +324,32 @@ func TestOpenAIStateDirFromLookupUsesLaunchEnvHome(t *testing.T) {
 
 // TestOpenAIStateDirFromEnvMatchesDefaultStateRoot pins the anti-drift contract
 // #1012 asked for: when the supplied env is the process env, the hub resolves
-// exactly what cmdutil.DefaultStateRoot resolves. The two used to disagree on
+// exactly what userdirs.DefaultStateRoot resolves. The two used to disagree on
 // Windows, where the hub read USERPROFILE/HOMEDRIVE+HOMEPATH out of the
 // supplied env instead of letting os.UserHomeDir find the home directory.
 func TestOpenAIStateDirFromEnvMatchesDefaultStateRoot(t *testing.T) {
 	t.Setenv(envvars.XDGStateHome.Name, t.TempDir())
 	t.Setenv(envvars.Home.Name, t.TempDir())
 
-	if got, want := openAIStateDirFromEnv(envToMap(os.Environ())), cmdutil.DefaultStateRoot(); got != want {
-		t.Fatalf("stateDir=%q, want cmdutil.DefaultStateRoot() %q", got, want)
+	got, err := openAIStateDirFromEnv(envToMap(os.Environ()))
+	if want := mustStateRoot(t); err != nil || got != want {
+		t.Fatalf("stateDir=%q, %v, want userdirs.DefaultStateRoot() %q", got, err, want)
 	}
 }
 
-// TestOpenAIStateDirFromEnvFallsBackWhenNoHome pins the last-resort arm: a
-// supplied environment with neither XDG_STATE_HOME nor a home resolves to
-// cmdutil's "."-rooted fallback, not back into the process environment. A
-// launch env that deliberately carries no home therefore cannot silently read
-// or write OAuth state under the ambient one.
-func TestOpenAIStateDirFromEnvFallsBackWhenNoHome(t *testing.T) {
+// TestOpenAIStateDirFromEnvReportsNoStateHomeWhenNoHome pins the last-resort
+// arm: a supplied environment with neither XDG_STATE_HOME nor a home resolves
+// to an error, not back into the process environment. A launch env that
+// deliberately carries no home therefore cannot silently read or write OAuth
+// state under the ambient one.
+func TestOpenAIStateDirFromEnvReportsNoStateHomeWhenNoHome(t *testing.T) {
 	t.Setenv(envvars.XDGStateHome.Name, t.TempDir())
 	t.Setenv(envvars.Home.Name, t.TempDir())
 	t.Setenv(envvars.UserProfile.Name, t.TempDir())
-	processRoot := cmdutil.DefaultStateRoot()
 
-	got := openAIStateDirFromEnv(map[string]string{})
-	if want := filepath.Join(".local", "state", "evener"); got != want {
-		t.Fatalf("stateDir=%q, want %q", got, want)
-	}
-	if got == processRoot {
-		t.Fatalf("stateDir=%q equals the process root; the supplied env must win", got)
+	got, err := openAIStateDirFromEnv(map[string]string{})
+	if !errors.Is(err, userdirs.ErrNoStateHome) || got != "" {
+		t.Fatalf("stateDir=%q, %v; the supplied env must win and report ErrNoStateHome", got, err)
 	}
 }
 
@@ -373,13 +371,9 @@ func TestHubRPCAuthLogoutRemovesUserScopedOpenAIAuth(t *testing.T) {
 
 	hub := newHubRPCTestServer(t, stateRootAuthConfig(t, stateRoot, nil))
 	defer hub.Close()
-	client := dialHubRPC(t, hub)
-	defer client.Close()
-	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
-		t.Fatalf("Initialize: %v", err)
-	}
+	client := dialHubRPCInitialized(t, hub)
 
-	resp, err := client.AuthLogout(context.Background(), appwire.AuthLogoutParams{Provider: "openai-codex"})
+	resp, err := appwiretest.AuthLogout(context.Background(), client, appwire.AuthLogoutParams{Provider: "openai-codex"})
 	if err != nil {
 		t.Fatalf("AuthLogout: %v", err)
 	}
@@ -539,20 +533,16 @@ func TestHubRPCAuthStoresOAuthWhereTheRegistryReads(t *testing.T) {
 		CredsStore:   store,
 	})
 	defer hub.Close()
-	client := dialHubRPC(t, hub)
-	defer client.Close()
-	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
-		t.Fatalf("Initialize: %v", err)
-	}
+	client := dialHubRPCInitialized(t, hub)
 
-	status, err := client.AuthStatus(context.Background(), appwire.AuthStatusParams{Provider: "openai-codex"})
+	status, err := appwiretest.AuthStatus(context.Background(), client, appwire.AuthStatusParams{Provider: "openai-codex"})
 	if err != nil {
 		t.Fatalf("AuthStatus: %v", err)
 	}
 	if !status.SignedIn || status.ActiveSource != authopenai.AuthSourceOAuth {
 		t.Fatalf("status=%+v, want the record under the registry state root %s to sign the instance in", status, registryRoot)
 	}
-	logout, err := client.AuthLogout(context.Background(), appwire.AuthLogoutParams{Provider: "openai-codex"})
+	logout, err := appwiretest.AuthLogout(context.Background(), client, appwire.AuthLogoutParams{Provider: "openai-codex"})
 	if err != nil {
 		t.Fatalf("AuthLogout: %v", err)
 	}
@@ -1624,4 +1614,86 @@ func renameProvidersEntry(t *testing.T, c *hubAuthController, path, content stri
 func attachTestRegistry(t *testing.T, c *hubAuthController) {
 	t.Helper()
 	c.reg = newTestRegistry(t, c.stateDir, "", c.creds, nil)
+}
+
+// mustStateRoot is the Evener state root of the test's isolated environment.
+func mustStateRoot(t *testing.T) string {
+	t.Helper()
+	root, err := userdirs.DefaultStateRoot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return root
+}
+
+// A hub with no state home finds no OAuth records and refuses to save one,
+// rather than resolving auth/<instance>.json against its working directory, and
+// answers credential writes with the same reason. A controller built once a
+// home exists works again.
+func TestHubAuthControllerWithoutStateHomeRefusesRecords(t *testing.T) {
+	t.Setenv(envvars.XDGStateHome.Name, "")
+	t.Setenv(envvars.Home.Name, "")
+	t.Chdir(t.TempDir())
+
+	ctrl := newHubAuthControllerWithStore("", nil)
+	if _, err := ctrl.loadAuth(ctrl.stateDir, "openai"); !errors.Is(err, authopenai.ErrAuthNotFound) {
+		t.Fatalf("loadAuth error = %v, want ErrAuthNotFound", err)
+	}
+	if err := ctrl.saveAuth(ctrl.stateDir, "openai", authopenai.AuthRecord{}); !errors.Is(err, userdirs.ErrNoStateHome) {
+		t.Fatalf("saveAuth error = %v, want ErrNoStateHome", err)
+	}
+	if deleted, err := ctrl.deleteAuth(ctrl.stateDir, "openai"); deleted || err != nil {
+		t.Fatalf("deleteAuth = %v, %v, want nothing deleted and no error", deleted, err)
+	}
+	if _, credsErr := ctrl.credentialStore(); !errors.Is(credsErr, userdirs.ErrNoStateHome) {
+		t.Fatalf("credentialStore error = %v, want ErrNoStateHome", credsErr)
+	}
+	if _, err := os.Stat("auth"); !os.IsNotExist(err) {
+		t.Fatalf("an auth directory appeared in the working directory: %v", err)
+	}
+
+	// The launch-env constructor refuses the same way, and does not resolve a
+	// credentials store from the ambient environment instead.
+	launched := newHubAuthController(map[string]string{})
+	if err := launched.saveAuth(launched.stateDir, "openai", authopenai.AuthRecord{}); !errors.Is(err, userdirs.ErrNoStateHome) {
+		t.Fatalf("launch-env saveAuth error = %v, want ErrNoStateHome", err)
+	}
+	if store, credsErr := launched.credentialStore(); store != nil || !errors.Is(credsErr, userdirs.ErrNoStateHome) {
+		t.Fatalf("launch-env credentialStore = %v, %v, want no store and ErrNoStateHome", store, credsErr)
+	}
+
+	t.Setenv(envvars.Home.Name, t.TempDir())
+	recovered := newHubAuthControllerWithStore("", nil)
+	if _, err := recovered.loadAuth(recovered.stateDir, "openai"); !errors.Is(err, authopenai.ErrAuthNotFound) {
+		t.Fatalf("loadAuth after the home returned error = %v, want ErrAuthNotFound", err)
+	}
+}
+
+// A hub with explicit paths and a healthy credentials store but no default
+// state home can still rename and remove API-key instances: with no state
+// directory there is no OAuth record to collide with or clean up.
+func TestHubInstancesWithoutStateHomeSeeNoOAuthRecords(t *testing.T) {
+	t.Setenv(envvars.XDGStateHome.Name, "")
+	t.Setenv(envvars.Home.Name, "")
+	store, err := credentials.LoadStore(filepath.Join(t.TempDir(), "credentials.toml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Set("gateway", "sk-test"); err != nil {
+		t.Fatal(err)
+	}
+	instances := &hubInstancesController{auth: newHubAuthControllerWithStore("", store)}
+
+	if held := instances.credentialsUnder("unused"); len(held) != 0 {
+		t.Fatalf("credentialsUnder(unused) = %v, want none", held)
+	}
+	if held := instances.credentialsUnder("gateway"); len(held) != 1 {
+		t.Fatalf("credentialsUnder(gateway) = %v, want only the credentials.toml entry", held)
+	}
+	if err := instances.moveCredentials("gateway", "renamed"); err != nil {
+		t.Fatalf("moveCredentials: %v", err)
+	}
+	if _, ok := store.Get("renamed"); !ok {
+		t.Fatal("the renamed instance lost its stored key")
+	}
 }

@@ -34,10 +34,7 @@ var (
 	hubBuildNavigationTree       = hubcore.BuildTreeWithProjects
 	hubDeriveNavigationAttention = hubcore.DeriveAttention
 	hubNavigationInputs          = (*WebServer).navigationSnapshotInputs
-	hubTreeAttentionRank         = hubapi.AttentionRank
 )
-
-var _ = hubTreeAttentionRank
 
 type navigationSnapshot struct {
 	ownershipErr        error
@@ -130,7 +127,7 @@ func pinDecisionKey(key hubcore.ArchiveKey) hubcore.ArchiveKey {
 	if key.Source == "" {
 		return hubcore.ArchiveKey{Kind: "session", ID: key.ID}
 	}
-	return hubcore.ArchiveKey{Kind: "session", ID: hubapi.Ref{HostID: key.Source, SessionID: key.ID}.String()}
+	return hubcore.ArchiveKey{Kind: "session", ID: appwire.Ref{SourceID: key.Source, ThreadID: key.ID}.String()}
 }
 
 func classifySessionPins(assignments map[hubcore.ArchiveKey]hubcore.SessionPin, authority hubcore.FavoriteAuthority) hubcore.FavoriteRevalidation {
@@ -215,38 +212,6 @@ func projectFavoriteForSources(favorites map[string]bool, project hubcore.TreePr
 		}
 	}
 	return false
-}
-
-// memoTree returns the memoized tree projection retained by mutation handlers
-// that still need it. AppWire navigation reads are owned by NavigationService,
-// whose webNavigationSource captures a fresh source snapshot.
-func (s *WebServer) memoTree(ctx context.Context) (hubcore.Tree, appwire.AttentionSummary) {
-	tree, summary, _, _ := s.memoTreeWithAuthority(ctx)
-	return tree, summary
-}
-
-func (s *WebServer) memoTreeWithAuthority(ctx context.Context) (hubcore.Tree, appwire.AttentionSummary, []hubcore.LiveEntry, hubcore.FavoriteAuthority) {
-	inputsVersion := uint64(0)
-	if s.cfg.Inputs != nil {
-		inputsVersion = s.cfg.Inputs.Load()
-	}
-	snapshot := s.navigationSnapshot(ctx)
-	decisions := s.archiveDecisions()
-	key := hubcore.TreeCacheKey{InputsVersion: inputsVersion, RemoteGeneration: snapshot.remoteGeneration}
-	value := s.treeCache.Get(key, time.Now(), func() hubcore.TreeCacheValue {
-		t := hubBuildNavigationTree(snapshot.metas, snapshot.live, decisions, snapshot.projects)
-		_, sum := hubDeriveNavigationAttention(snapshot.metas, snapshot.live, decisions)
-		// This authority serves alias lookup, which falls back to the id's own
-		// spellings, so it carries no session facts: the stores are not read.
-		authority, _ := s.favoriteAuthorityForReferences(snapshot, nil)
-		return hubcore.TreeCacheValue{
-			Tree:              t,
-			AttentionSummary:  sum,
-			Live:              snapshot.live,
-			FavoriteAuthority: authority,
-		}
-	})
-	return value.Tree, value.AttentionSummary, value.Live, value.FavoriteAuthority
 }
 
 type navigationProjectBucket struct {
@@ -610,17 +575,12 @@ func selectNavigationProjects(candidates map[string]map[string]identifier.Projec
 	return projects, identities, conflicts
 }
 
-func (s *WebServer) navigationTreeInputs(ctx context.Context) ([]schema.SessionMeta, []hubcore.LiveEntry, map[string]identifier.Project) {
-	snapshot := s.navigationSnapshot(ctx)
-	return snapshot.metas, snapshot.live, snapshot.projects
-}
-
-// remoteTreeThreads returns the remote-source thread list the tree walk
+// remoteThreadFetch returns the remote-source thread list the tree walk
 // folds into its metas/live inputs. When a RemoteThreadCache is configured
 // (production — see main.go), it reads the cache instead of performing a
 // synchronous network walk, so a tree render never blocks on a remote hop.
-// Tests that construct a WebServer without a cache fall back to the old
-// synchronous behavior via refreshRemoteThreads.
+// Tests that construct a WebServer without a cache fall back to the
+// synchronous walk in refreshRemoteThreadSnapshot.
 func (s *WebServer) remoteThreadFetch(ctx context.Context) remoteThreadFetch {
 	if s.cfg.RemoteThreadCache != nil {
 		snapshot := s.cfg.RemoteThreadCache.Snapshot()
@@ -664,21 +624,6 @@ func (s *WebServer) retainedTombstoneSources() map[string]hubcore.RemoteSourceSn
 	return s.hostManage.retainedTombstoneSources()
 }
 
-func (s *WebServer) remoteTreeThreads(ctx context.Context) []appwire.Thread {
-	return s.remoteThreadFetch(ctx).threads
-}
-
-// refreshRemoteThreads performs the synchronous walk across every configured
-// remote source: it lists each source's threads (via listThreadsWithFallback,
-// which retains the last-known-good result across transient errors) and
-// backfills each thread's Source and Evener.Ref. This used to run inline on
-// every navigation read (as remoteTreeThreads); it now runs on a background
-// ~30s ticker + poke (main.go), storing its result into a RemoteThreadCache
-// for remoteTreeThreads to read.
-func (s *WebServer) refreshRemoteThreads(ctx context.Context) []appwire.Thread {
-	return s.refreshRemoteThreadSnapshot(ctx).threads
-}
-
 func (s *WebServer) refreshRemoteThreadSnapshot(ctx context.Context) remoteThreadFetch {
 	tombstoneSources := s.retainedTombstoneSources()
 	if s.sources == nil {
@@ -707,7 +652,7 @@ func (s *WebServer) refreshRemoteThreadSnapshot(ctx context.Context) remoteThrea
 	readGenerations := make(map[string]uint64)
 	remoteHosts := remoteHostNames(s.cfg)
 	for _, source := range s.sources.All() {
-		if source.ID() == "local" {
+		if source.ID() == appwire.LocalSourceID {
 			continue
 		}
 		// Row ownership follows the generation at READ time, not at walk
@@ -1118,12 +1063,6 @@ func appThreadTreeLive(thread appwire.Thread) bool {
 	}
 }
 
-// hubAttentionSummaryFromCore maps hubcore's internal attention summary to
-// hubapi's public wire type (hubapi cannot import the hub's internal package).
-func hubAttentionSummaryFromCore(sum appwire.AttentionSummary) hubapi.AttentionSummary {
-	return hubapi.AttentionSummary{NeedsYou: sum.NeedsYou, Error: sum.Error, Working: sum.Working}
-}
-
 func (s *WebServer) apiTreeSources() []hubapi.Source {
 	sources := []hubapi.Source{{
 		ID:     "local",
@@ -1135,7 +1074,7 @@ func (s *WebServer) apiTreeSources() []hubapi.Source {
 		return sources
 	}
 	for _, source := range s.sources.All() {
-		if source.ID() == "local" {
+		if source.ID() == appwire.LocalSourceID {
 			continue
 		}
 		sources = append(sources, hubapi.Source{
@@ -1146,23 +1085,6 @@ func (s *WebServer) apiTreeSources() []hubapi.Source {
 		})
 	}
 	return sources
-}
-
-func (s *WebServer) isLive(sessionID string) bool {
-	if !isLocalRouteID(sessionID) {
-		// A tree projection has no request context of its own; bound the
-		// ownership wait the same way the relay publication guard does, so a
-		// pending Resume cannot block the render indefinitely.
-		ctx, cancel := context.WithTimeout(context.Background(), hubTransientOwnershipBudget)
-		defer cancel()
-		_, err := sourceForThreadWithDeletionFence(ctx, s.cfg, s.sources, appRefFromRouteID(sessionID), "")
-		return err == nil
-	}
-	if s.cfg.Roster == nil {
-		return false
-	}
-	_, ok := s.cfg.Roster.Find(sessionID)
-	return ok
 }
 
 // favoriteDecisions returns the current set of user-explicit favorite
@@ -1285,12 +1207,12 @@ func referencedSessionAuthorities(ids []string, snapshot navigationSnapshot, loc
 // authority is keyed by: the bare id for the controller's own sessions, the
 // host-qualified ref for a remote one.
 func canonicalSessionDecisionID(raw string) (id string, remote bool) {
-	ref, err := hubapi.ParseRef(raw)
+	ref, err := appwire.ParseRef(raw)
 	switch {
 	case err != nil:
 		return raw, false
-	case ref.HostID == "local":
-		return ref.SessionID, false
+	case ref.SourceID == appwire.LocalSourceID:
+		return ref.ThreadID, false
 	default:
 		return ref.String(), true
 	}
@@ -1298,8 +1220,8 @@ func canonicalSessionDecisionID(raw string) (id string, remote bool) {
 
 func favoriteSessionAliases(id string) []string {
 	aliases := []string{id}
-	if ref, err := hubapi.ParseRef(id); err == nil && ref.HostID == "local" {
-		aliases = append(aliases, ref.SessionID, "local:"+ref.SessionID)
+	if ref, err := appwire.ParseRef(id); err == nil && ref.SourceID == appwire.LocalSourceID {
+		aliases = append(aliases, ref.ThreadID, "local:"+ref.ThreadID)
 	} else if !strings.Contains(id, ":") {
 		aliases = append(aliases, "local:"+id)
 	}
@@ -1347,7 +1269,7 @@ func favoriteRemoteOwnerships(threads []appwire.Thread) map[string]favoriteRemot
 	ownerships := make(map[string]favoriteRemoteOwnership)
 	for _, thread := range threads {
 		ref, ok := appThreadTreeRef(thread)
-		if !ok || ref.SourceID == "local" {
+		if !ok || ref.SourceID == appwire.LocalSourceID {
 			continue
 		}
 		sourceID := strings.TrimSpace(thread.Source)
@@ -1507,22 +1429,9 @@ func favoriteProjectSourceClaim(id string, snapshot navigationSnapshot) string {
 	return "local"
 }
 
-// rowRenameable reports whether a tree row exposes the rename menu item. Local
-// rows are always renameable (ended via the hub meta-edit path, live via the
-// daemon method); non-local rows are not. Derived from the ref's host, not
-// a per-thread probe.
-func (s *WebServer) rowRenameable(id string) bool { return isLocalRouteID(id) }
-
-func hubRefFromTreeNodeID(id string) hubapi.Ref {
-	if ref, err := hubapi.ParseRef(id); err == nil {
+func hubRefFromTreeNodeID(id string) appwire.Ref {
+	if ref, err := appwire.ParseRef(id); err == nil {
 		return ref
 	}
-	return hubapi.LocalRef(id)
-}
-
-func (s *WebServer) liveEntry(sessionID string) (hubcore.LiveEntry, bool) {
-	if s.cfg.Roster == nil {
-		return hubcore.LiveEntry{}, false
-	}
-	return s.cfg.Roster.Find(sessionID)
+	return appwire.LocalRef(id)
 }

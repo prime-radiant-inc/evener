@@ -14,8 +14,20 @@ export const ENTRY_COVERAGE_BOUNDARY_SNAPSHOT_INDEX = "historyKey_boundary_snaps
 // it lives in ENTRY_META_STORE keyed by this historyKey. It is not a history row
 // and every enumeration skips it by key comparison.
 export const CLEAR_EPOCH_KEY = "__clearEpoch";
-// The lookup's own short deadline (the spec's load seam), far below the
-// outbox's 10-second storage timeout: no pane ever waits on storage longer.
+// The repository's own short deadline for bounded internal reads: paging
+// continuation decisions, the cached shell install, and durable authority
+// reads, where a slow answer falls back to the server or fails closed. The
+// pane's foreground open does not use it: that open is an event race - the
+// local openLocal(200) restore against the next tracked hydration's
+// settlement, with a long storage backstop (10 s) as the clock of last
+// resort when no hydration is in flight and the read never answers. A
+// remount over a still-established view races only the stalled-restore
+// window (5 s); recovery attempts keep that longer window so a
+// slow-but-successful read finishes. A claim's post-hydration certification
+// whose own publication completed the display, with an older frontier still
+// outstanding, runs quietly (no consumer hold) and, when it establishes the
+// display, takes exclusive opening ownership: it retires the superseded
+// published opening's consumer hold and notifies that open's parked wait.
 export const SESSION_CACHE_LOOKUP_DEADLINE_MS = 250;
 // The legacy stores dropped at the 6d schema bump. Named here only so the
 // upgrade can discard them.

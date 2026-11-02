@@ -10,7 +10,6 @@ import { RunRow } from "./RunRow";
 vi.mock("react-native", async () => ({
 	...(await import("../renderNative.testkit")).nativeModuleMock(),
 }));
-vi.mock("expo-symbols", () => ({ SymbolView: "SymbolView" }));
 vi.mock("./StepEvidence", () => ({ StepEvidence: "StepEvidence" }));
 vi.mock("./evidence", async (importOriginal) => {
 	const original = await importOriginal<typeof import("./evidence")>();

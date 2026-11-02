@@ -13,7 +13,7 @@ package agent
 // fail on the wire.
 //
 // This test is the corpus for those rows. It finishes three subagents the way
-// a run does (stableDelegateFinishFromRun, the journal events the controller
+// a run does (delegateFinishFromRun, the journal events the controller
 // appends) — one that reported, one the user stopped, one that failed — and
 // reads the session's activity tree as evener/jobs/list answers it.
 //
@@ -78,7 +78,7 @@ func TestSubagentOutcomeWireFixtures(t *testing.T) {
 		inputs.startedAt = started
 		inputs.latestActivityAt = started.Add(20 * time.Second)
 		inputs.endedAt = started.Add(30 * time.Second)
-		seedStableReadonlyFinish(t, s, run.id, descriptor, started, stableDelegateFinishFromRun(inputs), true)
+		seedStableReadonlyFinish(t, s, run.id, descriptor, started, delegateFinishFromRun(inputs), true)
 	}
 
 	delegates, err := s.ListActivityDelegates(t.Context(), appwire.SessionActivityListParams{Ref: encodeRef("", s.ID()), Scope: appwire.SessionActivityScopeSubtree})
@@ -92,7 +92,7 @@ func TestSubagentOutcomeWireFixtures(t *testing.T) {
 	}
 	delegateWire = []byte(strings.ReplaceAll(string(delegateWire), s.ID(), "root"))
 
-	tree, err := s.JobActivityTree(appwire.JobsListParams{})
+	tree, err := s.JobActivityTree(t.Context(), appwire.JobsListParams{})
 	if err != nil {
 		t.Fatalf("JobActivityTree: %v", err)
 	}
@@ -163,7 +163,7 @@ func TestSubagentOutcomeWireFixtures(t *testing.T) {
 		DelegatesResponse        json.RawMessage `json:"delegatesResponse"`        //nolint:tagliatelle // AppWire corpus key consumed by the typed phone fixture.
 		ResumedDelegatesResponse json.RawMessage `json:"resumedDelegatesResponse"` //nolint:tagliatelle // AppWire corpus key consumed by the typed phone fixture.
 	}{
-		Note:                     "evener/jobs/list's answer for a coordinator with three finished subagents: one that reported, one the user stopped, one whose provider failed. Each is finished through stableDelegateFinishFromRun and the controller's journal events, and read through Session.JobActivityTree; the session id is written as root.",
+		Note:                     "evener/jobs/list's answer for a coordinator with three finished subagents: one that reported, one the user stopped, one whose provider failed. Each is finished through delegateFinishFromRun and the controller's journal events, and read through Session.JobActivityTree; the session id is written as root.",
 		Response:                 response,
 		DelegatesResponse:        delegateWire,
 		ResumedDelegatesResponse: resumedWire,

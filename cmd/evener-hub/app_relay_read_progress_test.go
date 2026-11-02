@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -42,23 +43,156 @@ func TestHubRelayPendingTargetBurstMakesProgress(t *testing.T) {
 	testHubRelayRetiredChildReadProgress(t, true, false, hubRelayPendingDeliveryLimit+1)
 }
 
-func testHubRelayRetiredChildReadProgress(t *testing.T, queuedRead, backgroundConsumer bool, childEvents int) {
-	t.Helper()
+func TestHubRelayPendingTargetBurstAtCapacity(t *testing.T) {
+	// Not parallel: installs package-wide relay seams.
+	const pendingCapacity = 64
+	var maxOccupancy, currentOccupancy, burstAccepted atomic.Int64
+	occupancyViolation := make(chan int, 1)
+	backpressure := make(chan struct{})
+	backpressureReached := sync.OnceFunc(func() { close(backpressure) })
+	publicationEntered := make(chan struct{})
+	publicationReleased := make(chan struct{})
+	releasePublication := sync.OnceFunc(func() { close(publicationReleased) })
+	var publicationArmed atomic.Bool
+	var readStarted bool
+	readFinished := make(chan struct{})
+
+	pendingObservation := func(n int) {
+		currentOccupancy.Store(int64(n))
+		for {
+			seen := maxOccupancy.Load()
+			if int64(n) <= seen || maxOccupancy.CompareAndSwap(seen, int64(n)) {
+				break
+			}
+		}
+		if n > pendingCapacity {
+			select {
+			case occupancyViolation <- n:
+			default:
+			}
+		}
+	}
+	backpressureObservation := func() {
+		backpressureReached()
+	}
+	publicationObservation := func() {
+		if publicationArmed.CompareAndSwap(true, false) {
+			close(publicationEntered)
+			<-publicationReleased
+		}
+	}
+	deliveryObservation := func(routingKey string) {
+		if routingKey == childRef {
+			burstAccepted.Add(1)
+		}
+	}
+	previousPending := observeHubRelayPending.Swap(&pendingObservation)
+	previousBackpressure := observeHubRelayPendingBackpressure.Swap(&backpressureObservation)
+	previousPublication := observeHubRelayRoutePublication.Swap(&publicationObservation)
+	previousDelivery := observeHubRelayDeliveryRead.Swap(&deliveryObservation)
+	// Register the restore before the fixture so LIFO runs it after the
+	// fixture's stopCanonicalRelay cleanup. Releasing the publication here also
+	// unblocks every failure path, and the read wait leaves no in-flight read
+	// behind before the observations are dropped.
+	t.Cleanup(func() {
+		releasePublication()
+		if readStarted {
+			<-readFinished
+		}
+		observeHubRelayPending.Store(previousPending)
+		observeHubRelayPendingBackpressure.Store(previousBackpressure)
+		observeHubRelayRoutePublication.Store(previousPublication)
+		observeHubRelayDeliveryRead.Store(previousDelivery)
+	})
+
 	f := newHubRelayProgressFixture(t, hubcore.RelayLifecycleHooks{})
-	ctx, daemon, relays, open := f.ctx, f.daemon, f.relays, f.open
-	idleDeleted, gateEntered, releaseGate := f.idleDeleted, f.gateEntered, f.releaseGate
-	root, child := open(), open()
+	ctx, daemon := f.ctx, f.daemon
+	root, _ := openRootWithRetiredChild(t, f, false)
+
+	f.gateArmed.Store(true)
+	readDone := make(chan readOutcome, 1)
+	readStarted = true
+	go func() {
+		defer close(readFinished)
+		response, err := root.ThreadRead(ctx, appwire.ThreadReadParams{Ref: rootRef, Subscribe: true})
+		readDone <- readOutcome{response, err}
+	}()
+	awaitActivityRelaySignal(ctx, t, f.gateEntered, "root read did not reach the daemon subscription gate")
+
+	// The source captures notifications received during the in-flight read and
+	// publishes them at the response cut, so this burst is ordered behind the
+	// held authoritative publication rather than racing it.
+	burstAccepted.Store(0)
+	for i := range pendingCapacity + 1 {
+		daemon.RecordDescendantAppEvent(rootID, events.SessionEvent{
+			Kind: events.EventNotesUpdated, SessionID: childID,
+			Data: events.NotesUpdatedData{HumanNote: fmt.Sprintf("pending-capacity-%02d", i)},
+		})
+	}
+
+	publicationArmed.Store(true)
+	f.releaseGate()
+	awaitActivityRelaySignal(ctx, t, publicationEntered, "authoritative publication did not reach the held barrier")
+
+	select {
+	case <-backpressure:
+	case n := <-occupancyViolation:
+		t.Fatalf("pending occupancy %d exceeded capacity %d before publication resolved routing", n, pendingCapacity)
+	case <-ctx.Done():
+		var stacks bytes.Buffer
+		_ = pprof.Lookup("goroutine").WriteTo(&stacks, 1)
+		t.Fatalf("pending buffer never reached its %d-delivery bound: max=%d\n%s", pendingCapacity, maxOccupancy.Load(), stacks.String())
+	}
+	if got := maxOccupancy.Load(); got != pendingCapacity {
+		t.Fatalf("max pending occupancy = %d, want exactly %d", got, pendingCapacity)
+	}
+	if got := burstAccepted.Load(); got != pendingCapacity {
+		t.Fatalf("child deliveries accepted before publication release = %d, want exactly %d", got, pendingCapacity)
+	}
+
+	releasePublication()
+	select {
+	case result := <-readDone:
+		if result.err != nil || result.response.Thread.ID != rootID {
+			t.Fatalf("root read: thread=%s err=%v", result.response.Thread.ID, result.err)
+		}
+	case <-ctx.Done():
+		t.Fatal("root read did not complete after publication release")
+	}
+	if _, err := root.ThreadRead(ctx, appwire.ThreadReadParams{Ref: rootRef, Subscribe: true}); err != nil {
+		t.Fatalf("subsequent root read: %v", err)
+	}
+
+	daemon.RecordAppEvent(events.SessionEvent{Kind: events.EventNotesUpdated, SessionID: rootID, Data: events.NotesUpdatedData{HumanNote: "root-sentinel"}})
+	daemon.RecordAppEvent(events.SessionEvent{Kind: events.EventNotesUpdated, SessionID: rootID, Data: events.NotesUpdatedData{HumanNote: "root-fence"}})
+	assertHubRelayRootNotes(ctx, t, root)
+
+	if got := burstAccepted.Load(); got < pendingCapacity+1 {
+		t.Fatalf("child deliveries accepted after publication release = %d, want at least %d", got, pendingCapacity+1)
+	}
+	awaitActivityRelayCondition(ctx, t, func() bool { return currentOccupancy.Load() == 0 }, "pending deliveries did not drain after publication")
+	select {
+	case n := <-occupancyViolation:
+		t.Fatalf("pending occupancy %d exceeded capacity %d", n, pendingCapacity)
+	default:
+	}
+}
+
+func openRootWithRetiredChild(t *testing.T, f hubRelayProgressFixture, backgroundConsumer bool) (*appwire.Client, []*appwire.Client) {
+	t.Helper()
+	ctx := f.ctx
+	root, child := f.open(), f.open()
 	for _, target := range []struct {
 		client *appwire.Client
 		ref    string
 	}{{root, rootRef}, {child, childRef}} {
-		if _, err := target.client.ThreadRead(ctx, appwire.ThreadReadParams{Ref: target.ref, Subscribe: true, ReplaceSubscription: false}); err != nil {
+		if _, err := target.client.ThreadRead(ctx, appwire.ThreadReadParams{Ref: target.ref, Subscribe: true}); err != nil {
 			t.Fatal(err)
 		}
 	}
 	consumers := []*appwire.Client{root}
 	if backgroundConsumer {
-		background := open()
+		background := f.open()
 		if _, err := background.ThreadRead(ctx, appwire.ThreadReadParams{Ref: rootRef, Subscribe: true}); err != nil {
 			t.Fatal(err)
 		}
@@ -68,22 +202,27 @@ func testHubRelayRetiredChildReadProgress(t *testing.T, queuedRead, backgroundCo
 		t.Fatal(err)
 	}
 	select {
-	case id := <-idleDeleted:
-		if id != rootID || relays.relayPublished(childRef) || !relays.relayPublished(rootRef) {
-			t.Fatalf("unexpected retirement: canonical=%s child=%v root=%v", id, relays.relayPublished(childRef), relays.relayPublished(rootRef))
+	case id := <-f.idleDeleted:
+		if id != rootID || f.relays.relayPublished(childRef) || !f.relays.relayPublished(rootRef) {
+			t.Fatalf("unexpected retirement: canonical=%s child=%v root=%v", id, f.relays.relayPublished(childRef), f.relays.relayPublished(rootRef))
 		}
 	case <-ctx.Done():
 		t.Fatal("child route did not retire")
 	}
-	if got := daemon.AppServer().SubscriberCount(childID); got != 1 {
+	if got := f.daemon.AppServer().SubscriberCount(childID); got != 1 {
 		t.Fatalf("retained upstream child subscriptions = %d, want 1", got)
 	}
+	return root, consumers
+}
+
+func testHubRelayRetiredChildReadProgress(t *testing.T, queuedRead, backgroundConsumer bool, childEvents int) {
+	t.Helper()
+	f := newHubRelayProgressFixture(t, hubcore.RelayLifecycleHooks{})
+	ctx, daemon, relays, open := f.ctx, f.daemon, f.relays, f.open
+	gateEntered, releaseGate := f.gateEntered, f.releaseGate
+	root, consumers := openRootWithRetiredChild(t, f, backgroundConsumer)
 
 	f.gateArmed.Store(true)
-	type readOutcome struct {
-		response appwire.ThreadReadResponse
-		err      error
-	}
 	readDone := make(chan readOutcome, 1)
 	go func() {
 		response, err := root.ThreadRead(ctx, appwire.ThreadReadParams{Ref: rootRef, Subscribe: true})
@@ -191,6 +330,11 @@ func assertHubRelayRootNotes(ctx context.Context, t *testing.T, root *appwire.Cl
 const rootID, childID = "read-progress-root", "read-progress-child"
 const rootRef, childRef = "local:" + rootID, "local:" + childID
 
+type readOutcome struct {
+	response appwire.ThreadReadResponse
+	err      error
+}
+
 func TestHubRelayRoutePublicationUnblocksPendingDelivery(t *testing.T) {
 	oldEntered, oldRelease := make(chan struct{}), make(chan struct{})
 	var oldArmed atomic.Bool
@@ -220,7 +364,7 @@ func TestHubRelayRoutePublicationUnblocksPendingDelivery(t *testing.T) {
 		t.Fatal(err)
 	}
 	replacement.ReplaceAppIdentity(identity.WithBootGeneration("1"), nil)
-	replacement.SetStatus(daemonserver.StatusInfo{SessionID: replacementID, State: "idle"})
+	seedDaemonStatus(replacement, daemonserver.StatusInfo{SessionID: replacementID, State: "idle"})
 	replacement.RecordDescendantAppEvent(replacementID, events.SessionEvent{Kind: events.EventSessionStart, SessionID: childID, Data: events.SessionStartData{}})
 	gateArmed, gateEntered, releaseGate := installRelayProgressGate(f.ctx, replacement)
 	replacementHTTP := httptest.NewServer(http.HandlerFunc(replacement.AppServer().ServeWebSocket))
@@ -311,6 +455,12 @@ func testHubRelayInterruptedRead(t *testing.T, disconnect bool) {
 	if _, err := client.ThreadRead(f.ctx, appwire.ThreadReadParams{Ref: rootRef, Subscribe: true}); err != nil {
 		t.Fatal(err)
 	}
+	// The hub releases a read's command owner when the response enters the
+	// connection's send queue, which can follow the client receiving it. Wait
+	// for that release so the count below belongs to the interrupted read.
+	awaitActivityRelayCondition(f.ctx, t, func() bool {
+		return f.relays.relayCommandCount(rootRef) == 0
+	}, "initial read did not release its owner")
 	readCtx, cancelRead := context.WithCancel(f.ctx)
 	t.Cleanup(cancelRead)
 	f.gateArmed.Store(true)
@@ -400,7 +550,7 @@ type hubRelayProgressFixture struct {
 	ctx           context.Context
 	daemon        *daemonserver.Server
 	source        *appsource.LocalDaemonSource
-	relays        hubRelayFunctions
+	relays        *hubRelay
 	open          func() *appwire.Client
 	idleDeleted   <-chan string
 	gateArmed     *atomic.Bool
@@ -417,13 +567,13 @@ func newHubRelayProgressFixture(t *testing.T, hooks hubcore.RelayLifecycleHooks)
 	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
 	t.Cleanup(cancel)
 
-	var relays hubRelayFunctions
+	var relays *hubRelay
 	var pendingWait atomic.Bool
-	previousFunctions, previousWait := observeHubRelayFunctions, observeHubRelayWait
-	observeHubRelayFunctions = func(f hubRelayFunctions) { relays = f }
+	previousFunctions, previousWait := observeHubRelay, observeHubRelayWait
+	observeHubRelay = func(f *hubRelay) { relays = f }
 	observeHubRelayWait = func() { pendingWait.Store(true) }
 	t.Cleanup(func() {
-		observeHubRelayFunctions, observeHubRelayWait = previousFunctions, previousWait
+		observeHubRelay, observeHubRelayWait = previousFunctions, previousWait
 	})
 
 	daemon := daemonserver.NewServer(daemonserver.ServerConfig{})
@@ -433,7 +583,7 @@ func newHubRelayProgressFixture(t *testing.T, hooks hubcore.RelayLifecycleHooks)
 		t.Fatal(err)
 	}
 	daemon.ReplaceAppIdentity(prepared.WithBootGeneration("1"), nil)
-	daemon.SetStatus(daemonserver.StatusInfo{SessionID: rootID, State: "idle"})
+	seedDaemonStatus(daemon, daemonserver.StatusInfo{SessionID: rootID, State: "idle"})
 	daemon.RecordDescendantAppEvent(rootID, events.SessionEvent{
 		Kind: events.EventSessionStart, SessionID: childID, Data: events.SessionStartData{},
 	})

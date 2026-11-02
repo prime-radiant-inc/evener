@@ -27,7 +27,6 @@ func IsolateOpenAIAuth(t *testing.T) string {
 		envvars.OpenAICodexBaseURL,
 		envvars.OpenAIOrgID,
 		envvars.OpenAIProjectID,
-		envvars.OpenAIChatGPTClientID,
 	} {
 		t.Setenv(v.Name, "")
 	}

@@ -1,5 +1,5 @@
 import type { NavigationProjectSummary, NavigationSessionSummary } from "@evener/appwire-client";
-import type { ConversationClientLike } from "../../mobile/src/services/conversation";
+import type { ConversationClientLike } from "./conversation/services/conversation";
 import { ArchivedPages } from "./archivedPages";
 import { NavigationPages, type PageSource, type PageState } from "./navigationPages";
 

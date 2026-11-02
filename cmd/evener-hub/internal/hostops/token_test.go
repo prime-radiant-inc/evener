@@ -86,6 +86,36 @@ func mintDefaults(host string, capturedAt time.Time) MintRequest {
 	}
 }
 
+// MintToken mints a token without the terminal-operation guard production
+// applies through MintTokenIfQuiescent.
+func (s *Store) MintToken(req MintRequest) (Token, error) {
+	return s.mintToken(req, nil)
+}
+
+// consumeToken consumes host's token through the production consume-and-create
+// write. The write needs the host's persisted probe epoch, so the helper
+// persists one bound to the host's outstanding row first.
+func consumeToken(t *testing.T, store *Store, host, value string) (Token, error) {
+	t.Helper()
+	pair := OperationPair{Generation: 7, IncarnationID: "inc-" + host}
+	if row, ok := store.OutstandingToken(host); ok {
+		pair = OperationPair{Generation: row.Generation, IncarnationID: row.IncarnationID}
+	}
+	if _, err := store.PersistProbeEpoch(ProbeEpochRequest{
+		Host: host, BootID: "boot-1", Generation: pair.Generation, IncarnationID: pair.IncarnationID,
+	}); err != nil {
+		t.Fatalf("PersistProbeEpoch: %v", err)
+	}
+	outcome, err := store.ConsumeTokenAndCreateOperation(OperationCreateRequest{
+		ClientOperationID: "consume-" + host,
+		Host:              host,
+		Kind:              KindDeploy,
+		Pair:              pair,
+		TokenValue:        value,
+	})
+	return outcome.Token, err
+}
+
 // mustMint mints a token or fails the test.
 func mustMint(t *testing.T, store *Store, req MintRequest) Token {
 	t.Helper()
@@ -205,9 +235,9 @@ func TestTokenMintValidateConsumeRoundTrip(t *testing.T) {
 		t.Fatalf("store file rows = %+v, want exactly the minted row", rows)
 	}
 
-	consumed, err := store.ConsumeToken("m4", minted.Value)
+	consumed, err := consumeToken(t, store, "m4", minted.Value)
 	if err != nil {
-		t.Fatalf("ConsumeToken: %v", err)
+		t.Fatalf("consume: %v", err)
 	}
 	if consumed.Value != minted.Value {
 		t.Fatalf("consumed = %+v, want the minted row", consumed)
@@ -220,9 +250,6 @@ func TestTokenMintValidateConsumeRoundTrip(t *testing.T) {
 	}
 	// Consume is delete, never a mark: the replayed token reads token-missing.
 	if _, err := store.ValidateToken("m4", minted.Value); !errors.Is(err, ErrTokenMissing) {
-		t.Fatalf("err = %v, want %v", err, ErrTokenMissing)
-	}
-	if _, err := store.ConsumeToken("m4", minted.Value); !errors.Is(err, ErrTokenMissing) {
 		t.Fatalf("err = %v, want %v", err, ErrTokenMissing)
 	}
 }
@@ -240,9 +267,6 @@ func TestTokenMintSupersedesEarlierToken(t *testing.T) {
 	}
 
 	if _, err := store.ValidateToken("m4", first.Value); !errors.Is(err, ErrTokenSuperseded) {
-		t.Fatalf("err = %v, want %v", err, ErrTokenSuperseded)
-	}
-	if _, err := store.ConsumeToken("m4", first.Value); !errors.Is(err, ErrTokenSuperseded) {
 		t.Fatalf("err = %v, want %v", err, ErrTokenSuperseded)
 	}
 	if row, err := store.ValidateToken("m4", second.Value); err != nil || row.Value != second.Value {
@@ -267,16 +291,13 @@ func TestTokenMissingAndMismatched(t *testing.T) {
 		t.Fatalf("err = %v, want %v", err, ErrTokenMissing)
 	}
 	for _, value := range []string{"", "not-a-token", strings.Repeat("A", minTokenValueChars-1), "!@#$%^&*" + strings.Repeat("A", 24)} {
-		if _, err := store.ConsumeToken("m4", value); !errors.Is(err, ErrTokenMismatched) {
+		if _, err := store.ValidateToken("m4", value); !errors.Is(err, ErrTokenMismatched) {
 			wantTokenError(t, err, ErrTokenMismatched)
 		}
 	}
 	// A live token is bound to its host: presenting it for another host is a
 	// mismatch, never a supersede of the other host's row or a silent success.
 	if _, err := store.ValidateToken("m4", other.Value); !errors.Is(err, ErrTokenMismatched) {
-		t.Fatalf("err = %v, want %v", err, ErrTokenMismatched)
-	}
-	if _, err := store.ConsumeToken("m4", other.Value); !errors.Is(err, ErrTokenMismatched) {
 		t.Fatalf("err = %v, want %v", err, ErrTokenMismatched)
 	}
 	if row, ok := store.OutstandingToken("other"); !ok || row.Value != other.Value {
@@ -381,8 +402,8 @@ func TestTokenPersistsAcrossReloadAndStaysConsumed(t *testing.T) {
 		row.IncarnationID != "inc-m4" || row.TargetPath != "/opt/evener" {
 		t.Fatalf("reloaded token = %+v/%v, want the minted bindings", row, err)
 	}
-	if _, err := reloaded.ConsumeToken("m4", minted.Value); err != nil {
-		t.Fatalf("ConsumeToken after reload: %v", err)
+	if _, err := consumeToken(t, reloaded, "m4", minted.Value); err != nil {
+		t.Fatalf("consume after reload: %v", err)
 	}
 	restarted := reopenClockStore(t, path, clock)
 	if _, err := restarted.ValidateToken("m4", minted.Value); !errors.Is(err, ErrTokenMissing) {
@@ -457,13 +478,13 @@ func TestTokenRollbackGuardKeepsMintedLifetime(t *testing.T) {
 		t.Fatalf("a rollback shortened a token's deadline: %v", err)
 	}
 	clock.set(tokenEpoch.Add(DefaultTokenTTL + 2*time.Minute))
-	if _, err := store.ConsumeToken("m6", shortLived.Value); !errors.Is(err, ErrTokenExpired) {
+	if _, err := store.ValidateToken("m6", shortLived.Value); !errors.Is(err, ErrTokenExpired) {
 		t.Fatalf("err = %v, want %v", err, ErrTokenExpired)
 	}
 	// A rollback after that expiry cannot revive it: the row is gone, and even a
 	// still-present row whose deadline the store has observed stays expired.
 	clock.set(tokenEpoch.Add(30 * time.Second))
-	if _, err := store.ConsumeToken("m6", shortLived.Value); !errors.Is(err, ErrTokenMissing) {
+	if _, err := store.ValidateToken("m6", shortLived.Value); !errors.Is(err, ErrTokenMissing) {
 		t.Fatalf("err = %v, want %v", err, ErrTokenMissing)
 	}
 }
@@ -649,34 +670,6 @@ func TestTokenMintWriteDiscipline(t *testing.T) {
 	})
 }
 
-// TestTokenRevokeDropsOutstandingTokens is the durable half of live remove: a
-// revoked name holds no outstanding token, and other names are untouched.
-func TestTokenRevokeDropsOutstandingTokens(t *testing.T) {
-	store, path, _ := openClockStore(t)
-	removed := mustMint(t, store, mintDefaults("m4", tokenEpoch))
-	kept := mustMint(t, store, mintDefaults("m5", tokenEpoch))
-	if err := store.RevokeTokens("m4"); err != nil {
-		t.Fatalf("RevokeTokens: %v", err)
-	}
-	if _, err := store.ValidateToken("m4", removed.Value); !errors.Is(err, ErrTokenMissing) {
-		t.Fatalf("err = %v, want %v", err, ErrTokenMissing)
-	}
-	if _, err := store.ValidateToken("m5", kept.Value); err != nil {
-		t.Fatalf("revoking one host dropped another's token: %v", err)
-	}
-	rows := tokenRows(t, path)
-	if len(rows) != 1 || rows[0]["host"] != "m5" {
-		t.Fatalf("store file rows = %+v, want only the kept host's row", rows)
-	}
-	// A re-added host starts with zero valid tokens: nothing to revive.
-	if err := store.RevokeTokens("m4"); err != nil {
-		t.Fatalf("RevokeTokens on a name with no row: %v", err)
-	}
-	if _, ok := store.OutstandingToken("m4"); ok {
-		t.Fatal("a revoked name still holds a token")
-	}
-}
-
 // TestTokenReapExpiredTokens is §3's boot reap: expiry reaps lazily and at boot,
 // and the pass drops exactly the rows whose deadlines the clock has passed.
 func TestTokenReapExpiredTokens(t *testing.T) {
@@ -764,8 +757,8 @@ func TestTokenBindingsRefuseDrift(t *testing.T) {
 		})
 	}
 	// The refusal is a check, not a consumption: the token stays consumable.
-	if _, err := store.ConsumeToken("m4", minted.Value); err != nil {
-		t.Fatalf("ConsumeToken after binding checks: %v", err)
+	if _, err := consumeToken(t, store, "m4", minted.Value); err != nil {
+		t.Fatalf("consume after binding checks: %v", err)
 	}
 }
 
@@ -861,8 +854,8 @@ func TestTokenRunningStateAndFactsAgeRefuseDrift(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("a token that bound no process start time compared one: %v", err)
 	}
-	if _, err := store.ConsumeToken("m4", minted.Value); err != nil {
-		t.Fatalf("ConsumeToken after the running-state checks: %v", err)
+	if _, err := consumeToken(t, store, "m4", minted.Value); err != nil {
+		t.Fatalf("consume after the running-state checks: %v", err)
 	}
 }
 
@@ -929,8 +922,8 @@ func TestTokenValidatePassIsARead(t *testing.T) {
 	}
 
 	// A consuming pass writes, and records the clock it observed.
-	if _, err := store.ConsumeToken("m4", minted.Value); err != nil {
-		t.Fatalf("ConsumeToken: %v", err)
+	if _, err := consumeToken(t, store, "m4", minted.Value); err != nil {
+		t.Fatalf("consume: %v", err)
 	}
 	var doc struct {
 		Mark string `json:"wallClockHighWaterMark"`

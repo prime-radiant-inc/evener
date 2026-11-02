@@ -3,8 +3,9 @@ import { deferRequest, FakeClient } from "@evener/appwire-client/testing/fakeCli
 import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
-import { connectionStore } from "../../../../stores/connection";
+import { connectionStore, resetConnectionStoreForTests } from "../../../../stores/connection";
 import { extensionsStore, resetExtensionsStoreForTests } from "../../../../stores/extensions";
+import { connectReadyFakeClient } from "../../../../testing/connectionTestUtils";
 import { getToasts, resetToastStoreForTests } from "../../../../widgets/toast/store";
 import { alertReasons, statusReasons } from "../reasonTestUtils";
 import { MarketplacesPluginsSection } from "./index";
@@ -35,25 +36,18 @@ function cloneLitterError(data: unknown): WireError {
   });
 }
 
-function connectFakeClient(): FakeClient {
-  const fake = new FakeClient("ready");
-  fake.on("evener/launch/getLayer", () => ({ pluginDirs: [] }));
-  connectionStore.getState().connect(fake);
-  return fake;
-}
-
 // Registers list handlers returning one marketplace + one plugin, so the
 // section's own mount fetch populates the store (the same path production
 // takes) instead of the test forcing store state around it.
 function connectSeededClient(): FakeClient {
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient((fake) => fake.on("evener/launch/getLayer", () => ({ pluginDirs: [] })));
   fake.on("evener/marketplace/list", () => ({ marketplaces: [ACME] }));
   fake.on("evener/plugin/list", () => ({ plugins: [LINTER] }));
   return fake;
 }
 
 beforeEach(() => {
-  connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
+  resetConnectionStoreForTests();
   resetExtensionsStoreForTests();
   resetToastStoreForTests();
 });
@@ -168,7 +162,7 @@ test("cached installed details remain inspectable through failed reads and delay
 });
 
 test("first plugin journey navigates through Sources and explicitly browses the added catalog without installing", async () => {
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient((fake) => fake.on("evener/launch/getLayer", () => ({ pluginDirs: [] })));
   fake.on("evener/marketplace/list", () => ({ marketplaces: [] }));
   fake.on("evener/plugin/list", () => ({ plugins: [] }));
   fake.on("evener/marketplace/add", () => ({ marketplaces: [ACME] }));
@@ -358,7 +352,7 @@ afterEach(() => {
 });
 
 test("shows a loading state before both the marketplace and plugin lists resolve", () => {
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient((fake) => fake.on("evener/launch/getLayer", () => ({ pluginDirs: [] })));
   fake.on("evener/marketplace/list", () => new Promise(() => {}));
   fake.on("evener/plugin/list", () => new Promise(() => {}));
   render(<MarketplacesPluginsSection />);
@@ -366,7 +360,7 @@ test("shows a loading state before both the marketplace and plugin lists resolve
 });
 
 test("fetches both marketplaces and plugins in parallel on mount", async () => {
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient((fake) => fake.on("evener/launch/getLayer", () => ({ pluginDirs: [] })));
   fake.on("evener/marketplace/list", () => ({ marketplaces: [] }));
   fake.on("evener/plugin/list", () => ({ plugins: [] }));
   render(<MarketplacesPluginsSection />);
@@ -376,7 +370,7 @@ test("fetches both marketplaces and plugins in parallel on mount", async () => {
 });
 
 test("opening the view asks the hub for plugin updates once the lists load, and marks what it finds", async () => {
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient((fake) => fake.on("evener/launch/getLayer", () => ({ pluginDirs: [] })));
   fake.on("evener/marketplace/list", () => ({ marketplaces: [ACME] }));
   const releaseList = deferRequest<{ plugins: PluginEntry[] }>(fake, "evener/plugin/list");
   fake.on("evener/plugin/checkUpdates", () => {
@@ -394,7 +388,7 @@ test("opening the view asks the hub for plugin updates once the lists load, and 
 });
 
 test("a view whose plugin list failed to load asks the hub for no updates", async () => {
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient((fake) => fake.on("evener/launch/getLayer", () => ({ pluginDirs: [] })));
   fake.on("evener/marketplace/list", () => ({ marketplaces: [ACME] }));
   fake.on("evener/plugin/list", () => {
     throw new Error("boom");
@@ -405,7 +399,7 @@ test("a view whose plugin list failed to load asks the hub for no updates", asyn
 });
 
 test("keeps navigation available with one failure notice when the marketplace list fails to load", async () => {
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient((fake) => fake.on("evener/launch/getLayer", () => ({ pluginDirs: [] })));
   fake.on("evener/marketplace/list", () => {
     throw new Error("network down");
   });
@@ -420,7 +414,7 @@ test("keeps navigation available with one failure notice when the marketplace li
 });
 
 test("shows one failed-to-load message when the plugin list fails to load", async () => {
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient((fake) => fake.on("evener/launch/getLayer", () => ({ pluginDirs: [] })));
   fake.on("evener/marketplace/list", () => ({ marketplaces: [] }));
   fake.on("evener/plugin/list", () => {
     throw new Error("boom");
@@ -441,7 +435,7 @@ test.each([
   ["plugin", "a hub-reported WireError", new WireError("plugin index is rebuilding", -32000)],
   ["plugin", "a client-side failure", new Error("AppwireClient internal detail")],
 ])("a %s list failure from %s shows that error's friendly form", async (list, _name, err) => {
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient((fake) => fake.on("evener/launch/getLayer", () => ({ pluginDirs: [] })));
   fake.on("evener/marketplace/list", () => {
     if (list === "marketplace") throw err;
     return { marketplaces: [] };
@@ -522,7 +516,7 @@ test("switching segments while the marketplace sheet is open closes it", async (
 });
 
 test("keeps an applied removal guard across failed reconciliation and sheet remount", async () => {
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient((fake) => fake.on("evener/launch/getLayer", () => ({ pluginDirs: [] })));
   let listCalls = 0;
   fake.on("evener/marketplace/list", () => {
     listCalls += 1;
@@ -554,7 +548,7 @@ test("a later accepted notification publication clears a same-name applied remov
   // Library's findBy/waitFor polls advance it, so the wait costs no real time.
   vi.stubGlobal("jest", { advanceTimersByTime: vi.advanceTimersByTime });
   vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient((fake) => fake.on("evener/launch/getLayer", () => ({ pluginDirs: [] })));
   let listCalls = 0;
   fake.on("evener/marketplace/list", () => {
     listCalls += 1;
@@ -582,7 +576,7 @@ test("a later accepted notification publication clears a same-name applied remov
 });
 
 test("a delayed applied outcome after authoritative absence cannot leave a removal guard", async () => {
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient((fake) => fake.on("evener/launch/getLayer", () => ({ pluginDirs: [] })));
   let listCalls = 0;
   fake.on("evener/marketplace/list", () => {
     listCalls += 1;
@@ -627,7 +621,7 @@ test("a delayed applied outcome after authoritative absence cannot leave a remov
 });
 
 test("clears an applied removal guard when the connection client changes", async () => {
-  const first = connectFakeClient();
+  const first = connectReadyFakeClient((fake) => fake.on("evener/launch/getLayer", () => ({ pluginDirs: [] })));
   let listCalls = 0;
   first.on("evener/marketplace/list", () => {
     listCalls += 1;
@@ -657,7 +651,7 @@ test("clears an applied removal guard when the connection client changes", async
 });
 
 test("a fenced outcome from the replaced client cannot leave a removal guard", async () => {
-  const first = connectFakeClient();
+  const first = connectReadyFakeClient((fake) => fake.on("evener/launch/getLayer", () => ({ pluginDirs: [] })));
   first.on("evener/marketplace/list", () => ({ marketplaces: [ACME] }));
   first.on("evener/plugin/list", () => ({ plugins: [] }));
   let rejectRemoval: ((reason: unknown) => void) | undefined;
@@ -749,7 +743,7 @@ test("Browse tree expansion survives a segment round trip (Installed → Browse 
 });
 
 test("clears an applied removal guard when the selected host changes (same connection)", async () => {
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient((fake) => fake.on("evener/launch/getLayer", () => ({ pluginDirs: [] })));
   let betaListCalls = 0;
   fake.on("evener/host/request", (params) => {
     const forwarded = params as { host: string; method: string };
@@ -855,7 +849,7 @@ function heldListReads() {
 }
 
 test("a late applied outcome after the whole page unmounts leaves no guard on the remounted page and warns once", async () => {
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient((fake) => fake.on("evener/launch/getLayer", () => ({ pluginDirs: [] })));
   const held = heldListReads();
   let listCalls = 0;
   fake.on("evener/marketplace/list", () => {
@@ -896,7 +890,7 @@ test("a late applied outcome after the whole page unmounts leaves no guard on th
 });
 
 test("an outcome from the replaced client cannot mark or block the remounted page and adds no list call", async () => {
-  const first = connectFakeClient();
+  const first = connectReadyFakeClient((fake) => fake.on("evener/launch/getLayer", () => ({ pluginDirs: [] })));
   first.on("evener/marketplace/list", () => ({ marketplaces: [ACME] }));
   first.on("evener/plugin/list", () => ({ plugins: [] }));
 
@@ -924,7 +918,7 @@ test("an outcome from the replaced client cannot mark or block the remounted pag
 });
 
 test("a late applied outcome against an already-reconciled list is not marked, does not re-fetch, and warns truthfully once", async () => {
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient((fake) => fake.on("evener/launch/getLayer", () => ({ pluginDirs: [] })));
   const held = heldListReads();
   let listCalls = 0;
   fake.on("evener/marketplace/list", () => {
@@ -966,7 +960,7 @@ test("a late applied outcome against an already-reconciled list is not marked, d
 });
 
 test("an ordinary removal failure stays retryable across a whole-page remount", async () => {
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient((fake) => fake.on("evener/launch/getLayer", () => ({ pluginDirs: [] })));
   fake.on("evener/marketplace/list", () => ({ marketplaces: [ACME] }));
   fake.on("evener/plugin/list", () => ({ plugins: [] }));
   let removeAttempts = 0;

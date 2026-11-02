@@ -2,7 +2,6 @@ import { expect, test } from "vitest";
 import { activitySummary } from "../../../stores/sessionActivityTestUtils";
 import {
   activityActionLabel,
-  formatQuietAge,
   formatUsagePair,
   isFailedStatus,
   jobStatusDisplay,
@@ -43,16 +42,6 @@ test("formatUsagePair renders arrows with compact counts", () => {
   expect(formatUsagePair({ inputTokens: 41200, outputTokens: 6100 })).toBe("↑41.2K ↓6.1K");
   expect(formatUsagePair({ inputTokens: 900, outputTokens: 12 })).toBe("↑900 ↓12");
   expect(formatUsagePair(undefined)).toBeNull();
-});
-
-test("formatQuietAge buckets seconds, minutes, hours, days", () => {
-  expect(formatQuietAge(0)).toBe("0s");
-  expect(formatQuietAge(3_000)).toBe("3s");
-  expect(formatQuietAge(59_999)).toBe("59s");
-  expect(formatQuietAge(60_000)).toBe("1m");
-  expect(formatQuietAge(13 * 3_600_000)).toBe("13h");
-  expect(formatQuietAge(26 * 3_600_000)).toBe("1d");
-  expect(formatQuietAge(-5)).toBe("0s"); // clock skew clamps, never negative
 });
 
 test("quietAnchorMillis prefers lastOutputAt, falls back to startedAt", () => {

@@ -130,10 +130,7 @@ func TestSessionDeleteRefusesLiveTarget(t *testing.T) {
 		t.Fatal(err)
 	}
 	writeSession(t, stateDir, webTestSessionID, project.CanonicalPath)
-	past := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
-	if _, err := past.Rebuild(); err != nil {
-		t.Fatal(err)
-	}
+	past := newRebuiltPastIndex(t, filepath.Join(root, "projects", "*"))
 	roster := hubcore.NewRosterWithEntries(hubcore.LiveEntry{SessionID: webTestSessionID, Status: "active"})
 	web := NewWebServer(hubcore.WebConfig{StateDir: root, Past: past, Roster: roster})
 
@@ -162,10 +159,7 @@ func TestSessionDeleteRefusesWhenAlreadyReserved(t *testing.T) {
 		t.Fatal(err)
 	}
 	writeSession(t, stateDir, webTestSessionID, project.CanonicalPath)
-	past := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
-	if _, err := past.Rebuild(); err != nil {
-		t.Fatal(err)
-	}
+	past := newRebuiltPastIndex(t, filepath.Join(root, "projects", "*"))
 	web := NewWebServer(hubcore.WebConfig{StateDir: root, Past: past, Roster: hubcore.NewRosterWithEntries()})
 
 	resumeLogger, err := llm.NewSessionAPILogger(stateDir)
@@ -204,10 +198,7 @@ func TestSessionDeleteRemovesTheSessionsDaemonLog(t *testing.T) {
 	survivorID := projectDeleteCanonicalSessionIDs[1]
 	writeSession(t, stateDir, targetID, project.CanonicalPath)
 	writeSession(t, stateDir, survivorID, project.CanonicalPath)
-	past := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
-	if _, err := past.Rebuild(); err != nil {
-		t.Fatal(err)
-	}
+	past := newRebuiltPastIndex(t, filepath.Join(root, "projects", "*"))
 
 	runDir := filepath.Join(root, "run")
 	logDir := filepath.Join(runDir, "logs")
@@ -256,10 +247,7 @@ func TestSessionDeleteRemovesTheSessionsScratchTree(t *testing.T) {
 	survivorID := projectDeleteCanonicalSessionIDs[1]
 	writeSession(t, stateDir, targetID, project.CanonicalPath)
 	writeSession(t, stateDir, survivorID, project.CanonicalPath)
-	past := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
-	if _, err := past.Rebuild(); err != nil {
-		t.Fatal(err)
-	}
+	past := newRebuiltPastIndex(t, filepath.Join(root, "projects", "*"))
 	targetTree := mintEndedScratchTree(t, targetID, "CHILD1")
 	survivorTree := mintEndedScratchTree(t, survivorID)
 
@@ -297,10 +285,7 @@ func TestSessionDeleteRemovesTheTreeInTheDaemonsTempDir(t *testing.T) {
 	if err := schema.SaveSessionMeta(stateDir, meta); err != nil {
 		t.Fatal(err)
 	}
-	past := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
-	if _, err := past.Rebuild(); err != nil {
-		t.Fatal(err)
-	}
+	past := newRebuiltPastIndex(t, filepath.Join(root, "projects", "*"))
 	t.Setenv("TMPDIR", daemonTmp)
 	tree := mintEndedScratchTree(t, sessionID)
 	t.Setenv("TMPDIR", hubTmp)
@@ -329,10 +314,7 @@ func TestSessionDeleteRemovesCrashedSessionAndRendezvous(t *testing.T) {
 		t.Fatal(err)
 	}
 	writeSession(t, stateDir, webTestSessionID, project.CanonicalPath)
-	past := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
-	if _, err := past.Rebuild(); err != nil {
-		t.Fatal(err)
-	}
+	past := newRebuiltPastIndex(t, filepath.Join(root, "projects", "*"))
 	runDir := filepath.Join(root, "run")
 	staleEntry := rendezvous.Entry{
 		PID:       4242,
@@ -483,10 +465,7 @@ func TestSessionDeletePreservesSuccessAfterNavigationFailure(t *testing.T) {
 		t.Fatal(err)
 	}
 	writeSession(t, stateDir, webTestSessionID, project.CanonicalPath)
-	past := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
-	if _, err := past.Rebuild(); err != nil {
-		t.Fatal(err)
-	}
+	past := newRebuiltPastIndex(t, filepath.Join(root, "projects", "*"))
 	web := NewWebServer(hubcore.WebConfig{StateDir: root, Past: past, Roster: hubcore.NewRosterWithEntries()})
 	failingSource := newTestNavigationSource(time.Unix(1_700_000_000, 0).UTC())
 	failingSource.err = errors.New("capture failed")
@@ -636,10 +615,7 @@ func TestSessionDeleteRefreshesRosterAndBustsTreeMemo(t *testing.T) {
 		t.Fatal(err)
 	}
 	writeSession(t, stateDir, webTestSessionID, project.CanonicalPath)
-	past := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
-	if _, err := past.Rebuild(); err != nil {
-		t.Fatal(err)
-	}
+	past := newRebuiltPastIndex(t, filepath.Join(root, "projects", "*"))
 
 	// A retained crash marker unblocks deletion (kata 8at6) while still being
 	// listed by the roster snapshot the tree is built from.
@@ -727,10 +703,7 @@ func TestFailedInitialRosterScanBlocksNavigationAndDeletion(t *testing.T) {
 	root := t.TempDir()
 	stateDir := filepath.Join(root, "projects", "delete-uncertain-0123456789")
 	writeSession(t, stateDir, webTestSessionID, root)
-	past := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
-	if _, err := past.Rebuild(); err != nil {
-		t.Fatal(err)
-	}
+	past := newRebuiltPastIndex(t, filepath.Join(root, "projects", "*"))
 	runDir := t.TempDir()
 	claim := filepath.Join(runDir, "1.json")
 	if err := os.WriteFile(claim, []byte("{"), 0600); err != nil {
@@ -882,10 +855,7 @@ func TestSessionDeleteRetainedDelegateAfterParentDeletion(t *testing.T) {
 	stateDir := filepath.Join(root, "projects", "upgrade-0000000000")
 	parentID := buildRPCParentSession(t, stateDir)
 	childID := buildUpgradeDelegate(t, stateDir, parentID)
-	past := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
-	if _, err := past.Rebuild(); err != nil {
-		t.Fatal(err)
-	}
+	past := newRebuiltPastIndex(t, filepath.Join(root, "projects", "*"))
 	roster := hubcore.NewRoster(t.TempDir(), &hubcore.StatusProber{})
 	roster.Refresh()
 	spawned := false

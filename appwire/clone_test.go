@@ -265,3 +265,69 @@ func TestCloneThreadOwnsTheFailure(t *testing.T) {
 		t.Fatal("a nil failure cloned to a non-nil one")
 	}
 }
+
+func TestCloneDelegateInfoOwnsEveryMutableField(t *testing.T) {
+	newSource := func() EvenerDelegateInfo {
+		int64Value := int64(1)
+		boolValue := true
+		return EvenerDelegateInfo{
+			RunningForMS:        &int64Value,
+			QuietForMS:          &int64Value,
+			DurationMS:          &int64Value,
+			Message:             json.RawMessage(`{"a":1}`),
+			StructuredResult:    json.RawMessage(`{"b":2}`),
+			StructuredValid:     &boolValue,
+			Warnings:            []string{"w"},
+			Diagnostics:         []string{"d"},
+			ExhaustionResumable: &boolValue,
+			Usage:               &EvenerUsage{InputTokens: 1},
+			Worktree:            &JobActivityWorktree{Path: "/a"},
+		}
+	}
+	source := newSource()
+	clone := CloneDelegateInfo(source)
+
+	*clone.RunningForMS = 2
+	*clone.QuietForMS = 2
+	*clone.DurationMS = 2
+	clone.Message[2] = 'z'
+	clone.StructuredResult[2] = 'z'
+	*clone.StructuredValid = false
+	clone.Warnings[0] = "x"
+	clone.Diagnostics[0] = "x"
+	*clone.ExhaustionResumable = false
+	clone.Usage.InputTokens = 2
+	clone.Worktree.Path = "/b"
+
+	if !reflect.DeepEqual(source, newSource()) {
+		t.Fatalf("mutating the clone changed the source: %+v", source)
+	}
+}
+
+func TestCloneQueueStateOwnsEveryMutableField(t *testing.T) {
+	source := QueueState{
+		Preview: []string{"p"}, IDs: []string{"i"}, ClientMutationIDs: []string{"c"}, Texts: []string{"t"},
+		SkillNames: [][]string{{"s"}}, CommandNames: [][]string{{"n"}},
+		Mentions: [][]InputMention{{{}}},
+	}
+	clone := CloneQueueState(source)
+	clone.Preview[0], clone.IDs[0], clone.ClientMutationIDs[0], clone.Texts[0] = "x", "x", "x", "x"
+	clone.SkillNames[0][0], clone.CommandNames[0][0] = "x", "x"
+	clone.Mentions[0][0] = InputMention{Kind: "x"}
+	if source.Preview[0] != "p" || source.IDs[0] != "i" || source.ClientMutationIDs[0] != "c" || source.Texts[0] != "t" ||
+		source.SkillNames[0][0] != "s" || source.CommandNames[0][0] != "n" || source.Mentions[0][0] != (InputMention{}) {
+		t.Fatalf("mutating the clone changed the source: %+v", source)
+	}
+}
+
+func TestClonePointerOwnsItsValue(t *testing.T) {
+	if got := ClonePointer[int](nil); got != nil {
+		t.Fatalf("nil pointer cloned to %v", got)
+	}
+	value := 1
+	clone := ClonePointer(&value)
+	*clone = 2
+	if value != 1 {
+		t.Fatal("mutating the clone changed the source")
+	}
+}

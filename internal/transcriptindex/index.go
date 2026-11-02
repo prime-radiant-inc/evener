@@ -20,6 +20,7 @@ import (
 
 	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/execsupport/fsatomic"
 	"primeradiant.com/evener/internal/apptranscript"
 )
 
@@ -27,11 +28,9 @@ const (
 	// formatVersion is the sidecar's layout. projectionID names the projection
 	// its records reproduce; either changing rebuilds every index.
 	formatVersion = 6
-	// v8: a settled tool result's nonzero exit no longer counts as a failure
-	// (Jesse, 2026-10-16), so a sidecar built under v7 carries per-turn
-	// FailedToolCalls counts from the OLD rule. The JSON field shapes did not
-	// change, so schemaID cannot tell the two apart; the projection name must.
-	projectionID = "transcript-read-model-v8"
+	// Dedicated COMMUNICATE records consume inherited call reconstruction.
+	// Older sidecars can contain duplicate messages from ordinary forks.
+	projectionID = "transcript-read-model-v10"
 
 	// tailBytes is how much of the covered prefix's end validation compares,
 	// the check the attention fold cursor uses (agent/session_attention.go).
@@ -1292,11 +1291,7 @@ func persistCommCalls(m map[string]commState) []persistedCommCall {
 // writeFileAtomically replaces path by rename. There is no fsync: the index is
 // derived, and whatever a crash loses rebuilds or replays.
 func writeFileAtomically(path string, data []byte) error {
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, data, 0o600); err != nil {
-		return fmt.Errorf("write transcript index: %w", err)
-	}
-	if err := os.Rename(tmp, path); err != nil {
+	if err := fsatomic.WriteWithoutSync(path, data, 0o600); err != nil {
 		return fmt.Errorf("publish transcript index: %w", err)
 	}
 	return nil

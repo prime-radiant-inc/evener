@@ -11,7 +11,6 @@ import { dockBody, pressable, render, renderedText, textOf } from "../renderNati
 import { ApprovalDock } from "./ApprovalDock";
 
 vi.mock("react-native", async () => (await import("../renderNative.testkit")).nativeModuleMock());
-vi.mock("expo-symbols", () => ({ SymbolView: "SymbolView" }));
 
 type State = ReturnType<ApprovalControls["getSnapshot"]>;
 

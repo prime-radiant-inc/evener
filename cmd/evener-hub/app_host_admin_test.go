@@ -594,6 +594,7 @@ func TestHostAdminAllowListMatchesCatalog(t *testing.T) {
 		"evener/thread/watches/list":              false,
 		"evener/update/apply":                     false,
 		"evener/update/check":                     false,
+		"evener/hub/restart":                      false,
 		"evener/upgrade":                          false,
 		"goal/set":                                false,
 		"model/list":                              true, // discovery: the host's own model inventory (ScopeBoth)

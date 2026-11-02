@@ -4,7 +4,6 @@ import (
 	"errors"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"testing"
 )
 
@@ -100,50 +99,6 @@ func TestSystemCommandRuntime_PID_NilProcess(t *testing.T) {
 	// Process is nil before Start is called.
 	if got := c.PID(); got != 0 {
 		t.Fatalf("PID() = %d, want 0 for nil process", got)
-	}
-}
-
-// TestIsSubmoduleGitDirShape covers the submodule shape detection function
-// (lines 206-215).
-func TestIsSubmoduleGitDirShape(t *testing.T) {
-	// A path under .git/modules/... is a submodule git dir.
-	submodulePath := filepath.Join("repo", ".git", "modules", "sub")
-	if !isSubmoduleGitDirShape(submodulePath) {
-		t.Fatalf("expected %q to be a submodule git dir", submodulePath)
-	}
-
-	// A regular path is not.
-	if isSubmoduleGitDirShape("/regular/path") {
-		t.Fatal("expected /regular/path to NOT be a submodule git dir")
-	}
-
-	// Root path is not.
-	if isSubmoduleGitDirShape("/") {
-		t.Fatal("expected / to NOT be a submodule git dir")
-	}
-}
-
-// TestPointerTarget covers the pointerTarget function (lines 195-203).
-func TestPointerTarget(t *testing.T) {
-	// Valid gitdir pointer with absolute path.
-	content := "gitdir: /some/absolute/path"
-	got, ok := pointerTarget(content, "/ancestor")
-	if !ok || got != "/some/absolute/path" {
-		t.Fatalf("pointerTarget = %q, %v", got, ok)
-	}
-
-	// Valid gitdir pointer with relative path — resolved against ancestor.
-	content = "gitdir: relative/path"
-	got, ok = pointerTarget(content, "/ancestor")
-	if !ok || got != filepath.Clean(filepath.Join("/ancestor", "relative/path")) { //nolint:gocritic // test needs absolute path
-		t.Fatalf("pointerTarget = %q, %v", got, ok)
-	}
-
-	// Invalid pointer — not a gitdir prefix.
-	content = "not a pointer"
-	_, ok = pointerTarget(content, "/ancestor")
-	if ok {
-		t.Fatal("expected false for invalid pointer")
 	}
 }
 

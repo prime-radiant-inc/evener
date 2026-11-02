@@ -1,0 +1,17 @@
+{
+  "name": "connection-settings-help-phone",
+  "description": "At a phone viewport the shared connection settings row stacks its label, control, and help in one column. The credential-header row always carries help; without a mobile reset of .settingHelp's grid-column: 2, the help creates an implicit second column and the input sits beside its label instead of under it.",
+  "cssFiles": [
+    "styles/global.css",
+    "styles/tokens.css",
+    "widgets/input/input.module.css",
+    "panes/settings/sections/credentials/ConnectionFacts.module.css"
+  ],
+  "viewport": { "width": 390, "height": 844, "deviceScaleFactor": 2, "mobile": true },
+  "mutation": {
+    "declaration": "panes/settings/sections/credentials/ConnectionFacts.module.css: the @media (max-width: 480px) .settingHelp { grid-column: 1 } reset (deleted), leaving grid-column: 2 in the one-column row",
+    "verified": "2026-10-23",
+    "expect": "fail",
+    "note": "Red run before the mobile reset: the help keeps grid-column 2, the row grows an implicit second column, and the geometry assertions fail. Restoring the reset passes with the label, input, and help stacked in one column."
+  }
+}

@@ -1,7 +1,6 @@
 package agent
 
 import (
-	"context"
 	"testing"
 	"time"
 
@@ -20,7 +19,7 @@ func TestLastTurnEndedAt_StampedWhenATurnEnds(t *testing.T) {
 	sess := newSession(t, withConfig(SessionConfig{clock: clk}), withSteps(
 		func(req llm.Request) llm.Response {
 			clk.Advance(2 * time.Second)
-			return finalResponse("ok")
+			return agenttest.FinalResponse("ok")
 		},
 	))
 	if got := sess.Meta().LastTurnEndedAt; !got.IsZero() {
@@ -28,8 +27,7 @@ func TestLastTurnEndedAt_StampedWhenATurnEnds(t *testing.T) {
 	}
 	// TRIPWIRE: scripted in-process adapter with a fake clock, no real I/O;
 	// only fires on a genuine hang.
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
+	ctx := tripwireCtx(t)
 	if _, err := sess.ProcessInput(ctx, "hello", nil); err != nil {
 		t.Fatalf("ProcessInput: %v", err)
 	}

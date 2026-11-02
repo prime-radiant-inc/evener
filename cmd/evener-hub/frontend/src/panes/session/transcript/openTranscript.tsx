@@ -3,6 +3,7 @@ import * as paneActions from "../../../shell/paneActions";
 import { openTopLevelSession } from "../../../shell/sessionPlacement";
 import {
   conversationOpenParentRef,
+  presentedPanes,
   recordConversationOpenParent,
   recordTranscriptOpenOrigin,
   workspaceStore,
@@ -27,13 +28,18 @@ function sameParams(a: unknown, b: unknown): boolean {
 // fetched.
 function conversationContextRefs(ref: string): string[] {
   const panes = workspaceStore.getState().panes;
+  const presented = presentedPanes(panes);
   const visited = new Set<string>();
   let current: string | undefined = ref;
   while (current !== undefined && !visited.has(current)) {
     visited.add(current);
-    const holder = panes.find(
-      (pane) => (pane.type === "session" || pane.type === "transcript") && transcriptRefOf(pane.params) === current,
-    );
+    const holder =
+      presented.find(
+        (pane) => (pane.type === "session" || pane.type === "transcript") && transcriptRefOf(pane.params) === current,
+      ) ??
+      panes.find(
+        (pane) => (pane.type === "session" || pane.type === "transcript") && transcriptRefOf(pane.params) === current,
+      );
     if (holder === undefined) break;
     const parentParam = (holder.params as { parentRef?: unknown }).parentRef;
     current = conversationOpenParentRef(holder) ?? (typeof parentParam === "string" ? parentParam : undefined);
@@ -52,7 +58,7 @@ export function conversationContextIncludes(ref: string, ancestorRef: string): b
 // possible and close only same-job variants before the normal opener runs.
 function canonicalTranscriptPane(ref: string, params: { ref: string; parentRef?: string }): string | undefined {
   const workspace = workspaceStore.getState();
-  const sameChild = workspace.panes.filter(
+  const sameChild = presentedPanes(workspace.panes).filter(
     (pane) => pane.type === "transcript" && transcriptRefOf(pane.params) === ref,
   );
   const exact = sameChild.find((pane) => sameParams(pane.params, params));
@@ -71,7 +77,7 @@ export function openTranscript(ref: string, parentRef?: string): void {
   // Capture before owner placement changes selection. The workspace validates
   // this against parentRef and the surviving pane lifetime.
   const workspace = workspaceStore.getState();
-  const origin = workspace.panes.find((pane) => pane.id === workspace.focusedPaneId);
+  const origin = presentedPanes(workspace.panes).find((pane) => pane.id === workspace.focusedPaneId);
   const params = parentRef === undefined ? { ref } : { ref, parentRef };
   if (parentRef !== undefined) {
     const main = workspaceStore.getState().mainPane();
@@ -129,9 +135,9 @@ export function openTranscript(ref: string, parentRef?: string): void {
       type: "transcript",
       params,
     });
-    const opened = workspaceStore
-      .getState()
-      .panes.find((pane) => pane.type === "transcript" && sameParams(pane.params, params));
+    const opened = presentedPanes(workspaceStore.getState().panes).find(
+      (pane) => pane.type === "transcript" && sameParams(pane.params, params),
+    );
     if (opened) recordTranscriptOpenOrigin(opened, origin);
     return;
   }
@@ -140,9 +146,9 @@ export function openTranscript(ref: string, parentRef?: string): void {
   // this ref, else open it beside the current selection. The conversation
   // pane's identity is its ref, so no parent-context variants exist to
   // canonicalize.
-  const existing = workspaceStore
-    .getState()
-    .panes.find((pane) => pane.type === "session" && transcriptRefOf(pane.params) === ref);
+  const existing = presentedPanes(workspaceStore.getState().panes).find(
+    (pane) => pane.type === "session" && transcriptRefOf(pane.params) === ref,
+  );
   if (existing) {
     recordConversationOpenParent(existing, parentRef);
     workspaceStore.getState().focusPane(existing.id);
@@ -152,9 +158,9 @@ export function openTranscript(ref: string, parentRef?: string): void {
     type: "session",
     params: { ref },
   });
-  const opened = workspaceStore
-    .getState()
-    .panes.find((pane) => pane.type === "session" && transcriptRefOf(pane.params) === ref);
+  const opened = presentedPanes(workspaceStore.getState().panes).find(
+    (pane) => pane.type === "session" && transcriptRefOf(pane.params) === ref,
+  );
   if (opened) recordConversationOpenParent(opened, parentRef);
 }
 

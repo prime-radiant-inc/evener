@@ -109,31 +109,16 @@ func (s *Session) ensureClientMutationStore() error {
 	return nil
 }
 
-func (s *Session) clientMutationQueue(params appwire.TurnQueueParams) (appwire.TurnQueueResponse, error) {
-	release, err := s.beginRetirementMutation("input")
-	if err != nil {
-		return appwire.TurnQueueResponse{}, err
-	}
-	defer release()
-	input, err := appwire.NormalizeMutationInput(params.Input)
-	if err != nil {
-		return appwire.TurnQueueResponse{}, appwire.InvalidParams(err.Error())
-	}
-	params.Input = input.Items
-	if err := s.ensureClientMutationStore(); err != nil {
-		return appwire.TurnQueueResponse{}, err
-	}
-	request, err := newClientMutationRequest(clientMutationMethodQueue, params.ClientMutationID, params)
-	if err != nil {
-		return appwire.TurnQueueResponse{}, err
-	}
-
+// AcceptClientMutationQueue durably accepts or replays one client-authored
+// queued input.
+func (s *Session) AcceptClientMutationQueue(params appwire.TurnQueueParams) (appwire.TurnQueueResponse, error) {
 	var response appwire.TurnQueueResponse
-	lookup, err := s.clientMutations.executeAtomic(request, func(snapshot *clientMutationSnapshot, record *clientMutationRecord) error {
-		if snapshot.InterruptFence != nil {
-			rejectClientMutation(record, appwire.Conflict("turn interrupt is pending"))
-			return nil
-		}
+	lookup, err := s.acceptClientMutation(clientMutationSpec{
+		method:  clientMutationMethodQueue,
+		id:      params.ClientMutationID,
+		payload: &params,
+		input:   &params.Input,
+	}, func(snapshot *clientMutationSnapshot, record *clientMutationRecord) error {
 		if len(params.Input) == 0 {
 			rejectClientMutation(record, appwire.InvalidParams("input is required"))
 			return nil
@@ -171,9 +156,6 @@ func (s *Session) clientMutationQueue(params appwire.TurnQueueParams) (appwire.T
 	})
 	if err != nil {
 		return appwire.TurnQueueResponse{}, err
-	}
-	if lookup.Record.OperationState == clientMutationOperationRejected {
-		return appwire.TurnQueueResponse{}, clientMutationRejectionError(lookup.Record)
 	}
 	// Only a FRESH application unparks: a replayed accept re-runs no effect
 	// callback, so it releases no QueueHeld, and a Stop that landed after the
@@ -308,39 +290,30 @@ func (s *Session) ProcessPendingUserInput(ctx context.Context, onRunnable func(s
 	if inputHasContent(queued.Text, queued.Images, queued.SkillNames, queued.CommandNames) || queued.SteeringCarrier {
 		// The claims above decided their refusals on the generations they
 		// committed against, so a poisoning can still land between a decision and
-		// its commit. The announcement is made under the transcript's write door
-		// rather than after a check outside it: a poisoning append records the
-		// poison while holding that door, so the announce is ordered against every
-		// poisoning. Either it is already visible -- nothing is announced, and the
-		// claim goes back -- or it lands after the announce, where it is the
-		// ordinary refusal the run below meets.
-		announceRefusal := s.attachedTranscript().WhileHealthy(func() {
+		// its commit; announceClaimedInput orders the announce against it.
+		if err := s.announceClaimedInput(func() {
 			if onRunnable != nil && queued.StableTurnID != "" {
 				onRunnable(queued.StableTurnID)
 			}
-		})
-		if announceRefusal != nil {
+		}, func() error {
 			if queued.SteeringCarrier {
 				s.releaseSteeringCarrierClaim(queuedClientMutationIdentityOf(queued))
-			} else if queued.ClientMutationID != "" {
-				if restoreErr := s.completeClientMutationTurn(queued.ClientMutationID); restoreErr != nil {
-					return "", false, errors.Join(errWhileHealthyRefuses(announceRefusal), fmt.Errorf("return claimed input: %w", restoreErr))
-				}
+				return nil
 			}
-			return "", false, errWhileHealthyRefuses(announceRefusal)
+			if queued.ClientMutationID != "" {
+				return s.completeClientMutationTurn(queued.ClientMutationID)
+			}
+			return nil
+		}); err != nil {
+			return "", false, err
 		}
-		ctx = withQueuedClientMutation(ctx, queued)
-		// Prepare the claimed input's skill selection at actual consumption:
-		// one atomic group tied to this input's durable identity,
-		// all-or-nothing before any dependent work dispatches.
-		ctx = s.contextWithSelectedSkills(ctx, queued)
 		if queued.SteeringCarrier {
 			// The stand-down set is per-carrier-run: clear anything a previous
 			// run left so this claim's membership test reads only this call's
 			// stand-downs.
 			s.resetSteeringCarrierStoodDown()
 		}
-		result, err := s.ProcessInputKind(ctx, queued.Text, queued.Images, EntryUserInput)
+		result, err := s.ProcessInputKind(s.claimedInputContext(ctx, queued), queued.Text, queued.Images, EntryUserInput)
 		// The pop above is durable and the turn loop's gate can refuse after it,
 		// when poisoning lands in between. Put the message back rather than
 		// leave it in no queue and no transcript; turn completion is the queue's
@@ -378,7 +351,7 @@ func (s *Session) ProcessPendingUserInput(ctx context.Context, onRunnable func(s
 // only job is to carry already-accepted user steering, and returns the entry
 // that turn runs as: queued input with no content, whose identity is the head
 // steer's. It reuses the id that steer already reserved at its own acceptance
-// -- reserveClientMutationTurnID, called from clientMutationSteer/Drain/Promote
+// -- reserveClientMutationTurnID, called from AcceptClientMutationSteer/Drain/Promote
 // -- rather than minting a fresh one, so the id returned in that mutation's
 // Applied receipt is the id that actually runs.
 //
@@ -403,7 +376,7 @@ func (s *Session) claimSteeringCarrierInput() (queuedInput, error) {
 	}
 	defer release()
 	if err := s.ensureClientMutationStore(); err != nil {
-		s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("open client mutation store: %v", err)})
+		s.emit(events.WarningData{Message: fmt.Sprintf("open client mutation store: %v", err)})
 		return queuedInput{}, nil
 	}
 	// Eligibility is decided on one sample: the store as the serializer holds
@@ -448,7 +421,7 @@ func (s *Session) claimSteeringCarrierInput() (queuedInput, error) {
 		// -- the next external wake, attach or any accepted client mutation,
 		// claims it again. No paced retry. A closed rail or an occupied slot
 		// returns nil above.
-		s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("claim steering carrier turn failed: %v; the steering stays queued", err)})
+		s.emit(events.WarningData{Message: fmt.Sprintf("claim steering carrier turn failed: %v; the steering stays queued", err)})
 		s.parkSteering()
 		return queuedInput{}, nil
 	}
@@ -559,12 +532,6 @@ func (s *Session) resetSteeringCarrierStoodDown() {
 	s.mu.Lock()
 	s.steeringCarrierStoodDowns = nil
 	s.mu.Unlock()
-}
-
-// AcceptClientMutationQueue durably accepts or replays one client-authored
-// queued input.
-func (s *Session) AcceptClientMutationQueue(params appwire.TurnQueueParams) (appwire.TurnQueueResponse, error) {
-	return s.clientMutationQueue(params)
 }
 
 func rejectClientMutation(record *clientMutationRecord, err error) {
@@ -681,7 +648,7 @@ func (s *Session) reflectDurableInputQueue(consumedClientMutationIDs ...string) 
 	data.ClientMutationIDs = clientMutationQueueClientMutationIDs(snapshot.InputQueue)
 	s.mu.Unlock()
 	data.ConsumedClientMutationIDs = consumedClientMutationIDs
-	s.emit(events.EventQueueChanged, data)
+	s.emit(data)
 }
 
 func queuedInputFromClientMutation(entry clientMutationQueueEntry) queuedInput {
@@ -711,10 +678,6 @@ func queuedInputFromClientMutation(entry clientMutationQueueEntry) queuedInput {
 	return queued
 }
 
-func clientMutationInput(text string, images []ImageAttachment, skillNames []string, commandNames ...[]string) []appwire.InputItem {
-	return clientMutationInputWithMentions(text, images, skillNames, nil, commandNames...)
-}
-
 func clientMutationInputWithMentions(text string, images []ImageAttachment, skillNames []string, mentions []appwire.InputMention, commandNames ...[]string) []appwire.InputItem {
 	input := make([]appwire.InputItem, 0, 1+len(images)+len(skillNames))
 	if text != "" {
@@ -739,30 +702,16 @@ func clientMutationInputWithMentions(text string, images []ImageAttachment, skil
 	return input
 }
 
-func (s *Session) clientMutationSteer(params appwire.TurnSteerParams) (appwire.TurnSteerResponse, error) {
-	release, err := s.beginRetirementMutation("input")
-	if err != nil {
-		return appwire.TurnSteerResponse{}, err
-	}
-	defer release()
-	input, err := appwire.NormalizeMutationInput(params.Input)
-	if err != nil {
-		return appwire.TurnSteerResponse{}, appwire.InvalidParams(err.Error())
-	}
-	params.Input = input.Items
-	if err := s.ensureClientMutationStore(); err != nil {
-		return appwire.TurnSteerResponse{}, err
-	}
-	request, err := newClientMutationRequest(clientMutationMethodSteer, params.ClientMutationID, params)
-	if err != nil {
-		return appwire.TurnSteerResponse{}, err
-	}
+// AcceptClientMutationSteer durably accepts or replays one client-authored
+// steering input.
+func (s *Session) AcceptClientMutationSteer(params appwire.TurnSteerParams) (appwire.TurnSteerResponse, error) {
 	var response appwire.TurnSteerResponse
-	lookup, err := s.clientMutations.executeAtomic(request, func(snapshot *clientMutationSnapshot, record *clientMutationRecord) error {
-		if snapshot.InterruptFence != nil {
-			rejectClientMutation(record, appwire.Conflict("turn interrupt is pending"))
-			return nil
-		}
+	lookup, err := s.acceptClientMutation(clientMutationSpec{
+		method:  clientMutationMethodSteer,
+		id:      params.ClientMutationID,
+		payload: &params,
+		input:   &params.Input,
+	}, func(snapshot *clientMutationSnapshot, record *clientMutationRecord) error {
 		if len(params.Input) == 0 {
 			rejectClientMutation(record, appwire.InvalidParams("input is required"))
 			return nil
@@ -783,16 +732,11 @@ func (s *Session) clientMutationSteer(params appwire.TurnSteerParams) (appwire.T
 	if err != nil {
 		return appwire.TurnSteerResponse{}, err
 	}
-	if lookup.Record.OperationState == clientMutationOperationRejected {
-		return appwire.TurnSteerResponse{}, clientMutationRejectionError(lookup.Record)
-	}
 	if lookup.Disposition == clientMutationDispositionReplayed {
 		var replayed appwire.TurnSteerResponse
-		if err := replayClientMutationResult(lookup.Record, &replayed); err != nil {
+		if err := replayClientMutation(lookup.Record, &replayed, &replayed.Receipt); err != nil {
 			return replayed, err
 		}
-		replayed.Receipt.Disposition = appwire.MutationDispositionReplayed
-		replayed.Receipt.ProjectionState = lookup.Record.ProjectionState
 		// A retry of a steer that was accepted but never delivered -- the
 		// process died between the commit and the wake -- must still provoke
 		// delivery. Replay is idempotent in the store; the wake is what makes
@@ -856,38 +800,18 @@ func (s *Session) wakeForPendingQueuedInput() {
 	s.wakePendingUserInput()
 }
 
-// AcceptClientMutationSteer durably accepts or replays one client-authored
-// steering input.
-func (s *Session) AcceptClientMutationSteer(params appwire.TurnSteerParams) (appwire.TurnSteerResponse, error) {
-	return s.clientMutationSteer(params)
-}
-
-func (s *Session) clientMutationDrain(params appwire.TurnDrainAsSteerParams) (appwire.TurnDrainAsSteerResponse, error) {
-	release, err := s.beginRetirementMutation("input")
-	if err != nil {
-		return appwire.TurnDrainAsSteerResponse{}, err
-	}
-	defer release()
-	input, err := appwire.NormalizeMutationInput(params.Input)
-	if err != nil {
-		return appwire.TurnDrainAsSteerResponse{}, appwire.InvalidParams(err.Error())
-	}
-	params.Input = input.Items
-	if err := s.ensureClientMutationStore(); err != nil {
-		return appwire.TurnDrainAsSteerResponse{}, err
-	}
-	request, err := newClientMutationRequest(clientMutationMethodDrain, params.ClientMutationID, params)
-	if err != nil {
-		return appwire.TurnDrainAsSteerResponse{}, err
-	}
-	request.Preconditions.ExpectedQueueRevision = &params.ExpectedQueueRevision
+// AcceptClientMutationDrainAsSteer durably accepts or replays one queued-
+// input drain into steering.
+func (s *Session) AcceptClientMutationDrainAsSteer(params appwire.TurnDrainAsSteerParams) (appwire.TurnDrainAsSteerResponse, error) {
 	var response appwire.TurnDrainAsSteerResponse
 	var consumedClientMutationIDs []string
-	lookup, err := s.clientMutations.executeAtomic(request, func(snapshot *clientMutationSnapshot, record *clientMutationRecord) error {
-		if snapshot.InterruptFence != nil {
-			rejectClientMutation(record, appwire.Conflict("turn interrupt is pending"))
-			return nil
-		}
+	lookup, err := s.acceptClientMutation(clientMutationSpec{
+		method:        clientMutationMethodDrain,
+		id:            params.ClientMutationID,
+		payload:       &params,
+		input:         &params.Input,
+		preconditions: clientMutationPreconditions{ExpectedQueueRevision: &params.ExpectedQueueRevision},
+	}, func(snapshot *clientMutationSnapshot, record *clientMutationRecord) error {
 		if snapshot.QueueRevision != params.ExpectedQueueRevision {
 			rejectClientMutation(record, appwire.Conflict("queue revision changed"))
 			return nil
@@ -942,20 +866,15 @@ func (s *Session) clientMutationDrain(params appwire.TurnDrainAsSteerParams) (ap
 	if err != nil {
 		return appwire.TurnDrainAsSteerResponse{}, err
 	}
-	if lookup.Record.OperationState == clientMutationOperationRejected {
-		return appwire.TurnDrainAsSteerResponse{}, clientMutationRejectionError(lookup.Record)
-	}
 	// Only a FRESH application unparks (see the queue accept's note).
 	if lookup.Disposition != clientMutationDispositionReplayed {
 		s.unparkRootDelegateAttention()
 	}
 	if lookup.Disposition == clientMutationDispositionReplayed {
 		var replayed appwire.TurnDrainAsSteerResponse
-		if err := replayClientMutationResult(lookup.Record, &replayed); err != nil {
+		if err := replayClientMutation(lookup.Record, &replayed, &replayed.Receipt); err != nil {
 			return replayed, err
 		}
-		replayed.Receipt.Disposition = appwire.MutationDispositionReplayed
-		replayed.Receipt.ProjectionState = lookup.Record.ProjectionState
 		// A retry of steering that was accepted but never delivered must still
 		// provoke delivery; replay is idempotent in the store and useless to the
 		// user without the wake.
@@ -966,12 +885,6 @@ func (s *Session) clientMutationDrain(params appwire.TurnDrainAsSteerParams) (ap
 	s.reflectDurableClientSteering()
 	s.wakeForPendingSteering()
 	return response, nil
-}
-
-// AcceptClientMutationDrainAsSteer durably accepts or replays one queued-input
-// drain into steering.
-func (s *Session) AcceptClientMutationDrainAsSteer(params appwire.TurnDrainAsSteerParams) (appwire.TurnDrainAsSteerResponse, error) {
-	return s.clientMutationDrain(params)
 }
 
 func combineClientMutationInputs(entries []clientMutationQueueEntry, extra []appwire.InputItem) []appwire.InputItem {
@@ -1006,26 +919,16 @@ func combineClientMutationInputs(entries []clientMutationQueueEntry, extra []app
 	return clientMutationInputWithMentions(strings.Join(texts, "\n\n"), images, skillNames, mentions, commandNames)
 }
 
-func (s *Session) clientMutationPromote(params appwire.TurnPromoteQueuedAsSteerParams) (appwire.TurnPromoteQueuedAsSteerResponse, error) {
-	release, err := s.beginRetirementMutation("input")
-	if err != nil {
-		return appwire.TurnPromoteQueuedAsSteerResponse{}, err
-	}
-	defer release()
-	if err := s.ensureClientMutationStore(); err != nil {
-		return appwire.TurnPromoteQueuedAsSteerResponse{}, err
-	}
-	request, err := newClientMutationRequest(clientMutationMethodPromote, params.ClientMutationID, params)
-	if err != nil {
-		return appwire.TurnPromoteQueuedAsSteerResponse{}, err
-	}
-	request.Preconditions.ExpectedEntryID = params.ExpectedEntryID
+// AcceptClientMutationPromoteQueuedAsSteer durably accepts or replays one
+// queued-input promotion into steering.
+func (s *Session) AcceptClientMutationPromoteQueuedAsSteer(params appwire.TurnPromoteQueuedAsSteerParams) (appwire.TurnPromoteQueuedAsSteerResponse, error) {
 	var response appwire.TurnPromoteQueuedAsSteerResponse
-	lookup, err := s.clientMutations.executeAtomic(request, func(snapshot *clientMutationSnapshot, record *clientMutationRecord) error {
-		if snapshot.InterruptFence != nil {
-			rejectClientMutation(record, appwire.Conflict("turn interrupt is pending"))
-			return nil
-		}
+	lookup, err := s.acceptClientMutation(clientMutationSpec{
+		method:        clientMutationMethodPromote,
+		id:            params.ClientMutationID,
+		payload:       &params,
+		preconditions: clientMutationPreconditions{ExpectedEntryID: params.ExpectedEntryID},
+	}, func(snapshot *clientMutationSnapshot, record *clientMutationRecord) error {
 		if params.Index < 0 || params.Index >= len(snapshot.InputQueue) {
 			rejectClientMutation(record, appwire.Conflict(fmt.Sprintf("promote: queue index %d out of range (depth %d)", params.Index, len(snapshot.InputQueue))))
 			return nil
@@ -1072,20 +975,15 @@ func (s *Session) clientMutationPromote(params appwire.TurnPromoteQueuedAsSteerP
 	if err != nil {
 		return appwire.TurnPromoteQueuedAsSteerResponse{}, err
 	}
-	if lookup.Record.OperationState == clientMutationOperationRejected {
-		return appwire.TurnPromoteQueuedAsSteerResponse{}, clientMutationRejectionError(lookup.Record)
-	}
 	// Only a FRESH application unparks (see the queue accept's note).
 	if lookup.Disposition != clientMutationDispositionReplayed {
 		s.unparkRootDelegateAttention()
 	}
 	if lookup.Disposition == clientMutationDispositionReplayed {
 		var replayed appwire.TurnPromoteQueuedAsSteerResponse
-		if err := replayClientMutationResult(lookup.Record, &replayed); err != nil {
+		if err := replayClientMutation(lookup.Record, &replayed, &replayed.Receipt); err != nil {
 			return replayed, err
 		}
-		replayed.Receipt.Disposition = appwire.MutationDispositionReplayed
-		replayed.Receipt.ProjectionState = lookup.Record.ProjectionState
 		// A retry of steering that was accepted but never delivered must still
 		// provoke delivery; replay is idempotent in the store and useless to the
 		// user without the wake.
@@ -1098,28 +996,17 @@ func (s *Session) clientMutationPromote(params appwire.TurnPromoteQueuedAsSteerP
 	return response, nil
 }
 
-// AcceptClientMutationPromoteQueuedAsSteer durably accepts or replays one
-// queued-input promotion into steering.
-func (s *Session) AcceptClientMutationPromoteQueuedAsSteer(params appwire.TurnPromoteQueuedAsSteerParams) (appwire.TurnPromoteQueuedAsSteerResponse, error) {
-	return s.clientMutationPromote(params)
-}
-
-func (s *Session) clientMutationCancel(params appwire.TurnCancelQueuedParams) (appwire.TurnCancelQueuedResponse, error) {
-	release, err := s.beginRetirementMutation("input")
-	if err != nil {
-		return appwire.TurnCancelQueuedResponse{}, err
-	}
-	defer release()
-	if err := s.ensureClientMutationStore(); err != nil {
-		return appwire.TurnCancelQueuedResponse{}, err
-	}
-	request, err := newClientMutationRequest(clientMutationMethodCancel, params.ClientMutationID, params)
-	if err != nil {
-		return appwire.TurnCancelQueuedResponse{}, err
-	}
-	request.Preconditions.ExpectedEntryID = params.ExpectedEntryID
+// AcceptClientMutationCancelQueued durably accepts or replays one queued-
+// input cancellation.
+func (s *Session) AcceptClientMutationCancelQueued(params appwire.TurnCancelQueuedParams) (appwire.TurnCancelQueuedResponse, error) {
 	var response appwire.TurnCancelQueuedResponse
-	lookup, err := s.clientMutations.executeAtomic(request, func(snapshot *clientMutationSnapshot, record *clientMutationRecord) error {
+	lookup, err := s.acceptClientMutation(clientMutationSpec{
+		method:               clientMutationMethodCancel,
+		id:                   params.ClientMutationID,
+		payload:              &params,
+		preconditions:        clientMutationPreconditions{ExpectedEntryID: params.ExpectedEntryID},
+		allowDuringInterrupt: true,
+	}, func(snapshot *clientMutationSnapshot, record *clientMutationRecord) error {
 		if params.Index < 0 || params.Index >= len(snapshot.InputQueue) {
 			rejectClientMutation(record, appwire.Conflict(fmt.Sprintf("cancel: queue index %d out of range (depth %d)", params.Index, len(snapshot.InputQueue))))
 			return nil
@@ -1166,27 +1053,16 @@ func (s *Session) clientMutationCancel(params appwire.TurnCancelQueuedParams) (a
 	if err != nil {
 		return appwire.TurnCancelQueuedResponse{}, err
 	}
-	if lookup.Record.OperationState == clientMutationOperationRejected {
-		return appwire.TurnCancelQueuedResponse{}, clientMutationRejectionError(lookup.Record)
-	}
 	if lookup.Disposition == clientMutationDispositionReplayed {
 		var replayed appwire.TurnCancelQueuedResponse
-		if err := replayClientMutationResult(lookup.Record, &replayed); err != nil {
+		if err := replayClientMutation(lookup.Record, &replayed, &replayed.Receipt); err != nil {
 			return replayed, err
 		}
-		replayed.Receipt.Disposition = appwire.MutationDispositionReplayed
-		replayed.Receipt.ProjectionState = lookup.Record.ProjectionState
 		return replayed, nil
 	}
 	s.reflectDurableInputQueue()
 	s.wakeForPendingQueuedInput()
 	return response, nil
-}
-
-// AcceptClientMutationCancelQueued durably accepts or replays one queued-input
-// cancellation.
-func (s *Session) AcceptClientMutationCancelQueued(params appwire.TurnCancelQueuedParams) (appwire.TurnCancelQueuedResponse, error) {
-	return s.clientMutationCancel(params)
 }
 
 func reserveClientMutationTurnID(snapshot *clientMutationSnapshot, record *clientMutationRecord) {
@@ -1260,6 +1136,17 @@ func addPendingSteering(snapshot *clientMutationSnapshot, record *clientMutation
 		ProjectionState:  acceptedClientMutationProjection(record.Method),
 	}
 	snapshot.SteeringOrder = append(snapshot.SteeringOrder, record.ClientMutationID)
+}
+
+// replayClientMutation decodes the journaled response of a retried mutation
+// and reports it as replayed. receipt points into response.
+func replayClientMutation(record clientMutationRecord, response any, receipt *appwire.MutationReceipt) error {
+	if err := replayClientMutationResult(record, response); err != nil {
+		return err
+	}
+	receipt.Disposition = appwire.MutationDispositionReplayed
+	receipt.ProjectionState = record.ProjectionState
+	return nil
 }
 
 func replayClientMutationResult(record clientMutationRecord, response any) error {
@@ -1375,7 +1262,7 @@ func (s *Session) reflectDurableClientSteering() {
 // snapshotHasPendingUserSteering reports whether the durable store holds user
 // steering that could still be delivered -- the steering a Stop has something
 // to park. It reads the durable store rather than s.steeringQueue because a
-// steer is recorded there first (clientMutationSteer commits, then reflects)
+// steer is recorded there first (AcceptClientMutationSteer commits, then reflects)
 // and stays there across a restart, which is the delivery this answer governs.
 // A steer is pending from its acceptance until its transcript append is
 // recorded (finalizeIncorporatedSteering), a turn appending it included: if
@@ -1542,7 +1429,7 @@ func (s *Session) restoreDurableClientMutationQueues() {
 		snapshot.QueueRevision++
 		return nil
 	}); err != nil {
-		s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("restore client mutations failed: %v", err)})
+		s.emit(events.WarningData{Message: fmt.Sprintf("restore client mutations failed: %v", err)})
 	}
 	snapshot := s.clientMutations.snapshot()
 	s.inputQueue = make([]queuedInput, 0, len(snapshot.InputQueue))
@@ -1735,6 +1622,7 @@ func (s *Session) recordClientMutationFailure(
 		// bytes rewrites the same path.
 		queued.Images = s.persistInputImages(queued.Images)
 		turn := schema.NewTurn(schema.TurnUserInput, buildSelectedUserInputMessage(queued.Text, queued.Images, queued.SkillNames))
+		turn.Authorship = humanTranscriptAuthorship()
 		turn.CommandInput = commandInputRecordFromQueued(queued)
 		turn.ClientMutationID = clientMutationID
 		turn.StableTurnID = pending.TurnID
@@ -1873,11 +1761,6 @@ func (s *Session) completeClientMutationTurn(clientMutationID string) error {
 	return err
 }
 
-func (s *Session) completeClientMutationInterruptedTurn(clientMutationID string) error {
-	_, err := s.completeClientMutationTurnWithState(clientMutationID, "interrupted")
-	return err
-}
-
 // completeClientMutationTurnWithState settles one client-mutation turn and
 // reports whether doing so finalized an interrupt fence naming that turn --
 // i.e. whether a Stop is what ended it. The drain loop needs that fact: a turn
@@ -1983,7 +1866,7 @@ func (s *Session) completeClientMutationTurnWithState(clientMutationID, executio
 		s.wakeRunnableClientMutationStartAfterFence()
 	}
 	if returned {
-		// The durable queue grew a message back. QueueDepth, QueuePreview,
+		// The durable queue grew a message back. QueueDepth,
 		// WireState and the queued-input wake all read the process-local copy,
 		// so without this the message is durably present and invisible -- and
 		// the wake that would run it gates on that same stale depth.
@@ -2033,7 +1916,7 @@ func returnClaimedQueuedMutation(
 	}
 	// Callers own the queue revision and the runtime reflection: restore bumps
 	// the revision once for the whole rebuild, and the completion path bumps it
-	// per return. Both must reflect afterwards -- QueueDepth, QueuePreview,
+	// per return. Both must reflect afterwards -- QueueDepth,
 	// WireState and the queued-input wake all read the process-local copy, so a
 	// message restored only here would be durably present and invisible.
 	record.ProjectionState = acceptedClientMutationProjection(record.Method)

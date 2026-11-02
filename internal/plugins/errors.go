@@ -41,6 +41,14 @@ var (
 	// ErrMarketplaceSourceUnsupported rejects a source kind this build does not
 	// accept; it is wire input, not a store failure, and carries no path.
 	ErrMarketplaceSourceUnsupported = errors.New("unsupported marketplace source")
+	// ErrMarketplaceSourcePinned rejects a directory source carrying a git
+	// branch, tag, or commit: a directory is read in place and has no remote to
+	// check one out from.
+	ErrMarketplaceSourcePinned = errors.New("a directory source cannot name a branch, tag, or commit")
+	// ErrSourceRefQualified rejects a source ref that is a fully qualified
+	// ref. Ref fields carry a branch or tag name, which checkout, refresh, and
+	// remote lookup all resolve against their own namespaces.
+	ErrSourceRefQualified = errors.New("a source ref must be a branch or tag name, not a fully qualified ref")
 	// ErrSelectionUnavailable identifies an --enabled-plugins selection naming
 	// a plugin that cannot be loaded.
 	ErrSelectionUnavailable = errors.New("enabled plugin selection is unavailable")

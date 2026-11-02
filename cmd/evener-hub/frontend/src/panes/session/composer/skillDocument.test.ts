@@ -3,11 +3,47 @@ import {
   documentPositionToTextOffset,
   materializeSkillReferences,
   parseSkillDocument,
+  patchSelectionText,
   serializeSkillDocument,
   textOffsetToDocumentPosition,
 } from "./skillDocument";
 
 describe("skill document", () => {
+  it("patches explicit same-name identities without selecting newly typed prose", () => {
+    const value = {
+      text: "/inspect then /inspect",
+      skillNames: ["inspect"],
+      commandNames: ["inspect"],
+      mentions: [
+        { kind: "skill" as const, name: "inspect", offset: 0 },
+        { kind: "command" as const, name: "inspect", offset: 14 },
+      ],
+    };
+    const shifted = patchSelectionText(value, `😀 ${value.text}`);
+    expect(shifted).toEqual({
+      ...value,
+      text: `😀 ${value.text}`,
+      mentions: [
+        { kind: "skill", name: "inspect", offset: 3 },
+        { kind: "command", name: "inspect", offset: 17 },
+      ],
+    });
+    expect(patchSelectionText(shifted, value.text)).toEqual(value);
+    expect(patchSelectionText(value, `${value.text} /inspect`)).toEqual({ ...value, text: `${value.text} /inspect` });
+    expect(patchSelectionText(value, "/changed then /inspect")).toEqual({
+      text: "/changed then /inspect",
+      skillNames: [],
+      commandNames: ["inspect"],
+      mentions: [{ kind: "command", name: "inspect", offset: 14 }],
+    });
+    // Browser parsing still drops incomplete references and derives implicit atoms.
+    expect(patchSelectionText(value, `${value.text}x`)).toEqual({ text: `${value.text}x`, skillNames: ["inspect"] });
+    expect(patchSelectionText({ text: "/inspect", skillNames: ["inspect"] }, "😀 /inspect")).toEqual({
+      text: "😀 /inspect",
+      skillNames: ["inspect"],
+    });
+  });
+
   it("reads a trailing colon as sentence punctuation, like a period", () => {
     for (const text of ["Run /cleanup.", "Run /cleanup: fix the parser", "Run /cleanup,"]) {
       expect(serializeSkillDocument(parseSkillDocument({ text, skillNames: ["cleanup"] }))).toEqual({

@@ -6,7 +6,15 @@ import type { ReactTestRenderer } from "react-test-renderer";
 import { act } from "react-test-renderer";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { paletteFor } from "../design/tokens";
-import { playedHaptics, pressable, render, renderedText, swipeableCalls, swipeRowFully } from "../renderNative.testkit";
+import {
+	type PanGestureMock,
+	playedHaptics,
+	pressable,
+	render,
+	renderedText,
+	swipeableCalls,
+	swipeRowFully,
+} from "../renderNative.testkit";
 import { SwipeRow } from "../board/SwipeRow";
 import { GhostBubble } from "./GhostBubble";
 import { GhostRowContext, GhostRowView } from "./GhostRows";
@@ -18,7 +26,6 @@ vi.mock("react-native", async () => ({
 	...(await import("../renderNative.testkit")).nativeModuleMock(),
 	ActionSheetIOS: { showActionSheetWithOptions: native.showActionSheetWithOptions },
 }));
-vi.mock("expo-symbols", () => ({ SymbolView: "SymbolView" }));
 vi.mock("react-native-gesture-handler/ReanimatedSwipeable", async () =>
 	(await import("../renderNative.testkit")).gestureHandlerModuleMock(),
 );
@@ -93,6 +100,8 @@ function mount(
 		disabled = false,
 		canEdit = true,
 		editHint = null as string | null,
+		canEditParked = true,
+		parkedEditHint = null as string | null,
 		draftAttachments = undefined as ReactNode,
 	} = {},
 ) {
@@ -100,7 +109,18 @@ function mount(
 	const onMore = vi.fn();
 	const rows = withGhostRows([], ghosts).filter(isGhostRow);
 	const tree = render(
-		<GhostRowContext.Provider value={{ disabled, canEdit, editHint, draftAttachments, onAction, onMore }}>
+		<GhostRowContext.Provider
+			value={{
+				disabled,
+				canEdit,
+				editHint,
+				canEditParked,
+				parkedEditHint,
+				draftAttachments,
+				onAction,
+				onMore,
+			}}
+		>
 			{rows.map((row) => (
 				<GhostRowView key={row.id} row={row} />
 			))}
@@ -341,6 +361,14 @@ describe("swiping a ghost left (spec 8.5)", () => {
 		expect(onAction).not.toHaveBeenCalled();
 	});
 
+	it("starts its edge band at the transcript's padded left edge, not the row's", () => {
+		const { tree } = mount([queued]);
+		const swipeable = swipeables(tree)[0];
+		const tracker = swipeable?.props.simultaneousWithExternalGesture as PanGestureMock | undefined;
+		expect(swipeable?.props.hitSlop).toEqual({ left: -8 });
+		expect(tracker?.config.hitSlop).toEqual({ left: -8 });
+	});
+
 	it("doesn't swipe a message with nothing to cancel, or while another action runs", () => {
 		for (const ghost of [steering, sending, unconfirmed, refused])
 			expect(swipeables(mount([ghost]).tree)).toHaveLength(0);
@@ -365,6 +393,7 @@ describe("swiping a ghost left (spec 8.5)", () => {
 				canEdit
 				editHint={null}
 				backdrop="page"
+				edgeInset={16}
 				attachments={<Attachment />}
 				onAction={() => {}}
 			/>

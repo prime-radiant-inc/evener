@@ -111,7 +111,7 @@ func (s *session) try(ctx context.Context) (toolCall, error) {
 		return toolCall{}, fmt.Errorf("build request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
-	// Send affinity headers if configured, mimicking what evener does when send_session_affinity_headers is true.
+	// Send affinity headers if configured, mimicking what evener does when session_affinity_headers is true.
 	if s.affinityHeaderID != "" {
 		req.Header.Set("session_id", s.affinityHeaderID)
 		req.Header.Set("x-client-request-id", s.affinityHeaderID)
@@ -197,7 +197,7 @@ func (s *session) stopInFlightRound(ctx context.Context) {
 // compact rewrites this session's conversation the way evener's context
 // compaction does: the older turns are folded into a user-role checkpoint and
 // the most recent messages are kept verbatim
-// (agent/internal/contextmgr/context_manager.go, PreserveRecentTurns).
+// (agent/internal/contextmgr/manager.go, PreserveRecentTurns).
 //
 // It keeps the exact shape measured against a live hub + daemon after a
 // thread/compact/start: system prompt, a "[CONTEXT SUMMARY]" user message,
@@ -840,7 +840,7 @@ func TestSessionAffinityHeaderNamesRound1(t *testing.T) {
 // TestToolCallIDFallbackWhenNoAffinityHeader: when no affinity headers are
 // present, the system should fall back to the existing tool-call-id naming
 // scheme. This preserves backward compatibility for instances without
-// send_session_affinity_headers configured.
+// session_affinity_headers configured.
 func TestToolCallIDFallbackWhenNoAffinityHeader(t *testing.T) {
 	var logged syncBuffer
 	previous := log.Writer()

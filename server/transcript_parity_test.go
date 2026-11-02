@@ -10,6 +10,7 @@ import (
 	"image/png"
 	"os"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strings"
 	"sync"
@@ -364,7 +365,7 @@ func transcriptTurns(t *testing.T, path string) []schema.Turn {
 	reader := bufio.NewReaderSize(f, 1<<20)
 	var turns []schema.Turn
 	for first := true; ; first = false {
-		line, complete, _, err := transcript.ReadLine(reader, appTranscriptMaxLineBytes)
+		line, complete, _, err := transcript.ReadLine(reader, transcript.DefaultMaxLineBytes)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -384,7 +385,14 @@ func transcriptTurns(t *testing.T, path string) []schema.Turn {
 
 func assertParity(t *testing.T, label string, ps *paritySession, table []knownDivergence) {
 	t.Helper()
-	observed := diffParity(ps.liveTurns(t), fileHistoryTurns(t, ps.sess.TranscriptPath()))
+	live, file := ps.liveTurns(t), fileHistoryTurns(t, ps.sess.TranscriptPath())
+	observed := diffParity(live, file)
+	liveItems, fileItems := flattenParityItems(live), flattenParityItems(file)
+	for _, pair := range alignParityItems(liveItems, fileItems) {
+		if !reflect.DeepEqual(liveItems[pair[0]].item.Authorship, fileItems[pair[1]].item.Authorship) {
+			t.Errorf("%s authorship differs at aligned items %v", label, pair)
+		}
+	}
 	t.Run(label, func(t *testing.T) { checkParity(t, observed, table) })
 }
 
@@ -762,6 +770,28 @@ func TestTranscriptParityAcrossACrashAndReclaimedTurn(t *testing.T) {
 	}
 	if reopens != 1 {
 		t.Fatalf("the restored transcript has %d TURN_REOPEN markers, want 1", reopens)
+	}
+	for _, projected := range [][]appwire.Turn{ps.liveTurns(t), fileHistoryTurns(t, restored.TranscriptPath())} {
+		found := 0
+		for _, turn := range projected {
+			for _, item := range turn.Items {
+				if item.Type == "userMessage" {
+					found++
+					if item.Authorship == nil || item.Authorship.Author.Kind != appwire.TranscriptAuthorHuman || item.Authorship.Inherited {
+						t.Errorf("reclaimed input lost original human: %+v", item)
+					}
+				}
+				if item.Type == "agentMessage" {
+					found++
+					if item.Authorship == nil || item.Authorship.Author.SessionRef != "local:"+restored.ID() || item.Authorship.Inherited {
+						t.Errorf("recovered output author: %+v", item)
+					}
+				}
+			}
+		}
+		if found != 2 {
+			t.Errorf("reclaimed authored items=%d", found)
+		}
 	}
 	assertParity(t, "crash and reclaim", ps, parityCrashAndReclaim)
 }

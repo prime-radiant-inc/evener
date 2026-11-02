@@ -2,7 +2,6 @@ package hubcore
 
 import (
 	"bufio"
-	"cmp"
 	"context"
 	"database/sql"
 	"errors"
@@ -678,19 +677,13 @@ func wordRuneCount(s string) int {
 // limit of them.
 func keepNewestHits(hits []MessageHit, hit MessageHit, limit int) []MessageHit {
 	at, _ := slices.BinarySearchFunc(hits, hit, func(kept, hit MessageHit) int {
-		return compareItemPositions(hit.Position, kept.Position)
+		return appitempaging.ComparePosition(hit.Position, kept.Position)
 	})
 	if at >= limit {
 		return hits
 	}
 	hits = slices.Insert(hits, at, hit)
 	return hits[:min(len(hits), limit)]
-}
-
-// compareItemPositions orders two items of one transcript: negative when a
-// comes first.
-func compareItemPositions(a, b appwire.ThreadItemPosition) int {
-	return cmp.Or(cmp.Compare(a.Entry, b.Entry), cmp.Compare(a.Item, b.Item), cmp.Compare(a.Sub, b.Sub))
 }
 
 // Texts returns each hit's message text, in hits' order. A hit whose message

@@ -24,7 +24,6 @@ vi.mock("../ConnectionProvider", () => ({ useConnection: () => ({ state: "ready"
 vi.mock("react-native", async () => ({
 	...(await import("../renderNative.testkit")).nativeModuleMock(),
 }));
-vi.mock("expo-symbols", () => ({ SymbolView: "SymbolView" }));
 
 const ADVANCED = {
 	roundTimings: false,
@@ -73,6 +72,7 @@ const context: HubSheetContextValue = {
 		client: () => {
 			throw new Error("not in this test");
 		},
+		currentIncarnation: async () => null,
 		awaitRestart: async () => true,
 	}),
 	hosts: null,

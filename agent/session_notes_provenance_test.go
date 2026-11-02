@@ -484,7 +484,7 @@ func TestRestoredCompactedForkKeepsItsOwnTurnProvenance(t *testing.T) {
 
 	// The child's transcript: two inherited turns, a compaction checkpoint, then
 	// the child's own steering turn.
-	path := filepath.Join(stateDir, sessionsSubdir, sessionID+".transcript.jsonl")
+	path := schema.SessionTranscriptPath(stateDir, sessionID)
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -573,7 +573,7 @@ func TestRestoredForkBoundaryCountsRepairInsertions(t *testing.T) {
 	// for it before the parent's user turn), the parent's user turn, and a
 	// kindless parent steering turn whose id collides with a child note record.
 	// The child's own turn follows.
-	path := filepath.Join(stateDir, sessionsSubdir, sessionID+".transcript.jsonl")
+	path := schema.SessionTranscriptPath(stateDir, sessionID)
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		t.Fatal(err)
 	}

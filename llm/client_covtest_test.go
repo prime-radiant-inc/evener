@@ -9,7 +9,7 @@ import (
 )
 
 // TestCovBeginProviderOperationNilContext covers the nil-ctx path in
-// beginProviderOperation (client.go line 274-275).
+// beginProviderOperation.
 func TestCovBeginProviderOperationNilContext(t *testing.T) {
 	c := NewClient()
 	// Register a sink middleware so the function does not return early.
@@ -34,7 +34,7 @@ func TestCovBeginProviderOperationNilContext(t *testing.T) {
 }
 
 // TestCovBeginProviderOperationNoSink covers the sink == nil early return
-// in beginProviderOperation (client.go line 286-287).
+// in beginProviderOperation.
 func TestCovBeginProviderOperationNoSink(t *testing.T) {
 	c := NewClient()
 	// No middleware or sink in context.
@@ -79,14 +79,6 @@ func TestCovBeginAPIAttemptGroupScopeWithExistingGroup(t *testing.T) {
 	}
 }
 
-// TestCovBeginAPIAttemptGroupScopeNilSettleResult covers the nil-receiver
-// guard in SettleResult.
-func TestCovBeginAPIAttemptGroupScopeNilSettleResult(t *testing.T) {
-	var scope *APIAttemptGroupScope
-	scope.SettleResult(nil)
-	// No panic.
-}
-
 // TestCovBeginAPIAttemptGroupScopeOwnedSettleResult covers the owned path
 // of SettleResult.
 func TestCovBeginAPIAttemptGroupScopeOwnedSettleResult(t *testing.T) {
@@ -116,4 +108,13 @@ func (m *sinkMiddleware) AppendAttempt(ctx context.Context, rec apilog.APIAttemp
 }
 func (m *sinkMiddleware) AppendSettlement(ctx context.Context, rec apilog.APIAttemptGroupSettlement) error {
 	return m.sink.AppendSettlement(ctx, rec)
+}
+
+// A nil client has no middleware to read: the snapshot helper is what every
+// entry point consults, so it must answer nil rather than dereference.
+func TestNilClientMiddlewareSnapshotIsEmpty(t *testing.T) {
+	var c *Client
+	if got := c.middlewareSnapshot(); got != nil {
+		t.Fatalf("nil client middleware = %v, want nil", got)
+	}
 }

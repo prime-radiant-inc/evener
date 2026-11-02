@@ -26,6 +26,17 @@ type scriptedReply struct {
 	closeConn bool
 }
 
+// wireCalls drops the initialize handshake so a test can count request methods.
+func wireCalls(calls []remoteCall) []remoteCall {
+	out := make([]remoteCall, 0, len(calls))
+	for _, call := range calls {
+		if call.method != appwire.MethodInitialize {
+			out = append(out, call)
+		}
+	}
+	return out
+}
+
 // newScriptedClient builds an initialized AppWire client backed by an in-memory
 // StreamTransport whose server side answers canned responses and records every
 // request. No SSH, no network, no host. It is the shared body behind
@@ -228,10 +239,7 @@ func TestRemoteHubSourceCallErrorKeepsRequestDeadlineRaw(t *testing.T) {
 		t.Fatalf("mapCallError(canceled) = %v, want context.Canceled", err)
 	}
 	connect := source.mapConnectError(context.DeadlineExceeded)
-	var wire appwire.WireError
-	if !errors.As(connect, &wire) || wire.Code != appwire.CodeUnavailable {
-		t.Fatalf("mapConnectError(deadline) = %v, want SessionUnavailable", connect)
-	}
+	requireWireError(t, connect, appwire.CodeUnavailable)
 }
 
 func TestRemoteHubSourceReadThread(t *testing.T) {
@@ -391,10 +399,7 @@ func TestRemoteHubSourceNestedNonLocalRefRefused(t *testing.T) {
 	if err == nil {
 		t.Fatal("ReadThread accepted a nested non-local ref")
 	}
-	var wire appwire.WireError
-	if !errors.As(err, &wire) || wire.Code != appwire.CodeInternalError {
-		t.Fatalf("error = %T %v, want InternalError WireError", err, err)
-	}
+	requireWireError(t, err, appwire.CodeInternalError)
 }
 
 func TestRemoteHubSourceEOFBecomesSessionUnavailable(t *testing.T) {

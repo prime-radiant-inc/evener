@@ -37,10 +37,18 @@
 // restored anywhere. A reload lands wherever the URL says (see the URL-
 // sync effect below), the same as any other fresh navigation - there is no
 // separate "last mobile screen" memory to restore independently of that.
-import { type ReactNode, Suspense, useEffect, useRef, useState } from "react";
+import { type ReactNode, Suspense, useEffect, useMemo, useRef, useState } from "react";
+import { parseZoomParams } from "../../panes/zoom/intent";
+import {
+  conversationHandoffGeneration,
+  registerConversationHostVisibility,
+  restrictConversationHandoff,
+} from "../../stores/conversationClaimHandoff";
 import { Chevron, IconButton } from "../../widgets";
 import { ActivitySidebar } from "../activitybar/ActivitySidebar";
 import { useActivitySidebarStore } from "../activitybar/activitySidebarStore";
+import { attentionEntryOwnsReader, goBackInAttentionHistory } from "../attentionHistory";
+import { ConversationHandoffBoundary } from "../ConversationHandoffBoundary";
 import { useChromeStore } from "../chromeStore";
 import { paneFor } from "../paneRegistry";
 import { PaneVisibilityContext } from "../paneVisibility";
@@ -51,6 +59,7 @@ import {
   conversationOpenParentRef,
   documentPaneState,
   type OpenPaneRecord,
+  presentedPanes,
   transcriptOpenOrigin,
   useWorkspaceStore,
   workspaceStore,
@@ -69,7 +78,9 @@ function StackedPane({ pane }: { pane: OpenPaneRecord }) {
   return (
     <PaneVisibilityContext.Provider value>
       <Suspense fallback={null}>
-        <Component params={pane.params} paneId={pane.id} focused />
+        <ConversationHandoffBoundary generation={conversationHandoffGeneration("mobile")} paneId={pane.id}>
+          <Component params={pane.params} paneId={pane.id} focused />
+        </ConversationHandoffBoundary>
       </Suspense>
     </PaneVisibilityContext.Provider>
   );
@@ -118,6 +129,17 @@ function singlePaneRouteNames(pathname: string, pane: OpenPaneRecord): boolean {
   if (!isSinglePaneRoute(pathname)) return false;
   const route = urlToPane(pathname);
   return route !== null && route.type === pane.type && JSON.stringify(route.params) === JSON.stringify(pane.params);
+}
+
+function attentionEntryOwnsPane(pane: OpenPaneRecord | null | undefined): boolean {
+  if (!pane) return false;
+  const readerRef =
+    pane.type === "session"
+      ? (pane.params as { ref?: unknown }).ref
+      : pane.type === "sessionZoom"
+        ? parseZoomParams(pane.params)?.ref
+        : null;
+  return typeof readerRef === "string" && attentionEntryOwnsReader(pane.id, readerRef);
 }
 
 // Module-level, not component state: popstate is a window-level browser
@@ -175,7 +197,8 @@ export interface StackHostProps {
 }
 
 export function StackHost({ railSlot, routeDeferred = false, singlePane = false }: StackHostProps = {}) {
-  const panes = useWorkspaceStore((s) => s.panes);
+  const livingPanes = useWorkspaceStore((s) => s.panes);
+  const panes = useMemo(() => presentedPanes(livingPanes), [livingPanes]);
   const focusedPaneId = useWorkspaceStore((s) => s.focusedPaneId);
   // The focused pane's title, published host-agnostically by its
   // PaneScaffold through the chrome store (chromeStore.ts's own comment).
@@ -190,6 +213,12 @@ export function StackHost({ railSlot, routeDeferred = false, singlePane = false 
   // publishes one, the top-bar Back invokes IT instead of the stack walk.
   const paneBack = useChromeStore((s) => s.paneBack);
   const focusedPane = panes.find((p) => p.id === focusedPaneId) ?? null;
+  const handoffGeneration = conversationHandoffGeneration("mobile");
+  useEffect(() => {
+    const visible = () => new Set(focusedPane ? [focusedPane.id] : []);
+    restrictConversationHandoff(handoffGeneration, visible());
+    return registerConversationHostVisibility("mobile", visible);
+  }, [handoffGeneration, focusedPane]);
   const activityOpen = useActivitySidebarStore((s) => s.open);
   const [panelOpen, setPanelOpen] = useState(false);
   // True when no real pane is focused: either nothing at all, or the
@@ -260,11 +289,13 @@ export function StackHost({ railSlot, routeDeferred = false, singlePane = false 
     if (prev !== focusedPaneId) {
       const realBrowserNav = lastPopstateWasTrusted;
       lastPopstateWasTrusted = false;
-      if (!wentBackRef.current && !realBrowserNav && prev !== null) backStackRef.current.push(prev);
+      const attentionRestore = attentionEntryOwnsPane(focusedPane);
+      if (!wentBackRef.current && !realBrowserNav && !attentionRestore && prev !== null)
+        backStackRef.current.push(prev);
       wentBackRef.current = false;
       prevFocusedIdRef.current = focusedPaneId;
     }
-  }, [focusedPaneId]);
+  }, [focusedPane, focusedPaneId]);
 
   // URL sync (requirement 2): unlike desktop, exactly one pane is ever
   // visible at a time here, so it's meaningful (and, per this task's
@@ -291,6 +322,7 @@ export function StackHost({ railSlot, routeDeferred = false, singlePane = false 
   useEffect(() => {
     if (routeDeferred) return;
     if (!focusedPane) return;
+    if (attentionEntryOwnsPane(focusedPane)) return;
     if (singlePaneRouteNames(window.location.pathname, focusedPane)) return;
     const url = paneToURL(focusedPane.type, focusedPane.params);
     if (url) navigate(url);
@@ -340,6 +372,15 @@ export function StackHost({ railSlot, routeDeferred = false, singlePane = false 
         return;
       }
     }
+    // Attention Back belongs to the reader the current entry owns. A cascade
+    // opened over that reader is a local step, and its own Back returns to the
+    // reader rather than jumping past it to the entry's source.
+    if (
+      (focusedPane?.type === "session" || focusedPane?.type === "sessionZoom") &&
+      attentionEntryOwnsPane(focusedPane) &&
+      goBackInAttentionHistory()
+    )
+      return;
     let target = popValidBackTarget(backStackRef.current, panes, focusedPaneId);
     if (!target && focusedPane?.type === "transcript") {
       const params = focusedPane.params as { ref?: unknown; parentRef?: unknown };
@@ -347,8 +388,9 @@ export function StackHost({ railSlot, routeDeferred = false, singlePane = false 
         // A host swap discards local history, not the retained parent pane.
         // Focus that exact pane: reopening a session could promote a nested
         // parent into main and discard the real owner and remaining context.
+        const origin = transcriptOpenOrigin(focusedPane);
         let ancestor =
-          transcriptOpenOrigin(focusedPane) ??
+          (origin && panes.includes(origin) ? origin : undefined) ??
           panes.find(
             (pane) =>
               pane.id !== focusedPaneId &&

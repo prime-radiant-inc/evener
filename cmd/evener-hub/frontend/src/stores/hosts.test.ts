@@ -9,7 +9,8 @@ import { AppwireClient, type HostListResponse, type HostRow, type RemovedRow, Wi
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { FakeSocket } from "@evener/appwire-client/testing/fakeSocket";
 import { beforeEach, describe, expect, test, vi } from "vitest";
-import { connectionStore } from "./connection";
+import { connectReadyFakeClient } from "../testing/connectionTestUtils";
+import { connectionStore, resetConnectionStoreForTests } from "./connection";
 import {
   currentHostRegistration,
   hostRegistrationChanged,
@@ -17,12 +18,6 @@ import {
   registrySaysHostGone,
   sameHostRegistration,
 } from "./hosts";
-
-function connectFakeClient(): FakeClient {
-  const fake = new FakeClient("ready");
-  connectionStore.getState().connect(fake);
-  return fake;
-}
 
 function row(name: string): HostRow {
   return {
@@ -42,13 +37,13 @@ function removedRow(name: string): RemovedRow {
 }
 
 beforeEach(() => {
-  connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
+  resetConnectionStoreForTests();
   hostsStore.getState().resetForTests();
 });
 
 describe("client replacement", () => {
   test("a different client wired in after the store was cleared clears the published marker", async () => {
-    const a = connectFakeClient();
+    const a = connectReadyFakeClient();
     a.on("evener/host/list", () => ({ hosts: [row("alpha")] }));
     await hostsStore.getState().fetch();
     expect(hostsStore.getState().publishedRevision).not.toBeNull();
@@ -72,7 +67,7 @@ describe("client replacement", () => {
   });
 
   test("a reconnect of the same client does not clear the published marker", async () => {
-    const a = connectFakeClient();
+    const a = connectReadyFakeClient();
     a.on("evener/host/list", () => ({ hosts: [row("alpha")] }));
     await hostsStore.getState().fetch();
     const revision = hostsStore.getState().revision;
@@ -87,7 +82,7 @@ describe("client replacement", () => {
   });
 
   test("a replacement drops the old quiet-read slot without disturbing the new connection's reads", async () => {
-    const a = connectFakeClient();
+    const a = connectReadyFakeClient();
     let settleOld!: (value: HostListResponse) => void;
     const oldRead = new Promise<HostListResponse>((resolve) => (settleOld = resolve));
     a.on("evener/host/list", () => oldRead);
@@ -122,7 +117,7 @@ describe("client replacement", () => {
 
 describe("refresh", () => {
   test("Connect and refresh preserve the remote build or its absence", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     connectionStore.setState({
       serverInfo: { name: "controller", version: "package-sentinel", buildVersion: "controller-sentinel" },
     });
@@ -150,7 +145,7 @@ describe("refresh", () => {
     // refresh() returned without ever issuing a request.
     await hostsStore.getState().refresh();
 
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     fake.on("evener/host/list", () => ({ hosts: [row("beta")] }));
     await hostsStore.getState().refresh();
 
@@ -158,7 +153,7 @@ describe("refresh", () => {
   });
 
   test("a stale background refresh response cannot overwrite a newer fetch list", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     let resolveBackground!: (data: HostListResponse) => void;
     fake.on("evener/host/list", () => new Promise<HostListResponse>((resolve) => (resolveBackground = resolve)));
     const background = hostsStore.getState().refresh();
@@ -194,7 +189,7 @@ describe("refresh", () => {
     // must compare them: a remnant that opens, escalates, or clears without
     // any other row change is a real change the pane has to render — the
     // repair affordance would otherwise appear late or never clear.
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     let remnant: string | undefined;
     let escalation: number | undefined;
     fake.on("evener/host/list", () => ({
@@ -236,7 +231,7 @@ describe("refresh", () => {
     // changes on every poll once past the bound. Comparing the integer would
     // republish the section (and advance the revision its caches key on) every
     // HOST_POLL_MS; presence is what the affordance keys off.
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     let escalation: number | undefined = 7200;
     fake.on("evener/host/list", () => ({
       hosts: [
@@ -275,7 +270,7 @@ describe("fetch", () => {
     // list was discarded and the skeleton never cleared. A response may only
     // be discarded when a newer response actually PUBLISHED: a failed request
     // publishes nothing and invalidates nothing.
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     let resolveFetch!: (data: HostListResponse) => void;
     fake.on("evener/host/list", () => new Promise<HostListResponse>((resolve) => (resolveFetch = resolve)));
     const fetched = hostsStore.getState().fetch();
@@ -357,7 +352,7 @@ describe("mutations", () => {
       expect(outcome).toEqual({ status: "resolved", row: updatedRow });
     } finally {
       client.close();
-      connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
+      resetConnectionStoreForTests();
       vi.useRealTimers();
     }
   });
@@ -422,13 +417,13 @@ describe("mutations", () => {
       expect(outcome).toEqual({ status: "resolved" });
     } finally {
       client.close();
-      connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
+      resetConnectionStoreForTests();
       vi.useRealTimers();
     }
   });
 
   test("update sends the target name and the entry, then re-reads quietly", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     fake.on("evener/host/list", () => ({ hosts: [row("alpha")] }));
     await hostsStore.getState().fetch();
 
@@ -463,7 +458,7 @@ describe("mutations", () => {
   });
 
   test("a rejected update reaches the caller and keeps the rows", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     fake.on("evener/host/list", () => ({ hosts: [row("alpha")] }));
     await hostsStore.getState().fetch();
 
@@ -481,7 +476,7 @@ describe("mutations", () => {
   });
 
   test("an add's non-commit arm rejects but still re-reads, so the row the hub reports appears", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     fake.on("evener/host/list", () => ({ hosts: [] }));
     fake.on("evener/host/add", () => ({ outcome: "ambiguous", observedRow: row("beta") }));
     // The re-read after the ambiguous arm shows the row the hub says already
@@ -499,7 +494,7 @@ describe("mutations", () => {
   });
 
   test("an update's teardown-failure arm rejects but still re-reads, so the committed row appears", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     fake.on("evener/host/list", () => ({ hosts: [row("alpha")] }));
     await hostsStore.getState().fetch();
 
@@ -528,7 +523,7 @@ describe("mutations", () => {
   });
 
   test("a remove's teardown-failure arm rejects but still re-reads, so the committed removal appears", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     fake.on("evener/host/list", () => ({ hosts: [row("alpha")] }));
     await hostsStore.getState().fetch();
 
@@ -549,7 +544,7 @@ describe("mutations", () => {
   });
 
   test("add sends a minted mutationId so a retried add cannot double-add", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     fake.on("evener/host/list", () => ({ hosts: [] }));
     fake.on("evener/host/add", () => ({ outcome: "committed", host: row("beta") }));
     await hostsStore.getState().add({ name: "beta", address: "b.example" });
@@ -564,7 +559,7 @@ describe("mutations", () => {
   });
 
   test("remove sends the pair the held row carries", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     fake.on("evener/host/list", () => ({ hosts: [{ ...row("alpha"), generation: 7, incarnationId: "inc-7" }] }));
     await hostsStore.getState().fetch();
     fake.on("evener/host/remove", () => ({ outcome: "committed", host: removedRow("alpha") }));
@@ -584,7 +579,7 @@ describe("mutations", () => {
   });
 
   test("a remove with no held row lists first instead of fabricating a pair", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     // The store never fetched, so no row is held; the first list read answers
     // the pair, and the remove echoes that — never a defaulted pair.
     fake.on("evener/host/list", () => ({ hosts: [{ ...row("alpha"), generation: 3, incarnationId: "inc-3" }] }));
@@ -600,14 +595,14 @@ describe("mutations", () => {
   });
 
   test("a guarded mutation for a name the registry does not list refuses locally", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     fake.on("evener/host/list", () => ({ hosts: [{ ...row("beta"), generation: 1, incarnationId: "inc-b" }] }));
     await expect(hostsStore.getState().remove("alpha")).rejects.toThrowError(/not listed/);
     expect(fake.calls.some((c) => c.method === "evener/host/remove")).toBe(false);
   });
 
   test("an edit sends the pair its dialog opened on, and a stale refusal after a refresh surfaces unretried", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     fake.on("evener/host/list", () => ({ hosts: [{ ...row("alpha"), generation: 1, incarnationId: "inc-1" }] }));
     await hostsStore.getState().fetch();
     // The dialog opens on generation 1. Someone else edits the host, and the
@@ -636,7 +631,7 @@ describe("mutations", () => {
   });
 
   test("a remove refused as stale re-reads and retries once with a new mutationId", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     fake.on("evener/host/list", () => ({ hosts: [{ ...row("alpha"), generation: 1, incarnationId: "inc-1" }] }));
     await hostsStore.getState().fetch();
 
@@ -668,7 +663,7 @@ describe("mutations", () => {
   });
 
   test("a second stale-entry refusal of a remove surfaces to the caller", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     fake.on("evener/host/list", () => ({ hosts: [{ ...row("alpha"), generation: 1, incarnationId: "inc-1" }] }));
     await hostsStore.getState().fetch();
 
@@ -687,7 +682,7 @@ describe("mutations", () => {
   });
 
   test("a non-stale refusal is not retried", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     fake.on("evener/host/list", () => ({ hosts: [{ ...row("alpha"), generation: 1, incarnationId: "inc-1" }] }));
     await hostsStore.getState().fetch();
 
@@ -711,7 +706,7 @@ describe("mutations", () => {
     // hostRowEqual's field list is what decides whether the quiet re-read's rows
     // replace the rendered ones; a comparator that ignores user/evenerPath/
     // configPath/addr/roots would leave the pane rendering the pre-edit row.
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     fake.on("evener/host/list", () => ({ hosts: [row("alpha")] }));
     await hostsStore.getState().fetch();
 
@@ -743,7 +738,7 @@ describe("mutations", () => {
     // rendered, and the next poll or fetch converges them. Pre-fix the
     // mutation path re-read through fetch(), which parked the section on
     // the error state over a mutation that succeeded.
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     fake.on("evener/host/list", () => ({ hosts: [row("alpha")] }));
     await hostsStore.getState().fetch();
 
@@ -759,7 +754,7 @@ describe("mutations", () => {
   });
 
   test("a successful remove whose list re-read fails keeps the rows and does not error the section", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     fake.on("evener/host/list", () => ({ hosts: [row("alpha"), row("beta")] }));
     await hostsStore.getState().fetch();
 
@@ -784,7 +779,7 @@ describe("mutations", () => {
     // before the mutation fence it could still land. The landed add fences it
     // out: the rows the section was rendering stay, and the next poll or fetch
     // converges them.
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     fake.on("evener/host/list", () => ({ hosts: [row("alpha")] }));
     await hostsStore.getState().fetch();
 
@@ -808,7 +803,7 @@ describe("mutations", () => {
   });
 
   test("a pre-mutation list response cannot publish after a remove whose re-read failed", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     fake.on("evener/host/list", () => ({ hosts: [row("alpha"), row("beta")] }));
     await hostsStore.getState().fetch();
 
@@ -836,7 +831,7 @@ describe("mutations", () => {
     // the one read left that can clear the skeleton, and the mutation fence
     // must stand down for it: it protects rows that are rendering, and here
     // there are none to protect.
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     fake.on("evener/host/list", () => ({ hosts: [row("alpha")] }));
     await hostsStore.getState().fetch();
 
@@ -865,7 +860,7 @@ describe("reading", () => {
   // overlap (a foreground fetch and the poll), so one of them settling must not
   // clear it while the other request is still out.
   test("stays set while any list request is still in flight", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     const gates: Array<(value: HostListResponse) => void> = [];
     fake.on(
       "evener/host/list",

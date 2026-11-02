@@ -16,7 +16,7 @@ import {
 	type NavigationInvalidationTarget,
 	type NavigationSessionSummary,
 } from "@evener/appwire-client";
-import type { ConversationClientLike } from "../../mobile/src/services/conversation";
+import type { ConversationClientLike } from "./conversation/services/conversation";
 import { archivedListStoreFor } from "./archivedLists";
 import type { PageSource, PageState } from "./navigationPages";
 

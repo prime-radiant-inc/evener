@@ -1,7 +1,4 @@
-import { readFileSync } from "node:fs";
-import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
-import type { ItemModel, Thread, ThreadCapabilities, TurnModel } from "@evener/appwire-client";
+import type { ItemModel, Thread, TurnModel } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -10,8 +7,10 @@ import { afterAll, beforeAll, beforeEach, describe, expect, test } from "vitest"
 import { registerPaneForTests } from "../../../../shell/paneRegistry";
 import { resetWorkspaceStoreForTests, workspaceStore } from "../../../../shell/workspace";
 import { installLocalStorage, MemoryStorage } from "../../../../storageTestUtils";
-import { connectionStore } from "../../../../stores/connection";
+import { connectionStore, resetConnectionStoreForTests } from "../../../../stores/connection";
 import { resetThreadsStoreForTests } from "../../../../stores/threads";
+import { readModuleCss } from "../../../../styles/cssBlock";
+import { ALL_CAPABILITIES as FORK_CAPABILITIES } from "../../../../threadTestUtils";
 import { Toast } from "../../../../widgets";
 import { hoverForTooltip } from "../../../../widgets/tooltip/tooltipTestUtils";
 import { readDraft } from "../../composer/draft";
@@ -123,8 +122,7 @@ test("the approved You row keeps identity, text, and attachments in one avatar +
 });
 
 test("the slack-lean layout is token-backed and has no prose card treatment", () => {
-  const here = dirname(fileURLToPath(import.meta.url));
-  const css = readFileSync(join(here, "usermessageitem.module.css"), "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
+  const css = readModuleCss(import.meta.url, "usermessageitem.module.css");
   // One flex row: avatar (flex:none) + the transcript's single-sourced
   // --speaker-gap (10px, declared on .turn in turnblock.module.css), so the
   // content column lands on the same 34px line the TurnBlock gutter uses for
@@ -177,8 +175,7 @@ test("the slack-lean layout is token-backed and has no prose card treatment", ()
 });
 
 test("the speaker avatar starts at the top of the user message row", () => {
-  const here = dirname(fileURLToPath(import.meta.url));
-  const css = readFileSync(join(here, "usermessageitem.module.css"), "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
+  const css = readModuleCss(import.meta.url, "usermessageitem.module.css");
   expect(css).toMatch(/\.message\s*\{[\s\S]*align-items:\s*flex-start;/);
 });
 
@@ -196,8 +193,7 @@ test("the body renders as a bubble wrapping the text and attachments", () => {
 // editorial scale, so no distinct tail renders). Serif prose stays; only
 // the containment returns.
 test("the user reading surface is an accent bubble hugging its content column", () => {
-  const here = dirname(fileURLToPath(import.meta.url));
-  const css = readFileSync(join(here, "usermessageitem.module.css"), "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
+  const css = readModuleCss(import.meta.url, "usermessageitem.module.css");
   const body = /\.body\s*\{([^}]*)\}/.exec(css);
   expect(body).not.toBeNull();
   expect(body![1]).toMatch(/background:\s*var\(--accent-bg\)/);
@@ -270,22 +266,6 @@ test("UserMessageView is exported standalone for reuse by user-sourced steering"
 // dialog first. openChildPane's success path is mirrored: open the new ref as
 // its own pane, no toast.
 
-const FORK_CAPABILITIES: ThreadCapabilities = {
-  send: true,
-  steer: true,
-  interrupt: true,
-  compact: true,
-  clear: true,
-  forkFromTurn: true,
-  shutdown: true,
-  changeModel: true,
-  changeVisionModel: true,
-  queue: true,
-  goal: true,
-  sharedNotes: true,
-  rename: true,
-};
-
 // A minimal, test-only "session" pane registration - real registerPane/
 // openPane machinery without pulling in the actual panes/session module
 // (mirrors SessionActionsMenu.test.tsx's identical setup for the same reason:
@@ -325,7 +305,7 @@ function connectForkClient(): FakeClient {
 
 describe("per-message fork affordance", () => {
   beforeEach(() => {
-    connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
+    resetConnectionStoreForTests();
     resetThreadsStoreForTests();
     resetWorkspaceStoreForTests();
     localStorage.clear();

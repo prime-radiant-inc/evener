@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"primeradiant.com/evener/gittest"
 	"primeradiant.com/evener/identifier"
 )
 
@@ -219,7 +220,7 @@ func TestProjectResolver_LocalRepository(t *testing.T) {
 }
 
 func TestProjectResolver_LinkedWorktreeUsesMainCheckout(t *testing.T) {
-	main, worktree := newLinkedWorktree(t)
+	main, worktree := gittest.NewLinkedWorktree(t)
 	project, err := identifier.ResolveProjectWith(worktree, NewProjectResolver(NewLocalExecutionEnvironment(worktree)))
 	if err != nil {
 		t.Fatal(err)
@@ -233,11 +234,11 @@ func TestProjectResolver_SubmoduleUsesSubmoduleCheckout(t *testing.T) {
 	base := t.TempDir()
 	sub := filepath.Join(base, "sub")
 	super := filepath.Join(base, "super")
-	runGit(t, base, "init", "-q", "sub")
-	runGit(t, sub, "commit", "-q", "--allow-empty", "-m", "seed")
-	runGit(t, base, "init", "-q", "super")
-	runGit(t, super, "commit", "-q", "--allow-empty", "-m", "seed")
-	runGit(t, super, "submodule", "add", "-q", "../sub", "sub")
+	gittest.Run(t, base, "init", "-q", "sub")
+	gittest.Run(t, sub, "commit", "-q", "--allow-empty", "-m", "seed")
+	gittest.Run(t, base, "init", "-q", "super")
+	gittest.Run(t, super, "commit", "-q", "--allow-empty", "-m", "seed")
+	gittest.Run(t, super, "submodule", "add", "-q", "../sub", "sub")
 	worktree := filepath.Join(super, "sub")
 	project, err := identifier.ResolveProjectWith(worktree, NewProjectResolver(NewLocalExecutionEnvironment(worktree)))
 	if err != nil {

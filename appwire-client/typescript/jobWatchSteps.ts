@@ -35,7 +35,7 @@ import {
 /** The parts of a job_watch step its words read. */
 export type JobWatchStep = Pick<ItemModel, "toolName" | "argumentsJSON" | "raw">;
 
-/** watchDeliveryBudget in agent/job_watch.go: the condition-fire budget the Go
+/** watchDeliveryBudget in package agent: the condition-fire budget the Go
  * side's own notices name ("matched 50 times"). It is not the denominator for
  * a watch's deliveries count: cfg.deliveries counts every model-facing
  * delivery including periodic progress/timer ticks that never consume the
@@ -230,7 +230,7 @@ function createWords(raw: JsonObject, step: JobWatchStep): StepWords {
 
 // endReasonPhrase renders a watch end_reason id in words, shared by list rows
 // and inspect bodies so the two never drift. The ids are the whole set the
-// backend records: cleared (explicit clear, agent/job_watch.go clearWatch,
+// backend records: cleared (explicit clear, agent's clearWatch,
 // "watch cleared"), replaced (a newer watch took the key, "watch replaced"),
 // fired (a one-shot timer retired by its only fire,
 // clearWatchByIDMatchingWithReason), budget_exhausted (the condition-fire

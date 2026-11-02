@@ -3,10 +3,10 @@
 // authoritative empty list. Tool mutation snapshots may add started/settled.
 // The insert template marker has no display consumer and is not projected.
 
-import type { Task } from "./types.gen";
+import { TASK_STATUSES, type Task, type TaskStatus } from "./types.gen";
 import { asJsonObject } from "./watchRows";
 
-export type TaskStatus = "open" | "in_progress" | "done" | "cancelled";
+export type { TaskStatus };
 
 export interface TaskCounts {
   total: number;
@@ -67,12 +67,12 @@ export function taskAggregateLabel(tasks: TaskCounts): string {
   return `All ${tasks.total} ${noun} done`;
 }
 
-// The closed status enum the Go store mints (agent/task/task_store.go,
-// TaskStatus). A status outside it - a newer daemon's addition, or corrupt
+// The closed status enum the Go store mints (appwire.TaskStatus, generated
+// as TASK_STATUSES). A status outside it - a newer daemon's addition, or corrupt
 // data - is dropped rather than cast: groupTasks routes every unmatched
 // status into the settled group, where the web pane would render an
 // unknown-status row as a broken glyph.
-const KNOWN_STATUSES = new Set(["open", "in_progress", "done", "cancelled"]);
+const KNOWN_STATUSES: ReadonlySet<string> = new Set(TASK_STATUSES);
 
 // A row is usable once it carries the wire's non-omitempty fields with the
 // right primitive types (id/type/description/prompt/status are never

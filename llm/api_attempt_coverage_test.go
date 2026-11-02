@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"slices"
 	"testing"
 	"time"
 
@@ -167,12 +168,12 @@ func TestRecordFailureWithNilErr(t *testing.T) {
 	}
 }
 
-// TestMergeCredentialMaterialCoversBothSides exercises mergeAPILogCredentialMaterial
+// TestMergeCredentialMaterialCoversBothSides exercises APILogCredentialMaterial.Merge
 // with non-empty left and right to cover the merge loops.
 func TestMergeCredentialMaterialCoversBothSides(t *testing.T) {
 	left := NewAPILogCredentialMaterial([]string{"X-Left"}, []string{"left_q"}, "left-secret")
 	right := NewAPILogCredentialMaterial([]string{"X-Right"}, []string{"right_q"}, "right-secret")
-	merged := mergeAPILogCredentialMaterial(left, right)
+	merged := left.Merge(right)
 	if _, ok := merged.HeaderNames["X-Left"]; !ok {
 		t.Fatal("merged missing left header name")
 	}
@@ -184,5 +185,10 @@ func TestMergeCredentialMaterialCoversBothSides(t *testing.T) {
 	}
 	if _, ok := merged.QueryNames["right_q"]; !ok {
 		t.Fatal("merged missing right query name")
+	}
+	for _, secret := range []string{"left-secret", "right-secret"} {
+		if !slices.Contains(merged.Values, secret) {
+			t.Fatalf("merged missing value %q", secret)
+		}
 	}
 }

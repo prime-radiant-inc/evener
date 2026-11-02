@@ -1018,3 +1018,10 @@ func TestOperationsReadSerializesUnderTheStoreMutex(t *testing.T) {
 		t.Fatalf("store holds %d records, want 20", len(page.Records))
 	}
 }
+
+// CursorEpoch returns the live epoch pair for the tests that pin when it moves.
+func (s *Store) CursorEpoch() CursorEpoch {
+	s.cell.mu.Lock()
+	defer s.cell.mu.Unlock()
+	return s.cursorEpochLocked()
+}

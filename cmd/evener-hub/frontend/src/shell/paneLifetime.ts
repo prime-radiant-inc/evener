@@ -10,6 +10,8 @@ export interface PaneLifetime {
   readonly serial: number;
   readonly sourceRef: string;
   readonly sourceType: "session" | "transcript";
+  readonly compositionOwnerId: string;
+  readonly composerSeatId: string;
   readonly alive: boolean;
   readonly composer: ComposerSourceState | null;
   readonly composers: Map<string, ComposerSourceState>;
@@ -37,6 +39,12 @@ export function conversationPaneLifetime(pane: OpenPaneRecord): PaneLifetime {
   const lifetime: PaneLifetime = {
     paneId: pane.id,
     serial: ++nextSerial,
+    // The composition owner is the durable composer seat: a recovery row
+    // written by this pane carries it, so the pane that authored preserved
+    // work can find its own row again after a reload. Resolved exactly as
+    // the seat on the next line, on the same lifetime literal.
+    compositionOwnerId: pane.composerSeatId ?? pane.id,
+    composerSeatId: pane.composerSeatId ?? pane.id,
     get sourceRef() {
       return sourceRef;
     },
@@ -52,7 +60,7 @@ export function conversationPaneLifetime(pane: OpenPaneRecord): PaneLifetime {
       if (!alive || sourceType !== "session") return null;
       let state = lifetime.composers.get(sourceRef);
       if (state === undefined) {
-        state = createComposerSourceState(sourceRef);
+        state = createComposerSourceState(sourceRef, lifetime.compositionOwnerId);
         lifetime.composers.set(sourceRef, state);
       }
       return state;
@@ -65,7 +73,8 @@ export function conversationPaneLifetime(pane: OpenPaneRecord): PaneLifetime {
       // state; a fresh one for the resumed identity loads the draft the
       // resume carried, and any state already created for the resumed ref
       // keeps its newer work.
-      lifetime.composers.get(sourceRef)?.dispose();
+      const retired = lifetime.composers.get(sourceRef);
+      retired?.dispose();
       lifetime.composers.delete(sourceRef);
       sourceRef = resumedRef;
     },
@@ -83,6 +92,12 @@ export function conversationPaneLifetime(pane: OpenPaneRecord): PaneLifetime {
   };
   lifetimes.set(pane, lifetime);
   return lifetime;
+}
+
+/** The lifetime this pane already owns, without creating one: callers that only
+ * read identity (a pending navigation's fence) must not mint lifetimes. */
+export function existingConversationPaneLifetime(pane: OpenPaneRecord): PaneLifetime | null {
+  return lifetimes.get(pane) ?? null;
 }
 
 export function disposeConversationPaneLifetime(pane: OpenPaneRecord): void {

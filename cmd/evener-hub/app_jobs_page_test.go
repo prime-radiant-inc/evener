@@ -153,9 +153,7 @@ func TestJobsOutputPageProtocolV6OwnerPreserved(t *testing.T) {
 	t.Cleanup(wire.Close)
 	client := dialHubRPC(t, wire)
 	t.Cleanup(func() { _ = client.Close() })
-	if _, err := client.Initialize(t.Context(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
-		t.Fatal(err)
-	}
+	mustInitializeHubClient(t, client)
 	_, err = client.JobOutput(t.Context(), appwire.JobsOutputParams{Ref: "local:" + oldID, JobID: "job_page"})
 	if err == nil || oldRequests.Load() != 0 {
 		t.Fatalf("old owner output = %v, requests %d, want refused before dispatch", err, oldRequests.Load())

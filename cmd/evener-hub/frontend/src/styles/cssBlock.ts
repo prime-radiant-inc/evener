@@ -11,11 +11,14 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 /** One .module.css (or other CSS) file, read straight off disk next to the
- * calling test file. `moduleUrl` is always `import.meta.url` from the caller;
+ * calling test file, with comments removed: a declaration quoted in a doc
+ * comment must never satisfy an assertion about the rule below it.
+ * `moduleUrl` is always `import.meta.url` from the caller;
  * passing it in (rather than importing.meta from here) keeps the resolution
  * relative to whoever owns the file being read. */
 export function readModuleCss(moduleUrl: string, fileName: string): string {
-  return readFileSync(join(dirname(fileURLToPath(moduleUrl)), fileName), "utf8");
+  const css = readFileSync(join(dirname(fileURLToPath(moduleUrl)), fileName), "utf8");
+  return css.replace(/\/\*[\s\S]*?\*\//g, "");
 }
 
 /** The text of one balanced-brace block, given the index of its opening `{`.

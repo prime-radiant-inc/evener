@@ -72,13 +72,17 @@ Start the hub in a terminal you can leave open:
 evener hub
 ```
 
-By default it listens on `127.0.0.1:9180`, reachable only from the same computer. Open the authorization URL printed at startup. It has this shape, with a real token in place of the placeholder:
+By default it listens on `127.0.0.1:9180`, reachable only from the same computer. Open the authorization URL printed when startup output goes directly to an interactive terminal. It has this shape, with a real token in place of the placeholder:
 
 ```text
 http://127.0.0.1:9180/auth/<token>
 ```
 
 The URL signs this browser in. Treat it as a credential: do not paste it into a conversation, screenshot, or bug report. After signing in, use `http://127.0.0.1:9180` normally.
+
+Redirected output and service logs contain only the safe browser address. Retrieve the private sign-in link explicitly from another terminal with `evener hub login-url`. If you started with `--config`, pass that same config path to `login-url`.
+
+For a configured listener such as TOML `addr = "0.0.0.0:0"`, run `evener hub endpoint --json` to discover the actual bound port. Port zero selects a port at startup; do not use `:0` as a browser or client destination. See [hub endpoints](evener-hub-endpoints.md) for listener, client, and public-origin settings.
 
 Leave the hub running. Closing a browser tab is not a stop command for the agent. If the port is occupied or the page will not open, use [troubleshooting](troubleshooting.md) rather than launching more hub instances. For another bind address or a supervised service, use the [hub runbook](evener-hub.md).
 
@@ -117,17 +121,20 @@ directory, task draft, provider, and model all belong to this launch form:
    the provider you intend to use. An ordinary chat subscription is not
    necessarily an API account.
 3. For an API connection, paste the actual key into the masked field and select
-   **Save and check**. For a supported ChatGPT/Codex subscription, choose the
+   **Save and test**. For a supported ChatGPT/Codex subscription, choose the
    separate **OpenAI Codex** sign-in route instead; it is not the `openai` API-key
    connection.
 4. A successful check means Evener saved the resolved access and fetched that
    provider connection's model list. It does **not** send your task, make a
    generation request, or prove quota, billing, model capability, or generation
-   access. Fix an inline failure and retry; a failed list check does not erase a
-   key that was saved successfully.
-5. Select **Choose model**, then explicitly choose the model for this session.
-   If listing fails, use **Retry models**. If the provider cannot support a list
-   check, **Continue without verification** is an unverified route, not a pass.
+   access. A temporary read failure is retried automatically; a failed list
+   check does not erase a key that was saved successfully.
+5. On success the dialog closes and returns to this draft automatically. An
+   untouched draft adopts the connected instance's configured default model
+   when its usable listing marks one; otherwise the ordinary model control
+   still asks you to choose. A model you chose yourself is kept. If the provider
+   cannot support a list check, **Continue without verification** is an
+   unverified route, not a pass.
 
 For a custom endpoint, choose **Show all providers**, then **OpenAI-compatible
 endpoint** and **Configure provider**. Enter a connection **Name** and the server's

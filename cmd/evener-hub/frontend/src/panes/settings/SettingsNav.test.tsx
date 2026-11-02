@@ -1,14 +1,12 @@
-import { readFileSync } from "node:fs";
-import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
 import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { expect, test, vi } from "vitest";
+import { readModuleCss } from "../../styles/cssBlock";
 import { SettingsNav } from "./SettingsNav";
 import { SETTINGS_SECTIONS } from "./sections";
 
 function readCss(): string {
-  return readFileSync(join(dirname(fileURLToPath(import.meta.url)), "settings.module.css"), "utf8");
+  return readModuleCss(import.meta.url, "settings.module.css");
 }
 
 // The mobile rules live in one trailing @media block whose inner rules are
@@ -30,7 +28,7 @@ function mobileBlock(css: string): string {
 // substitution toast.module.css already makes for text on this exact
 // --accent-bg fill).
 test("the selected nav item's text uses the AA-derived --accent-ink, not the raw --accent hue", () => {
-  const css = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "settings.module.css"), "utf8");
+  const css = readModuleCss(import.meta.url, "settings.module.css");
   const linkActiveRule = /\.linkActive\s*\{[^}]*\}/.exec(css);
   expect(linkActiveRule).not.toBeNull();
   expect(linkActiveRule?.[0]).toMatch(/color:\s*var\(--accent-ink\)/);

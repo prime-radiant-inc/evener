@@ -23,9 +23,8 @@ import {
 } from "@evener/appwire-client/testing/systemEventWireFixtures";
 import { act, type ReactTestRenderer } from "react-test-renderer";
 import { describe, expect, it, vi } from "vitest";
-import { createConversationService } from "../../mobile/src/services/conversation";
-import { createActivityStore } from "../../mobile/src/state/activity";
-import { createConversationStore } from "../../mobile/src/state/conversation";
+import { createConversationService } from "./conversation/services/conversation";
+import { createConversationStore } from "./conversation/state/conversation";
 import { palettes } from "./design/tokens";
 import { MAX_ITEM_BYTES, projectConversation } from "./projectedRows";
 import { withTestID } from "./markerTestUtils";
@@ -40,9 +39,11 @@ import { projectNativeTranscript } from "./transcriptPresentation";
 vi.mock("react-native", async () => ({
 	...(await import("./renderNative.testkit")).nativeModuleMock(),
 }));
-vi.mock("expo-symbols", () => ({ SymbolView: "SymbolView" }));
 vi.mock("react-native-safe-area-context", () => ({ SafeAreaView: "SafeAreaView" }));
 vi.mock("react-native-enriched-markdown", () => ({ EnrichedMarkdownText: "EnrichedMarkdownText" }));
+vi.mock("react-native-gesture-handler", async () =>
+	(await import("./renderNative.testkit")).gestureDetectorModuleMock(),
+);
 vi.mock("expo-clipboard", () => ({ setStringAsync: async () => true }));
 vi.mock("./TranscriptImages", () => ({ TranscriptImages: () => null }));
 
@@ -146,7 +147,18 @@ describe("a failed turn (G5)", () => {
 		if (failure?.kind !== "failure") throw new Error("not a failure row");
 		expect(failure.title).toContain("Evener error");
 		expect(failure.detail).toContain("Provider exploded: 529 overloaded");
-		expect(errorAction(failure, model, true)).toBe("retry");
+		expect(
+			errorAction(
+				failure,
+				{
+					canonical: model,
+					displayedLatestTurnId: model.turns.at(-1)?.id,
+					pendingMutations: [],
+					pendingMutationsReady: true,
+				},
+				true,
+			),
+		).toEqual({ kind: "retry", failedTurnId: "turn_2", disabled: false });
 	});
 
 	// Only the error that echoes turn.error goes: an earlier, distinct error in
@@ -408,9 +420,8 @@ describe("shared-notes snapshots", () => {
 		client.on("thread/unsubscribe", () => ({}));
 		const service = createConversationService(client, { now: () => T0, resolveDisplayConfig: () => config });
 		const store = createConversationStore({ displayConfig: config });
-		const activity = createActivityStore();
 		try {
-			await store.getState().openProjected(service, activity.getState(), "ref-1");
+			await store.getState().openProjected(service, "ref-1");
 			expect(store.getState().status).toBe("open");
 			const conversation = store.getState().conversation;
 			if (!conversation) throw new Error("no stored conversation");

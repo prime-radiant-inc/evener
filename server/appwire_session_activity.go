@@ -24,17 +24,9 @@ func (s *Server) SetThreadActivityReadFunc(fn func(context.Context, appwire.Sess
 }
 
 func (s *Server) handleThreadActivityRead(ctx context.Context, params appwire.SessionActivityReadParams) (appwire.SessionActivitySummary, error) {
-	s.mu.RLock()
-	fn := s.appSessionActivity.activityRead
-	sourceID := sourceIDForProjection(s.appSourceID)
-	s.mu.RUnlock()
-	if err := validateSessionActivityRef(ctx, params.Ref, sourceID); err != nil {
-		return appwire.SessionActivitySummary{}, err
-	}
-	if fn == nil {
-		return appwire.SessionActivitySummary{}, appwire.SessionUnavailable("session activity is unavailable")
-	}
-	return readCurrentSessionActivity(s, params.Ref, func() (appwire.SessionActivitySummary, error) { return fn(ctx, params) })
+	return handleSessionActivity(ctx, s, params.Ref, params, func(h sessionActivityHooks) func(context.Context, appwire.SessionActivityReadParams) (appwire.SessionActivitySummary, error) {
+		return h.activityRead
+	})
 }
 
 // SetThreadDelegatesListFunc installs the context-bearing session activity read.
@@ -45,17 +37,9 @@ func (s *Server) SetThreadDelegatesListFunc(fn func(context.Context, appwire.Ses
 }
 
 func (s *Server) handleThreadDelegatesList(ctx context.Context, params appwire.SessionActivityListParams) (appwire.SessionDelegatesResponse, error) {
-	s.mu.RLock()
-	fn := s.appSessionActivity.delegatesList
-	sourceID := sourceIDForProjection(s.appSourceID)
-	s.mu.RUnlock()
-	if err := validateSessionActivityRef(ctx, params.Ref, sourceID); err != nil {
-		return appwire.SessionDelegatesResponse{}, err
-	}
-	if fn == nil {
-		return appwire.SessionDelegatesResponse{}, appwire.SessionUnavailable("session activity is unavailable")
-	}
-	return readCurrentSessionActivity(s, params.Ref, func() (appwire.SessionDelegatesResponse, error) { return fn(ctx, params) })
+	return handleSessionActivity(ctx, s, params.Ref, params, func(h sessionActivityHooks) func(context.Context, appwire.SessionActivityListParams) (appwire.SessionDelegatesResponse, error) {
+		return h.delegatesList
+	})
 }
 
 // SetThreadJobsListFunc installs the context-bearing session activity read.
@@ -66,17 +50,9 @@ func (s *Server) SetThreadJobsListFunc(fn func(context.Context, appwire.SessionA
 }
 
 func (s *Server) handleThreadJobsList(ctx context.Context, params appwire.SessionActivityListParams) (appwire.SessionJobsResponse, error) {
-	s.mu.RLock()
-	fn := s.appSessionActivity.jobsList
-	sourceID := sourceIDForProjection(s.appSourceID)
-	s.mu.RUnlock()
-	if err := validateSessionActivityRef(ctx, params.Ref, sourceID); err != nil {
-		return appwire.SessionJobsResponse{}, err
-	}
-	if fn == nil {
-		return appwire.SessionJobsResponse{}, appwire.SessionUnavailable("session activity is unavailable")
-	}
-	return readCurrentSessionActivity(s, params.Ref, func() (appwire.SessionJobsResponse, error) { return fn(ctx, params) })
+	return handleSessionActivity(ctx, s, params.Ref, params, func(h sessionActivityHooks) func(context.Context, appwire.SessionActivityListParams) (appwire.SessionJobsResponse, error) {
+		return h.jobsList
+	})
 }
 
 // SetThreadWatchesListFunc installs the context-bearing session activity read.
@@ -87,17 +63,27 @@ func (s *Server) SetThreadWatchesListFunc(fn func(context.Context, appwire.Sessi
 }
 
 func (s *Server) handleThreadWatchesList(ctx context.Context, params appwire.SessionActivityListParams) (appwire.SessionWatchesResponse, error) {
+	return handleSessionActivity(ctx, s, params.Ref, params, func(h sessionActivityHooks) func(context.Context, appwire.SessionActivityListParams) (appwire.SessionWatchesResponse, error) {
+		return h.watchesList
+	})
+}
+
+// handleSessionActivity serves one session activity route: it refuses a ref
+// this daemon does not serve or a route with no installed read, then runs the
+// read fenced against a root replacement.
+func handleSessionActivity[P, R any](ctx context.Context, s *Server, ref string, params P, pick func(sessionActivityHooks) func(context.Context, P) (R, error)) (R, error) {
 	s.mu.RLock()
-	fn := s.appSessionActivity.watchesList
+	fn := pick(s.appSessionActivity)
 	sourceID := sourceIDForProjection(s.appSourceID)
 	s.mu.RUnlock()
-	if err := validateSessionActivityRef(ctx, params.Ref, sourceID); err != nil {
-		return appwire.SessionWatchesResponse{}, err
+	var zero R
+	if err := validateSessionActivityRef(ctx, ref, sourceID); err != nil {
+		return zero, err
 	}
 	if fn == nil {
-		return appwire.SessionWatchesResponse{}, appwire.SessionUnavailable("session activity is unavailable")
+		return zero, appwire.SessionUnavailable("session activity is unavailable")
 	}
-	return readCurrentSessionActivity(s, params.Ref, func() (appwire.SessionWatchesResponse, error) { return fn(ctx, params) })
+	return readCurrentSessionActivity(s, ref, func() (R, error) { return fn(ctx, params) })
 }
 
 // readCurrentSessionActivity fences slow results across a root replacement.

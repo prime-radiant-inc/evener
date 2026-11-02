@@ -262,7 +262,7 @@ func TestTurnStartClearMutation(t *testing.T) {
 // TestASecondSteerWhileHeldStaysParked is the RCA's named trap (#146
 // Option C, "the one a naive implementation gets wrong"): a naive "clear
 // SteeringHeld everywhere QueueHeld is cleared" reading would clear it on
-// clientMutationSteer's own accept path, and that path calls
+// AcceptClientMutationSteer's own accept path, and that path calls
 // wakeForPendingSteering unconditionally -- reproducing the #146 restart,
 // retriggered by a second steer instead of by Stop. A steer arriving while
 // held must append to SteeringOrder and stay parked with the rest.

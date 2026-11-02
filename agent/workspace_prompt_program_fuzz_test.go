@@ -313,16 +313,10 @@ func wppRuntimePaths(t *testing.T, token string) {
 	t.Setenv("XDG_STATE_HOME", "")
 	t.Setenv("XDG_CACHE_HOME", "")
 	t.Setenv("HOME", root)
-	if got, want := xdgStateHome(), filepath.Join(root, ".local", "state"); got != want {
-		t.Fatalf("default state home = %q, want %q", got, want)
-	}
 	if got, want := xdgCacheHome(), filepath.Join(root, ".cache"); got != want {
 		t.Fatalf("default cache home = %q, want %q", got, want)
 	}
 	t.Setenv("HOME", "")
-	if got, want := xdgStateHome(), filepath.Join(os.TempDir(), ".local", "state"); got != want {
-		t.Fatalf("fallback state home = %q, want %q", got, want)
-	}
 	if got, want := xdgCacheHome(), filepath.Join(os.TempDir(), ".cache"); got != want {
 		t.Fatalf("fallback cache home = %q, want %q", got, want)
 	}

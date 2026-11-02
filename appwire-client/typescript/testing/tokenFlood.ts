@@ -8,7 +8,8 @@
 // fakeClient.ts/fakeSocket.ts precedent for shared non-test test
 // infrastructure.
 import type { ThreadModel } from "../model";
-import { applyNotification, hydrateThread } from "../reducer";
+import { applyNotification } from "../reducer";
+import { hydrateThread } from "../transcriptHistory";
 import type { AnyNotification, OverlayItem, Thread, ThreadCapabilities, ThreadReadResponse } from "../types.gen";
 
 // mulberry32: a small, fast, deterministic PRNG (public-domain algorithm) -
@@ -288,10 +289,9 @@ export function foldWithTiming(model: ThreadModel, notifications: AnyNotificatio
   return { model: m, perDeltaMs, totalMs };
 }
 
-// A fresh, empty hydrated model for `ref` - mirrors reducer.test.ts's own
-// testHydrate() shape (kept local rather than imported: that file is a test
-// file, not shared infrastructure, and this harness's Thread fixture only
-// needs a handful of the same required fields).
+// A fresh, empty hydrated model for `ref` - mirrors reducerTestKit.ts's
+// testHydrate() shape (kept local rather than imported: this harness's Thread
+// fixture only needs a handful of the same required fields).
 export function hydrateFloodModel(ref: string): ThreadModel {
   const thread: Thread = {
     id: `thr_${ref}`,

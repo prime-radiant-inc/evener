@@ -25,6 +25,15 @@
 //   bar (design/BarFrame) animates with the keyboard.
 import { vi } from "vitest";
 
+const expoCryptoTestState = vi.hoisted(() => ({ nextToken: 0 }));
+
+// DraftDocument uses Expo Crypto for capture ownership. Keep that dependency
+// behind the test boundary so Vitest never loads React Native's Flow entry.
+vi.mock("expo-crypto", () => ({
+	randomUUID: () => `native-test-capture-${++expoCryptoTestState.nextToken}`,
+	getRandomValues: (array: Uint8Array) => array,
+}));
+
 // react-test-renderer logs a deprecation warning through console.error on
 // every create() unless it is told it runs in a React Native test
 // environment; the flag also selects the synchronous root React Native's

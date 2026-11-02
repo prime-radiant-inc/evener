@@ -30,6 +30,14 @@ import { createStore } from "zustand/vanilla";
 
 export interface ChromeStoreState {
   paneTitle: string | null;
+  /** The document each pane lives in. Dockview moves a panel's DOM into a popout
+   * window, so a shell-level observer needs the focused reader's own document. */
+  paneDocuments: ReadonlyMap<string, Document>;
+  setPaneDocumentFor(paneId: string, document: Document | null): void;
+  /** Publish one document for several panes at once - a popout move carries a
+   * whole group, and one store write keeps observers from seeing a half-moved
+   * set. */
+  setPaneDocumentsFor(paneIds: readonly string[], document: Document | null): void;
   setPaneTitle(title: string | null): void;
   paneTitles: ReadonlyMap<string, string>;
   setPaneTitleFor(paneId: string, title: string | null): void;
@@ -40,6 +48,27 @@ export interface ChromeStoreState {
 export const chromeStore = createStore<ChromeStoreState>()((set) => ({
   paneTitle: null,
   setPaneTitle: (title) => set({ paneTitle: title }),
+  paneDocuments: new Map(),
+  setPaneDocumentFor: (paneId, document) =>
+    set((state) => {
+      if ((state.paneDocuments.get(paneId) ?? null) === document) return state;
+      const paneDocuments = new Map(state.paneDocuments);
+      if (document === null) paneDocuments.delete(paneId);
+      else paneDocuments.set(paneId, document);
+      return { paneDocuments };
+    }),
+  setPaneDocumentsFor: (paneIds, document) =>
+    set((state) => {
+      let changed = false;
+      const paneDocuments = new Map(state.paneDocuments);
+      for (const paneId of paneIds) {
+        if ((paneDocuments.get(paneId) ?? null) === document) continue;
+        changed = true;
+        if (document === null) paneDocuments.delete(paneId);
+        else paneDocuments.set(paneId, document);
+      }
+      return changed ? { paneDocuments } : state;
+    }),
   paneTitles: new Map(),
   setPaneTitleFor: (paneId, title) =>
     set((state) => {
@@ -61,5 +90,5 @@ export function useChromeStore<T>(selector: (state: ChromeStoreState) => T): T {
 // mirrors workspace.ts's resetWorkspaceStoreForTests precedent. No
 // production code should ever call this.
 export function resetChromeStoreForTests(): void {
-  chromeStore.setState({ paneTitle: null, paneTitles: new Map(), paneBack: null });
+  chromeStore.setState({ paneTitle: null, paneTitles: new Map(), paneBack: null, paneDocuments: new Map() });
 }

@@ -19,9 +19,9 @@ func TestS1Cov_watchListToolResultForReceiver(t *testing.T) {
 		t.Fatalf("empty receiver → %+v, want empty", got)
 	}
 
-	matchA := &watchConfig{id: "wa", watchID: "wa", sourcePublic: "aaa", target: "job_a", receiverSessionID: rsID, receiverDelegateID: rdID}
-	matchB := &watchConfig{id: "wb", watchID: "wb", sourcePublic: "bbb", target: "job_b", receiverSessionID: rsID, receiverDelegateID: rdID}
-	other := &watchConfig{id: "wo", watchID: "wo", sourcePublic: "ccc", target: "job_c", receiverSessionID: "OTHER", receiverDelegateID: rdID}
+	matchA := &watchConfig{watchID: "wa", sourcePublic: "aaa", target: "job_a", receiverSessionID: rsID, receiverDelegateID: rdID}
+	matchB := &watchConfig{watchID: "wb", sourcePublic: "bbb", target: "job_b", receiverSessionID: rsID, receiverDelegateID: rdID}
+	other := &watchConfig{watchID: "wo", sourcePublic: "ccc", target: "job_c", receiverSessionID: "OTHER", receiverDelegateID: rdID}
 
 	jm.mu.Lock()
 	jm.watches[watchKey{Target: "job_a", ReceiverSessionID: rsID, ReceiverDelegateID: rdID}] = matchA
@@ -30,9 +30,9 @@ func TestS1Cov_watchListToolResultForReceiver(t *testing.T) {
 
 	// terminalFlush: a matching detached config (distinct watchID) is appended;
 	// a non-matching one and one whose watchID is already active are skipped.
-	flushMatch := &watchConfig{id: "wf", watchID: "wf", sourcePublic: "zzz", target: "job_f", receiverSessionID: rsID, receiverDelegateID: rdID}
-	flushDup := &watchConfig{id: "wa", watchID: "wa", sourcePublic: "aaa", target: "job_a", receiverSessionID: rsID, receiverDelegateID: rdID}
-	flushOther := &watchConfig{id: "wx", watchID: "wx", sourcePublic: "yyy", target: "job_x", receiverSessionID: "OTHER", receiverDelegateID: rdID}
+	flushMatch := &watchConfig{watchID: "wf", sourcePublic: "zzz", target: "job_f", receiverSessionID: rsID, receiverDelegateID: rdID}
+	flushDup := &watchConfig{watchID: "wa", sourcePublic: "aaa", target: "job_a", receiverSessionID: rsID, receiverDelegateID: rdID}
+	flushOther := &watchConfig{watchID: "wx", sourcePublic: "yyy", target: "job_x", receiverSessionID: "OTHER", receiverDelegateID: rdID}
 	jm.terminalFlush = map[*watchConfig]bool{flushMatch: true, flushDup: true, flushOther: true}
 
 	// watchHistory: one matching, one not.

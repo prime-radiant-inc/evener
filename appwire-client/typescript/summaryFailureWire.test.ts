@@ -1,11 +1,7 @@
 import { expect, test } from "vitest";
-import {
-  currentTranscriptState,
-  decodeCurrentTranscriptState,
-  hydrateThread,
-  threadModelFromCurrentState,
-} from "./reducer";
 import { summaryFailureWireFixture, summaryFailureWireRead } from "./testing/summaryFailureWireFixtures";
+import { currentTranscriptState, decodeCurrentTranscriptState, threadModelFromCurrentState } from "./transcriptCache";
+import { hydrateThread } from "./transcriptHistory";
 import { attentionWarningNotice, isInformationalWarning } from "./warnings";
 
 // Dropping route data or extending the producer's raw.warning fields must fail

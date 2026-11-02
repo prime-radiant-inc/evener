@@ -1,18 +1,12 @@
 import type { LaunchConfigLayer, LaunchConfigResolved, LaunchOptionSchemaResponse } from "@evener/appwire-client";
-import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
-import { connectionStore } from "../../../stores/connection";
+import { resetConnectionStoreForTests } from "../../../stores/connection";
 import { resetLaunchConfigStoreForTests } from "../../../stores/launchConfig";
+import { connectReadyFakeClient } from "../../../testing/connectionTestUtils";
 import { LaunchServerSection } from "./launchServer";
 import { shownReasons } from "./reasonTestUtils";
-
-function connectFakeClient(): FakeClient {
-  const fake = new FakeClient("ready");
-  connectionStore.getState().connect(fake);
-  return fake;
-}
 
 const SCHEMA: LaunchOptionSchemaResponse = {
   options: [
@@ -32,18 +26,18 @@ const LAYER: LaunchConfigLayer = { agent: "evener" };
 const RESOLVED: LaunchConfigResolved = { effective: LAYER, layers: { global: LAYER }, provenance: { agent: "global" } };
 
 beforeEach(() => {
-  connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
+  resetConnectionStoreForTests();
   resetLaunchConfigStoreForTests();
 });
 
 afterEach(() => {
-  connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
+  resetConnectionStoreForTests();
   cleanup();
 });
 
 describe("load sequence", () => {
   test("shows a loading placeholder, then fetches schema before getLayer (sequential, not parallel)", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     const order: string[] = [];
     fake.on("evener/launch/schema", () => {
       order.push("schema");
@@ -62,7 +56,7 @@ describe("load sequence", () => {
   });
 
   test("on load failure, shows a failure message forever (2-state contract - no retry)", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     fake.on("evener/launch/schema", () => {
       throw new Error("network down");
     });
@@ -73,7 +67,7 @@ describe("load sequence", () => {
   });
 
   test("a best-effort resolve('/') populates the diagnostics panel after load; its own failure is non-fatal", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     fake.on("evener/launch/schema", () => SCHEMA);
     fake.on("evener/launch/getLayer", () => LAYER);
     fake.on("evener/launch/resolve", () => {
@@ -86,7 +80,7 @@ describe("load sequence", () => {
   });
 
   test("renders warnings from the initial resolve()'s diagnostics", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     fake.on("evener/launch/schema", () => SCHEMA);
     fake.on("evener/launch/getLayer", () => LAYER);
     fake.on("evener/launch/resolve", () => ({
@@ -101,7 +95,7 @@ describe("load sequence", () => {
 
 describe("save", () => {
   test("saving calls evener/launch/setLayer(/, global, collected) and refreshes diagnostics from ITS OWN returned resolved config", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     fake.on("evener/launch/schema", () => SCHEMA);
     fake.on("evener/launch/getLayer", () => LAYER);
     fake.on("evener/launch/resolve", () => RESOLVED); // no diagnostics initially
@@ -142,7 +136,7 @@ describe("resolved-default labels", () => {
   }
 
   test("an unset field names the effective layer's value once the initial resolve lands", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     fake.on("evener/launch/schema", () => BOOL_SCHEMA);
     fake.on("evener/launch/getLayer", () => ({}));
     fake.on("evener/launch/resolve", () => ({
@@ -157,7 +151,7 @@ describe("resolved-default labels", () => {
   });
 
   test("a failed resolve leaves the plain (default) marker", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     fake.on("evener/launch/schema", () => BOOL_SCHEMA);
     fake.on("evener/launch/getLayer", () => ({}));
     fake.on("evener/launch/resolve", () => {
@@ -170,7 +164,7 @@ describe("resolved-default labels", () => {
   });
 
   test("saving refreshes the labels from setLayer's own returned resolved config", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     fake.on("evener/launch/schema", () => BOOL_SCHEMA);
     fake.on("evener/launch/getLayer", () => ({}));
     fake.on("evener/launch/resolve", () => ({ effective: { sandboxNet: true }, layers: {}, provenance: {} }));

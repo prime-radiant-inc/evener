@@ -273,6 +273,10 @@ Authorization = "Bearer $PORTKEY_KEY"
 	for name, w := range want {
 		rec := r.explicit[name]
 		got, warns := r.credential(rec, r.listingTransport(rec))
+		if (got.MissingReason != "") != (len(warns) > 0) {
+			t.Errorf("%s: MissingReason = %q with warnings %v; want one exactly when the other is set", name, got.MissingReason, warns)
+		}
+		got.MissingReason = ""
 		if got != w {
 			t.Errorf("%s: credential = %+v, want %+v", name, got, w)
 		}
@@ -432,10 +436,7 @@ func TestCredential_GCPADCPrefersStoredJSON(t *testing.T) {
 	if !ok || inst.CredentialSource != "store" || len(inst.Warnings) != 0 {
 		t.Fatalf("instance = %+v ok=%v; want source store with no warnings", inst, ok)
 	}
-	res, err := r.Resolve("vertex/gemini-2.5-flash")
-	if err != nil {
-		t.Fatal(err)
-	}
+	res := mustResolve(t, r, "vertex/gemini-2.5-flash")
 	if res.Credential.Source != "store" || res.Credential.Value != stored {
 		t.Fatalf("credential = %+v", res.Credential)
 	}
@@ -450,10 +451,7 @@ func TestCredential_GCPADCStoreSourceNeverReportsShadowedEnvVar(t *testing.T) {
 	if !ok || inst.ShadowedEnvVar != "" {
 		t.Fatalf("instance = %+v ok=%v; want no shadowed env var (gcp-adc never consults api_key_env)", inst, ok)
 	}
-	res, err := r.Resolve("vertex/gemini-2.5-flash")
-	if err != nil {
-		t.Fatal(err)
-	}
+	res := mustResolve(t, r, "vertex/gemini-2.5-flash")
 	if res.ShadowedEnvVar != "" {
 		t.Fatalf("resolved.ShadowedEnvVar = %q, want empty", res.ShadowedEnvVar)
 	}
@@ -500,10 +498,7 @@ func TestCredential_GCPADCIgnoresNonJSONStoreValue_WithADC(t *testing.T) {
 	if len(inst.Warnings) != len(clean.Warnings)+1 {
 		t.Fatalf("warnings = %q, want one more than without the store value (%q)", inst.Warnings, clean.Warnings)
 	}
-	res, err := r.Resolve("vertex/gemini-2.5-flash")
-	if err != nil {
-		t.Fatal(err)
-	}
+	res := mustResolve(t, r, "vertex/gemini-2.5-flash")
 	if res.Credential.Source != "adc" || res.Credential.Value != "" {
 		t.Fatalf("credential = %+v, want the adc source with no value", res.Credential)
 	}
@@ -542,10 +537,7 @@ func TestCredential_GCPADCIgnoresUnsupportedStoreJSON_WithADC(t *testing.T) {
 			t.Errorf("warnings %q lack %q", joined, want)
 		}
 	}
-	res, err := r.Resolve("vertex/gemini-2.5-flash")
-	if err != nil {
-		t.Fatal(err)
-	}
+	res := mustResolve(t, r, "vertex/gemini-2.5-flash")
 	if res.Credential.Source != "adc" || res.Credential.Value != "" {
 		t.Fatalf("credential = %+v, want the adc source with no value", res.Credential)
 	}
@@ -569,10 +561,7 @@ func TestCredential_GCPADCIgnoresTypeOnlyStoreJSON_WithADC(t *testing.T) {
 			t.Errorf("warnings %q lack %q", joined, want)
 		}
 	}
-	res, err := r.Resolve("vertex/gemini-2.5-flash")
-	if err != nil {
-		t.Fatal(err)
-	}
+	res := mustResolve(t, r, "vertex/gemini-2.5-flash")
 	if res.Credential.Source != "adc" || res.Credential.Value != "" {
 		t.Fatalf("credential = %+v, want the adc source with no value", res.Credential)
 	}
@@ -596,10 +585,7 @@ func TestCredential_GCPADCIgnoresUnusableKeyStoreJSON_WithADC(t *testing.T) {
 			t.Errorf("warnings %q lack %q", joined, want)
 		}
 	}
-	res, err := r.Resolve("vertex/gemini-2.5-flash")
-	if err != nil {
-		t.Fatal(err)
-	}
+	res := mustResolve(t, r, "vertex/gemini-2.5-flash")
 	if res.Credential.Source != "adc" || res.Credential.Value != "" {
 		t.Fatalf("credential = %+v, want the adc source with no value", res.Credential)
 	}
@@ -785,10 +771,7 @@ func TestCredentialFromCommandExpression(t *testing.T) {
 	runs := 0
 	valueexpr.RunCommand = func(string) (string, error) { runs++; return "minted-token", nil }
 	r := fixtureLoad(t, nil, config)
-	res, err := r.Resolve("gw/house-model")
-	if err != nil {
-		t.Fatal(err)
-	}
+	res := mustResolve(t, r, "gw/house-model")
 	if res.Credential.Value != "minted-token" || res.Credential.Source != "api_key" {
 		t.Fatalf("credential = %+v; want minted-token from api_key", res.Credential)
 	}
@@ -806,7 +789,7 @@ func TestCredentialFromCommandExpression(t *testing.T) {
 		return "", errors.New("command exited with status 1: session expired")
 	}
 	failing := fixtureLoad(t, nil, config)
-	res, err = failing.Resolve("gw/house-model")
+	res, err := failing.Resolve("gw/house-model")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -850,10 +833,7 @@ func TestCredentialSourceUnderNoneAuthNamesEffectiveHeaders(t *testing.T) {
 		t.Fatalf("the presence judgment ran the command %d times; want 0", runs)
 	}
 
-	res, err := r.Resolve("gw/house-model")
-	if err != nil {
-		t.Fatal(err)
-	}
+	res := mustResolve(t, r, "gw/house-model")
 	if res.Credential.Source != "credential_headers" {
 		t.Fatalf("full source = %q; want credential_headers", res.Credential.Source)
 	}
@@ -943,10 +923,7 @@ func TestCredentialEmptyExpansionIsNoCredential(t *testing.T) {
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			r := fixtureLoad(t, nil, tt.config)
-			res, err := r.Resolve("gw/house-model")
-			if err != nil {
-				t.Fatal(err)
-			}
+			res := mustResolve(t, r, "gw/house-model")
 			if res.Credential.Source != "none" || res.Credential.Value != "" {
 				t.Fatalf("credential = %+v; want none with no value", res.Credential)
 			}
@@ -975,10 +952,7 @@ func TestCredentialHeaderCommandExpressionWarns(t *testing.T) {
 		"credential_headers = { \"X-Gateway-Key\" = '''$(get-gateway-token)''' }\n" +
 		"[providers.gw.models.\"house-model\"]\n"
 	r := fixtureLoad(t, nil, config)
-	res, err := r.Resolve("gw/house-model")
-	if err != nil {
-		t.Fatal(err)
-	}
+	res := mustResolve(t, r, "gw/house-model")
 	if _, ok := res.CredentialHeaders["X-Gateway-Key"]; ok {
 		t.Fatal("a failed command expression must drop the credential header")
 	}
@@ -1000,10 +974,7 @@ func TestCredentialHeaderEmptyExpansionWarns(t *testing.T) {
 		"credential_headers = { \"X-Gateway-Key\" = '''${MISSING:-}''' }\n" +
 		"[providers.gw.models.\"house-model\"]\n"
 	r := fixtureLoad(t, nil, config)
-	res, err := r.Resolve("gw/house-model")
-	if err != nil {
-		t.Fatal(err)
-	}
+	res := mustResolve(t, r, "gw/house-model")
 	if _, ok := res.CredentialHeaders["X-Gateway-Key"]; ok {
 		t.Fatal("an empty expansion must drop the credential header")
 	}
@@ -1033,10 +1004,7 @@ func TestResolveAuthHeaderFailureWarnsOnce(t *testing.T) {
 				"credential_headers = { \"Authorization\" = '''" + tt.value + "''' }\n" +
 				"[providers.gw.models.\"house-model\"]\n"
 			r := fixtureLoad(t, nil, config)
-			res, err := r.Resolve("gw/house-model")
-			if err != nil {
-				t.Fatal(err)
-			}
+			res := mustResolve(t, r, "gw/house-model")
 			if res.Credential.Source != "none" {
 				t.Fatalf("credential = %+v; want none", res.Credential)
 			}
@@ -1124,10 +1092,7 @@ func TestAuthorizationHeaderLookupCaseInsensitive(t *testing.T) {
 		"credential_headers = { \"authorization\" = '''$(mint-auth)''' }\n" +
 		"[providers.gw.models.\"house-model\"]\n"
 	r := fixtureLoad(t, nil, config)
-	res, err := r.Resolve("gw/house-model")
-	if err != nil {
-		t.Fatal(err)
-	}
+	res := mustResolve(t, r, "gw/house-model")
 	if res.Credential.Source != "credential_headers" || res.Credential.Value != "minted-token" {
 		t.Fatalf("credential = %+v; want the minted value from the lowercase Authorization header", res.Credential)
 	}
@@ -1156,10 +1121,7 @@ func TestCredentialSchemeWordOnlyExpansionIsNoCredential(t *testing.T) {
 				"credential_headers = { \"Authorization\" = '''" + value + "''' }\n" +
 				"[providers.gw.models.\"house-model\"]\n"
 			r := fixtureLoad(t, nil, config)
-			res, err := r.Resolve("gw/house-model")
-			if err != nil {
-				t.Fatal(err)
-			}
+			res := mustResolve(t, r, "gw/house-model")
 			if res.Credential.Source != "none" || res.Credential.Value != "" {
 				t.Fatalf("credential = %+v; want none: the default is only scheme words", res.Credential)
 			}
@@ -1186,10 +1148,7 @@ func TestAPIKeySchemeWordOnlyExpansionIsNoCredential(t *testing.T) {
 		"api_key = '''${MISSING:-Bearer}'''\n" +
 		"[providers.gw.models.\"house-model\"]\n"
 	r := fixtureLoad(t, nil, config)
-	res, err := r.Resolve("gw/house-model")
-	if err != nil {
-		t.Fatal(err)
-	}
+	res := mustResolve(t, r, "gw/house-model")
 	if res.Credential.Source != "none" || res.Credential.Value != "" {
 		t.Fatalf("credential = %+v; want none: the default is only a scheme word", res.Credential)
 	}
@@ -1207,7 +1166,7 @@ func TestAPIKeySchemeWordOnlyExpansionIsNoCredential(t *testing.T) {
 		"api_key = \"Bearer\"\n" +
 		"[providers.gw.models.\"house-model\"]\n"
 	r = fixtureLoad(t, nil, literal)
-	res, err = r.Resolve("gw/house-model")
+	res, err := r.Resolve("gw/house-model")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1269,10 +1228,7 @@ func TestCustomAuthHeaderCarriesTheCredential(t *testing.T) {
 				"credential_headers = { \"" + tt.mapKey + "\" = '''$(get-key)''' }\n" +
 				"[providers.gw.models.\"house-model\"]\n"
 			r := fixtureLoad(t, nil, config)
-			res, err := r.Resolve("gw/house-model")
-			if err != nil {
-				t.Fatal(err)
-			}
+			res := mustResolve(t, r, "gw/house-model")
 			if res.Credential.Source != "credential_headers" || res.Credential.Value != "minted-key" {
 				t.Fatalf("credential = %+v; want the minted value from the custom auth header", res.Credential)
 			}
@@ -1355,10 +1311,7 @@ func TestRowAuthHeaderOverrideCarriesTheCredential(t *testing.T) {
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			r := fixtureLoad(t, map[string]string{"K": "gk"}, tt.config)
-			res, err := r.Resolve("gw/house-model")
-			if err != nil {
-				t.Fatal(err)
-			}
+			res := mustResolve(t, r, "gw/house-model")
 			if res.Credential.Source != tt.wantResolve {
 				t.Fatalf("resolve credential = %+v; want source %s", res.Credential, tt.wantResolve)
 			}
@@ -1400,10 +1353,7 @@ func TestRowAuthOverrideSelectsTheScheme(t *testing.T) {
 		"[providers.gw.models.\"house-model\"]\n" +
 		"auth = \"none\"\n"
 	r := fixtureLoad(t, nil, config)
-	res, err := r.Resolve("gw/house-model")
-	if err != nil {
-		t.Fatal(err)
-	}
+	res := mustResolve(t, r, "gw/house-model")
 	if res.Credential.Source != "none" {
 		t.Fatalf("credential = %+v; want none", res.Credential)
 	}
@@ -1442,10 +1392,7 @@ func TestListingJudgesTheGlobResolvedDefaultModel(t *testing.T) {
 		"[providers.gw.models.\"house-*\"]\n" +
 		"auth = \"none\"\n"
 	r := fixtureLoad(t, nil, config)
-	res, err := r.Resolve("gw/house-model")
-	if err != nil {
-		t.Fatal(err)
-	}
+	res := mustResolve(t, r, "gw/house-model")
 	if res.Transport.Auth != "none" {
 		t.Fatalf("resolve auth = %q; the glob row's none override must apply to the child", res.Transport.Auth)
 	}
@@ -1538,10 +1485,7 @@ func TestCredentialHeaderWarningsSortedByKey(t *testing.T) {
 		"credential_headers = { " + strings.Join(pairs, ", ") + " }\n" +
 		"[providers.gw.models.\"house-model\"]\n"
 	r := fixtureLoad(t, nil, config)
-	res, err := r.Resolve("gw/house-model")
-	if err != nil {
-		t.Fatal(err)
-	}
+	res := mustResolve(t, r, "gw/house-model")
 	if res.Credential.Source != "api_key" {
 		t.Fatalf("credential = %+v; want the api_key", res.Credential)
 	}
@@ -1598,10 +1542,7 @@ func TestCredentialListingSkipsOverriddenKeyCommands(t *testing.T) {
 	if stableRuns != 0 {
 		t.Fatalf("the listing ran the overridden api_key command %d time(s); a credential the wire never carries must not evaluate anywhere", stableRuns)
 	}
-	res, err := r.Resolve("gw/house-model")
-	if err != nil {
-		t.Fatal(err)
-	}
+	res := mustResolve(t, r, "gw/house-model")
 	if res.Credential.Source != "none" || res.Credential.AuthoredLayer != "credential_headers" {
 		t.Fatalf("credential = %+v; want the authored header's own failure: it owns the slot, so its failure is the launch's, not a reason to fall back to the key it overrides", res.Credential)
 	}
@@ -2052,10 +1993,7 @@ func TestAuthNoneNeverExpandsAPIKey(t *testing.T) {
 		"api_key = '''$(none-mint)'''\n" +
 		"[providers.gw.models.\"house-model\"]\n"
 	r := fixtureLoad(t, nil, config)
-	res, err := r.Resolve("gw/house-model")
-	if err != nil {
-		t.Fatal(err)
-	}
+	res := mustResolve(t, r, "gw/house-model")
 	if res.Credential.Source != "none" {
 		t.Fatalf("credential = %+v; want none", res.Credential)
 	}
@@ -2111,10 +2049,7 @@ func TestMintedLettersOnlyTokenIsACredential(t *testing.T) {
 		"credential_headers = { \"Authorization\" = '''$(mint-auth)''' }\n" +
 		"[providers.gw.models.\"house-model\"]\n"
 	r := fixtureLoad(t, nil, config)
-	res, err := r.Resolve("gw/house-model")
-	if err != nil {
-		t.Fatal(err)
-	}
+	res := mustResolve(t, r, "gw/house-model")
 	if res.Credential.Source != "credential_headers" || res.Credential.Value != "abcdeftoken" {
 		t.Fatalf("credential = %+v; want the minted letters-only token", res.Credential)
 	}
@@ -2136,10 +2071,7 @@ func TestGenericCredentialHeaderSchemeWordDefaultDrops(t *testing.T) {
 		"credential_headers = { \"X-Gateway-Key\" = '''${MISSING:-Bearer}''' }\n" +
 		"[providers.gw.models.\"house-model\"]\n"
 	r := fixtureLoad(t, nil, config)
-	res, err := r.Resolve("gw/house-model")
-	if err != nil {
-		t.Fatal(err)
-	}
+	res := mustResolve(t, r, "gw/house-model")
 	if _, ok := res.CredentialHeaders["X-Gateway-Key"]; ok {
 		t.Fatal("the scheme-word-only gateway key is on the wire; want it dropped")
 	}
@@ -2162,11 +2094,54 @@ func TestLiteralCredentialHeaderValueStays(t *testing.T) {
 		"credential_headers = { \"X-Api-Key\" = \"abcdef\" }\n" +
 		"[providers.gw.models.\"house-model\"]\n"
 	r := fixtureLoad(t, nil, config)
-	res, err := r.Resolve("gw/house-model")
-	if err != nil {
-		t.Fatal(err)
-	}
+	res := mustResolve(t, r, "gw/house-model")
 	if got := res.CredentialHeaders["X-Api-Key"]; got != "abcdef" {
 		t.Fatalf("credential header map carries %q; want the literal key kept", got)
+	}
+}
+
+// MissingReason is the typed half of the credential diagnosis: set exactly
+// when a scheme that needs a credential resolved to none, on the listing,
+// the gate and the full resolution alike, so no caller parses Warnings.
+func TestCredentialMissingReasonTracksTheSlotState(t *testing.T) {
+	const head = "[providers.gw]\n" +
+		"base = \"openai-compatible\"\n" +
+		"base_url = \"https://gw.internal.example/v1\"\n" +
+		"protocol = \"openai-chat\"\n"
+	const model = "[providers.gw.models.\"house-model\"]\n"
+	for _, tt := range []struct {
+		name    string
+		config  string
+		env     map[string]string
+		missing bool
+	}{
+		{"api_key unset variable", head + "auth = \"bearer\"\napi_key = '''$MISSING'''\n" + model, nil, true},
+		{"api_key empty expansion", head + "auth = \"bearer\"\napi_key = '''${MISSING:-}'''\n" + model, nil, true},
+		{"api_key scheme word only", head + "auth = \"bearer\"\napi_key = '''${MISSING:-Bearer}'''\n" + model, nil, true},
+		{"nothing authored", head + "auth = \"bearer\"\n" + model, nil, true},
+		{"auth header unset variable", head + "auth = \"header\"\nauth_header = \"Authorization\"\ncredential_headers = { \"Authorization\" = '''$MISSING''' }\n" + model, nil, true},
+		{"auth header empty expansion", head + "auth = \"header\"\nauth_header = \"Authorization\"\ncredential_headers = { \"Authorization\" = '''${MISSING:-}''' }\n" + model, nil, true},
+		{"api_key present", head + "auth = \"bearer\"\napi_key = '''$PRESENT'''\n" + model, map[string]string{"PRESENT": "k"}, false},
+		{"auth header present", head + "auth = \"header\"\nauth_header = \"X-K\"\ncredential_headers = { \"X-K\" = '''$PRESENT''' }\n" + model, map[string]string{"PRESENT": "k"}, false},
+		{"optional bearer without key", head + "auth = \"optional-bearer\"\n" + model, nil, false},
+		{"auth none", head + "auth = \"none\"\n" + model, nil, false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			r := fixtureLoad(t, tt.env, tt.config)
+			res, err := r.Resolve("gw/house-model")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := res.Credential.MissingReason != ""; got != tt.missing {
+				t.Fatalf("resolve: MissingReason = %q; want missing=%v", res.Credential.MissingReason, tt.missing)
+			}
+			gate, err := r.ResolveGateCredential("gw", "house-model")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := gate.Credential.MissingReason != ""; got != tt.missing {
+				t.Fatalf("gate: MissingReason = %q; want missing=%v", gate.Credential.MissingReason, tt.missing)
+			}
+		})
 	}
 }

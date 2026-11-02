@@ -52,7 +52,6 @@ vi.mock("../retainedScreen", () => ({
 }));
 vi.mock("../nativeDrafts", () => ({ nativeDrafts: () => ({ creation: harness.drafts }) }));
 vi.mock("./nativeLaunchMemory", () => ({ launchMemory: () => harness.memory }));
-vi.mock("expo-crypto", () => ({ randomUUID: () => "sheet-uuid" }));
 vi.mock("../hosts/useHubFleet", () => ({ useHubFleet: () => ({ hosts: null, live: null }) }));
 // The pages render inside the navigator, which isn't drawn here; it reads
 // the context the sheet gives them.
@@ -79,7 +78,6 @@ vi.mock("./MoreOptions", () => ({ MoreOptions: () => null }));
 vi.mock("react-native", async () => ({
 	...(await import("../renderNative.testkit")).nativeModuleMock(),
 }));
-vi.mock("expo-symbols", () => ({ SymbolView: "SymbolView" }));
 // The sheet's share handoff reads the app group; this suite's sheet carries no
 // share, and the module cannot load under vitest.
 vi.mock("expo-file-system", () => ({ Paths: { appleSharedContainers: {} } }));

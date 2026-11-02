@@ -236,8 +236,8 @@ func TestRunExitsWhenADelegateIsWedgedInAnUncancellableToolCall(t *testing.T) {
 }
 
 // closeStopJoinObservations records every stop join Session.Close bounds, via
-// agent.ObserveCloseStopJoin: the stop's deadline, the cascade's, and when it
-// was minted. The companion budget seam records the immutable cascade budget.
+// agent.ObserveCloseStopJoinBudget: the stop's deadline, the cascade's, and the
+// immutable cascade budget.
 type closeStopJoinObservations struct {
 	mu   sync.Mutex
 	seen []closeStopJoin

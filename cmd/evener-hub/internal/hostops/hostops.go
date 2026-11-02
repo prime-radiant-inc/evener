@@ -284,16 +284,9 @@ func validateRecord(record Record) error {
 	// The loader refuses a file that names any key twice, so the write path must
 	// refuse a raw field that does: writing one would brick the store on the next
 	// boot — the file the store just committed would fail its own load.
-	for _, field := range []struct {
-		raw  json.RawMessage
-		what string
-	}{
-		{record.FencingEpoch, "fencing epoch"},
-	} {
-		if err := validateRawFieldKeys(field.raw); err != nil {
-			return fmt.Errorf("%w: record %q carries a %s that names a key twice: %w",
-				ErrInvalidRecord, record.ID, field.what, err)
-		}
+	if err := validateRawFieldKeys(record.FencingEpoch); err != nil {
+		return fmt.Errorf("%w: record %q carries a fencing epoch that names a key twice: %w",
+			ErrInvalidRecord, record.ID, err)
 	}
 	if len(record.FencingEpoch) > 0 && !jsonFieldIsObject(record.FencingEpoch) {
 		return fmt.Errorf("%w: record %q carries a fencing epoch that is not an object", ErrInvalidRecord, record.ID)

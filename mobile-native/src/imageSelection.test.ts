@@ -242,6 +242,91 @@ it("retains current text while decoding and does not reuse a removed marker", as
 	expect(document.getSnapshot().record.draft.startsWith("newer ")).toBe(true);
 });
 
+it("reserves literal and current image markers before allocating a selection", async () => {
+	const { document, selection } = setup(
+		async () => [photo],
+		async () => "AQID",
+	);
+	document.edit("literal [image 1] and [image 3]");
+	document.addImage({ id: "existing", marker: 2, mediaType: "image/png", data: "BAUG" });
+
+	await selection.choose();
+
+	expect(document.getSnapshot().record.images?.map((image) => image.marker)).toEqual([2, 4]);
+	expect(document.getSnapshot().record.draft).toBe("literal [image 1] and [image 3][image 2][image 4]");
+});
+
+it("reallocates a reserved marker claimed by text while encoding is pending", async () => {
+	let finish!: (data: string) => void;
+	let started!: () => void;
+	const encoding = new Promise<void>((resolve) => {
+		started = resolve;
+	});
+	const { document, selection } = setup(
+		async () => [photo],
+		() => {
+			started();
+			return new Promise((resolve) => {
+				finish = resolve;
+			});
+		},
+	);
+	const choosing = selection.choose();
+	await encoding;
+	document.edit("typed [image 1]");
+	finish("AQID");
+	await choosing;
+
+	const record = document.getSnapshot().record;
+	expect(record.draft).toBe("typed [image 1][image 2]");
+	expect(record.images?.map((image) => [image.id, image.marker])).toEqual([["image-1", 2]]);
+	expect(document.imagePreviews()[0]?.data).toBe("AQID");
+});
+
+it("reserves unconfirmed and pending image markers for the whole selection", async () => {
+	const { document, selection } = setup(
+		async () => [photo, { ...photo, name: "second.jpg" }],
+		async () => "AQID",
+	);
+	document.edit("literal [image 1]");
+	document.replaceDraft("literal [image 1]");
+	await document.submitText("sending [image 5]", async () => false, [
+		{ marker: 5, mediaType: "image/png", data: "BAUG" },
+	]);
+	await selection.choose();
+
+	expect(document.getSnapshot().record.images?.map((image) => image.marker)).toEqual([6, 7]);
+	expect(document.getSnapshot().record.unconfirmedImages?.map((image) => image.marker)).toEqual([5]);
+});
+
+it("reallocates a pending marker when another tile claims it during encoding", async () => {
+	let finish!: (data: string) => void;
+	let started!: () => void;
+	const encoding = new Promise<void>((resolve) => {
+		started = resolve;
+	});
+	const { document, selection } = setup(
+		async () => [photo],
+		() => {
+			started();
+			return new Promise((resolve) => {
+				finish = resolve;
+			});
+		},
+	);
+	const choosing = selection.choose();
+	await encoding;
+	document.addImage({ id: "new-tile", marker: 1, mediaType: "image/png", data: "BAUG" });
+	finish("AQID");
+	await choosing;
+
+	expect(document.getSnapshot().record.images?.map((image) => [image.id, image.marker])).toEqual([
+		["new-tile", 1],
+		["image-1", 2],
+	]);
+	expect(document.imagePreviews().map((image) => image.data)).toEqual(["BAUG", "AQID"]);
+});
+
 it("adds a photo the camera took through the same encoding and markers", async () => {
 	const shot = { ...photo, name: "camera.jpg" };
 	const { document, selection } = setup(

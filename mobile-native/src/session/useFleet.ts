@@ -4,7 +4,7 @@
 // Back's count and Next agree with the Board.
 import type { NavigationManifest } from "@evener/appwire-client";
 import { useEffect, useMemo, useState, useSyncExternalStore } from "react";
-import type { ConversationClientLike } from "../../../mobile/src/services/conversation";
+import type { ConversationClientLike } from "../conversation/services/conversation";
 import { type LiveBands, liveBands } from "../board/attention";
 import { createBoardController } from "../board/boardData";
 import type { BoardSeen } from "../board/hubSeen";

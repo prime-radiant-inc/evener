@@ -112,9 +112,7 @@ func FuzzJobWatchEventsOutput(f *testing.F) {
 			filter := &watchEventFilter{ToolName: "wanted", Status: "error"}
 			cases := []events.SessionEvent{
 				{Kind: events.EventError},
-				{Kind: events.EventToolCallEnd, Data: (*events.ToolCallEndData)(nil)},
 				{Kind: events.EventToolCallEnd, Data: events.ErrorData{}},
-				{Kind: events.EventToolCallEnd, Data: &events.ToolCallEndData{ToolName: "wanted"}},
 				{Kind: events.EventToolCallEnd, Data: events.ToolCallEndData{ToolName: "wanted", Error: "boom"}},
 			}
 			for _, ev := range cases {

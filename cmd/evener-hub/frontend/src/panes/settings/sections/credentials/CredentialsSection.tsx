@@ -183,6 +183,7 @@ export function CredentialsSection({
   // read a ref that this handler has already written. The state copy is what
   // renders the switch disabled.
   const pendingToggleKeys = useRef(new Set<string>());
+  const oauthStartGeneration = useRef(0);
 
   async function handleRefreshModels(name: string): Promise<void> {
     try {
@@ -249,8 +250,12 @@ export function CredentialsSection({
   // authDeviceStart, then branches on `fallback` exactly like the legacy's
   // startDeviceLogin (templates/partials/credentials.html:58-75).
   async function handleOAuthStart(name: string): Promise<void> {
+    // Closing the editor claims a new generation, so a start still out when the
+    // user cancels (a restart the dialog asked for, say) cannot reopen it.
+    const generation = ++oauthStartGeneration.current;
     try {
-      setOpenEditor(await startOAuthFlow(name));
+      const editor = await startOAuthFlow(name, () => oauthStartGeneration.current === generation);
+      if (editor) setOpenEditor(editor);
     } catch (err) {
       if (recoverStaleListing(err)) return;
       toast.push("error", `Sign-in failed: ${friendlyErrorMessage(err)}`);
@@ -499,7 +504,10 @@ export function CredentialsSection({
   // effect depends on the onSuccess it's given, and an unstable reference
   // here would restart that dialog's poll timer on every unrelated parent
   // re-render (see oauthDialogs.tsx's own comment on that effect).
-  const closeEditor = useCallback(() => setOpenEditor(null), []);
+  const closeEditor = useCallback(() => {
+    oauthStartGeneration.current += 1;
+    setOpenEditor(null);
+  }, []);
   const rootRef = useRef<HTMLDivElement>(null);
   // A listing that no longer carries the focused row can unmount the control
   // holding the keyboard (the rows themselves stay mounted through reads and
@@ -541,11 +549,7 @@ export function CredentialsSection({
               </Dialog>
             }
           >
-            <ConnectProviderDialog
-              completionLabel="Done"
-              onClose={() => setConnecting(false)}
-              onConnected={() => setConnecting(false)}
-            />
+            <ConnectProviderDialog onClose={() => setConnecting(false)} onConnected={() => setConnecting(false)} />
           </Suspense>
         </ConnectProviderDialogBoundary>
       )}
@@ -701,11 +705,13 @@ export function CredentialsSection({
         })()}
       {openEditor?.kind === "oauth-redirect" && (
         <OAuthRedirectDialog
+          key={openEditor.flowId}
           name={openEditor.name}
           flowId={openEditor.flowId}
           authUrl={openEditor.authUrl}
           onCancel={closeEditor}
           onSuccess={closeEditor}
+          onRestart={() => void handleOAuthStart(openEditor.name)}
         />
       )}
       {openEditor?.kind === "device" && (

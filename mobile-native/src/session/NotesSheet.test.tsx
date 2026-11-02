@@ -1,3 +1,4 @@
+import { canWriteSharedNotes } from "@evener/appwire-client";
 // The Notes & links sheet route, rendered with a host in notesHosts the way
 // ConversationScreen provides one: a real NotesController over a fake client.
 // Only native edges are mocked.
@@ -8,6 +9,7 @@ import { act, type ReactTestInstance, type ReactTestRenderer } from "react-test-
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { paletteFor } from "../design/tokens";
 import {
+	type PanGestureMock,
 	alertRequests,
 	playedHaptics,
 	pressable,
@@ -25,7 +27,7 @@ import { Sheet } from "../sheet/Sheet";
 import { sheetKey } from "../sheet/sheetHosts";
 import type { SyncStringStorage } from "../syncStringStorage";
 import { type NotesHost, NotesSheet, notesHosts } from "./NotesSheet";
-import { canWriteHumanNote, NOTE_LIMIT, NotesController, type SaveOutcome } from "./sessionNotes";
+import { NOTE_LIMIT, NotesController, type SaveOutcome } from "./sessionNotes";
 
 const navigation = vi.hoisted(() => ({ goBack: vi.fn(), dispatch: vi.fn(), navigate: vi.fn() }));
 const appState = vi.hoisted(() => ({ listeners: [] as ((state: string) => void)[] }));
@@ -47,7 +49,6 @@ vi.mock("@react-navigation/native", () => ({
 	useNavigation: () => navigation,
 	usePreventRemove: () => {},
 }));
-vi.mock("expo-symbols", () => ({ SymbolView: "SymbolView" }));
 vi.mock("react-native-gesture-handler/ReanimatedSwipeable", async () =>
 	(await import("../renderNative.testkit")).gestureHandlerModuleMock(),
 );
@@ -114,7 +115,7 @@ function provide(current: Session, { removeThrows }: { removeThrows?: string } =
 		instanceId: () => "instance",
 		savedNote: () => current.humanNote,
 		working: () => current.status.type === "active",
-		writable: () => canWriteHumanNote(current),
+		writable: () => canWriteSharedNotes(current),
 		storage: memoryStorage(),
 		uuid: () => "uuid",
 	});
@@ -501,6 +502,20 @@ describe("links", () => {
 		expect(tree.root.findByProps({ testID: "swipe-row-content" }).props.style).toEqual({
 			backgroundColor: palette.canvas,
 		});
+	});
+
+	it("starts a link row's edge band at the sheet's padded left edge", () => {
+		provide(session({ sessionUrls: [web, file] }));
+		const tree = sheet();
+		const scroller = tree.root.findAllByType("ScrollView" as never)[0];
+		expect(scroller?.props.contentContainerStyle).toMatchObject({ paddingHorizontal: 20 });
+		const swipeables = tree.root.findAllByType("ReanimatedSwipeable" as never);
+		expect(swipeables).toHaveLength(2);
+		for (const swipeable of swipeables) {
+			const tracker = swipeable.props.simultaneousWithExternalGesture as PanGestureMock | undefined;
+			expect(swipeable.props.hitSlop).toEqual({ left: -4 });
+			expect(tracker?.config.hitSlop).toEqual({ left: -4 });
+		}
 	});
 
 	it("offers VoiceOver Remove link, the swipe's own remove, on a session whose notes you can change", async () => {

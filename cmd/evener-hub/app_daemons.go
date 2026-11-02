@@ -29,7 +29,7 @@ func daemonIdentity(entry rendezvous.Entry) appwire.DaemonIdentity {
 		ref = entry.ThreadID
 	}
 	if ref == "" {
-		if workspace, err := appwire.ParseRef(entry.WorkspaceRef); err == nil && workspace.SourceID == "local" {
+		if workspace, err := appwire.ParseRef(entry.WorkspaceRef); err == nil && workspace.SourceID == appwire.LocalSourceID {
 			ref = workspace.ThreadID
 		}
 	}
@@ -102,7 +102,7 @@ func registerDaemonHandlers(server *appserver.Server, cfg hubcore.WebConfig, sou
 // retire the handler forwards on the serial worker (the #4080 stall, silently).
 func daemonRetireRef(params appwire.DaemonRetireParams) (appwire.Ref, error) {
 	ref, err := appwire.ParseRef(params.Identity.Ref)
-	if err != nil || ref.SourceID != "local" {
+	if err != nil || ref.SourceID != appwire.LocalSourceID {
 		return appwire.Ref{}, appwire.InvalidParams("daemon retire requires a local session ref")
 	}
 	return ref, nil
@@ -352,7 +352,7 @@ func retireDaemon(ctx context.Context, cfg hubcore.WebConfig, sources *appsource
 	if sources == nil {
 		return appwire.DaemonRetireResponse{}, appwire.Unavailable("local daemon source is not configured")
 	}
-	source, ok := sources.Source("local")
+	source, ok := sources.Source(appwire.LocalSourceID)
 	if !ok {
 		return appwire.DaemonRetireResponse{}, appwire.Unavailable("local daemon source is not configured")
 	}

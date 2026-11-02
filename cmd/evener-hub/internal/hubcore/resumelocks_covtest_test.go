@@ -5,8 +5,7 @@ import (
 	"testing"
 )
 
-// TestCovNewResumeLocks covers NewResumeLocks (resumelocks.go:16) and For
-// (resumelocks.go:23). For must return the same mutex for the same id and
+// TestCovNewResumeLocks covers NewResumeLocks and For. For must return the same mutex for the same id and
 // distinct mutexes for different ids.
 func TestCovNewResumeLocks(t *testing.T) {
 	r := NewResumeLocks()
@@ -84,7 +83,7 @@ func TestCovResumeLocksConcurrent(t *testing.T) {
 	}
 }
 
-// TestCovSessionMetaPath covers sessionMetaPath (past.go:223), a pure
+// TestCovSessionMetaPath covers sessionMetaPath, a pure
 // path-join helper.
 func TestCovSessionMetaPath(t *testing.T) {
 	got := sessionMetaPath("/projects/myproject", "01ABCDEF")
@@ -94,7 +93,7 @@ func TestCovSessionMetaPath(t *testing.T) {
 	}
 }
 
-// TestCovNewDeletionStore covers NewDeletionStore (deletion_store.go:72),
+// TestCovNewDeletionStore covers NewDeletionStore,
 // which opens the host deletion store under stateRoot. With a fresh temp
 // directory (no existing snapshot), it returns an empty store.
 func TestCovNewDeletionStore(t *testing.T) {

@@ -1,11 +1,9 @@
-import { readFileSync } from "node:fs";
-import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
 import { makeTranscriptDisplayConfig, presetContent, type TranscriptDisplayConfigV1 } from "@evener/appwire-client";
 import { act, fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { startTransition, useState } from "react";
 import { expect, onTestFinished, test, vi } from "vitest";
+import { readModuleCss } from "../../../styles/cssBlock";
 import { installMobileViewport } from "../testing/mobileViewport";
 import { TranscriptDetailEditor } from "./TranscriptDetailEditor";
 
@@ -396,8 +394,7 @@ test("Hook exit messages is labelled through FormRow and Select", async () => {
 });
 
 test("styles only layout and retains semantic fieldsets", () => {
-  const here = dirname(fileURLToPath(import.meta.url));
-  const css = readFileSync(join(here, "transcriptDisplay.module.css"), "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
+  const css = readModuleCss(import.meta.url, "transcriptDisplay.module.css");
 
   expect(css).toContain("container-name: transcript-detail-editor");
   expect(css).toMatch(/\.root[^{]*\{[^}]*gap:\s*var\(--space-3\)/);

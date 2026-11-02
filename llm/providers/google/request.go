@@ -380,6 +380,28 @@ func geminiImagePart(p llm.ContentPart) (map[string]any, error) {
 	return nil, nil
 }
 
+// geminiDocumentPart represents user document input without fetching or
+// rewriting it. FileName is not part of Gemini's media-part schema.
+func geminiDocumentPart(doc *llm.DocumentData) map[string]any {
+	if doc == nil {
+		return nil
+	}
+	mt := strings.TrimSpace(doc.MediaType)
+	if mt == "" {
+		mt = "application/pdf"
+	}
+	if len(doc.Data) > 0 {
+		return map[string]any{"inlineData": map[string]any{
+			"mimeType": mt,
+			"data":     base64.StdEncoding.EncodeToString(doc.Data),
+		}}
+	}
+	if u := strings.TrimSpace(doc.URL); u != "" {
+		return map[string]any{"fileData": map[string]any{"mimeType": mt, "fileUri": u}}
+	}
+	return nil
+}
+
 func toGeminiContents(model string, msgs []llm.Message, multimodalToolResults bool) (system string, contents []map[string]any, _ error) {
 	var sysParts []string
 	appendContent := func(role string, parts []map[string]any) {
@@ -431,7 +453,11 @@ func toGeminiContents(model string, msgs []llm.Message, multimodalToolResults bo
 					if part != nil {
 						parts = append(parts, part)
 					}
-				case llm.ContentAudio, llm.ContentDocument:
+				case llm.ContentDocument:
+					if part := geminiDocumentPart(p.Document); part != nil {
+						parts = append(parts, part)
+					}
+				case llm.ContentAudio:
 					return "", nil, &llm.ConfigurationError{Message: fmt.Sprintf("unsupported content kind for google: %s", p.Kind)}
 				default:
 					// ignore
@@ -479,7 +505,10 @@ func toGeminiContents(model string, msgs []llm.Message, multimodalToolResults bo
 						part["thoughtSignature"] = sig
 					}
 					parts = append(parts, part)
-				case llm.ContentAudio, llm.ContentDocument:
+				case llm.ContentDocument:
+					// Document input is user-only, not generated-document replay.
+					return "", nil, &llm.ConfigurationError{Message: "unsupported assistant document content for google"}
+				case llm.ContentAudio:
 					return "", nil, &llm.ConfigurationError{Message: fmt.Sprintf("unsupported content kind for google: %s", p.Kind)}
 				default:
 					// ignore
@@ -521,22 +550,28 @@ func toGeminiContents(model string, msgs []llm.Message, multimodalToolResults bo
 					"name":     name,
 					"response": respObj,
 				}
+				// Documents take the describing side-channel as user-message
+				// documents. Sending them here too would duplicate their delivery
+				// (llm.DeliversToolResultMedia deliberately remains image-only).
 				if len(p.ToolResult.ImageData) > 0 {
-					if !multimodalToolResults {
-						return "", nil, &llm.ConfigurationError{Message: fmt.Sprintf("google model %q does not support tool-result images: multimodal function responses require a Gemini 3 series model", model)}
+					mediaType := strings.ToLower(strings.TrimSpace(p.ToolResult.ImageMediaType))
+					if mediaType == "" || strings.HasPrefix(mediaType, "image/") {
+						if !multimodalToolResults {
+							return "", nil, &llm.ConfigurationError{Message: fmt.Sprintf("google model %q does not support tool-result images: multimodal function responses require a Gemini 3 series model", model)}
+						}
+						mt := p.ToolResult.ImageMediaType
+						if mediaType == "" {
+							mt = "image/png"
+						}
+						// Media belongs inside the functionResponse it came from; a sibling
+						// content part would leave the image unassociated with the tool call.
+						funcResp["parts"] = []map[string]any{{
+							"inlineData": map[string]any{
+								"mimeType": mt,
+								"data":     base64.StdEncoding.EncodeToString(p.ToolResult.ImageData),
+							},
+						}}
 					}
-					mt := p.ToolResult.ImageMediaType
-					if mt == "" {
-						mt = "image/png"
-					}
-					// Media belongs inside the functionResponse it came from; a sibling
-					// content part would leave the image unassociated with the tool call.
-					funcResp["parts"] = []map[string]any{{
-						"inlineData": map[string]any{
-							"mimeType": mt,
-							"data":     base64.StdEncoding.EncodeToString(p.ToolResult.ImageData),
-						},
-					}}
 				}
 				parts = append(parts, map[string]any{"functionResponse": funcResp})
 			}

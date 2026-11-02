@@ -16,11 +16,11 @@ import { documentMemory } from "./nativeDocumentMemory";
 import { readerHosts } from "./readerHosts";
 
 export function CommentsSheet({ route, navigation }: NativeStackScreenProps<Routes, "CommentsSheet">) {
-	const { hubId, sessionRef, path } = route.params;
+	const { hubId, sessionRef, path, root } = route.params;
 	const sheet = useSheet();
 	const host = useSheetHost(readerHosts, sheetKey(hubId, sessionRef, path), sheet);
 	const memory = documentMemory(hubId);
-	const key = { sessionRef, path };
+	const key = { sessionRef, path, ...(root === "artifacts" ? { root } : {}) };
 	useSyncExternalStore(memory.subscribe, memory.getRevision);
 	const comments = memory.comments(key);
 	const { palette } = useColors();

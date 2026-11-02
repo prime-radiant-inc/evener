@@ -11,7 +11,7 @@ import type {
 	NavigationReadResponse,
 } from "@evener/appwire-client";
 import { wireSnapshot } from "@evener/appwire-client/testing/navigation";
-import type { ConversationClientLike } from "../../../mobile/src/services/conversation";
+import type { ConversationClientLike } from "../conversation/services/conversation";
 
 export function boundary() {
 	const requests: Array<{

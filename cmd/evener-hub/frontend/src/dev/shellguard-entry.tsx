@@ -15,7 +15,7 @@ import { APPWIRE_PROTOCOL_VERSION } from "@evener/appwire-client";
 // and the boxes (if any) whose bottoms escape the viewport - which is the
 // answer the fix has to be aimed at.
 
-import type { NavigationReadBase, NavigationReadParams, NavigationReadResponse } from "@evener/appwire-client";
+import type { NavigationReadBase, NavigationReadParams, NavigationReadResponse, Task } from "@evener/appwire-client";
 import { buildWatchRows, hydrateThread } from "@evener/appwire-client";
 import {
   navigationOwnedContainerKey,
@@ -26,6 +26,7 @@ import {
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { navigationInvalidatedNotification } from "@evener/appwire-client/testing/notifications";
 import { createRoot } from "react-dom/client";
+import { TaskActivityTime } from "../panes/session/chrome/activityTime";
 import { TasksPanelBody } from "../panes/session/chrome/TasksPanel";
 import { RepoLocation } from "../panes/session/composer/RepoLocation";
 import activityStyles from "../shell/activitybar/activitybar.module.css";
@@ -99,6 +100,7 @@ const EXPECTED_PANE_ACTIVITY_CONTROLS = EXPECTED_PANE_ACTIVITY_TABS.length;
 const CROWDED_ACTIVITY_COUNTS = { known: true, total: 100, active: 100, failed: 0, completed: 0 };
 const OVERVIEW_CHILD = "local:overview-child";
 const ROW_PADDING_REF = "local:row-padding";
+const ROW_TIME_NOW = Date.parse("2026-10-05T00:00:00Z");
 
 function overviewActivityContext(ref: string) {
   return {
@@ -454,17 +456,29 @@ async function boot(): Promise<void> {
   // too): the guard's page-height contract must hold with the tab body's own
   // scroll container owning a list this tall, not the document. The padding
   // fixture keeps its one-row list - it measures a single row's box.
-  const tallTasksFixture = Array.from({ length: 40 }, (_, i) => ({
-    id: i + 1,
-    type: "verify",
-    description: `Overview task ${i + 1}: keep the page frame from scrolling when the task list is taller than the viewport`,
-    prompt: "",
-    status: i % 4 === 3 ? "done" : "open",
-  }));
+  const tallTasksFixture = Array.from(
+    { length: 40 },
+    (_, i): Task => ({
+      id: i + 1,
+      type: "verify",
+      description: `Overview task ${i + 1}: keep the page frame from scrolling when the task list is taller than the viewport`,
+      prompt: "",
+      status: i % 4 === 3 ? "done" : "open",
+    }),
+  );
   fake.on("evener/tasks/list", ({ ref }) => ({
     data:
       ref === ROW_PADDING_REF
-        ? [{ id: 1, type: "verify", description: "Measure task row", prompt: "", status: "open" }]
+        ? [
+            {
+              id: 1,
+              type: "verify",
+              description: "Measure a compact task title that keeps its timestamp on the same line",
+              prompt: "",
+              status: "open",
+              updated_at: "2026-10-04T23:55:00Z",
+            },
+          ]
         : tallTasksFixture,
   }));
   fake.on("evener/git/head", () => ({
@@ -851,26 +865,68 @@ target.activityRowFixture = (open) => {
   fixtureRoot.render(
     <div className={activityStyles.stack}>
       <div data-row-case="agent-passive">
-        <AgentRow sub={activityDelegate()} />
+        <AgentRow
+          now={ROW_TIME_NOW}
+          sub={activityDelegate({
+            terminal: true,
+            outcome: "failed",
+            status: "failed",
+            runEndedAt: "2026-10-04T23:45:00Z",
+            description: "A failed agent with a long title and a preserved outcome",
+          })}
+        />
       </div>
       <div data-row-case="agent-clickable">
-        <AgentRow sub={activityDelegate()} onDrill={() => activate("agent")} />
+        <AgentRow
+          now={ROW_TIME_NOW}
+          sub={activityDelegate({
+            terminal: true,
+            status: "completed",
+            outcome: "completed",
+            runEndedAt: "2026-10-04T23:50:00Z",
+            description: "A successfully completed agent whose long title truncates beside its timestamp",
+          })}
+          onDrill={() => activate("agent")}
+        />
       </div>
       <div data-row-case="job-passive">
-        <JobRow job={activityJob()} />
+        <JobRow
+          now={ROW_TIME_NOW}
+          job={activityJob({
+            description: "A running job with a long description and recent output",
+            lastOutputAt: "2026-10-04T23:55:00Z",
+          })}
+        />
       </div>
       <div data-row-case="job-clickable">
-        <JobRow job={activityJob()} onOpen={() => activate("job")} />
+        <JobRow
+          now={ROW_TIME_NOW}
+          job={activityJob({
+            terminal: true,
+            outcome: "failure",
+            status: "command_exited_nonzero",
+            endedAt: "2026-10-04T23:40:00Z",
+            description: "A failed job with a long description and a preserved outcome",
+          })}
+          onOpen={() => activate("job")}
+        />
       </div>
       <div data-row-case="watch">
-        {buildWatchRows([activityWatch()]).map((row) => (
-          <WatchRow key={row.id} row={row} now={Date.parse("2026-10-05T00:00:00Z")} />
+        {buildWatchRows([
+          activityWatch({
+            note: "A watch with a long note and a real delivery timestamp",
+            deliveries: 1,
+            deliveryTimes: ["2026-10-04T23:55:00Z"],
+          }),
+        ]).map((row) => (
+          <WatchRow key={row.id} row={row} now={ROW_TIME_NOW} />
         ))}
       </div>
       <div data-row-case="task">
         <TasksPanelBody
           sessionRef={ROW_PADDING_REF}
           model={hydrateThread(activityThread(ROW_PADDING_REF), ROW_PADDING_REF, 0)}
+          renderTime={(task) => <TaskActivityTime task={task} now={ROW_TIME_NOW} />}
         />
       </div>
     </div>,

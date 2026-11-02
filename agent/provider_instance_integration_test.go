@@ -34,6 +34,7 @@ import (
 	"time"
 
 	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/provider"
 	"primeradiant.com/evener/llm"
 	"primeradiant.com/evener/llm/registry"
@@ -81,7 +82,7 @@ func TestProviderInstance_RenamedOpenAI_IdentityAndBehavior(t *testing.T) {
 	f := &fakeAdapter{
 		name: "work",
 		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response { return finalResponse("hello from work") },
+			func(req llm.Request) llm.Response { return agenttest.FinalResponse("hello from work") },
 		},
 	}
 	c.Register(f)

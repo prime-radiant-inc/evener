@@ -1,0 +1,166 @@
+{
+ "verdicts": [
+  {
+   "id": "x-client-duplication-1",
+   "title": "Session state to attention class re-derived in ~8 places",
+   "category": "duplication",
+   "original_severity": "high",
+   "verdict": "partial",
+   "severity": "medium",
+   "note": "Core confirmed: sessionStatus.ts:4, liveness.ts:30, railNodes.ts:373, attention.ts:6 each switch on awaiting/warning/restartRequired separately; native boardState (attention.ts:92-95) lets a nonblocking warning yield to running subagents, web does not. But the web copies are 3-to-8 line maps onto different output enums (CadenceState, AttentionLevel); the real same-app duplicate is native sessionState.ts sessionStateLine vs board/attention.ts boardState. Native warning precedence is a recorded product rule (subsystems S03 text), so it is a product difference not just drift. High is overstated.",
+   "revised_fix_plan": "Phase 1: in native only, make sessionStateLine and boardState share one precedence table. Phase 2: add normalizeWireState (closed->ended, systemError->errored) to the package so the two web Cadence mappers collapse to one. Only then consider a package attentionOf; ask Jesse about warning precedence before touching web. Update subsystems.md S05 and session-activity.md."
+  },
+  {
+   "id": "x-client-duplication-2",
+   "title": "Liveness/quiet/stuck policy implemented twice with different thresholds",
+   "category": "inconsistency",
+   "original_severity": "high",
+   "verdict": "partial",
+   "severity": "medium",
+   "note": "Confirmed: trayLine.ts:27 redeclares STUCK_AFTER_MS = 10*60_000, identical to sessionActivity.ts:11 (duplicate constant, trivially deletable). Web describeLiveness (flow/liveness.ts:27-28,180-191) uses 20s quiet / 180s stall, and stalls even with running subagents; native trayLine.ts:93 never calls a session stuck while subagents run and uses 600s (comment cites Jesse's ruling on S5). The package QUIET 3 min / STUCK 10 min is the Board-row signal (transcript motion), a different signal from the stream-gap in describeLiveness, so claiming 3 vs 10 minute conflict with it overstates. Real defect: the two cut-points differ and the retry rule is re-implemented with a comment pointing at the web.",
+   "revised_fix_plan": "Step 1: delete trayLine's STUCK_AFTER_MS and import the package's (tiny, behavior-preserving). Step 2: ask Jesse whether web stall should follow the S5 ruling (no stall while subagents run) and whether 180s vs 600s should unify; then move a pure describeLiveness decision (level/kind, no text) into the package with red tests. Keep phrasing per client."
+  },
+  {
+   "id": "x-client-duplication-3",
+   "title": "A dozen duration / relative-time / clock formatters that already disagree",
+   "category": "duplication",
+   "original_severity": "medium",
+   "verdict": "partial",
+   "severity": "medium",
+   "note": "Mostly confirmed: relativeAge floors (selectors.ts:30) vs relativeTime rounds (taskListTime.ts:11-16); formatQuietAge (activityFormat.ts:50) is the same floor ladder as native durationIn (format.ts:16); durationLabel (attention.ts:324) uses the new Date(0) epoch hack; formatClockTimeSeconds has no caller except qualify-package.mjs:177; humanizeSeconds/humanizeInterval both in watchRows.ts. Detail error: formatDurationMs(0) returns '1ms', not ''; it returns '' only for non-finite input. formatThoughtDuration(0) '0ms' and the 9999ms '10.0s' vs '10s' differences are real.",
+   "revised_fix_plan": "Add durationParts(ms) to displayFormat (move native durationIn), rebuild relativeAge, formatQuietAge, compactDuration, spokenDuration on it; delete durationLabel hack. Decide floor-vs-round for relativeTime with Jesse (text change). formatThoughtDuration -> formatDurationMs after red boundary tests. Delete formatClockTimeSeconds and its line in qualify-package.mjs:177."
+  },
+  {
+   "id": "x-client-duplication-4",
+   "title": "Phone conversation store re-derives reducer internals",
+   "category": "duplication",
+   "original_severity": "high",
+   "verdict": "partial",
+   "severity": "medium",
+   "note": "Steps 1-2 confirmed: SNAPSHOT_AUTHORITY_FIELDS (conversation.ts:124-141) is identical to reducer.ts ITEM_OMISSION_TOLERANT_FIELDS (14 fields, comment at reducer.ts:3479 cross-references it); THREAD_SCALAR_ONLY_METHODS (conversation.ts:149) is a hand-copied denylist of reducer switch cases. Sizes confirmed: conversation.ts 3721 lines, test 20457. Step 3 (move cross-turn reissue reconciliation into reducer) is speculative: those functions (withdrawOmittedFullTurns etc.) exist only in mobile/ and nothing shows web needs them; moving 300 lines into the reducer is a design change, not dedup. Severity high overstated: the shared lists are same-valued today and flagged by comments.",
+   "revised_fix_plan": "Do steps 1-2 only (export the field list; export a notificationTouchesTranscript predicate next to applyNotificationToThread with a test that every method is classified). Treat moving cross-turn merge semantics and splitting the test file as separate, discussed work."
+  },
+  {
+   "id": "x-client-duplication-5",
+   "title": "mobile/ is native-only code in a pseudo-package with cyclic relative imports",
+   "category": "architecture",
+   "original_severity": "medium",
+   "verdict": "confirmed",
+   "severity": "medium",
+   "note": "Verified: mobile/ has src/{services,state} only and no package.json; 145 mobile-native/src files reference mobile/src; mobile/src/state/conversation.ts:40-41 imports ../../../mobile-native/src/projectedRows (cycle); no consumer outside mobile-native besides Go/audit tests (hooks_test.go, packageimportpaths_audit_test.go) that mention the path. projectedRows.reachability.test.ts:10 polices the deleted mobile/src/conversation/. subsystems.md S03 calls it 'shared mobile services'. Restructuring existing work: needs Jesse's approval, and the Go tests referencing the path must be updated."
+  },
+  {
+   "id": "x-client-duplication-6",
+   "title": "Phone ActivityStore/ActivityView appears write-only (third activity projection)",
+   "category": "dead-code",
+   "original_severity": "medium",
+   "verdict": "partial",
+   "severity": "medium",
+   "note": "Sizes confirmed (450+422 lines, 1590+1224 test lines). createActivityStore is only used in nativeConversationSessions.ts:159 and no non-test reader of .view was found in mobile-native/src. BUT the fix plan is unsafe as written: activity.ts applyLiveNotification decides 'rehydrate' from view contents (duplicate ids via countEntriesById, parent relocation, kind mismatch; lines 184-280), and conversation.ts routeLiveFrame:1508-1520 acts on that outcome by calling requestRehydrate. A stateless shouldRehydrate(notification) predicate would change when rehydrates fire. Also LiveActivitySink/ActivityView types are woven through conversation.ts (:92,:226-232,:494-500).",
+   "revised_fix_plan": "Needs Jesse's go-ahead. First establish what the sink's rehydrate triggers protect against given activity screens now read the package SessionActivityStore; if those cases are covered there, delete the sink, ActivityView and projection together with their tests and drop the activitySink parameters from openProjected/resumeProjected/rehydrate. If not, keep a minimal state-free rule set only for the cases that were needed, with a test per case."
+  },
+  {
+   "id": "x-client-duplication-7",
+   "title": "IndexedDB and SQLite outbox adapters duplicate transition rules and have drifted",
+   "category": "duplication",
+   "original_severity": "medium",
+   "verdict": "confirmed",
+   "severity": "medium",
+   "note": "Verified drift: web mutationOutboxIndexedDB.ts:675-676 retains an accepted copy for carriesOptimisticInput(source) || method==='notes/human/set'; native mutationOutboxStorage.ts:553 only carriesOptimisticInput. Web :685 keeps recovery rows with compositionRevision>0; native :555 deletes unconditionally and has no compositionRevision (grep empty) although native does enqueue notes/human/set (mutationOutboxStorage.ts, sessionNotes.ts). Sizes 1406/1173 confirmed. Caveat: native transactions are synchronous SQL while web is async IndexedDB, so a 'plan then apply' split must be a pure function of already-read rows."
+  },
+  {
+   "id": "x-client-duplication-8",
+   "title": "Composer verb to wire-method mapping stated in seven places",
+   "category": "duplication",
+   "original_severity": "medium",
+   "verdict": "confirmed",
+   "severity": "low",
+   "note": "Verified strings: web COMPOSER_ROUTE_METHODS (threads.ts:4144-4149), native methodFor and DIRECT_FALLBACK_METHODS (nativeMutationRuntime.ts:93-108), package queuedMessages.ts:40, pendingEntries.ts:49,63, dispatcher.ts:318. Web already derives its fallback set; the real exposure is native's hard-coded copy and the package sets. Each is a short literal list and wire method names are stable, so medium is generous."
+  },
+  {
+   "id": "x-client-duplication-9",
+   "title": "Rail/project tree layout decisions duplicated between web railNodes and native projectTree",
+   "category": "duplication",
+   "original_severity": "medium",
+   "verdict": "partial",
+   "severity": "low",
+   "note": "Header at projectTree.ts:6-8 does say it mirrors railNodes hostProjectNodes/projectNodesWithHostBranches, and both apply a flat-until-non-local-host rule (projectTree.ts:79-82 vs Rail.tsx). But the outputs differ structurally: web builds identity-cached tree nodes (cachedHostNode, hostProjectCopyNode), native emits a flat item list with fold keys and per-tier loaded/failed states. Only the small decisions (flat rule, which host carries overflow) are shared policy; a layoutProject abstraction with +150 package lines is speculative and risks the web identity-stability guarantees.",
+   "revised_fix_plan": "Extract just the decisions: isGroupedByHost(sources) and the overflow-carrier choice (canonicalHostId already exists) into hostGrouping.ts, call from both. Do not build a shared layout tree."
+  },
+  {
+   "id": "x-client-duplication-10",
+   "title": "Native re-derives the Activity row model and delegate state the package already builds",
+   "category": "duplication",
+   "original_severity": "medium",
+   "verdict": "confirmed",
+   "severity": "medium",
+   "note": "Verified: native has no references to buildActivityRows or activityDelegateState; subagentModel.ts:74-80 subagentState states 'the subagent's own outcome, never its children's (ruling 4)'; activityRows.ts:313-317 computes failed: ownFailure || childFailed. Differing failure rules are a real hidden product decision. Row ordering is pinned by native tests, so migration is not trivial."
+  },
+  {
+   "id": "x-client-duplication-11",
+   "title": "Behavior copies marked 'keep in sync' between web and native (markdown fences, mermaid sanitizer, notes gate, ask dock)",
+   "category": "duplication",
+   "original_severity": "medium",
+   "verdict": "partial",
+   "severity": "medium",
+   "note": "Confirmed: markdownSegments.ts:10-12 and segments.ts:18 say 'keep the two in sync'; canWriteHumanNote identical four-status test in humanNoteDrafts.ts:370 and sessionNotes.ts:59-65 while package owns canReadSharedNotes; MERMAID_SANITIZE_CONFIG literal identical (security.ts:15, mermaidPageContent.ts:29). Caveat: mermaidPageContent.ts is the WebView page source (MERMAID_FORBID_TAGS is a declared global injected into that page), so the config must be shared as injectable data, not just imported. I did not open every ask-dock location (AskQuestionCard.tsx:71, askDockCopy.ts:23, questionAnswers.ts:245), so those sub-claims are unverified.",
+   "revised_fix_plan": "Start with the clear wins: canWriteSharedNotes beside canReadSharedNotes, and the markdown fence helpers into the package. For mermaid, share the config object and serialize it into the WebView page the way the forbid list already is. Verify each ask-dock duplicate before moving it."
+  },
+  {
+   "id": "x-client-duplication-12",
+   "title": "Host constants and parity values held by cross-reference comments",
+   "category": "duplication",
+   "original_severity": "low",
+   "verdict": "partial",
+   "severity": "low",
+   "note": "Confirmed: LOCAL_HOST = 'local' in hostRouting.ts:20 and mobile-native hosts/liveCounts.ts:10, CONTROLLER_SOURCE_ID = 'local' in hostGrouping.ts:13; HOST_POLL_MS = 2000 in web hosts.tsx:60 and native hostsController.ts:19; MODEL_LIST_CAP = 50 in InstanceSheet.tsx:83 and ProvidersPage.tsx:69. The count of '18 bare \"local\" comparisons' is not reproducible: a grep for the literal across non-test source gives ~80 hits, most not comparisons; unverified. Cosmetic."
+  },
+  {
+   "id": "x-client-duplication-13",
+   "title": "Exponential backoff formula written six times",
+   "category": "duplication",
+   "original_severity": "low",
+   "verdict": "confirmed",
+   "severity": "low",
+   "note": "Verified: hubConnection.ts:26 (1000*2**(n-1) cap 30s), sessionActivityStore.ts:1061 and historyPaging.ts:144 (different exponent clamps), and threads.ts:1982/2012 two schedulers with identical bodies and constants (500ms base, 15s cap). The two web schedulers are literal paste; collapsing them into one factory is the clean win."
+  },
+  {
+   "id": "x-client-duplication-14",
+   "title": "Pass-through wrappers and alias re-exports that only rename another function",
+   "category": "slop",
+   "original_severity": "low",
+   "verdict": "confirmed",
+   "severity": "low",
+   "note": "Verified wrappers: prependOlderTurns->mergeOlderItemPage (reducer.ts:2531), watchName->watchTitle (activityRows.ts:95), harnessSupportsPluginSelection->harnessUsesEvenerModels (spawnHarnessModels.ts:14), formatToolDuration = formatDurationMs (toolCallText.ts:68), teardownRecoverRefusalAction->teardownRetryRefusalAction (hostOps.ts:310), connectionTarget->hubRPCURL (connection.ts:71), pairingEnvelope crc32 wrapper. prependOlderTurns has 4 non-test references, watchName 2 in the package. Some are exported package API, so removal must also update index.ts/publicExports."
+  },
+  {
+   "id": "x-client-duplication-15",
+   "title": "Scattered micro-utilities: record guards, ellipsis truncation, escapeRegExp, utf8Length",
+   "category": "duplication",
+   "original_severity": "low",
+   "verdict": "partial",
+   "severity": "low",
+   "note": "isRecord is verbatim three times in the package (reducer.ts:1373, memoryContext.ts:37, codec.ts:61) and escapeRegExp twice (cssBlock.ts:36, steeringNotifications.ts:1006): confirmed. utf8Length is NOT a copy: projectedRows.ts:1394-1400 deliberately avoids TextEncoder allocation (commented), while codec.ts:79 uses TextEncoder, so merging changes a performance decision. Ten ellipsis variants not individually verified.",
+   "revised_fix_plan": "Replace the three isRecord bodies with one export and share escapeRegExp; leave utf8Length and truncation variants alone unless touching them."
+  },
+  {
+   "id": "x-client-duplication-16",
+   "title": "Session lifecycle status sets restated despite a 'one set for every client' comment",
+   "category": "inconsistency",
+   "original_severity": "low",
+   "verdict": "confirmed",
+   "severity": "low",
+   "note": "Verified: submitRouting.ts:148 SHUT_DOWN_STATUSES = {ended, closed, notLoaded} with the comment 'One set for every client'; native sessionState.ts:29 re-declares SHUT_DOWN; ConversationBody.tsx:485 HELD_SURFACE_OFF_STATUSES and humanNoteDrafts.ts:374 / sessionNotes.ts:63 inline the set plus restartRequired. Package export is consumed only in threads.ts and a native demo file, so the invariant claim is indeed false."
+  },
+  {
+   "id": "x-client-duplication-17",
+   "title": "Dead or test-only public exports in the package barrel",
+   "category": "dead-code",
+   "original_severity": "low",
+   "verdict": "partial",
+   "severity": "low",
+   "note": "index.ts has 908 lines (908 export entries claimed). Grep across appwire-client, frontend src, mobile-native, mobile confirms the listed values appear only in package-internal files and tests. But formatClockTimeSeconds and canSteer are asserted in appwire-client/typescript/scripts/qualify-package.mjs:162-177 (packaged-tarball qualification), and canSteer is used internally by sessionControls (submitRouting.ts:159,191); it is not deletable, only un-exportable. cachedSessionRecord/jobOwnerSessionId are referenced by publicExports.test.ts. Rule 'barrel holds only what clients import' is a policy call.",
+   "revised_fix_plan": "Delete formatClockTimeSeconds (and qualify-package.mjs:177); un-export canSteer (update qualify-package.mjs:162-164) and the other internal-only names; update publicExports.test.ts and the README export list in the same change."
+  }
+ ]
+}

@@ -1,7 +1,3 @@
-/* Header/row chrome duplicated from table.module.css - the two widgets
- * share no CSS module to `composes:` from, and it's a handful of
- * declarations, not worth inventing a cross-widget shared file for. */
-
 .scroll {
   overflow-x: auto;
   border-block: 1px solid var(--edge);

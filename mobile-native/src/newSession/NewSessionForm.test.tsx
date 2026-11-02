@@ -3,7 +3,7 @@ import type { NativeStackNavigationOptions, NativeStackScreenProps } from "@reac
 import type { ReactElement } from "react";
 import { act, type ReactTestRenderer } from "react-test-renderer";
 import { beforeEach, expect, it, vi } from "vitest";
-import { createNewSessionService } from "../../../mobile/src/services/newSession";
+import { createNewSessionService } from "../conversation/services/newSession";
 import type { CreationDraft } from "../creationDraftRepository";
 import { HostsController } from "../hosts/hostsController";
 import { hostRow, scriptedFleet } from "../hosts/hostsTestUtils";
@@ -50,7 +50,6 @@ vi.mock("@react-navigation/native", async () => {
 vi.mock("react-native", async () => ({
 	...(await import("../renderNative.testkit")).nativeModuleMock(),
 }));
-vi.mock("expo-symbols", () => ({ SymbolView: "SymbolView" }));
 vi.mock("react-native-safe-area-context", () => ({ SafeAreaView: "SafeAreaView" }));
 vi.mock("../nativeImagePicker", () => ({
 	nativeImagePicker: {

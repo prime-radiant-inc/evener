@@ -8,6 +8,7 @@ import (
 
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/plugin"
 	"primeradiant.com/evener/llm"
 )
 
@@ -199,5 +200,47 @@ func TestInitPlugins_ValidHooksProduceNoWarning(t *testing.T) {
 		if w.PluginName == "good-plugin" {
 			t.Errorf("well-formed hooks must not warn; got %+v", w)
 		}
+	}
+}
+
+// A plugin with one malformed command file still starts the session with its
+// healthy commands usable, and the skipped file is reported on the event stream
+// against the plugin that owns it.
+func TestNewSession_MalformedPluginCommandFileSkippedWithDiagnostic(t *testing.T) {
+	t.Parallel()
+	dir := makePluginDir(t, "partial")
+	commandsDir := filepath.Join(dir, "commands")
+	if err := os.MkdirAll(commandsDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	for name, content := range map[string]string{
+		"good.md": "do the good thing\n",
+		"bad.md":  "---\n: : not valid yaml :\n---\nbody\n",
+	} {
+		if err := os.WriteFile(filepath.Join(commandsDir, name), []byte(content), 0644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	sess, err := NewSession(llm.NewClient(), NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(t.TempDir()),
+		SessionConfig{PluginDirs: []string{dir}, testOnly: testConfig{skipGitSnapshot: true}})
+	if err != nil {
+		t.Fatalf("NewSession must start with the healthy commands of a plugin that has a malformed one: %v", err)
+	}
+	if _, err := plugin.ResolveCommand(sess.pluginCommands, "partial:good"); err != nil {
+		t.Errorf("healthy command is not usable: %v", err)
+	}
+	if _, err := plugin.ResolveCommand(sess.pluginCommands, "partial:bad"); err == nil {
+		t.Error("malformed command resolved")
+	}
+
+	var named bool
+	for _, w := range drainWarnings(t, sess) {
+		if w.PluginName == "partial" && strings.Contains(w.Message, "bad.md") {
+			named = true
+		}
+	}
+	if !named {
+		t.Fatal("no warning for the plugin names the skipped file")
 	}
 }

@@ -119,15 +119,13 @@ func TestRestoreSessionLifetimeOwnsRootAndChild(t *testing.T) {
 	}
 	t.Cleanup(restored.Close)
 
-	prepared := prepareSubagentForTreeRevisionTest(t, restored, "child task")
+	prepared := prepareStableChild(t, restored, delegateArgs{Task: "child task"})
 	t.Cleanup(prepared.runCancel)
-	t.Cleanup(func() { releasePreparedTreeSlot(prepared) })
 	t.Cleanup(prepared.sub.sess.Close)
 
 	for name, done := range map[string]<-chan struct{}{
-		"root":      restored.sessionCtx.Done(),
-		"child":     prepared.sub.sess.sessionCtx.Done(),
-		"child run": prepared.runCtx.Done(),
+		"root":  restored.sessionCtx.Done(),
+		"child": prepared.sub.sess.sessionCtx.Done(),
 	} {
 		select {
 		case <-done:
@@ -138,9 +136,8 @@ func TestRestoreSessionLifetimeOwnsRootAndChild(t *testing.T) {
 
 	cancelOwner()
 	for name, done := range map[string]<-chan struct{}{
-		"root":      restored.sessionCtx.Done(),
-		"child":     prepared.sub.sess.sessionCtx.Done(),
-		"child run": prepared.runCtx.Done(),
+		"root":  restored.sessionCtx.Done(),
+		"child": prepared.sub.sess.sessionCtx.Done(),
 	} {
 		select {
 		case <-done:

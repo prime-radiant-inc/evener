@@ -69,6 +69,13 @@ Web setup failures also retain the full Playwright error in a protected
 action phase and private file path, not the locator details. Apply the same
 local-inspection and deletion rule to this file.
 
+The Documentation workflow's `build` job, when the tours step fails, runs
+`docs-site/scripts/tours/diagnostics.mjs collect`. It reads each `failure.json`,
+keeps only the phase and the allowlisted scalar fields of the path-validation
+RPC trace and the directory-picker probe (never the message, stack, paths or
+frames), prints a compact timeline to the log, and uploads the files as the
+`tutorial-failure-diagnostics` artifact with 7-day retention.
+
 `manifest.json` version 1 records the revision, dirty-source digest, tool
 versions, explicit coverage, deferral, completeness, and each checkpoint's
 representation, hashes, dimensions, assertions, and result. CLI rows also name

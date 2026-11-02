@@ -186,7 +186,7 @@ func TestAPoisonedWriterFailsAServedSessionClosed(t *testing.T) {
 	s.mu.Unlock()
 	t.Cleanup(func() { _ = previous.Close() })
 	adapter.script(func(context.Context) (llm.Response, error) {
-		return communicateResponse(false, "working"), nil
+		return agenttest.CommunicateResponse(false, "working"), nil
 	})
 	if _, err := s.ProcessInput(context.Background(), "tear", nil); err == nil {
 		t.Fatal("the input completed on a poisoned transcript")
@@ -256,7 +256,7 @@ func TestAnUnrecordedCommunicateFailsAServedSessionClosed(t *testing.T) {
 	served := serveFailClosedSession(s)
 	refuseCommunicateEntries(t, s)
 	adapter.script(func(context.Context) (llm.Response, error) {
-		return communicateResponse(true, "never delivered"), nil
+		return agenttest.CommunicateResponse(true, "never delivered"), nil
 	})
 	if _, err := s.ProcessInput(context.Background(), "talk", nil); err == nil {
 		t.Fatal("the input completed after its communicate was not recorded")
@@ -310,7 +310,7 @@ func TestACommunicateAfterTheTranscriptClosedDoesNotFailClosed(t *testing.T) {
 		if err := s.attachedTranscript().Close(); err != nil {
 			t.Error(err)
 		}
-		return communicateResponse(true, "after close"), nil
+		return agenttest.CommunicateResponse(true, "after close"), nil
 	})
 	_, _ = s.ProcessInput(context.Background(), "talk", nil)
 	evs := served.settle(s)
@@ -400,7 +400,7 @@ func TestAnUnservedSessionDeliversAnUnrecordedCommunicate(t *testing.T) {
 	evs := drainEvents(s)
 	refuseCommunicateEntries(t, s)
 	adapter.script(func(context.Context) (llm.Response, error) {
-		return communicateResponse(true, "delivered anyway"), nil
+		return agenttest.CommunicateResponse(true, "delivered anyway"), nil
 	})
 	_, _ = s.ProcessInput(context.Background(), "talk", nil)
 	s.Close()
@@ -417,7 +417,7 @@ func TestAnUnrecordedCompletionFailsAServedSessionClosed(t *testing.T) {
 	served := serveFailClosedSession(s)
 	refuseEntries(t, s, schema.TurnCompletion)
 	adapter.script(func(context.Context) (llm.Response, error) {
-		return communicateResponse(true, "done"), nil
+		return agenttest.CommunicateResponse(true, "done"), nil
 	})
 	_, _ = s.ProcessInput(context.Background(), "finish", nil)
 	if _, err := s.ProcessInput(context.Background(), "again", nil); !errors.Is(err, ErrTranscriptFailedClosed) {
@@ -513,7 +513,7 @@ func TestCommunicateAndCompletionEntriesAreSynced(t *testing.T) {
 	s.mu.Unlock()
 	t.Cleanup(func() { _ = previous.Close() })
 	adapter.script(func(context.Context) (llm.Response, error) {
-		return communicateResponse(true, "synced"), nil
+		return agenttest.CommunicateResponse(true, "synced"), nil
 	})
 	if _, err := s.ProcessInput(context.Background(), "talk", nil); err != nil {
 		t.Fatal(err)
@@ -648,7 +648,7 @@ func TestRetainedCompletionSettlesAfterRetryingTheBarrier(t *testing.T) {
 	served := serveFailClosedSession(s)
 	attachRetainedBarrierWrite(t, s, schema.TurnCompletion, 2)
 	adapter.script(func(context.Context) (llm.Response, error) {
-		return communicateResponse(true, "settles"), nil
+		return agenttest.CommunicateResponse(true, "settles"), nil
 	})
 	baseline := clk.BlockedCount()
 	if _, err := s.ProcessInput(context.Background(), "finish", nil); err != nil {
@@ -693,7 +693,7 @@ func TestRetainedCompletionFailsAServedSessionClosedAfterExhaustingRetries(t *te
 	served := serveFailClosedSession(s)
 	attachRetainedBarrierWrite(t, s, schema.TurnCompletion, durabilityRetryAttempts+1)
 	adapter.script(func(context.Context) (llm.Response, error) {
-		return communicateResponse(true, "never settles"), nil
+		return agenttest.CommunicateResponse(true, "never settles"), nil
 	})
 	baseline := clk.BlockedCount()
 	if _, err := s.ProcessInput(context.Background(), "finish", nil); err != nil {
@@ -724,7 +724,7 @@ func TestRetainedCompletionOnAnUnservedSessionKeepsRunningAfterExhaustingRetries
 	evs := drainEvents(s)
 	attachRetainedBarrierWrite(t, s, schema.TurnCompletion, durabilityRetryAttempts+1)
 	adapter.script(func(context.Context) (llm.Response, error) {
-		return communicateResponse(true, "delivered anyway"), nil
+		return agenttest.CommunicateResponse(true, "delivered anyway"), nil
 	})
 	baseline := clk.BlockedCount()
 	if _, err := s.ProcessInput(context.Background(), "talk", nil); err != nil {
@@ -761,7 +761,7 @@ func TestRetainedCompletionSettlesAfterTheWriterIsReopenedMidRetry(t *testing.T)
 	// The original writer never settles on its own.
 	attachRetainedBarrierWrite(t, s, schema.TurnCompletion, durabilityRetryAttempts+1)
 	adapter.script(func(context.Context) (llm.Response, error) {
-		return communicateResponse(true, "settles after reopen"), nil
+		return agenttest.CommunicateResponse(true, "settles after reopen"), nil
 	})
 	baseline := clk.BlockedCount()
 	if _, err := s.ProcessInput(context.Background(), "finish", nil); err != nil {

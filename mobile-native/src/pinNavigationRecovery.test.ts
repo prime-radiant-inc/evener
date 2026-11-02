@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { NavigationPinSectionDescriptor } from "@evener/appwire-client";
 import { wireSnapshot } from "@evener/appwire-client/testing/navigation";
-import type { ConversationClientLike } from "../../mobile/src/services/conversation";
+import type { ConversationClientLike } from "./conversation/services/conversation";
 import { nativeNavigationActions } from "./navigationActionRepository";
 import { NavigationActions } from "./navigationActions";
 import { NavigationPages } from "./navigationPages";

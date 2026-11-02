@@ -350,6 +350,44 @@ describe("finding 1: reconnect window", () => {
         .appliedMatches,
     ).toBe(false);
   });
+  test("required: a follow-up refresh on the new connection does not displace the applied reconnect read", () => {
+    // The entry route keeps the older edge it already loaded, so after the
+    // reconnect read and a later, narrower refresh the model still carries the
+    // reconnect read's cursor and window.
+    const refreshedPath = path.join(scratchRoot, "refreshed-connection.jsonl");
+    const refreshTurns = [{ id: "turn_new", items: [WINDOW_TURNS[1].items[2]] }];
+    writeFileSync(
+      refreshedPath,
+      [
+        readReq("conn-1", 1),
+        readRes("conn-1", 1, "c1"),
+        readReq("conn-2", 1),
+        readRes("conn-2", 1, "c2", WINDOW_TURNS),
+        readReq("conn-2", 2),
+        readRes("conn-2", 2, "c3", refreshTurns),
+      ].join("\n"),
+    );
+    const ev = guard.targetPagingEvidence(REF, refreshedPath);
+    const check = guard.reconnectValidator(before, ev, { cursor: "c2", domain: appliedWindow() });
+    expect(check.newConnectionReads).toBe(2);
+    expect(check.appliedMatches).toBe(true);
+  });
+  test("RED: a follow-up refresh does not excuse an applied window no new-connection read returned", () => {
+    const refreshedPath = path.join(scratchRoot, "refreshed-mismatch.jsonl");
+    writeFileSync(
+      refreshedPath,
+      [
+        readReq("conn-1", 1),
+        readRes("conn-1", 1, "c1"),
+        readReq("conn-2", 1),
+        readRes("conn-2", 1, "c2", WINDOW_TURNS),
+        readReq("conn-2", 2),
+        readRes("conn-2", 2, "c3", WINDOW_TURNS),
+      ].join("\n"),
+    );
+    const ev = guard.targetPagingEvidence(REF, refreshedPath);
+    expect(guard.reconnectValidator(before, ev, { cursor: "c9", domain: appliedWindow() }).appliedMatches).toBe(false);
+  });
   test("repaired: a same-connection refresh is not a reconnect", () => {
     const ev = guard.targetPagingEvidence(REF, sameConnPath);
     expect(guard.reconnectValidator(before, ev, { cursor: "c2", domain: appliedWindow() }).reconnected).toBe(false);

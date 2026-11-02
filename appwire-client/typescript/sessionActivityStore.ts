@@ -3,6 +3,7 @@ import { mutationErrorData, WireError } from "./errors";
 import { sameJsonValue } from "./plainObject";
 import { intentWithinBound } from "./sessionActivity";
 import { isThreadNotFound } from "./sessionErrors";
+import { activityInstant, joinDelegateState, revisionOf } from "./stableDelegate";
 import {
   acquireThreadSubscription,
   type ThreadSubscriptionLease,
@@ -1309,73 +1310,10 @@ function delegateRowFromFrame(row: SessionDelegate, frame: EvenerDelegateInfo): 
     worktree: frame.worktree,
   };
 }
-/** time.RFC3339Nano, the layout internal/appprojector parses activity
- * timestamps with. Date.parse is looser and keeps only milliseconds, so the
- * comparison tests this shape and reads the fraction itself. */
-const activityTimestamp = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.(\d+))?(Z|([+-])(\d{2}):(\d{2}))$/;
-/** The whole seconds since the epoch (offset applied) and the fractional
- * nanoseconds of an RFC3339Nano activity timestamp, or null when the value is
- * not one -- so a value only Date.parse accepts never orders against a real
- * one, and two values that differ below a millisecond order exactly as the
- * projector's time.Time does. */
-function activityInstant(value: string): { seconds: number; nanos: number } | null {
-  const match = activityTimestamp.exec(value);
-  if (!match) return null;
-  const [, year, month, day, hour, minute, second, fraction, , sign, offsetHour, offsetMinute] = match;
-  const monthValue = Number(month);
-  const dayValue = Number(day);
-  if (monthValue < 1 || monthValue > 12 || dayValue < 1 || dayValue > 31) return null;
-  // Go's time.RFC3339Nano rejects a leap second ("second out of range"), so
-  // accepting one would order a value the projector refuses.
-  if (Number(hour) > 23 || Number(minute) > 59 || Number(second) > 59) return null;
-  if (sign !== undefined && (Number(offsetHour) > 23 || Number(offsetMinute) > 59)) return null;
-  const yearValue = Number(year);
-  const utc = Date.UTC(yearValue, monthValue - 1, dayValue, Number(hour), Number(minute), Number(second));
-  const at = new Date(utc);
-  // Date.UTC rolls a calendar-invalid day (31 February) into the next month,
-  // which the projector's parser rejects outright.
-  if (at.getUTCFullYear() !== yearValue || at.getUTCMonth() !== monthValue - 1 || at.getUTCDate() !== dayValue) {
-    return null;
-  }
-  const offsetSeconds =
-    sign === undefined ? 0 : (sign === "-" ? -1 : 1) * (Number(offsetHour) * 3600 + Number(offsetMinute) * 60);
-  return { seconds: utc / 1000 - offsetSeconds, nanos: Number((fraction ?? "").padEnd(9, "0").slice(0, 9)) };
+export function isValidActivityTimestamp(value: string): boolean {
+  return activityInstant(value) !== null;
 }
-/** Mirrors internal/appprojector.delegateActivityAfter: a blank candidate never
- * wins, a blank current loses to any non-blank candidate, and otherwise the
- * candidate wins only when both values parse and it is strictly later. */
-function activityAfter(candidate: string | undefined, current: string | undefined): boolean {
-  if (!candidate || candidate.trim() === "") return false;
-  if (!current || current.trim() === "") return true;
-  const candidateAt = activityInstant(candidate);
-  const currentAt = activityInstant(current);
-  if (!candidateAt || !currentAt) return false;
-  if (candidateAt.seconds !== currentAt.seconds) return candidateAt.seconds > currentAt.seconds;
-  return candidateAt.nanos > currentAt.nanos;
-}
-/** The projector's join for one delegate: `incomingWins` picks the snapshot
- * fields, while latestActivityAt is the independent maximum of the two -- a
- * lower revision may advance it, a higher one never moves it backward. The
- * other side's activity is taken only when it is strictly later, exactly as
- * internal/appprojector.mergeAppwireDelegateInfo moves it, so a pushed row and
- * the same row read back agree. */
-function joinDelegateState<T extends { latestActivityAt?: string | undefined }>(
-  incoming: T,
-  current: T,
-  incomingWins: boolean,
-): T {
-  const winner = incomingWins ? incoming : current;
-  const other = incomingWins ? current : incoming;
-  const activity = activityAfter(other.latestActivityAt, winner.latestActivityAt)
-    ? other.latestActivityAt
-    : winner.latestActivityAt;
-  return activity === winner.latestActivityAt ? winner : { ...winner, latestActivityAt: activity };
-}
-/** A missing/NaN revision is the zero value; an unset read row must not beat a
- * real frame, and two unset rows compare equal. */
-function revisionOf(value: number | undefined): number {
-  return typeof value === "number" && !Number.isNaN(value) ? value : 0;
-}
+
 /** The frame fields a row merge can apply. The raw report payload and the model
  * preferences a row does not carry are not part of the row, and a buffered frame
  * waits for a read to admit the row, so keeping them would let 128 buffered

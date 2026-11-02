@@ -5,7 +5,7 @@ import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState, useS
 import { Text, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { type ConnectionState, createHubOverviewStore } from "@evener/appwire-client";
-import type { ConversationClientLike } from "../../mobile/src/services/conversation";
+import type { ConversationClientLike } from "./conversation/services/conversation";
 import { isReady, whenReady } from "./connectionDisplay";
 import { HUB_NO_LONGER_SELECTED, useRetainedScreenConnection } from "./retainedScreen";
 import { FirstLoad, SheetStatus } from "./sheet/SheetStatus";

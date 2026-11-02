@@ -13,9 +13,9 @@ import type { ModelDescriptor } from "@evener/appwire-client";
 export const SPAWN_DEFAULTS_PREFIX = "evener-hub.spawn-defaults.";
 // Global scalar keys (distinct from the `.global` blob defaultsKeyFor("")
 // produces): a last-resort working dir consulted on prefill and rewritten on
-// every submit (spawn.js:84-88,100), a cross-project model default that layers
-// under any per-project one (spawn.js:81-83,98), and the dir-picker's own
-// "last accepted directory" seed (spawn.js:1910-1913,1919-1922).
+// every submit, a cross-project model default that layers
+// under any per-project one, and the dir-picker's own
+// "last accepted directory" seed.
 export const GLOBAL_WORKING_DIR_KEY = `${SPAWN_DEFAULTS_PREFIX}global.working_dir`;
 export const GLOBAL_MODEL_KEY = `${SPAWN_DEFAULTS_PREFIX}global.model`;
 export const GLOBAL_LAST_WORKING_DIR_KEY = `${SPAWN_DEFAULTS_PREFIX}global.last-working-dir`;
@@ -65,7 +65,7 @@ function removeRaw(key: string): void {
 }
 
 // The per-project blob key: keyed by the working dir, or the shared "global"
-// blob when there is no working dir yet (floor §1.9, spawn.js:51-53).
+// blob when there is no working dir yet (floor §1.9).
 export function defaultsKeyFor(cwd: string): string {
   const trimmed = cwd.trim();
   return `${SPAWN_DEFAULTS_PREFIX}${trimmed === "" ? "global" : trimmed}`;
@@ -115,22 +115,20 @@ export interface SaveDefaultsInput {
   accessMode?: string;
   reasoningEffort?: string;
   // Whether the chosen harness uses evener models (kind === "evener"). Gates
-  // whether the model field is persisted at all (floor §1.9, spawn.js:92-98).
+  // whether the model field is persisted at all (floor §1.9).
   harnessUsesEvenerModels: boolean;
   // Whether this submit targets a remote source. A remote launch's cwd and
   // model belong to the SELECTED HOST, not this controller, so they must not be
   // written to the global scalar defaults a later LOCAL spawn consults: the
   // remote cwd would default the next local Spawn to a path that usually does
   // not exist here, and a host-only model would default the next local launch
-  // to a model this hub may not serve (Component 06b review, round seven). The
+  // to a model this hub may not serve. The
   // per-project blob keyed by that cwd is still written, minus any model of its
-  // OWN (round eight - the cwd key cannot distinguish a local checkout of the
-  // same path from the remote one) while keeping a model already stored there
-  // (round nine - a remote submit must not erase the local project's sticky
-  // choice). Component 07b's round four adds one refinement main's round nine
-  // implies but did not yet do: a remote submit never takes the blob's
-  // removeRaw path either, so an empty remote form cannot delete a local
-  // project's stored layer (see saveDefaults).
+  // OWN (the cwd key cannot distinguish a local checkout of the same path from
+  // the remote one) while keeping a model already stored there (a remote
+  // submit must not erase the local project's sticky choice). A remote submit
+  // never takes the blob's removeRaw path either, so an empty remote form
+  // cannot delete a local project's stored layer (see saveDefaults).
   remoteLaunch?: boolean;
 }
 
@@ -153,14 +151,9 @@ export function saveDefaults(input: SaveDefaultsInput): void {
   // fields the remote form re-supplied, and the blob is keyed by the cwd ALONE -
   // a path that is as often a local checkout of the same path as it is the
   // remote one. Rebuilding the blob from the remote form therefore deleted every
-  // stored field the remote form left empty. Round nine fixed exactly that for
-  // the model alone (the carry-over the model line below replaced) and the fix
-  // HID the rest: carrying the stored model over was what kept the write
-  // non-empty, so the erasure of the other fields was silent whenever the stored
-  // blob also had a model. A remote submit now starts from the stored blob
-  // instead and overlays only the fields it names - the same "leave the local
-  // layer as you found it" rule, stated for every field rather than for the
-  // model alone (component 07b review, residual).
+  // stored field the remote form left empty. A remote submit therefore starts
+  // from the stored blob and overlays only the fields it names - the "leave the
+  // local layer as you found it" rule, stated for every field.
   const blob: SpawnDefaultsBlob = input.remoteLaunch ? { ...loadDefaultsBlob(input.cwd) } : {};
   if (harness) blob.harness = harness;
   if (accessMode) blob.access_mode = accessMode;
@@ -172,31 +165,29 @@ export function saveDefaults(input: SaveDefaultsInput): void {
   // the stale-model sweep cannot even recognize as wrong (an unknown provider
   // is deliberately left untouched). Only the host-specific model value is
   // dropped; the remote project's harness/access/effort layer is still
-  // remembered (Component 06b review, round eight, refining round seven's
-  // "the blob is still written").
+  // remembered.
   if (model && input.harnessUsesEvenerModels && !input.remoteLaunch) blob.model = model;
 
   const key = defaultsKeyFor(input.cwd);
   // The remote launch must not ERASE a model a previous LOCAL launch stored for
   // this path either. The write below replaces the whole blob, so omitting model
   // was not "this submit names no model" - it was "this path has no model", and
-  // a later local spawn of the same cwd silently lost its sticky choice (round
-  // nine). That carry-over is now the blob base above: a remote submit starts
-  // from the stored blob verbatim, contributes no model of its own (round
-  // eight's intent), and leaves the local one exactly as it found it.
+  // a later local spawn of the same cwd silently lost its sticky choice. The
+  // blob base above carries it over: a remote submit starts from the stored
+  // blob verbatim, contributes no model of its own, and leaves the local one
+  // exactly as it found it.
   if (Object.keys(blob).length > 0) writeRaw(key, JSON.stringify(blob));
   // A remote submit that contributes no field of its own must not take the
-  // removeRaw path either (component 07b review, round four, adopted onto main's
-  // round-nine rule): an empty blob here means "this remote form named nothing",
+  // removeRaw path either: an empty blob here means "this remote form named nothing",
   // not "this path has no stored layer", and the evidence would only ever
   // describe another machine. The carry-over above keeps the stored model; this
   // keeps the rest of the layer - and the blob itself - intact.
   else if (!input.remoteLaunch) removeRaw(key);
 
   // Global scalars are controller-wide defaults; a remote launch must not
-  // rewrite them (round seven). The per-project blob above stays keyed by the
+  // rewrite them. The per-project blob above stays keyed by the
   // submitted cwd, so the remote project's own layer is still remembered
-  // (round eight - only the host-specific model is withheld from it).
+  // (only the host-specific model is withheld from it).
   if (!input.remoteLaunch) {
     if (model && input.harnessUsesEvenerModels) writeRaw(GLOBAL_MODEL_KEY, model);
     if (input.cwd.trim() !== "") writeRaw(GLOBAL_WORKING_DIR_KEY, input.cwd);
@@ -205,8 +196,8 @@ export function saveDefaults(input: SaveDefaultsInput): void {
 
 export type ModelValidity = "malformed" | "stale" | "unknown" | "valid";
 
-// Classifies a stored model value against the live model list (floor §1.10,
-// spawn.js:154-175): no "/" is malformed; an exact provider/model match is
+// Classifies a stored model value against the live model list (floor §1.10):
+// no "/" is malformed; an exact provider/model match is
 // valid; a value whose provider IS enumerated but whose model is gone is stale;
 // a provider not enumerated at all (e.g. OAuth-only anthropic, openrouter) is
 // unknown - deliberately left untouched, the hub can't prove it is wrong.
@@ -223,8 +214,7 @@ export function modelValidityAgainstList(value: string, models: ModelDescriptor[
 }
 
 // Sweeps EVERY spawn-defaults blob plus the standalone global-model key,
-// stripping model values classified malformed or stale (floor §1.10,
-// spawn.js:177-246). An unknown or valid model is left in place. A blob left
+// stripping model values classified malformed or stale (floor §1.10). An unknown or valid model is left in place. A blob left
 // with no other fields is deleted outright. Returns the discarded model values
 // so the caller can surface the inline "no longer offered by this hub" notice.
 export function sweepStaleModels(models: ModelDescriptor[]): { discarded: string[] } {

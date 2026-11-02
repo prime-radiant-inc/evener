@@ -32,7 +32,6 @@ vi.mock("react-native", async () => ({
 	useWindowDimensions: () => ({ width: 390, height: 844, scale: 3, fontScale: viewport.fontScale }),
 	useColorScheme: () => viewport.scheme,
 }));
-vi.mock("expo-symbols", () => ({ SymbolView: "SymbolView" }));
 
 const light = palettes.light;
 const symbols = (tree: ReturnType<typeof render>) =>

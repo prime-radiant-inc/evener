@@ -7,7 +7,7 @@
 // bookkeeping.
 //
 // Every evener/instance/* mutation's Go handler returns the FULL updated
-// InstanceListResponse (appwire/types.go), so create/edit/remove/setDefault
+// InstanceListResponse (appwire/types_auth_commands.go), so create/edit/remove/setDefault
 // apply that response directly to the listing instead of issuing a separate
 // evener/instance/list refetch. Auth mutations return the raw wire response
 // and the store schedules its own listing refresh, correlated with the hub's
@@ -46,6 +46,8 @@ import type {
   InstanceSetModelDisabledParams,
   ProviderDescriptor,
 } from "../../types.gen";
+import { REFETCH_DEBOUNCE_MS } from "../refetchDebounce";
+import { type CredentialListing, listState } from "./listing";
 
 /** The client surface the store calls: requests, and the notification feed the
  * evener/auth/updated refetch listens on. */
@@ -87,8 +89,8 @@ export interface CredentialInstancesState {
   instances: InstanceEntry[];
   availableProviders: ProviderDescriptor[];
   // diagnostics/userLayer/writesRefused mirror InstanceListResponse's own
-  // optional fields (appwire/types.go), normalized here to always-present
-  // values (spec §11.3) so components never need an `?? []`/`?? false`
+  // optional fields (appwire/types_auth_commands.go), normalized here to always-present
+  // values so components never need an `?? []`/`?? false`
   // fallback of their own.
   diagnostics: string[];
   userLayer: string;
@@ -150,8 +152,11 @@ export interface CredentialInstancesState {
   // the one the store now holds, false when a newer request superseded it.
   // Callers that steer a flow on the strength of their own write (the sheet,
   // the add dialog, the removal report) act on the store's verdict, never on
-  // the raw response.
-  create(params: InstanceCreateParams): Promise<boolean>;
+  // the raw response. create takes the same reconcile hook as edit: a create
+  // whose answer a newer request superseded still carries the row it authored
+  // under the hub's write lock, which is the only proof a caller has of the
+  // created endpoint.
+  create(params: InstanceCreateParams, reconcile?: EditSupersededReconcile): Promise<boolean>;
   edit(params: InstanceEditParams, reconcile?: EditSupersededReconcile): Promise<boolean>;
   remove(name: string, expectedEndpointFingerprint?: string): Promise<boolean>;
   setDefault(name: string): Promise<boolean>;
@@ -220,58 +225,6 @@ export interface CredentialInstancesDeps {
   ownClientId: () => string;
 }
 
-/** The listing half of the state: InstanceListResponse with every optional
- * field present. */
-const LISTING_FIELDS = ["instances", "availableProviders", "diagnostics", "userLayer", "writesRefused"] as const;
-export type CredentialListing = Pick<CredentialInstancesState, (typeof LISTING_FIELDS)[number]>;
-
-// listState normalizes one instance/list answer into the store's own always-
-// present shape. Every reader of the listing goes through it, so a field
-// added to InstanceListResponse is defaulted in exactly one place.
-function listState(resp: InstanceListResponse): CredentialListing {
-  return {
-    instances: resp.instances,
-    availableProviders: resp.availableProviders,
-    diagnostics: resp.diagnostics ?? [],
-    userLayer: resp.userLayer ?? "",
-    writesRefused: resp.writesRefused ?? false,
-  };
-}
-
-/** listingOf picks the listing out of a store snapshot, for a consumer that
- * hands the rows on as one value rather than selecting fields. */
-export function listingOf(state: CredentialListing): CredentialListing {
-  // Spelled out rather than looped: CredentialListing derives from
-  // LISTING_FIELDS, so a field added there fails to compile here.
-  const { instances, availableProviders, diagnostics, userLayer, writesRefused } = state;
-  return { instances, availableProviders, diagnostics, userLayer, writesRefused };
-}
-
-/** listingChanged reports whether a store transition replaced the listing:
- * every applied read or write installs fresh rows, while a loading or error
- * patch leaves the same arrays in place. */
-export function listingChanged(state: CredentialListing, previous: CredentialListing): boolean {
-  return LISTING_FIELDS.some((field) => state[field] !== previous[field]);
-}
-
-type ListingTransition = CredentialListing & Pick<CredentialInstancesState, "selfRefresh" | "loading" | "error">;
-
-/** foreignListingChange reports whether a store transition is a change a
- * credential probe or a guided flow must not be trusted against: the rows
- * moved, or a read began or failed, and the transition is NOT the store's own
- * self-marked refresh (selfRefresh moves only on those). A host that shows a
- * probe result, or steers a flow on a listing, invalidates on exactly this. */
-export function foreignListingChange(
-  state: ListingTransition,
-  previous: ListingTransition,
-  moved: boolean = listingChanged(state, previous),
-): boolean {
-  return (
-    state.selfRefresh === previous.selfRefresh &&
-    (moved || state.loading !== previous.loading || state.error !== previous.error)
-  );
-}
-
 // MutationReconcile tells applyMutation how to place its answer among newer
 // reads: supersededFor receives the answer a newer request outran, instance
 // names the row the landed-write count belongs to, and written names the
@@ -311,7 +264,6 @@ function changedCounts(before: Map<string, number>, now: Map<string, number>): S
   return new Set([...now].filter(([name, count]) => (before.get(name) ?? 0) !== count).map(([name]) => name));
 }
 
-const REFETCH_DEBOUNCE_MS = 250;
 // Age budget from an own-echo marker's latest stamp - the issue, or the RPC
 // response that re-stamped it (authMutation's and applyMutation's landed
 // branches).
@@ -668,10 +620,37 @@ export function createCredentialInstancesStore(deps: CredentialInstancesDeps): C
     }, REFETCH_DEBOUNCE_MS);
   }
 
+  // A superseded response lost the store's ordering race: a read may have
+  // snapshotted before the write landed, so that read cannot reconcile it
+  // (setDefault's winning read may predate the hub applying the new default and
+  // would keep the old flag). The store's own read lands the post-mutation view,
+  // foreign-marked because the write is not the guided flow's own edit. Owning
+  // it in the core - a timer on the store, not a subscription in the issuing
+  // screen - makes it survive that screen unmounting and remounting around this
+  // store.
+  function settleMutation(applied: boolean): boolean {
+    if (!applied) scheduleRefetch();
+    return applied;
+  }
+
   function cancelRefetch(): void {
     clearTimeout(refetchTimer);
     refetchTimer = undefined;
     pendingRefetchSelf = undefined;
+  }
+
+  // consumeScheduledRefetch folds the store's queued refresh into a read the
+  // caller is starting now, when - and only when - every request in the queue's
+  // window was this client's own. Such a read observes the same post-write
+  // listing the queued read would have, so dropping the timer loses no event,
+  // and the caller's read carries the self mark the queued read would have
+  // carried. A queued FOREIGN request stays armed: it may have been scheduled
+  // after a caller's read took its snapshot, and consuming it here would lose
+  // an unrelated change's refresh. Returns the mark to use for the read.
+  function consumeScheduledRefetch(): boolean | undefined {
+    if (pendingRefetchSelf !== true) return undefined;
+    cancelRefetch();
+    return true;
   }
 
   // clearClientBookkeeping drops what was written under one client: a row a
@@ -1064,29 +1043,24 @@ export function createCredentialInstancesStore(deps: CredentialInstancesDeps): C
     refreshingInstances: new Set<string>(),
 
     async fetch() {
-      return readListing(false);
+      return readListing(consumeScheduledRefetch() ?? false);
     },
 
     async fetchSelf() {
+      consumeScheduledRefetch();
       return readListing(true);
     },
 
-    async create(params) {
+    async create(params, reconcile) {
       const client = requireWritableClient();
       const applied = await applyMutation(
         (origin) => client.request("evener/instance/create", { ...params, ...origin }),
         {
           instance: params.name,
+          supersededFor: reconcile?.onSuperseded,
         },
       );
-      // Like setDefault: a superseded response lost the store's ordering race,
-      // and a read may have snapshotted before this write landed, so that read
-      // cannot reconcile the write. Schedule the store's own read to land the
-      // post-mutation view. Owning it in the core - a timer on the store, not a
-      // subscription in the issuing screen - is what makes it survive that
-      // screen unmounting and remounting around this store.
-      if (!applied) scheduleRefetch();
-      return applied;
+      return settleMutation(applied);
     },
 
     async edit(params, reconcile) {
@@ -1098,8 +1072,7 @@ export function createCredentialInstancesStore(deps: CredentialInstancesDeps): C
           supersededFor: reconcile?.onSuperseded,
         },
       );
-      if (!applied) scheduleRefetch();
-      return applied;
+      return settleMutation(applied);
     },
 
     async remove(name, expectedEndpointFingerprint) {
@@ -1113,8 +1086,7 @@ export function createCredentialInstancesStore(deps: CredentialInstancesDeps): C
           }),
         { instance: name },
       );
-      if (!applied) scheduleRefetch();
-      return applied;
+      return settleMutation(applied);
     },
 
     async setDefault(name) {
@@ -1123,13 +1095,7 @@ export function createCredentialInstancesStore(deps: CredentialInstancesDeps): C
         (origin) => client.request("evener/instance/setDefault", { name, ...origin }),
         { instance: name },
       );
-      // A superseded response lost the store's ordering race: the read that won it
-      // may have started before the hub applied the new default, so the listing
-      // would keep the old flag until something else refreshed. The store's own
-      // read lands the post-mutation view - foreign-marked, because a default
-      // change is not the guided flow's own edit.
-      if (!applied) scheduleRefetch();
-      return applied;
+      return settleMutation(applied);
     },
 
     async setModelDisabled(params) {
@@ -1189,8 +1155,12 @@ export function createCredentialInstancesStore(deps: CredentialInstancesDeps): C
     },
 
     loginComplete(provider, flowId, redirectUrl) {
-      return authMutation(provider, (client, origin) =>
-        client.request("evener/auth/login/complete", { provider, flowId, redirectUrl, ...origin }),
+      // A completion the hub discarded unchecked (restart) wrote nothing, so it
+      // arms no echo and schedules no listing read.
+      return authMutation(
+        provider,
+        (client, origin) => client.request("evener/auth/login/complete", { provider, flowId, redirectUrl, ...origin }),
+        (resp) => resp.restart !== true,
       );
     },
 

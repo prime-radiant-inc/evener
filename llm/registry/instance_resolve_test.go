@@ -643,3 +643,25 @@ func TestResolveInstanceModelFactsDefaultsEmptyInstance(t *testing.T) {
 		t.Fatalf("defaulted resolve = %s/%s, want %s/%s", res.Instance, res.Model.ID, direct.Instance, direct.Model.ID)
 	}
 }
+
+// A Codex id the bundled roster lacks is not the gate's refusal: the child
+// applies the instance's live roster before resolving the model, so the gate
+// judges the credential at the instance's transport and leaves the model
+// verdict to the child. Resolve itself still refuses the unlisted id.
+func TestResolveGateCredentialLeavesAnUnlistedCodexIDToTheChild(t *testing.T) {
+	r := fixtureLoad(t, nil, "[providers.subscription]\nbase = \"openai-codex\"\n")
+	const unlisted = "gpt-not-in-any-bundled-roster"
+	if _, err := r.Resolve("subscription/" + unlisted); !errors.Is(err, ErrCodexModelNotListed) {
+		t.Fatalf("Resolve(unlisted) = %v; want ErrCodexModelNotListed", err)
+	}
+	res, err := r.ResolveGateCredential("subscription", unlisted)
+	if err != nil {
+		t.Fatalf("gate(unlisted codex id) = %v; want the instance's transport judged", err)
+	}
+	if res.Transport.Auth != AuthOAuthOpenAICodex {
+		t.Fatalf("gate transport auth = %q; want the codex oauth scheme", res.Transport.Auth)
+	}
+	if res.Credential.MissingReason == "" {
+		t.Fatal("no login stored: the gate must still judge the credential missing")
+	}
+}

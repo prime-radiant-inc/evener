@@ -5,7 +5,6 @@ import { pressable, render, renderedText } from "../renderNative.testkit";
 import { ContinueReadingRow } from "./ContinueReadingRow";
 
 vi.mock("react-native", async () => (await import("../renderNative.testkit")).nativeModuleMock());
-vi.mock("expo-symbols", () => ({ SymbolView: "SymbolView" }));
 
 const trail = {
 	sessionRef: "local:fix",

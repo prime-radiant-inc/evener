@@ -1,6 +1,12 @@
 import { parseZoomParams } from "../panes/zoom/intent";
 import { navigate, paneToURL, refParam } from "./routing";
-import { type OpenPaneRecord, recordConversationOpenParent, workspaceStore } from "./workspace";
+import {
+  cancelCarriedComposerSeat,
+  type OpenPaneRecord,
+  presentedPanes,
+  recordConversationOpenParent,
+  workspaceStore,
+} from "./workspace";
 
 // A session pane's identity is the ref in its own params, derived here rather
 // than spelled by the caller so the type and the ref cannot diverge.
@@ -18,12 +24,15 @@ function isSessionPaneFor(pane: OpenPaneRecord, ref: string): boolean {
 // use the two helpers below directly.
 export function openSessionByRef(ref: string): void {
   const workspace = workspaceStore.getState();
-  const existing = workspace.panes.find((pane) => isSessionPaneFor(pane, ref));
+  const existing = presentedPanes(workspace.panes).find((pane) => isSessionPaneFor(pane, ref));
   if (existing) {
     workspace.focusPane(existing.id);
   }
   const url = paneToURL("session", { ref });
-  if (url) navigate(url);
+  // The rail, scope crumbs and every session link land here: a press that
+  // names a reader already in the address bar still has to leave an attention
+  // entry's own placement behind.
+  if (url) navigate(url, { ordinary: true });
 }
 
 // A legacy cascade retains its original route role: opening the session a cascade
@@ -54,6 +63,9 @@ export function openTopLevelSession(ref: string): void {
     // the cascade. Closing a focused duplicate nulls focus (closePane's own
     // rule), but this branch never redirects focus, so a restored layout's
     // saved focus survives the placement.
+    // Retaining the cascade in main is the placement decision for the
+    // route's conversation: a pending carry dies with it.
+    cancelCarriedComposerSeat(ref);
     for (const pane of workspace.panes) {
       if (isSessionPaneFor(pane, ref)) workspace.closePane(pane.id);
     }
@@ -66,7 +78,7 @@ export function openTopLevelSession(ref: string): void {
 // opening the contextual child in secondary.
 export function openNestedSessionWithOwner(ref: string, ownerRef: string): void {
   openTopLevelSession(ownerRef);
-  workspaceStore.getState().openPane("session", { ref }, { slot: "secondary" });
-  const opened = workspaceStore.getState().panes.find((pane) => isSessionPaneFor(pane, ref));
+  const openedId = workspaceStore.getState().openPane("session", { ref }, { slot: "secondary" });
+  const opened = workspaceStore.getState().panes.find((pane) => pane.id === openedId);
   if (opened) recordConversationOpenParent(opened, ownerRef);
 }

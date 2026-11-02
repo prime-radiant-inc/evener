@@ -6,10 +6,12 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -17,6 +19,7 @@ import (
 	"github.com/fsnotify/fsnotify"
 	"primeradiant.com/evener/agent/sandbox/sandboxtest"
 	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/appwire/appwiretest"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubedge"
 	"primeradiant.com/evener/test/e2e/fakellm"
 )
@@ -26,6 +29,16 @@ const backgroundJobsBrowserCount = 151
 // TestMain scrubs product EVENER_* variables and removes its redirected root.
 // Capture the supplied evidence destination before that environment redirect.
 var backgroundJobsArtifactRoot = os.Getenv("EVENER_SCRATCH_DIR")
+
+// backgroundJobsEvidenceRoot is where the guards keep evidence that must outlive
+// the test: the supplied destination, else the kept temp dir (the redirected
+// test temp root is removed when the test ends).
+func backgroundJobsEvidenceRoot() string {
+	if backgroundJobsArtifactRoot != "" {
+		return backgroundJobsArtifactRoot
+	}
+	return sandboxtest.KeptTempDir()
+}
 
 // The only scripted boundary is the provider. Jobs, journal eligibility, paging,
 // subscriptions, output and browser state all belong to the real stack.
@@ -43,11 +56,7 @@ func TestBackgroundJobsBrowser(t *testing.T) {
 	t.Cleanup(provider.Close)
 	stack := startHubStack(t, provider)
 	client := stack.dialRPC(ctx, t)
-	artifactRoot := backgroundJobsArtifactRoot
-	if artifactRoot == "" {
-		artifactRoot = sandboxtest.KeptTempDir()
-	}
-	artifacts, err := os.MkdirTemp(artifactRoot, "backgroundjobsguard-")
+	artifacts, err := os.MkdirTemp(backgroundJobsEvidenceRoot(), "backgroundjobsguard-")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -59,7 +68,7 @@ func TestBackgroundJobsBrowser(t *testing.T) {
 		}
 	}
 	rounds := 200
-	started, err := client.ThreadStart(ctx, appwire.ThreadStartParams{
+	started, err := appwiretest.ThreadStart(ctx, client, appwire.ThreadStartParams{
 		Harness: "evener", CWD: stack.workDir, Model: stack.model,
 		Input:           []appwire.InputItem{{Type: "text", Text: "BACKGROUND_JOBS_PRODUCER"}},
 		LaunchOverrides: &appwire.LaunchConfigLayer{Sandbox: "off", MaxRounds: &rounds},
@@ -106,7 +115,7 @@ func TestBackgroundJobsBrowser(t *testing.T) {
 	waitFor := func(name string) string {
 		return fmt.Sprintf("while ! test -e %q; do sleep 0.02; done; ", barrier(name))
 	}
-	for index := 0; index < backgroundJobsBrowserCount; index++ {
+	for index := range backgroundJobsBrowserCount {
 		command := fmt.Sprintf("printf 'BACKGROUND_JOB_%03d\\n'", index)
 		switch index {
 		case 0:
@@ -340,7 +349,7 @@ func TestBackgroundJobsBrowser(t *testing.T) {
 		t.Fatal(err)
 	}
 	found := make(map[string]bool)
-	for _, line := range strings.Split(string(milestones), "\n") {
+	for line := range strings.SplitSeq(string(milestones), "\n") {
 		var record struct {
 			Milestone string `json:"milestone"`
 		}
@@ -355,7 +364,7 @@ func TestBackgroundJobsBrowser(t *testing.T) {
 	}
 	stopNotices()
 	<-providerDone
-	runJobOutputPagingJourney(t, ctx, &stack, provider)
+	runJobOutputPagingJourney(ctx, t, &stack, provider)
 }
 
 func backgroundJobsAwaitOutput(ctx context.Context, client *appwire.Client, ref, jobID, want string) error {
@@ -405,7 +414,7 @@ func backgroundJobsReadUntil(ctx context.Context, client *appwire.Client, ref st
 				break
 			}
 			if page.Page.NextCursor == "" || page.Page.NextCursor == cursor {
-				return nil, fmt.Errorf("actual Jobs cursor does not advance")
+				return nil, errors.New("actual Jobs cursor does not advance")
 			}
 			cursor = page.Page.NextCursor
 		}
@@ -419,7 +428,7 @@ func backgroundJobsReadUntil(ctx context.Context, client *appwire.Client, ref st
 				return nil, fmt.Errorf("actual Jobs state did not arrive: %w, last rows %+v", ctx.Err(), rows)
 			case note, ok := <-client.Notifications():
 				if !ok {
-					return nil, fmt.Errorf("actual Jobs subscription closed")
+					return nil, errors.New("actual Jobs subscription closed")
 				}
 				wake = backgroundJobsInvalidated(note, ref, scope)
 			}
@@ -429,7 +438,7 @@ func backgroundJobsReadUntil(ctx context.Context, client *appwire.Client, ref st
 		// A bounded snapshot cannot starve that read under continuous traffic.
 		for queued := len(client.Notifications()); queued > 0; queued-- {
 			if _, ok := <-client.Notifications(); !ok {
-				return nil, fmt.Errorf("actual Jobs subscription closed")
+				return nil, errors.New("actual Jobs subscription closed")
 			}
 		}
 	}
@@ -442,11 +451,7 @@ func backgroundJobsInvalidated(note appwire.Notification, ref string, scope appw
 		if json.Unmarshal(note.Params, &changed) != nil || (changed.Ref != ref && changed.Ref != scope.Ref) || changed.SessionID != scope.SessionID {
 			return false
 		}
-		for _, resource := range changed.Resources {
-			if resource == appwire.SessionActivityResourceJobs {
-				return true
-			}
-		}
+		return slices.Contains(changed.Resources, appwire.SessionActivityResourceJobs)
 	case appwire.NotifyEvenerThreadResync:
 		var resync appwire.ThreadResyncParams
 		return json.Unmarshal(note.Params, &resync) == nil && (resync.Ref == ref || resync.Ref == scope.Ref)

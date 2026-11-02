@@ -10,6 +10,7 @@ import (
 
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/plugin"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/llm"
@@ -134,7 +135,7 @@ func TestRestoreSessionDefersResumeSessionStartHooksUntilUserInput(t *testing.T)
 				"RESUME_HOOK_CONTEXT",
 				"current user task",
 			)
-			return finalResponse("done")
+			return agenttest.FinalResponse("done")
 		},
 	}}
 	sess := restoredSessionWithResumeHook(t, adapter)
@@ -172,11 +173,11 @@ func TestRestoreSessionNotificationDoesNotDrainResumeSessionStartHooks(t *testin
 			if !strings.Contains(text, "notification steering without resume hooks") {
 				t.Fatalf("notification request missing steering text; text:\n%s", text)
 			}
-			return finalResponse("notification done")
+			return agenttest.FinalResponse("notification done")
 		},
 		func(req llm.Request) llm.Response {
 			requireRequestContainsInOrder(t, req, "RESUME_HOOK_CONTEXT", "first real user")
-			return finalResponse("user done")
+			return agenttest.FinalResponse("user done")
 		},
 	}}
 	sess := restoredSessionWithResumeHook(t, adapter)
@@ -210,7 +211,7 @@ func TestRestoreSessionStartHooksDrainOnlyOnce(t *testing.T) {
 	adapter := &fakeAdapter{name: "openai", steps: []func(req llm.Request) llm.Response{
 		func(req llm.Request) llm.Response {
 			requireRequestContainsInOrder(t, req, "RESUME_HOOK_CONTEXT", "first user")
-			return finalResponse("first done")
+			return agenttest.FinalResponse("first done")
 		},
 		func(req llm.Request) llm.Response {
 			text := requestText(req)
@@ -220,7 +221,7 @@ func TestRestoreSessionStartHooksDrainOnlyOnce(t *testing.T) {
 			if !strings.Contains(text, "second user") {
 				t.Fatalf("second request missing second user prompt; text:\n%s", text)
 			}
-			return finalResponse("second done")
+			return agenttest.FinalResponse("second done")
 		},
 	}}
 	sess := restoredSessionWithResumeHook(t, adapter)
@@ -256,7 +257,7 @@ func TestRestoreSessionMaxTurnsRejectedUserInputKeepsPendingResumeHooks(t *testi
 				"RESUME_HOOK_CONTEXT",
 				"accepted after max turns",
 			)
-			return finalResponse("done")
+			return agenttest.FinalResponse("done")
 		},
 	}}
 	sess := restoredSessionWithResumeHook(t, adapter)
@@ -302,7 +303,7 @@ func TestRestoreSessionRejectedUserInputKeepsPendingResumeHooks(t *testing.T) {
 	adapter := &fakeAdapter{name: "openai", steps: []func(req llm.Request) llm.Response{
 		func(req llm.Request) llm.Response {
 			requireRequestContainsInOrder(t, req, "RESUME_HOOK_CONTEXT", "accepted user")
-			return finalResponse("done")
+			return agenttest.FinalResponse("done")
 		},
 	}}
 	sess := restoredSessionWithResumeHook(t, adapter)

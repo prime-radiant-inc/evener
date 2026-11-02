@@ -432,9 +432,7 @@ and applies to all four alternatives — neither is D's, and D's one original id
 belongs. Shipped `c16f8178f`. Title clustering (C) has since been removed:
 session titles are agentic and do not repeat, so every session is its own row.
 
-Verdict **superseded** for Alt A: `docs/superpowers/plans/2026-07-23-webui-ux-round2.md`
-records the decision to keep Live, Pinned, Projects, Archived and Test runs, and
-that "residual duplication is accepted." Alts C and D are **ABSENT**, and in a
+Verdict **superseded** for Alt A: the decision is to keep Live, Pinned, Projects, Archived and Test runs, and "residual duplication is accepted." Alts C and D are **ABSENT**, and in a
 telling way — `TreeNode.cluster_count` and `TreeProject.rollup_live` are both
 defined on the wire and never read by anything. A half-finished backend-first
 cut, not a rejection. No "you are here" row exists.
@@ -843,8 +841,7 @@ new rendering gets reviewed.
 Settings → Marketplaces & Plugins was redesigned from a six-mockup
 exploration (decluttered sections, segmented workspace, master–detail,
 catalog storefront, mobile-first sheets, power table — mockups and
-desktop/mobile screenshots of all six in
-`docs/web-ui/specs/assets/2026-08-29-plugins-segmented-workspace/`). The
+desktop/mobile screenshots of all six were reviewed on the PR). The
 winner is the **segmented workspace**, and its two idioms are now the
 design system's collection-page language, written up in design-system.md
 §10: same-weight sibling collections go behind one page-level
@@ -863,8 +860,7 @@ about a newer upstream). The shipped sheet offers a plain "Upgrade" action
 (the RPC's actual "check and pull if newer" semantics) instead of faking
 the field; real update detection is a backend feature, not a presentation
 choice, and was not smuggled into this redesign. The implementation
-screenshots beside the mockups in the assets directory record what
-actually shipped, in the app's default theme.
+screenshots on the PR record what actually shipped, in the app's default theme.
 
 ## 2026-09-06 typography, measure and rhythm
 

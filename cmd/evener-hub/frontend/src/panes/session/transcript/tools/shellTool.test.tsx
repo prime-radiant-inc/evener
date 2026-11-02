@@ -1,9 +1,10 @@
-import { stripRedundantCd, toolExitCode } from "@evener/appwire-client";
+import { stripRedundantCd, tailFold, toolExitCode } from "@evener/appwire-client";
 import { cleanup, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { resetThreadsStoreForTests, threadsStore } from "../../../../stores/threads";
 import { toolRendererFor } from "../toolRenderers";
+import { TOOL_BODY_MAX_CHARS } from "./bodies";
 import "./shellTool";
 import type { ItemModel, ThreadModel } from "@evener/appwire-client";
 
@@ -346,6 +347,18 @@ test("a settled shell tail restores styling that began before the retained outpu
     `earlier output not retained — showing the last 8,000 chars\n${"x".repeat(7_992)}KEPT`,
   );
   expect(container.querySelector('[data-ansi-fg="green"]')?.textContent).toBe(`${"x".repeat(7_992)}KEPT`);
+});
+
+// The settled truncation note has ONE owner. This compares the shell body's
+// rendered text with tailFold's output for the same plain-text, over-budget
+// input, so a re-inlined note that changes on one side drifts the two apart.
+// The fixture stays one line: CodeBlock folds past 100 lines, which would hide
+// the note from the rendered <code>.
+test("a settled truncated body's note matches tailFold's shared output", () => {
+  const Body = toolRendererFor("shell").body!;
+  const output = "x".repeat(TOOL_BODY_MAX_CHARS + 100);
+  const { container } = render(<Body item={withCommand("long-run", { output })} live={false} />);
+  expect(outputCode(container)?.textContent).toBe(tailFold(output, TOOL_BODY_MAX_CHARS));
 });
 
 test("a retained tail preserves inverse semantics for later color changes", () => {

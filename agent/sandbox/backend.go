@@ -8,6 +8,8 @@ import (
 	"os/exec"
 	"path/filepath"
 	"slices"
+
+	"primeradiant.com/evener/identifier"
 )
 
 // Wrapper turns a spawned command's argv into a kernel-wrapped argv that
@@ -175,8 +177,8 @@ func liveCacheRoots(rp ResolvedPolicy) []string {
 			// inside the outer root, or the outer root not spelled under a
 			// private mount (bwrap's own /tmp and /dev hide host symlinks, so
 			// such an overlay sits elsewhere in the sandbox).
-			inside := resolved[i] != resolved[j] && pathUnder(resolved[i], resolved[j]) || resolved[i] == resolved[j] && j < i
-			reached := pathUnder(servable[i], servable[j]) || !inPrivateMount(servable[j])
+			inside := resolved[i] != resolved[j] && identifier.PathUnder(resolved[i], resolved[j]) || resolved[i] == resolved[j] && j < i
+			reached := identifier.PathUnder(servable[i], servable[j]) || !inPrivateMount(servable[j])
 			if inside && reached {
 				nested = true
 			}
@@ -194,7 +196,7 @@ func liveCacheRoots(rp ResolvedPolicy) []string {
 func landsInPersistentRoot(rp ResolvedPolicy, c string) bool {
 	rc := physicalLanding(c)
 	return slices.ContainsFunc(appendNonEmpty(slices.Clone(bwrapWriteRoots(rp)), rp.Git.WorktreeRoot), func(w string) bool {
-		return pathUnder(rc, physicalLanding(w))
+		return identifier.PathUnder(rc, physicalLanding(w))
 	})
 }
 

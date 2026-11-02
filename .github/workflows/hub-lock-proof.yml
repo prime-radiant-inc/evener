@@ -1,0 +1,38 @@
+name: macOS hub-lock proof
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - .github/workflows/hub-lock-proof.yml
+      - cmd/evener-hub/internal/hostlock/**
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+jobs:
+  darwin-flock-query:
+    runs-on: macos-26
+    # Deadman for checkout, toolchain setup, compilation and focused proofs.
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.work
+          cache: false
+
+      - name: Record macOS kernel and version
+        run: |
+          uname -a
+          sw_vers
+
+      - name: Prove production lock queries and storage checks
+        run: go test -v -count=1 -timeout=60s ./cmd/evener-hub/internal/hostlock

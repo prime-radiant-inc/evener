@@ -175,6 +175,32 @@ type DelegateStatusInfo struct {
 	Worktree            *appwire.JobActivityWorktree `json:"worktree,omitempty"`
 }
 
+// AppwireInfo maps the delegate read model onto the AppWire row. The row owns
+// its pointers and slices, so callers may keep or mutate it independently of
+// the status it came from.
+func (d DelegateStatusInfo) AppwireInfo() appwire.EvenerDelegateInfo {
+	return appwire.EvenerDelegateInfo{
+		DelegateID: d.DelegateID, RunGeneration: d.RunGeneration, OwnerSessionID: d.OwnerSessionID, RootSessionID: d.RootSessionID,
+		ChildSessionID: d.ChildSessionID, TranscriptRef: d.TranscriptRef, ParentDelegateID: d.ParentDelegateID,
+		Type: d.Type, Lifecycle: d.Lifecycle, Phase: d.Phase, Status: d.Status,
+		Outcome: d.Outcome, Reason: d.Reason, Error: d.Error, Terminal: d.Terminal, Resumable: d.Resumable, NeedsAttention: d.NeedsAttention,
+		NotResumableReason: d.NotResumableReason, ProjectionRevision: d.ProjectionRevision,
+		Task: d.Task, Description: d.Description, AgentType: d.AgentType, RequestedModel: d.RequestedModel,
+		ResolvedProfileID: d.ResolvedProfileID, ResolvedModel: d.ResolvedModel, Model: d.Model,
+		ReasoningEffort: d.ReasoningEffort, OriginTurnID: d.OriginTurnID, OriginToolCallID: d.OriginToolCallID,
+		OriginItemID: d.OriginItemID, RunStartedAt: d.RunStartedAt, RunEndedAt: d.RunEndedAt,
+		LatestActivityAt: d.LatestActivityAt, LatestIntent: d.LatestIntent, RunningForMS: appwire.ClonePointer(d.RunningForMS),
+		QuietForMS: appwire.ClonePointer(d.QuietForMS), DurationMS: appwire.ClonePointer(d.DurationMS), PacketKind: d.PacketKind,
+		Message: append(json.RawMessage(nil), d.Message...), StructuredResult: append(json.RawMessage(nil), d.StructuredResult...),
+		StructuredValid: appwire.ClonePointer(d.StructuredValid), StructuredReason: d.StructuredReason,
+		Warnings: append([]string(nil), d.Warnings...), Diagnostics: append([]string(nil), d.Diagnostics...),
+		ExhaustionBudget: d.ExhaustionBudget, ExhaustionLimit: d.ExhaustionLimit,
+		ExhaustionResumable: appwire.ClonePointer(d.ExhaustionResumable), DelegationAllowance: d.DelegationAllowance,
+		ParentWatchGranted: d.ParentWatchGranted,
+		Usage:              appwire.ClonePointer(d.Usage), Worktree: appwire.ClonePointer(d.Worktree),
+	}
+}
+
 // HookEventStatus describes a single hook event's registration state and
 // compatibility tier for typed diagnostics.
 // Tier: Supported=true events are "claude-compatible-subset";
@@ -484,7 +510,7 @@ func delegateFrameStatusInfo(now time.Time, rootID string, row delegateSnapshot)
 
 func delegateStatusInfo(now time.Time, rootID string, row delegateSnapshot, boundedMetadata bool) DelegateStatusInfo {
 	descriptor := row.descriptor
-	timing := projectStableDelegateStatus(now, row)
+	timing := projectDelegateStatus(now, row)
 	out := DelegateStatusInfo{
 		DelegateID:          row.id,
 		RunGeneration:       row.generation,
@@ -515,9 +541,9 @@ func delegateStatusInfo(now time.Time, rootID string, row delegateSnapshot, boun
 		RunStartedAt:        timing.RunStartedAt,
 		LatestActivityAt:    timing.LatestActivityAt,
 		LatestIntent:        row.latestIntent,
-		RunningForMS:        cloneInt64(timing.RunningForMS),
-		QuietForMS:          cloneInt64(timing.QuietForMS),
-		DurationMS:          cloneInt64(timing.DurationMS),
+		RunningForMS:        appwire.ClonePointer(timing.RunningForMS),
+		QuietForMS:          appwire.ClonePointer(timing.QuietForMS),
+		DurationMS:          appwire.ClonePointer(timing.DurationMS),
 		DelegationAllowance: descriptor.DelegationAllowance,
 		ParentWatchGranted:  descriptor.ParentWatchGranted,
 	}
@@ -531,13 +557,13 @@ func delegateStatusInfo(now time.Time, rootID string, row delegateSnapshot, boun
 		}
 		out.ExhaustionBudget = string(row.lastOutcome.ExhaustionBudget)
 		out.ExhaustionLimit = row.lastOutcome.ExhaustionLimit
-		out.ExhaustionResumable = cloneBool(row.lastOutcome.Resumable)
+		out.ExhaustionResumable = appwire.ClonePointer(row.lastOutcome.Resumable)
 	}
 	if packet := row.latestPacket; packet != nil {
 		out.PacketKind = string(packet.Kind)
 		out.Message = append(json.RawMessage(nil), packet.Message...)
 		out.StructuredResult = append(json.RawMessage(nil), packet.StructuredResult...)
-		out.StructuredValid = cloneBool(packet.StructuredResultValid)
+		out.StructuredValid = appwire.ClonePointer(packet.StructuredResultValid)
 		out.StructuredReason = packet.StructuredResultReason
 		out.Warnings = append([]string(nil), packet.Warnings...)
 		// The activity read bounds the payload with the same helper, so a pushed
@@ -566,14 +592,6 @@ func delegateStatusInfo(now time.Time, rootID string, row delegateSnapshot, boun
 	return out
 }
 
-func cloneBool(value *bool) *bool {
-	if value == nil {
-		return nil
-	}
-	clone := *value
-	return &clone
-}
-
 func delegateUpdatedDataFromStatus(info DelegateStatusInfo) events.DelegateUpdatedData {
 	out := events.DelegateUpdatedData{
 		DelegateID: info.DelegateID, OwnerSessionID: info.OwnerSessionID, RootSessionID: info.RootSessionID,
@@ -584,14 +602,14 @@ func delegateUpdatedDataFromStatus(info DelegateStatusInfo) events.DelegateUpdat
 		RequestedModel: info.RequestedModel, ResolvedProfileID: info.ResolvedProfileID, ResolvedModel: info.ResolvedModel,
 		Model: info.Model, ReasoningEffort: info.ReasoningEffort, OriginTurnID: info.OriginTurnID,
 		OriginToolCallID: info.OriginToolCallID, OriginItemID: info.OriginItemID, RunStartedAt: info.RunStartedAt,
-		RunEndedAt: info.RunEndedAt, LatestActivityAt: info.LatestActivityAt, RunningForMS: cloneInt64(info.RunningForMS),
+		RunEndedAt: info.RunEndedAt, LatestActivityAt: info.LatestActivityAt, RunningForMS: appwire.ClonePointer(info.RunningForMS),
 		LatestIntent: info.LatestIntent,
-		QuietForMS:   cloneInt64(info.QuietForMS), DurationMS: cloneInt64(info.DurationMS), PacketKind: info.PacketKind,
+		QuietForMS:   appwire.ClonePointer(info.QuietForMS), DurationMS: appwire.ClonePointer(info.DurationMS), PacketKind: info.PacketKind,
 		Message: append(json.RawMessage(nil), info.Message...), StructuredResult: append(json.RawMessage(nil), info.StructuredResult...),
-		StructuredValid: cloneBool(info.StructuredValid), StructuredReason: info.StructuredReason,
+		StructuredValid: appwire.ClonePointer(info.StructuredValid), StructuredReason: info.StructuredReason,
 		Warnings: append([]string(nil), info.Warnings...), Diagnostics: append([]string(nil), info.Diagnostics...),
 		ExhaustionBudget: info.ExhaustionBudget, ExhaustionLimit: info.ExhaustionLimit,
-		ExhaustionResumable: cloneBool(info.ExhaustionResumable), DelegationAllowance: info.DelegationAllowance,
+		ExhaustionResumable: appwire.ClonePointer(info.ExhaustionResumable), DelegationAllowance: info.DelegationAllowance,
 		ParentWatchGranted: info.ParentWatchGranted,
 	}
 	if info.Usage != nil {

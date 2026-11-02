@@ -181,7 +181,7 @@ export interface ActivityDelegate {
 }
 
 // The one place that decides which shape a delegate is. `type` is optional on
-// the wire (appwire/types.go gives it `json:"type,omitempty"`, and the
+// the wire (appwire/types_thread.go gives it `json:"type,omitempty"`, and the
 // generated types.gen.ts declares `type?: string`), so an empty value arrives
 // as no field at all - and the daemon's only delegate construction site sets
 // "delegate" (agent/jobs_activity.go:988). A turn container is therefore a

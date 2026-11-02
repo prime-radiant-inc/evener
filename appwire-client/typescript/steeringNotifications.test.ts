@@ -4,6 +4,7 @@ import { expect, test } from "vitest";
 import delegateUserStopGo from "../../agent/delegate_user_stop.go?raw";
 import foldGo from "../../agent/internal/delegatestore/fold.go?raw";
 import {
+  decodeNotificationEntities,
   type ParsedNotification,
   parseSteeringNotifications,
   type SteeringFragment,
@@ -18,7 +19,7 @@ import {
 // notificationsOf flattens the ordered fragment list down to just its parsed
 // notifications, in order - most existing tests here only care about the
 // notifications themselves, not their position relative to interstitial text
-// (that positioning is covered separately below, issue #48).
+// (that positioning is covered separately below).
 function notificationsOf(fragments: SteeringFragment[]): ParsedNotification[] {
   return fragments
     .filter((f): f is Extract<SteeringFragment, { kind: "notification" }> => f.kind === "notification")
@@ -40,13 +41,63 @@ function notif(notifications: ParsedNotification[], i: number): ParsedNotificati
 // guess a steering "kind" from wording is gone (SteeringItem.tsx routes on
 // ItemModel.steeringKind instead); this pins that its exports stay gone.
 
+test("real producer corpus preserves literal sender entities", () => {
+  const sender = `& < &lt; &amp; &amp;lt; " > ' &quot; &gt; &#39;`;
+  const parse = (name: NotificationWireCase) => notif(wireNotifications(name), 0);
+  expect(parse("job-literal-entities").excerpt).toBe(sender);
+  expect(parse("delegate-update-literal-entities").message).toBe(sender);
+  expect(parse("delegate-update-literal-entities").name).toBe(sender);
+  expect(parse("watch-note-literal-entities").prose).toContain(`Note: ${sender}`);
+});
+
+test("body decoder decodes only lt and amp once", () => {
+  expect(decodeNotificationEntities("&lt; &amp; &amp;lt; &amp;amp;lt; &quot; &gt; &#39; &#x27;")).toBe(
+    "< & &lt; &amp;lt; &quot; &gt; &#39; &#x27;",
+  );
+});
+
+test("two-entity bodies preserve sender text in job excerpts and delegate updates", () => {
+  const sender = `& < &lt; &amp; &amp;lt; " > ' &quot; &gt; &#39;`;
+  const wire = `&amp; &lt; &amp;lt; &amp;amp; &amp;amp;lt; " > ' &amp;quot; &amp;gt; &amp;#39;`;
+  const [job, update] = notificationsOf(
+    parseSteeringNotifications(
+      `<job-notification job_id="job_1" event="completed">Done.\nexcerpt:\n${wire}</job-notification>\n` +
+        `<delegate-notification delegate_id="dlg_1" kind="update">${wire}</delegate-notification>`,
+    ),
+  );
+  expect(job?.excerpt).toBe(sender);
+  expect(update?.message).toBe(sender);
+});
+
+test("old full-escaped JSON bodies stay literal and do not extract an envelope", () => {
+  const oldBody = `{&quot;message&quot;:&quot;a &gt; b&quot;,&quot;data&quot;:{},&quot;artifacts&quot;:[]}`;
+  const [job] = notificationsOf(
+    parseSteeringNotifications(
+      `<job-notification job_id="job_old" event="completed" job_type="delegate">Done.\nexcerpt:\n${oldBody}</job-notification>`,
+    ),
+  );
+  expect(job?.excerpt).toBe(oldBody);
+  expect(job?.message).toBeUndefined();
+});
+
+test("full-escaped notification attributes still decode", () => {
+  const [job, update] = notificationsOf(
+    parseSteeringNotifications(
+      `<job-notification job_id="job_1" event="completed" intent="a &lt; b &amp; c &gt; d &quot;q&quot; &#39;s&#39;">Done.</job-notification>\n` +
+        `<delegate-notification delegate_id="dlg_1" kind="update" name="a &lt; b &amp; c &gt; d &quot;q&quot; &#39;s&#39;">hello</delegate-notification>`,
+    ),
+  );
+  expect(job?.intent).toBe(`a < b & c > d "q" 's'`);
+  expect(update?.name).toBe(`a < b & c > d "q" 's'`);
+});
+
 test("no longer exports a prose classifier", async () => {
   const mod = await import("./steeringNotifications");
   expect("classifySteering" in mod).toBe(false);
   expect("steeringTreatment" in mod).toBe(false);
 });
 
-// --- notification parsing (contracts §17) --------------------------------
+// --- notification parsing --------------------------------
 
 const oneBlock = `<job-notification job_id="job_42" event="completed" job_type="delegate" status="completed" reason="" output_bytes="12" transcript_ref="ref_a">
 Job job_42 completed. Output is available through read_transcript(transcript_ref="ref_a") if needed.
@@ -223,8 +274,7 @@ Job job_42 completed.
   const n = notif(notificationsOf(parseSteeringNotifications(block)), 0);
   expect(n.tone).toBe("error");
   // The title names the failure: the glyph's aria-hidden seat is decorative,
-  // so the title is the only failure text a screen reader reaches (RoboRev
-  // round 7's accessibility finding).
+  // so the title is the only failure text a screen reader reaches.
   expect(n.title).toBe("Command failed");
   expect(n.secondary).toBe("");
   expect(n.description).toBe("Inspect the workspace");
@@ -300,7 +350,7 @@ Job job_d completed.
   expect(n.tone).toBe("warning");
   // The exit bit is reachable: the send-rail diagnostic tones warning
   // BEFORE the disposition arms, so a failure disposition can ride a
-  // warning head (RoboRev round-6 dead-code claim, disproven by this test).
+  // warning head.
   expect(n.secondary).toContain("exit 2");
 });
 
@@ -415,7 +465,7 @@ Watch event triggered: file changed.
   const n = notif(notificationsOf(parseSteeringNotifications(block)), 0);
   expect(n.type).toBe("watch");
   expect(n.title).toBe("Watch triggered");
-  // Mockups 23-job-watch §E: a fired watch is the expected outcome, never
+  // A fired watch is the expected outcome, never
   // something needing a human — no watch notification earns a tone chip.
   expect(n.tone).toBe("neutral");
 });
@@ -431,7 +481,7 @@ Note: keep an eye on the flaky edge case
 });
 
 test("a job-targeted condition fire classifies as watch with its prose and job kept", () => {
-  // RoboRev PR #954: a job-targeted watch fire carries job_id AND
+  // A job-targeted watch fire carries job_id AND
   // event/status watch. It is still a watch delivery — prose kept whole,
   // tone neutral, job named in the title, trigger in the secondary.
   const block = `<job-notification job_id="job_a1b2" event="watch" job_type="watch" status="watch" reason="output_match: ready" output_bytes="0">
@@ -454,12 +504,12 @@ Timer fired (every 300s).
   const n = notif(notificationsOf(parseSteeringNotifications(block)), 0);
   expect(n.type).toBe("watch");
   expect(n.title).toBe("Timer fired");
-  // RoboRev PR #954 review 3 (finding G): a bare timer reason humanizes from
+  // A bare timer reason humanizes from
   // the prose lead's seconds.
   expect(n.secondary).toBe("every 5m");
 });
 
-test("watch titles derive from the trigger: event fires name the event, timers the timer (RoboRev PR #954)", () => {
+test("watch titles derive from the trigger: event fires name the event, timers the timer", () => {
   const eventBlock = `<job-notification job_id="job_a1b2" event="watch" job_type="watch" status="watch" reason="event: JOB_FINISHED" output_bytes="0">
 Watch event triggered: event: JOB_FINISHED.
 </job-notification>`;
@@ -530,8 +580,8 @@ test("an Observer callback with no output surfaces its message prose (not just t
   // The daemon USED TO emit `Observer callback:\nmessage: X` with no `\noutput:`
   // when the callback carried no tool output. Durable transcripts still hold
   // that shape, so it must still render.
-  // The prose is then the ONLY content, so it must reach the card body (floor
-  // parity-m4 §8:239 "body = observer-callback prose"), not be dropped to the
+  // The prose is then the ONLY content, so it must reach the card body (the body is
+  // observer-callback prose), not be dropped to the
   // raw disclosure alone.
   const notifications = notificationsOf(
     parseSteeringNotifications("Observer callback:\nmessage: the sidecar noticed the build broke"),
@@ -555,13 +605,13 @@ test("text around a notification block is kept as its own fragment before and af
   expect(fragments[2]).toMatchObject({ kind: "text", text: "some epilogue" });
 });
 
-// issue #48: splitNotificationBlocks used to replace every notification block
+// splitNotificationBlocks used to replace every notification block
 // with "" and trim what remained into ONE leftover string, so interstitial
 // text between two cards lost its position and rendered after both cards
 // instead of between them. Fragments must stay in source order so each
 // interstitial span renders as its own divider, positioned where it was
 // written.
-test("interstitial text between two notification blocks stays positioned between them, not merged after both (issue #48)", () => {
+test("interstitial text between two notification blocks stays positioned between them, not merged after both", () => {
   const secondBlock = `<job-notification job_id="job_43" event="failed" job_type="shell" status="failed" reason="nonzero exit" output_bytes="4" exit_code="2">
 Job job_43 failed.
 excerpt:
@@ -584,16 +634,16 @@ boom
   expect(second.notification.jobId).toBe("job_43");
 });
 
-// --- kata 77sf: producer-escaped job output must not terminate or forge the
-// wrapper. agent/job_notify.go's escapeNotificationText HTML-entity-escapes
-// & (first), <, >, and " before interpolating job/watch-derived text into a
+// --- producer-escaped job output must not terminate or forge the
+// wrapper. agent/job_notify.go's escapeNotificationBody HTML-entity-escapes
+// & (first) and < before interpolating job/watch-derived text into a
 // <job-notification> block. These tests mirror that producer contract with a
 // test-local escaper (the same order) to prove the parser still sees exactly
 // one card when the underlying job output is wrapper-shaped text. -------
 
-// escapeLikeProducer mirrors agent/job_notify.go's escapeNotificationText.
+// escapeLikeProducer mirrors agent/job_notify.go's escapeNotificationBody.
 function escapeLikeProducer(s: string): string {
-  return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+  return s.replace(/&/g, "&amp;").replace(/</g, "&lt;");
 }
 
 test("a producer-escaped excerpt containing wrapper-shaped delimiters still parses as exactly one card", () => {
@@ -614,13 +664,13 @@ ${escapeLikeProducer(dangerous)}
   expect(fragments[2]).toMatchObject({ kind: "text", text: "epilogue" });
   const n = notif(notifications, 0);
   expect(n.jobId).toBe("job_X");
-  // Issue #3086: the parser decodes the body once, so the excerpt is the
+  // The parser decodes the body once, so the excerpt is the
   // original text, not the producer's escaped form.
   expect(n.excerpt).toBe(dangerous);
   expect(n.rawText).toBe(block);
 });
 
-// Issue #3086: the parser decodes the body once and hands callers plain text.
+// The parser decodes the body once and hands callers plain text.
 // These pin the contract at the parser boundary, so a client that reads
 // `excerpt`/`prose` never has to (and must never) decode again.
 test("the parser hands a job excerpt back as plain text", () => {
@@ -658,12 +708,9 @@ excerpt:
 });
 
 // A delegate's communicate envelope rides the excerpt as body content, so
-// the producer escapes it exactly like any other body text (kata 77sf) -
-// including the envelope's OWN JSON double-quotes, which become &quot;. That
-// text must be decoded back before JSON.parse, or a real producer-escaped
-// envelope (as opposed to the hand-typed unescaped JSON the other
-// communicate tests use) never parses at all.
-test("a producer-escaped delegate communicate envelope still parses (its own JSON quotes are escaped like any other body content)", () => {
+// the producer escapes & and < but leaves its JSON quotes intact. Decode
+// exactly once before JSON.parse to recover the message and concerns.
+test("a producer-escaped delegate communicate envelope still parses with literal JSON quotes", () => {
   const envelopeJson = JSON.stringify({ message: "R & D done", data: { status: "ok", concerns: ["edge <case>"] } });
   const block = `<job-notification job_id="j" event="completed" job_type="delegate" status="completed" reason="" output_bytes="0">
 Job j completed.
@@ -675,7 +722,7 @@ ${escapeLikeProducer(envelopeJson)}
   expect(n.concerns).toEqual(["edge <case>"]);
 });
 
-// --- kata 9cnq: communicate-envelope parsing must be gated on job_type,
+// --- communicate-envelope parsing must be gated on job_type,
 // never detected from JSON shape alone. A shell job's stdout is literal
 // output; it is not eligible to carry a delegate's communicate envelope,
 // even when it coincidentally parses as JSON with message/data keys. -------
@@ -708,13 +755,13 @@ excerpt:
 test("a timer notification keeps its prose and watch id", () => {
   const block = `<job-notification job_id="" event="watch" job_type="watch" description="" status="watch" reason="repeat" output_bytes="0" watch_id="w1">
 Timer fired (every 300s), 3 times since your last turn.
-Note: PR #123: newer than id 456 &lt;x&gt;
+Note: PR #123: newer than id 456 &lt;x>
 </job-notification>`;
   const n = notif(notificationsOf(parseSteeringNotifications(block)), 0);
   expect(n.type).toBe("watch");
   expect(n.watchId).toBe("w1");
   expect(n.prose).toContain("Timer fired (every 300s), 3 times since your last turn.");
-  // The parser hands prose as plain text (issue #3086).
+  // The parser hands prose as plain text.
   expect(n.prose).toContain("Note: PR #123: newer than id 456 <x>");
 });
 
@@ -734,7 +781,7 @@ the section that keeps regressing
   expect(n.excerpt).toBe("");
 });
 
-// --- RoboRev PR #954 review 3: teardown/budget titles (finding A) ------------
+// --- teardown/budget titles ---
 // watchEndedUnfiredMessage / watchLostAtRestartMessage start with
 // "watch ended:"; watchBudgetClearedMessage starts with "watch cleared:".
 // Those reasons must title as an ending, never as a firing.
@@ -750,7 +797,7 @@ watch ended: job_x is terminal (status=completed reason=done output_bytes=10); c
 
 test("a budget auto-clear notice titles Watch auto-cleared, not a trigger", () => {
   // Backend truth: autoClearWatchOverBudgetNotification passes "" as the
-  // job id (agent/job_watch.go) — the cleared target rides the reason, never
+  // job id — the cleared target rides the reason, never
   // a job_id attr. (An earlier revision of this fixture used job_id="self";
   // no producer emits that — the NotificationCard "self" guard test pins the
   // defensive rendering instead.)
@@ -762,7 +809,7 @@ watch cleared: job_a1b2 matched 50 times; re-arm with a tighter condition (highe
   expect(n.title).toBe("Watch auto-cleared");
 });
 
-// --- RoboRev PR #954 review 3: entity-decoded reasons (finding B) ------------
+// --- entity-decoded reasons ---
 // The producer entity-escapes attribute values (escapeNotificationText), and
 // parseQuotedAttrs does NOT decode, so a reason carrying & < > arrives
 // escaped and must be decoded before title/secondary use.
@@ -783,7 +830,7 @@ Watch event triggered: event: a &amp; b.
   expect(n.title).toBe("Event on job_a1b2: a & b");
 });
 
-// --- RoboRev PR #954 review 3: humanized timer secondaries (finding G) -------
+// --- humanized timer secondaries ---
 // Timer reasons are bare ("after"/"repeat"); the prose lead carries the
 // seconds ("Timer fired after 300s." / "Timer fired (every 300s)."), so the
 // secondary humanizes from the prose and falls back to the raw reason.
@@ -821,13 +868,13 @@ Something else entirely.
   expect(n.secondary).toBe("after");
 });
 
-// --- RoboRev PR #954 combined review (ba9a9d0): job-targeted watch bodies ---
+// --- job-targeted watch bodies ---
 // The producer's non-empty-job_id watch path (agent/job_notify.go
 // formatJobNotificationBlock) emits the generic body "Job <id> watch." with
 // the real trigger only in the escaped reason attr. The card must synthesize
 // its prose from the reason instead of showing the generic sentence.
 
-test("a job-targeted output_match fire synthesizes prose from the reason (finding M3)", () => {
+test("a job-targeted output_match fire synthesizes prose from the reason", () => {
   const block = `<job-notification job_id="job_a1b2" event="watch" job_type="watch" status="watch" reason="output_match: ready" output_bytes="0">
 Job job_a1b2 watch. Output is available through read_transcript if needed.
 </job-notification>`;
@@ -838,7 +885,7 @@ Job job_a1b2 watch. Output is available through read_transcript if needed.
   expect(n.prose).not.toContain("Job job_a1b2 watch.");
 });
 
-test("a job-targeted event fire synthesizes prose from the reason (finding M3)", () => {
+test("a job-targeted event fire synthesizes prose from the reason", () => {
   const block = `<job-notification job_id="job_a1b2" event="watch" job_type="watch" status="watch" reason="event: job.notification" output_bytes="0">
 Job job_a1b2 watch. Output is available through read_transcript if needed.
 </job-notification>`;
@@ -849,7 +896,7 @@ Job job_a1b2 watch. Output is available through read_transcript if needed.
   expect(n.prose).not.toContain("Job job_a1b2 watch.");
 });
 
-test("a teardown notice keeps its own prose (finding M3)", () => {
+test("a teardown notice keeps its own prose", () => {
   const block = `<job-notification job_id="job_x" event="watch" job_type="watch" status="watch" reason="watch ended: job_x is terminal (status=completed reason=done output_bytes=10); condition never matched" output_bytes="0">
 watch ended: job_x is terminal (status=completed reason=done output_bytes=10); condition never matched
 </job-notification>`;
@@ -857,7 +904,7 @@ watch ended: job_x is terminal (status=completed reason=done output_bytes=10); c
   expect(n.prose).toContain("condition never matched");
 });
 
-// --- RoboRev PR #954 combined review (ba9a9d0): timer hours (finding L1) ----
+// --- timer hours ---
 // Valid timers run to 86,400s. The dedicated renderer already formats those
 // as hours — the notification humanizers must too, not "after 1440m".
 
@@ -877,7 +924,7 @@ Timer fired (every 86400s).
   expect(n.secondary).toBe("every 24h");
 });
 
-// --- RoboRev combined review (43fe73f): teardown generic bodies (M1) --------
+// --- teardown generic bodies ---
 // A job-targeted teardown notice's body is ALSO the generic "Job <id> watch."
 // sentence (formatJobNotificationBlock's non-empty-JobID fallthrough covers
 // teardown reasons too, not just condition fires). The card must surface the
@@ -894,8 +941,8 @@ Job job_x watch. Output is available through read_transcript if needed.
   expect(n.prose).not.toContain("Job job_x watch.");
 });
 
-// --- RoboRev combined review (43fe73f): single entity decode (L1) -----------
-// The producer escapes once; the parser decodes once (issue #3086) and hands
+// --- single entity decode ---
+// The producer escapes once; the parser decodes once and hands
 // plain text. A matched pattern that literally contains "&lt;" arrives
 // double-escaped ("&amp;lt;") and must decode to the literal "&lt;" text —
 // never all the way to "<".
@@ -912,7 +959,7 @@ Job job_a1b2 watch. Output is available through read_transcript if needed.
   expect(n.prose).not.toContain("<");
 });
 
-test("a status-only watch frame earns no tone chip (combined review M2)", () => {
+test("a status-only watch frame earns no tone chip", () => {
   // The parser types event OR status "watch"; the tone short-circuit must
   // mirror it. A frame with only status="watch" is still a watch delivery.
   const block = `<job-notification job_id="job_a1b2" status="watch" job_type="watch" reason="output_match: ready" output_bytes="0">
@@ -923,10 +970,10 @@ Job job_a1b2 watch. Output is available through read_transcript if needed.
   expect(n.tone).toBe("neutral");
 });
 
-// --- RoboRev combined review (6e38dea): delivery-failure classification ----
+// --- delivery-failure classification ---
 // Send-rail diagnostics ("watch send failed:", "watch send dropped state
 // failed:", "watch send pending state failed:", "watch send evicted:",
-// "output dropped:" — agent/job_watch.go) are failed deliveries, not
+// "output dropped:") are failed deliveries, not
 // successful triggers. They must title as failures with a warning tone, not
 // "Watch fired on <job>" with forced neutral.
 
@@ -972,7 +1019,7 @@ Job job_a1b2 watch. Output is available through read_transcript if needed.
   expect(n.tone).toBe("warning");
 });
 
-// --- RoboRev combined review (322f7aa): job-targeted notes (M2) -------------
+// --- job-targeted notes ---
 // The producer appends the watch note to every fire body
 // (withNotificationNote). Synthesized job-targeted prose must preserve the
 // trailing Note: section instead of replacing the whole body.
@@ -987,7 +1034,6 @@ Note: check the build
   expect(n.prose).toContain("Note: check the build");
   // The note arrives with its prefix and the synthesizer adds exactly one —
   // a doubled "Note: Note:" means the section kept the prefix it must strip
-  // (RoboRev PR #954 combined review of 9e38707).
   expect(n.prose).not.toContain("Note: Note:");
   expect(n.prose?.match(/Note:/g)?.length).toBe(1);
   expect(n.prose).not.toContain("Job job_a1b2 watch.");
@@ -1036,7 +1082,7 @@ Job self watch. Output is available through read_transcript if needed.
   expect(n.prose).not.toContain("on self");
 });
 
-// --- RoboRev combined review (322f7aa): dot-all reasons (L1) ---------------
+// --- dot-all reasons ---
 // Matched output can contain newlines, and the reason attr carries raw text
 // (only entity-escaped). A multiline pattern must title and synthesize, not
 // fall back to generic.
@@ -1065,21 +1111,10 @@ Job job_a1b2 watch. Output is available through read_transcript if needed.
   expect(n.tone).toBe("warning");
 });
 
-// --- RoboRev combined review of 5c202de (MEDIUM): body entity symmetry -----
-// The producer escapes attribute values fully (&, <, >, " — kata 77sf) but
-// notification bodies only for "<" (kata 72kp) — except the watch-note lane,
-// which pre-escapes "&" (agent/job_watch.go's watchNotificationFromWatch), so
-// a note body carries the same "&"-first order as attribute values. A note
-// literally containing "&lt;" rides the wire as "&amp;lt;" and the card's
-// single full decode must restore the literal "&lt;" text — never "<".
-// escapeNoteLikeProducer mirrors that lane: "&"-first pre-escape composed
-// with the body's "<"-only escaping.
-
-// escapeNoteLikeProducer mirrors the watch-note producer lane:
-// watchNotificationFromWatch's "&" pre-escape composed with
-// escapeNotificationBody's "<"-only escaping.
+// Watch notes use the same central body encoder as excerpts. A note's literal
+// "&lt;" rides as "&amp;lt;" and decodes once back to "&lt;", never "<".
 function escapeNoteLikeProducer(s: string): string {
-  return s.replace(/&/g, "&amp;").replace(/</g, "&lt;");
+  return escapeLikeProducer(s);
 }
 
 test("a note containing literal entity text round-trips to the literal text, not a decode (MEDIUM)", () => {
@@ -1090,7 +1125,7 @@ Note: ${escapeNoteLikeProducer(note)}
 </job-notification>`;
   const n = notif(notificationsOf(parseSteeringNotifications(block)), 0);
   expect(n.type).toBe("watch");
-  // The parser hands prose decoded once (issue #3086).
+  // The parser hands prose decoded once.
   expect(n.prose).toContain(`Note: ${note}`);
   expect(n.prose).not.toContain("Note: <tag>");
 });
@@ -1108,7 +1143,7 @@ Note: ${escapeNoteLikeProducer(note)}
   expect(n.prose).not.toContain("Note: <done>");
 });
 
-// --- RoboRev combined review of 51bb12b (MEDIUM): watch_id reclassification -
+// --- watch_id reclassification ---
 // A self/parent job.notification watch IS a watch notification
 // (watchNotificationFromWatch stamps OriginWatchID), but when the event
 // carries finished-job data, jobFinishedEventIdentity (agent/job_notify.go)
@@ -1185,7 +1220,7 @@ frame text
   expect(n.type).toBe("watch-send");
 });
 
-// --- combined RoboRev review (6bdc9ed): self job ids in watch titles --------
+// --- self job ids in watch titles ---
 // watchNotificationFromWatch always sets JobID, and a self-source watch fires
 // with job_id="self" — internal vocabulary NotificationCard already
 // suppresses in the job-id field. Titles must use the same human label the
@@ -1469,7 +1504,7 @@ test("a schema result that merely neighbors the envelope's keys stays whole", ()
   expect(n?.structuredResult).toEqual({ message: "Read the fixture.", data: { rows: 3 } });
 });
 
-// The exact collision #3548 closes: a result schema whose top-level fields are
+// The exact collision the capture source closes: a result schema whose top-level fields are
 // exactly the default envelope's - a matching message and a string-array
 // artifacts - produces a frame byte-identical to a no-schema capture. The
 // packet's structured_result_source marker settles it: a schema source stays
@@ -1497,7 +1532,7 @@ test("a schema result that is the default envelope's exact shape stays whole", (
 // (WithAllowedDecisions adds a `decision` key), so the marker alone cannot
 // prove the capture is the canonical envelope. The unwrap keeps requiring the
 // exact default shape, so a widened capture stays whole instead of silently
-// dropping `decision` and `artifacts` (roborev Medium on #3548).
+// dropping `decision` and `artifacts`.
 test("a marked default-envelope capture widened with a decision stays whole", () => {
   const widened = { decision: "keep_config", message: "Kept the config.", data: { kept: true }, artifacts: [] };
   const [n] = notificationsOf(
@@ -1518,7 +1553,7 @@ test("a marked default-envelope capture widened with a decision stays whole", ()
 // A no-schema delegate can also inherit a custom communicate output schema
 // with no `data` key. Unwrapping such a capture to `captured.data` would yield
 // undefined and hide the whole result; the exact-shape requirement keeps it
-// whole instead (roborev Medium on #3548).
+// whole instead.
 test("a marked default-envelope capture with no data key stays whole", () => {
   const custom = { plan: "step one" };
   const [n] = notificationsOf(
@@ -1762,8 +1797,8 @@ test("a legacy attribute frame claims no ending", () => {
   expect(n?.ending).toBeUndefined();
 });
 
-// The packet's metadata carries the run's cause beside its reason code
-// (#3327); the card says the cause, never the bare code.
+// The packet's metadata carries the run's cause beside its reason code;
+// the card says the cause, never the bare code.
 test("an unnamed subagent's failure parses as a failure carrying its message", () => {
   const [n] = wireNotifications("delegate-failed-unnamed");
   expect(n).toMatchObject({
@@ -1799,7 +1834,7 @@ test("a parent's stop that cancelled a run carrying its own packet reads as stop
 });
 
 // The fold's own bare stop packet (agent/internal/delegatestore/fold.go's
-// stopping branch, kept bare so old events replay unchanged, #3114) carries no
+// stopping branch, kept bare so old events replay unchanged) carries no
 // metadata: the parser falls back to what its kind implies.
 test("a terminal_error packet with no metadata reads as a failure", () => {
   const frame = `<delegate-notification delegate_id="dlg_9" name="Tail the hub log">${JSON.stringify({

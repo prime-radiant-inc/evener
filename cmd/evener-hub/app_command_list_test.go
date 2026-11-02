@@ -14,6 +14,7 @@ import (
 	"testing"
 
 	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/appwire/appwiretest"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 	"primeradiant.com/evener/internal/plugins"
 )
@@ -259,13 +260,8 @@ func TestHubCommandList_ViaTypedRPCClient(t *testing.T) {
 		PluginDirs: []string{pluginDir},
 	})
 	defer hub.Close()
-	client := dialHubRPC(t, hub)
-	defer client.Close()
-
-	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
-		t.Fatalf("Initialize: %v", err)
-	}
-	resp, err := client.CommandList(context.Background())
+	client := dialHubRPCInitialized(t, hub)
+	resp, err := appwiretest.CommandList(context.Background(), client)
 	if err != nil {
 		t.Fatalf("CommandList: %v", err)
 	}

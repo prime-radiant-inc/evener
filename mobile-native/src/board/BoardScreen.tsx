@@ -37,16 +37,13 @@ import {
 } from "react-native";
 import Animated from "react-native-reanimated";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
-import type { ConversationClientLike } from "../../../mobile/src/services/conversation";
+import type { ConversationClientLike } from "../conversation/services/conversation";
 import { useConnection } from "../ConnectionProvider";
 import { getNativeMutationRuntime } from "../nativeMutationRuntime";
 import { drafts } from "../nativeDrafts";
 import { useReduceMotion } from "../accessibilitySettings";
 import { GlassHeaderPanel } from "../design/GlassHeaderPanel";
-import { ChipStrip } from "../design/ChipStrip";
-import { scaledType, uiType } from "../design/tokens";
 import { navBarGlassOptions, reservedUnderGlass, useSystemGlass } from "../design/systemGlass";
-import { useHeaderTextScale } from "../headerText";
 import type { Routes } from "../screens";
 import { sheetKey, useProvideSheetHost } from "../sheet/sheetHosts";
 import { useScreenInFront } from "../sheet/useScreenInFront";
@@ -56,8 +53,6 @@ import {
 	type Band,
 	type ClassifiedRow,
 	hostLabeler,
-	type LiveSummary,
-	LIVE_BAND_ORDER,
 	liveBands,
 	liveRows,
 	liveSummary,
@@ -70,13 +65,22 @@ import {
 import { type BoardItem, groupItems, liveItems, pinnedItems, projectItems } from "./boardItems";
 import type { OrganizeBy, SeenMarkers } from "./boardMemory";
 import { ROW_MOVE } from "./boardMotion";
-import { createSearchController, projectResults, type SearchScope } from "./boardSearch";
-import { FreshDot } from "../reader/FreshDot";
+import { projectResults } from "./boardSearch";
 import { documentMemory } from "../reader/nativeDocumentMemory";
 import { openDocumentInSession } from "../reader/openDocument";
 import { BoardNotices, NoticeRow } from "./BoardNotices";
 import { ContinueReadingRow } from "./ContinueReadingRow";
-import { BandHeader, FoldChevron, Hairline, TITLE_INSET } from "./BoardRow";
+import { BandHeader, Hairline, TITLE_INSET } from "./BoardRow";
+import {
+	type ChipProps,
+	Chips,
+	EmptyBoard,
+	FirstReadFailed,
+	HubButton,
+	IdleFold,
+	Skeleton,
+	SummaryLine,
+} from "./BoardLeaves";
 import { BoardListRow, type RowContext } from "./BoardRows";
 import { ComposeButton, composeButtonRoom } from "./ComposeButton";
 import { type BoardController, type BoardSnapshot, createBoardController } from "./boardData";
@@ -88,14 +92,7 @@ import { BoardReplay } from "./boardReplay";
 import { BoardStops, stopToast } from "./boardStops";
 import { INCOMPATIBLE_VERSIONS } from "../connectionRecovery";
 import { type HubSeenMarks, hubSeenMarks } from "./hubSeen";
-import {
-	boardHold,
-	foldedSections,
-	organizeByPreference,
-	recentSearches,
-	seenMarkers,
-	useBoardSeen,
-} from "./nativeBoardMemory";
+import { boardHold, foldedSections, organizeByPreference, seenMarkers, useBoardSeen } from "./nativeBoardMemory";
 import { notices } from "./notices";
 import { PinnedEmptyHint, PinnedSection, useBoardFolds, useCategoryFolds } from "./PinnedSections";
 import { journalHoldsProject, PROJECT_MENU_LABELS, type ProjectMenuAction, projectMenuActions } from "./projectMenu";
@@ -112,7 +109,6 @@ import {
 } from "./projectTree";
 import { projectName, ProjectSectionHeader, ProjectTreeRow } from "./ProjectTreeRow";
 import { fleetMinutes } from "./pulse";
-import { PulseMeter } from "./PulseMeter";
 import {
 	archiveTarget,
 	archivingSessionId,
@@ -133,16 +129,22 @@ import { SearchResults } from "./SearchResults";
 import { listScrollHandlers } from "./settledList";
 import { journalOperation, organizationOpen } from "./organizationCheck";
 import { type BoardOrganization, useBoardOrganization } from "./useBoardOrganization";
+import { useBoardSearch } from "./useBoardSearch";
 import { PROJECT_SECTIONS, showExpanded, useProjectSections } from "./useProjectSections";
 import { useSettledList } from "./useSettledList";
 import { FLOAT_GAP, underBar } from "../design/underBar";
-import { destructiveButton, haptic } from "../haptics";
+import { destructiveButton } from "../haptics";
+import { confirmShutDown } from "../session/confirmShutDown";
 import { Button } from "../sheet/Grouped";
+import { CATEGORY_NAME_MAX_CODE_POINTS } from "../navigationActionRepository";
 
 type Props = NativeStackScreenProps<Routes, "Sessions">;
 type Navigation = Props["navigation"];
 
 const MINUTE = 60_000;
+/** How far each project tree level indents a Board row, in points. The tree's
+ * own rows use ProjectTreeRow.projectIndent's same 16 per level. */
+const BOARD_ROW_INDENT_PT = 16;
 const BAND_HEADERS: Record<Exclude<Band, "idle">, string> = {
 	needsYou: "Needs you",
 	working: "Working",
@@ -304,12 +306,18 @@ function Board({
 	const held = useSyncExternalStore(hold.subscribe, hold.getSnapshot);
 	const holdAction = (action: HeldAction) => hold.hold(action, Date.now());
 	// A press answered later (an alert, a sheet) asks what's true then.
+	// The refs are written after the commit that made them current, not during
+	// render, and before any effect below reads them.
 	const liveNow = useRef(actionsConnected);
-	liveNow.current = actionsConnected;
 	const clientNow = useRef(actionsClient);
-	clientNow.current = actionsClient;
 	const toastNow = useRef(toast);
-	toastNow.current = toast;
+	const organizationNow = useRef(organization);
+	useEffect(() => {
+		liveNow.current = actionsConnected;
+		clientNow.current = actionsClient;
+		toastNow.current = toast;
+		organizationNow.current = organization;
+	});
 	const [replay] = useState(
 		() =>
 			new BoardReplay(hold, {
@@ -325,8 +333,6 @@ function Board({
 	useEffect(() => {
 		if (actionsClient && held.length) void replay.sendImmediate(actionsClient, liveOn(actionsClient));
 	}, [replay, actionsClient, held]);
-	const organizationNow = useRef(organization);
-	organizationNow.current = organization;
 	useEffect(() => {
 		if (focused && organization.ready && held.length)
 			void replay.organize(organizationNow.current, liveOn(clientNow.current));
@@ -379,26 +385,23 @@ function Board({
 	// rule): a reconnect while a pushed screen covers the Board must not send
 	// one `evener/search` for the query the field still holds. A sheet over
 	// the Board is still the Board (ruling 28), so it stays bound then.
-	const search = useSearch(connected && inFront ? client : null);
-	const searchInput = useRef<TextInput>(null);
-	const [searchText, setSearchText] = useState("");
-	// Searching from the moment the field takes focus until Cancel.
-	const [searching, setSearching] = useState(false);
-	const [scope, setScope] = useState<SearchScope>("all");
+	const {
+		search,
+		searchInput,
+		searchText,
+		searching,
+		setSearching,
+		scope,
+		setScope,
+		recentList,
+		typeSearch,
+		leaveSearch,
+		clearRecent,
+		rememberSearch,
+	} = useBoardSearch(hubId, connected && inFront ? client : null);
 	const searchFieldHeight = searchFieldHeightAt(useTextScale());
 	const reduceMotion = useReduceMotion();
 	const { height: windowHeight } = useWindowDimensions();
-	const recent = recentSearches(hubId);
-	const [recentList, setRecentList] = useState(() => recent.list());
-	const typeSearch = (text: string) => {
-		setSearchText(text);
-		search.controller.setQuery(text);
-	};
-	const leaveSearch = () => {
-		typeSearch("");
-		setSearching(false);
-		searchInput.current?.blur?.();
-	};
 	const cancelSearch = () => {
 		leaveSearch();
 		// Tuck the field back out of view, where the Board keeps it.
@@ -418,14 +421,6 @@ function Board({
 		const row = loadedRows.find((loaded) => loaded.ref === result.ref);
 		if (row) openSession(row);
 		else navigation.navigate("Conversation", { hubId, ref: result.ref, title: result.title });
-	};
-	const clearRecent = () => {
-		recent.clear();
-		setRecentList(recent.list());
-	};
-	const rememberSearch = () => {
-		recent.add(search.snapshot.query);
-		setRecentList(recent.list());
 	};
 
 	// Where each section starts in the scroller, for the chips and the
@@ -452,12 +447,14 @@ function Board({
 	// waits until Live and the band have, then scrolls.
 	const pendingJump = useRef<Band | null>(null);
 	const jumpWhenLaidOut = useRef(() => {});
-	jumpWhenLaidOut.current = () => {
-		const band = pendingJump.current;
-		if (band === null || offsets.current.live === undefined || offsets.current[band] === undefined) return;
-		pendingJump.current = null;
-		jumpToBand(band);
-	};
+	useEffect(() => {
+		jumpWhenLaidOut.current = () => {
+			const band = pendingJump.current;
+			if (band === null || offsets.current.live === undefined || offsets.current[band] === undefined) return;
+			pendingJump.current = null;
+			jumpToBand(band);
+		};
+	});
 	useEffect(
 		() =>
 			onBoardJump((section) => {
@@ -633,7 +630,7 @@ function Board({
 	const actOnRow = (item: ClassifiedRow, action: RowAction) => {
 		const { row } = item;
 		if (action === "shutDown")
-			confirmShutDown(row, () => {
+			confirmShutDown(() => {
 				const on = holdsChange(waitsFor(row.ref, "shutDown"), false) ? null : clientNow.current;
 				if (!on) holdAction({ kind: "shutDown", ref: row.ref, title: row.title, seen: turnSeen(row) });
 				else
@@ -641,7 +638,7 @@ function Board({
 						() => toast.show(SHUT_DOWN_DONE),
 						(error: unknown) => toast.show(shutDownFailed(row.title, error)),
 					);
-			});
+			}, row.title);
 		else if (action === "rename")
 			promptRename(row, (name) => {
 				const on = holdsChange(waitsFor(row.ref, "rename"), false) ? null : clientNow.current;
@@ -1029,9 +1026,10 @@ function Board({
 				/>
 			);
 			onLayout = measure("idle");
-		} else if (item.kind === "row")
+		} else if (item.kind === "row") {
+			const indent = BOARD_ROW_INDENT_PT * item.depth;
 			content = (
-				<View style={{ marginLeft: 16 * item.depth }}>
+				<View style={{ marginLeft: indent }}>
 					{item.separated && previous?.kind === "row" ? <Hairline inset={TITLE_INSET} /> : null}
 					<BoardListRow
 						item={item.item}
@@ -1040,11 +1038,12 @@ function Board({
 						archived={item.archived}
 						wash={settled.washed.get(item.key) ?? 0}
 						context={listContext}
+						edgeInset={indent}
 						onSwipeActive={(active) => list.setInteraction(`swipe:${item.key}`, active)}
 					/>
 				</View>
 			);
-		else if (item.kind === "pinEmpty") content = <PinnedEmptyHint />;
+		} else if (item.kind === "pinEmpty") content = <PinnedEmptyHint />;
 		else if (item.kind === "tree") content = treeItem(item.section, item.tree);
 		else return null;
 		return (
@@ -1255,9 +1254,9 @@ function Board({
 }
 
 /** A category's name is at most 80 characters, the journal's own bound. */
-const CATEGORY_NAME_TOO_LONG = "Category names can be up to 80 characters.";
+const CATEGORY_NAME_TOO_LONG = `Category names can be up to ${CATEGORY_NAME_MAX_CODE_POINTS} characters.`;
 function categoryNameTooLong(name: string): boolean {
-	return Array.from(name).length > 80;
+	return Array.from(name).length > CATEGORY_NAME_MAX_CODE_POINTS;
 }
 
 /** Rename and Delete for the pinned categories (spec 7.1), through the
@@ -1337,8 +1336,8 @@ function pinnedCategoryMenu(organization: BoardOrganization, catalog: () => read
 type PinTarget = { sectionId: string } | { sectionName: string };
 
 /** A row's Pin (ruling 18): the pin catalog's categories, then a new one, as
- * an action sheet. A new category's name is 1-80 characters, the journal's
- * own bound. */
+ * an action sheet. A new category's name must fit the journal's own
+ * bound. */
 function chooseCategory(
 	categories: readonly NavigationPinSectionDescriptor[],
 	toast: Pick<ToastController, "show">,
@@ -1386,15 +1385,6 @@ function menuActionsHere(item: ClassifiedRow, context: RowActionContext): RowAct
 	return Platform.OS === "ios" ? actions : actions.filter((action) => action !== "rename");
 }
 
-/** Shut down from the row menu: asked first, online or offline, then
- * `shutDown` runs (the Session's own request, or a hold). */
-function confirmShutDown(row: NavigationSessionSummary, shutDown: () => void) {
-	Alert.alert(`Shut down “${row.title}”?`, "The agent stops. Send it a message to resume it.", [
-		{ text: "Cancel", style: "cancel" },
-		destructiveButton("Shut down", shutDown),
-	]);
-}
-
 /** Rename from the row menu (iOS only: Alert.prompt), starting from the
  * row's title; `rename` gets the name typed. */
 function promptRename(row: NavigationSessionSummary, rename: (name: string) => void) {
@@ -1439,15 +1429,6 @@ function openProjectMenu(
 		...actions.map((action) => ({ text: PROJECT_MENU_LABELS[action], onPress: () => act(action) })),
 		{ text: "Cancel", style: "cancel" },
 	]);
-}
-
-/** The Board's search controller, bound to the ready client or none. */
-function useSearch(client: ConversationClientLike | null) {
-	const [controller] = useState(createSearchController);
-	useEffect(() => () => controller.dispose(), [controller]);
-	useEffect(() => controller.setClient(client), [controller, client]);
-	const snapshot = useSyncExternalStore(controller.subscribe, controller.getSnapshot);
-	return { controller, snapshot };
 }
 
 /** The chips' panel on the glass: over the Board's top, which runs under it. */
@@ -1571,8 +1552,11 @@ function useShownRows(rows: readonly ShownRow[]): ReadonlyMap<string, ShownRow> 
 		if (!byKey.has(key)) byKey.set(key, shown);
 	}
 	const kept = useRef(byKey);
-	if (!sameShownRows(kept.current, byKey)) kept.current = byKey;
-	return kept.current;
+	const shown = sameShownRows(kept.current, byKey) ? kept.current : byKey;
+	useEffect(() => {
+		kept.current = shown;
+	});
+	return shown;
 }
 
 function sameShownRows(before: ReadonlyMap<string, ShownRow>, after: ReadonlyMap<string, ShownRow>): boolean {
@@ -1686,304 +1670,4 @@ function useHeader(
 			),
 		});
 	}, [navigation, hubId, hubName, revealSearch, fontScale, glass, page]);
-}
-
-/** The hub button (spec 7.1): the hub's name and a chevron as one control,
- * opening the Hub sheet (spec 12). A native bar item given both a label and an
- * icon draws only the icon, so this is a custom header view. The Hub opens
- * while the hub is out of reach too: it keeps its last data and says why its
- * controls wait. Its text follows Dynamic Type up to xxxLarge only, since the
- * bar's height is fixed, so a long press shows the whole name in the Large
- * Content Viewer, as Apple asks of text that stops growing. */
-function HubButton({ hubName, onOpen }: { hubName: string; onOpen: () => void }) {
-	const { palette } = useColors();
-	const scale = useHeaderTextScale();
-	const { width } = useWindowDimensions();
-	return (
-		<Pressable
-			accessibilityRole="button"
-			accessibilityLabel={hubName}
-			accessibilityHint="Opens the Hub"
-			accessibilityShowsLargeContentViewer
-			accessibilityLargeContentTitle={hubName}
-			onPress={onOpen}
-			style={{
-				// A custom header view sizes itself, so a long hub name needs a
-				// cap to truncate against instead of growing into Search.
-				maxWidth: Math.round(width * 0.6),
-				minHeight: 44,
-				paddingHorizontal: 12,
-				flexDirection: "row",
-				alignItems: "center",
-				columnGap: 6,
-			}}
-		>
-			<Text
-				allowFontScaling={allowFontScaling}
-				numberOfLines={1}
-				style={{ flexShrink: 1, fontSize: 17 * scale, color: palette.inkHi }}
-			>
-				{hubName}
-			</Text>
-			<SymbolView name="chevron.down" size={13 * scale} tintColor={palette.inkHi} />
-		</Pressable>
-	);
-}
-
-interface ChipProps {
-	key: string;
-	name: string;
-	count: number;
-	badge?: number;
-	pinned?: boolean;
-	label: string;
-	onPress: () => void;
-}
-
-/** The section chips, fixed under the header (spec 7.1), in the shared chip
- * strip that owns the row's fill and its overflow fade. */
-function Chips({ chips, onGlass }: { chips: ChipProps[]; onGlass: boolean }) {
-	const { palette } = useColors();
-	const scale = useTextScale();
-	return (
-		<ChipStrip testID="chips" onGlass={onGlass}>
-			{chips.map((chip) => (
-				<Pressable
-					key={chip.key}
-					testID="chip"
-					accessibilityRole="button"
-					accessibilityLabel={chip.label}
-					onPress={() => {
-						haptic("selection");
-						chip.onPress();
-					}}
-					// The chip draws 32pt tall; hit slop into the row's 8pt padding makes a 44pt target.
-					hitSlop={{ top: 6, bottom: 6 }}
-					style={({ pressed }) => ({
-						minHeight: 32,
-						paddingHorizontal: 12,
-						borderRadius: 16,
-						flexDirection: "row",
-						alignItems: "center",
-						columnGap: 6,
-						backgroundColor: pressed ? palette.pressed : palette.surface,
-						borderWidth: 0.5,
-						borderColor: palette.edge,
-					})}
-				>
-					{chip.pinned ? <SymbolView name="pin.fill" size={12 * scale} tintColor={palette.inkLow} /> : null}
-					<Text
-						allowFontScaling={allowFontScaling}
-						style={{ fontSize: 14 * scale, fontWeight: "600", color: palette.inkHi }}
-					>
-						{chip.name}
-					</Text>
-					<Text
-						allowFontScaling={allowFontScaling}
-						style={{ fontSize: 14 * scale, fontWeight: "500", color: palette.inkLow, fontVariant: ["tabular-nums"] }}
-					>
-						{String(chip.count)}
-					</Text>
-					{chip.badge ? (
-						<View
-							style={{
-								minWidth: 18 * scale,
-								height: 18 * scale,
-								paddingHorizontal: 5,
-								borderRadius: 9 * scale,
-								alignItems: "center",
-								justifyContent: "center",
-								backgroundColor: palette.attention,
-							}}
-						>
-							<Text
-								allowFontScaling={allowFontScaling}
-								style={{
-									fontSize: 11 * scale,
-									fontWeight: "700",
-									fontVariant: ["tabular-nums"],
-									// Dark ink on amber in both themes: the light theme's ink,
-									// the dark theme's page.
-									color: palette.scheme === "dark" ? palette.page : palette.inkHi,
-								}}
-							>
-								{String(chip.badge)}
-							</Text>
-						</View>
-					) : null}
-				</Pressable>
-			))}
-		</ChipStrip>
-	);
-}
-
-/** The Live summary line (spec 7.1): each count jumps to its band. */
-function SummaryLine({
-	summary,
-	connected,
-	perMinute,
-	onJump,
-}: {
-	summary: LiveSummary;
-	connected: boolean;
-	/** The fleet meter's per-minute counts; absent, it shows its still fallback. */
-	perMinute?: readonly number[];
-	onJump: (band: Band) => void;
-}) {
-	const { palette } = useColors();
-	const scale = useTextScale();
-	const entries = LIVE_BAND_ORDER.filter((band) => summary[band] > 0);
-	return (
-		<View
-			testID="live-summary"
-			style={{
-				flexDirection: "row",
-				flexWrap: "wrap",
-				alignItems: "center",
-				// Wrapped rows sit apart by both counts' slop, so a tap near the
-				// wrap lands on the count it's over.
-				rowGap: 14,
-				paddingTop: 12,
-				paddingHorizontal: 16,
-			}}
-		>
-			{entries.map((band, index) => (
-				// Each count carries the separator after it, so the line wraps
-				// after a dot and no wrapped line starts with one.
-				<View key={band} style={{ flexDirection: "row", alignItems: "center" }}>
-					<Pressable
-						accessibilityRole="button"
-						onPress={() => {
-							haptic("selection");
-							onJump(band);
-						}}
-						// Each count draws 30pt tall; the slop makes a 44pt target.
-						hitSlop={{ top: 7, bottom: 7 }}
-						style={({ pressed }) => ({
-							minHeight: 30,
-							flexDirection: "row",
-							alignItems: "center",
-							columnGap: 4,
-							opacity: pressed ? 0.6 : 1,
-						})}
-					>
-						{band === "working" ? <PulseMeter tone={connected ? "alive" : "gray"} perMinute={perMinute} /> : null}
-						<Text
-							allowFontScaling={allowFontScaling}
-							style={{
-								...scaledType(uiType.statusLine, scale),
-								fontWeight: band === "needsYou" ? "600" : "400",
-								color: band === "needsYou" ? palette.attentionInk : palette.inkMid,
-							}}
-						>
-							{summaryText(band, summary[band])}
-						</Text>
-					</Pressable>
-					{index < entries.length - 1 ? (
-						<Text allowFontScaling={allowFontScaling} style={{ fontSize: 14 * scale, color: palette.inkLow }}>
-							{" · "}
-						</Text>
-					) : null}
-				</View>
-			))}
-		</View>
-	);
-}
-
-/** Idle's header, folded by default; its state persists per device. Folded,
- * it shows the blue dot while any session inside has updates you haven't
- * opened: no count, no words. */
-function IdleFold({
-	count,
-	folded,
-	unseen,
-	onToggle,
-}: {
-	count: number;
-	folded: boolean;
-	unseen: boolean;
-	onToggle: () => void;
-}) {
-	const { palette } = useColors();
-	const scale = useTextScale();
-	const dot = folded && unseen;
-	return (
-		<Pressable
-			testID="idle-fold"
-			accessibilityRole="button"
-			accessibilityLabel={`Idle, ${plural(count, "session")}${dot ? ", unread sessions inside" : ""}`}
-			accessibilityState={{ expanded: !folded }}
-			onPress={onToggle}
-			style={({ pressed }) => ({
-				minHeight: 48,
-				paddingHorizontal: 16,
-				flexDirection: "row",
-				alignItems: "center",
-				justifyContent: "space-between",
-				backgroundColor: pressed ? palette.pressed : palette.page,
-			})}
-		>
-			<Text
-				testID="band-header"
-				allowFontScaling={allowFontScaling}
-				style={{ fontSize: 15 * scale, color: palette.inkMid }}
-			>
-				{`Idle · ${count}`}
-			</Text>
-			<View style={{ flexDirection: "row", alignItems: "center", columnGap: 8 }}>
-				{dot ? <FreshDot /> : null}
-				<FoldChevron folded={folded} />
-			</View>
-		</Pressable>
-	);
-}
-
-/** The very first load: three still placeholder rows. */
-function Skeleton() {
-	const { palette } = useColors();
-	return (
-		<View style={{ paddingTop: 12, paddingHorizontal: 16, rowGap: 8 }} accessibilityLabel="Loading sessions">
-			{["first", "second", "third"].map((key) => (
-				<View
-					key={key}
-					testID="skeleton-row"
-					style={{ height: 64, borderRadius: 10, backgroundColor: palette.inset }}
-				/>
-			))}
-		</View>
-	);
-}
-
-function FirstReadFailed() {
-	const { palette } = useColors();
-	const scale = useTextScale();
-	return (
-		<View testID="empty-state:firstReadFailed" style={{ paddingHorizontal: 16, paddingVertical: 32 }}>
-			<Text
-				allowFontScaling={allowFontScaling}
-				style={{ fontSize: 17 * scale, lineHeight: 22 * scale, color: palette.inkMid, textAlign: "center" }}
-			>
-				Couldn't load this hub's sessions. Trying again shortly.
-			</Text>
-		</View>
-	);
-}
-
-function EmptyBoard({ disabled, onNewSession }: { disabled: boolean; onNewSession: () => void }) {
-	const { palette } = useColors();
-	const scale = useTextScale();
-	return (
-		<View
-			testID="empty-state:noSessions"
-			style={{ paddingHorizontal: 16, paddingVertical: 32, alignItems: "center", rowGap: 16 }}
-		>
-			<Text
-				allowFontScaling={allowFontScaling}
-				style={{ fontSize: 17 * scale, lineHeight: 22 * scale, color: palette.inkMid, textAlign: "center" }}
-			>
-				Nothing's running. Start a session to put an agent to work.
-			</Text>
-			<Button primary compact label="New session" disabled={disabled} onPress={onNewSession} />
-		</View>
-	);
 }

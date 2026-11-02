@@ -181,6 +181,29 @@ func TestHostPlanUnionRefusesMalformedValues(t *testing.T) {
 	}
 }
 
+// TestHostPlanUnionRefusesUndecodableBodies pins that both arms decode through
+// their own types: a body naming an outcome but carrying a field of the wrong
+// shape is refused instead of read as a zero-valued arm.
+func TestHostPlanUnionRefusesUndecodableBodies(t *testing.T) {
+	t.Parallel()
+	var decoded HostPlanResult
+	if err := json.Unmarshal([]byte(`{"outcome":`), &decoded); err == nil {
+		t.Fatal("unmarshaling a body with no JSON value succeeded, want an error")
+	}
+	if err := json.Unmarshal([]byte(`{"outcome":"planned","plan":"not-a-plan"}`), &decoded); err == nil {
+		t.Fatal("unmarshaling a planned arm without a plan object succeeded, want an error")
+	}
+	if decoded.HostPlanPlanned != nil || decoded.HostPlanNoToken != nil {
+		t.Fatalf("a refused planned decode set an arm: %+v", decoded)
+	}
+	if err := json.Unmarshal([]byte(`{"outcome":"no-token","staleFacts":"not-facts"}`), &decoded); err == nil {
+		t.Fatal("unmarshaling a no-token arm without stale facts succeeded, want an error")
+	}
+	if decoded.HostPlanPlanned != nil || decoded.HostPlanNoToken != nil {
+		t.Fatalf("a refused no-token decode set an arm: %+v", decoded)
+	}
+}
+
 // assertJSONKeys marshals v and fails unless the JSON object carries exactly the
 // given keys, in sorted order.
 func assertJSONKeys(t *testing.T, v any, keys ...string) {

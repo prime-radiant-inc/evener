@@ -1,7 +1,6 @@
 package agent
 
 import (
-	"path/filepath"
 	"testing"
 
 	"primeradiant.com/evener/agent/events"
@@ -33,7 +32,7 @@ func TestRestoreSessionStartCarriesTranscriptEntryCount(t *testing.T) {
 	dir := t.TempDir()
 	id := "01RESUMETURNSEED0000001"
 
-	tpath := filepath.Join(dir, sessionsSubdir, id+".transcript.jsonl")
+	tpath := schema.SessionTranscriptPath(dir, id)
 	tw, err := transcript.NewWriter(tpath, transcript.Header{
 		SessionID: id,
 		ProfileID: "openai",
@@ -88,7 +87,7 @@ func TestRestoreSessionStartTranscriptEntryCountExceedsTurns(t *testing.T) {
 	dir := t.TempDir()
 	id := "01RESUMETURNSEED0000002"
 
-	tpath := filepath.Join(dir, sessionsSubdir, id+".transcript.jsonl")
+	tpath := schema.SessionTranscriptPath(dir, id)
 	tw, err := transcript.NewWriter(tpath, transcript.Header{
 		SessionID: id,
 		ProfileID: "openai",

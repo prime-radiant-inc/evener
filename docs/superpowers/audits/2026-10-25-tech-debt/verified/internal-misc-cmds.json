@@ -1,0 +1,210 @@
+[
+ {
+  "id": "internal-misc-cmds-1",
+  "title": "Seven hand-rolled atomic-write implementations with different durability guarantees",
+  "category": "duplication",
+  "original_severity": "high",
+  "verdict": "partial",
+  "severity": "high",
+  "note": "Core confirmed: credentials/store.go:196-225 uses afero.TempFile, fsyncs the file, renames, and never fsyncs the parent dir; hubendpoint/runtime.go:196 syncDir and auth/openai/storage.go:229 authSyncUnsupported carry the same ENOSYS/ENOTSUP/EINVAL tolerance; rendezvous.go:96 and evener-migrate/convert.go:242 use a fixed '.tmp' name (rendezvous also never fsyncs); plugins/atomic.go has 6 seam vars (atomicMkdirAll/ReadEntropy/OpenFile/Remove/Rename/OpenDir). Overstated: selfupdate/update.go:820 stageExecutable is a streaming binary copy (ctx-aware, 0755) not a data write, so it does not belong in the helper's first pass; credentials save() streams toml.Encoder into the file so the helper needs an io.Writer/callback variant or the caller must encode to bytes first. No demonstrated bug, only drift, so 'actively causes bugs' is soft.",
+  "revised_fix_plan": "Same helper, but scope it to the 8 real write-bytes sites (drop selfupdate stageExecutable). Offer Write(path, data, Options{Perm, Fs, SyncDir}) and have credentials encode to a bytes.Buffer first. Migrate credentials first (adds the missing parent fsync) and keep its random-name policy as the default; keep the 0644 survey cache via Perm."
+ },
+ {
+  "id": "internal-misc-cmds-2",
+  "title": "XDG state/config root resolution copied into about nine packages with drifting fallbacks",
+  "category": "duplication",
+  "original_severity": "high",
+  "verdict": "partial",
+  "severity": "medium",
+  "note": "Confirmed copies and drift: rendezvous.go:42-60 ('.' on home failure, raw env), cmdutil/statedir.go:25-50 ('.', raw), auth/openai/storage.go:90-103 (os.TempDir(), Trimmed()), appwire/frame_recorder.go:95-103 (relative .local/state), agent/runtime_dir.go:75-83 and agent/doctor/statedir.go:29-37 (os.TempDir()), plus evener-migrate/main.go:129-137 and legacymigration.go:79-100. The 'duplicated to avoid dependency' comments are false for rendezvous (it already imports envvars) because envvars/userdirs depends only on envvars. cmdutil.DefaultSkillsDir/DefaultPluginsRoot are used in 11 non-definition places and duplicate userdirs.UserSkills/PluginStore. Caveats: agent/doctor/statedir.go also honors EVENER_STATE_DIR first so it is not a pure copy; userdirs.ConfigRoot deliberately returns '' on home failure while cmdutil falls back to '.', so unifying is a policy decision. Impact only shows when HOME is unresolvable, so downgrade to medium.",
+  "revised_fix_plan": "Add userdirs.StateRoot beside ConfigRoot with one table test. Do the pure dedup first (rendezvous, appwire, evener-migrate, legacymigration, cmdutil skill/plugin helpers) keeping each caller's current home-failure result via an explicit parameter; unify the fallback policy as a separate step after asking Jesse."
+ },
+ {
+  "id": "internal-misc-cmds-3",
+  "title": "evener serve is a 1597-line function and run duplicates its startup",
+  "category": "complexity",
+  "original_severity": "high",
+  "verdict": "confirmed",
+  "severity": "high",
+  "note": "runServeWithDeps spans serve.go:401-2002 (next func at 2003, ~1600 lines); run spans run.go:114-516. Flag name sets overlap in at least 38 names between main.go newRunFlagSet and serve.go (audit said 30, undercount). Help text drift verified: main.go:360/363 ('compact|session-log|ooda (default: compact)', 'default (default), explorer, or another available agent name') vs serve.go:426/431 ('context management strategy', 'agent persona name (default: default)'). One-call-each in both files confirmed for ParseProviderIdleTimeout, parseAPILog, resolveOpenAIResponsesContinuation, ResolveReasoningEffort, MaxRoundsToConfig, configureSandbox, rejectPluginSelectionWithResume, applyFastCheapModel, buildInitialProfile (applyVisionModel 1 vs 2; ResolveSessionMeta only in run). Parallel SessionConfig literals at run.go:354 and serve.go:686."
+ },
+ {
+  "id": "internal-misc-cmds-4",
+  "title": "tool-fluency re-implements cmd/evener launch plumbing with a drifted applyFastCheapModel",
+  "category": "duplication",
+  "original_severity": "medium",
+  "verdict": "partial",
+  "severity": "medium",
+  "note": "Confirmed: runnerApplyFastCheapModel (main.go:1357) is applyFastCheapModel (serve.go:2183) with a literal message instead of errFastCheapProviderUnavailable; parseLiveSandboxNet (main.go:1134) is byte-identical to parseSandboxNet (sandbox.go:165); runnerInitialProfile repeats ParseAllowedDecisions(Getenv) as serve.go:2138. Correction: the claim that provisionLiveSandboxWithHost 'drops' PickFreshSessionID is misleading. The fluency caller runs agent.PickFreshSessionID at main.go:1216 right before provisionLiveSandbox, which is the same ordering production has; production just folds it into provisionSandboxWithHost. No behavior drift there, only structural duplication.",
+  "revised_fix_plan": "Same plan (move ApplyFastCheapModel, ParseSandboxNet, ConfigureSandbox, ProvisionSandbox into cmdutil), but fold PickFreshSessionID into the shared ProvisionSandbox so both callers get it from one place; drop the 'drops PickFreshSessionID' rationale from the PR description."
+ },
+ {
+  "id": "internal-misc-cmds-5",
+  "title": "Plugin-store rename and metadata migrations for older layouts run on every store lock",
+  "category": "compat-legacy",
+  "original_severity": "medium",
+  "verdict": "partial",
+  "severity": "medium",
+  "note": "Evidence confirmed: marketplace_migration.go 1282 lines (439 comment lines), metadata_migration.go 343, tests 4261+774+590+170=5795; lockStore (locks.go:84-97) calls migrateMarketplaceNames and ensureManagedContentMigrated on every acquisition and fails the acquisition if the marketplaces file is unparseable. git log: #1065 and #1180 on 2026-09-12, #1825 on 2026-09-17. Caveat: this is not a plain cleanup. docs/product/subsystems.md S17 and S18 state the migration as a product contract (automatic marketplace-name migration rekeys ownership without moving caches, interrupted-rename recovery, session continuity across migration). Removal is a backward-compat/product-promise change that needs Jesse's explicit decision, and the 'raw' LOC deltas (-1600/-5800) assume zero replacement code. ensureManagedContentMigrated lives in store_format.go, not locks.go. Features are only ~6 weeks old, so whether old-layout stores exist is a question only Jesse can answer.",
+  "revised_fix_plan": "Do not queue as a refactor. Ask Jesse whether any store older than 2026-09-12 can still exist. If not, delete as proposed and rewrite the S17/S18 rows in the same PR; if yes, keep, and at most take the cheap win of making the lockStore migration not fail unrelated operations (disable/gc) on a corrupt marketplaces file."
+ },
+ {
+  "id": "internal-misc-cmds-6",
+  "title": "Serf-era and pre-registry migration tools shipped permanently; evener-migrate duplicates homeRootFiles with a false justification",
+  "category": "compat-legacy",
+  "original_severity": "medium",
+  "verdict": "partial",
+  "severity": "medium",
+  "note": "Part (a) confirmed: migrate/main.go:88-91 says it is duplicated because evener-migrate 'does not import cmdutil', but the package is invoked as 'evener migrate' (cmd/evener/main.go:21 imports it) and already imports envvars; cmdutil/legacymigration.go:19 holds the same 9 names. Importing cmdutil from migrate would drag agent/llm but it ships in the same binary anyway; better home is envvars/userdirs. Part (b) overreaches: cmd/evener-doctor/reconstruct.go (593 lines) rebuilds transcripts from an AgentsView archive, which is a recovery tool, not Serf-era compat, and sits squarely in the recovery-over-lockdown principle; it should not be bundled into a sunset. Line counts roughly right (migrate 801 prod, transcript-v2 408, reconstruct 593). ErrLegacySerfData (legacymigration.go:33) refuses launches to protect unmigrated user data; removing it needs a sunset decision.",
+  "revised_fix_plan": "(a) Move the 9-name list into envvars/userdirs, have both packages use it, delete the false comment (-25). (b) Separate PR, needs Jesse's sunset call: ErrLegacySerfData, evener-migrate and the transcript v1 upgrader only. Leave reconstruct.go out."
+ },
+ {
+  "id": "internal-misc-cmds-7",
+  "title": "Dead internal/devtool/gatesurface package; shell lib is the live definition",
+  "category": "dead-code",
+  "original_severity": "low",
+  "verdict": "confirmed",
+  "severity": "low",
+  "note": "Grep over the whole repo finds no importer outside internal/devtool/gatesurface itself; only docs mention it (infra-standardization spec line 190 even lists it for deletion, and the build-gates-scripts audit independently proposes deleting it). coverage-floor.sh, coverage-gaps.sh, run-module-tests.sh and test-timing-budget.sh still source scripts/lib/gate-surface-lib.sh, and root gatesurface_test.go tests the shell function directly. Package file is 26 lines, drift_test 101, gatesurface_test 38. Note drift_test.go:11 cites a spec that is not tracked."
+ },
+ {
+  "id": "internal-misc-cmds-8",
+  "title": "Root frontmatter module is a test-only duplicate of agent/internal/frontmatter",
+  "category": "duplication",
+  "original_severity": "low",
+  "verdict": "confirmed",
+  "severity": "low",
+  "note": "Only internal/bundled/bundled_test.go imports primeradiant.com/evener/frontmatter; frontmatter.go:16-19 says it cannot import agent/internal (true: Go internal rule across the agent module boundary). 61 prod + 303 test lines match. The agent copy has 10 non-test importers (not 14) and a richer API (Framing), so they are not identical, which supports deletion rather than sync."
+ },
+ {
+  "id": "internal-misc-cmds-9",
+  "title": "Coverage-chasing 'fuzz' targets that discard their input and hand-listed FuzzPackageUnion replays",
+  "category": "test-debt",
+  "original_severity": "medium",
+  "verdict": "partial",
+  "severity": "medium",
+  "note": "Confirmed: 22 'f.Fuzz(func(t *testing.T, _ uint8)' sites exist, but they include out-of-slice ones (cmd/evener-hub, appwiredoc). credentials/package_union_fuzz_test.go hand-lists 8 Test funcs plus a fault-FS scenario under //go:build evenerfuzz; plugins/package_union_fuzz_test.go lists 96 of 517 Test funcs (112 lines); fuzz-targets.txt registers them. Caveat: docs/developing-evener/coverage.md:9,56 documents the union of test track and fuzz-seed replay as the coverage-floor metric, so this is a deliberate (if odd) design, and deleting it moves the blessed floors. The fault-injection scenarios in coverage_*_fuzz files only appear there and are what raises the number; they are the test-of-mocked-behavior smell.",
+  "revised_fix_plan": "Needs Jesse's decision on the coverage-union metric first. If kept, generate the replay list instead of hand-listing; if dropped, delete package_union_* and coverage_*_fuzz files, re-bless floors, update coverage.md, fuzzing.md and fuzz-targets.txt in the same PR."
+ },
+ {
+  "id": "internal-misc-cmds-10",
+  "title": "internal/plugins has about 75 package-level function seams used only for fault injection",
+  "category": "test-debt",
+  "original_severity": "medium",
+  "verdict": "confirmed",
+  "severity": "medium",
+  "note": "source.go:17-30 declares sourceStat/Walk/Rel/Open/MkdirAll/OpenFile/Copy/Close/RemoveAll plus git seams; atomic.go:21-27 six more; my regex count of assignment-style seams in non-test files gave marketplaces.go 11, source.go 8, manifest_fallback.go 6, atomic.go 4, others 2-3 (a looser count may reach the audit's 75). Git-clone seams (sourceGitClone etc.) guard network and are legitimately useful, so the 'drop all' scope should exclude them."
+ },
+ {
+  "id": "internal-misc-cmds-11",
+  "title": "selfupdate.installExtractedBinaries is a 208-line multi-binary transaction for a one-element list",
+  "category": "complexity",
+  "original_severity": "low",
+  "verdict": "partial",
+  "severity": "low",
+  "note": "Confirmed: update.go:590-797 is 208 lines, installBinaries = []string{\"evener\"} (update.go:41, comment confirms evener-dev dropped). Correction: rollback tests already exist (install_rollback_test.go, 8 calls to installExtractedBinaries with failure injection; installdirs_custom_test.go), so the 'add a restore-on-failure test first' step is largely done. Gain is about -90 lines on the self-update path, a sensitive area; I would downgrade to low because the risk/benefit is thin and the multi-binary shape is cheap to leave.",
+  "revised_fix_plan": "Defer unless touched for another reason; if done, rely on the existing install_rollback_test.go as the guard."
+ },
+ {
+  "id": "internal-misc-cmds-12",
+  "title": "Hand-copied agent.DetailedStatus to server.DetailedStatus mapping with duplicate DTO types",
+  "category": "duplication",
+  "original_severity": "medium",
+  "verdict": "confirmed",
+  "severity": "medium",
+  "note": "serve.go:2232-2345 is agentToServerDetailedStatus, with a one-line hand-written 45-field delegate literal (2293-2316) and cloneServe* helpers; agent/status.go:124 and server/server.go:105 both declare DelegateStatusInfo with identical json tags; evenerUsageFromLLM (serve.go:2228) wraps appwire.EvenerUsageFromLLM. Fix feasibility confirmed: server already imports agent in 28 files, so server can consume the agent types directly (no cycle)."
+ },
+ {
+  "id": "internal-misc-cmds-13",
+  "title": "runPluginLifecycle is a 211-line switch with repeated ref-parsing boilerplate and a single-impl 16-method interface",
+  "category": "complexity",
+  "original_severity": "medium",
+  "verdict": "partial",
+  "severity": "low",
+  "note": "Function spans plugincmd.go:406-616 (211 lines) and splitPluginRef (315) vs plugins.splitKey (install.go:448) differ on no-@ input: confirmed. Wrong: pluginManager is not only faked in the evenerfuzz test. Default tests use fakes too (plugincmd_test.go:80-93 marketplaceAddCapture, task3EffectiveListManager at :522), though one test (262) uses a real plugins.Manager. Deleting the interface means reworking those tests. Boilerplate dedup is real but low value.",
+  "revised_fix_plan": "Do the verb-table/parseRefArg dedup and export plugins.ParseRef. Retype newPluginManager to *plugins.Manager only after converting the two fake-based tests to real managers on t.TempDir()."
+ },
+ {
+  "id": "internal-misc-cmds-14",
+  "title": "evener-dev: Python-repr emulation and a 500-line go test -v text scraper",
+  "category": "complexity",
+  "original_severity": "medium",
+  "verdict": "confirmed",
+  "severity": "low",
+  "note": "covstmt.go:289-376 holds surrogateEscapeRunes/containsRunes/pyRepr, justified by 'the Python this report replaced'; no Python covstmt exists in git ls-files, so the parity goal is stale. runShards spans agentshards.go:314-663 (350 lines); replaySurveyFailures at :846; agentshards tests 3037 lines. The scraper replacement is a product-of-dev-tooling choice for Jesse. Severity low-medium: dev tooling only."
+ },
+ {
+  "id": "internal-misc-cmds-15",
+  "title": "Plugin store has three tree-copy implementations and a scattered .git policy",
+  "category": "duplication",
+  "original_severity": "medium",
+  "verdict": "confirmed",
+  "severity": "medium",
+  "note": "copyTree (source.go:304, O_TRUNC, dereferences, skips .git, via seams), copyTreeExact (publication.go:325, O_EXCL) and copyBundledPayload=os.CopyFS (resolve.go:412) exist; copyRegularFile (publication.go:229) duplicates copyTree's open/copy/close. .git predicates verified in source.go (rejectGitPathComponent 191, selectedDirectoryIsGitAdministration 198, looksLikeGitAdministration 238, refuseGitSymlink 358, hasGitComponent 378, removeGitMetadata 385) and publication.go (isGitName 22, symlinkReachesGit 59, targetTouchesGit 85). Security-sensitive; characterize semantics before merging."
+ },
+ {
+  "id": "internal-misc-cmds-16",
+  "title": "cmdutil pass-through wrappers and near-twin resolvers",
+  "category": "slop",
+  "original_severity": "low",
+  "verdict": "confirmed",
+  "severity": "low",
+  "note": "ParseAllowedDecisions (cmdutil.go:240) is a pure wrapper of parseAllowedDecisions; CheckLegacyDataDirs wraps checkLegacyDataDirs (userdirs.go:33); ResolveModelRef/ResolveResumeModelRef (cmdutil.go:64-96) differ only in env-vs-resume order and repeat the error and normalization. The twins encode an intentional precedence difference, so fold via a precedence argument, not by deleting one."
+ },
+ {
+  "id": "internal-misc-cmds-17",
+  "title": "Hand-rolled subcommand dispatch boilerplate in cmd/evener",
+  "category": "slop",
+  "original_severity": "low",
+  "verdict": "confirmed",
+  "severity": "low",
+  "note": "main.go:495-565: 11-field cliCommandRunners, 11-case switch, three identical code-to-subcommandExitError adapters for hub/doctor/migrate."
+ },
+ {
+  "id": "internal-misc-cmds-18",
+  "title": "History-narrating, issue-numbered and essay-length comments",
+  "category": "slop",
+  "original_severity": "low",
+  "verdict": "confirmed",
+  "severity": "low",
+  "note": "Spot-checked quotes exist: resume_guard.go:27 '(#4442)', :80 'roborev, PR #4589', remoteinstall.go:69 'before round twelve'. Aggregate counts not re-derived. Violates the comment rule in CLAUDE.md. Piggyback on files already being edited."
+ },
+ {
+  "id": "internal-misc-cmds-19",
+  "title": "Tests assert on human-readable output and error text",
+  "category": "test-debt",
+  "original_severity": "medium",
+  "verdict": "confirmed",
+  "severity": "medium",
+  "note": "providers_test.go:245 asserts strings.Contains(out, \"ok (1 models)\") and 'LIVE'; providers_test.go has 38 strings.Contains calls; testing.md 'Copy Is Not a Test Oracle' (line 62) forbids exactly this. Per-package counts not re-derived."
+ },
+ {
+  "id": "internal-misc-cmds-20",
+  "title": "install.sh is a byte-for-byte checked-in copy to satisfy go:embed",
+  "category": "duplication",
+  "original_severity": "low",
+  "verdict": "confirmed",
+  "severity": "low",
+  "note": "cmp shows install.sh and internal/remoteinstall/install.sh identical (180 lines); remoteinstall.go:33 go:embed install.sh. Release URL and workflow need checking before collapsing, as the plan says."
+ },
+ {
+  "id": "internal-misc-cmds-21",
+  "title": "Small duplicates and vacuous tests in leaf packages",
+  "category": "slop",
+  "original_severity": "low",
+  "verdict": "partial",
+  "severity": "low",
+  "note": "Confirmed: fuzzroutes.go:27-29 lists /api/health at slots 13 and 15; e2ecap_test.go (14 lines) only calls RequireLoopbackBind/RequireProcessInspect with no assertion. Refuted: shellSingleQuote (session_tools_shell.go:421) always quotes, whereas shellquote.Literal (shellquote.go:108,117-124) returns safe words unquoted, so they are not the same expression and swapping changes the suggested-command text (still valid shell). Replacing is optional, not a dedup.",
+  "revised_fix_plan": "Drop the shellSingleQuote replacement item (or add shellquote.Always if Jesse wants it); keep e2ecap test deletion and leave the fuzzroutes index design alone."
+ },
+ {
+  "id": "internal-misc-cmds-22",
+  "title": "Hand-rolled TOML line scanner in evener-tomlcheck misses nested keys",
+  "category": "complexity",
+  "original_severity": "low",
+  "verdict": "partial",
+  "severity": "low",
+  "note": "Scanner is real (main.go:187-345, tomlKeyLineRe at 192 only matches a leading key, no inline-table handling or tests). But the checker reports line numbers and supports an 'evener:naming-ignore' line marker; BurntSushi/toml's MetaData gives key paths but no positions, so a decoder rewrite does not obviously simplify and may lose ignore handling. Fix size -150 is unproven.",
+  "revised_fix_plan": "Document the inline-table limitation in the tool's header; revisit only if a nested key violation slips through."
+ }
+]

@@ -11,11 +11,22 @@ import (
 
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/internal/jobstore"
 	"primeradiant.com/evener/agent/provenance"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/llm"
 )
+
+// Omitting ampersand escaping would make literal sender entities ambiguous.
+func TestEscapeNotificationBodyPreservesLiteralEntities(t *testing.T) {
+	t.Parallel()
+	const text = `& < &lt; &amp; &amp;lt; " > ' &quot; &gt; &#39;`
+	const want = `&amp; &lt; &amp;lt; &amp;amp; &amp;amp;lt; " > ' &amp;quot; &amp;gt; &amp;#39;`
+	if got := escapeNotificationBody(text); got != want {
+		t.Fatalf("escaped body = %q, want %q", got, want)
+	}
+}
 
 func TestFormatJobNotification(t *testing.T) {
 	t.Parallel()
@@ -427,7 +438,7 @@ func TestJobNotificationTurnDeliversPendingDurableRecord(t *testing.T) {
 	adapter := &fakeAdapter{
 		name: "openai",
 		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response { return finalResponse("ack") },
+			func(req llm.Request) llm.Response { return agenttest.FinalResponse("ack") },
 		},
 	}
 	c.Register(adapter)
@@ -477,7 +488,7 @@ func TestJobNotificationTurnDeliversWatchNotification(t *testing.T) {
 	adapter := &fakeAdapter{
 		name: "openai",
 		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response { return finalResponse("ack") },
+			func(req llm.Request) llm.Response { return agenttest.FinalResponse("ack") },
 		},
 	}
 	c.Register(adapter)
@@ -514,7 +525,7 @@ func TestWatchNotificationHistoryDoesNotSuppressDurableTerminalNotification(t *t
 	adapter := &fakeAdapter{
 		name: "openai",
 		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response { return finalResponse("ack") },
+			func(req llm.Request) llm.Response { return agenttest.FinalResponse("ack") },
 		},
 	}
 	c.Register(adapter)
@@ -558,7 +569,7 @@ func TestJobNotificationTurnRequeuesWhenDeliveredMarkFails(t *testing.T) {
 	adapter := &fakeAdapter{
 		name: "openai",
 		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response { return finalResponse("ack") },
+			func(req llm.Request) llm.Response { return agenttest.FinalResponse("ack") },
 		},
 	}
 	c.Register(adapter)
@@ -632,7 +643,7 @@ func TestJobNotificationTurnRequeuesWhenJobManagerMissing(t *testing.T) {
 	adapter := &fakeAdapter{
 		name: "openai",
 		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response { return finalResponse("should not run") },
+			func(req llm.Request) llm.Response { return agenttest.FinalResponse("should not run") },
 		},
 	}
 	c.Register(adapter)
@@ -666,7 +677,7 @@ func TestJobNotificationTurnRequeuesWhenStoreLoadFailsThenDelivers(t *testing.T)
 	adapter := &fakeAdapter{
 		name: "openai",
 		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response { return finalResponse("ack") },
+			func(req llm.Request) llm.Response { return agenttest.FinalResponse("ack") },
 		},
 	}
 	c.Register(adapter)
@@ -874,7 +885,7 @@ func newNotificationExcerptSession(t *testing.T) (*Session, *fakeAdapter) {
 	adapter := &fakeAdapter{
 		name: "openai",
 		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response { return finalResponse("ack") },
+			func(req llm.Request) llm.Response { return agenttest.FinalResponse("ack") },
 		},
 	}
 	c.Register(adapter)

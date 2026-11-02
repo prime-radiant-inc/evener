@@ -289,7 +289,7 @@ func formatPatchMismatchError(d patchMismatchDiagnostic) string {
 				if i > 0 {
 					b.WriteByte('\n')
 				}
-				fmt.Fprintf(&b, "candidate at line %d:\n%s", idx+1, formatLineSnippet(d.lines, idx+1, minInt(6, maxInt(2, len(oldLines)+1))))
+				fmt.Fprintf(&b, "candidate at line %d:\n%s", idx+1, formatLineSnippet(d.lines, idx+1, min(6, max(2, len(oldLines)+1))))
 			}
 		}
 	}
@@ -310,8 +310,8 @@ func formatLineSnippet(lines []string, line, radius int) string {
 	if line > len(lines) {
 		line = len(lines)
 	}
-	start := maxInt(1, line-radius)
-	end := minInt(len(lines), line+radius)
+	start := max(1, line-radius)
+	end := min(len(lines), line+radius)
 	width := len(strconv.Itoa(end))
 	var b strings.Builder
 	for i := start; i <= end; i++ {
@@ -369,14 +369,14 @@ func candidateSequenceIndexes(lines, pattern []string, failedLine int, limit int
 }
 
 func looseCandidateSequenceIndexes(lines, pattern []string, failedLine int, limit int) []int {
-	minScore := minInt(2, len(pattern))
+	minScore := min(2, len(pattern))
 	window := min(len(pattern)+4, len(lines))
 	var out []int
 	for i := range lines {
 		if !fuzzyLineMatch(lines[i], pattern[0]) {
 			continue
 		}
-		end := minInt(len(lines), i+window)
+		end := min(len(lines), i+window)
 		score := 0
 		next := 0
 		for j := i; j < end && next < len(pattern); j++ {
@@ -401,7 +401,7 @@ func mismatchLineForMissingSequence(lines []string, want string, searchStart int
 	if len(lines) == 0 {
 		return 0
 	}
-	return minInt(searchStart+1, len(lines))
+	return min(searchStart+1, len(lines))
 }
 
 func nearestIndexes(indexes []int, failedLine int, limit int) []int {
@@ -586,7 +586,7 @@ func lineAt(lines []string, idx int) string {
 
 func formatExpectedLines(lines []string) string {
 	var b strings.Builder
-	limit := minInt(len(lines), 12)
+	limit := min(len(lines), 12)
 	for _, line := range lines[:limit] {
 		fmt.Fprintf(&b, "  %s\n", line)
 	}
@@ -594,20 +594,6 @@ func formatExpectedLines(lines []string) string {
 		fmt.Fprintf(&b, "  ... %d more lines omitted\n", len(lines)-limit)
 	}
 	return b.String()
-}
-
-func minInt(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
-}
-
-func maxInt(a, b int) int {
-	if a > b {
-		return a
-	}
-	return b
 }
 
 // normalizeWS collapses all whitespace runs to single spaces and trims ends.

@@ -16,6 +16,7 @@ import (
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/cmdutil"
 	"primeradiant.com/evener/envvars"
+	"primeradiant.com/evener/envvars/userdirs"
 	"primeradiant.com/evener/execsupport/syncio"
 	"primeradiant.com/evener/identifier"
 	"primeradiant.com/evener/internal/apptranscript"
@@ -111,6 +112,18 @@ func resolveMemoryProjectID(env execenv.ExecutionEnvironment, warnings io.Writer
 	return project.ID
 }
 
+// memoryStateRootForLaunch is the host state root native memory lives under.
+// With no state home the session runs without memory (an empty root means
+// unavailable) and the reason goes to warnings, unless the user opted out of
+// memory anyway.
+func memoryStateRootForLaunch(disabled bool, warnings io.Writer) string {
+	root, err := userdirs.DefaultStateRoot()
+	if err != nil && !disabled {
+		fmt.Fprintf(warnings, "warning: memory unavailable: %v\n", err) //nolint:errcheck
+	}
+	return root
+}
+
 func run(ctx context.Context, cfg runConfig) error {
 	if err := rejectPluginSelectionWithResume(cfg.enabledPlugins, cfg.resume, cfg.resumeLast); err != nil {
 		return err
@@ -177,14 +190,10 @@ func run(ctx context.Context, cfg runConfig) error {
 	if err := startupInterrupted(ctx, stepSeedingMarketplaces); err != nil {
 		return err
 	}
-	if _, err := agent.ParseProviderIdleTimeout(cfg.providerIdleTimeout); err != nil {
-		return err
-	}
-	apiLogEnabled, err := parseAPILog(cfg.apiLog)
+	settings, err := resolveLaunchSettings(cfg.providerIdleTimeout, cfg.apiLog, cfg.openAIResponsesContinuation)
 	if err != nil {
 		return err
 	}
-	openAIResponsesContinuation := resolveOpenAIResponsesContinuation(cfg.openAIResponsesContinuation, nil)
 
 	// Compute runtime state directory.
 	// Priority: --state-dir flag > EVENER_STATE_DIR env > XDG-computed default.
@@ -275,7 +284,7 @@ func run(ctx context.Context, cfg runConfig) error {
 		return err
 	}
 
-	reserveSession, closeAPILog, err := runAttachAPILogger(client, stateDir, cfg.stderr, apiLogEnabled)
+	reserveSession, closeAPILog, err := runAttachAPILogger(client, stateDir, cfg.stderr, settings.apiLogEnabled)
 	if err != nil {
 		return err
 	}
@@ -326,7 +335,7 @@ func run(ctx context.Context, cfg runConfig) error {
 	if err != nil {
 		return err
 	}
-	profile, err = applyFastCheapModel(profile, cfg.fastCheapModel, client)
+	profile, err = cmdutil.ApplyFastCheapModel(profile, cfg.fastCheapModel, client)
 	if err != nil {
 		return err
 	}
@@ -350,9 +359,10 @@ func run(ctx context.Context, cfg runConfig) error {
 		memoryProjectID = resolveMemoryProjectID(env, cfg.stderr)
 	}
 
+	memoryStateRoot := memoryStateRootForLaunch(cfg.disableMemory || (meta != nil && meta.Config.DisableMemory), cfg.stderr)
 	var sess *agent.Session
 	baseSessionCfg := agent.SessionConfig{
-		MemoryStateRoot:             cmdutil.DefaultStateRoot(),
+		MemoryStateRoot:             memoryStateRoot,
 		MemoryProjectID:             memoryProjectID,
 		DisableMemory:               cfg.disableMemory,
 		LifetimeContext:             ctx,
@@ -376,7 +386,7 @@ func run(ctx context.Context, cfg runConfig) error {
 		NonInteractive:              true,
 		TurnEndsProcess:             true,
 		SystemPromptAsUser:          cfg.systemPromptAsUser,
-		OpenAIResponsesContinuation: openAIResponsesContinuation,
+		OpenAIResponsesContinuation: settings.openAIResponsesContinuation,
 		ProviderIdleTimeout:         cfg.providerIdleTimeout,
 		ResolveProfile:              cmdutil.BuildResolveProfile(client),
 		StartupModelListing:         startupListing,
@@ -401,7 +411,7 @@ func run(ctx context.Context, cfg runConfig) error {
 	if effort.Set {
 		baseSessionCfg.ReasoningEffort = effort.Value
 	}
-	if err := configureSandbox(&baseSessionCfg, cfg.sandboxMode, cfg.sandboxNet); err != nil {
+	if err := cmdutil.ConfigureSandbox(&baseSessionCfg, cfg.sandboxMode, cfg.sandboxNet); err != nil {
 		return err
 	}
 	// Engage enforcement for a FRESH session from the flag-set mode. A resume
@@ -430,7 +440,7 @@ func run(ctx context.Context, cfg runConfig) error {
 			StartupModelListing:         startupListing,
 			AcquireSessionOwnership:     reserveSession,
 			OwnershipAlreadyAcquired:    true,
-			OpenAIResponsesContinuation: openAIResponsesContinuation,
+			OpenAIResponsesContinuation: settings.openAIResponsesContinuation,
 			ProviderIdleTimeout:         cfg.providerIdleTimeout,
 			TurnEndsProcess:             baseSessionCfg.TurnEndsProcess,
 		})
@@ -571,7 +581,7 @@ func drainEventsHuman(eventCh <-chan events.SessionEvent, w io.Writer) <-chan st
 				if d, ok := ev.Data.(events.ToolCallStartData); ok {
 					args := d.ArgumentsJSON
 					if len(args) > 100 {
-						args = args[:97] + "..."
+						args = strings.ToValidUTF8(args[:97], "") + "..."
 					}
 					fmt.Fprintf(w, "[tool] %s %s\n", d.ToolName, args) //nolint:errcheck
 				}

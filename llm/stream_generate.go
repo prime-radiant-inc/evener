@@ -129,6 +129,24 @@ func (r *StreamResult) Steps() []StepResult {
 	return append([]StepResult{}, r.steps...)
 }
 
+// fail records err as the stream's terminal error and emits it to consumers.
+func (r *StreamResult) fail(err error) {
+	r.stream.Send(StreamEvent{Type: StreamEventError, Err: err})
+	r.mu.Lock()
+	r.err = err
+	r.mu.Unlock()
+}
+
+// settle records the stream's final response, aggregate usage and steps.
+func (r *StreamResult) settle(final *Response, totalUsage Usage, steps []StepResult) {
+	r.mu.Lock()
+	r.final = final
+	r.partial = final
+	r.totalUsage = totalUsage
+	r.steps = steps
+	r.mu.Unlock()
+}
+
 // StreamGenerate is the high-level streaming API (spec stream()). It is equivalent
 // to Generate(), but yields StreamEvent values incrementally and continues across
 // tool-execution steps. Between tool steps it emits a STEP_FINISH event.
@@ -164,45 +182,11 @@ func StreamGenerate(ctx context.Context, opts GenerateOptions) (*StreamResult, e
 
 		for {
 			if sctx.Err() != nil {
-				err := WrapContextError(opts.Provider, sctx.Err())
-				outStream.Send(StreamEvent{Type: StreamEventError, Err: err})
-				res.mu.Lock()
-				res.err = err
-				res.mu.Unlock()
+				res.fail(WrapContextError(opts.Provider, sctx.Err()))
 				return
 			}
 
-			req := Request{
-				Model:                opts.Model,
-				Provider:             opts.Provider,
-				Messages:             append([]Message{}, history...),
-				Tools:                gs.toolDefs,
-				ToolChoice:           opts.ToolChoice,
-				ResponseFormat:       opts.ResponseFormat,
-				Temperature:          opts.Temperature,
-				TopP:                 opts.TopP,
-				MaxTokens:            opts.MaxTokens,
-				StopSequences:        opts.StopSequences,
-				ReasoningEffort:      opts.ReasoningEffort,
-				Metadata:             opts.Metadata,
-				ClientMetadata:       opts.ClientMetadata,
-				Include:              opts.Include,
-				PromptCacheKey:       opts.PromptCacheKey,
-				PreviousResponseID:   opts.PreviousResponseID,
-				ConversationID:       opts.ConversationID,
-				ServiceTier:          opts.ServiceTier,
-				SafetyIdentifier:     opts.SafetyIdentifier,
-				PromptCacheRetention: opts.PromptCacheRetention,
-				Truncation:           opts.Truncation,
-				MaxToolCalls:         opts.MaxToolCalls,
-				Background:           opts.Background,
-				Store:                opts.Store,
-				SessionID:            opts.SessionID,
-				ThreadID:             opts.ThreadID,
-				ProviderOptions:      opts.ProviderOptions,
-				WebSearch:            opts.WebSearch,
-				AdapterTimeout:       opts.AdapterTimeout,
-			}
+			req := gs.request(opts, history)
 
 			callCtx, cancelStep := WithTimeout(sctx, opts.TimeoutPerStep)
 			callCtx, attemptGroupScope := BeginAPIAttemptGroupScope(callCtx)
@@ -295,10 +279,7 @@ func StreamGenerate(ctx context.Context, opts GenerateOptions) (*StreamResult, e
 			cancelStep()
 			if stepErr != nil {
 				stepErr = WrapContextError(req.Provider, stepErr)
-				outStream.Send(StreamEvent{Type: StreamEventError, Err: stepErr})
-				res.mu.Lock()
-				res.err = stepErr
-				res.mu.Unlock()
+				res.fail(stepErr)
 				return
 			}
 
@@ -307,43 +288,15 @@ func StreamGenerate(ctx context.Context, opts GenerateOptions) (*StreamResult, e
 				stepResp = streamGenerateAccumulatedResponse(acc)
 			}
 			if stepResp == nil {
-				err := NewStreamError(strings.TrimSpace(req.Provider), "missing response in finish event", nil)
-				outStream.Send(StreamEvent{Type: StreamEventError, Err: err})
-				res.mu.Lock()
-				res.err = err
-				res.mu.Unlock()
+				res.fail(NewStreamError(strings.TrimSpace(req.Provider), "missing response in finish event", nil))
 				return
 			}
 
 			calls := stepResp.ToolCalls()
 
-			// Stop if there are no tool calls, tool looping is disabled, we lack active tools,
-			// or we've exhausted the tool-round budget.
-			stopNow := false
-			if len(calls) == 0 || (stepResp.Finish.Reason != FinishReasonToolCalls && stepResp.Finish.Reason != FinishReasonPauseTurn) || !gs.hasActiveTool || gs.maxToolRounds == 0 || toolRoundsUsed >= gs.maxToolRounds {
-				stopNow = true
-			}
-			// Passive tool call: if a tool is defined but has no execute handler, return to caller.
-			if !stopNow {
-				for _, call := range calls {
-					if t, ok := gs.toolIndex[call.Name]; ok && t.Execute == nil {
-						stopNow = true
-						break
-					}
-				}
-			}
-
-			if stopNow {
+			if gs.endsToolLoop(stepResp, calls, toolRoundsUsed) {
 				// Build final step and aggregate usage.
-				finalStep := StepResult{
-					Text:         stepResp.Text(),
-					Reasoning:    stepResp.ReasoningText(),
-					ToolCalls:    calls,
-					FinishReason: stepResp.Finish,
-					Usage:        stepResp.Usage,
-					Response:     *stepResp,
-					Warnings:     append([]Warning{}, stepResp.Warnings...),
-				}
+				finalStep := newStepResult(stepResp, calls, nil)
 				steps = append(steps, finalStep)
 				totalUsage = totalUsage.Add(stepResp.Usage)
 
@@ -353,13 +306,8 @@ func StreamGenerate(ctx context.Context, opts GenerateOptions) (*StreamResult, e
 					finishEv.Response = &cp
 				}
 				outStream.Send(*finishEv)
-				res.mu.Lock()
 				cp := *stepResp
-				res.final = &cp
-				res.partial = &cp
-				res.totalUsage = totalUsage
-				res.steps = steps
-				res.mu.Unlock()
+				res.settle(&cp, totalUsage, steps)
 				return
 			}
 
@@ -373,16 +321,7 @@ func StreamGenerate(ctx context.Context, opts GenerateOptions) (*StreamResult, e
 			toolRoundsUsed++
 
 			// Build step result and aggregate usage.
-			step := StepResult{
-				Text:         stepResp.Text(),
-				Reasoning:    stepResp.ReasoningText(),
-				ToolCalls:    calls,
-				ToolResults:  results,
-				FinishReason: stepResp.Finish,
-				Usage:        stepResp.Usage,
-				Response:     *stepResp,
-				Warnings:     append([]Warning{}, stepResp.Warnings...),
-			}
+			step := newStepResult(stepResp, calls, results)
 			steps = append(steps, step)
 			totalUsage = totalUsage.Add(stepResp.Usage)
 
@@ -410,12 +349,7 @@ func StreamGenerate(ctx context.Context, opts GenerateOptions) (*StreamResult, e
 					Usage:        finishEv.Usage,
 					Response:     &stepCopy,
 				})
-				res.mu.Lock()
-				res.final = &stepCopy
-				res.partial = &stepCopy
-				res.totalUsage = totalUsage
-				res.steps = steps
-				res.mu.Unlock()
+				res.settle(&stepCopy, totalUsage, steps)
 				return
 			}
 		}

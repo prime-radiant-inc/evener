@@ -112,3 +112,21 @@ func cloneWatchConfigSnapshot(c *WatchConfigSnapshot) *WatchConfigSnapshot {
 	out.EventFilter = clonePtr(c.EventFilter)
 	return &out
 }
+
+// Clone returns a copy of r that shares no mutable state with it; nil clones to
+// nil. The fold cache and the agent's job manager hand records across lock
+// boundaries through it.
+func (r *JobRecord) Clone() *JobRecord {
+	if r == nil {
+		return nil
+	}
+	c := *r
+	c.LastActivity = clonePtr(r.LastActivity)
+	c.EndedAt = clonePtr(r.EndedAt)
+	c.ExitCode = clonePtr(r.ExitCode)
+	c.StructuredResult = cloneJSONValue(r.StructuredResult)
+	c.StructuredResultValid = clonePtr(r.StructuredResultValid)
+	c.Provenance = cloneCausal(r.Provenance)
+	c.NotificationProvenance = cloneCausal(r.NotificationProvenance)
+	return &c
+}

@@ -114,30 +114,15 @@ var maxGlobLiveEntries = 500_000
 // ever refuses a pathological one.
 var maxGlobIgnoreFileBytes = 1 << 20
 
-// maxGlobIgnoreTotalBytes is the aggregate bound on what one call may spend on
-// .gitignore discovery: the compiled matcher memory it retains and the source
-// it reads, across every rules file in the call. go-gitignore builds one regexp
-// per rule line, so a file is charged a fixed globIgnoreRuleBytes per rule plus
-// globIgnoreUnitBytes for each compiled instruction its rules expand into. That
-// unit count comes from parsing the rules — a literal byte is one unit, a glob
-// star about five, and a counted repetition multiplies the units of its element
-// — so the charge follows the matcher `regexp` will build rather than the
-// source's length. Each file also pays globIgnoreFileOverheadBytes plus the
-// length of its path, and globIgnoreUnicodeClassBytes per Unicode property
-// escape, whose rune table dwarfs its source.
-//
-// Source is charged whether or not a matcher is kept, so a file that compiles
-// no rule still counts toward the bound on how much a call reads.
-//
-// The number follows the entry caps: one listing at maxGlobDirEntries costs
-// roughly 21 MB of directory entries and the live ceiling allows about 52 MB,
-// so 32 MiB sits between them.
-//
-// This bound is best-effort. It is charged from an estimate of each rule's
-// compiled size (classifyIgnoreLine), so a construct whose compiled program is
-// larger than the estimate can still pass; charging the real program size is
-// issue #1971.
-var maxGlobIgnoreTotalBytes = 32 << 20
+// maxGlobIgnoreTotalBytes is the one aggregate bound on what a call may spend on
+// .gitignore discovery: the matchers it retains and the source it reads, across
+// every rules file in the call. A file is charged globIgnoreFileOverheadBytes
+// plus the length of its path, globIgnoreRuleBytes per rule line, and one byte
+// per source byte, whether or not a matcher is kept. The bound is deliberately
+// high and deliberately simple: it stops a runaway tree of rules files, and does
+// not try to predict what an individual rule compiles into, because a hostile
+// .gitignore is not a threat this search defends against.
+var maxGlobIgnoreTotalBytes = 256 << 20
 
 // globIgnoreRuleBytes is the accounting charge for one compiled ignore rule,
 // before its source. go-gitignore converts every rule line into its own
@@ -145,22 +130,6 @@ var maxGlobIgnoreTotalBytes = 32 << 20
 // 2 KiB — far more than the tens of bytes the line occupies in the file — so
 // this is what one ordinary rule costs.
 const globIgnoreRuleBytes = 2048
-
-// globIgnoreUnitBytes is the charge for one compiled instruction a rule
-// expands into. A syntax instruction is about 40 bytes and a rule retains a few
-// bytes of other state per unit, so a compiled program costs tens of bytes per
-// unit: measured against go-gitignore, a literal rule retained 46.5 bytes per
-// unit at 1 MiB, 48.5 at 256 KiB, 50.7 at 16 KiB and 76.1 at 1 KiB, and a star
-// retained about 380 bytes for its five units. 80 is above every measured
-// value.
-const globIgnoreUnitBytes = 80
-
-// globIgnoreUnicodeClassBytes is the charge for one Unicode property escape
-// such as `\pL` or `\p{Greek}`. go-gitignore passes it through and Go compiles
-// it to a rune-class instruction carrying the property's whole range table;
-// measured, each `\pL` retained about 10 KB from its 3 source bytes. 32768 is
-// above every property's table.
-const globIgnoreUnicodeClassBytes = 32768
 
 // globIgnoreFileOverheadBytes is the fixed charge for retaining one
 // .gitignore's entry in the call's dedupe map; the path itself is charged at
@@ -217,7 +186,7 @@ type GlobBudget struct {
 	// trips, so a test can see how far a walk actually got.
 	peakLiveEntries int
 	// ruleBytes is what .gitignore discovery has cost this call: a per-file
-	// charge for each path it dedupes, a per-rule plus per-rune charge for each
+	// charge for each path it dedupes, a per-rule charge for each
 	// compiled matcher, and the source read for every file. It is cumulative
 	// because the matchers and dedupe entries live as long as the call does.
 	ruleBytes int
@@ -339,33 +308,24 @@ func (b *GlobBudget) tooManyRuleBytes(path string, read int) error {
 }
 
 // ignoreFileCost is what one .gitignore read costs the call: the path retained
-// in the dedupe map, the rules it contributes, the compiled instruction units
-// those rules expand into, the Unicode property escapes whose rune tables
-// dwarf their source, and every source byte read.
+// in the dedupe map, the rule lines it contributes, and every source byte read.
 type ignoreFileCost struct {
-	path           int   // bytes of the path retained in the dedupe map
-	rules          int   // compiled rule lines
-	expansionUnits int64 // compiled instruction units those rules expand into
-	source         int   // every source byte read
+	path   int // bytes of the path retained in the dedupe map
+	rules  int // compiled rule lines
+	source int // every source byte read
 }
 
 // retainIgnoreFile charges one .gitignore read against the call's ignore budget
-// and refuses once the total crosses maxGlobIgnoreTotalBytes. It bills
-// globIgnoreFileOverheadBytes plus the path's length for retaining the file in
-// the dedupe map, globIgnoreRuleBytes per compiled rule, the rule's source at
-// globIgnoreUnitBytes for each compiled instruction the rules expand into,
-// globIgnoreUnicodeClassBytes per Unicode property escape, whose rune table far
-// exceeds its source, and one byte per source byte read. A file that compiles
-// no rule passes zero rules and zero units and is charged for its path and the
-// source it read, so the bound covers every file the call reads, not only the
-// matchers it keeps. The sum is computed in int64 and saturated so no term can
-// wrap int on a 32-bit build and shrink the charge. It is cumulative across
-// every traversal of the call, because the matchers and the dedupe entries are
-// never released before the call ends.
+// and refuses once the total crosses maxGlobIgnoreTotalBytes. A file that
+// compiles no rule passes zero rules and is charged for its path and the source
+// it read, so the bound covers every file the call reads, not only the matchers
+// it keeps. The sum is saturated so no term can wrap int on a 32-bit build and
+// shrink the charge. It is cumulative across every traversal of the call,
+// because the matchers and the dedupe entries are never released before the
+// call ends.
 func (b *GlobBudget) retainIgnoreFile(c ignoreFileCost) error {
 	total := satAdd(int64(globIgnoreFileOverheadBytes), int64(c.path)+int64(c.source))
-	total = satAdd(total, satMul(int64(c.rules), globIgnoreRuleBytes))
-	total = satAdd(total, satMul(c.expansionUnits, globIgnoreUnitBytes))
+	total = satAdd(total, int64(c.rules)*globIgnoreRuleBytes)
 	total = satAdd(int64(b.ruleBytes), total)
 	b.ruleBytes = int(total)
 	if total <= int64(maxGlobIgnoreTotalBytes) {
@@ -374,27 +334,16 @@ func (b *GlobBudget) retainIgnoreFile(c ignoreFileCost) error {
 	return &globBudgetError{count: int(total), budget: maxGlobIgnoreTotalBytes, cycleSafe: true, op: b.op, kind: budgetRulesTotal}
 }
 
-// satAdd and satMul keep the ignore-cost arithmetic from wrapping. Every term
-// saturates at the largest value `int` can hold, so a pathological .gitignore
-// cannot overflow the accumulator into a small number that slips under the
-// budget on any supported build.
+// satAdd keeps the ignore-cost arithmetic from wrapping: it saturates at the
+// largest value `int` can hold, so a pathological .gitignore cannot overflow
+// the accumulator into a small number that slips under the budget on any
+// supported build.
 func satAdd(a, b int64) int64 {
 	const maxInt = int64(^uint(0) >> 1)
 	if a > maxInt-b {
 		return maxInt
 	}
 	return a + b
-}
-
-func satMul(a, b int64) int64 {
-	const maxInt = int64(^uint(0) >> 1)
-	if a <= 0 || b <= 0 {
-		return 0
-	}
-	if a > maxInt/b {
-		return maxInt
-	}
-	return a * b
 }
 
 // globBudgetKind tells apart the three things a globBudgetError can report:

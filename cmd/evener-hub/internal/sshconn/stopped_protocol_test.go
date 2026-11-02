@@ -63,7 +63,7 @@ func newStoppedProtocolInstallation(t *testing.T) (*Manager, *stoppedProtocolIns
 			default:
 				t.Fatalf("unsupported launch-check arguments: %v", args)
 			}
-			return json.Marshal(map[string]any{"protocol": s.protocol, "version": s.version, "launch_flags": s.flags})
+			return json.Marshal(map[string]any{"hub_endpoint_schema": 1, "protocol": s.protocol, "version": s.version, "launch_flags": s.flags})
 		}
 		command := strings.Join(argv, " ")
 		switch {
@@ -101,8 +101,21 @@ func TestEnsureStoppedProtocolOldRepairsAndStarts(t *testing.T) {
 	if err != nil || ch == nil {
 		t.Fatalf("Connect: channel=%v err=%v builds=%d writes=%d starts=%d", ch, err, s.builds, s.deploys, s.starts)
 	}
-	if s.builds != 1 || s.deploys != 1 || s.starts != 1 || s.descriptions != 1 || s.protocol != appwire.ProtocolVersion || m.pendingRestart("alpha").active() {
+	// One description comes from preflight's self-contract read; the other is the
+	// pre-write revalidation that refuses to overwrite a newer install.
+	if s.builds != 1 || s.deploys != 1 || s.starts != 1 || s.descriptions != 2 || s.protocol != appwire.ProtocolVersion || m.pendingRestart("alpha").active() {
 		t.Fatalf("repair: builds=%d writes=%d starts=%d descriptions=%d protocol=%q pending=%+v", s.builds, s.deploys, s.starts, s.descriptions, s.protocol, m.pendingRestart("alpha"))
+	}
+}
+
+func TestEnsureStoppedNewerProtocolRefusesInsteadOfDowngrading(t *testing.T) {
+	m, s := newStoppedProtocolInstallation(t)
+	s.protocol = "evener-appwire-v99"
+	ch, err := m.Ensure(t.Context(), "alpha")
+	if ch != nil || !errors.Is(err, ErrHostProtocolNewer) || !isTerminal(err) ||
+		s.builds != 0 || s.deploys != 0 || s.starts != 0 || m.pendingRestart("alpha").active() {
+		t.Fatalf("newer stopped host: channel=%v err=%v builds=%d writes=%d starts=%d pending=%+v",
+			ch, err, s.builds, s.deploys, s.starts, m.pendingRestart("alpha"))
 	}
 }
 
@@ -114,7 +127,7 @@ func TestEnsureStoppedProtocolOldRecoversUnlandedWrite(t *testing.T) {
 		t.Fatal(err)
 	}
 	s.interruptWrite = true
-	_, _, err = m.DeployForOperation(t.Context(), host, facts, false, nil)
+	_, _, err = m.DeployForOperation(t.Context(), host, facts, false, nil, nil)
 	if err == nil || s.deploys != 1 || s.starts != 0 || s.protocol != stoppedOldProtocol || !m.pendingRestart("alpha").deployment {
 		t.Fatalf("interrupted write: err=%v writes=%d starts=%d protocol=%q pending=%+v", err, s.deploys, s.starts, s.protocol, m.pendingRestart("alpha"))
 	}
@@ -133,8 +146,8 @@ func TestEnsureStoppedProtocolSelfDescriptionMustSucceedAndDecode(t *testing.T) 
 	}{
 		{name: "malformed", body: `{`, want: ErrPreflightDecode},
 		{name: "missing-protocol", body: `{"version":"old-build"}`, want: ErrPreflightDecode},
-		{name: "missing-version", body: `{"protocol":"evener-appwire-v5"}`, want: ErrPreflightDecode},
-		{name: "nonzero-contract", body: `{"protocol":"evener-appwire-v5","version":"old-build","launch_flags":["api-log"]}`, nonzero: true, want: ErrSSHStart},
+		{name: "missing-version", body: `{"hub_endpoint_schema":1,"protocol":"evener-appwire-v5"}`, want: ErrPreflightDecode},
+		{name: "nonzero-contract", body: `{"hub_endpoint_schema":1,"protocol":"evener-appwire-v5","version":"old-build","launch_flags":["api-log"]}`, nonzero: true, want: ErrSSHStart},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			m, s := newStoppedProtocolInstallation(t)
@@ -167,8 +180,52 @@ func TestCollectPreflightStoppedProtocolUsesDiscoveredExecutable(t *testing.T) {
 func TestProbeLaunchCheckStillRejectsStoppedProtocolOld(t *testing.T) {
 	m, s := newStoppedProtocolInstallation(t)
 	host, _ := m.reg.Get("alpha")
-	_, err := m.probeLaunchCheck(t.Context(), host)
+	_, err := m.probeStartupLaunchCheck(t.Context(), host)
 	if !errors.Is(err, ErrProtocolIncompatible) || s.descriptions != 0 {
 		t.Fatalf("strict deployment probe: err=%v descriptions=%d", err, s.descriptions)
+	}
+}
+
+func TestRestartForOperationRefusesNewerDisk(t *testing.T) {
+	for _, pendingDeployment := range []bool{false, true} {
+		t.Run(fmt.Sprintf("pending=%t", pendingDeployment), func(t *testing.T) {
+			host := hostreg.Host{Name: "alpha", SSH: "alpha.example", EvenerPath: "/opt/evener/bin/evener"}
+			fr := deployRunner(t, func(int) ([]byte, error) {
+				return []byte(`{"hub_endpoint_schema":1,"protocol":"evener-appwire-v99","version":"newer-build","launch_flags":["api-log"]}`), nil
+			}, func(int) ([]byte, error) {
+				return nil, errors.New("no listener")
+			})
+			run := fr.runFn
+			refused := exitStatus(t, 1)
+			fr.runFn = func(ctx context.Context, argv []string, stdin io.Reader) ([]byte, error) {
+				joined := strings.Join(argv, " ")
+				if strings.Contains(joined, "launch-check") && strings.Contains(joined, "--protocol") {
+					// The newer binary refuses the imposed controller protocol
+					// before emitting JSON, then describes its own contract.
+					return []byte(`unsupported appwire protocol "evener-appwire-v7" (supported "evener-appwire-v99")`), refused
+				}
+				return run(ctx, argv, stdin)
+			}
+			m := newTestManager(t, testRegistry(t, host), fr, Options{
+				controllerVersionOverride: "controller-build",
+				BuildBinary:               writeStageBinary,
+			})
+			if pendingDeployment {
+				m.mu.Lock()
+				m.pendingRestarts[host.Name] = pendingRestartState{
+					deployment: true, writeAcknowledged: true, expectedVersion: "controller-build",
+				}
+				m.mu.Unlock()
+			}
+			_, err := m.RestartForOperation(t.Context(), host, Preflight{OS: "linux"}, nil)
+			if !errors.Is(err, ErrHostProtocolNewer) || !isTerminal(err) {
+				t.Fatalf("RestartForOperation = %v, want ErrHostProtocolNewer", err)
+			}
+			for _, argv := range fr.recordedRuns() {
+				if strings.Contains(strings.Join(argv, " "), "cat >") {
+					t.Fatalf("RestartForOperation wrote over the newer disk: %v", argv)
+				}
+			}
+		})
 	}
 }

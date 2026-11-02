@@ -531,7 +531,7 @@ func registerTaskTools(reg *tool.Registry, deps *toolDeps) {
 					tasks := store.View()
 					summary := taskpkg.Summarize(tasks)
 					taskUpdate := taskUpdatedData(summary, "", epoch, revision)
-					deps.emit(events.EventTaskUpdated, taskUpdate)
+					deps.emit(taskUpdate)
 					return tool.StateResult{
 						Output: fmt.Sprintf("Added %d task(s). Progress: %s.", len(added), summary.ProgressText()),
 						State:  tasks,
@@ -616,7 +616,7 @@ func registerTaskTools(reg *tool.Registry, deps *toolDeps) {
 
 				if !completedAny && manuallyStartedID == 0 {
 					summary := taskpkg.Summarize(mutation.After)
-					deps.emit(events.EventTaskUpdated, taskUpdatedData(summary, "", epoch, revision))
+					deps.emit(taskUpdatedData(summary, "", epoch, revision))
 					return tool.StateResult{
 						// Every successful mutation output carries Progress:
 						// the card's footer (aggregate, meter, and the
@@ -684,7 +684,7 @@ func registerTaskTools(reg *tool.Registry, deps *toolDeps) {
 
 				summary := taskpkg.Summarize(finalTasks)
 				taskUpdate := taskUpdatedData(summary, "", epoch, revision)
-				deps.emit(events.EventTaskUpdated, taskUpdate)
+				deps.emit(taskUpdate)
 				if postCommitErr != nil {
 					msg.WriteString(postCommitErr.Error())
 					msg.WriteString(" ")
@@ -728,4 +728,71 @@ func taskUpdatedData(summary taskpkg.ListSummary, taskStoreOwnerSessionID string
 		TaskPublicationEpoch:    publicationEpoch,
 		TaskPublicationRevision: publicationRevision,
 	}
+}
+
+func (s *Session) getOrCreateTaskStore() *taskpkg.TaskStore {
+	s.taskStoreOnce.Do(func() {
+		if s.cfg.spawn.sharedTaskStore != nil {
+			s.taskStore = s.cfg.spawn.sharedTaskStore
+			return
+		}
+		dir := s.stateDir
+		if dir == "" {
+			dir = s.currentEnv().WorkingDirectory()
+		}
+		s.taskStore = taskpkg.NewTaskStore(dir, s.id)
+		_ = s.taskStore.Load()
+	})
+	return s.taskStore
+}
+
+// taskStoreOwnerSessionID names the session whose durable task store backs this
+// session's task view. Shared descendants retain the original owner's identity.
+func (s *Session) taskStoreOwnerSessionID() string {
+	if owner := s.cfg.spawn.sharedTaskStoreOwnerSessionID; owner != "" {
+		return owner
+	}
+	return s.id
+}
+
+// maybeInjectTaskReminder checks whether a task-related steering message
+// should be injected before the next LLM call. Returns the message and its
+// events.SteeringKind*, or ("", "") when no reminder fires. The kind is
+// returned rather than left for the caller to infer so the label on the
+// resulting SteeringInjectedData event is ground truth, not a guess from the
+// text this function just built.
+func (s *Session) maybeInjectTaskReminder() (string, string) {
+	s.mu.Lock()
+	totalRounds := s.totalRounds
+	lastRound := s.taskToolLastRound
+	everUsed := s.taskToolEverUsed
+	s.mu.Unlock()
+
+	roundsSinceUse := totalRounds - lastRound
+
+	// Tasks exist, not used in 25+ rounds.
+	if everUsed && roundsSinceUse >= 25 {
+		store := s.getOrCreateTaskStore()
+		if len(store.View()) > 0 {
+			s.mu.Lock()
+			s.taskToolLastRound = totalRounds
+			s.mu.Unlock()
+			return taskReminderForInactivity(store, s.canInstructTool("task_list")), events.SteeringKindTaskInactive
+		}
+	}
+
+	return "", ""
+}
+
+// TasksWithError returns one coherent snapshot of the session's task list and
+// its availability error. A nil error with an empty slice is an authoritative
+// empty store; a non-nil error means the aggregate is unavailable.
+func (s *Session) TasksWithError() ([]taskpkg.Task, error) {
+	return s.getOrCreateTaskStore().ViewWithError()
+}
+
+// Tasks returns a snapshot of the session's task list.
+func (s *Session) Tasks() []taskpkg.Task {
+	tasks, _ := s.TasksWithError()
+	return tasks
 }

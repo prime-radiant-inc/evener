@@ -5,10 +5,14 @@ package agent
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
+	"regexp"
+	"slices"
 	"strings"
 	"testing"
 	"unicode/utf8"
@@ -69,7 +73,7 @@ const trenderLegacySession = "034UFS34rc5EKcH0qp1gaT"
 // would silently weaken the subsequence oracle instead of failing loudly.
 func trender_scanLines(content []byte) (lines []string, ok bool) {
 	scanner := bufio.NewScanner(bytes.NewReader(content))
-	scanner.Buffer(make([]byte, 0, 64*1024), transcriptJSONLMaxLineBytes)
+	scanner.Buffer(make([]byte, 0, 64*1024), transcript.DefaultMaxLineBytes)
 	for scanner.Scan() {
 		lines = append(lines, scanner.Text())
 	}
@@ -313,10 +317,10 @@ func TestTrenderEntryLinesAreProjection(t *testing.T) {
 
 // TestTrenderScanLines_ScanError verifies that trender_scanLines reports
 // ok=false (rather than silently returning a truncated line list) when a
-// single line exceeds transcriptJSONLMaxLineBytes.
+// single line exceeds transcript.DefaultMaxLineBytes.
 func TestTrenderScanLines_ScanError(t *testing.T) {
 	t.Parallel()
-	tooLong := bytes.Repeat([]byte("x"), transcriptJSONLMaxLineBytes+10)
+	tooLong := bytes.Repeat([]byte("x"), transcript.DefaultMaxLineBytes+10)
 	content := append([]byte("short line\n"), tooLong...)
 	lines, ok := trender_scanLines(content)
 	if ok {
@@ -369,7 +373,7 @@ not json
 			t.Fatalf("write temp transcript: %v", err)
 		}
 
-		result, lines, skipped, truncated, err := rawLinesForRange(path, "", startSeq, endSeq)
+		result, lines, skipped, truncated, err := rawLinesForRange(context.Background(), path, "", startSeq, endSeq)
 		if err != nil {
 			return // open/empty/scan error: no-panic floor proven for this input
 		}
@@ -474,6 +478,10 @@ func FuzzRenderTranscriptProgram(f *testing.F) {
 	}
 	// Exercise the bulk byte bound at the first byte of a multibyte rune.
 	f.Add([]byte{5}, strings.Repeat("a", 47)+string(rune(0x20AC)))
+	f.Add([]byte{5}, `range="`)
+	f.Add([]byte{5}, "expand_turn=123")
+	f.Add([]byte{5}, "\n## Turn 123 — User\n")
+	f.Add([]byte{6}, "\n- read_transcript(transcript_ref, expand_turn=123)\n")
 
 	f.Fuzz(func(t *testing.T, program []byte, payload string) {
 		scenario := trenderScenario(program)
@@ -481,7 +489,7 @@ func FuzzRenderTranscriptProgram(f *testing.F) {
 
 		got, meta := renderTranscript(header, entries, rangeSpec, opt)
 		again, againMeta := renderTranscript(header, entries, rangeSpec, opt)
-		if got != again || meta != againMeta {
+		if got != again || !reflect.DeepEqual(meta, againMeta) {
 			t.Fatalf("renderTranscript was not deterministic for program=%x", program)
 		}
 		if meta.TurnsTotal != len(entries) {
@@ -496,8 +504,78 @@ func FuzzRenderTranscriptProgram(f *testing.F) {
 			}
 		} else if meta.FirstRendered < 0 || meta.LastRendered < meta.FirstRendered || meta.LastRendered >= len(entries) {
 			t.Fatalf("invalid render span = [%d,%d] for %d entries", meta.FirstRendered, meta.LastRendered, len(entries))
-		} else if meta.LastRendered-meta.FirstRendered+1 != meta.TurnsRendered {
+		} else if meta.SelectedTurns == nil && meta.LastRendered-meta.FirstRendered+1 != meta.TurnsRendered {
 			t.Fatalf("render span [%d,%d] has %d turns, metadata says %d", meta.FirstRendered, meta.LastRendered, meta.LastRendered-meta.FirstRendered+1, meta.TurnsRendered)
+		}
+		if meta.SelectedTurns != nil {
+			// Bulk fixtures contain complete literal text bodies. Remove those
+			// known source bytes before reading structure, since arbitrary payloads
+			// may themselves quote headings and recovery calls.
+			structure := got
+			for _, entry := range entries {
+				for _, part := range entry.Turn.Message.Content {
+					if part.Kind == llm.ContentText && part.Text != "" {
+						structure = strings.ReplaceAll(structure, part.Text, "")
+					}
+				}
+			}
+			shown := transcriptHeadingTurns(t, structure)
+			if !slices.Equal(shown, meta.SelectedTurns) || len(shown) != meta.TurnsRendered {
+				t.Fatalf("actual selected addresses=%v, metadata=%v count=%d", shown, meta.SelectedTurns, meta.TurnsRendered)
+			}
+			start, end := parseRange(rangeSpec, len(entries))
+			for _, seq := range shown {
+				if seq < start || seq > end {
+					t.Fatalf("selected turn %d outside requested [%d,%d]", seq, start, end)
+				}
+			}
+			if len(shown) > 0 && (shown[0] != meta.FirstRendered || shown[len(shown)-1] != meta.LastRendered) {
+				t.Fatalf("actual address bounds=%v, metadata=[%d,%d]", shown, meta.FirstRendered, meta.LastRendered)
+			}
+			var omittedUsers []int
+			for seq := start; seq <= end; seq++ {
+				if slices.Contains(shown, seq) {
+					if entries[seq].Turn.Kind == schema.TurnUserInput {
+						for _, part := range entries[seq].Turn.Message.Content {
+							if part.Kind == llm.ContentText && !strings.Contains(got, part.Text) {
+								t.Fatalf("selected user %d lost complete text", seq)
+							}
+						}
+					}
+					continue
+				}
+				if entries[seq].Turn.Kind == schema.TurnUserInput {
+					omittedUsers = append(omittedUsers, seq)
+				}
+			}
+			if !slices.IsSorted(shown) || len(slices.Compact(slices.Clone(shown))) != len(shown) {
+				t.Fatalf("selected addresses are not strictly chronological: %v", shown)
+			}
+			if recovered := transcriptRecoveryTurns(t, structure); !slices.Equal(recovered, omittedUsers) {
+				t.Fatalf("omitted user addresses=%v, want %v", recovered, omittedUsers)
+			}
+			var wantGaps []string
+			for seq := start; seq <= end; seq++ {
+				if slices.Contains(shown, seq) {
+					continue
+				}
+				first := seq
+				for seq < end && !slices.Contains(shown, seq+1) {
+					seq++
+				}
+				wantGaps = append(wantGaps, fmt.Sprintf(`range="%d-%d"`, first, seq))
+			}
+			var actualGaps []string
+			gapPattern := `(?m)^_[^\n]*read_transcript\(transcript_ref, range="(\d+)-(\d+)"\)[^\n]*_$`
+			for _, match := range regexp.MustCompile(gapPattern).FindAllStringSubmatch(structure, -1) {
+				actualGaps = append(actualGaps, fmt.Sprintf(`range="%s-%s"`, match[1], match[2]))
+			}
+			if !slices.Equal(actualGaps, wantGaps) {
+				t.Fatalf("range recovery addresses=%v, want exact omitted spans %v", actualGaps, wantGaps)
+			}
+			if len(got) > convBudgetChars {
+				t.Fatalf("user-prioritized range uses %d bytes, budget=%d", len(got), convBudgetChars)
+			}
 		}
 		if meta.TurnsRendered < meta.TurnsTotal && !meta.Truncated {
 			t.Fatal("elided turns did not set Truncated")
@@ -637,7 +715,7 @@ func trenderAssertPagedExpansion(t *testing.T, header transcript.Header, entries
 	want := trenderExpectedPairedExpansionJSONL(t, path, entries, *opt.fullResultFor)
 
 	const pageBytes = 64
-	firstAny, err := readMarkdownPage(path, "", "local:paged", opt.meta, rangeSpec, opt.fullResultFor, 0, pageBytes)
+	firstAny, err := readMarkdownPage(context.Background(), path, "", "local:paged", opt.meta, rangeSpec, opt.fullResultFor, 0, pageBytes)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -665,7 +743,7 @@ func trenderAssertPagedExpansion(t *testing.T, header transcript.Header, entries
 		t.Fatalf("first continuation = %#v, want offset %d", first.Continuation, len(firstBytes))
 	}
 
-	secondAny, err := readMarkdownPage(path, "", "local:paged", opt.meta, rangeSpec, opt.fullResultFor, first.Continuation.OffsetBytes, pageBytes)
+	secondAny, err := readMarkdownPage(context.Background(), path, "", "local:paged", opt.meta, rangeSpec, opt.fullResultFor, first.Continuation.OffsetBytes, pageBytes)
 	if err != nil {
 		t.Fatal(err)
 	}

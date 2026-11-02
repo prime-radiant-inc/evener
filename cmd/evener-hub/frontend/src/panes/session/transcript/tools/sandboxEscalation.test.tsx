@@ -1,18 +1,14 @@
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import type {
-  SandboxEscalationRequested,
-  Thread,
-  ThreadCapabilities,
-  ThreadReadResponse,
-} from "@evener/appwire-client";
-import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
+import type { SandboxEscalationRequested, Thread, ThreadReadResponse } from "@evener/appwire-client";
 import { act, fireEvent, render, renderHook, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, expect, test, vi } from "vitest";
-import { connectionStore } from "../../../../stores/connection";
+import { resetConnectionStoreForTests } from "../../../../stores/connection";
 import { resetThreadsStoreForTests, threadsStore } from "../../../../stores/threads";
+import { connectReadyFakeClient } from "../../../../testing/connectionTestUtils";
+import { ALL_CAPABILITIES as CAPABILITIES } from "../../../../threadTestUtils";
 import { SandboxEscalationCard, SandboxEscalationRail, useSandboxEscalations } from "./sandboxEscalation";
 
 // Ground truth: evener/sandbox/escalation/requested + EvenerThread.
@@ -46,22 +42,6 @@ function requested(overrides: Partial<SandboxEscalationRequested> = {}): Sandbox
   };
 }
 
-const CAPABILITIES: ThreadCapabilities = {
-  send: true,
-  steer: true,
-  interrupt: true,
-  compact: true,
-  clear: true,
-  forkFromTurn: true,
-  shutdown: true,
-  changeModel: true,
-  changeVisionModel: true,
-  queue: true,
-  goal: true,
-  sharedNotes: true,
-  rename: true,
-};
-
 function testThread(ref: string, overrides: Partial<Thread> = {}): Thread {
   return {
     id: `thr_${ref}`,
@@ -84,15 +64,6 @@ function readResponse(ref: string, overrides: Partial<Thread> = {}): ThreadReadR
   return { thread: testThread(ref, overrides) };
 }
 
-// connectFakeClient wires a fresh FakeClient through connectionStore
-// directly - the threads store's own requireClient() rides that, not React
-// context, so no <ClientProvider> is needed anywhere in this file.
-function connectFakeClient(): FakeClient {
-  const fake = new FakeClient("ready");
-  connectionStore.getState().connect(fake);
-  return fake;
-}
-
 function readResponseWithEscalation(ref: string, escalation: SandboxEscalationRequested): ThreadReadResponse {
   return readResponse(ref, {
     evener: { ref, capabilities: CAPABILITIES, queue: { revision: 0 }, pendingEscalations: [escalation] },
@@ -100,7 +71,7 @@ function readResponseWithEscalation(ref: string, escalation: SandboxEscalationRe
 }
 
 beforeEach(() => {
-  connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
+  resetConnectionStoreForTests();
   resetThreadsStoreForTests();
 });
 
@@ -139,7 +110,7 @@ test("both buttons are disabled once resolved", () => {
 // delegates to the threads-store action) -----------------------------------
 
 test("starts with no pending escalations when the tracked model has none", async () => {
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   fake.on("thread/read", () => readResponse("ref_a"));
   await threadsStore.getState().ensureThread("ref_a");
 
@@ -148,7 +119,7 @@ test("starts with no pending escalations when the tracked model has none", async
 });
 
 test("a cold-open snapshot's pendingEscalations render immediately - the exact case the old hook could not handle", async () => {
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   fake.on("thread/read", () => readResponseWithEscalation("ref_a", requested()));
   await threadsStore.getState().ensureThread("ref_a");
 
@@ -158,7 +129,7 @@ test("a cold-open snapshot's pendingEscalations render immediately - the exact c
 });
 
 test("a live evener/sandbox/escalation/requested notification, folded through the store, appears in `pending`", async () => {
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   fake.on("thread/read", () => readResponse("ref_a"));
   await threadsStore.getState().ensureThread("ref_a");
 
@@ -174,7 +145,7 @@ test("a live evener/sandbox/escalation/requested notification, folded through th
 });
 
 test("a notification for a DIFFERENT ref is ignored", async () => {
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   fake.on("thread/read", () => readResponse("ref_a"));
   await threadsStore.getState().ensureThread("ref_a");
 
@@ -190,7 +161,7 @@ test("a notification for a DIFFERENT ref is ignored", async () => {
 });
 
 test("resolve(escalationId, true) delegates to the threads store, sending approve:true and removing it from `pending`", async () => {
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   fake.on("thread/read", () => readResponseWithEscalation("ref_a", requested()));
   fake.on("evener/sandbox/escalation/resolve", () => ({}));
   await threadsStore.getState().ensureThread("ref_a");
@@ -208,7 +179,7 @@ test("resolve(escalationId, true) delegates to the threads store, sending approv
 });
 
 test("resolve(escalationId, false) sends approve:false", async () => {
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   fake.on("thread/read", () => readResponseWithEscalation("ref_a", requested()));
   fake.on("evener/sandbox/escalation/resolve", () => ({}));
   await threadsStore.getState().ensureThread("ref_a");
@@ -223,7 +194,7 @@ test("resolve(escalationId, false) sends approve:false", async () => {
 });
 
 test("a rejected resolve() propagates to the caller and leaves `pending` untouched", async () => {
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   fake.on("thread/read", () => readResponseWithEscalation("ref_a", requested()));
   fake.on("evener/sandbox/escalation/resolve", () => Promise.reject(new Error("sandbox offline")));
   await threadsStore.getState().ensureThread("ref_a");
@@ -234,7 +205,7 @@ test("a rejected resolve() propagates to the caller and leaves `pending` untouch
 });
 
 test("two distinct escalations both surface independently", async () => {
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   fake.on("thread/read", () => readResponse("ref_a"));
   await threadsStore.getState().ensureThread("ref_a");
 
@@ -254,7 +225,7 @@ test("two distinct escalations both surface independently", async () => {
 });
 
 test("a duplicate notification for the same escalationId is de-duplicated, not appended twice (protocol/reducer.ts's upsertPendingEscalation)", async () => {
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   fake.on("thread/read", () => readResponse("ref_a"));
   await threadsStore.getState().ensureThread("ref_a");
 
@@ -274,7 +245,7 @@ test("a duplicate notification for the same escalationId is de-duplicated, not a
 // across the store-backed rewrite above, re-verified here.
 
 test("clicking Allow immediately disables that card (before the resolve response arrives), preventing a double-submit", async () => {
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   fake.on("thread/read", () => readResponse("ref_a"));
   const box: { resolveCall: (() => void) | null } = { resolveCall: null };
   fake.on("evener/sandbox/escalation/resolve", () => new Promise((res) => (box.resolveCall = () => res({}))));
@@ -306,7 +277,7 @@ test("clicking Allow immediately disables that card (before the resolve response
 // nothing at all. This is the wave's only interactive surface, so a failure
 // has to be visible and the card has to stay answerable (retry possible).
 test("a rejected resolve surfaces an error on the card instead of an unhandled rejection, and re-enables the buttons", async () => {
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   fake.on("thread/read", () => readResponse("ref_a"));
   fake.on("evener/sandbox/escalation/resolve", () => Promise.reject(new Error("sandbox offline")));
   const user = userEvent.setup();
@@ -328,7 +299,7 @@ test("a rejected resolve surfaces an error on the card instead of an unhandled r
 });
 
 test("a subsequent successful resolve clears a previously shown error", async () => {
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   fake.on("thread/read", () => readResponse("ref_a"));
   let shouldFail = true;
   fake.on("evener/sandbox/escalation/resolve", () => (shouldFail ? Promise.reject(new Error("sandbox offline")) : {}));
@@ -351,7 +322,7 @@ test("a subsequent successful resolve clears a previously shown error", async ()
 });
 
 test("a cold-open snapshot's pendingEscalations render as cards with no live notification needed", async () => {
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   fake.on("thread/read", () => readResponseWithEscalation("ref_a", requested()));
   await threadsStore.getState().ensureThread("ref_a");
 
@@ -360,7 +331,7 @@ test("a cold-open snapshot's pendingEscalations render as cards with no live not
 });
 
 test("SandboxEscalationRail renders one card per pending escalation, keyed by escalationId", async () => {
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   fake.on("thread/read", () => readResponse("ref_a"));
   await threadsStore.getState().ensureThread("ref_a");
 
@@ -393,7 +364,7 @@ test("the rail caps its own height and scrolls internally, so several pending es
 });
 
 test("nothing pending renders no sticky rail wrapper at all", async () => {
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   fake.on("thread/read", () => readResponse("ref_a"));
   await threadsStore.getState().ensureThread("ref_a");
 
@@ -402,7 +373,7 @@ test("nothing pending renders no sticky rail wrapper at all", async () => {
 });
 
 test("an escalation arriving focuses the Allow button", async () => {
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   fake.on("thread/read", () => readResponse("ref_a"));
   await threadsStore.getState().ensureThread("ref_a");
 
@@ -420,7 +391,7 @@ test("an escalation arriving focuses the Allow button", async () => {
 // mid-keystroke in the composer must not steal focus onto Allow - the very
 // next Enter/Space they type would approve an escalation they haven't read.
 test("does not steal focus while a textarea is focused", async () => {
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   fake.on("thread/read", () => readResponse("ref_a"));
   await threadsStore.getState().ensureThread("ref_a");
 
@@ -444,7 +415,7 @@ test("does not steal focus while a textarea is focused", async () => {
 // focus from something the reader is already interacting with (e.g. a
 // second card's Deny button already focused).
 test("a later escalation that only grows an already-open rail does not steal focus", async () => {
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   fake.on("thread/read", () => readResponse("ref_a"));
   const user = userEvent.setup();
   await threadsStore.getState().ensureThread("ref_a");

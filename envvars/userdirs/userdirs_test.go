@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
 )
 
@@ -57,6 +58,35 @@ func TestSubdir(t *testing.T) {
 	}
 }
 
+func TestPluginStore(t *testing.T) {
+	t.Parallel()
+
+	if got := PluginStore("/cfg/evener"); got != "/cfg/evener/plugins" {
+		t.Fatalf("PluginStore() = %q, want %q", got, "/cfg/evener/plugins")
+	}
+	got := PluginContentDirs("/cfg/evener/plugins")
+	want := []string{"/cfg/evener/plugins/cache", "/cfg/evener/plugins/bundled"}
+	if !slices.Equal(got, want) {
+		t.Fatalf("PluginContentDirs() = %v, want %v", got, want)
+	}
+	// An unavailable config root stays unavailable rather than turning into a
+	// relative plugin store.
+	if got := PluginStore(""); got != "" {
+		t.Fatalf("PluginStore(unavailable root) = %q, want empty", got)
+	}
+}
+
+func TestUserSkills(t *testing.T) {
+	t.Parallel()
+
+	if got := UserSkills("/cfg/evener"); got != "/cfg/evener/skills" {
+		t.Fatalf("UserSkills() = %q, want %q", got, "/cfg/evener/skills")
+	}
+	if got := UserSkills(""); got != "" {
+		t.Fatalf("UserSkills(unavailable root) = %q, want empty", got)
+	}
+}
+
 func TestDefaultConfigRootUsesXDGConfigHome(t *testing.T) {
 	root := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", root)
@@ -89,5 +119,80 @@ func TestStateHomeForBucketDir(t *testing.T) {
 				t.Fatalf("StateHomeForBucketDir(%q) = %q, want %q", tc.dir, got, tc.want)
 			}
 		})
+	}
+}
+
+func TestStateRoot(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		xdg     string
+		home    string
+		err     error
+		want    string
+		wantErr bool
+	}{
+		{name: "xdg wins", xdg: "/xdg", home: "/home", want: "/xdg/evener"},
+		{name: "xdg wins without a home", xdg: "/xdg", err: os.ErrNotExist, want: "/xdg/evener"},
+		{name: "home fallback", home: "/home", want: "/home/.local/state/evener"},
+		{name: "both unset", err: os.ErrNotExist, wantErr: true},
+		{name: "empty home", wantErr: true},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := StateRoot(tc.xdg, func() (string, error) { return tc.home, tc.err })
+			if tc.wantErr {
+				if !errors.Is(err, ErrNoStateHome) {
+					t.Fatalf("StateRoot() error = %v, want ErrNoStateHome", err)
+				}
+				if got != "" {
+					t.Fatalf("StateRoot() = %q alongside an error, want empty", got)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("StateRoot() error = %v", err)
+			}
+			if got != tc.want {
+				t.Fatalf("StateRoot() = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestStateHome(t *testing.T) {
+	t.Parallel()
+
+	got, err := StateHome("", func() (string, error) { return "/home", nil })
+	if err != nil || got != "/home/.local/state" {
+		t.Fatalf("StateHome() = %q, %v", got, err)
+	}
+	if _, err := StateHome("", func() (string, error) { return "", os.ErrNotExist }); !errors.Is(err, ErrNoStateHome) {
+		t.Fatalf("StateHome() error = %v, want ErrNoStateHome", err)
+	}
+}
+
+func TestDefaultStateRootReadsProcessEnvironment(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", "/explicit/state")
+	got, err := DefaultStateRoot()
+	if err != nil || got != "/explicit/state/evener" {
+		t.Fatalf("DefaultStateRoot with XDG_STATE_HOME = %q, %v", got, err)
+	}
+
+	t.Setenv("XDG_STATE_HOME", "")
+	t.Setenv("HOME", "/home/tester")
+	got, err = DefaultStateRoot()
+	if err != nil || got != "/home/tester/.local/state/evener" {
+		t.Fatalf("DefaultStateRoot home fallback = %q, %v", got, err)
+	}
+
+	t.Setenv("HOME", "")
+	if _, err := DefaultStateRoot(); !errors.Is(err, ErrNoStateHome) {
+		t.Fatalf("DefaultStateRoot with no XDG_STATE_HOME and no HOME error = %v, want ErrNoStateHome", err)
+	}
+	if _, err := DefaultStateHome(); !errors.Is(err, ErrNoStateHome) {
+		t.Fatalf("DefaultStateHome with no XDG_STATE_HOME and no HOME error = %v, want ErrNoStateHome", err)
 	}
 }

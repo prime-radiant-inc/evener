@@ -15,7 +15,7 @@
 //
 // Arguments (validated before Chrome starts):
 //   --url            the hub's real /auth/<token> URL to authenticate first
-//   --hub-url        the fixture hub base URL; exported as EVENER_HUB_ADDR for
+//   --hub-url        the fixture hub base URL; exported as EVENER_HUB_URL for
 //                    the Vite proxy BEFORE Vite starts
 //   --artifact-dir   where screenshots/dumps survive for triage
 //   --control-path-a helper alpha's fixture control JSONL
@@ -416,6 +416,17 @@ function renderedSentinelRowsExpr(ref) {
   })()`;
 }
 
+// renderedSentinelRowsOnceExpr is renderedSentinelRowsExpr held to a non-empty
+// answer, so a wait on it returns the rows it saw. Pane text proves a marker is
+// somewhere in the pane; the journey asserts the anchored rows, so it waits on
+// those rather than on the text.
+function renderedSentinelRowsOnceExpr(ref) {
+  return `(() => {
+    const rows = ${renderedSentinelRowsExpr(ref)};
+    return rows.length > 0 ? rows : null;
+  })()`;
+}
+
 // A fresh browser document joins the real hub while the provider is gated
 // mid-turn. Both panes must load that turn and receive its remaining output.
 async function runLiveTwoTabs(driver, harnessUrl) {
@@ -438,7 +449,12 @@ async function runLiveTwoTabs(driver, harnessUrl) {
       await pane.send("Page.bringToFront");
       await waitForPaneText(pane, SESSION_B, BEFORE, 30000, `initial live output in tab ${index}`);
       await waitForTargetRunning(pane, SESSION_B);
-      beforeRows.push(await evaluate(pane.send, renderedSentinelRowsExpr(SESSION_B)));
+      beforeRows.push(
+        await pane.waitPage(renderedSentinelRowsOnceExpr(SESSION_B), {
+          timeoutMs: 30000,
+          label: `initial live output rendered as a transcript row in tab ${index}`,
+        }),
+      );
     }
     driver.phase("after-eviction");
     for (const pane of [driver, sibling]) {
@@ -678,9 +694,6 @@ function reconnectValidator(before, evidence, applied = {}) {
   }));
   const newConnectionReads = reads.filter((r) => !beforeConnections.has(r.connection));
   const newReads = (evidence?.readResponses ?? 0) - (before?.readResponses ?? 0);
-  const latest = newConnectionReads.length > 0 ? newConnectionReads[newConnectionReads.length - 1] : null;
-  const responseCursor = latest?.olderCursor ?? "";
-  const responseWindow = latest?.window ?? null;
   const appliedCursor = applied?.cursor ?? "";
   const appliedWindow = applied?.domain ? normalizeWindowFromModel(applied.domain) : null;
   const reconnected = newConnectionReads.length > 0;
@@ -693,27 +706,35 @@ function reconnectValidator(before, evidence, applied = {}) {
   // turn, tolerating the extra systemMessage notices; the cursor must still
   // match. This keeps the observation's meaning (the reconnect read was applied)
   // without the legacy whole-window exact-identity premise.
+  //
+  // The new connection may read the thread again after the reconnect read (a
+  // follow-up refresh). The model keeps the older edge it already holds, so its
+  // cursor and window stay the reconnect read's: the applied model matches the
+  // new connection's read that carries them, not necessarily the last one.
   const recordedItems = (items) => (items ?? []).filter((item) => item.type !== "systemMessage");
-  const windowExact =
-    Array.isArray(responseWindow) &&
-    responseWindow.length > 0 &&
+  const appliedBy = (read) =>
+    read.olderCursor === appliedCursor &&
+    Array.isArray(read.window) &&
+    read.window.length > 0 &&
     Array.isArray(appliedWindow) &&
-    responseWindow.every((responseTurn) => {
+    read.window.every((responseTurn) => {
       const appliedTurn = appliedWindow.find((turn) => turn.turnId === responseTurn.turnId);
       return (
         appliedTurn !== undefined &&
         orderedHistoryEqual(recordedItems(responseTurn.items), recordedItems(appliedTurn.items))
       );
     });
+  const appliedRead = newConnectionReads.find(appliedBy);
+  const reported = appliedRead ?? newConnectionReads[newConnectionReads.length - 1];
   return {
     reconnected,
     newReads,
     newConnectionReads: newConnectionReads.length,
-    responseCursor,
-    responseWindow,
+    responseCursor: reported?.olderCursor ?? "",
+    responseWindow: reported?.window ?? null,
     appliedWindow,
     appliedCursor,
-    appliedMatches: reconnected && appliedCursor === responseCursor && windowExact,
+    appliedMatches: appliedRead !== undefined,
   };
 }
 
@@ -872,7 +893,8 @@ async function main() {
   loadConfig(process.argv.slice(2));
   // The Vite child inherits this environment; the dev server proxies /rpc and
   // the hub HTTP routes to the fixture hub. Set BEFORE startBrowserGuard.
-  process.env.EVENER_HUB_ADDR = HUB_URL;
+  delete process.env.EVENER_HUB_ADDR;
+  process.env.EVENER_HUB_URL = HUB_URL;
 
   let guard;
   try {
@@ -1005,6 +1027,7 @@ async function main() {
       // The entry route is the only route, so the harness budget query is always
       // present; runJourney rejects a run without it.
       const harnessUrl = `http://127.0.0.1:${vitePort}/scripts/backgroundtranscriptguard/index.html?entry-production=true`;
+      await runDisplaySynchronization(driver, cdpEndpoint, harnessUrl);
       try {
         await navigateTo(page, harnessUrl, BOOT);
       } catch (error) {
@@ -1044,6 +1067,293 @@ async function main() {
   } finally {
     await cleanup();
   }
+}
+
+// Literal inputs are independent of the production display codec and receiver.
+const DISPLAY_CONFIGS = [
+  {
+    version: 1,
+    content: { kind: "preset", level: "full" },
+    advanced: {
+      roundTimings: true,
+      tokenCounts: false,
+      estimatedCost: true,
+      systemEvents: false,
+      promptEvents: true,
+      hookExits: "all",
+    },
+  },
+  {
+    version: 1,
+    content: { kind: "preset", level: "tools" },
+    advanced: {
+      roundTimings: false,
+      tokenCounts: true,
+      estimatedCost: false,
+      systemEvents: true,
+      promptEvents: false,
+      hookExits: "successful",
+    },
+  },
+  {
+    version: 1,
+    content: { kind: "preset", level: "activity" },
+    advanced: {
+      roundTimings: false,
+      tokenCounts: true,
+      estimatedCost: true,
+      systemEvents: true,
+      promptEvents: false,
+      hookExits: "none",
+    },
+  },
+  {
+    version: 1,
+    content: { kind: "preset", level: "intent" },
+    advanced: {
+      roundTimings: true,
+      tokenCounts: false,
+      estimatedCost: false,
+      systemEvents: false,
+      promptEvents: true,
+      hookExits: "all",
+    },
+  },
+];
+const DISPLAY_KEYS = ["desktop", "mobile"].map((layout) => `evener.prefs.transcriptDisplay.${layout}`);
+const DISPLAY_LEGACY_KEYS = [
+  "transcriptRoundTimings",
+  "transcriptTokenCounts",
+  "transcriptHookExitsAll",
+  "transcriptHookExitsNormal",
+  "transcriptPromptLoaded",
+  "showCost",
+].map((key) => `evener.prefs.${key}`);
+const displayCall = (tab, method, ...args) =>
+  evaluate(tab.send, `window.backgroundDisplayGuard.${method}(${args.map((arg) => JSON.stringify(arg)).join(",")})`);
+const sameDisplayValue = (a, b) => JSON.stringify(a) === JSON.stringify(b);
+
+async function waitDisplay(tab, predicate, label) {
+  const deadline = Date.now() + 15000;
+  let snapshot;
+  do {
+    snapshot = await displayCall(tab, "snapshot");
+    if (predicate(snapshot)) return snapshot;
+    await delay(25);
+  } while (Date.now() < deadline);
+  throw new Error(`display ${label}: ${JSON.stringify(snapshot)}`);
+}
+
+async function runDisplaySynchronization(driver, endpoint, harnessUrl) {
+  for (const transport of ["broadcast", "storage"]) {
+    const tabs = [];
+    try {
+      for (const name of ["a", "b"]) {
+        const target = await openPage(endpoint, "about:blank");
+        const page = await connectPage(endpoint, target.id);
+        const tab = { ...page, target_id: target.id };
+        tabs.push(tab);
+        await tab.send("Runtime.enable");
+        // Run before any app import. Only A clears the named display keys, and
+        // does so before B starts. No synthetic events or receiver reinit.
+        await tab.send("Page.addScriptToEvaluateOnNewDocument", {
+          source: `(() => {
+            ${transport === "storage" ? 'Object.defineProperty(window, "BroadcastChannel", { value: undefined, configurable: true });' : ""}
+            if (${JSON.stringify(name)} === "a" && location.origin === ${JSON.stringify(new URL(harnessUrl).origin)}) {
+              for (const key of ${JSON.stringify([...DISPLAY_KEYS, ...DISPLAY_LEGACY_KEYS])}) localStorage.removeItem(key);
+            }
+          })()`,
+        });
+        await navigateTo(tab, `${harnessUrl}&display-transport=${transport}&display-tab=${name}`, BOOT);
+        const ready = await evaluate(
+          tab.send,
+          `(async () => {
+          const deadline = Date.now() + 30000;
+          while (typeof window.backgroundTranscriptEvidence === "undefined" && Date.now() < deadline) {
+            if (window.__backgroundGuardBootError) throw new Error(window.__backgroundGuardBootError);
+            await new Promise((resolve) => setTimeout(resolve, 25));
+          }
+          return typeof window.backgroundDisplayGuard !== "undefined";
+        })()`,
+        );
+        if (!ready) throw new Error(`display ${transport}: missing display observer window.backgroundDisplayGuard`);
+      }
+      const baseline = await Promise.all(tabs.map((tab) => displayCall(tab, "snapshot")));
+      driver.milestone(`display-${transport}-baseline`, {
+        target_ids: tabs.map((tab) => tab.target_id),
+        tabs: baseline,
+      });
+      if (tabs[0].target_id === tabs[1].target_id || baseline[0].origin !== baseline[1].origin)
+        throw new Error("display requires distinct same-origin documents");
+      for (const value of baseline) {
+        if (
+          !sameDisplayValue(value.local, {}) ||
+          value.storage_blocked !== (transport === "broadcast") ||
+          value.broadcast_channel !== (transport === "broadcast" ? "function" : "undefined")
+        )
+          throw new Error(`display transport baseline: ${JSON.stringify(value)}`);
+      }
+      const expected = {};
+      const sourceIds = new Map();
+      const operations = [
+        ["desktop-v1", 0, "desktop", DISPLAY_CONFIGS[0]],
+        ["mobile-v1", 1, "mobile", DISPLAY_CONFIGS[1]],
+        ["desktop-v2", 0, "desktop", DISPLAY_CONFIGS[2]],
+        ["mobile-v2", 1, "mobile", DISPLAY_CONFIGS[3]],
+        ["clear-desktop", 0, "desktop", null],
+        ["clear-mobile", 1, "mobile", null],
+      ];
+      for (const [name, sender, layout, config] of operations) {
+        await Promise.all(tabs.map((tab) => displayCall(tab, "resetObservations")));
+        const before = await Promise.all(tabs.map((tab) => displayCall(tab, "snapshot")));
+        if (config === null) {
+          await displayCall(tabs[sender], "clearLocal", layout);
+          delete expected[layout];
+        } else {
+          await displayCall(tabs[sender], "setLocal", layout, config);
+          expected[layout] = config;
+        }
+        const receiver = 1 - sender;
+        await waitDisplay(
+          tabs[receiver],
+          (value) =>
+            value.publications.length > 0 &&
+            value.storage.length > 0 &&
+            (transport === "storage" || value.messages.length > 0),
+          `${transport} ${name} delivered`,
+        );
+        if (transport === "broadcast")
+          await waitDisplay(tabs[sender], (value) => value.messages.length > 0, `${name} sender observation`);
+        const after = await Promise.all(tabs.map((tab) => displayCall(tab, "snapshot")));
+        driver.milestone(`display-${transport}-${name}`, { sender, layout, before, after });
+        const encoded = config === null ? null : JSON.stringify(config);
+        for (let n = 0; n < 2; n += 1) {
+          const value = after[n];
+          if (
+            !sameDisplayValue(value.local, expected) ||
+            value.publications.length !== 1 ||
+            !sameDisplayValue(value.publications[0], expected)
+          )
+            throw new Error(`display ${transport} ${name} map/publication: ${JSON.stringify(value)}`);
+          for (const key of ["desktop", "mobile"]) {
+            if (!sameDisplayValue(value.effective[key], expected[key] ?? baseline[n].effective[key]))
+              throw new Error(`display ${name} effective ${key}: ${JSON.stringify(value)}`);
+          }
+          if (value.persisted[layout] !== encoded)
+            throw new Error(`display ${name} durable value: ${JSON.stringify(value)}`);
+          const events = value.storage;
+          if (events.length !== (n === receiver ? 1 : 0))
+            throw new Error(`display ${name} storage event count: ${JSON.stringify(value)}`);
+          if (n === receiver) {
+            const event = events[0];
+            if (
+              !event.trusted ||
+              !event.local_storage ||
+              event.blocked !== (transport === "broadcast") ||
+              event.key !== `evener.prefs.transcriptDisplay.${layout}` ||
+              event.old_value !== before[n].persisted[layout] ||
+              event.new_value !== encoded ||
+              event.url !== before[sender].href
+            )
+              throw new Error(`display ${name} native storage evidence: ${JSON.stringify(event)}`);
+          }
+          if (transport === "broadcast") {
+            const message = value.messages[0];
+            if (
+              value.messages.length !== 1 ||
+              Object.keys(message).length !== 5 ||
+              message.version !== 1 ||
+              !message.sourceId ||
+              message.layout !== layout ||
+              message.config !== encoded ||
+              message.fingerprint !== encoded
+            )
+              throw new Error(`display ${name} native envelope: ${JSON.stringify(value.messages)}`);
+            const previous = sourceIds.get(sender);
+            if (previous && previous !== message.sourceId) throw new Error("display sender identity changed");
+            sourceIds.set(sender, message.sourceId);
+          } else if (value.messages.length !== 0) throw new Error("fallback unexpectedly observed BroadcastChannel");
+        }
+      }
+      if (transport === "broadcast") {
+        if (sourceIds.get(0) === sourceIds.get(1)) throw new Error("display real sender identities are equal");
+        await runDisplayFingerprint(driver, tabs, [...sourceIds.values()]);
+      }
+      // clearLocal also dual-writes legacy toggles. Remove only this phase's
+      // named keys so the next document does not migrate those test writes
+      // into an activity override and change the existing transcript journey.
+      await evaluate(
+        tabs[0].send,
+        `(() => { for (const key of ${JSON.stringify([...DISPLAY_KEYS, ...DISPLAY_LEGACY_KEYS])}) localStorage.removeItem(key); })()`,
+      );
+    } finally {
+      for (const tab of tabs) {
+        tab.close();
+        await closePage(endpoint, tab.target_id).catch(() => {});
+      }
+    }
+  }
+}
+
+async function runDisplayFingerprint(driver, tabs, sourceIds) {
+  await Promise.all(tabs.map((tab) => displayCall(tab, "resetObservations")));
+  const before = await Promise.all(tabs.map((tab) => displayCall(tab, "snapshot")));
+  const invalid = {
+    version: 1,
+    sourceId: "display-guard-fingerprint-control",
+    layout: "desktop",
+    config: JSON.stringify(DISPLAY_CONFIGS[0]),
+    fingerprint: JSON.stringify(DISPLAY_CONFIGS[1]),
+  };
+  if (sourceIds.includes(invalid.sourceId)) throw new Error("fingerprint control must have a different source ID");
+  // This is an extra NATIVE sending channel, not the production receiver and
+  // not a storage write. Its sibling observer was created after that receiver.
+  await evaluate(
+    tabs[0].send,
+    `window.__displayFingerprintSender = new BroadcastChannel("evener.transcript-display.v1"); window.__displayFingerprintSender.postMessage(${JSON.stringify(invalid)})`,
+  );
+  await Promise.all(
+    tabs.map((tab) =>
+      waitDisplay(
+        tab,
+        (value) => value.messages.length === 1,
+        "mismatched fingerprint observed after production receiver",
+      ),
+    ),
+  );
+  const rejected = await Promise.all(tabs.map((tab) => displayCall(tab, "snapshot")));
+  if (
+    !sameDisplayValue(rejected[1].messages, [invalid]) ||
+    rejected[1].publications.length !== 0 ||
+    !sameDisplayValue(rejected[1].local, before[1].local)
+  )
+    throw new Error(`display mismatched fingerprint was not rejected: ${JSON.stringify(rejected[1])}`);
+  const valid = { ...invalid, fingerprint: invalid.config };
+  await evaluate(tabs[0].send, `window.__displayFingerprintSender.postMessage(${JSON.stringify(valid)})`);
+  await Promise.all(
+    tabs.map((tab) =>
+      waitDisplay(tab, (value) => value.messages.length === 2, "corrected fingerprint positive control delivered"),
+    ),
+  );
+  const accepted = await Promise.all(tabs.map((tab) => displayCall(tab, "snapshot")));
+  driver.milestone("display-fingerprint", { invalid, valid, before, rejected, accepted });
+  if (
+    !sameDisplayValue(accepted[1].messages, [invalid, valid]) ||
+    !sameDisplayValue(accepted[1].local, { desktop: DISPLAY_CONFIGS[0] }) ||
+    !sameDisplayValue(accepted[1].publications, [{ desktop: DISPLAY_CONFIGS[0] }])
+  )
+    throw new Error(`display corrected fingerprint not applied exactly once: ${JSON.stringify(accepted[1])}`);
+  for (let n = 0; n < 2; n += 1) {
+    if (!sameDisplayValue(before[n].persisted, accepted[n].persisted) || accepted[n].storage.length !== 0)
+      throw new Error("fingerprint control wrote browser storage");
+  }
+  await displayCall(tabs[1], "clearLocal", "desktop");
+  await waitDisplay(
+    tabs[0],
+    (value) => sameDisplayValue(value.local, {}) && value.messages.length === 3,
+    "fingerprint override cleared through production channel",
+  );
+  await evaluate(tabs[0].send, "window.__displayFingerprintSender.close()");
 }
 
 async function runEntryProductionJourney(driver, harnessUrl) {
@@ -1533,12 +1843,13 @@ async function runEntryProductionJourney(driver, harnessUrl) {
   await driver.waitPage(`Boolean(document.querySelector("[data-stacked-pane-type='session']"))`, {
     label: "the same session has mounted in the mobile host",
   });
+  const restoredNarrow = await waitForRestoredDomain(driver, SESSION_B, laterPageSentinel);
   const readingAfter = await settledReading(driver, SESSION_B);
   driver.milestone("responsive-reading", {
     before: readingBefore, after: readingAfter, sentinel: laterPageSentinel,
     traceBefore: narrowTraceBefore, traceAfter: traceBytes(),
     beforePayload: (narrowBefore?.items ?? []).map(recordedItemIdentity),
-    afterPayload: ((await readTargetDomain(driver, SESSION_B))?.items ?? []).map(recordedItemIdentity),
+    afterPayload: (restoredNarrow?.items ?? []).map(recordedItemIdentity),
     entry: await evaluate(driver.send, `window.backgroundTranscriptEvidence.entryRoute(${JSON.stringify(SESSION_B)})`),
   });
   await driver.screenshot("older-responsive");
@@ -1563,7 +1874,7 @@ async function runEntryProductionJourney(driver, harnessUrl) {
     30000,
     "preserved content after repeat activation at a narrow viewport",
   );
-  const narrowAfter = await readTargetDomain(driver, SESSION_B);
+  const narrowAfter = await waitForRestoredDomain(driver, SESSION_B, laterPageSentinel);
   const beforeItems = (narrowBefore?.items ?? []).map((item) => item.id).sort();
   const afterItems = (narrowAfter?.items ?? []).map((item) => item.id).sort();
   const contentPreserved = narrowViewportContentPreserved(narrowBefore, narrowAfter);
@@ -1676,6 +1987,17 @@ async function waitForRestoredDomain(driver, ref, sentinel, timeoutMs = 30000) {
   return last;
 }
 
+// A hidden page gets no rendering opportunities, so a viewport change made
+// while the page is hidden never reaches the responsive host (the media-query
+// change event does not fire). Callers that hide the page must bring it back
+// to the front before waiting here.
+async function waitForResponsiveHost(driver) {
+  await driver.waitPage(`(() => {
+    const mobile = matchMedia("(max-width: 899px)").matches;
+    return mobile === Boolean(document.querySelector("[data-stacked-pane-type]"));
+  })()`, { label: "the responsive host has committed" });
+}
+
 // openSessionInCurrentShell activates a session through whichever shell the
 // current viewport hosts. At or below the mobile breakpoint
 // (useIsMobile.ts MOBILE_QUERY "(max-width: 899px)") the desktop RailHost is
@@ -1683,10 +2005,7 @@ async function waitForRestoredDomain(driver, ref, sentinel, timeoutMs = 30000) {
 // through the tree-drawer trigger. The guarantee - a real rail-row activation
 // that re-focuses the session - is identical.
 async function openSessionInCurrentShell(driver, ref) {
-  await driver.waitPage(`(() => {
-    const mobile = matchMedia("(max-width: 899px)").matches;
-    return mobile === Boolean(document.querySelector("[data-stacked-pane-type]"));
-  })()`, { label: "the responsive host has committed" });
+  await waitForResponsiveHost(driver);
   const rowSelector = `[data-session-ref='${ref}']`;
   const rowVisible = async () =>
     evaluate(
@@ -1744,10 +2063,19 @@ async function runJourney(driver, entryProduction = false, harnessUrl) {
 // runTwoTabFencing drives the entry route's Clear and delete fences across two
 // REAL tabs sharing one native BroadcastChannel and one IndexedDB. The first tab
 // is the journey's own page; the second is a real second document on the same
-// guard harness. Only the fence entry points are invoked (threads.clearCachedSessions
-// and markCacheSessionsDeleted, the same effect set a real Clear/delete owes the
-// cache); the propagation and the durable removal are the browser's own.
+// guard harness. The real stopped-project delete action removes the source as
+// well as its cache, and Clear uses threads.clearCachedSessions. Propagation and
+// durable removal are the browser's own.
 async function runTwoTabFencing(driver, endpoint, harnessUrl) {
+  const call = (send, method, ...args) =>
+    evaluate(send, `window.backgroundTranscriptGuard.${method}(${args.map((arg) => JSON.stringify(arg)).join(",")})`);
+  // Preserve B's producer transcript for the Go owner's independent history
+  // assertions. Stop A before the sibling boots, so it cannot acquire a live
+  // background lease while this phase is preparing a fresh deleted-ref open.
+  const ref = SESSION_A;
+  const stopped = await fetch(new URL("/background-guard/stop-sustained", HUB_URL), { method: "POST" });
+  if (!stopped.ok) throw new Error(`two-tab stop: ${await stopped.text()}`);
+  const project = await stopped.json();
   const opened = await openPage(endpoint, "about:blank");
   const tab = await connectPage(endpoint, opened.id);
   try {
@@ -1771,7 +2099,8 @@ async function runTwoTabFencing(driver, endpoint, harnessUrl) {
            const deadline = Date.now() + 30000;
            while (Date.now() < deadline) {
              if (typeof window.backgroundTranscriptEvidence !== "undefined" &&
-                 typeof window.backgroundTranscriptGuard !== "undefined") return true;
+                 typeof window.backgroundTranscriptGuard !== "undefined" &&
+                 window.backgroundTranscriptEvidence.connectionState() === "ready") return true;
              await new Promise((resolve) => setTimeout(resolve, 100));
            }
            return { booted: typeof window.backgroundTranscriptBooted, evidence: typeof window.backgroundTranscriptEvidence,
@@ -1787,13 +2116,15 @@ async function runTwoTabFencing(driver, endpoint, harnessUrl) {
         `${error instanceof Error ? error.message : String(error)}\ntab errors:\n${tabErrors.join("\n") || "(none captured)"}`,
       );
     }
-    const call = (send, method, ...args) =>
-      evaluate(send, `window.backgroundTranscriptGuard.${method}(${args.map((arg) => JSON.stringify(arg)).join(",")})`);
+    // Opening the second tab hid the driver's page; restore it so a viewport
+    // change still pending from the journey reaches the desktop rail before the
+    // rail row is pressed.
+    await driver.send("Page.bringToFront");
+    await waitForResponsiveHost(driver);
     const fence = (send, ref) => call(send, "fenceState", ref);
     const durable = (send, ref) => evaluate(send, nativeEntryEvidenceExpression(ref));
 
     // ---- delete fence: one tab deletes, the sibling observes over the channel ----
-    const ref = SESSION_B;
     const seeded = await durable(tab.send, ref);
     if (!seeded || seeded.rows.length === 0) {
       throw new Error(`two-tab delete: the target has no durable entry rows to fence: ${JSON.stringify(seeded)}`);
@@ -1803,7 +2134,10 @@ async function runTwoTabFencing(driver, endpoint, harnessUrl) {
     if (aBefore.deletedRefs.includes(ref) || bBefore.deletedRefs.includes(ref)) {
       throw new Error(`two-tab delete: the ref was already fenced: ${JSON.stringify({ aBefore, bBefore })}`);
     }
-    await call(driver.send, "delete", ref);
+    const deletion = await call(driver.send, "delete", project.key, project.workingDir);
+    if (!deletion.deleted.some((id) => id === ref || `local:${id}` === ref) || deletion.skipped.length !== 0) {
+      throw new Error(`two-tab delete: the source session was not deleted: ${JSON.stringify(deletion)}`);
+    }
     const suppressDeadline = Date.now() + 15000;
     let bAfter = await fence(tab.send, ref);
     while (bAfter.lifetime?.suppressed !== true && Date.now() < suppressDeadline) {
@@ -1839,6 +2173,11 @@ async function runTwoTabFencing(driver, endpoint, harnessUrl) {
     if (!(removed === null || removed.rows.length === 0)) {
       throw new Error("two-tab delete: the durable record still exists in the shared IndexedDB");
     }
+    const sourceReadOutcome = await call(tab.send, "sourceReadOutcome", ref);
+    driver.milestone("two-tab-delete-source", { ref, sourceReadOutcome });
+    if (sourceReadOutcome !== "rejected") {
+      throw new Error("two-tab delete: the target remains readable on the source after deletion");
+    }
     // The sibling's fresh acquisition must not resurrect the deleted session:
     // the deletion fence refuses the hydration and no route or durable row
     // appears. Poll the real condition (the ref acquired no route) rather than
@@ -1867,12 +2206,12 @@ async function runTwoTabFencing(driver, endpoint, harnessUrl) {
     }
 
     // ---- clear fence: a held old-epoch lease is suppressed, not rebound ----
-    await driver.openSession(SESSION_A);
+    await driver.openSession(SESSION_B);
     const armDeadline = Date.now() + 15000;
-    let aClearBefore = await fence(driver.send, SESSION_A);
+    let aClearBefore = await fence(driver.send, SESSION_B);
     while (aClearBefore.lifetime?.leaseEpoch === undefined && Date.now() < armDeadline) {
       await delay(100);
-      aClearBefore = await fence(driver.send, SESSION_A);
+      aClearBefore = await fence(driver.send, SESSION_B);
     }
     if (aClearBefore.lifetime?.leaseEpoch === undefined) {
       throw new Error(`two-tab clear: the holding tab never captured a cache lease: ${JSON.stringify(aClearBefore)}`);
@@ -1882,13 +2221,13 @@ async function runTwoTabFencing(driver, endpoint, harnessUrl) {
       throw new Error(`two-tab clear: the sibling clear did not commit: ${JSON.stringify(cleared)}`);
     }
     const clearDeadline = Date.now() + 15000;
-    let aClearAfter = await fence(driver.send, SESSION_A);
+    let aClearAfter = await fence(driver.send, SESSION_B);
     while (aClearAfter.lifetime?.suppressed !== true && Date.now() < clearDeadline) {
       await delay(100);
-      aClearAfter = await fence(driver.send, SESSION_A);
+      aClearAfter = await fence(driver.send, SESSION_B);
     }
     driver.milestone("two-tab-clear-fence", {
-      ref: SESSION_A,
+      ref: SESSION_B,
       epochBefore: aClearBefore.lifetime?.leaseEpoch ?? null,
       epochAfter: aClearAfter.lifetime?.leaseEpoch ?? null,
       suppressed: aClearAfter.lifetime?.suppressed === true,
@@ -2224,8 +2563,8 @@ async function settledReading(driver, ref) {
 }
 
 async function positionOlderReading(driver, ref, sentinel) {
-  const domain = await readTargetDomain(driver, ref);
-  const item = domain.items.find(item => item.text === sentinel);
+  const domain = await waitForRestoredDomain(driver, ref, sentinel);
+  const item = domain?.items.find(item => item.text === sentinel);
   if (!item) throw new Error(`older fixture item absent: ${sentinel}`);
   const result = await evaluate(driver.send, `(async () => {
     const port = ${SCROLL_PORT_EXPR(ref)};

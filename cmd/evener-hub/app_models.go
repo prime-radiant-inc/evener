@@ -104,7 +104,7 @@ func hubModelListInner(ctx context.Context, cfg hubcore.WebConfig, sources *apps
 		}
 		return resp, nil
 	}
-	source, ok := sources.Source("local")
+	source, ok := sources.Source(appwire.LocalSourceID)
 	if ok {
 		resp, err := source.ListModels(ctx, params)
 		if err == nil && len(resp.Data) > 0 {

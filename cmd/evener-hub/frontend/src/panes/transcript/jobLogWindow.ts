@@ -1,6 +1,5 @@
-import type { DecodedJobOutputPage } from "@evener/appwire-client";
-import type { AnsiByteRow, AnsiByteRows, AnsiByteState } from "../../widgets/codeblock/ansi";
-import { ANSI_BYTE_FRAGMENT_BYTES, parseAnsiByteRows } from "../../widgets/codeblock/ansi";
+import type { AnsiByteRow, AnsiByteRows, AnsiByteState, DecodedJobOutputPage } from "@evener/appwire-client";
+import { ANSI_BYTE_FRAGMENT_BYTES, parseAnsiByteRows } from "@evener/appwire-client";
 
 export const JOB_LOG_PAGE_BYTES = 64 * 1024;
 export const JOB_LOG_WINDOW_BYTES = 512 * 1024;

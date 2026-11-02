@@ -526,3 +526,33 @@ func TestReadOutputSnapshotFromFileValidatesMetadataOnce(t *testing.T) {
 		})
 	}
 }
+
+// openedOutputRead opens path and hands the descriptor to read, the way
+// production callers pin an output before snapshotting it.
+func openedOutputRead[T any](path string, read func(f *os.File) (T, error)) (T, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		var zero T
+		return zero, err
+	}
+	defer func() { _ = f.Close() }()
+	return read(f)
+}
+
+func readOutputSnapshotAtPath(path string, maxBytes int, fromHead bool) (OutputSnapshot, error) {
+	return openedOutputRead(path, func(f *os.File) (OutputSnapshot, error) {
+		return ReadOutputSnapshotFromFile(path, f, maxBytes, fromHead)
+	})
+}
+
+func readOutputWindowSnapshotAtPath(path string, offset int64, maxBytes int) (OutputWindowSnapshot, error) {
+	return openedOutputRead(path, func(f *os.File) (OutputWindowSnapshot, error) {
+		return ReadOutputWindowSnapshotFromFile(path, f, offset, maxBytes)
+	})
+}
+
+func readOutputPageSnapshotAtPath(path string, beforeBytes *int64, maxBytes int) (OutputWindowSnapshot, error) {
+	return openedOutputRead(path, func(f *os.File) (OutputWindowSnapshot, error) {
+		return ReadOutputPageSnapshotFromFile(path, f, beforeBytes, maxBytes)
+	})
+}

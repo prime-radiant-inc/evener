@@ -69,30 +69,12 @@ func bareWarningDataFromError(label string, err error) events.WarningData {
 	}
 }
 
-func enrichDiagnosticData(kind events.EventKind, data events.EventData) events.EventData {
-	switch kind {
-	case events.EventWarning:
-		switch d := data.(type) {
-		case events.WarningData:
-			return enrichWarningData(d)
-		case *events.WarningData:
-			if d == nil {
-				return data
-			}
-			enriched := enrichWarningData(*d)
-			return &enriched
-		}
-	case events.EventError:
-		switch d := data.(type) {
-		case events.ErrorData:
-			return enrichErrorData(d)
-		case *events.ErrorData:
-			if d == nil {
-				return data
-			}
-			enriched := enrichErrorData(*d)
-			return &enriched
-		}
+func enrichDiagnosticData(data events.EventData) events.EventData {
+	switch d := data.(type) {
+	case events.WarningData:
+		return enrichWarningData(d)
+	case events.ErrorData:
+		return enrichErrorData(d)
 	}
 	return data
 }

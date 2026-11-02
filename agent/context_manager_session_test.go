@@ -8,6 +8,7 @@ import (
 
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/task"
 	"primeradiant.com/evener/llm"
 )
@@ -113,7 +114,7 @@ func TestSession_ContextManager_CompactsWhenNeeded(t *testing.T) {
 			// Second round: just return text.
 			func(req llm.Request) llm.Response {
 				callCount++
-				return finalResponse("done")
+				return agenttest.FinalResponse("done")
 			},
 		},
 	})
@@ -199,7 +200,7 @@ func TestSession_ContextManager_EmitsEvents(t *testing.T) {
 				}
 			},
 			func(req llm.Request) llm.Response {
-				return finalResponse("done")
+				return agenttest.FinalResponse("done")
 			},
 		},
 	})

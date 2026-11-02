@@ -545,9 +545,7 @@ func TestDoctor_MarketplaceSeededPointerIsOK(t *testing.T) {
 }
 
 func TestDoctor_MarketplaceNotAGitRepo(t *testing.T) {
-	if !gitAvailable() {
-		t.Skip("git not available")
-	}
+	skipWithoutGit(t)
 	m := NewManager(t.TempDir())
 	dir := t.TempDir() // a real directory, but never `git init`-ed
 	if err := os.MkdirAll(filepath.Join(dir, ".claude-plugin"), 0o755); err != nil {
@@ -573,14 +571,10 @@ func TestDoctor_MarketplaceNotAGitRepo(t *testing.T) {
 }
 
 func TestDoctor_MarketplaceStaleWarns(t *testing.T) {
-	if !gitAvailable() {
-		t.Skip("git not available")
-	}
+	skipWithoutGit(t)
 	src := makeMarketplaceRepo(t, "acme")
 	m := NewManager(t.TempDir())
-	if _, err := m.AddMarketplace(context.Background(), "", Source{Kind: SourceURL, URL: src}); err != nil {
-		t.Fatalf("AddMarketplace: %v", err)
-	}
+	mustAddMarketplace(context.Background(), t, m, "", Source{Kind: SourceURL, URL: src})
 
 	mk, err := m.loadMarketplaces()
 	if err != nil {
@@ -913,9 +907,7 @@ func TestDoctor_ASingleNameNoFilesystemCanHoldIsAPendingRename(t *testing.T) {
 func TestDoctor_RelSourceInADirectoryMarketplaceIsUsedInPlace(t *testing.T) {
 	dir := makeDirectoryMarketplace(t, "local", "widget")
 	m := NewManager(t.TempDir())
-	if _, err := m.AddMarketplace(context.Background(), "", Source{Kind: SourceDirectory, Path: dir}); err != nil {
-		t.Fatalf("AddMarketplace: %v", err)
-	}
+	mustAddMarketplace(context.Background(), t, m, "", Source{Kind: SourceDirectory, Path: dir})
 	if _, err := m.Install(context.Background(), "widget", "local"); err != nil {
 		t.Fatalf("Install: %v", err)
 	}
@@ -945,9 +937,7 @@ func TestDoctor_RelSourceInADirectoryMarketplaceIsUsedInPlace(t *testing.T) {
 func TestUpgrade_RelSourceInADirectoryMarketplaceIsANoOp(t *testing.T) {
 	dir := makeDirectoryMarketplace(t, "local", "widget")
 	m := NewManager(t.TempDir())
-	if _, err := m.AddMarketplace(context.Background(), "", Source{Kind: SourceDirectory, Path: dir}); err != nil {
-		t.Fatalf("AddMarketplace: %v", err)
-	}
+	mustAddMarketplace(context.Background(), t, m, "", Source{Kind: SourceDirectory, Path: dir})
 	if _, err := m.Install(context.Background(), "widget", "local"); err != nil {
 		t.Fatalf("Install: %v", err)
 	}
@@ -1072,5 +1062,46 @@ func TestDoctorRetainedSupportedManifestFormats(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+func TestRenderDoctorFindingsExactReport(t *testing.T) {
+	tests := []struct {
+		name     string
+		findings []DoctorFinding
+		want     string
+	}{
+		{
+			name: "empty",
+			want: "0 OK, 0 WARN, 0 FAIL\n",
+		},
+		{
+			name: "counts grouping order and remediation",
+			findings: []DoctorFinding{
+				{Level: LevelOK, Category: "registry", Message: "registry ok"},
+				{Level: LevelWarn, Category: "marketplace", Message: "marketplace stale", Remediation: "run refresh"},
+				{Level: LevelFail, Category: "marketplace", Message: "marketplace broken"},
+				{Level: LevelOK, Category: "component", Message: "component ok"},
+				{Level: LevelWarn, Category: "registry", Message: "registry warn"},
+			},
+			want: "2 OK, 2 WARN, 1 FAIL\n" +
+				"\n[registry]\n" +
+				"  OK   registry ok\n" +
+				"  WARN registry warn\n" +
+				"\n[marketplace]\n" +
+				"  WARN marketplace stale\n" +
+				"       -> run refresh\n" +
+				"  FAIL marketplace broken\n" +
+				"\n[component]\n" +
+				"  OK   component ok\n",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := RenderDoctorFindings(tc.findings); got != tc.want {
+				t.Fatalf("RenderDoctorFindings() = %q, want %q", got, tc.want)
+			}
+		})
 	}
 }

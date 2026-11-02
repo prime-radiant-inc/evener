@@ -134,26 +134,52 @@ func DefEditFile() llm.ToolDefinition {
 	}
 }
 
+// DefShell is the fully capable seed form, equivalent to
+// DefShellWithDetach(true). Sessions narrow it for their live environment.
 func DefShell() llm.ToolDefinition {
+	return DefShellWithDetach(true)
+}
+
+// ShellModeProperty returns the shell schema's mode property for an
+// environment whose execenv.DetachSupportReporter reports detachAvailable. When
+// false, the enum omits "detached" and the description says this environment
+// cannot disown a process, so the advertised modes match what DetachCommand
+// accepts.
+func ShellModeProperty(detachAvailable bool) map[string]any {
+	modeEnum := []any{"foreground", "background"}
+	modeDescription := "foreground waits for the command to finish before continuing; background runs a session-owned job in the background and Evener stops it when the session ends"
+	if detachAvailable {
+		modeEnum = append(modeEnum, "detached")
+		modeDescription += "; detached is the only mode that lets a process survive after this Evener session stops — a detached process is not a job: its output is discarded (redirect it to an absolute path the process may write) and it sends no completion notification. A detached command gets no session scratch: $EVENER_SCRATCH_DIR is unset there, so no path it reads or writes may be built from it."
+	} else {
+		modeDescription += ". This environment cannot disown a process, so detached mode is unavailable; nothing can outlive the session."
+	}
+	return map[string]any{
+		"type":        "string",
+		"enum":        modeEnum,
+		"description": modeDescription,
+	}
+}
+
+// DefShellWithDetach returns the shell definition for an environment whose
+// execenv.DetachSupportReporter reports detachAvailable.
+func DefShellWithDetach(detachAvailable bool) llm.ToolDefinition {
 	return llm.ToolDefinition{
 		Name: "shell",
 		Description: "Run a shell command and report stdout, stderr, and exit status. " +
 			"The command runs in Bash with pipefail, so a failed stage fails the whole command; check the exit code. " +
 			"Small foreground output comes back in full. Larger or background output is bounded: a finished command with large output returns a head-and-tail digest and a job_id under which the full output is kept, so there is no need to pipe through head or tail. " +
 			"A background job reports a launch failure at once; once it is running you get its job_id and a notification when it finishes, so it needs no completion marker or redirect. " +
-			"To keep a complete log beyond the retained output, tee inside the command, for example `( make test ) 2>&1 | tee \"$EVENER_SCRATCH_DIR/test.log\"` when EVENER_SCRATCH_DIR is set: pipefail keeps the command's exit status, and tee overwrites the file.",
+			"To keep a complete log beyond the retained output, tee inside the command, for example `( make test ) 2>&1 | tee \"$EVENER_SCRATCH_DIR/test.log\"` when EVENER_SCRATCH_DIR is set: pipefail keeps the command's exit status, and tee overwrites the file. " +
+			"A `&` inside the command creates neither a tracked job nor an escape from teardown: when the command ends or its job is stopped, its whole process group is torn down — descendants holding an inherited output pipe get the SIGTERM/SIGKILL escalation, and any other group member, for example a child that redirected its own output, is killed with the group. Run a helper that must outlive the command as its own background job or in detached mode instead.",
 		Parameters: map[string]any{
 			"type":                 "object",
 			"additionalProperties": false,
 			"properties": map[string]any{
 				"command":     map[string]any{"type": "string", "description": "The shell command to run (POSIX: Bash with pipefail)."},
 				"description": map[string]any{"type": "string", "description": "Optional human-facing summary of the command, shown on job surfaces."},
-				"mode": map[string]any{
-					"type":        "string",
-					"enum":        []any{"foreground", "background", "detached"},
-					"description": "foreground waits for the command to finish before continuing; background runs a session-owned job in the background and Evener stops it when the session ends; detached is the only mode that lets a process survive after this Evener session stops — a detached process is not a job: its output is discarded (redirect it to an absolute path the process may write) and it sends no completion notification. A detached command gets no session scratch: $EVENER_SCRATCH_DIR is unset there, so no path it reads or writes may be built from it.",
-				},
-				"cwd": map[string]any{"type": "string", "description": "Optional working directory for the command. Relative paths resolve against your current working directory. With sandbox off, paths may be outside it; confined policies require paths inside it. Must already exist. Default: your current working directory."},
+				"mode":        ShellModeProperty(detachAvailable),
+				"cwd":         map[string]any{"type": "string", "description": "Optional working directory for the command. Relative paths resolve against your current working directory. With sandbox off, paths may be outside it; confined policies require paths inside it. Must already exist. Default: your current working directory."},
 			},
 			"required": []string{"command"},
 		},
@@ -244,7 +270,8 @@ func DefDelegateWithResultTool(agentTypes []string, sandboxSchema DelegateSandbo
 			"metadata and initial input are durable; use notifications or `delegate_send` for subsequent interaction. " +
 			"A delegate may itself delegate: by default it gets an allowance one below yours; " +
 			"pass `delegation_allowance` 0 to make it a leaf, or a smaller value to cap its depth. Set watch_parent=true for an observer sidecar: the child can call job_watch(source=\"parent\"). " + ObserverReporting(resultTool) + " For delegate readiness, status, findings, and final reports, ask the " +
-			"delegate to call `" + resultTool + "` with the exact marker/report. Observer readiness results can include `watching:true` and `watches` when the observer installed watches. Use the delegate's output as the evidence for judging the work.",
+			"delegate to call `" + resultTool + "` with the exact marker/report. Observer readiness results can include `watching:true` and `watches` when the observer installed watches. Use the delegate's output as the evidence for judging the work. " +
+			"A delegate's shell jobs end with its activation. A watch the delegate registers on its parent lives in the parent's job manager and survives the delegate, so clear it explicitly when observation should stop. Notifications from a delegate's own jobs wake the delegate, not you, so an external wait whose verdict you need (CI, a deploy) runs in your session, not a delegate's. A delegate completion notification may omit the full report; read the delegate's transcript for it before relying on the summary.",
 		Strict: &strictFalse,
 		Parameters: map[string]any{
 			"type":                 "object",
@@ -256,7 +283,7 @@ func DefDelegateWithResultTool(agentTypes []string, sandboxSchema DelegateSandbo
 				},
 				"task_list": map[string]any{
 					"type":        "array",
-					"description": "Seed the delegate's task list, one item per step, in order. Items fill the role's parent_tasks slot when its default task list has one and follow the role's default tasks otherwise. The first task auto-starts and its prompt is injected into the delegate; the delegate works the list in order and marks each task done. Each item's prompt must define a self-contained step.",
+					"description": "Seed the delegate's task list, one item per step, in order. Items fill the role's parent_tasks slot when its default task list has one and follow the role's default tasks otherwise. The delegate's first turn carries the whole plan — every step's title, status, effort, and prompt — and names the step to work first, so write each prompt as if every worker can read it. The delegate works the list in order and marks each task done. Each item's prompt must define a self-contained step.",
 					"items": map[string]any{
 						"type":                 "object",
 						"additionalProperties": false,
@@ -532,7 +559,7 @@ func DefJobListNamed(resultTool string) llm.ToolDefinition {
 func DefJobStop() llm.ToolDefinition {
 	return llm.ToolDefinition{
 		Name:        "job_stop",
-		Description: "Request cancellation of a shell job or stable delegate by `target`; stopping never deletes output or history. `max_wait_ms > 0` waits for the stop to finalize. A delegate target is always stopped recursively, so include_children cannot weaken it; for a shell target, include_children=true also stops nested children.",
+		Description: "Request cancellation of a shell job or stable delegate by `target`; stopping never deletes output or history. Stopping a delegate also stops its running shell jobs; a delegate resumed later restarts them rather than continuing them. `max_wait_ms > 0` waits for the stop to finalize. A delegate target is always stopped recursively, so include_children cannot weaken it; for a shell target, include_children=true also stops nested children.",
 		Parameters: map[string]any{
 			"type":                 "object",
 			"additionalProperties": false,
@@ -560,7 +587,7 @@ func DefGrep() llm.ToolDefinition {
 				"case_insensitive": map[string]any{"type": "boolean", "description": "Match the pattern case-insensitively."},
 				"max_results": map[string]any{
 					"type":        "integer",
-					"description": "Maximum number of results to return: lines, file paths, or count entries by output mode. Defaults to 100.",
+					"description": "Maximum output to return. In content mode the cap counts output lines — matches plus context lines — not the number of matches; in files_with_matches and count modes it caps returned files or entries. Defaults to 100.",
 				},
 				"context_lines": map[string]any{
 					"type":        "integer",
@@ -645,7 +672,7 @@ Example combining all operations:
 Important:
 - Always include a header (Add/Delete/Update) for each file.
 - Prefix every new line with + even when creating a new file.
-- File paths must be relative, NEVER absolute.
+- File paths resolve against the session's current working directory, which a worktree switch changes; prefer relative paths from that directory. An absolute path is correct when the file lives outside it, such as inside a delegate's worktree while you work from the main checkout.
 - Do NOT use standard unified diff format (--- a/ +++ b/). Use only the format above.
 - Try to use apply_patch for single file edits. Use scripting for bulk search-and-replace.`,
 		Parameters: map[string]any{
@@ -1036,7 +1063,8 @@ func DefManageWorktree() llm.ToolDefinition {
 		"exit (return to the main checkout); remove (delete a worktree by `name`; `delete_branch` also deletes its branch, " +
 		"`force` overrides provenance/merge gating, `force_dirty` overrides the refusal to discard uncommitted changes); " +
 		"prune (remove worktrees that have no unmerged work — unchanged or already-merged lanes, including ones left behind " +
-		"by finished sessions — the one-call way to clean up); " +
+		"by finished sessions — the one-call way to clean up; with orphaned_delegate_days it also releases the locks of " +
+		"delegate lanes whose parent session is gone or long-inactive — crash residue no other path may unlock); " +
 		"dispose (retire a delegate's isolation worktree lane by its delegate `id` once you are done with its work — unlocks, " +
 		"removes the worktree, deletes its branch, and marks the delegate disposed; `force` overrides the refusal to discard " +
 		"unmerged commits, `force_dirty` overrides the refusal to discard uncommitted changes). " +
@@ -1081,6 +1109,10 @@ func DefManageWorktree() llm.ToolDefinition {
 				"delete_branch": map[string]any{
 					"type":        "boolean",
 					"description": "For remove: also delete the worktree's branch. Default false.",
+				},
+				"orphaned_delegate_days": map[string]any{
+					"type":        "number",
+					"description": "For prune: also release delegate-lane locks whose parent session provably cannot act as the disposer — its own disposal already ran (the store records the delegate's isolation disposal), or the session is gone or inactive at least this many days. Removal still requires the ordinary unchanged/merged gates; a released lane with unmerged work stays put, unlocked and visible to the merge and force paths. 0 (default) keeps the locked-lane rule absolute. A positive value below the supported minimum (one minute plus the refresh cadence's tick, ~0.00072 days) is refused: the activity evidence a live tree refreshes is only as fresh as that window, so a shorter threshold could release a lane under a running delegate.",
 				},
 			},
 			"required": []string{"operation"},

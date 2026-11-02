@@ -39,7 +39,6 @@ vi.mock("@react-navigation/native", () => ({
 		guard.onPrevent = callback;
 	},
 }));
-vi.mock("expo-symbols", () => ({ SymbolView: "SymbolView" }));
 const clipboard = vi.hoisted(() => ({ setStringAsync: vi.fn(async () => true) }));
 vi.mock("expo-clipboard", () => clipboard);
 

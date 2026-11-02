@@ -377,7 +377,7 @@ func TestProjectTurnMapsToolCallsAndResults(t *testing.T) {
 
 // TestItemTurnsFromFileFallsBackToPurposeForPreRenameToolCalls (issue #709): the
 // purpose->intent tool-param rename (7512a736e, 2026-08-29) made
-// ToolIntentFromArguments read only "intent", so every transcript recorded
+// schema.ToolIntent read only "intent", so every transcript recorded
 // before that rename -- which persisted the model's stated reason under
 // "purpose" -- silently rendered its tool calls with no intent line on
 // reload. The data was never lost; only the reader stopped looking for it
@@ -887,31 +887,6 @@ func TestCommunicateMessageFromArguments(t *testing.T) {
 			got := CommunicateMessageFromArguments(json.RawMessage(tc.raw))
 			if got != tc.want {
 				t.Errorf("CommunicateMessageFromArguments(%q) = %q, want %q", tc.raw, got, tc.want)
-			}
-		})
-	}
-}
-
-func TestToolIntentFromArguments(t *testing.T) {
-	tests := []struct {
-		name string
-		raw  string
-		want string
-	}{
-		{"intent", `{"intent":"do it"}`, "do it"},
-		{"purpose ignored", `{"intent":"a","purpose":"b"}`, "a"},
-		{"purpose fallback (pre-rename transcripts, issue #709)", `{"purpose":"inspect"}`, "inspect"},
-		{"purpose non-string ignored", `{"purpose":123}`, ""},
-		{"non-string ignored", `{"intent":123}`, ""},
-		{"empty object", `{}`, ""},
-		{"invalid json", `not json`, ""},
-		{"empty", "", ""},
-	}
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			got := ToolIntentFromArguments(json.RawMessage(tc.raw))
-			if got != tc.want {
-				t.Errorf("ToolIntentFromArguments(%q) = %q, want %q", tc.raw, got, tc.want)
 			}
 		})
 	}

@@ -13,13 +13,13 @@ func FromWire(in appwire.LaunchConfigLayer) Layer {
 		OpenAIResponsesContinuation: in.OpenAIResponsesContinuation,
 		ProviderIdleTimeout:         in.ProviderIdleTimeout,
 		Sandbox:                     in.Sandbox,
-		SandboxNet:                  copyBoolPtr(in.SandboxNet),
-		MaxRounds:                   copyIntPtr(in.MaxRounds),
-		MaxSubagentDepth:            copyIntPtr(in.MaxSubagentDepth),
-		MaxConcurrentDelegateTurns:  copyIntPtr(in.MaxConcurrentDelegateTurns),
-		MaxRetainedTerminal:         copyIntPtr(in.MaxRetainedTerminal),
-		NonInteractive:              copyBoolPtr(in.NonInteractive),
-		AppReplaySize:               copyIntPtr(in.AppReplaySize),
+		SandboxNet:                  appwire.ClonePointer(in.SandboxNet),
+		MaxRounds:                   appwire.ClonePointer(in.MaxRounds),
+		MaxSubagentDepth:            appwire.ClonePointer(in.MaxSubagentDepth),
+		MaxConcurrentDelegateTurns:  appwire.ClonePointer(in.MaxConcurrentDelegateTurns),
+		MaxRetainedTerminal:         appwire.ClonePointer(in.MaxRetainedTerminal),
+		NonInteractive:              appwire.ClonePointer(in.NonInteractive),
+		AppReplaySize:               appwire.ClonePointer(in.AppReplaySize),
 		SkillsDirs:                  in.SkillsDirs,
 		PluginDirs:                  in.PluginDirs,
 		MCPConfigs:                  in.MCPConfigs,
@@ -33,8 +33,8 @@ func FromWire(in appwire.LaunchConfigLayer) Layer {
 		ModelFallbacks:              copyStringSlicePtr(in.ModelFallbacks),
 		EnabledPlugins:              cloneStringSlicePtr(in.EnabledPlugins),
 		Env:                         in.Env,
-		Verbose:                     copyBoolPtr(in.Verbose),
-		APILog:                      copyBoolPtr(in.APILog),
+		Verbose:                     appwire.ClonePointer(in.Verbose),
+		APILog:                      appwire.ClonePointer(in.APILog),
 		TraceFile:                   in.TraceFile,
 		CPUProfile:                  in.CPUProfile,
 		ExportATIFPath:              in.ExportATIFPath,
@@ -60,13 +60,13 @@ func ToWire(in Layer) appwire.LaunchConfigLayer {
 		OpenAIResponsesContinuation: in.OpenAIResponsesContinuation,
 		ProviderIdleTimeout:         in.ProviderIdleTimeout,
 		Sandbox:                     in.Sandbox,
-		SandboxNet:                  copyBoolPtr(in.SandboxNet),
-		MaxRounds:                   copyIntPtr(in.MaxRounds),
-		MaxSubagentDepth:            copyIntPtr(in.MaxSubagentDepth),
-		MaxConcurrentDelegateTurns:  copyIntPtr(in.MaxConcurrentDelegateTurns),
-		MaxRetainedTerminal:         copyIntPtr(in.MaxRetainedTerminal),
-		NonInteractive:              copyBoolPtr(in.NonInteractive),
-		AppReplaySize:               copyIntPtr(in.AppReplaySize),
+		SandboxNet:                  appwire.ClonePointer(in.SandboxNet),
+		MaxRounds:                   appwire.ClonePointer(in.MaxRounds),
+		MaxSubagentDepth:            appwire.ClonePointer(in.MaxSubagentDepth),
+		MaxConcurrentDelegateTurns:  appwire.ClonePointer(in.MaxConcurrentDelegateTurns),
+		MaxRetainedTerminal:         appwire.ClonePointer(in.MaxRetainedTerminal),
+		NonInteractive:              appwire.ClonePointer(in.NonInteractive),
+		AppReplaySize:               appwire.ClonePointer(in.AppReplaySize),
 		SkillsDirs:                  in.SkillsDirs,
 		PluginDirs:                  in.PluginDirs,
 		MCPConfigs:                  in.MCPConfigs,
@@ -80,8 +80,8 @@ func ToWire(in Layer) appwire.LaunchConfigLayer {
 		ModelFallbacks:              derefStringSlicePtr(in.ModelFallbacks),
 		EnabledPlugins:              cloneStringSlicePtr(in.EnabledPlugins),
 		Env:                         in.Env,
-		Verbose:                     copyBoolPtr(in.Verbose),
-		APILog:                      copyBoolPtr(in.APILog),
+		Verbose:                     appwire.ClonePointer(in.Verbose),
+		APILog:                      appwire.ClonePointer(in.APILog),
 		TraceFile:                   in.TraceFile,
 		CPUProfile:                  in.CPUProfile,
 		ExportATIFPath:              in.ExportATIFPath,
@@ -126,14 +126,6 @@ func ResolvedToWire(r Resolved) appwire.LaunchConfigResolved {
 	return out
 }
 
-func copyIntPtr(v *int) *int {
-	if v == nil {
-		return nil
-	}
-	out := *v
-	return &out
-}
-
 // copyStringSlicePtr wraps a wire []string into the Layer's three-state
 // pointer: nil stays nil (unset); a non-nil slice (including empty, the
 // explicit-clear state) becomes a fresh non-nil pointer.
@@ -153,12 +145,4 @@ func derefStringSlicePtr(v *[]string) []string {
 		return nil
 	}
 	return append([]string{}, (*v)...)
-}
-
-func copyBoolPtr(v *bool) *bool {
-	if v == nil {
-		return nil
-	}
-	out := *v
-	return &out
 }

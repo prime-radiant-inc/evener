@@ -54,6 +54,14 @@ describe("native fork checkpoints", () => {
 		expect(repo.removeIf(accepted)).toBe(false);
 		expect(repo.removeIf(prepared)).toBe(true);
 	});
+	it("removes a checkpoint whose keys arrive in a different order", () => {
+		const backend = disk(),
+			repo = forkCheckpoints("hub", "parent", backend);
+		const saved = repo.begin(target);
+		const reordered = { target: saved.target, id: saved.id };
+		expect(repo.removeIf(reordered)).toBe(true);
+		expect(repo.load()).toBeNull();
+	});
 	it("does not resurrect removed or replacement checkpoints through a late acknowledgement", () => {
 		const backend = disk(),
 			repo = forkCheckpoints("hub", "parent", backend);

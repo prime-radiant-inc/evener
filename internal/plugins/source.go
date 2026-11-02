@@ -16,13 +16,6 @@ import (
 
 var (
 	sourceStat        = os.Stat
-	sourceWalk        = filepath.Walk
-	sourceRel         = filepath.Rel
-	sourceOpen        = os.Open
-	sourceMkdirAll    = os.MkdirAll
-	sourceOpenFile    = os.OpenFile
-	sourceCopy        = io.Copy
-	sourceClose       = func(f *os.File) error { return f.Close() }
 	sourceRemoveAll   = os.RemoveAll
 	sourceGitClone    = gitClone
 	sourceGitHeadSHA  = gitHeadSHA
@@ -38,6 +31,12 @@ const (
 	SourceURL       SourceKind = "url"
 	SourceGitSubdir SourceKind = "git-subdir"
 )
+
+// HasRemote reports whether the kind names a git remote. A directory source is
+// read in place and has none.
+func (k SourceKind) HasRemote() bool {
+	return k != SourceDirectory
+}
 
 // Source is a marketplace-container or plugin source. Field meaning depends on
 // Kind: Repo (github), URL (url/git-subdir), Path (directory local path, or
@@ -303,7 +302,7 @@ func copyTree(src, dst string) error {
 	if !info.IsDir() {
 		return fmt.Errorf("source %q is not a directory", src)
 	}
-	return sourceWalk(src, func(path string, fi os.FileInfo, err error) error {
+	return filepath.Walk(src, func(path string, fi os.FileInfo, err error) error {
 		if err != nil {
 			return err
 		}
@@ -318,31 +317,18 @@ func copyTree(src, dst string) error {
 				return err
 			}
 		}
-		rel, err := sourceRel(src, path)
+		rel, err := filepath.Rel(src, path)
 		if err != nil {
 			return err
 		}
 		target := filepath.Join(dst, rel)
 		if fi.IsDir() {
-			return sourceMkdirAll(target, 0o755)
+			return os.MkdirAll(target, 0o755)
 		}
-		in, err := sourceOpen(path)
-		if err != nil {
+		if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
 			return err
 		}
-		defer func() { _ = sourceClose(in) }()
-		if err := sourceMkdirAll(filepath.Dir(target), 0o755); err != nil {
-			return err
-		}
-		out, err := sourceOpenFile(target, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, fi.Mode().Perm())
-		if err != nil {
-			return err
-		}
-		_, err = sourceCopy(out, in)
-		if closeErr := sourceClose(out); err == nil {
-			err = closeErr
-		}
-		return err
+		return copyRegularFile(path, target, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, fi.Mode().Perm())
 	})
 }
 

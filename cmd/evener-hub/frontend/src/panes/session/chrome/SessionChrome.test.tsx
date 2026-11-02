@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import type { NavigationSessionLocation, Thread, ThreadCapabilities, ThreadReadResponse } from "@evener/appwire-client";
+import type { NavigationSessionLocation, Thread, ThreadReadResponse } from "@evener/appwire-client";
 import { makeTranscriptDisplayConfig } from "@evener/appwire-client";
 import { keyID } from "@evener/appwire-client/state/navigation";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
@@ -21,34 +21,19 @@ import { ClientProvider } from "../../../shell/clientContext";
 import { resetFocusedActivityScopeForTests } from "../../../shell/focusedSession";
 import { registerPaneForTests } from "../../../shell/paneRegistry";
 import { resetWorkspaceStoreForTests, workspaceStore } from "../../../shell/workspace";
-import { connectionStore } from "../../../stores/connection";
+import { connectionStore, resetConnectionStoreForTests } from "../../../stores/connection";
 import { navigationStore, resetNavigationStoreForTests } from "../../../stores/navigation/store";
 import { sessionActivitySnapshot } from "../../../stores/sessionActivity";
 import { activityClient, activitySummary } from "../../../stores/sessionActivityTestUtils";
 import { resetThreadsStoreForTests, threadsStore } from "../../../stores/threads";
 import { resetTranscriptDisplayStoreForTests, transcriptDisplayStore } from "../../../stores/transcriptDisplay";
+import { ALL_CAPABILITIES as CAPABILITIES } from "../../../threadTestUtils";
 import { settleActivityDiscovery } from "../testing/activityDiscovery";
 import { installMobileViewport } from "../testing/mobileViewport";
 import "../../sessionPanels";
 import { type SessionChromePlacement, SessionChrome as SessionChromeView } from "./SessionChrome";
 
 const here = dirname(fileURLToPath(import.meta.url));
-
-const CAPABILITIES: ThreadCapabilities = {
-  send: true,
-  steer: true,
-  interrupt: true,
-  compact: true,
-  clear: true,
-  forkFromTurn: true,
-  shutdown: true,
-  changeModel: true,
-  changeVisionModel: true,
-  queue: true,
-  goal: true,
-  sharedNotes: true,
-  rename: true,
-};
 
 function testThread(ref: string, overrides: Partial<Thread> = {}): Thread {
   return {
@@ -158,7 +143,7 @@ function render(ui: ReactElement) {
 
 beforeEach(() => {
   chromeClient = new FakeClient("ready");
-  connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
+  resetConnectionStoreForTests();
   resetThreadsStoreForTests();
   resetWorkspaceStoreForTests();
   resetNavigationStoreForTests();
@@ -413,17 +398,23 @@ test("desktop Session actions opens the full Verbosity Dialog, persists selectio
 
   const dialog = screen.getByRole("dialog", { name: "Verbosity" });
   expect(dialog.getAttribute("aria-modal")).toBe("true");
-  expect(
-    within(dialog)
-      .getAllByRole("radio")
-      .map((radio) => radio.textContent),
-  ).toEqual(["Chat", "Intent", "Tools", "Activity", "Full", "Custom"]);
+  const detailEditor = within(dialog).getByRole("region", { name: "Transcript detail editor" });
+  expect(within(detailEditor).getAllByRole("radio")).toHaveLength(6);
   const activity = within(dialog).getByRole("radio", { name: "Activity" });
   await user.click(activity);
   expect(transcriptDisplayStore.getState().local.desktop).toEqual(
     makeTranscriptDisplayConfig({ kind: "preset", level: "activity" }),
   );
   expect(document.activeElement).toBe(activity);
+
+  const presentation = within(dialog).getByRole("radiogroup", { name: "Presentation" });
+  await user.click(within(presentation).getByRole("radio", { name: "Comic" }));
+  expect(transcriptDisplayStore.getState().presentation.desktop).toBe("comic");
+  expect((activity as HTMLButtonElement).disabled).toBe(true);
+  await user.click(within(presentation).getByRole("radio", { name: "Standard" }));
+  expect(transcriptDisplayStore.getState().presentation.desktop).toBe("standard");
+  expect((activity as HTMLButtonElement).disabled).toBe(false);
+  expect(activity.getAttribute("aria-checked")).toBe("true");
 
   await user.keyboard("{Escape}");
   expect(screen.queryByRole("dialog", { name: "Verbosity" })).toBeNull();
@@ -466,10 +457,13 @@ test("mobile Session actions opens the full Verbosity bottom Sheet", async () =>
 
     const sheet = screen.getByRole("dialog", { name: "Verbosity" });
     expect(sheet.className).toContain("bottom");
-    expect(within(sheet).getAllByRole("radio")).toHaveLength(6);
-    expect(
-      within(sheet).getByRole("region", { name: "Transcript detail editor" }).querySelector("summary"),
-    ).not.toBeNull();
+    const detailEditor = within(sheet).getByRole("region", { name: "Transcript detail editor" });
+    expect(within(detailEditor).getAllByRole("radio")).toHaveLength(6);
+    expect(detailEditor.querySelector("summary")).not.toBeNull();
+    const presentation = within(sheet).getByRole("radiogroup", { name: "Presentation" });
+    await user.click(within(presentation).getByRole("radio", { name: "Comic" }));
+    expect(transcriptDisplayStore.getState().presentation.mobile).toBe("comic");
+    expect(transcriptDisplayStore.getState().presentation.desktop).toBe("standard");
 
     await user.keyboard("{Escape}");
     expect(screen.queryByRole("dialog", { name: "Verbosity" })).toBeNull();

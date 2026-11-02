@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/identifier"
@@ -98,7 +99,7 @@ func TestDelegateForkContext_OptInHistory(t *testing.T) {
 			if failures, measured := child.FailedToolCallsSnapshot(); !measured || failures != 0 {
 				t.Errorf("child charged for parent's tool failure: %d, measured=%v", failures, measured)
 			}
-			data, err := readTranscriptFull(transcriptPath(root.stateDir, child.id), "")
+			data, err := readTranscriptFull(context.Background(), transcriptPath(root.stateDir, child.id), "")
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -127,7 +128,7 @@ func TestDelegateForkContext_DescendantsStartClean(t *testing.T) {
 					message.Content[0].ToolCall.Arguments = []byte(`{"prompt":"grandchild-unit-sentinel","delegation_allowance":0}`)
 					return llm.Response{Message: message}
 				},
-				func(llm.Request) llm.Response { return finalResponse("child finished") },
+				func(llm.Request) llm.Response { return agenttest.FinalResponse("child finished") },
 			}})
 		} else {
 			client.Register(grandchild)
@@ -176,7 +177,7 @@ func TestDelegateForkContext_ColdResumePreservesSnapshot(t *testing.T) {
 	root.appendTurn(schema.TurnCheckpoint, llm.User("parent-summary-sentinel"))
 	root.appendTurn(schema.TurnUserInput, llm.User("recent-parent-sentinel"))
 	adapter := &fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
-		func(llm.Request) llm.Response { return finalResponse("child-result-sentinel") },
+		func(llm.Request) llm.Response { return agenttest.FinalResponse("child-result-sentinel") },
 	}}
 	client.Register(adapter)
 	result := root.createDelegate(context.Background(), delegateArgs{Task: "child-unit-sentinel", ForkContext: true, DelegationAllowance: new(0)})
@@ -230,7 +231,7 @@ func TestDelegateForkContext_ColdResumePreservesSnapshot(t *testing.T) {
 	if !meta.IsSubagent || meta.DivergenceTurn == 0 || meta.OriginalPrompt != "child-unit-sentinel" || child.reg.Get("ask_user") != nil {
 		t.Fatalf("restored delegate lost identity or gained permissions: %+v", meta)
 	}
-	data, err := readTranscriptFull(transcriptPath(root.stateDir, child.id), "")
+	data, err := readTranscriptFull(context.Background(), transcriptPath(root.stateDir, child.id), "")
 	if err != nil {
 		t.Fatal(err)
 	}

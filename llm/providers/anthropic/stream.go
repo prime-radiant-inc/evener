@@ -83,17 +83,15 @@ func decodeMessagesStream(sctx context.Context, cancel context.CancelFunc, resp 
 	var msgID string
 	var actualModel string
 	var rawMessage map[string]any
-	var finalEvent *llm.StreamEvent
 
-	runner := &transport.StreamRunner{
+	var runner *transport.StreamRunner
+	runner = &transport.StreamRunner{
 		Provider:   provider,
 		Resp:       resp,
 		Stream:     s,
 		Attempt:    attempt,
 		StatusCode: resp.StatusCode,
-		FinalEvent: func() *llm.StreamEvent {
-			return finalEvent
-		},
+		Cancel:     cancel,
 		// HTTP response-byte idle is owned by ClientWithAdapterTimeout, below gzip decoding.
 		Finished:      &finished,
 		IncompleteMsg: provider + " stream ended without completion",
@@ -407,15 +405,7 @@ func decodeMessagesStream(sctx context.Context, cancel context.CancelFunc, resp 
 					}
 				}
 
-				rp := r
-				event := llm.StreamEvent{Type: llm.StreamEventFinish, FinishReason: &r.Finish, Usage: &r.Usage, Response: &rp}
-				if attempt.Active() {
-					finalEvent = &event
-				} else {
-					s.Send(event)
-				}
-				finished = true
-				cancel()
+				runner.Finish(r)
 			case "error":
 				// Anthropic reports a mid-stream failure as a structured error
 				// event on an HTTP 200 stream. Decode it into the typed error

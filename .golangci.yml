@@ -35,6 +35,9 @@ linters:
     - modernize
     - nakedret
     - nilerr
+    # A suppression must name its linter and say why, and goes stale loudly
+    # once the finding it silenced is gone.
+    - nolintlint
     - noctx
     - perfsprint
     - predeclared
@@ -43,6 +46,11 @@ linters:
     - unconvert
     - usestdlibvars
   settings:
+    nolintlint:
+      require-explanation: true
+      require-specific: true
+      # Directives that no longer match a finding are not this gate's concern.
+      allow-unused: true
     govet:
       disable:
         - inline
@@ -153,6 +161,14 @@ linters:
       # on a cold cache, which takes the count to zero.
       - path: _test\.go
         text: SA5011
+
+      # Explanations are required for every suppression except these four
+      # linters, whose existing bare suppressions (defer Close, best-effort
+      # writes, SQL without a context) predate the gate. A new
+      # nolint:unused, or any other linter, must say why.
+      - linters:
+          - nolintlint
+        text: 'nolint:(errcheck|noctx|nilerr|staticcheck)` should provide explanation'
 
       # llm/providers/ speaks each upstream provider's wire format; tag
       # casing belongs to upstream, not to this repo's snake_case default.

@@ -1,8 +1,11 @@
 // @vitest-environment node
 
 import { afterEach, beforeEach, expect, test } from "vitest";
+import { presentAttentionTarget } from "../attentionPlacement";
 import { resetWorkspaceStoreForTests, workspaceStore } from "../workspace";
 import { buildPaletteContext } from "./paletteContext";
+import "../../panes/session";
+import "../../panes/sessionPanels";
 
 beforeEach(() => {
   resetWorkspaceStoreForTests();
@@ -45,6 +48,15 @@ test("a focused session panel pins the open session pane for its ref as the addr
     sessionPaneId: "p2",
     onPage: "session",
   });
+});
+
+test.each([false, true])("a focused panel skips a parked composer with a presented duplicate: %s", (duplicate) => {
+  const parked = workspaceStore.getState().openPane("session", { ref: "local:panel" });
+  presentAttentionTarget("local:target");
+  const visible = duplicate ? workspaceStore.getState().openPane("session", { ref: "local:panel" }) : null;
+  workspaceStore.getState().openPane("sessionTasks", { ref: "local:panel" });
+  expect(buildPaletteContext()).toEqual({ sessionRef: "local:panel", sessionPaneId: visible, onPage: "session" });
+  expect(workspaceStore.getState().panes.find((pane) => pane.id === parked)?.slot).toBe("parked");
 });
 
 test("a retired Activity descriptor carries no interactive palette context", () => {

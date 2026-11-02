@@ -289,7 +289,7 @@ func TestResumeWorktreeReentry_ManagedForeign_RestoresRootAndNotices(t *testing.
 // TestResumeWorktreeReentry_RefusesUnconfinedSandboxReroot is roborev round 7's
 // High: re-entry publishes the clone WithWorkingDirectory returned, and that
 // method's failure mode is an environment with BOTH Sandbox and Wrapper nil plus
-// a sticky refusal (execenv/local.go:964-1002). Publishing it runs the restored
+// a sticky refusal. Publishing it runs the restored
 // session with unconfined file and command tools, so re-entry has to consult the
 // refusal exactly as the five other call sites do (enterWorktree among them).
 func TestResumeWorktreeReentry_RefusesUnconfinedSandboxReroot(t *testing.T) {

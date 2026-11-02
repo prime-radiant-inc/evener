@@ -8,14 +8,9 @@ import { HubWriteBusyError } from "@evener/appwire-client/state/extensions";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { threadStartedNotification } from "@evener/appwire-client/testing/notifications";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
-import { connectionStore } from "./connection";
+import { connectReadyFakeClient } from "../testing/connectionTestUtils";
+import { connectionStore, resetConnectionStoreForTests } from "./connection";
 import { extensionsStore, type MarketplaceCatalogEntry, resetExtensionsStoreForTests } from "./extensions";
-
-function connectFakeClient(): FakeClient {
-  const fake = new FakeClient("ready");
-  connectionStore.getState().connect(fake);
-  return fake;
-}
 
 type BrowseResult = { name: string; plugins: MarketplaceCatalogPlugin[] };
 
@@ -83,18 +78,18 @@ const PLUGIN_A: PluginEntry = {
 };
 
 beforeEach(() => {
-  connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
+  resetConnectionStoreForTests();
   resetExtensionsStoreForTests();
 });
 
 afterEach(() => {
-  connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
+  resetConnectionStoreForTests();
   resetExtensionsStoreForTests();
 });
 
 describe("resetExtensionsStoreForTests", () => {
   test("preserves the marketplace publication version across the combined-store reset", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     fake.on("evener/marketplace/list", () => ({ marketplaces: [MARKETPLACE_A] }));
     const before = extensionsStore.getState().marketplacesPublicationVersion;
 
@@ -124,7 +119,7 @@ describe("resetExtensionsStoreForTests", () => {
 
 describe("fetchMarketplaces", () => {
   test("populates marketplaces from evener/marketplace/list", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     fake.on("evener/marketplace/list", () => ({ marketplaces: [MARKETPLACE_A, MARKETPLACE_B] }));
     await extensionsStore.getState().fetchMarketplaces();
     expect(extensionsStore.getState().marketplaces).toEqual([MARKETPLACE_A, MARKETPLACE_B]);
@@ -133,7 +128,7 @@ describe("fetchMarketplaces", () => {
   });
 
   test("marketplacesLoading is true while the request is in flight", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     let resolveRequest!: (v: { marketplaces: MarketplaceEntry[] }) => void;
     fake.on(
       "evener/marketplace/list",
@@ -154,7 +149,7 @@ describe("fetchMarketplaces", () => {
   });
 
   test("a rejected request records an error and never throws", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     fake.on("evener/marketplace/list", () => {
       throw new Error("boom");
     });
@@ -164,7 +159,7 @@ describe("fetchMarketplaces", () => {
   });
 
   test("a later successful fetch clears a previous error", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     fake.on("evener/marketplace/list", () => {
       throw new Error("boom");
     });
@@ -180,7 +175,7 @@ describe("fetchMarketplaces", () => {
 
 describe("addMarketplace", () => {
   test("calls evener/marketplace/add with the given params and applies the response's marketplaces directly (no separate list round-trip)", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     fake.on("evener/marketplace/add", (params) => {
       expect(params).toEqual({ name: "acme-plugins", source: { kind: "github", repo: "acme/plugins" } });
       return { marketplaces: [MARKETPLACE_A] };
@@ -192,7 +187,7 @@ describe("addMarketplace", () => {
   });
 
   test("a rejection propagates to the caller (so the section can toast) rather than being swallowed", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     fake.on("evener/marketplace/add", () => {
       throw new Error("add failed");
     });
@@ -210,14 +205,14 @@ describe("removeMarketplace", () => {
     expect(extensionsStore.getState().marketplaces).toEqual([MARKETPLACE_B]);
 
     function connectFacadeForRemove() {
-      const client = connectFakeClient();
+      const client = connectReadyFakeClient();
       client.on("evener/marketplace/remove", () => ({ marketplaces: [MARKETPLACE_B] }));
       return client;
     }
   });
 
   test("invalidates the browse cache entry for the removed marketplace", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     fake.on("evener/marketplace/browse", () => ({ name: "acme-plugins", plugins: [] }));
     await extensionsStore.getState().browseMarketplace("acme-plugins");
     expect(extensionsStore.getState().browseCatalogs.has("acme-plugins")).toBe(true);
@@ -228,7 +223,7 @@ describe("removeMarketplace", () => {
   });
 
   test("a browse that predates the removal cannot refill the cache it dropped", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     const resolveBrowse = deferBrowse(fake);
     const stale = extensionsStore.getState().browseMarketplace("acme-plugins");
 
@@ -241,7 +236,7 @@ describe("removeMarketplace", () => {
   });
 
   test("a rejection propagates to the caller", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     fake.on("evener/marketplace/remove", () => {
       throw new Error("remove failed");
     });
@@ -251,7 +246,7 @@ describe("removeMarketplace", () => {
 
 describe("refreshMarketplace", () => {
   test("calls evener/marketplace/refresh, applies the response, and invalidates the browse cache", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     fake.on("evener/marketplace/browse", () => ({ name: "acme-plugins", plugins: [{ name: "linter" }] }));
     await extensionsStore.getState().browseMarketplace("acme-plugins");
     expect(extensionsStore.getState().browseCatalogs.get("acme-plugins")).toEqual({
@@ -270,7 +265,7 @@ describe("refreshMarketplace", () => {
   });
 
   test("a browse that predates the refresh cannot refill the cache it dropped", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     const resolveBrowse = deferBrowse(fake);
     const stale = extensionsStore.getState().browseMarketplace("acme-plugins");
 
@@ -283,7 +278,7 @@ describe("refreshMarketplace", () => {
   });
 
   test("a rejection propagates to the caller", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     fake.on("evener/marketplace/refresh", () => {
       throw new Error("refresh failed");
     });
@@ -293,7 +288,7 @@ describe("refreshMarketplace", () => {
 
 describe("editMarketplace", () => {
   test("calls evener/marketplace/edit, applies the response, and drops the browse cache for both names", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     fake.on("evener/marketplace/browse", () => ({ name: "acme-plugins", description: "", plugins: [] }));
     await extensionsStore.getState().browseMarketplace("acme-plugins");
     expect(extensionsStore.getState().browseCatalogs.has("acme-plugins")).toBe(true);
@@ -317,7 +312,7 @@ describe("editMarketplace", () => {
   });
 
   test("a browse that predates the edit cannot refill the cache the edit dropped", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     const resolveBrowse = deferBrowse(fake);
     const stale = extensionsStore.getState().browseMarketplace("acme-plugins");
     expect(extensionsStore.getState().browseCatalogs.get("acme-plugins")).toEqual({ status: "loading" });
@@ -345,7 +340,7 @@ describe("editMarketplace", () => {
   });
 
   test("a rename fences an in-flight browse under the new name too", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     const resolveBrowse = deferBrowse(fake);
     const stale = extensionsStore.getState().browseMarketplace("acme2");
 
@@ -358,7 +353,7 @@ describe("editMarketplace", () => {
   });
 
   test("a rejection propagates", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     fake.on("evener/marketplace/edit", () => {
       throw new Error("edit failed");
     });
@@ -374,7 +369,7 @@ describe("editMarketplace", () => {
 // order they arrive in.
 describe("marketplace mutation ordering", () => {
   test("a rename is refused while a refresh is in flight, and the refresh still applies", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     let resolveRefresh!: (v: { marketplaces: MarketplaceEntry[] }) => void;
     fake.on(
       "evener/marketplace/refresh",
@@ -401,7 +396,7 @@ describe("marketplace mutation ordering", () => {
   });
 
   test("a list response that resolves after a newer mutation cannot roll it back", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     let resolveList!: (v: { marketplaces: MarketplaceEntry[] }) => void;
     fake.on(
       "evener/marketplace/list",
@@ -429,7 +424,7 @@ describe("marketplace mutation ordering", () => {
   });
 
   test("a refused concurrent rename leaves the in-flight refresh to retire its own browse cache entry", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     fake.on("evener/marketplace/browse", () => ({ name: "local-plugins", plugins: [{ name: "linter" }] }));
     await extensionsStore.getState().browseMarketplace("local-plugins");
     let resolveRefresh!: (v: { marketplaces: MarketplaceEntry[] }) => void;
@@ -455,7 +450,7 @@ describe("marketplace mutation ordering", () => {
   });
 
   test("an in-order sequence applies every response", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     fake.on("evener/marketplace/add", () => ({ marketplaces: [MARKETPLACE_A] }));
     await extensionsStore.getState().addMarketplace({ source: { kind: "github", repo: "acme/plugins" } });
     expect(extensionsStore.getState().marketplaces).toEqual([MARKETPLACE_A]);
@@ -481,7 +476,7 @@ describe("marketplace mutation ordering", () => {
   // the fence covers all three: a fetch the store has already moved past can
   // no more post its error or clear a load than it can put its list back.
   test("a list failure that lands after a newer mutation cannot post an error over it", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     let rejectList!: (err: Error) => void;
     fake.on(
       "evener/marketplace/list",
@@ -503,7 +498,7 @@ describe("marketplace mutation ordering", () => {
   });
 
   test("a list response that lands after a newer fetch failed leaves the newer error in place", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     let resolveList!: (v: { marketplaces: MarketplaceEntry[] }) => void;
     fake.on(
       "evener/marketplace/list",
@@ -528,7 +523,7 @@ describe("marketplace mutation ordering", () => {
   });
 
   test("an in-order fetch after a failure clears both the error and the loading flag", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     fake.on("evener/marketplace/list", () => {
       throw new Error("list failed");
     });
@@ -546,7 +541,7 @@ describe("marketplace mutation ordering", () => {
 
 describe("browseMarketplace", () => {
   test("fetches and caches a marketplace's catalog as status:loaded", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     fake.on("evener/marketplace/browse", (params) => {
       expect(params).toEqual({ name: "acme-plugins" });
       return {
@@ -564,7 +559,7 @@ describe("browseMarketplace", () => {
   });
 
   test("caches a failure as status:error with the error's friendly form", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     fake.on("evener/marketplace/browse", () => {
       throw new Error("network down");
     });
@@ -576,7 +571,7 @@ describe("browseMarketplace", () => {
   });
 
   test("does not re-fetch an already-cached (loaded) marketplace", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     fake.on("evener/marketplace/browse", () => ({ name: "acme-plugins", plugins: [] }));
     await extensionsStore.getState().browseMarketplace("acme-plugins");
     await extensionsStore.getState().browseMarketplace("acme-plugins");
@@ -584,7 +579,7 @@ describe("browseMarketplace", () => {
   });
 
   test("does not re-fetch an already-cached (errored) marketplace - only refreshMarketplace invalidates it", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     fake.on("evener/marketplace/browse", () => {
       throw new Error("boom");
     });
@@ -594,7 +589,7 @@ describe("browseMarketplace", () => {
   });
 
   test("marks the entry status:loading synchronously before the request settles, so a concurrent call is a no-op", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     let resolveRequest!: (v: { name: string; plugins: MarketplaceCatalogPlugin[] }) => void;
     fake.on(
       "evener/marketplace/browse",
@@ -619,7 +614,7 @@ describe("browseMarketplace", () => {
   // waiting on a marketplace someone else's click started - also needs to
   // know when it lands, so the second call awaits the first's request.
   test("a call for a catalog already in flight resolves with that request, not before it", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     const resolveBrowse = deferBrowse(fake);
     const first = extensionsStore.getState().browseMarketplace("acme-plugins");
     const second = extensionsStore.getState().browseMarketplace("acme-plugins");
@@ -664,7 +659,7 @@ describe("browseMarketplace", () => {
   // replacement's registration alone: the entry the next caller reads is the
   // replacement's, and it needs the promise that goes with it.
   test("a browse retired mid-flight leaves the replacement request's registration in place", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     const releases = gateBrowseCalls(fake);
     const first = extensionsStore.getState().browseMarketplace("acme-plugins");
 
@@ -710,7 +705,7 @@ describe("browseMarketplace", () => {
   // it is waiting for is the replacement's, so resolving it when the fenced
   // request lands would wake it on a "loading" entry.
   test("a caller waiting on a browse retired mid-flight waits for its replacement", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     const releases = gateBrowseCalls(fake);
     const first = extensionsStore.getState().browseMarketplace("acme-plugins");
     // The entry this caller woke on, so a failure says which one that was.
@@ -748,7 +743,7 @@ describe("browseMarketplace", () => {
   // "ready" transition would, which retires every catalog regardless of
   // status and would otherwise hide this from the package's own store.
   test("a browse still in flight when the connection is replaced does not stick on loading", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     const release = deferBrowse(fake);
     const browsing = extensionsStore.getState().browseMarketplace("acme-plugins");
     await drainMicrotasks();
@@ -774,7 +769,7 @@ describe("browseMarketplace", () => {
 
 describe("fetchPlugins", () => {
   test("populates plugins from evener/plugin/list", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     fake.on("evener/plugin/list", () => ({ plugins: [PLUGIN_A] }));
     await extensionsStore.getState().fetchPlugins();
     expect(extensionsStore.getState().plugins).toEqual([PLUGIN_A]);
@@ -783,7 +778,7 @@ describe("fetchPlugins", () => {
   });
 
   test("a rejected request records an error and never throws", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     fake.on("evener/plugin/list", () => {
       throw new Error("boom");
     });
@@ -794,7 +789,7 @@ describe("fetchPlugins", () => {
 
 describe("plugin mutations", () => {
   test("installPlugin calls evener/plugin/install with {plugin,marketplace} and applies the response", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     fake.on("evener/plugin/install", (params) => {
       expect(params).toEqual({ plugin: "linter", marketplace: "acme-plugins" });
       return { plugins: [PLUGIN_A] };
@@ -804,7 +799,7 @@ describe("plugin mutations", () => {
   });
 
   test("upgradePlugin calls evener/plugin/upgrade with {plugin,marketplace} and applies the response", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     fake.on("evener/plugin/upgrade", (params) => {
       expect(params).toEqual({ plugin: "linter", marketplace: "acme-plugins" });
       return { plugins: [{ ...PLUGIN_A, version: "1.1.0" }] };
@@ -814,7 +809,7 @@ describe("plugin mutations", () => {
   });
 
   test("removePlugin calls evener/plugin/remove with {plugin,marketplace} and applies the response", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     fake.on("evener/plugin/remove", (params) => {
       expect(params).toEqual({ plugin: "linter", marketplace: "acme-plugins" });
       return { plugins: [] };
@@ -824,7 +819,7 @@ describe("plugin mutations", () => {
   });
 
   test("enablePlugin calls evener/plugin/enable with {plugin,marketplace} and applies the response", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     fake.on("evener/plugin/enable", (params) => {
       expect(params).toEqual({ plugin: "linter", marketplace: "acme-plugins" });
       return { plugins: [{ ...PLUGIN_A, enabled: true }] };
@@ -834,7 +829,7 @@ describe("plugin mutations", () => {
   });
 
   test("disablePlugin calls evener/plugin/disable with {plugin,marketplace} and applies the response", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     fake.on("evener/plugin/disable", (params) => {
       expect(params).toEqual({ plugin: "linter", marketplace: "acme-plugins" });
       return { plugins: [{ ...PLUGIN_A, enabled: false }] };
@@ -844,7 +839,7 @@ describe("plugin mutations", () => {
   });
 
   test("setPluginAutoUpgrade calls evener/plugin/setAutoUpgrade with {plugin,marketplace,autoUpgrade} and applies the response", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     fake.on("evener/plugin/setAutoUpgrade", (params) => {
       expect(params).toEqual({ plugin: "linter", marketplace: "acme-plugins", autoUpgrade: true });
       return { plugins: [{ ...PLUGIN_A, autoUpgrade: true }] };
@@ -854,7 +849,7 @@ describe("plugin mutations", () => {
   });
 
   test("a rejected plugin mutation propagates to the caller", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     fake.on("evener/plugin/upgrade", () => {
       throw new Error("upgrade failed");
     });
@@ -864,7 +859,7 @@ describe("plugin mutations", () => {
 
 describe("fetchLaunchLayer", () => {
   test("populates launchLayer from evener/launch/getLayer with cwd '/' and layer 'global'", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     fake.on("evener/launch/getLayer", (params) => {
       expect(params).toEqual({ cwd: "/", layer: "global" });
       return { pluginDirs: ["/opt/plugins"], skillsDirs: [] };
@@ -876,7 +871,7 @@ describe("fetchLaunchLayer", () => {
   });
 
   test("a rejected request records an error and never throws", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     fake.on("evener/launch/getLayer", () => {
       throw new Error("boom");
     });
@@ -887,7 +882,7 @@ describe("fetchLaunchLayer", () => {
 
 describe("setLaunchLayer", () => {
   test("calls evener/launch/setLayer with cwd '/', layer 'global', and the given config", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     fake.on("evener/launch/setLayer", (params) => {
       expect(params).toEqual({ cwd: "/", layer: "global", config: { pluginDirs: ["/opt/plugins"] } });
       return { effective: {}, layers: { global: { pluginDirs: ["/opt/plugins"] } }, provenance: {} };
@@ -896,7 +891,7 @@ describe("setLaunchLayer", () => {
   });
 
   test("stores the config it sent as the new launchLayer on success (not a parsed response field)", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     fake.on("evener/launch/setLayer", () => ({
       // Deliberately a DIFFERENT shape than what was sent, to prove the store
       // trusts its own outgoing payload rather than the response's
@@ -910,7 +905,7 @@ describe("setLaunchLayer", () => {
   });
 
   test("a rejection propagates to the caller and leaves launchLayer unchanged", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     fake.on("evener/launch/getLayer", () => ({ pluginDirs: ["/existing"] }));
     await extensionsStore.getState().fetchLaunchLayer();
 
@@ -926,7 +921,7 @@ describe("setLaunchLayer", () => {
 
 describe("validatePath", () => {
   test("calls evener/path/validate with the given path and kind and returns the response", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     fake.on("evener/path/validate", (params) => {
       expect(params).toEqual({ path: "/opt/plugins", kind: "dir" });
       return { path: "/opt/plugins", valid: true };
@@ -938,7 +933,7 @@ describe("validatePath", () => {
   });
 
   test("propagates an invalid-path response as-is (valid:false is not a rejection)", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     fake.on("evener/path/validate", () => ({ path: "/nope", valid: false, error: "path does not exist" }));
     await expect(extensionsStore.getState().validatePath("/nope", "dir")).resolves.toEqual({
       path: "/nope",
@@ -950,7 +945,7 @@ describe("validatePath", () => {
 
 describe("completePaths", () => {
   test("passes the prefix through verbatim, with no trailing-slash normalization", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     fake.on("evener/paths/complete", (params) => {
       expect(params).toEqual({ prefix: "/opt/plug", includeFiles: false });
       return { data: ["/opt/plugins"] };
@@ -959,7 +954,7 @@ describe("completePaths", () => {
   });
 
   test("an empty prefix goes over the wire as-is, for the hub to resolve", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     fake.on("evener/paths/complete", (params) => {
       expect(params).toEqual({ prefix: "", includeFiles: false });
       return { data: ["/home/jesse/src"] };
@@ -968,7 +963,7 @@ describe("completePaths", () => {
   });
 
   test("forwards includeFiles so file-kind fields get files as well as directories", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     fake.on("evener/paths/complete", (params) => {
       expect(params).toEqual({ prefix: "/etc/", includeFiles: true });
       return { data: ["/etc/ssl/", "/etc/hosts"] };
@@ -977,7 +972,7 @@ describe("completePaths", () => {
   });
 
   test("a null data payload resolves to an empty list", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     // A Go handler returning a nil slice sends `null` here, which the generated
     // type declares cannot happen; every PathField would then crash its whole
     // form on the first .length. Coalesced at the seam so no caller has to.
@@ -996,7 +991,7 @@ describe("reconnect-triggered refetch", () => {
   // `started`), so without this the pane shows the pre-disconnect lists until
   // the user navigates away and back.
   test("a reconnect re-reads the lists something has already read", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     fake.on("evener/marketplace/list", () => ({ marketplaces: [MARKETPLACE_A] }));
     fake.on("evener/plugin/list", () => ({ plugins: [PLUGIN_A] }));
     fake.on("evener/launch/getLayer", () => ({ pluginDirs: ["/opt/plugins"] }));
@@ -1020,7 +1015,7 @@ describe("reconnect-triggered refetch", () => {
   // back regardless of whether anything ever read the controller's own list -
   // the established check belongs to the refetch decision, not to this.
   test("a reconnect moves pluginRevision even though no section read the list", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     fake.on("evener/plugin/list", () => ({ plugins: [PLUGIN_A] }));
     expect(extensionsStore.getState().pluginRevision).toBe(0);
 
@@ -1041,7 +1036,7 @@ describe("reconnect-triggered refetch", () => {
   // resetExtensionsStoreForTests puts the singleton back the way a fresh load
   // leaves it, that pass included, which is what lets this be tested at all.
   test("a module that initializes while the client is ready still recovers on the next reconnect", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     resetExtensionsStoreForTests();
     expect(extensionsStore.getState().pluginRevision).toBe(0);
 
@@ -1059,14 +1054,14 @@ describe("reconnect-triggered refetch", () => {
   // speaks to, and acting on it would retire the new hub's caches or move the
   // revision its consumers key on.
   test("a notification from a replaced client moves nothing", async () => {
-    const stale = connectFakeClient();
+    const stale = connectReadyFakeClient();
     stale.on("evener/plugin/list", () => ({ plugins: [PLUGIN_A] }));
     stale.on("evener/marketplace/list", () => ({ marketplaces: [MARKETPLACE_A] }));
     await extensionsStore.getState().fetchPlugins();
     await extensionsStore.getState().fetchMarketplaces();
     await extensionsStore.getState().browseMarketplace("acme-plugins");
 
-    const current = connectFakeClient();
+    const current = connectReadyFakeClient();
     const revision = extensionsStore.getState().pluginRevision;
     const calls = current.calls.length;
 
@@ -1084,7 +1079,7 @@ describe("reconnect-triggered refetch", () => {
   // store has to carry the intent across the replacement itself - otherwise
   // the settings page keeps a null list with nothing loading.
   test("a read a client replacement interrupted is issued again, to the replacement", async () => {
-    const interrupted = connectFakeClient();
+    const interrupted = connectReadyFakeClient();
     interrupted.on("evener/plugin/list", () => new Promise(() => {}));
     void extensionsStore.getState().fetchPlugins();
     await Promise.resolve();
@@ -1108,7 +1103,7 @@ describe("reconnect-triggered refetch", () => {
   // replacement interrupted has to survive that gap, because the sections'
   // loader latches `started` and will not ask again.
   test("a replacement named before it is dialled still gets the read it interrupted", async () => {
-    const interrupted = connectFakeClient();
+    const interrupted = connectReadyFakeClient();
     interrupted.on("evener/plugin/list", () => new Promise(() => {}));
     void extensionsStore.getState().fetchPlugins();
     await Promise.resolve();
@@ -1138,7 +1133,7 @@ describe("notification-triggered refetch", () => {
   });
 
   test("evener/marketplace/updated schedules a debounced fetchMarketplaces, 250ms", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     fake.on("evener/marketplace/list", () => ({ marketplaces: [MARKETPLACE_A] }));
     await extensionsStore.getState().fetchMarketplaces(); // initial load; also wires notification handling
     fake.on("evener/marketplace/list", () => ({ marketplaces: [MARKETPLACE_A, MARKETPLACE_B] }));
@@ -1154,7 +1149,7 @@ describe("notification-triggered refetch", () => {
   // changed - an add, a removal, a refresh, a rename or a re-source from
   // another client all arrive as this one bare method.
   test("a marketplace update retires every catalog and fences in-flight browses", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     fake.on("evener/marketplace/list", () => ({ marketplaces: [MARKETPLACE_A, MARKETPLACE_B] }));
     fake.on("evener/marketplace/browse", () => ({ name: "acme-plugins", plugins: [{ name: "before" }] }));
     await extensionsStore.getState().browseMarketplace("acme-plugins");
@@ -1179,7 +1174,7 @@ describe("notification-triggered refetch", () => {
   // The refetch a notification schedules is one more list response, and a
   // mutation this client makes while it is in flight is newer than it.
   test("a refetch that resolves after a newer mutation does not roll the list back", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     fake.on("evener/marketplace/list", () => ({ marketplaces: [MARKETPLACE_A] }));
     await extensionsStore.getState().fetchMarketplaces();
 
@@ -1204,7 +1199,7 @@ describe("notification-triggered refetch", () => {
   });
 
   test("evener/plugin/updated schedules a debounced fetchPlugins, 250ms", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     fake.on("evener/plugin/list", () => ({ plugins: [] }));
     await extensionsStore.getState().fetchPlugins();
     fake.on("evener/plugin/list", () => ({ plugins: [PLUGIN_A] }));
@@ -1217,7 +1212,7 @@ describe("notification-triggered refetch", () => {
   });
 
   test("evener/plugin/updated increments pluginRevision synchronously before refetch", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     fake.on("evener/plugin/list", () => ({ plugins: [] }));
     await extensionsStore.getState().fetchPlugins();
     expect(extensionsStore.getState().pluginRevision).toBe(0);
@@ -1229,7 +1224,7 @@ describe("notification-triggered refetch", () => {
   });
 
   test("evener/launch/updated schedules a debounced fetchLaunchLayer, 250ms", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     fake.on("evener/launch/getLayer", () => ({ pluginDirs: [] }));
     await extensionsStore.getState().fetchLaunchLayer();
     fake.on("evener/launch/getLayer", () => ({ pluginDirs: ["/opt/plugins"] }));
@@ -1252,7 +1247,7 @@ describe("notification-triggered refetch", () => {
   // and a plugin reconciled from that stale preview is sent as a thread/start
   // launchOverride the host no longer has.
   test("a wrapped remote plugin update bumps pluginRevision", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     fake.on("evener/plugin/list", () => ({ plugins: [PLUGIN_A] }));
     await extensionsStore.getState().fetchPlugins();
     expect(extensionsStore.getState().pluginRevision).toBe(0);
@@ -1278,7 +1273,7 @@ describe("notification-triggered refetch", () => {
   // must not schedule that refetch - it would replace this hub's layer with
   // this hub's unchanged one.
   test("a wrapped remote launch update never refetches the controller's launch layer", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     fake.on("evener/launch/getLayer", () => ({ pluginDirs: [] }));
     await extensionsStore.getState().fetchLaunchLayer();
     const layerCalls = fake.calls.filter((call) => call.method === "evener/launch/getLayer").length;
@@ -1296,7 +1291,7 @@ describe("notification-triggered refetch", () => {
   // evener/auth/updated is the spawn pane's own concern (it advances that pane's
   // catalog generation) and must not be read as a plugin change here.
   test("a wrapped remote method this store does not own leaves pluginRevision alone", () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     fake.emitNotification({
       method: "evener/host/notification",
       params: { host: "buildbox", method: "evener/auth/updated", params: {} },
@@ -1310,7 +1305,7 @@ describe("notification-triggered refetch", () => {
   // host's wrapper must not drop it with them: it is unwrapped and applied
   // exactly as the plain notification is, revision and refetch both.
   test("a wrapped update tagged with the controller is applied as the controller's own", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     fake.on("evener/plugin/list", () => ({ plugins: [] }));
     await extensionsStore.getState().fetchPlugins();
     fake.on("evener/plugin/list", () => ({ plugins: [PLUGIN_A] }));
@@ -1326,7 +1321,7 @@ describe("notification-triggered refetch", () => {
   });
 
   test("wiring attaches as soon as a client connects, with no prior fetch call required", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     fake.on("evener/marketplace/list", () => ({ marketplaces: [MARKETPLACE_A] }));
     fake.emitNotification({ method: "evener/marketplace/updated", params: {} });
     await vi.advanceTimersByTimeAsync(250);
@@ -1334,7 +1329,7 @@ describe("notification-triggered refetch", () => {
   });
 
   test("an irrelevant notification triggers no refetch on any of the three channels", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     fake.on("evener/marketplace/list", () => ({ marketplaces: [] }));
     fake.on("evener/plugin/list", () => ({ plugins: [] }));
     fake.on("evener/launch/getLayer", () => ({}));
@@ -1358,7 +1353,7 @@ describe("notification-triggered refetch", () => {
   });
 
   test("each channel debounces independently - a burst of the same notification coalesces into one refetch", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     fake.on("evener/marketplace/list", () => ({ marketplaces: [] }));
     await extensionsStore.getState().fetchMarketplaces();
     const marketplaceSpy = vi.fn(() => ({ marketplaces: [MARKETPLACE_A] }));

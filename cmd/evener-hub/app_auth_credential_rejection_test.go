@@ -285,7 +285,9 @@ func TestCredentialRejection_AConfigurationChangeRetiresIt(t *testing.T) {
 }
 
 // A key written while a probe of the old key is in flight must not inherit
-// that probe's rejection.
+// that probe's rejection. The old rejection is also not a verdict about the
+// replacement: the probe's caller gets the existing generic Conflict, never
+// auth_rejected, and the replacement is checked fresh.
 func TestCredentialRejection_AProbeThatRacedAWriteRecordsNothing(t *testing.T) {
 	client := &credentialProbeFakeClient{
 		listErr: llm.ErrorFromHTTPStatus("gateway", 401, "bad key", nil, nil),
@@ -293,18 +295,24 @@ func TestCredentialRejection_AProbeThatRacedAWriteRecordsNothing(t *testing.T) {
 		release: make(chan struct{}),
 	}
 	c, _ := newRejectionController(t, client)
-	done := make(chan appwire.AuthTestResponse, 1)
+	type outcome struct {
+		resp appwire.AuthTestResponse
+		err  error
+	}
+	done := make(chan outcome, 1)
 	go func() {
-		resp, _ := c.TestCredentials(context.Background(), appwire.AuthTestParams{Provider: "gateway"})
-		done <- resp
+		resp, err := c.TestCredentials(context.Background(), appwire.AuthTestParams{Provider: "gateway"})
+		done <- outcome{resp: resp, err: err}
 	}()
 	<-client.started
 	if _, err := c.ApiKeySet(appwire.AuthApiKeySetParams{Provider: "gateway", Value: "sk-replacement"}); err != nil {
 		t.Fatalf("ApiKeySet: %v", err)
 	}
 	close(client.release)
-	if resp := <-done; resp.Status != appwire.AuthTestStatusAuthRejected {
-		t.Fatalf("test status = %q, want auth_rejected", resp.Status)
+	got := <-done
+	assertConflict(t, got.err)
+	if got.resp.Status == appwire.AuthTestStatusAuthRejected {
+		t.Fatalf("test status = %q, want a conflict: the old key's rejection is not a verdict about its replacement", got.resp.Status)
 	}
 	if got := gatewayError(t, c); got != "" {
 		t.Fatalf("error = %q: the old key's rejection landed on the key written during the probe", got)
@@ -341,9 +349,7 @@ func TestCredentialRejection_TestRPCBroadcastsAuthUpdated(t *testing.T) {
 	client := dialHubRPC(t, httpServer)
 	t.Cleanup(func() { client.Close() })
 
-	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
-		t.Fatalf("Initialize: %v", err)
-	}
+	mustInitializeHubClient(t, client)
 	var resp appwire.AuthTestResponse
 	if err := client.Request(context.Background(), appwire.MethodEvenerAuthTest, appwire.AuthTestParams{Provider: "gateway"}, &resp); err != nil {
 		t.Fatalf("auth/test: %v", err)

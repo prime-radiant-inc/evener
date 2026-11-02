@@ -1,5 +1,5 @@
 import { AppwireClient } from "@evener/appwire-client";
-import { lazy, StrictMode } from "react";
+import { lazy, type ReactNode, StrictMode } from "react";
 import DocPane from "../panes/doc/DocPane";
 import type { DocParams } from "../panes/doc/openDoc";
 import Session, { type SessionPaneParams } from "../panes/session/Session";
@@ -57,10 +57,11 @@ export async function startFileLinksFixture(ref: string) {
   await fileLinksClient.connect();
   workspaceStore.getState().openPane("session", { ref });
 }
-export function DocumentFileLinksFixture() {
+export function DocumentFileLinksFixture({ probe }: { probe?: ReactNode }) {
   return (
     <StrictMode>
       <AppShell client={fileLinksClient} />
+      {probe}
     </StrictMode>
   );
 }

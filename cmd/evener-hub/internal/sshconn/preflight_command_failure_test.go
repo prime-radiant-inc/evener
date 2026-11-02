@@ -23,9 +23,10 @@ func TestEnsureLaunchCheckCommandFailure(t *testing.T) {
 				failure = context.DeadlineExceeded
 			}
 			fr := &fakeRunner{startFn: goodStartFn(t)}
-			if mode == "bridge-failed" {
+			bridgeFailure := errors.New("bridge transport failed")
+			if mode == "bridge-failed" || mode == "cold" {
 				fr.startFn = func(context.Context, []string, io.Writer) (Stdio, error) {
-					return nil, errors.New("bridge transport failed")
+					return nil, bridgeFailure
 				}
 			}
 			fr.runFn = func(ctx context.Context, argv []string, stdin io.Reader) ([]byte, error) {
@@ -35,7 +36,7 @@ func TestEnsureLaunchCheckCommandFailure(t *testing.T) {
 					return nil, failure
 				case strings.Contains(command, "launch-check"):
 					return nil, failure
-				case strings.Contains(command, "if test -x"):
+				case strings.Contains(command, "if test -e"):
 					if mode == "presence-probe" {
 						return nil, &RunError{Err: exitStatus(t, 255)}
 					}
@@ -55,8 +56,11 @@ func TestEnsureLaunchCheckCommandFailure(t *testing.T) {
 			}
 			ch, err := m.Ensure(t.Context(), "alpha")
 			wantBridges := 0
-			if mode == "bridge-failed" {
+			if mode == "bridge-failed" || mode == "cold" {
 				wantBridges = 1
+				if !errors.Is(err, bridgeFailure) {
+					t.Fatalf("bridge failure was hidden: %v", err)
+				}
 			}
 			if ch != nil || err == nil || *effects != (connectEffects{}) || len(fr.recordedStarts()) != wantBridges {
 				t.Fatalf("refused preflight: channel=%v err=%v effects=%+v bridges=%d", ch, err, effects, len(fr.recordedStarts()))

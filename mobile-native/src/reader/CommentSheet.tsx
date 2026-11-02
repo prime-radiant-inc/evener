@@ -15,14 +15,17 @@ import { documentMemory } from "./nativeDocumentMemory";
 const QUOTE_SHOWN = 280;
 
 export function CommentSheet({ route }: NativeStackScreenProps<Routes, "CommentSheet">) {
-	const { hubId, sessionRef, path, blockIndex, blockHash, quote } = route.params;
+	const { hubId, sessionRef, path, root, blockIndex, blockHash, quote } = route.params;
 	const [text, setText] = useState("");
 	const blank = text.trim() === "";
 	const sheet = useSheet({ dirty: !blank, discardTitle: "Discard this comment?" });
 	const { palette } = useColors();
 	const scale = useTextScale();
 	const add = () => {
-		documentMemory(hubId).addComment({ sessionRef, path }, { blockIndex, blockHash, quote, text: text.trim() });
+		documentMemory(hubId).addComment(
+			{ sessionRef, path, ...(root === "artifacts" ? { root } : {}) },
+			{ blockIndex, blockHash, quote, text: text.trim() },
+		);
 		sheet.finish();
 	};
 	return (

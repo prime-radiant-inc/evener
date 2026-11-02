@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"primeradiant.com/evener/appwire"
-	"primeradiant.com/evener/internal/e2ecap"
 	"primeradiant.com/evener/test/e2e/fakellm"
 )
 
@@ -25,19 +24,7 @@ import (
 // exited session used to be refused outright ("thread not found") — the
 // session was never resumed for it and the message never ran.
 func TestE2E_QueuePromptToARetiredSession(t *testing.T) {
-	e2ecap.RequireLoopbackBind(t)
-	e2ecap.RequireProcessInspect(t)
-	if testing.Short() {
-		t.Skip("live-stack e2e: builds binaries and runs a hub + daemon")
-	}
-
-	provider, err := fakellm.New()
-	if err != nil {
-		t.Fatalf("start fake provider: %v", err)
-	}
-	t.Cleanup(provider.Close)
-
-	stack := startHubStack(t, provider)
+	stack, provider := startE2EHubStack(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
 	client := stack.dialRPC(ctx, t)

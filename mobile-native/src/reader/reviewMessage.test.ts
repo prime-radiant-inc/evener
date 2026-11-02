@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { quoteLine, reviewMessage } from "./reviewMessage";
+import { quoteLine, reviewDocumentName, reviewMessage } from "./reviewMessage";
 
 describe("the review message (spec 10.2)", () => {
 	it("is the spec's format: the verdict, each comment under its quote, then the overall note", () => {
@@ -44,5 +44,19 @@ describe("the review message (spec 10.2)", () => {
 		).toBe("Review of a.md: comments only.\n\n> Split this into two.\nOne.\nTwo.");
 		expect(quoteLine("x".repeat(200))).toBe(`${"x".repeat(159)}…`);
 		expect(quoteLine("x".repeat(160))).toBe("x".repeat(160));
+	});
+
+	// Two documents can be named report.md: one in the session's folder and one
+	// it filed in its retained artifacts. A review of the retained one must name
+	// the file that was actually read, which the relative path cannot.
+	it("names a working-directory document by its path and an artifacts one by its full target", () => {
+		expect(reviewDocumentName({ path: "docs/plan.md" })).toBe("docs/plan.md");
+		expect(
+			reviewDocumentName({
+				path: "report.md",
+				readTarget: "/state/sessions/s-1/artifacts/report.md",
+				root: "artifacts",
+			}),
+		).toBe("/state/sessions/s-1/artifacts/report.md");
 	});
 });
