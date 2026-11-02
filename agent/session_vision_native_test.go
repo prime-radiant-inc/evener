@@ -1010,8 +1010,8 @@ func TestDescribeImage_ProviderFailureWarningCarriesTheProviderCause(t *testing.
 	}) {
 		t.Fatalf("warning messages = %q, want one carrying the provider's own failure text", msgs)
 	}
-	if !strings.Contains(result.failureCause, "vision route exploded") {
-		t.Fatalf("failureCause = %q, want it to carry the provider's failure text", result.failureCause)
+	if steering := visionFailureSteering("/tmp/a.png", result); !strings.Contains(steering, "vision route exploded") {
+		t.Fatalf("steering = %q, want it to carry the provider's failure text", steering)
 	}
 }
 
@@ -1034,8 +1034,8 @@ func TestDescribeImage_UntypedFailureWarningStaysSanitized(t *testing.T) {
 	if result.outcome != visionSideChannelProviderFailure {
 		t.Fatalf("outcome = %v, want provider failure", result.outcome)
 	}
-	if result.failureCause != "" {
-		t.Fatalf("failureCause = %q, want empty for an untyped error", result.failureCause)
+	if steering := visionFailureSteering("/tmp/a.png", result); strings.Contains(steering, "request.example") {
+		t.Fatalf("steering = %q, want the untyped error's details kept out", steering)
 	}
 	if slices.ContainsFunc(msgs, func(m string) bool {
 		return strings.Contains(m, "request.example")

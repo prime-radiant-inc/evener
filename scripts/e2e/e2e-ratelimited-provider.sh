@@ -114,11 +114,6 @@ fake429_addr="127.0.0.1:$e2e_port"
 # the file.
 sed "s|FAKE429_ADDR|$fake429_addr|" "$fixtures_dir/providers.toml" >"$HOME/.config/evener/providers.toml"
 
-# Name the isolated file explicitly: e2e_isolate_home unsets
-# EVENER_PROVIDERS_CONFIG, and the HOME-derived default is the only thing
-# that would otherwise point the hub at it.
-export EVENER_PROVIDERS_CONFIG="$HOME/.config/evener/providers.toml"
-
 echo "==> starting evener hub" >&2
 "$run/evener" hub -addr 127.0.0.1:0 -config "$fixtures_dir/hub.toml" -evener "$run/evener" >"$run/hub.log" 2>&1 &
 hub_pid=$!

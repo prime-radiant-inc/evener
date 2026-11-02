@@ -149,17 +149,6 @@ func parameterNameFromMessage(message string) string {
 	return ""
 }
 
-// responsesContentPartTypes are the content-part type tokens the Responses
-// protocol emits inside `input`. A gateway that rejects one of them is
-// rejecting the wire shape itself, so no prunable field can fix it; pinning
-// the row to the chat protocol is the remedy.
-var responsesContentPartTypes = map[string]bool{
-	"input_text":  true,
-	"input_image": true,
-	"input_file":  true,
-	"output_text": true,
-}
-
 // fieldHint picks the spec §12 hint for a rejected field: the other
 // max-tokens spelling when the name is the row's current one, a
 // fields.<name> = false pointer when the name is prunable, a protocol pin
@@ -170,8 +159,15 @@ func fieldHint(name string, res registry.Resolved) string {
 	if name == "" {
 		return genericFieldHint(ref)
 	}
-	if res.Protocol == registry.ProtocolOpenAIResponses && responsesContentPartTypes[name] {
-		return fmt.Sprintf("set protocol = %q on %s", registry.ProtocolOpenAIChat, ref)
+	if res.Protocol == registry.ProtocolOpenAIResponses {
+		// The Responses wire shape carries these content-part types inside
+		// `input`. A gateway that rejects one is rejecting the shape itself, so
+		// no prunable field can fix it; pinning the row to the chat protocol is
+		// the remedy.
+		switch name {
+		case "input_text", "input_image", "input_file", "output_text":
+			return fmt.Sprintf("set protocol = %q on %s", registry.ProtocolOpenAIChat, ref)
+		}
 	}
 	if res.Protocol == registry.ProtocolOpenAIChat {
 		current := registry.StringValue(res.Caps.MaxTokensField)

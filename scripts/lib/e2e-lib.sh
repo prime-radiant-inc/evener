@@ -168,6 +168,10 @@ e2e_isolate_home() {
 	unset XDG_STATE_HOME XDG_CONFIG_HOME XDG_CACHE_HOME
 	unset EVENER_STATE_DIR EVENER_RUN_DIR EVENER_HUB_TOKEN EVENER_HUB_ADDR EVENER_HUB_LISTEN_ADDR EVENER_HUB_URL EVENER_HUB_SPAWNED
 	unset EVENER_PROVIDERS_CONFIG EVENER_CREDENTIALS_CONFIG
+	# Pin the provider layer at the throwaway home's own file. Unsetting alone
+	# leaves the hub on the HOME-derived default, which a wrapper re-exporting
+	# the operator's path would silently outrank on the next call.
+	export EVENER_PROVIDERS_CONFIG="$HOME/.config/evener/providers.toml"
 }
 
 # e2e_wait_for_port LOG_FILE PID LABEL — poll until the process logs a port.

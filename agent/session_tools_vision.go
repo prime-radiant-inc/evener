@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"primeradiant.com/evener/agent/events"
+	"primeradiant.com/evener/agent/internal/runetrim"
 	"primeradiant.com/evener/agent/internal/tool"
 	"primeradiant.com/evener/agent/provider"
 	"primeradiant.com/evener/llm"
@@ -49,9 +50,8 @@ type visionSideChannelResult struct {
 	elapsed     time.Duration
 	usage       llm.Usage
 	outcome     visionSideChannelOutcome
-	// failureCause carries a typed provider failure's own rendering (provider,
-	// status, the provider's message, hint) for the steering and warning. Empty
-	// for untyped errors, whose transport details stay undisclosed.
+	// failureCause is the typed provider failure's bounded rendering; empty for
+	// an untyped error.
 	failureCause string
 }
 
@@ -96,17 +96,18 @@ func visionUnavailableSteering(path string) string {
 }
 
 func visionFailureSteering(path string, result visionSideChannelResult) string {
-	if result.outcome == visionSideChannelProviderFailure {
-		cause := ""
-		if result.failureCause != "" {
-			cause = " (" + result.failureCause + ")"
-		}
-		if path == "" {
-			return "Vision is unavailable because the vision provider failed" + cause + ". Use OCR or inspect the source data, or continue without vision."
-		}
-		return fmt.Sprintf("Vision is unavailable for %s because the vision provider failed%s. Use OCR or inspect the source data, or continue without vision.", strconv.Quote(path), cause)
+	if result.outcome != visionSideChannelProviderFailure {
+		return visionUnavailableSteering(path)
 	}
-	return visionUnavailableSteering(path)
+	subject := "Vision is unavailable"
+	if path != "" {
+		subject += " for " + strconv.Quote(path)
+	}
+	cause := ""
+	if result.failureCause != "" {
+		cause = " (" + result.failureCause + ")"
+	}
+	return subject + " because the vision provider failed" + cause + ". Use OCR or inspect the source data, or continue without vision."
 }
 
 // visionFailureCause extracts the diagnosable cause of a vision side-channel
@@ -120,13 +121,12 @@ func visionFailureCause(err error) string {
 	if !errors.As(err, &le) {
 		return ""
 	}
-	cause := strings.TrimSpace(le.Error())
+	cause := runetrim.OneLine(strings.TrimSpace(le.Error()))
 	if cause == "" {
 		return ""
 	}
 	if len(cause) > visionFailureCauseLimit {
-		// Drop a possibly split trailing rune rather than emit invalid UTF-8.
-		cause = strings.ToValidUTF8(cause[:visionFailureCauseLimit], "") + " …"
+		cause = runetrim.Cut(cause, visionFailureCauseLimit) + " …"
 	}
 	return cause
 }
@@ -472,16 +472,16 @@ func (s *Session) describeImageCall(ctx context.Context, r tool.ExecResult) visi
 			// so it stays fully suppressed. A typed provider error's rendering is the
 			// same disclosure the main path makes, and it is what makes a vision
 			// failure diagnosable, so it reaches the warning.
-			cause := ""
+			providerCause := ""
 			if outcome == visionSideChannelProviderFailure {
-				cause = visionFailureCause(err)
+				providerCause = visionFailureCause(err)
 			}
 			warning := "vision side-channel unavailable"
-			if cause != "" {
-				warning += ": " + cause
+			if providerCause != "" {
+				warning += ": " + providerCause
 			}
 			s.emit(events.WarningData{Message: warning})
-			return visionSideChannelResult{elapsed: elapsed, outcome: outcome, failureCause: cause}
+			return visionSideChannelResult{elapsed: elapsed, outcome: outcome, failureCause: providerCause}
 		}
 		return visionSideChannelResult{elapsed: elapsed, outcome: outcome}
 	}
