@@ -598,11 +598,11 @@ func (s *relaySession) recoverCanonicalFeed() {
 			return
 		}
 		params := s.readParams
-		// Reconnect with a subscription only while some live lease demands
-		// one. The stored params are the LAST reader's, which after a
-		// binding-retention read carries Subscribe false; replaying that
-		// verbatim would leave a live consumer without its feed.
-		params.Subscribe = params.Subscribe || s.anySubscribedLeaseLocked()
+		// The stored params are the LAST reader's, so their Subscribe flag
+		// can misstate current demand in both directions: a retention read
+		// stores false while a consumer is live, and a departed consumer
+		// leaves a stale true behind. Ask the live leases instead.
+		params.Subscribe = s.refDemandedLocked(params.Ref)
 		s.mu.Unlock()
 
 		result, err := s.read(s.ctx, nil, params)
@@ -641,17 +641,6 @@ func (s *relaySession) recoverCanonicalFeed() {
 			return
 		}
 	}
-}
-
-// anySubscribedLeaseLocked reports whether any live lease has asked the
-// daemon for a subscription. Guarded by s.mu.
-func (s *relaySession) anySubscribedLeaseLocked() bool {
-	for _, lease := range s.leases {
-		if len(lease.subscribedRefs) != 0 {
-			return true
-		}
-	}
-	return false
 }
 
 // refDemandedLocked reports whether any live lease still asks the daemon for
