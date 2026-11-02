@@ -103,6 +103,38 @@ func SessionScratchOwnerOf(dir string) string {
 	return filepath.Base(dir)
 }
 
+// SessionScratchTreeRootOf reports the root session whose tree the named
+// session scratch directory dir occupies, or "" for a disposable scratch,
+// which belongs to no tree.
+func SessionScratchTreeRootOf(dir string) string {
+	tree := scratchTreeOf(dir)
+	if tree == "" {
+		return ""
+	}
+	return strings.TrimPrefix(filepath.Base(tree), sessionScratchTreePrefix)
+}
+
+// SessionScratchDirOwned reports whether dir — a named session scratch
+// directory composed as <base>/evener-scratch-<root>/<session> — is a real
+// directory this process's user owns, together with the tree it occupies.
+// Allocation (OpenSessionScratch) and removal (RemoveSessionScratchTree) touch
+// only such directories — a scratch base is a shared temp dir where another
+// local user can plant the same names once the real tree is gone — and a hub
+// serving a session's documents from them must accept nothing looser.
+func SessionScratchDirOwned(dir string) bool {
+	tree := scratchTreeOf(dir)
+	if tree == "" {
+		return false
+	}
+	for _, entry := range []string{tree, dir} {
+		info, err := os.Lstat(entry)
+		if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 || !scratchInfoOwnedByProcess(info) {
+			return false
+		}
+	}
+	return true
+}
+
 // Named reports whether this scratch lives in a session's tree
 // (OpenSessionScratch) rather than being a disposable one (NewSessionScratch).
 // A named scratch outlives its session's end; a disposable one does not.

@@ -276,7 +276,11 @@ type SessionMeta struct {
 	ScratchTempDir string `json:"scratch_temp_dir,omitempty"`
 	// ScratchTreeRootID names the root session whose scratch tree this
 	// session's scratch lives in, when that is not the session itself: a
-	// delegate's root, kept when the delegate is resumed on its own.
+	// delegate's root, kept when the delegate is resumed on its own. Once a
+	// scratch exists it is derived from the directory the session's
+	// environment actually writes into, so a child spawned by a resumed
+	// delegate records the original root's tree, not the resumed delegate's
+	// delegate-tree root.
 	ScratchTreeRootID string `json:"scratch_tree_root_id,omitempty"`
 	// ScratchDirSessionID names the session whose directory in the scratch
 	// tree this session's scratch actually occupies, when that is not the

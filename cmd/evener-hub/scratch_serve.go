@@ -2,7 +2,6 @@ package hub
 
 import (
 	"context"
-	"os"
 
 	agentsandbox "primeradiant.com/evener/agent/sandbox"
 	"primeradiant.com/evener/agent/schema"
@@ -50,8 +49,10 @@ func sessionScratchRoot(ctx context.Context, cfg hubcore.WebConfig, ref string) 
 // that shares its parent's environment records — and the bases are the ones
 // the allocator chooses between and the removal path reclaims from: the temp
 // dir the session's daemon recorded, this process's own, then the user cache
-// dir. The first existing real directory wins; anything else (no scratch yet,
-// a cleaned tree, a symlink or file planted at the path) serves nothing.
+// dir. The first directory the session's own user allocated wins — real,
+// symlink-free, and owned, both the tree and the directory, the same
+// validation allocation applies before creating one — so a planted tree under
+// the session's names on a shared base serves nothing.
 func scratchDirFromMeta(meta schema.SessionMeta) string {
 	if schema.ValidateSessionID(meta.ID) != nil {
 		return ""
@@ -63,7 +64,7 @@ func scratchDirFromMeta(meta schema.SessionMeta) string {
 		if dir == "" {
 			continue
 		}
-		if info, err := os.Lstat(dir); err == nil && info.IsDir() && info.Mode()&os.ModeSymlink == 0 {
+		if agentsandbox.SessionScratchDirOwned(dir) {
 			return dir
 		}
 	}

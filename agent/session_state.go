@@ -348,6 +348,14 @@ func (s *Session) metaWithNotes(human, agentNote string, urls []schema.SessionUR
 		if base := local.SessionScratchBase(); base != "" {
 			scratchTempDir = base
 		}
+		// The tree recorded is the one the scratch occupies: a child spawned by
+		// a delegate resumed on its own inherits the resumed delegate's id as
+		// its delegate-tree root while its environment writes into the original
+		// root's tree, so the bookkeeping answer would name a tree nobody wrote
+		// into.
+		if root := local.SessionScratchTreeRoot(); root != "" && root != s.id {
+			scratchTreeRootID = root
+		}
 	}
 	skills := s.skillLifecycle.Clone()
 	skills.PinnedNoteGen = s.pinnedNoteGen

@@ -293,6 +293,47 @@ func TestWorktreeDelegateMetaRecordsTheScratchOwner(t *testing.T) {
 	}
 }
 
+// TestChildOfAResumedDelegateRecordsTheScratchsTreeRoot: `serve --resume
+// <delegate>` restores a delegate as the root of its children — a child
+// spawned after the resume inherits the resumed delegate's id as its
+// delegate-tree root — but the environment the child shares still writes into
+// the ORIGINAL root's tree. The meta must record the tree the scratch actually
+// occupies, or the hub composes one nobody wrote into and refuses the child's
+// scratch documents.
+func TestChildOfAResumedDelegateRecordsTheScratchsTreeRoot(t *testing.T) {
+	stateDir := t.TempDir()
+	rootID := artifactRestoreMeta(t).ID
+	resumed := artifactRestoreMeta(t)
+	resumed.IsSubagent = true
+	resumed.ScratchTreeRootID = rootID
+	env := execenv.NewLocalExecutionEnvironment(t.TempDir())
+	parent, err := RestoreSessionFromMetaWithConfig(newArtifactTestClient(), NewOpenAIProfile("gpt-5.2"), env, resumed, artifactRestoreConfig(t, stateDir))
+	if err != nil {
+		t.Fatalf("restore the resumed delegate: %v", err)
+	}
+	t.Cleanup(parent.Close)
+	mintRootScratch(t, parent)
+	if _, session := env.ScratchIdentity(); session != resumed.ID {
+		t.Fatalf("the resumed delegate's environment names %q, want the delegate %q", session, resumed.ID)
+	}
+	child := artifactRestoreMeta(t)
+	child.IsSubagent = true
+	cfg := artifactRestoreConfig(t, stateDir)
+	cfg.spawn = spawnConfig{
+		delegateController:    parent.delegateController,
+		delegateRootSessionID: parent.delegateRootSessionID,
+		parentSessionID:       parent.ID(),
+	}
+	sess, err := RestoreSessionFromMetaWithConfig(newArtifactTestClient(), NewOpenAIProfile("gpt-5.2"), env, child, cfg)
+	if err != nil {
+		t.Fatalf("restore the child: %v", err)
+	}
+	t.Cleanup(sess.Close)
+	if got := sess.Meta().ScratchTreeRootID; got != rootID {
+		t.Errorf("child of a resumed delegate records scratch tree %q, want the original root's tree %q", got, rootID)
+	}
+}
+
 // TestDelegateResumedAsRootReopensItsScratchInItsRootsTree: `serve --resume
 // <delegate>` restores a delegate as a top-level session. Its scratch is still
 // its directory in its root's tree, so it reopens what it had and goes when the

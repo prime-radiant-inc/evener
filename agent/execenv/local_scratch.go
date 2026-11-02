@@ -212,6 +212,16 @@ func (e *LocalExecutionEnvironment) SessionScratchBase() string {
 	return sandbox.SessionScratchBaseOf(e.sessionScratchPath())
 }
 
+// SessionScratchTreeRoot reports the root session whose scratch tree this
+// env's session scratch occupies — derived from the scratch path itself, the
+// one uniform authority across re-rooted clones, adopted scratches, and
+// wrapperless envs — or "" when no scratch is provisioned or it is a
+// disposable one, which belongs to no tree. Like SessionScratchDir it never
+// provisions one: reporting a path must not create it.
+func (e *LocalExecutionEnvironment) SessionScratchTreeRoot() string {
+	return sandbox.SessionScratchTreeRootOf(e.sessionScratchPath())
+}
+
 // WithSandboxInvocationGrant returns a short-lived clone of this env whose file-tool
 // enforcement layer additionally permits EXACTLY the one path — the M7 escalation
 // approve path re-dispatches a single denied tool call through it. The clone shares

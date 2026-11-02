@@ -319,6 +319,49 @@ func TestDocFile_ServesTheAllocatedCacheBaseOverARetainedTempTree(t *testing.T) 
 	}
 }
 
+// A planted tree must not be served. Scratch bases are shared temp dirs: once
+// an archived session's real tree is gone, another local user can create the
+// same tree and session names and fill them with files. The doc route accepts
+// only a scratch the session's own user allocated — a real, symlink-free,
+// process-owned tree and directory — the same validation allocation and
+// removal apply before touching one.
+func TestDocFile_RefusesAPlantedScratchTree(t *testing.T) {
+	// Not parallel: t.Setenv redirects TMPDIR, which names this process's own
+	// default scratch base, for the duration of the test.
+	base := t.TempDir()
+	t.Setenv("TMPDIR", base)
+	root := t.TempDir()
+	proj := filepath.Join(root, "projects", "project-docs-0000000000")
+	sessionID := "02wMz5Txv1C3Hut0M8GCeB"
+	if err := os.MkdirAll(filepath.Join(proj, "sessions"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := schema.SaveSessionMeta(proj, schema.SessionMeta{
+		ID: sessionID, UpdatedAt: time.Now(), OriginalPrompt: "archived session",
+		EnvInfo: schema.EnvironmentInfo{WorkingDir: t.TempDir()},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	tree := filepath.Join(base, "evener-scratch-"+sessionID)
+	attacker := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(attacker, sessionID), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(attacker, sessionID, "shot.png")
+	if err := os.WriteFile(target, []byte("ATTACKER TREE"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(attacker, tree); err != nil {
+		t.Skipf("this host cannot create the planted symlink: %v", err)
+	}
+	idx := newRebuiltPastIndex(t, filepath.Join(root, "projects", "*"))
+	web := NewWebServer(hubcore.WebConfig{HubAddr: "127.0.0.1:9180", Past: idx})
+	rec := docRawRequest(t, web, sessionID, target)
+	if rec.Code == http.StatusOK || bytes.Contains(rec.Body.Bytes(), []byte("ATTACKER TREE")) {
+		t.Fatalf("a scratch tree planted under a session's names must not be served, got %d body=%q", rec.Code, rec.Body.String())
+	}
+}
+
 // A session whose scratch directory never existed (an old session, a cleaned
 // tree) advertises no scratch root and serves none: its scratch-shaped paths
 // fall back to the cwd refusal rather than a second root.
