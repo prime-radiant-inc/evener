@@ -1,9 +1,11 @@
 package agent
 
 import (
+	"context"
 	"testing"
 
 	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/schema"
 )
 
 // TestSessionHasWakeableWork pins every wake source hasWakeableWork counts
@@ -78,5 +80,22 @@ func TestSessionHasWakeableWork(t *testing.T) {
 				t.Fatalf("hasWakeableWork = %v, want %v", got, tc.want)
 			}
 		})
+	}
+}
+
+func TestWaitingOnWorkRefusalKeepsTheSessionAlive(t *testing.T) {
+	t.Parallel()
+	s, adapter := newExecutionSession(t)
+	adapter.script(
+		respond(toolCallResponse(communicateCallArgs("comm-1", map[string]any{"message": "starting the rebase now", "end_turn": true, "end_reason": "waiting_on_work"}))),
+		respond(toolCallResponse(communicateCallArgs("comm-2", map[string]any{"message": "done", "end_turn": true}))),
+	)
+	if _, err := s.ProcessInput(context.Background(), "talk", nil); err != nil {
+		t.Fatal(err)
+	}
+	s.Close()
+	communicates := entriesOfKind(transcriptTurnsOf(t, s), schema.TurnCommunicate)
+	if len(communicates) != 1 || communicates[0].Communicate.EndReason != "done" {
+		t.Fatalf("communicates = %+v; want exactly the done call from the correction round", communicates)
 	}
 }

@@ -148,6 +148,13 @@ type toolDeps struct {
 	// end_turn=true is called while work is still in flight.
 	runningJobIDs func() []string
 
+	// wakeableWork reports whether anything can provably wake this session once
+	// its current turn ends and it rests: pending autonomy input, running jobs
+	// or detached processes, a pending question, or an armed watch in any
+	// manager that can deliver to this session. The communicate handler refuses
+	// end_reason waiting_on_work when it returns false. Nil never refuses.
+	wakeableWork func() bool
+
 	// turnEndsProcess mirrors SessionConfig.TurnEndsProcess so the end_turn
 	// warning can tell the truth about what happens to those jobs. Captured by
 	// value: the flag is fixed for a session's lifetime.
@@ -378,6 +385,7 @@ func newToolDeps(s *Session) *toolDeps {
 		skillInventory:         s.skillInventorySnapshot,
 		setCommunicateTerminal: s.acceptCommunicateTerminal,
 		runningJobIDs:          func() []string { return sessionRunningWorkIDs(s) },
+		wakeableWork:           s.hasWakeableWork,
 		turnEndsProcess:        s.cfg.TurnEndsProcess,
 		offersEndReason:        s.hasHumanPartnerToAsk(),
 		memoryToolsStripped:    memoryNamespaceUnavailable(s.cfg),
