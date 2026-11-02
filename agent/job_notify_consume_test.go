@@ -344,7 +344,7 @@ func TestTerminalJobStatusReadContinuesCurrentTurn(t *testing.T) {
 		return s.peekNotifications() > 0
 	})
 
-	adapter.steps = []func(llm.Request) llm.Response{
+	adapter.setSteps([]func(llm.Request) llm.Response{
 		func(llm.Request) llm.Response {
 			return llm.Response{Message: llm.Message{
 				Role: llm.RoleAssistant,
@@ -360,7 +360,7 @@ func TestTerminalJobStatusReadContinuesCurrentTurn(t *testing.T) {
 			}}
 		},
 		func(llm.Request) llm.Response { return agenttest.FinalResponse("continued") },
-	}
+	})
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second) // TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
 	defer cancel()

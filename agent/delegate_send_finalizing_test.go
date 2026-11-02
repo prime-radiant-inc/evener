@@ -761,9 +761,9 @@ func TestDelegateSendReleasesAResidentReplacedAfterItsCommit(t *testing.T) {
 // stop will never hand it (#3502).
 func TestDelegateSendStartAStopEndedIsReportedStopped(t *testing.T) {
 	fixture := newColdDelegateFixture(t, "")
-	fixture.adapter.steps = []func(llm.Request) llm.Response{
+	fixture.adapter.setSteps([]func(llm.Request) llm.Response{
 		func(llm.Request) llm.Response { return agenttest.FinalResponse("warm result") },
-	}
+	})
 	root := restoreSupervisionRoot(t, fixture, nil)
 	warmStableSupervisionDelegate(t, root, fixture)
 	waitForStableSupervisionRun(t, root, fixture.childID)
