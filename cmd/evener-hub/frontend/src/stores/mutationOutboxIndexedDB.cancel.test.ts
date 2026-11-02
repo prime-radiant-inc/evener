@@ -308,7 +308,7 @@ describe("MutationOutboxIndexedDB cancellation", () => {
   test.each([
     ["evidenced", ["stopEpochAtEnqueue"]],
     ["unknown evidence", ["attempted", "unresolvedAttempts", "stopEpochAtEnqueue"]],
-  ] as const)("a legacy %s row without a capture never redispatches past a historical Stop", async (shape, fields) => {
+  ] as const)("a legacy %s row without a capture never redispatches past a historical Stop", async (_shape, fields) => {
     const storage = store();
     const record = await storage.enqueueIntent(intent("legacy pre-fence row"));
     // Evidence first, so the Stop's own cancel scan skips the row: the

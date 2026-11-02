@@ -650,7 +650,10 @@ describe("durable recovery rows", () => {
     await user.click(within(canceledRow).getByRole("button", { name: "Edit message" }));
     // The edit moves the row to recovery through the row's own destination
     // identity - the sending pane's ref would strand the surfaced row inert.
-    expect(onEditRecovery).toHaveBeenCalledTimes(1);
+    // The action is fire-and-forget (it claims the row in storage before the
+    // callback fires), so wait for it rather than racing the microtask queue
+    // under full-battery fan-out.
+    await waitFor(() => expect(onEditRecovery).toHaveBeenCalledTimes(1));
     expect(onEditRecovery.mock.calls[0]?.[0]).toMatchObject({
       clientMutationId: row.clientMutationId,
       targetRef: "ref_b",

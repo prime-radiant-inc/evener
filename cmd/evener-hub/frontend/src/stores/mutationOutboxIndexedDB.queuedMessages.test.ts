@@ -663,7 +663,7 @@ test("preserveRecoveryComposition keeps the displayed-session association of a r
   if (sent.status !== "sent") throw new Error(`resend did not send: ${sent.status}`);
   // The retargeted editing recovery the displayed session's tray holds.
   const original = await f.storage.transferToRecovery(sent.record.clientMutationId, "editing");
-  if (!original || original.displayedRef !== "local:queued") throw new Error("missing retargeted recovery");
+  if (original?.displayedRef !== "local:queued") throw new Error("missing retargeted recovery");
   const fresh = await f.storage.preserveRecoveryComposition(
     original,
     input,
