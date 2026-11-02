@@ -526,6 +526,7 @@ describe("TranscriptBody", () => {
         toolCalls: false,
         reasoning: false,
         expandByDefault: false,
+        thinkingOpenByDefault: false,
       });
       let hideTools: () => void = () => {
         throw new Error("focus fallback harness did not mount");
@@ -868,6 +869,7 @@ describe("TranscriptBody", () => {
       toolCalls: false,
       reasoning: false,
       expandByDefault: true,
+      thinkingOpenByDefault: true,
     });
     const intentClosed = makeTranscriptDisplayConfig({
       kind: "custom",
@@ -875,6 +877,7 @@ describe("TranscriptBody", () => {
       toolCalls: false,
       reasoning: false,
       expandByDefault: false,
+      thinkingOpenByDefault: false,
     });
     const { rerender } = render(
       <TranscriptBody model={fixture} config={intentOpen} surface="preview" disclosureScope="preview:single" />,
@@ -965,6 +968,7 @@ describe("TranscriptBody", () => {
       toolCalls: false,
       reasoning: false,
       expandByDefault: true,
+      thinkingOpenByDefault: true,
     });
     const initial = { ...crossTurnFixture, turns: crossTurnFixture.turns.slice(0, 2) } as ThreadModel;
     const finalTurn = crossTurnFixture.turns[2];

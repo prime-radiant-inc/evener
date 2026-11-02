@@ -138,7 +138,14 @@ test("sets and clears only the browser-local value for the selected layout", asy
 
 test("keeps Custom and Advanced extras truthful in the editor summary", () => {
   const custom = makeTranscriptDisplayConfig(
-    { kind: "custom", toolIntent: true, toolCalls: false, reasoning: true, expandByDefault: false },
+    {
+      kind: "custom",
+      toolIntent: true,
+      toolCalls: false,
+      reasoning: true,
+      expandByDefault: false,
+      thinkingOpenByDefault: false,
+    },
     { roundTimings: true, systemEvents: true },
   );
   seedStore({ local: { desktop: custom } });
@@ -309,7 +316,14 @@ test.each(["desktop", "mobile"] as const)(
   async (layout) => {
     const user = userEvent.setup();
     const custom = makeTranscriptDisplayConfig(
-      { kind: "custom", toolIntent: false, toolCalls: true, reasoning: true, expandByDefault: true },
+      {
+        kind: "custom",
+        toolIntent: false,
+        toolCalls: true,
+        reasoning: true,
+        expandByDefault: true,
+        thinkingOpenByDefault: true,
+      },
       { roundTimings: true, systemEvents: true },
     );
     transcriptDisplayStore.getState().setLocal(layout, custom);

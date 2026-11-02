@@ -81,6 +81,13 @@ type TranscriptDisplayCustomContent struct {
 	ToolCalls       bool `json:"toolCalls"`
 	Reasoning       bool `json:"reasoning"`
 	ExpandByDefault bool `json:"expandByDefault"`
+	// Initial state of thinking disclosures. Canonical output always carries
+	// it; on input the field is optional so the custom vector as shipped
+	// before it (2026-08..10) keeps decoding, an absent field meaning what
+	// expandByDefault meant at the time. Removal condition: drop the
+	// optional-input acceptance once the minimum supported client bundle
+	// encodes the field.
+	ThinkingOpenByDefault bool `json:"thinkingOpenByDefault"`
 }
 
 type TranscriptDisplayContent struct {
@@ -302,6 +309,16 @@ func DecodeTranscriptDisplayDefaultsPatchParams(raw json.RawMessage) (Transcript
 		}
 		if err := requireTranscriptDisplayBooleans(customFields, "toolIntent", "toolCalls", "reasoning", "expandByDefault"); err != nil {
 			return TranscriptDisplayDefaultsPatchParams{}, fmt.Errorf("custom: %w", err)
+		}
+		// thinkingOpenByDefault is optional on input (see the struct's own
+		// comment): present, it must be a boolean; absent, it means what
+		// expandByDefault meant at the time the shape shipped.
+		if _, ok := customFields["thinkingOpenByDefault"]; ok {
+			if err := requireTranscriptDisplayBooleans(customFields, "thinkingOpenByDefault"); err != nil {
+				return TranscriptDisplayDefaultsPatchParams{}, fmt.Errorf("custom: %w", err)
+			}
+		} else if params.Config.Content.Custom != nil {
+			params.Config.Content.Custom.ThinkingOpenByDefault = params.Config.Content.Custom.ExpandByDefault
 		}
 	default:
 		return TranscriptDisplayDefaultsPatchParams{}, fmt.Errorf("invalid transcript content kind %q", params.Config.Content.Kind)

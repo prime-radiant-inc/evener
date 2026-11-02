@@ -552,6 +552,7 @@ test("a growing Chat group keeps its first-action identity and manually opened s
     toolCalls: false,
     reasoning: false,
     expandByDefault: false,
+    thinkingOpenByDefault: false,
   });
   const first = item({
     id: "stream-first",
@@ -586,6 +587,7 @@ test("a growing Intent group keeps its first-action identity and manually closed
     toolCalls: false,
     reasoning: false,
     expandByDefault: true,
+    thinkingOpenByDefault: true,
   });
   const first = item({
     id: "stream-first",

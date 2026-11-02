@@ -34,6 +34,9 @@ export interface ContentVector {
   readonly toolCalls: boolean;
   readonly reasoning: boolean;
   readonly expandByDefault: boolean;
+  /** Initial state of THINKING disclosures (never a content-visibility gate):
+   * see informationalNoticesVisible's field list. */
+  readonly thinkingOpenByDefault: boolean;
 }
 
 export type ContentSelection =
@@ -64,11 +67,23 @@ export const CONTENT_LEVELS = TRANSCRIPT_LEVELS;
 export const HOOK_EXIT_DETAILS = TRANSCRIPT_HOOK_EXIT_DETAILS;
 
 const CONTENT_VECTORS: Readonly<Record<ContentLevel, ContentVector>> = {
-  chat: { toolIntent: true, toolCalls: false, reasoning: false, expandByDefault: false },
-  intent: { toolIntent: true, toolCalls: false, reasoning: false, expandByDefault: false },
-  tools: { toolIntent: true, toolCalls: true, reasoning: false, expandByDefault: false },
-  activity: { toolIntent: true, toolCalls: true, reasoning: false, expandByDefault: true },
-  full: { toolIntent: true, toolCalls: true, reasoning: true, expandByDefault: true },
+  chat: { toolIntent: true, toolCalls: false, reasoning: false, expandByDefault: false, thinkingOpenByDefault: false },
+  intent: {
+    toolIntent: true,
+    toolCalls: false,
+    reasoning: false,
+    expandByDefault: false,
+    thinkingOpenByDefault: false,
+  },
+  tools: { toolIntent: true, toolCalls: true, reasoning: false, expandByDefault: false, thinkingOpenByDefault: false },
+  activity: {
+    toolIntent: true,
+    toolCalls: true,
+    reasoning: false,
+    expandByDefault: true,
+    thinkingOpenByDefault: false,
+  },
+  full: { toolIntent: true, toolCalls: true, reasoning: true, expandByDefault: true, thinkingOpenByDefault: true },
 };
 
 const ADVANCED_DEFAULTS: TranscriptDisplayAdvancedV1 = {
@@ -80,12 +95,25 @@ const ADVANCED_DEFAULTS: TranscriptDisplayAdvancedV1 = {
   hookExits: "none",
 };
 
+// The vector's two accepted input shapes: the canonical five-field vector,
+// and the older four-field one shipped before thinkingOpenByDefault
+// (2026-08..10) that decode treats as thinkingOpenByDefault = expandByDefault.
+const VECTOR_CONTENT_FIELDS = ["toolIntent", "toolCalls", "reasoning", "expandByDefault"] as const;
+const VECTOR_FIELDS = [...VECTOR_CONTENT_FIELDS, "thinkingOpenByDefault"] as const;
+
 function cloneVector(vector: ContentVector): ContentVector {
   return {
     toolIntent: vector.toolIntent,
     toolCalls: vector.toolCalls,
     reasoning: vector.reasoning,
     expandByDefault: vector.expandByDefault,
+    // A decoded legacy vector reaches here with the field undefined at
+    // runtime despite the type: `??` falls through only on that shape, and
+    // expandByDefault is the fixup because it is the switch that opened
+    // reasoning-on thinking before the dedicated field existed. Removal
+    // condition: delete with VECTOR_CONTENT_FIELDS once the minimum
+    // supported client bundle encodes the five-field shape.
+    thinkingOpenByDefault: vector.thinkingOpenByDefault ?? vector.expandByDefault,
   };
 }
 
@@ -128,26 +156,24 @@ function isBoolean(value: unknown): value is boolean {
   return typeof value === "boolean";
 }
 
+function isBooleanFields(value: Record<string, unknown>, keys: readonly string[]): boolean {
+  return keys.every((key) => isBoolean(value[key]));
+}
+
 function isContentVector(value: unknown): value is ContentVector {
   return (
     isPlainObject(value) &&
-    hasExactKeys(value, ["toolIntent", "toolCalls", "reasoning", "expandByDefault"]) &&
-    isBoolean(value.toolIntent) &&
-    isBoolean(value.toolCalls) &&
-    isBoolean(value.reasoning) &&
-    isBoolean(value.expandByDefault)
+    ((hasExactKeys(value, VECTOR_FIELDS) && isBooleanFields(value, VECTOR_FIELDS)) ||
+      (hasExactKeys(value, VECTOR_CONTENT_FIELDS) && isBooleanFields(value, VECTOR_CONTENT_FIELDS)))
   );
 }
 
 function isCustomSelection(value: unknown): value is { readonly kind: "custom" } & ContentVector {
   return (
     isPlainObject(value) &&
-    hasExactKeys(value, ["kind", "toolIntent", "toolCalls", "reasoning", "expandByDefault"]) &&
     value.kind === "custom" &&
-    isBoolean(value.toolIntent) &&
-    isBoolean(value.toolCalls) &&
-    isBoolean(value.reasoning) &&
-    isBoolean(value.expandByDefault)
+    ((hasExactKeys(value, ["kind", ...VECTOR_FIELDS]) && isBooleanFields(value, VECTOR_FIELDS)) ||
+      (hasExactKeys(value, ["kind", ...VECTOR_CONTENT_FIELDS]) && isBooleanFields(value, VECTOR_CONTENT_FIELDS)))
   );
 }
 
@@ -159,17 +185,20 @@ export function presetContent(level: ContentLevel): ContentVector {
  * the custom selection's own. The one lookup the web and native surfaces share,
  * so they cannot drift on what a level shows. */
 export function contentVectorForConfig(config: TranscriptDisplayConfigV1): ContentVector {
-  return config.content.kind === "preset" ? presetContent(config.content.level) : config.content;
+  return config.content.kind === "preset" ? presetContent(config.content.level) : cloneVector(config.content);
 }
 
 /** The one rule both the transcript projector and this module's category
  * inventory answer from: informational notices (coded "no action needed"
  * warnings, and tool-repair notices - the repair already succeeded) show only
  * at full, the level that shows everything: the full preset, or a custom
- * vector with every field of full's turned on. */
+ * vector with every field of full's turned on. The comparison names the
+ * CONTENT-visibility fields deliberately: thinkingOpenByDefault is a
+ * presentation default (ruling: it takes over exactly the thinking
+ * disclosures' initial state) and must never gate content visibility. */
 export function informationalNoticesVisible(vector: ContentVector): boolean {
   const full = CONTENT_VECTORS.full;
-  return (Object.keys(full) as (keyof ContentVector)[]).every((field) => vector[field] === full[field]);
+  return VECTOR_CONTENT_FIELDS.every((field) => vector[field] === full[field]);
 }
 
 /** The one rule the transcript projector and the category inventory answer
@@ -181,6 +210,14 @@ export function informationalNoticesVisible(vector: ContentVector): boolean {
  * calls, reasoning and expansion — never steering — so daemon steering shows
  * for them as it does at intent and above. */
 export function hidesDaemonSteering(content: ContentSelection): boolean {
+  return content.kind === "preset" && content.level === "chat";
+}
+
+/** The one rule the transcript projector answers from: the chat preset stays
+ * conversation-only, so a SETTLED thought keeps no compact trace row there
+ * (its live placeholder and critical rows still show, as they always have).
+ * Custom selections model content fields, never this preset posture. */
+export function hidesThinkingTraces(content: ContentSelection): boolean {
   return content.kind === "preset" && content.level === "chat";
 }
 
@@ -499,6 +536,7 @@ export type TranscriptDisplayCategory =
   | "toolCalls"
   | "reasoning"
   | "expandedDetails"
+  | "openThinking"
   | "informationalNotices"
   | "daemonSteering"
   | "sharedNotes"
@@ -524,6 +562,7 @@ export function visibleCategoryInventory(config: TranscriptDisplayConfigV1): Vis
     ["toolCalls", "toolCalls"],
     ["reasoning", "reasoning"],
     ["expandByDefault", "expandedDetails"],
+    ["thinkingOpenByDefault", "openThinking"],
   ];
   for (const [field, category] of contentCategories) (content[field] ? visible : hidden).push(category);
   // Informational notices answer from the same rule the projector gates them

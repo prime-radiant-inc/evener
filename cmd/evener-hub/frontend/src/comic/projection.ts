@@ -77,6 +77,7 @@ export const COMIC_TRANSCRIPT_CONFIG: TranscriptDisplayConfigV1 = makeTranscript
   toolCalls: true,
   reasoning: true,
   expandByDefault: false,
+  thinkingOpenByDefault: false,
 });
 
 function textOf(item: ItemModel): string {

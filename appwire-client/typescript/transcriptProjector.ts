@@ -16,6 +16,7 @@ import {
   contentVectorForConfig,
   type HookExitDetail,
   hidesDaemonSteering,
+  hidesThinkingTraces,
   informationalNoticesVisible,
   normalizeConfig,
   sharedNotesVisible,
@@ -46,10 +47,12 @@ export type ProjectedEntry =
     }
   | {
       /**
-       * A content-free placeholder for a reasoning item that is the turn's
-       * live current thought while the `reasoning` content flag is off. It
-       * carries the source item only so the renderer can estimate a streaming
-       * token count; the thought's text is never rendered from this entry.
+       * A compact trace row for a reasoning item while the `reasoning`
+       * content flag is off: live current thoughts AND settled thoughts at
+       * every level but the chat preset. The renderer derives live (the
+       * pulsing "Thinking…" label, streaming body) vs settled (the collapsed
+       * "Thought · ~N tokens" disclosure) from the item and turn; the
+       * thought's text renders only inside the unfoldable disclosure.
        */
       kind: "thinking";
       id: string;
@@ -367,15 +370,18 @@ function decisionFor(
 
   if (item.type === "reasoning") {
     if (vector.reasoning) return "item";
-    // With reasoning off, a live current thought becomes a content-free
-    // placeholder: the reader sees that the agent is thinking without the
-    // stream itself. Only an in-progress turn takes the placeholder - a
-    // terminal turn's agent is not thinking any more - and an in-progress
-    // thought that is NOT the turn's tail is hidden (the renderer would not
-    // stream it either). Failure and terminal-turn visibility stay so a broken
-    // turn still explains itself.
+    // With reasoning off, a live current thought becomes a compact trace
+    // row: a collapsed, reader-unfoldable disclosure whose closed label is
+    // the pulsing "Thinking…" placeholder grammar. Only an in-progress turn
+    // takes the live treatment - a terminal turn's agent is not thinking
+    // any more.
     if (isLiveCurrentReasoning(item, turn)) return "thinking";
-    return hasFailureStatus(item) || isTerminalTurn(turn) ? "critical" : "hidden";
+    if (hasFailureStatus(item) || isTerminalTurn(turn)) return "critical";
+    // A settled healthy thought stays as a compact trace row at every level
+    // but the chat preset, which stays conversation-only (see
+    // hidesThinkingTraces). The renderer derives live vs settled itself; a
+    // stale inProgress item on a completed turn renders settled.
+    return hidesThinkingTraces(config.content) ? "hidden" : "thinking";
   }
 
   if (item.type === "systemMessage") return systemDecision(item, config, vector);
