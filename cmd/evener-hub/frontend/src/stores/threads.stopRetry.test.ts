@@ -2335,6 +2335,67 @@ test("a Send pressed before a foreign Stop that canceled the drive stays cancele
   expect(resumeAttempts).toBe(1);
 });
 
+// The fired retry of an identity-changing arm carries the resumed identity's
+// fences, but a press joining it BEFORE adoption snapshots only the original
+// ref. A Stop on the inherited identity then cancels the drive before any
+// resume answer - and the press must not read as fresh intent through the
+// original ref's untouched fences: the Stop on that identity was the user's
+// last word.
+test("a Send pressed before a Stop on the inherited identity stays canceled", async ({ onTestFinished }) => {
+  const scheduledResumeRetries = trackScheduledResumeRetries(onTestFinished);
+  const ref = "local:pre-inherited-stop-press-stays-canceled";
+  const resumedRef = "local:pre-inherited-stop-press-stays-canceled-2";
+  const storage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(storage);
+  const fake = connectMutationClient();
+  const { rejectHydration } = stageResumedIdentityFailure(fake, ref, resumedRef);
+  fake.on("thread/shutdown", () => ({}));
+  await threadsStore.getState().ensureThread(ref);
+  await threadsStore.getState().ensureThread(resumedRef);
+  const owner = acquireBackgroundThread(resumedRef);
+  await owner.ready;
+  await flushIndexedDBUntil(() => false);
+  const drive = threadsStore.getState().resumeSession(ref);
+  await waitFor(() => expect(fake.calls.filter((call) => call.method === "thread/resume")).toHaveLength(1));
+  rejectHydration(new Error("connection reset by peer"));
+  await drive;
+  await waitFor(() => expect(scheduledResumeRetries).toHaveLength(1));
+  // The fired drive parks on its pre-request read of the INHERITED identity's
+  // epoch (the fire's own re-check reads both refs first); the press joins it
+  // there, before it could adopt the inherited identity.
+  let releaseHeldResumedRead!: () => void;
+  const heldResumedRead = new Promise<void>((resolve) => {
+    releaseHeldResumedRead = resolve;
+  });
+  let epochReads = 0;
+  const realReadStopEpoch = storage.readStopEpoch.bind(storage);
+  storage.readStopEpoch = async (targetRef: string) => {
+    epochReads += 1;
+    const value = await realReadStopEpoch(targetRef);
+    if (epochReads === 4) await heldResumedRead;
+    return value;
+  };
+  act(() => {
+    scheduledResumeRetries[0]?.fire();
+  });
+  await waitFor(() => expect(epochReads).toBe(4));
+  const joined = threadsStore.getState().resumeSession(ref);
+  // The user shuts the INHERITED session down from another pane of this page.
+  await threadsStore.getState().shutdown(resumedRef);
+  await act(async () => {
+    releaseHeldResumedRead();
+  });
+  await flushIndexedDBUntil(() => false);
+  await flushMicrotasks();
+  await flushIndexedDBUntil(() => false);
+  await flushMicrotasks();
+  await joined;
+  // No drive of the press's own starts: the Stop on the inherited identity
+  // supersedes it.
+  expect(fake.calls.filter((call) => call.method === "thread/resume")).toHaveLength(1);
+  await owner.release();
+});
+
 // The fire-time comparison reads the epoch, and the attempt it wakes reads it
 // AGAIN before its request goes out. A Stop from another tab can land between
 // those two reads: the fire's snapshot predates the bump and passes, and an

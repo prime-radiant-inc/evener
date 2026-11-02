@@ -2830,6 +2830,11 @@ interface ResumeDrive {
   // own drive starts. Pre-Stop joins leave it unset - their Stop was the
   // user's last word, and the pressed rows stay parked.
   restartAfterSettle?: boolean;
+  // The resumed identity this drive was armed to speak for, before adoption
+  // gives it a targetRef of its own: a press joining the un-adopted drive
+  // snapshots this identity's fences too, or a Stop of that identity reads
+  // as fresh intent through the original ref's untouched fences.
+  inheritedResumed?: ResumedStopFence;
 }
 const inFlightResumes = new Map<string, ResumeDrive>();
 
@@ -2881,8 +2886,13 @@ const pressJoinedResumes = new Map<
   {
     generation: number;
     target?: { ref: string; generation: number };
+    // The inherited identity an un-adopted armed drive speaks for: a Stop of
+    // it must be visible to the join check even though the drive's targetRef
+    // is still the original ref.
+    inheritedTarget?: { ref: string; generation: number };
     epoch: Promise<number | undefined>;
     targetEpoch?: Promise<number | undefined>;
+    inheritedTargetEpoch?: Promise<number | undefined>;
   }
 >();
 
@@ -2911,14 +2921,30 @@ async function resumeFencedForSend(ref: string, automatic = false, inherited: In
   const existing = inFlightResumes.get(ref);
   if (existing !== undefined) {
     if (!automatic) {
+      // The drive a press joins speaks for the original ref always, the
+      // identity it has already adopted (target), and - for a fired retry
+      // that has not adopted yet - the inherited identity its arm carried.
+      // The marker snapshots every one of those identities' fences, so a
+      // Stop landing on ANY of them after the press is visible to the
+      // restart check below.
+      const joinedInherited =
+        existing.targetRef === ref && existing.inheritedResumed !== undefined
+          ? {
+              ref: existing.inheritedResumed.ref,
+              generation: userIntentStopGenerations.get(existing.inheritedResumed.ref) ?? 0,
+            }
+          : undefined;
       pressJoinedResumes.set(ref, {
         generation: userIntentStopGenerations.get(ref) ?? 0,
         target:
           existing.targetRef !== ref
             ? { ref: existing.targetRef, generation: userIntentStopGenerations.get(existing.targetRef) ?? 0 }
             : undefined,
+        inheritedTarget: joinedInherited,
         epoch: readDurableStopEpoch(mutationRuntime, ref),
         targetEpoch: existing.targetRef !== ref ? readDurableStopEpoch(mutationRuntime, existing.targetRef) : undefined,
+        inheritedTargetEpoch:
+          joinedInherited !== undefined ? readDurableStopEpoch(mutationRuntime, joinedInherited.ref) : undefined,
       });
     }
     return existing.promise;
@@ -2928,6 +2954,7 @@ async function resumeFencedForSend(ref: string, automatic = false, inherited: In
     promise: Promise.resolve().then(() => runResumeFencedForSend(ref, drive, stopBaseline, inherited)),
     targetRef: ref,
     automatic,
+    inheritedResumed: inherited.resumed,
   };
   // Install the owner before resumeThread can reconnect and publish ready.
   inFlightResumes.set(ref, drive);
@@ -3259,35 +3286,45 @@ async function runResumeFencedForSend(
       // fresh user intent: the Send pressed on an already-stopped session
       // asks for a resume of its own, and its row must not park forever
       // because it happened to ride this doomed drive. The join's snapshot
-      // separates the two: generations unchanged since the press mean no Stop
-      // has superseded it. An identity the drive adopted only after the press
-      // joined is not in the snapshot - the Stop that canceled on it may
-      // predate the press, unknowably - so that press stays canceled.
-      // A drive whose resume never answered has adopted nothing, so
-      // resumedRef is undefined - that is the ORIGINAL ref for this check,
-      // not a third identity.
+      // separates the two: every identity the drive spoke for - the
+      // original ref, the identity it had already adopted, and the inherited
+      // identity its armed retry carried before adoption - fences the press
+      // once the press snapshotted it, so a Stop landing on ANY of them
+      // after the press reads as the user's later word and keeps the press
+      // canceled. An identity the drive adopted only after the press joined
+      // is not in the snapshot - the Stop that canceled on it may predate
+      // the press, unknowably - so that press stays canceled.
       const joinIdentity = resumedRef ?? ref;
       if (join !== undefined) {
+        const snapshottedIdentities = [join.target, join.inheritedTarget];
+        const adoptedKnown =
+          joinIdentity === ref
+            ? join.target === undefined
+            : snapshottedIdentities.some((entry) => entry !== undefined && entry.ref === joinIdentity);
         const generationsUnchanged =
           join.generation === (userIntentStopGenerations.get(ref) ?? 0) &&
-          (joinIdentity === ref
-            ? join.target === undefined
-            : join.target !== undefined &&
-              join.target.ref === joinIdentity &&
-              join.target.generation === (userIntentStopGenerations.get(joinIdentity) ?? 0));
+          adoptedKnown &&
+          snapshottedIdentities.every(
+            (entry) => entry === undefined || entry.generation === (userIntentStopGenerations.get(entry.ref) ?? 0),
+          );
         // A Stop another tab lands is invisible to the page's generations:
         // it is visible only in the durable epoch, so when a durable check
         // did the canceling the press survives only if the epochs it
-        // arrived at are also unchanged since it. A local Stop never reaches
-        // this comparison: the generations arbitrate it exactly, and the
-        // press's own epoch read may predate that Stop's still-in-flight
-        // durable write. Unread epochs on both sides compare equal - the
-        // same store cannot have recorded a Stop an unread snapshot missed.
+        // arrived at are also unchanged since it, on every snapshotted
+        // identity. A local Stop never reaches this comparison: the
+        // generations arbitrate it exactly, and the press's own epoch read
+        // may predate that Stop's still-in-flight durable write. Unread
+        // epochs on both sides compare equal - the same store cannot have
+        // recorded a Stop an unread snapshot missed.
         const epochsUnchanged = durableStopCanceled
           ? (await join.epoch) === (await readDurableStopEpoch(mutationRuntime, ref)) &&
             (join.target === undefined || join.targetEpoch === undefined
               ? true
-              : (await join.targetEpoch) === (await readDurableStopEpoch(mutationRuntime, joinIdentity)))
+              : (await join.targetEpoch) === (await readDurableStopEpoch(mutationRuntime, join.target.ref))) &&
+            (join.inheritedTarget === undefined || join.inheritedTargetEpoch === undefined
+              ? true
+              : (await join.inheritedTargetEpoch) ===
+                (await readDurableStopEpoch(mutationRuntime, join.inheritedTarget.ref)))
           : true;
         if (generationsUnchanged && epochsUnchanged) {
           drive.restartAfterSettle = true;
