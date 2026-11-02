@@ -859,6 +859,48 @@ exit 2
 	}
 }
 
+// TestListEvenerLaunchModelContractCarriesEffortLevels: the spawn composer
+// builds its effort options from the served descriptor's ladder
+// (catalogEffortLevels), so the child's reasoning-effort facts must survive
+// the parse instead of being flattened to provider/model - a flattened row
+// falls back to a generic ladder, and the composer's levels stop matching the
+// running session's.
+func TestListEvenerLaunchModelContractCarriesEffortLevels(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	bin := filepath.Join(dir, "fake-evener")
+	script := `#!/bin/sh
+if [ "$1" = "launch-check" ]; then
+	  printf '{"protocol":"evener-appwire-v7","models":[{"provider":"lunaroute","model":"glm-5.3","reasoningEffortLevels":["low","high","max"],"supportsReasoning":true},{"provider":"lunaroute","model":"plain"}]}\n'
+  exit 0
+fi
+exit 2
+`
+	writeFakeEvener(t, bin, script)
+
+	resp, err := listEvenerLaunchModelContract(context.Background(), bin, nil)
+	if err != nil {
+		t.Fatalf("listEvenerLaunchModelContract: %v", err)
+	}
+	if len(resp.Data) != 2 {
+		t.Fatalf("data=%+v, want two models", resp.Data)
+	}
+	glm := resp.Data[0]
+	if glm.Provider != "lunaroute" || glm.Model != "glm-5.3" {
+		t.Fatalf("descriptor=%+v, want lunaroute/glm-5.3", glm)
+	}
+	if !slices.Equal(glm.ReasoningEffortLevels, []string{"low", "high", "max"}) {
+		t.Fatalf("reasoningEffortLevels=%v, want the ladder the contract carried", glm.ReasoningEffortLevels)
+	}
+	if glm.SupportsReasoning == nil || !*glm.SupportsReasoning {
+		t.Fatalf("supportsReasoning=%v, want the carried capability", glm.SupportsReasoning)
+	}
+	plain := resp.Data[1]
+	if len(plain.ReasoningEffortLevels) != 0 || plain.SupportsReasoning != nil {
+		t.Fatalf("plain carries no reasoning facts the contract did not state: %+v", plain)
+	}
+}
+
 func TestValidateEvenerLaunchContractRejectsIncompatibleProtocolBinary(t *testing.T) {
 	evenerBinary := filepath.Join(t.TempDir(), "old-evener")
 	writeFakeEvener(t, evenerBinary, `#!/bin/sh
