@@ -166,6 +166,96 @@ test("redacts a critical reasoning row on a terminal turn", () => {
   expect(screen.getByText("abcdefghijklmnop")).toBeTruthy();
 });
 
+test("the trace journey: every thought stays readable on demand at tools, the switch opens them, chat stays conversation-only", () => {
+  const tools = makeTranscriptDisplayConfig({ kind: "preset", level: "tools" });
+  const openThinking = makeTranscriptDisplayConfig({
+    kind: "custom",
+    toolIntent: true,
+    toolCalls: true,
+    reasoning: false,
+    expandByDefault: false,
+    thinkingOpenByDefault: true,
+  });
+  const chat = makeTranscriptDisplayConfig({ kind: "preset", level: "chat" });
+  const items = () => [
+    item({ id: "settled", type: "reasoning", status: "completed", reasoningSummaries: [["the settled trace body"]] }),
+    item({ id: "failed", type: "reasoning", status: "failed", reasoningSummaries: [["the failed trace body"]] }),
+  ];
+  // Each phase renders in its own disclosure scope: the store keeps explicit
+  // choices per scope, and a choice made in one phase must not answer for
+  // another (the very precedence under test).
+  const inScope = (scope: string, config: TranscriptDisplayConfigV1, node: ReactNode) => (
+    <TranscriptRenderProvider config={config} surface="live" disclosureScope={`turnblock:${scope}`}>
+      {node}
+    </TranscriptRenderProvider>
+  );
+
+  // Tools: one collapsed trace row per thought, each unfolding to its own text.
+  const { unmount: unmountTools } = render(
+    inScope("journey-tools", tools, <TurnBlock turn={turn(items(), { status: "completed" }, tools)} />),
+  );
+  let details = screen.getAllByRole("group") as HTMLDetailsElement[];
+  expect(details).toHaveLength(2);
+  expect(details.every((row) => !row.open)).toBe(true);
+  expect(screen.queryByText("the settled trace body")).toBeNull();
+  expect(screen.queryByText("the failed trace body")).toBeNull();
+  for (const row of details) fireEvent.click(row.querySelector("summary")!);
+  expect(screen.getByText("the settled trace body")).toBeTruthy();
+  expect(screen.getByText("the failed trace body")).toBeTruthy();
+  unmountTools();
+
+  // The switch: a settled trace starts open; a broken turn's thought keeps
+  // its neutral label until the reader unfolds it.
+  const { unmount: unmountOpen } = render(
+    inScope("journey-open", openThinking, <TurnBlock turn={turn(items(), { status: "completed" }, openThinking)} />),
+  );
+  details = screen.getAllByRole("group") as HTMLDetailsElement[];
+  expect(details.filter((row) => row.open)).toHaveLength(1);
+  expect(screen.getByText("the settled trace body")).toBeTruthy();
+  expect(screen.queryByText("the failed trace body")).toBeNull();
+  const failedRow = details.find((row) => !row.open);
+  expect(failedRow?.querySelector('[data-testid="think-block-redacted"]')).not.toBe(null);
+  fireEvent.click(failedRow!.querySelector("summary")!);
+  expect(screen.getByText("the failed trace body")).toBeTruthy();
+  unmountOpen();
+
+  // Chat: conversation-only - the settled trace is gone, the broken turn's
+  // explanation stays, and the live placeholder carries no text and no
+  // disclosure to unfold.
+  const { unmount: unmountChat } = render(
+    inScope(
+      "journey-chat",
+      chat,
+      <TurnBlock
+        turn={turn(
+          [
+            ...items(),
+            item({
+              id: "live",
+              type: "reasoning",
+              status: "inProgress",
+              reasoningSummaries: [["the live trace body"]],
+            }),
+          ],
+          { status: "inProgress" },
+          chat,
+        )}
+      />,
+    ),
+  );
+  details = screen.getAllByRole("group") as HTMLDetailsElement[];
+  expect(details).toHaveLength(1);
+  expect(details[0]?.open).toBe(false);
+  expect(screen.queryByText("the settled trace body")).toBeNull();
+  expect(screen.queryByText("the live trace body")).toBeNull();
+  fireEvent.click(details[0]!.querySelector("summary")!);
+  expect(screen.getByText("the failed trace body")).toBeTruthy();
+  const liveBlock = screen.getAllByTestId("think-block").find((block) => block.dataset.contentFree === "true");
+  expect(liveBlock?.querySelector("details")).toBeNull();
+  expect(liveBlock?.textContent).not.toContain("the live trace body");
+  unmountChat();
+});
+
 test("the turn root remains a centered, shrinkable reading column", () => {
   const css = readModuleCss(import.meta.url, "turnblock.module.css");
   expect(css).toMatch(
