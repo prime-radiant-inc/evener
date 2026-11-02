@@ -759,8 +759,9 @@ test("an automatic requeue mint preserves the sender's tab identity", async () =
     setMutationClientIdentityForTests("reconciling-tab");
     const restored = await f.storage.restoreProvenAbsent(a.targetRef, new Set());
     expect(restored).toHaveLength(1);
-    const fresh = await f.storage.getOutbox(restored[0]);
-    if (!fresh) throw new Error("missing restored row");
+    const restoredId = restored[0];
+    if (!restoredId) throw new Error("missing restored row");
+    const fresh = await f.storage.getOutbox(restoredId);
     // ...but the fresh row keeps the SENDER's provenance and the inherited
     // wire id, so the sender's tab still recognizes its own pending send.
     expect(fresh.originClientId).toBe("sender-tab");
