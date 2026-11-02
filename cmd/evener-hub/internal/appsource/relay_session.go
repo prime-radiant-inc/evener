@@ -299,6 +299,19 @@ func (s *relaySession) readWithRoutePublication(
 		return RelayReadResult{}, appwire.SessionUnavailable("relay session is closed")
 	}
 	s.commandOwners++
+	if lease == nil && params.Subscribe {
+		// A recovery read re-subscribes on behalf of the leases that demanded
+		// the ref when the recovery plan was built. A demanding lease can
+		// release while an earlier plan read holds the command gate: the
+		// release queues an orphaned-subscription withdrawal on this gate, but
+		// replaying the plan's stale Subscribe would re-create the
+		// subscription after the withdrawal ran, and nothing would withdraw it
+		// again — the daemon would count a consumer that left forever.
+		// Recompute demand here, under the gate, so a released ref is read
+		// without re-subscribing it; a lease that releases after this point
+		// queues a withdrawal behind this read that still covers it.
+		params.Subscribe = s.refDemandedLocked(params.Ref)
+	}
 	s.readParams = params
 	if lease != nil && params.Subscribe {
 		if lease.subscribedRefs == nil {

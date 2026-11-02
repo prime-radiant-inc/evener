@@ -1037,6 +1037,152 @@ func TestRelaySessionRecoveryRestoresSubscriptionOverwrittenByDescendantSnapshot
 	}
 }
 
+// TestRelaySessionRecoverySkipsReleasedSubscriptionMidPlan pins the release
+// half of recovery's demand rule. A lease can release while an earlier plan
+// read is in flight: its orphaned-subscription withdrawal queues on the
+// command gate, but the plan was built before the release, so a later plan
+// read that replays its stale Subscribe would re-create a subscription nobody
+// demands and nothing would withdraw again — the daemon would count a
+// consumer that left forever. Recovery must recompute each read's demand
+// against the live leases rather than trust the plan snapshot.
+func TestRelaySessionRecoverySkipsReleasedSubscriptionMidPlan(t *testing.T) {
+	root := relayEntry("thread-1")
+	root.WorkspaceRef = "local:thread-1"
+	daemon := &relayTestDaemon{reads: make(chan relayReadCall, 16), unsubscribes: make(chan appwire.Request, 16)}
+	source := NewLocalDaemonSourceWithEntries("local", func() []LocalDaemonEntry {
+		return []LocalDaemonEntry{
+			{Entry: root},
+			{Entry: root, SessionID: "sess_alias", OwnerSessionID: "thread-1", ReadOnlyAlias: true},
+			{Entry: root, SessionID: "sess_warm", OwnerSessionID: "thread-1", ReadOnlyAlias: true},
+		}
+	}, nil)
+	source.dial = relayTestDial(daemon)
+
+	// A consumer on the root ref keeps its delivery channel drained so the
+	// recovery's resync publications cannot stall the read loop.
+	consumerParams := appwire.ThreadReadParams{Ref: "local:thread-1", Subscribe: true}
+	consumer, err := source.acquireRelaySession(consumerParams)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer consumer.Close()
+	ctx := t.Context()
+	deliveries, err := consumer.Listen(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	go func() {
+		for delivery := range deliveries {
+			if delivery.Acknowledge != nil {
+				delivery.Acknowledge()
+			}
+		}
+	}()
+	read := readRelayAsync(context.Background(), consumer, consumerParams)
+	call := <-daemon.reads
+	call.transport.recv <- appwire.ResponseMessage(call.request.ID, relaySnapshot("thread-1", "snapshot"))
+	result := <-read
+	if result.err != nil {
+		t.Fatal(result.err)
+	}
+	if !result.result.Handoff.Commit() {
+		t.Fatal("consumer handoff commit lost")
+	}
+
+	// A second consumer subscribes an alias ref of the same session.
+	aliasParams := appwire.ThreadReadParams{Ref: "local:sess_alias", Subscribe: true}
+	aliasConsumer, err := source.acquireRelaySession(aliasParams)
+	if err != nil {
+		t.Fatal(err)
+	}
+	aliasRead := readRelayAsync(context.Background(), aliasConsumer, aliasParams)
+	aliasCall := <-daemon.reads
+	if aliasCall.transport != call.transport {
+		t.Fatal("alias read did not share the root's relay connection")
+	}
+	aliasCall.transport.recv <- appwire.ResponseMessage(aliasCall.request.ID, relaySnapshot("sess_alias", "alias"))
+	aliasResult := <-aliasRead
+	if aliasResult.err != nil {
+		t.Fatal(aliasResult.err)
+	}
+	if !aliasResult.result.Handoff.Commit() {
+		t.Fatal("alias handoff commit lost")
+	}
+
+	// A non-subscribing snapshot read of a second alias leaves the stored
+	// params on a ref no lease demands: recovery's plan reads that warming
+	// ref first, then each ref with live demand.
+	snapshot, err := source.acquireRelaySession(appwire.ThreadReadParams{Ref: "local:sess_warm"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer snapshot.Close()
+	snapshotRead := readRelayAsync(context.Background(), snapshot, appwire.ThreadReadParams{Ref: "local:sess_warm"})
+	snapshotCall := <-daemon.reads
+	snapshotCall.transport.recv <- appwire.ResponseMessage(snapshotCall.request.ID, relaySnapshot("sess_warm", "warm"))
+	snapshotResult := <-snapshotRead
+	if snapshotResult.err != nil {
+		t.Fatal(snapshotResult.err)
+	}
+	if !snapshotResult.result.Handoff.Commit() {
+		t.Fatal("snapshot handoff commit lost")
+	}
+
+	// The shared daemon connection drops; recovery builds its plan.
+	if err := call.transport.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	// The first recovery read holds the command gate while it waits for its
+	// answer. Release the alias lease inside that window: its withdrawal
+	// queues on the gate behind the read, exactly as when the last demanding
+	// lease closes mid-recovery.
+	first := <-daemon.reads
+	if first.transport == call.transport {
+		t.Fatal("recovery read reused the dropped connection")
+	}
+	aliasConsumer.Close()
+	first.transport.recv <- appwire.ResponseMessage(first.request.ID, relaySnapshot("sess_warm", "recovered"))
+
+	// The alias lease released before this read ran, so the plan's stale
+	// Subscribe for it must not reach the daemon: the released ref is read
+	// without re-subscribing it.
+	second := <-daemon.reads
+	var secondParams appwire.ThreadReadParams
+	if err := json.Unmarshal(second.request.Params, &secondParams); err != nil {
+		t.Fatal(err)
+	}
+	if secondParams.Ref != "local:sess_alias" {
+		t.Fatalf("second recovery read ref = %q, want the released alias", secondParams.Ref)
+	}
+	if secondParams.Subscribe {
+		t.Fatal("recovery re-subscribed a ref whose demanding lease released mid-plan")
+	}
+	second.transport.recv <- appwire.ResponseMessage(second.request.ID, relaySnapshot("sess_alias", "recovered"))
+
+	// The root's live subscription is still demanded and must be restored.
+	third := <-daemon.reads
+	var thirdParams appwire.ThreadReadParams
+	if err := json.Unmarshal(third.request.Params, &thirdParams); err != nil {
+		t.Fatal(err)
+	}
+	if thirdParams.Ref != "local:thread-1" || !thirdParams.Subscribe {
+		t.Fatalf("root recovery read = ref %q subscribe %v, want the root's live subscription", thirdParams.Ref, thirdParams.Subscribe)
+	}
+	third.transport.recv <- appwire.ResponseMessage(third.request.ID, relaySnapshot("thread-1", "recovered"))
+
+	// The release's withdrawal lands once the gate frees: the alias
+	// subscription is withdrawn, not re-created behind the withdrawal's back.
+	withdrawal := <-daemon.unsubscribes
+	var withdrawn appwire.ThreadUnsubscribeParams
+	if err := json.Unmarshal(withdrawal.Params, &withdrawn); err != nil {
+		t.Fatal(err)
+	}
+	if withdrawn.Ref != "local:sess_alias" {
+		t.Fatalf("withdrew subscription for %q, want local:sess_alias", withdrawn.Ref)
+	}
+}
+
 // TestRelaySessionReleaseWithdrawsUndemandedSubscription pins the
 // release-side of the demand rule: when the last lease asking for a
 // subscription releases while another lease keeps the canonical relay
