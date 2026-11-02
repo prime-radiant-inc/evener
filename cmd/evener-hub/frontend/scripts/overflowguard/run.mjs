@@ -949,8 +949,8 @@ function assertDetail(result, width) {
     failures.push("Verbosity Advanced summary target measurement is missing");
   }
   const switchLabels = detail?.targets?.filter((target) => target.kind === "switch-label") ?? [];
-  if (switchLabels.length !== 9)
-    failures.push(`Verbosity mounted ${switchLabels.length} Switch label targets, expected 9`);
+  if (switchLabels.length !== 10)
+    failures.push(`Verbosity mounted ${switchLabels.length} Switch label targets, expected 10`);
   if (!detail?.dialogCentered && !mobile) {
     failures.push(
       `Desktop Verbosity Dialog is not centered in the layout viewport: ${JSON.stringify({ panel: detail?.panel, viewport: result.viewport })}`,
