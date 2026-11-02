@@ -228,7 +228,7 @@ func TestAnEmptyTempDirIsNotAScratchTreeBase(t *testing.T) {
 	prev := sessionScratchTempDir
 	sessionScratchTempDir = func() string { return "" }
 	t.Cleanup(func() { sessionScratchTempDir = prev })
-	for _, base := range sessionScratchTreeBases() {
+	for _, base := range SessionScratchTreeBases() {
 		if base == cwd || base == resolved {
 			t.Errorf("an empty temp dir made the working directory %s a scratch tree base", base)
 		}

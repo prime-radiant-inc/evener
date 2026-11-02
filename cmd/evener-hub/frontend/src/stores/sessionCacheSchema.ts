@@ -60,9 +60,11 @@ export interface TranscriptCoverageRow {
   continuityId?: string;
   boundary: string;
   suffixBlocked?: boolean;
-  // Recorded only for a page certificate: the exclusive request boundary the
-  // page was fetched against, the provenance link between consecutive pages.
-  // Never parsed as an opaque cursor.
+  // Recorded for a page certificate (the exclusive request boundary the page
+  // was fetched against, the provenance link between consecutive pages) and
+  // for a spanning certificate a replacement trimmed (the replacement
+  // boundary its retained portion provably abuts). Never parsed as an opaque
+  // cursor.
   before?: ThreadItemPosition | null;
   // Recorded only for a page certificate: the opaque request cursor the page
   // consumed (`ThreadTurnsListParams.cursor`), undefined for a position-only

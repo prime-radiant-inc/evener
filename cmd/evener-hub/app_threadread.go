@@ -863,13 +863,14 @@ func hubForkIdentityFenced(cfg hubcore.WebConfig, threadID string, owner forkThr
 
 // applyHubCapabilities stamps the capability bits the hub owns, not the
 // daemon, on a thread it serves: fork (applyHubForkCapability) and pageBefore
-// (hubPagesBefore), plus the session's retained artifacts directory. Every
-// path that serves a thread applies it, so a session reads the same from
-// thread/list and thread/read (#1840).
+// (hubPagesBefore), plus the session's retained artifacts and scratch
+// directories. Every path that serves a thread applies it, so a session reads
+// the same from thread/list and thread/read (#1840).
 func applyHubCapabilities(cfg hubcore.WebConfig, thread appwire.Thread) appwire.Thread {
 	thread = applyHubForkCapability(cfg, thread)
 	thread.Evener.Capabilities.PageBefore = hubPagesBefore(cfg, thread.Evener.Ref)
 	thread.Evener.ArtifactsDir = hubArtifactsDir(cfg, thread.Evener.Ref)
+	thread.Evener.ScratchDir = hubScratchDir(cfg, thread.Evener.Ref)
 	return thread
 }
 
@@ -881,6 +882,15 @@ func applyHubCapabilities(cfg hubcore.WebConfig, thread appwire.Thread) appwire.
 // this hub and stays empty.
 func hubArtifactsDir(cfg hubcore.WebConfig, ref string) string {
 	return sessionArtifactsRoot(context.Background(), cfg, ref)
+}
+
+// hubScratchDir is the session's named scratch directory, announced on the
+// thread beside ArtifactsDir. It answers from sessionScratchRoot
+// (scratch_serve.go), the same resolver the doc routes serve from, so the
+// advertised directory and the served one cannot drift apart. A remote or
+// unparseable ref names nothing on this hub and stays empty.
+func hubScratchDir(cfg hubcore.WebConfig, ref string) string {
+	return sessionScratchRoot(context.Background(), cfg, ref)
 }
 
 // hubPagesBefore is the hub's answer to ThreadCapabilities.PageBefore: whether
@@ -1212,6 +1222,13 @@ func pastEntryThreadForList(ctx context.Context, cfg hubcore.WebConfig, entry hu
 		if dir, dirErr := schema.SessionArtifactsDir(entry.StateDir, entry.Meta.ID); dirErr == nil {
 			thread.Evener.ArtifactsDir = dir
 		}
+	}
+	// The scratch directory is the same kind of place, and the saved entry's
+	// own meta already carries what resolves it, so an unavailable daemon
+	// changes nothing either.
+	thread.Evener.ScratchDir = hubScratchDir(cfg, thread.Evener.Ref)
+	if thread.Evener.ScratchDir == "" {
+		thread.Evener.ScratchDir = scratchDirFromMeta(entry.Meta)
 	}
 	thread.Evener.VisionModel = entry.Meta.VisionModel
 	thread.Evener.Access = appwire.SessionAccess(entry.Meta.Config.Sandbox, entry.Meta.Config.SandboxNet)

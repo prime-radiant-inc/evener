@@ -67,6 +67,76 @@ func OpenSessionScratch(base, workspaceRoot, rootID, sessionID string) (*Session
 	return &SessionScratch{Dir: dir, base: tree, lease: lease}, nil
 }
 
+// SessionScratchDirPath composes the directory a session's named scratch
+// occupies in rootID's tree under base — the same path OpenSessionScratch
+// allocates — without touching the filesystem, so another process can name
+// the directory a session's meta describes. Empty when the base or either id
+// cannot name one.
+func SessionScratchDirPath(base, rootID, sessionID string) string {
+	if strings.TrimSpace(base) == "" {
+		return ""
+	}
+	if !safeScratchName(rootID) || !safeScratchName(sessionID) {
+		return ""
+	}
+	return filepath.Join(filepath.Clean(base), sessionScratchTreePrefix+rootID, sessionID)
+}
+
+// SessionScratchBaseOf reports the scratch base the named session scratch
+// directory dir was allocated in — the base a hub serving the session's
+// documents must search first — or "" for a disposable scratch, which belongs
+// to no tree and no other process serves.
+func SessionScratchBaseOf(dir string) string {
+	tree := scratchTreeOf(dir)
+	if tree == "" {
+		return ""
+	}
+	return filepath.Dir(tree)
+}
+
+// SessionScratchOwnerOf reports the session the named session scratch
+// directory dir belongs to — the directory's own name, which the allocator
+// derives from the session's ID — or "" for a disposable scratch, which no
+// session's tree holds.
+func SessionScratchOwnerOf(dir string) string {
+	if scratchTreeOf(dir) == "" {
+		return ""
+	}
+	return filepath.Base(dir)
+}
+
+// SessionScratchTreeRootOf reports the root session whose tree the named
+// session scratch directory dir occupies, or "" for a disposable scratch,
+// which belongs to no tree.
+func SessionScratchTreeRootOf(dir string) string {
+	tree := scratchTreeOf(dir)
+	if tree == "" {
+		return ""
+	}
+	return strings.TrimPrefix(filepath.Base(tree), sessionScratchTreePrefix)
+}
+
+// SessionScratchDirOwned reports whether dir — a named session scratch
+// directory composed as <base>/evener-scratch-<root>/<session> — is a real
+// directory this process's user owns, together with the tree it occupies.
+// Allocation (OpenSessionScratch) and removal (RemoveSessionScratchTree) touch
+// only such directories — a scratch base is a shared temp dir where another
+// local user can plant the same names once the real tree is gone — and a hub
+// serving a session's documents from them must accept nothing looser.
+func SessionScratchDirOwned(dir string) bool {
+	tree := scratchTreeOf(dir)
+	if tree == "" {
+		return false
+	}
+	for _, entry := range []string{tree, dir} {
+		info, err := os.Lstat(entry)
+		if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 || !scratchInfoOwnedByProcess(info) {
+			return false
+		}
+	}
+	return true
+}
+
 // Named reports whether this scratch lives in a session's tree
 // (OpenSessionScratch) rather than being a disposable one (NewSessionScratch).
 // A named scratch outlives its session's end; a disposable one does not.
@@ -133,7 +203,7 @@ func RemoveSessionScratchTree(rootID string, extraBases ...string) error {
 		return fmt.Errorf("sandbox: unsafe session scratch identity %q", rootID)
 	}
 	var errs []error
-	for _, base := range sessionScratchTreeBases(extraBases...) {
+	for _, base := range SessionScratchTreeBases(extraBases...) {
 		tree := filepath.Join(base, sessionScratchTreePrefix+rootID)
 		info, err := os.Lstat(tree)
 		if os.IsNotExist(err) {
@@ -169,7 +239,7 @@ func SessionScratchTreeRootIDs(ctx context.Context, extraBases ...string) []stri
 		return nil
 	}
 	var ids []string
-	for _, base := range sessionScratchTreeBases(extraBases...) {
+	for _, base := range SessionScratchTreeBases(extraBases...) {
 		if ctx.Err() != nil {
 			return nil
 		}
@@ -297,22 +367,28 @@ func ProcessScratchTempDir() string {
 	return abs
 }
 
-// sessionScratchTreeBases are the bases a tree may live in: the temp dir and
-// the user cache dir, the two OpenSessionScratch chooses between, then extra.
-func sessionScratchTreeBases(extra ...string) []string {
+// SessionScratchTreeBases are the bases a tree may live in: the recorded
+// extra bases first — allocation prefers the base a session's daemon asked
+// for, and a hub serving session scratch must prefer the base the session's
+// meta records over its own defaults, or a retained old directory in a
+// default base would shadow the resumed session's current one — then the temp
+// dir and the user cache dir, the two OpenSessionScratch chooses between. A
+// hub serving session scratch reads the same list, so the directory it
+// serves from and the trees the removal path reclaims stay one answer.
+func SessionScratchTreeBases(extra ...string) []string {
 	// A recorded extra base names another process's dir, so a relative one
 	// has no meaning here and is skipped.
 	var candidates []string
+	for _, dir := range extra {
+		if filepath.IsAbs(dir) {
+			candidates = append(candidates, dir)
+		}
+	}
 	if dir := ProcessScratchTempDir(); dir != "" {
 		candidates = append(candidates, dir)
 	}
 	if dir, err := sessionScratchUserCacheDir(); err == nil {
 		candidates = append(candidates, dir)
-	}
-	for _, dir := range extra {
-		if filepath.IsAbs(dir) {
-			candidates = append(candidates, dir)
-		}
 	}
 	var bases []string
 	for _, dir := range candidates {

@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"primeradiant.com/evener/agent/events"
+	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/internal/tool"
 	"primeradiant.com/evener/agent/sandbox"
 	"primeradiant.com/evener/agent/schema"
@@ -352,6 +353,39 @@ func (s *Session) metaWithNotes(human, agentNote string, urls []schema.SessionUR
 	if root := s.scratchTreeRootID(); root != s.id {
 		scratchTreeRootID = root
 	}
+	// The scratch the hub serves this session's documents from is the one its
+	// environment actually writes into: a delegate that shares its parent's
+	// environment, or one that re-roots its parent's kernel wrapper, writes
+	// into the parent's scratch directory, while an isolated delegate owns its
+	// own. The directory's owning session is the environment's effective
+	// scratch owner, not this session's own id.
+	scratchDirSessionID := ""
+	// The base recorded is the one the session's scratch was actually allocated
+	// in — allocation refuses a temp base inside the session's workspace and
+	// falls back to the user cache dir, and a hub that searched the refused
+	// base first would find a retained old tree there instead of the session's
+	// current scratch — or this process's temp dir while no scratch exists yet,
+	// which the archive removal path still needs to find a tree an earlier run
+	// recorded.
+	scratchTempDir := sandbox.ProcessScratchTempDir()
+	// This runs under s.mu, so it reads s.env directly rather than through
+	// currentEnv.
+	if local, ok := s.env.(*execenv.LocalExecutionEnvironment); ok {
+		if session := local.ScratchOwnerSession(); session != "" && session != s.id {
+			scratchDirSessionID = session
+		}
+		if base := local.SessionScratchBase(); base != "" {
+			scratchTempDir = base
+		}
+		// The tree recorded is the one the scratch occupies: a child spawned by
+		// a delegate resumed on its own inherits the resumed delegate's id as
+		// its delegate-tree root while its environment writes into the original
+		// root's tree, so the bookkeeping answer would name a tree nobody wrote
+		// into.
+		if root := local.SessionScratchTreeRoot(); root != "" && root != s.id {
+			scratchTreeRootID = root
+		}
+	}
 	skills := s.skillLifecycle.Clone()
 	skills.PinnedNoteGen = s.pinnedNoteGen
 	return schema.SessionMeta{
@@ -394,8 +428,9 @@ func (s *Session) metaWithNotes(human, agentNote string, urls []schema.SessionUR
 		LastMessage:              s.lastMessage,
 		CumulativeUsage:          cumulativeUsageSnapshot(s.contextMgr.CumulativeUsage()),
 		JobTreeRootSessionID:     jobTreeRootSessionID,
-		ScratchTempDir:           sandbox.ProcessScratchTempDir(),
+		ScratchTempDir:           scratchTempDir,
 		ScratchTreeRootID:        scratchTreeRootID,
+		ScratchDirSessionID:      scratchDirSessionID,
 		JobTreeRevision:          jobTreeRevision,
 		EnvContext:               s.envContextState,
 	}
