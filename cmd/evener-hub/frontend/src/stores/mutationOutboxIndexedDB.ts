@@ -814,8 +814,6 @@ export class MutationOutboxIndexedDB implements WebQueuedMessageStorage<Mutation
             (record) => record.clientMutationId !== clientMutationId && settlementRetiresRecovery(record),
           );
           if (wireCarriers.length === 0) return { settled: false, retiredIds: [] };
-        } else if (siblings.length === 0 && !named) {
-          return { settled: false, retiredIds: [] };
         }
         // The named record settles with today's semantics; when the receipt
         // names a wire id whose own record is already gone, the replacement
@@ -944,8 +942,6 @@ export class MutationOutboxIndexedDB implements WebQueuedMessageStorage<Mutation
             (record) => record.clientMutationId !== clientMutationId && settlementRetiresRecovery(record),
           );
           if (wireCarriers.length === 0) return { settled: false, retiredIds: [] };
-        } else if (siblings.length === 0 && !named) {
-          return { settled: false, retiredIds: [] };
         }
         const subject = (named ?? siblings[0] ?? wireCarriers[0]) as MutationRecord;
         await this.#discardSupersededNoteRecovery(transaction, subject);
