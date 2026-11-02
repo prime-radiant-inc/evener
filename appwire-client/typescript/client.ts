@@ -365,7 +365,7 @@ export class AppwireClient {
   // recovery. Pending requests fail normally; they are never replayed here.
   async resumeThread(
     ref: string,
-    options?: { beforeRequest?: () => void },
+    options?: { beforeRequest?: () => void | Promise<void> },
   ): Promise<MethodTypes["thread/resume"]["result"]> {
     if (this.resumePending) throw new Error("A session resume is already pending");
     const socket = this.socket;
@@ -393,11 +393,14 @@ export class AppwireClient {
       }
       this.retryNow();
       await connected;
-      // Runs after the reconnect settles and synchronously before the resume
-      // RPC so a canceled action sends nothing. A throw here releases
-      // listeners, the timer, and resumePending through the finally below
-      // without tearing down the now-healthy primary connection.
-      options?.beforeRequest?.();
+      // Runs after the reconnect settles and immediately before the resume
+      // RPC so a canceled action sends nothing. The hook may be async and is
+      // awaited: a caller revalidates durable state that a Stop could have
+      // moved while the reconnect was in flight. A throw or rejection here
+      // releases listeners, the timer, and resumePending through the finally
+      // below without tearing down the now-healthy primary connection.
+      const revalidation = options?.beforeRequest?.();
+      if (revalidation) await revalidation;
       clearTimeout(timeout);
       stopReady();
       stopState();

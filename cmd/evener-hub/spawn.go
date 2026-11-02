@@ -1207,9 +1207,12 @@ func listEvenerLaunchModelContract(ctx context.Context, evenerBinary string, env
 			continue
 		}
 		models = append(models, appwire.ModelDescriptor{
-			Provider: provider, Model: name,
-			Warnings:        append([]string(nil), model.Warnings...),
-			InstanceDefault: model.InstanceDefault,
+			Provider:              provider,
+			Model:                 name,
+			Warnings:              append([]string(nil), model.Warnings...),
+			InstanceDefault:       model.InstanceDefault,
+			ReasoningEffortLevels: append([]string(nil), model.ReasoningEffortLevels...),
+			SupportsReasoning:     model.SupportsReasoning,
 		})
 	}
 	diagnostics := make([]appwire.ModelListDiagnostic, 0, len(resp.Diagnostics))

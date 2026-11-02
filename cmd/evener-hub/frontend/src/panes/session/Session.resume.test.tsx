@@ -7,6 +7,7 @@ import userEvent from "@testing-library/user-event";
 import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
 import { useSyncExternalStore } from "react";
 import { afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
+import { appliedReceipt } from "../../mutationReceiptTestUtils";
 import { resetActivitySidebarStoreForTests } from "../../shell/activitybar/activitySidebarStore";
 import { ClientProvider } from "../../shell/clientContext";
 import { urlToPane } from "../../shell/routing";
@@ -18,7 +19,13 @@ import { resetActivityPanelStoreForTests } from "../../stores/activityPanel";
 import { connectionStore, resetConnectionStoreForTests } from "../../stores/connection";
 import { MutationOutboxIndexedDB } from "../../stores/mutationOutboxIndexedDB";
 import { resetNavigationStoreForTests } from "../../stores/navigation/store";
-import { resetThreadsStoreForTests, setMutationStorageForTests, threadsStore } from "../../stores/threads";
+import {
+  installResumeRetrySchedulerForTests,
+  resetThreadsStoreForTests,
+  sendResumesModel,
+  setMutationStorageForTests,
+  threadsStore,
+} from "../../stores/threads";
 import { ALL_CAPABILITIES as CAPABILITIES } from "../../threadTestUtils";
 import { Toast } from "../../widgets";
 import { emptyStateReasons } from "../../widgets/emptystate/emptyStateTestUtils";
@@ -1182,4 +1189,392 @@ test("a Stop on the resumed identity before the resume RPC leaves suppresses the
   await waitFor(() => expect(threadsStore.getState().resumeFailures.get(stableRef)?.stopCanceled).toBe(true));
   expect(window.location.pathname).toBe("/s/local%3Astable-a");
   await shutdownCompletion;
+});
+
+// A failed Send-resumes resume is not a one-shot dead end: while the ref's
+// restart obligation stands, the store keeps a retry owner that re-drives the
+// resume with capped backoff and no attempt limit, retiring the moment one
+// lands (and with it the fence, the parked send's dispatch and the failure
+// record). Native's settle path already retries refused resumes for its parked
+// rows; this pins the browser's owner for the same recovery.
+test("a failed send-resumes resume is re-driven with capped backoff until one lands", async ({ onTestFinished }) => {
+  const scheduledResumeRetries: { attempt: number; fire: () => void; cancelled: boolean }[] = [];
+  const restoreResumeScheduler = installResumeRetrySchedulerForTests((attempt, retry) => {
+    const scheduled = { attempt, fire: retry, cancelled: false };
+    scheduledResumeRetries.push(scheduled);
+    return () => {
+      scheduled.cancelled = true;
+    };
+  });
+  onTestFinished(restoreResumeScheduler);
+  const fake = connectReadyFakeClient();
+  const ref = "local:resume-retry-owner";
+  let resumeFails = true;
+  let resumeAttempts = 0;
+  const failureTokens: string[] = [];
+  fake.on("thread/read", () => {
+    const response = readResponse(ref, {
+      status: { type: resumeFails ? "notLoaded" : "idle" },
+    });
+    response.thread.evener.resumeRequired = resumeFails;
+    return response;
+  });
+  fake.on("thread/resume", () => {
+    resumeAttempts += 1;
+    if (resumeFails) {
+      // A generated opaque sentinel: the assertions check the record carries
+      // THIS attempt's failure, never any particular phrasing.
+      const token = `probe-failure-${crypto.randomUUID()}`;
+      failureTokens.push(token);
+      throw new Error(token);
+    }
+    return readResponse(ref, { status: { type: "idle" } });
+  });
+  fake.on("turn/start", (params) => ({
+    receipt: appliedReceipt(params.clientMutationId, "thr_ref_a"),
+    turn: { id: "turn_2", status: "inProgress", itemsView: "" },
+  }));
+  render(
+    <ClientProvider client={fake}>
+      <Session params={{ ref }} paneId="p1" focused={true} />
+    </ClientProvider>,
+  );
+  await waitFor(() => expect(threadsStore.getState().restartBlockingObligations.has(ref)).toBe(true));
+  expect(sendResumesModel(ref)).toBe(true);
+  await resumeViaSend(ref, "the pressed text");
+  // The press drove resume #1, which the hub refused; the failure is published
+  // for the press surface and one paced retry is armed.
+  const firstFailure = await waitFor(() => {
+    const record = threadsStore.getState().resumeFailures.get(ref);
+    expect(record).toBeDefined();
+    return record;
+  });
+  expect(firstFailure?.message).toBe(failureTokens[0]);
+  const pressFailureSeq = firstFailure?.seq ?? 0;
+  expect(resumeAttempts).toBe(1);
+  // The attempt captured the durable stop epoch before it began, so the arm
+  // lands with the published failure itself.
+  await waitFor(() => expect(scheduledResumeRetries).toHaveLength(1));
+  expect(scheduledResumeRetries[0]?.attempt).toBe(1);
+  // The scheduled retry fires with no press: resume #2 also fails, and the
+  // backoff doubles for the one after it. The automatic failure updates the
+  // record in place - the press surface's toast identity (seq) must not bump
+  // once for every background attempt.
+  act(() => {
+    scheduledResumeRetries[0]?.fire();
+  });
+  await waitFor(() => expect(resumeAttempts).toBe(2));
+  expect(threadsStore.getState().resumeFailures.get(ref)?.message).toBe(failureTokens[1]);
+  expect(threadsStore.getState().resumeFailures.get(ref)?.seq).toBe(pressFailureSeq);
+  await waitFor(() => expect(scheduledResumeRetries).toHaveLength(2));
+  expect(scheduledResumeRetries[1]?.attempt).toBe(2);
+  // The third attempt lands: the fence clears, the failure record drops, the
+  // parked send drains, and the retry owner retires with nothing more armed.
+  resumeFails = false;
+  await act(async () => {
+    scheduledResumeRetries[1]?.fire();
+  });
+  // The landing drive reads the durable epoch before it starts, so its full
+  // sequence (RPC, identity fences, retarget, hydration, publish) gets the
+  // same budget the parked-send drain below does rather than the default.
+  await waitFor(() => expect(threadsStore.getState().restartBlockingObligations.has(ref)).toBe(false), {
+    timeout: 5000,
+  });
+  await waitFor(() => expect(threadsStore.getState().resumeFailures.has(ref)).toBe(false), { timeout: 5000 });
+  await waitFor(
+    () =>
+      expect(
+        fake.calls.some(
+          (call) =>
+            call.method === "turn/start" &&
+            (call.params as { input?: { text?: string }[] }).input?.[0]?.text === "the pressed text",
+        ),
+      ).toBe(true),
+    { timeout: 5000 },
+  );
+  expect(resumeAttempts).toBe(3);
+  expect(scheduledResumeRetries).toHaveLength(2);
+}, 15000);
+
+// The retry owner serves the user's Send intent; a Stop that reverses that
+// intent is the user's own answer, and re-driving the resume would fight the
+// acknowledged Stop. A stop-canceled drive publishes its failure (the existing
+// contract) but arms no automatic retry.
+test("a Stop that cancels the resume drive arms no automatic retry", async ({ onTestFinished }) => {
+  const scheduledResumeRetries: { attempt: number; fire: () => void }[] = [];
+  const restoreResumeScheduler = installResumeRetrySchedulerForTests((attempt, retry) => {
+    scheduledResumeRetries.push({ attempt, fire: retry });
+    return () => undefined;
+  });
+  onTestFinished(restoreResumeScheduler);
+  const fake = connectReadyFakeClient();
+  const ref = "local:resume-retry-stopped";
+  let resolveResume!: (response: ThreadReadResponse) => void;
+  const resumeHeld = new Promise<ThreadReadResponse>((resolve) => {
+    resolveResume = resolve;
+  });
+  fake.on("thread/read", (params) => {
+    if (!params.ref) throw new Error("thread/read test request requires ref");
+    const response = readResponse(params.ref, { status: { type: "notLoaded" } });
+    response.thread.evener.resumeRequired = params.ref === ref;
+    return response;
+  });
+  fake.on("thread/resume", () => resumeHeld);
+  fake.on("thread/shutdown", () => ({}));
+  render(
+    <ClientProvider client={fake}>
+      <Session params={{ ref }} paneId="p1" focused={true} />
+    </ClientProvider>,
+  );
+  await waitFor(() => expect(threadsStore.getState().restartBlockingObligations.has(ref)).toBe(true));
+  expect(sendResumesModel(ref)).toBe(true);
+  await resumeViaSend(ref, "the pressed text");
+  // The drive reads the durable stop epoch before its request goes out, so
+  // wait for the RPC itself: the Stop must land while it is genuinely on the
+  // wire, not while the drive is still reading.
+  await waitFor(() => expect(fake.calls.filter((call) => call.method === "thread/resume")).toHaveLength(1));
+  // The Stop lands on the drive's own ref while the resume RPC is still on the
+  // wire: the drive's stop baseline records it, so resolving the resume can
+  // only fail the identity fence.
+  await act(async () => {
+    await threadsStore.getState().shutdown(ref);
+    resolveResume(readResponse(ref, { status: { type: "idle" } }));
+  });
+  await waitFor(() => expect(threadsStore.getState().resumeFailures.get(ref)?.stopCanceled).toBe(true));
+  expect(scheduledResumeRetries).toHaveLength(0);
+});
+
+// The armed retry must die at the user's own hand: a Stop during the backoff
+// window is the user reversing the Send intent the retry serves, and a drive
+// fired after it would take a fresh stop baseline - blind to that Stop - and
+// restart the daemon the user just stopped. forceStop is the sharp case: it
+// re-arms the recovery obligation itself, so the fire-time fence alone would
+// let the armed drive through.
+test("a Stop during the armed backoff retires the pending resume retry", async ({ onTestFinished }) => {
+  const scheduledResumeRetries: { attempt: number; fire: () => void; cancelled: boolean }[] = [];
+  const restoreResumeScheduler = installResumeRetrySchedulerForTests((attempt, retry) => {
+    const scheduled = { attempt, fire: retry, cancelled: false };
+    scheduledResumeRetries.push(scheduled);
+    return () => {
+      scheduled.cancelled = true;
+    };
+  });
+  onTestFinished(restoreResumeScheduler);
+  const fake = connectReadyFakeClient();
+  const ref = "local:resume-retry-stopped-mid-backoff";
+  fake.on("thread/read", () => {
+    const response = readResponse(ref, { status: { type: "notLoaded" } });
+    response.thread.evener.resumeRequired = true;
+    return response;
+  });
+  fake.on("thread/resume", () => {
+    throw new Error("rendezvous timed out");
+  });
+  fake.on("evener/thread/forceStop", () => ({}));
+  render(
+    <ClientProvider client={fake}>
+      <Session params={{ ref }} paneId="p1" focused={true} />
+    </ClientProvider>,
+  );
+  await waitFor(() => expect(threadsStore.getState().restartBlockingObligations.has(ref)).toBe(true));
+  await resumeViaSend(ref, "the pressed text");
+  await waitFor(() => expect(scheduledResumeRetries).toHaveLength(1));
+  await act(async () => {
+    await threadsStore.getState().forceStop(ref);
+  });
+  expect(scheduledResumeRetries[0]?.cancelled).toBe(true);
+});
+
+// A Stop that lands on the drive's own ref while the resume RPC is on the
+// wire can surface in the catch as a plain transport failure - the Stop is
+// killing the very daemon the resume reaches - so the error's type cannot be
+// the only Stop signal: the drive re-checks its own stop baseline on failure,
+// arms no automatic retry, and - because the Stop reversed the drive before
+// any fate was checked - grows no row's discard threshold.
+test("a Stop followed by a rejected resume RPC arms no automatic retry and counts no failed check", async ({
+  onTestFinished,
+}) => {
+  const scheduledResumeRetries: { attempt: number; fire: () => void }[] = [];
+  const restoreResumeScheduler = installResumeRetrySchedulerForTests((attempt, retry) => {
+    scheduledResumeRetries.push({ attempt, fire: retry });
+    return () => undefined;
+  });
+  onTestFinished(restoreResumeScheduler);
+  const fake = connectReadyFakeClient();
+  const ref = "local:resume-retry-rejected-after-stop";
+  const standingRow = await mutationStorage.enqueueIntent({
+    targetRef: ref,
+    threadId: `thr_${ref}`,
+    method: "turn/queue",
+    payload: { ref, input: [{ type: "text", text: "standing uncertain row" }] },
+    attachments: [],
+    optimisticDisplay: { text: "standing uncertain row" },
+  });
+  await mutationStorage.markAttempted(standingRow.clientMutationId);
+  await mutationStorage.markUnknown(standingRow.clientMutationId, "blockedUnknown");
+  let rejectResume!: (error: Error) => void;
+  const resumeHeld = new Promise<ThreadReadResponse>((_, reject) => {
+    rejectResume = reject;
+  });
+  fake.on("thread/read", (params) => {
+    if (!params.ref) throw new Error("thread/read test request requires ref");
+    const response = readResponse(params.ref, { status: { type: "notLoaded" } });
+    response.thread.evener.resumeRequired = params.ref === ref;
+    return response;
+  });
+  fake.on("thread/resume", () => resumeHeld);
+  fake.on("thread/shutdown", () => ({}));
+  render(
+    <ClientProvider client={fake}>
+      <Session params={{ ref }} paneId="p1" focused={true} />
+    </ClientProvider>,
+  );
+  await waitFor(() => expect(threadsStore.getState().restartBlockingObligations.has(ref)).toBe(true));
+  await resumeViaSend(ref, "the pressed text");
+  // The drive reads the durable stop epoch before its request goes out, so
+  // wait for the RPC itself: the rejection must answer a request that is
+  // genuinely on the wire when the Stop lands, or the held promise rejects
+  // before the drive ever adopts it.
+  await waitFor(() => expect(fake.calls.filter((call) => call.method === "thread/resume")).toHaveLength(1));
+  await act(async () => {
+    await threadsStore.getState().shutdown(ref);
+    rejectResume(new Error("connection reset by peer"));
+  });
+  await waitFor(() => expect(threadsStore.getState().resumeFailures.get(ref)?.stopCanceled).toBe(true));
+  expect(scheduledResumeRetries).toHaveLength(0);
+  expect(threadsStore.getState().uncertainRecheckFailures.size).toBe(0);
+});
+
+// A Send press that joins an in-flight drive still owns a toast for that
+// drive's failure: the joined press marks the drive, and its failure mints a
+// fresh seq - a fresh toast identity - instead of the quiet in-place update
+// the retry owner's own failures keep.
+test("a Send press that joins an in-flight automatic drive still hears that drive's failure", async ({
+  onTestFinished,
+}) => {
+  const scheduledResumeRetries: { attempt: number; fire: () => void }[] = [];
+  const restoreResumeScheduler = installResumeRetrySchedulerForTests((attempt, retry) => {
+    scheduledResumeRetries.push({ attempt, fire: retry });
+    return () => undefined;
+  });
+  onTestFinished(restoreResumeScheduler);
+  const fake = connectReadyFakeClient();
+  const ref = "local:resume-press-joins-drive";
+  let resumeAttempts = 0;
+  let rejectHeldResume!: (error: Error) => void;
+  const heldResume = new Promise<ThreadReadResponse>((_, reject) => {
+    rejectHeldResume = reject;
+  });
+  fake.on("thread/read", () => {
+    const response = readResponse(ref, { status: { type: "notLoaded" } });
+    response.thread.evener.resumeRequired = true;
+    return response;
+  });
+  fake.on("thread/resume", () => {
+    resumeAttempts += 1;
+    if (resumeAttempts === 1) throw new Error("rendezvous timed out (attempt 1)");
+    return heldResume;
+  });
+  render(
+    <ClientProvider client={fake}>
+      <Session params={{ ref }} paneId="p1" focused={true} />
+    </ClientProvider>,
+  );
+  await waitFor(() => expect(threadsStore.getState().restartBlockingObligations.has(ref)).toBe(true));
+  await resumeViaSend(ref, "the pressed text");
+  const firstFailure = await waitFor(() => {
+    const record = threadsStore.getState().resumeFailures.get(ref);
+    expect(record).toBeDefined();
+    return record;
+  });
+  const firstFailureSeq = firstFailure?.seq ?? 0;
+  // The paced retry's drive is in flight - its resume RPC is held - when a
+  // second Send press joins it.
+  act(() => {
+    scheduledResumeRetries[0]?.fire();
+  });
+  await waitFor(() => expect(resumeAttempts).toBe(2));
+  await resumeViaSend(ref, "a second pressed text");
+  // The joined press surfaces the failure it joined as its own: the record
+  // carries the held resume's rejection (a generated opaque sentinel), and
+  // its toast identity is a fresh seq.
+  const joinedFailureToken = `probe-joined-${crypto.randomUUID()}`;
+  await act(async () => {
+    rejectHeldResume(new Error(joinedFailureToken));
+  });
+  await waitFor(() => expect(threadsStore.getState().resumeFailures.get(ref)?.message).toBe(joinedFailureToken));
+  expect(threadsStore.getState().resumeFailures.get(ref)?.seq).not.toBe(firstFailureSeq);
+  // The joined press's failure re-arms the retry owner. Await that arm so this
+  // test ends with the drive's whole catch tail settled rather than leaving
+  // the next test to observe it: an arm that escapes this test arms through
+  // whichever scheduler the NEXT test has installed.
+  await waitFor(() => expect(scheduledResumeRetries).toHaveLength(2));
+});
+
+// An identity-changing resume moves the user's work under the resumed ref, and
+// a Stop can land on THAT ref while the drive is still running: the post-resume
+// read then rejects before the drive's identity fence ever runs, surfacing in
+// the catch as a plain transport failure. The Stop generation check must fence
+// both identities, or the failure of a drive the user already stopped re-arms
+// the retry and restarts the session they shut down.
+test("a Stop on the resumed identity mid-drive arms no automatic retry", async ({ onTestFinished }) => {
+  const scheduledResumeRetries: { attempt: number; fire: () => void }[] = [];
+  const restoreResumeScheduler = installResumeRetrySchedulerForTests((attempt, retry) => {
+    scheduledResumeRetries.push({ attempt, fire: retry });
+    return () => undefined;
+  });
+  onTestFinished(restoreResumeScheduler);
+  const fake = connectReadyFakeClient();
+  const ref = "local:resume-stop-resumed";
+  const resumedRef = "local:resume-stop-resumed-2";
+  let resumeReadIssued!: () => void;
+  const resumeReadOnWire = new Promise<void>((resolve) => {
+    resumeReadIssued = resolve;
+  });
+  let holdResumedRead = true;
+  let rejectHeldRead!: (error: Error) => void;
+  const heldRead = new Promise<ThreadReadResponse>((_, reject) => {
+    rejectHeldRead = reject;
+  });
+  fake.on("thread/read", (params) => {
+    if (params.ref === resumedRef) {
+      if (holdResumedRead) {
+        holdResumedRead = false;
+        resumeReadIssued();
+        return heldRead;
+      }
+      return readResponse(resumedRef, { status: { type: "idle" } });
+    }
+    return readResponse(ref, {
+      status: { type: "notLoaded" },
+      evener: {
+        ref,
+        capabilities: CAPABILITIES,
+        resumeRequired: true,
+        mutationStateAuthoritative: false,
+        queue: { revision: 0 },
+      },
+    });
+  });
+  fake.on("thread/resume", () => readResponse(resumedRef, { status: { type: "idle" } }));
+  fake.on("thread/shutdown", () => ({}));
+  render(
+    <ClientProvider client={fake}>
+      <Session params={{ ref }} paneId="p1" focused={true} />
+    </ClientProvider>,
+  );
+  await waitFor(() => expect(threadsStore.getState().restartBlockingObligations.has(ref)).toBe(true));
+  await resumeViaSend(ref, "the pressed text");
+  // The resume returned the resumed identity and its post-resume read is on
+  // the wire when the user Stops the resumed session; that Stop refuses the
+  // read, which rejects as a plain transport failure before any fence runs.
+  await act(async () => {
+    await resumeReadOnWire;
+  });
+  await act(async () => {
+    await threadsStore.getState().shutdown(resumedRef);
+    rejectHeldRead(new Error("connection reset by peer"));
+  });
+  await waitFor(() => expect(threadsStore.getState().resumeFailures.get(ref)?.stopCanceled).toBe(true));
+  expect(scheduledResumeRetries).toHaveLength(0);
 });

@@ -1032,3 +1032,103 @@ default_model = "text-embedding-3-small"
 		t.Fatalf("instance defaults = %v, want none for a non-chat default (rows: %+v)", marked, rows)
 	}
 }
+
+// The hub decodes the contract straight into appwire.ModelDescriptor, and the
+// spawn composer builds its effort options from those fields
+// (catalogEffortLevels in the web spawn pane). A live listing's per-model
+// effort ladder must survive that exact decode, or the composer falls back to
+// a generic ladder that omits the model's real levels — max missing at start
+// while the running session's picker offers it.
+func TestLaunchCheckEffortLevelsSurviveAppWireDecode(t *testing.T) {
+	launchCheckGateway(t, http.StatusOK, `{"data":[
+		{"id":"glm-5.3","reasoning":{"supported_efforts":["low","high","max"]}},
+		{"id":"plain"},
+		{"id":"no-reasoning","supported_parameters":["tools"]}
+	]}`)
+
+	var stdout, stderr bytes.Buffer
+	err := RunLaunchCheck([]string{
+		"--protocol", appwire.ProtocolVersion,
+		"--models",
+		"--json",
+	}, &stdout, &stderr)
+	if err != nil {
+		t.Fatalf("runLaunchCheck: %v stderr=%s", err, stderr.String())
+	}
+	var out struct {
+		Models []appwire.ModelDescriptor `json:"models"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &out); err != nil {
+		t.Fatalf("decode stdout %q: %v", stdout.String(), err)
+	}
+	rows := map[string]appwire.ModelDescriptor{}
+	for _, m := range out.Models {
+		if m.Provider == "gw" {
+			rows[m.Model] = m
+		}
+	}
+
+	glm, ok := rows["glm-5.3"]
+	if !ok {
+		t.Fatalf("models=%+v, want the served glm-5.3", out.Models)
+	}
+	if !reflect.DeepEqual(glm.ReasoningEffortLevels, []string{"low", "high", "max"}) {
+		t.Fatalf("glm-5.3 reasoningEffortLevels=%v, want the ladder the listing stated", glm.ReasoningEffortLevels)
+	}
+	if glm.SupportsReasoning == nil || !*glm.SupportsReasoning {
+		t.Fatalf("glm-5.3 supportsReasoning=%v, want the stated reasoning capability", glm.SupportsReasoning)
+	}
+
+	plain, ok := rows["plain"]
+	if !ok {
+		t.Fatalf("models=%+v, want the served plain", out.Models)
+	}
+	if len(plain.ReasoningEffortLevels) != 0 || plain.SupportsReasoning != nil {
+		t.Fatalf("plain must carry no reasoning facts the listing did not state: %+v", plain)
+	}
+
+	noReasoning, ok := rows["no-reasoning"]
+	if !ok {
+		t.Fatalf("models=%+v, want the served no-reasoning", out.Models)
+	}
+	if noReasoning.SupportsReasoning == nil || *noReasoning.SupportsReasoning {
+		t.Fatalf("no-reasoning supportsReasoning=%v, want an explicit false", noReasoning.SupportsReasoning)
+	}
+	if len(noReasoning.ReasoningEffortLevels) != 0 {
+		t.Fatalf("no-reasoning must offer no levels: %+v", noReasoning)
+	}
+}
+
+// The mint-free rows the contract serves for a command-credentialed instance
+// carry the row's authored ladder too, so the composer's effort options come
+// from the same facts whichever branch listed the row.
+func TestLaunchCheckModelsCarriesEffortLevelsForCommandCredentialedRows(t *testing.T) {
+	valueexpr.ResetForTest()
+	t.Cleanup(valueexpr.ResetForTest)
+	client := launchCheckClient(t, map[string]registry.Provider{
+		"gw": {
+			Base: "openai-compatible", APIKey: "$(gw-mint)",
+			Transport: registry.Transport{BaseURL: "http://127.0.0.1:9/v1"},
+			Models: map[string]registry.Model{
+				"house-model": {Caps: registry.Caps{EffortValues: []string{"low", "high", "xhigh", "max"}}},
+			},
+		},
+	})
+	oldLoad := launchCheckLoadClient
+	launchCheckLoadClient = func(string) (*llm.Client, error) { return client, nil }
+	t.Cleanup(func() { launchCheckLoadClient = oldLoad })
+
+	models, _, err := launchCheckModels()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, m := range models {
+		if m.Provider == "gw" && m.Model == "house-model" {
+			if !reflect.DeepEqual(m.ReasoningEffortLevels, []string{"low", "high", "xhigh", "max"}) {
+				t.Fatalf("house-model reasoningEffortLevels=%v, want the authored ladder", m.ReasoningEffortLevels)
+			}
+			return
+		}
+	}
+	t.Fatalf("models=%+v, want gw/house-model", models)
+}
