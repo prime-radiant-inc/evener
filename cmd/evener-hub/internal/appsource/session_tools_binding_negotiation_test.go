@@ -678,6 +678,25 @@ func TestManagerQueueInputAwaitsStaleBindingRedial(t *testing.T) {
 	// it, and that re-dial is gated mid-negotiation.
 	liveBinding.Store("")
 	firstConn.Close()
+	// The relay's read loop observes the closed transport asynchronously, so
+	// a closing race exists before the hub has learned the connection died.
+	// Wait for the disconnection to register on the session before queuing:
+	// the scenario under test is input arriving once reconnection is
+	// pending, and the ref's serving state is the observable for that.
+	ref, err := appwire.ParseRef("local:thread")
+	if err != nil {
+		t.Fatal(err)
+	}
+	disconnectionDeadline := time.Now().Add(5 * time.Second)
+	for {
+		if _, known := source.SessionToolsSupported(ref); !known {
+			break
+		}
+		if time.Now().After(disconnectionDeadline) {
+			t.Fatal("relay did not register the disconnection")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
 
 	// The Manager queues input while reconnection is pending: the queue must
 	// await the replacement binding, not send the canceled one.
