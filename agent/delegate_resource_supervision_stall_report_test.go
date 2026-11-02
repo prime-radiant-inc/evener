@@ -32,9 +32,9 @@ const stableSupervisionRefusalHeldWindow = 100 * time.Millisecond
 func stableSupervisionReportFixture(t *testing.T) (*Session, *subagent) {
 	t.Helper()
 	fixture := newColdDelegateFixture(t, "")
-	fixture.adapter.steps = []func(llm.Request) llm.Response{
+	fixture.adapter.setSteps([]func(llm.Request) llm.Response{
 		func(llm.Request) llm.Response { return agenttest.FinalResponse("warm result") },
-	}
+	})
 	root := restoreSupervisionRoot(t, fixture, nil)
 	sub := warmStableSupervisionDelegate(t, root, fixture)
 	waitForStableSupervisionRun(t, root, fixture.childID)

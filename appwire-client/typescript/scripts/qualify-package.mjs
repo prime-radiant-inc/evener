@@ -258,7 +258,7 @@ assert.deepEqual(pickerRows.map((row) => row.kind), ["group", "model"]);
 assert.equal(client.pickableModelRows(pickerRows).length, 1);
 assert.deepEqual(client.buildPickerRows(null, ""), []);
 assert.equal(client.effortLabel("none", ["none", "high"]), "none (off)");
-assert.deepEqual(client.effortOptionLevels(["low", "high"], "medium"), ["", "low", "high", "medium"]);
+assert.deepEqual(client.effortOptionLevels(["low", "high"], "medium"), ["", "low", "medium", "high"]);
 assert.deepEqual(client.sessionEffortLevels(undefined, true), ["minimal", "low", "medium", "high"]);
 const envInstance = {
   name: "openai", providerId: "openai", protocol: "openai-chat", auth: "bearer", implicit: true, isDefault: false,

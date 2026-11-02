@@ -40,6 +40,10 @@ type launchCheckModel struct {
 	// launch model list). This is that fixed AppWire JSON contract, not a
 	// local naming choice.
 	InstanceDefault bool `json:"instanceDefault,omitempty"` //nolint:tagliatelle // matches appwire.ModelDescriptor's camelCase wire contract
+	// The resolved row's effort facts, so the composer offers the model's own
+	// levels rather than a generic fallback ladder.
+	ReasoningEffortLevels []string `json:"reasoningEffortLevels,omitempty"` //nolint:tagliatelle // matches appwire.ModelDescriptor's camelCase wire contract
+	SupportsReasoning     *bool    `json:"supportsReasoning,omitempty"`     //nolint:tagliatelle // matches appwire.ModelDescriptor's camelCase wire contract
 }
 
 // supportedLaunchFlags advertises the serve/run flags this binary accepts
@@ -183,7 +187,7 @@ func launchCheckModels() ([]launchCheckModel, []appwire.ModelListDiagnostic, err
 				if err != nil || res.Model.Hidden || llm.LiveSaysNoTools(res) {
 					continue
 				}
-				out = append(out, launchCheckModel{Provider: inst.Name, Model: row.ID, Warnings: append([]string(nil), res.Warnings...)})
+				out = append(out, launchCheckModelRow(inst.Name, row.ID, res, false))
 			}
 			continue
 		}
@@ -195,14 +199,28 @@ func launchCheckModels() ([]launchCheckModel, []appwire.ModelListDiagnostic, err
 			continue
 		}
 		for _, m := range listing.Models {
-			out = append(out, launchCheckModel{
-				Provider: inst.Name, Model: m.ModelID,
-				Warnings:        append([]string(nil), m.Warnings...),
-				InstanceDefault: listing.Usable && defaultModel != "" && strings.TrimSpace(m.ModelID) == defaultModel,
-			})
+			out = append(out, launchCheckModelRow(inst.Name, m.ModelID, m,
+				listing.Usable && defaultModel != "" && strings.TrimSpace(m.ModelID) == defaultModel))
 		}
 	}
 	return out, diagnostics, nil
+}
+
+// launchCheckModelRow builds one contract row from a resolved record through
+// cmdutil's wire view of the same caps, so this contract and the hub's
+// live-descriptor path cannot state different facts about the same model. The
+// reasoning capability rides only when the row states one; an unstated
+// capability stays absent so the composer's fallback ladder still applies.
+func launchCheckModelRow(provider, modelID string, res registry.Resolved, instanceDefault bool) launchCheckModel {
+	d := cmdutil.ModelDescriptorFromResolved(res)
+	return launchCheckModel{
+		Provider:              provider,
+		Model:                 modelID,
+		Warnings:              d.Warnings,
+		InstanceDefault:       instanceDefault,
+		ReasoningEffortLevels: d.ReasoningEffortLevels,
+		SupportsReasoning:     d.SupportsReasoning,
+	}
 }
 
 func launchCheckModelDiagnostic(provider string, err error) appwire.ModelListDiagnostic {

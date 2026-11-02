@@ -172,14 +172,14 @@ func TestQueuedMidTurnSwitchEnumeratesTheLiveListingOnce(t *testing.T) {
 		MaxSubagentDepth: 1,
 		testOnly:         testConfig{skipGitSnapshot: true, minimalSystemPrompt: true, noSyncJobStore: true},
 	}))
-	adapter.steps = []func(llm.Request) llm.Response{
+	adapter.setSteps([]func(llm.Request) llm.Response{
 		func(llm.Request) llm.Response {
 			if err := s.SetModel("gpt-5.4"); err != nil {
 				t.Errorf("mid-turn SetModel: %v", err)
 			}
 			return agenttest.CommunicateResponse(true, "first turn done")
 		},
-	}
+	})
 
 	baseline := listings.Load()
 	if _, err := s.ProcessInput(context.Background(), "run one turn and pick mid-turn", nil); err != nil {
@@ -226,7 +226,7 @@ func TestAtRestPickDoesNotSwapUnderATurnThatStartedWhileItValidated(t *testing.T
 		},
 	}
 	pickDone := make(chan error, 1)
-	adapter.steps = []func(llm.Request) llm.Response{
+	adapter.setSteps([]func(llm.Request) llm.Response{
 		func(llm.Request) llm.Response {
 			go func() { pickDone <- s.SetModel("gpt-5.4") }()
 			// Do not end the first turn until the pick has reached its
@@ -240,7 +240,7 @@ func TestAtRestPickDoesNotSwapUnderATurnThatStartedWhileItValidated(t *testing.T
 			return agenttest.ToolCallResponse(llm.ToolCallData{ID: "t2_tasks", Name: "task_list", Arguments: []byte(`{}`), Type: "function"})
 		},
 		func(llm.Request) llm.Response { return agenttest.CommunicateResponse(true, "second turn done") },
-	}
+	})
 	if _, err := s.ProcessInput(context.Background(), "first message", nil); err != nil {
 		t.Fatalf("first ProcessInput: %v", err)
 	}
@@ -316,7 +316,7 @@ func TestSupersededPendingApplicationDoesNotOverwriteANewerPick(t *testing.T) {
 		},
 		func() ([]registry.Model, error) { return nil, errors.New("newer pick listing unavailable") },
 	}
-	adapter.steps = []func(llm.Request) llm.Response{
+	adapter.setSteps([]func(llm.Request) llm.Response{
 		func(llm.Request) llm.Response {
 			// The queued pick: its preflight fails open, so the pending switch
 			// carries no listing and the tail must re-fetch.
@@ -325,7 +325,7 @@ func TestSupersededPendingApplicationDoesNotOverwriteANewerPick(t *testing.T) {
 			}
 			return agenttest.CommunicateResponse(true, "first turn done")
 		},
-	}
+	})
 
 	// The newer pick arrives from its own goroutine while the main goroutine
 	// is blocked inside the idle tail's listing fetch; the same goroutine
@@ -375,7 +375,7 @@ func TestConcurrentMidTurnPicksLastAcceptedChoiceWins(t *testing.T) {
 		func() ([]registry.Model, error) { return nil, errors.New("fast listing unavailable") },
 	}
 	aDone, bDone := make(chan error, 1), make(chan error, 1)
-	adapter.steps = []func(llm.Request) llm.Response{
+	adapter.setSteps([]func(llm.Request) llm.Response{
 		func(llm.Request) llm.Response {
 			go func() { aDone <- s.SetModel("gpt-5.4") }()
 			// The second pick only enters its preflight once the first one
@@ -388,7 +388,7 @@ func TestConcurrentMidTurnPicksLastAcceptedChoiceWins(t *testing.T) {
 			return agenttest.CommunicateResponse(true, "first turn done")
 		},
 		func(llm.Request) llm.Response { return agenttest.CommunicateResponse(true, "queued turn done") },
-	}
+	})
 	serveSessionWithMutationStore(t, s)
 	queueOneMutation(t, s, "cm-last-accepted", "the queued message")
 	// The boundary hook is the rendezvous: it fires after the first turn's
@@ -440,7 +440,7 @@ func TestRejectedPickDoesNotCancelAnEarlierQueuedPick(t *testing.T) {
 		MaxSubagentDepth: 1,
 		testOnly:         testConfig{skipGitSnapshot: true, minimalSystemPrompt: true, noSyncJobStore: true},
 	}))
-	adapter.steps = []func(llm.Request) llm.Response{
+	adapter.setSteps([]func(llm.Request) llm.Response{
 		func(llm.Request) llm.Response {
 			if err := s.SetModel("gpt-5.4"); err != nil {
 				t.Errorf("accepted pick: %v", err)
@@ -451,7 +451,7 @@ func TestRejectedPickDoesNotCancelAnEarlierQueuedPick(t *testing.T) {
 			return agenttest.CommunicateResponse(true, "first turn done")
 		},
 		func(llm.Request) llm.Response { return agenttest.CommunicateResponse(true, "queued turn done") },
-	}
+	})
 	serveSessionWithMutationStore(t, s)
 	queueOneMutation(t, s, "cm-rejected-pick", "the queued message")
 
@@ -495,7 +495,7 @@ func TestSupersededLoopTopApplicationAppliesTheNewerQueuedPick(t *testing.T) {
 		// The newer pick's preflight.
 		func() ([]registry.Model, error) { return nil, errors.New("newer pick listing unavailable") },
 	}
-	adapter.steps = []func(llm.Request) llm.Response{
+	adapter.setSteps([]func(llm.Request) llm.Response{
 		func(llm.Request) llm.Response {
 			if err := s.SetModel("gpt-5.4"); err != nil {
 				t.Errorf("queued pick: %v", err)
@@ -503,7 +503,7 @@ func TestSupersededLoopTopApplicationAppliesTheNewerQueuedPick(t *testing.T) {
 			return agenttest.CommunicateResponse(true, "first turn done")
 		},
 		func(llm.Request) llm.Response { return agenttest.CommunicateResponse(true, "queued turn done") },
-	}
+	})
 	serveSessionWithMutationStore(t, s)
 	queueOneMutation(t, s, "cm-loop-superseded", "the queued message")
 	// While the loop-top application's refetch is parked, a newer pick queues
@@ -548,7 +548,7 @@ func TestCommittedSwitchPublicationsLandInCommitOrder(t *testing.T) {
 		MaxSubagentDepth: 1,
 		testOnly:         testConfig{skipGitSnapshot: true, minimalSystemPrompt: true, noSyncJobStore: true},
 	}))
-	adapter.steps = []func(llm.Request) llm.Response{
+	adapter.setSteps([]func(llm.Request) llm.Response{
 		func(llm.Request) llm.Response {
 			// The queued pick: mid-turn, so it stores and the idle tail
 			// applies it.
@@ -557,7 +557,7 @@ func TestCommittedSwitchPublicationsLandInCommitOrder(t *testing.T) {
 			}
 			return agenttest.CommunicateResponse(true, "first turn done")
 		},
-	}
+	})
 	// Gate the queued application between its swap and its publication: the
 	// newer pick's application then waits on the publication lock until the
 	// older application has told its story. One-shot: the newer pick's own
@@ -758,7 +758,7 @@ func TestACommittedSwitchPublishesEvenWhenANewerQueuedPickLaterFails(t *testing.
 			}
 		}
 	})
-	openaiAdapter.steps = []func(llm.Request) llm.Response{
+	openaiAdapter.setSteps([]func(llm.Request) llm.Response{
 		// Turn 1: pick A mid-turn; the pick queues for this turn's boundary.
 		func(llm.Request) llm.Response {
 			if err := s.SetModel("gpt-5.4"); err != nil {
@@ -767,7 +767,7 @@ func TestACommittedSwitchPublishesEvenWhenANewerQueuedPickLaterFails(t *testing.
 			return agenttest.CommunicateResponse(true, "first turn done")
 		},
 		func(llm.Request) llm.Response { return agenttest.CommunicateResponse(true, "queued turn done") },
-	}
+	})
 	// Serve the session through this test's own lossless consumer: one drain
 	// owns the events, so nothing races the capture for them.
 	var evMu sync.Mutex

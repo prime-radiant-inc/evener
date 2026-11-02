@@ -129,6 +129,10 @@ func registerCommunicateTool(reg *tool.Registry, deps *toolDeps) error {
 			if err := deps.abort(ctx); err != nil {
 				return nil, err
 			}
+			if endTurn && endReason == tool.CommunicateEndReasonWaitingOnWork &&
+				deps.wakeableWork != nil && !deps.wakeableWork() {
+				return nil, errors.New("end_reason waiting_on_work requires work that will wake this session; none is pending: end with done if the work is finished, needs_response if your partner must act, or start the work or arm a watch before ending the turn")
+			}
 
 			if err := deps.deliverCommunicate(events.CommunicateData{
 				CallID:    callIDFromContext(ctx),

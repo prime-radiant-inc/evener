@@ -1859,9 +1859,9 @@ func TestTaskListTool_UpdateIgnoresTerminalDelegates(t *testing.T) {
 					},
 				})
 			} else {
-				fixture.adapter.steps = []func(llm.Request) llm.Response{
+				fixture.adapter.setSteps([]func(llm.Request) llm.Response{
 					func(llm.Request) llm.Response { return agenttest.CommunicateResponse(true, "done") },
-				}
+				})
 			}
 			root, err := restoreDelegateResourceBootstrapSession(fixture.client, fixture.profile, fixture.workspace, fixture.meta, fixture.stateDir)
 			if err != nil {
