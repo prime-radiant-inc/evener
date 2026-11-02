@@ -25,6 +25,7 @@ import type {
   MutationOutboxState,
   MutationRecoveryRecord,
 } from "./records";
+import { effectiveWireId } from "./records";
 
 // A pure read over `model`'s running turn: true once an identified user
 // message (one carrying its own clientMutationId) has landed in it and
@@ -234,7 +235,15 @@ export function createPendingTurnsStore<A extends MutationAttachmentRef = Mutati
     // carries none).
     const discovered = [...snapshot.outbox, ...snapshot.optimistic]
       .filter((record) => deps.identity.isOwnMutationRecord(record))
-      .map((record) => [record.clientMutationId, record.createdAt] as const)
+      // Key the map by the record's EFFECTIVE WIRE id, not its storage key:
+      // a replacement owns a fresh storage key while traveling under its
+      // predecessor's wire id, and the daemon's feed names the wire id. A
+      // storage-keyed map entry dies with the replacement's durable copy the
+      // moment authoritative reconciliation settles it out of the outbox,
+      // stranding the lineage's ownership trail; the wire id is stable
+      // across every mint. Ordinary rows - wire id === storage key, every
+      // native row and most web rows - keep byte-identical behavior.
+      .map((record) => [effectiveWireId(record), record.createdAt] as const)
       .filter(([id]) => !known.has(id));
     if (discovered.length === 0) return;
     store.setState((state) => ({ submittedHere: new Map([...state.submittedHere, ...discovered]) }));

@@ -1238,6 +1238,7 @@ export class MutationOutboxIndexedDB implements WebQueuedMessageStorage<Mutation
           stopEpoch: targetStopEpoch,
           displayedStopEpoch,
           bornCanceled: false,
+          preserveOriginClientId: true,
         });
         restored.push(fresh.clientMutationId);
       }
@@ -1544,12 +1545,14 @@ export class MutationOutboxIndexedDB implements WebQueuedMessageStorage<Mutation
       if (ids.length === 0) return { status: "refused" };
       let consumed = false;
       let refused = false;
+      const consumedWireIds = new Set<string>();
       for (const id of ids) {
         const recovery = await requestResult<MutationRecoveryRecord | undefined>(recoveryStore.get(id));
         if (!recovery) {
           consumed = true;
           continue;
         }
+        consumedWireIds.add(effectiveWireId(recovery));
         const durableRevision = (recovery as VersionedMutationRecoveryRecord).compositionRevision ?? 0;
         // A caller that supplies no map is the legacy resend path and accepts
         // the durable row as it stands. A supplied map stays authoritative: a
@@ -1617,6 +1620,25 @@ export class MutationOutboxIndexedDB implements WebQueuedMessageStorage<Mutation
         stopEpochAtEnqueue: stopEpoch,
       };
       await requestResult(transaction.objectStore(OUTBOX_STORE).add(record));
+      // Consume-time sibling retirement: transferToRecovery's wire coalesce
+      // consults only LIVE recovery rows, so once this resend consumes a
+      // recovery, a delayed terminal refusal for its superseded wire
+      // siblings would find no wire copy and mint a NEW sendable recovery
+      // for work this resend already delivers. The siblings retire in the
+      // same write transaction that consumes the recovery - their late
+      // outcomes then land on a missing row and are inert, the same
+      // semantics a late receipt against a settled row already has. Only
+      // superseded rows retire (a canceled row is the user's visible strip
+      // row; any other state is live work), and never the fresh row this
+      // resend just created, which is excluded by key and by state.
+      if (consumedWireIds.size > 0) {
+        const rows = await requestResult<MutationOutboxRecord[]>(transaction.objectStore(OUTBOX_STORE).getAll());
+        for (const row of rows) {
+          if (row.state !== "superseded" || row.clientMutationId === record.clientMutationId) continue;
+          if (consumedWireIds.has(effectiveWireId(row)))
+            await requestResult(transaction.objectStore(OUTBOX_STORE).delete(row.clientMutationId));
+        }
+      }
       for (const id of ids) await requestResult(recoveryStore.delete(id));
       return { status: "sent", record };
     });
@@ -1874,6 +1896,12 @@ export class MutationOutboxIndexedDB implements WebQueuedMessageStorage<Mutation
       stopEpoch: number;
       displayedStopEpoch: number | undefined;
       bornCanceled: boolean;
+      // The automatic requeue (reconciliation's proven-absent mint) can run
+      // in ANY tab, and the fresh row must keep the SENDER's provenance or
+      // the sender's recordSubmittedHere never claims it and its own
+      // Send/Queue routing mis-routes behind the send. An explicit Retry
+      // press is a user-chosen actor and stamps the pressing tab.
+      preserveOriginClientId?: boolean;
     },
   ): Promise<MutationOutboxRecord> {
     const intentSequence = await this.#allocateSequence(transaction, source.targetRef);
@@ -1898,8 +1926,9 @@ export class MutationOutboxIndexedDB implements WebQueuedMessageStorage<Mutation
         clientMutationId: inheritWireId ? inheritedWireId : clientMutationId,
       },
       clientMutationId,
-      originClientId: ownClientId(),
+      originClientId: fresh.preserveOriginClientId ? (source.originClientId ?? ownClientId()) : ownClientId(),
       intentSequence,
+
       createdAt: this.#now(),
       state: fresh.bornCanceled ? "canceled" : "submitting",
       attempted: false,

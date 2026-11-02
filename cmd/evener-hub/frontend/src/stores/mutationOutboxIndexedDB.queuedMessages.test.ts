@@ -8,6 +8,7 @@ import {
 import { IDBFactory, IDBObjectStore } from "fake-indexeddb";
 import { afterEach, expect, test, vi } from "vitest";
 import { requestResult, transactionCompletion } from "./idbConnection";
+import { setMutationClientIdentityForTests } from "./mutationClientIdentity";
 import { MutationOutboxIndexedDB } from "./mutationOutboxIndexedDB";
 
 const opened: MutationOutboxIndexedDB[] = [];
@@ -695,4 +696,98 @@ test("preserveRecoveryComposition reuses a row that already holds the compositio
   );
   expect(preserved?.clientMutationId).toBe(original.clientMutationId);
   expect(await f.storage.listRecovery(original.targetRef)).toHaveLength(1);
+});
+
+// Round-3 review M-A: the wire coalesce consults only LIVE recovery rows, so
+// once a recovery is consumed by a resend (deleted from the store) a delayed
+// terminal refusal for its superseded sibling finds no wire copy and mints a
+// NEW sendable recovery for work the resend already delivered. The resend's
+// consumption must retire the superseded wire siblings in the same write
+// transaction, so the late refusal lands on a missing row and is inert -
+// the same late-outcome semantics a receipt already has.
+test("a consumed recovery retires its superseded wire siblings, so a late refusal cannot resurrect delivered work", async () => {
+  const f = fixture();
+  // A: attempted, response lost -> delivery-uncertain.
+  const a = await f.storage.enqueueIntent(queuedIntent());
+  await f.storage.markAttempted(a.clientMutationId);
+  await f.storage.markUnknown(a.clientMutationId, "blockedUnknown");
+  // Retry mints B under A's wire id; A settles terminal superseded, keeping
+  // its id and attempt evidence for its real attempt's late outcome.
+  const capture = await f.storage.getOutboxWithStopEpoch(a.clientMutationId);
+  const b = await f.storage.mintRetryFromRow(a.clientMutationId, {
+    record: capture.record,
+    stopEpoch: capture.stopEpoch,
+    displayedStopEpoch: 0,
+  });
+  if (!b) throw new Error("mint failed");
+  // B's attempt is refused -> recovery R (key B, wire A).
+  await f.storage.markAttempted(b.clientMutationId);
+  await f.storage.markUnknown(b.clientMutationId, "blockedUnknown");
+  const recovery = await f.storage.transferToRecovery(b.clientMutationId, "rejected");
+  if (!recovery) throw new Error("failed to seed recovery");
+  // The user resends R: R is consumed and C is enqueued.
+  const sent = await f.storage.resendRecoveryResult(b.clientMutationId, queuedIntent());
+  if (sent.status !== "sent") throw new Error(`resend did not send: ${sent.status}`);
+  // The consumed recovery's superseded wire siblings retire with it, in the
+  // same transaction that consumed the recovery.
+  expect(await f.storage.getOutbox(a.clientMutationId)).toBeUndefined();
+  // C delivers and settles: the composition has left exactly once.
+  await f.storage.markAttempted(sent.record.clientMutationId);
+  expect(await f.storage.settleReceipt(sent.record.clientMutationId, "reflected")).toBe(true);
+  // A's delayed terminal refusal now arrives for work already delivered as C:
+  // it must find no row to transfer and create no second sendable recovery.
+  expect(await f.storage.transferToRecovery(a.clientMutationId, "rejected", "late")).toBeUndefined();
+  expect(await f.storage.getRecovery(a.clientMutationId)).toBeUndefined();
+  expect(await f.storage.listRecovery("local:queued")).toHaveLength(0);
+});
+
+// Round-3 review M-B (half 1): the AUTOMATIC mint - reconciliation's
+// proven-absent innocent-row requeue - can run in ANY tab, so stamping the
+// fresh row with the minting tab's identity loses the sender's provenance:
+// the sender's own recordSubmittedHere filters by originClientId and never
+// claims the row, and its Send/Queue routing mis-routes behind the send.
+// The automatic mint carries the source row's originClientId; only an
+// explicit Retry press - a user-chosen actor - stamps the pressing tab.
+test("an automatic requeue mint preserves the sender's tab identity", async () => {
+  setMutationClientIdentityForTests("sender-tab");
+  try {
+    const f = fixture();
+    const a = await f.storage.enqueueIntent(queuedIntent());
+    await f.storage.markAttempted(a.clientMutationId);
+    await f.storage.markUnknown(a.clientMutationId, "blockedUnknown");
+    // Reconciliation runs in ANOTHER tab...
+    setMutationClientIdentityForTests("reconciling-tab");
+    const restored = await f.storage.restoreProvenAbsent(a.targetRef, new Set());
+    expect(restored).toHaveLength(1);
+    const fresh = await f.storage.getOutbox(restored[0]);
+    if (!fresh) throw new Error("missing restored row");
+    // ...but the fresh row keeps the SENDER's provenance and the inherited
+    // wire id, so the sender's tab still recognizes its own pending send.
+    expect(fresh.originClientId).toBe("sender-tab");
+    expect(fresh.payload.clientMutationId).toBe(a.clientMutationId);
+  } finally {
+    setMutationClientIdentityForTests(undefined);
+  }
+});
+
+// The scope pin, disclosed: an explicit Retry press is a user-chosen actor,
+// so its mint stamps the PRESSING tab's identity - the reviewer's scope for
+// the fix is automatic requeues only.
+test("an explicit Retry mint stamps the pressing tab's identity", async () => {
+  setMutationClientIdentityForTests("pressing-tab");
+  try {
+    const f = fixture();
+    const a = await f.storage.enqueueIntent(queuedIntent());
+    await f.storage.markAttempted(a.clientMutationId);
+    await f.storage.markUnknown(a.clientMutationId, "blockedUnknown");
+    const capture = await f.storage.getOutboxWithStopEpoch(a.clientMutationId);
+    const b = await f.storage.mintRetryFromRow(a.clientMutationId, {
+      record: capture.record,
+      stopEpoch: capture.stopEpoch,
+      displayedStopEpoch: 0,
+    });
+    expect(b?.originClientId).toBe("pressing-tab");
+  } finally {
+    setMutationClientIdentityForTests(undefined);
+  }
 });
