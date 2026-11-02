@@ -762,6 +762,7 @@ test("an automatic requeue mint preserves the sender's tab identity", async () =
     const restoredId = restored[0];
     if (!restoredId) throw new Error("missing restored row");
     const fresh = await f.storage.getOutbox(restoredId);
+    if (!fresh) throw new Error("missing restored row");
     // ...but the fresh row keeps the SENDER's provenance and the inherited
     // wire id, so the sender's tab still recognizes its own pending send.
     expect(fresh.originClientId).toBe("sender-tab");
