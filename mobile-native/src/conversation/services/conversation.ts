@@ -118,6 +118,13 @@ export interface ConversationReadProjection {
 	olderCursor: string | null;
 	hasEarlierItems?: boolean;
 	hasLaterItems?: boolean;
+	// True only on the stale-snapshot recovery path: the server refused the
+	// held window as predating its bounded update log, and the fresh window
+	// below replaces the held history instead of merging with it. A merge
+	// would keep the older pages' stale content — an item that changed while
+	// the client was disconnected — and advance the snapshot length past the
+	// skipped update with no way back.
+	replacedHeldHistory?: boolean;
 }
 
 // The canonical service interface — preserved for screen test mocks that only
@@ -657,6 +664,7 @@ export function createConversationService<ReadLease = unknown>(
 			// against a projection the publish has not installed.
 			const publish = (async (): Promise<ConversationReadProjection> => {
 				let response: ThreadReadResponse;
+				let replacedHeldHistory = false;
 				try {
 					response = await readOnce(heldSnapshot);
 				} catch (error) {
@@ -671,6 +679,7 @@ export function createConversationService<ReadLease = unknown>(
 					// the store, untouched here.
 					if (heldSnapshot === undefined || !isStaleCursorError(error)) throw error;
 					response = await readOnce(undefined);
+					replacedHeldHistory = true;
 				}
 				// Compute ALL response-derived projection work BEFORE committing the
 				// pair — a throw in hydration or projectConversation (or a
@@ -708,6 +717,7 @@ export function createConversationService<ReadLease = unknown>(
 					conversation,
 					changes: response.changes,
 					olderCursor,
+					...(replacedHeldHistory ? { replacedHeldHistory: true } : {}),
 					hasEarlierItems: thread.turns?.some((turn) => turn.hasEarlierItems === true) ?? false,
 					hasLaterItems: thread.turns?.some((turn) => turn.hasLaterItems === true) ?? false,
 				};

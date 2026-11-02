@@ -429,10 +429,7 @@ export class FakeConversationService implements LiveConversationService {
 	notificationHandler: ((n: AnyNotification) => void) | null = null;
 	closed = false;
 	// readProjection support
-	readProjectionResult: {
-		conversation: MobileConversation;
-		olderCursor: string | null;
-	} | null = null;
+	readProjectionResult: ConversationReadProjection | null = null;
 	readProjectionBlock: Promise<ConversationReadProjection> | null = null;
 	readProjectionCalls: { ref: string }[] = [];
 

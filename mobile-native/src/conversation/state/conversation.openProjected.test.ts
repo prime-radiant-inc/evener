@@ -668,6 +668,58 @@ describe("ConversationStore", () => {
 			expect(service.readProjectionCalls).toHaveLength(reads + 1);
 		});
 
+		// A stale held snapshot means the server's bounded update log no longer
+		// covers the retained window, so the recovery re-read comes back marked
+		// replacedHeldHistory: the store must adopt that window and its cursor
+		// instead of merging. A merge keeps the older pages' stale content — an
+		// item that changed while the client was disconnected still displays its
+		// pre-change state — and advances the snapshot length past the skipped
+		// update, so no later refresh can recover it.
+		it("adopts the fresh window a stale-snapshot recovery returns, dropping held older pages", async () => {
+			const service = new FakeConversationService();
+			service.openConv = makeConversation({ items: positionedRows(100, 200) }, true);
+			const store = createConversationStore();
+			await store.getState().openProjected(service, "ref-1");
+			store.setState({ olderCursor: "held-cursor" });
+			store.getState().setFollowingLiveEnd(false);
+			// Two older pages are loaded above the window. The second page's
+			// row-7 is the item the server changed while this client was
+			// disconnected; the held page still shows the pre-change content.
+			service.olderItems = { items: positionedRows(50, 100), nextCursor: "held-page-2" };
+			expect((await store.getState().loadOlder(service)).status).toBe("loaded");
+			service.olderItems = { items: positionedRows(0, 50), nextCursor: undefined };
+			expect((await store.getState().loadOlder(service)).status).toBe("loaded");
+			expect(store.getState().conversation?.items).toHaveLength(200);
+
+			// The recovery read: the same instance, the server's current
+			// window, and the replacement signal.
+			service.readProjectionResult = {
+				conversation: makeConversation({ items: positionedRows(150, 200) }, true),
+				olderCursor: "fresh-cursor",
+				replacedHeldHistory: true,
+			};
+			store.setState({ draft: "draft survives the recovery" });
+			await store.getState().rehydrate(service);
+
+			// The held older pages are gone: the store adopted the fresh
+			// window and cursor, and the draft survived.
+			expect(store.getState().conversation?.items.map((row) => row.id)).toEqual(
+				positionedRows(150, 200).map((row) => row.id),
+			);
+			expect(store.getState().olderCursor).toBe("fresh-cursor");
+			expect(store.getState().draft).toBe("draft survives the recovery");
+
+			// Re-paging with the fresh cursor returns the changed older item's
+			// current content: the skipped update is recoverable.
+			service.olderItems = {
+				items: [{ kind: "user", id: "row-7", text: "row 7 finished", position: { entry: 7, item: 0 } }],
+				nextCursor: undefined,
+			};
+			expect((await store.getState().loadOlder(service)).status).toBe("loaded");
+			const changedRow = store.getState().conversation?.items.find((row) => row.id === "row-7");
+			expect(changedRow?.kind === "user" ? changedRow.text : undefined).toBe("row 7 finished");
+		});
+
 		// The hub answers the page before the transcript's first item with an
 		// empty, exhausted page: nothing is older, so the trim is spent.
 		it("stops paging when the page above the trimmed rows is empty and exhausted", async () => {

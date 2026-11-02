@@ -1709,10 +1709,8 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 					const heldSnapshot = heldHistory?.incarnation
 						? { incarnation: heldHistory.incarnation, length: heldHistory.length }
 						: undefined;
-					const { conversation, changes, hasEarlierItems, hasLaterItems } = await service.readProjection(
-						ref,
-						heldSnapshot,
-					);
+					const { conversation, changes, hasEarlierItems, hasLaterItems, replacedHeldHistory } =
+						await service.readProjection(ref, heldSnapshot);
 					// I1: Suppress stale work — if the binding epoch changed, the store
 					// switched to a different service/ref. Do not commit.
 					if (entryEpoch !== bindingEpoch) return;
@@ -1775,8 +1773,18 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 					// running turn's content this read's own bounded window may omit
 					// survives without a separate live-turn carve-out (the old
 					// withLiveActiveTurn).
+					// A stale-snapshot recovery (replacedHeldHistory) is the third
+					// disposition: the server refused the held window as predating
+					// its bounded update log, so the held history — including the
+					// older pages this client paged in — is exactly the content the
+					// fresh window must REPLACE, not merge with: a merge keeps the
+					// pages' stale content (an item that changed while the client
+					// was disconnected still displays its pre-change state) and
+					// advances the snapshot length past the skipped update, so no
+					// later refresh can recover it.
+					const replaceHeldHistory = replacedHeldHistory === true;
 					const appliedModel =
-						sameInstance && currentConvForMerge !== null
+						sameInstance && currentConvForMerge !== null && !replaceHeldHistory
 							? applyReadModel(currentConvForMerge, conversation, changes)
 							: conversation;
 					// applyReadModel returns the held model BY REFERENCE, completely
@@ -1808,10 +1816,10 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 					// same way loadOlder and the live-frame path
 					// (applyThreadNotification) do.
 					let mergedTurns: TurnModel[] =
-						sameInstance && currentConvForMerge !== null
+						sameInstance && currentConvForMerge !== null && !replaceHeldHistory
 							? [...reconcileCrossTurnReissues(currentConvForMerge.turns, appliedModel.turns)]
 							: [...appliedModel.turns];
-					if (sameInstance && currentConvForMerge !== null) {
+					if (sameInstance && currentConvForMerge !== null && !replaceHeldHistory) {
 						mergedTurns = stripFieldsOmittedByRead(mergedTurns, conversation.turns);
 					}
 					const merged = withSyncedHistoryTurns({ ...appliedModel, turns: mergedTurns }, mergedTurns);
@@ -1831,7 +1839,12 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 					// — not the token, and not row ownership — is what separates the
 					// two: the fresh read's own signal still wins unless the store's
 					// own cursor actually moved during the await.
-					const pageCursorAdvanced = sameInstance && currentSnapshot.olderCursor !== entryOlderCursor;
+					// A stale-snapshot replacement also discards the held cursor: a
+					// racing loadOlder that advanced it during the await was paging
+					// the discarded history, and its advancement must not pin the
+					// fresh window's own cursor.
+					const pageCursorAdvanced =
+						sameInstance && !replaceHeldHistory && currentSnapshot.olderCursor !== entryOlderCursor;
 					if (pageCursorAdvanced) mergedCursor = currentSnapshot.olderCursor;
 					acceptedRehydrate = { generation: gen };
 					adoptRead(conversation);

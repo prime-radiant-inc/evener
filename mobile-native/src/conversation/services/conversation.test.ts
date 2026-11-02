@@ -1384,6 +1384,28 @@ describe("ConversationService", () => {
 			expect(result?.conversation.threadId).toBe("thread-1");
 		});
 
+		it("marks the stale-snapshot recovery as replacing the held history", async () => {
+			const { client, service } = setup();
+			await service.open("ref-1");
+			client.calls.length = 0;
+			let readCalls = 0;
+			client.on("thread/read", () => {
+				readCalls += 1;
+				if (readCalls === 1) {
+					throw new WireError("stale transcript cursor", -32020, {
+						evenerErrorInfo: "transcriptItemCursorStale",
+					});
+				}
+				return makeReadResponse(makeThread());
+			});
+			const recovered = await service.readProjection("ref-1", { incarnation: "inc-1", length: 3 });
+			expect(recovered?.replacedHeldHistory).toBe(true);
+			// A plain projection is a merge candidate like before: only the
+			// stale-snapshot recovery replaces.
+			const plain = await service.readProjection("ref-1");
+			expect(plain?.replacedHeldHistory).toBeUndefined();
+		});
+
 		it("retries a stale held snapshot exactly once, then surfaces the refusal", async () => {
 			const { client, service } = setup();
 			await service.open("ref-1");
