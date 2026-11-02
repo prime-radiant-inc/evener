@@ -6,6 +6,7 @@ import {
   type ThreadItem,
   type ThreadModel,
   type ThreadReadResponse,
+  type ThreadTurnsListResponse,
 } from "@evener/appwire-client";
 import { deferred } from "@evener/appwire-client/testing/deferred";
 import { IDBDatabase, IDBObjectStore } from "fake-indexeddb";
@@ -2136,6 +2137,78 @@ it("a repository whose first read is windowed still owes the recorded range belo
   const opened = await reader.openLocal(200);
   const texts = opened.model?.turns.flatMap((turn) => turn.items).map((item) => item.text);
   expect(texts).toEqual(Array.from({ length: 81 }, (_, index) => `row-${index + 1}`));
+  reader.dispose();
+  owner.dispose();
+});
+
+it("a certify-only open's loaded-range fill does not consume the recorded demand", async () => {
+  const fixture = createEntryCacheFixture();
+  fixtures.push(fixture);
+  const owner = repository(fixture.cache);
+  owner.acceptRead(readMany(200), { lifetime: 1, readId: "read-full", boundary: "boundary-full" });
+  await owner.settled();
+  // The route notes the miss against the established display: the recorded
+  // range below the windowed answer is owed.
+  owner.noteOwedRecordedRange();
+  // The daemon's windowed answer replaces the hydrated history with the
+  // latest 40-item wire window (rows 162..201), and one older page (rows
+  // 122..161) loads below it: the opening cut has a loaded interval under the
+  // window while the record still holds rows 1..121 the model does not
+  // present.
+  owner.acceptRead(windowedRead(201, 1), { lifetime: 1, readId: "read-window", boundary: "boundary-window" });
+  await owner.settled();
+  const page: ThreadTurnsListResponse = {
+    data: [
+      {
+        id: "turn_1",
+        itemsView: "full",
+        status: "completed",
+        version: 161,
+        items: Array.from(
+          { length: 40 },
+          (_, index): ThreadItem => ({
+            type: "agentMessage",
+            id: `item-${122 + index}`,
+            transcriptKey: `item-${122 + index}`,
+            turnId: "turn_1",
+            position: { entry: 122 + index, item: 0 },
+            version: 122 + index,
+            text: `row-${122 + index}`,
+          }),
+        ),
+      },
+    ],
+    bootGeneration: "1",
+    epoch: 1,
+    snapshot: { incarnation: identity.incarnation, length: 201 },
+  };
+  expect(
+    owner.acceptPage(page, {
+      lifetime: 1,
+      readId: "read-page-1",
+      boundary: "boundary-page-1",
+      authority: owner.getBaselineIdentity(),
+      requestCursor: "opaque-server-before-item-161",
+    }),
+  ).toBe(true);
+  await owner.settled();
+  const reader = owner.attachReader();
+
+  // The certify-only open certifies the publication's cut without promoting
+  // owed ranges: it serves the loaded interval's own rows and must leave the
+  // armed demand alone — the 40 rows it re-presents from the loaded interval
+  // satisfy none of the 120 rows the record still owes.
+  const certified = await reader.openLocal(200, { certifyOnly: true });
+  expect(certified.model?.turns.flatMap((turn) => turn.items).map((item) => item.text)).toEqual(
+    Array.from({ length: 80 }, (_, index) => `row-${122 + index}`),
+  );
+  // The promotion open proves the demand survived: it owes the recorded range
+  // below the loaded interval and presents the record's newest 200 rows, not
+  // the loaded interval alone.
+  const promoted = await reader.openLocal(200);
+  expect(promoted.model?.turns.flatMap((turn) => turn.items).map((item) => item.text)).toEqual(
+    Array.from({ length: 200 }, (_, index) => `row-${index + 2}`),
+  );
   reader.dispose();
   owner.dispose();
 });

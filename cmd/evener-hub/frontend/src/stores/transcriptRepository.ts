@@ -1874,12 +1874,23 @@ export class TranscriptRepository {
               // it must not record keys as unreconciled either — commit the
               // set with the presentation, after every fence has passed.
               unreconciledFromFill = nextUnreconciled;
-              // The promotion presents the range the route noted as owed:
-              // the demand is satisfied for this baseline — committed with
-              // the presentation below, once every fence has passed.
-              owedSatisfiedByFill = true;
               boundedOlder.sort((left, right) => comparePosition(left.position, right.position));
               window = { ...window, rows: [...boundedOlder, ...window.rows] };
+              // The promotion presents the range the route noted as owed: the
+              // demand is satisfied for this baseline — committed with
+              // the presentation below, once every fence has passed — and
+              // only when the assembled fill actually presents every identity
+              // the armed capture names. A fill that restored only the loaded
+              // interval's rows (a certify-only open's bounded restore, or an
+              // older page inside the range the opening cut already loaded)
+              // satisfies none of what the capture owes and must not consume
+              // the demand: the flag it would clear is what keeps the owed
+              // fill eligible for the next open.
+              const armedOwed = this.#owedRecorded;
+              if (armedOwed !== undefined && !("unknown" in armedOwed)) {
+                const fillPresents = new Set(window.rows.map((row) => row.transcriptKey));
+                owedSatisfiedByFill = [...armedOwed.identities.keys()].every((key) => fillPresents.has(key));
+              }
             }
           }
           if (!openingCurrent()) {

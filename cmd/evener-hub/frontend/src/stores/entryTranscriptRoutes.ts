@@ -475,15 +475,19 @@ export function holdsSatisfiedRecordedRange(
   const displayed = new Map(
     model?.turns.flatMap((turn) => turn.items.map((item) => [item.transcriptKey ?? item.id, item] as const)),
   );
-  // Bound the demand to the promotion window: the newest 200 identities of
-  // what the model presents together with what the record still owes.
-  // Identities below that boundary are older demand, not debt — the same
-  // line holdsResidentForegroundRange draws for its own interval.
-  const positions = [
-    ...[...displayed.values()].flatMap((item) => (item.position ? [item.position] : [])),
-    ...owed.identities.values(),
-  ].sort(comparePositions);
-  const floor = positions.slice(-200)[0];
+  // Bound the demand to the promotion window: the newest 200 DISTINCT
+  // identities of what the model presents together with what the record
+  // still owes. An identity the display presents that the capture also names
+  // is one demand row, not two — double-counting it skews the boundary high
+  // and silently drops the oldest owed rows out of the demand. Identities
+  // below that boundary are older demand, not debt — the same line
+  // holdsResidentForegroundRange draws for its own interval.
+  const positionsByKey = new Map<string, ThreadItemPosition>();
+  for (const item of displayed.values()) {
+    if (item.position) positionsByKey.set(item.transcriptKey ?? item.id, item.position);
+  }
+  for (const [key, position] of owed.identities) positionsByKey.set(key, position);
+  const floor = [...positionsByKey.values()].sort(comparePositions).slice(-200)[0];
   for (const [key, position] of owed.identities) {
     if (floor && comparePositions(position, floor) < 0) continue;
     const restored = displayed.get(key);
@@ -543,6 +547,29 @@ export function holdsCompleteForegroundWindow(
         !encodeTranscriptItem(restored).identityOnly
       );
     })
+  );
+}
+
+// The source-superseded ACCEPTANCE verdict: a foreign hydration that settles
+// while this open still owns the route hands the pane to the source lifecycle
+// only when the settling read actually converged the pane — a bodied window
+// over the resident range, or an empty transcript that expects nothing. The
+// armed recorded-range debt is consulted here too, whatever the settling
+// read recovered: a bodied window over an owed range is a source-owned
+// display that still owes its convergence, so the open keeps its recovery
+// handoff (the miss path below) instead of accepting the window as final.
+export function supersededSourceAcceptance(
+  repository: {
+    holdsBodiedForegroundWindow(): boolean;
+    holdsResidentForegroundRange(): boolean;
+    expectsEmptyForegroundWindow(): boolean;
+  } & EntryRecordedRangeSource,
+  model: ThreadModel | undefined,
+): boolean {
+  return (
+    repository.holdsBodiedForegroundWindow() &&
+    (repository.holdsResidentForegroundRange() || repository.expectsEmptyForegroundWindow()) &&
+    holdsSatisfiedRecordedRange(model, repository)
   );
 }
 
@@ -723,10 +750,7 @@ export async function openEntryTranscript(
       // the same empty-expectation semantics the window check carries. The
       // non-empty verdict is unchanged: a window that expects items still
       // needs the resident range AND the bodied window together.
-      if (
-        repository.holdsBodiedForegroundWindow() &&
-        (repository.holdsResidentForegroundRange() || repository.expectsEmptyForegroundWindow())
-      ) {
+      if (supersededSourceAcceptance(repository, store().getState().threads.get(ref))) {
         fixture.lastLocalOpenStatus = "superseded-by-source";
         return true;
       }
