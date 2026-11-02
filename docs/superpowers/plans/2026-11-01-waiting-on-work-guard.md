@@ -90,7 +90,7 @@
   - working subagent: track a running child the way session_awaiting_test.go:216-239 does
   - running work: `s.recordDetachedProcess(execenv.DetachedProcess{PID: 4321, Done: make(chan struct{})})` (session_tools_jobs.go:2166-2178; the open channel receipt is the "still running" signal `runningDetachedProcessIDs` reads)
   - pending question: under `s.mu`, append a zero-value `askQuestion` to `s.askPending` (session.go:705; `askPendingCount` is length-based)
-  - armed watch in own manager: `s.jobManager.configureWatch(watchArgs{Target: runtimeMessageAliasCaller, AfterSeconds: 3600})`, with `defer s.Close()` on this row so the timer goroutine stops
+  - armed watch in own manager: `s.jobManager.configureWatch(watchArgs{Target: runtimeMessageAliasCaller, Source: "self", AfterSeconds: 3600})`, with `defer s.Close()` on this row so the timer goroutine stops (the manager's timer validation requires `Source: "self"`, job_watch.go:1075-1078 — confirmed by Task 1)
 
   `autonomyInFlight`'s remaining terms (queued input, delegate deliveries, delegate attention) already own their tests (`TestAutonomyInFlight*`); the two rows above cover the representative inputs plus every term this change adds.
 
