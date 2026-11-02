@@ -3070,7 +3070,10 @@ async function runResumeFencedForSend(
   // Stop. An automatic retry names the token its arm carried - a read landing
   // during backoff may have observed a foreign Stop, and adopting that fresher
   // value would re-arm the retry past the Stop the fence exists to catch.
-  let expectedRecoveryToken = drive.automatic ? inherited.recoveryToken : undefined;
+  // Seeded BEFORE any fallible step: a drive that throws at the initial storage
+  // read or the readiness check must still arm its retry under the token this
+  // page has already observed, or every retry after it inherits none.
+  let expectedRecoveryToken = drive.automatic ? inherited.recoveryToken : recoveryTokenOf(ref);
   try {
     const attemptRuntime = mutationRuntime;
     if (attemptRuntime !== null) {
@@ -3117,7 +3120,25 @@ async function runResumeFencedForSend(
     // runs once the drain settles, instead of the user meeting a Resume button.
     // Only a drain in progress waits for another user action to settle.
     while (threadsStore.getState().stoppingRefs.has(ref)) await waitForStopDrain(ref);
-    if (!drive.automatic) expectedRecoveryToken = recoveryTokenOf(ref);
+    if (!drive.automatic) {
+      // The Stop that held this press completed while it waited, and its new
+      // token lives only in a fresh read: a press naming the pre-Stop token
+      // would be refused as superseded. Read directly - the store's own
+      // refresh is fenced by this drive's ownership - and keep the seeded
+      // token when the read fails.
+      const reconcileClient = getWiredClient();
+      if (reconcileClient !== null && reconcileClient.state === "ready") {
+        try {
+          const response = await reconcileClient.request("thread/read", { ref, includeTurns: false });
+          noteRecoveryToken(ref, response.thread.evener);
+          if (typeof response.thread.evener.recoveryToken === "string") {
+            expectedRecoveryToken = response.thread.evener.recoveryToken;
+          }
+        } catch {
+          // An unreadable reconcile leaves the seeded token in place.
+        }
+      }
+    }
     // The reconnect this resume forces is a window the attempt's own reads
     // cannot see: another tab's Stop can land after the attempt's epoch read
     // and before the replacement connection is admitted, and a connection
@@ -3298,7 +3319,15 @@ async function runResumeFencedForSend(
     // press a supersession restarts (or the next Send) arms under the fresh
     // fence instead of failing against the stale one again.
     const supersededToken = recoveryTokenFromError(error);
-    if (supersededToken !== undefined) recoveryTokens.set(ref, supersededToken);
+    if (supersededToken !== undefined) {
+      recoveryTokens.set(ref, supersededToken);
+      // The Stop superseded this drive's parked work: its unattempted messages
+      // must not stay dispatchable, or a foldable read's dispatch would fold a
+      // resume past the refusal. Canceled durably, they wait for explicit
+      // Retry like any Stop's parked rows.
+      await cancelUnattemptedMutations(ref).catch(() => {});
+      if (resumedRef !== undefined) await cancelUnattemptedMutations(resumedRef).catch(() => {});
+    }
     // A Stop that lands mid-drive can surface here as a plain transport
     // failure - the Stop is killing the very daemon the resume reaches - so
     // the error type alone cannot be the Stop signal. Whatever the error, the

@@ -2507,11 +2507,12 @@ test("a parked-state resume names its recovery epoch and a superseded refusal is
   const fake = connectMutationClient();
   const resumeParams: Array<string | undefined> = [];
   let resumeCalls = 0;
+  let currentToken = "tok-5";
   fake.on("thread/read", () => {
     const response = readResponse(ref, { status: { type: "notLoaded" } });
     response.thread.evener.resumeRequired = true;
     response.thread.evener.mutationStateAuthoritative = false;
-    response.thread.evener.recoveryToken = "tok-5";
+    response.thread.evener.recoveryToken = currentToken;
     return response;
   });
   fake.on("thread/resume", (params) => {
@@ -2538,7 +2539,8 @@ test("a parked-state resume names its recovery epoch and a superseded refusal is
   expect(resumeParams).toEqual(["tok-5", "tok-5"]);
   // The hub's supersession refusal is terminal: no new retry is armed.
   expect(scheduledResumeRetries).toHaveLength(1);
-  // The refusal named the current epoch: the next press arms under it.
+  // The next press reads the hub's current token and arms under it.
+  currentToken = "tok-9";
   await threadsStore.getState().resumeSession(ref);
   await flushIndexedDBUntil(() => false);
   await flushMicrotasks();
@@ -2656,7 +2658,7 @@ test("a press joined before a supersession stays canceled", async ({ onTestFinis
 // drive started predates the Stop and the hub refuses the resume as
 // superseded, leaving the new message parked with no retry.
 test("a press waiting out this page's drain resumes under the post-drain token", async ({ onTestFinished }) => {
-  const scheduledResumeRetries = trackScheduledResumeRetries(onTestFinished);
+  const _scheduledResumeRetries = trackScheduledResumeRetries(onTestFinished);
   const ref = "local:recovery-token-drain";
   const storage = new MutationOutboxIndexedDB();
   setMutationStorageForTests(storage);
@@ -2674,15 +2676,25 @@ test("a press waiting out this page's drain resumes under the post-drain token",
     resumeParams.push((params as { expectedRecoveryToken?: string }).expectedRecoveryToken);
     throw new Error("connection reset by peer");
   });
-  fake.on("thread/shutdown", () => ({}));
+  let releaseStop!: () => void;
+  const heldStop = new Promise<void>((resolve) => {
+    releaseStop = resolve;
+  });
+  fake.on("evener/thread/forceStop", () => heldStop);
   await threadsStore.getState().ensureThread(ref);
   await flushIndexedDBUntil(() => false);
   // The Stop begins and the Send is pressed while its drain is in flight.
-  const stopping = threadsStore.getState().shutdown(ref);
-  const joined = threadsStore.getState().resumeSession(ref);
-  // The acknowledged Stop advances the token before the drain settles.
+  const stopping = threadsStore.getState().forceStop(ref);
+  expect(threadsStore.getState().stoppingRefs.has(ref)).toBe(true);
+  // The Stop's completion advances the token; the drive must reconcile it
+  // itself, with no read supplied by the caller.
   token = "tok-after";
-  await threadsStore.getState().refreshThread(ref);
+  const joined = threadsStore.getState().resumeSession(ref);
+  // Let the press's drive reach its drain wait while the Stop is still held.
+  await flushMicrotasks();
+  await act(async () => {
+    releaseStop();
+  });
   await stopping;
   await flushIndexedDBUntil(() => false);
   await flushMicrotasks();
