@@ -377,6 +377,9 @@ func (r *Registry) resolveInstanceMode(name string, presence bool) (Resolved, er
 		mergeCaps(&caps, layer.provider, layer.tag+"/provider", prov)
 	}
 	seedFields(&caps, rec.head.Protocol)
+	// A provider-level ladder leaves the instance views rank-ordered like a
+	// row's leaves a model resolve; see rankEffortLadder.
+	caps.EffortValues = rankEffortLadder(caps.EffortValues)
 	transport, hostDerived, warnings := r.buildTransport(rec, Model{}, rec.head.Protocol)
 	proto := rec.head.Protocol
 	if presence {
@@ -916,6 +919,10 @@ func (r *Registry) resolveLayersModeLive(rec *record, ref Ref, warnings []string
 	}
 
 	derive(&caps, &row, deriveInput{Protocol: rowProto, Synthesized: hit.synthesized, ProviderSurface: rec.head.Surface, ProviderFamily: rec.head.Family, Aliased: row.AliasOf != "", AliasTargetProtocol: aliasTargetProtocol, AliasControlsRecorded: aliasControlsRecorded}, prov)
+	// In the caller because derive early-returns for non-anthropic
+	// protocols; the ladder's membership is already settled here.
+	// rankEffortLadder states the ordering contract.
+	caps.EffortValues = rankEffortLadder(caps.EffortValues)
 
 	if hit.synthesized {
 		warnings = append(warnings, "model not in catalog")

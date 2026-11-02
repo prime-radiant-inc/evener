@@ -1,6 +1,7 @@
 package registry
 
 import (
+	"cmp"
 	"slices"
 	"strings"
 )
@@ -26,6 +27,23 @@ type deriveInput struct {
 }
 
 const provDerived = "derived"
+
+// rankEffortLadder returns a served effort ladder ordered least to most by
+// the shared vocabulary, so ladder order is a registry guarantee instead of
+// a per-source accident: models.dev rows, live listings, and user overlays
+// all state their values verbatim, and every picker renders the ladder as
+// resolved. The off level and any tier outside the vocabulary rank below the
+// known tiers and keep their authored relative order — a stable sort — the
+// same pass-through the request-side clamp gives them. The input is never
+// mutated: the merged ladder can alias a record-owned slice (mergeCaps
+// assigns wholesale fields by reference), so the sorted result is a clone.
+func rankEffortLadder(ladder []string) []string {
+	ordered := slices.Clone(ladder)
+	slices.SortStableFunc(ordered, func(a, b string) int {
+		return cmp.Compare(effortLevelRank(a), effortLevelRank(b))
+	})
+	return ordered
+}
 
 // derive applies the spec §7.4 derivations, in order, to a merged row:
 // effort pass-through, the junk-cap guard, the surface fallback, and the
