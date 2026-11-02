@@ -254,6 +254,10 @@ export class MutationOutboxIndexedDB implements WebQueuedMessageStorage<Mutation
   readonly #onOpenDiagnostic: (diagnostic: MutationOutboxOpenDiagnostic) => void;
   #supersededDiscardListener: ((targetRef: string) => void) | undefined;
   #settledListener: ((targetRef: string) => void) | undefined;
+  // The wire sweep's retired ids, fired inside the settlement itself so a
+  // host can resolve in-memory bookkeeping synchronously - before any
+  // trailing read could fail and leave it armed on retired rows.
+  #retiredIdsListener: ((retiredIds: string[]) => void) | undefined;
   #stalledWrites = 0;
 
   constructor(options: MutationOutboxIndexedDBOptions = {}) {
@@ -305,6 +309,10 @@ export class MutationOutboxIndexedDB implements WebQueuedMessageStorage<Mutation
   // changed, so callers do not have to derive it from the row id.
   setSettledListener(listener: ((targetRef: string) => void) | undefined): void {
     this.#settledListener = listener;
+  }
+
+  setRetiredIdsListener(listener: ((retiredIds: string[]) => void) | undefined): void {
+    this.#retiredIdsListener = listener;
   }
 
   async enqueueIntent(intent: MutationIntent, barrier?: MutationStopBarrier): Promise<MutationOutboxRecord> {
@@ -761,7 +769,10 @@ export class MutationOutboxIndexedDB implements WebQueuedMessageStorage<Mutation
         // identity, or one side lingers retained and pinning its ref after
         // delivery.
         const wireId = named ? effectiveWireId(named) : clientMutationId;
-        const family = await this.#resolveWireFamily(transaction, wireId);
+        const family = await this.#resolveWireFamily(transaction, wireId, {
+          readOptimistic: true,
+          readRecovery: true,
+        });
         const siblings = [...family.outbox, ...family.optimistic].filter(
           (record) => record.clientMutationId !== clientMutationId,
         );
@@ -802,9 +813,10 @@ export class MutationOutboxIndexedDB implements WebQueuedMessageStorage<Mutation
         // so an unedited recovery copy of the wire retires with the
         // settlement too (it is sendable delivered work otherwise) while an
         // independently edited composition survives it.
-        const retiredIds = await this.#retireWireSiblings(transaction, wireId, {
+        const retiredIds = await this.#retireWireFamily(transaction, family, {
           excludeKeys: new Set([clientMutationId, subject.clientMutationId]),
-          includeOptimistic: true,
+          sweepOptimistic: true,
+          sweepRecovery: true,
         });
         return { settled: true, retiredIds };
       },
@@ -813,6 +825,7 @@ export class MutationOutboxIndexedDB implements WebQueuedMessageStorage<Mutation
     this.#discardSupersededCanceledNotesAfterSettle(settledSource);
     const settledRef = settledSource?.targetRef;
     if (settledRef !== undefined) this.#notifyQuietly(() => this.#settledListener?.(settledRef));
+    if (settled.retiredIds.length > 0) this.#retiredIdsListener?.(settled.retiredIds);
     return settled;
   }
 
@@ -840,7 +853,10 @@ export class MutationOutboxIndexedDB implements WebQueuedMessageStorage<Mutation
         // is what keeps a superseded predecessor from lingering retained
         // and pinned after its replacement is applied.
         const wireId = named ? effectiveWireId(named) : clientMutationId;
-        const family = await this.#resolveWireFamily(transaction, wireId);
+        const family = await this.#resolveWireFamily(transaction, wireId, {
+          readOptimistic: true,
+          readRecovery: true,
+        });
         const siblings = [...family.outbox, ...family.optimistic].filter(
           (record) => record.clientMutationId !== clientMutationId,
         );
@@ -858,9 +874,10 @@ export class MutationOutboxIndexedDB implements WebQueuedMessageStorage<Mutation
           await requestResult(optimistic.delete(subject.clientMutationId));
         }
         // The same one sibling sweep as settleReceipt, all three stores.
-        const retiredIds = await this.#retireWireSiblings(transaction, wireId, {
+        const retiredIds = await this.#retireWireFamily(transaction, family, {
           excludeKeys: new Set([clientMutationId, subject.clientMutationId]),
-          includeOptimistic: true,
+          sweepOptimistic: true,
+          sweepRecovery: true,
         });
         settledSource = subject;
         return { settled: true, retiredIds };
@@ -870,6 +887,7 @@ export class MutationOutboxIndexedDB implements WebQueuedMessageStorage<Mutation
     this.#discardSupersededCanceledNotesAfterSettle(settledSource);
     const settledRef = settledSource?.targetRef;
     if (settledRef !== undefined) this.#notifyQuietly(() => this.#settledListener?.(settledRef));
+    if (settled.retiredIds.length > 0) this.#retiredIdsListener?.(settled.retiredIds);
     return settled;
   }
 
@@ -884,20 +902,27 @@ export class MutationOutboxIndexedDB implements WebQueuedMessageStorage<Mutation
   async #resolveWireFamily(
     transaction: IDBTransaction,
     wireId: string,
+    options: { readOptimistic?: boolean; readRecovery?: boolean } = {},
   ): Promise<{
     outbox: MutationOutboxRecord[];
     optimistic: MutationOptimisticRecord[];
     recovery: MutationRecoveryRecord[];
   }> {
-    // Reads only the stores this transaction spans: a caller's sweep reaches
-    // exactly the stores its own write spans (a settlement spans all three;
-    // the resend consume and the transfer coalesce span outbox and recovery).
-    const read = async <T>(store: string): Promise<T[]> =>
-      transaction.objectStoreNames.contains(store) ? requestResult<T[]>(transaction.objectStore(store).getAll()) : [];
+    // Reads only the stores this transaction spans AND the caller sweeps: a
+    // settlement resolves all three once; the resend consume reads the
+    // outbox alone (its write must not wait on recovery projection reads);
+    // the transfer coalesce asks for the recovery copies only. One read
+    // round per question - the note editor's tightly-sequenced flows wedge
+    // on extra read rounds inside a write (the markAttempted precedent), so
+    // no sweeper re-resolves what it already holds.
+    const read = async <T>(store: string, wanted: boolean): Promise<T[]> =>
+      wanted && transaction.objectStoreNames.contains(store)
+        ? requestResult<T[]>(transaction.objectStore(store).getAll())
+        : [];
     const [outbox, optimistic, recovery] = await Promise.all([
-      read<MutationOutboxRecord>(OUTBOX_STORE),
-      read<MutationOptimisticRecord>(OPTIMISTIC_STORE),
-      read<MutationRecoveryRecord>(RECOVERY_STORE),
+      read<MutationOutboxRecord>(OUTBOX_STORE, true),
+      read<MutationOptimisticRecord>(OPTIMISTIC_STORE, options.readOptimistic === true),
+      read<MutationRecoveryRecord>(RECOVERY_STORE, options.readRecovery === true),
     ]);
     return {
       outbox: outbox.filter((record) => effectiveWireId(record) === wireId),
@@ -915,32 +940,62 @@ export class MutationOutboxIndexedDB implements WebQueuedMessageStorage<Mutation
   // the caller proves delivery (a settlement) - a resend has no such proof and
   // leaves accepted copies to settlement's own authority. Returns every retired
   // storage key so the caller can resolve in-memory bookkeeping synchronously.
-  async #retireWireSiblings(
+  // The one deletion-rule home every sweep shares, over a family the caller
+  // already resolved: outbox rows delete whatever their state (the wire's
+  // outcome decided, they are dead work; their late outcomes land inert on a
+  // missing row, the same semantics a late receipt against a settled row
+  // already has); recovery rows retire only when UNEDITED
+  // (settlementRetiresRecovery - an independently edited composition survives
+  // every sweep); optimistic rows delete only when the caller proves delivery
+  // (a settlement) - a resend has no such proof and leaves accepted copies to
+  // settlement's own authority. Returns every retired storage key so the
+  // caller can resolve in-memory bookkeeping synchronously.
+  async #retireWireFamily(
     transaction: IDBTransaction,
-    wireId: string,
-    options: { excludeKeys: ReadonlySet<string>; includeOptimistic: boolean },
+    family: {
+      outbox: MutationOutboxRecord[];
+      optimistic: MutationOptimisticRecord[];
+      recovery: MutationRecoveryRecord[];
+    },
+    options: { excludeKeys: ReadonlySet<string>; sweepOptimistic: boolean; sweepRecovery: boolean },
   ): Promise<string[]> {
-    const family = await this.#resolveWireFamily(transaction, wireId);
     const retired: string[] = [];
     for (const record of family.outbox) {
       if (options.excludeKeys.has(record.clientMutationId)) continue;
       await requestResult(transaction.objectStore(OUTBOX_STORE).delete(record.clientMutationId));
       retired.push(record.clientMutationId);
     }
-    if (options.includeOptimistic) {
+    if (options.sweepOptimistic) {
       for (const record of family.optimistic) {
         if (options.excludeKeys.has(record.clientMutationId)) continue;
         await requestResult(transaction.objectStore(OPTIMISTIC_STORE).delete(record.clientMutationId));
         retired.push(record.clientMutationId);
       }
     }
-    for (const record of family.recovery) {
-      if (options.excludeKeys.has(record.clientMutationId)) continue;
-      if (!settlementRetiresRecovery(record)) continue;
-      await requestResult(transaction.objectStore(RECOVERY_STORE).delete(record.clientMutationId));
-      retired.push(record.clientMutationId);
+    if (options.sweepRecovery) {
+      for (const record of family.recovery) {
+        if (options.excludeKeys.has(record.clientMutationId)) continue;
+        if (!settlementRetiresRecovery(record)) continue;
+        await requestResult(transaction.objectStore(RECOVERY_STORE).delete(record.clientMutationId));
+        retired.push(record.clientMutationId);
+      }
     }
     return retired;
+  }
+
+  // Resolve-and-retire for callers that do not already hold the family (the
+  // resend consume). The read flags follow the sweep flags so the write never
+  // waits on stores it will not touch.
+  async #retireWireSiblings(
+    transaction: IDBTransaction,
+    wireId: string,
+    options: { excludeKeys: ReadonlySet<string>; sweepOptimistic: boolean; sweepRecovery: boolean },
+  ): Promise<string[]> {
+    const family = await this.#resolveWireFamily(transaction, wireId, {
+      readOptimistic: options.sweepOptimistic,
+      readRecovery: options.sweepRecovery,
+    });
+    return this.#retireWireFamily(transaction, family, options);
   }
 
   // The settle-time retirement ruling: a settled note save is the note's
@@ -1372,7 +1427,7 @@ export class MutationOutboxIndexedDB implements WebQueuedMessageStorage<Mutation
         // protection.
         // The wire-copy lookup is the wire family's own question (one home
         // with the settlement and resend sweeps, so it cannot diverge).
-        const family = await this.#resolveWireFamily(transaction, effectiveWireId(record));
+        const family = await this.#resolveWireFamily(transaction, effectiveWireId(record), { readRecovery: true });
         const wireCopy = family.recovery.find((existing) => existing.clientMutationId !== clientMutationId);
         if (wireCopy) {
           await requestResult(outbox.delete(clientMutationId));
@@ -1761,7 +1816,8 @@ export class MutationOutboxIndexedDB implements WebQueuedMessageStorage<Mutation
         retiredIds.push(
           ...(await this.#retireWireSiblings(transaction, wireId, {
             excludeKeys: new Set([record.clientMutationId, ...ids]),
-            includeOptimistic: false,
+            sweepOptimistic: false,
+            sweepRecovery: false,
           })),
         );
       }

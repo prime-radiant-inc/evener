@@ -639,7 +639,7 @@ describe("MutationDispatcher", () => {
     const outbox = storage(indexedDB, "pre-daemon-uncertain", ["mutation-a"]);
     const record = await outbox.enqueueIntent(queueIntent("ref-a", "shape refused"));
     const client = new FakeClient();
-    client.on("turn/queue", (params) => {
+    client.on("turn/queue", () => {
       throw new WireError("expectedTurnId is required", -32602, { evenerErrorInfo: "invalidParams" });
     });
     const dispatcher = new MutationDispatcher(outbox, { getClient: () => client });

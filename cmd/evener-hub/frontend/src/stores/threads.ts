@@ -2476,29 +2476,28 @@ function getMutationRuntime(): MutationRuntime | null {
   // invalidation is unconditional and comes with the settled record's own ref,
   // so a settle for a row this tab never registered still invalidates that
   // ref's in-flight reads (see noteMutationStateChange).
-  const settleReceiptResult = storage.settleReceiptResult.bind(storage);
+  const settleReceipt = storage.settleReceipt.bind(storage);
   storage.settleReceipt = async (clientMutationId, projectionState) => {
-    const { settled, retiredIds } = await settleReceiptResult(clientMutationId, projectionState);
-    if (settled) {
-      noteHandledMutation(clientMutationId);
-      // The settlement's wire sweep retired the wire's sibling rows from
-      // storage; their in-memory registrations resolve HERE, synchronously -
-      // the same shape the resend wrapper gives retiredIds - so a persistence
-      // read that fails next (a storage hiccup) cannot leave the fallback
-      // guard armed on rows that no longer exist.
-      for (const retired of retiredIds) noteHandledMutation(retired);
-    }
+    const settled = await settleReceipt(clientMutationId, projectionState);
+    if (settled) noteHandledMutation(clientMutationId);
     return settled;
   };
-  const settleAppliedResult = storage.settleAppliedResult.bind(storage);
+  const settleApplied = storage.settleApplied.bind(storage);
   storage.settleApplied = async (clientMutationId) => {
-    const { settled, retiredIds } = await settleAppliedResult(clientMutationId);
-    if (settled) {
-      noteHandledMutation(clientMutationId);
-      for (const retired of retiredIds) noteHandledMutation(retired);
-    }
+    const settled = await settleApplied(clientMutationId);
+    if (settled) noteHandledMutation(clientMutationId);
     return settled;
   };
+  // The settlement's wire sweep retires the wire's sibling rows from storage;
+  // their in-memory registrations resolve through this listener, fired inside
+  // the settlement itself - synchronously, like the resend wrapper's
+  // retiredIds clearing - so a persistence read that fails next (a storage
+  // hiccup) cannot leave the fallback guard armed on rows that no longer
+  // exist. Clearing is idempotent and only ever names retired keys, so
+  // concurrent settlements are safe to interleave.
+  storage.setRetiredIdsListener?.((retiredIds) => {
+    for (const retired of retiredIds) noteHandledMutation(retired);
+  });
   storage.setSettledListener((targetRef) => noteMutationStateChange(targetRef));
   // §6's note-row supersede discard commits fire-and-forget AFTER the settle
   // that spawned it has already notified — the dispatcher's post-settlement
