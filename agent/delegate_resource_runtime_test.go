@@ -1187,10 +1187,10 @@ func TestDelegateResourceRuntime_GenericStopUsesCanonicalFinish(t *testing.T) {
 		// role floor for a hook side effect.
 		descriptor.ToolNameCeiling = append(descriptor.ToolNameCeiling, "write_file")
 	})
-	fixture.adapter.steps = []func(llm.Request) llm.Response{
+	fixture.adapter.setSteps([]func(llm.Request) llm.Response{
 		func(llm.Request) llm.Response { return agenttest.FinalResponse("before generic Stop continuation") },
 		func(llm.Request) llm.Response { return agenttest.FinalResponse("after generic Stop continuation") },
-	}
+	})
 	root := restoreSupervisionRoot(t, fixture, nil)
 	outcome := (delegateRuntime{owner: root}).send(context.Background(), fixture.delegateID, "run Stop hook", 60_000)
 	abortUnpersistedDelegateOutcome(t, outcome)
@@ -1611,11 +1611,11 @@ func newStableStopRuntimeHarnessWithClock(t *testing.T, clock *agenttest.FakeClo
 	var releaseOnce sync.Once
 	release := func() { releaseOnce.Do(func() { close(releaseProvider) }) }
 	t.Cleanup(release)
-	fixture.adapter.steps = []func(llm.Request) llm.Response{func(llm.Request) llm.Response {
+	fixture.adapter.setSteps([]func(llm.Request) llm.Response{func(llm.Request) llm.Response {
 		close(entered)
 		<-releaseProvider
 		return agenttest.FinalResponse("provider released after stop")
-	}}
+	}})
 	root := restoreSupervisionRoot(t, fixture, clock)
 	started := (delegateRuntime{owner: root}).send(context.Background(), fixture.delegateID, "block for stop", 0)
 	if started.result.Err != nil {
@@ -2408,11 +2408,11 @@ func newBlockingColdDelegateRuntime(t *testing.T) (*Session, coldDelegateFixture
 	fixture := newColdDelegateFixture(t, "")
 	entered := make(chan struct{})
 	release := make(chan struct{})
-	fixture.adapter.steps = []func(llm.Request) llm.Response{func(llm.Request) llm.Response {
+	fixture.adapter.setSteps([]func(llm.Request) llm.Response{func(llm.Request) llm.Response {
 		close(entered)
 		<-release
 		return agenttest.CommunicateResponse(true, "done")
-	}}
+	}})
 	root, err := restoreDelegateResourceBootstrapSession(fixture.client, fixture.profile, fixture.workspace, fixture.meta, fixture.stateDir)
 	if err != nil {
 		t.Fatalf("restore root: %v", err)
