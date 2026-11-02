@@ -2136,6 +2136,36 @@ async function applyClearResponse(targetRef: string, response: ThreadClearRespon
   });
 }
 
+// The row dispatch is about to fold was issued under a token this page has
+// outrun (another device's Stop): park it canceled so later work proceeds -
+// an explicit Retry reopens it under the token the page reads then.
+function parkedRowOutranToken(
+  targetRef: string,
+  record: { clientMutationId?: string; recoveryTokenAtEnqueue?: string },
+): boolean {
+  if (record.recoveryTokenAtEnqueue === undefined) return false;
+  if (record.recoveryTokenAtEnqueue === recoveryTokenOf(targetRef)) return false;
+  const clientMutationId = record.clientMutationId;
+  const runtime = getMutationRuntime();
+  if (clientMutationId !== undefined && runtime !== null) {
+    void runtime.storage
+      .cancelSupersededRow(clientMutationId)
+      .then((canceled) => {
+        if (canceled) notifyMutationPersistence([targetRef]);
+      })
+      .catch(() => undefined);
+  }
+  return true;
+}
+
+// The resume drive a record's press needs, carrying the record's own intent
+// sequence as the supersession cancellation bound: a supersession cancels the
+// work at or before it and spares a Send pressed afterwards. Every press that
+// has a record of its own starts its drive here.
+function driveMutationResume(targetRef: string, record: { intentSequence?: number } | undefined): void {
+  void resumeFencedForSend(targetRef, false, { cancelBound: record?.intentSequence });
+}
+
 // True when a retry armed for the ref - or for the identity its arm already
 // adopted - names an OLDER recovery token than the page's latest read: a Stop
 // from another client or device landed while the retry waited, so dispatch
@@ -2213,10 +2243,10 @@ function currentDispatchClient(
       // tab (or this page after a reload) can read a newer token - another
       // device's Stop - and must not fold the row past it. A row with no
       // capture predates the field and is admitted as before.
-      (options?.record?.recoveryTokenAtEnqueue !== undefined &&
-        method === "turn/start" &&
+      (method === "turn/start" &&
         resumeOnlyDispatchable(targetRef) &&
-        options.record.recoveryTokenAtEnqueue !== recoveryTokenOf(targetRef)) ||
+        options?.record !== undefined &&
+        parkedRowOutranToken(targetRef, options.record)) ||
       // A supersession's cancellation storage has not committed yet: the rows
       // it names are still dispatchable, so the ref waits until the write lands
       // instead of folding a resume over the Stop that superseded them.
@@ -3527,6 +3557,9 @@ async function runResumeFencedForSend(
     // this page, on either identity, retires it at fire too. A capture the
     // wedged store could not read arms without that durable fence: the same
     // store cannot have recorded the Stop either.
+    // A replacement drive a join asks for speaks for the same work this drive
+    // did: its own supersession must not cancel a Send this one preserved.
+    drive.restartCancelBound ??= attemptCancelBound;
     if (!stopCanceled) {
       scheduleResumeRetryForFence(ref, {
         stopEpoch: attemptStopEpoch,
@@ -3959,9 +3992,14 @@ export function useEditableQueuedMutationEntries(ref: string): MutationOutboxRec
 }
 
 export function captureRecoveryStopBarrier(targetRef: string): Promise<MutationStopBarrier> {
+  // The recovery token is a SYNCHRONOUS snapshot of this page's latest read,
+  // taken before any await: a read that lands during the storage capture below
+  // belongs to a Stop after the click, and must not stamp this submission with
+  // the token that Stop advanced to.
+  const recoveryToken = recoveryTokenOf(targetRef);
   const barrier = requireMutationRuntime()
     .storage.readStopEpoch(targetRef)
-    .then((stopEpoch) => ({ stopEpoch }));
+    .then((stopEpoch) => ({ stopEpoch, ...(recoveryToken !== undefined ? { recoveryToken } : {}) }));
   // The capture can fail while Composer is still awaiting its recovery write.
   // Keep that rejection for the sender without an unhandled interim promise.
   void barrier.catch(() => undefined);
@@ -4109,7 +4147,7 @@ export async function resendRecoveryMutation(
   handleDiscoveredMutations(runtime, [targetRef]);
   // A resent row on the Send-resumes face parks like an ordinary send: drive the
   // resume it needs. Read after the write, which cannot have changed the face.
-  if (sendResumesModel(targetRef)) void resumeFencedForSend(targetRef);
+  if (sendResumesModel(targetRef)) driveMutationResume(targetRef, record);
   return result;
 }
 
@@ -4655,9 +4693,7 @@ async function sendMutationIntent(intent: MutationIntent): Promise<void> {
     // The row's own sequence is the boundary this press speaks for: a
     // supersession cancels the ref's work at or before it, and anything the
     // page queues afterwards survives.
-    if (sendResumesModel(intent.targetRef)) {
-      void resumeFencedForSend(intent.targetRef, false, { cancelBound: record?.intentSequence });
-    }
+    if (sendResumesModel(intent.targetRef)) driveMutationResume(intent.targetRef, record);
   } finally {
     release();
   }
@@ -5162,7 +5198,7 @@ async function enqueueMutationIntent(
   // unfenceable order is a Stop whose write is created before the capture's
   // transaction can exist at all (§4's honest boundary). The Stop's own
   // interrupt record passes no barrier (it IS the click the epoch records).
-  const barrierRead = durableWrite === "enqueue" ? runtime.storage.readStopEpoch(ref) : undefined;
+  const barrierRead = durableWrite === "enqueue" ? captureRecoveryStopBarrier(ref) : undefined;
   await runtime.start;
   // Enqueue schedules discovery before returning; preserve the hydrated replay
   // gate now, but only a durable commit may pin this ref after its pane closes.
@@ -5334,12 +5370,9 @@ async function enqueueDurableMutation(
   intent: MutationIntent,
   onCommitted: ((record: MutationOutboxRecord) => void) | undefined,
   durableWrite: "enqueue" | "interruptAndCancel",
-  barrierRead: Promise<number> | undefined,
+  barrierRead: Promise<MutationStopBarrier> | undefined,
 ): Promise<MutationOutboxRecord> {
-  const barrier: MutationStopBarrier | undefined =
-    barrierRead === undefined
-      ? undefined
-      : { stopEpoch: await barrierRead, recoveryToken: recoveryTokenOf(intent.targetRef) };
+  const barrier = barrierRead === undefined ? undefined : await barrierRead;
   for (let attempt = 1; ; attempt += 1) {
     try {
       return durableWrite === "interruptAndCancel"

@@ -26,6 +26,7 @@ type MutationOutboxOperation =
   | "unmarkAttempted"
   | "enqueueIntent"
   | "enqueueInterruptAndCancel"
+  | "cancelSupersededRow"
   | "cancelUnattempted"
   | "discardCanceled"
   | "releaseCanceled"
@@ -456,6 +457,20 @@ export class MutationOutboxIndexedDB implements QueuedMessageStorage<MutationAtt
       canceled.push(record.clientMutationId);
     }
     return canceled;
+  }
+
+  // A supersession's single-row cancel: the row dispatch was about to fold was
+  // issued under a token the page has since outrun, so it parks canceled
+  // instead of sitting at the FIFO head. An explicit Retry reopens it under the
+  // token the page reads then.
+  async cancelSupersededRow(clientMutationId: string): Promise<boolean> {
+    return this.#write(OUTBOX_STORE, "cancelSupersededRow", async (transaction) => {
+      const store = transaction.objectStore(OUTBOX_STORE);
+      const record = await requestResult<MutationOutboxRecord | undefined>(store.get(clientMutationId));
+      if (record === undefined || record.state !== "submitting") return false;
+      await requestResult(store.put({ ...record, state: "canceled" }));
+      return true;
+    });
   }
 
   // The ref's last allocated intent sequence: the boundary between work issued
@@ -1245,6 +1260,7 @@ export class MutationOutboxIndexedDB implements QueuedMessageStorage<MutationAtt
         state: barrier !== undefined && stopEpoch > barrier.stopEpoch ? "canceled" : "submitting",
         attempted: false,
         stopEpochAtEnqueue: stopEpoch,
+        ...(barrier?.recoveryToken !== undefined ? { recoveryTokenAtEnqueue: barrier.recoveryToken } : {}),
       };
       await requestResult(transaction.objectStore(OUTBOX_STORE).add(record));
       for (const id of ids) await requestResult(recoveryStore.delete(id));

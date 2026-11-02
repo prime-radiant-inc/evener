@@ -21,6 +21,7 @@ import { SessionEntryCache } from "./sessionEntryCache";
 import { holdNextWriteTransaction, wedgeDatabaseOpens } from "./testing/stalledIndexedDB";
 import {
   acquireBackgroundThread,
+  captureRecoveryStopBarrier,
   discardRecoveryMutation,
   installHydrationRetrySchedulerForTests,
   installResumeRetrySchedulerForTests,
@@ -3827,6 +3828,86 @@ test("a parked row does not fold under a token newer than its own", async ({ onT
   const turnStarts = () => fake.calls.filter((call) => call.method === "turn/start");
   // A foldable read naming the newer token must not fold the row past the Stop.
   expect(turnStarts().map(sentText)).not.toContain("parked");
-  // The row is parked, not lost: the fence waits for a read that names its token.
-  expect((await storage.listOutbox(ref))[0]?.state).toBe("submitting");
+  // The row parks canceled rather than at the FIFO head: an explicit Retry
+  // reopens it under the token the page reads then.
+  expect((await storage.listOutbox(ref))[0]?.state).toBe("canceled");
+});
+
+// The click's recovery token is a synchronous snapshot: a read that lands while
+// the stop-epoch capture is in flight belongs to a Stop AFTER the click, so the
+// row must record the token the page had when the user pressed Send.
+test("a submission records the token it saw at the click, not one a later read brought", async ({ onTestFinished }) => {
+  trackScheduledResumeRetries(onTestFinished);
+  const ref = "local:recovery-click-token";
+  const storage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(storage);
+  const fake = connectMutationClient();
+  let token = "tok-5";
+  fake.on("thread/read", () => {
+    const live = readResponse(ref, { status: { type: "idle" } });
+    live.thread.evener.recoveryToken = token;
+    return live;
+  });
+  await threadsStore.getState().ensureThread(ref);
+  await threadsStore.getState().refreshThread(ref);
+  await flushIndexedDBUntil(() => false);
+  // Hold the click's stop-epoch capture; another device's Stop lands as a read
+  // while it is in flight.
+  const realReadStopEpoch = storage.readStopEpoch.bind(storage);
+  let releaseCapture!: () => void;
+  const heldCapture = new Promise<void>((resolve) => {
+    releaseCapture = resolve;
+  });
+  let held = false;
+  storage.readStopEpoch = async (targetRef: string) => {
+    const epoch = await realReadStopEpoch(targetRef);
+    if (!held) {
+      held = true;
+      await heldCapture;
+    }
+    return epoch;
+  };
+  const sent = threadsStore.getState().send(ref, "clicked");
+  await waitFor(() => expect(held).toBe(true));
+  token = "tok-9";
+  await threadsStore.getState().refreshThread(ref);
+  releaseCapture();
+  await sent;
+  await flushIndexedDBUntil(() => false);
+  expect((await storage.listOutbox(ref))[0]?.recoveryTokenAtEnqueue).toBe("tok-5");
+});
+
+// The recovery resend is a press with a record of its own: its row carries the
+// token the resend was issued under, and its drive carries the row's bound.
+test("a recovery resend records the token it was issued under", async ({ onTestFinished }) => {
+  trackScheduledResumeRetries(onTestFinished);
+  const ref = "local:recovery-resend-token";
+  const storage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(storage);
+  const fake = connectMutationClient();
+  fake.on("thread/read", () => {
+    const response = readResponse(ref, { status: { type: "notLoaded" } });
+    response.thread.evener.resumeRequired = true;
+    response.thread.evener.mutationStateAuthoritative = false;
+    response.thread.evener.recoveryToken = "tok-5";
+    return response;
+  });
+  await threadsStore.getState().ensureThread(ref);
+  await threadsStore.getState().refreshThread(ref);
+  await flushIndexedDBUntil(() => false);
+  const record = await storage.enqueueIntent(
+    {
+      targetRef: ref,
+      threadId: `thr_${ref}`,
+      method: "turn/start",
+      payload: { ref, input: [{ type: "text", text: "resent" }] },
+      attachments: [],
+      optimisticDisplay: { text: "resent" },
+    },
+    { stopEpoch: await storage.readStopEpoch(ref), recoveryToken: "tok-5" },
+  );
+  // The resend path's own barrier, captured at its click.
+  const barrier = await captureRecoveryStopBarrier(ref);
+  expect(barrier.recoveryToken).toBe("tok-5");
+  expect(record.recoveryTokenAtEnqueue).toBe("tok-5");
 });
