@@ -263,6 +263,12 @@ func (s *Session) hasWakeableWork() bool {
 	if len(sessionRunningJobIDs(s)) > 0 {
 		return true
 	}
+	if s.hasWorkingSubagent() {
+		// A working child wakes this session through its delivery; checking it
+		// before the holder walk skips that recursive inventory on the common
+		// delegate-waiting path.
+		return true
+	}
 	for _, holder := range s.watchHolderSessions() {
 		jm := holder.jobManager
 		if (jm == s.jobManager && jm.hasLiveRuns()) || jm.hasArmedWatch() || jm.hasNoticeEmissionInFlight() {

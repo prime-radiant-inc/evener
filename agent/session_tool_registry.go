@@ -148,12 +148,10 @@ type toolDeps struct {
 	// end_turn=true is called while work is still in flight.
 	runningJobIDs func() []string
 
-	// wakeableWork reports whether anything can provably wake this session once
-	// its current turn ends and it rests: pending autonomy input, running managed
-	// jobs, a pending question, or an armed watch in any manager that can deliver
-	// to this session. Detached processes are excluded because their completion
-	// sends no notification. The communicate handler refuses end_reason
-	// waiting_on_work when it returns false. Nil never refuses.
+	// wakeableWork reports whether a resting session can be woken; see
+	// Session.hasWakeableWork for the sources it counts. The communicate
+	// handler refuses end_reason waiting_on_work when it returns false.
+	// Nil disables the refusal.
 	wakeableWork func() bool
 
 	// turnEndsProcess mirrors SessionConfig.TurnEndsProcess so the end_turn
