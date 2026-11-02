@@ -155,6 +155,81 @@ func TestWorktreePruneReportsLiveOwnerViaRendezvous(t *testing.T) {
 	requireLaneReportedSkippedAndKept(t, r, "rendezvous-owner-lane", path, "locked ("+marker+"); owner-live")
 }
 
+// TestWorktreePrune_OrphanArmWithholdsReleaseForRendezvousLiveOwner: the same
+// no-livelock owner under the inactivity arm's own gate. A daemon from before
+// livelock support never writes a livelock, and a resumed process that finds
+// the flock held runs without one — for both, the verified rendezvous entry
+// is the live-process witness. An owner the liveness oracle proves live
+// withholds the stale-evidence release, or the arm collects a live tree's
+// clean checkout mid-work: the reporting verdict and the release decision
+// must not disagree.
+func TestWorktreePrune_OrphanArmWithholdsReleaseForRendezvousLiveOwner(t *testing.T) {
+	t.Parallel()
+	r := newWorktreeRepo(t)
+	dir := hermeticRendezvous(t, r)
+	parentSID := identifier.MustNewSessionID()
+	const dlg = "dlg_034rendezvous0000"
+	seedOwnerRootSession(t, r.stateDir, parentSID)
+	lane := r.delegateLane(t, "orphan-rendezvous-live", dlg, parentSID)
+	seedOrphanParent(t, r, parentSID, dlg, "", time.Now().Add(-30*24*time.Hour))
+	// No livelock file at all — the shape of a daemon from before livelock
+	// support — and this test process is the live daemon the tree's
+	// rendezvous entry names, verified by its start time.
+	seedRendezvousEntry(t, dir, parentSID, os.Getpid(), time.Now().UTC())
+
+	out, err := r.pruneOrphanedOp(t, 7)
+	if err != nil {
+		t.Fatalf("prune with a rendezvous-live owner: %v", err)
+	}
+	if findPruneEntry(t, pruneEntries(t, out, "removed"), "orphan-rendezvous-live") != nil {
+		t.Fatalf("a rendezvous-proven live owner's lane was collected on stale-evidence inactivity: %+v", out)
+	}
+	if e := findPruneEntry(t, pruneEntries(t, out, "unlocked"), "orphan-rendezvous-live"); e != nil {
+		t.Fatalf("a rendezvous-proven live owner's lane was reported unlocked: %+v", e)
+	}
+	if _, locked, reason := r.laneLocked(t, lane); !locked {
+		t.Errorf("a rendezvous-proven live owner's lane was released: %q", reason)
+	}
+}
+
+// TestWorktreePrune_OrphanArmWithholdsReleaseForRendezvousDoubt: doubt of the
+// live kind withholds too. An attributed rendezvous entry whose pid is alive
+// but whose daemon identity cannot be established — no registration time
+// recorded, or no start-time reader on the platform, darwin among them — is
+// the only witness a pre-livelock daemon may have. Uncertainty about whether
+// that pid is the tree's live daemon is not permission to reclaim: the
+// inactivity release is withheld until the doubt resolves, and the reporting
+// verdict for the same tree still says owner-unverifiable.
+func TestWorktreePrune_OrphanArmWithholdsReleaseForRendezvousDoubt(t *testing.T) {
+	t.Parallel()
+	r := newWorktreeRepo(t)
+	dir := hermeticRendezvous(t, r)
+	parentSID := identifier.MustNewSessionID()
+	const dlg = "dlg_034rendezvous0001"
+	seedOwnerRootSession(t, r.stateDir, parentSID)
+	lane := r.delegateLane(t, "orphan-rendezvous-doubt", dlg, parentSID)
+	seedOrphanParent(t, r, parentSID, dlg, "", time.Now().Add(-30*24*time.Hour))
+	// No livelock, and the tree's one witness is a live pid this test process
+	// owns — attributed to the tree, but registered with no start time, so
+	// whether it still names the daemon that wrote the entry cannot be
+	// established.
+	seedRendezvousEntry(t, dir, parentSID, os.Getpid(), time.Time{})
+
+	out, err := r.pruneOrphanedOp(t, 7)
+	if err != nil {
+		t.Fatalf("prune with a rendezvous doubt owner: %v", err)
+	}
+	if findPruneEntry(t, pruneEntries(t, out, "removed"), "orphan-rendezvous-doubt") != nil {
+		t.Fatalf("a lane whose only witness is unresolved doubt of a live daemon was collected on stale-evidence inactivity: %+v", out)
+	}
+	if e := findPruneEntry(t, pruneEntries(t, out, "unlocked"), "orphan-rendezvous-doubt"); e != nil {
+		t.Fatalf("a lane whose only witness is unresolved doubt of a live daemon was reported unlocked: %+v", e)
+	}
+	if _, locked, reason := r.laneLocked(t, lane); !locked {
+		t.Errorf("a lane whose only witness is unresolved doubt of a live daemon was released: %q", reason)
+	}
+}
+
 // TestWorktreePruneHeldLivelockOutranksUnestablishableEntry (review round 7,
 // finding 1): conclusive live evidence takes precedence over doubt. The
 // tree's root process holds its livelock, and an attributed rendezvous entry

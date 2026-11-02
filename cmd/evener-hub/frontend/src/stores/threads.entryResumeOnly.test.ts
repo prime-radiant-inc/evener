@@ -250,7 +250,8 @@ test.each([false, true])(
       turn: { id: "sent", status: "inProgress", itemsView: "full" },
     }));
     await threadsStore.getState().send(ref, "durable recovery input");
-    expect(fake.calls.filter(({ method }) => method === "thread/resume")).toHaveLength(1);
+    // The drive runs beside the parked send; await its request's arrival.
+    await vi.waitFor(() => expect(fake.calls.filter(({ method }) => method === "thread/resume")).toHaveLength(1));
     expect(fake.calls.filter(({ method }) => method === "turn/start")).toEqual([]);
     const parked = await storage.listOutbox(ref);
     expect(parked).toHaveLength(1);
@@ -475,6 +476,9 @@ test("resume completion drains after a held lifecycle discovery result", async (
   fake.on("thread/resume", () => failedResume.promise);
   await threadsStore.getState().send(ref, "deliver after the owner releases");
   const failedCompletion = threadsStore.getState().resumeSession(ref);
+  // The drive runs beside the parked send; await its request's arrival so
+  // the staged rejection finds the consumer awaiting it.
+  await vi.waitFor(() => expect(fake.calls.filter(({ method }) => method === "thread/resume")).toHaveLength(1));
   failedResume.reject(new Error("retry this transport failure"));
   await failedCompletion;
   expect(threadsStore.getState().resumeFailures.has(ref)).toBe(true);

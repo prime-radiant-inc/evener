@@ -612,7 +612,9 @@ test("a local session with a blockedUnknown row takes the Send-resumes face and 
   // it is in flight nothing reaches the wire.
   fake.on("thread/resume", () => new Promise<never>(() => {}));
   await threadsStore.getState().send(ref, "text");
-  expect(fake.calls.filter((call) => call.method === "thread/resume")).toHaveLength(1);
+  // The drive runs beside the parked send: its request's arrival is the
+  // observable, not the microtask schedule the request lands on.
+  await vi.waitFor(() => expect(fake.calls.filter((call) => call.method === "thread/resume")).toHaveLength(1));
   expect(fake.calls.filter((call) => call.method === "turn/start")).toEqual([]);
   const parked = await storage.listOutbox(ref);
   expect(parked.map((record) => record.method)).toContain("turn/start");
@@ -751,7 +753,8 @@ test("a merely-resumable local session's head turn/start dispatches ahead of a q
   expect(sendResumesModel(ref)).toBe(true);
   fake.on("thread/resume", () => new Promise<never>(() => {}));
   await threadsStore.getState().send(ref, "another");
-  expect(fake.calls.filter((call) => call.method === "thread/resume")).toHaveLength(1);
+  // The drive runs beside the parked send; await its request's arrival.
+  await vi.waitFor(() => expect(fake.calls.filter((call) => call.method === "thread/resume")).toHaveLength(1));
 });
 
 // Part 2's predicate: a queued, not-yet-attempted NON-turn/start row parks at
