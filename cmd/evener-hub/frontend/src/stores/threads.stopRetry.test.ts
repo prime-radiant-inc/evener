@@ -4002,3 +4002,49 @@ test("a hub recreation re-arms the retry instead of canceling the parked work", 
   expect(scheduledResumeRetries).toHaveLength(2);
   expect(scheduledResumeRetries[1]?.attempt).toBeGreaterThan(1);
 });
+
+// A restart alone is not a Stop, but a Stop that lands before the refusal must
+// still win: the restored session keeps ResumeRequired and gets a fresh
+// incarnation, so the refusal's token alone cannot tell them apart. The ref's
+// durable stop epoch can.
+test("a recreation after a Stop still cancels the superseded press", async ({ onTestFinished }) => {
+  const scheduledResumeRetries = trackScheduledResumeRetries(onTestFinished);
+  const ref = "local:recovery-recreated-after-stop";
+  const storage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(storage);
+  const fake = connectMutationClient();
+  fake.on("thread/read", () => {
+    const response = readResponse(ref, { status: { type: "notLoaded" } });
+    response.thread.evener.resumeRequired = true;
+    response.thread.evener.mutationStateAuthoritative = false;
+    response.thread.evener.recoveryToken = "inc-a:5";
+    return response;
+  });
+  let rejectResume!: (error: Error) => void;
+  const heldResume = new Promise<ThreadReadResponse>((_, reject) => {
+    rejectResume = reject;
+  });
+  fake.on("thread/resume", () => heldResume);
+  await threadsStore.getState().ensureThread(ref);
+  await flushIndexedDBUntil(() => false);
+  await threadsStore.getState().send(ref, "parked");
+  await waitFor(() => expect(fake.calls.filter((call) => call.method === "thread/resume")).toHaveLength(1));
+  // Another device stops the session while the attempt is in flight, and the
+  // hub is recreated before the attempt hears back.
+  const otherTab = new MutationOutboxIndexedDB();
+  await otherTab.cancelUnattempted(ref);
+  otherTab.close();
+  rejectResume(
+    new WireError("session recovery canceled this pending action; submit it again", -32000, {
+      evenerErrorInfo: "sessionRecoveryCanceled",
+      recoveryToken: "inc-b:0",
+    }),
+  );
+  await flushIndexedDBUntil(() => false);
+  await flushMicrotasks();
+  await flushIndexedDBUntil(() => false);
+  await flushMicrotasks();
+  // The Stop won even though the token is from another incarnation: no retry
+  // is re-armed, so the recovery stops here instead of restarting the session.
+  expect(scheduledResumeRetries).toHaveLength(0);
+});

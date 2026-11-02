@@ -27,6 +27,7 @@ type MutationOutboxOperation =
   | "enqueueIntent"
   | "enqueueInterruptAndCancel"
   | "cancelUnattempted"
+  | "authorizeParkedRows"
   | "discardCanceled"
   | "releaseCanceled"
   | "settleReceipt"
@@ -455,12 +456,46 @@ export class MutationOutboxIndexedDB implements QueuedMessageStorage<MutationAtt
       // A supersession of an identity-changing resume cancels rows its own
       // attempt marked but never sent: their outcome is known undelivered, and
       // leaving them submitting hands them to the next foldable read.
-      if (!isCancelableByStop(record) && !(includeAttempted && record.state === "submitting")) continue;
+      const unsent = includeAttempted && record.state === "submitting";
+      if (!isCancelableByStop(record) && !unsent) continue;
       if (upToSequence !== undefined && record.intentSequence > upToSequence) continue;
-      await requestResult(store.put({ ...record, state: "canceled" }));
+      // The attempt evidence this write outranks goes with it: a canceled row
+      // offers Edit and Remove only while it reads as never attempted, and a
+      // Retry replays under the same clientMutationId.
+      await requestResult(
+        store.put(
+          unsent
+            ? { ...record, state: "canceled", attempted: false, unresolvedAttempts: 0 }
+            : { ...record, state: "canceled" },
+        ),
+      );
       canceled.push(record.clientMutationId);
     }
     return canceled;
+  }
+
+  // A press that waited out this page's own Stop resumes under the post-drain
+  // token: its rows were enqueued before that Stop finished, so their stored
+  // token is the pre-drain one. Re-stamp them under the token the press now
+  // names, or a later foldable read parks its own fresh message.
+  async authorizeParkedRows(
+    targetRef: string,
+    upToSequence: number | undefined,
+    recoveryToken: string,
+  ): Promise<string[]> {
+    return this.#write(OUTBOX_STORE, "authorizeParkedRows", async (transaction) => {
+      const store = transaction.objectStore(OUTBOX_STORE);
+      const records = await requestResult<MutationOutboxRecord[]>(store.getAll());
+      const authorized: string[] = [];
+      for (const record of records) {
+        if (record.targetRef !== targetRef || record.state !== "submitting") continue;
+        if (upToSequence !== undefined && record.intentSequence > upToSequence) continue;
+        if (record.recoveryTokenAtEnqueue === recoveryToken) continue;
+        await requestResult(store.put({ ...record, recoveryTokenAtEnqueue: recoveryToken }));
+        authorized.push(record.clientMutationId);
+      }
+      return authorized;
+    });
   }
 
   // The ref's last allocated intent sequence: the boundary between work issued

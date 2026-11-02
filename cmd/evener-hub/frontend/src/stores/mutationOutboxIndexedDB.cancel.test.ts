@@ -300,6 +300,22 @@ describe("MutationOutboxIndexedDB cancellation", () => {
     storage.close();
   });
 
+  test("a supersession parks an attempted-but-unsent row without attempt evidence", async () => {
+    const storage = store();
+    const row = await storage.enqueueIntent(intent("unsent"));
+    await storage.markAttempted(row.clientMutationId);
+    // The dispatcher's own park: the row was marked, never sent, and must still
+    // offer Edit and Remove (which read "never attempted").
+    const canceled = await storage.cancelUnattempted(TARGET, row.intentSequence, true, false);
+    expect(canceled).toEqual([row.clientMutationId]);
+    expect(await storage.getOutbox(row.clientMutationId)).toMatchObject({
+      state: "canceled",
+      attempted: false,
+      unresolvedAttempts: 0,
+    });
+    storage.close();
+  });
+
   test("a legacy row without attempted metadata is never canceled by Stop", async () => {
     const storage = store();
     const legacy = await storage.enqueueIntent(intent("legacy row"));

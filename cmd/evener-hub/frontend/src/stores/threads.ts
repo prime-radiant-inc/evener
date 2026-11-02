@@ -3348,8 +3348,16 @@ async function runResumeFencedForSend(
         try {
           const response = await reconcileClient.request("thread/read", { ref, includeTurns: false });
           noteRecoveryToken(ref, response.thread.evener);
-          if (typeof response.thread.evener.recoveryToken === "string") {
-            expectedRecoveryToken = response.thread.evener.recoveryToken;
+          const reconciledToken = response.thread.evener.recoveryToken;
+          if (typeof reconciledToken === "string") {
+            expectedRecoveryToken = reconciledToken;
+            // This press's rows were enqueued before the Stop finished, so
+            // their stored token is the pre-drain one: re-authorize them under
+            // the token the press now names, or a later foldable read parks
+            // this fresh message as outrun.
+            void mutationRuntime?.storage
+              .authorizeParkedRows(ref, attemptCancelBound, reconciledToken)
+              .catch(() => undefined);
           }
         } catch {
           // An unreadable reconcile leaves the seeded token in place.
@@ -3542,10 +3550,14 @@ async function runResumeFencedForSend(
     // fence instead of failing against the stale one again.
     const supersededToken = recoveryTokenFromError(error);
     // A refusal from a token minted by an EARLIER hub incarnation is a
-    // recreation, not a Stop: nothing stopped the session, so the recovery
-    // re-arms under the fresh token and the parked work stays queued.
+    // recreation, not a Stop - unless a Stop landed before the restart: the
+    // restored session keeps ResumeRequired, so the refusal alone cannot tell
+    // the two apart. The ref's durable stop epoch can: a Stop from any tab
+    // advances it, and a restart leaves it where it was.
     const supersededByRecreation =
-      isSessionRecoveryCanceled(error) && tokenFromEarlierIncarnation(expectedRecoveryToken, supersededToken);
+      isSessionRecoveryCanceled(error) &&
+      tokenFromEarlierIncarnation(expectedRecoveryToken, supersededToken) &&
+      !stopEpochMoved(await readDurableStopEpoch(mutationRuntime, ref), attemptStopEpoch);
     // The hub refusing a resume a newer Stop superseded is that Stop's own
     // word: the caller armed before it, and re-driving would restart the
     // session the other client or device stopped.
