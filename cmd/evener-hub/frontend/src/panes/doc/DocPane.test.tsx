@@ -20,7 +20,7 @@ import {
   useWorkspaceStore,
   workspaceStore,
 } from "../../shell/workspace";
-import { connectionStore } from "../../stores/connection";
+import { connectionStore, resetConnectionStoreForTests } from "../../stores/connection";
 import { resetThreadsStoreForTests, threadsStore } from "../../stores/threads";
 import { readModuleCss } from "../../styles/cssBlock";
 import DocPane from "./DocPane";
@@ -93,7 +93,7 @@ afterAll(
   }),
 );
 beforeEach(async () => {
-  connectionStore.setState({ state: "idle", client: null });
+  resetConnectionStoreForTests();
   resetThreadsStoreForTests();
   resetWorkspaceStoreForTests();
   cwd = "/work/a";
@@ -127,7 +127,7 @@ beforeEach(async () => {
 });
 afterEach(async () => {
   cleanup();
-  connectionStore.setState({ state: "idle", client: null });
+  resetConnectionStoreForTests();
   resetThreadsStoreForTests();
   vi.useRealTimers();
   vi.restoreAllMocks();

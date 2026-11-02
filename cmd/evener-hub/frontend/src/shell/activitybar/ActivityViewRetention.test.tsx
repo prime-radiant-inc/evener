@@ -2,7 +2,7 @@ import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-libra
 import { afterEach, beforeEach, expect, test } from "vitest";
 import { MotionProvider } from "../../motion";
 import { installLocalStorage, MemoryStorage } from "../../storageTestUtils";
-import { connectionStore } from "../../stores/connection";
+import { connectionStore, resetConnectionStoreForTests } from "../../stores/connection";
 import {
   activityClient,
   activityContext,
@@ -50,7 +50,7 @@ function clearLiveState() {
   resetActivitySidebarStoreForTests({ preserveStorage: true });
   resetDisclosureStoreForTests();
   resetThreadsStoreForTests();
-  connectionStore.setState({ client: null, state: "idle" });
+  resetConnectionStoreForTests();
 }
 
 beforeEach(() => installLocalStorage(new MemoryStorage()));

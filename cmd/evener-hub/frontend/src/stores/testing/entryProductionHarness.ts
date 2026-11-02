@@ -1,11 +1,7 @@
 import type { ThreadModel } from "@evener/appwire-client";
+import { productionEntryTranscriptForTests, setProductionEntryCacheForTests } from "../entryTranscriptRoutes";
 import type { SessionEntryCache } from "../sessionEntryCache";
-import {
-  productionEntryTranscriptForTests,
-  setProductionEntryCacheForTests,
-  settleEntryTranscriptForTests,
-  threadsStore,
-} from "../threads";
+import { settleEntryTranscriptForTests, threadsStore } from "../threads";
 
 // Storage is tab-wide. The ref scopes read-only observations, never routing.
 export function observeProductionEntryForTests(cache: SessionEntryCache, ref: string) {

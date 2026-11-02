@@ -167,10 +167,10 @@ func historyTurnFailure(history []schema.Turn) (schema.Turn, bool) {
 // without user input. Child activity is excluded because it is projected on
 // the child session, while its eventual notification is included once queued.
 func (s *Session) sessionWorkPending() bool {
-	return s.peekNotifications() > 0 || s.pendingQueueDepth() > 0 || s.hasRunnableClientMutationStart() || s.hasPendingDelegateDeliveries() || s.pendingRootDelegateAttention() || s.hasPendingDelegateAttentionArmRetry() || s.hasPendingStableDelegateAttention() || (s.jobManager != nil && s.jobManager.hasPendingStableWatchSettlementRetry())
+	return s.pendingQueueDepth() > 0 || s.hasRunnableClientMutationStart() || s.hasPendingDelegateDeliveries() || s.pendingRootDelegateAttention() || s.hasPendingDelegateAttentionArmRetry() || s.hasPendingDelegateAttention() || (s.jobManager != nil && s.jobManager.hasPendingStableWatchSettlementRetry()) || s.peekNotifications() > 0
 }
 
-func (s *Session) hasPendingStableDelegateAttention() bool {
+func (s *Session) hasPendingDelegateAttention() bool {
 	return s != nil && s.isRootDelegateAttentionReceiver() && s.delegateController.hasPendingDelegateAttention()
 }
 
@@ -249,6 +249,35 @@ func (s *Session) autonomyInFlight() bool {
 		return true
 	}
 	return s.sessionWorkPending()
+}
+
+// hasWakeableWork reports whether anything can wake a resting session. Used by
+// communicate to refuse waiting_on_work only when nothing can wake it. Producers
+// are read before queues, with notifications last among queue terms, so a
+// retirement-to-enqueue handoff cannot fall between reads. Detached processes,
+// Stop-held steering, and daemon nudges never count; watch and emission terms
+// overcount on purpose because refusing too little is safe. See the spec for
+// the full source list.
+func (s *Session) hasWakeableWork() bool {
+	if len(sessionRunningJobIDs(s)) > 0 {
+		return true
+	}
+	if s.jobManager != nil && s.jobManager.hasLiveRuns() {
+		return true
+	}
+	if s.hasWorkingSubagent() {
+		// A working child wakes this session through its delivery; checking it
+		// before the holder walk skips that recursive inventory on the common
+		// delegate-waiting path.
+		return true
+	}
+	for _, holder := range s.watchHolderSessions() {
+		jm := holder.jobManager
+		if jm.hasArmedWatch() || jm.hasNoticeEmissionInFlight() {
+			return true
+		}
+	}
+	return s.hasRunnableUserSteering() || s.autonomyInFlight() || s.HasPendingAsk()
 }
 
 // cumulativeUsageSnapshot converts the context manager's llm.Usage total to
@@ -522,7 +551,9 @@ func (s *Session) finishProcessingAtRestoredFailureBoundary(ctx context.Context)
 	path := s.TranscriptPath()
 	s.attentionMu.Lock()
 	if path != "" {
-		_, entries, _, err := readTranscript(path, s.stateDir)
+		// The interrupt that sends us here already cancelled ctx; the durable
+		// transcript must still be read to reconcile the boundary.
+		_, entries, _, err := readTranscript(context.Background(), path, s.stateDir)
 		if err == nil {
 			restoredHistory, restoredRepairInsertions = resumeHistoryIndexed(entries)
 			restoredEntries = entries

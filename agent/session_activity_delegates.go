@@ -201,7 +201,7 @@ func captureSessionActivityDelegate(rootID string, state delegatestore.State, ag
 	if aggregate.Phase == delegatestore.PhaseIdle || aggregate.Phase == delegatestore.PhaseClosed {
 		snapshot.lifecycle = delegateLifecycleIdle
 	}
-	status := projectStableDelegateStatus(now, snapshot)
+	status := projectDelegateStatus(now, snapshot)
 	d := aggregate.Descriptor
 	row := appwire.SessionDelegate{Name: activitybound.Truncate(d.Name, activityMaxLabelRunes), DelegateID: aggregate.DelegateID, RunGeneration: aggregate.Generation, ProjectionRevision: aggregate.ProjectionRevision, OwnerRef: encodeRef("", sessionActivityDelegateOwner(state, aggregate)), RootRef: encodeRef("", rootID), ChildRef: encodeRef("", d.ChildSessionID), ParentDelegateID: d.ParentDelegateID, Description: activitybound.Truncate(d.Description, activityMaxDelegateProseRunes), Task: activitybound.Truncate(d.Task, activityMaxDelegateProseRunes), Type: "delegate", Lifecycle: string(snapshot.lifecycle), Phase: string(aggregate.Phase), Status: string(snapshot.lifecycle), Resumable: aggregate.Resumable, NotResumableReason: activitybound.Truncate(aggregate.NotResumableReason, activityMaxDelegateProseRunes), Model: activitybound.Truncate(d.ResolvedModel, activityMaxLabelRunes), ReasoningEffort: d.Config.ReasoningEffort, RunStartedAt: status.RunStartedAt, LatestActivityAt: status.LatestActivityAt, LatestIntent: appwire.Excerpt(aggregate.LatestIntent, appwire.MaxIntentRunes)}
 	if outcome := aggregate.LatestOutcome; outcome != nil {

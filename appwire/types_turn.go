@@ -179,21 +179,22 @@ var AllThreadItemEventKinds = []string{
 }
 
 type ThreadItem struct {
-	Type                 string              `json:"type"`
-	ID                   string              `json:"id"`
-	TranscriptKey        string              `json:"transcriptKey,omitempty"`
-	Position             *ThreadItemPosition `json:"position,omitempty"`
-	TurnID               string              `json:"turnId,omitempty"`
-	TranscriptEntryIndex int                 `json:"transcriptEntryIndex,omitempty"`
-	Text                 string              `json:"text,omitempty"`
-	Delta                string              `json:"delta,omitempty"`
-	Images               []InputItem         `json:"images,omitempty"`
-	ToolName             string              `json:"toolName,omitempty"`
-	CallID               string              `json:"callId,omitempty"`
-	ArgumentsJSON        string              `json:"argumentsJson,omitempty"`
-	Description          string              `json:"description,omitempty"`
-	Output               string              `json:"output,omitempty"`
-	Error                string              `json:"error,omitempty"`
+	Authorship           *TranscriptAuthorship `json:"authorship,omitempty"`
+	Type                 string                `json:"type"`
+	ID                   string                `json:"id"`
+	TranscriptKey        string                `json:"transcriptKey,omitempty"`
+	Position             *ThreadItemPosition   `json:"position,omitempty"`
+	TurnID               string                `json:"turnId,omitempty"`
+	TranscriptEntryIndex int                   `json:"transcriptEntryIndex,omitempty"`
+	Text                 string                `json:"text,omitempty"`
+	Delta                string                `json:"delta,omitempty"`
+	Images               []InputItem           `json:"images,omitempty"`
+	ToolName             string                `json:"toolName,omitempty"`
+	CallID               string                `json:"callId,omitempty"`
+	ArgumentsJSON        string                `json:"argumentsJson,omitempty"`
+	Description          string                `json:"description,omitempty"`
+	Output               string                `json:"output,omitempty"`
+	Error                string                `json:"error,omitempty"`
 	// OutputImages is omitzero; see the nil-vs-empty rule in output_images.go.
 	// Images stays omitempty: nothing removes an item's input images.
 	OutputImages []OutputImage `json:"outputImages,omitzero"`
@@ -201,7 +202,7 @@ type ThreadItem struct {
 	// PrevalOnly is true when Error came from a pre-dispatch rejection (an
 	// unknown tool name, or arguments that failed schema validation even
 	// after repair) rather than the tool's own execution - the call never
-	// reached ExecuteCall (kata hgm1). A client uses this to tell a
+	// reached ExecuteCall. A client uses this to tell a
 	// self-corrected malformed-call bounce apart from a real execution
 	// failure or denial: same non-empty Error, different meaning. False (the
 	// default) for a real execution failure, and meaningless when Error is
@@ -214,8 +215,8 @@ type ThreadItem struct {
 	CompletedAt *int64 `json:"completedAt,omitempty"`
 	// DurationMS is the item's real server-measured runtime in milliseconds
 	// (tool-call items only). Stamped live from the event stream's own
-	// timestamps; nil when no honest span was recorded (issue #37: the web
-	// hover meta shows real times or nothing).
+	// timestamps; nil when no honest span was recorded (the web hover meta
+	// shows real times or nothing).
 	DurationMS *int64 `json:"durationMs,omitempty"`
 	// ExitCode is the exit status of the process behind this item, on the two
 	// item kinds that have one:
@@ -238,7 +239,7 @@ type ThreadItem struct {
 	EventKind ThreadItemEventKind `json:"eventKind,omitempty"`
 	// Source carries item provenance for steering items: "user" for
 	// human-sent steering (rendered as a user message), empty for
-	// daemon/system steering (issue #24).
+	// daemon/system steering.
 	Source string `json:"source,omitempty"`
 	// SteeringKind names what a daemon-originated steering item was
 	// (events.SteeringKind*), set at the injection site so a client labels it
@@ -695,8 +696,8 @@ type ThreadForkParams struct {
 	// NOT read as one for this: send ThreadItem.TranscriptKey, never Turn.ID;
 	// the entry ordinal a live turn's own id implies coincides with its
 	// transcript entry index only on a transcript replayed from disk,
-	// because every live turn minter numbers turns off its own counter (kata
-	// 0jhh). Required unless Aside.
+	// because every live turn minter numbers turns off its own counter.
+	// Required unless Aside.
 	SourceItemKey string `json:"sourceItemKey,omitempty"`
 }
 
@@ -783,7 +784,7 @@ type MutationReceipt struct {
 	// queued entries into itself). It rides the durable mutation result, so
 	// a replayed disposition carries the same ids the first execution did —
 	// unlike queueChanged's own copy of this fact, a replay needs no live
-	// push to settle those records (issue #1704). Absent on every receipt
+	// push to settle those records. Absent on every receipt
 	// that is not a drain's.
 	ConsumedClientMutationIDs []string `json:"consumedClientMutationIds,omitempty"`
 }

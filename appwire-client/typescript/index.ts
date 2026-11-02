@@ -521,51 +521,14 @@ export { createReadyGenerationFence } from "./readyGenerationFence";
 export { effortLabel, effortOptionLevels, sessionEffortLevels } from "./reasoningEffort";
 export type { AskBatch } from "./reconcileBatches";
 export { reconcileBatches } from "./reconcileBatches";
-export type {
-  CachedSessionRecord,
-  CurrentTranscriptAdmission,
-  NotificationRoutingKey,
-  OlderItemPageMerge,
-  TurnHistoryFoldDetail,
-  TurnHistoryMergeResult,
-} from "./reducer";
+export type { NotificationRoutingKey } from "./reducer";
 export {
-  applyHistoryReadFailure,
   applyNotification,
   applyOverlayEndForTranscriptHandoff,
-  applyReadModel,
-  applyReadResponse,
-  cachedSessionRecord,
-  collectAuthoritativeMutationIds,
-  comparePositions,
-  currentTranscriptState,
-  decodeCurrentTranscriptState,
-  decodeTranscriptItem,
-  encodeTranscriptItem,
-  hydrateThread,
-  ITEM_OMISSION_TOLERANT_FIELDS,
-  imageSessionRouteForSession,
-  invalidateHistory,
-  issueLatestWindowRead,
-  itemIdentityMatches,
-  mergeOlderItemPage,
-  mergeOlderItemPageWithFolds,
-  mergeTailTurns,
-  mergeTranscriptItemVersioned,
-  mergeTranscriptReaderWindow,
-  mergeTranscriptTurnVersioned,
-  mergeTurnHistory,
-  mergeTurnHistoryWithFolds,
   notificationRoutingKey,
   notificationTargetsThread,
   notificationTouchesTranscript,
-  prependOlderTurns,
-  pruneBackgroundHistoryBodies,
-  readDisposition,
-  readWindowBounds,
   resolvePendingEscalation,
-  threadModelFromCache,
-  threadModelFromCurrentState,
 } from "./reducer";
 export {
   type RetryEligibility,
@@ -793,6 +756,19 @@ export {
   words,
   writeFileSummary,
 } from "./toolSummaries";
+export type {
+  CachedSessionRecord,
+  CurrentTranscriptAdmission,
+} from "./transcriptCache";
+export {
+  cachedSessionRecord,
+  currentTranscriptState,
+  decodeCurrentTranscriptState,
+  decodeTranscriptItem,
+  encodeTranscriptItem,
+  threadModelFromCache,
+  threadModelFromCurrentState,
+} from "./transcriptCache";
 // TranscriptDisplayConfig (an unused alias of TranscriptDisplayConfigV1) is
 // deliberately absent: the root publishes the wire type of that name from
 // types.gen, which it would shadow.
@@ -859,7 +835,28 @@ export type {
 } from "./transcriptDisplayStore";
 export { createTranscriptDisplayStore, fromWireChange, transcriptDisplaySupport } from "./transcriptDisplayStore";
 export {
+  applyHistoryReadFailure,
+  applyReadModel,
+  applyReadResponse,
+  collectAuthoritativeMutationIds,
+  comparePositions,
+  hydrateThread,
+  ITEM_OMISSION_TOLERANT_FIELDS,
+  invalidateHistory,
+  issueLatestWindowRead,
+  mergeOlderItemPage,
+  mergeTailTurns,
+  mergeTranscriptItemVersioned,
+  mergeTranscriptReaderWindow,
+  mergeTranscriptTurnVersioned,
+  prependOlderTurns,
+  pruneBackgroundHistoryBodies,
+  readDisposition,
+  readWindowBounds,
+} from "./transcriptHistory";
+export {
   copyItemTextPresence,
+  imageSessionRouteForSession,
   isToolCallItemId,
   isToolResultItemId,
   itemTextPresence,
@@ -897,6 +894,13 @@ export {
   type RetryTurnThread,
   TURN_CONTINUATION_TEXT,
 } from "./turnContinuation";
+export type { OlderItemPageMerge, TurnHistoryFoldDetail, TurnHistoryMergeResult } from "./turnHistoryMerge";
+export {
+  itemIdentityMatches,
+  mergeOlderItemPageWithFolds,
+  mergeTurnHistory,
+  mergeTurnHistoryWithFolds,
+} from "./turnHistoryMerge";
 export type * from "./types.gen";
 export {
   HOST_REQUEST_METHODS,

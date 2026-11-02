@@ -17,22 +17,12 @@ func foldCutoff(history []schema.Turn, preserveRecent int) int {
 	return safeCutoff(history, attentionTransparentRecentCutoff(history, preserveRecent))
 }
 
-// summarizeWithLLM calls the cheap model to generate a narrative summary of
-// old history. Replaces old history with a single user message containing the
-// summary, preserving the most recent turns.
-func (cm *Manager) summarizeWithLLM(ctx context.Context, history []schema.Turn, preserveRecent int) ([]schema.Turn, error) {
-	return cm.summarizeWithLLMSteered(ctx, history, preserveRecent, "")
-}
-
-// summarizeWithLLMSteered is like summarizeWithLLM but accepts optional caller
-// instructions that replace the default mandatory-sections prompt when non-empty.
-func (cm *Manager) summarizeWithLLMSteered(ctx context.Context, history []schema.Turn, preserveRecent int, instructions string) ([]schema.Turn, error) {
-	return cm.summarizeFold(ctx, history, preserveRecent, instructions, nil)
-}
-
-// summarizeFold is summarizeWithLLMSteered for a summary that completes a
-// fold a checkpoint began this pass. checkpointed is what that checkpoint, at
-// history[0], folded: the checkpoint sheds conversation under its own budget,
+// summarizeFold calls the cheap model to summarize old history, replacing it
+// with a single user message that holds the summary and preserving the most
+// recent turns. A non-empty instructions replaces the default
+// mandatory-sections prompt. For a summary that completes a fold a checkpoint
+// began this pass, checkpointed is what that checkpoint, at history[0],
+// folded: the checkpoint sheds conversation under its own budget,
 // which earlier summaries and agent replies share, so the partner's messages
 // the summary carries are read from those turns, plus every later turn the
 // summary folds, under the carry's own cap. With checkpointed nil they are

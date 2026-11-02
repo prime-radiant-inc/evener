@@ -18,7 +18,7 @@ import { resetComposerFocusStoreForTests } from "../../panes/session/composer/co
 import { resetQuoteInsertStoreForTests, useQuoteInsertRequest } from "../../panes/session/composer/quoteInsert";
 import { installLocalStorage, MemoryStorage } from "../../storageTestUtils";
 import { useCommandCatalog } from "../../stores/commandCatalog";
-import { connectionStore } from "../../stores/connection";
+import { resetConnectionStoreForTests } from "../../stores/connection";
 import { resetNavigationStoreForTests } from "../../stores/navigation/store";
 import { resetThreadsStoreForTests, threadsStore } from "../../stores/threads";
 import { NeedsYouProvider } from "../NeedsYouProvider";
@@ -92,7 +92,7 @@ function focusSession(ref: string, overrides: Partial<ThreadModel> = {}): void {
 
 beforeEach(() => {
   paletteStore.setState({ open: false, query: "", openSeq: 0 });
-  connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
+  resetConnectionStoreForTests();
   useCommandCatalog.setState(useCommandCatalog.getInitialState());
   resetThreadsStoreForTests();
   resetWorkspaceStoreForTests();

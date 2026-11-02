@@ -39,6 +39,11 @@ replace primeradiant.com/evener/agent v0.0.0 => ./agent
 Keeping the replace in `go.work` rather than in each `go.mod` leaves the
 committed `go.mod` files clean and publishable.
 
+Every `go.mod` requires each sibling at `v0.0.0`, and `go.work` carries exactly
+one replace per sibling for that version. A second version string would need
+a second replace and tells a reader the modules are released independently,
+which they are not.
+
 Before assuming a module edge does not exist, check: the root `go.mod`
 already requires `agent`, and `cmd/evener-hub/internal/hubcore` already
 imports `agent/schema` in several files. A wrapper type introduced to

@@ -319,7 +319,7 @@ type Server struct {
 	listModelsFunc           func(context.Context) ([]appwire.ModelDescriptor, error)
 	appSessionActivity       sessionActivityHooks
 	tasksFn                  func() []appwire.Task
-	jobsFn                   func(appwire.JobsListParams) (any, error)
+	jobsFn                   func(context.Context, appwire.JobsListParams) (any, error)
 	jobOutputFn              func(jobID string, beforeBytes *int64, maxBytes int64) (data appwire.JobOutputPage, found bool, err error)
 	jobGetFn                 func(jobID string) (data appwire.JobActivityJob, found bool, err error)
 	shutdownFunc             func()
@@ -495,6 +495,21 @@ func (s *Server) GetStatus() StatusInfo {
 // UpdateSessionInfo sets session identity fields.
 func (s *Server) UpdateSessionInfo(sessionID, model, profile string) {
 	s.mu.Lock()
+	s.updateSessionInfoLocked(sessionID, model, profile)
+	s.mu.Unlock()
+}
+
+// UpdateSessionInfoFrom sets session identity fields from a sample that runs
+// under the server lock. A caller whose read raced a newer model-changed
+// projection - the daemon's model-set hook reading the profile while a turn
+// boundary commits a queued switch - would otherwise install a stale snapshot
+// after the projection already installed the new model, regressing the cache
+// with no corrective event behind it. Sampling inside the write's critical
+// section installs whatever the session reports at write time, so the cache
+// can only move forward.
+func (s *Server) UpdateSessionInfoFrom(sessionID string, sample func() (model, profile string)) {
+	s.mu.Lock()
+	model, profile := sample()
 	s.updateSessionInfoLocked(sessionID, model, profile)
 	s.mu.Unlock()
 }
@@ -686,7 +701,7 @@ func (s *Server) SetTasksFunc(fn func() []appwire.Task) {
 // an error if it cannot read one: an unreadable durable root must reach the
 // caller as a failure, never as the empty success a job-less session answers
 // with.
-func (s *Server) SetJobsFunc(fn func(appwire.JobsListParams) (any, error)) {
+func (s *Server) SetJobsFunc(fn func(context.Context, appwire.JobsListParams) (any, error)) {
 	s.mu.Lock()
 	s.jobsFn = fn
 	s.mu.Unlock()

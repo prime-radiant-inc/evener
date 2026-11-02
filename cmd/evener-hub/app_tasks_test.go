@@ -22,7 +22,7 @@ import (
 // taskListSource is a minimal appsource.Source test double that stubs the
 // live path's ListTasks response; every other (large) Source method falls
 // through to the embedded relayLifecycleSource's stub implementation
-// (app_rpc_test.go), mirroring listThreadSource's existing override pattern.
+// (app_rpc_helpers_test.go), mirroring listThreadSource's existing override pattern.
 type taskListSource struct {
 	relayLifecycleSource
 	id        string

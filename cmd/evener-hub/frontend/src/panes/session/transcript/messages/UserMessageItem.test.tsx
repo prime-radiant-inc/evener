@@ -7,7 +7,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, test } from "vitest"
 import { registerPaneForTests } from "../../../../shell/paneRegistry";
 import { resetWorkspaceStoreForTests, workspaceStore } from "../../../../shell/workspace";
 import { installLocalStorage, MemoryStorage } from "../../../../storageTestUtils";
-import { connectionStore } from "../../../../stores/connection";
+import { connectionStore, resetConnectionStoreForTests } from "../../../../stores/connection";
 import { resetThreadsStoreForTests } from "../../../../stores/threads";
 import { readModuleCss } from "../../../../styles/cssBlock";
 import { ALL_CAPABILITIES as FORK_CAPABILITIES } from "../../../../threadTestUtils";
@@ -305,7 +305,7 @@ function connectForkClient(): FakeClient {
 
 describe("per-message fork affordance", () => {
   beforeEach(() => {
-    connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
+    resetConnectionStoreForTests();
     resetThreadsStoreForTests();
     resetWorkspaceStoreForTests();
     localStorage.clear();

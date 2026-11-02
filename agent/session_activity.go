@@ -251,6 +251,7 @@ func activityContextFromDelegates(result *appwire.SessionActivityContext, rootID
 		}
 		if result.DelegateID == "" {
 			result.DelegateID = aggregate.DelegateID
+			result.DelegateName = activitybound.Truncate(d.Name, activityMaxLabelRunes)
 			result.ParentRef = encodeRef("", owner)
 		}
 		parentDelegateID := d.ParentDelegateID
@@ -261,6 +262,7 @@ func activityContextFromDelegates(result *appwire.SessionActivityContext, rootID
 				return false
 			}
 			chain[len(chain)-1].Title = activitybound.Truncate(parent.Descriptor.Description, activityMaxLabelRunes)
+			chain[len(chain)-1].DelegateName = activitybound.Truncate(parent.Descriptor.Name, activityMaxLabelRunes)
 		} else if owner != rootID {
 			return false
 		}

@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"maps"
-	"os"
 	"slices"
 	"sort"
 	"sync"
@@ -15,6 +14,7 @@ import (
 	"github.com/spf13/afero"
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/envvars"
+	"primeradiant.com/evener/execsupport/componentlog"
 	"primeradiant.com/evener/identifier"
 	"primeradiant.com/evener/rendezvous"
 )
@@ -1203,7 +1203,7 @@ func (r *Roster) Watch(ctx context.Context) error {
 			r.Refresh()
 		case err := <-w.Errors():
 			if err != nil {
-				fmt.Fprintf(os.Stderr, "[hub] fsnotify error on %s: %v\n", r.runDir, err)
+				componentlog.New("hub").Error("fsnotify error", "dir", r.runDir, "err", err)
 			}
 			r.Refresh()
 		case <-ticker.C():

@@ -105,8 +105,17 @@ func stoolCommunicateRun(t *testing.T, data []byte) stoolCommunicateTrace {
 			"artifacts": []any{"artifact-" + token},
 		},
 	})
-	if err != nil || !strings.Contains(nonterminal.(string), `"accepted":true`) || committed {
+	typed, isTyped := nonterminal.(tool.StateResult)
+	if err != nil || !isTyped || !strings.Contains(typed.Output, `"accepted":true`) || committed {
 		t.Fatalf("nonterminal communicate = %#v err=%v committed=%v", nonterminal, err, committed)
+	}
+	// The durable verdict rides the typed state, independent of the display
+	// output: a nonterminal accept is an accepted message that does not end
+	// the turn and carries no end reason.
+	if state, ok := typed.State.(communicateEndState); !ok ||
+		state.Accepted == nil || !*state.Accepted ||
+		state.EndTurn == nil || *state.EndTurn || state.EndReason != "" {
+		t.Fatalf("nonterminal typed verdict = %#v", nonterminal)
 	}
 
 	var resultMessage, resultReply, resultOutput string

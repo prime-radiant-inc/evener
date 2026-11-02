@@ -510,7 +510,7 @@ func delegateFrameStatusInfo(now time.Time, rootID string, row delegateSnapshot)
 
 func delegateStatusInfo(now time.Time, rootID string, row delegateSnapshot, boundedMetadata bool) DelegateStatusInfo {
 	descriptor := row.descriptor
-	timing := projectStableDelegateStatus(now, row)
+	timing := projectDelegateStatus(now, row)
 	out := DelegateStatusInfo{
 		DelegateID:          row.id,
 		RunGeneration:       row.generation,

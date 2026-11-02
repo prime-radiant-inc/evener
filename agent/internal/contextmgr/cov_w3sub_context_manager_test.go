@@ -24,7 +24,7 @@ func w3subCommunicateTurn(endTurn bool, message string) schema.Turn {
 	}})
 }
 
-// summarizeWithLLMSteered's history digest walks every turn shape. This drives
+// summarizeFold's history digest walks every turn shape. This drives
 // its assistant communicate-extraction arms (end_turn message vs status vs
 // skipped empty message), the oversized tool-result truncation, and the
 // steering arm, then confirms a framed SUMMARY turn replaced the walked prefix.
@@ -44,7 +44,7 @@ func TestW3Sub_SummarizeSteered_DigestArms(t *testing.T) {
 	client := ctxmgr_scriptedClient(profile.ID(), "handoff summary body", nil)
 	cm := NewManager(profile, client, cheapmodel.New(client))
 
-	result, err := cm.summarizeWithLLMSteered(context.Background(), history, 1, "keep the plan")
+	result, err := cm.summarizeFold(context.Background(), history, 1, "keep the plan", nil)
 	if err != nil {
 		t.Fatalf("summarize: %v", err)
 	}
@@ -76,7 +76,7 @@ func TestW3Sub_SummarizeSteered_HistoryCharCap(t *testing.T) {
 	client := ctxmgr_scriptedClient(profile.ID(), "## Progress\nsummary", nil)
 	cm := NewManager(profile, client, cheapmodel.New(client))
 
-	result, err := cm.summarizeWithLLMSteered(context.Background(), history, 1, "")
+	result, err := cm.summarizeFold(context.Background(), history, 1, "", nil)
 	if err != nil {
 		t.Fatalf("summarize: %v", err)
 	}
@@ -98,7 +98,7 @@ func TestW3Sub_SummarizeSteered_NoRoutes(t *testing.T) {
 	client := ctxmgr_scriptedClient("openai", "unused", nil)
 	cm := NewManager(profile, client, cheapmodel.New(client))
 
-	if _, err := cm.summarizeWithLLMSteered(context.Background(), history, 1, ""); err == nil {
+	if _, err := cm.summarizeFold(context.Background(), history, 1, "", nil); err == nil {
 		t.Fatalf("expected an empty-model error")
 	}
 }

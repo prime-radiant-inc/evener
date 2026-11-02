@@ -53,7 +53,7 @@ func TestDelegateResourceBootstrap_ChildInheritsControllerAndStableOwnerID(t *te
 	if got := delegateControllerPointer(t, child); got != rootController {
 		t.Fatalf("child controller pointer = %#x, want root pointer %#x", got, rootController)
 	}
-	if got := stableDelegateOwnerID(t, child); got != result.DelegateID {
+	if got := delegateOwnerID(t, child); got != result.DelegateID {
 		t.Fatalf("child stable owner ID = %q, want %q", got, result.DelegateID)
 	}
 }
@@ -596,7 +596,15 @@ func newDelegateResourceBootstrapSession(t *testing.T) (*Session, *llm.Client, *
 
 func closedDelegateResourceBootstrapFixture(t *testing.T) (schema.SessionMeta, *llm.Client, *provider.Profile, string, string, *fakeAdapter) {
 	t.Helper()
-	stateDir := realTempDirForTest(t)
+	return closedDelegateResourceBootstrapFixtureInState(t, realTempDirForTest(t))
+}
+
+// closedDelegateResourceBootstrapFixtureInState bootstraps the closed parent
+// session inside a caller-chosen state directory — the shared-state-root
+// shape, where the session that later examines this parent resolves its
+// evidence through that same root.
+func closedDelegateResourceBootstrapFixtureInState(t *testing.T, stateDir string) (schema.SessionMeta, *llm.Client, *provider.Profile, string, string, *fakeAdapter) {
+	t.Helper()
 	workspace := t.TempDir()
 	adapter := &fakeAdapter{name: "openai"}
 	client := llm.NewClient()
@@ -664,7 +672,7 @@ func delegateControllerPointer(t *testing.T, sess *Session) uintptr {
 	return field.Pointer()
 }
 
-func stableDelegateOwnerID(t *testing.T, sess *Session) string {
+func delegateOwnerID(t *testing.T, sess *Session) string {
 	t.Helper()
 	field := reflect.ValueOf(sess).Elem().FieldByName("owningDelegateID")
 	if !field.IsValid() {

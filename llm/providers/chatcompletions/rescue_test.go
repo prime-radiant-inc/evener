@@ -235,3 +235,66 @@ func TestFromChatCompletionResponseRescuePreservesNonCanonicalJSON(t *testing.T)
 	wantToken(t, fields, "action", `"update"`)
 	wantToken(t, fields, "x", `1`)
 }
+
+// TestRescueClaudeXMLArgsEmptyReturnsEmpty pins the empty-arguments short
+// circuit: nothing to inspect means nothing to change.
+func TestRescueClaudeXMLArgsEmptyReturnsEmpty(t *testing.T) {
+	if got := rescueClaudeXMLArgs(""); got != "" {
+		t.Fatalf("rescue of empty arguments = %q, want empty", got)
+	}
+}
+
+// TestRescueClaudeXMLArgsSecondOrderInvalidJSONKept pins the second-order
+// rescue's decode guard: a string value that merely looks like JSON but does
+// not parse is left exactly as it was.
+func TestRescueClaudeXMLArgsSecondOrderInvalidJSONKept(t *testing.T) {
+	wantUnchanged(t, `{"payload":"[oops"}`)
+	wantUnchanged(t, `{"payload":"{oops"}`)
+}
+
+// TestRescueClaudeXMLArgsCarrierWithoutQuoteBoundary pins the split fallback:
+// when a carrier's XML open tag has no `">` before it, the split happens at
+// the tag itself, leaving the carrier empty.
+func TestRescueClaudeXMLArgsCarrierWithoutQuoteBoundary(t *testing.T) {
+	raw := `{"action":"<parameter name=\"x\">1","note":"ok"}`
+	fields := fieldsOf(t, rescueClaudeXMLArgs(raw))
+	wantToken(t, fields, "action", `""`)
+	wantToken(t, fields, "x", `1`)
+	wantToken(t, fields, "note", `"ok"`)
+}
+
+// TestRescueClaudeXMLArgsControlBytesRoundTrip pins the byte-preserving
+// escape handling on both sides of the rescue: control escapes in the wire
+// strings decode to their single bytes and re-encode to exactly JSON's
+// required escapes — named ones for \b \f \n \r \t, \u00XX for every other
+// control byte.
+func TestRescueClaudeXMLArgsControlBytesRoundTrip(t *testing.T) {
+	raw := `{"action":"go\">\n<parameter name=\"x\">a\nb\bc\fd\re\tf` + `\u0001` + `g</parameter>","note":"ok"}`
+	fields := fieldsOf(t, rescueClaudeXMLArgs(raw))
+	wantToken(t, fields, "action", `"go"`)
+	wantToken(t, fields, "x", `"a\nb\bc\fd\re\tf\u0001g"`)
+	wantToken(t, fields, "note", `"ok"`)
+}
+
+// TestRescueClaudeXMLArgsUnpairedSurrogates pin the lone-surrogate handling:
+// a high surrogate with no valid low partner and a lone low surrogate both
+// decode to U+FFFD (stdlib parity), one per unpaired escape, rather than
+// rejecting the arguments.
+func TestRescueClaudeXMLArgsUnpairedSurrogates(t *testing.T) {
+	raw := `{"action":"go\">\n<parameter name=\"hi\">` + `\ud800` + `\udb00` + `x</parameter>","note":"ok"}`
+	fields := fieldsOf(t, rescueClaudeXMLArgs(raw))
+	wantToken(t, fields, "hi", "\"\uFFFD\uFFFDx\"")
+
+	raw = `{"action":"go\">\n<parameter name=\"lo\">` + `\udc00` + `y</parameter>","note":"ok"}`
+	fields = fieldsOf(t, rescueClaudeXMLArgs(raw))
+	wantToken(t, fields, "lo", "\"\uFFFDy\"")
+}
+
+// TestRescueClaudeXMLArgsUppercaseHexEscape pins that \uXXXX escapes with
+// uppercase hex digits decode — OpenRouter-style listings are not normalized
+// to lowercase.
+func TestRescueClaudeXMLArgsUppercaseHexEscape(t *testing.T) {
+	raw := `{"action":"go\">\n<parameter name=\"up\">` + `\uABCD` + `z</parameter>","note":"ok"}`
+	fields := fieldsOf(t, rescueClaudeXMLArgs(raw))
+	wantToken(t, fields, "up", "\"\uABCDz\"")
+}

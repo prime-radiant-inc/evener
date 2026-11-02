@@ -53,9 +53,9 @@ func TestSummarizeWithLLM_DefaultsToActiveModel(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	result, err := cm.summarizeWithLLM(ctx, history, 2)
+	result, err := cm.summarizeFold(ctx, history, 2, "", nil)
 	if err != nil {
-		t.Fatalf("summarizeWithLLM: %v", err)
+		t.Fatalf("summarizeFold: %v", err)
 	}
 
 	// Should have summary + 2 preserved turns.
@@ -80,8 +80,8 @@ func TestSummarizeWithLLM_UsesConfiguredCompactionModel(t *testing.T) {
 		{Kind: schema.TurnAssistant, Message: llm.Assistant("recent")},
 	}
 
-	if _, err := cm.summarizeWithLLM(context.Background(), history, 1); err != nil {
-		t.Fatalf("summarizeWithLLM: %v", err)
+	if _, err := cm.summarizeFold(context.Background(), history, 1, "", nil); err != nil {
+		t.Fatalf("summarizeFold: %v", err)
 	}
 	reqs := adapter.Requests()
 	if len(reqs) != 1 {
@@ -106,9 +106,9 @@ func TestSummarizeWithLLM_FallsBackToActiveModelWhenConfiguredModelFails(t *test
 		{Kind: schema.TurnAssistant, Message: llm.Assistant("recent")},
 	}
 
-	result, err := cm.summarizeWithLLM(context.Background(), history, 1)
+	result, err := cm.summarizeFold(context.Background(), history, 1, "", nil)
 	if err != nil {
-		t.Fatalf("summarizeWithLLM: %v", err)
+		t.Fatalf("summarizeFold: %v", err)
 	}
 	if !strings.Contains(result[0].Message.Text(), "fallback summary") {
 		t.Fatalf("summary did not come from fallback response: %q", result[0].Message.Text())
@@ -161,7 +161,7 @@ func TestSummarizeWithLLM_DoesNotFallbackOnCancellation(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	_, err := cm.summarizeWithLLM(ctx, history, 1)
+	_, err := cm.summarizeFold(ctx, history, 1, "", nil)
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("error = %v, want context.Canceled", err)
 	}
@@ -216,9 +216,9 @@ func TestSummarizeWithLLM_ReplacesOldHistory(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	result, err := cm.summarizeWithLLM(ctx, history, 1)
+	result, err := cm.summarizeFold(ctx, history, 1, "", nil)
 	if err != nil {
-		t.Fatalf("summarizeWithLLM: %v", err)
+		t.Fatalf("summarizeFold: %v", err)
 	}
 
 	// First turn should contain the LLM summary.
@@ -254,9 +254,9 @@ func TestSummarizeWithLLM_PreservesRecentTurns(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	result, err := cm.summarizeWithLLM(ctx, history, 2)
+	result, err := cm.summarizeFold(ctx, history, 2, "", nil)
 	if err != nil {
-		t.Fatalf("summarizeWithLLM: %v", err)
+		t.Fatalf("summarizeFold: %v", err)
 	}
 
 	if result[1].Message.Text() != "recent1" {
@@ -281,9 +281,9 @@ func TestSummarizeWithLLM_ErrorFallsBackGracefully(t *testing.T) {
 		{Kind: schema.TurnAssistant, Message: llm.Assistant("recent")},
 	}
 
-	result, err := cm.summarizeWithLLM(context.Background(), history, 1)
+	result, err := cm.summarizeFold(context.Background(), history, 1, "", nil)
 	if err == nil {
-		t.Fatal("expected error from summarizeWithLLM when adapter fails")
+		t.Fatal("expected error from summarizeFold when adapter fails")
 	}
 	if result != nil {
 		t.Fatalf("expected nil result on error, got %d turns", len(result))
@@ -313,9 +313,9 @@ func TestSummarizeWithLLM_AdjustsCutoffToAvoidOrphanedToolTurn(t *testing.T) {
 	}
 
 	// preserveRecent=2 → cutoff=4, preserved starts at TurnTool — BAD.
-	result, err := cm.summarizeWithLLM(context.Background(), history, 2)
+	result, err := cm.summarizeFold(context.Background(), history, 2, "", nil)
 	if err != nil {
-		t.Fatalf("summarizeWithLLM: %v", err)
+		t.Fatalf("summarizeFold: %v", err)
 	}
 
 	if len(result) < 2 {
@@ -326,7 +326,7 @@ func TestSummarizeWithLLM_AdjustsCutoffToAvoidOrphanedToolTurn(t *testing.T) {
 	}
 }
 
-// H4: summarizeWithLLM should truncate the prompt to avoid exceeding the cheap model's context.
+// H4: summarizeFold should truncate the prompt to avoid exceeding the cheap model's context.
 func TestSummarizeWithLLM_TruncatesPromptForCheapModel(t *testing.T) {
 	var receivedPromptLen int
 	adapter := &fakeAdapter{
@@ -351,9 +351,9 @@ func TestSummarizeWithLLM_TruncatesPromptForCheapModel(t *testing.T) {
 		{Kind: schema.TurnAssistant, Message: llm.Assistant("recent")},
 	}
 
-	_, err := cm.summarizeWithLLM(context.Background(), history, 1)
+	_, err := cm.summarizeFold(context.Background(), history, 1, "", nil)
 	if err != nil {
-		t.Fatalf("summarizeWithLLM: %v", err)
+		t.Fatalf("summarizeFold: %v", err)
 	}
 
 	// The prompt sent to the cheap model should be bounded, not 200k+ chars.
@@ -389,8 +389,8 @@ func TestSummarizeWithLLM_RequestsInterleavedConversationTimeline(t *testing.T) 
 		{Kind: schema.TurnAssistant, Message: llm.Assistant("recent")},
 	}
 
-	if _, err := cm.summarizeWithLLM(context.Background(), history, 1); err != nil {
-		t.Fatalf("summarizeWithLLM: %v", err)
+	if _, err := cm.summarizeFold(context.Background(), history, 1, "", nil); err != nil {
+		t.Fatalf("summarizeFold: %v", err)
 	}
 	if !strings.Contains(prompt, "## Conversation Timeline") || !strings.Contains(prompt, "interleaved") {
 		t.Fatalf("summary prompt should request an interleaved conversation timeline:\n%s", prompt)
@@ -400,7 +400,7 @@ func TestSummarizeWithLLM_RequestsInterleavedConversationTimeline(t *testing.T) 
 	}
 }
 
-// H5: summarizeWithLLM error path must be reliably testable.
+// H5: summarizeFold error path must be reliably testable.
 func TestSummarizeWithLLM_AdapterError_ReturnsError(t *testing.T) {
 	adapter := &errorAdapter{name: "openai"}
 	client := llm.NewClient()
@@ -413,9 +413,9 @@ func TestSummarizeWithLLM_AdapterError_ReturnsError(t *testing.T) {
 		{Kind: schema.TurnAssistant, Message: llm.Assistant("recent")},
 	}
 
-	result, err := cm.summarizeWithLLM(context.Background(), history, 1)
+	result, err := cm.summarizeFold(context.Background(), history, 1, "", nil)
 	if err == nil {
-		t.Fatal("expected error from summarizeWithLLM when adapter fails")
+		t.Fatal("expected error from summarizeFold when adapter fails")
 	}
 	if result != nil {
 		t.Fatalf("expected nil result on error, got %d turns", len(result))
@@ -577,7 +577,7 @@ func TestSummarizeWithLLM_SafeCutoffNegative_ReturnsUnchanged(t *testing.T) {
 		{Kind: schema.TurnAssistant, Message: llm.Assistant("answer")},
 		{Kind: schema.TurnAssistant, Message: llm.Assistant("recent")},
 	}
-	result, err := cm.summarizeWithLLM(context.Background(), history, 3)
+	result, err := cm.summarizeFold(context.Background(), history, 3, "", nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

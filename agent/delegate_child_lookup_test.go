@@ -23,25 +23,25 @@ func TestSnapshotsForChildSessionCapturesOnlyThatChild(t *testing.T) {
 	}
 }
 
-// TestDirectStableDelegateForChildSessionHonorsVisibility keeps the lookup's
+// TestDirectDelegateForChildSessionHonorsVisibility keeps the lookup's
 // contract: only a direct child of the asking session is found.
-func TestDirectStableDelegateForChildSessionHonorsVisibility(t *testing.T) {
+func TestDirectDelegateForChildSessionHonorsVisibility(t *testing.T) {
 	c, _ := newDelegateControllerTestHarness(t, 1, 1)
 	seedDelegateControllerIdle(t, c, "dlg_parent", "")
 	seedDelegateControllerIdle(t, c, "dlg_nested", "dlg_parent")
 	root := &Session{id: "root-session", delegateController: c}
 
-	row, ok := root.directStableDelegateForChildSession("child-dlg_parent")
+	row, ok := root.directDelegateForChildSession("child-dlg_parent")
 	if !ok || row.id != "dlg_parent" {
 		t.Fatalf("direct child = %+v, %v; want dlg_parent", row, ok)
 	}
-	if row, ok := root.directStableDelegateForChildSession("child-dlg_nested"); ok {
+	if row, ok := root.directDelegateForChildSession("child-dlg_nested"); ok {
 		t.Fatalf("grandchild resolved as a direct child: %+v", row)
 	}
 	// The seed's rows all name root-session as owner, so a session owning
 	// dlg_parent with that id sees dlg_nested as its direct child.
 	parent := &Session{id: "root-session", owningDelegateID: "dlg_parent", delegateController: c}
-	if row, ok := parent.directStableDelegateForChildSession("child-dlg_nested"); !ok || row.id != "dlg_nested" {
+	if row, ok := parent.directDelegateForChildSession("child-dlg_nested"); !ok || row.id != "dlg_nested" {
 		t.Fatalf("nested child from its parent = %+v, %v; want dlg_nested", row, ok)
 	}
 }

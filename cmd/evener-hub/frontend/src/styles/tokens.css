@@ -162,6 +162,9 @@
   --speaker-gap: 10px; /* deliberately off the 4px grid: measured rhythm */
   --speaker-gutter: 34px;
 
+  --comic-panel-max-width: 26rem;
+  --comic-insert-max-width: 40rem;
+
   --radius-chip: 3px; /* chips, badges, small tags */
   --radius-control: 4px; /* buttons, inputs */
   --radius-pane: 4px; /* panes, cards, dialogs */

@@ -198,16 +198,23 @@ establish range coverage or own persisted turn metadata.
 
 ## Transcript reader reducer helpers
 
-`reducer.ts` holds the transcript reducer. The warning fold (`foldWarningParams`,
+The transcript reducer is split by responsibility. The warning fold (`foldWarningParams`,
 `joinWarningParts`, the bounded raw-frame fallback) lives in `warningFold.ts`, a
 leaf module the reducer imports and that imports nothing from it. The cache
 and checkpoint shape validators (`valid*`, the persisted-record types they
 check) live in `transcriptValidators.ts`, and wire-item hydration (image mapping,
 the omitted-text and identity-only marks, `wireItemToModel`, the tool-id
 predicates) in `transcriptItems.ts`; both are leaves over `model` and
-`types.gen`. Further
-reducer pieces follow the same rule: a split-out module never imports
-`reducer.ts`.
+`types.gen`. The tool-call fold and turn/page history merge
+(`mergeTurnHistory*`, `mergeOlderItemPageWithFolds`, `itemIdentityMatches`) live in
+`turnHistoryMerge.ts`, which imports `transcriptItems` only. Versioned history and
+the live overlay (history state, versioned merges, overlay display, read dispositions,
+`applyReadResponse`/`applyReadModel`, `hydrateThread`) live in `transcriptHistory.ts`,
+which imports `turnHistoryMerge` and `transcriptItems`. The persisted session record
+codec (`cachedSessionRecord`, `threadModelFromCache`, the current-transcript
+checkpoint) lives in `transcriptCache.ts`, which imports the validators and
+`transcriptHistory`. `reducer.ts` is the notification fold and imports all of
+them; no split-out module imports `reducer.ts`.
 
 `mergeTranscriptReaderWindow(model, turns)` folds actual bounded local reader
 rows into `model.history` with the reducer's ordinary versioned merge rules.
@@ -561,16 +568,17 @@ Besides the root, `package.json` `exports` publishes these subpaths:
   `HubWriteBusyError`. The global launch-layer store
   (`createLaunchLayerStore(client)`, the one `LaunchConfigLayer` the plugin and
   skill directory lists and the MCP server list are four fields of, read and
-  written at cwd `/` and layer `global`), and the pieces they are built over:
-  `createListRevision`, the fence on a list every response replaces whole, and
-  `createStoreLifecycle`, the notification subscription, debounced refetch,
+  written at cwd `/` and layer `global`), and `createHubWriteGate`, the one
+  write gate the marketplaces and plugins stores share. Every store follows
+  the same lifecycle: a notification subscription, debounced refetch,
   `connectionChanged` recovery (a list a host has read is read again when the
   connection is ready again, because the hub's broadcast only reaches clients
   that were connected) and the `start`/`reset`/`dispose` trio a host drives
-  from its screen, and `createHubWriteGate`, the one write gate the marketplaces
-  and plugins stores share. In every store fetches record their failure in state and
-  mutations reject. The subpath resolves to `state/extensions/index.ts`, a
-  barrel over the layer's modules.
+  from its screen. The revision fence and lifecycle helpers the stores are
+  built over are internal to the package. In every store fetches record their failure in state and
+  mutations reject. `REFETCH_DEBOUNCE_MS` is the one debounce every store uses,
+  exported from this subpath and from `state/credentials`. The subpath resolves
+  to `state/extensions/index.ts`, a barrel that names its exports.
 - `@evener/appwire-client/state/credentials` - the credentials state layer:
   `createCredentialInstancesStore({ ownClientId })` is the framework-free
   store core (`instances`) each app's Providers & credentials store adapts:
@@ -583,7 +591,7 @@ Besides the root, `package.json` `exports` publishes these subpaths:
   hub's credential statuses (`evener/auth/list`) by provider, each with the
   error the hub found with its credential, over the extensions stores'
   lifecycle (it follows `evener/auth/updated` and re-reads on reconnect).
-  Resolves to `state/credentials/index.ts`, a barrel.
+  Resolves to `state/credentials/index.ts`, a barrel that names its exports.
 - `@evener/appwire-client/state/mutation` - the mutation state layer: the
   durable record shapes both apps' outboxes store (`MutationIntent`,
   `MutationRecord`, `MutationOutboxRecord`, `MutationOptimisticRecord`,

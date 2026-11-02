@@ -189,7 +189,7 @@ func TestPersistPendingWatchSendBatchesCapOverflowEvictions(t *testing.T) {
 // The fault injection fails CompleteWatchEnqueue deterministically: the
 // overflow send begins a real stable enqueue, then the test steals the live
 // enqueue receipt out of the controller (the stop-capture path in
-// TestStableDelegateWatch_StopFencesAndDrainsBothReceiptClasses proves
+// TestDelegateWatch_StopFencesAndDrainsBothReceiptClasses proves
 // receipts stay completable once admitted) so completion reports a stale
 // lease. The batch (pending + eviction) is already durable at that point,
 // and the return carries persisted=true + the completion failure. The

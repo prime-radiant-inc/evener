@@ -6,7 +6,7 @@ import {
   makeTranscriptDisplayConfig,
   type TranscriptDisplayConfigV1,
 } from "@evener/appwire-client";
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { useState } from "react";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
@@ -277,11 +277,82 @@ test("sets and resets only Mobile local state when Desktop local state already e
   expect(transcriptDisplayStore.getState().hub).toEqual({ desktop: hubDesktop, mobile: hubMobile });
 });
 
-test("composes the controlled overlay only from shared Buttons and Dialog/Sheet public APIs", () => {
+test.each(["desktop", "mobile"] as const)(
+  "%s presentation selection does not create a content override",
+  async (layout) => {
+    const user = userEvent.setup();
+    render(<TranscriptDetailControl open onClose={() => {}} layout={layout} onEditHubDefaults={() => {}} />);
+    const presentation = screen.getByRole("radiogroup", { name: "Presentation" });
+    const standard = within(presentation).getByRole("radio", { name: "Standard" });
+    const comic = within(presentation).getByRole("radio", { name: "Comic" });
+    expect(standard.getAttribute("aria-checked")).toBe("true");
+    const before = transcriptDisplayStore.getState();
+    await user.click(comic);
+    expect(comic.getAttribute("aria-checked")).toBe("true");
+    expect(transcriptDisplayStore.getState().presentation[layout]).toBe("comic");
+    expect(transcriptDisplayStore.getState().presentation[layout === "desktop" ? "mobile" : "desktop"]).toBe(
+      "standard",
+    );
+    expect(transcriptDisplayStore.getState().local).toBe(before.local);
+    expect(transcriptDisplayStore.getState().hub).toBe(before.hub);
+    expect(transcriptDisplayStore.getState().drafts).toBe(before.drafts);
+    expect(detailScope()).toBe("hub");
+    expect(screen.queryByRole("button", { name: "Use hub default" })).toBeNull();
+    await user.click(standard);
+    expect(transcriptDisplayStore.getState().presentation[layout]).toBe("standard");
+    expect(transcriptDisplayStore.getState().local).toBe(before.local);
+  },
+);
+
+test.each(["desktop", "mobile"] as const)(
+  "%s keeps the same standard editor mounted, disabled in Comic, and restores advanced state",
+  async (layout) => {
+    const user = userEvent.setup();
+    const custom = makeTranscriptDisplayConfig(
+      { kind: "custom", toolIntent: false, toolCalls: true, reasoning: true, expandByDefault: true },
+      { roundTimings: true, systemEvents: true },
+    );
+    transcriptDisplayStore.getState().setLocal(layout, custom);
+    const persisted = localStorage.getItem(`evener.prefs.transcriptDisplay.${layout}`);
+    render(<TranscriptDetailControl open onClose={() => {}} layout={layout} onEditHubDefaults={() => {}} />);
+    const editor = screen.getByRole("region", { name: "Transcript detail editor" });
+    const disclosure = screen.getByTestId("transcript-detail-summary");
+    await user.click(disclosure);
+    const timing = within(editor).getByRole("switch", { name: "Round timings" });
+    expect(timing.getAttribute("aria-checked")).toBe("true");
+    await user.click(screen.getByRole("radio", { name: "Comic" }));
+    expect(screen.getByRole("region", { name: "Transcript detail editor" })).toBe(editor);
+    expect(disclosure.closest("details")?.open).toBe(true);
+    expect(disclosure.closest("summary")?.getAttribute("aria-disabled")).toBe("true");
+    for (const control of editor.querySelectorAll<HTMLButtonElement | HTMLSelectElement>("button, select")) {
+      expect(control.disabled).toBe(true);
+    }
+    await user.click(within(editor).getByRole("radio", { name: "Activity" }));
+    await user.click(timing);
+    expect(transcriptDisplayStore.getState().local[layout]).toEqual(custom);
+    expect(localStorage.getItem(`evener.prefs.transcriptDisplay.${layout}`)).toBe(persisted);
+    await user.click(screen.getByRole("radio", { name: "Standard" }));
+    expect(screen.getByRole("region", { name: "Transcript detail editor" })).toBe(editor);
+    expect(disclosure.closest("details")?.open).toBe(true);
+    expect((timing as HTMLButtonElement).disabled).toBe(false);
+    expect(timing.getAttribute("aria-checked")).toBe("true");
+    expect(within(editor).getByRole("radio", { name: "Custom" }).getAttribute("aria-checked")).toBe("true");
+    expect(transcriptDisplayStore.getState().local[layout]).toEqual(custom);
+    await user.click(screen.getByRole("radio", { name: "Comic" }));
+    await user.click(screen.getByRole("button", { name: "Use hub default" }));
+    expect(transcriptDisplayStore.getState().local[layout]).toBeUndefined();
+    expect(transcriptDisplayStore.getState().presentation[layout]).toBe("comic");
+    expect((within(editor).getByRole("radio", { name: "Activity" }) as HTMLButtonElement).disabled).toBe(true);
+  },
+);
+
+test("composes the controlled overlay only from shared controls and Dialog/Sheet public APIs", () => {
   const here = dirname(fileURLToPath(import.meta.url));
   const source = readFileSync(join(here, "TranscriptDetailControl.tsx"), "utf8");
 
-  expect(source).toMatch(/import \{ Button, Dialog, Sheet \} from "\.\.\/\.\.\/\.\.\/widgets";/);
+  expect(source).toMatch(
+    /import \{ Button, Dialog, InlineNotice, SegmentedControl, Sheet \} from "\.\.\/\.\.\/\.\.\/widgets";/,
+  );
   expect(source).not.toMatch(/<button\b/);
   expect(source.match(/<Button\b/g)).toHaveLength(2);
   expect(source.match(/variant="secondary"/g)).toHaveLength(1);

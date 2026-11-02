@@ -102,9 +102,8 @@ type builder struct {
 	// logical-turn/group boundaries (e.g. a standalone HOOK_COMPLETED
 	// closing the assistant's group before its result arrives) — matching
 	// the full read's single registry, threaded for the whole scan. This
-	// state applies to legacy entries only (applyLegacy): a new-format
-	// COMMUNICATE entry carries its message explicitly, so applyIdentity
-	// never needs it. An item's own Context (see itemRecord) persists only
+	// state also covers inherited identity-format calls, whose transcript-only
+	// COMMUNICATE records are excluded from forks. An item's Context persists only
 	// the position each is at, not the projected item content: the reader
 	// replays the referenced raw entries to reconstruct the values, so build
 	// time only needs enough to decide the affected items' structure
@@ -253,7 +252,7 @@ func (b *builder) applyLegacy(ordinal uint64, offset int64, length uint32, entry
 			b.calls[item.CallID] = slot
 		}
 	}
-	b.recordCommState(entry, turnID, seed, base)
+	b.recordCommState(entry, turnID, seed, base, items)
 	return b.stampTurn(b.turnSlot, entry, ordinal, offset, length)
 }
 
@@ -349,19 +348,20 @@ func (b *builder) communicateContext(callID string) (strRef, error) {
 // comment). Called after the entry's items are recorded, so
 // communicateContext above still sees the state as it stood when this entry
 // was projected.
-func (b *builder) recordCommState(entry *schema.Turn, turnID string, seed map[string]string, c contributor) {
+func (b *builder) recordCommState(entry *schema.Turn, turnID string, seed map[string]string, c contributor, items []appwire.ThreadItem) {
 	if entry.Kind == schema.TurnAssistant {
 		var lastText string
+		// Read the actual projected messages: legacy text parts and identity
+		// text runs have different segmentation, and empty runs show nothing.
+		for _, item := range items {
+			if item.Type == "agentMessage" {
+				lastText = strings.TrimSpace(item.Text)
+			}
+		}
 		for _, part := range entry.Message.Content {
-			switch part.Kind {
-			case llm.ContentText:
-				if part.Text != "" {
-					lastText = strings.TrimSpace(part.Text)
-				}
-			case llm.ContentToolCall:
-				if part.ToolCall != nil && part.ToolCall.Name == "communicate" {
-					b.commCalls[part.ToolCall.ID] = commState{rawArgs: part.ToolCall.SentArguments(), pos: c, turnID: turnID}
-				}
+			if part.Kind == llm.ContentToolCall && part.ToolCall != nil && part.ToolCall.Name == "communicate" &&
+				(entry.Format != schema.TurnFormatIdentity || entry.Authorship != nil && entry.Authorship.Inherited) {
+				b.commCalls[part.ToolCall.ID] = commState{rawArgs: part.ToolCall.SentArguments(), pos: c, turnID: turnID}
 			}
 		}
 		// Mirrors ProjectTurn: only a non-empty text updates the sticky
@@ -422,6 +422,11 @@ func (b *builder) applyIdentity(ordinal uint64, offset int64, length uint32, ent
 			return err
 		}
 	case schema.TurnCommunicate:
+		// A dedicated delivery consumes inherited reconstruction even when
+		// its visible message is suppressed as an assistant-text echo.
+		if entry.Communicate != nil {
+			delete(b.commCalls, entry.Communicate.CallID)
+		}
 		echoes, err := b.echoesAwaiting(summary, entry)
 		if err != nil {
 			return err
@@ -563,6 +568,8 @@ func (b *builder) applyResults(slot uint64, summary turnRecord, entry *schema.Tu
 		if part.Kind == llm.ContentToolResult && part.ToolResult != nil && part.ToolResult.Name == "" {
 			if call, ok := calls[part.ToolResult.ToolCallID]; ok {
 				seed[part.ToolResult.ToolCallID] = call.name
+			} else if _, ok := b.commCalls[part.ToolResult.ToolCallID]; ok {
+				seed[part.ToolResult.ToolCallID] = "communicate"
 			}
 		}
 	}
@@ -634,10 +641,10 @@ func (b *builder) interruptAwaitedCalls(summary turnRecord, completion contribut
 // item absorb (when set) does not take. seed names the entry's nameless tool
 // results.
 func (b *builder) appendItems(slot uint64, entry *schema.Turn, c contributor, seed map[string]string, absorb func(appwire.ThreadItem) (bool, error)) error {
-	// New-format entries never need CommRawArgs/LastAssistantText: a
-	// COMMUNICATE entry carries its message explicitly, so seed's tool
-	// names are all this registry ever needs.
-	reg := &apptranscript.ToolCallRegistry{Names: seed}
+	reg := &apptranscript.ToolCallRegistry{
+		Names: b.registryNames(seed), CommRawArgs: b.registryCommArgs(),
+		LastAssistantText: b.lastAssistantText, LastAssistantTurnID: b.lastAssistantTurnID,
+	}
 	items, parts := apptranscript.ProjectEntryParts(entry.TurnID, int(c.Ordinal)+1, *entry, reg, apptranscript.AddressedImageProjector, apptranscript.ToolResultOutputImages)
 	for i, item := range items {
 		if absorb != nil {
@@ -649,21 +656,23 @@ func (b *builder) appendItems(slot uint64, entry *schema.Turn, c contributor, se
 				continue
 			}
 		}
-		if _, err := b.appendItem(item, parts[i], slot, c); err != nil {
+		var context strRef
+		if callID, ok := communicateResultCallID(entry, parts[i], seed); ok {
+			var err error
+			if context, err = b.communicateContext(callID); err != nil {
+				return err
+			}
+		}
+		if _, err := b.appendItemWithContext(item, parts[i], slot, c, context); err != nil {
 			return err
 		}
 	}
+	b.recordCommState(entry, entry.TurnID, seed, c, items)
 	return nil
 }
 
-// appendItem appends the record of an item the entry c opens at part.
-func (b *builder) appendItem(item appwire.ThreadItem, part int, turnSlot uint64, c contributor) (uint64, error) {
-	return b.appendItemWithContext(item, part, turnSlot, c, strRef{})
-}
-
-// appendItemWithContext is appendItem plus an explicit Context: only
-// applyLegacy's deferred communicate results ever need one (see
-// communicateContext); every other caller passes the zero strRef.
+// appendItemWithContext appends the record of an item the entry c opens at
+// part. Only deferred communicate results need Context (communicateContext).
 func (b *builder) appendItemWithContext(item appwire.ThreadItem, part int, turnSlot uint64, c contributor, context strRef) (uint64, error) {
 	version := c.Ordinal + 1
 	record := itemRecord{Entry: version, Part: uint32(part), Turn: uint32(turnSlot), Version: version, Opener: c, Context: context}

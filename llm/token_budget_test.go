@@ -285,3 +285,26 @@ func TestShapeRequestClampsKnownOutputCap(t *testing.T) {
 		t.Fatal("ShapeRequest must return a constrained copy without writing through the caller's pointer")
 	}
 }
+
+// TestSafetyReserveTokens pins the documented reserve rule callers size
+// requests by: one percent of the context window, rounded up, floored at the
+// package minimum, and the minimum alone when no window is known.
+func TestSafetyReserveTokens(t *testing.T) {
+	cases := []struct {
+		window int
+		want   int
+	}{
+		{0, minimumTokenSafetyReserve},
+		{1, minimumTokenSafetyReserve},
+		{100, minimumTokenSafetyReserve}, // 1% rounds to 1, floor wins
+		{102_400, minimumTokenSafetyReserve},
+		{102_401, 1_025}, // ceil(1% of 102401)
+		{200_000, 2_000},
+		{300_000, 3_000},
+	}
+	for _, tc := range cases {
+		if got := SafetyReserveTokens(tc.window); got != tc.want {
+			t.Errorf("SafetyReserveTokens(%d) = %d, want %d", tc.window, got, tc.want)
+		}
+	}
+}

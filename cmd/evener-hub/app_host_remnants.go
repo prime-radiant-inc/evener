@@ -135,9 +135,9 @@ const hostRecoveryStatement = "teardown-verified-absent"
 // statement must be exactly hostRecoveryStatement, observedAt an RFC3339
 // instant, and operator the session's authenticated identity.
 type HostRecoveryAttestation struct {
-	Operator   string `toml:"operator"`
-	Statement  string `toml:"statement"`
-	ObservedAt string `toml:"observed_at"` //nolint:tagliatelle // §6 stores this row in the lowerCamel wire vocabulary
+	Operator   string `toml:"operator" json:"operator"`
+	Statement  string `toml:"statement" json:"statement"`
+	ObservedAt string `toml:"observed_at" json:"observed_at"` //nolint:tagliatelle // §6 stores this row in the lowerCamel wire vocabulary
 }
 
 // HostPendingTeardown is the remnant's pinned, self-contained teardown target
@@ -148,22 +148,22 @@ type HostRecoveryAttestation struct {
 // "Incarnation-scoped teardown").
 type HostPendingTeardown struct {
 	// Name is the host whose lifecycle handles the teardown destroys.
-	Name string `toml:"name"`
+	Name string `toml:"name" json:"name"`
 	// Kind is the post-commit rebind step the teardown re-runs.
-	Kind string `toml:"kind"`
+	Kind string `toml:"kind" json:"kind"`
 	// Generation and IncarnationID are the pinned identity: every handle the
 	// teardown may touch is targeted by incarnation-id equality against this
 	// pair, never by name lookup alone.
-	Generation    uint64 `toml:"generation"`
-	IncarnationID string `toml:"incarnation_id"`
+	Generation    uint64 `toml:"generation" json:"generation"`
+	IncarnationID string `toml:"incarnation_id" json:"incarnation_id"`
 	// Supervisor, Channel, and FanOuts name the handles the teardown destroys:
 	// the host's supervisor/channel binding and the per-host lifecycle fan-outs
 	// (the remote-source subscription and the host-admin request/notification
 	// fan-out). Where the pinned target is empty the re-run is a no-op (spec
 	// §5).
-	Supervisor bool     `toml:"supervisor,omitempty"`
-	Channel    bool     `toml:"channel,omitempty"`
-	FanOuts    []string `toml:"fan_outs,omitempty"`
+	Supervisor bool     `toml:"supervisor,omitempty" json:"supervisor,omitempty"`
+	Channel    bool     `toml:"channel,omitempty" json:"channel,omitempty"`
+	FanOuts    []string `toml:"fan_outs,omitempty" json:"fan_outs,omitempty"`
 }
 
 // HostCleanupHandle is the remnant's durable ownership/remote-cleanup handle
@@ -184,18 +184,18 @@ type HostPendingTeardown struct {
 type HostCleanupHandle struct {
 	// Kind names which durable handle resolves the cleanup. This build writes
 	// `local-boundary`; any other kind refuses the typed `teardown-unknown-key`.
-	Kind string `toml:"kind"`
+	Kind string `toml:"kind" json:"kind"`
 	// Generation, IncarnationID, and PresenceEpoch are the persisted ownership
 	// boundary the handle resolves through.
-	Generation    uint64 `toml:"generation"`
-	IncarnationID string `toml:"incarnation_id"`
-	PresenceEpoch uint64 `toml:"presence_epoch"`
+	Generation    uint64 `toml:"generation" json:"generation"`
+	IncarnationID string `toml:"incarnation_id" json:"incarnation_id"`
+	PresenceEpoch uint64 `toml:"presence_epoch" json:"presence_epoch"`
 	// RemoteGuardFile and LeaseEntryTokens are retired (comp08): a prior file's
 	// fields stay decodable and are dropped, never written. Empty here.
-	RemoteGuardFile   string   `toml:"remote_guard_file,omitempty"`
-	LeaseEntryTokens  []string `toml:"lease_entry_tokens,omitempty"`
-	FencingEpochBoot  string   `toml:"fencing_epoch_boot,omitempty"`
-	FencingEpochOpSeq uint64   `toml:"fencing_epoch_op_seq,omitempty"`
+	RemoteGuardFile   string   `toml:"remote_guard_file,omitempty" json:"remote_guard_file,omitempty"`
+	LeaseEntryTokens  []string `toml:"lease_entry_tokens,omitempty" json:"lease_entry_tokens,omitempty"`
+	FencingEpochBoot  string   `toml:"fencing_epoch_boot,omitempty" json:"fencing_epoch_boot,omitempty"`
+	FencingEpochOpSeq uint64   `toml:"fencing_epoch_op_seq,omitempty" json:"fencing_epoch_op_seq,omitempty"`
 }
 
 // cleanupHandleKindLocal is this build's only cleanup-handle kind.
@@ -230,11 +230,11 @@ func (h HostCleanupHandle) resolvable() bool {
 // restart without the live entry"). `Attestation` is present exactly on
 // `recover` records.
 type HostResolvedRemnant struct {
-	ClearedAt      string                   `toml:"cleared_at"`
-	ResolutionKind string                   `toml:"resolution_kind"`
-	HostKind       string                   `toml:"host_kind"`
-	MutationKey    string                   `toml:"mutation_key,omitempty"`
-	Attestation    *HostRecoveryAttestation `toml:"attestation,omitempty"`
+	ClearedAt      string                   `toml:"cleared_at" json:"cleared_at"`
+	ResolutionKind string                   `toml:"resolution_kind" json:"resolution_kind"`
+	HostKind       string                   `toml:"host_kind" json:"host_kind"`
+	MutationKey    string                   `toml:"mutation_key,omitempty" json:"mutation_key,omitempty"`
+	Attestation    *HostRecoveryAttestation `toml:"attestation,omitempty" json:"attestation,omitempty"`
 }
 
 // HostTeardownRemnant is one [teardown_remnants."<remnantId>"] record: an open
@@ -248,32 +248,32 @@ type HostTeardownRemnant struct {
 	// section's key IS the id.
 	remnantID string
 	// Host is the fenced name.
-	Host string `toml:"host"`
+	Host string `toml:"host" json:"host"`
 	// Kind is the mutation kind whose commit left the remnant: add, update, or
 	// remove.
-	Kind string `toml:"kind"`
+	Kind string `toml:"kind" json:"kind"`
 	// Seam names the failed rebind step (spec §11: "`seam` names the failed
 	// rebind step").
-	Seam string `toml:"seam"`
+	Seam string `toml:"seam" json:"seam"`
 	// PendingTeardown is the pinned, self-contained teardown target.
-	PendingTeardown HostPendingTeardown `toml:"pending_teardown"`
+	PendingTeardown HostPendingTeardown `toml:"pending_teardown" json:"pending_teardown"`
 	// Generation and IncarnationID are the pinned identity the retry validates
 	// against — never the registry's current values (spec §6: "it re-resolves
 	// the pinned teardown target by the remnant's recorded `(generation,
 	// incarnationId)` plus its persisted `cleanupHandle`").
-	Generation    uint64 `toml:"generation"`
-	IncarnationID string `toml:"incarnation_id"`
+	Generation    uint64 `toml:"generation" json:"generation"`
+	IncarnationID string `toml:"incarnation_id" json:"incarnation_id"`
 	// MutationKey is the scoped receipt key the commit wrote (spec §6: "the
 	// mutation's scoped receipt key plus the in-progress remnant already pinned
 	// in the step-(2) marker"). The clearance records it on the resolved record
 	// as the receipt reference.
-	MutationKey string `toml:"mutation_key"`
+	MutationKey string `toml:"mutation_key" json:"mutation_key"`
 	// CommittedAt is the commit instant.
-	CommittedAt string `toml:"committed_at"`
+	CommittedAt string `toml:"committed_at" json:"committed_at"`
 	// CleanupHandle is the durable ownership/remote-cleanup handle.
-	CleanupHandle HostCleanupHandle `toml:"cleanup_handle"`
+	CleanupHandle HostCleanupHandle `toml:"cleanup_handle" json:"cleanup_handle"`
 	// Resolved is present exactly once the remnant is cleared.
-	Resolved *HostResolvedRemnant `toml:"resolved,omitempty"`
+	Resolved *HostResolvedRemnant `toml:"resolved,omitempty" json:"resolved,omitempty"`
 }
 
 // open reports whether the remnant still fences its name.
@@ -294,42 +294,64 @@ func hostKindOf(kind string) string {
 // B, and every marker write preserves other hosts' entries verbatim.
 type HostStagedReceipt struct {
 	// Key is the scoped receipt key the commit will finalize under.
-	Key string `toml:"key"`
+	Key string `toml:"key" json:"key"`
 	// StagedAt is when the step-(2) write landed.
-	StagedAt string `toml:"staged_at"`
+	StagedAt string `toml:"staged_at" json:"staged_at"`
 	// SwapStarted is the durable swap intent: false at stage time, flipped true
 	// in its own atomic write before the runtime transition begins. A finalizing
 	// claim preserves the marker's persisted value, never forcing it true.
-	SwapStarted bool `toml:"swap_started"`
+	SwapStarted bool `toml:"swap_started" json:"swap_started"`
 	// TeardownStarted is the durable post-swap flag: false at stage time,
 	// flipped true in its own atomic write after the swap and before the first
 	// teardown. A finalizing claim preserves the persisted flag the same way —
 	// boot recovery decides by it, "never by treating every claim as
 	// teardown-started" (spec §5).
-	TeardownStarted bool `toml:"teardown_started"`
+	TeardownStarted bool `toml:"teardown_started" json:"teardown_started"`
 	// Phase is the marker's runtime phase: hostStagedPhaseStaged at stage time,
 	// hostStagedPhaseRuntimeSwapped in the same atomic write that flips
 	// TeardownStarted.
-	Phase string `toml:"phase"`
+	Phase string `toml:"phase" json:"phase"`
 	// ReconcileFingerprint is the collision-reconcile armed intent: the
 	// validation-read hub.toml fingerprint the commit staged against. The
 	// post-commit write replaces the marker with the finalized receipt, clearing
 	// the armed intent with it.
-	ReconcileFingerprint string `toml:"reconcile_fingerprint,omitempty"`
+	ReconcileFingerprint string `toml:"reconcile_fingerprint,omitempty" json:"reconcile_fingerprint,omitempty"`
+	// HostFingerprint is the digest of the entry hub.toml held for the marker's
+	// host when a removal staged against it. It is the evidence that a staged
+	// removal never reached the file: that entry is unchanged since, whatever
+	// else the file holds now.
+	HostFingerprint string `toml:"-" json:"host_fingerprint,omitempty"`
 	// FinalizingToken is the server-generated opaque attempt token of a
 	// finalizing claim: non-empty exactly while a finder owns the marker's
 	// finalization. "Any other path finding a finalizing claim waits for or
 	// recovers the claim instead of re-finalizing" (spec §5).
-	FinalizingToken string `toml:"finalizing_token,omitempty"`
+	FinalizingToken string `toml:"finalizing_token,omitempty" json:"finalizing_token,omitempty"`
 	// Provisional is the staged provisional payload: "explicitly provisional
 	// outcome, row, generation, a pre-minted `remnantId`, and the pinned
 	// teardown target". It is never returned as-is: every finalization path
 	// re-runs the pinned teardown and finalizes from the observed result.
-	Provisional HostMutationReceipt `toml:"provisional"`
+	Provisional HostMutationReceipt `toml:"provisional" json:"provisional"`
 	// PendingTeardown is the pinned teardown target the commit staged. It is
 	// durable before the first teardown executes, so the target and its remnant
 	// survive any crash.
-	PendingTeardown HostPendingTeardown `toml:"pending_teardown"`
+	PendingTeardown HostPendingTeardown `toml:"pending_teardown" json:"pending_teardown"`
+	// Consumed holds what a re-add's staging write purged to make room for the
+	// new incarnation. Boot puts it back when the re-add never reached hub.toml.
+	Consumed *HostConsumedRecords `toml:"-" json:"consumed,omitempty"`
+}
+
+// HostConsumedRecords is the removed incarnation's history a re-add's staging
+// write purged: its tombstone, its superseded receipts, its resolved teardown
+// remnants, their attempts and the replay guards its compaction evicted.
+type HostConsumedRecords struct {
+	Tombstone HostTombstone                  `json:"tombstone"`
+	Receipts  map[string]HostMutationReceipt `json:"receipts,omitempty"`
+	Remnants  map[string]HostTeardownRemnant `json:"remnants,omitempty"`
+	// Pruned holds the replay guards the same write evicted from a full marker
+	// set while it compacted the purged receipts.
+	Pruned map[string]PrunedReceiptMarker `json:"pruned,omitempty"`
+	// Attempts holds the retained attempt records of the purged remnants.
+	Attempts map[string]HostTeardownAttempt `json:"attempts,omitempty"`
 }
 
 // HostTeardownAttempt is one [teardown_attempts."<attemptId>"] record: the
@@ -341,22 +363,22 @@ type HostStagedReceipt struct {
 // the host gate only while its attempt is live".
 type HostTeardownAttempt struct {
 	// RemnantID is the remnant the attempt claimed.
-	RemnantID string `toml:"remnant_id"`
+	RemnantID string `toml:"remnant_id" json:"remnant_id"`
 	// State is open or fenced-closed. A timed-out attempt stays open — "marks
 	// its attempt record timed-out-but-open" — with TimedOutAt set.
-	State string `toml:"state"`
+	State string `toml:"state" json:"state"`
 	// StartedAt is when the attempt claimed the remnant.
-	StartedAt string `toml:"started_at"`
+	StartedAt string `toml:"started_at" json:"started_at"`
 	// TimedOutAt is present exactly on an attempt whose bounded execution
 	// deadline expired while it stayed open for fencing.
-	TimedOutAt string `toml:"timed_out_at,omitempty"`
+	TimedOutAt string `toml:"timed_out_at,omitempty" json:"timed_out_at,omitempty"`
 	// FencedAt is present exactly on a fenced-closed attempt: when a later
 	// retry took over its fencing epoch.
-	FencedAt string `toml:"fenced_at,omitempty"`
+	FencedAt string `toml:"fenced_at,omitempty" json:"fenced_at,omitempty"`
 	// FencingEpoch is the attempt's epoch pair (boot id + op sequence), the
 	// historical field name retained on the record.
-	FencingEpochBoot  string `toml:"fencing_epoch_boot,omitempty"`
-	FencingEpochOpSeq uint64 `toml:"fencing_epoch_op_seq,omitempty"`
+	FencingEpochBoot  string `toml:"fencing_epoch_boot,omitempty" json:"fencing_epoch_boot,omitempty"`
+	FencingEpochOpSeq uint64 `toml:"fencing_epoch_op_seq,omitempty" json:"fencing_epoch_op_seq,omitempty"`
 }
 
 // open reports whether the attempt still fences the name.

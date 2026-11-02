@@ -1,11 +1,9 @@
-import { readFileSync } from "node:fs";
-import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
 import type { AskQuestionRef } from "@evener/appwire-client";
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { useState } from "react";
 import { expect, test, vi } from "vitest";
+import { readModuleCss } from "../../../../styles/cssBlock";
 import { AskQuestionCard } from "./AskQuestionCard";
 import type { AskAnswerState } from "./askDockStore";
 
@@ -13,10 +11,7 @@ import type { AskAnswerState } from "./askDockStore";
 // "A stylesheet assertion that matches its own comment") - strip comments
 // before any toContain/match against the CSS text.
 function cardCss(): string {
-  return readFileSync(join(dirname(fileURLToPath(import.meta.url)), "askquestioncard.module.css"), "utf8").replace(
-    /\/\*[\s\S]*?\*\//g,
-    "",
-  );
+  return readModuleCss(import.meta.url, "askquestioncard.module.css");
 }
 
 function question(overrides: Partial<AskQuestionRef> = {}): AskQuestionRef {
@@ -320,7 +315,7 @@ test("options render inside a group whose role reflects single vs multi select",
 // detail; the (any-pointer: coarse) block (same pattern as askdock.module.css's
 // own .tab rule) grows short rows the rest of the way to --tap-min on touch.
 test("every option row gets comfortable padding, and reaches the tap floor on a coarse pointer", () => {
-  const css = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "askquestioncard.module.css"), "utf8");
+  const css = readModuleCss(import.meta.url, "askquestioncard.module.css");
   const desktopRule = css.match(/\.optionRow\s*\{([^}]*)\}/);
   expect(desktopRule, "askquestioncard.module.css must declare a base .optionRow rule").not.toBeNull();
   expect(desktopRule![1]).toMatch(/padding:/);

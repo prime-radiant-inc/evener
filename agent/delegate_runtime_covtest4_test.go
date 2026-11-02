@@ -18,9 +18,9 @@ import (
 	"primeradiant.com/evener/agent/sandbox"
 )
 
-type covStableDelegateResultError struct{}
+type covDelegateResultError struct{}
 
-func (*covStableDelegateResultError) Error() string { return "fail" }
+func (*covDelegateResultError) Error() string { return "fail" }
 
 // TestCovAbortOwedDelegateBootstrap covers abortOwedDelegateBootstrap: the error-cleanup path that iterates
 // restored candidates in reverse, calling prepareDeferredOwedStart for each
@@ -287,8 +287,8 @@ func TestCovDelegateInputWasPreseeded(t *testing.T) {
 	}
 }
 
-// TestCovStableDelegateOutcomeJobStatus covers stableDelegateOutcomeJobStatus: all outcome branches.
-func TestCovStableDelegateOutcomeJobStatus(t *testing.T) {
+// TestCovDelegateOutcomeJobStatus covers delegateOutcomeJobStatus: all outcome branches.
+func TestCovDelegateOutcomeJobStatus(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
 		outcome delegatestore.OutcomeStatus
@@ -302,9 +302,9 @@ func TestCovStableDelegateOutcomeJobStatus(t *testing.T) {
 		{"unknown_outcome", jobstore.StatusFailed},
 	}
 	for _, tt := range tests {
-		got := stableDelegateOutcomeJobStatus(tt.outcome)
+		got := delegateOutcomeJobStatus(tt.outcome)
 		if got != tt.want {
-			t.Fatalf("stableDelegateOutcomeJobStatus(%v) = %q, want %q", tt.outcome, got, tt.want)
+			t.Fatalf("delegateOutcomeJobStatus(%v) = %q, want %q", tt.outcome, got, tt.want)
 		}
 	}
 }
@@ -336,8 +336,8 @@ func TestCovDescriptorProvenance(t *testing.T) {
 	}
 }
 
-// TestCovStableDelegateResult covers stableDelegateResult: the result construction.
-func TestCovStableDelegateResult(t *testing.T) {
+// TestCovDelegateResult covers startedDelegateResult: the result construction.
+func TestCovDelegateResult(t *testing.T) {
 	t.Parallel()
 	desc := delegatestore.Descriptor{
 		ChildSessionID:    "child_1",
@@ -357,7 +357,7 @@ func TestCovStableDelegateResult(t *testing.T) {
 		resumable:   true,
 		lastOutcome: latestOutcome,
 	}}}}}
-	result := stableDelegateResult(desc, "dlg_1", committed, plans, nil)
+	result := startedDelegateResult(desc, "dlg_1", committed, plans, nil)
 	if result.DelegateID != "dlg_1" {
 		t.Fatalf("delegateID = %q", result.DelegateID)
 	}
@@ -392,14 +392,14 @@ func TestCovStableDelegateResult(t *testing.T) {
 	// With sandbox snapshot.
 	network := true
 	desc.Sandbox = &delegatestore.SandboxSnapshot{Mode: "off", Network: &network}
-	result = stableDelegateResult(desc, "dlg_1", committed, plans, nil)
+	result = startedDelegateResult(desc, "dlg_1", committed, plans, nil)
 	if result.Sandbox == nil || result.Sandbox.Mode != "off" || !result.Sandbox.Network {
 		t.Fatalf("sandbox = %+v, want mode=off network=true", result.Sandbox)
 	}
 
 	// With error.
-	wantErr := &covStableDelegateResultError{}
-	result = stableDelegateResult(desc, "dlg_1", committed, plans, wantErr)
+	wantErr := &covDelegateResultError{}
+	result = startedDelegateResult(desc, "dlg_1", committed, plans, wantErr)
 	if reflect.TypeOf(result.Err) != reflect.TypeOf(wantErr) || reflect.ValueOf(result.Err).Pointer() != reflect.ValueOf(wantErr).Pointer() {
 		t.Fatalf("error object = %T %v, want exact input object %p", result.Err, result.Err, wantErr)
 	}
@@ -485,31 +485,31 @@ func TestCovResolveStableSharedTaskStore(t *testing.T) {
 	}
 }
 
-// TestCovDriveStableDelegateAttention_NilSession covers
-// driveStableDelegateAttention nil guard.
-func TestCovDriveStableDelegateAttention_NilSession(t *testing.T) {
+// TestCovDriveDelegateAttention_NilSession covers
+// driveDelegateAttention nil guard.
+func TestCovDriveDelegateAttention_NilSession(t *testing.T) {
 	t.Parallel()
 	var s *Session
-	if s.driveStableDelegateAttention(nil) {
+	if s.driveDelegateAttention(nil) {
 		t.Fatal("nil session should return false")
 	}
 }
 
-// TestCovDriveStableDelegateAttention_NilSub covers with nil sub.
-func TestCovDriveStableDelegateAttention_NilSub(t *testing.T) {
+// TestCovDriveDelegateAttention_NilSub covers with nil sub.
+func TestCovDriveDelegateAttention_NilSub(t *testing.T) {
 	t.Parallel()
 	s := &Session{}
-	if s.driveStableDelegateAttention(nil) {
+	if s.driveDelegateAttention(nil) {
 		t.Fatal("nil sub should return false")
 	}
 }
 
-// TestCovDriveStableDelegateAttention_NilSubSession covers with sub having nil sess.
-func TestCovDriveStableDelegateAttention_NilSubSession(t *testing.T) {
+// TestCovDriveDelegateAttention_NilSubSession covers with sub having nil sess.
+func TestCovDriveDelegateAttention_NilSubSession(t *testing.T) {
 	t.Parallel()
 	s := &Session{}
 	sub := &subagent{}
-	if s.driveStableDelegateAttention(sub) {
+	if s.driveDelegateAttention(sub) {
 		t.Fatal("nil sub.sess should return false")
 	}
 }
@@ -620,9 +620,9 @@ func TestCovOwedBootstrapRestoreAdd_NilNotify(t *testing.T) {
 	}
 }
 
-// TestCovEmitStableDelegateUpdate_WithRows covers forwarding a stable update
+// TestCovEmitDelegateUpdate_WithRows covers forwarding a stable update
 // to the root callback when the delegate owner runtime is not resident.
-func TestCovEmitStableDelegateUpdate_WithRows(t *testing.T) {
+func TestCovEmitDelegateUpdate_WithRows(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, 8, 24, 20, 30, 0, 0, time.UTC)
 	var forwarded []events.SessionEvent
@@ -637,7 +637,7 @@ func TestCovEmitStableDelegateUpdate_WithRows(t *testing.T) {
 		WatchKeys: []provenance.WatchKey{{WatchID: "watch_1", WatchGeneration: "wg_1"}},
 		Chain:     []provenance.Entry{{Kind: "watch", DeliveryID: "delivery_1"}},
 	}
-	s.emitStableDelegateUpdate(delegateUpdatePlan{
+	s.emitDelegateUpdate(delegateUpdatePlan{
 		rows: []delegateSnapshot{
 			{
 				id:        "dlg_remote",

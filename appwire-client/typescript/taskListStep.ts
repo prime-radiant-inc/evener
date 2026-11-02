@@ -29,10 +29,8 @@ import { capitalized, parseArgs, str } from "./toolCallText";
 export type TaskListStep = Pick<ItemModel, "argumentsJSON" | "raw">;
 
 // The label an update row shows for a task: its description when the
-// authoritative state names one (mirrors the legacy card's
-// buildTaskRowLine, which preferred task.description over a bare id -
-// cmd/evener-hub/assets/renderer-format.js), falling back to "#<id>" when
-// state is absent or the id isn't found there.
+// authoritative state names one (preferred over a bare id), falling back to
+// "#<id>" when state is absent or the id isn't found there.
 export function taskLabel(tasks: TaskRow[] | null, id: number | undefined): string {
   if (id === undefined) return "(task)";
   const description = tasks?.find((t) => t.id === id)?.description;
@@ -192,9 +190,9 @@ function appendRows(tasks: Record<string, unknown>[], legacy: boolean): TouchedR
 }
 
 function updateRows(item: TaskListStep, updates: Record<string, unknown>[]): TouchedRow[] {
-  // Only a real status change earns a row - matching the legacy card, which
-  // flags exactly done/cancelled/in_progress updates (renderer.js:5010) and
-  // renders a note-only or reopened update as no per-row change at all.
+  // Only a real status change earns a row: exactly done/cancelled/in_progress
+  // updates are flagged, and a note-only or reopened update renders as no
+  // per-row change at all.
   const state = parseTaskListData(item.raw);
   const rows: TouchedRow[] = [];
   const touchedIds = new Set<number>();
@@ -236,8 +234,7 @@ function updateRows(item: TaskListStep, updates: Record<string, unknown>[]): Tou
   return rows;
 }
 
-// touchKind's status-to-flag mapping for the three statuses the card renders as
-// a row (renderer-format.js:525-533's touchKind, gated by renderer.js:5010).
+// The status-to-flag mapping for the three statuses the card renders as a row.
 const TOUCH_BY_STATUS: Record<string, MutationTouch> = {
   done: "done",
   cancelled: "cancelled",

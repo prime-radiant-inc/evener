@@ -389,3 +389,13 @@ func TestListModelsReadsGatewayVisionCapability(t *testing.T) {
 		t.Fatalf("architecture.input_modalities must win over capabilities.vision: %+v", c.InputModalities)
 	}
 }
+
+// TestListModelsDecodeFailure pins the listing's decode arm: a 200 body that
+// is not the models JSON shape fails the listing rather than yielding empty
+// rows silently.
+func TestListModelsDecodeFailure(t *testing.T) {
+	srv, _ := server(t, 200, `not json at all`)
+	if _, err := (&Protocol{Client: srv.Client()}).ListModels(context.Background(), liveRes(srv, nil)); err == nil {
+		t.Fatal("an undecodable models listing must fail")
+	}
+}

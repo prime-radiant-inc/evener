@@ -19,7 +19,7 @@ import (
 // delegate does not start another generation for it, so it never repeats
 // its handoff, and its parent's next message still resumes it.
 func TestDelegatePresentedAttentionDoesNotEarnSuccessorGeneration(t *testing.T) {
-	fixture := newColdStableDelegateFixture(t, "")
+	fixture := newColdDelegateFixture(t, "")
 	var root *Session
 	fixture.adapter.steps = []func(llm.Request) llm.Response{
 		func(llm.Request) llm.Response {
@@ -77,7 +77,7 @@ func TestDelegatePresentedAttentionDoesNotEarnSuccessorGeneration(t *testing.T) 
 // been shown to the model, so it still wakes the delegate: one attention
 // generation, whose request presents it.
 func TestDelegateAttentionAfterLastRequestStillWakesTheDelegate(t *testing.T) {
-	fixture := newColdStableDelegateFixture(t, "")
+	fixture := newColdDelegateFixture(t, "")
 	var root *Session
 	fixture.adapter.steps = []func(llm.Request) llm.Response{
 		func(llm.Request) llm.Response {
@@ -113,7 +113,7 @@ func TestDelegateAttentionAfterLastRequestStillWakesTheDelegate(t *testing.T) {
 // model sees, so the generation consumes it like any other presented item and
 // starts no successor for it.
 func TestDelegateAttentionLandingBetweenRequestSnapshotsIsConsumed(t *testing.T) {
-	fixture := newColdStableDelegateFixture(t, "")
+	fixture := newColdDelegateFixture(t, "")
 	fixture.adapter.steps = []func(llm.Request) llm.Response{
 		func(llm.Request) llm.Response { return agenttest.FinalResponse("warm") },
 		func(req llm.Request) llm.Response {
@@ -154,7 +154,7 @@ func TestDelegateAttentionLandingBetweenRequestSnapshotsIsConsumed(t *testing.T)
 // reservation ran to report the consumption, and the parent may never drive
 // the child again to reconcile it. Nothing on this root drives the child.
 func TestDelegateConsumingPresentedAttentionClearsNeedsAttentionWithoutAParentDrive(t *testing.T) {
-	fixture := newColdStableDelegateFixture(t, "")
+	fixture := newColdDelegateFixture(t, "")
 	var root *Session
 	fixture.adapter.steps = []func(llm.Request) llm.Response{
 		func(llm.Request) llm.Response { return agenttest.FinalResponse("warm") },
@@ -170,7 +170,7 @@ func TestDelegateConsumingPresentedAttentionClearsNeedsAttentionWithoutAParentDr
 		},
 	}
 	root = restoreSupervisionRoot(t, fixture, nil)
-	sub := warmStableDelegateUnservedRoot(t, root, fixture)
+	sub := warmDelegateUnservedRoot(t, root, fixture)
 	waitForStableSupervisionRun(t, root, fixture.childID)
 	sendAndAcknowledge(t, root, fixture.delegateID, "run the gates")
 	waitForStableSupervisionRun(t, root, fixture.childID)
@@ -198,7 +198,7 @@ func TestDelegateConsumingPresentedAttentionClearsNeedsAttentionWithoutAParentDr
 // and discarding an already-consumed item is a conflicting resolution that
 // would leave the stop outstanding.
 func TestDelegateStopAfterConsumingPresentedAttentionCompletesWithLaterAttentionPending(t *testing.T) {
-	fixture := newColdStableDelegateFixture(t, "")
+	fixture := newColdDelegateFixture(t, "")
 	var root *Session
 	fixture.adapter.steps = []func(llm.Request) llm.Response{
 		func(llm.Request) llm.Response { return agenttest.FinalResponse("warm") },
@@ -281,7 +281,7 @@ func TestDelegateStopAfterConsumingPresentedAttentionCompletesWithLaterAttention
 // noted wakes stay the retry obligation until a clear lands, and the root's
 // attention drive reconciles them against the transcript.
 func TestDelegateNeedsAttentionClearRecoversFromATransientFailure(t *testing.T) {
-	fixture := newColdStableDelegateFixture(t, "")
+	fixture := newColdDelegateFixture(t, "")
 	var root *Session
 	fixture.adapter.steps = []func(llm.Request) llm.Response{
 		func(llm.Request) llm.Response { return agenttest.FinalResponse("warm") },
@@ -324,7 +324,7 @@ func TestDelegateNeedsAttentionClearRecoversFromATransientFailure(t *testing.T) 
 
 // attentionRunStarts counts the fixture delegate's generations its journal
 // records as started by attention.
-func attentionRunStarts(t *testing.T, fixture coldStableDelegateFixture) int {
+func attentionRunStarts(t *testing.T, fixture coldDelegateFixture) int {
 	t.Helper()
 	events, err := delegatestore.ReadEvents(delegateResourceStorePath(fixture.stateDir, fixture.meta.ID))
 	if err != nil {
@@ -361,7 +361,7 @@ func childAttentionResolution(t *testing.T, sub *subagent, attentionID string) (
 // drive, so the send's generation is the first to run, and its first request
 // presents it.
 func TestDelegateAttentionPendingBeforeASendIsConsumedByThatSend(t *testing.T) {
-	fixture := newColdStableDelegateFixture(t, "")
+	fixture := newColdDelegateFixture(t, "")
 	fixture.adapter.steps = []func(llm.Request) llm.Response{
 		func(llm.Request) llm.Response { return agenttest.FinalResponse("warm") },
 		func(req llm.Request) llm.Response {
@@ -403,7 +403,7 @@ func TestDelegateAttentionPendingBeforeASendIsConsumedByThatSend(t *testing.T) {
 // from the parent's next message: that generation presents the item and
 // consumes it, and no attention generation runs.
 func TestDelegateFailedTurnLeavesPresentedAttentionPending(t *testing.T) {
-	fixture := newColdStableDelegateFixture(t, "")
+	fixture := newColdDelegateFixture(t, "")
 	var root *Session
 	fixture.adapter.steps = []func(llm.Request) llm.Response{
 		func(llm.Request) llm.Response { return agenttest.FinalResponse("warm") },

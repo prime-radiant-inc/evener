@@ -18,7 +18,7 @@ import {
   MutationStorageTimeoutError,
   warnOpenDiagnostic,
 } from "./mutationOutboxIndexedDB";
-import { neverSettlingRequest, settleRealTasks } from "./testing/stalledIndexedDB";
+import { settleRealTasks, wedgeDatabaseOpens } from "./testing/stalledIndexedDB";
 
 const DATABASE_NAME = "evener-mutation-outbox";
 // The adapter's own schema fence: DATABASE_VERSION in mutationOutboxIndexedDB.ts.
@@ -88,7 +88,7 @@ test("a healthy open records no diagnostic", async () => {
 
 test("the open watchdog records the timeout path once", async () => {
   const indexedDB = new IDBFactory();
-  vi.spyOn(indexedDB, "open").mockImplementation(() => neverSettlingRequest());
+  wedgeDatabaseOpens(indexedDB, DATABASE_NAME);
   const { diagnostics, report } = collect();
   vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
   const storage = new MutationOutboxIndexedDB({ indexedDB, onOpenDiagnostic: report });
@@ -249,7 +249,7 @@ test("the default reporter warns on the console with a stable prefix", () => {
 test("the constructor's default reporter is silent under the test environment", async () => {
   const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
   const indexedDB = new IDBFactory();
-  vi.spyOn(indexedDB, "open").mockImplementation(() => neverSettlingRequest());
+  wedgeDatabaseOpens(indexedDB, DATABASE_NAME);
   vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
   const storage = new MutationOutboxIndexedDB({ indexedDB });
   const failure = storage.listOutbox().then(
@@ -266,7 +266,7 @@ test("the constructor's default reporter is silent under the test environment", 
 
 test("a throwing diagnostic reporter does not change the open outcome", async () => {
   const indexedDB = new IDBFactory();
-  vi.spyOn(indexedDB, "open").mockImplementation(() => neverSettlingRequest());
+  wedgeDatabaseOpens(indexedDB, DATABASE_NAME);
   vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
   const storage = new MutationOutboxIndexedDB({
     indexedDB,

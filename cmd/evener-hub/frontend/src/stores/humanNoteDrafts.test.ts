@@ -5,7 +5,8 @@ import { IDBFactory, IDBKeyRange, IDBObjectStore } from "fake-indexeddb";
 import { useEffect } from "react";
 import { afterEach, beforeEach, expect, onTestFinished, test, vi } from "vitest";
 import { resetWorkspaceStoreForTests, workspaceStore } from "../shell/workspace";
-import { connectionStore } from "./connection";
+import { connectionStore, resetConnectionStoreForTests } from "./connection";
+import { setProductionEntryCacheForTests } from "./entryTranscriptRoutes";
 import {
   acknowledgeHumanNote,
   blurHumanNote,
@@ -20,7 +21,6 @@ import { holdIndexedDBEvent } from "./testing/stalledIndexedDB";
 import {
   resetThreadsStoreForTests,
   setMutationStorageForTests,
-  setProductionEntryCacheForTests,
   settleEntryTranscriptForTests,
   threadsStore,
 } from "./threads";
@@ -30,7 +30,7 @@ let entryCache: SessionEntryCache;
 beforeEach(async () => {
   resetPanelStoreEvictionForTests();
   resetWorkspaceStoreForTests();
-  connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
+  resetConnectionStoreForTests();
   resetThreadsStoreForTests();
   const indexedDB = new IDBFactory();
   vi.stubGlobal("indexedDB", indexedDB);

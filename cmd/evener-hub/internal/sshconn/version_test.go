@@ -108,9 +108,9 @@ func TestEnsureVersionMatchesAttachesWithoutDeploy(t *testing.T) {
 	// A stamped controller and host carry a comparable identity; the identity-less
 	// "dev" case is covered by TestEnsureDevBuildDeploysOncePerManager.
 	fr := &fakeRunner{
-		runFn: cannedRun(map[string][]byte{
-			"launch-check": []byte(`{"hub_endpoint_schema":1,"protocol":"evener-appwire-v7","version":"newsha","launch_flags":["api-log"]}`),
-			"api/health":   []byte(`{"version":"newsha","mobile_api_version":1,"hub_addr":"127.0.0.1:9180"}`),
+		runFn: cannedRun(map[remoteOp][]byte{
+			opLaunchCheck: []byte(`{"hub_endpoint_schema":1,"protocol":"evener-appwire-v7","version":"newsha","launch_flags":["api-log"]}`),
+			opHealth:      []byte(`{"version":"newsha","mobile_api_version":1,"hub_addr":"127.0.0.1:9180"}`),
 		}),
 		startFn: goodStartFn(t),
 	}
@@ -126,14 +126,8 @@ func TestEnsureVersionMatchesAttachesWithoutDeploy(t *testing.T) {
 	if buildCalled {
 		t.Fatal("build ran for a matching version")
 	}
-	for _, argv := range fr.recordedRuns() {
-		joined := strings.Join(argv, " ")
-		for _, forbidden := range []string{"cat >", "systemctl", "launchctl", "lsof", "kill ", "nohup", "command -v"} {
-			if strings.Contains(joined, forbidden) {
-				t.Fatalf("matching version issued deploy/restart command: %v", argv)
-			}
-		}
-	}
+	requireNoRemoteOps(t, fr, "matching version issued deploy/restart command",
+		opBinaryInstall, opSystemdUnits, opSystemdRestart, opSystemdStart, opLaunchdList, opLaunchdKick, opListenerProbe, opProcessFiles, opProcessAlive, opProcessKill, opRelaunch, opCommandLookup)
 	if got := len(fr.recordedStarts()); got != 1 {
 		t.Fatalf("Start calls = %d, want 1", got)
 	}
@@ -156,17 +150,16 @@ func TestEnsureProtocolUpgradeDeploysRestartsThenAttaches(t *testing.T) {
 
 	fr := &fakeRunner{
 		runFn: func(_ context.Context, argv []string, stdin io.Reader) ([]byte, error) {
-			joined := strings.Join(argv, " ")
-			switch {
-			case strings.HasSuffix(joined, "uname -s"):
+			switch classifyRemote(argv) {
+			case opUnameKernel:
 				return []byte("Linux\n"), nil
-			case strings.HasSuffix(joined, "uname -m"):
+			case opUnameArch:
 				return []byte("x86_64\n"), nil
-			case strings.HasSuffix(joined, "id -u"):
+			case opUserID:
 				return []byte("1000\n"), nil
-			case argv[len(argv)-1] == envProbeScript:
+			case opEnvironment:
 				return []byte("HOME=/home/dev\nXDG_STATE_HOME=\nXDG_CONFIG_HOME=\n"), nil
-			case strings.Contains(joined, "launch-check"):
+			case opLaunchCheck:
 				// The preflight reads the stale on-disk binary; the re-probe after
 				// the deploy reads the controller's freshly installed build.
 				launchChecks++
@@ -174,26 +167,24 @@ func TestEnsureProtocolUpgradeDeploysRestartsThenAttaches(t *testing.T) {
 					return []byte(`{"hub_endpoint_schema":1,"protocol":"evener-appwire-v7","version":"oldsha","launch_flags":["api-log"]}`), nil
 				}
 				return []byte(`{"hub_endpoint_schema":1,"protocol":"evener-appwire-v7","version":"newsha","launch_flags":["api-log"]}`), nil
-			case strings.Contains(joined, "test -d /opt/evener/bin"):
+			case opInstallDirProbe:
 				return nil, nil
-			case strings.Contains(joined, "evener_resolve /opt/evener/bin/evener"):
-				return []byte("/opt/evener/bin/evener\n"), nil
-			case strings.Contains(joined, "list-units"):
+			case opSystemdUnits:
 				return []byte("evener-hub.service loaded active running Evener Hub\n"), nil
-			case strings.Contains(joined, "systemctl restart"):
+			case opSystemdRestart:
 				record("restart")
 				return nil, nil
-			case strings.Contains(joined, "api/health"):
+			case opHealth:
 				return []byte(`{"version":"newsha","mobile_api_version":1,"hub_addr":"127.0.0.1:9180"}`), nil
-			case strings.Contains(joined, "cat >"):
+			case opBinaryInstall:
 				record("push")
 				if stdin != nil {
 					_, _ = io.ReadAll(stdin)
 				}
 				return nil, nil
-			case strings.Contains(strings.Join(argv, " "), "command -v evener"):
+			case opCommandLookup:
 				return []byte("/opt/evener/bin/evener\n"), nil
-			case strings.Contains(strings.Join(argv, " "), "evener_resolve"):
+			case opResolveExec:
 				return []byte("/opt/evener/bin/evener\n"), nil
 			default:
 				return nil, fmt.Errorf("unexpected remote command: %v", argv)
@@ -264,7 +255,7 @@ func TestEnsureProtocolUpgradeDeploysRestartsThenAttaches(t *testing.T) {
 // build and no bridge for a target with no shipped build.
 func TestEnsureUnsupportedTargetDoesNotDeploy(t *testing.T) {
 	host := hostreg.Host{Name: "alpha", SSH: "alpha.example", EvenerPath: "/opt/evener/bin/evener"}
-	override := map[string][]byte{"uname -s": []byte("Darwin\n"), "uname -m": []byte("x86_64\n")}
+	override := map[remoteOp][]byte{opUnameKernel: []byte("Darwin\n"), opUnameArch: []byte("x86_64\n")}
 	fr := &fakeRunner{runFn: cannedRun(override), startFn: goodStartFn(t)}
 	buildCalled := false
 	m := newTestManager(t, testRegistry(t, host), fr, Options{
@@ -292,41 +283,38 @@ func TestEnsureDeploysBeforeEnforcingLaunchContract(t *testing.T) {
 	built := false
 	fr := &fakeRunner{
 		runFn: func(_ context.Context, argv []string, stdin io.Reader) ([]byte, error) {
-			joined := strings.Join(argv, " ")
-			switch {
-			case strings.HasSuffix(joined, "uname -s"):
+			switch classifyRemote(argv) {
+			case opUnameKernel:
 				return []byte("Linux\n"), nil
-			case strings.HasSuffix(joined, "uname -m"):
+			case opUnameArch:
 				return []byte("x86_64\n"), nil
-			case strings.HasSuffix(joined, "id -u"):
+			case opUserID:
 				return []byte("1000\n"), nil
-			case argv[len(argv)-1] == envProbeScript:
+			case opEnvironment:
 				return []byte("HOME=/home/dev\nXDG_STATE_HOME=\nXDG_CONFIG_HOME=\n"), nil
-			case strings.Contains(joined, "launch-check"):
+			case opLaunchCheck:
 				launchChecks++
 				if launchChecks == 1 {
 					// The on-disk 04a-era binary: old version, no api-log flag.
 					return []byte(`{"hub_endpoint_schema":1,"protocol":"evener-appwire-v7","version":"oldsha","launch_flags":[]}`), nil
 				}
 				return []byte(`{"hub_endpoint_schema":1,"protocol":"evener-appwire-v7","version":"newsha","launch_flags":["api-log"]}`), nil
-			case strings.Contains(joined, "test -d /opt/evener/bin"):
+			case opInstallDirProbe:
 				return nil, nil
-			case strings.Contains(joined, "evener_resolve"):
+			case opResolveExec:
 				return []byte("/opt/evener/bin/evener\n"), nil
-			case strings.Contains(joined, "list-units"):
+			case opSystemdUnits:
 				return []byte("evener-hub.service loaded active running Evener Hub\n"), nil
-			case strings.Contains(joined, "systemctl restart"):
+			case opSystemdRestart:
 				return nil, nil
-			case strings.Contains(joined, "api/health"):
+			case opHealth:
 				return []byte(`{"version":"newsha","mobile_api_version":1,"hub_addr":"127.0.0.1:9180"}`), nil
-			case strings.Contains(joined, "cat >"):
+			case opBinaryInstall:
 				if stdin != nil {
 					_, _ = io.ReadAll(stdin)
 				}
 				return nil, nil
-			case strings.Contains(strings.Join(argv, " "), "command -v evener"):
-				return []byte("/opt/evener/bin/evener\n"), nil
-			case strings.Contains(strings.Join(argv, " "), "evener_resolve"):
+			case opCommandLookup:
 				return []byte("/opt/evener/bin/evener\n"), nil
 			default:
 				return nil, fmt.Errorf("unexpected remote command: %v", argv)
@@ -367,13 +355,12 @@ func TestEnsureDeploysBeforeEnforcingLaunchContract(t *testing.T) {
 func TestRestartHubRejectsAmbiguousSupervisor(t *testing.T) {
 	host := hostreg.Host{Name: "alpha", SSH: "alpha.example"}
 	fr := &fakeRunner{runFn: func(_ context.Context, argv []string, _ io.Reader) ([]byte, error) {
-		joined := strings.Join(argv, " ")
-		switch {
-		case strings.Contains(joined, "list-units"):
+		switch classifyRemote(argv) {
+		case opSystemdUnits:
 			return []byte("evener-hub.service loaded active running\nother-evener-hub.service loaded active running\n"), nil
-		case strings.Contains(strings.Join(argv, " "), "command -v evener"):
+		case opCommandLookup:
 			return []byte("/opt/evener/bin/evener\n"), nil
-		case strings.Contains(strings.Join(argv, " "), "evener_resolve"):
+		case opResolveExec:
 			return []byte("/opt/evener/bin/evener\n"), nil
 		default:
 			return nil, fmt.Errorf("unexpected remote command: %v", argv)
@@ -387,7 +374,7 @@ func TestRestartHubRejectsAmbiguousSupervisor(t *testing.T) {
 		if remote == "systemctl show --property=Id,MainPID,User,ExecStart,WorkingDirectory -- other-evener-hub.service" {
 			return []byte("Id=other-evener-hub.service\nMainPID=4242\nUser=dev\nExecStart={ path=/opt/evener/bin/evener ; argv[]=/opt/evener/bin/evener hub ; ignore_errors=no ; }\nWorkingDirectory=/home/dev\n"), nil
 		}
-		if strings.Contains(strings.Join(argv, " "), "list-units") {
+		if classifyRemote(argv) == opSystemdUnits {
 			return declared(ctx, argv, in)
 		}
 		return selected(ctx, argv, in)
@@ -413,19 +400,18 @@ func TestRestartHubRejectsAmbiguousSupervisor(t *testing.T) {
 func supervisorRestartRunner(restartErr error, health func(probe int) ([]byte, error)) (*fakeRunner, *int) {
 	probe := 0
 	fr := &fakeRunner{runFn: func(_ context.Context, argv []string, _ io.Reader) ([]byte, error) {
-		joined := strings.Join(argv, " ")
-		switch {
-		case strings.Contains(joined, "list-units"):
+		switch classifyRemote(argv) {
+		case opSystemdUnits:
 			return []byte("evener-hub.service loaded active running Evener Hub\n"), nil
-		case strings.Contains(joined, "systemctl restart"):
+		case opSystemdRestart:
 			return nil, restartErr
-		case strings.Contains(joined, "api/health"):
+		case opHealth:
 			out, err := health(probe)
 			probe++
 			return out, err
-		case strings.Contains(strings.Join(argv, " "), "command -v evener"):
+		case opCommandLookup:
 			return []byte("/opt/evener/bin/evener\n"), nil
-		case strings.Contains(strings.Join(argv, " "), "evener_resolve"):
+		case opResolveExec:
 			return []byte("/opt/evener/bin/evener\n"), nil
 		default:
 			return nil, fmt.Errorf("unexpected remote command: %v", argv)
@@ -614,11 +600,9 @@ func TestHubExecutableMatchesCanonicalTarget(t *testing.T) {
 	t.Run("custom evener_path basename restarts", func(t *testing.T) {
 		host := hostreg.Host{Name: "alpha", SSH: "alpha.example", EvenerPath: "/opt/evener/current/evener-hub"}
 		fr := &fakeRunner{runFn: func(_ context.Context, argv []string, _ io.Reader) ([]byte, error) {
-			joined := strings.Join(argv, " ")
-			if strings.Contains(joined, "evener_resolve /opt/evener/current/evener-hub") {
-				return []byte("/opt/evener/current/evener-hub\n"), nil
-			}
-			return nil, fmt.Errorf("unexpected remote command: %v", argv)
+			return resolveAnswers(argv, map[string]string{
+				"/opt/evener/current/evener-hub": "/opt/evener/current/evener-hub",
+			})
 		}}
 		m := newTestManager(t, testRegistry(t, host), fr, Options{})
 		if err := m.hubExecutableMatches(context.Background(), host, "/opt/evener/current/evener-hub"); err != nil {
@@ -629,12 +613,12 @@ func TestHubExecutableMatchesCanonicalTarget(t *testing.T) {
 	t.Run("a symlink resolves to the configured target", func(t *testing.T) {
 		host := hostreg.Host{Name: "alpha", SSH: "alpha.example", EvenerPath: "/usr/local/bin/evener"}
 		fr := &fakeRunner{runFn: func(_ context.Context, argv []string, _ io.Reader) ([]byte, error) {
-			joined := strings.Join(argv, " ")
-			switch {
-			case strings.Contains(joined, "evener_resolve /usr/local/bin/evener"):
-				return []byte("/opt/evener/bin/evener\n"), nil
-			case strings.Contains(joined, "evener_resolve /proc/self/exe"):
-				return []byte("/opt/evener/bin/evener\n"), nil
+			switch classifyRemote(argv) {
+			case opResolveExec:
+				return resolveAnswers(argv, map[string]string{
+					"/usr/local/bin/evener": "/opt/evener/bin/evener",
+					"/proc/self/exe":        "/opt/evener/bin/evener",
+				})
 			default:
 				return nil, fmt.Errorf("unexpected remote command: %v", argv)
 			}
@@ -648,12 +632,12 @@ func TestHubExecutableMatchesCanonicalTarget(t *testing.T) {
 	t.Run("a non-hub executable refuses", func(t *testing.T) {
 		host := hostreg.Host{Name: "alpha", SSH: "alpha.example", EvenerPath: "/opt/evener/bin/evener"}
 		fr := &fakeRunner{runFn: func(_ context.Context, argv []string, _ io.Reader) ([]byte, error) {
-			joined := strings.Join(argv, " ")
-			switch {
-			case strings.Contains(joined, "evener_resolve /usr/sbin/nginx"):
-				return []byte("/usr/sbin/nginx\n"), nil
-			case strings.Contains(joined, "evener_resolve /opt/evener/bin/evener"):
-				return []byte("/opt/evener/bin/evener\n"), nil
+			switch classifyRemote(argv) {
+			case opResolveExec:
+				return resolveAnswers(argv, map[string]string{
+					"/usr/sbin/nginx":        "/usr/sbin/nginx",
+					"/opt/evener/bin/evener": "/opt/evener/bin/evener",
+				})
 			default:
 				return nil, fmt.Errorf("unexpected remote command: %v", argv)
 			}
@@ -667,14 +651,14 @@ func TestHubExecutableMatchesCanonicalTarget(t *testing.T) {
 	t.Run("empty evener_path compares command -v evener", func(t *testing.T) {
 		host := hostreg.Host{Name: "alpha", SSH: "alpha.example"}
 		fr := &fakeRunner{runFn: func(_ context.Context, argv []string, _ io.Reader) ([]byte, error) {
-			joined := strings.Join(argv, " ")
-			switch {
-			case strings.Contains(joined, "command -v evener"):
+			switch classifyRemote(argv) {
+			case opCommandLookup:
 				return []byte("/usr/local/bin/evener\n"), nil
-			case strings.Contains(joined, "evener_resolve /usr/local/bin/evener"):
-				return []byte("/opt/evener/bin/evener\n"), nil
-			case strings.Contains(joined, "evener_resolve /proc/1234/exe"):
-				return []byte("/opt/evener/bin/evener\n"), nil
+			case opResolveExec:
+				return resolveAnswers(argv, map[string]string{
+					"/usr/local/bin/evener": "/opt/evener/bin/evener",
+					"/proc/1234/exe":        "/opt/evener/bin/evener",
+				})
 			default:
 				return nil, fmt.Errorf("unexpected remote command: %v", argv)
 			}
@@ -692,14 +676,13 @@ func TestHubExecutableMatchesCanonicalTarget(t *testing.T) {
 		// `command -v` first, exactly as expectedHubExecutable and deployTarget do.
 		host := hostreg.Host{Name: "alpha", SSH: "alpha.example", EvenerPath: "/opt/evener/bin/evener"}
 		fr := &fakeRunner{runFn: func(_ context.Context, argv []string, _ io.Reader) ([]byte, error) {
-			joined := strings.Join(argv, " ")
-			switch {
-			case strings.Contains(joined, "command -v evener"):
+			switch classifyRemote(argv) {
+			case opCommandLookup:
 				return []byte("/opt/evener/bin/evener\n"), nil
-			case strings.Contains(joined, "evener_resolve evener"):
-				return nil, errors.New("resolver: no such file or directory")
-			case strings.Contains(joined, "evener_resolve /opt/evener/bin/evener"):
-				return []byte("/opt/evener/bin/evener\n"), nil
+			case opResolveExec:
+				return resolveAnswers(argv, map[string]string{
+					"/opt/evener/bin/evener": "/opt/evener/bin/evener",
+				})
 			default:
 				return nil, fmt.Errorf("unexpected remote command: %v", argv)
 			}
@@ -713,7 +696,7 @@ func TestHubExecutableMatchesCanonicalTarget(t *testing.T) {
 	t.Run("bare argv[0] absent from PATH refuses", func(t *testing.T) {
 		host := hostreg.Host{Name: "alpha", SSH: "alpha.example", EvenerPath: "/opt/evener/bin/evener"}
 		fr := &fakeRunner{runFn: func(_ context.Context, argv []string, _ io.Reader) ([]byte, error) {
-			if strings.Contains(strings.Join(argv, " "), "command -v evener") {
+			if classifyRemote(argv) == opCommandLookup {
 				return []byte("\n"), nil
 			}
 			return nil, fmt.Errorf("unexpected remote command: %v", argv)
@@ -757,18 +740,17 @@ func TestRestartHubLaunchdKickstartStatusIsAdvisory(t *testing.T) {
 	kickErr := errors.New("exit status 1")
 	probes := 0
 	fr := &fakeRunner{runFn: func(_ context.Context, argv []string, _ io.Reader) ([]byte, error) {
-		joined := strings.Join(argv, " ")
-		switch {
-		case strings.Contains(joined, "launchctl list"):
+		switch classifyRemote(argv) {
+		case opLaunchdList:
 			return []byte("PID\tStatus\tLabel\n1234\t0\tcom.example.evener-hub\n"), nil
-		case strings.Contains(joined, "launchctl kickstart"):
+		case opLaunchdKick:
 			return []byte("kickstart: job failed"), kickErr
-		case strings.Contains(joined, "api/health"):
+		case opHealth:
 			probes++
 			return []byte(`{"version":"newsha","mobile_api_version":1,"hub_addr":"127.0.0.1:9180"}`), nil
-		case strings.Contains(strings.Join(argv, " "), "command -v evener"):
+		case opCommandLookup:
 			return []byte("/opt/evener/bin/evener\n"), nil
-		case strings.Contains(strings.Join(argv, " "), "evener_resolve"):
+		case opResolveExec:
 			return []byte("/opt/evener/bin/evener\n"), nil
 		default:
 			return nil, fmt.Errorf("unexpected remote command: %v", argv)
@@ -797,17 +779,16 @@ func TestRestartHubLaunchdKickstartFailureSurfacesWhenHealthFails(t *testing.T) 
 	host := hostreg.Host{Name: "alpha", SSH: "alpha.example", EvenerPath: "/opt/evener/bin/evener"}
 	kickErr := errors.New("exit status 1")
 	fr := &fakeRunner{runFn: func(_ context.Context, argv []string, _ io.Reader) ([]byte, error) {
-		joined := strings.Join(argv, " ")
-		switch {
-		case strings.Contains(joined, "launchctl list"):
+		switch classifyRemote(argv) {
+		case opLaunchdList:
 			return []byte("PID\tStatus\tLabel\n1234\t0\tcom.example.evener-hub\n"), nil
-		case strings.Contains(joined, "launchctl kickstart"):
+		case opLaunchdKick:
 			return []byte("kickstart: job failed"), kickErr
-		case strings.Contains(joined, "api/health"):
+		case opHealth:
 			return []byte(`{"version":"oldsha","mobile_api_version":1,"hub_addr":"127.0.0.1:9180"}`), nil
-		case strings.Contains(strings.Join(argv, " "), "command -v evener"):
+		case opCommandLookup:
 			return []byte("/opt/evener/bin/evener\n"), nil
-		case strings.Contains(strings.Join(argv, " "), "evener_resolve"):
+		case opResolveExec:
 			return []byte("/opt/evener/bin/evener\n"), nil
 		default:
 			return nil, fmt.Errorf("unexpected remote command: %v", argv)
@@ -837,34 +818,33 @@ func TestEnsurePreservesRunningHubWhenBuildDiffers(t *testing.T) {
 	healthProbes := 0
 	fr := &fakeRunner{
 		runFn: func(_ context.Context, argv []string, _ io.Reader) ([]byte, error) {
-			joined := strings.Join(argv, " ")
-			switch {
-			case strings.HasSuffix(joined, "uname -s"):
+			switch classifyRemote(argv) {
+			case opUnameKernel:
 				return []byte("Linux\n"), nil
-			case strings.HasSuffix(joined, "uname -m"):
+			case opUnameArch:
 				return []byte("x86_64\n"), nil
-			case strings.HasSuffix(joined, "id -u"):
+			case opUserID:
 				return []byte("1000\n"), nil
-			case argv[len(argv)-1] == envProbeScript:
+			case opEnvironment:
 				return []byte("HOME=/home/dev\nXDG_STATE_HOME=\nXDG_CONFIG_HOME=\n"), nil
-			case strings.Contains(joined, "launch-check"):
+			case opLaunchCheck:
 				// The on-disk binary already matches the controller.
 				return []byte(`{"hub_endpoint_schema":1,"protocol":"evener-appwire-v7","version":"newsha","launch_flags":["api-log"]}`), nil
-			case strings.Contains(joined, "list-units"):
+			case opSystemdUnits:
 				return []byte("evener-hub.service loaded active running Evener Hub\n"), nil
-			case strings.Contains(joined, "systemctl restart"):
+			case opSystemdRestart:
 				restarts++
 				return nil, nil
-			case strings.Contains(joined, "api/health"):
+			case opHealth:
 				healthProbes++
 				if healthProbes == 1 {
 					// The stale hub a previously failed restart left serving.
 					return []byte(`{"version":"oldsha","mobile_api_version":1,"hub_addr":"127.0.0.1:9180"}`), nil
 				}
 				return []byte(`{"version":"newsha","mobile_api_version":1,"hub_addr":"127.0.0.1:9180"}`), nil
-			case strings.Contains(strings.Join(argv, " "), "command -v evener"):
+			case opCommandLookup:
 				return []byte("/opt/evener/bin/evener\n"), nil
-			case strings.Contains(strings.Join(argv, " "), "evener_resolve"):
+			case opResolveExec:
 				return []byte("/opt/evener/bin/evener\n"), nil
 			default:
 				return nil, fmt.Errorf("unexpected remote command: %v", argv)
@@ -897,8 +877,8 @@ func TestEnsurePreservesRunningHubWhenBuildDiffers(t *testing.T) {
 // would bootstrap it (TestFirstAttachBootstrapsStoppedHost).
 func TestReconnectNeverStartsAStoppedHub(t *testing.T) {
 	host := hostreg.Host{Name: "alpha", SSH: "alpha.example", EvenerPath: "/opt/evener/bin/evener"}
-	fr := &fakeRunner{runFn: cannedRun(map[string][]byte{
-		"api/health": []byte(`not a health body`),
+	fr := &fakeRunner{runFn: cannedRun(map[remoteOp][]byte{
+		opHealth: []byte(`not a health body`),
 	}), startFn: goodStartFn(t)}
 	m := newTestManager(t, testRegistry(t, host), fr, Options{
 		controllerVersionOverride: "dev", // cannedRun reports the on-disk version "dev"
@@ -907,14 +887,8 @@ func TestReconnectNeverStartsAStoppedHub(t *testing.T) {
 	if _, err := m.ensureOnce(context.Background(), host, false); err != nil {
 		t.Fatalf("ensureOnce(reconnect): %v", err)
 	}
-	for _, argv := range fr.recordedRuns() {
-		joined := strings.Join(argv, " ")
-		for _, forbidden := range []string{"systemctl", "launchctl", "kill ", "nohup", "cat >"} {
-			if strings.Contains(joined, forbidden) {
-				t.Fatalf("a reconnect started a hub: %v", argv)
-			}
-		}
-	}
+	requireNoRemoteOps(t, fr, "a reconnect started a hub",
+		opSystemdUnits, opSystemdRestart, opSystemdStart, opLaunchdList, opLaunchdKick, opProcessAlive, opProcessKill, opRelaunch, opBinaryInstall)
 }
 
 // TestFirstAttachBootstrapsStoppedHost covers acceptance criterion 15: an
@@ -926,30 +900,29 @@ func TestFirstAttachBootstrapsStoppedHost(t *testing.T) {
 	started := false
 	var startedCmd string
 	fr := &fakeRunner{runFn: func(_ context.Context, argv []string, _ io.Reader) ([]byte, error) {
-		joined := strings.Join(argv, " ")
-		switch {
-		case strings.HasSuffix(joined, "uname -s"):
+		switch classifyRemote(argv) {
+		case opUnameKernel:
 			return []byte("Linux\n"), nil
-		case strings.HasSuffix(joined, "uname -m"):
+		case opUnameArch:
 			return []byte("x86_64\n"), nil
-		case strings.HasSuffix(joined, "id -u"):
+		case opUserID:
 			return []byte("1000\n"), nil
-		case argv[len(argv)-1] == envProbeScript:
+		case opEnvironment:
 			return []byte("HOME=/home/dev\nXDG_STATE_HOME=\nXDG_CONFIG_HOME=\n"), nil
-		case strings.Contains(joined, "launch-check"):
+		case opLaunchCheck:
 			return []byte(`{"hub_endpoint_schema":1,"protocol":"evener-appwire-v7","version":"newsha","launch_flags":["api-log"]}`), nil
-		case strings.Contains(joined, "api/health"):
+		case opHealth:
 			if !started {
 				return nil, errors.New("curl: (7) Failed to connect")
 			}
 			return []byte(`{"version":"newsha","mobile_api_version":1,"hub_addr":"127.0.0.1:9180"}`), nil
-		case strings.Contains(joined, "list-units"):
+		case opSystemdUnits:
 			return []byte("evener-hub.service loaded inactive dead Evener Hub\n"), nil
-		case strings.Contains(joined, "lsof -ti :9180"):
+		case opListenerProbe:
 			return []byte(noListenerMarker + "\n"), nil
-		case strings.Contains(joined, "systemctl start"):
+		case opSystemdStart:
 			started = true
-			startedCmd = joined
+			startedCmd = strings.Join(argv, " ")
 			return nil, nil
 		default:
 			return nil, fmt.Errorf("unexpected remote command: %v", argv)
@@ -1015,30 +988,29 @@ func TestFirstAttachBootstrapsStoppedHostOnAnotherBuild(t *testing.T) {
 	host := hostreg.Host{Name: "alpha", SSH: "alpha.example", EvenerPath: "/opt/evener/bin/evener"}
 	started := false
 	fr := &fakeRunner{runFn: func(_ context.Context, argv []string, _ io.Reader) ([]byte, error) {
-		joined := strings.Join(argv, " ")
-		switch {
-		case strings.HasSuffix(joined, "uname -s"):
+		switch classifyRemote(argv) {
+		case opUnameKernel:
 			return []byte("Linux\n"), nil
-		case strings.HasSuffix(joined, "uname -m"):
+		case opUnameArch:
 			return []byte("x86_64\n"), nil
-		case strings.HasSuffix(joined, "id -u"):
+		case opUserID:
 			return []byte("1000\n"), nil
-		case argv[len(argv)-1] == envProbeScript:
+		case opEnvironment:
 			return []byte("HOME=/home/dev\nXDG_STATE_HOME=\nXDG_CONFIG_HOME=\n"), nil
-		case strings.Contains(joined, "launch-check"):
+		case opLaunchCheck:
 			return []byte(`{"hub_endpoint_schema":1,"protocol":"evener-appwire-v7","version":"oldsha","launch_flags":["api-log"]}`), nil
-		case strings.Contains(joined, "api/health"):
+		case opHealth:
 			if !started {
 				return nil, errors.New("curl: (7) Failed to connect")
 			}
 			// The binary that was started is the one on disk: it comes up
 			// reporting its own build, never the controller's.
 			return []byte(`{"version":"oldsha","mobile_api_version":1,"hub_addr":"127.0.0.1:9180"}`), nil
-		case strings.Contains(joined, "list-units"):
+		case opSystemdUnits:
 			return []byte("evener-hub.service loaded inactive dead Evener Hub\n"), nil
-		case strings.Contains(joined, "lsof -ti :9180"):
+		case opListenerProbe:
 			return []byte(noListenerMarker + "\n"), nil
-		case strings.Contains(joined, "systemctl start"):
+		case opSystemdStart:
 			started = true
 			return nil, nil
 		default:
@@ -1073,22 +1045,21 @@ func TestPendingStartRecoveryAcceptsTheHostsOwnBuild(t *testing.T) {
 	host := hostreg.Host{Name: "alpha", SSH: "alpha.example", EvenerPath: "/opt/evener/bin/evener"}
 	started := false
 	fr := &fakeRunner{runFn: func(_ context.Context, argv []string, _ io.Reader) ([]byte, error) {
-		joined := strings.Join(argv, " ")
-		switch {
-		case strings.Contains(joined, relaunch):
+		switch classifyRemote(argv) {
+		case opSystemdStart:
 			started = true
 			return nil, nil
-		case strings.HasSuffix(joined, "uname -s"):
+		case opUnameKernel:
 			return []byte("Linux\n"), nil
-		case strings.HasSuffix(joined, "uname -m"):
+		case opUnameArch:
 			return []byte("x86_64\n"), nil
-		case strings.HasSuffix(joined, "id -u"):
+		case opUserID:
 			return []byte("1000\n"), nil
-		case strings.Contains(joined, "XDG_STATE_HOME"):
+		case opEnvironment:
 			return []byte("HOME=/home/dev\nXDG_STATE_HOME=\nXDG_CONFIG_HOME=\n"), nil
-		case strings.Contains(joined, "launch-check"):
+		case opLaunchCheck:
 			return []byte(`{"hub_endpoint_schema":1,"protocol":"evener-appwire-v7","version":"oldsha","launch_flags":["api-log"]}`), nil
-		case strings.Contains(joined, "api/health"):
+		case opHealth:
 			if !started {
 				return nil, errors.New("curl: (7) Failed to connect")
 			}
@@ -1132,24 +1103,23 @@ func TestRestartOnlyMismatchOnAnotherBuildAttaches(t *testing.T) {
 	host := hostreg.Host{Name: "alpha", SSH: "alpha.example", EvenerPath: "/opt/evener/bin/evener"}
 	restarted := false
 	fr := &fakeRunner{runFn: func(_ context.Context, argv []string, _ io.Reader) ([]byte, error) {
-		joined := strings.Join(argv, " ")
-		switch {
-		case strings.Contains(joined, "systemctl restart"):
+		switch classifyRemote(argv) {
+		case opSystemdRestart:
 			restarted = true
 			return nil, nil
-		case strings.HasSuffix(joined, "uname -s"):
+		case opUnameKernel:
 			return []byte("Linux\n"), nil
-		case strings.HasSuffix(joined, "uname -m"):
+		case opUnameArch:
 			return []byte("x86_64\n"), nil
-		case strings.HasSuffix(joined, "id -u"):
+		case opUserID:
 			return []byte("1000\n"), nil
-		case strings.Contains(joined, "XDG_STATE_HOME"):
+		case opEnvironment:
 			return []byte("HOME=/home/dev\nXDG_STATE_HOME=\nXDG_CONFIG_HOME=\n"), nil
-		case strings.Contains(joined, "launch-check"):
+		case opLaunchCheck:
 			return []byte(`{"hub_endpoint_schema":1,"protocol":"evener-appwire-v7","version":"oldsha","launch_flags":["api-log"]}`), nil
-		case strings.Contains(joined, "list-units"):
+		case opSystemdUnits:
 			return []byte("evener-hub.service loaded active running Evener Hub\n"), nil
-		case strings.Contains(joined, "api/health"):
+		case opHealth:
 			// Before the restart a stale process answers; the restart must converge
 			// it on the host's own build (never the controller's version).
 			if !restarted {
@@ -1192,21 +1162,20 @@ func TestPendingStartOnHealthySupervisorlessHostAttaches(t *testing.T) {
 	const relaunch = "nohup /opt/evener/bin/evener hub"
 	host := hostreg.Host{Name: "alpha", SSH: "alpha.example", EvenerPath: "/opt/evener/bin/evener"}
 	fr := &fakeRunner{runFn: func(_ context.Context, argv []string, _ io.Reader) ([]byte, error) {
-		joined := strings.Join(argv, " ")
-		switch {
-		case strings.HasSuffix(joined, "uname -s"):
+		switch classifyRemote(argv) {
+		case opUnameKernel:
 			return []byte("Linux\n"), nil
-		case strings.HasSuffix(joined, "uname -m"):
+		case opUnameArch:
 			return []byte("x86_64\n"), nil
-		case strings.HasSuffix(joined, "id -u"):
+		case opUserID:
 			return []byte("1000\n"), nil
-		case strings.Contains(joined, "XDG_STATE_HOME"):
+		case opEnvironment:
 			return []byte("HOME=/home/dev\nXDG_STATE_HOME=\nXDG_CONFIG_HOME=\n"), nil
-		case strings.Contains(joined, "launch-check"):
+		case opLaunchCheck:
 			return []byte(`{"hub_endpoint_schema":1,"protocol":"evener-appwire-v7","version":"newsha","launch_flags":["api-log"]}`), nil
-		case strings.Contains(joined, "list-units"):
+		case opSystemdUnits:
 			return nil, nil // no supervisor: a supervisorless host
-		case strings.Contains(joined, "api/health"):
+		case opHealth:
 			// The started hub is healthy and serves the expected build.
 			return []byte(`{"version":"newsha","mobile_api_version":1,"hub_addr":"127.0.0.1:9180"}`), nil
 		default:
@@ -1241,21 +1210,20 @@ func TestPendingStartOnHealthyHostKeepingItsOwnBuildAttaches(t *testing.T) {
 	const relaunch = "nohup /opt/evener/bin/evener hub"
 	host := hostreg.Host{Name: "alpha", SSH: "alpha.example", EvenerPath: "/opt/evener/bin/evener"}
 	fr := &fakeRunner{runFn: func(_ context.Context, argv []string, _ io.Reader) ([]byte, error) {
-		joined := strings.Join(argv, " ")
-		switch {
-		case strings.HasSuffix(joined, "uname -s"):
+		switch classifyRemote(argv) {
+		case opUnameKernel:
 			return []byte("Linux\n"), nil
-		case strings.HasSuffix(joined, "uname -m"):
+		case opUnameArch:
 			return []byte("x86_64\n"), nil
-		case strings.HasSuffix(joined, "id -u"):
+		case opUserID:
 			return []byte("1000\n"), nil
-		case strings.Contains(joined, "XDG_STATE_HOME"):
+		case opEnvironment:
 			return []byte("HOME=/home/dev\nXDG_STATE_HOME=\nXDG_CONFIG_HOME=\n"), nil
-		case strings.Contains(joined, "launch-check"):
+		case opLaunchCheck:
 			return []byte(`{"hub_endpoint_schema":1,"protocol":"evener-appwire-v7","version":"oldsha","launch_flags":["api-log"]}`), nil
-		case strings.Contains(joined, "list-units"):
+		case opSystemdUnits:
 			return nil, nil // no supervisor
-		case strings.Contains(joined, "api/health"):
+		case opHealth:
 			// The host serves its own build; the attach path accepts it.
 			return []byte(`{"version":"oldsha","mobile_api_version":1,"hub_addr":"127.0.0.1:9180"}`), nil
 		default:
@@ -1291,21 +1259,20 @@ func TestPendingStartNotSettledForWrongSnapshotCommit(t *testing.T) {
 	const relaunch = "nohup /opt/evener/bin/evener hub"
 	host := hostreg.Host{Name: "alpha", SSH: "alpha.example", EvenerPath: "/opt/evener/bin/evener"}
 	fr := &fakeRunner{runFn: func(_ context.Context, argv []string, _ io.Reader) ([]byte, error) {
-		joined := strings.Join(argv, " ")
-		switch {
-		case strings.HasSuffix(joined, "uname -s"):
+		switch classifyRemote(argv) {
+		case opUnameKernel:
 			return []byte("Linux\n"), nil
-		case strings.HasSuffix(joined, "uname -m"):
+		case opUnameArch:
 			return []byte("x86_64\n"), nil
-		case strings.HasSuffix(joined, "id -u"):
+		case opUserID:
 			return []byte("1000\n"), nil
-		case strings.Contains(joined, "XDG_STATE_HOME"):
+		case opEnvironment:
 			return []byte("HOME=/home/dev\nXDG_STATE_HOME=\nXDG_CONFIG_HOME=\n"), nil
-		case strings.Contains(joined, "launch-check"):
+		case opLaunchCheck:
 			return []byte(`{"hub_endpoint_schema":1,"protocol":"evener-appwire-v7","version":"newsha","launch_flags":["api-log"]}`), nil
-		case strings.Contains(joined, "list-units"):
+		case opSystemdUnits:
 			return nil, nil // no supervisor
-		case strings.Contains(joined, "api/health"):
+		case opHealth:
 			// The expected version, but a commit this controller never installed.
 			return []byte(`{"version":"newsha","backend_git_sha":"othersha","mobile_api_version":1,"hub_addr":"127.0.0.1:9180"}`), nil
 		default:
@@ -1336,32 +1303,29 @@ func TestFirstAttachBootstrapAdHocLaunch(t *testing.T) {
 	launched := false
 	var launchCmd string
 	fr := &fakeRunner{runFn: func(_ context.Context, argv []string, _ io.Reader) ([]byte, error) {
-		joined := strings.Join(argv, " ")
-		switch {
-		case strings.HasSuffix(joined, "uname -s"):
+		switch classifyRemote(argv) {
+		case opUnameKernel:
 			return []byte("Linux\n"), nil
-		case strings.HasSuffix(joined, "uname -m"):
+		case opUnameArch:
 			return []byte("x86_64\n"), nil
-		case strings.HasSuffix(joined, "id -u"):
+		case opUserID:
 			return []byte("1000\n"), nil
-		case argv[len(argv)-1] == envProbeScript:
+		case opEnvironment:
 			return []byte("HOME=/home/dev\nXDG_STATE_HOME=\nXDG_CONFIG_HOME=\n"), nil
-		case strings.Contains(joined, "launch-check"):
+		case opLaunchCheck:
 			return []byte(`{"hub_endpoint_schema":1,"protocol":"evener-appwire-v7","version":"newsha","launch_flags":["api-log"]}`), nil
-		case strings.Contains(joined, "api/health"):
+		case opHealth:
 			if !launched {
 				return nil, errors.New("curl: (7) Failed to connect")
 			}
 			return []byte(`{"version":"newsha","mobile_api_version":1,"hub_addr":"127.0.0.1:9180"}`), nil
-		case strings.Contains(joined, "list-units"):
+		case opSystemdUnits:
 			return nil, nil // no evener hub unit; the ad hoc path
-		case strings.Contains(joined, "lsof -ti :9180"):
+		case opListenerProbe:
 			return []byte(noListenerMarker + "\n"), nil
-		case strings.Contains(joined, "evener_resolve /opt/evener/bin/evener"):
-			return []byte("/opt/evener/bin/evener\n"), nil
-		case strings.Contains(joined, "nohup"):
+		case opRelaunch:
 			launched = true
-			launchCmd = joined
+			launchCmd = strings.Join(argv, " ")
 			return nil, nil
 		default:
 			return nil, fmt.Errorf("unexpected remote command: %v", argv)
@@ -1391,29 +1355,28 @@ func TestBootstrapUnhealthyIsErrRestart(t *testing.T) {
 	host := hostreg.Host{Name: "alpha", SSH: "alpha.example", EvenerPath: "/opt/evener/bin/evener"}
 	healthProbes := 0
 	fr := &fakeRunner{runFn: func(_ context.Context, argv []string, _ io.Reader) ([]byte, error) {
-		joined := strings.Join(argv, " ")
-		switch {
-		case strings.HasSuffix(joined, "uname -s"):
+		switch classifyRemote(argv) {
+		case opUnameKernel:
 			return []byte("Linux\n"), nil
-		case strings.HasSuffix(joined, "uname -m"):
+		case opUnameArch:
 			return []byte("x86_64\n"), nil
-		case strings.HasSuffix(joined, "id -u"):
+		case opUserID:
 			return []byte("1000\n"), nil
-		case argv[len(argv)-1] == envProbeScript:
+		case opEnvironment:
 			return []byte("HOME=/home/dev\nXDG_STATE_HOME=\nXDG_CONFIG_HOME=\n"), nil
-		case strings.Contains(joined, "launch-check"):
+		case opLaunchCheck:
 			return []byte(`{"hub_endpoint_schema":1,"protocol":"evener-appwire-v7","version":"newsha","launch_flags":["api-log"]}`), nil
-		case strings.Contains(joined, "api/health"):
+		case opHealth:
 			healthProbes++
 			if healthProbes == 1 {
 				return nil, errors.New("no listener")
 			}
 			return []byte(`{"version":"oldsha","mobile_api_version":1,"hub_addr":"127.0.0.1:9180"}`), nil
-		case strings.Contains(joined, "list-units"):
+		case opSystemdUnits:
 			return []byte("evener-hub.service loaded inactive dead Evener Hub\n"), nil
-		case strings.Contains(joined, "lsof -ti :9180"):
+		case opListenerProbe:
 			return []byte(noListenerMarker + "\n"), nil
-		case strings.Contains(joined, "systemctl start"):
+		case opSystemdStart:
 			return nil, nil
 		default:
 			return nil, fmt.Errorf("unexpected remote command: %v", argv)
@@ -1448,40 +1411,39 @@ func TestFirstAttachAfterDeployBootstrapsStoppedHost(t *testing.T) {
 	launchCalls, launches := 0, 0
 	var launchCmd string
 	fr := &fakeRunner{runFn: func(_ context.Context, argv []string, stdin io.Reader) ([]byte, error) {
-		joined := strings.Join(argv, " ")
-		switch {
-		case strings.HasSuffix(joined, "uname -s"):
+		switch classifyRemote(argv) {
+		case opUnameKernel:
 			return []byte("Linux\n"), nil
-		case strings.HasSuffix(joined, "uname -m"):
+		case opUnameArch:
 			return []byte("x86_64\n"), nil
-		case strings.HasSuffix(joined, "id -u"):
+		case opUserID:
 			return []byte("1000\n"), nil
-		case argv[len(argv)-1] == envProbeScript:
+		case opEnvironment:
 			return []byte("HOME=/home/dev\nXDG_STATE_HOME=\nXDG_CONFIG_HOME=\n"), nil
-		case strings.Contains(joined, "launch-check"):
+		case opLaunchCheck:
 			launchCalls++
 			if launchCalls == 1 {
 				return []byte(`{"hub_endpoint_schema":1,"protocol":"evener-appwire-v7","version":"oldsha","launch_flags":[]}`), nil
 			}
 			return []byte(`{"hub_endpoint_schema":1,"protocol":"evener-appwire-v7","version":"newsha","launch_flags":["api-log"]}`), nil
-		case strings.Contains(joined, "test -d /opt/evener/bin"):
+		case opInstallDirProbe:
 			return nil, nil
-		case strings.Contains(joined, "list-units"):
+		case opSystemdUnits:
 			return nil, nil // no supervisor: the ad hoc host
-		case strings.Contains(joined, "lsof -ti :9180"):
+		case opListenerProbe:
 			return []byte(noListenerMarker + "\n"), nil // nothing is listening
-		case strings.Contains(joined, "evener_resolve"):
+		case opResolveExec:
 			return []byte("/opt/evener/bin/evener\n"), nil
-		case strings.Contains(joined, "cat >"):
+		case opBinaryInstall:
 			if stdin != nil {
 				_, _ = io.ReadAll(stdin)
 			}
 			return nil, nil
-		case strings.Contains(joined, "nohup"):
+		case opRelaunch:
 			launches++
-			launchCmd = joined
+			launchCmd = strings.Join(argv, " ")
 			return nil, nil
-		case strings.Contains(joined, "api/health"):
+		case opHealth:
 			if launches == 0 {
 				return nil, errors.New("curl: (7) Failed to connect")
 			}
@@ -1510,11 +1472,7 @@ func TestFirstAttachAfterDeployBootstrapsStoppedHost(t *testing.T) {
 	if !strings.Contains(launchCmd, "/opt/evener/bin/evener hub") {
 		t.Fatalf("bootstrap command = %q, want the resolved evener hub invocation", launchCmd)
 	}
-	for _, argv := range fr.recordedRuns() {
-		if strings.Contains(strings.Join(argv, " "), "systemctl restart") {
-			t.Fatalf("a stopped host was restarted instead of bootstrapped: %v", argv)
-		}
-	}
+	requireNoRemoteOps(t, fr, "a stopped host was restarted instead of bootstrapped", opSystemdRestart)
 	// The deploy changed the on-disk build, so the launch contract must have been
 	// re-read: the attached channel reports the deployed build, not the stale
 	// pre-deploy contract.
@@ -1536,42 +1494,41 @@ func TestDeployThenExplicitAttachStartsDormantUnit(t *testing.T) {
 	launchCalls := 0
 	var startCmd, restartCmd string
 	fr := &fakeRunner{runFn: func(_ context.Context, argv []string, stdin io.Reader) ([]byte, error) {
-		joined := strings.Join(argv, " ")
-		switch {
-		case strings.HasSuffix(joined, "uname -s"):
+		switch classifyRemote(argv) {
+		case opUnameKernel:
 			return []byte("Linux\n"), nil
-		case strings.HasSuffix(joined, "uname -m"):
+		case opUnameArch:
 			return []byte("x86_64\n"), nil
-		case strings.HasSuffix(joined, "id -u"):
+		case opUserID:
 			return []byte("1000\n"), nil
-		case argv[len(argv)-1] == envProbeScript:
+		case opEnvironment:
 			return []byte("HOME=/home/dev\nXDG_STATE_HOME=\nXDG_CONFIG_HOME=\n"), nil
-		case strings.Contains(joined, "launch-check"):
+		case opLaunchCheck:
 			launchCalls++
 			if launchCalls == 1 {
 				return []byte(`{"hub_endpoint_schema":1,"protocol":"evener-appwire-v7","version":"oldsha","launch_flags":[]}`), nil
 			}
 			return []byte(`{"hub_endpoint_schema":1,"protocol":"evener-appwire-v7","version":"newsha","launch_flags":["api-log"]}`), nil
-		case strings.Contains(joined, "test -d /opt/evener/bin"):
+		case opInstallDirProbe:
 			return nil, nil
-		case strings.Contains(joined, "list-units"):
+		case opSystemdUnits:
 			return []byte("evener-hub.service loaded inactive dead Evener Hub\n"), nil
-		case strings.Contains(joined, "lsof -ti :9180"):
+		case opListenerProbe:
 			return []byte(noListenerMarker + "\n"), nil
-		case strings.Contains(joined, "evener_resolve"):
+		case opResolveExec:
 			return []byte("/opt/evener/bin/evener\n"), nil
-		case strings.Contains(joined, "cat >"):
+		case opBinaryInstall:
 			if stdin != nil {
 				_, _ = io.ReadAll(stdin)
 			}
 			return nil, nil
-		case strings.Contains(joined, "systemctl restart"):
-			restartCmd = joined
+		case opSystemdRestart:
+			restartCmd = strings.Join(argv, " ")
 			return nil, nil
-		case strings.Contains(joined, "systemctl start"):
-			startCmd = joined
+		case opSystemdStart:
+			startCmd = strings.Join(argv, " ")
 			return nil, nil
-		case strings.Contains(joined, "api/health"):
+		case opHealth:
 			if startCmd == "" {
 				return nil, errors.New("curl: (7) Failed to connect")
 			}
@@ -1616,36 +1573,35 @@ func TestReconnectDeployDoesNotStartAStoppedHub(t *testing.T) {
 	host := hostreg.Host{Name: "alpha", SSH: "alpha.example", EvenerPath: "/opt/evener/bin/evener"}
 	launchCalls := 0
 	fr := &fakeRunner{runFn: func(_ context.Context, argv []string, stdin io.Reader) ([]byte, error) {
-		joined := strings.Join(argv, " ")
-		switch {
-		case strings.HasSuffix(joined, "uname -s"):
+		switch classifyRemote(argv) {
+		case opUnameKernel:
 			return []byte("Linux\n"), nil
-		case strings.HasSuffix(joined, "uname -m"):
+		case opUnameArch:
 			return []byte("x86_64\n"), nil
-		case strings.HasSuffix(joined, "id -u"):
+		case opUserID:
 			return []byte("1000\n"), nil
-		case argv[len(argv)-1] == envProbeScript:
+		case opEnvironment:
 			return []byte("HOME=/home/dev\nXDG_STATE_HOME=\nXDG_CONFIG_HOME=\n"), nil
-		case strings.Contains(joined, "launch-check"):
+		case opLaunchCheck:
 			launchCalls++
 			if launchCalls == 1 {
 				return []byte(`{"hub_endpoint_schema":1,"protocol":"evener-appwire-v7","version":"oldsha","launch_flags":[]}`), nil
 			}
 			return []byte(`{"hub_endpoint_schema":1,"protocol":"evener-appwire-v7","version":"newsha","launch_flags":["api-log"]}`), nil
-		case strings.Contains(joined, "test -d /opt/evener/bin"):
+		case opInstallDirProbe:
 			return nil, nil
-		case strings.Contains(joined, "list-units"):
+		case opSystemdUnits:
 			return []byte("evener-hub.service loaded inactive dead Evener Hub\n"), nil
-		case strings.Contains(joined, "lsof -ti :9180"):
+		case opListenerProbe:
 			return []byte(noListenerMarker + "\n"), nil
-		case strings.Contains(joined, "evener_resolve"):
+		case opResolveExec:
 			return []byte("/opt/evener/bin/evener\n"), nil
-		case strings.Contains(joined, "cat >"):
+		case opBinaryInstall:
 			if stdin != nil {
 				_, _ = io.ReadAll(stdin)
 			}
 			return nil, nil
-		case strings.Contains(joined, "api/health"):
+		case opHealth:
 			return nil, errors.New("curl: (7) Failed to connect")
 		default:
 			return nil, fmt.Errorf("unexpected remote command: %v", argv)
@@ -1664,14 +1620,8 @@ func TestReconnectDeployDoesNotStartAStoppedHub(t *testing.T) {
 	if _, err := m.ensureOnce(context.Background(), host, false); err == nil {
 		t.Fatal("ensureOnce(reconnect) reported success with nothing serving")
 	}
-	for _, argv := range fr.recordedRuns() {
-		joined := strings.Join(argv, " ")
-		for _, forbidden := range []string{"systemctl start", "systemctl restart", "launchctl kickstart", "nohup"} {
-			if strings.Contains(joined, forbidden) {
-				t.Fatalf("a reconnect deploy started a hub: %v", argv)
-			}
-		}
-	}
+	requireNoRemoteOps(t, fr, "a reconnect deploy started a hub",
+		opSystemdStart, opSystemdRestart, opLaunchdKick, opRelaunch)
 }
 
 // Compatible unstamped builds remain untouched on first Connect and reconnect.
@@ -1730,68 +1680,63 @@ func TestEnsureRestartRecoveryRetriesRelaunch(t *testing.T) {
 	var relaunchCommands []string
 
 	fr := &fakeRunner{runFn: func(_ context.Context, argv []string, stdin io.Reader) ([]byte, error) {
-		joined := strings.Join(argv, " ")
-		switch {
-		case strings.Contains(joined, "id -un"):
+		switch classifyRemote(argv) {
+		case opUserName:
 			return []byte("dev\n"), nil
-		case strings.Contains(joined, pidOwnerRemote("4242")):
-			return []byte("dev\n"), nil
-		case strings.HasSuffix(joined, "uname -s"):
+		case opUnameKernel:
 			return []byte("Linux\n"), nil
-		case strings.HasSuffix(joined, "uname -m"):
+		case opUnameArch:
 			return []byte("x86_64\n"), nil
-		case strings.HasSuffix(joined, "id -u"):
+		case opUserID:
 			return []byte("1000\n"), nil
-		case argv[len(argv)-1] == envProbeScript && !strings.Contains(joined, "nohup"):
+		case opEnvironment:
 			return []byte("HOME=/home/dev\nXDG_STATE_HOME=\nXDG_CONFIG_HOME=\n"), nil
-		case strings.Contains(joined, "launch-check"):
+		case opLaunchCheck:
 			launchCalls++
 			if launchCalls == 1 {
 				return []byte(`{"hub_endpoint_schema":1,"protocol":"evener-appwire-v7","version":"oldsha","launch_flags":["api-log"]}`), nil
 			}
 			return []byte(`{"hub_endpoint_schema":1,"protocol":"evener-appwire-v7","version":"newsha","launch_flags":["api-log"]}`), nil
-		case strings.Contains(joined, "test -d /opt/evener/bin"):
+		case opInstallDirProbe:
 			return nil, nil
-		case strings.Contains(joined, "evener_resolve"):
+		case opResolveExec:
 			return []byte("/opt/evener/bin/evener\n"), nil
-		case strings.Contains(joined, "list-units"):
+		case opSystemdUnits:
 			return nil, nil // no supervisor: the bare-process path
-		case strings.Contains(joined, "lsof -ti :9180"):
+		case opListenerProbe:
 			if killCalls == 0 {
 				return []byte("4242\n"), nil
 			}
 			return []byte(noListenerMarker + "\n"), nil
-		case strings.Contains(joined, "-ww -o "):
+		case opProcessArgv:
 			return []byte("/opt/evener/bin/evener hub -addr 127.0.0.1:9180\n"), nil
-		case strings.Contains(joined, "lsof -p 4242"):
+		case opProcessFiles:
 			return nil, errors.New("exit status 1")
-		case strings.Contains(joined, "kill -s 0 -- 4242"):
+		case opProcessAlive:
 			return []byte(pidGoneMarker + "\n"), nil
-		case strings.Contains(joined, "kill -- 4242"):
+		case opProcessKill:
 			killCalls++
 			return nil, nil
-		case strings.Contains(joined, "nohup"):
+		case opRelaunch:
 			relaunches++
-			relaunchCommands = append(relaunchCommands, joined)
+			relaunchCommands = append(relaunchCommands, strings.Join(argv, " "))
 			if relaunches == 1 {
 				return []byte("nohup: failed"), errors.New("exit status 1")
 			}
 			return nil, nil
-		case strings.Contains(joined, "api/health"):
+		case opHealth:
 			// Nothing answers until the recovered relaunch has actually started
 			// the deployed hub.
 			if relaunches < 2 {
 				return nil, errors.New("curl: (7) Failed to connect")
 			}
 			return []byte(`{"version":"newsha","mobile_api_version":1,"hub_addr":"127.0.0.1:9180"}`), nil
-		case strings.Contains(joined, "cat >"):
+		case opBinaryInstall:
 			if stdin != nil {
 				_, _ = io.ReadAll(stdin)
 			}
 			return nil, nil
-		case strings.Contains(strings.Join(argv, " "), "command -v evener"):
-			return []byte("/opt/evener/bin/evener\n"), nil
-		case strings.Contains(strings.Join(argv, " "), "evener_resolve"):
+		case opCommandLookup:
 			return []byte("/opt/evener/bin/evener\n"), nil
 		default:
 			return nil, fmt.Errorf("unexpected remote command: %v", argv)
@@ -1918,48 +1863,45 @@ func TestEnsureSupervisorRestartRecoveryRetriesRestart(t *testing.T) {
 	host := hostreg.Host{Name: "alpha", SSH: "alpha.example", EvenerPath: "/opt/evener/bin/evener"}
 	restarts, starts, launchCalls := 0, 0, 0
 	fr := &fakeRunner{runFn: func(_ context.Context, argv []string, stdin io.Reader) ([]byte, error) {
-		joined := strings.Join(argv, " ")
-		switch {
-		case strings.HasSuffix(joined, "uname -s"):
+		switch classifyRemote(argv) {
+		case opUnameKernel:
 			return []byte("Linux\n"), nil
-		case strings.HasSuffix(joined, "uname -m"):
+		case opUnameArch:
 			return []byte("x86_64\n"), nil
-		case strings.HasSuffix(joined, "id -u"):
+		case opUserID:
 			return []byte("1000\n"), nil
-		case argv[len(argv)-1] == envProbeScript:
+		case opEnvironment:
 			return []byte("HOME=/home/dev\nXDG_STATE_HOME=\nXDG_CONFIG_HOME=\n"), nil
-		case strings.Contains(joined, "launch-check"):
+		case opLaunchCheck:
 			launchCalls++
 			if launchCalls == 1 {
 				return []byte(`{"hub_endpoint_schema":1,"protocol":"evener-appwire-v7","version":"oldsha","launch_flags":["api-log"]}`), nil
 			}
 			return []byte(`{"hub_endpoint_schema":1,"protocol":"evener-appwire-v7","version":"newsha","launch_flags":["api-log"]}`), nil
-		case strings.Contains(joined, "test -d /opt/evener/bin"):
+		case opInstallDirProbe:
 			return nil, nil
-		case strings.Contains(joined, "evener_resolve"):
+		case opResolveExec:
 			return []byte("/opt/evener/bin/evener\n"), nil
-		case strings.Contains(joined, "list-units"):
+		case opSystemdUnits:
 			return []byte("evener-hub.service loaded active running Evener Hub\n"), nil
-		case strings.Contains(joined, "systemctl start"):
+		case opSystemdStart:
 			starts++
 			return nil, nil
-		case strings.Contains(joined, "systemctl restart"):
+		case opSystemdRestart:
 			restarts++
 			return nil, nil
-		case strings.Contains(joined, "api/health"):
+		case opHealth:
 			// The hub only answers once the recovery restart has run.
 			if restarts+starts < 2 {
 				return nil, errors.New("curl: (7) Failed to connect")
 			}
 			return []byte(`{"version":"newsha","mobile_api_version":1,"hub_addr":"127.0.0.1:9180"}`), nil
-		case strings.Contains(joined, "cat >"):
+		case opBinaryInstall:
 			if stdin != nil {
 				_, _ = io.ReadAll(stdin)
 			}
 			return nil, nil
-		case strings.Contains(strings.Join(argv, " "), "command -v evener"):
-			return []byte("/opt/evener/bin/evener\n"), nil
-		case strings.Contains(strings.Join(argv, " "), "evener_resolve"):
+		case opCommandLookup:
 			return []byte("/opt/evener/bin/evener\n"), nil
 		default:
 			return nil, fmt.Errorf("unexpected remote command: %v", argv)
@@ -2002,8 +1944,8 @@ func TestEnsureSupervisorRestartRecoveryRetriesRestart(t *testing.T) {
 // running hub reported, so the channel must report what the probe actually saw.
 func TestRefreshAfterRestartReportsTheReprobedVersion(t *testing.T) {
 	host := hostreg.Host{Name: "alpha", SSH: "alpha.example"}
-	fr := &fakeRunner{runFn: cannedRun(map[string][]byte{
-		"launch-check": []byte(`{"hub_endpoint_schema":1,"protocol":"evener-appwire-v7","version":"probedsha","launch_flags":["api-log"]}`),
+	fr := &fakeRunner{runFn: cannedRun(map[remoteOp][]byte{
+		opLaunchCheck: []byte(`{"hub_endpoint_schema":1,"protocol":"evener-appwire-v7","version":"probedsha","launch_flags":["api-log"]}`),
 	})}
 	m := newTestManager(t, testRegistry(t, host), fr, Options{controllerVersionOverride: "expectedsha"})
 
@@ -2029,38 +1971,35 @@ func TestEnsureKeepsPendingRestartWhenOldProcessStillServes(t *testing.T) {
 	host := hostreg.Host{Name: "alpha", SSH: "alpha.example", EvenerPath: "/opt/evener/bin/evener"}
 	restarts := 0
 	fr := &fakeRunner{runFn: func(_ context.Context, argv []string, stdin io.Reader) ([]byte, error) {
-		joined := strings.Join(argv, " ")
-		switch {
-		case strings.HasSuffix(joined, "uname -s"):
+		switch classifyRemote(argv) {
+		case opUnameKernel:
 			return []byte("Linux\n"), nil
-		case strings.HasSuffix(joined, "uname -m"):
+		case opUnameArch:
 			return []byte("x86_64\n"), nil
-		case strings.HasSuffix(joined, "id -u"):
+		case opUserID:
 			return []byte("1000\n"), nil
-		case argv[len(argv)-1] == envProbeScript:
+		case opEnvironment:
 			return []byte("HOME=/home/dev\nXDG_STATE_HOME=\nXDG_CONFIG_HOME=\n"), nil
-		case strings.Contains(joined, "launch-check"):
+		case opLaunchCheck:
 			return []byte(`{"hub_endpoint_schema":1,"protocol":"evener-appwire-v7","version":"dev","launch_flags":["api-log"]}`), nil
-		case strings.Contains(joined, "test -d /opt/evener/bin"):
+		case opInstallDirProbe:
 			return nil, nil
-		case strings.Contains(joined, "evener_resolve"):
+		case opResolveExec:
 			return []byte("/opt/evener/bin/evener\n"), nil
-		case strings.Contains(joined, "list-units"):
+		case opSystemdUnits:
 			return []byte("evener-hub.service loaded active running Evener Hub\n"), nil
-		case strings.Contains(joined, "systemctl restart"):
+		case opSystemdRestart:
 			restarts++
 			return []byte("Failed to restart evener-hub.service: Interactive authentication required.\n"), errors.New("exit status 1")
-		case strings.Contains(joined, "api/health"):
+		case opHealth:
 			// The same old process keeps serving: same version, same start time.
 			return []byte(`{"version":"dev","started_at":"2026-01-01T00:00:00Z","mobile_api_version":1,"hub_addr":"127.0.0.1:9180"}`), nil
-		case strings.Contains(joined, "cat >"):
+		case opBinaryInstall:
 			if stdin != nil {
 				_, _ = io.ReadAll(stdin)
 			}
 			return nil, nil
-		case strings.Contains(strings.Join(argv, " "), "command -v evener"):
-			return []byte("/opt/evener/bin/evener\n"), nil
-		case strings.Contains(strings.Join(argv, " "), "evener_resolve"):
+		case opCommandLookup:
 			return []byte("/opt/evener/bin/evener\n"), nil
 		default:
 			return nil, fmt.Errorf("unexpected remote command: %v", argv)
@@ -2156,21 +2095,20 @@ func TestRestartHubStartsAnInactiveSupervisorWhenThePortIsFree(t *testing.T) {
 	host := hostreg.Host{Name: "alpha", SSH: "alpha.example"}
 	restarted, killed := false, false
 	fr := &fakeRunner{runFn: func(_ context.Context, argv []string, _ io.Reader) ([]byte, error) {
-		joined := strings.Join(argv, " ")
-		switch {
-		case strings.Contains(joined, "list-units"):
+		switch classifyRemote(argv) {
+		case opSystemdUnits:
 			return []byte("evener-hub.service loaded inactive dead Evener Hub\n"), nil
-		case strings.Contains(joined, "systemctl restart"):
+		case opSystemdRestart:
 			restarted = true
 			return nil, nil
-		case strings.Contains(joined, "kill "):
+		case opProcessKill:
 			killed = true
 			return nil, nil
-		case strings.Contains(joined, "api/health"):
+		case opHealth:
 			return []byte(`{"version":"newsha","mobile_api_version":1,"hub_addr":"127.0.0.1:9180"}`), nil
-		case strings.Contains(strings.Join(argv, " "), "command -v evener"):
+		case opCommandLookup:
 			return []byte("/opt/evener/bin/evener\n"), nil
-		case strings.Contains(strings.Join(argv, " "), "evener_resolve"):
+		case opResolveExec:
 			return []byte("/opt/evener/bin/evener\n"), nil
 		default:
 			return nil, fmt.Errorf("unexpected remote command: %v", argv)
@@ -2201,33 +2139,30 @@ func TestRestartHubPrefersAnAdHocHubOverAnInactiveSupervisor(t *testing.T) {
 	host := hostreg.Host{Name: "alpha", SSH: "alpha.example"}
 	killed, restarted := false, false
 	fr := &fakeRunner{runFn: func(_ context.Context, argv []string, _ io.Reader) ([]byte, error) {
-		joined := strings.Join(argv, " ")
-		switch {
-		case strings.Contains(joined, "id -un"):
+		switch classifyRemote(argv) {
+		case opUserName:
 			return []byte("dev\n"), nil
-		case strings.Contains(joined, pidOwnerRemote("4242")):
-			return []byte("dev\n"), nil
-		case strings.Contains(joined, "list-units"):
+		case opSystemdUnits:
 			return []byte("evener-hub.service loaded inactive dead Evener Hub\n"), nil
-		case strings.Contains(joined, "/proc/4242/cmdline"):
+		case opProcessCmdline:
 			return []byte("/opt/evener/bin/evener\x00hub\x00-addr\x00127.0.0.1:9180\x00"), nil
-		case strings.Contains(joined, "lsof -p 4242"):
+		case opProcessFiles:
 			return nil, errors.New("exit status 1")
-		case strings.Contains(joined, "kill -s 0 -- 4242"):
+		case opProcessAlive:
 			return []byte(pidGoneMarker + "\n"), nil
-		case strings.Contains(joined, "kill -- 4242"):
+		case opProcessKill:
 			killed = true
 			return nil, nil
-		case strings.Contains(joined, "systemctl restart"):
+		case opSystemdRestart:
 			restarted = true
 			return nil, nil
-		case strings.Contains(joined, "nohup"):
+		case opRelaunch:
 			return nil, nil
-		case strings.Contains(joined, "api/health"):
+		case opHealth:
 			return []byte(`{"version":"newsha","mobile_api_version":1,"hub_addr":"127.0.0.1:9180"}`), nil
-		case strings.Contains(strings.Join(argv, " "), "command -v evener"):
+		case opCommandLookup:
 			return []byte("/opt/evener/bin/evener\n"), nil
-		case strings.Contains(strings.Join(argv, " "), "evener_resolve"):
+		case opResolveExec:
 			return []byte("/opt/evener/bin/evener\n"), nil
 		default:
 			return nil, fmt.Errorf("unexpected remote command: %v", argv)
@@ -2263,31 +2198,28 @@ func TestRestartHubFallsThroughOnUnsafeLaunchdLabel(t *testing.T) {
 	host := hostreg.Host{Name: "alpha", SSH: "alpha.example"}
 	killed, relaunched := false, false
 	fr := &fakeRunner{runFn: func(_ context.Context, argv []string, _ io.Reader) ([]byte, error) {
-		joined := strings.Join(argv, " ")
-		switch {
-		case strings.Contains(joined, "id -un"):
+		switch classifyRemote(argv) {
+		case opUserName:
 			return []byte("dev\n"), nil
-		case strings.Contains(joined, pidOwnerRemote("4242")):
-			return []byte("dev\n"), nil
-		case strings.Contains(joined, "launchctl list"):
+		case opLaunchdList:
 			return []byte("PID\tStatus\tLabel\n1234\t0\tcom.example/evener-hub\n"), nil
-		case strings.Contains(joined, "/proc/4242/cmdline"):
+		case opProcessCmdline:
 			return []byte("/opt/evener/bin/evener\x00hub\x00-addr\x00127.0.0.1:9180\x00"), nil
-		case strings.Contains(joined, "lsof -p 4242"):
+		case opProcessFiles:
 			return nil, errors.New("exit status 1")
-		case strings.Contains(joined, "kill -s 0 -- 4242"):
+		case opProcessAlive:
 			return []byte(pidGoneMarker + "\n"), nil
-		case strings.Contains(joined, "kill -- 4242"):
+		case opProcessKill:
 			killed = true
 			return nil, nil
-		case strings.Contains(joined, "nohup"):
+		case opRelaunch:
 			relaunched = true
 			return nil, nil
-		case strings.Contains(joined, "api/health"):
+		case opHealth:
 			return []byte(`{"version":"newsha","mobile_api_version":1,"hub_addr":"127.0.0.1:9180"}`), nil
-		case strings.Contains(joined, "command -v evener"):
+		case opCommandLookup:
 			return []byte("/opt/evener/bin/evener\n"), nil
-		case strings.Contains(joined, "evener_resolve"):
+		case opResolveExec:
 			return []byte("/opt/evener/bin/evener\n"), nil
 		default:
 			return nil, fmt.Errorf("unexpected remote command: %v", argv)
@@ -2327,31 +2259,28 @@ func TestRestartHubRestartsAdHocOnSupervisorlessHost(t *testing.T) {
 	host := hostreg.Host{Name: "alpha", SSH: "alpha.example"}
 	killed, relaunched := false, false
 	fr := &fakeRunner{runFn: func(_ context.Context, argv []string, _ io.Reader) ([]byte, error) {
-		joined := strings.Join(argv, " ")
-		switch {
-		case strings.Contains(joined, "id -un"):
+		switch classifyRemote(argv) {
+		case opUserName:
 			return []byte("dev\n"), nil
-		case strings.Contains(joined, pidOwnerRemote("4242")):
-			return []byte("dev\n"), nil
-		case strings.Contains(joined, "list-units"):
+		case opSystemdUnits:
 			return nil, nil // no supervisor: the ad hoc path
-		case strings.Contains(joined, "/proc/4242/cmdline"):
+		case opProcessCmdline:
 			return []byte("/opt/evener/bin/evener\x00hub\x00-addr\x00127.0.0.1:9180\x00"), nil
-		case strings.Contains(joined, "lsof -p 4242"):
+		case opProcessFiles:
 			return nil, errors.New("exit status 1")
-		case strings.Contains(joined, "kill -s 0 -- 4242"):
+		case opProcessAlive:
 			return []byte(pidGoneMarker + "\n"), nil
-		case strings.Contains(joined, "kill -- 4242"):
+		case opProcessKill:
 			killed = true
 			return nil, nil
-		case strings.Contains(joined, "nohup"):
+		case opRelaunch:
 			relaunched = true
 			return nil, nil
-		case strings.Contains(joined, "api/health"):
+		case opHealth:
 			return []byte(`{"version":"newsha","mobile_api_version":1,"hub_addr":"127.0.0.1:9180"}`), nil
-		case strings.Contains(joined, "command -v evener"):
+		case opCommandLookup:
 			return []byte("/opt/evener/bin/evener\n"), nil
-		case strings.Contains(joined, "evener_resolve"):
+		case opResolveExec:
 			return []byte("/opt/evener/bin/evener\n"), nil
 		default:
 			return nil, fmt.Errorf("unexpected remote command: %v", argv)
@@ -2380,8 +2309,8 @@ func TestRestartHubRestartsAdHocOnSupervisorlessHost(t *testing.T) {
 func TestEnsureAttachesToAnotherBuildWhenProtocolMatches(t *testing.T) {
 	host := hostreg.Host{Name: "alpha", SSH: "alpha.example"}
 	fr := &fakeRunner{
-		runFn: cannedRun(map[string][]byte{
-			"launch-check": []byte(`{"hub_endpoint_schema":1,"protocol":"evener-appwire-v7","version":"oldsha","launch_flags":["api-log"]}`),
+		runFn: cannedRun(map[remoteOp][]byte{
+			opLaunchCheck: []byte(`{"hub_endpoint_schema":1,"protocol":"evener-appwire-v7","version":"oldsha","launch_flags":["api-log"]}`),
 		}),
 		startFn: goodStartFn(t),
 	}
@@ -2401,10 +2330,5 @@ func TestEnsureAttachesToAnotherBuildWhenProtocolMatches(t *testing.T) {
 	}
 	// No deploy path is configured, so nothing may be pushed or installed: the
 	// host's own binary stays, and the difference is reported rather than repaired.
-	for _, argv := range fr.recordedRuns() {
-		joined := strings.Join(argv, " ")
-		if strings.Contains(joined, "evener-install") || strings.Contains(joined, "cat >") {
-			t.Fatalf("a deploy ran on a host with no deploy path configured: %v", argv)
-		}
-	}
+	requireNoRemoteOps(t, fr, "a deploy ran on a host with no deploy path configured", opBinaryInstall)
 }

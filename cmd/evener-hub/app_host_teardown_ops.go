@@ -94,6 +94,9 @@ func (m *hubHostManager) TeardownRetry(ctx context.Context, params appwire.HostT
 	if !remnant.open() {
 		return m.alreadyClearedArm(remnant), nil
 	}
+	if err := m.mutationRefusal(); err != nil {
+		return appwire.HostTeardownRetryResult{}, err
+	}
 	name := remnant.Host
 	// Gate first, then the mutation lock (spec §5's fixed order). A held gate —
 	// a live retry attempt holding it, a deploy/restart, an Ensure, a
@@ -125,33 +128,15 @@ func (m *hubHostManager) TeardownRetry(ctx context.Context, params appwire.HostT
 	// A live attempt owns the remnant: refuse before claiming anything, so two
 	// retries never run the same cleanup and a recover never overwrites a live
 	// retry's resolution.
-	if attemptID, live := m.liveAttemptInThisBoot(remnantID); live {
-		return appwire.HostTeardownRetryResult{}, attemptBusyRefusal(name, remnantID, attemptID)
-	}
-	// Claim under the mutation lock: one atomic hub.toml write that fences any
-	// prior timed-out (or previous-boot) attempt and writes this attempt's
-	// durable record.
-	priorAttemptID, priorAttempt, priorOpen := m.cfg.store.openAttemptFor(remnantID)
-	attemptID, attempt, change := m.claimTeardownAttempt(remnantID, m.nowTime(), priorAttemptID, priorAttempt, priorOpen)
-	m.cfg.mu.Lock()
-	// Re-read under the lock: a concurrent retry may have resolved the remnant
-	// or claims may have moved since the gate-free read above.
-	current, ok := m.cfg.store.remnantByID(remnantID)
-	if !ok {
-		m.cfg.mu.Unlock()
-		return appwire.HostTeardownRetryResult{}, teardownUnknownKeyRefusal(remnantID)
-	}
-	if !current.open() {
-		m.cfg.mu.Unlock()
-		return m.alreadyClearedArm(current), nil
-	}
-	remnant = current
-	entries := m.cfg.store.snapshot()
-	if err := m.persistHosts(entries, entries, change); err != nil {
-		m.cfg.mu.Unlock()
+	claim, err := m.claimTeardown(remnantID, name)
+	if err != nil {
 		return appwire.HostTeardownRetryResult{}, err
 	}
-	m.cfg.mu.Unlock()
+	if claim.alreadyCleared {
+		return m.alreadyClearedArm(claim.remnant), nil
+	}
+	remnant = claim.remnant
+	attemptID, attempt := claim.attemptID, claim.attempt
 
 	// The run itself: no mutation lock held, bounded by the owner-set execution
 	// deadline. A timeout is the terminal failure arm with the remnant still
@@ -187,17 +172,15 @@ func (m *hubHostManager) TeardownRetry(ctx context.Context, params appwire.HostT
 		// over), while a non-deadline refusal is not a timeout and must not be
 		// durably recorded as one — it fences the attempt closed and returns the
 		// refusal the caller must see.
-		entries := m.cfg.store.snapshot()
 		if runErr != nil && !isTeardownDeadline(runErr) {
-			closed := fencedAttemptRecord(attempt, m.nowTime())
-			if err := m.persistHosts(entries, entries, hostPersistChange{attempt: &pendingHostAttempt{AttemptID: attemptID, Attempt: closed}}); err != nil {
+			if err := m.fenceClaimLocked(claim); err != nil {
 				return appwire.HostTeardownRetryResult{}, err
 			}
 			return appwire.HostTeardownRetryResult{}, runErr
 		}
 		timedOut := attempt
 		timedOut.TimedOutAt = hostInstant(m.nowTime())
-		if err := m.persistHosts(entries, entries, hostPersistChange{attempt: &pendingHostAttempt{AttemptID: attemptID, Attempt: timedOut}}); err != nil {
+		if err := m.persistChange(hostPersistChange{attempt: &pendingHostAttempt{AttemptID: attemptID, Attempt: timedOut}}); err != nil {
 			return appwire.HostTeardownRetryResult{}, err
 		}
 		return m.retryArm(appwire.HostTeardownOutcomeFailed, remnant, seam), nil
@@ -206,37 +189,9 @@ func (m *hubHostManager) TeardownRetry(ctx context.Context, params appwire.HostT
 	// Finalize from the observed result: one atomic write records the typed
 	// resolved-remnant record, resolves the original receipt, and closes the
 	// attempt.
-	clearedAt := m.nowTime()
-	resolved := HostResolvedRemnant{
-		ClearedAt:      hostInstant(clearedAt),
-		ResolutionKind: hostRemnantResolutionRetry,
-		HostKind:       hostKindOf(remnant.Kind),
-		MutationKey:    remnant.MutationKey,
-	}
-	stored := remnant
-	stored.Resolved = &resolved
-	closed := fencedAttemptRecord(attempt, clearedAt)
-	entries = m.cfg.store.snapshot()
-	finalize := hostPersistChange{
-		resolved: &pendingHostRemnant{RemnantID: remnantID, Remnant: stored},
-		attempt:  &pendingHostAttempt{AttemptID: attemptID, Attempt: closed},
-	}
-	if receipt, ok := m.resolvedReceipt(remnant, clearedAt, nil); ok {
-		finalize.receipt = &pendingHostReceipt{Key: remnant.MutationKey, Receipt: receipt}
-	}
-	if err := m.persistHosts(entries, entries, finalize); err != nil {
+	stored, err := m.finalizeTeardown(claim, m.nowTime(), hostRemnantResolutionRetry, nil)
+	if err != nil {
 		return appwire.HostTeardownRetryResult{}, err
-	}
-	// A completed REMOVAL retirement takes the name's derived state with it,
-	// exactly as the clean removal path does: the committed-with-teardown-failure
-	// branch of `RemoveResult` returns before its own drop, and the retry is the
-	// only other path to completion — so without this the removed host's source
-	// registration and cached session rows would outlive the removal, and
-	// `sourceOnline`'s fail-open for an unregistered source would keep rendering
-	// its sessions as live until a restart. An edit's remnant leaves the name
-	// live and keeps its state.
-	if hostKindOf(remnant.Kind) == hostRemnantHostKindRemoved {
-		m.dropHostDerivedState(remnant.Host)
 	}
 	return m.retryArm(appwire.HostTeardownOutcomeComplete, stored, ""), nil
 }
@@ -256,6 +211,9 @@ func (m *hubHostManager) TeardownRecover(ctx context.Context, params appwire.Hos
 	}
 	if !remnant.open() {
 		return recoveredClearedResult(remnant), nil
+	}
+	if err := m.mutationRefusal(); err != nil {
+		return appwire.HostTeardownRecoverResult{}, err
 	}
 	name := remnant.Host
 	// Gate first: "failing fast with the typed busy error when a retry attempt
@@ -286,29 +244,14 @@ func (m *hubHostManager) TeardownRecover(ctx context.Context, params appwire.Hos
 	// A live attempt owns the remnant: a recover must not clear past a running
 	// retry (nor overwrite its resolution), so it refuses busy exactly as a
 	// concurrent retry does.
-	if liveID, live := m.liveAttemptInThisBoot(remnantID); live {
-		return appwire.HostTeardownRecoverResult{}, attemptBusyRefusal(name, remnantID, liveID)
-	}
-	priorAttemptID, priorAttempt, priorOpen := m.cfg.store.openAttemptFor(remnantID)
-	attemptID, attempt, change := m.claimTeardownAttempt(remnantID, m.nowTime(), priorAttemptID, priorAttempt, priorOpen)
-
-	m.cfg.mu.Lock()
-	current, ok := m.cfg.store.remnantByID(remnantID)
-	if !ok {
-		m.cfg.mu.Unlock()
-		return appwire.HostTeardownRecoverResult{}, teardownUnknownKeyRefusal(remnantID)
-	}
-	if !current.open() {
-		m.cfg.mu.Unlock()
-		return recoveredClearedResult(current), nil
-	}
-	remnant = current
-	entries := m.cfg.store.snapshot()
-	if err := m.persistHosts(entries, entries, change); err != nil {
-		m.cfg.mu.Unlock()
+	claim, err := m.claimTeardown(remnantID, name)
+	if err != nil {
 		return appwire.HostTeardownRecoverResult{}, err
 	}
-	m.cfg.mu.Unlock()
+	if claim.alreadyCleared {
+		return recoveredClearedResult(claim.remnant), nil
+	}
+	remnant = claim.remnant
 
 	// The safety checks run outside the lock (they read the live registry and
 	// the manager's bindings), then are re-checked immediately before the
@@ -322,8 +265,7 @@ func (m *hubHostManager) TeardownRecover(ctx context.Context, params appwire.Hos
 		// A failed fence write is surfaced beside the refusal rather than
 		// swallowed: it leaves exactly that wedge behind.
 		m.cfg.mu.Lock()
-		entries := m.cfg.store.snapshot()
-		fenceErr := m.persistHosts(entries, entries, hostPersistChange{attempt: &pendingHostAttempt{AttemptID: attemptID, Attempt: fencedAttemptRecord(attempt, m.nowTime())}})
+		fenceErr := m.fenceClaimLocked(claim)
 		m.cfg.mu.Unlock()
 		if fenceErr != nil {
 			return appwire.HostTeardownRecoverResult{}, fmt.Errorf("%w; the refused recover left its attempt record open: %w", err, fenceErr)
@@ -340,49 +282,98 @@ func (m *hubHostManager) TeardownRecover(ctx context.Context, params appwire.Hos
 	// left open under this boot's epoch fences the name for the rest of the
 	// process, so a later retry or recover would refuse busy instead of acting.
 	if blocking := m.recoverySafetyCheckLocked(remnantID, remnant); blocking != nil {
-		entries := m.cfg.store.snapshot()
-		closed := fencedAttemptRecord(attempt, m.nowTime())
-		if fenceErr := m.persistHosts(entries, entries, hostPersistChange{attempt: &pendingHostAttempt{AttemptID: attemptID, Attempt: closed}}); fenceErr != nil {
+		if fenceErr := m.fenceClaimLocked(claim); fenceErr != nil {
 			// The deferred unlock (this branch holds the mutation lock) returns
 			// it on the way out.
 			return appwire.HostTeardownRecoverResult{}, fmt.Errorf("%w; the refused recover left its attempt record open: %w", blocking, fenceErr)
 		}
 		return appwire.HostTeardownRecoverResult{}, blocking
 	}
-	resolved := HostResolvedRemnant{
-		ClearedAt:      hostInstant(clearedAt),
-		ResolutionKind: hostRemnantResolutionRecover,
-		HostKind:       hostKindOf(remnant.Kind),
-		MutationKey:    remnant.MutationKey,
-		Attestation:    &attestation,
-	}
-	stored := remnant
-	stored.Resolved = &resolved
-	closed := fencedAttemptRecord(attempt, clearedAt)
-	entries = m.cfg.store.snapshot()
-	finalize := hostPersistChange{
-		resolved: &pendingHostRemnant{RemnantID: remnantID, Remnant: stored},
-		attempt:  &pendingHostAttempt{AttemptID: attemptID, Attempt: closed},
-	}
-	if receipt, ok := m.resolvedReceipt(remnant, clearedAt, &attestation); ok {
-		finalize.receipt = &pendingHostReceipt{Key: remnant.MutationKey, Receipt: receipt}
-	}
-	if err := m.persistHosts(entries, entries, finalize); err != nil {
+	stored, err := m.finalizeTeardown(claim, clearedAt, hostRemnantResolutionRecover, &attestation)
+	if err != nil {
 		return appwire.HostTeardownRecoverResult{}, err
 	}
-	// Clearing a REMOVAL's remnant completes the removal, so the name's derived
-	// state goes with it exactly as it does on the retry's completion: the
-	// removal committed (its tombstone and receipt are durable and the fence
-	// forbids a re-add while the remnant was open), and the unattested cleanup is
-	// the operator's forward path precisely because no handle of the pinned
-	// incarnation is reachable — so leaving the source registration and cached
-	// session rows behind would keep rendering the removed host's sessions as
-	// live until a restart. An edit's remnant leaves the name live and keeps its
-	// state.
+	return recoveredClearedResult(stored), nil
+}
+
+// teardownClaim is one retry's or recover's claim on an open remnant: the
+// remnant as re-read under the mutation lock and the attempt record written for
+// it. When a concurrent call resolved the remnant first, alreadyCleared is set
+// and remnant is the resolved record.
+type teardownClaim struct {
+	remnant        HostTeardownRemnant
+	attemptID      string
+	attempt        HostTeardownAttempt
+	alreadyCleared bool
+}
+
+// claimTeardown refuses busy while a live attempt owns the remnant, then, under
+// the mutation lock, writes one atomic hub.toml record that fences any prior
+// timed-out (or previous-boot) attempt and records this attempt. The remnant is
+// re-read under the lock: a concurrent call may have resolved it since the
+// caller's gate-free read.
+func (m *hubHostManager) claimTeardown(remnantID, name string) (teardownClaim, error) {
+	if attemptID, live := m.liveAttemptInThisBoot(remnantID); live {
+		return teardownClaim{}, attemptBusyRefusal(name, remnantID, attemptID)
+	}
+	priorAttemptID, priorAttempt, priorOpen := m.cfg.store.openAttemptFor(remnantID)
+	attemptID, attempt, change := m.claimTeardownAttempt(remnantID, m.nowTime(), priorAttemptID, priorAttempt, priorOpen)
+	m.cfg.mu.Lock()
+	defer m.cfg.mu.Unlock()
+	current, ok := m.cfg.store.remnantByID(remnantID)
+	if !ok {
+		return teardownClaim{}, teardownUnknownKeyRefusal(remnantID)
+	}
+	if !current.open() {
+		return teardownClaim{remnant: current, alreadyCleared: true}, nil
+	}
+	if err := m.persistChange(change); err != nil {
+		return teardownClaim{}, err
+	}
+	return teardownClaim{remnant: current, attemptID: attemptID, attempt: attempt}, nil
+}
+
+// fenceClaimLocked closes the claim's attempt record. The caller holds the
+// mutation lock.
+func (m *hubHostManager) fenceClaimLocked(claim teardownClaim) error {
+	closed := fencedAttemptRecord(claim.attempt, m.nowTime())
+	return m.persistChange(hostPersistChange{attempt: &pendingHostAttempt{AttemptID: claim.attemptID, Attempt: closed}})
+}
+
+// finalizeTeardown is the clearing write both retry and recover end with: one
+// atomic hub.toml record of the typed resolved remnant, the original receipt
+// resolved, and the claim's attempt closed. attestation is non-nil exactly for
+// a recover. A completed REMOVAL takes the name's derived state with it, as the
+// clean removal path does: its committed-with-teardown-failure branch returns
+// before its own drop, and clearing the remnant is the only other path to
+// completion, so without this the removed host's source registration and cached
+// session rows would outlive the removal and render as live until a restart. An
+// edit's remnant leaves the name live and keeps its state. The caller holds the
+// mutation lock.
+func (m *hubHostManager) finalizeTeardown(claim teardownClaim, clearedAt time.Time, resolutionKind string, attestation *HostRecoveryAttestation) (HostTeardownRemnant, error) {
+	remnant := claim.remnant
+	stored := remnant
+	stored.Resolved = &HostResolvedRemnant{
+		ClearedAt:      hostInstant(clearedAt),
+		ResolutionKind: resolutionKind,
+		HostKind:       hostKindOf(remnant.Kind),
+		MutationKey:    remnant.MutationKey,
+		Attestation:    attestation,
+	}
+	finalize := hostPersistChange{
+		resolved: &pendingHostRemnant{RemnantID: remnant.remnantID, Remnant: stored},
+		attempt:  &pendingHostAttempt{AttemptID: claim.attemptID, Attempt: fencedAttemptRecord(claim.attempt, clearedAt)},
+	}
+	if receipt, ok := m.resolvedReceipt(remnant, clearedAt, attestation); ok {
+		finalize.receipt = &pendingHostReceipt{Key: remnant.MutationKey, Receipt: receipt}
+	}
+	if err := m.persistChange(finalize); err != nil {
+		return HostTeardownRemnant{}, err
+	}
 	if hostKindOf(remnant.Kind) == hostRemnantHostKindRemoved {
 		m.dropHostDerivedState(remnant.Host)
 	}
-	return recoveredClearedResult(stored), nil
+	return stored, nil
 }
 
 // liveAttemptInThisBoot reports whether an open attempt for the remnant is
@@ -544,18 +535,19 @@ func (m *hubHostManager) runPinnedTeardown(ctx context.Context, remnantID string
 	if !remnant.CleanupHandle.resolvable() {
 		return teardownRunResult{Seam: remnant.Seam}, teardownUnknownKeyRefusal(remnantID)
 	}
-	if err := m.resolveCleanupHandle(remnantID, remnant); err != nil {
-		return teardownRunResult{Seam: remnant.Seam}, err
-	}
 	// The pinned incarnation is the only one this run may touch. A live entry
 	// that is a *different* incarnation means the pinned handles are already
 	// gone — the registry moved on — and re-running the rebind step against the
 	// new incarnation would tear down state the remnant does not own, so the run
 	// is a no-op that still succeeds: there is nothing of the pinned
-	// incarnation left to destroy.
+	// incarnation left to destroy. Its cleanup boundary went with it, so this is
+	// settled before the boundary is required.
 	host, live := m.cfg.hosts.Get(remnant.Host)
 	if live && host.IncarnationID != remnant.IncarnationID {
 		return teardownRunResult{}, nil
+	}
+	if err := m.resolveCleanupHandle(remnantID, remnant); err != nil {
+		return teardownRunResult{Seam: remnant.Seam}, err
 	}
 	if !live {
 		// Nothing live carries the pinned pair (a post-remove remnant, or a
@@ -715,12 +707,12 @@ func (m *hubHostManager) resolveCleanupHandle(remnantID string, remnant HostTear
 		if handle.IncarnationID != remnant.IncarnationID {
 			return teardownUnknownKeyRefusal(remnantID)
 		}
-		if m.cfg.ops == nil {
+		if m.opsStore() == nil {
 			// No operation store is wired (tests, embedders): the handle's own
 			// record is the whole durable handle, and it is complete.
 			return nil
 		}
-		mark, ok := m.cfg.ops.Boundary(remnant.Host)
+		mark, ok := m.opsStore().Boundary(remnant.Host)
 		if !ok {
 			return teardownUnknownKeyRefusal(remnantID)
 		}

@@ -87,22 +87,6 @@ func TestPendingDelegateAttentionIDsNilGuard(t *testing.T) {
 	}
 }
 
-// TestScheduleStableDelegateAttentionRetryNilGuard covers the nil-session guard.
-func TestScheduleStableDelegateAttentionRetryNilGuard(t *testing.T) {
-	t.Parallel()
-	var s *Session
-	// Should not panic.
-	s.scheduleStableDelegateAttentionRetry()
-}
-
-// TestResetStableDelegateAttentionRetryNilGuard covers the nil-session guard.
-func TestResetStableDelegateAttentionRetryNilGuard(t *testing.T) {
-	t.Parallel()
-	var s *Session
-	// Should not panic.
-	s.resetStableDelegateAttentionRetry()
-}
-
 // TestFinishRootDelegateAttentionTurnEmptyIDs covers the empty-ids early-return.
 func TestFinishRootDelegateAttentionTurnEmptyIDs(t *testing.T) {
 	t.Parallel()

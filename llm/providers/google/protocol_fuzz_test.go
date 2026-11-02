@@ -25,6 +25,8 @@ func FuzzGoogleProtocolBuildBody(f *testing.F) {
 	f.Add("gemini-2.5-pro", "", "", []byte(`{}`), []byte(`{"type":["string","null"]}`), byte(3), byte(255))
 	f.Add("m", "sys", "u", []byte(`not json`), []byte(`{"$ref":"#/x"}`), byte(11), byte(2))
 	f.Add("", "s", "u", []byte(``), []byte(`{"anyOf":[1,2]}`), byte(20), byte(4))
+	// sel=2 selects tool_choice mode "none" (functionCallingConfig mode NONE).
+	f.Add("gemini-test", "be terse", "hello", []byte(`{"city":"paris"}`), []byte(`{"type":"object","properties":{"x":{"type":"string"}}}`), byte(2), byte(0))
 
 	p := &Protocol{}
 
