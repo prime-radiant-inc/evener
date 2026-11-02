@@ -285,6 +285,17 @@ type sessionRecoveryAdmissionError struct{ appwire.WireError }
 
 func (err sessionRecoveryAdmissionError) Unwrap() error { return err.WireError }
 
+// recoverySupersededError is the refusal for a resume issued against a
+// recovery epoch a newer Stop has since advanced past. The caller parked the
+// retry before that Stop, so restarting the session would override it; the
+// structured discriminant lets the client treat the failure as the Stop's
+// own word instead of arming another retry.
+func recoverySupersededError() error {
+	wire := appwire.Unavailable("session recovery canceled this pending action; submit it again")
+	wire.Data = appwire.ErrorData{EvenerErrorInfo: appwire.ErrorSessionRecoveryCanceled}
+	return sessionRecoveryAdmissionError{wire}
+}
+
 func isSessionRecoveryAdmissionError(err error) bool {
 	_, ok := errors.AsType[sessionRecoveryAdmissionError](err)
 	return ok

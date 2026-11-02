@@ -1589,6 +1589,10 @@ func outputImageDescriptorKey(img appwire.OutputImage) string {
 // saved snapshots and daemons started by another controller.
 func applyThreadResumeRequirement(ctx context.Context, cfg hubcore.WebConfig, ref, threadID string, thread appwire.Thread) appwire.Thread {
 	recovery := sessionRecoveryState(cfg, ref, threadID)
+	// Every read carries the current recovery epoch, fenced or not: a client
+	// arming a retry from this read hands it back with its next resume, so a
+	// Stop from another client or device can supersede the retry server-side.
+	thread.Evener.RecoveryEpoch = recovery.Epoch
 	if recovery.ResumeRequired || recovery.Stopping > 0 || sessionConnectionRecoveryError(ctx, cfg, ref, threadID) != nil {
 		thread.Evener.ResumeRequired = true
 		thread.Evener.Capabilities.Send = false

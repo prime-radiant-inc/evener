@@ -34,6 +34,13 @@ const (
 	ErrorSessionUnavailable         ErrorInfo = "sessionUnavailable"
 	ErrorConflict                   ErrorInfo = "conflict"
 	ErrorActionUnavailable          ErrorInfo = "actionUnavailable"
+	// ErrorSessionRecoveryCanceled marks a resume the hub refused because a
+	// Stop advanced the session's recovery epoch past the one the request was
+	// issued against: the caller's automatic retry was parked before that
+	// Stop, and restarting the session would override it. It shares
+	// CodeUnavailable with plain unavailability, so a client that must treat
+	// the refusal as terminal matches this discriminant, never the code.
+	ErrorSessionRecoveryCanceled    ErrorInfo = "sessionRecoveryCanceled"
 	ErrorHubLaunch                  ErrorInfo = "hubLaunch"
 	ErrorQueuedDrainPartial         ErrorInfo = "queuedDrainPartial"
 	ErrorMutationOutcomeUnknown     ErrorInfo = "mutationOutcomeUnknown"

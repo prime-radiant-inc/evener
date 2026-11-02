@@ -497,6 +497,17 @@ func resumeThread(ctx context.Context, cfg hubcore.WebConfig, sources *appsource
 		if err := sessionConnectionRecoveryError(ctx, cfg, "", requestedID); err != nil {
 			return appwire.ThreadResumeResponse{}, err
 		}
+		// A resume issued from parked state (an automatic retry) names the
+		// recovery epoch it armed against. A Stop from another client or
+		// device advanced that epoch while the retry waited, invisible to this
+		// page's Stop generations and its IndexedDB epochs; the fresh
+		// connection's admission epoch would equal the current one, so only
+		// the caller's expected value can catch it.
+		if params.ExpectedRecoveryEpoch != nil {
+			if current := cfg.ResumeLocks.RecoveryState(requestedID).Epoch; current != *params.ExpectedRecoveryEpoch {
+				return appwire.ThreadResumeResponse{}, recoverySupersededError()
+			}
+		}
 		ownershipDone := trace.stage(ctx, "ownership")
 		target, aliases, err := resumeOwnership(cfg, requestedID, requestedRefID)
 		ownershipDone(err)

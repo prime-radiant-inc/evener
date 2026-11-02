@@ -661,6 +661,14 @@ type ThreadStartResponse struct {
 type ThreadResumeParams struct {
 	Ref     string `json:"ref,omitempty"`
 	Session string `json:"sessionId,omitempty"`
+	// ExpectedRecoveryEpoch, when present, is the session's hub-owned recovery
+	// epoch the caller issued this resume against: the value last read in
+	// thread/read (EvenerThread.RecoveryEpoch). The hub refuses the resume
+	// when a Stop advanced that epoch since, so an automatic retry parked in
+	// another client's or device's backoff cannot restart the session that
+	// client stopped. Absent means the caller issued no such expectation and
+	// the hub validates only the connection's own admission epoch.
+	ExpectedRecoveryEpoch *uint64 `json:"expectedRecoveryEpoch,omitempty"`
 }
 
 type ThreadResumeResponse struct {

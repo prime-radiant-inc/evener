@@ -64,6 +64,12 @@ type EvenerThread struct {
 	// ResumeRequired means recovery stopped this session and automatic actions
 	// must wait for an explicit thread/resume. Saved transcripts remain readable.
 	ResumeRequired bool `json:"resumeRequired,omitempty"`
+	// RecoveryEpoch is the session's hub-owned recovery generation: it
+	// advances on every confirmed Stop, from any client or device. A client
+	// that issues a resume from parked state (an automatic retry) carries the
+	// value it last read here as thread/resume's expectedRecoveryEpoch, so the
+	// hub can refuse a resume a newer Stop has superseded.
+	RecoveryEpoch uint64 `json:"recoveryEpoch,omitempty"`
 	// ResumeOnlyFoldable means a turn/start sent on this connection right now
 	// would be admitted under the resume-only carve-out: the session merely needs
 	// its resume, which the send folds into itself. The hub stamps it only when
