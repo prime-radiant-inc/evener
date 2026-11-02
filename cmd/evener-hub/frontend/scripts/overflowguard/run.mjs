@@ -932,10 +932,15 @@ function assertDetail(result, width) {
   if (detail?.mobile !== mobile)
     failures.push(`Verbosity layout mode is ${detail?.mobile}, realized viewport mode is ${mobile}`);
   failures.push(...assertFieldsets(detail, `${width}px Verbosity`));
-  const expectedTargets = 33;
+  // The editor renders nine content/metrics/diagnostics switches plus the
+  // "Thinking open by default" switch added in PR #5565; a control added or
+  // lost without this update flips the count.
+  const expectedTargets = 35;
   if ((detail?.targets?.length ?? 0) !== expectedTargets) {
     failures.push(
-      `Verbosity mounted ${detail?.targets?.length ?? "unknown"} interactive targets, expected ${expectedTargets}`,
+      `Verbosity mounted ${detail?.targets?.length ?? "unknown"} interactive targets, expected ${expectedTargets}: ${JSON.stringify(
+        (detail?.targets ?? []).map((target) => ({ kind: target.kind, label: target.label })),
+      )}`,
     );
   }
   if (!(detail?.targets ?? []).some((target) => target.kind === "menuitem" && target.label === "Verbosity…")) {
@@ -949,8 +954,8 @@ function assertDetail(result, width) {
     failures.push("Verbosity Advanced summary target measurement is missing");
   }
   const switchLabels = detail?.targets?.filter((target) => target.kind === "switch-label") ?? [];
-  if (switchLabels.length !== 9)
-    failures.push(`Verbosity mounted ${switchLabels.length} Switch label targets, expected 9`);
+  if (switchLabels.length !== 10)
+    failures.push(`Verbosity mounted ${switchLabels.length} Switch label targets, expected 10`);
   if (!detail?.dialogCentered && !mobile) {
     failures.push(
       `Desktop Verbosity Dialog is not centered in the layout viewport: ${JSON.stringify({ panel: detail?.panel, viewport: result.viewport })}`,

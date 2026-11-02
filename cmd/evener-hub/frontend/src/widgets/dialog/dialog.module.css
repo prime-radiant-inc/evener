@@ -46,6 +46,10 @@
   line-height: var(--line-height-body);
   color: var(--ink-hi);
   overflow: auto;
+  /* Keep a focused row's painted ring inside the scrollport when focus scrolls
+   * it flush to the edge (the mobile Verbosity sheet's segmented control, for
+   * example): the ring draws 4px outside the row's box. */
+  scroll-padding-block: 6px;
 }
 
 .footer {
