@@ -34,8 +34,8 @@ can move the session without its human partner:
 - `autonomyInFlight()`: pending job notifications, queued input, a runnable
   client start, pending delegate deliveries and attention, watch-send
   settlement retries, and working children (running/driving/finalizing).
-- Running work: this session's own running jobs plus detached processes with
-  open completion receipts (`sessionRunningWorkIDs`).
+- This session's own running managed jobs (`sessionRunningJobIDs`), excluding
+  detached processes because their completion sends no notification.
 - A pending question (`HasPendingAsk`): the human's answer wakes the session.
 - An armed watch registered anywhere it can deliver to this session: this
   session's own job manager plus every holder manager `watchHolderSessions`
