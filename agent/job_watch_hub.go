@@ -294,7 +294,7 @@ func (jm *jobManager) onHubObservationLookup(watchID string, update appwire.Sess
 	delivery := jm.watchSendSnapshot(cfg, identity, trigger, root).withSelfInfluence(jm.classifySelfInfluenceLocked(cfg, m.Causal))
 	jm.mu.Unlock()
 	if complete {
-		for failures := 0; ; failures++ {
+		for {
 			err := jm.endHubWatch(watchID, "completed", &delivery)
 			if err == nil {
 				jm.mu.Lock()
@@ -308,15 +308,22 @@ func (jm *jobManager) onHubObservationLookup(watchID string, update appwire.Sess
 				return nil
 			}
 			// A failed journal write is not an observation failure: the
-			// completion was verified, only its durable write failed. The
-			// delivery is retained on the pending-send recovery path across
-			// attempts, so retry the same end on the file's own state-read
-			// budget instead of handing the consumer a fallback end whose
-			// failure would leave the registered watch with no consumer.
-			if failures >= hubWatchStateFailureLimit || jm.isClosing() || !managerHubWatchPresent(jm, watchID) {
+			// completion was verified, only its durable write failed. No
+			// other path owns this end — the pending-send retention is
+			// disabled for terminal sends while the config rejects
+			// deliveries — so the consumer keeps retrying the same end
+			// until it persists, the manager closes, or the watch is
+			// replaced by a re-registration. Abandoning the end after a
+			// bounded window would strand the registered watch with no
+			// consumer and no completion delivery.
+			if jm.isClosing() || !managerHubWatchPresent(jm, watchID) {
 				return err
 			}
-			time.Sleep(hubWatchRetryDelay)
+			delay := hubWatchRetryDelay
+			if jm.testOnlyTerminalSendRetryDelay > 0 {
+				delay = jm.testOnlyTerminalSendRetryDelay
+			}
+			time.Sleep(delay)
 		}
 	}
 	jm.recordWatchSendsAndKick([]watchSendDelivery{delivery})

@@ -8,6 +8,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"primeradiant.com/evener/agent/internal/jobstore"
 	"primeradiant.com/evener/agent/provenance"
@@ -720,5 +721,58 @@ func TestHubWatchCompletionDedupWaitsForTerminalPersistence(t *testing.T) {
 	}
 	if managerWatchActive(jm, watch.WatchID) {
 		t.Fatal("the completed watch stayed registered")
+	}
+}
+
+func TestHubWatchCompletionKeepsTerminalOwnershipPastRetryWindow(t *testing.T) {
+	t.Parallel()
+	root := newMessagingRoot(t, newMessagingAdapter(), func(c *SessionConfig) { c.Manager = true })
+	jm := root.jobManager
+	const ref, instance, generation = "local:worker", "worker-instance", "7@worker"
+	watch, err := jm.configureHubWatch(ref, instance, generation, "local:manager", []string{"communicate"}, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The journal stays down longer than the terminal send's bounded retry
+	// window. The completion's end must keep owning the send until
+	// persistence returns, not abandon the completion after a fixed number
+	// of failed attempts and leave the registered watch with neither a
+	// consumer nor the completion it already verified.
+	jm.testOnlyTerminalSendRetryDelay = 10 * time.Millisecond
+	realAppendEvents := jm.appendEvents
+	var attempts atomic.Int32
+	jm.appendEvents = func(events []jobstore.Event) error {
+		if attempts.Add(1) <= 6 {
+			return errors.New("journal write failed")
+		}
+		return realAppendEvents(events)
+	}
+	accepted := true
+	completion := appwire.SessionWatchUpdate{Event: "communicate", Metadata: appwire.SessionObservationMetadata{
+		Ref: ref, InstanceID: instance, GenerationID: generation,
+		EntryID: "terminal-1", EndTurn: true, EndReason: "done",
+		TerminalAccepted: &accepted, CausalKnown: true,
+	}}
+	if err := jm.onHubObservation(watch.WatchID, completion); err != nil {
+		t.Fatalf("completion must keep its terminal ownership past the retry window: %v", err)
+	}
+	if managerWatchActive(jm, watch.WatchID) {
+		t.Fatal("the completed watch stayed registered")
+	}
+	ends, deliveries := 0, 0
+	for _, event := range loadJobStoreEvents(t, jm) {
+		if event.Watch != nil && event.WatchID == watch.WatchID && event.Watch.EndReason == "completed" {
+			ends++
+		}
+		if event.WatchSend != nil && event.WatchSend.Key.WatchID == watch.WatchID &&
+			event.WatchSend.TriggerReason == "completed: accepted terminal done" && !event.WatchSend.EndNotice {
+			deliveries++
+		}
+	}
+	if ends != 1 {
+		t.Fatalf("completed end records=%d, want 1", ends)
+	}
+	if deliveries != 1 {
+		t.Fatalf("completion deliveries=%d, want 1", deliveries)
 	}
 }

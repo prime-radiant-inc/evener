@@ -199,6 +199,9 @@ type jobManager struct {
 	// concurrent prior-notice settlement must not strip the terminal
 	// delivery's eligibility. Nil in production.
 	testOnlyBeforeTerminalWatchSend func()
+	// testOnlyTerminalSendRetryDelay overrides the completion send's retry
+	// cadence in tests. Zero in production keeps the production delay.
+	testOnlyTerminalSendRetryDelay time.Duration
 	// watchReceiptBoundary observes entry into the delegate controller for a
 	// stable-watch receipt. Nil in production; lock-order tests use it to prove
 	// the job manager released its local persistence lock first.
