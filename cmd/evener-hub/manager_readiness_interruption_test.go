@@ -33,15 +33,24 @@ type readinessContinuationGate struct {
 	cancelled           chan appwire.SessionRuntimeCancel
 	release             chan struct{}
 	settled             chan error
+	finished            chan struct{}
+	finishOnce          sync.Once
 	once                sync.Once
 	held                bool
 }
 
 func newReadinessContinuationGate() *readinessContinuationGate {
-	return &readinessContinuationGate{entered: make(chan appwire.ThreadReadResponse, 1), cancelled: make(chan appwire.SessionRuntimeCancel, 1), release: make(chan struct{}), settled: make(chan error, 1)}
+	return &readinessContinuationGate{entered: make(chan appwire.ThreadReadResponse, 1), cancelled: make(chan appwire.SessionRuntimeCancel, 1), release: make(chan struct{}), settled: make(chan error, 1), finished: make(chan struct{})}
 }
 
 func (g *readinessContinuationGate) open() { g.once.Do(func() { close(g.release) }) }
+
+// finish ends the proxy's authority to fail the test. A redial that reaches a
+// proxy after cleanup started is teardown noise, not a readiness failure, and
+// an assertion from its handler goroutine after the test completed panics the
+// whole shard ("Fail in goroutine after TestX has completed"). Cleanup closes
+// this before any server, so late handlers drop their connections quietly.
+func (g *readinessContinuationGate) finish() { g.finishOnce.Do(func() { close(g.finished) }) }
 
 func (g *readinessContinuationGate) setIDs(ancestor, candidate string) {
 	g.mu.Lock()
@@ -85,11 +94,18 @@ func (g *readinessContinuationGate) proxy(t *testing.T, daemon *httptest.Server,
 			}
 			dialAttempts = append(dialAttempts, err.Error())
 			if ctx.Err() != nil || time.Now().After(dialDeadline) {
-				t.Errorf("dial daemon websocket after %d attempts: %s", len(dialAttempts), strings.Join(dialAttempts, "; "))
+				select {
+				case <-g.finished:
+				default:
+					t.Errorf("dial daemon websocket after %d attempts: %s", len(dialAttempts), strings.Join(dialAttempts, "; "))
+				}
 				return
 			}
 			select {
 			case <-ctx.Done():
+			case <-g.finished:
+				// The test is over; this late redial is teardown noise.
+				return
 			case <-time.After(200 * time.Millisecond):
 			}
 		}
@@ -304,6 +320,9 @@ func newReadinessInterruptionFixture(t *testing.T) *readinessInterruptionFixture
 	t.Cleanup(managerProxy.Close)
 	// LIFO cleanup must release any held frame before either proxy closes.
 	t.Cleanup(gate.open)
+	// Registered after the proxy cleanups, so it runs before them: a handler
+	// still mid-dial must learn the test is over before Close waits on it.
+	t.Cleanup(gate.finish)
 	entries := []appsource.LocalDaemonEntry{}
 	for _, current := range []struct {
 		session  *agent.Session
