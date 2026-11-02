@@ -2868,7 +2868,23 @@ function waitForStopDrain(ref: string): Promise<void> {
 // when it has already adopted another identity - so the drive's catch can
 // tell a press that arrived AFTER the Stop that canceled it (fresh intent:
 // generations unchanged since the press) from one the Stop superseded.
-const pressJoinedResumes = new Map<string, { generation: number; target?: { ref: string; generation: number } }>();
+// The marker also snapshots the page's Stop generations the press arrived
+// at and the durable epochs read the moment it joins. A Stop another tab
+// lands is invisible to the page's generations, so the epoch is the only
+// witness of one landing after the press - but a LOCAL Stop's durable write
+// can still be in flight when the press joins, and the join's epoch read
+// would then predate that Stop's own bump, so the epoch only arbitrates when
+// no local Stop was mid-flight at the join; the page's generations are the
+// exact witness for those.
+const pressJoinedResumes = new Map<
+  string,
+  {
+    generation: number;
+    target?: { ref: string; generation: number };
+    epoch: Promise<number | undefined>;
+    targetEpoch?: Promise<number | undefined>;
+  }
+>();
 
 // The durable Stop fences one resume attempt is issued against, inherited
 // from the armed retry that fired it: the original ref's stop epoch, and - for
@@ -2901,6 +2917,8 @@ async function resumeFencedForSend(ref: string, automatic = false, inherited: In
           existing.targetRef !== ref
             ? { ref: existing.targetRef, generation: userIntentStopGenerations.get(existing.targetRef) ?? 0 }
             : undefined,
+        epoch: readDurableStopEpoch(mutationRuntime, ref),
+        targetEpoch: existing.targetRef !== ref ? readDurableStopEpoch(mutationRuntime, existing.targetRef) : undefined,
       });
     }
     return existing.promise;
@@ -2949,6 +2967,12 @@ async function runResumeFencedForSend(
   let stopWon = false;
   let swapRegistered = false;
   let requestIssued = false;
+  // Whether a DURABLE epoch comparison did the canceling: a Stop another
+  // tab landed, invisible to this page's generations. The joined-press
+  // restart below arbitrates the durable epochs only in that shape - a
+  // local Stop is witnessed exactly by the generations, and the press's own
+  // epoch read may predate that Stop's still-in-flight durable write.
+  let durableStopCanceled = false;
   // The durable stop epoch this attempt is issued against: inherited from the
   // fired retry's arm (so a drive whose storage read fails re-arms with the
   // SAME fence instead of none), then freshened from storage BEFORE the
@@ -2982,6 +3006,7 @@ async function runResumeFencedForSend(
       // re-driving the session it stopped. A read that failed is not a Stop:
       // the attempt keeps the inherited fence.
       if (drive.automatic && stopEpochMoved(freshStopEpoch, inherited.stopEpoch)) {
+        durableStopCanceled = true;
         throw new StopCanceledError();
       }
       attemptStopEpoch = freshStopEpoch ?? inherited.stopEpoch;
@@ -2996,6 +3021,7 @@ async function runResumeFencedForSend(
         }
         const freshResumedEpoch = await readDurableStopEpoch(attemptRuntime, inherited.resumed.ref);
         if (stopEpochMoved(freshResumedEpoch, inherited.resumed.epoch)) {
+          durableStopCanceled = true;
           throw new StopCanceledError();
         }
       }
@@ -3013,7 +3039,6 @@ async function runResumeFencedForSend(
     // runs once the drain settles, instead of the user meeting a Resume button.
     // Only a drain in progress waits for another user action to settle.
     while (threadsStore.getState().stoppingRefs.has(ref)) await waitForStopDrain(ref);
-    requestIssued = true;
     // The reconnect this resume forces is a window the attempt's own reads
     // cannot see: another tab's Stop can land after the attempt's epoch read
     // and before the replacement connection is admitted, and a connection
@@ -3027,11 +3052,13 @@ async function runResumeFencedForSend(
     const revalidateDurableStops = async (): Promise<void> => {
       const freshEpoch = await readDurableStopEpoch(mutationRuntime, ref);
       if (stopEpochMoved(freshEpoch, attemptStopEpoch)) {
+        durableStopCanceled = true;
         throw new StopCanceledError();
       }
       if (inherited.resumed !== undefined) {
         const freshResumedEpoch = await readDurableStopEpoch(mutationRuntime, inherited.resumed.ref);
         if (stopEpochMoved(freshResumedEpoch, inherited.resumed.epoch)) {
+          durableStopCanceled = true;
           throw new StopCanceledError();
         }
       }
@@ -3049,8 +3076,16 @@ async function runResumeFencedForSend(
         // more - it is this page's live intent, fenced only by this page's
         // own Stops - so its request timing is what it always was.
         stopBaseline();
-        if (!drive.automatic) return;
-        return revalidateDurableStops();
+        // The marker means the request is genuinely on its way: a drive whose
+        // reconnect dies, or whose revalidation meets a Stop, never reaches
+        // this point and counts no failed fate check below.
+        if (!drive.automatic) {
+          requestIssued = true;
+          return;
+        }
+        return revalidateDurableStops().then(() => {
+          requestIssued = true;
+        });
       },
     });
     resumedRef = thread.evener.ref;
@@ -3072,6 +3107,7 @@ async function runResumeFencedForSend(
         inherited.resumed.ref === resumedRef &&
         (inherited.resumed.generation !== resumedGeneration || stopEpochMoved(resumedEpoch, inherited.resumed.epoch))
       ) {
+        if (stopEpochMoved(resumedEpoch, inherited.resumed.epoch)) durableStopCanceled = true;
         throw new StopCanceledError();
       }
       // An unread store cancels nothing: when this is the identity the
@@ -3231,16 +3267,31 @@ async function runResumeFencedForSend(
       // resumedRef is undefined - that is the ORIGINAL ref for this check,
       // not a third identity.
       const joinIdentity = resumedRef ?? ref;
-      if (
-        join !== undefined &&
-        join.generation === (userIntentStopGenerations.get(ref) ?? 0) &&
-        (joinIdentity === ref
-          ? join.target === undefined
-          : join.target !== undefined &&
-            join.target.ref === joinIdentity &&
-            join.target.generation === (userIntentStopGenerations.get(joinIdentity) ?? 0))
-      ) {
-        drive.restartAfterSettle = true;
+      if (join !== undefined) {
+        const generationsUnchanged =
+          join.generation === (userIntentStopGenerations.get(ref) ?? 0) &&
+          (joinIdentity === ref
+            ? join.target === undefined
+            : join.target !== undefined &&
+              join.target.ref === joinIdentity &&
+              join.target.generation === (userIntentStopGenerations.get(joinIdentity) ?? 0));
+        // A Stop another tab lands is invisible to the page's generations:
+        // it is visible only in the durable epoch, so when a durable check
+        // did the canceling the press survives only if the epochs it
+        // arrived at are also unchanged since it. A local Stop never reaches
+        // this comparison: the generations arbitrate it exactly, and the
+        // press's own epoch read may predate that Stop's still-in-flight
+        // durable write. Unread epochs on both sides compare equal - the
+        // same store cannot have recorded a Stop an unread snapshot missed.
+        const epochsUnchanged = durableStopCanceled
+          ? (await join.epoch) === (await readDurableStopEpoch(mutationRuntime, ref)) &&
+            (join.target === undefined || join.targetEpoch === undefined
+              ? true
+              : (await join.targetEpoch) === (await readDurableStopEpoch(mutationRuntime, joinIdentity)))
+          : true;
+        if (generationsUnchanged && epochsUnchanged) {
+          drive.restartAfterSettle = true;
+        }
       }
     }
     // The escape counter counts failed opportunities to CHECK a standing row's

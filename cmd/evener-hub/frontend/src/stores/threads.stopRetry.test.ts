@@ -1710,6 +1710,74 @@ test("a resume failure that never reached the hub counts as no failed delivery c
   expect(threadsStore.getState().uncertainRecheckFailures.get(row.clientMutationId)).toBe(1);
 });
 
+// The escape ledger counts FAILED FATE CHECKS, and a drive whose client died
+// mid-reconnect - after readiness, before any resume request left - checked
+// nothing. The connection's own death must not grow any row's counter, or a
+// mere outage can unlock the deliberate discard.
+test("a resume drive whose reconnect dies before its request counts no failed delivery check", async ({
+  onTestFinished,
+}) => {
+  const scheduledResumeRetries = trackScheduledResumeRetries(onTestFinished);
+  const ref = "local:dead-reconnect-counts-nothing";
+  const storage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(storage);
+  const row = await storage.enqueueIntent({
+    targetRef: ref,
+    threadId: `thr_${ref}`,
+    method: "turn/queue",
+    payload: { ref, input: [{ type: "text", text: "fate unknown" }] },
+    attachments: [],
+    optimisticDisplay: { text: "fate unknown" },
+  });
+  await storage.markAttempted(row.clientMutationId);
+  await storage.markUnknown(row.clientMutationId, "blockedUnknown");
+  let releaseHeldPreCapture!: () => void;
+  const heldPreCapture = new Promise<void>((resolve) => {
+    releaseHeldPreCapture = resolve;
+  });
+  let epochReads = 0;
+  const realReadStopEpoch = storage.readStopEpoch.bind(storage);
+  storage.readStopEpoch = async (targetRef: string) => {
+    epochReads += 1;
+    const value = await realReadStopEpoch(targetRef);
+    if (epochReads === 1) await heldPreCapture;
+    return value;
+  };
+  const fake = connectMutationClient();
+  fake.on("thread/read", () => {
+    const response = readResponse(ref, { status: { type: "notLoaded" } });
+    response.thread.evener.resumeRequired = true;
+    response.thread.evener.mutationStateAuthoritative = false;
+    return response;
+  });
+  await threadsStore.getState().ensureThread(ref);
+  await flushIndexedDBUntil(() => false);
+  // The press drive begins and parks on its pre-capture read, ready and
+  // inside the client's resume: releasing lets it into the fake's reconnect
+  // stand-in, and the close staged in that same turn rejects it there,
+  // before its request - the hub never hears anything.
+  const drive = threadsStore.getState().resumeSession(ref);
+  await waitFor(() => expect(epochReads).toBe(1));
+  // Release the pre-capture read and let exactly the drive's microtask chain
+  // reach the fake's one-microtask reconnect stand-in - past the call-time
+  // state check, before the post-await closure check - then close the client
+  // inside that window, as a dead reconnect would.
+  releaseHeldPreCapture();
+  await null;
+  await null;
+  act(() => {
+    fake.close();
+  });
+  await flushIndexedDBUntil(() => false);
+  await flushMicrotasks();
+  await flushIndexedDBUntil(() => false);
+  await flushMicrotasks();
+  await drive;
+  await waitFor(() => expect(scheduledResumeRetries).toHaveLength(1));
+  expect(fake.calls.filter((call) => call.method === "thread/resume")).toHaveLength(0);
+  expect(threadsStore.getState().uncertainRecheckFailures.has(row.clientMutationId)).toBe(false);
+});
+
 // The armed retry must also honor a Stop this page never saw: another tab's
 // force-stop bumps the ref's DURABLE stop epoch - the same write that cancels
 // the parked rows - not this page's Stop generations, so the fire-time
@@ -2198,6 +2266,73 @@ test("a Send pressed after the Stop that aborted the drive before its request st
   // Await its failure's arm so this test ends with the whole catch tail
   // settled rather than leaving the next test to observe it.
   await waitFor(() => expect(scheduledResumeRetries).toHaveLength(2));
+});
+
+// The join-survival snapshot is page-local, but a Stop from ANOTHER tab
+// leaves this page's generations untouched: it is visible only in the ref's
+// durable epoch. A press that joined BEFORE such a foreign Stop must not be
+// mistaken for fresh intent - the Stop is the user's last word - or the
+// restart would resume the session the other tab just stopped.
+test("a Send pressed before a foreign Stop that canceled the drive stays canceled", async ({ onTestFinished }) => {
+  const scheduledResumeRetries = trackScheduledResumeRetries(onTestFinished);
+  const ref = "local:pre-foreign-stop-press-stays-canceled";
+  const storage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(storage);
+  const fake = connectMutationClient();
+  let resumeAttempts = 0;
+  let releaseHeldPreCapture!: () => void;
+  const heldPreCapture = new Promise<void>((resolve) => {
+    releaseHeldPreCapture = resolve;
+  });
+  let epochReads = 0;
+  const realReadStopEpoch = storage.readStopEpoch.bind(storage);
+  storage.readStopEpoch = async (targetRef: string) => {
+    epochReads += 1;
+    const value = await realReadStopEpoch(targetRef);
+    if (epochReads === 3) await heldPreCapture;
+    return value;
+  };
+  fake.on("thread/read", () => {
+    const response = readResponse(ref, { status: { type: "notLoaded" } });
+    response.thread.evener.resumeRequired = true;
+    response.thread.evener.mutationStateAuthoritative = false;
+    return response;
+  });
+  fake.on("thread/resume", () => {
+    resumeAttempts += 1;
+    throw new Error("rendezvous timed out");
+  });
+  fake.on("thread/shutdown", () => ({}));
+  await threadsStore.getState().ensureThread(ref);
+  await flushIndexedDBUntil(() => false);
+  // The first press fails at the hub and arms the paced retry.
+  await threadsStore.getState().resumeSession(ref);
+  await waitFor(() => expect(scheduledResumeRetries).toHaveLength(1));
+  // The fired drive parks on its pre-capture epoch read; a press joins the
+  // in-flight drive while it holds.
+  act(() => {
+    scheduledResumeRetries[0]?.fire();
+  });
+  await waitFor(() => expect(epochReads).toBe(3));
+  const joined = threadsStore.getState().resumeSession(ref);
+  // Another tab force-stops: the durable epoch moves, this page's own Stop
+  // generations do not.
+  const otherTab = new MutationOutboxIndexedDB();
+  await otherTab.cancelUnattempted(ref);
+  otherTab.close();
+  // The drive wakes, meets the foreign Stop at its hook's durable
+  // revalidation, and aborts without ever issuing its request.
+  await act(async () => {
+    releaseHeldPreCapture();
+  });
+  await flushIndexedDBUntil(() => false);
+  await flushMicrotasks();
+  await flushIndexedDBUntil(() => false);
+  await flushMicrotasks();
+  await joined;
+  // No drive of the press's own starts: the press joined before the Stop and
+  // is superseded by it, whatever the page's own generations say.
+  expect(resumeAttempts).toBe(1);
 });
 
 // The fire-time comparison reads the epoch, and the attempt it wakes reads it
