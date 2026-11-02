@@ -2141,21 +2141,32 @@ async function applyClearResponse(targetRef: string, response: ThreadClearRespon
 // cancel, its own attempt evidence included since the resume never sent it, so
 // later work proceeds. An explicit Retry reopens it under the token the page
 // reads then.
+// Whether the row dispatch is about to fold was issued under a token this page
+// has outrun (another device's Stop). Pure: the parking write happens once, in
+// the dispatcher's onStaleRecord, after it has rolled back its own attempt
+// evidence.
+function rowOutranRead(targetRef: string, record: { recoveryTokenAtEnqueue?: string }): boolean {
+  return tokenOutranRead(targetRef, record.recoveryTokenAtEnqueue);
+}
+
 const parkedRowCancels = new Set<string>();
 function parkOutranRow(
   targetRef: string,
   record: { clientMutationId?: string; intentSequence?: number; recoveryTokenAtEnqueue?: string },
-): boolean {
-  if (!tokenOutranRead(targetRef, record.recoveryTokenAtEnqueue)) return false;
+): void {
+  if (!rowOutranRead(targetRef, record)) return;
   const clientMutationId = record.clientMutationId;
-  // Every admission check of this row would otherwise queue the same write.
-  if (clientMutationId !== undefined && !parkedRowCancels.has(clientMutationId)) {
+  const runtime = getMutationRuntime();
+  // Every rejection of this row would otherwise queue the same write.
+  if (clientMutationId !== undefined && runtime !== null && !parkedRowCancels.has(clientMutationId)) {
     parkedRowCancels.add(clientMutationId);
-    void cancelSupersededMutations(targetRef, record.intentSequence, true).finally(() =>
-      parkedRowCancels.delete(clientMutationId),
-    );
+    void (async () => {
+      // The attempt this pass wrote is the only evidence provably unsent here:
+      // the count-aware rollback keeps any earlier or concurrent attempt's.
+      await runtime.storage.unmarkAttempted(clientMutationId).catch(() => false);
+      await cancelSupersededMutations(targetRef, record.intentSequence, true);
+    })().finally(() => parkedRowCancels.delete(clientMutationId));
   }
-  return true;
 }
 
 // Whether `token` names a session state a Stop has since superseded, given the
@@ -2170,7 +2181,11 @@ function tokenSupersededBy(token: string | undefined, read: string | undefined):
   const minted = parseRecoveryToken(token);
   const current = parseRecoveryToken(read);
   if (minted === undefined || current === undefined) return token !== read;
-  return minted.incarnation === current.incarnation && minted.epoch < current.epoch;
+  // The epoch is the hub's PERSISTED recovery state, so it orders across a
+  // restart too: a Stop that landed before the restart advanced it, and the new
+  // incarnation mints its token from the restored value. Only a strictly older
+  // epoch names a state a Stop has left; a newer one is this tab's stale read.
+  return minted.epoch < current.epoch;
 }
 
 function parseRecoveryToken(token: string): { incarnation: string; epoch: number } | undefined {
@@ -2294,9 +2309,7 @@ function currentDispatchClient(
       // tab (or this page after a reload) can read a newer token - another
       // device's Stop - and must not fold the row past it. A row with no
       // capture predates the field and is admitted as before.
-      (resumeOnlyFoldMethod(targetRef, method) &&
-        options?.record !== undefined &&
-        parkOutranRow(targetRef, options.record)) ||
+      (method === "turn/start" && options?.record !== undefined && rowOutranRead(targetRef, options.record)) ||
       // A supersession's cancellation storage has not committed yet: the rows
       // it names are still dispatchable, so the ref waits until the write lands
       // instead of folding a resume over the Stop that superseded them.
@@ -2625,6 +2638,7 @@ function getMutationRuntime(): MutationRuntime | null {
     isCurrentMutationRuntime(runtime) ? currentDispatchClient(targetRef, method, true, { record }) : null;
   const dispatcher = new MutationDispatcher(storage, {
     getClient,
+    onStaleRecord: (record) => parkOutranRow(record.targetRef, record),
     onStorageChange: (targetRefs, cause) => {
       // The dispatcher's own state changes - a settle, a recovery transfer, a
       // blocked reclassification - invalidate in-flight reads for every ref it
@@ -3557,7 +3571,7 @@ async function runResumeFencedForSend(
     const supersededByRecreation =
       isSessionRecoveryCanceled(error) &&
       tokenFromEarlierIncarnation(expectedRecoveryToken, supersededToken) &&
-      !stopEpochMoved(await readDurableStopEpoch(mutationRuntime, ref), attemptStopEpoch);
+      !tokenSupersededBy(expectedRecoveryToken, supersededToken);
     // The hub refusing a resume a newer Stop superseded is that Stop's own
     // word: the caller armed before it, and re-driving would restart the
     // session the other client or device stopped.

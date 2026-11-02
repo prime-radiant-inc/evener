@@ -4037,14 +4037,60 @@ test("a recreation after a Stop still cancels the superseded press", async ({ on
   rejectResume(
     new WireError("session recovery canceled this pending action; submit it again", -32000, {
       evenerErrorInfo: "sessionRecoveryCanceled",
-      recoveryToken: "inc-b:0",
+      recoveryToken: "inc-b:6",
     }),
   );
   await flushIndexedDBUntil(() => false);
   await flushMicrotasks();
   await flushIndexedDBUntil(() => false);
   await flushMicrotasks();
-  // The Stop won even though the token is from another incarnation: no retry
-  // is re-armed, so the recovery stops here instead of restarting the session.
+  // The Stop won even though the token is from another incarnation: the hub's
+  // persisted epoch advanced past the arm's, so no retry is re-armed.
   expect(scheduledResumeRetries).toHaveLength(0);
+});
+
+// An ordinary shutdown advances the recovery token without leaving a
+// resume-only snapshot. A reloaded tab therefore has no in-memory arm and no
+// foldable shape to gate on: the row's own token is the only fence that stops
+// its turn/start from starting the daemon the shutdown stopped.
+test("a parked row does not fold under the token an ordinary shutdown advanced", async ({ onTestFinished }) => {
+  trackScheduledResumeRetries(onTestFinished);
+  const ref = "local:recovery-ordshutdown-token";
+  const storage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(storage);
+  const fake = connectMutationClient();
+  fake.on("thread/read", () => {
+    const live = readResponse(ref, { status: { type: "idle" } });
+    live.thread.evener.recoveryToken = "inc-a:6";
+    return live;
+  });
+  fake.on("turn/start", (params) => ({
+    receipt: {
+      clientMutationId: params.clientMutationId,
+      threadId: `thr_${ref}`,
+      disposition: "applied",
+      projectionState: "notProjected",
+    },
+    turn: { id: "turn_shutdown", status: "inProgress", itemsView: "" },
+  }));
+  await storage.enqueueIntent(
+    {
+      targetRef: ref,
+      threadId: `thr_${ref}`,
+      method: "turn/start",
+      payload: { ref, input: [{ type: "text", text: "parked" }] },
+      attachments: [],
+      optimisticDisplay: { text: "parked" },
+    },
+    { stopEpoch: await storage.readStopEpoch(ref), recoveryToken: "inc-a:5" },
+  );
+  await threadsStore.getState().ensureThread(ref);
+  await threadsStore.getState().refreshThread(ref);
+  notifyReadyForMutationDispatch([ref]);
+  await flushIndexedDBUntil(() => false);
+  await flushMicrotasks();
+  await flushIndexedDBUntil(() => false);
+  await flushMicrotasks();
+  expect(fake.calls.filter((call) => call.method === "turn/start")).toHaveLength(0);
+  expect((await storage.listOutbox(ref))[0]?.state).toBe("canceled");
 });

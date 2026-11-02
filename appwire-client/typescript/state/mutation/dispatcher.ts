@@ -63,6 +63,10 @@ export interface MutationStorageChangeCause {
 
 export interface MutationDispatcherOptions<A extends MutationAttachmentRef = MutationAttachmentRef> {
   getClient: MutationDispatchClientLookup;
+  // Fired when a record-aware admission rejected a row this pass was about to
+  // send: the host parks it (a superseded row must leave the FIFO head), after
+  // the dispatcher has rolled back the attempt evidence this pass wrote.
+  onStaleRecord?: (record: MutationOutboxRecord<A>) => void;
   onStorageChange?: (targetRefs: string[], cause?: MutationStorageChangeCause) => void;
   onBlockedMutation?: (targetRef: string, client: AppwireClientLike) => void;
   // Fired when the hub refused an attempt in band as transient
@@ -86,6 +90,7 @@ export interface MutationDispatcherOptions<A extends MutationAttachmentRef = Mut
 export class MutationDispatcher<A extends MutationAttachmentRef = MutationAttachmentRef> {
   readonly #storage: MutationOutboxStorage<A>;
   readonly #getClient: MutationDispatcherOptions<A>["getClient"];
+  readonly #onStaleRecord: MutationDispatcherOptions<A>["onStaleRecord"];
   readonly #onStorageChange: NonNullable<MutationDispatcherOptions<A>["onStorageChange"]>;
   readonly #onBlockedMutation: NonNullable<MutationDispatcherOptions<A>["onBlockedMutation"]>;
   readonly #onTransientRefusal: NonNullable<MutationDispatcherOptions<A>["onTransientRefusal"]>;
@@ -98,6 +103,7 @@ export class MutationDispatcher<A extends MutationAttachmentRef = MutationAttach
   constructor(storage: MutationOutboxStorage<A>, options: MutationDispatcherOptions<A>) {
     this.#storage = storage;
     this.#getClient = options.getClient;
+    this.#onStaleRecord = options.onStaleRecord;
     this.#onStorageChange = options.onStorageChange ?? (() => undefined);
     this.#onBlockedMutation = options.onBlockedMutation ?? (() => undefined);
     this.#onTransientRefusal = options.onTransientRefusal ?? (() => undefined);
@@ -181,13 +187,19 @@ export class MutationDispatcher<A extends MutationAttachmentRef = MutationAttach
       // The method-aware recheck: the top-of-loop lookup answered for the ref
       // alone (it runs before nextDispatchable picks a record), so a host that
       // fences one queued verb must still be able to park THIS record here.
-      if (this.#getClient(targetRef, current.method) !== client) return true;
+      if (this.#getClient(targetRef, current.method, current) !== client) {
+        this.#onStaleRecord?.(current);
+        return true;
+      }
 
       if (!(await this.#storage.markAttempted(current.clientMutationId))) continue;
       // Keep the committed attempt evidence if this client was retired: another
       // tab may have dispatched the same record, so absence of this send is not
       // proof of non-delivery. Live recovery retries the original payload.
-      if (this.#getClient(targetRef, current.method, current) !== client) return true;
+      if (this.#getClient(targetRef, current.method, current) !== client) {
+        this.#onStaleRecord?.(current);
+        return true;
+      }
       const outcome = await this.#attempt(client, current);
       if (outcome === "stop") return false;
     }
