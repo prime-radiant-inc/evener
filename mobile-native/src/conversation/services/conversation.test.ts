@@ -1358,6 +1358,48 @@ describe("ConversationService", () => {
 			const params = call?.params as Record<string, unknown>;
 			expect(params).not.toHaveProperty("cursor");
 		});
+
+		it("recovers from a stale held snapshot by re-reading without one", async () => {
+			const { client, service } = setup();
+			await service.open("ref-1");
+			client.calls.length = 0;
+			let readCalls = 0;
+			client.on("thread/read", () => {
+				readCalls += 1;
+				if (readCalls === 1) {
+					throw new WireError("stale transcript cursor", -32020, {
+						evenerErrorInfo: "transcriptItemCursorStale",
+					});
+				}
+				return makeReadResponse(makeThread());
+			});
+			const result = await service.readProjection("ref-1", { incarnation: "inc-1", length: 3 });
+			const reads = client.calls.filter((c) => c.method === "thread/read");
+			expect(reads).toHaveLength(2);
+			expect((reads[0].params as Record<string, unknown>).heldSnapshot).toEqual({
+				incarnation: "inc-1",
+				length: 3,
+			});
+			expect((reads[1].params as Record<string, unknown>).heldSnapshot).toBeUndefined();
+			expect(result?.conversation.threadId).toBe("thread-1");
+		});
+
+		it("retries a stale held snapshot exactly once, then surfaces the refusal", async () => {
+			const { client, service } = setup();
+			await service.open("ref-1");
+			client.calls.length = 0;
+			client.on("thread/read", () => {
+				throw new WireError("stale transcript cursor", -32020, {
+					evenerErrorInfo: "transcriptItemCursorStale",
+				});
+			});
+			await expect(service.readProjection("ref-1", { incarnation: "inc-1", length: 3 })).rejects.toThrow(
+				"stale transcript cursor",
+			);
+			const reads = client.calls.filter((c) => c.method === "thread/read");
+			expect(reads).toHaveLength(2);
+			expect((reads[1].params as Record<string, unknown>).heldSnapshot).toBeUndefined();
+		});
 	});
 
 	describe("loadOlder with explicit limit", () => {

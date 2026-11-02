@@ -644,18 +644,34 @@ export function createConversationService<ReadLease = unknown>(
 			const expectedThreadId = threadId ?? undefined;
 			const epoch = beginOpen(threadRef);
 			const readLease = options.onReadStart?.(threadRef, expectedThreadId);
-			const read = subscribedRead(threadRef).read({
-				includeTurns: true,
-				itemsView: "fragment",
-				itemLimit: READ_ITEM_LIMIT,
-				...(heldSnapshot ? { heldSnapshot } : {}),
-			});
+			const readOnce = (snapshot?: SnapshotIdentity) =>
+				subscribedRead(threadRef).read({
+					includeTurns: true,
+					itemsView: "fragment",
+					itemLimit: READ_ITEM_LIMIT,
+					...(snapshot ? { heldSnapshot: snapshot } : {}),
+				});
 			// The publish is the whole projected read: the raw response, the
 			// projection work and pair commit, and then the host's read fence. Paging
 			// waits on it (see PendingProjection), so a page can never be seated
 			// against a projection the publish has not installed.
 			const publish = (async (): Promise<ConversationReadProjection> => {
-				const response: ThreadReadResponse = await read;
+				let response: ThreadReadResponse;
+				try {
+					response = await readOnce(heldSnapshot);
+				} catch (error) {
+					// A held snapshot that predates the server's bounded update log
+					// is refused with transcriptItemCursorStale. The refusal
+					// indicts the held window, not the thread: without a
+					// fallback, every refresh and reconnect re-derives the same
+					// stale window from the retained history and fails the same
+					// way, so the conversation cannot recover. Retry exactly once
+					// with no held snapshot: the fresh window replaces the held
+					// history through this same publish, and the draft lives in
+					// the store, untouched here.
+					if (heldSnapshot === undefined || !isStaleCursorError(error)) throw error;
+					response = await readOnce(undefined);
+				}
 				// Compute ALL response-derived projection work BEFORE committing the
 				// pair — a throw in hydration or projectConversation (or a
 				// malformed response) leaves ref+capabilities null/fail-closed. Only
