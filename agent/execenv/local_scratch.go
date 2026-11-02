@@ -202,6 +202,16 @@ func (e *LocalExecutionEnvironment) SessionScratchDir() string {
 	return e.sessionScratchPath()
 }
 
+// SessionScratchBase reports the scratch base this env's session scratch was
+// actually allocated in — the base allocation chose, which is not always the
+// requested one: a base inside the session's workspace is refused for the user
+// cache dir — or "" when no scratch is provisioned or it is a disposable one,
+// which no other process serves. Like SessionScratchDir it never provisions
+// one: reporting a path must not create it.
+func (e *LocalExecutionEnvironment) SessionScratchBase() string {
+	return sandbox.SessionScratchBaseOf(e.sessionScratchPath())
+}
+
 // WithSandboxInvocationGrant returns a short-lived clone of this env whose file-tool
 // enforcement layer additionally permits EXACTLY the one path — the M7 escalation
 // approve path re-dispatches a single denied tool call through it. The clone shares
@@ -408,6 +418,23 @@ func (e *LocalExecutionEnvironment) ScratchIdentity() (rootID, sessionID string)
 	e.scratchMu.Lock()
 	defer e.scratchMu.Unlock()
 	return e.scratchRoot, e.scratchSession
+}
+
+// ScratchOwnerSession reports the session whose named scratch directory this
+// env's spawned commands actually write into. A re-rooted clone
+// (WithWorkingDirectory) shares its parent's kernel wrapper and writes into
+// the parent's scratch even though its own mint identity names the clone, so
+// the wrapper arm reads the owner from the wrapper's scratch path — the
+// directory's own name, and "" for the disposable scratch no tree holds —
+// while a wrapperless env mints under its own identity, which therefore names
+// the directory the next mint reopens even before any exists.
+func (e *LocalExecutionEnvironment) ScratchOwnerSession() string {
+	if e.Wrapper != nil {
+		return sandbox.SessionScratchOwnerOf(e.Wrapper.SessionTmp())
+	}
+	e.scratchMu.Lock()
+	defer e.scratchMu.Unlock()
+	return e.scratchSession
 }
 
 // EndSessionScratch settles this env's scratch at a session's end — close, idle

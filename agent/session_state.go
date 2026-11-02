@@ -324,15 +324,29 @@ func (s *Session) metaWithNotes(human, agentNote string, urls []schema.SessionUR
 	if root := s.scratchTreeRootID(); root != s.id {
 		scratchTreeRootID = root
 	}
-	// A delegate that shares its parent's environment writes into the parent's
-	// scratch directory, so the directory's owning session is the one the
-	// environment's scratch identity names, not this session's own id; an
-	// isolated delegate's identity is its own and records nothing. This runs
-	// under s.mu, so it reads s.env directly rather than through currentEnv.
+	// The scratch the hub serves this session's documents from is the one its
+	// environment actually writes into: a delegate that shares its parent's
+	// environment, or one that re-roots its parent's kernel wrapper, writes
+	// into the parent's scratch directory, while an isolated delegate owns its
+	// own. The directory's owning session is the environment's effective
+	// scratch owner, not this session's own id.
 	scratchDirSessionID := ""
+	// The base recorded is the one the session's scratch was actually allocated
+	// in — allocation refuses a temp base inside the session's workspace and
+	// falls back to the user cache dir, and a hub that searched the refused
+	// base first would find a retained old tree there instead of the session's
+	// current scratch — or this process's temp dir while no scratch exists yet,
+	// which the archive removal path still needs to find a tree an earlier run
+	// recorded.
+	scratchTempDir := sandbox.ProcessScratchTempDir()
+	// This runs under s.mu, so it reads s.env directly rather than through
+	// currentEnv.
 	if local, ok := s.env.(*execenv.LocalExecutionEnvironment); ok {
-		if _, session := local.ScratchIdentity(); session != "" && session != s.id {
+		if session := local.ScratchOwnerSession(); session != "" && session != s.id {
 			scratchDirSessionID = session
+		}
+		if base := local.SessionScratchBase(); base != "" {
+			scratchTempDir = base
 		}
 	}
 	skills := s.skillLifecycle.Clone()
@@ -376,7 +390,7 @@ func (s *Session) metaWithNotes(human, agentNote string, urls []schema.SessionUR
 		LastMessage:              s.lastMessage,
 		CumulativeUsage:          cumulativeUsageSnapshot(s.contextMgr.CumulativeUsage()),
 		JobTreeRootSessionID:     jobTreeRootSessionID,
-		ScratchTempDir:           sandbox.ProcessScratchTempDir(),
+		ScratchTempDir:           scratchTempDir,
 		ScratchTreeRootID:        scratchTreeRootID,
 		ScratchDirSessionID:      scratchDirSessionID,
 		JobTreeRevision:          jobTreeRevision,

@@ -260,6 +260,65 @@ func TestDocFile_PrefersTheRecordedScratchBaseOverHubDefaults(t *testing.T) {
 	}
 }
 
+// A session that resumed on a host whose temp dir lies inside its workspace
+// has its scratch in the user cache dir, and its meta records that allocated
+// base. The doc route serves the recorded base's tree even though a retained
+// older tree sits in the hub's own temp dir, which the default order would
+// search before the cache dir.
+func TestDocFile_ServesTheAllocatedCacheBaseOverARetainedTempTree(t *testing.T) {
+	// Not parallel: t.Setenv redirects TMPDIR and XDG_CACHE_HOME, which name
+	// this process's own scratch bases, for the duration of the test.
+	cacheBase, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("XDG_CACHE_HOME", cacheBase)
+	tempBase, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("TMPDIR", tempBase)
+	root := t.TempDir()
+	proj := filepath.Join(root, "projects", "project-docs-0000000000")
+	sessionID := "02wMz5Txv1C3Hut0M8GCeB"
+	if err := os.MkdirAll(filepath.Join(proj, "sessions"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := schema.SaveSessionMeta(proj, schema.SessionMeta{
+		ID: sessionID, UpdatedAt: time.Now(), OriginalPrompt: "resumed session",
+		EnvInfo:        schema.EnvironmentInfo{WorkingDir: t.TempDir()},
+		ScratchTempDir: cacheBase,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	stale := agentsandbox.SessionScratchDirPath(tempBase, sessionID, sessionID)
+	if err := os.MkdirAll(stale, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(stale) })
+	if err := os.WriteFile(filepath.Join(stale, "shot.png"), []byte("STALE TREE"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	current := agentsandbox.SessionScratchDirPath(cacheBase, sessionID, sessionID)
+	if err := os.MkdirAll(current, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	content := []byte("current tree")
+	target := filepath.Join(current, "shot.png")
+	if err := os.WriteFile(target, content, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	idx := newRebuiltPastIndex(t, filepath.Join(root, "projects", "*"))
+	web := NewWebServer(hubcore.WebConfig{HubAddr: "127.0.0.1:9180", Past: idx})
+	rec := docRawRequest(t, web, sessionID, target)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("the allocated base's file should be served, got %d body=%q", rec.Code, rec.Body.String())
+	}
+	if !bytes.Equal(rec.Body.Bytes(), content) {
+		t.Fatalf("body=%q, want the allocated base's %q — the retained tree in the hub's temp dir won", rec.Body.Bytes(), content)
+	}
+}
+
 // A session whose scratch directory never existed (an old session, a cleaned
 // tree) advertises no scratch root and serves none: its scratch-shaped paths
 // fall back to the cwd refusal rather than a second root.

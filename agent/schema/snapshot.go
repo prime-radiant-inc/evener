@@ -266,10 +266,13 @@ type SessionMeta struct {
 	// ID so durable activity-tree responses can preserve the same root-scoped
 	// revision envelope after exit.
 	JobTreeRootSessionID string `json:"job_tree_root_session_id,omitempty"`
-	// ScratchTempDir is the temp dir of the process running the session, where
-	// its scratch tree lives. The hub removes an archived session's tree from
-	// its own temp dir and from this one, which differs when the daemon was
-	// started with another TMPDIR. Empty on metas written before it existed.
+	// ScratchTempDir is the scratch base the session's scratch tree was
+	// allocated in, which a hub serving the session's documents and the archive
+	// removal path search before their own defaults; before any scratch exists
+	// it is the temp dir of the process running the session. The hub removes
+	// an archived session's tree from its own temp dir and from this one, which
+	// differs when the daemon was started with another TMPDIR. Empty on metas
+	// written before it existed.
 	ScratchTempDir string `json:"scratch_temp_dir,omitempty"`
 	// ScratchTreeRootID names the root session whose scratch tree this
 	// session's scratch lives in, when that is not the session itself: a
@@ -277,8 +280,9 @@ type SessionMeta struct {
 	ScratchTreeRootID string `json:"scratch_tree_root_id,omitempty"`
 	// ScratchDirSessionID names the session whose directory in the scratch
 	// tree this session's scratch actually occupies, when that is not the
-	// session itself: a delegate that shares its parent's environment writes
-	// into the parent's scratch, while an isolated delegate owns its own
+	// session itself: a delegate that shares its parent's environment, or one
+	// that re-roots its parent's sandbox wrapper, writes into the parent's
+	// scratch, while a delegate that provisions its own sandbox owns its own
 	// directory. Empty on metas written before it existed and for every
 	// session that owns its scratch.
 	ScratchDirSessionID string `json:"scratch_dir_session_id,omitempty"`

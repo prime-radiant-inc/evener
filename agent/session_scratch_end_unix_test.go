@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/sandbox"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/llm"
 )
@@ -223,6 +224,72 @@ func TestMetaRecordsARelativeTempDirAsAbsolute(t *testing.T) {
 	root := newSession(t, withoutGitSnapshot())
 	if got, want := root.Meta().ScratchTempDir, filepath.Join(cwd, "reltmp"); got != want {
 		t.Errorf("meta ScratchTempDir = %q, want the absolute %q", got, want)
+	}
+}
+
+// TestMetaRecordsTheBaseItsScratchWasAllocatedIn: allocation refuses a temp
+// base inside the session's workspace and lands the scratch in the user cache
+// dir instead, so the meta records the base the scratch was actually
+// allocated in. Recording the refused temp dir would send the hub to a
+// retained old tree there and never to the session's current scratch.
+func TestMetaRecordsTheBaseItsScratchWasAllocatedIn(t *testing.T) {
+	// Not parallel: t.Setenv redirects TMPDIR and XDG_CACHE_HOME, which steer
+	// this process's scratch bases for the duration of the test.
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+	ws := t.TempDir()
+	inside := filepath.Join(ws, "tmp")
+	if err := os.Mkdir(inside, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("TMPDIR", inside)
+	root := newSession(t, withoutGitSnapshot(), withDir(ws))
+	scratch := mintRootScratch(t, root)
+	t.Cleanup(func() { _ = os.RemoveAll(filepath.Dir(scratch)) })
+	want := filepath.Dir(filepath.Dir(scratch))
+	if got := root.Meta().ScratchTempDir; got != want {
+		t.Errorf("meta ScratchTempDir = %q, want the allocated scratch base %q", got, want)
+	}
+}
+
+// TestWorktreeDelegateMetaRecordsTheScratchOwner: a worktree-isolated delegate
+// of a sandboxed parent re-roots its parent's kernel wrapper, which still
+// carries the scratch minted for the parent — the delegate's commands write
+// into that directory even though the clone's own mint identity names the
+// child. Its meta must record the parent, the session that owns the directory,
+// or the hub searches a directory the delegate never writes into.
+func TestWorktreeDelegateMetaRecordsTheScratchOwner(t *testing.T) {
+	delegate := artifactRestoreMeta(t)
+	delegate.IsSubagent = true
+	rootID := artifactRestoreMeta(t).ID
+	parent := artifactRestoreMeta(t).ID
+	cwd := t.TempDir()
+	lane := t.TempDir()
+	net := true
+	rp, err := sandbox.Resolve(
+		sandbox.SandboxPolicy{Mode: sandbox.ModeWorkspaceWrite, Network: &net},
+		sandbox.HostFacts{OS: "linux", Home: t.TempDir(), BwrapPath: "/fixture/bwrap", BwrapCapable: true},
+		cwd)
+	if err != nil {
+		t.Fatalf("resolve the parent's policy: %v", err)
+	}
+	env := execenv.NewLocalExecutionEnvironment(cwd)
+	env.SetScratchIdentity(rootID, parent)
+	if err := env.EnableSandbox(&rp); err != nil {
+		t.Fatalf("enable the parent's sandbox: %v", err)
+	}
+	t.Cleanup(env.DisposeSandboxScratch)
+	child := env.WithWorkingDirectory(lane)
+	child.SetScratchIdentity(rootID, delegate.ID)
+	if got, want := child.SessionScratchDir(), env.SessionScratchDir(); got == "" || got != want {
+		t.Fatalf("the re-rooted clone writes into %q, want its parent's wrapper scratch %q", got, want)
+	}
+	sess, err := RestoreSessionFromMetaWithConfig(newArtifactTestClient(), NewOpenAIProfile("gpt-5.2"), child, delegate, artifactRestoreConfig(t, t.TempDir()))
+	if err != nil {
+		t.Fatalf("restore: %v", err)
+	}
+	t.Cleanup(sess.Close)
+	if got := sess.Meta().ScratchDirSessionID; got != parent {
+		t.Errorf("worktree delegate meta records scratch dir session %q, want the wrapper scratch's owner %q", got, parent)
 	}
 }
 

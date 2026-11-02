@@ -80,6 +80,29 @@ func SessionScratchDirPath(base, rootID, sessionID string) string {
 	return filepath.Join(filepath.Clean(base), sessionScratchTreePrefix+rootID, sessionID)
 }
 
+// SessionScratchBaseOf reports the scratch base the named session scratch
+// directory dir was allocated in — the base a hub serving the session's
+// documents must search first — or "" for a disposable scratch, which belongs
+// to no tree and no other process serves.
+func SessionScratchBaseOf(dir string) string {
+	tree := scratchTreeOf(dir)
+	if tree == "" {
+		return ""
+	}
+	return filepath.Dir(tree)
+}
+
+// SessionScratchOwnerOf reports the session the named session scratch
+// directory dir belongs to — the directory's own name, which the allocator
+// derives from the session's ID — or "" for a disposable scratch, which no
+// session's tree holds.
+func SessionScratchOwnerOf(dir string) string {
+	if scratchTreeOf(dir) == "" {
+		return ""
+	}
+	return filepath.Base(dir)
+}
+
 // Named reports whether this scratch lives in a session's tree
 // (OpenSessionScratch) rather than being a disposable one (NewSessionScratch).
 // A named scratch outlives its session's end; a disposable one does not.
