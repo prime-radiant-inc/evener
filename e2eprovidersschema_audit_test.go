@@ -123,7 +123,7 @@ func TestE2EScriptsPinProvidersConfig(t *testing.T) {
 			if exportAt < 0 {
 				t.Fatalf("%s never exports EVENER_PROVIDERS_CONFIG at the isolated providers.toml path", tc.source)
 			}
-			if !(writeAt < exportAt && exportAt < hubAt) {
+			if writeAt >= exportAt || exportAt >= hubAt {
 				t.Fatalf("%s must export EVENER_PROVIDERS_CONFIG between the providers.toml write (line %d) and the hub start (line %d); found at line %d",
 					tc.source, writeAt+1, hubAt+1, exportAt+1)
 			}
