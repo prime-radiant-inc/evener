@@ -315,11 +315,19 @@ describe("MutationOutboxIndexedDB cancellation", () => {
 
     expect(await storage.getOutbox(superseded.clientMutationId)).toBeUndefined();
     expect(await storage.getOutbox(newerNote.clientMutationId)).toBeUndefined();
-    // Scoped: another ref's canceled note row, a canceled non-note row, and a
-    // delivery-uncertain attempted note row all keep their state.
+    // Scoped: another ref's canceled note row and a canceled non-note row
+    // keep their state. The settled-newer boundary the earlier round
+    // disclosed is now CLOSED by the settle-time retirement ruling: an
+    // OLDER blockedUnknown note row on the same target retires to terminal
+    // "superseded" with this settlement (state change only - its id and
+    // attempt evidence stay, so its own late receipt still settles it),
+    // which kills the reflected-newer stale-dispatch case by construction:
+    // by the time a reconcile could re-queue the older save, it is already
+    // terminal.
     expect((await storage.getOutbox(otherRefNote.clientMutationId))?.state).toBe("canceled");
     expect((await storage.getOutbox(canceledTurn.clientMutationId))?.state).toBe("canceled");
-    expect((await storage.getOutbox(uncertainNote.clientMutationId))?.state).toBe("blockedUnknown");
+    expect((await storage.getOutbox(uncertainNote.clientMutationId))?.state).toBe("superseded");
+    expect((await storage.getOutbox(uncertainNote.clientMutationId))?.attempted).toBe(true);
     storage.close();
   });
 
