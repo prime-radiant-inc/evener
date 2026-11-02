@@ -672,6 +672,113 @@ func TestHubWatchCompletionRetriesTerminalSendUntilJournalRecovers(t *testing.T)
 	}
 }
 
+func TestHubWatchEndRetriesUntilJournalRecovers(t *testing.T) {
+	t.Parallel()
+	root := newMessagingRoot(t, newMessagingAdapter(), func(c *SessionConfig) { c.Manager = true })
+	jm := root.jobManager
+	jm.testOnlyTerminalSendRetryDelay = 10 * time.Millisecond
+	const ref, instance, generation = "local:worker", "worker-instance", "7@worker"
+	watch, err := jm.configureHubWatch(ref, instance, generation, "local:manager", []string{"communicate"}, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The journal refuses the end transaction's first write, then recovers. A
+	// non-completion end must retry its durable end the way the completion
+	// path does: the consumer that started this end has already exited, so a
+	// single failed attempt would strand the registered watch with no
+	// consumer and no re-registration notice.
+	realAppendEvents := jm.appendEvents
+	var failedWrite atomic.Bool
+	jm.appendEvents = func(events []jobstore.Event) error {
+		if !failedWrite.Swap(true) {
+			return errors.New("journal write failed")
+		}
+		return realAppendEvents(events)
+	}
+	const endReason = "observation failed: synthetic"
+	if err := jm.endHubWatchUntilPersisted(watch.WatchID, endReason, nil); err != nil {
+		t.Fatalf("end must ride out a transient journal failure: %v", err)
+	}
+	if managerWatchActive(jm, watch.WatchID) {
+		t.Fatal("the ended watch stayed registered")
+	}
+	ends, notices := 0, 0
+	for _, event := range loadJobStoreEvents(t, jm) {
+		if event.Watch != nil && event.WatchID == watch.WatchID && event.Watch.EndReason == endReason {
+			ends++
+		}
+		if event.WatchSend != nil && event.WatchSend.Key.WatchID == watch.WatchID && event.WatchSend.EndNotice {
+			notices++
+		}
+	}
+	if ends != 1 {
+		t.Fatalf("end records=%d, want 1", ends)
+	}
+	if notices != 1 {
+		t.Fatalf("end notices=%d, want 1", notices)
+	}
+}
+
+func TestHubWatchEndRetryYieldsToReplacement(t *testing.T) {
+	t.Parallel()
+	root := newMessagingRoot(t, newMessagingAdapter(), func(c *SessionConfig) { c.Manager = true })
+	jm := root.jobManager
+	jm.testOnlyTerminalSendRetryDelay = 10 * time.Millisecond
+	const ref, instance, generation = "local:worker", "worker-instance", "7@worker"
+	watch, err := jm.configureHubWatch(ref, instance, generation, "local:manager", []string{"communicate"}, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The journal keeps refusing this end's clear record while a
+	// re-registration replaces the watch. The retrying end must yield to the
+	// replacement: it stops retrying, and it never ends the replacement,
+	// whose own registration already retired the old entry.
+	const endReason = "observation failed: synthetic"
+	realAppendEvents := jm.appendEvents
+	var refused atomic.Int32
+	jm.appendEvents = func(events []jobstore.Event) error {
+		for _, event := range events {
+			if event.Watch != nil && event.WatchID == watch.WatchID && event.Watch.EndReason == endReason {
+				refused.Add(1)
+				return errors.New("journal write failed")
+			}
+		}
+		return realAppendEvents(events)
+	}
+	ended := make(chan error, 1)
+	go func() {
+		ended <- jm.endHubWatchUntilPersisted(watch.WatchID, endReason, nil)
+	}()
+	deadline := time.Now().Add(10 * time.Second)
+	for refused.Load() < 2 {
+		if time.Now().After(deadline) {
+			t.Fatal("the end never attempted a journal write")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	replacement, err := jm.configureHubWatch(ref, instance, generation, "local:manager", []string{"communicate", "status"}, true)
+	if err != nil {
+		t.Fatalf("replacement registration failed: %v", err)
+	}
+	select {
+	case err := <-ended:
+		if err != nil {
+			t.Fatalf("a yielded end must not report failure: %v", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("the end retry did not yield to the replacement")
+	}
+	if replacement.WatchID == watch.WatchID {
+		t.Fatal("the replacement must be a new watch")
+	}
+	if !managerWatchActive(jm, replacement.WatchID) {
+		t.Fatal("the replacement watch was ended by the old watch's retry")
+	}
+	if managerWatchActive(jm, watch.WatchID) {
+		t.Fatal("the old watch stayed registered after the replacement")
+	}
+}
+
 func TestHubWatchCompletionDedupWaitsForTerminalPersistence(t *testing.T) {
 	t.Parallel()
 	root := newMessagingRoot(t, newMessagingAdapter(), func(c *SessionConfig) { c.Manager = true })

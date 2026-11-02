@@ -294,37 +294,18 @@ func (jm *jobManager) onHubObservationLookup(watchID string, update appwire.Sess
 	delivery := jm.watchSendSnapshot(cfg, identity, trigger, root).withSelfInfluence(jm.classifySelfInfluenceLocked(cfg, m.Causal))
 	jm.mu.Unlock()
 	if complete {
-		for {
-			err := jm.endHubWatch(watchID, "completed", &delivery)
-			if err == nil {
-				jm.mu.Lock()
-				if _, current, ok := jm.watchConfigByIDLocked(watchID); ok && current == cfg {
-					if cfg.hubSeen == nil {
-						cfg.hubSeen = map[string]bool{}
-					}
-					cfg.hubSeen[identity] = true
-				}
-				jm.mu.Unlock()
-				return nil
-			}
-			// A failed journal write is not an observation failure: the
-			// completion was verified, only its durable write failed. No
-			// other path owns this end — the pending-send retention is
-			// disabled for terminal sends while the config rejects
-			// deliveries — so the consumer keeps retrying the same end
-			// until it persists, the manager closes, or the watch is
-			// replaced by a re-registration. Abandoning the end after a
-			// bounded window would strand the registered watch with no
-			// consumer and no completion delivery.
-			if jm.isClosing() || !managerHubWatchPresent(jm, watchID) {
-				return err
-			}
-			delay := hubWatchRetryDelay
-			if jm.testOnlyTerminalSendRetryDelay > 0 {
-				delay = jm.testOnlyTerminalSendRetryDelay
-			}
-			time.Sleep(delay)
+		if err := jm.endHubWatchUntilPersisted(watchID, "completed", &delivery); err != nil {
+			return err
 		}
+		jm.mu.Lock()
+		if _, current, ok := jm.watchConfigByIDLocked(watchID); ok && current == cfg {
+			if cfg.hubSeen == nil {
+				cfg.hubSeen = map[string]bool{}
+			}
+			cfg.hubSeen[identity] = true
+		}
+		jm.mu.Unlock()
+		return nil
 	}
 	jm.recordWatchSendsAndKick([]watchSendDelivery{delivery})
 	if crossedBudget {
@@ -430,6 +411,31 @@ func (jm *jobManager) endHubWatch(watchID, reason string, completion *watchSendD
 	return err
 }
 
+// endHubWatchUntilPersisted keeps ownership of an end the way the completion
+// path does: a failed journal write is not an observation failure, and the
+// pending-send retention is disabled for terminal sends while the config
+// rejects deliveries, so no other path can finish this end. The caller —
+// completion or a consumer that is already exiting — retries the same end
+// until it persists, the manager closes, or the watch is ended or replaced by
+// another path. Abandoning the end after a bounded window would strand the
+// registered watch with no consumer and no re-registration notice.
+func (jm *jobManager) endHubWatchUntilPersisted(watchID, reason string, completion *watchSendDelivery) error {
+	for {
+		err := jm.endHubWatch(watchID, reason, completion)
+		if err == nil {
+			return nil
+		}
+		if jm.isClosing() || !managerHubWatchPresent(jm, watchID) {
+			return err
+		}
+		delay := hubWatchRetryDelay
+		if jm.testOnlyTerminalSendRetryDelay > 0 {
+			delay = jm.testOnlyTerminalSendRetryDelay
+		}
+		time.Sleep(delay)
+	}
+}
+
 // restore uses the existing restart end-notice rail, including generations
 // that spoke before the runtime died; no continuing hub watch is restored.
 func hubWatchLostAtRestart(w *jobstore.WatchRecord) bool { return w != nil && w.HubRef != "" }
@@ -508,13 +514,13 @@ func (s *Session) configureHubWatchRuntime(ctx context.Context, args map[string]
 	stopSetupCancellation()
 	if err := ctx.Err(); err != nil {
 		cancel()
-		if endErr := jm.endHubWatch(result.WatchID, "setup canceled after registration", nil); endErr != nil {
+		if endErr := jm.endHubWatchUntilPersisted(result.WatchID, "setup canceled after registration", nil); endErr != nil {
 			return nil, errors.Join(err, endErr)
 		}
 		return nil, err
 	}
 	if err := watchCtx.Err(); err != nil {
-		if endErr := jm.endHubWatch(result.WatchID, "setup canceled after registration", nil); endErr != nil {
+		if endErr := jm.endHubWatchUntilPersisted(result.WatchID, "setup canceled after registration", nil); endErr != nil {
 			return nil, errors.Join(err, endErr)
 		}
 		return nil, err
@@ -655,7 +661,7 @@ func (s *Session) consumeHubWatch(ctx context.Context, id string, request appwir
 			if ctx.Err() != nil {
 				return
 			}
-			_ = jm.endHubWatch(id, "observation snapshot failed: "+err.Error(), nil)
+			_ = jm.endHubWatchUntilPersisted(id, "observation snapshot failed: "+err.Error(), nil)
 			return
 		}
 		if !managerHubWatchPresent(jm, id) {
@@ -672,14 +678,14 @@ func (s *Session) consumeHubWatch(ctx context.Context, id string, request appwir
 					break stream
 				}
 				if update.Snapshot != nil && (update.Metadata.Ref != initial.Metadata.Ref || update.Metadata.InstanceID != initial.Metadata.InstanceID || update.Metadata.GenerationID != initial.Metadata.GenerationID) {
-					_ = jm.endHubWatch(id, "target replaced; re-register", nil)
+					_ = jm.endHubWatchUntilPersisted(id, "target replaced; re-register", nil)
 					return
 				}
 				if err := observe(update); err != nil {
 					if ctx.Err() != nil {
 						return
 					}
-					_ = jm.endHubWatch(id, "observation failed: "+err.Error(), nil)
+					_ = jm.endHubWatchUntilPersisted(id, "observation failed: "+err.Error(), nil)
 					return
 				}
 				if !managerHubWatchPresent(jm, id) {
@@ -691,7 +697,7 @@ func (s *Session) consumeHubWatch(ctx context.Context, id string, request appwir
 			return
 		}
 		if err := jm.suspendHubWatch(id); err != nil {
-			_ = jm.endHubWatch(id, "observation interruption failed: "+err.Error(), nil)
+			_ = jm.endHubWatchUntilPersisted(id, "observation interruption failed: "+err.Error(), nil)
 			return
 		}
 		for ctx.Err() == nil && managerHubWatchPresent(jm, id) {
@@ -713,11 +719,11 @@ func (s *Session) consumeHubWatch(ctx context.Context, id string, request appwir
 			if err == nil {
 				stateFailures = 0
 				if !state.Manager || state.Ref != callerRef || state.InstanceID != callerInstance {
-					_ = jm.endHubWatch(id, "Manager binding no longer serves this session; re-register", nil)
+					_ = jm.endHubWatchUntilPersisted(id, "Manager binding no longer serves this session; re-register", nil)
 					return
 				}
 				if signal == boundSignal {
-					_ = jm.endHubWatch(id, "observation subscription ended unexpectedly; re-register", nil)
+					_ = jm.endHubWatchUntilPersisted(id, "observation subscription ended unexpectedly; re-register", nil)
 					return
 				}
 				rebound, watchErr := client.Watch(ctx, request)
@@ -729,14 +735,14 @@ func (s *Session) consumeHubWatch(ctx context.Context, id string, request appwir
 						return
 					}
 					if snapshot.Snapshot == nil || snapshot.Metadata.InstanceID != initial.Metadata.InstanceID || snapshot.Metadata.GenerationID != initial.Metadata.GenerationID || snapshot.Metadata.Ref != initial.Metadata.Ref {
-						_ = jm.endHubWatch(id, "target replaced or observation unavailable; re-register", nil)
+						_ = jm.endHubWatchUntilPersisted(id, "target replaced or observation unavailable; re-register", nil)
 						return
 					}
 					updates, initial, boundSignal = rebound, snapshot, signal
 					break
 				}
 				if permanentHubWatchError(watchErr) {
-					_ = jm.endHubWatch(id, "observation subscription rejected: "+watchErr.Error(), nil)
+					_ = jm.endHubWatchUntilPersisted(id, "observation subscription rejected: "+watchErr.Error(), nil)
 					return
 				}
 			} else {
@@ -754,7 +760,7 @@ func (s *Session) consumeHubWatch(ctx context.Context, id string, request appwir
 			case <-time.After(hubWatchRetryDelay):
 			}
 			if stateErr != nil && stateFailures >= hubWatchStateFailureLimit {
-				_ = jm.endHubWatch(id, "observation unreachable: "+stateErr.Error()+"; re-register", nil)
+				_ = jm.endHubWatchUntilPersisted(id, "observation unreachable: "+stateErr.Error()+"; re-register", nil)
 				return
 			}
 		}
