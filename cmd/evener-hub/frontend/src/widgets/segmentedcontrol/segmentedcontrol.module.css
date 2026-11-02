@@ -49,6 +49,11 @@
   font-weight: var(--font-weight-medium);
   text-align: center;
   cursor: pointer;
+  /* scroll-into-view aligns the focused segment flush with the scrollport,
+     which clips the focus ring's 4px reach (2px offset + 2px width); the
+     margin clears that reach plus fractional scroll rounding, so an
+     exact-reach value still clips. */
+  scroll-margin-block: 6px;
   transition:
     background-color var(--motion-duration-hover) var(--motion-easing-standard),
     border-color var(--motion-duration-hover) var(--motion-easing-standard),

@@ -213,3 +213,27 @@ that is the safe direction and that nothing in `src/` triggers today. Opacity
 is deliberately excluded — it is not inherited, so an element-local check
 would be ancestor-blind in exactly the way bsq9 is about, and opacity 0 is a
 legitimate resting state here (kata hk8v).
+
+## Verbosity target inventory (`assertDetail()`'s `expectedTargets` and
+switch-label count checks)
+
+`assertDetail()` pins the interactive-control inventory of the open Verbosity
+dialog: every control the harness measures (the Verbosity menu item, the
+trigger, every button/select/summary/radio/switch - see
+`overflowharness-entry.tsx`'s `controls` array) plus one extra `switch-label`
+target per Switch, the element its `aria-labelledby` points at. A Switch
+contributes two targets: its own `switch` entry and its label. The counts move
+whenever TranscriptDetailEditor's inventory does.
+
+**Mutation performed:** none needed - the drift happened in the wild. An
+unconditionally-rendered Switch ("Thinking open by default") was added to
+TranscriptDetailEditor's advanced fieldset without these constants, and the
+guard went red on main and in two merge-group runs: `Verbosity mounted 35
+interactive targets, expected 33; 10 Switch label targets, expected 9`, at
+every width, deterministically. That is exactly the inventory drift the
+assertion exists to catch, witnessed red on real CI before the re-pin.
+
+**Result after the re-pin (35 targets / 10 switch labels):** PASS at every
+width.
+
+**Verified:** 2026-11-02. **Expect:** fail on any inventory change.

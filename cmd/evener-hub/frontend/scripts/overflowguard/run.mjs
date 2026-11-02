@@ -932,7 +932,12 @@ function assertDetail(result, width) {
   if (detail?.mobile !== mobile)
     failures.push(`Verbosity layout mode is ${detail?.mobile}, realized viewport mode is ${mobile}`);
   failures.push(...assertFieldsets(detail, `${width}px Verbosity`));
-  const expectedTargets = 33;
+  // Pinned to the control inventory the harness measures in the open Verbosity
+  // dialog (src/dev/overflowharness-entry.tsx): the `controls` array plus one
+  // switch-label target per Switch. Any inventory change there fails the sweep
+  // at every width until both constants move together; see the "Verbosity
+  // target inventory" section in scripts/overflowguard/MUTATIONS.md.
+  const expectedTargets = 35;
   if ((detail?.targets?.length ?? 0) !== expectedTargets) {
     failures.push(
       `Verbosity mounted ${detail?.targets?.length ?? "unknown"} interactive targets, expected ${expectedTargets}`,
@@ -948,9 +953,10 @@ function assertDetail(result, width) {
   ) {
     failures.push("Verbosity Advanced summary target measurement is missing");
   }
+  const expectedSwitchLabels = 10;
   const switchLabels = detail?.targets?.filter((target) => target.kind === "switch-label") ?? [];
-  if (switchLabels.length !== 9)
-    failures.push(`Verbosity mounted ${switchLabels.length} Switch label targets, expected 9`);
+  if (switchLabels.length !== expectedSwitchLabels)
+    failures.push(`Verbosity mounted ${switchLabels.length} Switch label targets, expected ${expectedSwitchLabels}`);
   if (!detail?.dialogCentered && !mobile) {
     failures.push(
       `Desktop Verbosity Dialog is not centered in the layout viewport: ${JSON.stringify({ panel: detail?.panel, viewport: result.viewport })}`,
