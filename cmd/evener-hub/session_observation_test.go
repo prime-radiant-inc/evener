@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -308,6 +309,140 @@ func TestManagerObservationClearRotatesHistoryAndEndsWatch(t *testing.T) {
 	}
 	if targetReads.Load() != 2 {
 		t.Fatalf("hub reads=%d, want initial watch read and independent replacement read only", targetReads.Load())
+	}
+}
+
+func TestManagerObservationStartupWindowDoesNotCancelBinding(t *testing.T) {
+	// A communicate watch whose initial window holds more recorded
+	// observations than the reverse transport's 32-update queue must deliver
+	// them through the snapshot alone. Replaying each window observation as
+	// an individual frame floods the queue while the consumer is still
+	// taking the snapshot, and the overflow path cancels the whole binding:
+	// every other watch and in-flight Manager operation dies with it on an
+	// otherwise healthy connection.
+	ctx, cancel := context.WithTimeout(t.Context(), 20*time.Second)
+	defer cancel()
+	const ref, instance = "local:manager-workspace", "manager-instance"
+	const observations = 40
+	path := filepath.Join(t.TempDir(), "observed.transcript.jsonl")
+	w, err := transcript.NewWriter(path, transcript.Header{SessionID: instance})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < observations; i++ {
+		callID := fmt.Sprintf("startup-call-%d", i)
+		entries := []schema.Turn{
+			{Format: schema.TurnFormatIdentity, TurnID: fmt.Sprintf("startup-turn-%d", i), TurnKind: schema.TurnSpanExecution, Kind: schema.TurnAssistant,
+				Message: llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{
+					{Kind: llm.ContentText, Text: "startup-sentinel"},
+					{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{ID: callID, Name: "communicate", Arguments: []byte(`{"message":"startup-sentinel"}`)}},
+				}}},
+			{Format: schema.TurnFormatIdentity, TurnID: fmt.Sprintf("startup-turn-%d", i), Kind: schema.TurnCommunicate, CausalKnown: true,
+				Communicate: &schema.CommunicateInfo{CallID: callID, Message: "startup-sentinel", EndTurn: true, EndReason: "done"}},
+			{Format: schema.TurnFormatIdentity, TurnID: fmt.Sprintf("startup-turn-%d", i), Kind: schema.TurnToolResults,
+				Message: llm.Message{Role: llm.RoleTool, Content: []llm.ContentPart{{Kind: llm.ContentToolResult,
+					ToolResult: &llm.ToolResultData{ToolCallID: callID, Name: "communicate", Content: `{"accepted":true,"end_turn":true}`}}}}},
+		}
+		for _, entry := range entries {
+			if err := w.Append(entry); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	length := w.RecordedLength()
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+	type boundConnection struct {
+		life    context.Context
+		client  appwire.SessionHubClient
+		binding appwire.SessionBinding
+	}
+	bound := make(chan boundConnection, 8)
+	daemon := daemonserver.NewServer(daemonserver.ServerConfig{HubToken: "test-token", StateDir: t.TempDir()})
+	defer daemon.Close()
+	identity, err := daemonserver.PrepareAppIdentityForRef("local", instance, ref, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	daemon.ReplaceAppIdentity(identity.WithBootGeneration("7@manager").WithRecordedLength(length), nil)
+	daemon.AppServer().InstallSessionTools(func(life context.Context, binding appwire.SessionBinding, client appwire.SessionHubClient) error {
+		bound <- boundConnection{life: life, client: client, binding: binding}
+		return nil
+	})
+	upstream := httptest.NewServer(http.HandlerFunc(daemon.AppServer().ServeWebSocket))
+	defer upstream.Close()
+	entry := rendezvous.Entry{Protocol: appwire.ProtocolVersion, Endpoint: upstream.URL, SourceID: "local", ThreadID: instance, SessionID: instance, WorkspaceRef: ref, InstanceID: instance, HubToken: "test-token"}
+	source := appsource.NewLocalDaemonSourceWithEntries("local", func() []appsource.LocalDaemonEntry {
+		return []appsource.LocalDaemonEntry{{Entry: entry, SessionID: instance, Manager: true}}
+	}, upstream.Client())
+	sources := appsource.NewRegistry()
+	sources.Add(source)
+	cfg := hubcore.WebConfig{HubStateRoot: t.TempDir(), Past: hubcore.NewPastIndex(""), HubID: "hub-test", Roster: hubcore.NewRosterWithEntries(hubcore.LiveEntry{Entry: entry, SessionID: instance, Status: "active", Manager: true})}
+	web := NewWebServer(cfg)
+	hubServer := newHubAppServerWithNavigation(cfg, sources, web.navigation, web.resolveTopLevelSessionRef)
+	hubHTTP := httptest.NewServer(http.HandlerFunc(hubServer.ServeWebSocket))
+	defer hubHTTP.Close()
+	var workers sync.WaitGroup
+	defer workers.Wait()
+	// stop is deferred after workers.Wait so cancel runs first: the
+	// reconciler workers exit only once life is canceled, and defers run
+	// last-registered-first.
+	life, stop := context.WithCancel(ctx)
+	defer stop()
+	startSessionTools(life, sources, func(f func()) { workers.Go(f) })
+	select {
+	case first := <-bound:
+		if first.binding.Ref != ref || first.binding.InstanceID != instance {
+			t.Fatalf("discovered binding=%+v", first.binding)
+		}
+		watchCtx, cancelWatch := context.WithCancel(ctx)
+		defer cancelWatch()
+		updates, err := first.client.Watch(watchCtx, appwire.SessionWatchRequest{Ref: ref, Completion: true})
+		if err != nil {
+			t.Fatalf("completion watch through reverse transport: %v", err)
+		}
+		var initial appwire.SessionWatchUpdate
+		select {
+		case initial = <-updates:
+			if initial.Snapshot == nil {
+				t.Fatalf("missing initial snapshot: %+v", initial)
+			}
+		case <-ctx.Done():
+			t.Fatal("initial observation blocked")
+		}
+		windowed := 0
+		for _, turn := range initial.Snapshot.Thread.Turns {
+			for _, item := range turn.Items {
+				if item.Observation != nil {
+					windowed++
+				}
+			}
+		}
+		if windowed <= 32 {
+			t.Fatalf("snapshot observations=%d, want more than the transport's 32-frame queue", windowed)
+		}
+		// TRIPWIRE-style quiescence bound: startup must deliver the window
+		// through the snapshot alone, so nothing else may arrive here; only
+		// a frame-flooding replay (the regression this test guards against)
+		// or the binding's cancellation reaches the bound.
+		select {
+		case got, open := <-updates:
+			if !open {
+				t.Fatal("binding canceled at startup: individual replay frames overflowed the reverse transport's update queue")
+			}
+			t.Fatalf("unexpected individual replay frame after the snapshot: %+v", got)
+		case <-time.After(1500 * time.Millisecond):
+		}
+		view, err := first.client.State(ctx)
+		if err != nil {
+			t.Fatalf("binding unhealthy after startup: %v", err)
+		}
+		if !view.Manager {
+			t.Fatalf("binding lost Manager state: %+v", view)
+		}
+	case <-ctx.Done():
+		t.Fatal("automatic binding did not arrive")
 	}
 }
 

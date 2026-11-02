@@ -137,13 +137,25 @@ func TestManagerObservationReconnectBeyondLatestPage(t *testing.T) {
 	if initial.Snapshot == nil || initial.Snapshot.Snapshot == nil {
 		t.Fatalf("no initial saved snapshot: %+v", initial)
 	}
-	// Drain the two initial recorded communicate updates before closing transport.
-	for range 2 {
-		select {
-		case <-updates:
-		case <-ctx.Done():
-			t.Fatal(ctx.Err())
+	// The initial snapshot alone carries the window's recorded observations:
+	// old-done and watched-progress ride its turns, and no individual frames
+	// follow. Closing the transport afterwards starts recovery from that
+	// held snapshot.
+	observed := 0
+	for _, turn := range initial.Snapshot.Thread.Turns {
+		for _, item := range turn.Items {
+			if item.Observation != nil {
+				observed++
+			}
 		}
+	}
+	if observed != 2 {
+		t.Fatalf("initial snapshot observations=%d, want the two recorded communicates", observed)
+	}
+	select {
+	case update := <-updates:
+		t.Fatalf("unexpected frame after the initial snapshot: %+v", update)
+	case <-time.After(500 * time.Millisecond):
 	}
 	mu.Lock()
 	gate = make(chan struct{})

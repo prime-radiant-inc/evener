@@ -227,13 +227,14 @@ func (b *boundSessionOperations) Watch(ctx context.Context, request appwire.Sess
 				return false
 			}
 		}
-		for _, turn := range read.Thread.Turns {
-			for _, u := range recordedObservationUpdates(turn.Items, request, ref.String(), read.Thread.Evener.InstanceID, read.BootGeneration) {
-				if !send(u) {
-					return
-				}
-			}
-		}
+		// The initial snapshot is the window's historical catch-up: its turns
+		// already carry the recorded observations to the consumer. Replaying
+		// each one as an individual frame here would only duplicate them, and
+		// a window with more observations than the reverse transport's
+		// 32-update queue overflows it while the consumer is still taking the
+		// snapshot — the overflow path cancels the whole binding. Items that
+		// arrive after the snapshot flow through the notification and refresh
+		// paths below instead.
 		type readResult struct {
 			response *appwire.ThreadReadResponse
 			items    []appwire.ThreadItem
