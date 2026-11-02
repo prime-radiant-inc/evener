@@ -972,6 +972,12 @@ func (f *ForceStopFence) Reject() {
 func (r *ResumeLocks) InvalidateResumeAdmission(aliases []string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	// An in-memory registry (NewResumeLocks) starts with no recovery rows; a
+	// shutdown of a session that never registered recovery state still needs
+	// its epoch published.
+	if r.recovery == nil {
+		r.recovery = map[string]SessionRecoveryState{}
+	}
 	for _, id := range aliases {
 		state := r.recovery[id]
 		state.Epoch++

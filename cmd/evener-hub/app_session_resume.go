@@ -84,9 +84,13 @@ func shutdownThreadTolerateExited(ctx context.Context, cfg hubcore.WebConfig, so
 	if err := shutdownCleanupError(cfg, params.Ref); err != nil {
 		return err
 	}
-	discoveryUncertain := false
+	localThreadID := ""
 	if ref, err := appwire.ParseRef(params.Ref); err == nil && ref.SourceID == appwire.LocalSourceID {
-		decision, err := checkConfirmedStoppedWithoutClaim(ctx, cfg, ref.ThreadID, false, nil)
+		localThreadID = ref.ThreadID
+	}
+	discoveryUncertain := false
+	if localThreadID != "" {
+		decision, err := checkConfirmedStoppedWithoutClaim(ctx, cfg, localThreadID, false, nil)
 		if err != nil {
 			return err
 		}
@@ -113,7 +117,19 @@ func shutdownThreadTolerateExited(ctx context.Context, cfg hubcore.WebConfig, so
 		if err := ensureThreadActionAvailable(ctx, source, params.Ref, "", "shutdown"); err != nil {
 			return struct{}{}, err
 		}
-		return struct{}{}, source.ShutdownThread(ctx, params)
+		if err := source.ShutdownThread(ctx, params); err != nil {
+			return struct{}{}, err
+		}
+		// A successful live shutdown is a confirmed Stop this device landed, and
+		// it must advance the session's recovery epoch under the ownership this
+		// action holds. Otherwise a resume token minted before it still matches:
+		// a resume whose hydration failed re-arms, another device shuts the
+		// daemon down during its backoff, and the retry restarts what the user
+		// stopped. The confirmed-stopped no-op above publishes the same advance.
+		if localThreadID != "" && cfg.ResumeLocks != nil {
+			cfg.ResumeLocks.InvalidateResumeAdmission(cfg.ResumeLocks.RecoveryAliases(localThreadID))
+		}
+		return struct{}{}, nil
 	}
 	var err error
 	if discoveryUncertain {

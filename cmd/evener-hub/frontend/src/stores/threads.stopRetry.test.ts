@@ -3552,7 +3552,13 @@ test("a Send that joined before the newer token was read is canceled with the su
     response.thread.evener.recoveryToken = token;
     return response;
   });
-  fake.on("thread/resume", () => heldResume);
+  let resumeCalls = 0;
+  fake.on("thread/resume", () => {
+    resumeCalls += 1;
+    // The replacement drive that follows the refusal lands, so the surviving
+    // press is delivered rather than refusing again.
+    return resumeCalls === 1 ? heldResume : readResponse(ref, { status: { type: "idle" } });
+  });
   await threadsStore.getState().ensureThread(ref);
   await flushIndexedDBUntil(() => false);
   void threadsStore.getState().send(ref, "first");
@@ -3659,4 +3665,168 @@ test("a fresh Send delivers after a terminal supersession refusal", async ({ onT
         (call.params as { input?: Array<{ text?: string }> }).input?.[0]?.text === "fresh",
     ),
   ).toBe(true);
+});
+
+// Every join carries the token it observed. A later join replaces the marker's
+// restart fields, but a supersession must still cancel the earlier press that
+// joined under the token the Stop replaced - otherwise that message is
+// delivered by the replacement drive.
+test("a supersession cancels every join that predates the newer token", async ({ onTestFinished }) => {
+  trackScheduledResumeRetries(onTestFinished);
+  const ref = "local:recovery-multi-join";
+  const storage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(storage);
+  const fake = connectMutationClient();
+  let token = "tok-5";
+  const heldResumes: Array<{ resolve: (value: ThreadReadResponse) => void; reject: (error: Error) => void }> = [];
+  fake.on("thread/resume", () => {
+    const hold = deferred<ThreadReadResponse>();
+    heldResumes.push({ resolve: hold.resolve, reject: hold.reject });
+    return hold.promise;
+  });
+  fake.on("thread/read", () => {
+    const response = readResponse(ref, { status: { type: "notLoaded" } });
+    response.thread.evener.resumeRequired = true;
+    response.thread.evener.mutationStateAuthoritative = false;
+    response.thread.evener.recoveryToken = token;
+    return response;
+  });
+  await threadsStore.getState().ensureThread(ref);
+  await flushIndexedDBUntil(() => false);
+  void threadsStore.getState().send(ref, "first");
+  await waitFor(() => expect(heldResumes).toHaveLength(1));
+  await threadsStore.getState().send(ref, "joined-old");
+  await flushIndexedDBUntil(() => false);
+  // The page then reads the Stop's newer token, and a third press joins under it.
+  token = "tok-9";
+  await threadsStore.getState().refreshThread(ref);
+  await flushIndexedDBUntil(() => false);
+  await threadsStore.getState().send(ref, "joined-new");
+  await flushIndexedDBUntil(() => false);
+  heldResumes[0]?.reject(
+    new WireError("session recovery canceled this pending action; submit it again", -32000, {
+      evenerErrorInfo: "sessionRecoveryCanceled",
+      recoveryToken: "tok-9",
+    }),
+  );
+  // Whatever drive follows lands, so the surviving press is delivered.
+  for (const held of heldResumes.slice(1)) held.resolve(readResponse(ref, { status: { type: "idle" } }));
+  await flushIndexedDBUntil(() => false);
+  await flushMicrotasks();
+  await flushIndexedDBUntil(() => false);
+  await flushMicrotasks();
+  for (const held of heldResumes.slice(1)) held.resolve(readResponse(ref, { status: { type: "idle" } }));
+  await flushIndexedDBUntil(() => false);
+  await flushMicrotasks();
+  const rows = await storage.listOutbox(ref);
+  expect(rows.find((row) => outboxText(row) === "first")?.state).toBe("canceled");
+  expect(rows.find((row) => outboxText(row) === "joined-old")?.state).toBe("canceled");
+  expect(rows.find((row) => outboxText(row) === "joined-new")?.state).not.toBe("canceled");
+});
+
+// An identity-changing attempt can move the parked rows under the resumed
+// identity and fail before it adopts it. The refusal of the arm that failure
+// leaves must cancel those moved rows: retiring the arm hands them to a
+// foldable read, and they restart the session the Stop superseded.
+test("a supersession of a retry that never adopted cancels the moved rows", async ({ onTestFinished }) => {
+  const scheduledResumeRetries = trackScheduledResumeRetries(onTestFinished);
+  const ref = "local:recovery-moved-rows";
+  const resumedRef = "local:recovery-moved-rows-2";
+  const storage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(storage);
+  const fake = connectMutationClient();
+  const { rejectHydration } = stageResumedIdentityFailure(fake, ref, resumedRef);
+  await threadsStore.getState().ensureThread(ref);
+  await threadsStore.getState().ensureThread(resumedRef);
+  const owner = acquireBackgroundThread(resumedRef);
+  await owner.ready;
+  await flushIndexedDBUntil(() => false);
+  // A parked row is moved under the resumed identity, then the hydration of
+  // that identity fails: the arm carries the resumed fence, never adopted.
+  await storage.enqueueIntent({
+    targetRef: ref,
+    threadId: `thr_${ref}`,
+    method: "turn/queue",
+    payload: { ref, input: [{ type: "text", text: "moved" }] },
+    attachments: [],
+    optimisticDisplay: { text: "moved" },
+  });
+  void threadsStore.getState().resumeSession(ref);
+  await waitFor(async () => expect((await storage.listOutbox(resumedRef)).length).toBe(1));
+  rejectHydration(new Error("transport unavailable"));
+  await waitFor(() => expect(scheduledResumeRetries).toHaveLength(1));
+  fake.on("thread/resume", () => {
+    throw new WireError("session recovery canceled this pending action; submit it again", -32000, {
+      evenerErrorInfo: "sessionRecoveryCanceled",
+      recoveryToken: "tok-9",
+    });
+  });
+  act(() => {
+    scheduledResumeRetries[0]?.fire();
+  });
+  await flushIndexedDBUntil(() => false);
+  await flushMicrotasks();
+  await flushIndexedDBUntil(() => false);
+  await flushMicrotasks();
+
+  expect((await storage.listOutbox(resumedRef)).map((row) => row.state)).toEqual(["canceled"]);
+  await owner.release();
+});
+
+// A parked row folds only under the token it was issued under. Another tab (or
+// this page after a reload) has no in-memory arm for the row: it reads the
+// Stop's newer token, sees a foldable session, and would dispatch the shared
+// row - restarting the session the other device stopped. The row's own persisted
+// token is the fence, and a read that still names it admits the fold.
+test("a parked row does not fold under a token newer than its own", async ({ onTestFinished }) => {
+  trackScheduledResumeRetries(onTestFinished);
+  const ref = "local:recovery-parked-token";
+  const storage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(storage);
+  const fake = connectMutationClient();
+  const token = "tok-9";
+  fake.on("thread/read", () => {
+    const response = readResponse(ref, { status: { type: "notLoaded" } });
+    response.thread.evener.resumeRequired = true;
+    response.thread.evener.resumeOnlyFoldable = true;
+    response.thread.evener.mutationStateAuthoritative = false;
+    response.thread.evener.recoveryToken = token;
+    return response;
+  });
+  fake.on("turn/start", (params) => ({
+    receipt: {
+      clientMutationId: params.clientMutationId,
+      threadId: `thr_${ref}`,
+      disposition: "applied",
+      projectionState: "notProjected",
+    },
+    turn: { id: "turn_parked", status: "inProgress", itemsView: "" },
+  }));
+  // The row another tab finds in the shared outbox: issued under tok-5, which
+  // the page no longer names.
+  await storage.enqueueIntent(
+    {
+      targetRef: ref,
+      threadId: `thr_${ref}`,
+      method: "turn/start",
+      payload: { ref, input: [{ type: "text", text: "parked" }] },
+      attachments: [],
+      optimisticDisplay: { text: "parked" },
+    },
+    { stopEpoch: await storage.readStopEpoch(ref), recoveryToken: "tok-5" },
+  );
+  expect((await storage.listOutbox(ref))[0]?.recoveryTokenAtEnqueue).toBe("tok-5");
+  await threadsStore.getState().ensureThread(ref);
+  await threadsStore.getState().refreshThread(ref);
+  notifyReadyForMutationDispatch([ref]);
+  await flushIndexedDBUntil(() => false);
+  await flushMicrotasks();
+  await flushIndexedDBUntil(() => false);
+  const sentText = (call: { params: unknown }) =>
+    (call.params as { input?: Array<{ text?: string }> }).input?.[0]?.text;
+  const turnStarts = () => fake.calls.filter((call) => call.method === "turn/start");
+  // A foldable read naming the newer token must not fold the row past the Stop.
+  expect(turnStarts().map(sentText)).not.toContain("parked");
+  // The row is parked, not lost: the fence waits for a read that names its token.
+  expect((await storage.listOutbox(ref))[0]?.state).toBe("submitting");
 });

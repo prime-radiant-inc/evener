@@ -67,6 +67,10 @@ export type MutationDiscoveryReason =
 // still cancels that send, which is the conservative, retryable direction.
 export interface MutationStopBarrier {
   stopEpoch: number;
+  // The session's hub-owned recovery token at the click. Stored on the record
+  // so a resume-only row folds under the token it was issued under, whichever
+  // tab or page later dispatches it.
+  recoveryToken?: string;
 }
 
 // The storage this layer needs, as an interface rather than a class: the web's

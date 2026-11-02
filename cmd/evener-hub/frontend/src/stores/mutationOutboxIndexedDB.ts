@@ -306,6 +306,7 @@ export class MutationOutboxIndexedDB implements QueuedMessageStorage<MutationAtt
         // The barrier's own read, stored: the refusal rollback's fence
         // compares the ref's epoch at rollback time against this capture.
         stopEpochAtEnqueue: stopEpoch,
+        ...(barrier?.recoveryToken !== undefined ? { recoveryTokenAtEnqueue: barrier.recoveryToken } : {}),
       };
       await requestResult(transaction.objectStore(OUTBOX_STORE).add(record));
       return record;
@@ -414,9 +415,18 @@ export class MutationOutboxIndexedDB implements QueuedMessageStorage<MutationAtt
   // `upToSequence` bounds the write to work issued at or before that intent
   // sequence: a supersession cancels only the rows its drive spoke for, so a
   // Send the user pressed afterwards (under the newer fence) survives.
-  async cancelUnattempted(targetRef: string, upToSequence?: number): Promise<string[]> {
+  async cancelUnattempted(
+    targetRef: string,
+    upToSequence?: number,
+    options?: { includeAttempted?: boolean },
+  ): Promise<string[]> {
     return this.#write([OUTBOX_STORE, SEQUENCE_STORE], "cancelUnattempted", async (transaction) => {
-      const canceled = await this.#cancelUnattempted(transaction, targetRef, upToSequence);
+      const canceled = await this.#cancelUnattempted(
+        transaction,
+        targetRef,
+        upToSequence,
+        options?.includeAttempted === true,
+      );
       // Only a Stop action advances the epoch. A bounded supersession
       // cancellation is the consequence of a Stop that already bumped it, and
       // bumping again here would strand a Send whose newer-token barrier
@@ -426,13 +436,21 @@ export class MutationOutboxIndexedDB implements QueuedMessageStorage<MutationAtt
     });
   }
 
-  async #cancelUnattempted(transaction: IDBTransaction, targetRef: string, upToSequence?: number): Promise<string[]> {
+  async #cancelUnattempted(
+    transaction: IDBTransaction,
+    targetRef: string,
+    upToSequence?: number,
+    includeAttempted = false,
+  ): Promise<string[]> {
     const store = transaction.objectStore(OUTBOX_STORE);
     const records = await requestResult<MutationOutboxRecord[]>(store.getAll());
     const canceled: string[] = [];
     for (const record of records) {
       if (record.targetRef !== targetRef) continue;
-      if (!isCancelableByStop(record)) continue;
+      // A supersession of an identity-changing resume cancels rows its own
+      // attempt marked but never sent: their outcome is known undelivered, and
+      // leaving them submitting hands them to the next foldable read.
+      if (!isCancelableByStop(record) && !(includeAttempted && record.state === "submitting")) continue;
       if (upToSequence !== undefined && record.intentSequence > upToSequence) continue;
       await requestResult(store.put({ ...record, state: "canceled" }));
       canceled.push(record.clientMutationId);
@@ -520,7 +538,16 @@ export class MutationOutboxIndexedDB implements QueuedMessageStorage<MutationAtt
       // next refusal redelivers instead of re-canceling. The barrier above
       // still fences a Stop newer than this press.
       const stopEpoch = await this.#stopEpochOf(transaction, record.targetRef);
-      await requestResult(store.put({ ...record, state: "submitting", stopEpochAtEnqueue: stopEpoch }));
+      // The same re-authorization covers the recovery token: a Retry pressed
+      // under the token the page has read re-issues the row under it.
+      await requestResult(
+        store.put({
+          ...record,
+          state: "submitting",
+          stopEpochAtEnqueue: stopEpoch,
+          ...(barrier?.recoveryToken !== undefined ? { recoveryTokenAtEnqueue: barrier.recoveryToken } : {}),
+        }),
+      );
       return true;
     });
   }

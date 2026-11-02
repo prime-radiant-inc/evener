@@ -125,6 +125,13 @@ export interface MutationOutboxRecord<A extends MutationAttachmentRef = Mutation
   // interleavings. Optional because rows written before the field existed
   // carry none; a missing capture reads as zero, the conservative direction.
   stopEpochAtEnqueue?: number;
+  // The session's hub-owned recovery token as the submitting click observed it.
+  // A resume-only row may only fold a resume under the token it was issued
+  // under: another tab (or this page after a reload) can read a newer token -
+  // another device's Stop - and would otherwise fold the parked row past it.
+  // Optional: rows written before the field existed carry none, and a missing
+  // capture is admitted exactly as a Stop fence that cannot answer is.
+  recoveryTokenAtEnqueue?: string;
 }
 
 export interface MutationOptimisticRecord<A extends MutationAttachmentRef = MutationAttachmentRef>

@@ -1167,3 +1167,46 @@ func TestCompletionOwnedResumeRendezvousWaitIsHubBounded(t *testing.T) {
 		}
 	})
 }
+
+// TestLiveShutdownAdvancesRecoveryToken pins the other device's half of the
+// supersession fence: a successful live shutdown is a confirmed Stop, so it must
+// advance the session's recovery epoch. Without the advance, a resume token
+// minted before the shutdown still matches, and a client whose resume hydrate
+// failed restarts the daemon the user shut down.
+func TestLiveShutdownAdvancesRecoveryToken(t *testing.T) {
+	locks := hubcore.NewResumeLocks()
+	sessionID := hubtest.SessionID(t)
+	runDir := t.TempDir()
+	// A live claim for the session: discovery succeeds and finds it, so the
+	// shutdown reaches the source action instead of the confirmed-stopped no-op
+	// (whose own epoch advance would mask the one under test).
+	if _, err := rendezvous.Write(runDir, rendezvous.Entry{
+		PID:       os.Getpid(),
+		SourceID:  "local",
+		ThreadID:  sessionID,
+		SessionID: sessionID,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	source := &shutdownScriptedSource{scriptedAppSource: &scriptedAppSource{
+		id: "local",
+		thread: appwire.Thread{
+			ID:     sessionID,
+			Source: "local",
+			Evener: appwire.EvenerThread{Ref: "local:" + sessionID, Capabilities: appwire.ThreadCapabilities{Shutdown: true}},
+		},
+	}}
+	sources := appsource.NewRegistry()
+	sources.Add(source)
+	cfg := hubcore.WebConfig{RunDir: runDir, ResumeLocks: locks}
+	before := locks.RecoveryToken(sessionID)
+	if err := shutdownThreadTolerateExited(t.Context(), cfg, sources, appwire.ThreadShutdownParams{Ref: "local:" + sessionID}); err != nil {
+		t.Fatalf("live shutdown failed: %v", err)
+	}
+	if source.shutdowns != 1 {
+		t.Fatalf("live shutdown invoked the source %d times, want 1", source.shutdowns)
+	}
+	if after := locks.RecoveryToken(sessionID); after == before {
+		t.Fatalf("live shutdown left the recovery token unchanged (%q): a pre-shutdown resume still matches", after)
+	}
+}
