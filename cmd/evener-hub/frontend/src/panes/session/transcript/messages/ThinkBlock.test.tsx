@@ -165,14 +165,8 @@ test("live shows a Thinking label and renders the reasoning text open (not colla
 // plain placeholder with no disclosure at all.
 
 test("contentFree renders only the Loader placeholder and an approximate token count, never the thought text", () => {
-  render(
-    <ThinkBlock
-      item={item({ reasoningSummaries: [["abcdefghijklmnop"]] })}
-      turn={turn}
-      live={true}
-      contentFree={true}
-    />,
-  );
+  const live = item({ reasoningSummaries: [["abcdefghijklmnop"]] });
+  render(<ThinkBlock item={live} turn={{ ...turn, items: [live] }} live={true} contentFree={true} />);
   expect(thinkBlockLive()).toBe("true");
   // 16 characters -> characters/4 -> 4, marked approximate.
   expect(screen.getByTestId("think-block").dataset.estimatedTokens).toBe("4");
@@ -185,24 +179,21 @@ test("contentFree renders only the Loader placeholder and an approximate token c
 });
 
 test("contentFree with no chunks yet shows the label alone, never a fabricated token count", () => {
-  render(<ThinkBlock item={item({ reasoningSummaries: [] })} turn={turn} live={true} contentFree={true} />);
+  const live = item({ reasoningSummaries: [] });
+  render(<ThinkBlock item={live} turn={{ ...turn, items: [live] }} live={true} contentFree={true} />);
   expect(thinkBlockLive()).toBe("true");
   expect(screen.getByTestId("think-block").dataset.estimatedTokens).toBeUndefined();
 });
 
 test("the chat preset keeps the live compact row a plain placeholder with no disclosure", () => {
+  const live = item({ reasoningSummaries: [["abcdefghijklmnop"]] });
   render(
     <TranscriptRenderProvider
       config={makeTranscriptDisplayConfig({ kind: "preset", level: "chat" })}
       surface="readOnly"
       disclosureScope="tb:chat"
     >
-      <ThinkBlock
-        item={item({ reasoningSummaries: [["abcdefghijklmnop"]] })}
-        turn={turn}
-        live={true}
-        contentFree={true}
-      />
+      <ThinkBlock item={live} turn={{ ...turn, items: [live] }} live={true} contentFree={true} />
     </TranscriptRenderProvider>,
   );
   expect(screen.getByTestId("think-block").dataset.estimatedTokens).toBe("4");
@@ -288,14 +279,8 @@ test("an explicit reader choice on a compact row beats the config default and su
 });
 
 test("a live compact thought streams its body inside the disclosure once opened, and collapses back on click", () => {
-  renderTools(
-    <ThinkBlock
-      item={item({ id: "compact_live", status: "inProgress", reasoningSummaries: [["streaming thought text"]] })}
-      turn={turn}
-      live={true}
-      contentFree={true}
-    />,
-  );
+  const live = item({ id: "compact_live", status: "inProgress", reasoningSummaries: [["streaming thought text"]] });
+  renderTools(<ThinkBlock item={live} turn={{ ...turn, items: [live] }} live={true} contentFree={true} />);
   const details = screen.getByRole("group") as HTMLDetailsElement;
   expect(details.open).toBe(false);
   expect(screen.queryByTestId("think-block-live-body")).toBeNull();
@@ -314,14 +299,8 @@ test("a live compact thought streams its body inside the disclosure once opened,
 // role="status" element (the Loader root) - the same module-class technique
 // the streaming assertions above use.
 test("contentFree seats its status glyph in the icon rail like the live and settled rows seat theirs", () => {
-  render(
-    <ThinkBlock
-      item={item({ reasoningSummaries: [["abcdefghijklmnop"]] })}
-      turn={turn}
-      live={true}
-      contentFree={true}
-    />,
-  );
+  const live = item({ reasoningSummaries: [["abcdefghijklmnop"]] });
+  render(<ThinkBlock item={live} turn={{ ...turn, items: [live] }} live={true} contentFree={true} />);
   expect(screen.getByRole("status").className).toContain(loaderStyles.rail);
 });
 

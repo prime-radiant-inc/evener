@@ -842,7 +842,7 @@ describe("transcript projector", () => {
     });
     const model = { ...threadWith(), turns: [liveTurn] } as ThreadModel;
 
-    const placeholder = [expect.objectContaining({ kind: "thinking", id: "think" })];
+    const placeholder = [expect.objectContaining({ kind: "thinking", id: "think", live: true })];
     expect(entriesFor(model, preset("chat"))).toEqual(placeholder);
     expect(entriesFor(model, preset("tools"))).toEqual(placeholder);
     expect(
@@ -862,7 +862,7 @@ describe("transcript projector", () => {
       item("thought-a", "reasoning", { status: "completed", text: "first thought", reasoningSummaries: [["A"]] }),
       item("thought-b", "reasoning", { status: "completed", text: "second thought", reasoningSummaries: [["B"]] }),
     );
-    const compactRow = (id: string) => expect.objectContaining({ kind: "thinking", id });
+    const compactRow = (id: string) => expect.objectContaining({ kind: "thinking", id, live: false });
 
     expect(entriesFor(model, preset("tools"))).toEqual([compactRow("thought-a"), compactRow("thought-b")]);
     expect(entriesFor(model, preset("activity"))).toEqual([compactRow("thought-a"), compactRow("thought-b")]);

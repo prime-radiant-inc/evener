@@ -620,9 +620,19 @@ function reasoningDetail(it: ItemModel): ActivityDetail {
 
 // A reasoning item's text as the reader sees it: the longer of the settled
 // text and the joined delta summaries wins.
+// Joined reasoning text, memoized per item: the projection rebuilds a live
+// turn's rows on every delta, but settled items keep their object identity,
+// so their joined text (O(total thought text)) is computed once. A streaming
+// item is a fresh object each delta and simply misses the cache.
+const reasoningTextCache = new WeakMap<ItemModel, string>();
+
 function reasoningText(it: ItemModel): string {
+	const cached = reasoningTextCache.get(it);
+	if (cached !== undefined) return cached;
 	const joined = joinedReasoningParagraphs(it.reasoningSummaries).join("\n\n");
-	return joined.length > it.text.length ? joined : it.text || joined;
+	const text = joined.length > it.text.length ? joined : it.text || joined;
+	reasoningTextCache.set(it, text);
+	return text;
 }
 
 // The canonical blank-label behavior (D24-3's deferred delta): a toolName or

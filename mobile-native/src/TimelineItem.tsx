@@ -62,10 +62,11 @@ const NO_STEP = { label: "", summaryOnly: true, detail: {} } as const;
 // default" switch; runs and every other activity keep the expand-details
 // posture. Everything else starts closed.
 function rowOpensByDefault(item: TimelineRow, expandByDefault: boolean, thinkingOpenByDefault: boolean): boolean {
-	if (item.kind === "run") return expandByDefault;
-	if (item.kind === "failure") return item.thought === true && thinkingOpenByDefault;
-	if (item.kind !== "activity") return false;
-	return item.family === "reasoning" ? thinkingOpenByDefault : expandByDefault;
+	const isThoughtRow =
+		(item.kind === "activity" && item.family === "reasoning") || (item.kind === "failure" && item.thought === true);
+	if (isThoughtRow) return thinkingOpenByDefault;
+	const expandable = item.kind === "activity" || item.kind === "run";
+	return expandable && expandByDefault;
 }
 
 export function TimelineItem({
@@ -266,26 +267,23 @@ export function TimelineItem({
 			// and never dropped like the old quiet line when text exists.
 			// With no text, the row stays today's one quiet line.
 			if (item.thought === true) {
-				if (item.detail.trim() === "") {
-					content = (
+				content =
+					item.detail.trim() === "" ? (
 						<Text
 							allowFontScaling={allowFontScaling}
 							style={{ fontSize: 14 * textScale, lineHeight: 19 * textScale, color: colors.palette.inkLow }}
 						>
 							{item.title}
 						</Text>
+					) : (
+						<ThoughtRow
+							label={item.title}
+							durationMs={undefined}
+							text={item.detail}
+							expanded={expanded}
+							onToggle={toggle}
+						/>
 					);
-					break;
-				}
-				content = (
-					<ThoughtRow
-						label={item.title}
-						durationMs={undefined}
-						text={item.detail}
-						expanded={expanded}
-						onToggle={toggle}
-					/>
-				);
 				break;
 			}
 			content = (

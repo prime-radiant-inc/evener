@@ -175,7 +175,11 @@ function isTerminalTurn(turn: TurnModel): boolean {
 // settled. The `turn.status` guard matters because a completed turn can still
 // carry a stale `inProgress` reasoning item in a snapshot or a race, and the
 // loader must not pulse for an agent that is no longer thinking.
-function isLiveCurrentReasoning(item: ItemModel, turn: TurnModel): boolean {
+//
+// Exported because it is THE live rule for a reasoning item: the projector
+// stamps it on each "thinking" entry, the web renderer asks it directly, and
+// the phone reads the stamped bit - one function, so the three cannot drift.
+export function isLiveCurrentReasoning(item: ItemModel, turn: TurnModel): boolean {
   return (
     isInProgressStatus(turn.status) && isActiveItem(item, turn.status) && turn.items[turn.items.length - 1] === item
   );

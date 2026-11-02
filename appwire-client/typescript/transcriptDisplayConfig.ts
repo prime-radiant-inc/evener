@@ -66,15 +66,19 @@ export interface HubTranscriptDisplayDefault {
 export const CONTENT_LEVELS = TRANSCRIPT_LEVELS;
 export const HOOK_EXIT_DETAILS = TRANSCRIPT_HOOK_EXIT_DETAILS;
 
+const CHAT_INTENT_VECTOR: ContentVector = {
+  toolIntent: true,
+  toolCalls: false,
+  reasoning: false,
+  expandByDefault: false,
+  thinkingOpenByDefault: false,
+};
+
 const CONTENT_VECTORS: Readonly<Record<ContentLevel, ContentVector>> = {
-  chat: { toolIntent: true, toolCalls: false, reasoning: false, expandByDefault: false, thinkingOpenByDefault: false },
-  intent: {
-    toolIntent: true,
-    toolCalls: false,
-    reasoning: false,
-    expandByDefault: false,
-    thinkingOpenByDefault: false,
-  },
+  // Chat and intent carry the same vector today (both show intent proxies,
+  // no detail expansion); one object keeps them from drifting apart.
+  chat: CHAT_INTENT_VECTOR,
+  intent: CHAT_INTENT_VECTOR,
   tools: { toolIntent: true, toolCalls: true, reasoning: false, expandByDefault: false, thinkingOpenByDefault: false },
   activity: {
     toolIntent: true,
@@ -160,21 +164,22 @@ function isBooleanFields(value: Record<string, unknown>, keys: readonly string[]
   return keys.every((key) => isBoolean(value[key]));
 }
 
-function isContentVector(value: unknown): value is ContentVector {
-  return (
-    isPlainObject(value) &&
-    ((hasExactKeys(value, VECTOR_FIELDS) && isBooleanFields(value, VECTOR_FIELDS)) ||
-      (hasExactKeys(value, VECTOR_CONTENT_FIELDS) && isBooleanFields(value, VECTOR_CONTENT_FIELDS)))
+// The vector's accepted shapes with any extra identifying keys (none for the
+// bare vector, "kind" for a custom selection): each shape must carry exactly
+// its own fields, all booleans. Adding a field means editing VECTOR_FIELDS,
+// not every predicate below.
+function matchesVectorShape(value: Record<string, unknown>, extraKeys: readonly string[]): boolean {
+  return [VECTOR_FIELDS, VECTOR_CONTENT_FIELDS].some(
+    (fields) => hasExactKeys(value, [...extraKeys, ...fields]) && isBooleanFields(value, fields),
   );
 }
 
+function isContentVector(value: unknown): value is ContentVector {
+  return isPlainObject(value) && matchesVectorShape(value, []);
+}
+
 function isCustomSelection(value: unknown): value is { readonly kind: "custom" } & ContentVector {
-  return (
-    isPlainObject(value) &&
-    value.kind === "custom" &&
-    ((hasExactKeys(value, ["kind", ...VECTOR_FIELDS]) && isBooleanFields(value, VECTOR_FIELDS)) ||
-      (hasExactKeys(value, ["kind", ...VECTOR_CONTENT_FIELDS]) && isBooleanFields(value, VECTOR_CONTENT_FIELDS)))
-  );
+  return isPlainObject(value) && value.kind === "custom" && matchesVectorShape(value, ["kind"]);
 }
 
 export function presetContent(level: ContentLevel): ContentVector {
@@ -183,9 +188,11 @@ export function presetContent(level: ContentLevel): ContentVector {
 
 /** The content vector a display config selects: the named preset's vector, or
  * the custom selection's own. The one lookup the web and native surfaces share,
- * so they cannot drift on what a level shows. */
+ * so they cannot drift on what a level shows. Every decode path normalizes
+ * (cloneVector's legacy fixup) before a config reaches here, so returning the
+ * selection itself is canonical. */
 export function contentVectorForConfig(config: TranscriptDisplayConfigV1): ContentVector {
-  return config.content.kind === "preset" ? presetContent(config.content.level) : cloneVector(config.content);
+  return config.content.kind === "preset" ? presetContent(config.content.level) : config.content;
 }
 
 /** The one rule both the transcript projector and this module's category
@@ -209,21 +216,31 @@ export function informationalNoticesVisible(vector: ContentVector): boolean {
  * source before it consults this rule. Custom selections model tool intent,
  * calls, reasoning and expansion — never steering — so daemon steering shows
  * for them as it does at intent and above. */
-export function hidesDaemonSteering(content: ContentSelection): boolean {
+/** The chat preset's conversation-only posture: the one preset fact every
+ * carve-out reads (daemon steering, settled thinking traces, internal
+ * snapshots). Custom selections model content fields, never this posture. */
+function isChatPreset(content: ContentSelection): boolean {
   return content.kind === "preset" && content.level === "chat";
+}
+
+/** The one rule for daemon steering: the chat preset — "just the
+ * conversation" — shows no daemon steering (instructions to the agent, never
+ * the conversation; Jesse, 2026-10-03). See isChatPreset. */
+export function hidesDaemonSteering(content: ContentSelection): boolean {
+  return isChatPreset(content);
 }
 
 /** The one rule the transcript projector answers from: the chat preset stays
  * conversation-only, so a SETTLED thought keeps no compact trace row there
  * (its live placeholder and critical rows still show, as they always have).
- * Custom selections model content fields, never this preset posture. */
+ * See isChatPreset. */
 export function hidesThinkingTraces(content: ContentSelection): boolean {
-  return content.kind === "preset" && content.level === "chat";
+  return isChatPreset(content);
 }
 
 /** Internal snapshots stay out of the chat preset, even with diagnostics on. */
 export function sharedNotesVisible(config: TranscriptDisplayConfigV1): boolean {
-  return config.advanced.systemEvents && !(config.content.kind === "preset" && config.content.level === "chat");
+  return config.advanced.systemEvents && !isChatPreset(config.content);
 }
 
 export function normalizeContent(content: ContentSelection): ContentSelection {

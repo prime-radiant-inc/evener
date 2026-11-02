@@ -196,7 +196,7 @@ it("shows Custom's switches and hook events, and saves each change at once", asy
 		"Tool calls",
 		"Reasoning",
 		"Open details by default",
-		"Open thinking by default",
+		"Thinking open by default",
 		"Timing",
 		"Token counts",
 		"Estimated cost",
