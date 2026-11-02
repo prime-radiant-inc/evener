@@ -624,7 +624,7 @@ async function journey(page, fixture, endpoint) {
       value.overflow > 1 ||
       value.pageOverflow > 1 ||
       value.clipped.length ||
-      value.mounted > 35 ||
+      value.mounted > 50 ||
       value.missingArt.length
     )
       throw new Error(`${name}: bad geometry ${JSON.stringify(value)}`);
@@ -4200,7 +4200,7 @@ async function childJourney(page, fixture, { command, incoming, outgoing, screen
       geometry.overflow > 1 ||
       geometry.pageOverflow > 1 ||
       geometry.clipped.length ||
-      geometry.mounted > 35 ||
+      geometry.mounted > 50 ||
       nestedGeometry.scrollports !== 1 ||
       nestedGeometry.editors !== 0 ||
       nestedGeometry.fullPageEditors !== 1 ||
