@@ -365,7 +365,7 @@ export class AppwireClient {
   // recovery. Pending requests fail normally; they are never replayed here.
   async resumeThread(
     ref: string,
-    options?: { beforeRequest?: () => void | Promise<void>; expectedRecoveryEpoch?: number },
+    options?: { beforeRequest?: () => void | Promise<void>; expectedRecoveryToken?: string },
   ): Promise<MethodTypes["thread/resume"]["result"]> {
     if (this.resumePending) throw new Error("A session resume is already pending");
     const socket = this.socket;
@@ -404,13 +404,13 @@ export class AppwireClient {
       clearTimeout(timeout);
       stopReady();
       stopState();
-      // The caller's expected recovery epoch travels with the parked-state
+      // The caller's expected recovery token travels with the parked-state
       // resume so the hub can refuse one a Stop from another client or device
       // has superseded; the reconnect's own admission epoch cannot see that
       // Stop. Omitted when the caller never read an epoch.
       const params: MethodTypes["thread/resume"]["params"] = { ref };
-      if (options?.expectedRecoveryEpoch !== undefined) {
-        params.expectedRecoveryEpoch = options.expectedRecoveryEpoch;
+      if (options?.expectedRecoveryToken !== undefined) {
+        params.expectedRecoveryToken = options.expectedRecoveryToken;
       }
       return await this.request("thread/resume", params);
     } finally {

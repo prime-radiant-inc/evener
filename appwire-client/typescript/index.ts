@@ -281,7 +281,7 @@ export {
   isUpgradeRequiredError,
   mutationErrorData,
   RequestTimeoutError,
-  recoveryEpochFromError,
+  recoveryTokenFromError,
   StoreMessageError,
   sessionActionError,
   sessionActionHeadline,

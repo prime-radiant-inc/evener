@@ -822,13 +822,15 @@ export interface EvenerThread {
    * that issues a resume from parked state (an automatic retry) carries the
    * value it last read here as thread/resume's expectedRecoveryEpoch, so the
    * hub can refuse a resume a newer Stop has superseded.
-   * A pointer so an explicit zero is still serialized - a fresh session's
-   * epoch is zero, and a client that never records it (a restored hub's
-   * sessions start there) would arm retries with no expectation at all -
-   * while an absent field still means a source that cannot say (an older
-   * remote hub), which is not the same as zero.
+   * RecoveryToken is the opaque, hub-owned token a client carries across a
+   * parked-state resume: the session's recovery epoch bound to the hub's
+   * incarnation, so a Stop from any client or device (or a hub recreation)
+   * supersedes every token minted before it. A client that arms an automatic
+   * retry carries the value it last read here as thread/resume's
+   * expectedRecoveryToken. Absent means the source cannot say (an older
+   * remote hub).
    */
-  recoveryEpoch?: number;
+  recoveryToken?: string;
   /**
    * ResumeOnlyFoldable means a turn/start sent on this connection right now
    * would be admitted under the resume-only carve-out: the session merely needs
@@ -4348,15 +4350,15 @@ export interface ThreadResumeParams {
   ref?: string;
   sessionId?: string;
   /**
-   * ExpectedRecoveryEpoch, when present, is the session's hub-owned recovery
-   * epoch the caller issued this resume against: the value last read in
-   * thread/read (EvenerThread.RecoveryEpoch). The hub refuses the resume
-   * when a Stop advanced that epoch since, so an automatic retry parked in
+   * ExpectedRecoveryToken, when present, is the session's hub-owned recovery
+   * token the caller issued this resume against: the value last read in
+   * thread/read (EvenerThread.RecoveryToken). The hub refuses the resume
+   * when a Stop advanced the token since, so an automatic retry parked in
    * another client's or device's backoff cannot restart the session that
    * client stopped. Absent means the caller issued no such expectation and
    * the hub validates only the connection's own admission epoch.
    */
-  expectedRecoveryEpoch?: number;
+  expectedRecoveryToken?: string;
 }
 
 export interface ThreadResumeResponse {

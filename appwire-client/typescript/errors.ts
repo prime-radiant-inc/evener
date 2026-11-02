@@ -222,15 +222,15 @@ export function isSessionRecoveryCanceled(err: unknown): boolean {
   return err instanceof WireError && err.evenerErrorInfo === ErrorSessionRecoveryCanceled;
 }
 
-// recoveryEpochFromError reads the CURRENT recovery epoch a superseded-resume
+// recoveryTokenFromError reads the CURRENT recovery token a superseded-resume
 // refusal names (appwire.RecoverySupersededErrorData), so the caller refreshes
 // the value it arms retries under. Undefined for any other error.
-export function recoveryEpochFromError(err: unknown): number | undefined {
+export function recoveryTokenFromError(err: unknown): string | undefined {
   if (!isSessionRecoveryCanceled(err)) return undefined;
   const data = (err as WireError).data;
   if (typeof data !== "object" || data === null) return undefined;
-  const epoch = (data as { recoveryEpoch?: unknown }).recoveryEpoch;
-  return typeof epoch === "number" ? epoch : undefined;
+  const token = (data as { recoveryToken?: unknown }).recoveryToken;
+  return typeof token === "string" ? token : undefined;
 }
 
 // ErrorMarketplaceRemoveApplied is the hub's discriminant for a marketplace

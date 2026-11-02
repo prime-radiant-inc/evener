@@ -1595,9 +1595,8 @@ func applyThreadResumeRequirement(ctx context.Context, cfg hubcore.WebConfig, re
 	// Only a LOCAL session's epoch comes from this hub's recovery locks; a
 	// remote reply's epoch is its own controller's, and overwriting it with
 	// this hub's empty state would leave the reply's retries unfenced.
-	if parsed, err := appwire.ParseRef(ref); err == nil && parsed.SourceID == appwire.LocalSourceID {
-		epoch := recovery.Epoch
-		thread.Evener.RecoveryEpoch = &epoch
+	if parsed, err := appwire.ParseRef(ref); err == nil && parsed.SourceID == appwire.LocalSourceID && cfg.ResumeLocks != nil {
+		thread.Evener.RecoveryToken = cfg.ResumeLocks.RecoveryToken(threadID)
 	}
 	if recovery.ResumeRequired || recovery.Stopping > 0 || sessionConnectionRecoveryError(ctx, cfg, ref, threadID) != nil {
 		thread.Evener.ResumeRequired = true

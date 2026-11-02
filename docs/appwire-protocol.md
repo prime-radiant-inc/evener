@@ -1190,7 +1190,7 @@ Underlying Go kind: `string` (no struct fields).
 | Field | Go type | Omitempty | Embedded |
 |-------|---------|-----------|----------|
 | `resumeRequired` | bool | yes |  |
-| `recoveryEpoch` | \*uint64 | yes |  |
+| `recoveryToken` | string | yes |  |
 | `resumeOnlyFoldable` | bool | yes |  |
 | `ref` | string |  |  |
 | `instanceId` | string | yes |  |
@@ -4193,7 +4193,7 @@ Underlying Go kind: `string` (no struct fields).
 |-------|---------|-----------|----------|
 | `ref` | string | yes |  |
 | `sessionId` | string | yes |  |
-| `expectedRecoveryEpoch` | \*uint64 | yes |  |
+| `expectedRecoveryToken` | string | yes |  |
 
 
 ### `ThreadResumeResponse`

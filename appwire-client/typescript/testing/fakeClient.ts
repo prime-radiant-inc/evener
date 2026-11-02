@@ -389,7 +389,7 @@ export class FakeClient implements AppwireClientLike {
   // on the real client with FakeSocket (client.test.ts, reconnect.test.ts).
   async resumeThread(
     ref: string,
-    options?: { beforeRequest?: () => void | Promise<void>; expectedRecoveryEpoch?: number },
+    options?: { beforeRequest?: () => void | Promise<void>; expectedRecoveryToken?: string },
   ): ReturnType<AppwireClient["resumeThread"]> {
     // AppwireClient.resumeThread's own precondition (client.ts): a client that
     // is not ready at call time - including one already closed - throws this
@@ -410,8 +410,8 @@ export class FakeClient implements AppwireClientLike {
     const revalidation = options?.beforeRequest?.();
     if (revalidation) await revalidation;
     const params: MethodTypes["thread/resume"]["params"] = { ref };
-    if (options?.expectedRecoveryEpoch !== undefined) {
-      params.expectedRecoveryEpoch = options.expectedRecoveryEpoch;
+    if (options?.expectedRecoveryToken !== undefined) {
+      params.expectedRecoveryToken = options.expectedRecoveryToken;
     }
     return this.request("thread/resume", params);
   }

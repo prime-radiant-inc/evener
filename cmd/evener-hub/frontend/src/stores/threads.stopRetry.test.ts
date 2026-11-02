@@ -2505,22 +2505,22 @@ test("a parked-state resume names its recovery epoch and a superseded refusal is
   const storage = new MutationOutboxIndexedDB();
   setMutationStorageForTests(storage);
   const fake = connectMutationClient();
-  const resumeParams: Array<number | undefined> = [];
+  const resumeParams: Array<string | undefined> = [];
   let resumeCalls = 0;
   fake.on("thread/read", () => {
     const response = readResponse(ref, { status: { type: "notLoaded" } });
     response.thread.evener.resumeRequired = true;
     response.thread.evener.mutationStateAuthoritative = false;
-    response.thread.evener.recoveryEpoch = 5;
+    response.thread.evener.recoveryToken = "tok-5";
     return response;
   });
   fake.on("thread/resume", (params) => {
     resumeCalls += 1;
-    resumeParams.push((params as { expectedRecoveryEpoch?: number }).expectedRecoveryEpoch);
+    resumeParams.push((params as { expectedRecoveryToken?: string }).expectedRecoveryToken);
     if (resumeCalls === 1) throw new Error("connection reset by peer");
     throw new WireError("session recovery canceled this pending action; submit it again", -32000, {
       evenerErrorInfo: "sessionRecoveryCanceled",
-      recoveryEpoch: 9,
+      recoveryToken: "tok-9",
     });
   });
   await threadsStore.getState().ensureThread(ref);
@@ -2535,7 +2535,7 @@ test("a parked-state resume names its recovery epoch and a superseded refusal is
   await flushIndexedDBUntil(() => false);
   await flushMicrotasks();
   // Both the first attempt and the fired retry name the epoch the page read.
-  expect(resumeParams).toEqual([5, 5]);
+  expect(resumeParams).toEqual(["tok-5", "tok-5"]);
   // The hub's supersession refusal is terminal: no new retry is armed.
   expect(scheduledResumeRetries).toHaveLength(1);
   // The refusal named the current epoch: the next press arms under it.
@@ -2543,7 +2543,7 @@ test("a parked-state resume names its recovery epoch and a superseded refusal is
   await flushIndexedDBUntil(() => false);
   await flushMicrotasks();
   await flushIndexedDBUntil(() => false);
-  expect(resumeParams[2]).toBe(9);
+  expect(resumeParams[2]).toBe("tok-9");
 });
 
 // A retry is armed under the epoch its drive started under. A read landing
@@ -2558,17 +2558,17 @@ test("a fired retry names the epoch its arm carried, not one a mid-backoff read 
   const storage = new MutationOutboxIndexedDB();
   setMutationStorageForTests(storage);
   const fake = connectMutationClient();
-  let epoch = 5;
-  const resumeParams: Array<number | undefined> = [];
+  let epochToken = "tok-5";
+  const resumeParams: Array<string | undefined> = [];
   fake.on("thread/read", () => {
     const response = readResponse(ref, { status: { type: "notLoaded" } });
     response.thread.evener.resumeRequired = true;
     response.thread.evener.mutationStateAuthoritative = false;
-    response.thread.evener.recoveryEpoch = epoch;
+    response.thread.evener.recoveryToken = epochToken;
     return response;
   });
   fake.on("thread/resume", (params) => {
-    resumeParams.push((params as { expectedRecoveryEpoch?: number }).expectedRecoveryEpoch);
+    resumeParams.push((params as { expectedRecoveryToken?: string }).expectedRecoveryToken);
     throw new Error("connection reset by peer");
   });
   await threadsStore.getState().ensureThread(ref);
@@ -2576,7 +2576,7 @@ test("a fired retry names the epoch its arm carried, not one a mid-backoff read 
   await threadsStore.getState().resumeSession(ref);
   await waitFor(() => expect(scheduledResumeRetries).toHaveLength(1));
   // The page reads a foreign Stop's newer epoch while the retry waits.
-  epoch = 7;
+  epochToken = "tok-7";
   await threadsStore.getState().refreshThread(ref);
   await flushIndexedDBUntil(() => false);
   act(() => {
@@ -2585,7 +2585,7 @@ test("a fired retry names the epoch its arm carried, not one a mid-backoff read 
   await flushIndexedDBUntil(() => false);
   await flushMicrotasks();
   // The retry names the epoch it was armed under, not the fresher read.
-  expect(resumeParams).toEqual([5, 5]);
+  expect(resumeParams).toEqual(["tok-5", "tok-5"]);
 });
 
 // A press that joins the armed drive before the foreign Stop's new epoch is
@@ -2597,22 +2597,22 @@ test("a press joined before a supersession stays canceled", async ({ onTestFinis
   const storage = new MutationOutboxIndexedDB();
   setMutationStorageForTests(storage);
   const fake = connectMutationClient();
-  const resumeParams: Array<number | undefined> = [];
+  const resumeParams: Array<string | undefined> = [];
   let resumeCalls = 0;
   fake.on("thread/read", () => {
     const response = readResponse(ref, { status: { type: "notLoaded" } });
     response.thread.evener.resumeRequired = true;
     response.thread.evener.mutationStateAuthoritative = false;
-    response.thread.evener.recoveryEpoch = 5;
+    response.thread.evener.recoveryToken = "tok-5";
     return response;
   });
   fake.on("thread/resume", (params) => {
     resumeCalls += 1;
-    resumeParams.push((params as { expectedRecoveryEpoch?: number }).expectedRecoveryEpoch);
+    resumeParams.push((params as { expectedRecoveryToken?: string }).expectedRecoveryToken);
     if (resumeCalls === 1) throw new Error("connection reset by peer");
     throw new WireError("session recovery canceled this pending action; submit it again", -32000, {
       evenerErrorInfo: "sessionRecoveryCanceled",
-      recoveryEpoch: 9,
+      recoveryToken: "tok-9",
     });
   });
   let epochReads = 0;
@@ -2647,7 +2647,50 @@ test("a press joined before a supersession stays canceled", async ({ onTestFinis
   await flushMicrotasks();
   await joined;
   // No restart: the press never observed the epoch the Stop advanced to.
-  expect(resumeParams).toEqual([5, 5]);
+  expect(resumeParams).toEqual(["tok-5", "tok-5"]);
+});
+
+// A Send pressed while this page's own Stop drains waits that Stop out before
+// resuming. The Stop's completion advances the hub's recovery token, so the
+// resume must name the token read AFTER the drain: a token captured when the
+// drive started predates the Stop and the hub refuses the resume as
+// superseded, leaving the new message parked with no retry.
+test("a press waiting out this page's drain resumes under the post-drain token", async ({ onTestFinished }) => {
+  const scheduledResumeRetries = trackScheduledResumeRetries(onTestFinished);
+  const ref = "local:recovery-token-drain";
+  const storage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(storage);
+  const fake = connectMutationClient();
+  let token = "tok-5";
+  const resumeParams: Array<string | undefined> = [];
+  fake.on("thread/read", () => {
+    const response = readResponse(ref, { status: { type: "notLoaded" } });
+    response.thread.evener.resumeRequired = true;
+    response.thread.evener.mutationStateAuthoritative = false;
+    response.thread.evener.recoveryToken = token;
+    return response;
+  });
+  fake.on("thread/resume", (params) => {
+    resumeParams.push((params as { expectedRecoveryToken?: string }).expectedRecoveryToken);
+    throw new Error("connection reset by peer");
+  });
+  fake.on("thread/shutdown", () => ({}));
+  await threadsStore.getState().ensureThread(ref);
+  await flushIndexedDBUntil(() => false);
+  // The Stop begins and the Send is pressed while its drain is in flight.
+  const stopping = threadsStore.getState().shutdown(ref);
+  const joined = threadsStore.getState().resumeSession(ref);
+  // The acknowledged Stop advances the token before the drain settles.
+  token = "tok-after";
+  await threadsStore.getState().refreshThread(ref);
+  await stopping;
+  await flushIndexedDBUntil(() => false);
+  await flushMicrotasks();
+  await flushIndexedDBUntil(() => false);
+  await flushMicrotasks();
+  await joined;
+  // The press resumes under the post-drain token, not the one it started with.
+  expect(resumeParams).toEqual(["tok-after"]);
 });
 
 // The fire-time comparison reads the epoch, and the attempt it wakes reads it

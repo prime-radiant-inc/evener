@@ -7,6 +7,7 @@ import (
 	"maps"
 	"os"
 	"slices"
+	"strconv"
 	"sync"
 
 	"github.com/spf13/afero"
@@ -23,17 +24,33 @@ import (
 type ResumeLocks struct {
 	persistenceMu sync.Mutex
 	store         *recoveryStore
-	mu            sync.Mutex
-	locks         map[string]*ResumeMutex
-	active        map[string]map[*ActiveResume]struct{}
-	recovery      map[string]SessionRecoveryState
-	sequence      uint64
-	fences        []*ForceStopFence // held admission fences, newest last; guarded by mu
+	// incarnation identifies this controller process, minted fresh per
+	// construction: a recovery token minted before a hub recreation must not
+	// match the restored state, whose per-session epochs start at zero again.
+	incarnation string
+	mu          sync.Mutex
+	locks       map[string]*ResumeMutex
+	active      map[string]map[*ActiveResume]struct{}
+	recovery    map[string]SessionRecoveryState
+	sequence    uint64
+	fences      []*ForceStopFence // held admission fences, newest last; guarded by mu
 }
 
 // NewResumeLocks returns an empty registry ready for use.
 func NewResumeLocks() *ResumeLocks {
-	return &ResumeLocks{locks: map[string]*ResumeMutex{}}
+	return &ResumeLocks{locks: map[string]*ResumeMutex{}, incarnation: rand.Text()}
+}
+
+// RecoveryToken is the opaque, hub-owned token a client carries across a
+// parked-state resume and hands back in thread/resume: the session's recovery
+// epoch bound to this hub's incarnation. Binding the incarnation keeps a token
+// minted before a hub recreation from matching restored state; every confirmed
+// Stop advances the epoch, from any client or device, so a Stop supersedes
+// every token minted before it.
+func (r *ResumeLocks) RecoveryToken(sessionID string) string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.incarnation + ":" + strconv.FormatUint(r.recovery[sessionID].Epoch, 10)
 }
 
 // NewPersistentResumeLocks restores explicit-resume authority before serving.

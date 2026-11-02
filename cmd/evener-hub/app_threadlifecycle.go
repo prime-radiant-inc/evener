@@ -503,8 +503,8 @@ func resumeThread(ctx context.Context, cfg hubcore.WebConfig, sources *appsource
 		// page's Stop generations and its IndexedDB epochs; the fresh
 		// connection's admission epoch would equal the current one, so only
 		// the caller's expected value can catch it.
-		if params.ExpectedRecoveryEpoch != nil {
-			if current := cfg.ResumeLocks.RecoveryState(requestedID).Epoch; current != *params.ExpectedRecoveryEpoch {
+		if params.ExpectedRecoveryToken != "" {
+			if current := cfg.ResumeLocks.RecoveryToken(requestedID); current != params.ExpectedRecoveryToken {
 				return appwire.ThreadResumeResponse{}, recoverySupersededError(current)
 			}
 		}

@@ -540,7 +540,7 @@ type ErrorData struct {
 // failing every later attempt against the same stale fence.
 type RecoverySupersededErrorData struct {
 	ErrorData
-	RecoveryEpoch uint64 `json:"recoveryEpoch"`
+	RecoveryToken string `json:"recoveryToken"`
 }
 
 // HostFieldErrorData is a host mutation's validation-refusal data (component 08

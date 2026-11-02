@@ -56,7 +56,7 @@ import {
   mutationErrorData,
   notificationRoutingKey,
   pruneBackgroundHistoryBodies,
-  recoveryEpochFromError,
+  recoveryTokenFromError,
   resolvePendingEscalation,
   SHUT_DOWN_STATUSES,
   type ThreadSubscriptionLease,
@@ -1680,7 +1680,7 @@ export function installResumeRetrySchedulerForTests(scheduler: RetryScheduler): 
 // armed also carries the resumed identity's Stop fences.
 const resumeRetries = new Map<
   string,
-  { attempt: number; cancel?: () => void; resumed?: ResumedStopFence; recoveryEpoch?: number }
+  { attempt: number; cancel?: () => void; resumed?: ResumedStopFence; recoveryToken?: string }
 >();
 
 // The one read every durable stop fence decision shares: a store that cannot
@@ -1705,7 +1705,7 @@ function scheduleResumeRetryForFence(
   ref: string,
   armedStopEpoch: number | undefined,
   armedResumedFence: ResumedStopFence | undefined,
-  armedRecoveryEpoch: number | undefined,
+  armedRecoveryToken: string | undefined,
 ): void {
   const existing = resumeRetries.get(ref);
   // A prior arm can still stand when a NEW drive fails - a press that arrived
@@ -1793,11 +1793,11 @@ function scheduleResumeRetryForFence(
       void resumeFencedForSend(ref, true, {
         stopEpoch: armedStopEpoch,
         resumed: armedResumedFence,
-        recoveryEpoch: armedRecoveryEpoch,
+        recoveryToken: armedRecoveryToken,
       });
     })();
   });
-  resumeRetries.set(ref, { attempt, cancel, resumed: armedResumedFence, recoveryEpoch: armedRecoveryEpoch });
+  resumeRetries.set(ref, { attempt, cancel, resumed: armedResumedFence, recoveryToken: armedRecoveryToken });
 }
 
 function retireResumeRetry(ref: string): void {
@@ -2601,25 +2601,26 @@ export async function readMutationPersistence(targetRef?: string): Promise<Mutat
 
 const userIntentStopGenerations = new Map<string, number>();
 
-// Per ref, the session's hub-owned recovery epoch as of its latest
+// Per ref, the session's hub-owned recovery token as of its latest
 // thread/read: it advances on every confirmed Stop, from any client or
-// device. A parked-state resume carries the value its drive started under,
-// and the hub refuses the resume when a newer Stop advanced it - the only
-// witness of a foreign Stop during this page's backoff, since neither the
-// page's Stop generations nor its IndexedDB epochs record one.
-const recoveryEpochs = new Map<string, number>();
+// device (the epoch is bound to the hub's incarnation). A parked-state resume
+// carries the value its drive started under, and the hub refuses the resume
+// when a newer Stop advanced it - the only witness of a foreign Stop during
+// this page's backoff, since neither the page's Stop generations nor its
+// IndexedDB epochs record one.
+const recoveryTokens = new Map<string, string>();
 
-// recoveryEpochOf reads the epoch a resume issued now should expect: the
+// recoveryTokenOf reads the token a resume issued now should expect: the
 // value the latest thread/read carried, or undefined when none has read it.
-function recoveryEpochOf(ref: string): number | undefined {
-  return recoveryEpochs.get(ref);
+function recoveryTokenOf(ref: string): string | undefined {
+  return recoveryTokens.get(ref);
 }
 
 // noteRecoveryEpoch refreshes a ref's parked-state fence from every thread/read
 // response the store consumes: the hub-owned epoch advances on Stops from any
 // client or device, and the next resume hands this value back for validation.
-function noteRecoveryEpoch(ref: string, evener: { recoveryEpoch?: number } | undefined): void {
-  if (typeof evener?.recoveryEpoch === "number") recoveryEpochs.set(ref, evener.recoveryEpoch);
+function noteRecoveryToken(ref: string, evener: { recoveryToken?: string } | undefined): void {
+  if (typeof evener?.recoveryToken === "string") recoveryTokens.set(ref, evener.recoveryToken);
 }
 // Stop generations come from one page-wide sequence, never a per-ref counter,
 // and an entry once written persists for the page session - releaseThread
@@ -2924,7 +2925,7 @@ const pressJoinedResumes = new Map<
     epoch: Promise<number | undefined>;
     targetEpoch?: Promise<number | undefined>;
     inheritedTargetEpoch?: Promise<number | undefined>;
-    recoveryEpoch?: number;
+    recoveryToken?: string;
   }
 >();
 
@@ -2936,11 +2937,11 @@ const pressJoinedResumes = new Map<
 interface InheritedStopFences {
   stopEpoch?: number;
   resumed?: ResumedStopFence;
-  // The hub-owned recovery epoch the fired arm was issued under. An
+  // The hub-owned recovery token the fired arm was issued under. An
   // automatic retry names THIS value, never a fresher one a read landed
   // during backoff: adopting a read that observed a foreign Stop would
   // re-arm the retry past the very Stop the fence exists to catch.
-  recoveryEpoch?: number;
+  recoveryToken?: string;
 }
 
 // The resumed identity's Stop fences, captured when a drive adopts the
@@ -2978,10 +2979,10 @@ async function resumeFencedForSend(ref: string, automatic = false, inherited: In
             ? { ref: existing.targetRef, generation: userIntentStopGenerations.get(existing.targetRef) ?? 0 }
             : undefined,
         inheritedTarget: joinedInherited,
-        // The hub-owned epoch this page had read when the press arrived: a
+        // The hub-owned token this page had read when the press arrived: a
         // supersession refusal may restart the press's drive only if the
-        // press already observed the epoch that Stop advanced to.
-        recoveryEpoch: recoveryEpochOf(ref),
+        // press already observed the token that Stop advanced to.
+        recoveryToken: recoveryTokenOf(ref),
         epoch: readDurableStopEpoch(mutationRuntime, ref),
         targetEpoch: existing.targetRef !== ref ? readDurableStopEpoch(mutationRuntime, existing.targetRef) : undefined,
         inheritedTargetEpoch:
@@ -3061,14 +3062,15 @@ async function runResumeFencedForSend(
   // identity the fired arm already carried. A later adoption replaces the
   // seed with its own fresh captures.
   let attemptResumedFence: ResumedStopFence | undefined = inherited.resumed;
-  // The hub-owned recovery epoch this drive is issued under: a Stop from
+  // The hub-owned recovery token this drive is issued under: a Stop from
   // another client or device advances it invisibly to this page, and the hub
-  // refuses the request when the value it names is stale. An automatic retry
-  // names the epoch its arm carried - a read landing during backoff may have
-  // observed a foreign Stop, and adopting that fresher value would re-arm the
-  // retry past the Stop the fence exists to catch. A press is new user
-  // intent and names the latest epoch this page has read.
-  const expectedRecoveryEpoch = drive.automatic ? inherited.recoveryEpoch : recoveryEpochOf(ref);
+  // refuses the request when the value it names is stale. A press reads it
+  // AFTER the drain wait below: a Send parked by this page's own Stop resumes
+  // once that Stop finishes, and its token must include the acknowledged
+  // Stop. An automatic retry names the token its arm carried - a read landing
+  // during backoff may have observed a foreign Stop, and adopting that fresher
+  // value would re-arm the retry past the Stop the fence exists to catch.
+  let expectedRecoveryToken = drive.automatic ? inherited.recoveryToken : undefined;
   try {
     const attemptRuntime = mutationRuntime;
     if (attemptRuntime !== null) {
@@ -3115,6 +3117,7 @@ async function runResumeFencedForSend(
     // runs once the drain settles, instead of the user meeting a Resume button.
     // Only a drain in progress waits for another user action to settle.
     while (threadsStore.getState().stoppingRefs.has(ref)) await waitForStopDrain(ref);
+    if (!drive.automatic) expectedRecoveryToken = recoveryTokenOf(ref);
     // The reconnect this resume forces is a window the attempt's own reads
     // cannot see: another tab's Stop can land after the attempt's epoch read
     // and before the replacement connection is admitted, and a connection
@@ -3145,7 +3148,7 @@ async function runResumeFencedForSend(
       stopBaseline();
     };
     const { thread } = await client.resumeThread(ref, {
-      expectedRecoveryEpoch,
+      expectedRecoveryToken,
       beforeRequest: () => {
         // The page-local fence stays first and synchronous, exactly as
         // before: any acknowledged Stop on this page since the drive
@@ -3291,11 +3294,11 @@ async function runResumeFencedForSend(
     // word: the caller armed before it, and re-driving would restart the
     // session the other client or device stopped.
     if (!stopCanceled && isSessionRecoveryCanceled(error)) stopCanceled = true;
-    // The refusal names the epoch the Stop advanced to: refresh it, so the
+    // The refusal names the token the Stop advanced to: refresh it, so the
     // press a supersession restarts (or the next Send) arms under the fresh
     // fence instead of failing against the stale one again.
-    const supersededEpoch = recoveryEpochFromError(error);
-    if (supersededEpoch !== undefined) recoveryEpochs.set(ref, supersededEpoch);
+    const supersededToken = recoveryTokenFromError(error);
+    if (supersededToken !== undefined) recoveryTokens.set(ref, supersededToken);
     // A Stop that lands mid-drive can surface here as a plain transport
     // failure - the Stop is killing the very daemon the resume reaches - so
     // the error type alone cannot be the Stop signal. Whatever the error, the
@@ -3338,7 +3341,7 @@ async function runResumeFencedForSend(
     // wedged store could not read arms without that durable fence: the same
     // store cannot have recorded the Stop either.
     if (!stopCanceled) {
-      scheduleResumeRetryForFence(ref, attemptStopEpoch, attemptResumedFence, expectedRecoveryEpoch);
+      scheduleResumeRetryForFence(ref, attemptStopEpoch, attemptResumedFence, expectedRecoveryToken);
     } else {
       const join = pressJoinedResumes.get(ref);
       // A press that arrived AFTER the Stop that canceled this drive is
@@ -3393,10 +3396,10 @@ async function runResumeFencedForSend(
         // A supersession refusal is the hub's word on a Stop this page never
         // saw: the press is fresh only if it already read the epoch that Stop
         // advanced to. A press that joined before it stays canceled, or the
-        // refreshed epoch would let its restart override the Stop.
-        const hubEpochUnchanged =
-          supersededEpoch === undefined || (join.recoveryEpoch !== undefined && join.recoveryEpoch === supersededEpoch);
-        if (generationsUnchanged && epochsUnchanged && hubEpochUnchanged) {
+        // refreshed token would let its restart override the Stop.
+        const hubTokenUnchanged =
+          supersededToken === undefined || (join.recoveryToken !== undefined && join.recoveryToken === supersededToken);
+        if (generationsUnchanged && epochsUnchanged && hubTokenUnchanged) {
           drive.restartAfterSettle = true;
         }
       }
@@ -4202,7 +4205,7 @@ async function readThreadHydration(
           )
         : applyReadResponse(pending.baseModel, response, now)
       : hydrateThread(response, ref, now);
-  noteRecoveryEpoch(ref, response.thread.evener);
+  noteRecoveryToken(ref, response.thread.evener);
   // The response cut retires buffered input from the legacy hydrator because
   // its snapshot is authoritative for that route. The entry repository also
   // receives this input, but only comparable versions may supersede the read:
@@ -5252,7 +5255,7 @@ function readThreadForgettingConfirmed(
       const evener = response.thread.evener;
       // Every read refreshes the hub-owned recovery epoch a parked-state
       // resume names; the hub refuses one a newer Stop superseded.
-      noteRecoveryEpoch(ref, evener);
+      noteRecoveryToken(ref, evener);
       const advertised = evener?.pendingEscalations ?? [];
       if (evener?.mutationStateAuthoritative === true) {
         const advertisedIds = new Set(advertised.map((e) => e.escalationId));
@@ -5788,7 +5791,7 @@ function reconcileAcceptedReadRecovery(ref: string, response: ThreadReadResponse
     const mutationAuthorityRefs = new Set(state.mutationAuthorityRefs);
     if (response.thread.evener.mutationStateAuthoritative === true) mutationAuthorityRefs.add(ref);
     else mutationAuthorityRefs.delete(ref);
-    noteRecoveryEpoch(ref, response.thread.evener);
+    noteRecoveryToken(ref, response.thread.evener);
     return { mutationAuthorityRefs };
   });
   if (model.status.type === "restartRequired" || response.thread.evener.resumeRequired === true) {
