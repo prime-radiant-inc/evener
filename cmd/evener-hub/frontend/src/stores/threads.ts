@@ -113,6 +113,8 @@ import {
   retireEntryTranscriptIfUnowned,
   retireEntryTranscriptRoute,
   scheduleEntryOpeningRecovery,
+  scheduleEntryRecordedReconciliation,
+  scheduleReplacementEntryRecovery,
 } from "./entryTranscriptRoutes";
 import { entryWriteAdmissionFor } from "./entryWriteAdmission";
 import { acknowledgeHumanNote, resetHumanNoteDrafts } from "./humanNoteDrafts";
@@ -390,6 +392,15 @@ export interface ThreadsStoreState {
   watchThread(ref: string, opts?: { includeTurns?: boolean }): Promise<void>;
   releaseWatchedThread(ref: string): void;
   loadOlderTurns(ref: string): Promise<void>;
+  /** One bounded source page below the wire window, to reconcile restored
+   * older rows no current-baseline statement validated. "accepted" means the
+   * page was accepted and its range reconciled; "discarded" means a competing
+   * read moved the baseline while the page was in the air — a retryable
+   * rejection the caller may retry within its own bounded budget once the
+   * competing read settles; "unissued" means no page could serve the range
+   * (no sendable cursor, a failed request, or a page that merged nothing
+   * against an unchanged baseline — genuine exhaustion). */
+  reconcileRecordedRange(ref: string): Promise<"accepted" | "discarded" | "unissued">;
   // skillNames carries the composer's canonical skill selections for the
   // request. It is gated: a non-empty selection requires the target's
   // advertised capabilities.skillInput to be true, and a refusal throws
@@ -789,7 +800,7 @@ function createEntryTranscriptRepository(
   const { threadId, historyKey, identity, clearEpoch, historyGeneration, seedModel } = binding;
   const ref = fixture.ref;
   const productionRoute = existingEntryRoute(ref) === fixture;
-  return new TranscriptRepository(fixture.cache, {
+  const repository = new TranscriptRepository(fixture.cache, {
     ref,
     threadId,
     historyKey,
@@ -842,6 +853,16 @@ function createEntryTranscriptRepository(
         });
       }),
   });
+  // The route's outstanding miss is the route's fact, not any repository
+  // instance's: every fresh repository for this route — the stale-cursor
+  // replacement's, and one created over a retired repository when a pane
+  // reopens before its recovery converged — inherits the demand, or the
+  // first windowed answer would certify a bare window over the range the
+  // record still owes. The note is synchronous and inert until a windowed
+  // baseline exists; an authoritative full answer below clears it again,
+  // exactly as it would on the repository the route retired.
+  if (fixture.unresolvedOpenMiss) repository.noteOwedRecordedRange();
+  return repository;
 }
 
 async function acceptEntryTranscriptHydration(
@@ -956,6 +977,12 @@ async function acceptEntryTranscriptHydration(
     // Only rebuild the route this acquisition owns; a concurrent replacement is
     // not this response's to replace.
     if (fixture.repository !== claimedRepository) return;
+    // The pending recorded-range work is the route's fact, not the repository
+    // instance's: identities the display restored but no current-baseline
+    // statement validated yet survive the replacement the stale-cursor
+    // fallback retires. Capture them before the retirement disposes the
+    // outgoing repository.
+    const pendingUnreconciled = claimedRepository?.unreconciledRecorded();
     retireEntryTranscriptRoute(fixture);
     fixture.lifetime += 1;
     fixture.clearEpoch = clearEpoch;
@@ -967,6 +994,27 @@ async function acceptEntryTranscriptHydration(
       clearEpoch,
       historyGeneration,
     });
+    // A missed opening armed the route's outstanding miss on the outgoing
+    // repository, and a usable open may have cleared that miss while the
+    // bounded reconciliation was still pending — the pending set is the
+    // surviving fact then. Either way the replacement starts with no demand
+    // armed, and nothing else would transfer it: the owed range is the
+    // route's fact, not the repository instance's, so the display's
+    // convergence debt survives the repository the stale-cursor fallback
+    // retires. Re-arm the replacement so the recorded range below its
+    // baseline still restores before certification can accept a bare latest
+    // window, adopt the identities the outgoing repository still owed the
+    // source's word for, and re-arm the recovery chain against the
+    // replacement — its successor must resume, or the windowed answer that
+    // dropped the restored range strands it with nothing left to restore.
+    // The note is synchronous and inert until a windowed baseline exists; an
+    // authoritative full answer below clears it again, exactly as it would
+    // have on the outgoing repository.
+    if (fixture.unresolvedOpenMiss || (pendingUnreconciled?.size ?? 0) > 0) {
+      fixture.repository.noteOwedRecordedRange();
+      if (pendingUnreconciled) fixture.repository.inheritUnreconciledRecorded(pendingUnreconciled);
+      fixture.pendingReplacementRecovery = true;
+    }
   }
   const repository = fixture.repository;
   fixture.cachedUnverified = false;
@@ -5742,6 +5790,23 @@ async function publishAndReconcileThreadHydration(
   const adoptedEntryRead = (await acceptEntryTranscriptHydration(ref, pending, hydration)) === true;
   const published = publishThreadHydration(ref, pending, hydration.model, adoptedEntryRead);
   if (!published) return null;
+  // A published replace that adopted the outgoing repository's pending
+  // recorded-range recovery needs the chain's successor against the NEW
+  // display — armed here, after the publish, so the successor's
+  // complete-window guard judges the display the replacement actually
+  // established. One shot per replacement: the mark the seam left fires this
+  // once, and every later publication keeps the chain's ordinary arming.
+  const replacedRoute = entryTranscriptRoute(ref);
+  if (replacedRoute?.ref === ref && replacedRoute.pendingReplacementRecovery) {
+    replacedRoute.pendingReplacementRecovery = false;
+    scheduleReplacementEntryRecovery(ref);
+    // The replacement's reconciliation successor arms alongside the recovery
+    // one: the inherited unreconciled identities are the replacement's own
+    // pending slot now, so the chain that validates the restored range
+    // against the source resumes against the new repository instead of dying
+    // with the one the refresh retired.
+    scheduleEntryRecordedReconciliation(ref);
+  }
   reconcileAcceptedReadRecovery(ref, hydration.response, published);
   const blockingObligation = threadsStore.getState().restartBlockingObligations.get(ref);
   if (intent === "background" || intent === "final") return published;
@@ -7645,6 +7710,83 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
     return resumeFencedForSend(ref);
   },
 
+  // A pane whose restored older rows no current-baseline statement validated
+  // reconciles them through the same bounded source page a user's scroll
+  // issues below the wire window. This scoped read never displaces the paging
+  // machinery: it captures the pane's own cursor and ownership and accepts
+  // the page into the route's repository, which reconciles every identity the
+  // page covers. It is read-only, so it waits out a reconnect (issue #195's
+  // RCA) instead of failing the caller.
+  async reconcileRecordedRange(ref: string) {
+    await requireReadyClient();
+    // A competing tracked read that started while a page was in the air owns
+    // the ref's convergence until it settles; a retry captured mid-flight
+    // would be discarded again. Wait for the pending settlement, then capture
+    // fresh state.
+    await trackedHydrationCompletions.get(ref);
+    const client = getWiredClient();
+    const capturedEpoch = getReadyEpoch();
+    const fixture = entryTranscriptRoute(ref);
+    const fixtureState = fixture?.ref === ref ? fixture : undefined;
+    const fixtureRepository = fixtureState?.repository;
+    const model = threadsStore.getState().threads.get(ref);
+    if (!client || !fixtureState || !fixtureRepository || !model) return "unissued";
+    const capturedRef = model.ref;
+    const capturedCursor = model.olderCursor;
+    // A local-only scheduling key is never an opaque source cursor: send the
+    // display key on the wire never; the ordinary paths own that range.
+    if (!capturedCursor || capturedCursor.startsWith("entry-local:")) return "unissued";
+    const capturedAuthority = fixtureRepository.getBaselineIdentity();
+    const capturedBefore = fixtureRepository.oldestPosition();
+    const capturedHydrations = threadsStore.getState().hydrations.get(ref) ?? 0;
+    const capturedPageGeneration = olderPageGeneration(ref);
+    const stillOwned = (): boolean => {
+      const current = threadsStore.getState().threads.get(ref);
+      return (
+        current !== undefined &&
+        getWiredClient() === client &&
+        getReadyEpoch() === capturedEpoch &&
+        current.ref === capturedRef &&
+        current.olderCursor === capturedCursor &&
+        (threadsStore.getState().hydrations.get(ref) ?? 0) === capturedHydrations &&
+        olderPageGeneration(ref) === capturedPageGeneration &&
+        !pendingThreadHydrations.has(ref) &&
+        entryTranscriptRoute(ref) === fixtureState &&
+        fixtureState?.repository === fixtureRepository &&
+        !threadsStore.getState().deletedRefs.has(ref)
+      );
+    };
+    if (!stillOwned()) return "discarded";
+    let resp: ThreadTurnsListResponse;
+    try {
+      resp = await client.request("thread/turns/list", olderItemsParams(ref, capturedCursor));
+    } catch {
+      return "unissued";
+    }
+    if (!stillOwned()) return "discarded";
+    const accepted = fixtureRepository.acceptPage(resp, {
+      lifetime: fixtureState.lifetime,
+      ...nextTranscriptReadIdentity(),
+      authority: capturedAuthority,
+      ...(capturedBefore === undefined ? {} : { before: capturedBefore }),
+      requestCursor: capturedCursor,
+    });
+    if (accepted) {
+      // A late reconciliation page can settle after its pane closed, while a
+      // background lease alone retains the route: the ownership checks above
+      // still pass, so the publication must go through the route's own
+      // prune-aware path — a raw model put would overwrite the background-
+      // pruned store model with the page's bodies, and the repository's own
+      // later reclamation never republishes, retaining those payloads until
+      // an unrelated publication.
+      publishEntryTranscriptModel(ref);
+      return "accepted";
+    }
+    // A page the baseline moved under is a retryable rejection; a page that
+    // merged nothing against the same baseline is genuine exhaustion.
+    return fixtureRepository.getBaselineIdentity() === capturedAuthority ? "unissued" : "discarded";
+  },
+
   async loadOlderTurns(ref) {
     beginHistoryHold(ref);
     try {
@@ -8307,6 +8449,7 @@ installEntryRouteHost({
   onCacheEpochObserved,
   ensureGeneration: (ref) => ensureGenerations.get(ref),
   createRepository: createEntryTranscriptRepository,
+  reconcileRecordedRange: (ref) => threadsStore.getState().reconcileRecordedRange(ref),
 });
 
 function onCacheEpochObserved(observed: number): void {

@@ -9,6 +9,7 @@ import { SESSION_CACHE_DATABASE_NAME } from "./sessionCacheSchema";
 import { SessionEntryCache } from "./sessionEntryCache";
 
 const ref = "local:identity-regression";
+type EntryRecordedRangeSource = import("./entryTranscriptRoutes").EntryRecordedRangeSource;
 const tabs: Array<{
   threads: typeof import("./threads");
   routes: typeof import("./entryTranscriptRoutes");
@@ -556,4 +557,204 @@ it("rejects a pre-deletion hydration and repopulates only from a subsequent sour
   expect(tab.client.calls.filter((call) => call.method === "thread/read")).toHaveLength(readsBefore + 1);
   expect((await sibling.getLatest(historyKey, 10)).map((row) => row.transcriptKey)).toEqual(["row-3"]);
   expect(tab.commits.mock.calls.every(([batch]) => batch.historyGeneration === 1)).toBe(true);
+});
+
+// The opening verdict's owed-range rule, constructed directly: a committed
+// windowed cut — a fresh-baseline read whose cache proof says current — must
+// not report an opening usable while the repository still owes a recorded
+// range below that cut, whatever the cache status says. A usable verdict
+// there is what clears the route's outstanding miss, and a miss cleared over
+// outstanding debt never schedules recovery, so the pane stays stranded on
+// the wire window. The end-to-end interleaving (a close and reopen around the
+// hydration's mutation-reconciliation commit) is exercised in the production
+// suite; this pins the verdict rule itself, by construction, for every status.
+it("an opening's usable verdict never certifies a windowed cut complete over outstanding recorded-range debt", async () => {
+  const routes = await import("./entryTranscriptRoutes");
+  const { hydrateThread } = await import("@evener/appwire-client");
+  const base = currentRead(ref);
+  const windowedCut = {
+    ...base,
+    olderCursor: "opaque-server-cursor",
+    overlay: [],
+    snapshot: { incarnation: "inc-1", length: 226 },
+    thread: {
+      ...base.thread,
+      turns: [
+        {
+          id: "turn_1",
+          status: "completed" as const,
+          itemsView: "full" as const,
+          version: 226,
+          items: Array.from({ length: 40 }, (_, index) => item(187 + index)),
+        },
+      ],
+    },
+  };
+  const model = hydrateThread(windowedCut, ref, 0);
+  expect(model.turns.flatMap((turn) => turn.items)).toHaveLength(40);
+  const owedRange: EntryRecordedRangeSource = {
+    holdsWindowedBaseline: () => true,
+    owedRecorded: () => ({ identities: new Map([["row-100", { entry: 100, item: 0 }]]) }),
+  };
+  const unknownRange: EntryRecordedRangeSource = {
+    holdsWindowedBaseline: () => true,
+    owedRecorded: () => ({ unknown: true }),
+  };
+  const debtFree: EntryRecordedRangeSource = {
+    holdsWindowedBaseline: () => true,
+    owedRecorded: () => undefined,
+  };
+  // A current cache proof over a fresh committed cut is the certification's
+  // own best answer; the debt below the cut still refuses it.
+  expect(routes.entryOpeningUsableVerdict({ status: "current", retainedRangeComplete: true, model }, owedRange)).toBe(
+    false,
+  );
+  expect(routes.entryOpeningUsableVerdict({ status: "stale", retainedRangeComplete: true, model }, owedRange)).toBe(
+    false,
+  );
+  // A capture the record could not answer is unknown debt, not proof of
+  // satisfaction.
+  expect(
+    routes.entryOpeningUsableVerdict({ status: "current", retainedRangeComplete: true, model }, unknownRange),
+  ).toBe(false);
+  // The debt-free controls keep the verdict's healthy answers exactly: a
+  // current or stale cut with nothing owed stays usable, and only an answer
+  // that itself reports recovery must prove the whole requested window.
+  expect(routes.entryOpeningUsableVerdict({ status: "current", retainedRangeComplete: true, model }, debtFree)).toBe(
+    true,
+  );
+  expect(routes.entryOpeningUsableVerdict({ status: "current", retainedRangeComplete: false, model }, debtFree)).toBe(
+    false,
+  );
+  expect(
+    routes.entryOpeningUsableVerdict({ status: "recovery-needed", retainedRangeComplete: true, model }, owedRange),
+  ).toBe(false);
+});
+
+// The owed-range floor is one boundary over DISTINCT identities: an identity
+// the display presents that the capture also names is one demand row, not two.
+// Double-counting it skews the newest-200 boundary high and silently drops the
+// oldest owed rows from the demand — a fenced fill's capture (rows 27–186)
+// against a display paging restored (rows 67–226) must keep rows 27–66 in the
+// newest 200 and refuse the verdict until they are presented.
+it("the owed-range floor counts each identity once across the display and the capture", async () => {
+  const routes = await import("./entryTranscriptRoutes");
+  const { hydrateThread } = await import("@evener/appwire-client");
+  const base = currentRead(ref);
+  const pagedDisplay = {
+    ...base,
+    olderCursor: "opaque-server-cursor",
+    overlay: [],
+    snapshot: { incarnation: "inc-1", length: 226 },
+    thread: {
+      ...base.thread,
+      turns: [
+        {
+          id: "turn_1",
+          status: "completed" as const,
+          itemsView: "full" as const,
+          version: 226,
+          items: Array.from({ length: 160 }, (_, index) => item(67 + index)),
+        },
+      ],
+    },
+  };
+  const model = hydrateThread(pagedDisplay, ref, 0);
+  const fencedCapture: EntryRecordedRangeSource = {
+    holdsWindowedBaseline: () => true,
+    owedRecorded: () => ({
+      identities: new Map(
+        Array.from({ length: 160 }, (_, index) => [`row-${27 + index}`, { entry: 27 + index, item: 0 }]),
+      ),
+    }),
+  };
+  // Rows 27–66 are owed, unpresented, and inside the newest 200 distinct
+  // identities (27–226): the range is NOT satisfied.
+  expect(routes.holdsSatisfiedRecordedRange(model, fencedCapture)).toBe(false);
+  // Presenting the missing rows satisfies the range — the same construction
+  // with the full 200-row display passes, so the boundary is not refusing
+  // everything above it.
+  const fullDisplay = {
+    ...pagedDisplay,
+    thread: {
+      ...pagedDisplay.thread,
+      turns: [
+        {
+          id: "turn_1",
+          status: "completed" as const,
+          itemsView: "full" as const,
+          version: 226,
+          items: Array.from({ length: 200 }, (_, index) => item(27 + index)),
+        },
+      ],
+    },
+  };
+  expect(routes.holdsSatisfiedRecordedRange(hydrateThread(fullDisplay, ref, 0), fencedCapture)).toBe(true);
+});
+
+// The source-superseded ACCEPTANCE verdict, constructed directly: a foreign
+// hydration settling while an open still owns the route hands the pane to the
+// source lifecycle only when the settling read actually converged it. A
+// bodied 40-item window over the resident range is NOT convergence while the
+// recorded range below it is still owed — accepting it would skip the
+// recovery handoff (the open's own miss path), no chain would ever be
+// scheduled, and the older recorded rows would never return. The end-to-end
+// interleaving (a foreign settlement superseding a parked open with the
+// debt armed) is exercised in the production suite's close/reopen churn;
+// this pins the branch's rule itself for every settling read.
+it("the superseded-source acceptance does not take a bodied window over outstanding recorded-range debt", async () => {
+  const routes = await import("./entryTranscriptRoutes");
+  const { hydrateThread } = await import("@evener/appwire-client");
+  const base = currentRead(ref);
+  const windowedCut = {
+    ...base,
+    olderCursor: "opaque-server-cursor",
+    overlay: [],
+    snapshot: { incarnation: "inc-1", length: 226 },
+    thread: {
+      ...base.thread,
+      turns: [
+        {
+          id: "turn_1",
+          status: "completed" as const,
+          itemsView: "full" as const,
+          version: 226,
+          items: Array.from({ length: 40 }, (_, index) => item(187 + index)),
+        },
+      ],
+    },
+  };
+  const model = hydrateThread(windowedCut, ref, 0);
+  type SupersededSource = Parameters<typeof routes.supersededSourceAcceptance>[0];
+  const settledWindow: SupersededSource = {
+    holdsBodiedForegroundWindow: () => true,
+    holdsResidentForegroundRange: () => true,
+    expectsEmptyForegroundWindow: () => false,
+    holdsWindowedBaseline: () => true,
+    owedRecorded: () => ({ unknown: true }),
+  };
+  const identifiedDebt: SupersededSource = {
+    ...settledWindow,
+    owedRecorded: () => ({ identities: new Map([["row-100", { entry: 100, item: 0 }]]) }),
+  };
+  const debtFree: SupersededSource = {
+    ...settledWindow,
+    owedRecorded: () => undefined,
+  };
+  const emptyExpecting: SupersededSource = {
+    holdsBodiedForegroundWindow: () => true,
+    holdsResidentForegroundRange: () => false,
+    expectsEmptyForegroundWindow: () => true,
+    holdsWindowedBaseline: () => true,
+    owedRecorded: () => undefined,
+  };
+  // A settling read's bodied window does not accept over armed debt, however
+  // the capture was armed.
+  expect(routes.supersededSourceAcceptance(settledWindow, model)).toBe(false);
+  expect(routes.supersededSourceAcceptance(identifiedDebt, model)).toBe(false);
+  // The debt-free controls keep the branch's healthy answers exactly: a
+  // converged window accepts, and an empty transcript that expects nothing
+  // accepts too.
+  expect(routes.supersededSourceAcceptance(debtFree, model)).toBe(true);
+  expect(routes.supersededSourceAcceptance(emptyExpecting, model)).toBe(true);
 });
