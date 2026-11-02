@@ -2546,6 +2546,110 @@ test("a parked-state resume names its recovery epoch and a superseded refusal is
   expect(resumeParams[2]).toBe(9);
 });
 
+// A retry is armed under the epoch its drive started under. A read landing
+// during backoff can observe a foreign Stop (another tab's read delivered the
+// bumped epoch), and an automatic retry that adopted the fresher value would
+// name it to the hub and restart the session that Stop stopped.
+test("a fired retry names the epoch its arm carried, not one a mid-backoff read observed", async ({
+  onTestFinished,
+}) => {
+  const scheduledResumeRetries = trackScheduledResumeRetries(onTestFinished);
+  const ref = "local:recovery-epoch-armed";
+  const storage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(storage);
+  const fake = connectMutationClient();
+  let epoch = 5;
+  const resumeParams: Array<number | undefined> = [];
+  fake.on("thread/read", () => {
+    const response = readResponse(ref, { status: { type: "notLoaded" } });
+    response.thread.evener.resumeRequired = true;
+    response.thread.evener.mutationStateAuthoritative = false;
+    response.thread.evener.recoveryEpoch = epoch;
+    return response;
+  });
+  fake.on("thread/resume", (params) => {
+    resumeParams.push((params as { expectedRecoveryEpoch?: number }).expectedRecoveryEpoch);
+    throw new Error("connection reset by peer");
+  });
+  await threadsStore.getState().ensureThread(ref);
+  await flushIndexedDBUntil(() => false);
+  await threadsStore.getState().resumeSession(ref);
+  await waitFor(() => expect(scheduledResumeRetries).toHaveLength(1));
+  // The page reads a foreign Stop's newer epoch while the retry waits.
+  epoch = 7;
+  await threadsStore.getState().refreshThread(ref);
+  await flushIndexedDBUntil(() => false);
+  act(() => {
+    scheduledResumeRetries[0]?.fire();
+  });
+  await flushIndexedDBUntil(() => false);
+  await flushMicrotasks();
+  // The retry names the epoch it was armed under, not the fresher read.
+  expect(resumeParams).toEqual([5, 5]);
+});
+
+// A press that joins the armed drive before the foreign Stop's new epoch is
+// read is not fresh intent for that Stop: the supersession refusal stays
+// terminal instead of letting the restart drive run under the refreshed epoch.
+test("a press joined before a supersession stays canceled", async ({ onTestFinished }) => {
+  const scheduledResumeRetries = trackScheduledResumeRetries(onTestFinished);
+  const ref = "local:recovery-epoch-joined";
+  const storage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(storage);
+  const fake = connectMutationClient();
+  const resumeParams: Array<number | undefined> = [];
+  let resumeCalls = 0;
+  fake.on("thread/read", () => {
+    const response = readResponse(ref, { status: { type: "notLoaded" } });
+    response.thread.evener.resumeRequired = true;
+    response.thread.evener.mutationStateAuthoritative = false;
+    response.thread.evener.recoveryEpoch = 5;
+    return response;
+  });
+  fake.on("thread/resume", (params) => {
+    resumeCalls += 1;
+    resumeParams.push((params as { expectedRecoveryEpoch?: number }).expectedRecoveryEpoch);
+    if (resumeCalls === 1) throw new Error("connection reset by peer");
+    throw new WireError("session recovery canceled this pending action; submit it again", -32000, {
+      evenerErrorInfo: "sessionRecoveryCanceled",
+      recoveryEpoch: 9,
+    });
+  });
+  let epochReads = 0;
+  let releasePreCapture!: (epoch: number) => void;
+  const realReadStopEpoch = storage.readStopEpoch.bind(storage);
+  storage.readStopEpoch = async (targetRef: string) => {
+    epochReads += 1;
+    if (epochReads === 3) {
+      return new Promise<number>((resolve) => {
+        releasePreCapture = resolve;
+      });
+    }
+    return realReadStopEpoch(targetRef);
+  };
+  await threadsStore.getState().ensureThread(ref);
+  await flushIndexedDBUntil(() => false);
+  await threadsStore.getState().resumeSession(ref);
+  await waitFor(() => expect(scheduledResumeRetries).toHaveLength(1));
+  act(() => {
+    scheduledResumeRetries[0]?.fire();
+  });
+  await waitFor(() => expect(epochReads).toBe(3));
+  // The press joins the armed drive while it is parked, before the foreign
+  // Stop's epoch reached this page.
+  const joined = threadsStore.getState().resumeSession(ref);
+  act(() => {
+    releasePreCapture(0);
+  });
+  await flushIndexedDBUntil(() => false);
+  await flushMicrotasks();
+  await flushIndexedDBUntil(() => false);
+  await flushMicrotasks();
+  await joined;
+  // No restart: the press never observed the epoch the Stop advanced to.
+  expect(resumeParams).toEqual([5, 5]);
+});
+
 // The fire-time comparison reads the epoch, and the attempt it wakes reads it
 // AGAIN before its request goes out. A Stop from another tab can land between
 // those two reads: the fire's snapshot predates the bump and passes, and an

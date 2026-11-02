@@ -69,7 +69,12 @@ type EvenerThread struct {
 	// that issues a resume from parked state (an automatic retry) carries the
 	// value it last read here as thread/resume's expectedRecoveryEpoch, so the
 	// hub can refuse a resume a newer Stop has superseded.
-	RecoveryEpoch uint64 `json:"recoveryEpoch,omitempty"`
+	// A pointer so an explicit zero is still serialized - a fresh session's
+	// epoch is zero, and a client that never records it (a restored hub's
+	// sessions start there) would arm retries with no expectation at all -
+	// while an absent field still means a source that cannot say (an older
+	// remote hub), which is not the same as zero.
+	RecoveryEpoch *uint64 `json:"recoveryEpoch,omitempty"`
 	// ResumeOnlyFoldable means a turn/start sent on this connection right now
 	// would be admitted under the resume-only carve-out: the session merely needs
 	// its resume, which the send folds into itself. The hub stamps it only when

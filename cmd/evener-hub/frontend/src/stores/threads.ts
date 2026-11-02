@@ -1678,7 +1678,10 @@ export function installResumeRetrySchedulerForTests(scheduler: RetryScheduler): 
 // other means: the fire-time re-check retires it on the next wake rather than
 // checking on every obligation transition. A retry an identity-changing resume
 // armed also carries the resumed identity's Stop fences.
-const resumeRetries = new Map<string, { attempt: number; cancel?: () => void; resumed?: ResumedStopFence }>();
+const resumeRetries = new Map<
+  string,
+  { attempt: number; cancel?: () => void; resumed?: ResumedStopFence; recoveryEpoch?: number }
+>();
 
 // The one read every durable stop fence decision shares: a store that cannot
 // answer is an unread epoch, and an unread epoch cancels nothing - the same
@@ -1702,6 +1705,7 @@ function scheduleResumeRetryForFence(
   ref: string,
   armedStopEpoch: number | undefined,
   armedResumedFence: ResumedStopFence | undefined,
+  armedRecoveryEpoch: number | undefined,
 ): void {
   const existing = resumeRetries.get(ref);
   // A prior arm can still stand when a NEW drive fails - a press that arrived
@@ -1786,10 +1790,14 @@ function scheduleResumeRetryForFence(
       ) {
         return;
       }
-      void resumeFencedForSend(ref, true, { stopEpoch: armedStopEpoch, resumed: armedResumedFence });
+      void resumeFencedForSend(ref, true, {
+        stopEpoch: armedStopEpoch,
+        resumed: armedResumedFence,
+        recoveryEpoch: armedRecoveryEpoch,
+      });
     })();
   });
-  resumeRetries.set(ref, { attempt, cancel, resumed: armedResumedFence });
+  resumeRetries.set(ref, { attempt, cancel, resumed: armedResumedFence, recoveryEpoch: armedRecoveryEpoch });
 }
 
 function retireResumeRetry(ref: string): void {
@@ -2916,6 +2924,7 @@ const pressJoinedResumes = new Map<
     epoch: Promise<number | undefined>;
     targetEpoch?: Promise<number | undefined>;
     inheritedTargetEpoch?: Promise<number | undefined>;
+    recoveryEpoch?: number;
   }
 >();
 
@@ -2927,6 +2936,11 @@ const pressJoinedResumes = new Map<
 interface InheritedStopFences {
   stopEpoch?: number;
   resumed?: ResumedStopFence;
+  // The hub-owned recovery epoch the fired arm was issued under. An
+  // automatic retry names THIS value, never a fresher one a read landed
+  // during backoff: adopting a read that observed a foreign Stop would
+  // re-arm the retry past the very Stop the fence exists to catch.
+  recoveryEpoch?: number;
 }
 
 // The resumed identity's Stop fences, captured when a drive adopts the
@@ -2964,6 +2978,10 @@ async function resumeFencedForSend(ref: string, automatic = false, inherited: In
             ? { ref: existing.targetRef, generation: userIntentStopGenerations.get(existing.targetRef) ?? 0 }
             : undefined,
         inheritedTarget: joinedInherited,
+        // The hub-owned epoch this page had read when the press arrived: a
+        // supersession refusal may restart the press's drive only if the
+        // press already observed the epoch that Stop advanced to.
+        recoveryEpoch: recoveryEpochOf(ref),
         epoch: readDurableStopEpoch(mutationRuntime, ref),
         targetEpoch: existing.targetRef !== ref ? readDurableStopEpoch(mutationRuntime, existing.targetRef) : undefined,
         inheritedTargetEpoch:
@@ -3043,12 +3061,14 @@ async function runResumeFencedForSend(
   // identity the fired arm already carried. A later adoption replaces the
   // seed with its own fresh captures.
   let attemptResumedFence: ResumedStopFence | undefined = inherited.resumed;
-  // The hub-owned recovery epoch this drive was issued under: a Stop from
+  // The hub-owned recovery epoch this drive is issued under: a Stop from
   // another client or device advances it invisibly to this page, and the hub
-  // refuses the request when the value it names is stale. Captured once, at
-  // the drive's start, so a read landing mid-drive cannot rebase the fence
-  // onto a Stop that predates the press.
-  const expectedRecoveryEpoch = recoveryEpochOf(ref);
+  // refuses the request when the value it names is stale. An automatic retry
+  // names the epoch its arm carried - a read landing during backoff may have
+  // observed a foreign Stop, and adopting that fresher value would re-arm the
+  // retry past the Stop the fence exists to catch. A press is new user
+  // intent and names the latest epoch this page has read.
+  const expectedRecoveryEpoch = drive.automatic ? inherited.recoveryEpoch : recoveryEpochOf(ref);
   try {
     const attemptRuntime = mutationRuntime;
     if (attemptRuntime !== null) {
@@ -3318,7 +3338,7 @@ async function runResumeFencedForSend(
     // wedged store could not read arms without that durable fence: the same
     // store cannot have recorded the Stop either.
     if (!stopCanceled) {
-      scheduleResumeRetryForFence(ref, attemptStopEpoch, attemptResumedFence);
+      scheduleResumeRetryForFence(ref, attemptStopEpoch, attemptResumedFence, expectedRecoveryEpoch);
     } else {
       const join = pressJoinedResumes.get(ref);
       // A press that arrived AFTER the Stop that canceled this drive is
@@ -3370,7 +3390,13 @@ async function runResumeFencedForSend(
           snapshottedIdentities.every(
             (entry) => entry === undefined || entry.generation === (userIntentStopGenerations.get(entry.ref) ?? 0),
           );
-        if (generationsUnchanged && epochsUnchanged) {
+        // A supersession refusal is the hub's word on a Stop this page never
+        // saw: the press is fresh only if it already read the epoch that Stop
+        // advanced to. A press that joined before it stays canceled, or the
+        // refreshed epoch would let its restart override the Stop.
+        const hubEpochUnchanged =
+          supersededEpoch === undefined || (join.recoveryEpoch !== undefined && join.recoveryEpoch === supersededEpoch);
+        if (generationsUnchanged && epochsUnchanged && hubEpochUnchanged) {
           drive.restartAfterSettle = true;
         }
       }

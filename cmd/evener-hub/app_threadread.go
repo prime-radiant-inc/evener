@@ -1592,7 +1592,13 @@ func applyThreadResumeRequirement(ctx context.Context, cfg hubcore.WebConfig, re
 	// Every read carries the current recovery epoch, fenced or not: a client
 	// arming a retry from this read hands it back with its next resume, so a
 	// Stop from another client or device can supersede the retry server-side.
-	thread.Evener.RecoveryEpoch = recovery.Epoch
+	// Only a LOCAL session's epoch comes from this hub's recovery locks; a
+	// remote reply's epoch is its own controller's, and overwriting it with
+	// this hub's empty state would leave the reply's retries unfenced.
+	if parsed, err := appwire.ParseRef(ref); err == nil && parsed.SourceID == appwire.LocalSourceID {
+		epoch := recovery.Epoch
+		thread.Evener.RecoveryEpoch = &epoch
+	}
 	if recovery.ResumeRequired || recovery.Stopping > 0 || sessionConnectionRecoveryError(ctx, cfg, ref, threadID) != nil {
 		thread.Evener.ResumeRequired = true
 		thread.Evener.Capabilities.Send = false
