@@ -195,6 +195,61 @@ func TestHubWatchTerminalDeliverySurvivesPriorLastNoticeSettlement(t *testing.T)
 	}
 }
 
+func TestHubWatchTerminalDeliverySurvivesSettlementBeforeTerminalPersistence(t *testing.T) {
+	t.Parallel()
+	root := newMessagingRoot(t, newMessagingAdapter(), func(cfg *SessionConfig) { cfg.Manager = true })
+	jm := root.jobManager
+	watch, err := jm.configureHubWatch("local:worker", "worker-instance", "7@worker", "local:manager", []string{"status"}, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := jm.onHubObservation(watch.WatchID, appwire.SessionWatchUpdate{Event: "status", Metadata: appwire.SessionObservationMetadata{Ref: "local:worker", InstanceID: "worker-instance", GenerationID: "7@worker", EntryID: "prior", CausalKnown: true}}); err != nil {
+		t.Fatal(err)
+	}
+	jm.mu.Lock()
+	_, cfg, ok := jm.watchConfigByIDLocked(watch.WatchID)
+	if !ok {
+		jm.mu.Unlock()
+		t.Fatal("prior watch config disappeared before terminal transition")
+	}
+	var prior jobstore.WatchSendState
+	for _, state := range cfg.pending {
+		prior = *state
+	}
+	jm.mu.Unlock()
+
+	// The last prior notice settles inside endHubWatch's window between
+	// releasing the config lock and persisting the terminal send. The
+	// terminal delivery must still record and end the watch instead of
+	// being refused as no longer current and leaking an active watch with
+	// no subscription and no end notice.
+	jm.testOnlyBeforeTerminalWatchSend = func() {
+		if err := jm.settleWatchSendDelivered(cfg, prior); err != nil {
+			t.Errorf("settle prior notice in the terminal window: %v", err)
+		}
+	}
+	defer func() { jm.testOnlyBeforeTerminalWatchSend = nil }()
+
+	if err := jm.endHubWatch(watch.WatchID, "target replaced; re-register", nil); err != nil {
+		t.Fatalf("endHubWatch with in-window prior settlement: %v", err)
+	}
+	jm.mu.Lock()
+	_, _, stillActive := jm.watchConfigByIDLocked(watch.WatchID)
+	jm.mu.Unlock()
+	if stillActive {
+		t.Fatal("watch stayed active after its terminal delivery")
+	}
+	ended := 0
+	for _, event := range loadJobStoreEvents(t, jm) {
+		if event.Kind == jobstore.EventWatchSendPending && event.WatchSend != nil && event.WatchSend.Key.WatchID == watch.WatchID && event.WatchSend.EndNotice {
+			ended++
+		}
+	}
+	if ended != 1 {
+		t.Fatalf("durable terminal end notices = %d, want 1", ended)
+	}
+}
+
 func TestHubWatchTerminalDeliveryAppendBatchFailureLeavesWatchActive(t *testing.T) {
 	t.Parallel()
 	root := newMessagingRoot(t, newMessagingAdapter(), func(cfg *SessionConfig) { cfg.Manager = true })

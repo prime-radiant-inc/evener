@@ -328,6 +328,12 @@ func (jm *jobManager) endHubWatch(watchID, reason string, completion *watchSendD
 		return nil
 	}
 	cfg.rejectingDelivery = true
+	// The terminal delivery's eligibility must survive settlement of the
+	// last prior pending send inside the unlock-to-record window below:
+	// terminalDeliveryPending keeps forgetTerminalFlushIfEmptyLocked from
+	// dropping the flush entry the terminal send needs to still count as
+	// current. Cleared again on every completion and rollback path.
+	cfg.terminalDeliveryPending = true
 	jm.rememberDetachedPendingLocked(cfg)
 	var delivery watchSendDelivery
 	if completion != nil {
@@ -338,12 +344,16 @@ func (jm *jobManager) endHubWatch(watchID, reason string, completion *watchSendD
 	}
 	delivery.allowAfterTerminalExpiry = true
 	jm.mu.Unlock()
+	if jm.testOnlyBeforeTerminalWatchSend != nil {
+		jm.testOnlyBeforeTerminalWatchSend()
+	}
 	delivery = jm.snapshotWatchSendFrame(delivery)
 	state, _, recorded, err := jm.recordWatchSend(delivery, []jobstore.Event{watchClearedEvent(jm, cfg, reason)})
 	committed := state.DeliveryID != ""
 	if !committed {
 		jm.mu.Lock()
 		cfg.rejectingDelivery = false
+		cfg.terminalDeliveryPending = false
 		delete(jm.terminalFlush, cfg)
 		jm.mu.Unlock()
 		if err == nil {
@@ -353,6 +363,8 @@ func (jm *jobManager) endHubWatch(watchID, reason string, completion *watchSendD
 	}
 	jm.mu.Lock()
 	if jm.watches[key] != cfg {
+		cfg.terminalDeliveryPending = false
+		jm.forgetTerminalFlushIfEmptyLocked(cfg)
 		jm.mu.Unlock()
 		return nil
 	}
@@ -360,10 +372,6 @@ func (jm *jobManager) endHubWatch(watchID, reason string, completion *watchSendD
 	jm.recordWatchEndedLocked(key, cfg, reason)
 	cfg.rejectingDelivery = false
 	jm.rememberDetachedPendingLocked(cfg)
-	// Keep the terminal eligibility record alive until the final send has had
-	// its chance to enter the shared durable rail, even if prior pending sends
-	// settle concurrently in this unlock-to-record gap.
-	cfg.terminalDeliveryPending = true
 	jm.mu.Unlock()
 	if jm.testOnlyAfterHubWatchDetach != nil {
 		jm.testOnlyAfterHubWatchDetach()

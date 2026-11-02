@@ -194,6 +194,11 @@ type jobManager struct {
 	// testOnlyAfterHubWatchDetach pauses after endHubWatch detaches its config
 	// and before the final terminal send is recorded. Nil in production.
 	testOnlyAfterHubWatchDetach func()
+	// testOnlyBeforeTerminalWatchSend runs inside endHubWatch's window between
+	// releasing the config lock and persisting the terminal send, where a
+	// concurrent prior-notice settlement must not strip the terminal
+	// delivery's eligibility. Nil in production.
+	testOnlyBeforeTerminalWatchSend func()
 	// watchReceiptBoundary observes entry into the delegate controller for a
 	// stable-watch receipt. Nil in production; lock-order tests use it to prove
 	// the job manager released its local persistence lock first.
