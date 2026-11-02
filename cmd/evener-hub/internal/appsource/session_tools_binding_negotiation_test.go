@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -228,7 +229,11 @@ func TestSessionToolsRejectedBindRecoversThroughRunOwner(t *testing.T) {
 	secondBindAttempt := make(chan struct{}, 1)
 	releaseSecondBind := make(chan struct{})
 	recoveredRead := make(chan struct{}, 1)
-	secondBindingID := make(chan string, 1)
+	// recoveredBindingIDs is the set of binding IDs the daemon successfully
+	// negotiated after the refusal. The paced recovery and a concurrent
+	// Manager read can each dial, so "the" recovered binding is a set, and a
+	// proof naming any of them is a proof through recovery.
+	var recoveredBindingIDs sync.Map
 	managerTurnBindingID := make(chan string, 1)
 	source.SetSessionTools(func(appwire.SessionBinding) (appwire.SessionHubClient, error) {
 		return bindingTestOwner{}, nil
@@ -246,7 +251,16 @@ func TestSessionToolsRejectedBindRecoversThroughRunOwner(t *testing.T) {
 			case appwire.MethodRuntimeSessionBind:
 				attempt := bindingRequests.Add(1)
 				if attempt == 1 {
-					firstBindAttempt <- struct{}{}
+					// Evidence sends are non-blocking drops: a racing
+					// re-entrant dialer (the paced recovery re-reading
+					// while the Manager mutation holds its own dial)
+					// must never park inside the script past the test
+					// body, or cleanup's join of RunSessionTools hangs
+					// on a capture the idle path cannot retire.
+					select {
+					case firstBindAttempt <- struct{}{}:
+					default:
+					}
 					// TRIPWIRE: bound the test-controlled first refusal so a broken test cannot hang.
 					select {
 					case <-releaseFirstBind:
@@ -256,7 +270,10 @@ func TestSessionToolsRejectedBindRecoversThroughRunOwner(t *testing.T) {
 					transport.recv <- appwire.ErrorMessage(message.Request.ID, appwire.Unavailable("transient bind refusal"))
 					return nil
 				}
-				secondBindAttempt <- struct{}{}
+				select {
+				case secondBindAttempt <- struct{}{}:
+				default:
+				}
 				// TRIPWIRE: keep the recovered bind pending until authority checks finish.
 				select {
 				case <-releaseSecondBind:
@@ -268,14 +285,17 @@ func TestSessionToolsRejectedBindRecoversThroughRunOwner(t *testing.T) {
 					return err
 				}
 				response = binding
-				secondBindingID <- binding.BindingID
+				recoveredBindingIDs.Store(binding.BindingID, struct{}{})
 			case appwire.MethodThreadRead:
 				response = appwire.ThreadReadResponse{Thread: appwire.Thread{
 					ID: "instance", Source: "local",
 					Evener: appwire.EvenerThread{Ref: "local:thread", InstanceID: "instance"},
 				}}
 				if bindingRequests.Load() >= 2 {
-					recoveredRead <- struct{}{}
+					select {
+					case recoveredRead <- struct{}{}:
+					default:
+					}
 				}
 			case appwire.MethodTurnStart:
 				var params appwire.TurnStartParams
@@ -286,7 +306,13 @@ func TestSessionToolsRejectedBindRecoversThroughRunOwner(t *testing.T) {
 					if params.ManagerProof.BindingID == "" {
 						return errors.New("recovered Manager mutation had no binding proof")
 					}
-					managerTurnBindingID <- params.ManagerProof.BindingID
+					if _, ok := recoveredBindingIDs.Load(params.ManagerProof.BindingID); !ok {
+						return errors.New("recovered Manager mutation named a binding the daemon never negotiated")
+					}
+					select {
+					case managerTurnBindingID <- params.ManagerProof.BindingID:
+					default:
+					}
 				}
 				response = appwire.TurnStartResponse{}
 			default:
@@ -359,16 +385,10 @@ func TestSessionToolsRejectedBindRecoversThroughRunOwner(t *testing.T) {
 	if got := bindingRequests.Load(); got < 2 {
 		t.Fatalf("binding attempts = %d, want recovery attempt", got)
 	}
-	var publishedBindingID string
-	select {
-	case publishedBindingID = <-secondBindingID:
-	case <-time.After(5 * time.Second):
-		t.Fatal("recovered binding request was not observed")
-	}
 	select {
 	case got := <-managerTurnBindingID:
-		if got != publishedBindingID {
-			t.Fatalf("Manager proof binding = %q, recovered binding = %q", got, publishedBindingID)
+		if _, ok := recoveredBindingIDs.Load(got); !ok {
+			t.Fatalf("Manager proof binding = %q, which the daemon never recovered", got)
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("recovered Manager mutation was not observed")
