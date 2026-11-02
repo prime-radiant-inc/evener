@@ -269,6 +269,9 @@ function SpawnForm({
   const client = useClient();
   const toasts = useToasts();
   const advancedOwnerRef = useRef<HTMLDivElement>(null);
+  // The portaled slash menu tracks this anchor's live rect; see the
+  // promptAnchor mount below.
+  const promptAnchorRef = useRef<HTMLDivElement>(null);
   const [source, setSource] = useDraftField(draft, "source");
   // The manifest carries every configured launch source (Component 06a). It is
   // empty until it loads, and in the common single-host case holds only
@@ -2623,19 +2626,20 @@ function SpawnForm({
         </div>
 
         {/* The prompt shares its card and attachment controls with the session composer. */}
-        {/* The positioned anchor for the inline slash menu above the card -
-            PromptCard's props are field/leading/actions only, so the menu
-            cannot go inside it (nor is Composer's own menu inside its card
-            either - it sits in Composer.tsx's positioned .formAnchor
+        {/* The portaled slash menu pins to this wrapper's live rect, above
+            the card - PromptCard's props are field/leading/actions only, so
+            the menu cannot go inside it (nor is Composer's own menu inside
+            its card either - it tracks Composer.tsx's .formAnchor
             wrapper). Rendered as this wrapper's first child, mirroring
             Composer's anchor-above-card placement. */}
-        <div className={CLASS.promptAnchor}>
+        <div className={CLASS.promptAnchor} ref={promptAnchorRef}>
           {slashOpen && (
             <SlashCompletionMenu
               id={slashListboxId}
               items={slashItems}
               highlightedIndex={slashActiveIndex}
               onSelect={commitSlashCompletion}
+              anchorRef={promptAnchorRef}
             />
           )}
           <Dropzone onFiles={(files) => attachments.ingestFiles(files, (message) => toasts.push("error", message))}>

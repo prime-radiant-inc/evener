@@ -3,9 +3,15 @@
 // LICENSES/beautiful-ui.txt. Composer.tsx owns all the keyboard mechanics
 // (Arrow/Tab/Enter/Escape) via its own onKeyDown - this component is a pure
 // rendering of the current item list plus a click-to-select affordance, a
-// listbox anchored above the composer's control row (see
-// slashcompletionmenu.module.css's own header comment for the float
-// recipe).
+// listbox pinned above the composer's top edge.
+//
+// The listbox renders through a portal at its anchor's document level: the
+// comic seat mounts the shared Composer inside a bounded, scrolling
+// interaction area (max-height + overflow), and a popup inside that subtree
+// would be clipped by it. A placement loop pins the box to the anchor's live
+// rect every frame while the menu is open - typing can grow the draft and
+// move the composer's top edge mid-menu - so the box always sits exactly
+// where the old in-flow anchor put it, visible above any ancestor.
 //
 // items is slashCompletion.ts's own merged SlashMenuItem list (2026-08-14:
 // session-scoped BUILT-INS merged with the plugin catalog, mergeSlashCommands'
@@ -13,6 +19,9 @@
 // row came from beyond rendering its already-resolved label/hint/invocation.
 
 import type { SlashMenuItem } from "@evener/appwire-client";
+import type { RefObject } from "react";
+import { useEffect, useRef } from "react";
+import { createPortal } from "react-dom";
 import { requireClass } from "../../../widgets/internal/requireClass";
 import styles from "./slashcompletionmenu.module.css";
 
@@ -29,6 +38,8 @@ export interface SlashCompletionMenuProps {
   items: SlashMenuItem[];
   highlightedIndex: number;
   onSelect: (item: SlashMenuItem) => void;
+  /** The composer's form anchor, whose live rect the portaled box tracks. */
+  anchorRef: RefObject<HTMLElement | null>;
 }
 
 // optionId is exported so Composer.tsx's own aria-activedescendant wiring
@@ -40,9 +51,32 @@ export function optionId(listboxId: string, index: number): string {
   return `${listboxId}-option-${index}`;
 }
 
-export function SlashCompletionMenu({ id, items, highlightedIndex, onSelect }: SlashCompletionMenuProps) {
-  return (
+export function SlashCompletionMenu({ id, items, highlightedIndex, onSelect, anchorRef }: SlashCompletionMenuProps) {
+  const menuRef = useRef<HTMLDivElement>(null);
+  const anchor = anchorRef.current;
+  useEffect(() => {
+    const menu = menuRef.current;
+    if (!menu || !anchor) return;
+    let frame = 0;
+    const place = () => {
+      const rect = anchor.getBoundingClientRect();
+      const view = anchor.ownerDocument.defaultView;
+      const gap = Number.parseFloat(getComputedStyle(menu).getPropertyValue("--space-1")) || 0;
+      menu.style.left = `${rect.left}px`;
+      menu.style.width = `${rect.width}px`;
+      menu.style.bottom = `${(view?.innerHeight ?? 0) - rect.top - gap}px`;
+      // The anchor inherits its surface's font stack (the comic seat's own
+      // token); the portaled box would otherwise fall back to the app root's.
+      menu.style.fontFamily = getComputedStyle(anchor).fontFamily;
+      frame = requestAnimationFrame(place);
+    };
+    frame = requestAnimationFrame(place);
+    return () => cancelAnimationFrame(frame);
+  }, [anchor]);
+  if (!anchor) return null;
+  return createPortal(
     <div
+      ref={menuRef}
       className={CLASS.menu}
       role="listbox"
       id={id}
@@ -70,6 +104,7 @@ export function SlashCompletionMenu({ id, items, highlightedIndex, onSelect }: S
           </button>
         );
       })}
-    </div>
+    </div>,
+    anchor.ownerDocument.body,
   );
 }

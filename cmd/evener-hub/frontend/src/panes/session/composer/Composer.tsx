@@ -250,6 +250,10 @@ export function Composer({
   // Steer moves into the menu below the phone-width boundary.
   // narrowComposer.ts measures the pane, not the viewport.
   const [narrow, composerRootRef] = useNarrowComposer();
+  // The slash menu's placement anchor: the menu portals outside every
+  // ancestor of this node (the comic seat's bounded interaction area clips
+  // in-flow popups) and pins to this node's live rect while open.
+  const formAnchorRef = useRef<HTMLDivElement>(null);
 
   // The session menu's turn-verb items press the same handlers the row
   // buttons press. Those handlers are recreated every render (they close
@@ -900,18 +904,19 @@ export function Composer({
         // owning pane id, so the overlay can anchor to the FOCUSED pane's
         // composer when several are mounted - including an ordinary pane and a
         // cascade column showing the same conversation.
-        <div className={CLASS.formAnchor} data-composer={ref} data-composer-pane={paneId}>
-          {/* Anchored above the control row inside the card below, opening
-              upward - see slashcompletionmenu.module.css's header comment
-              for the anchored-float recipe. Mounted only
-              while a token has real catalog matches (slashOpen), never for
-              an empty/no-match filter. */}
+        <div className={CLASS.formAnchor} ref={formAnchorRef} data-composer={ref} data-composer-pane={paneId}>
+          {/* Pinned above this node's live rect through a portal at its
+              document level - never inside this subtree, whose ancestors
+              (the comic seat's bounded, scrolling interaction area) clip
+              in-flow popups. Mounted only while a token has real catalog
+              matches (slashOpen), never for an empty/no-match filter. */}
           {slashOpen && (
             <SlashCompletionMenu
               id={slashListboxId}
               items={slashItems}
               highlightedIndex={slashActiveIndex}
               onSelect={commitSlashCompletion}
+              anchorRef={formAnchorRef}
             />
           )}
           <form

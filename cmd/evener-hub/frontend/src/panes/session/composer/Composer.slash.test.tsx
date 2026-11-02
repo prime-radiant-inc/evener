@@ -128,6 +128,46 @@ test('"/" at the start of an empty composer types a literal slash and opens the 
   expect(screen.getByTestId("composer-slash-menu")).toBeTruthy();
 });
 
+test("the slash menu escapes the composer's subtree and tracks its anchor's live rect", async () => {
+  useCommandCatalog.setState({ commands: [{ name: "review", description: "review the diff" }] });
+  const user = userEvent.setup();
+  const ref = "ref_slash_portal";
+  const { container } = await mountComposerWithHandle(ref, {
+    evener: {
+      ...testThread(ref).evener,
+      diagnostics: { commands: [{ name: "review", description: "review the diff" }] },
+    },
+  });
+  const rectSpy = vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockReturnValue({
+    top: 200,
+    left: 100,
+    width: 300,
+    height: 50,
+    right: 400,
+    bottom: 250,
+    x: 100,
+    y: 200,
+    toJSON: () => ({}),
+  } as DOMRect);
+  try {
+    await user.type(textarea(), "/");
+    // Let the placement loop write the anchored coordinates at least once.
+    await new Promise((resolve) => requestAnimationFrame(() => resolve(null)));
+    const menu = screen.getByTestId("composer-slash-menu");
+    // No ancestor of the composer - the comic seat's bounded, scrolling
+    // interaction area - can clip a listbox rendered outside its subtree.
+    expect(document.body.contains(menu)).toBe(true);
+    expect(container.contains(menu)).toBe(false);
+    // The fixed position tracks the anchor: same left edge, same width,
+    // pinned above its top edge.
+    expect(menu.style.left).toBe("100px");
+    expect(menu.style.width).toBe("300px");
+    expect(menu.style.bottom).toBe(`${window.innerHeight - 200}px`);
+  } finally {
+    rectSpy.mockRestore();
+  }
+});
+
 test('"/" in a NON-empty composer is a literal slash, not a palette trigger', async () => {
   const user = userEvent.setup();
   await mountComposer("ref_slash2");
