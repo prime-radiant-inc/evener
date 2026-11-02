@@ -21,6 +21,65 @@ func mustResolve(t *testing.T, r *Registry, ref string) Resolved {
 	return res
 }
 
+// The registry rank-orders a resolved row's effort ladder (least to most)
+// whatever order its sources stated it in: models.dev rows, live listings,
+// and user overlays can arrive unsorted, and every picker renders the ladder
+// as resolved.
+func TestResolve_RanksAuthoredEffortLadder(t *testing.T) {
+	r := fixtureLoad(t, nil, "[providers.anthropic.models.\"claude-opus-4-6\"]\neffort_values = [\"max\", \"low\", \"high\"]\n")
+	res := mustResolve(t, r, "anthropic/claude-opus-4-6")
+	if !reflect.DeepEqual(res.Caps.EffortValues, []string{"low", "high", "max"}) {
+		t.Fatalf("resolved ladder = %v, want the authored tiers rank-ordered low, high, max", res.Caps.EffortValues)
+	}
+}
+
+// The off level and any tier outside the vocabulary are unrankable: they keep
+// their authored relative order ahead of the ranked tiers, the same
+// pass-through the request-side clamp gives them.
+func TestResolve_EffortLadderKeepsAuthoredOrderForUnrankableLevels(t *testing.T) {
+	r := fixtureLoad(t, nil, "[providers.anthropic.models.\"claude-opus-4-6\"]\neffort_values = [\"max\", \"turbo\", \"low\", \"none\"]\n")
+	res := mustResolve(t, r, "anthropic/claude-opus-4-6")
+	if !reflect.DeepEqual(res.Caps.EffortValues, []string{"turbo", "none", "low", "max"}) {
+		t.Fatalf("resolved ladder = %v, want turbo and none to keep their authored order ahead of low, max", res.Caps.EffortValues)
+	}
+}
+
+// A provider-level ladder reaches the instance views the way a row's ladder
+// reaches a model resolve: rank-ordered, whatever order the config stated.
+func TestResolveInstance_RanksProviderLevelEffortLadder(t *testing.T) {
+	r := fixtureLoad(t, nil, "[providers.gw]\nbase = \"openai\"\neffort_values = [\"max\", \"low\"]\n")
+	inst, err := r.ResolveInstance("gw")
+	if err != nil {
+		t.Fatalf("ResolveInstance: %v", err)
+	}
+	if !reflect.DeepEqual(inst.Caps.EffortValues, []string{"low", "max"}) {
+		t.Fatalf("instance ladder = %v, want the provider's tiers rank-ordered low, max", inst.Caps.EffortValues)
+	}
+}
+
+// The merged ladder aliases the record's own slices — mergeCaps assigns
+// wholesale fields by reference, and a record's layers are borrowed read-only
+// (the capLayer contract) — so ranking must never sort in place: a resolve
+// that reached back into the record would race every concurrent resolve and
+// silently reorder the stored row. The record keeps its authored order; only
+// the served copy is ranked.
+func TestResolve_RankingKeepsTheStoredLayersAuthored(t *testing.T) {
+	r := fixtureLoad(t, nil, "[providers.anthropic.models.\"claude-opus-4-6\"]\neffort_values = [\"max\", \"low\", \"high\"]\n")
+	mustResolve(t, r, "anthropic/claude-opus-4-6")
+	for _, bucket := range []map[string]*record{r.curated, r.explicit} {
+		for _, rec := range bucket {
+			for _, layer := range rec.layers {
+				if layer.tag != LayerConfig {
+					continue
+				}
+				if row, ok := layer.rows["claude-opus-4-6"]; ok && !reflect.DeepEqual(row.Caps.EffortValues, []string{"max", "low", "high"}) {
+					t.Fatalf("stored row ladder = %v, want the authored max, low, high: ranking must not mutate the record's layers", row.Caps.EffortValues)
+				}
+			}
+		}
+	}
+}
+
 func hasWarning(res Resolved, substr string) bool {
 	return strings.Contains(strings.Join(res.Warnings, "\n"), substr)
 }
