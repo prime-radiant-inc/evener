@@ -125,13 +125,11 @@ func TestFakeAdapterScriptResistsConcurrentDrive(t *testing.T) {
 		func(llm.Request) llm.Response { return llm.Response{Message: llm.Assistant("scripted")} },
 	})
 	var wg sync.WaitGroup
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
+	wg.Go(func() {
 		for range 200 {
 			_, _ = a.Complete(context.Background(), llm.Request{})
 		}
-	}()
+	})
 	for range 200 {
 		a.setSteps([]func(llm.Request) llm.Response{
 			func(llm.Request) llm.Response { return llm.Response{Message: llm.Assistant("next")} },
