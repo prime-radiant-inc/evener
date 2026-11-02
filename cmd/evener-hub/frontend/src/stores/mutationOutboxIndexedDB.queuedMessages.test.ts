@@ -949,13 +949,71 @@ test("an edited resend of a delivery-uncertain recovery takes a fresh wire ident
     0,
   );
   if (!edited) throw new Error("failed to edit recovery");
-  const sent = await f.storage.resendRecoveryResult(a.clientMutationId, queuedIntent("local:queued"));
+  // Round-7 rewrite, disclosed: the resend now carries the EDITED content the
+  // user actually resends, not the original fixture. The byte-identity
+  // contract is judged against what goes on the wire; resending the original
+  // input never exercised the autosaved-edit path the round-7 High names.
+  const sent = await f.storage.resendRecoveryResult(a.clientMutationId, {
+    ...queuedIntent(),
+    payload: { ...queuedIntent().payload, input: [{ type: "text", text: "edited content" }] },
+  });
   if (sent.status !== "sent") throw new Error(`resend did not send: ${sent.status}`);
   // The edited composition is new work: a fresh wire identity, so the
   // daemon journals it as its own mutation instead of mismatching the
   // original wire's method-and-payload hash forever.
   expect(sent.record.payload.clientMutationId).toBe(sent.record.clientMutationId);
   expect(sent.record.payload.clientMutationId).not.toBe(a.clientMutationId);
+});
+
+// Round-7 review High: the byte-identity check compared the resend against
+// the recovery record AS IT STOOD AT CONSUME TIME, but the composer's
+// autosave replaces payload.input in place while preserving the uncertainty
+// marker - so an edited composition compared equal to its own edited record
+// and inheritance was authorized for content the daemon never journaled
+// under that wire: the mismatch loop again, and a delayed settlement of the
+// original wire could sweep-delete the edited resend after the composer
+// cleared. The daemon's journal is the immutable reference: the comparison
+// runs against the composition frozen at transferToRecovery time, so an
+// autosaved edit is NEW intent under a fresh id, unreachable by the
+// original wire's late settlement.
+test("an autosaved edit of a delivery-uncertain recovery is new intent, not a replay", async () => {
+  const f = fixture();
+  const a = await f.storage.enqueueIntent(queuedIntent());
+  await f.storage.markAttempted(a.clientMutationId);
+  const recovery = await f.storage.transferToRecovery(a.clientMutationId, "rejected", "invalid params", {
+    wireDeliveryUncertain: true,
+  });
+  if (!recovery) throw new Error("failed to seed recovery");
+  // The composer's autosave replaces the input in place, revision and all.
+  const autosaved = await f.storage.updateRecoveryInput(
+    a.clientMutationId,
+    [{ type: "text", text: "autosaved edit" }],
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    0,
+  );
+  if (!autosaved) throw new Error("failed to autosave");
+  // The user resends the edited content the autosave actually holds.
+  const sent = await f.storage.resendRecoveryResult(
+    a.clientMutationId,
+    { ...queuedIntent(), payload: { ...queuedIntent().payload, input: [{ type: "text", text: "autosaved edit" }] } },
+    undefined,
+    { [a.clientMutationId]: 1 },
+  );
+  if (sent.status !== "sent") throw new Error(`resend did not send: ${sent.status}`);
+  // The edited composition is new work: its own wire identity, not the
+  // inherited one the daemon would mismatch against its journal forever.
+  expect(sent.record.payload.clientMutationId).toBe(sent.record.clientMutationId);
+  expect(sent.record.payload.clientMutationId).not.toBe(a.clientMutationId);
+  // And the original wire's delayed settlement cannot reach the edited
+  // resend: the fresh row is not in that wire's family, so no sweep can
+  // delete it after the composer cleared.
+  await f.storage.markAttempted(sent.record.clientMutationId);
+  await f.storage.settleReceipt(a.clientMutationId, "reflected");
+  expect(await f.storage.getOutbox(sent.record.clientMutationId)).toBeDefined();
 });
 
 // The rerouted half: a different METHOD is different work too.

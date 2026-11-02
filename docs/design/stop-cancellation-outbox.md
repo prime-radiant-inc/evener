@@ -162,10 +162,17 @@ race window RoboRev keeps finding. The durable write should happen **first**:
   unknown before the row is read, so the capture cannot precede that read —
   it joins it, the row and the epoch read in ONE transaction requested in the
   click's synchronous prefix (`getOutboxWithStopEpoch`). The mint that carries
-  the work compares the stored row against that capture and REFUSES when it
-  advanced (or when the row's durable target or instance moved), leaving the
-  row canceled: a newer Stop outranks an earlier Retry, the same commit-order
-  rule the enqueue barrier carries.
+  the work compares the stored row against that capture and REFUSES only
+  when the row's durable target or instance moved since the capture read - an
+  identity change means the pressed row is not the one the capture vouched
+  for, and it stays exactly as it was, retryable again. A newer Stop crossing
+  the capture-to-mint window is not a refusal: the old row settles terminal
+  (a canceled row is deleted, a `blockedUnknown` row settles `superseded`
+  keeping its id and attempt evidence) and the mint returns a FRESH row born
+  `canceled` - fenced at birth rather than refused, because the Stop's own
+  cancel scan owns canceled rows and the fresh row joins them. Either way a
+  newer Stop outranks an earlier Retry, the same commit-order rule the
+  enqueue barrier carries.
   The "deliberate post-Stop send" exemption is therefore bounded for Retry
   exactly as for enqueue — a Stop whose durable write commits before the
   capture read's transaction can exist is invisible to it (the capture reads
@@ -207,10 +214,15 @@ barrier compares against — so the scan and the fence commit as one durable fac
   still settles it — and the fresh row is fenced at birth by the same
   press-time capture pair every send carries (`getOutboxWithStopEpoch`: the
   row and the ref's stop epoch read in ONE transaction requested in the
-  click's synchronous prefix). The mint REFUSES unless the row is still
-  canceled/blockedUnknown with the same durable targetRef and instance the
-  capture read — a newer Stop's epoch bump or a peer retarget intervening
-  leaves the row exactly as it was, retryable again. The fresh row takes a NEW
+  click's synchronous prefix). The mint REFUSES when the row's durable
+  targetRef or instance moved since the capture read — a peer retarget
+  intervening leaves the row exactly as it was, retryable again. A newer
+  Stop's epoch bump is a different verdict with the same rank: the mint does
+  not refuse, the old row settles terminal (a canceled row is deleted, a
+  `blockedUnknown` row settles `superseded` keeping its evidence), and the
+  fresh row is born `canceled` — the Stop outranks the Retry by fencing the
+  new row at birth, the same way the scan claims every unattempted row of
+  the ref. The fresh row takes a NEW
   intentSequence at the ref's tail (Retry visibly re-queues at the tail; the
   old chip leaves the canceled strip), and a predecessor whose lineage is
   delivery-uncertain has its wire identity INHERITED into the fresh row's

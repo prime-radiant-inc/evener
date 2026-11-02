@@ -66,6 +66,16 @@ type VersionedMutationRecoveryRecord = MutationRecoveryRecord & {
   // the recovery's resend must INHERIT the wire identity so the daemon's
   // journal replays instead of applying the composition twice.
   wireDeliveryUncertain?: boolean;
+  // The wire's JOURNALED composition, frozen at transferToRecovery time on a
+  // delivery-uncertain recovery. The resend's byte-identity is judged against
+  // this immutable copy, never the record's mutable payload: the composer's
+  // autosave replaces payload.input in place, and the Send path itself
+  // persists before resending, so the current payload - and the
+  // compositionRevision every such persist bumps - cannot tell an edit from
+  // a no-op save. Absent on journaled-rejected recoveries (fresh ids there)
+  // and on legacy marked rows written before this field existed, which fail
+  // closed to a fresh id.
+  originalWirePayload?: Record<string, unknown>;
 };
 
 // A stale row that still holds exactly the composition a refused pane meant to
@@ -1563,7 +1573,9 @@ export class MutationOutboxIndexedDB implements WebQueuedMessageStorage<Mutation
         recoveryKind,
         recoveryReason,
         compositionRevision: 0,
-        ...(options?.wireDeliveryUncertain ? { wireDeliveryUncertain: true } : {}),
+        ...(options?.wireDeliveryUncertain
+          ? { wireDeliveryUncertain: true, originalWirePayload: { ...record.payload } }
+          : {}),
       };
       await requestResult(transaction.objectStore(RECOVERY_STORE).put(recovery));
       await requestResult(outbox.delete(clientMutationId));
@@ -1825,7 +1837,7 @@ export class MutationOutboxIndexedDB implements WebQueuedMessageStorage<Mutation
       let refused = false;
       const consumedWireIds = new Set<string>();
       const consumedUncertainWireIds = new Set<string>();
-      const consumedOriginals: Array<{ method: string; payload: Record<string, unknown> }> = [];
+      const consumedOriginals: Array<{ method: string; frozen: Record<string, unknown> | undefined }> = [];
       for (const id of ids) {
         const recovery = await requestResult<MutationRecoveryRecord | undefined>(recoveryStore.get(id));
         if (!recovery) {
@@ -1833,7 +1845,8 @@ export class MutationOutboxIndexedDB implements WebQueuedMessageStorage<Mutation
           continue;
         }
         consumedWireIds.add(effectiveWireId(recovery));
-        consumedOriginals.push({ method: recovery.method, payload: { ...recovery.payload } });
+        const frozen = (recovery as VersionedMutationRecoveryRecord).originalWirePayload;
+        consumedOriginals.push({ method: recovery.method, frozen: frozen ? { ...frozen } : undefined });
         if ((recovery as VersionedMutationRecoveryRecord).wireDeliveryUncertain === true)
           consumedUncertainWireIds.add(effectiveWireId(recovery));
         const durableRevision = (recovery as VersionedMutationRecoveryRecord).compositionRevision ?? 0;
@@ -1885,7 +1898,16 @@ export class MutationOutboxIndexedDB implements WebQueuedMessageStorage<Mutation
       // different payload is a MISMATCH it refuses before journaling - which
       // would land the new row back in a marked-uncertain recovery whose next
       // resend inherits the same id and mismatches again, forever (round-6
-      // M:1761). Edited or rerouted content is NEW work under a fresh id. A
+      // M:1761). Byte-identical means identical to the composition the daemon
+      // JOURNALED, not to the record as it stands at consume time (round-7
+      // High): the composer's autosave replaces payload.input in place, and
+      // the Send path itself persists the composition before resending, so
+      // the current payload - and the compositionRevision every such persist
+      // bumps - cannot tell an edit from a no-op save. The frozen
+      // originalWirePayload (stamped at transferToRecovery) is the immutable
+      // reference; a marked record without one is a legacy row and fails
+      // closed to a fresh id. Edited or rerouted content is NEW work under a
+      // fresh id. A
       // journaled rejection resolved the wire authoritatively (the daemon
       // will never apply it), and a consolidation of several wires is merged
       // work the journal never saw as one composition: fresh ids too.
@@ -1895,8 +1917,9 @@ export class MutationOutboxIndexedDB implements WebQueuedMessageStorage<Mutation
       };
       const replaysOriginal = consumedOriginals.every(
         (original) =>
+          original.frozen !== undefined &&
           intent.method === original.method &&
-          sameJsonShape(stripPayloadId(intent.payload), stripPayloadId(original.payload)),
+          sameJsonShape(stripPayloadId(intent.payload), stripPayloadId(original.frozen)),
       );
       const soleConsumedWireId = consumedWireIds.size === 1 ? [...consumedWireIds][0] : undefined;
       const inheritedWireId =
