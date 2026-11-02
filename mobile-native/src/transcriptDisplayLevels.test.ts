@@ -24,6 +24,7 @@ import {
 	type TranscriptDisplayConfigV1,
 } from "@evener/appwire-client";
 import { projectConversation } from "./projectedRows";
+import { displayForLevel } from "./session/detailLevels";
 import { projectNativeTranscript } from "./transcriptPresentation";
 
 const CAPS = {
@@ -149,6 +150,35 @@ describe("the seam projects the conversation at the user's content level", () =>
 				output: SHELL_OUTPUT,
 			},
 		});
+	});
+
+	it("the phone's Chat level hides settled traces through the production display filter", () => {
+		// The phone reaches Chat differently from the web: displayForLevel maps
+		// Chat to the intent projection and the screen then applies
+		// conversationOnly. A healthy settled trace must be gone either way
+		// (ruling 2026-11-01: Chat stays conversation-only), while the live
+		// current thought's placeholder still rides.
+		const display = displayForLevel("chat", null);
+		expect(display.justTheConversation).toBe(true);
+		const conversation = projectConversation(
+			hydrateThread({ thread: levelsThread() }, "ref-1", 0),
+			undefined,
+			display.config ?? undefined,
+		);
+		const presentation = projectNativeTranscript(conversation, display.config, {
+			justTheConversation: display.justTheConversation,
+		});
+		const settledTrace = presentation.items.find(
+			(row) => row.kind === "activity" && row.family === "reasoning" && row.state !== "running",
+		);
+		expect(settledTrace).toBeUndefined();
+		expect(JSON.stringify(presentation.items)).not.toContain("auditing quietly");
+		// The live current thought's placeholder survives the filter.
+		expect(
+			presentation.items.some(
+				(row) => row.kind === "activity" && row.family === "reasoning" && row.state === "running",
+			),
+		).toBe(true);
 	});
 
 	it("settles superseded thoughts and stale in-progress tails instead of rendering them running", () => {

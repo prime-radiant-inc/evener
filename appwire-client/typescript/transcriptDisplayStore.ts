@@ -22,6 +22,7 @@ import {
   settleUnsettleableWrite,
 } from "./settingsHubGeneration";
 import {
+  type ContentSelection,
   configFingerprint,
   fromWireConfig,
   fromWireDefault,
@@ -33,7 +34,7 @@ import {
   toWireConfig,
   type ViewportClass,
 } from "./transcriptDisplayConfig";
-import type { AnyNotification, FeatureSet } from "./types.gen";
+import type { AnyNotification, FeatureSet, TranscriptDisplayConfig as WireConfig } from "./types.gen";
 
 export type TranscriptDisplayClient = Pick<AppwireClient, "request" | "onNotification">;
 
@@ -287,6 +288,43 @@ function decodePatchReply(
       (canonical.revision === confirmed.revision && requestedFingerprint === configFingerprint(confirmed.config)));
   if (canonical === undefined || !isThisWrite) throw new InvalidPatchResponseError(MALFORMED_PATCH_MESSAGE);
   return canonical;
+}
+
+/** The older-hub fallback payload: a custom vector with the presentation
+ * field omitted, the shape a hub predating thinkingOpenByDefault accepts
+ * (its decoder rejects unknown fields - the compatibility table's "the client
+ * works with an older hub, including the combined update/apply path"). Only a
+ * divergent custom needs it; when the field equals its migration default the
+ * four-field reading is the same canonical config. The payload is built raw
+ * because normalizing would re-add the field through the migration fixup. The
+ * reader's preference stays in the local config; the hub default keeps the
+ * migration default. Removal condition: delete with the four-field decode
+ * acceptance once the minimum supported hub carries the field. */
+function legacyPatchPayload(
+  config: TranscriptDisplayConfigV1,
+): { config: WireConfig; fingerprint: string } | undefined {
+  if (config.content.kind !== "custom") return undefined;
+  if (config.content.thinkingOpenByDefault === config.content.expandByDefault) return undefined;
+  const legacy = {
+    toolIntent: config.content.toolIntent,
+    toolCalls: config.content.toolCalls,
+    reasoning: config.content.reasoning,
+    expandByDefault: config.content.expandByDefault,
+  };
+  const wire = toWireConfig(config);
+  return {
+    // The older hub's own custom shape: the four fields, no presentation
+    // field (casts because the canonical wire type always names it).
+    config: {
+      ...wire,
+      content: { kind: "custom", custom: legacy as unknown as WireConfig["content"]["custom"] },
+    },
+    // What the hub stores: the four fields, whose missing presentation field
+    // resolves from expandByDefault on the way back in.
+    fingerprint: configFingerprint(
+      normalizeConfig({ ...config, content: { kind: "custom", ...legacy } as unknown as ContentSelection }),
+    ),
+  };
 }
 
 export function fromWireChange(value: unknown): TranscriptDisplayChange | undefined {
@@ -953,14 +991,33 @@ export function createTranscriptDisplayStore(deps: TranscriptDisplayStoreDeps): 
       if (strandedByFlap()) strandedPreviews.add(layout);
       return retained();
     }
-    try {
-      const result = await client.request("evener/settings/transcriptDisplay/patch", {
+    const sendPatch = (payload: TranscriptDisplayConfigV1) =>
+      client.request("evener/settings/transcriptDisplay/patch", {
         layout,
         expectedRevision: confirmed.revision,
-        config: toWireConfig(config),
+        config: toWireConfig(payload),
       });
+    try {
+      let sentFingerprint = requestedFingerprint;
+      let result: unknown;
+      try {
+        result = await sendPatch(config);
+      } catch (error) {
+        const legacy = legacyPatchPayload(config);
+        if (legacy === undefined || !(error instanceof WireError && error.evenerErrorInfo === "invalidParams")) {
+          throw error;
+        }
+        // An older hub rejected the unknown field: send the four-field shape
+        // and judge the reply against what that payload stores.
+        sentFingerprint = legacy.fingerprint;
+        result = await client.request("evener/settings/transcriptDisplay/patch", {
+          layout,
+          expectedRevision: confirmed.revision,
+          config: legacy.config,
+        });
+      }
       if (!stillMine()) return retained();
-      const canonical = decodePatchReply(result, layout, confirmed, requestedFingerprint);
+      const canonical = decodePatchReply(result, layout, confirmed, sentFingerprint);
       const current = getState().hub[layout] ?? confirmed;
       if (canonical.revision < current.revision) {
         setState(writeSettled(layout));

@@ -351,6 +351,7 @@ func validateTranscriptDisplaySnapshotDefaultShape(layout string, raw json.RawMe
 			if err := requireTranscriptDisplaySnapshotBooleans(customFields, "thinkingOpenByDefault"); err != nil {
 				return false, fmt.Errorf("%s custom: %w", layout, err)
 			}
+			return true, nil
 		}
 	default:
 		// Semantic validation reports the canonical invalid-kind error.

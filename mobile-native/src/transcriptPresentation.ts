@@ -196,8 +196,18 @@ function conversationOnly(items: MobileTimelineItem[]): MobileTimelineItem[] {
 		(item) =>
 			!isDroppedStep(item) &&
 			!isDaemonSteering(item) &&
-			!(item.kind === "notice" && item.eventKind === "notes-context"),
+			!(item.kind === "notice" && item.eventKind === "notes-context") &&
+			!isSettledThoughtTrace(item),
 	);
+}
+
+// A healthy settled thought is conversation-only's excess: the phone reaches
+// Chat through its intent projection plus this filter, so a settled trace the
+// intent level now keeps (ruling 2026-11-01) must fall out here. The live
+// thought's placeholder stays (it is the running status line), and a broken
+// turn's thought is a failure row, which Chat still shows.
+function isSettledThoughtTrace(item: MobileTimelineItem): boolean {
+	return item.kind === "activity" && item.family === "reasoning" && item.state !== "running";
 }
 
 // A settled or running step; a failed one is not dropped (see above).

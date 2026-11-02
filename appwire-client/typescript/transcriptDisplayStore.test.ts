@@ -5,6 +5,7 @@ import { memoryDraftStorage } from "./testing/draftStorage";
 import { FakeClient } from "./testing/fakeClient";
 import { nextMacrotask } from "./testing/macrotask";
 import {
+  fromWireConfig,
   type HubTranscriptDisplayDefault,
   makeTranscriptDisplayConfig,
   type TranscriptDisplayConfigV1,
@@ -84,6 +85,59 @@ async function readyStore(
   await store.getState().refreshHubDefaults();
   return store;
 }
+
+test("an older hub that rejects the five-field custom still saves via the four-field payload", async () => {
+  // The compatibility table: the client works with an older hub, including
+  // the combined update/apply path. A hub predating thinkingOpenByDefault
+  // decodes patches with DisallowUnknownFields, so the canonical five-field
+  // custom is rejected there; the store retries with the four-field shape and
+  // reconciles against the payload it actually sent.
+  const desktop = hubDefault(1, makeTranscriptDisplayConfig({ kind: "preset", level: "tools" }));
+  const mobile = hubDefault(0, makeTranscriptDisplayConfig({ kind: "preset", level: "intent" }));
+  const client = serving(desktop, mobile);
+  const sentCustoms: Record<string, unknown>[] = [];
+  client.on(patchMethod, (params) => {
+    const content = params.config.content as { custom?: Record<string, unknown> };
+    if (content.custom) sentCustoms.push(content.custom);
+    if (content.custom && "thinkingOpenByDefault" in content.custom) {
+      throw new WireError("invalid transcript display patch: unknown field", -32602, {
+        evenerErrorInfo: "invalidParams",
+      });
+    }
+    const appliedConfig = fromWireConfig(params.config);
+    if (appliedConfig === undefined) throw new Error("unexpected malformed patch config");
+    return patchAnswer(params.layout as "desktop" | "mobile", hubDefault(params.expectedRevision + 1, appliedConfig));
+  });
+  const store = await readyStore(client);
+  const divergent = makeTranscriptDisplayConfig({
+    kind: "custom",
+    toolIntent: true,
+    toolCalls: true,
+    reasoning: false,
+    expandByDefault: false,
+    thinkingOpenByDefault: true,
+  });
+
+  const saved = await store.getState().patchHubDefault("desktop", divergent);
+
+  // The canonical payload went first; the four-field retry carried no
+  // thinkingOpenByDefault, and the reply is reconciled against that retry.
+  expect(sentCustoms).toHaveLength(2);
+  expect(sentCustoms[0]).toHaveProperty("thinkingOpenByDefault", true);
+  expect(sentCustoms[1]).not.toHaveProperty("thinkingOpenByDefault");
+  expect(saved.revision).toBe(2);
+  expect(saved.config.content).toEqual({
+    kind: "custom",
+    toolIntent: true,
+    toolCalls: true,
+    reasoning: false,
+    expandByDefault: false,
+    thinkingOpenByDefault: false,
+  });
+  expect(store.getState().hub.desktop?.revision).toBe(2);
+  expect(store.getState().hubErrors.desktop).toBeUndefined();
+  expect(store.getState().writeUncertain).toBe(false);
+});
 
 describe("transcript display wire decoders", () => {
   test("rejects malformed and foreign changed payloads", () => {

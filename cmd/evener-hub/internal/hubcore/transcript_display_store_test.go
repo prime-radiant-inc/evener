@@ -249,6 +249,31 @@ func TestTranscriptDisplayStoreMalformedSnapshotFallsBackAndBlocksPatches(t *tes
 	}
 }
 
+func TestTranscriptDisplayStoreKeepsExplicitThinkingOpenFromSnapshot(t *testing.T) {
+	// A stored five-field custom whose thinkingOpenByDefault diverges from
+	// expandByDefault carries an EXPLICIT presentation choice; presence must
+	// be reported, or the legacy fixup would overwrite it after a restart.
+	root := t.TempDir()
+	snapshot := `{"version":1,"desktop":{"revision":2,"config":{"version":1,"content":{"kind":"custom","custom":{"toolIntent":true,"toolCalls":true,"reasoning":false,"expandByDefault":true,"thinkingOpenByDefault":false}},"advanced":{"roundTimings":false,"tokenCounts":false,"estimatedCost":false,"systemEvents":false,"promptEvents":false,"hookExits":"none"}}},"mobile":{"revision":0,"config":{"version":1,"content":{"kind":"preset","level":"intent"},"advanced":{"roundTimings":false,"tokenCounts":false,"estimatedCost":false,"systemEvents":false,"promptEvents":false,"hookExits":"none"}}}}`
+	if err := writeTranscriptDisplayStateFile(afero.NewOsFs(), root, []byte(snapshot)); err != nil {
+		t.Fatal(err)
+	}
+	store, err := NewTranscriptDisplayStore(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	custom := store.Snapshot().Desktop.Config.Content.Custom
+	if custom == nil {
+		t.Fatalf("desktop custom missing")
+	}
+	if custom.ThinkingOpenByDefault {
+		t.Fatalf("explicit thinkingOpenByDefault=false was overwritten by expandByDefault")
+	}
+	if !custom.ExpandByDefault {
+		t.Fatalf("expandByDefault = false, want the stored true")
+	}
+}
+
 func TestTranscriptDisplayStoreEmptySnapshotUsesShippedDefaults(t *testing.T) {
 	root := t.TempDir()
 	if err := writeTranscriptDisplayStateFile(afero.NewOsFs(), root, nil); err != nil {
