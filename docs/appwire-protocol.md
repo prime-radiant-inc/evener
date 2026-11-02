@@ -4445,6 +4445,7 @@ Underlying Go kind: `string` (no struct fields).
 | `toolCalls` | bool |  |  |
 | `reasoning` | bool |  |  |
 | `expandByDefault` | bool |  |  |
+| `thinkingOpenByDefault` | bool |  |  |
 
 
 ### `TranscriptDisplayDefault`

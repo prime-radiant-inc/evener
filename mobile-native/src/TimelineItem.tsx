@@ -57,6 +57,18 @@ const exitTextStyle = { flex: 1, minWidth: 0 } as const;
 // every row, so a non-step needs a stable source with nothing to show.
 const NO_STEP = { label: "", summaryOnly: true, detail: {} } as const;
 
+// The initial expansion posture per row family: thinking rows (settled
+// thoughts and redacted failures alike) follow their own "Open thinking by
+// default" switch; runs and every other activity keep the expand-details
+// posture. Everything else starts closed.
+function rowOpensByDefault(item: TimelineRow, expandByDefault: boolean, thinkingOpenByDefault: boolean): boolean {
+	const isThoughtRow =
+		(item.kind === "activity" && item.family === "reasoning") || (item.kind === "failure" && item.thought === true);
+	if (isThoughtRow) return thinkingOpenByDefault;
+	const expandable = item.kind === "activity" || item.kind === "run";
+	return expandable && expandByDefault;
+}
+
 export function TimelineItem({
 	item,
 	hubId,
@@ -64,6 +76,7 @@ export function TimelineItem({
 	sourceTurns,
 	activityPresentation,
 	expandByDefault = false,
+	thinkingOpenByDefault = false,
 	showDuration = true,
 	fork,
 	forkDisabled = false,
@@ -86,6 +99,9 @@ export function TimelineItem({
 	sourceTurns?: readonly TurnModel[];
 	activityPresentation?: ActivityPresentation;
 	expandByDefault?: boolean;
+	/** The initial state of THINKING disclosures (the "Open thinking by
+	 * default" switch); tool and run rows keep expandByDefault. */
+	thinkingOpenByDefault?: boolean;
 	showDuration?: boolean;
 	fork?: (entryIndex: number, preview: string) => void;
 	forkDisabled?: boolean;
@@ -113,7 +129,12 @@ export function TimelineItem({
 	fileContext?: NativeFileOpenContext;
 }) {
 	const disclosureIds = rowDisclosureIds(hubId, sessionRef, item);
-	const defaultOpen = (item.kind === "activity" || item.kind === "run") && expandByDefault;
+	// Thinking rows follow their own "Open thinking by default" switch; every
+	// other activity and run keeps the expand-details posture (ruling
+	// 2026-11-01: at Activity, tool rows open while thinking rows follow their
+	// switch). A redacted failure row is a thinking disclosure too, so the
+	// switch opens it while its neutral label stays the summary.
+	const defaultOpen = rowOpensByDefault(item, expandByDefault, thinkingOpenByDefault);
 	const expanded = useDisclosureOpenAmong(disclosureIds, defaultOpen);
 	const toggle = () => setDisclosureOpenAll(disclosureIds, !expanded);
 	// Nothing collapses on its own: a run held open while it is live stays
@@ -135,9 +156,6 @@ export function TimelineItem({
 	// detail. A thought has its own row.
 	const step = item.kind === "activity" && item.family !== "reasoning" ? item : NO_STEP;
 	const evidence = useStepEvidence(step);
-	// A thought the projector didn't show reads as one quiet line, with no
-	// error rule, unless the thought itself failed.
-	const quietThought = item.kind === "failure" && item.thought === true && item.title !== "Thought failed";
 	const textScale = useTextScale();
 	const label = item.kind === "notice" ? noticeLabel(item) : undefined;
 	const noticeText = useMemo(() => {
@@ -242,15 +260,30 @@ export function TimelineItem({
 			break;
 		}
 		case "failure":
-			if (quietThought) {
-				content = (
-					<Text
-						allowFontScaling={allowFontScaling}
-						style={{ fontSize: 14 * textScale, lineHeight: 19 * textScale, color: colors.palette.inkLow }}
-					>
-						{item.title}
-					</Text>
-				);
+			// A redacted thought folds behind its neutral label (ruling
+			// 2026-11-01): the summary stays the collapsed label and the
+			// thought's text renders only once the reader unfolds - never the
+			// ErrorRow path, which prints detail as always-visible body text,
+			// and never dropped like the old quiet line when text exists.
+			// With no text, the row stays today's one quiet line.
+			if (item.thought === true) {
+				content =
+					item.detail.trim() === "" ? (
+						<Text
+							allowFontScaling={allowFontScaling}
+							style={{ fontSize: 14 * textScale, lineHeight: 19 * textScale, color: colors.palette.inkLow }}
+						>
+							{item.title}
+						</Text>
+					) : (
+						<ThoughtRow
+							label={item.title}
+							durationMs={undefined}
+							text={item.detail}
+							expanded={expanded}
+							onToggle={toggle}
+						/>
+					);
 				break;
 			}
 			content = (

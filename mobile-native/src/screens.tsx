@@ -3345,6 +3345,7 @@ function ConversationScreenView({
 							sourceTurns={conversation?.turns}
 							activityPresentation={presentation.activityPresentation.get(item.id)}
 							expandByDefault={presentation.expandByDefault}
+							thinkingOpenByDefault={presentation.thinkingOpenByDefault}
 							showDuration={presentation.showDuration}
 							fork={snapshot.conversation?.capabilities?.forkFromTurn ? forkMessage : undefined}
 							forkDisabled={!connected || !focused || snapshot.status !== "open"}

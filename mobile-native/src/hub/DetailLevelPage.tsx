@@ -32,6 +32,7 @@ const SHOWS: readonly { key: keyof ContentVector; label: string }[] = [
 	{ key: "toolCalls", label: "Tool calls" },
 	{ key: "reasoning", label: "Reasoning" },
 	{ key: "expandByDefault", label: "Open details by default" },
+	{ key: "thinkingOpenByDefault", label: "Thinking open by default" },
 ];
 const MORE_DETAIL = [
 	["roundTimings", "Timing"],
@@ -78,7 +79,12 @@ export function DetailLevelPage(_props: NativeStackScreenProps<HubRoutes, "Detai
 		wasUncertain.current = writeUncertain;
 	}, [writeUncertain]);
 	const current = state?.confirmed ?? null;
-	const config = (state?.draft ?? current)?.config;
+	// An active draft leads; then the retained local preference (an older hub
+	// cannot store the presentation field, so it lives on the phone); then the
+	// confirmed hub default. The editor shows and composes from what is
+	// effective, so the switch cannot read reset and an unrelated edit cannot
+	// silently drop the retained choice.
+	const config = state?.draft?.config ?? state?.local ?? current?.config ?? null;
 	// A page that has never loaded says it is connecting (ruling 21).
 	if (!state || !model || (!config && (state.loading || state.support === "unknown"))) {
 		return (

@@ -343,9 +343,15 @@ export function projectedRow(entry: ProjectedEntry, context: ProjectedRowContext
 			// here rather than re-derived.
 			return intentRow(entry, context);
 		case "thinking":
-			// A content-free placeholder: the reader sees that the agent is
-			// thinking without the thought's stream. Never the thought text.
-			return { ...reasoningPlaceholderRow(entry.item), ...itemIdentity(entry.item) };
+			// A compact trace row (see reasoningPlaceholderRow): the live
+			// current thought stays a content-free placeholder; a settled
+			// thought carries its text as the row's expandable detail. The
+			// projector's own live rule rides on the entry, so the phone and
+			// the web cannot drift.
+			return {
+				...reasoningPlaceholderRow(entry.item, entry.live),
+				...itemIdentity(entry.item),
+			};
 		case "critical":
 			if (entry.item.type === "reasoning") return criticalReasoningRow(entry);
 			return rowForItem(entry.item, context);
@@ -513,27 +519,37 @@ function rowForItem(it: ItemModel, context: ProjectedRowContext): MobileTimeline
 	};
 }
 
-// A content-free activity row for a live current thought whose text the config
-// hides: label and liveness only, no detail body.
-function reasoningPlaceholderRow(it: ItemModel): Extract<MobileTimelineItem, { kind: "activity" }> {
+// A compact trace row for a reasoning item while the `reasoning` content flag
+// is off (the shared projector's "thinking" entries). The LIVE current thought
+// keeps today's content-free placeholder: label and liveness only, no detail
+// body. A SETTLED thought is a completed trace row whose detail carries the
+// thought text (ruling 2026-11-01: traces unfold on demand), the same shape
+// the reasoning-on rows use. Liveness comes from the projector's own rule
+// (the entry's live bit: turn in progress, active, tail), so a superseded
+// thought mid-turn or a stale inProgress tail on a completed turn settles
+// here exactly as it does on the web.
+function reasoningPlaceholderRow(it: ItemModel, live: boolean): Extract<MobileTimelineItem, { kind: "activity" }> {
 	return {
 		kind: "activity",
 		id: it.id,
 		label: "Reasoning",
 		family: "reasoning",
-		state: "running",
-		detail: {},
+		state: live ? "running" : "completed",
+		detail: live ? {} : reasoningDetail(it),
 	};
 }
 
 // A critical reasoning item is always redacted when it reaches here (the
 // projector only routes a reasoning item to critical while the `reasoning`
-// flag is off). It shows a neutral summary, never the thought.
+// flag is off). The neutral summary stays the row's title - the collapsed
+// label (ruling 2026-11-01: the label does not change) - and the thought's
+// text rides in the detail, where TimelineItem unfolds it behind the fold
+// instead of showing it unconditionally.
 function criticalReasoningRow(entry: Extract<ProjectedEntry, { kind: "critical" }>): MobileTimelineItem {
 	const it = entry.item;
 	const identity = itemIdentity(it);
 	if (entry.redacted) {
-		return { kind: "failure", id: it.id, title: entry.summary, detail: "", thought: true, ...identity };
+		return { kind: "failure", id: it.id, title: entry.summary, detail: reasoningText(it), thought: true, ...identity };
 	}
 	// Defensive: a critical reasoning that is not redacted keeps its thought as
 	// a failed reasoning activity.
@@ -604,9 +620,19 @@ function reasoningDetail(it: ItemModel): ActivityDetail {
 
 // A reasoning item's text as the reader sees it: the longer of the settled
 // text and the joined delta summaries wins.
+// Joined reasoning text, memoized per item: the projection rebuilds a live
+// turn's rows on every delta, but settled items keep their object identity,
+// so their joined text (O(total thought text)) is computed once. A streaming
+// item is a fresh object each delta and simply misses the cache.
+const reasoningTextCache = new WeakMap<ItemModel, string>();
+
 function reasoningText(it: ItemModel): string {
+	const cached = reasoningTextCache.get(it);
+	if (cached !== undefined) return cached;
 	const joined = joinedReasoningParagraphs(it.reasoningSummaries).join("\n\n");
-	return joined.length > it.text.length ? joined : it.text || joined;
+	const text = joined.length > it.text.length ? joined : it.text || joined;
+	reasoningTextCache.set(it, text);
+	return text;
 }
 
 // The canonical blank-label behavior (D24-3's deferred delta): a toolName or

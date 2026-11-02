@@ -4628,6 +4628,15 @@ export interface TranscriptDisplayCustomContent {
   toolCalls: boolean;
   reasoning: boolean;
   expandByDefault: boolean;
+  /**
+   * Initial state of thinking disclosures. Canonical output always carries
+   * it; on input the field is optional so the custom vector as shipped
+   * before it (2026-08..10) keeps decoding, an absent field meaning what
+   * expandByDefault meant at the time. Removal condition: drop the
+   * optional-input acceptance once the minimum supported client bundle
+   * encodes the field.
+   */
+  thinkingOpenByDefault: boolean;
 }
 
 export interface TranscriptDisplayDefault {

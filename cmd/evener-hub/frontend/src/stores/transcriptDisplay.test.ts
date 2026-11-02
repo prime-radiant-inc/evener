@@ -125,7 +125,14 @@ describe("browser conversation presentation", () => {
 
   test("preserves custom content, advanced settings, and persisted bytes through both modes", () => {
     const custom = makeTranscriptDisplayConfig(
-      { kind: "custom", toolIntent: false, toolCalls: true, reasoning: true, expandByDefault: true },
+      {
+        kind: "custom",
+        toolIntent: false,
+        toolCalls: true,
+        reasoning: true,
+        expandByDefault: true,
+        thinkingOpenByDefault: true,
+      },
       { roundTimings: true, tokenCounts: true, systemEvents: true, hookExits: "all" },
     );
     transcriptDisplayStore.getState().setLocal("desktop", custom);

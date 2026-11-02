@@ -3,6 +3,7 @@ package appwire
 import (
 	"bytes"
 	"encoding/json"
+	"strconv"
 	"testing"
 )
 
@@ -46,14 +47,47 @@ func TestDecodeTranscriptDisplayPatchAcceptsPreset(t *testing.T) {
 }
 
 func TestDecodeTranscriptDisplayPatchAcceptsCompleteCustom(t *testing.T) {
-	raw := json.RawMessage(`{"layout":"mobile","expectedRevision":3,"config":{"version":1,"content":{"kind":"custom","custom":{"toolIntent":true,"toolCalls":false,"reasoning":true,"expandByDefault":false}},"advanced":{"roundTimings":true,"tokenCounts":false,"estimatedCost":true,"systemEvents":false,"promptEvents":true,"hookExits":"successful"}}}`)
+	raw := json.RawMessage(`{"layout":"mobile","expectedRevision":3,"config":{"version":1,"content":{"kind":"custom","custom":{"toolIntent":true,"toolCalls":false,"reasoning":true,"expandByDefault":false,"thinkingOpenByDefault":true}},"advanced":{"roundTimings":true,"tokenCounts":false,"estimatedCost":true,"systemEvents":false,"promptEvents":true,"hookExits":"successful"}}}`)
 	got, err := DecodeTranscriptDisplayDefaultsPatchParams(raw)
 	if err != nil {
 		t.Fatalf("valid custom rejected: %v", err)
 	}
 	if got.Layout != TranscriptViewportClassMobile || got.ExpectedRevision != 3 || got.Config.Content.Custom == nil ||
-		!got.Config.Content.Custom.ToolIntent || got.Config.Content.Custom.ToolCalls || !got.Config.Content.Custom.Reasoning || got.Config.Content.Custom.ExpandByDefault {
+		!got.Config.Content.Custom.ToolIntent || got.Config.Content.Custom.ToolCalls || !got.Config.Content.Custom.Reasoning || got.Config.Content.Custom.ExpandByDefault ||
+		!got.Config.Content.Custom.ThinkingOpenByDefault {
 		t.Fatalf("decoded = %#v", got)
+	}
+}
+
+func TestDecodeTranscriptDisplayPatchFixesUpMissingThinkingOpenFromExpandByDefault(t *testing.T) {
+	// The custom vector as shipped before thinkingOpenByDefault (2026-08..10)
+	// must keep patching: the absent field means what expandByDefault meant
+	// at the time, because expandByDefault was the switch that opened
+	// reasoning-on thinking then. Removal condition: delete with the 4-field
+	// acceptance once the minimum supported client encodes the 5-field shape.
+	for _, test := range []struct {
+		name             string
+		expandByDefault  bool
+		wantThinkingOpen bool
+	}{
+		{"expand on fixes thinking open on", true, true},
+		{"expand off fixes thinking open off", false, false},
+	} {
+		raw := json.RawMessage(`{"layout":"desktop","expectedRevision":0,"config":{"version":1,"content":{"kind":"custom","custom":{"toolIntent":true,"toolCalls":true,"reasoning":true,"expandByDefault":` + strconv.FormatBool(test.expandByDefault) + `}},"advanced":{"roundTimings":false,"tokenCounts":false,"estimatedCost":false,"systemEvents":false,"promptEvents":false,"hookExits":"none"}}}`)
+		got, err := DecodeTranscriptDisplayDefaultsPatchParams(raw)
+		if err != nil {
+			t.Fatalf("%s: older 4-field custom rejected: %v", test.name, err)
+		}
+		if got.Config.Content.Custom == nil || got.Config.Content.Custom.ThinkingOpenByDefault != test.wantThinkingOpen {
+			t.Fatalf("%s: thinkingOpenByDefault = %v, want %v", test.name, got.Config.Content.Custom, test.wantThinkingOpen)
+		}
+	}
+}
+
+func TestDecodeTranscriptDisplayPatchRejectsNonBooleanThinkingOpen(t *testing.T) {
+	raw := json.RawMessage(`{"layout":"desktop","expectedRevision":0,"config":{"version":1,"content":{"kind":"custom","custom":{"toolIntent":true,"toolCalls":true,"reasoning":false,"expandByDefault":false,"thinkingOpenByDefault":"true"}},"advanced":{"roundTimings":false,"tokenCounts":false,"estimatedCost":false,"systemEvents":false,"promptEvents":false,"hookExits":"none"}}}`)
+	if _, err := DecodeTranscriptDisplayDefaultsPatchParams(raw); err == nil {
+		t.Fatal("expected non-boolean thinkingOpenByDefault to fail")
 	}
 }
 
@@ -62,7 +96,7 @@ func TestTranscriptDisplayCustomBooleansAreAlwaysOnWire(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, field := range []string{"toolIntent", "toolCalls", "reasoning", "expandByDefault"} {
+	for _, field := range []string{"toolIntent", "toolCalls", "reasoning", "expandByDefault", "thinkingOpenByDefault"} {
 		if !bytes.Contains(encoded, []byte(`"`+field+`":false`)) {
 			t.Errorf("custom JSON missing false %s: %s", field, encoded)
 		}
