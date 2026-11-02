@@ -1182,10 +1182,11 @@ func TestWorktreePrune_OrphanArmSparesLaneWhileRetainedChildNotifies(t *testing.
 	go func() {
 		for deadline := time.Now().Add(10 * time.Second); time.Now().Before(deadline); {
 			lane.delegateSess.driveChildIfNotStopGated(lane.sharedSub)
+			time.Sleep(200 * time.Millisecond)
 			select {
 			case <-entered:
 				return
-			case <-time.After(200 * time.Millisecond):
+			default:
 			}
 		}
 	}()
@@ -1195,6 +1196,16 @@ func TestWorktreePrune_OrphanArmSparesLaneWhileRetainedChildNotifies(t *testing.
 	case <-time.After(12 * time.Second):
 		t.Fatal("the retained child's turn never started")
 	}
+
+	// The injected report below must be publication-eligible. The wedged turn
+	// reported awaiting-model activity just before the model call, and the
+	// report a live lease carries inside delegateActivityPublishInterval of a
+	// publication is coalesced away — its evidence refresh rides the next one
+	// instead. Let the floor clear before the backdate (never between the
+	// backdate and the assertion, where a turn-ticker refresh would satisfy the
+	// stat without the injected report doing anything), the same way the
+	// running-delegate test does.
+	time.Sleep(delegateActivityPublishInterval + 200*time.Millisecond)
 
 	// The parent has now been idle past the operator's threshold: the wake
 	// refreshed its evidence once at launch, and nothing since.
