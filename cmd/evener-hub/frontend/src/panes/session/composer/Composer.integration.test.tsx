@@ -1274,12 +1274,14 @@ test("a second message queues behind a committed start even when recovery projec
   } finally {
     spy.mockRestore();
     // The released reads complete the projection's stalled work, and its
-    // completion publishes to the mounted components - run it inside act so
-    // the updates belong to this test rather than leaking past its end.
+    // completion publishes to the mounted components - own those updates in
+    // this test's act window. The flush itself runs AFTER the outer act: a
+    // flush inside one cannot settle the work its own rounds' effects start
+    // (testFlushScopeHygiene pins that rule).
     await act(async () => {
       for (const hold of held) hold.release();
-      await flushPendingTurnsProjectionForTests();
     });
+    await flushPendingTurnsProjectionForTests();
   }
 });
 
@@ -1435,12 +1437,14 @@ test("the composer resends recovered text while recovery projection callbacks ar
   } finally {
     spy.mockRestore();
     // The released reads complete the projection's stalled work, and its
-    // completion publishes to the mounted components - run it inside act so
-    // the updates belong to this test rather than leaking past its end.
+    // completion publishes to the mounted components - own those updates in
+    // this test's act window. The flush itself runs AFTER the outer act: a
+    // flush inside one cannot settle the work its own rounds' effects start
+    // (testFlushScopeHygiene pins that rule).
     await act(async () => {
       for (const hold of held) hold.release();
-      await flushPendingTurnsProjectionForTests();
     });
+    await flushPendingTurnsProjectionForTests();
   }
 });
 
