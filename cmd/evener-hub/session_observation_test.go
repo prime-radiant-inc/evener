@@ -329,7 +329,7 @@ func TestManagerObservationStartupWindowDoesNotCancelBinding(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for i := 0; i < observations; i++ {
+	for i := range observations {
 		callID := fmt.Sprintf("startup-call-%d", i)
 		entries := []schema.Turn{
 			{Format: schema.TurnFormatIdentity, TurnID: fmt.Sprintf("startup-turn-%d", i), TurnKind: schema.TurnSpanExecution, Kind: schema.TurnAssistant,
