@@ -8,18 +8,26 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"path/filepath"
 	"reflect"
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
+	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener-hub/internal/appsource"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hostreg"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 	"primeradiant.com/evener/internal/appitempaging"
 	"primeradiant.com/evener/internal/appserver"
+	"primeradiant.com/evener/llm"
+	"primeradiant.com/evener/rendezvous"
+	daemonserver "primeradiant.com/evener/server"
 )
 
 // A source records the arguments actually passed to existing source owners.
@@ -79,6 +87,32 @@ func (s *managerReadSource) ItemCandidatesFromRead(_ context.Context, _ appwire.
 		return appsource.ItemCandidateResult{}, err
 	}
 	return appsource.ItemCandidateResult{Candidates: appitempaging.TranscriptItemWindow{Candidates: candidates, OlderCursor: response.OlderCursor}, Identity: appitempaging.CursorIdentity{ThreadRef: s.thread.Evener.Ref, Incarnation: "fixture", ProjectionVersion: 1}, Exhausted: response.OlderCursor == ""}, nil
+}
+
+func (s *managerReadSource) ListItemCandidates(_ context.Context, p appwire.ThreadTurnsListParams) (appsource.ItemCandidateResult, error) {
+	s.turnCalls = append(s.turnCalls, p)
+	if s.unavailable {
+		return appsource.ItemCandidateResult{}, appwire.SessionUnavailable("source offline")
+	}
+	identity := appitempaging.CursorIdentity{ThreadRef: s.thread.Evener.Ref, Incarnation: "fixture", ProjectionVersion: 1}
+	page, ok := s.pages[p.Cursor]
+	if !ok {
+		// A cursor past the scripted window reads as the legacy zero page did.
+		return appsource.ItemCandidateResult{Identity: identity, Exhausted: true}, nil
+	}
+	candidates, err := appitempaging.CandidatesFromTurns(page.Data)
+	if err != nil {
+		return appsource.ItemCandidateResult{}, err
+	}
+	return appsource.ItemCandidateResult{Candidates: appitempaging.TranscriptItemWindow{Candidates: candidates, OlderCursor: page.NextCursor}, Identity: identity, Exhausted: page.NextCursor == ""}, nil
+}
+
+func (s *managerReadSource) ReadItemCandidates(ctx context.Context, p appwire.ThreadReadParams) (appsource.ItemCandidateResult, error) {
+	read, err := s.ReadThread(ctx, p)
+	if err != nil {
+		return appsource.ItemCandidateResult{}, err
+	}
+	return s.ItemCandidatesFromRead(ctx, p, read)
 }
 
 func (s *managerReadSource) ListThreads(_ context.Context, _ appwire.ThreadListParams) (appwire.ThreadListResponse, error) {
@@ -608,5 +642,82 @@ func TestManagerReadRefreshAcrossPages(t *testing.T) {
 	selectedHost := "remote"
 	if frozenLocalCatalogChanged || hostCatalogSource != selectedHost {
 		t.Fatalf("catalog scope changed: models=%+v calls=%+v", model, remote.modelCalls)
+	}
+}
+
+// A Manager read_transcript continuation must follow the initial page's
+// hub-minted cursor through the source adapter's candidate paging, which
+// resolves hub-owned cursors. Forwarding it directly to the source's
+// ListTurns makes the daemon reject the foreign cursor as stale and deny
+// the Manager all older history.
+func TestManagerTurnsContinuationFollowsInitialCursor(t *testing.T) {
+	ctx, cancel := context.WithTimeout(t.Context(), 20*time.Second)
+	defer cancel()
+	const ref, instance = "local:manager-workspace", "manager-instance"
+	path := filepath.Join(t.TempDir(), "manager-paged.transcript.jsonl")
+	w, err := transcript.NewWriter(path, transcript.Header{SessionID: instance})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := range 100 {
+		if err := w.Append(schema.Turn{Format: schema.TurnFormatIdentity, TurnID: fmt.Sprintf("turn-%03d", i), Kind: schema.TurnUserInput, Message: llm.User(fmt.Sprintf("item-%03d", i))}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	length := w.RecordedLength()
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+	daemon := daemonserver.NewServer(daemonserver.ServerConfig{HubToken: "test-token"})
+	defer daemon.Close()
+	identity, err := daemonserver.PrepareAppIdentityForRef("local", instance, ref, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	daemon.ReplaceAppIdentity(identity.WithBootGeneration("7@manager").WithRecordedLength(length), nil)
+	upstream := httptest.NewServer(http.HandlerFunc(daemon.AppServer().ServeWebSocket))
+	defer upstream.Close()
+	entry := rendezvous.Entry{Protocol: appwire.ProtocolVersion, Endpoint: upstream.URL, SourceID: "local", ThreadID: instance, SessionID: instance, WorkspaceRef: ref, InstanceID: instance, HubToken: "test-token"}
+	source := appsource.NewLocalDaemonSourceWithEntries("local", func() []appsource.LocalDaemonEntry {
+		return []appsource.LocalDaemonEntry{{Entry: entry, SessionID: instance, Manager: true}}
+	}, upstream.Client())
+	sources := appsource.NewRegistry()
+	sources.Add(source)
+	cfg := hubcore.WebConfig{HubStateRoot: t.TempDir(), Past: hubcore.NewPastIndex(""), HubID: "hub-test"}
+	server := appserver.NewServer(appserver.ServerConfig{})
+	owner := &sessionOperations{cfg: cfg, sources: sources, relays: newHubRelay(server, cfg, sources), server: server}
+	appserver.HandleTyped(server.Router(), appwire.MethodThreadRead, owner.Read)
+	binding := &boundSessionOperations{owner: owner, local: source, binding: appwire.SessionBinding{Ref: ref, InstanceID: instance, HubID: "hub-test", BindingID: "binding"}}
+	seen := map[string]bool{}
+	cursor := ""
+	for page := 1; ; page++ {
+		params := appwire.ThreadTurnsListParams{Ref: ref, ItemLimit: 40}
+		if cursor != "" {
+			params.Cursor = cursor
+		}
+		response, err := binding.Invoke(ctx, appwire.SessionOperationRequest{Turns: &params})
+		if err != nil {
+			t.Fatalf("turns page %d (cursor %q): %v", page, cursor, err)
+		}
+		list := response.Turns
+		if list == nil || len(list.Data) == 0 {
+			t.Fatalf("turns page %d empty: %+v", page, list)
+		}
+		for _, turn := range list.Data {
+			if seen[turn.ID] {
+				t.Fatalf("turn %q repeated across pages", turn.ID)
+			}
+			seen[turn.ID] = true
+		}
+		if list.NextCursor == "" {
+			break
+		}
+		if page > 10 {
+			t.Fatalf("cursor chain did not exhaust after %d pages", page)
+		}
+		cursor = list.NextCursor
+	}
+	if len(seen) != 100 {
+		t.Fatalf("walked %d distinct turns, want all 100", len(seen))
 	}
 }

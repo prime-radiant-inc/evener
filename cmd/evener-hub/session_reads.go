@@ -66,11 +66,17 @@ func (o *sessionOperations) turns(ctx context.Context, p appwire.ThreadTurnsList
 	}
 	source, err := sourceForThreadWithDeletionFence(ctx, o.cfg, o.sources, p.Ref, "")
 	if err == nil {
-		page, readErr := source.ListTurns(ctx, p)
-		if readErr == nil {
+		// The initial Manager read mints a hub-owned cursor through the
+		// candidate machinery; the continuation must resolve it the same
+		// way. A raw ListTurns forwards that cursor to the daemon, which
+		// rejects the foreign identity as stale. The handled flag needs no
+		// inspection here: without an error it only distinguishes a packed
+		// page from a legacy source's page, and both are success.
+		page, _, listErr := listItemTurns(ctx, source, p, nil)
+		if listErr == nil {
 			return page, nil
 		}
-		err = readErr
+		err = listErr
 	}
 	if !isDeadSessionError(err) {
 		return appwire.ThreadTurnsListResponse{}, err
