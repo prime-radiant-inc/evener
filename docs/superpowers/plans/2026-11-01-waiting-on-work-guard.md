@@ -286,10 +286,10 @@
   Run: `/Users/jesse/.local/bin/golangci-lint run ./agent/...`
   Expected: exit 0 (the pinned 2.13.1 binary the repo gates on; modernize prefers `new(expr)` for pointer literals).
 
-- [ ] **Step 4: Root meta-guards.**
+- [ ] **Step 4: Meta-guard audits.**
 
-  Run: `go test . -run 'TestNoNewErrorMessageAssertions|TestNoBareWallClockDeadlineInAgentTests' -count=1`
-  Expected: PASS — proves the new tests contain no copy oracles and no bare wall-clock deadlines.
+  Run: `go test ./agent -run 'TestNoBareWallClockDeadlineInAgentTests' -count=1 && go test . -run TestNoNewCopyOnlyTests -count=1`
+  Expected: PASS — proves the new tests contain neither bare wall-clock deadlines nor copy-only assertions. (The copy audit lives in the root package as `TestNoNewCopyOnlyTests`, not in `agent`.)
 
 - [ ] **Step 5: Full agent package once, as the local source of truth for the change's blast radius.**
 
