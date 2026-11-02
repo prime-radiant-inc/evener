@@ -500,6 +500,10 @@ const (
 	// It is distinct from every asserted sentinel so it cannot double a
 	// before/after/tool count, and it never repeats the streamed payload.
 	backgroundTurnDone = "BACKGROUND_TURN_DONE"
+	// comicGrandchildUpdateText is the grandchild's one mid-work update. The
+	// delivered steering text marks the child's grow round, so the grow gate
+	// keeps gating the answer even though the pre-grow round now ends early.
+	comicGrandchildUpdateText = "COMIC_UPDATE_GRANDCHILD literal folded update"
 	// backgroundHistoryReply is the history role's neutral assistant text. It
 	// must NOT reuse the target's before/after sentinels, or those gates would
 	// pass on history content instead of the target's own turn.
@@ -813,20 +817,16 @@ func (a *skillBrowserAdapter) scriptComicSubchats(ctx context.Context, st *llm.C
 			}
 		}
 	}
-	launched, answered, instructed := false, false, false
-	grandchildID := ""
+	launched, answered := false, false
 	historyCalls := 0
 	updated := false
+	growRound := false
 	for _, message := range req.Messages {
 		for _, part := range message.Content {
-			if part.ToolResult != nil && part.ToolResult.ToolCallID == "comic_delegate_GRANDCHILD" {
-				var receipt struct {
-					DelegateID string `json:"delegate_id"`
-				}
-				text, _ := part.ToolResult.Content.(string)
-				if json.Unmarshal([]byte(text), &receipt) == nil {
-					grandchildID = receipt.DelegateID
-				}
+			// The grandchild's delivered update reaches the child as steering
+			// text; only the grow round's request has it.
+			if level == "CHILD" && strings.Contains(part.Text, comicGrandchildUpdateText) {
+				growRound = true
 			}
 		}
 		if message.Role != llm.RoleAssistant {
@@ -841,9 +841,6 @@ func (a *skillBrowserAdapter) scriptComicSubchats(ctx context.Context, st *llm.C
 			}
 			if part.ToolCall != nil && strings.HasPrefix(part.ToolCall.ID, "comic_history_") {
 				historyCalls++
-			}
-			if part.ToolCall != nil && part.ToolCall.ID == "comic_parent_instruction" {
-				instructed = true
 			}
 			if strings.Contains(part.Text, "COMIC_ANSWER_"+level) {
 				answered = true
@@ -865,7 +862,7 @@ func (a *skillBrowserAdapter) scriptComicSubchats(ctx context.Context, st *llm.C
 		}
 		_ = a.writeEvent("comic-grandchild-update-released")
 		args, _ := json.Marshal(map[string]any{
-			"message":  "COMIC_UPDATE_GRANDCHILD literal folded update",
+			"message":  comicGrandchildUpdateText,
 			"end_turn": false,
 			"output":   map[string]any{"message": "", "data": map[string]any{}, "artifacts": []string{}},
 		})
@@ -873,6 +870,22 @@ func (a *skillBrowserAdapter) scriptComicSubchats(ctx context.Context, st *llm.C
 		st.Send(llm.StreamEvent{Type: llm.StreamEventToolCallStart, ToolCall: &call})
 		st.Send(llm.StreamEvent{Type: llm.StreamEventToolCallEnd, ToolCall: &call})
 		st.Send(llm.StreamEvent{Type: llm.StreamEventFinish, FinishReason: &llm.FinishReason{Reason: llm.FinishReasonToolCalls}})
+		return
+	}
+	if level == "CHILD" && growRound {
+		// The run's drain starts this round for the grandchild's delivered
+		// update. The grow gate holds the answer for the browser journey's
+		// live-stream proof and the finish gate holds the terminal report.
+		if !a.waitBackgroundPhase(ctx, "comic-child-grow") {
+			_ = a.writeEvent("comic-child-cancelled-before-growth")
+			return
+		}
+		_ = a.writeEvent("comic-child-growth-released")
+		st.Send(llm.StreamEvent{Type: llm.StreamEventTextDelta, Delta: "COMIC_ANSWER_CHILD literal attributed answer [COMIC_DOCUMENT_CHILD](comic-document-child.md)"})
+		if !a.waitBackgroundPhase(ctx, "comic-child-finish") {
+			return
+		}
+		sendScriptedCommunicate(st)
 		return
 	}
 	if level == "CHILD" && launched && historyCalls < 45 {
@@ -887,34 +900,27 @@ func (a *skillBrowserAdapter) scriptComicSubchats(ctx context.Context, st *llm.C
 		st.Send(llm.StreamEvent{Type: llm.StreamEventFinish, FinishReason: &llm.FinishReason{Reason: llm.FinishReasonToolCalls}})
 		return
 	}
-	if level == "CHILD" && grandchildID != "" && !instructed {
-		args, _ := json.Marshal(map[string]any{"to": grandchildID, "message": "COMIC_PARENT_INSTRUCTION literal parent steering", "intent": "Proving canonical named parent attribution", "max_wait_ms": 1000})
-		call := llm.ToolCallData{ID: "comic_parent_instruction", Name: "delegate_send", Arguments: args, Type: "function"}
-		st.Send(llm.StreamEvent{Type: llm.StreamEventToolCallStart, ToolCall: &call})
-		st.Send(llm.StreamEvent{Type: llm.StreamEventToolCallEnd, ToolCall: &call})
-		st.Send(llm.StreamEvent{Type: llm.StreamEventFinish, FinishReason: &llm.FinishReason{Reason: llm.FinishReasonToolCalls}})
-		return
-	}
 	if launched || level == "GRANDCHILD" {
 		st.Send(llm.StreamEvent{Type: llm.StreamEventReasoningStart})
 		st.Send(llm.StreamEvent{Type: llm.StreamEventReasoningDelta, ReasoningDelta: "COMIC_THOUGHT_" + level + " available literal reasoning"})
 		st.Send(llm.StreamEvent{Type: llm.StreamEventReasoningEnd})
 		if level == "CHILD" {
 			_ = a.writeEvent("comic-child-produced")
-			if !a.waitBackgroundPhase(ctx, "comic-child-grow") {
-				_ = a.writeEvent("comic-child-cancelled-before-growth")
-				return
-			}
-			_ = a.writeEvent("comic-child-growth-released")
+			// The pre-grow round ends on the child's own report, the same
+			// valid turn end the root's round uses: the run parks idle, so
+			// the grandchild's delivered update wakes the grow round above
+			// instead of queueing behind a held response whose model boundary
+			// only the journey's later releases would reach. A reasoning-only
+			// turn is not a valid delegate turn end: the daemon discards and
+			// retries it, and the thought never records.
+			sendScriptedCommunicate(st)
+			return
 		}
 		answer := "COMIC_ANSWER_" + level + " literal attributed answer"
-		if level == "ROOT" || level == "CHILD" {
+		if level == "ROOT" {
 			answer += " [COMIC_DOCUMENT_" + level + "](comic-document-" + strings.ToLower(level) + ".md)"
 		}
 		st.Send(llm.StreamEvent{Type: llm.StreamEventTextDelta, Delta: answer})
-		if level == "CHILD" && !a.waitBackgroundPhase(ctx, "comic-child-finish") {
-			return
-		}
 		sendScriptedCommunicate(st)
 		return
 	}

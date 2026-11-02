@@ -140,10 +140,13 @@ and strip key after completion and the expanded-reader checks. The disclosure is
 then collapsed solely to mount both original neighbors in one observation.
 Before any of that, the meanwhile journey holds the grandchild's mid-work update
 behind the `comic-grandchild-update` phase: with the launch still on an unloaded
-page and no folded update, the strip renders no row at all, and releasing the
-phase must anchor it inline exactly between the child's thought entry and the
-grandchild's report caption, with the header's `[data-comic-updates]` counting
-the folded update. The deleted trailing unplaced group must never render.
+page and no folded update, the strip renders no row at all. Releasing the phase
+must anchor it inline directly after the child's own pre-grow report — the last
+row of the child's flow — with the header's `[data-comic-updates]` counting the
+folded update. The grandchild's report follows the attention model (the next
+attention generation once the grow round ends), so its inherited caption is
+asserted separately after the child settles. The deleted
+trailing unplaced group must never render.
 `late-creation-position.json` records the same independently located source glyph
 before and after the final origin-revealing history page. Only that authentic
 WebSocket reply is held, then released unchanged after pinning the source. No
@@ -241,10 +244,10 @@ within 2px through at least two distinct successful network page replies.
 boundary and connection-correlated requests and replies. Cache eviction is an
 explicit browser persistence boundary, not store injection or a substituted RPC.
 The control-file producer inputs are separate from browser read traffic.
-The child is named `comic-named-parent` and sends a real `delegate_send` instruction
-to its grandchild. The grandchild's direct page must attribute that instruction
-to the same named parent, not its task description. `named-parent.json` records
-that check and the parent reader's Back restoration remains measured.
+The child is named `comic-named-parent`; the launch instruction it authored to
+start its grandchild must attribute to that same named parent on the grandchild's
+direct page, not to the task description. `named-parent.json` records that check
+and the parent reader's Back restoration remains measured.
 
 An independent fresh root runs two explicit `fork_context: true` delegations.
 The nested leaf inherits human input, root and child answers/thoughts, and the

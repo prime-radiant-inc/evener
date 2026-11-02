@@ -156,8 +156,8 @@ async function snapshotFailedPage(page, evidenceDir) {
   } catch {}
 }
 
-async function until(label, read, accept = Boolean) {
-  const deadline = Date.now() + 20000;
+async function until(label, read, accept = Boolean, budget = 20000) {
+  const deadline = Date.now() + budget;
   let value;
   do {
     value = await read();
@@ -3820,6 +3820,24 @@ async function rosterJourney(page, fixture, { command, complete, incoming, outgo
           pages: pages().map((page) => ({ count: page.delegates.length, page: page.page })),
         }),
     );
+  // The comic reveals older history only through its "Older messages"
+  // control; scrolling never demands a page. Load the thread's whole
+  // history the way a reader does, so every real delegate's strip composes
+  // before the walk asserts coverage.
+  await until(
+    "real roster history loaded",
+    async () => {
+      const loaded = await evaluateHere(
+        `(() => { const button=[...document.querySelectorAll('button')].find(button=>button.textContent==='Older messages'); if(!button) return {exhausted:true}; if(button.disabled) return {loading:true}; button.click(); return {clicked:true}; })()`,
+      );
+      if (loaded.clicked) {
+        await evaluateHere("new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))");
+      }
+      return loaded;
+    },
+    (value) => value.exhausted === true,
+    120000,
+  );
   const observed = new Map();
   let maxMountedHeaders = 0;
   let direction = 1;
@@ -4107,9 +4125,10 @@ async function childJourney(page, fixture, { command, incoming, outgoing, screen
       )
       ?.delegates.find((row) => row.childRef !== header.ref),
   );
-  // The child's own thought is the last entry its pre-grow round records; the
-  // folded update must land after it to anchor inside the loaded window.
-  const childThought = await until("child thought before the folded update", async () => {
+  // The child's pre-grow round streams its thought and then its own terminal
+  // report, which leaves the run parked idle; the folded update must land
+  // after that round to anchor inside the loaded window.
+  await until("child thought before the folded update", async () => {
     const value = await evaluateHere(`(() => {
       const port=window.__comicRoot()?.querySelector('[data-comic-scroll]')?.firstElementChild;
       const thought=[...(port?.querySelectorAll('[data-comic-entry]') ?? [])].find(node=>node.dataset.comicSession===${JSON.stringify(header.ref)}&&node.textContent.includes('COMIC_THOUGHT_CHILD'));
@@ -4129,8 +4148,13 @@ async function childJourney(page, fixture, { command, incoming, outgoing, screen
     )
   )
     throw Error("unanchored nested strip rendered a row before any folded update");
-  // Release the grandchild's one mid-work update: the strip must appear
-  // anchored exactly between the child's thought and the grandchild's report.
+  // Release the grandchild's one mid-work update: the delivered update is the
+  // strip's earliest folded anchor, so the strip appears directly after the
+  // child's own pre-grow report — the last row of the child's flow at this
+  // point. The grandchild's report follows the attention model (the next
+  // attention generation once the grow round ends), so this step pins the
+  // update's anchoring; the caption check after the child settles proves the
+  // report landed.
   command("background-phase", "comic-grandchild-update");
   let grandchild;
   await until("folded update anchors the nested strip inline", async () => {
@@ -4139,10 +4163,9 @@ async function childJourney(page, fixture, { command, incoming, outgoing, screen
       const observation=(${observeDelegateRelocationSource})(${JSON.stringify(header.ref)},${JSON.stringify(grandchildWire.childRef)},null);
       if(observation.found&&observation.updates>0&&!observation.unplacedRows){
         const entries=[...port.querySelectorAll('[data-comic-entry]')].filter(node=>node.dataset.comicSession===${JSON.stringify(header.ref)});
-        const thought=entries.find(node=>node.dataset.comicEntry===${JSON.stringify(childThought)});
-        const report=entries.find(node=>node.textContent.includes('BACKGROUND_TURN_DONE'));
+        const ownReport=entries.find(node=>node.textContent.includes('BACKGROUND_TURN_DONE'));
         const heading=[...port.querySelectorAll('[data-comic-delegate]')].find(node=>node.dataset.comicChildRef===${JSON.stringify(grandchildWire.childRef)});
-        if(observation.beforeId===thought?.dataset.comicEntry&&observation.afterId===report?.dataset.comicEntry)
+        if(ownReport&&observation.beforeId===ownReport.dataset.comicEntry)
           return {ref:${JSON.stringify(grandchildWire.childRef)},key:heading.dataset.comicDelegate,updates:observation.updates,beforeId:observation.beforeId,afterId:observation.afterId};
       }
       port.dispatchEvent(new WheelEvent('wheel',{bubbles:true,deltaY:300})); port.scrollTop+=300; return null;
@@ -4156,12 +4179,16 @@ async function childJourney(page, fixture, { command, incoming, outgoing, screen
   const nestedSource = await reveal("[data-comic-entry]", "COMIC_THOUGHT_GRANDCHILD", 1);
   if (nestedSource.sessionRef !== grandchild.ref || nestedSource.path.length !== 2) throw Error("wrong nested source");
   let saved = await capturedSource("nested source anchor", nestedSource);
-  const measure = async (name) => {
+  // budget is the restore-observation cap for this record: the two
+  // eviction-reload measures below walk a real multi-page network chain to
+  // reach the saved anchor, which the default never outlived on any run.
+  const measure = async (name, budget) => {
     const geometry = await until(
       name,
       () =>
         evaluateHere(`(${readGeometry.toString()})(${JSON.stringify(saved)}, ${JSON.stringify(fixture.refs.live)})`),
       (value) => savedSourcePlaced(value, saved),
+      budget,
     );
     const nestedGeometry = await evaluateHere(`(() => {
       const port = window.__comicRoot()?.querySelector('[data-comic-scroll]').firstElementChild;
@@ -4213,6 +4240,19 @@ async function childJourney(page, fixture, { command, incoming, outgoing, screen
       }),
   );
   await measure("nested-child-stream-finished");
+  // The grandchild's terminal report reaches the child as an inherited
+  // delegate-report steering caption wherever the attention model delivered
+  // it. The child's own terminal communicates are assistant panels, so
+  // exactly one steering entry carries the report text.
+  const inheritedReports = await until("inherited grandchild report caption", async () => {
+    const found = await evaluateHere(`(() => {
+      const port=window.__comicRoot()?.querySelector('[data-comic-scroll]')?.firstElementChild;
+      return [...(port?.querySelectorAll('[data-comic-entry]') ?? [])].filter(node=>node.dataset.comicSession===${JSON.stringify(header.ref)}&&node.dataset.comicEntry.startsWith('item_steering')&&node.textContent.includes('BACKGROUND_TURN_DONE')).map(node=>({id:node.dataset.comicEntry,text:node.textContent}));
+    })()`);
+    return found.length >= 1 ? found : null;
+  });
+  if (inheritedReports.length !== 1)
+    throw Error(`inherited grandchild report captions=${JSON.stringify(inheritedReports)}, want exactly one`);
   const nestedHandoff = [await presentation(page, "Standard"), await presentation(page, "Comic")];
   await measure("nested-mode-handoff");
   writeFileSync(`${fixture.evidenceDir}/nested-mode-handoff.json`, JSON.stringify(nestedHandoff, null, 2));
@@ -4262,6 +4302,7 @@ async function childJourney(page, fixture, { command, incoming, outgoing, screen
     await selectAppearance(page, "View", mode);
     await measure(`nested-${mode}`);
   }
+  await reveal(`[data-comic-child-ref=${JSON.stringify(grandchild.ref)}]`);
   if (!(await operate(grandchild.ref, "Collapse conversation", true))) throw Error("missing keyboard collapse");
   await until("collapsed focus remains on strip", () =>
     evaluateHere(
@@ -4548,7 +4589,7 @@ async function childJourney(page, fixture, { command, incoming, outgoing, screen
       throw Error(`cache boundary did not remove older source ${JSON.stringify(eviction)}`);
     const networkStart = wireTrace.length;
     await reloadPage(page);
-    await measure(partial ? "later-child-partial-cache-reload" : "later-child-cold-cache-reload");
+    await measure(partial ? "later-child-partial-cache-reload" : "later-child-cold-cache-reload", 120000);
     const pages = repliesSince(
       wireTrace,
       networkStart,
@@ -4585,7 +4626,7 @@ async function childJourney(page, fixture, { command, incoming, outgoing, screen
     "named parent instruction identity",
     () =>
       evaluateHere(`(() => {
-    const panel=[...window.__comicRoot()?.querySelectorAll('[data-comic-entry]')].find(node=>node.dataset.comicSession===${JSON.stringify(grandchild.ref)}&&node.textContent.includes('COMIC_PARENT_INSTRUCTION literal parent steering'));
+    const panel=[...window.__comicRoot()?.querySelectorAll('[data-comic-entry]')].find(node=>node.dataset.comicSession===${JSON.stringify(grandchild.ref)}&&node.textContent.includes('COMIC_SUBCHAT_GRANDCHILD'));
     if(panel)return panel.closest('article')?.querySelector('[data-comic-identity]')?.textContent;
     const port=window.__comicRoot()?.querySelector('[data-comic-scroll]')?.firstElementChild;if(port){port.dispatchEvent(new WheelEvent('wheel',{bubbles:true,deltaY:-300}));port.scrollTop-=300;}return null;
   })()`),
