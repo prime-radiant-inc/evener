@@ -345,9 +345,11 @@ export function projectedRow(entry: ProjectedEntry, context: ProjectedRowContext
 		case "thinking":
 			// A compact trace row (see reasoningPlaceholderRow): the live
 			// current thought stays a content-free placeholder; a settled
-			// thought carries its text as the row's expandable detail.
+			// thought carries its text as the row's expandable detail. The
+			// projector's own live rule rides on the entry, so the phone and
+			// the web cannot drift.
 			return {
-				...reasoningPlaceholderRow(entry.item, context.turnStatus),
+				...reasoningPlaceholderRow(entry.item, entry.live),
 				...itemIdentity(entry.item),
 			};
 		case "critical":
@@ -522,19 +524,18 @@ function rowForItem(it: ItemModel, context: ProjectedRowContext): MobileTimeline
 // keeps today's content-free placeholder: label and liveness only, no detail
 // body. A SETTLED thought is a completed trace row whose detail carries the
 // thought text (ruling 2026-11-01: traces unfold on demand), the same shape
-// the reasoning-on rows use.
-function reasoningPlaceholderRow(
-	it: ItemModel,
-	turnStatus: string | undefined,
-): Extract<MobileTimelineItem, { kind: "activity" }> {
-	const running = isActiveItem(it, turnStatus);
+// the reasoning-on rows use. Liveness comes from the projector's own rule
+// (the entry's live bit: turn in progress, active, tail), so a superseded
+// thought mid-turn or a stale inProgress tail on a completed turn settles
+// here exactly as it does on the web.
+function reasoningPlaceholderRow(it: ItemModel, live: boolean): Extract<MobileTimelineItem, { kind: "activity" }> {
 	return {
 		kind: "activity",
 		id: it.id,
 		label: "Reasoning",
 		family: "reasoning",
-		state: running ? "running" : "completed",
-		detail: running ? {} : reasoningDetail(it),
+		state: live ? "running" : "completed",
+		detail: live ? {} : reasoningDetail(it),
 	};
 }
 

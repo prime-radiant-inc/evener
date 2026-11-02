@@ -151,6 +151,50 @@ describe("the seam projects the conversation at the user's content level", () =>
 		});
 	});
 
+	it("settles superseded thoughts and stale in-progress tails instead of rendering them running", () => {
+		// The wire never completes a reasoning item mid-turn, so a superseded
+		// thought keeps status inProgress; the projector's rule (turn in
+		// progress AND active AND tail) decides liveness, and the phone must
+		// render the settled variant for the first thought: completed, with its
+		// text as the expandable detail.
+		const midTurn = thread([
+			turn(
+				"t-mid",
+				[
+					item({ id: "r2", type: "reasoning", text: "superseded thought", status: "inProgress" }),
+					item({ id: "c2", type: "commandExecution", toolName: "shell", description: "step", status: "completed" }),
+					item({ id: "r3", type: "reasoning", text: "live tail thought", status: "inProgress" }),
+				],
+				{ status: "inProgress" },
+			),
+		]);
+		const model = hydrateThread({ thread: midTurn }, "ref-1", 0);
+		const rows = projectConversation(model, undefined, tools).items;
+		expect(rowById(rows, "r2")).toMatchObject({
+			kind: "activity",
+			family: "reasoning",
+			state: "completed",
+			detail: { output: "superseded thought" },
+		});
+		// The tail thought is the live one: content-free while it runs.
+		expect(rowById(rows, "r3")).toMatchObject({ kind: "activity", state: "running" });
+		expect(JSON.stringify(rows)).not.toContain("live tail thought");
+
+		// A stale inProgress tail on a completed turn is settled too.
+		const stale = thread([
+			turn("t-stale", [item({ id: "r4", type: "reasoning", text: "stale thought", status: "inProgress" })], {
+				status: "completed",
+			}),
+		]);
+		const staleRows = projectConversation(hydrateThread({ thread: stale }, "ref-1", 0), undefined, tools).items;
+		expect(rowById(staleRows, "r4")).toMatchObject({
+			kind: "activity",
+			family: "reasoning",
+			state: "completed",
+			detail: { output: "stale thought" },
+		});
+	});
+
 	it("re-projects when the level changes", () => {
 		// The same model, two levels: the rows differ exactly where the level
 		// decides (the settled thought exists at full and not at chat).

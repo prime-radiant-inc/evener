@@ -349,7 +349,7 @@ test("redacted keeps the projector's summary as the collapsed label and unfolds 
   expect(screen.getByText("the failure reasoning")).toBeTruthy();
 });
 
-test("redacted rows stay collapsed by default even with thinking-open-by-default on", () => {
+test("redacted rows open with the thinking switch like every other thinking disclosure", () => {
   const thinkingOpenConfig = makeTranscriptDisplayConfig({
     kind: "custom",
     toolIntent: true,
@@ -370,8 +370,13 @@ test("redacted rows stay collapsed by default even with thinking-open-by-default
     </TranscriptRenderProvider>,
   );
   const details = screen.getByRole("group") as HTMLDetailsElement;
+  // The neutral label stays the summary; the switch opens the body.
   expect(screen.getByTestId("think-block-redacted").textContent).toContain("Thought not shown");
-  expect(details.open).toBe(false);
+  expect(details.open).toBe(true);
+  expect(screen.getByText("the failure reasoning")).toBeTruthy();
+  // The reader's explicit close still beats the switch.
+  fireEvent.click(details.querySelector("summary")!);
+  expect((screen.getByRole("group") as HTMLDetailsElement).open).toBe(false);
 });
 
 // Jesse's review call: a blinking caret inside a read-only reasoning view

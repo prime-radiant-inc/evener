@@ -204,19 +204,21 @@ test("the trace journey: every thought stays readable on demand at tools, the sw
   expect(screen.getByText("the failed trace body")).toBeTruthy();
   unmountTools();
 
-  // The switch: a settled trace starts open; a broken turn's thought keeps
-  // its neutral label until the reader unfolds it.
+  // The switch: every thinking trace starts open, the failure row's neutral
+  // label staying its summary; the reader can still fold it.
   const { unmount: unmountOpen } = render(
     inScope("journey-open", openThinking, <TurnBlock turn={turn(items(), { status: "completed" }, openThinking)} />),
   );
   details = screen.getAllByRole("group") as HTMLDetailsElement[];
-  expect(details.filter((row) => row.open)).toHaveLength(1);
+  expect(details.filter((row) => row.open)).toHaveLength(2);
   expect(screen.getByText("the settled trace body")).toBeTruthy();
-  expect(screen.queryByText("the failed trace body")).toBeNull();
-  const failedRow = details.find((row) => !row.open);
-  expect(failedRow?.querySelector('[data-testid="think-block-redacted"]')).not.toBe(null);
-  fireEvent.click(failedRow!.querySelector("summary")!);
   expect(screen.getByText("the failed trace body")).toBeTruthy();
+  const failedRow = details.find((row) =>
+    row.querySelector('[data-testid="think-block-redacted"]'),
+  ) as HTMLDetailsElement;
+  expect(failedRow.querySelector('[data-testid="think-block-redacted"]')?.textContent).not.toBe("");
+  fireEvent.click(failedRow.querySelector("summary")!);
+  expect((failedRow as HTMLDetailsElement).open).toBe(false);
   unmountOpen();
 
   // Chat: conversation-only - the settled trace is gone, the broken turn's

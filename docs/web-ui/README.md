@@ -106,8 +106,8 @@ Use the shared default clears only the selected layout's browser-local override.
 Thinking traces render as unfoldable disclosures at every level — collapsed to
 their placeholder grammar when the Reasoning content switch is off, with the
 Chat preset staying conversation-only — and "Thinking open by default" controls
-whether they start open; a broken turn's thought stays behind its neutral label
-until the reader unfolds it.
+whether they start open, broken-turn thoughts included, whose neutral label
+always remains the summary.
 Scope and the local-override action appear before the editor. Editing a shared
 default keeps both browser-local layout choices. **Use the shared default** clears
 only the selected layout's browser-local override, without writing shared defaults.

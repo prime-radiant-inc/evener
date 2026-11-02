@@ -47,6 +47,11 @@ export interface ItemRenderProps {
   // for every entry kind by TurnBlock, so a memoized renderer can compare it
   // by value.
   contentFree?: boolean;
+  // For a content-free entry, the projector's own live rule (turn in
+  // progress, item active, tail position), carried on the "thinking" entry so
+  // the renderer and the phone answer from one source. Absent on direct leaf
+  // renders; the renderer then falls back to deriving the same rule.
+  contentFreeLive?: boolean;
   // True when a critical reasoning row renders through the neutral failure
   // summary. The summary stays the collapsed label (ruling 2026-11-01: the
   // label does not change); the thought's text sits behind the unfold.
@@ -102,6 +107,7 @@ export function ignoringTurn(prev: ItemRenderProps, next: ItemRenderProps): bool
     prev.projectedSummary === next.projectedSummary &&
     prev.displayKey === next.displayKey &&
     prev.contentFree === next.contentFree &&
+    prev.contentFreeLive === next.contentFreeLive &&
     prev.redacted === next.redacted &&
     prev.renderContext === next.renderContext &&
     prev.threadFingerprint === next.threadFingerprint

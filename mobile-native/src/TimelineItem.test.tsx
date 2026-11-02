@@ -844,7 +844,7 @@ describe("a settled thought", () => {
 		expect(renderedText(tree)).toContain("the failure reasoning");
 	});
 
-	it("unfolds an interrupted thought behind Thought not shown, staying collapsed by default even with thinking open", () => {
+	it("unfolds an interrupted thought behind Thought not shown, following the thinking switch", () => {
 		const row: TimelineRow = {
 			kind: "failure",
 			id: "r-4",
@@ -852,11 +852,18 @@ describe("a settled thought", () => {
 			detail: "the interrupted reasoning",
 			thought: true,
 		};
-		const tree = render(<TimelineItem item={row} hubId="hub" sessionRef="thought-interrupted" thinkingOpenByDefault />);
-		expect(renderedText(tree)).not.toContain("the interrupted reasoning");
-		const line = tree.root.findAll((node) => node.props.accessibilityRole === "button")[0];
+		const closed = render(<TimelineItem item={row} hubId="hub" sessionRef="thought-interrupted" />);
+		expect(renderedText(closed)).not.toContain("the interrupted reasoning");
+		const line = closed.root.findAll((node) => node.props.accessibilityRole === "button")[0];
 		act(() => line.props.onPress());
-		expect(renderedText(tree)).toContain("the interrupted reasoning");
+		expect(renderedText(closed)).toContain("the interrupted reasoning");
+		closed.unmount();
+		// The switch opens it by default; the neutral label stays the summary.
+		const open = render(
+			<TimelineItem item={row} hubId="hub" sessionRef="thought-interrupted-open" thinkingOpenByDefault />,
+		);
+		expect(renderedText(open)).toContain("Thought not shown");
+		expect(renderedText(open)).toContain("the interrupted reasoning");
 	});
 
 	// Thinking rows follow their own "Open thinking by default" switch; every

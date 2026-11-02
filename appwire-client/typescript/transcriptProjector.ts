@@ -55,6 +55,10 @@ export type ProjectedEntry =
        * thought's text renders only inside the unfoldable disclosure.
        */
       kind: "thinking";
+      /** The projector's own live rule (isLiveCurrentReasoning: the turn is
+       * in progress, the item is active, and it is the turn's tail), carried
+       * on the entry so every renderer answers from one source. */
+      live: boolean;
       id: string;
       displayKey?: string;
       turnId: string;
@@ -522,7 +526,15 @@ export function projectThread(model: ThreadModel, config: TranscriptDisplayConfi
       if (decision === "item") {
         entry = itemEntry(item, turn.id, itemSourceIndex, displayKey);
       } else if (decision === "thinking") {
-        entry = { kind: "thinking", id: item.id, displayKey, turnId: turn.id, sourceIndex: itemSourceIndex, item };
+        entry = {
+          kind: "thinking",
+          id: item.id,
+          displayKey,
+          turnId: turn.id,
+          sourceIndex: itemSourceIndex,
+          item,
+          live: isLiveCurrentReasoning(item, turn),
+        };
       } else if (decision === "intent") {
         entry = intentEntry(item, turn.id, itemSourceIndex);
       } else {

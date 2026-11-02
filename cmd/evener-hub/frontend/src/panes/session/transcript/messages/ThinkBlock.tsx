@@ -19,8 +19,8 @@
 // the entry's displayKey, so a reader's choice survives the stream ->
 // recorded id change; their initial state is the "Thinking open by default"
 // switch (thinkingOpenByDefault), with an explicit reader choice always
-// winning. A redacted row stays collapsed until the reader asks (ruling:
-// the neutral label remains the collapsed summary).
+// winning. A redacted row follows the same switch; its neutral label always
+// stays the summary.
 //
 // MARKDOWN, LIVE AND SETTLED: agents write reasoning in markdown, so BOTH
 // states parse it through the same Markdown widget that renders a settled
@@ -338,13 +338,13 @@ function CompactThinkBlock({
 
 // The redacted counterpart for a critical reasoning row while the reasoning
 // content flag is off: a failed or interrupted turn still explains itself.
-// The projector's neutral summary stays the COLLAPSED label (ruling
-// 2026-11-01: the label does not change; the never-show stance is reversed)
-// and the thought's text sits behind the unfold - never rendered while the
-// row is closed, and collapsed by default even with "Thinking open by
-// default" on, because a broken turn's thought deserves the deliberate
-// click. The summary text is owned by the projector (criticalEntry), not
-// re-derived here, so there is one source of truth for it.
+// The projector's neutral summary stays the summary (ruling 2026-11-01: the
+// label does not change; the never-show stance is reversed) and the thought's
+// text sits behind the unfold - never rendered while the row is closed. The
+// row follows the same "Thinking open by default" switch as every thinking
+// disclosure; an explicit reader choice wins. The summary text is owned by
+// the projector (criticalEntry), not re-derived here, so there is one source
+// of truth for it.
 function RedactedThinkBlock({
   item,
   summary,
@@ -413,10 +413,19 @@ function isCurrentThought(item: ItemModel, turn: TurnModel): boolean {
 // rule (an in-progress turn, an active item, tail position) shared with the
 // renderer so a stale inProgress item on a completed turn renders settled.
 // Failing toward live (true) matches isCurrentThought's own fallback posture.
-function isCompactTraceLive(item: ItemModel, turn: TurnModel, contentFree: boolean | undefined): boolean {
-  return (
-    !!contentFree && isInProgressStatus(turn.status) && isActiveItem(item, turn.status) && isCurrentThought(item, turn)
-  );
+// The compact trace row's live bit: the projector's isLiveCurrentReasoning
+// rule (an in-progress turn, an active item, tail position), carried on the
+// entry as contentFreeLive. Direct leaf renders that carry no bit derive the
+// same rule here; a stale inProgress item on a completed turn settles either
+// way. Failing toward live (true) matches isCurrentThought's own fallback
+// posture.
+function isCompactTraceLive(item: ItemModel, turn: TurnModel): boolean {
+  return isInProgressStatus(turn.status) && isActiveItem(item, turn.status) && isCurrentThought(item, turn);
+}
+
+function effectiveCompactLive(props: ItemRenderProps): boolean {
+  if (!props.contentFree) return false;
+  return props.contentFreeLive ?? isCompactTraceLive(props.item, props.turn);
 }
 
 // The memo comparator: ignoringTurn's contract (a fresh turn object on every
@@ -432,8 +441,7 @@ function thinkBlockPropsEqual(prev: ItemRenderProps, next: ItemRenderProps): boo
     ignoringTurn(prev, next) &&
     prev.displayKey === next.displayKey &&
     isCurrentThought(prev.item, prev.turn) === isCurrentThought(next.item, next.turn) &&
-    isCompactTraceLive(prev.item, prev.turn, prev.contentFree) ===
-      isCompactTraceLive(next.item, next.turn, next.contentFree)
+    effectiveCompactLive(prev) === effectiveCompactLive(next)
   );
 }
 
@@ -444,6 +452,7 @@ export const ThinkBlock = memo(function ThinkBlock({
   sessionRef,
   displayKey,
   contentFree,
+  contentFreeLive,
   redacted,
   projectedSummary,
 }: ItemRenderProps) {
@@ -464,7 +473,7 @@ export const ThinkBlock = memo(function ThinkBlock({
   // stays conversation-only with the plain placeholder.
   if (contentFree) {
     if (hidesThinkingTraces(config.content)) return <ContentFreeThinkBlock item={item} />;
-    const isLive = isCompactTraceLive(item, turn, contentFree);
+    const isLive = effectiveCompactLive({ item, turn, live, sessionRef, displayKey, contentFree, contentFreeLive });
     const paragraphs = joinedReasoningParagraphs(item.reasoningSummaries);
     // Empty settled thoughts render nothing (the full grammar's removal rule);
     // a live one keeps its label-alone placeholder until the first chunk.
@@ -474,14 +483,15 @@ export const ThinkBlock = memo(function ThinkBlock({
     );
   }
   // A redacted critical row: the projector's neutral summary is the collapsed
-  // label; the thought is behind the unfold, collapsed until the reader asks.
+  // label; the thought is behind the same unfoldable-disclosure switch every
+  // thinking row follows, and an explicit reader choice still wins.
   if (redacted) {
     return (
       <RedactedThinkBlock
         item={item}
         summary={projectedSummary ?? "Thought not shown"}
         disclosureKey={disclosureKey}
-        defaultOpen={disclosureDefault(disclosureScope, disclosureId, false)}
+        defaultOpen={disclosureFallback}
       />
     );
   }

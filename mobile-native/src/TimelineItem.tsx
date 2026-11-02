@@ -57,6 +57,17 @@ const exitTextStyle = { flex: 1, minWidth: 0 } as const;
 // every row, so a non-step needs a stable source with nothing to show.
 const NO_STEP = { label: "", summaryOnly: true, detail: {} } as const;
 
+// The initial expansion posture per row family: thinking rows (settled
+// thoughts and redacted failures alike) follow their own "Open thinking by
+// default" switch; runs and every other activity keep the expand-details
+// posture. Everything else starts closed.
+function rowOpensByDefault(item: TimelineRow, expandByDefault: boolean, thinkingOpenByDefault: boolean): boolean {
+	if (item.kind === "run") return expandByDefault;
+	if (item.kind === "failure") return item.thought === true && thinkingOpenByDefault;
+	if (item.kind !== "activity") return false;
+	return item.family === "reasoning" ? thinkingOpenByDefault : expandByDefault;
+}
+
 export function TimelineItem({
 	item,
 	hubId,
@@ -119,15 +130,10 @@ export function TimelineItem({
 	const disclosureIds = rowDisclosureIds(hubId, sessionRef, item);
 	// Thinking rows follow their own "Open thinking by default" switch; every
 	// other activity and run keeps the expand-details posture (ruling
-	// 2026-11-01: at Activity, tool rows open while thinking rows stay
-	// collapsed). A failure row never opens on its own - the redacted thought
-	// waits for the reader's deliberate unfold.
-	const defaultOpen =
-		item.kind === "run"
-			? expandByDefault
-			: item.kind === "activity" && item.family === "reasoning"
-				? thinkingOpenByDefault
-				: item.kind === "activity" && expandByDefault;
+	// 2026-11-01: at Activity, tool rows open while thinking rows follow their
+	// switch). A redacted failure row is a thinking disclosure too, so the
+	// switch opens it while its neutral label stays the summary.
+	const defaultOpen = rowOpensByDefault(item, expandByDefault, thinkingOpenByDefault);
 	const expanded = useDisclosureOpenAmong(disclosureIds, defaultOpen);
 	const toggle = () => setDisclosureOpenAll(disclosureIds, !expanded);
 	// Nothing collapses on its own: a run held open while it is live stays
