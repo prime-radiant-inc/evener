@@ -405,6 +405,12 @@ test.each(["source", "destination"])(
     const entered = deferred<void>();
     const hydration = deferred<ThreadReadResponse>();
     fake.on("thread/read", async (params) => {
+      // The press reconciles its recovery token through a direct read (no
+      // request generation) before resuming; only the store's hydration read
+      // is gated here.
+      if (params.requestGeneration === undefined) {
+        return { ...resumeOnlySnapshot(params.ref ?? ref), requestGeneration: params.requestGeneration };
+      }
       entered.resolve();
       return { ...(await hydration.promise), requestGeneration: params.requestGeneration };
     });

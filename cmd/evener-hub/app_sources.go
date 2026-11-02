@@ -292,10 +292,8 @@ func (err sessionRecoveryAdmissionError) Unwrap() error { return err.WireError }
 // own word instead of arming another retry.
 func recoverySupersededError(currentToken string) error {
 	wire := appwire.Unavailable("session recovery canceled this pending action; submit it again")
-	data := appwire.RecoverySupersededErrorData{}
-	data.ErrorData = appwire.ErrorData{EvenerErrorInfo: appwire.ErrorSessionRecoveryCanceled}
-	data.RecoveryToken = currentToken
-	wire.Data = data
+	errData := appwire.ErrorData{EvenerErrorInfo: appwire.ErrorSessionRecoveryCanceled}
+	wire.Data = appwire.RecoverySupersededErrorData{ErrorData: errData, RecoveryToken: currentToken}
 	return sessionRecoveryAdmissionError{wire}
 }
 
