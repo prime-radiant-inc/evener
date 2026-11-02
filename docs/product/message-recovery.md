@@ -240,7 +240,8 @@ duplicate; only a reproduced identity/projection case can establish that cause.
 - Shared policy and composition: `appwire-client/typescript/state/mutation` and
   the shared composer helpers. These do not authorize transport.
 - Browser transactions: `cmd/evener-hub/frontend/src/stores/mutationOutboxIndexedDB.ts`.
-- Browser identity checks and dispatch: `cmd/evener-hub/frontend/src/stores/threads.ts`.
+- Browser identity checks, dispatch and resume-retry pacing:
+  `cmd/evener-hub/frontend/src/stores/threads.ts`.
 - Projection and presentation membership: `composer/queue/pendingTurnsStore.ts`.
   Presentation filtering does not change submission routing.
 - Pane lifetime and durable recovery owner: `composer/sourceState.ts`.
