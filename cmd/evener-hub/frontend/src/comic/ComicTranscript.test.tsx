@@ -584,6 +584,87 @@ test("pages a parent whose loaded window holds no anchor for the saved child's s
   mounted.unmount();
 });
 
+test("keeps an absent child anchor while its window is unverified, and settles only on a definitive frontier", async () => {
+  const model = hydrateThread({ thread: wireThread("local:root", { sessionId: "root" }) }, "local:root", 0);
+  const entities = buildEntityView({
+    sessionRef: model.ref,
+    tree: parseActivityTree(subagentOutcomesResponse().data) ?? undefined,
+    turns: [],
+    stale: false,
+    ended: false,
+  });
+  const strip = { ...projectComicDelegates(model, entities)[0]!, ownerRef: "local:test" };
+  const foldedUpdate = {
+    ...entry,
+    id: "mid-update",
+    sourceItemId: "source-mid-update",
+    sourceIndex: 2,
+    kind: "caption" as const,
+    speaker: "source" as const,
+    delegateUpdate: { childRef: strip.childRef },
+  };
+  const position = {
+    mode: "away" as const,
+    sessionRef: strip.childRef,
+    path: [strip.key],
+    entryId: "child-entry",
+    offset: 12,
+    viewportOffset: 24,
+  };
+  writeComicPosition("local:test", position);
+  const childEntries = [{ ...entry, id: "child-newest", sourceItemId: "source-child-newest", sourceIndex: 0 }];
+  const activity = { snapshot: null, strips: [], entities: new Map(), context: {}, loadMore: async () => {} };
+  const subchatsFor = (childHistory: UseTranscriptResult, entries: readonly ComicEntry[]) => ({
+    readers: new Map([
+      [
+        JSON.stringify([strip.key]),
+        { ref: strip.childRef, path: [strip.key], entries, history: childHistory, activity },
+      ],
+    ]),
+    expandedPaths: [[strip.key]],
+    expand: vi.fn(),
+    collapse: vi.fn(),
+  });
+  const rootEntries = [entry, foldedUpdate, { ...entry, id: "after", sourceItemId: "source-after", sourceIndex: 4 }];
+  const mounted = render(
+    <Reader entries={rootEntries} older={history()} strips={[strip]} subchats={subchatsFor(history(), childEntries)} />,
+  );
+  await waitFor(() => expect(mounted.container.querySelector("[data-comic-entry]")).not.toBeNull());
+  // The cached window has accepted no authoritative read yet: its missing
+  // cursor is unknown, not the end of history, so the absent saved anchor
+  // must survive unchanged instead of settling onto the loaded newest entry.
+  await act(async () => {});
+  expect(readComicPosition("local:test")).toEqual(position);
+  const demanding = {
+    ...history(),
+    olderPageKey: "server:fixture-cursor",
+    hasOlder: true,
+    loadOlderReportingError: vi.fn(),
+  };
+  mounted.rerender(
+    <Reader entries={rootEntries} older={history()} strips={[strip]} subchats={subchatsFor(demanding, childEntries)} />,
+  );
+  await act(async () => {});
+  expect(demanding.loadOlderReportingError).toHaveBeenCalled();
+  expect(readComicPosition("local:test")).toEqual(position);
+  const definitive = { ...history(), olderPageKey: null, hasOlder: false, loadOlderReportingError: vi.fn() };
+  mounted.rerender(
+    <Reader
+      entries={rootEntries}
+      older={history()}
+      strips={[strip]}
+      subchats={subchatsFor(definitive, childEntries)}
+    />,
+  );
+  await act(async () => {});
+  // A frontier an accepted read established with no cursor is a real history
+  // end: the truncated tail settles onto the remaining oldest loaded entry.
+  expect(readComicPosition("local:test")).toEqual({ ...position, entryId: "child-newest", offset: 0 });
+  expect(definitive.loadOlderReportingError).not.toHaveBeenCalled();
+  mounted.unmount();
+  sessionStorage.clear();
+});
+
 test("keeps an item-backed point fixed with itemless errors across prepend, resize and views", async ({
   onTestFinished,
 }) => {
@@ -1523,7 +1604,8 @@ test("settles a missing nested source only when its own local opening completes"
     ref: strip.childRef,
     path: [strip.key],
     entries: [entry],
-    history: history(),
+    // A definitive frontier: an accepted read named no older history.
+    history: { ...history(), olderPageKey: null },
     activity: { snapshot: null, entities: new Map(), strips: [], context: {}, loadMore: async () => {} },
   };
   publishLocalOpening(child.ref, true);
@@ -1614,7 +1696,8 @@ test("settles an unavailable saved source when history is exhausted", async () =
     offset: 12,
     viewportOffset: 24,
   });
-  const older = history();
+  // A definitive frontier: an accepted read named no older history.
+  const older = { ...history(), olderPageKey: null };
   const mounted = render(<Reader older={older} />);
   await waitFor(() =>
     expect(readComicPosition("local:test")).toEqual({

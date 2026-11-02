@@ -1403,6 +1403,16 @@ export class TranscriptRepository {
     );
   }
 
+  /**
+   * True once an authoritative source read has been accepted for this
+   * repository's window. Before it, the model is a local seed whose missing
+   * server cursor is unknown rather than the end of history, so consumers
+   * must not read its absence as a definitive no-older verdict.
+   */
+  hasAcceptedSourceRead(): boolean {
+    return this.#coverageReadId !== undefined;
+  }
+
   attachReader(): TranscriptReader {
     let active = true;
     this.#readerCount++;

@@ -660,7 +660,10 @@ export function ComicTranscript({
         lastPage.current = page;
         history.loadOlderReportingError();
       }
-    } else if (!history.loadingOlder) {
+    } else if (history.olderPageKey === null && !history.loadingOlder) {
+      // Only a frontier an accepted read established settles: an unverified
+      // window's missing cursor is unknown, not the end of history, and the
+      // absent anchor must survive it so the arriving frontier can page.
       const first = target.entries.find((entry) => entry.id === nearest.current) ?? target.entries[0];
       if (first) save({ ...position, sessionRef: target.ref, path: target.path, entryId: first.id, offset: 0 });
       restoring.current = false;

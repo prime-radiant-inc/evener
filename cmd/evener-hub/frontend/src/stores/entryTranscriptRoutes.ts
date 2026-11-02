@@ -387,6 +387,12 @@ export function olderTranscriptPageKey(ref: string): string | null | undefined {
   // never this key. Tag both kinds so an opaque server cursor cannot collide.
   if (local)
     return JSON.stringify(["local", route?.repository?.getBaselineIdentity(), local.entry, local.item, local.sub ?? 0]);
+  // An entry route still converging from an unverified local window: with no
+  // accepted read AND no cursor the frontier is unknown, not the end of
+  // history, so consumers must not read its absence as a definitive no-older
+  // verdict. A cursor the certified local window already restored stays
+  // schedulable, as does a null an accepted read established.
+  if (!model.olderCursor && route?.repository && !route.repository.hasAcceptedSourceRead()) return undefined;
   return model.olderCursor ? JSON.stringify(["server", model.olderCursor]) : null;
 }
 
