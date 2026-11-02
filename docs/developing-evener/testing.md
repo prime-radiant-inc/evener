@@ -519,9 +519,11 @@ previous result. A new *local* convenience target must not copy that flag:
 The test cache is Go's only changed-only mechanism (there is no `--changed`
 flag), and it invalidates a package on any input change, `testdata` fixtures
 included. Caching and scope solve different halves of local latency, too: a
-fully cached run still pays to link and start each package's test binary, so a
-warm run of a broad scope stays slow — measure both halves before concluding
-which one a slowness comes from.
+fully cached run still loads its packages and validates their cache entries
+(a cached package's result is replayed without running its test binary), so a
+warm run of a broad scope stays slow; a cache miss adds the compile, link and
+execution costs on top. Measure both halves before concluding which one a
+slowness comes from.
 
 CI runs the web check as two lanes on separate runners, web-unit (`make
 test-web`) and web-browser (`make test-web-browser`), and the required `web` job
