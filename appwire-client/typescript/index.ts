@@ -802,6 +802,7 @@ export {
   fromWireDefault,
   fromWireDefaults,
   HOOK_EXIT_DETAILS,
+  hidesThinkingTraces,
   LEGACY_PREF_KEYS,
   legacyConfigFromValues,
   makeTranscriptDisplayConfig,
@@ -833,7 +834,12 @@ export type {
   TranscriptDraftCheckpoint,
   TranscriptDraftStorage,
 } from "./transcriptDisplayStore";
-export { createTranscriptDisplayStore, fromWireChange, transcriptDisplaySupport } from "./transcriptDisplayStore";
+export {
+  acknowledgesConfig,
+  createTranscriptDisplayStore,
+  fromWireChange,
+  transcriptDisplaySupport,
+} from "./transcriptDisplayStore";
 export {
   applyHistoryReadFailure,
   applyReadModel,
@@ -871,7 +877,13 @@ export type {
   TranscriptMetadataVisibility,
   TranscriptProjection,
 } from "./transcriptProjector";
-export { ACTION_SUMMARY_UNAVAILABLE, entryDisplayKey, PROMPT_EVENT_KINDS, projectThread } from "./transcriptProjector";
+export {
+  ACTION_SUMMARY_UNAVAILABLE,
+  entryDisplayKey,
+  isLiveCurrentReasoning,
+  PROMPT_EVENT_KINDS,
+  projectThread,
+} from "./transcriptProjector";
 export {
   findSessionsSummary,
   readTranscriptEnvelope,

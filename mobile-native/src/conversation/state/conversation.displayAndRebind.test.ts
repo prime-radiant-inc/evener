@@ -62,6 +62,10 @@ describe("ConversationStore", () => {
 			kind: "preset",
 			level: "intent",
 		});
+		const chatConfig = makeTranscriptDisplayConfig({
+			kind: "preset",
+			level: "chat",
+		});
 		const fullConfig = makeTranscriptDisplayConfig({
 			kind: "preset",
 			level: "full",
@@ -103,9 +107,15 @@ describe("ConversationStore", () => {
 
 			store.getState().setDisplayConfig(intentConfig);
 			expect(store.getState().displayConfig).toEqual(intentConfig);
-			// The settled thought is gone at intent; the summarized tool row
-			// carries only its trimmed summary line (the summary-only ruling).
-			expect(rowById(store, "r1")).toBeUndefined();
+			// The settled thought rides as a collapsed trace row at intent (its
+			// text unfolds on demand); the summarized tool row carries only its
+			// trimmed summary line (the summary-only ruling).
+			expect(rowById(store, "r1")).toMatchObject({
+				kind: "activity",
+				family: "reasoning",
+				state: "completed",
+				detail: { output: "auditing quietly" },
+			});
 			const c1 = rowById(store, "c1");
 			expect(c1).toMatchObject({
 				kind: "activity",
@@ -225,8 +235,8 @@ describe("ConversationStore", () => {
 			const store = await openProjectedThread(thread);
 			// Show-everything keeps both turns' payloads.
 			expect(store.getState().conversation?.turns[0]?.items).toHaveLength(1);
-			store.getState().setDisplayConfig(intentConfig);
-			// t0's every row is hidden at intent — hidden, not withdrawn: the
+			store.getState().setDisplayConfig(chatConfig);
+			// t0's every row is hidden at chat — hidden, not withdrawn: the
 			// payload stays in the model.
 			expect(store.getState().conversation?.turns[0]?.items).toHaveLength(1);
 			expect(rowById(store, "r1")).toBeUndefined();

@@ -55,7 +55,7 @@ func (jm *jobManager) snapshotWatchSendFrame(d watchSendDelivery) watchSendDeliv
 // returns ok=true with the persisted state, so the journal and the runtime
 // map can be reconciled against it instead of a ghost ok=false.
 // Pure observation: no delivery, no Session calls (spec §3).
-func (jm *jobManager) recordWatchSend(d watchSendDelivery) (state jobstore.WatchSendState, cfg *watchConfig, ok bool, err error) {
+func (jm *jobManager) recordWatchSend(d watchSendDelivery, terminalEvents ...[]jobstore.Event) (state jobstore.WatchSendState, cfg *watchConfig, ok bool, err error) {
 	if d.cfg == nil || d.send == nil || !jm.isCurrentWatchSendDelivery(d) {
 		return jobstore.WatchSendState{}, nil, false, nil
 	}
@@ -74,7 +74,7 @@ func (jm *jobManager) recordWatchSend(d watchSendDelivery) (state jobstore.Watch
 	// can cross the runaway threshold only together. Everything downstream
 	// (the fuse decision and any drop event) uses the PERSISTED coalesced
 	// state so the recorded evidence carries the ancestry that tripped it.
-	persistedState, persisted, perr := jm.persistPendingWatchSend(state, d)
+	persistedState, persisted, perr := jm.persistPendingWatchSend(state, d, terminalEvents...)
 	if perr != nil {
 		if d.allowAfterTerminalExpiry && !persisted {
 			jm.rememberUnpersistedTerminalPendingWatchSend(d.cfg, state)
@@ -93,10 +93,10 @@ func (jm *jobManager) recordWatchSend(d watchSendDelivery) (state jobstore.Watch
 	}
 	state = persistedState
 	if terr != nil {
-		return jobstore.WatchSendState{}, nil, false, jm.dropWatchSend(state, d.cfg, terr.Error())
+		return state, d.cfg, false, jm.dropWatchSend(state, d.cfg, terr.Error())
 	}
 	if state.SelfInfluenceDepth >= runawaySelfInfluenceDepth {
-		return jobstore.WatchSendState{}, nil, false, jm.dropWatchSend(state, d.cfg, "runaway")
+		return state, d.cfg, false, jm.dropWatchSend(state, d.cfg, "runaway")
 	}
 	return state, d.cfg, true, nil
 }
@@ -408,14 +408,15 @@ func (jm *jobManager) isCurrentPendingWatchSend(cfg *watchConfig, state jobstore
 }
 
 func (jm *jobManager) isCurrentPendingWatchSendLocked(cfg *watchConfig, state jobstore.WatchSendState) bool {
-	if cfg == nil || cfg.rejectingDelivery || jm.closing {
+	terminalFlush := cfg != nil && jm.terminalFlush != nil && jm.terminalFlush[cfg]
+	if cfg == nil || jm.closing || (cfg.rejectingDelivery && !terminalFlush) {
 		return false
 	}
 	pending := cfg.pending[state.Key]
 	if pending == nil || pending.UpdateSeq != state.UpdateSeq || pending.DeliveryID != state.DeliveryID {
 		return false
 	}
-	if jm.terminalFlush != nil && jm.terminalFlush[cfg] {
+	if terminalFlush {
 		return true
 	}
 	key := watchKey{VisibleSessionID: state.Key.VisibleSessionID, Target: state.Key.WatchTarget, SendTo: cfg.sendTo(), ReceiverSessionID: cfg.receiverSessionID, ReceiverDelegateID: cfg.receiverDelegateID}
@@ -458,7 +459,7 @@ func (jm *jobManager) isCurrentWatchSendDelivery(d watchSendDelivery) bool {
 }
 
 func (jm *jobManager) isCurrentWatchSendDeliveryLocked(d watchSendDelivery) bool {
-	if d.cfg == nil || d.cfg.generation != d.generation || d.cfg.rejectingDelivery || jm.closing {
+	if d.cfg == nil || d.cfg.generation != d.generation || (d.cfg.rejectingDelivery && !d.allowAfterTerminalExpiry) || jm.closing {
 		return false
 	}
 	if d.allowAfterTerminalExpiry {
@@ -467,13 +468,17 @@ func (jm *jobManager) isCurrentWatchSendDeliveryLocked(d watchSendDelivery) bool
 	return jm.watches[d.key] == d.cfg
 }
 
-func (jm *jobManager) persistPendingWatchSend(state jobstore.WatchSendState, d watchSendDelivery) (jobstore.WatchSendState, bool, error) {
+func (jm *jobManager) persistPendingWatchSend(state jobstore.WatchSendState, d watchSendDelivery, terminalEvents ...[]jobstore.Event) (jobstore.WatchSendState, bool, error) {
 	releasePersistence := jm.beginWatchPersistence()
 	defer releasePersistence()
 
 	record := jm.planWatchSendPending(state, d)
 	if len(record.pendingEvents) == 0 {
 		return state, false, nil
+	}
+	var teardownEvents []jobstore.Event
+	if len(terminalEvents) != 0 {
+		teardownEvents = terminalEvents[0]
 	}
 	enqueueReceipt, err := jm.beginStableWatchEnqueue(record.persisted)
 	if err != nil {
@@ -496,7 +501,7 @@ func (jm *jobManager) persistPendingWatchSend(state jobstore.WatchSendState, d w
 	// durable — persisted=true with each durable prefix committed to the
 	// runtime map — instead of leaving a durable prefix behind an ok=false
 	// return that never commits it.
-	if len(record.evictions) != 0 && jm.appendEvents == nil {
+	if len(record.evictions) != 0 && jm.appendEvents == nil && len(teardownEvents) == 0 {
 		if err := jm.appendWatchSendEvents(record.pendingEvents); err != nil {
 			jm.enqueueWatchNotifications([]jobNotification{
 				watchSendDiagnosticNotification(state.Key.WatchID, state.Key.ResolvedWatchedIdentity, "watch send pending state failed: "+limitWatchText(err.Error(), watchReadErrorMaxChars)),
@@ -527,6 +532,7 @@ func (jm *jobManager) persistPendingWatchSend(state jobstore.WatchSendState, d w
 		return record.persisted, true, verr
 	}
 	group := append([]jobstore.Event(nil), record.pendingEvents...)
+	group = append(group, teardownEvents...)
 	var evictionSnapshots []watchSendTerminalSnapshot
 	for _, eviction := range record.evictions {
 		evictionSnapshots = append(evictionSnapshots, eviction.terminal)
@@ -850,7 +856,7 @@ func settleWatchSendLocked(cfg *watchConfig, key jobstore.WatchSendKey, updateSe
 }
 
 func (jm *jobManager) forgetTerminalFlushIfEmptyLocked(cfg *watchConfig) {
-	if cfg == nil || len(cfg.pending) != 0 || jm.terminalFlush == nil {
+	if cfg == nil || cfg.terminalDeliveryPending || len(cfg.pending) != 0 || jm.terminalFlush == nil {
 		return
 	}
 	delete(jm.terminalFlush, cfg)

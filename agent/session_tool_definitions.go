@@ -13,12 +13,16 @@ import (
 // allToolDefinitions returns cached tool definitions.
 // The cache is built once at session init via rebuildToolDefsCache.
 func (s *Session) allToolDefinitions(_ int) []llm.ToolDefinition {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	return s.cachedToolDefs
 }
 
 // ToolDefinitions returns the model-facing tool definitions currently
 // advertised by this session.
 func (s *Session) ToolDefinitions() []llm.ToolDefinition {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	return append([]llm.ToolDefinition(nil), s.cachedToolDefs...)
 }
 
@@ -184,6 +188,7 @@ func (s *Session) profileWireToolDefs() []llm.ToolDefinition {
 // current profile, MCP tools, and registry state. Called once at session init
 // and again if tools are added at runtime (e.g. MCP or custom tools).
 func (s *Session) rebuildToolDefsCache() {
+	s.composeHubRegistry()
 	registered := s.reg.RegisteredNames()
 
 	// Profile tool definitions are canonical (e.g. "shell"); the registry is also
@@ -195,8 +200,15 @@ func (s *Session) rebuildToolDefsCache() {
 	included := make(map[string]bool)
 	for _, td := range s.profile.ToolDefinitions() {
 		if registered[td.Name] {
+			// Manager composition already owns both the ordinary and hub branches.
+			// Keep its parameters as well as its description on provider requests.
+			if _, composed := s.hubOrdinary[td.Name]; s.hubEnabled && composed {
+				td = s.reg.Get(td.Name).Definition
+			}
 			if td.Name == "delegate" {
-				td = s.delegateToolDefinition()
+				if !s.hubEnabled {
+					td = s.delegateToolDefinition()
+				}
 				// When this session can only grant allowance 0 (own allowance 1),
 				// delegation_allowance has a single legal value — a no-op knob. Hide it
 				// so the model is not offered a parameter it cannot meaningfully set.
@@ -242,6 +254,11 @@ func (s *Session) rebuildToolDefsCache() {
 			// schema here rather than the registry's fully capable copy
 			// (issue #4422).
 			td = s.sessionShellDefinition()
+		}
+		if s.hubEnabled && (td.Name == "job_list" || td.Name == "job_status") {
+			if mapped, ok := nameMap[td.Name]; ok {
+				td.Name = mapped
+			}
 		}
 		defs = append(defs, normalizeRegistryToolDefinition(td))
 	}

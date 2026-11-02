@@ -40,6 +40,9 @@ var shownMetaFields = []string{
 // SessionMeta field on neither list fails TestShownMetaFieldsCoverSessionMeta,
 // which is what forces the next added field to be classified.
 var notShownMetaFields = []string{
+	// Manager is the session's start-time property; the projected thread
+	// carries it, no navigation row does.
+	"Manager",
 	"ProfileID", "CheapModel", "VisionModel", "Config", "Revision",
 	"TurnBudgetWarningEmitted", "LastInputTokens", "NameSource", "NameUpdatedAt",
 	"DivergenceTurn", "Goal", "PinnedNote", "Skills", "MemorySaveUnavailable", "HumanNote", "AgentNote",

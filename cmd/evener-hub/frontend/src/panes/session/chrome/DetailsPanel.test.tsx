@@ -70,6 +70,18 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
+test.each([true, false, undefined])("Manager projection %s is read-only in session details", async (manager) => {
+  await openPanel(testModel({ manager }));
+  expect(screen.queryByRole("switch")).toBeNull();
+  const indication = screen.queryByTestId("session-details-manager");
+  if (manager) {
+    expect(indication?.closest("dd")).toBeTruthy();
+    expect(indication?.closest("button")).toBeNull();
+  } else {
+    expect(indication).toBeNull();
+  }
+});
+
 test("the trigger opens the details sheet", async () => {
   await openPanel(testModel());
   expect(screen.getByRole("dialog", { name: "Session details" })).toBeTruthy();

@@ -391,6 +391,9 @@ func (s *Session) beginClosing(forceTerminal, markClosed bool) (turns int, emitE
 		s.endTurnLocked() // dying turn's work counts and it ends now
 	}
 	s.closing = true
+	for _, cancel := range s.hubWatchCancels {
+		cancel()
+	}
 	if markClosed {
 		s.state = SessionClosed
 	}

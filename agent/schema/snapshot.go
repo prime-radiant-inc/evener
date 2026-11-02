@@ -146,12 +146,16 @@ type SessionMeta struct {
 	// WithCheapModel ref ("provider/model" when cross-provider, else bare model).
 	// Empty when none is configured. Persisted so the cheap routing survives
 	// resume — launch args alone do not carry it across restart.
-	CheapModel  string          `json:"cheap_model,omitempty"`
-	VisionModel string          `json:"vision_model,omitempty"`
-	Config      ConfigSnapshot  `json:"config"`     // the session's configuration
-	EnvInfo     EnvironmentInfo `json:"env_info"`   // captured environment description
-	CreatedAt   time.Time       `json:"created_at"` // when the session was first created
-	UpdatedAt   time.Time       `json:"updated_at"` // last time the meta was written
+	CheapModel  string `json:"cheap_model,omitempty"`
+	VisionModel string `json:"vision_model,omitempty"`
+	// Manager records that this session was started as a Manager. It is a
+	// launch property the daemon owns, persisted here so a resume keeps it: the
+	// hub never re-asserts it, and nothing disables it.
+	Manager   bool            `json:"manager,omitempty"`
+	Config    ConfigSnapshot  `json:"config"`     // the session's configuration
+	EnvInfo   EnvironmentInfo `json:"env_info"`   // captured environment description
+	CreatedAt time.Time       `json:"created_at"` // when the session was first created
+	UpdatedAt time.Time       `json:"updated_at"` // last time the meta was written
 	// Revision is a monotonic per-session counter bumped on every save, so two
 	// revisions that share a timestamp (a fork tag or an ObservedBy append
 	// re-saves without advancing UpdatedAt) can still be ordered. Zero on metas

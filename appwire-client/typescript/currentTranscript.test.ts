@@ -29,6 +29,28 @@ function readWithItems(ref: string, items: ThreadItem[]) {
 }
 
 describe("current transcript checkpoints", () => {
+  it("preserves typed Manager speaker across hydrate and current-state restore", () => {
+    const ref = "local:worker";
+    const original = hydrateThread(
+      readWithItems(ref, [
+        {
+          type: "userMessage",
+          id: "item_1",
+          turnId: "turn_1",
+          text: "same text",
+          actor: { kind: "manager", managerRef: "local:manager" },
+        },
+      ]),
+      ref,
+      1,
+    );
+    expect(original.turns[0]?.items[0]?.actor).toEqual({ kind: "manager", managerRef: "local:manager" });
+    const encoded = currentTranscriptState(original);
+    const decoded = decodeCurrentTranscriptState(JSON.parse(JSON.stringify(encoded)));
+    if (!decoded) throw new Error("actor invalidated saved transcript");
+    const restored = threadModelFromCurrentState(decoded);
+    expect(restored.turns[0]?.items[0]?.actor).toEqual({ kind: "manager", managerRef: "local:manager" });
+  });
   it("preserves a live stream so the restored reducer can continue its fold", () => {
     const original = hydrateThread(currentRead("local:one"), "local:one", 10);
     const encoded = currentTranscriptState(original);
@@ -1043,6 +1065,13 @@ describe("current transcript checkpoints", () => {
     // field, so the deferred-page validators cannot drift without a red build.
     const everyItemField: Required<ThreadItem> = {
       type: "toolCall",
+      actor: { kind: "manager", managerRef: "hub:manager" },
+      observation: {
+        ref: "local:observed",
+        instanceId: "observed-instance",
+        generationId: "observed-generation",
+        causalKnown: false,
+      },
       authorship: {
         author: {
           kind: "agent",

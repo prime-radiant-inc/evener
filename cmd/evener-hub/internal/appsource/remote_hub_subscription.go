@@ -1263,17 +1263,19 @@ func (s *RemoteHubSource) translateNotification(n appwire.Notification, client *
 	// item/completed carry a ThreadItem. Both are image carriers, so the shared
 	// visitor runs on them here exactly as it runs on a thread.
 	if raw, ok := fields["turn"]; ok {
-		fields["turn"] = s.translateRawTurnAuthorship(s.rewriteRawTurnImageURLs(raw))
+		fields["turn"] = s.translateRawTurnAuthorship(s.rewriteRawTurnImageURLs(s.translateRawTurnActors(raw)))
 	}
 	if raw, ok := fields["item"]; ok {
-		fields["item"] = s.rewriteRawItemImageURLs(raw)
+		fields["item"] = s.rewriteRawItemImageURLs(s.translateRawItemActor(raw))
 	}
 	// history/updated (HistoryUpdatedParams) carries its turns and items in
 	// the plural "turns"/"items" arrays instead: turns carry no items of
 	// their own there (the reducer merges items in by key), so only the
 	// items array needs the item visitor.
 	if raw, ok := fields["items"]; ok {
-		fields["items"] = s.rewriteRawArray(raw, s.rewriteRawItemImageURLs)
+		fields["items"] = s.rewriteRawArray(raw, func(item json.RawMessage) json.RawMessage {
+			return s.rewriteRawItemImageURLs(s.translateRawItemActor(item))
+		})
 	}
 	if n.Method == appwire.NotifyThreadStatusChanged {
 		if rawCapabilities, ok := fields[capabilitiesField]; ok {

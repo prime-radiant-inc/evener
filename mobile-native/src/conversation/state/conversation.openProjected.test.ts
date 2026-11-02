@@ -12,6 +12,7 @@ import { createConversationStore, olderPageKey } from "./conversation";
 import {
 	ALL_TRUE_CAPS,
 	FakeConversationService,
+	historyUpdated,
 	makeControlledRead,
 	makeConversation,
 	makeReadProjectionResult,
@@ -666,6 +667,254 @@ describe("ConversationStore", () => {
 			) as never;
 			await store.getState().loadOlder(service);
 			expect(service.readProjectionCalls).toHaveLength(reads + 1);
+		});
+
+		// A stale held snapshot means the server's bounded update log no longer
+		// covers the retained window, so the recovery re-read comes back marked
+		// replacedHeldHistory: the store must adopt that window and its cursor
+		// instead of merging. A merge keeps the older pages' stale content — an
+		// item that changed while the client was disconnected still displays its
+		// pre-change state — and advances the snapshot length past the skipped
+		// update, so no later refresh can recover it.
+		it("adopts the fresh window a stale-snapshot recovery returns, dropping held older pages", async () => {
+			const service = new FakeConversationService();
+			service.openConv = makeConversation({ items: positionedRows(100, 200) }, true);
+			const store = createConversationStore();
+			await store.getState().openProjected(service, "ref-1");
+			store.setState({ olderCursor: "held-cursor" });
+			store.getState().setFollowingLiveEnd(false);
+			// Two older pages are loaded above the window. The second page's
+			// row-7 is the item the server changed while this client was
+			// disconnected; the held page still shows the pre-change content.
+			service.olderItems = { items: positionedRows(50, 100), nextCursor: "held-page-2" };
+			expect((await store.getState().loadOlder(service)).status).toBe("loaded");
+			service.olderItems = { items: positionedRows(0, 50), nextCursor: undefined };
+			expect((await store.getState().loadOlder(service)).status).toBe("loaded");
+			expect(store.getState().conversation?.items).toHaveLength(200);
+
+			// The recovery read: the same instance, the server's current
+			// window, and the replacement signal.
+			service.readProjectionResult = {
+				conversation: makeConversation({ items: positionedRows(150, 200) }, true),
+				olderCursor: "fresh-cursor",
+				replacedHeldHistory: true,
+			};
+			store.setState({ draft: "draft survives the recovery" });
+			await store.getState().rehydrate(service);
+
+			// The held older pages are gone: the store adopted the fresh
+			// window and cursor, and the draft survived.
+			expect(store.getState().conversation?.items.map((row) => row.id)).toEqual(
+				positionedRows(150, 200).map((row) => row.id),
+			);
+			expect(store.getState().olderCursor).toBe("fresh-cursor");
+			expect(store.getState().draft).toBe("draft survives the recovery");
+
+			// Re-paging with the fresh cursor returns the changed older item's
+			// current content: the skipped update is recoverable.
+			service.olderItems = {
+				items: [{ kind: "user", id: "row-7", text: "row 7 finished", position: { entry: 7, item: 0 } }],
+				nextCursor: undefined,
+			};
+			expect((await store.getState().loadOlder(service)).status).toBe("loaded");
+			const changedRow = store.getState().conversation?.items.find((row) => row.id === "row-7");
+			expect(changedRow?.kind === "user" ? changedRow.text : undefined).toBe("row 7 finished");
+		});
+
+		// A frame that lands while the recovery read is awaited is newer than
+		// the read's snapshot: replacing the stale base must not discard the
+		// frame's own content — a final message or tool completion that
+		// arrived mid-read disappears until another refresh otherwise.
+		it("keeps a frame that lands during the recovery read, on the replaced window", async () => {
+			const service = new FakeConversationService();
+			service.openConv = makeConversation({ items: positionedRows(100, 200) }, true);
+			const store = createConversationStore();
+			await store.getState().openProjected(service, "ref-1");
+			store.getState().setFollowingLiveEnd(false);
+
+			// The recovery read hangs until the test resolves it.
+			let releaseRead!: (projection: ConversationReadProjection) => void;
+			service.readProjectionBlock = new Promise((resolve) => {
+				releaseRead = resolve;
+			});
+			const recovering = store.getState().rehydrate(service);
+			// The final message lands while the recovery read is awaited: the
+			// completed item in a turn the held model does not hold yet, in the
+			// frame shape the wire delivers it. The turn itself is still open —
+			// a settled turn scalar would owe the store its own reread by the
+			// usage rule, which is not this test's race.
+			service.notificationHandler?.(
+				historyUpdated({
+					items: [
+						{
+							id: "row-final",
+							type: "userMessage",
+							text: "row final message",
+							status: "completed",
+							turnId: "turn-final",
+							position: { entry: 200, item: 0 },
+						},
+					],
+				}),
+			);
+			releaseRead({
+				conversation: makeConversation({ items: positionedRows(150, 200) }, true),
+				olderCursor: "fresh-cursor",
+				replacedHeldHistory: true,
+			});
+			await recovering;
+
+			// The fresh window replaced the stale base, and the mid-read frame
+			// survived on top of it.
+			const rows = store.getState().conversation?.items.map((row) => row.id) ?? [];
+			expect(rows).toEqual([...positionedRows(150, 200).map((row) => row.id), "row-final"]);
+		});
+
+		// Overlapping rehydrates resolve by token: the newer read publishes,
+		// the superseded one bails. Both finishing orders must leave the
+		// newer read's window standing — a superseded read's frame log is
+		// dead once a newer read takes over, so finishing it must not
+		// resurrect or disturb the published state.
+		it("resolves overlapping rehydrates when the older read finishes first", async () => {
+			const service = new FakeConversationService();
+			service.openConv = makeConversation({ items: positionedRows(100, 200) }, true);
+			const store = createConversationStore();
+			await store.getState().openProjected(service, "ref-1");
+			store.getState().setFollowingLiveEnd(false);
+			const readsBefore = service.readProjectionCalls.length;
+
+			// Rehydrate A hangs, then a frame lands in its window.
+			let releaseA!: (projection: ConversationReadProjection) => void;
+			service.readProjectionBlock = new Promise((resolve) => {
+				releaseA = resolve;
+			});
+			const readA = store.getState().rehydrate(service);
+			await new Promise((resolve) => setTimeout(resolve, 0));
+			expect(service.readProjectionCalls).toHaveLength(readsBefore + 1);
+			service.notificationHandler?.(
+				historyUpdated({
+					items: [
+						{
+							id: "row-during-a",
+							type: "userMessage",
+							text: "row during a",
+							status: "completed",
+							turnId: "turn-a",
+							position: { entry: 200, item: 0 },
+						},
+					],
+				}),
+			);
+
+			// Rehydrate B supersedes A and hangs, then a frame lands in its window.
+			let releaseB!: (projection: ConversationReadProjection) => void;
+			service.readProjectionBlock = new Promise((resolve) => {
+				releaseB = resolve;
+			});
+			const readB = store.getState().rehydrate(service);
+			await new Promise((resolve) => setTimeout(resolve, 0));
+			expect(service.readProjectionCalls).toHaveLength(readsBefore + 2);
+			service.notificationHandler?.(
+				historyUpdated({
+					items: [
+						{
+							id: "row-during-b",
+							type: "userMessage",
+							text: "row during b",
+							status: "completed",
+							turnId: "turn-b",
+							position: { entry: 201, item: 0 },
+						},
+					],
+				}),
+			);
+
+			// A finishes first: superseded, it must publish nothing. B's
+			// snapshot already carries A's frame as post-cut truth, and B's
+			// own frame replays onto the replaced window.
+			releaseA({
+				conversation: makeConversation({ items: positionedRows(100, 200) }, true),
+				olderCursor: "cursor-a",
+			});
+			releaseB({
+				conversation: makeConversation(
+					{
+						items: [
+							...positionedRows(150, 200),
+							{
+								kind: "user",
+								id: "row-during-a",
+								text: "row during a",
+								position: { entry: 200, item: 0 },
+							},
+						],
+					},
+					true,
+				),
+				olderCursor: "cursor-b",
+				replacedHeldHistory: true,
+			});
+			await Promise.all([readA, readB]);
+
+			const rows = store.getState().conversation?.items.map((row) => row.id) ?? [];
+			expect(rows).toEqual([...positionedRows(150, 200).map((row) => row.id), "row-during-a", "row-during-b"]);
+		});
+
+		it("resolves overlapping rehydrates when the newer read finishes first", async () => {
+			const service = new FakeConversationService();
+			service.openConv = makeConversation({ items: positionedRows(100, 200) }, true);
+			const store = createConversationStore();
+			await store.getState().openProjected(service, "ref-1");
+			store.getState().setFollowingLiveEnd(false);
+
+			// Rehydrate A hangs; rehydrate B supersedes it and hangs.
+			let releaseA!: (projection: ConversationReadProjection) => void;
+			service.readProjectionBlock = new Promise((resolve) => {
+				releaseA = resolve;
+			});
+			const readA = store.getState().rehydrate(service);
+			await new Promise((resolve) => setTimeout(resolve, 0));
+			let releaseB!: (projection: ConversationReadProjection) => void;
+			service.readProjectionBlock = new Promise((resolve) => {
+				releaseB = resolve;
+			});
+			const readB = store.getState().rehydrate(service);
+			await new Promise((resolve) => setTimeout(resolve, 0));
+			// A frame lands in B's window.
+			service.notificationHandler?.(
+				historyUpdated({
+					items: [
+						{
+							id: "row-during-b",
+							type: "userMessage",
+							text: "row during b",
+							status: "completed",
+							turnId: "turn-b",
+							position: { entry: 201, item: 0 },
+						},
+					],
+				}),
+			);
+
+			// B finishes first with the replacement window: it publishes.
+			releaseB({
+				conversation: makeConversation({ items: positionedRows(150, 200) }, true),
+				olderCursor: "cursor-b",
+				replacedHeldHistory: true,
+			});
+			await readB;
+			const afterB = store.getState().conversation?.items.map((row) => row.id) ?? [];
+			expect(afterB).toEqual([...positionedRows(150, 200).map((row) => row.id), "row-during-b"]);
+
+			// A finishes last with a different, older window: it must bail on
+			// the token and leave B's published state untouched.
+			releaseA({
+				conversation: makeConversation({ items: positionedRows(120, 170) }, true),
+				olderCursor: "cursor-a",
+			});
+			await readA;
+			const rows = store.getState().conversation?.items.map((row) => row.id) ?? [];
+			expect(rows).toEqual([...positionedRows(150, 200).map((row) => row.id), "row-during-b"]);
 		});
 
 		// The hub answers the page before the transcript's first item with an

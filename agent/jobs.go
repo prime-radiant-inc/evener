@@ -191,6 +191,17 @@ type jobManager struct {
 	// stopReceiptsAfterCapture observes the subtree-stop boundary after exact
 	// live receipts are captured and before they are consumed. Nil in production.
 	stopReceiptsAfterCapture func()
+	// testOnlyAfterHubWatchDetach pauses after endHubWatch detaches its config
+	// and before the final terminal send is recorded. Nil in production.
+	testOnlyAfterHubWatchDetach func()
+	// testOnlyBeforeTerminalWatchSend runs inside endHubWatch's window between
+	// releasing the config lock and persisting the terminal send, where a
+	// concurrent prior-notice settlement must not strip the terminal
+	// delivery's eligibility. Nil in production.
+	testOnlyBeforeTerminalWatchSend func()
+	// testOnlyTerminalSendRetryDelay overrides the completion send's retry
+	// cadence in tests. Zero in production keeps the production delay.
+	testOnlyTerminalSendRetryDelay time.Duration
 	// watchReceiptBoundary observes entry into the delegate controller for a
 	// stable-watch receipt. Nil in production; lock-order tests use it to prove
 	// the job manager released its local persistence lock first.

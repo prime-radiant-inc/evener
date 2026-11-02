@@ -4583,8 +4583,24 @@ async function childJourney(page, fixture, { command, incoming, outgoing, screen
       evaluateHere(
         `document.body.textContent.includes(${JSON.stringify(`COMIC_DOCUMENT_BODY_${level}`)}) && !document.querySelector('[data-comic-font][data-session-ref]')`,
       );
+    // The Comic feed can follow a new frame back to the live tail between the
+    // mounted check and the click, virtualizing the labelled entry (and its
+    // anchor) out of the DOM. Each click attempt scrolls the entry back into
+    // view when the anchor is missing, then clicks the live element.
+    const clickExpression = `(() => {
+      const find = () => [...window.__comicRoot().querySelectorAll('a')].find(node=>node.textContent===${JSON.stringify(label)});
+      const first = find();
+      if (first) return first;
+      const port = window.__comicRoot()?.querySelector('[data-comic-scroll]')?.firstElementChild;
+      if (!port) return null;
+      const entry = [...port.querySelectorAll('[data-comic-entry]')].find(node => node.textContent.includes(${JSON.stringify(label)}));
+      const deltaY = entry ? entry.getBoundingClientRect().top - port.getBoundingClientRect().top - 24 : -port.clientHeight * .7;
+      port.dispatchEvent(new WheelEvent('wheel', {bubbles:true, deltaY}));
+      port.scrollTop += deltaY;
+      return find();
+    })()`;
     try {
-      await nativeClick(page, `activate ${label}`, linkExpression);
+      await nativeClick(page, `activate ${label}`, clickExpression);
       await until(`${label} actual file content with Comic unmounted`, documentVisible);
     } finally {
       const activation = await evaluateHere(`(async () => {

@@ -1375,7 +1375,14 @@ test.each([
         model={model}
         config={makeTranscriptDisplayConfig(
           hideSource
-            ? { kind: "custom", toolIntent: false, toolCalls: false, reasoning: false, expandByDefault: false }
+            ? {
+                kind: "custom",
+                toolIntent: false,
+                toolCalls: false,
+                reasoning: false,
+                expandByDefault: false,
+                thinkingOpenByDefault: false,
+              }
             : { kind: "preset", level: "tools" },
         )}
         surface="readOnly"

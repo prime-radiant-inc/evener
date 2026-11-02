@@ -299,6 +299,8 @@ func writeForkChildWithConfig(fs afero.Fs, stateDir, parentID string, parentHead
 	if config != nil {
 		childConfig = config.Clone()
 	}
+	// A fork or aside is a new ordinary session, not a resumed Manager.
+	childConfig.Manager = false
 	// A fork child is written as a root, so it keeps a restricted root parent's
 	// memory-save verdict but never inherits a delegate parent's save-tool
 	// removal: the child registers the save tools when it launches. An aside

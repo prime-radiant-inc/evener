@@ -562,6 +562,10 @@ type hubRelayProgressFixture struct {
 }
 
 func newHubRelayProgressFixture(t *testing.T, hooks hubcore.RelayLifecycleHooks) hubRelayProgressFixture {
+	return newHubRelayProgressFixtureWithSessionTools(t, hooks, true)
+}
+
+func newHubRelayProgressFixtureWithSessionTools(t *testing.T, hooks hubcore.RelayLifecycleHooks, supported bool) hubRelayProgressFixture {
 	t.Helper()
 	// Not parallel: observes the package's relay functions and pending wait.
 	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
@@ -623,6 +627,9 @@ func newHubRelayProgressFixture(t *testing.T, hooks hubcore.RelayLifecycleHooks)
 		defer inventoryMu.Unlock()
 		return slices.Clone(inventory)
 	}, daemonHTTP.Client())
+	if supported {
+		configureObservationTargetSessionTools(daemon, source)
+	}
 	remapChild := func(replacement rendezvous.Entry) {
 		inventoryMu.Lock()
 		defer inventoryMu.Unlock()
@@ -638,7 +645,9 @@ func newHubRelayProgressFixture(t *testing.T, hooks hubcore.RelayLifecycleHooks)
 	hooks.AfterIdleDelete = func(id string) { idleDeleted <- id }
 	hubServer := newHubAppServer(hubcore.WebConfig{
 		HubStateRoot: t.TempDir(), Past: hubcore.NewPastIndex(""),
-		RelayHooks: hooks,
+		// A real hub has a durable identity, which is what makes it advertise
+		// session tools to peers: remote completion watches are refused without it.
+		HubID: "hub-test", RelayHooks: hooks,
 	}, sources)
 	hubHTTP := httptest.NewServer(http.HandlerFunc(hubServer.ServeWebSocket))
 	t.Cleanup(hubHTTP.Close)

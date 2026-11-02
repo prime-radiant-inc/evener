@@ -169,8 +169,21 @@ func (s *RemoteHubSource) Online() bool {
 	return s.online()
 }
 
+// SessionToolsSupported reports whether the currently attached remote hub
+// negotiated the SessionTools feature. A missing connection is unknown and is
+// treated as unsupported by callers admitting observation watches.
+func (s *RemoteHubSource) SessionToolsSupported(ctx context.Context) (supported, known bool) {
+	client, err := s.resolveClient(ctx)
+	if err != nil || client == nil {
+		return false, false
+	}
+	return client.Features().SessionTools, true
+}
+
 // call forwards one request over the current remote client and translates any
-// refs in the response back into the controller namespace.
+// refs in the response back into the controller namespace. Errors bypass
+// response translation; StartThread translates its createdRef error evidence
+// separately, since an error has no response to translate.
 //
 // A caller cancellation or deadline stays raw at every step, exactly as
 // mutationCall and LocalDaemonSource.withClientCallMapper leave ctx.Err(): the
@@ -228,13 +241,44 @@ func (s *RemoteHubSource) callOn(ctx context.Context, client *appwire.Client, me
 	if err := ctx.Err(); err != nil {
 		return s.mapCallError(err)
 	}
-	if err := client.Request(ctx, method, params, out); err != nil {
+	if err := s.requestOn(ctx, client, method, params, out); err != nil {
 		if cerr := ctx.Err(); cerr != nil {
 			return cerr
 		}
 		return s.mapCallError(err)
 	}
 	return s.translateOut(client, out)
+}
+
+type managerInputCallerKey struct{}
+
+// WithManagerInputCaller marks work admitted by the local Manager's bound hub
+// owner. Wire parameters cannot construct a Go context value.
+func WithManagerInputCaller(ctx context.Context, callerRef string) context.Context {
+	return context.WithValue(ctx, managerInputCallerKey{}, callerRef)
+}
+
+func (s *RemoteHubSource) requestOn(ctx context.Context, client *appwire.Client, method string, params any, out any) error {
+	if caller, _ := ctx.Value(managerInputCallerKey{}).(string); caller != "" && (method == appwire.MethodTurnStart || method == appwire.MethodTurnQueue || method == appwire.MethodTurnSteer || method == appwire.MethodTurnDrainAsSteer || method == appwire.MethodTurnPromoteQueuedAsSteer || method == appwire.MethodEvenerSandboxEscalationResolve) {
+		// The source translated the target ref first. The caller metadata came
+		// from the bound hub owner and must never reach the ordinary human RPC.
+		encoded, err := json.Marshal(params)
+		if err != nil {
+			return err
+		}
+		var fields map[string]json.RawMessage
+		if err := json.Unmarshal(encoded, &fields); err != nil {
+			return err
+		}
+		delete(fields, "managerProof")
+		encoded, err = json.Marshal(fields)
+		if err != nil {
+			return err
+		}
+		params = appwire.SessionToolsInput{CallerRef: caller, Method: method, Params: encoded}
+		method = appwire.MethodHubSessionToolsInput
+	}
+	return client.Request(ctx, method, params, out)
 }
 
 // mapCallError mirrors LocalDaemonSource's error shapes for a remote hub: a
