@@ -181,7 +181,7 @@ runtime meaning across flags.
 | `--fast-cheap-model` | `""` | auxiliary model for side calls (naming, summarization, web fetch); 'provider/model' may use a different provider than --model, or a bare 'model' for the active provider |
 | `--vision-model` | `""` | vision side-channel model: 'off' disables image description, 'provider/model' or bare 'model' routes it (default: the session model) |
 | `--dir` | `""` | working directory (default: current directory) |
-| `--system-prompt` | `""` | path to a custom system prompt file |
+| `--system-prompt` | `""` | path to a custom system prompt file, replacing only the persona block of the system prompt; tool documentation, global AGENTS.md guidance and the skill catalog are still appended after it |
 | `--state-dir` | `""` | override runtime state directory (default: XDG-computed) |
 | `--disable-memory` | `false` | disable native memory for this session, including on resume |
 | `--resume` | `""` | resume a previous session by id |
