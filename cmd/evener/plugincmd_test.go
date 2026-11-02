@@ -884,6 +884,35 @@ func TestPluginCommandsRejectTrailingArguments(t *testing.T) {
 	}
 }
 
+// TestPluginCommandsOptionsFirstFormsWork pins the other half of the arity
+// contract: the options-first forms the rejection errors teach are exactly
+// the ones the parser accepts, so a user following the error's advice
+// succeeds on the next try.
+func TestPluginCommandsOptionsFirstFormsWork(t *testing.T) {
+	cases := []struct {
+		name string
+		args []string
+	}{
+		{name: "auto-upgrade --off", args: []string{"auto-upgrade", "--off", "widget@acme"}},
+		{name: "marketplace browse --json", args: []string{"marketplace", "browse", "--json", "acme"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+			m := &pluginCallCapture{}
+			swapPluginManager(t, m)
+
+			var out, errb bytes.Buffer
+			if err := runPlugin(tc.args, nil, &out, &errb); err != nil {
+				t.Fatalf("runPlugin(%v): %v\nstderr: %s", tc.args, err, errb.String())
+			}
+			if m.calls != 1 {
+				t.Fatalf("a manager method was called %d times for the options-first form, want 1", m.calls)
+			}
+		})
+	}
+}
+
 func TestPluginDoctor_JSON(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	var out, errb bytes.Buffer
