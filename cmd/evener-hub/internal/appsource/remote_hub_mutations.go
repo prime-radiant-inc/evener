@@ -219,6 +219,11 @@ func (s *RemoteHubSource) StopJob(ctx context.Context, request appwire.SessionSt
 	return out, err
 }
 
+// StopsJobsThroughPeerControl reports that StopJob forwards into the peer
+// hub's session control, which re-validates the request against the session
+// its ref addresses.
+func (s *RemoteHubSource) StopsJobsThroughPeerControl() bool { return true }
+
 func (s *RemoteHubSource) InterruptTurn(ctx context.Context, params appwire.TurnInterruptParams) (appwire.TurnInterruptResponse, error) {
 	ref, err := s.toRemoteRef(params.Ref, params.ThreadID)
 	if err != nil {

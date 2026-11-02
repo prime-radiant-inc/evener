@@ -768,8 +768,6 @@ func acceptanceWatchCompleted(watches appwire.SessionWatchesResponse, watchID st
 // sessions; each caller owns those through the returned human client.
 func startManagerAcceptanceSSHFixture(ctx context.Context, t *testing.T, provider *fakellm.Server) (hubStack, *appwire.Client, *hostSSH, string, string, string) {
 	t.Helper()
-	local := startHubStack(t, provider)
-	human := local.dialRPC(ctx, t)
 	host := newHostSSH(t, "localhost", "")
 	hostDir := filepath.Join(os.TempDir(), "evener-manager-accept-"+hostDeployRunID())
 	host.prepareDeployDir(hostDir)
@@ -785,15 +783,18 @@ func startManagerAcceptanceSSHFixture(ctx context.Context, t *testing.T, provide
 		cleanupManagerAcceptanceFixture(t, host, addr, hostDir+"/"+hostDeployToml, hostDir+"/bin/evener-real", hostDir)
 	})
 	host.writeFile(hostDir+"/"+hostDeployToml, hostDeployConfig(hostDir, addr))
-	host.mustRun("cp " + shellquote.RemoteWord(filepath.Join(local.binDir, "evener")) + " " + shellquote.RemoteWord(hostDir+"/bin/evener-real"))
+	localBinary := filepath.Join(liveStackBinaries(t, repoRootForTestMain()), "evener")
+	host.mustRun("cp " + shellquote.RemoteWord(localBinary) + " " + shellquote.RemoteWord(hostDir+"/bin/evener-real"))
 	host.mustRun("mkdir -p " + shellquote.RemoteWord(hostDir+"/home/config/evener") + " " + shellquote.RemoteWord(hostDir+"/workspace"))
 	host.writeFile(hostDir+"/home/config/evener/providers.toml", []byte(fmt.Sprintf("default = \"fake\"\n[providers.fake]\nbase = \"openai-compatible\"\nbase_url = %q\napi_key = \"fakellm-not-a-secret\"\n", provider.BaseURL())))
 	host.writeFile(hostDir+"/bin/evener", []byte(fmt.Sprintf("#!/bin/sh\nexport HOME=%s XDG_CONFIG_HOME=%s XDG_STATE_HOME=%s XDG_CACHE_HOME=%s EVENER_PROVIDERS_CONFIG=%s\nexec %s \"$@\"\n", shellquote.RemoteWord(hostDir+"/home"), shellquote.RemoteWord(hostDir+"/home/config"), shellquote.RemoteWord(hostDir+"/home/state"), shellquote.RemoteWord(hostDir+"/home/cache"), shellquote.RemoteWord(hostDir+"/home/config/evener/providers.toml"), shellquote.RemoteWord(hostDir+"/bin/evener-real"))))
 	host.mustRun("chmod 700 " + shellquote.RemoteWord(hostDir+"/bin/evener"))
-	sshDir := hostDeploySSHWrapper(t, hostDir)
+	sshDir := hostDeploySSHWrapper(t, hostDir, hostDir+"/home/config/evener/providers.toml")
 	t.Setenv("PATH", sshDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	local := startHubStack(t, provider)
+	human := local.dialRPC(ctx, t)
 	const remoteHost = "accept-remote"
-	if _, err := hostAddCommittedRow(ctx, human, appwire.HostAddParams{Entry: appwire.HostEntry{Name: remoteHost, Address: "localhost", EvenerPath: hostDir + "/bin/evener", ConfigPath: hostDir + "/" + hostDeployToml, Addr: addr}}); err != nil {
+	if _, err := hostAddCommittedRow(ctx, human, appwire.HostAddParams{Entry: appwire.HostEntry{Name: remoteHost, Address: "localhost", EvenerPath: hostDir + "/bin/evener-real", ConfigPath: hostDir + "/" + hostDeployToml, Addr: addr}}); err != nil {
 		t.Fatal(err)
 	}
 	awaitHostAttachedWithin(ctx, t, human, remoteHost, hostDeployAttachTimeout)

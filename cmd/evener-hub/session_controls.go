@@ -5,6 +5,7 @@ import (
 	"strings"
 	"time"
 
+	"primeradiant.com/evener/agent"
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener-hub/internal/appsource"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
@@ -175,7 +176,12 @@ func stopJobControl(ctx context.Context, cfg hubcore.WebConfig, sources *appsour
 	summary, err := readSessionActivity(ctx, cfg, sources, ref, func(source appsource.Source) (appwire.SessionActivitySummary, error) {
 		return source.ThreadActivityRead(ctx, appwire.SessionActivityReadParams{Ref: ref})
 	}, func(entry hubcore.PastEntry) (appwire.SessionActivitySummary, error) {
-		return appwire.SessionActivitySummary{}, appwire.Unavailable("job stop needs a live owner")
+		// A delegate thread has no daemon entry of its own, so its live view
+		// resolves through the past index; its saved state still reports the
+		// owning ancestry. The dispatch below requires a live root daemon, so
+		// a genuinely dead tree still refuses there.
+		params := appwire.SessionActivityReadParams{Ref: appwire.Ref{SourceID: appwire.LocalSourceID, ThreadID: entry.Meta.ID}.String()}
+		return agent.LoadSessionActivitySummary(ctx, entry.StateDir, entry.Meta.ID, params)
 	})
 	if err != nil {
 		return out, err
@@ -210,6 +216,15 @@ func stopJobControl(ctx context.Context, cfg hubcore.WebConfig, sources *appsour
 		if !ok {
 			return out, appwire.Unavailable("this session's source cannot stop jobs")
 		}
+		// The daemon's job-stop owner requires the root ref as its mutation
+		// target, but a peer hub re-validates the request against the session
+		// its ref addresses: forwarding the root there makes a descendant-
+		// owned job read as not owned by the addressed session, so a peer
+		// control keeps the addressed ref instead.
+		forwardRef := ownerRef
+		if peer, peerControl := stopper.(appsource.PeerHubJobStopSource); peerControl && peer.StopsJobsThroughPeerControl() {
+			forwardRef = ref
+		}
 		if request.Job != nil {
 			job, err := source.JobGet(ctx, appwire.JobsGetParams{Ref: ownerRef, JobID: request.Job.JobID})
 			if err != nil {
@@ -220,11 +235,11 @@ func stopJobControl(ctx context.Context, cfg hubcore.WebConfig, sources *appsour
 				return out, appwire.InvalidParams("job is not a live shell owned by the addressed session")
 			}
 			updatedJob := *request.Job
-			updatedJob.Ref = ownerRef
+			updatedJob.Ref = forwardRef
 			request.Job = &updatedJob
 		} else {
 			delegate := *request.OwnedDelegate
-			delegate.Ref = ownerRef
+			delegate.Ref = forwardRef
 			request.OwnedDelegate = &delegate
 		}
 		return stopper.StopJob(ctx, request)

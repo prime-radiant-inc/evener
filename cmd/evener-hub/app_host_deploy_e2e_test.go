@@ -369,17 +369,21 @@ plugin_auto_upgrade = false
 `, addr, stateRoot, stateRoot+"/run", stateRoot+"/projects/*", stateRoot+"/index.db"))
 }
 
-func hostDeployRemoteEnvironment(hostDir string) string {
+func hostDeployRemoteEnvironment(hostDir string, providerConfig ...string) string {
 	home := hostDir + "/home"
-	return fmt.Sprintf("export HOME=%s XDG_CONFIG_HOME=%s XDG_STATE_HOME=%s XDG_CACHE_HOME=%s; unset EVENER_PROVIDERS_CONFIG EVENER_CREDENTIALS_CONFIG EVENER_STATE_DIR; ",
+	env := fmt.Sprintf("export HOME=%s XDG_CONFIG_HOME=%s XDG_STATE_HOME=%s XDG_CACHE_HOME=%s; unset EVENER_PROVIDERS_CONFIG EVENER_CREDENTIALS_CONFIG EVENER_STATE_DIR; ",
 		shellquote.RemoteWord(home), shellquote.RemoteWord(home+"/config"), shellquote.RemoteWord(home+"/state"), shellquote.RemoteWord(home+"/cache"))
+	if len(providerConfig) != 0 {
+		env += "export EVENER_PROVIDERS_CONFIG=" + shellquote.RemoteWord(providerConfig[0]) + "; "
+	}
+	return env
 }
 
 // hostDeploySSHWrapper supplies the remote environment at the process boundary.
 // It forwards options, stdin, stdout, stderr and exit status to the real ssh.
 // The runner terminates local options with --, then names the destination and
 // remote command words, which OpenSSH joins with spaces for the remote shell.
-func hostDeploySSHWrapper(t *testing.T, hostDir string) string {
+func hostDeploySSHWrapper(t *testing.T, hostDir string, providerConfig ...string) string {
 	t.Helper()
 	ssh, err := exec.LookPath("ssh")
 	if err != nil {
@@ -399,7 +403,7 @@ for ((i=0; i<${#args[@]}; i++)); do
 done
 printf 'private SSH fixture requires -- destination command\n' >&2
 exit 2
-`, bash, shellquote.RemoteWord(hostDeployRemoteEnvironment(hostDir)), shellquote.RemoteWord(ssh))
+	`, bash, shellquote.RemoteWord(hostDeployRemoteEnvironment(hostDir, providerConfig...)), shellquote.RemoteWord(ssh))
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "ssh"), []byte(script), 0o700); err != nil {
 		t.Fatal(err)

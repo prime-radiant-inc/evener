@@ -15,6 +15,8 @@ import (
 	"time"
 
 	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/execsupport/shellquote"
+	"primeradiant.com/evener/internal/e2ecap"
 	"primeradiant.com/evener/test/e2e/fakellm"
 )
 
@@ -44,35 +46,63 @@ func TestE2E_ManagerLocalTypedJobStop(t *testing.T) {
 				t.Fatalf("unexpected worker request: %v", worker.Texts())
 			}
 
-			jobOwner := workerRef
-			jobCaller := worker
-			var parent, descendant, sibling appwire.SessionDelegate
+			// Both modes stop delegate-owned work inside a live subtree: job
+			// mode targets a direct delegate's shell through the session that
+			// owns it, owned_delegate mode stops the root's owned subtree with
+			// a deeper-owned shell.
+			worker.RespondToolCall("delegate", map[string]any{"prompt": "TYPED-STOP-PARENT"})
+			parentCall, workerRound := typedStopDelegateRounds(ctx, t, provider, "TYPED-STOP-PARENT")
+			parent := typedStopDelegate(ctx, t, client, workerRef, "TYPED-STOP-PARENT")
+			shellCaller, jobOwner := parentCall, parent.ChildRef
+			var descendant, sibling appwire.SessionDelegate
 			if mode == "owned_delegate" {
-				worker.RespondToolCall("delegate", map[string]any{"prompt": "TYPED-STOP-PARENT"})
-				parentCall, workerRound := typedStopDelegateRounds(ctx, t, provider, "TYPED-STOP-PARENT")
-				parent = typedStopDelegate(ctx, t, client, workerRef, "TYPED-STOP-PARENT")
 				parentCall.RespondToolCall("delegate", map[string]any{"prompt": "TYPED-STOP-DESCENDANT"})
-				jobCaller, _ = typedStopDelegateRounds(ctx, t, provider, "TYPED-STOP-DESCENDANT")
+				descendantCall, _ := typedStopDelegateRounds(ctx, t, provider, "TYPED-STOP-DESCENDANT")
 				descendant = typedStopDelegate(ctx, t, client, workerRef, "TYPED-STOP-DESCENDANT")
+				if descendant.ParentDelegateID != parent.DelegateID || parent.Terminal || descendant.Terminal {
+					t.Fatalf("invalid live subtree fixture: parent=%+v descendant=%+v", parent, descendant)
+				}
+				shellCaller, jobOwner = descendantCall, descendant.ChildRef
 				workerRound.RespondToolCall("delegate", map[string]any{"prompt": "TYPED-STOP-SIBLING"})
 				typedStopDelegateRounds(ctx, t, provider, "TYPED-STOP-SIBLING")
 				sibling = typedStopDelegate(ctx, t, client, workerRef, "TYPED-STOP-SIBLING")
-				if descendant.ParentDelegateID != parent.DelegateID || sibling.ParentDelegateID != "" || parent.Terminal || descendant.Terminal || sibling.Terminal {
-					t.Fatalf("invalid live subtree fixture: parent=%+v descendant=%+v sibling=%+v", parent, descendant, sibling)
+				if sibling.ParentDelegateID != "" || sibling.Terminal {
+					t.Fatalf("invalid live subtree fixture: sibling=%+v", sibling)
 				}
-				jobOwner = descendant.ChildRef
+			} else {
+				// The worker's open round stays unanswered: the shared
+				// provider is FIFO, so a round consumed here would be mistaken
+				// for the Manager's result.
+				_ = workerRound
 			}
-			process := typedStopStartShell(ctx, t, provider, jobCaller, shutdown).process
+			process := typedStopStartShell(ctx, t, provider, shellCaller, shutdown).process
 			jobs, err := client.ThreadJobsList(ctx, appwire.SessionActivityListParams{Ref: jobOwner})
 			if err != nil || len(jobs.Jobs) != 1 || jobs.Jobs[0].Terminal || jobs.Jobs[0].OwnerRef != jobOwner {
 				t.Fatalf("real background shell was not admitted: jobs=%+v err=%v", jobs, err)
 			}
 			jobID := jobs.Jobs[0].JobID
-			arguments := map[string]any{"ref": workerRef, "maxWaitMs": 10000}
+			// The hub's roster admits a fresh delegate alias asynchronously,
+			// and the stop resolves the addressed session through that roster:
+			// await the alias with the same activity read the stop uses.
+			aliasDeadline := time.Now().Add(30 * time.Second)
+			for {
+				_, err := clientRequest[appwire.SessionActivitySummary](ctx, client, appwire.MethodEvenerThreadActivityRead, appwire.SessionActivityReadParams{Ref: jobOwner})
+				if err == nil {
+					break
+				}
+				if time.Now().After(aliasDeadline) {
+					t.Fatalf("descendant alias never became addressable at the local hub: %v", err)
+				}
+				time.Sleep(200 * time.Millisecond)
+			}
+			arguments := map[string]any{"maxWaitMs": 10000}
 			target := jobID
 			if mode == "job" {
+				// The job mode addresses the session that owns the shell.
+				arguments["ref"] = jobOwner
 				arguments["jobId"] = jobID
 			} else {
+				arguments["ref"] = workerRef
 				target = parent.DelegateID
 				arguments["delegateId"] = target
 			}
@@ -109,6 +139,146 @@ func TestE2E_ManagerLocalTypedJobStop(t *testing.T) {
 			}
 			t.Logf("%s target %s settled, shell job %s %s and PID %d gone", mode, target, jobID, jobStatus, process.Pid)
 		})
+	}
+}
+
+// TestE2E_ManagerRemoteDescendantJobStop sends stop through a controller hub to
+// a real SSH-hosted hub. A direct delegate of the remote root owns the shell
+// job; the Manager addresses that delegate.
+func TestE2E_ManagerRemoteDescendantJobStop(t *testing.T) {
+	if os.Getenv("EVENER_SSH_E2E") != "1" || os.Getenv("EVENER_SSH_E2E_DEPLOY") != "1" {
+		t.Skip("requires EVENER_SSH_E2E=1 EVENER_SSH_E2E_DEPLOY=1 and the disposable localhost SSH fixture")
+	}
+	e2ecap.RequireLoopbackBind(t)
+	e2ecap.RequireProcessInspect(t)
+	if testing.Short() {
+		t.Skip("live-stack e2e: builds binaries and runs two hubs + daemon")
+	}
+	probe, done := context.WithTimeout(context.Background(), 5*time.Second)
+	defer done()
+	if err := exec.CommandContext(probe, "ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=3", "localhost", "true").Run(); err != nil {
+		t.Fatalf("required remote host unavailable: %v", err)
+	}
+	provider, err := fakellm.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(provider.Close)
+	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
+	defer cancel()
+	local, controller, host, hostDir, addr, remoteHost := startManagerAcceptanceSSHFixture(ctx, t, provider)
+	managerRef := startManagerThread(ctx, t, controller, local, "REMOTE-STOP-MANAGER")
+	managerCall := typedStopNext(ctx, t, provider)
+	if !slices.Contains(managerCall.Texts(), "user: REMOTE-STOP-MANAGER") {
+		t.Fatalf("unexpected Manager request: %v", managerCall.Texts())
+	}
+	managerCall.RespondToolCall("model_list", map[string]any{"hub": map[string]any{"host": remoteHost, "refresh": true}})
+	managerCall = typedStopNext(ctx, t, provider)
+	var modelResult appwire.SessionOperationResponse
+	if !managerToolResult(managerCall, &modelResult) || modelResult.Models == nil {
+		t.Fatalf("remote model refresh failed: %v", managerCall.Texts())
+	}
+	selectedModel := ""
+	for _, model := range modelResult.Models.Data {
+		if model.Provider == "fake" && model.Model == fakellm.ModelID {
+			selectedModel = model.Provider + "/" + model.Model
+			break
+		}
+	}
+	if selectedModel == "" {
+		t.Fatalf("fake model missing from remote catalog: %+v", modelResult.Models.Data)
+	}
+	token, err := os.ReadFile(hostDir + "/state/auth-token")
+	if err != nil {
+		t.Fatal(err)
+	}
+	remoteStack := hubStack{addr: addr, token: strings.TrimSpace(string(token)), workDir: hostDir + "/workspace", home: hostDir + "/home"}
+	remoteClient := remoteStack.dialRPC(ctx, t)
+	remoteStack.model = selectedModel
+	started, err := clientRequest[appwire.ThreadStartResponse](ctx, remoteClient, appwire.MethodThreadStart, appwire.ThreadStartParams{
+		Harness: "evener", CWD: remoteStack.workDir, Model: remoteStack.model,
+		LaunchOverrides: &appwire.LaunchConfigLayer{Sandbox: "off"},
+		Input:           []appwire.InputItem{{Type: "text", Text: "REMOTE-STOP-WORKER"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	workerRef := started.Thread.Evener.Ref
+	typedStopWorkerShutdown(t, remoteStack, workerRef)
+	worker := typedStopNext(ctx, t, provider)
+	if !slices.Contains(worker.Texts(), "user: REMOTE-STOP-WORKER") {
+		t.Fatalf("unexpected remote worker request: %v", worker.Texts())
+	}
+	worker.RespondToolCall("delegate", map[string]any{"prompt": "REMOTE-STOP-PARENT"})
+	parentCall, workerRound := typedStopDelegateRounds(ctx, t, provider, "REMOTE-STOP-PARENT")
+	parent := typedStopDelegate(ctx, t, remoteClient, workerRef, "REMOTE-STOP-PARENT")
+	// Store the PID on the remote host so the test proves remote process settlement.
+	pidPath := hostDir + "/workspace/manager-stop.pid"
+	parentCall.RespondToolCall("shell", map[string]any{
+		"command": fmt.Sprintf("printf '%%s\\n' $$ > %s; exec sleep 300", shellquote.RemoteWord(pidPath)),
+		"mode":    "background", "intent": "Starting the owned process for typed stop verification.",
+	})
+	// Hold the delegate's next model round open, exactly as the local stop
+	// fixture holds the owner's: the shared provider is FIFO, so this
+	// unconsumed round would otherwise be mistaken for the Manager's result.
+	parentContinuation := typedStopNext(ctx, t, provider)
+	_ = parentContinuation
+	pidBytes, err := host.runStdout("for i in $(seq 1 300); do if test -s " + shellquote.RemoteWord(pidPath) + "; then cat " + shellquote.RemoteWord(pidPath) + "; exit 0; fi; sleep .1; done; exit 1")
+	if err != nil {
+		t.Fatalf("await remote shell PID: %v", err)
+	}
+	pid, err := strconv.Atoi(strings.TrimSpace(string(pidBytes)))
+	if err != nil || pid < 1 {
+		t.Fatalf("invalid remote shell PID %q: %v", pidBytes, err)
+	}
+	if _, err := host.run("kill -0 " + strconv.Itoa(pid)); err != nil {
+		t.Fatalf("admitted remote shell is not alive: pid=%d err=%v", pid, err)
+	}
+	// The Manager addresses the owning delegate in the remote host's namespace.
+	parentID, err := appwire.ParseRef(parent.ChildRef)
+	if err != nil {
+		t.Fatal(err)
+	}
+	controllerParentRef := (appwire.Ref{SourceID: remoteHost, ThreadID: parentID.ThreadID}).String()
+	jobs, err := remoteClient.ThreadJobsList(ctx, appwire.SessionActivityListParams{Ref: workerRef, Scope: appwire.SessionActivityScopeSubtree})
+	var parentJob *appwire.JobActivityJob
+	for i := range jobs.Jobs {
+		if jobs.Jobs[i].OwnerSessionID == parentID.ThreadID && !jobs.Jobs[i].Terminal {
+			parentJob = &jobs.Jobs[i]
+			break
+		}
+	}
+	if err != nil || parentJob == nil {
+		t.Fatalf("real delegate shell was not admitted: parent=%+v jobs=%+v err=%v", parent, jobs, err)
+	}
+	// The hosting hub's roster admits a fresh delegate alias asynchronously,
+	// and the stop addresses that alias: await it through the same activity
+	// read the stop control resolves, so the stop does not race the roster.
+	aliasDeadline := time.Now().Add(30 * time.Second)
+	for {
+		_, err := clientRequest[appwire.SessionActivitySummary](ctx, controller, appwire.MethodEvenerThreadActivityRead, appwire.SessionActivityReadParams{Ref: controllerParentRef})
+		if err == nil {
+			break
+		}
+		if time.Now().After(aliasDeadline) {
+			t.Fatalf("descendant alias never became addressable at the hosting hub: %v", err)
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+	// workerRound is intentionally held open just like the owner's model round in
+	// the local stop fixture; its pending delegate call is not part of this stop.
+	_ = workerRound
+	managerCall.RespondToolCall("job_stop", map[string]any{"hub": map[string]any{"mode": "job", "arguments": map[string]any{"ref": controllerParentRef, "jobId": parentJob.JobID, "maxWaitMs": 10000}}})
+	resultRound := typedStopNext(ctx, t, provider)
+	var stopOutcome appwire.SessionOperationResponse
+	if !managerToolResult(resultRound, &stopOutcome) || stopOutcome.Stop == nil || stopOutcome.Stop.Job == nil || stopOutcome.Stop.Job.JobID != parentJob.JobID || stopOutcome.Actor.ManagerRef != managerRef {
+		var detail any
+		managerToolResult(resultRound, &detail)
+		t.Fatalf("remote descendant job stop did not return the target outcome: outcome=%+v detail=%+v refusal=%q texts=%q", stopOutcome, detail, managerToolRefusal(resultRound), resultRound.Texts())
+	}
+	settled, err := host.run("for i in $(seq 1 50); do if ! kill -0 " + strconv.Itoa(pid) + " 2>/dev/null; then exit 0; fi; sleep .1; done; exit 1")
+	if err != nil {
+		t.Fatalf("remote descendant stop returned but PID %d did not exit: %s", pid, settled)
 	}
 }
 
