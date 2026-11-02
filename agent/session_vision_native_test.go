@@ -2,10 +2,12 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -965,4 +967,119 @@ func visionModelOf(reqs []llm.Request) string {
 		return ""
 	}
 	return reqs[0].Model
+}
+
+// visionWarningMessages collects every warning message emitted while f runs.
+func visionWarningMessages(sess *Session, f func()) []string {
+	var msgs []string
+	done := make(chan struct{})
+	sess.ConsumeEventsLossless(func(ev events.SessionEvent) {
+		if w, ok := ev.Data.(events.WarningData); ok {
+			msgs = append(msgs, w.Message)
+		}
+	}, func() { close(done) })
+	f()
+	sess.Close()
+	<-done
+	return msgs
+}
+
+// A typed provider failure stays diagnosable through structured metadata —
+// provider, status, code — while the provider's own response text, which can
+// echo request or credential material, reaches neither steering (sent to the
+// session's own provider) nor the warning.
+func TestDescribeImage_ProviderFailureExposesOnlyStructuredCause(t *testing.T) {
+	t.Parallel()
+	openai := &fakeErrAdapter{name: "openai", steps: []func(req llm.Request) (llm.Response, error){
+		func(req llm.Request) (llm.Response, error) {
+			return llm.Response{}, visionRouteError("openai")
+		},
+	}}
+	sess := newSession(t, withAdapter(openai), withProfile(NewOpenAIProfile("m")),
+		withConfig(SessionConfig{VisionModel: "openai/vision-m"}))
+
+	var result visionSideChannelResult
+	msgs := visionWarningMessages(sess, func() {
+		result = sess.describeImageCall(context.Background(), visionImageResult())
+	})
+	if result.outcome != visionSideChannelProviderFailure {
+		t.Fatalf("outcome = %v, want provider failure", result.outcome)
+	}
+	for _, m := range msgs {
+		if strings.Contains(m, "vision route exploded") {
+			t.Fatalf("warning message = %q, want the provider's own text kept out", m)
+		}
+	}
+	steering := visionFailureSteering("/tmp/a.png", result)
+	if !strings.Contains(steering, "status 500") {
+		t.Fatalf("steering = %q, want the structured status", steering)
+	}
+	if strings.Contains(steering, "vision route exploded") {
+		t.Fatalf("steering = %q, want the provider's own text kept out", steering)
+	}
+}
+
+// A rejection that echoes credential material must not leak it into steering
+// (sent to the session's provider) or the warning; the structured status still
+// names the cause.
+func TestDescribeImage_CredentialEchoStaysOutOfSteeringAndWarning(t *testing.T) {
+	t.Parallel()
+	const echoed = "sk-live-abc123"
+	openai := &fakeErrAdapter{name: "openai", steps: []func(req llm.Request) (llm.Response, error){
+		func(req llm.Request) (llm.Response, error) {
+			raw := map[string]any{"error": map[string]any{"code": "invalid_api_key"}}
+			return llm.Response{}, llm.ErrorFromHTTPStatus("openai", 401, "invalid x-api-key "+echoed, raw, nil)
+		},
+	}}
+	sess := newSession(t, withAdapter(openai), withProfile(NewOpenAIProfile("m")),
+		withConfig(SessionConfig{VisionModel: "openai/vision-m"}))
+
+	var result visionSideChannelResult
+	msgs := visionWarningMessages(sess, func() {
+		result = sess.describeImageCall(context.Background(), visionImageResult())
+	})
+	if result.outcome != visionSideChannelProviderFailure {
+		t.Fatalf("outcome = %v, want provider failure", result.outcome)
+	}
+	steering := visionFailureSteering("/tmp/a.png", result)
+	if strings.Contains(steering, echoed) {
+		t.Fatalf("steering = %q, want the echoed credential kept out", steering)
+	}
+	if !strings.Contains(steering, "status 401") {
+		t.Fatalf("steering = %q, want the structured status", steering)
+	}
+	for _, m := range msgs {
+		if strings.Contains(m, echoed) {
+			t.Fatalf("warning message = %q, want the echoed credential kept out", m)
+		}
+	}
+}
+
+// An untyped error keeps the sanitized shape: request URLs and transport
+// details an arbitrary error may carry must not reach the warning.
+func TestDescribeImage_UntypedFailureWarningStaysSanitized(t *testing.T) {
+	t.Parallel()
+	openai := &fakeErrAdapter{name: "openai", steps: []func(req llm.Request) (llm.Response, error){
+		func(req llm.Request) (llm.Response, error) {
+			return llm.Response{}, errors.New("dial https://request.example/secret failed")
+		},
+	}}
+	sess := newSession(t, withAdapter(openai), withProfile(NewOpenAIProfile("m")),
+		withConfig(SessionConfig{VisionModel: "openai/vision-m"}))
+
+	var result visionSideChannelResult
+	msgs := visionWarningMessages(sess, func() {
+		result = sess.describeImageCall(context.Background(), visionImageResult())
+	})
+	if result.outcome != visionSideChannelProviderFailure {
+		t.Fatalf("outcome = %v, want provider failure", result.outcome)
+	}
+	if steering := visionFailureSteering("/tmp/a.png", result); strings.Contains(steering, "request.example") {
+		t.Fatalf("steering = %q, want the untyped error's details kept out", steering)
+	}
+	if slices.ContainsFunc(msgs, func(m string) bool {
+		return strings.Contains(m, "request.example")
+	}) {
+		t.Fatalf("warning messages = %q, want the untyped error's details kept out", msgs)
+	}
 }
