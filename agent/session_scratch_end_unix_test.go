@@ -233,9 +233,19 @@ func TestMetaRecordsARelativeTempDirAsAbsolute(t *testing.T) {
 // allocated in. Recording the refused temp dir would send the hub to a
 // retained old tree there and never to the session's current scratch.
 func TestMetaRecordsTheBaseItsScratchWasAllocatedIn(t *testing.T) {
-	// Not parallel: t.Setenv redirects TMPDIR and XDG_CACHE_HOME, which steer
-	// this process's scratch bases for the duration of the test.
-	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+	// Not parallel: the redirects below steer this process's scratch bases —
+	// HOME as well as XDG_CACHE_HOME, because macOS's user cache dir follows
+	// HOME, not XDG — for the duration of the test.
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CACHE_HOME", filepath.Join(home, "cache"))
+	cache, err := os.UserCacheDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(cache, 0o700); err != nil {
+		t.Fatal(err)
+	}
 	ws := t.TempDir()
 	inside := filepath.Join(ws, "tmp")
 	if err := os.Mkdir(inside, 0o700); err != nil {
@@ -244,7 +254,6 @@ func TestMetaRecordsTheBaseItsScratchWasAllocatedIn(t *testing.T) {
 	t.Setenv("TMPDIR", inside)
 	root := newSession(t, withoutGitSnapshot(), withDir(ws))
 	scratch := mintRootScratch(t, root)
-	t.Cleanup(func() { _ = os.RemoveAll(filepath.Dir(scratch)) })
 	want := filepath.Dir(filepath.Dir(scratch))
 	if got := root.Meta().ScratchTempDir; got != want {
 		t.Errorf("meta ScratchTempDir = %q, want the allocated scratch base %q", got, want)

@@ -50,10 +50,10 @@ func TestEnableSandboxUsesConfiguredTmpBase(t *testing.T) {
 // must search to find the session's directory. Reporting the requested one
 // would send the hub to a tree that never exists.
 func TestSessionScratchBaseReportsTheBaseAllocationChose(t *testing.T) {
-	// Not parallel: t.Setenv redirects XDG_CACHE_HOME, which names this
-	// process's user cache dir — the fallback base — for the duration of the
-	// test.
-	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+	// Not parallel: redirectUserCacheDirForTest points this process's user
+	// cache dir — the fallback base, on every platform — at a test directory
+	// for the duration of the test.
+	redirectUserCacheDirForTest(t)
 	home := t.TempDir()
 	worktree := filepath.Join(home, "worktree")
 	if err := os.MkdirAll(filepath.Join(worktree, ".git"), 0o755); err != nil {
@@ -75,10 +75,11 @@ func TestSessionScratchBaseReportsTheBaseAllocationChose(t *testing.T) {
 	if err := env.EnableSandbox(&policy); err != nil {
 		t.Fatalf("EnableSandbox: %v", err)
 	}
-	t.Cleanup(func() {
-		_ = os.RemoveAll(filepath.Dir(env.SessionScratchDir()))
-		env.DisposeSandboxScratch()
-	})
+	// Disposal removes exactly the env's own scratch directory. The cleanup
+	// must never remove the scratch's PARENT: a contended named scratch falls
+	// back to a disposable directory minted directly under the cache base, and
+	// a parent removal would delete that whole base.
+	t.Cleanup(env.DisposeSandboxScratch)
 	scratch := env.SessionScratchDir()
 	if scratch == "" {
 		t.Fatal("no scratch provisioned")
