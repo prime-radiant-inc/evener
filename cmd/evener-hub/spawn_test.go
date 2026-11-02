@@ -942,6 +942,56 @@ exit 2
 	}
 }
 
+// TestListEvenerLaunchModelContractCarriesEveryDescriptorCapability: the
+// contract's rows are appwire.ModelDescriptor, and a capability the child's
+// contract states — context window, token limits, tools, vision, costs — must
+// survive the hub's parse into the composer's model list, not be rebuilt down
+// to a hand-maintained subset that silently drops whatever was not re-listed
+// (the failure mode behind 52315a95de, fixed wholesale).
+func TestListEvenerLaunchModelContractCarriesEveryDescriptorCapability(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	bin := filepath.Join(dir, "fake-evener")
+	script := `#!/bin/sh
+if [ "$1" = "launch-check" ]; then
+	  printf '{"protocol":"evener-appwire-v7","models":[{"provider":"team","model":"glm-5.3","contextWindow":200000,"maxInputTokens":190000,"maxOutputTokens":32000,"supportsTools":true,"supportsVision":true,"inputCostPerMillion":3,"outputCostPerMillion":15}]}\n'
+	  exit 0
+fi
+exit 2
+`
+	writeFakeEvener(t, bin, script)
+
+	resp, err := listEvenerLaunchModelContract(context.Background(), bin, nil)
+	if err != nil {
+		t.Fatalf("listEvenerLaunchModelContract: %v", err)
+	}
+	if len(resp.Data) != 1 {
+		t.Fatalf("data=%+v, want one model", resp.Data)
+	}
+	got := resp.Data[0]
+	if got.ContextWindow == nil || *got.ContextWindow != 200000 {
+		t.Fatalf("contextWindow=%v, want the stated 200000", got.ContextWindow)
+	}
+	if got.MaxInputTokens == nil || *got.MaxInputTokens != 190000 {
+		t.Fatalf("maxInputTokens=%v, want the stated 190000", got.MaxInputTokens)
+	}
+	if got.MaxOutputTokens == nil || *got.MaxOutputTokens != 32000 {
+		t.Fatalf("maxOutputTokens=%v, want the stated 32000", got.MaxOutputTokens)
+	}
+	if got.SupportsTools == nil || !*got.SupportsTools {
+		t.Fatalf("supportsTools=%v, want the stated tools support", got.SupportsTools)
+	}
+	if got.SupportsVision == nil || !*got.SupportsVision {
+		t.Fatalf("supportsVision=%v, want the stated vision support", got.SupportsVision)
+	}
+	if got.InputCostPerMillion == nil || *got.InputCostPerMillion != 3 {
+		t.Fatalf("inputCostPerMillion=%v, want the stated 3", got.InputCostPerMillion)
+	}
+	if got.OutputCostPerMillion == nil || *got.OutputCostPerMillion != 15 {
+		t.Fatalf("outputCostPerMillion=%v, want the stated 15", got.OutputCostPerMillion)
+	}
+}
+
 // TestListEvenerLaunchModelContractCarriesEffortLevels: the spawn composer
 // builds its effort options from the served descriptor's ladder
 // (catalogEffortLevels), so the child's reasoning-effort facts must survive
