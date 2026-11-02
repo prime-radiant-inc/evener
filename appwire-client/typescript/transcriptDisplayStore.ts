@@ -293,18 +293,18 @@ function decodePatchReply(
 /** The older-hub fallback payload: a custom vector with the presentation
  * field omitted, the shape a hub predating thinkingOpenByDefault accepts
  * (its decoder rejects unknown fields - the compatibility table's "the client
- * works with an older hub, including the combined update/apply path"). Only a
- * divergent custom needs it; when the field equals its migration default the
- * four-field reading is the same canonical config. The payload is built raw
- * because normalizing would re-add the field through the migration fixup. The
- * reader's preference stays in the local config; the hub default keeps the
- * migration default. Removal condition: delete with the four-field decode
- * acceptance once the minimum supported hub carries the field. */
+ * works with an older hub, including the combined update/apply path"). Every
+ * custom payload needs it: the canonical five-field shape always carries the
+ * field, so a pre-field hub rejects it whether or not the value diverges. The
+ * payload is built raw because normalizing would re-add the field through the
+ * migration fixup. The reader's preference stays in the local config; the hub
+ * default keeps the migration default. Removal condition: delete with the
+ * four-field decode acceptance once the minimum supported hub carries the
+ * field. */
 function legacyPatchPayload(
   config: TranscriptDisplayConfigV1,
 ): { config: WireConfig; fingerprint: string } | undefined {
   if (config.content.kind !== "custom") return undefined;
-  if (config.content.thinkingOpenByDefault === config.content.expandByDefault) return undefined;
   const legacy = {
     toolIntent: config.content.toolIntent,
     toolCalls: config.content.toolCalls,
@@ -325,6 +325,19 @@ function legacyPatchPayload(
       normalizeConfig({ ...config, content: { kind: "custom", ...legacy } as unknown as ContentSelection }),
     ),
   };
+}
+
+/** Whether an acknowledged hub default is this write's answer: the canonical
+ * request, or - against a hub that predates thinkingOpenByDefault - its
+ * four-field resolution. Callers reconciling a save accept either; a value
+ * from some other writer still fails. */
+export function acknowledgesConfig(
+  requested: TranscriptDisplayConfigV1,
+  acknowledged: TranscriptDisplayConfigV1,
+): boolean {
+  const acknowledgedFingerprint = configFingerprint(acknowledged);
+  if (acknowledgedFingerprint === configFingerprint(requested)) return true;
+  return legacyPatchPayload(requested)?.fingerprint === acknowledgedFingerprint;
 }
 
 export function fromWireChange(value: unknown): TranscriptDisplayChange | undefined {
@@ -1004,7 +1017,13 @@ export function createTranscriptDisplayStore(deps: TranscriptDisplayStoreDeps): 
         result = await sendPatch(config);
       } catch (error) {
         const legacy = legacyPatchPayload(config);
-        if (legacy === undefined || !(error instanceof WireError && error.evenerErrorInfo === "invalidParams")) {
+        // A retired write settles through the fenced handling below; it must
+        // not retry and mutate ahead of the write that superseded it.
+        if (
+          !stillMine() ||
+          legacy === undefined ||
+          !(error instanceof WireError && error.evenerErrorInfo === "invalidParams")
+        ) {
           throw error;
         }
         // An older hub rejected the unknown field: send the four-field shape
@@ -1167,16 +1186,38 @@ export function createTranscriptDisplayStore(deps: TranscriptDisplayStoreDeps): 
       ...clearPreview(layout),
     });
     let result: unknown;
+    let sentFingerprint = requestedFingerprint;
+    const sendPatch = (payloadConfig: TranscriptDisplayConfigV1) =>
+      client.request("evener/settings/transcriptDisplay/patch", {
+        layout,
+        expectedRevision: revision,
+        config: toWireConfig(payloadConfig),
+      });
     try {
       // The saving publish above may have disposed the store or retired the
       // payload (a host tearing down on the transition): the checkpoint stays
       // for the next instance to restore, and nothing leaves.
       if (!stillMine()) throw new StoreMessageError(SAVE_CANCELLED_MESSAGE);
-      result = await client.request("evener/settings/transcriptDisplay/patch", {
-        layout,
-        expectedRevision: revision,
-        config: toWireConfig(config),
-      });
+      try {
+        result = await sendPatch(config);
+      } catch (error) {
+        const legacy = legacyPatchPayload(config);
+        if (
+          !stillMine() ||
+          legacy === undefined ||
+          !(error instanceof WireError && error.evenerErrorInfo === "invalidParams")
+        ) {
+          throw error;
+        }
+        // An older hub rejected the unknown field: send the four-field shape
+        // and judge the reply against what that payload stores.
+        sentFingerprint = legacy.fingerprint;
+        result = await client.request("evener/settings/transcriptDisplay/patch", {
+          layout,
+          expectedRevision: revision,
+          config: legacy.config,
+        });
+      }
     } catch (error) {
       if (!stillMine()) {
         settleLostHubWrite(generation, layout, token);
@@ -1246,7 +1287,7 @@ export function createTranscriptDisplayStore(deps: TranscriptDisplayStoreDeps): 
     }
     let value: HubTranscriptDisplayDefault;
     try {
-      value = decodePatchReply(result, layout, confirmed, requestedFingerprint);
+      value = decodePatchReply(result, layout, confirmed, sentFingerprint);
     } catch (error) {
       setState({
         saving: false,

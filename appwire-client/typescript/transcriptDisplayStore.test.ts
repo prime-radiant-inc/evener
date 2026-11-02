@@ -139,6 +139,122 @@ test("an older hub that rejects the five-field custom still saves via the four-f
   expect(store.getState().writeUncertain).toBe(false);
 });
 
+test("an older hub that rejects a non-divergent custom also saves via the four-field payload", async () => {
+  // The equality guard must not skip the fallback: the canonical payload
+  // carries the field regardless of its value, and a pre-field hub rejects
+  // it either way.
+  const desktop = hubDefault(1, makeTranscriptDisplayConfig({ kind: "preset", level: "tools" }));
+  const mobile = hubDefault(0, makeTranscriptDisplayConfig({ kind: "preset", level: "intent" }));
+  const client = serving(desktop, mobile);
+  const sentCustoms: Record<string, unknown>[] = [];
+  client.on(patchMethod, (params) => {
+    const content = params.config.content as { custom?: Record<string, unknown> };
+    if (content.custom) sentCustoms.push(content.custom);
+    if (content.custom && "thinkingOpenByDefault" in content.custom) {
+      throw new WireError("invalid transcript display patch: unknown field", -32602, {
+        evenerErrorInfo: "invalidParams",
+      });
+    }
+    const appliedConfig = fromWireConfig(params.config);
+    if (appliedConfig === undefined) throw new Error("unexpected malformed patch config");
+    return patchAnswer(params.layout as "desktop" | "mobile", hubDefault(params.expectedRevision + 1, appliedConfig));
+  });
+  const store = await readyStore(client);
+  const aligned = makeTranscriptDisplayConfig({
+    kind: "custom",
+    toolIntent: true,
+    toolCalls: true,
+    reasoning: false,
+    expandByDefault: true,
+    thinkingOpenByDefault: true,
+  });
+
+  const saved = await store.getState().patchHubDefault("desktop", aligned);
+
+  expect(sentCustoms).toHaveLength(2);
+  expect(sentCustoms[1]).not.toHaveProperty("thinkingOpenByDefault");
+  expect(saved.revision).toBe(2);
+  expect(store.getState().writeUncertain).toBe(false);
+});
+
+test("the checkpointed save path falls back to the four-field payload for an older hub", async () => {
+  const desktop = hubDefault(1, makeTranscriptDisplayConfig({ kind: "preset", level: "tools" }));
+  const mobile = hubDefault(0, makeTranscriptDisplayConfig({ kind: "preset", level: "intent" }));
+  const client = serving(desktop, mobile);
+  const sentCustoms: Record<string, unknown>[] = [];
+  client.on(patchMethod, (params) => {
+    const content = params.config.content as { custom?: Record<string, unknown> };
+    if (content.custom) sentCustoms.push(content.custom);
+    if (content.custom && "thinkingOpenByDefault" in content.custom) {
+      throw new WireError("invalid transcript display patch: unknown field", -32602, {
+        evenerErrorInfo: "invalidParams",
+      });
+    }
+    const appliedConfig = fromWireConfig(params.config);
+    if (appliedConfig === undefined) throw new Error("unexpected malformed patch config");
+    return patchAnswer(params.layout as "desktop" | "mobile", hubDefault(params.expectedRevision + 1, appliedConfig));
+  });
+  const store = await readyStore(client);
+  const divergent = makeTranscriptDisplayConfig({
+    kind: "custom",
+    toolIntent: true,
+    toolCalls: true,
+    reasoning: false,
+    expandByDefault: false,
+    thinkingOpenByDefault: true,
+  });
+
+  const saved = await store.getState().saveDraft("desktop", divergent);
+
+  expect(sentCustoms).toHaveLength(2);
+  expect(sentCustoms[0]).toHaveProperty("thinkingOpenByDefault", true);
+  expect(sentCustoms[1]).not.toHaveProperty("thinkingOpenByDefault");
+  expect(saved.revision).toBe(2);
+  expect(store.getState().draft).toBeNull();
+});
+
+test("a superseded custom save does not dispatch the older-hub fallback", async () => {
+  const desktop = hubDefault(1, makeTranscriptDisplayConfig({ kind: "preset", level: "tools" }));
+  const mobile = hubDefault(0, makeTranscriptDisplayConfig({ kind: "preset", level: "intent" }));
+  const client = serving(desktop, mobile);
+  const first = deferred<TranscriptDisplayPatchResponse>();
+  let patches = 0;
+  client.on(patchMethod, (params) => {
+    patches += 1;
+    if (patches === 1) return first.promise;
+    const appliedConfig = fromWireConfig(params.config);
+    if (appliedConfig === undefined) throw new Error("unexpected malformed patch config");
+    return patchAnswer(params.layout as "desktop" | "mobile", hubDefault(params.expectedRevision + 1, appliedConfig));
+  });
+  const store = await readyStore(client);
+  const divergent = makeTranscriptDisplayConfig({
+    kind: "custom",
+    toolIntent: true,
+    toolCalls: true,
+    reasoning: false,
+    expandByDefault: false,
+    thinkingOpenByDefault: true,
+  });
+  const superseded = store
+    .getState()
+    .patchHubDefault("desktop", divergent)
+    .catch((error: unknown) => error);
+  await nextMacrotask();
+  // A newer write on the layout claims the token.
+  const newer = store
+    .getState()
+    .patchHubDefault("desktop", makeTranscriptDisplayConfig({ kind: "preset", level: "activity" }))
+    .catch((error: unknown) => error);
+  await nextMacrotask();
+  first.reject(
+    new WireError("invalid transcript display patch: unknown field", -32602, { evenerErrorInfo: "invalidParams" }),
+  );
+  await superseded;
+  await newer;
+  // The retired write settled through the fenced handling; it never retried.
+  expect(patches).toBe(2);
+});
+
 describe("transcript display wire decoders", () => {
   test("rejects malformed and foreign changed payloads", () => {
     expect(fromWireChange(undefined)).toBeUndefined();

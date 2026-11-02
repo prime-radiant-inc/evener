@@ -349,6 +349,48 @@ test("acknowledges an ordinary same-config response after the store clears its d
   expect(transcriptDisplayStore.getState().drafts.desktop).toBeUndefined();
 });
 
+test("acknowledges an older hub's four-field resolution of a custom save", async () => {
+  const client = new FakeClient("ready");
+  const confirmed = makeTranscriptDisplayConfig({ kind: "preset", level: "tools" });
+  client.on("evener/settings/transcriptDisplay/get", () => ({
+    desktop: { revision: 1, config: toWireConfig(confirmed) },
+    mobile: { revision: 1, config: toWireConfig(shippedDefault("mobile").config) },
+  }));
+  connectionStore.getState().connect(client);
+  connectionStore.setState({ features: { ...(await client.connect()).features, transcriptDisplaySettings: true } });
+  // The old hub stored the four-field reading: the presentation field resolves
+  // from expandByDefault. The caller must accept that acknowledgment of the
+  // divergent request it made.
+  const acknowledged = makeTranscriptDisplayConfig({
+    kind: "custom",
+    toolIntent: true,
+    toolCalls: true,
+    reasoning: false,
+    expandByDefault: false,
+    thinkingOpenByDefault: false,
+  });
+  const patched = vi
+    .spyOn(transcriptDisplayStore.getState(), "patchHubDefault")
+    .mockResolvedValue({ revision: 2, config: acknowledged });
+  renderWithToasts();
+  await waitFor(() => expect(transcriptDisplayStore.getState().hub.desktop?.revision).toBe(1));
+  await waitFor(() => expect(transcriptDisplayStore.getState().hubLoading).toBe(false));
+
+  const user = userEvent.setup();
+  await user.click(screen.getByText(/Customize & advanced/));
+  await user.click(screen.getByRole("switch", { name: "Thinking open by default" }));
+
+  await savedOnce();
+  expect(patched).toHaveBeenCalledWith(
+    "desktop",
+    expect.objectContaining({
+      content: expect.objectContaining({ kind: "custom", thinkingOpenByDefault: true, expandByDefault: false }),
+    }),
+  );
+  expect(successToasts()).toHaveLength(1);
+  expect(screen.queryByRole("alert")).toBeNull();
+});
+
 test("allows the winner-first concurrent save to toast exactly once", async () => {
   const client = new FakeClient("ready");
   const firstDraft = makeTranscriptDisplayConfig({ kind: "preset", level: "full" });

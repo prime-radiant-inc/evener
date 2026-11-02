@@ -116,6 +116,10 @@ describe("NativePreferences", () => {
 			toolCalls: false,
 			reasoning: true,
 			expandByDefault: false,
+			// The legacy four-field wire input decodes through the migration
+			// fixup, which resolves the absent presentation field from
+			// expandByDefault.
+			thinkingOpenByDefault: false,
 		});
 	});
 
