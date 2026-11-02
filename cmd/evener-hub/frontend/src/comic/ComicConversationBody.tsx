@@ -118,13 +118,20 @@ export function ComicConversationBody({
               {liveness}
               <PendingChips sessionRef={ref} />
               {seat.composerSource && (
-                <Composer
-                  ref={ref}
-                  paneId={seat.viewFallbackId}
-                  source={seat.composerSource}
-                  focused={seat.focused}
-                  mountAutofocus={seat.mountAutofocus}
-                />
+                <section className={styles.interaction} aria-label="Your message">
+                  <Composer
+                    ref={ref}
+                    paneId={seat.viewFallbackId}
+                    source={seat.composerSource}
+                    focused={seat.focused}
+                    mountAutofocus={seat.mountAutofocus}
+                    sessionMenuFallback={
+                      seat.sessionMenu ? (
+                        <SessionChrome ref={ref} paneId={seat.viewFallbackId} placement="menu" />
+                      ) : undefined
+                    }
+                  />
+                </section>
               )}
               {!seat.composerSource && seat.sessionMenu && (
                 <SessionChrome ref={ref} paneId={seat.viewFallbackId} placement="menu" />

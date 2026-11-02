@@ -106,6 +106,10 @@ export interface ComposerProps {
   // this editor, and hiding the control then would take it away before the
   // reader could use it. Draft content alone is never editing either.
   onEditingChange?: (editing: boolean) => void;
+  // Rendered in place of the session menu when no input card can mount (a
+  // shut-down session with no Send capability and no recovery fence), so the
+  // owning pane keeps session actions reachable in that state.
+  sessionMenuFallback?: React.ReactNode;
 }
 
 const CLASS = {
@@ -131,7 +135,15 @@ const MemoizedSessionChrome = memo(function MemoizedSessionChrome(props: Session
 // shallow-equality bailout for a value that carries no information.
 const NO_TURN_VERBS: SessionMenuTurnVerbs = Object.freeze({});
 
-export function Composer({ ref, paneId, focused, mountAutofocus = true, source, onEditingChange }: ComposerProps) {
+export function Composer({
+  ref,
+  paneId,
+  focused,
+  mountAutofocus = true,
+  source,
+  onEditingChange,
+  sessionMenuFallback,
+}: ComposerProps) {
   const model = useThreadsStore((s) => s.threads.get(ref));
   const recoveryRequired = useThreadsStore((s) => s.restartBlockingObligations.has(ref));
   // Delivery-uncertain rows do NOT fence Send here: they clear the resume-only
@@ -841,10 +853,10 @@ export function Composer({ ref, paneId, focused, mountAutofocus = true, source, 
           }
         }}
       />
-      {/* No card means no in-card menu: keep the session actions mounted (Verbosity
-          lives there) whenever ask is pending or a shut-down session cannot show
-          its follow-up card. */}
-      {(askPending || (ended && !showFollowUpCard)) && sessionChrome}
+      {askPending && sessionChrome}
+      {/* No input card means no in-card menu: the pane's fallback keeps session
+          actions reachable in exactly that state, never alongside the card. */}
+      {!askPending && ended && !showFollowUpCard && sessionMenuFallback}
       {/* Staged attachments. One rendering for every state, so nothing here
           swaps element types under a user mid-gesture - AttachmentTile.tsx's
           own header comment has the mechanism and the bug it closed. */}

@@ -17,6 +17,7 @@ import { resetWorkspaceStoreForTests, workspaceStore } from "../shell/workspace"
 import { connectionStore, resetConnectionStoreForTests } from "../stores/connection";
 import { resetThreadsStoreForTests, threadsStore } from "../stores/threads";
 import { resetTranscriptDisplayStoreForTests, transcriptDisplayStore } from "../stores/transcriptDisplay";
+import styles from "./comic.module.css";
 import { type ComicReadingPosition, readComicPosition, writeComicPosition } from "./readerPosition";
 import * as comicReader from "./useComicReader";
 
@@ -386,10 +387,23 @@ test("comic mode mounts the shared Composer with attach and the in-card menu", a
 test("a closed unsendable session keeps its session menu reachable", async () => {
   const { mount } = setup(2, undefined, false, true);
   const mounted = mount("closed-menu");
-  // The composer renders no follow-up card without a Send capability or recovery
-  // fence, but the session menu must stay mounted: it carries Verbosity and the
-  // other session actions for the pane.
-  await waitFor(() => expect(mounted.container.querySelector('[data-testid="session-chrome-inline"]')).not.toBeNull());
+  // The composer renders no follow-up card and no in-card menu without a Send
+  // capability or recovery fence; the pane's fallback mounts exactly one
+  // session menu so Verbosity and session actions stay reachable.
+  await waitFor(() =>
+    expect(within(mounted.container).getAllByRole("button", { name: "Session actions" })).toHaveLength(1),
+  );
+  mounted.unmount();
+});
+
+test("the shared Composer sits inside the bounded interaction area", async () => {
+  const { mount } = setup(2);
+  const mounted = mount("bounded-composer");
+  await waitFor(() => expect(mounted.container.querySelector('[data-testid="composer-form"]')).not.toBeNull());
+  // A tall draft with the phone keyboard open must not consume the pane: the
+  // composer mounts inside the capped, scrolling interaction area.
+  const composer = mounted.container.querySelector("[data-composer]");
+  expect(composer?.closest(`section.${styles.interaction}`)).not.toBeNull();
   mounted.unmount();
 });
 

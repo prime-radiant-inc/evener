@@ -350,6 +350,26 @@ export default async function assert(_measurement, { page }) {
         failures.push(`keyboard ${name} ${width}: reader height did not restore`);
       evidence.push({ width, keyboard: name, composerBottom: state.composer.bottom, readerHeight: state.reader.height });
     }
+    // A multiline draft with the keyboard open must stay bounded: the composer's
+    // interaction area caps its height so controls and reader remain usable.
+    const tallDraft = Array.from({ length: 18 }, (_, line) => `TALL_LINE_${line}_${width}`).join("\n");
+    await replaceDraft(send, tallDraft);
+    await evaluate(send, `window.comicGeometry.viewport("resize", ${JSON.stringify({ height: 440, offsetTop: 0, scale: 1 })})`);
+    await frame(send);
+    const tallState = await readSession();
+    if (
+      tallState.overflow > 1 ||
+      tallState.reader.height <= 0 ||
+      !tallState.sourceParts ||
+      !tallState.editor.hit ||
+      !tallState.submit.hit ||
+      ![tallState.composer, tallState.editor, tallState.submit].every((box) => reachable(box, width, 440)) ||
+      tallState.composer.height > 220
+    ) failures.push(`keyboard tall ${width}: unbounded composer ${JSON.stringify(tallState)}`);
+    evidence.push({ width, keyboard: "tall", composerHeight: tallState.composer.height, readerHeight: tallState.reader.height });
+    await replaceDraft(send, draft);
+    await evaluate(send, `window.comicGeometry.viewport("resize", ${JSON.stringify({ height: 620, offsetTop: 0 })})`);
+    await frame(send);
     if (width < 900) {
       // The compact pane must retain a positive reader even at this height.
       for (const [name, event, values, bottom] of [
