@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/internal/jobstore"
 	"primeradiant.com/evener/agent/schema"
@@ -221,6 +222,60 @@ func TestSessionHasWakeableWorkTimerHandoff(t *testing.T) {
 	}
 }
 
+func TestSessionHasWakeableWorkEventWatchBudgetHandoff(t *testing.T) {
+	t.Parallel()
+	root := newTestSessionForState(t)
+	t.Cleanup(root.Close)
+	child := newTestSessionForState(t)
+	t.Cleanup(child.Close)
+	root.subagents.track(&subagent{id: child.ID(), sess: child})
+	jm := child.jobManager
+	observed := 0
+	res, err := jm.configureWatch(watchArgs{
+		Target: "*", Events: []string{"job.notification"}, ReceiverSessionID: root.ID(),
+		ReceiverNotify: func(n jobNotification) {
+			observed++
+			if jm.hasArmedWatch() {
+				t.Error("event watch must be budget-cleared before enqueue")
+			}
+			if observed == 1 && root.peekNotifications() != 0 {
+				t.Error("event watch notification must not yet be queued")
+			}
+			if !root.hasWakeableWork() {
+				t.Error("budget-cleared event watch must remain wakeable until enqueue")
+			}
+			root.enqueueJobNotificationAndNotify(n)
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	jm.mu.Lock()
+	_, cfg, ok := jm.watchConfigByIDLocked(res.WatchID)
+	if ok {
+		cfg.conditionFires = watchDeliveryBudget - 1
+	}
+	jm.mu.Unlock()
+	if !ok {
+		t.Fatal("event watch was not registered")
+	}
+	if root.hasWorkingSubagent() || child.autonomyInFlight() {
+		t.Fatal("child must be idle")
+	}
+	jm.onSessionEvent(events.SessionEvent{
+		Kind: events.EventJobFinished, SessionID: child.ID(), Data: events.JobFinishedData{},
+	})
+	jm.mu.Lock()
+	inFlight := jm.noticesInFlight
+	jm.mu.Unlock()
+	if inFlight != 0 || jm.hasNoticeEmissionInFlight() || jm.hasArmedWatch() {
+		t.Fatal("budget-cleared event watch must have no remaining producer signal")
+	}
+	if observed != 2 || root.peekNotifications() != 2 || !root.hasWakeableWork() {
+		t.Fatal("event watch must hand off its event and budget-clear notifications")
+	}
+}
+
 func TestSessionHasWakeableWorkJobFinalizationHandoff(t *testing.T) {
 	t.Parallel()
 	s := newTestSessionForState(t)
@@ -235,6 +290,9 @@ func TestSessionHasWakeableWorkJobFinalizationHandoff(t *testing.T) {
 		pendingObserved = true
 		if !jm.hasLiveRuns() {
 			t.Error("finalizing run must stay live at the notification-pending seam")
+		}
+		if !jm.hasNoticeEmissionInFlight() {
+			t.Error("job emission must already be in flight at the notification-pending seam")
 		}
 		if jobID != rec.JobID || len(sessionRunningJobIDs(s)) != 0 || s.peekNotifications() != 0 {
 			t.Error("terminal job must no longer be journaled running, with notification not yet queued")

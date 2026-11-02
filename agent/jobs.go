@@ -79,7 +79,8 @@ type jobManager struct {
 	transcriptRef    string
 	store            *jobstore.Store
 	running          map[string]*runningJob
-	// noticesInFlight spans producer retirement through notification enqueue.
+	// noticesInFlight spans job finalization start or watch retirement through
+	// notification enqueue.
 	// Guarded by jm.mu, like running, which includes runs still finalizing.
 	noticesInFlight int
 	watches         map[watchKey]*watchConfig
@@ -2065,6 +2066,8 @@ func (jm *jobManager) enqueueNotifications(notifs []jobNotification) bool {
 
 func (jm *jobManager) armFinalizedJob(run *runningJob, terminal *terminalJob) error {
 	defer jm.publishWatchActivity()
+	jm.noteNoticeEmission(1)
+	defer jm.noteNoticeEmission(-1)
 	jm.mu.Lock()
 	if jm.running[run.rec.JobID] != run || run.terminal != terminal {
 		jm.mu.Unlock()
@@ -2148,7 +2151,6 @@ func (jm *jobManager) armFinalizedJob(run *runningJob, terminal *terminalJob) er
 	jm.mu.Lock()
 	if jm.running[run.rec.JobID] == run {
 		delete(jm.running, run.rec.JobID)
-		jm.noticesInFlight++
 	} else {
 		jm.mu.Unlock()
 		flushNotices()
@@ -2179,7 +2181,6 @@ func (jm *jobManager) armFinalizedJob(run *runningJob, terminal *terminalJob) er
 		ownNotices = append(ownNotices, ownNotice)
 	}
 	flushNotices()
-	jm.noteNoticeEmission(-1)
 	run.delegateShell.finish()
 	run.closeDoneDurable()
 	return nil

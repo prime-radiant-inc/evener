@@ -3341,6 +3341,9 @@ func (jm *jobManager) onSessionEvent(ev events.SessionEvent) {
 			overBudget = append(overBudget, cfg)
 		}
 	}
+	if len(notifications) > 0 || len(overBudget) > 0 {
+		jm.noticesInFlight++
+	}
 	jm.mu.Unlock()
 
 	// Called from Session.emit; only persist + wake here so watch delivery does
@@ -3360,6 +3363,9 @@ func (jm *jobManager) onSessionEvent(ev events.SessionEvent) {
 		}
 	}
 	jm.enqueueWatchNotifications(notifications)
+	if len(notifications) > 0 || len(overBudget) > 0 {
+		jm.noteNoticeEmission(-1)
+	}
 }
 
 // watchEventSnapshot is a read-only copy of the per-watch fields that decide
