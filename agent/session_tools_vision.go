@@ -10,7 +10,6 @@ import (
 	"strings"
 	"time"
 
-	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/internal/runetrim"
 	"primeradiant.com/evener/agent/internal/tool"
 	"primeradiant.com/evener/agent/provider"
@@ -50,8 +49,9 @@ type visionSideChannelResult struct {
 	elapsed     time.Duration
 	usage       llm.Usage
 	outcome     visionSideChannelOutcome
-	// failureCause is the typed provider failure's bounded rendering; empty for
-	// an untyped error.
+	// failureCause is structured provider metadata (provider, status, code),
+	// never the provider's response text: it is safe to send to the session's
+	// own provider in steering. Empty for an untyped error.
 	failureCause string
 }
 
@@ -110,30 +110,33 @@ func visionFailureSteering(path string, result visionSideChannelResult) string {
 	return subject + " because the vision provider failed" + cause + ". Use OCR or inspect the source data, or continue without vision."
 }
 
-// visionFailureCause extracts the diagnosable cause of a vision side-channel
-// failure from a typed llm.Error only. Its rendering carries the provider's
-// name, status and its own failure text — the same disclosure the main
-// generation path makes — so a vision failure is diagnosable from steering
-// and diagnostics. An untyped error yields "": arbitrary transport errors can
-// carry request URLs or credentials, and those stay suppressed.
+// visionFailureCause renders the diagnosable cause of a vision side-channel
+// failure from a typed llm.Error's structured fields only — provider, status
+// and error code. The provider's response text is deliberately excluded: a
+// rejection can echo request or credential material, and this string rides
+// steering into the session's own provider. An untyped error yields "", so
+// arbitrary transport details stay suppressed too.
 func visionFailureCause(err error) string {
 	var le llm.Error
 	if !errors.As(err, &le) {
 		return ""
 	}
-	cause := runetrim.OneLine(strings.TrimSpace(le.Error()))
-	if cause == "" {
-		return ""
+	parts := make([]string, 0, 3)
+	if provider := strings.TrimSpace(le.Provider()); provider != "" {
+		parts = append(parts, provider)
 	}
-	if len(cause) > visionFailureCauseLimit {
-		cause = runetrim.Cut(cause, visionFailureCauseLimit) + " …"
+	if status := le.StatusCode(); status > 0 {
+		parts = append(parts, "status "+strconv.Itoa(status))
 	}
-	return cause
+	if code := runetrim.OneLine(strings.TrimSpace(le.ErrorCode())); code != "" {
+		parts = append(parts, "code "+runetrim.Cut(code, visionFailureCodeLimit))
+	}
+	return strings.Join(parts, ", ")
 }
 
-// visionFailureCauseLimit bounds the cause text in steering and warnings;
-// provider messages can embed long bodies.
-const visionFailureCauseLimit = 256
+// visionFailureCodeLimit bounds the provider's error code in steering; a code
+// is normally a short token, but it is provider-supplied text.
+const visionFailureCodeLimit = 64
 
 func formatVisionSideChannelStats(result visionSideChannelResult) string {
 	stats := visionSideChannelStats{
@@ -468,19 +471,15 @@ func (s *Session) describeImageCall(ctx context.Context, r tool.ExecResult) visi
 			outcome = visionSideChannelOwnedTimeout
 		}
 		if outcome != visionSideChannelParentCanceled {
-			// An untyped error can contain request URLs, bodies, IDs, or credentials,
-			// so it stays fully suppressed. A typed provider error's rendering is the
-			// same disclosure the main path makes, and it is what makes a vision
-			// failure diagnosable, so it reaches the warning.
+			// Provider response text can echo request or credential material, so the
+			// warning stays label-only and classifies the error through the shared
+			// bare form (the same rule model-call warnings follow); only structured
+			// provider metadata reaches steering.
 			providerCause := ""
 			if outcome == visionSideChannelProviderFailure {
 				providerCause = visionFailureCause(err)
 			}
-			warning := "vision side-channel unavailable"
-			if providerCause != "" {
-				warning += ": " + providerCause
-			}
-			s.emit(events.WarningData{Message: warning})
+			s.emit(bareWarningDataFromError("vision side-channel unavailable", err))
 			return visionSideChannelResult{elapsed: elapsed, outcome: outcome, failureCause: providerCause}
 		}
 		return visionSideChannelResult{elapsed: elapsed, outcome: outcome}

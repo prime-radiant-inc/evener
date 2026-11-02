@@ -984,11 +984,11 @@ func visionWarningMessages(sess *Session, f func()) []string {
 	return msgs
 }
 
-// A typed provider failure must disclose its cause: the provider's own message
-// (the same text the main path shows verbatim) reaches the warning diagnostic,
-// so a vision failure is diagnosable from the transcript instead of reading
-// only "unavailable".
-func TestDescribeImage_ProviderFailureWarningCarriesTheProviderCause(t *testing.T) {
+// A typed provider failure stays diagnosable through structured metadata —
+// provider, status, code — while the provider's own response text, which can
+// echo request or credential material, reaches neither steering (sent to the
+// session's own provider) nor the warning.
+func TestDescribeImage_ProviderFailureExposesOnlyStructuredCause(t *testing.T) {
 	t.Parallel()
 	openai := &fakeErrAdapter{name: "openai", steps: []func(req llm.Request) (llm.Response, error){
 		func(req llm.Request) (llm.Response, error) {
@@ -1005,13 +1005,53 @@ func TestDescribeImage_ProviderFailureWarningCarriesTheProviderCause(t *testing.
 	if result.outcome != visionSideChannelProviderFailure {
 		t.Fatalf("outcome = %v, want provider failure", result.outcome)
 	}
-	if !slices.ContainsFunc(msgs, func(m string) bool {
-		return strings.Contains(m, "vision route exploded")
-	}) {
-		t.Fatalf("warning messages = %q, want one carrying the provider's own failure text", msgs)
+	for _, m := range msgs {
+		if strings.Contains(m, "vision route exploded") {
+			t.Fatalf("warning message = %q, want the provider's own text kept out", m)
+		}
 	}
-	if steering := visionFailureSteering("/tmp/a.png", result); !strings.Contains(steering, "vision route exploded") {
-		t.Fatalf("steering = %q, want it to carry the provider's failure text", steering)
+	steering := visionFailureSteering("/tmp/a.png", result)
+	if !strings.Contains(steering, "status 500") {
+		t.Fatalf("steering = %q, want the structured status", steering)
+	}
+	if strings.Contains(steering, "vision route exploded") {
+		t.Fatalf("steering = %q, want the provider's own text kept out", steering)
+	}
+}
+
+// A rejection that echoes credential material must not leak it into steering
+// (sent to the session's provider) or the warning; the structured status still
+// names the cause.
+func TestDescribeImage_CredentialEchoStaysOutOfSteeringAndWarning(t *testing.T) {
+	t.Parallel()
+	const echoed = "sk-live-abc123"
+	openai := &fakeErrAdapter{name: "openai", steps: []func(req llm.Request) (llm.Response, error){
+		func(req llm.Request) (llm.Response, error) {
+			raw := map[string]any{"error": map[string]any{"code": "invalid_api_key"}}
+			return llm.Response{}, llm.ErrorFromHTTPStatus("openai", 401, "invalid x-api-key "+echoed, raw, nil)
+		},
+	}}
+	sess := newSession(t, withAdapter(openai), withProfile(NewOpenAIProfile("m")),
+		withConfig(SessionConfig{VisionModel: "openai/vision-m"}))
+
+	var result visionSideChannelResult
+	msgs := visionWarningMessages(sess, func() {
+		result = sess.describeImageCall(context.Background(), visionImageResult())
+	})
+	if result.outcome != visionSideChannelProviderFailure {
+		t.Fatalf("outcome = %v, want provider failure", result.outcome)
+	}
+	steering := visionFailureSteering("/tmp/a.png", result)
+	if strings.Contains(steering, echoed) {
+		t.Fatalf("steering = %q, want the echoed credential kept out", steering)
+	}
+	if !strings.Contains(steering, "status 401") {
+		t.Fatalf("steering = %q, want the structured status", steering)
+	}
+	for _, m := range msgs {
+		if strings.Contains(m, echoed) {
+			t.Fatalf("warning message = %q, want the echoed credential kept out", m)
+		}
 	}
 }
 
