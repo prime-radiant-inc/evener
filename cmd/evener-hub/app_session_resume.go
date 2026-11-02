@@ -84,13 +84,11 @@ func shutdownThreadTolerateExited(ctx context.Context, cfg hubcore.WebConfig, so
 	if err := shutdownCleanupError(cfg, params.Ref); err != nil {
 		return err
 	}
+	discoveryUncertain := false
 	localThreadID := ""
 	if ref, err := appwire.ParseRef(params.Ref); err == nil && ref.SourceID == appwire.LocalSourceID {
 		localThreadID = ref.ThreadID
-	}
-	discoveryUncertain := false
-	if localThreadID != "" {
-		decision, err := checkConfirmedStoppedWithoutClaim(ctx, cfg, localThreadID, false, nil)
+		decision, err := checkConfirmedStoppedWithoutClaim(ctx, cfg, ref.ThreadID, false, nil)
 		if err != nil {
 			return err
 		}
@@ -127,7 +125,7 @@ func shutdownThreadTolerateExited(ctx context.Context, cfg hubcore.WebConfig, so
 		// daemon down during its backoff, and the retry restarts what the user
 		// stopped. The confirmed-stopped no-op above publishes the same advance.
 		if localThreadID != "" && cfg.ResumeLocks != nil {
-			cfg.ResumeLocks.InvalidateResumeAdmission(cfg.ResumeLocks.RecoveryAliases(localThreadID))
+			cfg.ResumeLocks.InvalidateSessionAdmission(localThreadID)
 		}
 		return struct{}{}, nil
 	}
@@ -158,6 +156,12 @@ func shutdownThreadTolerateExited(ctx context.Context, cfg hubcore.WebConfig, so
 		}
 		if restartErr := daemonRestartRequiredError(ctx, cfg, params.Ref, "", ""); restartErr != nil {
 			return restartErr
+		}
+		// A session the source reports as already gone is a confirmed stop as
+		// much as the live path is: publish it, or a resume token minted before
+		// the daemon exited still matches.
+		if localThreadID != "" && cfg.ResumeLocks != nil {
+			cfg.ResumeLocks.InvalidateSessionAdmission(localThreadID)
 		}
 		return nil
 	}

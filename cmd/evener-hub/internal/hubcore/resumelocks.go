@@ -38,7 +38,11 @@ type ResumeLocks struct {
 
 // NewResumeLocks returns an empty registry ready for use.
 func NewResumeLocks() *ResumeLocks {
-	return &ResumeLocks{locks: map[string]*ResumeMutex{}, incarnation: rand.Text()}
+	return &ResumeLocks{
+		locks:       map[string]*ResumeMutex{},
+		incarnation: rand.Text(),
+		recovery:    map[string]SessionRecoveryState{},
+	}
 }
 
 // RecoveryToken is the opaque, hub-owned token a client carries across a
@@ -963,6 +967,13 @@ func (f *ForceStopFence) Reject() {
 	}
 }
 
+// InvalidateSessionAdmission advances the session's aliases' admission epochs:
+// the single "a confirmed Stop landed" publication, so a caller never has to
+// pair RecoveryAliases with InvalidateResumeAdmission itself.
+func (r *ResumeLocks) InvalidateSessionAdmission(sessionID string) {
+	r.InvalidateResumeAdmission(r.RecoveryAliases(sessionID))
+}
+
 // InvalidateResumeAdmission advances every alias's admission epoch without
 // installing a stop fence: Stopping, ResumeRequired, and the connection-level
 // recovery sequence are untouched. A confirmed-stopped no-op calls it while it
@@ -972,12 +983,6 @@ func (f *ForceStopFence) Reject() {
 func (r *ResumeLocks) InvalidateResumeAdmission(aliases []string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	// An in-memory registry (NewResumeLocks) starts with no recovery rows; a
-	// shutdown of a session that never registered recovery state still needs
-	// its epoch published.
-	if r.recovery == nil {
-		r.recovery = map[string]SessionRecoveryState{}
-	}
 	for _, id := range aliases {
 		state := r.recovery[id]
 		state.Epoch++

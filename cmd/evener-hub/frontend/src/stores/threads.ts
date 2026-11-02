@@ -2137,32 +2137,44 @@ async function applyClearResponse(targetRef: string, response: ThreadClearRespon
 }
 
 // The row dispatch is about to fold was issued under a token this page has
-// outrun (another device's Stop): park it canceled so later work proceeds -
-// an explicit Retry reopens it under the token the page reads then.
-function parkedRowOutranToken(
+// outrun (another device's Stop): park it canceled through the one supersession
+// cancel, its own attempt evidence included since the resume never sent it, so
+// later work proceeds. An explicit Retry reopens it under the token the page
+// reads then.
+const parkedRowCancels = new Set<string>();
+function parkOutranRow(
   targetRef: string,
-  record: { clientMutationId?: string; recoveryTokenAtEnqueue?: string },
+  record: { clientMutationId?: string; intentSequence?: number; recoveryTokenAtEnqueue?: string },
 ): boolean {
-  if (record.recoveryTokenAtEnqueue === undefined) return false;
-  if (record.recoveryTokenAtEnqueue === recoveryTokenOf(targetRef)) return false;
+  if (!tokenOutranRead(targetRef, record.recoveryTokenAtEnqueue)) return false;
   const clientMutationId = record.clientMutationId;
-  const runtime = getMutationRuntime();
-  if (clientMutationId !== undefined && runtime !== null) {
-    void runtime.storage
-      .cancelSupersededRow(clientMutationId)
-      .then((canceled) => {
-        if (canceled) notifyMutationPersistence([targetRef]);
-      })
-      .catch(() => undefined);
+  // Every admission check of this row would otherwise queue the same write.
+  if (clientMutationId !== undefined && !parkedRowCancels.has(clientMutationId)) {
+    parkedRowCancels.add(clientMutationId);
+    void cancelSupersededMutations(targetRef, record.intentSequence, true).finally(() =>
+      parkedRowCancels.delete(clientMutationId),
+    );
   }
   return true;
+}
+
+// One rule for "the token this fence names is older than the page's latest
+// read": an absent token on either side names nothing to compare.
+function tokenOutranRead(ref: string, token: string | undefined): boolean {
+  const read = recoveryTokenOf(ref);
+  return token !== undefined && read !== undefined && token !== read;
 }
 
 // The resume drive a record's press needs, carrying the record's own intent
 // sequence as the supersession cancellation bound: a supersession cancels the
 // work at or before it and spares a Send pressed afterwards. Every press that
 // has a record of its own starts its drive here.
-function driveMutationResume(targetRef: string, record: { intentSequence?: number } | undefined): void {
+function driveMutationResume(
+  targetRef: string,
+  // The record is absent only for an enqueue that took the transport fallback
+  // and minted no durable row: nothing to bound.
+  record: { intentSequence?: number } | undefined,
+): void {
   void resumeFencedForSend(targetRef, false, { cancelBound: record?.intentSequence });
 }
 
@@ -2174,11 +2186,18 @@ function driveMutationResume(targetRef: string, record: { intentSequence?: numbe
 // fence, and the parked row's fold is the recovery the retry would have driven.
 function armedRetryOutpacesReadToken(ref: string): boolean {
   const armed = resumeRetries.get(ref);
-  if (armed !== undefined) return armed.recoveryToken !== recoveryTokenOf(ref);
+  if (armed !== undefined) return tokenOutranRead(ref, armed.recoveryToken);
   for (const [armedRef, entry] of resumeRetries) {
-    if (entry.resumed?.ref === ref) return entry.recoveryToken !== recoveryTokenOf(armedRef);
+    if (entry.resumed?.ref === ref) return tokenOutranRead(armedRef, entry.recoveryToken);
   }
   return false;
+}
+
+// The one shape the hub admits while a resume-only obligation stands: a
+// turn/start that folds the resume (a ref-less lookup asks the readiness
+// question). Every admission clause that carves it out reads this.
+function resumeOnlyFoldMethod(ref: string, method: string | undefined): boolean {
+  return (method === "turn/start" || method === undefined) && resumeOnlyDispatchable(ref);
 }
 
 // currentDispatchClient is the dispatch admission: the wired client and its
@@ -2243,10 +2262,9 @@ function currentDispatchClient(
       // tab (or this page after a reload) can read a newer token - another
       // device's Stop - and must not fold the row past it. A row with no
       // capture predates the field and is admitted as before.
-      (method === "turn/start" &&
-        resumeOnlyDispatchable(targetRef) &&
+      (resumeOnlyFoldMethod(targetRef, method) &&
         options?.record !== undefined &&
-        parkedRowOutranToken(targetRef, options.record)) ||
+        parkOutranRow(targetRef, options.record)) ||
       // A supersession's cancellation storage has not committed yet: the rows
       // it names are still dispatchable, so the ref waits until the write lands
       // instead of folding a resume over the Stop that superseded them.
@@ -2279,8 +2297,7 @@ function currentDispatchClient(
       // method-aware recheck could name it, so a ref holding [turn/start,
       // turn/queue] could neither resume nor drain its outbox. The method check
       // below still parks the tail non-send row.
-      (state.restartBlockingObligations.has(targetRef) &&
-        !(resumeOnlyDispatchable(targetRef) && (method === undefined || method === "turn/start"))) ||
+      (state.restartBlockingObligations.has(targetRef) && !resumeOnlyFoldMethod(targetRef, method)) ||
       state.mutationReconciliationFailures.has(targetRef))
   )
     return null;
@@ -3040,11 +3057,6 @@ const pressJoinedResumes = new Map<
     epoch: Promise<number | undefined>;
     targetEpoch?: Promise<number | undefined>;
     inheritedTargetEpoch?: Promise<number | undefined>;
-    recoveryToken?: string;
-    // The ref's intent-sequence bound when the press joined. A press that
-    // joined before observing the Stop's newer token is superseded work too,
-    // so a supersession cancels it along with the drive's own rows.
-    intentBound: Promise<number | undefined>;
     // Every press that joined under the drive's flight, with the token each
     // one had observed: a later join replaces the restart fields above, but
     // the supersession must still cancel each earlier press it supersedes.
@@ -3108,7 +3120,10 @@ async function resumeFencedForSend(ref: string, automatic = false, inherited: In
         inherited.cancelBound !== undefined
           ? Promise.resolve(inherited.cancelBound)
           : readIntentSequenceBound(mutationRuntime, ref);
-      const previousJoins = pressJoinedResumes.get(ref)?.joined ?? [];
+      const previousJoins = pressJoinedResumes.get(ref)?.joined;
+      // Push in place: the marker is replaced wholesale below, so the array's
+      // identity is this drive's alone.
+      previousJoins?.push({ recoveryToken: recoveryTokenOf(ref), intentBound: pressBound });
       pressJoinedResumes.set(ref, {
         generation: userIntentStopGenerations.get(ref) ?? 0,
         target:
@@ -3116,12 +3131,7 @@ async function resumeFencedForSend(ref: string, automatic = false, inherited: In
             ? { ref: existing.targetRef, generation: userIntentStopGenerations.get(existing.targetRef) ?? 0 }
             : undefined,
         inheritedTarget: joinedInherited,
-        // The hub-owned token this page had read when the press arrived: a
-        // supersession refusal may restart the press's drive only if the
-        // press already observed the token that Stop advanced to.
-        recoveryToken: recoveryTokenOf(ref),
-        intentBound: pressBound,
-        joined: [...previousJoins, { recoveryToken: recoveryTokenOf(ref), intentBound: pressBound }],
+        joined: previousJoins ?? [{ recoveryToken: recoveryTokenOf(ref), intentBound: pressBound }],
         epoch: readDurableStopEpoch(mutationRuntime, ref),
         targetEpoch: existing.targetRef !== ref ? readDurableStopEpoch(mutationRuntime, existing.targetRef) : undefined,
         inheritedTargetEpoch:
@@ -3209,7 +3219,7 @@ async function runResumeFencedForSend(
   // step, after its own row is enqueued, so a Send pressed afterwards - a
   // fresher intent the page issued under the token it had already read -
   // survives the supersession.
-  const attemptCancelBound = inherited.cancelBound;
+  let attemptCancelBound = inherited.cancelBound;
   let attemptResumedCancelBound = inherited.resumedCancelBound;
   // The hub-owned recovery token this drive is issued under: a Stop from
   // another client or device advances it invisibly to this page, and the hub
@@ -3228,7 +3238,12 @@ async function runResumeFencedForSend(
     if (attemptRuntime !== null) {
       // A press's bound is its own row's sequence (captured where it presses,
       // exact against anything queued afterwards); an automatic retry inherits
-      // its arm's. Both describe the work the supersession cancels.
+      // its arm's, and an explicit Resume - which has no row of its own - takes
+      // the ref's counter at this read. Beyond its bound, a supersession cancels
+      // everything for the ref, which is what the Resume click spoke for.
+      if (!drive.automatic && attemptCancelBound === undefined) {
+        attemptCancelBound = await readIntentSequenceBound(attemptRuntime, ref);
+      }
       const freshStopEpoch = await readDurableStopEpoch(attemptRuntime, ref);
       // An automatic attempt inherits the fence its fired arm carried, and a
       // fresh epoch that has moved past that fence is a Stop from another tab
@@ -3506,14 +3521,11 @@ async function runResumeFencedForSend(
       // or the arm's retirement hands them to a foldable read. A same-identity
       // drive names the ref twice, and a second unbounded cancel would undo the
       // bound that preserved the newer Sends.
-      const supersededResumedRef =
-        resumedRef !== undefined && resumedRef !== ref
-          ? resumedRef
-          : inherited.resumed !== undefined && inherited.resumed.ref !== ref
-            ? inherited.resumed.ref
-            : undefined;
+      const supersededResumedRef = [resumedRef, inherited.resumed?.ref].find(
+        (candidate) => candidate !== undefined && candidate !== ref,
+      );
       if (supersededResumedRef !== undefined) {
-        await cancelSupersededMutations(supersededResumedRef, attemptResumedCancelBound, { includeAttempted: true });
+        await cancelSupersededMutations(supersededResumedRef, attemptResumedCancelBound, true);
       }
     }
     // A Stop that lands mid-drive can surface here as a plain transport
@@ -3628,7 +3640,7 @@ async function runResumeFencedForSend(
         // advanced to. A press that joined before it stays canceled, or the
         // refreshed token would let its restart override the Stop.
         const hubTokenUnchanged =
-          supersededToken === undefined || (join.recoveryToken !== undefined && join.recoveryToken === supersededToken);
+          supersededToken === undefined || join.joined.at(-1)?.recoveryToken === supersededToken;
         if (generationsUnchanged && epochsUnchanged && hubTokenUnchanged) {
           drive.restartAfterSettle = true;
         }
@@ -4529,12 +4541,12 @@ function discardCanceledMutations(targetRef: string): Promise<void> {
 async function cancelUnattemptedMutations(
   ref: string,
   upToSequence?: number,
-  options?: { includeAttempted?: boolean },
+  includeAttempted?: boolean,
 ): Promise<void> {
   const runtime = getMutationRuntime();
   if (!runtime) return;
   await runtime.start;
-  const canceled = await runtime.storage.cancelUnattempted(ref, upToSequence, options);
+  const canceled = await runtime.storage.cancelUnattempted(ref, upToSequence, includeAttempted);
   // Rows were canceled in the outbox: in-flight reads for the ref are stale,
   // whether or not their ids were registered here.
   noteMutationStateChange(ref);
@@ -4561,7 +4573,7 @@ interface SupersededCancellationRetry {
   attempt: number;
   cancel?: () => void;
   upToSequence?: number;
-  options?: { includeAttempted?: boolean };
+  includeAttempted?: boolean;
   ownObligation?: symbol;
   previousObligation?: symbol;
 }
@@ -4574,26 +4586,26 @@ const supersededCancellationRetries = new Map<string, SupersededCancellationRetr
 async function cancelSupersededMutations(
   ref: string,
   upToSequence?: number,
-  options?: { includeAttempted?: boolean },
+  includeAttempted?: boolean,
 ): Promise<void> {
   retireSupersededCancellationRetry(ref);
   try {
-    await cancelUnattemptedMutations(ref, upToSequence, options);
+    await cancelUnattemptedMutations(ref, upToSequence, includeAttempted);
   } catch {
-    armSupersededCancellationRetry(ref, upToSequence, options);
+    armSupersededCancellationRetry(ref, upToSequence, includeAttempted);
   }
 }
 
 function armSupersededCancellationRetry(
   ref: string,
   upToSequence: number | undefined,
-  options?: { includeAttempted?: boolean },
+  includeAttempted?: boolean,
 ): void {
   const ownObligation = Symbol("superseded-cancellation");
   const entry: SupersededCancellationRetry = {
     attempt: 1,
     upToSequence,
-    options,
+    includeAttempted,
     ownObligation,
     previousObligation: threadsStore.getState().restartBlockingObligations.get(ref),
   };
@@ -4610,7 +4622,7 @@ function scheduleSupersededCancellationRetry(ref: string, entry: SupersededCance
     void (async () => {
       if (supersededCancellationRetries.get(ref) !== entry) return;
       try {
-        await cancelUnattemptedMutations(ref, entry.upToSequence, entry.options);
+        await cancelUnattemptedMutations(ref, entry.upToSequence, entry.includeAttempted);
       } catch {
         entry.attempt += 1;
         scheduleSupersededCancellationRetry(ref, entry);
