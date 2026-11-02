@@ -67,7 +67,10 @@ function sameRecoveryComposition(
 }
 
 export type MutationRecoveryResendResult =
-  | { status: "sent"; record: MutationOutboxRecord }
+  // retiredIds: the outbox rows the consumption retired (every other row of
+  // a consumed recovery's wire - the caller resolves their in-memory
+  // delivery registrations in the same breath).
+  | { status: "sent"; record: MutationOutboxRecord; retiredIds: string[] }
   | { status: "consumed" }
   | { status: "refused" };
 
@@ -1622,25 +1625,29 @@ export class MutationOutboxIndexedDB implements WebQueuedMessageStorage<Mutation
       await requestResult(transaction.objectStore(OUTBOX_STORE).add(record));
       // Consume-time sibling retirement: transferToRecovery's wire coalesce
       // consults only LIVE recovery rows, so once this resend consumes a
-      // recovery, a delayed terminal refusal for its superseded wire
-      // siblings would find no wire copy and mint a NEW sendable recovery
-      // for work this resend already delivers. The siblings retire in the
-      // same write transaction that consumes the recovery - their late
-      // outcomes then land on a missing row and are inert, the same
-      // semantics a late receipt against a settled row already has. Only
-      // superseded rows retire (a canceled row is the user's visible strip
-      // row; any other state is live work), and never the fresh row this
-      // resend just created, which is excluded by key and by state.
+      // recovery, a delayed terminal refusal for any other row of that wire
+      // would find no wire copy and mint a NEW sendable recovery for work
+      // this resend already delivers. Every remaining row of a consumed
+      // recovery's wire retires in the same write transaction that consumes
+      // it - the settled superseded predecessor, a replacement still
+      // submitting mid-flight (its late outcomes land inert on a missing
+      // row, the same semantics a late receipt against a settled row already
+      // has), and a canceled duplicate whose chip leaves the strip with the
+      // consumption, the same tail-position surface an explicit requeue
+      // already has. The wire's one live row is the fresh row this resend
+      // just created, excluded by key.
+      const retiredIds: string[] = [];
       if (consumedWireIds.size > 0) {
         const rows = await requestResult<MutationOutboxRecord[]>(transaction.objectStore(OUTBOX_STORE).getAll());
         for (const row of rows) {
-          if (row.state !== "superseded" || row.clientMutationId === record.clientMutationId) continue;
-          if (consumedWireIds.has(effectiveWireId(row)))
-            await requestResult(transaction.objectStore(OUTBOX_STORE).delete(row.clientMutationId));
+          if (row.clientMutationId === record.clientMutationId) continue;
+          if (!consumedWireIds.has(effectiveWireId(row))) continue;
+          await requestResult(transaction.objectStore(OUTBOX_STORE).delete(row.clientMutationId));
+          retiredIds.push(row.clientMutationId);
         }
       }
       for (const id of ids) await requestResult(recoveryStore.delete(id));
-      return { status: "sent", record };
+      return { status: "sent", record, retiredIds };
     });
   }
 

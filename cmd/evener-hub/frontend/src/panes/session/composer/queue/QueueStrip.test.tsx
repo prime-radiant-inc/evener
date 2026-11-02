@@ -708,6 +708,43 @@ describe("durable recovery rows", () => {
     expect(within(recoveryRow).getByText("edited while retargeted")).toBeTruthy();
   });
 
+  // RoboRev round-4 M3: Retry eligibility is ROW-scoped, not pane-scoped.
+  // The button's disabled term read the DISPLAYED session's snapshot flags,
+  // so a retargeted canceled row targeting healthy ref_b inherited fenced
+  // ref_a's refusal - and an inherited-wire row has no Edit and no Remove,
+  // making Retry its only recovery control, disabled in exactly the pane the
+  // displayedRef projection surfaced it in. Each row's Retry derives from its
+  // own target ref's flags, the same inputs retryBlockedMutation presses with.
+  test("a retargeted canceled row keeps Retry enabled when only the displayed session is fenced", async () => {
+    const fake = connectReadyFakeClient();
+    await hydrate(fake, "ref_a", { status: { type: "notLoaded" } });
+    await hydrate(fake, "ref_b");
+    const row = await seedRetargetedCanceled("retry under a fenced display");
+    expect(row.targetRef).toBe("ref_b");
+    renderStrip(defaultProps());
+    await flushPendingTurnsProjectionForTests();
+    const canceledRow = await findRow("canceled");
+    const retry = within(canceledRow).getByRole("button", { name: "Retry" });
+    expect(isDisabled(retry)).toBe(false);
+  });
+
+  // The honest degenerate case, the same finding's other edge: a row whose
+  // own target is notLoaded keeps Retry disabled - the press would refuse on
+  // that target's snapshot, and a fence on the row's real destination is a
+  // real fence. Before the row-scoped fix this rendered an ENABLED Retry
+  // that always failed.
+  test("a retargeted row keeps Retry disabled while its own target is notLoaded", async () => {
+    const fake = connectReadyFakeClient();
+    await hydrate(fake, "ref_a");
+    await hydrate(fake, "ref_b", { status: { type: "notLoaded" } });
+    await seedRetargetedCanceled("retry toward a fenced target");
+    renderStrip(defaultProps());
+    await flushPendingTurnsProjectionForTests();
+    const canceledRow = await findRow("canceled");
+    const retry = within(canceledRow).getByRole("button", { name: "Retry" });
+    expect(isDisabled(retry)).toBe(true);
+  });
+
   test("blocked unknown has Retry but no sendable action", async () => {
     const user = userEvent.setup();
     const fake = connectReadyFakeClient();

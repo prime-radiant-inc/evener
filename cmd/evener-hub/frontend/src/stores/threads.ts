@@ -3577,6 +3577,23 @@ export function retryBlockedBySnapshot(
   );
 }
 
+// The per-target form of the snapshot refusals: a durable row's Retry is a
+// verdict on its OWN destination, which for a retargeted row is not the pane
+// that renders it. Reads exactly the inputs the press itself consults, so a
+// row's disabled state and retryBlockedMutation's refusal cannot drift. A
+// target whose model is absent or notLoaded keeps Retry disabled - the press
+// would refuse on that snapshot too.
+export function retryBlockedForTarget(targetRef: string): boolean {
+  const state = threadsStore.getState();
+  return (
+    retryBlockedBySnapshot(
+      state.threads.get(targetRef)?.status.type,
+      state.mutationAuthorityRefs.has(targetRef),
+      state.restartBlockingObligations.has(targetRef),
+    ) || state.mutationReconciliationStorageBlocked.has(targetRef)
+  );
+}
+
 export async function retryBlockedMutation(
   clientMutationId: string,
   mode: "user" | "backgroundNote" = "user",
@@ -3628,22 +3645,14 @@ export async function retryBlockedMutation(
   // must refuse here too — the daemon would fence the stale send anyway.
   const rowInstance = record.instanceId ?? record.threadId;
   if (rowInstance !== undefined && threadInstanceID(pressModel) !== rowInstance) return false;
-  if (
-    retryBlockedBySnapshot(
-      state.threads.get(record.targetRef)?.status.type,
-      state.mutationAuthorityRefs.has(record.targetRef),
-      state.restartBlockingObligations.has(record.targetRef),
-    )
-  )
-    return false;
+  // The snapshot refusals and the storage-blocked fence are per-TARGET (the
+  // row's own destination), shared with QueueStrip's per-row button via
+  // retryBlockedForTarget.
+  if (retryBlockedForTarget(record.targetRef)) return false;
   if (
     pendingMutationReconciliations.has(record.targetRef) ||
     pendingThreadHydrations.has(record.targetRef) ||
-    state.mutationReconciliationFailures.has(record.targetRef) ||
-    // A storage-blocked ref cannot answer the ordering questions a Retry
-    // press asks either: its reconcile sits on the same wedge, and
-    // discovery's retry is what clears this fence.
-    state.mutationReconciliationStorageBlocked.has(record.targetRef)
+    state.mutationReconciliationFailures.has(record.targetRef)
   )
     return false;
   const client = currentDispatchClient();
@@ -3671,6 +3680,12 @@ export async function retryBlockedMutation(
         fresh ? { clientMutationId: fresh.clientMutationId, undelivered: fresh.state !== "canceled" } : undefined,
     );
     if (!minted) return false;
+    // The mint removed the predecessor row, so its in-memory delivery
+    // registration resolves here, synchronously - the same shape the resend
+    // path gives the recovery row it consumes. The fresh row keeps the
+    // registration trackOutboxWrite just took, so unreadable storage cannot
+    // strand the guard on a row that no longer exists.
+    noteHandledMutation(clientMutationId);
     notifyMutationPersistence([record.targetRef]);
   }
   // Shared storage can become blocked after this tab's authoritative snapshot.
@@ -3716,6 +3731,12 @@ export async function retryBlockedMutation(
           fresh ? { clientMutationId: fresh.clientMutationId, undelivered: fresh.state !== "canceled" } : undefined,
       );
       if (minted) {
+        // The predecessor settled terminal superseded - its delivery is now
+        // owed by the fresh row - so its in-memory registration resolves
+        // here, synchronously; the fresh row keeps the registration
+        // trackOutboxWrite just took. Unreadable storage cannot strand the
+        // guard on the predecessor's id after the pair settles.
+        noteHandledMutation(clientMutationId);
         notifyMutationPersistence([record.targetRef]);
         // The resync-and-dispatch tail above already ran its dispatch pass, so
         // the fresh row drives its own - the same kick a resend gives it.
@@ -3987,8 +4008,11 @@ export async function resendRecoveryMutation(
   // The resend mints a new row and removes the recovery row it came from, so
   // the old id is resolved: keep the new one (trackOutboxWrite registered it)
   // and drop the old, so a later settle of the new row or unreadable storage
-  // does not strand the guard on a row that no longer exists.
+  // does not strand the guard on a row that no longer exists. The siblings
+  // the consumption retired went with it - a row deleted from storage has no
+  // delivery left to owe.
   noteHandledMutation(clientMutationId);
+  for (const retired of result.retiredIds) noteHandledMutation(retired);
   pinMutationRef(targetRef);
   notifyMutationPersistence([targetRef], { record, recoveryId: clientMutationId });
   handleDiscoveredMutations(runtime, [targetRef]);

@@ -793,3 +793,93 @@ test("an explicit Retry mint stamps the pressing tab's identity", async () => {
     setMutationClientIdentityForTests(undefined);
   }
 });
+
+// Round-4 review M1: the round-3 consume-time retirement filtered to
+// superseded siblings only, so a replacement still SUBMITTING (mid-flight)
+// or CANCELED on the same wire survived the consumption of its predecessor's
+// recovery - and the surviving sibling's later terminal refusal then found
+// no live wire copy and minted a second sendable recovery for work the
+// resend already delivered. The consumption retires the wire's remaining
+// rows whatever their state: the fresh resend row is the composition's one
+// live row, and every other row of that wire is either a settled predecessor
+// or a duplicate whose late outcomes must land inert on a missing row.
+test("a consumed recovery retires its submitting wire sibling, whose late refusal cannot resurrect delivered work", async () => {
+  const f = fixture();
+  // A: attempted, response lost -> delivery-uncertain.
+  const a = await f.storage.enqueueIntent(queuedIntent());
+  await f.storage.markAttempted(a.clientMutationId);
+  await f.storage.markUnknown(a.clientMutationId, "blockedUnknown");
+  // Retry mints B under A's wire id; B stays submitting - mid-flight.
+  const capture = await f.storage.getOutboxWithStopEpoch(a.clientMutationId);
+  const b = await f.storage.mintRetryFromRow(a.clientMutationId, {
+    record: capture.record,
+    stopEpoch: capture.stopEpoch,
+    displayedStopEpoch: 0,
+  });
+  if (!b) throw new Error("mint failed");
+  expect(b.state).toBe("submitting");
+  // A's delayed refusal moves the superseded predecessor into recovery.
+  const recovery = await f.storage.transferToRecovery(a.clientMutationId, "rejected", "late");
+  if (!recovery) throw new Error("failed to seed recovery");
+  // The user resends A's recovery: R consumed, C enqueued; C delivers.
+  const sent = await f.storage.resendRecoveryResult(a.clientMutationId, queuedIntent());
+  if (sent.status !== "sent") throw new Error(`resend did not send: ${sent.status}`);
+  await f.storage.markAttempted(sent.record.clientMutationId);
+  expect(await f.storage.settleReceipt(sent.record.clientMutationId, "reflected")).toBe(true);
+  // The mid-flight sibling retired with the consumption...
+  expect(await f.storage.getOutbox(b.clientMutationId)).toBeUndefined();
+  // ...so its late refusal finds no row and creates no second recovery for
+  // work the resend already delivered.
+  expect(await f.storage.transferToRecovery(b.clientMutationId, "rejected", "late")).toBeUndefined();
+  expect(await f.storage.getRecovery(b.clientMutationId)).toBeUndefined();
+  expect(await f.storage.listRecovery("local:queued")).toHaveLength(0);
+});
+
+// The canceled half of M1: a Stop crossed while the replacement sat
+// unattempted leaves it the user's visible canceled strip row - and it is a
+// duplicate of the composition the resend just re-delivered. Retiring it at
+// consume time makes its chip leave the canceled strip, the same
+// tail-position surface an explicit requeue already has, and a later press
+// can no longer re-queue delivered work from it.
+test("a consumed recovery retires its canceled wire sibling, whose chip leaves the strip", async () => {
+  const f = fixture();
+  const a = await f.storage.enqueueIntent(queuedIntent());
+  await f.storage.markAttempted(a.clientMutationId);
+  await f.storage.markUnknown(a.clientMutationId, "blockedUnknown");
+  const capture = await f.storage.getOutboxWithStopEpoch(a.clientMutationId);
+  const b = await f.storage.mintRetryFromRow(a.clientMutationId, {
+    record: capture.record,
+    stopEpoch: capture.stopEpoch,
+    displayedStopEpoch: 0,
+  });
+  if (!b) throw new Error("mint failed");
+  // A crossed Stop cancels the unattempted replacement: the strip row.
+  await f.storage.enqueueInterruptAndCancel({
+    targetRef: "local:queued",
+    threadId: "thread",
+    method: "turn/interrupt",
+    payload: { ref: "local:queued" },
+    attachments: [],
+    optimisticDisplay: { method: "turn/interrupt" },
+  });
+  expect((await f.storage.getOutbox(b.clientMutationId))?.state).toBe("canceled");
+  // A's delayed refusal moves the superseded predecessor into recovery; the
+  // user resends it and C delivers.
+  const recovery = await f.storage.transferToRecovery(a.clientMutationId, "rejected", "late");
+  if (!recovery) throw new Error("failed to seed recovery");
+  const sent = await f.storage.resendRecoveryResult(a.clientMutationId, queuedIntent());
+  if (sent.status !== "sent") throw new Error(`resend did not send: ${sent.status}`);
+  await f.storage.markAttempted(sent.record.clientMutationId);
+  expect(await f.storage.settleReceipt(sent.record.clientMutationId, "reflected")).toBe(true);
+  // The canceled duplicate chip left the strip with the consumption, and
+  // the predecessor's own recovery went with the resend that consumed it:
+  // nothing of the composition remains in the outbox queue except the
+  // crossed Stop's own interrupt row - the resend's fresh row is the
+  // composition's one live row, delivered and settled.
+  expect(await f.storage.getOutbox(b.clientMutationId)).toBeUndefined();
+  // The crossed Stop's own interrupt row is this ref's queue business too;
+  // among the composition's rows only the predecessor's terminal evidence
+  // remains.
+  const remaining = (await f.storage.listOutbox("local:queued")).filter((record) => record.method !== "turn/interrupt");
+  expect(remaining).toEqual([]);
+});
