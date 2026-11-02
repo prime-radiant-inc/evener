@@ -20,6 +20,7 @@ import { SessionEntryCache } from "./sessionEntryCache";
 import { holdIndexedDBEvent } from "./testing/stalledIndexedDB";
 import {
   resetThreadsStoreForTests,
+  retryBlockedMutation,
   setMutationStorageForTests,
   settleEntryTranscriptForTests,
   threadsStore,
@@ -553,6 +554,158 @@ test("a background save whose blocked row is restored elsewhere mid-retry takes 
     submitted: { id: original.clientMutationId, state: "submitting" },
   });
   expect(fake.calls.filter(({ method }) => method === "thread/resume" || method === "notes/human/set")).toEqual([]);
+});
+
+// RoboRev round-1 M4: reconciliation re-queues a blocked note save as a FRESH
+// replacement row under the SAME wire id. The draft's status must follow the
+// replacement (its storage key differs from the wire id the draft holds),
+// and the replacement's successful response must acknowledge the draft -
+// when the replay response is the only remaining acknowledgement, a
+// storage-key comparison strands the saved note dirty forever.
+async function seedBlockedNoteDraft(text: string): Promise<{
+  fake: FakeClient;
+  result: {
+    current: { submitted?: { id?: string; state?: string } | undefined; error?: string | null } | undefined;
+  };
+  original: Awaited<ReturnType<typeof persisted>>;
+}> {
+  vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+  const fake = new FakeClient("ready");
+  fake.on("thread/read", () => hydrationResponse("ref-a", "instance-a"));
+  connectionStore.getState().connect(fake);
+  await threadsStore.getState().ensureThread("ref-a");
+  const original = await persisted(text);
+  await storage.markUnknown(original.clientMutationId, "blockedUnknown");
+  syncHumanNote("ref-a", "");
+  const { result } = renderHook(() => useHumanNoteDraft("ref-a"));
+  await act(async () => {
+    await storage.listOutbox("ref-a");
+  });
+  expect(result.current?.submitted).toMatchObject({ id: original.clientMutationId, state: "blockedUnknown" });
+  return { fake, result, original };
+}
+
+test("a note draft follows its reconciled replacement under the same wire id", async () => {
+  const { fake, result, original } = await seedBlockedNoteDraft("replaced mid-flight");
+  // The replacement's transport never answers, so its in-flight state is the
+  // durable truth the draft must show.
+  fake.on("notes/human/set", () => new Promise<never>(() => undefined));
+  await act(async () => {
+    await retryBlockedMutation(original.clientMutationId, "backgroundNote");
+  });
+  const rows = await storage.listOutbox("ref-a");
+  const replacement = rows.find((row) => row.clientMutationId !== original.clientMutationId);
+  expect(replacement).toMatchObject({ state: "submitting" });
+  expect(replacement?.payload.clientMutationId).toBe(original.clientMutationId);
+  await act(async () => {
+    await flushIndexedDBUntil(() => result.current?.submitted?.state === "submitting");
+  });
+  expect(result.current?.submitted).toMatchObject({
+    id: original.clientMutationId,
+    state: "submitting",
+  });
+  expect(result.current?.error).toBeNull();
+});
+
+test("a reconciled replacement's response acknowledges the draft under the shared wire id", async () => {
+  // The session pane that renders the draft holds its ref, so the eviction
+  // sweep the acknowledgment schedules keeps the now-clean record (the same
+  // setup the matching-identity test uses).
+  workspaceStore.setState({
+    panes: [{ id: "p_session", type: "session", params: { ref: "ref-a" }, slot: "main" }],
+  });
+  const { fake, result, original } = await seedBlockedNoteDraft("replaced mid-flight");
+  fake.on("notes/human/set", (params) => ({
+    note: "replaced mid-flight",
+    receipt: {
+      clientMutationId: params.clientMutationId,
+      threadId: "thr",
+      disposition: "applied",
+      projectionState: "reflected",
+    },
+  }));
+  await act(async () => {
+    await retryBlockedMutation(original.clientMutationId, "backgroundNote");
+  });
+  // The background note's resend belongs to the outbox's lifecycle scan -
+  // the retry deliberately does not dispatch it - so the replacement's
+  // response arrives only once that scan runs.
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(2_100);
+  });
+  await act(async () => {
+    await flushIndexedDBUntil(() => result.current?.submitted === undefined);
+  });
+  expect(result.current).toMatchObject({
+    text: "replaced mid-flight",
+    dirty: false,
+    saved: true,
+    error: null,
+    submitted: undefined,
+  });
+});
+
+// RoboRev round-2 M4 corner: a RELOADED draft adopts its persisted save by
+// the WIRE id. A reconciled replacement carries its predecessor's id inside
+// the payload under a fresh storage key, and every status and acknowledgement
+// comparison meets the wire. Adopting the storage key strands the reloaded
+// draft: the replacement's own success can never acknowledge it again.
+test("a reloaded note draft adopts a reconciled replacement under its wire id", async () => {
+  workspaceStore.setState({
+    panes: [{ id: "p_session", type: "session", params: { ref: "ref-a" }, slot: "main" }],
+  });
+  vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+  const fake = new FakeClient("ready");
+  fake.on("thread/read", () => hydrationResponse("ref-a", "instance-a"));
+  connectionStore.getState().connect(fake);
+  await threadsStore.getState().ensureThread("ref-a");
+  const original = await persisted("reloaded and replaced");
+  await storage.markAttempted(original.clientMutationId);
+  await storage.markUnknown(original.clientMutationId, "blockedUnknown");
+  // The save reconciles into a FRESH replacement under the same wire id while
+  // no draft exists - the reload shape: the next mount rebuilds from persistence.
+  await act(async () => {
+    await retryBlockedMutation(original.clientMutationId, "backgroundNote");
+  });
+  const rows = await storage.listOutbox("ref-a");
+  const replacement = rows.find((row) => row.clientMutationId !== original.clientMutationId);
+  expect(replacement).toMatchObject({ state: "submitting" });
+  expect(replacement?.payload.clientMutationId).toBe(original.clientMutationId);
+  // Reload: the mount adopts the note's latest durable row - the replacement.
+  syncHumanNote("ref-a", "");
+  const { result } = renderHook(() => useHumanNoteDraft("ref-a"));
+  await act(async () => {
+    await storage.listOutbox("ref-a");
+  });
+  expect(result.current?.submitted).toMatchObject({
+    id: original.clientMutationId,
+    state: "submitting",
+  });
+  expect(result.current?.error).toBeNull();
+  // The replacement's successful response must acknowledge the reloaded draft:
+  // the receipt names the wire id, which the adopted identity now meets.
+  fake.on("notes/human/set", (params) => ({
+    note: "reloaded and replaced",
+    receipt: {
+      clientMutationId: params.clientMutationId,
+      threadId: "thr",
+      disposition: "applied",
+      projectionState: "reflected",
+    },
+  }));
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(2_100);
+  });
+  await act(async () => {
+    await flushIndexedDBUntil(() => result.current?.saved === true && result.current.dirty === false);
+  });
+  expect(result.current).toMatchObject({
+    text: "reloaded and replaced",
+    dirty: false,
+    saved: true,
+    error: null,
+    submitted: undefined,
+  });
 });
 
 // RoboRev finding (PR 1393 head fee4eb8): the save's post-retry lookup asked

@@ -442,6 +442,95 @@ export function describeWebQueuedMessageStorage(name: string, create: () => WebQ
       expect(dispatchableNotes[0]?.payload.note).toBe("newer text");
     });
 
+    // RoboRev round-1 M3, interleaving one: the replacement earned an
+    // accepted-but-pending receipt and lives in the optimistic store under
+    // its own key while the authoritative feed names the WIRE id. The feed
+    // must reach the replacement and retire the settled pair.
+    test("aFeedNamingTheWireIdSettlesTheReplacementAndRetiresThePredecessor", async () => {
+      const f = create();
+      const original = await f.storage.enqueueIntent(queuedIntent());
+      await f.storage.markAttempted(original.clientMutationId);
+      await f.storage.markUnknown(original.clientMutationId, "blockedUnknown");
+      const capture = await f.storage.getOutboxWithStopEpoch(original.clientMutationId);
+      const fresh = await f.storage.mintRetryFromRow(original.clientMutationId, capture);
+      if (!fresh) throw new Error("mint refused");
+      expect(await f.storage.settleReceipt(fresh.clientMutationId, "pending")).toBe(true);
+      expect(await f.storage.getOptimistic(fresh.clientMutationId)).toBeDefined();
+      expect(await f.storage.settleApplied(original.clientMutationId)).toBe(true);
+      expect(await f.storage.getOptimistic(fresh.clientMutationId)).toBeUndefined();
+      expect(await f.storage.getOutbox(original.clientMutationId)).toBeUndefined();
+    });
+
+    // RoboRev round-1 M3, interleaving two: a reflected replay settles the
+    // replacement, and the predecessor's outcome is proven by the same wire
+    // id - it must not linger superseded, retained and pinning the ref, once
+    // the replacement is reflected.
+    test("aReflectedReplacementSettlesItsSupersededPredecessorToo", async () => {
+      const f = create();
+      const original = await f.storage.enqueueIntent(queuedIntent());
+      await f.storage.markAttempted(original.clientMutationId);
+      await f.storage.markUnknown(original.clientMutationId, "blockedUnknown");
+      const capture = await f.storage.getOutboxWithStopEpoch(original.clientMutationId);
+      const fresh = await f.storage.mintRetryFromRow(original.clientMutationId, capture);
+      if (!fresh) throw new Error("mint refused");
+      expect(await f.storage.settleReceipt(fresh.clientMutationId, "reflected")).toBe(true);
+      expect(await f.storage.getOutbox(original.clientMutationId)).toBeUndefined();
+    });
+
+    // RoboRev round-2 M3 corner: a composition can earn REPEATED pending
+    // receipts - two tabs both settling the same accepted-but-unreflected
+    // mutation. The retained accepted copy is the input's only durable
+    // pending representation once the outbox row is gone, so the second
+    // settlement must leave it in place: the optimistic delete is conditional
+    // on the settlement NOT retaining, never an unconditional delete of
+    // whatever the receipt names.
+    test("repeatedPendingReceiptsKeepTheRetainedAcceptedCopy", async () => {
+      const f = create();
+      const original = await f.storage.enqueueIntent(queuedIntent());
+      expect(await f.storage.settleReceipt(original.clientMutationId, "pending")).toBe(true);
+      expect(await f.storage.getOptimistic(original.clientMutationId)).toBeDefined();
+      // The second tab's pending receipt for the same mutation.
+      expect(await f.storage.settleReceipt(original.clientMutationId, "pending")).toBe(true);
+      expect(await f.storage.getOptimistic(original.clientMutationId)).toBeDefined();
+      expect(await f.storage.getOutbox(original.clientMutationId)).toBeUndefined();
+    });
+
+    // The settle-time retirement ruling (the disclosed settled-newer
+    // boundary, now closed): when a notes/human/set row settles, OLDER
+    // blockedUnknown note rows on the same target retire to terminal
+    // superseded - state change only, keeping id and attempt evidence
+    // exactly like the mint's own superseded semantics. By the time a
+    // reconciliation could mint the older save, it is already terminal, so
+    // the newer note's text can never be overwritten by the stale dispatch;
+    // and the older row's own late receipt still settles it.
+    test("aSettledNewerNoteSaveRetiresOlderBlockedNoteRows", async () => {
+      const f = create();
+      const noteIntent = (note: string) => ({
+        ...queuedIntent(),
+        method: "notes/human/set",
+        payload: { ref: "local:queued", note },
+        optimisticDisplay: null,
+      });
+      const older = await f.storage.enqueueIntent(noteIntent("older text"));
+      const newer = await f.storage.enqueueIntent(noteIntent("newer text"));
+      await f.storage.markAttempted(older.clientMutationId);
+      await f.storage.markUnknown(older.clientMutationId, "blockedUnknown");
+      // The newer save dispatches and settles.
+      expect(await f.storage.settleReceipt(newer.clientMutationId, "reflected")).toBe(true);
+      expect(await f.storage.getOutbox(older.clientMutationId)).toMatchObject({
+        state: "superseded",
+        attempted: true,
+      });
+      // Reconciliation finds no innocent work to re-queue: the older row is
+      // terminal, so the newer note's text survives untouched.
+      expect(await f.storage.restoreProvenAbsent("local:queued", new Set())).toHaveLength(0);
+      const rows = await f.storage.listOutbox("local:queued");
+      expect(rows.filter((row) => row.method === "notes/human/set" && row.state === "submitting")).toHaveLength(0);
+      // The older row's own late receipt still settles it.
+      expect(await f.storage.settleReceipt(older.clientMutationId, "reflected")).toBe(true);
+      expect(await f.storage.getOutbox(older.clientMutationId)).toBeUndefined();
+    });
+
     test("aMintCrossedByANewerStopCommitsBornCanceled", async () => {
       const f = create();
       const original = await f.storage.enqueueIntent(queuedIntent());

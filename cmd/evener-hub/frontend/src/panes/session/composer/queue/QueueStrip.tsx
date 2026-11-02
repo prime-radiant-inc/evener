@@ -36,6 +36,7 @@ import {
   discardRecoveryPendingTurn,
   editQueuedPendingTurn,
   type PendingTurnEntry,
+  refreshPendingTurnsProjection,
   removeQueuedPendingTurn,
   resendRecoveryPendingTurn,
   retryBlockedPendingTurn,
@@ -293,13 +294,23 @@ export function QueueStrip({
     localActions.current.add(id);
     setRowBusy(id, true);
     try {
+      // The row's OWN destination identity governs its controls: a
+      // retargeted row surfaced under the displayed ref carries the resumed
+      // session as its targetRef, and the identity checks inside edit and
+      // remove reject a pane ref that differs from the row's destination.
+      // The destination ref's refresh runs inside the wrapper; the DISPLAYED
+      // pane - the one the user is pressing in - refreshes its own
+      // projection here, or the surfaced row lingers in the strip after the
+      // operation that consumed it.
+      const ref = record.targetRef;
       if (action === "edit") {
-        const recovery = await editQueuedPendingTurn(id, sessionRef);
+        const recovery = await editQueuedPendingTurn(id, ref);
         if (recovery) await onEditRecovery?.(recovery);
         else pushRecoveryRefusal("changed");
-      } else if (!(await removeQueuedPendingTurn(id, sessionRef))) {
+      } else if (!(await removeQueuedPendingTurn(id, ref))) {
         pushRecoveryRefusal("changed");
       }
+      if (ref !== sessionRef) await refreshPendingTurnsProjection(sessionRef);
     } catch (error) {
       toasts.push("error", sessionActionError(action === "edit" ? "Edit failed" : "Remove failed", error));
     } finally {

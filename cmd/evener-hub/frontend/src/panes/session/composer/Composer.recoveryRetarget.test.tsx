@@ -8,6 +8,7 @@
 
 import type { Thread, ThreadReadResponse } from "@evener/appwire-client";
 import { WireError } from "@evener/appwire-client";
+import { canceledEntries } from "@evener/appwire-client/state/mutation";
 import { deferred } from "@evener/appwire-client/testing/deferred";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { act, cleanup, fireEvent, render, waitFor } from "@testing-library/react";
@@ -270,6 +271,7 @@ async function runStopMatrixCase(stop: StopOrigin, phase: StopPhase): Promise<vo
     expect(rows[0]).toMatchObject({ state: "canceled", targetRef: resumed, displayedRef: "root" });
     expect(wired.delivered).toHaveLength(0);
     expect(await storage.getRecovery(recoveryId)).toBeUndefined();
+    expect(canceledEntries(new Map([[rows[0]!.clientMutationId, rows[0]!]]), "root")).toHaveLength(1);
   } finally {
     storage.finishHold();
     wired.releaseRead();
@@ -344,6 +346,7 @@ test("a stop while the press-time destination read is delayed cancels the send",
     expect(rows[0]).toMatchObject({ state: "canceled", targetRef: resumed, displayedRef: "root" });
     expect(wired.delivered).toHaveLength(0);
     expect(await storage.getRecovery(recoveryId)).toBeUndefined();
+    expect(canceledEntries(new Map([[rows[0]!.clientMutationId, rows[0]!]]), "root")).toHaveLength(1);
   } finally {
     storage.finishHold();
     peer.close();

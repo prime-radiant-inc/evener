@@ -878,10 +878,14 @@ describe("Stop cancellation durability across reload, tabs, and resume", () => {
           (call.params as { clientMutationId?: string }).clientMutationId === clientMutationId,
       ),
     );
-    // The old row settles terminal "superseded" - never re-dispatched, its
-    // id and attempt evidence kept for the receipt a real in-flight attempt
-    // can still bring.
-    expect((await storage.getOutbox(clientMutationId))?.state).toBe("superseded");
+    // The old row settles terminal "superseded" at the mint, and the minted
+    // resend's response settles the WHOLE wire pair: the completed
+    // predecessor retires with it (RoboRev round-1 M3), so nothing of the
+    // composition lingers pinned once its outcome is proven.
+    await flushUntilArrived(
+      "the settled wire pair to retire the predecessor",
+      async () => (await storage.getOutbox(clientMutationId)) === undefined,
+    );
   });
 
   // #5182 M2, the store-level shape: for a canceled retargeted resend, a Stop

@@ -574,6 +574,22 @@ export class MutationOutboxIndexedDB implements WebQueuedMessageStorage<Mutation
     });
   }
 
+  // The displayed-ref half of the persistence read: a retargeted row's
+  // durable destination is the resumed ref, but the pane that surfaces it -
+  // the canceled strip's projection - is the displayed one it was
+  // retargeted from. This read lists the outbox rows whose displayedRef
+  // names the given ref, whatever their destination; rows whose own
+  // targetRef is the ref are listOutbox's, so callers merge without
+  // duplicating them.
+  async listOutboxDisplayedAt(targetRef: string): Promise<MutationOutboxRecord[]> {
+    return this.#read(OUTBOX_STORE, async (transaction) => {
+      const records = await requestResult<MutationOutboxRecord[]>(transaction.objectStore(OUTBOX_STORE).getAll());
+      return records
+        .filter((record) => record.displayedRef === targetRef)
+        .sort((left, right) => left.intentSequence - right.intentSequence);
+    });
+  }
+
   async listTargetRefs(): Promise<string[]> {
     const [outbox, optimistic] = await Promise.all([this.listOutbox(), this.listOptimistic()]);
     return [...new Set([...outbox, ...optimistic].map((record) => record.targetRef))].sort();
@@ -714,21 +730,60 @@ export class MutationOutboxIndexedDB implements WebQueuedMessageStorage<Mutation
           requestResult<MutationOptimisticRecord | undefined>(optimistic.get(clientMutationId)),
           requestResult<MutationRecoveryRecord | undefined>(recovery.get(clientMutationId)),
         ]);
-        const source = outboxRecord ?? recoveryRecord ?? optimisticRecord;
-        if (!source) return false;
-        await this.#discardSupersededNoteRecovery(transaction, source);
-        settledSource = source;
-
-        if (retainsAcceptedCopy(source, projectionState)) {
+        const named = outboxRecord ?? recoveryRecord ?? optimisticRecord;
+        // The wire id the settlement travels under: the daemon journals the
+        // composition by it, so a receipt proves EVERY record sharing it -
+        // the superseded predecessor behind a settled replacement, or the
+        // replacement carrying a predecessor's id when the feed names the
+        // predecessor's own record. Resolve the pair by effective wire
+        // identity, or one side lingers retained and pinning its ref after
+        // delivery.
+        const wireId = named ? effectiveWireId(named) : clientMutationId;
+        const [outboxRecords, optimisticRecords] = await Promise.all([
+          requestResult<MutationOutboxRecord[]>(outbox.getAll()),
+          requestResult<MutationOptimisticRecord[]>(optimistic.getAll()),
+        ]);
+        const siblings = [...outboxRecords, ...optimisticRecords].filter(
+          (record) => record.clientMutationId !== clientMutationId && effectiveWireId(record) === wireId,
+        );
+        if (!named && siblings.length === 0) return false;
+        // The named record settles with today's semantics; when the receipt
+        // names a wire id whose own record is already gone, the replacement
+        // carrying that wire id is the subject. Every other sibling only
+        // retires - the composition settled once, and one accepted copy is
+        // enough.
+        const subject = (named ?? siblings[0]) as MutationRecord;
+        settledSource = subject;
+        await this.#discardSupersededNoteRecovery(transaction, subject);
+        await this.#retireOlderBlockedNoteRows(transaction, subject);
+        const retained = retainsAcceptedCopy(subject, projectionState);
+        if (retained) {
           // The accepted whitelist lives in the package's acceptedRecord so
           // this adapter and native's build the same row.
-          await requestResult(optimistic.put(acceptedRecord(source)));
+          await requestResult(optimistic.put(acceptedRecord(subject)));
         } else if (optimisticRecord) {
+          // The delete stays CONDITIONAL on the named optimistic record: a
+          // repeated pending receipt must leave the retained accepted copy
+          // in place (the round-1 M3 corner - an unconditional delete of
+          // whatever the wire pair holds would erase accepted input's only
+          // durable pending representation).
           await requestResult(optimistic.delete(clientMutationId));
         }
-        if (outboxRecord) await requestResult(outbox.delete(clientMutationId));
-        if (recoveryRecord && settlementRetiresRecovery(recoveryRecord))
-          await requestResult(recovery.delete(clientMutationId));
+        if (named) {
+          if (outboxRecord) await requestResult(outbox.delete(clientMutationId));
+          if (recoveryRecord && settlementRetiresRecovery(recoveryRecord))
+            await requestResult(recovery.delete(clientMutationId));
+        } else {
+          // A receipt for a record already gone settles the replacement
+          // that carries its wire id.
+          await requestResult(outbox.delete(subject.clientMutationId));
+          if (!retained) await requestResult(optimistic.delete(subject.clientMutationId));
+        }
+        for (const sibling of siblings) {
+          if (sibling.clientMutationId === subject.clientMutationId) continue;
+          await requestResult(outbox.delete(sibling.clientMutationId));
+          await requestResult(optimistic.delete(sibling.clientMutationId));
+        }
         return true;
       },
     );
@@ -752,14 +807,38 @@ export class MutationOutboxIndexedDB implements WebQueuedMessageStorage<Mutation
           requestResult<MutationOptimisticRecord | undefined>(optimistic.get(clientMutationId)),
           requestResult<MutationRecoveryRecord | undefined>(recovery.get(clientMutationId)),
         ]);
-        if (!outboxRecord && !optimisticRecord && !recoveryRecord) return false;
-        const source = outboxRecord ?? optimisticRecord ?? recoveryRecord;
-        await this.#discardSupersededNoteRecovery(transaction, source);
-        if (outboxRecord) await requestResult(outbox.delete(clientMutationId));
-        if (optimisticRecord) await requestResult(optimistic.delete(clientMutationId));
-        if (recoveryRecord && settlementRetiresRecovery(recoveryRecord))
-          await requestResult(recovery.delete(clientMutationId));
-        settledSource = source;
+        const named = outboxRecord ?? optimisticRecord ?? recoveryRecord;
+        // The same wire-identity resolution as settleReceipt: an applied
+        // settlement proves the whole wire pair, and retiring the other side
+        // is what keeps a superseded predecessor from lingering retained
+        // and pinned after its replacement is applied.
+        const wireId = named ? effectiveWireId(named) : clientMutationId;
+        const [outboxRecords, optimisticRecords] = await Promise.all([
+          requestResult<MutationOutboxRecord[]>(outbox.getAll()),
+          requestResult<MutationOptimisticRecord[]>(optimistic.getAll()),
+        ]);
+        const siblings = [...outboxRecords, ...optimisticRecords].filter(
+          (record) => record.clientMutationId !== clientMutationId && effectiveWireId(record) === wireId,
+        );
+        if (!named && siblings.length === 0) return false;
+        const subject = (named ?? siblings[0]) as MutationRecord;
+        await this.#discardSupersededNoteRecovery(transaction, subject);
+        await this.#retireOlderBlockedNoteRows(transaction, subject);
+        if (named) {
+          if (outboxRecord) await requestResult(outbox.delete(clientMutationId));
+          if (optimisticRecord) await requestResult(optimistic.delete(clientMutationId));
+          if (recoveryRecord && settlementRetiresRecovery(recoveryRecord))
+            await requestResult(recovery.delete(clientMutationId));
+        } else {
+          await requestResult(outbox.delete(subject.clientMutationId));
+          await requestResult(optimistic.delete(subject.clientMutationId));
+        }
+        for (const sibling of siblings) {
+          if (sibling.clientMutationId === subject.clientMutationId) continue;
+          await requestResult(outbox.delete(sibling.clientMutationId));
+          await requestResult(optimistic.delete(sibling.clientMutationId));
+        }
+        settledSource = subject;
         return true;
       },
     );
@@ -767,6 +846,33 @@ export class MutationOutboxIndexedDB implements WebQueuedMessageStorage<Mutation
     const settledRef = settledSource?.targetRef;
     if (settledRef !== undefined) this.#notifyQuietly(() => this.#settledListener?.(settledRef));
     return settled;
+  }
+
+  // The settle-time retirement ruling: a settled note save is the note's
+  // truth, and an OLDER blockedUnknown note row on the same target is stale
+  // work that a later reconcile could still re-queue as a fresh row at the
+  // ref's tail - dispatching the older text AFTER the newer save landed. The
+  // mint's own ordering guard only sees newer saves that are still queued or
+  // waiting; a newer save that already settled is invisible to it. Retire the
+  // older row to terminal "superseded" here, in the settlement's own write:
+  // state change only, keeping its id and attempt evidence so a receipt or
+  // in-band refusal from its own real in-flight attempt still settles it,
+  // exactly like the mint's superseded semantics - and superseded rows never
+  // dispatch again (nextDispatchable returns only submitting rows).
+  async #retireOlderBlockedNoteRows(transaction: IDBTransaction, source: MutationRecord | undefined): Promise<void> {
+    if (source?.method !== "notes/human/set") return;
+    const store = transaction.objectStore(OUTBOX_STORE);
+    const records = await requestResult<MutationOutboxRecord[]>(store.getAll());
+    for (const record of records) {
+      if (
+        record.method === "notes/human/set" &&
+        record.targetRef === source.targetRef &&
+        record.intentSequence < source.intentSequence &&
+        record.state === "blockedUnknown"
+      ) {
+        await requestResult(store.put({ ...record, state: "superseded" }));
+      }
+    }
   }
 
   // A later accepted note supersedes refused earlier text, not chat recovery
@@ -1202,6 +1308,19 @@ export class MutationOutboxIndexedDB implements WebQueuedMessageStorage<Mutation
       return requestResult<MutationRecoveryRecord | undefined>(
         transaction.objectStore(RECOVERY_STORE).get(clientMutationId),
       );
+    });
+  }
+
+  // The displayed-ref half of the recovery read: an edited retargeted row's
+  // recovery row carries the resumed ref as its durable destination while
+  // the pane that must show it - the tray the strip's own Edit opened - is
+  // the displayed ref it was retargeted from.
+  async listRecoveryDisplayedAt(targetRef: string): Promise<MutationRecoveryRecord[]> {
+    return this.#read(RECOVERY_STORE, async (transaction) => {
+      const records = await requestResult<MutationRecoveryRecord[]>(transaction.objectStore(RECOVERY_STORE).getAll());
+      return records
+        .filter((record) => record.displayedRef === targetRef)
+        .sort((left, right) => left.intentSequence - right.intentSequence);
     });
   }
 

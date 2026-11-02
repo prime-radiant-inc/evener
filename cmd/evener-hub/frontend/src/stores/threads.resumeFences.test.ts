@@ -916,8 +916,16 @@ test("a background note save does not reopen an unrelated blocked record for the
 
     expect(await retryBlockedMutation(note.clientMutationId, "backgroundNote")).toBe(true);
 
-    // The reconciliation ran and reopened the note it was asked to retry...
-    expect((await storage.getOutbox(note.clientMutationId))?.state).toBe("submitting");
+    // The reconciliation re-queued the note it was asked to retry through a
+    // FRESH row under the same wire id (the endpoint's mint: the old row
+    // settles terminal superseded, keeping its id and evidence)...
+    expect((await storage.getOutbox(note.clientMutationId))?.state).toBe("superseded");
+    const rows = await storage.listOutbox("ref_a");
+    const freshNote = rows.find(
+      (row) => row.method === "notes/human/set" && row.clientMutationId !== note.clientMutationId,
+    );
+    expect(freshNote).toMatchObject({ state: "submitting" });
+    expect(freshNote?.payload.clientMutationId).toBe(note.clientMutationId);
     // ...but the unrelated blocked row for the same target is untouched.
     expect((await storage.getOutbox(unrelated.clientMutationId))?.state).toBe("blockedUnknown");
   } finally {
@@ -1458,7 +1466,13 @@ test("the global resume Stop baseline fires on any ref's Stop and on nothing els
 test("persistent journal failures wait for periodic recovery between attempts", async () => {
   vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
   try {
-    const storage = new MutationOutboxIndexedDB({ createMutationId: () => "persistent-journal" });
+    // The endpoint's retry re-queues through a FRESH row (the old row settles
+    // superseded and keeps its key), so the factory must produce distinct ids;
+    // the first keeps the bare name the test addresses the original row by.
+    let mintedId = 0;
+    const storage = new MutationOutboxIndexedDB({
+      createMutationId: () => (++mintedId === 1 ? "persistent-journal" : `persistent-journal-${mintedId}`),
+    });
     let blocked = deferred<void>();
     const markUnknown = storage.markUnknown.bind(storage);
     vi.spyOn(storage, "markUnknown").mockImplementation(async (...args) => {
@@ -1486,8 +1500,28 @@ test("persistent journal failures wait for periodic recovery between attempts", 
       await settleCallerContinuations();
       expect(fake.calls.filter((call) => call.method === "thread/read")).toHaveLength(attempt);
       expect(fake.calls.filter((call) => call.method === "turn/queue")).toHaveLength(attempt);
+      // The press cannot reopen the old row (the endpoint deletes the
+      // refresh-in-place class): from the first re-queue on, the work lives
+      // in the newest of a chain of FRESH rows all traveling under the same
+      // wire id, and a press on the old id is a no-op refusal.
       expect(await retryBlockedMutation("persistent-journal")).toBe(false);
-      expect((await storage.getOutbox("persistent-journal"))?.state).toBe("blockedUnknown");
+      const rows = await storage.listOutbox("ref_a");
+      if (attempt === 1) {
+        // Nothing has re-queued the original row yet: it is still the live
+        // one, parked blockedUnknown by the journal's refusal.
+        expect(rows).toHaveLength(1);
+        expect(rows[0]).toMatchObject({ clientMutationId: "persistent-journal", state: "blockedUnknown" });
+      } else {
+        // Each periodic recovery window minted exactly ONE fresh
+        // generation: every earlier generation settled terminal superseded
+        // (keeping its id and attempt evidence for the receipt its own real
+        // in-flight attempt could still bring), and exactly one live row
+        // remains parked by the refusal.
+        expect(rows).toHaveLength(attempt);
+        expect(rows[0]).toMatchObject({ clientMutationId: "persistent-journal", state: "superseded" });
+        expect(rows.at(-1)?.state).toBe("blockedUnknown");
+        expect(rows.every((row) => row.payload.clientMutationId === "persistent-journal")).toBe(true);
+      }
       if (attempt < 3) {
         blocked = deferred<void>();
         await vi.advanceTimersByTimeAsync(2000);
@@ -1503,7 +1537,11 @@ test("persistent journal failures wait for periodic recovery between attempts", 
     fake.on("turn/queue", (params) => ({ receipt: mutationReceipt(params.clientMutationId) }));
     await vi.advanceTimersByTimeAsync(2000);
     await settled.promise;
+    // The successful receipt settles the WHOLE wire pair: the live row and
+    // every superseded generation of the composition retire together, so
+    // nothing lingers pinned once the outcome is proven.
     expect(await storage.getOutbox("persistent-journal")).toBeUndefined();
+    expect(await storage.listOutbox("ref_a")).toHaveLength(0);
     expect(fake.calls.filter((call) => call.method === "turn/queue")).toHaveLength(4);
   } finally {
     vi.useRealTimers();

@@ -172,6 +172,43 @@ describe("MutationDispatcher", () => {
     await outbox.close();
   });
 
+  // RoboRev round-2 M4 corner: the id an authoritative feed names may be a
+  // WIRE identity whose own durable row is already gone - the replacement
+  // minted from it carries that id inside its payload under a fresh storage
+  // key, and after a pending receipt only its retained accepted copy remains.
+  // The note reconciliation must resolve the wire id to the carrying
+  // replacement, or the save's acknowledgement never fires and the draft it
+  // belongs to strands submitting forever.
+  test("reconcileIdentities resolves a gone wire id to its carrying replacement before the note callback", async () => {
+    const outbox = storage(new IDBFactory(), "wire-rejoin", ["note-original", "note-fresh"]);
+    const original = await outbox.enqueueIntent({
+      targetRef: "ref-a",
+      method: "notes/human/set",
+      payload: { ref: "ref-a", note: "raw draft" },
+      attachments: [],
+      optimisticDisplay: null,
+    });
+    await outbox.markAttempted(original.clientMutationId);
+    await outbox.markUnknown(original.clientMutationId, "blockedUnknown");
+    const capture = await outbox.getOutboxWithStopEpoch(original.clientMutationId);
+    const fresh = await outbox.mintRetryFromRow(original.clientMutationId, capture);
+    if (!fresh) throw new Error("mint refused");
+    expect(fresh.payload.clientMutationId).toBe(original.clientMutationId);
+    // The replacement earns an accepted-but-pending receipt: its retained
+    // accepted copy survives, and the wire-pair settlement retires the
+    // superseded predecessor - only the carrying replacement remains.
+    expect(await outbox.settleReceipt(fresh.clientMutationId, "pending")).toBe(true);
+    expect(await outbox.getOutbox(original.clientMutationId)).toBeUndefined();
+    const onHumanNoteReconciled = vi.fn();
+    const dispatcher = new MutationDispatcher(outbox, { getClient: () => null, onHumanNoteReconciled });
+    await dispatcher.reconcileIdentities([original.clientMutationId]);
+    expect(onHumanNoteReconciled).toHaveBeenCalledWith(
+      expect.objectContaining({ clientMutationId: fresh.clientMutationId, method: "notes/human/set" }),
+    );
+    expect(await outbox.getOptimistic(fresh.clientMutationId)).toBeUndefined();
+    await outbox.close();
+  });
+
   test("dispatches thread/clear with its instance fence and publishes the replacement response", async () => {
     const indexedDB = new IDBFactory();
     const outbox = storage(indexedDB, "clear-response", ["mutation-a"]);
@@ -258,13 +295,13 @@ describe("MutationDispatcher", () => {
 
     // Exactly one submission, under the inherited wire id, settled by the
     // replayed receipt: the minted row leaves the outbox keyed on its own
-    // fresh id, and the superseded predecessor keeps its id and evidence for
-    // a receipt the real in-flight attempt could still bring (the wire-pair
-    // settlement that retires completed predecessors lands with PR-B).
+    // fresh id, and the receipt settles the WHOLE wire pair - the completed
+    // predecessor retires with it (RoboRev round-1 M3), never lingering
+    // retained and pinned once the composition's outcome is proven.
     expect(submissions).toBe(1);
     expect(queueCalls(client)).toEqual([{ ...minted!.payload }]);
     expect(await outbox.getOutbox(minted!.clientMutationId)).toBeUndefined();
-    expect(await outbox.getOutbox(predecessor.clientMutationId)).toMatchObject({ state: "superseded" });
+    expect(await outbox.getOutbox(predecessor.clientMutationId)).toBeUndefined();
     outbox.close();
   });
 
@@ -755,7 +792,9 @@ describe("MutationDispatcher", () => {
       second.clientMutationId,
       first.clientMutationId,
     ]);
-    expect(await outbox.getOutbox(first.clientMutationId)).toMatchObject({ state: "superseded" });
+    // The fresh row's settlement retires the completed predecessor with it
+    // (RoboRev round-1 M3): the ref drains to empty, nothing lingers pinned.
+    expect(await outbox.getOutbox(first.clientMutationId)).toBeUndefined();
     expect(await outbox.getOutbox(fresh?.clientMutationId ?? "")).toBeUndefined();
     expect(await outbox.getOutbox(second.clientMutationId)).toBeUndefined();
   });
@@ -1228,14 +1267,11 @@ test("a client replacement during attempt commit retains evidence and recovers t
   await dispatcher.dispatchTargets([record.targetRef]);
 
   expect(replacement.calls).toEqual([{ method: "turn/queue", params: record.payload }]);
-  // The replayed receipt settles the FRESH row; the superseded predecessor
-  // keeps its id and evidence, waiting on the real in-flight attempt's own
-  // settlement exactly as before.
-  expect(await inspector.getOutbox(record.clientMutationId)).toMatchObject({
-    state: "superseded",
-    attempted: true,
-  });
-  expect(await inspector.listOutbox(record.targetRef)).toHaveLength(1);
+  // The replayed receipt settles the FRESH row and retires the completed
+  // predecessor with it (RoboRev round-1 M3) - the one journal entry proves
+  // the whole wire pair, so nothing of the composition lingers pinned.
+  expect(await inspector.getOutbox(record.clientMutationId)).toBeUndefined();
+  expect(await inspector.listOutbox(record.targetRef)).toHaveLength(0);
   inspector.close();
   writer.close();
 });

@@ -1,7 +1,12 @@
 import { sessionActionError } from "@evener/appwire-client";
 import { useStore } from "zustand";
 import { createStore } from "zustand/vanilla";
-import type { MutationOutboxRecord, MutationRecord, MutationRecoveryRecord } from "./mutationOutbox";
+import {
+  effectiveWireId,
+  type MutationOutboxRecord,
+  type MutationRecord,
+  type MutationRecoveryRecord,
+} from "./mutationOutbox";
 import { registerPanelStoreEvictor, schedulePanelStoreEviction } from "./panelStoreEviction";
 import { readMutationPersistence, retryBlockedMutation, subscribeMutationPersistence, threadsStore } from "./threads";
 
@@ -97,7 +102,13 @@ function refreshPersistence(): void {
             dirty: true,
             submitted: {
               generation: 1,
-              id: record.clientMutationId,
+              // The WIRE id, never the storage key: a reconciled save lives
+              // on as a replacement carrying its predecessor's id inside the
+              // payload under a fresh key, and every status and
+              // acknowledgement comparison below meets the wire. Adopting
+              // the storage key strands the reloaded draft - its own save's
+              // success could never acknowledge it again.
+              id: effectiveWireId(record),
               text: record.payload.note,
               state: adopted.state,
             },
@@ -105,7 +116,11 @@ function refreshPersistence(): void {
           put(record.targetRef, draft);
         }
         if (!draft?.submitted || draft.generation !== draft.submitted.generation) continue;
-        if (draft.submitted.id === record.clientMutationId) {
+        // The draft keeps the WIRE id it saved under, while a reconciled
+        // save lives on as a replacement row with its own storage key - so
+        // the status follows the replacement only when the comparison meets
+        // the wire: effectiveWireId(record), never the storage key alone.
+        if (draft.submitted.id === effectiveWireId(record)) {
           const refused = recovery.find((item) => item.clientMutationId === record.clientMutationId);
           const { state, error } = submittedStatusFor(record, refused);
           put(record.targetRef, { ...draft, submitted: { ...draft.submitted, state }, error, saved: false });
@@ -133,7 +148,9 @@ function refreshPersistence(): void {
         )
           continue;
         const draft = get(accepted.targetRef);
-        if (draft?.submitted?.id !== accepted.clientMutationId || draft.generation !== draft.submitted.generation)
+        // The same wire-id comparison: the accepted copy may be the
+        // replacement row a settlement retained under its own key.
+        if (draft?.submitted?.id !== effectiveWireId(accepted) || draft.generation !== draft.submitted.generation)
           continue;
         // Idempotent: the accepted copy persists until reconcileIdentities
         // settles it, while refreshes fire on every notification and mount.
@@ -349,7 +366,12 @@ function flushPendingHumanNoteSaves(): void {
 }
 export function acknowledgeHumanNote(record: MutationRecord, note: string): void {
   const draft = get(record.targetRef);
-  if (!draft || draft.submitted?.id !== record.clientMutationId) return;
+  // An acknowledgement names the composition's wire id - the id the daemon's
+  // response echoes - which a replacement row carries inside its payload while
+  // owning a different storage key. Match by effective wire id so a
+  // replacement's success still acknowledges the draft that saved the text;
+  // durable operations elsewhere stay keyed on storage ids.
+  if (!draft || draft.submitted?.id !== effectiveWireId(record)) return;
   const next =
     draft.generation !== draft.submitted.generation
       ? { ...draft, submitted: undefined }

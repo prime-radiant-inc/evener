@@ -113,6 +113,15 @@ export class MutationDispatcher<A extends MutationAttachmentRef = MutationAttach
     this.#onHumanNoteReconciled = options.onHumanNoteReconciled ?? (() => undefined);
   }
 
+  // The record that CARRIES a wire id: one whose effective wire identity
+  // names it while its own storage key differs - a minted replacement or its
+  // retained accepted copy. Bounded by the optimistic store's size; the
+  // outbox's own rows answer by storage key above.
+  async #recordCarryingWireId(wireId: string): Promise<MutationRecord<A> | undefined> {
+    const records = await this.#storage.listOptimistic();
+    return records.find((record) => effectiveWireId(record) === wireId);
+  }
+
   async dispatchTargets(targetRefs: Iterable<string>): Promise<void> {
     await Promise.all([...new Set(targetRefs)].map((targetRef) => this.#dispatchTarget(targetRef)));
   }
@@ -132,7 +141,15 @@ export class MutationDispatcher<A extends MutationAttachmentRef = MutationAttach
         const record =
           (await this.#storage.getOutbox(clientMutationId)) ??
           (await this.#storage.getOptimistic(clientMutationId)) ??
-          (await this.#storage.getRecovery(clientMutationId));
+          (await this.#storage.getRecovery(clientMutationId)) ??
+          // The id an authoritative feed names may be a WIRE identity whose
+          // own durable row is already gone: the replacement minted from it
+          // carries that id inside its payload under a fresh storage key, and
+          // after a pending receipt only its retained accepted copy remains.
+          // Resolve the wire id to the carrying record BEFORE settling, or
+          // the note reconciliation callback never fires and the draft the
+          // save belongs to strands submitting forever.
+          (await this.#recordCarryingWireId(clientMutationId));
         if (record?.method === "notes/human/set") this.#onHumanNoteReconciled(record);
         if (await this.#storage.settleApplied(clientMutationId)) {
           if (record) targetRefs.add(record.targetRef);

@@ -1,6 +1,7 @@
 import type { ComposerMention } from "@evener/appwire-client";
 import {
   awaitingFirstFrameSend,
+  canceledEntries,
   createMutationProjectionFence,
   createPendingTurnsStore,
   createSubmissionRunner,
@@ -490,9 +491,19 @@ export function useBlockedMutationEntries(ref: string): MutationOutboxRecord[] {
 
 // Stop-canceled rows (stop-cancellation-outbox §6): QueueStrip surfaces them
 // in the same durable-rows slot as blocked ones, where their explicit Retry
-// affordance lives.
+// affordance lives. The canceled state is the one projected by displayedRef
+// too (canceledEntries): a retargeted resend's born-canceled row is the
+// composition's only durable copy, and the session the user is looking at
+// must still show it.
 export function useCanceledMutationEntries(ref: string): MutationOutboxRecord[] {
-  return useOutboxRecordsByState(ref, "canceled");
+  const outbox = useStore(pendingTurnsStore, (state) => state.outbox);
+  useEffect(() => {
+    void refreshPendingTurnsProjection(ref);
+  }, [ref]);
+  return useMemo(() => {
+    const records = canceledEntries(outbox, ref);
+    return records.length > 0 ? records : NO_BLOCKED;
+  }, [outbox, ref]);
 }
 
 // A durable mutation and the projection refresh that publishes it are one

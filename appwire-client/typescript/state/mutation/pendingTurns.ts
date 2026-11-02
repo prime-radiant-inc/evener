@@ -55,12 +55,18 @@ export function awaitingFirstFrameSend(model: ThreadModel | undefined): boolean 
 
 // `ref`'s recovery records, oldest submission first - the order a recovery
 // list renders in.
+// `ref`'s recovery rows, oldest first - and the one association the tray
+// needs beyond the destination: an edited retargeted row's recovery carries
+// the resumed ref as its targetRef while the pane that must keep showing it
+// is the displayed ref it was retargeted from (the strip's own Edit opened
+// the recovery there). Ordinary recovery rows carry no displayedRef, so for
+// them the predicate is exactly the destination, as before.
 export function recoveryEntries<A extends MutationAttachmentRef = MutationAttachmentRef>(
   recovery: ReadonlyMap<string, MutationRecoveryRecord<A>>,
   ref: string,
 ): MutationRecoveryRecord<A>[] {
   return [...recovery.values()]
-    .filter((record) => record.targetRef === ref)
+    .filter((record) => record.targetRef === ref || record.displayedRef === ref)
     .sort((left, right) => left.intentSequence - right.intentSequence);
 }
 
@@ -70,6 +76,24 @@ export function blockedEntries<A extends MutationAttachmentRef = MutationAttachm
   ref: string,
 ): MutationOutboxRecord<A>[] {
   return outboxEntriesByState(outbox, ref, "blockedUnknown");
+}
+
+// `ref`'s stop-canceled rows, oldest first - the one state a row can be
+// visible under a ref it does not target. A retargeted recovery resend
+// carries the displayed ref it was sent from, and its born-canceled row -
+// keyed to the destination the peer retargeted to - is the composition's
+// only durable copy, so the sending session's canceled strip must match it
+// by displayedRef as well as targetRef, or the composition the fenced toast
+// points at is invisible to its author after any reload. Canceled-specific
+// by design: the other states still project by targetRef alone, exactly as
+// before, so no other consumer's surface changes.
+export function canceledEntries<A extends MutationAttachmentRef = MutationAttachmentRef>(
+  outbox: ReadonlyMap<string, MutationOutboxRecord<A>>,
+  ref: string,
+): MutationOutboxRecord<A>[] {
+  return [...outbox.values()]
+    .filter((record) => record.state === "canceled" && (record.targetRef === ref || record.displayedRef === ref))
+    .sort((left, right) => left.intentSequence - right.intentSequence);
 }
 
 // `ref`'s outbox records in the given durable state, oldest first - the one

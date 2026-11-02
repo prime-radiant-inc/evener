@@ -2433,12 +2433,42 @@ export async function readMutationPersistence(targetRef?: string): Promise<Mutat
   const runtime = getMutationRuntime();
   if (!runtime) return { outbox: [], optimistic: [], recovery: [] };
   await runtime.start;
-  const [outbox, optimistic, recovery] = await Promise.all([
+  const [outbox, displayed, optimistic, recovery, displayedRecovery] = await Promise.all([
     runtime.storage.listOutbox(targetRef),
+    // A retargeted row's durable destination is the resumed ref while the
+    // pane the user watches is the displayed one - the canceled strip
+    // surfaces such rows under the displayed ref, so the persistence read
+    // must load them too or the strip that names them never fills. Rows
+    // the main read already returned (the destination ref's own rows)
+    // win; the merge stays sorted by intentSequence like both reads.
+    targetRef === undefined ? Promise.resolve([]) : runtime.storage.listOutboxDisplayedAt(targetRef),
     runtime.storage.listOptimistic(targetRef),
     runtime.storage.listRecovery(targetRef),
+    // The recovery half of the displayed-ref merge: an edited retargeted
+    // row's recovery is associated with the displayed session too, or the
+    // tray the strip's own Edit opened loses the composition the moment
+    // the displayed session reloads its durable projection.
+    targetRef === undefined ? Promise.resolve([]) : runtime.storage.listRecoveryDisplayedAt(targetRef),
   ]);
-  return { outbox, optimistic, recovery };
+  const seen = new Set(outbox.map((record) => record.clientMutationId));
+  const merged = [...outbox];
+  for (const record of displayed) {
+    if (seen.has(record.clientMutationId)) continue;
+    seen.add(record.clientMutationId);
+    merged.push(record);
+  }
+  const seenRecovery = new Set(recovery.map((record) => record.clientMutationId));
+  const mergedRecovery = [...recovery];
+  for (const record of displayedRecovery) {
+    if (seenRecovery.has(record.clientMutationId)) continue;
+    seenRecovery.add(record.clientMutationId);
+    mergedRecovery.push(record);
+  }
+  const bySequence = (left: { intentSequence: number }, right: { intentSequence: number }) =>
+    left.intentSequence - right.intentSequence;
+  merged.sort(bySequence);
+  mergedRecovery.sort(bySequence);
+  return { outbox: merged, optimistic, recovery: mergedRecovery };
 }
 
 const userIntentStopGenerations = new Map<string, number>();

@@ -2,7 +2,7 @@ import { canonicalSkillNames } from "../../composerInput";
 import type { ThreadModel } from "../../model";
 import type { InputItem, PendingMutation } from "../../types.gen";
 import { type ComposerVerb, composerVerb } from "./composerMethods";
-import type { MutationOptimisticRecord, MutationOutboxRecord } from "./records";
+import { effectiveWireId, type MutationOptimisticRecord, type MutationOutboxRecord } from "./records";
 
 export type PendingMethod = ComposerVerb;
 // "canceled" is the durable Stop cancellation state surfaced as-is: the entry
@@ -294,9 +294,16 @@ export function reconcilePendingEntries(
   const entries = new Map<string, PendingTurnEntry>();
 
   for (const record of outbox) {
-    if (record.targetRef !== ref || reflected.has(record.clientMutationId)) continue;
+    // Key the durable side by the record's effective wire id - the same key
+    // space the daemon's feed names - and let a reflected feed id retire a
+    // durable replacement that carries it: a replacement owns a fresh storage
+    // key while traveling under its predecessor's wire id, and any other
+    // keying projects the one composition twice. The entry's own id stays
+    // the storage key; only the projection's identity is the wire id.
+    const wireId = effectiveWireId(record);
+    if (record.targetRef !== ref || reflected.has(wireId)) continue;
     const entry = outboxEntry(record, isOwnMutationRecord);
-    if (entry) entries.set(entry.id, entry);
+    if (entry) entries.set(wireId, entry);
   }
 
   for (const mutation of model?.pendingMutations ?? []) {
