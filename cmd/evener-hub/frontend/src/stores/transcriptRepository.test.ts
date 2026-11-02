@@ -2382,6 +2382,59 @@ it("a fill fenced mid-read does not record keys its discarded presentation never
   owner.dispose();
 });
 
+it("a baseline change during the durable fill keeps the recorded demand armed", async () => {
+  const fixture = createEntryCacheFixture();
+  fixtures.push(fixture);
+  const owner = repository(fixture.cache);
+  // The client's record holds rows 101..160 — the range below the wire
+  // window that a missed open owes the display. The windowed replace
+  // answers 101..140 while the demand is armed.
+  owner.acceptRead(rangedRead(101, 160), { lifetime: 1, readId: "read-old", boundary: "boundary-old" });
+  await owner.settled();
+  owner.noteOwedRecordedRange();
+  owner.acceptRead(windowedRead(140, 1), { lifetime: 1, readId: "read-window", boundary: "boundary-window" });
+  await owner.settled();
+  const reader = owner.attachReader();
+  // Hold the open's durable pull and prove the open has reached it, then
+  // let a NEWER windowed read (121..160, a fresh epoch) replace the
+  // baseline while the fill still awaits storage. The old fill resumes
+  // and resolves its debt against its own now-obsolete floor 101 — nothing
+  // in the record sits below it — and the presentation fences discard its
+  // assembly. Resolving identities per the current fill's floor may not
+  // mutate the armed demand before those fences pass: the discarded fill
+  // measured a floor the newer window has already moved past, and a demand
+  // it cleared would let the newer window certify complete with rows
+  // 101..120 never restored.
+  const realGetLatest = fixture.cache.getLatest.bind(fixture.cache);
+  const fillEntered = deferred<void>();
+  let releaseFill!: () => void;
+  let fillArgs: unknown[] = [];
+  const heldFill = new Promise<unknown>((resolve) => {
+    releaseFill = () => resolve(realGetLatest(...(fillArgs as Parameters<typeof realGetLatest>)));
+  });
+  (fixture.cache as unknown as { getLatest: unknown }).getLatest = (...args: unknown[]) => {
+    fillArgs = args;
+    fillEntered.resolve();
+    return heldFill;
+  };
+  const fencedOpen = reader.openLocal(200);
+  await fillEntered.promise;
+  owner.acceptRead(windowedRead(160, 2), { lifetime: 1, readId: "read-newer", boundary: "boundary-newer" });
+  releaseFill();
+  await fencedOpen;
+  (fixture.cache as unknown as { getLatest: unknown }).getLatest = realGetLatest;
+  // The fenced fill's resolution measured nothing; the demand it was
+  // satisfying must still stand for the newer baseline.
+  expect(owner.owedRecorded()).toBeDefined();
+  const reopenedReader = owner.attachReader();
+  const reopened = await reopenedReader.openLocal(200);
+  const texts = reopened.model?.turns.flatMap((turn) => turn.items).map((item) => item.text);
+  expect(texts).toEqual(Array.from({ length: 60 }, (_, index) => `row-${index + 101}`));
+  reopenedReader.dispose();
+  reader.dispose();
+  owner.dispose();
+});
+
 it("attaches a reader to an already-mounted model by reference without reconstructing history", () => {
   const fixture = createEntryCacheFixture();
   fixtures.push(fixture);

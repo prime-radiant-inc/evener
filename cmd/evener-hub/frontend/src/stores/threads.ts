@@ -113,6 +113,7 @@ import {
   retireEntryTranscriptIfUnowned,
   retireEntryTranscriptRoute,
   scheduleEntryOpeningRecovery,
+  scheduleEntryRecordedReconciliation,
   scheduleReplacementEntryRecovery,
 } from "./entryTranscriptRoutes";
 import { entryWriteAdmissionFor } from "./entryWriteAdmission";
@@ -794,7 +795,7 @@ function createEntryTranscriptRepository(
   const { threadId, historyKey, identity, clearEpoch, historyGeneration, seedModel } = binding;
   const ref = fixture.ref;
   const productionRoute = existingEntryRoute(ref) === fixture;
-  return new TranscriptRepository(fixture.cache, {
+  const repository = new TranscriptRepository(fixture.cache, {
     ref,
     threadId,
     historyKey,
@@ -847,6 +848,16 @@ function createEntryTranscriptRepository(
         });
       }),
   });
+  // The route's outstanding miss is the route's fact, not any repository
+  // instance's: every fresh repository for this route — the stale-cursor
+  // replacement's, and one created over a retired repository when a pane
+  // reopens before its recovery converged — inherits the demand, or the
+  // first windowed answer would certify a bare window over the range the
+  // record still owes. The note is synchronous and inert until a windowed
+  // baseline exists; an authoritative full answer below clears it again,
+  // exactly as it would on the repository the route retired.
+  if (fixture.unresolvedOpenMiss) repository.noteOwedRecordedRange();
+  return repository;
 }
 
 async function acceptEntryTranscriptHydration(
@@ -5229,6 +5240,12 @@ async function publishAndReconcileThreadHydration(
   if (replacedRoute?.ref === ref && replacedRoute.pendingReplacementRecovery) {
     replacedRoute.pendingReplacementRecovery = false;
     scheduleReplacementEntryRecovery(ref);
+    // The replacement's reconciliation successor arms alongside the recovery
+    // one: the inherited unreconciled identities are the replacement's own
+    // pending slot now, so the chain that validates the restored range
+    // against the source resumes against the new repository instead of dying
+    // with the one the refresh retired.
+    scheduleEntryRecordedReconciliation(ref);
   }
   reconcileAcceptedReadRecovery(ref, hydration.response, published);
   const blockingObligation = threadsStore.getState().restartBlockingObligations.get(ref);

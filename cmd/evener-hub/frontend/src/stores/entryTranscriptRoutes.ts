@@ -1217,19 +1217,23 @@ function launchEntryOpeningRecovery(ref: string, route: EntryTranscriptRoute): v
 // happened to page that deep. The route reconciles the range against the
 // source automatically — the same bounded older page a user's scroll issues —
 // while the restored cached bodies keep displaying through the
-// reconciliation. One chain, deduplicated per live route, stopping at the
-// first page that makes no progress: the ordinary owner-scoped paths and the
-// user's own paging own the rest.
-const pendingRecordedReconciliations = new Map<string, EntryTranscriptRoute>();
+// reconciliation. One chain per repository instance, stopping at the first
+// page that makes no progress: the pending slot is owned by the REPOSITORY,
+// never the route, because a stale-cursor replacement changes the repository
+// under the same route — the replacement must be free to start its own
+// successor chain while the old chain exits on the mismatch below, and the
+// old chain's finally frees only a slot that still names its own repository.
+// The ordinary owner-scoped paths and the user's own paging own the rest.
+const pendingRecordedReconciliations = new Map<string, TranscriptRepository>();
 
-function scheduleEntryRecordedReconciliation(ref: string): void {
+export function scheduleEntryRecordedReconciliation(ref: string): void {
   const route = entryTranscriptRoute(ref);
   if (!route || route.ref !== ref) return;
   const repository = route.repository;
   if (!repository || repository.unreconciledRecorded().size === 0) return;
-  if (pendingRecordedReconciliations.get(ref) === route) return;
+  if (pendingRecordedReconciliations.get(ref) === repository) return;
   if (foregroundHolds(ref) <= 0) return;
-  pendingRecordedReconciliations.set(ref, route);
+  pendingRecordedReconciliations.set(ref, repository);
   void (async () => {
     try {
       // The promotion window bounds the owed range and each page is one
@@ -1239,12 +1243,10 @@ function scheduleEntryRecordedReconciliation(ref: string): void {
       for (let pages = 0; pages < 8; pages += 1) {
         if (entryTranscriptRoute(ref) !== route) return;
         if (foregroundHolds(ref) <= 0) return;
-        const current = route.repository;
-        if (!current) return;
-        const owed = current.unreconciledRecorded();
+        const owed = repository.unreconciledRecorded();
         if (owed.size === 0) return;
         const paged = await routeHost().reconcileRecordedRange(ref);
-        if (entryTranscriptRoute(ref) !== route || route.repository !== current) return;
+        if (entryTranscriptRoute(ref) !== route || route.repository !== repository) return;
         // A page a competing read discarded mid-flight — an overlay/end
         // reconciliation read, a refresh, anything that moved the baseline
         // while the page was in the air — is a retryable rejection, not
@@ -1254,13 +1256,13 @@ function scheduleEntryRecordedReconciliation(ref: string): void {
         // nothing, ends the chain (offline, exhausted, superseded).
         if (paged === "unissued") return;
         if (paged === "discarded") continue;
-        if (route.repository?.unreconciledRecorded().size === owed.size) return;
+        if (repository.unreconciledRecorded().size === owed.size) return;
       }
     } catch {
       // A failed reconciliation keeps the displayed cached bodies; the
       // ordinary retry paths and the user's own paging own the rest.
     } finally {
-      if (pendingRecordedReconciliations.get(ref) === route) pendingRecordedReconciliations.delete(ref);
+      if (pendingRecordedReconciliations.get(ref) === repository) pendingRecordedReconciliations.delete(ref);
     }
   })();
 }

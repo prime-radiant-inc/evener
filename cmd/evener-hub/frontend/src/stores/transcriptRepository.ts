@@ -1491,24 +1491,26 @@ export class TranscriptRepository {
   }
 
   /**
-   * Resolve the armed demand's identities from durable rows the fill already
-   * pulled — no extra read: the identities the record holds below the
-   * open's window floor that the displayed model does not present with a
-   * real body —
+   * Compute the armed demand's identities from durable rows the fill already
+   * pulled — no extra read, and no state change: the identities the record
+   * holds below the open's window floor that the displayed model does not
+   * present with a real body —
    * restricted to rows inside the recorded-coverage component linked to the
    * window. Rows outside it are disconnected islands behind an uncertified
    * gap: the display cannot present them without stitching across the gap,
    * so they are not owed to the display and the cursor-owning paging
-   * machinery speaks for them. A resolution that finds nothing owed clears
-   * the demand; a fenced fill changes nothing, because the resolution
-   * reflects the record and the model, not the fill's discarded presentation.
+   * machinery speaks for them. The CALLER commits the result with the
+   * presentation, after every fence has passed — a fill whose presentation a
+   * fence discards changes nothing, because a resolution measured against one
+   * window's obsolete floor must not clear or reshape a demand a newer
+   * baseline still owes.
    */
   #resolveOwedFromRows(
     rows: readonly TranscriptItemRow<unknown>[],
     model: ThreadModel | undefined,
     coverage: readonly TranscriptCoverageRow[],
     windowFloor: ThreadItemPosition,
-  ): void {
+  ): Map<string, ThreadItemPosition> {
     const displayedItems = (model?.history?.turns ?? model?.turns ?? []).flatMap((turn) => turn.items);
     // Presentation means a real body, the same standard the completeness
     // check demands: a body-suppressed shell's identity-only items present
@@ -1530,10 +1532,7 @@ export class TranscriptRepository {
       if (!coverage.some((cert) => coveredByCert(row.position, cert))) continue;
       owed.set(row.transcriptKey, row.position);
     }
-    this.#owedRecorded = owed.size > 0 ? { identities: owed } : undefined;
-    // A resolution that found nothing owed reconciles the demand itself: the
-    // record holds no identity below the window the model does not present.
-    if (owed.size === 0) this.#recordedRangeOwed = false;
+    return owed;
   }
 
   /**
@@ -1778,6 +1777,7 @@ export class TranscriptRepository {
           // disarm point reading the debt as already satisfied.
           let owedSatisfiedByFill = false;
           let unreconciledFromFill: Set<string> | undefined;
+          let resolvedOwed: Map<string, ThreadItemPosition> | undefined;
           // A certification open's contract is to certify what its caller's
           // publication established, not to promote additional recorded
           // ranges: the owed fill — with its durable pull, contiguity walk
@@ -1832,9 +1832,15 @@ export class TranscriptRepository {
             // islands behind an uncertified gap: they are not owed to the
             // display, and the server-paging machinery that owns cursors
             // speaks for them.
-            if (owedFillEligible) {
-              this.#resolveOwedFromRows(durableOlder, cut.model, olderCoverage, latestStart);
-            }
+            // The debt resolution is computed here and committed with the
+            // presentation below, after every fence has passed: a resolution
+            // measured against this fill's own floor must not mutate the
+            // armed demand while a newer read can still move the window under
+            // the fill — a fenced presentation discarded, the demand must
+            // stand exactly as it was.
+            resolvedOwed = owedFillEligible
+              ? this.#resolveOwedFromRows(durableOlder, cut.model, olderCoverage, latestStart)
+              : undefined;
             // The owed fill is measured from the pull itself: identities the
             // record holds below the window that the model does not present —
             // the range a plain windowed replace dropped, however much of it
@@ -1902,8 +1908,9 @@ export class TranscriptRepository {
               // satisfies none of what the capture owes and must not consume
               // the demand: the flag it would clear is what keeps the owed
               // fill eligible for the next open.
-              const armedOwed = this.#owedRecorded;
-              if (armedOwed !== undefined && !("unknown" in armedOwed)) {
+              const armedOwed =
+                resolvedOwed !== undefined && resolvedOwed.size > 0 ? { identities: resolvedOwed } : undefined;
+              if (armedOwed !== undefined) {
                 const fillPresents = new Set(window.rows.map((row) => row.transcriptKey));
                 owedSatisfiedByFill = [...armedOwed.identities.keys()].every((key) => fillPresents.has(key));
               }
@@ -1972,6 +1979,13 @@ export class TranscriptRepository {
           // while this restore was in flight already provided theirs, and
           // re-advertising loaded history only risks a redundant lookup that
           // can reconcile the retained range away.
+          // The fill's debt resolution commits here, with the presentation
+          // and beside the other presentation-scoped commits: every fence
+          // above has passed, so the fill's own floor measured it.
+          if (resolvedOwed !== undefined) {
+            this.#owedRecorded = resolvedOwed.size > 0 ? { identities: resolvedOwed } : undefined;
+            if (resolvedOwed.size === 0) this.#recordedRangeOwed = false;
+          }
           if (owedSatisfiedByFill) this.#recordedRangeOwed = false;
           if (unreconciledFromFill !== undefined) this.#unreconciledRecorded = unreconciledFromFill;
           this.#model = latest;
