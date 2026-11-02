@@ -724,6 +724,34 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 		return turns === next.turns ? next : withSyncedHistoryTurns({ ...next, turns: [...turns] }, turns);
 	}
 
+	// One rule for folding a frame into a model: the reducer's own fold plus
+	// the history/updated turn-scalar adjustment the live path takes. The live
+	// frame handler and the stale-snapshot recovery's frame replay share it,
+	// so a frame lands the same way wherever it is applied.
+	function foldNotification(conversation: MobileConversation, n: AnyNotification): MobileConversation {
+		let applied = applyThreadNotification(conversation, n);
+		// activeTurnId is otherwise snapshot-only (reducer.ts's
+		// activeTurnIdFromThread runs once, at hydrate); history/updated's
+		// own turn-scalar merge (mergeHistory) only adds/updates items and
+		// turn fields by version and never moves this field. The mobile
+		// store is this field's one live writer: a frame's own turn opening
+		// (inProgress) becomes the active turn, and a frame settling the
+		// CURRENTLY active turn (any status the wire uses to close one)
+		// clears it. A frame naming some OTHER, already-settled turn changes
+		// nothing (the "not on a superseded turn" rule).
+		if (n.method === "history/updated") {
+			let activeTurnId = applied.activeTurnId;
+			for (const turn of n.params.turns ?? []) {
+				if (turn.status === "inProgress") activeTurnId = turn.id;
+				else if (turn.id === activeTurnId) activeTurnId = undefined;
+			}
+			if (activeTurnId !== applied.activeTurnId) {
+				applied = { ...applied, activeTurnId };
+			}
+		}
+		return applied;
+	}
+
 	const boundedText = createBoundedTextCache();
 	// Whether a folded model can change a row. projectConversation reads two of
 	// the model's own fields: `turns` — every turn, item, status and error a row
@@ -937,6 +965,13 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 	// a stale rehydrate (from an older operation) cannot overwrite a newer
 	// rehydrate's state within the same generation.
 	let rehydrateToken = 0;
+
+	// Frames that arrive while the current rehydrate's read is awaited, in
+	// arrival order. They fold into the held model as they land; a
+	// stale-snapshot recovery replaces that model, so the recovery replays
+	// them onto the replacement instead of discarding them with the stale
+	// base. Null when no rehydrate read is in flight.
+	let rehydrateFrameLog: AnyNotification[] | null = null;
 
 	// Review round 3 (Medium): a level-carrying publish (the frame publish,
 	// setDisplayConfig) widens the window to level-independent rows — see
@@ -1704,6 +1739,14 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 				const entryOlderCursor = get().olderCursor;
 				boundService = service;
 				boundProjected = true;
+				// Frames arriving from here until this read's publish fold into
+				// the held model; a stale-snapshot recovery replaces that model,
+				// so it replays this log onto the replacement. Only the
+				// recovery path consumes it — the merge path keeps the held
+				// model, frames included.
+				const framesDuringRead: AnyNotification[] = [];
+				const priorFrameLog = rehydrateFrameLog;
+				rehydrateFrameLog = framesDuringRead;
 				try {
 					const heldHistory = get().conversation?.history;
 					const heldSnapshot = heldHistory?.incarnation
@@ -1783,10 +1826,28 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 					// advances the snapshot length past the skipped update, so no
 					// later refresh can recover it.
 					const replaceHeldHistory = replacedHeldHistory === true;
-					const appliedModel =
-						sameInstance && currentConvForMerge !== null && !replaceHeldHistory
-							? applyReadModel(currentConvForMerge, conversation, changes)
-							: conversation;
+					let appliedModel: MobileConversation;
+					if (sameInstance && currentConvForMerge !== null && !replaceHeldHistory) {
+						appliedModel = applyReadModel(currentConvForMerge, conversation, changes);
+					} else {
+						appliedModel = conversation;
+						// A frame that arrived while the recovery read was
+						// awaited is newer than the read's snapshot: replay it
+						// onto the fresh window so replacing the stale base
+						// keeps the frame's own content — a final message or
+						// tool completion that landed mid-read would otherwise
+						// disappear until another refresh. The reducer's own
+						// identity rules treat each replayed frame exactly as
+						// a live arrival after this publish. A different
+						// instance's window keeps none of the old instance's
+						// frames — the reducer would only invalidate the new
+						// window with them.
+						if (replaceHeldHistory && sameInstance) {
+							for (const frame of framesDuringRead) {
+								appliedModel = foldNotification(appliedModel, frame);
+							}
+						}
+					}
 					// applyReadModel returns the held model BY REFERENCE, completely
 					// unchanged, when the read's own wire identity disposition is
 					// "discard" (an older epoch, a stale same-incarnation length, or
@@ -1979,6 +2040,11 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 					} else {
 						markLatest("error");
 					}
+				} finally {
+					// This read is done: stop recording frames for it. An older
+					// rehydrate whose read a newer one superseded leaves the
+					// newer's log in place.
+					if (rehydrateFrameLog === framesDuringRead) rehydrateFrameLog = priorFrameLog;
 				}
 			},
 
@@ -2536,6 +2602,9 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 				// when it carries one, else by threadId; a frame naming neither is
 				// not about this thread. Silently drop everything else.
 				if (!notificationTargetsThread(n, state.conversation)) return;
+				// A frame arriving while a rehydrate read is in flight is
+				// recorded for that read's recovery replay, in arrival order.
+				if (rehydrateFrameLog !== null) rehydrateFrameLog.push(n);
 				// A frame that names a mutation the daemon has moved past proves that
 				// send landed (appliedMutationIdentities), so its durable record
 				// retires now instead of waiting for a wide enough read. The
@@ -2559,26 +2628,7 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 				// rule for a frame and for a snapshot, so there is nothing for a row
 				// applier to disagree with. The two display bounds run after the
 				// projection.
-				let applied = applyThreadNotification(state.conversation, n);
-				// activeTurnId is otherwise snapshot-only (reducer.ts's
-				// activeTurnIdFromThread runs once, at hydrate); history/updated's
-				// own turn-scalar merge (mergeHistory) only adds/updates items and
-				// turn fields by version and never moves this field. The mobile
-				// store is this field's one live writer: a frame's own turn opening
-				// (inProgress) becomes the active turn, and a frame settling the
-				// CURRENTLY active turn (any status the wire uses to close one)
-				// clears it. A frame naming some OTHER, already-settled turn changes
-				// nothing (the "not on a superseded turn" rule).
-				if (n.method === "history/updated") {
-					let activeTurnId = applied.activeTurnId;
-					for (const turn of n.params.turns ?? []) {
-						if (turn.status === "inProgress") activeTurnId = turn.id;
-						else if (turn.id === activeTurnId) activeTurnId = undefined;
-					}
-					if (activeTurnId !== applied.activeTurnId) {
-						applied = { ...applied, activeTurnId };
-					}
-				}
+				let applied = foldNotification(state.conversation, n);
 				// RoboRev round 34: a warning with no active turn is the one frame
 				// the wire drops entirely (and never persists, so no read can carry
 				// it back), yet it is a real diagnostic — the projector emits

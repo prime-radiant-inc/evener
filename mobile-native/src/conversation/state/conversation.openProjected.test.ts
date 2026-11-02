@@ -12,6 +12,7 @@ import { createConversationStore, olderPageKey } from "./conversation";
 import {
 	ALL_TRUE_CAPS,
 	FakeConversationService,
+	historyUpdated,
 	makeControlledRead,
 	makeConversation,
 	makeReadProjectionResult,
@@ -718,6 +719,55 @@ describe("ConversationStore", () => {
 			expect((await store.getState().loadOlder(service)).status).toBe("loaded");
 			const changedRow = store.getState().conversation?.items.find((row) => row.id === "row-7");
 			expect(changedRow?.kind === "user" ? changedRow.text : undefined).toBe("row 7 finished");
+		});
+
+		// A frame that lands while the recovery read is awaited is newer than
+		// the read's snapshot: replacing the stale base must not discard the
+		// frame's own content — a final message or tool completion that
+		// arrived mid-read disappears until another refresh otherwise.
+		it("keeps a frame that lands during the recovery read, on the replaced window", async () => {
+			const service = new FakeConversationService();
+			service.openConv = makeConversation({ items: positionedRows(100, 200) }, true);
+			const store = createConversationStore();
+			await store.getState().openProjected(service, "ref-1");
+			store.getState().setFollowingLiveEnd(false);
+
+			// The recovery read hangs until the test resolves it.
+			let releaseRead!: (projection: ConversationReadProjection) => void;
+			service.readProjectionBlock = new Promise((resolve) => {
+				releaseRead = resolve;
+			});
+			const recovering = store.getState().rehydrate(service);
+			// The final message lands while the recovery read is awaited: the
+			// completed item in a turn the held model does not hold yet, in the
+			// frame shape the wire delivers it. The turn itself is still open —
+			// a settled turn scalar would owe the store its own reread by the
+			// usage rule, which is not this test's race.
+			service.notificationHandler?.(
+				historyUpdated({
+					items: [
+						{
+							id: "row-final",
+							type: "userMessage",
+							text: "row final message",
+							status: "completed",
+							turnId: "turn-final",
+							position: { entry: 200, item: 0 },
+						},
+					],
+				}),
+			);
+			releaseRead({
+				conversation: makeConversation({ items: positionedRows(150, 200) }, true),
+				olderCursor: "fresh-cursor",
+				replacedHeldHistory: true,
+			});
+			await recovering;
+
+			// The fresh window replaced the stale base, and the mid-read frame
+			// survived on top of it.
+			const rows = store.getState().conversation?.items.map((row) => row.id) ?? [];
+			expect(rows).toEqual([...positionedRows(150, 200).map((row) => row.id), "row-final"]);
 		});
 
 		// The hub answers the page before the transcript's first item with an
