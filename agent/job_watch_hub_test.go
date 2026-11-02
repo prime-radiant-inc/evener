@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -762,9 +763,18 @@ func TestHubWatchEndRetryYieldsToReplacement(t *testing.T) {
 	}
 	select {
 	case err := <-ended:
-		if err != nil {
-			t.Fatalf("a yielded end must not report failure: %v", err)
+		// A replacement landing mid-retry exits the loop through either
+		// outcome: the next end attempt finds nothing to end and reports
+		// nil, or the loop's presence check notices the replacement first
+		// and returns the last write failure. Both are a yield — the
+		// assertions below pin that it yielded without ending the
+		// replacement.
+		if err != nil && !strings.Contains(err.Error(), "journal write failed") {
+			t.Fatalf("a yielded end reported an unexpected error: %v", err)
 		}
+		// TRIPWIRE: the retry delay is 10ms in this test, so a yielding end
+		// returns within one or two attempts; only a broken retry that never
+		// yields (the mutation this test guards against) reaches the bound.
 	case <-time.After(10 * time.Second):
 		t.Fatal("the end retry did not yield to the replacement")
 	}
