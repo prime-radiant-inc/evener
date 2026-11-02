@@ -619,3 +619,106 @@ func managerWatchActive(jm *jobManager, id string) bool {
 	_, _, active := jm.watchConfigByIDLocked(id)
 	return active
 }
+
+func TestHubWatchCompletionRetriesTerminalSendUntilJournalRecovers(t *testing.T) {
+	t.Parallel()
+	root := newMessagingRoot(t, newMessagingAdapter(), func(c *SessionConfig) { c.Manager = true })
+	jm := root.jobManager
+	const ref, instance, generation = "local:worker", "worker-instance", "7@worker"
+	watch, err := jm.configureHubWatch(ref, instance, generation, "local:manager", []string{"communicate"}, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The journal refuses the terminal group's first write, then recovers. The
+	// completion's end must retry its durable send instead of surfacing the
+	// failure to the consumer, whose fallback end would leave the registered
+	// watch with no consumer and drop the completion it had already verified.
+	realAppendEvents := jm.appendEvents
+	var failedWrite atomic.Bool
+	jm.appendEvents = func(events []jobstore.Event) error {
+		if !failedWrite.Swap(true) {
+			return errors.New("journal write failed")
+		}
+		return realAppendEvents(events)
+	}
+	accepted := true
+	completion := appwire.SessionWatchUpdate{Event: "communicate", Metadata: appwire.SessionObservationMetadata{
+		Ref: ref, InstanceID: instance, GenerationID: generation,
+		EntryID: "terminal-1", EndTurn: true, EndReason: "done",
+		TerminalAccepted: &accepted, CausalKnown: true,
+	}}
+	if err := jm.onHubObservation(watch.WatchID, completion); err != nil {
+		t.Fatalf("completion must ride out a transient journal failure: %v", err)
+	}
+	if managerWatchActive(jm, watch.WatchID) {
+		t.Fatal("the completed watch stayed registered")
+	}
+	ends, deliveries := 0, 0
+	for _, event := range loadJobStoreEvents(t, jm) {
+		if event.Watch != nil && event.WatchID == watch.WatchID && event.Watch.EndReason == "completed" {
+			ends++
+		}
+		if event.WatchSend != nil && event.WatchSend.Key.WatchID == watch.WatchID &&
+			event.WatchSend.TriggerReason == "completed: accepted terminal done" && !event.WatchSend.EndNotice {
+			deliveries++
+		}
+	}
+	if ends != 1 {
+		t.Fatalf("completed end records=%d, want 1", ends)
+	}
+	if deliveries != 1 {
+		t.Fatalf("completion deliveries=%d, want 1", deliveries)
+	}
+}
+
+func TestHubWatchCompletionDedupWaitsForTerminalPersistence(t *testing.T) {
+	t.Parallel()
+	root := newMessagingRoot(t, newMessagingAdapter(), func(c *SessionConfig) { c.Manager = true })
+	jm := root.jobManager
+	const ref, instance, generation = "local:worker", "worker-instance", "7@worker"
+	watch, err := jm.configureHubWatch(ref, instance, generation, "local:manager", []string{"communicate"}, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// While the terminal send is failing, the completion's dedup marker must
+	// not be committed: the watch stays registered when the end fails, and a
+	// committed marker would suppress the replay that re-delivers the
+	// completion once journal writes return.
+	realAppendEvents := jm.appendEvents
+	firstWriteFailed := make(chan struct{})
+	var failedWrite atomic.Bool
+	jm.appendEvents = func(events []jobstore.Event) error {
+		if !failedWrite.Swap(true) {
+			close(firstWriteFailed)
+			return errors.New("journal write failed")
+		}
+		return realAppendEvents(events)
+	}
+	accepted := true
+	completion := appwire.SessionWatchUpdate{Event: "communicate", Metadata: appwire.SessionObservationMetadata{
+		Ref: ref, InstanceID: instance, GenerationID: generation,
+		EntryID: "terminal-1", EndTurn: true, EndReason: "done",
+		TerminalAccepted: &accepted, CausalKnown: true,
+	}}
+	observed := make(chan error, 1)
+	go func() {
+		observed <- jm.onHubObservation(watch.WatchID, completion)
+	}()
+	<-firstWriteFailed
+	jm.mu.Lock()
+	_, cfg, present := jm.watchConfigByIDLocked(watch.WatchID)
+	seen := 0
+	if present && cfg.hubSeen != nil {
+		seen = len(cfg.hubSeen)
+	}
+	jm.mu.Unlock()
+	if !present || seen != 0 {
+		t.Fatalf("dedup committed before the terminal send persisted: present=%v seen=%d", present, seen)
+	}
+	if err := <-observed; err != nil {
+		t.Fatal(err)
+	}
+	if managerWatchActive(jm, watch.WatchID) {
+		t.Fatal("the completed watch stayed registered")
+	}
+}

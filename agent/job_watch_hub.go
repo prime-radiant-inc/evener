@@ -278,7 +278,14 @@ func (jm *jobManager) onHubObservationLookup(watchID string, update appwire.Sess
 			return nil
 		}
 	}
-	cfg.hubSeen[identity] = true
+	// The completion's dedup marker commits only after its terminal send
+	// persists (in the end retry below): a failed end leaves the watch
+	// registered — and reusable by an identical re-registration — where a
+	// committed marker would suppress the replay that re-delivers the
+	// completion once journal writes return.
+	if !complete {
+		cfg.hubSeen[identity] = true
+	}
 	trigger := event
 	if complete {
 		trigger = "completed: accepted terminal done"
@@ -287,7 +294,30 @@ func (jm *jobManager) onHubObservationLookup(watchID string, update appwire.Sess
 	delivery := jm.watchSendSnapshot(cfg, identity, trigger, root).withSelfInfluence(jm.classifySelfInfluenceLocked(cfg, m.Causal))
 	jm.mu.Unlock()
 	if complete {
-		return jm.endHubWatch(watchID, "completed", &delivery)
+		for failures := 0; ; failures++ {
+			err := jm.endHubWatch(watchID, "completed", &delivery)
+			if err == nil {
+				jm.mu.Lock()
+				if _, current, ok := jm.watchConfigByIDLocked(watchID); ok && current == cfg {
+					if cfg.hubSeen == nil {
+						cfg.hubSeen = map[string]bool{}
+					}
+					cfg.hubSeen[identity] = true
+				}
+				jm.mu.Unlock()
+				return nil
+			}
+			// A failed journal write is not an observation failure: the
+			// completion was verified, only its durable write failed. The
+			// delivery is retained on the pending-send recovery path across
+			// attempts, so retry the same end on the file's own state-read
+			// budget instead of handing the consumer a fallback end whose
+			// failure would leave the registered watch with no consumer.
+			if failures >= hubWatchStateFailureLimit || jm.isClosing() || !managerHubWatchPresent(jm, watchID) {
+				return err
+			}
+			time.Sleep(hubWatchRetryDelay)
+		}
 	}
 	jm.recordWatchSendsAndKick([]watchSendDelivery{delivery})
 	if crossedBudget {
@@ -772,4 +802,10 @@ func managerHubWatchPresent(jm *jobManager, id string) bool {
 	defer jm.mu.Unlock()
 	_, cfg, ok := jm.watchConfigByIDLocked(id)
 	return ok && cfg.hubRef != ""
+}
+
+func (jm *jobManager) isClosing() bool {
+	jm.mu.Lock()
+	defer jm.mu.Unlock()
+	return jm.closing
 }
