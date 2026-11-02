@@ -4684,3 +4684,108 @@ func TestRoundEntryResolvesAskBoundary_SkipsNonCarrierFailureToFindTheRealEntry(
 		t.Fatal("roundEntryResolvesAskBoundary = false, want true (a non-carrier TurnFailure is transparent bookkeeping before the resolving TurnUserInput entry)")
 	}
 }
+
+// Typed verdicts separate restorable end reasons from calls the input never
+// settled on: since typed state rides every result path, a rejected or
+// nonterminal call records a reason the restore scan must not hand back.
+// Legacy states — an end reason with no explicit verdict, the only shape
+// written before the verdict fields — still count, because those were only
+// ever recorded on the accepted terminal path.
+func TestCommunicateEndReasonOfGatesOnTypedVerdict(t *testing.T) {
+	t.Parallel()
+	yes, no := true, false
+	for _, tc := range []struct {
+		name  string
+		state communicateEndState
+		want  string
+	}{
+		{name: "accepted terminal reason", state: communicateEndState{Accepted: &yes, EndTurn: &yes, EndReason: "needs_response"}, want: "needs_response"},
+		{name: "rejected terminal reason", state: communicateEndState{Accepted: &no, EndTurn: &yes, EndReason: "done"}, want: ""},
+		{name: "accepted nonterminal reason", state: communicateEndState{Accepted: &yes, EndTurn: &no, EndReason: "done"}, want: ""},
+		{name: "rejected nonterminal reason", state: communicateEndState{Accepted: &no, EndTurn: &no, EndReason: "done"}, want: ""},
+		{name: "legacy end reason only", state: communicateEndState{EndReason: "needs_response"}, want: "needs_response"},
+		{name: "no verdict no reason", state: communicateEndState{}, want: ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			raw, err := json.Marshal(tc.state)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := communicateEndReasonOf(&llm.ToolResultData{ToolState: raw}); got != tc.want {
+				t.Fatalf("communicateEndReasonOf(%s) = %q, want %q", raw, got, tc.want)
+			}
+		})
+	}
+}
+
+// An input's terminal capture is first-wins, and a Stop hook block can send
+// the input on past the call it accepted, so a later terminal call in the
+// same attempt loses the capture and records accepted:false with its own
+// requested end reason. The restore scan reads that attempt back-to-front;
+// if the rejected call's reason were restorable, the session would restore
+// idle while its settlement still awaits the user — live and restore would
+// disagree.
+func TestCommunicateRestoreKeepsSettledNeedsResponseBehindRejectedRetry(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	blocked := filepath.Join(t.TempDir(), "stop-hook-blocked-once")
+	f := &fakeAdapter{
+		name: "openai",
+		steps: []func(req llm.Request) llm.Response{
+			func(req llm.Request) llm.Response {
+				return agenttest.ToolCallResponse(communicateCallArgs("comm-1", map[string]any{
+					"message": "which db should we use?", "end_turn": true, "end_reason": "needs_response",
+				}))
+			},
+			func(req llm.Request) llm.Response {
+				return agenttest.ToolCallResponse(communicateCallArgs("comm-2", map[string]any{
+					"message": "settling on done regardless", "end_turn": true, "end_reason": "done",
+				}))
+			},
+		},
+	}
+	// The Stop hook blocks the first turn end — sending the input on past its
+	// accepted terminal communicate — and allows the second.
+	runner := hooks.NewRunner(nil, "")
+	runner.Add(plugin.HookStop, plugin.RegisteredHook{
+		Matcher: "*",
+		Type:    "command",
+		Command: "if [ -f " + blocked + " ]; then exit 0; else touch " + blocked + "; printf '%s' '{\"decision\":\"block\",\"reason\":\"one more round\"}'; fi",
+		Timeout: 5,
+	})
+	var sess *Session
+	c := llm.NewClient()
+	c.Register(f)
+	var err error
+	cfg := SessionConfig{StateDir: dir}
+	// The needs_response rest arms synchronously here (no quiet period): the
+	// live-against-restore comparison below reads sess.State() as soon as
+	// ProcessInput returns.
+	cfg.testOnly.needsResponseQuietPeriod = new(time.Duration)
+	sess, err = NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), cfg)
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	sess.hookRunner = runner
+
+	// TRIPWIRE: scripted in-process adapter; the Stop hook is a real
+	// subprocess writing a real marker file. Only fires on a genuine hang.
+	ctx := tripwireCtx(t)
+	if _, err := sess.ProcessInput(ctx, "talk", nil); err != nil {
+		t.Fatalf("ProcessInput: %v", err)
+	}
+	if got := len(f.Requests()); got != 2 {
+		t.Fatalf("provider requests = %d, want 2 (the block decision must send the input on to a second round)", got)
+	}
+	if got := sess.State(); got != SessionAwaiting {
+		t.Fatalf("live state = %q, want %q (the input settled on comm-1's accepted needs_response)", got, SessionAwaiting)
+	}
+	meta := sess.Meta()
+	sess.Close()
+
+	restored := restoreAskSession(t, meta, dir)
+	if got := restored.State(); got != SessionAwaiting {
+		t.Fatalf("restored state = %q, want %q: comm-2's rejected done must not read as the restorable verdict ahead of comm-1's accepted needs_response", got, SessionAwaiting)
+	}
+}

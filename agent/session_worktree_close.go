@@ -22,6 +22,12 @@ type isolationLane struct {
 	// Sidecar.BranchOrName(). Only the branch-acting paths populate it — a
 	// lane built for the touch+unlock tail or a relock never touches a branch.
 	branch string
+	// markerSessionID is the session the lane's evener:dlg: marker names: the
+	// one that spawned the lane-owning delegate, whose disposal lifecycle owns
+	// the lane and whose activity evidence the orphan reclaim reads. A re-lock
+	// restores this marker even when the launch revalidating the lane runs on
+	// another session of the tree, as a shared descendant's wake does.
+	markerSessionID string
 }
 
 // disposeDelegateLanesAtClose disposes the isolation delegate lanes this

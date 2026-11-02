@@ -179,7 +179,7 @@ func TestLaneResidueSweepSkipsOwnerLivenessProbes(t *testing.T) {
 		t.Fatalf("list worktrees: %v", err)
 	}
 	managed := managedPorcelainEntries(worktree.ParsePorcelain(out), projectDir)
-	removed, skipped, err := r.s.collectRegisteredLanes(t.Context(), run, managed, metaDirForProject(projectDir), r.s.residueSweepPolicy())
+	removed, skipped, _, err := r.s.collectRegisteredLanes(t.Context(), run, managed, metaDirForProject(projectDir), r.s.residueSweepPolicy())
 	if err != nil {
 		t.Fatalf("residue sweep pass: %v", err)
 	}

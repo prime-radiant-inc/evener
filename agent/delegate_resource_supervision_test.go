@@ -24,6 +24,7 @@ import (
 	"primeradiant.com/evener/agent/internal/hooks"
 	"primeradiant.com/evener/agent/internal/jobstore"
 	toolpkg "primeradiant.com/evener/agent/internal/tool"
+	"primeradiant.com/evener/agent/internal/worktree"
 	"primeradiant.com/evener/agent/plugin"
 	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/execsupport/shellquote"
@@ -1768,6 +1769,11 @@ func TestDelegateResourceSupervision_FatalNudgeRunStopsOwnedShell(t *testing.T) 
 		descriptor.Isolation = "worktree"
 		descriptor.WorkingDir = lane
 	})
+	// The lane above was cut under a stand-in delegate id; the delegate this
+	// fixture revives owns the lane under its own id and root, the shape a real
+	// spawn leaves (revive revalidates the marker before handing it back).
+	wtGit(t, worktreeRepo.mainRoot, "worktree", "unlock", lane)
+	wtGit(t, worktreeRepo.mainRoot, "worktree", "lock", "--reason", worktree.FormatDelegateMarker(fixture.delegateID, fixture.meta.ID), lane)
 	client := llm.NewClient()
 	client.Register(adapter)
 	fixture.client = client
@@ -2108,6 +2114,11 @@ func TestDelegateResourceSupervision_OrdinaryMissingTerminalCleanupPrecedesPacke
 		descriptor.Isolation = "worktree"
 		descriptor.WorkingDir = lane
 	})
+	// The lane above was cut under a stand-in delegate id; the delegate this
+	// fixture revives owns the lane under its own id and root, the shape a real
+	// spawn leaves (revive revalidates the marker before handing it back).
+	wtGit(t, worktreeRepo.mainRoot, "worktree", "unlock", lane)
+	wtGit(t, worktreeRepo.mainRoot, "worktree", "lock", "--reason", worktree.FormatDelegateMarker(fixture.delegateID, fixture.meta.ID), lane)
 	fixture.adapter.steps = []func(llm.Request) llm.Response{
 		func(llm.Request) llm.Response {
 			close(enteredInitialRequest)

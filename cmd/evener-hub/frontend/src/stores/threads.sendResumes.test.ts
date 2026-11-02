@@ -183,7 +183,9 @@ test("a second send while the Send-resumes drive is in flight parks and rides th
   expect(threadsStore.getState().restartBlockingObligations.has(ref)).toBe(true);
   fake.on("thread/resume", () => new Promise<never>(() => {}));
   await Promise.all([threadsStore.getState().send(ref, "one"), threadsStore.getState().send(ref, "two")]);
-  expect(fake.calls.filter((call) => call.method === "thread/resume")).toHaveLength(1);
+  // The drive runs beside the parked sends; await its request's arrival and
+  // that it stays one for both.
+  await vi.waitFor(() => expect(fake.calls.filter((call) => call.method === "thread/resume")).toHaveLength(1));
   expect(fake.calls.filter((call) => call.method === "turn/start")).toEqual([]);
   const parked = await storage.listOutbox(ref);
   expect(parked.filter((record) => record.method === "turn/start")).toHaveLength(2);
