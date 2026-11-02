@@ -237,7 +237,10 @@ branch never applies to a delegate.
 On the roots that get `ask_user`, `communicate` also takes `end_reason`, read only when
 `end_turn=true`: `done` (the default), `needs_response`, or `waiting_on_work`. It is recorded
 with the message (`CommunicateData`, the transcript's `CommunicateInfo`). A turn that ends on
-`done` or `waiting_on_work` rests idle. One that ends on `needs_response` rests awaiting, unless
+`done` or `waiting_on_work` rests idle. A turn-ending `waiting_on_work` call is refused when
+nothing can wake the session: use `done` if finished, `needs_response` if the partner must act,
+or start the work or arm a watch before ending the turn.
+One that ends on `needs_response` rests awaiting, unless
 autonomous work (a working child, a pending delegate report, a pending notification, queued
 input, a goal kick) will move the session first; a finished child's warm runtime does not
 count. The settle reads the first turn-ending call the input accepted, and restore derives the
