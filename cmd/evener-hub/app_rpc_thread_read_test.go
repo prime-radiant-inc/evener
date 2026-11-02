@@ -102,6 +102,96 @@ func TestSessionOperationsReadPreservesHumanAndManagerSubscriptionModes(t *testi
 	}
 }
 
+// TestManagerSnapshotReadDoesNotAskDaemonForSubscription pins the upstream
+// half of the snapshot rule. A Manager status read without a watch has no
+// consumer, so it must not ask the daemon for a subscription: while it did,
+// the daemon counted a subscriber for the read's duration, and a curable
+// sandbox denial in that window raised an approval card nobody received.
+func TestManagerSnapshotReadDoesNotAskDaemonForSubscription(t *testing.T) {
+	var mu sync.Mutex
+	asked := map[string][]bool{}
+	daemon := appserver.NewServer(appserver.ServerConfig{ServerName: "daemon", SourceID: "local"})
+	appserver.HandleTyped(daemon.Router(), appwire.MethodThreadRead, func(ctx context.Context, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
+		ref, err := appwire.ParseRef(params.Ref)
+		if err != nil {
+			return appwire.ThreadReadResponse{}, err
+		}
+		mu.Lock()
+		asked[params.Ref] = append(asked[params.Ref], params.Subscribe)
+		mu.Unlock()
+		if params.Subscribe {
+			if err := appserver.SubscribeWithAdmission(ctx, ref.ThreadID, false); err != nil {
+				return appwire.ThreadReadResponse{}, err
+			}
+		}
+		return appwire.ThreadReadResponse{Thread: appwire.Thread{ID: ref.ThreadID, SessionID: ref.ThreadID, Evener: appwire.EvenerThread{Ref: params.Ref}}}, nil
+	})
+	daemonHTTP := httptest.NewServer(http.HandlerFunc(daemon.ServeWebSocket))
+	defer daemonHTTP.Close()
+	endpoint := "ws" + strings.TrimPrefix(daemonHTTP.URL, "http")
+	entries := []appsource.LocalDaemonEntry{
+		{Entry: rendezvous.Entry{Protocol: appwire.ProtocolVersion, Endpoint: endpoint, SourceID: "local", ThreadID: "human", SessionID: "human", WorkspaceRef: "local:human"}},
+		{Entry: rendezvous.Entry{Protocol: appwire.ProtocolVersion, Endpoint: endpoint, SourceID: "local", ThreadID: "manager", SessionID: "manager", WorkspaceRef: "local:manager"}},
+	}
+	source := appsource.NewLocalDaemonSourceWithEntries("local", func() []appsource.LocalDaemonEntry { return entries }, http.DefaultClient)
+	sources := appsource.NewRegistry()
+	sources.Add(source)
+	cfg := hubcore.WebConfig{HubStateRoot: t.TempDir(), Past: hubcore.NewPastIndex("")}
+	server := appserver.NewServer(appserver.ServerConfig{ServerName: "hub", Version: "test", SourceID: "local"})
+	relays := newHubRelay(server, cfg, sources)
+	operations := &sessionOperations{cfg: cfg, sources: sources, relays: relays, server: server}
+	appserver.HandleTyped(server.Router(), appwire.MethodThreadRead, operations.Read)
+	// This test-local route exercises the same internal snapshot-only path used
+	// by Manager operations without adding a production hook.
+	appserver.HandleTyped(server.Router(), "test/managerSnapshotRead", func(ctx context.Context, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
+		return operations.read(ctx, params, false)
+	})
+	hub := httptest.NewServer(http.HandlerFunc(server.ServeWebSocket))
+	defer hub.Close()
+	client := dialHubRPCInitialized(t, hub)
+	defer client.Close()
+
+	// An ordinary human read captures a downstream subscription, so its
+	// relay read legitimately asks the daemon for the feed.
+	if _, err := client.ThreadRead(context.Background(), appwire.ThreadReadParams{Ref: "local:human"}); err != nil {
+		t.Fatalf("ordinary human ThreadRead: %v", err)
+	}
+	for _, params := range []appwire.ThreadReadParams{
+		{Ref: "local:manager"},
+		// The snapshot path must not subscribe even when the caller's own
+		// params carry a stale Subscribe flag.
+		{Ref: "local:manager", Subscribe: true},
+	} {
+		var snapshot appwire.ThreadReadResponse
+		if err := client.Request(context.Background(), "test/managerSnapshotRead", params, &snapshot); err != nil {
+			t.Fatalf("Manager snapshot read: %v", err)
+		}
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	flags := asked["local:manager"]
+	if len(flags) == 0 {
+		t.Fatal("manager snapshot read never reached the daemon")
+	}
+	for _, f := range flags {
+		if f {
+			t.Fatal("manager snapshot read asked the daemon for a subscription")
+		}
+	}
+	human := asked["local:human"]
+	if len(human) == 0 {
+		t.Fatal("ordinary human read never reached the daemon")
+	}
+	fed := false
+	for _, f := range human {
+		fed = fed || f
+	}
+	if !fed {
+		t.Fatal("ordinary human read no longer asks the daemon for the feed")
+	}
+}
+
 func TestHubRPCThreadReadRoutesReachableErroredDaemon(t *testing.T) {
 	const sessionID = "02wMz5Txv9yYdSRJat13MZ"
 	daemon := appserver.NewServer(appserver.ServerConfig{ServerName: "daemon", SourceID: "local"})

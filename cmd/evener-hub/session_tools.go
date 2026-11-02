@@ -463,7 +463,15 @@ func (o *sessionOperations) read(ctx context.Context, params appwire.ThreadReadP
 		}
 		return appwire.ThreadReadResponse{}, err
 	}
-	read, err := relays.readThread(ctx, source, params)
+	var read *hubThreadReadResult
+	// A captured read hands its caller a downstream subscription, so its
+	// relay read holds the daemon-side feed. An internal snapshot read has
+	// no consumer and must not count as a subscriber.
+	if capture {
+		read, err = relays.readThread(ctx, source, params)
+	} else {
+		read, err = relays.readThreadSnapshot(ctx, source, params)
+	}
 	if err != nil {
 		recovered := false
 		allowPast := allowsPastFallbackAfterLiveReadFailure(source, params, err)
@@ -501,7 +509,11 @@ func (o *sessionOperations) read(ctx context.Context, params appwire.ThreadReadP
 					source = refreshedSource
 					_, err = daemon.ResolveSubscriptionAdmission(params)
 					if err == nil {
-						read, err = relays.readThread(ctx, source, params)
+						if capture {
+							read, err = relays.readThread(ctx, source, params)
+						} else {
+							read, err = relays.readThreadSnapshot(ctx, source, params)
+						}
 						recovered = err == nil
 					}
 					if ctx.Err() != nil {
