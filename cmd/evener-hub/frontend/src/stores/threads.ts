@@ -113,6 +113,7 @@ import {
   retireEntryTranscriptIfUnowned,
   retireEntryTranscriptRoute,
   scheduleEntryOpeningRecovery,
+  scheduleReplacementEntryRecovery,
 } from "./entryTranscriptRoutes";
 import { entryWriteAdmissionFor } from "./entryWriteAdmission";
 import { acknowledgeHumanNote, resetHumanNoteDrafts } from "./humanNoteDrafts";
@@ -960,6 +961,12 @@ async function acceptEntryTranscriptHydration(
     // Only rebuild the route this acquisition owns; a concurrent replacement is
     // not this response's to replace.
     if (fixture.repository !== claimedRepository) return;
+    // The pending recorded-range work is the route's fact, not the repository
+    // instance's: identities the display restored but no current-baseline
+    // statement validated yet survive the replacement the stale-cursor
+    // fallback retires. Capture them before the retirement disposes the
+    // outgoing repository.
+    const pendingUnreconciled = claimedRepository?.unreconciledRecorded();
     retireEntryTranscriptRoute(fixture);
     fixture.lifetime += 1;
     fixture.clearEpoch = clearEpoch;
@@ -972,16 +979,26 @@ async function acceptEntryTranscriptHydration(
       historyGeneration,
     });
     // A missed opening armed the route's outstanding miss on the outgoing
-    // repository; the replacement starts with no demand armed, and nothing
-    // else would transfer it. The owed range is the route's fact, not the
-    // repository instance's: the display's convergence debt survives the
-    // repository the stale-cursor fallback retires. Re-arm the replacement so
-    // the recorded range below its baseline still restores before
-    // certification can accept a bare latest window and clear the miss. The
-    // note is synchronous and inert until a windowed baseline exists; an
+    // repository, and a usable open may have cleared that miss while the
+    // bounded reconciliation was still pending — the pending set is the
+    // surviving fact then. Either way the replacement starts with no demand
+    // armed, and nothing else would transfer it: the owed range is the
+    // route's fact, not the repository instance's, so the display's
+    // convergence debt survives the repository the stale-cursor fallback
+    // retires. Re-arm the replacement so the recorded range below its
+    // baseline still restores before certification can accept a bare latest
+    // window, adopt the identities the outgoing repository still owed the
+    // source's word for, and re-arm the recovery chain against the
+    // replacement — its successor must resume, or the windowed answer that
+    // dropped the restored range strands it with nothing left to restore.
+    // The note is synchronous and inert until a windowed baseline exists; an
     // authoritative full answer below clears it again, exactly as it would
     // have on the outgoing repository.
-    if (fixture.unresolvedOpenMiss) fixture.repository.noteOwedRecordedRange();
+    if (fixture.unresolvedOpenMiss || (pendingUnreconciled?.size ?? 0) > 0) {
+      fixture.repository.noteOwedRecordedRange();
+      if (pendingUnreconciled) fixture.repository.inheritUnreconciledRecorded(pendingUnreconciled);
+      fixture.pendingReplacementRecovery = true;
+    }
   }
   const repository = fixture.repository;
   fixture.cachedUnverified = false;
@@ -5202,6 +5219,17 @@ async function publishAndReconcileThreadHydration(
   const adoptedEntryRead = (await acceptEntryTranscriptHydration(ref, pending, hydration)) === true;
   const published = publishThreadHydration(ref, pending, hydration.model, adoptedEntryRead);
   if (!published) return null;
+  // A published replace that adopted the outgoing repository's pending
+  // recorded-range recovery needs the chain's successor against the NEW
+  // display — armed here, after the publish, so the successor's
+  // complete-window guard judges the display the replacement actually
+  // established. One shot per replacement: the mark the seam left fires this
+  // once, and every later publication keeps the chain's ordinary arming.
+  const replacedRoute = entryTranscriptRoute(ref);
+  if (replacedRoute?.ref === ref && replacedRoute.pendingReplacementRecovery) {
+    replacedRoute.pendingReplacementRecovery = false;
+    scheduleReplacementEntryRecovery(ref);
+  }
   reconcileAcceptedReadRecovery(ref, hydration.response, published);
   const blockingObligation = threadsStore.getState().restartBlockingObligations.get(ref);
   if (intent === "background" || intent === "final") return published;

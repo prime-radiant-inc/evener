@@ -257,6 +257,10 @@ export interface EntryTranscriptRoute {
   // body-suppressed with nothing scheduled — the CI strand where bodies
   // stayed [] after an awaited ensureThread.
   unresolvedOpenMiss?: boolean;
+  /** @internal A replacement repository adopted the outgoing one's pending
+   * recorded-range recovery; the next successful publication owes the chain's
+   * one-shot successor arm (see the replacement seam in threads.ts). */
+  pendingReplacementRecovery?: boolean;
 }
 
 const productionEntryRoutes = new Map<string, EntryTranscriptRoute>();
@@ -1079,6 +1083,27 @@ export function scheduleEntryOpeningRecovery(ref: string): void {
   // open) already healed needs no re-open churn against storage that may
   // never answer.
   if (holdsCompleteForegroundWindow(store().getState().threads.get(ref), route.repository)) return;
+  launchEntryOpeningRecovery(ref, route);
+}
+
+// The stale-cursor fallback's replacement inherits the recorded-range demand
+// the outgoing repository still owed (see the replacement seam in threads.ts).
+// The ordinary arming above refuses it — a usable open already cleared the
+// miss flags, and the chain's own terminal states must not re-arm against
+// storage on every later publication — so the replacement's successor arms
+// here instead, once per replacement, under the chain's remaining guards: the
+// dedup, the live foreground holder and the complete-window check keep this a
+// no-op for a replacement whose display needs nothing.
+export function scheduleReplacementEntryRecovery(ref: string): void {
+  const route = entryTranscriptRoute(ref);
+  if (!route || route.ref !== ref) return;
+  if (pendingOpeningRecoveries.get(ref) === route) return;
+  if (foregroundHolds(ref) <= 0) return;
+  if (holdsCompleteForegroundWindow(store().getState().threads.get(ref), route.repository)) return;
+  launchEntryOpeningRecovery(ref, route);
+}
+
+function launchEntryOpeningRecovery(ref: string, route: EntryTranscriptRoute): void {
   pendingOpeningRecoveries.set(ref, route);
   const recovery = (async () => {
     let stalledAttempts = 0;

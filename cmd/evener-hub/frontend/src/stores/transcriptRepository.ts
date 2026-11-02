@@ -1475,6 +1475,22 @@ export class TranscriptRepository {
   }
 
   /**
+   * Adopt the pending unreconciled identities of the repository a stale-cursor
+   * replacement retired. The set is the route's fact — recorded rows the
+   * display restored but no current-baseline statement validated — so the
+   * bounded reconciliation resumes against this replacement instead of dying
+   * with the instance the refresh replaced. In-memory bookkeeping only: the
+   * identities stay reconciled-by-the-source the moment a page or read speaks
+   * for them, exactly as rows this repository restored itself.
+   */
+  inheritUnreconciledRecorded(keys: ReadonlySet<string>): void {
+    if (keys.size === 0) return;
+    const next = new Set(this.#unreconciledRecorded);
+    for (const key of keys) next.add(key);
+    this.#unreconciledRecorded = next;
+  }
+
+  /**
    * Resolve the armed demand's identities from durable rows the fill already
    * pulled — no extra read: the identities the record holds below the
    * open's window floor that the displayed model does not present with a

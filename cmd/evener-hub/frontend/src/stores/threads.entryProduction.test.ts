@@ -2688,6 +2688,125 @@ it("a stale-cursor hydration that replaces the repository keeps the missed open'
     await lease.release();
   }
 });
+// The round-7 medium: after recovery restored the recorded range, the usable
+// open cleared the route's outstanding miss while the bounded reconciliation
+// was still pending. A competing refresh whose read is rejected
+// transcriptItemCursorStale retries without the held snapshot and REPLACES
+// the repository — the windowed answer drops the restored older range, the
+// chain's own repository guard ends the pending reconciliation, and the
+// replacement inherits no armed demand because the arming consults only the
+// cleared miss flags. The pending recorded-range recovery must survive the
+// replacement and resume against it, or the pane stays on the bare wire
+// window with nothing restoring the older range.
+it("a stale-cursor refresh that replaces the repository resumes the pending recorded-range recovery", async () => {
+  const storage = cache();
+  const realGetLatestWindow = storage.getLatestWindow.bind(storage);
+  setProductionEntryCacheForTests(storage);
+  const ref = "local:a";
+  const read = response(
+    ref,
+    Array.from({ length: 225 }, (_, index) => turn(`row-${index + 1}`, index + 1)),
+  );
+  read.snapshot = { incarnation: "inc-a", length: 225 };
+  const client = connect(read);
+  let foregroundReads = 0;
+  let refreshStarted = false;
+  let rejectHeld: ((error: unknown) => void) | undefined;
+  client.on("thread/read", (params) => {
+    foregroundReads += 1;
+    if (foregroundReads === 1) return read;
+    // The competing refresh's held-snapshot read is the one the hub rejects
+    // transcriptItemCursorStale; earlier held reads answer normally so the
+    // pane converges before the refresh lands.
+    if (refreshStarted && (params as { heldSnapshot?: unknown }).heldSnapshot !== undefined) {
+      return new Promise<ThreadReadResponse>((_resolve, reject) => {
+        rejectHeld = reject;
+      });
+    }
+    return { ...latestWindowRead(ref, 226), requestGeneration: params.requestGeneration };
+  });
+  // The bounded reconciliation's older pages: the first page is held, so the
+  // reconciliation is still pending when the refresh replaces the repository.
+  const listPageFor = (pageNumber: number) => {
+    const first = 188 - pageNumber * 40;
+    const rows = Array.from({ length: 40 }, (_, index) => turn(`row-${first + index}`, first + index));
+    return {
+      data: rows,
+      nextCursor: pageNumber < 4 ? `opaque-server-page-${pageNumber + 1}` : undefined,
+      bootGeneration: "1",
+      epoch: 1,
+      snapshot: { incarnation: "inc-a", length: 226 },
+    };
+  };
+  const listReads: string[] = [];
+  const heldPage = deferred<ReturnType<typeof listPageFor>>();
+  client.on("thread/turns/list", (params) => {
+    listReads.push(params.cursor ?? "-");
+    if (listReads.length === 1) return heldPage.promise;
+    return listPageFor(Math.min(listReads.length, 4));
+  });
+  const lease = acquireBackgroundThread(ref);
+  await lease.ready;
+  await settleEntryTranscriptForTests(ref);
+  const key = entryHistoryKey({ ...identity, clientId: location.origin });
+  expect(await storage.getLatest(key, 300)).toHaveLength(225);
+  const bodies = () =>
+    threadsStore
+      .getState()
+      .threads.get(ref)
+      ?.turns.flatMap((turn) => turn.items)
+      .map((item) => item.text)
+      .filter(Boolean);
+  expect(bodies()).toEqual([]);
+
+  let withheldWindowReads = 0;
+  (storage as unknown as { getLatestWindow: unknown }).getLatestWindow = (...args: unknown[]) => {
+    if (withheldWindowReads > 0) {
+      withheldWindowReads -= 1;
+      return new Promise(() => {}) as ReturnType<typeof realGetLatestWindow>;
+    }
+    return realGetLatestWindow(...(args as Parameters<typeof realGetLatestWindow>)) as ReturnType<
+      typeof realGetLatestWindow
+    >;
+  };
+  withheldWindowReads = 1;
+  setSessionCacheOpenBackstopForTests(40);
+  try {
+    const opened = threadsStore.getState().ensureThread(ref);
+    // Recovery restored the recorded range below the windowed answer, the
+    // usable open cleared the route's outstanding miss, and the bounded
+    // reconciliation is pending on its first held page.
+    await vi.waitFor(() => {
+      expect(bodies()).toEqual(Array.from({ length: 200 }, (_, index) => `row-${index + 27}`));
+    });
+    await vi.waitFor(() => {
+      expect(productionEntryTranscriptForTests(ref).unresolvedOpenMiss).toBe(false);
+      expect(listReads.length).toBeGreaterThanOrEqual(1);
+    });
+    await opened;
+    await settleEntryTranscriptForTests(ref);
+    // The competing refresh: its held-snapshot read is rejected stale and the
+    // retry without the held snapshot replaces the repository with the
+    // daemon's 40-item window.
+    refreshStarted = true;
+    const refreshed = threadsStore.getState().refreshThread(ref);
+    await vi.waitFor(() => expect(rejectHeld).toBeDefined());
+    rejectHeld?.(new WireError("stale", -32000, { evenerErrorInfo: "transcriptItemCursorStale" }));
+    await refreshed;
+    await settleEntryTranscriptForTests(ref);
+    // The older recorded range must restore against the replacement: the
+    // pane converges back to the recorded range below the wire window, not
+    // the bare 40-item cut the refresh published.
+    await vi.waitFor(() => {
+      expect(bodies()).toEqual(Array.from({ length: 200 }, (_, index) => `row-${index + 27}`));
+    });
+  } finally {
+    setSessionCacheStalledOpenForTests(5000);
+    setSessionCacheOpenBackstopForTests(10000);
+    threadsStore.getState().releaseThread(ref);
+    await lease.release();
+  }
+});
 
 it("a converged pane automatically reconciles its restored older rows against the source", async () => {
   const storage = cache();
