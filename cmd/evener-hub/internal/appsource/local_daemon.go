@@ -200,6 +200,10 @@ func (s *LocalDaemonSource) ID() string {
 type sessionToolsLiveConnection struct {
 	binding   appwire.SessionBinding
 	transport appwire.Transport
+	// epoch is the relay connection that published the binding. The binding
+	// lives exactly as long as that connection: the daemon cancels it when
+	// the connection closes, and the next dial negotiates a fresh one.
+	epoch uint64
 }
 
 // SetSessionTools is installed before any source connection starts. It does not
@@ -502,7 +506,7 @@ func (s *LocalDaemonSource) AcquireRelaySession(ref appwire.Ref) (RelaySessionRo
 					binding.Ref = ref.String()
 					binding.InstanceID = currentEntry.SessionID
 					s.sessionToolsMu.Lock()
-					s.sessionToolsConnections[ref.String()] = sessionToolsLiveConnection{binding: binding, transport: transport}
+					s.sessionToolsConnections[ref.String()] = sessionToolsLiveConnection{binding: binding, transport: transport, epoch: epoch}
 					s.sessionToolsMu.Unlock()
 					// Reconcile a failed binding or a daemon identity that changed
 					// while this connection was being established.
@@ -803,6 +807,13 @@ func (s *LocalDaemonSource) targetManagerProof(ctx context.Context, entry rendez
 // performs or awaits that dial, so the input waits for the same setup
 // instead of being refused by it. Failures surface as themselves: an
 // unreachable daemon is a retryable dial error, not a missing binding.
+//
+// A cached binding only vouches while the relay connection that published it
+// is still connected: the daemon cancels the binding when that connection
+// closes, and the cache keeps the old BindingID until the re-dial replaces
+// it. Input sent on the canceled binding is refused with no recovery, so a
+// stale epoch falls through to the acquisition below, which awaits the
+// re-dial and the replacement binding under the caller's context.
 func (s *LocalDaemonSource) ensureSessionToolsBinding(ctx context.Context, entry rendezvous.Entry) error {
 	if s.sessionToolsFactory == nil {
 		return nil
@@ -817,7 +828,12 @@ func (s *LocalDaemonSource) ensureSessionToolsBinding(ctx context.Context, entry
 	valid := ok && connection.binding.BindingID != "" && connection.binding.InstanceID == entry.SessionID
 	s.sessionToolsMu.Unlock()
 	if valid {
-		return nil
+		s.relayMu.Lock()
+		session := s.relaySessions[raw]
+		s.relayMu.Unlock()
+		if session != nil && session.connectionEpochLive(connection.epoch) {
+			return nil
+		}
 	}
 	lease, err := s.AcquireRelaySession(ref)
 	if err != nil {

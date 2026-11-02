@@ -192,6 +192,16 @@ func (s *relaySession) SessionToolsSupported() (supported, known bool) {
 	return s.connection.client.Features().SessionTools, true
 }
 
+// connectionEpochLive reports whether epoch still names the relay's connected
+// daemon link. The daemon cancels a session-tools binding when its connection
+// closes, so a binding cached under a dead epoch must not vouch for Manager
+// input: only the connected epoch's binding is still honored.
+func (s *relaySession) connectionEpochLive(epoch uint64) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.connection != nil && s.connection.epoch == epoch && !s.connection.disconnected
+}
+
 func (l *relaySessionLease) Close() {
 	if l == nil || l.session == nil {
 		return
