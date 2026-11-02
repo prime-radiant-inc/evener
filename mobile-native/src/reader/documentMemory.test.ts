@@ -414,6 +414,24 @@ describe("what the phone remembers about a document", () => {
 		expect(memory.comments(retained).map((comment) => comment.text)).toEqual(["keep"]);
 	});
 
+	// The same must hold for a document the session's tools wrote into its
+	// scratch directory: the bare relative name is not its identity.
+	it("keeps a working-directory file and a scratch file of one name apart", () => {
+		const storage = memoryStorage();
+		const folder: DocumentKey = { sessionRef: "local:s-1", path: "shot.md" };
+		const scratch: DocumentKey = { sessionRef: "local:s-1", path: "shot.md", root: "scratch" };
+		const memory = new DocumentMemory(storage, "hub-1", () => 1_000);
+		memory.savePosition(folder, { blockIndex: 1, blockHash: "p1", offset: 4, progress: 0.3 });
+		memory.addComment(folder, { blockIndex: 1, blockHash: "p1", quote: "folder words", text: "fix this" });
+		expect(memory.position(scratch)).toBeNull();
+		expect(memory.comments(scratch)).toEqual([]);
+		memory.savePosition(scratch, { blockIndex: 7, blockHash: "p7", offset: 0, progress: 0.8 });
+		memory.addComment(scratch, { blockIndex: 7, blockHash: "p7", quote: "scratch words", text: "keep" });
+		expect(memory.position(folder)).toEqual({ blockIndex: 1, blockHash: "p1", offset: 4, progress: 0.3 });
+		expect(memory.comments(folder).map((comment) => comment.text)).toEqual(["fix this"]);
+		expect(memory.comments(scratch).map((comment) => comment.text)).toEqual(["keep"]);
+	});
+
 	// Positions and unsent comments saved before artifacts documents existed
 	// were keyed by session and path alone. They are still that document's.
 	it("still reads a record saved under the old working-directory key", () => {

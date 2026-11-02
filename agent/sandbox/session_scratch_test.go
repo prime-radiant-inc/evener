@@ -11,6 +11,51 @@ import (
 	"primeradiant.com/evener/identifier"
 )
 
+// SessionScratchDirPath must answer the exact directory OpenSessionScratch
+// allocates, so a process that reads only a session's recorded meta names the
+// same scratch the allocator made.
+func TestSessionScratchDirPathMatchesTheAllocatedScratch(t *testing.T) {
+	t.Parallel()
+	base, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	opened, err := OpenSessionScratch(base, t.TempDir(), "ROOTP", "ROOTP")
+	if err != nil {
+		t.Fatalf("open scratch: %v", err)
+	}
+	t.Cleanup(func() { _ = opened.Retain() })
+	if got := SessionScratchDirPath(base, "ROOTP", "ROOTP"); got != opened.Dir {
+		t.Fatalf("SessionScratchDirPath = %q, want the allocated %q", got, opened.Dir)
+	}
+	child, err := OpenSessionScratch(base, t.TempDir(), "ROOTP", "CHILDP")
+	if err != nil {
+		t.Fatalf("open child scratch: %v", err)
+	}
+	t.Cleanup(func() { _ = child.Retain() })
+	if got := SessionScratchDirPath(base, "ROOTP", "CHILDP"); got != child.Dir {
+		t.Fatalf("SessionScratchDirPath = %q, want the allocated %q", got, child.Dir)
+	}
+}
+
+func TestSessionScratchDirPathRefusesIdentitiesThatCannotNameOne(t *testing.T) {
+	t.Parallel()
+	for _, args := range []struct{ base, rootID, sessionID string }{
+		{"", "ROOTQ", "ROOTQ"},
+		{"   ", "ROOTQ", "ROOTQ"},
+		{t.TempDir(), "", "ROOTQ"},
+		{t.TempDir(), "ROOTQ", ""},
+		{t.TempDir(), "..", "ROOTQ"},
+		{t.TempDir(), "ROOTQ", "../evil"},
+		{t.TempDir(), "ROOTQ", "sub/dir"},
+		{t.TempDir(), "evener-sandbox-x", "ROOTQ"},
+	} {
+		if got := SessionScratchDirPath(args.base, args.rootID, args.sessionID); got != "" {
+			t.Fatalf("SessionScratchDirPath(%q, %q, %q) = %q, want empty", args.base, args.rootID, args.sessionID, got)
+		}
+	}
+}
+
 func TestSessionScratchLifecycle(t *testing.T) {
 	base := t.TempDir()
 	scratch, err := NewSessionScratch(base, t.TempDir())

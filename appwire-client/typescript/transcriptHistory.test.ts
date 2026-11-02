@@ -867,3 +867,23 @@ test("hydrateThread clears artifactsDir when a snapshot omits it", () => {
   );
   expect(withdrawn.artifactsDir).toBeUndefined();
 });
+
+// The scratch directory is snapshot state with the same withdraw rule as the
+// artifacts directory: it must reach the model from a read, and a fresh read
+// that withdraws it must clear it, not keep the previous one.
+test("a read carries scratchDir into the model and a withdrawn root clears it", () => {
+  expect(testHydrate({ evener: {} }).scratchDir).toBeUndefined();
+  const withRoot = testHydrate({ evener: { scratchDir: "/tmp/evener-scratch-a/a" } });
+  expect(withRoot.scratchDir).toBe("/tmp/evener-scratch-a/a");
+  expect(applyReadModel(withRoot, testHydrate({ evener: {} })).scratchDir).toBeUndefined();
+  const wire = testThread({ evener: {} });
+  const withdrawn = applyReadResponse(
+    withRoot,
+    {
+      thread: wire,
+      requestGeneration: 1,
+    } as ThreadReadResponse,
+    2000,
+  );
+  expect(withdrawn.scratchDir).toBeUndefined();
+});

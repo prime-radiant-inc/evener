@@ -157,14 +157,35 @@ is refused. A delegate's artifacts resolve through the live entry that reports
 it as a running subagent, since they sit under its owner's project state
 directory.
 
+An absolute path may also name a file in the session's named scratch
+directory, the tree its recorded meta names (`<base>/evener-scratch-<tree
+root>/<sessionID>`, under the temp base the session's daemon recorded, this
+hub's own, or the user cache dir). Tools write screenshots and other
+session-local output there and name those files by absolute path in messages
+and tool results, so the transcript turns such a path into a document read the
+same way. The `<sessionID>` in that path is the session that owns the
+directory, not always the requested one: a delegate that shares its parent's
+environment writes into the parent's scratch, so its meta records that owner
+and serving resolves through the record. The scratch directory is a third boundary beside the other two,
+never a widening of them: the same containment check resolves it, the read
+opens through whichever root accepted the path, a session fenced for deletion
+serves nothing from it, and a scratch directory that no longer exists on disk
+answers as not-served rather than refused.
+
+`Thread.evener.scratchDir` announces that directory for a local session whose
+scratch exists, with the same absent-means-absent rule as the artifacts
+directory: empty for a remote thread, an unknown ref, a session with no
+scratch on disk, or a hub serving no state directory.
+
 `Thread.evener.artifactsDir` announces that directory for a local session, so a
 client can tell an openable `file://` link from one the hub would refuse without
 guessing. It is empty for a remote thread, an unknown ref, or a hub serving no
 state directory. Clients bind a link through the shared resolver
 ([docContent.ts](../appwire-client/typescript/docContent.ts)), which tries the
-working directory and then the artifacts root, so the web transcript and the
-phone's Reader offer the same document for the same link. A link that names no
-root is left an ordinary link rather than promising a read the hub would refuse.
+working directory and then the artifacts and scratch roots, so the web
+transcript and the phone's Reader offer the same document for the same link.
+A link that names no root is left an ordinary link rather than promising a
+read the hub would refuse.
 
 A missing archived metadata file returns `ResourceNotFound` (HTTP 404). Other
 metadata read or decode failures return `SessionUnavailable` (HTTP 503), so the

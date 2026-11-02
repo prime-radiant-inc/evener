@@ -903,6 +903,17 @@ export interface EvenerThread {
    */
   artifactsDir?: string;
   /**
+   * ScratchDir is the session's named scratch directory on the hub that
+   * serves it, empty when no local path names one (a remote thread, an
+   * unknown ref, a session with no scratch directory on disk). Tools write
+   * screenshots and other session-local output there and name those files by
+   * absolute path in messages and tool results; the transcript turns such a
+   * path into a document-pane request, and this is the directory the hub's
+   * doc route serves that request out of. Clients compare an absolute path
+   * against it rather than guessing whether the hub can open it.
+   */
+  scratchDir?: string;
+  /**
    * Usage, WorkMillis, and ActiveTurnStartedAt are the daemon's live
    * working-state/token metrics (WS2), served from the daemon's materialized
    * thread envelope, which is refreshed at the turn boundaries that move

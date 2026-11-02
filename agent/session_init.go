@@ -896,7 +896,7 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	// A delegate's own environment was named when it was prepared, and a shared
 	// delegate is handed its parent's, so only a root restore names env.
 	if restoreCfg.spawn.parentSessionID == "" {
-		nameRootScratch(env, restoredScratchTreeRoot(meta), meta.ID)
+		nameRootScratch(env, meta.RestoredScratchTreeRoot(), meta.ID)
 	}
 
 	restoreComplete := false
@@ -1325,7 +1325,7 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	// A delegate resumed on its own keeps its scratch in its root's tree, and
 	// Meta() keeps recording that root for the next resume.
 	if restoreCfg.spawn.parentSessionID == "" {
-		if root := restoredScratchTreeRoot(meta); root != meta.ID {
+		if root := meta.RestoredScratchTreeRoot(); root != meta.ID {
 			s.restoredScratchTreeRoot = root
 		}
 	}
@@ -2609,7 +2609,7 @@ func reconnectRecoveryWarning(name string) events.WarningData {
 // on resume, and removed when the hub archives or deletes the session. A
 // scratch the environment already minted is unaffected. rootID is the tree the
 // scratch lives in: the session's own ID, except for a delegate resumed as a
-// top-level session (restoredScratchTreeRoot).
+// top-level session (SessionMeta.RestoredScratchTreeRoot).
 func nameRootScratch(env execenv.ExecutionEnvironment, rootID, sessionID string) {
 	local, ok := env.(*execenv.LocalExecutionEnvironment)
 	if !ok {
@@ -2618,20 +2618,6 @@ func nameRootScratch(env execenv.ExecutionEnvironment, rootID, sessionID string)
 	if root, _ := local.ScratchIdentity(); root == "" {
 		local.SetScratchIdentity(rootID, sessionID)
 	}
-}
-
-// restoredScratchTreeRoot is the root whose scratch tree a restored top-level
-// session's scratch lives in. A delegate resumed on its own (`serve --resume
-// <delegate>`) keeps its directory in the tree of the root that spawned it,
-// which its meta records, so it reopens what it had and goes when that root is
-// archived.
-func restoredScratchTreeRoot(meta schema.SessionMeta) string {
-	for _, root := range []string{meta.ScratchTreeRootID, meta.JobTreeRootSessionID} {
-		if root = strings.TrimSpace(root); meta.IsSubagent && schema.ValidateSessionID(root) == nil {
-			return root
-		}
-	}
-	return meta.ID
 }
 
 // PickFreshSessionID picks the ID a new top-level session will take, unless cfg

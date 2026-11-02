@@ -511,6 +511,7 @@ export function threadFields(resp: ThreadReadResponse, ref: string, now: number)
     // Present-and-undefined clears it; the key is then dropped so a model
     // without a root keeps the shape it had before this field existed.
     artifactsDir: thread.evener.artifactsDir || undefined,
+    scratchDir: thread.evener.scratchDir || undefined,
     modelProvider: thread.modelProvider,
     // Thread has no separate "model id" field on the wire snapshot — only
     // ModelProvider, which appwire/types_thread.go documents as overloaded to
@@ -577,5 +578,6 @@ export function threadFields(resp: ThreadReadResponse, ref: string, now: number)
   // Present-and-undefined clears it; the key is then dropped so a model
   // without a root keeps the shape it had before this field existed.
   if (fields.artifactsDir === undefined) delete fields.artifactsDir;
+  if (fields.scratchDir === undefined) delete fields.scratchDir;
   return fields;
 }
