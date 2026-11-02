@@ -190,7 +190,11 @@
 - [ ] **Step 4: Inventory existing session-level `waiting_on_work` usages.**
 
   Run: `rg -n '"waiting_on_work"' agent --glob '*_test.go'`
-  For every hit OUTSIDE this plan's own tests that scripts a REAL session (not the deps harness) to end its turn `waiting_on_work`: the guard will now refuse it. Each such test needs its fixture seeded with one of the Task 2 wake sources (a running job, a live delegate, a pending notification), because the refusal is the new correct behavior — never weaken the guard to keep an old expectation. Deps-harness hits stay as-is (they set `wakeableWork` explicitly). The restore-contract test (session_tools_misc_contract_fuzz_test.go, state-machine level, no communicate Exec) must be untouched by this change; if the inventory suggests otherwise, stop and re-check the design before proceeding.
+  Preflight already classified the current hits; re-run only to catch new arrivals:
+  - `session_tools_misc_contract_fuzz_test.go:155` — state-machine contract, no communicate Exec runs; leave untouched.
+  - `session_awaiting_test.go:105` (`TestProcessInput_CleanCompletionRestsByEndReason`) and `:348` (`TestRestore_RestsByEndReason`) — real sessions end a turn `waiting_on_work` with nothing live, so the guard would refuse them and break their clean-completion premise. Fix: before the turn, seed one live wake source on the session's own manager — `sess.jobManager.configureWatch(watchArgs{Target: runtimeMessageAliasCaller, AfterSeconds: 3600})` — so the ending is legitimate and delivered; all rest-state assertions stay exactly as they are. In the restore test the seed goes inside the `restoreAfter` setup callback, while the session is live (the restored state is derived from the persisted reason and is unaffected).
+  - `session_communicate_end_reason_test.go:42` — enum list, unchanged; `:83` — the row this task rewrites.
+  For every other hit that scripts a REAL session to end `waiting_on_work`: seed a Task 2 wake source the same way, because the refusal is the new correct behavior — never weaken the guard to keep an old expectation. Deps-harness hits stay as-is (they set `wakeableWork` explicitly). The restore-contract test (session_tools_misc_contract_fuzz_test.go) must stay untouched by this change; if it needs anything, stop and re-check the design before proceeding.
 
 - [ ] **Step 5: Implement.**
 
