@@ -2434,7 +2434,16 @@ func newColdDelegateFixture(t *testing.T, sharedOwner string) coldDelegateFixtur
 
 func newColdDelegateFixtureConfigured(t *testing.T, sharedOwner string, configure func(*delegatestore.Descriptor)) coldDelegateFixture {
 	t.Helper()
-	meta, client, profile, stateDir, workspace, adapter := closedDelegateResourceBootstrapFixture(t)
+	return newColdDelegateFixtureConfiguredInState(t, sharedOwner, realTempDirForTest(t), configure)
+}
+
+// newColdDelegateFixtureConfiguredInState builds the cold delegate fixture
+// with the parent session inside a caller-chosen state directory, so a test
+// can share one state root between the parent and the session that examines
+// it.
+func newColdDelegateFixtureConfiguredInState(t *testing.T, sharedOwner, stateDir string, configure func(*delegatestore.Descriptor)) coldDelegateFixture {
+	t.Helper()
+	meta, client, profile, _, workspace, adapter := closedDelegateResourceBootstrapFixtureInState(t, stateDir)
 	delegateID := identifier.MustNewDelegateID()
 	childID := identifier.MustNewSessionID()
 	config := meta.Config.Clone()

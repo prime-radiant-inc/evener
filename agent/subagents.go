@@ -1397,6 +1397,14 @@ var driveRedriveMinInterval = 1 * time.Second
 // in flight per child at a time (the EntryNotification drain loop self-services
 // every queued notification within that single turn, so one launch suffices). No
 // session or jobManager lock is held while ProcessInputKind runs.
+// notificationDriveBlockedLocked reports whether the child is in a state
+// that must refuse a notification drive: gone, closed, busy in a run or a
+// drive, or gated against one. The caller holds a.mu; the nil-session term
+// short-circuits before the committed-send check reads the session id.
+func (a *subagent) notificationDriveBlockedLocked(s *Session) bool {
+	return a.sess == nil || a.closed || a.running || a.driving || a.disposeGated || a.fatalRunGated || a.finalizing || s.childCommittedSendStart(a.sess.id)
+}
+
 // driveSubagentNotificationTurn returns true when it launches a drive turn
 // (a successful handoff) and false when the live/idle guard skips the child
 // (closed, mid-run, or already being driven). The caller uses the handoff result
@@ -1415,8 +1423,23 @@ func (s *Session) driveSubagentNotificationTurn(sub *subagent) bool {
 			release()
 		}
 	}()
+	// The busy/gated guard runs before the lane revalidation so a closed or
+	// gated child never pays the revalidation's git work — and never
+	// re-locks a lane a concurrent disposer just unlocked. The revalidation
+	// below runs without the guard held, so the guard is re-checked after it
+	// for the claim window.
 	sub.mu.Lock()
-	if sub.sess == nil || sub.closed || sub.running || sub.driving || sub.disposeGated || sub.fatalRunGated || sub.finalizing || s.childCommittedSendStart(sub.sess.id) {
+	blocked := sub.notificationDriveBlockedLocked(s)
+	sub.mu.Unlock()
+	if blocked {
+		return false
+	}
+	if !s.validateDrivenDelegateLane(sub) {
+		s.recordDrainAbandonedChildOnLaneRefusal(sub, "its lane failed revalidation before a notification turn")
+		return false
+	}
+	sub.mu.Lock()
+	if sub.notificationDriveBlockedLocked(s) {
 		sub.mu.Unlock()
 		return false
 	}
@@ -1947,6 +1970,13 @@ func (a *subagent) drainForFinalization(ctx context.Context, result string) (str
 	a.mu.Lock()
 	a.finalizing = true
 	a.mu.Unlock()
+	// The drain can hold the generation open for as long as a descendant
+	// runs, after this session's own turn — and its turn ticker — has ended:
+	// a coordinator awaiting a descendant is still active delegate work, and
+	// its lane's marker parent evidence must stay fresh through the wait or
+	// a foreign prune can release the lane mid-finalization.
+	stopEvidenceTicker := a.sess.startLaneEvidenceTicker(ctx)
+	defer stopEvidenceTicker()
 	drained, err := a.sess.DrainJobTreeKeepingReport(ctx)
 	if err != nil {
 		return result, parentDriveNotify, err
