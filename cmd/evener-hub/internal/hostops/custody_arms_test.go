@@ -137,8 +137,8 @@ func TestCustodySnapshotRefusesUnprovableCorruptStores(t *testing.T) {
 			t.Parallel()
 			path := StorePath(t.TempDir())
 			writeRawStore(t, path, 0o600, tc.body)
-			if _, err := Open(path); !errors.Is(err, ErrStoreCorrupt) {
-				t.Fatalf("Open error = %v, want errors.Is(ErrStoreCorrupt)", err)
+			if err := loadAt(path); !errors.Is(err, ErrStoreCorrupt) {
+				t.Fatalf("load error = %v, want errors.Is(ErrStoreCorrupt)", err)
 			}
 		})
 	}
@@ -209,7 +209,7 @@ func TestQuarantineSecondEpochKeepsALineageFenceUnderItsID(t *testing.T) {
 	}
 }
 
-// TestQuarantineSecondEpochRefusesAnAliasedFenceID pins the refusal half of the
+// TestQuarantineSecondEpochRefusesAnAliasedFenceID pins the refusal half (the fence is not imported; the file is set aside unproven) of the
 // prior-import rule: a second corrupt store whose fence carries an id an
 // earlier custody file already handed to a different record identity is
 // refused, so an id-only resolve can never alias an unrelated record.
@@ -231,7 +231,14 @@ func TestQuarantineSecondEpochRefusesAnAliasedFenceID(t *testing.T) {
 	if err := forgetStore(path); err != nil {
 		t.Fatalf("forgetStore: %v", err)
 	}
-	if _, err := Open(path); !errors.Is(err, ErrStoreCorrupt) {
-		t.Fatalf("Open error = %v, want errors.Is(ErrStoreCorrupt)", err)
+	store, err := Open(path)
+	if err != nil {
+		t.Fatalf("Open error = %v, want the unproven set-aside", err)
+	}
+	if signal := store.Quarantine(); signal == nil || !signal.Unproven || signal.QuarantineEpoch != 2 {
+		t.Fatalf("Quarantine() = %+v, want an unproven signal at epoch 2", signal)
+	}
+	if records := store.Records(); len(records) != 0 {
+		t.Fatalf("the replacement imported an aliasing fence id: %+v", records)
 	}
 }

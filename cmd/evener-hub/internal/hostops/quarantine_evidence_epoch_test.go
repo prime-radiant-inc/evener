@@ -101,19 +101,15 @@ func TestQuarantineBoundsSyntheticNamesAndIDs(t *testing.T) {
 			t.Fatalf("no ownership import for the mirrored name: %+v", store.Records())
 		}
 	})
-	t.Run("a name over the host bound refuses explicitly", func(t *testing.T) {
+	t.Run("a name over the host bound is set aside unproven", func(t *testing.T) {
 		path := StorePath(t.TempDir())
 		writeRawStore(t, path, 0o600, mirrorStore(strings.Repeat("n", MaxHostNameBytes+1)))
+		body := mirrorStore(strings.Repeat("n", MaxHostNameBytes+1))
 		store, err := Open(path)
-		if store != nil {
-			t.Fatalf("Open accepted a name over the host bound")
+		if err != nil {
+			t.Fatalf("Open = %v, want the unproven set-aside", err)
 		}
-		if !errors.Is(err, ErrStoreCorrupt) || !errors.Is(err, ErrQuarantineIncomplete) {
-			t.Fatalf("Open = %v, want an incomplete-custody refusal", err)
-		}
-		if !strings.Contains(err.Error(), "host") {
-			t.Fatalf("refusal = %v, want it to name the host bound", err)
-		}
+		requireUnprovenReplacement(t, store, path, []byte(body))
 	})
 }
 
@@ -398,10 +394,15 @@ func TestQuarantineRefusesFenceIDsThatAliasAnEarlierCustody(t *testing.T) {
 		if err := forgetStore(path); err != nil {
 			t.Fatalf("forgetStore: %v", err)
 		}
-		if store, err := Open(path); err == nil {
-			t.Fatalf("Open accepted a fence id aliasing an earlier custody's import: %+v", store.Records())
-		} else if !errors.Is(err, ErrStoreCorrupt) || !errors.Is(err, ErrQuarantineIncomplete) {
-			t.Fatalf("Open = %v, want an incomplete-custody refusal", err)
+		store, err := Open(path)
+		if err != nil {
+			t.Fatalf("Open = %v, want the unproven set-aside", err)
+		}
+		if signal := store.Quarantine(); signal == nil || !signal.Unproven || signal.QuarantineEpoch != 2 {
+			t.Fatalf("Quarantine() = %+v, want an unproven signal at epoch 2", signal)
+		}
+		if records := store.Records(); len(records) != 0 {
+			t.Fatalf("the replacement imported an aliasing fence id: %+v", records)
 		}
 	})
 	t.Run("the same lineage's fence keeps its original id", func(t *testing.T) {

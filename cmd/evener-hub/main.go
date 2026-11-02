@@ -373,11 +373,12 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 // custody file keeps the names it closed closed.
 //
 // A corrupt file whose custody snapshot is incomplete, so that the quarantine
-// cannot prove the names it would carry, is returned as an error and left
-// exactly as it is. That is not a reason to stop serving the hosts in hub.toml:
-// the caller serves them with host changes paused and retries the open, which
-// succeeds once the file is repaired. Every other open failure, a transient
-// permission or I/O problem for one, is handled the same way.
+// cannot prove the names it would carry, is set aside the same way, with an
+// empty replacement and a health signal that says the custody is unproven: a
+// name the file had closed may not be held. Host changes resume on the
+// replacement. Every other open failure, a transient permission or I/O problem
+// for one, is returned: the caller serves the hosts in hub.toml with host
+// changes paused and retries the open at startup.
 //
 // The opened store also runs §3's boot reap: expired confirmation tokens are
 // dropped at startup, so a restart never leaves an unexpired-looking row behind
@@ -397,7 +398,11 @@ func openHostOpsStore(stateRoot string, stderr io.Writer, retention hostops.Rete
 	if err != nil {
 		return nil, fmt.Errorf("host operation store: %w", err)
 	}
-	if signal := store.Quarantine(); signal != nil {
+	if signal := store.Quarantine(); signal != nil && signal.Unproven {
+		_, _ = fmt.Fprintf(stderr,
+			"[hub] host operation store set aside without proven custody %s (custody %s, quarantine epoch %d); it was replaced by an empty store, so a name the set-aside file had closed may not be held closed\n",
+			signal.QuarantinedFile, signal.CustodyFile, signal.QuarantineEpoch)
+	} else if signal != nil {
 		_, _ = fmt.Fprintf(stderr,
 			"[hub] host operation store quarantined %s (custody %s, quarantine epoch %d); the replacement store serves the custody's orphan-unverified imports as historical rows (no name is held closed)\n",
 			signal.QuarantinedFile, signal.CustodyFile, signal.QuarantineEpoch)

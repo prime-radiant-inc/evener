@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"slices"
 	"strings"
 
 	"primeradiant.com/evener/cmd/evener-hub/internal/hostops"
@@ -172,11 +173,18 @@ func decodeReadableRecords[V any](encoded map[string]json.RawMessage) map[string
 // record elsewhere in the family that cannot be read, another remnant or an
 // attempt included, must not hide them. A remnant this build cannot read in
 // full but that names its host and is still open keeps that host fenced: the
-// stand-in carries only the host, and the record itself stays in the store.
-func decodeTeardownFences(family hostops.HostRecords) (map[string]HostTeardownRemnant, map[string]HostTeardownAttempt) {
+// stand-in carries only the host, and the record itself stays in the store. A
+// remnant that names no host fences nothing; its key is returned so the caller
+// can tell the operator which record to check.
+func decodeTeardownFences(family hostops.HostRecords) (map[string]HostTeardownRemnant, map[string]HostTeardownAttempt, []string) {
+	var nameless []string
 	remnants := decodeReadableRecords[HostTeardownRemnant](family.Remnants)
 	for key, raw := range family.Remnants {
-		if _, readable := remnants[key]; readable {
+		if remnant, readable := remnants[key]; readable {
+			if strings.TrimSpace(remnant.Host) == "" {
+				delete(remnants, key)
+				nameless = append(nameless, key)
+			}
 			continue
 		}
 		var partial struct {
@@ -184,6 +192,7 @@ func decodeTeardownFences(family hostops.HostRecords) (map[string]HostTeardownRe
 			Resolved json.RawMessage `json:"resolved"`
 		}
 		if json.Unmarshal(raw, &partial) != nil || strings.TrimSpace(partial.Host) == "" {
+			nameless = append(nameless, key)
 			continue
 		}
 		if len(partial.Resolved) != 0 && string(partial.Resolved) != "null" {
@@ -191,5 +200,6 @@ func decodeTeardownFences(family hostops.HostRecords) (map[string]HostTeardownRe
 		}
 		remnants[key] = HostTeardownRemnant{Host: partial.Host}
 	}
-	return remnants, decodeReadableRecords[HostTeardownAttempt](family.Attempts)
+	slices.Sort(nameless)
+	return remnants, decodeReadableRecords[HostTeardownAttempt](family.Attempts), nameless
 }

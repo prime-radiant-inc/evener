@@ -19,14 +19,15 @@ import (
 
 // This file owns spec §4's quarantine-custody snapshot: the schema the custody
 // file is written with, the all-or-nothing completeness check that decides
-// whether a corrupt store file may be quarantined at all, and the import set the
-// replacement store opens with. That check is the slice's safety core: custody
-// is written only when the corrupt file parses whole and its record set is
-// accounted for with no gap or residue, so no fence the file carried can be
-// lost. Any shortfall — an unparseable record, a per-host boundary record that
-// fails its schema, ownership missing for a fenced name, an id below the file's
-// own allocator high-water mark with no retained evidence — refuses startup
-// rather than serving past a fence nobody can prove.
+// whether a corrupt store file's names can be carried into the replacement, and
+// the import set the replacement store opens with. The snapshot is complete only
+// when the corrupt file parses whole and its record set is accounted for with no
+// gap or residue. Any shortfall — an unparseable record, a per-host boundary
+// record that fails its schema, ownership missing for a fenced name, an id below
+// the file's own allocator high-water mark with no retained evidence — makes the
+// custody unproven: the file is still set aside, with a custody file marked
+// unproven and no imports, so the hub resumes on an empty store and the health
+// signal says a closed name may not be held.
 //
 // The retired BoundaryEntry vocabulary and the later slices that once owned the
 // verifier, the kill/wait, and `orphan-resolve` were withdrawn with the
@@ -36,11 +37,12 @@ import (
 // carried kind under its stable `quarantineRecordId`, so the `operations` detail
 // filter can address every closed name by record id (no resolver runs).
 
-// ErrQuarantineIncomplete reports a corrupt store file whose custody snapshot
-// cannot be shown complete. Spec §4: "When the corrupt file cannot yield a
-// complete custody snapshot, boot fails startup rather than serving hosts past
-// an unprovable fence." It always accompanies ErrStoreCorrupt, so a caller that
-// classifies store failures sees one class either way.
+// ErrQuarantineIncomplete reports quarantine bookkeeping that cannot be shown
+// complete: a custody file that fails its schema, or an intent or aside file
+// with no custody behind it. A corrupt store file whose own snapshot is
+// incomplete is not this error: it is set aside with an unproven custody file.
+// It always accompanies ErrStoreCorrupt, so a caller that classifies store
+// failures sees one class either way.
 var ErrQuarantineIncomplete = errors.New("hostops: quarantine custody is incomplete")
 
 // custodyFile is §4's custody schema, pinned field-for-field:
@@ -72,6 +74,15 @@ type custodyFile struct {
 	// keeps for its hosts instead of losing them with the operation history. It
 	// is absent when the corrupt file had imported none.
 	HostRecords json.RawMessage `json:"hostRecords,omitempty"`
+	// AllocatorFloor is the id range no store of this lineage issued: the
+	// replacement store records it in its own file, so a later quarantine
+	// accounts for the range after these artifacts are cleaned away. Zero when
+	// no unproven set-aside is in the lineage.
+	AllocatorFloor uint64 `json:"allocatorFloor,omitempty"`
+	// Unproven marks a custody file written for a corrupt store that could not
+	// yield a complete snapshot: it carries no fences or ownership, and the
+	// names the corrupt file had closed are not held.
+	Unproven bool `json:"unproven,omitempty"`
 }
 
 // custodyRecordID is one imported record's identity for the replacement import.
@@ -327,6 +338,7 @@ type custodyDocument struct {
 	Tombstones             *[]tombstoneFile           `json:"tombstones"`
 	CompactionMarks        *[]CompactionMark          `json:"compactionMarks"`
 	CompactionFloor        uint64                     `json:"compactionFloor"`
+	AllocatorFloor         uint64                     `json:"allocatorFloor"`
 	Boundaries             map[string]json.RawMessage `json:"boundaries"`
 	RemovedHosts           map[string]json.RawMessage `json:"removedHosts"`
 	Tokens                 json.RawMessage            `json:"tokens"`
@@ -346,6 +358,27 @@ type custodyDocument struct {
 	HostRecords json.RawMessage `json:"hostRecords"`
 }
 
+// custodyIOError marks a failure to reach the corrupt file's bytes, as opposed
+// to a failure in what they say. The first leaves the file where it is to be
+// retried; only the second can make its custody unproven.
+type custodyIOError struct{ err error }
+
+func (e *custodyIOError) Error() string { return e.err.Error() }
+func (e *custodyIOError) Unwrap() error { return e.err }
+
+// accountedPrefix is the highest id this custody file accounts for without
+// evidence: its floor, its allocator mark, and any id it handed out. A file
+// written before allocatorFloor existed has the last two only.
+func (c custodyFile) accountedPrefix() uint64 {
+	prefix := max(c.AllocatorFloor, c.AllocatorHighWaterMark)
+	for _, row := range c.RecordIDs {
+		if allocated, err := parseAllocatorID(row.RecordID); err == nil {
+			prefix = max(prefix, allocated)
+		}
+	}
+	return prefix
+}
+
 // readStoreForCustody decodes a corrupt store file for the custody snapshot. It
 // keeps the byte-level rules (valid UTF-8, no lone surrogate escape, no key
 // named twice) and the strict decode of everything custody stands on — the
@@ -362,14 +395,14 @@ func readStoreForCustody(fs afero.Fs, path string) (snapshot, error) {
 	// custody artifacts that wedge every later boot.
 	info, err := lstat(fs, path)
 	if err != nil {
-		return snapshot{}, fmt.Errorf("stat corrupt store %s: %w", path, err)
+		return snapshot{}, &custodyIOError{fmt.Errorf("stat corrupt store %s: %w", path, err)}
 	}
 	if err := rejectNonStoreFileKind(path, info); err != nil {
 		return snapshot{}, err
 	}
 	raw, err := afero.ReadFile(fs, path)
 	if err != nil {
-		return snapshot{}, fmt.Errorf("read corrupt store %s: %w", path, err)
+		return snapshot{}, &custodyIOError{fmt.Errorf("read corrupt store %s: %w", path, err)}
 	}
 	if err := checkQuarantineBytes(raw); err != nil {
 		return snapshot{}, fmt.Errorf("%s: %w", path, err)
@@ -425,6 +458,7 @@ func readStoreForCustody(fs afero.Fs, path string) (snapshot, error) {
 		state.CompactionMarks = append([]CompactionMark(nil), (*file.CompactionMarks)...)
 	}
 	state.CompactionFloor = file.CompactionFloor
+	state.AllocatorFloor = file.AllocatorFloor
 	state.Boundaries = make(map[string]Boundary, len(file.Boundaries))
 	state.RemovedHosts = make(map[string]RemovedHost, len(file.RemovedHosts))
 	for name, value := range file.Boundaries {
@@ -479,14 +513,22 @@ func readStoreForCustody(fs afero.Fs, path string) (snapshot, error) {
 // corrupt file's own high-water mark, so a later quarantine can never mint an id
 // an earlier custody file still references: an id-only resolve (§5) must never
 // alias an unrelated record.
+// lineageFloor is the highest allocator floor an unproven set-aside gave this
+// store's lineage (zero when there is none), from the store's own file and the
+// custody files. The store never issued an id at or below it, so those ids are
+// accounted for without evidence.
 // priorImports maps every id an existing custody file already handed out to the
 // entry that carries it. A fence import reusing such an id is refused unless it
 // is the same record identity — the same lineage's repeated fence keeps its
 // original id, while a different record under an earlier custody's id could
 // otherwise be cleared by resolving the older custody's row.
-func custodyFromStore(state snapshot, path string, epoch uint64, now time.Time, floor uint64, priorImports map[string]custodyFence) (custodyFile, error) {
+func custodyFromStore(state snapshot, path string, epoch uint64, now time.Time, floor, lineageFloor uint64, priorImports map[string]custodyFence) (custodyFile, error) {
 	if state.Version != storeVersion {
 		return custodyFile{}, fmt.Errorf("%w: unsupported store version %d", ErrQuarantineIncomplete, state.Version)
+	}
+	if state.AllocatorFloor > state.AllocatorHighWaterMark {
+		return custodyFile{}, fmt.Errorf("%w: allocator floor %d is above the allocator high-water mark %d",
+			ErrQuarantineIncomplete, state.AllocatorFloor, state.AllocatorHighWaterMark)
 	}
 	ids := make(map[uint64]bool, len(state.Records)+len(state.Tombstones))
 	previous := ""
@@ -550,7 +592,28 @@ func custodyFromStore(state snapshot, path string, epoch uint64, now time.Time, 
 	//     compacted, so a gap there is a lost record; and any id above the
 	//     highest visible id — where §4's "truncation that merely omits a record"
 	//     lands — has no evidence at all. Both refuse.
-	missing := state.AllocatorHighWaterMark - uint64(len(ids))
+	//
+	// present counts the ids in [from, to] the file accounts for: the retained
+	// ones, plus every id at or below unprovenFloor, which no store of this
+	// lineage issued.
+	lineageFloor = max(lineageFloor, state.AllocatorFloor)
+	skipped := min(lineageFloor, state.AllocatorHighWaterMark)
+	present := func(from, to uint64) uint64 {
+		if from > to {
+			return 0
+		}
+		var count uint64
+		if from <= skipped {
+			count = min(to, skipped) - from + 1
+		}
+		for allocated := range ids {
+			if allocated >= from && allocated <= to && allocated > skipped {
+				count++
+			}
+		}
+		return count
+	}
+	missing := state.AllocatorHighWaterMark - present(1, state.AllocatorHighWaterMark)
 	if missing > 0 {
 		smallest, haveSmallest := uint64(0), false
 		var maxVisible uint64
@@ -588,19 +651,10 @@ func custodyFromStore(state snapshot, path string, epoch uint64, now time.Time, 
 			return custodyFile{}, fmt.Errorf("%w: %d ids below the allocator high-water mark %d carry no removal evidence",
 				ErrQuarantineIncomplete, missing, state.AllocatorHighWaterMark)
 		}
-		var visibleBelow, visibleInSpan uint64
-		for allocated := range ids {
-			switch {
-			case allocated < smallest:
-				visibleBelow++
-			case allocated <= maxVisible:
-				visibleInSpan++
-			}
-		}
-		missingBelow := smallest - 1 - visibleBelow
+		missingBelow := smallest - 1 - present(1, smallest-1)
 		missingInSpan := uint64(0)
 		if maxVisible >= smallest {
-			missingInSpan = maxVisible - smallest + 1 - visibleInSpan
+			missingInSpan = maxVisible - smallest + 1 - present(smallest, maxVisible)
 		}
 		missingAbove := missing - missingBelow - missingInSpan
 		if missingAbove > 0 {
@@ -704,6 +758,10 @@ func custodyFromStore(state snapshot, path string, epoch uint64, now time.Time, 
 		Fences:                 fences,
 		Ownership:              ownership,
 		HostRecords:            familyRegion,
+		// Every id up to this file's mark, and up to any id an earlier custody
+		// handed out, is either carried into the replacement or deliberately
+		// dropped by it, and none is issued again.
+		AllocatorFloor: max(lineageFloor, state.AllocatorHighWaterMark, floor),
 	})
 }
 
@@ -859,7 +917,7 @@ func readCustodyFile(fs afero.Fs, path, storePath string) (custodyFile, error) {
 		}
 	}
 	for name := range top {
-		if name != "hostRecords" && !slices.Contains(requiredKeys, name) {
+		if name != "hostRecords" && name != "unproven" && name != "allocatorFloor" && !slices.Contains(requiredKeys, name) {
 			return custodyFile{}, fmt.Errorf("%w: %s carries unknown key %q", ErrQuarantineIncomplete, path, name)
 		}
 	}
@@ -903,7 +961,10 @@ func replacementState(custody custodyFile, floor uint64) (snapshot, error) {
 		}
 	}
 	state := snapshot{
-		Version:                storeVersion,
+		Version: storeVersion,
+		// A custody file written before allocatorFloor existed accounts for every
+		// id up to its mark.
+		AllocatorFloor:         custody.accountedPrefix(),
 		AllocatorHighWaterMark: allocated,
 		Records:                records,
 		Boundaries:             map[string]Boundary{},

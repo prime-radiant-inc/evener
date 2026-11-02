@@ -103,6 +103,12 @@ type snapshot struct {
 	Sequence               uint64   `json:"sequence"`
 	AllocatorHighWaterMark uint64   `json:"allocatorHighWaterMark"`
 	Records                []Record `json:"records"`
+	// AllocatorFloor is the highest id this lineage of stores never issued: an
+	// unproven set-aside starts the replacement's allocator above ids the
+	// corrupt file might have issued, and the skipped range is accounted for
+	// by this value, not by any quarantine artifact. Optional on read; zero
+	// means no id range was skipped.
+	AllocatorFloor uint64 `json:"allocatorFloor,omitempty"`
 	// CompactSeq is §4's durable compaction sequence: advanced by every
 	// compacting write, pinned by every minted cursor (§8). Optional on read
 	// for the same reason as Boundaries: the key arrived after the store
@@ -670,6 +676,7 @@ type storeFile struct {
 	// CompactSeq, Tombstones and RemovedHosts are optional on read (see
 	// snapshot's comments): absent and null both decode to the pre-S6 state,
 	// which is "no compacting write yet".
+	AllocatorFloor  uint64                 `json:"allocatorFloor"`
 	CompactSeq      uint64                 `json:"compactSeq"`
 	Tombstones      *[]tombstoneFile       `json:"tombstones"`
 	CompactionMarks *[]CompactionMark      `json:"compactionMarks"`
@@ -976,6 +983,7 @@ func readStoreFS(fs afero.Fs, path string) (snapshot, error) {
 		Sequence:               *file.Sequence,
 		AllocatorHighWaterMark: *file.AllocatorHighWaterMark,
 		Records:                records,
+		AllocatorFloor:         file.AllocatorFloor,
 		CompactSeq:             file.CompactSeq,
 		Boundaries:             file.Boundaries,
 		RemovedHosts:           file.RemovedHosts,
@@ -1315,7 +1323,7 @@ var (
 var ownedObjectKeys = map[string]map[string]struct{}{
 	"": keysOf("version", "sequence", "allocatorHighWaterMark", "records", "boundaries",
 		"tokens", "probeEpochs", "probeEpochSeq", "guardEpoch", "wallClockHighWaterMark",
-		"compactSeq", "tombstones", "compactionMarks", "compactionFloor", "removedHosts",
+		"compactSeq", "tombstones", "compactionMarks", "compactionFloor", "allocatorFloor", "removedHosts",
 		"pendingCompensation", "fencingQuarantines", "hostRecords"),
 	"records[]": keysOf("id", "clientOperationId", "host", "kind", "state", "generation",
 		"incarnationId", "fencingEpoch", "orphanBoundary", "orphanResolved", "attestation",
@@ -1743,6 +1751,10 @@ func validateSnapshot(state snapshot) error {
 			return fmt.Errorf("%w: compaction seq %d is carried by more than one mark", ErrInvalidRecord, mark.Seq)
 		}
 		markSeqs[mark.Seq] = struct{}{}
+	}
+	if state.AllocatorFloor > state.AllocatorHighWaterMark {
+		return fmt.Errorf("%w: allocator floor %d is above the allocator high-water mark %d",
+			ErrInvalidRecord, state.AllocatorFloor, state.AllocatorHighWaterMark)
 	}
 	if state.CompactionFloor > state.CompactSeq {
 		return fmt.Errorf("%w: compaction floor %d is above the store's compactSeq %d",
