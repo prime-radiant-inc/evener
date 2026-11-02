@@ -294,6 +294,37 @@ describe("MutationOutboxIndexedDB cancellation", () => {
     storage.close();
   });
 
+  // Whole-endpoint review M1: a legacy row that reaches this build with no
+  // capture field survives a Stop for one of two reasons. A PROVABLY
+  // unattempted row was never crossed (any crossing would have canceled it
+  // while unattempted), so the current epoch IS its birth epoch. An EVIDENCED
+  // row survived because the scan SKIPS attempted rows, not because no Stop
+  // crossed - and a pre-#936 row without the attempted field is unknown
+  // evidence of the same kind. The current-epoch initialization must apply
+  // only to the provably unattempted shape: an evidenced or unknown-evidence
+  // row keeps the conservative zero baseline, so the fence trips on any
+  // historical Stop and the row parks delivery-uncertain instead of
+  // redispatching input a Stop already cancelled.
+  test.each([
+    ["evidenced", ["stopEpochAtEnqueue"]],
+    ["unknown evidence", ["attempted", "unresolvedAttempts", "stopEpochAtEnqueue"]],
+  ] as const)("a legacy %s row without a capture never redispatches past a historical Stop", async (shape, fields) => {
+    const storage = store();
+    const record = await storage.enqueueIntent(intent("legacy pre-fence row"));
+    // Evidence first, so the Stop's own cancel scan skips the row: the
+    // row crosses the Stop as evidenced work.
+    expect(await storage.markAttempted(record.clientMutationId)).toBe(true);
+    await storage.enqueueInterruptAndCancel(interruptIntent());
+    // The row reaches this build as a pre-capture legacy row of this shape.
+    await rewriteOutboxRowWithoutFields(indexedDB, databaseName, record.clientMutationId, [...fields]);
+    // A second tab's mark on the same row: the choke-point fence must
+    // refuse it against the historical Stop.
+    expect(await storage.markAttempted(record.clientMutationId)).toBe(false);
+    const parked = await storage.getOutbox(record.clientMutationId);
+    expect(parked).toMatchObject({ state: "blockedUnknown", stopFenced: true });
+    storage.close();
+  });
+
   test("a settled newer note save discards the canceled note rows it supersedes", async () => {
     const storage = store();
     const superseded = await storage.enqueueIntent(noteIntent("the stop-canceled note"));

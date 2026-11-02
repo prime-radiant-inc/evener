@@ -976,20 +976,31 @@ export class MutationOutboxIndexedDB implements WebQueuedMessageStorage<Mutation
       // reads the whole small sequence store in the same event delivery.
       const evidenced = record.attempted === true || priorUnresolvedAttempts(record) > 0;
       const rolledBack = record.unresolvedAttempts !== undefined;
-      if (evidenced || rolledBack || record.stopEpochAtEnqueue === undefined) {
+      const legacyCapture = record.stopEpochAtEnqueue === undefined;
+      // Survival proves a missing capture's birth epoch only for a row with
+      // NO attempt evidence: a provably unattempted row - attempted === false
+      // with no unresolved-attempt count - that lived through every Stop's
+      // cancel scan was necessarily never crossed, because any crossing
+      // would have canceled it while unattempted. An EVIDENCED row
+      // (attempted, or a live unresolved count) survived because the scan
+      // SKIPS attempted rows, not because no Stop crossed, and a row from
+      // before the attempted field existed is unknown evidence of the same
+      // kind. Those rows keep the conservative ZERO baseline instead of the
+      // current-epoch initialization: initializing to now would absorb every
+      // historical Stop and let this gate redispatch input a Stop already
+      // cancelled, while zero trips the fence on any historical Stop and
+      // parks them delivery-uncertain, never redispatched. For the provably
+      // unattempted row the epoch as it stands IS the epoch it was born at:
+      // initialize the capture here, one-time, and the fence compares
+      // against the birth epoch instead of an inherited zero. A row's stored
+      // capture never moves again after this write.
+      const provablyUnattempted = record.attempted === false && record.unresolvedAttempts === undefined;
+      const uncertainEvidence = evidenced || (legacyCapture && !provablyUnattempted);
+      if (evidenced || rolledBack || legacyCapture) {
         const sequences = await requestResult<TargetSequence[]>(transaction.objectStore(SEQUENCE_STORE).getAll());
         const epochOf = (ref: string) => sequences.find((sequence) => sequence.targetRef === ref)?.stopEpoch ?? 0;
-        // A row from before the capture field existed (persisted untouched
-        // through every later schema version) proves by survival, at its
-        // first mark, that no Stop's cancel scan has run since its birth -
-        // any bump would have canceled it while unattempted - so the epoch
-        // as it stands IS the epoch it was born at: initialize the capture
-        // here, and the fence compares against the birth epoch instead of an
-        // inherited zero a historical Stop trips. This is a missing capture's
-        // one-time initialization, not a refresh: a row's stored capture
-        // never moves again after this write.
         const stopEpochAtEnqueue =
-          record.stopEpochAtEnqueue === undefined ? epochOf(record.targetRef) : record.stopEpochAtEnqueue;
+          legacyCapture && provablyUnattempted ? epochOf(record.targetRef) : (record.stopEpochAtEnqueue ?? 0);
         if (
           await this.#fenceCrossedSinceEnqueue(
             transaction,
@@ -1015,7 +1026,7 @@ export class MutationOutboxIndexedDB implements WebQueuedMessageStorage<Mutation
           // it (the liveness semantics live at nextDispatchable).
           await requestResult(
             store.put(
-              evidenced
+              uncertainEvidence
                 ? {
                     ...record,
                     state: "blockedUnknown",
@@ -1250,6 +1261,29 @@ export class MutationOutboxIndexedDB implements WebQueuedMessageStorage<Mutation
           transaction.objectStore(RECOVERY_STORE).get(clientMutationId),
         );
         if (existingRecovery && (existingRecovery.compositionRevision ?? 0) > 0) return undefined;
+        // The wire coalesce: terminal refusals can arrive for BOTH halves of
+        // a superseded wire pair - the original key and its minted
+        // replacement carrying the inherited wire id - and transfers keyed
+        // on the storage key alone would leave two independent sendable
+        // copies of the SAME wire mutation, whose separate resends assign
+        // independent wire ids and can submit the composition twice. When
+        // the transfer's effective wire id already has a live recovery copy,
+        // the refused row still leaves the outbox but no second copy is
+        // created - the existing copy is the composition's one recovery.
+        // Nothing here replaces a recovery record, so an independently
+        // edited composition keeps the compositionRevision guard's existing
+        // protection.
+        const recoveries = await requestResult<VersionedMutationRecoveryRecord[]>(
+          transaction.objectStore(RECOVERY_STORE).getAll(),
+        );
+        const wireCopy = recoveries.find(
+          (existing) =>
+            existing.clientMutationId !== clientMutationId && effectiveWireId(existing) === effectiveWireId(record),
+        );
+        if (wireCopy) {
+          await requestResult(outbox.delete(clientMutationId));
+          return wireCopy;
+        }
       }
       const recovery: VersionedMutationRecoveryRecord = {
         ...record,
@@ -1437,6 +1471,11 @@ export class MutationOutboxIndexedDB implements WebQueuedMessageStorage<Mutation
         // A preserve that does not name a new owner keeps the preserved row
         // findable by the seat that authored its base composition.
         compositionOwnerId: compositionOwnerId ?? base.compositionOwnerId,
+        // The displayed-session association is part of the composition: a
+        // retargeted recovery's preserved replacement keeps the displayed
+        // ref, or the displayed session's tray - which matches recoveries by
+        // displayedRef - loses the composition after any reload.
+        ...(base.displayedRef === undefined ? {} : { displayedRef: base.displayedRef }),
         localDraftRevisionId,
         state: "submitting",
         attempted: false,

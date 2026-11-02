@@ -626,6 +626,60 @@ test("preserveRecoveryComposition writes a fresh owner with image bytes", async 
   expect(await reopened.getRecovery(fresh?.clientMutationId ?? "")).toMatchObject({ payload: { input } });
 });
 
+// Whole-endpoint review M2: a retargeted editing recovery's displayed-session
+// association is part of the composition the preserve must carry. The
+// preserved replacement row keeps base.displayedRef, or the preserved
+// composition - attachment bytes included - vanishes from the displayed
+// session's tray after reload: the displayedRef-matching persistence reads
+// can no longer find it.
+test("preserveRecoveryComposition keeps the displayed-session association of a retargeted recovery", async () => {
+  const f = fixture();
+  const input: InputItem[] = [{ type: "text", text: "retargeted composition" }];
+  const seed = await f.storage.enqueueIntent({
+    targetRef: "local:queued",
+    threadId: "thread",
+    method: "turn/start",
+    payload: { ref: "local:queued", input },
+    attachments: [],
+    optimisticDisplay: { method: "turn/start", input },
+  });
+  await f.storage.transferToRecovery(seed.clientMutationId, "rejected");
+  await f.storage.retargetOutbox("local:queued", "local:resumed", { threadId: "thread-resumed" });
+  const sent = await f.storage.resendRecoveryResult(
+    seed.clientMutationId,
+    {
+      targetRef: "local:resumed",
+      threadId: "thread-resumed",
+      method: "turn/start",
+      payload: { ref: "local:resumed", input },
+      attachments: [],
+      optimisticDisplay: { method: "turn/start", input },
+    },
+    undefined,
+    undefined,
+    undefined,
+    { stopEpoch: 0, displayedRef: "local:queued" },
+  );
+  if (sent.status !== "sent") throw new Error(`resend did not send: ${sent.status}`);
+  // The retargeted editing recovery the displayed session's tray holds.
+  const original = await f.storage.transferToRecovery(sent.record.clientMutationId, "editing");
+  if (!original || original.displayedRef !== "local:queued") throw new Error("missing retargeted recovery");
+  const fresh = await f.storage.preserveRecoveryComposition(
+    original,
+    input,
+    [],
+    "retargeted composition",
+    [],
+    "pane-owner",
+  );
+  // The preserved replacement keeps the displayed-session association...
+  expect(fresh).toMatchObject({ displayedRef: "local:queued", targetRef: "local:resumed" });
+  // ...so the displayed session's tray still finds it after a reload.
+  const reopened = await f.reopen();
+  const displayed = await reopened.listRecoveryDisplayedAt("local:queued");
+  expect(displayed.map((record) => record.clientMutationId)).toContain(fresh?.clientMutationId);
+});
+
 test("preserveRecoveryComposition reuses a row that already holds the composition", async () => {
   const f = fixture();
   const outbox = await f.storage.enqueueIntent(queuedIntent());

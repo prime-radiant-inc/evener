@@ -531,6 +531,58 @@ export function describeWebQueuedMessageStorage(name: string, create: () => WebQ
       expect(await f.storage.getOutbox(older.clientMutationId)).toBeUndefined();
     });
 
+    // Whole-endpoint review M3: terminal refusals can arrive for BOTH
+    // halves of a superseded wire pair - the original (key A) and its minted
+    // replacement (key B carrying the inherited wire id A). Transfers keyed
+    // on the storage key would leave two independent sendable copies of the
+    // SAME wire mutation in recovery, and resending both assigns independent
+    // wire ids - the composition could submit twice. A terminal transfer
+    // whose effective wire id already has a live recovery copy coalesces:
+    // no second copy is created, and nothing here ever replaces a recovery
+    // record, so an independently edited composition keeps the
+    // compositionRevision guard's existing protection.
+    test("terminalRefusalsOfAWirePairCoalesceIntoOneRecoveryCopy", async () => {
+      const f = create();
+      const original = await f.storage.enqueueIntent(queuedIntent());
+      await f.storage.markAttempted(original.clientMutationId);
+      await f.storage.markUnknown(original.clientMutationId, "blockedUnknown");
+      const capture = await f.storage.getOutboxWithStopEpoch(original.clientMutationId);
+      const fresh = await f.storage.mintRetryFromRow(original.clientMutationId, capture);
+      if (!fresh) throw new Error("mint refused");
+      expect(await f.storage.transferToRecovery(original.clientMutationId, "rejected", "refused")).toBeDefined();
+      // The replacement's own later terminal refusal coalesces into the
+      // original's copy: no second sendable recovery row exists, and the
+      // refused row leaves the outbox either way.
+      const coalesced = await f.storage.transferToRecovery(fresh.clientMutationId, "rejected", "refused again");
+      expect(coalesced?.clientMutationId).toBe(original.clientMutationId);
+      expect(await f.storage.getRecovery(fresh.clientMutationId)).toBeUndefined();
+      expect(await f.storage.getOutbox(fresh.clientMutationId)).toBeUndefined();
+      expect(await f.storage.getRecovery(original.clientMutationId)).toMatchObject({
+        recoveryKind: "rejected",
+      });
+    });
+
+    // The same coalesce in the other order: the replacement's refusal lands
+    // first, and the original's own late refusal must not spawn a second
+    // sendable copy either.
+    test("terminalRefusalsOfAWirePairCoalesceInEitherOrder", async () => {
+      const f = create();
+      const original = await f.storage.enqueueIntent(queuedIntent());
+      await f.storage.markAttempted(original.clientMutationId);
+      await f.storage.markUnknown(original.clientMutationId, "blockedUnknown");
+      const capture = await f.storage.getOutboxWithStopEpoch(original.clientMutationId);
+      const fresh = await f.storage.mintRetryFromRow(original.clientMutationId, capture);
+      if (!fresh) throw new Error("mint refused");
+      expect(await f.storage.transferToRecovery(fresh.clientMutationId, "rejected", "refused")).toBeDefined();
+      const coalesced = await f.storage.transferToRecovery(original.clientMutationId, "rejected", "refused late");
+      expect(coalesced?.clientMutationId).toBe(fresh.clientMutationId);
+      expect(await f.storage.getRecovery(original.clientMutationId)).toBeUndefined();
+      expect(await f.storage.getOutbox(original.clientMutationId)).toBeUndefined();
+      expect(await f.storage.getRecovery(fresh.clientMutationId)).toMatchObject({
+        recoveryKind: "rejected",
+      });
+    });
+
     test("aMintCrossedByANewerStopCommitsBornCanceled", async () => {
       const f = create();
       const original = await f.storage.enqueueIntent(queuedIntent());
