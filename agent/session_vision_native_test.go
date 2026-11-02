@@ -2,10 +2,12 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -965,4 +967,79 @@ func visionModelOf(reqs []llm.Request) string {
 		return ""
 	}
 	return reqs[0].Model
+}
+
+// visionWarningMessages collects every warning message emitted while f runs.
+func visionWarningMessages(sess *Session, f func()) []string {
+	var msgs []string
+	done := make(chan struct{})
+	sess.ConsumeEventsLossless(func(ev events.SessionEvent) {
+		if w, ok := ev.Data.(events.WarningData); ok {
+			msgs = append(msgs, w.Message)
+		}
+	}, func() { close(done) })
+	f()
+	sess.Close()
+	<-done
+	return msgs
+}
+
+// A typed provider failure must disclose its cause: the provider's own message
+// (the same text the main path shows verbatim) reaches the warning diagnostic,
+// so a vision failure is diagnosable from the transcript instead of reading
+// only "unavailable".
+func TestDescribeImage_ProviderFailureWarningCarriesTheProviderCause(t *testing.T) {
+	t.Parallel()
+	openai := &fakeErrAdapter{name: "openai", steps: []func(req llm.Request) (llm.Response, error){
+		func(req llm.Request) (llm.Response, error) {
+			return llm.Response{}, visionRouteError("openai")
+		},
+	}}
+	sess := newSession(t, withAdapter(openai), withProfile(NewOpenAIProfile("m")),
+		withConfig(SessionConfig{VisionModel: "openai/vision-m"}))
+
+	var result visionSideChannelResult
+	msgs := visionWarningMessages(sess, func() {
+		result = sess.describeImageCall(context.Background(), visionImageResult())
+	})
+	if result.outcome != visionSideChannelProviderFailure {
+		t.Fatalf("outcome = %v, want provider failure", result.outcome)
+	}
+	if !slices.ContainsFunc(msgs, func(m string) bool {
+		return strings.Contains(m, "vision route exploded")
+	}) {
+		t.Fatalf("warning messages = %q, want one carrying the provider's own failure text", msgs)
+	}
+	if !strings.Contains(result.failureCause, "vision route exploded") {
+		t.Fatalf("failureCause = %q, want it to carry the provider's failure text", result.failureCause)
+	}
+}
+
+// An untyped error keeps the sanitized shape: request URLs and transport
+// details an arbitrary error may carry must not reach the warning.
+func TestDescribeImage_UntypedFailureWarningStaysSanitized(t *testing.T) {
+	t.Parallel()
+	openai := &fakeErrAdapter{name: "openai", steps: []func(req llm.Request) (llm.Response, error){
+		func(req llm.Request) (llm.Response, error) {
+			return llm.Response{}, errors.New("dial https://request.example/secret failed")
+		},
+	}}
+	sess := newSession(t, withAdapter(openai), withProfile(NewOpenAIProfile("m")),
+		withConfig(SessionConfig{VisionModel: "openai/vision-m"}))
+
+	var result visionSideChannelResult
+	msgs := visionWarningMessages(sess, func() {
+		result = sess.describeImageCall(context.Background(), visionImageResult())
+	})
+	if result.outcome != visionSideChannelProviderFailure {
+		t.Fatalf("outcome = %v, want provider failure", result.outcome)
+	}
+	if result.failureCause != "" {
+		t.Fatalf("failureCause = %q, want empty for an untyped error", result.failureCause)
+	}
+	if slices.ContainsFunc(msgs, func(m string) bool {
+		return strings.Contains(m, "request.example")
+	}) {
+		t.Fatalf("warning messages = %q, want the untyped error's details kept out", msgs)
+	}
 }

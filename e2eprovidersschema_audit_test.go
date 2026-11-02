@@ -72,6 +72,66 @@ func scriptProvidersTOML(t *testing.T, path string) string {
 	return ""
 }
 
+// TestE2EScriptsPinProvidersConfig keeps each disposable-hub script immune to
+// an ambient EVENER_PROVIDERS_CONFIG: e2e_isolate_home unsets it, but the hub
+// then finds the script's providers.toml only through the HOME-derived
+// default path, so a value re-exported by a wrapper (or a future change to the
+// isolation) leaves the disposable hub with no providers while every
+// liveness check still passes — exactly the silent failure #4411 shaped this
+// file around. Each script that writes an isolated providers.toml and starts
+// a hub must export EVENER_PROVIDERS_CONFIG naming that same file between the
+// two.
+func TestE2EScriptsPinProvidersConfig(t *testing.T) {
+	for _, tc := range []struct {
+		name, source, writeLine string
+	}{
+		{
+			name: "webui-turn-controls", source: e2eTurnControlsScript,
+			writeLine: providersHeredocOpen,
+		},
+		{
+			name: "ratelimited-provider", source: "scripts/e2e/e2e-ratelimited-provider.sh",
+			writeLine: `sed "s|FAKE429_ADDR|$fake429_addr|" "$fixtures_dir/providers.toml" >"$HOME/.config/evener/providers.toml"`,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			body, err := os.ReadFile(tc.source)
+			if err != nil {
+				t.Fatalf("read %s: %v", tc.source, err)
+			}
+			lines := strings.Split(string(body), "\n")
+			writeAt, hubAt, exportAt := -1, -1, -1
+			for i, line := range lines {
+				trimmed := strings.TrimSpace(line)
+				if writeAt < 0 && trimmed == tc.writeLine {
+					writeAt = i
+					continue
+				}
+				if exportAt < 0 && trimmed == `export EVENER_PROVIDERS_CONFIG="$HOME/.config/evener/providers.toml"` {
+					exportAt = i
+					continue
+				}
+				if hubAt < 0 && strings.Contains(line, `"$run/evener" hub`) {
+					hubAt = i
+				}
+			}
+			if writeAt < 0 {
+				t.Fatalf("%s no longer writes its providers.toml on the line this audit matches", tc.source)
+			}
+			if hubAt < 0 {
+				t.Fatalf("%s no longer starts its hub via \"$run/evener\" hub", tc.source)
+			}
+			if exportAt < 0 {
+				t.Fatalf("%s never exports EVENER_PROVIDERS_CONFIG at the isolated providers.toml path", tc.source)
+			}
+			if !(writeAt < exportAt && exportAt < hubAt) {
+				t.Fatalf("%s must export EVENER_PROVIDERS_CONFIG between the providers.toml write (line %d) and the hub start (line %d); found at line %d",
+					tc.source, writeAt+1, hubAt+1, exportAt+1)
+			}
+		})
+	}
+}
+
 // TestE2EProvidersSchema keeps both hand-written configs parseable by the
 // registry the hub loads them with, and their fake instances resolvable.
 func TestE2EProvidersSchema(t *testing.T) {

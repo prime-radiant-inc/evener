@@ -140,6 +140,13 @@ anyway — an annotation and the doc generated from it are one change, and a
 commit that carries only half of it leaves `HEAD` in the state the gate
 exists to refuse.
 
+The same coupling covers a non-obvious input: a **doc comment on a wire type
+in `appwire/*.go`** (say, a field comment on `EvenerThread`) changes
+`appwire-client/typescript/types.gen.ts`, because the generated TypeScript
+carries those comments. Editing only the Go comment leaves the generated file
+stale and fails `lint-generated`; run `make generate` after any comment or
+field change on a wire type and commit the regenerated file with it.
+
 ## The golangci-lint cross-checkout cache hazard (issue #290)
 
 A content-identical checkout of this repo at a second path — a git worktree,

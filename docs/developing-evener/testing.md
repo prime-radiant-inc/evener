@@ -511,6 +511,18 @@ sanity functions; their deterministic replay, and all other fuzz coverage, is
 owned and run by `make fuzz`. Ordinary `make test` keeps the root wave in short
 mode unless `ROOT_FULL=1` is set.
 
+The gate scripts pass `-count=1` deliberately (`scripts/gate/run-module-tests.sh`
+behind `make test`, plus the timing, fuzz and coverage scripts): a gate's evidence
+is fresh execution, and Go's per-package test cache would otherwise replay a
+previous result. A new *local* convenience target must not copy that flag:
+`-count=1` throws the cache away and turns every warm re-run into a full run.
+The test cache is Go's only changed-only mechanism (there is no `--changed`
+flag), and it invalidates a package on any input change, `testdata` fixtures
+included. Caching and scope solve different halves of local latency, too: a
+fully cached run still pays to link and start each package's test binary, so a
+warm run of a broad scope stays slow — measure both halves before concluding
+which one a slowness comes from.
+
 CI runs the web check as two lanes on separate runners, web-unit (`make
 test-web`) and web-browser (`make test-web-browser`), and the required `web` job
 passes only when both do. The deterministic Go check runs the same way: `tests /

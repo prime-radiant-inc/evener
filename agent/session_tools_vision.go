@@ -49,6 +49,10 @@ type visionSideChannelResult struct {
 	elapsed     time.Duration
 	usage       llm.Usage
 	outcome     visionSideChannelOutcome
+	// failureCause carries a typed provider failure's own rendering (provider,
+	// status, the provider's message, hint) for the steering and warning. Empty
+	// for untyped errors, whose transport details stay undisclosed.
+	failureCause string
 }
 
 // describeImage makes a side-channel API call with no tools to describe an image
@@ -93,13 +97,43 @@ func visionUnavailableSteering(path string) string {
 
 func visionFailureSteering(path string, result visionSideChannelResult) string {
 	if result.outcome == visionSideChannelProviderFailure {
-		if path == "" {
-			return "Vision is unavailable because the vision provider failed. Use OCR or inspect the source data, or continue without vision."
+		cause := ""
+		if result.failureCause != "" {
+			cause = " (" + result.failureCause + ")"
 		}
-		return fmt.Sprintf("Vision is unavailable for %s because the vision provider failed. Use OCR or inspect the source data, or continue without vision.", strconv.Quote(path))
+		if path == "" {
+			return "Vision is unavailable because the vision provider failed" + cause + ". Use OCR or inspect the source data, or continue without vision."
+		}
+		return fmt.Sprintf("Vision is unavailable for %s because the vision provider failed%s. Use OCR or inspect the source data, or continue without vision.", strconv.Quote(path), cause)
 	}
 	return visionUnavailableSteering(path)
 }
+
+// visionFailureCause extracts the diagnosable cause of a vision side-channel
+// failure from a typed llm.Error only. Its rendering carries the provider's
+// name, status and its own failure text — the same disclosure the main
+// generation path makes — so a vision failure is diagnosable from steering
+// and diagnostics. An untyped error yields "": arbitrary transport errors can
+// carry request URLs or credentials, and those stay suppressed.
+func visionFailureCause(err error) string {
+	var le llm.Error
+	if !errors.As(err, &le) {
+		return ""
+	}
+	cause := strings.TrimSpace(le.Error())
+	if cause == "" {
+		return ""
+	}
+	if len(cause) > visionFailureCauseLimit {
+		// Drop a possibly split trailing rune rather than emit invalid UTF-8.
+		cause = strings.ToValidUTF8(cause[:visionFailureCauseLimit], "") + " …"
+	}
+	return cause
+}
+
+// visionFailureCauseLimit bounds the cause text in steering and warnings;
+// provider messages can embed long bodies.
+const visionFailureCauseLimit = 256
 
 func formatVisionSideChannelStats(result visionSideChannelResult) string {
 	stats := visionSideChannelStats{
@@ -434,10 +468,20 @@ func (s *Session) describeImageCall(ctx context.Context, r tool.ExecResult) visi
 			outcome = visionSideChannelOwnedTimeout
 		}
 		if outcome != visionSideChannelParentCanceled {
-			// Provider errors can contain request URLs, bodies, IDs, or credentials.
-			// The user-facing steering below is deliberately sanitized, so keep the
-			// warning sanitized too rather than reintroducing the raw adapter error.
-			s.emit(events.WarningData{Message: "vision side-channel unavailable"})
+			// An untyped error can contain request URLs, bodies, IDs, or credentials,
+			// so it stays fully suppressed. A typed provider error's rendering is the
+			// same disclosure the main path makes, and it is what makes a vision
+			// failure diagnosable, so it reaches the warning.
+			cause := ""
+			if outcome == visionSideChannelProviderFailure {
+				cause = visionFailureCause(err)
+			}
+			warning := "vision side-channel unavailable"
+			if cause != "" {
+				warning += ": " + cause
+			}
+			s.emit(events.WarningData{Message: warning})
+			return visionSideChannelResult{elapsed: elapsed, outcome: outcome, failureCause: cause}
 		}
 		return visionSideChannelResult{elapsed: elapsed, outcome: outcome}
 	}
