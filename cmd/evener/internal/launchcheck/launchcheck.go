@@ -28,24 +28,6 @@ var launchCheckLoadClient = cmdutil.LoadClient
 // instance, not per command, so a slow endpoint costs only its own budget.
 const launchCheckListTimeout = llm.LiveModelListTimeout
 
-type launchCheckModel struct {
-	Provider string `json:"provider"`
-	Model    string `json:"model"`
-	// Warnings carries the resolved row's registry notes so the hub picker can
-	// flag rows the resolver itself warns about (e.g. a global-only model under
-	// a regional Vertex location).
-	Warnings []string `json:"warnings,omitempty"`
-	// The hub decodes this contract directly into appwire.ModelDescriptor,
-	// whose wire field is camelCase (cmd/evener-hub/spawn.go resolves the
-	// launch model list). This is that fixed AppWire JSON contract, not a
-	// local naming choice.
-	InstanceDefault bool `json:"instanceDefault,omitempty"` //nolint:tagliatelle // matches appwire.ModelDescriptor's camelCase wire contract
-	// The resolved row's effort facts, so the composer offers the model's own
-	// levels rather than a generic fallback ladder.
-	ReasoningEffortLevels []string `json:"reasoningEffortLevels,omitempty"` //nolint:tagliatelle // matches appwire.ModelDescriptor's camelCase wire contract
-	SupportsReasoning     *bool    `json:"supportsReasoning,omitempty"`     //nolint:tagliatelle // matches appwire.ModelDescriptor's camelCase wire contract
-}
-
 // supportedLaunchFlags advertises the serve/run flags this binary accepts
 // that a launcher (the hub) passes on the command line. Keep in sync with
 // the flag definitions in cmd/evener's run/serve commands: a launcher gates
@@ -58,12 +40,16 @@ type launchCheckResponse struct {
 	// binary predating a flag omits it, which is itself the signal a
 	// launcher needs to reject the pairing up front instead of dying on an
 	// unknown flag at spawn time.
-	LaunchFlags []string                      `json:"launch_flags,omitempty"`
-	Version     string                        `json:"version"`
-	Protocol    string                        `json:"protocol"`
-	Provider    string                        `json:"provider,omitempty"`
-	Model       string                        `json:"model,omitempty"`
-	Models      []launchCheckModel            `json:"models,omitempty"`
+	LaunchFlags []string `json:"launch_flags,omitempty"`
+	Version     string   `json:"version"`
+	Protocol    string   `json:"protocol"`
+	Provider    string   `json:"provider,omitempty"`
+	Model       string   `json:"model,omitempty"`
+	// The model rows are appwire.ModelDescriptor wholesale: a capability the
+	// resolved row states reaches the composer with no synchronized edit here,
+	// and the hub decodes the contract into the same type (the fields are
+	// additive, omitempty and skew-safe across hub/child versions).
+	Models      []appwire.ModelDescriptor     `json:"models,omitempty"`
 	Diagnostics []appwire.ModelListDiagnostic `json:"diagnostics,omitempty"`
 }
 
@@ -155,12 +141,12 @@ func validateLaunchCheckProfile(ref cmdutil.ModelRef) error {
 // instance is listed on its own, under its own timeout, so one unreachable
 // endpoint reports a diagnostic instead of hiding the rest or starving every
 // instance after it.
-func launchCheckModels() ([]launchCheckModel, []appwire.ModelListDiagnostic, error) {
+func launchCheckModels() ([]appwire.ModelDescriptor, []appwire.ModelListDiagnostic, error) {
 	client, err := launchCheckLoadClient("")
 	if err != nil {
 		return nil, nil, err
 	}
-	out := []launchCheckModel{}
+	out := []appwire.ModelDescriptor{}
 	diagnostics := []appwire.ModelListDiagnostic{}
 	for _, inst := range client.Registry().Instances() {
 		if inst.Hidden {
@@ -211,16 +197,15 @@ func launchCheckModels() ([]launchCheckModel, []appwire.ModelListDiagnostic, err
 // live-descriptor path cannot state different facts about the same model. The
 // reasoning capability rides only when the row states one; an unstated
 // capability stays absent so the composer's fallback ladder still applies.
-func launchCheckModelRow(provider, modelID string, res registry.Resolved, instanceDefault bool) launchCheckModel {
+func launchCheckModelRow(provider, modelID string, res registry.Resolved, instanceDefault bool) appwire.ModelDescriptor {
 	d := cmdutil.ModelDescriptorFromResolved(res)
-	return launchCheckModel{
-		Provider:              provider,
-		Model:                 modelID,
-		Warnings:              d.Warnings,
-		InstanceDefault:       instanceDefault,
-		ReasoningEffortLevels: d.ReasoningEffortLevels,
-		SupportsReasoning:     d.SupportsReasoning,
-	}
+	// The identity fields name the instance and row exactly as the caller
+	// listed them; the rest of the descriptor is the resolved row's own wire
+	// view, carried wholesale.
+	d.Provider = provider
+	d.Model = modelID
+	d.InstanceDefault = instanceDefault
+	return d
 }
 
 func launchCheckModelDiagnostic(provider string, err error) appwire.ModelListDiagnostic {
