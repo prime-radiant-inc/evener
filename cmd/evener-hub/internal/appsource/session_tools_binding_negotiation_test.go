@@ -672,6 +672,26 @@ func TestManagerQueueInputAwaitsStaleBindingRedial(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("first binding did not identify its relay connection")
 	}
+	// The relay's read loop observes a closed transport asynchronously, and
+	// the dialer publishes its entry before the connection is even installed,
+	// so "serving state unknown" alone cannot distinguish a registered
+	// disconnection from a dial that has not finished. Wait for the first
+	// connection to be live first, so that after the close, unknown can only
+	// mean the disconnection was actually observed.
+	ref, err := appwire.ParseRef("local:thread")
+	if err != nil {
+		t.Fatal(err)
+	}
+	liveDeadline := time.Now().Add(5 * time.Second)
+	for {
+		if _, known := source.SessionToolsSupported(ref); known {
+			break
+		}
+		if time.Now().After(liveDeadline) {
+			t.Fatal("first relay connection never became live")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
 
 	// The relay's daemon connection drops. The daemon cancels the binding it
 	// carried; the map still holds the old binding until the re-dial replaces
@@ -683,10 +703,6 @@ func TestManagerQueueInputAwaitsStaleBindingRedial(t *testing.T) {
 	// Wait for the disconnection to register on the session before queuing:
 	// the scenario under test is input arriving once reconnection is
 	// pending, and the ref's serving state is the observable for that.
-	ref, err := appwire.ParseRef("local:thread")
-	if err != nil {
-		t.Fatal(err)
-	}
 	disconnectionDeadline := time.Now().Add(5 * time.Second)
 	for {
 		if _, known := source.SessionToolsSupported(ref); !known {
