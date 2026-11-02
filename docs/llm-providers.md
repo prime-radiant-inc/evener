@@ -547,9 +547,9 @@ context_window    = 1048576
 max_output_tokens = 131072
 effort_values     = ["high", "max"]      # implies the effort control
 default_effort    = "high"               # what it runs at with nothing configured
+thinking_format   = "zai"
 [providers.work.models."deepseek-4.1-flash"]
 protocol          = "openai-chat"        # pin this one row to /chat/completions when the gateway's /responses rejects it
-thinking_format   = "zai"
 
 [providers.local]
 base     = "openai-compatible"           # protocol-only pseudo-provider
