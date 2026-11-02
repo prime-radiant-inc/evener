@@ -47,6 +47,7 @@ import {
   hydrateThread,
   type InputAttachment,
   invalidateHistory,
+  isSessionRecoveryCanceled,
   isStaleCursorError,
   issueLatestWindowRead,
   isTranscriptHistoryFailedError,
@@ -55,6 +56,7 @@ import {
   mutationErrorData,
   notificationRoutingKey,
   pruneBackgroundHistoryBodies,
+  recoveryEpochFromError,
   resolvePendingEscalation,
   SHUT_DOWN_STATUSES,
   type ThreadSubscriptionLease,
@@ -2590,6 +2592,27 @@ export async function readMutationPersistence(targetRef?: string): Promise<Mutat
 }
 
 const userIntentStopGenerations = new Map<string, number>();
+
+// Per ref, the session's hub-owned recovery epoch as of its latest
+// thread/read: it advances on every confirmed Stop, from any client or
+// device. A parked-state resume carries the value its drive started under,
+// and the hub refuses the resume when a newer Stop advanced it - the only
+// witness of a foreign Stop during this page's backoff, since neither the
+// page's Stop generations nor its IndexedDB epochs record one.
+const recoveryEpochs = new Map<string, number>();
+
+// recoveryEpochOf reads the epoch a resume issued now should expect: the
+// value the latest thread/read carried, or undefined when none has read it.
+function recoveryEpochOf(ref: string): number | undefined {
+  return recoveryEpochs.get(ref);
+}
+
+// noteRecoveryEpoch refreshes a ref's parked-state fence from every thread/read
+// response the store consumes: the hub-owned epoch advances on Stops from any
+// client or device, and the next resume hands this value back for validation.
+function noteRecoveryEpoch(ref: string, evener: { recoveryEpoch?: number } | undefined): void {
+  if (typeof evener?.recoveryEpoch === "number") recoveryEpochs.set(ref, evener.recoveryEpoch);
+}
 // Stop generations come from one page-wide sequence, never a per-ref counter,
 // and an entry once written persists for the page session - releaseThread
 // deliberately does NOT prune. Deleting the only cancellation evidence let a
@@ -3020,6 +3043,12 @@ async function runResumeFencedForSend(
   // identity the fired arm already carried. A later adoption replaces the
   // seed with its own fresh captures.
   let attemptResumedFence: ResumedStopFence | undefined = inherited.resumed;
+  // The hub-owned recovery epoch this drive was issued under: a Stop from
+  // another client or device advances it invisibly to this page, and the hub
+  // refuses the request when the value it names is stale. Captured once, at
+  // the drive's start, so a read landing mid-drive cannot rebase the fence
+  // onto a Stop that predates the press.
+  const expectedRecoveryEpoch = recoveryEpochOf(ref);
   try {
     const attemptRuntime = mutationRuntime;
     if (attemptRuntime !== null) {
@@ -3096,6 +3125,7 @@ async function runResumeFencedForSend(
       stopBaseline();
     };
     const { thread } = await client.resumeThread(ref, {
+      expectedRecoveryEpoch,
       beforeRequest: () => {
         // The page-local fence stays first and synchronous, exactly as
         // before: any acknowledged Stop on this page since the drive
@@ -3237,6 +3267,15 @@ async function runResumeFencedForSend(
     if (swapRegistered) endResumeSwap(ref);
     const message = error instanceof Error ? error.message : String(error);
     let stopCanceled = error instanceof StopCanceledError;
+    // The hub refusing a resume a newer Stop superseded is that Stop's own
+    // word: the caller armed before it, and re-driving would restart the
+    // session the other client or device stopped.
+    if (!stopCanceled && isSessionRecoveryCanceled(error)) stopCanceled = true;
+    // The refusal names the epoch the Stop advanced to: refresh it, so the
+    // press a supersession restarts (or the next Send) arms under the fresh
+    // fence instead of failing against the stale one again.
+    const supersededEpoch = recoveryEpochFromError(error);
+    if (supersededEpoch !== undefined) recoveryEpochs.set(ref, supersededEpoch);
     // A Stop that lands mid-drive can surface here as a plain transport
     // failure - the Stop is killing the very daemon the resume reaches - so
     // the error type alone cannot be the Stop signal. Whatever the error, the
@@ -4137,6 +4176,7 @@ async function readThreadHydration(
           )
         : applyReadResponse(pending.baseModel, response, now)
       : hydrateThread(response, ref, now);
+  noteRecoveryEpoch(ref, response.thread.evener);
   // The response cut retires buffered input from the legacy hydrator because
   // its snapshot is authoritative for that route. The entry repository also
   // receives this input, but only comparable versions may supersede the read:
@@ -5184,6 +5224,9 @@ function readThreadForgettingConfirmed(
   return lease.read(params).then(
     (response) => {
       const evener = response.thread.evener;
+      // Every read refreshes the hub-owned recovery epoch a parked-state
+      // resume names; the hub refuses one a newer Stop superseded.
+      noteRecoveryEpoch(ref, evener);
       const advertised = evener?.pendingEscalations ?? [];
       if (evener?.mutationStateAuthoritative === true) {
         const advertisedIds = new Set(advertised.map((e) => e.escalationId));
@@ -5719,6 +5762,7 @@ function reconcileAcceptedReadRecovery(ref: string, response: ThreadReadResponse
     const mutationAuthorityRefs = new Set(state.mutationAuthorityRefs);
     if (response.thread.evener.mutationStateAuthoritative === true) mutationAuthorityRefs.add(ref);
     else mutationAuthorityRefs.delete(ref);
+    noteRecoveryEpoch(ref, response.thread.evener);
     return { mutationAuthorityRefs };
   });
   if (model.status.type === "restartRequired" || response.thread.evener.resumeRequired === true) {

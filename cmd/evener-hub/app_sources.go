@@ -290,9 +290,12 @@ func (err sessionRecoveryAdmissionError) Unwrap() error { return err.WireError }
 // retry before that Stop, so restarting the session would override it; the
 // structured discriminant lets the client treat the failure as the Stop's
 // own word instead of arming another retry.
-func recoverySupersededError() error {
+func recoverySupersededError(currentEpoch uint64) error {
 	wire := appwire.Unavailable("session recovery canceled this pending action; submit it again")
-	wire.Data = appwire.ErrorData{EvenerErrorInfo: appwire.ErrorSessionRecoveryCanceled}
+	wire.Data = appwire.RecoverySupersededErrorData{
+		ErrorData:     appwire.ErrorData{EvenerErrorInfo: appwire.ErrorSessionRecoveryCanceled},
+		RecoveryEpoch: currentEpoch,
+	}
 	return sessionRecoveryAdmissionError{wire}
 }
 

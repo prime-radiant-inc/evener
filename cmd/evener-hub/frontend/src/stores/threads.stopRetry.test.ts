@@ -2491,6 +2491,61 @@ test("a same-page Stop during the surviving join's epoch reads keeps the press c
   expect(fake.calls.filter((call) => call.method === "thread/resume")).toHaveLength(1);
 });
 
+// A Stop from another client or device advances the session's hub-owned
+// recovery epoch, invisible to this page's Stop generations and its IndexedDB
+// epochs. The parked-state resume names the epoch its drive started under, so
+// the hub can refuse a superseded retry; the refusal is terminal (the Stop is
+// the user's word) and names the current epoch, so the page's next press arms
+// under the fresh fence instead of failing against the stale one again.
+test("a parked-state resume names its recovery epoch and a superseded refusal is terminal", async ({
+  onTestFinished,
+}) => {
+  const scheduledResumeRetries = trackScheduledResumeRetries(onTestFinished);
+  const ref = "local:recovery-epoch-fence";
+  const storage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(storage);
+  const fake = connectMutationClient();
+  const resumeParams: Array<number | undefined> = [];
+  let resumeCalls = 0;
+  fake.on("thread/read", () => {
+    const response = readResponse(ref, { status: { type: "notLoaded" } });
+    response.thread.evener.resumeRequired = true;
+    response.thread.evener.mutationStateAuthoritative = false;
+    response.thread.evener.recoveryEpoch = 5;
+    return response;
+  });
+  fake.on("thread/resume", (params) => {
+    resumeCalls += 1;
+    resumeParams.push((params as { expectedRecoveryEpoch?: number }).expectedRecoveryEpoch);
+    if (resumeCalls === 1) throw new Error("connection reset by peer");
+    throw new WireError("session recovery canceled this pending action; submit it again", -32000, {
+      evenerErrorInfo: "sessionRecoveryCanceled",
+      recoveryEpoch: 9,
+    });
+  });
+  await threadsStore.getState().ensureThread(ref);
+  await flushIndexedDBUntil(() => false);
+  await threadsStore.getState().resumeSession(ref);
+  await waitFor(() => expect(scheduledResumeRetries).toHaveLength(1));
+  act(() => {
+    scheduledResumeRetries[0]?.fire();
+  });
+  await flushIndexedDBUntil(() => false);
+  await flushMicrotasks();
+  await flushIndexedDBUntil(() => false);
+  await flushMicrotasks();
+  // Both the first attempt and the fired retry name the epoch the page read.
+  expect(resumeParams).toEqual([5, 5]);
+  // The hub's supersession refusal is terminal: no new retry is armed.
+  expect(scheduledResumeRetries).toHaveLength(1);
+  // The refusal named the current epoch: the next press arms under it.
+  await threadsStore.getState().resumeSession(ref);
+  await flushIndexedDBUntil(() => false);
+  await flushMicrotasks();
+  await flushIndexedDBUntil(() => false);
+  expect(resumeParams[2]).toBe(9);
+});
+
 // The fire-time comparison reads the epoch, and the attempt it wakes reads it
 // AGAIN before its request goes out. A Stop from another tab can land between
 // those two reads: the fire's snapshot predates the bump and passes, and an

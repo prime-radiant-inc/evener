@@ -1197,6 +1197,35 @@ test.each(["closed", "rejected"])("explicit Resume releases its waiters when %s"
   expect(vi.getTimerCount()).toBe(0);
 });
 
+test("a parked-state resume names the recovery epoch it expects in the thread/resume request", async () => {
+  const sockets: FakeSocket[] = [];
+  const client = new AppwireClient({
+    url: "ws://hub/rpc",
+    socketFactory: () => {
+      const socket = new FakeSocket({ autoInitialize: true });
+      sockets.push(socket);
+      return socket;
+    },
+  });
+  const connected = client.connect();
+  const primary = sockets[0];
+  if (!primary) throw new Error("missing primary");
+  primary.open();
+  await connected;
+  const resumed = client.resumeThread("local:owner", { expectedRecoveryEpoch: 7 });
+  const rejected = expect(resumed).rejects.toThrow();
+  const replacement = sockets[1];
+  if (!replacement) throw new Error("missing replacement");
+  replacement.open();
+  await flushUntil(() => sentFrames(replacement).some((frame) => frame.method === "thread/resume"));
+  const frame = lastSentFrame(replacement);
+  expect(frame.params).toMatchObject({ ref: "local:owner", expectedRecoveryEpoch: 7 });
+  replacement.receive({ id: frame.id, error: { code: -32000, message: "resume refused" } });
+  await rejected;
+  client.close();
+  expect(vi.getTimerCount()).toBe(0);
+});
+
 test("a throwing beforeRequest sends no resume RPC, releases the resume, and keeps the primary ready", async () => {
   const sockets: FakeSocket[] = [];
   const client = new AppwireClient({

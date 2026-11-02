@@ -817,6 +817,14 @@ export interface EvenerThread {
    */
   resumeRequired?: boolean;
   /**
+   * RecoveryEpoch is the session's hub-owned recovery generation: it
+   * advances on every confirmed Stop, from any client or device. A client
+   * that issues a resume from parked state (an automatic retry) carries the
+   * value it last read here as thread/resume's expectedRecoveryEpoch, so the
+   * hub can refuse a resume a newer Stop has superseded.
+   */
+  recoveryEpoch?: number;
+  /**
    * ResumeOnlyFoldable means a turn/start sent on this connection right now
    * would be admitted under the resume-only carve-out: the session merely needs
    * its resume, which the send folds into itself. The hub stamps it only when
@@ -4334,6 +4342,16 @@ export interface ThreadReasoningEffortSetParams {
 export interface ThreadResumeParams {
   ref?: string;
   sessionId?: string;
+  /**
+   * ExpectedRecoveryEpoch, when present, is the session's hub-owned recovery
+   * epoch the caller issued this resume against: the value last read in
+   * thread/read (EvenerThread.RecoveryEpoch). The hub refuses the resume
+   * when a Stop advanced that epoch since, so an automatic retry parked in
+   * another client's or device's backoff cannot restart the session that
+   * client stopped. Absent means the caller issued no such expectation and
+   * the hub validates only the connection's own admission epoch.
+   */
+  expectedRecoveryEpoch?: number;
 }
 
 export interface ThreadResumeResponse {

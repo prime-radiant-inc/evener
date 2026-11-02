@@ -49,9 +49,12 @@ func TestResumeRefusesEpochSupersededByANewerStop(t *testing.T) {
 	if !ok {
 		t.Fatalf("refusal is not a wire error: %v", err)
 	}
-	data, ok := wire.Data.(appwire.ErrorData)
+	data, ok := wire.Data.(appwire.RecoverySupersededErrorData)
 	if !ok || data.EvenerErrorInfo != appwire.ErrorSessionRecoveryCanceled {
 		t.Fatalf("refusal data = %#v, want the superseded recovery discriminant", wire.Data)
+	}
+	if want := locks.RecoveryState(sessionID).Epoch; data.RecoveryEpoch != want {
+		t.Fatalf("refusal named epoch %d, want the current %d", data.RecoveryEpoch, want)
 	}
 	if spawned != 0 {
 		t.Fatalf("superseded resume reached the spawner %d times", spawned)

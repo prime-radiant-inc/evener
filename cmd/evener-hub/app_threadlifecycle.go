@@ -505,7 +505,7 @@ func resumeThread(ctx context.Context, cfg hubcore.WebConfig, sources *appsource
 		// the caller's expected value can catch it.
 		if params.ExpectedRecoveryEpoch != nil {
 			if current := cfg.ResumeLocks.RecoveryState(requestedID).Epoch; current != *params.ExpectedRecoveryEpoch {
-				return appwire.ThreadResumeResponse{}, recoverySupersededError()
+				return appwire.ThreadResumeResponse{}, recoverySupersededError(current)
 			}
 		}
 		ownershipDone := trace.stage(ctx, "ownership")

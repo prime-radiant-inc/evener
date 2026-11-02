@@ -27,13 +27,13 @@ const (
 	// way HostEntry's json tags spell it). It shares CodeInvalidParams with
 	// plain validation refusals, so a client that wants to place a message on
 	// an input must match this discriminant, never the code.
-	ErrorInvalidHostField           ErrorInfo = "invalidHostField"
-	ErrorResourceNotFound           ErrorInfo = "resourceNotFound"
-	ErrorMethodNotFound             ErrorInfo = "methodNotFound"
-	ErrorProviderUnavailable        ErrorInfo = "providerUnavailable"
-	ErrorSessionUnavailable         ErrorInfo = "sessionUnavailable"
-	ErrorConflict                   ErrorInfo = "conflict"
-	ErrorActionUnavailable          ErrorInfo = "actionUnavailable"
+	ErrorInvalidHostField    ErrorInfo = "invalidHostField"
+	ErrorResourceNotFound    ErrorInfo = "resourceNotFound"
+	ErrorMethodNotFound      ErrorInfo = "methodNotFound"
+	ErrorProviderUnavailable ErrorInfo = "providerUnavailable"
+	ErrorSessionUnavailable  ErrorInfo = "sessionUnavailable"
+	ErrorConflict            ErrorInfo = "conflict"
+	ErrorActionUnavailable   ErrorInfo = "actionUnavailable"
 	// ErrorSessionRecoveryCanceled marks a resume the hub refused because a
 	// Stop advanced the session's recovery epoch past the one the request was
 	// issued against: the caller's automatic retry was parked before that
@@ -532,6 +532,15 @@ type ErrorData struct {
 	MutationOutcome  MutationOutcome  `json:"mutationOutcome,omitempty"`
 	RetryDisposition RetryDisposition `json:"retryDisposition,omitempty"`
 	Cause            string           `json:"cause,omitempty"`
+}
+
+// RecoverySupersededErrorData is the refusal a resume issued against a stale
+// recovery epoch receives: the standard ErrorData plus the session's CURRENT
+// epoch, so the client refreshes the value it arms retries under instead of
+// failing every later attempt against the same stale fence.
+type RecoverySupersededErrorData struct {
+	ErrorData
+	RecoveryEpoch uint64 `json:"recoveryEpoch"`
 }
 
 // HostFieldErrorData is a host mutation's validation-refusal data (component 08

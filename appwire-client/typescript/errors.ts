@@ -207,6 +207,32 @@ export function isInstanceRemoveApplied(err: unknown): boolean {
 // binding test (errors.test.ts) reads the Go constant.
 export const ErrorEndpointConflict = "endpointConflict";
 
+// ErrorSessionRecoveryCanceled is the hub's discriminant for a resume a
+// newer Stop superseded (appwire.ErrorSessionRecoveryCanceled,
+// appwire/errors.go): the caller issued the resume against a recovery epoch a
+// Stop from another client or device had since advanced past, so restarting
+// the session would override that Stop. It shares CodeUnavailable with plain
+// unavailability, so a client that must treat the refusal as the Stop's own
+// word matches this string, never the code.
+export const ErrorSessionRecoveryCanceled = "sessionRecoveryCanceled";
+
+// isSessionRecoveryCanceled reports whether err is the hub refusing a resume
+// a newer Stop superseded.
+export function isSessionRecoveryCanceled(err: unknown): boolean {
+  return err instanceof WireError && err.evenerErrorInfo === ErrorSessionRecoveryCanceled;
+}
+
+// recoveryEpochFromError reads the CURRENT recovery epoch a superseded-resume
+// refusal names (appwire.RecoverySupersededErrorData), so the caller refreshes
+// the value it arms retries under. Undefined for any other error.
+export function recoveryEpochFromError(err: unknown): number | undefined {
+  if (!isSessionRecoveryCanceled(err)) return undefined;
+  const data = (err as WireError).data;
+  if (typeof data !== "object" || data === null) return undefined;
+  const epoch = (data as { recoveryEpoch?: unknown }).recoveryEpoch;
+  return typeof epoch === "number" ? epoch : undefined;
+}
+
 // ErrorMarketplaceRemoveApplied is the hub's discriminant for a marketplace
 // removal that APPLIED - the unregister and its clone cleanup both completed
 // - but whose response could not carry the updated list, because the fresh
