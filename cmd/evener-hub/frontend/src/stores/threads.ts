@@ -3301,12 +3301,6 @@ async function runResumeFencedForSend(
           joinIdentity === ref
             ? join.target === undefined
             : snapshottedIdentities.some((entry) => entry !== undefined && entry.ref === joinIdentity);
-        const generationsUnchanged =
-          join.generation === (userIntentStopGenerations.get(ref) ?? 0) &&
-          adoptedKnown &&
-          snapshottedIdentities.every(
-            (entry) => entry === undefined || entry.generation === (userIntentStopGenerations.get(entry.ref) ?? 0),
-          );
         // A Stop another tab lands is invisible to the page's generations:
         // it is visible only in the durable epoch, so when a durable check
         // did the canceling the press survives only if the epochs it
@@ -3326,6 +3320,17 @@ async function runResumeFencedForSend(
               : (await join.inheritedTargetEpoch) ===
                 (await readDurableStopEpoch(mutationRuntime, join.inheritedTarget.ref)))
           : true;
+        // The generation comparison runs AFTER those awaited reads: a Stop
+        // this page lands while one of them is in flight is invisible to the
+        // read's snapshot but moves the generations immediately, and running
+        // this check before them would miss it - the restart drive would then
+        // capture the newer Stop as its own baseline and resume over it.
+        const generationsUnchanged =
+          join.generation === (userIntentStopGenerations.get(ref) ?? 0) &&
+          adoptedKnown &&
+          snapshottedIdentities.every(
+            (entry) => entry === undefined || entry.generation === (userIntentStopGenerations.get(entry.ref) ?? 0),
+          );
         if (generationsUnchanged && epochsUnchanged) {
           drive.restartAfterSettle = true;
         }

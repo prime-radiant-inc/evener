@@ -2396,6 +2396,101 @@ test("a Send pressed before a Stop on the inherited identity stays canceled", as
   await owner.release();
 });
 
+// A joined Send survives a durable Stop only when its snapshots agree with
+// the reads that decide the restart. Those reads are awaited, and a Stop this
+// page lands while they are in flight moves only the generations - computing
+// the generation comparison BEFORE them misses it, and the restart drive
+// captures the newer Stop as its own baseline and resumes over it.
+test("a same-page Stop during the surviving join's epoch reads keeps the press canceled", async ({
+  onTestFinished,
+}) => {
+  const scheduledResumeRetries = trackScheduledResumeRetries(onTestFinished);
+  const ref = "local:join-epoch-window-stop";
+  const storage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(storage);
+  const fake = connectMutationClient();
+  fake.on("thread/read", () => {
+    const response = readResponse(ref, { status: { type: "notLoaded" } });
+    response.thread.evener.resumeRequired = true;
+    response.thread.evener.mutationStateAuthoritative = false;
+    return response;
+  });
+  fake.on("thread/resume", () => {
+    throw new Error("rendezvous timed out");
+  });
+  fake.on("thread/shutdown", () => ({}));
+  let epochReads = 0;
+  let releasePreCapture!: (epoch: number) => void;
+  let releaseRevalidate!: () => Promise<void>;
+  let releaseCatchRead!: (epoch: number) => void;
+  const realReadStopEpoch = storage.readStopEpoch.bind(storage);
+  storage.readStopEpoch = async (targetRef: string) => {
+    epochReads += 1;
+    if (epochReads === 3) {
+      // The fired attempt's pre-capture, parked while another tab
+      // force-stops: it resolves with its pre-Stop snapshot.
+      return new Promise<number>((resolve) => {
+        releasePreCapture = resolve;
+      });
+    }
+    if (epochReads === 4) {
+      // The attempt's beforeRequest revalidation read, parked: the press
+      // joins the drive while it is in flight.
+      return new Promise<number>((resolve) => {
+        releaseRevalidate = async () => resolve(await realReadStopEpoch(targetRef));
+      });
+    }
+    if (epochReads === 6) {
+      // The restart decision's own read, parked: the user force-stops this
+      // page's session while it is in flight.
+      return new Promise<number>((resolve) => {
+        releaseCatchRead = resolve;
+      });
+    }
+    return realReadStopEpoch(targetRef);
+  };
+  await threadsStore.getState().ensureThread(ref);
+  await flushIndexedDBUntil(() => false);
+  await threadsStore.getState().resumeSession(ref);
+  await waitFor(() => expect(scheduledResumeRetries).toHaveLength(1));
+  act(() => {
+    scheduledResumeRetries[0]?.fire();
+  });
+  await waitFor(() => expect(epochReads).toBe(3));
+  const otherTab = new MutationOutboxIndexedDB();
+  await otherTab.cancelUnattempted(ref);
+  otherTab.close();
+  // The pre-capture resolves with its pre-Stop snapshot, so the fired
+  // attempt's own revalidation is the check that finds the other tab's Stop.
+  act(() => {
+    releasePreCapture(0);
+  });
+  await waitFor(() => expect(epochReads).toBe(4));
+  // The Send pressed before the restart decision joins the doomed drive; its
+  // snapshot reads the durable epoch the other tab's Stop already wrote.
+  const joined = threadsStore.getState().resumeSession(ref);
+  await act(async () => {
+    await releaseRevalidate();
+  });
+  await waitFor(() => expect(epochReads).toBe(6));
+  // The user force-stops the same session from this page while the restart
+  // decision's epoch reads are in flight: the generations move now, the
+  // durable write lands later.
+  const preStopEpoch = await realReadStopEpoch(ref);
+  await threadsStore.getState().shutdown(ref);
+  act(() => {
+    releaseCatchRead(preStopEpoch);
+  });
+  await flushIndexedDBUntil(() => false);
+  await flushMicrotasks();
+  await flushIndexedDBUntil(() => false);
+  await flushMicrotasks();
+  await joined;
+  // The joined press no longer restarts anything: the page's Stop is the
+  // user's last word, and the restart would have captured it as its baseline.
+  expect(fake.calls.filter((call) => call.method === "thread/resume")).toHaveLength(1);
+});
+
 // The fire-time comparison reads the epoch, and the attempt it wakes reads it
 // AGAIN before its request goes out. A Stop from another tab can land between
 // those two reads: the fire's snapshot predates the bump and passes, and an
