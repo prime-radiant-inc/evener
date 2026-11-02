@@ -2136,13 +2136,17 @@ async function applyClearResponse(targetRef: string, response: ThreadClearRespon
   });
 }
 
-// True while an armed retry speaks for the ref - as its own recovery owner, or
-// as the identity an identity-changing arm already adopted. Dispatch reads it
-// to keep parked work behind the retry's token validation.
-function armedResumeRetryHolds(ref: string): boolean {
-  if (resumeRetries.has(ref)) return true;
-  for (const armed of resumeRetries.values()) {
-    if (armed.resumed?.ref === ref) return true;
+// True when a retry armed for the ref - or for the identity its arm already
+// adopted - names an OLDER recovery token than the page's latest read: a Stop
+// from another client or device landed while the retry waited, so dispatch
+// must not let the ref's parked rows fold a resume under the newer token before
+// the retry's stale one is judged. An arm and a read that agree name the same
+// fence, and the parked row's fold is the recovery the retry would have driven.
+function armedRetryOutpacesReadToken(ref: string): boolean {
+  const armed = resumeRetries.get(ref);
+  if (armed !== undefined) return armed.recoveryToken !== recoveryTokenOf(ref);
+  for (const [armedRef, entry] of resumeRetries) {
+    if (entry.resumed?.ref === ref) return entry.recoveryToken !== recoveryTokenOf(armedRef);
   }
   return false;
 }
@@ -2200,11 +2204,15 @@ function currentDispatchClient(
       // the destination identity and its outbox reconciliation until it ends.
       inFlightResumes.has(targetRef) ||
       Array.from(inFlightResumes.values()).some((drive) => drive.targetRef === targetRef) ||
-      // An armed retry owns the ref's token validation: parked work waits
-      // until it lands or the hub refuses it, so a foldable read that
-      // observed a foreign Stop's newer token cannot fold a resume past the
-      // stale token the retry still has to name.
-      armedResumeRetryHolds(targetRef) ||
+      // An armed retry whose token a read has since outrun owns the ref's
+      // token validation: parked work waits until it lands or the hub refuses
+      // it, so a foldable read that observed a foreign Stop's newer token
+      // cannot fold a resume past the stale token the retry still has to name.
+      armedRetryOutpacesReadToken(targetRef) ||
+      // A supersession's cancellation storage has not committed yet: the rows
+      // it names are still dispatchable, so the ref waits until the write lands
+      // instead of folding a resume over the Stop that superseded them.
+      supersededCancellationRetries.has(targetRef) ||
       // A graceful shutdown's own cancellation write is in flight: the write is
       // an await and is not itself a fence, so a dispatch already scheduled for
       // the ref could be admitted in that window and put the row the Stop is
