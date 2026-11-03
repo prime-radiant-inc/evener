@@ -51,6 +51,23 @@ validate each against source and a real end-to-end path before promoting it to a
 implementation task. Split them further where they leave useful working behavior;
 there is no PR-count ceiling.
 
+### Clarified contracts
+
+- Newly handled typed schema containers may normalize numeric scalars to
+  `json.Number` while preserving exact JSON values. Existing generic-map, scalar
+  and explicitly supported-slice paths retain their established Go types.
+- Exact-number validation needs bounded exact arithmetic, not exponent-sized
+  rational expansion or a new numeric admission limit. Prepare a scoped validator
+  implementation/dependency design for Jesse's review before implementing it.
+- Provider schema copies preserve exact numeric values instead of normalizing
+  every number to `float64`. Update the helper contract and its conflicting
+  numeric assertion while preserving isolation and error handling. Do not add a
+  compatibility shim or keep an unused helper.
+- A durable successful model response counts as observation of notifications it
+  read even if writing their resolutions later fails. Repair bookkeeping without
+  another model request for those notifications. Update the two conflicting
+  recovery assertions, preserving retries before a successful durable response.
+
 ```mermaid
 flowchart TD
     Render[Bounded transcript rendering]
@@ -223,12 +240,14 @@ copy their agent-level tests. Real callers include `WithIntentParameter`,
 cloning. Use the existing shared clone rather than adding another clone helper.
 
 **Contracts:** Preserve the current generic-map recursion, every explicitly
-supported slice type, scalar Go representations including `float64`, nil and
-empty behavior, and fallback for unserializable input. Previously unhandled
-serializable typed maps, slices, arrays, structs and pointers must not alias
-mutable source state. Preserve `json.Number("9007199254740993")` exactly in those
-containers. No numeric rejection policy, compatibility layer or validator change
-is authorized. Do not orphan an existing production symbol or weaken assertions.
+supported slice type, and Go scalar representations including `float64` on those
+existing paths. Preserve nil and empty behavior and fallback for unserializable
+input. Previously unhandled serializable typed maps, slices, arrays, structs and
+pointers must not alias mutable source state. Their numeric scalars may normalize
+to `json.Number`, preserving exact JSON values, including
+`json.Number("9007199254740993")`. No numeric rejection policy, compatibility layer
+or validator change belongs in this cut. Do not orphan an existing production
+symbol or weaken assertions.
 
 **Tests:** Read the product guide, S14 map row and testing guide first. Record up
 to five ranked hypotheses before production edits. Add
@@ -237,7 +256,8 @@ kind, exact numeric contents and mutation in both directions. Add
 `TestWithIntentParameterTypedSchemaIsolation` through the existing production
 decorator, with a valid typed nested schema. Start parallel tests with
 `t.Parallel()`. Assert semantic contents independently of the concrete clone
-representation; a type-assertion panic is not an aliasing reproduction. Existing
+representation, including ordinary `float64` values mixed with exact large
+`json.Number` values. A type-assertion panic is not an aliasing reproduction. Existing
 `TestCloneSchemaMap_DeepClonesEverySliceKind` and decorator assertions stay intact.
 Prove behavioral RED on unchanged production before the smallest shared repair,
 then GREEN. Reuse the already-reviewed fallback only if it meets all contracts.
