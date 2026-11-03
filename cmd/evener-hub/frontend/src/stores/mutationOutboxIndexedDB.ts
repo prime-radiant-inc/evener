@@ -1137,7 +1137,12 @@ export class MutationOutboxIndexedDB implements WebQueuedMessageStorage<Mutation
   async #retireWireSiblings(
     transaction: IDBTransaction,
     wireId: string,
-    options: { excludeKeys: ReadonlySet<string>; sweepOptimistic: boolean; sweepRecovery: boolean },
+    options: {
+      excludeKeys: ReadonlySet<string>;
+      sweepOptimistic: boolean;
+      sweepRecovery: boolean;
+      onlySuperseded?: boolean;
+    },
   ): Promise<string[]> {
     const family = await this.#resolveWireFamily(transaction, wireId, {
       readOptimistic: options.sweepOptimistic,
