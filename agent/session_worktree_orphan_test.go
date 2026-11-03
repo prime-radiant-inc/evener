@@ -1192,8 +1192,8 @@ func TestWorktreePrune_OrphanArmSparesLaneWhileRetainedChildNotifies(t *testing.
 	}()
 	select {
 	case <-entered:
-	// TRIPWIRE: the armed attention turns over within seconds of the send settling; 12s only fires on a genuine hang.
-	case <-time.After(12 * time.Second):
+	// TRIPWIRE: the armed attention turns over within seconds of the send settling; 30s only fires on a genuine hang. The deadline covers a shard loaded with the rest of this package's parallel tests, where spawn and the retry cadence stretch.
+	case <-time.After(30 * time.Second):
 		t.Fatal("the retained child's turn never started")
 	}
 
@@ -1259,8 +1259,8 @@ func TestWorktreePrune_OrphanArmSparesLaneWhileRetainedChildNotifies(t *testing.
 	// the settle, so waiting on it proves the turn finished, not just that a
 	// drive launched it.
 	close(release)
-	// TRIPWIRE: the released turn settles within seconds; 10s only fires on a genuine hang.
-	waitForCondition(t, 10*time.Second, "the retained child's turn to finish after release", func() bool {
+	// TRIPWIRE: the released turn settles within seconds once the model call returns; 30s only fires on a genuine hang. The deadline absorbs a loaded shard's scheduling delay between the release and the settle.
+	waitForCondition(t, 30*time.Second, "the retained child's turn to finish after release", func() bool {
 		lane.sharedSub.mu.Lock()
 		running := lane.sharedSub.running
 		lane.sharedSub.mu.Unlock()
