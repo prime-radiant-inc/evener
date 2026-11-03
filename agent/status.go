@@ -505,7 +505,15 @@ func delegateStatusInfoFromSnapshot(now time.Time, rootID string, row delegateSn
 // terminal packet whose metadata runs past the payload cap and never parses such
 // a document; a diagnostics status is not that frame, so it keeps them.
 func delegateFrameStatusInfo(now time.Time, rootID string, row delegateSnapshot) DelegateStatusInfo {
-	return delegateStatusInfo(now, rootID, row, true)
+	out := delegateStatusInfo(now, rootID, row, true)
+	if !delegateRunTerminal(row.lastOutcome, row.currentRunOpen) {
+		out.Outcome = ""
+		out.Reason = ""
+		out.Error = ""
+		out.RunEndedAt = ""
+		out.Terminal = false
+	}
+	return out
 }
 
 func delegateStatusInfo(now time.Time, rootID string, row delegateSnapshot, boundedMetadata bool) DelegateStatusInfo {
@@ -548,18 +556,12 @@ func delegateStatusInfo(now time.Time, rootID string, row delegateSnapshot, boun
 		ParentWatchGranted:  descriptor.ParentWatchGranted,
 	}
 	if row.lastOutcome != nil {
-		terminal := delegateRunTerminal(row.lastOutcome, row.currentRunOpen)
-		// A pushed frame is the current generation's snapshot, so an open run
-		// cannot carry its predecessor's ending. Detailed diagnostic status keeps
-		// that history as before.
-		if !boundedMetadata || terminal {
-			out.Outcome = string(row.lastOutcome.Status)
-			out.Reason = row.lastOutcome.Reason
-			out.Error = row.lastOutcome.Error
-			out.Terminal = terminal
-			if !row.lastOutcome.EndedAt.IsZero() {
-				out.RunEndedAt = row.lastOutcome.EndedAt.UTC().Format(time.RFC3339Nano)
-			}
+		out.Outcome = string(row.lastOutcome.Status)
+		out.Reason = row.lastOutcome.Reason
+		out.Error = row.lastOutcome.Error
+		out.Terminal = delegateRunTerminal(row.lastOutcome, row.currentRunOpen)
+		if !row.lastOutcome.EndedAt.IsZero() {
+			out.RunEndedAt = row.lastOutcome.EndedAt.UTC().Format(time.RFC3339Nano)
 		}
 		out.ExhaustionBudget = string(row.lastOutcome.ExhaustionBudget)
 		out.ExhaustionLimit = row.lastOutcome.ExhaustionLimit
