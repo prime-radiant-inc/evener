@@ -57,8 +57,8 @@ type gitleaksConfig struct {
 	Rules []struct {
 		ID         string `toml:"id"`
 		Allowlists []struct {
-			Condition   string   `toml:"condition"`
-			RegexTarget string   `toml:"regexTarget"`
+			Condition   string `toml:"condition"`
+			RegexTarget string
 			Paths       []string `toml:"paths"`
 			Regexes     []string `toml:"regexes"`
 		} `toml:"allowlists"`
