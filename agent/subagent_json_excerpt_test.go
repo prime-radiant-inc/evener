@@ -38,22 +38,20 @@ func TestSubagentSeesFailingInputExcerpt(t *testing.T) {
 	var factoryCalls atomic.Int64
 	factory := func() *llm.Client {
 		factoryCalls.Add(1)
-		childAdapter = &agenttest.FakeAdapter{
-			Provider: "openai",
-			Steps: []func(llm.Request) llm.Response{
-				func(llm.Request) llm.Response {
-					return agenttest.ToolCallResponse(llm.ToolCallData{
-						ID:        "call_truncated",
-						Name:      "write_file",
-						Arguments: []byte(truncatedArgs),
-						Type:      "function",
-					})
-				},
-				func(llm.Request) llm.Response {
-					return agenttest.FinalResponse("child recovered and done")
-				},
+		childAdapter = &agenttest.FakeAdapter{Provider: "openai"}
+		childAdapter.SetSteps([]func(llm.Request) llm.Response{
+			func(llm.Request) llm.Response {
+				return agenttest.ToolCallResponse(llm.ToolCallData{
+					ID:        "call_truncated",
+					Name:      "write_file",
+					Arguments: []byte(truncatedArgs),
+					Type:      "function",
+				})
 			},
-		}
+			func(llm.Request) llm.Response {
+				return agenttest.FinalResponse("child recovered and done")
+			},
+		})
 		c := llm.NewClient()
 		c.Register(childAdapter)
 		registerTestSessionNamer(c)
@@ -188,22 +186,20 @@ func TestSubagentUnquotedKeyToolCallRecoversAndExecutes(t *testing.T) {
 	const unquotedArgs = `{add: [{"type": "implement", "description": "child task", "prompt": "do the work"}]}`
 	var childAdapter *agenttest.FakeAdapter
 	factory := func() *llm.Client {
-		childAdapter = &agenttest.FakeAdapter{
-			Provider: "openai",
-			Steps: []func(llm.Request) llm.Response{
-				func(llm.Request) llm.Response {
-					return agenttest.ToolCallResponse(llm.ToolCallData{
-						ID:        "call_unq",
-						Name:      "task_list",
-						Arguments: []byte(unquotedArgs),
-						Type:      "function",
-					})
-				},
-				func(llm.Request) llm.Response {
-					return agenttest.FinalResponse("child recovered and done")
-				},
+		childAdapter = &agenttest.FakeAdapter{Provider: "openai"}
+		childAdapter.SetSteps([]func(llm.Request) llm.Response{
+			func(llm.Request) llm.Response {
+				return agenttest.ToolCallResponse(llm.ToolCallData{
+					ID:        "call_unq",
+					Name:      "task_list",
+					Arguments: []byte(unquotedArgs),
+					Type:      "function",
+				})
 			},
-		}
+			func(llm.Request) llm.Response {
+				return agenttest.FinalResponse("child recovered and done")
+			},
+		})
 		c := llm.NewClient()
 		c.Register(childAdapter)
 		registerTestSessionNamer(c)

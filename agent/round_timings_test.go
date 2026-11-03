@@ -61,19 +61,17 @@ func TestRoundTimings_Emitted(t *testing.T) {
 
 	c := llm.NewClient()
 	comm := agenttest.CommunicateCall("c1", "result")
-	f := &agenttest.FakeAdapter{
-		Provider: "openai",
-		Steps: []func(req llm.Request) llm.Response{
-			// Round 0: tool call
-			func(req llm.Request) llm.Response {
-				return agenttest.ToolCallResponse(shellToolCall("s1"))
-			},
-			// Round 1: communicate
-			func(req llm.Request) llm.Response {
-				return agenttest.ToolCallResponse(comm)
-			},
+	f := &agenttest.FakeAdapter{Provider: "openai"}
+	f.SetSteps([]func(req llm.Request) llm.Response{
+		// Round 0: tool call
+		func(req llm.Request) llm.Response {
+			return agenttest.ToolCallResponse(shellToolCall("s1"))
 		},
-	}
+		// Round 1: communicate
+		func(req llm.Request) llm.Response {
+			return agenttest.ToolCallResponse(comm)
+		},
+	})
 	c.Register(f)
 
 	sess, err := agent.NewSession(c, agent.NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), agent.SessionConfig{})
