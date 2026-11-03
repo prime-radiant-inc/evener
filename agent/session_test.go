@@ -40,6 +40,12 @@ type fakeAdapter struct {
 	// listing; an unscripted fake cannot list models at all.
 	liveModels func(ctx context.Context) ([]registry.Model, error)
 
+	// steps is the CONSTRUCTION-TIME script: hundreds of fixtures build it in
+	// the struct literal, before any drive exists. After construction every
+	// read and write goes through the synchronized methods below — a test
+	// reaching for the field mid-drive reopens the race the setters exist to
+	// prevent (the agenttest.FakeAdapter carries the no-field engine version
+	// for adapters whose construction surface is small).
 	mu       sync.Mutex
 	requests []llm.Request
 	steps    []func(req llm.Request) llm.Response
@@ -107,6 +113,30 @@ func (a *fakeAdapter) scriptLen() int {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	return len(a.steps)
+}
+
+// stepAt returns the currently scripted step at index, under the same mutex
+// Complete reads under, pairing with setStepAt for tests that capture a step
+// and wrap it with extra assertions. It panics on an out-of-range index.
+func (a *fakeAdapter) stepAt(index int) func(req llm.Request) llm.Response {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if index < 0 || index >= len(a.steps) {
+		panic("fakeAdapter: script index out of range")
+	}
+	return a.steps[index]
+}
+
+// setStepAt replaces the step at index under the same mutex, so wrapping a
+// step beside a concurrent drive cannot race. It panics on an out-of-range
+// index: a test addressing a position beyond its own script is a fixture bug.
+func (a *fakeAdapter) setStepAt(index int, step func(req llm.Request) llm.Response) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if index < 0 || index >= len(a.steps) {
+		panic("fakeAdapter: script index out of range")
+	}
+	a.steps[index] = step
 }
 
 func (a *fakeAdapter) Requests() []llm.Request {

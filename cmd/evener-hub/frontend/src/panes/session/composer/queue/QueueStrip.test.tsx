@@ -745,7 +745,7 @@ describe("durable recovery rows", () => {
     expect(isDisabled(retry)).toBe(true);
   });
 
-  test("blocked unknown has Retry but no sendable action", async () => {
+  test("a delivery-uncertain row carries the same actions as any local message", async () => {
     const user = userEvent.setup();
     const fake = connectReadyFakeClient();
     await hydrate(fake, "ref_a");
@@ -756,7 +756,10 @@ describe("durable recovery rows", () => {
     const row = await findRow("blocked");
     expect(within(row).getByText("uncertain")).toBeTruthy();
     const retry = within(row).getByRole("button", { name: "Retry" });
-    expect(within(row).queryByRole("button", { name: /edit|send|steer|remove/i })).toBeNull();
+    // Uncertain delivery is a subtitle, not a species: the row is editable and
+    // removable like any other local message - editing it is sending it again.
+    expect(within(row).getByRole("button", { name: "Edit message" })).toBeTruthy();
+    expect(within(row).getByRole("button", { name: "Remove from queue" })).toBeTruthy();
 
     await user.click(retry);
     const storage = new MutationOutboxIndexedDB();

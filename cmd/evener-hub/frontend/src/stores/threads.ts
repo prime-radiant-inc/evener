@@ -245,11 +245,8 @@ export interface PromoteDisplayInput {
 export interface ThreadsStoreState {
   threads: Map<string, ThreadModel>;
   mutationWriteStalled: boolean;
-  // Delivery-uncertain escape bookkeeping: per row, how many opportunities to
-  // check that row's fate have failed (a Retry press that still cannot decide
-  // it, a resume drive that died while it stood), so a fresh uncertain row
-  // always gets its honest reconciliation attempts first.
-  uncertainRecheckFailures: ReadonlyMap<string, number>;
+  // Refs whose durable reconcile failed for a reason other than storage: the
+  // ref waits for discovery's retry before anything is dispatched.
   mutationReconciliationFailures: ReadonlySet<string>;
   // Reconciliation failures this page attributes to unavailable storage rather
   // than a mutation-state conflict: the same wedge that fences the durable
@@ -3083,15 +3080,14 @@ async function runResumeFencedForSend(
 ): Promise<void> {
   // Hoisted for the catch: which identity this drive reached, what its first
   // retarget moved, whether a Stop won the identity fence, whether this
-  // drive registered a swap (it only does when the resume changed the ref),
-  // and whether its resume request ever went out. The stop baseline is the
+  // drive registered a swap (it only does when the resume changed the ref).
+  // The stop baseline is the
   // caller's, captured when the drive acquired ownership, so a Stop that
   // lands anywhere from acquisition to the last fence is visible to it.
   let resumedRef: string | undefined;
   let movedFirst: RetargetedMutations | null = null;
   let stopWon = false;
   let swapRegistered = false;
-  let requestIssued = false;
   // Whether a DURABLE epoch comparison did the canceling: a Stop another
   // tab landed, invisible to this page's generations. The joined-press
   // restart below arbitrates the durable epochs only in that shape - a
@@ -3201,16 +3197,11 @@ async function runResumeFencedForSend(
         // more - it is this page's live intent, fenced only by this page's
         // own Stops - so its request timing is what it always was.
         stopBaseline();
-        // The marker means the request is genuinely on its way: a drive whose
-        // reconnect dies, or whose revalidation meets a Stop, never reaches
-        // this point and counts no failed fate check below.
-        if (!drive.automatic) {
-          requestIssued = true;
-          return;
-        }
-        return revalidateDurableStops().then(() => {
-          requestIssued = true;
-        });
+        // A press's request is on its way; an automatic retry revalidates the
+        // durable fences first, so a Stop landing in the reconnect window still
+        // cancels it before anything reaches the hub.
+        if (!drive.automatic) return;
+        return revalidateDurableStops();
       },
     });
     resumedRef = thread.evener.ref;
@@ -3432,15 +3423,6 @@ async function runResumeFencedForSend(
         if (generationsUnchanged && epochsUnchanged) {
           drive.restartAfterSettle = true;
         }
-      }
-    }
-    // The escape counter counts failed opportunities to CHECK a standing row's
-    // fate. A drive whose resume request went out and failed checked; one
-    // that never reached the hub, or that the user's own Stop reversed,
-    // checked nothing and must not grow any row's discard threshold.
-    if (requestIssued && !stopCanceled) {
-      for (const clientMutationId of blockedUnknownIdsOf(ref)) {
-        noteUncertainRecheckFailure(clientMutationId);
       }
     }
   }
@@ -3796,31 +3778,6 @@ export async function removeQueuedMutation(clientMutationId: string, targetRef: 
   noteMutationStateChange(targetRef);
   notifyMutationPersistence([targetRef]);
   return removed;
-}
-
-// One more failed opportunity to check a row's fate: a Retry press that still
-// cannot decide its delivery, or a resume drive that died while it stood (the
-// resume was the reconciliation's precondition). Keyed by the row, so every
-// uncertain row earns its own escape and a sibling's misfortune never unlocks
-// this row's discard.
-export function noteUncertainRecheckFailure(clientMutationId: string): void {
-  threadsStore.setState((state) => {
-    const uncertainRecheckFailures = new Map(state.uncertainRecheckFailures);
-    uncertainRecheckFailures.set(clientMutationId, (uncertainRecheckFailures.get(clientMutationId) ?? 0) + 1);
-    return { uncertainRecheckFailures };
-  });
-}
-
-// The projection's cleanup: a failure count belongs to a row that still stands
-// uncertain. One that settled (or was discarded) takes its count with it, so a
-// NEW uncertain row starts its own honest reconciliation attempts.
-export function clearUncertainRecheckFailure(clientMutationId: string): void {
-  threadsStore.setState((state) => {
-    if (!state.uncertainRecheckFailures.has(clientMutationId)) return {};
-    const uncertainRecheckFailures = new Map(state.uncertainRecheckFailures);
-    uncertainRecheckFailures.delete(clientMutationId);
-    return { uncertainRecheckFailures };
-  });
 }
 
 interface QueuedMutationProjection {
@@ -4595,10 +4552,6 @@ interface ResumeOnlyProjection {
   // this is true, per ref.
   isLoaded(ref: string): boolean;
   hasBlockedUnknown(ref: string): boolean;
-  // The standing delivery-uncertain rows' clientMutationIds - the escape
-  // counter's input, so each standing row can be counted on its own. Unsorted:
-  // no consumer of these ids needs an order.
-  blockedUnknownIds(ref: string): string[];
   // Queued non-turn/start rows (still "submitting", attempted or not): a
   // turn/start queued behind one starves at the target's FIFO, so a ref holding
   // one is not foldable.
@@ -4647,16 +4600,6 @@ export function hasBlockedUnknown(ref: string): boolean {
   return (
     resumeOnlyProjection === null || !resumeOnlyProjection.isLoaded(ref) || resumeOnlyProjection.hasBlockedUnknown(ref)
   );
-}
-
-// The standing delivery-uncertain rows of a loaded ref, as the pending-turns
-// projection last published them - each row's clientMutationId, unsorted.
-// Unlike hasBlockedUnknown this is an enumeration, not a fence predicate: an
-// unloaded ref yields no ids rather than "unknown", so a caller counts only
-// the rows the published read can actually name.
-export function blockedUnknownIdsOf(ref: string): string[] {
-  if (resumeOnlyProjection === null || !resumeOnlyProjection.isLoaded(ref)) return [];
-  return resumeOnlyProjection.blockedUnknownIds(ref);
 }
 
 // Whether ref's durable outbox holds a queued non-turn/start row (still
@@ -7369,7 +7312,6 @@ function replaceThread(
 export const threadsStore = createStore<ThreadsStoreState>(() => ({
   threads: new Map(),
   mutationWriteStalled: false,
-  uncertainRecheckFailures: new Map(),
   mutationReconciliationFailures: new Set(),
   mutationReconciliationStorageBlocked: new Set(),
   restartBlockingObligations: new Map(),

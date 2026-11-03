@@ -66,11 +66,16 @@ test("queuedMessageActionsRespectOwnership", () => {
   expect(canEditQueuedMessage(canceledQueue)).toBe(true);
   expect(canRemoveQueuedMessage(canceledQueue)).toBe(true);
   expect(canEditQueuedMessage(unattemptedQueue)).toBe(true);
+  // Another pass is sending the submitting row: the click must not race it.
   expect(canEditQueuedMessage(attemptedQueue)).toBe(false);
   expect(canRemoveQueuedMessage(attemptedQueue)).toBe(false);
-  expect(canEditQueuedMessage(contradictoryCanceledQueue)).toBe(false);
-  expect(canRemoveQueuedMessage(contradictoryCanceledQueue)).toBe(false);
-  expect(canEditQueuedMessage(unknownQueue)).toBe(false);
+  // A canceled row is parked, and an uncertain row closes its queue: both are
+  // the user's to clear, whatever their attempt evidence says.
+  expect(canEditQueuedMessage(contradictoryCanceledQueue)).toBe(true);
+  expect(canRemoveQueuedMessage(contradictoryCanceledQueue)).toBe(true);
+  // Uncertain delivery is the user's to clear or to send again as a new message.
+  expect(canEditQueuedMessage(unknownQueue)).toBe(true);
+  expect(canRemoveQueuedMessage(unknownQueue)).toBe(true);
   expect(canEditQueuedMessage(legacyUnknownQueue)).toBe(false);
   expect(canEditQueuedMessage(note)).toBe(false);
   expect(canRemoveQueuedMessage(note)).toBe(false);

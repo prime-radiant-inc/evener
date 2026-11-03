@@ -1173,6 +1173,11 @@ export class TranscriptRepository {
     return true;
   }
 
+  /** True once a source read (opening or suffix) has been accepted in this lifetime. */
+  #hasAcceptedSourceRead(): boolean {
+    return this.#coverageReadId !== undefined;
+  }
+
   /**
    * Serve an older page from the certified local cache where this baseline's
    * coverage permits. `reconcile` means the cache holds a connected chain for
@@ -1351,7 +1356,12 @@ export class TranscriptRepository {
     if (window.stale) {
       if (window.coverage.length > 0) return { kind: "reconcile" };
       const newest = this.#model ?? current;
-      return newest.olderCursor ? { kind: "server" } : { kind: "exhausted", model: newest };
+      // A cursorless frontier is only history end when an accepted source read
+      // named it; until then the missing cursor means not-yet-known, so the
+      // server decides.
+      return newest.olderCursor || !this.#hasAcceptedSourceRead()
+        ? { kind: "server" }
+        : { kind: "exhausted", model: newest };
     }
     if (window.rows.length === 0) {
       // Certified local coverage below the oldest row ended. Only a frontier

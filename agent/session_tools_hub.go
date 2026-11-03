@@ -199,6 +199,7 @@ func managerDelegateDefinition(def llm.ToolDefinition, ordinary bool) llm.ToolDe
 	props["hub"] = map[string]any{
 		"type": "object", "additionalProperties": false,
 		"properties": map[string]any{
+			"host":  map[string]any{"type": "string"},
 			"cwd":   map[string]any{"type": "string"},
 			"model": map[string]any{"type": "string"},
 			"watch": hubWatchSelectorSchema(nil, nil),
@@ -213,7 +214,7 @@ func managerDelegateDefinition(def llm.ToolDefinition, ordinary bool) llm.ToolDe
 	} else {
 		params["required"] = []string{"prompt", "hub"}
 	}
-	def.Description += " In a Manager session, hub={cwd,model,watch} creates an independent local top-level session, attaches the requested watch and reads its initial state before sending prompt. Creation, watch and input are reported separately. A failed watch leaves the created session empty; an unknown launch is never retried. Hub results are not owned delegate reports. Remote creation is not supported."
+	def.Description += " In a Manager session, hub={cwd,model,watch} creates an independent top-level session, attaches the requested watch and reads its initial state before sending prompt. hub.host names any host the hub can reach; absent means this hub. Creation, watch and input are reported separately. A failed watch leaves the created session empty; an unknown launch is never retried, and an unknown or unreachable host is refused by the hub. Hub results are not owned delegate reports."
 	strictFalse := false
 	def.Strict = &strictFalse
 	def.Parameters = params
@@ -306,6 +307,7 @@ func (s *Session) createHubDelegate(ctx context.Context, args map[string]any) (a
 		return nil, err
 	}
 	var hub struct {
+		Host  string                      `json:"host"`
 		CWD   string                      `json:"cwd"`
 		Model string                      `json:"model"`
 		Watch appwire.SessionWatchRequest `json:"watch"`
@@ -314,6 +316,13 @@ func (s *Session) createHubDelegate(ctx context.Context, args map[string]any) (a
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&hub); err != nil || hub.CWD == "" || hub.Model == "" {
 		return nil, appwire.InvalidParams("hub creation requires cwd, model and watch")
+	}
+	// The hub owns the reachable roster: a named host is forwarded as the start
+	// source and routeThreadStart resolves or refuses it authoritatively. An
+	// absent host keeps the historical local default.
+	sourceID := strings.TrimSpace(hub.Host)
+	if sourceID == "" {
+		sourceID = "local"
 	}
 	if err := validateHubWatchSelectors(hub.Watch.Events, hub.Watch.Completion); err != nil {
 		return nil, appwire.InvalidParams("invalid hub watch selectors")
@@ -326,7 +335,7 @@ func (s *Session) createHubDelegate(ctx context.Context, args map[string]any) (a
 	}
 	out := managerCreateOutcome{Created: managerCreateStage{Status: "unknown"}, Watch: managerWatchStage{Status: "notAttached"}, Input: managerInputStage{Status: "notSubmitted"}}
 	created, err := client.Invoke(ctx, appwire.SessionOperationRequest{Create: &appwire.ThreadStartParams{
-		Harness: "evener", Source: "local", CWD: hub.CWD, Model: hub.Model,
+		Harness: "evener", Source: sourceID, CWD: hub.CWD, Model: hub.Model,
 	}})
 	if err != nil {
 		out.Created.Error = err.Error()

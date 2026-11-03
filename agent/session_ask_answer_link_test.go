@@ -68,7 +68,7 @@ func TestAskUser_AnswerLinkDurableAdmission(t *testing.T) {
 		t.Run(mode, func(t *testing.T) {
 			sess, adapter := newDurableAdmissionAskSessionWithAdapter(t, SessionConfig{})
 			ctx := seedDurableAdmissionAsk(t, sess)
-			adapter.steps = append(adapter.steps, func(llm.Request) llm.Response { return agenttest.CommunicateResponse(true, "answer received") })
+			adapter.appendSteps(func(llm.Request) llm.Response { return agenttest.CommunicateResponse(true, "answer received") })
 			questionID := ""
 			for _, turn := range answerLinkRecords(t, sess) {
 				if turn.Kind == schema.TurnToolResults {
@@ -160,13 +160,11 @@ func TestAskUser_AnswerLinkSuccessiveQuestions(t *testing.T) {
 	t.Parallel()
 	sess, adapter := newDurableAdmissionAskSessionWithAdapter(t, SessionConfig{})
 	ctx := seedDurableAdmissionAsk(t, sess)
-	adapter.steps = append(adapter.steps,
-		func(llm.Request) llm.Response {
-			return agenttest.ToolCallResponse(askUserCall("ask2", askUserArgsValid()))
-		},
-		func(llm.Request) llm.Response { return agenttest.CommunicateResponse(true, "finished") },
-		func(llm.Request) llm.Response { return agenttest.CommunicateResponse(true, "unrelated finished") },
-	)
+	adapter.appendSteps(func(llm.Request) llm.Response {
+		return agenttest.ToolCallResponse(askUserCall("ask2", askUserArgsValid()))
+	})
+	adapter.appendSteps(func(llm.Request) llm.Response { return agenttest.CommunicateResponse(true, "finished") })
+	adapter.appendSteps(func(llm.Request) llm.Response { return agenttest.CommunicateResponse(true, "unrelated finished") })
 	for _, input := range []string{"first answer", "second answer", "unrelated input"} {
 		if _, err := sess.ProcessInput(ctx, input, nil); err != nil {
 			t.Fatal(err)
@@ -212,7 +210,7 @@ func TestAskUser_AnswerLinkSteeringAdmission(t *testing.T) {
 			if len(questionIDs) != 1 {
 				t.Fatalf("pending question identities=%v", questionIDs)
 			}
-			adapter.steps = append(adapter.steps, func(llm.Request) llm.Response { return agenttest.CommunicateResponse(true, "steering received") })
+			adapter.appendSteps(func(llm.Request) llm.Response { return agenttest.CommunicateResponse(true, "steering received") })
 			if mode == "human_note" {
 				if _, err := sess.SetHumanNote("steer-link", "a note, not an answer"); err != nil {
 					t.Fatal(err)

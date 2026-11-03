@@ -106,6 +106,11 @@ Start a Manager by setting `manager: true` in the AppWire `thread/start`
 parameters. Anyone authorized to start a session may supply it. Manager is an
 immutable session property: an existing session cannot gain or lose it.
 
+From a client, the web form's **Start as Manager** switch (under Advanced
+options) sends that parameter with the launch. From a shell, `evener serve
+--manager` starts the daemon session with the same property. A one-shot `evener
+run` session has no hub connection, so it has no Manager mode.
+
 The session saves the bit in its metadata. Resume, process restart and Clear
 preserve it. Fresh roots and forks do not inherit it; a new Manager requires an
 explicit `manager: true` start. A missing bit means false, so existing sessions
@@ -199,12 +204,13 @@ than guessing. Cancellation checks between reads do not impose a hard wall-clock
 bound on catch-up or underlying OS I/O; see
 [completion evidence](job-control.md#manager-observation-evidence).
 
-Creation is local. `hub` accepts only `cwd`, `model` and `watch`, and an
-unknown field such as a source or host name is rejected rather than ignored.
-A Manager can discover an empty remote host and read its model catalog, but it
-cannot create the first worker there: start that worker from the remote host's
-own client, then address it by its `HOST:WORKSPACE_ID` reference. Remote
-creation is a planned follow-up, not a supported mode.
+`hub` accepts `cwd`, `model` and `watch`, plus an optional `host` naming any
+host the Manager's hub can reach; an absent host keeps the local default and
+any other unknown field is rejected rather than ignored. The hub's own roster
+resolves or refuses the host, and the receiving hub spawns locally under its
+own working-directory and model validation, so the created worker is
+addressed by its `HOST:WORKSPACE_ID` reference. Discovery of an empty remote
+host and its model catalog does not create a worker there on its own.
 
 The `delegate` result reports `created`, `watch` and `input` separately. A
 successful creation followed by a failed watch returns the worker ref, leaves

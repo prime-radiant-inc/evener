@@ -9,9 +9,18 @@ Controls follow that ownership, not the preview text or connection status.
   including while offline. Stop-canceled messages keep **Retry** as well.
 - Edit moves the exact durable identity into recovery before opening it in the
   composer. Remove deletes only that identity. Identical previews remain distinct.
-- Attempted, accepted, delivery-uncertain and legacy records with unknown attempt
-  history do not gain these local controls. Accepted daemon queue actions and
-  delivery-uncertain Retry keep their existing rules.
+- Accepted daemon queue actions and delivery-uncertain Retry keep their existing
+  rules. A local message stays editable and removable while it remains in the
+  outbox. The exceptions are a submitting row the client has already attempted
+  and is waiting on, whose edit would race that send; a legacy row with no
+  attempt metadata at all; and the non-composer verbs (interrupt, clear, note
+  saves), which keep their own controls.
+- A delivery-uncertain message is otherwise one local message like any other:
+  **Edit message** and **Remove from queue** reach it, and its row carries
+  "Delivery uncertain" as a subtitle. Editing it is the user choosing to send it
+  again - the send that follows is a new message, and that is the user's call. The row still closes its ref's FIFO - the
+  daemon may already hold it, so nothing behind it may go - and when the hub
+  cannot answer, Remove is the exit that lets later messages move.
 - Promotion and input-empty drain commands offer Remove only. Editing a
   content-bearing drain restores its composer input, not the daemon queue preview.
 - Unattempted rows appear once in QueueStrip, not also in optimistic send chips
@@ -22,7 +31,7 @@ Controls follow that ownership, not the preview text or connection status.
 flowchart LR
   Local[Local unsent identity] -->|Edit transaction| Recovery[Durable editing recovery]
   Local -->|Remove transaction| Removed[Removed identity]
-  Local -->|Transport attempt| Flight[In flight, no local Edit or Remove]
+  Local -->|Transport attempt| Flight[In flight, local controls once uncertain]
   Recovery -->|Merge into occupied draft| Owner[One durable recovery owner]
   Owner -->|Send transaction| Fresh[Fresh mutation identity]
   Fresh -->|Newer Stop| Held[Canceled, explicit Retry required]
@@ -88,8 +97,8 @@ not scope user selections; they keep pane identity stable and scope automatic
 restoration: a recovery row records the composer seat that last wrote it as
 its composition owner, and an empty composer at mount restores only the
 newest rejected row its own seat owns - the pane's own bounced work, one tap
-back. Every row stays reachable through QueueStrip's explicit Edit, Retry and
-Send now regardless of owner. A pane's own send carries its seat, so the row
+back. Every row stays reachable through QueueStrip's explicit Edit, Remove, Retry
+and Send now regardless of owner. A pane's own send carries its seat, so the row
 a refusal bounces from it restores to that pane's next mount under the same
 seat. A resumed nested session carries the authoring pane's seat to its
 replacement pane, so the resumed composer can restore its own work again.

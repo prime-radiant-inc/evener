@@ -3614,15 +3614,13 @@ it("a foreground opening whose storage read fails transiently still converges th
     // The refusal must not end recovery for good: the pane is still
     // body-suppressed with healthy storage just one read away, so the chain
     // hands to source recovery and the recorded display converges exactly as
-    // the twice-miss strand does. The bounded race keeps a red honest
-    // instead of hanging a chain that never re-arms.
-    await Promise.race([
-      settleEntryTranscriptForTests(ref),
-      new Promise<void>((resolve) => {
-        setTimeout(resolve, 2000);
-      }),
-    ]);
-    expect(bodies()).toEqual(Array.from({ length: 200 }, (_, index) => `row-${index + 26}`));
+    // the twice-miss strand does. Wait on the convergence itself: a loaded
+    // runner can outrun a fixed two-second window between the open, the
+    // refusal and the re-arm, and a chain that never re-arms still fails
+    // honestly at the ceiling instead of hanging.
+    await vi.waitFor(() => expect(bodies()).toEqual(Array.from({ length: 200 }, (_, index) => `row-${index + 26}`)), {
+      timeout: 15_000,
+    });
     expect(threadsStore.getState().threads.get(ref)?.olderCursor).toBeDefined();
   } finally {
     setSessionCacheOpenBackstopForTests(10000);
@@ -3630,7 +3628,7 @@ it("a foreground opening whose storage read fails transiently still converges th
     threadsStore.getState().releaseThread(ref);
     await lease.release();
   }
-});
+}, 30_000);
 
 it("a foreground opening whose storage reads never resolve hands to the source and settles its recovery", async () => {
   const storage = cache();

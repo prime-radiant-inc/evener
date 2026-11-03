@@ -62,6 +62,7 @@ import {
   PromptCard,
   Select,
   SendIcon,
+  Switch,
   Tooltip,
   useToasts,
   VisuallyHidden,
@@ -270,6 +271,7 @@ function SpawnForm({
   const toasts = useToasts();
   const advancedOwnerRef = useRef<HTMLDivElement>(null);
   const [source, setSource] = useDraftField(draft, "source");
+  const [manager, setManager] = useDraftField(draft, "manager");
   // The manifest carries every configured launch source (Component 06a). It is
   // empty until it loads, and in the common single-host case holds only
   // "local" - either way no picker renders, so the existing form is unchanged.
@@ -2277,6 +2279,8 @@ function SpawnForm({
       // from the wire), so the single-host request stays identical to before
       // the host picker existed.
       source: submittedSource,
+      // Start-time role: an ordinary launch omits it entirely.
+      manager,
     });
     if (builtinMatch && builtinMatch.command.id === "goal") {
       // Post-start application runs AFTER navigation below: awaiting goal/set
@@ -3009,6 +3013,12 @@ function SpawnForm({
                 options={accessOptions}
               />
             </FormRow>
+            <Switch
+              label="Start as Manager"
+              description="The session can manage any session its hub can reach. This is a start-time property: it lasts until the session ends."
+              checked={manager}
+              onChange={setManager}
+            />
           </AdvancedOptions>
         </div>
       </div>

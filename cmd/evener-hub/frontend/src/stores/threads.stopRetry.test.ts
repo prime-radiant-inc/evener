@@ -26,6 +26,7 @@ import {
   installHydrationRetrySchedulerForTests,
   installResumeRetrySchedulerForTests,
   notifyReadyForMutationDispatch,
+  removeQueuedMutation,
   resendRecoveryMutation,
   resetThreadsStoreForTests,
   resumeStopBaseline,
@@ -2112,11 +2113,9 @@ describe("Stop cancellation durability across reload, tabs, and resume", () => {
   });
 });
 
-// The escape counter counts FAILED FATE CHECKS, not failed drives: a drive
-// that never reached the hub - no ready client - checked nothing, so it must
-// not grow any row's discard threshold. A drive whose resume request went
-// out and the hub refused is a real failed check, and counts.
-test("a resume failure that never reached the hub counts as no failed delivery check", async ({ onTestFinished }) => {
+// A drive that never reached the hub - no ready client - checked nothing: the
+// failure publishes, but no second request goes out.
+test("a resume failure that never reached the hub sends no second request", async ({ onTestFinished }) => {
   const restoreResumeScheduler = installResumeRetrySchedulerForTests(() => () => undefined);
   onTestFinished(restoreResumeScheduler);
   const ref = "local:uncertain-unreached-resume";
@@ -2142,33 +2141,24 @@ test("a resume failure that never reached the hub counts as no failed delivery c
   await refreshPendingTurnsProjection(ref);
   await flushIndexedDBUntil(() => false);
   // With the hub reachable, the drive's resume request goes out and the hub
-  // refuses it: that is one failed opportunity to check the row's fate.
+  // refuses it.
   fake.on("thread/resume", () => {
     throw new Error("rendezvous timed out");
   });
   await threadsStore.getState().resumeSession(ref);
-  // The hub-reachable failure published, and its one refused request is one
-  // failed fate check.
+  // The hub-reachable failure published.
   expect(threadsStore.getState().resumeFailures.has(ref)).toBe(true);
-  expect(threadsStore.getState().uncertainRecheckFailures.get(row.clientMutationId)).toBe(1);
-  // Then, with no ready client, a later drive fails before any request goes
-  // out. It checked nothing, so the row's count must stay where the real check
-  // left it - a hub outage between checks never advances the discard
-  // threshold - and no second resume request exists.
+  // Then, with no ready client, a later drive fails before any request goes out,
+  // and no second resume request exists.
   connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
   await threadsStore.getState().resumeSession(ref);
   expect(threadsStore.getState().resumeFailures.has(ref)).toBe(true);
   expect(fake.calls.filter((call) => call.method === "thread/resume")).toHaveLength(1);
-  expect(threadsStore.getState().uncertainRecheckFailures.get(row.clientMutationId)).toBe(1);
 });
 
-// The escape ledger counts FAILED FATE CHECKS, and a drive whose client died
-// mid-reconnect - after readiness, before any resume request left - checked
-// nothing. The connection's own death must not grow any row's counter, or a
-// mere outage can unlock the deliberate discard.
-test("a resume drive whose reconnect dies before its request counts no failed delivery check", async ({
-  onTestFinished,
-}) => {
+// A drive whose client died mid-reconnect - after readiness, before any resume
+// request left - issued nothing: the connection's death is not a retry.
+test("a resume drive whose reconnect dies before its request issues nothing", async ({ onTestFinished }) => {
   const scheduledResumeRetries = trackScheduledResumeRetries(onTestFinished);
   const ref = "local:dead-reconnect-counts-nothing";
   const storage = new MutationOutboxIndexedDB();
@@ -2227,7 +2217,6 @@ test("a resume drive whose reconnect dies before its request counts no failed de
   await drive;
   await waitFor(() => expect(scheduledResumeRetries).toHaveLength(1));
   expect(fake.calls.filter((call) => call.method === "thread/resume")).toHaveLength(0);
-  expect(threadsStore.getState().uncertainRecheckFailures.has(row.clientMutationId)).toBe(false);
 });
 
 // The armed retry must also honor a Stop this page never saw: another tab's
@@ -3511,4 +3500,51 @@ test("a press that fails while an older backoff stands supersedes its fences", a
   // fire re-drove the resume (3) instead of retiring on the old pre-Stop
   // epoch.
   expect(fake.calls.filter((call) => call.method === "thread/resume")).toHaveLength(3);
+});
+
+// The complaint this answers: an uncertain message sat at the head with no way
+// to clear it. It is local work like any other row, so Remove reaches it and the
+// ref can send again.
+test("removing an uncertain head frees the ref again", async ({ onTestFinished }) => {
+  trackScheduledResumeRetries(onTestFinished);
+  const ref = "local:remove-uncertain";
+  const storage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(storage);
+  const fake = connectMutationClient();
+  fake.on("thread/read", () => readResponse(ref, { status: { type: "idle" } }));
+  fake.on("turn/start", (params) => ({
+    receipt: {
+      clientMutationId: params.clientMutationId,
+      threadId: `thr_${ref}`,
+      disposition: "applied",
+      projectionState: "notProjected",
+    },
+    turn: { id: "turn_after_remove", status: "inProgress", itemsView: "" },
+  }));
+  await threadsStore.getState().ensureThread(ref);
+  await flushIndexedDBUntil(() => false);
+  const blocked = await storage.enqueueIntent({
+    targetRef: ref,
+    threadId: `thr_${ref}`,
+    method: "turn/start",
+    payload: { ref, input: [{ type: "text", text: "uncertain" }] },
+    attachments: [],
+    optimisticDisplay: { text: "uncertain" },
+  });
+  await storage.markAttempted(blocked.clientMutationId);
+  await storage.markUnknown(blocked.clientMutationId, "blockedUnknown");
+
+  expect(await removeQueuedMutation(blocked.clientMutationId, ref)).toBe(true);
+  expect(await storage.getOutbox(blocked.clientMutationId)).toBeUndefined();
+
+  // The ref is free again: the next press goes out.
+  const sentTexts = () =>
+    fake.calls
+      .filter((call) => call.method === "turn/start")
+      .map((call) => (call.params as { input?: Array<{ text?: string }> }).input?.[0]?.text);
+  await threadsStore.getState().send(ref, "after");
+  await flushIndexedDBUntil(() => false);
+  await flushMicrotasks();
+  await flushIndexedDBUntil(() => false);
+  expect(sentTexts()).toContain("after");
 });

@@ -89,7 +89,10 @@ TLS, without a Hub or Mac transcription proxy.
 S02's shared explicit-resume drive fences mutation dispatch through identity and
 outbox reconciliation, independently of overlapping reconnect reads. Releasing
 that owner wakes eligible work on both identities without disabling ordinary
-folded Send or bypassing Stop and recovery fences.
+folded Send or bypassing Stop and recovery fences. A delivery-uncertain row is
+local work like any other: QueueStrip's Edit and Remove reach it, and removing it
+wakes the queue behind it. Editing it sends it again as a new message. A submitting row the client has already attempted and
+is waiting on stays locked, as do the verbs that have their own controls.
 
 For original transcript authors, **S10** owns durable author snapshots, first-live
 publication, indexed/history projection and preservation through ordinary and
@@ -222,7 +225,10 @@ caller's ref and instance and retains only the same target instance and
 generation; replacement or runtime restart ends the watch durably with
 re-registration guidance. Authenticated Manager input and sandbox approval use
 the target's ordinary human owners and retain the caller's actor identity.
-Manager worker creation remains local-only. See
+Manager worker creation reaches any host the Manager's hub can reach: the
+create block's optional `host` is forwarded as the start source, the hub's own
+roster resolves or refuses it, and the receiving hub spawns locally under its
+own validation. See
 [automation](../automation.md#manager-sessions), [job control](../job-control.md#manager-observation-evidence),
 and [remote operations](../evener-hub-remote-operations.md#remote-manager-and-input-support).
 

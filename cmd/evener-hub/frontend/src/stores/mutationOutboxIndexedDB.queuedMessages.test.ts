@@ -1389,4 +1389,46 @@ test("a consumed recovery retires its canceled wire sibling, whose chip leaves t
   // remains.
   const remaining = (await f.storage.listOutbox("local:queued")).filter((record) => record.method !== "turn/interrupt");
   expect(remaining).toEqual([]);
+test("removeQueuedMessage clears a delivery-uncertain row the user lets go", async () => {
+  const f = fixture();
+  const uncertain = await f.storage.enqueueIntent(queuedIntent());
+  await f.storage.markAttempted(uncertain.clientMutationId);
+  await f.storage.markUnknown(uncertain.clientMutationId, "blockedUnknown");
+  const waiting = await f.storage.enqueueIntent(queuedIntent());
+  const uncertainNow = await f.storage.getOutbox(uncertain.clientMutationId);
+  if (uncertainNow === undefined) throw new Error("fixture row missing");
+
+  // An uncertain row is local work like any other: the user's Remove reaches it.
+  expect(await f.storage.removeQueuedMessage(uncertainNow, { stopEpoch: 0 })).toBe(true);
+  expect(await f.storage.getOutbox(uncertain.clientMutationId)).toBeUndefined();
+  expect(await f.storage.getOutbox(waiting.clientMutationId)).toMatchObject({ state: "submitting" });
+});
+
+test("a row another tab already settled is not removed again", async () => {
+  const f = fixture();
+  const uncertain = await f.storage.enqueueIntent(queuedIntent());
+  await f.storage.markAttempted(uncertain.clientMutationId);
+  await f.storage.markUnknown(uncertain.clientMutationId, "blockedUnknown");
+  const uncertainNow = await f.storage.getOutbox(uncertain.clientMutationId);
+  if (uncertainNow === undefined) throw new Error("fixture row missing");
+  // Another tab settled it before this click's write: the row is gone, and the
+  // press reports no removal of its own.
+  await f.peer.settleReceipt(uncertain.clientMutationId, "notProjected");
+
+  expect(await f.storage.removeQueuedMessage(uncertainNow, { stopEpoch: 0 })).toBe(false);
+  expect(await f.storage.getOutbox(uncertain.clientMutationId)).toBeUndefined();
+});
+
+test("editQueuedMessage opens a delivery-uncertain row for a fresh send", async () => {
+  const f = fixture();
+  const uncertain = await f.storage.enqueueIntent(queuedIntent());
+  await f.storage.markAttempted(uncertain.clientMutationId);
+  await f.storage.markUnknown(uncertain.clientMutationId, "blockedUnknown");
+  const uncertainNow = await f.storage.getOutbox(uncertain.clientMutationId);
+  if (uncertainNow === undefined) throw new Error("fixture row missing");
+
+  const recovery = await f.storage.editQueuedMessage(uncertainNow, { stopEpoch: 0 });
+
+  expect(recovery).toMatchObject({ recoveryKind: "editing" });
+  expect(await f.storage.getOutbox(uncertain.clientMutationId)).toBeUndefined();
 });

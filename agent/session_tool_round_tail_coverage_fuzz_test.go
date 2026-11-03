@@ -121,12 +121,13 @@ func FuzzSessionToolRoundTailCoverage(f *testing.F) {
 
 		t.Run("cancel after image description", func(t *testing.T) {
 			ctx, cancel := context.WithCancel(context.Background())
-			visionAdapter := &agenttest.FakeAdapter{Provider: "openai", Steps: []func(llm.Request) llm.Response{
+			visionAdapter := &agenttest.FakeAdapter{Provider: "openai"}
+			visionAdapter.SetSteps([]func(llm.Request) llm.Response{
 				func(llm.Request) llm.Response {
 					cancel()
 					return llm.Response{Message: llm.Assistant("scripted description")}
 				},
-			}}
+			})
 			visionSession := toolRoundTailSession(t, visionAdapter)
 			calls := []llm.ToolCallData{{ID: "image", Name: "read_image", Arguments: []byte(`{"file_path":"fixture.png"}`)}}
 			results := []tool.ExecResult{{CallID: "image", ToolName: "read_image", ImageData: []byte("fixture"), ImageMediaType: "image/png"}}
@@ -219,11 +220,12 @@ func FuzzSessionToolRoundTailCoverage(f *testing.F) {
 				t.Fatalf("ask boundary = done %v state %v", done, s.State())
 			}
 
-			hookAdapter := &agenttest.FakeAdapter{Provider: "openai", Steps: []func(llm.Request) llm.Response{
+			hookAdapter := &agenttest.FakeAdapter{Provider: "openai"}
+			hookAdapter.SetSteps([]func(llm.Request) llm.Response{
 				func(llm.Request) llm.Response {
 					return llm.Response{Message: llm.Assistant(`{"decision":"block","reason":"keep working","hookSpecificOutput":{"additionalContext":"model note"},"systemMessage":"user note"}`)}
 				},
-			}}
+			})
 			hookClient := llm.NewClient()
 			hookClient.Register(hookAdapter)
 			runner := hooks.NewRunner(hookClient, "gpt-5")
