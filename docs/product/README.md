@@ -16,7 +16,8 @@ changes; keep implementation history in Git and pull requests.
 - [Manager workflow](../automation.md#manager-sessions): an immutable session
   start parameter for anyone authorized to start a session. Managers discover,
   observe and act on sessions reachable through their own hub, with local and
-  remote watches; worker creation remains local-only. The daemon owns status;
+  remote watches and worker creation on any reachable host (local by default).
+  The daemon owns status;
   web and native show a read-only indication. Ownership stays in the existing session, hub, input,
   history and watch subsystems.
 - [Session pulse meter](pulse-meter.md): the hub's live per-session activity

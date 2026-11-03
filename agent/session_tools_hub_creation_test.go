@@ -13,10 +13,12 @@ import (
 // Only the hub boundary is scripted. Input acceptance and replay use the real
 // worker's durable mutation owner, including its persisted pending execution.
 type managerCreationClient struct {
-	worker  *Session
-	stage   string
-	creates int
-	starts  []appwire.TurnStartParams
+	worker        *Session
+	stage         string
+	creates       int
+	createReqs    []appwire.ThreadStartParams
+	createHeldErr error
+	starts        []appwire.TurnStartParams
 }
 
 func (*managerCreationClient) State(context.Context) (appwire.ManagerView, error) {
@@ -25,6 +27,10 @@ func (*managerCreationClient) State(context.Context) (appwire.ManagerView, error
 func (c *managerCreationClient) Invoke(_ context.Context, req appwire.SessionOperationRequest) (appwire.SessionOperationResponse, error) {
 	if req.Create != nil {
 		c.creates++
+		c.createReqs = append(c.createReqs, *req.Create)
+		if c.createHeldErr != nil {
+			return appwire.SessionOperationResponse{}, c.createHeldErr
+		}
 		if c.stage == "createFailed" {
 			return appwire.SessionOperationResponse{}, appwire.WireError{Code: appwire.CodeConflict, Data: appwire.ErrorData{MutationOutcome: appwire.MutationOutcomeNotAccepted}}
 		}
@@ -204,5 +210,73 @@ func TestManagerCreationReturnsPersistedMutationIdentity(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// A Manager creation names a host just like every other hub operation: the
+// authoritative roster is the hub's, so the tool forwards the source and lets
+// routeThreadStart resolve or refuse it. An absent host keeps the historical
+// local default.
+func TestManagerCreatePassesTheNamedHost(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct{ name, host, want string }{
+		{name: "named host", host: "host-b", want: "host-b"},
+		{name: "absent host stays local", host: "", want: "local"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			worker := newTestSession(t)
+			client := &managerCreationClient{worker: worker}
+			root := newMessagingRoot(t, newMessagingAdapter(), func(cfg *SessionConfig) { cfg.Manager = true })
+			root.SetHubClient(client)
+			hub := map[string]any{
+				"cwd": t.TempDir(), "model": "openai/gpt-5.2",
+				"watch": map[string]any{"events": []string{}, "completion": true},
+			}
+			if tc.host != "" {
+				hub["host"] = tc.host
+			}
+			value, err := root.createHubDelegate(t.Context(), map[string]any{"prompt": "worker task", "hub": hub})
+			if err != nil {
+				t.Fatal(err)
+			}
+			out, ok := value.(managerCreateOutcome)
+			if !ok || out.Created.Status != "created" || out.Watch.Status != "attached" || out.Input.Status != "submitted" {
+				t.Fatalf("creation stages = %#v", value)
+			}
+			if len(client.createReqs) != 1 || client.createReqs[0].Source != tc.want {
+				t.Fatalf("create sources = %+v, want one %q", client.createReqs, tc.want)
+			}
+		})
+	}
+}
+
+// A hub-side host refusal is the create stage's error: the tool reports it, does
+// not retry, and never attaches a watch or submits input to a session that was
+// not created.
+func TestManagerCreateSurfacesTheHubHostRefusal(t *testing.T) {
+	t.Parallel()
+	worker := newTestSession(t)
+	client := &managerCreationClient{worker: worker, createHeldErr: appwire.Unavailable("spawn source is not available: ghost")}
+	root := newMessagingRoot(t, newMessagingAdapter(), func(cfg *SessionConfig) { cfg.Manager = true })
+	root.SetHubClient(client)
+	value, err := root.createHubDelegate(t.Context(), map[string]any{
+		"prompt": "worker task",
+		"hub": map[string]any{
+			"host": "ghost", "cwd": t.TempDir(), "model": "openai/gpt-5.2",
+			"watch": map[string]any{"events": []string{}, "completion": true},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, ok := value.(managerCreateOutcome)
+	if !ok || out.Created.Status == "created" || out.Created.Error == "" {
+		t.Fatalf("hub refusal lost: %#v", value)
+	}
+	if out.Watch.Status != "notAttached" || out.Input.Status != "notSubmitted" {
+		t.Fatalf("stages after a refused create: %#v", out)
+	}
+	if len(client.createReqs) != 1 || len(client.starts) != 0 {
+		t.Fatalf("create calls=%d start calls=%d; want one create and no start", len(client.createReqs), len(client.starts))
 	}
 }
