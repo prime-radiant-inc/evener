@@ -62,6 +62,7 @@ import {
 } from "@evener/appwire-client";
 import {
   COMPOSER_METHODS,
+  canDiscardUncertainMessage,
   canEditQueuedMessage,
   canRemoveQueuedMessage,
   DIRECT_FALLBACK_METHODS,
@@ -3681,6 +3682,40 @@ export async function removeQueuedMutation(clientMutationId: string, targetRef: 
   noteMutationStateChange(targetRef);
   notifyMutationPersistence([targetRef]);
   return removed;
+}
+
+// The failed delivery checks a message must survive before the user can throw
+// it away: the hub has had honest chances to say what became of it, so the
+// escape hatch is a decision made after asking, never on first uncertainty.
+export const UNCERTAIN_DISCARD_AFTER_RECHECKS = 2;
+
+// Whether this uncertain row's escape hatch is open yet.
+export function canDiscardUncertainMutation(clientMutationId: string): boolean {
+  return (
+    (threadsStore.getState().uncertainRecheckFailures.get(clientMutationId) ?? 0) >= UNCERTAIN_DISCARD_AFTER_RECHECKS
+  );
+}
+
+// The user's own way out of a delivery-uncertain row: it leaves the outbox, its
+// failed-check count leaves with it, and whatever queue waited behind it may
+// move again. Its fate was unknown to both sides, so nothing else could have
+// cleared it.
+export async function discardUncertainMutation(clientMutationId: string, targetRef: string): Promise<boolean> {
+  const runtime = requireMutationRuntime();
+  const capture = runtime.storage.getOutboxWithStopEpoch(clientMutationId);
+  await runtime.start;
+  const { record } = await capture;
+  if (!record || !canDiscardUncertainMessage(record) || !localMutationIdentityMatches(record, targetRef)) return false;
+  if (!canDiscardUncertainMutation(clientMutationId)) return false;
+  const discarded = await runtime.storage.discardUncertainMessage(record);
+  if (!discarded) return false;
+  clearUncertainRecheckFailure(clientMutationId);
+  noteHandledMutation(clientMutationId);
+  noteMutationStateChange(targetRef);
+  notifyMutationPersistence([targetRef]);
+  // The row was the ref's FIFO head; the messages behind it were waiting on it.
+  notifyReadyForMutationDispatch([targetRef]);
+  return true;
 }
 
 // One more failed opportunity to check a row's fate: a Retry press that still

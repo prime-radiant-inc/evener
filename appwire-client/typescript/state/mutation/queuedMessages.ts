@@ -73,3 +73,15 @@ export function canEditQueuedMessage(record: MutationOutboxRecord): boolean {
 export function canRemoveQueuedMessage(record: MutationOutboxRecord): boolean {
   return isSafelyWaiting(record) && PENDING_TURN_METHODS.includes(record.method);
 }
+
+// The escape hatch for a delivery-uncertain message. A blockedUnknown head
+// closes the ref's FIFO (the daemon may already hold it, so nothing behind it
+// may go), and the only exits were a successful reconcile or a Retry that
+// canceled it. Neither is available when the hub cannot answer, which is how an
+// uncertain message used to block every later one with no way to clear it. The
+// user's own decision to let the message go is the third exit, and it is safe
+// precisely because the row's fate is unknown to both sides: nothing else can
+// prove it delivered, so keeping it forever is not the conservative choice.
+export function canDiscardUncertainMessage(record: MutationOutboxRecord): boolean {
+  return record.state === "blockedUnknown" && hasComposerInput(record);
+}

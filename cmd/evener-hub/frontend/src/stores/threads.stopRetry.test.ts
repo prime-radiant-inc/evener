@@ -21,9 +21,12 @@ import { SessionEntryCache } from "./sessionEntryCache";
 import { holdNextWriteTransaction, wedgeDatabaseOpens } from "./testing/stalledIndexedDB";
 import {
   acquireBackgroundThread,
+  canDiscardUncertainMutation,
   discardRecoveryMutation,
+  discardUncertainMutation,
   installHydrationRetrySchedulerForTests,
   installResumeRetrySchedulerForTests,
+  noteUncertainRecheckFailure,
   notifyReadyForMutationDispatch,
   resetThreadsStoreForTests,
   resumeStopBaseline,
@@ -3059,4 +3062,61 @@ test("a press that fails while an older backoff stands supersedes its fences", a
   // fire re-drove the resume (3) instead of retiring on the old pre-Stop
   // epoch.
   expect(fake.calls.filter((call) => call.method === "thread/resume")).toHaveLength(3);
+});
+
+// The complaint this escape hatch answers: an uncertain message sat at the head
+// and every later message waited behind it, with no way to clear it. After the
+// hub has had its chances to settle the row, the user can let it go and the
+// queue moves.
+test("discarding an uncertain head lets the messages behind it send", async ({ onTestFinished }) => {
+  trackScheduledResumeRetries(onTestFinished);
+  const ref = "local:discard-uncertain";
+  const storage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(storage);
+  const fake = connectMutationClient();
+  fake.on("thread/read", () => readResponse(ref, { status: { type: "idle" } }));
+  fake.on("turn/start", (params) => ({
+    receipt: {
+      clientMutationId: params.clientMutationId,
+      threadId: `thr_${ref}`,
+      disposition: "applied",
+      projectionState: "notProjected",
+    },
+    turn: { id: "turn_after_discard", status: "inProgress", itemsView: "" },
+  }));
+  await threadsStore.getState().ensureThread(ref);
+  await flushIndexedDBUntil(() => false);
+  // A message whose delivery the hub cannot settle.
+  const blocked = await storage.enqueueIntent({
+    targetRef: ref,
+    threadId: `thr_${ref}`,
+    method: "turn/start",
+    payload: { ref, input: [{ type: "text", text: "uncertain" }] },
+    attachments: [],
+    optimisticDisplay: { text: "uncertain" },
+  });
+  await storage.markAttempted(blocked.clientMutationId);
+  await storage.markUnknown(blocked.clientMutationId, "blockedUnknown");
+
+  // Before the hub has had its chances, the hatch is shut.
+  expect(await discardUncertainMutation(blocked.clientMutationId, ref)).toBe(false);
+  noteUncertainRecheckFailure(blocked.clientMutationId);
+  noteUncertainRecheckFailure(blocked.clientMutationId);
+  expect(canDiscardUncertainMutation(blocked.clientMutationId)).toBe(true);
+
+  // The user lets it go: the row leaves the outbox and its count with it.
+  expect(await discardUncertainMutation(blocked.clientMutationId, ref)).toBe(true);
+  expect(await storage.getOutbox(blocked.clientMutationId)).toBeUndefined();
+  expect(canDiscardUncertainMutation(blocked.clientMutationId)).toBe(false);
+
+  // The ref is free again: the next press goes out.
+  const sentTexts = () =>
+    fake.calls
+      .filter((call) => call.method === "turn/start")
+      .map((call) => (call.params as { input?: Array<{ text?: string }> }).input?.[0]?.text);
+  await threadsStore.getState().send(ref, "after");
+  await flushIndexedDBUntil(() => false);
+  await flushMicrotasks();
+  await flushIndexedDBUntil(() => false);
+  expect(sentTexts()).toContain("after");
 });

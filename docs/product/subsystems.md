@@ -89,7 +89,9 @@ TLS, without a Hub or Mac transcription proxy.
 S02's shared explicit-resume drive fences mutation dispatch through identity and
 outbox reconciliation, independently of overlapping reconnect reads. Releasing
 that owner wakes eligible work on both identities without disabling ordinary
-folded Send or bypassing Stop and recovery fences.
+folded Send or bypassing Stop and recovery fences. A delivery-uncertain row that
+the hub cannot settle is the user's to let go: QueueStrip's Discard removes it,
+after the client's failed delivery checks, and wakes the queue behind it.
 
 For original transcript authors, **S10** owns durable author snapshots, first-live
 publication, indexed/history projection and preservation through ordinary and
