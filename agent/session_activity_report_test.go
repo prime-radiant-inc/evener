@@ -159,13 +159,7 @@ func TestSessionActivityOpenGenerationOmitsPriorOutcome(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			finish := delegateRunFinishedEvent(delegateLease{delegateID: id, generation: 1}, tc.outcome, tc.disposition, tc.reason, at.Add(time.Second), delegateDeliveryID(id, 1), &tc.packet)
-			finish.RunFinished.Outcome.Error = tc.errorText
-			appendEvents(
-				delegatestore.Event{Kind: delegatestore.EventDelegateCreated, DelegateID: id, Created: &delegatestore.DelegateCreated{Descriptor: descriptor}},
-				delegateControllerRunStartedEvent(id, 1, delegatestore.TriggerInitial, at),
-				finish,
-			)
+			seedStableReadonlyFinish(t, s, id, descriptor, at, delegateFinish{outcome: tc.outcome, disposition: tc.disposition, reason: tc.reason, errorText: tc.errorText, packet: &tc.packet, endedAt: at.Add(time.Second)}, false)
 
 			prior := ending{outcome: string(tc.outcome), reason: tc.reason, errorText: tc.errorText, endedAt: at.Add(time.Second).Format(time.RFC3339Nano), terminal: true, reportPreview: tc.wantReport}
 			open := ending{}
