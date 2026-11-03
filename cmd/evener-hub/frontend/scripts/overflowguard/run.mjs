@@ -932,10 +932,14 @@ function assertDetail(result, width) {
   if (detail?.mobile !== mobile)
     failures.push(`Verbosity layout mode is ${detail?.mobile}, realized viewport mode is ${mobile}`);
   failures.push(...assertFieldsets(detail, `${width}px Verbosity`));
+  // The count covers every control in the Verbosity panel; a control added or
+  // lost without this update flips it, and the mismatch lists the inventory.
   const expectedTargets = 33;
   if ((detail?.targets?.length ?? 0) !== expectedTargets) {
     failures.push(
-      `Verbosity mounted ${detail?.targets?.length ?? "unknown"} interactive targets, expected ${expectedTargets}`,
+      `Verbosity mounted ${detail?.targets?.length ?? "unknown"} interactive targets, expected ${expectedTargets}: ${JSON.stringify(
+        (detail?.targets ?? []).map((target) => ({ kind: target.kind, label: target.label })),
+      )}`,
     );
   }
   if (!(detail?.targets ?? []).some((target) => target.kind === "menuitem" && target.label === "Verbosity…")) {
