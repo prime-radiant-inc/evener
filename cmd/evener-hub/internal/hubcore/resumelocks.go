@@ -68,6 +68,12 @@ func NewPersistentResumeLocks(stateRoot string) (*ResumeLocks, error) {
 	r.store = store
 	r.recovery = make(map[string]SessionRecoveryState)
 	groups := make(map[string]*sessionRecoveryGroup)
+	// The generation is restored apart from the Stop authority: a session with
+	// no Stop record still carries the epochs its Stops and shutdowns advanced
+	// in an earlier incarnation.
+	for alias, epoch := range store.epochs {
+		r.recovery[alias] = SessionRecoveryState{Epoch: epoch}
+	}
 	for alias, authority := range store.state {
 		id := authority.Group
 		group := groups[id]
@@ -76,9 +82,31 @@ func NewPersistentResumeLocks(stateRoot string) (*ResumeLocks, error) {
 			groups[id] = group
 		}
 		group.aliases = append(group.aliases, alias)
-		r.recovery[alias] = SessionRecoveryState{ResumeRequired: true, ExitConfirmed: authority.ExitConfirmed, group: group, durableGroup: id, ResumeSessionID: authority.SessionID, owner: daemonprocess.Target{PID: authority.OwnerPID, SessionID: authority.SessionID, StateDir: authority.OwnerStateDir, StartedAt: authority.OwnerStartedAt}}
+		r.recovery[alias] = SessionRecoveryState{ResumeRequired: true, ExitConfirmed: authority.ExitConfirmed, group: group, durableGroup: id, ResumeSessionID: authority.SessionID, Epoch: store.epochs[alias], owner: daemonprocess.Target{PID: authority.OwnerPID, SessionID: authority.SessionID, StateDir: authority.OwnerStateDir, StartedAt: authority.OwnerStartedAt}}
 	}
 	return r, nil
+}
+
+// persistEpochs commits the sessions' advanced recovery epochs. Best-effort by
+// design: the epoch already fences this incarnation, and a failed commit leaves
+// the previous value on disk - the conservative direction, since a smaller
+// restored epoch only fails to prove a Stop.
+func (r *ResumeLocks) persistEpochs() {
+	if r.store == nil {
+		return
+	}
+	r.persistenceMu.Lock()
+	defer r.persistenceMu.Unlock()
+	r.mu.Lock()
+	next := maps.Clone(r.store.epochs)
+	for alias, state := range r.recovery {
+		if state.Epoch == 0 || next[alias] == state.Epoch {
+			continue
+		}
+		next[alias] = state.Epoch
+	}
+	r.mu.Unlock()
+	_ = r.store.commitEpochs(next)
 }
 
 // PersistForceStop records verified aliases and their current transcript under
@@ -982,12 +1010,15 @@ func (r *ResumeLocks) InvalidateSessionAdmission(sessionID string) {
 // reported the session stopped; it is refused and must re-admit afterward.
 func (r *ResumeLocks) InvalidateResumeAdmission(aliases []string) {
 	r.mu.Lock()
-	defer r.mu.Unlock()
 	for _, id := range aliases {
 		state := r.recovery[id]
 		state.Epoch++
 		r.recovery[id] = state
 	}
+	r.mu.Unlock()
+	// The advance must outlive this process: a Stop before a hub restart has to
+	// still supersede the tokens minted before it.
+	r.persistEpochs()
 }
 
 // ExplicitResumeCompleted clears every alias only if no newer recovery began.

@@ -482,6 +482,9 @@ export class MutationOutboxIndexedDB implements QueuedMessageStorage<MutationAtt
     targetRef: string,
     upToSequence: number | undefined,
     recoveryToken: string,
+    // Only rows issued once the drain this press waited out began: an older
+    // parked message keeps the token it was issued under.
+    fromSequence = 0,
   ): Promise<string[]> {
     return this.#write(OUTBOX_STORE, "authorizeParkedRows", async (transaction) => {
       const store = transaction.objectStore(OUTBOX_STORE);
@@ -489,6 +492,7 @@ export class MutationOutboxIndexedDB implements QueuedMessageStorage<MutationAtt
       const authorized: string[] = [];
       for (const record of records) {
         if (record.targetRef !== targetRef || record.state !== "submitting") continue;
+        if (record.intentSequence < fromSequence) continue;
         if (upToSequence !== undefined && record.intentSequence > upToSequence) continue;
         if (record.recoveryTokenAtEnqueue === recoveryToken) continue;
         await requestResult(store.put({ ...record, recoveryTokenAtEnqueue: recoveryToken }));

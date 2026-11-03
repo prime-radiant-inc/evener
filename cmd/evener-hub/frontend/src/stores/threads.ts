@@ -2153,6 +2153,7 @@ const parkedRowCancels = new Set<string>();
 function parkOutranRow(
   targetRef: string,
   record: { clientMutationId?: string; intentSequence?: number; recoveryTokenAtEnqueue?: string },
+  marked: boolean,
 ): void {
   if (!rowOutranRead(targetRef, record)) return;
   const clientMutationId = record.clientMutationId;
@@ -2161,10 +2162,11 @@ function parkOutranRow(
   if (clientMutationId !== undefined && runtime !== null && !parkedRowCancels.has(clientMutationId)) {
     parkedRowCancels.add(clientMutationId);
     void (async () => {
-      // The attempt this pass wrote is the only evidence provably unsent here:
-      // the count-aware rollback keeps any earlier or concurrent attempt's.
-      await runtime.storage.unmarkAttempted(clientMutationId).catch(() => false);
-      await cancelSupersededMutations(targetRef, record.intentSequence, true);
+      // Only an attempt THIS pass wrote is provably unsent; the count-aware
+      // rollback keeps an earlier or concurrent attempt's evidence, so an
+      // applied-but-unacked send still reports itself.
+      if (marked) await runtime.storage.unmarkAttempted(clientMutationId).catch(() => false);
+      await cancelSupersededMutations(targetRef, record.intentSequence, !marked);
     })().finally(() => parkedRowCancels.delete(clientMutationId));
   }
 }
@@ -2309,7 +2311,9 @@ function currentDispatchClient(
       // tab (or this page after a reload) can read a newer token - another
       // device's Stop - and must not fold the row past it. A row with no
       // capture predates the field and is admitted as before.
-      (method === "turn/start" && options?.record !== undefined && rowOutranRead(targetRef, options.record)) ||
+      ((method === "turn/start" || method === "turn/queue") &&
+        options?.record !== undefined &&
+        rowOutranRead(targetRef, options.record)) ||
       // A supersession's cancellation storage has not committed yet: the rows
       // it names are still dispatchable, so the ref waits until the write lands
       // instead of folding a resume over the Stop that superseded them.
@@ -2638,7 +2642,7 @@ function getMutationRuntime(): MutationRuntime | null {
     isCurrentMutationRuntime(runtime) ? currentDispatchClient(targetRef, method, true, { record }) : null;
   const dispatcher = new MutationDispatcher(storage, {
     getClient,
-    onStaleRecord: (record) => parkOutranRow(record.targetRef, record),
+    onStaleRecord: (record, marked) => parkOutranRow(record.targetRef, record, marked),
     onStorageChange: (targetRefs, cause) => {
       // The dispatcher's own state changes - a settle, a recovery transfer, a
       // blocked reclassification - invalidate in-flight reads for every ref it
@@ -3350,7 +3354,16 @@ async function runResumeFencedForSend(
     // stays the single recovery action: the press parks its row and this drive
     // runs once the drain settles, instead of the user meeting a Resume button.
     // Only a drain in progress waits for another user action to settle.
-    while (threadsStore.getState().stoppingRefs.has(ref)) await waitForStopDrain(ref);
+    // A press that outlives this page's Stop resumes under the post-drain
+    // token, and only the rows it issued during that drain are re-authorized
+    // with it: older parked messages keep the token they were issued under.
+    // Read only when there is a drain to wait out, so the ordinary press keeps
+    // the drive's step order.
+    let drainBoundStart: number | undefined;
+    if (threadsStore.getState().stoppingRefs.has(ref)) {
+      drainBoundStart = await readIntentSequenceBound(mutationRuntime, ref);
+      while (threadsStore.getState().stoppingRefs.has(ref)) await waitForStopDrain(ref);
+    }
     if (!drive.automatic) {
       // The Stop that held this press completed while it waited, and its new
       // token lives only in a fresh read: a press naming the pre-Stop token
@@ -3370,7 +3383,7 @@ async function runResumeFencedForSend(
             // the token the press now names, or a later foldable read parks
             // this fresh message as outrun.
             void mutationRuntime?.storage
-              .authorizeParkedRows(ref, attemptCancelBound, reconciledToken)
+              .authorizeParkedRows(ref, attemptCancelBound, reconciledToken, (drainBoundStart ?? 0) + 1)
               .catch(() => undefined);
           }
         } catch {

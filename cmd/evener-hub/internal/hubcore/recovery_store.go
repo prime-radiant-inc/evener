@@ -28,6 +28,21 @@ type recoveryAuthority struct {
 	OwnerPID       int       `json:"owner_pid,omitempty"`
 	OwnerStateDir  string    `json:"owner_state_dir,omitempty"`
 	OwnerStartedAt time.Time `json:"owner_started_at,omitzero"`
+	// Epoch is the session's hub-owned recovery generation at the last
+	// commit. It is restored with the authority so a Stop that landed before a
+	// hub restart still supersedes every token minted before it: without it the
+	// restored generation starts at zero and a Stop plus restart is
+	// indistinguishable from a restart.
+	Epoch uint64 `json:"epoch,omitempty"`
+}
+
+// recoveryEpochs is the hub-owned recovery generation per session, kept apart
+// from the Stop authority: a session with no Stop record still advances its
+// generation (an ordinary shutdown does), and the advance must survive a hub
+// restart so a Stop that landed before it still supersedes older tokens.
+type recoveryEpochs struct {
+	Version int               `json:"version"`
+	Epochs  map[string]uint64 `json:"epochs"`
 }
 
 type recoveryRecord struct {
@@ -52,7 +67,10 @@ type recoveryStore struct {
 	root          string
 	directoryBase string
 	state         map[string]recoveryAuthority
-	faults        recoveryStoreFaults
+	// epochs is the per-session recovery generation, persisted separately from
+	// the Stop authority.
+	epochs map[string]uint64
+	faults recoveryStoreFaults
 }
 
 func openRecoveryStore(fs afero.Fs, root string) (*recoveryStore, error) {
@@ -64,7 +82,10 @@ func openRecoveryStore(fs afero.Fs, root string) (*recoveryStore, error) {
 	if err != nil {
 		return nil, err
 	}
-	store := &recoveryStore{fs: fs, root: root, directoryBase: base, state: map[string]recoveryAuthority{}}
+	store := &recoveryStore{fs: fs, root: root, directoryBase: base, state: map[string]recoveryAuthority{}, epochs: map[string]uint64{}}
+	if err := store.loadEpochs(); err != nil {
+		return nil, err
+	}
 	data, err := afero.ReadFile(fs, filepath.Join(root, "recovery", "state.json"))
 	if os.IsNotExist(err) {
 		return store, nil
@@ -102,6 +123,46 @@ func openRecoveryStore(fs afero.Fs, root string) (*recoveryStore, error) {
 	return store, nil
 }
 
+func (s *recoveryStore) loadEpochs() error {
+	data, err := afero.ReadFile(s.fs, filepath.Join(s.root, "recovery", "epochs.json"))
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("read recovery epochs: %w", err)
+	}
+	var snapshot recoveryEpochs
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&snapshot); err != nil {
+		return fmt.Errorf("decode recovery epochs: %w", err)
+	}
+	if snapshot.Version != 1 {
+		return fmt.Errorf("unsupported recovery epoch state version %d", snapshot.Version)
+	}
+	for session, epoch := range snapshot.Epochs {
+		if !validRecoveryAlias(session) {
+			return fmt.Errorf("invalid recovery epoch alias %q", session)
+		}
+		s.epochs[session] = epoch
+	}
+	return nil
+}
+
+func (s *recoveryStore) commitEpochs(next map[string]uint64) error {
+	snapshot := recoveryEpochs{Version: 1, Epochs: next}
+	data, err := json.Marshal(snapshot)
+	if err != nil {
+		return err
+	}
+	_, err = s.writeFile("epochs.json", data)
+	if err != nil {
+		return fmt.Errorf("persist recovery epochs: %w", err)
+	}
+	s.epochs = next
+	return nil
+}
+
 func validRecoveryAlias(alias string) bool {
 	return alias != "" && alias != "." && alias != ".." && strings.TrimSpace(alias) == alias && !strings.ContainsAny(alias, "/\\:\x00")
 }
@@ -135,11 +196,17 @@ func (s *recoveryStore) commit(next map[string]recoveryAuthority) (bool, error) 
 // AfterRename fault before the directory sync and folds that sync into the
 // same write result. See TestRecoveryIntentRequiresFileAndDirectoryDurability.
 func (s *recoveryStore) write(data []byte) (renamed bool, err error) {
+	return s.writeFile("state.json", data)
+}
+
+// writeFile commits data as <recovery>/<name> with the store's durability
+// contract.
+func (s *recoveryStore) writeFile(name string, data []byte) (renamed bool, err error) {
 	dir := filepath.Join(s.root, "recovery")
 	if err := createRecoveryDirectory(s.fs, dir, s.directoryBase); err != nil {
 		return false, err
 	}
-	temp, err := afero.TempFile(s.fs, dir, "state.json.tmp-*")
+	temp, err := afero.TempFile(s.fs, dir, name+".tmp-*")
 	if err != nil {
 		return false, err
 	}
@@ -167,7 +234,7 @@ func (s *recoveryStore) write(data []byte) (renamed bool, err error) {
 			return false, err
 		}
 	}
-	if err := s.fs.Rename(tempPath, filepath.Join(dir, "state.json")); err != nil {
+	if err := s.fs.Rename(tempPath, filepath.Join(dir, name)); err != nil {
 		return false, err
 	}
 	renamed = true

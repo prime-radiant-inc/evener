@@ -2,6 +2,7 @@ package hubcore
 
 import (
 	"errors"
+	"strings"
 	"testing"
 )
 
@@ -340,4 +341,36 @@ func TestForceStopFenceFinishIsIdempotent(t *testing.T) {
 	if state.LastRecoverySequence != first.LastRecoverySequence {
 		t.Fatalf("second Finish rewrote the fenced alias's sequence: after first=%d, after second=%d", first.LastRecoverySequence, state.LastRecoverySequence)
 	}
+}
+
+// The recovery generation must survive a hub restart: a Stop that landed before
+// the restart has to keep superseding the tokens minted before it, or the
+// recreated hub mints from zero and a stopped session looks untouched.
+func TestRecoveryEpochSurvivesRestart(t *testing.T) {
+	root := t.TempDir()
+	locks, err := NewPersistentResumeLocks(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const session = "session-epoch"
+	locks.InvalidateSessionAdmission(session)
+	before := locks.RecoveryToken(session)
+
+	restored, err := NewPersistentResumeLocks(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	after := restored.RecoveryToken(session)
+	if minted, current := tokenEpochPart(before), tokenEpochPart(after); minted != current {
+		t.Fatalf("restored recovery epoch = %q, want the committed %q (token %q -> %q)", current, minted, before, after)
+	}
+}
+
+// tokenEpochPart is the numeric suffix of a recovery token.
+func tokenEpochPart(token string) string {
+	separator := strings.LastIndex(token, ":")
+	if separator < 0 {
+		return ""
+	}
+	return token[separator+1:]
 }
