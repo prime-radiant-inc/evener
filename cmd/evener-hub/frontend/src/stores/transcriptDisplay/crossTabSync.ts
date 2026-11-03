@@ -4,9 +4,7 @@ import {
   type TranscriptDisplayConfigV1,
   type ViewportClass,
 } from "@evener/appwire-client";
-import type { ConversationPresentation } from "../transcriptDisplay";
 import { createVersionedChannel, makeSourceId, type VersionedChannelMessage } from "../versionedChannel";
-import { isConversationPresentation, PRESENTATION_KEYS } from "./localStore";
 
 export { makeSourceId } from "../versionedChannel";
 
@@ -14,7 +12,6 @@ type LocalConfigByLayout = Partial<Record<ViewportClass, TranscriptDisplayConfig
 
 interface SyncState {
   local: LocalConfigByLayout;
-  presentation: Record<ViewportClass, ConversationPresentation>;
 }
 
 interface LocalMessage extends VersionedChannelMessage {
@@ -23,18 +20,11 @@ interface LocalMessage extends VersionedChannelMessage {
   fingerprint: string | null;
 }
 
-interface PresentationMessage extends VersionedChannelMessage {
-  kind: "presentation";
-  layout: ViewportClass;
-  presentation: ConversationPresentation;
-}
-
 interface BrowserSyncOptions {
   channelName: string;
   localKeys: Record<ViewportClass, string>;
   getState: () => SyncState;
   applyLocal: (layout: ViewportClass, config: TranscriptDisplayConfigV1 | undefined) => void;
-  applyPresentation: (layout: ViewportClass, value: ConversationPresentation) => void;
   onDetach: () => void;
 }
 
@@ -42,20 +32,15 @@ export interface BrowserSync {
   attach(): void;
   detach(): void;
   broadcastLocal(layout: ViewportClass, encoded: string | null): void;
-  broadcastPresentation(layout: ViewportClass, value: ConversationPresentation): void;
 }
 
 export function createBrowserSync(options: BrowserSyncOptions): BrowserSync {
   let sourceId = "";
-  const channel = createVersionedChannel<LocalMessage | PresentationMessage>({
+  const channel = createVersionedChannel<LocalMessage>({
     name: options.channelName,
     getSourceId: () => sourceId,
-    isMessage: (value): value is LocalMessage | PresentationMessage =>
-      isLocalMessage(value) || isPresentationMessage(value),
-    onMessage: (message) => {
-      if ("kind" in message) applyIncomingPresentation(message.layout, message.presentation);
-      else applyIncomingLocal(message);
-    },
+    isMessage: (value): value is LocalMessage => isLocalMessage(value),
+    onMessage: (message) => applyIncomingLocal(message),
   });
 
   function isLayout(value: unknown): value is ViewportClass {
@@ -94,28 +79,7 @@ export function createBrowserSync(options: BrowserSyncOptions): BrowserSync {
     options.applyLocal(message.layout, config);
   }
 
-  function isPresentationMessage(value: VersionedChannelMessage): value is PresentationMessage {
-    if (Array.isArray(value)) return false;
-    const candidate = value as Partial<PresentationMessage>;
-    return (
-      Object.keys(candidate).length === 5 &&
-      typeof candidate.sourceId === "string" &&
-      candidate.kind === "presentation" &&
-      isLayout(candidate.layout) &&
-      isConversationPresentation(candidate.presentation)
-    );
-  }
-
-  function applyIncomingPresentation(layout: ViewportClass, value: ConversationPresentation): void {
-    if (options.getState().presentation[layout] !== value) options.applyPresentation(layout, value);
-  }
-
   function onStorage(event: StorageEvent): void {
-    if (event.key === PRESENTATION_KEYS.desktop || event.key === PRESENTATION_KEYS.mobile) {
-      const layout = event.key === PRESENTATION_KEYS.mobile ? "mobile" : "desktop";
-      applyIncomingPresentation(layout, isConversationPresentation(event.newValue) ? event.newValue : "standard");
-      return;
-    }
     if (!isLayoutKey(event.key)) return;
     const layout = event.key.endsWith(".mobile") ? "mobile" : "desktop";
     if (event.newValue === null) {
@@ -149,9 +113,6 @@ export function createBrowserSync(options: BrowserSyncOptions): BrowserSync {
         config: encoded,
         fingerprint: decoded === undefined ? null : configFingerprint(decoded),
       });
-    },
-    broadcastPresentation(layout, presentation) {
-      channel.postMessage({ kind: "presentation", layout, presentation });
     },
   };
 }

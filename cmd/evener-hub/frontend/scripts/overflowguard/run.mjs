@@ -932,10 +932,9 @@ function assertDetail(result, width) {
   if (detail?.mobile !== mobile)
     failures.push(`Verbosity layout mode is ${detail?.mobile}, realized viewport mode is ${mobile}`);
   failures.push(...assertFieldsets(detail, `${width}px Verbosity`));
-  // The editor renders nine content/metrics/diagnostics switches plus the
-  // "Thinking open by default" switch added in PR #5565; a control added or
-  // lost without this update flips the count.
-  const expectedTargets = 35;
+  // The count covers every control in the Verbosity panel; a control added or
+  // lost without this update flips it, and the mismatch lists the inventory.
+  const expectedTargets = 33;
   if ((detail?.targets?.length ?? 0) !== expectedTargets) {
     failures.push(
       `Verbosity mounted ${detail?.targets?.length ?? "unknown"} interactive targets, expected ${expectedTargets}: ${JSON.stringify(

@@ -407,15 +407,6 @@ test("desktop Session actions opens the full Verbosity Dialog, persists selectio
   );
   expect(document.activeElement).toBe(activity);
 
-  const presentation = within(dialog).getByRole("radiogroup", { name: "Presentation" });
-  await user.click(within(presentation).getByRole("radio", { name: "Comic" }));
-  expect(transcriptDisplayStore.getState().presentation.desktop).toBe("comic");
-  expect((activity as HTMLButtonElement).disabled).toBe(true);
-  await user.click(within(presentation).getByRole("radio", { name: "Standard" }));
-  expect(transcriptDisplayStore.getState().presentation.desktop).toBe("standard");
-  expect((activity as HTMLButtonElement).disabled).toBe(false);
-  expect(activity.getAttribute("aria-checked")).toBe("true");
-
   await user.keyboard("{Escape}");
   expect(screen.queryByRole("dialog", { name: "Verbosity" })).toBeNull();
   expect(document.activeElement).toBe(actions);
@@ -460,10 +451,6 @@ test("mobile Session actions opens the full Verbosity bottom Sheet", async () =>
     const detailEditor = within(sheet).getByRole("region", { name: "Transcript detail editor" });
     expect(within(detailEditor).getAllByRole("radio")).toHaveLength(6);
     expect(detailEditor.querySelector("summary")).not.toBeNull();
-    const presentation = within(sheet).getByRole("radiogroup", { name: "Presentation" });
-    await user.click(within(presentation).getByRole("radio", { name: "Comic" }));
-    expect(transcriptDisplayStore.getState().presentation.mobile).toBe("comic");
-    expect(transcriptDisplayStore.getState().presentation.desktop).toBe("standard");
 
     await user.keyboard("{Escape}");
     expect(screen.queryByRole("dialog", { name: "Verbosity" })).toBeNull();
