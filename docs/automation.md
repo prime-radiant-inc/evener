@@ -106,6 +106,11 @@ Start a Manager by setting `manager: true` in the AppWire `thread/start`
 parameters. Anyone authorized to start a session may supply it. Manager is an
 immutable session property: an existing session cannot gain or lose it.
 
+From a client, the web form's **Start as Manager** switch (under Advanced
+options) sends that parameter with the launch. From a shell, `evener serve
+--manager` starts the daemon session with the same property. A one-shot `evener
+run` session has no hub connection, so it has no Manager mode.
+
 The session saves the bit in its metadata. Resume, process restart and Clear
 preserve it. Fresh roots and forks do not inherit it; a new Manager requires an
 explicit `manager: true` start. A missing bit means false, so existing sessions
