@@ -117,3 +117,63 @@ func TestRemoteManagerActorNamespace(t *testing.T) {
 		})
 	}
 }
+
+// Pending steering input carries its author on the mutation entry, not on a
+// transcript item. A remote-local Manager author must be projected into the
+// controller namespace exactly like transcript actors, on the typed read path
+// and on the raw thread path; an author already qualified by another hub is
+// preserved and a saved actor value is never mutated.
+func TestRemotePendingMutationActorNamespace(t *testing.T) {
+	t.Parallel()
+	s := NewRemoteHubSource("host-b", nil, nil)
+	for _, actorCase := range []struct{ name, kind, saved, want string }{
+		{"local_manager", "manager", "local:manager-on-b", "host-b:manager-on-b"},
+		{"origin_hub_identity", "manager", "hub-a-id:manager-on-a", "hub-a-id:manager-on-a"},
+		{"human", "human", "", ""},
+	} {
+		t.Run(actorCase.name, func(t *testing.T) {
+			mutation := func() appwire.PendingMutation {
+				return appwire.PendingMutation{
+					Actor:            appwire.SessionActor{Kind: actorCase.kind, ManagerRef: actorCase.saved},
+					ClientMutationID: "cm-1",
+					Method:           "turn/steer",
+				}
+			}
+			check := func(t *testing.T, projected appwire.PendingMutation) {
+				t.Helper()
+				if projected.Actor.Kind != actorCase.kind || projected.Actor.ManagerRef != actorCase.want {
+					t.Errorf("pending author = %+v, want kind %q ref %q", projected.Actor, actorCase.kind, actorCase.want)
+				}
+				if projected.ClientMutationID != "cm-1" || projected.Method != "turn/steer" {
+					t.Errorf("non-actor data changed: %+v", projected)
+				}
+			}
+			saved := mutation()
+			t.Run("read", func(t *testing.T) {
+				response := appwire.ThreadReadResponse{Thread: appwire.Thread{ID: "worker", Source: "local", Evener: appwire.EvenerThread{Ref: "local:worker", PendingMutations: []appwire.PendingMutation{mutation()}}}}
+				if err := s.translateOut(nil, &response); err != nil {
+					t.Fatal(err)
+				}
+				check(t, response.Thread.Evener.PendingMutations[0])
+			})
+			t.Run("raw_thread", func(t *testing.T) {
+				raw, err := json.Marshal(appwire.Thread{ID: "worker", Source: "local", Evener: appwire.EvenerThread{Ref: "local:worker", PendingMutations: []appwire.PendingMutation{mutation()}}})
+				if err != nil {
+					t.Fatal(err)
+				}
+				translated, err := s.translateThreadRaw(raw, appwire.ThreadCapabilities{})
+				if err != nil {
+					t.Fatal(err)
+				}
+				var out appwire.Thread
+				if err := json.Unmarshal(translated, &out); err != nil {
+					t.Fatal(err)
+				}
+				check(t, out.Evener.PendingMutations[0])
+			})
+			if saved.Actor.Kind != actorCase.kind || saved.Actor.ManagerRef != actorCase.saved {
+				t.Errorf("saved pending author mutated: %+v", saved.Actor)
+			}
+		})
+	}
+}
