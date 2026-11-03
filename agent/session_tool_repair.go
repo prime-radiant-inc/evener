@@ -76,7 +76,6 @@ func prepareToolCall(call llm.ToolCallData, t *tool.RegisteredTool, visibleNames
 				return res
 			}
 			repaired, c := repair.RepairJSON(res.Call.Arguments)
-			args = map[string]any{}
 			var err2 error
 			args, err2 = tool.DecodeArguments(repaired)
 			if err2 != nil {

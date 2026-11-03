@@ -563,13 +563,9 @@ func applyUpdatedToolInput(call *llm.ToolCallData, updated map[string]any) error
 	if call == nil || len(updated) == 0 {
 		return nil
 	}
-	args := map[string]any{}
-	if len(call.Arguments) > 0 {
-		var err error
-		args, err = tool.DecodeArguments(call.Arguments)
-		if err != nil {
-			return err
-		}
+	args, err := tool.DecodeArguments(call.Arguments)
+	if err != nil {
+		return err
 	}
 	maps.Copy(args, updated)
 	b, err := json.Marshal(args)

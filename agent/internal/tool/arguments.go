@@ -62,6 +62,10 @@ func ValidateArguments(schema *jsonschema.Schema, args map[string]any) (err erro
 // WholeNumberInt reads an exact integral JSON number in the platform int range.
 // Callers retain their own narrower bounds and existing non-Number branches.
 func WholeNumberInt(number json.Number) (int, bool) {
+	if n, err := number.Int64(); err == nil {
+		i := int(n)
+		return i, int64(i) == n
+	}
 	r, ok := new(big.Rat).SetString(number.String())
 	if !ok || !r.IsInt() || !r.Num().IsInt64() {
 		return 0, false
