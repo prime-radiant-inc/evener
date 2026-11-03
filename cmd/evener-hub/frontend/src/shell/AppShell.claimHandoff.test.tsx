@@ -4,7 +4,6 @@ import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
 import { afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
-import { projectComicConversation } from "../comic/projection";
 import { openDocBeside } from "../panes/doc/openDoc";
 import { StubResizeObserver } from "../resizeObserverTestUtils";
 import { installLocalStorage, MemoryStorage } from "../storageTestUtils";
@@ -69,15 +68,10 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-async function mountHost(
-  mobile: boolean,
-  presentation: "standard" | "comic" = "comic",
-  configure?: (client: FakeClient, pane: OpenPaneRecord) => void,
-) {
+async function mountHost(mobile: boolean, configure?: (client: FakeClient, pane: OpenPaneRecord) => void) {
   const setMobile = installSwitchableViewport();
   setMobile(mobile);
   initTranscriptDisplay();
-  transcriptDisplayStore.setState({ presentation: { desktop: presentation, mobile: presentation } });
   const client = new FakeClient("ready");
   client.on("thread/read", (params) => ({ ...response(params.ref), requestGeneration: params.requestGeneration }));
   client.on("thread/unsubscribe", () => ({}));
@@ -135,27 +129,24 @@ function assertPreserved(fixture: Awaited<ReturnType<typeof mountHost>>, ordinar
   expect(snapshot().foreground).toBe(ordinaryReaders);
 }
 
-test.each(["standard", "comic"] as const)(
-  "real desktop to phone preserves %s source at every publication",
-  async (presentation) => {
-    const fixture = await mountHost(false, presentation);
-    expect(getDockviewApi()?.getPanel(fixture.pane.id)).toBeDefined();
-    await act(async () => {
-      fixture.setMobile(true);
-    });
-    expect(getDockviewApi()).toBeNull();
-    expect(fixture.release).toHaveBeenCalledWith(ref);
-    expect(fixture.ensure.mock.calls.length).toBeGreaterThanOrEqual(2);
-    await act(async () => {
-      await settleEntryTranscriptForTests(ref);
-    });
-    try {
-      assertPreserved(fixture);
-    } finally {
-      await disposeFixture(fixture);
-    }
-  },
-);
+test("real desktop to phone preserves source at every publication", async () => {
+  const fixture = await mountHost(false);
+  expect(getDockviewApi()?.getPanel(fixture.pane.id)).toBeDefined();
+  await act(async () => {
+    fixture.setMobile(true);
+  });
+  expect(getDockviewApi()).toBeNull();
+  expect(fixture.release).toHaveBeenCalledWith(ref);
+  expect(fixture.ensure.mock.calls.length).toBeGreaterThanOrEqual(2);
+  await act(async () => {
+    await settleEntryTranscriptForTests(ref);
+  });
+  try {
+    assertPreserved(fixture);
+  } finally {
+    await disposeFixture(fixture);
+  }
+});
 
 test("held lazy desktop preserves source across separate commits", async () => {
   const { promise: pending, resolve } = deferred<DockHostModule>();
@@ -184,8 +175,8 @@ test("held lazy desktop preserves source across separate commits", async () => {
   }
 });
 
-test.each(["standard", "comic"] as const)("real phone to desktop preserves %s source", async (presentation) => {
-  const fixture = await mountHost(true, presentation);
+test("real phone to desktop preserves source", async () => {
+  const fixture = await mountHost(true);
   expect(getDockviewApi()).toBeNull();
   await act(async () => {
     fixture.setMobile(false);
@@ -412,7 +403,7 @@ test("desktop split visibility is not focus, phone selection rejects the other r
   });
   await waitFor(() => {
     const model = threadsStore.getState().threads.get(otherRef);
-    expect(model ? projectComicConversation(model).map((entry) => entry.id) : []).toEqual(sourceIds);
+    expect(snapshot(model).sources).toEqual(sourceIds);
   });
   await act(async () => {
     await settleEntryTranscriptForTests(otherRef);
@@ -424,7 +415,7 @@ test("desktop split visibility is not focus, phone selection rejects the other r
   const publications: string[][] = [];
   const unsubscribe = threadsStore.subscribe(() => {
     const model = threadsStore.getState().threads.get(otherRef);
-    publications.push(model ? projectComicConversation(model).map((entry) => entry.id) : []);
+    publications.push(snapshot(model).sources);
   });
   await act(async () => {
     fixture.setMobile(true);
@@ -511,7 +502,7 @@ test("real Zoom preserves the leaf and retires readable parent ownership on phon
     rootRef: ancestor,
     ancestors: lineage(requested).map((id) => ({ ref: id, sessionId: response(id).thread.sessionId, title: id })),
   });
-  const fixture = await mountHost(false, "comic", (client, pane) => {
+  const fixture = await mountHost(false, (client, pane) => {
     installFailedLocation(ancestor);
     window.history.replaceState({}, "", `/s/${encodeURIComponent(ancestor)}`);
     client.on("evener/thread/activity/read", ({ ref: requested, scope }) => ({
@@ -574,8 +565,8 @@ test("real Zoom preserves the leaf and retires readable parent ownership on phon
 });
 
 function installReaderGeometry() {
-  // Like the Comic reader fixture, supply a measurable viewport and rows.
-  // These short bodies fit one text line, not the viewport's full height.
+  // Supply a measurable viewport and rows: these short bodies fit one text
+  // line, not the viewport's full height.
   vi.spyOn(HTMLElement.prototype, "offsetHeight", "get").mockImplementation(function (this: HTMLElement) {
     return this.hasAttribute("data-index") ? 40 : 500;
   });
@@ -583,7 +574,6 @@ function installReaderGeometry() {
   vi.spyOn(HTMLElement.prototype, "clientWidth", "get").mockReturnValue(760);
   vi.spyOn(HTMLElement.prototype, "clientHeight", "get").mockReturnValue(500);
   vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
-    if (this.closest("[data-comic-probe]")) return new DOMRect(0, 0, 760, 24);
     return new DOMRect(0, 0, 760, this.style.height ? Number.parseFloat(this.style.height) : this.offsetHeight);
   });
 }
@@ -597,7 +587,7 @@ test("saved legacy cascade returned on phone preserves the conversation during d
     rootRef: ref,
     ancestors: requested === child ? [{ ref, sessionId: response().thread.sessionId, title: ref }] : [],
   });
-  const fixture = await mountHost(false, "comic", (client) => {
+  const fixture = await mountHost(false, (client) => {
     client.on("evener/thread/activity/read", ({ ref: requested, scope }) => ({
       ...activitySummary(requested, scope),
       context: context(requested),
@@ -715,7 +705,7 @@ test("saved session params cannot acknowledge a different phone conversation dur
     const model = threadsStore.getState().threads.get(currentRef);
     return {
       foreground: foregroundHolds(currentRef),
-      sources: model ? projectComicConversation(model).map((entry) => entry.id) : [],
+      sources: snapshot(model).sources,
       bodies: model?.turns.flatMap((turn) => turn.items.map(({ id, text }) => ({ id, text }))) ?? [],
     };
   };

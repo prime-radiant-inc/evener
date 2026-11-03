@@ -1,6 +1,6 @@
 import type * as appwire from "@evener/appwire-client";
+import { entryDisplayKey, isTurnError, makeTranscriptDisplayConfig, projectThread } from "@evener/appwire-client";
 import { wireThread } from "@evener/appwire-client/testing/notifications";
-import { projectComicConversation } from "../comic/projection";
 import { backgroundHolds, foregroundHolds } from "./threadOwners";
 import { threadsStore } from "./threads";
 
@@ -47,11 +47,32 @@ export function response(requestedRef = ref): appwire.ThreadReadResponse {
   };
 }
 
+const HANDOFF_TRANSCRIPT_CONFIG = makeTranscriptDisplayConfig({ kind: "preset", level: "full" });
+
+// Ordered conversation identities: the canonical projection's content
+// entries by display key, then any turn errors, so a failed turn survives
+// the snapshot.
 export function snapshot(model = threadsStore.getState().threads.get(ref)) {
+  const projected = model ? projectThread(model as appwire.ThreadModel, HANDOFF_TRANSCRIPT_CONFIG) : undefined;
+  const content = projected
+    ? projected.turns.flatMap((turn) =>
+        turn.entries.flatMap((entry) =>
+          entry.kind === "item" || entry.kind === "critical"
+            ? [{ key: entryDisplayKey(entry), index: entry.sourceIndex }]
+            : [],
+        ),
+      )
+    : [];
+  content.sort((a, b) => a.index - b.index);
   return {
     foreground: foregroundHolds(ref),
     background: backgroundHolds(ref),
     items: model?.turns.flatMap((turn) => turn.items.map((item) => item.id)) ?? [],
-    sources: model ? projectComicConversation(model).map((entry) => entry.id) : [],
+    sources: [
+      ...content.map((entry) => entry.key),
+      ...(projected?.turns.flatMap((turn) =>
+        isTurnError(turn.source.error) ? [`turn:${turn.source.id}:error`] : [],
+      ) ?? []),
+    ],
   };
 }

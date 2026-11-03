@@ -341,8 +341,7 @@ const entryTranscriptLatestOpening = new Map<string, number>();
 // its own publication already completed, and whose older frontier is still
 // outstanding, has no pruned publication for the gate to protect, while
 // consumers hold live paging demand the gate would strand exactly between
-// the claim and the open's settle (the Comic restore's next accepted page is
-// the observed strand) — so it does not hold them, while still recording its
+// the claim and the open's settle — so it does not hold them, while still recording its
 // verdict like any open, including arming the recovery chain on a miss.
 const entryTranscriptQuietOpenings = new Map<string, number>();
 

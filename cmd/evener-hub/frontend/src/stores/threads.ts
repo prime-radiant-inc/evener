@@ -7377,8 +7377,7 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
             // open. Where that display still has an older frontier, consumers
             // hold live paging demand for the next accepted page, and the
             // held gate strands exactly that demand in the window between the
-            // claim and the open's settle (the Comic restore's next accepted
-            // page is the observed strand) — so it certifies quietly: the
+            // claim and the open's settle — so it certifies quietly: the
             // open still records its verdict, marker and recovery verdicts,
             // just without holding consumers. A display with no older
             // frontier has no demand the gate could strand, and keeps the
