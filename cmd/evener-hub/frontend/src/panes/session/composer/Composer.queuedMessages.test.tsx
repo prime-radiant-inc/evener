@@ -1804,8 +1804,13 @@ test("an uncertain queued message offers Remove like any other row", async () =>
   await storage.markUnknown(record.clientMutationId, "blockedUnknown");
   mount(fake);
   await flushPendingTurnsProjectionForTests();
-  await waitFor(() => expect(screen.getByText("Delivery uncertain")).toBeTruthy());
-  const remove = await screen.findByRole("button", { name: "Remove from queue" });
+  // By slot, not by copy: a wording change must not break the behaviour test.
+  const row = await waitFor(() => {
+    const found = document.querySelector('li[data-kind="blocked"]');
+    expect(found).toBeTruthy();
+    return found as HTMLElement;
+  });
+  const remove = await within(row).findByRole("button", { name: "Remove from queue" });
   await act(async () => {
     fireEvent.click(remove);
   });
