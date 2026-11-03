@@ -168,6 +168,13 @@ Read responses stay below the tool result cap; use returned structured
 Session configuration supplies the Manager schemas and guidance independently
 of transport availability. A disconnect leaves that tool surface intact;
 individual calls may report unavailable while healthy ordinary work continues.
+Calls made during runtime binding installation wait until replies can be routed.
+Installation refusal or disconnect releases those calls as unavailable; caller
+cancellation ends its wait without sending an operation.
+Ending a Watch stops observations waiting to send. An observation already admitted
+to the wire finishes within the existing write budget under the binding's lifetime,
+so cancelling one Watch preserves the shared connection. Binding shutdown cancels
+accepted writes; genuine write failures retire the connection.
 The authenticated connection supplies caller identity, and the hub checks the
 daemon's Manager projection before admitting an operation. Tool arguments cannot
 grant Manager status or choose a different caller.

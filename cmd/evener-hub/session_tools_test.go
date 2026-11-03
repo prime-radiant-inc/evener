@@ -196,27 +196,7 @@ func TestSessionToolsAutomaticBindingLifecycleAndReconnect(t *testing.T) {
 		binding appwire.SessionBinding
 	}
 	bound := make(chan connection, 8)
-	// TEMP-DIAGNOSTIC (CI-only binding disconnect): route the daemon's
-	// server-side diagnostics — connection eviction, session-tools binding
-	// teardown with context states and stack — into this test's buffered
-	// output, so a failing CI run names the killer that never reproduces
-	// locally. The guard drops logs once cleanup starts: a hijacked
-	// connection's teardown can outlive the test, and logging after
-	// completion panics. Remove with the TEMP-DIAGNOSTIC in internal/appserver.
-	diagDone := make(chan struct{})
-	t.Cleanup(func() { close(diagDone) })
-	var diagMu sync.Mutex
-	diagLogf := func(format string, args ...any) {
-		diagMu.Lock()
-		defer diagMu.Unlock()
-		select {
-		case <-diagDone:
-			return
-		default:
-		}
-		t.Logf(format, args...)
-	}
-	daemon := daemonserver.NewServer(daemonserver.ServerConfig{HubToken: "test-token", Logf: diagLogf})
+	daemon := daemonserver.NewServer(daemonserver.ServerConfig{HubToken: "test-token"})
 	defer daemon.Close()
 	identity, err := daemonserver.PrepareAppIdentityForRef("local", instance, ref, "")
 	if err != nil {
