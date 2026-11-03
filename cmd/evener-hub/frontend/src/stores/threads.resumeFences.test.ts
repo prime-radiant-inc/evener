@@ -1516,12 +1516,18 @@ test("persistent journal failures wait for periodic recovery between attempts", 
         expect(rows[0]).toMatchObject({ clientMutationId: "persistent-journal", state: "blockedUnknown" });
       } else {
         // Each periodic recovery window minted exactly ONE fresh
-        // generation: every earlier generation settled terminal superseded
-        // (keeping its id and attempt evidence for the receipt its own real
-        // in-flight attempt could still bring), and exactly one live row
-        // remains parked by the refusal.
-        expect(rows).toHaveLength(attempt);
-        expect(rows[0]).toMatchObject({ clientMutationId: "persistent-journal", state: "superseded" });
+        // generation, and the mint BOUNDS the wire's retained generations
+        // (round-10): the redundant older superseded copies retired with
+        // the mint, so the chain holds exactly one evidence-bearing
+        // superseded row - the NEWEST predecessor, keeping its key and
+        // attempt evidence for the receipt its own real in-flight attempt
+        // could still bring - plus exactly one live row parked by the
+        // refusal. A superseded generation carries no live delivery
+        // registration (the minting wrapper cleared each at its mint), so
+        // the bound needs no notification channel.
+        expect(rows).toHaveLength(2);
+        expect(rows[0]?.state).toBe("superseded");
+        expect(rows[0]?.attempted).toBe(true);
         expect(rows.at(-1)?.state).toBe("blockedUnknown");
         expect(rows.every((row) => row.payload.clientMutationId === "persistent-journal")).toBe(true);
       }
