@@ -772,7 +772,7 @@ test("two offline edits consolidate one durable owner and preserve typing during
   await user.click(screen.getAllByRole("button", { name: "Edit message" })[0] as HTMLElement);
   await waitFor(() => expect(source.getSnapshot().activeRecoveryId).toBe(first.clientMutationId));
   await flushPendingTurnsProjectionForTests();
-  const hold = holdNextWriteTransaction(["recovery"]);
+  const hold = holdNextWriteTransaction(["recovery", "outbox"]);
   try {
     await user.click(screen.getByRole("button", { name: "Edit message" }));
     // The press's own continuation is fire-and-forget (QueueStrip's handler),
@@ -1031,7 +1031,7 @@ test("a Stop during recovery persistence holds the new Send identity without dis
     fake.emitReady();
   });
   await flushPendingTurnsProjectionForTests();
-  const hold = holdNextWriteTransaction(["recovery"]);
+  const hold = holdNextWriteTransaction(["recovery", "outbox"]);
   try {
     await user.click(screen.getByRole("button", { name: "Send" }));
     await hold.reached;
@@ -1342,7 +1342,7 @@ test("Send cannot race an unobserved secondary recovery consolidation", async ()
     fake.emitReady();
   });
   await flushPendingTurnsProjectionForTests();
-  const hold = holdNextWriteTransaction(["recovery"]);
+  const hold = holdNextWriteTransaction(["recovery", "outbox"]);
   try {
     await user.click(screen.getByRole("button", { name: "Edit message" }));
     await hold.reached;
@@ -1757,7 +1757,7 @@ test("an ordinary send cannot start while a recovery Edit claim is settling", as
   await flushPendingTurnsProjectionForTests();
   // The user has a draft in the composer while claiming the queued edit.
   act(() => source.editText("A"));
-  const hold = holdNextWriteTransaction(["recovery"]);
+  const hold = holdNextWriteTransaction(["recovery", "outbox"]);
   try {
     // A local queue row's Edit first claims the row (outbox -> recovery); the
     // activation has not started yet, so only the shared lease stops Send.

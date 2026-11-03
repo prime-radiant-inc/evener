@@ -791,7 +791,7 @@ test.each([
   const submittedText = image ? "edit me [image 1]" : "retry me";
   expect(textarea().textContent).toBe(submittedText);
 
-  const hold = holdNextWriteTransaction(["recovery"]);
+  const hold = holdNextWriteTransaction(["recovery", "outbox"]);
   const written = hold.reached;
   try {
     fireEvent.click(submitButton());
