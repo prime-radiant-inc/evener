@@ -242,7 +242,9 @@ export function QueueStrip({
     ...blockedEntries.map((record) => ({ kind: "blocked" as const, record })),
     ...canceledEntries.map((record) => ({ kind: "canceled" as const, record })),
     ...editableEntries
-      .filter((record) => record.state !== "canceled")
+      // Canceled and uncertain rows have their own slot above (the label says
+      // which); the action set on every slot is the same one now.
+      .filter((record) => record.state === "submitting")
       .map((record) => ({ kind: "waiting" as const, record })),
   ].sort((left, right) => left.record.intentSequence - right.record.intentSequence);
   const toasts = useToasts();

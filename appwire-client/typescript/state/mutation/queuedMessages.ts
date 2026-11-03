@@ -34,16 +34,21 @@ export function matchesQueuedMessageSnapshot(record: MutationOutboxRecord, expec
   );
 }
 
-function hasContradictoryAttemptEvidence(record: MutationOutboxRecord): boolean {
-  return record.attempted === true || (record.unresolvedAttempts !== undefined && record.unresolvedAttempts > 0);
+// A local message stays the user's until it leaves the outbox. The one row a
+// click must not take is the one another pass is sending right now - a
+// submitting row with attempt evidence - because the edit would race a send.
+// Canceled rows are parked by a Stop, and an uncertain row is exactly the one
+// that closes its queue: both are the user's to remove, or nothing behind an
+// uncertain head can ever move.
+function isLocalQueuedMessage(record: MutationOutboxRecord): boolean {
+  if (record.state === "blockedUnknown" || record.state === "canceled") return true;
+  if (record.state !== "submitting") return false;
+  return record.attempted === false;
 }
 
-function isSafelyWaiting(record: MutationOutboxRecord): boolean {
-  if (hasContradictoryAttemptEvidence(record)) return false;
-  if (record.state === "canceled") return true;
-  if (record.state !== "submitting") return false;
-  return record.attempted === false || record.unresolvedAttempts === 0;
-}
+// Editing an uncertain row is the user choosing to send it again: the edit
+// brings the text back to the composer, and the send that follows is a new
+// message. That is the user's call, not a duplicate the client should hide.
 
 function recordInput(record: MutationOutboxRecord): InputItem[] {
   return Array.isArray(record.payload.input) ? (record.payload.input as InputItem[]) : [];
@@ -60,7 +65,7 @@ function hasComposerInput(record: MutationOutboxRecord): boolean {
 }
 
 export function canEditQueuedMessage(record: MutationOutboxRecord): boolean {
-  if (!isSafelyWaiting(record)) return false;
+  if (!isLocalQueuedMessage(record)) return false;
   if (
     record.method === COMPOSER_METHODS.send ||
     record.method === COMPOSER_METHODS.queue ||
@@ -71,5 +76,5 @@ export function canEditQueuedMessage(record: MutationOutboxRecord): boolean {
 }
 
 export function canRemoveQueuedMessage(record: MutationOutboxRecord): boolean {
-  return isSafelyWaiting(record) && PENDING_TURN_METHODS.includes(record.method);
+  return isLocalQueuedMessage(record) && PENDING_TURN_METHODS.includes(record.method);
 }

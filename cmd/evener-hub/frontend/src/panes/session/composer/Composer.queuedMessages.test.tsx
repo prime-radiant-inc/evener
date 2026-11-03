@@ -1785,3 +1785,34 @@ test("an ordinary send cannot start while a recovery Edit claim is settling", as
     hold.release();
   }
 });
+
+// The stuck-uncertain-message complaint: an uncertain row in the queue strip
+// looks and acts like any other local message, so the user can clear it.
+test("an uncertain queued message offers Remove like any other row", async () => {
+  const storage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(storage);
+  const { fake } = await setup(false, storage);
+  const record = await storage.enqueueIntent({
+    targetRef: "root",
+    threadId: "thread-a",
+    method: "turn/start",
+    attachments: [],
+    payload: { input: [{ type: "text", text: "uncertain message" }] },
+    optimisticDisplay: { input: [{ type: "text", text: "uncertain message" }] },
+  });
+  await storage.markAttempted(record.clientMutationId);
+  await storage.markUnknown(record.clientMutationId, "blockedUnknown");
+  mount(fake);
+  await flushPendingTurnsProjectionForTests();
+  // By slot, not by copy: a wording change must not break the behaviour test.
+  const row = await waitFor(() => {
+    const found = document.querySelector('li[data-kind="blocked"]');
+    expect(found).toBeTruthy();
+    return found as HTMLElement;
+  });
+  const remove = await within(row).findByRole("button", { name: "Remove from queue" });
+  await act(async () => {
+    fireEvent.click(remove);
+  });
+  await waitFor(async () => expect(await storage.getOutbox(record.clientMutationId)).toBeUndefined());
+});
