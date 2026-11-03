@@ -70,9 +70,18 @@ Modified inherited files carry notices identifying Evener's changes:
 
 - `doc.go`: local optional-loader usage path and modification notice.
 - `schema.go`: constant `%s` format when rendering the precomputed enum error,
-  required by Go 1.27's default vet check. Numeric logic and validity are
-  unchanged. Percent signs in enum values are now rendered literally rather
-  than reinterpreted as formatting directives.
+  required by Go 1.27's default vet check. Percent signs in enum values are
+  rendered literally rather than reinterpreted as formatting directives.
+  The five public numeric constraint fields, integer recognition, ordered bounds
+  and divisibility use the immutable compact decimal kernel. Numeric diagnostics
+  use compact canonical encoding rather than Float64 conversion.
+  Examined nonfinite Go floats and malformed programmatic `json.Number` values
+  (including `01` and `1/2`) return `InvalidJSONTypeError`, rather than the old
+  number-only acceptance or arithmetic panic. Valid finite Go values retain the
+  existing kind switch and `fmt.Sprint` interpretation.
+- `compiler.go`: compile all five numeric bounds through the compact decimal
+  loader, including built-in metaschema bootstrap. Preserve draft-specific
+  exclusive-bound dispatch and reject nonpositive divisors.
 - `httploader/httploader.go`: local jsonschema import and usage path, notice.
   The loader's actual HTTP behavior is unchanged.
 - `schema_test.go`: local imports, per-compiler `LoadURL` routing of the
@@ -91,11 +100,14 @@ Modified inherited files carry notices identifying Evener's changes:
   examples retain their empty expected outputs.
 - `README.md`: ownership/checkpoint documentation and local loader usage path.
 
-`compiler.go`, `content.go`, `draft.go`, `errors.go`, `extension.go`, `format.go`,
+`content.go`, `draft.go`, `errors.go`, `extension.go`, `format.go`,
 `loader.go`, `output.go` and `resource.go` are byte-identical to the
 pinned source. `format_test.go`, `internal_test.go`, both licenses and all
 fixtures are unchanged. New Evener files are `UPSTREAM.md`, `corpus_test.go`
-and `draft_baseline_test.go`.
+and `draft_baseline_test.go`. Compact numeric additions are `numeric.go`,
+`numeric_test.go`, `numeric_metaschema_test.go`, and the `decimal/` kernel and
+independent oracle tests. Shared test-only resource containment lives in
+`../internal/numerictest/`.
 
 The llm callers in `generate.go`, `generate_object.go` and
 `generate_edges_fuzz_test.go` change only their jsonschema import. The llm
@@ -111,9 +123,11 @@ deltas and retained exclusions, and pass CI's full imported conformance harness.
 Tests never fetch fixtures by default. The optional HTTP loader remains opt-in
 for applications; the inherited test suite imports and exercises it locally.
 
-This checkpoint intentionally preserves upstream arithmetic, including its
-rational-number implementation. It does **not** establish exponent-bounded
-validation. The approved later tasks replace that arithmetic before publication.
-No decoder or Go-type admission boundary changes here. The validator remains a
-leaf package inside the existing llm module, with no nested module and no
-imports of parent llm, agent or application packages.
+This checkpoint bounds parsing, compilation and direct numeric predicates in
+encoded mantissa/exponent size. It does **not** establish wholly bounded
+validation: equality/hash still use upstream rational arithmetic, and cardinality
+fields still use native integers. Those are later tasks, not compatibility
+fallbacks in the new decimal API. No decoder or Go-kind switch is widened.
+The validator and decimal kernel remain leaf packages inside the existing llm
+module, with no nested module and no imports of parent llm, agent or application
+packages.

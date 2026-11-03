@@ -1,13 +1,15 @@
+// Modified by Evener: compact exact numeric bound compilation, see UPSTREAM.md.
 package jsonschema
 
 import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"math/big"
 	"regexp"
 	"strconv"
 	"strings"
+
+	"primeradiant.com/evener/llm/jsonschema/decimal"
 )
 
 // A Compiler represents a json-schema compiler.
@@ -380,12 +382,11 @@ func (c *Compiler) compileMap(r *resource, stack []schemaRef, sref schemaRef, re
 		return -1
 	}
 
-	loadRat := func(pname string) *big.Rat {
+	loadBound := func(pname string) (*decimal.Number, error) {
 		if num, ok := m[pname]; ok {
-			r, _ := new(big.Rat).SetString(string(num.(json.Number)))
-			return r
+			return loadNumber(num)
 		}
-		return nil
+		return nil, nil
 	}
 
 	if r.draft.version < 2019 || r.schema.meta.hasVocab("validation") {
@@ -422,29 +423,42 @@ func (c *Compiler) compileMap(r *resource, stack []schemaRef, sref schemaRef, re
 			}
 		}
 
-		s.Minimum = loadRat("minimum")
+		if s.Minimum, err = loadBound("minimum"); err != nil {
+			return err
+		}
 		if exclusive, ok := m["exclusiveMinimum"]; ok {
 			if exclusive, ok := exclusive.(bool); ok {
 				if exclusive {
 					s.Minimum, s.ExclusiveMinimum = nil, s.Minimum
 				}
 			} else {
-				s.ExclusiveMinimum = loadRat("exclusiveMinimum")
+				if s.ExclusiveMinimum, err = loadBound("exclusiveMinimum"); err != nil {
+					return err
+				}
 			}
 		}
 
-		s.Maximum = loadRat("maximum")
+		if s.Maximum, err = loadBound("maximum"); err != nil {
+			return err
+		}
 		if exclusive, ok := m["exclusiveMaximum"]; ok {
 			if exclusive, ok := exclusive.(bool); ok {
 				if exclusive {
 					s.Maximum, s.ExclusiveMaximum = nil, s.Maximum
 				}
 			} else {
-				s.ExclusiveMaximum = loadRat("exclusiveMaximum")
+				if s.ExclusiveMaximum, err = loadBound("exclusiveMaximum"); err != nil {
+					return err
+				}
 			}
 		}
 
-		s.MultipleOf = loadRat("multipleOf")
+		if s.MultipleOf, err = loadBound("multipleOf"); err != nil {
+			return err
+		}
+		if s.MultipleOf != nil && s.MultipleOf.Sign() <= 0 {
+			return fmt.Errorf("jsonschema: multipleOf must be positive")
+		}
 
 		s.MinProperties, s.MaxProperties = loadInt("minProperties"), loadInt("maxProperties")
 

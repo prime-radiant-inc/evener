@@ -1,4 +1,5 @@
-// Modified by Evener: constant printf format for Go 1.27 vet compatibility.
+// Modified by Evener: constant printf format for Go 1.27 vet compatibility,
+// compact exact numeric constraints and predicates.
 // See UPSTREAM.md for the pinned Apache-2.0 source.
 package jsonschema
 
@@ -14,6 +15,8 @@ import (
 	"strconv"
 	"strings"
 	"unicode/utf8"
+
+	"primeradiant.com/evener/llm/jsonschema/decimal"
 )
 
 // A Schema represents compiled version of json-schema.
@@ -86,11 +89,11 @@ type Schema struct {
 	ContentSchema    *Schema
 
 	// number validators
-	Minimum          *big.Rat
-	ExclusiveMinimum *big.Rat
-	Maximum          *big.Rat
-	ExclusiveMaximum *big.Rat
-	MultipleOf       *big.Rat
+	Minimum          *decimal.Number
+	ExclusiveMinimum *decimal.Number
+	Maximum          *decimal.Number
+	ExclusiveMaximum *decimal.Number
+	MultipleOf       *decimal.Number
 
 	// annotations. captured only when Compiler.ExtractAnnotations is true.
 	Title       string
@@ -267,8 +270,8 @@ func (s *Schema) validate(scope []schemaRef, vscope int, spath string, v interfa
 				matched = true
 				break
 			} else if t == "integer" && vType == "number" {
-				num, _ := new(big.Rat).SetString(fmt.Sprint(v))
-				if num.IsInt() {
+				num, _ := numberValue(v) // jsonType already checked numeric validity
+				if num.IsInteger() {
 					matched = true
 					break
 				}
@@ -584,33 +587,25 @@ func (s *Schema) validate(scope []schemaRef, vscope int, spath string, v interfa
 		}
 
 	case json.Number, float32, float64, int, int8, int32, int64, uint, uint8, uint32, uint64:
-		// lazy convert to *big.Rat to avoid allocation
-		var numVal *big.Rat
-		num := func() *big.Rat {
-			if numVal == nil {
-				numVal, _ = new(big.Rat).SetString(fmt.Sprint(v))
-			}
-			return numVal
+		num, ok := numberValue(v)
+		if !ok {
+			panic(InvalidJSONTypeError(fmt.Sprintf("%T", v)))
 		}
-		f64 := func(r *big.Rat) float64 {
-			f, _ := r.Float64()
-			return f
+		if s.Minimum != nil && num.Cmp(*s.Minimum) < 0 {
+			errors = append(errors, validationError("minimum", "must be >= %v but found %v", s.Minimum.String(), num.String()))
 		}
-		if s.Minimum != nil && num().Cmp(s.Minimum) < 0 {
-			errors = append(errors, validationError("minimum", "must be >= %v but found %v", f64(s.Minimum), v))
+		if s.ExclusiveMinimum != nil && num.Cmp(*s.ExclusiveMinimum) <= 0 {
+			errors = append(errors, validationError("exclusiveMinimum", "must be > %v but found %v", s.ExclusiveMinimum.String(), num.String()))
 		}
-		if s.ExclusiveMinimum != nil && num().Cmp(s.ExclusiveMinimum) <= 0 {
-			errors = append(errors, validationError("exclusiveMinimum", "must be > %v but found %v", f64(s.ExclusiveMinimum), v))
+		if s.Maximum != nil && num.Cmp(*s.Maximum) > 0 {
+			errors = append(errors, validationError("maximum", "must be <= %v but found %v", s.Maximum.String(), num.String()))
 		}
-		if s.Maximum != nil && num().Cmp(s.Maximum) > 0 {
-			errors = append(errors, validationError("maximum", "must be <= %v but found %v", f64(s.Maximum), v))
-		}
-		if s.ExclusiveMaximum != nil && num().Cmp(s.ExclusiveMaximum) >= 0 {
-			errors = append(errors, validationError("exclusiveMaximum", "must be < %v but found %v", f64(s.ExclusiveMaximum), v))
+		if s.ExclusiveMaximum != nil && num.Cmp(*s.ExclusiveMaximum) >= 0 {
+			errors = append(errors, validationError("exclusiveMaximum", "must be < %v but found %v", s.ExclusiveMaximum.String(), num.String()))
 		}
 		if s.MultipleOf != nil {
-			if q := new(big.Rat).Quo(num(), s.MultipleOf); !q.IsInt() {
-				errors = append(errors, validationError("multipleOf", "%v not multipleOf %v", v, f64(s.MultipleOf)))
+			if !num.MultipleOf(*s.MultipleOf) {
+				errors = append(errors, validationError("multipleOf", "%v not multipleOf %v", num.String(), s.MultipleOf.String()))
 			}
 		}
 	}
@@ -799,6 +794,9 @@ func jsonType(v interface{}) string {
 	case bool:
 		return "boolean"
 	case json.Number, float32, float64, int, int8, int32, int64, uint, uint8, uint32, uint64:
+		if _, ok := numberValue(v); !ok {
+			panic(InvalidJSONTypeError(fmt.Sprintf("%T", v)))
+		}
 		return "number"
 	case string:
 		return "string"
