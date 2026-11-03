@@ -33,9 +33,9 @@
     "anser": "^2.3.5",
     "dockview": "^7.0.2",
     "dockview-react": "^7.0.2",
-    "dompurify": "^3.4.16",
+    "dompurify": "^3.4.17",
     "marked": "^18.0.6",
-    "mermaid": "11.17.2",
+    "mermaid": "12.3.0",
     "motion": "^13.4.5",
     "prosemirror-commands": "^1.7.2",
     "prosemirror-history": "^1.5.0",
@@ -60,13 +60,13 @@
     "@types/react": "19.2.18",
     "@types/react-dom": "19.2.3",
     "@vitejs/plugin-react": "^6.0.3",
-    "@vitest/coverage-v8": "4.1.11",
+    "@vitest/coverage-v8": "4.1.12",
     "fake-indexeddb": "6.2.5",
     "jsdom": "^29.1.1",
     "jsqr": "1.4.0",
     "typescript": "6.0.3",
-    "vite": "^8.1.5",
-    "vitest": "4.1.11",
+    "vite": "^8.1.6",
+    "vitest": "4.1.12",
     "ws": "8.21.3"
   }
 }
