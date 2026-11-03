@@ -1084,6 +1084,100 @@ test("a settled newer note save reports the older blocked rows it superseded", a
   expect(result.retiredIds).toContain(older.clientMutationId);
 });
 
+// Round-9 review Medium: the consolidation's write deleted secondary recovery
+// rows directly - no wire-family resolution, no family retirement, no
+// retiredIds notification. Retry leaves the predecessor superseded in the
+// outbox carrying its attempt evidence; when the replacement's recovery is
+// consumed by a consolidation and the merged composition sends, the
+// predecessor's delayed terminal refusal finds no live carrier and mints a
+// FRESH sendable recovery of already-sent content. Consuming a recovery ends
+// its wire's life in the same write, exactly like the resend's consume.
+test("a consolidation that consumes a recovery retires its wire so a late refusal cannot resurrect sent content", async () => {
+  const f = fixture();
+  const retired: string[] = [];
+  f.storage.setRetiredIdsListener((ids) => retired.push(...ids));
+  // A: attempted, response lost -> Retry mints B under A's wire id.
+  const a = await f.storage.enqueueIntent(queuedIntent());
+  await f.storage.markAttempted(a.clientMutationId);
+  await f.storage.markUnknown(a.clientMutationId, "blockedUnknown");
+  const capture = await f.storage.getOutboxWithStopEpoch(a.clientMutationId);
+  const b = await f.storage.mintRetryFromRow(a.clientMutationId, {
+    record: capture.record,
+    stopEpoch: capture.stopEpoch,
+    displayedStopEpoch: 0,
+  });
+  if (!b) throw new Error("mint failed");
+  // B is refused pre-daemon: its recovery carries the wire's uncertainty, and
+  // A settles superseded in the outbox, keeping its attempt evidence.
+  await f.storage.markAttempted(b.clientMutationId);
+  const recoveryB = await f.storage.transferToRecovery(b.clientMutationId, "rejected", "invalid params", {
+    wireDeliveryUncertain: true,
+  });
+  if (!recoveryB) throw new Error("failed to seed B's recovery");
+  // An independent recovery on the same target: the consolidation survivor.
+  const c = await f.storage.enqueueIntent(queuedIntent());
+  const recoveryC = await f.storage.transferToRecovery(c.clientMutationId, "rejected", "not needed");
+  if (!recoveryC) throw new Error("failed to seed C's recovery");
+  // The consolidation absorbs B's recovery into C's (the delete-sources path).
+  const merged = await f.storage.updateRecoveryInput(
+    recoveryC.clientMutationId,
+    [{ type: "text", text: "combined" }],
+    [],
+    "combined",
+    [],
+    [recoveryB.clientMutationId],
+    undefined,
+    0,
+    { [recoveryC.clientMutationId]: 0, [recoveryB.clientMutationId]: 0 },
+  );
+  if (!merged) throw new Error("consolidation failed");
+  // The predecessor retired WITH the consumption - in the same write - and the
+  // notification that clears the runtime's delivery registrations names it.
+  expect(await f.storage.getOutbox(a.clientMutationId)).toBeUndefined();
+  expect(retired).toContain(a.clientMutationId);
+  // The merged composition sends successfully.
+  const sent = await f.storage.resendRecoveryResult(recoveryC.clientMutationId, queuedIntent());
+  if (sent.status !== "sent") throw new Error(`resend did not send: ${sent.status}`);
+  await f.storage.markAttempted(sent.record.clientMutationId);
+  expect(await f.storage.settleReceipt(sent.record.clientMutationId, "reflected")).toBe(true);
+  // A's delayed terminal refusal: no live carrier and no row - it lands inert
+  // instead of minting a sendable recovery of already-sent content.
+  expect(await f.storage.transferToRecovery(a.clientMutationId, "rejected", "late refusal")).toBeUndefined();
+  expect(await f.storage.listRecovery()).toEqual([]);
+});
+
+// The explicit-discard variant of the same gap: discarding a recovery row
+// deleted only the row, so the wire's superseded predecessor stayed in the
+// outbox and its late refusal resurrected the discarded composition as a
+// fresh sendable recovery.
+test("an explicit discard retires the recovery's wire so a late refusal cannot resurrect discarded content", async () => {
+  const f = fixture();
+  const retired: string[] = [];
+  f.storage.setRetiredIdsListener((ids) => retired.push(...ids));
+  const a = await f.storage.enqueueIntent(queuedIntent());
+  await f.storage.markAttempted(a.clientMutationId);
+  await f.storage.markUnknown(a.clientMutationId, "blockedUnknown");
+  const capture = await f.storage.getOutboxWithStopEpoch(a.clientMutationId);
+  const b = await f.storage.mintRetryFromRow(a.clientMutationId, {
+    record: capture.record,
+    stopEpoch: capture.stopEpoch,
+    displayedStopEpoch: 0,
+  });
+  if (!b) throw new Error("mint failed");
+  await f.storage.markAttempted(b.clientMutationId);
+  const recoveryB = await f.storage.transferToRecovery(b.clientMutationId, "rejected", "invalid params", {
+    wireDeliveryUncertain: true,
+  });
+  if (!recoveryB) throw new Error("failed to seed B's recovery");
+  expect(await f.storage.discardRecovery(recoveryB.clientMutationId)).toBe(true);
+  // The wire's rows retire with the discard, and the notification names them.
+  expect(await f.storage.getOutbox(a.clientMutationId)).toBeUndefined();
+  expect(retired).toContain(a.clientMutationId);
+  // A's delayed terminal refusal lands inert: no resurrection.
+  expect(await f.storage.transferToRecovery(a.clientMutationId, "rejected", "late refusal")).toBeUndefined();
+  expect(await f.storage.listRecovery()).toEqual([]);
+});
+
 // Round-5 review H2: the settlement's sibling sweep enumerated the outbox and
 // optimistic stores only, so a wire sibling living as an UNEDITED recovery
 // record escaped both the named lookup (the receipt names the predecessor's

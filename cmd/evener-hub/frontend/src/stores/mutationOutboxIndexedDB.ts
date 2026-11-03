@@ -1679,7 +1679,7 @@ export class MutationOutboxIndexedDB implements WebQueuedMessageStorage<Mutation
     expectedRecoveryRevisions?: Readonly<Record<string, number>>,
     compositionOwnerId?: string,
   ): Promise<MutationRecoveryRecord | undefined> {
-    return this.#write(RECOVERY_STORE, "updateRecoveryInput", async (transaction) => {
+    const outcome = await this.#write([RECOVERY_STORE, OUTBOX_STORE], "updateRecoveryInput", async (transaction) => {
       const store = transaction.objectStore(RECOVERY_STORE);
       const record = await requestResult<VersionedMutationRecoveryRecord | undefined>(store.get(clientMutationId));
       if (!record) return undefined;
@@ -1694,6 +1694,7 @@ export class MutationOutboxIndexedDB implements WebQueuedMessageStorage<Mutation
       // the replacement or deleting any secondary recovery rows.
       if (!expected.has(clientMutationId) || (record.compositionRevision ?? 0) !== expected.get(clientMutationId))
         return undefined;
+      const consumedSources: MutationRecoveryRecord[] = [];
       for (const id of sources) {
         const source = await requestResult<MutationRecoveryRecord | undefined>(store.get(id));
         if (
@@ -1703,6 +1704,7 @@ export class MutationOutboxIndexedDB implements WebQueuedMessageStorage<Mutation
           ((source as VersionedMutationRecoveryRecord).compositionRevision ?? 0) !== expected.get(id)
         )
           return undefined;
+        consumedSources.push(source);
       }
       const next: VersionedMutationRecoveryRecord = {
         ...record,
@@ -1723,9 +1725,37 @@ export class MutationOutboxIndexedDB implements WebQueuedMessageStorage<Mutation
         composerMentions: composerText === undefined ? (composerMentions ?? record.composerMentions) : composerMentions,
       };
       await requestResult(store.put(next));
+      // Round-9 Medium: consuming a recovery row ends its wire's life in this
+      // same write, exactly like the resend's consume. A consumed source's
+      // superseded outbox predecessors - the rows whose delayed terminal
+      // refusal would otherwise find no live carrier and mint a fresh
+      // sendable recovery of content the merge already carries - retire
+      // here, atomically with the consumption, and their ids reach the
+      // runtime's registration clearing through the same retiredIds channel
+      // every other retired row uses. The sweep reads the outbox only: the
+      // survivor keeps its own wire, and no unedited same-wire recovery copy
+      // can exist beside a live row (the transfer coalesce), so this write
+      // needs no recovery read it did not already make.
+      const retiredIds: string[] = [];
+      const swept = new Set<string>();
+      for (const source of consumedSources) {
+        const wireId = effectiveWireId(source);
+        if (swept.has(wireId)) continue;
+        swept.add(wireId);
+        retiredIds.push(
+          ...(await this.#retireWireSiblings(transaction, wireId, {
+            excludeKeys: new Set([clientMutationId, ...sources]),
+            sweepOptimistic: false,
+            sweepRecovery: false,
+          })),
+        );
+      }
       for (const id of sources) await requestResult(store.delete(id));
-      return next;
+      return { next, retiredIds };
     });
+    if (!outcome) return undefined;
+    if (outcome.retiredIds.length > 0) this.#retiredIdsListener?.(outcome.retiredIds);
+    return outcome.next;
   }
 
   // A stale lease can no longer write its row, but the composition in the
@@ -1797,22 +1827,36 @@ export class MutationOutboxIndexedDB implements WebQueuedMessageStorage<Mutation
     shouldDiscard?: () => boolean,
     expectedCompositionRevision?: number,
   ): Promise<boolean> {
-    return this.#write(RECOVERY_STORE, "discardRecovery", async (transaction) => {
+    const outcome = await this.#write([RECOVERY_STORE, OUTBOX_STORE], "discardRecovery", async (transaction) => {
       const store = transaction.objectStore(RECOVERY_STORE);
       const record = await requestResult<MutationRecoveryRecord | undefined>(store.get(clientMutationId));
-      if (!record) return false;
+      if (!record) return undefined;
       if (
         expectedCompositionRevision !== undefined &&
         ((record as VersionedMutationRecoveryRecord).compositionRevision ?? 0) !== expectedCompositionRevision
       )
-        return false;
+        return undefined;
       // Evaluate immediately at the durable deletion boundary, after every
       // asynchronous prerequisite. Callers use this to invalidate a discard
       // that became stale while it was waiting to reach storage.
-      if (shouldDiscard && !shouldDiscard()) return false;
+      if (shouldDiscard && !shouldDiscard()) return undefined;
+      // Round-9 Medium: an explicit discard ends the composition, so it ends
+      // the wire. The row's superseded outbox predecessors retire atomically
+      // with the discard - or a delayed terminal refusal would resurrect the
+      // discarded composition as a fresh sendable recovery - and their ids
+      // reach the runtime's registration clearing through the same
+      // retiredIds channel every other retired row uses.
+      const retiredIds = await this.#retireWireSiblings(transaction, effectiveWireId(record), {
+        excludeKeys: new Set([clientMutationId]),
+        sweepOptimistic: false,
+        sweepRecovery: false,
+      });
       await requestResult(store.delete(clientMutationId));
-      return true;
+      return { retiredIds };
     });
+    if (!outcome) return false;
+    if (outcome.retiredIds.length > 0) this.#retiredIdsListener?.(outcome.retiredIds);
+    return true;
   }
 
   async resendRecovery(
