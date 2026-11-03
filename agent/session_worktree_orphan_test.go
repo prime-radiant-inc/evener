@@ -1196,7 +1196,30 @@ func TestWorktreePrune_OrphanArmSparesLaneWhileRetainedChildNotifies(t *testing.
 	case <-entered:
 	// TRIPWIRE: the armed attention turns over within seconds of the send settling; the shared deadline only fires on a genuine hang. It covers a shard loaded with the rest of this package's parallel tests, where spawn and the arm both stretch.
 	case <-time.After(time.Until(turnStartDeadline)):
-		t.Fatal("the retained child's turn never started")
+		// Reproduce the drive's own preconditions, in its order, so the
+		// failure names the one that declined: the drive's boolean cannot.
+		// All of them green names the other failure mode — the wake-edge
+		// keeps launching empty turns because the owed attention never
+		// armed.
+		shared := lane.sharedSub
+		shared.mu.Lock()
+		closed, running, driving := shared.closed, shared.running, shared.driving
+		shared.mu.Unlock()
+		_, locked, reason := r.laneLocked(t, lane.lanePath)
+		mutRelease, mutErr := lane.delegateSess.beginRetirementMutation("delegate_drive")
+		if mutErr == nil {
+			mutRelease()
+		}
+		revalErr := lane.delegateSess.revalidateLaneForLaunch(lane.sharedDelegateID)
+		driveSlot, driveSlotOK := lane.delegateSess.reserveDriveSlot()
+		if driveSlotOK {
+			driveSlot.release()
+		}
+		lane.delegateSess.mu.Lock()
+		driverClosing := lane.delegateSess.closingOrClosedLocked()
+		lane.delegateSess.mu.Unlock()
+		t.Fatalf("the retained child's turn never started (lane locked=%v reason=%q, sub closed=%v running=%v driving=%v; retirement mutation=%v, lane validation=%v, drive slot=%v, driver closing=%v)",
+			locked, reason, closed, running, driving, mutErr, revalErr, driveSlotOK, driverClosing)
 	}
 
 	// The injected report below must be publication-eligible. The wedged turn
