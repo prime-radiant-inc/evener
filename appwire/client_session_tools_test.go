@@ -289,33 +289,59 @@ func (g *gatedSessionReplyTransport) Close() error {
 }
 
 func TestSessionToolsReplyWriteBudgetClassifiesTransmissionBoundary(t *testing.T) {
+	for _, bound := range []bool{false, true} {
+		t.Run(fmt.Sprintf("bound=%t", bound), func(t *testing.T) {
+			transport := &gatedSessionReplyTransport{started: make(chan struct{}, 1), closed: make(chan struct{})}
+			client := NewClient(transport)
+			if bound {
+				client.SetSessionTools(SessionBinding{BindingID: "binding"}, nil)
+				defer client.sessionTools.cancel()
+			}
+			frame := ResponseMessage(NewIntID(-1), EmptyResponse{})
+			if err := client.acquireSendSlot(t.Context()); err != nil {
+				t.Fatal(err)
+			}
+			err := client.sendSessionFrameWithBudgets(t.Context(), frame, 20*time.Millisecond, 20*time.Millisecond)
+			client.releaseSendSlot()
+			var notSent RequestNotSentError
+			if !errors.As(err, &notSent) || !errors.Is(err, context.DeadlineExceeded) {
+				t.Fatalf("slot budget error = %T %v, want not-sent deadline", err, err)
+			}
+			transport.mu.Lock()
+			sends := transport.sends
+			transport.mu.Unlock()
+			if sends != 0 {
+				t.Fatalf("slot-expired reply reached transport %d times", sends)
+			}
+			err = client.sendSessionFrameWithBudgets(t.Context(), frame, time.Second, 20*time.Millisecond)
+			if !errors.Is(err, context.DeadlineExceeded) || errors.As(err, &notSent) {
+				t.Fatalf("after-send budget error = %T %v, want uncertain in-flight deadline", err, err)
+			}
+			transport.mu.Lock()
+			sends = transport.sends
+			transport.mu.Unlock()
+			if sends != 1 {
+				t.Fatalf("after-send reply reached transport %d times, want 1", sends)
+			}
+		})
+	}
+}
+
+func TestSessionToolsBindingCancellationStopsAcceptedWrite(t *testing.T) {
 	transport := &gatedSessionReplyTransport{started: make(chan struct{}, 1), closed: make(chan struct{})}
 	client := NewClient(transport)
-	frame := ResponseMessage(NewIntID(-1), EmptyResponse{})
-	if err := client.acquireSendSlot(t.Context()); err != nil {
-		t.Fatal(err)
-	}
-	err := client.sendSessionFrameWithBudgets(t.Context(), frame, 20*time.Millisecond, 20*time.Millisecond)
-	client.releaseSendSlot()
+	client.SetSessionTools(SessionBinding{BindingID: "binding"}, nil)
+	defer client.sessionTools.cancel()
+	done := make(chan error, 1)
+	go func() {
+		done <- client.sendSessionFrameWithBudgets(t.Context(), ResponseMessage(NewIntID(-1), EmptyResponse{}), time.Second, time.Second)
+	}()
+	<-transport.started
+	client.sessionTools.cancel()
+	err := <-done
 	var notSent RequestNotSentError
-	if !errors.As(err, &notSent) || !errors.Is(err, context.DeadlineExceeded) {
-		t.Fatalf("slot budget error = %T %v, want not-sent deadline", err, err)
-	}
-	transport.mu.Lock()
-	sends := transport.sends
-	transport.mu.Unlock()
-	if sends != 0 {
-		t.Fatalf("slot-expired reply reached transport %d times", sends)
-	}
-	err = client.sendSessionFrameWithBudgets(t.Context(), frame, time.Second, 20*time.Millisecond)
-	if !errors.Is(err, context.DeadlineExceeded) || errors.As(err, &notSent) {
-		t.Fatalf("after-send budget error = %T %v, want uncertain in-flight deadline", err, err)
-	}
-	transport.mu.Lock()
-	sends = transport.sends
-	transport.mu.Unlock()
-	if sends != 1 {
-		t.Fatalf("after-send reply reached transport %d times, want 1", sends)
+	if !errors.Is(err, context.Canceled) || errors.As(err, &notSent) {
+		t.Fatalf("binding cancellation after admission = %T %v, want in-flight cancellation", err, err)
 	}
 }
 

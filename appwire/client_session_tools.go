@@ -92,7 +92,13 @@ func (c *Client) sendSessionFrameWithBudgets(ctx context.Context, message Messag
 		return RequestNotSentError{Err: c.closedError()}
 	default:
 	}
-	writeCtx, cancelWrite := context.WithTimeout(ctx, writeBudget)
+	// Cancelling an in-flight WebSocket write closes the shared connection.
+	// Once admitted, the binding owns the write rather than an individual watch.
+	writeParent := ctx
+	if c.sessionTools != nil {
+		writeParent = c.sessionTools.ctx
+	}
+	writeCtx, cancelWrite := context.WithTimeout(writeParent, writeBudget)
 	defer cancelWrite()
 	return c.transport.Send(writeCtx, message)
 }

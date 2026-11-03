@@ -24,7 +24,6 @@ func (s *Server) NewInProcessTransport(parent context.Context) (appwire.Transpor
 	ctx, cancel := context.WithCancel(parent)
 	conn := s.NewConnection(fmt.Sprintf("conn-%d", serverConnSeq.Add(1)))
 	conn.sessionLifetime = ctx
-	conn.sessionToolsDiagParent = ctx
 	conn.setCancel(cancel)
 	s.registerConnection(conn)
 	if s.webSocketShutdownStarted() {

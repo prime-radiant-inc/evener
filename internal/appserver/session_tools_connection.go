@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"runtime/debug"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -67,6 +66,7 @@ type sessionToolsConnection struct {
 	binding appwire.SessionBinding
 	ctx     context.Context
 	cancel  context.CancelFunc
+	ready   chan struct{}
 	next    atomic.Uint64
 	mu      sync.Mutex
 	pending map[string]chan appwire.Message
@@ -95,7 +95,7 @@ func (c *Connection) bindSessionTools(ctx context.Context, req appwire.Request) 
 		ctx = context.WithValue(c.sessionLifetime, connectionContextKey{}, c)
 	}
 	lifetime, cancel := context.WithCancel(ctx)
-	bound := &sessionToolsConnection{conn: c, binding: binding, ctx: lifetime, cancel: cancel, pending: map[string]chan appwire.Message{}, watches: map[string]*sessionWatchConsumer{}}
+	bound := &sessionToolsConnection{conn: c, binding: binding, ctx: lifetime, cancel: cancel, ready: make(chan struct{}), pending: map[string]chan appwire.Message{}, watches: map[string]*sessionWatchConsumer{}}
 	// The installation wait is bounded by the connection lifetime, not by this
 	// request. Holding sessionMu across that wait would park the frame reader,
 	// so reserve the single slot under the lock and install outside it.
@@ -135,6 +135,7 @@ func (c *Connection) bindSessionTools(ctx context.Context, req appwire.Request) 
 	}
 	c.sessionToolsInstalling = nil
 	c.sessionTools = bound
+	close(bound.ready)
 	return appwire.ResponseMessage(req.ID, binding)
 }
 
@@ -194,25 +195,6 @@ func (c *Connection) closeSessionTools() {
 	installing := c.sessionToolsInstalling
 	c.sessionToolsInstalling = nil
 	c.sessionMu.Unlock()
-	// TEMP-DIAGNOSTIC (PR 5498 binding-lifecycle CI failure): the
-	// TestSessionToolsAutomaticBindingLifecycleAndReconnect failure on CI
-	// shows the binding's connection context dead within ~30ms while every
-	// local reproduction attempt passes. Log which side killed the
-	// connection: a canceled parent means the peer hung up the HTTP request
-	// (hub-side close), while a live parent with a dead session lifetime
-	// names a daemon-internal cancel (shutdown, eviction or keepalive).
-	// Remove once the CI-only killer is identified.
-	if bound != nil || installing != nil {
-		parentState := "unset"
-		if c.sessionToolsDiagParent != nil {
-			parentState = fmt.Sprintf("%v", c.sessionToolsDiagParent.Err())
-		}
-		lifetimeState := "unset"
-		if c.sessionLifetime != nil {
-			lifetimeState = fmt.Sprintf("%v", c.sessionLifetime.Err())
-		}
-		c.server.logf("TEMP-DIAGNOSTIC session-tools binding teardown on %s: lifetime=%s parent=%s\n%s", c.id, lifetimeState, parentState, debug.Stack())
-	}
 	closeSessionBinding(installing)
 	closeSessionBinding(bound)
 }
@@ -232,6 +214,15 @@ func closeSessionBinding(bound *sessionToolsConnection) {
 }
 
 func (b *sessionToolsConnection) request(ctx context.Context, method string, p appwire.SessionRuntimeRequest, result any) error {
+	// Installation can publish this client before its callback returns. Wait
+	// until replies are routable before sending anything to the peer.
+	select {
+	case <-b.ctx.Done():
+		return appwire.Unavailable("runtime binding disconnected")
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-b.ready:
+	}
 	p.BindingID = b.binding.BindingID
 	requestID := -int64(b.conn.sessionNext.Add(1))
 	id := appwire.NewIntID(requestID)
@@ -333,6 +324,12 @@ func (b *sessionToolsConnection) Watch(ctx context.Context, p appwire.SessionWat
 // Cleanup needs no waiter or operation slot. The fixed response is ignored by
 // receiveSessionFrame, and a disconnected peer already owns teardown.
 func (b *sessionToolsConnection) unwatch(watchID string) {
+	select {
+	case <-b.ready:
+	default:
+		// No watch request can reach the peer before installation commits.
+		return
+	}
 	if b.ctx.Err() != nil {
 		return
 	}

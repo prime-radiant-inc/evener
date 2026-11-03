@@ -302,5 +302,162 @@
         "latestActivityAt": "2026-09-28T20:02:30Z"
       }
     ]
+  },
+  "resumedOpenDelegatesResponse": {
+    "context": {
+      "ref": "local:root",
+      "sessionId": "root",
+      "rootRef": "local:root",
+      "ancestors": [],
+      "ancestryKnown": true,
+      "epoch": "fixture",
+      "availability": "live",
+      "reportPreview": true
+    },
+    "scope": "subtree",
+    "page": {
+      "complete": true,
+      "issues": []
+    },
+    "delegates": [
+      {
+        "name": "stopped-delegate",
+        "runGeneration": 1,
+        "projectionRevision": 3,
+        "delegateId": "dlg_stopped",
+        "ownerRef": "local:root",
+        "rootRef": "local:root",
+        "childRef": "local:child-dlg_stopped",
+        "description": "Bisect the flaky test",
+        "task": "Bisect the flaky test",
+        "type": "delegate",
+        "lifecycle": "idle",
+        "phase": "idle",
+        "status": "idle",
+        "outcome": "cancelled",
+        "reason": "cancelled",
+        "terminal": true,
+        "resumable": true,
+        "model": "gpt-5.2",
+        "runStartedAt": "2026-09-28T20:01:00Z",
+        "runEndedAt": "2026-09-28T20:01:30Z",
+        "latestActivityAt": "2026-09-28T20:01:30Z"
+      },
+      {
+        "name": "reported-delegate",
+        "runGeneration": 2,
+        "projectionRevision": 4,
+        "delegateId": "dlg_reported",
+        "ownerRef": "local:root",
+        "rootRef": "local:root",
+        "childRef": "local:child-dlg_reported",
+        "description": "Fix race in tree settle",
+        "task": "Fix race in tree settle",
+        "type": "delegate",
+        "lifecycle": "running",
+        "phase": "running",
+        "status": "running",
+        "terminal": false,
+        "resumable": true,
+        "model": "gpt-5.2",
+        "runStartedAt": "2026-09-28T20:00:00Z",
+        "latestActivityAt": "2026-09-28T20:00:00Z"
+      },
+      {
+        "name": "failed-delegate",
+        "runGeneration": 1,
+        "projectionRevision": 3,
+        "delegateId": "dlg_failed",
+        "ownerRef": "local:root",
+        "rootRef": "local:root",
+        "childRef": "local:child-dlg_failed",
+        "description": "Update the lockfile",
+        "task": "Update the lockfile",
+        "type": "delegate",
+        "lifecycle": "idle",
+        "phase": "idle",
+        "status": "idle",
+        "outcome": "failed",
+        "reason": "run_error",
+        "error": "provider returned 500",
+        "terminal": true,
+        "resumable": true,
+        "model": "gpt-5.2",
+        "runStartedAt": "2026-09-28T20:02:00Z",
+        "runEndedAt": "2026-09-28T20:02:30Z",
+        "latestActivityAt": "2026-09-28T20:02:30Z"
+      }
+    ]
+  },
+  "resumedOpenNotification": {
+    "method": "evener/delegate/updated",
+    "params": {
+      "threadId": "root",
+      "ref": "local:root",
+      "delegate": {
+        "runGeneration": 2,
+        "delegateId": "dlg_reported",
+        "ownerSessionId": "root",
+        "logicalOwnerSessionId": "root",
+        "rootSessionId": "root",
+        "childSessionId": "child-dlg_reported",
+        "transcriptRef": "local:child-dlg_reported",
+        "type": "delegate",
+        "lifecycle": "running",
+        "phase": "running",
+        "status": "running",
+        "resumable": true,
+        "needsAttention": false,
+        "projectionRevision": 4,
+        "task": "Fix race in tree settle",
+        "description": "Fix race in tree settle",
+        "agentType": "general",
+        "resolvedModel": "gpt-5.2",
+        "model": "gpt-5.2",
+        "runStartedAt": "2026-09-28T20:00:00Z",
+        "latestActivityAt": "2026-09-28T20:00:00Z",
+        "runningForMs": 0,
+        "quietForMs": 0,
+        "packetKind": "reported",
+        "message": "Fixed the race: settle now waits for the drain.\n\nThe new test covers both orders."
+      }
+    }
+  },
+  "resumedFinishedNotification": {
+    "method": "evener/delegate/updated",
+    "params": {
+      "threadId": "root",
+      "ref": "local:root",
+      "delegate": {
+        "runGeneration": 2,
+        "delegateId": "dlg_reported",
+        "ownerSessionId": "root",
+        "logicalOwnerSessionId": "root",
+        "rootSessionId": "root",
+        "childSessionId": "child-dlg_reported",
+        "transcriptRef": "local:child-dlg_reported",
+        "type": "delegate",
+        "lifecycle": "idle",
+        "phase": "idle",
+        "status": "idle",
+        "outcome": "completed",
+        "terminal": true,
+        "resumable": true,
+        "needsAttention": false,
+        "projectionRevision": 5,
+        "reportPreview": "Second run report.",
+        "task": "Fix race in tree settle",
+        "description": "Fix race in tree settle",
+        "agentType": "general",
+        "resolvedModel": "gpt-5.2",
+        "model": "gpt-5.2",
+        "runStartedAt": "2026-09-28T20:00:00Z",
+        "runEndedAt": "2026-09-28T20:00:30Z",
+        "latestActivityAt": "2026-09-28T20:00:30Z",
+        "durationMs": 30000,
+        "packetKind": "reported",
+        "message": "Second run report."
+      }
+    }
   }
 }
