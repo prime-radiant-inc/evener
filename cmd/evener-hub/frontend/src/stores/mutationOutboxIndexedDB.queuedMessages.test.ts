@@ -663,7 +663,7 @@ test("a row another tab already settled is not removed again", async () => {
   expect(await f.storage.getOutbox(uncertain.clientMutationId)).toBeUndefined();
 });
 
-test("editQueuedMessage keeps a delivery-uncertain row out of the composer", async () => {
+test("editQueuedMessage opens a delivery-uncertain row for a fresh send", async () => {
   const f = fixture();
   const uncertain = await f.storage.enqueueIntent(queuedIntent());
   await f.storage.markAttempted(uncertain.clientMutationId);
@@ -671,8 +671,8 @@ test("editQueuedMessage keeps a delivery-uncertain row out of the composer", asy
   const uncertainNow = await f.storage.getOutbox(uncertain.clientMutationId);
   if (uncertainNow === undefined) throw new Error("fixture row missing");
 
-  // An edit would re-send under a fresh identity, and the daemon may already
-  // hold the message: the uncertain row stays out of the composer.
-  expect(await f.storage.editQueuedMessage(uncertainNow, { stopEpoch: 0 })).toBeUndefined();
-  expect(await f.storage.getOutbox(uncertain.clientMutationId)).toBeDefined();
+  const recovery = await f.storage.editQueuedMessage(uncertainNow, { stopEpoch: 0 });
+
+  expect(recovery).toMatchObject({ recoveryKind: "editing" });
+  expect(await f.storage.getOutbox(uncertain.clientMutationId)).toBeUndefined();
 });

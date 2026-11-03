@@ -46,16 +46,9 @@ function isLocalQueuedMessage(record: MutationOutboxRecord): boolean {
   return record.attempted === false;
 }
 
-// Edit is the stricter verb: it re-sends the message under a fresh identity, so
-// it is safe only for a row the client knows it never sent. On an uncertain row
-// - the daemon may already hold it - an edit would duplicate the turn, which is
-// why the uncertain row offers Remove, not Edit.
-function isEditableQueuedMessage(record: MutationOutboxRecord): boolean {
-  // A Stop-canceled row provably never left the client, so editing it is a
-  // fresh send of work the user still owns.
-  if (record.state === "canceled") return true;
-  return record.state === "submitting" && record.attempted === false;
-}
+// Editing an uncertain row is the user choosing to send it again: the edit
+// brings the text back to the composer, and the send that follows is a new
+// message. That is the user's call, not a duplicate the client should hide.
 
 function recordInput(record: MutationOutboxRecord): InputItem[] {
   return Array.isArray(record.payload.input) ? (record.payload.input as InputItem[]) : [];
@@ -72,7 +65,7 @@ function hasComposerInput(record: MutationOutboxRecord): boolean {
 }
 
 export function canEditQueuedMessage(record: MutationOutboxRecord): boolean {
-  if (!isEditableQueuedMessage(record)) return false;
+  if (!isLocalQueuedMessage(record)) return false;
   if (
     record.method === COMPOSER_METHODS.send ||
     record.method === COMPOSER_METHODS.queue ||

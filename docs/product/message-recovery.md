@@ -16,9 +16,9 @@ Controls follow that ownership, not the preview text or connection status.
   attempt metadata at all; and the non-composer verbs (interrupt, clear, note
   saves), which keep their own controls.
 - A delivery-uncertain message is otherwise one local message like any other:
-  **Remove from queue** reaches it (Edit does not - an edit re-sends under a
-  fresh identity, and the daemon may already hold the message), and its row
-  carries "Delivery uncertain" as a subtitle. The row still closes its ref's FIFO - the
+  **Edit message** and **Remove from queue** reach it, and its row carries
+  "Delivery uncertain" as a subtitle. Editing it is the user choosing to send it
+  again - the send that follows is a new message, and that is the user's call. The row still closes its ref's FIFO - the
   daemon may already hold it, so nothing behind it may go - and when the hub
   cannot answer, Remove is the exit that lets later messages move.
 - Promotion and input-empty drain commands offer Remove only. Editing a
@@ -31,7 +31,7 @@ Controls follow that ownership, not the preview text or connection status.
 flowchart LR
   Local[Local unsent identity] -->|Edit transaction| Recovery[Durable editing recovery]
   Local -->|Remove transaction| Removed[Removed identity]
-  Local -->|Transport attempt| Flight[In flight: no Edit, Remove once uncertain]
+  Local -->|Transport attempt| Flight[In flight, local controls once uncertain]
   Recovery -->|Merge into occupied draft| Owner[One durable recovery owner]
   Owner -->|Send transaction| Fresh[Fresh mutation identity]
   Fresh -->|Newer Stop| Held[Canceled, explicit Retry required]

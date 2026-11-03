@@ -73,10 +73,8 @@ test("queuedMessageActionsRespectOwnership", () => {
   // the user's to clear, whatever their attempt evidence says.
   expect(canEditQueuedMessage(contradictoryCanceledQueue)).toBe(true);
   expect(canRemoveQueuedMessage(contradictoryCanceledQueue)).toBe(true);
-  // Uncertain delivery is removable (its head blocks the queue) but not
-  // editable: an edit re-sends under a fresh identity, and the daemon may
-  // already hold the message.
-  expect(canEditQueuedMessage(unknownQueue)).toBe(false);
+  // Uncertain delivery is the user's to clear or to send again as a new message.
+  expect(canEditQueuedMessage(unknownQueue)).toBe(true);
   expect(canRemoveQueuedMessage(unknownQueue)).toBe(true);
   expect(canEditQueuedMessage(legacyUnknownQueue)).toBe(false);
   expect(canEditQueuedMessage(note)).toBe(false);
