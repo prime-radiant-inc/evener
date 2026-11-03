@@ -1070,11 +1070,23 @@ export class MutationOutboxIndexedDB implements WebQueuedMessageStorage<Mutation
       optimistic: MutationOptimisticRecord[];
       recovery: MutationRecoveryRecord[];
     },
-    options: { excludeKeys: ReadonlySet<string>; sweepOptimistic: boolean; sweepRecovery: boolean },
+    options: {
+      excludeKeys: ReadonlySet<string>;
+      sweepOptimistic: boolean;
+      sweepRecovery: boolean;
+      // The generation bound's state filter: retire only terminal
+      // "superseded" copies, leaving every LIVE row of the wire untouched.
+      // Used by the mint (#mintFreshRow) - the redundant older generations
+      // of a wire are safe to delete precisely because they are terminal,
+      // while a submitting sibling mid-flight keeps its lifecycle and
+      // evidence whatever the mint is doing.
+      onlySuperseded?: boolean;
+    },
   ): Promise<string[]> {
     const retired: string[] = [];
     for (const record of family.outbox) {
       if (options.excludeKeys.has(record.clientMutationId)) continue;
+      if (options.onlySuperseded === true && record.state !== "superseded") continue;
       await requestResult(transaction.objectStore(OUTBOX_STORE).delete(record.clientMutationId));
       retired.push(record.clientMutationId);
     }
@@ -2376,6 +2388,28 @@ export class MutationOutboxIndexedDB implements WebQueuedMessageStorage<Mutation
     delete record.unresolvedAttempts;
     delete record.stopFenced;
     await requestResult(transaction.objectStore(OUTBOX_STORE).add(record));
+    // Round-10 Medium: the generation bound lives at the mint - the one
+    // place the accumulation is created. While the daemon's journal write
+    // keeps failing, each reconcile cycle (and each explicit Retry) settles
+    // one full generation superseded - payload and image bytes retained -
+    // and this mint queues another full copy under the inherited wire id;
+    // unbounded, a prolonged outage accumulated byte-identical superseded
+    // copies until the origin quota exhausted and further mints failed.
+    // Every generation of one wire shares the same wire id, so a late
+    // receipt or refusal reconciles through ANY one retained evidence row:
+    // retiring the redundant OLDER superseded siblings here, in the mint's
+    // own write, bounds retention at one evidence-bearing superseded row per
+    // wire (the predecessor the caller just settled is the newest) - never
+    // zero, so the late-outcome contract keeps its evidence. No
+    // retiredIds notification: a superseded generation carries no live
+    // delivery registration - the minting wrapper cleared each one's at its
+    // own mint.
+    await this.#retireWireSiblings(transaction, inheritedWireId, {
+      excludeKeys: new Set([source.clientMutationId, record.clientMutationId]),
+      sweepOptimistic: false,
+      sweepRecovery: false,
+      onlySuperseded: true,
+    });
     return record;
   }
 

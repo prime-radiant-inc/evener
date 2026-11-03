@@ -1084,6 +1084,52 @@ test("a settled newer note save reports the older blocked rows it superseded", a
   expect(result.retiredIds).toContain(older.clientMutationId);
 });
 
+// Round-10 review Medium: when the daemon's journal write keeps failing while
+// authoritative reads succeed, every 2-second reconcile cycle takes the
+// innocent-row path - the blockedUnknown generation settles superseded (its
+// full payload and image bytes retained) and the mint queues another full
+// copy under the inherited wire id. NOTHING bounded the retained
+// generations: unbounded accumulation of byte-identical superseded copies
+// until the origin quota exhausts and further mints fail, leaving delivery
+// stuck even after the daemon recovers. The bound lives at the mint - the
+// one place the accumulation is created: redundant OLDER superseded
+// siblings of the wire retire in the same write, keeping exactly ONE
+// evidence-bearing superseded row (the newest predecessor) so the wire's
+// late outcome still reconciles through it.
+test("a repeatedly uncertain wire bounds its retained superseded generations at the mint", async () => {
+  const f = fixture();
+  const bigText = `payload `.repeat(2048);
+  const largeIntent = {
+    ...queuedIntent(),
+    payload: { ...queuedIntent().payload, input: [{ type: "text", text: bigText }] },
+  };
+  const a = await f.storage.enqueueIntent(largeIntent);
+  await f.storage.markAttempted(a.clientMutationId);
+  await f.storage.markUnknown(a.clientMutationId, "blockedUnknown");
+  const generations: string[] = [a.clientMutationId];
+  // Three reconcile cycles while the journal write keeps failing: each
+  // generation is proven absent and mints the next full copy.
+  for (let cycle = 0; cycle < 3; cycle += 1) {
+    const restored = await f.storage.restoreProvenAbsent("local:queued", new Set());
+    expect(restored).toHaveLength(1);
+    const fresh = (await f.storage.listOutbox("local:queued")).find((row) => row.clientMutationId === restored[0]);
+    if (!fresh) throw new Error("no minted generation");
+    // The journal write failed again: the fresh generation went uncertain.
+    await f.storage.markAttempted(fresh.clientMutationId);
+    await f.storage.markUnknown(fresh.clientMutationId, "blockedUnknown");
+    generations.push(fresh.clientMutationId);
+  }
+  const superseded = (await f.storage.listOutbox("local:queued")).filter((row) => row.state === "superseded");
+  // Bounded retention: ONE superseded evidence row - the newest predecessor -
+  // not one full copy per cycle.
+  expect(superseded).toHaveLength(1);
+  expect(superseded[0]?.clientMutationId).toBe(generations.at(-2));
+  // The retained row keeps the wire identity and attempt evidence, so the
+  // wire's late outcome still reconciles through it.
+  expect(superseded[0]?.payload.clientMutationId).toBe(a.clientMutationId);
+  expect(await f.storage.settleReceipt(generations.at(-2)!, "reflected")).toBe(true);
+});
+
 // Round-9 review Medium: the consolidation's write deleted secondary recovery
 // rows directly - no wire-family resolution, no family retirement, no
 // retiredIds notification. Retry leaves the predecessor superseded in the
