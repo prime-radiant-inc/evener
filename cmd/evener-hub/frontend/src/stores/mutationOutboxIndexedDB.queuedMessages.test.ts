@@ -1250,7 +1250,7 @@ test("editing a replacement whose predecessor left an unedited recovery coalesce
   expect(copies).toHaveLength(1);
   expect(copies[0]?.clientMutationId).toBe(b.clientMutationId);
   expect(copies[0]?.payload.clientMutationId).toBe(a.clientMutationId);
-  expect(copies[0]?.wireDeliveryUncertain).toBe(true);
+  expect((copies[0] as { wireDeliveryUncertain?: boolean })?.wireDeliveryUncertain).toBe(true);
 });
 
 // The preservation boundary of the same seam: an INDEPENDENTLY EDITED
