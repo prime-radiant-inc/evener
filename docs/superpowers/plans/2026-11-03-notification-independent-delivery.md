@@ -197,3 +197,65 @@ red/green output, committed SHA, paths, self-review and concerns. Return DONE,
 DONE_WITH_CONCERNS, NEEDS_CONTEXT or BLOCKED. Do not delegate or start a reviewer.
 The parent obtains independent review, simplifies the diff, pushes once for the
 round, settles CI and RoboRev, and merges through the queue.
+
+## Task 4: Isolate typed schema containers
+
+**Purpose:** Make the existing shared schema clone isolate valid serializable
+containers that its type switch currently returns unchanged. This correction is
+independent of exact argument ingestion, provider normalization and validation
+arithmetic. Existing decorators already call the shared clone on main.
+
+**Base:** `818cb733c1aeeb99dcb77a8aea7a661867692c4c`, on the isolated branch
+`wip/notification-schema-clone-isolation`. Preserve the held numeric lane and its
+remote PR unchanged.
+
+**Own:** `agent/internal/tool/registry.go`, a new directly covering
+`agent/internal/tool/schema_clone_test.go`, and one evergreen ownership sentence
+in the S14 row of `docs/product/subsystems.md`. The parent owns this plan.
+Do not edit existing tests, provider decorators, argument ingestion, terminal
+validation, dependencies, notification runtime or client code.
+
+**Source:** Inspect only the `cloneSchemaValue` correction in
+`0eee1aaa018493d0f0c2a7e98b09aa1a7a100792..35e2e938f660187fa9ebd8175d7bc672b3013cb9`.
+Reconstruct against this task's base; do not cherry-pick the numeric commits or
+copy their agent-level tests. Real callers include `WithIntentParameter`,
+`WithoutIntentParameter`, tool-definition decorators and provider definition
+cloning. Use the existing shared clone rather than adding another clone helper.
+
+**Contracts:** Preserve the current generic-map recursion, every explicitly
+supported slice type, scalar Go representations including `float64`, nil and
+empty behavior, and fallback for unserializable input. Previously unhandled
+serializable typed maps, slices, arrays, structs and pointers must not alias
+mutable source state. Preserve `json.Number("9007199254740993")` exactly in those
+containers. No numeric rejection policy, compatibility layer or validator change
+is authorized. Do not orphan an existing production symbol or weaken assertions.
+
+**Tests:** Read the product guide, S14 map row and testing guide first. Record up
+to five ranked hypotheses before production edits. Add
+`TestCloneSchemaMapTypedContainerIsolation`, covering each newly handled container
+kind, exact numeric contents and mutation in both directions. Add
+`TestWithIntentParameterTypedSchemaIsolation` through the existing production
+decorator, with a valid typed nested schema. Start parallel tests with
+`t.Parallel()`. Assert semantic contents independently of the concrete clone
+representation; a type-assertion panic is not an aliasing reproduction. Existing
+`TestCloneSchemaMap_DeepClonesEverySliceKind` and decorator assertions stay intact.
+Prove behavioral RED on unchanged production before the smallest shared repair,
+then GREEN. Reuse the already-reviewed fallback only if it meets all contracts.
+
+**Checks:** Run only the new tests for RED, then:
+
+```sh
+go test ./agent/internal/tool -run '^(TestCloneSchemaMapTypedContainerIsolation|TestWithIntentParameterTypedSchemaIsolation|TestCloneSchemaMap_DeepClonesEverySliceKind|TestWithIntentParameter_LeavesRequiredUntouched|TestWithIntentParameterRequired_MarksIntentRequired|TestWithoutIntentParameter_RemovesFromRequired)$' -count=1
+```
+
+No local full suite, race, broad lint or browser gates. CI owns them. Gofmt only
+touched Go files. If any preserved assertion or contract conflicts, stop with
+NEEDS_CONTEXT and its evidence instead of inventing another policy.
+
+**Finish:** Inspect the staged diff and commit only the three owned paths with
+normal hooks. Do not amend, push, post remotely, delegate, create a reviewer,
+stash, switch branches/worktrees or edit the parent ledger/brief. Append the full
+red/green commands and exit codes, exact base/head, changed paths, shape and
+isolation coverage, self-review and concerns to the report path supplied by the
+parent. Return DONE, DONE_WITH_CONCERNS, NEEDS_CONTEXT or BLOCKED. The parent
+reviews the whole independent cut before its own push and merge-queue attempt.
