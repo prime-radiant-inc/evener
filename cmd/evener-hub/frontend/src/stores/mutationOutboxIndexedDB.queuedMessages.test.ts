@@ -1016,8 +1016,16 @@ test("an autosaved edit of a delivery-uncertain recovery is new intent, not a re
   expect(await f.storage.getOutbox(sent.record.clientMutationId)).toBeDefined();
 });
 
-// The rerouted half: a different METHOD is different work too.
-test("a rerouted resend of a delivery-uncertain recovery takes a fresh wire identity", async () => {
+// The rerouted half, REWRITTEN for round-8 (disclosed): a byte-identical
+// payload under a different METHOD is not different work - the client-side
+// route/method choice cannot be allowed to mint a second wire for a
+// composition whose sibling RPC can still apply (the round-8 High, reached
+// through destinationSendRoute's automatic send-to-queue reroute). The
+// replay submits under the ORIGINAL method with the inherited wire id, and
+// the daemon's journal dedupes it; the round-6 "fresh id on reroute"
+// contract is superseded. Edited PAYLOADS remain new work under fresh ids
+// (the test above), and journaled rejections keep fresh ids (the pin below).
+test("a rerouted resend of an unchanged delivery-uncertain recovery replays under its original method and wire identity", async () => {
   const f = fixture();
   const a = await f.storage.enqueueIntent(queuedIntent());
   await f.storage.markAttempted(a.clientMutationId);
@@ -1028,7 +1036,11 @@ test("a rerouted resend of a delivery-uncertain recovery takes a fresh wire iden
   const rerouted = { ...queuedIntent("local:queued"), method: "turn/start" };
   const sent = await f.storage.resendRecoveryResult(a.clientMutationId, rerouted);
   if (sent.status !== "sent") throw new Error(`resend did not send: ${sent.status}`);
-  expect(sent.record.payload.clientMutationId).toBe(sent.record.clientMutationId);
+  // Identity is a unit: the resend keeps the wire's ORIGINAL method and the
+  // inherited id - the route's method choice is discarded, never honored
+  // with a fresh wire.
+  expect(sent.record.method).toBe(a.method);
+  expect(sent.record.payload.clientMutationId).toBe(a.clientMutationId);
 });
 
 // The complementary pin: a refusal the daemon JOURNALED (in band, naming this
@@ -1042,6 +1054,34 @@ test("a resend of a journaled-rejected recovery takes a fresh wire identity", as
   const sent = await f.storage.resendRecoveryResult(a.clientMutationId, queuedIntent());
   if (sent.status !== "sent") throw new Error(`resend did not send: ${sent.status}`);
   expect(sent.record.payload.clientMutationId).toBe(sent.record.clientMutationId);
+});
+
+// Round-8 review Medium: #retireOlderBlockedNoteRows superseded older
+// blockedUnknown note rows inside the settlement's own write but returned
+// nothing, so their ids never reached the settlement's post-commit
+// retiredIds notification. Their in-memory delivery registrations survived
+// until the next successful background read cleared them, and a storage
+// wedge inside that window left admitDirectSend refusing fallback sends
+// for work that can never dispatch again (superseded rows never dispatch).
+// The notification must name them, like every other retired row.
+test("a settled newer note save reports the older blocked rows it superseded", async () => {
+  const f = fixture();
+  const noteIntent = (text: string) => ({
+    targetRef: "local:queued",
+    threadId: "thread",
+    method: "notes/human/set",
+    payload: { ref: "local:queued", input: [{ type: "text", text }] },
+    attachments: [],
+    optimisticDisplay: { method: "notes/human/set", input: [{ type: "text", text }] },
+  });
+  const older = await f.storage.enqueueIntent(noteIntent("older blocked note"));
+  await f.storage.markAttempted(older.clientMutationId);
+  await f.storage.markUnknown(older.clientMutationId, "blockedUnknown");
+  const newer = await f.storage.enqueueIntent(noteIntent("newer note text"));
+  const result = await f.storage.settleReceiptResult(newer.clientMutationId, "reflected");
+  expect(result.settled).toBe(true);
+  expect((await f.storage.getOutbox(older.clientMutationId))?.state).toBe("superseded");
+  expect(result.retiredIds).toContain(older.clientMutationId);
 });
 
 // Round-5 review H2: the settlement's sibling sweep enumerated the outbox and

@@ -833,7 +833,7 @@ export class MutationOutboxIndexedDB implements WebQueuedMessageStorage<Mutation
         const subject = (named ?? siblings[0] ?? wireCarriers[0]) as MutationRecord;
         settledSource = subject;
         await this.#discardSupersededNoteRecovery(transaction, subject);
-        await this.#retireOlderBlockedNoteRows(transaction, subject);
+        const supersededNoteIds = await this.#retireOlderBlockedNoteRows(transaction, subject);
         const retained = retainsAcceptedCopy(subject, projectionState);
         if (retained) {
           // The accepted whitelist lives in the package's acceptedRecord so
@@ -877,6 +877,7 @@ export class MutationOutboxIndexedDB implements WebQueuedMessageStorage<Mutation
         // runtime clears in-memory registrations from - exactly like the
         // sweep's own rows. The named record's id the runtime clears itself.
         if (named === undefined) retiredIds.push(subject.clientMutationId);
+        retiredIds.push(...supersededNoteIds);
         return { settled: true, retiredIds };
       },
     );
@@ -955,7 +956,7 @@ export class MutationOutboxIndexedDB implements WebQueuedMessageStorage<Mutation
         }
         const subject = (named ?? siblings[0] ?? wireCarriers[0]) as MutationRecord;
         await this.#discardSupersededNoteRecovery(transaction, subject);
-        await this.#retireOlderBlockedNoteRows(transaction, subject);
+        const supersededNoteIds = await this.#retireOlderBlockedNoteRows(transaction, subject);
         if (named) {
           if (outboxRecord) await requestResult(outbox.delete(clientMutationId));
           if (optimisticRecord) await requestResult(optimistic.delete(clientMutationId));
@@ -978,6 +979,7 @@ export class MutationOutboxIndexedDB implements WebQueuedMessageStorage<Mutation
         // The same M:817 rule as settleReceipt: a fallback subject's key
         // reaches the retired ids.
         if (named === undefined) retiredIds.push(subject.clientMutationId);
+        retiredIds.push(...supersededNoteIds);
         settledSource = subject;
         return { settled: true, retiredIds };
       },
@@ -1143,10 +1145,14 @@ export class MutationOutboxIndexedDB implements WebQueuedMessageStorage<Mutation
   // in-band refusal from its own real in-flight attempt still settles it,
   // exactly like the mint's superseded semantics - and superseded rows never
   // dispatch again (nextDispatchable returns only submitting rows).
-  async #retireOlderBlockedNoteRows(transaction: IDBTransaction, source: MutationRecord | undefined): Promise<void> {
-    if (source?.method !== "notes/human/set") return;
+  async #retireOlderBlockedNoteRows(
+    transaction: IDBTransaction,
+    source: MutationRecord | undefined,
+  ): Promise<string[]> {
+    if (source?.method !== "notes/human/set") return [];
     const store = transaction.objectStore(OUTBOX_STORE);
     const records = await requestResult<MutationOutboxRecord[]>(store.getAll());
+    const supersededIds: string[] = [];
     for (const record of records) {
       if (
         record.method === "notes/human/set" &&
@@ -1155,8 +1161,16 @@ export class MutationOutboxIndexedDB implements WebQueuedMessageStorage<Mutation
         record.state === "blockedUnknown"
       ) {
         await requestResult(store.put({ ...record, state: "superseded" }));
+        supersededIds.push(record.clientMutationId);
       }
     }
+    // The ids return to the settlement's retiredIds notification: these rows
+    // leave every pending surface in this same write, so the runtime's
+    // in-memory delivery registrations must clear through the same
+    // post-commit channel every other retired row uses - or a storage wedge
+    // before the next background read leaves them refusing fallback sends
+    // for work that can never dispatch again (round-8 Medium).
+    return supersededIds;
   }
 
   // A later accepted note supersedes refused earlier text, not chat recovery
@@ -1915,20 +1929,36 @@ export class MutationOutboxIndexedDB implements WebQueuedMessageStorage<Mutation
         const { clientMutationId: _id, ...rest } = payload;
         return rest;
       };
-      const replaysOriginal = consumedOriginals.every(
+      const soleConsumedWireId = consumedWireIds.size === 1 ? [...consumedWireIds][0] : undefined;
+      const replaysOriginalPayload = consumedOriginals.every(
         (original) =>
           original.frozen !== undefined &&
-          intent.method === original.method &&
           sameJsonShape(stripPayloadId(intent.payload), stripPayloadId(original.frozen)),
       );
-      const soleConsumedWireId = consumedWireIds.size === 1 ? [...consumedWireIds][0] : undefined;
-      const inheritedWireId =
-        soleConsumedWireId !== undefined && replaysOriginal && consumedUncertainWireIds.has(soleConsumedWireId)
-          ? soleConsumedWireId
-          : undefined;
+      // Round-8 High: a byte-identical replay of a delivery-uncertain wire
+      // keeps the wire's identity AS A UNIT - id, method, and payload, the
+      // three fields the daemon's journal replays together. The composer's
+      // destination routing can rewrite the method (a Send pressed while the
+      // destination is busy - busy with the wire's OWN outstanding sibling
+      // attempt - routes as a queue), and judging identity on the rewritten
+      // method would mint a fresh id for a composition whose sibling RPC can
+      // still apply: double delivery through a client-side route choice. The
+      // frozen original is the reference for the method too - an unchanged
+      // replay submits under the ORIGINAL method with the inherited id, and
+      // the route cannot mint a second wire for the same composition. Edited
+      // content fails the payload compare and keeps the route's method as
+      // NEW work under a fresh id, exactly as before.
+      const uncertainReplay =
+        soleConsumedWireId !== undefined &&
+        replaysOriginalPayload &&
+        consumedUncertainWireIds.has(soleConsumedWireId) &&
+        consumedOriginals.every((original) => original.method === consumedOriginals[0].method);
+      const replayMethod = uncertainReplay ? consumedOriginals[0].method : undefined;
+      const resendIntent = replayMethod === undefined ? intent : { ...intent, method: replayMethod };
+      const inheritedWireId = uncertainReplay ? soleConsumedWireId : undefined;
       const record: MutationOutboxRecord = {
-        ...intent,
-        payload: { ...intent.payload, clientMutationId: inheritedWireId ?? nextMutationId },
+        ...resendIntent,
+        payload: { ...resendIntent.payload, clientMutationId: inheritedWireId ?? nextMutationId },
         attachments,
         version: 1,
         clientMutationId: nextMutationId,
