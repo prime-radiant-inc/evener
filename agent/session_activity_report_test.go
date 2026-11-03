@@ -9,8 +9,10 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/internal/delegatestore"
 	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/internal/appprojector"
 )
 
 func TestSessionActivityReportPreviewFollowsSettledGeneration(t *testing.T) {
@@ -199,6 +201,40 @@ func TestSessionActivityOpenGenerationOmitsPriorOutcome(t *testing.T) {
 					}
 				}
 			}
+			assertProjectedFrame := func(stage string, generation uint64, phase delegatestore.Phase, want ending) {
+				t.Helper()
+				var snapshot delegateSnapshot
+				for _, candidate := range s.delegateController.Snapshot().rows {
+					if candidate.id == id {
+						snapshot = candidate
+					}
+				}
+				data := delegateUpdatedDataFromStatus(delegateFrameStatusInfo(at, s.ID(), snapshot))
+				projector := appprojector.NewAppEventProjector(s.ID(), encodeRef("", s.ID()))
+				notifications := projector.Project(events.SessionEvent{Kind: events.EventDelegateUpdated, SessionID: s.ID(), Data: data})
+				if len(notifications) != 1 {
+					t.Fatalf("%s projected notifications=%+v, want one", stage, notifications)
+				}
+				params, ok := notifications[0].Params.(appwire.EvenerDelegateParams)
+				if !ok {
+					t.Fatalf("%s projected params=%T, want appwire.EvenerDelegateParams", stage, notifications[0].Params)
+				}
+				frame := params.Delegate
+				if frame.RunGeneration != generation || frame.Phase != string(phase) {
+					t.Fatalf("%s projected frame did not reach generation=%d phase=%s: %+v", stage, generation, phase, frame)
+				}
+				got := ending{outcome: frame.Outcome, reason: frame.Reason, errorText: frame.Error, endedAt: frame.RunEndedAt, terminal: frame.Terminal, reportPreview: frame.ReportPreview}
+				if got != want {
+					t.Fatalf("%s projected generation=%d ending=%+v, want %+v; frame=%+v", stage, generation, got, want, frame)
+				}
+				fresh, err := s.ListActivityDelegates(t.Context(), appwire.SessionActivityListParams{Ref: encodeRef("", s.ID()), Scope: appwire.SessionActivityScopeSession})
+				if err != nil || len(fresh.Delegates) != 1 {
+					t.Fatalf("%s fresh parity read rows=%d err=%v", stage, len(fresh.Delegates), err)
+				}
+				if frame.RunGeneration != fresh.Delegates[0].RunGeneration || frame.ProjectionRevision != fresh.Delegates[0].ProjectionRevision {
+					t.Fatalf("%s frame generation/revision=%d/%d, fresh read=%d/%d", stage, frame.RunGeneration, frame.ProjectionRevision, fresh.Delegates[0].RunGeneration, fresh.Delegates[0].ProjectionRevision)
+				}
+			}
 			assertRows("settled prior generation", 1, delegatestore.PhaseIdle, prior)
 
 			read, err := s.activityRead(t.Context(), appwire.SessionActivityReadParams{Ref: encodeRef("", s.ID()), Scope: appwire.SessionActivityScopeSession})
@@ -218,11 +254,14 @@ func TestSessionActivityOpenGenerationOmitsPriorOutcome(t *testing.T) {
 
 			appendEvents(delegateControllerRunStartedEvent(id, 2, delegatestore.TriggerOwnerInput, at.Add(2*time.Second)))
 			assertRows("open generation", 2, delegatestore.PhaseRunning, open)
+			assertProjectedFrame("open generation", 2, delegatestore.PhaseRunning, open)
 			packet := delegatestore.TerminalPacket{Kind: delegatestore.PacketReported, Message: json.RawMessage(`"second report"`)}
 			appendEvents(delegatestore.Event{Kind: delegatestore.EventDelegateTerminalPrepared, DelegateID: id, TerminalPrepared: &delegatestore.TerminalPrepared{Generation: 2, Packet: packet}})
 			assertRows("prepared open generation", 2, delegatestore.PhaseSettling, open)
+			assertProjectedFrame("prepared open generation", 2, delegatestore.PhaseSettling, open)
 			appendEvents(delegateRunFinishedEvent(delegateLease{delegateID: id, generation: 2}, delegatestore.OutcomeCompleted, delegatestore.DispositionReported, "", at.Add(3*time.Second), delegateDeliveryID(id, 2), nil))
 			assertRows("settled second generation", 2, delegatestore.PhaseIdle, second)
+			assertProjectedFrame("settled second generation", 2, delegatestore.PhaseIdle, second)
 
 			captured := candidates[0].project()
 			capturedEnding := ending{outcome: captured.Outcome, reason: captured.Reason, errorText: captured.Error, endedAt: captured.RunEndedAt, terminal: captured.Terminal, reportPreview: captured.ReportPreview}
