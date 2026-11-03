@@ -1176,11 +1176,13 @@ func TestWorktreePrune_OrphanArmSparesLaneWhileRetainedChildNotifies(t *testing.
 	// idle. The drive keeps retrying the wake-edge because the owed attention
 	// arms asynchronously: the drive turn a launch reports runs empty until
 	// it does, and exiting on the first launch would strand the wedge turn on
-	// the owner's slow quiet-watch retry — the #5556 flake, where a miss raced
-	// the arm and the 12s window expired before the tree's own machinery
-	// launched the attention run.
+	// the owner's slow quiet-watch retry. The drive loop and the tripwire
+	// below share one deadline: a loop budget shorter than the tripwire
+	// strands an arm that lands in the gap — nothing drives the turn again
+	// until the owner's quiet-watch, past the tripwire.
+	turnStartDeadline := time.Now().Add(30 * time.Second)
 	go func() {
-		for deadline := time.Now().Add(10 * time.Second); time.Now().Before(deadline); {
+		for time.Now().Before(turnStartDeadline) {
 			lane.delegateSess.driveChildIfNotStopGated(lane.sharedSub)
 			time.Sleep(200 * time.Millisecond)
 			select {
@@ -1192,8 +1194,8 @@ func TestWorktreePrune_OrphanArmSparesLaneWhileRetainedChildNotifies(t *testing.
 	}()
 	select {
 	case <-entered:
-	// TRIPWIRE: the armed attention turns over within seconds of the send settling; 30s only fires on a genuine hang. The deadline covers a shard loaded with the rest of this package's parallel tests, where spawn and the retry cadence stretch.
-	case <-time.After(30 * time.Second):
+	// TRIPWIRE: the armed attention turns over within seconds of the send settling; the shared deadline only fires on a genuine hang. It covers a shard loaded with the rest of this package's parallel tests, where spawn and the arm both stretch.
+	case <-time.After(time.Until(turnStartDeadline)):
 		t.Fatal("the retained child's turn never started")
 	}
 
