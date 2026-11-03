@@ -1084,6 +1084,131 @@ test("a settled newer note save reports the older blocked rows it superseded", a
   expect(result.retiredIds).toContain(older.clientMutationId);
 });
 
+// Jesse's 2026-11-03 ruling on the #5583 collision: both Edit and Remove
+// reach inherited-wire rows, and the duplicate problem is solved
+// MECHANICALLY, not by hiding the verb. The edit seam stamps the row's
+// delivery-uncertainty identity onto the editing recovery - the same
+// stamping transferToRecovery does - so an UNCHANGED resend replays under
+// the inherited wire id (journal dedup, no double-apply) while changed
+// content resends as the user's new message under a fresh id. The predicate
+// is uniform across the two uncertainty shapes: a blockedUnknown row's own
+// attempt may have landed, and an inherited-wire row's predecessor may have
+// landed under the shared wire id.
+test("an edited inherited-wire row resends unchanged under its inherited wire id", async () => {
+  const f = fixture();
+  const a = await f.storage.enqueueIntent(queuedIntent());
+  await f.storage.markAttempted(a.clientMutationId);
+  await f.storage.markUnknown(a.clientMutationId, "blockedUnknown");
+  const capture = await f.storage.getOutboxWithStopEpoch(a.clientMutationId);
+  const b = await f.storage.mintRetryFromRow(a.clientMutationId, {
+    record: capture.record,
+    stopEpoch: capture.stopEpoch,
+    displayedStopEpoch: 0,
+  });
+  if (!b) throw new Error("mint failed");
+  expect(b.payload.clientMutationId).toBe(a.clientMutationId);
+  const bNow = await f.storage.getOutbox(b.clientMutationId);
+  if (!bNow) throw new Error("minted row missing");
+  const recovery = await f.storage.editQueuedMessage(bNow, { stopEpoch: 0 });
+  if (!recovery) throw new Error("edit failed");
+  const sent = await f.storage.resendRecoveryResult(recovery.clientMutationId, queuedIntent());
+  if (sent.status !== "sent") throw new Error(`resend did not send: ${sent.status}`);
+  expect(sent.record.payload.clientMutationId).toBe(a.clientMutationId);
+});
+
+test("an edited blockedUnknown row resends unchanged under its own wire id", async () => {
+  const f = fixture();
+  const x = await f.storage.enqueueIntent(queuedIntent());
+  await f.storage.markAttempted(x.clientMutationId);
+  await f.storage.markUnknown(x.clientMutationId, "blockedUnknown");
+  const xNow = await f.storage.getOutbox(x.clientMutationId);
+  if (!xNow) throw new Error("row missing");
+  const recovery = await f.storage.editQueuedMessage(xNow, { stopEpoch: 0 });
+  if (!recovery) throw new Error("edit failed");
+  const sent = await f.storage.resendRecoveryResult(recovery.clientMutationId, queuedIntent());
+  if (sent.status !== "sent") throw new Error(`resend did not send: ${sent.status}`);
+  expect(sent.record.payload.clientMutationId).toBe(x.clientMutationId);
+});
+
+// The ruling's boundary, changed-content side: an edit the user actually
+// changed is their new message - a fresh wire identity, never an inherited
+// one.
+test("an edited-and-changed composition resends as new work under a fresh id", async () => {
+  const f = fixture();
+  const a = await f.storage.enqueueIntent(queuedIntent());
+  await f.storage.markAttempted(a.clientMutationId);
+  await f.storage.markUnknown(a.clientMutationId, "blockedUnknown");
+  const capture = await f.storage.getOutboxWithStopEpoch(a.clientMutationId);
+  const b = await f.storage.mintRetryFromRow(a.clientMutationId, {
+    record: capture.record,
+    stopEpoch: capture.stopEpoch,
+    displayedStopEpoch: 0,
+  });
+  if (!b) throw new Error("mint failed");
+  const bNow = await f.storage.getOutbox(b.clientMutationId);
+  if (!bNow) throw new Error("minted row missing");
+  const recovery = await f.storage.editQueuedMessage(bNow, { stopEpoch: 0 });
+  if (!recovery) throw new Error("edit failed");
+  const sent = await f.storage.resendRecoveryResult(recovery.clientMutationId, {
+    ...queuedIntent(),
+    payload: { ...queuedIntent().payload, input: [{ type: "text", text: "changed my mind" }] },
+  });
+  if (sent.status !== "sent") throw new Error(`resend did not send: ${sent.status}`);
+  expect(sent.record.payload.clientMutationId).toBe(sent.record.clientMutationId);
+  expect(sent.record.payload.clientMutationId).not.toBe(a.clientMutationId);
+});
+
+// The ruling's boundary, canceled side: a provably-never-delivered canceled
+// row carries no uncertainty, so its edit resends under a fresh id.
+test("an edited canceled row resends under a fresh id", async () => {
+  const f = fixture();
+  const c = await f.storage.enqueueIntent(queuedIntent());
+  await f.storage.cancelUnattempted("local:queued");
+  const cNow = await f.storage.getOutbox(c.clientMutationId);
+  if (cNow?.state !== "canceled") throw new Error("canceled fixture failed");
+  // The cancel scan bumps the ref's stop epoch: the edit's press-time barrier
+  // reads the POST-cancel epoch, exactly like a real press after a Stop.
+  const recovery = await f.storage.editQueuedMessage(cNow, {
+    stopEpoch: await f.storage.readStopEpoch("local:queued"),
+  });
+  if (!recovery) throw new Error("edit failed");
+  const sent = await f.storage.resendRecoveryResult(recovery.clientMutationId, queuedIntent());
+  if (sent.status !== "sent") throw new Error(`resend did not send: ${sent.status}`);
+  expect(sent.record.payload.clientMutationId).toBe(sent.record.clientMutationId);
+});
+
+// Seam 2, the #5583 ruling's Remove half: removal ends the composition, so it
+// ends the wire - the round-9 routing at the new seam. The removed row's
+// wire siblings (an inherited-wire row's superseded predecessor) retire
+// atomically in the same write, and the retired keys - including the removed
+// row's own - reach the retiredIds notification, so the runtime's live
+// registration clears without waiting for a background read. A delayed
+// terminal refusal for the wire then lands inert: no resurrection of work
+// the user removed. (If the wire's in-flight attempt genuinely lands, the
+// message may still appear in the conversation - it delivered; nothing may
+// re-queue it locally.)
+test("removing an inherited-wire row retires its wire so a late refusal cannot resurrect it", async () => {
+  const f = fixture();
+  const retired: string[] = [];
+  f.storage.setRetiredIdsListener((ids) => retired.push(...ids));
+  const a = await f.storage.enqueueIntent(queuedIntent());
+  await f.storage.markAttempted(a.clientMutationId);
+  await f.storage.markUnknown(a.clientMutationId, "blockedUnknown");
+  const capture = await f.storage.getOutboxWithStopEpoch(a.clientMutationId);
+  const b = await f.storage.mintRetryFromRow(a.clientMutationId, {
+    record: capture.record,
+    stopEpoch: capture.stopEpoch,
+    displayedStopEpoch: 0,
+  });
+  if (!b) throw new Error("mint failed");
+  const bNow = await f.storage.getOutbox(b.clientMutationId);
+  if (!bNow) throw new Error("minted row missing");
+  expect(await f.storage.removeQueuedMessage(bNow, { stopEpoch: 0 })).toBe(true);
+  expect(await f.storage.getOutbox(a.clientMutationId)).toBeUndefined();
+  expect(retired).toEqual(expect.arrayContaining([a.clientMutationId, b.clientMutationId]));
+  expect(await f.storage.transferToRecovery(a.clientMutationId, "rejected", "late refusal")).toBeUndefined();
+});
+
 // Round-10 review Medium: when the daemon's journal write keeps failing while
 // authoritative reads succeed, every 2-second reconcile cycle takes the
 // innocent-row path - the blockedUnknown generation settles superseded (its

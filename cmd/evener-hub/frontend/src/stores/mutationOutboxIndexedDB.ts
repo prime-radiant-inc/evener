@@ -1632,10 +1632,25 @@ export class MutationOutboxIndexedDB implements WebQueuedMessageStorage<Mutation
         (existingRecovery.compositionRevision ?? 0) > 0
       )
         return undefined;
+      // Jesse's 2026-11-03 ruling on the #5583 collision: editing is the
+      // user's call for uncertain rows too, and the duplicate problem is
+      // solved mechanically, not by hiding the verb. An edit of a row whose
+      // delivery is uncertain carries the wire's uncertainty identity into
+      // the editing recovery - the same stamping transferToRecovery does -
+      // so an UNCHANGED resend replays under the inherited wire id (journal
+      // dedup, no double-apply) while changed content resends as the user's
+      // new message under a fresh id. The predicate is uniform across the
+      // two uncertainty shapes: a blockedUnknown row's own attempt may have
+      // landed (the state's definition), and an inherited-wire row's
+      // predecessor may have landed under the shared wire id. Canceled rows
+      // and unattempted submitting rows are provably not delivered - no
+      // marker, fresh resends.
+      const uncertainEdit = record.state === "blockedUnknown" || effectiveWireId(record) !== record.clientMutationId;
       const recovery: VersionedMutationRecoveryRecord = {
         ...record,
         recoveryKind: "editing",
         compositionRevision: 0,
+        ...(uncertainEdit ? { wireDeliveryUncertain: true, originalWirePayload: { ...record.payload } } : {}),
       };
       await requestResult(transaction.objectStore(RECOVERY_STORE).put(recovery));
       await requestResult(outbox.delete(record.clientMutationId));
@@ -1644,14 +1659,37 @@ export class MutationOutboxIndexedDB implements WebQueuedMessageStorage<Mutation
   }
 
   async removeQueuedMessage(expected: MutationOutboxRecord, barrier: MutationStopBarrier): Promise<boolean> {
-    return this.#write([OUTBOX_STORE, SEQUENCE_STORE], "removeQueuedMessage", async (transaction) => {
+    const outcome = await this.#write([OUTBOX_STORE, SEQUENCE_STORE], "removeQueuedMessage", async (transaction) => {
       const outbox = transaction.objectStore(OUTBOX_STORE);
       const record = await requestResult<MutationOutboxRecord | undefined>(outbox.get(expected.clientMutationId));
-      if (!record || !matchesQueuedMessageSnapshot(record, expected) || !canRemoveQueuedMessage(record)) return false;
-      if ((await this.#stopEpochOf(transaction, record.targetRef)) !== barrier.stopEpoch) return false;
+      if (!record || !matchesQueuedMessageSnapshot(record, expected) || !canRemoveQueuedMessage(record))
+        return undefined;
+      if ((await this.#stopEpochOf(transaction, record.targetRef)) !== barrier.stopEpoch) return undefined;
+      // Round-10 seam 2 (Jesse's 2026-11-03 ruling): removal ends the
+      // composition, so it ends the wire - the round-9 routing at the #5583
+      // seam. The removed row's wire siblings (an inherited-wire row's
+      // superseded predecessor) retire atomically in the same write, or a
+      // delayed terminal refusal for the wire would resurrect work the user
+      // removed. The retired keys - INCLUDING the removed row's own, a live
+      // strip row carrying a registration - reach the retiredIds
+      // post-commit notification so the runtime clears without waiting for
+      // a background read. No state filter here, unlike the mint's
+      // generation bound: remove ends the composition entirely, exactly like
+      // round-9's consolidation and discard, while the mint keeps a live
+      // successor. If the wire's in-flight attempt genuinely lands, the
+      // message may still appear in the conversation - it delivered;
+      // nothing may re-queue it locally.
+      const retiredIds = await this.#retireWireSiblings(transaction, effectiveWireId(record), {
+        excludeKeys: new Set([record.clientMutationId]),
+        sweepOptimistic: false,
+        sweepRecovery: false,
+      });
       await requestResult(outbox.delete(record.clientMutationId));
-      return true;
+      return { retiredIds: [...retiredIds, record.clientMutationId] };
     });
+    if (!outcome) return false;
+    if (outcome.retiredIds.length > 0) this.#retiredIdsListener?.(outcome.retiredIds);
+    return true;
   }
 
   async getRecovery(clientMutationId: string): Promise<MutationRecoveryRecord | undefined> {
