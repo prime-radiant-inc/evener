@@ -575,7 +575,9 @@ export function describeMutationOutboxStorage(factory: MutationOutboxStorageFact
     // as a receipt does.
     test("settleApplied discards a ref's superseded note recovery rows and preserves the rest", async () => {
       const ids = await seedSupersededNoteScenario(storage);
-      await expect(storage.settleApplied(ids.settling.clientMutationId)).resolves.toBe(true);
+      await expect(storage.settleApplied(ids.settling.clientMutationId)).resolves.toMatchObject({
+        clientMutationId: ids.settling.clientMutationId,
+      });
       await expectSupersedeDroppedEarlierNotes(storage, ids);
     });
 
@@ -599,7 +601,9 @@ export function describeMutationOutboxStorage(factory: MutationOutboxStorageFact
       const refused = await storage.enqueueIntent(conformanceNoteIntent("refused older"));
       await storage.transferToRecovery(refused.clientMutationId, "rejected", "note refused");
       const settling = await storage.enqueueIntent(conformanceTextIntent("a turn", CONFORMANCE_TARGET));
-      await expect(storage.settleApplied(settling.clientMutationId)).resolves.toBe(true);
+      await expect(storage.settleApplied(settling.clientMutationId)).resolves.toMatchObject({
+        clientMutationId: settling.clientMutationId,
+      });
       await expect(storage.getRecovery(refused.clientMutationId)).resolves.toMatchObject({
         clientMutationId: refused.clientMutationId,
       });

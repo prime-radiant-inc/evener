@@ -552,20 +552,23 @@ export class MutationOutboxSQLite<A extends MutationAttachmentRef = MutationAtta
 	}
 
 	// Removes a record the daemon has authoritatively applied, from whichever
-	// of the three tables currently holds it.
-	async settleApplied(clientMutationId: string): Promise<boolean> {
+	// of the three tables currently holds it. Returns the record the
+	// settlement resolved as its subject, or undefined when nothing carrying
+	// the id settled - the shared port contract that makes the settlement
+	// the one home of id resolution for its callers.
+	async settleApplied(clientMutationId: string): Promise<MutationRecord<A> | undefined> {
 		return this.transaction("mutation_outbox_settle_applied", () => {
 			const outboxRecord = this.get<MutationOutboxRecord<A>>(TABLES.outbox, clientMutationId);
 			const optimisticRecord = this.get<MutationOptimisticRecord<A>>(TABLES.optimistic, clientMutationId);
 			const recoveryRecord = this.get<MutationRecoveryRecord<A>>(TABLES.recovery, clientMutationId);
 			const source = outboxRecord ?? optimisticRecord ?? recoveryRecord;
-			if (!source) return false;
+			if (!source) return undefined;
 			this.discardSupersededNoteRecovery(source);
 			let removed = false;
 			for (const table of Object.values(TABLES)) {
 				if (this.delete(table, clientMutationId)) removed = true;
 			}
-			return removed;
+			return removed ? source : undefined;
 		});
 	}
 

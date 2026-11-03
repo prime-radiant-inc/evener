@@ -408,7 +408,9 @@ describe("MutationOutboxIndexedDB cancellation", () => {
     // settleApplied, not its own response receipt: the same supersede must run
     // there, or the pinned row survives every commit path but one.
     const newerNote = await storage.enqueueIntent(noteIntent("the newer save"));
-    expect(await storage.settleApplied(newerNote.clientMutationId)).toBe(true);
+    expect(await storage.settleApplied(newerNote.clientMutationId)).toMatchObject({
+      clientMutationId: newerNote.clientMutationId,
+    });
 
     expect(await storage.getOutbox(superseded.clientMutationId)).toBeUndefined();
     expect(await storage.getOutbox(newerNote.clientMutationId)).toBeUndefined();

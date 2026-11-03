@@ -209,6 +209,52 @@ describe("MutationDispatcher", () => {
     await outbox.close();
   });
 
+  // RoboRev round-11 M1 corner: two requeues of a note save leave the wire's
+  // ORIGINAL storage key retired by the mint's retention bound - the newest
+  // superseded row is the wire's one retained evidence row, and the live
+  // successor carries the wire id only inside its payload. An authoritative
+  // read that names the original wire id (a lost response, no RPC receipt)
+  // must still reconcile through the surviving carriers: the note
+  // acknowledgement fires with the record the settlement resolved, and the
+  // family retires - instead of the settlement deleting the family with no
+  // callback and the note draft stranding submitting forever.
+  test("a reconcile naming an original wire id pruned by the retention bound still acknowledges the note", async () => {
+    const outbox = storage(new IDBFactory(), "wire-pruned-rejoin", ["note-original", "note-fresh-1", "note-fresh-2"]);
+    const original = await outbox.enqueueIntent({
+      targetRef: "ref-a",
+      method: "notes/human/set",
+      payload: { ref: "ref-a", note: "raw draft" },
+      attachments: [],
+      optimisticDisplay: null,
+    });
+    await outbox.markAttempted(original.clientMutationId);
+    await outbox.markUnknown(original.clientMutationId, "blockedUnknown");
+    const firstCapture = await outbox.getOutboxWithStopEpoch(original.clientMutationId);
+    const first = await outbox.mintRetryFromRow(original.clientMutationId, firstCapture);
+    if (!first) throw new Error("mint refused");
+    expect(first.payload.clientMutationId).toBe(original.clientMutationId);
+    await outbox.markAttempted(first.clientMutationId);
+    await outbox.markUnknown(first.clientMutationId, "blockedUnknown");
+    const secondCapture = await outbox.getOutboxWithStopEpoch(first.clientMutationId);
+    const second = await outbox.mintRetryFromRow(first.clientMutationId, secondCapture);
+    if (!second) throw new Error("mint refused");
+    expect(second.payload.clientMutationId).toBe(original.clientMutationId);
+    // The retention bound has pruned the wire's original storage key: the
+    // newest superseded row is the one retained evidence row beside the live
+    // successor.
+    expect(await outbox.getOutbox(original.clientMutationId)).toBeUndefined();
+    expect(await outbox.getOutbox(first.clientMutationId)).toBeDefined();
+    expect(await outbox.getOutbox(second.clientMutationId)).toBeDefined();
+    const onHumanNoteReconciled = vi.fn();
+    const dispatcher = new MutationDispatcher(outbox, { getClient: () => null, onHumanNoteReconciled });
+    await dispatcher.reconcileIdentities([original.clientMutationId]);
+    expect(onHumanNoteReconciled).toHaveBeenCalledWith(
+      expect.objectContaining({ method: "notes/human/set", targetRef: "ref-a" }),
+    );
+    expect(await outbox.listOutbox()).toEqual([]);
+    await outbox.close();
+  });
+
   test("dispatches thread/clear with its instance fence and publishes the replacement response", async () => {
     const indexedDB = new IDBFactory();
     const outbox = storage(indexedDB, "clear-response", ["mutation-a"]);

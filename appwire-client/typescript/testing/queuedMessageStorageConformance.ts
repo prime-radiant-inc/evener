@@ -322,7 +322,9 @@ export function describeWebQueuedMessageStorage(name: string, create: () => WebQ
       // The Stop's own interrupt row still heads the queue ahead of the tail
       // mint; retire it the way its dispatch would, then the old row is never
       // dispatched again: only the fresh row is dispatchable.
-      expect(await f.storage.settleApplied(interrupt.clientMutationId)).toBe(true);
+      expect(await f.storage.settleApplied(interrupt.clientMutationId)).toMatchObject({
+        clientMutationId: interrupt.clientMutationId,
+      });
       expect(await f.storage.nextDispatchable("local:queued")).toMatchObject({
         clientMutationId: minted?.clientMutationId,
       });
@@ -456,7 +458,9 @@ export function describeWebQueuedMessageStorage(name: string, create: () => WebQ
       if (!fresh) throw new Error("mint refused");
       expect(await f.storage.settleReceipt(fresh.clientMutationId, "pending")).toBe(true);
       expect(await f.storage.getOptimistic(fresh.clientMutationId)).toBeDefined();
-      expect(await f.storage.settleApplied(original.clientMutationId)).toBe(true);
+      expect(await f.storage.settleApplied(original.clientMutationId)).toMatchObject({
+        clientMutationId: fresh.clientMutationId,
+      });
       expect(await f.storage.getOptimistic(fresh.clientMutationId)).toBeUndefined();
       expect(await f.storage.getOutbox(original.clientMutationId)).toBeUndefined();
     });
@@ -600,7 +604,9 @@ export function describeWebQueuedMessageStorage(name: string, create: () => WebQ
       // Retire the Stop's own interrupt row the way its dispatch would; with
       // it gone nothing on the ref is dispatchable - the fresh row was born
       // canceled and the old canceled row is removed.
-      expect(await f.storage.settleApplied(interrupt.clientMutationId)).toBe(true);
+      expect(await f.storage.settleApplied(interrupt.clientMutationId)).toMatchObject({
+        clientMutationId: interrupt.clientMutationId,
+      });
       expect(await f.storage.nextDispatchable("local:queued")).toBeUndefined();
     });
   });

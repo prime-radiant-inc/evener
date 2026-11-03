@@ -17,15 +17,28 @@ Controls follow that ownership, not the preview text or connection status.
   saves), which keep their own controls.
 - A delivery-uncertain message is otherwise one local message like any other:
   **Edit message** and **Remove from queue** reach it, and its row carries
-  "Delivery uncertain" as a subtitle. Editing it is the user choosing to send it
-  again - the send that follows is a new message, and that is the user's call. The row still closes its ref's FIFO - the
+  "Delivery uncertain" as a subtitle. Editing it carries the row's inherited wire
+  identity into the recovery: an unchanged resend replays the existing mutation
+  under that identity - the daemon's journal deduplicates it, so work that
+  already delivered cannot apply twice - while changed content sends as a new
+  message under a fresh identity. The row still closes its ref's FIFO - the
   daemon may already hold it, so nothing behind it may go - and when the hub
-  cannot answer, Remove is the exit that lets later messages move.
+  cannot answer, Remove is the exit that lets later messages move: it ends the
+  wire, retiring the row's remaining durable siblings in the same write, though
+  an attempt already in flight may still land and appear in the conversation.
 - Promotion and input-empty drain commands offer Remove only. Editing a
   content-bearing drain restores its composer input, not the daemon queue preview.
 - Unattempted rows appear once in QueueStrip, not also in optimistic send chips
   or steering ghosts. In-flight and remote ghosts remain. A move back to the
   local queue after an explicit refusal is not announced as delivery or failure.
+
+A **Retry** of a canceled or delivery-uncertain row mints a fresh row at the
+queue's tail and settles the predecessor terminal. The predecessor keeps its
+identity and attempt evidence as the wire's one retained evidence row, so a
+late receipt or refusal still reconciles through it, whichever generation the
+authoritative feed names; repeated requeues bound retention to that one
+evidence row beside the live successor, and the wire's settlement or removal
+retires it with the rest.
 
 ```mermaid
 flowchart LR
@@ -33,7 +46,7 @@ flowchart LR
   Local -->|Remove transaction| Removed[Removed identity]
   Local -->|Transport attempt| Flight[In flight, local controls once uncertain]
   Recovery -->|Merge into occupied draft| Owner[One durable recovery owner]
-  Owner -->|Send transaction| Fresh[Fresh mutation identity]
+  Owner -->|Send transaction| Fresh[Fresh identity, or the inherited identity replayed]
   Fresh -->|Newer Stop| Held[Canceled, explicit Retry required]
   Fresh -->|No newer Stop| Dispatch[Normal dispatch]
 ```

@@ -267,7 +267,9 @@ test("settlement leaves recovery advanced to revision one for reconciliation", a
     0,
   );
   expect(edited?.compositionRevision).toBe(1);
-  expect(await f.storage.settleApplied(original.clientMutationId)).toBe(true);
+  expect(await f.storage.settleApplied(original.clientMutationId)).toMatchObject({
+    clientMutationId: original.clientMutationId,
+  });
   const reopened = await f.reopen();
   expect(await reopened.getRecovery(original.clientMutationId)).toMatchObject({
     compositionRevision: 1,
@@ -1399,7 +1401,7 @@ test("an applied settlement retires its unedited recovery sibling", async () => 
   await f.storage.markUnknown(b.clientMutationId, "blockedUnknown");
   const recovery = await f.storage.transferToRecovery(b.clientMutationId, "rejected");
   if (!recovery) throw new Error("failed to seed recovery");
-  expect(await f.storage.settleApplied(a.clientMutationId)).toBe(true);
+  expect(await f.storage.settleApplied(a.clientMutationId)).toMatchObject({ clientMutationId: a.clientMutationId });
   expect(await f.storage.getRecovery(b.clientMutationId)).toBeUndefined();
 });
 

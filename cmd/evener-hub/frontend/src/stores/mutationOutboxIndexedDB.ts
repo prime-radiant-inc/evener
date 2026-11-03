@@ -901,11 +901,13 @@ export class MutationOutboxIndexedDB implements WebQueuedMessageStorage<Mutation
     return settled;
   }
 
-  async settleApplied(clientMutationId: string): Promise<boolean> {
-    return (await this.settleAppliedResult(clientMutationId)).settled;
+  async settleApplied(clientMutationId: string): Promise<MutationRecord | undefined> {
+    return (await this.settleAppliedResult(clientMutationId)).record;
   }
 
-  async settleAppliedResult(clientMutationId: string): Promise<{ settled: boolean; retiredIds: string[] }> {
+  async settleAppliedResult(
+    clientMutationId: string,
+  ): Promise<{ settled: boolean; retiredIds: string[]; record?: MutationRecord }> {
     let settledSource: MutationRecord | undefined;
     let settledWireId: string | undefined;
     const settled = await this.#write<{ settled: boolean; retiredIds: string[] }>(
@@ -952,7 +954,7 @@ export class MutationOutboxIndexedDB implements WebQueuedMessageStorage<Mutation
           wireCarriers = recoveryFamily.recovery.filter(
             (record) => record.clientMutationId !== clientMutationId && settlementRetiresRecovery(record),
           );
-          if (wireCarriers.length === 0) return { settled: false, retiredIds: [] };
+          if (wireCarriers.length === 0) return { settled: false, retiredIds: [], record: undefined };
         }
         const subject = (named ?? siblings[0] ?? wireCarriers[0]) as MutationRecord;
         await this.#discardSupersededNoteRecovery(transaction, subject);
@@ -981,7 +983,7 @@ export class MutationOutboxIndexedDB implements WebQueuedMessageStorage<Mutation
         if (named === undefined) retiredIds.push(subject.clientMutationId);
         retiredIds.push(...supersededNoteIds);
         settledSource = subject;
-        return { settled: true, retiredIds };
+        return { settled: true, retiredIds, record: subject };
       },
     );
     if (!settled.settled) return settled;

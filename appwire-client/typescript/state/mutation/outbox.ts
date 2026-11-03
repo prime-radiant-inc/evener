@@ -28,6 +28,7 @@ import type {
   MutationIntent,
   MutationOptimisticRecord,
   MutationOutboxRecord,
+  MutationRecord,
   MutationRecoveryKind,
   MutationRecoveryRecord,
 } from "./records";
@@ -151,8 +152,15 @@ export interface MutationOutboxStorage<A extends MutationAttachmentRef = Mutatio
   // interface conformance alone does not prove it.
   settleReceipt(clientMutationId: string, projectionState: string): Promise<boolean>;
   // Records an authoritative apply, with the same notes/human/set supersede
-  // side effect as settleReceipt.
-  settleApplied(clientMutationId: string): Promise<boolean>;
+  // side effect as settleReceipt. Returns the record the settlement resolved
+  // as its subject - the row the id names, else a carrier of the id's wire
+  // identity (a minted replacement, its retained accepted copy, or the
+  // wire's remaining recovery carrier) - so a consumer that must react to
+  // the reconciled composition (the note-draft acknowledgement) reads the
+  // answer from the settlement, the one home of wire-family resolution,
+  // rather than enumerating stores by wire id. Undefined when nothing
+  // carrying the id, by key or by wire, settled.
+  settleApplied(clientMutationId: string): Promise<MutationRecord<A> | undefined>;
   // Records the authoritative snapshot proves never landed, re-queued for
   // another dispatch attempt; returns the ids of the records this pass
   // re-queued (a host may reopen the record in place or mint a fresh row
