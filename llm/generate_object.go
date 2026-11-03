@@ -10,7 +10,7 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/santhosh-tekuri/jsonschema/v5"
+	"primeradiant.com/evener/llm/jsonschema"
 )
 
 // GenerateObjectOptions configures object generation. It embeds GenerateOptions

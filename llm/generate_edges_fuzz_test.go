@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/santhosh-tekuri/jsonschema/v5"
+	"primeradiant.com/evener/llm/jsonschema"
 )
 
 func FuzzGenerateEdges(f *testing.F) {

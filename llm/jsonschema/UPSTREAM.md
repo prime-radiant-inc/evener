@@ -1,0 +1,119 @@
+# Upstream provenance and local ownership
+
+## Immutable identities and licenses
+
+This package derives from Santhosh Tekuri's
+`github.com/santhosh-tekuri/jsonschema/v5@v5.3.1`, source repository
+https://github.com/santhosh-tekuri/jsonschema, tag `v5.3.1`, commit
+`16bce71af51f6a4a775f11e649a347a8803940d3`.
+The retained [LICENSE](LICENSE) is Apache-2.0, unchanged.
+The Go module checksums of the imported release were:
+
+```text
+github.com/santhosh-tekuri/jsonschema/v5 v5.3.1 h1:lZUw3E0/J3roVtGQ+SCrUrg3ON6NgVqpn3+iol9aGu4=
+github.com/santhosh-tekuri/jsonschema/v5 v5.3.1/go.mod h1:uToXkOrWAZ6/Oc07xWQrPOhJotwFIyu2bBVN41fcDUY=
+```
+
+The source commit's `testdata/JSON-Schema-Test-Suite` gitlink pins
+`8cdfac41e37527795879e480a483997cbd6188f3` from
+https://github.com/json-schema-org/JSON-Schema-Test-Suite.
+Its complete `tests/`, `remotes/` and
+[LICENSE](testdata/JSON-Schema-Test-Suite/LICENSE) are committed unchanged.
+That MIT-style license retains `Copyright (c) 2012 Julian Berman`.
+`tests/latest` remains the upstream symlink to `draft2020-12`.
+
+During import, the cached source files were compared byte-for-byte with the
+immutable source commit, its corpus gitlink was checked, and the copied corpus
+was compared byte-for-byte and by exact relative-path inventory with that
+immutable corpus checkout. No upstream `go.mod`, Git metadata, CI configuration
+or repository scaffolding is included.
+
+## Corpus inventory
+
+`TestFixtureCorpus` decodes the committed files and counts declared groups and
+cases, including optional cases. It does not validate the conformance corpus.
+The imported supported-draft inventory is:
+
+| Draft directory | JSON files | Groups | Declared cases |
+| --- | ---: | ---: | ---: |
+| draft4 | 43 | 191 | 832 |
+| draft6 | 52 | 265 | 1093 |
+| draft7 | 63 | 300 | 1396 |
+| draft2019-09 | 76 | 415 | 1793 |
+| draft2020-12 | 77 | 420 | 1824 |
+| **Supported total** | **311** | **1591** | **6938** |
+
+The complete upstream `tests/` tree has 425 physical JSON files plus the
+`latest` symlink. It also retains `draft3` (39 files, 125 groups, 544 cases)
+and `draft-next` (75 files, 419 groups, 1867 cases), without claiming support
+for either. The `remotes/` tree has 73 JSON reference fixtures. Including the
+corpus license and symlink, 500 corpus paths are imported. The source release's
+own `testdata/` contributes another 21 unchanged fixture files.
+
+## Retained baseline exclusions
+
+`schema_test.go` retains the v5.3.1 `skipTests` map exactly, with no added skips
+or changed validity expectations. Its exact map text, from immediately after
+`var skipTests = ` through the newline before `func TestDraft4`, has SHA-256
+`b65f01532208804e73ef58ac76725e6a64832f62b7e615b9aee495679eb19e56`.
+
+The inherited exclusions are the draft4 zero-terminated-float group,
+ECMAScript/Go-regexp differences in each supported draft, and optional
+`idn-hostname`/`idn-email` formats in draft7, draft2019-09 and draft2020-12.
+The precise group and case exclusions and upstream explanations remain in the
+map. The inherited harness and its extra-fixture directory selections remain
+otherwise unchanged. Metaschema validation stays enabled.
+
+## Local modifications in this checkpoint
+
+Modified inherited files carry notices identifying Evener's changes:
+
+- `doc.go`: local optional-loader usage path and modification notice.
+- `schema.go`: constant `%s` format when rendering the precomputed enum error,
+  required by Go 1.27's default vet check. Numeric logic and validity are
+  unchanged. Percent signs in enum values are now rendered literally rather
+  than reinterpreted as formatting directives.
+- `httploader/httploader.go`: local jsonschema import and usage path, notice.
+  The loader's actual HTTP behavior is unchanged.
+- `schema_test.go`: local imports, per-compiler `LoadURL` routing of the
+  upstream localhost URL identities to committed fixture files, refusal of
+  unexpected external fixture URLs, removal of fixed-port `TestMain` servers,
+  and ephemeral HTTP/TLS servers exercising the actual optional loader in
+  `TestCompileURL` and `TestInvalidSchema`. A private certificate-trusting test
+  client rejects destinations outside those servers and restores the original
+  loader client. No global TLS verification bypass remains.
+- `extension_test.go`: local import and typed validation-error/cause/location
+  assertions instead of the inherited diagnostic-message substring assertion.
+- `example_extension_test.go`: local import, retained successful validation,
+  and an additional rejection example whose output is the concrete error type
+  and keyword location, not diagnostic prose.
+- `example_test.go`: local import and modification notice. Existing successful
+  examples retain their empty expected outputs.
+- `README.md`: ownership/checkpoint documentation and local loader usage path.
+
+`compiler.go`, `content.go`, `draft.go`, `errors.go`, `extension.go`, `format.go`,
+`loader.go`, `output.go` and `resource.go` are byte-identical to the
+pinned source. `format_test.go`, `internal_test.go`, both licenses and all
+fixtures are unchanged. New Evener files are `UPSTREAM.md`, `corpus_test.go`
+and `draft_baseline_test.go`.
+
+The llm callers in `generate.go`, `generate_object.go` and
+`generate_edges_fuzz_test.go` change only their jsonschema import. The llm
+module manifests remove the old dependency. Compiler, schema and error types
+now belong to this package; this is not an alias or a second validation path.
+
+## Maintenance and delivery boundary
+
+The llm maintainers own security triage, upstream advisory monitoring, license
+preservation, corpus updates and reconciliation of upstream fixes. An upstream
+update must record its immutable source/corpus revisions here, review local
+deltas and retained exclusions, and pass CI's full imported conformance harness.
+Tests never fetch fixtures by default. The optional HTTP loader remains opt-in
+for applications; the inherited test suite imports and exercises it locally.
+
+This checkpoint intentionally preserves upstream arithmetic, including its
+rational-number implementation. It does **not** establish exponent-bounded
+validation. The approved later tasks replace that arithmetic before publication.
+No decoder or Go-type admission boundary changes here. The validator remains a
+leaf package inside the existing llm module, with no nested module and no
+imports of parent llm, agent or application packages.

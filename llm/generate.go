@@ -10,7 +10,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/santhosh-tekuri/jsonschema/v5"
+	"primeradiant.com/evener/llm/jsonschema"
 )
 
 // Tool is a callable tool made available to the model. It pairs a ToolDefinition

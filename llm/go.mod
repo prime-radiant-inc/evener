@@ -4,7 +4,6 @@ go 1.27.0
 
 require (
 	github.com/BurntSushi/toml v1.6.0
-	github.com/santhosh-tekuri/jsonschema/v5 v5.3.1
 	golang.org/x/image v0.44.0
 	golang.org/x/net v0.50.0
 	golang.org/x/oauth2 v0.35.0
