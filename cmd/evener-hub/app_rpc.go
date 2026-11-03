@@ -1585,13 +1585,13 @@ func registerThreadHandlers(
 		return appwire.EmptyResponse{}, shutdownThreadTolerateExited(ctx, cfg, sources, params)
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodThreadModelSet, func(ctx context.Context, params appwire.ThreadModelSetParams) (appwire.EmptyResponse, error) {
-		return appwire.EmptyResponse{}, setThreadModelWithResume(ctx, cfg, sources, params)
+		return appwire.EmptyResponse{}, setThreadModelWithResume(ctx, cfg, sources, relays, params)
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodThreadVisionModelSet, func(ctx context.Context, params appwire.ThreadVisionModelSetParams) (appwire.EmptyResponse, error) {
 		return appwire.EmptyResponse{}, setThreadVisionModelWithResume(ctx, cfg, sources, params)
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodThreadReasoningEffortSet, func(ctx context.Context, params appwire.ThreadReasoningEffortSetParams) (appwire.EmptyResponse, error) {
-		return setReasoningEffortControl(ctx, cfg, sources, params)
+		return setReasoningEffortControl(ctx, cfg, sources, relays, params)
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodGoalSet, func(ctx context.Context, params appwire.GoalSetParams) (appwire.GoalSetResponse, error) {
 		return setGoalWithResume(ctx, cfg, sources, params)

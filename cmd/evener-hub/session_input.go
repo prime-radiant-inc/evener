@@ -165,7 +165,7 @@ func (o *sessionOperations) Queue(ctx context.Context, params appwire.TurnQueueP
 	// session (appwire-client/typescript/sendQueueAvailability.ts) — so the
 	// message was dropped instead of being queued behind the resume that send
 	// had started.
-	resp, err := withSessionResume(ctx, cfg, sources, params.Ref, params.ClientMutationID, func() (appwire.TurnQueueResponse, error) {
+	resp, err := withSessionResume(ctx, cfg, sources, params.Ref, params.ClientMutationID, nil, func() (appwire.TurnQueueResponse, error) {
 		source, err := sourceForThread(sources, params.Ref, "")
 		if err != nil {
 			return appwire.TurnQueueResponse{}, err

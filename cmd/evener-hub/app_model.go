@@ -8,8 +8,8 @@ import (
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 )
 
-func setThreadModelWithResume(ctx context.Context, cfg hubcore.WebConfig, sources *appsource.Registry, params appwire.ThreadModelSetParams) error {
-	_, err := relayWithResume(ctx, cfg, sources, params.Ref, "", "model",
+func setThreadModelWithResume(ctx context.Context, cfg hubcore.WebConfig, sources *appsource.Registry, relays *hubRelay, params appwire.ThreadModelSetParams) error {
+	_, err := relayWithResumeAfter(ctx, cfg, sources, relays, params.Ref, "", "model",
 		func(source appsource.Source) (struct{}, error) {
 			return struct{}{}, source.SetThreadModel(ctx, params)
 		})
