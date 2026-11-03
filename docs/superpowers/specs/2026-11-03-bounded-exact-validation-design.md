@@ -142,7 +142,11 @@ Parse JSON number syntax directly. Remove mantissa leading/trailing zeros and
 adjust the exponent by fractional-digit and removed-zero counts. Those counts
 are bounded by mantissa length. Never parse the exponent through `int` or
 `int64`, materialize `10^E`, or allocate implied zero digits. Invalid numeric
-representations follow the existing caller's invalid-value handling.
+values are rejected: when examined as numbers, programmatic NaN/Inf and malformed
+`json.Number` values, including `01` and `1/2`, return `InvalidJSONTypeError`
+rather than acceptance or panic. Preserve valid finite values, admitted Go-kind
+switches, `fmt.Sprint` interpretation and every decoder boundary. This is not an
+eager whole-tree admission pass.
 
 The kernel exposes parsing, sign/zero/integer classification, comparison,
 equality, divisibility and compact canonical encoding. It exposes no mutable
@@ -252,7 +256,7 @@ Arithmetic and decoding are separate contracts. Preserve these boundaries:
 | Existing schema-resource and GenerateObject `UseNumber` paths | Validate accepted large positive/negative exponents exactly without adding a float prepass. |
 | Existing float-valued llm tool loop | Keep ordinary Unmarshal and its float64 handler contract. Validate the supplied decimal interpretation, without claiming recovery of raw-token precision. |
 | Current-main delegate capture | Keep its ordinary Unmarshal boundary in the validator migration. Packet bytes remain intact. The held lane's later UseNumber change is a separate lossless-result cut, not silently imported here. |
-| Programmatic Go numbers | Preserve each caller's admitted kinds, finite-value policy and decimal conversion, including repair's existing float32 interpretation. |
+| Programmatic Go numbers | Reject examined NaN/Inf and malformed `json.Number`, including `01` and `1/2`, with `InvalidJSONTypeError`. Preserve valid finite values, admitted kinds and `fmt.Sprint` decimal interpretation, including repair's existing float32 interpretation. No eager whole-tree admission change. |
 
 The current-main delegate capture distinction matters: the source inventory was
 made against the held numeric lane, whose capture already uses `UseNumber`.

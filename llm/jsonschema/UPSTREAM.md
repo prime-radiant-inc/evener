@@ -64,7 +64,7 @@ The precise group and case exclusions and upstream explanations remain in the
 map. The inherited harness and its extra-fixture directory selections remain
 otherwise unchanged. Metaschema validation stays enabled.
 
-## Local modifications in this checkpoint
+## Maintained local modifications
 
 Modified inherited files carry notices identifying Evener's changes:
 
@@ -118,7 +118,8 @@ Modified inherited files carry notices identifying Evener's changes:
   and keyword location, not diagnostic prose.
 - `example_test.go`: local import and modification notice. Existing successful
   examples retain their empty expected outputs.
-- `README.md`: ownership/checkpoint documentation and local loader usage path.
+- `README.md`: maintained ownership, public numeric/cardinality API, decoder and
+  resource boundaries, local loader usage and focused verification commands.
 
 `content.go`, `draft.go`, `errors.go`, `extension.go`, `format.go`,
 `loader.go`, `output.go` and `resource.go` are byte-identical to the
@@ -135,6 +136,17 @@ of the production duplicate helper, without global mutable test hooks.
 decimal spelling before compact comparison. `cardinality_test.go` exercises exact
 thresholds, invalid schemas, optional fields, defaults, zero, Unicode lengths,
 vocabulary selection, schema reuse, contains evaluation and structured errors.
+`resource_bound_test.go` measures real compilation, numeric predicates and nested
+identity under shared subprocess containment. Its custom ceiling rejection uses
+the existing registered-extension metaschema hook; declaring a custom `$schema`
+alone does not apply its arbitrary assertions in the inherited compiler.
+`concurrency_test.go` reuses one
+compiled numeric/identity/cardinality schema across distinct concurrent inputs.
+`distribution_test.go` builds and runs an offline, workspace-disabled consumer
+of the two public leaf packages with only a local llm replacement. The llm
+`generate_numeric_test.go` and `generate_object_numeric_test.go` exercise real
+scripted tool continuations and complete/streamed object validation without
+changing the ordinary-Unmarshal versus UseNumber boundaries.
 
 The llm callers in `generate.go`, `generate_object.go` and
 `generate_edges_fuzz_test.go` change only their jsonschema import. The llm
@@ -150,13 +162,17 @@ deltas and retained exclusions, and pass CI's full imported conformance harness.
 Tests never fetch fixtures by default. The optional HTTP loader remains opt-in
 for applications; the inherited test suite imports and exercises it locally.
 
-This checkpoint bounds parsing, compilation, direct numeric predicates and
+The maintained implementation bounds parsing, numeric compilation, predicates and
 numeric equality/hash in encoded mantissa/exponent size. Cardinality thresholds
 are exact compact decimals too; only actual container/string/match counts use
-native integers. This does **not** establish the whole backend/llm delivery
-claim: consumer, resource and distribution evidence remains a separate task.
-Hash collisions can still require pairwise exact comparisons. No decoder or
-Go-kind switch is widened.
+native integers. Resource regression budgets are not production admission limits
+or a universal bound on the validator. Source review remains the primary
+exponent-magnitude proof. Hash collisions can still require pairwise exact
+comparisons; schema recursion and instance traversal are not bounded by the
+arithmetic guarantee. No decoder or Go-kind switch is widened.
 The validator and decimal kernel remain leaf packages inside the existing llm
 module, with no nested module and no imports of parent llm, agent or application
-packages.
+packages. They release with llm. The offline leaf consumer does not prove
+whole-module publication readiness: other llm packages still require workspace
+sibling modules at local placeholder versions. Agent still uses the upstream
+validator until its separately scoped migration.

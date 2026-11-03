@@ -1,241 +1,105 @@
-# Evener-owned jsonschema, derived from v5.3.1
+# Maintained JSON Schema validator
 
-Modified by Evener: this ownership note and the optional-loader import path.
-The upstream documentation below describes the imported implementation.
-See [UPSTREAM.md](UPSTREAM.md) for immutable source/corpus identities, licenses,
-local modifications and reconciliation ownership.
+`primeradiant.com/evener/llm/jsonschema` is Evener's maintained validator,
+derived from Santhosh Tekuri's Apache-2.0 `jsonschema/v5@v5.3.1`.
+The llm maintainers own releases, security triage, upstream reconciliation and
+corpus updates. [UPSTREAM.md](UPSTREAM.md) records the immutable source and
+corpus revisions, licenses, local changes and inherited exclusions.
 
-This is an unchanged-arithmetic import checkpoint, not the completed bounded
-validator. The upstream numeric arithmetic is still present. This leaf package
-lives in the existing `llm` module and does not import parent llm or agent code.
-Ordinary llm decoding and `UseNumber` admission boundaries are unchanged.
+`Generate` tool validation, `GenerateObject` and `StreamGenerateObject` use this
+backend. Agent still uses the upstream validator until the separate agent cut.
+This package and [`decimal`](decimal) are public leaf packages inside the llm
+module: no nested `go.mod`, and no imports of parent llm, agent or applications.
+Their release unit is the llm module, not an independently versioned fork.
 
-Fixtures are committed. Tests never download the conformance corpus. CI owns
-the full conformance run. The focused local preservation checks are:
+## Compiler and errors
+
+Use `NewCompiler`, `AddResource` and `Compile`, or `CompileString`, then
+`Schema.Validate` on an already decoded value. Drafts 4, 6, 7, 2019-09 and
+2020-12 retain their draft-specific keyword behavior. `Compiler.Draft` selects
+the default when `$schema` is absent, currently 2020-12.
+Built-in draft metaschemas validate schemas during compilation. A declared
+custom `$schema` is resolved for dialect/vocabulary handling but does not alone
+apply that document's arbitrary assertions. Custom keyword metaschema assertions
+run through `Compiler.RegisterExtension`, before the extension compiler.
+The optional HTTP loader requires an explicit blank import of
+`primeradiant.com/evener/llm/jsonschema/httploader`; the base package does not
+implicitly enable HTTP loading.
+
+Compilation errors wrap in `*SchemaError`. Validation returns
+`*ValidationError` with ordered `Causes`, `InstanceLocation`, `KeywordLocation`
+and `AbsoluteKeywordLocation`. Existing error traversal and flag/basic/detailed
+output APIs remain. Numeric and cardinality diagnostics render exact compact
+canonical JSON numbers, not approximate floats or exponent-expanded digits.
+Consumers should inspect error types and locations, not diagnostic wording.
+
+## Exact numeric API
+
+The five `Schema` numeric fields are `*decimal.Number`:
+
+- `Minimum`, `ExclusiveMinimum`, `Maximum`, `ExclusiveMaximum`, `MultipleOf`.
+
+The eight cardinality fields have the same type:
+
+- `MinProperties`, `MaxProperties`, `MinItems`, `MaxItems`.
+- `MinLength`, `MaxLength`, `MinContains`, `MaxContains`.
+
+Every nil means absent, including cardinalities: no negative sentinel or
+approximate compatibility field exists. Explicit zero differs from absence.
+When `contains` is active, absent `MinContains` has an effective minimum of one;
+draft and vocabulary activation rules still apply. String counts are Unicode
+code points. Schema counts remain exact even beyond native integer range; only
+actual container, string and match counts use native integers. Compilation
+rejects negative/nonintegral cardinalities and nonpositive `multipleOf`.
+
+`decimal.Number` is immutable and its zero value is zero. `decimal.Parse`
+accepts JSON number syntax. `Sign`, `IsInteger`, `Cmp`, `Equal` and `MultipleOf`
+operate exactly; `String` emits compact canonical syntax without implied zero
+digits. `MultipleOf` returns false for a nonpositive divisor. There is no general
+rational conversion, mutable limb API, interning or arithmetic fallback.
+Compiled values can be reused concurrently when callers do not mutate the
+schema. Arithmetic temporaries and identity hashers are call-local.
+
+Numeric equality also governs nested `const`, `enum` and `uniqueItems`.
+Uniqueness keeps pairwise comparison through 20 items and hash buckets above
+20; exact equality resolves collisions. This does not promise linear time for
+colliding hashes or bound general schema recursion and instance traversal.
+
+## Admission and resource boundary
+
+Parsing, numeric compilation, predicates and numeric identity work/storage
+follow encoded mantissa and exponent sizes, not the magnitude of an implied
+power of ten. No exponent is narrowed to a native integer, no `10^E` is
+materialized and no implied zero digits are allocated. This is an arithmetic
+resource guarantee, not a total validator CPU/memory limit or an input-size
+limit. Code review is the primary exponent-magnitude proof.
+
+Decoding remains the caller's responsibility. Schema resources and llm object
+generation retain `UseNumber`; llm tool handlers retain ordinary `Unmarshal`
+and receive float64 numbers, including its rounding and underflow behavior.
+Overflow remains rejected there. Validation cannot recover discarded token
+precision. Valid finite programmatic values retain the admitted Go-kind switch
+and `fmt.Sprint` interpretation. When examined as numbers, NaN, infinity and
+malformed `json.Number` values, including `01` and `1/2`, return
+`InvalidJSONTypeError`. There is no eager whole-tree admission pass.
+
+## Verification and distribution
+
+Fixtures are committed and tests do not download the corpus. CI owns full
+conformance, existing llm regressions, fuzz seeds, race and tagged-consumer
+gates. Focused evidence checks are:
 
 ```sh
 cd llm
-go test ./jsonschema -run '^Test(FixtureCorpus|ValidatorDraftBaseline)$' -count=1
-go test . -run '^(TestGenerateObject_Success|TestGenerate_ToolLoop_ExecutesToolsAndContinues)$' -count=1
+go test . -run '^TestGenerate(NumericValidationJourney|ObjectNumericValidationJourney)$' -count=1
+go test ./jsonschema -run '^Test(NumericResourceBound|CompiledNumericConcurrentValidation|LeafPackagesOutsideWorkspace)$' -count=1
 ```
 
-## Original upstream documentation
-
-[![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
-[![GoDoc](https://godoc.org/github.com/santhosh-tekuri/jsonschema?status.svg)](https://pkg.go.dev/github.com/santhosh-tekuri/jsonschema/v5)
-[![Go Report Card](https://goreportcard.com/badge/github.com/santhosh-tekuri/jsonschema/v5)](https://goreportcard.com/report/github.com/santhosh-tekuri/jsonschema/v5)
-[![Build Status](https://github.com/santhosh-tekuri/jsonschema/actions/workflows/go.yaml/badge.svg?branch=master)](https://github.com/santhosh-tekuri/jsonschema/actions/workflows/go.yaml)
-[![codecov](https://codecov.io/gh/santhosh-tekuri/jsonschema/branch/master/graph/badge.svg?token=JMVj1pFT2l)](https://codecov.io/gh/santhosh-tekuri/jsonschema)
-
-Package jsonschema provides json-schema compilation and validation.
-
-[Benchmarks](https://dev.to/vearutop/benchmarking-correctness-and-performance-of-go-json-schema-validators-3247)
-
-### Features:
- - implements
-   [draft 2020-12](https://json-schema.org/specification-links.html#2020-12),
-   [draft 2019-09](https://json-schema.org/specification-links.html#draft-2019-09-formerly-known-as-draft-8),
-   [draft-7](https://json-schema.org/specification-links.html#draft-7),
-   [draft-6](https://json-schema.org/specification-links.html#draft-6),
-   [draft-4](https://json-schema.org/specification-links.html#draft-4)
- - fully compliant with [JSON-Schema-Test-Suite](https://github.com/json-schema-org/JSON-Schema-Test-Suite), (excluding some optional)
-   - list of optional tests that are excluded can be found in schema_test.go(variable [skipTests](https://github.com/santhosh-tekuri/jsonschema/blob/master/schema_test.go#L24))
- - validates schemas against meta-schema
- - full support of remote references
- - support of recursive references between schemas
- - detects infinite loop in schemas
- - thread safe validation
- - rich, intuitive hierarchial error messages with json-pointers to exact location
- - supports output formats flag, basic and detailed
- - supports enabling format and content Assertions in draft2019-09 or above
-   - change `Compiler.AssertFormat`, `Compiler.AssertContent` to `true`
- - compiled schema can be introspected. easier to develop tools like generating go structs given schema
- - supports user-defined keywords via [extensions](https://pkg.go.dev/github.com/santhosh-tekuri/jsonschema/v5/#example-package-Extension)
- - implements following formats (supports [user-defined](https://pkg.go.dev/github.com/santhosh-tekuri/jsonschema/v5/#example-package-UserDefinedFormat))
-   - date-time, date, time, duration, period (supports leap-second)
-   - uuid, hostname, email
-   - ip-address, ipv4, ipv6
-   - uri, uriref, uri-template(limited validation)
-   - json-pointer, relative-json-pointer
-   - regex, format
- - implements following contentEncoding (supports [user-defined](https://pkg.go.dev/github.com/santhosh-tekuri/jsonschema/v5/#example-package-UserDefinedContent))
-   - base64
- - implements following contentMediaType (supports [user-defined](https://pkg.go.dev/github.com/santhosh-tekuri/jsonschema/v5/#example-package-UserDefinedContent))
-   - application/json
- - can load from files/http/https/[string](https://pkg.go.dev/github.com/santhosh-tekuri/jsonschema/v5/#example-package-FromString)/[]byte/io.Reader (supports [user-defined](https://pkg.go.dev/github.com/santhosh-tekuri/jsonschema/v5/#example-package-UserDefinedLoader))
-
-
-see examples in [godoc](https://pkg.go.dev/github.com/santhosh-tekuri/jsonschema/v5)
-
-The schema is compiled against the version specified in `$schema` property.
-If "$schema" property is missing, it uses latest draft which currently implemented
-by this library.
-
-You can force to use specific version, when `$schema` is missing, as follows:
-
-```go
-compiler := jsonschema.NewCompiler()
-compiler.Draft = jsonschema.Draft4
-```
-
-This package supports loading json-schema from filePath and fileURL.
-
-To load json-schema from HTTPURL, add following import:
-
-```go
-import _ "primeradiant.com/evener/llm/jsonschema/httploader"
-```
-
-## Rich Errors
-
-The ValidationError returned by Validate method contains detailed context to understand why and where the error is.
-
-schema.json:
-```json
-{
-      "$ref": "t.json#/definitions/employee"
-}
-```
-
-t.json:
-```json
-{
-    "definitions": {
-        "employee": {
-            "type": "string"
-        }
-    }
-}
-```
-
-doc.json:
-```json
-1
-```
-
-assuming `err` is the ValidationError returned when `doc.json` validated with `schema.json`,
-```go
-fmt.Printf("%#v\n", err) // using %#v prints errors hierarchy
-```
-Prints:
-```
-[I#] [S#] doesn't validate with file:///Users/santhosh/jsonschema/schema.json#
-  [I#] [S#/$ref] doesn't validate with 'file:///Users/santhosh/jsonschema/t.json#/definitions/employee'
-    [I#] [S#/definitions/employee/type] expected string, but got number
-```
-
-Here `I` stands for instance document and `S` stands for schema document.  
-The json-fragments that caused error in instance and schema documents are represented using json-pointer notation.  
-Nested causes are printed with indent.
-
-To output `err` in `flag` output format:
-```go
-b, _ := json.MarshalIndent(err.FlagOutput(), "", "  ")
-fmt.Println(string(b))
-```
-Prints:
-```json
-{
-  "valid": false
-}
-```
-To output `err` in `basic` output format:
-```go
-b, _ := json.MarshalIndent(err.BasicOutput(), "", "  ")
-fmt.Println(string(b))
-```
-Prints:
-```json
-{
-  "valid": false,
-  "errors": [
-    {
-      "keywordLocation": "",
-      "absoluteKeywordLocation": "file:///Users/santhosh/jsonschema/schema.json#",
-      "instanceLocation": "",
-      "error": "doesn't validate with file:///Users/santhosh/jsonschema/schema.json#"
-    },
-    {
-      "keywordLocation": "/$ref",
-      "absoluteKeywordLocation": "file:///Users/santhosh/jsonschema/schema.json#/$ref",
-      "instanceLocation": "",
-      "error": "doesn't validate with 'file:///Users/santhosh/jsonschema/t.json#/definitions/employee'"
-    },
-    {
-      "keywordLocation": "/$ref/type",
-      "absoluteKeywordLocation": "file:///Users/santhosh/jsonschema/t.json#/definitions/employee/type",
-      "instanceLocation": "",
-      "error": "expected string, but got number"
-    }
-  ]
-}
-```
-To output `err` in `detailed` output format:
-```go
-b, _ := json.MarshalIndent(err.DetailedOutput(), "", "  ")
-fmt.Println(string(b))
-```
-Prints:
-```json
-{
-  "valid": false,
-  "keywordLocation": "",
-  "absoluteKeywordLocation": "file:///Users/santhosh/jsonschema/schema.json#",
-  "instanceLocation": "",
-  "errors": [
-    {
-      "valid": false,
-      "keywordLocation": "/$ref",
-      "absoluteKeywordLocation": "file:///Users/santhosh/jsonschema/schema.json#/$ref",
-      "instanceLocation": "",
-      "errors": [
-        {
-          "valid": false,
-          "keywordLocation": "/$ref/type",
-          "absoluteKeywordLocation": "file:///Users/santhosh/jsonschema/t.json#/definitions/employee/type",
-          "instanceLocation": "",
-          "error": "expected string, but got number"
-        }
-      ]
-    }
-  ]
-}
-```
-
-## CLI
-
-to install `go install github.com/santhosh-tekuri/jsonschema/cmd/jv@latest`
-
-```bash
-jv [-draft INT] [-output FORMAT] [-assertformat] [-assertcontent] <json-schema> [<json-or-yaml-doc>]...
-  -assertcontent
-    	enable content assertions with draft >= 2019
-  -assertformat
-    	enable format assertions with draft >= 2019
-  -draft int
-    	draft used when '$schema' attribute is missing. valid values 4, 5, 7, 2019, 2020 (default 2020)
-  -output string
-    	output format. valid values flag, basic, detailed
-```
-
-if no `<json-or-yaml-doc>` arguments are passed, it simply validates the `<json-schema>`.  
-if `$schema` attribute is missing in schema, it uses latest version. this can be overridden by passing `-draft` flag
-
-exit-code is 1, if there are any validation errors
-
-`jv` can also validate yaml files. It also accepts schema from yaml files.
-
-## Validating YAML Documents
-
-since yaml supports non-string keys, such yaml documents are rendered as invalid json documents.  
-
-most yaml parser use `map[interface{}]interface{}` for object,  
-whereas json parser uses `map[string]interface{}`.  
-
-so we need to manually convert them to `map[string]interface{}`.   
-below code shows such conversion by `toStringKeys` function.
-
-https://play.golang.org/p/Hhax3MrtD8r
-
-NOTE: if you are using `gopkg.in/yaml.v3`, then you do not need such conversion. since this library
-returns `map[string]interface{}` if all keys are strings.
+`TestNumericResourceBound` includes compilation and validation in the existing
+subprocess helper's measured callback, with `GOMAXPROCS=1`, allocation/CPU
+metrics and Linux hard-limit readback. Its regression budgets are not production
+admission limits or a universal complexity bound. Non-Linux containment differs.
+`TestLeafPackagesOutsideWorkspace` builds and runs only the two leaf packages
+through a temporary consumer with `GOWORK=off GOPROXY=off GOSUMDB=off` and only a
+local llm replacement. This does not establish publication readiness for the
+whole llm module, whose other packages still depend on workspace sibling modules.

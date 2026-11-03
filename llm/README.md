@@ -56,3 +56,27 @@ may not.
 
 Routing keys on the instance name, never on a model-string prefix or a
 base-URL guess — a gateway in front of the vendor makes URL sniffing wrong.
+
+## Schema validation ownership
+
+`Generate` tool validation, `GenerateObject` and `StreamGenerateObject` use the
+maintained [`llm/jsonschema`](jsonschema) backend and its immutable exact
+[`decimal`](jsonschema/decimal) kernel. The llm maintainers own release,
+security triage and upstream/corpus reconciliation; the leaf packages release
+with this module. Agent still uses its upstream validator until the separate
+agent cut. [Provenance](jsonschema/UPSTREAM.md) records the source and corpus pins.
+
+Schema numeric bounds and cardinalities use optional `*decimal.Number` fields,
+with nil meaning absent and active `contains` retaining an effective minimum
+of one when unspecified. Diagnostics remain exact and compact. The backend's
+arithmetic resource guarantee follows encoded numeric size, not exponent
+magnitude; it does not bound arbitrary schema/instance work or impose new
+production admission limits. See the backend README for the complete field API.
+
+Decoder contracts do not change: tool arguments use ordinary `Unmarshal` and
+reach handlers as float64, retaining rounding, underflow and overflow rejection.
+Object generation and schema resources use `UseNumber`, preserving admitted
+JSON number tokens for exact validation. Validation does not reconstruct raw
+precision lost by a decoder. Examined NaN/Inf and malformed programmatic
+`json.Number` values return `InvalidJSONTypeError`; valid finite Go values retain
+their existing kind admission and `fmt.Sprint` interpretation.
