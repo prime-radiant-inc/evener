@@ -1,7 +1,13 @@
 package evener_test
 
 import (
+	"encoding/json"
+	"errors"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"regexp"
+	"strings"
 	"testing"
 
 	"github.com/BurntSushi/toml"
@@ -48,6 +54,15 @@ type gitleaksConfig struct {
 	Allowlist struct {
 		Paths []string `toml:"paths"`
 	} `toml:"allowlist"`
+	Rules []struct {
+		ID         string `toml:"id"`
+		Allowlists []struct {
+			Condition   string `toml:"condition"`
+			RegexTarget string
+			Paths       []string `toml:"paths"`
+			Regexes     []string `toml:"regexes"`
+		} `toml:"allowlists"`
+	} `toml:"rules"`
 }
 
 // gitleaksAllowlistPaths returns the [allowlist].paths regexes from the
@@ -76,4 +91,126 @@ func anyGitleaksPathMatches(t *testing.T, paths []string, target string) bool {
 		}
 	}
 	return false
+}
+
+const (
+	mermaidGeneratedPath = "mobile-native/src/generated/mermaidPage.ts"
+	mermaidVendorCounts  = "p.keyCount,v=p.atlasCount;"
+)
+
+func TestGitleaksMermaidExceptionScope(t *testing.T) {
+	t.Parallel()
+	var cfg gitleaksConfig
+	if _, err := toml.DecodeFile(".gitleaks.toml", &cfg); err != nil {
+		t.Fatal(err)
+	}
+	for _, rule := range cfg.Rules {
+		if rule.ID != "generic-api-key" {
+			continue
+		}
+		for _, allowlist := range rule.Allowlists {
+			if !anyGitleaksPathMatches(t, allowlist.Paths, mermaidGeneratedPath) {
+				continue
+			}
+			if allowlist.Condition != "AND" || allowlist.RegexTarget != "match" {
+				t.Fatal("vendor exception must require both the path and the individual match")
+			}
+			for _, path := range []string{
+				"mobile-native/src/MermaidDiagram.tsx",
+				"other/" + mermaidGeneratedPath,
+				mermaidGeneratedPath + ".backup",
+			} {
+				if anyGitleaksPathMatches(t, allowlist.Paths, path) {
+					t.Errorf("vendor exception also matches %q", path)
+				}
+			}
+			for _, tc := range []struct {
+				match string
+				allow bool
+			}{
+				{mermaidVendorCounts, true},
+				{mermaidVendorCounts + "api_key=another_value;", false},
+				{"api_key=another_value;" + mermaidVendorCounts, false},
+				{"p.keyCount,v=someOtherValue;", false},
+			} {
+				if got := anyGitleaksPathMatches(t, allowlist.Regexes, tc.match); got != tc.allow {
+					t.Errorf("match %q: allow=%v, want %v", tc.match, got, tc.allow)
+				}
+			}
+			return
+		}
+	}
+	t.Fatal("no scoped generic-api-key exception for the generated Mermaid vendor expression")
+}
+
+// The real engine is opt-in so default tests need no ambient tool installation.
+func TestGitleaksMermaidSecretDetection(t *testing.T) {
+	if os.Getenv("EVENER_GITLEAKS_TESTS") != "1" {
+		t.Skip("set EVENER_GITLEAKS_TESTS=1 with gitleaks installed")
+	}
+	t.Parallel()
+	bin, err := exec.LookPath("gitleaks")
+	if err != nil {
+		t.Fatal(err)
+	}
+	config, err := filepath.Abs(".gitleaks.toml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A deterministic synthetic credential exercises the actual generic rule.
+	credential := `api_key="` + strings.Repeat("aB3dE7gH9kL2", 3) + `";`
+	for _, tc := range []struct {
+		name     string
+		path     string
+		content  string
+		findings int
+	}{
+		{"vendor-generated", mermaidGeneratedPath, mermaidVendorCounts, 0},
+		{"vendor-other-path", "mobile-native/src/vendor.ts", mermaidVendorCounts, 1},
+		{"credential-same-line", mermaidGeneratedPath, mermaidVendorCounts + credential, 1},
+		{"credential-other-path", "mobile-native/src/vendor.ts", mermaidVendorCounts + credential, 2},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			root := t.TempDir()
+			path := filepath.Join(root, filepath.FromSlash(tc.path))
+			if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(path, []byte(tc.content), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			report := filepath.Join(t.TempDir(), "findings.json")
+			cmd := exec.CommandContext(t.Context(), bin, "detect", "--no-git", "--redact",
+				"--config", config, "--source", ".", "--report-format", "json", "--report-path", report)
+			cmd.Dir = root
+			out, err := cmd.CombinedOutput()
+			if tc.findings == 0 {
+				if err != nil {
+					t.Fatalf("gitleaks: %v\n%s", err, out)
+				}
+			} else {
+				var exit *exec.ExitError
+				if !errors.As(err, &exit) || exit.ExitCode() != 1 {
+					t.Fatalf("gitleaks exit: %v\n%s", err, out)
+				}
+			}
+			data, err := os.ReadFile(report)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var findings []struct{ RuleID, File string }
+			if err := json.Unmarshal(data, &findings); err != nil {
+				t.Fatal(err)
+			}
+			if len(findings) != tc.findings {
+				t.Fatalf("findings=%d, want %d", len(findings), tc.findings)
+			}
+			for _, finding := range findings {
+				if finding.RuleID != "generic-api-key" || finding.File != tc.path {
+					t.Errorf("unexpected finding: %+v", finding)
+				}
+			}
+		})
+	}
 }
