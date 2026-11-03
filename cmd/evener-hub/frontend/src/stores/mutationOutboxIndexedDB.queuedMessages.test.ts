@@ -1389,6 +1389,8 @@ test("a consumed recovery retires its canceled wire sibling, whose chip leaves t
   // remains.
   const remaining = (await f.storage.listOutbox("local:queued")).filter((record) => record.method !== "turn/interrupt");
   expect(remaining).toEqual([]);
+});
+
 test("removeQueuedMessage clears a delivery-uncertain row the user lets go", async () => {
   const f = fixture();
   const uncertain = await f.storage.enqueueIntent(queuedIntent());
