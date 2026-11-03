@@ -4801,38 +4801,53 @@ function releaseInflightDurableEnqueue(ref: string): void {
   else inflightDurableEnqueues.delete(ref);
 }
 
-// Register an outbox write that can create or re-queue a row this tab now owes
-// delivery (resendRecovery, the Retry mint), not only the send funnel. It is
-// counted in flight for the fallback's concurrent-enqueue guard, and the ref is
-// marked as holding undelivered work when the write commits a row that is not
-// canceled. Without this the guard's in-memory state stays stale-empty until an
-// async refresh reads the row back - and if storage wedges first, a fallback
-// send jumps the row that was just written. Every caller names the row it
-// wrote: a reopened recovery row keeps its id and a resend returns the new
-// record, so the settle that proves delivery can resolve it. (Writes that only
-// REMOVE or cancel rows - discardRecovery, updateRecoveryInput, discardCanceled,
-// discardCanceledOfInstance, cancelUnattempted - need no registration: they
-// never create undelivered work, and the next refresh/hydration recomputes the
-// ids from the records when it can read them.)
-async function trackOutboxWrite<T>(
+// Register an outbox write that can create or re-queue rows this tab now owes
+// delivery (resendRecovery, the Retry mint, the reconcile's automatic
+// requeue), not only the send funnel. It is counted in flight for the
+// fallback's concurrent-enqueue guard, and the ref is marked as holding
+// undelivered work for every row the write commits that is not canceled.
+// Without this the guard's in-memory state stays stale-empty until an async
+// refresh reads the rows back - and if storage wedges first, a fallback send
+// jumps the rows that were just written. Every caller names the rows it wrote:
+// a reopened recovery row keeps its id, a resend returns the new record, and
+// the reconcile's restore returns the rows it re-queued, so the settle that
+// proves delivery can resolve each. (Writes that only REMOVE or cancel rows -
+// discardRecovery, updateRecoveryInput, discardCanceled, discardCanceledOfInstance,
+// cancelUnattempted - need no registration: they never create undelivered
+// work, and the next refresh/hydration recomputes the ids from the records
+// when it can read them.)
+async function trackOutboxWriteRows<T>(
   ref: string,
   write: () => Promise<T>,
-  committedRow: (result: T) => { clientMutationId: string; undelivered: boolean } | undefined,
+  committedRows: (result: T) => Array<{ clientMutationId: string; undelivered: boolean }>,
 ): Promise<T> {
   inflightDurableEnqueues.set(ref, (inflightDurableEnqueues.get(ref) ?? 0) + 1);
   try {
     const result = await write();
-    const committed = committedRow(result);
-    if (committed !== undefined) {
+    const committed = committedRows(result);
+    if (committed.length > 0) {
       // The write changed this ref's outbox, so in-flight reads are stale
-      // whether or not the row it touched is undelivered work.
+      // whether or not the rows it touched are undelivered work.
       noteMutationStateChange(ref);
-      if (committed.undelivered) noteUndeliveredMutation(ref, committed.clientMutationId);
+      for (const row of committed) if (row.undelivered) noteUndeliveredMutation(ref, row.clientMutationId);
     }
     return result;
   } finally {
     releaseInflightDurableEnqueue(ref);
   }
+}
+
+// The single-row shape most writes take, delegating to the rows primitive so
+// the in-flight accounting and the read-invalidation rule keep one home.
+async function trackOutboxWrite<T>(
+  ref: string,
+  write: () => Promise<T>,
+  committedRow: (result: T) => { clientMutationId: string; undelivered: boolean } | undefined,
+): Promise<T> {
+  return trackOutboxWriteRows(ref, write, (result) => {
+    const committed = committedRow(result);
+    return committed === undefined ? [] : [committed];
+  });
 }
 
 // Remove a ref's dispatch arm once the ref is genuinely idle: it has no
@@ -5958,7 +5973,19 @@ async function publishAndReconcileThreadHydration(
             }
             if (!current()) return;
           }
-          await runtime.dispatcher.restoreProvenAbsent(ref, reopenExcludedIds);
+          // Round-12: the automatic mint registers the rows it re-queued,
+          // exactly like the explicit Retry wrapper - the fresh row is
+          // undelivered work this tab owes, and a fallback send must see it
+          // before the pin refresh's background read (which failing storage
+          // can starve forever). The predecessor's and the swept siblings'
+          // registrations resolve through the storage write's own retiredIds
+          // publication.
+          await trackOutboxWriteRows(
+            ref,
+            () => runtime.dispatcher.restoreProvenAbsent(ref, reopenExcludedIds),
+            (rows) =>
+              rows.map((row) => ({ clientMutationId: row.clientMutationId, undelivered: row.state !== "canceled" })),
+          );
         }
         if (!current()) return;
         await refreshMutationPins(runtime, [ref]);

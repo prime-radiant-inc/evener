@@ -162,10 +162,13 @@ export interface MutationOutboxStorage<A extends MutationAttachmentRef = Mutatio
   // carrying the id, by key or by wire, settled.
   settleApplied(clientMutationId: string): Promise<MutationRecord<A> | undefined>;
   // Records the authoritative snapshot proves never landed, re-queued for
-  // another dispatch attempt; returns the ids of the records this pass
-  // re-queued (a host may reopen the record in place or mint a fresh row
-  // for its work - the returned id is the row that dispatches).
-  restoreProvenAbsent(targetRef: string, authoritativeIds: ReadonlySet<string>): Promise<string[]>;
+  // another dispatch attempt; returns the ROWS this pass re-queued (a host
+  // may reopen the record in place or mint a fresh row for its work - the
+  // returned row is what dispatches, or the canceled verdict a crossed Stop
+  // made of it) so a host can transfer each re-queued row's in-memory
+  // delivery registration synchronously, before any background read
+  // re-computes it.
+  restoreProvenAbsent(targetRef: string, authoritativeIds: ReadonlySet<string>): Promise<MutationOutboxRecord[]>;
   // The optional marker a refusal that never reached the daemon sets: the
   // wire may still be applied by an outstanding attempt, so a host that
   // resends the recovery under a fresh wire identity would let the

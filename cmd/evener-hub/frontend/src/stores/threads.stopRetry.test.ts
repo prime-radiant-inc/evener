@@ -306,6 +306,137 @@ describe("Stop cancellation durability across reload, tabs, and resume", () => {
     }
   });
 
+  // RoboRev round-12 Medium: the automatic reconcile mint - unlike explicit
+  // Retry - transferred nothing: the predecessor's in-memory delivery
+  // registration survived its superseding (cleared only by the pin refresh's
+  // background read), and the fresh row registered nowhere. A Stop that
+  // cancels the fresh row before that refresh, followed by failing storage
+  // reads, left the terminal predecessor's registration refusing fallback
+  // sends for work that can never dispatch again. The mint's own commit must
+  // publish every key it retires and register its successor, exactly like
+  // the explicit Retry wrapper above.
+  test("an automatic requeue's mint clears the predecessor's registration before the pin refresh can", async () => {
+    const indexedDB = new IDBFactory();
+    const databaseName = "evener-mutation-outbox-automatic-mint-clears-predecessor";
+    const storage = new MutationOutboxIndexedDB({ indexedDB, databaseName });
+    setMutationStorageForTests(storage);
+    const fake = connectMutationClient();
+    await ensureActiveMutationTarget(fake, "ref_a");
+    await nextMacrotask();
+    onTurnStart(fake);
+    fake.on("turn/interrupt", (params) => ({ receipt: mutationReceipt(params.clientMutationId) }));
+    // A lost response: the reply carries no receipt, so the dispatcher parks
+    // the row delivery-uncertain instead of settling it. The queued send
+    // commits and registers its row, so the guard holds its id.
+    fake.on("turn/queue", () => ({}) as TurnQueueResponse);
+    await threadsStore.getState().queue("ref_a", "ours");
+    for (let i = 0; i < 10; i += 1) await nextMacrotask();
+    const rows = await storage.listOutbox("ref_a");
+    expect(rows).toHaveLength(1);
+    const ours = rows[0]!.clientMutationId;
+    await storage.markUnknown(ours, "blockedUnknown");
+    // The automatic reconcile: an authoritative read that names no ids
+    // proves the parked row absent, so the mint arm supersedes the
+    // predecessor and queues a fresh row under the inherited wire id. The
+    // fixture holds the window the finding lives in: once the mint commits,
+    // the FIRST storage read of the pin refresh that follows lands a Stop
+    // (canceling the fresh unattempted row while the database still answers)
+    // and then wedges the database - so the refresh reads nothing and the
+    // only registrations that can matter afterwards are the ones the mint's
+    // own commit transferred.
+    fake.on("thread/read", (params) =>
+      readResponse(params.ref ?? "ref_a", {
+        evener: {
+          ref: "ref_a",
+          capabilities: CAPABILITIES,
+          instanceId: "instance-a",
+          mutationStateAuthoritative: true,
+          queue: { revision: 9, clientMutationIds: [] },
+        },
+      }),
+    );
+    let mintCommitted = false;
+    let openSpy: ReturnType<typeof wedgeDatabaseOpens> | undefined;
+    const wedgeEngaged = deferred<void>();
+    const stopThenWedge = async () => {
+      await storage.enqueueInterruptAndCancel({
+        targetRef: "ref_a",
+        method: "turn/interrupt",
+        payload: { ref: "ref_a" },
+        attachments: [],
+        optimisticDisplay: { method: "turn/interrupt" },
+      });
+      storage.close();
+      openSpy = wedgeDatabaseOpens(indexedDB, databaseName);
+      wedgeEngaged.resolve();
+    };
+    // Every read after the mint fails, exactly as a wedged database answers
+    // it. (The closed instance's cached handle can still serve straggler
+    // reads - a fake-indexeddb reachability detail - so the failure is
+    // raised here rather than trusted to the wedge; writes genuinely wedge.
+    // Disclosed fixture reachability work: the gated reads keep the pin
+    // refresh and the lifecycle scans from recomputing the guard.)
+    const stopAndWedgeOnce = (() => {
+      let engaged: Promise<void> | undefined;
+      return () => (engaged ??= stopThenWedge());
+    })();
+    const gateRead = <T>(real: () => Promise<T>): Promise<T> =>
+      mintCommitted ? stopAndWedgeOnce().then(() => Promise.reject(new MutationStorageTimeoutError())) : real();
+    const realListOutbox = storage.listOutbox.bind(storage);
+    const realListOptimistic = storage.listOptimistic.bind(storage);
+    const realNextDispatchable = storage.nextDispatchable.bind(storage);
+    storage.listOutbox = (targetRef?: string) => gateRead(() => realListOutbox(targetRef));
+    storage.listOptimistic = (targetRef?: string) => gateRead(() => realListOptimistic(targetRef));
+    storage.nextDispatchable = (targetRef: string) => gateRead(() => realNextDispatchable(targetRef));
+    const realRestore = storage.restoreProvenAbsent.bind(storage);
+    storage.restoreProvenAbsent = async (targetRef: string, authoritativeIds: ReadonlySet<string>) => {
+      const restored = await realRestore(targetRef, authoritativeIds);
+      mintCommitted = true;
+      return restored;
+    };
+    const refreshed = threadsStore.getState().refreshThread("ref_a");
+    const refreshSettled = refreshed.catch(() => "storage failed");
+    await wedgeEngaged.promise;
+    // The reconcile minted, the Stop canceled the fresh row, and the wedge
+    // closed the database: the predecessor is terminal, the fresh row is
+    // canceled, and the pin refresh that follows reads nothing - its wedged
+    // reads fail under the fake clock below, exactly like the send's.
+    expect(openSpy).toBeDefined();
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
+    try {
+      await vi.advanceTimersByTimeAsync(12_000);
+      await refreshSettled;
+      expect(ours).toBeDefined();
+      let failure: unknown;
+      const sendOutcome = threadsStore
+        .getState()
+        .send("ref_a", "after the reconcile")
+        .then(
+          () => undefined,
+          (error: unknown) => {
+            failure = error;
+          },
+        );
+      await vi.advanceTimersByTimeAsync(11_000);
+      await sendOutcome;
+      expect(failure).toBeUndefined();
+      expect(fake.calls.filter((call) => call.method === "turn/start")).toHaveLength(1);
+    } finally {
+      vi.useRealTimers();
+      openSpy?.mockRestore();
+    }
+    // The durable states the window produced: the mint's superseded
+    // predecessor, and the fresh row the Stop canceled - no live delivery
+    // remains for the ref.
+    const inspector = new MutationOutboxIndexedDB({ indexedDB, databaseName });
+    expect(
+      (await inspector.listOutbox("ref_a"))
+        .filter((record) => record.method === "turn/queue")
+        .map((record) => record.state),
+    ).toEqual(["superseded", "canceled"]);
+    inspector.close();
+  });
+
   // Round-5 review Medium: the settlement's runtime wrapper cleared the
   // in-memory delivery registration for the SUPPLIED id only, while the
   // settlement's wire sweep deletes the wire's SIBLING rows from storage. A

@@ -761,7 +761,7 @@ test("an automatic requeue mint preserves the sender's tab identity", async () =
     setMutationClientIdentityForTests("reconciling-tab");
     const restored = await f.storage.restoreProvenAbsent(a.targetRef, new Set());
     expect(restored).toHaveLength(1);
-    const restoredId = restored[0];
+    const restoredId = restored[0]?.clientMutationId;
     if (!restoredId) throw new Error("missing restored row");
     const fresh = await f.storage.getOutbox(restoredId);
     if (!fresh) throw new Error("missing restored row");
@@ -1239,7 +1239,9 @@ test("a repeatedly uncertain wire bounds its retained superseded generations at 
   for (let cycle = 0; cycle < 3; cycle += 1) {
     const restored = await f.storage.restoreProvenAbsent("local:queued", new Set());
     expect(restored).toHaveLength(1);
-    const fresh = (await f.storage.listOutbox("local:queued")).find((row) => row.clientMutationId === restored[0]);
+    const fresh = (await f.storage.listOutbox("local:queued")).find(
+      (row) => row.clientMutationId === restored[0]?.clientMutationId,
+    );
     if (!fresh) throw new Error("no minted generation");
     // The journal write failed again: the fresh generation went uncertain.
     await f.storage.markAttempted(fresh.clientMutationId);

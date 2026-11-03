@@ -120,9 +120,10 @@ export class MutationDispatcher<A extends MutationAttachmentRef = MutationAttach
   // Reopen unresolved records beside receipt reconciliation. A live snapshot
   // may omit accepted work, so dispatch preserves each original mutation ID
   // and payload for journal replay and instance-fence validation.
-  async restoreProvenAbsent(targetRef: string, authoritativeIds: ReadonlySet<string>): Promise<void> {
+  async restoreProvenAbsent(targetRef: string, authoritativeIds: ReadonlySet<string>): Promise<MutationOutboxRecord[]> {
     const restored = await this.#storage.restoreProvenAbsent(targetRef, authoritativeIds);
     if (restored.length > 0) this.#onStorageChange([targetRef]);
+    return restored;
   }
 
   async reconcileIdentities(clientMutationIds: Iterable<string>): Promise<void> {

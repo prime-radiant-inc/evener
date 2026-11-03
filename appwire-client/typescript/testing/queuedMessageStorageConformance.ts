@@ -351,8 +351,8 @@ export function describeWebQueuedMessageStorage(name: string, create: () => WebQ
         state: "superseded",
         attempted: true,
       });
-      expect(restored[0]).not.toBe(original.clientMutationId);
-      const fresh = await f.storage.getOutbox(restored[0] ?? "");
+      expect(restored[0]?.clientMutationId).not.toBe(original.clientMutationId);
+      const fresh = await f.storage.getOutbox(restored[0]?.clientMutationId ?? "");
       expect(fresh).toMatchObject({ state: "submitting", attempted: false });
       expect(fresh?.payload.clientMutationId).toBe(original.clientMutationId);
       expect(fresh?.stopEpochAtEnqueue).toBe(0);
@@ -406,7 +406,7 @@ export function describeWebQueuedMessageStorage(name: string, create: () => WebQ
       await f.storage.markUnknown(first.clientMutationId, "blockedUnknown");
       const restored = await f.storage.restoreProvenAbsent("local:queued", new Set());
       expect(restored).toHaveLength(1);
-      const second = await f.storage.getOutbox(restored[0] ?? "");
+      const second = await f.storage.getOutbox(restored[0]?.clientMutationId ?? "");
       expect(second?.payload.clientMutationId).toBe(original.clientMutationId);
     });
 

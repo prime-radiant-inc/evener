@@ -179,7 +179,7 @@ describe("retargeted resend rows' displayed-ref fence", () => {
     // receipt a real in-flight attempt can still bring.
     const restored = await storage.restoreProvenAbsent(DESTINATION, new Set());
     expect(restored).toHaveLength(1);
-    const freshId = restored[0]!;
+    const freshId = restored[0]!.clientMutationId;
     expect(freshId).not.toBe(row.clientMutationId);
     expect(await storage.getOutbox(row.clientMutationId)).toMatchObject({
       state: "superseded",

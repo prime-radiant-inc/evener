@@ -438,9 +438,14 @@ export class MutationOutboxIndexedDB implements WebQueuedMessageStorage<Mutation
   // cannot cancel the interrupt itself, and an aborted commit rolls both back.
   async enqueueInterruptAndCancel(intent: MutationIntent): Promise<MutationOutboxRecord> {
     if (!intent.targetRef.trim()) throw new Error("targetRef is required");
-    return this.#write(ENQUEUE_STORES, "enqueueInterruptAndCancel", async (transaction) => {
+    // Round-12: the Stop's cancel retires its canceled rows from live
+    // delivery, so their ids reach the runtime's delivery registrations
+    // through the same post-commit channel - a Stop-canceled row must not
+    // keep the fallback guard armed on work that will never dispatch.
+    const retiredIds: string[] = [];
+    const interrupted = await this.#write(ENQUEUE_STORES, "enqueueInterruptAndCancel", async (transaction) => {
       const outbox = transaction.objectStore(OUTBOX_STORE);
-      await this.#cancelUnattempted(transaction, intent.targetRef);
+      retiredIds.push(...(await this.#cancelUnattempted(transaction, intent.targetRef)));
       await this.#bumpStopEpoch(transaction, intent.targetRef);
       const intentSequence = await this.#allocateSequence(transaction, intent.targetRef);
       const clientMutationId = this.#createMutationId();
@@ -465,6 +470,8 @@ export class MutationOutboxIndexedDB implements WebQueuedMessageStorage<Mutation
       await requestResult(outbox.add(record));
       return record;
     });
+    if (retiredIds.length > 0) this.#retiredIdsListener?.(retiredIds);
+    return interrupted;
   }
 
   // forceStop/shutdown carry no interrupt record, but their cancellation
@@ -579,7 +586,13 @@ export class MutationOutboxIndexedDB implements WebQueuedMessageStorage<Mutation
     clientMutationId: string,
     capture: MutationRetryCapture,
   ): Promise<MutationOutboxRecord | undefined> {
-    return this.#write(ENQUEUE_STORES, "mintRetry", async (transaction) => {
+    // Round-12: every key the mint retires - the predecessor the caller
+    // settles or removes, and the bound's swept redundant siblings -
+    // publishes through the post-commit retiredIds channel, so the runtime's
+    // delivery registrations resolve synchronously instead of waiting for a
+    // background pin refresh that failing storage can starve forever.
+    const retiredIds: string[] = [];
+    const minted = await this.#write(ENQUEUE_STORES, "mintRetry", async (transaction) => {
       const store = transaction.objectStore(OUTBOX_STORE);
       const record = await requestResult<MutationOutboxRecord | undefined>(store.get(clientMutationId));
       if (record === undefined) return undefined;
@@ -595,6 +608,7 @@ export class MutationOutboxIndexedDB implements WebQueuedMessageStorage<Mutation
       } else {
         await requestResult(store.delete(clientMutationId));
       }
+      retiredIds.push(clientMutationId);
       // The birth fence: both epochs read in this same transaction, compared
       // against the capture the way enqueueIntent compares its barrier.
       const stopEpoch = await this.#stopEpochOf(transaction, record.targetRef);
@@ -603,12 +617,19 @@ export class MutationOutboxIndexedDB implements WebQueuedMessageStorage<Mutation
       const bornCanceled =
         stopEpoch > capture.stopEpoch ||
         (displayedStopEpoch !== undefined && displayedStopEpoch > capture.displayedStopEpoch);
-      return this.#mintFreshRow(transaction, record, {
-        stopEpoch,
-        displayedStopEpoch,
-        bornCanceled,
-      });
+      return this.#mintFreshRow(
+        transaction,
+        record,
+        {
+          stopEpoch,
+          displayedStopEpoch,
+          bornCanceled,
+        },
+        retiredIds,
+      );
     });
+    if (retiredIds.length > 0) this.#retiredIdsListener?.(retiredIds);
+    return minted;
   }
 
   async listOutbox(targetRef?: string): Promise<MutationOutboxRecord[]> {
@@ -1485,11 +1506,20 @@ export class MutationOutboxIndexedDB implements WebQueuedMessageStorage<Mutation
   // read proves nothing, so the crossed Stop fences redispatch only - the row
   // stays delivery-uncertain for a receipt or refusal to settle, the same
   // truth the refusal rollback's fence derives from an actual refusal.
-  async restoreProvenAbsent(targetRef: string, authoritativeIds: ReadonlySet<string>): Promise<string[]> {
-    return this.#write(ENQUEUE_STORES, undefined, async (transaction) => {
+  async restoreProvenAbsent(targetRef: string, authoritativeIds: ReadonlySet<string>): Promise<MutationOutboxRecord[]> {
+    // Round-12: the automatic mint published nothing while the explicit
+    // Retry wrapper transferred both registrations - so a predecessor
+    // superseded by reconcile kept its in-memory delivery registration until
+    // the pin refresh's background read, and failing reads kept it armed on
+    // work that can never dispatch again. Every key this pass retires now
+    // publishes through the post-commit retiredIds channel, and the rows it
+    // re-queues return to the caller so it registers them synchronously -
+    // the same transfer the explicit Retry wrapper performs at its mint.
+    const retiredIds: string[] = [];
+    const restored = await this.#write(ENQUEUE_STORES, undefined, async (transaction) => {
       const store = transaction.objectStore(OUTBOX_STORE);
       const records = await requestResult<MutationOutboxRecord[]>(store.getAll());
-      const restored: string[] = [];
+      const requeued: MutationOutboxRecord[] = [];
       // The epochs every parked row on this ref compares against, read once
       // for the pass (displayed refs memoized: retargeted rows share one).
       const targetStopEpoch = await this.#stopEpochOf(transaction, targetRef);
@@ -1524,8 +1554,10 @@ export class MutationOutboxIndexedDB implements WebQueuedMessageStorage<Mutation
           })
         ) {
           if (record.attempted === false) {
-            await requestResult(store.put({ ...record, state: "canceled" }));
-            restored.push(record.clientMutationId);
+            const fenceCanceled = { ...record, state: "canceled" as const };
+            await requestResult(store.put(fenceCanceled));
+            requeued.push(fenceCanceled);
+            retiredIds.push(record.clientMutationId);
           } else {
             await requestResult(store.put({ ...record, state: "blockedUnknown", stopFenced: true }));
           }
@@ -1539,6 +1571,7 @@ export class MutationOutboxIndexedDB implements WebQueuedMessageStorage<Mutation
         // the newer save is the note's one live send.
         if (record.method === "notes/human/set" && (await this.#newerNoteSaveWaiting(transaction, record))) {
           await requestResult(store.put({ ...record, state: "superseded" }));
+          retiredIds.push(record.clientMutationId);
           continue;
         }
         // Reconciliation NEVER re-enables the old row: an innocent parked
@@ -1551,16 +1584,24 @@ export class MutationOutboxIndexedDB implements WebQueuedMessageStorage<Mutation
         // and a re-submission under the inherited id replays rather than
         // double-applies), and queues at the ref's tail.
         await requestResult(store.put({ ...record, state: "superseded" }));
-        const fresh = await this.#mintFreshRow(transaction, record, {
-          stopEpoch: targetStopEpoch,
-          displayedStopEpoch,
-          bornCanceled: false,
-          preserveOriginClientId: true,
-        });
-        restored.push(fresh.clientMutationId);
+        retiredIds.push(record.clientMutationId);
+        const fresh = await this.#mintFreshRow(
+          transaction,
+          record,
+          {
+            stopEpoch: targetStopEpoch,
+            displayedStopEpoch,
+            bornCanceled: false,
+            preserveOriginClientId: true,
+          },
+          retiredIds,
+        );
+        requeued.push(fresh);
       }
-      return restored;
+      return requeued;
     });
+    if (retiredIds.length > 0) this.#retiredIdsListener?.(retiredIds);
+    return restored;
   }
 
   async transferToRecovery(
@@ -2388,6 +2429,7 @@ export class MutationOutboxIndexedDB implements WebQueuedMessageStorage<Mutation
       // press is a user-chosen actor and stamps the pressing tab.
       preserveOriginClientId?: boolean;
     },
+    retiredIds: string[],
   ): Promise<MutationOutboxRecord> {
     const intentSequence = await this.#allocateSequence(transaction, source.targetRef);
     const clientMutationId = this.#createMutationId();
@@ -2445,16 +2487,22 @@ export class MutationOutboxIndexedDB implements WebQueuedMessageStorage<Mutation
     // retiring the redundant OLDER superseded siblings here, in the mint's
     // own write, bounds retention at one evidence-bearing superseded row per
     // wire (the predecessor the caller just settled is the newest) - never
-    // zero, so the late-outcome contract keeps its evidence. No
-    // retiredIds notification: a superseded generation carries no live
-    // delivery registration - the minting wrapper cleared each one's at its
-    // own mint.
-    await this.#retireWireSiblings(transaction, inheritedWireId, {
-      excludeKeys: new Set([source.clientMutationId, record.clientMutationId]),
-      sweepOptimistic: false,
-      sweepRecovery: false,
-      onlySuperseded: true,
-    });
+    // zero, so the late-outcome contract keeps its evidence. The swept ids
+    // publish through the post-commit retiredIds channel like every other
+    // retirement transition: the explicit Retry wrapper clears its own
+    // predecessor, but a chain with ANY automatic cycle leaks - a
+    // superseded generation's in-memory delivery registration is otherwise
+    // cleared only by the background pin refresh, and failed reads leave
+    // it armed on work that can never dispatch again. The mint is the one
+    // home both arms share, so every key it retires publishes here.
+    retiredIds.push(
+      ...(await this.#retireWireSiblings(transaction, inheritedWireId, {
+        excludeKeys: new Set([source.clientMutationId, record.clientMutationId]),
+        sweepOptimistic: false,
+        sweepRecovery: false,
+        onlySuperseded: true,
+      })),
+    );
     return record;
   }
 

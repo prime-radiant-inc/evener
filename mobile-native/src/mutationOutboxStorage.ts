@@ -960,27 +960,33 @@ export class MutationOutboxSQLite<A extends MutationAttachmentRef = MutationAtta
 	// explicitly confirms stays settled. Returns the ids restored. Wrapped in
 	// the same savepoint as every other compound write here: a throw must not
 	// leave some blockedUnknown records reopened and others not.
-	async restoreProvenAbsent(targetRef: string, authoritativeIds: ReadonlySet<string>): Promise<string[]> {
+	async restoreProvenAbsent(
+		targetRef: string,
+		authoritativeIds: ReadonlySet<string>,
+	): Promise<MutationOutboxRecord<A>[]> {
 		return this.transaction("mutation_outbox_restore_absent", () => {
-			// One statement reopens the whole omitted set and reports the ids it
-			// changed, instead of decoding every row on the target and updating the
+			// One statement reopens the whole omitted set and reports the rows it
+			// changed, instead of reading every row on the target and updating the
 			// blocked ones one at a time. It stays inside the savepoint: a fault on
 			// any row aborts the single UPDATE and rolls the entire restore back,
 			// the same all-or-nothing the loop's savepoint gave. RETURNING promises
 			// no row order, so carry intent_sequence out and sort here to keep the
-			// ascending order callers saw when this listed the target first.
+			// ascending order callers saw when this listed the target first. The
+			// shared port returns the re-queued ROWS so a host can register each
+			// one's delivery synchronously; only the reopened set is decoded,
+			// never the target's other rows.
 			const named = [...authoritativeIds];
 			const namedClause = named.length > 0 ? ` AND client_mutation_id NOT IN (${named.map(() => "?").join(", ")})` : "";
-			const restored = this.db.getAllSync<{ client_mutation_id: string; intent_sequence: number }>(
+			const restored = this.db.getAllSync<Row>(
 				`UPDATE ${TABLES.outbox} SET state = 'submitting'
 				 WHERE target_ref = ? AND state = 'blockedUnknown'${namedClause}
-				 RETURNING client_mutation_id, intent_sequence`,
+				 RETURNING *`,
 				targetRef,
 				...named,
 			);
 			return restored
 				.sort((left, right) => left.intent_sequence - right.intent_sequence)
-				.map((row) => row.client_mutation_id);
+				.map((row) => fromRow<A, MutationOutboxRecord<A>>(row));
 		});
 	}
 

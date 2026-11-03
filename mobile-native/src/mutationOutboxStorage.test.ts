@@ -1086,7 +1086,7 @@ test("restoreProvenAbsent scopes reopening to the target and preserves authorita
 	await storage.markUnknown(unrelated.clientMutationId, "blockedUnknown");
 
 	await expect(storage.restoreProvenAbsent(TARGET, new Set([named.clientMutationId]))).resolves.toEqual([
-		omitted.clientMutationId,
+		expect.objectContaining({ clientMutationId: omitted.clientMutationId, state: "submitting" }),
 	]);
 	await expect(storage.getOutbox(omitted.clientMutationId)).resolves.toMatchObject({ state: "submitting" });
 	await expect(storage.getOutbox(named.clientMutationId)).resolves.toMatchObject({ state: "blockedUnknown" });
@@ -1116,9 +1116,10 @@ test("a failed restore leaves every blockedUnknown record on the target unreopen
 });
 
 // #1945 read-path cleanup: one bulk UPDATE ... RETURNING reopens the omitted set
-// and reports the ids, instead of decoding every row on the target and updating
-// the blocked ones one at a time. No row is decoded at all now.
-test("restoreProvenAbsent reopens the omitted set without decoding the target's rows", async () => {
+// and reports the rows it reopened, instead of reading every row on the target
+// and updating the blocked ones one at a time. Only the reopened set decodes -
+// the rows the shared port contract returns - never the target's others.
+test("restoreProvenAbsent decodes only the rows it returns, never the target's others", async () => {
 	const first = await storage.enqueueIntent(intent("first blocked"));
 	const second = await storage.enqueueIntent(intent("second blocked"));
 	await storage.markUnknown(first.clientMutationId, "blockedUnknown");
@@ -1130,14 +1131,16 @@ test("restoreProvenAbsent reopens the omitted set without decoding the target's 
 		// Ascending intent_sequence order, the order the prior listing produced;
 		// RETURNING alone guarantees no order.
 		await expect(storage.restoreProvenAbsent(TARGET, new Set())).resolves.toEqual([
-			first.clientMutationId,
-			second.clientMutationId,
+			expect.objectContaining({ clientMutationId: first.clientMutationId, state: "submitting" }),
+			expect.objectContaining({ clientMutationId: second.clientMutationId, state: "submitting" }),
 		]);
 	} finally {
 		parses = parse.mock.calls.length;
 		parse.mockRestore();
 	}
-	expect(parses).toBe(0);
+	// Exactly the two returned rows decode (each row's optimistic display,
+	// payload and attachments); the target's other rows are never read.
+	expect(parses).toBe(6);
 	await expect(storage.getOutbox(first.clientMutationId)).resolves.toMatchObject({ state: "submitting" });
 	await expect(storage.getOutbox(second.clientMutationId)).resolves.toMatchObject({ state: "submitting" });
 });
