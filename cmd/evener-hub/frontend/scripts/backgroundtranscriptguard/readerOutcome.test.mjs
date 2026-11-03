@@ -147,6 +147,9 @@ function fakeDriver({ online = true } = {}) {
   };
   return {
     send,
+    // The real Driver carries the load-observation budget every condition
+    // wait sizes itself from; this fake keeps the test's budget fixed.
+    reactions: { deadline: (floorMs) => floorMs, observe() {} },
     waitPage: async (expr) => {
       const seen = evalExpr(expr);
       if (!seen) throw new Error("waitPage: not ready");
