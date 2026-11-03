@@ -1,5 +1,5 @@
 // Modified by Evener: constant printf format for Go 1.27 vet compatibility,
-// compact exact numeric constraints and predicates.
+// compact exact numeric constraints and predicates, shared exact uniqueness.
 // See UPSTREAM.md for the pinned Apache-2.0 source.
 package jsonschema
 
@@ -8,10 +8,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"hash/maphash"
-	"math/big"
 	"net/url"
 	"regexp"
-	"sort"
 	"strconv"
 	"strings"
 	"unicode/utf8"
@@ -428,39 +426,14 @@ func (s *Schema) validate(scope []schemaRef, vscope int, spath string, v interfa
 			errors = append(errors, validationError("maxItems", "maximum %d items required, but found %d items", s.MaxItems, len(v)))
 		}
 		if s.UniqueItems {
-			if len(v) <= 20 {
-			outer1:
-				for i := 1; i < len(v); i++ {
-					for j := 0; j < i; j++ {
-						if equals(v[i], v[j]) {
-							errors = append(errors, validationError("uniqueItems", "items at index %d and %d are equal", j, i))
-							break outer1
-						}
-					}
-				}
-			} else {
-				m := make(map[uint64][]int)
-				var h maphash.Hash
-			outer2:
-				for i, item := range v {
-					h.Reset()
-					hash(item, &h)
-					k := h.Sum64()
-					if err != nil {
-						panic(err)
-					}
-					arr, ok := m[k]
-					if ok {
-						for _, j := range arr {
-							if equals(v[j], item) {
-								errors = append(errors, validationError("uniqueItems", "items at index %d and %d are equal", j, i))
-								break outer2
-							}
-						}
-					}
-					arr = append(arr, i)
-					m[k] = arr
-				}
+			var h maphash.Hash
+			first, second := duplicateItems(v, func(item any) uint64 {
+				h.Reset()
+				hash(item, &h)
+				return h.Sum64()
+			})
+			if first != -1 {
+				errors = append(errors, validationError("uniqueItems", "items at index %d and %d are equal", first, second))
 			}
 		}
 
@@ -806,90 +779,6 @@ func jsonType(v interface{}) string {
 		return "object"
 	}
 	panic(InvalidJSONTypeError(fmt.Sprintf("%T", v)))
-}
-
-// equals tells if given two json values are equal or not.
-func equals(v1, v2 interface{}) bool {
-	v1Type := jsonType(v1)
-	if v1Type != jsonType(v2) {
-		return false
-	}
-	switch v1Type {
-	case "array":
-		arr1, arr2 := v1.([]interface{}), v2.([]interface{})
-		if len(arr1) != len(arr2) {
-			return false
-		}
-		for i := range arr1 {
-			if !equals(arr1[i], arr2[i]) {
-				return false
-			}
-		}
-		return true
-	case "object":
-		obj1, obj2 := v1.(map[string]interface{}), v2.(map[string]interface{})
-		if len(obj1) != len(obj2) {
-			return false
-		}
-		for k, v1 := range obj1 {
-			if v2, ok := obj2[k]; ok {
-				if !equals(v1, v2) {
-					return false
-				}
-			} else {
-				return false
-			}
-		}
-		return true
-	case "number":
-		num1, _ := new(big.Rat).SetString(fmt.Sprint(v1))
-		num2, _ := new(big.Rat).SetString(fmt.Sprint(v2))
-		return num1.Cmp(num2) == 0
-	default:
-		return v1 == v2
-	}
-}
-
-func hash(v interface{}, h *maphash.Hash) {
-	switch v := v.(type) {
-	case nil:
-		h.WriteByte(0)
-	case bool:
-		h.WriteByte(1)
-		if v {
-			h.WriteByte(1)
-		} else {
-			h.WriteByte(0)
-		}
-	case json.Number, float32, float64, int, int8, int32, int64, uint, uint8, uint32, uint64:
-		h.WriteByte(2)
-		num, _ := new(big.Rat).SetString(fmt.Sprint(v))
-		h.Write(num.Num().Bytes())
-		h.Write(num.Denom().Bytes())
-	case string:
-		h.WriteByte(3)
-		h.WriteString(v)
-	case []interface{}:
-		h.WriteByte(4)
-		for _, item := range v {
-			hash(item, h)
-		}
-	case map[string]interface{}:
-		h.WriteByte(5)
-		props := make([]string, 0, len(v))
-		for prop := range v {
-			props = append(props, prop)
-		}
-		sort.Slice(props, func(i, j int) bool {
-			return props[i] < props[j]
-		})
-		for _, prop := range props {
-			hash(prop, h)
-			hash(v[prop], h)
-		}
-	default:
-		panic(InvalidJSONTypeError(fmt.Sprintf("%T", v)))
-	}
 }
 
 // escape converts given token to valid json-pointer token

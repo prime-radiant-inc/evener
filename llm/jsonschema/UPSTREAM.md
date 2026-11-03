@@ -79,6 +79,17 @@ Modified inherited files carry notices identifying Evener's changes:
   (including `01` and `1/2`) return `InvalidJSONTypeError`, rather than the old
   number-only acceptance or arithmetic panic. Valid finite Go values retain the
   existing kind switch and `fmt.Sprint` interpretation.
+  Equality and hashing move to `identity.go`; `uniqueItems` calls its shared
+  duplicate helper with a call-local hasher and retains the same error order.
+- `identity.go`: derived equality, hashing and duplicate traversal from
+  `schema.go`. Numeric identity uses the same admitted converter and immutable
+  decimal kernel, without rational conversion. Hashes frame type tags, string
+  and container lengths, sorted object keys and canonical numeric encodings.
+  Pairwise comparison remains in use through length 20; larger arrays use hash
+  buckets, with exact equality resolving every collision and the original
+  earliest-second-then-first duplicate order preserved. Invalid numeric leaves
+  examined by hashing return `InvalidJSONTypeError` too. No eager instance
+  admission pass is added.
 - `compiler.go`: compile all five numeric bounds through the compact decimal
   loader, including built-in metaschema bootstrap. Preserve draft-specific
   exclusive-bound dispatch and reject nonpositive divisors.
@@ -108,6 +119,9 @@ and `draft_baseline_test.go`. Compact numeric additions are `numeric.go`,
 `numeric_test.go`, `numeric_metaschema_test.go`, and the `decimal/` kernel and
 independent oracle tests. Shared test-only resource containment lives in
 `../internal/numerictest/`.
+`identity_test.go` adds exact nested const/enum/uniqueItems regressions, framed
+hash tests, contained unsafe witnesses and injected-collision/call-count tests
+of the production duplicate helper, without global mutable test hooks.
 
 The llm callers in `generate.go`, `generate_object.go` and
 `generate_edges_fuzz_test.go` change only their jsonschema import. The llm
@@ -123,11 +137,12 @@ deltas and retained exclusions, and pass CI's full imported conformance harness.
 Tests never fetch fixtures by default. The optional HTTP loader remains opt-in
 for applications; the inherited test suite imports and exercises it locally.
 
-This checkpoint bounds parsing, compilation and direct numeric predicates in
-encoded mantissa/exponent size. It does **not** establish wholly bounded
-validation: equality/hash still use upstream rational arithmetic, and cardinality
-fields still use native integers. Those are later tasks, not compatibility
-fallbacks in the new decimal API. No decoder or Go-kind switch is widened.
+This checkpoint bounds parsing, compilation, direct numeric predicates and
+numeric equality/hash in encoded mantissa/exponent size. It does **not**
+establish wholly bounded validation: cardinality fields still use native
+integers. Their migration is a later task, not a compatibility fallback in the
+new decimal API. Hash collisions can still require pairwise exact comparisons.
+No decoder or Go-kind switch is widened.
 The validator and decimal kernel remain leaf packages inside the existing llm
 module, with no nested module and no imports of parent llm, agent or application
 packages.
