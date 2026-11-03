@@ -459,16 +459,10 @@ export class MutationOutboxIndexedDB implements QueuedMessageStorage<MutationAtt
       const unsent = includeAttempted && record.state === "submitting";
       if (!isCancelableByStop(record) && !unsent) continue;
       if (upToSequence !== undefined && record.intentSequence > upToSequence) continue;
-      // The attempt evidence this write outranks goes with it: a canceled row
-      // offers Edit and Remove only while it reads as never attempted, and a
-      // Retry replays under the same clientMutationId.
-      await requestResult(
-        store.put(
-          unsent
-            ? { ...record, state: "canceled", attempted: false, unresolvedAttempts: 0 }
-            : { ...record, state: "canceled" },
-        ),
-      );
+      // Evidence is preserved: an attempted row's send may have applied
+      // without an acknowledgment, and a Retry replays under the same
+      // clientMutationId while reporting that uncertainty.
+      await requestResult(store.put({ ...record, state: "canceled" }));
       canceled.push(record.clientMutationId);
     }
     return canceled;

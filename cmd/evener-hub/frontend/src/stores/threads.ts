@@ -2168,7 +2168,9 @@ function parkOutranRow(
       // This pass's own evidence is rolled back; any earlier or concurrent
       // attempt keeps its count and its row is not treated as unattempted.
       if (marked) await runtime.storage.unmarkAttempted(clientMutationId).catch(() => false);
-      await cancelSupersededMutations(targetRef, record.intentSequence, false);
+      // Cancel attempted rows too - a superseded row must leave the FIFO head -
+      // and keep their evidence, since an earlier attempt may have applied.
+      await cancelSupersededMutations(targetRef, record.intentSequence, true);
     })().finally(() => parkedRowCancels.delete(clientMutationId));
   }
 }
@@ -3386,7 +3388,7 @@ async function runResumeFencedForSend(
             // this fresh message as outrun.
             if (drainBoundStart !== undefined) {
               void mutationRuntime?.storage
-                .authorizeParkedRows(ref, attemptCancelBound, reconciledToken, drainBoundStart)
+                .authorizeParkedRows(ref, undefined, reconciledToken, drainBoundStart)
                 .catch(() => undefined);
             }
           }

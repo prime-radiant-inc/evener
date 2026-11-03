@@ -310,8 +310,8 @@ describe("MutationOutboxIndexedDB cancellation", () => {
     expect(canceled).toEqual([row.clientMutationId]);
     expect(await storage.getOutbox(row.clientMutationId)).toMatchObject({
       state: "canceled",
-      attempted: false,
-      unresolvedAttempts: 0,
+      // Delivery evidence survives: the send may have applied unacked.
+      attempted: true,
     });
     storage.close();
   });
