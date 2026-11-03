@@ -27,6 +27,7 @@ func TestCloneSchemaMapTypedContainerIsolation(t *testing.T) {
 		return map[string]any{
 			"marker": "original",
 			"number": exactTypedSchemaNumber,
+			"float":  float64(1.25),
 		}
 	}
 	cases := []struct {
@@ -109,6 +110,7 @@ func TestWithIntentParameterTypedSchemaIsolation(t *testing.T) {
 	sourceDefault := map[string]any{
 		"marker": "original",
 		"number": exactTypedSchemaNumber,
+		"float":  float64(1.25),
 	}
 	decorated := WithIntentParameter(llm.ToolDefinition{
 		Name: "typed_schema",
@@ -165,6 +167,14 @@ func assertTypedSchemaContainerContents(t *testing.T, value any, wantMarker stri
 	}
 	if number != exactTypedSchemaNumber {
 		t.Errorf("number = %q, want %q", number, exactTypedSchemaNumber)
+	}
+	float, ok := entry["float"].(json.Number)
+	if !ok {
+		t.Errorf("semantic float type = %T, want json.Number", entry["float"])
+		return
+	}
+	if float != json.Number("1.25") {
+		t.Errorf("semantic float = %q, want 1.25", float)
 	}
 }
 
