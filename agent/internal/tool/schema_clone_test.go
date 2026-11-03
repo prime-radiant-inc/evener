@@ -270,8 +270,8 @@ func replaceTypedSchemaMarkerValue(value reflect.Value, replacement string) bool
 			}
 		}
 	case reflect.Struct:
-		for i := 0; i < value.NumField(); i++ {
-			if replaceTypedSchemaMarkerValue(value.Field(i), replacement) {
+		for _, field := range value.Fields() {
+			if replaceTypedSchemaMarkerValue(field, replacement) {
 				return true
 			}
 		}
