@@ -75,6 +75,23 @@ func TestNumericGoAdmission(t *testing.T) {
 			}
 		}
 	})
+	t.Run("short-circuits", func(t *testing.T) {
+		for _, v := range []any{math.NaN(), json.Number("01"), int16(1)} {
+			if err := numericSchema(t, `true`).Validate(v); err != nil {
+				t.Fatalf("Always true examined %T: %T", v, err)
+			}
+			var ve *jsonschema.ValidationError
+			var invalid jsonschema.InvalidJSONTypeError
+			err := numericSchema(t, `false`).Validate(v)
+			if !errors.As(err, &ve) || errors.As(err, &invalid) {
+				t.Fatalf("Always false examined %T: %T", v, err)
+			}
+		}
+		// Without a type constraint, the existing kind switch ignores this kind.
+		if err := numericSchema(t, `{}`).Validate(int16(1)); err != nil {
+			t.Fatalf("eager classification: %T", err)
+		}
+	})
 }
 
 func TestNumericBoundsExtreme(t *testing.T) {

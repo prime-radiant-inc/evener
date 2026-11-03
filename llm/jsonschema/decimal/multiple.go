@@ -11,6 +11,14 @@ func (n Number) MultipleOf(divisor Number) bool {
 	if n.sign == 0 {
 		return true
 	}
+	// A smaller normalized exponent would require the instance coefficient to
+	// contain a factor of ten. Normalization has removed all such factors.
+	if n.exponent.Cmp(&divisor.exponent) < 0 {
+		return false
+	}
+	if divisor.coefficient == "1" {
+		return true
+	}
 	a, u, v := factor(n.coefficient)
 	b, r, s := factor(divisor.coefficient)
 	if new(big.Int).Rem(a, b).Sign() != 0 {

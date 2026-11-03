@@ -1,6 +1,9 @@
 package decimal
 
-import "math/big"
+import (
+	"math/big"
+	"strings"
+)
 
 // Cmp returns -1, 0, or +1 according to the exact ordering of n and other.
 func (n Number) Cmp(other Number) int {
@@ -19,21 +22,8 @@ func (n Number) Cmp(other Number) int {
 	if cmp := order.Cmp(otherOrder); cmp != 0 {
 		return n.sign * cmp
 	}
-	// Equal orders need only a virtual zero-padded comparison of encoded digits.
-	for i := 0; i < len(n.coefficient) || i < len(other.coefficient); i++ {
-		a, b := byte('0'), byte('0')
-		if i < len(n.coefficient) {
-			a = n.coefficient[i]
-		}
-		if i < len(other.coefficient) {
-			b = other.coefficient[i]
-		}
-		if a < b {
-			return -n.sign
-		}
-		if a > b {
-			return n.sign
-		}
-	}
-	return 0
+	// Normalized coefficients have no trailing zeros. If one is a proper prefix,
+	// the longer coefficient's suffix contains a nonzero digit, so lexical order
+	// matches zero-padding.
+	return n.sign * strings.Compare(n.coefficient, other.coefficient)
 }

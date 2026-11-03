@@ -251,15 +251,16 @@ func (s *Schema) validate(scope []schemaRef, vscope int, spath string, v interfa
 		return result, nil
 	}
 
+	var vType string
+	var num decimal.Number
 	if len(s.Types) > 0 {
-		vType := jsonType(v)
+		vType, num = classifyJSON(v)
 		matched := false
 		for _, t := range s.Types {
 			if vType == t {
 				matched = true
 				break
 			} else if t == "integer" && vType == "number" {
-				num, _ := numberValue(v) // jsonType already checked numeric validity
 				if num.IsInteger() {
 					matched = true
 					break
@@ -556,9 +557,8 @@ func (s *Schema) validate(scope []schemaRef, vscope int, spath string, v interfa
 		}
 
 	case json.Number, float32, float64, int, int8, int32, int64, uint, uint8, uint32, uint64:
-		num, ok := numberValue(v)
-		if !ok {
-			panic(InvalidJSONTypeError(fmt.Sprintf("%T", v)))
+		if vType == "" {
+			_, num = classifyJSON(v)
 		}
 		if s.Minimum != nil && num.Cmp(*s.Minimum) < 0 {
 			errors = append(errors, validationError("minimum", "must be >= %v but found %v", s.Minimum.String(), num.String()))
@@ -757,22 +757,30 @@ func (vr validationResult) unevalPnames() string {
 //
 // It panics if the given value is not valid json value
 func jsonType(v interface{}) string {
+	typ, _ := classifyJSON(v)
+	return typ
+}
+
+// classifyJSON examines only v, returning its parsed number for call-local reuse.
+// Like jsonType, it panics with InvalidJSONTypeError for an invalid examined value.
+func classifyJSON(v interface{}) (string, decimal.Number) {
 	switch v.(type) {
 	case nil:
-		return "null"
+		return "null", decimal.Number{}
 	case bool:
-		return "boolean"
+		return "boolean", decimal.Number{}
 	case json.Number, float32, float64, int, int8, int32, int64, uint, uint8, uint32, uint64:
-		if _, ok := numberValue(v); !ok {
+		num, ok := numberValue(v)
+		if !ok {
 			panic(InvalidJSONTypeError(fmt.Sprintf("%T", v)))
 		}
-		return "number"
+		return "number", num
 	case string:
-		return "string"
+		return "string", decimal.Number{}
 	case []interface{}:
-		return "array"
+		return "array", decimal.Number{}
 	case map[string]interface{}:
-		return "object"
+		return "object", decimal.Number{}
 	}
 	panic(InvalidJSONTypeError(fmt.Sprintf("%T", v)))
 }

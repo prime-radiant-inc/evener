@@ -16,13 +16,19 @@ func parse(t *testing.T, s string) decimal.Number {
 }
 
 func TestDecimalExtremeIdentity(t *testing.T) {
-	for _, s := range []string{"", "01", "+1", ".1", "1.", "1e", "NaN", "Infinity", "-01", "1e+", "1e-", " 1", "1 ", "1/2", "0x1"} {
+	for _, s := range []string{"", "01", "+1", ".1", "1.", "1e", "NaN", "Infinity", "-01", "1e+", "1e-", " 1", "1 ", "1/2", "0x1", "0e", "0e+", "-0.00e-", "0e123x", "0e+123 "} {
 		if _, err := decimal.Parse(s); err == nil {
 			t.Errorf("accepted %q", s)
 		}
 	}
 	for _, s := range []string{"0", "-0", "0.0", "1e+0000", "1.20e-2"} {
 		parse(t, s)
+	}
+	for _, s := range []string{"0e+0000", "-0.00E-000000", "0e+999999999999999999999", "-0.00e-999999999999999999999"} {
+		n := parse(t, s)
+		if !n.Equal(decimal.Number{}) || n.String() != "0" {
+			t.Fatal("noncanonical zero", s, n)
+		}
 	}
 	for _, tc := range []struct {
 		a, b  string

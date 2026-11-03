@@ -56,10 +56,10 @@ func Parse(text string) (Number, error) {
 			return invalid()
 		}
 	}
-	var exponent big.Int
+	expStart, expEnd := i, i
 	if i < len(text) && (text[i] == 'e' || text[i] == 'E') {
 		i++
-		expStart := i
+		expStart = i
 		if i < len(text) && (text[i] == '+' || text[i] == '-') {
 			i++
 		}
@@ -70,9 +70,7 @@ func Parse(text string) (Number, error) {
 		if digitsStart == i {
 			return invalid()
 		}
-		if _, ok := exponent.SetString(text[expStart:i], 10); !ok {
-			return invalid()
-		}
+		expEnd = i
 	}
 	if i != len(text) {
 		return invalid()
@@ -81,6 +79,12 @@ func Parse(text string) (Number, error) {
 	coefficient = strings.TrimLeft(coefficient, "0")
 	if len(coefficient) == 0 {
 		return Number{}, nil
+	}
+	var exponent big.Int
+	if expStart != expEnd {
+		if _, ok := exponent.SetString(text[expStart:expEnd], 10); !ok {
+			return invalid()
+		}
 	}
 	trimmed := strings.TrimRight(coefficient, "0")
 	adjustment := len(coefficient) - len(trimmed) - (fracEnd - fracStart)

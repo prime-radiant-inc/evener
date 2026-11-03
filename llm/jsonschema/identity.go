@@ -10,10 +10,11 @@ import (
 )
 
 // equals compares ordered arrays, object key sets and exact numeric identities.
-// jsonType preserves the existing examined-value admission boundary.
+// Classification preserves the existing examined-value admission boundary.
 func equals(v1, v2 any) bool {
-	v1Type := jsonType(v1)
-	if v1Type != jsonType(v2) {
+	v1Type, num1 := classifyJSON(v1)
+	v2Type, num2 := classifyJSON(v2)
+	if v1Type != v2Type {
 		return false
 	}
 	switch v1Type {
@@ -41,8 +42,6 @@ func equals(v1, v2 any) bool {
 		}
 		return true
 	case "number":
-		num1, _ := numberValue(v1) // jsonType already checked numeric validity
-		num2, _ := numberValue(v2)
 		return num1.Equal(num2)
 	default:
 		return v1 == v2
@@ -53,7 +52,8 @@ func equals(v1, v2 any) bool {
 // establish equality. All numbers use the one admitted converter and compact
 // canonical encoding, including signs and normalized zero/exponent spellings.
 func hash(v any, h *maphash.Hash) {
-	switch jsonType(v) {
+	vType, num := classifyJSON(v)
+	switch vType {
 	case "null":
 		h.WriteByte(0)
 	case "boolean":
@@ -65,7 +65,6 @@ func hash(v any, h *maphash.Hash) {
 		}
 	case "number":
 		h.WriteByte(2)
-		num, _ := numberValue(v) // jsonType already checked numeric validity
 		hashString(num.String(), h)
 	case "string":
 		h.WriteByte(3)

@@ -48,6 +48,26 @@ func identityError(t *testing.T, err error, instance string, keywords ...string)
 }
 
 func TestNumericTreeIdentity(t *testing.T) {
+	t.Run("operand-examination", func(t *testing.T) {
+		for _, tc := range []struct {
+			a, b any
+			want InvalidJSONTypeError
+		}{
+			{"different type", json.Number("01"), InvalidJSONTypeError("json.Number")},
+			{json.Number("01"), "different type", InvalidJSONTypeError("json.Number")},
+			{int16(1), json.Number("01"), InvalidJSONTypeError("int16")},
+		} {
+			func() {
+				defer func() {
+					got, ok := recover().(InvalidJSONTypeError)
+					if !ok || got != tc.want {
+						t.Errorf("operands %T/%T: got %T(%v), want invalid Go type %v", tc.a, tc.b, got, got, tc.want)
+					}
+				}()
+				equals(tc.a, tc.b)
+			}()
+		}
+	})
 	for _, operation := range []string{"equals", "hash", "const", "enum"} {
 		t.Run("extreme-"+operation, func(t *testing.T) {
 			numerictest.Run(t, operation, func(t *testing.T) {
