@@ -1176,11 +1176,13 @@ func TestWorktreePrune_OrphanArmSparesLaneWhileRetainedChildNotifies(t *testing.
 	// idle. The drive keeps retrying the wake-edge because the owed attention
 	// arms asynchronously: the drive turn a launch reports runs empty until
 	// it does, and exiting on the first launch would strand the wedge turn on
-	// the owner's slow quiet-watch retry — the #5556 flake, where a miss raced
-	// the arm and the 12s window expired before the tree's own machinery
-	// launched the attention run.
+	// the owner's slow quiet-watch retry. The drive loop and the tripwire
+	// below share one deadline: a loop budget shorter than the tripwire
+	// strands an arm that lands in the gap — nothing drives the turn again
+	// until the owner's quiet-watch, past the tripwire.
+	turnStartDeadline := time.Now().Add(30 * time.Second)
 	go func() {
-		for deadline := time.Now().Add(10 * time.Second); time.Now().Before(deadline); {
+		for time.Now().Before(turnStartDeadline) {
 			lane.delegateSess.driveChildIfNotStopGated(lane.sharedSub)
 			time.Sleep(200 * time.Millisecond)
 			select {
@@ -1192,9 +1194,43 @@ func TestWorktreePrune_OrphanArmSparesLaneWhileRetainedChildNotifies(t *testing.
 	}()
 	select {
 	case <-entered:
-	// TRIPWIRE: the armed attention turns over within seconds of the send settling; 30s only fires on a genuine hang. The deadline covers a shard loaded with the rest of this package's parallel tests, where spawn and the retry cadence stretch.
-	case <-time.After(30 * time.Second):
-		t.Fatal("the retained child's turn never started")
+	// TRIPWIRE: the armed attention turns over within seconds of the send settling; the shared deadline only fires on a genuine hang. It covers a shard loaded with the rest of this package's parallel tests, where spawn and the arm both stretch.
+	case <-time.After(time.Until(turnStartDeadline)):
+		// Reproduce the drive's own preconditions, in its order, so the
+		// failure names the one that declined: the drive's boolean cannot.
+		// All of them green names the other failure mode — the wake-edge
+		// keeps launching empty turns because the owed attention never
+		// armed.
+		shared := lane.sharedSub
+		shared.mu.Lock()
+		closed, running, driving, attentionRefused := shared.closed, shared.running, shared.driving, shared.attentionDriveRefused
+		shared.mu.Unlock()
+		_, locked, reason := r.laneLocked(t, lane.lanePath)
+		mutRelease, mutErr := lane.delegateSess.beginRetirementMutation("delegate_drive")
+		if mutErr == nil {
+			mutRelease()
+		}
+		revalErr := lane.delegateSess.revalidateLaneForLaunch(lane.sharedDelegateID)
+		driveSlot, driveSlotOK := lane.delegateSess.reserveDriveSlot()
+		if driveSlotOK {
+			driveSlot.release()
+		}
+		lane.delegateSess.mu.Lock()
+		driverClosing := lane.delegateSess.closingOrClosedLocked()
+		lane.delegateSess.mu.Unlock()
+		// The attention drive's own gate and its pending rows: the
+		// notification-drive preconditions above say nothing about them, and
+		// all of them green leaves exactly two failure modes — the owed
+		// attention never armed, or a gate held the launch. Name which.
+		pending, pendErr := lane.sharedSub.sess.pendingDelegateAttentionIDs()
+		stopGated := lane.delegateSess.childStopGated(lane.sharedSub.sess.id)
+		fatalGated := lane.delegateSess.childFatalRunGated(lane.sharedSub.sess.id)
+		drainAbandoned := lane.delegateSess.childDrainAbandoned(lane.sharedSub.sess.id)
+		drainGrace := lane.delegateSess.childDrainGracePending(lane.sharedSub.sess.id)
+		committedStart := lane.delegateSess.childCommittedSendStart(lane.sharedSub.sess.id)
+		t.Fatalf("the retained child's turn never started (lane locked=%v reason=%q, sub closed=%v running=%v driving=%v attentionDriveRefused=%v; retirement mutation=%v, lane validation=%v, drive slot=%v, driver closing=%v; pending attention=%d (%v), gates: stop=%v fatal=%v drainAbandoned=%v drainGrace=%v committedSendStart=%v)",
+			locked, reason, closed, running, driving, attentionRefused, mutErr, revalErr, driveSlotOK, driverClosing,
+			len(pending), pendErr, stopGated, fatalGated, drainAbandoned, drainGrace, committedStart)
 	}
 
 	// The injected report below must be publication-eligible. The wedged turn
