@@ -23,7 +23,6 @@ import { useIsMobile } from "../../shell/useIsMobile";
 import { carryComposerSeatForPlacement, workspaceStore } from "../../shell/workspace";
 import { useNavigationStore } from "../../stores/navigation/store";
 import { threadsStore, useThreadsStore } from "../../stores/threads";
-import { useTranscriptDisplayStore } from "../../stores/transcriptDisplay";
 import { Button, EmptyState, InlineNotice, Loader, PaneScaffold } from "../../widgets";
 import { ConversationBody, type ConversationSeat } from "./ConversationBody";
 import { RepoLocation } from "./composer/RepoLocation";
@@ -68,7 +67,6 @@ function SessionForceStopRecovery({ sessionRef }: { sessionRef: string }) {
 export default function Session({ params, paneId, focused: paneFocused }: PaneProps<SessionPaneParams>) {
   const { ref } = params;
   const isMobile = useIsMobile();
-  const presentation = useTranscriptDisplayStore((state) => state.presentation[state.viewport]);
   const pane = useStore(workspaceStore, (state) =>
     state.panes.find((record) => record.id === paneId && record.type === "session" && refParam(record.params) === ref),
   );
@@ -213,10 +211,9 @@ export default function Session({ params, paneId, focused: paneFocused }: PanePr
           <PaneScaffold
             paneId={paneId}
             focused={paneFocused}
-            focusSelector='[data-composer] [role="textbox"], [data-comic-composer] [role="textbox"]'
+            focusSelector='[data-composer] [role="textbox"]'
             scaffoldMarker={`session:${ref}`}
             title={title}
-            bodyScroll={presentation !== "comic"}
             cadence={cadence}
             footer={footer}
             edgeFooter={edgeFooter}

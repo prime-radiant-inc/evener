@@ -1057,17 +1057,6 @@ The full-stack skill guard is a different KIND of check:
   the gate (`evener-dev dev web-browser-guards`, cmd/evener-dev/webbrowser.go)
   still builds one when the dist is missing rather than skipping.
 
-- **`web-comicguard`** runs
-  `go test -tags browserguard ./cmd/evener-hub -run '^TestComicChatBrowser$' -count=1`.
-  Its registered build dependency prevents launch after a failed frontend build;
-  interruption waits for the Go fixture's daemon/browser cleanup. The real hub,
-  daemon transcripts and Chrome drive the alternate Comic reader and shared root
-  interactions. Only the external provider is scripted. Default runs inspect actual
-  glyphs from the bundled historical Comic Sans font, including synthesized bold.
-  `EVENER_COMIC_BLOCK_FONTS=1` exercises failed-font fallback and usable controls.
-  See the [driver guide](../../cmd/evener-hub/frontend/scripts/comicguard/README.md)
-  for commands, retained evidence and the limits of viewport emulation.
-
 These guards are owned by `make test-web-browser`, which is required by the CI web
 job and remains separate from `make lint` and `make test` because it needs Chrome.
 

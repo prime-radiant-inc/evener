@@ -136,8 +136,7 @@ unknown while preserving proven inheritance. Wrong-typed and unknown JSON
 fields retain the transcript decoder's existing strict outcomes. The transcript
 format marker is unchanged: older strict readers can reject records containing
 the new field, so downgrading a writer is not a promise of readable new history.
-This shared metadata does not change human-interaction permissions or complete
-the Comic client’s consumer and browser acceptance work.
+This shared metadata does not change human-interaction permissions.
 
 ## Summary failure diagnostics
 

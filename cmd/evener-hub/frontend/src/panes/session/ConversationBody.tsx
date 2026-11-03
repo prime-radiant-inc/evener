@@ -1,7 +1,6 @@
 import { configFingerprint, formatQuoteBlock, projectThread, resolveEffectiveConfig } from "@evener/appwire-client";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useStore } from "zustand";
-import { ComicConversationBody } from "../../comic/ComicConversationBody";
 import { focusedSessionRef } from "../../shell/focusedSession";
 import { navigate, paneToURL, refParam } from "../../shell/routing";
 import { cadenceStateFor } from "../../shell/sessionStatus";
@@ -150,29 +149,14 @@ export function ConversationBody({
     hasOtherReaders: (sourceRef) => otherRetainedViewOf(sourceRef, seat.viewFallbackId),
   });
 
-  const presentation = useTranscriptDisplayStore((state) => state.presentation[state.viewport]);
   const renderParts = (parts: ConversationParts) =>
     render({
       ...parts,
-      footer:
-        parts.state !== "live" && seat.sessionMenu ? (
-          <UnavailablePresentationControl />
-        ) : presentation === "comic" && parts.state === "live" ? (
-          <>
-            <ConversationRecoveryNotices sessionRef={ref} />
-            {parts.footer}
-          </>
-        ) : (
-          parts.footer
-        ),
+      footer: parts.state !== "live" && seat.sessionMenu ? <UnavailablePresentationControl /> : parts.footer,
     });
   return (
     <SandboxEscalationOwner key={ref} sessionRef={ref}>
-      {presentation === "comic" ? (
-        <ComicConversationBody ref={ref} seat={seat} render={renderParts} />
-      ) : (
-        <StandardConversationBody ref={ref} seat={seat} render={renderParts} />
-      )}
+      <StandardConversationBody ref={ref} seat={seat} render={renderParts} />
     </SandboxEscalationOwner>
   );
 }

@@ -1,32 +1,9 @@
 import type { ViewportClass } from "@evener/appwire-client";
-import type { ConversationPresentation } from "../transcriptDisplay";
 
 export const LOCAL_KEYS: Record<ViewportClass, string> = {
   desktop: "evener.prefs.transcriptDisplay.desktop",
   mobile: "evener.prefs.transcriptDisplay.mobile",
 };
-
-export const PRESENTATION_KEYS: Record<ViewportClass, string> = {
-  desktop: "evener.prefs.conversationPresentation.desktop",
-  mobile: "evener.prefs.conversationPresentation.mobile",
-};
-
-export function isConversationPresentation(value: unknown): value is ConversationPresentation {
-  return value === "standard" || value === "comic";
-}
-
-export function readPresentation(layout: ViewportClass): ConversationPresentation {
-  try {
-    const raw = localStorage.getItem(PRESENTATION_KEYS[layout]);
-    return isConversationPresentation(raw) ? raw : "standard";
-  } catch {
-    return "standard";
-  }
-}
-
-export function writePresentation(layout: ViewportClass, value: ConversationPresentation): boolean {
-  return writeVerified(PRESENTATION_KEYS[layout], value);
-}
 
 export type StorageWarningSetter = (message: string | null) => void;
 
