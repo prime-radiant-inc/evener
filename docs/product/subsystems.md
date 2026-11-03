@@ -222,7 +222,10 @@ caller's ref and instance and retains only the same target instance and
 generation; replacement or runtime restart ends the watch durably with
 re-registration guidance. Authenticated Manager input and sandbox approval use
 the target's ordinary human owners and retain the caller's actor identity.
-Manager worker creation remains local-only. See
+Manager worker creation reaches any host the Manager's hub can reach: the
+create block's optional `host` is forwarded as the start source, the hub's own
+roster resolves or refuses it, and the receiving hub spawns locally under its
+own validation. See
 [automation](../automation.md#manager-sessions), [job control](../job-control.md#manager-observation-evidence),
 and [remote operations](../evener-hub-remote-operations.md#remote-manager-and-input-support).
 

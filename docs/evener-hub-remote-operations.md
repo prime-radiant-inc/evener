@@ -122,10 +122,12 @@ do not inherit it. See [Manager sessions](automation.md#manager-sessions).
 
 The shared remote source carries text Send, Queue and Steer, plus skill and command input **only when the target advertises those capabilities**. Human and Manager input use the same remote mutation receipts and target validation. Unsupported input modes stay unavailable; unrelated remote mutations are not advertised. Reads, status and sandbox approval use their existing routes.
 
-Manager worker creation remains local to the Manager's own hub. Remote creation
-through the Manager's `delegate` branch is deferred; start a worker through the
-remote host's own client, then use its source-qualified ref. Discovery of an empty
-remote host and its model catalog does not create a worker there.
+Manager worker creation reaches any host the Manager's hub can reach through the
+`delegate` branch's optional `hub.host`: the hub's roster is the authority, an
+unknown or unreachable host is refused there, and the receiving hub spawns
+locally under its own cwd/model validation. An absent host keeps the historical
+local default. Discovery of an empty remote host and its model catalog still
+does not create a worker there on its own.
 
 The real two-hub localhost SSH
 [remote approval test](../cmd/evener-hub/manager_readiness_approval_test.go)
