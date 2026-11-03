@@ -1,5 +1,5 @@
 // Modified by Evener: constant printf format for Go 1.27 vet compatibility,
-// compact exact numeric constraints and predicates, shared exact uniqueness.
+// compact exact numeric and cardinality constraints, shared exact uniqueness.
 // See UPSTREAM.md for the pinned Apache-2.0 source.
 package jsonschema
 
@@ -49,9 +49,9 @@ type Schema struct {
 	Else             *Schema // nil, when If is nil.
 
 	// object validations
-	MinProperties         int      // -1 if not specified.
-	MaxProperties         int      // -1 if not specified.
-	Required              []string // list of required properties.
+	MinProperties         *decimal.Number // nil if not specified.
+	MaxProperties         *decimal.Number // nil if not specified.
+	Required              []string        // list of required properties.
 	Properties            map[string]*Schema
 	PropertyNames         *Schema
 	RegexProperties       bool // property names must be valid regex. used only in draft4 as workaround in metaschema.
@@ -63,22 +63,22 @@ type Schema struct {
 	UnevaluatedProperties *Schema
 
 	// array validations
-	MinItems         int // -1 if not specified.
-	MaxItems         int // -1 if not specified.
+	MinItems         *decimal.Number // nil if not specified.
+	MaxItems         *decimal.Number // nil if not specified.
 	UniqueItems      bool
 	Items            interface{} // nil or *Schema or []*Schema
 	AdditionalItems  interface{} // nil or bool or *Schema.
 	PrefixItems      []*Schema
 	Items2020        *Schema // items keyword reintroduced in draft 2020-12
 	Contains         *Schema
-	ContainsEval     bool // whether any item in an array that passes validation of the contains schema is considered "evaluated"
-	MinContains      int  // 1 if not specified
-	MaxContains      int  // -1 if not specified
+	ContainsEval     bool            // whether any item in an array that passes validation of the contains schema is considered "evaluated"
+	MinContains      *decimal.Number // nil if not specified, effective minimum is 1.
+	MaxContains      *decimal.Number // nil if not specified.
 	UnevaluatedItems *Schema
 
 	// string validations
-	MinLength        int // -1 if not specified.
-	MaxLength        int // -1 if not specified.
+	MinLength        *decimal.Number // nil if not specified.
+	MaxLength        *decimal.Number // nil if not specified.
 	Pattern          *regexp.Regexp
 	ContentEncoding  string
 	decoder          func(string) ([]byte, error)
@@ -112,18 +112,9 @@ func (s *Schema) String() string {
 }
 
 func newSchema(url, floc string, draft *Draft, doc interface{}) *Schema {
-	// fill with default values
 	s := &Schema{
-		Location:      url + floc,
-		Draft:         draft,
-		MinProperties: -1,
-		MaxProperties: -1,
-		MinItems:      -1,
-		MaxItems:      -1,
-		MinContains:   1,
-		MaxContains:   -1,
-		MinLength:     -1,
-		MaxLength:     -1,
+		Location: url + floc,
+		Draft:    draft,
 	}
 
 	if doc, ok := doc.(map[string]interface{}); ok {
@@ -316,11 +307,11 @@ func (s *Schema) validate(scope []schemaRef, vscope int, spath string, v interfa
 
 	switch v := v.(type) {
 	case map[string]interface{}:
-		if s.MinProperties != -1 && len(v) < s.MinProperties {
-			errors = append(errors, validationError("minProperties", "minimum %d properties allowed, but found %d properties", s.MinProperties, len(v)))
+		if s.MinProperties != nil && compareCount(len(v), *s.MinProperties) < 0 {
+			errors = append(errors, validationError("minProperties", "minimum %s properties allowed, but found %d properties", s.MinProperties.String(), len(v)))
 		}
-		if s.MaxProperties != -1 && len(v) > s.MaxProperties {
-			errors = append(errors, validationError("maxProperties", "maximum %d properties allowed, but found %d properties", s.MaxProperties, len(v)))
+		if s.MaxProperties != nil && compareCount(len(v), *s.MaxProperties) > 0 {
+			errors = append(errors, validationError("maxProperties", "maximum %s properties allowed, but found %d properties", s.MaxProperties.String(), len(v)))
 		}
 		if len(s.Required) > 0 {
 			var missing []string
@@ -419,11 +410,11 @@ func (s *Schema) validate(scope []schemaRef, vscope int, spath string, v interfa
 		}
 
 	case []interface{}:
-		if s.MinItems != -1 && len(v) < s.MinItems {
-			errors = append(errors, validationError("minItems", "minimum %d items required, but found %d items", s.MinItems, len(v)))
+		if s.MinItems != nil && compareCount(len(v), *s.MinItems) < 0 {
+			errors = append(errors, validationError("minItems", "minimum %s items required, but found %d items", s.MinItems.String(), len(v)))
 		}
-		if s.MaxItems != -1 && len(v) > s.MaxItems {
-			errors = append(errors, validationError("maxItems", "maximum %d items required, but found %d items", s.MaxItems, len(v)))
+		if s.MaxItems != nil && compareCount(len(v), *s.MaxItems) > 0 {
+			errors = append(errors, validationError("maxItems", "maximum %s items required, but found %d items", s.MaxItems.String(), len(v)))
 		}
 		if s.UniqueItems {
 			var h maphash.Hash
@@ -489,7 +480,7 @@ func (s *Schema) validate(scope []schemaRef, vscope int, spath string, v interfa
 		}
 
 		// contains + minContains + maxContains
-		if s.Contains != nil && (s.MinContains != -1 || s.MaxContains != -1) {
+		if s.Contains != nil {
 			matched := 0
 			var causes []error
 			for i, item := range v {
@@ -502,23 +493,28 @@ func (s *Schema) validate(scope []schemaRef, vscope int, spath string, v interfa
 					}
 				}
 			}
-			if s.MinContains != -1 && matched < s.MinContains {
-				errors = append(errors, validationError("minContains", "valid must be >= %d, but got %d", s.MinContains, matched).add(causes...))
+			// An absent minimum requires one match, including before draft2019.
+			if (s.MinContains == nil && matched == 0) || (s.MinContains != nil && compareCount(matched, *s.MinContains) < 0) {
+				minimum := "1"
+				if s.MinContains != nil {
+					minimum = s.MinContains.String()
+				}
+				errors = append(errors, validationError("minContains", "valid must be >= %s, but got %d", minimum, matched).add(causes...))
 			}
-			if s.MaxContains != -1 && matched > s.MaxContains {
-				errors = append(errors, validationError("maxContains", "valid must be <= %d, but got %d", s.MaxContains, matched))
+			if s.MaxContains != nil && compareCount(matched, *s.MaxContains) > 0 {
+				errors = append(errors, validationError("maxContains", "valid must be <= %s, but got %d", s.MaxContains.String(), matched))
 			}
 		}
 
 	case string:
 		// minLength + maxLength
-		if s.MinLength != -1 || s.MaxLength != -1 {
+		if s.MinLength != nil || s.MaxLength != nil {
 			length := utf8.RuneCount([]byte(v))
-			if s.MinLength != -1 && length < s.MinLength {
-				errors = append(errors, validationError("minLength", "length must be >= %d, but got %d", s.MinLength, length))
+			if s.MinLength != nil && compareCount(length, *s.MinLength) < 0 {
+				errors = append(errors, validationError("minLength", "length must be >= %s, but got %d", s.MinLength.String(), length))
 			}
-			if s.MaxLength != -1 && length > s.MaxLength {
-				errors = append(errors, validationError("maxLength", "length must be <= %d, but got %d", s.MaxLength, length))
+			if s.MaxLength != nil && compareCount(length, *s.MaxLength) > 0 {
+				errors = append(errors, validationError("maxLength", "length must be <= %s, but got %d", s.MaxLength.String(), length))
 			}
 		}
 

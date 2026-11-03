@@ -81,6 +81,12 @@ Modified inherited files carry notices identifying Evener's changes:
   existing kind switch and `fmt.Sprint` interpretation.
   Equality and hashing move to `identity.go`; `uniqueItems` calls its shared
   duplicate helper with a call-local hasher and retains the same error order.
+  All eight public cardinality fields use optional immutable compact decimals,
+  compared against native actual counts without narrowing schema thresholds.
+  Absent contains minima remain nil publicly and require one match in validation;
+  explicit zero, draft/vocabulary activation, Unicode code-point lengths and
+  contains evaluation accounting are retained. Cardinality diagnostics use
+  compact canonical threshold encoding.
 - `identity.go`: derived equality, hashing and duplicate traversal from
   `schema.go`. Numeric identity uses the same admitted converter and immutable
   decimal kernel, without rational conversion. Hashes frame type tags, string
@@ -93,6 +99,9 @@ Modified inherited files carry notices identifying Evener's changes:
 - `compiler.go`: compile all five numeric bounds through the compact decimal
   loader, including built-in metaschema bootstrap. Preserve draft-specific
   exclusive-bound dispatch and reject nonpositive divisors.
+  The same loader compiles all eight cardinalities, replacing Float64/native-int
+  conversion and sentinel defaults while retaining metaschema validation and
+  vocabulary/draft branches.
 - `httploader/httploader.go`: local jsonschema import and usage path, notice.
   The loader's actual HTTP behavior is unchanged.
 - `schema_test.go`: local imports, per-compiler `LoadURL` routing of the
@@ -122,6 +131,10 @@ independent oracle tests. Shared test-only resource containment lives in
 `identity_test.go` adds exact nested const/enum/uniqueItems regressions, framed
 hash tests, contained unsafe witnesses and injected-collision/call-count tests
 of the production duplicate helper, without global mutable test hooks.
+`numeric.go` also owns `compareCount`, which parses only the actual native count's
+decimal spelling before compact comparison. `cardinality_test.go` exercises exact
+thresholds, invalid schemas, optional fields, defaults, zero, Unicode lengths,
+vocabulary selection, schema reuse, contains evaluation and structured errors.
 
 The llm callers in `generate.go`, `generate_object.go` and
 `generate_edges_fuzz_test.go` change only their jsonschema import. The llm
@@ -138,11 +151,12 @@ Tests never fetch fixtures by default. The optional HTTP loader remains opt-in
 for applications; the inherited test suite imports and exercises it locally.
 
 This checkpoint bounds parsing, compilation, direct numeric predicates and
-numeric equality/hash in encoded mantissa/exponent size. It does **not**
-establish wholly bounded validation: cardinality fields still use native
-integers. Their migration is a later task, not a compatibility fallback in the
-new decimal API. Hash collisions can still require pairwise exact comparisons.
-No decoder or Go-kind switch is widened.
+numeric equality/hash in encoded mantissa/exponent size. Cardinality thresholds
+are exact compact decimals too; only actual container/string/match counts use
+native integers. This does **not** establish the whole backend/llm delivery
+claim: consumer, resource and distribution evidence remains a separate task.
+Hash collisions can still require pairwise exact comparisons. No decoder or
+Go-kind switch is widened.
 The validator and decimal kernel remain leaf packages inside the existing llm
 module, with no nested module and no imports of parent llm, agent or application
 packages.

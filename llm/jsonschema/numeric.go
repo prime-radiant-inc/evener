@@ -3,6 +3,7 @@ package jsonschema
 import (
 	"encoding/json"
 	"fmt"
+	"strconv"
 
 	"primeradiant.com/evener/llm/jsonschema/decimal"
 )
@@ -26,4 +27,11 @@ func loadNumber(v any) (*decimal.Number, error) {
 		return nil, fmt.Errorf("jsonschema: invalid numeric bound %v", v)
 	}
 	return &n, nil
+}
+
+// compareCount encodes only the actual native count, never the schema threshold.
+func compareCount(actual int, threshold decimal.Number) int {
+	// Itoa always produces valid JSON-number syntax, so parsing cannot fail.
+	n, _ := decimal.Parse(strconv.Itoa(actual))
+	return n.Cmp(threshold)
 }

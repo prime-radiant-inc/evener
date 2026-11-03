@@ -1,8 +1,8 @@
-// Modified by Evener: compact exact numeric bound compilation, see UPSTREAM.md.
+// Modified by Evener: compact exact numeric and cardinality compilation,
+// see UPSTREAM.md.
 package jsonschema
 
 import (
-	"encoding/json"
 	"fmt"
 	"io"
 	"regexp"
@@ -374,14 +374,6 @@ func (c *Compiler) compileMap(r *resource, stack []schemaRef, sref schemaRef, re
 		}
 	}
 
-	loadInt := func(pname string) int {
-		if num, ok := m[pname]; ok {
-			i, _ := num.(json.Number).Float64()
-			return int(i)
-		}
-		return -1
-	}
-
 	loadBound := func(pname string) (*decimal.Number, error) {
 		if num, ok := m[pname]; ok {
 			return loadNumber(num)
@@ -460,28 +452,45 @@ func (c *Compiler) compileMap(r *resource, stack []schemaRef, sref schemaRef, re
 			return fmt.Errorf("jsonschema: multipleOf must be positive")
 		}
 
-		s.MinProperties, s.MaxProperties = loadInt("minProperties"), loadInt("maxProperties")
+		if s.MinProperties, err = loadBound("minProperties"); err != nil {
+			return err
+		}
+		if s.MaxProperties, err = loadBound("maxProperties"); err != nil {
+			return err
+		}
 
 		if req, ok := m["required"]; ok {
 			s.Required = toStrings(req.([]interface{}))
 		}
 
-		s.MinItems, s.MaxItems = loadInt("minItems"), loadInt("maxItems")
+		if s.MinItems, err = loadBound("minItems"); err != nil {
+			return err
+		}
+		if s.MaxItems, err = loadBound("maxItems"); err != nil {
+			return err
+		}
 
 		if unique, ok := m["uniqueItems"]; ok {
 			s.UniqueItems = unique.(bool)
 		}
 
-		s.MinLength, s.MaxLength = loadInt("minLength"), loadInt("maxLength")
+		if s.MinLength, err = loadBound("minLength"); err != nil {
+			return err
+		}
+		if s.MaxLength, err = loadBound("maxLength"); err != nil {
+			return err
+		}
 
 		if pattern, ok := m["pattern"]; ok {
 			s.Pattern = regexp.MustCompile(pattern.(string))
 		}
 
 		if r.draft.version >= 2019 {
-			s.MinContains, s.MaxContains = loadInt("minContains"), loadInt("maxContains")
-			if s.MinContains == -1 {
-				s.MinContains = 1
+			if s.MinContains, err = loadBound("minContains"); err != nil {
+				return err
+			}
+			if s.MaxContains, err = loadBound("maxContains"); err != nil {
+				return err
 			}
 
 			if deps, ok := m["dependentRequired"]; ok {
