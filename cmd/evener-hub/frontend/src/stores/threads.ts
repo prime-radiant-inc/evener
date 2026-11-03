@@ -3387,8 +3387,18 @@ async function runResumeFencedForSend(
             // the token the press now names, or a later foldable read parks
             // this fresh message as outrun.
             if (drainBoundStart !== undefined) {
+              // From the earliest surviving press's own row, not this pass's
+              // post-enqueue counter: every press that waited out the drain
+              // authorizes the work it issued, and older rows keep their token.
+              const joinBounds = await Promise.all(
+                (pressJoinedResumes.get(ref)?.joined ?? []).map((join) => join.intentBound),
+              );
+              const pressBounds = [attemptCancelBound, ...joinBounds].filter(
+                (bound): bound is number => bound !== undefined,
+              );
+              const fromSequence = pressBounds.length > 0 ? Math.min(...pressBounds) : drainBoundStart;
               void mutationRuntime?.storage
-                .authorizeParkedRows(ref, undefined, reconciledToken, drainBoundStart)
+                .authorizeParkedRows(ref, undefined, reconciledToken, fromSequence)
                 .catch(() => undefined);
             }
           }
