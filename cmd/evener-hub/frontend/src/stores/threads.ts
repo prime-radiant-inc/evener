@@ -2165,8 +2165,10 @@ function parkOutranRow(
       // Only an attempt THIS pass wrote is provably unsent; the count-aware
       // rollback keeps an earlier or concurrent attempt's evidence, so an
       // applied-but-unacked send still reports itself.
+      // This pass's own evidence is rolled back; any earlier or concurrent
+      // attempt keeps its count and its row is not treated as unattempted.
       if (marked) await runtime.storage.unmarkAttempted(clientMutationId).catch(() => false);
-      await cancelSupersededMutations(targetRef, record.intentSequence, !marked);
+      await cancelSupersededMutations(targetRef, record.intentSequence, false);
     })().finally(() => parkedRowCancels.delete(clientMutationId));
   }
 }
@@ -3382,9 +3384,11 @@ async function runResumeFencedForSend(
             // their stored token is the pre-drain one: re-authorize them under
             // the token the press now names, or a later foldable read parks
             // this fresh message as outrun.
-            void mutationRuntime?.storage
-              .authorizeParkedRows(ref, attemptCancelBound, reconciledToken, (drainBoundStart ?? 0) + 1)
-              .catch(() => undefined);
+            if (drainBoundStart !== undefined) {
+              void mutationRuntime?.storage
+                .authorizeParkedRows(ref, attemptCancelBound, reconciledToken, drainBoundStart)
+                .catch(() => undefined);
+            }
           }
         } catch {
           // An unreadable reconcile leaves the seeded token in place.

@@ -920,22 +920,30 @@ type ForceStopFence struct {
 func (f *ForceStopFence) Finish(stopped bool) {
 	r := f.owner
 	r.mu.Lock()
-	defer r.mu.Unlock()
 	if f.finished {
+		r.mu.Unlock()
 		return
 	}
 	f.finished = true
 	r.fences = slices.DeleteFunc(r.fences, func(held *ForceStopFence) bool { return held == f })
 	r.sequence++
+	advanced := false
 	for _, id := range f.aliases {
 		state := r.recovery[id]
 		state.Stopping--
 		if !f.rejected {
 			state.Epoch++
 			state.LastRecoverySequence = r.sequence
+			advanced = true
 		}
 		state.ResumeRequired = state.ResumeRequired || stopped
 		r.recovery[id] = state
+	}
+	r.mu.Unlock()
+	// The advance must outlive this process: a Stop before a hub restart has to
+	// still supersede the tokens minted before it.
+	if advanced {
+		r.persistEpochs()
 	}
 }
 

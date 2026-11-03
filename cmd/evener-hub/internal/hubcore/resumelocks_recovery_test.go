@@ -366,6 +366,34 @@ func TestRecoveryEpochSurvivesRestart(t *testing.T) {
 	}
 }
 
+// A force-stop's epoch advance must persist too: the finish is the Stop's own
+// publication, and a restart before it lands would mint from the old value.
+func TestForceStopEpochSurvivesRestart(t *testing.T) {
+	root := t.TempDir()
+	locks, err := NewPersistentResumeLocks(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const session = "session-force-stop-epoch"
+	finish := locks.BeginForceStop([]string{session})
+	if err := locks.PersistForceStop([]string{session}, session); err != nil {
+		t.Fatal(err)
+	}
+	if err := locks.ConfirmForceStop(session); err != nil {
+		t.Fatal(err)
+	}
+	finish.Finish(true)
+	committed := tokenEpochPart(locks.RecoveryToken(session))
+
+	restored, err := NewPersistentResumeLocks(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := tokenEpochPart(restored.RecoveryToken(session)); got != committed {
+		t.Fatalf("restored force-stop epoch = %q, want the committed %q", got, committed)
+	}
+}
+
 // tokenEpochPart is the numeric suffix of a recovery token.
 func tokenEpochPart(token string) string {
 	separator := strings.LastIndex(token, ":")
