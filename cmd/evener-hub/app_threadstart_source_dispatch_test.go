@@ -2,7 +2,7 @@ package hub
 
 import (
 	"context"
-	"strings"
+	"errors"
 	"testing"
 
 	"primeradiant.com/evener/appwire"
@@ -50,7 +50,7 @@ func TestHubThreadStartDispatchesANamedSourceCreate(t *testing.T) {
 	_, err = hubThreadStart(context.Background(), hubcore.WebConfig{}, sources, appwire.ThreadStartParams{
 		Harness: "evener", CWD: "/local/work", Model: "openai/gpt-5.2",
 	})
-	if err == nil || !strings.Contains(err.Error(), "spawner") {
+	if !errors.Is(err, errSpawnerNotConfigured) {
 		t.Fatalf("local default reached the remote source: err=%v calls=%d", err, len(source.started))
 	}
 }
