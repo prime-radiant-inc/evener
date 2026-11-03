@@ -427,6 +427,15 @@ func (s *RemoteHubSource) fromRemoteThread(thread appwire.Thread, forwarded appw
 	for index := range thread.Evener.PendingEscalations {
 		thread.Evener.PendingEscalations[index].Ref = s.fromRemoteNestedRef(thread.Evener.PendingEscalations[index].Ref)
 	}
+	// A queued or pending steering input carries its author on the mutation
+	// entry. Left untranslated, a remote-local Manager author would read as
+	// this controller's own namespace — wrong session on an id collision,
+	// source-not-found otherwise — while the transcript actors beside it are
+	// host-qualified.
+	for index := range thread.Evener.PendingMutations {
+		mutation := &thread.Evener.PendingMutations[index]
+		mutation.Actor = s.projectManagerActor(mutation.Actor)
+	}
 	s.fromRemoteDiagnostics(thread.Evener.Diagnostics)
 	for i := range thread.Turns {
 		s.translateTurnActors(&thread.Turns[i])
@@ -461,10 +470,21 @@ func (s *RemoteHubSource) fromRemoteNestedRef(raw string) string {
 
 func (s *RemoteHubSource) translateItemActor(item *appwire.ThreadItem) {
 	if item.Actor != nil && item.Actor.Kind == "manager" {
-		actor := *item.Actor
-		actor.ManagerRef = s.fromRemoteNestedRef(actor.ManagerRef)
+		actor := s.projectManagerActor(*item.Actor)
 		item.Actor = &actor
 	}
+}
+
+// projectManagerActor moves a manager author's ref into the controller
+// namespace; every other actor is returned unchanged, and a ref already
+// qualified by another hub passes through fromRemoteNestedRef byte-for-byte.
+func (s *RemoteHubSource) projectManagerActor(actor appwire.SessionActor) appwire.SessionActor {
+	if actor.Kind != "manager" {
+		return actor
+	}
+	projected := actor
+	projected.ManagerRef = s.fromRemoteNestedRef(actor.ManagerRef)
+	return projected
 }
 
 func (s *RemoteHubSource) translateTurnActors(turn *appwire.Turn) {
@@ -566,6 +586,12 @@ func (s *RemoteHubSource) translateThreadRaw(raw json.RawMessage, forwarded appw
 		}
 		if rawEscalations, ok := evenerFields[pendingEscalationsField]; ok && len(rawEscalations) > 0 {
 			evenerFields[pendingEscalationsField] = s.translatePendingEscalationsRaw(rawEscalations)
+		}
+		// Pending steering input entries carry the same "actor" object as a
+		// transcript item, so the per-entry rewriter that projects item actors
+		// applies unchanged: only actor.managerRef moves, unknown fields stay.
+		if rawMutations, ok := evenerFields["pendingMutations"]; ok && len(rawMutations) > 0 {
+			evenerFields["pendingMutations"] = s.rewriteRawArray(rawMutations, s.translateRawItemActor)
 		}
 		encoded, err := json.Marshal(evenerFields)
 		if err != nil {

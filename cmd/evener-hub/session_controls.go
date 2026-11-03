@@ -50,11 +50,11 @@ func (o *sessionOperations) Control(ctx context.Context, request appwire.Session
 		out.Clear = &result
 		return out, err
 	case "model":
-		return out, setThreadModelWithResume(ctx, o.cfg, o.sources, *request.Model)
+		return out, setThreadModelWithResume(ctx, o.cfg, o.sources, o.relays, *request.Model)
 	case "vision_model":
 		return out, setThreadVisionModelWithResume(ctx, o.cfg, o.sources, *request.VisionModel)
 	case "reasoning_effort":
-		_, err := setReasoningEffortControl(ctx, o.cfg, o.sources, *request.ReasoningEffort)
+		_, err := setReasoningEffortControl(ctx, o.cfg, o.sources, o.relays, *request.ReasoningEffort)
 		return out, err
 	case "compact":
 		return out, compactThreadWithResume(ctx, o.cfg, o.sources, *request.Compact)
@@ -261,20 +261,50 @@ func clearThreadControl(ctx context.Context, cfg hubcore.WebConfig, sources *app
 	return result, err
 }
 
-func setReasoningEffortControl(ctx context.Context, cfg hubcore.WebConfig, sources *appsource.Registry, params appwire.ThreadReasoningEffortSetParams) (appwire.EmptyResponse, error) {
-	return withSessionActionOwnership(ctx, cfg, params.Ref, "", func() (appwire.EmptyResponse, error) {
+// setReasoningEffortControl applies a reasoning-effort change, resuming an
+// exited session first and keeping a relay listening so the daemon's change
+// frame reaches subscribed clients. No capability gate: there is no
+// reasoning-effort thread capability, and the daemon/source already reject the
+// call when it is unsupported (a non-evener source, or a daemon without the
+// effort hook).
+func setReasoningEffortControl(ctx context.Context, cfg hubcore.WebConfig, sources *appsource.Registry, relays *hubRelay, params appwire.ThreadReasoningEffortSetParams) (appwire.EmptyResponse, error) {
+	ensureEffortRelay(ctx, relays, sources, params.Ref)
+	once := func() (struct{}, error) {
 		if err := refreshDaemonRestartRequiredError(ctx, cfg, params.Ref, "", ""); err != nil {
-			return appwire.EmptyResponse{}, err
+			return struct{}{}, err
 		}
 		source, err := sourceForThread(sources, params.Ref, "")
 		if err != nil {
-			return appwire.EmptyResponse{}, err
+			return struct{}{}, err
 		}
-		// No capability gate: there is no reasoning-effort thread capability, and
-		// the daemon/source already reject the call when it is unsupported (a
-		// non-evener source, or a daemon without the effort hook).
-		return appwire.EmptyResponse{}, source.SetThreadReasoningEffort(ctx, params)
-	})
+		return struct{}{}, source.SetThreadReasoningEffort(ctx, params)
+	}
+	afterResume := func(resumed appwire.ThreadResumeResponse) error {
+		if relays == nil {
+			return nil
+		}
+		return relays.startRelayForThread(ctx, resumed.Thread)
+	}
+	_, err := withSessionResume(ctx, cfg, sources, params.Ref, "", afterResume, once)
+	return appwire.EmptyResponse{}, err
+}
+
+// ensureEffortRelay attaches the live relay before an effort set against an
+// already-running session. A prior mutation may have resumed the session
+// without attaching one (thread/model/set's resume does not), and the change
+// frame reaches a subscriber only if a relay is listening when the daemon
+// emits it. A cold session's read fails here; afterResume attaches the relay
+// after the resume instead, and both paths are harmless when it already
+// exists.
+func ensureEffortRelay(ctx context.Context, relays *hubRelay, sources *appsource.Registry, ref string) {
+	if relays == nil {
+		return
+	}
+	source, err := sourceForThread(sources, ref, "")
+	if err != nil {
+		return
+	}
+	_, _ = relays.prepareRelay(ctx, source, appwire.ThreadReadParams{Ref: ref, IncludeTurns: false})
 }
 
 func drainQueueControl(ctx context.Context, cfg hubcore.WebConfig, sources *appsource.Registry, params appwire.TurnDrainAsSteerParams) (appwire.TurnDrainAsSteerResponse, error) {

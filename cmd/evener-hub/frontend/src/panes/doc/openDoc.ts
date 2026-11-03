@@ -2,7 +2,6 @@
 // to the source session, retains the exact source pane for Back, and routes the
 // deduplicated document through the real openBeside action.
 import { bindFilePath, type FileReference, isImagePath } from "@evener/appwire-client/docContent";
-import { captureComicDocumentCoverage, comicPaneCoversConversation } from "../../comic/comicPaneCoverage";
 import * as paneActions from "../../shell/paneActions";
 import {
   documentPaneState,
@@ -51,10 +50,9 @@ function paneOwnsSession(pane: OpenPaneRecord, session: string): boolean {
   // An embedded cascade column has no pane of its own: the zoom pane
   // hosting the conversation owns the request when its cascade covers the
   // session.
-  if (pane.type === "sessionZoom")
-    return zoomPaneCoversConversation(pane, session) || comicPaneCoversConversation(pane, session);
+  if (pane.type === "sessionZoom") return zoomPaneCoversConversation(pane, session);
   if (pane.type !== "session" && pane.type !== "transcript") return false;
-  return sourcePaneSessionRef(pane) === session || comicPaneCoversConversation(pane, session);
+  return sourcePaneSessionRef(pane) === session;
 }
 
 function isRequestedDocument(pane: OpenPaneRecord, params: DocParams): boolean {
@@ -101,10 +99,8 @@ export function openDocBeside(request: DocumentOpenRequest): void {
     presented.find((pane) => pane.type === "session" && paneOwnsSession(pane, request.session)) ??
     presented.find((pane) => pane.type === "transcript" && paneOwnsSession(pane, request.session));
   const existingDocument = presented.find((pane) => isRequestedDocument(pane, params));
-  const retainComicCoverage = captureComicDocumentCoverage(origin, request.session);
   if (existingDocument) {
     const previous = documentPaneState(existingDocument);
-    retainComicCoverage(existingDocument);
     // Publish a changed binding before openBeside focuses the reused pane, so
     // consumers never observe the newly focused document with its old source.
     recordDocumentPaneState(existingDocument, {
@@ -123,7 +119,6 @@ export function openDocBeside(request: DocumentOpenRequest): void {
   if (existingDocument) return;
   const document = presentedPanes(workspaceStore.getState().panes).find((pane) => isRequestedDocument(pane, params));
   if (!document) return;
-  retainComicCoverage(document);
   recordDocumentPaneState(document, {
     reference,
     origin,
