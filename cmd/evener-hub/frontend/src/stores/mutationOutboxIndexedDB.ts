@@ -1948,12 +1948,14 @@ export class MutationOutboxIndexedDB implements WebQueuedMessageStorage<Mutation
       // the route cannot mint a second wire for the same composition. Edited
       // content fails the payload compare and keeps the route's method as
       // NEW work under a fresh id, exactly as before.
+      const firstOriginal = consumedOriginals[0];
       const uncertainReplay =
         soleConsumedWireId !== undefined &&
+        firstOriginal !== undefined &&
         replaysOriginalPayload &&
         consumedUncertainWireIds.has(soleConsumedWireId) &&
-        consumedOriginals.every((original) => original.method === consumedOriginals[0].method);
-      const replayMethod = uncertainReplay ? consumedOriginals[0].method : undefined;
+        consumedOriginals.every((original) => original.method === firstOriginal.method);
+      const replayMethod = uncertainReplay && firstOriginal !== undefined ? firstOriginal.method : undefined;
       const resendIntent = replayMethod === undefined ? intent : { ...intent, method: replayMethod };
       const inheritedWireId = uncertainReplay ? soleConsumedWireId : undefined;
       const record: MutationOutboxRecord = {
