@@ -13,7 +13,7 @@ import type {
   ThreadReadResponse,
   ThreadTurnsListResponse,
 } from "@evener/appwire-client";
-import { decodeTranscriptItem } from "@evener/appwire-client";
+import { decodeTranscriptItem, hydrateThread } from "@evener/appwire-client";
 import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
 import { afterEach, expect, test, vi } from "vitest";
 import {
@@ -150,7 +150,12 @@ function historyUpdate(entry: number, version: number, text: string, length: num
   } as AnyNotification;
 }
 
-function repository(cache: SessionEntryCache, lifetime = 1, nowFn: () => number = () => Date.now()) {
+function repository(
+  cache: SessionEntryCache,
+  lifetime = 1,
+  nowFn: () => number = () => Date.now(),
+  seedModel?: ThreadModel,
+) {
   return new TranscriptRepository(cache, {
     ref,
     threadId,
@@ -159,6 +164,18 @@ function repository(cache: SessionEntryCache, lifetime = 1, nowFn: () => number 
     clearEpoch: 0,
     lifetime,
     now: nowFn,
+    ...(seedModel
+      ? {
+          seedModel,
+          seedAuthority: {
+            trustedCurrentSource: true,
+            bootGeneration: seedModel.history!.bootGeneration,
+            epoch: seedModel.history!.epoch,
+            incarnation: seedModel.history!.incarnation ?? "",
+            snapshotLength: seedModel.history!.length,
+          },
+        }
+      : {}),
   });
 }
 
@@ -371,6 +388,19 @@ test("beginFreshBaseline retires the outgoing authority so old certificates cann
     }),
   ).toBe(false);
   expect(await fixture.cache.getCoverage(historyKey, "page:r2:p2")).toBeUndefined();
+});
+
+test("a cursorless seed does not latch exhausted before any source read is accepted", async () => {
+  const fixture = createEntryCacheFixture();
+  fixtures.push(fixture);
+  // The partial-eviction reopen shape: the local cache seed is published before
+  // the network read lands, so the model's missing older cursor is the seed's,
+  // not the source's. The entry cache holds nothing below the seed's oldest
+  // row, so the older-window lookup returns a stale window with empty coverage.
+  const seed = hydrateThread(readOf([1, 2, 3]), ref, 3);
+  const repo = repository(fixture.cache, 1, () => Date.now(), seed);
+
+  expect((await repo.loadOlderPage(40, 1)).kind).toBe("server");
 });
 
 test("acceptPage records the captured request cursor, authority and boundary under rangeId page:<readId>:<boundary>", async () => {
