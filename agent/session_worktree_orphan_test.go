@@ -1203,7 +1203,7 @@ func TestWorktreePrune_OrphanArmSparesLaneWhileRetainedChildNotifies(t *testing.
 		// armed.
 		shared := lane.sharedSub
 		shared.mu.Lock()
-		closed, running, driving := shared.closed, shared.running, shared.driving
+		closed, running, driving, attentionRefused := shared.closed, shared.running, shared.driving, shared.attentionDriveRefused
 		shared.mu.Unlock()
 		_, locked, reason := r.laneLocked(t, lane.lanePath)
 		mutRelease, mutErr := lane.delegateSess.beginRetirementMutation("delegate_drive")
@@ -1218,8 +1218,19 @@ func TestWorktreePrune_OrphanArmSparesLaneWhileRetainedChildNotifies(t *testing.
 		lane.delegateSess.mu.Lock()
 		driverClosing := lane.delegateSess.closingOrClosedLocked()
 		lane.delegateSess.mu.Unlock()
-		t.Fatalf("the retained child's turn never started (lane locked=%v reason=%q, sub closed=%v running=%v driving=%v; retirement mutation=%v, lane validation=%v, drive slot=%v, driver closing=%v)",
-			locked, reason, closed, running, driving, mutErr, revalErr, driveSlotOK, driverClosing)
+		// The attention drive's own gate and its pending rows: the
+		// notification-drive preconditions above say nothing about them, and
+		// all of them green leaves exactly two failure modes — the owed
+		// attention never armed, or a gate held the launch. Name which.
+		pending, pendErr := lane.sharedSub.sess.pendingDelegateAttentionIDs()
+		stopGated := lane.delegateSess.childStopGated(lane.sharedSub.sess.id)
+		fatalGated := lane.delegateSess.childFatalRunGated(lane.sharedSub.sess.id)
+		drainAbandoned := lane.delegateSess.childDrainAbandoned(lane.sharedSub.sess.id)
+		drainGrace := lane.delegateSess.childDrainGracePending(lane.sharedSub.sess.id)
+		committedStart := lane.delegateSess.childCommittedSendStart(lane.sharedSub.sess.id)
+		t.Fatalf("the retained child's turn never started (lane locked=%v reason=%q, sub closed=%v running=%v driving=%v attentionDriveRefused=%v; retirement mutation=%v, lane validation=%v, drive slot=%v, driver closing=%v; pending attention=%d (%v), gates: stop=%v fatal=%v drainAbandoned=%v drainGrace=%v committedSendStart=%v)",
+			locked, reason, closed, running, driving, attentionRefused, mutErr, revalErr, driveSlotOK, driverClosing,
+			len(pending), pendErr, stopGated, fatalGated, drainAbandoned, drainGrace, committedStart)
 	}
 
 	// The injected report below must be publication-eligible. The wedged turn
