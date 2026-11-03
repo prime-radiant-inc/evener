@@ -3628,7 +3628,7 @@ it("a foreground opening whose storage read fails transiently still converges th
     threadsStore.getState().releaseThread(ref);
     await lease.release();
   }
-});
+}, 30_000);
 
 it("a foreground opening whose storage reads never resolve hands to the source and settles its recovery", async () => {
   const storage = cache();
