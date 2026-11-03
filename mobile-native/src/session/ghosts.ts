@@ -174,7 +174,10 @@ export function ghosts(
 						normalizeText(entry.text) === normalizeText(unconfirmedDraft.sentText),
 				);
 	const sameRecord = sameSend && localRecord(sameSend);
-	const locallyWaitingDraft = sameRecord !== undefined && canRemoveQueuedMessage(sameRecord);
+	// An uncertain send keeps its draft capture: the draft ghost's Discard also
+	// dismisses that capture, and the pending ghost's does not.
+	const locallyWaitingDraft =
+		sameRecord !== undefined && canRemoveQueuedMessage(sameRecord) && sameSend?.state !== "blockedUnknown";
 	for (const entry of own) {
 		if (steering(entry) || (entry === sameSend && !locallyWaitingDraft)) continue;
 		const record = localRecord(entry);

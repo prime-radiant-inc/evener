@@ -73,12 +73,12 @@ test("queuedMessageActionsRespectOwnership", () => {
   // the user's to clear, whatever their attempt evidence says.
   expect(canEditQueuedMessage(contradictoryCanceledQueue)).toBe(true);
   expect(canRemoveQueuedMessage(contradictoryCanceledQueue)).toBe(true);
-  expect(canEditQueuedMessage(unknownQueue)).toBe(true);
+  // Uncertain delivery is removable (its head blocks the queue) but not
+  // editable: an edit re-sends under a fresh identity, and the daemon may
+  // already hold the message.
+  expect(canEditQueuedMessage(unknownQueue)).toBe(false);
   expect(canRemoveQueuedMessage(unknownQueue)).toBe(true);
-  // A legacy row with no attempt metadata at all is still waiting to be sent.
   expect(canEditQueuedMessage(legacyUnknownQueue)).toBe(false);
-  // A submitting row that recorded zero unresolved attempts is waiting too.
-  expect(canEditQueuedMessage(queuedRecord("turn/queue", { attempted: undefined, unresolvedAttempts: 0 }))).toBe(true);
   expect(canEditQueuedMessage(note)).toBe(false);
   expect(canRemoveQueuedMessage(note)).toBe(false);
   expect(canEditQueuedMessage(stop)).toBe(false);

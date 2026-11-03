@@ -594,10 +594,11 @@ describe("durable recovery rows", () => {
     const row = await findRow("blocked");
     expect(within(row).getByText("uncertain")).toBeTruthy();
     const retry = within(row).getByRole("button", { name: "Retry" });
-    // Uncertain delivery is a subtitle, not a species: the row is editable and
-    // removable like any other local message, so its head can be cleared.
-    expect(within(row).getByRole("button", { name: "Edit message" })).toBeTruthy();
+    // Uncertain delivery is a subtitle, not a species: the row is removable, so
+    // its head can be cleared. It is not editable - an edit re-sends under a
+    // fresh identity, and the daemon may already hold the message.
     expect(within(row).getByRole("button", { name: "Remove from queue" })).toBeTruthy();
+    expect(within(row).queryByRole("button", { name: "Edit message" })).toBeNull();
 
     await user.click(retry);
     const storage = new MutationOutboxIndexedDB();

@@ -90,9 +90,9 @@ S02's shared explicit-resume drive fences mutation dispatch through identity and
 outbox reconciliation, independently of overlapping reconnect reads. Releasing
 that owner wakes eligible work on both identities without disabling ordinary
 folded Send or bypassing Stop and recovery fences. A delivery-uncertain row is
-local work like any other: QueueStrip's Edit and Remove reach it, and removing it
-wakes the queue behind it. Only a submitting row another pass is sending is
-locked.
+local work like any other: QueueStrip's Remove reaches it (not Edit, which would
+re-send under a fresh identity), and removing it wakes the queue behind it. A submitting row the client has already attempted and
+is waiting on stays locked, as do the verbs that have their own controls.
 
 For original transcript authors, **S10** owns durable author snapshots, first-live
 publication, indexed/history projection and preservation through ordinary and

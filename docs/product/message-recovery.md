@@ -11,12 +11,14 @@ Controls follow that ownership, not the preview text or connection status.
   composer. Remove deletes only that identity. Identical previews remain distinct.
 - Accepted daemon queue actions and delivery-uncertain Retry keep their existing
   rules. A local message stays editable and removable while it remains in the
-  outbox; the two exceptions are a submitting row another pass is sending right
-  now, whose edit would race that send, and a legacy row with no attempt
-  metadata at all.
+  outbox. The exceptions are a submitting row the client has already attempted
+  and is waiting on, whose edit would race that send; a legacy row with no
+  attempt metadata at all; and the non-composer verbs (interrupt, clear, note
+  saves), which keep their own controls.
 - A delivery-uncertain message is otherwise one local message like any other:
-  **Edit message** and **Remove from queue** reach it, and its row carries
-  "Delivery uncertain" as a subtitle. The row still closes its ref's FIFO - the
+  **Remove from queue** reaches it (Edit does not - an edit re-sends under a
+  fresh identity, and the daemon may already hold the message), and its row
+  carries "Delivery uncertain" as a subtitle. The row still closes its ref's FIFO - the
   daemon may already hold it, so nothing behind it may go - and when the hub
   cannot answer, Remove is the exit that lets later messages move.
 - Promotion and input-empty drain commands offer Remove only. Editing a
@@ -29,7 +31,7 @@ Controls follow that ownership, not the preview text or connection status.
 flowchart LR
   Local[Local unsent identity] -->|Edit transaction| Recovery[Durable editing recovery]
   Local -->|Remove transaction| Removed[Removed identity]
-  Local -->|Transport attempt| Flight[In flight, no local Edit or Remove]
+  Local -->|Transport attempt| Flight[In flight: no Edit, Remove once uncertain]
   Recovery -->|Merge into occupied draft| Owner[One durable recovery owner]
   Owner -->|Send transaction| Fresh[Fresh mutation identity]
   Fresh -->|Newer Stop| Held[Canceled, explicit Retry required]

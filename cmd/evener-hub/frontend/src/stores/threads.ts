@@ -243,10 +243,8 @@ export interface PromoteDisplayInput {
 export interface ThreadsStoreState {
   threads: Map<string, ThreadModel>;
   mutationWriteStalled: boolean;
-  // Delivery-uncertain escape bookkeeping: per row, how many opportunities to
-  // check that row's fate have failed (a Retry press that still cannot decide
-  // it, a resume drive that died while it stood), so a fresh uncertain row
-  // always gets its honest reconciliation attempts first.
+  // Refs whose durable reconcile failed for a reason other than storage: the
+  // ref waits for discovery's retry before anything is dispatched.
   mutationReconciliationFailures: ReadonlySet<string>;
   // Reconciliation failures this page attributes to unavailable storage rather
   // than a mutation-state conflict: the same wedge that fences the durable
@@ -4412,9 +4410,6 @@ interface ResumeOnlyProjection {
   // this is true, per ref.
   isLoaded(ref: string): boolean;
   hasBlockedUnknown(ref: string): boolean;
-  // The standing delivery-uncertain rows' clientMutationIds - the escape
-  // counter's input, so each standing row can be counted on its own. Unsorted:
-  // no consumer of these ids needs an order.
   // Queued non-turn/start rows (still "submitting", attempted or not): a
   // turn/start queued behind one starves at the target's FIFO, so a ref holding
   // one is not foldable.
@@ -4464,12 +4459,6 @@ export function hasBlockedUnknown(ref: string): boolean {
     resumeOnlyProjection === null || !resumeOnlyProjection.isLoaded(ref) || resumeOnlyProjection.hasBlockedUnknown(ref)
   );
 }
-
-// The standing delivery-uncertain rows of a loaded ref, as the pending-turns
-// projection last published them - each row's clientMutationId, unsorted.
-// Unlike hasBlockedUnknown this is an enumeration, not a fence predicate: an
-// unloaded ref yields no ids rather than "unknown", so a caller counts only
-// the rows the published read can actually name.
 
 // Whether ref's durable outbox holds a queued non-turn/start row (still
 // "submitting", attempted or not), as the pending-turns projection last

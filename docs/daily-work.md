@@ -112,7 +112,7 @@ Busy sessions expose Stop and, when supported, Steer. On the web, an empty draft
 
 With a draft, the submit button still says **Send** while the agent is busy; it does not become a separate Queue button. Messages waiting for a later turn appear in **Queued messages** beside the composer. A **Sending** or **Retrying** indicator means delivery is still in progress, not that the agent has already acted on the message.
 
-For a queued message, use **Remove from queue** to withdraw it before it runs, **Edit message** to bring it back for revision, or **Steer now** to send it into the current work. These controls appear only when the session supports them and may be disabled during recovery. Confirm that removal succeeded; an error means you must not assume the request was withdrawn. Removing a queued message cannot undo work the agent has already started. If a row says **Delivery uncertain**, let the session recover before submitting a duplicate.
+For a queued message, use **Remove from queue** to withdraw it before it runs, **Edit message** to bring it back for revision, or **Steer now** to send it into the current work. These controls appear only when the session supports them and may be disabled during recovery. Confirm that removal succeeded; an error means you must not assume the request was withdrawn. Removing a queued message cannot undo work the agent has already started. If a row says **Delivery uncertain**, **Remove from queue** clears it so later messages can move; a Retry asks the hub once more, and a resend under the same identity is safe, while typing the message again is not.
 
 On a failed turn, **Retry** sends a new `continue` message in the same
 conversation in both the browser and native app. The earlier prompt, images,

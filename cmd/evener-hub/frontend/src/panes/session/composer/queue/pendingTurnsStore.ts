@@ -101,8 +101,7 @@ installQueuedMutationProjection({
 const loadedRefs = new Set<string>();
 
 // The ref's standing delivery-uncertain rows in one pass, unsorted: the fence
-// predicate needs only WHETHER any stand, and the escape counter needs WHICH
-// rows stand - neither needs the order, so this never pays the sorted
+// predicate needs only WHETHER any stand, so this never pays the sorted
 // projection's sort.
 function blockedUnknownRowsFor(ref: string): MutationOutboxRecord[] {
   const rows: MutationOutboxRecord[] = [];

@@ -38,12 +38,23 @@ export function matchesQueuedMessageSnapshot(record: MutationOutboxRecord, expec
 // click must not take is the one another pass is sending right now - a
 // submitting row with attempt evidence - because the edit would race a send.
 // Canceled rows are parked by a Stop, and an uncertain row is exactly the one
-// that closes its queue: both are the user's to edit or remove, or nothing
-// behind an uncertain head can ever move.
+// that closes its queue: both are the user's to remove, or nothing behind an
+// uncertain head can ever move.
 function isLocalQueuedMessage(record: MutationOutboxRecord): boolean {
   if (record.state === "blockedUnknown" || record.state === "canceled") return true;
   if (record.state !== "submitting") return false;
-  return record.attempted === false || record.unresolvedAttempts === 0;
+  return record.attempted === false;
+}
+
+// Edit is the stricter verb: it re-sends the message under a fresh identity, so
+// it is safe only for a row the client knows it never sent. On an uncertain row
+// - the daemon may already hold it - an edit would duplicate the turn, which is
+// why the uncertain row offers Remove, not Edit.
+function isEditableQueuedMessage(record: MutationOutboxRecord): boolean {
+  // A Stop-canceled row provably never left the client, so editing it is a
+  // fresh send of work the user still owns.
+  if (record.state === "canceled") return true;
+  return record.state === "submitting" && record.attempted === false;
 }
 
 function recordInput(record: MutationOutboxRecord): InputItem[] {
@@ -61,7 +72,7 @@ function hasComposerInput(record: MutationOutboxRecord): boolean {
 }
 
 export function canEditQueuedMessage(record: MutationOutboxRecord): boolean {
-  if (!isLocalQueuedMessage(record)) return false;
+  if (!isEditableQueuedMessage(record)) return false;
   if (
     record.method === COMPOSER_METHODS.send ||
     record.method === COMPOSER_METHODS.queue ||

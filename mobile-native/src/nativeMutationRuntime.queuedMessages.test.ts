@@ -445,7 +445,10 @@ test.each(["editQueuedMessage", "removeQueuedMessage"] as const)(
 		await f.runtime.storage.markAttempted("mutation-1");
 		expect(await f.runtime[action]("mutation-1", key)).toBe(action === "editQueuedMessage" ? undefined : false);
 		await f.runtime.storage.markUnknown("mutation-1", "blockedUnknown");
-		expect(await f.runtime[action]("mutation-1", key)).toBe(action === "editQueuedMessage" ? undefined : false);
+		// Uncertain delivery is removable (its head blocks the queue) but not
+		// editable: an edit re-sends under a fresh identity the daemon may
+		// already hold.
+		expect(await f.runtime[action]("mutation-1", key)).toBe(action === "editQueuedMessage" ? undefined : true);
 		await f.runtime.settleIdentities(["mutation-1"]);
 		expect(await f.runtime[action]("mutation-1", key)).toBe(action === "editQueuedMessage" ? undefined : false);
 		expect(client.calls).toEqual([]);

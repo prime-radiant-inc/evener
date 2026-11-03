@@ -648,17 +648,31 @@ test("removeQueuedMessage clears a delivery-uncertain row the user lets go", asy
   expect(await f.storage.getOutbox(waiting.clientMutationId)).toMatchObject({ state: "submitting" });
 });
 
-test("removeQueuedMessage refuses an uncertain row that changed since the click", async () => {
+test("a row another tab already settled is not removed again", async () => {
   const f = fixture();
   const uncertain = await f.storage.enqueueIntent(queuedIntent());
   await f.storage.markAttempted(uncertain.clientMutationId);
   await f.storage.markUnknown(uncertain.clientMutationId, "blockedUnknown");
   const uncertainNow = await f.storage.getOutbox(uncertain.clientMutationId);
   if (uncertainNow === undefined) throw new Error("fixture row missing");
-  // Another tab settled it before this click's write: the stale decision must
-  // not remove a row whose fate is now known.
+  // Another tab settled it before this click's write: the row is gone, and the
+  // press reports no removal of its own.
   await f.peer.settleReceipt(uncertain.clientMutationId, "notProjected");
 
   expect(await f.storage.removeQueuedMessage(uncertainNow, { stopEpoch: 0 })).toBe(false);
   expect(await f.storage.getOutbox(uncertain.clientMutationId)).toBeUndefined();
+});
+
+test("editQueuedMessage keeps a delivery-uncertain row out of the composer", async () => {
+  const f = fixture();
+  const uncertain = await f.storage.enqueueIntent(queuedIntent());
+  await f.storage.markAttempted(uncertain.clientMutationId);
+  await f.storage.markUnknown(uncertain.clientMutationId, "blockedUnknown");
+  const uncertainNow = await f.storage.getOutbox(uncertain.clientMutationId);
+  if (uncertainNow === undefined) throw new Error("fixture row missing");
+
+  // An edit would re-send under a fresh identity, and the daemon may already
+  // hold the message: the uncertain row stays out of the composer.
+  expect(await f.storage.editQueuedMessage(uncertainNow, { stopEpoch: 0 })).toBeUndefined();
+  expect(await f.storage.getOutbox(uncertain.clientMutationId)).toBeDefined();
 });
