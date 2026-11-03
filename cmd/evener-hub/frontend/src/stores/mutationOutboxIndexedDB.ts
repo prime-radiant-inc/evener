@@ -1076,16 +1076,8 @@ export class MutationOutboxIndexedDB implements WebQueuedMessageStorage<Mutation
   // the caller proves delivery (a settlement) - a resend has no such proof and
   // leaves accepted copies to settlement's own authority. Returns every retired
   // storage key so the caller can resolve in-memory bookkeeping synchronously.
-  // The one deletion-rule home every sweep shares, over a family the caller
-  // already resolved: outbox rows delete whatever their state (the wire's
-  // outcome decided, they are dead work; their late outcomes land inert on a
-  // missing row, the same semantics a late receipt against a settled row
-  // already has); recovery rows retire only when UNEDITED
-  // (settlementRetiresRecovery - an independently edited composition survives
-  // every sweep); optimistic rows delete only when the caller proves delivery
-  // (a settlement) - a resend has no such proof and leaves accepted copies to
-  // settlement's own authority. Returns every retired storage key so the
-  // caller can resolve in-memory bookkeeping synchronously.
+  // The family is one the caller already resolved (#resolveWireFamily), so
+  // no sweeper re-reads what it holds.
   async #retireWireFamily(
     transaction: IDBTransaction,
     family: {
@@ -1675,6 +1667,23 @@ export class MutationOutboxIndexedDB implements WebQueuedMessageStorage<Mutation
         (existingRecovery.compositionRevision ?? 0) > 0
       )
         return undefined;
+      // The wire's recovery carriers - the same resolution the transfer
+      // coalesce uses. A late refusal of the row's predecessor can leave an
+      // UNEDITED recovery copy under the predecessor's key while this row
+      // waits in the outbox, invisible to the own-key check above; editing
+      // would then insert a SECOND copy of the same wire, and both ride the
+      // persistence read into an activation's consolidation - the same text
+      // and attachments merged twice into one active recovery. The ruling's
+      // mechanical coalesce: the editing recovery this write creates under
+      // the row's key IS the wire's one recovery, and the unedited carrier
+      // retires in the same write. An INDEPENDENTLY EDITED carrier instead
+      // owns the wire's editing session and this edit refuses - the own-key
+      // guard's rule, one more transition.
+      const wireCarrier = (
+        await this.#resolveWireFamily(transaction, effectiveWireId(record), { readRecovery: true })
+      ).recovery.find((existing) => existing.clientMutationId !== record.clientMutationId);
+      if (wireCarrier && wireCarrier.method !== "notes/human/set" && (wireCarrier.compositionRevision ?? 0) > 0)
+        return undefined;
       // Jesse's 2026-11-03 ruling on the #5583 collision: editing is the
       // user's call for uncertain rows too, and the duplicate problem is
       // solved mechanically, not by hiding the verb. An edit of a row whose
@@ -1697,39 +1706,49 @@ export class MutationOutboxIndexedDB implements WebQueuedMessageStorage<Mutation
       };
       await requestResult(transaction.objectStore(RECOVERY_STORE).put(recovery));
       await requestResult(outbox.delete(record.clientMutationId));
+      if (wireCarrier)
+        await requestResult(transaction.objectStore(RECOVERY_STORE).delete(wireCarrier.clientMutationId));
       return recovery;
     });
   }
 
   async removeQueuedMessage(expected: MutationOutboxRecord, barrier: MutationStopBarrier): Promise<boolean> {
-    const outcome = await this.#write([OUTBOX_STORE, SEQUENCE_STORE], "removeQueuedMessage", async (transaction) => {
-      const outbox = transaction.objectStore(OUTBOX_STORE);
-      const record = await requestResult<MutationOutboxRecord | undefined>(outbox.get(expected.clientMutationId));
-      if (!record || !matchesQueuedMessageSnapshot(record, expected) || !canRemoveQueuedMessage(record))
-        return undefined;
-      if ((await this.#stopEpochOf(transaction, record.targetRef)) !== barrier.stopEpoch) return undefined;
-      // Round-10 seam 2 (Jesse's 2026-11-03 ruling): removal ends the
-      // composition, so it ends the wire - the round-9 routing at the #5583
-      // seam. The removed row's wire siblings (an inherited-wire row's
-      // superseded predecessor) retire atomically in the same write, or a
-      // delayed terminal refusal for the wire would resurrect work the user
-      // removed. The retired keys - INCLUDING the removed row's own, a live
-      // strip row carrying a registration - reach the retiredIds
-      // post-commit notification so the runtime clears without waiting for
-      // a background read. No state filter here, unlike the mint's
-      // generation bound: remove ends the composition entirely, exactly like
-      // round-9's consolidation and discard, while the mint keeps a live
-      // successor. If the wire's in-flight attempt genuinely lands, the
-      // message may still appear in the conversation - it delivered;
-      // nothing may re-queue it locally.
-      const retiredIds = await this.#retireWireSiblings(transaction, effectiveWireId(record), {
-        excludeKeys: new Set([record.clientMutationId]),
-        sweepOptimistic: false,
-        sweepRecovery: false,
-      });
-      await requestResult(outbox.delete(record.clientMutationId));
-      return { retiredIds: [...retiredIds, record.clientMutationId] };
-    });
+    const outcome = await this.#write(
+      [OUTBOX_STORE, RECOVERY_STORE, SEQUENCE_STORE],
+      "removeQueuedMessage",
+      async (transaction) => {
+        const outbox = transaction.objectStore(OUTBOX_STORE);
+        const record = await requestResult<MutationOutboxRecord | undefined>(outbox.get(expected.clientMutationId));
+        if (!record || !matchesQueuedMessageSnapshot(record, expected) || !canRemoveQueuedMessage(record))
+          return undefined;
+        if ((await this.#stopEpochOf(transaction, record.targetRef)) !== barrier.stopEpoch) return undefined;
+        // Round-10 seam 2 (Jesse's 2026-11-03 ruling): removal ends the
+        // composition, so it ends the wire - the round-9 routing at the #5583
+        // seam. The removed row's wire siblings retire atomically in the same
+        // write - the superseded predecessor in the outbox AND the wire's
+        // UNEDITED recovery copies (a late refusal's carrier under the
+        // predecessor's key, which would otherwise keep offering the removed
+        // input for resend; the family sweep's unedited-only rule keeps an
+        // independently edited draft, the user's live work) - or a delayed
+        // terminal refusal for the wire would resurrect work the user
+        // removed. The retired keys - INCLUDING the removed row's own, a live
+        // strip row carrying a registration - reach the retiredIds
+        // post-commit notification so the runtime clears without waiting for
+        // a background read. No state filter here, unlike the mint's
+        // generation bound: remove ends the composition entirely, exactly like
+        // round-9's consolidation and discard, while the mint keeps a live
+        // successor. If the wire's in-flight attempt genuinely lands, the
+        // message may still appear in the conversation - it delivered;
+        // nothing may re-queue it locally.
+        const retiredIds = await this.#retireWireSiblings(transaction, effectiveWireId(record), {
+          excludeKeys: new Set([record.clientMutationId]),
+          sweepOptimistic: false,
+          sweepRecovery: true,
+        });
+        await requestResult(outbox.delete(record.clientMutationId));
+        return { retiredIds: [...retiredIds, record.clientMutationId] };
+      },
+    );
     if (!outcome) return false;
     if (outcome.retiredIds.length > 0) this.#retiredIdsListener?.(outcome.retiredIds);
     return true;

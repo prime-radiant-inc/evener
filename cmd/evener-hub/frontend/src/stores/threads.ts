@@ -4816,6 +4816,20 @@ function releaseInflightDurableEnqueue(ref: string): void {
 // cancelUnattempted - need no registration: they never create undelivered
 // work, and the next refresh/hydration recomputes the ids from the records
 // when it can read them.)
+// The registration rule for rows an outbox write committed, in one place: the
+// write changed the ref's outbox (in-flight reads are stale whether or not the
+// rows it touched are undelivered work), and every committed row that is not
+// canceled is undelivered work this tab owes. Both the in-flight-counting
+// wrapper and the reconcile's registration-only requeue call this.
+function noteCommittedOutboxRows(
+  ref: string,
+  committed: Array<{ clientMutationId: string; undelivered: boolean }>,
+): void {
+  if (committed.length === 0) return;
+  noteMutationStateChange(ref);
+  for (const row of committed) if (row.undelivered) noteUndeliveredMutation(ref, row.clientMutationId);
+}
+
 async function trackOutboxWriteRows<T>(
   ref: string,
   write: () => Promise<T>,
@@ -4824,13 +4838,7 @@ async function trackOutboxWriteRows<T>(
   inflightDurableEnqueues.set(ref, (inflightDurableEnqueues.get(ref) ?? 0) + 1);
   try {
     const result = await write();
-    const committed = committedRows(result);
-    if (committed.length > 0) {
-      // The write changed this ref's outbox, so in-flight reads are stale
-      // whether or not the rows it touched are undelivered work.
-      noteMutationStateChange(ref);
-      for (const row of committed) if (row.undelivered) noteUndeliveredMutation(ref, row.clientMutationId);
-    }
+    noteCommittedOutboxRows(ref, committedRows(result));
     return result;
   } finally {
     releaseInflightDurableEnqueue(ref);
@@ -5979,12 +5987,19 @@ async function publishAndReconcileThreadHydration(
           // before the pin refresh's background read (which failing storage
           // can starve forever). The predecessor's and the swept siblings'
           // registrations resolve through the storage write's own retiredIds
-          // publication.
-          await trackOutboxWriteRows(
+          // publication. Round-13 (the CI red on round-12): this registers
+          // WITHOUT the in-flight durable-enqueue count. That count guards
+          // USER enqueues a fallback send must not jump, but a background
+          // reconcile wedged inside its own write would hold it forever, and
+          // the pinned contract is that a wedged reconcile must not strand a
+          // send. The pending-reconciliation fence owns this window: while
+          // the reconcile is in flight the ref refuses the fallback unless
+          // the fallback's own storage failure waives it - exactly the
+          // storage-blocked waiver.
+          const requeued = await runtime.dispatcher.restoreProvenAbsent(ref, reopenExcludedIds);
+          noteCommittedOutboxRows(
             ref,
-            () => runtime.dispatcher.restoreProvenAbsent(ref, reopenExcludedIds),
-            (rows) =>
-              rows.map((row) => ({ clientMutationId: row.clientMutationId, undelivered: row.state !== "canceled" })),
+            requeued.map((row) => ({ clientMutationId: row.clientMutationId, undelivered: row.state !== "canceled" })),
           );
         }
         if (!current()) return;

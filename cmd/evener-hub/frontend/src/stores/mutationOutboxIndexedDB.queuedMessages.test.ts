@@ -1211,6 +1211,161 @@ test("removing an inherited-wire row retires its wire so a late refusal cannot r
   expect(await f.storage.transferToRecovery(a.clientMutationId, "rejected", "late refusal")).toBeUndefined();
 });
 
+// Round-13 review Medium, the Edit half: the edit seam's recovery check was
+// keyed on the row's OWN storage key alone, so a late journaled refusal of
+// the predecessor - which transfers an UNEDITED recovery copy under the
+// PREDECESSOR's key while the minted replacement waits in the outbox - sat
+// outside the check. Editing the replacement inserted a SECOND copy of the
+// same wire, and both copies ride the persistence read's recovery list -
+// the feed an activation's consolidation consumes from - so the same text
+// and attachments would merge twice into an active recovery. The mechanical
+// coalesce, per the #5583 ruling: the editing recovery minted under the
+// row's key IS the wire's one recovery, stamped with the wire's
+// uncertainty (an unchanged resend replays under the inherited wire id);
+// the unedited carrier retires in the same write. One copy means the
+// activation's consume set cannot double-merge what does not exist.
+test("editing a replacement whose predecessor left an unedited recovery coalesces to the one wire copy", async () => {
+  const f = fixture();
+  const a = await f.storage.enqueueIntent(queuedIntent());
+  await f.storage.markAttempted(a.clientMutationId);
+  await f.storage.markUnknown(a.clientMutationId, "blockedUnknown");
+  const capture = await f.storage.getOutboxWithStopEpoch(a.clientMutationId);
+  const b = await f.storage.mintRetryFromRow(a.clientMutationId, {
+    record: capture.record,
+    stopEpoch: capture.stopEpoch,
+    displayedStopEpoch: 0,
+  });
+  if (!b) throw new Error("mint failed");
+  const bNow = await f.storage.getOutbox(b.clientMutationId);
+  if (!bNow) throw new Error("minted row missing");
+  // The predecessor's delayed terminal refusal: an UNEDITED recovery under
+  // A's own key, no uncertainty marker (a journaled rejection resends fresh).
+  const carrier = await f.storage.transferToRecovery(a.clientMutationId, "rejected", "late refusal");
+  if (!carrier) throw new Error("failed to seed the wire's carrier");
+  const recovery = await f.storage.editQueuedMessage(bNow, { stopEpoch: 0 });
+  if (!recovery) throw new Error("edit failed");
+  // The wire's ONE recovery copy: the stamped editing recovery under the
+  // row's own key, carrying the inherited wire identity for the replay.
+  const copies = await f.storage.listRecovery("local:queued");
+  expect(copies).toHaveLength(1);
+  expect(copies[0]?.clientMutationId).toBe(b.clientMutationId);
+  expect(copies[0]?.payload.clientMutationId).toBe(a.clientMutationId);
+  expect(copies[0]?.wireDeliveryUncertain).toBe(true);
+});
+
+// The preservation boundary of the same seam: an INDEPENDENTLY EDITED
+// carrier is the user's live draft, and it owns the wire's editing session -
+// the own-key guard's rule, one more transition. The replacement row's Edit
+// refuses, and the edited draft survives untouched.
+test("an edited recovery carrier owns the wire's editing session and survives a sibling row's Edit", async () => {
+  const f = fixture();
+  const a = await f.storage.enqueueIntent(queuedIntent());
+  await f.storage.markAttempted(a.clientMutationId);
+  await f.storage.markUnknown(a.clientMutationId, "blockedUnknown");
+  const capture = await f.storage.getOutboxWithStopEpoch(a.clientMutationId);
+  const b = await f.storage.mintRetryFromRow(a.clientMutationId, {
+    record: capture.record,
+    stopEpoch: capture.stopEpoch,
+    displayedStopEpoch: 0,
+  });
+  if (!b) throw new Error("mint failed");
+  const bNow = await f.storage.getOutbox(b.clientMutationId);
+  if (!bNow) throw new Error("minted row missing");
+  const carrier = await f.storage.transferToRecovery(a.clientMutationId, "rejected", "late refusal");
+  if (!carrier) throw new Error("failed to seed the wire's carrier");
+  // The user edits the carrier's draft: it is now independently edited work.
+  const edited = await f.storage.updateRecoveryInput(
+    carrier.clientMutationId,
+    [{ type: "text", text: "the user's edited draft" }],
+    [],
+    "the user's edited draft",
+    undefined,
+    undefined,
+    undefined,
+    0,
+  );
+  if (!edited) throw new Error("carrier edit failed");
+  expect(edited.compositionRevision ?? 0).toBeGreaterThan(0);
+  expect(await f.storage.editQueuedMessage(bNow, { stopEpoch: 0 })).toBeUndefined();
+  const surviving = await f.storage.getRecovery(carrier.clientMutationId);
+  expect(surviving?.compositionRevision ?? 0).toBeGreaterThan(0);
+  expect(surviving?.payload.input).toEqual([{ type: "text", text: "the user's edited draft" }]);
+});
+
+// Round-13 review Medium, the Remove half: removal ends the composition, so
+// it ends the wire - the round-10 seam's rule, applied to the wire's
+// RECOVERY carriers too. An unedited carrier under the predecessor's key
+// offered the removed input for resend; with the family sweep's unedited
+// rule (settlementRetiresRecovery) it retires in the same write, and its
+// key rides the retiredIds notification so the runtime clears without a
+// background read.
+test("removing a replacement retires the wire's unedited recovery sibling in the same write", async () => {
+  const f = fixture();
+  const retired: string[] = [];
+  f.storage.setRetiredIdsListener((ids) => retired.push(...ids));
+  const a = await f.storage.enqueueIntent(queuedIntent());
+  await f.storage.markAttempted(a.clientMutationId);
+  await f.storage.markUnknown(a.clientMutationId, "blockedUnknown");
+  const capture = await f.storage.getOutboxWithStopEpoch(a.clientMutationId);
+  const b = await f.storage.mintRetryFromRow(a.clientMutationId, {
+    record: capture.record,
+    stopEpoch: capture.stopEpoch,
+    displayedStopEpoch: 0,
+  });
+  if (!b) throw new Error("mint failed");
+  const bNow = await f.storage.getOutbox(b.clientMutationId);
+  if (!bNow) throw new Error("minted row missing");
+  const carrier = await f.storage.transferToRecovery(a.clientMutationId, "rejected", "late refusal");
+  if (!carrier) throw new Error("failed to seed the wire's carrier");
+  expect(await f.storage.removeQueuedMessage(bNow, { stopEpoch: 0 })).toBe(true);
+  // The removed input leaves the tray: the unedited carrier retired with the
+  // row, in the same write, its key on the notification.
+  expect(await f.storage.getRecovery(carrier.clientMutationId)).toBeUndefined();
+  expect(await f.storage.getOutbox(a.clientMutationId)).toBeUndefined();
+  expect(retired).toEqual(expect.arrayContaining([a.clientMutationId, b.clientMutationId]));
+  expect(await f.storage.listRecovery("local:queued")).toEqual([]);
+});
+
+// The same preservation boundary for Remove: an EDITED carrier is the user's
+// live draft and survives the sibling row's removal - the family sweep's
+// unedited-only rule (settlementRetiresRecovery) holds at this seam too.
+test("an edited recovery sibling survives removal of its wire's outbox row", async () => {
+  const f = fixture();
+  const a = await f.storage.enqueueIntent(queuedIntent());
+  await f.storage.markAttempted(a.clientMutationId);
+  await f.storage.markUnknown(a.clientMutationId, "blockedUnknown");
+  const capture = await f.storage.getOutboxWithStopEpoch(a.clientMutationId);
+  const b = await f.storage.mintRetryFromRow(a.clientMutationId, {
+    record: capture.record,
+    stopEpoch: capture.stopEpoch,
+    displayedStopEpoch: 0,
+  });
+  if (!b) throw new Error("mint failed");
+  const bNow = await f.storage.getOutbox(b.clientMutationId);
+  if (!bNow) throw new Error("minted row missing");
+  const carrier = await f.storage.transferToRecovery(a.clientMutationId, "rejected", "late refusal");
+  if (!carrier) throw new Error("failed to seed the wire's carrier");
+  const edited = await f.storage.updateRecoveryInput(
+    carrier.clientMutationId,
+    [{ type: "text", text: "the user's edited draft" }],
+    [],
+    "the user's edited draft",
+    undefined,
+    undefined,
+    undefined,
+    0,
+  );
+  if (!edited) throw new Error("carrier edit failed");
+  expect(edited.compositionRevision ?? 0).toBeGreaterThan(0);
+  expect(await f.storage.removeQueuedMessage(bNow, { stopEpoch: 0 })).toBe(true);
+  const surviving = await f.storage.getRecovery(carrier.clientMutationId);
+  expect(surviving?.compositionRevision ?? 0).toBeGreaterThan(0);
+  expect(surviving?.payload.input).toEqual([{ type: "text", text: "the user's edited draft" }]);
+  // The outbox rows are gone; the wire's remaining life is the edited draft.
+  expect(await f.storage.getOutbox(a.clientMutationId)).toBeUndefined();
+  expect(await f.storage.getOutbox(b.clientMutationId)).toBeUndefined();
+});
+
 // Round-10 review Medium: when the daemon's journal write keeps failing while
 // authoritative reads succeed, every 2-second reconcile cycle takes the
 // innocent-row path - the blockedUnknown generation settles superseded (its
