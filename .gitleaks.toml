@@ -108,3 +108,14 @@ paths = [
   '''(^|/)mobile-native/ios/Pods/React-Core-prebuilt/React\.xcframework/_CodeSignature/CodeResources$''',
   '''(^|/)mobile-native/ios/Pods/ReactNativeDependencies/framework/packages/react-native/ReactNativeDependencies\.xcframework/_CodeSignature/CodeResources$''',
 ]
+
+[[rules]]
+id = "generic-api-key"
+
+# Cytoscape's atlas debug counters are property reads, not a credential.
+[[rules.allowlists]]
+description = "generated Mermaid vendor atlas counters"
+condition = "AND"
+regexTarget = "match"
+paths = ['''^mobile-native/src/generated/mermaidPage\.ts$''']
+regexes = ['''^p\.keyCount,v=p\.atlasCount;$''']
