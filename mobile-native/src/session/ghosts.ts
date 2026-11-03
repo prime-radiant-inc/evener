@@ -178,7 +178,9 @@ export function ghosts(
 	for (const entry of own) {
 		if (steering(entry) || (entry === sameSend && !locallyWaitingDraft)) continue;
 		const record = localRecord(entry);
-		const removable = record !== undefined && canRemoveQueuedMessage(record);
+		// An uncertain row carries its own Check/Discard pair; the queue's own
+		// Edit/Cancel menu would be a second control set on one ghost.
+		const removable = record !== undefined && canRemoveQueuedMessage(record) && entry.state !== "blockedUnknown";
 		const editable =
 			record !== undefined && canEditQueuedMessage(record) && !!local && localQueuedEditReady(local.readiness);
 		const first = out.length;

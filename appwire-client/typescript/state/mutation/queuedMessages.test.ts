@@ -75,7 +75,10 @@ test("queuedMessageActionsRespectOwnership", () => {
   expect(canRemoveQueuedMessage(contradictoryCanceledQueue)).toBe(true);
   expect(canEditQueuedMessage(unknownQueue)).toBe(true);
   expect(canRemoveQueuedMessage(unknownQueue)).toBe(true);
+  // A legacy row with no attempt metadata at all is still waiting to be sent.
   expect(canEditQueuedMessage(legacyUnknownQueue)).toBe(false);
+  // A submitting row that recorded zero unresolved attempts is waiting too.
+  expect(canEditQueuedMessage(queuedRecord("turn/queue", { attempted: undefined, unresolvedAttempts: 0 }))).toBe(true);
   expect(canEditQueuedMessage(note)).toBe(false);
   expect(canRemoveQueuedMessage(note)).toBe(false);
   expect(canEditQueuedMessage(stop)).toBe(false);

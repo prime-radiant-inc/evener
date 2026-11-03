@@ -122,7 +122,6 @@ function blockedUnknownRowsFor(ref: string): MutationOutboxRecord[] {
 installResumeOnlyProjection({
   isLoaded: (ref) => loadedRefs.has(ref),
   hasBlockedUnknown: (ref) => blockedUnknownRowsFor(ref).length > 0,
-  blockedUnknownIds: (ref) => blockedUnknownRowsFor(ref).map((row) => row.clientMutationId),
   // A queued non-turn/start row (still "submitting") parks at the target's
   // FIFO: a turn/start queued behind it never dispatches, so a ref holding one
   // is not the foldable shape. An ATTEMPTED row counts too: the method-aware

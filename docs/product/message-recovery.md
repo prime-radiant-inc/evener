@@ -9,15 +9,16 @@ Controls follow that ownership, not the preview text or connection status.
   including while offline. Stop-canceled messages keep **Retry** as well.
 - Edit moves the exact durable identity into recovery before opening it in the
   composer. Remove deletes only that identity. Identical previews remain distinct.
-- Attempted, accepted, delivery-uncertain and legacy records with unknown attempt
-  history do not gain these local controls. Accepted daemon queue actions and
-  delivery-uncertain Retry keep their existing rules.
-- A delivery-uncertain message is one local message like any other: **Edit
-  message** and **Remove from queue** reach it, and its row carries "Delivery
-  uncertain" as a subtitle. The row still closes its ref's FIFO - the daemon may
-  already hold it, so nothing behind it may go - and when the hub cannot answer,
-  Remove is the exit that lets later messages move. The one row a click must not
-  take is a submitting row another pass is sending at that moment.
+- Accepted daemon queue actions and delivery-uncertain Retry keep their existing
+  rules. A local message stays editable and removable while it remains in the
+  outbox; the two exceptions are a submitting row another pass is sending right
+  now, whose edit would race that send, and a legacy row with no attempt
+  metadata at all.
+- A delivery-uncertain message is otherwise one local message like any other:
+  **Edit message** and **Remove from queue** reach it, and its row carries
+  "Delivery uncertain" as a subtitle. The row still closes its ref's FIFO - the
+  daemon may already hold it, so nothing behind it may go - and when the hub
+  cannot answer, Remove is the exit that lets later messages move.
 - Promotion and input-empty drain commands offer Remove only. Editing a
   content-bearing drain restores its composer input, not the daemon queue preview.
 - Unattempted rows appear once in QueueStrip, not also in optimistic send chips

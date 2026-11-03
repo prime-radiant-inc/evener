@@ -1661,11 +1661,9 @@ describe("Stop cancellation durability across reload, tabs, and resume", () => {
   });
 });
 
-// The escape counter counts FAILED FATE CHECKS, not failed drives: a drive
-// that never reached the hub - no ready client - checked nothing, so it must
-// not grow any row's discard threshold. A drive whose resume request went
-// out and the hub refused is a real failed check, and counts.
-test("a resume failure that never reached the hub counts as no failed delivery check", async ({ onTestFinished }) => {
+// A drive that never reached the hub - no ready client - checked nothing: the
+// failure publishes, but no second request goes out.
+test("a resume failure that never reached the hub sends no second request", async ({ onTestFinished }) => {
   const restoreResumeScheduler = installResumeRetrySchedulerForTests(() => () => undefined);
   onTestFinished(restoreResumeScheduler);
   const ref = "local:uncertain-unreached-resume";
@@ -1706,13 +1704,9 @@ test("a resume failure that never reached the hub counts as no failed delivery c
   expect(fake.calls.filter((call) => call.method === "thread/resume")).toHaveLength(1);
 });
 
-// The escape ledger counts FAILED FATE CHECKS, and a drive whose client died
-// mid-reconnect - after readiness, before any resume request left - checked
-// nothing. The connection's own death must not grow any row's counter, or a
-// mere outage can unlock the deliberate discard.
-test("a resume drive whose reconnect dies before its request counts no failed delivery check", async ({
-  onTestFinished,
-}) => {
+// A drive whose client died mid-reconnect - after readiness, before any resume
+// request left - issued nothing: the connection's death is not a retry.
+test("a resume drive whose reconnect dies before its request issues nothing", async ({ onTestFinished }) => {
   const scheduledResumeRetries = trackScheduledResumeRetries(onTestFinished);
   const ref = "local:dead-reconnect-counts-nothing";
   const storage = new MutationOutboxIndexedDB();
@@ -3056,10 +3050,10 @@ test("a press that fails while an older backoff stands supersedes its fences", a
   expect(fake.calls.filter((call) => call.method === "thread/resume")).toHaveLength(3);
 });
 
-// The complaint this answers: an uncertain message sat at the head and every
-// later message waited behind it, with no way to clear it. It is local work like
-// any other row, so Remove reaches it and the queue moves.
-test("removing an uncertain head lets the messages behind it send", async ({ onTestFinished }) => {
+// The complaint this answers: an uncertain message sat at the head with no way
+// to clear it. It is local work like any other row, so Remove reaches it and the
+// ref can send again.
+test("removing an uncertain head frees the ref again", async ({ onTestFinished }) => {
   trackScheduledResumeRetries(onTestFinished);
   const ref = "local:remove-uncertain";
   const storage = new MutationOutboxIndexedDB();

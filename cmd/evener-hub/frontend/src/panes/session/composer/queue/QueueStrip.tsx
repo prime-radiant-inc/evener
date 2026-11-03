@@ -242,10 +242,9 @@ export function QueueStrip({
     ...blockedEntries.map((record) => ({ kind: "blocked" as const, record })),
     ...canceledEntries.map((record) => ({ kind: "canceled" as const, record })),
     ...editableEntries
-      // Canceled and uncertain rows keep their own slot (the label says which);
-      // the action set on that slot is the same standard one now that they are
-      // editable and removable like any local message.
-      .filter((record) => record.state !== "canceled" && record.state !== "blockedUnknown")
+      // Canceled and uncertain rows have their own slot above (the label says
+      // which); the action set on every slot is the same one now.
+      .filter((record) => record.state === "submitting")
       .map((record) => ({ kind: "waiting" as const, record })),
   ].sort((left, right) => left.record.intentSequence - right.record.intentSequence);
   const toasts = useToasts();

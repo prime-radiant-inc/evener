@@ -43,7 +43,7 @@ export function matchesQueuedMessageSnapshot(record: MutationOutboxRecord, expec
 function isLocalQueuedMessage(record: MutationOutboxRecord): boolean {
   if (record.state === "blockedUnknown" || record.state === "canceled") return true;
   if (record.state !== "submitting") return false;
-  return record.attempted === false;
+  return record.attempted === false || record.unresolvedAttempts === 0;
 }
 
 function recordInput(record: MutationOutboxRecord): InputItem[] {

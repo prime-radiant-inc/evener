@@ -1389,11 +1389,8 @@ test("a Stop during the armed backoff retires the pending resume retry", async (
 // wire can surface in the catch as a plain transport failure - the Stop is
 // killing the very daemon the resume reaches - so the error's type cannot be
 // the only Stop signal: the drive re-checks its own stop baseline on failure,
-// arms no automatic retry, and - because the Stop reversed the drive before
-// any fate was checked - grows no row's discard threshold.
-test("a Stop followed by a rejected resume RPC arms no automatic retry and counts no failed check", async ({
-  onTestFinished,
-}) => {
+// arms no automatic retry.
+test("a Stop followed by a rejected resume RPC arms no automatic retry", async ({ onTestFinished }) => {
   const scheduledResumeRetries: { attempt: number; fire: () => void }[] = [];
   const restoreResumeScheduler = installResumeRetrySchedulerForTests((attempt, retry) => {
     scheduledResumeRetries.push({ attempt, fire: retry });
