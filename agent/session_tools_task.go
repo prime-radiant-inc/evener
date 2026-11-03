@@ -242,7 +242,7 @@ func decodeTaskArgs(args map[string]any) (adds []taskpkg.TaskInput, updates []ta
 			if !ok {
 				return nil, nil, fmt.Errorf("update entry %d depends_on must be an array of task IDs", i)
 			}
-			if len(arr) == 1 && arr[0] == float64(clearDependsOnID) {
+			if len(arr) == 1 && isClearDependsOnID(arr[0]) {
 				u.DependsOn = &[]int{}
 			} else {
 				depIDs, err := decodeIDList(arr)
@@ -340,6 +340,14 @@ func validateTaskListArgs(args map[string]any) error {
 // dependencies. Task IDs start at 1, so it never names a real task.
 const clearDependsOnID = 0
 
+func isClearDependsOnID(value any) bool {
+	if number, ok := value.(json.Number); ok {
+		id, whole := tool.WholeNumberInt(number)
+		return whole && id == clearDependsOnID
+	}
+	return value == float64(clearDependsOnID)
+}
+
 // errZeroTaskID rejects 0 inside an ID list; each caller says what [0] means
 // for its operation.
 var errZeroTaskID = errors.New("0 is not a task ID")
@@ -348,7 +356,7 @@ var errZeroTaskID = errors.New("0 is not a task ID")
 func decodeIDList(raw []any) ([]int, error) {
 	ids := make([]int, 0, len(raw))
 	for _, d := range raw {
-		if d == float64(clearDependsOnID) {
+		if isClearDependsOnID(d) {
 			return nil, errZeroTaskID
 		}
 		id, ok := taskIDValue(d)
@@ -443,18 +451,14 @@ func normalizeTaskListArgs(args map[string]any) (map[string]any, error) {
 	return normalized, nil
 }
 
-// maxTaskID bounds task ids below 2^53, so every accepted id is exact in
-// float64 and dispatch (float64) and the fingerprint (int64) accept the same
-// set: JSON 2^53+1 decodes to float64 2^53, which must not be accepted. A
-// fractional id close enough to the bound rounds to an integer in float64
-// before it gets here; parsing JSON numbers exactly to catch that is not
-// worth it for ids this large.
+// maxTaskID retains the task ID bound below 2^53. Dispatch preserves JSON
+// numbers exactly, so fractional and out-of-range IDs are rejected without
+// rounding; existing internal float64 callers retain the same bound.
 const maxTaskID = 1<<53 - 1
 
 // taskIDValue reads a task id: an integer from 1 to maxTaskID. It takes the
-// number types NormalizeArgs may see: float64 from dispatch's decoder, and
-// int64 or (past int64) json.Number from the failure fingerprint's canonical
-// view.
+// number types NormalizeArgs may see: json.Number from dispatch, int64 or
+// json.Number from the failure fingerprint, and float64 from internal callers.
 func taskIDValue(v any) (int, bool) {
 	var id int64
 	switch n := v.(type) {
@@ -466,11 +470,11 @@ func taskIDValue(v any) (int, bool) {
 	case int64:
 		id = n
 	case json.Number:
-		parsed, err := n.Int64()
-		if err != nil {
+		parsed, ok := tool.WholeNumberInt(n)
+		if !ok {
 			return 0, false
 		}
-		id = parsed
+		id = int64(parsed)
 	default:
 		return 0, false
 	}

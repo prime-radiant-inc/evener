@@ -2571,6 +2571,9 @@ func schemaOwnKeywordsMatch(candidate any, schema map[string]any) bool {
 	if !candidateMatchesType(candidate, schema["type"]) {
 		return false
 	}
+	if number, ok := candidate.(json.Number); ok {
+		return exactNumberSatisfies(number, schema)
+	}
 	if !integerCandidateExact(candidate) && hasNumericConstraint(schema) {
 		// A large integer loses precision in float64, so a bound or multipleOf
 		// could be validated against a different value than the one rendered:
@@ -2841,6 +2844,9 @@ func jsonEqual(a, b any) bool {
 // integer's exact value). ok is false for a non-numeric value or a form with no
 // rational representation.
 func numericRat(v any) (*big.Rat, bool) {
+	if n, ok := v.(json.Number); ok {
+		return new(big.Rat).SetString(n.String())
+	}
 	if i, ok := integerValue(v); ok {
 		return new(big.Rat).SetInt(i), true
 	}
@@ -2920,6 +2926,10 @@ func valueHasJSONType(v any, name string) bool {
 		_, ok := numericValue(v)
 		return ok
 	case "integer":
+		if n, ok := v.(json.Number); ok {
+			r, valid := numericRat(n)
+			return valid && r.IsInt()
+		}
 		f, ok := numericValue(v)
 		return ok && f == math.Trunc(f)
 	}
@@ -2957,6 +2967,9 @@ func hasUnhandledCandidateRisk(schema map[string]any) bool {
 // int32(3) is not silently exempt from numeric validation.
 func numericValue(v any) (float64, bool) {
 	switch n := v.(type) {
+	case json.Number:
+		f, err := n.Float64()
+		return f, err == nil
 	case float64:
 		return n, true
 	case float32:
@@ -3618,4 +3631,50 @@ func decodePointerToken(token string) string {
 	}
 	token = strings.ReplaceAll(token, "~1", "/")
 	return strings.ReplaceAll(token, "~0", "~")
+}
+
+// exactNumberSatisfies keeps retained JSON numbers out of the approximate
+// example-generation path. Unrepresentable candidates are declined, not rounded.
+func exactNumberSatisfies(n json.Number, schema map[string]any) bool {
+	if !hasNumericConstraint(schema) {
+		return true
+	}
+	value, ok := numericRat(n)
+	if !ok {
+		return false
+	}
+	for _, key := range []string{"minimum", "exclusiveMinimum", "maximum", "exclusiveMaximum", "multipleOf"} {
+		bound, present := schema[key]
+		if !present {
+			continue
+		}
+		r, valid := numericRat(bound)
+		if !valid {
+			return false
+		}
+		cmp := value.Cmp(r)
+		switch key {
+		case "minimum":
+			if cmp < 0 {
+				return false
+			}
+		case "exclusiveMinimum":
+			if cmp <= 0 {
+				return false
+			}
+		case "maximum":
+			if cmp > 0 {
+				return false
+			}
+		case "exclusiveMaximum":
+			if cmp >= 0 {
+				return false
+			}
+		case "multipleOf":
+			if r.Sign() != 0 && !new(big.Rat).Quo(value, r).IsInt() {
+				return false
+			}
+		}
+	}
+	return true
 }
