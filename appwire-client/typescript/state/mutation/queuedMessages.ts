@@ -34,15 +34,16 @@ export function matchesQueuedMessageSnapshot(record: MutationOutboxRecord, expec
   );
 }
 
-function hasContradictoryAttemptEvidence(record: MutationOutboxRecord): boolean {
-  return record.attempted === true || (record.unresolvedAttempts !== undefined && record.unresolvedAttempts > 0);
-}
-
-function isSafelyWaiting(record: MutationOutboxRecord): boolean {
-  if (hasContradictoryAttemptEvidence(record)) return false;
-  if (record.state === "canceled") return true;
+// A local message stays the user's until it leaves the outbox. The one row a
+// click must not take is the one another pass is sending right now - a
+// submitting row with attempt evidence - because the edit would race a send.
+// Canceled rows are parked by a Stop, and an uncertain row is exactly the one
+// that closes its queue: both are the user's to edit or remove, or nothing
+// behind an uncertain head can ever move.
+function isLocalQueuedMessage(record: MutationOutboxRecord): boolean {
+  if (record.state === "blockedUnknown" || record.state === "canceled") return true;
   if (record.state !== "submitting") return false;
-  return record.attempted === false || record.unresolvedAttempts === 0;
+  return record.attempted === false;
 }
 
 function recordInput(record: MutationOutboxRecord): InputItem[] {
@@ -60,7 +61,7 @@ function hasComposerInput(record: MutationOutboxRecord): boolean {
 }
 
 export function canEditQueuedMessage(record: MutationOutboxRecord): boolean {
-  if (!isSafelyWaiting(record)) return false;
+  if (!isLocalQueuedMessage(record)) return false;
   if (
     record.method === COMPOSER_METHODS.send ||
     record.method === COMPOSER_METHODS.queue ||
@@ -71,17 +72,5 @@ export function canEditQueuedMessage(record: MutationOutboxRecord): boolean {
 }
 
 export function canRemoveQueuedMessage(record: MutationOutboxRecord): boolean {
-  return isSafelyWaiting(record) && PENDING_TURN_METHODS.includes(record.method);
-}
-
-// The escape hatch for a delivery-uncertain message. A blockedUnknown head
-// closes the ref's FIFO (the daemon may already hold it, so nothing behind it
-// may go), and the only exits were a successful reconcile or a Retry that
-// canceled it. Neither is available when the hub cannot answer, which is how an
-// uncertain message used to block every later one with no way to clear it. The
-// user's own decision to let the message go is the third exit, and it is safe
-// precisely because the row's fate is unknown to both sides: nothing else can
-// prove it delivered, so keeping it forever is not the conservative choice.
-export function canDiscardUncertainMessage(record: MutationOutboxRecord): boolean {
-  return record.state === "blockedUnknown" && hasComposerInput(record);
+  return isLocalQueuedMessage(record) && PENDING_TURN_METHODS.includes(record.method);
 }

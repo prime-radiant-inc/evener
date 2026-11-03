@@ -1,6 +1,5 @@
 import type { ComposerMention, InputItem } from "@evener/appwire-client";
 import {
-  canDiscardUncertainMessage,
   canEditQueuedMessage,
   canRemoveQueuedMessage,
   matchesQueuedMessageSnapshot,
@@ -38,7 +37,6 @@ type MutationOutboxOperation =
   | "resendRecovery"
   | "editQueuedMessage"
   | "removeQueuedMessage"
-  | "discardUncertainMessage"
   | "retargetOutbox";
 
 type VersionedMutationRecoveryRecord = MutationRecoveryRecord & { compositionRevision?: number };
@@ -959,21 +957,6 @@ export class MutationOutboxIndexedDB implements QueuedMessageStorage<MutationAtt
       const record = await requestResult<MutationOutboxRecord | undefined>(outbox.get(expected.clientMutationId));
       if (!record || !matchesQueuedMessageSnapshot(record, expected) || !canRemoveQueuedMessage(record)) return false;
       if ((await this.#stopEpochOf(transaction, record.targetRef)) !== barrier.stopEpoch) return false;
-      await requestResult(outbox.delete(record.clientMutationId));
-      return true;
-    });
-  }
-
-  // The escape hatch: remove a delivery-uncertain row the user chose to let go.
-  // The row is verified against the caller's snapshot and against its own state
-  // inside this transaction, so a row that settled or changed since the click is
-  // never removed on a stale decision.
-  async discardUncertainMessage(expected: MutationOutboxRecord): Promise<boolean> {
-    return this.#write(OUTBOX_STORE, "discardUncertainMessage", async (transaction) => {
-      const outbox = transaction.objectStore(OUTBOX_STORE);
-      const record = await requestResult<MutationOutboxRecord | undefined>(outbox.get(expected.clientMutationId));
-      if (!record || !matchesQueuedMessageSnapshot(record, expected) || !canDiscardUncertainMessage(record))
-        return false;
       await requestResult(outbox.delete(record.clientMutationId));
       return true;
     });

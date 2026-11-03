@@ -10,23 +10,16 @@
 
 import type { ComposerMention, InputItem } from "@evener/appwire-client";
 import { canonicalSkillNames, errorText, STEER_UNAVAILABLE, sessionActionError } from "@evener/appwire-client";
-import {
-  canDiscardUncertainMessage,
-  canEditQueuedMessage,
-  canRemoveQueuedMessage,
-} from "@evener/appwire-client/state/mutation";
+import { canEditQueuedMessage, canRemoveQueuedMessage } from "@evener/appwire-client/state/mutation";
 import { type ReactNode, useRef, useState } from "react";
 import { copyToClipboard } from "../../../../shell/palette/commands";
 import { controlsFor, pressLocalRecoveryFenced, pressRefusal } from "../../../../stores/liveControls";
 import type { MutationOutboxRecord, MutationRecoveryRecord } from "../../../../stores/mutationOutbox";
 import type { InputAttachment } from "../../../../stores/threads";
 import {
-  canDiscardUncertainMutation,
   captureRecoveryStopBarrier,
-  discardUncertainMutation,
   retryBlockedBySnapshot,
   threadsStore,
-  UNCERTAIN_DISCARD_AFTER_RECHECKS,
   useEditableQueuedMutationEntries,
   useThreadsStore,
 } from "../../../../stores/threads";
@@ -225,8 +218,6 @@ export function QueueStrip({
   const model = useThreadsStore((s) => s.threads.get(sessionRef));
   const mutationAuthority = useThreadsStore((s) => s.mutationAuthorityRefs.has(sessionRef));
   const recoveryObligated = useThreadsStore((s) => s.restartBlockingObligations.has(sessionRef));
-  // The escape hatch opens per row, after its own failed delivery checks.
-  const uncertainRecheckFailures = useThreadsStore((s) => s.uncertainRecheckFailures);
   const reconciliationStorageBlocked = useThreadsStore((s) => s.mutationReconciliationStorageBlocked.has(sessionRef));
   const refusedId = useThreadsStore((s) => s.transientRefusalPaces.get(sessionRef)?.clientMutationId);
   const editableEntries = useEditableQueuedMutationEntries(sessionRef);
@@ -251,7 +242,10 @@ export function QueueStrip({
     ...blockedEntries.map((record) => ({ kind: "blocked" as const, record })),
     ...canceledEntries.map((record) => ({ kind: "canceled" as const, record })),
     ...editableEntries
-      .filter((record) => record.state !== "canceled")
+      // Canceled and uncertain rows keep their own slot (the label says which);
+      // the action set on that slot is the same standard one now that they are
+      // editable and removable like any local message.
+      .filter((record) => record.state !== "canceled" && record.state !== "blockedUnknown")
       .map((record) => ({ kind: "waiting" as const, record })),
   ].sort((left, right) => left.record.intentSequence - right.record.intentSequence);
   const toasts = useToasts();
@@ -519,26 +513,6 @@ export function QueueStrip({
     }
   }
 
-  // The user's own exit from a delivery-uncertain row: after enough failed
-  // checks, the message can be let go so the queue behind it moves.
-  async function handleDiscard(record: MutationOutboxRecord): Promise<void> {
-    const id = record.clientMutationId;
-    if (localActions.current.has(id)) return;
-    localActions.current.add(id);
-    setRowBusy(id, true);
-    try {
-      const discarded = await discardUncertainMutation(id, sessionRef);
-      if (!discarded) {
-        setRetryErrors((errors) => new Map(errors).set(id, "Discard failed: the message changed"));
-        return;
-      }
-      toasts.push("info", "Uncertain message discarded");
-    } finally {
-      localActions.current.delete(id);
-      setRowBusy(id, false);
-    }
-  }
-
   async function handleRetry(record: MutationOutboxRecord): Promise<void> {
     setRowBusy(record.clientMutationId, true);
     setRetryErrors((errors) => {
@@ -790,19 +764,6 @@ export function QueueStrip({
                       onClick={() => void handleLocalAction(record, "remove")}
                     />
                   )}
-                  {kind === "blocked" &&
-                    canDiscardUncertainMessage(record) &&
-                    (uncertainRecheckFailures.get(record.clientMutationId) ?? 0) >=
-                      UNCERTAIN_DISCARD_AFTER_RECHECKS && (
-                      <Button
-                        size="sm"
-                        variant="danger"
-                        disabled={rowBusy || busy}
-                        onClick={() => void handleDiscard(record)}
-                      >
-                        Discard message
-                      </Button>
-                    )}
                   {kind !== "waiting" && (
                     <Button
                       size="sm"

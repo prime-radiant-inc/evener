@@ -62,7 +62,6 @@ import {
 } from "@evener/appwire-client";
 import {
   COMPOSER_METHODS,
-  canDiscardUncertainMessage,
   canEditQueuedMessage,
   canRemoveQueuedMessage,
   DIRECT_FALLBACK_METHODS,
@@ -248,7 +247,6 @@ export interface ThreadsStoreState {
   // check that row's fate have failed (a Retry press that still cannot decide
   // it, a resume drive that died while it stood), so a fresh uncertain row
   // always gets its honest reconciliation attempts first.
-  uncertainRecheckFailures: ReadonlyMap<string, number>;
   mutationReconciliationFailures: ReadonlySet<string>;
   // Reconciliation failures this page attributes to unavailable storage rather
   // than a mutation-state conflict: the same wedge that fences the durable
@@ -3385,15 +3383,6 @@ async function runResumeFencedForSend(
         }
       }
     }
-    // The escape counter counts failed opportunities to CHECK a standing row's
-    // fate. A drive whose resume request went out and failed checked; one
-    // that never reached the hub, or that the user's own Stop reversed,
-    // checked nothing and must not grow any row's discard threshold.
-    if (requestIssued && !stopCanceled) {
-      for (const clientMutationId of blockedUnknownIdsOf(ref)) {
-        noteUncertainRecheckFailure(clientMutationId);
-      }
-    }
   }
 }
 
@@ -3681,66 +3670,9 @@ export async function removeQueuedMutation(clientMutationId: string, targetRef: 
   if (removed) noteHandledMutation(clientMutationId);
   noteMutationStateChange(targetRef);
   notifyMutationPersistence([targetRef]);
+  // The row may have been the ref's FIFO head; whatever waited behind it may go.
+  if (removed) notifyReadyForMutationDispatch([targetRef]);
   return removed;
-}
-
-// The failed delivery checks a message must survive before the user can throw
-// it away: the hub has had honest chances to say what became of it, so the
-// escape hatch is a decision made after asking, never on first uncertainty.
-export const UNCERTAIN_DISCARD_AFTER_RECHECKS = 2;
-
-// Whether this uncertain row's escape hatch is open yet.
-export function canDiscardUncertainMutation(clientMutationId: string): boolean {
-  return (
-    (threadsStore.getState().uncertainRecheckFailures.get(clientMutationId) ?? 0) >= UNCERTAIN_DISCARD_AFTER_RECHECKS
-  );
-}
-
-// The user's own way out of a delivery-uncertain row: it leaves the outbox, its
-// failed-check count leaves with it, and whatever queue waited behind it may
-// move again. Its fate was unknown to both sides, so nothing else could have
-// cleared it.
-export async function discardUncertainMutation(clientMutationId: string, targetRef: string): Promise<boolean> {
-  const runtime = requireMutationRuntime();
-  const capture = runtime.storage.getOutboxWithStopEpoch(clientMutationId);
-  await runtime.start;
-  const { record } = await capture;
-  if (!record || !canDiscardUncertainMessage(record) || !localMutationIdentityMatches(record, targetRef)) return false;
-  if (!canDiscardUncertainMutation(clientMutationId)) return false;
-  const discarded = await runtime.storage.discardUncertainMessage(record);
-  if (!discarded) return false;
-  clearUncertainRecheckFailure(clientMutationId);
-  noteHandledMutation(clientMutationId);
-  noteMutationStateChange(targetRef);
-  notifyMutationPersistence([targetRef]);
-  // The row was the ref's FIFO head; the messages behind it were waiting on it.
-  notifyReadyForMutationDispatch([targetRef]);
-  return true;
-}
-
-// One more failed opportunity to check a row's fate: a Retry press that still
-// cannot decide its delivery, or a resume drive that died while it stood (the
-// resume was the reconciliation's precondition). Keyed by the row, so every
-// uncertain row earns its own escape and a sibling's misfortune never unlocks
-// this row's discard.
-export function noteUncertainRecheckFailure(clientMutationId: string): void {
-  threadsStore.setState((state) => {
-    const uncertainRecheckFailures = new Map(state.uncertainRecheckFailures);
-    uncertainRecheckFailures.set(clientMutationId, (uncertainRecheckFailures.get(clientMutationId) ?? 0) + 1);
-    return { uncertainRecheckFailures };
-  });
-}
-
-// The projection's cleanup: a failure count belongs to a row that still stands
-// uncertain. One that settled (or was discarded) takes its count with it, so a
-// NEW uncertain row starts its own honest reconciliation attempts.
-export function clearUncertainRecheckFailure(clientMutationId: string): void {
-  threadsStore.setState((state) => {
-    if (!state.uncertainRecheckFailures.has(clientMutationId)) return {};
-    const uncertainRecheckFailures = new Map(state.uncertainRecheckFailures);
-    uncertainRecheckFailures.delete(clientMutationId);
-    return { uncertainRecheckFailures };
-  });
 }
 
 interface QueuedMutationProjection {
@@ -7262,7 +7194,6 @@ function replaceThread(
 export const threadsStore = createStore<ThreadsStoreState>(() => ({
   threads: new Map(),
   mutationWriteStalled: false,
-  uncertainRecheckFailures: new Map(),
   mutationReconciliationFailures: new Set(),
   mutationReconciliationStorageBlocked: new Set(),
   restartBlockingObligations: new Map(),

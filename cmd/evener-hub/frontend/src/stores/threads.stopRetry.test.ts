@@ -21,13 +21,11 @@ import { SessionEntryCache } from "./sessionEntryCache";
 import { holdNextWriteTransaction, wedgeDatabaseOpens } from "./testing/stalledIndexedDB";
 import {
   acquireBackgroundThread,
-  canDiscardUncertainMutation,
   discardRecoveryMutation,
-  discardUncertainMutation,
   installHydrationRetrySchedulerForTests,
   installResumeRetrySchedulerForTests,
-  noteUncertainRecheckFailure,
   notifyReadyForMutationDispatch,
+  removeQueuedMutation,
   resetThreadsStoreForTests,
   resumeStopBaseline,
   retryBlockedMutation,
@@ -1693,24 +1691,19 @@ test("a resume failure that never reached the hub counts as no failed delivery c
   await refreshPendingTurnsProjection(ref);
   await flushIndexedDBUntil(() => false);
   // With the hub reachable, the drive's resume request goes out and the hub
-  // refuses it: that is one failed opportunity to check the row's fate.
+  // refuses it.
   fake.on("thread/resume", () => {
     throw new Error("rendezvous timed out");
   });
   await threadsStore.getState().resumeSession(ref);
-  // The hub-reachable failure published, and its one refused request is one
-  // failed fate check.
+  // The hub-reachable failure published.
   expect(threadsStore.getState().resumeFailures.has(ref)).toBe(true);
-  expect(threadsStore.getState().uncertainRecheckFailures.get(row.clientMutationId)).toBe(1);
-  // Then, with no ready client, a later drive fails before any request goes
-  // out. It checked nothing, so the row's count must stay where the real check
-  // left it - a hub outage between checks never advances the discard
-  // threshold - and no second resume request exists.
+  // Then, with no ready client, a later drive fails before any request goes out,
+  // and no second resume request exists.
   connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
   await threadsStore.getState().resumeSession(ref);
   expect(threadsStore.getState().resumeFailures.has(ref)).toBe(true);
   expect(fake.calls.filter((call) => call.method === "thread/resume")).toHaveLength(1);
-  expect(threadsStore.getState().uncertainRecheckFailures.get(row.clientMutationId)).toBe(1);
 });
 
 // The escape ledger counts FAILED FATE CHECKS, and a drive whose client died
@@ -1778,7 +1771,6 @@ test("a resume drive whose reconnect dies before its request counts no failed de
   await drive;
   await waitFor(() => expect(scheduledResumeRetries).toHaveLength(1));
   expect(fake.calls.filter((call) => call.method === "thread/resume")).toHaveLength(0);
-  expect(threadsStore.getState().uncertainRecheckFailures.has(row.clientMutationId)).toBe(false);
 });
 
 // The armed retry must also honor a Stop this page never saw: another tab's
@@ -3064,13 +3056,12 @@ test("a press that fails while an older backoff stands supersedes its fences", a
   expect(fake.calls.filter((call) => call.method === "thread/resume")).toHaveLength(3);
 });
 
-// The complaint this escape hatch answers: an uncertain message sat at the head
-// and every later message waited behind it, with no way to clear it. After the
-// hub has had its chances to settle the row, the user can let it go and the
-// queue moves.
-test("discarding an uncertain head lets the messages behind it send", async ({ onTestFinished }) => {
+// The complaint this answers: an uncertain message sat at the head and every
+// later message waited behind it, with no way to clear it. It is local work like
+// any other row, so Remove reaches it and the queue moves.
+test("removing an uncertain head lets the messages behind it send", async ({ onTestFinished }) => {
   trackScheduledResumeRetries(onTestFinished);
-  const ref = "local:discard-uncertain";
+  const ref = "local:remove-uncertain";
   const storage = new MutationOutboxIndexedDB();
   setMutationStorageForTests(storage);
   const fake = connectMutationClient();
@@ -3082,11 +3073,10 @@ test("discarding an uncertain head lets the messages behind it send", async ({ o
       disposition: "applied",
       projectionState: "notProjected",
     },
-    turn: { id: "turn_after_discard", status: "inProgress", itemsView: "" },
+    turn: { id: "turn_after_remove", status: "inProgress", itemsView: "" },
   }));
   await threadsStore.getState().ensureThread(ref);
   await flushIndexedDBUntil(() => false);
-  // A message whose delivery the hub cannot settle.
   const blocked = await storage.enqueueIntent({
     targetRef: ref,
     threadId: `thr_${ref}`,
@@ -3098,16 +3088,8 @@ test("discarding an uncertain head lets the messages behind it send", async ({ o
   await storage.markAttempted(blocked.clientMutationId);
   await storage.markUnknown(blocked.clientMutationId, "blockedUnknown");
 
-  // Before the hub has had its chances, the hatch is shut.
-  expect(await discardUncertainMutation(blocked.clientMutationId, ref)).toBe(false);
-  noteUncertainRecheckFailure(blocked.clientMutationId);
-  noteUncertainRecheckFailure(blocked.clientMutationId);
-  expect(canDiscardUncertainMutation(blocked.clientMutationId)).toBe(true);
-
-  // The user lets it go: the row leaves the outbox and its count with it.
-  expect(await discardUncertainMutation(blocked.clientMutationId, ref)).toBe(true);
+  expect(await removeQueuedMutation(blocked.clientMutationId, ref)).toBe(true);
   expect(await storage.getOutbox(blocked.clientMutationId)).toBeUndefined();
-  expect(canDiscardUncertainMutation(blocked.clientMutationId)).toBe(false);
 
   // The ref is free again: the next press goes out.
   const sentTexts = () =>

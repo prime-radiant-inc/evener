@@ -13,7 +13,6 @@ import { MutationOutboxIndexedDB } from "../../../stores/mutationOutboxIndexedDB
 import { holdNextTransaction, holdNextWriteTransaction } from "../../../stores/testing/stalledIndexedDB";
 import {
   editQueuedMutation,
-  noteUncertainRecheckFailure,
   removeQueuedMutation,
   resetThreadsStoreForTests,
   setMutationStorageForTests,
@@ -1787,10 +1786,9 @@ test("an ordinary send cannot start while a recovery Edit claim is settling", as
   }
 });
 
-// The escape hatch the stuck-uncertain-message complaint asked for: an uncertain
-// row in the queue strip offers Discard once the hub has had its chances, and
-// discarding it leaves the outbox.
-test("an uncertain queued message offers Discard after its failed checks", async () => {
+// The stuck-uncertain-message complaint: an uncertain row in the queue strip
+// looks and acts like any other local message, so the user can clear it.
+test("an uncertain queued message offers Remove like any other row", async () => {
   const storage = new MutationOutboxIndexedDB();
   setMutationStorageForTests(storage);
   const { fake } = await setup(false, storage);
@@ -1807,15 +1805,9 @@ test("an uncertain queued message offers Discard after its failed checks", async
   mount(fake);
   await flushPendingTurnsProjectionForTests();
   await waitFor(() => expect(screen.getByText("Delivery uncertain")).toBeTruthy());
-  // The hatch is shut until the hub has been asked twice.
-  expect(screen.queryByRole("button", { name: "Discard message" })).toBeNull();
+  const remove = await screen.findByRole("button", { name: "Remove from queue" });
   await act(async () => {
-    noteUncertainRecheckFailure(record.clientMutationId);
-    noteUncertainRecheckFailure(record.clientMutationId);
-  });
-  const discard = await screen.findByRole("button", { name: "Discard message" });
-  await act(async () => {
-    fireEvent.click(discard);
+    fireEvent.click(remove);
   });
   await waitFor(async () => expect(await storage.getOutbox(record.clientMutationId)).toBeUndefined());
 });

@@ -1442,7 +1442,6 @@ test("a Stop followed by a rejected resume RPC arms no automatic retry and count
   });
   await waitFor(() => expect(threadsStore.getState().resumeFailures.get(ref)?.stopCanceled).toBe(true));
   expect(scheduledResumeRetries).toHaveLength(0);
-  expect(threadsStore.getState().uncertainRecheckFailures.size).toBe(0);
 });
 
 // A Send press that joins an in-flight drive still owns a toast for that

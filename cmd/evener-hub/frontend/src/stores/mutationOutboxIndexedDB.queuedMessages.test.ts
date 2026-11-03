@@ -633,27 +633,22 @@ test("preserveRecoveryComposition reuses a row that already holds the compositio
   expect(await f.storage.listRecovery(original.targetRef)).toHaveLength(1);
 });
 
-test("discardUncertainMessage removes only the uncertain row the user chose", async () => {
+test("removeQueuedMessage clears a delivery-uncertain row the user lets go", async () => {
   const f = fixture();
   const uncertain = await f.storage.enqueueIntent(queuedIntent());
   await f.storage.markAttempted(uncertain.clientMutationId);
   await f.storage.markUnknown(uncertain.clientMutationId, "blockedUnknown");
   const waiting = await f.storage.enqueueIntent(queuedIntent());
-
-  // The snapshot is the row as the user saw it.
   const uncertainNow = await f.storage.getOutbox(uncertain.clientMutationId);
   if (uncertainNow === undefined) throw new Error("fixture row missing");
 
-  // A waiting row is not uncertain: the escape hatch is for a row whose fate
-  // the hub could not settle.
-  expect(await f.storage.discardUncertainMessage(waiting)).toBe(false);
-  expect(await f.storage.discardUncertainMessage(uncertainNow)).toBe(true);
-
+  // An uncertain row is local work like any other: the user's Remove reaches it.
+  expect(await f.storage.removeQueuedMessage(uncertainNow, { stopEpoch: 0 })).toBe(true);
   expect(await f.storage.getOutbox(uncertain.clientMutationId)).toBeUndefined();
   expect(await f.storage.getOutbox(waiting.clientMutationId)).toMatchObject({ state: "submitting" });
 });
 
-test("discardUncertainMessage refuses a row that changed since the click", async () => {
+test("removeQueuedMessage refuses an uncertain row that changed since the click", async () => {
   const f = fixture();
   const uncertain = await f.storage.enqueueIntent(queuedIntent());
   await f.storage.markAttempted(uncertain.clientMutationId);
@@ -664,6 +659,6 @@ test("discardUncertainMessage refuses a row that changed since the click", async
   // not remove a row whose fate is now known.
   await f.peer.settleReceipt(uncertain.clientMutationId, "notProjected");
 
-  expect(await f.storage.discardUncertainMessage(uncertainNow)).toBe(false);
+  expect(await f.storage.removeQueuedMessage(uncertainNow, { stopEpoch: 0 })).toBe(false);
   expect(await f.storage.getOutbox(uncertain.clientMutationId)).toBeUndefined();
 });

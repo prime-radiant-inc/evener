@@ -27,13 +27,11 @@ import type { MutationRecoveryResendResult } from "../../../../stores/mutationOu
 import { clearProjectionWorkForTests, trackProjectionWork } from "../../../../stores/projectionWork";
 import {
   type ComposerMutationRoute,
-  clearUncertainRecheckFailure,
   discardRecoveryMutation,
   editQueuedMutation,
   type InputAttachment,
   installQueuedMutationProjection,
   installResumeOnlyProjection,
-  noteUncertainRecheckFailure,
   notifyReadyForMutationDispatch,
   preserveRecoveryMutation,
   readMutationPersistence,
@@ -200,21 +198,6 @@ async function readProjectionIntoStore(ref?: string): Promise<boolean> {
   // between, and it must still out-rank this snapshot for that target.
   const targets = accepted.apply();
   pendingTurnsStore.projectSnapshot(targets, snapshot);
-  // Delivery-uncertain bookkeeping: a failure count belongs to a row that
-  // still stands uncertain. One that settled (or was discarded) takes its
-  // count with it, so a NEW uncertain row starts its own honest
-  // reconciliation attempts. One pass over the outbox answers every counted
-  // row.
-  const failures = threadsStore.getState().uncertainRecheckFailures;
-  if (failures.size > 0) {
-    const standing = new Set<string>();
-    for (const record of pendingTurnsStore.getState().outbox.values()) {
-      if (record.state === "blockedUnknown") standing.add(record.clientMutationId);
-    }
-    for (const clientMutationId of failures.keys()) {
-      if (!standing.has(clientMutationId)) clearUncertainRecheckFailure(clientMutationId);
-    }
-  }
   // Readiness follows the fence's own ownership check, at the same moment the
   // snapshot is projected: a read a newer read or a live commit has already
   // superseded is not this ref's current word, so it must not mark the ref
@@ -546,9 +529,6 @@ export function retryBlockedPendingTurn(clientMutationId: string, ref: string): 
       if (await mutateThenRefresh(ref, () => retryBlockedMutation(clientMutationId))) return { released: true };
       const { outbox } = await readMutationPersistence(ref);
       const current = outbox.find((entry) => entry.clientMutationId === clientMutationId);
-      // The press could not decide the row's fate: one more failed delivery
-      // check recorded for this row's own escape ledger.
-      if (current?.state === "blockedUnknown") noteUncertainRecheckFailure(clientMutationId);
       return { released: false, current };
     })(),
   );
