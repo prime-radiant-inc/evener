@@ -253,6 +253,13 @@ rows prefer this label; genuinely unnamed records keep each view's existing prom
 fallback. Names are display data: owner refs and delegate IDs still identify and
 address delegates. Reading a name needs no child transcript or navigation lookup.
 
+The `outcome`, `reason`, `error`, `runEndedAt` and terminal settlement belong to
+the current run generation. While that generation is open, the row does not
+expose a previous generation's ending: its string and timestamp fields are
+omitted and `terminal` is false. `RunFinished` atomically publishes the current
+generation's outcome and terminal packet. A previously captured historical
+snapshot remains immutable.
+
 `evener/thread/delegates/list` carries `reportPreview` from the durable reported
 completion packet of the current settled run. It preserves a useful prefix of
 up to 4,096 Unicode code points, including the ellipsis when truncated;

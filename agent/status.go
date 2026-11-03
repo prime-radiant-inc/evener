@@ -505,7 +505,15 @@ func delegateStatusInfoFromSnapshot(now time.Time, rootID string, row delegateSn
 // terminal packet whose metadata runs past the payload cap and never parses such
 // a document; a diagnostics status is not that frame, so it keeps them.
 func delegateFrameStatusInfo(now time.Time, rootID string, row delegateSnapshot) DelegateStatusInfo {
-	return delegateStatusInfo(now, rootID, row, true)
+	out := delegateStatusInfo(now, rootID, row, true)
+	if !delegateRunTerminal(row.lastOutcome, row.currentRunOpen) {
+		out.Outcome = ""
+		out.Reason = ""
+		out.Error = ""
+		out.RunEndedAt = ""
+		out.Terminal = false
+	}
+	return out
 }
 
 func delegateStatusInfo(now time.Time, rootID string, row delegateSnapshot, boundedMetadata bool) DelegateStatusInfo {

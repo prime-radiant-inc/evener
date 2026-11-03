@@ -16,6 +16,13 @@ import {
 } from "./sessionActivityTestUtils";
 import { deferred } from "./testing/deferred";
 import { callsTo } from "./testing/fakeClient";
+import {
+  subagentOutcomesDelegatesResponse,
+  subagentResumedDelegatesResponse,
+  subagentResumedFinishedNotification,
+  subagentResumedOpenDelegatesResponse,
+  subagentResumedOpenNotification,
+} from "./testing/subagentWireFixtures";
 import type {
   AnyNotification,
   EvenerDelegateInfo,
@@ -419,6 +426,62 @@ test("a resume clears the prior report", async () => {
   const row = store.getSnapshot().delegates.rows[0];
   expect(row?.runGeneration).toBe(2);
   expect(row?.reportPreview).toBeUndefined();
+});
+
+test("recorded resumed-run frames match fresh reads without rereading a loaded row", async () => {
+  const initial = subagentOutcomesDelegatesResponse();
+  const freshOpen = subagentResumedOpenDelegatesResponse();
+  const freshFinished = subagentResumedDelegatesResponse();
+  const client = activityClient();
+  client.on("evener/thread/delegates/list", () => initial);
+  const store = new SessionActivityStore(client, initial.context.ref, {
+    scope: "subtree",
+    clock: {
+      setTimeout: (callback, ms) => setTimeout(callback, ms),
+      clearTimeout: (handle) => clearTimeout(handle as ReturnType<typeof setTimeout>),
+    },
+  });
+  owners.push(store);
+  store.observe("delegates");
+  await activityState(store, () => store.getSnapshot().delegates.complete);
+  const row = () => store.getSnapshot().delegates.rows.find(({ delegateId }) => delegateId === "dlg_reported");
+  const fresh = (response: SessionDelegatesResponse) =>
+    response.delegates.find(({ delegateId }) => delegateId === "dlg_reported");
+  expect(row()).toMatchObject({ runGeneration: 1, outcome: "completed", terminal: true });
+
+  const reads = callsTo(client, "evener/thread/delegates/list");
+  client.emitNotification(subagentResumedOpenNotification());
+  const open = row();
+  const openRead = fresh(freshOpen);
+  expect(callsTo(client, "evener/thread/delegates/list")).toBe(reads);
+  expect(open).toMatchObject({
+    runGeneration: openRead?.runGeneration,
+    projectionRevision: openRead?.projectionRevision,
+    lifecycle: "running",
+    phase: "running",
+    status: "running",
+    terminal: false,
+  });
+  expect([open?.outcome, open?.reason, open?.error, open?.runEndedAt, open?.reportPreview]).toEqual([
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+  ]);
+
+  client.emitNotification(subagentResumedFinishedNotification());
+  const finished = row();
+  const finishedRead = fresh(freshFinished);
+  expect(callsTo(client, "evener/thread/delegates/list")).toBe(reads);
+  expect(finished).toMatchObject({
+    runGeneration: finishedRead?.runGeneration,
+    projectionRevision: finishedRead?.projectionRevision,
+    outcome: finishedRead?.outcome,
+    terminal: finishedRead?.terminal,
+    runEndedAt: finishedRead?.runEndedAt,
+    reportPreview: finishedRead?.reportPreview,
+  });
 });
 
 test("a frame sets a row's latest intent and a later frame clears it", async () => {

@@ -9,8 +9,10 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/internal/delegatestore"
 	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/internal/appprojector"
 )
 
 func TestSessionActivityReportPreviewFollowsSettledGeneration(t *testing.T) {
@@ -108,6 +110,166 @@ func TestSessionActivityReportPreviewFollowsSettledGeneration(t *testing.T) {
 	}
 	appendEvents(delegateControllerRunStartedEvent(id, 3, delegatestore.TriggerAttention, at.Add(4*time.Second)), delegateRunFinishedEvent(delegateLease{delegateID: id, generation: 3}, delegatestore.OutcomeCompleted, delegatestore.DispositionCompletedNoAction, "", at.Add(5*time.Second), "", nil))
 	assertReport("", 3)
+}
+
+func TestSessionActivityOpenGenerationOmitsPriorOutcome(t *testing.T) {
+	t.Parallel()
+	type ending struct {
+		outcome       string
+		reason        string
+		errorText     string
+		endedAt       string
+		terminal      bool
+		reportPreview string
+	}
+	for _, tc := range []struct {
+		name        string
+		outcome     delegatestore.OutcomeStatus
+		disposition delegatestore.RunDisposition
+		reason      string
+		errorText   string
+		packet      delegatestore.TerminalPacket
+		wantReport  string
+	}{
+		{
+			name:        "successful prior generation",
+			outcome:     delegatestore.OutcomeCompleted,
+			disposition: delegatestore.DispositionReported,
+			packet:      delegatestore.TerminalPacket{Kind: delegatestore.PacketReported, Message: json.RawMessage(`"prior report"`)},
+			wantReport:  "prior report",
+		},
+		{
+			name:        "failed prior generation",
+			outcome:     delegatestore.OutcomeFailed,
+			disposition: delegatestore.DispositionTerminalError,
+			reason:      "run_error",
+			errorText:   "provider returned 500",
+			packet:      delegatestore.TerminalPacket{Kind: delegatestore.PacketTerminalError, Message: json.RawMessage(`"provider returned 500"`)},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := newSession(t, withoutGitSnapshot(), withConfig(SessionConfig{StateDir: t.TempDir(), MaxSubagentDepth: 1, AgentsDocPath: filepath.Join(t.TempDir(), "no-personal-AGENTS.md")}))
+			at := time.Unix(100, 0).UTC()
+			id := "dlg_generation_ending"
+			descriptor := stableToolDescriptor(s, id, "")
+			appendEvents := func(events ...delegatestore.Event) {
+				t.Helper()
+				s.delegateController.mu.Lock()
+				_, err := s.delegateController.appendLocked(events...)
+				s.delegateController.mu.Unlock()
+				if err != nil {
+					t.Fatal(err)
+				}
+			}
+			seedStableReadonlyFinish(t, s, id, descriptor, at, delegateFinish{outcome: tc.outcome, disposition: tc.disposition, reason: tc.reason, errorText: tc.errorText, packet: &tc.packet, endedAt: at.Add(time.Second)}, false)
+
+			prior := ending{outcome: string(tc.outcome), reason: tc.reason, errorText: tc.errorText, endedAt: at.Add(time.Second).Format(time.RFC3339Nano), terminal: true, reportPreview: tc.wantReport}
+			open := ending{}
+			second := ending{outcome: string(delegatestore.OutcomeCompleted), endedAt: at.Add(3 * time.Second).Format(time.RFC3339Nano), terminal: true, reportPreview: "second report"}
+			assertRows := func(stage string, generation uint64, phase delegatestore.Phase, want ending) {
+				t.Helper()
+				for _, scope := range []appwire.SessionActivityScope{appwire.SessionActivityScopeSession, appwire.SessionActivityScopeSubtree} {
+					params := appwire.SessionActivityListParams{Ref: encodeRef("", s.ID()), Scope: scope}
+					live, err := s.ListActivityDelegates(t.Context(), params)
+					if err != nil {
+						t.Fatalf("%s scope=%s live: %v", stage, scope, err)
+					}
+					// Remove this test's disposable index so the retained read folds the journal afresh.
+					key := s.stateDir + "\x00" + s.ID()
+					sessionActivityIndexes.Lock()
+					if cached := sessionActivityIndexes.entries[key]; cached != nil {
+						delete(sessionActivityIndexes.entries, key)
+						sessionActivityIndexes.order.Remove(cached.element)
+					}
+					sessionActivityIndexes.Unlock()
+					retained, err := LoadSessionActivityDelegates(t.Context(), s.stateDir, s.ID(), params)
+					if err != nil {
+						t.Fatalf("%s scope=%s replay: %v", stage, scope, err)
+					}
+					for source, page := range map[string]appwire.SessionDelegatesResponse{"live": live, "replayed": retained} {
+						if len(page.Delegates) != 1 {
+							t.Fatalf("%s scope=%s source=%s rows=%+v", stage, scope, source, page)
+						}
+						row := page.Delegates[0]
+						if row.RunGeneration != generation || row.Phase != string(phase) {
+							t.Fatalf("%s scope=%s source=%s did not reach generation=%d phase=%s: %+v", stage, scope, source, generation, phase, row)
+						}
+						got := ending{outcome: row.Outcome, reason: row.Reason, errorText: row.Error, endedAt: row.RunEndedAt, terminal: row.Terminal, reportPreview: row.ReportPreview}
+						if got != want {
+							t.Fatalf("%s scope=%s source=%s generation=%d ending=%+v, want %+v; row=%+v", stage, scope, source, generation, got, want, row)
+						}
+					}
+				}
+			}
+			assertProjectedFrame := func(stage string, generation uint64, phase delegatestore.Phase, want ending) {
+				t.Helper()
+				var snapshot delegateSnapshot
+				for _, candidate := range s.delegateController.Snapshot().rows {
+					if candidate.id == id {
+						snapshot = candidate
+					}
+				}
+				data := delegateUpdatedDataFromStatus(delegateFrameStatusInfo(at, s.ID(), snapshot))
+				projector := appprojector.NewAppEventProjector(s.ID(), encodeRef("", s.ID()))
+				notifications := projector.Project(events.SessionEvent{Kind: events.EventDelegateUpdated, SessionID: s.ID(), Data: data})
+				if len(notifications) != 1 {
+					t.Fatalf("%s projected notifications=%+v, want one", stage, notifications)
+				}
+				params, ok := notifications[0].Params.(appwire.EvenerDelegateParams)
+				if !ok {
+					t.Fatalf("%s projected params=%T, want appwire.EvenerDelegateParams", stage, notifications[0].Params)
+				}
+				frame := params.Delegate
+				if frame.RunGeneration != generation || frame.Phase != string(phase) {
+					t.Fatalf("%s projected frame did not reach generation=%d phase=%s: %+v", stage, generation, phase, frame)
+				}
+				got := ending{outcome: frame.Outcome, reason: frame.Reason, errorText: frame.Error, endedAt: frame.RunEndedAt, terminal: frame.Terminal, reportPreview: frame.ReportPreview}
+				if got != want {
+					t.Fatalf("%s projected generation=%d ending=%+v, want %+v; frame=%+v", stage, generation, got, want, frame)
+				}
+				fresh, err := s.ListActivityDelegates(t.Context(), appwire.SessionActivityListParams{Ref: encodeRef("", s.ID()), Scope: appwire.SessionActivityScopeSession})
+				if err != nil || len(fresh.Delegates) != 1 {
+					t.Fatalf("%s fresh parity read rows=%d err=%v", stage, len(fresh.Delegates), err)
+				}
+				if frame.RunGeneration != fresh.Delegates[0].RunGeneration || frame.ProjectionRevision != fresh.Delegates[0].ProjectionRevision {
+					t.Fatalf("%s frame generation/revision=%d/%d, fresh read=%d/%d", stage, frame.RunGeneration, frame.ProjectionRevision, fresh.Delegates[0].RunGeneration, fresh.Delegates[0].ProjectionRevision)
+				}
+			}
+			assertRows("settled prior generation", 1, delegatestore.PhaseIdle, prior)
+
+			read, err := s.activityRead(t.Context(), appwire.SessionActivityReadParams{Ref: encodeRef("", s.ID()), Scope: appwire.SessionActivityScopeSession})
+			if err != nil {
+				t.Fatal(err)
+			}
+			token, walk, err := read.index.token(appwire.SessionActivityListParams{Ref: encodeRef("", s.ID()), Scope: appwire.SessionActivityScopeSession}, appwire.SessionActivityResourceDelegates, s.ID())
+			if err != nil {
+				read.index.release()
+				t.Fatal(err)
+			}
+			candidates, complete, err := read.captureDelegateCandidates(t.Context(), appwire.SessionActivityListParams{Limit: 1}, token, walk)
+			read.index.release()
+			if err != nil || !complete || len(candidates) != 1 {
+				t.Fatalf("capture: candidates=%d complete=%v err=%v", len(candidates), complete, err)
+			}
+
+			appendEvents(delegateControllerRunStartedEvent(id, 2, delegatestore.TriggerOwnerInput, at.Add(2*time.Second)))
+			assertRows("open generation", 2, delegatestore.PhaseRunning, open)
+			assertProjectedFrame("open generation", 2, delegatestore.PhaseRunning, open)
+			packet := delegatestore.TerminalPacket{Kind: delegatestore.PacketReported, Message: json.RawMessage(`"second report"`)}
+			appendEvents(delegatestore.Event{Kind: delegatestore.EventDelegateTerminalPrepared, DelegateID: id, TerminalPrepared: &delegatestore.TerminalPrepared{Generation: 2, Packet: packet}})
+			assertRows("prepared open generation", 2, delegatestore.PhaseSettling, open)
+			assertProjectedFrame("prepared open generation", 2, delegatestore.PhaseSettling, open)
+			appendEvents(delegateRunFinishedEvent(delegateLease{delegateID: id, generation: 2}, delegatestore.OutcomeCompleted, delegatestore.DispositionReported, "", at.Add(3*time.Second), delegateDeliveryID(id, 2), nil))
+			assertRows("settled second generation", 2, delegatestore.PhaseIdle, second)
+			assertProjectedFrame("settled second generation", 2, delegatestore.PhaseIdle, second)
+
+			captured := candidates[0].project()
+			capturedEnding := ending{outcome: captured.Outcome, reason: captured.Reason, errorText: captured.Error, endedAt: captured.RunEndedAt, terminal: captured.Terminal, reportPreview: captured.ReportPreview}
+			if captured.RunGeneration != 1 || capturedEnding != prior {
+				t.Fatalf("captured generation one changed after generation two settlement: %+v", captured)
+			}
+		})
+	}
 }
 
 func TestSessionActivityReportPreviewKeepsBoundedText(t *testing.T) {

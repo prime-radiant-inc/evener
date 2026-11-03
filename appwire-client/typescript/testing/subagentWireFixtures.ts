@@ -14,7 +14,7 @@ import subagentCalls from "../../../agent/testdata/subagentwire/calls.json?raw";
 import subagentOutcomes from "../../../agent/testdata/subagentwire/outcomes.json?raw";
 import type { ItemModel, ThreadModel } from "../model";
 import { hydrateThread } from "../transcriptHistory";
-import type { JobsListResponse, SessionDelegatesResponse, Thread, ThreadItem } from "../types.gen";
+import type { AnyNotification, JobsListResponse, SessionDelegatesResponse, Thread, ThreadItem } from "../types.gen";
 import { wireThread } from "./notifications";
 
 /** The recorded call and result items, in the order history carries them. */
@@ -58,4 +58,17 @@ export function subagentOutcomesDelegatesResponse(): SessionDelegatesResponse {
 export function subagentResumedDelegatesResponse(): SessionDelegatesResponse {
   return (JSON.parse(subagentOutcomes) as { resumedDelegatesResponse: SessionDelegatesResponse })
     .resumedDelegatesResponse;
+}
+
+export function subagentResumedOpenDelegatesResponse(): SessionDelegatesResponse {
+  return (JSON.parse(subagentOutcomes) as { resumedOpenDelegatesResponse: SessionDelegatesResponse })
+    .resumedOpenDelegatesResponse;
+}
+
+export function subagentResumedOpenNotification(): AnyNotification {
+  return (JSON.parse(subagentOutcomes) as { resumedOpenNotification: AnyNotification }).resumedOpenNotification;
+}
+
+export function subagentResumedFinishedNotification(): AnyNotification {
+  return (JSON.parse(subagentOutcomes) as { resumedFinishedNotification: AnyNotification }).resumedFinishedNotification;
 }
