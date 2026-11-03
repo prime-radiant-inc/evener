@@ -268,7 +268,9 @@ func clearThreadControl(ctx context.Context, cfg hubcore.WebConfig, sources *app
 // call when it is unsupported (a non-evener source, or a daemon without the
 // effort hook).
 func setReasoningEffortControl(ctx context.Context, cfg hubcore.WebConfig, sources *appsource.Registry, relays *hubRelay, params appwire.ThreadReasoningEffortSetParams) (appwire.EmptyResponse, error) {
-	ensureEffortRelay(ctx, relays, sources, params.Ref)
+	if err := ensureEffortRelay(ctx, cfg, relays, sources, params.Ref); err != nil {
+		return appwire.EmptyResponse{}, err
+	}
 	once := func() (struct{}, error) {
 		if err := refreshDaemonRestartRequiredError(ctx, cfg, params.Ref, "", ""); err != nil {
 			return struct{}{}, err
@@ -295,16 +297,29 @@ func setReasoningEffortControl(ctx context.Context, cfg hubcore.WebConfig, sourc
 // frame reaches a subscriber only if a relay is listening when the daemon
 // emits it. A cold session's read fails here; afterResume attaches the relay
 // after the resume instead, and both paths are harmless when it already
-// exists.
-func ensureEffortRelay(ctx context.Context, relays *hubRelay, sources *appsource.Registry, ref string) {
+// exists. Discovery is refreshed first: a daemon another caller just started
+// may not be in the roster yet, and resolving before that catch-up makes the
+// attach fail for a session that is already running.
+func ensureEffortRelay(ctx context.Context, cfg hubcore.WebConfig, relays *hubRelay, sources *appsource.Registry, ref string) error {
 	if relays == nil {
-		return
+		return nil
+	}
+	if cfg.Roster != nil {
+		// Best effort: a failed refresh leaves the resolution below to answer,
+		// and the mutation's own attempt refreshes discovery again.
+		_ = hubRosterRefresh(ctx, cfg.Roster)
 	}
 	source, err := sourceForThread(sources, ref, "")
-	if err != nil {
-		return
+	if err == nil {
+		if _, prepErr := relays.prepareRelay(ctx, source, appwire.ThreadReadParams{Ref: ref, IncludeTurns: false}); prepErr != nil && !isSessionUnavailableError(prepErr) {
+			// The change would apply without a listener for its frame, leaving every
+			// subscribed footer stale. Refuse before touching the session instead.
+			return prepErr
+		}
 	}
-	_, _ = relays.prepareRelay(ctx, source, appwire.ThreadReadParams{Ref: ref, IncludeTurns: false})
+	// An unresolved source or an exited daemon both mean the session is cold
+	// here: withSessionResume's afterResume hook attaches the relay.
+	return nil
 }
 
 func drainQueueControl(ctx context.Context, cfg hubcore.WebConfig, sources *appsource.Registry, params appwire.TurnDrainAsSteerParams) (appwire.TurnDrainAsSteerResponse, error) {
