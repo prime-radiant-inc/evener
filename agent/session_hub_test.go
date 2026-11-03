@@ -131,7 +131,7 @@ func TestManagerModeKeepsRunningAndIdleOwnedDelegateSend(t *testing.T) {
 					close(release)
 				}
 			}()
-			fixture.adapter.steps = []func(llm.Request) llm.Response{
+			fixture.adapter.setSteps([]func(llm.Request) llm.Response{
 				func(llm.Request) llm.Response {
 					close(entered)
 					<-release
@@ -139,7 +139,7 @@ func TestManagerModeKeepsRunningAndIdleOwnedDelegateSend(t *testing.T) {
 				},
 				func(llm.Request) llm.Response { return agenttest.FinalResponse("steering consumed") },
 				func(llm.Request) llm.Response { return agenttest.FinalResponse("idle follow-up consumed") },
-			}
+			})
 			root := restoreSupervisionRoot(t, fixture, nil)
 			state := &managerStateForUnit{}
 			root.SetHubClient(state)

@@ -35,18 +35,16 @@ func TestAskUser_AnswerLinkInlineSuccessiveQuestions(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	adapter.steps[0] = func(llm.Request) llm.Response {
+	adapter.setStepAt(0, func(req llm.Request) llm.Response {
 		return agenttest.ToolCallResponse(
 			askUserCall("ask1", askUserArgsValid()),
 			llm.ToolCallData{ID: "barrier", Name: "shell", Arguments: shellArgs},
 		)
-	}
-	adapter.steps = append(adapter.steps,
-		func(llm.Request) llm.Response {
-			return agenttest.ToolCallResponse(askUserCall("ask2", askUserArgsValid()))
-		},
-		func(llm.Request) llm.Response { return agenttest.CommunicateResponse(true, "completed") },
-	)
+	})
+	adapter.appendSteps(func(llm.Request) llm.Response {
+		return agenttest.ToolCallResponse(askUserCall("ask2", askUserArgsValid()))
+	})
+	adapter.appendSteps(func(llm.Request) llm.Response { return agenttest.CommunicateResponse(true, "completed") })
 	process := make(chan error, 1)
 	go func() {
 		_, err := sess.ProcessInput(ctx, "which db should we use?", nil)
