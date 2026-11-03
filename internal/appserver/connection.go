@@ -23,11 +23,6 @@ type Connection struct {
 	sessionToolsInstalling *sessionToolsConnection
 	sessionNext            atomic.Uint64
 	sessionLifetime        context.Context
-	// sessionToolsDiagParent TEMP-DIAGNOSTIC (PR 5498 binding-lifecycle CI
-	// failure): the parent context the binding's lifetime derives from, logged
-	// at binding teardown to separate a peer-initiated HTTP hangup from a
-	// daemon-internal cancel. Remove once the CI-only killer is identified.
-	sessionToolsDiagParent context.Context
 	id                     string
 	server                 *Server
 	send                   chan appwire.Message

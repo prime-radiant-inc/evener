@@ -151,7 +151,6 @@ func (s *Server) ServeWebSocket(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithCancel(parent)
 	conn := s.NewConnection(connectionID)
 	conn.sessionLifetime = ctx
-	conn.sessionToolsDiagParent = parent
 	conn.setCancel(cancel)
 	s.registerConnection(conn)
 	if s.webSocketShutdownStarted() {
