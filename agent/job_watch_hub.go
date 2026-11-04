@@ -643,6 +643,28 @@ func (jm *jobManager) endHubWatchUntilPersisted(watchID, reason string, completi
 // that spoke before the runtime died; no continuing hub watch is restored.
 func hubWatchLostAtRestart(w *jobstore.WatchRecord) bool { return w != nil && w.HubRef != "" }
 
+// The roster's durable ID is reused across registrations. One setup owns the
+// entire join/open/install transaction, including cleanup, so neither an old
+// failure nor an uninstalled initial snapshot can affect a later registration.
+func (jm *jobManager) lockHubRosterReplacement(ctx context.Context) (func(), error) {
+	jm.mu.Lock()
+	if jm.hubRosterReplacement == nil {
+		jm.hubRosterReplacement = make(chan struct{}, 1)
+	}
+	gate := jm.hubRosterReplacement
+	jm.mu.Unlock()
+	select {
+	case gate <- struct{}{}:
+		if err := ctx.Err(); err != nil {
+			<-gate
+			return nil, err
+		}
+		return func() { <-gate }, nil
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+}
+
 func (s *Session) configureHubWatchRuntime(ctx context.Context, args map[string]any) (any, error) {
 	for key := range args {
 		if key != "operation" && key != "hub" && key != "intent" {
@@ -699,14 +721,33 @@ func (s *Session) configureHubWatchRuntime(ctx context.Context, args map[string]
 	if !state.Manager {
 		return nil, appwire.InvalidRequest("session is not a Manager")
 	}
+	var rosterManager *jobManager
+	if request.Scope == "top_level" {
+		rosterManager, err = sessionJobManager(s)
+		if err != nil {
+			return nil, err
+		}
+		unlock, err := rosterManager.lockHubRosterReplacement(ctx)
+		if err != nil {
+			return nil, err
+		}
+		defer unlock()
+	}
 	var rosterHandoffID string
+	var rosterHandoffDone <-chan struct{}
 	defer func() {
 		if rosterHandoffID != "" {
-			_ = s.jobManager.endHubWatchUntilPersisted(rosterHandoffID, "roster replacement subscription failed", nil)
+			rosterManager.mu.Lock()
+			_, cfg, ok := rosterManager.watchConfigByIDLocked(rosterHandoffID)
+			owns := ok && cfg.rosterConsumerDone == rosterHandoffDone
+			rosterManager.mu.Unlock()
+			if owns {
+				_ = rosterManager.endHubWatchUntilPersisted(rosterHandoffID, "roster replacement subscription failed", nil)
+			}
 		}
 	}()
-	if request.Scope == "top_level" && s.jobManager != nil {
-		jm := s.jobManager
+	if rosterManager != nil {
+		jm := rosterManager
 		jm.mu.Lock()
 		cfg := jm.watches[watchKey{VisibleSessionID: jm.sessionID, Target: hubRosterWatchKey, SendTo: runtimeMessageAliasCaller}]
 		var id string
@@ -716,7 +757,7 @@ func (s *Session) configureHubWatchRuntime(ctx context.Context, args map[string]
 		}
 		jm.mu.Unlock()
 		if done != nil {
-			rosterHandoffID = id
+			rosterHandoffID, rosterHandoffDone = id, done
 			s.cancelHubWatch(id)
 			select {
 			case <-done:
@@ -777,15 +818,6 @@ func (s *Session) configureHubWatchRuntime(ctx context.Context, args map[string]
 		}
 		return nil, err
 	}
-	// A replacement stream may restart the revision sequence. The old consumer
-	// has stopped, so compare its fresh initial against the retained baseline.
-	if request.Scope == "top_level" {
-		jm.resetHubRosterRevision(result.WatchID)
-		if err := jm.onHubRoster(result.WatchID, first); err != nil {
-			cancel()
-			return nil, err
-		}
-	}
 	var done chan struct{}
 	if request.Scope == "top_level" {
 		done = make(chan struct{})
@@ -795,6 +827,18 @@ func (s *Session) configureHubWatchRuntime(ctx context.Context, args map[string]
 	// or the durable watch ended; do not end the winner in the deferred cleanup.
 	rosterHandoffID = ""
 	if installed {
+		if request.Scope == "top_level" {
+			// Only the installed transport may reset revisions or apply its initial.
+			// The replacement gate keeps another setup out until this is complete.
+			rosterHandoffID, rosterHandoffDone = result.WatchID, done
+			jm.resetHubRosterRevision(result.WatchID)
+			if err := jm.onHubRoster(result.WatchID, first); err != nil {
+				s.cancelHubWatch(result.WatchID)
+				close(done)
+				return nil, err
+			}
+			rosterHandoffID = ""
+		}
 		go s.consumeHubWatch(watchCtx, result.WatchID, request, state.Ref, state.InstanceID, updates, first, done)
 	}
 	return marshalWatchResult(result, jobToolResultDefaultMaxChar)

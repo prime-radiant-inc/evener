@@ -86,6 +86,9 @@ type jobManager struct {
 	noticesInFlight int
 	watches         map[watchKey]*watchConfig
 	terminalFlush   map[*watchConfig]bool
+	// hubRosterReplacement serializes roster setup through failure cleanup.
+	// Initialized under jm.mu, acquired without holding jm.mu or Session.mu.
+	hubRosterReplacement chan struct{}
 	// watchHistory is a bounded, latest-trimmed ring of watches that have left
 	// the active set, surfaced by job_list so a fired-then-removed watch stays
 	// legible. Guarded by jm.mu.

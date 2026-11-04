@@ -3,9 +3,12 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"primeradiant.com/evener/agent/internal/jobstore"
@@ -414,6 +417,127 @@ type rosterRecoveryClient struct {
 	streams    []chan appwire.SessionWatchUpdate
 	onSecond   func()
 	failSecond bool
+}
+
+type rosterConcurrentClient struct {
+	*managerSetupCancelClient
+	calls atomic.Int32
+	watch func(int32) (<-chan appwire.SessionWatchUpdate, error)
+}
+
+func (c *rosterConcurrentClient) Watch(context.Context, appwire.SessionWatchRequest) (<-chan appwire.SessionWatchUpdate, error) {
+	return c.watch(c.calls.Add(1))
+}
+
+func TestHubRosterWatchConcurrentFailedReplacement(t *testing.T) {
+	t.Parallel()
+	testHubRosterConcurrentReplacement(t, true)
+}
+
+func TestHubRosterWatchConcurrentReplacementRevisionOwnership(t *testing.T) {
+	t.Parallel()
+	testHubRosterConcurrentReplacement(t, false)
+}
+
+func testHubRosterConcurrentReplacement(t *testing.T, failFirst bool) {
+	t.Helper()
+	synctest.Test(t, func(t *testing.T) {
+		root := newMessagingRoot(t, newMessagingAdapter(), func(cfg *SessionConfig) { cfg.Manager = true })
+		jm := root.jobManager
+		jm.enqueue = root.enqueueJobNotification
+		old := make(chan appwire.SessionWatchUpdate, 1)
+		delayed := make(chan appwire.SessionWatchUpdate, 1)
+		winner := make(chan appwire.SessionWatchUpdate, 2)
+		old <- rosterUpdate(50, true, rosterEntry("local:old", "new"))
+		delayed <- rosterUpdate(1000, true, rosterEntry("local:rejected", "error"))
+		winner <- rosterUpdate(1, true, rosterEntry("local:fresh", "new"))
+		entered := make(chan struct{})
+		release := make(chan struct{})
+		unavailable := errors.New("scripted replacement failure")
+		client := &rosterConcurrentClient{
+			managerSetupCancelClient: &managerSetupCancelClient{view: appwire.ManagerView{Ref: "local:manager", InstanceID: "manager-instance", Manager: true}},
+			watch: func(call int32) (<-chan appwire.SessionWatchUpdate, error) {
+				switch call {
+				case 1:
+					return old, nil
+				case 2:
+					close(entered)
+					<-release
+					if failFirst {
+						return nil, unavailable
+					}
+					return delayed, nil
+				case 3:
+					return winner, nil
+				default:
+					return nil, fmt.Errorf("unexpected Watch call %d", call)
+				}
+			},
+		}
+		root.SetHubClient(client)
+		args := map[string]any{"operation": "create", "hub": map[string]any{"scope": "top_level"}}
+		if _, err := root.configureHubWatchRuntime(t.Context(), args); err != nil {
+			t.Fatal(err)
+		}
+		firstResult := make(chan error, 1)
+		go func() {
+			_, err := root.configureHubWatchRuntime(t.Context(), args)
+			firstResult <- err
+		}()
+		<-entered // The first replacement has joined the old consumer and opened Watch.
+		secondResult := make(chan error, 1)
+		go func() {
+			_, err := root.configureHubWatchRuntime(t.Context(), args)
+			secondResult <- err
+		}()
+		// Without serialization the second replacement finishes here, before the
+		// delayed failure or revision-1000 snapshot can damage its revision-1 stream.
+		// With serialization it is blocked on the replacement gate instead.
+		synctest.Wait()
+		close(release)
+		if err := <-firstResult; (failFirst && !errors.Is(err, unavailable)) || (!failFirst && err != nil) {
+			t.Fatalf("first replacement error=%v, scripted failure=%t", err, failFirst)
+		}
+		if err := <-secondResult; err != nil {
+			t.Fatalf("winning replacement failed: %v", err)
+		}
+		synctest.Wait()
+		jm.mu.Lock()
+		cfg := jm.watches[watchKey{VisibleSessionID: jm.sessionID, Target: hubRosterWatchKey, SendTo: runtimeMessageAliasCaller}]
+		live := cfg != nil
+		fresh := live && cfg.rosterBound && cfg.rosterRevision == 1 && len(cfg.rosterBaseline) == 1 && cfg.rosterBaseline["local:fresh"].Ref == "local:fresh"
+		jm.mu.Unlock()
+		if !live {
+			t.Fatal("failed concurrent replacement ended the successful replacement's watch")
+		}
+		if !fresh {
+			t.Fatal("delayed concurrent replacement corrupted the winning revision-1 initial snapshot")
+		}
+		select {
+		case <-cfg.rosterConsumerDone:
+			t.Fatal("winning consumer stopped")
+		default:
+		}
+		winner <- rosterUpdate(2, false, rosterEntry("local:later", "needs_you"))
+		synctest.Wait()
+		jm.mu.Lock()
+		updated := cfg.rosterRevision == 2 && len(cfg.rosterBaseline) == 2 && cfg.rosterBaseline["local:later"].Ref == "local:later"
+		jm.mu.Unlock()
+		if !updated {
+			t.Fatal("winning stream's revision-2 delta did not apply")
+		}
+		delivered, _, _ := root.filterDeliverableJobNotifications(root.drainJobNotifications())
+		if len(delivered) != 1 {
+			t.Fatalf("delivered frames=%d, want one accumulated frame", len(delivered))
+		}
+		found := false
+		for _, entry := range rosterFrameEntries(t, delivered[0].notification.watchSendFrame) {
+			found = found || entry.Ref == "local:later"
+		}
+		if !found {
+			t.Fatal("winning stream's later update was not delivered")
+		}
+	})
 }
 
 func (c *rosterRecoveryClient) Watch(context.Context, appwire.SessionWatchRequest) (<-chan appwire.SessionWatchUpdate, error) {
