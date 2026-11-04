@@ -548,6 +548,8 @@ Underlying Go kind: `string` (no struct fields).
 
 | Field | Go type | Omitempty | Embedded |
 |-------|---------|-----------|----------|
+| `ref` | string | yes |  |
+| `rosterInstanceId` | string | yes |  |
 | `threadId` | string |  |  |
 | `title` | string |  |  |
 | `project` | string |  |  |
@@ -3268,6 +3270,14 @@ Underlying Go kind: `string` (no struct fields).
 | `preview` | string | yes |  |
 
 
+### `RosterEvent`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `AttentionEntry` | [appwire.AttentionEntry](#attentionentry) |  | yes |
+| `kind` | string |  |  |
+
+
 ### `SandboxEscalationRequested`
 
 | Field | Go type | Omitempty | Embedded |
@@ -3854,6 +3864,16 @@ Underlying Go kind: `string` (no struct fields).
 | `navigation` | [appwire.NavigationMutation](#navigationmutation) |  |  |
 
 
+### `SessionRosterUpdate`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `revision` | uint64 |  |  |
+| `initial` | bool | yes |  |
+| `resync` | bool | yes |  |
+| `events` | [][appwire.RosterEvent](#rosterevent) | yes |  |
+
+
 ### `SessionRuntimeCancel`
 
 | Field | Go type | Omitempty | Embedded |
@@ -4039,7 +4059,8 @@ Underlying Go kind: `string` (no struct fields).
 
 | Field | Go type | Omitempty | Embedded |
 |-------|---------|-----------|----------|
-| `ref` | string |  |  |
+| `ref` | string | yes |  |
+| `scope` | string | yes |  |
 | `events` | []string | yes |  |
 | `completion` | bool | yes |  |
 
@@ -4054,6 +4075,7 @@ Underlying Go kind: `string` (no struct fields).
 | Field | Go type | Omitempty | Embedded |
 |-------|---------|-----------|----------|
 | `snapshot` | \*[appwire.ThreadReadResponse](#threadreadresponse) | yes |  |
+| `roster` | \*[appwire.SessionRosterUpdate](#sessionrosterupdate) | yes |  |
 | `notification` | \*[appwire.Notification](#notification) | yes |  |
 | `event` | string | yes |  |
 | `metadata` | [appwire.SessionObservationMetadata](#sessionobservationmetadata) |  |  |

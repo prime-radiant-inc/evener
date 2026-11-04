@@ -1013,8 +1013,9 @@ func appThreadTreeEntries(thread appwire.Thread) (schema.SessionMeta, hubcore.Li
 			Model:      thread.ModelProvider,
 			StartedAt:  hubcore.OrderCreatedAt(createdAt, updatedAt),
 		},
-		SessionID: refText,
-		Project:   project,
+		SessionID:        refText,
+		RosterInstanceID: envvars.FirstNonEmpty(thread.Evener.InstanceID, thread.SessionID),
+		Project:          project,
 	}
 	// The remote row reads its thread-row facts through the one shared reader,
 	// so it cannot drift from the local probe (#2638). Capabilities and

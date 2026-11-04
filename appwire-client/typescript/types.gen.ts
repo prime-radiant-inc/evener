@@ -118,6 +118,12 @@ export interface ArchivedListResponse {
 }
 
 export interface AttentionChanged {
+  ref?: string;
+  /**
+   * RosterInstanceID identifies the session occupying Ref in roster updates.
+   * Clear changes it without changing the workspace ref or threadId.
+   */
+  rosterInstanceId?: string;
   threadId: string;
   title: string;
   project: string;
@@ -3190,6 +3196,35 @@ export interface RepoLaunchConfigStatus {
   preview?: string;
 }
 
+export interface RosterEvent {
+  ref?: string;
+  /**
+   * RosterInstanceID identifies the session occupying Ref in roster updates.
+   * Clear changes it without changing the workspace ref or threadId.
+   */
+  rosterInstanceId?: string;
+  threadId: string;
+  title: string;
+  project: string;
+  level: string;
+  askPending?: boolean;
+  /**
+   * ApprovalPending is true while the session is blocked on a sandbox
+   * escalation a human must allow or deny (M7). It is why an
+   * escalation-promoted session's Level is needs_you; AskPending is the
+   * question's equivalent.
+   */
+  approvalPending?: boolean;
+  /**
+   * NeedsResponse is true while the session rests awaiting with no pending
+   * question: its turn ended with end_reason needs_response, asking for a
+   * reply. A plain reply rests idle and never carries it. Additive: an
+   * older hub omits it, decoding as false.
+   */
+  needsResponse?: boolean;
+  kind: string;
+}
+
 export interface SandboxEscalationRequested {
   /**
    * ThreadID/Ref identify the SESSION this escalation belongs to, so a client can
@@ -3768,6 +3803,13 @@ export interface SessionPinUnpinResponse {
   navigation: NavigationMutation;
 }
 
+export interface SessionRosterUpdate {
+  revision: number;
+  initial?: boolean;
+  resync?: boolean;
+  events?: RosterEvent[];
+}
+
 export interface SessionRuntimeCancel {
   bindingId: string;
   requestId: number;
@@ -3896,13 +3938,15 @@ export interface SessionWatch {
 }
 
 export interface SessionWatchRequest {
-  ref: string;
+  ref?: string;
+  scope?: string;
   events?: string[];
   completion?: boolean;
 }
 
 export interface SessionWatchUpdate {
   snapshot?: ThreadReadResponse;
+  roster?: SessionRosterUpdate;
   notification?: Notification;
   event?: string;
   metadata: SessionObservationMetadata;

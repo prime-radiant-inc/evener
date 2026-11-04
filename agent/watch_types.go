@@ -9,6 +9,7 @@ import (
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/internal/jobstore"
 	"primeradiant.com/evener/agent/provenance"
+	"primeradiant.com/evener/appwire"
 )
 
 // WatchEventKindNames is the canonical, stable list of model-facing event-kind
@@ -216,6 +217,11 @@ type watchConfig struct {
 	hubTurnID          string
 	hubSeen            map[string]bool
 	hubSuspended       bool
+	rosterRevision     uint64
+	rosterBaseline     map[string]appwire.AttentionEntry
+	rosterBound        bool
+	rosterNeedsResync  bool
+	rosterConsumerDone chan struct{}
 	target             string
 	outputMatch        string
 	outputMatcher      *jobstore.OutputMatcher
@@ -436,6 +442,9 @@ type watchSendDelivery struct {
 	watchTarget              string
 	watchedIdentity          string
 	trigger                  string
+	rosterPayload            string
+	rosterInitial            bool
+	rosterResync             bool
 	triggerProvenance        *provenance.Causal
 	// provenance is the delivery's causal chain: the triggering event's
 	// provenance extended with this watch's own (watch_id, generation) key and a

@@ -406,7 +406,8 @@ type SessionStatusTarget struct {
 }
 
 type SessionWatchRequest struct {
-	Ref        string   `json:"ref"`
+	Ref        string   `json:"ref,omitempty"`
+	Scope      string   `json:"scope,omitempty"`
 	Events     []string `json:"events,omitempty"`
 	Completion bool     `json:"completion,omitempty"`
 }
@@ -427,6 +428,7 @@ type SessionObservationMetadata struct {
 
 type SessionWatchUpdate struct {
 	Snapshot     *ThreadReadResponse        `json:"snapshot,omitempty"`
+	Roster       *SessionRosterUpdate       `json:"roster,omitempty"`
 	Notification *Notification              `json:"notification,omitempty"`
 	Event        string                     `json:"event,omitempty"`
 	Metadata     SessionObservationMetadata `json:"metadata"`

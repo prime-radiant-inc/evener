@@ -413,16 +413,6 @@ func (s *Session) createHubDelegate(ctx context.Context, args map[string]any) (a
 	return out, nil
 }
 
-func managerWatchDefinition(def llm.ToolDefinition) llm.ToolDefinition {
-	var params map[string]any
-	encoded, _ := json.Marshal(def.Parameters)
-	_ = json.Unmarshal(encoded, &params)
-	params["properties"].(map[string]any)["hub"] = hubWatchSelectorSchema(map[string]any{"ref": map[string]any{"type": "string"}}, []string{"ref"})
-	def.Description += " In a Manager session, operation=create and hub={ref,events,completion} watches local or remote sessions through the shared hub subscription path. Completion fires when the watched turn is accepted as ended, including targets that do not offer an end reason, such as delegates and headless sessions. Active or question-pending watches retain their turn across reconnect; fresh idle watches catch up only with the latest recorded work. Connection loss suspends, target replacement ends the watch, and Manager runtime restart requires re-registration."
-	def.Parameters = params
-	return def
-}
-
 func (s *Session) composeHubWatchTool() {
 	const name = "job_watch"
 	if s.hubToolDenied(name) {

@@ -12,7 +12,27 @@ import (
 
 	"primeradiant.com/evener/agent/internal/jobstore"
 	"primeradiant.com/evener/agent/internal/tool"
+	"primeradiant.com/evener/llm"
 )
+
+func managerWatchDefinition(def llm.ToolDefinition) llm.ToolDefinition {
+	var params map[string]any
+	encoded, _ := json.Marshal(def.Parameters)
+	_ = json.Unmarshal(encoded, &params)
+	target := hubWatchSelectorSchema(map[string]any{"ref": map[string]any{"type": "string"}}, []string{"ref"})
+	params["properties"].(map[string]any)["hub"] = map[string]any{
+		"type": "object",
+		"oneOf": []any{
+			target,
+			map[string]any{"type": "object", "additionalProperties": false,
+				"properties": map[string]any{"scope": map[string]any{"type": "string", "const": "top_level"}},
+				"required":   []string{"scope"}},
+		},
+	}
+	def.Description += " In a Manager session, operation=create and hub={ref,events,completion} watches one local or remote session. hub={scope:\"top_level\"} is one aggregate global roster watch with fixed events: new, needs_you, error, disappeared; events and completion cannot be selected for this scope. Re-register after resync for a fresh snapshot. Completion fires when the watched turn is accepted as ended, including targets that do not offer an end reason, such as delegates and headless sessions. Active or question-pending watches retain their turn across reconnect; fresh idle watches catch up only with the latest recorded work. Connection loss suspends, target replacement ends a target watch, and Manager runtime restart requires re-registration."
+	def.Parameters = params
+	return def
+}
 
 // liveSteerWaitIgnoredReason returns a note when a caller passed a positive
 // max_wait_ms but the send was a live steer of a running delegate, which returns on
