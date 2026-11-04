@@ -29,9 +29,10 @@ import {
 	type NativeSyntheticEvent,
 	Platform,
 	Pressable,
-	ScrollView,
+	type ScrollViewInstance,
 	Text,
 	TextInput,
+	type TextInputInstance,
 	useWindowDimensions,
 	View,
 } from "react-native";
@@ -372,7 +373,7 @@ function Board({
 		setIdleFolded(folded);
 	};
 
-	const scroller = useRef<ScrollView>(null);
+	const scroller = useRef<ScrollViewInstance>(null);
 	// Where the device has Liquid Glass, one glass spans the nav bar and the
 	// chips under it (spec 16.3), and the Board scrolls under both: its
 	// content is inset by them (underGlass), and every scroll it makes itself
@@ -1449,7 +1450,7 @@ function SearchField({
 	onChangeText,
 	onCancel,
 }: {
-	inputRef: RefObject<TextInput | null>;
+	inputRef: RefObject<TextInputInstance | null>;
 	height: number;
 	text: string;
 	searching: boolean;

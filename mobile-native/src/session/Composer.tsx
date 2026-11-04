@@ -5,7 +5,17 @@
 // it is sending. Steering is something you do to a queued message.
 import { SymbolView } from "expo-symbols";
 import { type ReactNode, type RefObject, useEffect, useState } from "react";
-import { ActionSheetIOS, Alert, Platform, Pressable, Text, TextInput, useWindowDimensions, View } from "react-native";
+import {
+	ActionSheetIOS,
+	Alert,
+	Platform,
+	Pressable,
+	Text,
+	TextInput,
+	type TextInputInstance,
+	useWindowDimensions,
+	View,
+} from "react-native";
 import { useHoldAlerts } from "../alerts/alertsContext";
 import { allowFontScaling, useColors, useTextScale } from "../ui";
 import type { ComposerFocus } from "./composerFocus";
@@ -25,7 +35,7 @@ export interface ComposerProps {
 	 * whether the field can take focus; the composer adds its own focus bit. */
 	mayRest: boolean;
 	onChangeText(text: string): void;
-	inputRef?: RefObject<TextInput | null>;
+	inputRef?: RefObject<TextInputInstance | null>;
 	/** Where the field reports its focus, for what steps aside while you type
 	 * (useComposerTyping). */
 	focus?: ComposerFocus;

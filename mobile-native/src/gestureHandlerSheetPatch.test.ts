@@ -1,52 +1,42 @@
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
-import { patchAddedLines } from "./packagePatch.testkit";
 
-// A swipe row inside a sheet must not fire its press when the swipe lets go
-// (issue #2952). Every sheet is a native-stack formSheet, which UIKit presents
-// outside React Native's RCTSurfaceView. react-native-gesture-handler 2.32
-// cancels a JS responder (a Pressable's touch) by toggling the React touch
-// handler it finds where its root recognizer sits, and it looks for that spot
-// by walking up to an RCTSurfaceView. Inside a formSheet the walk finds none,
-// so no root recognizer is installed, and the Pressable's press survives the
-// swipe. Wrapping sheets in a GestureHandlerRootView doesn't help: on iOS it
-// renders a plain View.
-//
-// mobile-native ships upstream's fix (react-native-gesture-handler PR 4306,
-// released in 2.33.0, outside Expo SDK 57's ~2.32.0 pin) as a patch. The native
-// gate has no iOS toolchain to compile or run it, so this test guards the patch
-// itself: it reads the committed diff and checks the three parts of that fix.
-//
-// When react-native-gesture-handler moves to 2.33.0 or later, delete
-// patches/react-native-gesture-handler+2.32.0.patch and this test. The first
-// test below fails on that upgrade, since patch-package only warns when a
-// patch no longer matches the installed version.
-describe("react-native-gesture-handler sheet touch-cancellation patch", () => {
-	const patchedVersion = "2.32.0";
-	const manager = () =>
-		patchAddedLines("react-native-gesture-handler", patchedVersion, "apple/RNGestureHandlerManager.mm");
+// Native-stack sheets sit outside RCTSurfaceView. Their root recognizer must
+// cancel the screen's touch handler so releasing a swipe cannot press a row.
+// These installed-source checks complement the real simulator sheet journey.
+describe("react-native-gesture-handler sheet touch cancellation", () => {
+	const manager = readFileSync(
+		fileURLToPath(
+			new URL("../node_modules/react-native-gesture-handler/apple/RNGestureHandlerManager.mm", import.meta.url),
+		),
+		"utf8",
+	);
 
-	it("patches the version installed, so an upgrade to the fixed release retires it", () => {
-		const packageJson = fileURLToPath(
-			new URL("../node_modules/react-native-gesture-handler/package.json", import.meta.url),
-		);
-		expect(JSON.parse(readFileSync(packageJson, "utf8")).version).toBe(patchedVersion);
+	it("starts the root search at the child before walking its ancestors", () => {
+		expect(manager).toMatch(/RNGHUIView \*touchHandlerView = childView;/);
+		expect(manager).toMatch(/touchHandlerView = touchHandlerView\.superview;/);
 	});
 
 	it("installs the root recognizer on a modally presented screen", () => {
-		// The walk up from a handler's view stops at a modal RNSScreenView, the
-		// view react-native-screens attaches the sheet's own touch handler to.
-		expect(manager()).toContain('screenViewClass = NSClassFromString(@"RNSScreenView");');
-		expect(manager()).toContain('[[view valueForKey:@"isModal"] boolValue]');
-		expect(manager()).toContain("!RNGHIsScreensTouchHandlerHost(touchHandlerView)");
+		expect(manager).toContain('screenViewClass = NSClassFromString(@"RNSScreenView");');
+		expect(manager).toContain('[[view valueForKey:@"isModal"] boolValue]');
+		expect(manager).toContain("!RNGHIsScreensTouchHandlerHost(touchHandlerView)");
+		expect(manager).toContain("[touchHandlerView addGestureRecognizer:recognizer]");
 	});
 
-	it("retries once when the view isn't connected to its root yet", () => {
-		expect(manager()).toContain("registerViewWithGestureRecognizerAttachedIfNeeded:childView isRetry:YES");
+	it("retries once on the main queue when children mount before their root", () => {
+		expect(manager).toMatch(
+			/if \(touchHandlerView == nil\) \{[\s\S]*?if \(!isRetry\) \{\s*dispatch_async\(dispatch_get_main_queue\(\), \^\{\s*\[self registerViewWithGestureRecognizerAttachedIfNeeded:childView isRetry:YES\];/,
+		);
+		expect(manager.match(/registerViewWithGestureRecognizerAttachedIfNeeded:childView isRetry:YES/g)).toHaveLength(1);
 	});
 
 	it("cancels the touch handler the screen reports when none sits on its view", () => {
-		expect(manager()).toContain('[viewWithTouchHandler valueForKey:@"touchHandler"]');
+		expect(manager).toMatch(
+			/if \(touchHandler == nil && \[viewWithTouchHandler respondsToSelector:[^\n]+\) \{[\s\S]*?\[viewWithTouchHandler valueForKey:@"touchHandler"\]/,
+		);
+		expect(manager).toMatch(/touchHandler = screenTouchHandler;/);
+		expect(manager).toMatch(/\[touchHandler setEnabled:NO\];\s*\[touchHandler setEnabled:YES\];/);
 	});
 });

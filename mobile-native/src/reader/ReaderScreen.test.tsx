@@ -674,6 +674,21 @@ it("remembers where you were and what you read when you leave, and leaves the wa
 	});
 });
 
+it("keeps the visible reading position when another viewability token has no index", async () => {
+	const { tree } = await mount();
+	const list = documentList(tree);
+	const blocks = documentBlocks(PLAN);
+	act(() => list.props.onViewableItemsChanged({ viewableItems: [{ index: undefined }, { index: 1 }], changed: [] }));
+	const scroll = {
+		nativeEvent: { contentOffset: { y: 100 }, layoutMeasurement: { height: 400 }, contentSize: { height: 1000 } },
+	};
+	act(() => {
+		list.props.onScroll(scroll);
+		list.props.onMomentumScrollEnd(scroll);
+	});
+	expect(memory.position(KEY)).toEqual({ blockIndex: 1, blockHash: blocks[1]?.hash, offset: 0, progress: 0.5 });
+});
+
 it("leaves no way back once you read to the end", async () => {
 	const { tree } = await mount();
 	const list = documentList(tree);

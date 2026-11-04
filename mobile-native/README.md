@@ -58,16 +58,16 @@ command is `npm run android` when deferred Android work resumes.
 `npx expo prebuild` generates the native directories from app.config.js. Both native
 platform configurations permit user-entered HTTP hubs; HTTPS should be used
 where transport encryption is needed. Native generated projects are ignored.
-Expo SDK 57 configuration reference: https://docs.expo.dev/versions/v57.0.0/.
+Expo SDK 58 configuration reference: https://docs.expo.dev/versions/v58.0.0/.
 
 The iOS build uses Expo's scene lifecycle, required when building with the iOS 27
-SDK. Keep Expo at 57.0.23 or newer within SDK 57 and the
-`expo-build-properties` `ios.enableSceneSupport` option enabled. Prebuild makes
-the standard Swift AppDelegate an `ExpoReactNativeFactoryProvider` and delegates
-window startup to `EXExpoAppSceneDelegate`; do not hand-edit generated Swift or
-the scene manifest. See the [versioned build-properties reference](https://docs.expo.dev/versions/v57.0.0/sdk/build-properties/).
-`npm test` exercises that real plugin against the installed Expo template and
-checks generated lifecycle structure. An actual simulator Release launch remains
+SDK. SDK 58 ships an AppDelegate that provides the React factory and a
+SceneDelegate that inherits `ExpoAppSceneDelegate`. The scene owns window startup;
+Expo's `SceneEventForwarder` forwards URLs, user activities and lifecycle events.
+Do not set the retired `ios.enableSceneSupport` option or hand-edit generated
+Swift or the scene manifest. See the [versioned build-properties reference](https://docs.expo.dev/versions/v58.0.0/sdk/build-properties/).
+`npm test` exercises the real plugin against the installed Expo template and
+checks startup and forwarding ownership. An actual simulator Release launch remains
 necessary to verify native startup; Metro export alone cannot catch UIKit traps.
 
 ## Checks
