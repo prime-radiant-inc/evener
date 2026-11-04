@@ -36,11 +36,11 @@ const rosterRecoveryFrame = "roster_resync: true\nrecovery: re-register job_watc
 
 // The pending send rail replaces earlier frames for the same watch key.
 // Merge only roster frames there, after it finds the actual undelivered state.
-// Resync drops earlier pending entries. A fresh initial after resync replaces
-// them; a rebind initial without resync keeps earlier undelivered changes.
+// Resync and authoritative initials replace earlier pending entries. Deltas,
+// including ordinary rebind changes, retain pending entries and initial markers.
 func mergeHubRosterFrames(previous, current string) string {
 	if strings.Contains(current, "\nroster_resync: true\n") ||
-		(strings.Contains(current, "\nroster_initial: true\n") && strings.Contains(previous, "\nroster_resync: true\n")) {
+		strings.Contains(current, "\nroster_initial: true\n") {
 		return current
 	}
 	oldPayload := rosterFrameField(previous, "roster_events: ")
@@ -71,6 +71,8 @@ func mergeHubRosterFrames(previous, current string) string {
 	}
 	if strings.Contains(previous, "\nroster_resync: true\n") && !strings.Contains(current, "\nroster_resync: true\n") {
 		current += rosterRecoveryFrame
+	} else if strings.Contains(previous, "\nroster_initial: true\n") {
+		current += "roster_initial: true\n"
 	}
 	return current
 }
@@ -228,7 +230,7 @@ func (jm *jobManager) onHubRoster(id string, update appwire.SessionWatchUpdate) 
 	}
 	delivery := jm.watchSendSnapshot(cfg, hubRosterWatchKey, trigger, events.SessionEvent{SessionID: jm.sessionID})
 	delivery.rosterPayload = payload
-	delivery.rosterInitial, delivery.rosterResync = r.Initial, r.Resync
+	delivery.rosterInitial, delivery.rosterResync = deliverInitial, r.Resync
 	jm.mu.Unlock()
 	jm.recordWatchSendsAndKick([]watchSendDelivery{delivery})
 	return nil

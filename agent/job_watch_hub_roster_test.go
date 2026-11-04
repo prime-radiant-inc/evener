@@ -121,6 +121,145 @@ func TestHubRosterWatchDeliveredFrame(t *testing.T) {
 	}
 }
 
+func TestHubRosterWatchSettledRebindDeliversDelta(t *testing.T) {
+	t.Parallel()
+	root := newMessagingRoot(t, newMessagingAdapter(), nil)
+	jm := root.jobManager
+	jm.enqueue = root.enqueueJobNotification
+	result, err := jm.configureHubRosterWatch(t.Context(), "local:manager")
+	if err != nil {
+		t.Fatal(err)
+	}
+	a, b := rosterEntry("local:a", "new"), rosterEntry("local:b", "new")
+	if err := jm.onHubRoster(result.WatchID, rosterUpdate(10, true, a, b)); err != nil {
+		t.Fatal(err)
+	}
+	initial, _, _ := root.filterDeliverableJobNotifications(root.drainJobNotifications())
+	if len(initial) != 1 {
+		t.Fatalf("initial delivered=%d, want one", len(initial))
+	}
+	if err := jm.settleWatchSendDelivered(initial[0].watchCfg, initial[0].watchState); err != nil {
+		t.Fatal(err)
+	}
+	jm.resetHubRosterRevision(result.WatchID)
+	b.Level, b.Kind = "error", "error"
+	if err := jm.onHubRoster(result.WatchID, rosterUpdate(1, true, a, b)); err != nil {
+		t.Fatal(err)
+	}
+	delivered, _, _ := root.filterDeliverableJobNotifications(root.drainJobNotifications())
+	if len(delivered) != 1 {
+		t.Fatalf("rebind delivered=%d, want one delta", len(delivered))
+	}
+	frame := formatJobNotificationBlock(delivered[0].notification, notificationExcerpt{}, false)
+	entries := rosterFrameEntries(t, frame)
+	if len(entries) != 1 || entries[0] != b {
+		t.Fatalf("rebind entries=%+v, want only changed B=%+v", entries, b)
+	}
+	jm.mu.Lock()
+	_, cfg, ok := jm.watchConfigByIDLocked(result.WatchID)
+	retained := ok && len(cfg.rosterBaseline) == 2 && cfg.rosterBaseline[a.Ref] == a.AttentionEntry && cfg.rosterBaseline[b.Ref] == b.AttentionEntry
+	jm.mu.Unlock()
+	if !retained {
+		t.Fatal("rebind baseline lost unchanged A or changed B")
+	}
+	if rosterFrameField(frame, "roster_initial: ") != "" {
+		t.Fatalf("ordinary rebind delta carried authoritative initial marker: %s", frame)
+	}
+}
+
+func TestHubRosterWatchRecoveryInitialReplacesDeltaAfterSettledResync(t *testing.T) {
+	t.Parallel()
+	root := newMessagingRoot(t, newMessagingAdapter(), nil)
+	jm := root.jobManager
+	jm.enqueue = root.enqueueJobNotification
+	result, err := jm.configureHubRosterWatch(t.Context(), "local:manager")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := jm.onHubRoster(result.WatchID, appwire.SessionWatchUpdate{Roster: &appwire.SessionRosterUpdate{Revision: 1, Resync: true}}); err != nil {
+		t.Fatal(err)
+	}
+	notice, _, _ := root.filterDeliverableJobNotifications(root.drainJobNotifications())
+	if len(notice) != 1 || rosterFrameField(notice[0].notification.watchSendFrame, "roster_resync: ") != "true" {
+		t.Fatalf("resync notice=%+v", notice)
+	}
+	if err := jm.settleWatchSendDelivered(notice[0].watchCfg, notice[0].watchState); err != nil {
+		t.Fatal(err)
+	}
+	if err := jm.onHubRoster(result.WatchID, rosterUpdate(2, false, rosterEntry("local:stale", "new"))); err != nil {
+		t.Fatal(err)
+	}
+	registration, err := jm.configureHubRosterWatch(t.Context(), "local:manager")
+	if err != nil || registration.WatchID != result.WatchID {
+		t.Fatalf("recovery registration=%+v err=%v", registration, err)
+	}
+	jm.resetHubRosterRevision(result.WatchID)
+	if err := jm.onHubRoster(result.WatchID, rosterUpdate(0, true)); err != nil {
+		t.Fatal(err)
+	}
+	delivered, _, _ := root.filterDeliverableJobNotifications(root.drainJobNotifications())
+	if len(delivered) != 1 {
+		t.Fatalf("recovery delivered=%d, want one authoritative empty snapshot", len(delivered))
+	}
+	frame := formatJobNotificationBlock(delivered[0].notification, notificationExcerpt{}, false)
+	if entries := rosterFrameEntries(t, frame); len(entries) != 0 {
+		t.Fatalf("pending delta survived authoritative empty recovery: %+v", entries)
+	}
+	if rosterFrameField(frame, "roster_initial: ") != "true" || rosterFrameField(frame, "roster_resync: ") != "" {
+		t.Fatalf("recovery markers=%s", frame)
+	}
+}
+
+func TestHubRosterWatchPendingInitialMarkerSurvivesDelta(t *testing.T) {
+	t.Parallel()
+	for _, recovery := range []bool{false, true} {
+		t.Run(fmt.Sprintf("recovery=%t", recovery), func(t *testing.T) {
+			root := newMessagingRoot(t, newMessagingAdapter(), nil)
+			jm := root.jobManager
+			jm.enqueue = root.enqueueJobNotification
+			result, err := jm.configureHubRosterWatch(t.Context(), "local:manager")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if recovery {
+				if err := jm.onHubRoster(result.WatchID, appwire.SessionWatchUpdate{Roster: &appwire.SessionRosterUpdate{Revision: 1, Resync: true}}); err != nil {
+					t.Fatal(err)
+				}
+				notice, _, _ := root.filterDeliverableJobNotifications(root.drainJobNotifications())
+				if len(notice) != 1 {
+					t.Fatalf("resync delivered=%d, want one", len(notice))
+				}
+				if err := jm.settleWatchSendDelivered(notice[0].watchCfg, notice[0].watchState); err != nil {
+					t.Fatal(err)
+				}
+			}
+			a, b := rosterEntry("local:a", "new"), rosterEntry("local:b", "needs_you")
+			if err := jm.onHubRoster(result.WatchID, rosterUpdate(2, true, a)); err != nil {
+				t.Fatal(err)
+			}
+			if err := jm.onHubRoster(result.WatchID, rosterUpdate(3, false, b)); err != nil {
+				t.Fatal(err)
+			}
+			jm.resetHubRosterRevision(result.WatchID)
+			if err := jm.onHubRoster(result.WatchID, rosterUpdate(0, true, a, b)); err != nil {
+				t.Fatal(err)
+			}
+			delivered, _, _ := root.filterDeliverableJobNotifications(root.drainJobNotifications())
+			if len(delivered) != 1 {
+				t.Fatalf("delivered=%d, want one coalesced initial", len(delivered))
+			}
+			frame := formatJobNotificationBlock(delivered[0].notification, notificationExcerpt{}, false)
+			entries := rosterFrameEntries(t, frame)
+			if len(entries) != 2 || entries[0] != a || entries[1] != b {
+				t.Fatalf("coalesced initial entries=%+v, want A and B", entries)
+			}
+			if rosterFrameField(frame, "roster_initial: ") != "true" {
+				t.Fatalf("pending initial marker lost after delta: %s", frame)
+			}
+		})
+	}
+}
+
 func TestHubRosterWatchWorkerClearBaseline(t *testing.T) {
 	t.Parallel()
 	root := newMessagingRoot(t, newMessagingAdapter(), nil)
