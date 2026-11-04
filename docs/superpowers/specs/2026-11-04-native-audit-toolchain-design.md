@@ -1,8 +1,7 @@
 # Native dependency security and non-publishing iOS qualification
 
-**Status: Proposed.** Jesse selected a separate, non-publishing Mac CI path.
-The design below still needs his approval before dependency installation or
-implementation. Current product guides remain authoritative.
+**Status: Approved by Jesse on 2026-11-04.** The approved design includes a
+separate, non-publishing Mac CI path. Current product guides remain authoritative.
 
 ## Intent and scope
 
