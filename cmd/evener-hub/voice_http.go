@@ -1,0 +1,289 @@
+package hub
+
+import (
+	"context"
+	"crypto/rand"
+	"crypto/sha256"
+	"encoding/base64"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"io"
+	"net"
+	"net/http"
+	"net/netip"
+	"net/url"
+	"strings"
+	"sync"
+	"time"
+
+	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
+	"primeradiant.com/evener/cmd/evener-hub/internal/hubedge"
+	"primeradiant.com/evener/llm"
+	"primeradiant.com/evener/llm/registry"
+)
+
+const voiceGrantLifetime = 20 * time.Minute
+
+type voicePolicy struct {
+	TrailingSilenceMS int `json:"trailingSilenceMs"`
+	MaxUtteranceMS    int `json:"maxUtteranceMs"`
+	FollowupMS        int `json:"followupMs"`
+	IdleInputMS       int `json:"idleInputMs"`
+}
+
+func currentVoicePolicy() voicePolicy {
+	return voicePolicy{TrailingSilenceMS: 600, MaxUtteranceMS: 30000, FollowupMS: 12000, IdleInputMS: 30000}
+}
+
+type voiceArmRequest struct {
+	Ref                string `json:"ref"`
+	ExpectedInstanceID string `json:"expectedInstanceId"`
+	DeviceID           string `json:"deviceId"`
+	Provider           string `json:"provider"`
+	Model              string `json:"model"`
+	Voice              string `json:"voice"`
+	Takeover           bool   `json:"takeover"`
+}
+
+type voiceArmResponse struct {
+	BindingID  string      `json:"bindingId"`
+	Epoch      string      `json:"epoch"`
+	Grant      string      `json:"grant"`
+	ExpiresAt  time.Time   `json:"expiresAt"`
+	SocketPath string      `json:"socketPath"`
+	SampleRate int         `json:"sampleRate"`
+	Policy     voicePolicy `json:"policy"`
+}
+
+type voiceService struct {
+	web     *WebServer
+	mu      sync.Mutex
+	journal *hubcore.VoiceJournal
+	closed  bool
+}
+
+func (v *voiceService) store() (*hubcore.VoiceJournal, error) {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	if v.closed {
+		return nil, context.Canceled
+	}
+	if v.journal == nil {
+		journal, err := hubcore.NewVoiceJournal(v.web.cfg.HubStateRoot)
+		if err != nil {
+			return nil, err
+		}
+		v.journal = journal
+	}
+	return v.journal, nil
+}
+
+func (v *voiceService) close() {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	v.closed = true
+	if v.journal != nil {
+		_ = v.journal.Close()
+	}
+}
+
+func (v *voiceService) handler() http.Handler {
+	return hubedge.AuthGuard(v.web.cfg.AuthToken)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Cache-Control", "no-store")
+		if !voiceTransportAllowed(r) {
+			voiceHTTPError(w, http.StatusForbidden, "secure_transport_required")
+			return
+		}
+		if r.Method != http.MethodPost {
+			w.Header().Set("Allow", http.MethodPost)
+			voiceHTTPError(w, http.StatusMethodNotAllowed, "method_not_allowed")
+			return
+		}
+		if origin := r.Header.Get("Origin"); origin != "" {
+			u, err := url.Parse(origin)
+			if err != nil || u.Host != r.Host {
+				voiceHTTPError(w, http.StatusForbidden, "origin_not_allowed")
+				return
+			}
+		}
+		switch r.URL.Path {
+		case "/api/voice/arm":
+			v.arm(w, r)
+		default:
+			voiceHTTPError(w, http.StatusNotFound, "not_found")
+		}
+	}))
+}
+
+func (v *voiceService) arm(w http.ResponseWriter, r *http.Request) {
+	var request voiceArmRequest
+	if !decodeVoiceHTTP(w, r, &request) {
+		return
+	}
+	ref, err := appwire.ParseRef(request.Ref)
+	if err != nil || request.Ref != ref.String() || request.ExpectedInstanceID == "" || !validDeviceLabel(request.DeviceID) || len(request.Model) > 128 || len(request.Voice) > 64 || len(request.Provider) > 128 {
+		voiceHTTPError(w, http.StatusBadRequest, "invalid_binding")
+		return
+	}
+	client, err := v.web.voiceClient(r.Context())
+	if err != nil {
+		voiceHTTPError(w, http.StatusServiceUnavailable, "session_unavailable")
+		return
+	}
+	defer func() { _ = client.Close() }()
+	read, err := client.ThreadRead(r.Context(), appwire.ThreadReadParams{Ref: request.Ref})
+	if err != nil {
+		voiceHTTPError(w, http.StatusServiceUnavailable, "session_unavailable")
+		return
+	}
+	if read.Thread.Evener.InstanceID != request.ExpectedInstanceID {
+		voiceHTTPError(w, http.StatusConflict, "instance_changed")
+		return
+	}
+	if !read.Thread.Evener.MutationStateAuthoritative || !read.Thread.Evener.Manager {
+		voiceHTTPError(w, http.StatusConflict, "live_manager_required")
+		return
+	}
+	if request.Provider == "" {
+		request.Provider = "openai"
+	}
+	if request.Model == "" {
+		request.Model = "gpt-realtime-2.1-mini"
+	}
+	if request.Voice == "" {
+		request.Voice = "marin"
+	}
+	if _, _, err := v.web.voiceProvider(r.Context(), request.Provider); err != nil {
+		voiceHTTPError(w, http.StatusServiceUnavailable, "voice_provider_unavailable")
+		return
+	}
+	journal, err := v.store()
+	if err != nil {
+		voiceHTTPError(w, http.StatusServiceUnavailable, "voice_storage_unavailable")
+		return
+	}
+	grant, bindingID, epoch := voiceOpaqueID(), voiceOpaqueID(), voiceOpaqueID()
+	digest := sha256.Sum256([]byte(grant))
+	expires := time.Now().UTC().Add(voiceGrantLifetime)
+	binding := hubcore.VoiceBinding{
+		ID: bindingID, DeviceID: request.DeviceID, Ref: request.Ref,
+		InstanceID: request.ExpectedInstanceID, Epoch: epoch,
+		GrantHash: hex.EncodeToString(digest[:]), ExpiresAt: expires, Active: true,
+		Provider: request.Provider, Model: request.Model, Voice: request.Voice,
+	}
+	if err := journal.CreateBinding(r.Context(), binding, request.Takeover); err != nil {
+		if errors.Is(err, hubcore.ErrVoiceBindingBusy) {
+			voiceHTTPError(w, http.StatusConflict, "binding_owned")
+		} else {
+			voiceHTTPError(w, http.StatusServiceUnavailable, "voice_storage_unavailable")
+		}
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(voiceArmResponse{BindingID: bindingID, Epoch: epoch, Grant: grant, ExpiresAt: expires, SocketPath: "/api/voice/socket", SampleRate: 24000, Policy: currentVoicePolicy()})
+}
+
+func (s *WebServer) voiceClient(ctx context.Context) (*appwire.Client, error) {
+	transport, err := s.appRPC.NewInProcessTransport(ctx)
+	if err != nil {
+		return nil, err
+	}
+	client := appwire.NewClient(transport)
+	client.Start(ctx)
+	if _, err := client.Initialize(ctx, appwire.InitializeParams{}); err != nil {
+		_ = client.Close()
+		return nil, err
+	}
+	return client, nil
+}
+
+func (s *WebServer) voiceProvider(ctx context.Context, name string) (string, http.Header, error) {
+	if s.auth == nil || s.auth.registry() == nil {
+		return "", nil, errors.New("voice provider registry unavailable")
+	}
+	resolved, err := s.auth.registry().ResolveInstance(name)
+	if err != nil {
+		return "", nil, err
+	}
+	if resolved.Protocol != registry.ProtocolOpenAIChat && resolved.Protocol != registry.ProtocolOpenAIResponses {
+		return "", nil, errors.New("voice provider does not use an OpenAI transport")
+	}
+	u, err := url.Parse(resolved.Transport.BaseURL)
+	if err != nil || u == nil || u.Host == "" || u.User != nil || (u.Scheme != "https" && u.Scheme != "http") {
+		return "", nil, errors.New("voice provider endpoint unavailable")
+	}
+	u.Path = strings.TrimRight(u.Path, "/") + "/realtime"
+	u.RawPath, u.Fragment = "", ""
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
+	if err != nil {
+		return "", nil, err
+	}
+	for key, value := range resolved.Headers {
+		req.Header.Set(key, value)
+	}
+	for key, value := range resolved.CredentialHeaders {
+		req.Header.Set(key, value)
+	}
+	auth, ok := llm.AuthenticatorFor(resolved.Transport.Auth)
+	if !ok {
+		return "", nil, errors.New("voice provider authentication unavailable")
+	}
+	if err := auth.Apply(ctx, req, resolved); err != nil {
+		return "", nil, err
+	}
+	return u.String(), req.Header, nil
+}
+
+func voiceOpaqueID() string {
+	var value [32]byte
+	_, _ = rand.Read(value[:])
+	return base64.RawURLEncoding.EncodeToString(value[:])
+}
+
+func decodeVoiceHTTP(w http.ResponseWriter, r *http.Request, target any) bool {
+	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, 16<<10))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(target); err != nil {
+		voiceHTTPError(w, http.StatusBadRequest, "invalid_request")
+		return false
+	}
+	if err := decoder.Decode(new(any)); !errors.Is(err, io.EOF) {
+		voiceHTTPError(w, http.StatusBadRequest, "invalid_request")
+		return false
+	}
+	return true
+}
+
+func voiceHTTPError(w http.ResponseWriter, status int, code string) {
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Cache-Control", "no-store")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(struct {
+		Code string `json:"code"`
+	}{Code: code})
+}
+
+func voiceTransportAllowed(r *http.Request) bool {
+	if r.TLS != nil {
+		return true
+	}
+	remote, err := netip.ParseAddrPort(r.RemoteAddr)
+	if err != nil {
+		return false
+	}
+	local, ok := r.Context().Value(http.LocalAddrContextKey).(net.Addr)
+	if !ok {
+		return false
+	}
+	endpoint, err := netip.ParseAddrPort(local.String())
+	if err != nil {
+		return false
+	}
+	private := func(ip netip.Addr) bool {
+		ip = ip.Unmap()
+		return ip.IsLoopback() || netip.MustParsePrefix("100.64.0.0/10").Contains(ip) || netip.MustParsePrefix("fd7a:115c:a1e0::/48").Contains(ip)
+	}
+	return private(remote.Addr()) && private(endpoint.Addr())
+}

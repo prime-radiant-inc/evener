@@ -25,6 +25,7 @@ import (
 // WebServer wires routes and middleware.
 type WebServer struct {
 	pairings   *devicePairings
+	voice      *voiceService
 	cfg        hubcore.WebConfig
 	appRPC     *appserver.Server
 	navigation *NavigationService
@@ -214,6 +215,8 @@ func newWebServer(cfg hubcore.WebConfig, appwireTrace *appserver.WebSocketTrace)
 	server, hostAdmin, hostManage, notices, auth, pairings := newHubAppServerWithNavigationAndTrace(web.cfg, sources, web.navigation, web.resolveTopLevelSessionRef, appwireTrace)
 	web.appRPC = server
 	web.pairings = pairings
+	web.voice = &voiceService{web: web}
+	context.AfterFunc(server.Lifetime(), web.voice.close)
 	// A launch model list a picker was served stale has been refreshed with a
 	// different one. evener/auth/updated's no-data form is the broadcast the
 	// hub sends when a model listing changes what clients show, and every
@@ -341,7 +344,14 @@ func (s *WebServer) Handler() http.Handler {
 	// harvesting; identity middleware when unset, so the stack is unchanged.
 	record := newHTTPRequestRecorder(s.cfg.HubStateRoot)
 	guarded := record(auth(httpsec.CSPMiddleware(mux)))
+	voice := s.voice.handler()
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Voice requests carry scoped credentials and private microphone data.
+		// They keep their own authentication boundary outside corpus recording.
+		if strings.HasPrefix(r.URL.Path, "/api/voice/") {
+			voice.ServeHTTP(w, r)
+			return
+		}
 		if r.URL.Path == "/api/device-pairing" {
 			s.pairings.serveHTTP(w, r)
 			return
