@@ -55,6 +55,11 @@
     "tweetnacl": "1.0.3",
     "zustand": "^5.0.15"
   },
+  "overrides": {
+    "@bacons/xcode": {
+      "@xmldom/xmldom": "0.8.15"
+    }
+  },
   "devDependencies": {
     "@bacons/apple-targets": "^5.0.0",
     "@biomejs/biome": "2.5.5",
