@@ -143,6 +143,14 @@ owners that remain; record their removal conditions in the PR.
 | Surviving glob owners, including Apple targets, CLI 58 and fingerprint | Scope glob `14.0.3`, which includes the cancellation fix and supports minimatch 11. Preserve the caller's traversal/matching behavior. Do not put minimatch 11 under an old glob major alone. |
 | Surviving direct minimatch owner, including fingerprint | Scope minimatch `11.0.4`; exercise the owner's ignore behavior and the advisory's compiled-pattern growth bound. |
 
+Jesse approved this narrow cancellation exception on 2026-11-04: a stream started
+with an already-aborted signal may make at most one `lstat` of its working
+directory. It must read no directories, return no results and observe
+cancellation. Record the operation and path so another filesystem read cannot
+pass as that exception. Promise and synchronous walks, cancellation during
+traversal and paused-stream cancellation still require zero post-abort reads.
+This accepts upstream's fixed-cost stream setup without a local dependency patch.
+
 Validate the whole installed tree with `npm ls`, clean `npm ci`, Expo's version
 check, patch application and fresh lockfile audits. Resolve owner contexts
 explicitly rather than assuming npm hoisting. No confirmed high/moderate leaf
@@ -273,7 +281,7 @@ human-readable wording.
 
 | Check | Required evidence |
 | --- | --- |
-| Security regressions | XML injection/serialization rejection with valid plist/workspace round trips; UUID undersized-buffer rejection without partial writes plus valid writes; glob cancellation before later filesystem reads and complete uncancelled results; bounded minimatch compiled alternatives and ordinary matching/ignore behavior. Run adversarial amplification in a bounded child process. |
+| Security regressions | XML injection/serialization rejection with valid plist/workspace round trips; UUID undersized-buffer rejection without partial writes plus valid writes; glob cancellation before later filesystem reads, subject only to the pre-cancelled-stream working-directory metadata exception above, and complete uncancelled results; bounded minimatch compiled alternatives and ordinary matching/ignore behavior. Run adversarial amplification in a bounded child process. |
 | Owner integration | Actual Apple-target discovery patterns, CLI early-exit/completion glob consumers, fingerprint ignores and generated Xcode project parsing. Real filesystem fixtures and resolved owner imports, not mocked dependency implementations. |
 | Scene migration | Real SDK 58 template and plugin pipeline preserve one factory/scene owner, link ownership, identifiers, plist/plugin content and idempotence. Compile and exercise startup/activation on Mac. |
 | Saved work and recovery | Existing draft, local-storage, pending-share and reconnect suites stay green. Include restart/reopen and failed-write cases from their real controllers; no schema or namespace changes. The Mac journey must save/read a real SecureStore profile, reconnect with its restored credential and retain an unsent fixture draft across cold relaunch. |

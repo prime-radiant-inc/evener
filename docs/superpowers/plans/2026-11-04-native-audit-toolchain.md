@@ -241,11 +241,16 @@ git commit -m "fix(native): remove vulnerable UUID tooling owners"
 **Interfaces:**
 - Consumes: `requireFrom`, actual CLI/glob/fingerprint/Apple-target owner imports.
 - Produces: owner-scoped glob `14.0.3` and direct fingerprint minimatch `11.0.4` where those owners survive.
-- Test-only probe: invoke the `.mts` file with the installed `tsx`, selecting `cancel-promise`, `cancel-stream`, `cancel-sync`, `resume` or `minimatch-growth`. Its single JSON result contains `{ completed, readsAfterAbort, files, compiledAlternatives }` as relevant to that case. It delegates observing filesystem calls to real fs and exits after callbacks drain. No fake dependency implementation.
+- Test-only probe: invoke the `.mts` file with the installed `tsx`, selecting `cancel-promise`, `cancel-stream`, `cancel-sync`, `resume` or `minimatch-growth`. Its single JSON result contains `{ completed, readsAfterAbort, operationsAfterAbort, files, compiledAlternatives }` as relevant to that case. Each operation records its name and path. It delegates observing filesystem calls to real fs and exits after callbacks drain. No fake dependency implementation.
 
 - [ ] **Step 1: Add cancellation and bounded-amplification regressions.**
 
 Use real disposable trees, a delegating fs observer, and abort on the first directory read. Test pre-aborted signals and cancellation during traversal. Assert the actual trigger fired before checking no later reads. Add paused-stream abort and uncancelled pause/resume controls. Run amplification in a child with `--max-old-space-size=128` and a parent kill bound; the positive assertion is a completed JSON result, never a timeout:
+
+Apply Jesse's approved pre-cancelled-stream exception: only that case may perform
+at most one post-abort `lstat` of the fixture working directory. Assert the exact
+operation and path, zero directory reads, empty results and observed cancellation.
+All other cancellation cases retain the zero-read assertion below.
 
 ```ts
 expect(cancelled.completed).toBe(true);
