@@ -291,6 +291,28 @@ the demo Board draws real meters, subagent tallies and Quiet/May-be-stuck labels
 
 ## Standalone simulator builds
 
+For a reproducible, non-publishing build, use a fresh checkout on macOS with
+Xcode 26.6, Node 22.13.1, Ruby 3.3.6, Bundler 2.7.2, the locked gems and installed
+npm dependencies:
+
+```sh
+bash scripts/native/ios/build-simulator.sh --output /absolute/new/qualification-output
+```
+
+Run this command from the repository root. It generates with the non-secret
+fixture team `EVENERCI01`, checks repeat generation and CocoaPods lock equality,
+then builds Release and inspects the signed host and embedded share extension.
+It discovers and deletes only its own iPhone simulator. Output must not exist;
+diagnostics include source revision, npm/pod digests, tool identities, the pod
+candidate/diff and `DerivedData`. A changed lock fails and requires review, never
+an automatic source update. Linux refuses before generation.
+
+The separate `iOS qualification` workflow runs this path on native pull requests
+without release credentials. This command currently proves only the build and
+bundle checks. Installed-app credential, rendering and recovery tests remain
+separate requirements. Neither a build nor its diagnostic artifact authorizes
+TestFlight publication or qualifies a physical-device update.
+
 Follow the [locked dependency procedure](../docs/design/mobile/ios-build-distribution.md) to prebuild iOS and install pods.
 Also rerun `pod install` after `npm ci`: CocoaPods restores generated vendored
 sources inside native dependencies, including Expo SQLite's prefixed headers.
