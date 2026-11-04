@@ -446,7 +446,18 @@ func (j *VoiceJournal) CreateBinding(ctx context.Context, b VoiceBinding, takeov
 		return err
 	}
 	if current != "" && b.Active {
-		if !takeover {
+		owner, err := readVoiceBinding(ctx, tx, current)
+		if err != nil {
+			return err
+		}
+		now := time.Now()
+		if !b.ExpiresAt.IsZero() && !b.ExpiresAt.After(now) {
+			return ErrVoiceStale
+		}
+		// A missed expiry timer cannot reserve ownership indefinitely. Missing
+		// expiry metadata is not evidence that an owner's grant has elapsed.
+		expired := !owner.ExpiresAt.IsZero() && !owner.ExpiresAt.After(now)
+		if !takeover && (!expired || !b.ExpiresAt.After(now)) {
 			return ErrVoiceBindingBusy
 		}
 		if _, err := tx.ExecContext(ctx, `UPDATE voice_bindings SET active=0 WHERE id=?`, current); err != nil {
