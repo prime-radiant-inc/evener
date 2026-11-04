@@ -45,6 +45,10 @@ func CommunicateItem(turnID string, entryIndex int, entry schema.Turn) (appwire.
 			CausalKnown: entry.CausalKnown, Causal: provenance.Clone(entry.Causal),
 		},
 	}
+	if p := entry.ConversationProvenance; p != nil {
+		item.ConversationProvenance = &appwire.ConversationOutputProvenance{Version: p.Version, InstanceID: p.InstanceID,
+			RunGeneration: p.RunGeneration, RequestID: p.RequestID, FrontierID: p.FrontierID, SourceItemID: item.ID}
+	}
 	item.StartedAt = entryStartedAt(entry)
 	return item, true
 }

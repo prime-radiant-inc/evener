@@ -620,6 +620,8 @@ type ServerInfo struct {
 }
 
 type FeatureSet struct {
+	ConversationProvenance    bool `json:"conversationProvenance,omitempty"`
+	Voice                     bool `json:"voice,omitempty"`
 	SessionTools              bool `json:"sessionTools,omitempty"`
 	ThreadList                bool `json:"threadList"`
 	ThreadTurnsList           bool `json:"threadTurnsList"`

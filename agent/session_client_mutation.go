@@ -121,22 +121,23 @@ type clientMutationRejection struct {
 }
 
 type clientMutationRecord struct {
-	Actor               schema.SessionActor             `json:"actor,omitzero"`
-	ClientMutationID    string                          `json:"client_mutation_id"`
-	Method              string                          `json:"method"`
-	Payload             json.RawMessage                 `json:"payload,omitempty"`
-	Preconditions       clientMutationPreconditions     `json:"preconditions,omitzero"`
-	StableTurnID        string                          `json:"stable_turn_id,omitempty"`
-	StableQueueEntryIDs []string                        `json:"stable_queue_entry_ids,omitempty"`
-	PayloadHash         string                          `json:"payload_hash"`
-	OperationState      clientMutationOperationState    `json:"operation_state"`
-	ExecutionState      string                          `json:"execution_state"`
-	ProjectionState     appwire.MutationProjectionState `json:"projection_state"`
-	Result              json.RawMessage                 `json:"result,omitempty"`
-	Rejection           *clientMutationRejection        `json:"rejection,omitempty"`
-	Failure             *clientMutationFailure          `json:"failure,omitempty"`
-	AttemptGeneration   uint64                          `json:"attempt_generation"`
-	CommandPreparations []selectedCommandPreparation    `json:"command_preparations,omitempty"`
+	ConversationInputIDs []string                        `json:"conversation_input_ids,omitempty"`
+	Actor                schema.SessionActor             `json:"actor,omitzero"`
+	ClientMutationID     string                          `json:"client_mutation_id"`
+	Method               string                          `json:"method"`
+	Payload              json.RawMessage                 `json:"payload,omitempty"`
+	Preconditions        clientMutationPreconditions     `json:"preconditions,omitzero"`
+	StableTurnID         string                          `json:"stable_turn_id,omitempty"`
+	StableQueueEntryIDs  []string                        `json:"stable_queue_entry_ids,omitempty"`
+	PayloadHash          string                          `json:"payload_hash"`
+	OperationState       clientMutationOperationState    `json:"operation_state"`
+	ExecutionState       string                          `json:"execution_state"`
+	ProjectionState      appwire.MutationProjectionState `json:"projection_state"`
+	Result               json.RawMessage                 `json:"result,omitempty"`
+	Rejection            *clientMutationRejection        `json:"rejection,omitempty"`
+	Failure              *clientMutationFailure          `json:"failure,omitempty"`
+	AttemptGeneration    uint64                          `json:"attempt_generation"`
+	CommandPreparations  []selectedCommandPreparation    `json:"command_preparations,omitempty"`
 	// SteeringKind is accepted atomically with a typed pending notification.
 	// Reconstruction restores it onto the delivered steering entry.
 	SteeringKind string `json:"steering_kind,omitempty"`
@@ -179,6 +180,7 @@ type clientMutationInterruptFence struct {
 type clientMutationPendingExecutions map[string]appwire.PendingMutation
 
 type clientMutationSnapshot struct {
+	ConversationRevision uint64 `json:"conversation_revision,omitempty"`
 	// HumanNote is absent until canonical authority has been established; empty is a saved clear.
 	HumanNote *string `json:"human_note,omitempty"`
 	Version   int     `json:"version"`
@@ -352,7 +354,24 @@ func (s *Session) acceptClientMutation(spec clientMutationSpec, prepare, effect 
 			rejectClientMutation(record, appwire.Conflict("turn interrupt is pending"))
 			return nil
 		}
-		return prepare(snapshot, record)
+		if err := prepare(snapshot, record); err != nil {
+			return err
+		}
+		if record.OperationState != clientMutationOperationRejected {
+			if spec.input != nil && len(*spec.input) > 0 {
+				record.ConversationInputIDs = append(record.ConversationInputIDs, "client:"+record.ClientMutationID)
+			}
+			if record.Method == clientMutationMethodDrain || record.Method == clientMutationMethodPromote {
+				for _, entry := range snapshot.InputQueue {
+					if slices.Contains(record.StableQueueEntryIDs, entry.ID) {
+						record.ConversationInputIDs = append(record.ConversationInputIDs, snapshot.Journal[entry.ClientMutationID].ConversationInputIDs...)
+					}
+				}
+			}
+			slices.Sort(record.ConversationInputIDs)
+			record.ConversationInputIDs = slices.Compact(record.ConversationInputIDs)
+		}
+		return nil
 	}, effect)
 	if err != nil {
 		return clientMutationLookup{}, err
@@ -1669,6 +1688,7 @@ func (s *clientMutationStore) executeAtomic(
 		next.Journal[request.ClientMutationID] = current
 		next = cloneClientMutationSnapshot(next)
 		current = next.Journal[request.ClientMutationID]
+		next.ConversationRevision = s.state.ConversationRevision + 1
 		if _, err := saveClientMutationSnapshotFS(s.fs, s.stateDir, s.sessionID, next, clientMutationWriteReservation, s.faults); err != nil {
 			return clientMutationLookup{}, err
 		}
@@ -1688,6 +1708,7 @@ func (s *clientMutationStore) executeAtomic(
 		next := cloneClientMutationSnapshot(s.state)
 		current.AttemptGeneration++
 		next.Journal[request.ClientMutationID] = current
+		next.ConversationRevision = s.state.ConversationRevision + 1
 		if _, err := saveClientMutationSnapshotFS(s.fs, s.stateDir, s.sessionID, next, clientMutationWriteReservation, s.faults); err != nil {
 			return clientMutationLookup{}, err
 		}
@@ -1711,6 +1732,7 @@ func (s *clientMutationStore) executeAtomic(
 	if err := validateClientMutationSnapshot(next, s.sessionID); err != nil {
 		return clientMutationLookup{}, err
 	}
+	next.ConversationRevision = s.state.ConversationRevision + 1
 	renamed, err := saveClientMutationSnapshotFS(s.fs, s.stateDir, s.sessionID, next, clientMutationWriteEffect, s.faults)
 	if renamed {
 		s.commitStateLocked(next)
@@ -1787,6 +1809,7 @@ func (s *clientMutationStore) reservePrepared(
 	next.Journal[request.ClientMutationID] = record
 	next = cloneClientMutationSnapshot(next)
 	record = next.Journal[request.ClientMutationID]
+	next.ConversationRevision = s.state.ConversationRevision + 1
 	if _, err := saveClientMutationSnapshotFS(s.fs, s.stateDir, s.sessionID, next, clientMutationWriteReservation, s.faults); err != nil {
 		return clientMutationLookup{}, err
 	}
@@ -1855,6 +1878,7 @@ func (s *clientMutationStore) update(lease *clientMutationLease, mutate func(*cl
 		return err
 	}
 
+	next.ConversationRevision = s.state.ConversationRevision + 1
 	renamed, err := saveClientMutationSnapshotFS(s.fs, s.stateDir, s.sessionID, next, clientMutationWriteEffect, s.faults)
 	if renamed {
 		s.commitStateLocked(next)
@@ -2014,6 +2038,7 @@ func (s *clientMutationStore) mutate(mutate func(*clientMutationSnapshot) error)
 	if err := validateClientMutationSnapshot(next, s.sessionID); err != nil {
 		return err
 	}
+	next.ConversationRevision = s.state.ConversationRevision + 1
 	renamed, err := saveClientMutationSnapshotFS(s.fs, s.stateDir, s.sessionID, next, clientMutationWriteEffect, s.faults)
 	if renamed {
 		s.commitStateLocked(next)
@@ -2096,6 +2121,7 @@ func cloneClientMutationRecord(src clientMutationRecord) clientMutationRecord {
 	dst.Payload = append(json.RawMessage(nil), src.Payload...)
 	dst.Preconditions = cloneClientMutationPreconditions(src.Preconditions)
 	dst.StableQueueEntryIDs = append([]string(nil), src.StableQueueEntryIDs...)
+	dst.ConversationInputIDs = slices.Clone(src.ConversationInputIDs)
 	dst.CommandPreparations = slices.Clone(src.CommandPreparations)
 	dst.Result = append(json.RawMessage(nil), src.Result...)
 	if src.Rejection != nil {

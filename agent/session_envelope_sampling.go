@@ -64,6 +64,7 @@ type EnvelopeSampling interface {
 	ContextStatus() (ContextMetrics, float64)
 	DetailedStatus() DetailedStatus
 	ClientMutationProjection() (appwire.QueueState, []appwire.PendingMutation)
+	ConversationProvenance() *appwire.ConversationProvenanceState
 	TasksWithError() ([]task.Task, error)
 	GoalStatus() (status string, iterations int, ok bool)
 	WorkMillisSnapshot() int64

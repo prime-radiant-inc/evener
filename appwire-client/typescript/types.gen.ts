@@ -430,6 +430,39 @@ export interface CommandListResponse {
   commands: CommandDescriptor[];
 }
 
+export interface ConversationFrontier {
+  id: string;
+  baseId?: string;
+  addedInputs?: string[];
+  removedInputs?: string[];
+}
+
+export interface ConversationOutputProvenance {
+  version: number;
+  instanceId: string;
+  runGeneration: number;
+  requestId: string;
+  frontierId: string;
+  sourceItemId: string;
+}
+
+export interface ConversationProvenanceChangedParams {
+  threadId: string;
+  ref: string;
+  provenance: ConversationProvenanceState | null;
+}
+
+export interface ConversationProvenanceState {
+  version: number;
+  authoritative: boolean;
+  revision: number;
+  instanceId: string;
+  admittedInputs: string[];
+  retiredInputs: string[];
+  consumedFrontierId?: string;
+  frontiers: ConversationFrontier[];
+}
+
 export interface DaemonBlocker {
   category: string;
   sessionId?: string;
@@ -844,6 +877,7 @@ export interface EvenerSubagentPreviewResponse {
 }
 
 export interface EvenerThread {
+  conversationProvenance?: ConversationProvenanceState;
   /**
    * Manager is the session's start-time Manager property, reported by the
    * session itself. It is not a runtime setting: nothing can turn it on or
@@ -1193,6 +1227,8 @@ export interface FavoriteSetResponse {
 }
 
 export interface FeatureSet {
+  conversationProvenance?: boolean;
+  voice?: boolean;
   sessionTools?: boolean;
   threadList: boolean;
   threadTurnsList: boolean;
@@ -4402,6 +4438,7 @@ export interface ThreadForkResponse {
 }
 
 export interface ThreadItem {
+  conversationProvenance?: ConversationOutputProvenance;
   actor?: SessionActor;
   observation?: SessionObservationMetadata;
   authorship?: TranscriptAuthorship;
@@ -5469,6 +5506,7 @@ export const NOTIFICATION_NAMES = [
   "thread/closed",
   "thread/status/changed",
   "thread/queueChanged",
+  "thread/conversation-provenance/changed",
   "evener/thread/name/changed",
   "thread/model/changed",
   "thread/reasoning-effort/changed",
@@ -5665,7 +5703,7 @@ export const WIRE_FIELD_KEYS = {
   ThreadItemPosition: ["entry", "item", "sub"],
   TurnError: ["message", "additionalDetails", "codexErrorInfo", "source", "title", "hint", "cause"],
   DiagnosticCause: ["kind", "provider", "model", "status"],
-  ThreadItem: ["actor", "observation", "authorship", "type", "id", "transcriptKey", "position", "turnId", "transcriptEntryIndex", "text", "delta", "images", "toolName", "callId", "argumentsJson", "description", "output", "error", "outputImages", "status", "prevalOnly", "startedAt", "completedAt", "durationMs", "exitCode", "raw", "eventKind", "source", "steeringKind", "clientMutationId", "version", "roundId", "completedAtEntry"],
+  ThreadItem: ["conversationProvenance", "actor", "observation", "authorship", "type", "id", "transcriptKey", "position", "turnId", "transcriptEntryIndex", "text", "delta", "images", "toolName", "callId", "argumentsJson", "description", "output", "error", "outputImages", "status", "prevalOnly", "startedAt", "completedAt", "durationMs", "exitCode", "raw", "eventKind", "source", "steeringKind", "clientMutationId", "version", "roundId", "completedAtEntry"],
   InputItem: ["type", "text", "mentions", "url", "mediaType", "data", "name", "path", "metadata"],
   InputMention: ["kind", "name", "offset"],
   OutputImage: ["source", "name", "mediaType", "size", "url", "sha", "path"],
@@ -5846,6 +5884,7 @@ export interface NotificationTypes {
   "thread/closed": ThreadClosedParams;
   "thread/status/changed": ThreadStatusChangedParams;
   "thread/queueChanged": ThreadQueueChangedParams;
+  "thread/conversation-provenance/changed": ConversationProvenanceChangedParams;
   "evener/thread/name/changed": ThreadNameChangedParams;
   "thread/model/changed": ThreadModelChangedParams;
   "thread/reasoning-effort/changed": ThreadReasoningEffortChangedParams;

@@ -55,6 +55,8 @@ func (s *Session) beginExecution(name string) {
 	turnID := executionTurnID(name)
 	s.mu.Lock()
 	announced := s.sessionStarted
+	s.conversation.generation++
+	s.conversation.active = nil
 	s.execution = executionState{running: true, turnID: turnID, announced: announced, startedAt: s.sclock().Now()}
 	// A turn already recorded runs again only when recovery reclaims it: it
 	// reopens, and stays open until its next completion.
@@ -131,6 +133,7 @@ func (s *Session) noteRecordedLocked(rec transcript.Record) {
 		// execution running when the copy is written.
 		return
 	}
+	s.noteConversationTurnLocked(rec.Turn)
 	if rec.Turn.TurnKind == schema.TurnSpanExecution {
 		s.noteRecordedExecutionLocked(rec.Turn.TurnID)
 	}
@@ -464,7 +467,7 @@ func (s *Session) deliverCommunicate(data events.CommunicateData) error {
 		return refusal
 	}
 	causal := s.activeCausalProvenance()
-	rec, err := s.recordTranscriptOnlyThrough(schema.Turn{Kind: schema.TurnCommunicate, CausalKnown: true, Causal: causal, Authorship: s.roundTranscriptAuthorship(), Communicate: &schema.CommunicateInfo{CallID: data.CallID, EndTurn: data.EndTurn, Message: data.Message, EndReason: data.EndReason}}, transcript.DoorSynced, transcript.PlaceSession)
+	rec, err := s.recordTranscriptOnlyThrough(schema.Turn{Kind: schema.TurnCommunicate, ConversationProvenance: s.activeConversationProvenance(), CausalKnown: true, Causal: causal, Authorship: s.roundTranscriptAuthorship(), Communicate: &schema.CommunicateInfo{CallID: data.CallID, EndTurn: data.EndTurn, Message: data.Message, EndReason: data.EndReason}}, transcript.DoorSynced, transcript.PlaceSession)
 	if !rec.Recorded && s.servedByDaemon() {
 		switch writer := s.attachedTranscript(); {
 		case writer != nil && writer.Closed():

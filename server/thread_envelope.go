@@ -42,12 +42,13 @@ import (
 // refreshFacets always stores a freshly sampled value and never mutates one in
 // place, so a reader that copies the struct can hand the slices straight out.
 type threadEnvelope struct {
-	ContextPressure  float64
-	ContextMetrics   ContextMetrics
-	Detailed         *DetailedStatus
-	Queue            appwire.QueueState
-	PendingMutations []appwire.PendingMutation
-	Tasks            *appwire.TaskAggregate
+	ConversationProvenance *appwire.ConversationProvenanceState
+	ContextPressure        float64
+	ContextMetrics         ContextMetrics
+	Detailed               *DetailedStatus
+	Queue                  appwire.QueueState
+	PendingMutations       []appwire.PendingMutation
+	Tasks                  *appwire.TaskAggregate
 	// TaskStoreOwnerSessionID is projection routing state. It never enters
 	// EvenerThread or any other public AppWire shape.
 	TaskStoreOwnerSessionID string
@@ -282,6 +283,7 @@ var facetsByEvent = map[events.EventKind]envelopeFacet{
 	// rewrites history outright, and an idle /compact has no turn boundary to
 	// rescue the preview it can change.
 	events.EventAssistantTextEnd:  facetContext | facetWork,
+	events.EventCommunicate:       facetContext,
 	events.EventContextCompaction: facetContext | facetMeta,
 	events.EventCompactionTurn:    facetContext,
 
@@ -391,6 +393,11 @@ func (s *Server) refreshFacets(facets envelopeFacet) {
 	if facets&facetQueue != 0 {
 		next.Queue, next.PendingMutations = src.ClientMutationProjection()
 	}
+	if facets&(facetQueue|facetContext) != 0 {
+		if provenance, ok := src.(conversationProvenanceSource); ok {
+			next.ConversationProvenance = provenance.ConversationProvenance()
+		}
+	}
 	if facets&facetTasks != 0 {
 		next.Tasks = src.TaskAggregate()
 		next.TaskStoreOwnerSessionID = threadID
@@ -498,6 +505,7 @@ func (s *Server) refreshFacets(facets envelopeFacet) {
 		s.appEnvelope.assign(assignFacets, next, cwdStale, notesStale, urlsStale)
 	}
 	s.mu.Unlock()
+	s.commitConversationProvenance(threadID, sourceID, ref, next.ConversationProvenance)
 }
 
 // assign copies exactly the named facets out of next. notesStale and urlsStale

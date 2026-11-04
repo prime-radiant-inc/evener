@@ -12,6 +12,7 @@ import (
 	"primeradiant.com/evener/agent/internal/contextmgr"
 	"primeradiant.com/evener/agent/plugin"
 	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/identifier"
 	"primeradiant.com/evener/llm"
 )
 
@@ -233,11 +234,15 @@ func (s *Session) publishFoldTransaction(snapLen, snapRevision, snapAppends int,
 	}
 	s.mu.Lock()
 	previousEnvironmentIDs := environmentTurnIDs(s.history)
+	conversationBefore := s.conversationInputsLocked(s.history[:min(snapLen, len(s.history))])
 	published, ok = s.publishFoldedHistory(snapLen, snapRevision, folded)
 	if !ok {
 		s.mu.Unlock()
 		s.attentionMu.Unlock()
 		return nil, false, nil
+	}
+	if commit.prepareConversationLocked != nil {
+		commit.prepareConversationLocked(conversationBefore, published)
 	}
 	// The appended turns may reallocate, so the history takes the new slice.
 	published, restoredAt := withAttentionTurns(published, keptAttention)
@@ -500,6 +505,7 @@ func (s *Session) steerCompactionTranscriptReminderForFold(publishedRevision int
 // commitTranscriptsLocked and delivered (with its metadata save) by
 // commitSkillCompactionPublication after the flush.
 type foldCommit struct {
+	prepareConversationLocked    func([]string, []schema.Turn)
 	claimNoteLocked              func()
 	commitTranscriptsLocked      func() bool
 	flush                        func()
@@ -688,6 +694,34 @@ func (s *Session) stageCompactionEffects(ctx context.Context, history *[]schema.
 	// carries the typed record a restart reconciles from. Write errors are
 	// carried into flush, where emitting is safe again.
 	commit := &foldCommit{}
+	var conversationInputs []string
+	var conversationNode *schema.ConversationFrontier
+	var conversationRef string
+	commit.prepareConversationLocked = func(before []string, published []schema.Turn) {
+		if len(pendingCompactionTurns) == 0 {
+			return
+		}
+		retained := s.conversationInputsLocked(published)
+		for _, id := range before {
+			if _, ok := slices.BinarySearch(retained, id); !ok {
+				conversationInputs = append(conversationInputs, id)
+			}
+		}
+		conversationNode = s.conversationDeltaLocked(identifier.MustNewTurnID(), conversationInputs)
+		conversationRef = s.conversation.frontierID
+		if conversationNode != nil {
+			conversationRef = conversationNode.ID
+		}
+		last := len(pendingCompactionTurns) - 1
+		pendingCompactionTurns[last].ConversationFrontier = conversationNode
+		pendingCompactionTurns[last].ConversationCoverageRef = conversationRef
+		marker := pendingCompactionTurns[last]
+		for i := range published {
+			if published[i].Kind == marker.Kind && published[i].Message.Text() == marker.Message.Text() {
+				published[i].ConversationCoverageRef = conversationRef
+			}
+		}
+	}
 	var compactionTurnWriteErrs []error
 	var steeringWriteErrs []error
 	commitTranscriptsLocked := func() bool {

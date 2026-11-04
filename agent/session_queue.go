@@ -992,6 +992,9 @@ func (s *Session) consumeSteeringMessage(msg steeringMessage) steeringConsumptio
 	}
 	t.SteeringKind = msg.Kind
 	t.ClientMutationID = msg.ClientMutationID
+	if msg.ClientMutationID != "" || msg.Source == events.SteeringSourceUser {
+		t.ConversationInputIDs = s.conversationInputIDs(msg.ClientMutationID)
+	}
 	t.Actor = msg.Actor
 	t.StableTurnID = msg.StableTurnID
 	if steeringAnswersAsk(msg.Source, steeringOrigin{kind: msg.Kind}, "") {
