@@ -322,17 +322,18 @@ export class MutationDispatcher<A extends MutationAttachmentRef = MutationAttach
         return "stop";
       }
       if (data?.mutationOutcome === "notAccepted") {
-        // A NAMED refusal that never reached the daemon's journal - the
-        // server's admission refusals (a stale instance, a clear in
-        // progress), marked by their cause - leaves the wire
-        // delivery-uncertain like the unattributable pre-daemon arm: an
-        // outstanding attempt of the same wire can still apply, and a
-        // fresh-id resend would double-deliver (round-6 H). A refusal
-        // without that cause is the daemon's OWN journaled rejection,
-        // authoritative for the wire: the recovery keeps a certain identity
-        // and its resend takes a fresh id.
+        // Round-14 polarity: only the daemon's OWN journaled rejections -
+        // positively stamped with the journaledRejection cause at the
+        // rejectClientMutation choke point, so both the in-band response and
+        // a journal replay carry it - are certain for the wire. Every other
+        // named notAccepted is delivery-uncertain by DEFAULT: the producer
+        // set of pre-journal refusals grows with main (server admission, a
+        // daemon-down entry error on any verb), nothing was recorded for the
+        // wire, an outstanding attempt of the same wire can still apply, and
+        // a fresh-id resend would double-deliver (round-6 H). Forgetting to
+        // stamp is harmless now: unmarked means uncertain, inherit, replay.
         await this.#storage.transferToRecovery(record.clientMutationId, "rejected", rejectionReason(error, data), {
-          wireDeliveryUncertain: data?.cause === "refusedBeforeJournaling",
+          wireDeliveryUncertain: data?.cause !== "journaledRejection",
         });
         this.#onStorageChange([record.targetRef]);
         return "advance";

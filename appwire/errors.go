@@ -857,12 +857,12 @@ func MutationNotAccepted(clientMutationID, message string) WireError {
 			RetryDisposition: RetryDispositionNone,
 			// Every caller refuses the mutation BEFORE the daemon's journal
 			// can hold a record for it (server admission, a clear in
-			// progress): the journal never saw the wire, so its verdict is
-			// not authoritative and an outstanding attempt of the same wire
-			// can still apply. A journaled rejection (markedNotAccepted,
-			// from the daemon's own records) carries no such cause and IS
-			// authoritative - clients split wire uncertainty on this bit.
-			Cause: "refusedBeforeJournaling",
+			// progress), so no journal can vouch for the wire. No cause is
+			// stamped: clients split wire certainty on the POSITIVE
+			// journaledRejection stamp that only the daemon's own journaled
+			// rejections carry (JournaledRejectionCause), and treat an
+			// absent cause as delivery-uncertain - the safe default, since
+			// an outstanding attempt of the same wire can still apply.
 		},
 	}
 }
@@ -1013,6 +1013,14 @@ func MutationUnknown(clientMutationID, message string) WireError {
 // BackpressureCauseQueueSaturated marks a request refused before admission at
 // either the retry-safe mutation high-water mark or the full queue's hard cap.
 const BackpressureCauseQueueSaturated = "queueSaturated"
+
+// JournaledRejectionCause marks a rejection the daemon recorded in its own
+// journal - the only refusal authoritative enough for a client to treat the
+// wire as certainly dead. Every other nameable refusal happened before any
+// journal could vouch for the wire, so clients default those to
+// delivery-uncertain. rejectClientMutation, the choke point that creates
+// journaled rejections, is the only writer of this cause.
+const JournaledRejectionCause = "journaledRejection"
 
 // BackpressureRefusal is the hub's in-band refusal of a retry-safe mutation
 // that arrived on a connection whose inbound request queue was at or beyond

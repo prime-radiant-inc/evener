@@ -173,6 +173,10 @@ func TestRejectClientMutationWithNonWireError(t *testing.T) {
 
 // A refusal whose data wraps the standard data still records the mark, and
 // keeps its category: the rejection stores the ErrorData the wrapper embeds.
+// Round-14 disclosed rewrite: every journaled rejection positively carries
+// the journaledRejection cause (the stamp the client's certainty split reads),
+// so the want gains it - the old assertion pinned the pre-stamp premise that
+// a rejection's data carries no cause.
 func TestRejectClientMutationKeepsTheMarkOfWrappedData(t *testing.T) {
 	t.Parallel()
 	record := &clientMutationRecord{ClientMutationID: "cm_wrapped"}
@@ -182,6 +186,7 @@ func TestRejectClientMutationKeepsTheMarkOfWrappedData(t *testing.T) {
 		ClientMutationID: "cm_wrapped",
 		MutationOutcome:  appwire.MutationOutcomeNotAccepted,
 		RetryDisposition: appwire.RetryDispositionNone,
+		Cause:            appwire.JournaledRejectionCause,
 	}
 	if record.Rejection == nil || record.Rejection.Data != want {
 		t.Fatalf("rejection = %+v, want data %+v", record.Rejection, want)

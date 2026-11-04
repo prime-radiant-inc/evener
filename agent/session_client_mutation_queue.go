@@ -556,6 +556,14 @@ func rejectClientMutation(record *clientMutationRecord, err error) {
 	wireErr = wireErr.NotAccepted(record.ClientMutationID)
 	// The record keeps the standard data, the part of a wrapped one it embeds.
 	data, _ := appwire.ErrorDataOf(wireErr.Data)
+	// The one place a journaled rejection is created: stamp the cause
+	// explicitly, OVERWRITING any cause the refused error carried (the
+	// NotAccepted mark preserves them, and the producer set of refusal arms
+	// grows). This rejection is the daemon's own durable verdict - the only
+	// refusal a client may treat as certain for the wire - and both the
+	// in-band response and a journal replay rebuild from this record, so one
+	// stamp covers both.
+	data.Cause = appwire.JournaledRejectionCause
 	record.OperationState = clientMutationOperationRejected
 	record.ExecutionState = "rejected"
 	record.ProjectionState = appwire.MutationProjectionRemoved

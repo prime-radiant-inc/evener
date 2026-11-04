@@ -351,6 +351,89 @@ func TestClientMutation_QueueRejectionIsRecordedDurably(t *testing.T) {
 	}
 }
 
+// TestClientMutation_RejectionCarriesJournaledRejectionCause pins the
+// round-14 positive stamp: a journaled rejection is the ONLY refusal a client
+// may treat as certain for the wire, so the choke point that creates it -
+// rejectClientMutation, inside the same snapshot save that journals the
+// record - stamps Cause journaledRejection into the rejection's data. Both
+// the in-band response and a journal replay of the record carry the stamp,
+// because both rebuild from record.Rejection.
+func TestClientMutation_RejectionCarriesJournaledRejectionCause(t *testing.T) {
+	t.Parallel()
+	sess := newTestSession(t)
+	armTestInterruptFence(t, sess, "interrupt-in-flight")
+	params := appwire.TurnQueueParams{
+		ClientMutationID: "mutation-stamped",
+		Input:            []appwire.InputItem{{Type: "text", Text: "must not queue"}},
+	}
+
+	_, firstErr := sess.AcceptClientMutationQueue(params)
+	assertClientMutationConflict(t, firstErr)
+	var wireErr appwire.WireError
+	if !errors.As(firstErr, &wireErr) {
+		t.Fatalf("first error is not a wire error: %v", firstErr)
+	}
+	data, ok := appwire.ErrorDataOf(wireErr.Data)
+	if !ok {
+		t.Fatal("in-band rejection carries no readable error data")
+	}
+	if data.Cause != "journaledRejection" {
+		t.Fatalf("in-band cause = %q, want journaledRejection", data.Cause)
+	}
+
+	snapshot := sess.clientMutations.snapshot()
+	record, ok := snapshot.Journal[params.ClientMutationID]
+	if !ok {
+		t.Fatal("rejection was not recorded durably")
+	}
+	if record.OperationState != clientMutationOperationRejected {
+		t.Fatalf("operation state = %q, want rejected", record.OperationState)
+	}
+	journalData, ok := appwire.ErrorDataOf(record.Rejection.Data)
+	if !ok {
+		t.Fatal("journaled rejection carries no readable error data")
+	}
+	if journalData.Cause != "journaledRejection" {
+		t.Fatalf("journal cause = %q, want journaledRejection", journalData.Cause)
+	}
+
+	// The replay returns the STORED rejection - stamp included.
+	disarmTestInterruptFence(t, sess)
+	_, replayErr := sess.AcceptClientMutationQueue(params)
+	assertClientMutationConflict(t, replayErr)
+	var replayWire appwire.WireError
+	if !errors.As(replayErr, &replayWire) {
+		t.Fatalf("replay error is not a wire error: %v", replayErr)
+	}
+	replayData, ok := appwire.ErrorDataOf(replayWire.Data)
+	if !ok {
+		t.Fatal("replayed rejection carries no readable error data")
+	}
+	if replayData.Cause != "journaledRejection" {
+		t.Fatalf("replay cause = %q, want journaledRejection", replayData.Cause)
+	}
+}
+
+// The stamp must not ride on absence: an error that already carries a cause
+// (the producer set of refusal arms grows with main) is overwritten, or a
+// stale cause would reclassify a journaled rejection on the client.
+func TestClientMutation_RejectionCauseOverwritesInheritedCause(t *testing.T) {
+	t.Parallel()
+	record := &clientMutationRecord{ClientMutationID: "mutation-overwrite"}
+	rejectClientMutation(record, appwire.WireError{
+		Code:    appwire.CodeConflict,
+		Message: "refused",
+		Data:    appwire.ErrorData{Cause: "someInheritedCause"},
+	})
+	data, ok := appwire.ErrorDataOf(record.Rejection.Data)
+	if !ok {
+		t.Fatal("rejection carries no readable error data")
+	}
+	if data.Cause != "journaledRejection" {
+		t.Fatalf("cause = %q, want journaledRejection (the inherited cause must be overwritten)", data.Cause)
+	}
+}
+
 func TestClientMutation_QueueRejectedImagePayloadIsCompactedAndReplayable(t *testing.T) {
 	t.Parallel()
 	sess := newTestSession(t)

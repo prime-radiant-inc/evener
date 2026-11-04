@@ -267,6 +267,19 @@ function isCancelableByStop(record: MutationOutboxRecord): boolean {
   return (record.state === "submitting" || record.state === "blockedUnknown") && record.attempted === false;
 }
 
+// The wire-uncertainty predicate, one home for both consumers: the edit
+// seam's stamping and the mint's wire-id inheritance must answer the same
+// question or a wire's editing recovery and its minted successor split
+// identities (they were verbatim twins kept in sync by comments before this
+// home). A blockedUnknown row's own attempt may have landed (the state's
+// definition), and a row whose effective wire id differs from its own storage
+// key carries an id inherited from an uncertain predecessor that may have
+// landed under the shared wire id. Canceled rows and unattempted submitting
+// rows are provably not delivered - no uncertainty.
+function wireIdentityUncertain(record: { state: string; clientMutationId: string }, wireId: string): boolean {
+  return record.state === "blockedUnknown" || wireId !== record.clientMutationId;
+}
+
 // MutationOutboxIndexedDB serializes sequence allocation with each durable
 // transition. Cross-tab correctness comes from IndexedDB readwrite transaction
 // ordering rather than a browser lease or leader election.
@@ -1691,13 +1704,11 @@ export class MutationOutboxIndexedDB implements WebQueuedMessageStorage<Mutation
       // the editing recovery - the same stamping transferToRecovery does -
       // so an UNCHANGED resend replays under the inherited wire id (journal
       // dedup, no double-apply) while changed content resends as the user's
-      // new message under a fresh id. The predicate is uniform across the
-      // two uncertainty shapes: a blockedUnknown row's own attempt may have
-      // landed (the state's definition), and an inherited-wire row's
-      // predecessor may have landed under the shared wire id. Canceled rows
-      // and unattempted submitting rows are provably not delivered - no
-      // marker, fresh resends.
-      const uncertainEdit = record.state === "blockedUnknown" || effectiveWireId(record) !== record.clientMutationId;
+      // new message under a fresh id. wireIdentityUncertain (the one home,
+      // shared with the mint's inheritance) decides; canceled rows and
+      // unattempted submitting rows are provably not delivered - no marker,
+      // fresh resends.
+      const uncertainEdit = wireIdentityUncertain(record, effectiveWireId(record));
       const recovery: VersionedMutationRecoveryRecord = {
         ...record,
         recoveryKind: "editing",
@@ -2453,18 +2464,17 @@ export class MutationOutboxIndexedDB implements WebQueuedMessageStorage<Mutation
     const intentSequence = await this.#allocateSequence(transaction, source.targetRef);
     const clientMutationId = this.#createMutationId();
     await this.#assertMutationIdAvailable(transaction, clientMutationId);
-    // The payload id IS the uncertainty marker. Inherit the EFFECTIVE wire
-    // id whenever the source carries delivery-uncertain ancestry: a
-    // blockedUnknown source may already be delivered, and a source whose
-    // effective wire id differs from its own storage key carries an id
-    // inherited from an uncertain predecessor - a replacement born canceled
-    // by a Stop crossing at mint time is exactly that. Only a source whose
-    // effective wire id is its own key - an ordinary canceled row that
-    // provably never left any tab - takes a fresh id, so repeated mints
-    // never lose the original wire identity the daemon's replay journal
-    // knows.
+    // The payload id IS the uncertainty marker, decided by
+    // wireIdentityUncertain (the one home, shared with the edit seam's
+    // stamping): a delivery-uncertain source - blockedUnknown, or carrying
+    // an id inherited from an uncertain predecessor - re-submits under its
+    // effective wire id so the daemon's journal replays rather than
+    // double-applies, and only a source whose effective wire id is its own
+    // key, an ordinary canceled row that provably never left any tab, takes
+    // a fresh id. Repeated mints never lose the original wire identity the
+    // daemon's replay journal knows.
     const inheritedWireId = effectiveWireId(source);
-    const inheritWireId = source.state === "blockedUnknown" || inheritedWireId !== source.clientMutationId;
+    const inheritWireId = wireIdentityUncertain(source, inheritedWireId);
     const record: MutationOutboxRecord = {
       ...source,
       payload: {

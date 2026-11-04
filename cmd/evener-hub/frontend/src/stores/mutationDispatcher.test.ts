@@ -712,7 +712,6 @@ describe("MutationDispatcher", () => {
         clientMutationId: params.clientMutationId,
         mutationOutcome: "notAccepted",
         retryDisposition: "none",
-        cause: "refusedBeforeJournaling",
       });
     });
     const dispatcher = new MutationDispatcher(outbox, { getClient: () => client });
@@ -737,6 +736,7 @@ describe("MutationDispatcher", () => {
         clientMutationId: params.clientMutationId,
         mutationOutcome: "notAccepted",
         retryDisposition: "blocked",
+        cause: "journaledRejection",
       });
     });
     const dispatcher = new MutationDispatcher(outbox, { getClient: () => client });
@@ -762,6 +762,7 @@ describe("MutationDispatcher", () => {
         clientMutationId: params.clientMutationId,
         mutationOutcome: "notAccepted",
         retryDisposition: "none",
+        cause: "journaledRejection",
       });
     });
     const dispatcher = new MutationDispatcher(outbox, { getClient: () => client });
@@ -770,6 +771,116 @@ describe("MutationDispatcher", () => {
 
     const recovery = await outbox.getRecovery(record.clientMutationId);
     expect((recovery as { wireDeliveryUncertain?: boolean })?.wireDeliveryUncertain).toBeFalsy();
+  });
+
+  // Round-14 (the R13 interleaving, closed by the polarity flip): every
+  // outbox verb's daemon-down entry refusal - the generic localForwardMutation
+  // path AND the direct arms - marks the refusal notAccepted with NO cause:
+  // the daemon's journal never saw the wire, so nothing can vouch for it.
+  // The old default classified these CERTAIN (a fresh-id resend could
+  // double-deliver while an outstanding attempt of the same wire applied);
+  // the flip makes absence mean UNCERTAIN - the recovery carries the wire's
+  // uncertainty identity, so an unchanged resend replays under the inherited
+  // id (the inheritance and replay halves are the pinned contract of the
+  // round-5 test below). RED on the pre-flip tree: the entry refusal
+  // classified certain.
+  test("a daemon-down entry refusal leaves the wire delivery-uncertain (the generic localForwardMutation path)", async () => {
+    const indexedDB = new IDBFactory();
+    const outbox = storage(indexedDB, "entry-uncertain-generic", ["mutation-a"]);
+    const record = await outbox.enqueueIntent({
+      targetRef: "ref-a",
+      method: "notes/human/set",
+      payload: { ref: "ref-a", note: "daemon down" },
+      attachments: [],
+      optimisticDisplay: null,
+    });
+    const client = new FakeClient();
+    client.on("notes/human/set", (params) => {
+      throw new WireError("session is unavailable", -32014, {
+        evenerErrorInfo: "sessionUnavailable",
+        clientMutationId: params.clientMutationId,
+        mutationOutcome: "notAccepted",
+        retryDisposition: "none",
+      });
+    });
+    const dispatcher = new MutationDispatcher(outbox, { getClient: () => client });
+
+    await dispatcher.dispatchTargets(["ref-a"]);
+
+    const recovery = await outbox.getRecovery(record.clientMutationId);
+    expect((recovery as { wireDeliveryUncertain?: boolean })?.wireDeliveryUncertain).toBe(true);
+    expect((recovery as { originalWirePayload?: unknown })?.originalWirePayload).toMatchObject({
+      ref: "ref-a",
+    });
+  });
+
+  test("a daemon-down entry refusal leaves the wire delivery-uncertain (a direct steer arm)", async () => {
+    const indexedDB = new IDBFactory();
+    const outbox = storage(indexedDB, "entry-uncertain-steer", ["mutation-a"]);
+    const record = await outbox.enqueueIntent({
+      targetRef: "ref-a",
+      method: "turn/steer",
+      payload: { ref: "ref-a", input: [{ type: "text", text: "steer this" }] },
+      attachments: [],
+      optimisticDisplay: null,
+    });
+    const client = new FakeClient();
+    client.on("turn/steer", (params) => {
+      throw new WireError("session is unavailable", -32014, {
+        evenerErrorInfo: "sessionUnavailable",
+        clientMutationId: params.clientMutationId,
+        mutationOutcome: "notAccepted",
+        retryDisposition: "none",
+      });
+    });
+    const dispatcher = new MutationDispatcher(outbox, { getClient: () => client });
+
+    await dispatcher.dispatchTargets(["ref-a"]);
+
+    const recovery = await outbox.getRecovery(record.clientMutationId);
+    expect((recovery as { wireDeliveryUncertain?: boolean })?.wireDeliveryUncertain).toBe(true);
+  });
+
+  // Round-14 asymmetric-safety pin: the uncertainty classification is
+  // conservative, not a fact - a row can be classified uncertain while the
+  // journal actually holds a REJECTED record for the wire. The unchanged
+  // resend replays that record, and the replay carries the journaledRejection
+  // stamp (the choke point wrote it into the record): the dispatcher then
+  // classifies the replayed refusal CERTAIN - the journal's verdict is now
+  // known - and the row settles as rejected. No loop (the row leaves the
+  // outbox once), no double-apply (the journal never applied the wire).
+  // Green before and after: the stamp made the certain classification, and
+  // the flip keeps it.
+  test("an unchanged resend replays the journal's rejected record and settles as rejected", async () => {
+    const indexedDB = new IDBFactory();
+    const outbox = storage(indexedDB, "replay-rejected-record", ["mutation-a", "mutation-b"]);
+    const a = await outbox.enqueueIntent(queueIntent("ref-a", "maybe rejected"));
+    await outbox.markAttempted(a.clientMutationId);
+    await outbox.markUnknown(a.clientMutationId, "blockedUnknown");
+    const recovery = await outbox.transferToRecovery(a.clientMutationId, "rejected", "invalid params", {
+      wireDeliveryUncertain: true,
+    });
+    if (!recovery) throw new Error("failed to seed recovery");
+    const sent = await outbox.resendRecoveryResult(a.clientMutationId, queueIntent("ref-a", "maybe rejected"));
+    if (sent.status !== "sent") throw new Error(`resend did not send: ${sent.status}`);
+    const client = new FakeClient();
+    client.on("turn/queue", (params) => {
+      throw new WireError("turn interrupt is pending", -32011, {
+        evenerErrorInfo: "conflict",
+        clientMutationId: params.clientMutationId,
+        mutationOutcome: "notAccepted",
+        retryDisposition: "none",
+        cause: "journaledRejection",
+      });
+    });
+    const dispatcher = new MutationDispatcher(outbox, { getClient: () => client });
+
+    await dispatcher.dispatchTargets(["ref-a"]);
+
+    expect(await outbox.getOutbox(sent.record.clientMutationId)).toBeUndefined();
+    const settled = await outbox.getRecovery(sent.record.clientMutationId);
+    expect(settled).toMatchObject({ recoveryKind: "rejected" });
+    expect((settled as { wireDeliveryUncertain?: boolean })?.wireDeliveryUncertain).toBeFalsy();
   });
 
   // Round-5 review H1 (replay half): the resent row under an inherited wire id
