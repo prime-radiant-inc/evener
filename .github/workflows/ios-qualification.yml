@@ -28,9 +28,9 @@ jobs:
   simulator-build:
     runs-on: macos-26
     timeout-minutes: 90
-    env:
-      QUALIFICATION_OUTPUT: ${{ runner.temp }}/ios-qualification-${{ github.run_id }}-${{ github.run_attempt }}
     steps:
+      - name: Set the run-owned diagnostic output path
+        run: printf 'QUALIFICATION_OUTPUT=%s/ios-qualification-%s-%s\n' "$RUNNER_TEMP" "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" >> "$GITHUB_ENV"
       - name: Check out the tested head without persisted credentials
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
