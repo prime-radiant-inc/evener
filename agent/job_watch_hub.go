@@ -232,7 +232,18 @@ func (jm *jobManager) onHubRoster(id string, update appwire.SessionWatchUpdate) 
 	delivery.rosterPayload = payload
 	delivery.rosterInitial, delivery.rosterResync = deliverInitial, r.Resync
 	jm.mu.Unlock()
-	jm.recordWatchSendsAndKick([]watchSendDelivery{delivery})
+	if err := jm.recordWatchSendsAndKickErr([]watchSendDelivery{delivery}); err != nil {
+		jm.mu.Lock()
+		// The baseline advanced before persistence. A fresh snapshot must now
+		// replace it authoritatively, even if the hub restarts its revisions.
+		if _, current, ok := jm.watchConfigByIDLocked(id); ok && current.hubRef == hubRosterWatchKey {
+			current.rosterBaseline = nil
+			current.rosterNeedsResync = true
+			current.rosterRevision, current.rosterBound = 0, false
+		}
+		jm.mu.Unlock()
+		return err
+	}
 	return nil
 }
 

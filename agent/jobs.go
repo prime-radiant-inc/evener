@@ -1868,7 +1868,7 @@ func (jm *jobManager) armFinalizedJob(run *runningJob, terminal *terminalJob) er
 		jm.mu.Unlock()
 		ownNotices = jm.routeWatchNotifications(watchNotifications)
 		var tokens []jobNotification
-		tokens, watchSendRecorded = jm.recordWatchSends(watchDeliveries)
+		tokens, watchSendRecorded, _ = jm.recordWatchSends(watchDeliveries)
 		ownNotices = append(ownNotices, tokens...)
 	} else {
 		jm.mu.Unlock()

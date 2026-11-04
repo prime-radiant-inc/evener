@@ -167,6 +167,76 @@ func TestHubRosterWatchSettledRebindDeliversDelta(t *testing.T) {
 	}
 }
 
+func TestHubRosterWatchPendingAppendFailureRecoversFullSnapshot(t *testing.T) {
+	t.Parallel()
+	root := newMessagingRoot(t, newMessagingAdapter(), nil)
+	jm := root.jobManager
+	jm.enqueue = root.enqueueJobNotification
+	result, err := jm.configureHubRosterWatch(t.Context(), "local:manager")
+	if err != nil {
+		t.Fatal(err)
+	}
+	a, b := rosterEntry("local:a", "new"), rosterEntry("local:b", "needs_you")
+	if err := jm.onHubRoster(result.WatchID, rosterUpdate(10, true, a)); err != nil {
+		t.Fatal(err)
+	}
+	initial, _, _ := root.filterDeliverableJobNotifications(root.drainJobNotifications())
+	if len(initial) != 1 {
+		t.Fatalf("initial delivered=%d, want one", len(initial))
+	}
+	if err := jm.settleWatchSendDelivered(initial[0].watchCfg, initial[0].watchState); err != nil {
+		t.Fatal(err)
+	}
+	appendFailure := errors.New("scripted roster pending append failure")
+	originalAppend := jm.appendEvent
+	failed := false
+	jm.appendEvent = func(event jobstore.Event) error {
+		if event.Kind == jobstore.EventWatchSendPending {
+			failed = true
+			return appendFailure
+		}
+		return originalAppend(event)
+	}
+	err = jm.onHubRoster(result.WatchID, rosterUpdate(11, false, b))
+	jm.appendEvent = originalAppend
+	if !failed {
+		t.Fatal("delta never attempted the pending append failure seam")
+	}
+	if !errors.Is(err, appendFailure) {
+		t.Errorf("delta error=%v, want %v", err, appendFailure)
+	}
+	jm.mu.Lock()
+	_, cfg, ok := jm.watchConfigByIDLocked(result.WatchID)
+	invalidated := ok && cfg.rosterBaseline == nil && cfg.rosterNeedsResync && !cfg.rosterBound && cfg.rosterRevision == 0
+	jm.mu.Unlock()
+	if !invalidated {
+		t.Error("failed pending append did not invalidate the baseline and reset the revision gate")
+	}
+	if got := rosterTestEvents(t, jm, result.WatchID); len(got) != 1 {
+		t.Fatalf("failed delta persisted: pending events=%d, want only the initial", len(got))
+	}
+	root.drainJobNotifications() // Discard the persistence diagnostic before recovery.
+	registration, err := jm.configureHubRosterWatch(t.Context(), "local:manager")
+	if err != nil || registration.WatchID != result.WatchID {
+		t.Fatalf("recovery registration=%+v err=%v", registration, err)
+	}
+	if err := jm.onHubRoster(result.WatchID, rosterUpdate(0, true, a, b)); err != nil {
+		t.Fatal(err)
+	}
+	delivered, _, _ := root.filterDeliverableJobNotifications(root.drainJobNotifications())
+	if len(delivered) != 1 {
+		t.Fatalf("recovery delivered=%d, want one authoritative full snapshot", len(delivered))
+	}
+	frame := formatJobNotificationBlock(delivered[0].notification, notificationExcerpt{}, false)
+	entries := rosterFrameEntries(t, frame)
+	if len(entries) != 2 || entries[0] != a || entries[1] != b {
+		t.Fatalf("recovery entries=%+v, want A and B", entries)
+	}
+	if rosterFrameField(frame, "roster_initial: ") != "true" || rosterFrameField(frame, "roster_resync: ") != "" {
+		t.Fatalf("recovery markers=%s", frame)
+	}
+}
+
 func TestHubRosterWatchRecoveryInitialReplacesDeltaAfterSettledResync(t *testing.T) {
 	t.Parallel()
 	root := newMessagingRoot(t, newMessagingAdapter(), nil)
