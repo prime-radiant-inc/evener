@@ -1,0 +1,357 @@
+package agent
+
+import (
+	"context"
+	"encoding/json"
+	"strings"
+	"testing"
+	"time"
+
+	"primeradiant.com/evener/agent/internal/jobstore"
+	"primeradiant.com/evener/appwire"
+)
+
+func rosterTestWatch(t *testing.T) (*jobManager, string) {
+	t.Helper()
+	root := newMessagingRoot(t, newMessagingAdapter(), nil)
+	result, err := root.jobManager.configureHubRosterWatch(context.Background(), "local:manager")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return root.jobManager, result.WatchID
+}
+
+func rosterTestEvents(t *testing.T, jm *jobManager, id string) []jobstore.WatchSendState {
+	t.Helper()
+	var got []jobstore.WatchSendState
+	for _, event := range loadJobStoreEvents(t, jm) {
+		if event.Kind == jobstore.EventWatchSendPending && event.WatchSend != nil && event.WatchSend.Key.WatchID == id {
+			got = append(got, *event.WatchSend)
+		}
+	}
+	return got
+}
+
+func rosterUpdate(revision uint64, initial bool, entries ...appwire.RosterEvent) appwire.SessionWatchUpdate {
+	return appwire.SessionWatchUpdate{Roster: &appwire.SessionRosterUpdate{Revision: revision, Initial: initial, Events: entries}}
+}
+func rosterEntry(ref, kind string) appwire.RosterEvent {
+	return appwire.RosterEvent{Ref: ref, Level: "needs_you", Kind: kind}
+}
+
+func TestHubRosterWatchSnapshot(t *testing.T) {
+	t.Parallel()
+	jm, id := rosterTestWatch(t)
+	registered := 0
+	for _, event := range loadJobStoreEvents(t, jm) {
+		if event.Kind == jobstore.EventWatchRegistered && event.Watch != nil && event.Watch.Config != nil {
+			registered++
+			if event.Watch.Target != hubRosterWatchKey || event.Watch.Config.Source != "top_level" {
+				t.Fatalf("aggregate watch identity=%+v", event.Watch)
+			}
+		}
+	}
+	if registered != 1 {
+		t.Fatalf("registered watches=%d, want one", registered)
+	}
+	if err := jm.onHubRoster(id, rosterUpdate(1, true, rosterEntry("local:a", "new"), rosterEntry("local:b", "needs_you"))); err != nil {
+		t.Fatal(err)
+	}
+	got := rosterTestEvents(t, jm, id)
+	if len(got) != 1 || len(rosterFrameEntries(t, got[0].Frame)) != 2 {
+		t.Fatalf("snapshot deliveries=%+v", got)
+	}
+	frame := got[0].Frame
+	const marker = "roster_events: "
+	line := strings.SplitN(frame[strings.Index(frame, marker)+len(marker):], "\n", 2)[0]
+	var raw []map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(line), &raw); err != nil {
+		t.Fatal(err)
+	}
+	for _, flag := range []string{"askPending", "approvalPending", "needsResponse"} {
+		if string(raw[0][flag]) != "false" {
+			t.Fatalf("snapshot omitted explicit false %s: %s", flag, line)
+		}
+	}
+}
+
+func rosterFrameEntries(t *testing.T, frame string) []appwire.RosterEvent {
+	t.Helper()
+	const marker = "roster_events: "
+	i := strings.Index(frame, marker)
+	if i < 0 {
+		t.Fatalf("missing structured roster events: %s", frame)
+	}
+	var entries []appwire.RosterEvent
+	if err := json.Unmarshal([]byte(strings.SplitN(frame[i+len(marker):], "\n", 2)[0]), &entries); err != nil {
+		t.Fatal(err)
+	}
+	return entries
+}
+
+func TestHubRosterWatchDeliveredFrame(t *testing.T) {
+	t.Parallel()
+	root := newMessagingRoot(t, newMessagingAdapter(), nil)
+	jm := root.jobManager
+	jm.enqueue = root.enqueueJobNotification
+	result, err := jm.configureHubRosterWatch(t.Context(), "local:manager")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := appwire.RosterEvent{AttentionEntry: appwire.AttentionEntry{Ref: "local:worker", Title: "A worker", Level: "needs_you", AskPending: true, ApprovalPending: true, NeedsResponse: true}, Kind: "needs_you"}
+	if err := jm.onHubRoster(result.WatchID, rosterUpdate(1, true, want)); err != nil {
+		t.Fatal(err)
+	}
+	raw := root.drainJobNotifications()
+	delivered, _, _ := root.filterDeliverableJobNotifications(raw)
+	if len(delivered) != 1 {
+		t.Fatalf("delivered notifications=%d, want 1", len(delivered))
+	}
+	n := delivered[0].notification
+	entries := rosterFrameEntries(t, n.watchSendFrame)
+	if len(entries) != 1 || entries[0] != want {
+		t.Fatalf("delivered entries=%+v, want %+v", entries, want)
+	}
+	if block := formatJobNotificationBlock(n, notificationExcerpt{}, false); len(rosterFrameEntries(t, block)) != 1 || rosterFrameEntries(t, block)[0] != want {
+		t.Fatalf("model-visible frame=%s", block)
+	}
+}
+
+func TestHubRosterWatchQueuedNotifications(t *testing.T) {
+	t.Parallel()
+	jm, id := rosterTestWatch(t)
+	notifications := make(chan jobNotification, 3)
+	jm.enqueue = func(n jobNotification) { notifications <- n }
+	for _, update := range []appwire.SessionWatchUpdate{
+		rosterUpdate(1, true, rosterEntry("local:a", "new")),
+		rosterUpdate(2, false, rosterEntry("local:b", "error")),
+		rosterUpdate(2, false, rosterEntry("local:c", "new")),
+	} {
+		if err := jm.onHubRoster(id, update); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if len(notifications) != 2 {
+		t.Fatalf("queued notifications=%d, want snapshot and delta only", len(notifications))
+	}
+	for i := range 2 {
+		n := <-notifications
+		if n.Kind != jobNotificationKindWatch || n.WatchSend == nil {
+			t.Fatalf("notification %d is not a watch-send wake: %+v", i, n)
+		}
+	}
+}
+
+func TestHubRosterWatchRuntimeSubscription(t *testing.T) {
+	t.Parallel()
+	root := newMessagingRoot(t, newMessagingAdapter(), func(cfg *SessionConfig) { cfg.Manager = true })
+	notifications := make(chan jobNotification, 1)
+	root.jobManager.enqueue = func(n jobNotification) { notifications <- n }
+	client := &managerSetupCancelClient{
+		view:     appwire.ManagerView{Ref: "local:manager", InstanceID: "manager-instance", Manager: true},
+		watchCtx: make(chan context.Context, 1),
+		updates:  make(chan appwire.SessionWatchUpdate, 1),
+	}
+	client.updates <- rosterUpdate(1, true, rosterEntry("local:a", "new"))
+	root.SetHubClient(client)
+	if _, err := root.configureHubWatchRuntime(t.Context(), map[string]any{"operation": "create", "hub": map[string]any{"scope": "top_level"}}); err != nil {
+		t.Fatal(err)
+	}
+	// TRIPWIRE: the queued notification normally arrives immediately; ten seconds only guards a hung subscription.
+	awaitWithin(t, 10*time.Second, "roster notification", func() {
+		n := <-notifications
+		if n.Kind != jobNotificationKindWatch || n.WatchSend == nil {
+			t.Fatalf("runtime notification=%+v", n)
+		}
+	})
+	root.jobManager.mu.Lock()
+	if len(root.jobManager.watches) != 1 {
+		root.jobManager.mu.Unlock()
+		t.Fatalf("runtime registered watches=%d, want one", len(root.jobManager.watches))
+	}
+	for _, cfg := range root.jobManager.watches {
+		if cfg.hubRef != hubRosterWatchKey || cfg.rosterRevision != 1 || cfg.rosterBaseline["local:a"].Ref != "local:a" {
+			root.jobManager.mu.Unlock()
+			t.Fatalf("runtime roster watch=%+v", cfg)
+		}
+	}
+	root.jobManager.mu.Unlock()
+}
+
+func TestHubRosterWatchDelta(t *testing.T) {
+	t.Parallel()
+	jm, id := rosterTestWatch(t)
+	if err := jm.onHubRoster(id, rosterUpdate(1, true, rosterEntry("local:a", "new"))); err != nil {
+		t.Fatal(err)
+	}
+	if err := jm.onHubRoster(id, rosterUpdate(2, false, rosterEntry("local:b", "needs_you"))); err != nil {
+		t.Fatal(err)
+	}
+	got := rosterTestEvents(t, jm, id)
+	if len(got) != 2 || len(rosterFrameEntries(t, got[1].Frame)) != 1 || rosterFrameEntries(t, got[1].Frame)[0].Ref != "local:b" {
+		t.Fatalf("delta deliveries=%+v", got)
+	}
+}
+
+func TestHubRosterWatchActionableDeltaSameEntry(t *testing.T) {
+	t.Parallel()
+	jm, id := rosterTestWatch(t)
+	if err := jm.onHubRoster(id, rosterUpdate(1, true, rosterEntry("local:a", "new"))); err != nil {
+		t.Fatal(err)
+	}
+	if err := jm.onHubRoster(id, rosterUpdate(2, false, rosterEntry("local:a", "needs_you"))); err != nil {
+		t.Fatal(err)
+	}
+	got := rosterTestEvents(t, jm, id)
+	if len(got) != 2 || len(rosterFrameEntries(t, got[1].Frame)) != 1 || rosterFrameEntries(t, got[1].Frame)[0].Kind != "needs_you" {
+		t.Fatalf("actionable delta deliveries=%+v", got)
+	}
+}
+
+func TestHubRosterWatchDedup(t *testing.T) {
+	t.Parallel()
+	jm, id := rosterTestWatch(t)
+	if err := jm.onHubRoster(id, rosterUpdate(2, true, rosterEntry("local:a", "new"))); err != nil {
+		t.Fatal(err)
+	}
+	if err := jm.onHubRoster(id, rosterUpdate(2, false, rosterEntry("local:b", "error"))); err != nil {
+		t.Fatal(err)
+	}
+	if got := rosterTestEvents(t, jm, id); len(got) != 1 {
+		t.Fatalf("duplicate revision deliveries=%+v", got)
+	}
+}
+
+func TestHubRosterWatchRebind(t *testing.T) {
+	t.Parallel()
+	jm, id := rosterTestWatch(t)
+	if err := jm.onHubRoster(id, rosterUpdate(10, true, rosterEntry("local:a", "new"), rosterEntry("local:gone", "idle"))); err != nil {
+		t.Fatal(err)
+	}
+	next, err := jm.configureHubRosterWatch(context.Background(), "local:manager")
+	if err != nil || next.WatchID != id {
+		t.Fatalf("rebind config=%+v err=%v", next, err)
+	}
+	jm.resetHubRosterRevision(id)
+	if err := jm.onHubRoster(id, rosterUpdate(1, true, rosterEntry("local:a", "new"), rosterEntry("local:b", "new"))); err != nil {
+		t.Fatal(err)
+	}
+	got := rosterTestEvents(t, jm, id)
+	if len(got) != 2 || len(rosterFrameEntries(t, got[1].Frame)) != 2 {
+		t.Fatalf("rebind deliveries=%+v", got)
+	}
+	refs := map[string]string{}
+	for _, entry := range rosterFrameEntries(t, got[1].Frame) {
+		refs[entry.Ref] = entry.Kind
+	}
+	if refs["local:b"] != "new" || refs["local:gone"] != "disappeared" || len(refs) != 2 {
+		t.Fatalf("rebind changes=%+v", refs)
+	}
+}
+
+func TestHubRosterWatchResync(t *testing.T) {
+	t.Parallel()
+	jm, id := rosterTestWatch(t)
+	if err := jm.onHubRoster(id, rosterUpdate(1, true, rosterEntry("local:a", "new"))); err != nil {
+		t.Fatal(err)
+	}
+	if err := jm.onHubRoster(id, appwire.SessionWatchUpdate{Roster: &appwire.SessionRosterUpdate{Revision: 2, Resync: true}}); err != nil {
+		t.Fatal(err)
+	}
+	got := rosterTestEvents(t, jm, id)
+	if len(got) != 2 || strings.Contains(got[1].Frame, "roster_events:") || strings.Contains(got[1].Frame, "local:a") {
+		t.Fatalf("resync deliveries=%+v", got)
+	}
+	if err := jm.onHubRoster(id, appwire.SessionWatchUpdate{Roster: &appwire.SessionRosterUpdate{Revision: 4, Resync: true}}); err != nil {
+		t.Fatal(err)
+	}
+	if got := rosterTestEvents(t, jm, id); len(got) != 2 {
+		t.Fatalf("repeated resync notices=%d, want one", len(got)-1)
+	}
+	if err := jm.onHubRoster(id, rosterUpdate(5, false, rosterEntry("local:b", "new"))); err != nil {
+		t.Fatal(err)
+	}
+	jm.mu.Lock()
+	_, cfg, ok := jm.watchConfigByIDLocked(id)
+	baselineCleared := ok && cfg.rosterNeedsResync && cfg.rosterBaseline == nil
+	jm.mu.Unlock()
+	if !baselineCleared {
+		t.Fatal("a partial delta rebuilt the roster baseline after resync")
+	}
+	if err := jm.onHubRoster(id, rosterUpdate(6, true, rosterEntry("local:restored", "new"))); err != nil {
+		t.Fatal(err)
+	}
+	jm.mu.Lock()
+	_, cfg, ok = jm.watchConfigByIDLocked(id)
+	restored := ok && !cfg.rosterNeedsResync && len(cfg.rosterBaseline) == 1 && cfg.rosterBaseline["local:restored"].Ref == "local:restored"
+	jm.mu.Unlock()
+	if !restored {
+		t.Fatal("initial snapshot did not replace baseline after resync")
+	}
+}
+
+type rosterRecoveryClient struct {
+	*managerSetupCancelClient
+	streams []chan appwire.SessionWatchUpdate
+}
+
+func (c *rosterRecoveryClient) Watch(context.Context, appwire.SessionWatchRequest) (<-chan appwire.SessionWatchUpdate, error) {
+	stream := c.streams[0]
+	c.streams = c.streams[1:]
+	return stream, nil
+}
+
+func TestHubRosterWatchReregisterRecoversLiveSubscription(t *testing.T) {
+	t.Parallel()
+	root := newMessagingRoot(t, newMessagingAdapter(), func(cfg *SessionConfig) { cfg.Manager = true })
+	notified := make(chan jobNotification, 3)
+	root.jobManager.enqueue = func(n jobNotification) { notified <- n }
+	first := make(chan appwire.SessionWatchUpdate, 2)
+	second := make(chan appwire.SessionWatchUpdate, 1)
+	first <- rosterUpdate(1, true, rosterEntry("local:old", "new"))
+	second <- rosterUpdate(1, true, rosterEntry("local:fresh", "new"))
+	client := &rosterRecoveryClient{
+		managerSetupCancelClient: &managerSetupCancelClient{view: appwire.ManagerView{Ref: "local:manager", InstanceID: "manager-instance", Manager: true}},
+		streams:                  []chan appwire.SessionWatchUpdate{first, second},
+	}
+	root.SetHubClient(client)
+	args := map[string]any{"operation": "create", "hub": map[string]any{"scope": "top_level"}}
+	if _, err := root.configureHubWatchRuntime(t.Context(), args); err != nil {
+		t.Fatal(err)
+	}
+	awaitWithin(t, 10*time.Second, "initial roster", func() {
+		<-notified
+	})
+	root.jobManager.mu.Lock()
+	var id string
+	for _, cfg := range root.jobManager.watches {
+		id = cfg.watchID
+	}
+	root.jobManager.mu.Unlock()
+	if id == "" {
+		t.Fatal("roster watch was not registered")
+	}
+	if err := root.jobManager.onHubRoster(id, appwire.SessionWatchUpdate{Roster: &appwire.SessionRosterUpdate{Revision: 2, Resync: true}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := root.configureHubWatchRuntime(t.Context(), args); err != nil {
+		t.Fatal(err)
+	}
+	got := rosterTestEvents(t, root.jobManager, id)
+	if len(got) != 3 || len(rosterFrameEntries(t, got[2].Frame)) != 1 || rosterFrameEntries(t, got[2].Frame)[0].Ref != "local:fresh" {
+		t.Fatalf("re-registration did not deliver fresh initial snapshot: %+v", got)
+	}
+}
+
+func TestHubRosterWatchLargeSnapshotKeepsEntries(t *testing.T) {
+	t.Parallel()
+	jm, id := rosterTestWatch(t)
+	want := rosterEntry("local:"+strings.Repeat("a", watchTriggerMaxChars), "new")
+	if err := jm.onHubRoster(id, rosterUpdate(1, true, want)); err != nil {
+		t.Fatal(err)
+	}
+	got := rosterTestEvents(t, jm, id)
+	if len(got) != 1 || len([]rune(got[0].TriggerReason)) > watchTriggerMaxChars || len(rosterFrameEntries(t, got[0].Frame)) != 1 || rosterFrameEntries(t, got[0].Frame)[0].Ref != want.Ref {
+		t.Fatalf("oversized snapshot notification=%+v", got)
+	}
+}

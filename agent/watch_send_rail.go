@@ -43,6 +43,9 @@ func (jm *jobManager) snapshotWatchSendFrame(d watchSendDelivery) watchSendDeliv
 		Data:       d.eventData,
 		Provenance: provenance.Clone(d.triggerProvenance),
 	}, d.triggerProvenance)
+	if d.rosterPayload != "" {
+		d.frame += "roster_events: " + d.rosterPayload + "\n"
+	}
 	if notice := selfInfluenceNotice(d.selfInfluence, d.gradientDepth, d.truncated); notice != "" {
 		d.frame = notice + "\n" + d.frame
 	}
