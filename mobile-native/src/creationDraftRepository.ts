@@ -11,6 +11,8 @@ export interface CreationDraft {
 	harness: string;
 	model: { provider: string; model: string } | null;
 	reasoning: string;
+	/** Start the session as a Manager. Absent in a draft saved before the role. */
+	manager?: boolean;
 	launchOverrides: LaunchConfigLayer;
 	images: DraftImageData[];
 	unconfirmed: boolean;
@@ -26,6 +28,7 @@ function decode(raw: string): SavedDraft {
 		typeof value.prompt !== "string" ||
 		typeof value.harness !== "string" ||
 		typeof value.reasoning !== "string" ||
+		(value.manager !== undefined && typeof value.manager !== "boolean") ||
 		typeof value.unconfirmed !== "boolean" ||
 		!value.launchOverrides ||
 		typeof value.launchOverrides !== "object" ||
