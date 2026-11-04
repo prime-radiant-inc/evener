@@ -6,7 +6,7 @@
 import type { LaunchConfigLayer } from "@evener/appwire-client";
 import { View } from "react-native";
 import { useStore } from "zustand";
-import { GroupedPage, GroupFooter, GroupLabel, Segmented } from "../sheet/Grouped";
+import { GroupedPage, GroupFooter, GroupLabel, Segmented, SwitchRow } from "../sheet/Grouped";
 import { SheetStatus } from "../sheet/SheetStatus";
 import { useNewSession } from "./newSessionContext";
 
@@ -48,7 +48,7 @@ function footer(value: string | number | undefined, hubDefault: string | number 
 
 export function MoreOptions() {
 	const { store, launchDefaults: defaults } = useNewSession();
-	const { launchOverrides, submitting, setLaunchOverrides } = useStore(store);
+	const { launchOverrides, submitting, setLaunchOverrides, manager, setManager } = useStore(store);
 	const set = (field: Field, value: string | number | null) => {
 		const next: LaunchConfigLayer = { ...launchOverrides };
 		if (value === null) delete next[field];
@@ -58,6 +58,14 @@ export function MoreOptions() {
 	return (
 		<GroupedPage>
 			<SheetStatus />
+			<GroupLabel>Session</GroupLabel>
+			<SwitchRow
+				label="Start as Manager"
+				sub="Lets this session manage other sessions on the hub"
+				value={manager}
+				onChange={setManager}
+				disabled={submitting}
+			/>
 			{SETTINGS.map((setting) => {
 				const value = launchOverrides[setting.field];
 				const offered = value === undefined || setting.values.includes(value);
