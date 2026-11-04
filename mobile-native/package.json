@@ -56,9 +56,25 @@
     "zustand": "^5.0.15"
   },
   "overrides": {
+    "@bacons/apple-targets": {
+      "glob": "14.0.3",
+      "@expo/config": {
+        "glob": "14.0.3"
+      },
+      "@expo/config-plugins": {
+        "glob": "14.0.3"
+      }
+    },
     "@bacons/xcode": {
       "@xmldom/xmldom": "0.8.15",
       "uuid": "11.1.1"
+    },
+    "@expo/cli": {
+      "glob": "14.0.3"
+    },
+    "@expo/fingerprint": {
+      "glob": "14.0.3",
+      "minimatch": "11.0.4"
     }
   },
   "devDependencies": {
