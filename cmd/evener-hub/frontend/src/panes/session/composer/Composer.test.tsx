@@ -349,7 +349,7 @@ test("goal replacement preserves the consolidated recovery owner while its commi
   expect(textarea().textContent).toBe("second recovery");
   const sourceRow = screen.getByText("first recovery").closest("li");
   if (!sourceRow) throw new Error("missing first recovery row");
-  const hold = holdNextWriteTransaction(["recovery"]);
+  const hold = holdNextWriteTransaction(["recovery", "outbox"]);
   try {
     await user.click(within(sourceRow).getByRole("button", { name: "Edit message" }));
     await hold.reached;

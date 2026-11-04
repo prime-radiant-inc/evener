@@ -1661,13 +1661,26 @@ describe("retry-safe mutation outbox integration", () => {
       });
       await threadsStore.getState().refreshThread("ref_a");
       const inspector = new MutationOutboxIndexedDB();
-      expect(await inspector.getOutbox(record.clientMutationId)).toBeUndefined();
+      // The endpoint's Retry re-queues through a FRESH row that carries the
+      // wire id inside its payload, so the two variants land differently:
       if (snapshot === "cleared instance") {
-        expect(await inspector.getRecovery(record.clientMutationId)).toMatchObject({
-          recoveryKind: "rejected",
-          payload: record.payload,
+        // the terminal refusal lands in recovery under the FRESH key (the
+        // composition is findable by its wire id), while the superseded
+        // predecessor keeps its id and evidence for the receipt its own real
+        // in-flight attempt could still bring.
+        expect(await inspector.getOutbox(record.clientMutationId)).toMatchObject({
+          state: "superseded",
+          attempted: true,
         });
+        const refused = (await inspector.listRecovery("ref_a")).find(
+          (entry) => entry.clientMutationId !== record.clientMutationId,
+        );
+        expect(refused).toMatchObject({ recoveryKind: "rejected", payload: record.payload });
       } else {
+        // the replayed receipt settles the WHOLE wire pair (the settlement
+        // resolves sibling records by effective wire id), so nothing of the
+        // composition lingers pinned once its outcome is proven.
+        expect(await inspector.getOutbox(record.clientMutationId)).toBeUndefined();
         expect(await inspector.getRecovery(record.clientMutationId)).toBeUndefined();
       }
       inspector.close();

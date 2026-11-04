@@ -13,6 +13,7 @@ import { afterEach, expect, test, vi } from "vitest";
 import type { MutationIntent } from "./mutationOutbox";
 import type { MutationOutboxOpenDiagnostic } from "./mutationOutboxIndexedDB";
 import {
+  DATABASE_VERSION,
   MutationOutboxIndexedDB,
   MutationStorageError,
   MutationStorageTimeoutError,
@@ -21,8 +22,6 @@ import {
 import { settleRealTasks, wedgeDatabaseOpens } from "./testing/stalledIndexedDB";
 
 const DATABASE_NAME = "evener-mutation-outbox";
-// The adapter's own schema fence: DATABASE_VERSION in mutationOutboxIndexedDB.ts.
-const VERSION = 4;
 
 const intent: MutationIntent = {
   targetRef: "local:thread-1",
@@ -99,7 +98,7 @@ test("the open watchdog records the timeout path once", async () => {
   await vi.advanceTimersByTimeAsync(10_000);
   expect(await failure).toBeInstanceOf(MutationStorageTimeoutError);
   expect(diagnostics).toEqual([
-    { database: DATABASE_NAME, version: VERSION, path: "open-timeout", versionchangeTransaction: false },
+    { database: DATABASE_NAME, version: DATABASE_VERSION, path: "open-timeout", versionchangeTransaction: false },
   ]);
   storage.close();
 });
@@ -121,7 +120,7 @@ test("a timeout while the upgrade transaction is live records versionchangeTrans
   );
   vi.advanceTimersByTime(10_000);
   expect(diagnostics).toEqual([
-    { database: DATABASE_NAME, version: VERSION, path: "open-timeout", versionchangeTransaction: true },
+    { database: DATABASE_NAME, version: DATABASE_VERSION, path: "open-timeout", versionchangeTransaction: true },
   ]);
   expect(await failure).toBeInstanceOf(MutationStorageTimeoutError);
   storage.close();
@@ -143,7 +142,7 @@ test("an upgradeneeded for a superseded attempt records the abandoned path, and 
   expect(await read).toBeInstanceOf(Error);
   expect(diagnostics).toContainEqual({
     database: databaseName,
-    version: VERSION,
+    version: DATABASE_VERSION,
     path: "upgrade-abandoned",
     versionchangeTransaction: true,
   });
@@ -171,15 +170,15 @@ test("a timed-out attempt whose upgrade finally arrives records the abandoned pa
   // superseded disjunct is false and only `abandoned` can produce the record.
   vi.advanceTimersByTime(10_000);
   expect(diagnostics).toEqual([
-    { database: DATABASE_NAME, version: VERSION, path: "open-timeout", versionchangeTransaction: false },
+    { database: DATABASE_NAME, version: DATABASE_VERSION, path: "open-timeout", versionchangeTransaction: false },
   ]);
   // The upgrade finally arrives on the abandoned attempt, with a live
   // versionchange transaction.
   request.transaction = {} as IDBTransaction;
   request.dispatchEvent(new Event("upgradeneeded"));
   expect(diagnostics).toEqual([
-    { database: DATABASE_NAME, version: VERSION, path: "open-timeout", versionchangeTransaction: false },
-    { database: DATABASE_NAME, version: VERSION, path: "upgrade-abandoned", versionchangeTransaction: true },
+    { database: DATABASE_NAME, version: DATABASE_VERSION, path: "open-timeout", versionchangeTransaction: false },
+    { database: DATABASE_NAME, version: DATABASE_VERSION, path: "upgrade-abandoned", versionchangeTransaction: true },
   ]);
   expect(await failure).toBeInstanceOf(MutationStorageTimeoutError);
   storage.close();
@@ -200,7 +199,7 @@ test("a blocked upgrade request records the blocked path", async () => {
   await settleRealTasks(() => diagnostics.length > 0);
   expect(diagnostics).toContainEqual({
     database: databaseName,
-    version: VERSION,
+    version: DATABASE_VERSION,
     path: "open-blocked",
     versionchangeTransaction: false,
   });
@@ -218,11 +217,11 @@ test("a versionchange retirement records the retire path", async () => {
   // Install the connection and its versionchange listener.
   await storage.listOutbox();
   // A sibling tab asks for a higher version; this connection is told to retire.
-  const upgraded = openRequest(indexedDB, databaseName, VERSION + 1);
+  const upgraded = openRequest(indexedDB, databaseName, DATABASE_VERSION + 1);
   await settleRealTasks(() => diagnostics.length > 0);
   expect(diagnostics).toContainEqual({
     database: databaseName,
-    version: VERSION,
+    version: DATABASE_VERSION,
     path: "versionchange-retire",
     versionchangeTransaction: false,
   });
@@ -234,13 +233,13 @@ test("the default reporter warns on the console with a stable prefix", () => {
   const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
   warnOpenDiagnostic({
     database: DATABASE_NAME,
-    version: VERSION,
+    version: DATABASE_VERSION,
     path: "open-timeout",
     versionchangeTransaction: false,
   });
   expect(warn).toHaveBeenCalledWith("evener mutation outbox:", {
     database: DATABASE_NAME,
-    version: VERSION,
+    version: DATABASE_VERSION,
     path: "open-timeout",
     versionchangeTransaction: false,
   });

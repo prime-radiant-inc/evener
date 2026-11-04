@@ -172,6 +172,89 @@ describe("MutationDispatcher", () => {
     await outbox.close();
   });
 
+  // RoboRev round-2 M4 corner: the id an authoritative feed names may be a
+  // WIRE identity whose own durable row is already gone - the replacement
+  // minted from it carries that id inside its payload under a fresh storage
+  // key, and after a pending receipt only its retained accepted copy remains.
+  // The note reconciliation must resolve the wire id to the carrying
+  // replacement, or the save's acknowledgement never fires and the draft it
+  // belongs to strands submitting forever.
+  test("reconcileIdentities resolves a gone wire id to its carrying replacement before the note callback", async () => {
+    const outbox = storage(new IDBFactory(), "wire-rejoin", ["note-original", "note-fresh"]);
+    const original = await outbox.enqueueIntent({
+      targetRef: "ref-a",
+      method: "notes/human/set",
+      payload: { ref: "ref-a", note: "raw draft" },
+      attachments: [],
+      optimisticDisplay: null,
+    });
+    await outbox.markAttempted(original.clientMutationId);
+    await outbox.markUnknown(original.clientMutationId, "blockedUnknown");
+    const capture = await outbox.getOutboxWithStopEpoch(original.clientMutationId);
+    const fresh = await outbox.mintRetryFromRow(original.clientMutationId, capture);
+    if (!fresh) throw new Error("mint refused");
+    expect(fresh.payload.clientMutationId).toBe(original.clientMutationId);
+    // The replacement earns an accepted-but-pending receipt: its retained
+    // accepted copy survives, and the wire-pair settlement retires the
+    // superseded predecessor - only the carrying replacement remains.
+    expect(await outbox.settleReceipt(fresh.clientMutationId, "pending")).toBe(true);
+    expect(await outbox.getOutbox(original.clientMutationId)).toBeUndefined();
+    const onHumanNoteReconciled = vi.fn();
+    const dispatcher = new MutationDispatcher(outbox, { getClient: () => null, onHumanNoteReconciled });
+    await dispatcher.reconcileIdentities([original.clientMutationId]);
+    expect(onHumanNoteReconciled).toHaveBeenCalledWith(
+      expect.objectContaining({ clientMutationId: fresh.clientMutationId, method: "notes/human/set" }),
+    );
+    expect(await outbox.getOptimistic(fresh.clientMutationId)).toBeUndefined();
+    await outbox.close();
+  });
+
+  // RoboRev round-11 M1 corner: two requeues of a note save leave the wire's
+  // ORIGINAL storage key retired by the mint's retention bound - the newest
+  // superseded row is the wire's one retained evidence row, and the live
+  // successor carries the wire id only inside its payload. An authoritative
+  // read that names the original wire id (a lost response, no RPC receipt)
+  // must still reconcile through the surviving carriers: the note
+  // acknowledgement fires with the record the settlement resolved, and the
+  // family retires - instead of the settlement deleting the family with no
+  // callback and the note draft stranding submitting forever.
+  test("a reconcile naming an original wire id pruned by the retention bound still acknowledges the note", async () => {
+    const outbox = storage(new IDBFactory(), "wire-pruned-rejoin", ["note-original", "note-fresh-1", "note-fresh-2"]);
+    const original = await outbox.enqueueIntent({
+      targetRef: "ref-a",
+      method: "notes/human/set",
+      payload: { ref: "ref-a", note: "raw draft" },
+      attachments: [],
+      optimisticDisplay: null,
+    });
+    await outbox.markAttempted(original.clientMutationId);
+    await outbox.markUnknown(original.clientMutationId, "blockedUnknown");
+    const firstCapture = await outbox.getOutboxWithStopEpoch(original.clientMutationId);
+    const first = await outbox.mintRetryFromRow(original.clientMutationId, firstCapture);
+    if (!first) throw new Error("mint refused");
+    expect(first.payload.clientMutationId).toBe(original.clientMutationId);
+    await outbox.markAttempted(first.clientMutationId);
+    await outbox.markUnknown(first.clientMutationId, "blockedUnknown");
+    const secondCapture = await outbox.getOutboxWithStopEpoch(first.clientMutationId);
+    const second = await outbox.mintRetryFromRow(first.clientMutationId, secondCapture);
+    if (!second) throw new Error("mint refused");
+    expect(second.payload.clientMutationId).toBe(original.clientMutationId);
+    // The retention bound has pruned the wire's original storage key: the
+    // newest superseded row is the one retained evidence row beside the live
+    // successor.
+    expect(await outbox.getOutbox(original.clientMutationId)).toBeUndefined();
+    expect(await outbox.getOutbox(first.clientMutationId)).toBeDefined();
+    expect(await outbox.getOutbox(second.clientMutationId)).toBeDefined();
+    const onHumanNoteReconciled = vi.fn();
+    const dispatcher = new MutationDispatcher(outbox, { getClient: () => null, onHumanNoteReconciled });
+    await dispatcher.reconcileIdentities([original.clientMutationId]);
+    expect(onHumanNoteReconciled).toHaveBeenCalledWith(
+      expect.objectContaining({ method: "notes/human/set", targetRef: "ref-a" }),
+    );
+    expect(await outbox.listOutbox()).toEqual([]);
+    await outbox.close();
+  });
+
   test("dispatches thread/clear with its instance fence and publishes the replacement response", async () => {
     const indexedDB = new IDBFactory();
     const outbox = storage(indexedDB, "clear-response", ["mutation-a"]);
@@ -217,6 +300,55 @@ describe("MutationDispatcher", () => {
 
     expect(client.calls).toEqual([]);
     expect(await outbox.getOutbox(record.clientMutationId)).toMatchObject({ state: "submitting" });
+  });
+
+  // The wire-id rule of the #5182 mint, at the dispatch seam: a row minted
+  // from a blockedUnknown predecessor re-submits under the PREDECESSOR'S
+  // clientMutationId, because the daemon journals client mutations by id and
+  // renders a re-submission from the existing record with disposition
+  // "replayed" (agent/session_client_mutation.go: the replayed lookup and
+  // replayClientMutation) - never a second application. The dispatcher must
+  // therefore judge and settle the minted row by the wire id its payload
+  // carries, while every storage settle stays keyed on the row's own fresh
+  // storage key.
+  test("a minted row settles from the journal's replay of its inherited wire id, not a double application", async () => {
+    const indexedDB = new IDBFactory();
+    const outbox = storage(indexedDB, "mint-replay", ["mutation-a", "mutation-b"]);
+    const predecessor = await outbox.enqueueIntent(queueIntent());
+    // The attempt's outcome goes unknown - the daemon may already have
+    // applied the mutation - and a Stop crosses the row.
+    await outbox.markAttempted(predecessor.clientMutationId);
+    await outbox.markUnknown(predecessor.clientMutationId, "blockedUnknown");
+    await outbox.cancelUnattempted("ref-a");
+    // The user's explicit Retry mints the fresh row: a fresh storage key,
+    // the predecessor's wire id inherited inside the payload.
+    const capture = await outbox.getOutboxWithStopEpoch(predecessor.clientMutationId);
+    const minted = await outbox.mintRetryFromRow(predecessor.clientMutationId, capture);
+    expect(minted?.clientMutationId).not.toBe(predecessor.clientMutationId);
+    expect(minted?.payload.clientMutationId).toBe(predecessor.clientMutationId);
+
+    // The daemon answers the re-submission from its journal: disposition
+    // "replayed", naming the record's own id - the inherited wire id.
+    let submissions = 0;
+    const client = new FakeClient();
+    client.on("turn/queue", () => {
+      submissions += 1;
+      return { receipt: receipt(predecessor.clientMutationId, "replayed") };
+    });
+    const dispatcher = new MutationDispatcher(outbox, { getClient: () => client });
+
+    await dispatcher.dispatchTargets(["ref-a"]);
+
+    // Exactly one submission, under the inherited wire id, settled by the
+    // replayed receipt: the minted row leaves the outbox keyed on its own
+    // fresh id, and the receipt settles the WHOLE wire pair - the completed
+    // predecessor retires with it (RoboRev round-1 M3), never lingering
+    // retained and pinned once the composition's outcome is proven.
+    expect(submissions).toBe(1);
+    expect(queueCalls(client)).toEqual([{ ...minted!.payload }]);
+    expect(await outbox.getOutbox(minted!.clientMutationId)).toBeUndefined();
+    expect(await outbox.getOutbox(predecessor.clientMutationId)).toBeUndefined();
+    outbox.close();
   });
 
   test("lost responses retain submitting and reconnect retries the same clientMutationId", async () => {
@@ -542,6 +674,248 @@ describe("MutationDispatcher", () => {
     expect(changes.flat()).toContain("ref-a");
   });
 
+  // Round-5 review H1 (classification half): the pre-daemon refusal - the hub
+  // refused the request's shape without executing any of it, so the daemon
+  // journaled nothing for the wire - leaves the wire delivery-uncertain, and
+  // the recovery it creates must carry that uncertainty so the resend can
+  // inherit the wire identity (the journal then replays an outstanding
+  // sibling instead of applying the composition twice).
+  test("a pre-daemon refusal marks its recovery's wire delivery-uncertain", async () => {
+    const indexedDB = new IDBFactory();
+    const outbox = storage(indexedDB, "pre-daemon-uncertain", ["mutation-a"]);
+    const record = await outbox.enqueueIntent(queueIntent("ref-a", "shape refused"));
+    const client = new FakeClient();
+    client.on("turn/queue", () => {
+      throw new WireError("expectedTurnId is required", -32602, { evenerErrorInfo: "invalidParams" });
+    });
+    const dispatcher = new MutationDispatcher(outbox, { getClient: () => client });
+
+    await dispatcher.dispatchTargets(["ref-a"]);
+
+    const recovery = await outbox.getRecovery(record.clientMutationId);
+    expect(recovery).toMatchObject({ wireDeliveryUncertain: true });
+  });
+
+  // Round-6 review H (dispatcher): a NAMED notAccepted refusal that never
+  // reached the daemon's journal - the server's admission refusals (stale
+  // instance, a clear in progress) - leaves the wire delivery-uncertain, the
+  // same as the unattributable pre-daemon arm: an outstanding attempt of the
+  // same wire can still apply, and a fresh-id resend would double-deliver.
+  test("a server-admission named refusal preserves the wire's uncertainty", async () => {
+    const indexedDB = new IDBFactory();
+    const outbox = storage(indexedDB, "admission-uncertain", ["mutation-a"]);
+    const record = await outbox.enqueueIntent(queueIntent("ref-a", "stale instance"));
+    const client = new FakeClient();
+    client.on("turn/queue", (params) => {
+      throw new WireError("thread instance is stale", -32011, {
+        evenerErrorInfo: "conflict",
+        clientMutationId: params.clientMutationId,
+        mutationOutcome: "notAccepted",
+        retryDisposition: "none",
+      });
+    });
+    const dispatcher = new MutationDispatcher(outbox, { getClient: () => client });
+
+    await dispatcher.dispatchTargets(["ref-a"]);
+
+    const recovery = await outbox.getRecovery(record.clientMutationId);
+    expect(recovery).toMatchObject({ wireDeliveryUncertain: true });
+  });
+
+  // The complementary pin: an in-band rejection the daemon JOURNALED (naming
+  // this mutation, mutationOutcome notAccepted) is authoritative for the wire
+  // - it will never be applied - so the recovery keeps a CERTAIN wire identity
+  // and its resend takes a fresh id. Green before and after.
+  test("a journaled in-band rejection keeps its recovery's wire identity certain", async () => {
+    const indexedDB = new IDBFactory();
+    const outbox = storage(indexedDB, "journaled-certain", ["mutation-a"]);
+    const record = await outbox.enqueueIntent(queueIntent("ref-a", "refused in band"));
+    const client = new FakeClient();
+    client.on("turn/queue", (params) => {
+      throw new WireError("refused", -32010, {
+        clientMutationId: params.clientMutationId,
+        mutationOutcome: "notAccepted",
+        retryDisposition: "blocked",
+        cause: "journaledRejection",
+      });
+    });
+    const dispatcher = new MutationDispatcher(outbox, { getClient: () => client });
+
+    await dispatcher.dispatchTargets(["ref-a"]);
+
+    const recovery = await outbox.getRecovery(record.clientMutationId);
+    expect(recovery).toMatchObject({ recoveryKind: "rejected" });
+    expect((recovery as { wireDeliveryUncertain?: boolean })?.wireDeliveryUncertain).toBeFalsy();
+  });
+
+  // The journaled twin pin: a rejection the daemon journaled carries no
+  // pre-journaling cause, and its recovery keeps a CERTAIN wire identity -
+  // the journal's verdict is authoritative and the resend takes a fresh id.
+  test("a journaled named rejection keeps its recovery's wire identity certain", async () => {
+    const indexedDB = new IDBFactory();
+    const outbox = storage(indexedDB, "journaled-certain-cause", ["mutation-a"]);
+    const record = await outbox.enqueueIntent(queueIntent("ref-a", "journal rejected"));
+    const client = new FakeClient();
+    client.on("turn/queue", (params) => {
+      throw new WireError("turn interrupt is pending", -32011, {
+        evenerErrorInfo: "conflict",
+        clientMutationId: params.clientMutationId,
+        mutationOutcome: "notAccepted",
+        retryDisposition: "none",
+        cause: "journaledRejection",
+      });
+    });
+    const dispatcher = new MutationDispatcher(outbox, { getClient: () => client });
+
+    await dispatcher.dispatchTargets(["ref-a"]);
+
+    const recovery = await outbox.getRecovery(record.clientMutationId);
+    expect((recovery as { wireDeliveryUncertain?: boolean })?.wireDeliveryUncertain).toBeFalsy();
+  });
+
+  // Round-14 (the R13 interleaving, closed by the polarity flip): every
+  // outbox verb's daemon-down entry refusal - the generic localForwardMutation
+  // path AND the direct arms - marks the refusal notAccepted with NO cause:
+  // the daemon's journal never saw the wire, so nothing can vouch for it.
+  // The old default classified these CERTAIN (a fresh-id resend could
+  // double-deliver while an outstanding attempt of the same wire applied);
+  // the flip makes absence mean UNCERTAIN - the recovery carries the wire's
+  // uncertainty identity, so an unchanged resend replays under the inherited
+  // id (the inheritance and replay halves are the pinned contract of the
+  // round-5 test below). RED on the pre-flip tree: the entry refusal
+  // classified certain.
+  test("a daemon-down entry refusal leaves the wire delivery-uncertain (the generic localForwardMutation path)", async () => {
+    const indexedDB = new IDBFactory();
+    const outbox = storage(indexedDB, "entry-uncertain-generic", ["mutation-a"]);
+    const record = await outbox.enqueueIntent({
+      targetRef: "ref-a",
+      method: "notes/human/set",
+      payload: { ref: "ref-a", note: "daemon down" },
+      attachments: [],
+      optimisticDisplay: null,
+    });
+    const client = new FakeClient();
+    client.on("notes/human/set", (params) => {
+      throw new WireError("session is unavailable", -32014, {
+        evenerErrorInfo: "sessionUnavailable",
+        clientMutationId: params.clientMutationId,
+        mutationOutcome: "notAccepted",
+        retryDisposition: "none",
+      });
+    });
+    const dispatcher = new MutationDispatcher(outbox, { getClient: () => client });
+
+    await dispatcher.dispatchTargets(["ref-a"]);
+
+    const recovery = await outbox.getRecovery(record.clientMutationId);
+    expect((recovery as { wireDeliveryUncertain?: boolean })?.wireDeliveryUncertain).toBe(true);
+    expect((recovery as { originalWirePayload?: unknown })?.originalWirePayload).toMatchObject({
+      ref: "ref-a",
+    });
+  });
+
+  test("a daemon-down entry refusal leaves the wire delivery-uncertain (a direct steer arm)", async () => {
+    const indexedDB = new IDBFactory();
+    const outbox = storage(indexedDB, "entry-uncertain-steer", ["mutation-a"]);
+    const record = await outbox.enqueueIntent({
+      targetRef: "ref-a",
+      method: "turn/steer",
+      payload: { ref: "ref-a", input: [{ type: "text", text: "steer this" }] },
+      attachments: [],
+      optimisticDisplay: null,
+    });
+    const client = new FakeClient();
+    client.on("turn/steer", (params) => {
+      throw new WireError("session is unavailable", -32014, {
+        evenerErrorInfo: "sessionUnavailable",
+        clientMutationId: params.clientMutationId,
+        mutationOutcome: "notAccepted",
+        retryDisposition: "none",
+      });
+    });
+    const dispatcher = new MutationDispatcher(outbox, { getClient: () => client });
+
+    await dispatcher.dispatchTargets(["ref-a"]);
+
+    const recovery = await outbox.getRecovery(record.clientMutationId);
+    expect((recovery as { wireDeliveryUncertain?: boolean })?.wireDeliveryUncertain).toBe(true);
+  });
+
+  // Round-14 asymmetric-safety pin: the uncertainty classification is
+  // conservative, not a fact - a row can be classified uncertain while the
+  // journal actually holds a REJECTED record for the wire. The unchanged
+  // resend replays that record, and the replay carries the journaledRejection
+  // stamp (the choke point wrote it into the record): the dispatcher then
+  // classifies the replayed refusal CERTAIN - the journal's verdict is now
+  // known - and the row settles as rejected. No loop (the row leaves the
+  // outbox once), no double-apply (the journal never applied the wire).
+  // Green before and after: the stamp made the certain classification, and
+  // the flip keeps it.
+  test("an unchanged resend replays the journal's rejected record and settles as rejected", async () => {
+    const indexedDB = new IDBFactory();
+    const outbox = storage(indexedDB, "replay-rejected-record", ["mutation-a", "mutation-b"]);
+    const a = await outbox.enqueueIntent(queueIntent("ref-a", "maybe rejected"));
+    await outbox.markAttempted(a.clientMutationId);
+    await outbox.markUnknown(a.clientMutationId, "blockedUnknown");
+    const recovery = await outbox.transferToRecovery(a.clientMutationId, "rejected", "invalid params", {
+      wireDeliveryUncertain: true,
+    });
+    if (!recovery) throw new Error("failed to seed recovery");
+    const sent = await outbox.resendRecoveryResult(a.clientMutationId, queueIntent("ref-a", "maybe rejected"));
+    if (sent.status !== "sent") throw new Error(`resend did not send: ${sent.status}`);
+    const client = new FakeClient();
+    client.on("turn/queue", (params) => {
+      throw new WireError("turn interrupt is pending", -32011, {
+        evenerErrorInfo: "conflict",
+        clientMutationId: params.clientMutationId,
+        mutationOutcome: "notAccepted",
+        retryDisposition: "none",
+        cause: "journaledRejection",
+      });
+    });
+    const dispatcher = new MutationDispatcher(outbox, { getClient: () => client });
+
+    await dispatcher.dispatchTargets(["ref-a"]);
+
+    expect(await outbox.getOutbox(sent.record.clientMutationId)).toBeUndefined();
+    const settled = await outbox.getRecovery(sent.record.clientMutationId);
+    expect(settled).toMatchObject({ recoveryKind: "rejected" });
+    expect((settled as { wireDeliveryUncertain?: boolean })?.wireDeliveryUncertain).toBeFalsy();
+  });
+
+  // Round-5 review H1 (replay half): the resent row under an inherited wire id
+  // settles from a REPLAYED receipt naming that wire id, exactly like a minted
+  // replacement - the journal's dedupe is what keeps the outstanding
+  // sibling from double-applying.
+  test("a resent delivery-uncertain recovery settles as a replay under its inherited wire id", async () => {
+    const indexedDB = new IDBFactory();
+    const outbox = storage(indexedDB, "resend-replay", ["mutation-a", "mutation-b"]);
+    const a = await outbox.enqueueIntent(queueIntent("ref-a", "uncertain save"));
+    await outbox.markAttempted(a.clientMutationId);
+    await outbox.markUnknown(a.clientMutationId, "blockedUnknown");
+    const recovery = await outbox.transferToRecovery(a.clientMutationId, "rejected", "invalid params", {
+      wireDeliveryUncertain: true,
+    });
+    if (!recovery) throw new Error("failed to seed recovery");
+    // The replay is byte-identical to the wire's original composition: the
+    // daemon journals an id with its method and payload hash, so the resent
+    // row must carry the ORIGINAL text to inherit the wire id (the round-6
+    // refinement - a different payload is new work under a fresh id).
+    const sent = await outbox.resendRecoveryResult(a.clientMutationId, queueIntent("ref-a", "uncertain save"));
+    if (sent.status !== "sent") throw new Error(`resend did not send: ${sent.status}`);
+    // The inherited wire id is the dedupe contract: the daemon journals this
+    // composition under it, whatever storage key the row carries.
+    expect(sent.record.payload.clientMutationId).toBe(a.clientMutationId);
+    const client = new FakeClient();
+    client.on("turn/queue", (params) => ({ receipt: receipt(params.clientMutationId, "replayed") }));
+    const dispatcher = new MutationDispatcher(outbox, { getClient: () => client });
+
+    await dispatcher.dispatchTargets(["ref-a"]);
+
+    expect(await outbox.getOutbox(sent.record.clientMutationId)).toBeUndefined();
+    expect(await outbox.getRecovery(sent.record.clientMutationId)).toBeUndefined();
+  });
+
   test("an unattributable rejection with a non-deterministic code still retains submitting", async () => {
     const indexedDB = new IDBFactory();
     const outbox = storage(indexedDB, "ambiguous-error", ["mutation-a"]);
@@ -646,12 +1020,15 @@ describe("MutationDispatcher", () => {
     expect(causes.at(-1)).toEqual({ kind: "transientRefusal", projectedShapeUnchanged: false });
   });
 
-  // Live reconciliation reopens unresolved records without changing their
-  // payloads. The daemon's durable journal and original instance fence own
-  // replay safety; omission from the snapshot does not prove non-delivery.
-  test("restoreProvenAbsent returns a blocked head to submitting and the next dispatch drains it", async () => {
+  // Live reconciliation never re-enables a parked row: an innocent blocked
+  // head settles terminal "superseded" (its id and attempt evidence kept for
+  // the receipt a real in-flight attempt can still bring) and the work is
+  // re-queued as a FRESH row at the ref's tail, under the predecessor's wire
+  // id. The daemon's durable journal and original instance fence own replay
+  // safety; omission from the snapshot does not prove non-delivery.
+  test("restoreProvenAbsent re-queues a blocked head as a fresh tail row and the next dispatch drains the ref", async () => {
     const indexedDB = new IDBFactory();
-    const outbox = storage(indexedDB, "restore-absent", ["mutation-a", "mutation-b"]);
+    const outbox = storage(indexedDB, "restore-absent", ["mutation-a", "mutation-b", "mutation-c"]);
     const first = await outbox.enqueueIntent(queueIntent("ref-a", "first"));
     const second = await outbox.enqueueIntent(queueIntent("ref-a", "second"));
     const changes: string[][] = [];
@@ -680,15 +1057,33 @@ describe("MutationDispatcher", () => {
 
     await dispatcher.restoreProvenAbsent("ref-a", new Set());
     expect(changes).toContainEqual(["ref-a"]);
-    expect(await outbox.getOutbox(first.clientMutationId)).toMatchObject({ state: "submitting" });
+    // The old row settles terminal; the fresh row is submitting at the tail,
+    // re-submitting under the predecessor's wire id.
+    expect(await outbox.getOutbox(first.clientMutationId)).toMatchObject({
+      state: "superseded",
+      attempted: true,
+    });
+    const rows = await outbox.listOutbox("ref-a");
+    const fresh = rows.find(
+      (row) => row.clientMutationId !== first.clientMutationId && row.clientMutationId !== second.clientMutationId,
+    );
+    expect(fresh).toMatchObject({ state: "submitting", attempted: false });
+    expect(fresh?.payload.clientMutationId).toBe(first.clientMutationId);
+    expect(fresh?.intentSequence).toBeGreaterThan(second.intentSequence);
 
     await dispatcher.dispatchTargets(["ref-a"]);
+    // The tail mint visibly re-queues: the second row (born ahead of the
+    // parked head) dispatches first, then the fresh row under the inherited
+    // wire id. The superseded row is never dispatched again.
     expect(queueCalls(client).map((params) => params.clientMutationId)).toEqual([
       first.clientMutationId,
-      first.clientMutationId,
       second.clientMutationId,
+      first.clientMutationId,
     ]);
+    // The fresh row's settlement retires the completed predecessor with it
+    // (RoboRev round-1 M3): the ref drains to empty, nothing lingers pinned.
     expect(await outbox.getOutbox(first.clientMutationId)).toBeUndefined();
+    expect(await outbox.getOutbox(fresh?.clientMutationId ?? "")).toBeUndefined();
     expect(await outbox.getOutbox(second.clientMutationId)).toBeUndefined();
   });
 
@@ -1127,7 +1522,12 @@ test("a client replacement during attempt commit retains evidence and recovers t
   const writer = new MutationOutboxIndexedDB({
     indexedDB,
     databaseName: "rewire-attempt-evidence",
-    createMutationId: () => "mutation-a",
+    // The reconcile's re-queue mints a fresh row, so the storage needs a
+    // second id beyond the original enqueue's.
+    createMutationId: (() => {
+      let minted = 0;
+      return () => (minted++ === 0 ? "mutation-a" : "mutation-b");
+    })(),
     beforeCommit: (operation) => {
       if (operation === "markAttempted") current = replacement;
     },
@@ -1155,7 +1555,11 @@ test("a client replacement during attempt commit retains evidence and recovers t
   await dispatcher.dispatchTargets([record.targetRef]);
 
   expect(replacement.calls).toEqual([{ method: "turn/queue", params: record.payload }]);
+  // The replayed receipt settles the FRESH row and retires the completed
+  // predecessor with it (RoboRev round-1 M3) - the one journal entry proves
+  // the whole wire pair, so nothing of the composition lingers pinned.
   expect(await inspector.getOutbox(record.clientMutationId)).toBeUndefined();
+  expect(await inspector.listOutbox(record.targetRef)).toHaveLength(0);
   inspector.close();
   writer.close();
 });

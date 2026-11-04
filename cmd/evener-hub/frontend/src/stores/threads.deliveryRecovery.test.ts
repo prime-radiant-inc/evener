@@ -129,10 +129,14 @@ test.each(["active", "idle"].flatMap((status) => [true, false].map((accepted) =>
     const indexedDB = new IDBFactory();
     const databaseName = `evener-mutation-outbox-periodic-${status}-${accepted}`;
     try {
+      // The endpoint's reconcile re-queues through a FRESH row (the old row
+      // settles superseded and keeps its key), so the factory must be able
+      // to produce a second distinct id; the first keeps the bare name.
+      let mintedId = 0;
       const storage = new MutationOutboxIndexedDB({
         indexedDB,
         databaseName,
-        createMutationId: () => "delegate-periodic",
+        createMutationId: () => (++mintedId === 1 ? "delegate-periodic" : `delegate-periodic-${mintedId}`),
       });
       const record = await storage.enqueueIntent({
         targetRef: "ref_a",
@@ -142,17 +146,22 @@ test.each(["active", "idle"].flatMap((status) => [true, false].map((accepted) =>
         optimisticDisplay: { text: "sentinel" },
       });
       await storage.markAttempted(record.clientMutationId);
+      // The endpoint's reconcile re-queues through a FRESH row carrying the
+      // wire id, so the recovery completes under EITHER half of the pair:
+      // the read settles the old row directly (accepted), or the minted
+      // row's own receipt settles the whole wire pair (absent). Gate on any
+      // successful settlement of the ref's work, not on the old row's key.
       const settled = deferred<void>();
       const settleApplied = storage.settleApplied.bind(storage);
       vi.spyOn(storage, "settleApplied").mockImplementation(async (...args) => {
         const result = await settleApplied(...args);
-        if (args[0] === record.clientMutationId && result) settled.resolve();
+        if (result) settled.resolve();
         return result;
       });
       const settleReceipt = storage.settleReceipt.bind(storage);
       vi.spyOn(storage, "settleReceipt").mockImplementation(async (...args) => {
         const result = await settleReceipt(...args);
-        if (args[0] === record.clientMutationId) settled.resolve();
+        if (result) settled.resolve();
         return result;
       });
       setMutationStorageForTests(storage);
@@ -240,7 +249,13 @@ test.each([true, false])(
   "discovery reconciles another tab's blocked send with cached authority, accepted=%s",
   async (accepted) => {
     vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
-    const storage = new MutationOutboxIndexedDB({ createMutationId: () => "other-tab-blocked" });
+    // The endpoint's reconcile re-queues through a FRESH row (the old row
+    // settles superseded and keeps its key), so the factory must be able to
+    // produce a second distinct id; the first keeps the bare name.
+    let mintedId = 0;
+    const storage = new MutationOutboxIndexedDB({
+      createMutationId: () => (++mintedId === 1 ? "other-tab-blocked" : `other-tab-blocked-${mintedId}`),
+    });
     const otherTab = new MutationOutboxIndexedDB({ createMutationId: () => "other-tab-blocked" });
     const settled = deferred<void>();
     const settleApplied = storage.settleApplied.bind(storage);
@@ -298,7 +313,11 @@ test.each(["accepted", "absent", "unavailable"])(
   "manual retry refreshes authority after another tab blocks a send: %s",
   async (outcome) => {
     vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
-    const storage = new MutationOutboxIndexedDB({ createMutationId: () => "manual-other-tab" });
+    // Fresh-row re-queue needs a second distinct id; the first keeps the bare name.
+    let mintedId = 0;
+    const storage = new MutationOutboxIndexedDB({
+      createMutationId: () => (++mintedId === 1 ? "manual-other-tab" : `manual-other-tab-${mintedId}`),
+    });
     const otherTab = new MutationOutboxIndexedDB();
     const fresh = deferred<ThreadReadResponse>();
     try {
@@ -334,11 +353,21 @@ test.each(["accepted", "absent", "unavailable"])(
         response.thread.evener.queue = { revision: 1, clientMutationIds: ["manual-other-tab"] };
       if (outcome === "unavailable") response.thread.evener.mutationStateAuthoritative = false;
       fresh.resolve(response);
-      expect(await retry).toBe(outcome !== "unavailable");
+      // The endpoint's Retry is the one authorization that re-queues
+      // delivery-uncertain work: the resync settles the row (accepted) or
+      // mints a fresh one (absent), and when the authority refresh is
+      // UNAVAILABLE it still mints - the press, not the unavailable read,
+      // is the authorization, and the fresh row is fenced at birth and
+      // reconciles on its own dispatch.
+      expect(await retry).toBe(true);
       if (outcome === "absent") await flushIndexedDBUntil(() => sends === 2);
       expect(sends).toBe(outcome === "absent" ? 2 : 1);
-      if (outcome === "unavailable")
-        expect((await storage.getOutbox("manual-other-tab"))?.state).toBe("blockedUnknown");
+      if (outcome === "unavailable") {
+        expect((await storage.getOutbox("manual-other-tab"))?.state).toBe("superseded");
+        const rows = await storage.listOutbox("ref_a");
+        const freshRow = rows.find((row) => row.clientMutationId !== "manual-other-tab");
+        expect(freshRow?.payload.clientMutationId).toBe("manual-other-tab");
+      }
     } finally {
       fresh.resolve(readResponse("ref_a", { status: { type: "restartRequired" } }));
       otherTab.close();
@@ -423,7 +452,11 @@ for (const state of ["blockedUnknown", "submitting"] as const) {
 }
 
 test("compatible refresh wins over a delayed incompatible receipt write", async () => {
-  const storage = new MutationOutboxIndexedDB({ createMutationId: () => "delayed-upgrade" });
+  // Fresh-row re-queue needs a second distinct id; the first keeps the bare name.
+  let mintedId = 0;
+  const storage = new MutationOutboxIndexedDB({
+    createMutationId: () => (++mintedId === 1 ? "delayed-upgrade" : `delayed-upgrade-${mintedId}`),
+  });
   const record = await storage.enqueueIntent({
     targetRef: "ref_a",
     method: "turn/queue",
@@ -440,11 +473,14 @@ test("compatible refresh wins over a delayed incompatible receipt write", async 
     await releaseWrite.promise;
     return markUnknown(id, state);
   });
+  // The re-queued work settles under the FRESH row's key (the receipt names
+  // the wire id the pair shares), so the gate watches any successful
+  // settlement of the ref's work.
   const settled = deferred<void>();
   const settleReceipt = storage.settleReceipt.bind(storage);
   vi.spyOn(storage, "settleReceipt").mockImplementation(async (id, projectionState) => {
     const result = await settleReceipt(id, projectionState);
-    if (id === record.clientMutationId) settled.resolve();
+    if (result) settled.resolve();
     return result;
   });
   setMutationStorageForTests(storage);
@@ -463,16 +499,33 @@ test("compatible refresh wins over a delayed incompatible receipt write", async 
   releaseWrite.resolve();
   await Promise.all([firstRead, refresh]);
   await flushIndexedDBUntil(() => fake.calls.some((call) => call.method === "turn/queue"));
-  expect((await storage.getOutbox(record.clientMutationId))?.state).toBe("submitting");
+  // The compatible refresh re-queues through the endpoint's mint: the row
+  // that dispatches is a FRESH one carrying the wire id inside its payload,
+  // while the old row settles terminal superseded (keeping its id and
+  // evidence) - the delayed incompatible write lands on the dead predecessor
+  // only and cannot resurrect it.
+  expect((await storage.getOutbox(record.clientMutationId))?.state).toBe("superseded");
+  const rows = await storage.listOutbox("ref_a");
+  const freshRow = rows.find((row) => row.clientMutationId !== record.clientMutationId);
+  expect(freshRow).toMatchObject({ state: "submitting" });
+  expect(freshRow?.payload.clientMutationId).toBe(record.clientMutationId);
   expect(fake.calls.filter((call) => call.method === "turn/queue")).toHaveLength(1);
   receipt.resolve({ receipt: mutationReceipt(record.clientMutationId) });
   await settled.promise;
+  // The receipt settles the WHOLE wire pair: nothing of the composition
+  // lingers pinned once its outcome is proven.
+  expect(await storage.getOutbox(record.clientMutationId)).toBeUndefined();
+  expect(await storage.listOutbox("ref_a")).toHaveLength(0);
 });
 
 test.each([false, true])(
   "stopped refresh retains an overlapping blocking obligation (reconnect=%s)",
   async (reconnect) => {
-    const storage = new MutationOutboxIndexedDB({ createMutationId: () => "overlapping-stop" });
+    // Fresh-row re-queue needs a second distinct id; the first keeps the bare name.
+    let mintedId = 0;
+    const storage = new MutationOutboxIndexedDB({
+      createMutationId: () => (++mintedId === 1 ? "overlapping-stop" : `overlapping-stop-${mintedId}`),
+    });
     const record = await storage.enqueueIntent({
       targetRef: "ref_a",
       method: "turn/queue",
@@ -525,7 +578,11 @@ for (const failure of ["listOutbox", "markUnknown"] as const) {
   test.each([false, true])(
     `restart blocking survives ${failure} failure and stopped refresh (overlap=%s)`,
     async (overlap) => {
-      const storage = new MutationOutboxIndexedDB({ createMutationId: () => "failed-restart-block" });
+      // Fresh-row re-queue needs a second distinct id; the first keeps the bare name.
+      let mintedId = 0;
+      const storage = new MutationOutboxIndexedDB({
+        createMutationId: () => (++mintedId === 1 ? "failed-restart-block" : `failed-restart-block-${mintedId}`),
+      });
       const record = await storage.enqueueIntent({
         targetRef: "ref_a",
         method: "turn/queue",

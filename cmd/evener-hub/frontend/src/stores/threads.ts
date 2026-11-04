@@ -128,8 +128,10 @@ import {
   type MutationOutboxRecord,
   type MutationRecoveryRecord,
   type MutationStopBarrier,
+  type MutationStopCapture,
 } from "./mutationOutbox";
 import {
+  type DisplayedRecoveryStopCapture,
   MutationOutboxIndexedDB,
   type MutationRecoveryResendResult,
   type RetargetedMutations,
@@ -2294,10 +2296,15 @@ async function refreshMutationPins(runtime: MutationRuntime, targetRefs: Iterabl
     // predates it: discard rather than replace the commit's own ids.
     if ((mutationStateGenerations.get(targetRef) ?? 0) !== generation) continue;
     // A successful read is the authoritative snapshot: the ref's ids are
-    // exactly the non-canceled rows this read observed.
+    // exactly the rows with live work this read observed. A superseded row is
+    // terminal dead work - its send lives in the fresh row a mint queued,
+    // which the snapshot registers on its own - so it must not keep the
+    // fallback refused the way a canceled row never does either.
     replaceUndeliveredMutations(
       targetRef,
-      outbox.filter((record) => record.state !== "canceled").map((record) => record.clientMutationId),
+      outbox
+        .filter((record) => record.state !== "canceled" && record.state !== "superseded")
+        .map((record) => record.clientMutationId),
     );
     if (outbox.length > 0) {
       pinMutationRef(targetRef);
@@ -2338,9 +2345,12 @@ async function refreshMutationPinAfterRemoval(runtime: MutationRuntime, targetRe
   if (!isCurrentMutationRuntime(runtime)) return;
   // As in refreshMutationPins: a commit since the read began outranks it.
   if ((mutationStateGenerations.get(targetRef) ?? 0) !== generation) return;
+  // As above, a superseded row is terminal dead work: only live rows count.
   replaceUndeliveredMutations(
     targetRef,
-    outbox.filter((record) => record.state !== "canceled").map((record) => record.clientMutationId),
+    outbox
+      .filter((record) => record.state !== "canceled" && record.state !== "superseded")
+      .map((record) => record.clientMutationId),
   );
   if (outbox.length > 0 || optimistic.length > 0) {
     pinMutationRef(targetRef);
@@ -2475,6 +2485,16 @@ function getMutationRuntime(): MutationRuntime | null {
     if (settled) noteHandledMutation(clientMutationId);
     return settled;
   };
+  // The settlement's wire sweep retires the wire's sibling rows from storage;
+  // their in-memory registrations resolve through this listener, fired inside
+  // the settlement itself - synchronously, like the resend wrapper's
+  // retiredIds clearing - so a persistence read that fails next (a storage
+  // hiccup) cannot leave the fallback guard armed on rows that no longer
+  // exist. Clearing is idempotent and only ever names retired keys, so
+  // concurrent settlements are safe to interleave.
+  storage.setRetiredIdsListener?.((retiredIds) => {
+    for (const retired of retiredIds) noteHandledMutation(retired);
+  });
   storage.setSettledListener((targetRef) => noteMutationStateChange(targetRef));
   // §6's note-row supersede discard commits fire-and-forget AFTER the settle
   // that spawned it has already notified — the dispatcher's post-settlement
@@ -2626,12 +2646,42 @@ export async function readMutationPersistence(targetRef?: string): Promise<Mutat
   const runtime = getMutationRuntime();
   if (!runtime) return { outbox: [], optimistic: [], recovery: [] };
   await runtime.start;
-  const [outbox, optimistic, recovery] = await Promise.all([
+  const [outbox, displayed, optimistic, recovery, displayedRecovery] = await Promise.all([
     runtime.storage.listOutbox(targetRef),
+    // A retargeted row's durable destination is the resumed ref while the
+    // pane the user watches is the displayed one - the canceled strip
+    // surfaces such rows under the displayed ref, so the persistence read
+    // must load them too or the strip that names them never fills. Rows
+    // the main read already returned (the destination ref's own rows)
+    // win; the merge stays sorted by intentSequence like both reads.
+    targetRef === undefined ? Promise.resolve([]) : runtime.storage.listOutboxDisplayedAt(targetRef),
     runtime.storage.listOptimistic(targetRef),
     runtime.storage.listRecovery(targetRef),
+    // The recovery half of the displayed-ref merge: an edited retargeted
+    // row's recovery is associated with the displayed session too, or the
+    // tray the strip's own Edit opened loses the composition the moment
+    // the displayed session reloads its durable projection.
+    targetRef === undefined ? Promise.resolve([]) : runtime.storage.listRecoveryDisplayedAt(targetRef),
   ]);
-  return { outbox, optimistic, recovery };
+  const seen = new Set(outbox.map((record) => record.clientMutationId));
+  const merged = [...outbox];
+  for (const record of displayed) {
+    if (seen.has(record.clientMutationId)) continue;
+    seen.add(record.clientMutationId);
+    merged.push(record);
+  }
+  const seenRecovery = new Set(recovery.map((record) => record.clientMutationId));
+  const mergedRecovery = [...recovery];
+  for (const record of displayedRecovery) {
+    if (seenRecovery.has(record.clientMutationId)) continue;
+    seenRecovery.add(record.clientMutationId);
+    mergedRecovery.push(record);
+  }
+  const bySequence = (left: { intentSequence: number }, right: { intentSequence: number }) =>
+    left.intentSequence - right.intentSequence;
+  merged.sort(bySequence);
+  mergedRecovery.sort(bySequence);
+  return { outbox: merged, optimistic, recovery: mergedRecovery };
 }
 
 const userIntentStopGenerations = new Map<string, number>();
@@ -3519,28 +3569,50 @@ export function retryBlockedBySnapshot(
   );
 }
 
+// The per-target form of the snapshot refusals: a durable row's Retry is a
+// verdict on its OWN destination, which for a retargeted row is not the pane
+// that renders it. Reads exactly the inputs the press itself consults, so a
+// row's disabled state and retryBlockedMutation's refusal cannot drift. A
+// target whose model is absent or notLoaded keeps Retry disabled - the press
+// would refuse on that snapshot too.
+export function retryBlockedForTarget(targetRef: string): boolean {
+  const state = threadsStore.getState();
+  return (
+    retryBlockedBySnapshot(
+      state.threads.get(targetRef)?.status.type,
+      state.mutationAuthorityRefs.has(targetRef),
+      state.restartBlockingObligations.has(targetRef),
+    ) || state.mutationReconciliationStorageBlocked.has(targetRef)
+  );
+}
+
 export async function retryBlockedMutation(
   clientMutationId: string,
   mode: "user" | "backgroundNote" = "user",
 ): Promise<boolean> {
   const runtime = requireMutationRuntime();
-  // §4's stop barrier on the release path, the click-time capture: REQUESTED
+  // §4's stop barrier on the Retry path, the click-time capture: REQUESTED
   // here, inside the click's own synchronous prefix, before `await
   // runtime.start` and every other wait in the retry chain — the enqueue
   // barrier's own rule. The ref is unknown until the row is read, so the
-  // capture rides that read: one readonly transaction carries the row AND the
-  // ref's stop epoch, making it the click's first storage observation (on a
-  // cold connection the request itself issues the open). A Stop whose cancel
-  // transaction commits after that snapshot bumps the epoch past the capture,
-  // and the release below refuses — a newer Stop outranks an earlier Retry,
-  // the same commit-order comparison the enqueue barrier carries. A Stop
-  // committed before the capture read's transaction can exist is the bounded
-  // residual §4 states for the enqueue, and for the same reason: the
-  // deliberate post-Stop Retry §9 item 7 protects is indistinguishable from
-  // it in the database.
+  // capture rides that read: one readonly transaction carries the row AND
+  // both stop epochs it crosses, making it the click's first storage
+  // observation (on a cold connection the request itself issues the open).
+  // A Stop whose cancel transaction commits after that snapshot bumps an
+  // epoch past its capture half, and the mint below answers it the way the
+  // enqueue barrier does — the fresh row commits born-canceled, never
+  // dispatching past the newer Stop. A Stop committed before the capture
+  // read's transaction can exist is the bounded residual §4 states for the
+  // enqueue, and for the same reason: the deliberate post-Stop Retry §9 item
+  // 7 protects is indistinguishable from it in the database.
   const captureRead = runtime.storage.getOutboxWithStopEpoch(clientMutationId);
   await runtime.start;
-  const { record, stopEpoch } = await captureRead;
+  // The capture is the click's PAIR: the row's destination epoch and, for a
+  // retargeted resend, the still-displayed ref's. A Stop on either ref that
+  // commits after this snapshot and before the release write below compares
+  // newer against its half and the release refuses - the same commit-order
+  // comparison the enqueue barrier carries, now on both refs the row crosses.
+  const { record, stopEpoch, displayedStopEpoch } = await captureRead;
   if (record?.state !== "blockedUnknown" && record?.state !== "canceled") return false;
   // Only an explicit user Retry releases a canceled row (the one reversal the
   // design allows); background retry modes exist for delivery-uncertain rows
@@ -3565,45 +3637,47 @@ export async function retryBlockedMutation(
   // must refuse here too — the daemon would fence the stale send anyway.
   const rowInstance = record.instanceId ?? record.threadId;
   if (rowInstance !== undefined && threadInstanceID(pressModel) !== rowInstance) return false;
-  if (
-    retryBlockedBySnapshot(
-      state.threads.get(record.targetRef)?.status.type,
-      state.mutationAuthorityRefs.has(record.targetRef),
-      state.restartBlockingObligations.has(record.targetRef),
-    )
-  )
-    return false;
+  // The snapshot refusals and the storage-blocked fence are per-TARGET (the
+  // row's own destination), shared with QueueStrip's per-row button via
+  // retryBlockedForTarget.
+  if (retryBlockedForTarget(record.targetRef)) return false;
   if (
     pendingMutationReconciliations.has(record.targetRef) ||
     pendingThreadHydrations.has(record.targetRef) ||
-    state.mutationReconciliationFailures.has(record.targetRef) ||
-    // A storage-blocked ref cannot answer the ordering questions a Retry
-    // press asks either: its reconcile sits on the same wedge, and
-    // discovery's retry is what clears this fence.
-    state.mutationReconciliationStorageBlocked.has(record.targetRef)
+    state.mutationReconciliationFailures.has(record.targetRef)
   )
     return false;
   const client = currentDispatchClient();
   if (!client) return false;
   const epoch = dispatchReadyEpoch;
   if (record.state === "canceled") {
-    // The release is durable before any dispatch. A canceled row provably
+    // The mint is durable before any dispatch. A canceled row provably
     // never reached the daemon, so it needs no reconciliation to prove
-    // absence — release, then let the same fenced resync-and-dispatch tail
-    // every user retry uses carry it out. The barrier is the click-time
-    // capture above: a Stop that landed between the capture and this release
-    // outranks the Retry, and the refused release leaves the row canceled
-    // for it — the release returning false is this press's refusal.
-    // Registered around the write: the reopened row is undelivered work, and a
+    // absence — mint, then let the same fenced resync-and-dispatch tail
+    // every user retry uses carry the fresh row out. The mint never reopens
+    // the old row: it removes it (§6's removal on explicit Retry, so its
+    // chip leaves the canceled strip and a second press cannot mint the
+    // same send twice) and queues a FRESH row at the ref's tail, fenced at
+    // birth — a Stop that landed between the capture and this mint
+    // outranks the Retry and the fresh row commits born-canceled for it.
+    // The identity check is the capture's: a row whose durable destination
+    // or instance no longer matches the press refuses, and the mint
+    // returning undefined is this press's refusal.
+    // Registered around the write: the minted row is undelivered work, and a
     // fallback send must see it before the async refresh can.
-    const released = await trackOutboxWrite(
+    const minted = await trackOutboxWrite(
       record.targetRef,
-      () => runtime.storage.releaseCanceled(clientMutationId, { stopEpoch }),
-      // The released row keeps the id it is reopened under, and is undelivered
-      // work: it is reopened for a fresh dispatch.
-      (didRelease) => (didRelease ? { clientMutationId, undelivered: true } : undefined),
+      () => runtime.storage.mintRetryFromRow(clientMutationId, { record, stopEpoch, displayedStopEpoch }),
+      (fresh) =>
+        fresh ? { clientMutationId: fresh.clientMutationId, undelivered: fresh.state !== "canceled" } : undefined,
     );
-    if (!released) return false;
+    if (!minted) return false;
+    // The mint removed the predecessor row, so its in-memory delivery
+    // registration resolves here, synchronously - the same shape the resend
+    // path gives the recovery row it consumes. The fresh row keeps the
+    // registration trackOutboxWrite just took, so unreadable storage cannot
+    // strand the guard on a row that no longer exists.
+    noteHandledMutation(clientMutationId);
     notifyMutationPersistence([record.targetRef]);
   }
   // Shared storage can become blocked after this tab's authoritative snapshot.
@@ -3621,6 +3695,47 @@ export async function retryBlockedMutation(
   );
   if (!isCurrentMutationRuntime(runtime) || currentDispatchClient() !== client || dispatchReadyEpoch !== epoch)
     return false;
+  // A blockedUnknown row that is STILL parked after the reconciliation above is
+  // one the crossed-Stop fence held - no automatic path may re-queue it, and
+  // the user's Retry click is the one authorization that can. It runs after
+  // the resync deliberately: an innocent parked row is re-queued by that
+  // fresh authoritative read itself (the reconcile mints it a fresh row,
+  // barrier-free like §4's recovery resends), and the crossed row's own
+  // read may still settle it by receipt. Only the still-parked row mints:
+  // the old row settles terminal "superseded" - never dispatched again, its
+  // id and attempt evidence kept so a receipt or in-band refusal from the
+  // real in-flight attempt still settles it exactly as before - and the
+  // FRESH row inherits the predecessor's wire id (the daemon journals this
+  // composition under it; a re-submission replays the first attempt's
+  // receipt instead of double-applying), queues at the ref's tail, and is
+  // fenced at birth: a Stop that landed inside the capture-to-mint window
+  // makes it born-canceled rather than absorbed. A refused mint (the row's
+  // durable destination or instance no longer matches the press) falls
+  // through to the decision read below - the row it left parked reports
+  // itself. Background retry modes never take this branch.
+  if (record.state === "blockedUnknown" && mode === "user") {
+    const stillParked = await runtime.storage.getOutbox(clientMutationId);
+    if (stillParked?.state === "blockedUnknown") {
+      const minted = await trackOutboxWrite(
+        record.targetRef,
+        () => runtime.storage.mintRetryFromRow(clientMutationId, { record, stopEpoch, displayedStopEpoch }),
+        (fresh) =>
+          fresh ? { clientMutationId: fresh.clientMutationId, undelivered: fresh.state !== "canceled" } : undefined,
+      );
+      if (minted) {
+        // The predecessor settled terminal superseded - its delivery is now
+        // owed by the fresh row - so its in-memory registration resolves
+        // here, synchronously; the fresh row keeps the registration
+        // trackOutboxWrite just took. Unreadable storage cannot strand the
+        // guard on the predecessor's id after the pair settles.
+        noteHandledMutation(clientMutationId);
+        notifyMutationPersistence([record.targetRef]);
+        // The resync-and-dispatch tail above already ran its dispatch pass, so
+        // the fresh row drives its own - the same kick a resend gives it.
+        handleDiscoveredMutations(runtime, [record.targetRef]);
+      }
+    }
+  }
   const current = await runtime.storage.getOutbox(clientMutationId);
   return current?.state !== "blockedUnknown" && current?.state !== "canceled";
 }
@@ -3700,6 +3815,24 @@ export function captureRecoveryStopBarrier(targetRef: string): Promise<MutationS
   // Keep that rejection for the sender without an unhandled interim promise.
   void barrier.catch(() => undefined);
   return barrier;
+}
+
+/** A recovery row and its durable destination's Stop epoch, from ONE readonly
+ * storage snapshot. The recovery Send press requests this in its own
+ * synchronous prefix - the Retry path's own capture discipline
+ * (getOutboxWithStopEpoch): the snapshot is the press's first storage
+ * observation, so a Stop pressed while the Send waits on persistence or
+ * destination hydration stays in the fence's future, and a peer retarget that
+ * lands inside those waits cannot move the destination under the press. */
+export function readRecoveryWithStopEpoch(
+  clientMutationId: string,
+  displayedRef?: string,
+): Promise<{ record: MutationRecoveryRecord | undefined; stopEpoch: number; displayedStopEpoch: number }> {
+  const capture = requireMutationRuntime().storage.getRecoveryWithStopEpoch(clientMutationId, displayedRef);
+  // The capture can fail while the Send is still awaiting its recovery write.
+  // Keep that rejection for the sender without an unhandled interim promise.
+  void capture.catch(() => undefined);
+  return capture;
 }
 
 export async function updateRecoveryMutation(
@@ -3795,9 +3928,10 @@ export async function resendRecoveryMutation(
   skillNames?: readonly string[],
   commandNames?: readonly string[],
   mentions?: readonly ComposerMention[],
-  barrierRead = captureRecoveryStopBarrier(targetRef),
+  barrierRead: MutationStopCapture | Promise<MutationStopCapture> = captureRecoveryStopBarrier(targetRef),
   expectedRecoveryRevisions?: Readonly<Record<string, number>>,
   compositionOwnerId?: string,
+  displayedBarrierRead?: DisplayedRecoveryStopCapture | Promise<DisplayedRecoveryStopCapture>,
 ): Promise<MutationRecoveryResendResult> {
   const runtime = requireMutationRuntime();
   await runtime.start;
@@ -3811,6 +3945,10 @@ export async function resendRecoveryMutation(
     compositionOwnerId,
   );
   const barrier = await barrierRead;
+  // The displayed ref's fence, captured at the same press: a Stop on the
+  // still-displayed session cancels this resend exactly like one on the
+  // destination.
+  const displayedBarrier = displayedBarrierRead === undefined ? undefined : await displayedBarrierRead;
   // Registered around the write: the resent row is undelivered work, and a
   // fallback send must see it before the async refresh can.
   const result = await trackOutboxWrite(
@@ -3822,6 +3960,7 @@ export async function resendRecoveryMutation(
         barrier,
         expectedRecoveryRevisions,
         compositionOwnerId,
+        displayedBarrier,
       ),
     (outcome) =>
       outcome.status !== "sent"
@@ -3836,8 +3975,11 @@ export async function resendRecoveryMutation(
   // The resend mints a new row and removes the recovery row it came from, so
   // the old id is resolved: keep the new one (trackOutboxWrite registered it)
   // and drop the old, so a later settle of the new row or unreadable storage
-  // does not strand the guard on a row that no longer exists.
+  // does not strand the guard on a row that no longer exists. The siblings
+  // the consumption retired went with it - a row deleted from storage has no
+  // delivery left to owe.
   noteHandledMutation(clientMutationId);
+  for (const retired of result.retiredIds) noteHandledMutation(retired);
   pinMutationRef(targetRef);
   notifyMutationPersistence([targetRef], { record, recoveryId: clientMutationId });
   handleDiscoveredMutations(runtime, [targetRef]);
@@ -4659,38 +4801,61 @@ function releaseInflightDurableEnqueue(ref: string): void {
   else inflightDurableEnqueues.delete(ref);
 }
 
-// Register an outbox write that can create or reopen a row this tab now owes
-// delivery (resendRecovery, releaseCanceled), not only the send funnel. It is
-// counted in flight for the fallback's concurrent-enqueue guard, and the ref is
-// marked as holding undelivered work when the write commits a row that is not
-// canceled. Without this the guard's in-memory state stays stale-empty until an
-// async refresh reads the row back - and if storage wedges first, a fallback
-// send jumps the row that was just written. Every caller names the row it
-// wrote: a reopened recovery row keeps its id and a resend returns the new
-// record, so the settle that proves delivery can resolve it. (Writes that only
-// REMOVE or cancel rows - discardRecovery, updateRecoveryInput, discardCanceled,
-// discardCanceledOfInstance, cancelUnattempted - need no registration: they
-// never create undelivered work, and the next refresh/hydration recomputes the
-// ids from the records when it can read them.)
+// Register an outbox write that can create or re-queue rows this tab now owes
+// delivery (resendRecovery, the Retry mint, the reconcile's automatic
+// requeue), not only the send funnel. It is counted in flight for the
+// fallback's concurrent-enqueue guard, and the ref is marked as holding
+// undelivered work for every row the write commits that is not canceled.
+// Without this the guard's in-memory state stays stale-empty until an async
+// refresh reads the rows back - and if storage wedges first, a fallback send
+// jumps the rows that were just written. Every caller names the rows it wrote:
+// a reopened recovery row keeps its id, a resend returns the new record, and
+// the reconcile's restore returns the rows it re-queued, so the settle that
+// proves delivery can resolve each. (Writes that only REMOVE or cancel rows -
+// discardRecovery, updateRecoveryInput, discardCanceled, discardCanceledOfInstance,
+// cancelUnattempted - need no registration: they never create undelivered
+// work, and the next refresh/hydration recomputes the ids from the records
+// when it can read them.)
+// The registration rule for rows an outbox write committed, in one place: the
+// write changed the ref's outbox (in-flight reads are stale whether or not the
+// rows it touched are undelivered work), and every committed row that is not
+// canceled is undelivered work this tab owes. Both the in-flight-counting
+// wrapper and the reconcile's registration-only requeue call this.
+function noteCommittedOutboxRows(
+  ref: string,
+  committed: Array<{ clientMutationId: string; undelivered: boolean }>,
+): void {
+  if (committed.length === 0) return;
+  noteMutationStateChange(ref);
+  for (const row of committed) if (row.undelivered) noteUndeliveredMutation(ref, row.clientMutationId);
+}
+
+async function trackOutboxWriteRows<T>(
+  ref: string,
+  write: () => Promise<T>,
+  committedRows: (result: T) => Array<{ clientMutationId: string; undelivered: boolean }>,
+): Promise<T> {
+  inflightDurableEnqueues.set(ref, (inflightDurableEnqueues.get(ref) ?? 0) + 1);
+  try {
+    const result = await write();
+    noteCommittedOutboxRows(ref, committedRows(result));
+    return result;
+  } finally {
+    releaseInflightDurableEnqueue(ref);
+  }
+}
+
+// The single-row shape most writes take, delegating to the rows primitive so
+// the in-flight accounting and the read-invalidation rule keep one home.
 async function trackOutboxWrite<T>(
   ref: string,
   write: () => Promise<T>,
   committedRow: (result: T) => { clientMutationId: string; undelivered: boolean } | undefined,
 ): Promise<T> {
-  inflightDurableEnqueues.set(ref, (inflightDurableEnqueues.get(ref) ?? 0) + 1);
-  try {
-    const result = await write();
+  return trackOutboxWriteRows(ref, write, (result) => {
     const committed = committedRow(result);
-    if (committed !== undefined) {
-      // The write changed this ref's outbox, so in-flight reads are stale
-      // whether or not the row it touched is undelivered work.
-      noteMutationStateChange(ref);
-      if (committed.undelivered) noteUndeliveredMutation(ref, committed.clientMutationId);
-    }
-    return result;
-  } finally {
-    releaseInflightDurableEnqueue(ref);
-  }
+    return committed === undefined ? [] : [committed];
+  });
 }
 
 // Remove a ref's dispatch arm once the ref is genuinely idle: it has no
@@ -5816,7 +5981,26 @@ async function publishAndReconcileThreadHydration(
             }
             if (!current()) return;
           }
-          await runtime.dispatcher.restoreProvenAbsent(ref, reopenExcludedIds);
+          // Round-12: the automatic mint registers the rows it re-queued,
+          // exactly like the explicit Retry wrapper - the fresh row is
+          // undelivered work this tab owes, and a fallback send must see it
+          // before the pin refresh's background read (which failing storage
+          // can starve forever). The predecessor's and the swept siblings'
+          // registrations resolve through the storage write's own retiredIds
+          // publication. Round-13 (the CI red on round-12): this registers
+          // WITHOUT the in-flight durable-enqueue count. That count guards
+          // USER enqueues a fallback send must not jump, but a background
+          // reconcile wedged inside its own write would hold it forever, and
+          // the pinned contract is that a wedged reconcile must not strand a
+          // send. The pending-reconciliation fence owns this window: while
+          // the reconcile is in flight the ref refuses the fallback unless
+          // the fallback's own storage failure waives it - exactly the
+          // storage-blocked waiver.
+          const requeued = await runtime.dispatcher.restoreProvenAbsent(ref, reopenExcludedIds);
+          noteCommittedOutboxRows(
+            ref,
+            requeued.map((row) => ({ clientMutationId: row.clientMutationId, undelivered: row.state !== "canceled" })),
+          );
         }
         if (!current()) return;
         await refreshMutationPins(runtime, [ref]);

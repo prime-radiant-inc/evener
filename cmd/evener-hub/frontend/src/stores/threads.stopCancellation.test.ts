@@ -697,7 +697,18 @@ test("clear permits explicit fresh recovery without replaying old-instance input
   expect(await retryBlockedMutation(record.clientMutationId)).toBe(true);
   expect(fake.calls.filter((call) => call.method === "thread/read").length).toBeGreaterThan(reads);
   await flushPendingTurnsProjectionForTests();
-  expect(await storage.getRecovery(record.clientMutationId)).toMatchObject({
+  // The endpoint's Retry re-queues through a FRESH row carrying the wire id
+  // inside its payload: the terminal refusal lands in recovery under the
+  // FRESH key (findable by its payload's wire id), while the superseded
+  // predecessor keeps its id and evidence in the outbox.
+  expect(await storage.getOutbox(record.clientMutationId)).toMatchObject({
+    state: "superseded",
+    attempted: true,
+  });
+  const refused = (await storage.listRecovery("ref_a")).find(
+    (entry) => entry.clientMutationId !== record.clientMutationId,
+  );
+  expect(refused).toMatchObject({
     recoveryKind: "rejected",
     payload: { expectedInstanceId: "thr_ref_a" },
   });

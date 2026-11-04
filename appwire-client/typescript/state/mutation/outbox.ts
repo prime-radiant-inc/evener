@@ -28,6 +28,7 @@ import type {
   MutationIntent,
   MutationOptimisticRecord,
   MutationOutboxRecord,
+  MutationRecord,
   MutationRecoveryKind,
   MutationRecoveryRecord,
 } from "./records";
@@ -67,6 +68,17 @@ export type MutationDiscoveryReason =
 // still cancels that send, which is the conservative, retryable direction.
 export interface MutationStopBarrier {
   stopEpoch: number;
+}
+
+// The capture PAIR a click that reauthorizes a row carries: the destination
+// half every barrier already holds, plus the still-displayed ref's epoch for a
+// retargeted send that crosses one (and that ref's own name where the fence
+// stamps it on the row). Hosts without displayed-ref rows capture the
+// destination half alone; the optional halves read as absent and their fence
+// comparisons conservatively skip them.
+export interface MutationStopCapture extends MutationStopBarrier {
+  displayedStopEpoch?: number;
+  displayedRef?: string;
 }
 
 // The storage this layer needs, as an interface rather than a class: the web's
@@ -140,15 +152,35 @@ export interface MutationOutboxStorage<A extends MutationAttachmentRef = Mutatio
   // interface conformance alone does not prove it.
   settleReceipt(clientMutationId: string, projectionState: string): Promise<boolean>;
   // Records an authoritative apply, with the same notes/human/set supersede
-  // side effect as settleReceipt.
-  settleApplied(clientMutationId: string): Promise<boolean>;
-  // Records the authoritative snapshot proves never landed, restored for
-  // another dispatch attempt; returns the ids restored.
-  restoreProvenAbsent(targetRef: string, authoritativeIds: ReadonlySet<string>): Promise<string[]>;
+  // side effect as settleReceipt. Returns the record the settlement resolved
+  // as its subject - the row the id names, else a carrier of the id's wire
+  // identity (a minted replacement, its retained accepted copy, or the
+  // wire's remaining recovery carrier) - so a consumer that must react to
+  // the reconciled composition (the note-draft acknowledgement) reads the
+  // answer from the settlement, the one home of wire-family resolution,
+  // rather than enumerating stores by wire id. Undefined when nothing
+  // carrying the id, by key or by wire, settled.
+  settleApplied(clientMutationId: string): Promise<MutationRecord<A> | undefined>;
+  // Records the authoritative snapshot proves never landed, re-queued for
+  // another dispatch attempt; returns the ROWS this pass re-queued (a host
+  // may reopen the record in place or mint a fresh row for its work - the
+  // returned row is what dispatches, or the canceled verdict a crossed Stop
+  // made of it) so a host can transfer each re-queued row's in-memory
+  // delivery registration synchronously, before any background read
+  // re-computes it.
+  restoreProvenAbsent(targetRef: string, authoritativeIds: ReadonlySet<string>): Promise<MutationOutboxRecord[]>;
+  // The optional marker a refusal that never reached the daemon sets: the
+  // wire may still be applied by an outstanding attempt, so a host that
+  // resends the recovery under a fresh wire identity would let the
+  // composition apply twice. Hosts that resubmit inherit the wire id for
+  // marked recoveries (the daemon's journal replays a re-submission from the
+  // record); a journaled rejection resolves the wire authoritatively and
+  // keeps the fresh id.
   transferToRecovery(
     clientMutationId: string,
     recoveryKind: MutationRecoveryKind,
     recoveryReason?: string,
+    options?: { wireDeliveryUncertain?: boolean },
   ): Promise<MutationRecoveryRecord<A> | undefined>;
 }
 

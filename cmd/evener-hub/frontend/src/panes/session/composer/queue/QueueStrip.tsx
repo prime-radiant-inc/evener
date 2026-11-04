@@ -18,7 +18,7 @@ import type { MutationOutboxRecord, MutationRecoveryRecord } from "../../../../s
 import type { InputAttachment } from "../../../../stores/threads";
 import {
   captureRecoveryStopBarrier,
-  retryBlockedBySnapshot,
+  retryBlockedForTarget,
   threadsStore,
   useEditableQueuedMutationEntries,
   useThreadsStore,
@@ -36,6 +36,7 @@ import {
   discardRecoveryPendingTurn,
   editQueuedPendingTurn,
   type PendingTurnEntry,
+  refreshPendingTurnsProjection,
   removeQueuedPendingTurn,
   resendRecoveryPendingTurn,
   retryBlockedPendingTurn,
@@ -216,9 +217,6 @@ export function QueueStrip({
   onDrainBusyChange,
 }: QueueStripProps): ReactNode {
   const model = useThreadsStore((s) => s.threads.get(sessionRef));
-  const mutationAuthority = useThreadsStore((s) => s.mutationAuthorityRefs.has(sessionRef));
-  const recoveryObligated = useThreadsStore((s) => s.restartBlockingObligations.has(sessionRef));
-  const reconciliationStorageBlocked = useThreadsStore((s) => s.mutationReconciliationStorageBlocked.has(sessionRef));
   const refusedId = useThreadsStore((s) => s.transientRefusalPaces.get(sessionRef)?.clientMutationId);
   const editableEntries = useEditableQueuedMutationEntries(sessionRef);
   const editableIds = new Set(editableEntries.map((record) => record.clientMutationId));
@@ -247,6 +245,23 @@ export function QueueStrip({
       .filter((record) => record.state === "submitting")
       .map((record) => ({ kind: "waiting" as const, record })),
   ].sort((left, right) => left.record.intentSequence - right.record.intentSequence);
+  // Retry eligibility is ROW-scoped: each durable row's Retry reads its own
+  // target's flags (retryBlockedForTarget), and a retargeted row's target is
+  // not this pane's ref. Subscribe to every row target's flags as one
+  // primitive key, so the strip re-renders exactly when one of them flips.
+  const retryTargets = [...new Set(durableEntries.map((entry) => entry.record.targetRef))];
+  useThreadsStore((s) =>
+    retryTargets
+      .map((target) =>
+        [
+          s.threads.get(target)?.status.type ?? "",
+          s.mutationAuthorityRefs.has(target),
+          s.restartBlockingObligations.has(target),
+          s.mutationReconciliationStorageBlocked.has(target),
+        ].join("\u0000"),
+      )
+      .join("\u0001"),
+  );
   const toasts = useToasts();
   // Keyed by daemon-minted entryId (stable across a re-render even as
   // indices shift), not row index - mirrors the legacy renderer's own
@@ -295,13 +310,23 @@ export function QueueStrip({
     localActions.current.add(id);
     setRowBusy(id, true);
     try {
+      // The row's OWN destination identity governs its controls: a
+      // retargeted row surfaced under the displayed ref carries the resumed
+      // session as its targetRef, and the identity checks inside edit and
+      // remove reject a pane ref that differs from the row's destination.
+      // The destination ref's refresh runs inside the wrapper; the DISPLAYED
+      // pane - the one the user is pressing in - refreshes its own
+      // projection here, or the surfaced row lingers in the strip after the
+      // operation that consumed it.
+      const ref = record.targetRef;
       if (action === "edit") {
-        const recovery = await editQueuedPendingTurn(id, sessionRef);
+        const recovery = await editQueuedPendingTurn(id, ref);
         if (recovery) await onEditRecovery?.(recovery);
         else pushRecoveryRefusal("changed");
-      } else if (!(await removeQueuedPendingTurn(id, sessionRef))) {
+      } else if (!(await removeQueuedPendingTurn(id, ref))) {
         pushRecoveryRefusal("changed");
       }
+      if (ref !== sessionRef) await refreshPendingTurnsProjection(sessionRef);
     } catch (error) {
       toasts.push("error", sessionActionError(action === "edit" ? "Edit failed" : "Remove failed", error));
     } finally {
@@ -770,23 +795,16 @@ export function QueueStrip({
                       disabled={
                         rowBusy ||
                         // Retry is offered only when retryBlockedMutation can
-                        // actually act. Its snapshot-level refusals - every
-                        // notLoaded or restartRequired snapshot, any ref without
-                        // mutation authority, and a restart-blocking obligation
-                        // (a Stop, or a snapshot the daemon reports as
-                        // restartRequired/resumeRequired) - are shared with it as
-                        // retryBlockedBySnapshot (stores/threads.ts), so a
-                        // recovery-fenced local session keeps Retry disabled until
-                        // the explicit Resume action restores it; without the
-                        // obligation term an idle fenced row would offer a Retry
-                        // that always fails.
-                        retryBlockedBySnapshot(model?.status.type, mutationAuthority, recoveryObligated) ||
-                        // A storage-blocked ref refuses the press too - but its
-                        // press would first hang on the wedged storage read
-                        // before failing, so mirror the refusal here and let the
-                        // button return when discovery's reconcile retry clears
-                        // the state.
-                        reconciliationStorageBlocked
+                        // actually act, and it acts on the ROW's own target -
+                        // which for a retargeted row is not this pane's ref.
+                        // retryBlockedForTarget (stores/threads.ts) reads the
+                        // target's snapshot flags and its storage-blocked
+                        // fence, the same inputs the press consults, so a
+                        // fenced DISPLAYED session cannot disable a row whose
+                        // healthy target could proceed - and a fenced TARGET
+                        // keeps Retry disabled here exactly as its press
+                        // would refuse.
+                        retryBlockedForTarget(record.targetRef)
                       }
                       onClick={() => void handleRetry(record)}
                     >
