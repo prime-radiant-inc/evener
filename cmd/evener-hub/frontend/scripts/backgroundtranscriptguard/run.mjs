@@ -2059,8 +2059,7 @@ async function openSessionInCurrentShell(driver, ref) {
 // waitForNewTargetRead waits for the target's read count to advance past its
 // pre-gap value, returning refreshed evidence (the reconnect's authoritative
 // read on a new connection).
-async function waitForNewTargetRead(_driver, ref, beforeReads, timeoutMs = 30000) {
-  const driver = _driver;
+async function waitForNewTargetRead(driver, ref, beforeReads, timeoutMs = 30000) {
   const startedAt = Date.now();
   const deadline = startedAt + driver.reactions.deadline(timeoutMs);
   let ev = targetPagingEvidence(ref);

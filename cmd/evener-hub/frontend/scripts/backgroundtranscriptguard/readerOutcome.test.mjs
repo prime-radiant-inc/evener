@@ -18,6 +18,7 @@ import { TranscriptRenderProvider } from "../../src/transcriptDisplay/renderCont
 import "../../src/panes/session/transcript/tools/shellTool"; // registers the real "shell" descriptor
 import { connectionStore } from "../../src/stores/connection";
 import { resetDisclosureStoreForTests } from "../../src/widgets/disclosure/disclosureStore";
+import { ReactionBudget } from "../skillguard/budgets.mjs";
 import * as guard from "./run.mjs";
 
 const REF = "local:tgt";
@@ -148,8 +149,9 @@ function fakeDriver({ online = true } = {}) {
   return {
     send,
     // The real Driver carries the load-observation budget every condition
-    // wait sizes itself from; this fake keeps the test's budget fixed.
-    reactions: { deadline: (floorMs) => floorMs, observe() {} },
+    // wait sizes itself from. With no completed wait to observe, the budget
+    // returns each wait's floor unchanged, so this test stays deterministic.
+    reactions: new ReactionBudget(),
     waitPage: async (expr) => {
       const seen = evalExpr(expr);
       if (!seen) throw new Error("waitPage: not ready");
