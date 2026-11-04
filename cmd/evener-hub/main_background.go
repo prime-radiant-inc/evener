@@ -66,7 +66,10 @@ func watchHubAttention(ctx context.Context, poke <-chan struct{}, archive *hubco
 		// question/approval out of the broadcast (#2529).
 		snapshot := web.navigationSnapshot(ctx)
 		m, sum := hubDeriveNavigationAttention(snapshot.metas, snapshot.live, decisions)
-		web.navigation.roster.Publish(m, rosterIdentities(snapshot))
+		// Archiving clears human attention, not the Manager's live population.
+		// Reuse top-level eligibility without an archive suppression decision.
+		roster, _ := hubcore.DeriveAttention(snapshot.metas, snapshot.live, nil)
+		web.navigation.roster.Publish(roster, rosterIdentities(snapshot))
 		w.Tick(m, sum)
 	}
 	run()
