@@ -579,10 +579,31 @@ func clientMutationRejectionError(record clientMutationRecord) error {
 	if record.Rejection == nil {
 		return appwire.InternalError("client mutation rejection is missing")
 	}
+	data, ok := appwire.ErrorDataOf(record.Rejection.Data)
+	if !ok {
+		// An unreadable rejection body renders verbatim; the conservative
+		// client default then treats the wire as uncertain.
+		return appwire.WireError{
+			Code:    record.Rejection.Code,
+			Message: record.Rejection.Message,
+			Data:    record.Rejection.Data,
+		}
+	}
+	// The render-side half of the journaledRejection stamp: this helper is
+	// the one home every journal-rejection render path flows through, and it
+	// KNOWS it renders a record the daemon's journal holds - so the stamp is
+	// set here regardless of what the persisted bytes carry. A rejection
+	// persisted by pre-upgrade code carries no cause, and its replay would
+	// otherwise classify delivery-uncertain on the flipped client: an
+	// unchanged resend inheriting the rejected id would replay the same
+	// recorded rejection forever. The write-site stamp in
+	// rejectClientMutation stays as belt-and-braces; both write the same
+	// constant.
+	data.Cause = appwire.JournaledRejectionCause
 	return appwire.WireError{
 		Code:    record.Rejection.Code,
 		Message: record.Rejection.Message,
-		Data:    record.Rejection.Data,
+		Data:    data,
 	}
 }
 

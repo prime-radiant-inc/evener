@@ -414,6 +414,64 @@ func TestClientMutation_RejectionCarriesJournaledRejectionCause(t *testing.T) {
 	}
 }
 
+// TestClientMutation_PreUpgradeRejectionReplayCarriesTheStamp pins the
+// round-15 migration corner: a rejection PERSISTED by pre-upgrade code
+// carries Rejection.Data without the cause, executeAtomic's replay switch
+// returns the recorded record without calling rejectClientMutation, and the
+// render path must not trust the persisted bytes - it KNOWS it renders a
+// journal-held rejection, so the stamp is set at render, covering pre-upgrade
+// and restored records by construction. RED pre-fix: the replay rendered
+// verbatim with no cause, and the flipped dispatcher would classify the wire
+// delivery-uncertain - an unchanged resend inheriting the rejected id would
+// replay the same recorded rejection forever, wedged even after the original
+// conflict cleared.
+func TestClientMutation_PreUpgradeRejectionReplayCarriesTheStamp(t *testing.T) {
+	t.Parallel()
+	sess := newTestSession(t)
+	armTestInterruptFence(t, sess, "interrupt-in-flight")
+	params := appwire.TurnQueueParams{
+		ClientMutationID: "mutation-preupgrade",
+		Input:            []appwire.InputItem{{Type: "text", Text: "must not queue"}},
+	}
+
+	// Create the journaled rejection through the real pipeline, then strip
+	// the persisted record's cause: the pre-upgrade on-disk shape.
+	_, firstErr := sess.AcceptClientMutationQueue(params)
+	assertClientMutationConflict(t, firstErr)
+	if err := sess.clientMutations.mutate(func(snapshot *clientMutationSnapshot) error {
+		record, ok := snapshot.Journal[params.ClientMutationID]
+		if !ok {
+			return errors.New("rejection was not recorded durably")
+		}
+		data, ok := appwire.ErrorDataOf(record.Rejection.Data)
+		if !ok {
+			return errors.New("persisted rejection carries unreadable data")
+		}
+		data.Cause = ""
+		record.Rejection.Data = data
+		snapshot.Journal[params.ClientMutationID] = record
+		return nil
+	}); err != nil {
+		t.Fatalf("stripping the persisted cause: %v", err)
+	}
+
+	// The replay must render the stamp regardless of the persisted bytes.
+	disarmTestInterruptFence(t, sess)
+	_, replayErr := sess.AcceptClientMutationQueue(params)
+	assertClientMutationConflict(t, replayErr)
+	var replayWire appwire.WireError
+	if !errors.As(replayErr, &replayWire) {
+		t.Fatalf("replay error is not a wire error: %v", replayErr)
+	}
+	replayData, ok := appwire.ErrorDataOf(replayWire.Data)
+	if !ok {
+		t.Fatal("replayed rejection carries no readable error data")
+	}
+	if replayData.Cause != appwire.JournaledRejectionCause {
+		t.Fatalf("replay cause = %q, want journaledRejection (the render path must stamp pre-upgrade records)", replayData.Cause)
+	}
+}
+
 // The stamp must not ride on absence: an error that already carries a cause
 // (the producer set of refusal arms grows with main) is overwritten, or a
 // stale cause would reclassify a journaled rejection on the client.
