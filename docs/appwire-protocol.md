@@ -549,6 +549,7 @@ Underlying Go kind: `string` (no struct fields).
 | Field | Go type | Omitempty | Embedded |
 |-------|---------|-----------|----------|
 | `ref` | string | yes |  |
+| `rosterInstanceId` | string | yes |  |
 | `threadId` | string |  |  |
 | `title` | string |  |  |
 | `project` | string |  |  |

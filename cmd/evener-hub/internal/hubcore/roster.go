@@ -23,7 +23,10 @@ import (
 // rendezvous-file metadata with dynamic state resolved via AppWire.
 type LiveEntry struct {
 	rendezvous.Entry
-	SessionID         string
+	SessionID string
+	// RosterInstanceID preserves a remote session's identity when SessionID
+	// is its stable, source-qualified tree key. Local entries use SessionID.
+	RosterInstanceID  string
 	Status            string   // most-recent daemon state ("active", "idle", "awaiting", etc.)
 	ActiveFlags       []string // the status flags the daemon reported alongside Status
 	Crashed           bool     // true only for a retained record whose daemon PID is confirmed gone

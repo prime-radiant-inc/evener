@@ -119,6 +119,11 @@ export interface ArchivedListResponse {
 
 export interface AttentionChanged {
   ref?: string;
+  /**
+   * RosterInstanceID identifies the session occupying Ref in roster updates.
+   * Clear changes it without changing the workspace ref or threadId.
+   */
+  rosterInstanceId?: string;
   threadId: string;
   title: string;
   project: string;
@@ -3193,6 +3198,11 @@ export interface RepoLaunchConfigStatus {
 
 export interface RosterEvent {
   ref?: string;
+  /**
+   * RosterInstanceID identifies the session occupying Ref in roster updates.
+   * Clear changes it without changing the workspace ref or threadId.
+   */
+  rosterInstanceId?: string;
   threadId: string;
   title: string;
   project: string;

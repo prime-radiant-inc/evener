@@ -171,7 +171,7 @@ func (jm *jobManager) onHubRoster(id string, update appwire.SessionWatchUpdate) 
 			}
 			next[event.Ref] = event.AttentionEntry
 			if old, known := cfg.rosterBaseline[event.Ref]; !known || old != event.AttentionEntry {
-				if !known && !deliverInitial {
+				if !deliverInitial && (!known || old.ID != event.ID || old.RosterInstanceID != event.RosterInstanceID) {
 					event.Kind = "new"
 				}
 				changed = append(changed, event)

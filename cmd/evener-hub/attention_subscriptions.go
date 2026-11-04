@@ -17,7 +17,7 @@ func (o *sessionOperations) rosterBroker() *attentionBroker {
 	return &o.roster
 }
 
-type rosterIdentity struct{ Ref string }
+type rosterIdentity struct{ Ref, InstanceID string }
 
 type attentionBroker struct {
 	mu          sync.Mutex
@@ -106,6 +106,7 @@ func (b *attentionBroker) Publish(entries map[string]appwire.AttentionEntry, ide
 			continue
 		}
 		entry.Ref = ident.Ref
+		entry.RosterInstanceID = ident.InstanceID
 		b.latest[id], b.identities[id] = entry, ident
 	}
 	b.revision++
@@ -120,7 +121,7 @@ func (b *attentionBroker) Publish(entries map[string]appwire.AttentionEntry, ide
 			previous, existed := sub.baseline[id]
 			kind := ""
 			switch {
-			case !existed:
+			case !existed || previous.RosterInstanceID != entry.RosterInstanceID:
 				kind = "new"
 			case entry.Level == "needs_you" && (previous.Level != entry.Level || previous.AskPending != entry.AskPending || previous.ApprovalPending != entry.ApprovalPending || previous.NeedsResponse != entry.NeedsResponse):
 				kind = "needs_you"

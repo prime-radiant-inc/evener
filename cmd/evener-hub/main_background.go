@@ -100,7 +100,11 @@ func rosterIdentities(snapshot navigationSnapshot) func(string) (rosterIdentity,
 			ref = (appwire.Ref{SourceID: live.SourceID, ThreadID: live.ThreadID}).String()
 		}
 		if ref != "" {
-			identities[live.SessionID] = rosterIdentity{Ref: ref}
+			instanceID := live.RosterInstanceID
+			if instanceID == "" {
+				instanceID = live.SessionID
+			}
+			identities[live.SessionID] = rosterIdentity{Ref: ref, InstanceID: instanceID}
 		}
 	}
 	return func(id string) (rosterIdentity, bool) { identity, ok := identities[id]; return identity, ok }
