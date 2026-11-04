@@ -67,7 +67,7 @@ func TestHubRosterWatchSnapshot(t *testing.T) {
 	}
 	frame := got[0].Frame
 	const marker = "roster_events: "
-	line := strings.SplitN(frame[strings.Index(frame, marker)+len(marker):], "\n", 2)[0]
+	line, _, _ := strings.Cut(frame[strings.Index(frame, marker)+len(marker):], "\n")
 	var raw []map[string]json.RawMessage
 	if err := json.Unmarshal([]byte(line), &raw); err != nil {
 		t.Fatal(err)
@@ -82,12 +82,12 @@ func TestHubRosterWatchSnapshot(t *testing.T) {
 func rosterFrameEntries(t *testing.T, frame string) []appwire.RosterEvent {
 	t.Helper()
 	const marker = "roster_events: "
-	i := strings.Index(frame, marker)
-	if i < 0 {
+	_, payload, found := strings.Cut(frame, marker)
+	if !found {
 		t.Fatalf("missing structured roster events: %s", frame)
 	}
 	var entries []appwire.RosterEvent
-	if err := json.Unmarshal([]byte(strings.SplitN(frame[i+len(marker):], "\n", 2)[0]), &entries); err != nil {
+	if err := json.Unmarshal([]byte(strings.SplitN(payload, "\n", 2)[0]), &entries); err != nil {
 		t.Fatal(err)
 	}
 	return entries
@@ -102,7 +102,7 @@ func TestHubRosterWatchDeliveredFrame(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := appwire.RosterEvent{AttentionEntry: appwire.AttentionEntry{Ref: "local:worker", Title: "A worker", Level: "needs_you", AskPending: true, ApprovalPending: true, NeedsResponse: true}, Kind: "needs_you"}
+	want := appwire.RosterEvent{Ref: "local:worker", Title: "A worker", Level: "needs_you", AskPending: true, ApprovalPending: true, NeedsResponse: true, Kind: "needs_you"}
 	if err := jm.onHubRoster(result.WatchID, rosterUpdate(1, true, want)); err != nil {
 		t.Fatal(err)
 	}
@@ -130,7 +130,7 @@ func TestHubRosterWatchWorkerClearBaseline(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	entry := appwire.RosterEvent{AttentionEntry: appwire.AttentionEntry{ID: "before-clear", Ref: "local:worker", Level: "idle"}, Kind: "idle"}
+	entry := appwire.RosterEvent{ID: "before-clear", Ref: "local:worker", Level: "idle", Kind: "idle"}
 	if err := jm.onHubRoster(result.WatchID, rosterUpdate(1, true, entry)); err != nil {
 		t.Fatal(err)
 	}
@@ -675,7 +675,7 @@ func (c *rosterRecoveryClient) Watch(context.Context, appwire.SessionWatchReques
 		c.onSecond()
 	}
 	if len(c.streams) == 1 && c.failSecond {
-		return nil, fmt.Errorf("replacement unavailable")
+		return nil, errors.New("replacement unavailable")
 	}
 	stream := c.streams[0]
 	c.streams = c.streams[1:]

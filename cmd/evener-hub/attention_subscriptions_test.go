@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"runtime"
+	"strconv"
 	"testing"
 	"time"
 
@@ -77,7 +78,7 @@ func TestRosterGlobalInitialAndDeltas(t *testing.T) {
 
 func TestRosterSelfAfterClear(t *testing.T) {
 	t.Parallel()
-	snapshot := navigationSnapshot{live: []hubcore.LiveEntry{{Entry: rendezvous.Entry{WorkspaceRef: "local:stable"}, SessionID: "changed-session"}}}
+	snapshot := navigationSnapshot{live: []hubcore.LiveEntry{{WorkspaceRef: "local:stable", SessionID: "changed-session"}}}
 	b := &attentionBroker{}
 	b.Publish(map[string]appwire.AttentionEntry{"changed-session": {ID: "changed-session", Level: "needs_you"}}, rosterIdentities(snapshot))
 	sub, err := b.Subscribe(appwire.ManagerView{Ref: "local:stable", InstanceID: "changed-session", Manager: true})
@@ -94,7 +95,7 @@ func TestRosterIdentitiesUseWorkspaceRef(t *testing.T) {
 	t.Parallel()
 	snapshot := navigationSnapshot{live: []hubcore.LiveEntry{
 		{Entry: rendezvous.Entry{WorkspaceRef: "local:saved", SessionID: "cleared", ThreadID: "saved"}, SessionID: "cleared"},
-		{Entry: rendezvous.Entry{SourceID: "remote", ThreadID: "thread"}, SessionID: "remote:thread"},
+		{SourceID: "remote", ThreadID: "thread", SessionID: "remote:thread"},
 	}}
 	identity := rosterIdentities(snapshot)
 	if got, ok := identity("cleared"); !ok || got.Ref != "local:saved" {
@@ -304,7 +305,7 @@ func TestRosterSlowSubscriberKeepsLatest(t *testing.T) {
 	}
 	defer sub.Cancel()
 	for i := range 4 {
-		b.Publish(map[string]appwire.AttentionEntry{"worker": {ID: "worker", Level: "needs_you", Title: fmt.Sprint(i), AskPending: i%2 == 0}}, identity)
+		b.Publish(map[string]appwire.AttentionEntry{"worker": {ID: "worker", Level: "needs_you", Title: strconv.Itoa(i), AskPending: i%2 == 0}}, identity)
 	}
 	update := <-sub.Updates
 	if !update.Initial || len(update.Events) != 1 || update.Events[0].Title != "3" || update.Events[0].AskPending {
@@ -350,7 +351,7 @@ func TestRosterConcurrentDrain(t *testing.T) {
 			if i%2 == 0 {
 				level = "error"
 			}
-			b.Publish(map[string]appwire.AttentionEntry{"worker": {ID: "worker", Level: level, Title: fmt.Sprint(i)}}, identity)
+			b.Publish(map[string]appwire.AttentionEntry{"worker": {ID: "worker", Level: level, Title: strconv.Itoa(i)}}, identity)
 		}
 	}()
 	select {

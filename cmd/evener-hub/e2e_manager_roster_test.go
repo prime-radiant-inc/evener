@@ -279,12 +279,12 @@ func rosterModelFrames(t *testing.T, call *fakellm.Call) []map[string]appwire.Ro
 	for _, text := range call.Texts() {
 		for line := range strings.SplitSeq(text, "\n") {
 			const marker = "roster_events: "
-			start := strings.Index(line, marker)
-			if start < 0 {
+			_, payload, found := strings.Cut(line, marker)
+			if !found {
 				continue
 			}
 			var events []appwire.RosterEvent
-			if err := json.Unmarshal([]byte(line[start+len(marker):]), &events); err != nil {
+			if err := json.Unmarshal([]byte(payload), &events); err != nil {
 				t.Fatalf("decode model-visible roster events: %v", err)
 			}
 			entries := make(map[string]appwire.RosterEvent, len(events))
@@ -306,7 +306,7 @@ func rosterModelFrames(t *testing.T, call *fakellm.Call) []map[string]appwire.Ro
 func TestRosterModelFramesReplay(t *testing.T) {
 	frame := func(ref string) string {
 		t.Helper()
-		encoded, err := json.Marshal([]appwire.RosterEvent{{AttentionEntry: appwire.AttentionEntry{Ref: ref, Level: "idle"}, Kind: "new"}})
+		encoded, err := json.Marshal([]appwire.RosterEvent{{Ref: ref, Level: "idle", Kind: "new"}})
 		if err != nil {
 			t.Fatal(err)
 		}

@@ -7,7 +7,7 @@ import (
 
 func TestRosterUpdateRoundTrip(t *testing.T) {
 	t.Parallel()
-	want := SessionWatchUpdate{Roster: &SessionRosterUpdate{Revision: 9, Initial: true, Events: []RosterEvent{{AttentionEntry: AttentionEntry{Ref: "remote:thread", ID: "thread", Level: "needs_you", AskPending: true}, Kind: "needs_you"}}}}
+	want := SessionWatchUpdate{Roster: &SessionRosterUpdate{Revision: 9, Initial: true, Events: []RosterEvent{{Ref: "remote:thread", ID: "thread", Level: "needs_you", AskPending: true, Kind: "needs_you"}}}}
 	encoded, err := json.Marshal(want)
 	if err != nil {
 		t.Fatal(err)

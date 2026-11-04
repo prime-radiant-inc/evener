@@ -77,8 +77,8 @@ func mergeHubRosterFrames(previous, current string) string {
 
 func rosterFrameField(frame, field string) string {
 	for line := range strings.SplitSeq(frame, "\n") {
-		if strings.HasPrefix(line, field) {
-			return strings.TrimPrefix(line, field)
+		if value, found := strings.CutPrefix(line, field); found {
+			return value
 		}
 	}
 	return ""
