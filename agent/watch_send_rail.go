@@ -43,6 +43,12 @@ func (jm *jobManager) snapshotWatchSendFrame(d watchSendDelivery) watchSendDeliv
 		Data:       d.eventData,
 		Provenance: provenance.Clone(d.triggerProvenance),
 	}, d.triggerProvenance)
+	if d.rosterInitial {
+		d.frame += "roster_initial: true\n"
+	}
+	if d.rosterResync {
+		d.frame += rosterRecoveryFrame
+	}
 	if d.rosterPayload != "" {
 		d.frame += "roster_events: " + d.rosterPayload + "\n"
 	}
@@ -685,6 +691,9 @@ func (jm *jobManager) planWatchSendPending(state jobstore.WatchSendState, d watc
 		}
 		previous := *existing
 		record.previous = &previous
+		if d.watchTarget == hubRosterWatchKey {
+			state.Frame = mergeHubRosterFrames(existing.Frame, state.Frame)
+		}
 		state.CoalescedCount = existing.CoalescedCount + 1
 		state.CreatedAt = existing.CreatedAt
 		// The coalesced frame stands in for both the superseded delivery and this

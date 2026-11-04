@@ -221,6 +221,7 @@ type watchConfig struct {
 	rosterBaseline     map[string]appwire.AttentionEntry
 	rosterBound        bool
 	rosterNeedsResync  bool
+	rosterConsumerDone chan struct{}
 	target             string
 	outputMatch        string
 	outputMatcher      *jobstore.OutputMatcher
@@ -442,6 +443,8 @@ type watchSendDelivery struct {
 	watchedIdentity          string
 	trigger                  string
 	rosterPayload            string
+	rosterInitial            bool
+	rosterResync             bool
 	triggerProvenance        *provenance.Causal
 	// provenance is the delivery's causal chain: the triggering event's
 	// provenance extended with this watch's own (watch_id, generation) key and a

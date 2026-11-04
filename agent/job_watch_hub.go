@@ -32,6 +32,58 @@ var hubObservationEvents = [...]string{"status", "question", "approval", "commun
 
 const hubRosterWatchKey = "hub:roster"
 
+const rosterRecoveryFrame = "roster_resync: true\nrecovery: re-register job_watch with hub={\"scope\":\"top_level\"} for a fresh snapshot\n"
+
+// The pending send rail replaces earlier frames for the same watch key.
+// Merge only roster frames there, after it finds the actual undelivered state.
+// Resync drops earlier pending entries. A fresh initial after resync replaces
+// them; a rebind initial without resync keeps earlier undelivered changes.
+func mergeHubRosterFrames(previous, current string) string {
+	if strings.Contains(current, "\nroster_resync: true\n") ||
+		(strings.Contains(current, "\nroster_initial: true\n") && strings.Contains(previous, "\nroster_resync: true\n")) {
+		return current
+	}
+	oldPayload := rosterFrameField(previous, "roster_events: ")
+	newPayload := rosterFrameField(current, "roster_events: ")
+	if oldPayload != "" && newPayload != "" {
+		var old, next []json.RawMessage
+		if json.Unmarshal([]byte(oldPayload), &old) == nil && json.Unmarshal([]byte(newPayload), &next) == nil {
+			positions := make(map[string]int, len(old))
+			merged := make([]json.RawMessage, 0, len(old)+len(next))
+			for _, entry := range append(old, next...) {
+				var ref struct {
+					Ref string `json:"ref"`
+				}
+				if json.Unmarshal(entry, &ref) != nil || ref.Ref == "" {
+					continue
+				}
+				if at, found := positions[ref.Ref]; found {
+					merged[at] = entry
+				} else {
+					positions[ref.Ref] = len(merged)
+					merged = append(merged, entry)
+				}
+			}
+			if encoded, err := json.Marshal(merged); err == nil {
+				current = strings.Replace(current, "roster_events: "+newPayload+"\n", "roster_events: "+string(encoded)+"\n", 1)
+			}
+		}
+	}
+	if strings.Contains(previous, "\nroster_resync: true\n") && !strings.Contains(current, "\nroster_resync: true\n") {
+		current += rosterRecoveryFrame
+	}
+	return current
+}
+
+func rosterFrameField(frame, field string) string {
+	for line := range strings.SplitSeq(frame, "\n") {
+		if strings.HasPrefix(line, field) {
+			return strings.TrimPrefix(line, field)
+		}
+	}
+	return ""
+}
+
 // A roster occupies one ordinary live-watch slot and journal identity. Its
 // source is top_level, while the reserved target keys its registration.
 func (jm *jobManager) configureHubRosterWatch(ctx context.Context, caller string) (watchResult, error) {
@@ -173,8 +225,9 @@ func (jm *jobManager) onHubRoster(id string, update appwire.SessionWatchUpdate) 
 		payload = string(encoded)
 		trigger = fmt.Sprintf("roster revision %d, %d changes", r.Revision, len(changed))
 	}
-	delivery := jm.watchSendSnapshot(cfg, fmt.Sprintf("%s:%d", hubRosterWatchKey, cfg.nextUpdateSeq+1), trigger, events.SessionEvent{SessionID: jm.sessionID})
+	delivery := jm.watchSendSnapshot(cfg, hubRosterWatchKey, trigger, events.SessionEvent{SessionID: jm.sessionID})
 	delivery.rosterPayload = payload
+	delivery.rosterInitial, delivery.rosterResync = r.Initial, r.Resync
 	jm.mu.Unlock()
 	jm.recordWatchSendsAndKick([]watchSendDelivery{delivery})
 	return nil
@@ -646,6 +699,25 @@ func (s *Session) configureHubWatchRuntime(ctx context.Context, args map[string]
 	if !state.Manager {
 		return nil, appwire.InvalidRequest("session is not a Manager")
 	}
+	if request.Scope == "top_level" && s.jobManager != nil {
+		jm := s.jobManager
+		jm.mu.Lock()
+		cfg := jm.watches[watchKey{VisibleSessionID: jm.sessionID, Target: hubRosterWatchKey, SendTo: runtimeMessageAliasCaller}]
+		var id string
+		var done <-chan struct{}
+		if cfg != nil && cfg.rosterNeedsResync {
+			id, done = cfg.watchID, cfg.rosterConsumerDone
+		}
+		jm.mu.Unlock()
+		if done != nil {
+			s.cancelHubWatch(id)
+			select {
+			case <-done:
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			}
+		}
+	}
 	watchCtx, cancel := context.WithCancel(context.Background())
 	stopSetupCancellation := context.AfterFunc(ctx, cancel)
 	defer stopSetupCancellation()
@@ -713,13 +785,17 @@ func (s *Session) configureHubWatchRuntime(ctx context.Context, args map[string]
 			}
 		}
 	}
-	if s.installHubWatchSubscription(jm, result.WatchID, cancel) {
-		go s.consumeHubWatch(watchCtx, result.WatchID, request, state.Ref, state.InstanceID, updates, first)
+	var done chan struct{}
+	if request.Scope == "top_level" {
+		done = make(chan struct{})
+	}
+	if s.installHubWatchSubscription(jm, result.WatchID, cancel, done) {
+		go s.consumeHubWatch(watchCtx, result.WatchID, request, state.Ref, state.InstanceID, updates, first, done)
 	}
 	return marshalWatchResult(result, jobToolResultDefaultMaxChar)
 }
 
-func (s *Session) installHubWatchSubscription(jm *jobManager, id string, cancel context.CancelFunc) bool {
+func (s *Session) installHubWatchSubscription(jm *jobManager, id string, cancel context.CancelFunc, done ...chan struct{}) bool {
 	s.mu.Lock()
 	if s.hubWatchCancels == nil {
 		s.hubWatchCancels = map[string]context.CancelFunc{}
@@ -739,6 +815,13 @@ func (s *Session) installHubWatchSubscription(jm *jobManager, id string, cancel 
 		}
 	}
 	s.hubWatchCancels[id] = cancel
+	if len(done) != 0 && done[0] != nil {
+		jm.mu.Lock()
+		if _, cfg, ok := jm.watchConfigByIDLocked(id); ok {
+			cfg.rosterConsumerDone = done[0]
+		}
+		jm.mu.Unlock()
+	}
 	s.mu.Unlock()
 	for _, stop := range retired {
 		stop()
@@ -765,7 +848,10 @@ const hubWatchReadBudget = 2 * time.Second
 // callerRef and callerInstance name the Manager whose binding admitted the
 // watch: a recheck ends the watch if the binding no longer serves that same
 // Manager session.
-func (s *Session) consumeHubWatch(ctx context.Context, id string, request appwire.SessionWatchRequest, callerRef, callerInstance string, updates <-chan appwire.SessionWatchUpdate, initial appwire.SessionWatchUpdate) {
+func (s *Session) consumeHubWatch(ctx context.Context, id string, request appwire.SessionWatchRequest, callerRef, callerInstance string, updates <-chan appwire.SessionWatchUpdate, initial appwire.SessionWatchUpdate, done ...chan struct{}) {
+	if len(done) != 0 && done[0] != nil {
+		defer close(done[0])
+	}
 	defer s.cancelHubWatch(id)
 	jm := s.jobManager
 	if jm == nil {
