@@ -699,6 +699,7 @@ func TestHubRosterWatchFailedReplacementEndsWatch(t *testing.T) {
 	if _, err := root.configureHubWatchRuntime(t.Context(), args); err != nil {
 		t.Fatal(err)
 	}
+	// TRIPWIRE: the roster fixture signals immediately; ten seconds only guards a wedged consumer or notification path.
 	awaitWithin(t, 10*time.Second, "first snapshot", func() { <-notified })
 	root.jobManager.mu.Lock()
 	var id string
@@ -729,6 +730,7 @@ func TestHubRosterWatchFailedReplacementEndsWatch(t *testing.T) {
 		t.Fatalf("failed replacement has no explicit terminal delivery: %+v", got)
 	}
 	var terminal jobNotification
+	// TRIPWIRE: the roster fixture signals immediately; ten seconds only guards a wedged consumer or notification path.
 	awaitWithin(t, 10*time.Second, "end notice", func() { terminal = <-notified })
 	delivered, _, _ := root.filterDeliverableJobNotifications([]jobNotification{terminal})
 	if len(delivered) != 1 || !delivered[0].watchState.EndNotice {
@@ -754,12 +756,15 @@ func TestHubRosterWatchReplacementAcceptsLowerRevision(t *testing.T) {
 	if _, err := root.configureHubWatchRuntime(t.Context(), args); err != nil {
 		t.Fatal(err)
 	}
+	// TRIPWIRE: the roster fixture signals immediately; ten seconds only guards a wedged consumer or notification path.
 	awaitWithin(t, 10*time.Second, "first snapshot", func() { <-notified })
 	if _, err := root.configureHubWatchRuntime(t.Context(), args); err != nil {
 		t.Fatal(err)
 	}
+	// TRIPWIRE: the roster fixture signals immediately; ten seconds only guards a wedged consumer or notification path.
 	awaitWithin(t, 10*time.Second, "lower-revision fresh snapshot", func() { <-notified })
 	second <- rosterUpdate(2, false, rosterEntry("local:later", "needs_you"))
+	// TRIPWIRE: the roster fixture signals immediately; ten seconds only guards a wedged consumer or notification path.
 	awaitWithin(t, 10*time.Second, "lower-revision delta", func() { <-notified })
 	root.jobManager.mu.Lock()
 	var fresh bool
@@ -790,6 +795,7 @@ func TestHubRosterWatchReregisterRecoversLiveSubscription(t *testing.T) {
 	if _, err := root.configureHubWatchRuntime(t.Context(), args); err != nil {
 		t.Fatal(err)
 	}
+	// TRIPWIRE: the roster fixture signals immediately; ten seconds only guards a wedged consumer or notification path.
 	awaitWithin(t, 10*time.Second, "initial roster", func() {
 		<-notified
 	})
@@ -829,6 +835,7 @@ func TestHubRosterWatchRecoveryJoinsOldConsumerBeforeSnapshot(t *testing.T) {
 	if _, err := root.configureHubWatchRuntime(t.Context(), args); err != nil {
 		t.Fatal(err)
 	}
+	// TRIPWIRE: the roster fixture signals immediately; ten seconds only guards a wedged consumer or notification path.
 	awaitWithin(t, 10*time.Second, "first snapshot", func() { <-notified })
 	root.jobManager.mu.Lock()
 	var id string
@@ -882,6 +889,7 @@ func TestHubRosterWatchLateResyncJoinsBeforeReplacementWatch(t *testing.T) {
 	if _, err := root.configureHubWatchRuntime(t.Context(), args); err != nil {
 		t.Fatal(err)
 	}
+	// TRIPWIRE: the roster fixture signals immediately; ten seconds only guards a wedged consumer or notification path.
 	awaitWithin(t, 10*time.Second, "first snapshot", func() { <-notified })
 	root.jobManager.mu.Lock()
 	var id string
