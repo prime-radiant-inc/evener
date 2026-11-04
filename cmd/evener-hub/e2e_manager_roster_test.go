@@ -121,11 +121,10 @@ func TestManagerRosterEndToEnd(t *testing.T) {
 	if !initial.Contains("roster_initial: true") {
 		t.Fatal("first delivered roster frame is not marked as a full snapshot")
 	}
-	initialEntries := rosterModelEntries(t, initial, watchID)
+	initialEntries := rosterModelEntries(t, initial, watchID, managerRef, manager.SessionID)
 	if len(initialEntries) != 2 || initialEntries[first.Evener.Ref].Ref != first.Evener.Ref || initialEntries[second.Evener.Ref].Ref != second.Evener.Ref {
 		t.Fatalf("initial roster refs=%+v, want both workers", initialEntries)
 	}
-	assertRosterExcludesManager(t, initialEntries, managerRef, manager.SessionID)
 	if entry := initialEntries[first.Evener.Ref]; entry.Level != "needs_you" || !entry.AskPending {
 		t.Fatalf("initial question state=%+v", entry)
 	}
@@ -139,8 +138,7 @@ func TestManagerRosterEndToEnd(t *testing.T) {
 	barrierSeen := false
 	for !barrierSeen || len(seen) != 2 {
 		wake := managerCall()
-		entries := rosterModelEntries(t, wake, watchID)
-		assertRosterExcludesManager(t, entries, managerRef, manager.SessionID)
+		entries := rosterModelEntries(t, wake, watchID, managerRef, manager.SessionID)
 		for ref, entry := range entries {
 			if ref == barrier.Evener.Ref && entry.Kind == "new" {
 				barrierSeen = true
@@ -171,14 +169,23 @@ func TestManagerRosterEndToEnd(t *testing.T) {
 		call.RespondToolCall("communicate", communicateArgs("watch rearmed"))
 		postClear = managerCall()
 	}
-	postClearEntries := rosterModelEntries(t, postClear, "")
-	assertRosterExcludesManager(t, postClearEntries, managerRef, cleared.Thread.SessionID)
+	if !postClear.Contains("roster_initial: true") {
+		t.Fatal("post-Clear roster frame is not marked as a fresh snapshot")
+	}
+	postClearEntries := rosterModelEntries(t, postClear, "", managerRef, cleared.Thread.SessionID)
+	if len(postClearEntries) != 3 {
+		t.Fatalf("post-Clear snapshot has %d refs, want three workers: %+v", len(postClearEntries), postClearEntries)
+	}
+	for _, worker := range []appwire.Thread{first, second, barrier} {
+		if postClearEntries[worker.Evener.Ref].Ref != worker.Evener.Ref {
+			t.Fatalf("post-Clear snapshot missed %s: %+v", worker.Evener.Ref, postClearEntries)
+		}
+	}
 	postClear.RespondToolCall("communicate", communicateArgs("new snapshot received"))
 	last := start(false)
 	for {
 		wake := managerCall()
-		entries := rosterModelEntries(t, wake, "")
-		assertRosterExcludesManager(t, entries, managerRef, cleared.Thread.SessionID)
+		entries := rosterModelEntries(t, wake, "", managerRef, cleared.Thread.SessionID)
 		wake.RespondToolCall("communicate", communicateArgs("post-Clear delta received"))
 		if entries[last.Evener.Ref].Kind == "new" {
 			break
@@ -186,35 +193,65 @@ func TestManagerRosterEndToEnd(t *testing.T) {
 	}
 }
 
-func rosterModelEntries(t *testing.T, call *fakellm.Call, watchID string) map[string]appwire.RosterEvent {
+func rosterModelEntries(t *testing.T, call *fakellm.Call, watchID, managerRef, sessionID string) map[string]appwire.RosterEvent {
 	t.Helper()
 	if watchID != "" && !call.Contains(watchID) {
 		t.Fatalf("Manager model round lacks roster watch ID %s", watchID)
 	}
-	texts := call.Texts()
-	for i := len(texts) - 1; i >= 0; i-- {
-		text := texts[i]
-		const marker = "roster_events: "
-		start := strings.Index(text, marker)
-		if start < 0 {
-			continue
-		}
-		line := strings.SplitN(text[start+len(marker):], "\n", 2)[0]
-		var events []appwire.RosterEvent
-		if err := json.Unmarshal([]byte(line), &events); err != nil {
-			t.Fatalf("decode model-visible roster events: %v", err)
-		}
-		entries := make(map[string]appwire.RosterEvent, len(events))
-		for _, event := range events {
-			if event.Ref == "" || entries[event.Ref].Ref != "" {
-				t.Fatalf("invalid or duplicate roster ref: %+v", events)
-			}
-			entries[event.Ref] = event
-		}
-		return entries
+	frames := rosterModelFrames(t, call)
+	for _, entries := range frames {
+		assertRosterExcludesManager(t, entries, managerRef, sessionID)
 	}
-	t.Fatal("Manager model call contains no delivered roster frame")
-	return nil
+	return frames[len(frames)-1]
+}
+
+func rosterModelFrames(t *testing.T, call *fakellm.Call) []map[string]appwire.RosterEvent {
+	t.Helper()
+	var frames []map[string]appwire.RosterEvent
+	for _, text := range call.Texts() {
+		for line := range strings.SplitSeq(text, "\n") {
+			const marker = "roster_events: "
+			start := strings.Index(line, marker)
+			if start < 0 {
+				continue
+			}
+			var events []appwire.RosterEvent
+			if err := json.Unmarshal([]byte(line[start+len(marker):]), &events); err != nil {
+				t.Fatalf("decode model-visible roster events: %v", err)
+			}
+			entries := make(map[string]appwire.RosterEvent, len(events))
+			for _, event := range events {
+				if event.Ref == "" || entries[event.Ref].Ref != "" {
+					t.Fatalf("invalid or duplicate roster ref: %+v", events)
+				}
+				entries[event.Ref] = event
+			}
+			frames = append(frames, entries)
+		}
+	}
+	if len(frames) == 0 {
+		t.Fatal("Manager model call contains no delivered roster frame")
+	}
+	return frames
+}
+
+func TestRosterModelFramesReplay(t *testing.T) {
+	frame := func(ref string) string {
+		t.Helper()
+		encoded, err := json.Marshal([]appwire.RosterEvent{{AttentionEntry: appwire.AttentionEntry{Ref: ref, Level: "idle"}, Kind: "new"}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return "roster_events: " + string(encoded) + "\n"
+	}
+	call := &fakellm.Call{Body: map[string]any{"messages": []any{
+		map[string]any{"role": "user", "content": frame("local:manager") + frame("local:older-worker")},
+		map[string]any{"role": "user", "content": frame("local:latest-worker")},
+	}}}
+	frames := rosterModelFrames(t, call)
+	if len(frames) != 3 || frames[0]["local:manager"].Ref == "" || frames[1]["local:older-worker"].Ref == "" || frames[2]["local:latest-worker"].Ref == "" {
+		t.Fatalf("replayed roster frames=%+v, want all three in wire order", frames)
+	}
 }
 
 func assertRosterExcludesManager(t *testing.T, entries map[string]appwire.RosterEvent, ref, sessionID string) {
