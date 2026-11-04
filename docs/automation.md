@@ -129,6 +129,25 @@ not the controller through which someone viewed or started it. See
 [remote Manager and input support](evener-hub-remote-operations.md#remote-manager-and-input-support)
 for routing and capability limits.
 
+### Watch the top-level roster
+
+Register one aggregate watch with `job_watch` using
+`{"operation":"create","hub":{"scope":"top_level"}}`. Its first model-visible
+notification is the full current top-level roster, excluding the Manager's own
+workspace ref even after Clear changes its session ID. Later notifications
+carry source-qualified refs and meaningful `new`, `needs_you`, `error`, or
+`disappeared` events. Read each entry's `level`, `askPending`,
+`approvalPending`, and `needsResponse` fields to decide what needs action;
+the roster is not a synthesized summary. A per-target watch can also fire for
+the same change, so holding both can produce two wakes.
+
+The watch accumulates changes to different sessions while a notification is
+pending and deduplicates revisions. After an interrupted stream or lost
+revision, re-register for a fresh full snapshot rather than assuming the last
+delta is complete. `job_list` discovery is a secondary read and may be
+unavailable independently of the roster watch. See the
+[roster design record](superpowers/specs/2026-11-04-manager-roster-watch-design.md).
+
 ## Manager discovery, status and bounded reads
 
 An authenticated live Manager runtime can use `job_list` with
