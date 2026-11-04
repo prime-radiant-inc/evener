@@ -150,6 +150,7 @@ func (jm *jobManager) onHubRoster(id string, update appwire.SessionWatchUpdate) 
 	}
 	cfg.rosterRevision, cfg.rosterBound = r.Revision, true
 	var changed []appwire.RosterEvent
+	deliverInitial := r.Initial && (cfg.rosterBaseline == nil || cfg.rosterNeedsResync)
 	switch {
 	case r.Resync:
 		alreadyResync := cfg.rosterNeedsResync
@@ -197,7 +198,7 @@ func (jm *jobManager) onHubRoster(id string, update appwire.SessionWatchUpdate) 
 			changed = append(changed, event)
 		}
 	}
-	if !r.Resync && len(changed) == 0 {
+	if !r.Resync && !deliverInitial && len(changed) == 0 {
 		jm.mu.Unlock()
 		return nil
 	}
@@ -209,9 +210,9 @@ func (jm *jobManager) onHubRoster(id string, update appwire.SessionWatchUpdate) 
 			Title           string `json:"title"`
 			Level           string `json:"level"`
 			Kind            string `json:"kind"`
-			AskPending      bool   `json:"askPending"`
-			ApprovalPending bool   `json:"approvalPending"`
-			NeedsResponse   bool   `json:"needsResponse"`
+			AskPending      bool   `json:"askPending"`      //nolint:tagliatelle // The model-visible roster contract uses askPending.
+			ApprovalPending bool   `json:"approvalPending"` //nolint:tagliatelle // The model-visible roster contract uses approvalPending.
+			NeedsResponse   bool   `json:"needsResponse"`   //nolint:tagliatelle // The model-visible roster contract uses needsResponse.
 		}
 		refs := make([]rosterChange, 0, len(changed))
 		for _, event := range changed {

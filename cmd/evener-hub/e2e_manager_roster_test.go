@@ -11,6 +11,56 @@ import (
 	"primeradiant.com/evener/test/e2e/fakellm"
 )
 
+func TestManagerRosterEmptyInitial(t *testing.T) {
+	stack, provider := startE2EHubStack(t)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	defer cancel()
+	human := stack.dialRPC(ctx, t)
+	started, err := clientRequest[appwire.ThreadStartResponse](ctx, human, appwire.MethodThreadStart, appwire.ThreadStartParams{
+		Harness: "evener", CWD: stack.workDir, Model: stack.model, Manager: true,
+		LaunchOverrides: &appwire.LaunchConfigLayer{Sandbox: "off"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager := started.Thread
+	t.Cleanup(func() {
+		shutdownCtx, done := context.WithTimeout(context.Background(), 20*time.Second)
+		defer done()
+		client := stack.dialRPC(shutdownCtx, t)
+		if _, err := clientRequest[appwire.EmptyResponse](shutdownCtx, client, appwire.MethodThreadShutdown, appwire.ThreadShutdownParams{Ref: manager.Evener.Ref}); err != nil {
+			t.Errorf("shutdown Manager: %v", err)
+		}
+	})
+	if _, err := clientRequest[appwire.TurnStartResponse](ctx, human, appwire.MethodTurnStart, appwire.TurnStartParams{
+		Ref: manager.Evener.Ref, ExpectedInstanceID: manager.Evener.InstanceID, ClientMutationID: newMutationID(t),
+		Input: []appwire.InputItem{{Type: "text", Text: "EMPTY-ROSTER-OPENING"}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	call, err := provider.Next(ctx.Done())
+	if err != nil {
+		t.Fatal(err)
+	}
+	call.RespondToolCall("job_watch", map[string]any{"operation": "create", "hub": map[string]any{"scope": "top_level"}})
+	call, err = provider.Next(ctx.Done())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !call.Contains("roster_initial: true") {
+		call.RespondToolCall("communicate", communicateArgs("empty roster armed"))
+		call, err = provider.Next(ctx.Done())
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	frames := rosterModelFrames(t, call)
+	if !call.Contains("roster_initial: true") || len(frames) != 1 || len(frames[0]) != 0 {
+		t.Fatalf("Manager-only initial frames=%+v, want one authoritative empty snapshot", frames)
+	}
+	call.RespondToolCall("communicate", communicateArgs("empty snapshot received"))
+}
+
 // The model is scripted; session creation, questions, watch registration and
 // delivered notifications all cross a disposable hub and real daemons.
 func TestManagerRosterEndToEnd(t *testing.T) {
@@ -149,6 +199,24 @@ func TestManagerRosterEndToEnd(t *testing.T) {
 		}
 		wake.RespondToolCall("communicate", communicateArgs("roster delta received"))
 	}
+	// Seeing barrier's new entry above proves the daemon already holds its old
+	// session in the roster baseline before Clear replaces that session ID.
+	awaitThread(ctx, t, human, barrier.Evener.Ref, "worker Clear capability", func(thread appwire.Thread) bool { return thread.Evener.Capabilities.Clear })
+	clearedWorker, err := clientRequest[appwire.ThreadClearResponse](ctx, human, appwire.MethodThreadClear, appwire.ThreadClearParams{
+		Ref: barrier.Evener.Ref, ExpectedInstanceID: barrier.Evener.InstanceID, ClientMutationID: newMutationID(t),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if clearedWorker.Thread.Evener.Ref != barrier.Evener.Ref || clearedWorker.Thread.SessionID == barrier.SessionID {
+		t.Fatalf("worker Clear did not retain workspace and replace session: old=%+v new=%+v", barrier, clearedWorker.Thread)
+	}
+	workerClear := managerCall()
+	workerClearEntries := rosterModelEntries(t, workerClear, watchID, managerRef, manager.SessionID)
+	if entry := workerClearEntries[barrier.Evener.Ref]; entry.Ref != barrier.Evener.Ref || entry.Kind != "new" {
+		t.Fatalf("worker Clear delivered entry=%+v, want live replacement", entry)
+	}
+	workerClear.RespondToolCall("communicate", communicateArgs("worker Clear received"))
 	// Clear retains the workspace ref, but replaces the Manager session ID.
 	awaitThread(ctx, t, human, managerRef, "Manager Clear capability", func(thread appwire.Thread) bool { return thread.Evener.Capabilities.Clear })
 	cleared, err := clientRequest[appwire.ThreadClearResponse](ctx, human, appwire.MethodThreadClear, appwire.ThreadClearParams{

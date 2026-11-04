@@ -141,6 +141,13 @@ carry source-qualified refs and meaningful `new`, `needs_you`, `error`, or
 the roster is not a synthesized summary. A per-target watch can also fire for
 the same change, so holding both can produce two wakes.
 
+The broker confirms disappearance across two consecutive attention
+publications. A genuine end is reported one attention tick later; a Clear
+replacement retaining the same workspace ref is not reported as an end,
+including when it leaves a one-tick gap. First registration and resync
+recovery still deliver an explicit empty initial snapshot when the Manager
+is the only top-level session. Unchanged ordinary rebinds stay quiet.
+
 The watch accumulates changes to different sessions while a notification is
 pending and deduplicates revisions. After an interrupted stream or lost
 revision, re-register for a fresh full snapshot rather than assuming the last

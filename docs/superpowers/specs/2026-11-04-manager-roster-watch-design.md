@@ -17,6 +17,12 @@ also describe a current idle state. Quiet changes do not notify. A per-target
 watch held alongside the roster watch can wake the Manager twice for one
 change.
 
+A disappeared workspace ref must be absent in two consecutive attention
+publications. The first absence retains its prior entry without notifying;
+a genuine end is reported one attention tick later. A Clear replacement
+with the same workspace ref, either in the same publication or after that
+one-tick gap, is not reported as an end.
+
 The broker publishes ordered revisions. The daemon deduplicates revisions,
 accumulates changes to distinct refs while delivery is pending, and replaces
 an earlier pending entry for the same ref with its latest state. A later
@@ -25,3 +31,7 @@ revision, re-register for a fresh full snapshot rather than guessing from the
 last delta. The frame contains structured entries, not a synthesized summary
 or badge count. Discovery (`job_list` with `hub.mode="discovery"`) is a secondary
 read and may be unavailable independently of the watch.
+
+First registration and recovery after resync deliver `roster_initial: true`
+with `roster_events: []` when no other top-level sessions exist. An unchanged
+ordinary transport rebind stays quiet, including when the roster is empty.

@@ -105,6 +105,90 @@ func TestRosterIdentitiesUseWorkspaceRef(t *testing.T) {
 	}
 }
 
+func TestRosterWorkerClear(t *testing.T) {
+	t.Parallel()
+	b := &attentionBroker{}
+	publish := func(sessionID string) {
+		snapshot := navigationSnapshot{live: []hubcore.LiveEntry{{
+			Entry: rendezvous.Entry{WorkspaceRef: "local:worker", SessionID: sessionID}, SessionID: sessionID,
+		}}}
+		b.Publish(map[string]appwire.AttentionEntry{sessionID: {ID: sessionID, Level: "idle"}}, rosterIdentities(snapshot))
+	}
+	publish("before-clear")
+	sub, err := b.Subscribe(appwire.ManagerView{Ref: "local:manager", Manager: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sub.Cancel()
+	initial := <-sub.Updates
+	if !initial.Initial || len(initial.Events) != 1 || initial.Events[0].ID != "before-clear" {
+		t.Fatalf("before Clear snapshot=%+v", initial)
+	}
+	// Draining the initial before the synchronous Publish is the barrier:
+	// the replacement must be a delta, not an overwritten initial snapshot.
+	publish("after-clear")
+	select {
+	case update := <-sub.Updates:
+		if update.Initial || update.Resync || len(update.Events) != 1 || update.Events[0].Ref != "local:worker" || update.Events[0].ID != "after-clear" || update.Events[0].Kind != "new" {
+			t.Fatalf("worker Clear delta=%+v, want one live replacement", update)
+		}
+	default:
+		t.Fatal("worker Clear replacement was not published")
+	}
+}
+
+func TestRosterDisappearanceConfirmation(t *testing.T) {
+	t.Parallel()
+	for _, returns := range []bool{true, false} {
+		t.Run(fmt.Sprintf("replacement=%t", returns), func(t *testing.T) {
+			b := &attentionBroker{}
+			identity := func(string) (rosterIdentity, bool) { return rosterIdentity{Ref: "local:worker"}, true }
+			b.Publish(map[string]appwire.AttentionEntry{"before-clear": {ID: "before-clear", Level: "idle"}}, identity)
+			sub, err := b.Subscribe(appwire.ManagerView{Ref: "local:manager", Manager: true})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer sub.Cancel()
+			<-sub.Updates
+			// Each synchronous Publish is a completed tick, so the assertions
+			// cannot race the broker or depend on a guessed quiet interval.
+			b.Publish(nil, identity)
+			select {
+			case update := <-sub.Updates:
+				t.Fatalf("first missing tick delivered %+v", update)
+			default:
+			}
+			if len(sub.baseline) != 1 || sub.baseline["before-clear"].Ref != "local:worker" {
+				t.Fatalf("first missing tick lost baseline: %+v", sub.baseline)
+			}
+			var next map[string]appwire.AttentionEntry
+			wantKind := "disappeared"
+			if returns {
+				next = map[string]appwire.AttentionEntry{"after-clear": {ID: "after-clear", Level: "idle"}}
+				wantKind = "new"
+			}
+			b.Publish(next, identity)
+			select {
+			case update := <-sub.Updates:
+				if update.Revision != 3 || len(update.Events) != 1 || update.Events[0].Ref != "local:worker" || update.Events[0].Kind != wantKind {
+					t.Fatalf("confirmation tick=%+v, want one %s", update, wantKind)
+				}
+			default:
+				t.Fatal("confirmation tick was not delivered")
+			}
+			if returns && (len(sub.baseline) != 1 || sub.baseline["after-clear"].Ref != "local:worker") || !returns && len(sub.baseline) != 0 {
+				t.Fatalf("confirmation baseline=%+v", sub.baseline)
+			}
+			b.Publish(next, identity)
+			select {
+			case update := <-sub.Updates:
+				t.Fatalf("settled confirmation repeated %+v", update)
+			default:
+			}
+		})
+	}
+}
+
 func TestRosterWatchContextRemovesSubscriber(t *testing.T) {
 	t.Parallel()
 	b := &attentionBroker{}
@@ -159,7 +243,7 @@ func TestRosterQuietChurnAndDeltaCap(t *testing.T) {
 		t.Fatalf("working/idle churn emitted %+v", update)
 	default:
 	}
-	entries := make(map[string]appwire.AttentionEntry)
+	entries := map[string]appwire.AttentionEntry{"one": {ID: "one", Level: "idle"}}
 	for i := range 300 {
 		id := fmt.Sprintf("worker-%03d", i)
 		entries[id] = appwire.AttentionEntry{ID: id, Level: "working"}
@@ -196,6 +280,12 @@ func TestRosterNewErrorAndDisappeared(t *testing.T) {
 	b.Publish(map[string]appwire.AttentionEntry{"worker": entry}, identity)
 	if update := <-sub.Updates; len(update.Events) != 1 || update.Events[0].Kind != "error" {
 		t.Fatalf("error delta = %+v", update)
+	}
+	b.Publish(nil, identity)
+	select {
+	case update := <-sub.Updates:
+		t.Fatalf("unconfirmed disappearance = %+v", update)
+	default:
 	}
 	b.Publish(nil, identity)
 	if update := <-sub.Updates; len(update.Events) != 1 || update.Events[0].Kind != "disappeared" || update.Events[0].Ref != "local:worker" {

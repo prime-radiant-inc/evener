@@ -28,11 +28,12 @@ type attentionBroker struct {
 }
 
 type rosterSubscription struct {
-	Updates   <-chan appwire.SessionRosterUpdate
-	Cancel    func()
-	updates   chan appwire.SessionRosterUpdate
-	callerRef string
-	baseline  map[string]appwire.AttentionEntry
+	Updates     <-chan appwire.SessionRosterUpdate
+	Cancel      func()
+	updates     chan appwire.SessionRosterUpdate
+	callerRef   string
+	baseline    map[string]appwire.AttentionEntry
+	missingRefs map[string]bool
 }
 
 // Subscribe registers before publication can advance the initial snapshot.
@@ -42,6 +43,7 @@ func (b *attentionBroker) Subscribe(caller appwire.ManagerView) (*rosterSubscrip
 	updates := make(chan appwire.SessionRosterUpdate, 1)
 	sub := &rosterSubscription{Updates: updates, updates: updates, callerRef: caller.Ref}
 	sub.baseline = b.filtered(sub)
+	sub.missingRefs = make(map[string]bool)
 	updates <- initialRosterUpdate(b.revision, sub.baseline)
 	if b.subscribers == nil {
 		b.subscribers = make(map[*rosterSubscription]struct{})
@@ -110,8 +112,11 @@ func (b *attentionBroker) Publish(entries map[string]appwire.AttentionEntry, ide
 	for sub := range b.subscribers {
 		current := b.filtered(sub)
 		update := appwire.SessionRosterUpdate{Revision: b.revision}
+		currentRefs := make(map[string]bool, len(current))
 		for _, id := range sortedRosterIDs(current) {
 			entry := current[id]
+			currentRefs[entry.Ref] = true
+			delete(sub.missingRefs, entry.Ref)
 			previous, existed := sub.baseline[id]
 			kind := ""
 			switch {
@@ -127,7 +132,17 @@ func (b *attentionBroker) Publish(entries map[string]appwire.AttentionEntry, ide
 			}
 		}
 		for _, id := range sortedRosterIDs(sub.baseline) {
-			if _, ok := current[id]; !ok {
+			// Clear replaces the session ID without removing its workspace ref.
+			if _, ok := current[id]; !ok && !currentRefs[sub.baseline[id].Ref] {
+				entry := sub.baseline[id]
+				if !sub.missingRefs[entry.Ref] {
+					// Clear can leave one attention tick without a live entry.
+					// Keep it in the effective baseline until absence is confirmed.
+					sub.missingRefs[entry.Ref] = true
+					current[id] = entry
+					continue
+				}
+				delete(sub.missingRefs, entry.Ref)
 				update.Events = append(update.Events, appwire.RosterEvent{AttentionEntry: sub.baseline[id], Kind: "disappeared"})
 			}
 		}

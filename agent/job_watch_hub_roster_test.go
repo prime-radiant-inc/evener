@@ -121,6 +121,136 @@ func TestHubRosterWatchDeliveredFrame(t *testing.T) {
 	}
 }
 
+func TestHubRosterWatchWorkerClearBaseline(t *testing.T) {
+	t.Parallel()
+	root := newMessagingRoot(t, newMessagingAdapter(), nil)
+	jm := root.jobManager
+	jm.enqueue = root.enqueueJobNotification
+	result, err := jm.configureHubRosterWatch(t.Context(), "local:manager")
+	if err != nil {
+		t.Fatal(err)
+	}
+	entry := appwire.RosterEvent{AttentionEntry: appwire.AttentionEntry{ID: "before-clear", Ref: "local:worker", Level: "idle"}, Kind: "idle"}
+	if err := jm.onHubRoster(result.WatchID, rosterUpdate(1, true, entry)); err != nil {
+		t.Fatal(err)
+	}
+	// Hold the initial frame pending while the broker's Clear replacement queues.
+	entry.ID, entry.Kind = "after-clear", "new"
+	if err := jm.onHubRoster(result.WatchID, rosterUpdate(2, false, entry)); err != nil {
+		t.Fatal(err)
+	}
+	delivered, _, _ := root.filterDeliverableJobNotifications(root.drainJobNotifications())
+	if len(delivered) != 1 {
+		t.Fatalf("delivered=%d, want one coalesced frame", len(delivered))
+	}
+	entries := rosterFrameEntries(t, formatJobNotificationBlock(delivered[0].notification, notificationExcerpt{}, false))
+	if len(entries) != 1 || entries[0].Ref != entry.Ref || entries[0].Kind != "new" {
+		t.Fatalf("worker Clear delivered entries=%+v", entries)
+	}
+	jm.mu.Lock()
+	_, cfg, ok := jm.watchConfigByIDLocked(result.WatchID)
+	retained := ok && len(cfg.rosterBaseline) == 1 && cfg.rosterBaseline[entry.Ref] == entry.AttentionEntry
+	jm.mu.Unlock()
+	if !retained {
+		t.Fatal("worker Clear lost the live workspace from the daemon baseline")
+	}
+}
+
+func TestHubRosterWatchEmptyInitial(t *testing.T) {
+	t.Parallel()
+	root := newMessagingRoot(t, newMessagingAdapter(), nil)
+	jm := root.jobManager
+	jm.enqueue = root.enqueueJobNotification
+	result, err := jm.configureHubRosterWatch(t.Context(), "local:manager")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := jm.onHubRoster(result.WatchID, rosterUpdate(1, true)); err != nil {
+		t.Fatal(err)
+	}
+	delivered, _, _ := root.filterDeliverableJobNotifications(root.drainJobNotifications())
+	if len(delivered) != 1 {
+		t.Fatalf("empty initial delivered=%d, want one authoritative snapshot", len(delivered))
+	}
+	frame := formatJobNotificationBlock(delivered[0].notification, notificationExcerpt{}, false)
+	if rosterFrameField(frame, "roster_initial: ") != "true" || rosterFrameField(frame, "roster_events: ") != "[]" || len(rosterFrameEntries(t, frame)) != 0 {
+		t.Fatalf("empty initial frame=%s", frame)
+	}
+	if err := jm.settleWatchSendDelivered(delivered[0].watchCfg, delivered[0].watchState); err != nil {
+		t.Fatal(err)
+	}
+	jm.resetHubRosterRevision(result.WatchID)
+	if err := jm.onHubRoster(result.WatchID, rosterUpdate(0, true)); err != nil {
+		t.Fatal(err)
+	}
+	if got := root.drainJobNotifications(); len(got) != 0 {
+		t.Fatalf("unchanged empty rebind queued %d notifications", len(got))
+	}
+}
+
+func TestHubRosterWatchEmptyResyncRecovery(t *testing.T) {
+	t.Parallel()
+	for _, queued := range []bool{false, true} {
+		t.Run(fmt.Sprintf("recovery_notice_queued=%t", queued), func(t *testing.T) {
+			root := newMessagingRoot(t, newMessagingAdapter(), nil)
+			jm := root.jobManager
+			jm.enqueue = root.enqueueJobNotification
+			result, err := jm.configureHubRosterWatch(t.Context(), "local:manager")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := jm.onHubRoster(result.WatchID, rosterUpdate(1, true, rosterEntry("local:gone", "new"))); err != nil {
+				t.Fatal(err)
+			}
+			initial, _, _ := root.filterDeliverableJobNotifications(root.drainJobNotifications())
+			if len(initial) != 1 {
+				t.Fatalf("initial delivered=%d, want one", len(initial))
+			}
+			if err := jm.settleWatchSendDelivered(initial[0].watchCfg, initial[0].watchState); err != nil {
+				t.Fatal(err)
+			}
+			if err := jm.onHubRoster(result.WatchID, appwire.SessionWatchUpdate{Roster: &appwire.SessionRosterUpdate{Revision: 2, Resync: true}}); err != nil {
+				t.Fatal(err)
+			}
+			jm.mu.Lock()
+			_, cfg, ok := jm.watchConfigByIDLocked(result.WatchID)
+			cleared := ok && cfg.rosterNeedsResync && cfg.rosterBaseline == nil
+			jm.mu.Unlock()
+			if !cleared {
+				t.Fatal("resync did not clear the old roster baseline")
+			}
+			if !queued {
+				notice, _, _ := root.filterDeliverableJobNotifications(root.drainJobNotifications())
+				if len(notice) != 1 || rosterFrameField(notice[0].notification.watchSendFrame, "roster_resync: ") != "true" {
+					t.Fatalf("recovery notice=%+v", notice)
+				}
+				if err := jm.settleWatchSendDelivered(notice[0].watchCfg, notice[0].watchState); err != nil {
+					t.Fatal(err)
+				}
+			}
+			jm.resetHubRosterRevision(result.WatchID)
+			if err := jm.onHubRoster(result.WatchID, rosterUpdate(0, true)); err != nil {
+				t.Fatal(err)
+			}
+			delivered, _, _ := root.filterDeliverableJobNotifications(root.drainJobNotifications())
+			if len(delivered) != 1 {
+				t.Fatalf("empty recovery delivered=%d, want authoritative snapshot", len(delivered))
+			}
+			frame := formatJobNotificationBlock(delivered[0].notification, notificationExcerpt{}, false)
+			if rosterFrameField(frame, "roster_initial: ") != "true" || rosterFrameField(frame, "roster_events: ") != "[]" || rosterFrameField(frame, "roster_resync: ") != "" {
+				t.Fatalf("empty recovery frame=%s", frame)
+			}
+			jm.mu.Lock()
+			_, cfg, ok = jm.watchConfigByIDLocked(result.WatchID)
+			recovered := ok && !cfg.rosterNeedsResync && cfg.rosterBaseline != nil && len(cfg.rosterBaseline) == 0
+			jm.mu.Unlock()
+			if !recovered {
+				t.Fatal("empty initial did not establish an authoritative empty baseline")
+			}
+		})
+	}
+}
+
 func TestHubRosterWatchQueuedNotifications(t *testing.T) {
 	t.Parallel()
 	jm, id := rosterTestWatch(t)
