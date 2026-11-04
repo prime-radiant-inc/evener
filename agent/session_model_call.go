@@ -24,6 +24,7 @@ import (
 // details captured across one model call (including any fallback retries) for
 // the attempted or successful semantic assistant turn.
 type ModelAttemptMetadata struct {
+	conversation   *conversationRequest
 	HistoryMode    llm.HistoryMode
 	EndpointFamily string
 	// Protocol is the wire protocol of the attempt that answered, read back
@@ -411,6 +412,7 @@ func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t
 	// follows the skill rebuilds because credit belongs to what the request
 	// actually carries.
 	s.stagePresentedAttentionCoverage(ctx, presentedTurns)
+	s.stageConversationInputs(presentedTurns)
 	return profile, sys, history, req, fullHistory, reasoningEffort, nil
 }
 
@@ -1410,6 +1412,7 @@ func (s *Session) callModelWithFallback(ctx context.Context, profile *provider.P
 		return withPreviews(modelResp), req, attempt, usedProfile, err
 	}
 	attempt = completeAttemptMetadata(attempt, modelResp.Response)
+	attempt.conversation = modelResp.conversation
 	attempt.Protocol = group.Protocol()
 	group.SettleResult(callCtx, nil)
 	for _, warning := range modelResp.Response.Warnings {

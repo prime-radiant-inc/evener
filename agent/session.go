@@ -106,6 +106,7 @@ func (s *Session) nextJobTreeRevision(kind events.EventKind) (string, uint64, bo
 // history, registered tools, context-management state, subagents, plugins, MCP
 // connections, and persistence settings.
 type Session struct {
+	conversation           conversationState
 	hubClient              SessionHubClient
 	hubGeneration          uint64
 	hubEnabled             bool
@@ -2946,6 +2947,11 @@ func (s *Session) appendAssistantTurn(resp llm.Response, finalAttempt ModelAttem
 		RoundID:                         s.roundIDForModelCall(),
 	}
 	t.Authorship = s.roundTranscriptAuthorship()
+	if request := finalAttempt.conversation; request != nil {
+		p := request.provenance
+		t.ConversationProvenance = &p
+		t.ConversationFrontier = request.frontier
+	}
 	err := s.appendTurnAfterTranscriptWrite(
 		t,
 		func() error { return s.writeTranscriptDurableLocked(t) },

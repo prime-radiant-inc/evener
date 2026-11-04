@@ -2267,6 +2267,7 @@ func (s *Session) acceptUserInputWithSkillSelection(ctx context.Context, input s
 	if queuedIdentity.ClientMutationID == "" {
 		if !preseededInput {
 			turn := schema.NewTurn(schema.TurnUserInput, buildSelectedUserInputMessage(input, images, skillInputNames(skillInput)))
+			turn.ConversationInputIDs = s.conversationInputIDs("")
 			if internal, _ := ctx.Value(internalTranscriptInputKey{}).(bool); !internal {
 				turn.Authorship = humanTranscriptAuthorship()
 			}
@@ -2286,6 +2287,7 @@ func (s *Session) acceptUserInputWithSkillSelection(ctx context.Context, input s
 		}
 	} else {
 		turn := schema.NewTurn(schema.TurnUserInput, buildSelectedUserInputMessage(input, images, skillInputNames(skillInput)))
+		turn.ConversationInputIDs = s.conversationInputIDs(queuedIdentity.ClientMutationID)
 		turn.Authorship = humanTranscriptAuthorship()
 		if selected := durableSkillSelectionFromContext(ctx); selected != nil {
 			turn.CommandInput = selected.CommandInput

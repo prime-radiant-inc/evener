@@ -424,7 +424,11 @@ type GoalContinuationInfo struct {
 // projected, so turns carrying them are not byte-identical by design;
 // they stay sorted here too so a future key lands in one obvious place.
 type Turn struct {
-	Actor SessionActor `json:"actor,omitzero"`
+	ConversationCoverageRef string                        `json:"conversation_coverage_ref,omitempty"`
+	ConversationInputIDs    []string                      `json:"conversation_input_ids,omitempty"`
+	ConversationFrontier    *ConversationFrontier         `json:"conversation_frontier,omitempty"`
+	ConversationProvenance  *ConversationOutputProvenance `json:"conversation_provenance,omitempty"`
+	Actor                   SessionActor                  `json:"actor,omitzero"`
 	// AnswerToTurnIDs names the pending question executions resolved by this
 	// accepted input. Missing evidence never establishes continuation.
 	AnswerToTurnIDs []string `json:"answer_to_turn_ids,omitempty"`

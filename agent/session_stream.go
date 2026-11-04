@@ -29,6 +29,7 @@ var newSessionStreamAccumulator = func() sessionStreamAccumulator {
 var sessionCallModelAfterConsumeHook func()
 
 type sessionModelResponse struct {
+	conversation              *conversationRequest
 	Response                  llm.Response
 	StreamedAssistant         bool
 	CommunicatePreviewCallIDs []string
@@ -205,6 +206,7 @@ func (s *Session) callModel(ctx context.Context, policy llm.RetryPolicy, profile
 			group.observe(attemptRecord{Phase: llm.PhaseOpen, Err: deliveryErr, Duration: time.Since(attemptStart)}, nil)
 			return llm.AttemptReport{Phase: llm.PhaseOpen}, deliveryErr
 		}
+		conversation := s.freezeConversationRequest()
 		st, err := s.client.Stream(ctx, dispatchReq)
 		if streamUnavailable(err) || (err == nil && st == nil) {
 			// Nothing was attempted against the provider: the call falls
@@ -222,6 +224,7 @@ func (s *Session) callModel(ctx context.Context, policy llm.RetryPolicy, profile
 		var obs attemptObservation
 		var consumeErr error
 		result, obs, consumeErr = s.consumeModelStream(ctx, req, st)
+		result.conversation = conversation
 		rememberPreviewCalls(result.CommunicatePreviewCallIDs)
 		if sessionCallModelAfterConsumeHook != nil {
 			sessionCallModelAfterConsumeHook()
@@ -254,6 +257,7 @@ func (s *Session) callModel(ctx context.Context, policy llm.RetryPolicy, profile
 	// Streaming unsupported by this provider/runtime — fall through to the
 	// non-streaming Complete path.
 
+	var conversation *conversationRequest
 	resp, err := llm.Retry(ctx, policy, s.cfg.LLMSleep, nil, func() (llm.Response, error) {
 		dispatchReq, budgetErr := budgetModelDispatchRequest(profile, req)
 		if budgetErr != nil {
@@ -263,12 +267,13 @@ func (s *Session) callModel(ctx context.Context, policy llm.RetryPolicy, profile
 		if deliveryErr := s.finalizeSkillDelivery(ctx, dispatchReq); deliveryErr != nil {
 			return llm.Response{}, deliveryErr
 		}
+		conversation = s.freezeConversationRequest()
 		return s.client.Complete(ctx, dispatchReq)
 	})
 	if err != nil {
 		return sessionModelResponse{}, err
 	}
-	return sessionModelResponse{Response: resp}, nil
+	return sessionModelResponse{Response: resp, conversation: conversation}, nil
 }
 
 func isTurnCancellation(ctx context.Context, err error) bool {
