@@ -110,7 +110,7 @@ func qualify(ctx context.Context, output string) (result error) {
 	if err := os.WriteFile(resolved, lock, 0o600); err != nil {
 		return err
 	}
-	_, resolveErr := r.command(ctx, "pod-resolve", "bundle", "exec", "pod", "install", "--project-directory=ios")
+	_, resolveErr := r.commandOutput(ctx, "pod-resolve", false, "bundle", "exec", "pod", "install", "--project-directory=ios")
 	// Retain even an unchanged old input when CocoaPods refuses resolution. A
 	// failed resolver is never called a candidate success and is never unlocked
 	// automatically. Its actual diagnostic determines the next narrow update.
@@ -118,7 +118,7 @@ func qualify(ctx context.Context, output string) (result error) {
 	if resolveErr != nil || lockErr != nil {
 		return errors.Join(resolveErr, lockErr)
 	}
-	if _, err := r.command(ctx, "pod-deployment", "bundle", "exec", "pod", "install", "--deployment", "--project-directory=ios"); err != nil {
+	if _, err := r.commandOutput(ctx, "pod-deployment", false, "bundle", "exec", "pod", "install", "--deployment", "--project-directory=ios"); err != nil {
 		return err
 	}
 	if err := checkLock(ctx, committed, resolved, output); err != nil {
@@ -155,7 +155,7 @@ func qualify(ctx context.Context, output string) (result error) {
 	if err := r.writeJSON("simulator-identity.json", map[string]string{"udid": udid, "runtime": runtimeID, "deviceType": deviceID}); err != nil {
 		return err
 	}
-	if _, err := r.command(ctx, "xcodebuild-release", "xcodebuild", "-workspace", "ios/Evener.xcworkspace", "-scheme", "Evener", "-configuration", "Release", "-sdk", "iphonesimulator", "-destination", "platform=iOS Simulator,id="+udid, "-derivedDataPath", filepath.Join(output, "DerivedData"), "build"); err != nil {
+	if _, err := r.commandOutput(ctx, "xcodebuild-release", false, "xcodebuild", "-workspace", "ios/Evener.xcworkspace", "-scheme", "Evener", "-configuration", "Release", "-sdk", "iphonesimulator", "-destination", "platform=iOS Simulator,id="+udid, "-derivedDataPath", filepath.Join(output, "DerivedData"), "build"); err != nil {
 		return err
 	}
 	r.identity.AppPath = filepath.Join(output, "DerivedData", "Build", "Products", "Release-iphonesimulator", "Evener.app")
@@ -225,7 +225,7 @@ func (r *runner) toolchain(ctx context.Context) error {
 		return errors.New("qualification requires Xcode 26.6")
 	}
 	for _, help := range []struct{ name, tool string }{{"simctl", "simctl"}, {"xcresulttool", "xcresulttool"}} {
-		if _, err := r.command(ctx, "help-"+help.name, "xcrun", help.tool, "help"); err != nil {
+		if _, err := r.commandOutput(ctx, "help-"+help.name, false, "xcrun", help.tool, "help"); err != nil {
 			return err
 		}
 	}
@@ -235,7 +235,7 @@ func (r *runner) toolchain(ctx context.Context) error {
 func (r *runner) prebuild(ctx context.Context) error {
 	var first map[string]string
 	for _, phase := range []string{"first", "repeat"} {
-		if _, err := r.command(ctx, "prebuild-"+phase, "npx", "--no-install", "expo", "prebuild", "--platform", "ios", "--no-install"); err != nil {
+		if _, err := r.commandOutput(ctx, "prebuild-"+phase, false, "npx", "--no-install", "expo", "prebuild", "--platform", "ios", "--no-install"); err != nil {
 			return err
 		}
 		files := make(map[string]string)
@@ -312,7 +312,7 @@ func (r *runner) verifyApp(ctx context.Context, app, phase string) error {
 		if err != nil {
 			return err
 		}
-		if _, err := r.command(ctx, name+"-signature", "codesign", "--verify", "--deep", "--strict", bundle.path); err != nil {
+		if _, err := r.commandOutput(ctx, name+"-signature", false, "codesign", "--verify", "--deep", "--strict", bundle.path); err != nil {
 			return err
 		}
 		xml, err := r.command(ctx, name+"-entitlements", "codesign", "--display", "--entitlements", "-", "--xml", bundle.path)
@@ -359,11 +359,11 @@ func (r *runner) cleanupSimulator() error {
 	for _, devices := range listing.Devices {
 		for _, device := range devices {
 			if device.UDID == udid && device.State == "Booted" {
-				_, shutdownErr = r.command(ctx, "simulator-shutdown", "xcrun", "simctl", "shutdown", udid)
+				_, shutdownErr = r.commandOutput(ctx, "simulator-shutdown", false, "xcrun", "simctl", "shutdown", udid)
 			}
 		}
 	}
-	_, deleteErr := r.command(ctx, "simulator-delete", "xcrun", "simctl", "delete", udid)
+	_, deleteErr := r.commandOutput(ctx, "simulator-delete", false, "xcrun", "simctl", "delete", udid)
 	return errors.Join(listErr, parseErr, shutdownErr, deleteErr)
 }
 
@@ -375,7 +375,11 @@ func (r *runner) writeJSON(name string, value any) error {
 	return os.WriteFile(filepath.Join(r.output, name), append(data, '\n'), 0o600)
 }
 
-func (r *runner) command(ctx context.Context, name string, args ...string) (output []byte, result error) {
+func (r *runner) command(ctx context.Context, name string, args ...string) ([]byte, error) {
+	return r.commandOutput(ctx, name, true, args...)
+}
+
+func (r *runner) commandOutput(ctx context.Context, name string, capture bool, args ...string) (output []byte, result error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -390,7 +394,10 @@ func (r *runner) command(ctx context.Context, name string, args ...string) (outp
 	cmd.Dir = r.native
 	cmd.Env = append(os.Environ(), "CI=1", "APPLE_TEAM_ID=EVENERCI01")
 	var stdout bytes.Buffer
-	cmd.Stdout, cmd.Stderr = io.MultiWriter(log, &stdout), log
+	cmd.Stdout, cmd.Stderr = log, log
+	if capture {
+		cmd.Stdout = io.MultiWriter(log, &stdout)
+	}
 	if err := procgroup.Start(cmd); err != nil {
 		return nil, err
 	}

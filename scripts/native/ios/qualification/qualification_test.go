@@ -158,6 +158,22 @@ func TestGeneratedSettingsDoNotHideConflictingPlist(t *testing.T) {
 	}
 }
 
+func TestLogOnlyCommandDoesNotRetainStdout(t *testing.T) {
+	t.Parallel()
+	r := &runner{native: t.TempDir(), output: t.TempDir()}
+	output, err := r.commandOutput(context.Background(), "git-version", false, "git", "--version")
+	if err != nil {
+		t.Fatal(err)
+	}
+	log, err := os.ReadFile(filepath.Join(r.output, "git-version.log"))
+	if err != nil || len(log) == 0 {
+		t.Fatalf("command output was not retained on disk: %v", err)
+	}
+	if len(output) != 0 {
+		t.Fatalf("log-only command retained %d stdout bytes", len(output))
+	}
+}
+
 func writeTestFile(t *testing.T, path string, data []byte) {
 	t.Helper()
 	if err := os.WriteFile(path, data, 0o600); err != nil {
