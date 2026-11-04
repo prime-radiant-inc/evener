@@ -222,25 +222,48 @@ keep test source/helpers under `scripts/native/ios/`. Use the existing xcodeproj
 gem rather than adding another test framework or an application-only test mode.
 
 On a fresh simulator, wait for the first-run UI, open the address-entry form,
-type a harmless address without submitting it, return, background/reactivate,
-then terminate and cold-launch and repeat a real navigation action. Open
-`evener-native://share` in warm and cold states and verify the app remains usable.
-This proves scheme activation and startup, not full extension payload delivery.
-Use existing `testID`/group tokens, adding stable identifiers through existing
-native props where needed. Assert control existence, input state and successful
-navigation; do not make visible copy or arbitrary sleeps the oracle.
+complete ordinary onboarding with a disposable hub and token, and verify the
+saved hub after terminating and cold-launching the app. This must exercise real
+SecureStore writes and reads, not merely form state or an in-memory profile.
+Save failure, a missing restored hub or failed credential readback fails the
+test. Keep entitlement inspection as a separate check.
+
+For the native markdown gate, connect that profile to an isolated real Evener
+hub and daemon running on the Mac runner. Reuse the repository's scripted
+provider boundary in `test/e2e/fakellm`; no mocked hub, WebSocket proxy, production
+service or provider credential. Give the hub private config/state/cache roots
+and disposable authentication. Pin Go from the repository's toolchain policy.
+The helper may select a deterministic response fixture at the existing LLM
+boundary; it must not stub AppWire or the native renderer.
+
+Create a session and receive a fixed markdown response through the normal app
+path. Verify the actual `react-native-enriched-markdown` view mounts and lays out
+fixture prose, emphasis and code with nonempty native bounds. Capture a native
+screenshot and test results. Existing JS prop tests and patch-text checks cannot
+satisfy this gate. Leave an unsent draft, background/reactivate, then cold-launch,
+reconnect using the saved credential and reopen the same session. Verify the
+exact fixture draft remains and a follow-up completes through the real hub.
+An absent native view, lost draft or failed authenticated reconnect fails.
+
+Open `evener-native://share` in warm and cold states and verify the app remains
+usable. This proves scheme activation and startup, not full extension payload
+delivery. Use existing `testID`/group tokens, adding stable identifiers through
+existing native props where needed. Assert controls, stored fixture data,
+native layout and successful navigation; do not make visible copy or arbitrary
+sleeps the oracle.
 
 Capture the actual XCTest results and require that the intended tests executed,
 with zero failures. A successful `simctl launch` or empty test bundle cannot pass.
 Upload logs, xcresult, simulator/tool identity, source revision and generated
-project/lock diagnostics. Shut down/delete only the run's simulator on success,
-failure or cancellation. No production data or reusable signing assets enter
-artifacts.
+project/lock diagnostics. Stop the owned fixture hub, daemon and provider, and
+shut down/delete only the run's simulator on success, failure or cancellation.
+Keep disposable credentials and private hub state out of artifacts. No
+production data or reusable signing assets enter artifacts.
 
 This smoke does not claim physical-device install-over preservation, Safari's
-share sheet, every native gesture/keyboard geometry, App Store signing or live
-hub connectivity. Keep those limitations explicit; do not close the product's
-existing device-acceptance gates on this evidence.
+share sheet, every native gesture/keyboard geometry, App Store signing or
+production-hub/provider interoperability. Keep those limitations explicit; do
+not close the product's existing device-acceptance gates on this evidence.
 
 ## Proof obligations and recovery
 
@@ -254,9 +277,9 @@ human-readable wording.
 | Security regressions | XML injection/serialization rejection with valid plist/workspace round trips; UUID undersized-buffer rejection without partial writes plus valid writes; glob cancellation before later filesystem reads and complete uncancelled results; bounded minimatch compiled alternatives and ordinary matching/ignore behavior. Run adversarial amplification in a bounded child process. |
 | Owner integration | Actual Apple-target discovery patterns, CLI early-exit/completion glob consumers, fingerprint ignores and generated Xcode project parsing. Real filesystem fixtures and resolved owner imports, not mocked dependency implementations. |
 | Scene migration | Real SDK 58 template and plugin pipeline preserve one factory/scene owner, link ownership, identifiers, plist/plugin content and idempotence. Compile and exercise startup/activation on Mac. |
-| Saved work and recovery | Existing draft, local-storage, pending-share and reconnect suites stay green. Include restart/reopen and failed-write cases from their real controllers; no schema or namespace changes. |
-| Patch preservation | Installed patch hunks apply; upstream-replaced gesture cases retain regression checks; enriched markdown compiles and existing renderer cases pass. |
-| CI truthfulness | A changed/missing lock, failed build, missing extension or zero/failed UI tests produces a nonzero job. The matching committed lock and successful real UI tests produce a green job. Test these using real tools/fixtures where available, not canned success output. |
+| Saved work and recovery | Existing draft, local-storage, pending-share and reconnect suites stay green. Include restart/reopen and failed-write cases from their real controllers; no schema or namespace changes. The Mac journey must save/read a real SecureStore profile, reconnect with its restored credential and retain an unsent fixture draft across cold relaunch. |
+| Patch preservation | Installed patch hunks apply; upstream-replaced gesture cases retain regression checks; enriched markdown compiles, existing renderer cases pass and the real-hub simulator conversation mounts and lays out the native renderer. |
+| CI truthfulness | A changed/missing lock, failed build, missing extension, failed credential persistence/reconnect, lost draft, failed native rendering or zero/failed UI tests produces a nonzero job. The matching committed lock and successful real UI tests produce a green job. Test these using real tools/fixtures where available, not canned success output. |
 | Repository qualification | Run targeted native/shared/web checks affected by shared pins, then `make vet` and `make lint` serially. Let CI run full and race lanes; list any lane not run and its reason. Check all npm trees and shared-toolchain pins. |
 
 First reproduce each actionable leaf's failing behavior against the old installed
