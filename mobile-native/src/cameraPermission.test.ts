@@ -9,19 +9,25 @@ import { afterEach, expect, it, vi } from "vitest";
 
 afterEach(() => vi.unstubAllEnvs());
 
-it("generates camera permission without microphone access", async () => {
+it("generates camera and approved iOS voice permissions", async () => {
 	const root = join(__dirname, "..");
 	vi.stubEnv("APPLE_TEAM_ID", "");
-	const { exp } = await getPrebuildConfigAsync(root, { platforms: ["ios"] });
+	const { exp } = await getPrebuildConfigAsync(root, { platforms: ["ios", "android"] });
 	const projectRoot = mkdtempSync(join(process.env.EVENER_SCRATCH_DIR ?? tmpdir(), "camera-permission-"));
 	try {
 		// Info.plist introspection still reads local files even when Expo's
 		// ignoreExistingNativeFiles flag is set. Fonts need the real install.
 		symlinkSync(join(root, "node_modules"), join(projectRoot, "node_modules"), "dir");
 		try {
-			const config = await compileModsAsync(exp, { projectRoot, platforms: ["ios"], introspect: true });
+			const config = await compileModsAsync(exp, { projectRoot, platforms: ["ios", "android"], introspect: true });
 			expect(config.ios?.infoPlist).toHaveProperty("NSCameraUsageDescription", expect.any(String));
-			expect(config.ios?.infoPlist).not.toHaveProperty("NSMicrophoneUsageDescription");
+			expect(config.ios?.infoPlist).toHaveProperty("NSMicrophoneUsageDescription", expect.any(String));
+			expect(config.ios?.infoPlist?.UIBackgroundModes).toContain("audio");
+			const permissions = config._internal?.modResults.android.manifest.manifest["uses-permission"];
+			expect(permissions).toContainEqual({
+				$: { "android:name": "android.permission.RECORD_AUDIO", "tools:node": "remove" },
+			});
+			expect(permissions).toContainEqual({ $: { "android:name": "android.permission.CAMERA" } });
 		} finally {
 			unlinkSync(join(projectRoot, "node_modules"));
 		}
