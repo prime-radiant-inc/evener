@@ -108,8 +108,7 @@ func validateBundleMetadata(info, entitlements map[string]any, extension bool) e
 }
 
 func validateGeneratedSettings(info, entitlements map[string]any, settings map[string]string, extension bool) error {
-	identifier := info["CFBundleIdentifier"]
-	if identifier != "$(PRODUCT_BUNDLE_IDENTIFIER)" && identifier != settings["PRODUCT_BUNDLE_IDENTIFIER"] {
+	if identifier, exists := info["CFBundleIdentifier"]; exists && identifier != "$(PRODUCT_BUNDLE_IDENTIFIER)" && identifier != settings["PRODUCT_BUNDLE_IDENTIFIER"] {
 		return fmt.Errorf("%w: generated plist identifier conflicts with build settings", errIdentity)
 	}
 	if minimum, exists := info["MinimumOSVersion"]; exists && minimum != "$(IPHONEOS_DEPLOYMENT_TARGET)" && minimum != settings["IPHONEOS_DEPLOYMENT_TARGET"] {

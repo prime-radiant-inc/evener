@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"maps"
 	"os"
 	"path/filepath"
@@ -158,6 +159,55 @@ func TestGeneratedSettingsDoNotHideConflictingPlist(t *testing.T) {
 	}
 }
 
+func TestGeneratedShareSettingsUseBuildIdentifier(t *testing.T) {
+	t.Parallel()
+	info := map[string]any{"NSExtension": map[string]any{"NSExtensionPointIdentifier": "com.apple.share-services"}}
+	entitlements := map[string]any{"com.apple.security.application-groups": []any{"group.com.primeradiant.evener.native"}}
+	for _, identifier := range []string{"com.primeradiant.evener.native.ShareExtension", "other.app", ""} {
+		settings := map[string]string{
+			"PRODUCT_BUNDLE_IDENTIFIER":  identifier,
+			"IPHONEOS_DEPLOYMENT_TARGET": "16.4", "TARGETED_DEVICE_FAMILY": "1", "DEVELOPMENT_TEAM": "EVENERCI01",
+		}
+		err := validateGeneratedSettings(cloneTestMap(t, info), entitlements, settings, true)
+		if identifier == "com.primeradiant.evener.native.ShareExtension" {
+			if err != nil {
+				t.Fatalf("rejected build-owned share identifier: %v", err)
+			}
+		} else if !errors.Is(err, errIdentity) {
+			t.Fatalf("accepted invalid build identifier %q: %v", identifier, err)
+		}
+	}
+	info["MinimumOSVersion"] = "16.4"
+	info["UIDeviceFamily"] = []any{float64(1)}
+	if err := validateBundleMetadata(info, entitlements, true); !errors.Is(err, errIdentity) {
+		t.Fatalf("accepted built share bundle with missing identity: %v", err)
+	}
+}
+
+func TestGeneratedShareSourcePlist(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("requires the real macOS plutil")
+	}
+	t.Parallel()
+	path, err := filepath.Abs("../../../../mobile-native/targets/share/Info.plist")
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := &runner{native: t.TempDir(), output: t.TempDir()}
+	info, err := r.plist(context.Background(), "source-share", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	settings := map[string]string{
+		"PRODUCT_BUNDLE_IDENTIFIER":  "com.primeradiant.evener.native.ShareExtension",
+		"IPHONEOS_DEPLOYMENT_TARGET": "16.4", "TARGETED_DEVICE_FAMILY": "1", "DEVELOPMENT_TEAM": "EVENERCI01",
+	}
+	entitlements := map[string]any{"com.apple.security.application-groups": []any{"group.com.primeradiant.evener.native"}}
+	if err := validateGeneratedSettings(info, entitlements, settings, true); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestLogOnlyCommandDoesNotRetainStdout(t *testing.T) {
 	t.Parallel()
 	r := &runner{native: t.TempDir(), output: t.TempDir()}
@@ -171,6 +221,59 @@ func TestLogOnlyCommandDoesNotRetainStdout(t *testing.T) {
 	}
 	if len(output) != 0 {
 		t.Fatalf("log-only command retained %d stdout bytes", len(output))
+	}
+}
+
+func TestSourceProvenanceExcludesInstalledGems(t *testing.T) {
+	t.Setenv("GIT_CONFIG_GLOBAL", os.DevNull)
+	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
+	ignore, err := os.ReadFile("../../../../mobile-native/.gitignore")
+	if err != nil {
+		t.Fatal(err)
+	}
+	root := t.TempDir()
+	native := filepath.Join(root, "mobile-native")
+	if err := os.MkdirAll(filepath.Join(native, "src"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	writeTestFile(t, filepath.Join(native, ".gitignore"), ignore)
+	for _, path := range []string{"Gemfile.lock", "package-lock.json", "Podfile.lock", "src/App.ts"} {
+		writeTestFile(t, filepath.Join(native, path), []byte("fixture\n"))
+	}
+	r := &runner{root: root, native: native, output: t.TempDir()}
+	for i, args := range [][]string{
+		{"init", "-q"},
+		{"add", "--", "mobile-native/.gitignore", "mobile-native/Gemfile.lock", "mobile-native/package-lock.json", "mobile-native/Podfile.lock", "mobile-native/src/App.ts"},
+		{"-c", "user.name=fixture", "-c", "user.email=fixture@example.invalid", "-c", "core.hooksPath=/dev/null", "commit", "--no-gpg-sign", "-qm", "fixture"},
+	} {
+		if _, err := r.command(context.Background(), fmt.Sprintf("git-fixture-%d", i), append([]string{"git", "-C", root}, args...)...); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := r.provenanceUnchanged(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{".bundle/config", "vendor/bundle/fixture.gemspec"} {
+		full := filepath.Join(native, path)
+		if err := os.MkdirAll(filepath.Dir(full), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		writeTestFile(t, full, []byte("installed\n"))
+	}
+	if err := r.provenanceUnchanged(context.Background()); err != nil {
+		t.Fatalf("installed gems prevented source qualification: %v", err)
+	}
+	for _, path := range []string{"Gemfile.lock", "package-lock.json", "Podfile.lock", "src/App.ts"} {
+		full := filepath.Join(native, path)
+		writeTestFile(t, full, []byte("changed\n"))
+		if err := r.provenanceUnchanged(context.Background()); err == nil {
+			t.Errorf("accepted changed source %s", path)
+		}
+		writeTestFile(t, full, []byte("fixture\n"))
+	}
+	writeTestFile(t, filepath.Join(native, "vendor", "source.swift"), []byte("untracked\n"))
+	if err := r.provenanceUnchanged(context.Background()); err == nil {
+		t.Fatal("accepted untracked source beside the installed gems")
 	}
 }
 
