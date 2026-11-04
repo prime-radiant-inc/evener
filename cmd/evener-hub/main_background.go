@@ -66,6 +66,7 @@ func watchHubAttention(ctx context.Context, poke <-chan struct{}, archive *hubco
 		// question/approval out of the broadcast (#2529).
 		snapshot := web.navigationSnapshot(ctx)
 		m, sum := hubDeriveNavigationAttention(snapshot.metas, snapshot.live, decisions)
+		web.navigation.roster.Publish(m, rosterIdentities(snapshot))
 		w.Tick(m, sum)
 	}
 	run()
@@ -79,6 +80,27 @@ func watchHubAttention(ctx context.Context, poke <-chan struct{}, archive *hubco
 			run()
 		}
 	}
+}
+
+// rosterIdentities retains the workspace ref across thread/clear, when the
+// live session ID changes but the caller's qualified workspace ref does not.
+func rosterIdentities(snapshot navigationSnapshot) func(string) (rosterIdentity, bool) {
+	identities := make(map[string]rosterIdentity, len(snapshot.live))
+	for _, live := range snapshot.live {
+		if live.SessionID == "" {
+			continue
+		}
+		var ref string
+		if live.SourceID == "" || live.SourceID == appwire.LocalSourceID {
+			ref = localSpawnWorkspaceRef(live.Entry)
+		} else if live.ThreadID != "" {
+			ref = (appwire.Ref{SourceID: live.SourceID, ThreadID: live.ThreadID}).String()
+		}
+		if ref != "" {
+			identities[live.SessionID] = rosterIdentity{Ref: ref}
+		}
+	}
+	return func(id string) (rosterIdentity, bool) { identity, ok := identities[id]; return identity, ok }
 }
 
 // refreshHubMessageSearch keeps the message search index (S14) in step with

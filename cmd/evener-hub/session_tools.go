@@ -19,6 +19,7 @@ type sessionOperations struct {
 	// identify exchange; it carries no authority.
 	hubID      string
 	navigation *NavigationService
+	roster     attentionBroker // fallback for standalone AppRPC servers without navigation
 	resolve    topLevelSessionResolver
 	relays     *hubRelay
 	server     *appserver.Server

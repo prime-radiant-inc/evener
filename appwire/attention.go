@@ -8,6 +8,7 @@ package appwire
 // appwire — only this plain-data result crosses the boundary, in the
 // direction hubcore already imports (kata 4j2t).
 type AttentionEntry struct {
+	Ref        string `json:"ref,omitempty"`
 	ID         string `json:"threadId"`
 	Title      string `json:"title"`
 	Project    string `json:"project"`

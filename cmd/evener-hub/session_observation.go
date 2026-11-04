@@ -12,6 +12,12 @@ import (
 )
 
 func validSessionWatch(request appwire.SessionWatchRequest) error {
+	if request.Scope != "" {
+		if request.Scope != "top_level" || request.Ref != "" || request.Completion || len(request.Events) != 0 {
+			return appwire.InvalidParams("invalid scope watch request")
+		}
+		return nil
+	}
 	if !request.Completion && len(request.Events) == 0 {
 		return appwire.InvalidParams("events or completion is required")
 	}
@@ -139,6 +145,9 @@ func (b *boundSessionOperations) Watch(ctx context.Context, request appwire.Sess
 	}
 	if err := validSessionWatch(request); err != nil {
 		return nil, err
+	}
+	if request.Scope != "" {
+		return watchRoster(ctx, b.owner.rosterBroker(), view)
 	}
 	ref, err := appwire.ParseRef(request.Ref)
 	if err != nil {
@@ -376,6 +385,34 @@ func (b *boundSessionOperations) Watch(ctx context.Context, request appwire.Sess
 				base.EntryID = fmt.Sprintf("%s-%s-%d", notification.Method, subscription, notificationSeq)
 				base.CausalKnown = true
 				if !send(appwire.SessionWatchUpdate{Event: event, Notification: &notification, Metadata: base}) {
+					return
+				}
+			}
+		}
+	}()
+	return updates, nil
+}
+
+func watchRoster(ctx context.Context, broker *attentionBroker, view appwire.ManagerView) (<-chan appwire.SessionWatchUpdate, error) {
+	subscription, err := broker.Subscribe(view)
+	if err != nil {
+		return nil, err
+	}
+	updates := make(chan appwire.SessionWatchUpdate)
+	go func() {
+		defer close(updates)
+		defer subscription.Cancel()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case roster, ok := <-subscription.Updates:
+				if !ok {
+					return
+				}
+				select {
+				case updates <- appwire.SessionWatchUpdate{Roster: &roster}:
+				case <-ctx.Done():
 					return
 				}
 			}
