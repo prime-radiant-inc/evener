@@ -699,6 +699,12 @@ func (s *Session) configureHubWatchRuntime(ctx context.Context, args map[string]
 	if !state.Manager {
 		return nil, appwire.InvalidRequest("session is not a Manager")
 	}
+	var rosterHandoffID string
+	defer func() {
+		if rosterHandoffID != "" {
+			_ = s.jobManager.endHubWatchUntilPersisted(rosterHandoffID, "roster replacement subscription failed", nil)
+		}
+	}()
 	if request.Scope == "top_level" && s.jobManager != nil {
 		jm := s.jobManager
 		jm.mu.Lock()
@@ -710,6 +716,7 @@ func (s *Session) configureHubWatchRuntime(ctx context.Context, args map[string]
 		}
 		jm.mu.Unlock()
 		if done != nil {
+			rosterHandoffID = id
 			s.cancelHubWatch(id)
 			select {
 			case <-done:
@@ -770,26 +777,24 @@ func (s *Session) configureHubWatchRuntime(ctx context.Context, args map[string]
 		}
 		return nil, err
 	}
-	// A live watch already owns the transport. A second registration still
-	// supplies a fresh initial snapshot after resync, without a second consumer.
+	// A replacement stream may restart the revision sequence. The old consumer
+	// has stopped, so compare its fresh initial against the retained baseline.
 	if request.Scope == "top_level" {
-		jm.mu.Lock()
-		_, cfg, ok := jm.watchConfigByIDLocked(result.WatchID)
-		needsResync := ok && cfg.rosterNeedsResync
-		jm.mu.Unlock()
-		if needsResync {
-			jm.resetHubRosterRevision(result.WatchID)
-			if err := jm.onHubRoster(result.WatchID, first); err != nil {
-				cancel()
-				return nil, err
-			}
+		jm.resetHubRosterRevision(result.WatchID)
+		if err := jm.onHubRoster(result.WatchID, first); err != nil {
+			cancel()
+			return nil, err
 		}
 	}
 	var done chan struct{}
 	if request.Scope == "top_level" {
 		done = make(chan struct{})
 	}
-	if s.installHubWatchSubscription(jm, result.WatchID, cancel, done) {
+	installed := s.installHubWatchSubscription(jm, result.WatchID, cancel, done)
+	// A rejected install means another registration already installed a consumer
+	// or the durable watch ended; do not end the winner in the deferred cleanup.
+	rosterHandoffID = ""
+	if installed {
 		go s.consumeHubWatch(watchCtx, result.WatchID, request, state.Ref, state.InstanceID, updates, first, done)
 	}
 	return marshalWatchResult(result, jobToolResultDefaultMaxChar)

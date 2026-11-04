@@ -411,17 +411,111 @@ func TestHubRosterWatchResync(t *testing.T) {
 
 type rosterRecoveryClient struct {
 	*managerSetupCancelClient
-	streams  []chan appwire.SessionWatchUpdate
-	onSecond func()
+	streams    []chan appwire.SessionWatchUpdate
+	onSecond   func()
+	failSecond bool
 }
 
 func (c *rosterRecoveryClient) Watch(context.Context, appwire.SessionWatchRequest) (<-chan appwire.SessionWatchUpdate, error) {
 	if len(c.streams) == 1 && c.onSecond != nil {
 		c.onSecond()
 	}
+	if len(c.streams) == 1 && c.failSecond {
+		return nil, fmt.Errorf("replacement unavailable")
+	}
 	stream := c.streams[0]
 	c.streams = c.streams[1:]
 	return stream, nil
+}
+
+func TestHubRosterWatchFailedReplacementEndsWatch(t *testing.T) {
+	t.Parallel()
+	root := newMessagingRoot(t, newMessagingAdapter(), func(cfg *SessionConfig) { cfg.Manager = true })
+	notified := make(chan jobNotification, 3)
+	root.jobManager.enqueue = func(n jobNotification) { notified <- n }
+	first := make(chan appwire.SessionWatchUpdate, 1)
+	first <- rosterUpdate(10, true, rosterEntry("local:old", "new"))
+	client := &rosterRecoveryClient{
+		managerSetupCancelClient: &managerSetupCancelClient{view: appwire.ManagerView{Ref: "local:manager", InstanceID: "manager-instance", Manager: true}},
+		streams:                  []chan appwire.SessionWatchUpdate{first, make(chan appwire.SessionWatchUpdate)},
+		failSecond:               true,
+	}
+	root.SetHubClient(client)
+	args := map[string]any{"operation": "create", "hub": map[string]any{"scope": "top_level"}}
+	if _, err := root.configureHubWatchRuntime(t.Context(), args); err != nil {
+		t.Fatal(err)
+	}
+	awaitWithin(t, 10*time.Second, "first snapshot", func() { <-notified })
+	root.jobManager.mu.Lock()
+	var id string
+	var oldDone <-chan struct{}
+	for _, cfg := range root.jobManager.watches {
+		id, oldDone = cfg.watchID, cfg.rosterConsumerDone
+	}
+	root.jobManager.mu.Unlock()
+	if oldDone == nil {
+		t.Fatal("first consumer has no completion signal")
+	}
+	if _, err := root.configureHubWatchRuntime(t.Context(), args); err == nil {
+		t.Fatal("replacement unexpectedly succeeded")
+	}
+	select {
+	case <-oldDone:
+	default:
+		t.Fatal("replacement failed before the old consumer stopped")
+	}
+	root.jobManager.mu.Lock()
+	_, _, live := root.jobManager.watchConfigByIDLocked(id)
+	root.jobManager.mu.Unlock()
+	if live {
+		t.Fatal("failed replacement left a live roster watch without a consumer")
+	}
+	got := rosterTestEvents(t, root.jobManager, id)
+	if len(got) != 2 || !got[1].EndNotice {
+		t.Fatalf("failed replacement has no explicit terminal delivery: %+v", got)
+	}
+	var terminal jobNotification
+	awaitWithin(t, 10*time.Second, "end notice", func() { terminal = <-notified })
+	delivered, _, _ := root.filterDeliverableJobNotifications([]jobNotification{terminal})
+	if len(delivered) != 1 || !delivered[0].watchState.EndNotice {
+		t.Fatalf("failed replacement did not deliver its end notice: %+v", delivered)
+	}
+}
+
+func TestHubRosterWatchReplacementAcceptsLowerRevision(t *testing.T) {
+	t.Parallel()
+	root := newMessagingRoot(t, newMessagingAdapter(), func(cfg *SessionConfig) { cfg.Manager = true })
+	notified := make(chan jobNotification, 4)
+	root.jobManager.enqueue = func(n jobNotification) { notified <- n }
+	first := make(chan appwire.SessionWatchUpdate, 1)
+	second := make(chan appwire.SessionWatchUpdate, 2)
+	first <- rosterUpdate(50, true, rosterEntry("local:old", "new"))
+	second <- rosterUpdate(1, true, rosterEntry("local:fresh", "new"))
+	client := &rosterRecoveryClient{
+		managerSetupCancelClient: &managerSetupCancelClient{view: appwire.ManagerView{Ref: "local:manager", InstanceID: "manager-instance", Manager: true}},
+		streams:                  []chan appwire.SessionWatchUpdate{first, second},
+	}
+	root.SetHubClient(client)
+	args := map[string]any{"operation": "create", "hub": map[string]any{"scope": "top_level"}}
+	if _, err := root.configureHubWatchRuntime(t.Context(), args); err != nil {
+		t.Fatal(err)
+	}
+	awaitWithin(t, 10*time.Second, "first snapshot", func() { <-notified })
+	if _, err := root.configureHubWatchRuntime(t.Context(), args); err != nil {
+		t.Fatal(err)
+	}
+	awaitWithin(t, 10*time.Second, "lower-revision fresh snapshot", func() { <-notified })
+	second <- rosterUpdate(2, false, rosterEntry("local:later", "needs_you"))
+	awaitWithin(t, 10*time.Second, "lower-revision delta", func() { <-notified })
+	root.jobManager.mu.Lock()
+	var fresh bool
+	for _, cfg := range root.jobManager.watches {
+		fresh = cfg.rosterBound && cfg.rosterRevision == 2 && !cfg.rosterNeedsResync && len(cfg.rosterBaseline) == 2 && cfg.rosterBaseline["local:fresh"].Ref == "local:fresh" && cfg.rosterBaseline["local:later"].Ref == "local:later"
+	}
+	root.jobManager.mu.Unlock()
+	if !fresh {
+		t.Fatal("lower-revision initial and delta did not replace the old baseline")
+	}
 }
 
 func TestHubRosterWatchReregisterRecoversLiveSubscription(t *testing.T) {
