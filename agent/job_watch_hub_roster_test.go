@@ -251,6 +251,11 @@ func TestHubRosterWatchLargeRecoveryFrame(t *testing.T) {
 	}
 	frame := formatJobNotificationBlock(delivered[0].notification, notificationExcerpt{}, false)
 	got := rosterFrameEntries(t, frame)
+	frameBytes := len([]byte(frame))
+	if frameBytes <= watchFrameMaxChars || frameBytes >= 64*1024 {
+		t.Fatalf("300-entry model-visible frame is %d bytes, want above the ordinary %d-character cap and below 64 KiB", frameBytes, watchFrameMaxChars)
+	}
+	t.Logf("300-entry model-visible frame: %d bytes", frameBytes)
 	if len(got) != len(entries) || got[0].Ref != entries[0].Ref || got[len(got)-1].Ref != entries[len(entries)-1].Ref || strings.Contains(frame, "roster_resync: true") {
 		t.Fatalf("large recovery has %d entries, want %d", len(got), len(entries))
 	}
@@ -508,6 +513,59 @@ func TestHubRosterWatchRecoveryJoinsOldConsumerBeforeSnapshot(t *testing.T) {
 	root.jobManager.mu.Unlock()
 	if !recovered {
 		t.Fatal("old-stream delta overrode fresh initial snapshot")
+	}
+}
+
+func TestHubRosterWatchLateResyncJoinsBeforeReplacementWatch(t *testing.T) {
+	t.Parallel()
+	root := newMessagingRoot(t, newMessagingAdapter(), func(cfg *SessionConfig) { cfg.Manager = true })
+	notified := make(chan jobNotification, 3)
+	root.jobManager.enqueue = func(n jobNotification) { notified <- n }
+	first := make(chan appwire.SessionWatchUpdate, 2)
+	second := make(chan appwire.SessionWatchUpdate, 1)
+	first <- rosterUpdate(1, true, rosterEntry("local:old", "new"))
+	second <- rosterUpdate(3, true, rosterEntry("local:fresh", "new"))
+	client := &rosterRecoveryClient{
+		managerSetupCancelClient: &managerSetupCancelClient{view: appwire.ManagerView{Ref: "local:manager", InstanceID: "manager-instance", Manager: true}},
+		streams:                  []chan appwire.SessionWatchUpdate{first, second},
+	}
+	root.SetHubClient(client)
+	args := map[string]any{"operation": "create", "hub": map[string]any{"scope": "top_level"}}
+	if _, err := root.configureHubWatchRuntime(t.Context(), args); err != nil {
+		t.Fatal(err)
+	}
+	awaitWithin(t, 10*time.Second, "first snapshot", func() { <-notified })
+	root.jobManager.mu.Lock()
+	var id string
+	var oldDone <-chan struct{}
+	for _, cfg := range root.jobManager.watches {
+		id, oldDone = cfg.watchID, cfg.rosterConsumerDone
+	}
+	root.jobManager.mu.Unlock()
+	if oldDone == nil {
+		t.Fatal("first consumer has no completion signal")
+	}
+	client.onSecond = func() {
+		// This callback is after the early resync check, at the new Watch call.
+		if err := root.jobManager.onHubRoster(id, appwire.SessionWatchUpdate{Roster: &appwire.SessionRosterUpdate{Revision: 2, Resync: true}}); err != nil {
+			t.Fatal(err)
+		}
+		select {
+		case <-oldDone:
+		default:
+			t.Fatal("late resync can race the still-running old consumer")
+		}
+		first <- rosterUpdate(100, false, rosterEntry("local:stale", "error"))
+	}
+	if _, err := root.configureHubWatchRuntime(t.Context(), args); err != nil {
+		t.Fatal(err)
+	}
+	root.jobManager.mu.Lock()
+	_, cfg, ok := root.jobManager.watchConfigByIDLocked(id)
+	recovered := ok && !cfg.rosterNeedsResync && cfg.rosterRevision == 3 && len(cfg.rosterBaseline) == 1 && cfg.rosterBaseline["local:fresh"].Ref == "local:fresh"
+	root.jobManager.mu.Unlock()
+	if !recovered {
+		t.Fatal("late resync left the baseline cleared or let the old delta win")
 	}
 }
 

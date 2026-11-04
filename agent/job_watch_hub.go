@@ -705,7 +705,7 @@ func (s *Session) configureHubWatchRuntime(ctx context.Context, args map[string]
 		cfg := jm.watches[watchKey{VisibleSessionID: jm.sessionID, Target: hubRosterWatchKey, SendTo: runtimeMessageAliasCaller}]
 		var id string
 		var done <-chan struct{}
-		if cfg != nil && cfg.rosterNeedsResync {
+		if cfg != nil {
 			id, done = cfg.watchID, cfg.rosterConsumerDone
 		}
 		jm.mu.Unlock()
