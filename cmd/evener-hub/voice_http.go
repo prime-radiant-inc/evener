@@ -62,6 +62,7 @@ type voiceService struct {
 	mu      sync.Mutex
 	journal *hubcore.VoiceJournal
 	closed  bool
+	sockets map[string]*voiceBridge
 }
 
 func (v *voiceService) store() (*hubcore.VoiceJournal, error) {
@@ -82,23 +83,42 @@ func (v *voiceService) store() (*hubcore.VoiceJournal, error) {
 
 func (v *voiceService) close() {
 	v.mu.Lock()
-	defer v.mu.Unlock()
 	v.closed = true
-	if v.journal != nil {
-		_ = v.journal.Close()
+	journal := v.journal
+	var stopped []<-chan struct{}
+	for _, bridge := range v.sockets {
+		bridge.cancel()
+		stopped = append(stopped, bridge.done)
+	}
+	v.mu.Unlock()
+	for _, done := range stopped {
+		<-done
+	}
+	if journal != nil {
+		_ = journal.Close()
 	}
 }
 
 func (v *voiceService) handler() http.Handler {
-	return hubedge.AuthGuard(v.web.cfg.AuthToken)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Cache-Control", "no-store")
-		if !voiceTransportAllowed(r) {
-			voiceHTTPError(w, http.StatusForbidden, "secure_transport_required")
-			return
-		}
+	foreground := hubedge.AuthGuard(v.web.cfg.AuthToken)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			w.Header().Set("Allow", http.MethodPost)
 			voiceHTTPError(w, http.StatusMethodNotAllowed, "method_not_allowed")
+			return
+		}
+		switch r.URL.Path {
+		case "/api/voice/arm":
+			v.arm(w, r)
+		case "/api/voice/disarm":
+			v.disarm(w, r)
+		default:
+			voiceHTTPError(w, http.StatusNotFound, "not_found")
+		}
+	}))
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Cache-Control", "no-store")
+		if !voiceTransportAllowed(r) {
+			voiceHTTPError(w, http.StatusForbidden, "secure_transport_required")
 			return
 		}
 		if origin := r.Header.Get("Origin"); origin != "" {
@@ -108,13 +128,12 @@ func (v *voiceService) handler() http.Handler {
 				return
 			}
 		}
-		switch r.URL.Path {
-		case "/api/voice/arm":
-			v.arm(w, r)
-		default:
-			voiceHTTPError(w, http.StatusNotFound, "not_found")
+		if r.URL.Path == "/api/voice/socket" {
+			v.socket(w, r)
+			return
 		}
-	}))
+		foreground.ServeHTTP(w, r)
+	})
 }
 
 func (v *voiceService) arm(w http.ResponseWriter, r *http.Request) {
@@ -181,8 +200,49 @@ func (v *voiceService) arm(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
+	v.refreshSocket(r.Context(), binding.Ref)
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(voiceArmResponse{BindingID: bindingID, Epoch: epoch, Grant: grant, ExpiresAt: expires, SocketPath: "/api/voice/socket", SampleRate: 24000, Policy: currentVoicePolicy()})
+}
+
+func (v *voiceService) refreshSocket(ctx context.Context, ref string) {
+	v.mu.Lock()
+	bridge := v.sockets[ref]
+	v.mu.Unlock()
+	if bridge == nil {
+		return
+	}
+	binding, err := bridge.journal.Binding(ctx, bridge.binding.ID)
+	if err != nil || !binding.Active || !binding.ExpiresAt.After(time.Now()) {
+		bridge.cancel()
+	}
+}
+
+func (v *voiceService) disarm(w http.ResponseWriter, r *http.Request) {
+	var request struct {
+		BindingID string `json:"bindingId"`
+		Epoch     string `json:"epoch"`
+	}
+	if !decodeVoiceHTTP(w, r, &request) {
+		return
+	}
+	journal, err := v.store()
+	if err != nil {
+		voiceHTTPError(w, http.StatusServiceUnavailable, "voice_storage_unavailable")
+		return
+	}
+	binding, err := journal.Binding(r.Context(), request.BindingID)
+	if err != nil || binding.Epoch != request.Epoch {
+		voiceHTTPError(w, http.StatusConflict, "binding_changed")
+		return
+	}
+	if err := journal.RetireBinding(r.Context(), request.BindingID, request.Epoch); err != nil {
+		voiceHTTPError(w, http.StatusServiceUnavailable, "voice_storage_unavailable")
+		return
+	}
+	v.refreshSocket(r.Context(), binding.Ref)
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(struct{}{})
 }
 
 func (s *WebServer) voiceClient(ctx context.Context) (*appwire.Client, error) {

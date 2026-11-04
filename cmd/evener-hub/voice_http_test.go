@@ -6,12 +6,14 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"path/filepath"
 	"testing"
 	"time"
 
+	"github.com/coder/websocket"
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 )
@@ -84,15 +86,51 @@ func TestE2E_VoiceArmBindsExistingManager(t *testing.T) {
 	if status != http.StatusUnauthorized {
 		t.Fatalf("scoped grant could create another binding: %d", status)
 	}
+	headers := http.Header{}
+	headers.Set("Authorization", "Bearer "+armed.Grant)
+	headers.Set("X-Evener-Voice-Binding", armed.BindingID)
+	headers.Set("X-Evener-Voice-Epoch", armed.Epoch)
+	headers.Set("X-Evener-Voice-Device", "installation-one")
+	device, response, err := websocket.Dial(ctx, "ws://"+stack.addr+armed.SocketPath, &websocket.DialOptions{HTTPHeader: headers})
+	if err != nil {
+		code := 0
+		if response != nil {
+			code = response.StatusCode
+			_ = response.Body.Close()
+		}
+		t.Fatalf("scoped socket rejected durable Arm: HTTP %d", code)
+	}
+	defer func() { _ = device.CloseNow() }()
+	_, packet, err := device.Read(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var ready struct {
+		Type, BindingID, Epoch string
+		Generation             uint64
+	}
+	if err := json.Unmarshal(packet, &ready); err != nil || ready.Type != "ready" || ready.BindingID != armed.BindingID || ready.Epoch != armed.Epoch || ready.Generation == 0 {
+		t.Fatal("socket did not establish its current binding generation")
+	}
 	body["deviceId"] = "installation-two"
 	status, _ = voiceTestPost(t, ctx, stack, "/api/voice/arm", stack.token, body)
 	if status != http.StatusConflict {
 		t.Fatalf("second device silently took over: %d", status)
 	}
 	body["takeover"] = true
-	status, _ = voiceTestPost(t, ctx, stack, "/api/voice/arm", stack.token, body)
+	status, raw = voiceTestPost(t, ctx, stack, "/api/voice/arm", stack.token, body)
 	if status != http.StatusOK {
 		t.Fatalf("explicit takeover status = %d", status)
+	}
+	var replacement voiceArmResponse
+	if err := json.Unmarshal(raw, &replacement); err != nil {
+		t.Fatal(err)
+	}
+	closedCtx, closedCancel := context.WithTimeout(ctx, 2*time.Second)
+	defer closedCancel()
+	_, _, err = device.Read(closedCtx)
+	if err == nil || errors.Is(err, context.DeadlineExceeded) {
+		t.Fatal("takeover left the previous device connected")
 	}
 	binding, err = journal.Binding(ctx, armed.BindingID)
 	if err != nil || binding.Active {
@@ -101,6 +139,14 @@ func TestE2E_VoiceArmBindsExistingManager(t *testing.T) {
 	read, err := client.ThreadRead(ctx, appwire.ThreadReadParams{Ref: ref})
 	if err != nil || read.Thread.Evener.InstanceID != thread.Evener.InstanceID || !read.Thread.Evener.Manager {
 		t.Fatalf("Arm replaced the manager: %v", err)
+	}
+	status, _ = voiceTestPost(t, ctx, stack, "/api/voice/disarm", stack.token, map[string]string{"bindingId": replacement.BindingID, "epoch": replacement.Epoch})
+	if status != http.StatusOK {
+		t.Fatalf("Disarm status = %d", status)
+	}
+	binding, err = journal.Binding(ctx, replacement.BindingID)
+	if err != nil || binding.Active {
+		t.Fatal("Disarm did not persist binding retirement")
 	}
 }
 
