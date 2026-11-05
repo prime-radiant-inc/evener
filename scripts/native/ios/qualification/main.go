@@ -379,11 +379,45 @@ func (r *runner) verifyApp(ctx context.Context, app, phase string) error {
 		if err != nil {
 			return err
 		}
+		var embedded map[string]any
+		if len(entitlements) == 0 {
+			// Simulator builds embed the real entitlements in the binary and
+			// leave the signature's entitlement blob empty; read the embedded
+			// section so the capability check still sees the product's own
+			// entitlements.
+			embedded, err = r.embeddedEntitlements(ctx, name, bundle.path, info)
+			if err != nil {
+				return err
+			}
+		}
+		entitlements = productEntitlements(entitlements, embedded)
 		if err := validateBundleMetadata(info, entitlements, bundle.name == "share"); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+// embeddedEntitlements extracts the bundle executable's __TEXT,__entitlements
+// section and parses it, retaining the decoded plist as evidence.
+func (r *runner) embeddedEntitlements(ctx context.Context, name, bundle string, info map[string]any) (map[string]any, error) {
+	executable, _ := info["CFBundleExecutable"].(string)
+	if executable == "" {
+		return nil, fmt.Errorf("%w: %s has no CFBundleExecutable", errIdentity, bundle)
+	}
+	dump, err := r.command(ctx, name+"-embedded-entitlements-dump", "xcrun", "otool", "-X", "-s", "__TEXT", "__entitlements", filepath.Join(bundle, executable))
+	if err != nil {
+		return nil, err
+	}
+	plistBytes, err := decodeSectionDump(dump)
+	if err != nil {
+		return nil, err
+	}
+	path := filepath.Join(r.output, name+"-embedded-entitlements.plist")
+	if err := os.WriteFile(path, plistBytes, 0o600); err != nil {
+		return nil, err
+	}
+	return r.plist(ctx, name+"-embedded-entitlements-json", path)
 }
 
 func (r *runner) plist(ctx context.Context, name, path string) (map[string]any, error) {

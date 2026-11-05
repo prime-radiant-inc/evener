@@ -11,6 +11,7 @@ import (
 	"maps"
 	"os"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"slices"
 	"strings"
@@ -319,6 +320,39 @@ func TestPodUnlockKeepsRepoFlagOrder(t *testing.T) {
 	want := []string{"bundle", "exec", "pod", "update", "Expo", "hermes-engine", "--no-repo-update", "--project-directory=ios"}
 	if got := podUnlockCommand([]string{"Expo", "hermes-engine"}); !slices.Equal(got, want) {
 		t.Fatalf("unlock argv = %v, want %v", got, want)
+	}
+}
+
+func TestEmbeddedSectionDumpDecodes(t *testing.T) {
+	t.Parallel()
+	// otool -X -s __TEXT __entitlements prints the section as lines of hex
+	// byte pairs. Tokens of any other shape (an address column, a section
+	// header) are skipped rather than parsed.
+	dump := []byte("Contents of (__TEXT,__entitlements) section\n" +
+		"3c 3f 78 6d 6c 20 76 65\n" +
+		"000000010000f000 72 73 69 6f 6e 3d 22 31\n")
+	want := []byte(`<?xml version="1`)
+	got, err := decodeSectionDump(dump)
+	if err != nil || !bytes.Equal(got, want) {
+		t.Fatalf("decodeSectionDump = %q, %v; want %q", got, err, want)
+	}
+	if _, err := decodeSectionDump([]byte("not hex")); err == nil {
+		t.Fatal("a dump with no valid bytes must error, not pass silently")
+	}
+}
+
+func TestProductEntitlementsPreferSignatureThenEmbeddedSection(t *testing.T) {
+	t.Parallel()
+	appGroup := map[string]any{"com.apple.security.application-groups": []any{"group.com.primeradiant.evener.native"}}
+	signature := map[string]any{"other": true}
+	if got := productEntitlements(signature, appGroup); !reflect.DeepEqual(got, signature) {
+		t.Fatalf("non-empty signature entitlements must win, got %v", got)
+	}
+	if got := productEntitlements(map[string]any{}, appGroup); !reflect.DeepEqual(got, appGroup) {
+		t.Fatalf("an empty signature must fall back to the embedded section, got %v", got)
+	}
+	if got := productEntitlements(map[string]any{}, map[string]any{}); len(got) != 0 {
+		t.Fatalf("entitlements nowhere in the product must stay empty, got %v", got)
 	}
 }
 

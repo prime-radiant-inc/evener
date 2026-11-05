@@ -12,6 +12,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"strconv"
 	"strings"
 )
 
@@ -92,6 +93,49 @@ func localPodNames(lock []byte) []string {
 func podUnlockCommand(names []string) []string {
 	args := append([]string{"bundle", "exec", "pod", "update"}, names...)
 	return append(args, "--no-repo-update", "--project-directory=ios")
+}
+
+// decodeSectionDump turns `otool -X -s __TEXT __entitlements` output into the
+// section's raw bytes. Only two-character hex tokens are bytes; anything else
+// (a section header, an address column) is skipped.
+func decodeSectionDump(dump []byte) ([]byte, error) {
+	var out []byte
+	for token := range strings.FieldsSeq(string(dump)) {
+		if len(token) != 2 || !isHexPair(token) {
+			continue
+		}
+		value, err := strconv.ParseUint(token, 16, 8)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, byte(value))
+	}
+	if len(out) == 0 {
+		return nil, errors.New("entitlements section dump has no bytes")
+	}
+	return out, nil
+}
+
+func isHexPair(token string) bool {
+	for _, c := range token {
+		if !strings.ContainsRune("0123456789abcdefABCDEF", c) {
+			return false
+		}
+	}
+	return true
+}
+
+// productEntitlements picks where the built product's entitlements live. On
+// this toolchain's simulator builds Apple's simulated-entitlements model
+// leaves the ad-hoc signature's entitlement blob empty and embeds the real
+// entitlements in the binary's __TEXT,__entitlements section, so an empty
+// signature falls back to that embedded section. Entitlements in neither
+// place stay empty and fail the capability check.
+func productEntitlements(signature, section map[string]any) map[string]any {
+	if len(signature) > 0 {
+		return signature
+	}
+	return section
 }
 
 func checkLock(ctx context.Context, committed, resolved, output string) error {
