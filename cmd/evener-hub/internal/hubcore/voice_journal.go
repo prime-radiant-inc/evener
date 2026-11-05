@@ -87,6 +87,7 @@ type SpeechDelivery struct {
 	PresentationGeneration uint64               `json:"presentationGeneration"`
 	GeneratedTranscript    string               `json:"generatedTranscript"`
 	Items                  []SpeechDeliveryItem `json:"items,omitempty"`
+	OutputComplete         bool                 `json:"outputComplete"`
 	Interrupted            bool                 `json:"interrupted"`
 }
 
@@ -98,6 +99,7 @@ type SpeechDeliveryItem struct {
 	GeneratedSamples int64  `json:"generatedSamples"`
 	QueuedSamples    int64  `json:"queuedSamples"`
 	PlayedSamples    int64  `json:"playedSamples"`
+	PlaybackComplete bool   `json:"playbackComplete"`
 }
 
 type SpeechDeliveryUpdate struct {
@@ -105,11 +107,12 @@ type SpeechDeliveryUpdate struct {
 	PresentationGeneration uint64
 	Item                   *SpeechDeliveryItem
 	GeneratedTranscript    *string
+	OutputComplete         bool
 	Interrupted            bool
 }
 
 func (j *VoiceJournal) CreateSpeechDelivery(ctx context.Context, delivery SpeechDelivery) error {
-	if !validSpeechSource(delivery) || delivery.Interrupted || delivery.GeneratedTranscript != "" || len(delivery.Items) != 0 {
+	if !validSpeechSource(delivery) || delivery.Interrupted || delivery.OutputComplete || delivery.GeneratedTranscript != "" || len(delivery.Items) != 0 {
 		return ErrVoiceInvalid
 	}
 	tx, err := j.db.BeginTx(ctx, nil)
@@ -120,6 +123,7 @@ func (j *VoiceJournal) CreateSpeechDelivery(ctx context.Context, delivery Speech
 	existing, err := readSpeechDelivery(ctx, tx, delivery.ID)
 	if err == nil {
 		existing.GeneratedTranscript, existing.Items, existing.Interrupted = "", nil, false
+		existing.OutputComplete = false
 		delivery.Items = nil
 		if !reflect.DeepEqual(existing, delivery) {
 			return ErrVoiceConflict
@@ -163,7 +167,7 @@ func validSpeechSource(d SpeechDelivery) bool {
 }
 
 func validSpeechItem(item SpeechDeliveryItem) bool {
-	return item.ResponseID != "" && item.ItemID != "" && item.PlayedSamples >= 0 && item.PlayedSamples <= item.QueuedSamples && item.QueuedSamples <= item.GeneratedSamples
+	return item.ResponseID != "" && item.ItemID != "" && item.PlayedSamples >= 0 && item.PlayedSamples <= item.QueuedSamples && item.QueuedSamples <= item.GeneratedSamples && (!item.PlaybackComplete || item.PlayedSamples == item.GeneratedSamples)
 }
 
 func readSpeechDelivery(ctx context.Context, q voiceQuerier, id string) (SpeechDelivery, error) {
@@ -229,7 +233,7 @@ func (j *VoiceJournal) UpdateSpeechDelivery(ctx context.Context, id string, upda
 			}
 		}
 		if index < 0 {
-			if stopped {
+			if stopped || d.OutputComplete {
 				return SpeechDelivery{}, ErrVoiceStale
 			}
 			d.Items = append(d.Items, item)
@@ -238,9 +242,10 @@ func (j *VoiceJournal) UpdateSpeechDelivery(ctx context.Context, id string, upda
 			if old.ResponseID != item.ResponseID || item.GeneratedSamples < old.GeneratedSamples || item.QueuedSamples < old.QueuedSamples || item.PlayedSamples < old.PlayedSamples {
 				return SpeechDelivery{}, ErrVoiceConflict
 			}
-			if stopped && (item.GeneratedSamples != old.GeneratedSamples || item.QueuedSamples != old.QueuedSamples) {
+			if (stopped || d.OutputComplete || old.PlaybackComplete) && (item.GeneratedSamples != old.GeneratedSamples || item.QueuedSamples != old.QueuedSamples) {
 				return SpeechDelivery{}, ErrVoiceStale
 			}
+			item.PlaybackComplete = item.PlaybackComplete || old.PlaybackComplete
 			d.Items[index] = item
 		}
 	}
@@ -250,6 +255,7 @@ func (j *VoiceJournal) UpdateSpeechDelivery(ctx context.Context, id string, upda
 		}
 		d.GeneratedTranscript = *update.GeneratedTranscript
 	}
+	d.OutputComplete = d.OutputComplete || update.OutputComplete
 	d.Interrupted = stopped || update.Interrupted
 	raw, err := json.Marshal(d)
 	if err != nil {

@@ -48,8 +48,6 @@ type voiceBridge struct {
 	speechCursor *appwire.ThreadItemPosition
 	refresh      bool
 	delivery     *hubcore.SpeechDelivery
-	outputDone   bool
-	playedDone   map[string]bool
 	transcripts  map[string]string
 	provenance   *appwire.ConversationProvenanceState
 	retiring     *hubcore.SpeechDelivery

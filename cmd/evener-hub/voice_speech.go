@@ -88,11 +88,11 @@ func (b *voiceBridge) applyProvenance(state *appwire.ConversationProvenanceState
 // Retire presentation before waiting for provider acknowledgement. The manager
 // is untouched, and its recorded reply remains available as canonical text.
 func (b *voiceBridge) retireSpeech() error {
-	if err := b.updateDelivery(hubcore.SpeechDeliveryUpdate{Interrupted: true}); err != nil {
+	if err := b.updateDelivery(hubcore.SpeechDeliveryUpdate{Interrupted: !b.playbackFinished()}); err != nil {
 		return err
 	}
 	b.retiring, b.delivery = b.delivery, nil
-	b.outputDone, b.refresh = false, true
+	b.refresh = true
 	if err := b.advanceGeneration(); err != nil {
 		return err
 	}
@@ -152,8 +152,8 @@ func (b *voiceBridge) startSpeech(source appwire.ThreadItem) error {
 	if err := b.journal.CreateSpeechDelivery(b.ctx, delivery); err != nil {
 		return err
 	}
-	b.delivery, b.outputDone = &delivery, false
-	b.playedDone, b.transcripts = make(map[string]bool), make(map[string]string)
+	b.delivery = &delivery
+	b.transcripts = make(map[string]string)
 	if err := b.send(map[string]any{"type": "speech_start", "deliveryId": delivery.ID, "generation": delivery.PresentationGeneration, "sourceItemId": source.ID, "canonicalText": source.Text}); err != nil {
 		return err
 	}
@@ -180,11 +180,11 @@ func (b *voiceBridge) startSpeech(source appwire.ThreadItem) error {
 }
 
 func (b *voiceBridge) playbackFinished() bool {
-	if b.delivery == nil || !b.outputDone {
+	if b.delivery == nil || !b.delivery.OutputComplete {
 		return false
 	}
 	for _, item := range b.delivery.Items {
-		if !b.playedDone[item.ItemID] || item.PlayedSamples != item.QueuedSamples {
+		if !item.PlaybackComplete || item.PlayedSamples != item.QueuedSamples {
 			return false
 		}
 	}
@@ -244,7 +244,9 @@ func (b *voiceBridge) providerEvent(event VoiceRealtimeEvent) error {
 		if event.Status != "completed" {
 			return hubcore.ErrVoiceConflict
 		}
-		b.outputDone = true
+		if err := b.updateDelivery(hubcore.SpeechDeliveryUpdate{OutputComplete: true}); err != nil {
+			return err
+		}
 		for _, item := range b.delivery.Items {
 			if err := b.send(map[string]any{"type": "speech_end", "deliveryId": event.DeliveryID, "generation": event.Generation, "responseId": item.ResponseID, "itemId": item.ItemID}); err != nil {
 				return err
@@ -271,13 +273,13 @@ func (b *voiceBridge) recordPlayed(control voiceControl) error {
 			continue
 		}
 		item.PlayedSamples = control.Samples
+		item.PlaybackComplete = item.PlaybackComplete || control.Complete
 		updated, err := b.journal.UpdateSpeechDelivery(b.ctx, delivery.ID, hubcore.SpeechDeliveryUpdate{Epoch: delivery.Epoch, PresentationGeneration: control.Generation, Item: &item})
 		if err != nil {
 			return err
 		}
 		if b.delivery != nil && b.delivery.ID == delivery.ID {
 			b.delivery = &updated
-			b.playedDone[item.ItemID] = control.Complete
 			b.refresh = true
 		}
 		return nil

@@ -56,9 +56,12 @@ Voice answers remain ordinary, unchanged free-text input. The runtime resolves
 its current pending batch through normal admission and idempotent retries.
 
 A `SpeechDelivery` records its canonical source, generation, generated transcript
-and per-item generated, queued and played sample counts. Generated audio is not
-proof that the phone played it. Provider truncation uses the played watermark in
-the provider's 24 kHz sample timeline.
+and per-item generated, queued and played sample counts. Provider completion and
+each item's device playback-complete acknowledgement are separate durable facts.
+Equal sample counts alone establish neither completion nor human attention.
+Retiring a fully rendered delivery preserves its completion evidence; cutting
+off unfinished playback records interruption. Provider truncation uses the played
+watermark in the provider's 24 kHz sample timeline.
 
 Native barge-in retires presentation immediately and preserves the following
 utterance while provider cancellation completes. If setup or speech creation is

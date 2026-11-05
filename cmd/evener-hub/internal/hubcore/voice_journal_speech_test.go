@@ -143,3 +143,86 @@ func TestVoiceJournalSpeechIdentityAndWatermarkFences(t *testing.T) {
 		t.Fatalf("retirement lost playback uncertainty: %v", err)
 	}
 }
+
+func TestVoiceJournalSpeechCompletionSurvivesReopen(t *testing.T) {
+	t.Parallel()
+	j, root, binding := voiceJournalFixture(t)
+	ctx := context.Background()
+	source := voiceJournalDelivery(binding)
+	if err := j.CreateSpeechDelivery(ctx, source); err != nil {
+		t.Fatal(err)
+	}
+	item := SpeechDeliveryItem{ResponseID: "response", ItemID: "item", GeneratedSamples: 480, QueuedSamples: 480, PlayedSamples: 480}
+	update := SpeechDeliveryUpdate{Epoch: binding.Epoch, PresentationGeneration: source.PresentationGeneration, Item: &item}
+	got, err := j.UpdateSpeechDelivery(ctx, source.ID, update)
+	if err != nil || got.OutputComplete || got.Items[0].PlaybackComplete {
+		t.Fatalf("sample equality became completion without acknowledgements: %+v %v", got, err)
+	}
+	update.Item, update.OutputComplete = nil, true
+	got, err = j.UpdateSpeechDelivery(ctx, source.ID, update)
+	if err != nil || !got.OutputComplete || got.Items[0].PlaybackComplete {
+		t.Fatalf("provider completion did not persist independently of rendering: %+v %v", got, err)
+	}
+	item.PlaybackComplete = true
+	update.Item, update.OutputComplete = &item, false
+	if _, err := j.UpdateSpeechDelivery(ctx, source.ID, update); err != nil {
+		t.Fatal(err)
+	}
+	if err := j.Close(); err != nil {
+		t.Fatal(err)
+	}
+	reopened, err := NewVoiceJournal(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reopened.Close()
+	got, err = reopened.SpeechDelivery(ctx, source.ID)
+	if err != nil || !got.OutputComplete || !got.Items[0].PlaybackComplete {
+		t.Fatalf("restart lost independent completion evidence: %+v %v", got, err)
+	}
+	if err := reopened.CreateSpeechDelivery(ctx, source); err != nil {
+		t.Fatalf("idempotent creation rejected a completed delivery: %v", err)
+	}
+	item.PlaybackComplete = false
+	got, err = reopened.UpdateSpeechDelivery(ctx, source.ID, update)
+	if err != nil || !got.OutputComplete || !got.Items[0].PlaybackComplete {
+		t.Fatalf("late cumulative acknowledgement erased completion: %+v %v", got, err)
+	}
+}
+
+func TestVoiceJournalSpeechCompletionFencesFurtherAudio(t *testing.T) {
+	t.Parallel()
+	j, _, binding := voiceJournalFixture(t)
+	ctx := context.Background()
+	source := voiceJournalDelivery(binding)
+	if err := j.CreateSpeechDelivery(ctx, source); err != nil {
+		t.Fatal(err)
+	}
+	item := SpeechDeliveryItem{ResponseID: "response", ItemID: "item", GeneratedSamples: 480, QueuedSamples: 480, PlayedSamples: 240, PlaybackComplete: true}
+	update := SpeechDeliveryUpdate{Epoch: binding.Epoch, PresentationGeneration: source.PresentationGeneration, Item: &item}
+	if _, err := j.UpdateSpeechDelivery(ctx, source.ID, update); !errors.Is(err, ErrVoiceConflict) {
+		t.Fatalf("partial rendering claimed completion: %v", err)
+	}
+	item.PlaybackComplete = false
+	update.OutputComplete = true
+	if _, err := j.UpdateSpeechDelivery(ctx, source.ID, update); err != nil {
+		t.Fatal(err)
+	}
+	for _, change := range []func(*SpeechDeliveryItem){
+		func(i *SpeechDeliveryItem) { i.ItemID = "later-item" },
+		func(i *SpeechDeliveryItem) { i.GeneratedSamples++ },
+	} {
+		changed := item
+		change(&changed)
+		update.Item = &changed
+		if _, err := j.UpdateSpeechDelivery(ctx, source.ID, update); !errors.Is(err, ErrVoiceStale) {
+			t.Fatalf("completed output acquired new audio: %v", err)
+		}
+	}
+	item.PlayedSamples, item.PlaybackComplete = 480, true
+	update.Item, update.Interrupted = &item, true
+	got, err := j.UpdateSpeechDelivery(ctx, source.ID, update)
+	if err != nil || !got.OutputComplete || !got.Items[0].PlaybackComplete || !got.Interrupted {
+		t.Fatalf("late rendering evidence was discarded after output completion: %+v %v", got, err)
+	}
+}
