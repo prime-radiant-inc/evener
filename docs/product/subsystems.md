@@ -110,8 +110,11 @@ intent before **S11** admits it through ordinary session input. Public hub input
 cannot supply that evidence, and the original daemon must advertise support.
 **S09–S10** retain manager execution, canonical replies and originating-request
 provenance. A presentation interruption stops speech and can replace its provider
-connection while preserving manager work. Voice does not create another session
-queue or give the speech provider manager tools.
+connection while preserving manager work. During audio recovery, S03 rejects and
+retires each incoming speech generation; S06 cancels that unplayed presentation
+so it cannot block fresh output after recovery. Canonical replies remain in S10
+and cancelled speech is not replayed. Voice does not create another session queue
+or give the speech provider manager tools.
 
 | ID and responsibility | Entry points and implementation | State authority and recovery ownership | Owning references |
 | --- | --- | --- | --- |

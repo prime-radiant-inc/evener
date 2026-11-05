@@ -101,6 +101,12 @@ A newer typed admission also retires stale speech before a fresh reply exists.
 Delayed old audio and output from a request that did not consume the correction
 cannot become the new reply.
 
+If a reply arrives while native audio is recovering, the phone retires that
+incoming speech generation with no played samples and stays in recovery. The hub
+cancels that presentation, so fresh spoken updates can proceed after recovery
+without another user input. The cancelled reply remains in the canonical
+transcript and is not replayed when capture resumes.
+
 An explicit session Stop or definitive input-preparation failure retires the
 speech fence only for inputs that never reached canonical history. Inputs
 recorded before interruption or failure remain required across compaction and
@@ -166,6 +172,7 @@ The real-stack tests in
 [`e2e_voice_question_order_test.go`](../../cmd/evener-hub/e2e_voice_question_order_test.go),
 [`e2e_voice_history_test.go`](../../cmd/evener-hub/e2e_voice_history_test.go),
 [`e2e_voice_presentation_test.go`](../../cmd/evener-hub/e2e_voice_presentation_test.go),
+[`e2e_voice_audio_recovery_test.go`](../../cmd/evener-hub/e2e_voice_audio_recovery_test.go),
 [`e2e_voice_recovery_test.go`](../../cmd/evener-hub/e2e_voice_recovery_test.go)
 and [`e2e_voice_intent_recovery_test.go`](../../cmd/evener-hub/e2e_voice_intent_recovery_test.go)
 exercise real hub, daemon, journal and transcript paths with scripted external
