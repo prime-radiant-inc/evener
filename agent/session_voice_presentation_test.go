@@ -339,6 +339,11 @@ func TestVoicePresentationFoldConcurrentAppend(t *testing.T) {
 			restored := restoreQueuePersistTestSession(t, dir, id)
 			defer restored.Close()
 			check(currentHistory(t, restored))
+			if newVoice {
+				checkVoicePresentationRestoredRequest(t, restored, latest, "client:during-fold", false, "opaque-correction-831")
+			} else {
+				checkVoicePresentationRestoredRequest(t, restored, older, "client:before-fold", true, "opaque-correction-831")
+			}
 		})
 	}
 }
@@ -435,5 +440,144 @@ func TestVoicePresentationActualStartAndSteerRequests(t *testing.T) {
 	}
 	if inputs != 2 {
 		t.Fatalf("stored inputs=%d", inputs)
+	}
+}
+
+func TestVoicePresentationRetainedRestore(t *testing.T) {
+	dir := t.TempDir()
+	calls := 0
+	s := newScriptedSummaryCompactSession(t, "review-retained-summary", func(llm.Request) llm.Response {
+		calls++
+		return llm.Response{Message: llm.Assistant("[CONTEXT SUMMARY]\n## Progress\nopaque-review-summary\n[END SUMMARY]")}
+	}, withStateDir(dir))
+	for i := range 20 {
+		turn := schema.NewTurn(schema.TurnUserInput, llm.User(fmt.Sprint("opaque-padding-", i)))
+		s.recordTurn(turn, turn)
+	}
+	voice := voicePresentationFixture(s.ID())
+	if _, err := s.AcceptClientMutationSteer(appwire.TurnSteerParams{ClientMutationID: "retained-voice", Input: []appwire.InputItem{{Type: "text", Text: "opaque-retained-voice", VoicePresentation: voice}}}); err != nil {
+		t.Fatal(err)
+	}
+	for _, message := range s.drainSteering() {
+		s.consumeSteeringMessage(message)
+	}
+	correction := schema.NewTurn(schema.TurnUserInput, llm.User("opaque-retained-correction-927"))
+	s.recordTurn(correction, correction)
+	if err := s.Compact(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if calls == 0 {
+		t.Fatal("fold did not run")
+	}
+	found := 0
+	for _, turn := range currentHistory(t, s) {
+		if turn.ClientMutationID == "retained-voice" && turn.VoicePresentation != nil {
+			found++
+		}
+	}
+	if found != 1 {
+		t.Fatalf("scenario did not retain owning input, count=%d", found)
+	}
+	t.Log("real fold retained original voice-owning input in live history")
+	// A second actual fold must carry the original persisted records, not
+	// copies with fresh identities or a voice-only marker substitution.
+	callsBefore := calls
+	if err := s.Compact(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if calls == callsBefore {
+		t.Fatal("repeated fold did not run")
+	}
+	check := func(history []schema.Turn) []string {
+		t.Helper()
+		var inputs []string
+		association, correctionAt, count := -1, -1, 0
+		for i, turn := range history {
+			if turn.Kind == schema.TurnUserInput || turn.Kind == schema.TurnSteering {
+				inputs = append(inputs, turn.Message.Text())
+			}
+			if turn.Message.Text() == correction.Message.Text() {
+				correctionAt = i
+			}
+			if turn.VoicePresentation == nil {
+				continue
+			}
+			count++
+			association = i
+			if turn.Kind != schema.TurnSteering || turn.ClientMutationID != "retained-voice" || turn.VoicePresentationInputID != "client:retained-voice" || !reflect.DeepEqual(turn.VoicePresentation, voice) {
+				t.Fatalf("retained input changed or duplicated on marker: %+v", turn)
+			}
+		}
+		if count != 1 || correctionAt <= association || association < 0 {
+			t.Fatalf("associations=%d association=%d correction=%d", count, association, correctionAt)
+		}
+		return inputs
+	}
+	wantInputs := check(currentHistory(t, s))
+	id := s.ID()
+	s.Close()
+	restored := restoreQueuePersistTestSession(t, dir, id)
+	defer restored.Close()
+	found = 0
+	for _, turn := range currentHistory(t, restored) {
+		if turn.VoicePresentation != nil {
+			found++
+		}
+	}
+	if found != 1 {
+		t.Fatalf("after restore voice associations=%d, want 1", found)
+	}
+	if inputs := check(currentHistory(t, restored)); !reflect.DeepEqual(inputs, wantInputs) {
+		t.Fatalf("ordinary retained inputs changed on restore: got %q want %q", inputs, wantInputs)
+	}
+	checkVoicePresentationRestoredRequest(t, restored, voice, "client:retained-voice", false, correction.Message.Text())
+}
+
+// Observe the actual provider boundary, not a direct projection-helper call.
+func checkVoicePresentationRestoredRequest(t *testing.T, s *Session, want *appwire.VoicePresentationContext, inputID string, historical bool, correction string) {
+	t.Helper()
+	requests := 0
+	s.profile = withTestSessionNamer(s.client, s.profile)
+	s.client.Register(&fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{func(req llm.Request) llm.Response {
+		requests++
+		found, association, correctionAt := 0, -1, -1
+		for i, message := range req.Messages {
+			for _, part := range message.Content {
+				if part.Kind != llm.ContentText {
+					continue
+				}
+				if part.Text == correction {
+					correctionAt = i
+				}
+				index := strings.Index(part.Text, "\n{")
+				if index < 0 {
+					continue
+				}
+				var evidence struct {
+					InputID      string                            `json:"inputId"`
+					Historical   bool                              `json:"historical"`
+					Presentation *appwire.VoicePresentationContext `json:"presentation"`
+				}
+				if json.Unmarshal([]byte(part.Text[index+1:]), &evidence) != nil || evidence.Presentation == nil {
+					continue
+				}
+				found++
+				association = i
+				if message.Role != llm.RoleUser || evidence.Historical != historical || evidence.InputID != inputID || !reflect.DeepEqual(evidence.Presentation, want) {
+					t.Fatalf("restored provider association changed: %+v", evidence)
+				}
+			}
+		}
+		if found != 1 || correctionAt < 0 || association > correctionAt {
+			t.Fatalf("provider associations=%d association=%d correction=%d", found, association, correctionAt)
+		}
+		call := communicateCall("restored", "opaque-restored-result-927")
+		return llm.Response{Message: llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{{Kind: llm.ContentToolCall, ToolCall: &call}}}}
+	}}})
+	if _, err := s.ProcessInput(context.Background(), "opaque-after-restore-927", nil); err != nil {
+		t.Fatal(err)
+	}
+	if requests != 1 {
+		t.Fatalf("restored provider calls=%d", requests)
 	}
 }

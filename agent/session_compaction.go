@@ -211,9 +211,14 @@ func (s *Session) publishFoldTransaction(snapLen, snapRevision, snapAppends int,
 		s.attentionMu.Unlock()
 		return nil, false, refusal
 	}
-	var pendingAskTail []schema.Turn
+	var pendingAskTail, retainedTail []schema.Turn
 	if commit.stagedCompactionCount() > 0 {
 		var err error
+		retainedTail, err = s.retainedFoldReplayTailLocked(folded)
+		if err != nil {
+			s.attentionMu.Unlock()
+			return nil, false, err
+		}
 		pendingAskTail, err = s.pendingAskReplayTailLocked()
 		if err != nil {
 			s.attentionMu.Unlock()
@@ -291,11 +296,29 @@ func (s *Session) publishFoldTransaction(snapLen, snapRevision, snapAppends int,
 	// the same to a stale snapshot's start.
 	tailStart := snapAppends - s.persistedAppendLogBase
 	tailStart = max(0, min(tailStart, len(s.persistedAppendLog)))
-	rewriteTail := pendingAskTail
-	replayedOrdinals := make(map[uint64]bool, len(pendingAskTail))
-	for _, turn := range pendingAskTail {
-		replayedOrdinals[*turn.OriginalOrdinal] = true
+	// Both the snapshot's retained recent tail and pending asks must survive
+	// the new last-marker anchor. Merge their persisted forms by original
+	// ordinal so overlap neither duplicates input nor moves a correction.
+	var rewriteTail []schema.Turn
+	replayedOrdinals := make(map[uint64]bool, len(retainedTail)+len(pendingAskTail))
+	for _, turns := range [][]schema.Turn{retainedTail, pendingAskTail} {
+		for _, turn := range turns {
+			ordinal := *turn.OriginalOrdinal
+			if !replayedOrdinals[ordinal] {
+				rewriteTail = append(rewriteTail, turn)
+				replayedOrdinals[ordinal] = true
+			}
+		}
 	}
+	slices.SortFunc(rewriteTail, func(a, b schema.Turn) int {
+		if *a.OriginalOrdinal < *b.OriginalOrdinal {
+			return -1
+		}
+		if *a.OriginalOrdinal > *b.OriginalOrdinal {
+			return 1
+		}
+		return 0
+	})
 	for _, persisted := range s.persistedAppendLog[tailStart:] {
 		if persisted.Kind == "" {
 			continue // a tombstone: its write recorded nothing, so nothing re-appends
@@ -378,6 +401,48 @@ func (s *Session) publishFoldTransaction(snapLen, snapRevision, snapAppends int,
 	// receipt's phase advances, and the metadata save persists the result.
 	s.commitSkillCompactionPublication(commit)
 	return published, true, nil
+}
+
+// retainedFoldReplayTailLocked selects only persisted records whose turns the
+// fold retained. Live tool results can contain private evidence, so they are
+// never serialized here. Copies retain their original ordinal across repeated
+// folds. The caller holds attentionMu, fixing the transcript's read boundary.
+func (s *Session) retainedFoldReplayTailLocked(folded []schema.Turn) ([]schema.Turn, error) {
+	if s.stateDir == "" {
+		return nil, nil
+	}
+	_, entries, _, err := readTranscript(context.Background(), transcriptPath(s.stateDir, s.id), s.stateDir)
+	if err != nil {
+		return nil, fmt.Errorf("read retained compaction tail: %w", err)
+	}
+	var tail []schema.Turn
+	before := len(entries)
+	for i := len(folded) - 1; i >= 0; i-- {
+		live := folded[i]
+		if live.Kind.TranscriptOnly() || isSessionNameCompactionTurn(live) {
+			continue
+		}
+		// The fold keeps an ordered subsequence. Search backwards so equal
+		// timestamps in a retained suffix select the suffix's records, not an
+		// earlier folded-away occurrence. Identity stamped only by the writer
+		// is absent from live turns, but kind, timestamp and mutation ID survive.
+		for j := before - 1; j >= 0; j-- {
+			persisted := entries[j].Turn
+			if persisted.OriginalOrdinal != nil || persisted.Kind != live.Kind || !persisted.Timestamp.Equal(live.Timestamp) || persisted.ClientMutationID != live.ClientMutationID {
+				continue
+			}
+			if live.OriginalOrdinal != nil && *live.OriginalOrdinal != uint64(j) {
+				continue
+			}
+			ordinal := uint64(j)
+			persisted.OriginalOrdinal = &ordinal
+			tail = append(tail, persisted)
+			before = j
+			break
+		}
+	}
+	slices.Reverse(tail)
+	return tail, nil
 }
 
 // foldWithForceCompact snapshots s.history, runs ForceCompact with the given
