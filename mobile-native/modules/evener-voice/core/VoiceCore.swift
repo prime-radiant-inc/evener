@@ -35,6 +35,9 @@ public enum VoiceMessage: Equatable {
 public enum VoiceAction: Equatable {
     case cue, flushOutput, stopCapture, send(VoiceMessage), abort(Int, String)
 }
+public enum VoiceSpeechAdmission: Equatable {
+    case accepted, rejected([VoiceAction])
+}
 
 /// Serialized by the native service's worker, never the audio callback or JS.
 public struct VoiceController {
@@ -140,6 +143,16 @@ public struct VoiceController {
     }
     private mutating func clearInput() {
         active = false; admitted = false; pending.removeAll(); bufferedBytes = 0; inputSamples = 0
+    }
+    public mutating func admitSpeech(generation: Int, speakerConsent: Bool) -> VoiceSpeechAdmission {
+        guard armed, generation >= minimumGeneration else { return .rejected([]) }
+        guard speakerConsent else {
+            // The hub must retire this unplayed delivery before selecting another.
+            // Fence its incoming generation, not the previous local output's.
+            observeGeneration(generation)
+            return .rejected(stopSpeaking(played: [:]))
+        }
+        return acceptSpeech(generation: generation) ? .accepted : .rejected([])
     }
     public mutating func acceptSpeech(generation: Int) -> Bool {
         guard armed, state != .recovering, generation >= minimumGeneration else { return false }
