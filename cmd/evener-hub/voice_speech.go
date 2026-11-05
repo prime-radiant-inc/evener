@@ -89,7 +89,9 @@ func (b *voiceBridge) retireSpeech() error {
 	}
 	b.retiring, b.delivery = b.delivery, nil
 	b.outputDone, b.refresh = false, true
-	b.generation++
+	if err := b.advanceGeneration(); err != nil {
+		return err
+	}
 	if b.workKind == "speech" {
 		b.workCancel()
 	}
@@ -97,20 +99,45 @@ func (b *voiceBridge) retireSpeech() error {
 }
 
 func (b *voiceBridge) interruptSpeech(control voiceControl) error {
-	if b.delivery == nil || control.Generation != b.delivery.PresentationGeneration {
+	if control.Generation >= voiceMaxGeneration {
+		return hubcore.ErrVoiceInvalid
+	}
+	if control.Generation < b.generation {
 		return nil
 	}
-	for item, samples := range control.PlayedSamples {
-		if err := b.recordPlayed(voiceControl{DeliveryID: b.delivery.ID, Generation: control.Generation, ItemID: item, Samples: samples}); err != nil {
-			return err
+	if b.delivery != nil && control.Generation == b.delivery.PresentationGeneration {
+		for item, samples := range control.PlayedSamples {
+			if err := b.recordPlayed(voiceControl{DeliveryID: b.delivery.ID, Generation: control.Generation, ItemID: item, Samples: samples}); err != nil {
+				return err
+			}
 		}
 	}
-	return b.retireSpeech()
+	b.generation = control.Generation
+	if b.delivery != nil {
+		return b.retireSpeech()
+	}
+	if err := b.advanceGeneration(); err != nil {
+		return err
+	}
+	return b.send(map[string]any{"type": "stop", "generation": b.generation})
+}
+
+// Native and JavaScript clients must represent the same generation exactly.
+const voiceMaxGeneration = 1<<53 - 1
+
+func (b *voiceBridge) advanceGeneration() error {
+	if b.generation >= voiceMaxGeneration {
+		return hubcore.ErrVoiceInvalid
+	}
+	b.generation++
+	return nil
 }
 
 func (b *voiceBridge) startSpeech(source appwire.ThreadItem) error {
 	previous := b.delivery
-	b.generation++
+	if err := b.advanceGeneration(); err != nil {
+		return err
+	}
 	provenance := source.ConversationProvenance
 	delivery := hubcore.SpeechDelivery{
 		ID: uuid.NewString(), BindingID: b.binding.ID, Epoch: b.binding.Epoch, InstanceID: b.binding.InstanceID,

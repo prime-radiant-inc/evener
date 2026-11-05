@@ -209,6 +209,9 @@ func (b *voiceBridge) run() {
 				_ = b.reportError("input_failed")
 				return
 			}
+			if control.Type == "renew" {
+				expiry.Reset(time.Until(b.binding.ExpiresAt))
+			}
 		case notification, ok := <-b.client.Notifications():
 			if !ok {
 				return
@@ -390,6 +393,20 @@ func (b *voiceBridge) control(control voiceControl) error {
 		return b.recordPlayed(control)
 	case "interrupt":
 		return b.interruptSpeech(control)
+	case "renew":
+		read, err := b.client.ThreadRead(b.ctx, appwire.ThreadReadParams{Ref: b.binding.Ref})
+		if err != nil {
+			return err
+		}
+		if read.Thread.Evener.InstanceID != b.binding.InstanceID || !read.Thread.Evener.MutationStateAuthoritative || !read.Thread.Evener.Manager {
+			return hubcore.ErrVoiceStale
+		}
+		expires := time.Now().UTC().Add(voiceGrantLifetime)
+		if err := b.journal.RenewBinding(b.ctx, b.binding.ID, b.binding.Epoch, expires); err != nil {
+			return err
+		}
+		b.binding.ExpiresAt = expires
+		return b.send(map[string]any{"type": "renewed", "expiresAt": expires})
 	case "disarm":
 		if err := b.journal.RetireBinding(b.ctx, b.binding.ID, b.binding.Epoch); err != nil {
 			return err

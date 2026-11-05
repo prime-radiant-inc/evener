@@ -205,6 +205,9 @@ type voiceCorrectionStack struct {
 	device        realtimePeer
 	journal       *hubcore.VoiceJournal
 	ref, instance string
+	stack         hubStack
+	armed         voiceArmResponse
+	headers       http.Header
 }
 
 func newVoiceCorrectionStack(t *testing.T) *voiceCorrectionStack {
@@ -236,7 +239,7 @@ api_key = "voice-fixture-not-a-secret"
 		t.Fatal(err)
 	}
 	opening.RespondToolCall("communicate", communicateArgs("CORRECTION-READY-61"))
-	f := &voiceCorrectionStack{ctx: ctx, client: client, provider: provider, peers: peers, ref: ref}
+	f := &voiceCorrectionStack{ctx: ctx, client: client, provider: provider, peers: peers, ref: ref, stack: stack}
 	read, err := client.ThreadRead(ctx, appwire.ThreadReadParams{Ref: ref, Subscribe: true, IncludeTurns: true})
 	if err != nil {
 		t.Fatal(err)
@@ -261,16 +264,22 @@ api_key = "voice-fixture-not-a-secret"
 	headers.Set("X-Evener-Voice-Binding", armed.BindingID)
 	headers.Set("X-Evener-Voice-Epoch", armed.Epoch)
 	headers.Set("X-Evener-Voice-Device", "correction-device")
-	device := voiceJourneyConnect(t, ctx, "ws://"+stack.addr+armed.SocketPath, headers)
-	t.Cleanup(func() { _ = device.CloseNow() })
-	f.device = realtimePeer{conn: device, ctx: ctx, t: t}
-	voiceJourneyEvent(t, f.device, "ready")
+	f.armed, f.headers = armed, headers
+	f.connect(t)
 	f.journal, err = hubcore.NewVoiceJournal(filepath.Join(stack.home, "state", "evener"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = f.journal.Close() })
 	return f
+}
+
+func (f *voiceCorrectionStack) connect(t *testing.T) map[string]any {
+	t.Helper()
+	device := voiceJourneyConnect(t, f.ctx, "ws://"+f.stack.addr+f.armed.SocketPath, f.headers)
+	t.Cleanup(func() { _ = device.CloseNow() })
+	f.device = realtimePeer{conn: device, ctx: f.ctx, t: t}
+	return voiceJourneyEvent(t, f.device, "ready")
 }
 
 func (f *voiceCorrectionStack) read(t *testing.T) appwire.ThreadReadResponse {

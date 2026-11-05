@@ -64,6 +64,13 @@ remain durable. Disarm and takeover retire the listening binding without
 cancelling accepted manager work. A session-instance change requires a new
 explicit binding rather than sending to a replacement manager automatically.
 
+The authenticated native connection renews its scoped grant while its binding
+and original manager instance remain valid. Renewal preserves the device,
+session, epoch and grant identity and replaces the live expiry timer. A retired
+or expired grant cannot renew itself. Reconnect synchronizes the bridge to the
+phone's retained playback fence before fresh output, without replaying old speech
+or replacing the manager's conversation.
+
 ## Client and qualification boundaries
 
 Voice controls are native iOS controls; browser and ordinary text input retain
@@ -74,8 +81,9 @@ call identity; arbitrary tool arguments are never a speech source.
 
 The real-stack tests in
 [`e2e_voice_test.go`](../../cmd/evener-hub/e2e_voice_test.go),
-[`e2e_voice_correction_test.go`](../../cmd/evener-hub/e2e_voice_correction_test.go)
-and [`e2e_voice_barge_test.go`](../../cmd/evener-hub/e2e_voice_barge_test.go)
+[`e2e_voice_correction_test.go`](../../cmd/evener-hub/e2e_voice_correction_test.go),
+[`e2e_voice_barge_test.go`](../../cmd/evener-hub/e2e_voice_barge_test.go)
+and [`e2e_voice_recovery_test.go`](../../cmd/evener-hub/e2e_voice_recovery_test.go)
 exercise real hub, daemon, journal and transcript paths with scripted external
 provider/device boundaries. They do not qualify microphone initialization,
 echo cancellation, audible stopping, locked-phone lifetime or battery use.
