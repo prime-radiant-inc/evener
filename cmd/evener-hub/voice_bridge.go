@@ -163,6 +163,9 @@ func (b *voiceBridge) run() {
 	}
 	expiry := time.NewTimer(time.Until(b.binding.ExpiresAt))
 	defer expiry.Stop()
+	b.beginWork("recovery", func(ctx context.Context) voiceWorkResult {
+		return voiceWorkResult{err: b.recoverIntents(ctx)}
+	})
 	for {
 		if b.retiring != nil && b.workCancel == nil {
 			provider, delivery := b.provider, *b.retiring
@@ -256,6 +259,8 @@ func (b *voiceBridge) run() {
 				return
 			}
 			switch kind {
+			case "recovery":
+				b.refresh = true
 			case "input_started":
 				b.inputReady = true
 				if b.send(map[string]any{"type": kind, "sequence": b.turn.Sequence, "turnId": b.turn.ID}) != nil {
@@ -455,7 +460,11 @@ func (b *voiceBridge) finishInput(ctx context.Context, turn hubcore.VoiceTurn, p
 	if err != nil {
 		return intent, err
 	}
-	intent, err = b.journal.RecordAttempt(ctx, turn.ID, read.Thread.Evener.InstanceID, false)
+	return b.submitIntent(ctx, intent, false)
+}
+
+func (b *voiceBridge) submitIntent(ctx context.Context, intent hubcore.VoiceIntent, reconciled bool) (hubcore.VoiceIntent, error) {
+	intent, err := b.journal.RecordAttempt(ctx, intent.TurnID, b.binding.InstanceID, reconciled)
 	if err != nil {
 		return intent, err
 	}
@@ -468,5 +477,5 @@ func (b *voiceBridge) finishInput(ctx context.Context, turn hubcore.VoiceTurn, p
 	// A receipt remains durable evidence even if the phone disconnected in flight.
 	receiptCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), time.Second)
 	defer cancel()
-	return b.journal.RecordReceipt(receiptCtx, turn.ID, response.Receipt)
+	return b.journal.RecordReceipt(receiptCtx, intent.TurnID, response.Receipt)
 }

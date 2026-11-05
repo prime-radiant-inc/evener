@@ -71,6 +71,15 @@ or expired grant cannot renew itself. Reconnect synchronizes the bridge to the
 phone's retained playback fence before fresh output, without replaying old speech
 or replacing the manager's conversation.
 
+Reconnect also scans the binding's durable text intents. A prepared intent can
+dispatch under its still-valid grant. An attempted intent first requires an
+authoritative read of its original manager instance, then replays its exact
+stored method, payload and mutation identity through ordinary admission. The
+daemon returns the original receipt if it already accepted the request. Recovery
+records that receipt without interpreting the audio again or duplicating the
+user input. Accepted intents are not dispatched again. Retired bindings and
+replacement instances keep unresolved text in the journal for explicit recovery.
+
 ## Client and qualification boundaries
 
 Voice controls are native iOS controls; browser and ordinary text input retain
@@ -82,8 +91,9 @@ call identity; arbitrary tool arguments are never a speech source.
 The real-stack tests in
 [`e2e_voice_test.go`](../../cmd/evener-hub/e2e_voice_test.go),
 [`e2e_voice_correction_test.go`](../../cmd/evener-hub/e2e_voice_correction_test.go),
-[`e2e_voice_barge_test.go`](../../cmd/evener-hub/e2e_voice_barge_test.go)
-and [`e2e_voice_recovery_test.go`](../../cmd/evener-hub/e2e_voice_recovery_test.go)
+[`e2e_voice_barge_test.go`](../../cmd/evener-hub/e2e_voice_barge_test.go),
+[`e2e_voice_recovery_test.go`](../../cmd/evener-hub/e2e_voice_recovery_test.go)
+and [`e2e_voice_intent_recovery_test.go`](../../cmd/evener-hub/e2e_voice_intent_recovery_test.go)
 exercise real hub, daemon, journal and transcript paths with scripted external
 provider/device boundaries. They do not qualify microphone initialization,
 echo cancellation, audible stopping, locked-phone lifetime or battery use.
