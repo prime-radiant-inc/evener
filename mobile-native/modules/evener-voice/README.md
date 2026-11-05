@@ -19,6 +19,10 @@ The maximum-utterance policy is a normal endpoint: admitted speech ends within i
 Silent input is abandoned, not submitted. Each accepted reply replaces the previous
 follow-up deadline; its next window starts only when playback drains.
 
+While speaker consent is pending, an incoming speech delivery is retired with its
+own generation and no played-sample credit. Later consent permits fresh deliveries,
+not replay of rejected speech. Retirement leaves admitted input and manager work alone.
+
 ## Model and dependency packaging
 
 Run from `mobile-native`:
@@ -49,6 +53,11 @@ npm run test:voice-core
 ```
 
 Swift Package tests run the portable controller/timeline. On macOS they also run the actual Foundation transport against a real loopback HTTP peer, including HTTP and WebSocket redirects and hostname pinning. The Python peer is an OS/network boundary, not a substitute voice controller. Removing HTTP redirect rejection makes the test observe a request at the forbidden destination.
+
+Consent tests exercise the production admission policy used by `VoiceService`.
+The loopback WebSocket test observes the denied generation's interrupt before
+offering a fresh delivery after consent, and checks that stale deliveries stay fenced.
+These checks do not run the audio device or a live manager.
 
 On an Apple Silicon Mac, unpack the published ONNX 1.20.0 archives into a private directory (containing `objectivec/`, `Headers/`, `onnxruntime.xcframework/`) and run:
 

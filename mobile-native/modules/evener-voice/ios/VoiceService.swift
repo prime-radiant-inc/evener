@@ -186,8 +186,11 @@ final class VoiceService {
         case "intent":
             interpreted = event["text"] as? String ?? ""; custody = event["custody"] as? String ?? ""
         case "speech_start":
-            guard let generation = event["generation"] as? Int, let id = event["deliveryId"] as? String,
-                  speakerConsent, controller.acceptSpeech(generation: generation) else { return }
+            guard let generation = event["generation"] as? Int, let id = event["deliveryId"] as? String else { return }
+            switch controller.admitSpeech(generation: generation, speakerConsent: speakerConsent) {
+            case .accepted: break
+            case .rejected(let actions): perform(actions); return
+            }
             audio.flushOutput(); delivery = id; activeGeneration = generation
             canonical = event["canonicalText"] as? String ?? ""; generated = ""
         case "audio", "speech_end", "speech_text":
