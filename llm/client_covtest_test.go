@@ -79,14 +79,6 @@ func TestCovBeginAPIAttemptGroupScopeWithExistingGroup(t *testing.T) {
 	}
 }
 
-// TestCovBeginAPIAttemptGroupScopeNilSettleResult covers the nil-receiver
-// guard in SettleResult.
-func TestCovBeginAPIAttemptGroupScopeNilSettleResult(t *testing.T) {
-	var scope *APIAttemptGroupScope
-	scope.SettleResult(nil)
-	// No panic.
-}
-
 // TestCovBeginAPIAttemptGroupScopeOwnedSettleResult covers the owned path
 // of SettleResult.
 func TestCovBeginAPIAttemptGroupScopeOwnedSettleResult(t *testing.T) {
@@ -116,4 +108,13 @@ func (m *sinkMiddleware) AppendAttempt(ctx context.Context, rec apilog.APIAttemp
 }
 func (m *sinkMiddleware) AppendSettlement(ctx context.Context, rec apilog.APIAttemptGroupSettlement) error {
 	return m.sink.AppendSettlement(ctx, rec)
+}
+
+// A nil client has no middleware to read: the snapshot helper is what every
+// entry point consults, so it must answer nil rather than dereference.
+func TestNilClientMiddlewareSnapshotIsEmpty(t *testing.T) {
+	var c *Client
+	if got := c.middlewareSnapshot(); got != nil {
+		t.Fatalf("nil client middleware = %v, want nil", got)
+	}
 }

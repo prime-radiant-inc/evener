@@ -192,6 +192,21 @@ export function createMutationProjectionFence<
   };
 }
 
+// A record belongs to a target's replacement scope by destination, or -
+// for the retargeted rows the canceled strip surfaces under the displayed
+// ref - by the displayed ref it was retargeted from. Both halves are
+// replacement scopes: a target's refresh replaces every record its read
+// lists, whichever half of the identity named it. Ordinary rows carry no
+// displayedRef, so for them the predicate is exactly the destination.
+// The one ordering caveat of the displayed half: such a row sits in two
+// targets' scopes at once, and the fence only orders reads per target, so
+// two concurrent refreshes of the two refs can project the row out of
+// order - a stale copy until the next refresh of either ref, projection
+// staleness only; the durable row is never touched here.
+function recordProjectsTo<T extends { targetRef: string; displayedRef?: string }>(record: T, target: string): boolean {
+  return record.targetRef === target || record.displayedRef === target;
+}
+
 // Replaces every record `targets` names with `records`' own for that target,
 // and drops every existing record of `current`'s whose target is in
 // `targets` but has no replacement in `records` - a target's whole set of
@@ -199,7 +214,7 @@ export function createMutationProjectionFence<
 // `records` says what `current` already holds for every target, `current`
 // itself comes back: most reads find nothing new, and identity is how a
 // caller tells a real change from a fresh copy of the same records.
-export function replaceTargetRecords<T extends MutationRecord>(
+export function replaceTargetRecords<T extends MutationRecord & { displayedRef?: string }>(
   current: Map<string, T>,
   targets: ReadonlySet<string>,
   records: T[],
@@ -207,10 +222,10 @@ export function replaceTargetRecords<T extends MutationRecord>(
   if (sameTargetRecords(current, targets, records)) return current;
   const next = new Map(current);
   for (const [id, record] of next) {
-    if (targets.has(record.targetRef)) next.delete(id);
+    if ([...targets].some((target) => recordProjectsTo(record, target))) next.delete(id);
   }
   for (const record of records) {
-    if (targets.has(record.targetRef)) next.set(record.clientMutationId, record);
+    if ([...targets].some((target) => recordProjectsTo(record, target))) next.set(record.clientMutationId, record);
   }
   return next;
 }
@@ -219,15 +234,15 @@ export function replaceTargetRecords<T extends MutationRecord>(
 // the same order. Each target is compared on its own: both hold a target's
 // records in intent-sequence order, but an all-targets read interleaves
 // targets differently from the order a map's entries arrived in.
-function sameTargetRecords<T extends MutationRecord>(
+function sameTargetRecords<T extends MutationRecord & { displayedRef?: string }>(
   current: Map<string, T>,
   targets: ReadonlySet<string>,
   records: T[],
 ): boolean {
   const heldRecords = [...current.values()];
   for (const target of targets) {
-    const held = heldRecords.filter((record) => record.targetRef === target);
-    const read = records.filter((record) => record.targetRef === target);
+    const held = heldRecords.filter((record) => recordProjectsTo(record, target));
+    const read = records.filter((record) => recordProjectsTo(record, target));
     if (held.length !== read.length || !held.every((record, index) => sameRecord(record, read[index]))) return false;
   }
   return true;

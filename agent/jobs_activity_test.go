@@ -13,7 +13,7 @@ import (
 	"primeradiant.com/evener/appwire"
 )
 
-func TestProjectActivitySession_ProjectsStableDelegateAndShell(t *testing.T) {
+func TestProjectActivitySession_ProjectsDelegateAndShell(t *testing.T) {
 	t.Parallel()
 	child := &activitySessionSnapshot{
 		SessionID: "child", Ref: "local:child", Label: "Child",
@@ -22,7 +22,7 @@ func TestProjectActivitySession_ProjectsStableDelegateAndShell(t *testing.T) {
 	snap := activitySessionSnapshot{
 		SessionID: "root", Ref: "local:root", Label: "Root", RootID: "root",
 		Jobs: []*jobstore.JobRecord{{JobID: "job_root", Type: jobstore.JobShell, OwnerSessionID: "root", Status: jobstore.StatusRunning}},
-		StableDelegates: map[string]delegateSnapshot{
+		Delegates: map[string]delegateSnapshot{
 			"dlg_1": stableActivitySnapshot("dlg_1", "root", "child", "inspect child"),
 		},
 		Children: map[string]*activitySessionSnapshot{"child": child},
@@ -47,7 +47,7 @@ func TestProjectActivitySession_UnavailableStableChildPreservesDelegate(t *testi
 	t.Parallel()
 	snap := activitySessionSnapshot{
 		SessionID: "root", Ref: "local:root", RootID: "root",
-		StableDelegates: map[string]delegateSnapshot{
+		Delegates: map[string]delegateSnapshot{
 			"dlg_1": stableActivitySnapshot("dlg_1", "root", "child", "inspect child"),
 		},
 		Errors: map[string]error{"child": errActivityHistoryUnavailable},
@@ -191,7 +191,7 @@ func TestProjectActivitySession_TruncatesStableRowsWithScopedContinuation(t *tes
 		id := "dlg_" + strings.Repeat("x", i%3) + time.Unix(int64(i+1), 0).UTC().Format("150405")
 		delegates[id] = stableActivitySnapshot(id, "root", "child_"+id, "task")
 	}
-	snap := activitySessionSnapshot{SessionID: "root", Ref: "local:root", RootID: "root", StableDelegates: delegates}
+	snap := activitySessionSnapshot{SessionID: "root", Ref: "local:root", RootID: "root", Delegates: delegates}
 	tree, err := projectBoundedActivityTree(snap, "root", 0, 0, 1, time.Unix(1, 0).UTC())
 	if err != nil {
 		t.Fatal(err)
@@ -240,10 +240,10 @@ func TestProjectStableActivityDelegateCopiesChildUsage(t *testing.T) {
 	child := &activitySessionSnapshot{SessionID: "child", Ref: "local:child", Usage: want}
 	snap := activitySessionSnapshot{
 		SessionID: "root", Ref: "local:root", RootID: "root",
-		StableDelegates: map[string]delegateSnapshot{"dlg_1": stableActivitySnapshot("dlg_1", "root", "child", "inspect")},
-		Children:        map[string]*activitySessionSnapshot{"child": child},
+		Delegates: map[string]delegateSnapshot{"dlg_1": stableActivitySnapshot("dlg_1", "root", "child", "inspect")},
+		Children:  map[string]*activitySessionSnapshot{"child": child},
 	}
-	delegate := projectStableActivityDelegate(snap, snap.StableDelegates["dlg_1"], newActivityBudget(), 0, nil, 0)
+	delegate := projectStableActivityDelegate(snap, snap.Delegates["dlg_1"], newActivityBudget(), 0, nil, 0)
 	if delegate.Usage == nil || *delegate.Usage != *want || delegate.Usage == want {
 		t.Fatalf("delegate usage=%+v want copy of %+v", delegate.Usage, want)
 	}
@@ -285,7 +285,7 @@ func TestActivityTreeJSONOmitsLegacyDelegateTurns(t *testing.T) {
 	t.Parallel()
 	snap := activitySessionSnapshot{
 		SessionID: "root", Ref: "local:root", RootID: "root",
-		StableDelegates: map[string]delegateSnapshot{"dlg_1": stableActivitySnapshot("dlg_1", "root", "child", "inspect")},
+		Delegates: map[string]delegateSnapshot{"dlg_1": stableActivitySnapshot("dlg_1", "root", "child", "inspect")},
 	}
 	got := projectActivitySession(snap, newActivityBudget())
 	raw, err := json.Marshal(got)

@@ -52,7 +52,6 @@ vi.mock("../retainedScreen", () => ({
 }));
 vi.mock("../nativeDrafts", () => ({ nativeDrafts: () => ({ creation: harness.drafts }) }));
 vi.mock("./nativeLaunchMemory", () => ({ launchMemory: () => harness.memory }));
-vi.mock("expo-crypto", () => ({ randomUUID: () => "sheet-uuid" }));
 vi.mock("../hosts/useHubFleet", () => ({ useHubFleet: () => ({ hosts: null, live: null }) }));
 // The pages render inside the navigator, which isn't drawn here; it reads
 // the context the sheet gives them.

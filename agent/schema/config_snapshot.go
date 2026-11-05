@@ -11,40 +11,43 @@ import "maps"
 // See the engine's SessionConfig for the authoritative semantics and defaults
 // of each field.
 type ConfigSnapshot struct {
-	MemoryProjectID             string                     `json:"memory_project_id,omitempty"`
-	DisableMemory               bool                       `json:"disable_memory,omitempty"`
-	MaxToolRoundsPerInput       int                        `json:"max_tool_rounds_per_input,omitempty"`     // tool-call rounds per ProcessInput before TURN_LIMIT
-	MaxTurns                    int                        `json:"max_turns,omitempty"`                     // lifetime cap on user inputs (0 = unlimited)
-	DefaultCommandTimeoutMS     int                        `json:"default_command_timeout_ms,omitempty"`    // default shell/exec timeout
-	MaxCommandTimeoutMS         int                        `json:"max_command_timeout_ms,omitempty"`        // ceiling on a requested per-command timeout
-	MaxSubagentDepth            int                        `json:"max_subagent_depth,omitempty"`            // how deeply sub-agents may nest
-	MaxConcurrentDelegateTurns  int                        `json:"max_concurrent_delegate_turns,omitempty"` // tree-wide cap on running delegate turns
-	MaxRetainedTerminal         int                        `json:"max_retained_terminal,omitempty"`         // per-parent cap on retained terminal child records
-	ToolOutputLimits            map[string]ToolOutputLimit `json:"tool_output_limits,omitempty"`            // per-tool output truncation overrides
-	UserInstructionOverride     string                     `json:"user_instruction_override,omitempty"`     // text appended at the end of the system prompt
-	AgentName                   string                     `json:"agent_name,omitempty"`                    // persona selected for prompt composition
-	ReasoningEffort             string                     `json:"reasoning_effort,omitempty"`              // reasoning-effort passthrough (low|medium|high)
-	SkillsDirs                  []string                   `json:"skills_dirs,omitempty"`                   // extra directories scanned for skills
-	MCPConfigFiles              []string                   `json:"mcp_config_files,omitempty"`              // paths to .mcp.json files
-	MCPInline                   []string                   `json:"mcp_inline,omitempty"`                    // inline MCP server specs
-	PluginDirs                  []string                   `json:"plugin_dirs,omitempty"`                   // directories scanned for plugins
-	SystemPromptFile            string                     `json:"system_prompt_file,omitempty"`            // replacement base instruction prelude
-	SystemPromptAppend          []string                   `json:"system_prompt_append,omitempty"`          // file paths appended to the system prompt
-	AgentsDocPath               string                     `json:"agents_doc_path,omitempty"`               // personal AGENTS.md loaded ahead of project docs; empty resolves the process environment's config root
-	NonInteractive              bool                       `json:"non_interactive,omitempty"`               // no human available for questions/confirmation
-	TurnEndsProcess             bool                       `json:"turn_ends_process,omitempty"`             // the process exits with the turn (one-shot run), so nothing reports later
-	ContextStrategy             string                     `json:"context_strategy,omitempty"`              // context-management strategy
-	ShareTasksWithChildren      bool                       `json:"share_tasks_with_children,omitempty"`     // pass the task store to spawned children
-	ResultToolName              string                     `json:"result_tool_name,omitempty"`              // override for the result tool name
-	EnableLoopDetection         *bool                      `json:"enable_loop_detection,omitempty"`         // repeated-tool-call loop detection (nil = enabled)
-	LoopDetectionWindow         int                        `json:"loop_detection_window,omitempty"`         // recent tool-call signatures examined
-	ModelFallbacks              []string                   `json:"model_fallbacks,omitempty"`               // provider/model chain tried on permanent errors
-	SystemPromptAsUser          bool                       `json:"system_prompt_as_user,omitempty"`         // fold the system prompt into the first user message
-	OpenAIResponsesContinuation string                     `json:"openai_responses_continuation,omitempty"` // OpenAI Responses continuation mode: off|auto
-	ProviderIdleTimeout         string                     `json:"provider_idle_timeout,omitempty"`         // positive response-byte idle duration; default 10m
-	Sandbox                     string                     `json:"sandbox,omitempty"`                       // sandbox mode name (off|read-only|workspace-write|restricted); empty = off
-	SandboxNet                  *bool                      `json:"sandbox_net,omitempty"`                   // sandbox network decision; nil = default (on when sandboxed)
-	VisionModel                 string                     `json:"vision_model,omitempty"`                  // vision side-channel routing: "" | "off" | "model" | "provider/model"
+	MemoryProjectID            string                     `json:"memory_project_id,omitempty"`
+	DisableMemory              bool                       `json:"disable_memory,omitempty"`
+	MaxToolRoundsPerInput      int                        `json:"max_tool_rounds_per_input,omitempty"`     // tool-call rounds per ProcessInput before TURN_LIMIT
+	MaxTurns                   int                        `json:"max_turns,omitempty"`                     // lifetime cap on user inputs (0 = unlimited)
+	DefaultCommandTimeoutMS    int                        `json:"default_command_timeout_ms,omitempty"`    // default shell/exec timeout
+	MaxCommandTimeoutMS        int                        `json:"max_command_timeout_ms,omitempty"`        // ceiling on a requested per-command timeout
+	MaxSubagentDepth           int                        `json:"max_subagent_depth,omitempty"`            // how deeply sub-agents may nest
+	MaxConcurrentDelegateTurns int                        `json:"max_concurrent_delegate_turns,omitempty"` // tree-wide cap on running delegate turns
+	MaxRetainedTerminal        int                        `json:"max_retained_terminal,omitempty"`         // per-parent cap on retained terminal child records
+	ToolOutputLimits           map[string]ToolOutputLimit `json:"tool_output_limits,omitempty"`            // per-tool output truncation overrides
+	UserInstructionOverride    string                     `json:"user_instruction_override,omitempty"`     // text appended at the end of the system prompt
+	AgentName                  string                     `json:"agent_name,omitempty"`                    // persona selected for prompt composition
+	// Manager records this session's start-time Manager property. Resume
+	// restores it from here; the hub never re-asserts it and it cannot be off.
+	Manager                     bool     `json:"manager,omitempty"`
+	ReasoningEffort             string   `json:"reasoning_effort,omitempty"`              // reasoning-effort passthrough (low|medium|high)
+	SkillsDirs                  []string `json:"skills_dirs,omitempty"`                   // extra directories scanned for skills
+	MCPConfigFiles              []string `json:"mcp_config_files,omitempty"`              // paths to .mcp.json files
+	MCPInline                   []string `json:"mcp_inline,omitempty"`                    // inline MCP server specs
+	PluginDirs                  []string `json:"plugin_dirs,omitempty"`                   // directories scanned for plugins
+	SystemPromptFile            string   `json:"system_prompt_file,omitempty"`            // replacement base instruction prelude
+	SystemPromptAppend          []string `json:"system_prompt_append,omitempty"`          // file paths appended to the system prompt
+	AgentsDocPath               string   `json:"agents_doc_path,omitempty"`               // personal AGENTS.md loaded ahead of project docs; empty resolves the process environment's config root
+	NonInteractive              bool     `json:"non_interactive,omitempty"`               // no human available for questions/confirmation
+	TurnEndsProcess             bool     `json:"turn_ends_process,omitempty"`             // the process exits with the turn (one-shot run), so nothing reports later
+	ContextStrategy             string   `json:"context_strategy,omitempty"`              // context-management strategy
+	ShareTasksWithChildren      bool     `json:"share_tasks_with_children,omitempty"`     // pass the task store to spawned children
+	ResultToolName              string   `json:"result_tool_name,omitempty"`              // override for the result tool name
+	EnableLoopDetection         *bool    `json:"enable_loop_detection,omitempty"`         // repeated-tool-call loop detection (nil = enabled)
+	LoopDetectionWindow         int      `json:"loop_detection_window,omitempty"`         // recent tool-call signatures examined
+	ModelFallbacks              []string `json:"model_fallbacks,omitempty"`               // provider/model chain tried on permanent errors
+	SystemPromptAsUser          bool     `json:"system_prompt_as_user,omitempty"`         // fold the system prompt into the first user message
+	OpenAIResponsesContinuation string   `json:"openai_responses_continuation,omitempty"` // OpenAI Responses continuation mode: off|auto
+	ProviderIdleTimeout         string   `json:"provider_idle_timeout,omitempty"`         // positive response-byte idle duration; default 10m
+	Sandbox                     string   `json:"sandbox,omitempty"`                       // sandbox mode name (off|read-only|workspace-write|restricted); empty = off
+	SandboxNet                  *bool    `json:"sandbox_net,omitempty"`                   // sandbox network decision; nil = default (on when sandboxed)
+	VisionModel                 string   `json:"vision_model,omitempty"`                  // vision side-channel routing: "" | "off" | "model" | "provider/model"
 }
 
 // Clone returns an independently mutable copy of the persisted configuration.

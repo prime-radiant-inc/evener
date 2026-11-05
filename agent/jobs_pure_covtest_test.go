@@ -463,7 +463,7 @@ func TestCovFormatJobStop(t *testing.T) {
 	// Delegate with worktree.
 	got = formatJobStop(jobStopResult{
 		ID: "dlg1", Type: "delegate", Status: "stopped", Outcome: "killed",
-		Worktree: &delegateWorktreeToolResult{Path: "/wt", Branch: "br", HeadSHA: "abc", Ahead: 3, Dirty: true},
+		Worktree: &delegateWorktreeReport{Path: "/wt", Branch: "br", HeadSHA: "abc", Ahead: 3, Dirty: true},
 	})
 	if !strings.Contains(got, "worktree:") || !strings.Contains(got, "path=/wt") || !strings.Contains(got, "branch=br") {
 		t.Fatalf("delegate worktree = %q", got)

@@ -1,10 +1,27 @@
 package server
 
 import (
+	"context"
+
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/internal/appitempaging"
 	"primeradiant.com/evener/internal/transcriptindex"
 )
+
+func (h *threadHistory) answerContinuation(ctx context.Context, params appwire.ThreadReadParams) (appwire.AnswerContinuationVerdict, appwire.SnapshotIdentity, error) {
+	query := params.AnswerContinuation
+	verdict := appwire.AnswerContinuationVerdict{AncestorTurnID: query.AncestorTurnID, CandidateTurnID: query.CandidateTurnID}
+	var snapshot appwire.SnapshotIdentity
+	if err := ctx.Err(); err != nil {
+		return verdict, snapshot, err
+	}
+	err := h.read(func(idx *transcriptindex.Index) error {
+		var err error
+		verdict.Matches, snapshot, err = idx.AnswerContinuation(ctx, query.AncestorTurnID, query.CandidateTurnID, params.HeldSnapshot)
+		return err
+	})
+	return verdict, snapshot, err
+}
 
 // historyCapture is what a history read takes inside the subscription cut:
 // the overlay and the resync epoch the read's notifications follow. History
@@ -28,18 +45,18 @@ func (h *threadHistory) capture() historyCapture {
 // not yet replayed, or a failed thread): then the overlay may still hold
 // state the returned history covers, and the client drops it by key and
 // version as it does for a notification that races a read.
-func (h *threadHistory) latest(c historyCapture, threadRef string, limit int) (turns []appwire.Turn, olderCursor string, snapshot appwire.SnapshotIdentity, overlay []appwire.OverlayItem, err error) {
+func (h *threadHistory) latest(c historyCapture, threadRef string, limit int) (turns []appwire.Turn, olderCursor string, snapshot appwire.SnapshotIdentity, latestExecutionTurnID string, overlay []appwire.OverlayItem, err error) {
 	var window transcriptindex.Window
 	err = h.read(func(idx *transcriptindex.Index) (err error) {
 		window, err = idx.Latest(limit)
 		return err
 	})
 	if err != nil {
-		return nil, "", appwire.SnapshotIdentity{}, nil, err
+		return nil, "", appwire.SnapshotIdentity{}, "", nil, err
 	}
 	turns, olderCursor, snapshot, err = h.page(window, threadRef)
 	if err != nil {
-		return nil, "", appwire.SnapshotIdentity{}, nil, err
+		return nil, "", appwire.SnapshotIdentity{}, "", nil, err
 	}
 	overlay = make([]appwire.OverlayItem, 0, len(c.overlay))
 	for _, item := range c.overlay {
@@ -47,7 +64,7 @@ func (h *threadHistory) latest(c historyCapture, threadRef string, limit int) (t
 			overlay = append(overlay, item)
 		}
 	}
-	return turns, olderCursor, snapshot, overlay, nil
+	return turns, olderCursor, snapshot, window.LatestExecutionTurnID, overlay, nil
 }
 
 // before pages the request's ItemLimit items before its cursor from the

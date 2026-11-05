@@ -69,6 +69,18 @@ it("offers the three settings, each on Default until set", async () => {
 	expect(page.segments("Max turns").map(([label]) => label)).toEqual(["Default", "100", "500", "No limit"]);
 });
 
+it("sets the Manager role for this draft", async () => {
+	const page = await mount({});
+	const toggle = () =>
+		page.tree.root.find(
+			(node) => String(node.type) === "Switch" && node.props.accessibilityLabel === "Start as Manager",
+		);
+	expect(toggle().props.value).toBe(false);
+	act(() => toggle().props.onValueChange(true));
+	expect(page.store.getState().manager).toBe(true);
+	expect(toggle().props.value).toBe(true);
+});
+
 it("names the hub's default under each", async () => {
 	const page = await mount({ contextStrategy: "compact", maxSubagentDepth: 2, maxRounds: -1 });
 	expect(page.footer("contextStrategy")).toEqual({ hubDefault: "known", text: expect.stringContaining("compact") });

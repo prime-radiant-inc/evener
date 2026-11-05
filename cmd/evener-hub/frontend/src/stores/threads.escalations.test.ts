@@ -1,17 +1,16 @@
 import { ALL_CAPABILITIES as CAPABILITIES, type TestThreadOverrides, testThread } from "../threadTestUtils";
 import "fake-indexeddb/auto";
-import { type ConnectionState, type ThreadReadResponse, WireError } from "@evener/appwire-client";
-import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
+import { type ThreadReadResponse, WireError } from "@evener/appwire-client";
 import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
-import { connectionStore } from "./connection";
+import { connectReadyFakeClient } from "../testing/connectionTestUtils";
+import { resetConnectionStoreForTests } from "./connection";
+import { productionEntryTranscriptForTests, setProductionEntryCacheForTests } from "./entryTranscriptRoutes";
 import { SessionEntryCache } from "./sessionEntryCache";
 import {
   acquireBackgroundThread,
   clearCachedSessions,
-  productionEntryTranscriptForTests,
   resetThreadsStoreForTests,
-  setProductionEntryCacheForTests,
   settleEntryTranscriptForTests,
   threadsStore,
 } from "./threads";
@@ -19,7 +18,7 @@ import { ConflictError } from "./threadsErrors";
 
 let cache: SessionEntryCache;
 beforeEach(() => {
-  connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
+  resetConnectionStoreForTests();
   resetThreadsStoreForTests();
   cache = new SessionEntryCache({
     indexedDB: new IDBFactory(),
@@ -33,12 +32,7 @@ afterEach(() => {
   cache.close();
   vi.restoreAllMocks();
 });
-function connectFakeClient(state: ConnectionState = "ready"): FakeClient {
-  const fake = new FakeClient(state);
-  fake.on("thread/unsubscribe", () => ({}));
-  connectionStore.getState().connect(fake);
-  return fake;
-}
+const connectFakeClient = () => connectReadyFakeClient((fake) => fake.on("thread/unsubscribe", () => ({})));
 
 function readResponse(ref: string, overrides: TestThreadOverrides = {}): ThreadReadResponse {
   return {
@@ -466,13 +460,17 @@ describe("useThreadsStore.resolveEscalation", () => {
 
   test("a superseded read answered after the resolve is still discarded", async () => {
     const fake = connectFakeClient();
-    let answerRead: (response: ThreadReadResponse) => void = () => {};
+    const answerHeld: Array<(response: ThreadReadResponse) => void> = [];
     let reads = 0;
-    fake.on("thread/read", () => {
+    fake.on("thread/read", (params) => {
       reads += 1;
       if (reads === 1) return threadWithEscalation("ref_a", "esc_1");
+      // Echo the request's own generation, as the hub always does (the fake
+      // adds the same echo): supersession must come from a newer request
+      // existing, never from a wire-impossible missing echo.
+      const requestGeneration = (params as { requestGeneration?: number }).requestGeneration;
       return new Promise<ThreadReadResponse>((resolve) => {
-        answerRead = resolve;
+        answerHeld.push((response) => resolve({ ...response, requestGeneration }));
       });
     });
     fake.on("evener/sandbox/escalation/resolve", () => ({}));
@@ -482,13 +480,19 @@ describe("useThreadsStore.resolveEscalation", () => {
     const refresh = threadsStore.getState().refreshThread("ref_a");
     await vi.waitFor(() => expect(reads).toBe(2));
     await threadsStore.getState().resolveEscalation("ref_a", "esc_1", true);
-    // No requestGeneration echo: the response answers an older request than the
-    // one issued, so the reducer discards it.
-    answerRead(threadWithEscalation("ref_a", "esc_1"));
+    // A newer tracked read begins: beginThreadHydration bumps the held
+    // model's request generation synchronously, so the held refresh's answer
+    // arrives superseded on generation ordering. The newer read itself stays
+    // on the wire (unanswered), so a publish here can only be the discarded
+    // held answer's.
+    const newer = threadsStore.getState().refreshThread("ref_a");
+    await vi.waitFor(() => expect(reads).toBe(3));
+    answerHeld[0]?.(threadWithEscalation("ref_a", "esc_1"));
     await refresh;
 
     expect(threadsStore.getState().hydrations.get("ref_a")).toBe(publishedBefore);
     expect(threadsStore.getState().threads.get("ref_a")?.pendingEscalations).toEqual([]);
+    void newer;
   });
 
   test("a stale-cursor retry that replaces the repository does not bring a resolved escalation back", async () => {

@@ -4,7 +4,7 @@ import { memoryNavigationPersistence } from "@evener/appwire-client/testing/navi
 import { activityChangedNotification } from "@evener/appwire-client/testing/notifications";
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeAll, beforeEach, expect, it, vi } from "vitest";
-import { connectionStore } from "../../stores/connection";
+import { connectionStore, resetConnectionStoreForTests } from "../../stores/connection";
 import { sessionActivitySnapshot } from "../../stores/sessionActivity";
 import {
   activityClient,
@@ -29,7 +29,7 @@ beforeEach(() => resetWorkspaceStoreForTests());
 
 afterEach(() => {
   cleanup();
-  connectionStore.setState({ client: null, state: "idle" });
+  resetConnectionStoreForTests();
   resetWorkspaceStoreForTests();
   vi.restoreAllMocks();
 });

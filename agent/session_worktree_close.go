@@ -22,6 +22,12 @@ type isolationLane struct {
 	// Sidecar.BranchOrName(). Only the branch-acting paths populate it — a
 	// lane built for the touch+unlock tail or a relock never touches a branch.
 	branch string
+	// markerSessionID is the session the lane's evener:dlg: marker names: the
+	// one that spawned the lane-owning delegate, whose disposal lifecycle owns
+	// the lane and whose activity evidence the orphan reclaim reads. A re-lock
+	// restores this marker even when the launch revalidating the lane runs on
+	// another session of the tree, as a shared descendant's wake does.
+	markerSessionID string
 }
 
 // disposeDelegateLanesAtClose disposes the isolation delegate lanes this
@@ -71,7 +77,7 @@ func (s *Session) disposeDelegateLanesAtClose(ctx context.Context) {
 			}
 			continue
 		}
-		note, wasKept := s.disposeOneStableDelegateLane(budgetCtx, local, delegate)
+		note, wasKept := s.disposeOneDelegateLane(budgetCtx, local, delegate)
 		// The budget can expire inside a git operation after the top-of-loop
 		// check. Route that lane through the same non-expiring safety tail as all
 		// later lanes so an interrupted lock query or unlock never strands it
@@ -103,10 +109,10 @@ func (s *Session) disposeDelegateLanesAtClose(ctx context.Context) {
 	}
 }
 
-// disposeOneStableDelegateLane applies the existing close-time D0 and lock
+// disposeOneDelegateLane applies the existing close-time D0 and lock
 // rules, then fsyncs stable resumability closure before the first destructive
 // worktree operation. A closure failure leaves the lane intact.
-func (s *Session) disposeOneStableDelegateLane(ctx context.Context, local *execenv.LocalExecutionEnvironment, delegate stableDelegateWorktreeSnapshot) (note string, kept bool) {
+func (s *Session) disposeOneDelegateLane(ctx context.Context, local *execenv.LocalExecutionEnvironment, delegate delegateWorktreeSnapshot) (note string, kept bool) {
 	lane := isolationLane{delegateID: delegate.delegateID, path: delegate.descriptor.WorkingDir}
 	lanePath := filepath.Clean(lane.path)
 	if lanePath == "" || lanePath == "." {

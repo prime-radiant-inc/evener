@@ -272,6 +272,9 @@ func MergeThreadItems(existing, incoming appwire.ThreadItem) appwire.ThreadItem 
 	if incoming.TurnID == "" {
 		incoming.TurnID = existing.TurnID
 	}
+	if incoming.Authorship == nil {
+		incoming.Authorship = existing.Authorship
+	}
 	if incoming.CallID == "" {
 		incoming.CallID = existing.CallID
 	}

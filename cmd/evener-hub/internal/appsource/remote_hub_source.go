@@ -5,15 +5,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
-	"net"
-	"os"
 	"reflect"
 	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
-	"syscall"
 	"time"
 
 	"primeradiant.com/evener/appwire"
@@ -173,8 +169,21 @@ func (s *RemoteHubSource) Online() bool {
 	return s.online()
 }
 
+// SessionToolsSupported reports whether the currently attached remote hub
+// negotiated the SessionTools feature. A missing connection is unknown and is
+// treated as unsupported by callers admitting observation watches.
+func (s *RemoteHubSource) SessionToolsSupported(ctx context.Context) (supported, known bool) {
+	client, err := s.resolveClient(ctx)
+	if err != nil || client == nil {
+		return false, false
+	}
+	return client.Features().SessionTools, true
+}
+
 // call forwards one request over the current remote client and translates any
-// refs in the response back into the controller namespace.
+// refs in the response back into the controller namespace. Errors bypass
+// response translation; StartThread translates its createdRef error evidence
+// separately, since an error has no response to translate.
 //
 // A caller cancellation or deadline stays raw at every step, exactly as
 // mutationCall and LocalDaemonSource.withClientCallMapper leave ctx.Err(): the
@@ -232,13 +241,44 @@ func (s *RemoteHubSource) callOn(ctx context.Context, client *appwire.Client, me
 	if err := ctx.Err(); err != nil {
 		return s.mapCallError(err)
 	}
-	if err := client.Request(ctx, method, params, out); err != nil {
+	if err := s.requestOn(ctx, client, method, params, out); err != nil {
 		if cerr := ctx.Err(); cerr != nil {
 			return cerr
 		}
 		return s.mapCallError(err)
 	}
 	return s.translateOut(client, out)
+}
+
+type managerInputCallerKey struct{}
+
+// WithManagerInputCaller marks work admitted by the local Manager's bound hub
+// owner. Wire parameters cannot construct a Go context value.
+func WithManagerInputCaller(ctx context.Context, callerRef string) context.Context {
+	return context.WithValue(ctx, managerInputCallerKey{}, callerRef)
+}
+
+func (s *RemoteHubSource) requestOn(ctx context.Context, client *appwire.Client, method string, params any, out any) error {
+	if caller, _ := ctx.Value(managerInputCallerKey{}).(string); caller != "" && (method == appwire.MethodTurnStart || method == appwire.MethodTurnQueue || method == appwire.MethodTurnSteer || method == appwire.MethodTurnDrainAsSteer || method == appwire.MethodTurnPromoteQueuedAsSteer || method == appwire.MethodEvenerSandboxEscalationResolve) {
+		// The source translated the target ref first. The caller metadata came
+		// from the bound hub owner and must never reach the ordinary human RPC.
+		encoded, err := json.Marshal(params)
+		if err != nil {
+			return err
+		}
+		var fields map[string]json.RawMessage
+		if err := json.Unmarshal(encoded, &fields); err != nil {
+			return err
+		}
+		delete(fields, "managerProof")
+		encoded, err = json.Marshal(fields)
+		if err != nil {
+			return err
+		}
+		params = appwire.SessionToolsInput{CallerRef: caller, Method: method, Params: encoded}
+		method = appwire.MethodHubSessionToolsInput
+	}
+	return client.Request(ctx, method, params, out)
 }
 
 // mapCallError mirrors LocalDaemonSource's error shapes for a remote hub: a
@@ -311,9 +351,9 @@ func (s *RemoteHubSource) MapAttachError(err error) error {
 // stays raw; every transport-shaped failure names the host so the fleet view
 // and the auto-resume gate can attribute it.
 //
-// A write-side connection failure counts as transport loss, which is what makes
-// io.ErrClosedPipe, os.ErrClosed, net.ErrClosed, and appwire.ErrStreamClosed
-// listed here (round eight). The send path reports them when the stream's write
+// A write-side connection failure counts as transport loss, which is why
+// isTransportLoss lists io.ErrClosedPipe, os.ErrClosed, net.ErrClosed, and
+// appwire.ErrStreamClosed. The send path reports them when the stream's write
 // side is already gone — a partial write onto a connection the peer has torn
 // down, or the first write after this end closed it — and they are deliberately
 // not distinguishable from the read-side failures around it: like io.EOF or
@@ -352,23 +392,8 @@ func (s *RemoteHubSource) transportUnavailable(err error) error {
 	if errors.Is(err, sshconn.ErrRestart) {
 		return remoteHubUnavailable(s.id, err.Error())
 	}
-	if errors.Is(err, syscall.ECONNREFUSED) ||
-		errors.Is(err, syscall.ECONNRESET) ||
-		errors.Is(err, syscall.EPIPE) ||
-		errors.Is(err, io.ErrClosedPipe) ||
-		errors.Is(err, appwire.ErrStreamClosed) ||
-		errors.Is(err, os.ErrClosed) ||
-		errors.Is(err, net.ErrClosed) ||
-		errors.Is(err, io.EOF) ||
-		errors.Is(err, io.ErrUnexpectedEOF) ||
-		errors.Is(err, context.DeadlineExceeded) {
-		return remoteHubUnavailable(s.id, err.Error())
-	}
-	var netErr net.Error
-	if errors.As(err, &netErr) && netErr.Timeout() {
-		return remoteHubUnavailable(s.id, err.Error())
-	}
-	if remoteHubTransportText(strings.ToLower(err.Error())) {
+	if isTransportLoss(err) ||
+		remoteHubTransportText(strings.ToLower(err.Error())) {
 		return remoteHubUnavailable(s.id, err.Error())
 	}
 	return err
@@ -381,19 +406,16 @@ func (s *RemoteHubSource) transportUnavailable(err error) error {
 // reclassified as host unavailability.
 func remoteHubTransportText(lower string) bool {
 	switch {
-	case containsWord(lower, "eof"),
+	case isTransportLossText(lower),
+		containsWord(lower, "eof"),
 		strings.Contains(lower, "connection refused"),
-		strings.Contains(lower, "connection reset"),
-		strings.Contains(lower, "broken pipe"),
 		strings.Contains(lower, "closed pipe"),
 		// os.ErrClosed's text: the descriptor this end writes to is gone, the
 		// same class of failure as net.ErrClosed's "use of closed network
 		// connection" below. transportUnavailable checks errors.Is(err,
 		// os.ErrClosed) first, so this text fallback covers only the shapes a
 		// transport library wraps without exposing the sentinel.
-		strings.Contains(lower, "file already closed"),
-		strings.Contains(lower, "use of closed network connection"),
-		strings.Contains(lower, "i/o timeout"):
+		strings.Contains(lower, "file already closed"):
 		return true
 	default:
 		return false

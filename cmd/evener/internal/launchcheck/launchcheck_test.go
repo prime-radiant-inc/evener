@@ -629,7 +629,7 @@ func TestRunLaunchCheckRejectsDisabledCommandCredentialedModel(t *testing.T) {
 
 // markedInstanceDefaults maps "provider/model" to true for every row carrying
 // the instance-default marker.
-func markedInstanceDefaults(rows []launchCheckModel) map[string]bool {
+func markedInstanceDefaults(rows []appwire.ModelDescriptor) map[string]bool {
 	marked := map[string]bool{}
 	for _, row := range rows {
 		if row.InstanceDefault {
@@ -688,7 +688,7 @@ default_model = "first"
 		t.Fatalf("runLaunchCheck: %v stderr=%s", err, stderr.String())
 	}
 	var out struct {
-		Models []launchCheckModel `json:"models"`
+		Models []appwire.ModelDescriptor `json:"models"`
 	}
 	if err := json.Unmarshal(stdout.Bytes(), &out); err != nil {
 		t.Fatalf("decode stdout %q: %v", stdout.String(), err)
@@ -1031,4 +1031,164 @@ default_model = "text-embedding-3-small"
 	if marked := markedInstanceDefaults(rows); len(marked) != 0 {
 		t.Fatalf("instance defaults = %v, want none for a non-chat default (rows: %+v)", marked, rows)
 	}
+}
+
+// The hub decodes the contract straight into appwire.ModelDescriptor, and the
+// spawn composer builds its effort options from those fields
+// (catalogEffortLevels in the web spawn pane). A live listing's per-model
+// effort ladder must survive that exact decode, or the composer falls back to
+// a generic ladder that omits the model's real levels — max missing at start
+// while the running session's picker offers it.
+func TestLaunchCheckEffortLevelsSurviveAppWireDecode(t *testing.T) {
+	launchCheckGateway(t, http.StatusOK, `{"data":[
+		{"id":"glm-5.3","reasoning":{"supported_efforts":["low","high","max"]}},
+		{"id":"plain"},
+		{"id":"no-reasoning","supported_parameters":["tools"]}
+	]}`)
+
+	var stdout, stderr bytes.Buffer
+	err := RunLaunchCheck([]string{
+		"--protocol", appwire.ProtocolVersion,
+		"--models",
+		"--json",
+	}, &stdout, &stderr)
+	if err != nil {
+		t.Fatalf("runLaunchCheck: %v stderr=%s", err, stderr.String())
+	}
+	var out struct {
+		Models []appwire.ModelDescriptor `json:"models"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &out); err != nil {
+		t.Fatalf("decode stdout %q: %v", stdout.String(), err)
+	}
+	rows := map[string]appwire.ModelDescriptor{}
+	for _, m := range out.Models {
+		if m.Provider == "gw" {
+			rows[m.Model] = m
+		}
+	}
+
+	glm, ok := rows["glm-5.3"]
+	if !ok {
+		t.Fatalf("models=%+v, want the served glm-5.3", out.Models)
+	}
+	if !reflect.DeepEqual(glm.ReasoningEffortLevels, []string{"low", "high", "max"}) {
+		t.Fatalf("glm-5.3 reasoningEffortLevels=%v, want the ladder the listing stated", glm.ReasoningEffortLevels)
+	}
+	if glm.SupportsReasoning == nil || !*glm.SupportsReasoning {
+		t.Fatalf("glm-5.3 supportsReasoning=%v, want the stated reasoning capability", glm.SupportsReasoning)
+	}
+
+	plain, ok := rows["plain"]
+	if !ok {
+		t.Fatalf("models=%+v, want the served plain", out.Models)
+	}
+	if len(plain.ReasoningEffortLevels) != 0 || plain.SupportsReasoning != nil {
+		t.Fatalf("plain must carry no reasoning facts the listing did not state: %+v", plain)
+	}
+
+	noReasoning, ok := rows["no-reasoning"]
+	if !ok {
+		t.Fatalf("models=%+v, want the served no-reasoning", out.Models)
+	}
+	if noReasoning.SupportsReasoning == nil || *noReasoning.SupportsReasoning {
+		t.Fatalf("no-reasoning supportsReasoning=%v, want an explicit false", noReasoning.SupportsReasoning)
+	}
+	if len(noReasoning.ReasoningEffortLevels) != 0 {
+		t.Fatalf("no-reasoning must offer no levels: %+v", noReasoning)
+	}
+}
+
+// The contract's model row is an appwire.ModelDescriptor: a capability the
+// resolved row states — its context window, token limits, tools, vision,
+// costs — must reach the composer through the launch contract with no
+// synchronized field-by-field edit, the way the effort ladder did not before
+// 52315a95de and the rest of the descriptor still does not.
+func TestLaunchCheckModelsCarryEveryDescriptorCapability(t *testing.T) {
+	launchCheckGateway(t, http.StatusOK, `{"data":[
+		{"id":"glm-5.3","context_window":200000,"max_input_tokens":190000,"max_output_tokens":32000,
+		 "supported_parameters":["tools"],
+		 "architecture":{"input_modalities":["text","image"]},
+		 "pricing":{"prompt":"0.000003","completion":"0.000015"}}
+	]}`)
+
+	var stdout, stderr bytes.Buffer
+	err := RunLaunchCheck([]string{
+		"--protocol", appwire.ProtocolVersion,
+		"--models",
+		"--json",
+	}, &stdout, &stderr)
+	if err != nil {
+		t.Fatalf("runLaunchCheck: %v stderr=%s", err, stderr.String())
+	}
+	var out struct {
+		Models []appwire.ModelDescriptor `json:"models"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &out); err != nil {
+		t.Fatalf("decode stdout %q: %v", stdout.String(), err)
+	}
+	var row appwire.ModelDescriptor
+	for _, m := range out.Models {
+		if m.Provider == "gw" && m.Model == "glm-5.3" {
+			row = m
+		}
+	}
+	if row.Model != "glm-5.3" {
+		t.Fatalf("models=%+v, want the served glm-5.3", out.Models)
+	}
+	if row.ContextWindow == nil || *row.ContextWindow != 200000 {
+		t.Fatalf("glm-5.3 contextWindow=%v, want the stated 200000", row.ContextWindow)
+	}
+	if row.MaxInputTokens == nil || *row.MaxInputTokens != 190000 {
+		t.Fatalf("glm-5.3 maxInputTokens=%v, want the stated 190000", row.MaxInputTokens)
+	}
+	if row.MaxOutputTokens == nil || *row.MaxOutputTokens != 32000 {
+		t.Fatalf("glm-5.3 maxOutputTokens=%v, want the stated 32000", row.MaxOutputTokens)
+	}
+	if row.SupportsTools == nil || !*row.SupportsTools {
+		t.Fatalf("glm-5.3 supportsTools=%v, want the advertised tools support", row.SupportsTools)
+	}
+	if row.SupportsVision == nil || !*row.SupportsVision {
+		t.Fatalf("glm-5.3 supportsVision=%v, want the advertised image modality", row.SupportsVision)
+	}
+	if row.InputCostPerMillion == nil || *row.InputCostPerMillion != 3 {
+		t.Fatalf("glm-5.3 inputCostPerMillion=%v, want the stated prompt price per million", row.InputCostPerMillion)
+	}
+	if row.OutputCostPerMillion == nil || *row.OutputCostPerMillion != 15 {
+		t.Fatalf("glm-5.3 outputCostPerMillion=%v, want the stated completion price per million", row.OutputCostPerMillion)
+	}
+}
+
+// The mint-free rows the contract serves for a command-credentialed instance
+// carry the row's authored ladder too, so the composer's effort options come
+// from the same facts whichever branch listed the row.
+func TestLaunchCheckModelsCarriesEffortLevelsForCommandCredentialedRows(t *testing.T) {
+	valueexpr.ResetForTest()
+	t.Cleanup(valueexpr.ResetForTest)
+	client := launchCheckClient(t, map[string]registry.Provider{
+		"gw": {
+			Base: "openai-compatible", APIKey: "$(gw-mint)",
+			Transport: registry.Transport{BaseURL: "http://127.0.0.1:9/v1"},
+			Models: map[string]registry.Model{
+				"house-model": {Caps: registry.Caps{EffortValues: []string{"low", "high", "xhigh", "max"}}},
+			},
+		},
+	})
+	oldLoad := launchCheckLoadClient
+	launchCheckLoadClient = func(string) (*llm.Client, error) { return client, nil }
+	t.Cleanup(func() { launchCheckLoadClient = oldLoad })
+
+	models, _, err := launchCheckModels()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, m := range models {
+		if m.Provider == "gw" && m.Model == "house-model" {
+			if !reflect.DeepEqual(m.ReasoningEffortLevels, []string{"low", "high", "xhigh", "max"}) {
+				t.Fatalf("house-model reasoningEffortLevels=%v, want the authored ladder", m.ReasoningEffortLevels)
+			}
+			return
+		}
+	}
+	t.Fatalf("models=%+v, want gw/house-model", models)
 }

@@ -1,6 +1,7 @@
 import {
   bindArtifactPath,
   bindFilePath,
+  bindScratchPath,
   DOC_FILE_MAX_BYTES,
   type DocFileContent,
   type DocFileErrorKind,
@@ -154,6 +155,7 @@ export default function DocPane({ params, paneId, focused }: PaneProps<DocParams
   const thread = useThreadsStore((state) => state.threads.get(params.session));
   const cwd = thread?.cwd;
   const artifactsDir = thread?.artifactsDir;
+  const scratchDir = thread?.scratchDir;
   // A cached shell publishes before its authoritative read, and a shell carries
   // no artifacts root yet. A missing root proves nothing until that read
   // lands, so the pane stays pending rather than declaring the file gone.
@@ -173,23 +175,32 @@ export default function DocPane({ params, paneId, focused }: PaneProps<DocParams
       artifactsDir === undefined || params.artifactTarget === undefined
         ? undefined
         : bindArtifactPath(params.artifactTarget, artifactsDir);
+  } else if (params.root === "scratch") {
+    // A restored scratch document binds its recorded target the same way, so
+    // a replacement session's scratch cannot substitute a different file of
+    // the same name.
+    reference =
+      scratchDir === undefined || params.scratchTarget === undefined
+        ? undefined
+        : bindScratchPath(params.scratchTarget, scratchDir);
   } else if (cwd) reference = bindFilePath(params.path, cwd);
   useLayoutEffect(() => {
     if (!pane || !reference || retained?.reference === reference) return;
     recordDocumentPaneState(pane, { reference, origin: retained?.origin, reopen: retained?.reopen ?? 0 });
   }, [pane, reference, retained]);
 
-  // A restored artifacts document whose recorded target the loaded snapshot
-  // rejects (Clear moved the ref to another session) is unavailable for good,
-  // not still loading: the snapshot has arrived and does not contain it. A
-  // snapshot that advertises no artifacts root at all counts the same way,
-  // which is a supported answer rather than a missing field.
+  // A restored retained-root document (artifacts, scratch) whose recorded
+  // target the loaded snapshot rejects (Clear moved the ref to another
+  // session) is unavailable for good, not still loading: the snapshot has
+  // arrived and does not contain it. A snapshot that advertises no such root
+  // at all counts the same way, which is a supported answer rather than a
+  // missing field.
   const targetRejected =
     !retained &&
     !shellOnly &&
-    params.root === "artifacts" &&
+    params.root !== undefined &&
     thread !== undefined &&
-    params.artifactTarget !== undefined;
+    (params.root === "artifacts" ? params.artifactTarget !== undefined : params.scratchTarget !== undefined);
   if (targetRejected && !reference)
     return (
       <PaneScaffold title={filenameOf(params.path)} paneId={paneId} focused={focused}>

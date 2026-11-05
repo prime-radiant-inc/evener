@@ -150,6 +150,10 @@ type SessionConfig struct {
 	// The task prompt is the complete specification; the agent must make all decisions
 	// autonomously. Appends guidance to the system prompt adapting skill behavior.
 	NonInteractive bool `json:"non_interactive,omitempty"`
+	// Manager starts this session as a Manager of the sessions its hub can
+	// reach. A start-time property: set once at launch, persisted with the
+	// session, and never changed afterwards.
+	Manager bool `json:"manager,omitempty"`
 
 	// AskResponderAttached says this process answers ask_user questions for a
 	// NonInteractive session (`evener run --ask-responder`), so ask_user is
@@ -226,6 +230,14 @@ type SessionConfig struct {
 	// StateDir, when non-empty, enables incremental session persistence.
 	// Snapshots are written to <StateDir>/sessions/ and tasks to <StateDir>/tasks/.
 	StateDir string `json:"-"`
+
+	// RendezvousDir is the run directory the hosting daemon registered its
+	// rendezvous entry in (serve's --run-dir, EVENER_RUN_DIR, or the platform
+	// default, resolved by the host before it built this config). The
+	// owner-liveness probe reads the same directory, so a lane's live owner
+	// is found where its daemon actually registers. Engine-only like
+	// StateDir: never persisted, repopulated by the host on every launch.
+	RendezvousDir string `json:"-"`
 
 	// AcquireSessionOwnership reserves a freshly generated session ID for this
 	// process before any ID-specific state is persisted. Top-level hosts install
@@ -530,6 +542,7 @@ func (c SessionConfig) toSnapshot() schema.ConfigSnapshot {
 		SystemPromptAppend:          c.SystemPromptAppend,
 		AgentsDocPath:               c.AgentsDocPath,
 		NonInteractive:              c.NonInteractive,
+		Manager:                     c.Manager,
 		TurnEndsProcess:             c.TurnEndsProcess,
 		ContextStrategy:             c.ContextStrategy,
 		ShareTasksWithChildren:      c.ShareTasksWithChildren,
@@ -565,6 +578,7 @@ func configFromSnapshot(s schema.ConfigSnapshot) SessionConfig {
 		ToolOutputLimits:            s.ToolOutputLimits,
 		UserInstructionOverride:     s.UserInstructionOverride,
 		AgentName:                   s.AgentName,
+		Manager:                     s.Manager,
 		ReasoningEffort:             s.ReasoningEffort,
 		SkillsDirs:                  s.SkillsDirs,
 		MCPConfigFiles:              s.MCPConfigFiles,

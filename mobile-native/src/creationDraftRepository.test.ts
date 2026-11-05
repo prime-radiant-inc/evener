@@ -43,6 +43,18 @@ it("restores a complete creation draft from SQLite for its hub only", () => {
 		db.close();
 	}
 });
+it("round-trips the Manager role and restores an older draft as not Manager", () => {
+	const { db, repository } = fixture();
+	try {
+		repository().write("hub-a", { ...draft, manager: true });
+		expect(repository().read("hub-a")?.manager).toBe(true);
+		repository().write("hub-b", draft);
+		expect(repository().read("hub-b")?.manager).toBeUndefined();
+		expect(createNewSessionStore("hub-b", repository).getState().manager).toBe(false);
+	} finally {
+		db.close();
+	}
+});
 it("keeps image bytes immutable across text edits and rolls back a failed checkpoint", () => {
 	const { db, repository } = fixture();
 	try {

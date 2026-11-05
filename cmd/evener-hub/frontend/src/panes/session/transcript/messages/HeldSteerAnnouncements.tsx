@@ -63,9 +63,15 @@ export function HeldSteerAnnouncements({ ref: sessionRef }: { ref: string }): JS
     const announce = (outcomes: HeldSteerOutcome[]) => setAnnouncement((a) => ({ outcomes, key: a.key + 1 }));
     const appeared = held.some((entry: PendingTurnEntry) => !prev.ids.has(entry.id));
     // A local ownership move is neither delivery nor failure. The same
-    // identity is still visibly held by QueueStrip.
+    // identity is still visibly held by QueueStrip - but a Stop-canceled or
+    // delivery-uncertain departure is a real outcome, and the strip owning the
+    // row is exactly where its explanation lives.
     const disappeared = [...prev.ids].filter(
-      (id) => !ids.has(id) && (!queueStripIds.has(id) || canceled.some((record) => record.clientMutationId === id)),
+      (id) =>
+        !ids.has(id) &&
+        (!queueStripIds.has(id) ||
+          canceled.some((record) => record.clientMutationId === id) ||
+          blocked.some((record) => record.clientMutationId === id)),
     );
     // Departure priority in a same-batch collision (review ruling): a
     // departure is the outcome of a message the reader was already told

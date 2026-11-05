@@ -106,6 +106,33 @@ test("deselects a full selected label extended into a larger slash token", () =>
   expect(reconcileComposerMentions(before, "😀 /skillExtra", [mention])).toEqual([]);
 });
 
+test("preserves existing identities when a slash command prefixes the whole draft", () => {
+  const before = "/alpha /build kept";
+  const mentions = [
+    { kind: "skill" as const, name: "alpha", offset: 0 },
+    { kind: "command" as const, name: "build", offset: 7 },
+  ];
+  expect(reconcileComposerMentions(before, `/review ${before}`, mentions)).toEqual([
+    { kind: "skill", name: "alpha", offset: 8 },
+    { kind: "command", name: "build", offset: 15 },
+  ]);
+  expect(reconcileComposerMentions(before, `/review ${before}`, [])).toEqual([]);
+});
+
+test("prefers an exact append over an ambiguous whole-draft suffix", () => {
+  const before = "/alpha";
+  const mention = { kind: "skill" as const, name: "alpha", offset: 0 };
+  expect(reconcileComposerMentions(before, `${before} ${before}`, [mention])).toEqual([mention]);
+  expect(reconcileComposerMentions(before, `${before} /build`, [mention])).toEqual([mention]);
+});
+
+test("whole-draft prepend recognition keeps changed labels and joined tokens unselected", () => {
+  const mention = { kind: "skill" as const, name: "alpha", offset: 0 };
+  expect(reconcileComposerMentions("/alpha", "/review /alphas", [mention])).toEqual([]);
+  expect(reconcileComposerMentions("/alpha", "review/alpha", [mention])).toEqual([]);
+  expect(reconcileComposerMentions("/alpha", "/pkg:alpha", [mention])).toEqual([]);
+});
+
 test("deselects a selected label when a prefix is inserted inside its reference", () => {
   expect(reconcileComposerMentions("/skill", "/pkg:skill", [{ kind: "skill", name: "skill", offset: 0 }])).toEqual([]);
 });

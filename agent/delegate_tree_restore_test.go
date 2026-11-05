@@ -666,7 +666,7 @@ func TestDelegateControllerRestartRepairsPreparedTerminalOnce(t *testing.T) {
 func TestDelegateControllerRestartRepairKeepsAFailedRunsError(t *testing.T) {
 	c, path := newDelegateControllerTestHarness(t, 1, 1)
 	seedDelegateControllerRunning(t, c, "dlg_target", "")
-	finish := stableDelegateFinishFromRun(delegateTerminalRunInputs{runErr: errors.New("provider returned 500\nretry-after: 30")})
+	finish := delegateFinishFromRun(delegateTerminalRunInputs{runErr: errors.New("provider returned 500\nretry-after: 30")})
 	if _, _, err := c.prepareSettlementForTest(delegateLease{delegateID: "dlg_target", generation: 1}, finish.packet); err != nil {
 		t.Fatalf("BeginSettlement: %v", err)
 	}

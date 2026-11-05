@@ -276,6 +276,47 @@ function migrateLegacyTranscriptCheckpoint(value: unknown): TranscriptDraftCheck
 	};
 }
 
+/** The phone's local transcript override for one hub: the presentation
+ * preference a hub that predates thinkingOpenByDefault cannot store (the
+ * compatibility table's "the client works with an older hub" direction). The
+ * model retains it when a save is acknowledged with the older hub's
+ * four-field reading and clears it once a hub acknowledges the request
+ * exactly; refresh and reconnect re-read it. */
+export interface NativeTranscriptLocalStorage {
+	load(): TranscriptDisplayConfigV1 | null;
+	save(config: TranscriptDisplayConfigV1 | null): void;
+}
+
+export function nativeTranscriptLocal(
+	hubId: string,
+	backend: NativePreferenceDraftBackend,
+): NativeTranscriptLocalStorage {
+	if (!hubId.trim()) throw new Error("A hub id is required for transcript overrides.");
+	const key = `evener.native.transcript-local.${hubId}`;
+	return {
+		// Best effort: the override is a local convenience, so an unavailable
+		// or unreadable backend reads as "no override" rather than failing the
+		// model that owns the hub defaults.
+		load: () => {
+			try {
+				const value = backend.get(key);
+				if (value === null || value === undefined) return null;
+				return normalizeConfig(value as TranscriptDisplayConfigV1);
+			} catch {
+				return null;
+			}
+		},
+		save: (config) => {
+			try {
+				if (config === null) backend.delete(key);
+				else backend.set(key, config);
+			} catch {
+				// The next save retries; the in-memory override still applies.
+			}
+		},
+	};
+}
+
 export function nativeTranscriptDrafts(hubId: string, backend: NativePreferenceDraftBackend): TranscriptDraftStorage {
 	if (!hubId.trim()) throw new Error("A hub id is required for preference drafts.");
 	const key = `evener.native.transcript-draft.${hubId}`;

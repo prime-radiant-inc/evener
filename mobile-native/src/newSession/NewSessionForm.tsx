@@ -304,7 +304,13 @@ export function NewSessionForm({ navigation }: NativeStackScreenProps<NewSession
 				<Row
 					label="More options"
 					sub="Context strategy, subagent depth, turn limit"
-					value={MORE_OPTIONS.some((field) => form.launchOverrides[field] !== undefined) ? "Custom" : undefined}
+					value={
+						form.manager
+							? "Manager"
+							: MORE_OPTIONS.some((field) => form.launchOverrides[field] !== undefined)
+								? "Custom"
+								: undefined
+					}
 					chevron
 					onPress={() => navigation.navigate("MoreOptions")}
 				/>

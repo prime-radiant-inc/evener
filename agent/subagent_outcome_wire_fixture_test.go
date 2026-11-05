@@ -13,7 +13,7 @@ package agent
 // fail on the wire.
 //
 // This test is the corpus for those rows. It finishes three subagents the way
-// a run does (stableDelegateFinishFromRun, the journal events the controller
+// a run does (delegateFinishFromRun, the journal events the controller
 // appends) — one that reported, one the user stopped, one that failed — and
 // reads the session's activity tree as evener/jobs/list answers it.
 //
@@ -28,8 +28,10 @@ import (
 	"testing"
 	"time"
 
+	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/internal/delegatestore"
 	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/internal/appprojector"
 )
 
 // subagentOutcomeWireFixturePath is the committed corpus the phone reads.
@@ -78,7 +80,7 @@ func TestSubagentOutcomeWireFixtures(t *testing.T) {
 		inputs.startedAt = started
 		inputs.latestActivityAt = started.Add(20 * time.Second)
 		inputs.endedAt = started.Add(30 * time.Second)
-		seedStableReadonlyFinish(t, s, run.id, descriptor, started, stableDelegateFinishFromRun(inputs), true)
+		seedStableReadonlyFinish(t, s, run.id, descriptor, started, delegateFinishFromRun(inputs), true)
 	}
 
 	delegates, err := s.ListActivityDelegates(t.Context(), appwire.SessionActivityListParams{Ref: encodeRef("", s.ID()), Scope: appwire.SessionActivityScopeSubtree})
@@ -92,7 +94,7 @@ func TestSubagentOutcomeWireFixtures(t *testing.T) {
 	}
 	delegateWire = []byte(strings.ReplaceAll(string(delegateWire), s.ID(), "root"))
 
-	tree, err := s.JobActivityTree(appwire.JobsListParams{})
+	tree, err := s.JobActivityTree(t.Context(), appwire.JobsListParams{})
 	if err != nil {
 		t.Fatalf("JobActivityTree: %v", err)
 	}
@@ -127,6 +129,58 @@ func TestSubagentOutcomeWireFixtures(t *testing.T) {
 	}
 	var response json.RawMessage = []byte(strings.ReplaceAll(string(encoded), s.ID(), "root"))
 
+	projectedNotification := func(row delegateSnapshot) (json.RawMessage, appwire.EvenerDelegateInfo) {
+		t.Helper()
+		data := delegateUpdatedDataFromStatus(delegateFrameStatusInfo(wireFixtureStart, s.ID(), row))
+		projector := appprojector.NewAppEventProjector(s.ID(), encodeRef("", s.ID()))
+		notifications := projector.Project(events.SessionEvent{Kind: events.EventDelegateUpdated, SessionID: s.ID(), Data: data})
+		if len(notifications) != 1 {
+			t.Fatalf("projected notifications = %+v, want one", notifications)
+		}
+		params, ok := notifications[0].Params.(appwire.EvenerDelegateParams)
+		if !ok {
+			t.Fatalf("projected params = %T, want appwire.EvenerDelegateParams", notifications[0].Params)
+		}
+		wire, err := json.Marshal(struct {
+			Method string                       `json:"method"`
+			Params appwire.EvenerDelegateParams `json:"params"`
+		}{Method: notifications[0].Method, Params: params})
+		if err != nil {
+			t.Fatal(err)
+		}
+		wire = []byte(strings.ReplaceAll(string(wire), s.ID(), "root"))
+		return wire, params.Delegate
+	}
+	snapshot := func(delegateID string) delegateSnapshot {
+		t.Helper()
+		for _, row := range s.delegateController.Snapshot().rows {
+			if row.id == delegateID {
+				return row
+			}
+		}
+		t.Fatalf("controller snapshot missing %s", delegateID)
+		return delegateSnapshot{}
+	}
+	delegateRow := func(page appwire.SessionDelegatesResponse, delegateID string) appwire.SessionDelegate {
+		t.Helper()
+		for _, row := range page.Delegates {
+			if row.DelegateID == delegateID {
+				return row
+			}
+		}
+		t.Fatalf("delegates response missing %s", delegateID)
+		return appwire.SessionDelegate{}
+	}
+	encodeDelegates := func(page appwire.SessionDelegatesResponse) json.RawMessage {
+		t.Helper()
+		page.Context.Epoch = "fixture"
+		wire, err := json.Marshal(page)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return []byte(strings.ReplaceAll(string(wire), s.ID(), "root"))
+	}
+
 	// Same timestamps deliberately demonstrate that generation, not a clock,
 	// distinguishes a resumed run's report from its predecessor.
 	c := s.delegateController
@@ -141,8 +195,27 @@ func TestSubagentOutcomeWireFixtures(t *testing.T) {
 			DelegateID:   "dlg_reported",
 			UpdatePosted: &delegatestore.UpdatePosted{Generation: 2, Message: "Need the schema before I continue."},
 		},
-		delegateRunFinishedEvent(delegateLease{delegateID: "dlg_reported", generation: 2}, delegatestore.OutcomeCompleted, delegatestore.DispositionReported, "", wireFixtureStart.Add(30*time.Second), delegateDeliveryID("dlg_reported", 2), &nextPacket),
 	)
+	c.mu.Unlock()
+	if err != nil {
+		t.Fatal(err)
+	}
+	resumedOpen, err := s.ListActivityDelegates(t.Context(), appwire.SessionActivityListParams{Ref: encodeRef("", s.ID()), Scope: appwire.SessionActivityScopeSubtree})
+	if err != nil {
+		t.Fatal(err)
+	}
+	resumedOpenWire := encodeDelegates(resumedOpen)
+	resumedOpenNotification, openFrame := projectedNotification(snapshot("dlg_reported"))
+	openRow := delegateRow(resumedOpen, "dlg_reported")
+	if openFrame.RunGeneration != openRow.RunGeneration || openFrame.ProjectionRevision != openRow.ProjectionRevision {
+		t.Fatalf("resumed-open frame generation/revision=%d/%d, read=%d/%d", openFrame.RunGeneration, openFrame.ProjectionRevision, openRow.RunGeneration, openRow.ProjectionRevision)
+	}
+	if openFrame.Outcome != "" || openFrame.Reason != "" || openFrame.Error != "" || openFrame.RunEndedAt != "" || openFrame.Terminal || openFrame.ReportPreview != "" {
+		t.Fatalf("resumed-open frame retained a prior ending: %+v", openFrame)
+	}
+
+	c.mu.Lock()
+	_, err = c.appendLocked(delegateRunFinishedEvent(delegateLease{delegateID: "dlg_reported", generation: 2}, delegatestore.OutcomeCompleted, delegatestore.DispositionReported, "", wireFixtureStart.Add(30*time.Second), delegateDeliveryID("dlg_reported", 2), &nextPacket))
 	c.mu.Unlock()
 	if err != nil {
 		t.Fatal(err)
@@ -151,21 +224,27 @@ func TestSubagentOutcomeWireFixtures(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	resumed.Context.Epoch = "fixture"
-	resumedWire, err := json.Marshal(resumed)
-	if err != nil {
-		t.Fatal(err)
+	resumedWire := encodeDelegates(resumed)
+	resumedFinishedNotification, finishedFrame := projectedNotification(snapshot("dlg_reported"))
+	finishedRow := delegateRow(resumed, "dlg_reported")
+	if finishedFrame.RunGeneration != finishedRow.RunGeneration || finishedFrame.ProjectionRevision != finishedRow.ProjectionRevision || finishedFrame.Outcome != finishedRow.Outcome || finishedFrame.ReportPreview != finishedRow.ReportPreview {
+		t.Fatalf("resumed-finished frame/read mismatch: frame=%+v read=%+v", finishedFrame, finishedRow)
 	}
-	resumedWire = []byte(strings.ReplaceAll(string(resumedWire), s.ID(), "root"))
 	checkWireFixture(t, subagentOutcomeWireFixturePath, struct {
-		Note                     string          `json:"note"`
-		Response                 json.RawMessage `json:"response"`
-		DelegatesResponse        json.RawMessage `json:"delegatesResponse"`        //nolint:tagliatelle // AppWire corpus key consumed by the typed phone fixture.
-		ResumedDelegatesResponse json.RawMessage `json:"resumedDelegatesResponse"` //nolint:tagliatelle // AppWire corpus key consumed by the typed phone fixture.
+		Note                         string          `json:"note"`
+		Response                     json.RawMessage `json:"response"`
+		DelegatesResponse            json.RawMessage `json:"delegatesResponse"`            //nolint:tagliatelle // AppWire corpus key consumed by the typed phone fixture.
+		ResumedDelegatesResponse     json.RawMessage `json:"resumedDelegatesResponse"`     //nolint:tagliatelle // AppWire corpus key consumed by the typed phone fixture.
+		ResumedOpenDelegatesResponse json.RawMessage `json:"resumedOpenDelegatesResponse"` //nolint:tagliatelle // AppWire corpus key consumed by the typed phone fixture.
+		ResumedOpenNotification      json.RawMessage `json:"resumedOpenNotification"`      //nolint:tagliatelle // AppWire corpus key consumed by the typed phone fixture.
+		ResumedFinishedNotification  json.RawMessage `json:"resumedFinishedNotification"`  //nolint:tagliatelle // AppWire corpus key consumed by the typed phone fixture.
 	}{
-		Note:                     "evener/jobs/list's answer for a coordinator with three finished subagents: one that reported, one the user stopped, one whose provider failed. Each is finished through stableDelegateFinishFromRun and the controller's journal events, and read through Session.JobActivityTree; the session id is written as root.",
-		Response:                 response,
-		DelegatesResponse:        delegateWire,
-		ResumedDelegatesResponse: resumedWire,
+		Note:                         "evener/jobs/list's answer for a coordinator with three finished subagents: one that reported, one the user stopped, one whose provider failed. Each is finished through delegateFinishFromRun and the controller's journal events, and read through Session.JobActivityTree; the session id is written as root.",
+		Response:                     response,
+		DelegatesResponse:            delegateWire,
+		ResumedDelegatesResponse:     resumedWire,
+		ResumedOpenDelegatesResponse: resumedOpenWire,
+		ResumedOpenNotification:      resumedOpenNotification,
+		ResumedFinishedNotification:  resumedFinishedNotification,
 	}, "the mobile-native tests that read it")
 }

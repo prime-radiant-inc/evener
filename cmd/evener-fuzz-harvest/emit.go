@@ -3,6 +3,7 @@ package fuzzharvest
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -14,17 +15,31 @@ import (
 type Emitter struct {
 	dryRun       bool
 	maxSeedBytes int
+	// maxPerTarget caps the files a target directory may hold, counting those
+	// already on disk. A directory at the cap is first pruned by coverage via
+	// makeRoom, so redundant seeds written earlier in a run free their slots
+	// (and stay in seen, so they are not re-admitted) instead of starving the
+	// later seeds that add coverage.
+	maxPerTarget int
+	makeRoom     func(dir string) error
+	roomTried    map[string]bool // directories makeRoom already ran for and that are still full
+	roomErrs     []error
 	seen         map[string]bool
+	dirCount     map[string]int
 
 	written    int
 	deduped    int
 	oversized  int
+	capped     int
 	wouldWrite int
 }
 
 // NewEmitter builds an emitter with the given drop threshold (seed-data bytes).
 func NewEmitter(dryRun bool, maxSeedBytes int) *Emitter {
-	return &Emitter{dryRun: dryRun, maxSeedBytes: maxSeedBytes, seen: map[string]bool{}}
+	return &Emitter{
+		dryRun: dryRun, maxSeedBytes: maxSeedBytes, maxPerTarget: defaultMaxPerTarget,
+		seen: map[string]bool{}, dirCount: map[string]int{}, roomTried: map[string]bool{},
+	}
 }
 
 // emitStatus is the disposition of one Emit call, for per-surface accounting.
@@ -34,6 +49,7 @@ const (
 	statusWritten   emitStatus = iota // new file written
 	statusDeduped                     // identical seed already present (this run or on disk)
 	statusOversized                   // seed-data bytes exceeded the drop threshold
+	statusCapped                      // target directory already holds --max-per-target files
 	statusDryRun                      // would have written, but --dry-run
 )
 
@@ -59,8 +75,7 @@ func (e *Emitter) write(dir string, encoded []byte, seedLen int) (emitStatus, er
 		e.oversized++
 		return statusOversized, nil
 	}
-	sum := sha256.Sum256(encoded)
-	path := filepath.Join(dir, hex.EncodeToString(sum[:]))
+	path := filepath.Join(dir, seedFileName(encoded))
 	if e.seen[path] {
 		e.deduped++
 		return statusDeduped, nil
@@ -70,6 +85,21 @@ func (e *Emitter) write(dir string, encoded []byte, seedLen int) (emitStatus, er
 		e.deduped++ // already committed; re-run produces no diff
 		return statusDeduped, nil
 	}
+	if e.filesIn(dir) >= e.maxPerTarget && e.makeRoom != nil && !e.dryRun && !e.roomTried[dir] {
+		if err := e.makeRoom(dir); err != nil {
+			e.roomErrs = append(e.roomErrs, fmt.Errorf("prune %s: %w", dir, err))
+		}
+		e.roomTried[dir] = true // a prune that freed nothing would only repeat on the same files
+		delete(e.dirCount, dir)
+		if e.filesIn(dir) < e.maxPerTarget {
+			delete(e.roomTried, dir)
+		}
+	}
+	if e.filesIn(dir) >= e.maxPerTarget {
+		e.capped++
+		return statusCapped, nil
+	}
+	e.dirCount[dir]++
 	if e.dryRun {
 		e.wouldWrite++
 		return statusDryRun, nil
@@ -82,6 +112,22 @@ func (e *Emitter) write(dir string, encoded []byte, seedLen int) (emitStatus, er
 	}
 	e.written++
 	return statusWritten, nil
+}
+
+// seedFileName is the content-addressed file name of an encoded seed.
+func seedFileName(encoded []byte) string {
+	sum := sha256.Sum256(encoded)
+	return hex.EncodeToString(sum[:])
+}
+
+// filesIn counts the files in dir: those on disk when first asked, plus the
+// seeds this run has since accepted.
+func (e *Emitter) filesIn(dir string) int {
+	if _, ok := e.dirCount[dir]; !ok {
+		entries, _ := os.ReadDir(dir) //nolint:errcheck // a missing directory holds no files
+		e.dirCount[dir] = len(entries)
+	}
+	return e.dirCount[dir]
 }
 
 // encodeBytesSeed renders a one-argument []byte corpus file.

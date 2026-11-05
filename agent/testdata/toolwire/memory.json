@@ -4,6 +4,13 @@
   "notes": {},
   "items": [
     {
+      "authorship": {
+        "author": {
+          "kind": "agent",
+          "sessionRef": "local:memoryFixture1"
+        },
+        "inherited": false
+      },
       "type": "commandExecution",
       "id": "item_tool_1_0",
       "turnId": "turn_1",
@@ -24,6 +31,13 @@
       "completedAt": 1790625601000
     },
     {
+      "authorship": {
+        "author": {
+          "kind": "agent",
+          "sessionRef": "local:memoryFixture1"
+        },
+        "inherited": false
+      },
       "type": "commandExecution",
       "id": "item_tool_3_0",
       "turnId": "turn_1",
@@ -44,6 +58,13 @@
       "completedAt": 1790625603000
     },
     {
+      "authorship": {
+        "author": {
+          "kind": "agent",
+          "sessionRef": "local:memoryFixture2"
+        },
+        "inherited": false
+      },
       "type": "commandExecution",
       "id": "item_tool_5_0",
       "turnId": "turn_1",
@@ -64,6 +85,13 @@
       "completedAt": 1790625605000
     },
     {
+      "authorship": {
+        "author": {
+          "kind": "agent",
+          "sessionRef": "local:memoryFixture2"
+        },
+        "inherited": false
+      },
       "type": "commandExecution",
       "id": "item_tool_7_0",
       "turnId": "turn_1",

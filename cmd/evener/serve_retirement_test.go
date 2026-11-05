@@ -1224,13 +1224,13 @@ type gatedReadServer struct {
 	releaseOnce sync.Once
 }
 
-func (s *gatedReadServer) SetJobsFunc(fn func(appwire.JobsListParams) (any, error)) {
-	s.clearIdentityServer.SetJobsFunc(func(params appwire.JobsListParams) (any, error) {
+func (s *gatedReadServer) SetJobsFunc(fn func(context.Context, appwire.JobsListParams) (any, error)) {
+	s.clearIdentityServer.SetJobsFunc(func(ctx context.Context, params appwire.JobsListParams) (any, error) {
 		s.gateOnce.Do(func() {
 			close(s.readEntered)
 			<-s.readGate
 		})
-		return fn(params)
+		return fn(ctx, params)
 	})
 }
 

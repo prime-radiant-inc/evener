@@ -481,7 +481,7 @@ test("friendlyLaunchErrorMessage masks only the no-diagnosis subset with the gui
 });
 
 test("friendlyLaunchErrorMessage preserves the daemon's own stderr (the hub propagates it on purpose)", () => {
-  // Mirrors cmd/evener-hub/app_rpc_test.go's stderr-propagation fixture: a
+  // Mirrors cmd/evener-hub/app_rpc_thread_start_test.go's stderr-propagation fixture: a
   // daemon that SPAWNED and crashed carries its diagnosis in the message,
   // and 'run evener in the repo' would reproduce the same crash silently.
   const stderr =

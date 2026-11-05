@@ -37,7 +37,16 @@
 
 import type { SandboxEscalationRequested } from "@evener/appwire-client";
 import { sessionActionError } from "@evener/appwire-client";
-import { type KeyboardEvent as ReactKeyboardEvent, useCallback, useEffect, useRef, useState } from "react";
+import {
+  createContext,
+  type KeyboardEvent as ReactKeyboardEvent,
+  type ReactNode,
+  useCallback,
+  useContext,
+  useEffect,
+  useRef,
+  useState,
+} from "react";
 import { threadsStore, useThreadsStore } from "../../../../stores/threads";
 import { Button, Card, Chip } from "../../../../widgets";
 import { requireClass } from "../../../../widgets/internal/requireClass";
@@ -149,6 +158,28 @@ export function useSandboxEscalations(ref: string): UseSandboxEscalationsResult 
   return { pending, resolve };
 }
 
+function useEscalationInteractionState() {
+  const [resolving, setResolving] = useState<Set<string>>(new Set());
+  const [errors, setErrors] = useState<Map<string, string>>(new Map());
+  const inFlight = useRef(new Set<string>());
+  return { resolving, setResolving, errors, setErrors, inFlight };
+}
+
+const EscalationInteractionContext = createContext<{
+  sessionRef: string;
+  state: ReturnType<typeof useEscalationInteractionState>;
+} | null>(null);
+
+/** The conversation owns pending decisions across presentation-only rail remounts. */
+export function SandboxEscalationOwner({ sessionRef, children }: { sessionRef: string; children: ReactNode }) {
+  const state = useEscalationInteractionState();
+  return (
+    <EscalationInteractionContext.Provider value={{ sessionRef, state }}>
+      {children}
+    </EscalationInteractionContext.Provider>
+  );
+}
+
 // SandboxEscalationRail is the ready-to-mount combination of the hook and
 // the card, one per pending escalation - whoever owns the actual mount
 // point (see this file's own header) needs only render
@@ -156,13 +187,29 @@ export function useSandboxEscalations(ref: string): UseSandboxEscalationsResult 
 // `sessionRef`, not `ref` - the latter is reserved (React would try to
 // interpret a plain string value as an actual ref attempt).
 export function SandboxEscalationRail({ sessionRef }: { sessionRef: string }) {
+  const owner = useContext(EscalationInteractionContext);
+  if (owner?.sessionRef === sessionRef) return <SandboxEscalationContent sessionRef={sessionRef} state={owner.state} />;
+  return (
+    <SandboxEscalationOwner key={sessionRef} sessionRef={sessionRef}>
+      <SandboxEscalationRail sessionRef={sessionRef} />
+    </SandboxEscalationOwner>
+  );
+}
+
+function SandboxEscalationContent({
+  sessionRef,
+  state,
+}: {
+  sessionRef: string;
+  state: ReturnType<typeof useEscalationInteractionState>;
+}) {
   const { pending, resolve } = useSandboxEscalations(sessionRef);
   // Tracks escalations with a resolve() request currently in flight, so a
   // card disables the instant it's clicked rather than only once the
-  // response arrives - resolve() itself also removes a SETTLED escalation
-  // from `pending` entirely, so "in flight" is the only state this needs
-  // to track locally.
-  const [resolving, setResolving] = useState<Set<string>>(new Set());
+  // response arrives. The conversation owner retains this state when a
+  // presentation change remounts the rail. resolve() removes a settled
+  // escalation from `pending` entirely.
+  const { resolving, setResolving, errors, setErrors, inFlight } = state;
   // Tracks the last resolve() failure per escalation, so a rejection - the
   // sandbox unreachable, the wire request itself failing - surfaces on the
   // card instead of becoming an unhandled rejection (onApprove/onDeny below
@@ -170,7 +217,6 @@ export function SandboxEscalationRail({ sessionRef }: { sessionRef: string }) {
   // attempt so a retry never shows a stale message while it's in flight, and
   // a SUCCESSFUL resolve never has to clear it explicitly: resolve() itself
   // drops the escalation from `pending`, which unmounts the card.
-  const [errors, setErrors] = useState<Map<string, string>>(new Map());
 
   // Autofocuses the Allow button the moment an escalation arrives (empty ->
   // non-empty), edge-triggered on pending.length exactly like AskDock.tsx's
@@ -197,6 +243,8 @@ export function SandboxEscalationRail({ sessionRef }: { sessionRef: string }) {
   }, [pending.length]);
 
   async function handleResolve(escalationId: string, approve: boolean) {
+    if (inFlight.current.has(escalationId)) return;
+    inFlight.current.add(escalationId);
     setResolving((prev) => new Set(prev).add(escalationId));
     setErrors((prev) => {
       if (!prev.has(escalationId)) return prev;
@@ -209,6 +257,7 @@ export function SandboxEscalationRail({ sessionRef }: { sessionRef: string }) {
     } catch (err) {
       setErrors((prev) => new Map(prev).set(escalationId, sessionActionError("Couldn't resolve", err)));
     } finally {
+      inFlight.current.delete(escalationId);
       setResolving((prev) => {
         const next = new Set(prev);
         next.delete(escalationId);

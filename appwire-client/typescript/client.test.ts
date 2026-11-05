@@ -1244,6 +1244,57 @@ test("a throwing beforeRequest sends no resume RPC, releases the resume, and kee
   expect(vi.getTimerCount()).toBe(0);
 });
 
+// The hook may be async: the Stop fence that re-reads durable state after the
+// reconnect settles must gate the RPC exactly as a synchronous throw does.
+// An unawaited hook would send the resume while its revalidation is still in
+// flight, and its rejection would surface nowhere.
+test("an async beforeRequest is awaited: its rejection sends no resume RPC, releases the resume, and keeps the primary ready", async () => {
+  const sockets: FakeSocket[] = [];
+  const client = new AppwireClient({
+    url: "ws://hub/rpc",
+    socketFactory: () => {
+      const socket = new FakeSocket({ autoInitialize: true });
+      sockets.push(socket);
+      return socket;
+    },
+  });
+  const connected = client.connect();
+  const primary = sockets[0];
+  if (!primary) throw new Error("missing primary");
+  primary.open();
+  await connected;
+  const fence = new Error("Stop canceled this pending action");
+  const resumed = client.resumeThread("local:owner", {
+    beforeRequest: async () => {
+      await Promise.resolve();
+      throw fence;
+    },
+  });
+  const rejected = expect(resumed).rejects.toBe(fence);
+  const replacement = sockets[1];
+  if (!replacement) throw new Error("missing replacement");
+  replacement.open();
+  // No resume frame reaches either transport while the hook settles: the
+  // awaited hook is the gate, not a suggestion.
+  await flushUntil(() => sentFrames(replacement).some((frame) => frame.method === "thread/resume"));
+  expect(sentFrames(replacement).some((frame) => frame.method === "thread/resume")).toBe(false);
+  expect(sentFrames(primary).some((frame) => frame.method === "thread/resume")).toBe(false);
+  await rejected;
+  expect(client.state).toBe("ready");
+  // resumePending cleared: a subsequent resume starts instead of failing with
+  // "A session resume is already pending".
+  const retried = client.resumeThread("local:owner");
+  const secondReplacement = sockets[2];
+  if (!secondReplacement) throw new Error("missing second replacement");
+  secondReplacement.open();
+  await flushUntil(() => sentFrames(secondReplacement).some((frame) => frame.method === "thread/resume"));
+  secondReplacement.receive({ id: lastSentFrame(secondReplacement).id, result: {} });
+  await retried;
+  expect(client.state).toBe("ready");
+  client.close();
+  expect(vi.getTimerCount()).toBe(0);
+});
+
 function createResumeClient() {
   let resumeSent!: (frame: { id: number }) => void;
   const requestSent = new Promise<{ id: number }>((resolve) => {

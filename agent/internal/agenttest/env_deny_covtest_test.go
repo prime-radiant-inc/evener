@@ -292,12 +292,6 @@ func TestDenyEnvInitialize(t *testing.T) {
 	}
 }
 
-// TestDenyEnvCleanup covers Cleanup (line 37).
-func TestDenyEnvCleanup(t *testing.T) {
-	d := &DenyEnv{Seed: 0}
-	d.Cleanup() // should not panic
-}
-
 // TestDenyEnvBasics covers the basic accessor methods.
 func TestDenyEnvBasics(t *testing.T) {
 	d := &DenyEnv{WorkDir: "/work", Seed: 42}

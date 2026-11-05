@@ -1016,7 +1016,7 @@ func TestMemoryContextForkInvalidation(t *testing.T) {
 			default:
 				t.Fatal("forked child did not reach the model request")
 			}
-			data, err := readTranscriptFull(transcriptPath(child.sess.stateDir, child.sess.id), "")
+			data, err := readTranscriptFull(context.Background(), transcriptPath(child.sess.stateDir, child.sess.id), "")
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -1750,7 +1750,7 @@ func TestMemoryDelegatesReadButNeverSave(t *testing.T) {
 
 // A stable delegate's persisted tool ceiling never names a save tool, so its
 // descriptor and job status report only what the delegate can call.
-func TestStableDelegateToolNameCeilingOmitsSaveTools(t *testing.T) {
+func TestDelegateToolNameCeilingOmitsSaveTools(t *testing.T) {
 	t.Parallel()
 	s := newSession(t, withDir(t.TempDir()), withConfig(SessionConfig{MemoryStateRoot: t.TempDir()}))
 	for _, policy := range []struct {
@@ -1758,7 +1758,7 @@ func TestStableDelegateToolNameCeilingOmitsSaveTools(t *testing.T) {
 		allTools bool
 		allowed  []string
 	}{{"all-tools", true, nil}, {"listed", false, nativeMemoryToolNames}} {
-		ceiling := stableDelegateToolNameCeiling(s.reg, s.resultToolName(), policy.allTools, policy.allowed, nil, false, "")
+		ceiling := delegateToolNameCeiling(s.reg, s.resultToolName(), policy.allTools, policy.allowed, nil, false, "")
 		for _, name := range memorySaveToolNames {
 			if slices.Contains(ceiling, name) {
 				t.Errorf("%s ceiling names %s: %v", policy.name, name, ceiling)
@@ -2898,7 +2898,7 @@ func TestMemoryOutputRecovery(t *testing.T) {
 
 // This corpus uses the existing toolwire envelope. Every call/result comes
 // from ProcessInput, including retention and read_transcript recovery. Only
-// random capability IDs and runtime timestamps are normalized for recording.
+// random capability/session IDs and runtime timestamps are normalized for recording.
 func TestMemoryGenericDelivery(t *testing.T) {
 	t.Parallel()
 	var items []appwire.ThreadItem
@@ -2981,6 +2981,12 @@ func TestMemoryGenericDelivery(t *testing.T) {
 			projected := apptranscript.ProjectTurn("turn_1", index+arm*4, turn, reg, nil, nil)
 			for i := range projected {
 				projected[i].DurationMS = nil
+				if authorship := projected[i].Authorship; authorship != nil {
+					if authorship.Author.SessionRef != "local:"+s.ID() {
+						t.Fatalf("memory tool author=%+v, want session %s", authorship.Author, s.ID())
+					}
+					authorship.Author.SessionRef = fmt.Sprintf("local:memoryFixture%d", arm+1)
+				}
 			}
 			items = append(items, toolWireRelocated(t, projected, func(text string) string {
 				return strings.ReplaceAll(text, ref, fmt.Sprintf("artifact:memoryFixture%d", arm+1))

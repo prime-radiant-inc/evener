@@ -55,6 +55,20 @@ different machines distinct. The
 [navigation projection](../cmd/evener-hub/navigation_projection.go) owns the
 bounded resources and project tiers used by the client.
 
+For a session absent from the navigation index, the
+[navigation service](../cmd/evener-hub/navigation_service.go) resolves its
+placement through an indexed top-level row. A local session's current identity
+can resolve to its stable workspace row, including after the daemon exits.
+Child and fork locations retain their requested identity and nested placement.
+
+For a remote alias, one bounded location read asks the owning source for its
+top-level placement. The controller preserves the source qualifier and uses its
+own indexed root and revision; it never substitutes a local session with the
+same ID. Source failure or a resolved remote root absent from the controller's
+index returns unavailable, allowing a later refresh to recover. An absent
+source or a source-confirmed missing session retains the gone outcome. Indexed
+locations require no additional source read.
+
 Project favorites use `evener/favorite/set`. Session pins use
 `evener/session-pin/assign` and `evener/session-pin/unpin` with the navigation pin
 catalog. A project deletion uses `evener/project/delete`, which validates its
@@ -72,6 +86,22 @@ counterparts. In particular, live diagnostics bypass saved delegate-journal and
 child attention-transcript reconstruction. Absent live fields retain their
 saved fallbacks, and saved turns are projected only when requested and the live
 read supplied none. Remote reads never merge this hub's local saved state.
+
+When a local read fails because daemon ownership may have changed, the
+[thread read handler](../cmd/evener-hub/app_rpc.go) refreshes discovery. If that
+refresh establishes a usable local route, the same request retries its live
+read once. A child discovered by this refresh can therefore return its live
+boot generation and deliver later child-qualified events on the first
+subscribed read. Clients need neither a second read nor a periodic roster tick.
+
+The retry reuses deletion-fenced source resolution and the existing subscription
+admission and snapshot-to-live handoff. A descendant retains its own admission
+and delivery identity even though it shares its owner's upstream connection.
+Cancellation and deletion retain their typed outcomes. Incompatible owners
+remain restart-required, and an unavailable owner retains the original read's
+saved-history fallback eligibility, including when the one retry fails. This
+recovery never launches or resumes a daemon, replays mutations, or retries a
+remote ref against local saved state.
 
 The [hub relay](../cmd/evener-hub/app_relay.go) shares one canonical upstream
 connection across a session and its descendant routes. The
@@ -123,14 +153,35 @@ is refused. A delegate's artifacts resolve through the live entry that reports
 it as a running subagent, since they sit under its owner's project state
 directory.
 
+An absolute path may also name a file in the session's named scratch
+directory, the tree its recorded meta names (`<base>/evener-scratch-<tree
+root>/<sessionID>`, under the temp base the session's daemon recorded, this
+hub's own, or the user cache dir). Tools write screenshots and other
+session-local output there and name those files by absolute path in messages
+and tool results, so the transcript turns such a path into a document read the
+same way. The `<sessionID>` in that path is the session that owns the
+directory, not always the requested one: a delegate that shares its parent's
+environment writes into the parent's scratch, so its meta records that owner
+and serving resolves through the record. The scratch directory is a third boundary beside the other two,
+never a widening of them: the same containment check resolves it, the read
+opens through whichever root accepted the path, a session fenced for deletion
+serves nothing from it, and a scratch directory that no longer exists on disk
+answers as not-served rather than refused.
+
+`Thread.evener.scratchDir` announces that directory for a local session whose
+scratch exists, with the same absent-means-absent rule as the artifacts
+directory: empty for a remote thread, an unknown ref, a session with no
+scratch on disk, or a hub serving no state directory.
+
 `Thread.evener.artifactsDir` announces that directory for a local session, so a
 client can tell an openable `file://` link from one the hub would refuse without
 guessing. It is empty for a remote thread, an unknown ref, or a hub serving no
 state directory. Clients bind a link through the shared resolver
 ([docContent.ts](../appwire-client/typescript/docContent.ts)), which tries the
-working directory and then the artifacts root, so the web transcript and the
-phone's Reader offer the same document for the same link. A link that names no
-root is left an ordinary link rather than promising a read the hub would refuse.
+working directory and then the artifacts and scratch roots, so the web
+transcript and the phone's Reader offer the same document for the same link.
+A link that names no root is left an ordinary link rather than promising a
+read the hub would refuse.
 
 A missing archived metadata file returns `ResourceNotFound` (HTTP 404). Other
 metadata read or decode failures return `SessionUnavailable` (HTTP 503), so the

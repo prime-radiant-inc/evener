@@ -61,6 +61,10 @@ type TaskAggregate struct {
 }
 
 type EvenerThread struct {
+	// Manager is the session's start-time Manager property, reported by the
+	// session itself. It is not a runtime setting: nothing can turn it on or
+	// off after the session starts.
+	Manager bool `json:"manager,omitempty"`
 	// ResumeRequired means recovery stopped this session and automatic actions
 	// must wait for an explicit thread/resume. Saved transcripts remain readable.
 	ResumeRequired bool `json:"resumeRequired,omitempty"`
@@ -91,7 +95,7 @@ type EvenerThread struct {
 	Capabilities     ThreadCapabilities `json:"capabilities"`
 	Diagnostics      *EvenerDiagnostics `json:"diagnostics,omitempty"`
 	// Queue carries authoritative queue depth + preview for the per-session
-	// input queue (kata r80p). Both UIs derive their queue-preview chrome
+	// input queue. Both UIs derive their queue-preview chrome
 	// from this field rather than mirroring queue mutations locally, which
 	// fixes multi-client incoherence and post-reload state. The empty zero
 	// value (Depth==0, Preview==nil) means "no queued messages".
@@ -130,6 +134,15 @@ type EvenerThread struct {
 	// hub's doc route serves that request out of. Clients compare a link
 	// against it rather than guessing whether the hub can open it.
 	ArtifactsDir string `json:"artifactsDir,omitempty"`
+	// ScratchDir is the session's named scratch directory on the hub that
+	// serves it, empty when no local path names one (a remote thread, an
+	// unknown ref, a session with no scratch directory on disk). Tools write
+	// screenshots and other session-local output there and name those files by
+	// absolute path in messages and tool results; the transcript turns such a
+	// path into a document-pane request, and this is the directory the hub's
+	// doc route serves that request out of. Clients compare an absolute path
+	// against it rather than guessing whether the hub can open it.
+	ScratchDir string `json:"scratchDir,omitempty"`
 	// Usage, WorkMillis, and ActiveTurnStartedAt are the daemon's live
 	// working-state/token metrics (WS2), served from the daemon's materialized
 	// thread envelope, which is refreshed at the turn boundaries that move
@@ -394,7 +407,7 @@ type QueueState struct {
 // transition (currently: a drain folding the queue into steering), never a
 // property of the durable queue a client caches — a client settles those
 // optimistic records by positive evidence instead of inferring consumption
-// from sequence order (issue #1704). Absent on old daemons and on every push
+// from sequence order. Absent on old daemons and on every push
 // that is not the consuming transition.
 type ThreadQueueChangedParams struct {
 	ThreadID                  string     `json:"threadId"`
@@ -542,10 +555,11 @@ type DelegateStopResponse struct {
 // pending escalation. Approve re-runs the single denied invocation with the one
 // path granted; deny returns the typed error to the model.
 type SandboxEscalationResolveParams struct {
-	ThreadID     string `json:"threadId,omitempty"`
-	Ref          string `json:"ref,omitempty"`
-	EscalationID string `json:"escalationId"`
-	Approve      bool   `json:"approve"`
+	ManagerProof *SessionActorProof `json:"managerProof,omitempty"`
+	ThreadID     string             `json:"threadId,omitempty"`
+	Ref          string             `json:"ref,omitempty"`
+	EscalationID string             `json:"escalationId"`
+	Approve      bool               `json:"approve"`
 }
 
 type ThreadCapabilities struct {
@@ -560,7 +574,7 @@ type ThreadCapabilities struct {
 	// ChangeVisionModel advertises support for thread/vision-model/set. True for
 	// a live evener session whose daemon wires a vision-model hook.
 	ChangeVisionModel bool `json:"changeVisionModel"`
-	// Queue advertises harness support for turn/queue (kata 111a, #1375): true
+	// Queue advertises harness support for turn/queue: true
 	// when the daemon wires a queue seam and the thread is not closed, not when
 	// a turn happens to be in flight. The client applies the status, so
 	// turn/queue is still meaningful only mid-turn.
@@ -602,7 +616,7 @@ type ThreadCapabilities struct {
 	// before position, with or without a cursor: a client that trimmed rows
 	// from the top of its window can page them back. The hub answers for its
 	// own local and saved threads. A thread on another host stays masked until
-	// the hub can join such a page to its remote paging window (#3176); an
+	// the hub can join such a page to its remote paging window; an
 	// older hub never sends it.
 	PageBefore bool `json:"pageBefore,omitempty"`
 }

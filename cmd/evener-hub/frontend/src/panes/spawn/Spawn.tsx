@@ -62,6 +62,7 @@ import {
   PromptCard,
   Select,
   SendIcon,
+  Switch,
   Tooltip,
   useToasts,
   VisuallyHidden,
@@ -270,6 +271,7 @@ function SpawnForm({
   const toasts = useToasts();
   const advancedOwnerRef = useRef<HTMLDivElement>(null);
   const [source, setSource] = useDraftField(draft, "source");
+  const [manager, setManager] = useDraftField(draft, "manager");
   // The manifest carries every configured launch source (Component 06a). It is
   // empty until it loads, and in the common single-host case holds only
   // "local" - either way no picker renders, so the existing form is unchanged.
@@ -2198,13 +2200,13 @@ function SpawnForm({
     //
     // /goal applies post-start via runSpawnBuiltinAfterStart (goal/set has no
     // processing gate - it queues behind the running turn). /model and
-    // /reasoning-effort ride thread/start as launch scalars instead: the
-    // daemon refuses thread/model/set while the first input's turn is active
-    // (Conflict "session is processing"), and the effort source reads the new
-    // thread from threadsStore, which is empty until the session pane
-    // hydrates - so neither follow-up mutation can work. Their values are
-    // pre-start validated here (there is no cheaper moment to refuse), then
-    // folded into the start call under the chips, which keeps floor §1.11
+    // /reasoning-effort ride thread/start as launch scalars instead: a
+    // post-start thread/model/set now queues behind the first turn rather
+    // than refusing, but the effort source reads the new thread from
+    // threadsStore, which is empty until the session pane hydrates - so
+    // neither follow-up mutation can work. Their values are pre-start
+    // validated here (there is no cheaper moment to refuse), then folded
+    // into the start call under the chips, which keeps floor §1.11
     // precedence (explicit slash value wins over ambient form state).
     const builtinMatch =
       pluginSelectionSupported && attachments.items.length === 0 && skillNames.length === 0 && commandNames.length === 0
@@ -2277,6 +2279,8 @@ function SpawnForm({
       // from the wire), so the single-host request stays identical to before
       // the host picker existed.
       source: submittedSource,
+      // Start-time role: an ordinary launch omits it entirely.
+      manager,
     });
     if (builtinMatch && builtinMatch.command.id === "goal") {
       // Post-start application runs AFTER navigation below: awaiting goal/set
@@ -3009,6 +3013,12 @@ function SpawnForm({
                 options={accessOptions}
               />
             </FormRow>
+            <Switch
+              label="Start as Manager"
+              description="The session can manage any session its hub can reach. This is a start-time property: it lasts until the session ends."
+              checked={manager}
+              onChange={setManager}
+            />
           </AdvancedOptions>
         </div>
       </div>

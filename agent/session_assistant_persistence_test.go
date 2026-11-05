@@ -171,7 +171,7 @@ func TestSession_AssistantTranscriptFailureStopsBeforeToolDispatch(t *testing.T)
 	t.Cleanup(func() { _ = writer.Close() })
 
 	adapter := &fakeAdapter{name: "openai"}
-	adapter.steps = []func(llm.Request) llm.Response{
+	adapter.setSteps([]func(llm.Request) llm.Response{
 		func(llm.Request) llm.Response {
 			fs.fail = true
 			return agenttest.ToolCallResponse(llm.ToolCallData{
@@ -181,7 +181,7 @@ func TestSession_AssistantTranscriptFailureStopsBeforeToolDispatch(t *testing.T)
 				Type:      "function",
 			})
 		},
-	}
+	})
 	client := llm.NewClient()
 	client.Register(adapter)
 

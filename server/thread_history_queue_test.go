@@ -73,7 +73,7 @@ func awaitClosed(t *testing.T, ch <-chan struct{}, what string) {
 func (hx *historyHarness) readKeys(t *testing.T) map[string]bool {
 	t.Helper()
 	keys := map[string]bool{}
-	turns, cursor, _, _, err := hx.history.latest(hx.history.capture(), "local:th_history", 40)
+	turns, cursor, _, _, _, err := hx.history.latest(hx.history.capture(), "local:th_history", 40)
 	for {
 		if err != nil {
 			t.Fatal(err)
@@ -435,7 +435,7 @@ func TestThreadHistoryAppendsDuringRepeatedRebuilds(t *testing.T) {
 						return
 					default:
 					}
-					if _, _, _, _, err := hx.history.latest(hx.history.capture(), "local:th_history", 10); err != nil {
+					if _, _, _, _, _, err := hx.history.latest(hx.history.capture(), "local:th_history", 10); err != nil {
 						t.Errorf("read during rebuilds: %v", err)
 						return
 					}
@@ -483,7 +483,7 @@ func TestThreadHistoryAppendsDuringRepeatedRebuilds(t *testing.T) {
 	final := hx.record(t, "final")
 	// The readers stop with the appends, so the thread may end failed; a failed
 	// thread resumes publishing when a read recovers it, never before.
-	if _, _, _, _, err := hx.history.latest(hx.history.capture(), "local:th_history", 10); err != nil {
+	if _, _, _, _, _, err := hx.history.latest(hx.history.capture(), "local:th_history", 10); err != nil {
 		t.Fatalf("recovering read: %v", err)
 	}
 	hx.awaitPublished(t, final.Offset+final.Length)
@@ -583,7 +583,7 @@ func TestThreadHistoryReadsOfAStillBrokenThreadPushNothing(t *testing.T) {
 	hx.nextResync(t)
 	hx.nextResync(t)
 	for range 5 {
-		_, _, _, _, err := hx.history.latest(hx.history.capture(), "local:th_history", 10)
+		_, _, _, _, _, err := hx.history.latest(hx.history.capture(), "local:th_history", 10)
 		var wireErr appwire.WireError
 		if !errors.As(err, &wireErr) || wireErr.Data.(appwire.ErrorData).EvenerErrorInfo != appwire.ErrorTranscriptHistoryFailed {
 			t.Fatalf("read of a still-broken thread = %v, want transcriptHistoryFailed", err)
@@ -677,7 +677,7 @@ func TestThreadHistoryAReadDuringAFailingReadRecoveryGetsTheError(t *testing.T) 
 	hx.nextResync(t)
 	hx.nextResync(t)
 	read := func(results chan<- error) {
-		_, _, _, _, err := hx.history.latest(hx.history.capture(), "local:th_history", 10)
+		_, _, _, _, _, err := hx.history.latest(hx.history.capture(), "local:th_history", 10)
 		results <- err
 	}
 	firstRead, secondRead := make(chan error, 1), make(chan error, 1)
@@ -721,7 +721,7 @@ func TestThreadHistoryAReadRecoveryRetriesAnOverrunRebuild(t *testing.T) {
 	hx.record(t, "fails to project")
 	hx.nextResync(t)
 	hx.nextResync(t)
-	if _, _, _, _, err := hx.history.latest(hx.history.capture(), "local:th_history", 10); err != nil {
+	if _, _, _, _, _, err := hx.history.latest(hx.history.capture(), "local:th_history", 10); err != nil {
 		t.Fatalf("read whose rebuild was overrun once = %v, want the recovered history", err)
 	}
 	if rebuilds != threadHistoryMaxRebuilds+2 {

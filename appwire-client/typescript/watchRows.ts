@@ -32,9 +32,9 @@ export function strArrayField(object: JsonObject, key: string): string[] {
 // asked in: sub-minute stays in seconds ("in 45s", fractional "in 1.5s" for
 // sub-second producer precision such as progress_interval_ms 1500);
 // whole minutes collapse ("in 5m", "in 1m"); leftover seconds are kept
-// ("in 1m30s", never a lossy "in 1m" — RoboRev PR #954); an hour or more
+// ("in 1m30s", never a lossy "in 1m"); an hour or more
 // names hours and leftover minutes ("in 1h05m"). Rounding happens FIRST, so
-// a 60s carry can never surface ("in 1m60s" — combined RoboRev review):
+// a 60s carry can never surface ("in 1m60s"):
 // the seconds path runs iff the rounded value is below 60, and the minute
 // path divides the rounded value, whose remainder is always below 60.
 // Zero/negative never reaches here (numField filters it) — the caller falls
@@ -52,7 +52,7 @@ export function humanizeInterval(totalSeconds: number): string {
 }
 // A condition watch's trigger: the output pattern, the heartbeat cadence
 // (progress_interval_ms from the wire), the event list plus its every-Nth
-// throttle (RoboRev PR #954: `every: 3` fires on every third event, and
+// throttle (`every: 3` fires on every third event, and
 // dropping it claims every event fires), and the event-filter shape
 // (assistant.tool errors on a delegate). Empty when the result names no
 // condition at all — a bare source watch the summary still names.
@@ -63,7 +63,7 @@ export interface ConditionSpec {
   every?: number;
   filterToolName?: string;
   filterStatus?: string;
-  // Any watch carries a note (backend #995), delivered as raw.note on the
+  // Any watch carries a note, delivered as raw.note on the
   // create result — not only timers. The create body renders it as a full
   // section alongside the condition sentence.
   note?: string;
@@ -96,7 +96,7 @@ export function conditionSpec(raw: JsonObject, args?: JsonObject): ConditionSpec
   const filter = asJsonObject(raw.event_filter);
   const filterToolName = filter ? strField(filter, "tool_name") : undefined;
   const filterStatus = filter ? strField(filter, "status") : undefined;
-  // The note rides raw.note on every create result (backend #995) — it is
+  // The note rides raw.note on every create result — it is
   // the watch's own prose, rendered as a full section, never folded into
   // the condition sentence. A note alone still yields a spec: a valid watch
   // may carry only a note and no trigger, and the create body renders the
@@ -200,7 +200,7 @@ interface ParsedCondition {
   every?: number;
   filterToolName?: string;
   filterStatus?: string;
-  // The watch's own prose payload (backend #995: any watch carries one). The
+  // The watch's own prose payload (any watch carries one). The
   // value is dot-all — notes are multiline prose, and patterns may also span
   // lines — so all value patterns below use [\s\S], never dot.
   note?: string;
@@ -214,8 +214,7 @@ function numAfter(value: string | undefined): number | undefined {
 
 // Split only on semicolons that introduce a recognized Condition field.
 // output_match is caller-supplied and unbounded, so a pattern may itself
-// contain ";" — splitting on every one truncates the pattern (RoboRev PR
-// #954 review 3). The heads below are the producer's exact grammar
+// contain ";" — splitting on every one truncates the pattern. The heads below are the producer's exact grammar
 // (watchConditionSummary): "output_match: ",
 // "after_seconds: N" / "repeat_seconds: N" / "progress_interval_ms: N",
 // "note: ", "events: ...", joined with "; ". (A pattern literally containing
@@ -287,7 +286,7 @@ export function parseConditionText(condition: string, note?: string): ParsedCond
   // The note head is one clause among the split parts: the producer's join
   // order puts note: before the events clause (watchConditionSummary), so a
   // legacy persisted Condition reads "output_match: …; note: …; events: […]"
-  // and every trigger clause parses beside the note (RoboRev PR #954). The
+  // and every trigger clause parses beside the note. The
   // note value runs to the next head or end-of-string — a note that itself
   // contains delimiter-looking text ("; events: […]") truncates here, which
   // is why list/inspect raws also carry the note in its own structured field
@@ -356,8 +355,7 @@ export function parseConditionText(condition: string, note?: string): ParsedCond
 // gates on): watching; end_reason set (ended); source set without end_reason
 // (pending — a detached watch on the terminal-flush rail still holding
 // frames); neither (not found — inspectWatchByID's empty return). Collapsing
-// pending and missing into "ended" misreports both (RoboRev PR #954 combined
-// review).
+// pending and missing into "ended" misreports both.
 type WatchState = "watching" | "pending" | "ended" | "missing";
 
 function watchState(entry: { watching: boolean; source?: string; endReason?: string }): WatchState {

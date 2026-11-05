@@ -893,7 +893,7 @@ var grepMaxFileBytes = 16 << 20
 // every file: an emitted line can be as long as the read cap, so a hundred
 // matching lines of that shape retain gigabytes before the join doubles
 // them. 8 MiB matches the tool output channel's own capture cap
-// (cappedOutputBuffer), so the search never retains more than the channel
+// (cappedoutput.Buffer), so the search never retains more than the channel
 // delivers anyway, and an ordinary search's output sits far below it. A
 // variable so a test can exercise the cut with fixture-sized lines.
 var grepRetainedBytes = 8 << 20

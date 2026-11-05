@@ -44,7 +44,6 @@ import { answerFleetRead } from "./session/fleetTestUtils";
 import { sessionInfoHosts } from "./session/SessionInfoSheet";
 const harness = vi.hoisted(() => ({
 	connection: {} as Record<string, unknown>,
-	uuid: 0,
 	kvFailure: "" as "" | "read" | "write",
 	rpcFailure: "" as string,
 	reopenKV: () => {},
@@ -103,14 +102,6 @@ vi.mock("react-native-gesture-handler/ReanimatedSwipeable", async () =>
 vi.mock("expo-clipboard", () => ({
 	setStringAsync: vi.fn(async () => {}),
 	getStringAsync: vi.fn(async () => ""),
-}));
-// Every durable mutation needs its own id, so the uuid counts.
-vi.mock("expo-crypto", () => ({
-	randomUUID: () => {
-		harness.uuid += 1;
-		return `send-test-uuid-${harness.uuid}`;
-	},
-	getRandomValues: (array: Uint8Array) => array,
 }));
 vi.mock("expo-sqlite", async () => {
 	const { openSqliteSyncDouble } = await import("./sqliteSync.testkit");

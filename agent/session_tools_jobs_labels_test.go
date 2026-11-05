@@ -124,7 +124,7 @@ func TestJobListLabelsPreserveDurableBriefs(t *testing.T) {
 			t.Fatal(err)
 		}
 		status := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{ID: "detail", Name: "job_status", Arguments: args})
-		var detail stableDelegateStatusResult
+		var detail delegateStatusResult
 		if status.IsError {
 			t.Fatalf("detail read: %v", status.Err)
 		}

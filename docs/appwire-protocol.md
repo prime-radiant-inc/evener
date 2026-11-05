@@ -136,6 +136,12 @@ at high-water depth is refused in band as `connectionBackpressure` with
 started, so an identical retry is safe. The message states what happened on
 the hub and promises nothing about what a client will do.
 
+Once the queue is at capacity, any further request — reads and other
+non-mutations included — is refused in band with the same
+`connectionBackpressure` envelope and `data.cause "queueSaturated"`, but with
+`retryDisposition "none"`: the hard-cap refusal does not promise that an
+identical retry is safe. Let the connection drain and retry deliberately.
+
 ## Explicit skill and command input
 
 Input-bearing requests accept canonical selections alongside text and images:
@@ -192,6 +198,14 @@ no router (reserved).
 |--------|-------|--------|--------|---------|
 | `initialize` | connection | [InitializeParams](#initializeparams) | [InitializeResponse](#initializeresponse) | Handshake; must be the first request. Returns server info, protocol version, source ID, and feature set. |
 | `ping` | connection | [EmptyParams](#emptyparams) | [EmptyResponse](#emptyresponse) | Connection keepalive, answered directly before the initialize gate (the browser's app-level heartbeat). |
+| `evener/hub/session-tools/identify` | connection | [SessionToolsPeerParams](#sessiontoolspeerparams) | [SessionToolsPeerResponse](#sessiontoolspeerresponse) | Private peer identity exchange on an authenticated, negotiated hub bridge; a hub ID is not a credential. |
+| `evener/runtime/session/bind` | connection | [SessionBinding](#sessionbinding) | [SessionBinding](#sessionbinding) | Private authenticated hub-to-runtime binding, accepted only by explicitly installed daemon handlers after initialize. |
+| `evener/runtime/session/state` | connection | [SessionRuntimeRequest](#sessionruntimerequest) | [ManagerView](#managerview) | Private reverse request on a bound runtime connection, reads the session's own start-time Manager property. |
+| `evener/runtime/session/invoke` | connection | [SessionRuntimeRequest](#sessionruntimerequest) | [SessionOperationResponse](#sessionoperationresponse) | Private reverse request on a current Manager binding for one typed discovery, read, create, input, control or stop operation. |
+| `evener/runtime/session/watch` | connection | [SessionRuntimeRequest](#sessionruntimerequest) | [EmptyResponse](#emptyresponse) | Private reverse request for a Manager observation lease through the Manager's bound hub and shared subscriptions for local or remote targets, with initial snapshot, live events and accepted-terminal completion. |
+| `evener/runtime/session/unwatch` | connection | [SessionRuntimeRequest](#sessionruntimerequest) | [EmptyResponse](#emptyresponse) | Private reverse request, detaches one Manager observation lease from its bound connection. |
+| `evener/runtime/session/cancel` | connection | [SessionRuntimeCancel](#sessionruntimecancel) | [EmptyResponse](#emptyresponse) | Private reverse request, cancels the identified negative requestId on this authenticated binding. Available at operation capacity, completed calls are no-ops. |
+| `evener/hub/session-tools/input` | hub | [SessionToolsInput](#sessiontoolsinput) | [Value](#value) | Private identified bridge input for a bound Manager; its fixed method and target are admitted by the hosting hub, not arbitrary remote RPC. |
 | `thread/list` | both | [ThreadListParams](#threadlistparams) | [ThreadListResponse](#threadlistresponse) | Lists threads; the daemon returns its single session. |
 | `thread/read` | both | [ThreadReadParams](#threadreadparams) | [ThreadReadResponse](#threadreadresponse) | Reads one thread and optionally subscribes to its live updates; includeTurns returns the newest bounded atomic projected items, and itemLimit caps items. |
 | `thread/unsubscribe` | both | [ThreadUnsubscribeParams](#threadunsubscribeparams) | [EmptyResponse](#emptyresponse) | Drops this connection's live-update subscription to a thread without reading it. |
@@ -313,6 +327,7 @@ no router (reserved).
 | `evener/settings/agentsDoc/set` | hub | [AgentsDocSetParams](#agentsdocsetparams) | [AgentsDocResponse](#agentsdocresponse) | Replaces the personal AGENTS.md whole (no precondition); broadcasts evener/settings/agentsDoc/changed. |
 | `evener/sandbox/escalation/resolve` | both | [SandboxEscalationResolveParams](#sandboxescalationresolveparams) | [EmptyResponse](#emptyresponse) | Delivers a human's approve/deny decision for a pending sandbox-exemption escalation (M7); the daemon unblocks the waiting tool-exec goroutine, the hub relays. |
 | `evener/delegate/stop` | both | [DelegateStopParams](#delegatestopparams) | [DelegateStopResponse](#delegatestopresponse) | Ends one subagent's current run at the user's request (S6): that subagent alone, while the subagents it started keep running; the root's daemon serves it, the hub relays. Answers stopping or notRunning. |
+| `evener/jobs/stop` | both | [SessionStopRequest](#sessionstoprequest) | [SessionStopResponse](#sessionstopresponse) | Runs the human job_stop owner for a typed job_ target (includeChildren stops only immediate shell children) or owned_delegate dlg_ target (recursive owned subtree). The separate delegate mode ends only one run. |
 | `evener/host/request` | hub | [HostRequestParams](#hostrequestparams) | [HostForwardedResult](#hostforwardedresult) | Forwards one hub-scoped admin RPC to a named remote host's hub through the allow-listed proxy (component 07a); the result is the forwarded method's own result, verbatim — an opaque JSON object, not a wrapper, so a typed client must treat the result as unknown and cast it to the forwarded method's own result type (see HostForwardedResult). |
 | `evener/host/attach` | hub | [HostAttachParams](#hostattachparams) | [HostAttachResponse](#hostattachresponse) | Explicitly attaches one configured remote host by name through the Ensure-backed dialing seam (component 06's Connect action); a mutation and the only browser-reachable attach trigger, idempotent while attached, returning the host's post-attach state. |
 | `evener/host/add` | hub | [HostAddParams](#hostaddparams) | [HostMutationCommitted](#hostmutationcommitted) \| [HostMutationTeardownFailure](#hostmutationteardownfailure) \| [HostMutationCollisionDropped](#hostmutationcollisiondropped) \| [HostMutationAmbiguous](#hostmutationambiguous) | Registers one host entry (its full entry: name, ssh address, user, key path, and the host's paths and roots) into the machine-managed hub.toml; validates like hub.toml loading and refuses a name the live set already holds. Result is the mutation-result union: committed, committed-with-teardown-failure, collision-dropped, or the keyless-add ambiguous arm. |
@@ -338,6 +353,7 @@ the shared [TypeScript client](../appwire-client/typescript/README.md).
 
 | Notification | Payload | Summary |
 |--------------|---------|---------|
+| `evener/runtime/session/observation` | [SessionRuntimeObservation](#sessionruntimeobservation) | Targeted private bound-connection status observation or consumer end. Not a durable job_watch delivery. |
 | `thread/started` | [ThreadStartedParams](#threadstartedparams) | Session started; carries the initial Thread snapshot. |
 | `thread/closed` | [ThreadClosedParams](#threadclosedparams) | Session ended. |
 | `thread/status/changed` | [ThreadStatusChangedParams](#threadstatuschangedparams) | Thread status (type + active flags) changed. |
@@ -359,7 +375,7 @@ the shared [TypeScript client](../appwire-client/typescript/README.md).
 | `evener/marketplace/updated` | [EmptyParams](#emptyparams) | Broadcast after a marketplace mutation (add/edit/remove, or a refresh that moved a clone to another commit or repaired it); no payload. Clients refresh the marketplace list. A refresh that changed nothing moves only lastUpdated and does not broadcast. |
 | `evener/plugin/updated` | [EmptyParams](#emptyparams) | Broadcast after a plugin mutation (install/upgrade/remove/enable/disable/setAutoUpgrade, or a marketplace edit that can re-key installs); no payload. Clients refresh the plugin list. |
 | `evener/notices/changed` | [NoticesListResponse](#noticeslistresponse) | Hub-derived: the hub's notices changed (a notice appeared, cleared, or its session count moved); carries the whole new list, as evener/notices/list returns it. Hub-originated; never sent by daemons. |
-| `evener/thread/resync` | [ThreadResyncParams](#threadresyncparams) | Hub-originated hint asking clients to re-read one thread after relay recovery. |
+| `evener/thread/resync` | [ThreadResyncParams](#threadresyncparams) | Hub-originated hint asking clients to re-read one thread after relay recovery or a hub-owned setting change. |
 | `evener/thread/activity/changed` | [SessionActivityChangedParams](#sessionactivitychangedparams) | Scoped activity invalidation; clients revalidate the named observed resources for the addressed session. |
 | `evener/task/updated` | [TaskUpdatedParams](#taskupdatedparams) | The session's task-list outcome counts (total/done/cancelled/remaining) changed. |
 | `evener/goal/updated` | [GoalUpdatedParams](#goalupdatedparams) | The session's complete structured goal state changed; null clears it. |
@@ -426,6 +442,23 @@ without that tag. These tables describe fields, not every validation constraint.
 | Field | Go type | Omitempty | Embedded |
 |-------|---------|-----------|----------|
 | `content` | string |  |  |
+
+
+### `AnswerContinuationQuery`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `ancestorTurnId` | string |  |  |
+| `candidateTurnId` | string |  |  |
+
+
+### `AnswerContinuationVerdict`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `ancestorTurnId` | string |  |  |
+| `candidateTurnId` | string |  |  |
+| `matches` | bool |  |  |
 
 
 ### `ApiKeyConditionalSetParams`
@@ -515,6 +548,8 @@ Underlying Go kind: `string` (no struct fields).
 
 | Field | Go type | Omitempty | Embedded |
 |-------|---------|-----------|----------|
+| `ref` | string | yes |  |
+| `rosterInstanceId` | string | yes |  |
 | `threadId` | string |  |  |
 | `title` | string |  |  |
 | `project` | string |  |  |
@@ -709,6 +744,7 @@ Underlying Go kind: `string` (no struct fields).
 
 | Field | Go type | Omitempty | Embedded |
 |-------|---------|-----------|----------|
+| `sessionTools` | bool | yes |  |
 | `experimentalApi` | bool |  |  |
 | `optOutNotificationMethods` | []string | yes |  |
 
@@ -1189,6 +1225,7 @@ Underlying Go kind: `string` (no struct fields).
 
 | Field | Go type | Omitempty | Embedded |
 |-------|---------|-----------|----------|
+| `manager` | bool | yes |  |
 | `resumeRequired` | bool | yes |  |
 | `resumeOnlyFoldable` | bool | yes |  |
 | `ref` | string |  |  |
@@ -1214,6 +1251,7 @@ Underlying Go kind: `string` (no struct fields).
 | `agentNote` | string | yes |  |
 | `sessionUrls` | [][appwire.SessionURL](#sessionurl) | yes |  |
 | `artifactsDir` | string | yes |  |
+| `scratchDir` | string | yes |  |
 | `usage` | \*[appwire.EvenerUsage](#evenerusage) | yes |  |
 | `workMillis` | int64 | yes |  |
 | `activeTurnStartedAt` | int64 | yes |  |
@@ -1315,6 +1353,7 @@ Underlying Go kind: `string` (no struct fields).
 
 | Field | Go type | Omitempty | Embedded |
 |-------|---------|-----------|----------|
+| `sessionTools` | bool | yes |  |
 | `threadList` | bool |  |  |
 | `threadTurnsList` | bool |  |  |
 | `turnStart` | bool |  |  |
@@ -2498,6 +2537,15 @@ Underlying Go kind: `struct` (no struct fields).
 | `args` | []string | yes |  |
 
 
+### `ManagerView`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `ref` | string |  |  |
+| `instanceId` | string |  |  |
+| `manager` | bool | yes |  |
+
+
 ### `MarketplaceAddParams`
 
 | Field | Go type | Omitempty | Embedded |
@@ -2656,6 +2704,7 @@ Underlying Go kind: `string` (no struct fields).
 
 | Field | Go type | Omitempty | Embedded |
 |-------|---------|-----------|----------|
+| `actor` | [appwire.SessionActor](#sessionactor) |  |  |
 | `clientMutationId` | string |  |  |
 | `disposition` | [appwire.MutationDisposition](#mutationdisposition) |  |  |
 | `threadId` | string |  |  |
@@ -2787,6 +2836,14 @@ Underlying Go kind: `string` (no struct fields).
 | Field | Go type | Omitempty | Embedded |
 |-------|---------|-----------|----------|
 | `notices` | [][appwire.HubNotice](#hubnotice) |  |  |
+
+
+### `Notification`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `method` | string |  |  |
+| `params` | jsontext.Value | yes |  |
 
 
 ### `OperationProgressEntry`
@@ -2942,6 +2999,7 @@ Underlying Go kind: `string` (no struct fields).
 
 | Field | Go type | Omitempty | Embedded |
 |-------|---------|-----------|----------|
+| `actor` | [appwire.SessionActor](#sessionactor) |  |  |
 | `clientMutationId` | string |  |  |
 | `method` | string |  |  |
 | `input` | [][appwire.InputItem](#inputitem) | yes |  |
@@ -3212,6 +3270,14 @@ Underlying Go kind: `string` (no struct fields).
 | `preview` | string | yes |  |
 
 
+### `RosterEvent`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `AttentionEntry` | [appwire.AttentionEntry](#attentionentry) |  | yes |
+| `kind` | string |  |  |
+
+
 ### `SandboxEscalationRequested`
 
 | Field | Go type | Omitempty | Embedded |
@@ -3232,6 +3298,7 @@ Underlying Go kind: `string` (no struct fields).
 
 | Field | Go type | Omitempty | Embedded |
 |-------|---------|-----------|----------|
+| `managerProof` | \*[appwire.SessionActorProof](#sessionactorproof) | yes |  |
 | `threadId` | string | yes |  |
 | `ref` | string | yes |  |
 | `escalationId` | string |  |  |
@@ -3345,6 +3412,7 @@ Underlying Go kind: `string` (no struct fields).
 | `ref` | string |  |  |
 | `sessionId` | string |  |  |
 | `delegateId` | string | yes |  |
+| `delegateName` | string | yes |  |
 | `title` | string |  |  |
 
 
@@ -3367,6 +3435,7 @@ Underlying Go kind: `string` (no struct fields).
 | `rootRef` | string |  |  |
 | `parentRef` | string | yes |  |
 | `delegateId` | string | yes |  |
+| `delegateName` | string | yes |  |
 | `ancestors` | [][appwire.SessionActivityAncestor](#sessionactivityancestor) |  |  |
 | `ancestryKnown` | bool |  |  |
 | `epoch` | string |  |  |
@@ -3420,9 +3489,30 @@ Underlying Go kind: `string` (no struct fields).
 | `scope` | [appwire.SessionActivityScope](#sessionactivityscope) | yes |  |
 
 
+### `SessionActivityRequest`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `ref` | string |  |  |
+| `resource` | [appwire.SessionActivityResource](#sessionactivityresource) |  |  |
+| `scope` | [appwire.SessionActivityScope](#sessionactivityscope) | yes |  |
+| `cursor` | string | yes |  |
+| `limit` | int | yes |  |
+
+
 ### `SessionActivityResource`
 
 Underlying Go kind: `string` (no struct fields).
+
+
+### `SessionActivityResponse`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `summary` | \*[appwire.SessionActivitySummary](#sessionactivitysummary) | yes |  |
+| `delegates` | \*[appwire.SessionDelegatesResponse](#sessiondelegatesresponse) | yes |  |
+| `jobs` | \*[appwire.SessionJobsResponse](#sessionjobsresponse) | yes |  |
+| `watches` | \*[appwire.SessionWatchesResponse](#sessionwatchesresponse) | yes |  |
 
 
 ### `SessionActivityScope`
@@ -3441,6 +3531,82 @@ Underlying Go kind: `string` (no struct fields).
 | `delegates` | [appwire.SessionActivityCounts](#sessionactivitycounts) |  |  |
 | `jobs` | [appwire.SessionActivityCounts](#sessionactivitycounts) |  |  |
 | `watches` | [appwire.SessionActivityCounts](#sessionactivitycounts) |  |  |
+
+
+### `SessionActor`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `kind` | string |  |  |
+| `managerRef` | string | yes |  |
+
+
+### `SessionActorProof`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `bindingId` | string |  |  |
+| `callerRef` | string |  |  |
+| `actor` | [appwire.SessionActor](#sessionactor) |  |  |
+
+
+### `SessionBinding`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `ref` | string |  |  |
+| `instanceId` | string |  |  |
+| `hubId` | string |  |  |
+| `bindingId` | string |  |  |
+
+
+### `SessionControlRequest`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `action` | string |  |  |
+| `approval` | \*[appwire.SandboxEscalationResolveParams](#sandboxescalationresolveparams) | yes |  |
+| `resume` | \*[appwire.ThreadResumeParams](#threadresumeparams) | yes |  |
+| `fork` | \*[appwire.ThreadForkParams](#threadforkparams) | yes |  |
+| `clear` | \*[appwire.ThreadClearParams](#threadclearparams) | yes |  |
+| `model` | \*[appwire.ThreadModelSetParams](#threadmodelsetparams) | yes |  |
+| `vision_model` | \*[appwire.ThreadVisionModelSetParams](#threadvisionmodelsetparams) | yes |  |
+| `reasoning_effort` | \*[appwire.ThreadReasoningEffortSetParams](#threadreasoningeffortsetparams) | yes |  |
+| `compact` | \*[appwire.ThreadCompactStartParams](#threadcompactstartparams) | yes |  |
+| `drain_queue` | \*[appwire.TurnDrainAsSteerParams](#turndrainassteerparams) | yes |  |
+| `promote_queued` | \*[appwire.TurnPromoteQueuedAsSteerParams](#turnpromotequeuedassteerparams) | yes |  |
+| `cancel_queued` | \*[appwire.TurnCancelQueuedParams](#turncancelqueuedparams) | yes |  |
+| `rename` | \*[appwire.ThreadNameSetParams](#threadnamesetparams) | yes |  |
+| `goal` | \*[appwire.GoalSetParams](#goalsetparams) | yes |  |
+| `human_notes` | \*[appwire.NotesHumanSetParams](#noteshumansetparams) | yes |  |
+| `remove_url` | \*[appwire.UrlsRemoveParams](#urlsremoveparams) | yes |  |
+| `archive` | \*[appwire.ArchiveParams](#archiveparams) | yes |  |
+| `delete` | \*[appwire.SessionDeleteParams](#sessiondeleteparams) | yes |  |
+| `pin` | \*[appwire.SessionPinAssignParams](#sessionpinassignparams) | yes |  |
+| `unpin` | \*[appwire.SessionPinUnpinParams](#sessionpinunpinparams) | yes |  |
+| `seen` | \*[appwire.SessionSeenSetParams](#sessionseensetparams) | yes |  |
+
+
+### `SessionControlResponse`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `result` | [appwire.EmptyResponse](#emptyresponse) |  |  |
+| `actor` | [appwire.SessionActor](#sessionactor) |  |  |
+| `resume` | \*[appwire.ThreadResumeResponse](#threadresumeresponse) | yes |  |
+| `fork` | \*[appwire.ThreadForkResponse](#threadforkresponse) | yes |  |
+| `clear` | \*[appwire.ThreadClearResponse](#threadclearresponse) | yes |  |
+| `drain_queue` | \*[appwire.TurnDrainAsSteerResponse](#turndrainassteerresponse) | yes |  |
+| `promote_queued` | \*[appwire.TurnPromoteQueuedAsSteerResponse](#turnpromotequeuedassteerresponse) | yes |  |
+| `cancel_queued` | \*[appwire.TurnCancelQueuedResponse](#turncancelqueuedresponse) | yes |  |
+| `goal` | \*[appwire.GoalSetResponse](#goalsetresponse) | yes |  |
+| `human_notes` | \*[appwire.NotesHumanSetResponse](#noteshumansetresponse) | yes |  |
+| `remove_url` | \*[appwire.UrlsRemoveResponse](#urlsremoveresponse) | yes |  |
+| `archive` | \*[appwire.ArchiveResponse](#archiveresponse) | yes |  |
+| `delete` | \*[appwire.SessionDeleteResponse](#sessiondeleteresponse) | yes |  |
+| `pin` | \*[appwire.SessionPinAssignResponse](#sessionpinassignresponse) | yes |  |
+| `unpin` | \*[appwire.SessionPinUnpinResponse](#sessionpinunpinresponse) | yes |  |
+| `seen` | \*[appwire.SessionSeenSetResponse](#sessionseensetresponse) | yes |  |
 
 
 ### `SessionDelegate`
@@ -3505,6 +3671,14 @@ Underlying Go kind: `string` (no struct fields).
 | `navigation` | [appwire.NavigationMutation](#navigationmutation) |  |  |
 
 
+### `SessionDiscovery`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `threads` | [appwire.ThreadListResponse](#threadlistresponse) |  |  |
+| `sources` | [][appwire.SessionSource](#sessionsource) |  |  |
+
+
 ### `SessionDocumentParams`
 
 | Field | Go type | Omitempty | Embedded |
@@ -3542,6 +3716,25 @@ Underlying Go kind: `string` (no struct fields).
 | `data` | []uint8 |  |  |
 
 
+### `SessionJobStopParams`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `ref` | string |  |  |
+| `jobId` | string |  |  |
+| `includeChildren` | bool | yes |  |
+| `maxWaitMs` | int | yes |  |
+
+
+### `SessionJobStopResponse`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `jobId` | string |  |  |
+| `status` | string |  |  |
+| `outcome` | string |  |  |
+
+
 ### `SessionJobsResponse`
 
 | Field | Go type | Omitempty | Embedded |
@@ -3550,6 +3743,74 @@ Underlying Go kind: `string` (no struct fields).
 | `scope` | [appwire.SessionActivityScope](#sessionactivityscope) |  |  |
 | `page` | [appwire.SessionActivityPage](#sessionactivitypage) |  |  |
 | `jobs` | [][appwire.JobActivityJob](#jobactivityjob) |  |  |
+
+
+### `SessionObservationMetadata`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `ref` | string |  |  |
+| `instanceId` | string | yes |  |
+| `generationId` | string | yes |  |
+| `turnId` | string | yes |  |
+| `answerToTurnIds` | []string | yes |  |
+| `entryId` | string | yes |  |
+| `endTurn` | bool | yes |  |
+| `endReason` | string | yes |  |
+| `terminalAccepted` | \*bool | yes |  |
+| `causalKnown` | bool |  |  |
+| `causal` | \*provenance.Causal | yes |  |
+
+
+### `SessionOperationRequest`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `discover` | \*[appwire.ThreadListParams](#threadlistparams) | yes |  |
+| `read` | \*[appwire.ThreadReadParams](#threadreadparams) | yes |  |
+| `turns` | \*[appwire.ThreadTurnsListParams](#threadturnslistparams) | yes |  |
+| `activity` | \*[appwire.SessionActivityRequest](#sessionactivityrequest) | yes |  |
+| `tasks` | \*[appwire.SessionTasksRequest](#sessiontasksrequest) | yes |  |
+| `job` | \*[appwire.JobsGetParams](#jobsgetparams) | yes |  |
+| `jobOutput` | \*[appwire.JobsOutputParams](#jobsoutputparams) | yes |  |
+| `models` | \*[appwire.ModelListParams](#modellistparams) | yes |  |
+| `create` | \*[appwire.ThreadStartParams](#threadstartparams) | yes |  |
+| `start` | \*[appwire.TurnStartParams](#turnstartparams) | yes |  |
+| `queue` | \*[appwire.TurnQueueParams](#turnqueueparams) | yes |  |
+| `steer` | \*[appwire.TurnSteerParams](#turnsteerparams) | yes |  |
+| `control` | \*[appwire.SessionControlRequest](#sessioncontrolrequest) | yes |  |
+| `stop` | \*[appwire.SessionStopRequest](#sessionstoprequest) | yes |  |
+
+
+### `SessionOperationResponse`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `actor` | [appwire.SessionActor](#sessionactor) |  |  |
+| `discover` | \*[appwire.SessionDiscovery](#sessiondiscovery) | yes |  |
+| `read` | \*[appwire.ThreadReadResponse](#threadreadresponse) | yes |  |
+| `turns` | \*[appwire.ThreadTurnsListResponse](#threadturnslistresponse) | yes |  |
+| `activity` | \*[appwire.SessionActivityResponse](#sessionactivityresponse) | yes |  |
+| `tasks` | \*[appwire.SessionTasksResponse](#sessiontasksresponse) | yes |  |
+| `job` | \*[appwire.JobsGetResponse](#jobsgetresponse) | yes |  |
+| `jobOutput` | \*[appwire.JobsOutputResponse](#jobsoutputresponse) | yes |  |
+| `models` | \*[appwire.ModelListResponse](#modellistresponse) | yes |  |
+| `create` | \*[appwire.ThreadStartResponse](#threadstartresponse) | yes |  |
+| `start` | \*[appwire.TurnStartResponse](#turnstartresponse) | yes |  |
+| `queue` | \*[appwire.TurnQueueResponse](#turnqueueresponse) | yes |  |
+| `steer` | \*[appwire.TurnSteerResponse](#turnsteerresponse) | yes |  |
+| `control` | \*[appwire.SessionControlResponse](#sessioncontrolresponse) | yes |  |
+| `stop` | \*[appwire.SessionStopResponse](#sessionstopresponse) | yes |  |
+| `followUps` | [][appwire.SessionStatusFollowUp](#sessionstatusfollowup) | yes |  |
+
+
+### `SessionOwnedDelegateStopParams`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `ref` | string |  |  |
+| `delegateId` | string |  |  |
+| `maxWaitMs` | int | yes |  |
 
 
 ### `SessionPinAssignParams`
@@ -3603,6 +3864,44 @@ Underlying Go kind: `string` (no struct fields).
 | `navigation` | [appwire.NavigationMutation](#navigationmutation) |  |  |
 
 
+### `SessionRosterUpdate`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `revision` | uint64 |  |  |
+| `initial` | bool | yes |  |
+| `resync` | bool | yes |  |
+| `events` | [][appwire.RosterEvent](#rosterevent) | yes |  |
+
+
+### `SessionRuntimeCancel`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `bindingId` | string |  |  |
+| `requestId` | int64 |  |  |
+
+
+### `SessionRuntimeObservation`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `bindingId` | string |  |  |
+| `watchId` | string |  |  |
+| `update` | \*[appwire.SessionWatchUpdate](#sessionwatchupdate) | yes |  |
+| `ended` | bool | yes |  |
+
+
+### `SessionRuntimeRequest`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `bindingId` | string |  |  |
+| `operation` | \*[appwire.SessionOperationRequest](#sessionoperationrequest) | yes |  |
+| `watch` | \*[appwire.SessionWatchRequest](#sessionwatchrequest) | yes |  |
+| `watchId` | string | yes |  |
+
+
 ### `SessionSeenMark`
 
 | Field | Go type | Omitempty | Embedded |
@@ -3628,6 +3927,112 @@ Underlying Go kind: `string` (no struct fields).
 | `navigation` | [appwire.NavigationMutation](#navigationmutation) |  |  |
 
 
+### `SessionSource`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `id` | string |  |  |
+
+
+### `SessionStatusArguments`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `hub` | [appwire.SessionStatusTarget](#sessionstatustarget) |  |  |
+
+
+### `SessionStatusFollowUp`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `tool` | string |  |  |
+| `arguments` | [appwire.SessionStatusArguments](#sessionstatusarguments) |  |  |
+
+
+### `SessionStatusTarget`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `ref` | string |  |  |
+| `mode` | string | yes |  |
+| `resource` | [appwire.SessionActivityResource](#sessionactivityresource) | yes |  |
+| `scope` | [appwire.SessionActivityScope](#sessionactivityscope) | yes |  |
+| `cursor` | string | yes |  |
+| `limit` | int | yes |  |
+| `itemLimit` | int | yes |  |
+| `offset` | int | yes |  |
+| `snapshot` | string | yes |  |
+| `jobId` | string | yes |  |
+| `beforeBytes` | \*int64 | yes |  |
+| `maxBytes` | int64 | yes |  |
+
+
+### `SessionStopRequest`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `mode` | string |  |  |
+| `interrupt` | \*[appwire.TurnInterruptParams](#turninterruptparams) | yes |  |
+| `delegate` | \*[appwire.DelegateStopParams](#delegatestopparams) | yes |  |
+| `owned_delegate` | \*[appwire.SessionOwnedDelegateStopParams](#sessionowneddelegatestopparams) | yes |  |
+| `job` | \*[appwire.SessionJobStopParams](#sessionjobstopparams) | yes |  |
+| `shutdown` | \*[appwire.ThreadShutdownParams](#threadshutdownparams) | yes |  |
+| `force_stop` | \*[appwire.ThreadForceStopParams](#threadforcestopparams) | yes |  |
+
+
+### `SessionStopResponse`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `actor` | [appwire.SessionActor](#sessionactor) |  |  |
+| `interrupt` | \*[appwire.TurnInterruptResponse](#turninterruptresponse) | yes |  |
+| `delegate` | \*[appwire.DelegateStopResponse](#delegatestopresponse) | yes |  |
+| `job` | \*[appwire.SessionJobStopResponse](#sessionjobstopresponse) | yes |  |
+| `result` | [appwire.EmptyResponse](#emptyresponse) |  |  |
+
+
+### `SessionTasksRequest`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `ref` | string |  |  |
+| `offset` | int | yes |  |
+| `limit` | int | yes |  |
+| `snapshot` | string | yes |  |
+
+
+### `SessionTasksResponse`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `data` | [][appwire.Task](#task) |  |  |
+| `snapshot` | string | yes |  |
+| `nextOffset` | \*int | yes |  |
+
+
+### `SessionToolsInput`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `callerRef` | string |  |  |
+| `method` | string |  |  |
+| `params` | jsontext.Value |  |  |
+
+
+### `SessionToolsPeerParams`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `hubId` | string |  |  |
+
+
+### `SessionToolsPeerResponse`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `hubId` | string |  |  |
+
+
 ### `SessionURL`
 
 | Field | Go type | Omitempty | Embedded |
@@ -3650,9 +4055,30 @@ Underlying Go kind: `string` (no struct fields).
 | `watch` | [appwire.EvenerWatchInfo](#evenerwatchinfo) |  |  |
 
 
+### `SessionWatchRequest`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `ref` | string | yes |  |
+| `scope` | string | yes |  |
+| `events` | []string | yes |  |
+| `completion` | bool | yes |  |
+
+
 ### `SessionWatchState`
 
 Underlying Go kind: `string` (no struct fields).
+
+
+### `SessionWatchUpdate`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `snapshot` | \*[appwire.ThreadReadResponse](#threadreadresponse) | yes |  |
+| `roster` | \*[appwire.SessionRosterUpdate](#sessionrosterupdate) | yes |  |
+| `notification` | \*[appwire.Notification](#notification) | yes |  |
+| `event` | string | yes |  |
+| `metadata` | [appwire.SessionObservationMetadata](#sessionobservationmetadata) |  |  |
 
 
 ### `SessionWatchesResponse`
@@ -3998,6 +4424,9 @@ Underlying Go kind: `string` (no struct fields).
 
 | Field | Go type | Omitempty | Embedded |
 |-------|---------|-----------|----------|
+| `actor` | \*[appwire.SessionActor](#sessionactor) | yes |  |
+| `observation` | \*[appwire.SessionObservationMetadata](#sessionobservationmetadata) | yes |  |
+| `authorship` | \*[appwire.TranscriptAuthorship](#transcriptauthorship) | yes |  |
 | `type` | string |  |  |
 | `id` | string |  |  |
 | `transcriptKey` | string | yes |  |
@@ -4149,6 +4578,7 @@ Underlying Go kind: `string` (no struct fields).
 | `itemLimit` | int | yes |  |
 | `requestGeneration` | uint64 | yes |  |
 | `heldSnapshot` | \*[appwire.SnapshotIdentity](#snapshotidentity) | yes |  |
+| `answerContinuation` | \*[appwire.AnswerContinuationQuery](#answercontinuationquery) | yes |  |
 
 
 ### `ThreadReadResponse`
@@ -4156,6 +4586,9 @@ Underlying Go kind: `string` (no struct fields).
 | Field | Go type | Omitempty | Embedded |
 |-------|---------|-----------|----------|
 | `thread` | [appwire.Thread](#thread) |  |  |
+| `targetSessionToolsSupported` | \*bool | yes |  |
+| `latestExecutionTurnId` | string | yes |  |
+| `answerContinuation` | \*[appwire.AnswerContinuationVerdict](#answercontinuationverdict) | yes |  |
 | `olderCursor` | string | yes |  |
 | `requestGeneration` | uint64 | yes |  |
 | `bootGeneration` | string | yes |  |
@@ -4229,6 +4662,7 @@ Underlying Go kind: `string` (no struct fields).
 | `reasoningEffort` | string | yes |  |
 | `nonInteractive` | \*bool | yes |  |
 | `launchOverrides` | \*[appwire.LaunchConfigLayer](#launchconfiglayer) | yes |  |
+| `manager` | bool | yes |  |
 
 
 ### `ThreadStartResponse`
@@ -4365,6 +4799,30 @@ Underlying Go kind: `string` (no struct fields).
 | `visionModel` | string |  |  |
 
 
+### `TranscriptAuthor`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `kind` | [appwire.TranscriptAuthorKind](#transcriptauthorkind) |  |  |
+| `sessionRef` | string | yes |  |
+| `ownerRef` | string | yes |  |
+| `delegateId` | string | yes |  |
+| `delegateName` | string | yes |  |
+
+
+### `TranscriptAuthorKind`
+
+Underlying Go kind: `string` (no struct fields).
+
+
+### `TranscriptAuthorship`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `author` | [appwire.TranscriptAuthor](#transcriptauthor) |  |  |
+| `inherited` | bool |  |  |
+
+
 ### `TranscriptContentKind`
 
 Underlying Go kind: `string` (no struct fields).
@@ -4417,6 +4875,7 @@ Underlying Go kind: `string` (no struct fields).
 | `toolCalls` | bool |  |  |
 | `reasoning` | bool |  |  |
 | `expandByDefault` | bool |  |  |
+| `thinkingOpenByDefault` | bool |  |  |
 
 
 ### `TranscriptDisplayDefault`
@@ -4511,6 +4970,7 @@ Underlying Go kind: `string` (no struct fields).
 
 | Field | Go type | Omitempty | Embedded |
 |-------|---------|-----------|----------|
+| `managerProof` | \*[appwire.SessionActorProof](#sessionactorproof) | yes |  |
 | `ref` | string |  |  |
 | `clientMutationId` | string |  |  |
 | `expectedInstanceId` | string |  |  |
@@ -4564,6 +5024,7 @@ Underlying Go kind: `string` (no struct fields).
 
 | Field | Go type | Omitempty | Embedded |
 |-------|---------|-----------|----------|
+| `managerProof` | \*[appwire.SessionActorProof](#sessionactorproof) | yes |  |
 | `ref` | string |  |  |
 | `index` | int |  |  |
 | `clientMutationId` | string |  |  |
@@ -4582,6 +5043,7 @@ Underlying Go kind: `string` (no struct fields).
 
 | Field | Go type | Omitempty | Embedded |
 |-------|---------|-----------|----------|
+| `managerProof` | \*[appwire.SessionActorProof](#sessionactorproof) | yes |  |
 | `ref` | string |  |  |
 | `clientMutationId` | string |  |  |
 | `expectedInstanceId` | string |  |  |
@@ -4599,6 +5061,7 @@ Underlying Go kind: `string` (no struct fields).
 
 | Field | Go type | Omitempty | Embedded |
 |-------|---------|-----------|----------|
+| `managerProof` | \*[appwire.SessionActorProof](#sessionactorproof) | yes |  |
 | `ref` | string | yes |  |
 | `threadId` | string | yes |  |
 | `clientMutationId` | string |  |  |
@@ -4618,6 +5081,7 @@ Underlying Go kind: `string` (no struct fields).
 
 | Field | Go type | Omitempty | Embedded |
 |-------|---------|-----------|----------|
+| `managerProof` | \*[appwire.SessionActorProof](#sessionactorproof) | yes |  |
 | `ref` | string | yes |  |
 | `threadId` | string | yes |  |
 | `clientMutationId` | string |  |  |
@@ -4723,6 +5187,11 @@ Underlying Go kind: `struct` (no struct fields).
 | `threadId` | string |  |  |
 | `ref` | string |  |  |
 | `urls` | [][appwire.SessionURL](#sessionurl) | yes |  |
+
+
+### `Value`
+
+Underlying Go kind: `slice` (no struct fields).
 
 
 ### `WarningParams`

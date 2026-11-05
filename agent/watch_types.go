@@ -9,6 +9,7 @@ import (
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/internal/jobstore"
 	"primeradiant.com/evener/agent/provenance"
+	"primeradiant.com/evener/appwire"
 )
 
 // WatchEventKindNames is the canonical, stable list of model-facing event-kind
@@ -166,7 +167,7 @@ func watchLostAtRestartSessionMessage() string {
 	return "watch ended: this session restarted and the watch did not survive it; the observed session is still running, so its condition may still occur with nothing watching — re-arm the watch if you still care"
 }
 
-func watchLostAtRestartStableDelegateMessage(source string) string {
+func watchLostAtRestartDelegateMessage(source string) string {
 	return fmt.Sprintf("watch ended: this session restarted and the watch did not survive it; stable delegate %s may still emit matching events — re-arm the watch if you still care", source)
 }
 
@@ -207,6 +208,20 @@ type watchConfig struct {
 	sourceDelegateID   string
 	sourceGeneration   uint64
 	stableReceiver     bool
+	hubRef             string
+	hubInstance        string
+	hubGeneration      string
+	hubCaller          string
+	hubCompletion      bool
+	hubTurnBound       bool
+	hubTurnID          string
+	hubSeen            map[string]bool
+	hubSuspended       bool
+	rosterRevision     uint64
+	rosterBaseline     map[string]appwire.AttentionEntry
+	rosterBound        bool
+	rosterNeedsResync  bool
+	rosterConsumerDone chan struct{}
 	target             string
 	outputMatch        string
 	outputMatcher      *jobstore.OutputMatcher
@@ -240,8 +255,11 @@ type watchConfig struct {
 	settledUpdateSeq  map[jobstore.WatchSendKey]uint64
 	settledOrder      []jobstore.WatchSendKey
 	rejectingDelivery bool
-	nextUpdateSeq     uint64
-	progressStop      chan struct{}
+	// terminalDeliveryPending keeps detached eligibility alive while endHubWatch
+	// records its final send outside jm.mu.
+	terminalDeliveryPending bool
+	nextUpdateSeq           uint64
+	progressStop            chan struct{}
 	// deliveries counts model-facing deliveries for this watch config (rendered
 	// caller frames + delivered sidecar sends + no-send watch notifications +
 	// periodic progress ticks). It is the volume job_list reports, not the
@@ -318,7 +336,7 @@ const (
 	watchSourceConcreteJob watchSourceKind = iota
 	watchSourceSelfSession
 	watchSourceParentSession
-	watchSourceStableDelegate
+	watchSourceDelegate
 )
 
 type watchSource struct {
@@ -345,7 +363,7 @@ func normalizeWatchSource(source string) (watchSource, error) {
 			return watchSource{Kind: watchSourceConcreteJob, Public: source, Internal: source}, nil
 		}
 		if strings.HasPrefix(source, "dlg_") {
-			return watchSource{Kind: watchSourceStableDelegate, Public: source, Internal: runtimeMessageAliasCaller}, nil
+			return watchSource{Kind: watchSourceDelegate, Public: source, Internal: runtimeMessageAliasCaller}, nil
 		}
 		return watchSource{}, fmt.Errorf("source_not_watchable: %q is not self, parent, a concrete job_id, or a stable delegate_id", source)
 	}
@@ -424,6 +442,9 @@ type watchSendDelivery struct {
 	watchTarget              string
 	watchedIdentity          string
 	trigger                  string
+	rosterPayload            string
+	rosterInitial            bool
+	rosterResync             bool
 	triggerProvenance        *provenance.Causal
 	// provenance is the delivery's causal chain: the triggering event's
 	// provenance extended with this watch's own (watch_id, generation) key and a

@@ -2,7 +2,7 @@ import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, expect, test, vi } from "vitest";
 import { ClientProvider } from "../../../shell/clientContext";
-import { connectionStore } from "../../../stores/connection";
+import { connectionStore, resetConnectionStoreForTests } from "../../../stores/connection";
 import { emptyStateReasons } from "../../../widgets/emptystate/emptyStateTestUtils";
 import { MobileSection } from "./mobile";
 import { alertReasons } from "./reasonTestUtils";
@@ -19,7 +19,7 @@ vi.mock("./devicePairing/DeviceSetup", () => setupChunk.promise);
 afterEach(() => {
   cleanup();
   vi.unstubAllGlobals();
-  connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
+  resetConnectionStoreForTests();
 });
 
 test("keeps the pairing link accessible while setup loads and after a load failure", async () => {

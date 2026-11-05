@@ -4,12 +4,12 @@ import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { beforeEach, describe, expect, test } from "vitest";
 import { connectReadyFakeClient } from "../testing/connectionTestUtils";
 import { agentsDocStore, resetAgentsDocStoreForTests } from "./agentsDoc";
-import { connectionStore } from "./connection";
+import { connectionStore, resetConnectionStoreForTests } from "./connection";
 
 const DOC: AgentsDocResponse = { path: "/home/u/.config/evener/AGENTS.md", exists: true, content: "# hi\n" };
 
 beforeEach(() => {
-  connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
+  resetConnectionStoreForTests();
   resetAgentsDocStoreForTests();
 });
 

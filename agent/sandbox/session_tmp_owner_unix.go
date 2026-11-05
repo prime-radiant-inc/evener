@@ -25,9 +25,19 @@ func scratchEntryOwnedByProcess(path string) (bool, error) {
 	if err != nil {
 		return false, err
 	}
+	return scratchInfoOwnedByProcess(info), nil
+}
+
+// scratchInfoOwnedByProcess is scratchEntryOwnedByProcess over a stat the
+// caller already holds: per-request serving paths validate each entry with
+// one Lstat and read the uid from its result, never re-statting an entry the
+// same call just described — a second stat would re-resolve the same inode
+// for a value the first already carried, and the entry could change hands
+// between the two.
+func scratchInfoOwnedByProcess(info os.FileInfo) bool {
 	stat, ok := info.Sys().(*syscall.Stat_t)
 	if !ok {
-		return false, nil
+		return false
 	}
-	return int(stat.Uid) == os.Getuid(), nil
+	return int(stat.Uid) == os.Getuid()
 }

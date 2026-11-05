@@ -621,7 +621,7 @@ func TestSessionResumeRetryCorrelation(t *testing.T) {
 			ref := "local:" + sessionID
 
 			attempts := 0
-			_, err := withSessionResume(context.Background(), cfg, web.sources, ref, mutationID, func() (appwire.EmptyResponse, error) {
+			_, err := withSessionResume(context.Background(), cfg, web.sources, ref, mutationID, nil, func() (appwire.EmptyResponse, error) {
 				attempts++
 				if attempts == 1 {
 					return appwire.EmptyResponse{}, tc.firstErr
@@ -700,7 +700,7 @@ func TestSessionResumeResumeDeletionFailureKeepsDeletionOutcome(t *testing.T) {
 	cfg.DeletionStore = store
 
 	attempts := 0
-	_, err = withSessionResume(context.Background(), cfg, web.sources, ref, verbatim, func() (appwire.EmptyResponse, error) {
+	_, err = withSessionResume(context.Background(), cfg, web.sources, ref, verbatim, nil, func() (appwire.EmptyResponse, error) {
 		attempts++
 		if _, err := store.Begin("project-fence-0123456789", []hubcore.DeletionTarget{{
 			Ref:      ref,

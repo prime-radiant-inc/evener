@@ -65,57 +65,11 @@ func registerPinSectionHandlers(server *appserver.Server, cfg hubcore.WebConfig,
 	})
 
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerSessionPinAssign, func(ctx context.Context, params appwire.SessionPinAssignParams) (appwire.SessionPinAssignResponse, error) {
-		if (params.SectionID == nil) == (params.SectionName == nil) {
-			return appwire.SessionPinAssignResponse{}, appwire.InvalidParams("exactly one of sectionId or sectionName is required")
-		}
-		if cfg.PinSections == nil {
-			return appwire.SessionPinAssignResponse{}, appwire.InternalError("pin section store not configured")
-		}
-		session, err := resolvePinSession(ctx, resolve, params.SessionRef, "sessionRef")
-		if err != nil {
-			return appwire.SessionPinAssignResponse{}, err
-		}
-
-		var section hubcore.PinSection
-		var changed bool
-		if params.SectionID != nil {
-			section, changed, err = cfg.PinSections.Assign(*params.SectionID, session.source, session.sessionID, time.Now())
-		} else {
-			section, changed, err = cfg.PinSections.CreateOrReuseAndAssign(*params.SectionName, session.source, session.sessionID, time.Now())
-		}
-		if err != nil {
-			return appwire.SessionPinAssignResponse{}, pinSectionAppWireError(err)
-		}
-		mutation, err := commitNavigationChange(ctx, cfg, navigation, changed)
-		if err != nil {
-			return appwire.SessionPinAssignResponse{}, err
-		}
-		return appwire.SessionPinAssignResponse{
-			OK: true, Changed: changed, Navigation: mutation,
-			Assignment: appwire.SessionPinAssignment{SessionRef: session.ref().String(), Section: pinSectionForAppWire(section)},
-		}, nil
+		return pinAssign(ctx, cfg, navigation, resolve, params)
 	})
 
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerSessionPinUnpin, func(ctx context.Context, params appwire.SessionPinUnpinParams) (appwire.SessionPinUnpinResponse, error) {
-		if cfg.PinSections == nil {
-			return appwire.SessionPinUnpinResponse{}, appwire.InternalError("pin section store not configured")
-		}
-		session, err := resolveUnpinSession(ctx, cfg.PinSections, resolve, params.SessionRef)
-		if err != nil {
-			return appwire.SessionPinUnpinResponse{}, err
-		}
-		changed, err := cfg.PinSections.Unpin(session.source, session.sessionID)
-		if err != nil {
-			return appwire.SessionPinUnpinResponse{}, pinSectionAppWireError(err)
-		}
-		mutation, err := commitNavigationChange(ctx, cfg, navigation, changed)
-		if err != nil {
-			return appwire.SessionPinUnpinResponse{}, err
-		}
-		return appwire.SessionPinUnpinResponse{
-			OK: true, Changed: changed, Navigation: mutation,
-			Assignment: appwire.SessionPinUnpinAssignment{SessionRef: session.ref().String()},
-		}, nil
+		return pinUnpin(ctx, cfg, navigation, resolve, params)
 	})
 }
 
@@ -259,4 +213,58 @@ func sessionRefMatchesID(requested, actual string) bool {
 		return true
 	}
 	return actualRef.SourceID == appwire.LocalSourceID && requested == actualRef.ThreadID
+}
+
+func pinAssign(ctx context.Context, cfg hubcore.WebConfig, navigation *NavigationService, resolve topLevelSessionResolver, params appwire.SessionPinAssignParams) (appwire.SessionPinAssignResponse, error) {
+	if (params.SectionID == nil) == (params.SectionName == nil) {
+		return appwire.SessionPinAssignResponse{}, appwire.InvalidParams("exactly one of sectionId or sectionName is required")
+	}
+	if cfg.PinSections == nil {
+		return appwire.SessionPinAssignResponse{}, appwire.InternalError("pin section store not configured")
+	}
+	session, err := resolvePinSession(ctx, resolve, params.SessionRef, "sessionRef")
+	if err != nil {
+		return appwire.SessionPinAssignResponse{}, err
+	}
+
+	var section hubcore.PinSection
+	var changed bool
+	if params.SectionID != nil {
+		section, changed, err = cfg.PinSections.Assign(*params.SectionID, session.source, session.sessionID, time.Now())
+	} else {
+		section, changed, err = cfg.PinSections.CreateOrReuseAndAssign(*params.SectionName, session.source, session.sessionID, time.Now())
+	}
+	if err != nil {
+		return appwire.SessionPinAssignResponse{}, pinSectionAppWireError(err)
+	}
+	mutation, err := commitNavigationChange(ctx, cfg, navigation, changed)
+	if err != nil {
+		return appwire.SessionPinAssignResponse{}, err
+	}
+	return appwire.SessionPinAssignResponse{
+		OK: true, Changed: changed, Navigation: mutation,
+		Assignment: appwire.SessionPinAssignment{SessionRef: session.ref().String(), Section: pinSectionForAppWire(section)},
+	}, nil
+}
+
+func pinUnpin(ctx context.Context, cfg hubcore.WebConfig, navigation *NavigationService, resolve topLevelSessionResolver, params appwire.SessionPinUnpinParams) (appwire.SessionPinUnpinResponse, error) {
+	if cfg.PinSections == nil {
+		return appwire.SessionPinUnpinResponse{}, appwire.InternalError("pin section store not configured")
+	}
+	session, err := resolveUnpinSession(ctx, cfg.PinSections, resolve, params.SessionRef)
+	if err != nil {
+		return appwire.SessionPinUnpinResponse{}, err
+	}
+	changed, err := cfg.PinSections.Unpin(session.source, session.sessionID)
+	if err != nil {
+		return appwire.SessionPinUnpinResponse{}, pinSectionAppWireError(err)
+	}
+	mutation, err := commitNavigationChange(ctx, cfg, navigation, changed)
+	if err != nil {
+		return appwire.SessionPinUnpinResponse{}, err
+	}
+	return appwire.SessionPinUnpinResponse{
+		OK: true, Changed: changed, Navigation: mutation,
+		Assignment: appwire.SessionPinUnpinAssignment{SessionRef: session.ref().String()},
+	}, nil
 }

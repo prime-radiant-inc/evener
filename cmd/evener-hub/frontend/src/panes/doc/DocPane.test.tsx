@@ -20,7 +20,7 @@ import {
   useWorkspaceStore,
   workspaceStore,
 } from "../../shell/workspace";
-import { connectionStore } from "../../stores/connection";
+import { connectionStore, resetConnectionStoreForTests } from "../../stores/connection";
 import { resetThreadsStoreForTests, threadsStore } from "../../stores/threads";
 import { readModuleCss } from "../../styles/cssBlock";
 import DocPane from "./DocPane";
@@ -93,7 +93,7 @@ afterAll(
   }),
 );
 beforeEach(async () => {
-  connectionStore.setState({ state: "idle", client: null });
+  resetConnectionStoreForTests();
   resetThreadsStoreForTests();
   resetWorkspaceStoreForTests();
   cwd = "/work/a";
@@ -127,7 +127,7 @@ beforeEach(async () => {
 });
 afterEach(async () => {
   cleanup();
-  connectionStore.setState({ state: "idle", client: null });
+  resetConnectionStoreForTests();
   resetThreadsStoreForTests();
   vi.useRealTimers();
   vi.restoreAllMocks();
@@ -567,6 +567,67 @@ test("a restored artifacts document does not adopt a replacement session's same-
   await waitFor(() => expect(screen.getByTestId("empty-state").getAttribute("data-reason")).toBe("unavailable"));
   expect(requests.map((url) => url.searchParams.get("path"))).not.toContain(`${newDir}/report.md`);
   expect(screen.queryByText("replacement report body")).toBeNull();
+});
+
+// A scratch document restores the same way: the params alone carry what the
+// pane read — the path relative to the scratch root, the root it came from,
+// and the concrete target — and the pane rebinds against the scratch
+// directory the thread snapshot advertises.
+test("a restored scratch document reads the same scratch file again", async () => {
+  const scratchDir = "/tmp/evener-scratch-sess_owner/sess_owner";
+  client.on("thread/read", (params) => ({
+    thread: { ...thread(cwd), evener: { ...thread(cwd).evener, scratchDir } },
+    requestGeneration: params.requestGeneration,
+  }));
+  respond("scratch notes body");
+  const relativePath = "scratch-notes.md";
+  workspaceStore.getState().openPane("doc", {
+    session: ref,
+    path: relativePath,
+    root: "scratch",
+    scratchTarget: `${scratchDir}/${relativePath}`,
+    kind: "file",
+  });
+  const pane = workspaceStore.getState().panes.find((candidate) => candidate.type === "doc");
+  if (!pane) throw new Error("expected a document pane");
+  render(
+    <PaneVisibilityContext value={true}>
+      <DocPane params={pane.params as DocParams} paneId={pane.id} focused={false} />
+    </PaneVisibilityContext>,
+  );
+  await screen.findByText("scratch notes body");
+  const read = requests.map((url) => url.searchParams.get("path"));
+  expect(read).toEqual([`${scratchDir}/${relativePath}`]);
+});
+
+// A stable ref that now names a replacement session must not substitute that
+// session's same-named scratch file for the recorded one: the pane reads the
+// recorded target or refuses.
+test("a restored scratch document does not adopt a replacement session's same-named file", async () => {
+  const oldDir = "/tmp/evener-scratch-sess_owner/sess_owner";
+  const newDir = "/tmp/evener-scratch-sess_replacement/sess_replacement";
+  client.on("thread/read", (params) => ({
+    thread: { ...thread(cwd), evener: { ...thread(cwd).evener, scratchDir: newDir } },
+    requestGeneration: params.requestGeneration,
+  }));
+  respond("replacement scratch body");
+  workspaceStore.getState().openPane("doc", {
+    session: ref,
+    path: "shot.png",
+    root: "scratch",
+    scratchTarget: `${oldDir}/shot.png`,
+    kind: "file",
+  });
+  const pane = workspaceStore.getState().panes.find((candidate) => candidate.type === "doc");
+  if (!pane) throw new Error("expected a document pane");
+  render(
+    <PaneVisibilityContext value={true}>
+      <DocPane params={pane.params as DocParams} paneId={pane.id} focused={false} />
+    </PaneVisibilityContext>,
+  );
+  await waitFor(() => expect(screen.getByTestId("empty-state").getAttribute("data-reason")).toBe("unavailable"));
+  expect(requests.map((url) => url.searchParams.get("path"))).not.toContain(`${newDir}/shot.png`);
+  expect(screen.queryByText("replacement scratch body")).toBeNull();
 });
 
 // Two same-named reports in different sessions are different documents. The

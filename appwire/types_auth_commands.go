@@ -209,7 +209,7 @@ type InstanceEntry struct {
 	EnvVar         string   `json:"envVar,omitempty"`
 	// ShadowedEnvVar names an environment variable that is set but loses to
 	// a higher-precedence credential (api_key, credential_headers, or
-	// store, spec §10); empty when no such variable is set, including when
+	// store); empty when no such variable is set, including when
 	// an env source is itself what resolves.
 	ShadowedEnvVar string `json:"shadowedEnvVar,omitempty"`
 	// RenameLeavesRow is true when renaming this instance leaves an instance

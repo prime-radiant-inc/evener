@@ -12,6 +12,7 @@ import { installLocalStorage, MemoryStorage } from "./storageTestUtils";
 import { connectionStore } from "./stores/connection";
 import { navigationStore, resetNavigationStoreForTests } from "./stores/navigation/store";
 import { resetThreadsStoreForTests } from "./stores/threads";
+import { resetTranscriptDisplayStoreForTests } from "./stores/transcriptDisplay";
 import { resetToastStoreForTests } from "./widgets/toast/store";
 
 // AppShell's default createClient constructs a REAL AppwireClient (no test
@@ -164,6 +165,7 @@ beforeEach(() => {
   closeAllCreatedClients();
   connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
   localStorage.clear();
+  resetTranscriptDisplayStoreForTests();
   // The dev widget gallery route pushes real toasts through the
   // module-singleton toast store (widgets/toast/store.ts), and unmounting
   // cancels their timers without removing them; reset so no test starts
@@ -207,6 +209,25 @@ test("renders the app shell (welcome pane) at the default route", async () => {
   // route (see the next test) - it must not also render here.
   expect(screen.queryByText(/connection:/i)).toBeNull();
 });
+
+test.each(["/comic", "/comic/s/remote%3Ahost%2Fsession"])(
+  "retired Comic path %s uses ordinary unknown-route recovery",
+  async (path) => {
+    window.history.pushState({}, "", path);
+    await act(async () => {
+      render(<App />);
+    });
+    const home = await screen.findByRole("button", { name: "Go home" });
+    expect(document.querySelector("[data-comic-route]")).toBeNull();
+    const client = connectionStore.getState().client;
+    expect(client).toBeInstanceOf(AppwireClient);
+    await act(async () => home.click());
+    expect(await screen.findByTestId("workspace-host")).toBeTruthy();
+    expect(window.location.pathname).toBe("/");
+    expect(connectionStore.getState().client).toBe(client);
+    expect(allCreatedClients.size).toBe(1);
+  },
+);
 
 test("initiates and settles the welcome navigation load without an error", async () => {
   const client = new FakeClient("ready");

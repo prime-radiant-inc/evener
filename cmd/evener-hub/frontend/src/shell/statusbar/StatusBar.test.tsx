@@ -5,7 +5,7 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, expect, test } from "vitest";
 import { MotionProvider } from "../../motion";
 import { LivenessLine } from "../../panes/session/transcript/flow/LivenessLine";
-import { connectionStore } from "../../stores/connection";
+import { connectionStore, resetConnectionStoreForTests } from "../../stores/connection";
 import { activityClient, activityContext, activityJob, activitySummary } from "../../stores/sessionActivityTestUtils";
 import { ActivitySidebar } from "../activitybar/ActivitySidebar";
 import { activitySidebarStore, resetActivitySidebarStoreForTests } from "../activitybar/activitySidebarStore";
@@ -17,7 +17,7 @@ afterEach(() => {
   cleanup();
   resetWorkspaceStoreForTests();
   resetActivitySidebarStoreForTests();
-  connectionStore.setState({ client: null, state: "idle" });
+  resetConnectionStoreForTests();
 });
 
 test("four footer categories keep their owning pane and About has no chip", async () => {
