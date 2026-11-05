@@ -27,6 +27,7 @@ export function ComposeButton({ disabled, onPress }: { disabled: boolean; onPres
 		<Pressable
 			accessibilityRole="button"
 			accessibilityLabel="New session"
+			testID="new-session"
 			accessibilityState={{ disabled }}
 			disabled={disabled}
 			onPress={disabled ? undefined : onPress}

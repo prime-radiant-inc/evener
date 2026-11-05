@@ -154,7 +154,7 @@ final class EvenerQualificationUITests: XCTestCase {
 			)
 		} else {
 			XCTAssertTrue(
-				app.buttons["New session"].waitForExistence(timeout: tripwire),
+				app.buttons["new-session"].waitForExistence(timeout: tripwire),
 				"ordinary controls did not survive scheme activation"
 			)
 		}
@@ -167,7 +167,7 @@ final class EvenerQualificationUITests: XCTestCase {
 	func testSheetGestureKeepsControlsUsable() {
 		let app = XCUIApplication()
 		onboardIfNeeded(app)
-		let newSession = app.buttons["New session"]
+		let newSession = app.buttons["new-session"]
 		XCTAssertTrue(newSession.waitForExistence(timeout: tripwire), "the board never appeared")
 		newSession.tap()
 		let prompt = app.descendants(matching: .any).matching(identifier: "session-prompt").firstMatch
@@ -181,7 +181,7 @@ final class EvenerQualificationUITests: XCTestCase {
 		XCTAssertTrue(cancel.waitForExistence(timeout: tripwire), "the sheet's Cancel vanished after swipes")
 		cancel.tap()
 		XCTAssertTrue(
-			app.buttons["New session"].waitForExistence(timeout: tripwire),
+			app.buttons["new-session"].waitForExistence(timeout: tripwire),
 			"the sheet's Cancel stopped working after swipes"
 		)
 	}
@@ -189,10 +189,12 @@ final class EvenerQualificationUITests: XCTestCase {
 	// MARK: - Journey steps
 
 	/// The app's own main controls, whichever surface it restored to: the
-	/// first-run address way or the board's New session.
+	/// first-run address way or the board's compose button. Both carry stable
+	/// identifiers; the board also shows a second control labeled New session
+	/// when it is empty, so journeys never tap by that label.
 	private func mainSurface(_ app: XCUIApplication) -> XCUIElement {
-		return app.descendants(matching: .any)
-			.matching(NSPredicate(format: "identifier IN %@", ["add-hub:address", "New session"])).firstMatch
+		return app.buttons
+			.matching(NSPredicate(format: "identifier IN %@", ["add-hub:address", "new-session"])).firstMatch
 	}
 
 	/// Launches the app and, on a fresh install, saves the fixture hub
@@ -219,7 +221,7 @@ final class EvenerQualificationUITests: XCTestCase {
 			connect.tap()
 		}
 		XCTAssertTrue(
-			app.buttons["New session"].waitForExistence(timeout: tripwire),
+			app.buttons["new-session"].waitForExistence(timeout: tripwire),
 			"the board never appeared after onboarding"
 		)
 	}
@@ -229,7 +231,7 @@ final class EvenerQualificationUITests: XCTestCase {
 	/// a fresh hub lists no recent projects, so the workspace is reached by
 	/// browsing — then wait for Start to unlock and start.
 	private func startSession(_ app: XCUIApplication, prompt promptText: String) {
-		let newSession = app.buttons["New session"]
+		let newSession = app.buttons["new-session"]
 		XCTAssertTrue(newSession.waitForExistence(timeout: tripwire))
 		newSession.tap()
 		let prompt = app.descendants(matching: .any).matching(identifier: "session-prompt").firstMatch

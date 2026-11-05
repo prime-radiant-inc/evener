@@ -1926,6 +1926,21 @@ it("says what to do on an empty Board, with a New session button", async () => {
 	act(() => tree.unmount());
 });
 
+it("keeps the journey's compose identifier on the floating control alone beside the empty-state row", async () => {
+	const id = hubId();
+	adoptedAnHourAgo(id);
+	connect(id, hub({ ...fleet, live: [[]], needsYou: [] }).client, "ready");
+	const nav = navigation();
+	const tree = await mount(nav);
+	// Two controls answer to New session here (the empty-state row and the
+	// floating compose button), so the journey must tap by identifier; that
+	// identifier can belong to the floating one alone.
+	const identified = withTestID(tree, "new-session");
+	expect(identified).toHaveLength(1);
+	expect(identified[0].props.style({ pressed: false })).toMatchObject({ position: "absolute" });
+	act(() => tree.unmount());
+});
+
 it("shows three skeleton rows until the first read lands", async () => {
 	const id = hubId();
 	adoptedAnHourAgo(id);
