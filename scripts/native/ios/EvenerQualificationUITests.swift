@@ -110,7 +110,7 @@ final class EvenerQualificationUITests: XCTestCase {
 		)
 		XCUIDevice.shared.system.open(URL(string: "evener-native://share")!)
 		XCTAssertTrue(
-			app.waitForState(to: .runningForeground, timeout: tripwire),
+			app.waitForState(.runningForeground, timeout: tripwire),
 			"warm scheme activation left the app in the background"
 		)
 		XCTAssertTrue(app.buttons["add-hub:address"].exists, "scheme activation replaced the app's controls")
@@ -123,7 +123,7 @@ final class EvenerQualificationUITests: XCTestCase {
 		)
 		XCUIDevice.shared.system.open(URL(string: "evener-native://share")!)
 		XCTAssertTrue(
-			app.waitForState(to: .runningForeground, timeout: tripwire),
+			app.waitForState(.runningForeground, timeout: tripwire),
 			"cold scheme activation left the app in the background"
 		)
 		let way = app.buttons["add-hub:address"]
