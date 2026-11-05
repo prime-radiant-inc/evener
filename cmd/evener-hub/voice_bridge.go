@@ -43,14 +43,15 @@ type voiceBridge struct {
 	workKind     string
 	workers      sync.WaitGroup
 
-	generation   uint64
-	history      appwire.SnapshotIdentity
-	speechCursor *appwire.ThreadItemPosition
-	refresh      bool
-	delivery     *hubcore.SpeechDelivery
-	transcripts  map[string]string
-	provenance   *appwire.ConversationProvenanceState
-	retiring     *hubcore.SpeechDelivery
+	generation    uint64
+	awaitingFence bool
+	history       appwire.SnapshotIdentity
+	speechCursor  *appwire.ThreadItemPosition
+	refresh       bool
+	delivery      *hubcore.SpeechDelivery
+	transcripts   map[string]string
+	provenance    *appwire.ConversationProvenanceState
+	retiring      *hubcore.SpeechDelivery
 }
 
 type voiceControl struct {
@@ -111,7 +112,8 @@ func (v *voiceService) socket(w http.ResponseWriter, r *http.Request) {
 	if v.sockets == nil {
 		v.sockets = make(map[string]*voiceBridge)
 	}
-	if previous := v.sockets[binding.Ref]; previous != nil {
+	previous := v.sockets[binding.Ref]
+	if previous != nil {
 		previous.cancel()
 	}
 	v.sockets[binding.Ref] = bridge
@@ -123,6 +125,11 @@ func (v *voiceService) socket(w http.ResponseWriter, r *http.Request) {
 		}
 		v.mu.Unlock()
 	}()
+	if previous != nil {
+		// Join even if this bridge was also replaced. The chain must retire every
+		// older writer before a successor reads the durable generation floor.
+		<-previous.done
+	}
 	bridge.run()
 }
 
@@ -152,7 +159,13 @@ func (b *voiceBridge) run() {
 	}
 	b.captureSpeechBaseline(read)
 	b.provenance = read.Thread.Evener.ConversationProvenance
-	b.generation = 1
+	generation, err := b.journal.MaxSpeechGeneration(b.ctx, b.binding.ID, b.binding.Epoch)
+	if err != nil || generation >= voiceMaxGeneration {
+		_ = b.reportError("speech_failed")
+		return
+	}
+	b.generation = max(1, generation)
+	b.awaitingFence = true
 	controls := make(chan voiceControl, 8)
 	b.workers.Add(1)
 	go b.readControls(controls)
@@ -174,7 +187,7 @@ func (b *voiceBridge) run() {
 				}
 				return voiceWorkResult{err: provider.Interrupt(ctx, delivery.PresentationGeneration, played)}
 			})
-		} else if b.inputQueued && b.workCancel == nil {
+		} else if b.inputQueued && !b.awaitingFence && b.workCancel == nil {
 			b.inputQueued = false
 			provider := b.provider
 			b.beginWork("input_started", func(ctx context.Context) voiceWorkResult {
@@ -188,7 +201,7 @@ func (b *voiceBridge) run() {
 				}
 				return result
 			})
-		} else if b.refresh && b.workCancel == nil && b.turn == nil {
+		} else if b.refresh && !b.awaitingFence && b.workCancel == nil && b.turn == nil {
 			b.refresh = false
 			b.beginWork("history", func(ctx context.Context) voiceWorkResult {
 				read, err := b.client.ThreadRead(ctx, appwire.ThreadReadParams{Ref: b.binding.Ref, IncludeTurns: true, ItemLimit: appwire.TranscriptItemPageLimit})

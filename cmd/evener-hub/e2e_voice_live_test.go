@@ -125,7 +125,9 @@ api_key = "observer-not-a-secret"
 	device := voiceJourneyConnect(t, ctx, "ws://"+stack.addr+armed.SocketPath, headers)
 	defer func() { _ = device.CloseNow() }()
 	peer := realtimePeer{conn: device, ctx: ctx, t: t}
-	voiceJourneyEvent(t, peer, "ready")
+	ready := voiceJourneyEvent(t, peer, "ready")
+	voiceJourneyAcknowledgeReady(t, peer, ready, 0)
+	voiceJourneyEvent(t, peer, "stop")
 	quiet := observer.snapshot()
 	if quiet.Sessions != 0 || quiet.InputBytes != 0 {
 		t.Fatal("quiet ready connection contacted the provider before input_start")

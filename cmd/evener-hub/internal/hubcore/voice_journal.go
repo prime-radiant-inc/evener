@@ -164,6 +164,31 @@ func (j *VoiceJournal) SpeechDelivery(ctx context.Context, id string) (SpeechDel
 	return readSpeechDelivery(ctx, j.db, id)
 }
 
+// MaxSpeechGeneration includes interrupted deliveries. Their generations remain
+// reserved across bridge and hub restarts, even when no audio reached the device.
+func (j *VoiceJournal) MaxSpeechGeneration(ctx context.Context, bindingID, epoch string) (uint64, error) {
+	tx, err := j.db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, err
+	}
+	defer func() { _ = tx.Rollback() }()
+	if _, err := activeVoiceBinding(ctx, tx, bindingID, epoch); err != nil {
+		return 0, err
+	}
+	var id string
+	// Generations are canonical unsigned decimal strings, not signed SQLite
+	// integers. Length then lexical order preserves their numeric ordering.
+	err = tx.QueryRowContext(ctx, `SELECT id FROM voice_speech WHERE binding_id=? ORDER BY length(generation) DESC,generation DESC LIMIT 1`, bindingID).Scan(&id)
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, nil
+	}
+	if err != nil {
+		return 0, err
+	}
+	delivery, err := readSpeechDelivery(ctx, tx, id)
+	return delivery.PresentationGeneration, err
+}
+
 func validSpeechSource(d SpeechDelivery) bool {
 	return d.ID != "" && d.BindingID != "" && d.Epoch != "" && d.InstanceID != "" && d.CanonicalSourceItemID != "" && strings.TrimSpace(d.CanonicalText) != "" && d.OriginatingRequestID != "" && d.FrontierID != ""
 }

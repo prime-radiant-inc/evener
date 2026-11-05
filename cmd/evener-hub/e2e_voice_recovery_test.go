@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 )
 
@@ -32,6 +33,8 @@ func TestE2E_VoiceRenewalPreservesConnection(t *testing.T) {
 	if ready["bindingId"] != binding.ID || ready["epoch"] != binding.Epoch {
 		t.Fatal("short-grant connection did not establish its binding")
 	}
+	voiceJourneyAcknowledgeReady(t, f.device, ready, 0)
+	voiceJourneyEvent(t, f.device, "stop")
 	f.device.send(`{"type":"renew"}`)
 	renewed := voiceJourneyEvent(t, f.device, "renewed")
 	expires, err := time.Parse(time.RFC3339Nano, renewed["expiresAt"].(string))
@@ -154,6 +157,148 @@ func TestE2E_VoiceReconnectSynchronizesPlaybackFence(t *testing.T) {
 	f.expectFinishedAudio(t, delivery, "AQACAA==")
 }
 
+func TestE2E_VoiceReconnectRetainsOutputBeforeDelayedFence(t *testing.T) {
+	f := newVoiceCorrectionStack(t)
+	f.admit(t, "DELAYED-FENCE-INPUT-71", false)
+	args := communicateArgs("DELAYED-FENCE-OLD-71")
+	args["end_turn"] = false
+	f.next(t).RespondToolCall("communicate", args)
+	held := f.next(t)
+	active := f.read(t).Thread.Evener.ActiveTurnID
+	oldStart := voiceJourneyEvent(t, f.device, "speech_start")
+	oldPeer := f.openSpeaker(t)
+	old := f.speechRequest(t, oldPeer, oldStart, "DELAYED-FENCE-OLD-71")
+	if old.PresentationGeneration != 2 || active == "" {
+		t.Fatal("fixture did not reach durable generation 2 with manager work running")
+	}
+	voiceCorrectionAudio(oldPeer, old, "delayed-fence-old-response", "delayed-fence-old-item", "AwAEAA==")
+	voiceJourneyEvent(t, f.device, "audio")
+	_ = f.device.conn.CloseNow()
+	f.waitDelivery(t, old.ID, func(d hubcore.SpeechDelivery) bool { return d.Interrupted })
+	ready := f.connect(t)
+	minimum := old.PresentationGeneration + 1
+	if ready["generation"].(float64) >= float64(minimum) {
+		t.Fatal("reconnect fixture did not need the retained device fence")
+	}
+	if f.read(t).Thread.Evener.ActiveTurnID != active {
+		t.Fatal("reconnect stopped the manager's existing work")
+	}
+	select {
+	case <-held.Cancelled():
+		t.Fatal("socket loss cancelled the held manager request")
+	default:
+	}
+	// Ready proves the reconnect baseline was captured. The real manager commits
+	// this response before the device sends its normal ready-triggered interrupt.
+	held.RespondToolCall("communicate", communicateArgs("DELAYED-FENCE-FRESH-73"))
+	committed := f.waitRead(t, "fresh output committed before device fence", func(read appwire.ThreadReadResponse) bool {
+		return read.Thread.Evener.ActiveTurnID == "" && voiceCorrectionItem(read, "DELAYED-FENCE-FRESH-73").ID != ""
+	})
+	source := voiceCorrectionItem(committed, "DELAYED-FENCE-FRESH-73")
+	t.Logf("delayed fence reached: durable generation=%d, reconnect ready=%v, fresh source=%s committed on original instance before interrupt", old.PresentationGeneration, ready["generation"], source.ID)
+	f.device.send(fmt.Sprintf(`{"type":"interrupt","generation":%d,"playedSamples":{}}`, minimum-1))
+	stop := voiceJourneyEvent(t, f.device, "stop")
+	if stop["generation"].(float64) < float64(minimum) {
+		t.Fatal("reconnect did not reconcile the retained fence")
+	}
+	start := voiceJourneyEvent(t, f.device, "speech_start")
+	peer := f.openSpeaker(t)
+	fresh := f.speechRequest(t, peer, start, "DELAYED-FENCE-FRESH-73")
+	if fresh.CanonicalSourceItemID != source.ID || fresh.PresentationGeneration <= old.PresentationGeneration || fresh.PresentationGeneration < uint64(stop["generation"].(float64)) {
+		t.Fatal("fresh output was lost, replayed, or allocated behind the fence")
+	}
+	// A duplicated ready acknowledgement is stale once fresh speech has started.
+	// Renewal is an ordered control barrier before the provider emits any audio.
+	f.device.send(fmt.Sprintf(`{"type":"interrupt","generation":%d,"playedSamples":{}}`, minimum-1))
+	f.device.send(`{"type":"renew"}`)
+	if event := f.device.read(); event["type"] != "renewed" || f.delivery(t, fresh.ID).Interrupted {
+		t.Fatalf("duplicate ready acknowledgement retired fresh speech: %v", event["type"])
+	}
+	voiceCorrectionAudio(peer, fresh, "delayed-fence-fresh-response", "delayed-fence-fresh-item", "AQACAA==")
+	voiceCorrectionDone(peer, fresh, "delayed-fence-fresh-response", "delayed-fence-fresh-item")
+	f.expectFinishedAudio(t, fresh, "AQACAA==")
+}
+
+func TestE2E_VoiceReconnectAfterRepeatedInterruptions(t *testing.T) {
+	f := newVoiceCorrectionStack(t)
+	minimum, durable := uint64(1), uint64(0)
+	for cycle := range 3 {
+		input, output := fmt.Sprintf("RESTART-INPUT-%d", cycle), fmt.Sprintf("RESTART-OUTPUT-%d", cycle)
+		f.admit(t, input, false)
+		held := f.next(t)
+		active := f.read(t).Thread.Evener.ActiveTurnID
+		if active == "" || !held.Contains(input) {
+			t.Fatal("manager did not start the new request before socket replacement")
+		}
+		for range 2 {
+			f.device.send(fmt.Sprintf(`{"type":"interrupt","generation":%d,"playedSamples":{}}`, minimum))
+			minimum++
+			if stop := voiceJourneyEvent(t, f.device, "stop"); stop["generation"] != float64(minimum) {
+				t.Fatal("local interruption did not advance its retained fence")
+			}
+		}
+		minimum++ // Native also retires playback on socket loss.
+		previous := f.device
+		// A new authenticated socket replaces a half-open predecessor. Ready must
+		// follow its shutdown even when its provider retirement is unacknowledged.
+		ready := f.connect(t)
+		if ready["generation"] != float64(max(uint64(1), durable)) {
+			t.Fatalf("replacement lost the durable allocation floor: %v", ready["generation"])
+		}
+		closed, cancel := context.WithTimeout(f.ctx, 2*time.Second)
+		_, _, err := previous.conn.Read(closed)
+		timedOut := closed.Err() != nil
+		cancel()
+		if err == nil || timedOut {
+			t.Fatal("replacement left its preceding device socket alive")
+		}
+		voiceJourneyAcknowledgeReady(t, f.device, ready, minimum)
+		if stop := voiceJourneyEvent(t, f.device, "stop"); stop["generation"] != float64(minimum) {
+			t.Fatal("replacement did not retain the higher local fence")
+		}
+		if f.read(t).Thread.Evener.ActiveTurnID != active {
+			t.Fatal("socket replacement stopped or replaced manager work")
+		}
+		select {
+		case <-held.Cancelled():
+			t.Fatal("socket replacement cancelled the manager request")
+		default:
+		}
+		held.RespondToolCall("communicate", communicateArgs(output))
+		f.waitRead(t, "new output committed and manager settled", func(read appwire.ThreadReadResponse) bool {
+			return read.Thread.Evener.ActiveTurnID == "" && voiceCorrectionItem(read, output).ID != ""
+		})
+		start := voiceJourneyEvent(t, f.device, "speech_start")
+		peer := f.openSpeaker(t)
+		delivery := f.speechRequest(t, peer, start, output)
+		if delivery.PresentationGeneration != minimum+1 {
+			t.Fatal("new delivery reused a generation or remained behind the device fence")
+		}
+		voiceCorrectionAudio(peer, delivery, "restart-response", "restart-item", "AQACAA==")
+		voiceCorrectionDone(peer, delivery, "restart-response", "restart-item")
+		f.expectFinishedAudio(t, delivery, "AQACAA==")
+		f.device.send(fmt.Sprintf(`{"type":"played","deliveryId":%q,"generation":%d,"itemId":"restart-item","samples":2,"complete":true}`, delivery.ID, delivery.PresentationGeneration))
+		f.waitDelivery(t, delivery.ID, func(d hubcore.SpeechDelivery) bool {
+			return d.OutputComplete && !d.Interrupted && len(d.Items) == 1 && d.Items[0].PlaybackComplete
+		})
+		minimum, durable = delivery.PresentationGeneration, delivery.PresentationGeneration
+		// With no retained client state, the ready acknowledgement is below the
+		// durable floor. It must still release the gate without lowering that floor.
+		ready = f.connect(t)
+		if ready["generation"] != float64(durable) {
+			t.Fatal("reconnect lost the completed delivery's generation")
+		}
+		voiceJourneyAcknowledgeReady(t, f.device, ready, 0)
+		if stop := voiceJourneyEvent(t, f.device, "stop"); stop["generation"] != float64(durable) {
+			t.Fatal("acknowledgement below the durable floor failed to release the gate")
+		}
+	}
+	deliveries, _, err := f.journal.ListSpeechDeliveries(f.ctx, f.armed.BindingID, 0, 20)
+	if err != nil || len(deliveries) != 3 {
+		t.Fatalf("reconnect created duplicate or missing speech: count=%d err=%v", len(deliveries), err)
+	}
+}
+
 func TestVoicePlaybackFenceRejectsUnrepresentableGeneration(t *testing.T) {
 	bridge := &voiceBridge{generation: 1}
 	if err := bridge.interruptSpeech(voiceControl{Generation: 1 << 53}); !errors.Is(err, hubcore.ErrVoiceInvalid) {
@@ -161,5 +306,17 @@ func TestVoicePlaybackFenceRejectsUnrepresentableGeneration(t *testing.T) {
 	}
 	if bridge.generation != 1 {
 		t.Fatal("invalid generation changed the current playback fence")
+	}
+}
+
+func TestVoicePlaybackFenceRejectsUnrepresentableReconnectGeneration(t *testing.T) {
+	for _, generation := range []uint64{voiceMaxGeneration, 1 << 53, ^uint64(0)} {
+		bridge := &voiceBridge{generation: 9, awaitingFence: true}
+		if err := bridge.interruptSpeech(voiceControl{Generation: generation}); !errors.Is(err, hubcore.ErrVoiceInvalid) {
+			t.Fatalf("unsafe reconnect generation %d accepted: %v", generation, err)
+		}
+		if bridge.generation != 9 || !bridge.awaitingFence {
+			t.Fatal("invalid device generation changed the durable floor or released selection")
+		}
 	}
 }

@@ -106,6 +106,13 @@ func (b *voiceBridge) interruptSpeech(control voiceControl) error {
 	if control.Generation >= voiceMaxGeneration {
 		return hubcore.ErrVoiceInvalid
 	}
+	if b.awaitingFence {
+		// Every ready is acknowledged, including fresh Arm. Reconcile the phone's
+		// retained fence without lowering generations already used by this binding.
+		b.generation = max(b.generation, control.Generation+1)
+		b.awaitingFence = false
+		return b.send(map[string]any{"type": "stop", "generation": b.generation})
+	}
 	if control.Generation < b.generation {
 		return nil
 	}

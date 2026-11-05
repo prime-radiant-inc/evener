@@ -44,7 +44,8 @@ func TestE2E_VoiceReconnectRecoversDurableIntent(t *testing.T) {
 					t.Fatal("fixture did not cross the real manager admission boundary")
 				}
 			}
-			f.connect(t)
+			ready := f.connect(t)
+			voiceJourneyAcknowledgeReady(t, f.device, ready, 2)
 			recoveryCtx, cancel := context.WithTimeout(f.ctx, 2*time.Second)
 			defer cancel()
 			device := f.device

@@ -218,7 +218,9 @@ api_key = "voice-fixture-not-a-secret"
 	device := voiceJourneyConnect(t, ctx, "ws://"+stack.addr+armed.SocketPath, headers)
 	t.Cleanup(func() { _ = device.CloseNow() })
 	devicePeer := realtimePeer{conn: device, ctx: ctx, t: t}
-	voiceJourneyEvent(t, devicePeer, "ready")
+	ready := voiceJourneyEvent(t, devicePeer, "ready")
+	voiceJourneyAcknowledgeReady(t, devicePeer, ready, 0)
+	voiceJourneyEvent(t, devicePeer, "stop")
 	select {
 	case <-peers:
 		t.Fatal("quiet ready socket opened a provider before Talk or eligible output")
@@ -560,6 +562,17 @@ func voiceJourneyTalk(t *testing.T, ctx context.Context, device *websocket.Conn,
 		}
 	}
 	return peer, inputStarted
+}
+
+// Match native ready handling: every connection reports its retained playback
+// floor, even a fresh Arm whose minimum is still zero.
+func voiceJourneyAcknowledgeReady(t *testing.T, device realtimePeer, ready map[string]any, minimum uint64) {
+	t.Helper()
+	generation, ok := ready["generation"].(float64)
+	if !ok || generation < 1 || generation >= voiceMaxGeneration || generation != float64(uint64(generation)) {
+		t.Fatal("ready did not advertise a representable positive generation")
+	}
+	device.send(fmt.Sprintf(`{"type":"interrupt","generation":%d,"playedSamples":{}}`, max(uint64(generation), minimum)-1))
 }
 
 func voiceJourneyEvent(t *testing.T, device realtimePeer, want string) map[string]any {
