@@ -41,6 +41,7 @@ type buildIdentity struct {
 
 type runner struct {
 	root, native, output string
+	uiRunner             string
 	identity             buildIdentity
 	statusReads          int
 }
@@ -51,8 +52,9 @@ func main() {
 
 func runCLI() int {
 	output := flag.String("output", "", "New absolute directory for build diagnostics and DerivedData, must not exist")
+	ui := flag.Bool("with-ui", false, "Also run the installed-app qualification journeys inside this run's simulator lifetime")
 	flag.Usage = func() {
-		_, _ = fmt.Fprintln(flag.CommandLine.Output(), "Usage: build-simulator.sh --output ABSOLUTE_DIR\nBuilds a Release iPhone simulator app and embedded share extension. Requires the pinned macOS toolchain and installed npm/gem dependencies. Never publishes. Linux refuses before generation. The owned simulator is deleted before exit; artifact paths cannot be reused for a later UI run.")
+		_, _ = fmt.Fprintln(flag.CommandLine.Output(), "Usage: build-simulator.sh --output ABSOLUTE_DIR [--with-ui]\nBuilds a Release iPhone simulator app and embedded share extension. Requires the pinned macOS toolchain and installed npm/gem dependencies. Never publishes. Linux refuses before generation. The owned simulator is deleted before exit; artifact paths cannot be reused for a later UI run. With --with-ui the installed-app qualification journeys run as a child inside the same simulator lifetime, and a failed journey fails the run.")
 		flag.PrintDefaults()
 	}
 	flag.Parse()
@@ -62,7 +64,7 @@ func runCLI() int {
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	if err := qualify(ctx, *output); err != nil {
+	if err := qualify(ctx, *output, *ui); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		if exit, ok := errors.AsType[*exec.ExitError](err); ok {
 			return procgroup.ExitCode(exit.ProcessState)
@@ -72,7 +74,7 @@ func runCLI() int {
 	return 0
 }
 
-func qualify(ctx context.Context, output string) (result error) {
+func qualify(ctx context.Context, output string, withUI bool) (result error) {
 	if runtime.GOOS != "darwin" {
 		return errMacRequired
 	}
@@ -84,6 +86,7 @@ func qualify(ctx context.Context, output string) (result error) {
 		return err
 	}
 	r := &runner{root: root, native: filepath.Join(root, "mobile-native"), output: output}
+	r.uiRunner = filepath.Join(r.root, "scripts", "native", "ios", "run-ui-tests.sh")
 	if _, err := os.Lstat(filepath.Join(r.native, "ios")); !errors.Is(err, os.ErrNotExist) {
 		return errors.New("mobile-native/ios already exists; use a fresh qualification checkout to preserve generated work")
 	}
@@ -163,7 +166,36 @@ func qualify(ctx context.Context, output string) (result error) {
 	if err := r.verifyApp(ctx, r.identity.AppPath, "built"); err != nil {
 		return err
 	}
-	return r.provenanceUnchanged(ctx)
+	if err := r.provenanceUnchanged(ctx); err != nil {
+		return err
+	}
+	if !withUI {
+		return nil
+	}
+	// The journeys read the identity as it stands mid-run: the paths and the
+	// simulator ID are valid only inside this run's own lifetime.
+	if err := r.writeJSON("build-identity.json", r.identity); err != nil {
+		return err
+	}
+	return r.uiJourney(ctx)
+}
+
+// uiJourney runs the installed-app qualification journeys as a child inside
+// this run's simulator lifetime: the parent holds the simulator until the
+// child has stopped — the deferred cleanup runs only after qualify returns —
+// and the child's exit is the run's own result. The child owns its private
+// hub, provider and connection state; the parent never reads them.
+func (r *runner) uiJourney(ctx context.Context) error {
+	uiOutput := filepath.Join(r.output, "ui")
+	if err := os.Mkdir(uiOutput, 0o700); err != nil {
+		return err
+	}
+	if _, err := r.commandOutput(ctx, "ui-journey", false, "bash", r.uiRunner,
+		"--build-identity", filepath.Join(r.output, "build-identity.json"),
+		"--output", uiOutput); err != nil {
+		return err
+	}
+	return nil
 }
 
 func (r *runner) provenance(ctx context.Context) error {

@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"maps"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
 	"runtime"
@@ -251,11 +252,51 @@ func TestLinuxRefusesBeforeCreatingOutput(t *testing.T) {
 	}
 	t.Parallel()
 	out := filepath.Join(t.TempDir(), "not-created")
-	if err := qualify(context.Background(), out); !errors.Is(err, errMacRequired) {
+	if err := qualify(context.Background(), out, false); !errors.Is(err, errMacRequired) {
 		t.Fatalf("expected Mac prerequisite refusal, got %v", err)
 	}
 	if _, err := os.Stat(out); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("generation/output began on Linux: %v", err)
+	}
+}
+
+// The UI child runs with the identity this run wrote, inside an output
+// directory the parent prepared, and its exit becomes the run's own result.
+// A stub journey proves the wiring without a simulator.
+func TestUIJourneyPropagatesChildExitAfterIdentity(t *testing.T) {
+	t.Parallel()
+	stub := filepath.Join(t.TempDir(), "stub-journey.sh")
+	const script = `#!/bin/sh
+identity="" output=""
+while [ $# -gt 0 ]; do
+	case "$1" in
+	--build-identity) identity="$2"; shift 2 ;;
+	--output) output="$2"; shift 2 ;;
+	*) exit 9 ;;
+	esac
+done
+[ -f "$identity" ] || exit 5
+grep -q '"appPath"' "$identity" || exit 6
+grep -q '"simulatorUDID"' "$identity" || exit 6
+[ -d "$output" ] || exit 7
+exit 23
+`
+	if err := os.WriteFile(stub, []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	r := &runner{native: t.TempDir(), output: t.TempDir(), uiRunner: stub}
+	r.identity.AppPath = "/tmp/Evener.app"
+	r.identity.SimulatorUDID = "0A01AE4B-7278-47C0-997B-30258F2AF066"
+	if err := r.writeJSON("build-identity.json", r.identity); err != nil {
+		t.Fatal(err)
+	}
+	err := r.uiJourney(context.Background())
+	var exit *exec.ExitError
+	if !errors.As(err, &exit) {
+		t.Fatalf("child failure did not surface an exit error: %v", err)
+	}
+	if exit.ExitCode() != 23 {
+		t.Fatalf("child exit 23 did not propagate: %v", err)
 	}
 }
 

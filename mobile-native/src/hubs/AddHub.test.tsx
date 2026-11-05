@@ -282,6 +282,30 @@ it("reviews an address and token typed by hand", async () => {
 	expect(onConnected).toHaveBeenCalledTimes(1);
 });
 
+it("carries stable identifiers on the working address, token and continue controls", async () => {
+	mocks.saveHub.mockResolvedValue(true);
+	const { tree } = mount("address");
+	const [address] = withTestID(tree, "hub-address");
+	const [token] = withTestID(tree, "hub-token");
+	const [continueRow] = withTestID(tree, "hub-continue");
+	expect(address && String(address.type)).toBe("TextInput");
+	expect(address.props.accessibilityLabel).toBe("Address");
+	expect(address.props.keyboardType).toBe("url");
+	expect(token && String(token.type)).toBe("TextInput");
+	expect(token.props.accessibilityLabel).toBe("Token (optional)");
+	expect(token.props.secureTextEntry).toBe(true);
+	expect(continueRow?.props.accessibilityLabel).toBe("Continue");
+	expect(button(tree, "Continue").props.disabled).toBe(true);
+	act(() => {
+		address.props.onChangeText("https://magic-kingdom:9180");
+		token.props.onChangeText(TOKEN);
+	});
+	expect(address.props.value).toBe("https://magic-kingdom:9180");
+	expect(button(tree, "Continue").props.disabled).toBe(false);
+	await press(tree, "Continue");
+	expect(pairingWith(tree)).toBe("https://magic-kingdom:9180");
+});
+
 it("finishes when the hub is saved though a newer choice of hub kept it from being selected", async () => {
 	// saveHub resolves false when a later selection superseded this one; the
 	// hub is saved all the same, so review mustn't sit there (RoboRev, #3001).

@@ -5,6 +5,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { palettes } from "../design/tokens";
 import { Platform } from "react-native";
 import { alertRequests, pressable, render, renderedText } from "../renderNative.testkit";
+import { withTestID } from "../markerTestUtils";
 import { Composer, ModelChip } from "./Composer";
 import { ComposerFocus } from "./composerFocus";
 
@@ -90,6 +91,18 @@ describe("Composer", () => {
 		const { props, tree } = composer();
 		act(() => fields(tree)[0]?.props.onChangeText("hello"));
 		expect(props.onChangeText).toHaveBeenCalledWith("hello");
+	});
+
+	it("carries the field's stable identifier on the working input", () => {
+		const { props, tree } = composer({ value: "hello" });
+		const [field] = withTestID(tree, "composer-message");
+		expect(field && String(field.type)).toBe("TextInput");
+		expect(field.props.accessibilityLabel).toBe("Message");
+		expect(field.props.value).toBe("hello");
+		act(() => {
+			field.props.onChangeText("next");
+		});
+		expect(props.onChangeText).toHaveBeenCalledWith("next");
 	});
 
 	it("keeps a full-height focus target while resting and when the field opens", () => {

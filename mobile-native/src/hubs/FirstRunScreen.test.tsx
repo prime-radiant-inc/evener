@@ -3,7 +3,7 @@ import { act, type ReactTestRenderer } from "react-test-renderer";
 import { beforeEach, expect, it, vi } from "vitest";
 import type { HubProfile } from "../connection";
 import { palettes } from "../design/tokens";
-import { hasTestID } from "../markerTestUtils";
+import { hasTestID, withTestID } from "../markerTestUtils";
 import { offersButton, render, renderedText } from "../renderNative.testkit";
 import type { Routes } from "../screens";
 import { FirstRunScreen } from "./FirstRunScreen";
@@ -106,6 +106,16 @@ it("types an address in place", async () => {
 	expect(
 		tree.root.findAll((node) => String(node.type) === "TextInput" && node.props.accessibilityLabel === "Address"),
 	).toHaveLength(1);
+});
+
+it("marks the address way with a stable identifier on the working row", async () => {
+	const { tree } = mount();
+	const [way] = withTestID(tree, "add-hub:address");
+	expect(way?.props.accessibilityLabel).toBe("Enter the address");
+	await act(async () => {
+		way?.props.onPress();
+	});
+	expect(hasTestID(tree, "hub-address")).toBe(true);
 });
 
 it("pastes a pairing link, connects, and opens the Board", async () => {

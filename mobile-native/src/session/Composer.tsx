@@ -133,6 +133,7 @@ export function Composer({
 			<TextInput
 				ref={inputRef}
 				accessibilityLabel="Message"
+				testID="composer-message"
 				// Native scaling updates the font and its measurement together. A
 				// later JS font-size change can measure an existing draft's old font.
 				allowFontScaling

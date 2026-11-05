@@ -71,6 +71,18 @@ locked CocoaPods 1.16.2. It is separate from TestFlight and has no release secre
 or publishing step. Existing Linux native/API gates remain required. Its policy
 step also proves the bundle verification is real: a copied build whose share
 extension was removed fails verification while the untouched build still passes.
+The lane's green path always includes the installed-app journeys: with
+`--with-ui`, the build runner spawns `scripts/native/ios/run-ui-tests.sh`
+inside the run's own simulator lifetime. That child builds the runtime pair,
+starts the scripted loopback provider and an isolated hub under private XDG
+directories with `HOME` inherited, registers the generated-only
+`EvenerQualificationUITests` target, and injects the fixture-only connection
+data into a private copy of the test-run configuration. Before the target is
+registered it first proves the red side: naming the intended tests against the
+as-generated project must fail. The result bundle must show all three intended
+journeys executed with zero failures and none skipped; a partial, unreadable or
+absent result fails, and the child's exit is the run's own result. The parent
+remains the sole simulator cleanup owner.
 
 After installing the npm trees and locked gems in a fresh Mac checkout, run:
 

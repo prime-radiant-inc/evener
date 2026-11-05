@@ -302,6 +302,12 @@ bash scripts/native/ios/build-simulator.sh --output /absolute/new/qualification-
 Run this command from the repository root. It generates with the non-secret
 fixture team `EVENERCI01`, checks repeat generation and CocoaPods lock equality,
 then builds Release and inspects the signed host and embedded share extension.
+With `--with-ui`, the installed-app qualification journeys then run inside the
+same simulator lifetime: a private loopback provider scripts the model
+boundary, the app saves real hub credentials, renders the fixture response
+natively, keeps an unsent draft across a cold launch, answers the share scheme
+and survives gestures in a sheet. The journeys' connection data stays in
+private per-run state and never reaches uploaded artifacts.
 It discovers and deletes only its own iPhone simulator. Output must not exist;
 diagnostics include source revision, npm/pod digests, tool identities, the pod
 candidate/diff and `DerivedData`. A changed lock fails and requires review, never
@@ -309,10 +315,10 @@ an automatic source update. When CocoaPods refuses the committed lock because
 its local development pods changed, the runner unlocks only those pods to
 produce the reviewable candidate and diff. Linux refuses before generation.
 
-The separate `iOS qualification` workflow runs this path on native pull requests
-without release credentials. This command currently proves only the build and
-bundle checks. Installed-app credential, rendering and recovery tests remain
-separate requirements. Neither a build nor its diagnostic artifact authorizes
+The separate `iOS qualification` workflow runs this path with `--with-ui` on
+native pull requests without release credentials, so its green path always
+includes the installed-app journeys. Physical-device checks remain separate
+requirements. Neither a build nor its diagnostic artifact authorizes
 TestFlight publication or qualifies a physical-device update.
 
 Follow the [locked dependency procedure](../docs/design/mobile/ios-build-distribution.md) to prebuild iOS and install pods.
