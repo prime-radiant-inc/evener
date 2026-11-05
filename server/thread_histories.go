@@ -150,6 +150,27 @@ func (r *threadHistories) ensureLocked(
 	return h
 }
 
+// publicationForProducer pairs an already-installed, unwired history in place.
+// A previously paired history belongs to an earlier producer and must retain
+// its own holder, so delayed hooks cannot affect a replacement with the same ID.
+func (r *threadHistories) publicationForProducer(threadID string) *historyPublication {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	publication := &historyPublication{paired: true}
+	if h := r.get(threadID); h != nil {
+		h.mu.Lock()
+		if !h.paired && !h.closed {
+			publication = h.historyPublication
+			publication.paired = true
+			publication.completeLength = h.recordedLength
+			publication.stagedEnd = h.recordedLength
+		}
+		h.mu.Unlock()
+	}
+	r.publications.Store(threadID, publication)
+	return publication
+}
+
 // get returns threadID's history, or nil if none is registered. It takes no
 // lock.
 func (r *threadHistories) get(threadID string) *threadHistory {

@@ -3,6 +3,7 @@ package server
 import (
 	"sync"
 
+	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/appwire"
 )
 
@@ -16,6 +17,18 @@ type historyPublication struct {
 	stagedEnd      int64
 	provenance     *appwire.ConversationProvenanceState
 	history        *threadHistory
+}
+
+// stageLocked fences output demand until the producer publishes its snapshot.
+// Input-only side writes need no graph to resolve, but cannot cross a pending
+// output prefix. The boundary is independent of the droppable overlay queue.
+func (p *historyPublication) stageLocked(rec transcript.Record) {
+	end := rec.Offset + rec.Length
+	if rec.Turn.ConversationFrontier != nil || rec.Turn.ConversationProvenance != nil {
+		p.stagedEnd = max(p.stagedEnd, end)
+	} else if p.stagedEnd <= p.completeLength {
+		p.completeLength = max(p.completeLength, end)
+	}
 }
 
 func (p *historyPublication) adoptLocked(next *appwire.ConversationProvenanceState) {

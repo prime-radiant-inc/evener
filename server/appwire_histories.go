@@ -61,8 +61,7 @@ func (s *Server) WireTranscriptHistory(sess *agent.Session) {
 }
 
 func (s *Server) transcriptPublicationHooks(threadID string) (agent.TranscriptPublicationHooks, *historyPublication) {
-	publication := &historyPublication{paired: true}
-	s.appHistories.publications.Store(threadID, publication)
+	publication := s.appHistories.publicationForProducer(threadID)
 	return agent.TranscriptPublicationHooks{Recorded: func(rec transcript.Record) {
 		if h := s.appHistories.get(threadID); h != nil && h.historyPublication == publication {
 			h.recorded(rec)
