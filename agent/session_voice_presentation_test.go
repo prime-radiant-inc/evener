@@ -162,6 +162,10 @@ func TestVoicePresentationForcedFoldThenRestore(t *testing.T) {
 		calls++
 		return llm.Response{Message: llm.Assistant("[CONTEXT SUMMARY]\n## Progress\nopaque-summary-719\n[END SUMMARY]")}
 	}, withStateDir(dir))
+	// The cheap-model responder counts summaries, not background naming calls.
+	if err := s.Rename("Voice fold fixture"); err != nil {
+		t.Fatal(err)
+	}
 	voice := voicePresentationFixture(s.ID())
 	if _, err := s.AcceptClientMutationSteer(appwire.TurnSteerParams{ClientMutationID: "fold-voice", Input: []appwire.InputItem{{Type: "text", Text: "opaque-fold-voice-719", VoicePresentation: voice}}}); err != nil {
 		t.Fatal(err)
@@ -283,6 +287,9 @@ func TestVoicePresentationFoldConcurrentAppend(t *testing.T) {
 				}
 				return llm.Response{Message: llm.Assistant("[CONTEXT SUMMARY]\n## Progress\nopaque-summary-831\n[END SUMMARY]")}
 			}, withStateDir(dir))
+			if err := s.Rename("Voice concurrent fold fixture"); err != nil {
+				t.Fatal(err)
+			}
 			older := voicePresentationFixture(s.ID())
 			latest = appwire.CloneVoicePresentation(older)
 			latest.DeliveryID = "newer"
@@ -450,6 +457,9 @@ func TestVoicePresentationRetainedRestore(t *testing.T) {
 		calls++
 		return llm.Response{Message: llm.Assistant("[CONTEXT SUMMARY]\n## Progress\nopaque-review-summary\n[END SUMMARY]")}
 	}, withStateDir(dir))
+	if err := s.Rename("Voice retained fold fixture"); err != nil {
+		t.Fatal(err)
+	}
 	for i := range 20 {
 		turn := schema.NewTurn(schema.TurnUserInput, llm.User(fmt.Sprint("opaque-padding-", i)))
 		s.recordTurn(turn, turn)
