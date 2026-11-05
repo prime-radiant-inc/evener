@@ -214,3 +214,132 @@ func TestGitleaksMermaidSecretDetection(t *testing.T) {
 		})
 	}
 }
+
+const podLockPath = "mobile-native/Podfile.lock"
+
+// TestGitleaksPodLockChecksumScope pins the committed pod lock's SPEC CHECKSUMS
+// false positive: gitleaks' generic-api-key rule sees the pod name
+// "React-cxxstableapi" followed by that podspec's SHA-256 digest and mistakes
+// the checksum line for a key (observed when the Expo 58 lock landed). The
+// exception must allowlist only checksum-shaped lines in the lock itself, so
+// another match in the lock, including a real credential, still fails.
+func TestGitleaksPodLockChecksumScope(t *testing.T) {
+	t.Parallel()
+	var cfg gitleaksConfig
+	if _, err := toml.DecodeFile(".gitleaks.toml", &cfg); err != nil {
+		t.Fatal(err)
+	}
+	for _, rule := range cfg.Rules {
+		if rule.ID != "generic-api-key" {
+			continue
+		}
+		for _, allowlist := range rule.Allowlists {
+			if !anyGitleaksPathMatches(t, allowlist.Paths, podLockPath) {
+				continue
+			}
+			if allowlist.Condition != "AND" || allowlist.RegexTarget != "match" {
+				t.Fatal("pod lock exception must require both the path and the individual match")
+			}
+			for _, path := range []string{
+				"other/" + podLockPath,
+				podLockPath + ".backup",
+				"mobile-native/src/leak.swift",
+			} {
+				if anyGitleaksPathMatches(t, allowlist.Paths, path) {
+					t.Errorf("pod lock exception also matches %q", path)
+				}
+			}
+			// CocoaPods' SPEC CHECKSUMS are SHA-1 digests.
+			digest := "0123456789abcdef0123456789abcdef01234567"
+			for _, tc := range []struct {
+				match string
+				allow bool
+			}{
+				{"React-cxxstableapi: " + digest, true},
+				{"SomePod: " + digest, false},
+				{"React-cxxstableapi: " + digest + " trailing", false},
+				{"api_key=" + strings.Repeat("aB3dE7gH9kL2", 3), false},
+			} {
+				if got := anyGitleaksPathMatches(t, allowlist.Regexes, tc.match); got != tc.allow {
+					t.Errorf("match %q: allow=%v, want %v", tc.match, got, tc.allow)
+				}
+			}
+			return
+		}
+	}
+	t.Fatal("no scoped generic-api-key exception for the committed pod lock checksum lines")
+}
+
+// TestGitleaksPodLockSecretDetection runs the real engine over the exception:
+// the checksum line passes inside the lock, the same line fails outside it, and
+// a real credential shape fails inside the lock. The engine is opt-in so
+// default tests need no ambient tool installation.
+func TestGitleaksPodLockSecretDetection(t *testing.T) {
+	if os.Getenv("EVENER_GITLEAKS_TESTS") != "1" {
+		t.Skip("set EVENER_GITLEAKS_TESTS=1 with gitleaks installed")
+	}
+	t.Parallel()
+	bin, err := exec.LookPath("gitleaks")
+	if err != nil {
+		t.Fatal(err)
+	}
+	config, err := filepath.Abs(".gitleaks.toml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	digest := "0123456789abcdef0123456789abcdef01234567"
+	credential := `api_key="` + strings.Repeat("aB3dE7gH9kL2", 3) + `";`
+	for _, tc := range []struct {
+		name     string
+		path     string
+		content  string
+		findings int
+	}{
+		{"lock-checksum", podLockPath, "SPEC CHECKSUMS:\n  React-cxxstableapi: " + digest + "\n", 0},
+		{"lock-credential", podLockPath, "SPEC CHECKSUMS:\n  " + credential + "\n", 1},
+		{"other-path-checksum", "mobile-native/src/vendor.ts", "  React-cxxstableapi: " + digest + "\n", 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			root := t.TempDir()
+			path := filepath.Join(root, filepath.FromSlash(tc.path))
+			if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(path, []byte(tc.content), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			report := filepath.Join(t.TempDir(), "findings.json")
+			cmd := exec.CommandContext(t.Context(), bin, "detect", "--no-git", "--redact",
+				"--config", config, "--source", ".", "--report-format", "json", "--report-path", report)
+			cmd.Dir = root
+			out, err := cmd.CombinedOutput()
+			if tc.findings == 0 {
+				if err != nil {
+					t.Fatalf("gitleaks: %v\n%s", err, out)
+				}
+			} else {
+				var exit *exec.ExitError
+				if !errors.As(err, &exit) || exit.ExitCode() != 1 {
+					t.Fatalf("gitleaks exit: %v\n%s", err, out)
+				}
+			}
+			data, err := os.ReadFile(report)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var findings []struct{ RuleID, File string }
+			if err := json.Unmarshal(data, &findings); err != nil {
+				t.Fatal(err)
+			}
+			if len(findings) != tc.findings {
+				t.Fatalf("findings=%d, want %d", len(findings), tc.findings)
+			}
+			for _, finding := range findings {
+				if finding.RuleID != "generic-api-key" || finding.File != tc.path {
+					t.Errorf("unexpected finding: %+v", finding)
+				}
+			}
+		})
+	}
+}
