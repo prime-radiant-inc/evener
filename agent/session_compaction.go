@@ -442,8 +442,7 @@ func retainedFoldReplayTail(entries []transcript.Entry, folded []schema.Turn) []
 		}
 	}
 	var tail []schema.Turn
-	for i := len(folded) - 1; i >= 0; i-- {
-		live := folded[i]
+	for _, live := range slices.Backward(folded) {
 		if live.Kind.TranscriptOnly() || isSessionNameCompactionTurn(live) {
 			continue
 		}

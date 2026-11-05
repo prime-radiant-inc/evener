@@ -69,8 +69,8 @@ func (s *Session) noteConversationTurnLocked(turn schema.Turn) {
 		s.conversation.generation = max(s.conversation.generation, p.RunGeneration)
 		frontierID = p.FrontierID
 		if turn.Kind == schema.TurnAssistant {
-			copy := *p
-			s.conversation.active = &copy
+			provenance := *p
+			s.conversation.active = &provenance
 		}
 	}
 	if frontierID == "" || (turn.Kind != schema.TurnAssistant && turn.Kind != schema.TurnSummary && turn.Kind != schema.TurnCheckpoint) {
@@ -205,11 +205,11 @@ func (s *Session) resolveConversationFrontierLocked(id string) []string {
 		return nil
 	}
 	set := make(map[string]bool)
-	for i := len(chain) - 1; i >= 0; i-- {
-		for _, input := range chain[i].RemovedInputs {
+	for _, node := range slices.Backward(chain) {
+		for _, input := range node.RemovedInputs {
 			delete(set, input)
 		}
-		for _, input := range chain[i].AddedInputs {
+		for _, input := range node.AddedInputs {
 			set[input] = true
 		}
 	}
@@ -270,6 +270,6 @@ func (s *Session) activeConversationProvenance() *schema.ConversationOutputProve
 	if s.conversation.active == nil {
 		return nil
 	}
-	copy := *s.conversation.active
-	return &copy
+	provenance := *s.conversation.active
+	return &provenance
 }
