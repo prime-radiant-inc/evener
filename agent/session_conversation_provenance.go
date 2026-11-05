@@ -13,7 +13,6 @@ import (
 // come from the final presented history, not from later admission or appends.
 type conversationRequest struct {
 	provenance schema.ConversationOutputProvenance
-	frontier   *schema.ConversationFrontier
 	inputs     []string
 }
 
@@ -145,10 +144,12 @@ func (s *Session) conversationSnapshot(journal clientMutationSnapshot) *appwire.
 		}
 		for _, id := range record.ConversationInputIDs {
 			admitted[id] = true
-			// An interrupted start may have stopped before its input was
-			// recorded. Only that journal-only input can no longer be consumed,
-			// while canonical inputs must keep fencing stale replies after stop.
-			if record.ExecutionState == "canceled" || (record.ExecutionState == "interrupted" && !s.conversation.admitted[id]) {
+			// Failed preparation and interruption can end an input before it
+			// reaches canonical history. Only those terminal journal-only IDs
+			// can no longer be consumed; recorded inputs still fence stale replies.
+			unrecordedTerminal := record.OperationState == clientMutationOperationTerminal &&
+				(record.ExecutionState == "interrupted" || record.ExecutionState == "failed") && !s.conversation.admitted[id]
+			if record.ExecutionState == "canceled" || unrecordedTerminal {
 				retired[id] = true
 			}
 		}
@@ -227,16 +228,10 @@ func (s *Session) resolveConversationFrontierLocked(id string) []string {
 func (s *Session) freezeConversationRequest() *conversationRequest {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	ids := slices.Clone(s.conversation.preparedInputs)
-	request := &conversationRequest{inputs: ids, provenance: schema.ConversationOutputProvenance{
+	return &conversationRequest{inputs: slices.Clone(s.conversation.preparedInputs), provenance: schema.ConversationOutputProvenance{
 		Version: 1, InstanceID: s.id, RunGeneration: s.conversation.generation,
-		RequestID: identifier.MustNewTurnID(), FrontierID: s.conversation.frontierID,
+		RequestID: identifier.MustNewTurnID(),
 	}}
-	request.frontier = s.conversationDeltaLocked(request.provenance.RequestID, ids)
-	if request.frontier != nil {
-		request.provenance.FrontierID = request.frontier.ID
-	}
-	return request
 }
 
 func (s *Session) conversationDeltaLocked(id string, ids []string) *schema.ConversationFrontier {
