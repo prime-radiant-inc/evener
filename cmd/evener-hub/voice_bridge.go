@@ -44,15 +44,20 @@ type voiceBridge struct {
 	workKind     string
 	workers      sync.WaitGroup
 
-	generation    uint64
-	awaitingFence bool
-	history       appwire.SnapshotIdentity
-	speechCursor  *appwire.ThreadItemPosition
-	refresh       bool
-	delivery      *hubcore.SpeechDelivery
-	transcripts   map[string]string
-	provenance    *appwire.ConversationProvenanceState
-	retiring      *hubcore.SpeechDelivery
+	generation       uint64
+	awaitingFence    bool
+	history          appwire.SnapshotIdentity
+	historyThreadID  string
+	historyBoot      string
+	historyEpoch     uint64
+	interruptedTurns map[string]bool
+	speechCursor     *appwire.ThreadItemPosition
+	refresh          bool
+	delivery         *hubcore.SpeechDelivery
+	deliveryTurnID   string
+	transcripts      map[string]string
+	provenance       *appwire.ConversationProvenanceState
+	retiring         *hubcore.SpeechDelivery
 }
 
 type voiceControl struct {
@@ -231,6 +236,16 @@ func (b *voiceBridge) run() {
 		case notification, ok := <-b.client.Notifications():
 			if !ok {
 				return
+			}
+			if notification.Method == appwire.NotifyHistoryUpdated {
+				var changed appwire.HistoryUpdatedParams
+				if json.Unmarshal(notification.Params, &changed) != nil {
+					return
+				}
+				if b.applySpeechHistoryUpdate(changed) != nil {
+					_ = b.reportError("speech_failed")
+					return
+				}
 			}
 			if notification.Method == appwire.NotifyConversationProvenanceChanged {
 				var changed appwire.ConversationProvenanceChangedParams
