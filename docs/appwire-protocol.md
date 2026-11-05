@@ -1401,6 +1401,7 @@ Underlying Go kind: `string` (no struct fields).
 
 | Field | Go type | Omitempty | Embedded |
 |-------|---------|-----------|----------|
+| `voicePresentationContextV1` | bool | yes |  |
 | `conversationProvenance` | bool | yes |  |
 | `voice` | bool | yes |  |
 | `sessionTools` | bool | yes |  |
@@ -2046,6 +2047,7 @@ Underlying Go kind: `struct` (no struct fields).
 | `name` | string | yes |  |
 | `path` | string | yes |  |
 | `metadata` | map[string]string | yes |  |
+| `voicePresentation` | \*[appwire.VoicePresentationContext](#voicepresentationcontext) | yes |  |
 
 
 ### `InputMention`
@@ -4385,6 +4387,7 @@ Underlying Go kind: `string` (no struct fields).
 
 | Field | Go type | Omitempty | Embedded |
 |-------|---------|-----------|----------|
+| `voicePresentationContextV1` | bool | yes |  |
 | `send` | bool |  |  |
 | `steer` | bool |  |  |
 | `interrupt` | bool |  |  |
@@ -5261,6 +5264,40 @@ Underlying Go kind: `struct` (no struct fields).
 ### `Value`
 
 Underlying Go kind: `slice` (no struct fields).
+
+
+### `VoicePresentationContext`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `version` | int |  |  |
+| `deliveryId` | string |  |  |
+| `bindingId` | string |  |  |
+| `epoch` | string |  |  |
+| `instanceId` | string |  |  |
+| `canonicalSourceItemId` | string |  |  |
+| `originatingRequestId` | string |  |  |
+| `frontierId` | string |  |  |
+| `runGeneration` | uint64 |  |  |
+| `presentationGeneration` | uint64 |  |  |
+| `generatedTranscript` | string |  |  |
+| `transcriptTruncated` | bool |  |  |
+| `outputComplete` | bool |  |  |
+| `interrupted` | bool |  |  |
+| `sampleRateHz` | int |  |  |
+| `items` | [][appwire.VoicePresentationItem](#voicepresentationitem) |  |  |
+
+
+### `VoicePresentationItem`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `responseId` | string |  |  |
+| `itemId` | string |  |  |
+| `generatedSamples` | int64 |  |  |
+| `queuedSamples` | int64 |  |  |
+| `playedSamples` | int64 |  |  |
+| `playbackComplete` | bool |  |  |
 
 
 ### `WarningParams`

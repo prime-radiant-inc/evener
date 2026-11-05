@@ -245,6 +245,7 @@ func (s *Session) publishFoldTransaction(snapLen, snapRevision, snapAppends int,
 	}
 	s.mu.Lock()
 	previousEnvironmentIDs := environmentTurnIDs(s.history)
+	voiceBefore := latestVoicePresentationTurn(s.history)
 	conversationBefore := s.conversationInputsLocked(s.history[:min(snapLen, len(s.history))])
 	published, ok = s.publishFoldedHistory(snapLen, snapRevision, folded)
 	if !ok {
@@ -254,6 +255,9 @@ func (s *Session) publishFoldTransaction(snapLen, snapRevision, snapAppends int,
 	}
 	if commit.prepareConversationLocked != nil {
 		commit.prepareConversationLocked(conversationBefore, published)
+	}
+	if commit.prepareVoicePresentationLocked != nil {
+		commit.prepareVoicePresentationLocked(voiceBefore, published)
 	}
 	// The appended turns may reallocate, so the history takes the new slice.
 	published, restoredAt := withAttentionTurns(published, keptAttention)
@@ -527,17 +531,18 @@ func (s *Session) steerCompactionTranscriptReminderForFold(publishedRevision int
 // commitTranscriptsLocked and delivered (with its metadata save) by
 // commitSkillCompactionPublication after the flush.
 type foldCommit struct {
-	prepareConversationLocked    func([]string, []schema.Turn)
-	claimNoteLocked              func()
-	commitTranscriptsLocked      func() bool
-	flush                        func()
-	resetEnvContextTrackerLocked func(bool)
-	publishedRevision            int
-	actualCompaction             bool
-	captured                     *schema.SkillCompactionOperation
-	stagedCompactionCount        func() int
-	claimCompactionLocked        func()
-	receipt                      *schema.SkillCompactionReceipt
+	prepareVoicePresentationLocked func(schema.Turn, []schema.Turn)
+	prepareConversationLocked      func([]string, []schema.Turn)
+	claimNoteLocked                func()
+	commitTranscriptsLocked        func() bool
+	flush                          func()
+	resetEnvContextTrackerLocked   func(bool)
+	publishedRevision              int
+	actualCompaction               bool
+	captured                       *schema.SkillCompactionOperation
+	stagedCompactionCount          func() int
+	claimCompactionLocked          func()
+	receipt                        *schema.SkillCompactionReceipt
 }
 
 // foldPublicationID renders the winning publication's identity from the
@@ -716,6 +721,25 @@ func (s *Session) stageCompactionEffects(ctx context.Context, history *[]schema.
 	// carries the typed record a restart reconciles from. Write errors are
 	// carried into flush, where emitting is safe again.
 	commit := &foldCommit{}
+	commit.prepareVoicePresentationLocked = func(latest schema.Turn, published []schema.Turn) {
+		if len(pendingCompactionTurns) == 0 || latest.VoicePresentation == nil {
+			return
+		}
+		for _, turn := range published {
+			if turn.VoicePresentation != nil && turn.VoicePresentationInputID == latest.VoicePresentationInputID {
+				return // The owning input or an earlier marker survived the fold.
+			}
+		}
+		last := len(pendingCompactionTurns) - 1
+		marker := &pendingCompactionTurns[last]
+		copyVoicePresentationAssociation(marker, latest)
+		for i := len(published) - 1; i >= 0; i-- {
+			if published[i].Kind == marker.Kind && published[i].Message.Text() == marker.Message.Text() {
+				copyVoicePresentationAssociation(&published[i], latest)
+				break
+			}
+		}
+	}
 	var conversationInputs []string
 	var conversationNode *schema.ConversationFrontier
 	var conversationRef string

@@ -418,7 +418,8 @@ func (s *Server) appCapabilitiesLocked(state string, processing bool) appwire.Th
 	steerAvailable := s.retrySafeTurns.Steer != nil
 	clearAvailable := s.clearFunc != nil && !active && !closed && s.clearBlockedReasonLocked() == ""
 	return appwire.ThreadCapabilities{
-		Send: !active && !closed,
+		VoicePresentationContextV1: s.retrySafeTurns.Start != nil && steerAvailable,
+		Send:                       !active && !closed,
 		// Steer answers "can this harness steer", not "is there a turn to steer
 		// right now": clients apply the status themselves (the web's canSteer
 		// requires active for turn/steer), and the daemon accepts
