@@ -330,7 +330,7 @@ func NewVoiceJournal(root string) (*VoiceJournal, error) {
 		return nil, err
 	}
 	db.SetMaxOpenConns(1)
-	_, err = db.Exec(`CREATE TABLE IF NOT EXISTS voice_bindings (
+	_, err = db.ExecContext(context.Background(), `CREATE TABLE IF NOT EXISTS voice_bindings (
  id TEXT PRIMARY KEY, ref TEXT NOT NULL, active INTEGER NOT NULL, record BLOB NOT NULL);
  CREATE UNIQUE INDEX IF NOT EXISTS voice_binding_owner ON voice_bindings(ref) WHERE active = 1;
  CREATE TABLE IF NOT EXISTS voice_turns (
@@ -412,7 +412,7 @@ func voicePageIDs(ctx context.Context, tx *sql.Tx, query, bindingID string, afte
 	if err != nil {
 		return nil, after, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	ids := make([]string, 0, limit)
 	cursor := after
 	for rows.Next() {

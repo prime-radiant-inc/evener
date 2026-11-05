@@ -2,6 +2,7 @@ package appwire
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"maps"
 	"slices"
@@ -75,7 +76,7 @@ func NormalizeMutationInput(items []InputItem) (MutationInput, error) {
 	for i, item := range items {
 		if item.VoicePresentation != nil {
 			if len(items) != 1 || item.Type != "text" || strings.TrimSpace(item.Text) == "" || len(item.Mentions) != 0 {
-				return MutationInput{}, fmt.Errorf("voice presentation requires one ordinary nonblank text item")
+				return MutationInput{}, errors.New("voice presentation requires one ordinary nonblank text item")
 			}
 			if err := ValidateVoicePresentation(item.VoicePresentation); err != nil {
 				return MutationInput{}, err

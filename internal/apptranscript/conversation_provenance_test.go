@@ -1,8 +1,9 @@
 package apptranscript
 
 import (
-	"primeradiant.com/evener/agent/schema"
 	"testing"
+
+	"primeradiant.com/evener/agent/schema"
 )
 
 func TestConversationProvenance_ProjectsOnlyDurableOrigin(t *testing.T) {

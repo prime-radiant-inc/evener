@@ -182,7 +182,7 @@ api_key = "voice-fixture-not-a-secret"
 	t.Log("text fallback: same manager instance, real job_status target, one admitted input and one committed communicate reply")
 
 	const deviceID = "journey-device-6c"
-	armStatus, raw := voiceTestPost(t, ctx, stack, "/api/voice/arm", stack.token, map[string]any{
+	armStatus, raw := voiceTestPost(ctx, t, stack, "/api/voice/arm", stack.token, map[string]any{
 		"ref": managerRef, "expectedInstanceId": managerInstance, "deviceId": deviceID,
 		"provider": "voice-fixture", "model": "gpt-realtime-2.1-mini", "voice": "marin",
 	})
@@ -215,7 +215,7 @@ api_key = "voice-fixture-not-a-secret"
 	headers.Set("X-Evener-Voice-Binding", armed.BindingID)
 	headers.Set("X-Evener-Voice-Epoch", armed.Epoch)
 	headers.Set("X-Evener-Voice-Device", deviceID)
-	device := voiceJourneyConnect(t, ctx, "ws://"+stack.addr+armed.SocketPath, headers)
+	device := voiceJourneyConnect(ctx, t, "ws://"+stack.addr+armed.SocketPath, headers)
 	t.Cleanup(func() { _ = device.CloseNow() })
 	devicePeer := realtimePeer{conn: device, ctx: ctx, t: t}
 	ready := voiceJourneyEvent(t, devicePeer, "ready")
@@ -234,7 +234,7 @@ api_key = "voice-fixture-not-a-secret"
 
 	// Talk creates a durable app turn before any microphone bytes leave the device.
 	devicePeer.send(`{"type":"input_start","sequence":1}`)
-	peer, started := voiceJourneyTalk(t, ctx, device, peers)
+	peer, started := voiceJourneyTalk(ctx, t, device, peers)
 	turnID, _ := started["turnId"].(string)
 	turn, err := journal.Turn(ctx, turnID)
 	if err != nil || turn.ID == "" || turn.BindingID != armed.BindingID || turn.Epoch != armed.Epoch || turn.Sequence != 1 || turn.State != hubcore.VoiceTurnOpen || turn.ProviderInputItemID != "" {
@@ -454,7 +454,7 @@ api_key = "voice-fixture-not-a-secret"
 		t.Fatalf("manager work was not active before voice teardown: %v", err)
 	}
 	_ = device.CloseNow()
-	disarmStatus, _ := voiceTestPost(t, ctx, stack, "/api/voice/disarm", stack.token, map[string]any{"bindingId": armed.BindingID, "epoch": armed.Epoch})
+	disarmStatus, _ := voiceTestPost(ctx, t, stack, "/api/voice/disarm", stack.token, map[string]any{"bindingId": armed.BindingID, "epoch": armed.Epoch})
 	if disarmStatus != http.StatusOK {
 		t.Fatalf("Disarm status=%d, want 200", disarmStatus)
 	}
@@ -495,7 +495,7 @@ func voiceJourneyInspection(t *testing.T, call *fakellm.Call, toolCallID string)
 }
 
 // A quiet socket is only a control connection. Provider startup belongs to Talk.
-func voiceJourneyConnect(t *testing.T, ctx context.Context, endpoint string, headers http.Header) *websocket.Conn {
+func voiceJourneyConnect(ctx context.Context, t *testing.T, endpoint string, headers http.Header) *websocket.Conn {
 	t.Helper()
 	device, response, err := websocket.Dial(ctx, endpoint, &websocket.DialOptions{HTTPHeader: headers})
 	if err != nil {
@@ -511,7 +511,7 @@ func voiceJourneyConnect(t *testing.T, ctx context.Context, endpoint string, hea
 	return device
 }
 
-func voiceJourneyTalk(t *testing.T, ctx context.Context, device *websocket.Conn, peers <-chan realtimePeer) (realtimePeer, map[string]any) {
+func voiceJourneyTalk(ctx context.Context, t *testing.T, device *websocket.Conn, peers <-chan realtimePeer) (realtimePeer, map[string]any) {
 	t.Helper()
 	type deviceResult struct {
 		event map[string]any

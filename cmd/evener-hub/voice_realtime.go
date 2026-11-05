@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"io"
+	"maps"
 	"net/http"
 	"net/url"
 	"sort"
@@ -222,7 +223,12 @@ func (v *VoiceRealtime) Err() error {
 	}
 	return nil
 }
-func (v *VoiceRealtime) Close() error                      { v.fail("closed"); <-v.readerDone; return nil }
+func (v *VoiceRealtime) Close() error {
+	// The terminal error is reported through Err and Events, not Close.
+	_ = v.fail("closed")
+	<-v.readerDone
+	return nil
+}
 func (v *VoiceRealtime) Events() <-chan VoiceRealtimeEvent { return v.events }
 func (v *VoiceRealtime) drainEventsLocked() {
 	for {
@@ -281,16 +287,16 @@ func (v *VoiceRealtime) readLoop() {
 	for {
 		_, b, err := v.conn.Read(v.ctx)
 		if err != nil {
-			v.fail("read")
+			_ = v.fail("read")
 			return
 		}
 		var e voiceWireEvent
 		if json.Unmarshal(b, &e) != nil {
-			v.fail("malformed_event")
+			_ = v.fail("malformed_event")
 			return
 		}
 		if e.Type == "error" {
-			v.fail("provider_error")
+			_ = v.fail("provider_error")
 			return
 		}
 		v.mu.Lock()
@@ -301,7 +307,7 @@ func (v *VoiceRealtime) readLoop() {
 		if s := v.speech; s != nil && e.Type == "response.created" && e.Response.Metadata["delivery_id"] == s.delivery && e.Response.Metadata["generation"] == strconv.FormatUint(s.generation, 10) {
 			if s.response != "" || e.Response.ID == "" || len(e.Response.ID) > 256 || v.seen[e.Response.ID] || len(v.seen) >= 4096 {
 				v.mu.Unlock()
-				v.fail("response_identity")
+				_ = v.fail("response_identity")
 				return
 			}
 			s.response = e.Response.ID
@@ -309,7 +315,7 @@ func (v *VoiceRealtime) readLoop() {
 		}
 		if reason := v.speechEventLocked(e); reason != "" {
 			v.mu.Unlock()
-			v.fail(reason)
+			_ = v.fail(reason)
 			return
 		}
 		overflow := false
@@ -325,7 +331,7 @@ func (v *VoiceRealtime) readLoop() {
 		}
 		v.mu.Unlock()
 		if overflow {
-			v.fail("control_overflow")
+			_ = v.fail("control_overflow")
 			return
 		}
 	}
@@ -338,7 +344,7 @@ func (v *VoiceRealtime) speechEventLocked(e voiceWireEvent) string {
 	if s == nil || s.response == "" {
 		return ""
 	}
-	if e.ResponseID != s.response && !(e.Type == "response.done" && e.Response.ID == s.response) {
+	if e.ResponseID != s.response && (e.Type != "response.done" || e.Response.ID != s.response) {
 		return ""
 	}
 	out := VoiceRealtimeEvent{DeliveryID: s.delivery, Generation: s.generation, ResponseID: s.response, ItemID: e.ItemID}
@@ -691,9 +697,7 @@ func (v *VoiceRealtime) Interrupt(ctx context.Context, generation uint64, played
 	}
 	v.mu.Lock()
 	items := make(map[string]int64, len(s.items))
-	for id, count := range s.items {
-		items[id] = count
-	}
+	maps.Copy(items, s.items)
 	v.mu.Unlock()
 	for id, played := range playedSamples {
 		generated, exists := items[id]

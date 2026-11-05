@@ -48,7 +48,7 @@ func TestE2E_VoiceLiveProductionRelay(t *testing.T) {
 	t.Setenv("OPENAI_API_KEY", "")
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
-	pcm := voiceLiveFixture(t, ctx)
+	pcm := voiceLiveFixture(ctx, t)
 	model, voice := os.Getenv("EVENER_VOICE_RELAY_MODEL"), os.Getenv("EVENER_VOICE_RELAY_VOICE")
 	if model == "" {
 		model = "gpt-realtime-2.1-mini"
@@ -56,8 +56,8 @@ func TestE2E_VoiceLiveProductionRelay(t *testing.T) {
 	if voice == "" {
 		voice = "marin"
 	}
-	voiceLiveCatalog(t, ctx, key, model)
-	observer, endpoint := voiceLiveObserver(t, ctx, key, model)
+	voiceLiveCatalog(ctx, t, key, model)
+	observer, endpoint := voiceLiveObserver(ctx, t, key, model)
 	provider := newFakeLLMProvider(t)
 	stack := startHubStackOnProvider(t, fmt.Sprintf(`
 default = "fake"
@@ -103,7 +103,7 @@ api_key = "observer-not-a-secret"
 	}
 	managerInstance := initial.Thread.Evener.InstanceID
 	const deviceID = "live-relay-fixture"
-	status, raw := voiceTestPost(t, ctx, stack, "/api/voice/arm", stack.token, map[string]any{
+	status, raw := voiceTestPost(ctx, t, stack, "/api/voice/arm", stack.token, map[string]any{
 		"ref": managerRef, "expectedInstanceId": managerInstance, "deviceId": deviceID,
 		"provider": "voice-live", "model": model, "voice": voice,
 	})
@@ -122,7 +122,7 @@ api_key = "observer-not-a-secret"
 	headers.Set("X-Evener-Voice-Binding", armed.BindingID)
 	headers.Set("X-Evener-Voice-Epoch", armed.Epoch)
 	headers.Set("X-Evener-Voice-Device", deviceID)
-	device := voiceJourneyConnect(t, ctx, "ws://"+stack.addr+armed.SocketPath, headers)
+	device := voiceJourneyConnect(ctx, t, "ws://"+stack.addr+armed.SocketPath, headers)
 	defer func() { _ = device.CloseNow() }()
 	peer := realtimePeer{conn: device, ctx: ctx, t: t}
 	ready := voiceJourneyEvent(t, peer, "ready")
@@ -315,7 +315,7 @@ func voiceLiveNonzero(pcm []byte) int {
 	return n
 }
 
-func voiceLiveFixture(t *testing.T, ctx context.Context) []byte {
+func voiceLiveFixture(ctx context.Context, t *testing.T) []byte {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "amber.wav")
 	const filter = "flite=text='What is the status of Amber?':voice=slt"
@@ -352,7 +352,7 @@ func voiceLiveFixture(t *testing.T, ctx context.Context) []byte {
 	return pcm
 }
 
-func voiceLiveCatalog(t *testing.T, ctx context.Context, key, model string) {
+func voiceLiveCatalog(ctx context.Context, t *testing.T, key, model string) {
 	t.Helper()
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://api.openai.com/v1/models/"+url.PathEscape(model), nil)
 	if err != nil {
@@ -389,16 +389,16 @@ type voiceLiveWireObserver struct {
 func (o *voiceLiveWireObserver) snapshot() voiceLiveWire {
 	o.mu.Lock()
 	defer o.mu.Unlock()
-	copy := o.wire
-	copy.Requests = append([]map[string]any(nil), copy.Requests...)
-	copy.Responses = append([]voiceWireResponse(nil), copy.Responses...)
-	return copy
+	cloned := o.wire
+	cloned.Requests = append([]map[string]any(nil), cloned.Requests...)
+	cloned.Responses = append([]voiceWireResponse(nil), cloned.Responses...)
+	return cloned
 }
 
 // One upstream session maximum, no retry or fallback. Authorization is added
 // only on the TLS upstream connection. Headers, PCM and provider error prose
 // are never logged. Both directions otherwise forward byte-identical messages.
-func voiceLiveObserver(t *testing.T, ctx context.Context, key, model string) (*voiceLiveWireObserver, string) {
+func voiceLiveObserver(ctx context.Context, t *testing.T, key, model string) (*voiceLiveWireObserver, string) {
 	t.Helper()
 	o := &voiceLiveWireObserver{}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

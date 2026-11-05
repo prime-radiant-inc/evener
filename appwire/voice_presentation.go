@@ -2,6 +2,7 @@ package appwire
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"slices"
 	"strings"
@@ -49,7 +50,7 @@ type VoicePresentationItem struct {
 
 func (context *VoicePresentationContext) UnmarshalJSON(data []byte) error {
 	if !utf8.Valid(data) {
-		return fmt.Errorf("voice presentation must be valid UTF-8")
+		return errors.New("voice presentation must be valid UTF-8")
 	}
 	type plain VoicePresentationContext
 	var decoded plain
@@ -74,31 +75,31 @@ func ValidateVoicePresentation(context *VoicePresentationContext) error {
 		return nil
 	}
 	if context.Version != 1 || context.SampleRateHz != 24000 {
-		return fmt.Errorf("unsupported voice presentation version or sample rate")
+		return errors.New("unsupported voice presentation version or sample rate")
 	}
 	validIdentity := func(value string) bool {
 		return strings.TrimSpace(value) != "" && len(value) <= VoicePresentationMaxIdentityBytes && utf8.ValidString(value)
 	}
 	for _, value := range []string{context.DeliveryID, context.BindingID, context.Epoch, context.InstanceID, context.CanonicalSourceItemID, context.OriginatingRequestID, context.FrontierID} {
 		if !validIdentity(value) {
-			return fmt.Errorf("invalid voice presentation identity")
+			return errors.New("invalid voice presentation identity")
 		}
 	}
 	if len(context.GeneratedTranscript) > VoicePresentationMaxTranscriptBytes || !utf8.ValidString(context.GeneratedTranscript) {
-		return fmt.Errorf("voice presentation transcript exceeds UTF-8 bounds")
+		return errors.New("voice presentation transcript exceeds UTF-8 bounds")
 	}
 	if len(context.Items) > VoicePresentationMaxItems {
-		return fmt.Errorf("voice presentation has too many items")
+		return errors.New("voice presentation has too many items")
 	}
 	seen := make(map[[2]string]bool, len(context.Items))
 	for _, item := range context.Items {
 		key := [2]string{item.ResponseID, item.ItemID}
 		if !validIdentity(item.ResponseID) || !validIdentity(item.ItemID) || seen[key] {
-			return fmt.Errorf("invalid or duplicate voice presentation item identity")
+			return errors.New("invalid or duplicate voice presentation item identity")
 		}
 		seen[key] = true
 		if item.PlayedSamples < 0 || item.QueuedSamples < item.PlayedSamples || item.GeneratedSamples < item.QueuedSamples {
-			return fmt.Errorf("invalid voice presentation sample counters")
+			return errors.New("invalid voice presentation sample counters")
 		}
 	}
 	data, err := json.Marshal(context)
@@ -106,7 +107,7 @@ func ValidateVoicePresentation(context *VoicePresentationContext) error {
 		return err
 	}
 	if len(data) > VoicePresentationMaxBytes {
-		return fmt.Errorf("voice presentation exceeds serialized bound")
+		return errors.New("voice presentation exceeds serialized bound")
 	}
 	return nil
 }
@@ -129,10 +130,10 @@ func NormalizeVoicePresentationInput(items []InputItem, method, actorKind, insta
 			return MutationInput{}, fmt.Errorf("voice presentation unsupported on %s", method)
 		}
 		if actorKind != "human" {
-			return MutationInput{}, fmt.Errorf("voice presentation requires human input")
+			return MutationInput{}, errors.New("voice presentation requires human input")
 		}
 		if item.VoicePresentation.InstanceID != instanceID {
-			return MutationInput{}, fmt.Errorf("voice presentation instance mismatch")
+			return MutationInput{}, errors.New("voice presentation instance mismatch")
 		}
 	}
 	return NormalizeMutationInput(items)
