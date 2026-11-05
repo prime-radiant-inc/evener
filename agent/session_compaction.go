@@ -7,6 +7,7 @@ import (
 	"reflect"
 	"slices"
 	"strings"
+	"time"
 
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/internal/contextmgr"
@@ -212,14 +213,17 @@ func (s *Session) publishFoldTransaction(snapLen, snapRevision, snapAppends int,
 		return nil, false, refusal
 	}
 	var pendingAskTail, retainedTail []schema.Turn
-	if commit.stagedCompactionCount() > 0 {
-		var err error
-		retainedTail, err = s.retainedFoldReplayTailLocked(folded)
+	if commit.stagedCompactionCount() > 0 && s.stateDir != "" {
+		// One immutable read under the transcript door serves both selectors.
+		_, entries, _, err := readTranscript(context.Background(), transcriptPath(s.stateDir, s.id), s.stateDir)
 		if err != nil {
 			s.attentionMu.Unlock()
-			return nil, false, err
+			return nil, false, fmt.Errorf("read retained compaction tail: %w", err)
 		}
-		pendingAskTail, err = s.pendingAskReplayTailLocked()
+		retainedTail = retainedFoldReplayTail(entries, folded)
+		if ids := s.pendingAskTurnIDs(); len(ids) > 0 {
+			pendingAskTail, err = pendingAskReplayTail(entries, ids)
+		}
 		if err != nil {
 			s.attentionMu.Unlock()
 			s.emit(bareWarningDataFromError("preserve pending ask during compaction", err))
@@ -296,35 +300,30 @@ func (s *Session) publishFoldTransaction(snapLen, snapRevision, snapAppends int,
 	// the same to a stale snapshot's start.
 	tailStart := snapAppends - s.persistedAppendLogBase
 	tailStart = max(0, min(tailStart, len(s.persistedAppendLog)))
-	// Both the snapshot's retained recent tail and pending asks must survive
-	// the new last-marker anchor. Merge their persisted forms by original
-	// ordinal so overlap neither duplicates input nor moves a correction.
-	var rewriteTail []schema.Turn
-	replayedOrdinals := make(map[uint64]bool, len(retainedTail)+len(pendingAskTail))
-	for _, turns := range [][]schema.Turn{retainedTail, pendingAskTail} {
-		for _, turn := range turns {
-			ordinal := *turn.OriginalOrdinal
-			if !replayedOrdinals[ordinal] {
-				rewriteTail = append(rewriteTail, turn)
-				replayedOrdinals[ordinal] = true
-			}
+	// OriginalOrdinal identifies a record, not its place in published history:
+	// a concurrent input can be written before the note it follows live.
+	// Keep concurrent pairs after staged steering, even when pending-ask
+	// custody also selected them from the transcript.
+	concurrentOrdinals := make(map[uint64]bool)
+	for _, persisted := range s.persistedAppendLog[tailStart:] {
+		if persisted.Kind != "" && persisted.OriginalOrdinal != nil {
+			concurrentOrdinals[*persisted.OriginalOrdinal] = true
 		}
 	}
-	slices.SortFunc(rewriteTail, func(a, b schema.Turn) int {
-		if *a.OriginalOrdinal < *b.OriginalOrdinal {
-			return -1
-		}
-		if *a.OriginalOrdinal > *b.OriginalOrdinal {
-			return 1
-		}
-		return 0
-	})
+	retainedTail = mergeFoldReplayTail(retainedTail, pendingAskTail, concurrentOrdinals)
+	pendingByOrdinal := make(map[uint64]schema.Turn, len(pendingAskTail))
+	for _, turn := range pendingAskTail {
+		pendingByOrdinal[*turn.OriginalOrdinal] = turn
+	}
+	var rewriteTail []schema.Turn
 	for _, persisted := range s.persistedAppendLog[tailStart:] {
 		if persisted.Kind == "" {
 			continue // a tombstone: its write recorded nothing, so nothing re-appends
 		}
-		if persisted.OriginalOrdinal != nil && replayedOrdinals[*persisted.OriginalOrdinal] {
-			continue
+		if persisted.OriginalOrdinal != nil {
+			if original, ok := pendingByOrdinal[*persisted.OriginalOrdinal]; ok {
+				persisted = original
+			}
 		}
 		rewriteTail = append(rewriteTail, persisted)
 	}
@@ -363,8 +362,18 @@ func (s *Session) publishFoldTransaction(snapLen, snapRevision, snapAppends int,
 	if hook := s.cfg.testOnly.beforeFoldTranscriptCommit; hook != nil {
 		hook()
 	}
-	markerLanded := commit.commitTranscriptsLocked()
 	var mergedTailWriteErrs []error
+	// The staged writer invokes this only after a marker lands and before
+	// new steering. Together the phases match the published history:
+	// marker, retained snapshot, staged steering, concurrent append pairs.
+	commit.replayRetainedLocked = func() {
+		for _, turn := range retainedTail {
+			if _, err := s.recordTranscriptLocked(turn, transcript.DoorDurable, transcript.PlaceVerbatim); err != nil {
+				mergedTailWriteErrs = append(mergedTailWriteErrs, err)
+			}
+		}
+	}
+	markerLanded := commit.commitTranscriptsLocked()
 	// The rewrite exists only to carry these pairs PAST a marker this fold
 	// landed, because ResumeHistory anchors on the last one and discards
 	// everything before it. A model request publishes a fold whether or not a
@@ -376,8 +385,10 @@ func (s *Session) publishFoldTransaction(snapLen, snapRevision, snapAppends int,
 	if markerLanded {
 		for _, turn := range rewriteTail {
 			place := transcript.PlaceSession
-			if turn.OriginalOrdinal != nil && replayedOrdinals[*turn.OriginalOrdinal] {
-				place = transcript.PlaceVerbatim
+			if turn.OriginalOrdinal != nil {
+				if _, ok := pendingByOrdinal[*turn.OriginalOrdinal]; ok {
+					place = transcript.PlaceVerbatim
+				}
 			}
 			if _, err := s.recordTranscriptLocked(turn, transcript.DoorDurable, place); err != nil {
 				mergedTailWriteErrs = append(mergedTailWriteErrs, err)
@@ -403,46 +414,105 @@ func (s *Session) publishFoldTransaction(snapLen, snapRevision, snapAppends int,
 	return published, true, nil
 }
 
-// retainedFoldReplayTailLocked selects only persisted records whose turns the
-// fold retained. Live tool results can contain private evidence, so they are
-// never serialized here. Copies retain their original ordinal across repeated
-// folds. The caller holds attentionMu, fixing the transcript's read boundary.
-func (s *Session) retainedFoldReplayTailLocked(folded []schema.Turn) ([]schema.Turn, error) {
-	if s.stateDir == "" {
-		return nil, nil
+// retainedFoldReplayTail returns persisted forms in the fold's published order.
+// Never serialize live tool results: they can contain private evidence absent
+// from the durable form. An original ordinal is identity, not chronology.
+func retainedFoldReplayTail(entries []transcript.Entry, folded []schema.Turn) []schema.Turn {
+	type key struct {
+		kind, mutation string
+		timestamp      time.Time
 	}
-	_, entries, _, err := readTranscript(context.Background(), transcriptPath(s.stateDir, s.id), s.stateDir)
-	if err != nil {
-		return nil, fmt.Errorf("read retained compaction tail: %w", err)
+	keyOf := func(turn schema.Turn) key {
+		// Persisted timestamps have no monotonic reading. Canonicalizing the
+		// location and stripping that reading preserves Timestamp.Equal matching.
+		return key{string(turn.Kind), turn.ClientMutationID, turn.Timestamp.Round(0).UTC()}
+	}
+	candidates := make(map[key][]int)
+	for i, entry := range entries {
+		if entry.Turn.OriginalOrdinal == nil {
+			k := keyOf(entry.Turn)
+			candidates[k] = append(candidates[k], i)
+		}
+	}
+	used := make(map[uint64]bool)
+	// Reserve explicit identities before fallback matching equal timestamps.
+	for _, turn := range folded {
+		if turn.OriginalOrdinal != nil {
+			used[*turn.OriginalOrdinal] = true
+		}
 	}
 	var tail []schema.Turn
-	before := len(entries)
 	for i := len(folded) - 1; i >= 0; i-- {
 		live := folded[i]
 		if live.Kind.TranscriptOnly() || isSessionNameCompactionTurn(live) {
 			continue
 		}
-		// The fold keeps an ordered subsequence. Search backwards so equal
-		// timestamps in a retained suffix select the suffix's records, not an
-		// earlier folded-away occurrence. Identity stamped only by the writer
-		// is absent from live turns, but kind, timestamp and mutation ID survive.
-		for j := before - 1; j >= 0; j-- {
-			persisted := entries[j].Turn
-			if persisted.OriginalOrdinal != nil || persisted.Kind != live.Kind || !persisted.Timestamp.Equal(live.Timestamp) || persisted.ClientMutationID != live.ClientMutationID {
-				continue
+		ordinal := -1
+		if live.OriginalOrdinal != nil {
+			if *live.OriginalOrdinal < uint64(len(entries)) {
+				ordinal = int(*live.OriginalOrdinal)
 			}
-			if live.OriginalOrdinal != nil && *live.OriginalOrdinal != uint64(j) {
-				continue
+		} else {
+			k := keyOf(live)
+			matches := candidates[k]
+			for len(matches) > 0 {
+				last := matches[len(matches)-1]
+				matches = matches[:len(matches)-1]
+				if !used[uint64(last)] {
+					ordinal = last
+					break
+				}
 			}
-			ordinal := uint64(j)
-			persisted.OriginalOrdinal = &ordinal
+			candidates[k] = matches
+		}
+		if ordinal >= 0 {
+			original := uint64(ordinal)
+			used[original] = true
+			persisted := entries[ordinal].Turn
+			persisted.OriginalOrdinal = &original
 			tail = append(tail, persisted)
-			before = j
-			break
 		}
 	}
 	slices.Reverse(tail)
-	return tail, nil
+	return tail
+}
+
+// mergeFoldReplayTail keeps retained records in published order. Pending-only
+// custody records go before their next shared retained record, or at the end.
+// Concurrent pairs belong after new steering, never in this pre-steering tail.
+func mergeFoldReplayTail(retained, pending []schema.Turn, concurrent map[uint64]bool) []schema.Turn {
+	shared := make(map[uint64]bool, len(retained))
+	for _, turn := range retained {
+		shared[*turn.OriginalOrdinal] = true
+	}
+	before := make(map[uint64][]schema.Turn)
+	var extra []schema.Turn
+	seen := make(map[uint64]bool)
+	for _, turn := range pending {
+		id := *turn.OriginalOrdinal
+		if concurrent[id] || seen[id] {
+			continue
+		}
+		seen[id] = true
+		if shared[id] {
+			before[id] = extra
+			extra = nil
+		} else {
+			extra = append(extra, turn)
+		}
+	}
+	var merged []schema.Turn
+	seen = make(map[uint64]bool)
+	for _, turn := range retained {
+		id := *turn.OriginalOrdinal
+		if concurrent[id] || seen[id] {
+			continue
+		}
+		seen[id] = true
+		merged = append(merged, before[id]...)
+		merged = append(merged, turn)
+	}
+	return append(merged, extra...)
 }
 
 // foldWithForceCompact snapshots s.history, runs ForceCompact with the given
@@ -572,7 +642,9 @@ func (s *Session) steerCompactionTranscriptReminderForFold(publishedRevision int
 // commitTranscriptsLocked appends the fold's own transcript entries and MUST
 // run under the same attentionMu hold that decided the publish; it reports
 // whether a CHECKPOINT/SUMMARY marker actually landed, which decides whether
-// the tail rewrite has an anchor to carry pairs past. flush commits the
+// the tail rewrite has an anchor to carry pairs past. After a marker lands it
+// calls replayRetainedLocked before writing new steering, preserving published
+// order while concurrent append pairs remain after the steering. flush commits the
 // remaining deferred effects, outside the locks. A losing fold runs none of
 // them.
 //
@@ -600,6 +672,7 @@ type foldCommit struct {
 	prepareConversationLocked      func([]string, []schema.Turn)
 	claimNoteLocked                func()
 	commitTranscriptsLocked        func() bool
+	replayRetainedLocked           func()
 	flush                          func()
 	resetEnvContextTrackerLocked   func(bool)
 	publishedRevision              int
@@ -775,8 +848,8 @@ func (s *Session) stageCompactionEffects(ctx context.Context, history *[]schema.
 	// self-compact nudge latch.
 	//
 	// commitTranscriptsLocked appends the fold's own transcript entries
-	// (checkpoint/summary turns, then the steering turns the fold injected,
-	// in their history order) while the publication transaction still holds
+	// (checkpoint/summary turns, retained replay, then injected steering,
+	// in their published order) while the publication transaction still holds
 	// attentionMu — the transcript door — so no concurrently recorded
 	// turn's entry can sequence between the publish and these markers
 	// (ResumeHistory anchors on the LAST compaction marker and discards
@@ -858,6 +931,9 @@ func (s *Session) stageCompactionEffects(ctx context.Context, history *[]schema.
 			if compactionTurnWriteErrs[i] == nil && isSessionNameCompactionTurn(turn) {
 				markerLanded = true
 			}
+		}
+		if markerLanded && commit.replayRetainedLocked != nil {
+			commit.replayRetainedLocked()
 		}
 		steeringWriteErrs = s.writeSteeringTurnRecordsLocked(pendingSteering)
 		return markerLanded

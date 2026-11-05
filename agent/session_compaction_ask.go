@@ -1,7 +1,6 @@
 package agent
 
 import (
-	"context"
 	"errors"
 	"fmt"
 	"slices"
@@ -12,22 +11,8 @@ import (
 
 var errPendingAskSourceMissing = errors.New("pending ask execution absent from transcript")
 
-// pendingAskReplayTailLocked reads persisted forms, not live tool results which
-// can contain private evidence. The existing fold transaction replays these
-// records past its marker with original ordinals, retaining one public item.
-// The caller holds attentionMu so no append can move the read's durable cut.
-func (s *Session) pendingAskReplayTailLocked() ([]schema.Turn, error) {
-	ids := s.pendingAskTurnIDs()
-	if len(ids) == 0 || s.stateDir == "" {
-		return nil, nil
-	}
-	_, entries, _, err := readTranscript(context.Background(), transcriptPath(s.stateDir, s.id), s.stateDir)
-	if err != nil {
-		return nil, err
-	}
-	return pendingAskReplayTail(entries, ids)
-}
-
+// pendingAskReplayTail selects persisted forms from the fold publisher's
+// immutable transcript snapshot, never private live tool results.
 func pendingAskReplayTail(entries []transcript.Entry, ids []string) ([]schema.Turn, error) {
 	var tail []schema.Turn
 	found := map[string]bool{}
