@@ -13,6 +13,8 @@ import (
 	"net/http"
 	"net/netip"
 	"net/url"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -79,6 +81,30 @@ func (v *voiceService) store() (*hubcore.VoiceJournal, error) {
 		v.journal = journal
 	}
 	return v.journal, nil
+}
+
+// Authoritative session deletion also removes cold journals left by an earlier
+// hub process. A host that has never used voice needs no journal to delete.
+func (v *voiceService) deleteSession(ctx context.Context, ref string) error {
+	root := v.web.cfg.HubStateRoot
+	if root == "" {
+		return nil
+	}
+	if _, err := os.Stat(filepath.Join(root, "voice", "journal.db")); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		return err
+	}
+	journal, err := v.store()
+	if err != nil {
+		return err
+	}
+	if err := journal.DeleteSession(ctx, ref); err != nil {
+		return err
+	}
+	v.refreshSocket(ctx, ref)
+	return nil
 }
 
 func (v *voiceService) close() {

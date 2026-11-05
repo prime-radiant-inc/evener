@@ -476,9 +476,9 @@ func (s *WebServer) acquireProjectDeletionOwnership(
 }
 
 // cleanupProjectDeletionTargetAndDecisions removes one target's artifacts via
-// cleanupProjectDeletionTarget, then scrubs its session-kind archive/favorite
-// decisions on success. A failed artifact removal reports skip (with a
-// reason) and never touches decisions, so a retried delete finds them intact.
+// cleanupProjectDeletionTarget, then scrubs its session decisions and voice
+// journal on success. A failed artifact removal reports skip (with a reason)
+// and leaves both intact for a retried delete.
 // Shared by whole-project deletion (cleanupProjectDeletion, below) and
 // single-session deletion (sessionDelete) so both apply the exact
 // same per-target contract instead of two copies of it.
@@ -520,6 +520,11 @@ func (s *WebServer) scrubSessionDecisions(threadID string) (decisionErrors []str
 	if s.cfg.MessageSearch != nil {
 		if err := s.cfg.MessageSearch.Forget(context.Background(), threadID); err != nil {
 			decisionErrors = append(decisionErrors, fmt.Sprintf("message search index error: %v", err))
+		}
+	}
+	if s.voice != nil {
+		if err := s.voice.deleteSession(context.Background(), localAppRef(threadID)); err != nil {
+			decisionErrors = append(decisionErrors, fmt.Sprintf("voice journal error: %v", err))
 		}
 	}
 	return decisionErrors

@@ -193,6 +193,11 @@ coordinated. S07's settled journal and completed custody remain durable authorit
 during selective offline root relocation. The [state runbook](../evener-hub-state.md)
 owns that bounded procedure, independent-path preservation and proof limits.
 
+S06's local session-deletion owner also removes the session's voice journal
+records, including journals unopened by this process. Session and project
+deletion share cleanup and retry behavior; refusal preserves those records.
+See [voice conversations](voice.md).
+
 S06's local live thread-read merge uses saved tasks and diagnostics only when
 the daemon omitted those fields. Present live values, including empty ones,
 avoid their saved projections and the delegate attention-transcript reads that

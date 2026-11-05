@@ -108,6 +108,12 @@ records that receipt without interpreting the audio again or duplicating the
 user input. Accepted intents are not dispatched again. Retired bindings and
 replacement instances keep unresolved text in the journal for explicit recovery.
 
+Deleting a local session, directly or with its project, removes its voice
+bindings, turns, text intents and speech deliveries. The shared session-deletion
+owner opens an existing journal even when this hub process has not used voice.
+Cleanup failures remain retryable through ordinary deletion, and a refused
+deletion preserves the journal records.
+
 ## Client and qualification boundaries
 
 Voice controls are native iOS controls; browser and ordinary text input retain
