@@ -115,4 +115,163 @@ final class VoiceCoreTests: XCTestCase {
         XCTAssertEqual(voice.tick(at: 43000), [.abort(1, "input_idle")])
         XCTAssertEqual(voice.state, .quiet)
     }
+
+    func testNewOutputKeepsBargeInAfterPreviousFollowupDeadline() {
+        var voice = VoiceController()
+        voice.arm(policy: VoicePolicy()); voice.ready(generation: 1)
+        XCTAssertTrue(voice.acceptSpeech(generation: 2))
+        voice.outputDrained(at: 0)
+        _ = voice.tick(at: 10000)
+        XCTAssertTrue(voice.acceptSpeech(generation: 3))
+        _ = voice.tick(at: 12000)
+        // VoiceService's immediate local stop depends on this state.
+        XCTAssertEqual(voice.state, .speaking)
+        let pcm = Data(repeating: 1, count: 1024)
+        XCTAssertEqual(voice.capture(pcm, speech: true, at: 12001), [.cue, .send(.inputStart(1))])
+        XCTAssertEqual(voice.started(sequence: 1), [.send(.audio(1, 0, pcm))])
+    }
+
+    func testFollowupWindowStartsWhenLatestOutputDrains() {
+        var voice = VoiceController()
+        voice.arm(policy: VoicePolicy()); voice.ready(generation: 1)
+        XCTAssertTrue(voice.acceptSpeech(generation: 2))
+        voice.outputDrained(at: 0)
+        _ = voice.tick(at: 10000)
+        XCTAssertTrue(voice.acceptSpeech(generation: 3))
+        _ = voice.tick(at: 40000)
+        XCTAssertEqual(voice.state, .speaking)
+        voice.outputDrained(at: 40000)
+        _ = voice.tick(at: 51999)
+        XCTAssertEqual(voice.state, .conversing)
+        _ = voice.tick(at: 52000)
+        XCTAssertEqual(voice.state, .quiet)
+        XCTAssertEqual(voice.capture(Data(repeating: 1, count: 1024), speech: true, at: 52001), [])
+    }
+
+    func testRejectedSpeechPreservesFollowupDeadline() {
+        var voice = VoiceController()
+        voice.arm(policy: VoicePolicy()); voice.ready(generation: 1)
+        XCTAssertTrue(voice.acceptSpeech(generation: 3))
+        voice.outputDrained(at: 100)
+        _ = voice.tick(at: 10000)
+        XCTAssertFalse(voice.acceptSpeech(generation: 2))
+        XCTAssertEqual(voice.state, .conversing)
+        var beforeExpiry = voice
+        XCTAssertEqual(beforeExpiry.capture(Data(repeating: 1, count: 1024), speech: true, at: 12099), [.cue, .send(.inputStart(1))])
+        _ = voice.tick(at: 12100)
+        XCTAssertEqual(voice.state, .quiet)
+        XCTAssertEqual(voice.capture(Data(repeating: 1, count: 1024), speech: true, at: 12100), [])
+    }
+
+    func testCaptureSampleBudgetIncludesBufferedFramesAndResetsPerUtterance() {
+        var voice = VoiceController()
+        voice.arm(policy: VoicePolicy()); voice.ready(generation: 1)
+        let pcm = Data((0..<1024).map { UInt8($0 % 256) })
+        // Each 1024-frame hardware tap at 48 kHz supplies 512 mono PCM16
+        // provider samples at 24 kHz. Admission may arrive after buffering.
+        for (turn, pendingFrames) in [0, 45].enumerated() {
+            let sequence = turn + 1
+            let start = turn * 40000
+            XCTAssertEqual(voice.talk(at: Double(start)), [.cue, .send(.inputStart(sequence))])
+            var actions: [VoiceAction] = []
+            for frame in 0..<1500 {
+                if frame == pendingFrames { actions += voice.started(sequence: sequence) }
+                let at = Double(start + 1 + frame * 1024 * 1000 / 48000)
+                let captured = voice.capture(pcm, speech: true, at: at)
+                actions += captured
+                if captured.contains(.send(.inputEnd(sequence))) { break }
+            }
+            let audio = actions.compactMap { action -> (Int, Int, Data)? in
+                if case let .send(.audio(sequence, frame, pcm)) = action { return (sequence, frame, pcm) }
+                return nil
+            }
+            // The hub rejects an entire input above 720000 samples. A bounded
+            // final partial frame must precede input_end, with no frame gaps.
+            XCTAssertEqual(audio.map { $0.0 }, Array(repeating: sequence, count: 1407))
+            XCTAssertEqual(audio.map { $0.1 }, Array(0..<1407))
+            XCTAssertEqual(audio.map { $0.2.count / 2 }, Array(repeating: 512, count: 1406) + [128])
+            XCTAssertEqual(audio.reduce(0) { $0 + $1.2.count / 2 }, 720000)
+            XCTAssertTrue(audio.allSatisfy { $0.2.count % 2 == 0 })
+            XCTAssertEqual(audio.last?.2, Data(pcm.prefix(256)))
+            XCTAssertEqual(actions.count, audio.count + 1)
+            XCTAssertEqual(actions.last, .send(.inputEnd(sequence)))
+            XCTAssertFalse(voice.cloudMicrophone)
+            XCTAssertEqual(voice.bufferedBytes, 0)
+            XCTAssertEqual(voice.capture(pcm, speech: true, at: Double(start + 31000)), [])
+        }
+    }
+
+    func testSampleBudgetBeforeAdmissionAbandonsUnacknowledgedInput() {
+        var policy = VoicePolicy()
+        policy.maxUtteranceMs = 60
+        var voice = VoiceController()
+        voice.arm(policy: policy); voice.ready(generation: 1)
+        _ = voice.talk(at: 0)
+        let pcm = Data(repeating: 1, count: 1024)
+        XCTAssertEqual(voice.capture(pcm, speech: true, at: 1), [])
+        XCTAssertEqual(voice.capture(pcm, speech: true, at: 22), [])
+        XCTAssertEqual(voice.capture(pcm, speech: true, at: 43), [.abort(1, "input_start_timeout")])
+        XCTAssertEqual(voice.started(sequence: 1), [])
+        XCTAssertEqual(voice.bufferedBytes, 0)
+        XCTAssertEqual(voice.state, .quiet)
+    }
+
+    func testSampleBudgetDoesNotSubmitSilentInput() {
+        var voice = VoiceController()
+        voice.arm(policy: VoicePolicy()); voice.ready(generation: 1)
+        _ = voice.talk(at: 0); _ = voice.started(sequence: 1)
+        var actions: [VoiceAction] = []
+        for frame in 0..<1500 {
+            let at = Double(1 + frame * 1024 * 1000 / 48000)
+            actions += voice.capture(Data(repeating: 0, count: 1024), speech: false, at: at)
+        }
+        actions += voice.tick(at: 32000)
+        let audio = actions.compactMap { action -> Data? in
+            if case let .send(.audio(_, _, pcm)) = action { return pcm }
+            return nil
+        }
+        XCTAssertEqual(audio.reduce(0) { $0 + $1.count / 2 }, 720000)
+        XCTAssertFalse(actions.contains(.send(.inputEnd(1))))
+        XCTAssertEqual(actions.filter { if case .abort = $0 { return true }; return false }, [.abort(1, "input_idle")])
+        XCTAssertEqual(voice.state, .quiet)
+    }
+
+    func testReadyAcknowledgesFreshAndQuietReconnectWithoutClaimingCapture() {
+        var voice = VoiceController()
+        voice.arm(policy: VoicePolicy())
+        XCTAssertEqual(voice.synchronizeReady(generation: 1), [.send(.interrupt(0, [:]))])
+        XCTAssertEqual(voice.state, .recovering)
+        voice.ready(generation: 1)
+        XCTAssertEqual(voice.state, .quiet)
+        _ = voice.recovering()
+        XCTAssertEqual(voice.synchronizeReady(generation: 2), [.send(.interrupt(1, [:]))])
+        XCTAssertEqual(voice.state, .recovering)
+        voice.ready(generation: 2)
+        XCTAssertEqual(voice.state, .quiet)
+    }
+
+    func testReadyAcknowledgesRetainedFenceAndNewerDurableGeneration() {
+        var voice = VoiceController()
+        voice.arm(policy: VoicePolicy()); voice.ready(generation: 7)
+        _ = voice.stopSpeaking(played: [:])
+        _ = voice.recovering()
+        XCTAssertEqual(voice.synchronizeReady(generation: 3), [.send(.interrupt(8, [:]))])
+        XCTAssertEqual(voice.minimumGeneration, 9)
+        XCTAssertEqual(voice.synchronizeReady(generation: 20), [.send(.interrupt(19, [:]))])
+        XCTAssertEqual(voice.minimumGeneration, 20)
+        voice.ready(generation: 20)
+        XCTAssertFalse(voice.acceptSpeech(generation: 19))
+        XCTAssertTrue(voice.acceptSpeech(generation: 20))
+    }
+
+    func testRepeatedReadyAcknowledgementKeepsCurrentSpeechEligible() {
+        var voice = VoiceController()
+        voice.arm(policy: VoicePolicy()); voice.ready(generation: 6)
+        XCTAssertTrue(voice.acceptSpeech(generation: 6))
+        XCTAssertEqual(voice.synchronizeReady(generation: 6), [.send(.interrupt(5, [:]))])
+        XCTAssertEqual(voice.synchronizeReady(generation: 6), [.send(.interrupt(5, [:]))])
+        XCTAssertEqual(voice.minimumGeneration, 6)
+        XCTAssertEqual(voice.state, .speaking)
+        XCTAssertTrue(voice.acceptSpeech(generation: 6))
+    }
 }

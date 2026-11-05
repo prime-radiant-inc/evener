@@ -30,7 +30,7 @@ function Controls({ client, target }: { client: VoiceClient; target: VoiceTarget
 			setConsent(false);
 			setTakeover(false);
 		} catch (failure) {
-			if (failure instanceof VoiceError && failure.code === "binding_busy") setTakeover(true);
+			if (failure instanceof VoiceError && failure.code === "binding_owned") setTakeover(true);
 			else
 				setError(
 					`Voice could not arm (${failure instanceof VoiceError ? failure.code : "native_audio_unavailable"}). Text chat is unchanged.`,

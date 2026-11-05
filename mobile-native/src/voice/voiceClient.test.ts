@@ -200,13 +200,13 @@ it("keeps busy takeover explicit and refuses background broad credential reads",
 		() => foreground,
 		async () => {
 			requests++;
-			return Response.json({ code: "binding_busy" }, { status: 409 });
+			return Response.json({ code: "binding_owned" }, { status: 409 });
 		},
 	);
 	await expect(client.arm(target)).rejects.toMatchObject({ code: "foreground_required" });
 	expect(reads).toBe(0);
 	foreground = true;
-	await expect(client.arm(target)).rejects.toMatchObject({ code: "binding_busy" });
+	await expect(client.arm(target)).rejects.toMatchObject({ code: "binding_owned" });
 	expect(requests).toBe(1);
 	expect(hardware.actions).toEqual([]);
 });

@@ -55,7 +55,11 @@ it("requires disclosure consent, keeps takeover explicit, and sends Talk only to
 	};
 	native.authorize = async (origin, _path, _token, body) => {
 		requests.push(JSON.parse(body));
-		if (requests.length === 1) return { origin, status: 409, body: JSON.stringify({ code: "binding_busy" }) };
+		// voiceService.arm in cmd/evener-hub/voice_http.go returns this wire code.
+		if (requests.length === 1) {
+			expect(_path).toBe("/api/voice/arm");
+			return { origin, status: 409, body: JSON.stringify({ code: "binding_owned" }) };
+		}
 		return {
 			origin,
 			status: 200,
@@ -93,6 +97,9 @@ it("requires disclosure consent, keeps takeover explicit, and sends Talk only to
 	});
 	expect(requests).toHaveLength(1);
 	expect(requests[0].takeover).toBe(false);
+	expect(actions).toEqual([]);
+	expect(button("Talk").props.disabled).toBe(true);
+	expect(button("Take over the other armed device")).toBeDefined();
 	await act(async () => {
 		button("Take over the other armed device").props.onPress();
 	});
