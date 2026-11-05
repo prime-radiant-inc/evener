@@ -298,8 +298,7 @@ func TestVoiceJournalConcurrentConnectionsHaveOneOwnerAndTurn(t *testing.T) {
 	turns := make([]VoiceTurn, 2)
 	errs := make([]error, 2)
 	for n, store := range []*VoiceJournal{j, other} {
-		wg.Add(1)
-		go func() { defer wg.Done(); turns[n], errs[n] = store.CreateTurn(ctx, b.ID, b.Epoch, 1) }()
+		wg.Go(func() { turns[n], errs[n] = store.CreateTurn(ctx, b.ID, b.Epoch, 1) })
 	}
 	wg.Wait()
 	if errs[0] != nil || errs[1] != nil || turns[0].ID == "" || turns[0].ID != turns[1].ID {
@@ -309,14 +308,12 @@ func TestVoiceJournalConcurrentConnectionsHaveOneOwnerAndTurn(t *testing.T) {
 		t.Fatal(err)
 	}
 	for n, store := range []*VoiceJournal{j, other} {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			candidate := b
 			candidate.ID += string(rune('a' + n))
 			candidate.Epoch = candidate.ID
 			errs[n] = store.CreateBinding(ctx, candidate, false)
-		}()
+		})
 	}
 	wg.Wait()
 	successes, conflicts := 0, 0

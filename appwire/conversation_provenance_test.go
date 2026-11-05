@@ -82,12 +82,12 @@ func TestConversationProvenance_InvalidGraphAndSource(t *testing.T) {
 
 func TestConversationProvenance_CloneOwnsMetadata(t *testing.T) {
 	original := Thread{Evener: EvenerThread{ConversationProvenance: &ConversationProvenanceState{AdmittedInputs: []string{"a"}, RetiredInputs: []string{"r"}, Frontiers: []ConversationFrontier{{ID: "f", AddedInputs: []string{"a"}, RemovedInputs: []string{"r"}}}}}, Turns: []Turn{{Items: []ThreadItem{{ConversationProvenance: &ConversationOutputProvenance{RequestID: "request"}}}}}}
-	copy := CloneThread(original)
-	copy.Evener.ConversationProvenance.AdmittedInputs[0] = "changed"
-	copy.Evener.ConversationProvenance.RetiredInputs[0] = "changed"
-	copy.Evener.ConversationProvenance.Frontiers[0].AddedInputs[0] = "changed"
-	copy.Evener.ConversationProvenance.Frontiers[0].RemovedInputs[0] = "changed"
-	copy.Turns[0].Items[0].ConversationProvenance.RequestID = "changed"
+	cloned := CloneThread(original)
+	cloned.Evener.ConversationProvenance.AdmittedInputs[0] = "changed"
+	cloned.Evener.ConversationProvenance.RetiredInputs[0] = "changed"
+	cloned.Evener.ConversationProvenance.Frontiers[0].AddedInputs[0] = "changed"
+	cloned.Evener.ConversationProvenance.Frontiers[0].RemovedInputs[0] = "changed"
+	cloned.Turns[0].Items[0].ConversationProvenance.RequestID = "changed"
 	if original.Evener.ConversationProvenance.AdmittedInputs[0] != "a" || original.Evener.ConversationProvenance.RetiredInputs[0] != "r" || original.Evener.ConversationProvenance.Frontiers[0].AddedInputs[0] != "a" || original.Evener.ConversationProvenance.Frontiers[0].RemovedInputs[0] != "r" || original.Turns[0].Items[0].ConversationProvenance.RequestID != "request" {
 		t.Fatal("clone shares mutable provenance")
 	}

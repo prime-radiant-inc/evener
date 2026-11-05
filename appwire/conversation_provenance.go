@@ -6,15 +6,15 @@ func CloneConversationProvenance(state *ConversationProvenanceState) *Conversati
 	if state == nil {
 		return nil
 	}
-	copy := *state
-	copy.AdmittedInputs = slices.Clone(state.AdmittedInputs)
-	copy.RetiredInputs = slices.Clone(state.RetiredInputs)
-	copy.Frontiers = slices.Clone(state.Frontiers)
-	for i := range copy.Frontiers {
-		copy.Frontiers[i].AddedInputs = slices.Clone(copy.Frontiers[i].AddedInputs)
-		copy.Frontiers[i].RemovedInputs = slices.Clone(copy.Frontiers[i].RemovedInputs)
+	cloned := *state
+	cloned.AdmittedInputs = slices.Clone(state.AdmittedInputs)
+	cloned.RetiredInputs = slices.Clone(state.RetiredInputs)
+	cloned.Frontiers = slices.Clone(state.Frontiers)
+	for i := range cloned.Frontiers {
+		cloned.Frontiers[i].AddedInputs = slices.Clone(cloned.Frontiers[i].AddedInputs)
+		cloned.Frontiers[i].RemovedInputs = slices.Clone(cloned.Frontiers[i].RemovedInputs)
 	}
-	return &copy
+	return &cloned
 }
 
 // ResolveConversationFrontier resolves exact coverage from the canonical delta

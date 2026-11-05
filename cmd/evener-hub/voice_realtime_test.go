@@ -447,7 +447,7 @@ func TestVoiceRealtimeQueuePressure(t *testing.T) {
 		realtimeSpeak(t, v, p, "delivery-1", "1", "speech-1")
 		p.send(`{"type":"response.output_item.added","response_id":"speech-1","item":{"id":"audio-1","type":"message"}}`)
 		// Do not consume Events. Exactly 33 chunks exceed the documented 32 slots.
-		for i := 0; i < 33; i++ {
+		for range 33 {
 			p.send(`{"type":"response.output_audio.delta","response_id":"speech-1","item_id":"audio-1","content_index":0,"delta":"AAABAA=="}`)
 		}
 		select {
@@ -477,6 +477,37 @@ func TestVoiceRealtimeMalformedEventClosesReader(t *testing.T) {
 	}
 	if _, ok := <-v.Events(); ok {
 		t.Fatal("closed reader retained events")
+	}
+}
+
+func TestVoiceRealtimeCloseRetiresConnection(t *testing.T) {
+	v, p := openRealtimeTest(t)
+	if err := v.Close(); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-v.readerDone:
+	default:
+		t.Fatal("Close returned before the reader finished")
+	}
+	event := realtimeNextEvent(t, v)
+	if event.Kind != "error" || event.Err == nil || event.Err.Reason != "closed" || !event.Err.ReplaceConnection {
+		t.Fatalf("close event=%+v", event)
+	}
+	if err := v.Err(); !errors.Is(err, event.Err) {
+		t.Fatalf("terminal error=%v, event error=%v", err, event.Err)
+	}
+	if _, ok := <-v.Events(); ok {
+		t.Fatal("closed reader retained events")
+	}
+	if err := v.BeginInput(t.Context()); !errors.Is(err, event.Err) {
+		t.Fatalf("closed connection accepted input or changed terminal error: %v", err)
+	}
+	if err := v.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := p.conn.Read(t.Context()); err == nil {
+		t.Fatal("provider connection remained open")
 	}
 }
 

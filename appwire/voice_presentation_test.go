@@ -2,7 +2,7 @@ package appwire
 
 import (
 	"encoding/json"
-	"fmt"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -53,7 +53,7 @@ func TestVoicePresentationBoundsAndIsolation(t *testing.T) {
 		"duplicate":       func(v *VoicePresentationContext) { v.Items = append(v.Items, v.Items[0]) },
 		"items": func(v *VoicePresentationContext) {
 			for i := range 32 {
-				v.Items = append(v.Items, VoicePresentationItem{ResponseID: "r", ItemID: fmt.Sprint(i)})
+				v.Items = append(v.Items, VoicePresentationItem{ResponseID: "r", ItemID: strconv.Itoa(i)})
 			}
 		},
 		"serialized": func(v *VoicePresentationContext) { v.GeneratedTranscript = strings.Repeat("\x00", 16384) },

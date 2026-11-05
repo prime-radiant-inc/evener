@@ -41,17 +41,17 @@ func TestE2E_VoiceArmBindsExistingManager(t *testing.T) {
 		"ref": ref, "expectedInstanceId": thread.Evener.InstanceID,
 		"deviceId": "installation-one", "provider": "fake",
 	}
-	status, _ := voiceTestPost(t, ctx, stack, "/api/voice/arm", "", body)
+	status, _ := voiceTestPost(ctx, t, stack, "/api/voice/arm", "", body)
 	if status != http.StatusUnauthorized {
 		t.Fatalf("unauthenticated Arm status = %d", status)
 	}
 	body["expectedInstanceId"] = "replaced-instance"
-	status, _ = voiceTestPost(t, ctx, stack, "/api/voice/arm", stack.token, body)
+	status, _ = voiceTestPost(ctx, t, stack, "/api/voice/arm", stack.token, body)
 	if status != http.StatusConflict {
 		t.Fatalf("Arm against replaced instance status = %d, want conflict", status)
 	}
 	body["expectedInstanceId"] = thread.Evener.InstanceID
-	status, raw := voiceTestPost(t, ctx, stack, "/api/voice/arm", stack.token, body)
+	status, raw := voiceTestPost(ctx, t, stack, "/api/voice/arm", stack.token, body)
 	if status != http.StatusOK {
 		t.Fatalf("Arm status = %d", status)
 	}
@@ -82,7 +82,7 @@ func TestE2E_VoiceArmBindsExistingManager(t *testing.T) {
 	if binding.Ref != ref || binding.InstanceID != thread.Evener.InstanceID || binding.DeviceID != "installation-one" || binding.Epoch != armed.Epoch || binding.GrantHash != hex.EncodeToString(digest[:]) || !binding.Active {
 		t.Fatal("durable binding disagrees with selected session, owner or grant hash")
 	}
-	status, _ = voiceTestPost(t, ctx, stack, "/api/voice/arm", armed.Grant, body)
+	status, _ = voiceTestPost(ctx, t, stack, "/api/voice/arm", armed.Grant, body)
 	if status != http.StatusUnauthorized {
 		t.Fatalf("scoped grant could create another binding: %d", status)
 	}
@@ -116,12 +116,12 @@ func TestE2E_VoiceArmBindsExistingManager(t *testing.T) {
 	voiceJourneyAcknowledgeReady(t, peer, map[string]any{"generation": float64(ready.Generation)}, 0)
 	voiceJourneyEvent(t, peer, "stop")
 	body["deviceId"] = "installation-two"
-	status, _ = voiceTestPost(t, ctx, stack, "/api/voice/arm", stack.token, body)
+	status, _ = voiceTestPost(ctx, t, stack, "/api/voice/arm", stack.token, body)
 	if status != http.StatusConflict {
 		t.Fatalf("second device silently took over: %d", status)
 	}
 	body["takeover"] = true
-	status, raw = voiceTestPost(t, ctx, stack, "/api/voice/arm", stack.token, body)
+	status, raw = voiceTestPost(ctx, t, stack, "/api/voice/arm", stack.token, body)
 	if status != http.StatusOK {
 		t.Fatalf("explicit takeover status = %d", status)
 	}
@@ -143,7 +143,7 @@ func TestE2E_VoiceArmBindsExistingManager(t *testing.T) {
 	if err != nil || read.Thread.Evener.InstanceID != thread.Evener.InstanceID || !read.Thread.Evener.Manager {
 		t.Fatalf("Arm replaced the manager: %v", err)
 	}
-	status, _ = voiceTestPost(t, ctx, stack, "/api/voice/disarm", stack.token, map[string]string{"bindingId": replacement.BindingID, "epoch": replacement.Epoch})
+	status, _ = voiceTestPost(ctx, t, stack, "/api/voice/disarm", stack.token, map[string]string{"bindingId": replacement.BindingID, "epoch": replacement.Epoch})
 	if status != http.StatusOK {
 		t.Fatalf("Disarm status = %d", status)
 	}
@@ -153,7 +153,7 @@ func TestE2E_VoiceArmBindsExistingManager(t *testing.T) {
 	}
 }
 
-func voiceTestPost(t *testing.T, ctx context.Context, stack hubStack, path, token string, body any) (int, []byte) {
+func voiceTestPost(ctx context.Context, t *testing.T, stack hubStack, path, token string, body any) (int, []byte) {
 	t.Helper()
 	raw, err := json.Marshal(body)
 	if err != nil {

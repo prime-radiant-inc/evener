@@ -246,7 +246,7 @@ api_key = "voice-fixture-not-a-secret"
 	}
 	f.instance = read.Thread.Evener.InstanceID
 	f.waitRead(t, "opening settled", func(read appwire.ThreadReadResponse) bool { return read.Thread.Evener.ActiveTurnID == "" })
-	status, raw := voiceTestPost(t, ctx, stack, "/api/voice/arm", stack.token, map[string]any{
+	status, raw := voiceTestPost(ctx, t, stack, "/api/voice/arm", stack.token, map[string]any{
 		"ref": ref, "expectedInstanceId": f.instance, "deviceId": "correction-device", "provider": "voice-fixture", "model": "gpt-realtime-2.1-mini", "voice": "marin",
 	})
 	if status != http.StatusOK {
@@ -278,7 +278,7 @@ api_key = "voice-fixture-not-a-secret"
 
 func (f *voiceCorrectionStack) connect(t *testing.T) map[string]any {
 	t.Helper()
-	device := voiceJourneyConnect(t, f.ctx, "ws://"+f.stack.addr+f.armed.SocketPath, f.headers)
+	device := voiceJourneyConnect(f.ctx, t, "ws://"+f.stack.addr+f.armed.SocketPath, f.headers)
 	t.Cleanup(func() { _ = device.CloseNow() })
 	f.device = realtimePeer{conn: device, ctx: f.ctx, t: t}
 	return voiceJourneyEvent(t, f.device, "ready")
@@ -452,11 +452,11 @@ func voiceCorrectionFrontier(t *testing.T, state *appwire.ConversationProvenance
 		id = node.BaseID
 	}
 	result := make(map[string]bool)
-	for i := len(chain) - 1; i >= 0; i-- {
-		for _, input := range chain[i].AddedInputs {
+	for _, node := range slices.Backward(chain) {
+		for _, input := range node.AddedInputs {
 			result[input] = true
 		}
-		for _, input := range chain[i].RemovedInputs {
+		for _, input := range node.RemovedInputs {
 			delete(result, input)
 		}
 	}

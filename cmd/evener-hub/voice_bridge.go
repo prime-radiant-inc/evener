@@ -209,7 +209,7 @@ func (b *voiceBridge) run() {
 			})
 		}
 		var events <-chan VoiceRealtimeEvent
-		if b.provider != nil && !(b.retiring != nil && b.workKind == "speech") {
+		if b.provider != nil && (b.retiring == nil || b.workKind != "speech") {
 			events = b.provider.Events()
 		}
 		select {
@@ -346,9 +346,7 @@ func (b *voiceBridge) close() {
 func (b *voiceBridge) beginWork(kind string, work func(context.Context) voiceWorkResult) {
 	ctx, cancel := context.WithCancel(b.ctx)
 	b.workCancel, b.workKind = cancel, kind
-	b.workers.Add(1)
-	go func() {
-		defer b.workers.Done()
+	b.workers.Go(func() {
 		result := work(ctx)
 		select {
 		case b.work <- result:
@@ -357,7 +355,7 @@ func (b *voiceBridge) beginWork(kind string, work func(context.Context) voiceWor
 				_ = result.provider.Close()
 			}
 		}
-	}()
+	})
 }
 
 func (b *voiceBridge) control(control voiceControl) error {
