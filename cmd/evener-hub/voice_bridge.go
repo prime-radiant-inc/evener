@@ -1,16 +1,22 @@
 package hub
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"crypto/subtle"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"io"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/coder/websocket"
+	"github.com/google/uuid"
+	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 )
 
@@ -24,6 +30,50 @@ type voiceBridge struct {
 	ctx     context.Context
 	cancel  context.CancelFunc
 	done    chan struct{}
+
+	client       *appwire.Client
+	provider     *VoiceRealtime
+	turn         *hubcore.VoiceTurn
+	nextFrame    int64
+	inputSamples int64
+	inputReady   bool
+	inputQueued  bool
+	work         chan voiceWorkResult
+	workCancel   context.CancelFunc
+	workKind     string
+	workers      sync.WaitGroup
+
+	generation   uint64
+	history      appwire.SnapshotIdentity
+	speechCursor *appwire.ThreadItemPosition
+	refresh      bool
+	delivery     *hubcore.SpeechDelivery
+	outputDone   bool
+	playedDone   map[string]bool
+	transcripts  map[string]string
+	provenance   *appwire.ConversationProvenanceState
+	retiring     *hubcore.SpeechDelivery
+}
+
+type voiceControl struct {
+	Type          string           `json:"type"`
+	Sequence      int64            `json:"sequence,omitempty"`
+	Frame         int64            `json:"frame,omitempty"`
+	PCM           string           `json:"pcm,omitempty"`
+	Reason        string           `json:"reason,omitempty"`
+	DeliveryID    string           `json:"deliveryId,omitempty"`
+	Generation    uint64           `json:"generation,omitempty"`
+	ItemID        string           `json:"itemId,omitempty"`
+	Samples       int64            `json:"samples,omitempty"`
+	Complete      bool             `json:"complete,omitempty"`
+	PlayedSamples map[string]int64 `json:"playedSamples,omitempty"`
+}
+
+type voiceWorkResult struct {
+	provider *VoiceRealtime
+	intent   hubcore.VoiceIntent
+	read     appwire.ThreadReadResponse
+	err      error
 }
 
 func (v *voiceService) socket(w http.ResponseWriter, r *http.Request) {
@@ -89,16 +139,317 @@ func (b *voiceBridge) send(message any) error {
 }
 
 func (b *voiceBridge) run() {
-	if b.send(map[string]any{"type": "ready", "bindingId": b.binding.ID, "epoch": b.binding.Epoch, "generation": 1, "expiresAt": b.binding.ExpiresAt, "policy": currentVoicePolicy()}) != nil {
+	client, err := b.service.web.voiceClient(b.ctx)
+	if err != nil {
+		_ = b.reportError("session_unavailable")
 		return
 	}
-	// The quiet control connection carries no microphone data to a provider.
+	b.client = client
+	b.work = make(chan voiceWorkResult)
+	defer b.close()
+	read, err := b.client.ThreadRead(b.ctx, appwire.ThreadReadParams{Ref: b.binding.Ref, IncludeTurns: true, Subscribe: true, ItemLimit: appwire.TranscriptItemPageLimit})
+	if err != nil || !b.validSpeechRead(read) {
+		_ = b.reportError("session_unavailable")
+		return
+	}
+	b.captureSpeechBaseline(read)
+	b.provenance = read.Thread.Evener.ConversationProvenance
+	b.generation = 1
+	controls := make(chan voiceControl, 8)
+	b.workers.Add(1)
+	go b.readControls(controls)
+	if b.send(map[string]any{"type": "ready", "bindingId": b.binding.ID, "epoch": b.binding.Epoch, "generation": b.generation, "expiresAt": b.binding.ExpiresAt, "policy": currentVoicePolicy()}) != nil {
+		return
+	}
+	expiry := time.NewTimer(time.Until(b.binding.ExpiresAt))
+	defer expiry.Stop()
 	for {
-		if _, _, err := b.conn.Read(b.ctx); err != nil {
+		if b.retiring != nil && b.workCancel == nil {
+			provider, delivery := b.provider, *b.retiring
+			b.beginWork("retired", func(ctx context.Context) voiceWorkResult {
+				played := make(map[string]int64, len(delivery.Items))
+				for _, item := range delivery.Items {
+					played[item.ItemID] = item.PlayedSamples
+				}
+				return voiceWorkResult{err: provider.Interrupt(ctx, delivery.PresentationGeneration, played)}
+			})
+		} else if b.inputQueued && b.workCancel == nil {
+			b.inputQueued = false
+			provider := b.provider
+			b.beginWork("input_started", func(ctx context.Context) voiceWorkResult {
+				result := voiceWorkResult{}
+				if provider == nil {
+					provider, result.err = b.openProvider(ctx)
+					result.provider = provider
+				}
+				if result.err == nil {
+					result.err = provider.BeginInput(ctx)
+				}
+				return result
+			})
+		} else if b.refresh && b.workCancel == nil && b.turn == nil {
+			b.refresh = false
+			b.beginWork("history", func(ctx context.Context) voiceWorkResult {
+				read, err := b.client.ThreadRead(ctx, appwire.ThreadReadParams{Ref: b.binding.Ref, IncludeTurns: true, ItemLimit: appwire.TranscriptItemPageLimit})
+				return voiceWorkResult{read: read, err: err}
+			})
+		}
+		var events <-chan VoiceRealtimeEvent
+		if b.provider != nil && !(b.retiring != nil && b.workKind == "speech") {
+			events = b.provider.Events()
+		}
+		select {
+		case <-b.ctx.Done():
+			return
+		case <-expiry.C:
+			_ = b.reportError("grant_expired")
+			return
+		case control := <-controls:
+			if err := b.control(control); err != nil {
+				_ = b.reportError("input_failed")
+				return
+			}
+		case notification, ok := <-b.client.Notifications():
+			if !ok {
+				return
+			}
+			if notification.Method == appwire.NotifyConversationProvenanceChanged {
+				var changed appwire.ConversationProvenanceChangedParams
+				if json.Unmarshal(notification.Params, &changed) != nil {
+					return
+				}
+				if changed.Ref == b.binding.Ref && b.applyProvenance(changed.Provenance) != nil {
+					_ = b.reportError("speech_failed")
+					return
+				}
+			}
+			if notification.Method == appwire.NotifyHistoryUpdated || notification.Method == appwire.NotifyConversationProvenanceChanged {
+				b.refresh = true
+			}
+		case event, ok := <-events:
+			if !ok || b.providerEvent(event) != nil {
+				_ = b.reportError("speech_failed")
+				return
+			}
+		case result := <-b.work:
+			kind := b.workKind
+			b.workCancel()
+			b.workCancel, b.workKind = nil, ""
+			if result.provider != nil {
+				b.provider = result.provider
+			}
+			if kind == "speech" && b.retiring != nil {
+				// Setup was interrupted before acknowledgement. Its connection
+				// cannot safely carry the new utterance, even if setup just won.
+				if b.provider != nil {
+					_ = b.provider.Close()
+					b.provider = nil
+				}
+				b.retiring = nil
+				continue
+			}
+			if result.err != nil {
+				_ = b.reportError("input_failed")
+				return
+			}
+			switch kind {
+			case "input_started":
+				b.inputReady = true
+				if b.send(map[string]any{"type": kind, "sequence": b.turn.Sequence, "turnId": b.turn.ID}) != nil {
+					return
+				}
+			case "intent":
+				b.turn = nil
+				b.refresh = true
+				if b.send(map[string]any{"type": "intent", "turnId": result.intent.TurnID, "text": result.intent.Text, "custody": result.intent.State}) != nil {
+					return
+				}
+			case "history":
+				if b.selectSpeech(result.read) != nil {
+					_ = b.reportError("speech_failed")
+					return
+				}
+			case "retired":
+				b.retiring = nil
+			}
+		}
+	}
+}
+
+func (b *voiceBridge) reportError(code string) error {
+	return b.send(map[string]any{"type": "error", "code": code, "recoverable": true})
+}
+
+func (b *voiceBridge) readControls(controls chan<- voiceControl) {
+	defer b.workers.Done()
+	defer b.cancel()
+	for {
+		kind, raw, err := b.conn.Read(b.ctx)
+		if err != nil || kind != websocket.MessageText {
 			return
 		}
-		if b.send(map[string]any{"type": "error", "code": "unsupported_control", "recoverable": true}) != nil {
+		var control voiceControl
+		decoder := json.NewDecoder(bytes.NewReader(raw))
+		decoder.DisallowUnknownFields()
+		if decoder.Decode(&control) != nil || decoder.Decode(new(any)) != io.EOF {
+			return
+		}
+		select {
+		case controls <- control:
+		case <-b.ctx.Done():
+			return
+		default:
+			// A full input queue invalidates the whole partial utterance.
 			return
 		}
 	}
+}
+
+func (b *voiceBridge) close() {
+	b.cancel()
+	b.workers.Wait()
+	if b.provider != nil {
+		_ = b.provider.Close()
+	}
+	_ = b.client.Close()
+	if b.turn != nil {
+		ctx, cancel := context.WithTimeout(context.WithoutCancel(b.ctx), time.Second)
+		defer cancel()
+		_ = b.journal.AbortTurn(ctx, b.turn.ID)
+	}
+	if b.delivery != nil {
+		ctx, cancel := context.WithTimeout(context.WithoutCancel(b.ctx), time.Second)
+		defer cancel()
+		_, _ = b.journal.UpdateSpeechDelivery(ctx, b.delivery.ID, hubcore.SpeechDeliveryUpdate{Epoch: b.binding.Epoch, PresentationGeneration: b.delivery.PresentationGeneration, Interrupted: !b.playbackFinished()})
+	}
+}
+
+func (b *voiceBridge) beginWork(kind string, work func(context.Context) voiceWorkResult) {
+	ctx, cancel := context.WithCancel(b.ctx)
+	b.workCancel, b.workKind = cancel, kind
+	b.workers.Add(1)
+	go func() {
+		defer b.workers.Done()
+		result := work(ctx)
+		select {
+		case b.work <- result:
+		case <-b.ctx.Done():
+			if result.provider != nil {
+				_ = result.provider.Close()
+			}
+		}
+	}()
+}
+
+func (b *voiceBridge) control(control voiceControl) error {
+	switch control.Type {
+	case "input_start":
+		if b.turn != nil || control.Sequence <= 0 {
+			return b.reportError("input_busy")
+		}
+		turn, err := b.journal.CreateTurn(b.ctx, b.binding.ID, b.binding.Epoch, control.Sequence)
+		if err != nil {
+			return err
+		}
+		if turn.State != hubcore.VoiceTurnOpen {
+			return b.reportError("turn_closed")
+		}
+		b.turn, b.nextFrame, b.inputSamples, b.inputReady = &turn, 0, 0, false
+		b.inputQueued = true
+	case "audio":
+		if b.turn == nil || !b.inputReady || b.turn.Sequence != control.Sequence || b.nextFrame != control.Frame {
+			return hubcore.ErrVoiceConflict
+		}
+		pcm, err := base64.StdEncoding.DecodeString(control.PCM)
+		if err != nil || len(pcm) == 0 || len(pcm)%2 != 0 || len(pcm) > voicePCMChunkLimit {
+			return hubcore.ErrVoiceInvalid
+		}
+		b.inputSamples += int64(len(pcm) / 2)
+		if b.inputSamples > int64(currentVoicePolicy().MaxUtteranceMS)*24 {
+			return hubcore.ErrVoiceInvalid
+		}
+		if err := b.provider.AppendPCM(b.ctx, pcm); err != nil {
+			return err
+		}
+		b.nextFrame++
+	case "input_end":
+		if b.turn == nil || !b.inputReady || b.turn.Sequence != control.Sequence || b.workCancel != nil {
+			return hubcore.ErrVoiceConflict
+		}
+		b.inputReady = false
+		turn, provider := *b.turn, b.provider
+		b.beginWork("intent", func(ctx context.Context) voiceWorkResult {
+			intent, err := b.finishInput(ctx, turn, provider)
+			return voiceWorkResult{intent: intent, err: err}
+		})
+	case "input_abort":
+		if b.turn != nil && b.turn.Sequence == control.Sequence {
+			return context.Canceled
+		}
+	case "played":
+		return b.recordPlayed(control)
+	case "interrupt":
+		return b.interruptSpeech(control)
+	case "disarm":
+		if err := b.journal.RetireBinding(b.ctx, b.binding.ID, b.binding.Epoch); err != nil {
+			return err
+		}
+		b.cancel()
+	default:
+		return b.reportError("unsupported_control")
+	}
+	return nil
+}
+
+func (b *voiceBridge) openProvider(ctx context.Context) (*VoiceRealtime, error) {
+	endpoint, headers, err := b.service.web.voiceProvider(ctx, b.binding.Provider)
+	if err != nil {
+		return nil, err
+	}
+	endpoint = strings.Replace(endpoint, "https://", "wss://", 1)
+	endpoint = strings.Replace(endpoint, "http://", "ws://", 1)
+	return OpenVoiceRealtime(ctx, b.ctx, VoiceRealtimeConfig{Endpoint: endpoint, Header: headers, Model: b.binding.Model, Voice: b.binding.Voice})
+}
+
+func (b *voiceBridge) finishInput(ctx context.Context, turn hubcore.VoiceTurn, provider *VoiceRealtime) (hubcore.VoiceIntent, error) {
+	item, err := provider.CommitInput(ctx)
+	if err != nil {
+		return hubcore.VoiceIntent{}, err
+	}
+	if _, err := b.journal.CommitTurnInput(ctx, turn.ID, item); err != nil {
+		return hubcore.VoiceIntent{}, err
+	}
+	interpretation, err := provider.Interpret(ctx, turn.ID, item)
+	if err != nil {
+		return hubcore.VoiceIntent{}, err
+	}
+	read, err := b.client.ThreadRead(ctx, appwire.ThreadReadParams{Ref: b.binding.Ref})
+	if err != nil {
+		return hubcore.VoiceIntent{}, err
+	}
+	if read.Thread.Evener.InstanceID != b.binding.InstanceID || !read.Thread.Evener.MutationStateAuthoritative || !read.Thread.Evener.Manager {
+		return hubcore.VoiceIntent{}, hubcore.ErrVoiceStale
+	}
+	method := appwire.MethodTurnStart
+	if read.Thread.Evener.ActiveTurnID != "" {
+		method = appwire.MethodTurnSteer
+	}
+	intent, err := b.journal.PrepareIntent(ctx, turn.ID, method, interpretation.Text, uuid.NewString())
+	if err != nil {
+		return intent, err
+	}
+	intent, err = b.journal.RecordAttempt(ctx, turn.ID, read.Thread.Evener.InstanceID, false)
+	if err != nil {
+		return intent, err
+	}
+	var response struct {
+		Receipt appwire.MutationReceipt `json:"receipt"`
+	}
+	if err := b.client.Request(ctx, intent.Method, intent.Params, &response); err != nil {
+		return intent, err
+	}
+	// A receipt remains durable evidence even if the phone disconnected in flight.
+	receiptCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), time.Second)
+	defer cancel()
+	return b.journal.RecordReceipt(receiptCtx, turn.ID, response.Receipt)
 }

@@ -30,7 +30,7 @@ func openRealtimeTest(t *testing.T) (*VoiceRealtime, realtimePeer) {
 		err error
 	}
 	done := make(chan result, 1)
-	go func() { v, e := OpenVoiceRealtime(t.Context(), cfg); done <- result{v, e} }()
+	go func() { v, e := OpenVoiceRealtime(t.Context(), t.Context(), cfg); done <- result{v, e} }()
 	p := <-peers
 	p.read()
 	p.send(`{"type":"session.updated","session":{"audio":{"input":{"format":{"type":"audio/pcm","rate":24000},"turn_detection":null},"output":{"format":{"type":"audio/pcm","rate":24000},"voice":"marin"}},"tools":[],"output_modalities":["text"]}}`)
@@ -215,7 +215,7 @@ func TestVoiceRealtimeSessionConfiguration(t *testing.T) {
 		err    error
 	}
 	opened := make(chan outcome, 1)
-	go func() { c, e := OpenVoiceRealtime(t.Context(), cfg); opened <- outcome{c, e} }()
+	go func() { c, e := OpenVoiceRealtime(t.Context(), t.Context(), cfg); opened <- outcome{c, e} }()
 	peer := <-peers
 	request := peer.read()
 	peer.send(`{"type":"session.updated","session":{"type":"realtime","audio":{"input":{"format":{"type":"audio/pcm","rate":24000},"turn_detection":null},"output":{"format":{"type":"audio/pcm","rate":24000},"voice":"marin"}},"tools":[],"output_modalities":["text"]}}`)
@@ -241,7 +241,7 @@ func TestVoiceRealtimeSessionConfiguration(t *testing.T) {
 func TestVoiceRealtimeWaitsForSessionUpdated(t *testing.T) {
 	cfg, peers := realtimeTestServer(t)
 	opened := make(chan *VoiceRealtime, 1)
-	go func() { c, _ := OpenVoiceRealtime(t.Context(), cfg); opened <- c }()
+	go func() { c, _ := OpenVoiceRealtime(t.Context(), t.Context(), cfg); opened <- c }()
 	peer := <-peers
 	peer.read()
 	peer.send(`{"type":"session.created","session":{"id":"session-initial"}}`)
@@ -484,7 +484,7 @@ func TestVoiceRealtimeRejectsUnsafeSessionAcknowledgement(t *testing.T) {
 	cfg, peers := realtimeTestServer(t)
 	done := make(chan error, 1)
 	go func() {
-		v, err := OpenVoiceRealtime(t.Context(), cfg)
+		v, err := OpenVoiceRealtime(t.Context(), t.Context(), cfg)
 		if v != nil {
 			_ = v.Close()
 		}
@@ -559,7 +559,7 @@ func TestVoiceRealtimeLifetimeCancellationClosesReader(t *testing.T) {
 		err error
 	}
 	done := make(chan result, 1)
-	go func() { v, err := OpenVoiceRealtime(ctx, cfg); done <- result{v, err} }()
+	go func() { v, err := OpenVoiceRealtime(ctx, ctx, cfg); done <- result{v, err} }()
 	p := <-peers
 	p.read()
 	p.send(`{"type":"session.updated","session":{"audio":{"input":{"format":{"type":"audio/pcm","rate":24000},"turn_detection":null},"output":{"format":{"type":"audio/pcm","rate":24000},"voice":"marin"}},"tools":[],"output_modalities":["text"]}}`)

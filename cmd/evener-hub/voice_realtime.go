@@ -124,7 +124,9 @@ func (v *VoiceRealtime) Capabilities() VoiceRealtimeCapabilities {
 	return VoiceRealtimeCapabilities{InputCompletion: true, ToolCompletion: true, Cancel: true, PlaybackTruncation: true, Transcript: true, Usage: true, ConnectionLimit: 60 * time.Minute}
 }
 func voiceError(reason string) error { return &VoiceRealtimeError{Reason: reason} }
-func OpenVoiceRealtime(ctx context.Context, cfg VoiceRealtimeConfig) (*VoiceRealtime, error) {
+
+// Setup may be cancelled independently of an established connection's lifetime.
+func OpenVoiceRealtime(ctx, lifetimeCtx context.Context, cfg VoiceRealtimeConfig) (*VoiceRealtime, error) {
 	endpoint, err := url.Parse(cfg.Endpoint)
 	if err != nil || cfg.Model == "" || cfg.Voice == "" || (endpoint.Scheme != "ws" && endpoint.Scheme != "wss") {
 		return nil, voiceError("configuration")
@@ -138,7 +140,7 @@ func OpenVoiceRealtime(ctx context.Context, cfg VoiceRealtimeConfig) (*VoiceReal
 	if err != nil {
 		return nil, voiceError("connection")
 	}
-	lifetime, cancel := context.WithTimeout(ctx, 60*time.Minute)
+	lifetime, cancel := context.WithTimeout(lifetimeCtx, 60*time.Minute)
 	v := &VoiceRealtime{conn: c, ctx: lifetime, cancel: cancel, readerDone: make(chan struct{}), events: make(chan VoiceRealtimeEvent, voiceEventLimit), seen: make(map[string]bool)}
 	c.SetReadLimit(1 << 20)
 	inbox := v.listen()
