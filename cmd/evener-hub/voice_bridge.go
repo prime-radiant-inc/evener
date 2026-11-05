@@ -8,6 +8,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"strings"
@@ -203,8 +204,9 @@ func (b *voiceBridge) run() {
 			})
 		} else if b.refresh && !b.awaitingFence && b.workCancel == nil && b.turn == nil {
 			b.refresh = false
+			history, cursor := b.history, appwire.ClonePointer(b.speechCursor)
 			b.beginWork("history", func(ctx context.Context) voiceWorkResult {
-				read, err := b.client.ThreadRead(ctx, appwire.ThreadReadParams{Ref: b.binding.Ref, IncludeTurns: true, ItemLimit: appwire.TranscriptItemPageLimit})
+				read, err := b.readSpeechHistory(ctx, history, cursor)
 				return voiceWorkResult{read: read, err: err}
 			})
 		}
@@ -266,6 +268,13 @@ func (b *voiceBridge) run() {
 				continue
 			}
 			if result.err != nil {
+				var wire appwire.WireError
+				if kind == "history" && errors.As(result.err, &wire) {
+					if data, ok := appwire.DecodedErrorData(wire.Data); ok && data.EvenerErrorInfo == appwire.ErrorTranscriptItemCursorStale {
+						b.refresh = true
+						continue
+					}
+				}
 				_ = b.reportError("input_failed")
 				return
 			}
@@ -483,6 +492,14 @@ func (b *voiceBridge) submitIntent(ctx context.Context, intent hubcore.VoiceInte
 		Receipt appwire.MutationReceipt `json:"receipt"`
 	}
 	if err := b.client.Request(ctx, intent.Method, intent.Params, &response); err != nil {
+		var wire appwire.WireError
+		if errors.As(err, &wire) {
+			if data, ok := appwire.DecodedErrorData(wire.Data); ok && data.Cause == appwire.JournaledRejectionCause {
+				rejectionCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), time.Second)
+				defer cancel()
+				return b.journal.RecordRejection(rejectionCtx, intent.TurnID, wire)
+			}
+		}
 		return intent, err
 	}
 	// A receipt remains durable evidence even if the phone disconnected in flight.

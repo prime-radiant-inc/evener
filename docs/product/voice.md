@@ -48,12 +48,16 @@ request and consumed-input frontier with the
 live session's authoritative provenance. It never assigns current provenance to
 an old reply. Arm starts after existing history, without reading backlog aloud.
 The transcript remains the authority even when speech is suppressed or stopped.
+After that baseline, the bridge follows matching-snapshot history pages back to
+its speech cursor, including output committed during playback or reconnect fencing.
 
 Question speech uses the successful executor's canonical public state, including
 the full ordered questions and options. The current pending owner must name the
 same execution and call. Original tool arguments, navigation previews and legacy
 records without canonical state cannot substitute for that source. See
 [session questions](session-questions.md) for persistence and compaction ownership.
+An unfinished eligible question holds the speech cursor until its canonical
+result arrives, so a later message from the same tool batch cannot skip it.
 Voice answers remain ordinary, unchanged free-text input. The runtime resolves
 its current pending batch through normal admission and idempotent retries.
 
@@ -112,6 +116,12 @@ daemon returns the original receipt if it already accepted the request. Recovery
 records that receipt without interpreting the audio again or duplicating the
 user input. Accepted intents are not dispatched again. Retired bindings and
 replacement instances keep unresolved text in the journal for explicit recovery.
+Only a definitive refusal stamped by the daemon's mutation journal settles an
+intent as `rejected`. Its text and original target remain durable, and reconnect
+reports the refusal without replaying it or blocking other intents. Resubmitting
+that text requires explicit new input with a new identity. Transport failures and
+unstamped refusals remain uncertain, and public rejected-intent retry rules do
+not change.
 
 Deleting a local session, directly or with its project, removes its voice
 bindings, turns, text intents and speech deliveries. The shared session-deletion
@@ -138,6 +148,8 @@ The real-stack tests in
 [`e2e_voice_correction_test.go`](../../cmd/evener-hub/e2e_voice_correction_test.go),
 [`e2e_voice_barge_test.go`](../../cmd/evener-hub/e2e_voice_barge_test.go),
 [`e2e_voice_questions_test.go`](../../cmd/evener-hub/e2e_voice_questions_test.go),
+[`e2e_voice_question_order_test.go`](../../cmd/evener-hub/e2e_voice_question_order_test.go),
+[`e2e_voice_history_test.go`](../../cmd/evener-hub/e2e_voice_history_test.go),
 [`e2e_voice_presentation_test.go`](../../cmd/evener-hub/e2e_voice_presentation_test.go),
 [`e2e_voice_recovery_test.go`](../../cmd/evener-hub/e2e_voice_recovery_test.go)
 and [`e2e_voice_intent_recovery_test.go`](../../cmd/evener-hub/e2e_voice_intent_recovery_test.go)

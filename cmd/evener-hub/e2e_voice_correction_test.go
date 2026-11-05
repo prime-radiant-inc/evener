@@ -212,12 +212,21 @@ type voiceCorrectionStack struct {
 
 func newVoiceCorrectionStack(t *testing.T) *voiceCorrectionStack {
 	t.Helper()
+	return newVoiceCorrectionStackOnProvider(t, nil)
+}
+
+func newVoiceCorrectionStackOnProvider(t *testing.T, wrap func(string) string) *voiceCorrectionStack {
+	t.Helper()
 	e2ecap.RequireLoopbackBind(t)
 	e2ecap.RequireProcessInspect(t)
 	if testing.Short() {
 		t.Skip("live-stack e2e: real hub and manager daemon")
 	}
 	provider := newFakeLLMProvider(t)
+	endpoint := provider.BaseURL()
+	if wrap != nil {
+		endpoint = wrap(endpoint)
+	}
 	config, peers := realtimeTestServer(t)
 	stack := startHubStackOnProvider(t, fmt.Sprintf(`
 default = "fake"
@@ -229,7 +238,7 @@ api_key = "fakellm-not-a-secret"
 base = "openai-compatible"
 base_url = %q
 api_key = "voice-fixture-not-a-secret"
-`, provider.BaseURL(), "http"+strings.TrimPrefix(config.Endpoint, "ws")+"/v1"), "fake/"+fakellm.ModelID)
+`, endpoint, "http"+strings.TrimPrefix(config.Endpoint, "ws")+"/v1"), "fake/"+fakellm.ModelID)
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	t.Cleanup(cancel)
 	client := stack.dialRPC(ctx, t)

@@ -21,20 +21,22 @@ func (b *voiceBridge) recoverIntents(ctx context.Context) error {
 			if intent.State == hubcore.VoiceIntentAccepted {
 				continue
 			}
-			read, err := b.client.ThreadRead(ctx, appwire.ThreadReadParams{Ref: b.binding.Ref})
-			if err != nil {
-				return err
-			}
-			e := read.Thread.Evener
-			if e.Ref != intent.Ref || e.InstanceID != intent.ExpectedInstanceID || !e.Manager || !e.MutationStateAuthoritative {
-				return hubcore.ErrVoiceStale
-			}
-			// A window's absence cannot prove non-delivery. Reconcile against the
-			// original instance's durable mutation owner by replaying the exact
-			// stored method and bytes, even when its current activity has changed.
-			intent, err = b.submitIntent(ctx, intent, true)
-			if err != nil {
-				return err
+			if intent.State != hubcore.VoiceIntentRejected {
+				read, err := b.client.ThreadRead(ctx, appwire.ThreadReadParams{Ref: b.binding.Ref})
+				if err != nil {
+					return err
+				}
+				e := read.Thread.Evener
+				if e.Ref != intent.Ref || e.InstanceID != intent.ExpectedInstanceID || !e.Manager || !e.MutationStateAuthoritative {
+					return hubcore.ErrVoiceStale
+				}
+				// A window's absence cannot prove non-delivery. Reconcile against the
+				// original instance's durable mutation owner by replaying the exact
+				// stored method and bytes, even when its current activity has changed.
+				intent, err = b.submitIntent(ctx, intent, true)
+				if err != nil {
+					return err
+				}
 			}
 			if err := b.send(map[string]any{"type": "intent", "turnId": intent.TurnID, "text": intent.Text, "custody": intent.State}); err != nil {
 				return err
