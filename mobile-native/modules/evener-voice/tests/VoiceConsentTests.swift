@@ -49,9 +49,13 @@ final class VoiceConsentTests: XCTestCase {
                        .rejected([.flushOutput, .send(.interrupt(9, [:]))]))
         XCTAssertEqual(voice.minimumGeneration, 10)
         XCTAssertEqual(voice.state, .recovering)
-        XCTAssertEqual(voice.admitSpeech(generation: 11, speakerConsent: true), .rejected([]))
+        XCTAssertEqual(voice.admitSpeech(generation: 11, speakerConsent: true),
+                       .rejected([.flushOutput, .send(.interrupt(11, [:]))]))
+        XCTAssertEqual(voice.minimumGeneration, 12)
+        XCTAssertEqual(voice.state, .recovering)
         voice.ready(generation: 10)
         XCTAssertEqual(voice.admitSpeech(generation: 9, speakerConsent: true), .rejected([]))
-        XCTAssertEqual(voice.admitSpeech(generation: 11, speakerConsent: true), .accepted)
+        XCTAssertEqual(voice.admitSpeech(generation: 11, speakerConsent: true), .rejected([]))
+        XCTAssertEqual(voice.admitSpeech(generation: 12, speakerConsent: true), .accepted)
     }
 }

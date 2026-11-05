@@ -27,6 +27,10 @@ While speaker consent is pending, an incoming speech delivery is retired with it
 own generation and no played-sample credit. Later consent permits fresh deliveries,
 not replay of rejected speech. Retirement leaves admitted input and manager work alone.
 
+Replies arriving during audio recovery are also retired, without leaving the
+recovering state. They are cancelled rather than held for replay. Once capture is
+ready, fresh speech can be admitted without another user input.
+
 ## Model and dependency packaging
 
 Run from `mobile-native`:
