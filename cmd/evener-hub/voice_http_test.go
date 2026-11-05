@@ -112,6 +112,9 @@ func TestE2E_VoiceArmBindsExistingManager(t *testing.T) {
 	if err := json.Unmarshal(packet, &ready); err != nil || ready.Type != "ready" || ready.BindingID != armed.BindingID || ready.Epoch != armed.Epoch || ready.Generation == 0 {
 		t.Fatal("socket did not establish its current binding generation")
 	}
+	peer := realtimePeer{conn: device, ctx: ctx, t: t}
+	voiceJourneyAcknowledgeReady(t, peer, map[string]any{"generation": float64(ready.Generation)}, 0)
+	voiceJourneyEvent(t, peer, "stop")
 	body["deviceId"] = "installation-two"
 	status, _ = voiceTestPost(t, ctx, stack, "/api/voice/arm", stack.token, body)
 	if status != http.StatusConflict {

@@ -265,7 +265,9 @@ api_key = "voice-fixture-not-a-secret"
 	headers.Set("X-Evener-Voice-Epoch", armed.Epoch)
 	headers.Set("X-Evener-Voice-Device", "correction-device")
 	f.armed, f.headers = armed, headers
-	f.connect(t)
+	ready := f.connect(t)
+	voiceJourneyAcknowledgeReady(t, f.device, ready, 0)
+	voiceJourneyEvent(t, f.device, "stop")
 	f.journal, err = hubcore.NewVoiceJournal(filepath.Join(stack.home, "state", "evener"))
 	if err != nil {
 		t.Fatal(err)
