@@ -30,6 +30,10 @@ choose a target session or execute manager tools.
   instance and listening epoch. Arm requires foreground hub authentication.
   The original daemon must advertise `voicePresentationContextV1` so it can
   preserve speech context alongside the user's next input.
+  Arm also requires supported, authoritative conversation provenance for that
+  same instance, before issuing a grant or replacing an existing binding. A
+  restored legacy manager without that evidence remains usable through typed
+  input, with its transcript intact, but cannot arm voice.
   The scoped socket grant cannot dispatch general AppWire requests.
 - [`voiceBridge`](../../cmd/evener-hub/voice_bridge.go) accepts ordered utterance
   frames, waits for completed interpretation and uses ordinary `turn/start` or
@@ -107,10 +111,22 @@ cancels that presentation, so fresh spoken updates can proceed after recovery
 without another user input. The cancelled reply remains in the canonical
 transcript and is not replayed when capture resumes.
 
-An explicit session Stop or definitive input-preparation failure retires the
-speech fence only for inputs that never reached canonical history. Inputs
+An explicit session Stop or definitive input-preparation failure stops requiring
+an admitted input only when it never reached canonical history. Inputs
 recorded before interruption or failure remain required across compaction and
 restore. Accepted or unsettled inputs continue to fence stale replies.
+
+Separately, an accepted session Stop from any authenticated client retires
+unfinished speech owned by the interrupted execution and suppresses its pending
+canonical sources. The bridge matches the source item's execution `TurnID`, not
+the provenance run or audio generation. Matching history notifications retire
+speech even while provider setup awaits acknowledgement; authoritative reads
+also apply interruption before selecting more speech. Terminal evidence remains
+in force across stale reads. Fully rendered deliveries retain completion evidence,
+and canonical replies and recorded input remain unchanged. This is not global
+silence: Stop does not target another execution's speech or change idle-Stop
+admission. Ordinary completed executions remain eligible for speech, including
+pending output on older history pages. Failure alone is not an interruption.
 
 Disconnect aborts incomplete audio input. Journaled text intents and receipts
 remain durable. Disarm and takeover retire the listening binding without
@@ -165,6 +181,8 @@ presentation evidence supports references such as "the second one"; model
 reference-resolution quality requires a separate live qualification.
 
 The real-stack tests in
+[`e2e_voice_arm_provenance_test.go`](../../cmd/evener-hub/e2e_voice_arm_provenance_test.go),
+[`e2e_voice_stop_test.go`](../../cmd/evener-hub/e2e_voice_stop_test.go),
 [`e2e_voice_test.go`](../../cmd/evener-hub/e2e_voice_test.go),
 [`e2e_voice_correction_test.go`](../../cmd/evener-hub/e2e_voice_correction_test.go),
 [`e2e_voice_barge_test.go`](../../cmd/evener-hub/e2e_voice_barge_test.go),

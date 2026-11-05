@@ -104,12 +104,18 @@ either an author or inheritance. See
 
 For [voice conversations](voice.md), **S03** owns native microphone processing,
 local playback and played-sample acknowledgements. **S06** owns the scoped
-device/manager binding and provider bridge. Its voice journal pins presentation
+device/manager binding and provider bridge. Arm requires authoritative
+same-instance provenance before granting capture or replacing a binding, without
+changing legacy typed sessions. Its voice journal pins presentation
 identity at utterance start and freezes the observed evidence with the immutable
 intent before **S11** admits it through ordinary session input. Public hub input
 cannot supply that evidence, and the original daemon must advertise support.
 **S09–S10** retain manager execution, canonical replies and originating-request
-provenance. A presentation interruption stops speech and can replace its provider
+provenance. An accepted session Stop projects interrupted execution identity;
+S06 retires that execution's unfinished speech and suppresses its pending sources,
+including across stale reads and unacknowledged provider setup. It preserves fully
+rendered evidence and does not make Stop a global silence command.
+A presentation interruption stops speech and can replace its provider
 connection while preserving manager work. During audio recovery, S03 rejects and
 retires each incoming speech generation; S06 cancels that unplayed presentation
 so it cannot block fresh output after recovery. Canonical replies remain in S10
