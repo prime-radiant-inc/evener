@@ -28,12 +28,16 @@ project = Xcodeproj::Project.open(project_path)
 if project.targets.any? { |existing| existing.name == target_name }
 	puts "#{target_name} target already present"
 else
-	target = project.new_target(:ui_test_bundle, target_name, :ios, "Release")
+	target = project.new_target(:ui_test_bundle, target_name, :ios, "16.4")
 	target.build_configurations.each do |config|
 		config.build_settings["PRODUCT_BUNDLE_IDENTIFIER"] = "com.primeradiant.evener.native.QualificationUITests"
 		# The UI-test bundle drives the app under test by name; the run's
 		# xctestrun carries the built app the build runner already produced.
 		config.build_settings["TEST_TARGET_NAME"] = "Evener"
+		config.build_settings["PRODUCT_NAME"] = "$(TARGET_NAME)"
+		config.build_settings["GENERATE_INFOPLIST_FILE"] = "YES"
+		config.build_settings["SWIFT_VERSION"] = "5.0"
+		config.build_settings["TARGETED_DEVICE_FAMILY"] = "1"
 	end
 	source_ref = Pathname.new(source_path).relative_path_from(
 		Pathname.new(File.expand_path(project_path)).parent,

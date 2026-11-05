@@ -236,6 +236,7 @@ log "building the test bundles against the parent's products"
 xcodebuild build-for-testing \
 	-workspace mobile-native/ios/Evener.xcworkspace \
 	-scheme Evener \
+	-configuration Release \
 	-destination "id=$sim_udid" \
 	-derivedDataPath "$derived_data" \
 	-quiet >"$output/build-for-testing.log" 2>&1
@@ -266,6 +267,7 @@ log "running the qualification journeys"
 set +e
 xcodebuild test-without-building \
 	-xctestrun "$private_run" \
+	-configuration Release \
 	-derivedDataPath "$derived_data" \
 	-destination "id=$sim_udid" \
 	-resultBundlePath "$xcresult" \
