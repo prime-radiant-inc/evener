@@ -90,8 +90,20 @@ it("requires disclosure consent, keeps takeover explicit, and sends Talk only to
 		button("Arm").props.onPress();
 	});
 	expect(requests).toHaveLength(0);
-	expect(JSON.stringify(tree.toJSON())).toContain("nearby people or recordings");
-	expect(JSON.stringify(tree.toJSON())).toContain("Wake activation is unavailable");
+	expect(actions).toEqual([]);
+	expect(button("Talk").props.disabled).toBe(true);
+	await act(async () => {
+		button("Cancel").props.onPress();
+	});
+	expect(button("I understand · Arm voice")).toBeUndefined();
+	expect(requests).toHaveLength(0);
+	expect(actions).toEqual([]);
+	expect(button("Talk").props.disabled).toBe(true);
+	await act(async () => {
+		button("Arm").props.onPress();
+	});
+	expect(requests).toHaveLength(0);
+	expect(actions).toEqual([]);
 	await act(async () => {
 		button("I understand · Arm voice").props.onPress();
 	});
