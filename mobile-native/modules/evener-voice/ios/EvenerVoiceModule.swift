@@ -15,7 +15,7 @@ public final class EvenerVoiceModule: Module {
     public func definition() -> ModuleDefinition {
         Name("EvenerVoice")
         Events("state")
-        OnStartObserving { VoiceService.shared.observe { [weak self] state in self?.sendEvent("state", state) } }
+        OnStartObserving { [weak self] in VoiceService.shared.observe { [weak self] state in self?.sendEvent("state", state) } }
         OnStopObserving { VoiceService.shared.observe(nil) }
         AsyncFunction("deviceId") { () -> String in
             let key = "evener.voice.installation"
@@ -35,12 +35,18 @@ public final class EvenerVoiceModule: Module {
             }
             guard allowed else { throw VoiceFailure("microphone_denied") }
             guard await MainActor.run(body: { UIApplication.shared.applicationState == .active }) else { throw VoiceFailure("foreground_required") }
-            try await VoiceService.shared.arm(configuration)
+            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+                VoiceService.shared.arm(configuration) { continuation.resume(with: $0) }
+            }
         }
         Function("talk") { VoiceService.shared.talk() }
         Function("stopSpeaking") { VoiceService.shared.stopSpeaking() }
         Function("disarm") { VoiceService.shared.disarm() }
         Function("allowSpeaker") { VoiceService.shared.allowSpeaker() }
-        AsyncFunction("snapshot") { await VoiceService.shared.snapshot() }
+        AsyncFunction("snapshot") {
+            await withCheckedContinuation { continuation in
+                VoiceService.shared.snapshot { continuation.resume(returning: $0) }
+            }
+        }
     }
 }
