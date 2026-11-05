@@ -279,8 +279,11 @@ func (b *voiceBridge) recordPlayed(control voiceControl) error {
 			return err
 		}
 		if b.delivery != nil && b.delivery.ID == delivery.ID {
+			wasFinished := b.playbackFinished()
 			b.delivery = &updated
-			b.refresh = true
+			if !wasFinished && b.playbackFinished() {
+				b.refresh = true
+			}
 		}
 		return nil
 	}

@@ -222,6 +222,7 @@ func (j *VoiceJournal) UpdateSpeechDelivery(ctx context.Context, id string, upda
 		return SpeechDelivery{}, err
 	}
 	stopped := d.Interrupted || !b.Active || !b.ExpiresAt.After(time.Now())
+	changed := (!d.Interrupted && (stopped || update.Interrupted)) || (!d.OutputComplete && update.OutputComplete)
 	if update.Item != nil {
 		item := *update.Item
 		if !validSpeechItem(item) {
@@ -239,6 +240,7 @@ func (j *VoiceJournal) UpdateSpeechDelivery(ctx context.Context, id string, upda
 				return SpeechDelivery{}, ErrVoiceStale
 			}
 			d.Items = append(d.Items, item)
+			changed = true
 		} else {
 			old := d.Items[index]
 			if old.ResponseID != item.ResponseID || item.GeneratedSamples < old.GeneratedSamples || item.QueuedSamples < old.QueuedSamples || item.PlayedSamples < old.PlayedSamples {
@@ -248,6 +250,7 @@ func (j *VoiceJournal) UpdateSpeechDelivery(ctx context.Context, id string, upda
 				return SpeechDelivery{}, ErrVoiceStale
 			}
 			item.PlaybackComplete = item.PlaybackComplete || old.PlaybackComplete
+			changed = changed || item != old
 			d.Items[index] = item
 		}
 	}
@@ -255,10 +258,14 @@ func (j *VoiceJournal) UpdateSpeechDelivery(ctx context.Context, id string, upda
 		if !strings.HasPrefix(*update.GeneratedTranscript, d.GeneratedTranscript) {
 			return SpeechDelivery{}, ErrVoiceConflict
 		}
+		changed = changed || *update.GeneratedTranscript != d.GeneratedTranscript
 		d.GeneratedTranscript = *update.GeneratedTranscript
 	}
 	d.OutputComplete = d.OutputComplete || update.OutputComplete
 	d.Interrupted = stopped || update.Interrupted
+	if !changed {
+		return d, nil
+	}
 	raw, err := json.Marshal(d)
 	if err != nil {
 		return SpeechDelivery{}, ErrVoiceInvalid
