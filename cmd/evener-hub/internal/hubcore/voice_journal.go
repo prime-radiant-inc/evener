@@ -673,10 +673,7 @@ func voiceIntentParams(ref, instanceID, method, text, mutationID string, present
 		return nil, ErrVoiceInvalid
 	}
 	items := []appwire.InputItem{{Type: "text", Text: text, VoicePresentation: presentation}}
-	if appwire.ValidateVoicePresentationInput(items, method, "human", instanceID) != nil {
-		return nil, ErrVoiceInvalid
-	}
-	input, err := appwire.NormalizeMutationInput(items)
+	input, err := appwire.NormalizeVoicePresentationInput(items, method, "human", instanceID)
 	if err != nil || !input.HasContent() {
 		return nil, ErrVoiceInvalid
 	}

@@ -114,20 +114,26 @@ func ValidateVoicePresentation(context *VoicePresentationContext) error {
 // ValidateVoicePresentationInput validates the attachment's ingress, author and
 // instance. Unsupported ingress must reject evidence, never discard it.
 func ValidateVoicePresentationInput(items []InputItem, method, actorKind, instanceID string) error {
+	_, err := NormalizeVoicePresentationInput(items, method, actorKind, instanceID)
+	return err
+}
+
+// NormalizeVoicePresentationInput validates voice ingress before normalizing
+// mutation input. The returned input owns its copy of the presentation evidence.
+func NormalizeVoicePresentationInput(items []InputItem, method, actorKind, instanceID string) (MutationInput, error) {
 	for _, item := range items {
 		if item.VoicePresentation == nil {
 			continue
 		}
 		if method != "turn/start" && method != "turn/steer" {
-			return fmt.Errorf("voice presentation unsupported on %s", method)
+			return MutationInput{}, fmt.Errorf("voice presentation unsupported on %s", method)
 		}
 		if actorKind != "human" {
-			return fmt.Errorf("voice presentation requires human input")
+			return MutationInput{}, fmt.Errorf("voice presentation requires human input")
 		}
 		if item.VoicePresentation.InstanceID != instanceID {
-			return fmt.Errorf("voice presentation instance mismatch")
+			return MutationInput{}, fmt.Errorf("voice presentation instance mismatch")
 		}
 	}
-	_, err := NormalizeMutationInput(items)
-	return err
+	return NormalizeMutationInput(items)
 }

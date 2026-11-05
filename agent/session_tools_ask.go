@@ -461,6 +461,10 @@ func ParseAskUserCallArguments(argsJSON []byte) ([]schema.AskUserQuestion, error
 	if err != nil {
 		return nil, err
 	}
+	return projectAskUserQuestions(normalized, parsed), nil
+}
+
+func projectAskUserQuestions(normalized map[string]any, parsed []askQuestion) []schema.AskUserQuestion {
 	// parseAskQuestions checked semantics and carries header, question, and
 	// labels; the optional fields (detail, recommended, multi_select, why,
 	// if_unanswered) are read from the same normalized call.
@@ -494,7 +498,7 @@ func ParseAskUserCallArguments(argsJSON []byte) ([]schema.AskUserQuestion, error
 			Options:      options,
 		})
 	}
-	return out, nil
+	return out
 }
 
 // registerAskTool registers ask_user. registerCoreTools calls this only when
@@ -532,10 +536,7 @@ func registerAskTool(reg *tool.Registry, s *Session, deps *toolDeps) {
 			if err != nil {
 				return nil, fmt.Errorf("ask_user: marshal arguments: %w", err)
 			}
-			questions, err := ParseAskUserCallArguments(argsJSON)
-			if err != nil {
-				return nil, err
-			}
+			questions := projectAskUserQuestions(args, parsed)
 
 			s.mu.Lock()
 			s.appendAskPendingLocked(parsed, argsJSON, callIDFromContext(ctx))

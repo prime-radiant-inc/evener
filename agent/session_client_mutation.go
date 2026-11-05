@@ -329,10 +329,7 @@ func (s *Session) acceptClientMutation(spec clientMutationSpec, prepare, effect 
 	}
 	defer release()
 	if spec.input != nil {
-		if err := appwire.ValidateVoicePresentationInput(*spec.input, spec.method, spec.actor.Kind, s.ID()); err != nil {
-			return clientMutationLookup{}, appwire.InvalidParams(err.Error())
-		}
-		input, err := appwire.NormalizeMutationInput(*spec.input)
+		input, err := appwire.NormalizeVoicePresentationInput(*spec.input, spec.method, spec.actor.Kind, s.ID())
 		if err != nil {
 			return clientMutationLookup{}, appwire.InvalidParams(err.Error())
 		}
@@ -1964,6 +1961,14 @@ func (s *clientMutationStore) snapshot() clientMutationSnapshot {
 	s.stateMu.RLock()
 	defer s.stateMu.RUnlock()
 	return cloneClientMutationSnapshot(s.state)
+}
+
+// conversationInputIDs returns caller-owned IDs from one committed record
+// without cloning the rest of the journal.
+func (s *clientMutationStore) conversationInputIDs(mutationID string) []string {
+	s.stateMu.RLock()
+	defer s.stateMu.RUnlock()
+	return slices.Clone(s.state.Journal[mutationID].ConversationInputIDs)
 }
 
 // committedHumanNote reads the committed canonical human note under stateMu

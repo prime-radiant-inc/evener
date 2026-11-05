@@ -259,7 +259,7 @@ func (s *Session) conversationInputIDs(mutationID string) []string {
 		if s.clientMutations == nil {
 			return nil
 		}
-		return s.clientMutations.snapshot().Journal[mutationID].ConversationInputIDs
+		return s.clientMutations.conversationInputIDs(mutationID)
 	}
 	return []string{identifier.MustNewTurnID()}
 }

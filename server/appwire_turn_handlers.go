@@ -411,10 +411,7 @@ func gateTurnInput(items []appwire.InputItem, wired, contentRequired bool) ([]ap
 }
 
 func gateTurnInputWithVoice(items []appwire.InputItem, wired, contentRequired bool, method, actorKind, instanceID string) ([]appwire.InputItem, error) {
-	if err := appwire.ValidateVoicePresentationInput(items, method, actorKind, instanceID); err != nil {
-		return nil, appwire.InvalidParams(err.Error())
-	}
-	input, err := appwire.NormalizeMutationInput(items)
+	input, err := appwire.NormalizeVoicePresentationInput(items, method, actorKind, instanceID)
 	if err != nil {
 		return nil, appwire.InvalidParams(err.Error())
 	}
