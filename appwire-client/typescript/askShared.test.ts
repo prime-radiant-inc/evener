@@ -104,6 +104,73 @@ test("filters out an individual malformed option but keeps the well-formed ones 
   expect(result).toEqual([expect.objectContaining({ options: [{ label: "Good", detail: "ok", recommended: false }] })]);
 });
 
+// --- the single-question shorthand form (see askShared.ts for the form) ---
+
+test("parses the single-question shorthand form into one question", () => {
+  const shorthand = JSON.stringify({
+    question: "Should I deploy this to production now?",
+    options: [
+      { label: "Yes", detail: "Ship it", recommended: true },
+      { label: "No", detail: "Wait" },
+    ],
+  });
+  expect(parseAskUserQuestions(item({ argumentsJSON: shorthand }))).toEqual([
+    {
+      header: "Question 1",
+      question: "Should I deploy this to production now?",
+      options: [
+        { label: "Yes", detail: "Ship it", recommended: true },
+        { label: "No", detail: "Wait", recommended: false },
+      ],
+      multiSelect: false,
+      why: undefined,
+      ifUnanswered: undefined,
+    },
+  ]);
+});
+
+test("carries the shorthand form's header, multi_select, why and if_unanswered", () => {
+  const shorthand = JSON.stringify({
+    header: "Deploy?",
+    question: "Ship it?",
+    options: [{ label: "Yes", detail: "now" }],
+    multi_select: true,
+    why: "affects release",
+    if_unanswered: "assume yes",
+  });
+  expect(parseAskUserQuestions(item({ argumentsJSON: shorthand }))).toEqual([
+    expect.objectContaining({
+      header: "Deploy?",
+      multiSelect: true,
+      why: "affects release",
+      ifUnanswered: "assume yes",
+    }),
+  ]);
+});
+
+test("shorthand with question but no options stays unavailable (Go rejects it at dispatch)", () => {
+  const shorthand = JSON.stringify({ question: "Q?" });
+  expect(parseAskUserQuestions(item({ argumentsJSON: shorthand }))).toBeUndefined();
+});
+
+test("shorthand with no usable options stays unavailable (Go rejects it at dispatch)", () => {
+  const shorthand = JSON.stringify({ question: "Q?", options: [{ label: 5 }] });
+  expect(parseAskUserQuestions(item({ argumentsJSON: shorthand }))).toBeUndefined();
+});
+
+test("a questions array stays authoritative when shorthand fields sit beside it", () => {
+  // Go rejects a call carrying both forms outright (normalizeAskUserArgs's
+  // both-forms case), so this shape only reaches a recorded item as a rejected
+  // call; the parser stays deterministic either way: the batch form wins.
+  const both = JSON.stringify({
+    questions: [{ header: "Batch", question: "batch question", options: [{ label: "B", detail: "b" }] }],
+    question: "stray shorthand question",
+    options: [{ label: "S", detail: "s" }],
+  });
+  const result = parseAskUserQuestions(item({ argumentsJSON: both }));
+  expect(result?.map((question) => question.header)).toEqual(["Batch"]);
+});
+
 // answeredAskUserSuffix (kata h70z): the collapsed row's "— answered: ..."
 // recap, read back from a LATER [answers] userMessage this item alone
 // can't see.
