@@ -45,7 +45,7 @@ function goToSession(ref: string): void {
  * pane layout to have opened it already.
  *
  * needs-you outranks live, matching the rail's own attention ordering
- * (railNodes.ts's sessionWantsYou / hubapi.AttentionRank): a session
+ * (railNodes.ts's displayState / hubapi.AttentionRank): a session
  * blocked on you is a stronger "come back" signal than one merely still
  * running. Only the first candidate in whichever tier is non-empty - this
  * is a single "jump back in" link, not a list; a list is the rail's job. */

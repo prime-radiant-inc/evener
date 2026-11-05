@@ -20,7 +20,7 @@ import (
 //   - NeedsYou is the cross-project triage tier the sidebar renders at the top:
 //     every awaiting/warning/errored session, errors first then oldest-blocked
 //     first, hidden when empty. Archived sessions are excluded even if live.
-//   - Projects is the flat, recency-ordered list of active projects (those with
+//   - Projects is the flat, name-ordered list of active projects (those with
 //     at least one non-archived session and not manually archived). Each
 //     project's sessions are split into Current / Recent / Archived tiers.
 //   - ArchivedProjects is the collapsed group at the bottom: projects that are
@@ -200,8 +200,8 @@ type TreeProject struct {
 	// precedence over IsArchived.
 	IsTestRun bool
 	// LastActivity is the most recent last-touched moment (max last-activity,
-	// i.e. OrderUpdatedAt) across the project's top-level sessions; active
-	// projects are ordered by it, desc.
+	// i.e. OrderUpdatedAt) across the project's top-level sessions. It drives
+	// the project's age; the project list is ordered by name.
 	LastActivity time.Time
 	RollupState  string // highest-attention state across this project's live sessions; "" if none
 	// Magnitude rollup: how many of the project's live sessions are working
@@ -226,7 +226,8 @@ type TreeProject struct {
 	// small when hundreds of idle/archived projects exist.
 	Expanded bool
 	// More* hold the per-tier overflow beyond maxSidebarSessionsPerTier. The
-	// kept rows are the most-recent N; the sidebar shows "+N older" for the rest.
+	// kept rows are the newest-created N; the sidebar shows "+N older" for the
+	// rest.
 	MoreCurrent  int
 	MoreRecent   int
 	MoreArchived int
@@ -259,15 +260,16 @@ const (
 	// maxSidebarSessionsPerTier caps how many session rows each tier
 	// (Current/Recent/Archived) emits in the sidebar. A project with hundreds
 	// of one-shot runs would otherwise bloat the partial; the kept rows are the
-	// most-recent N and the overflow is summarised as a quiet "+N older" note.
+	// newest-created N and the overflow is summarised as a quiet "+N older"
+	// note.
 	maxSidebarSessionsPerTier = 50
 	// SidebarSessionPageSize is the maximum number of capped-away rows a
 	// single rail pagination request may reveal.
 	SidebarSessionPageSize = maxSidebarSessionsPerTier
 )
 
-// capTier keeps the first n rows (the input is already most-recent first) and
-// returns the kept slice plus the overflow count.
+// capTier keeps the first n rows (the input is already newest-created first)
+// and returns the kept slice plus the overflow count.
 func capTier(rows []TreeNode, n int) ([]TreeNode, int) {
 	if len(rows) <= n {
 		return rows, 0
@@ -277,7 +279,7 @@ func capTier(rows []TreeNode, n int) ([]TreeNode, int) {
 
 // Page returns one bounded, ordered slice from a project's uncapped tier and
 // the number still beyond the returned end. The baseline tree keeps only the
-// newest 50 rows, so callers use the same offset to reveal the next page
+// newest-created 50 rows, so callers use the same offset to reveal the next page
 // without changing the tier's ordering contract.
 func (p TreeProject) Page(tier string, offset, limit int) ([]TreeNode, int, bool) {
 	if offset < 0 || limit <= 0 {
@@ -873,7 +875,7 @@ func BuildTreeAtWithProjects(metas []schema.SessionMeta, live []LiveEntry, decis
 }
 
 func buildTreeAtWithProjects(metas []schema.SessionMeta, live []LiveEntry, decisions map[ArchiveKey]bool, now time.Time, resolvedProjects map[string]identifier.Project, sessionIsIndexed map[string]bool) Tree {
-	sortSessionMetas(metas)
+	sortSessionMetas(metas, SessionOrderLess)
 	metas = dedupeMetasByID(metas)
 
 	lv := newTreeLive(metas, live, sessionIsIndexed)
@@ -1053,7 +1055,7 @@ func buildTreeAtWithProjects(metas []schema.SessionMeta, live []LiveEntry, decis
 
 		// Children are fork originals only; a subagent has no row.
 		forks := slices.Clone(childrenByParent[m.ID])
-		sortSessionMetas(forks)
+		sortSessionMetas(forks, SessionOrderLess)
 		seenChildren := make(map[string]struct{}, len(forks))
 		for _, c := range forks {
 			if path[c.ID] {
@@ -1075,8 +1077,8 @@ func buildTreeAtWithProjects(metas []schema.SessionMeta, live []LiveEntry, decis
 	for _, path := range projectOrder {
 		acc := projects[path]
 
-		// Sort top-level sessions by the Hub session ordering contract.
-		sortSessionMetas(acc.topLevel)
+		// Sort newest-created first.
+		sortSessionMetas(acc.topLevel, ProjectSessionOrderLess)
 
 		sessions := make([]TreeNode, 0, len(acc.topLevel))
 		for _, m := range acc.topLevel {
@@ -1126,8 +1128,8 @@ func buildTreeAtWithProjects(metas []schema.SessionMeta, live []LiveEntry, decis
 		// last-activity across its top-level sessions). s.UpdatedAt is already
 		// the normalized last-activity value (OrderUpdatedAt(m.UpdatedAt,
 		// m.CreatedAt), applied when each node was built above), so this just
-		// takes the max of it. Used to order active projects by last activity,
-		// not by when a session merely started.
+		// takes the max of it. It feeds the project's age; its position comes
+		// from its name.
 		var lastActivity time.Time
 		for _, s := range sessions {
 			if s.UpdatedAt.After(lastActivity) {
@@ -1178,7 +1180,8 @@ func buildTreeAtWithProjects(metas []schema.SessionMeta, live []LiveEntry, decis
 			(len(current) == 0 && len(recent) == 0)
 
 		// Cap each tier so a project with hundreds of runs can't bloat the
-		// sidebar payload; the kept rows are the most-recent N (already ordered).
+		// sidebar payload; the kept rows are the newest-created N (already
+		// ordered).
 		allCurrent, allRecent, allArchived := current, recent, archived
 		current, moreCurrent := capTier(allCurrent, maxSidebarSessionsPerTier)
 		recent, moreRecent := capTier(allRecent, maxSidebarSessionsPerTier)
@@ -1351,10 +1354,9 @@ func buildTreeAtWithProjects(metas []schema.SessionMeta, live []LiveEntry, decis
 	}
 }
 
-// Split active projects from archived ones; order each newest-first by the
-// project's last activity. SliceStable keeps the insertion order (already
-// recency-sorted via sessionMetaLess) as the tiebreak when last-activity
-// times are equal.
+// Split active projects from archived ones; order each by name. Last activity
+// deliberately does not participate, so a project keeps its position while its
+// sessions run. The comparator is total over distinct projects.
 func splitProjectsByArchive(treeProjects []TreeProject) (activeProjects, archivedProjects []TreeProject) {
 	activeProjects = make([]TreeProject, 0, len(treeProjects))
 	archivedProjects = make([]TreeProject, 0)
@@ -1365,12 +1367,19 @@ func splitProjectsByArchive(treeProjects []TreeProject) (activeProjects, archive
 			activeProjects = append(activeProjects, p)
 		}
 	}
-	byLastActivityDesc := func(ps []TreeProject) func(i, j int) bool {
-		return func(i, j int) bool { return ps[i].LastActivity.After(ps[j].LastActivity) }
-	}
-	sort.SliceStable(activeProjects, byLastActivityDesc(activeProjects))
-	sort.SliceStable(archivedProjects, byLastActivityDesc(archivedProjects))
+	sort.SliceStable(activeProjects, func(i, j int) bool { return ProjectNameLess(activeProjects[i], activeProjects[j]) })
+	sort.SliceStable(archivedProjects, func(i, j int) bool { return ProjectNameLess(archivedProjects[i], archivedProjects[j]) })
 	return activeProjects, archivedProjects
+}
+
+// ProjectNameLess reports whether project a sorts before project b in the
+// sidebar's project list. Name is case-folded with a raw-text tiebreak; the
+// key keeps two same-named projects deterministic.
+func ProjectNameLess(a, b TreeProject) bool {
+	if cmp := compareOrderText(a.Name, b.Name); cmp != 0 {
+		return cmp < 0
+	}
+	return compareOrderText(a.Key, b.Key) < 0
 }
 
 // sortLiveNodes orders the Live tier by attention rank, highest first, then by
