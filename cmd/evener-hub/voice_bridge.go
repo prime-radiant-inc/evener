@@ -490,8 +490,7 @@ func (b *voiceBridge) submitIntent(ctx context.Context, intent hubcore.VoiceInte
 		Receipt appwire.MutationReceipt `json:"receipt"`
 	}
 	if err := b.client.Request(ctx, intent.Method, intent.Params, &response); err != nil {
-		var wire appwire.WireError
-		if errors.As(err, &wire) {
+		if wire, ok := errors.AsType[appwire.WireError](err); ok {
 			if data, ok := appwire.DecodedErrorData(wire.Data); ok && data.Cause == appwire.JournaledRejectionCause {
 				rejectionCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), time.Second)
 				defer cancel()
