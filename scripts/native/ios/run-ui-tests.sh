@@ -278,11 +278,23 @@ if [ -z "$ui_key" ]; then
 	echo "$SCRIPT_NAME: the test-run configuration has no EvenerQualificationUITests bundle" >&2
 	exit 1
 fi
-/usr/libexec/PlistBuddy -c "Add :$ui_key:EnvironmentVariables dict" "$private_run" >/dev/null
-/usr/libexec/PlistBuddy -c "Add :$ui_key:EnvironmentVariables:EVENER_QUALIFICATION_HUB_ORIGIN string $hub_origin" "$private_run" >/dev/null
-/usr/libexec/PlistBuddy -c "Add :$ui_key:EnvironmentVariables:EVENER_QUALIFICATION_HUB_TOKEN string $hub_token" "$private_run" >/dev/null
-/usr/libexec/PlistBuddy -c "Add :$ui_key:EnvironmentVariables:EVENER_QUALIFICATION_WORKSPACE string $workspace" "$private_run" >/dev/null
-/usr/libexec/PlistBuddy -c "Add :$ui_key:EnvironmentVariables:EVENER_QUALIFICATION_HOME string $HOME" "$private_run" >/dev/null
+# Xcode's own xctestrun can already carry an (empty) EnvironmentVariables
+# dict for the bundle, so the container is added only when absent and every
+# entry lands through whichever of Add or Set the file needs.
+if ! /usr/libexec/PlistBuddy -c "Print :$ui_key:EnvironmentVariables" "$private_run" >/dev/null 2>&1; then
+	/usr/libexec/PlistBuddy -c "Add :$ui_key:EnvironmentVariables dict" "$private_run" >/dev/null
+fi
+inject_environment() {
+	if /usr/libexec/PlistBuddy -c "Print :$ui_key:EnvironmentVariables:$1" "$private_run" >/dev/null 2>&1; then
+		/usr/libexec/PlistBuddy -c "Set :$ui_key:EnvironmentVariables:$1 string $2" "$private_run" >/dev/null
+	else
+		/usr/libexec/PlistBuddy -c "Add :$ui_key:EnvironmentVariables:$1 string $2" "$private_run" >/dev/null
+	fi
+}
+inject_environment EVENER_QUALIFICATION_HUB_ORIGIN "$hub_origin"
+inject_environment EVENER_QUALIFICATION_HUB_TOKEN "$hub_token"
+inject_environment EVENER_QUALIFICATION_WORKSPACE "$workspace"
+inject_environment EVENER_QUALIFICATION_HOME "$HOME"
 
 xcresult="$output/ui.xcresult"
 log "running the qualification journeys"
