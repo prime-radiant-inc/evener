@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -266,7 +267,7 @@ func voicePresentationFixture(instance string) *appwire.VoicePresentationContext
 
 func TestVoicePresentationFoldConcurrentAppend(t *testing.T) {
 	for _, newVoice := range []bool{false, true} {
-		t.Run(fmt.Sprint(newVoice), func(t *testing.T) {
+		t.Run(strconv.FormatBool(newVoice), func(t *testing.T) {
 			dir := t.TempDir()
 			var s *Session
 			var latest *appwire.VoicePresentationContext

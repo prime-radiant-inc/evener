@@ -961,6 +961,9 @@ func deriveRestoredAskPending(history []schema.Turn, divergenceTurn int, origins
 // whose arguments fail to unmarshal or fail parseAskQuestions's validation
 // is skipped, not fatal (spec §2: "rebuild what parses").
 func questionsFromAskCalls(history []schema.Turn, toolResultsIdx int, wantCallIDs map[string]bool) []askQuestion {
+	if toolResultsIdx < 0 || toolResultsIdx >= len(history) {
+		return nil
+	}
 	canonical := map[string]schema.AskUserState{}
 	for _, part := range history[toolResultsIdx].Message.Content {
 		if result := part.ToolResult; result != nil && result.Name == askUserToolName && !result.IsError {

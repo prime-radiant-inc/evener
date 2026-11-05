@@ -67,9 +67,7 @@ func TestVoicePresentationLiveReference(t *testing.T) {
 	// One live listing is shared through the production startup-listing seam;
 	// Session construction must not multiply catalog requests per case.
 	catalogClient := llm.NewClient(llm.WithRegistry(r), llm.WithClientStateDir(stateRoot))
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	listing, err := catalogClient.Models(ctx, "openai")
-	cancel()
+	listing, err := catalogClient.Models(t.Context(), "openai")
 	if err != nil {
 		t.Fatalf("live catalog: %s", strings.ReplaceAll(err.Error(), key, "[redacted]"))
 	}

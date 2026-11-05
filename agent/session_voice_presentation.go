@@ -18,9 +18,9 @@ func attachVoicePresentation(turn *schema.Turn, presentation *appwire.VoicePrese
 }
 
 func latestVoicePresentationTurn(history []schema.Turn) schema.Turn {
-	for i := len(history) - 1; i >= 0; i-- {
-		if history[i].VoicePresentation != nil {
-			return history[i]
+	for _, turn := range slices.Backward(history) {
+		if turn.VoicePresentation != nil {
+			return turn
 		}
 	}
 	return schema.Turn{}

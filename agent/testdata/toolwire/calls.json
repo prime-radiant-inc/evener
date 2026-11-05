@@ -1256,7 +1256,27 @@
       "callId": "call_ask_user",
       "output": "questions posted; answers arrive in the user's reply after your turn ends",
       "status": "completed",
-      "completedAt": 1790625602000
+      "completedAt": 1790625602000,
+      "raw": {
+        "version": 1,
+        "questions": [
+          {
+            "header": "Deploy",
+            "question": "Ship the settle fix tonight, or wait for the race run?",
+            "options": [
+              {
+                "label": "Ship tonight",
+                "detail": "The fix is small and the drain test passes.",
+                "recommended": true
+              },
+              {
+                "label": "Wait",
+                "detail": "Let go test -race run overnight first."
+              }
+            ]
+          }
+        ]
+      }
     },
     {
       "type": "commandExecution",
