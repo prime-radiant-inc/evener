@@ -49,6 +49,11 @@ func (s *Server) appThreadWithDiagnosticsLocked(diagnostics func(DetailedStatus)
 	if threadID == "" {
 		threadID = status.SessionID
 	}
+	if h := s.appHistories.get(threadID); h != nil {
+		if state := h.conversationProvenance(); state != nil {
+			envelope.ConversationProvenance = state
+		}
+	}
 	if ref == "" {
 		ref = appwire.Ref{SourceID: sourceID, ThreadID: threadID}.String()
 	}

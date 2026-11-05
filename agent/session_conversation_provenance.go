@@ -27,6 +27,7 @@ type conversationState struct {
 	inputs             []string
 	frontiers          []schema.ConversationFrontier
 	revision           uint64
+	snapshot           *appwire.ConversationProvenanceState
 }
 
 // restoreConversation replays canonical records, not their fold copies. The
@@ -43,12 +44,23 @@ func (s *Session) restoreConversation(entries []transcript.Entry) {
 	if s.conversation.frontierID != "" && !s.conversation.unknown {
 		if _, ok := appwire.ResolveConversationFrontier(s.conversationSnapshot(clientMutationSnapshot{}), s.conversation.frontierID); !ok {
 			s.conversation.unknown = true
+			s.conversation.revision++
 		}
 	}
 	s.stageConversationInputs(s.history)
 }
 
+// ConversationTurnAffectsProvenance identifies records that require Session
+// adoption before their byte boundary can be paired with a provenance snapshot.
+// Fold copies retain their original coverage and do not create a new frontier.
+func ConversationTurnAffectsProvenance(turn schema.Turn) bool {
+	return turn.OriginalOrdinal == nil && (len(turn.ConversationInputIDs) != 0 || turn.Kind == schema.TurnUserInput || turn.ConversationProvenance != nil || turn.ConversationCoverageRef != "")
+}
+
 func (s *Session) noteConversationTurnLocked(turn schema.Turn) {
+	if !ConversationTurnAffectsProvenance(turn) {
+		return
+	}
 	s.conversation.revision++
 	if s.conversation.admitted == nil {
 		s.conversation.admitted = make(map[string]bool)
@@ -120,6 +132,9 @@ func (s *Session) ConversationProvenance() *appwire.ConversationProvenanceState 
 func (s *Session) conversationSnapshot(journal clientMutationSnapshot) *appwire.ConversationProvenanceState {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if cached := s.conversation.snapshot; cached != nil && cached.Revision == s.conversation.revision+journal.ConversationRevision {
+		return cached
+	}
 	state := &appwire.ConversationProvenanceState{Version: 1, Authoritative: !s.conversation.unknown, InstanceID: s.id,
 		Revision: s.conversation.revision + journal.ConversationRevision, ConsumedFrontierID: s.conversation.consumedFrontierID,
 		AdmittedInputs: []string{}, RetiredInputs: []string{}, Frontiers: []appwire.ConversationFrontier{}}
@@ -165,7 +180,54 @@ func (s *Session) conversationSnapshot(journal clientMutationSnapshot) *appwire.
 	for _, node := range s.conversation.frontiers {
 		state.Frontiers = append(state.Frontiers, appwire.ConversationFrontier{ID: node.ID, BaseID: node.BaseID, AddedInputs: slices.Clone(node.AddedInputs), RemovedInputs: slices.Clone(node.RemovedInputs)})
 	}
+	s.conversation.snapshot = state
 	return state
+}
+
+// SetTranscriptPublishedFunc installs the completed-publication handoff and
+// seeds it at one canonical boundary. The snapshot is immutable. fn may take
+// only its owner's leaf lock, never call Session or enter a projection gate.
+// The raw SetTranscriptRecordedFunc hook retains its append-lock contract.
+func (s *Session) SetTranscriptPublishedFunc(fn func(int64, *appwire.ConversationProvenanceState)) {
+	s.attentionMu.Lock()
+	defer s.attentionMu.Unlock()
+	s.mu.Lock()
+	s.transcriptPublished = fn
+	s.mu.Unlock()
+	s.publishTranscriptLocked(s.TranscriptRecordedLength())
+}
+
+func (s *Session) publishTranscriptLocked(length int64) {
+	s.mu.Lock()
+	fn := s.transcriptPublished
+	s.mu.Unlock()
+	if fn != nil {
+		fn(length, s.ConversationProvenance())
+	}
+}
+
+// TranscriptPublicationHooks binds both publication phases to one producer
+// lifetime. Recorded retains Writer.OnRecorded's leaf-lock-only contract.
+// Published runs after adoption with the immutable snapshot and byte boundary.
+type TranscriptPublicationHooks struct {
+	Recorded  func(transcript.Record)
+	Published func(int64, *appwire.ConversationProvenanceState)
+}
+
+// SetDescendantTranscriptPublicationFunc installs a factory invoked once per
+// new or restored descendant, before its writer attaches. Each invocation
+// binds fresh hooks, so a retired producer cannot publish into its replacement.
+func (s *Session) SetDescendantTranscriptPublicationFunc(fn func(string) TranscriptPublicationHooks) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.cfg.spawn.descendantPublication = fn
+}
+
+func (s *Session) bindDescendantTranscriptPublication() {
+	if fn := s.cfg.spawn.descendantPublication; fn != nil {
+		hooks := fn(s.id)
+		s.transcriptRecorded, s.transcriptPublished = hooks.Recorded, hooks.Published
+	}
 }
 
 func (s *Session) stageConversationInputs(turns []schema.Turn) {

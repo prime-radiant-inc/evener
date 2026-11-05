@@ -12,6 +12,7 @@ import (
 	"sync"
 	"sync/atomic"
 
+	"primeradiant.com/evener/agent"
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/appwire"
@@ -100,6 +101,7 @@ type threadHistoryConfig struct {
 	// maxQueuedBytes bounds the projection queue; 0 is
 	// threadHistoryMaxQueuedBytes.
 	maxQueuedBytes int64
+	publication    *historyPublication
 }
 
 // threadHistory is one thread's history projection. The transcript's
@@ -135,8 +137,8 @@ type threadHistory struct {
 	bootGeneration      string
 	maxQueuedBytes      int64
 
-	// mu is the projection queue's mutex, a leaf.
-	mu sync.Mutex
+	// The publication and projection queue share one owner leaf mutex.
+	*historyPublication
 	// queue is the recorded entries the overlay has not applied, in ordinal
 	// order, and queuedBytes their summed length.
 	queue       []transcript.Record
@@ -216,25 +218,36 @@ func newThreadHistory(cfg threadHistoryConfig) *threadHistory {
 	if maxQueuedBytes == 0 {
 		maxQueuedBytes = threadHistoryMaxQueuedBytes
 	}
-	h := &threadHistory{
-		threadID:       cfg.threadID,
-		ref:            cfg.ref,
-		path:           cfg.path,
-		cache:          cfg.cache,
-		overlay:        cfg.overlay,
-		publish:        cfg.publish,
-		resync:         cfg.resync,
-		cost:           cfg.cost,
-		bootGeneration: cfg.bootGeneration,
-		onClosed:       cfg.onClosed,
-		maxQueuedBytes: maxQueuedBytes,
-		recordedLength: cfg.recordedLength,
-		published:      cfg.recordedLength,
-		epoch:          cfg.epoch,
-		wake:           make(chan struct{}, 1),
-		stop:           make(chan struct{}),
-		done:           make(chan struct{}),
+	publication := cfg.publication
+	if publication == nil {
+		publication = &historyPublication{}
 	}
+	h := &threadHistory{
+		historyPublication: publication,
+		threadID:           cfg.threadID,
+		ref:                cfg.ref,
+		path:               cfg.path,
+		cache:              cfg.cache,
+		overlay:            cfg.overlay,
+		publish:            cfg.publish,
+		resync:             cfg.resync,
+		cost:               cfg.cost,
+		bootGeneration:     cfg.bootGeneration,
+		onClosed:           cfg.onClosed,
+		maxQueuedBytes:     maxQueuedBytes,
+		recordedLength:     cfg.recordedLength,
+		published:          cfg.recordedLength,
+		epoch:              cfg.epoch,
+		wake:               make(chan struct{}, 1),
+		stop:               make(chan struct{}),
+		done:               make(chan struct{}),
+	}
+	publication.mu.Lock()
+	publication.history = h
+	if publication.paired {
+		h.published = publication.completeLength
+	}
+	publication.mu.Unlock()
 	go h.run()
 	return h
 }
@@ -247,7 +260,17 @@ func (h *threadHistory) recorded(rec transcript.Record) {
 		return
 	}
 	h.mu.Lock()
+	if h.paired && !h.closed {
+		if agent.ConversationTurnAffectsProvenance(rec.Turn) {
+			h.stagedEnd = max(h.stagedEnd, rec.Offset+rec.Length)
+		} else if h.stagedEnd <= h.completeLength {
+			h.completeLength = max(h.completeLength, rec.Offset+rec.Length)
+		}
+	}
 	if (h.failed != nil && !h.recovering) || h.closed {
+		if h.paired && !h.closed {
+			h.recordedLength, h.ordinal, h.hooked = rec.Offset+rec.Length, rec.Ordinal, true
+		}
 		h.mu.Unlock()
 		return
 	}
@@ -303,6 +326,9 @@ func (h *threadHistory) applyQueued(through int64) {
 	h.applyMu.Lock()
 	defer h.applyMu.Unlock()
 	h.mu.Lock()
+	if h.paired {
+		through = min(through, h.completeLength)
+	}
 	if h.gap != nil {
 		h.mu.Unlock()
 		return
@@ -331,9 +357,10 @@ func (h *threadHistory) overlayEvent(ev events.SessionEvent) []appoverlay.Change
 // file's size when no entry was recorded in this process.
 func (h *threadHistory) RecordedLength() (int64, error) {
 	h.mu.Lock()
-	recorded := h.recordedLength
+	recorded := h.readableLengthLocked()
+	paired := h.paired
 	h.mu.Unlock()
-	if recorded > 0 {
+	if paired || recorded > 0 {
 		return recorded, nil
 	}
 	info, err := os.Stat(h.path)
@@ -501,10 +528,13 @@ func (h *threadHistory) run() {
 // recovering when that fails or the queue overflowed. It reports whether the
 // projection is healthy: caught up to a boundary, not failed, not aborted.
 func (h *threadHistory) step() bool {
+	if err := h.fillOverlayGap(); err != nil {
+		return h.recover()
+	}
 	h.applyQueued(math.MaxInt64)
 	h.mu.Lock()
 	failed, overflowed := h.failed != nil, h.overflowed
-	target, published, epoch := h.recordedLength, h.published, h.epoch
+	target, published, epoch := h.readableLengthLocked(), h.published, h.epoch
 	h.mu.Unlock()
 	switch {
 	case failed:
@@ -528,7 +558,7 @@ func (h *threadHistory) finish(healthy bool) {
 	h.serial.Lock()
 	defer h.serial.Unlock()
 	h.mu.Lock()
-	target, published, epoch := h.recordedLength, h.published, h.epoch
+	target, published, epoch := h.readableLengthLocked(), h.published, h.epoch
 	healthy = healthy && h.failed == nil && !h.overflowed
 	h.mu.Unlock()
 	if healthy && target > published {
@@ -557,7 +587,12 @@ func (h *threadHistory) project(target, published int64, epoch uint64) error {
 	if err := idx.CatchUpTo(target); err != nil {
 		return err
 	}
-	changes, err := idx.ChangedSince(published)
+	var changes transcriptindex.Changes
+	err = idx.ReadAt(target, func(snapshot *transcriptindex.Snapshot) error {
+		var err error
+		changes, err = snapshot.ChangedSince(published)
+		return err
+	})
 	if err != nil {
 		return err
 	}
@@ -698,6 +733,14 @@ func (h *threadHistory) rebuildThroughBoundary() error {
 // adopts the boundary's last ordinal, which no hook reported while the
 // thread was failed.
 func (h *threadHistory) captureBoundary() (int64, error) {
+	h.mu.Lock()
+	if h.paired {
+		boundary := h.completeLength
+		h.overflowed = false
+		h.mu.Unlock()
+		return boundary, nil
+	}
+	h.mu.Unlock()
 	var boundary int64
 	adopt := func(recordedLength int64) {
 		boundary = recordedLength
@@ -735,7 +778,7 @@ func (h *threadHistory) rebuild(target int64) error {
 		return err
 	}
 	defer h.cache.Release(idx)
-	if err := idx.Rebuild(target); err != nil {
+	if err := idx.RebuildAtLeast(target); err != nil {
 		return err
 	}
 	changes, err := idx.ChangedSince(target)
@@ -754,8 +797,11 @@ func (h *threadHistory) fillOverlayGap() error {
 	for {
 		h.mu.Lock()
 		gap, end := h.gap, h.gapEndLocked()
+		if h.paired {
+			end = min(end, h.completeLength)
+		}
 		h.mu.Unlock()
-		if gap == nil {
+		if gap == nil || gap.offset >= end {
 			return nil
 		}
 		records, nextOrdinal, err := readRecordedEntries(h.path, *gap, end)
@@ -776,9 +822,10 @@ func (h *threadHistory) fillOverlayGap() error {
 		} else {
 			h.gap = &overlayGap{ordinal: nextOrdinal, offset: end}
 		}
+		atPublication := h.paired && end == h.completeLength
 		h.mu.Unlock()
 		h.applyMu.Unlock()
-		if closed {
+		if closed || atPublication {
 			return nil
 		}
 	}
