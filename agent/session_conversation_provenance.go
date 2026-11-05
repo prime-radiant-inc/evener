@@ -145,7 +145,10 @@ func (s *Session) conversationSnapshot(journal clientMutationSnapshot) *appwire.
 		}
 		for _, id := range record.ConversationInputIDs {
 			admitted[id] = true
-			if record.ExecutionState == "canceled" {
+			// An interrupted start may have stopped before its input was
+			// recorded. Only that journal-only input can no longer be consumed,
+			// while canonical inputs must keep fencing stale replies after stop.
+			if record.ExecutionState == "canceled" || (record.ExecutionState == "interrupted" && !s.conversation.admitted[id]) {
 				retired[id] = true
 			}
 		}
