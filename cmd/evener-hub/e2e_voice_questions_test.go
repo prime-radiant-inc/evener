@@ -105,10 +105,7 @@ func TestE2E_VoicePendingQuestionsAndFreeTextAnswer(t *testing.T) {
 	if !request.Contains(answer) {
 		t.Fatal("actual manager request lost the free-text answer")
 	}
-	var replay appwire.TurnStartResponse
-	if err := f.client.Request(f.ctx, intent.Method, intent.Params, &replay); err != nil || replay.Receipt.Disposition != appwire.MutationDispositionReplayed {
-		t.Fatalf("ordinary answer retry was not idempotent: %+v %v", replay.Receipt, err)
-	}
+	voicePresentationRetry(t, f, intent)
 	resolved := f.read(t)
 	if resolved.Thread.Evener.AskPending || resolved.Thread.Evener.PendingAsk == nil || len(resolved.Thread.Evener.PendingAsk.Calls) != 0 {
 		t.Fatal("ordinary answer did not clear the existing pending owner")

@@ -104,8 +104,10 @@ either an author or inheritance. See
 
 For [voice conversations](voice.md), **S03** owns native microphone processing,
 local playback and played-sample acknowledgements. **S06** owns the scoped
-device/manager binding and provider bridge. Its voice journal preserves the
-immutable intent before **S11** admits it through ordinary session input.
+device/manager binding and provider bridge. Its voice journal pins presentation
+identity at utterance start and freezes the observed evidence with the immutable
+intent before **S11** admits it through ordinary session input. Public hub input
+cannot supply that evidence, and the original daemon must advertise support.
 **S09–S10** retain manager execution, canonical replies and originating-request
 provenance. A presentation interruption stops speech and can replace its provider
 connection while preserving manager work. Voice does not create another session

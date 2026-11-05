@@ -447,7 +447,7 @@ func (b *voiceBridge) finishInput(ctx context.Context, turn hubcore.VoiceTurn, p
 	if err != nil {
 		return hubcore.VoiceIntent{}, err
 	}
-	if read.Thread.Evener.InstanceID != b.binding.InstanceID || !read.Thread.Evener.MutationStateAuthoritative || !read.Thread.Evener.Manager {
+	if read.Thread.Evener.InstanceID != b.binding.InstanceID || !read.Thread.Evener.MutationStateAuthoritative || !read.Thread.Evener.Manager || !read.Thread.Evener.Capabilities.VoicePresentationContextV1 {
 		return hubcore.VoiceIntent{}, hubcore.ErrVoiceStale
 	}
 	method := appwire.MethodTurnStart

@@ -28,6 +28,8 @@ choose a target session or execute manager tools.
   owns native capture and transport outside React component lifetimes.
 - [`voiceService`](../../cmd/evener-hub/voice_http.go) binds a device, manager
   instance and listening epoch. Arm requires foreground hub authentication.
+  The original daemon must advertise `voicePresentationContextV1` so it can
+  preserve speech context alongside the user's next input.
   The scoped socket grant cannot dispatch general AppWire requests.
 - [`voiceBridge`](../../cmd/evener-hub/voice_bridge.go) accepts ordered utterance
   frames, waits for completed interpretation and uses ordinary `turn/start` or
@@ -63,6 +65,20 @@ Retiring a fully rendered delivery preserves its completion evidence; cutting
 off unfinished playback records interruption. Provider truncation uses the played
 watermark in the provider's 24 kHz sample timeline.
 
+At utterance start, the journal pins the binding's latest presentation identity,
+including an explicit absence when nothing has been presented. Preparing the
+text intent freezes that delivery's observed wording and playback facts into
+the same immutable mutation payload. Late acknowledgements and newer speech
+cannot change a retry's evidence or attach another presentation to its words.
+
+Only the hub's journal-backed voice transport may attach those facts. Public
+hub input rejects client-supplied presentation evidence. The original daemon
+also validates the human actor, input method, instance and payload bounds.
+The [session input owner](session-input.md) persists the association and projects
+it as separate quoted data in the user message, without changing the user's
+text or granting authority to generated speech. A bounded transcript can be
+explicitly truncated; sample counts never identify which words the user heard.
+
 Native barge-in retires presentation immediately and preserves the following
 utterance while provider cancellation completes. If setup or speech creation is
 still awaiting acknowledgement, the bridge closes that provider connection and
@@ -96,15 +112,16 @@ replacement instances keep unresolved text in the journal for explicit recovery.
 
 Voice controls are native iOS controls; browser and ordinary text input retain
 their existing owners. The native module exposes Talk and Stop speaking. Wake
-recognition is unavailable until a shipping detector is qualified. Speech
-presentation evidence is stored, but is not yet attached to the manager's input
-for resolving references such as "the second one."
+recognition is unavailable until a shipping detector is qualified. Attached
+presentation evidence supports references such as "the second one"; model
+reference-resolution quality requires a separate live qualification.
 
 The real-stack tests in
 [`e2e_voice_test.go`](../../cmd/evener-hub/e2e_voice_test.go),
 [`e2e_voice_correction_test.go`](../../cmd/evener-hub/e2e_voice_correction_test.go),
 [`e2e_voice_barge_test.go`](../../cmd/evener-hub/e2e_voice_barge_test.go),
 [`e2e_voice_questions_test.go`](../../cmd/evener-hub/e2e_voice_questions_test.go),
+[`e2e_voice_presentation_test.go`](../../cmd/evener-hub/e2e_voice_presentation_test.go),
 [`e2e_voice_recovery_test.go`](../../cmd/evener-hub/e2e_voice_recovery_test.go)
 and [`e2e_voice_intent_recovery_test.go`](../../cmd/evener-hub/e2e_voice_intent_recovery_test.go)
 exercise real hub, daemon, journal and transcript paths with scripted external

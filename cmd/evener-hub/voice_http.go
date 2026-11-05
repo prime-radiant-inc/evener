@@ -165,6 +165,10 @@ func (v *voiceService) arm(w http.ResponseWriter, r *http.Request) {
 		voiceHTTPError(w, http.StatusConflict, "live_manager_required")
 		return
 	}
+	if !read.Thread.Evener.Capabilities.VoicePresentationContextV1 {
+		voiceHTTPError(w, http.StatusConflict, "voice_presentation_unsupported")
+		return
+	}
 	if request.Provider == "" {
 		request.Provider = "openai"
 	}
@@ -246,6 +250,7 @@ func (v *voiceService) disarm(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *WebServer) voiceClient(ctx context.Context) (*appwire.Client, error) {
+	ctx = context.WithValue(ctx, voicePresentationContextKey{}, true)
 	transport, err := s.appRPC.NewInProcessTransport(ctx)
 	if err != nil {
 		return nil, err

@@ -14,7 +14,7 @@ import (
 func (b *voiceBridge) validSpeechRead(read appwire.ThreadReadResponse) bool {
 	evener := read.Thread.Evener
 	state := evener.ConversationProvenance
-	return evener.Ref == b.binding.Ref && evener.InstanceID == b.binding.InstanceID && evener.Manager && evener.MutationStateAuthoritative && state != nil && state.Authoritative && state.InstanceID == b.binding.InstanceID && read.Snapshot != nil
+	return evener.Ref == b.binding.Ref && evener.InstanceID == b.binding.InstanceID && evener.Manager && evener.MutationStateAuthoritative && evener.Capabilities.VoicePresentationContextV1 && state != nil && state.Authoritative && state.InstanceID == b.binding.InstanceID && read.Snapshot != nil
 }
 
 func (b *voiceBridge) captureSpeechBaseline(read appwire.ThreadReadResponse) {

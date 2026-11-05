@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/google/uuid"
 	"github.com/spf13/afero"
@@ -41,12 +42,13 @@ type VoiceBinding struct {
 }
 
 type VoiceTurn struct {
-	ID                  string `json:"id"`
-	BindingID           string `json:"bindingId"`
-	Epoch               string `json:"epoch"`
-	Sequence            int64  `json:"sequence"`
-	ProviderInputItemID string `json:"providerInputItemId,omitempty"`
-	State               string `json:"state"`
+	ID                     string `json:"id"`
+	BindingID              string `json:"bindingId"`
+	Epoch                  string `json:"epoch"`
+	Sequence               int64  `json:"sequence"`
+	ProviderInputItemID    string `json:"providerInputItemId,omitempty"`
+	State                  string `json:"state"`
+	PresentationDeliveryID string `json:"presentationDeliveryId"`
 }
 
 const (
@@ -581,6 +583,12 @@ func (j *VoiceJournal) CreateTurn(ctx context.Context, bindingID, epoch string, 
 		return VoiceTurn{}, err
 	}
 	turn := VoiceTurn{ID: uuid.NewString(), BindingID: bindingID, Epoch: epoch, Sequence: sequence, State: VoiceTurnOpen}
+	// Pin absence as well as identity before interpretation. Later speech and
+	// reconnects cannot replace the presentation associated with this utterance.
+	err = tx.QueryRowContext(ctx, `SELECT id FROM voice_speech WHERE binding_id=? ORDER BY rowid DESC LIMIT 1`, bindingID).Scan(&turn.PresentationDeliveryID)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return VoiceTurn{}, err
+	}
 	raw, err := json.Marshal(turn)
 	if err != nil {
 		return VoiceTurn{}, ErrVoiceInvalid
@@ -658,12 +666,17 @@ func (j *VoiceJournal) AbortTurn(ctx context.Context, turnID string) error {
 	return tx.Commit()
 }
 
-// Params always contains one ordinary text item. Provider text never chooses authority.
-func voiceIntentParams(ref, instanceID, method, text, mutationID string) (json.RawMessage, error) {
+// Params always contains one ordinary text item. Presentation is quoted evidence,
+// never a change to the user's text or the authority selecting its target.
+func voiceIntentParams(ref, instanceID, method, text, mutationID string, presentation *appwire.VoicePresentationContext) (json.RawMessage, error) {
 	if method != appwire.MethodTurnStart && method != appwire.MethodTurnSteer {
 		return nil, ErrVoiceInvalid
 	}
-	input, err := appwire.NormalizeMutationInput([]appwire.InputItem{{Type: "text", Text: text}})
+	items := []appwire.InputItem{{Type: "text", Text: text, VoicePresentation: presentation}}
+	if appwire.ValidateVoicePresentationInput(items, method, "human", instanceID) != nil {
+		return nil, ErrVoiceInvalid
+	}
+	input, err := appwire.NormalizeMutationInput(items)
 	if err != nil || !input.HasContent() {
 		return nil, ErrVoiceInvalid
 	}
@@ -672,6 +685,40 @@ func voiceIntentParams(ref, instanceID, method, text, mutationID string) (json.R
 		return nil, ErrVoiceInvalid
 	}
 	return raw, nil
+}
+
+func voicePresentationForTurn(ctx context.Context, q voiceQuerier, turn VoiceTurn) (*appwire.VoicePresentationContext, error) {
+	if turn.PresentationDeliveryID == "" {
+		return nil, nil
+	}
+	d, err := readSpeechDelivery(ctx, q, turn.PresentationDeliveryID)
+	if err != nil {
+		return nil, err
+	}
+	if d.BindingID != turn.BindingID || d.Epoch != turn.Epoch || !utf8.ValidString(d.GeneratedTranscript) {
+		return nil, ErrVoiceCorrupt
+	}
+	p := &appwire.VoicePresentationContext{
+		Version: 1, DeliveryID: d.ID, BindingID: d.BindingID, Epoch: d.Epoch, InstanceID: d.InstanceID,
+		CanonicalSourceItemID: d.CanonicalSourceItemID, OriginatingRequestID: d.OriginatingRequestID, FrontierID: d.FrontierID,
+		RunGeneration: d.RunGeneration, PresentationGeneration: d.PresentationGeneration,
+		GeneratedTranscript: d.GeneratedTranscript, OutputComplete: d.OutputComplete, Interrupted: d.Interrupted, SampleRateHz: 24000,
+		Items: make([]appwire.VoicePresentationItem, 0, len(d.Items)),
+	}
+	if len(p.GeneratedTranscript) > appwire.VoicePresentationMaxTranscriptBytes {
+		p.GeneratedTranscript = p.GeneratedTranscript[:appwire.VoicePresentationMaxTranscriptBytes]
+		for !utf8.ValidString(p.GeneratedTranscript) {
+			p.GeneratedTranscript = p.GeneratedTranscript[:len(p.GeneratedTranscript)-1]
+		}
+		p.TranscriptTruncated = true
+	}
+	for _, item := range d.Items {
+		p.Items = append(p.Items, appwire.VoicePresentationItem{
+			ResponseID: item.ResponseID, ItemID: item.ItemID, GeneratedSamples: item.GeneratedSamples,
+			QueuedSamples: item.QueuedSamples, PlayedSamples: item.PlayedSamples, PlaybackComplete: item.PlaybackComplete,
+		})
+	}
+	return p, nil
 }
 
 func readVoiceIntent(ctx context.Context, q voiceQuerier, turnID string) (VoiceIntent, error) {
@@ -692,7 +739,15 @@ func readVoiceIntent(ctx context.Context, q voiceQuerier, turnID string) (VoiceI
 	if err != nil {
 		return VoiceIntent{}, err
 	}
-	expected, err := voiceIntentParams(in.Ref, in.ExpectedInstanceID, in.Method, in.Text, in.MutationID)
+	var params appwire.TurnStartParams
+	if json.Unmarshal(in.Params, &params) != nil || len(params.Input) != 1 {
+		return VoiceIntent{}, ErrVoiceCorrupt
+	}
+	presentation := params.Input[0].VoicePresentation
+	if presentation == nil && turn.PresentationDeliveryID != "" || presentation != nil && (presentation.DeliveryID != turn.PresentationDeliveryID || presentation.BindingID != turn.BindingID || presentation.Epoch != turn.Epoch) {
+		return VoiceIntent{}, ErrVoiceCorrupt
+	}
+	expected, err := voiceIntentParams(in.Ref, in.ExpectedInstanceID, in.Method, in.Text, in.MutationID, presentation)
 	if err != nil || string(expected) != string(in.Params) || in.Ref != b.Ref || in.ExpectedInstanceID != b.InstanceID || in.Epoch != b.Epoch || turn.BindingID != b.ID || turn.Epoch != b.Epoch || turn.State != VoiceTurnCommitted {
 		return VoiceIntent{}, ErrVoiceCorrupt
 	}
@@ -742,7 +797,11 @@ func (j *VoiceJournal) PrepareIntent(ctx context.Context, turnID, method, text, 
 	if err != nil {
 		return VoiceIntent{}, err
 	}
-	params, err := voiceIntentParams(b.Ref, b.InstanceID, method, text, mutationID)
+	presentation, err := voicePresentationForTurn(ctx, tx, turn)
+	if err != nil {
+		return VoiceIntent{}, err
+	}
+	params, err := voiceIntentParams(b.Ref, b.InstanceID, method, text, mutationID, presentation)
 	if err != nil {
 		return VoiceIntent{}, err
 	}
