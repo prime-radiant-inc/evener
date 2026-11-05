@@ -123,6 +123,128 @@ func TestBundleMetadataRequiresIdentityAndSharedGroup(t *testing.T) {
 	}
 }
 
+// The real Mac control: verification of an owned copy must fail once the
+func TestVerifyAppRejectsCopiedBuildWithoutExtension(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("requires the real macOS signing tools")
+	}
+	t.Parallel()
+	r := &runner{native: t.TempDir(), output: t.TempDir()}
+	ctx := context.Background()
+	build := buildControlAppFixture(t, r)
+	if err := r.verifyApp(ctx, build, "control-original"); err != nil {
+		t.Fatalf("untouched build did not verify: %v", err)
+	}
+	owned := filepath.Join(t.TempDir(), "Evener-copy.app")
+	if _, err := r.command(ctx, "control-copy-app", "cp", "-R", build, owned); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.verifyApp(ctx, owned, "control-copy"); err != nil {
+		t.Fatalf("owned copy did not verify before the control: %v", err)
+	}
+	if err := os.RemoveAll(filepath.Join(owned, "PlugIns", "EvenerShareExtension.appex")); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.verifyApp(ctx, owned, "control-missing-extension"); err == nil {
+		t.Fatal("accepted a copied build whose share extension was removed")
+	}
+	if err := r.verifyApp(ctx, build, "control-original-recheck"); err != nil {
+		t.Fatalf("the control altered the untouched build: %v", err)
+	}
+}
+
+// buildControlAppFixture assembles the smallest app that verifyApp accepts:
+func buildControlAppFixture(t *testing.T, r *runner) string {
+	t.Helper()
+	ctx := context.Background()
+	root := t.TempDir()
+	build := filepath.Join(root, "Evener.app")
+	extension := filepath.Join(build, "PlugIns", "EvenerShareExtension.appex")
+	if err := os.MkdirAll(extension, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	const plistHeader = `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleIdentifier</key>
+	<string>%s</string>
+	<key>CFBundleExecutable</key>
+	<string>%s</string>
+	<key>MinimumOSVersion</key>
+	<string>16.4</string>
+	<key>UIDeviceFamily</key>
+	<array>
+		<integer>1</integer>
+	</array>
+`
+	hostInfo := plistHeader + `	<key>CFBundleURLTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>evener-native</string>
+			</array>
+		</dict>
+	</array>
+</dict>
+</plist>
+`
+	shareInfo := plistHeader + `	<key>NSExtension</key>
+	<dict>
+		<key>NSExtensionPointIdentifier</key>
+		<string>com.apple.share-services</string>
+	</dict>
+</dict>
+</plist>
+`
+	if err := os.WriteFile(filepath.Join(build, "Info.plist"), []byte(fmt.Sprintf(hostInfo, "com.primeradiant.evener.native", "evener")), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(extension, "Info.plist"), []byte(fmt.Sprintf(shareInfo, "com.primeradiant.evener.native.ShareExtension", "evener-share")), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(build, "main.jsbundle"), []byte("// fixture"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	entitlements := `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>com.apple.security.application-groups</key>
+	<array>
+		<string>group.com.primeradiant.evener.native</string>
+	</array>
+</dict>
+</plist>
+`
+	entitlementPath := filepath.Join(root, "entitlements.plist")
+	if err := os.WriteFile(entitlementPath, []byte(entitlements), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	compile := func(dir, name string) {
+		t.Helper()
+		source := filepath.Join(root, name+".c")
+		if err := os.WriteFile(source, []byte("int main(void) { return 0; }"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := r.command(ctx, "control-compile-"+name, "clang", source, "-o", filepath.Join(dir, name)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	sign := func(dir, name string) {
+		t.Helper()
+		if _, err := r.command(ctx, "control-sign-"+name, "codesign", "--force", "--sign", "-", "--entitlements", entitlementPath, dir); err != nil {
+			t.Fatal(err)
+		}
+	}
+	compile(build, "evener")
+	compile(extension, "evener-share")
+	sign(extension, "share")
+	sign(build, "host")
+	return build
+}
+
 func TestLinuxRefusesBeforeCreatingOutput(t *testing.T) {
 	if runtime.GOOS != "linux" {
 		t.Skip("Linux capability refusal")
