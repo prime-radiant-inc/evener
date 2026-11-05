@@ -58,6 +58,7 @@ const (
 	VoiceIntentPrepared  = "prepared"
 	VoiceIntentUncertain = "uncertain"
 	VoiceIntentAccepted  = "accepted"
+	VoiceIntentRejected  = "rejected"
 )
 
 type VoiceIntent struct {
@@ -781,7 +782,7 @@ func readVoiceIntent(ctx context.Context, q voiceQuerier, turnID string) (VoiceI
 		return VoiceIntent{}, ErrVoiceCorrupt
 	}
 	switch in.State {
-	case VoiceIntentPrepared, VoiceIntentUncertain:
+	case VoiceIntentPrepared, VoiceIntentUncertain, VoiceIntentRejected:
 		if in.Receipt != nil {
 			return VoiceIntent{}, ErrVoiceCorrupt
 		}
@@ -876,7 +877,7 @@ func (j *VoiceJournal) RecordAttempt(ctx context.Context, turnID, currentInstanc
 	if err != nil {
 		return VoiceIntent{}, err
 	}
-	if in.State == VoiceIntentAccepted {
+	if in.State == VoiceIntentAccepted || in.State == VoiceIntentRejected {
 		return VoiceIntent{}, ErrVoiceConflict
 	}
 	if _, err := activeVoiceBinding(ctx, tx, in.BindingID, in.Epoch); err != nil {
@@ -918,13 +919,46 @@ func (j *VoiceJournal) RecordReceipt(ctx context.Context, turnID string, receipt
 	if !validVoiceReceipt(in, receipt) {
 		return VoiceIntent{}, ErrVoiceConflict
 	}
-	if in.State == VoiceIntentPrepared {
+	if in.State == VoiceIntentPrepared || in.State == VoiceIntentRejected {
 		return VoiceIntent{}, ErrVoiceConflict
 	}
 	if in.State == VoiceIntentAccepted {
 		return in, nil
 	}
 	in.State, in.Receipt = VoiceIntentAccepted, &receipt
+	if err := saveVoiceIntent(ctx, tx, in); err != nil {
+		return VoiceIntent{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return VoiceIntent{}, err
+	}
+	return in, nil
+}
+
+// RecordRejection settles only a refusal vouched for by the original daemon's
+// mutation journal. Transport and pre-admission refusals leave custody uncertain.
+// The rejected identity stays dead; resubmission must be an explicit new input.
+func (j *VoiceJournal) RecordRejection(ctx context.Context, turnID string, rejection appwire.WireError) (VoiceIntent, error) {
+	tx, err := j.db.BeginTx(ctx, nil)
+	if err != nil {
+		return VoiceIntent{}, err
+	}
+	defer func() { _ = tx.Rollback() }()
+	in, err := readVoiceIntent(ctx, tx, turnID)
+	if err != nil {
+		return VoiceIntent{}, err
+	}
+	data, ok := appwire.DecodedErrorData(rejection.Data)
+	if !ok || data.Cause != appwire.JournaledRejectionCause || data.ClientMutationID != in.MutationID || data.MutationOutcome != appwire.MutationOutcomeNotAccepted || data.RetryDisposition != appwire.RetryDispositionNone {
+		return VoiceIntent{}, ErrVoiceConflict
+	}
+	if in.State == VoiceIntentRejected {
+		return in, nil
+	}
+	if in.State != VoiceIntentUncertain {
+		return VoiceIntent{}, ErrVoiceConflict
+	}
+	in.State = VoiceIntentRejected
 	if err := saveVoiceIntent(ctx, tx, in); err != nil {
 		return VoiceIntent{}, err
 	}

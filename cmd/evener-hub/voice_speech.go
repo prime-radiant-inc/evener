@@ -29,6 +29,47 @@ func (b *voiceBridge) captureSpeechBaseline(read appwire.ThreadReadResponse) {
 	}
 }
 
+// Walk back to the last selected source before choosing the next one. Pages
+// from another snapshot cannot prove there was no earlier unsaid output.
+func (b *voiceBridge) readSpeechHistory(ctx context.Context, history appwire.SnapshotIdentity, cursor *appwire.ThreadItemPosition) (appwire.ThreadReadResponse, error) {
+	read, err := b.client.ThreadRead(ctx, appwire.ThreadReadParams{Ref: b.binding.Ref, IncludeTurns: true, ItemLimit: appwire.TranscriptItemPageLimit})
+	if err != nil || !b.validSpeechRead(read) || read.Snapshot.Incarnation != history.Incarnation {
+		return read, err
+	}
+	return b.backfillSpeechHistory(ctx, read, cursor)
+}
+
+func (b *voiceBridge) backfillSpeechHistory(ctx context.Context, read appwire.ThreadReadResponse, cursor *appwire.ThreadItemPosition) (appwire.ThreadReadResponse, error) {
+	page := read.Thread.Turns
+	for older := read.OlderCursor; older != "" && !voicePageReachesCursor(page, cursor); {
+		next, err := b.client.ThreadTurnsList(ctx, appwire.ThreadTurnsListParams{Ref: b.binding.Ref, Cursor: older, ItemLimit: appwire.TranscriptItemPageLimit})
+		if err != nil {
+			return appwire.ThreadReadResponse{}, err
+		}
+		// Authoritative controls replacement of a returned history range, not
+		// the identity or freshness of the snapshot it was projected from.
+		if next.Snapshot == nil || *next.Snapshot != *read.Snapshot || next.BootGeneration != read.BootGeneration || next.Epoch != read.Epoch {
+			return appwire.ThreadReadResponse{}, appwire.TranscriptItemCursorStale()
+		}
+		page, older = next.Data, next.NextCursor
+		read.Thread.Turns = append(page, read.Thread.Turns...)
+	}
+	return read, nil
+}
+
+func voicePageReachesCursor(turns []appwire.Turn, cursor *appwire.ThreadItemPosition) bool {
+	if cursor != nil {
+		for _, turn := range turns {
+			for _, item := range turn.Items {
+				if item.Position != nil && appitempaging.ComparePosition(*item.Position, *cursor) <= 0 {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+
 // Only recorded public output items carry request provenance. The initial
 // item position is the speech cursor, so attaching never reads old history aloud.
 // Snapshot length counts bytes, not the entry ordinals in item positions.
@@ -51,6 +92,11 @@ func (b *voiceBridge) selectSpeech(read appwire.ThreadReadResponse) error {
 			provenance := item.ConversationProvenance
 			if item.Position == nil || (b.speechCursor != nil && appitempaging.ComparePosition(*item.Position, *b.speechCursor) <= 0) || provenance == nil || provenance.SourceItemID != item.ID || !appwire.ConversationOutputEligible(b.provenance, provenance) {
 				continue
+			}
+			// A batched communicate can commit before ask_user's result. The
+			// completed question keeps its opener position, so do not pass it.
+			if item.Type == "commandExecution" && item.ToolName == "ask_user" && item.Status == appwire.TurnStatusInProgress {
+				return nil
 			}
 			item.Text = voiceSpeechText(item, read.Thread.Evener.PendingAsk, b.binding.InstanceID)
 			if strings.TrimSpace(item.Text) == "" {
