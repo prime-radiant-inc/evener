@@ -46,7 +46,9 @@ func (b *voiceBridge) backfillSpeechHistory(ctx context.Context, read appwire.Th
 		if err != nil {
 			return appwire.ThreadReadResponse{}, err
 		}
-		if next.Snapshot == nil || *next.Snapshot != *read.Snapshot || next.BootGeneration != read.BootGeneration || next.Epoch != read.Epoch || next.Authoritative != read.Authoritative {
+		// Authoritative controls replacement of a returned history range, not
+		// the identity or freshness of the snapshot it was projected from.
+		if next.Snapshot == nil || *next.Snapshot != *read.Snapshot || next.BootGeneration != read.BootGeneration || next.Epoch != read.Epoch {
 			return appwire.ThreadReadResponse{}, appwire.TranscriptItemCursorStale()
 		}
 		page, older = next.Data, next.NextCursor

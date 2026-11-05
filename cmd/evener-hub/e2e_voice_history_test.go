@@ -54,6 +54,9 @@ func TestE2E_VoiceSpeechReachesOlderHistoryPages(t *testing.T) {
 			if latest.OlderCursor == "" || voiceCorrectionItem(latest, "PAGED-UNSAID-173").ID != "" {
 				t.Fatal("fixture did not push eligible unsaid output out of the latest page")
 			}
+			if latest.Authoritative || latest.BootGeneration == "" || latest.BootGeneration == appwire.DaemonlessBootGeneration {
+				t.Fatal("fixture did not return the live daemon's non-replacing history read")
+			}
 			// Independently prove the source is in a later page under this same
 			// daemon, epoch and snapshot, rather than testing a missing fixture.
 			cursor := latest.OlderCursor
@@ -67,6 +70,9 @@ func TestE2E_VoiceSpeechReachesOlderHistoryPages(t *testing.T) {
 				if page.BootGeneration != latest.BootGeneration || page.Epoch != latest.Epoch || page.Snapshot == nil || *page.Snapshot != *latest.Snapshot {
 					t.Fatal("fixture pages did not share one settled history identity")
 				}
+				if page.Authoritative {
+					t.Fatal("fixture did not return the live daemon's non-replacing history page")
+				}
 				unsaid = voiceCorrectionItem(appwire.ThreadReadResponse{Thread: appwire.Thread{Turns: page.Data}}, "PAGED-UNSAID-173")
 				cursor = page.NextCursor
 				pages++
@@ -74,7 +80,7 @@ func TestE2E_VoiceSpeechReachesOlderHistoryPages(t *testing.T) {
 			if unsaid.ID == "" || unsaid.ConversationProvenance == nil {
 				t.Fatal("older pages lack the real eligible unsaid source")
 			}
-			t.Logf("eligible source=%s is on page %d beyond the latest %d-item window, same snapshot=%+v", unsaid.ID, pages, appwire.TranscriptItemPageLimit, *latest.Snapshot)
+			t.Logf("eligible source=%s is on page %d beyond the latest %d-item window, same snapshot=%+v boot=%s epoch=%d, live read and pages all Authoritative=false", unsaid.ID, pages, appwire.TranscriptItemPageLimit, *latest.Snapshot, latest.BootGeneration, latest.Epoch)
 			if reconnect {
 				voiceJourneyAcknowledgeReady(t, f.device, ready, 2)
 			} else {
@@ -135,6 +141,9 @@ func TestE2E_VoiceHistorySnapshotAdvanceKeepsCursor(t *testing.T) {
 	if *current.Snapshot == *stale.Snapshot {
 		t.Fatal("real provider completion did not advance history")
 	}
+	if current.BootGeneration != stale.BootGeneration || current.Epoch != stale.Epoch || current.Snapshot.Incarnation != stale.Snapshot.Incarnation || current.Snapshot.Length <= stale.Snapshot.Length {
+		t.Fatal("fixture did not isolate snapshot append from boot, epoch and incarnation replacement")
+	}
 	_, err = bridge.backfillSpeechHistory(f.ctx, stale, before)
 	var wire appwire.WireError
 	if !errors.As(err, &wire) {
@@ -148,4 +157,5 @@ func TestE2E_VoiceHistorySnapshotAdvanceKeepsCursor(t *testing.T) {
 	if err != nil || voiceCorrectionItem(fresh, "SNAPSHOT-FIRST-191").ID == "" || *fresh.Snapshot != *current.Snapshot {
 		t.Fatalf("fresh retry lost earlier unsaid output: %v", err)
 	}
+	t.Logf("same boot=%s epoch=%d incarnation, snapshot length advanced %d -> %d; mixed pages rejected without cursor movement and fresh read recovered the earlier source", current.BootGeneration, current.Epoch, stale.Snapshot.Length, current.Snapshot.Length)
 }
