@@ -119,6 +119,12 @@ owner opens an existing journal even when this hub process has not used voice.
 Cleanup failures remain retryable through ordinary deletion, and a refused
 deletion preserves the journal records.
 
+A missing history row does not prove deletion. Live or uncertain ownership,
+unreadable metadata and held API-log reservations preserve voice records and
+other session decisions. A prior deletion's tombstone permits cleanup to retry
+in the original history bucket. Confirmed absence permits orphan-decision
+cleanup. Ordinary deletion works again when the blocking condition clears.
+
 ## Client and qualification boundaries
 
 Voice controls are native iOS controls; browser and ordinary text input retain
