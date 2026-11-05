@@ -268,11 +268,12 @@ if [ -z "$generated_run" ]; then
 	exit 1
 fi
 
-# A private copy of the test-run configuration carries the connection data as
-# the test process environment; the generated file itself stays untouched
-# and the copy lives only in the private state that cleanup removes.
-private_run="$state_home/qualification.xctestrun"
-cp "$generated_run" "$private_run"
+# The generated test-run configuration carries the connection data as the
+# test process environment. It is modified in place because its product paths
+# resolve relative to its own location; the file lives in the parent's
+# DerivedData, which the run owns, never reuses and never uploads, and the
+# mode is tightened so the fixture-only credentials stay unreadable.
+private_run="$generated_run"
 ui_key="$(plutil -convert json -o - "$private_run" | jq -r 'keys[] | select(startswith("EvenerQualificationUITests"))')"
 if [ -z "$ui_key" ]; then
 	echo "$SCRIPT_NAME: the test-run configuration has no EvenerQualificationUITests bundle" >&2
@@ -295,6 +296,7 @@ inject_environment EVENER_QUALIFICATION_HUB_ORIGIN "$hub_origin"
 inject_environment EVENER_QUALIFICATION_HUB_TOKEN "$hub_token"
 inject_environment EVENER_QUALIFICATION_WORKSPACE "$workspace"
 inject_environment EVENER_QUALIFICATION_HOME "$HOME"
+chmod 600 "$private_run"
 
 xcresult="$output/ui.xcresult"
 log "running the qualification journeys"
