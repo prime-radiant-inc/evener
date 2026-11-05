@@ -197,8 +197,10 @@ remain mandatory and cannot be inferred by adding separate spike results togethe
 **Stories:** STORY-0013, STORY-0015, STORY-0017, STORY-0020, STORY-0037
 **Rationale:** Add durable pending-question batches and platform-sourced lower-trust presentation context, then proactive updates and real scoped correction/cancellation. Reuse the first-slice admission/provenance and playback contracts.
 **Status:** in progress. Canonical pending-question persistence and ordinary
-spoken answers are implemented. Presentation evidence is not yet carried into
-manager input. Live reference grounding and locked clarification remain unverified.
+spoken answers are implemented. Frozen presentation evidence reaches manager
+input and survives retry, restore and compaction. The opt-in live reference
+qualification passed 12 synthetic-metadata cases on `gpt-6-astra`; this does not
+qualify actual audio, the complete correction journey or locked clarification.
 **Impacted scenarios:** JOURNEY-0011, JOURNEY-0012, JOURNEY-0013, JOURNEY-0014, JOURNEY-0022, JOURNEY-0023, SCENARIO-0010, SCENARIO-0026, SCENARIO-0030, SCENARIO-0033, SCENARIO-0053, SCENARIO-0054, SCENARIO-0058
 **Look-ahead check:** Pending question events today precede durable tool output and live helpers do not restore the full batch. Add durable identity/public projection before speech, not a second questionnaire. The complete 13-interaction correction chain is JOURNEY-0013.
 

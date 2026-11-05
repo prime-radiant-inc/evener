@@ -95,9 +95,14 @@ explicit binding rather than sending to a replacement manager automatically.
 The authenticated native connection renews its scoped grant while its binding
 and original manager instance remain valid. Renewal preserves the device,
 session, epoch and grant identity and replaces the live expiry timer. A retired
-or expired grant cannot renew itself. Reconnect synchronizes the bridge to the
-phone's retained playback fence before fresh output, without replaying old speech
-or replacing the manager's conversation.
+or expired grant cannot renew itself. Each connection waits for the previous
+bridge to finish, then advertises a generation at least as high as every durable
+speech delivery, including interrupted deliveries. The phone acknowledges every
+`ready` with its retained playback fence through `interrupt`, including fresh Arm.
+The hub reconciles that fence without lowering the durable floor and replies with
+`stop` before starting cloud input or selecting fresh speech. Output committed
+while the acknowledgement is in flight remains eligible; old speech is not
+replayed and the manager's conversation is unchanged.
 
 Reconnect also scans the binding's durable text intents. A prepared intent can
 dispatch under its still-valid grant. An attempted intent first requires an
