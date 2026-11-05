@@ -29,7 +29,8 @@ The same check runs during `npm ci` postinstall. It downloads only the pinned Si
 - Runtime: CocoaPods `onnxruntime-objc` **1.20.0**, which pins `onnxruntime-c` **1.20.0**. Both are MIT, with upstream iOS minimum 13.0. This app/module stays at 16.4.
 - Silero is MIT. Notices live in `resources/` and are included with the model in CocoaPods' `EvenerVoiceModels.bundle`. The runtime checks the model checksum before inference. The app module itself does not introduce an open-source license grant.
 
-A controlled `Podfile.lock` update remains required through the normal full-app prebuild/pod installation flow. No hand-written dependency lock was substituted.
+`Podfile.lock` records the module and both ONNX pods. Update it only through the
+normal [full-app prebuild and pod installation flow](../../../docs/design/mobile/ios-build-distribution.md).
 
 ## Checks
 
@@ -55,8 +56,17 @@ Public archives:
 - `https://download.onnxruntime.ai/pod-archive-onnxruntime-objc-1.20.0.zip`
 - `https://download.onnxruntime.ai/pod-archive-onnxruntime-c-1.20.0.zip`
 
-The script compiles the actual Objective-C runtime and links the production voice runtime for arm64 iOS device and simulator, then runs actual model loading plus 100 recurrent silence windows on macOS. It creates a new output directory and never generates an app, signs, installs or uploads anything. **It excludes the Expo bridge** and does not replace an app build. Swift 5 mode currently emits two Swift 6 Sendable migration warnings for the serial-queue service.
+The script compiles the actual Objective-C runtime and links the production voice runtime for arm64 iOS device and simulator, then runs actual model loading plus 100 recurrent silence windows on macOS. It creates a new output directory and never generates an app, signs, installs or uploads anything. **It excludes the Expo bridge** and does not replace an app build.
+
+The full-app check must build the Expo bridge and original share extension,
+verify the embedded model checksum, and verify normal Simulator signing. Follow
+the [iOS build procedure](../../../docs/design/mobile/ios-build-distribution.md);
+a successful standalone runtime link does not cover these boundaries.
 
 ## Still unqualified
 
-The full Expo module/app build, CocoaPods resource embedding in the final app, physical iPhone microphone/playout, leading-phoneme retention, endpoint latency, barge-in/AEC, route transitions, interruption recovery, extended locked operation and provider-to-manager end-to-end behavior require their own checks. The runtime link and synthetic timeline tests cannot prove these. No wake engine is shipped. Locked listening remains a requirement, not a claimed result.
+Physical iPhone microphone/playout, leading-phoneme retention, endpoint latency,
+barge-in/AEC, route transitions, interruption recovery, extended locked operation,
+battery and the complete phone-to-manager journey require their own checks. App
+builds, scripted hub journeys and synthetic timeline tests cannot prove these.
+No wake engine is shipped. Locked listening remains a requirement, not a claimed result.

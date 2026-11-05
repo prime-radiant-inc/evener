@@ -251,7 +251,13 @@ do not establish installed-device rendering or touch behavior.
   offline and stale-input rules remain unchanged.
 - Historical production roster reads were slow. Representative-data measurement
   and normal deployment verification remain open; tiny fixtures do not establish
-  production responsiveness. Voice/barge-in is outside v1.
+  production responsiveness.
+- Opt-in voice offers manager selection, Arm/Disarm, Talk and Stop through the
+  [native voice owner](modules/evener-voice/README.md). The native service owns
+  microphone and playback independently of foreground chat sockets. Wake
+  activation is unavailable; microphone, audible barge-in, locked listening and
+  battery remain physical-device qualification gates. See the
+  [voice contract](../docs/product/voice.md).
 
 Run the native gate against the exact candidate being qualified and record its
 result with that revision. Passing automated tests, type checking and the Metro
