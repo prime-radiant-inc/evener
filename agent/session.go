@@ -2948,23 +2948,37 @@ func (s *Session) appendAssistantTurn(resp llm.Response, finalAttempt ModelAttem
 		RoundID:                         s.roundIDForModelCall(),
 	}
 	t.Authorship = s.roundTranscriptAuthorship()
-	if request := finalAttempt.conversation; request != nil {
-		p := request.provenance
-		t.ConversationProvenance = &p
-		t.ConversationFrontier = request.frontier
-	}
-	err := s.appendTurnAfterTranscriptWrite(
-		t,
-		func() error { return s.writeTranscriptDurableLocked(t) },
-		func() {
-			s.history = append(s.history, t)
-			// The round's entry is recorded: the next model call is a new
-			// round (a pause_turn continuation, a bare-text retry, the next
-			// tool round).
-			s.roundID = ""
-			s.noteAgentMessageLocked(lastAgentText(t.Message))
-		},
-	)
+	err := func() error {
+		s.attentionMu.Lock()
+		defer s.attentionMu.Unlock()
+		if request := finalAttempt.conversation; request != nil {
+			// Compaction may publish while the provider is running. Base the
+			// delta on the current canonical frontier under the transcript door,
+			// but keep exactly the inputs that this request actually presented.
+			s.mu.Lock()
+			p := request.provenance
+			p.FrontierID = s.conversation.frontierID
+			t.ConversationFrontier = s.conversationDeltaLocked(p.RequestID, request.inputs)
+			if t.ConversationFrontier != nil {
+				p.FrontierID = t.ConversationFrontier.ID
+			}
+			t.ConversationProvenance = &p
+			s.mu.Unlock()
+		}
+		return s.appendTurnAfterTranscriptWriteLocked(
+			t,
+			func() error { return s.writeTranscriptDurableLocked(t) },
+			func() {
+				s.history = append(s.history, t)
+				// The round's entry is recorded: the next model call is a new
+				// round (a pause_turn continuation, a bare-text retry, the next
+				// tool round).
+				s.roundID = ""
+				s.noteAgentMessageLocked(lastAgentText(t.Message))
+			},
+		)
+	}()
+	s.surfaceTranscriptWarnings()
 	if err != nil {
 		s.emit(events.WarningData{Message: fmt.Sprintf("transcript write failed: %v", err)})
 	}
