@@ -29,7 +29,7 @@ func (b *voiceBridge) captureSpeechBaseline(read appwire.ThreadReadResponse) {
 	}
 }
 
-// Only recorded communicate items carry request provenance. The initial
+// Only recorded public output items carry request provenance. The initial
 // item position is the speech cursor, so attaching never reads old history aloud.
 // Snapshot length counts bytes, not the entry ordinals in item positions.
 func (b *voiceBridge) selectSpeech(read appwire.ThreadReadResponse) error {
@@ -49,7 +49,11 @@ func (b *voiceBridge) selectSpeech(read appwire.ThreadReadResponse) error {
 	for _, turn := range read.Thread.Turns {
 		for _, item := range turn.Items {
 			provenance := item.ConversationProvenance
-			if item.Position == nil || (b.speechCursor != nil && appitempaging.ComparePosition(*item.Position, *b.speechCursor) <= 0) || provenance == nil || provenance.SourceItemID != item.ID || strings.TrimSpace(item.Text) == "" || !appwire.ConversationOutputEligible(b.provenance, provenance) {
+			if item.Position == nil || (b.speechCursor != nil && appitempaging.ComparePosition(*item.Position, *b.speechCursor) <= 0) || provenance == nil || provenance.SourceItemID != item.ID || !appwire.ConversationOutputEligible(b.provenance, provenance) {
+				continue
+			}
+			item.Text = voiceSpeechText(item, read.Thread.Evener.PendingAsk, b.binding.InstanceID)
+			if strings.TrimSpace(item.Text) == "" {
 				continue
 			}
 			b.speechCursor = appwire.ClonePointer(item.Position)

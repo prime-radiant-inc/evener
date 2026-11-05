@@ -40,11 +40,20 @@ choose a target session or execute manager tools.
 
 ## Speech and interruption
 
-Speech comes from newly committed public `communicate` items. The hub compares
-that item's recorded originating request and consumed-input frontier with the
+Speech comes from newly committed public `communicate` items or successful,
+still-pending `ask_user` items. The hub compares each item's recorded originating
+request and consumed-input frontier with the
 live session's authoritative provenance. It never assigns current provenance to
 an old reply. Arm starts after existing history, without reading backlog aloud.
 The transcript remains the authority even when speech is suppressed or stopped.
+
+Question speech uses the successful executor's canonical public state, including
+the full ordered questions and options. The current pending owner must name the
+same execution and call. Original tool arguments, navigation previews and legacy
+records without canonical state cannot substitute for that source. See
+[session questions](session-questions.md) for persistence and compaction ownership.
+Voice answers remain ordinary, unchanged free-text input. The runtime resolves
+its current pending batch through normal admission and idempotent retries.
 
 A `SpeechDelivery` records its canonical source, generation, generated transcript
 and per-item generated, queued and played sample counts. Generated audio is not
@@ -84,14 +93,15 @@ replacement instances keep unresolved text in the journal for explicit recovery.
 
 Voice controls are native iOS controls; browser and ordinary text input retain
 their existing owners. The native module exposes Talk and Stop speaking. Wake
-recognition is unavailable until a shipping detector is qualified. Spoken
-`ask_user` questions require canonical successful question state and exact pending
-call identity; arbitrary tool arguments are never a speech source.
+recognition is unavailable until a shipping detector is qualified. Speech
+presentation evidence is stored, but is not yet attached to the manager's input
+for resolving references such as "the second one."
 
 The real-stack tests in
 [`e2e_voice_test.go`](../../cmd/evener-hub/e2e_voice_test.go),
 [`e2e_voice_correction_test.go`](../../cmd/evener-hub/e2e_voice_correction_test.go),
 [`e2e_voice_barge_test.go`](../../cmd/evener-hub/e2e_voice_barge_test.go),
+[`e2e_voice_questions_test.go`](../../cmd/evener-hub/e2e_voice_questions_test.go),
 [`e2e_voice_recovery_test.go`](../../cmd/evener-hub/e2e_voice_recovery_test.go)
 and [`e2e_voice_intent_recovery_test.go`](../../cmd/evener-hub/e2e_voice_intent_recovery_test.go)
 exercise real hub, daemon, journal and transcript paths with scripted external

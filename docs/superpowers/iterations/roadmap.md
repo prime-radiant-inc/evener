@@ -2,7 +2,7 @@
 
 This is an implementation plan for the approved
 [voice design](../specs/2026-11-04-voice-chief-of-staff-design.md), not evidence of
-implemented behavior. All iterations are pending. The manager already exists at
+implemented behavior. The walking skeleton is in progress. The manager already exists at
 `f5e5516c19`; no manager merge, architecture reapproval, browser implementation or
 broad compatibility project is a prerequisite. Status lives here, not in a second
 progress ledger. Source coverage and review evidence live in [evidence.md](evidence.md).
@@ -31,7 +31,10 @@ progress ledger. Source coverage and review evidence live in [evidence.md](evide
 - STORY-0025 (EPIC-004) — Minimize retained audio and disclose provider privacy
 - STORY-0027 (EPIC-004) — Replace voice runtimes without replacing the chief
 - STORY-0032 (EPIC-005) — Prove the first voice-to-chief journey
-**Status:** pending
+**Status:** in progress. The real hub/daemon path covers voice intake, manager
+tools, committed speech, typed and spoken correction, renewal and lost-receipt
+recovery. The complete iOS app compiles. Physical microphone, playback and the
+assembled phone journey remain unverified, so the walking skeleton is not closed.
 
 ```mermaid
 flowchart LR
@@ -193,7 +196,9 @@ remain mandatory and cannot be inferred by adding separate spike results togethe
 
 **Stories:** STORY-0013, STORY-0015, STORY-0017, STORY-0020, STORY-0037
 **Rationale:** Add durable pending-question batches and platform-sourced lower-trust presentation context, then proactive updates and real scoped correction/cancellation. Reuse the first-slice admission/provenance and playback contracts.
-**Status:** pending
+**Status:** in progress. Canonical pending-question persistence and ordinary
+spoken answers are implemented. Presentation evidence is not yet carried into
+manager input. Live reference grounding and locked clarification remain unverified.
 **Impacted scenarios:** JOURNEY-0011, JOURNEY-0012, JOURNEY-0013, JOURNEY-0014, JOURNEY-0022, JOURNEY-0023, SCENARIO-0010, SCENARIO-0026, SCENARIO-0030, SCENARIO-0033, SCENARIO-0053, SCENARIO-0054, SCENARIO-0058
 **Look-ahead check:** Pending question events today precede durable tool output and live helpers do not restore the full batch. Add durable identity/public projection before speech, not a second questionnaire. The complete 13-interaction correction chain is JOURNEY-0013.
 
@@ -201,7 +206,9 @@ remain mandatory and cannot be inferred by adding separate spike results togethe
 
 **Stories:** STORY-0021, STORY-0022, STORY-0023, STORY-0026, STORY-0031, STORY-0033, STORY-0036, STORY-0038
 **Rationale:** Complete journal reconciliation, distinct recovery projection, original-instance fences, voice/socket/provider replacement and physically qualified locked renewal. Preserve earlier work through two conversations and disconnect.
-**Status:** pending
+**Status:** in progress. Scoped grant renewal, playback-fence reconnect and exact
+durable-intent replay are implemented. Recovery projection, remaining fault
+scenarios and physical locked renewal still need qualification.
 **Impacted scenarios:** JOURNEY-0013, JOURNEY-0017, JOURNEY-0018, JOURNEY-0019, JOURNEY-0022, JOURNEY-0023, SCENARIO-0014, SCENARIO-0015, SCENARIO-0019, SCENARIO-0020, SCENARIO-0021, SCENARIO-0022, SCENARIO-0023, SCENARIO-0039, SCENARIO-0040, SCENARIO-0041, SCENARIO-0045, SCENARIO-0046, SCENARIO-0047, SCENARIO-0048, SCENARIO-0050, SCENARIO-0051, SCENARIO-0052, SCENARIO-0053, SCENARIO-0054
 **Look-ahead check:** Use authoritative daemon mutation state and a revisioned control notification for typed input retirement; saved transcript flags alone are insufficient. Refresh before fresh admission. Never blindly replay creation or retarget unresolved work.
 
