@@ -65,6 +65,7 @@ type EnvelopeSampling interface {
 	DetailedStatus() DetailedStatus
 	ClientMutationProjection() (appwire.QueueState, []appwire.PendingMutation)
 	ConversationProvenance() *appwire.ConversationProvenanceState
+	PendingAskCalls() *appwire.PendingAskState
 	TasksWithError() ([]task.Task, error)
 	GoalStatus() (status string, iterations int, ok bool)
 	WorkMillisSnapshot() int64

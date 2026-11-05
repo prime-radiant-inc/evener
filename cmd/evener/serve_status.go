@@ -209,6 +209,10 @@ func (l liveThreadEnvelopeSource) PendingQuestion() *appwire.PendingQuestion {
 	return l.session().PendingQuestion()
 }
 
+func (l liveThreadEnvelopeSource) PendingAskCalls() *appwire.PendingAskState {
+	return l.session().PendingAskCalls()
+}
+
 func (l liveThreadEnvelopeSource) RestingFailure() *appwire.ThreadFailure {
 	return l.session().RestingFailure()
 }

@@ -43,6 +43,7 @@ import (
 // place, so a reader that copies the struct can hand the slices straight out.
 type threadEnvelope struct {
 	ConversationProvenance *appwire.ConversationProvenanceState
+	PendingAsk             *appwire.PendingAskState
 	ContextPressure        float64
 	ContextMetrics         ContextMetrics
 	Detailed               *DetailedStatus
@@ -322,6 +323,8 @@ var facetsByEvent = map[events.EventKind]envelopeFacet{
 func (s *Server) SetThreadEnvelopeSource(src ThreadEnvelopeSource) {
 	s.mu.Lock()
 	s.appEnvelopeSource = src
+	s.appEnvelopeSourceGeneration++
+	s.appEnvelope.PendingAsk = nil
 	s.mu.Unlock()
 }
 
@@ -362,6 +365,7 @@ func (s *Server) refreshThreadEnvelopeForEvent(ev events.SessionEvent) {
 func (s *Server) refreshFacets(facets envelopeFacet) {
 	s.mu.RLock()
 	src := s.appEnvelopeSource
+	sourceGeneration := s.appEnvelopeSourceGeneration
 	threadID := s.appThreadID
 	sourceID := s.appSourceID
 	taskCarrierGeneration := s.appEnvelope.taskCarrierGeneration
@@ -415,6 +419,11 @@ func (s *Server) refreshFacets(facets envelopeFacet) {
 	}
 	if facets&facetAsk != 0 {
 		next.PendingQuestion = src.PendingQuestion()
+		if pending, ok := src.(interface {
+			PendingAskCalls() *appwire.PendingAskState
+		}); ok {
+			next.PendingAsk = appwire.ClonePendingAsk(pending.PendingAskCalls())
+		}
 	}
 	if facets&facetTurnFailure != 0 {
 		next.Failure = src.RestingFailure()
@@ -483,7 +492,7 @@ func (s *Server) refreshFacets(facets envelopeFacet) {
 	// failure count and escalation cards under its successor's identity, with
 	// nothing afterwards to correct it. The fix is NOT to sample under the gate:
 	// that is the I/O this change exists to move off it.
-	if s.appThreadID == threadID && s.appSourceID == sourceID {
+	if s.appThreadID == threadID && s.appSourceID == sourceID && s.appEnvelopeSourceGeneration == sourceGeneration {
 		assignFacets := facets
 		if assignFacets&facetTasks != 0 && s.appEnvelope.taskCarrierGeneration != taskCarrierGeneration {
 			assignFacets &^= facetTasks
@@ -558,6 +567,11 @@ func (e *threadEnvelope) assign(facets envelopeFacet, next threadEnvelope, cwdSt
 	}
 	if facets&facetAsk != 0 {
 		e.PendingQuestion = next.PendingQuestion
+		// Revisions are comparable only within one installed source and instance.
+		// Source replacement clears PendingAsk before accepting its reset counter.
+		if next.PendingAsk != nil && (e.PendingAsk == nil || e.PendingAsk.InstanceID != next.PendingAsk.InstanceID || e.PendingAsk.Revision < next.PendingAsk.Revision) {
+			e.PendingAsk = next.PendingAsk
+		}
 	}
 	if facets&facetTurnFailure != 0 {
 		e.Failure = next.Failure

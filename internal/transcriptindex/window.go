@@ -989,6 +989,10 @@ func (r *reader) item(record itemRecord, turnID string) (appwire.ThreadItem, err
 			item.ID, item.RoundID = openerID, openerRoundID
 		}
 	}
+	if item.ConversationProvenance != nil {
+		item.ConversationProvenance = appwire.ClonePointer(item.ConversationProvenance)
+		item.ConversationProvenance.SourceItemID = item.ID
+	}
 	item.TurnID = turnID
 	position := appwire.ThreadItemPosition{Entry: record.Entry, Item: record.Part}
 	item.Position = &position

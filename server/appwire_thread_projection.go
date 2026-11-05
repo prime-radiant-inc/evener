@@ -109,6 +109,7 @@ func (s *Server) appThreadWithDiagnosticsLocked(diagnostics func(DetailedStatus)
 		Source:        sourceID,
 		Evener: appwire.EvenerThread{
 			ConversationProvenance: appwire.CloneConversationProvenance(envelope.ConversationProvenance),
+			PendingAsk:             appwire.ClonePendingAsk(envelope.PendingAsk),
 			Ref:                    ref,
 			InstanceID:             threadID,
 			Profile:                status.Profile,

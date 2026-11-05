@@ -62,6 +62,7 @@ type TaskAggregate struct {
 
 type EvenerThread struct {
 	ConversationProvenance *ConversationProvenanceState `json:"conversationProvenance,omitempty"`
+	PendingAsk             *PendingAskState             `json:"pendingAsk,omitempty"`
 	// Manager is the session's start-time Manager property, reported by the
 	// session itself. It is not a runtime setting: nothing can turn it on or
 	// off after the session starts.

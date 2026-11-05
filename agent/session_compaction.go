@@ -12,6 +12,7 @@ import (
 	"primeradiant.com/evener/agent/internal/contextmgr"
 	"primeradiant.com/evener/agent/plugin"
 	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/identifier"
 	"primeradiant.com/evener/llm"
 )
@@ -210,6 +211,16 @@ func (s *Session) publishFoldTransaction(snapLen, snapRevision, snapAppends int,
 		s.attentionMu.Unlock()
 		return nil, false, refusal
 	}
+	var pendingAskTail []schema.Turn
+	if commit.stagedCompactionCount() > 0 {
+		var err error
+		pendingAskTail, err = s.pendingAskReplayTailLocked()
+		if err != nil {
+			s.attentionMu.Unlock()
+			s.emit(bareWarningDataFromError("preserve pending ask during compaction", err))
+			return nil, false, err
+		}
+	}
 	// A fold may summarize away the turn behind a pending attention item.
 	// Attention turns are not folded content: the item stays pending until a
 	// turn presents it, and a turn that cannot see it would never consume it.
@@ -276,10 +287,17 @@ func (s *Session) publishFoldTransaction(snapLen, snapRevision, snapAppends int,
 	// the same to a stale snapshot's start.
 	tailStart := snapAppends - s.persistedAppendLogBase
 	tailStart = max(0, min(tailStart, len(s.persistedAppendLog)))
-	rewriteTail := make([]schema.Turn, 0, len(s.persistedAppendLog)-tailStart)
+	rewriteTail := pendingAskTail
+	replayedOrdinals := make(map[uint64]bool, len(pendingAskTail))
+	for _, turn := range pendingAskTail {
+		replayedOrdinals[*turn.OriginalOrdinal] = true
+	}
 	for _, persisted := range s.persistedAppendLog[tailStart:] {
 		if persisted.Kind == "" {
 			continue // a tombstone: its write recorded nothing, so nothing re-appends
+		}
+		if persisted.OriginalOrdinal != nil && replayedOrdinals[*persisted.OriginalOrdinal] {
+			continue
 		}
 		rewriteTail = append(rewriteTail, persisted)
 	}
@@ -330,7 +348,11 @@ func (s *Session) publishFoldTransaction(snapLen, snapRevision, snapAppends int,
 	// fold's marker would make the anchored read return the pair twice.
 	if markerLanded {
 		for _, turn := range rewriteTail {
-			if err := s.writeTranscriptDurableLocked(turn); err != nil {
+			place := transcript.PlaceSession
+			if turn.OriginalOrdinal != nil && replayedOrdinals[*turn.OriginalOrdinal] {
+				place = transcript.PlaceVerbatim
+			}
+			if _, err := s.recordTranscriptLocked(turn, transcript.DoorDurable, place); err != nil {
 				mergedTailWriteErrs = append(mergedTailWriteErrs, err)
 			}
 		}
@@ -1011,7 +1033,10 @@ func (s *Session) flushSteeringTurnRecords(records []steeringTurnRecord) {
 
 // buildCompactionMeta gathers session-level metadata for enriching compaction summaries.
 func (s *Session) buildCompactionMeta() contextmgr.CompactionMeta {
-	meta := contextmgr.CompactionMeta{}
+	meta := contextmgr.CompactionMeta{PendingAskTurnIDs: s.pendingAskTurnIDs()}
+	for _, call := range s.PendingAskCalls().Calls {
+		meta.PendingAskCallIDs = append(meta.PendingAskCallIDs, call.CallID)
+	}
 
 	// Session id — only populated for persistent sessions (stateDir set), where transcript tools are available.
 	if s.stateDir != "" {
