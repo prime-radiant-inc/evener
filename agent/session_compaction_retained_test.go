@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"reflect"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -379,11 +380,8 @@ func checkRetainedProviderOrder(t *testing.T, s *Session, want []string) {
 				if part.Kind != llm.ContentText {
 					continue
 				}
-				for _, text := range want {
-					if part.Text == text {
-						got = append(got, part.Text)
-						break
-					}
+				if slices.Contains(want, part.Text) {
+					got = append(got, part.Text)
 				}
 			}
 		}
