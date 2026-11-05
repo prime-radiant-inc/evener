@@ -68,7 +68,9 @@ a successful `simctl launch` request alone does not prove the process stayed ali
 head with read-only repository permissions and no persisted checkout credential.
 It uses macOS 26, Xcode 26.6, Node 22.13.1, Ruby 3.3.6, Bundler 2.7.2 and the
 locked CocoaPods 1.16.2. It is separate from TestFlight and has no release secrets
-or publishing step. Existing Linux native/API gates remain required.
+or publishing step. Existing Linux native/API gates remain required. Its policy
+step also proves the bundle verification is real: a copied build whose share
+extension was removed fails verification while the untouched build still passes.
 
 After installing the npm trees and locked gems in a fresh Mac checkout, run:
 
@@ -82,6 +84,11 @@ the committed pod lock. A changed or missing lock, failed resolver, deployment
 install or build, missing extension, or invalid identity/entitlement fails the
 run. A resolver error requires diagnosis of its named SDK-owned roots and
 necessary closure. Never delete the input lock or update every pod.
+When CocoaPods refuses the committed lock because its own local development
+pods changed version references, the runner unlocks exactly those named local
+pods in a single `pod update --no-repo-update`; registry pins stay locked. The
+result is still compared against the committed lock, so the candidate and its
+diff remain reviewable failure evidence.
 
 Review `Podfile.lock.candidate` and `Podfile.lock.diff` with `build-identity.json`.
 Match its `sourceRevision` and `npmLockSha256` to the tested branch before applying
@@ -91,7 +98,11 @@ and embedded-extension build pass. The runner never commits a lock itself.
 
 The build uses an available iPhone runtime/device type discovered through
 `simctl`, an owned disposable simulator, normal simulator signing, and Release's
-embedded Metro bundle. Output includes `DerivedData`, structured build identity
+embedded Metro bundle. Simulator builds embed the entitlements in the binary's
+`__TEXT,__entitlements` section and leave the ad-hoc signature's entitlement
+blob empty, so an empty `codesign --display` on a simulator build does not mean
+the app group is missing; the runner reads both locations. Output includes
+`DerivedData`, structured build identity
 and command logs. The simulator is deleted before exit; its recorded ID and app
 path are not permission to reuse an older artifact for a later installed-app
 test. Public CI artifacts enumerate diagnostics rather than uploading all state.

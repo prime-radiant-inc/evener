@@ -305,7 +305,9 @@ then builds Release and inspects the signed host and embedded share extension.
 It discovers and deletes only its own iPhone simulator. Output must not exist;
 diagnostics include source revision, npm/pod digests, tool identities, the pod
 candidate/diff and `DerivedData`. A changed lock fails and requires review, never
-an automatic source update. Linux refuses before generation.
+an automatic source update. When CocoaPods refuses the committed lock because
+its local development pods changed, the runner unlocks only those pods to
+produce the reviewable candidate and diff. Linux refuses before generation.
 
 The separate `iOS qualification` workflow runs this path on native pull requests
 without release credentials. This command currently proves only the build and
