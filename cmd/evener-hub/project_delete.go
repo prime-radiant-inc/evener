@@ -452,6 +452,20 @@ func (s *WebServer) acquireProjectDeletionOwnership(
 			return nil, &projectDeletionOwnershipError{ThreadID: target.ThreadID, Live: live, Err: ownershipErr}
 		}
 		stateDir := s.projectDeletionStateDir(target.StateProjectID, record.ProjectID, target.ThreadID, stateDirs)
+		missingHistory := stateDirs[target.ThreadID] == "" && target.StateProjectID == "" && record.ProjectID == ""
+		deleted := false
+		if missingHistory {
+			var err error
+			stateDir, deleted, err = s.missingSessionDeletionStateDir(target.ThreadID)
+			if err != nil {
+				release()
+				return nil, &projectDeletionOwnershipError{ThreadID: target.ThreadID, Err: err}
+			}
+			if stateDir == "" {
+				// No metadata or artifacts remain anywhere the index owns.
+				continue
+			}
+		}
 		if stateDir == "" {
 			release()
 			return nil, &projectDeletionOwnershipError{
@@ -471,8 +485,52 @@ func (s *WebServer) acquireProjectDeletionOwnership(
 			return nil, &projectDeletionOwnershipError{ThreadID: target.ThreadID, Err: err}
 		}
 		owners = append(owners, owner)
+		if missingHistory {
+			if !deleted {
+				release()
+				return nil, &projectDeletionOwnershipError{ThreadID: target.ThreadID, Err: errors.New("session artifacts remain without a deletion tombstone")}
+			}
+			stateDirs[target.ThreadID] = stateDir
+		}
 	}
 	return release, nil
+}
+
+// missingSessionDeletionStateDir distinguishes a completed deletion from lost
+// metadata using the existing tombstone. The index's configured roots, not an
+// empty project ID, locate the API-log reservation even before metadata exists.
+func (s *WebServer) missingSessionDeletionStateDir(threadID string) (string, bool, error) {
+	if s.cfg.Past == nil || !s.cfg.Past.ConfirmAbsent(threadID) {
+		return "", false, errors.New("session metadata absence is not confirmed")
+	}
+	projects, err := filepath.Glob(s.cfg.Past.StateGlob())
+	if err != nil {
+		return "", false, err
+	}
+	var stateDir string
+	var deleted bool
+	for _, project := range projects {
+		entries, err := os.ReadDir(schema.SessionsDir(project))
+		if os.IsNotExist(err) {
+			continue
+		}
+		if err != nil {
+			return "", false, err
+		}
+		for _, entry := range entries {
+			if entry.Name() != threadID && !strings.HasPrefix(entry.Name(), threadID+".") {
+				continue
+			}
+			if stateDir != "" && stateDir != project {
+				return "", false, errors.New("session artifacts span multiple state directories")
+			}
+			stateDir = project
+			if entry.Name() == threadID+schema.SessionMetaTombstoneSuffix {
+				deleted = true
+			}
+		}
+	}
+	return stateDir, deleted, nil
 }
 
 // cleanupProjectDeletionTargetAndDecisions removes one target's artifacts via
