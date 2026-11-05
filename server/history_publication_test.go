@@ -5,10 +5,124 @@ import (
 	"testing"
 
 	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/internal/transcriptindex"
 	"primeradiant.com/evener/llm"
 )
+
+func TestHistoryPublicationWiringOrder(t *testing.T) {
+	for _, order := range []string{"wire-first", "identity-first"} {
+		t.Run(order, func(t *testing.T) {
+			sess := newMutationReplaySession(t)
+			s := NewServer(ServerConfig{})
+			t.Cleanup(s.Close)
+			identity, err := PrepareAppIdentityForRef("local", sess.ID(), "local:"+sess.ID(), sess.TranscriptPath())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if order == "wire-first" {
+				s.WireTranscriptHistory(sess)
+			}
+			s.ReplaceAppIdentity(identity.WithBootGeneration("7@late-wire"), nil)
+			h := s.appHistoryForID(sess.ID())
+			if order == "identity-first" {
+				s.WireTranscriptHistory(sess)
+			}
+			if h == nil || s.appHistoryForID(sess.ID()) != h {
+				t.Fatal("wiring lost installed history identity")
+			}
+			registered, _ := s.appHistories.publications.Load(sess.ID())
+			if registered != h.historyPublication {
+				t.Error("wired producer and installed history have different holders")
+			}
+			h.serial.Lock()
+			defer h.serial.Unlock()
+			cursor := s.appNotifier.CurrentSequence()
+			w, _, err := transcript.OpenWriterForSession(sess.TranscriptPath(), sess.ID())
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer w.Close()
+			if err := w.Append(schema.NewTurn(schema.TurnUserInput, llm.User("late-wire-input-251"))); err != nil {
+				t.Fatal(err)
+			}
+			if got, _ := h.RecordedLength(); got != w.RecordedLength() {
+				t.Errorf("wired raw hook lost entry: got %d want %d", got, w.RecordedLength())
+			}
+			boundary := w.RecordedLength()
+			if err := w.Append(publicationDemandTurn(sess.ID(), "late-wire-output-252")); err != nil {
+				t.Fatal(err)
+			}
+			if got, _ := h.RecordedLength(); got != boundary {
+				t.Errorf("wired history exposed unpaired output: got %d want %d", got, boundary)
+			}
+			state := &appwire.ConversationProvenanceState{Version: 1, InstanceID: sess.ID(), Revision: sess.ConversationProvenance().Revision + 1, Authoritative: true,
+				AdmittedInputs: []string{"publication-input"}, Frontiers: []appwire.ConversationFrontier{{ID: "late-wire-output-252", AddedInputs: []string{"publication-input"}}}}
+			registered.(*historyPublication).complete(w.RecordedLength(), state)
+			if got, _ := h.RecordedLength(); got != w.RecordedLength() || h.conversationProvenance() != state {
+				t.Error("wired publication did not pair bytes with the exact snapshot")
+			}
+			h.step()
+			if updates := s.appNotifier.ReplayAfter(cursor, ""); len(updates) == 0 {
+				t.Fatal("wired history did not notify readiness observers")
+			}
+		})
+	}
+}
+
+// Output demand, not input adoption alone, must stay hidden until paired publication.
+func publicationDemandTurn(instance, text string) schema.Turn {
+	turn := schema.NewTurn(schema.TurnAssistant, llm.Assistant(text))
+	turn.ConversationFrontier = &schema.ConversationFrontier{ID: text, AddedInputs: []string{"publication-input"}}
+	turn.ConversationProvenance = &schema.ConversationOutputProvenance{Version: 1, InstanceID: instance, FrontierID: text, RequestID: text}
+	return turn
+}
+
+func TestHistoryPublicationStagedDemandBoundary(t *testing.T) {
+	for _, demand := range []string{"frontier", "provenance", "both"} {
+		t.Run(demand, func(t *testing.T) {
+			hx := newHistoryHarness(t)
+			h := hx.history
+			h.serial.Lock()
+			defer h.serial.Unlock()
+			h.mu.Lock()
+			h.paired = true
+			h.completeLength = hx.writer.RecordedLength()
+			h.mu.Unlock()
+			input := schema.NewTurn(schema.TurnUserInput, llm.User("side-writer-input-241"))
+			input.ConversationInputIDs = []string{"publication-input"}
+			safe := hx.recordTurn(t, input)
+			if got, _ := h.RecordedLength(); got != safe.Offset+safe.Length {
+				t.Errorf("non-demand input requires adoption: got %d want %d", got, safe.Offset+safe.Length)
+			}
+			turn := publicationDemandTurn(h.threadID, "pending-output-242")
+			switch demand {
+			case "frontier":
+				turn.ConversationProvenance = nil
+			case "provenance":
+				turn.ConversationFrontier = nil
+			}
+			pending := hx.recordTurn(t, turn)
+			if got, _ := h.RecordedLength(); got != pending.Offset {
+				t.Errorf("demand boundary: got %d want %d", got, pending.Offset)
+			}
+			later := hx.record(t, "later-side-writer-input-243")
+			if got, _ := h.RecordedLength(); got != pending.Offset {
+				t.Errorf("later non-demand input jumped pending output: got %d want %d", got, pending.Offset)
+			}
+			state := &appwire.ConversationProvenanceState{Version: 1, InstanceID: h.threadID, Revision: 1, Authoritative: true,
+				AdmittedInputs: []string{"publication-input"}, Frontiers: []appwire.ConversationFrontier{{ID: "pending-output-242", AddedInputs: []string{"publication-input"}}}}
+			h.complete(pending.Offset+pending.Length, state)
+			if got, _ := h.RecordedLength(); got != later.Offset+later.Length {
+				t.Errorf("publication failed to release safe suffix: got %d want %d", got, later.Offset+later.Length)
+			}
+			if h.conversationProvenance() != state {
+				t.Fatal("publication did not reuse exact producer snapshot")
+			}
+		})
+	}
+}
 
 func TestHistoryPublicationCaptureAndNotificationIdentity(t *testing.T) {
 	s := NewServer(ServerConfig{})
@@ -43,7 +157,7 @@ func TestHistoryPublicationFailedHistoryKeepsSafeSuffix(t *testing.T) {
 	h.completeLength = hx.writer.RecordedLength()
 	h.failed = &transcriptindex.EntryError{Ordinal: 1, Err: errors.New("projection failed")}
 	h.mu.Unlock()
-	staged := hx.record(t, "failed-history-input-194")
+	staged := hx.recordTurn(t, publicationDemandTurn(h.threadID, "failed-history-input-194"))
 	later := hx.recordTurn(t, schema.NewTurn(schema.TurnHookCompleted, llm.User("safe-suffix-195")))
 	if got, _ := h.RecordedLength(); got > staged.Offset {
 		t.Fatal("failed history exposed unfinished prefix")
@@ -65,7 +179,7 @@ func TestHistoryPublicationSideWriteWithoutPendingFrontier(t *testing.T) {
 	if got, _ := h.RecordedLength(); got != rec.Offset+rec.Length {
 		t.Fatalf("non-provenance side-write hidden: %d < %d", got, rec.Offset+rec.Length)
 	}
-	staged := hx.record(t, "unfinished-input-180")
+	staged := hx.recordTurn(t, publicationDemandTurn(h.threadID, "unfinished-input-180"))
 	later := hx.recordTurn(t, schema.NewTurn(schema.TurnHookCompleted, llm.User("later-side-write-181")))
 	if got, _ := h.RecordedLength(); got > staged.Offset {
 		t.Fatal("side-write bypassed unfinished provenance prefix")
@@ -111,7 +225,7 @@ func TestHistoryPublicationOverflowKeepsCompletedBoundary(t *testing.T) {
 	hx.awaitPublished(t, first.Offset+first.Length)
 	h.serial.Lock()
 	defer h.serial.Unlock()
-	raw := hx.record(t, "staged-172")
+	raw := hx.recordTurn(t, publicationDemandTurn(h.threadID, "staged-172"))
 	hx.record(t, "later-173")
 	last := hx.record(t, "later-174")
 	other, err := transcriptindex.Open(h.path, transcriptindex.DirFor(h.path))

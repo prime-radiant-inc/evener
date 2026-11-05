@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"errors"
 	"slices"
-	"strings"
 	"testing"
 
 	"github.com/spf13/afero"
@@ -36,7 +35,7 @@ func TestTranscriptPublicationRetainedUnsyncedRecord(t *testing.T) {
 	rec, err := s.recordTranscriptLocked(turn, transcript.DoorBuffered, transcript.PlaceSession)
 	s.attentionMu.Unlock()
 	warnings := w.DrainWarnings()
-	if len(warnings) != 1 || !strings.HasPrefix(warnings[0].Error(), "sync transcript entry") {
+	if len(warnings) != 1 || !errors.Is(warnings[0], fault.ErrInjected) {
 		t.Fatalf("fixture did not trigger retained fsync failure: %v", warnings)
 	}
 	if err != nil || !rec.Recorded || boundary != rec.Offset+rec.Length || state == nil || !slices.Contains(state.AdmittedInputs, "input-231") {

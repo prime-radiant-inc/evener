@@ -12,7 +12,6 @@ import (
 	"sync"
 	"sync/atomic"
 
-	"primeradiant.com/evener/agent"
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/appwire"
@@ -261,11 +260,7 @@ func (h *threadHistory) recorded(rec transcript.Record) {
 	}
 	h.mu.Lock()
 	if h.paired && !h.closed {
-		if agent.ConversationTurnAffectsProvenance(rec.Turn) {
-			h.stagedEnd = max(h.stagedEnd, rec.Offset+rec.Length)
-		} else if h.stagedEnd <= h.completeLength {
-			h.completeLength = max(h.completeLength, rec.Offset+rec.Length)
-		}
+		h.stageLocked(rec)
 	}
 	if (h.failed != nil && !h.recovering) || h.closed {
 		if h.paired && !h.closed {
