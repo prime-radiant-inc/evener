@@ -72,7 +72,7 @@ final class EvenerQualificationUITests: XCTestCase {
 		attach(app, "fixture-response")
 
 		let composer = composerField(app)
-		composer.tap()
+		tap(composer, "the composer never appeared")
 		composer.typeText(Self.draft)
 
 		// Reactivation keeps the hub: background, return, and the journey is
@@ -97,14 +97,12 @@ final class EvenerQualificationUITests: XCTestCase {
 		// The authenticated follow-up: the recovered credentials carry a new
 		// turn through the real hub, and its response renders. The baseline
 		// is sampled before sending, so the wait compares counts honestly.
-		recovered.tap()
+		tap(recovered, "the composer never appeared")
 		recovered.typeText("qualify the readback")
-		let send = app.buttons["Send"]
-		XCTAssertTrue(send.waitForExistence(timeout: tripwire), "Send never became available")
 		let followUp = app.descendants(matching: .any)
 			.matching(NSPredicate(format: "label CONTAINS %@", "QUALIFICATION_code_c9"))
 		let baseline = followUp.count
-		send.tap()
+		tap(app.buttons["Send"], "Send never became available")
 		let deadline = Date().addingTimeInterval(tripwire)
 		while Date() < deadline && followUp.count <= baseline {
 			Thread.sleep(forTimeInterval: 0.25)
@@ -147,7 +145,7 @@ final class EvenerQualificationUITests: XCTestCase {
 		)
 		let way = app.buttons["add-hub:address"]
 		if way.waitForExistence(timeout: absenceBound) {
-			way.tap()
+			tap(way, "the first-run address way disappeared before its tap")
 			XCTAssertTrue(
 				app.textFields["hub-address"].waitForExistence(timeout: tripwire),
 				"ordinary controls stopped working after scheme activation"
@@ -167,9 +165,7 @@ final class EvenerQualificationUITests: XCTestCase {
 	func testSheetGestureKeepsControlsUsable() {
 		let app = XCUIApplication()
 		onboardIfNeeded(app)
-		let newSession = app.buttons["new-session"]
-		XCTAssertTrue(newSession.waitForExistence(timeout: tripwire), "the board never appeared")
-		newSession.tap()
+		tap(app.buttons["new-session"], "the board never appeared")
 		let prompt = app.descendants(matching: .any).matching(identifier: "session-prompt").firstMatch
 		XCTAssertTrue(prompt.waitForExistence(timeout: tripwire), "the New session sheet never opened")
 
@@ -177,9 +173,7 @@ final class EvenerQualificationUITests: XCTestCase {
 		sheet.swipeUp()
 		sheet.swipeDown()
 
-		let cancel = app.buttons["Cancel"]
-		XCTAssertTrue(cancel.waitForExistence(timeout: tripwire), "the sheet's Cancel vanished after swipes")
-		cancel.tap()
+		tap(app.buttons["Cancel"], "the sheet's Cancel vanished after swipes")
 		XCTAssertTrue(
 			app.buttons["new-session"].waitForExistence(timeout: tripwire),
 			"the sheet's Cancel stopped working after swipes"
@@ -204,21 +198,15 @@ final class EvenerQualificationUITests: XCTestCase {
 		app.launch()
 		let way = app.buttons["add-hub:address"]
 		if way.waitForExistence(timeout: tripwire) {
-			way.tap()
+			tap(way, "the first-run address way disappeared before its tap")
 			let address = app.textFields["hub-address"]
-			XCTAssertTrue(address.waitForExistence(timeout: tripwire), "the address field never appeared")
-			address.tap()
+			tap(address, "the address field never appeared")
 			address.typeText(hubOrigin)
 			let token = app.secureTextFields["hub-token"]
-			XCTAssertTrue(token.waitForExistence(timeout: tripwire), "the token field never appeared")
-			token.tap()
+			tap(token, "the token field never appeared")
 			token.typeText(hubToken)
-			let proceed = app.buttons["hub-continue"]
-			XCTAssertTrue(proceed.waitForExistence(timeout: tripwire), "the Continue row never appeared")
-			proceed.tap()
-			let connect = app.buttons["Connect"]
-			XCTAssertTrue(connect.waitForExistence(timeout: tripwire), "the review step never appeared")
-			connect.tap()
+			tap(app.buttons["hub-continue"], "the Continue row never appeared")
+			tap(app.buttons["Connect"], "the review step never appeared")
 		}
 		XCTAssertTrue(
 			app.buttons["new-session"].waitForExistence(timeout: tripwire),
@@ -231,40 +219,44 @@ final class EvenerQualificationUITests: XCTestCase {
 	/// a fresh hub lists no recent projects, so the workspace is reached by
 	/// browsing — then wait for Start to unlock and start.
 	private func startSession(_ app: XCUIApplication, prompt promptText: String) {
-		let newSession = app.buttons["new-session"]
-		XCTAssertTrue(newSession.waitForExistence(timeout: tripwire))
-		newSession.tap()
+		tap(app.buttons["new-session"], "the board's compose button never appeared")
 		let prompt = app.descendants(matching: .any).matching(identifier: "session-prompt").firstMatch
-		XCTAssertTrue(prompt.waitForExistence(timeout: tripwire), "the New session sheet never opened")
-		prompt.tap()
+		tap(prompt, "the New session sheet never opened")
 		prompt.typeText(promptText)
 
 		let browse = app.buttons
 			.matching(NSPredicate(format: "label BEGINSWITH %@", "Browse folders")).firstMatch
-		XCTAssertTrue(browse.waitForExistence(timeout: tripwire), "the project picker never offered browsing")
-		browse.tap()
+		tap(browse, "the project picker never offered browsing")
 
 		// The browse starts in the hub host's home; walk up to the filesystem
 		// root, then down the workspace's own segments.
 		let up = app.buttons["Up one folder"]
 		let ups = hubHome.split(separator: "/").filter { !$0.isEmpty }.count
 		for _ in 0..<ups {
-			XCTAssertTrue(up.waitForExistence(timeout: tripwire), "the browse never offered going up")
-			up.tap()
+			tap(up, "the browse never offered going up")
 		}
 		for segment in workspace.split(separator: "/").filter({ !$0.isEmpty }) {
 			let folder = app.buttons[String(segment)]
-			XCTAssertTrue(folder.waitForExistence(timeout: tripwire), "the browse never listed \(segment)")
-			folder.tap()
+			tap(folder, "the browse never listed \(segment)")
 		}
-		let use = app.buttons["Use this folder"]
-		XCTAssertTrue(use.waitForExistence(timeout: tripwire), "the browse never offered the workspace")
-		use.tap()
+		tap(app.buttons["Use this folder"], "the browse never offered the workspace")
 
 		let start = app.buttons["Start"]
 		XCTAssertTrue(start.waitForExistence(timeout: tripwire), "Start never appeared")
 		waitForEnabled(start)
-		start.tap()
+		tap(start, "Start never appeared")
+	}
+
+	/// Taps only once the control has a real frame. A control that registers
+	/// in the accessibility tree during a screen push exists before layout
+	/// gives it a hit point; a tap at that moment computes {-1, -1} and lands
+	/// nowhere, and the screen behind it never changes. Hittability is the
+	/// tap's own readiness test, and it settles the moment the screen does.
+	private func tap(_ element: XCUIElement, _ what: String) {
+		XCTAssertTrue(element.waitForExistence(timeout: tripwire), what)
+		let ready = expectation(for: NSPredicate(format: "isHittable == true"), evaluatedWith: element)
+		wait(for: [ready], timeout: tripwire)
+		element.tap()
 	}
 
 	/// Waits for a control to become enabled using XCTest's own expectation
