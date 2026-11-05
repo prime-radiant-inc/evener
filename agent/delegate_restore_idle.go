@@ -136,6 +136,7 @@ func (runtime delegateRuntime) restoreIdle(started delegateStartCommit) (*subage
 			forwardJobEvent:               s.jobManager.forwardEvent,
 			descendantEvent:               s.cfg.spawn.descendantEvent,
 			descendantRecorded:            s.cfg.spawn.descendantRecorded,
+			descendantPublication:         s.cfg.spawn.descendantPublication,
 			treeCounter:                   s.cfg.spawn.treeCounter,
 			driveCounter:                  s.cfg.spawn.driveCounter,
 			parentSteer:                   s.SteerWithProvenance,

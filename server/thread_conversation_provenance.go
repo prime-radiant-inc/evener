@@ -22,6 +22,12 @@ func (s *Server) commitConversationProvenance(threadID, sourceID, ref string, ne
 		if s.appThreadID != threadID || s.appSourceID != sourceID {
 			return nil
 		}
+		if h := s.appHistories.get(threadID); h != nil {
+			h.mu.Lock()
+			h.adoptLocked(next)
+			next = h.provenance
+			h.mu.Unlock()
+		}
 		old := s.appEnvelope.ConversationProvenance
 		if old != nil && old.InstanceID == next.InstanceID && old.Revision >= next.Revision {
 			return nil

@@ -16,10 +16,11 @@ type threadHistories struct {
 	// mu serializes changes to the registry. A lookup (get) takes no lock:
 	// recorded-entry hooks look histories up under a transcript append lock,
 	// where only a history's queue mutex may be taken.
-	mu      sync.Mutex
-	cache   *transcriptindex.Cache
-	budget  *appoverlay.Budget
-	threads sync.Map // thread id -> *threadHistory
+	mu           sync.Mutex
+	cache        *transcriptindex.Cache
+	budget       *appoverlay.Budget
+	threads      sync.Map // thread id -> *threadHistory
+	publications sync.Map // thread id -> producer-bound *historyPublication
 	// root is the served root thread, the owner of every descendant history
 	// ensureDescendant admits; detachExcept sets it.
 	root string
@@ -110,13 +111,24 @@ func (r *threadHistories) ensureLocked(
 	cost func(model string) *registry.Cost,
 ) *threadHistory {
 	if h := r.get(threadID); h != nil {
-		return h
+		if p, ok := r.publications.Load(threadID); !ok || p == h.historyPublication {
+			return h
+		}
+		// A new producer with the same persisted instance ID owns a new
+		// history lifetime. Old closures remain bound to the retired owner.
+		r.detachLocked(threadID)
+		go closeHistories([]*threadHistory{h})
 	}
 	if r.closing {
 		return nil
 	}
 	epoch = max(epoch, r.lastEpoch[threadID])
+	var publication *historyPublication
+	if p, ok := r.publications.Load(threadID); ok {
+		publication = p.(*historyPublication)
+	}
 	h := newThreadHistory(threadHistoryConfig{
+		publication:    publication,
 		threadID:       threadID,
 		ref:            ref,
 		path:           path,
@@ -175,6 +187,7 @@ func (r *threadHistories) detachLocked(threadID string) *threadHistory {
 	}
 	h := loaded.(*threadHistory)
 	r.lastEpoch[threadID] = max(r.lastEpoch[threadID], h.retire())
+	r.publications.CompareAndDelete(threadID, h.historyPublication)
 	return h
 }
 

@@ -654,6 +654,9 @@ type Session struct {
 	// transcriptRecorded is the recorded-entry hook installed on every writer
 	// the session attaches; guarded by mu. See SetTranscriptRecordedFunc.
 	transcriptRecorded func(transcript.Record)
+	// transcriptPublished runs after adoption, outside mu and the append lock,
+	// while attentionMu still excludes the next canonical mutation.
+	transcriptPublished func(int64, *appwire.ConversationProvenanceState)
 	// recoveredTurnClaimReturned bounds the recovered turn's give-back to ONE
 	// in-process retry. The first failure of the inherited turn before its prompt
 	// is recorded hands its claim back, and the runner wake drives the immediate
@@ -2759,6 +2762,9 @@ func (s *Session) recordTranscriptLocked(t schema.Turn, door transcript.Door, pl
 	s.mu.Lock()
 	s.noteRecordedLocked(rec)
 	s.mu.Unlock()
+	if rec.Recorded {
+		s.publishTranscriptLocked(rec.Offset + rec.Length)
+	}
 	return rec, err
 }
 
@@ -2865,6 +2871,8 @@ func (s *Session) holdTurnUntilTranscriptReady(t schema.Turn) bool {
 // writer could not be opened, and marking those ready is what stops their turns
 // accumulating for the session's lifetime.
 func (s *Session) attachTranscript(w *transcript.Writer) {
+	s.attentionMu.Lock()
+	defer s.attentionMu.Unlock()
 	s.mu.Lock()
 	s.setTranscriptLocked(w)
 	s.transcriptReady = true
@@ -2872,7 +2880,11 @@ func (s *Session) attachTranscript(w *transcript.Writer) {
 	s.pendingTranscriptTurns = nil
 	s.mu.Unlock()
 	for _, t := range held {
-		if _, err := w.Record(t, transcript.RecordOptions{Door: transcript.DoorBuffered, Place: transcript.PlaceSession}); err != nil {
+		rec, err := w.Record(t, transcript.RecordOptions{Door: transcript.DoorBuffered, Place: transcript.PlaceSession})
+		s.mu.Lock()
+		s.noteRecordedLocked(rec)
+		s.mu.Unlock()
+		if err != nil {
 			// Buffered, not emitted directly (kata et0x): attachTranscript always
 			// runs before its caller's emitSessionStartEnvelope, so SESSION_START
 			// has not fired yet — same reasoning as the NewSession transcript-
@@ -2880,6 +2892,7 @@ func (s *Session) attachTranscript(w *transcript.Writer) {
 			s.pendingTranscriptWarnings = append(s.pendingTranscriptWarnings, events.WarningData{Message: fmt.Sprintf("transcript write failed: %v", err)})
 		}
 	}
+	s.publishTranscriptLocked(w.RecordedLength())
 	// A replayed append whose whole line landed but did not sync returned nil
 	// and queued its diagnostic on the writer; buffer it the same way, since
 	// SESSION_START has not fired yet.
