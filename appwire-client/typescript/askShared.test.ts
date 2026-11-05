@@ -158,6 +158,34 @@ test("shorthand with no usable options stays unavailable (Go rejects it at dispa
   expect(parseAskUserQuestions(item({ argumentsJSON: shorthand }))).toBeUndefined();
 });
 
+// Go's wrap drops a non-string or empty header (normalizeAskUserArgs's type
+// assertion), so such a call is accepted and live with the default header.
+// The raw object must not pass through to parseQuestion, whose shape check
+// treats a present-but-non-string header as a malformed question - the
+// recorded call would read back as unavailable and the dock would render
+// nothing again.
+test("shorthand with a null header parses into the default header", () => {
+  const shorthand = JSON.stringify({
+    question: "Q?",
+    options: [{ label: "A", detail: "a" }],
+    header: null,
+  });
+  expect(parseAskUserQuestions(item({ argumentsJSON: shorthand }))).toEqual([
+    expect.objectContaining({ header: "Question 1", question: "Q?" }),
+  ]);
+});
+
+test("shorthand with an empty header parses into the default header (Go drops it when wrapping)", () => {
+  const shorthand = JSON.stringify({
+    question: "Q?",
+    options: [{ label: "A", detail: "a" }],
+    header: "",
+  });
+  expect(parseAskUserQuestions(item({ argumentsJSON: shorthand }))).toEqual([
+    expect.objectContaining({ header: "Question 1", question: "Q?" }),
+  ]);
+});
+
 test("a questions array stays authoritative when shorthand fields sit beside it", () => {
   // Go rejects a call carrying both forms outright (normalizeAskUserArgs's
   // both-forms case), so this shape only reaches a recorded item as a rejected

@@ -83,7 +83,17 @@ export function parseAskUserQuestions(item: Pick<ItemModel, "argumentsJSON">): A
   const args = parseArgs(item.argumentsJSON);
   let raw: unknown = args.questions;
   if (!Array.isArray(raw) && typeof args.question === "string" && Array.isArray(args.options)) {
-    raw = [args];
+    // Copy the wrapped fields with normalizeAskUserArgs' own rules rather
+    // than passing the raw object through: Go's wrap drops a non-string or
+    // empty header (and empty why/if_unanswered), while parseQuestion's
+    // shape check treats a present-but-non-string header as a malformed
+    // question. A call Go accepted must never read back as unavailable data.
+    const wrapped: Record<string, unknown> = { question: args.question, options: args.options };
+    if (typeof args.header === "string" && args.header !== "") wrapped.header = args.header;
+    if (typeof args.why === "string" && args.why !== "") wrapped.why = args.why;
+    if (typeof args.if_unanswered === "string" && args.if_unanswered !== "") wrapped.if_unanswered = args.if_unanswered;
+    if (args.multi_select === true) wrapped.multi_select = true;
+    raw = [wrapped];
   }
   if (!Array.isArray(raw)) return undefined;
   const questions = raw
