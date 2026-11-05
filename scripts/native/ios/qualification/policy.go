@@ -20,6 +20,30 @@ var (
 	errMacRequired  = errors.New("iOS qualification requires macOS, Xcode, simctl, codesign and CocoaPods")
 )
 
+// generatedProjectFile is the one generated file whose identity is its complete
+// parsed content rather than its bytes: Expo's writer may reformat an unchanged
+// empty PBX dictionary between generations while every object, key, UUID and
+// reference stays identical.
+const generatedProjectFile = "Evener.xcodeproj/project.pbxproj"
+
+// prebuildCommand returns the real Expo prebuild invocation for a phase. The
+// repeat applies the supported update mode to the existing project instead of
+// recreating it with fresh template identifiers.
+func prebuildCommand(phase string) []string {
+	args := []string{"npx", "--no-install", "expo", "prebuild", "--platform", "ios", "--no-install"}
+	if phase == "repeat" {
+		args = append(args, "--no-clean")
+	}
+	return args
+}
+
+// canonicalProjectCommand runs the repository canonicalizer, which parses a
+// generated Xcode project with the real @bacons/xcode parser resolved from the
+// installed native graph and writes its complete sorted-key JSON form.
+func canonicalProjectCommand(script, native, project, canonical string) []string {
+	return []string{"node", script, native, project, canonical}
+}
+
 func checkLock(ctx context.Context, committed, resolved, output string) error {
 	candidate, err := os.ReadFile(resolved)
 	if err != nil {

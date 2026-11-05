@@ -233,9 +233,10 @@ func (r *runner) toolchain(ctx context.Context) error {
 }
 
 func (r *runner) prebuild(ctx context.Context) error {
+	script := filepath.Join(r.root, "scripts", "native", "ios", "qualification", "project-canonicalize.mjs")
 	var first map[string]string
 	for _, phase := range []string{"first", "repeat"} {
-		if _, err := r.commandOutput(ctx, "prebuild-"+phase, false, "npx", "--no-install", "expo", "prebuild", "--platform", "ios", "--no-install"); err != nil {
+		if _, err := r.commandOutput(ctx, "prebuild-"+phase, false, prebuildCommand(phase)...); err != nil {
 			return err
 		}
 		files := make(map[string]string)
@@ -258,16 +259,37 @@ func (r *runner) prebuild(ctx context.Context) error {
 		}); err != nil {
 			return err
 		}
+		identity, err := r.projectIdentity(ctx, phase, script, base)
+		if err != nil {
+			return err
+		}
+		files[generatedProjectFile] = identity
 		if err := r.writeJSON("prebuild-"+phase+".json", files); err != nil {
 			return err
 		}
 		if phase == "first" {
 			first = files
 		} else if !reflect.DeepEqual(first, files) {
-			return errors.New("repeated prebuild changed generated output; compare prebuild-first.json and prebuild-repeat.json")
+			return errors.New("repeated prebuild changed generated output; compare prebuild-first.json, prebuild-repeat.json and prebuild-project-*.json")
 		}
 	}
 	return r.provenanceUnchanged(ctx)
+}
+
+// projectIdentity hashes the canonical parsed form of the generated Xcode
+// project. The canonical JSON is retained as a mismatch diagnostic.
+func (r *runner) projectIdentity(ctx context.Context, phase, script, base string) (string, error) {
+	canonical := filepath.Join(r.output, "prebuild-project-"+phase+".json")
+	args := canonicalProjectCommand(script, r.native, filepath.Join(base, generatedProjectFile), canonical)
+	if _, err := r.commandOutput(ctx, "prebuild-project-"+phase, false, args...); err != nil {
+		return "", err
+	}
+	data, err := os.ReadFile(canonical)
+	if err != nil {
+		return "", err
+	}
+	hash := sha256.Sum256(data)
+	return hex.EncodeToString(hash[:]), nil
 }
 
 func (r *runner) generatedMetadata(ctx context.Context) error {

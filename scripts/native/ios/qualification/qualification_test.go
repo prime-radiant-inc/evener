@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"testing"
 )
 
@@ -221,6 +222,32 @@ func TestLogOnlyCommandDoesNotRetainStdout(t *testing.T) {
 	}
 	if len(output) != 0 {
 		t.Fatalf("log-only command retained %d stdout bytes", len(output))
+	}
+}
+
+func TestRepeatPrebuildUpdatesInsteadOfRecreating(t *testing.T) {
+	t.Parallel()
+	first := prebuildCommand("first")
+	repeat := prebuildCommand("repeat")
+	if !slices.Equal(first[:4], []string{"npx", "--no-install", "expo", "prebuild"}) {
+		t.Fatalf("prebuild must run the real Expo CLI: %v", first)
+	}
+	if slices.Contains(first, "--no-clean") {
+		t.Fatal("the first prebuild must create the project from the committed template")
+	}
+	if !slices.Contains(repeat, "--no-clean") {
+		t.Fatal("the repeat prebuild must apply the supported update mode to the existing project")
+	}
+}
+
+func TestProjectCanonicalizationRunsTheInstalledParser(t *testing.T) {
+	t.Parallel()
+	const script, native, project, canonical = "/repo/scripts/native/ios/qualification/project-canonicalize.mjs",
+		"/repo/mobile-native", "/repo/mobile-native/ios/Evener.xcodeproj/project.pbxproj",
+		"/out/prebuild-project-first.json"
+	want := []string{"node", script, native, project, canonical}
+	if got := canonicalProjectCommand(script, native, project, canonical); !slices.Equal(got, want) {
+		t.Fatalf("canonicalization argv = %v, want %v", got, want)
 	}
 }
 
