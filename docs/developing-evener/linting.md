@@ -84,7 +84,7 @@ separate, larger change — measured at 180 findings across the workspace (99
 modernize, 20 revive, 13 staticcheck, ...) that these files have never been
 held to.
 
-## The `server/appwire_*.go` camelCase regime
+## The AppWire and voice camelCase regimes
 
 `lint-golangci` runs `golangci-lint` across every `FUZZ_GO_MODULES` module —
 not `GO_MODULES` — because the fuzz module's ordinary (untagged) Go needs the
@@ -92,14 +92,25 @@ same linting as everything else even though its fuzz targets run through
 `make fuzz`, not the test gate.
 
 It then runs a second, narrower pass: `golangci-lint` with
-`.golangci-appwire.yml` against `./server/...` only. `server/appwire_*.go`
-carries JSON/TOML struct tags in camelCase, the opposite of every other
-package in the repo, because they mirror the AppWire wire protocol's own
-naming. `tagliatelle`'s casing overrides are per-package, and these files
-share the `server` package with 119 ordinary snake_case tags, so the two
-casing regimes cannot live in one config. `.golangci-appwire.yml` holds the
-camelCase half of the split and explains itself; the root `.golangci.yml`
-holds everything else.
+`.golangci-appwire.yml` against `./server/...`, `./agent`, `./cmd/evener-hub`
+and `./cmd/evener-hub/internal/hubcore`. That config retains only
+`server/appwire_*.go` and the explicitly named voice wire files. These JSON
+tags follow the camelCase AppWire/device contract, including persisted voice
+journal records. TOML tags remain snake_case in both passes.
+
+`tagliatelle`'s casing overrides are per-package, but these packages also
+contain snake_case surfaces. The main `.golangci.yml` delegates only the
+listed hub voice files and the `InputID` projection fields in
+`agent/session_voice_presentation.go`, `session_voice_presentation_test.go`
+and `session_voice_presentation_live_test.go` to the camelCase pass. The live
+test's `EndTurn`, `TargetID` and `CandidateIDs` tool-result fields remain
+checked by the primary snake_case pass. Neither the rest of the hub/agent
+packages nor upstream frames in `voice_realtime.go` change naming regimes.
+
+When changing this split, run both configs and mutation-check a wrong casing
+in each regime, including both shapes in the live presentation test. Restore
+the mutated files exactly before the final clean run. Passing only the main
+config does not prove that the delegated camelCase fields were checked.
 
 ## CI module concurrency
 
@@ -175,7 +186,7 @@ user's global golangci-lint cache or sibling worktrees.
 | `make lint-evenerfuzz` | The compile floor for the //go:build evenerfuzz sources: host go vet and a host tagliatelle-only golangci-lint pass, plus GOOS=linux repeats of both on non-Linux hosts and a GOOS=windows go vet that holds the build-tag discipline the untagged sources get from static-build's cross-vet. See "Why two tagged lint passes exist" in docs/developing-evener/linting.md for the full rationale. | Every evenerfuzz-tagged source across FUZZ_GO_MODULES still compiles for the host, Linux, and Windows and passes its struct-tag casing floor, catching a production signature change that strands a tagged call site, and a Unix-only tagged source that never declared its constraint. | Required CI (via make lint); local pre-merge. ~4s warm across the workspace on Linux; the GOOS=linux pass runs only off Linux, the GOOS=windows vet everywhere. | golangci-lint. Reads .golangci.yml's casing rules, carve-outs, and exclusions via --enable-only tagliatelle. | host, GOOS=linux, or GOOS=windows go vet -tags evenerfuzz fails for any module, or either host or GOOS=linux tagliatelle reports a casing violation. |
 | `make lint-eval` | The compile floor for the //go:build eval sources: host go vet and a host tagliatelle-only golangci-lint pass, plus GOOS=linux repeats of both on non-Linux hosts. | The eval-tagged live-provider suites (context-compaction quality, forced notes) still compile for the host and Linux. | Required CI (via make lint); local pre-merge. ~3.5s warm on Linux; the extra cross-GOOS pass runs only off Linux. | golangci-lint. Covers all of FUZZ_GO_MODULES, since eval sources could land in any module. | host or GOOS=linux go vet -tags eval fails for any module, or either host or GOOS=linux tagliatelle reports a casing violation. |
 | `make lint-internal` | Fail if any exported symbol in the `execsupport`, `agent` (plus its `diagnostic`/`execenv`/`mcpconfig`/`plugin`/`provider`/`schema`/`skill`/`task`/`transcript` subpackages), `llm`, or `llm/registry` libraries names a evener-internal type. | Those libraries stay externally importable — no exported symbol leaks an internal type name. | Required CI (via make lint); local pre-merge. | None beyond the Go toolchain. | cmd/evener-internalcheck finds an exported symbol naming an internal type. |
-| `make lint-golangci` | golangci-lint across every workspace module, plus the second appwire-specific camelCase pass over server/appwire_*.go. The module sweep repeats with GOOS=darwin off darwin so _darwin.go files are linted in CI. See "The server/appwire_*.go camelCase regime" in docs/developing-evener/linting.md. | golangci-lint's full ruleset (struct-tag casing, formatting, exported-doc comments, and the rest) passes across every FUZZ_GO_MODULES workspace module for the host GOOS and, off darwin, for GOOS=darwin, so a darwin-only source is linted on a Linux host (#2928); and the appwire camelCase regime holds for server/appwire_*.go. | Required CI (via make lint); local pre-merge. | golangci-lint. Runs against FUZZ_GO_MODULES, not GO_MODULES, so the fuzz module's ordinary Go is covered too. | golangci-lint fails for any module, under the host GOOS or, off darwin, under GOOS=darwin. |
+| `make lint-golangci` | golangci-lint across every workspace module, plus the second AppWire/voice camelCase pass over explicitly scoped wire files. The module sweep repeats with GOOS=darwin off darwin so _darwin.go files are linted in CI. See "The AppWire and voice camelCase regimes" in docs/developing-evener/linting.md. | golangci-lint's full ruleset (struct-tag casing, formatting, exported-doc comments, and the rest) passes across every FUZZ_GO_MODULES workspace module for the host GOOS and, off darwin, for GOOS=darwin, so a darwin-only source is linted on a Linux host (#2928); and AppWire/voice camelCase holds without exempting unrelated snake_case surfaces. | Required CI (via make lint); local pre-merge. | golangci-lint. Runs against FUZZ_GO_MODULES, not GO_MODULES, so the fuzz module's ordinary Go is covered too. | golangci-lint fails for any module, under the host GOOS or, off darwin, under GOOS=darwin. |
 | `make lint-cache-clean` | Remove the current worktree's golangci-lint cache without touching sibling worktrees or the user's global golangci-lint cache. | The current worktree's isolated cache can be reclaimed on demand. | Local cleanup after a tool upgrade or cache diagnosis. | golangci-lint. | golangci-lint cannot clean the configured worktree cache. |
 | `make lint-gofmt` | Keep every tracked Go source formatter-clean, including the tagged evenerfuzz/eval files golangci-lint's own gofmt pass never compiles. | `gofmt -l` reports nothing for any tracked .go file, tagged or not. | Required CI (via make lint); local pre-merge. | None beyond the Go toolchain. | Any tracked .go file is not gofmt-clean. |
 | `make lint-generated` | Fail if any committed generated output is stale: the two AppWire outputs, the six docs/developing-evener/ target tables and the configuration knob table. | docs/appwire-protocol.md, the generated TypeScript protocol types, the marked target-table regions in docs/developing-evener/'s six family docs, and docs/developing-evener/config-knobs.md all match what `make generate` produces right now. | Required CI (via make lint); local pre-merge. | None beyond the Go toolchain. | `make generate` exits nonzero, an expected output is no longer tracked, or regenerated output differs from what is committed. |
