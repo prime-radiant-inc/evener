@@ -66,36 +66,35 @@ final class VoiceService {
     }
     private var now: Double { ProcessInfo.processInfo.systemUptime * 1000 }
     func observe(_ listener: (([String: Any]) -> Void)?) { worker.async { self.listener = listener; self.publish() } }
-    func snapshot() async -> [String: Any] { await withCheckedContinuation { c in worker.async { c.resume(returning: self.state()) } } }
+    // The service and its completions stay on the worker. The Expo adapter owns Swift tasks.
+    func snapshot(completion: @escaping ([String: Any]) -> Void) { worker.async { completion(self.state()) } }
     private func state() -> [String: Any] {
         ["state": controller.state.rawValue, "capturing": audio.capturing, "cloudMicrophone": controller.cloudMicrophone,
          "route": audio.route, "speakerConsentRequired": !speakerConsent, "error": error ?? "", "interpreted": interpreted,
          "custody": custody, "canonical": canonical, "generated": generated, "bindingId": configuration?["bindingId"] as? String ?? ""]
     }
     private func publish() { listener?(state()) }
-    func arm(_ value: String) async throws {
-        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
-            worker.async {
-                do {
-                    guard let data = value.data(using: .utf8), let config = try JSONSerialization.jsonObject(with: data) as? [String: Any],
-                          let policyJSON = config["policy"], let expiry = config["expiresAt"] as? String,
-                          let date = voiceExpiry(expiry), date > Date(),
-                          config["sampleRate"] as? Int == 24000 else { throw VoiceFailure("grant_invalid") }
-                    let policy = try JSONDecoder().decode(VoicePolicy.self, from: JSONSerialization.data(withJSONObject: policyJSON))
-                    guard policy.trailingSilenceMs > 0, policy.maxUtteranceMs <= 30000, policy.followupMs > 0, policy.idleInputMs > 0 else { throw VoiceFailure("policy_invalid") }
-                    self.disarmNow()
-                    self.configuration = config; self.expiresAt = date
-                    self.renewAt = date.addingTimeInterval(-60)
-                    self.speakerConsent = true; self.error = nil
-                    self.interpreted = ""; self.custody = ""; self.canonical = ""; self.generated = ""
-                    self.controller.arm(policy: policy)
-                    try self.audio.start()
-                    try self.connect()
-                    self.publish(); continuation.resume()
-                } catch {
-                    self.disarmNow(); self.error = (error as? VoiceFailure)?.code ?? "arm_failed"
-                    self.publish(); continuation.resume(throwing: error)
-                }
+    func arm(_ value: String, completion: @escaping (Result<Void, Error>) -> Void) {
+        worker.async {
+            do {
+                guard let data = value.data(using: .utf8), let config = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+                      let policyJSON = config["policy"], let expiry = config["expiresAt"] as? String,
+                      let date = voiceExpiry(expiry), date > Date(),
+                      config["sampleRate"] as? Int == 24000 else { throw VoiceFailure("grant_invalid") }
+                let policy = try JSONDecoder().decode(VoicePolicy.self, from: JSONSerialization.data(withJSONObject: policyJSON))
+                guard policy.trailingSilenceMs > 0, policy.maxUtteranceMs <= 30000, policy.followupMs > 0, policy.idleInputMs > 0 else { throw VoiceFailure("policy_invalid") }
+                self.disarmNow()
+                self.configuration = config; self.expiresAt = date
+                self.renewAt = date.addingTimeInterval(-60)
+                self.speakerConsent = true; self.error = nil
+                self.interpreted = ""; self.custody = ""; self.canonical = ""; self.generated = ""
+                self.controller.arm(policy: policy)
+                try self.audio.start()
+                try self.connect()
+                self.publish(); completion(.success(()))
+            } catch {
+                self.disarmNow(); self.error = (error as? VoiceFailure)?.code ?? "arm_failed"
+                self.publish(); completion(.failure(error))
             }
         }
     }
