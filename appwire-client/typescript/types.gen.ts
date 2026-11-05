@@ -1228,6 +1228,7 @@ export interface FavoriteSetResponse {
 }
 
 export interface FeatureSet {
+  voicePresentationContextV1?: boolean;
   conversationProvenance?: boolean;
   voice?: boolean;
   sessionTools?: boolean;
@@ -1748,6 +1749,7 @@ export interface InputItem {
   name?: string;
   path?: string;
   metadata?: Record<string, string>;
+  voicePresentation?: VoicePresentationContext;
 }
 
 export interface InputMention {
@@ -4289,6 +4291,7 @@ export interface ThreadActivity {
 }
 
 export interface ThreadCapabilities {
+  voicePresentationContextV1?: boolean;
   send: boolean;
   steer: boolean;
   interrupt: boolean;
@@ -5289,6 +5292,34 @@ export interface UrlsUpdatedParams {
 export interface Value {
 }
 
+export interface VoicePresentationContext {
+  version: number;
+  deliveryId: string;
+  bindingId: string;
+  epoch: string;
+  instanceId: string;
+  canonicalSourceItemId: string;
+  originatingRequestId: string;
+  frontierId: string;
+  runGeneration: number;
+  presentationGeneration: number;
+  generatedTranscript: string;
+  transcriptTruncated: boolean;
+  outputComplete: boolean;
+  interrupted: boolean;
+  sampleRateHz: number;
+  items: VoicePresentationItem[];
+}
+
+export interface VoicePresentationItem {
+  responseId: string;
+  itemId: string;
+  generatedSamples: number;
+  queuedSamples: number;
+  playedSamples: number;
+  playbackComplete: boolean;
+}
+
 export interface WarningParams {
   threadId: string;
   ref: string;
@@ -5717,7 +5748,7 @@ export const WIRE_FIELD_KEYS = {
   TurnError: ["message", "additionalDetails", "codexErrorInfo", "source", "title", "hint", "cause"],
   DiagnosticCause: ["kind", "provider", "model", "status"],
   ThreadItem: ["conversationProvenance", "actor", "observation", "authorship", "type", "id", "transcriptKey", "position", "turnId", "transcriptEntryIndex", "text", "delta", "images", "toolName", "callId", "argumentsJson", "description", "output", "error", "outputImages", "status", "prevalOnly", "startedAt", "completedAt", "durationMs", "exitCode", "raw", "eventKind", "source", "steeringKind", "clientMutationId", "version", "roundId", "completedAtEntry"],
-  InputItem: ["type", "text", "mentions", "url", "mediaType", "data", "name", "path", "metadata"],
+  InputItem: ["type", "text", "mentions", "url", "mediaType", "data", "name", "path", "metadata", "voicePresentation"],
   InputMention: ["kind", "name", "offset"],
   OutputImage: ["source", "name", "mediaType", "size", "url", "sha", "path"],
   QueueState: ["depth", "revision", "preview", "ids", "clientMutationIds", "texts", "skillNames", "commandNames", "mentions"],

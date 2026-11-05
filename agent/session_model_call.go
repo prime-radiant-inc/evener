@@ -1698,6 +1698,7 @@ func (rs replayScope) webSearchReplayEligible(t schema.Turn) bool {
 // pass through unchanged (identical to legacy expansion). tool_call/tool_result
 // and text/image content is never touched.
 func (rs replayScope) projectTurnMessage(t schema.Turn, inFlight bool) llm.Message {
+	t.Message = projectVoicePresentation(t)
 	if !rs.active() || inFlight {
 		return t.Message
 	}
@@ -1784,9 +1785,9 @@ func expandHistory(historyTurns []schema.Turn, scope replayScope) []llm.Message 
 		switch t.Kind {
 		case schema.TurnSteering:
 			if len(pendingToolCalls) > 0 {
-				deferredSteering = append(deferredSteering, t.Message)
+				deferredSteering = append(deferredSteering, scope.projectTurnMessage(t, inFlight))
 			} else {
-				history = append(history, t.Message)
+				history = append(history, scope.projectTurnMessage(t, inFlight))
 			}
 		case schema.TurnToolResults:
 			// Expand aggregated tool results into individual messages.
@@ -1824,7 +1825,7 @@ func expandHistory(historyTurns []schema.Turn, scope replayScope) []llm.Message 
 		case schema.TurnCheckpoint, schema.TurnSummary:
 			// Compaction turns carry user-role messages; include as-is.
 			endToolRound()
-			history = append(history, t.Message)
+			history = append(history, scope.projectTurnMessage(t, inFlight))
 		case schema.TurnHookCompleted, schema.TurnAttentionResolution:
 			// Presentational telemetry and attention resolution can appear inside
 			// a tool round without interrupting it.

@@ -2294,6 +2294,7 @@ func (s *Session) acceptUserInputWithSkillSelection(ctx context.Context, input s
 			turn.Message = appendSelectedCommands(turn.Message, selected.CommandInput, selected.CommandBodies)
 		}
 		turn.ClientMutationID = queuedIdentity.ClientMutationID
+		attachVoicePresentation(&turn, queuedIdentity.VoicePresentation, queuedIdentity.ClientMutationID)
 		turn.StableTurnID = queuedIdentity.StableTurnID
 		turn.Actor = s.clientMutationActor(queuedIdentity.ClientMutationID)
 		if skillInput != nil {

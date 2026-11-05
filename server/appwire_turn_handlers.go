@@ -38,7 +38,7 @@ func (s *Server) handleAppTurnStart(ctx context.Context, params appwire.TurnStar
 	// them here with the typed unsupported-input error instead of asserting
 	// support it cannot deliver. Exact catalog identity and invocation policy
 	// remain consumption-time checks in the session.
-	if params.Input, err = gateTurnInput(params.Input, fn != nil, true); err != nil {
+	if params.Input, err = gateTurnInputWithVoice(params.Input, fn != nil, true, "turn/start", actor.Kind, params.ExpectedInstanceID); err != nil {
 		return appwire.TurnStartResponse{}, err
 	}
 	return callRetrySafe(s, fn, params, params.ClientMutationID, "turn start not available")
@@ -66,7 +66,7 @@ func (s *Server) handleAppTurnSteer(ctx context.Context, params appwire.TurnStee
 	}
 	// Skill selections are consumed at the steering's actual delivery: the
 	// support verdict is this endpoint's own wiring. See the turn/start gate.
-	if params.Input, err = gateTurnInput(params.Input, fn != nil, true); err != nil {
+	if params.Input, err = gateTurnInputWithVoice(params.Input, fn != nil, true, "turn/steer", actor.Kind, params.ExpectedInstanceID); err != nil {
 		return appwire.TurnSteerResponse{}, err
 	}
 	return callRetrySafe(s, fn, params, params.ClientMutationID, "steer not available")
@@ -407,6 +407,13 @@ func (s *Server) retrySafeTurnFunctions() RetrySafeTurnFunctions {
 // endpoint cannot deliver. wired is the endpoint's own wiring: it is the
 // support verdict for skill and command selections.
 func gateTurnInput(items []appwire.InputItem, wired, contentRequired bool) ([]appwire.InputItem, error) {
+	return gateTurnInputWithVoice(items, wired, contentRequired, "", "", "")
+}
+
+func gateTurnInputWithVoice(items []appwire.InputItem, wired, contentRequired bool, method, actorKind, instanceID string) ([]appwire.InputItem, error) {
+	if err := appwire.ValidateVoicePresentationInput(items, method, actorKind, instanceID); err != nil {
+		return nil, appwire.InvalidParams(err.Error())
+	}
 	input, err := appwire.NormalizeMutationInput(items)
 	if err != nil {
 		return nil, appwire.InvalidParams(err.Error())

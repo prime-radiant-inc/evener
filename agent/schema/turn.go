@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"primeradiant.com/evener/agent/provenance"
+	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/llm"
 )
 
@@ -446,8 +447,10 @@ type Turn struct {
 	// ClientMutationID identifies retry-safe client-authored input. StableTurnID
 	// preserves the logical turn identity across live events and transcript
 	// recovery for both client input and daemon goal continuations.
-	ClientMutationID string              `json:"client_mutation_id,omitempty"`
-	CommandInput     *CommandInputRecord `json:"command_input,omitempty"`
+	ClientMutationID         string                            `json:"client_mutation_id,omitempty"`
+	VoicePresentation        *appwire.VoicePresentationContext `json:"voice_presentation,omitempty"`
+	VoicePresentationInputID string                            `json:"voice_presentation_input_id,omitempty"`
+	CommandInput             *CommandInputRecord               `json:"command_input,omitempty"`
 	// Communicate carries a delivered message on TurnCommunicate entries.
 	Communicate *CommunicateInfo `json:"communicate,omitempty"`
 	// Completion carries how an execution ended on TurnCompletion entries.

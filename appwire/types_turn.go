@@ -285,15 +285,16 @@ type InputMention struct {
 }
 
 type InputItem struct {
-	Type      string            `json:"type"`
-	Text      string            `json:"text,omitempty"`
-	Mentions  []InputMention    `json:"mentions,omitempty"`
-	URL       string            `json:"url,omitempty"`
-	MediaType string            `json:"mediaType,omitempty"`
-	Data      []byte            `json:"data,omitempty"`
-	Name      string            `json:"name,omitempty"`
-	Path      string            `json:"path,omitempty"`
-	Metadata  map[string]string `json:"metadata,omitempty"`
+	Type              string                    `json:"type"`
+	Text              string                    `json:"text,omitempty"`
+	Mentions          []InputMention            `json:"mentions,omitempty"`
+	URL               string                    `json:"url,omitempty"`
+	MediaType         string                    `json:"mediaType,omitempty"`
+	Data              []byte                    `json:"data,omitempty"`
+	Name              string                    `json:"name,omitempty"`
+	Path              string                    `json:"path,omitempty"`
+	Metadata          map[string]string         `json:"metadata,omitempty"`
+	VoicePresentation *VoicePresentationContext `json:"voicePresentation,omitempty"`
 }
 
 type ThreadListParams struct {

@@ -700,6 +700,7 @@ func queuedInputFromClientMutation(entry clientMutationQueueEntry) queuedInput {
 	for _, item := range entry.Input {
 		switch item.Type {
 		case "text":
+			queued.VoicePresentation = appwire.CloneVoicePresentation(item.VoicePresentation)
 			if len(item.Mentions) > 0 {
 				offset := len(utf16.Encode([]rune(queued.Text)))
 				for _, mention := range item.Mentions {
@@ -1354,7 +1355,8 @@ func clientSteeringFromSnapshot(snapshot clientMutationSnapshot) []steeringMessa
 		queued := queuedInputFromClientMutation(clientMutationQueueEntry{Input: pending.Input})
 		origin := steeringOriginFromJournal(snapshot.Journal, id)
 		client = append(client, steeringMessage{
-			Actor: schema.SessionActor{Kind: pending.Actor.Kind, ManagerRef: pending.Actor.ManagerRef},
+			VoicePresentation: appwire.CloneVoicePresentation(queued.VoicePresentation),
+			Actor:             schema.SessionActor{Kind: pending.Actor.Kind, ManagerRef: pending.Actor.ManagerRef},
 			// A journal written before the write-path strip can carry controls in
 			// a note-origin pending text: the rebuilt entry reaches the model and
 			// the transcript, so that text is stripped like every other load path,
@@ -1693,6 +1695,8 @@ func (s *Session) recordClientMutationFailure(
 		turn.Authorship = humanTranscriptAuthorship()
 		turn.CommandInput = commandInputRecordFromQueued(queued)
 		turn.ClientMutationID = clientMutationID
+		attachVoicePresentation(&turn, queued.VoicePresentation, clientMutationID)
+		turn.Actor = s.clientMutationActor(clientMutationID)
 		turn.StableTurnID = pending.TurnID
 		// The typed selection must ride the persisted failed input before the
 		// journal payload cleanup below clears it: the record keeps both the

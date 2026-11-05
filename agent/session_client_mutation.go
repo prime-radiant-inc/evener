@@ -329,6 +329,9 @@ func (s *Session) acceptClientMutation(spec clientMutationSpec, prepare, effect 
 	}
 	defer release()
 	if spec.input != nil {
+		if err := appwire.ValidateVoicePresentationInput(*spec.input, spec.method, spec.actor.Kind, s.ID()); err != nil {
+			return clientMutationLookup{}, appwire.InvalidParams(err.Error())
+		}
 		input, err := appwire.NormalizeMutationInput(*spec.input)
 		if err != nil {
 			return clientMutationLookup{}, appwire.InvalidParams(err.Error())
@@ -2148,6 +2151,7 @@ func cloneClientMutationInput(src []appwire.InputItem) []appwire.InputItem {
 	dst := make([]appwire.InputItem, len(src))
 	for i, item := range src {
 		dst[i] = item
+		dst[i].VoicePresentation = appwire.CloneVoicePresentation(item.VoicePresentation)
 		dst[i].Data = append([]byte(nil), item.Data...)
 		dst[i].Mentions = slices.Clone(item.Mentions)
 		if item.Metadata != nil {

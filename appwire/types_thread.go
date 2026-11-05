@@ -565,14 +565,15 @@ type SandboxEscalationResolveParams struct {
 }
 
 type ThreadCapabilities struct {
-	Send         bool `json:"send"`
-	Steer        bool `json:"steer"`
-	Interrupt    bool `json:"interrupt"`
-	Compact      bool `json:"compact"`
-	Clear        bool `json:"clear"`
-	ForkFromTurn bool `json:"forkFromTurn"`
-	Shutdown     bool `json:"shutdown"`
-	ChangeModel  bool `json:"changeModel"`
+	VoicePresentationContextV1 bool `json:"voicePresentationContextV1,omitempty"`
+	Send                       bool `json:"send"`
+	Steer                      bool `json:"steer"`
+	Interrupt                  bool `json:"interrupt"`
+	Compact                    bool `json:"compact"`
+	Clear                      bool `json:"clear"`
+	ForkFromTurn               bool `json:"forkFromTurn"`
+	Shutdown                   bool `json:"shutdown"`
+	ChangeModel                bool `json:"changeModel"`
 	// ChangeVisionModel advertises support for thread/vision-model/set. True for
 	// a live evener session whose daemon wires a vision-model hook.
 	ChangeVisionModel bool `json:"changeVisionModel"`
