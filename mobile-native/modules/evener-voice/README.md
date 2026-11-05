@@ -12,6 +12,10 @@ Opt-in iOS Talk implementation, not release or acoustic qualification. The app s
 - `ios/EvenerVoiceModule.swift`: Expo bridge/application subscriber. General SecureStore accessibility is unchanged. The installation label is not speaker identity.
 - `src/voice` in the native app: consent, explicit manager selection, configurable provider/model/voice, Arm/Disarm/Talk/Stop and custody/canonical reply display. Capability-absent hubs gain no controls or guessed RPCs.
 
+Playback accepts nonempty, sample-aligned PCM16LE packets up to the hub's 64 KiB
+decoded-byte limit. Packet size is separate from the outstanding playback budget
+of 720,000 provider samples and the timeline's 8,192-chunk/128-ended-item bounds.
+
 Quiet microphone audio stays in bounded RAM on the phone. Capture loss/overflow abandons a partial input rather than submitting a truncation. No PCM enters a user-input record, outbox or diagnostics. Speech onset and Stop flush output and advance the local fence before network traffic. Background grant renewal is native; removal/logout retires the binding.
 
 The maximum-utterance policy is a normal endpoint: admitted speech ends within its
@@ -58,6 +62,10 @@ Consent tests exercise the production admission policy used by `VoiceService`.
 The loopback WebSocket test observes the denied generation's interrupt before
 offering a fresh delivery after consent, and checks that stale deliveries stay fenced.
 These checks do not run the audio device or a live manager.
+
+Packet tests exercise the validation and signed-sample conversion used by
+`VoiceAudioDevice.enqueue`, including wire-sized packets through the Foundation
+socket. They do not exercise AVAudioEngine scheduling or hardware-rate conversion.
 
 On an Apple Silicon Mac, unpack the published ONNX 1.20.0 archives into a private directory (containing `objectivec/`, `Headers/`, `onnxruntime.xcframework/`) and run:
 

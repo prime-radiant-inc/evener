@@ -159,13 +159,12 @@ final class VoiceAudioDevice {
         }
     }
     func enqueue(pcm: Data, delivery: String, generation: Int, item: String) throws {
-        guard capturing, !pcm.isEmpty, pcm.count % 2 == 0, pcm.count <= 48000,
-              let format = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: 24000, channels: 1, interleaved: false),
-              let source = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(pcm.count / 2)), let channel = source.floatChannelData?[0] else { throw VoiceFailure("audio_packet_invalid") }
+        guard capturing else { throw VoiceFailure("audio_packet_invalid") }
+        let packet = try VoicePlaybackPacket(pcm)
+        guard let format = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: 24000, channels: 1, interleaved: false),
+              let source = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(packet.sampleCount)), let channel = source.floatChannelData?[0] else { throw VoiceFailure("audio_packet_invalid") }
         source.frameLength = source.frameCapacity
-        pcm.withUnsafeBytes { bytes in
-            for i in 0..<Int(source.frameLength) { channel[i] = Float(Int16(littleEndian: bytes.loadUnaligned(fromByteOffset: i * 2, as: Int16.self))) / 32768 }
-        }
+        packet.copySamples(to: UnsafeMutableBufferPointer(start: channel, count: Int(source.frameLength)))
         let output = try convert(source, with: outputConverter)
         let rendered = player.lastRenderTime.flatMap { player.playerTime(forNodeTime: $0) }
         let clock = rendered.map { Int($0.sampleTime - outputOrigin) } ?? 0
