@@ -17,7 +17,7 @@ if project_path.nil? || !File.directory?(project_path)
 	abort "usage: add-ui-test-target.rb PATH_TO_GENERATED_XCODEPROJ"
 end
 
-source_path = File.expand_path("../EvenerQualificationUITests.swift", __dir__)
+source_path = File.expand_path("EvenerQualificationUITests.swift", __dir__)
 unless File.file?(source_path)
 	abort "missing UI test source at #{source_path}"
 end

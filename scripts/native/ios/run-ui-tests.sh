@@ -108,6 +108,10 @@ cleanup() {
 	fi
 	if [ -n "$provider_pid" ]; then
 		kill -TERM "$provider_pid" 2>/dev/null || true
+		for _ in $(seq 1 50); do
+			kill -0 "$provider_pid" 2>/dev/null || break
+			sleep 0.1
+		done
 		kill -KILL "$provider_pid" 2>/dev/null || true
 	fi
 	rm -rf "$run_dir"
@@ -285,14 +289,6 @@ if [ "$failures" != "0" ]; then
 	cat "$summary" >&2
 	exit 1
 fi
-
-jq -e '
-	(.testNodes // .children // []) as $root
-	| [ $root | .. | objects
-		| select((.nodeType? // .testType? // "") != "")
-		| .name? ] as $all
-	| "ok"
-' "$tests_json" >/dev/null 2>&1 || true
 
 # The three intended identities, exactly; each must appear as an executed
 # test case with a passed result and no skipped outcome.
