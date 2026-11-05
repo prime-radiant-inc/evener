@@ -50,7 +50,7 @@ unless File.file?(scheme_path)
 end
 scheme = Xcodeproj::XCScheme.new(scheme_path)
 listed = scheme.test_action.testables.any? do |testable|
-	testable.buildable_reference.buildable_name == "#{target_name}.xctest"
+	testable.buildable_references.any? { |reference| reference.buildable_name == "#{target_name}.xctest" }
 end
 if listed
 	puts "scheme already lists #{target_name}"
