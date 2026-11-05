@@ -163,7 +163,7 @@ public struct VoiceController {
     }
     public mutating func admitSpeech(generation: Int, speakerConsent: Bool) -> VoiceSpeechAdmission {
         guard armed, generation >= minimumGeneration else { return .rejected([]) }
-        guard speakerConsent else {
+        guard speakerConsent, state != .recovering else {
             // The hub must retire this unplayed delivery before selecting another.
             // Fence its incoming generation, not the previous local output's.
             observeGeneration(generation)
@@ -196,7 +196,7 @@ public struct VoiceController {
         let actions = abort(reason: "capture_interrupted")
         state = .recovering
         if advanceGeneration { minimumGeneration += 1 }
-        quietRing.removeAll()
+        quietRing.removeAll(); followupUntil = nil
         return actions + [.flushOutput]
     }
     public mutating func disarm() -> [VoiceAction] {
