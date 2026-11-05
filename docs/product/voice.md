@@ -69,6 +69,10 @@ Retiring a fully rendered delivery preserves its completion evidence; cutting
 off unfinished playback records interruption. Provider truncation uses the played
 watermark in the provider's 24 kHz sample timeline.
 
+Native playback limits outstanding audio. A physical buffer-drain acknowledgement
+releases queue capacity even while the provider is still generating that item.
+Cumulative played evidence and provider-gated completion remain intact.
+
 At utterance start, the journal pins the binding's latest presentation identity,
 including an explicit absence when nothing has been presented. Preparing the
 text intent freezes that delivery's observed wording and playback facts into
@@ -90,6 +94,10 @@ opens a fresh one for the queued utterance. The manager's active work continues.
 A newer typed admission also retires stale speech before a fresh reply exists.
 Delayed old audio and output from a request that did not consume the correction
 cannot become the new reply.
+
+An explicit session Stop retires the speech fence for a start that never reached
+canonical input history. Inputs recorded before interruption remain required
+across compaction and restore.
 
 Disconnect aborts incomplete audio input. Journaled text intents and receipts
 remain durable. Disarm and takeover retire the listening binding without
