@@ -11,14 +11,18 @@ import (
 	"primeradiant.com/evener/internal/appitempaging"
 )
 
+func validVoiceProvenance(state *appwire.ConversationProvenanceState, instanceID string) bool {
+	return state != nil && state.Version == 1 && state.Authoritative && instanceID != "" && state.InstanceID == instanceID
+}
+
 func (b *voiceBridge) validSpeechRead(read appwire.ThreadReadResponse) bool {
 	evener := read.Thread.Evener
-	state := evener.ConversationProvenance
-	return evener.Ref == b.binding.Ref && evener.InstanceID == b.binding.InstanceID && evener.Manager && evener.MutationStateAuthoritative && evener.Capabilities.VoicePresentationContextV1 && state != nil && state.Authoritative && state.InstanceID == b.binding.InstanceID && read.Snapshot != nil
+	return evener.Ref == b.binding.Ref && evener.InstanceID == b.binding.InstanceID && evener.Manager && evener.MutationStateAuthoritative && evener.Capabilities.VoicePresentationContextV1 && validVoiceProvenance(evener.ConversationProvenance, b.binding.InstanceID) && read.Snapshot != nil
 }
 
 func (b *voiceBridge) captureSpeechBaseline(read appwire.ThreadReadResponse) {
 	b.history = *read.Snapshot
+	b.historyThreadID, b.historyBoot, b.historyEpoch = read.Thread.ID, read.BootGeneration, read.Epoch
 	b.speechCursor = nil
 	for _, turn := range read.Thread.Turns {
 		for _, item := range turn.Items {
@@ -74,10 +78,7 @@ func voicePageReachesCursor(turns []appwire.Turn, cursor *appwire.ThreadItemPosi
 // item position is the speech cursor, so attaching never reads old history aloud.
 // Snapshot length counts bytes, not the entry ordinals in item positions.
 func (b *voiceBridge) selectSpeech(read appwire.ThreadReadResponse) error {
-	if !b.validSpeechRead(read) {
-		return hubcore.ErrVoiceStale
-	}
-	if err := b.applyProvenance(read.Thread.Evener.ConversationProvenance); err != nil {
+	if err := b.applySpeechAuthority(read); err != nil {
 		return err
 	}
 	if read.Snapshot.Incarnation != b.history.Incarnation {
@@ -88,6 +89,9 @@ func (b *voiceBridge) selectSpeech(read appwire.ThreadReadResponse) error {
 		return nil
 	}
 	for _, turn := range read.Thread.Turns {
+		if b.interruptedTurns[turn.ID] {
+			continue
+		}
 		for _, item := range turn.Items {
 			provenance := item.ConversationProvenance
 			if item.Position == nil || (b.speechCursor != nil && appitempaging.ComparePosition(*item.Position, *b.speechCursor) <= 0) || provenance == nil || provenance.SourceItemID != item.ID || !appwire.ConversationOutputEligible(b.provenance, provenance) {
@@ -109,8 +113,58 @@ func (b *voiceBridge) selectSpeech(read appwire.ThreadReadResponse) error {
 	return nil
 }
 
+func (b *voiceBridge) applySpeechAuthority(read appwire.ThreadReadResponse) error {
+	if !b.validSpeechRead(read) {
+		return hubcore.ErrVoiceStale
+	}
+	if err := b.applyProvenance(read.Thread.Evener.ConversationProvenance); err != nil {
+		return err
+	}
+	return b.applyInterruptedTurns(read.Thread.Turns)
+}
+
+// Resync is a read demand, never evidence that any execution was interrupted.
+// Relay recovery can name only the ref, without a history epoch or thread ID.
+func (b *voiceBridge) applySpeechResync(changed appwire.ThreadResyncParams) {
+	if changed.Ref == b.binding.Ref && (changed.ThreadID == "" || changed.ThreadID == b.historyThreadID) {
+		b.reconcile = true
+	}
+}
+
+// An authenticated terminal notification can retire setup immediately, but
+// only under the established history identity. Recovery identities demand an
+// authoritative read without waiting for that setup to finish.
+func (b *voiceBridge) applySpeechHistoryUpdate(changed appwire.HistoryUpdatedParams) error {
+	if changed.Ref != b.binding.Ref || changed.ThreadID != b.historyThreadID {
+		return nil
+	}
+	if changed.BootGeneration != b.historyBoot || changed.Epoch != b.historyEpoch || changed.Snapshot.Incarnation != b.history.Incarnation {
+		b.reconcile = true
+		return nil
+	}
+	return b.applyInterruptedTurns(changed.Turns)
+}
+
+// Interruption is terminal within this bound manager instance. Keep the evidence
+// across older in-flight reads and paged windows that omit the stopped execution.
+// Execution IDs are not provenance run IDs or audio presentation generations.
+func (b *voiceBridge) applyInterruptedTurns(turns []appwire.Turn) error {
+	for _, turn := range turns {
+		if turn.ID != "" && turn.Status == appwire.TurnStatusInterrupted {
+			if b.interruptedTurns == nil {
+				b.interruptedTurns = make(map[string]bool)
+			}
+			b.interruptedTurns[turn.ID] = true
+		}
+	}
+	if b.delivery != nil && !b.playbackFinished() && b.interruptedTurns[b.deliveryTurnID] {
+		return b.retireSpeech()
+	}
+	return nil
+}
+
 func (b *voiceBridge) applyProvenance(state *appwire.ConversationProvenanceState) error {
-	if state == nil || !state.Authoritative || state.InstanceID != b.binding.InstanceID {
+	if !validVoiceProvenance(state, b.binding.InstanceID) {
 		return hubcore.ErrVoiceStale
 	}
 	if b.provenance != nil && state.Revision <= b.provenance.Revision {
@@ -206,6 +260,7 @@ func (b *voiceBridge) startSpeech(source appwire.ThreadItem) error {
 		return err
 	}
 	b.delivery = &delivery
+	b.deliveryTurnID = source.TurnID
 	b.transcripts = make(map[string]string)
 	if err := b.send(map[string]any{"type": "speech_start", "deliveryId": delivery.ID, "generation": delivery.PresentationGeneration, "sourceItemId": source.ID, "canonicalText": source.Text}); err != nil {
 		return err

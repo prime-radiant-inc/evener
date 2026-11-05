@@ -1,6 +1,8 @@
 # Evener voice chief of staff: architecture and v1 specification
 
-**Status: proposed design, 2026-11-04. Production implementation has not started.**
+**Approved design baseline: 2026-11-04.** Repository observations and spike
+results below describe that baseline, not current implementation evidence.
+The paired-publication amendment in section 6 records the shared-history choice.
 
 Use a native iPhone audio service, a replaceable OpenAI Realtime voice adapter,
 and **one persistent Evener manager session**. The phone owns wake detection and
@@ -347,6 +349,57 @@ or assert that Jesse heard something. Numbers, names, negations, option labels
 and outcome claims are part of the live quality gate. If this fails, use the
 chained adapter with a qualified exact-reading engine rather than relaxing the gate.
 
+### Paired-publication amendment
+
+Shared history must expose each canonical reply together with the producer-owned
+provenance needed to resolve its actual consumed-input frontier. This applies to
+all history clients, not just voice. Reads remain nonblocking with respect to
+Session publication and never sample live Session state.
+
+```mermaid
+flowchart LR
+    A[Canonical append records bytes] --> B[Session adopts record and provenance]
+    B --> C[Capture immutable producer snapshot]
+    C --> D[Publish snapshot with recorded boundary]
+    D --> E[History exposes completed boundary]
+    E --> F[Read pairs indexed items with materialized provenance]
+```
+
+The Session owns a completed-publication handoff after adopting a recorded turn.
+It supplies the recorded byte boundary and an immutable provenance snapshot.
+The existing raw recording hook remains a leaf-lock-only staging operation;
+it cannot make provenance-affecting bytes readable before the handoff. History
+projection and recovery honor the completed boundary. After projection, a read
+uses the latest materialized provenance for that same instance and history
+identity rather than the graph captured before projection.
+
+Capture the producer snapshot after releasing the transcript append lock and
+Session mutex, while the existing mutation owner excludes the next canonical
+mutation. The handoff takes only the history owner's leaf mutex. Subscription
+capture remains callback-free and I/O-free, with notifications owned by the
+existing projection path. Admission-only updates use the same snapshot holder
+and monotonic revision fence.
+
+Carry exact producer state. Do not merge graphs, synthesize consumed-input
+coverage, introduce server-assigned revisions or wait for provenance on reads.
+Reuse immutable state until provenance changes and retain only the latest state
+plus reader-owned copies. Canonical recorded input retains its existing
+eligibility; terminal journal-only input retains its existing retirement rule.
+Input receipts, queue custody and session Stop semantics do not change.
+
+The paired boundary must survive initial wiring, restore, compaction, queue
+overflow, index rebuild, shared-index catch-up and instance replacement.
+Compaction preserves original output provenance without minting a frontier for
+copied entries. A retained but unsynced record remains recorded; a failed write
+cannot publish a new frontier.
+
+Qualification must force both publication gaps: a reply committed after a read
+captures its envelope, and a raw record observed before Session adopts its
+provenance. Use real request construction and canonical history, and assert that
+every returned reply's frontier resolves. Preserve the zero-live-sampling,
+stale-snapshot, paging, recovery and recorded-input tests. A passing retry of an
+intermittent voice test does not prove this invariant.
+
 ### References to spoken output
 
 Attach the current `SpeechDelivery` context to the next input as platform-sourced
@@ -554,9 +607,9 @@ failed gate produces evidence and a narrowed experiment, not a weaker assertion.
   behavior and clear microphone disclosure must comply with current Apple rules;
   technical background-audio capability is not App Review acceptance.
 
-The next implementation step needs approval of this design, particularly native
-background microphone permission, ambient-voice authority while armed, proactive
-speech while locked, and the paraphrased-speech contract.
+Implementation follows the approved native background microphone, armed ambient
+voice, proactive locked speech and paraphrased-speech contracts. Approval does
+not replace the qualification evidence required above.
 
 ## Sources
 

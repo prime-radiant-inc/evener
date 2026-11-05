@@ -195,6 +195,10 @@ func (v *voiceService) arm(w http.ResponseWriter, r *http.Request) {
 		voiceHTTPError(w, http.StatusConflict, "voice_presentation_unsupported")
 		return
 	}
+	if !validVoiceProvenance(read.Thread.Evener.ConversationProvenance, request.ExpectedInstanceID) {
+		voiceHTTPError(w, http.StatusConflict, "voice_provenance_unavailable")
+		return
+	}
 	if request.Provider == "" {
 		request.Provider = "openai"
 	}
