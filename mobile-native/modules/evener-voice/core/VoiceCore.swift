@@ -45,6 +45,7 @@ public struct VoiceController {
     private var active = false
     private var admitted = false
     private var frame = 0
+    private var inputSamples = 0
     private var startedAt: Double = 0
     private var lastSpeech: Double?
     private var followupUntil: Double?
@@ -65,6 +66,13 @@ public struct VoiceController {
         state = .quiet
     }
     public mutating func observeGeneration(_ generation: Int) { minimumGeneration = max(minimumGeneration, generation) }
+    public mutating func synchronizeReady(generation: Int) -> [VoiceAction] {
+        guard armed, generation > 0 else { return [] }
+        observeGeneration(generation)
+        // Acknowledge the playback fence even on a fresh connection. Capture
+        // readiness is separate, and the current generation remains eligible.
+        return [.send(.interrupt(minimumGeneration - 1, [:]))]
+    }
     public mutating func talk(at now: Double) -> [VoiceAction] {
         guard state == .quiet || state == .conversing || state == .speaking, !active else { return [] }
         sequence += 1; frame = 0; active = true; admitted = false
@@ -98,13 +106,20 @@ public struct VoiceController {
         guard now >= startedAt else { return [] }
         if speech { lastSpeech = now }
         var actions: [VoiceAction] = []
+        // Include pending audio in the hub's 24 kHz mono PCM16 budget. Tap
+        // timestamps mark block starts, so elapsed time alone can overshoot.
+        let maxSamples = policy.maxUtteranceMs * 24
+        let samples = min(pcm.count / 2, maxSamples - inputSamples)
+        let pcm = Data(pcm.prefix(samples * 2))
         if admitted {
             actions.append(.send(.audio(sequence, frame, pcm))); frame += 1
         } else {
             guard bufferedBytes + pcm.count <= 96000 else { return abort(reason: "input_overflow") }
             pending.append(pcm); bufferedBytes += pcm.count
         }
-        if let lastSpeech, now - lastSpeech >= Double(policy.trailingSilenceMs) || now - startedAt >= Double(policy.maxUtteranceMs) {
+        inputSamples += samples
+        if inputSamples == maxSamples, lastSpeech == nil { return actions + abort(reason: "input_idle") }
+        if let lastSpeech, now - lastSpeech >= Double(policy.trailingSilenceMs) || now - startedAt >= Double(policy.maxUtteranceMs) || inputSamples == maxSamples {
             // Acknowledgement must precede input_end too. An unacknowledged partial turn is discarded.
             if admitted { actions.append(.send(.inputEnd(sequence))); clearInput() }
             else { return abort(reason: "input_start_timeout") }
@@ -124,11 +139,11 @@ public struct VoiceController {
         return result
     }
     private mutating func clearInput() {
-        active = false; admitted = false; pending.removeAll(); bufferedBytes = 0
+        active = false; admitted = false; pending.removeAll(); bufferedBytes = 0; inputSamples = 0
     }
     public mutating func acceptSpeech(generation: Int) -> Bool {
         guard armed, state != .recovering, generation >= minimumGeneration else { return false }
-        minimumGeneration = generation; state = .speaking
+        minimumGeneration = generation; followupUntil = nil; state = .speaking
         return true
     }
     public mutating func stopSpeaking(played: [String: Int]) -> [VoiceAction] {

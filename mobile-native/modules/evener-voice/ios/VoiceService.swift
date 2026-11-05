@@ -175,14 +175,11 @@ final class VoiceService {
         guard controller.armed, let type = event["type"] as? String else { return }
         switch type {
         case "ready":
-            guard let generation = event["generation"] as? Int,
+            guard let generation = event["generation"] as? Int, generation > 0,
                   event["bindingId"] as? String == configuration?["bindingId"] as? String,
                   event["epoch"] as? String == configuration?["epoch"] as? String else { socket.close(); connectionLost(); return }
             connected = true; reconnectAttempt = 0; error = nil
-            if generation < controller.minimumGeneration {
-                socket.send(["type": "interrupt", "generation": controller.minimumGeneration - 1, "playedSamples": [:]])
-            }
-            controller.observeGeneration(generation)
+            perform(controller.synchronizeReady(generation: generation))
             if audio.capturing { controller.ready(generation: generation) }
         case "input_started":
             if let sequence = event["sequence"] as? Int { perform(controller.started(sequence: sequence)) }

@@ -14,6 +14,11 @@ Opt-in iOS Talk implementation, not release or acoustic qualification. The app s
 
 Quiet microphone audio stays in bounded RAM on the phone. Capture loss/overflow abandons a partial input rather than submitting a truncation. No PCM enters a user-input record, outbox or diagnostics. Speech onset and Stop flush output and advance the local fence before network traffic. Background grant renewal is native; removal/logout retires the binding.
 
+The maximum-utterance policy is a normal endpoint: admitted speech ends within its
+24 kHz sample budget, including buffered input, with a sample-aligned final block.
+Silent input is abandoned, not submitted. Each accepted reply replaces the previous
+follow-up deadline; its next window starts only when playback drains.
+
 ## Model and dependency packaging
 
 Run from `mobile-native`:
