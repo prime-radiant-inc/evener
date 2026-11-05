@@ -121,7 +121,11 @@ unfinished speech owned by the interrupted execution and suppresses its pending
 canonical sources. The bridge matches the source item's execution `TurnID`, not
 the provenance run or audio generation. Matching history notifications retire
 speech even while provider setup awaits acknowledgement; authoritative reads
-also apply interruption before selecting more speech. Terminal evidence remains
+also apply interruption before selecting more speech. Relay resync and changed
+history identities demand an authoritative refresh that does not wait for
+provider setup or block ordinary speech work. These hints alone never silence
+speech; the refreshed bound-instance history must prove the interruption.
+Terminal evidence remains
 in force across stale reads. Fully rendered deliveries retain completion evidence,
 and canonical replies and recorded input remain unchanged. This is not global
 silence: Stop does not target another execution's speech or change idle-Stop

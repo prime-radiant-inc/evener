@@ -78,13 +78,7 @@ func voicePageReachesCursor(turns []appwire.Turn, cursor *appwire.ThreadItemPosi
 // item position is the speech cursor, so attaching never reads old history aloud.
 // Snapshot length counts bytes, not the entry ordinals in item positions.
 func (b *voiceBridge) selectSpeech(read appwire.ThreadReadResponse) error {
-	if !b.validSpeechRead(read) {
-		return hubcore.ErrVoiceStale
-	}
-	if err := b.applyProvenance(read.Thread.Evener.ConversationProvenance); err != nil {
-		return err
-	}
-	if err := b.applyInterruptedTurns(read.Thread.Turns); err != nil {
+	if err := b.applySpeechAuthority(read); err != nil {
 		return err
 	}
 	if read.Snapshot.Incarnation != b.history.Incarnation {
@@ -119,11 +113,33 @@ func (b *voiceBridge) selectSpeech(read appwire.ThreadReadResponse) error {
 	return nil
 }
 
-// History work can be blocked behind provider setup. The authenticated
-// notification can retire that setup immediately, but only for the history
-// identity established by an authoritative read. Other identities need a read.
+func (b *voiceBridge) applySpeechAuthority(read appwire.ThreadReadResponse) error {
+	if !b.validSpeechRead(read) {
+		return hubcore.ErrVoiceStale
+	}
+	if err := b.applyProvenance(read.Thread.Evener.ConversationProvenance); err != nil {
+		return err
+	}
+	return b.applyInterruptedTurns(read.Thread.Turns)
+}
+
+// Resync is a read demand, never evidence that any execution was interrupted.
+// Relay recovery can name only the ref, without a history epoch or thread ID.
+func (b *voiceBridge) applySpeechResync(changed appwire.ThreadResyncParams) {
+	if changed.Ref == b.binding.Ref && (changed.ThreadID == "" || changed.ThreadID == b.historyThreadID) {
+		b.reconcile = true
+	}
+}
+
+// An authenticated terminal notification can retire setup immediately, but
+// only under the established history identity. Recovery identities demand an
+// authoritative read without waiting for that setup to finish.
 func (b *voiceBridge) applySpeechHistoryUpdate(changed appwire.HistoryUpdatedParams) error {
-	if changed.Ref != b.binding.Ref || changed.ThreadID != b.historyThreadID || changed.BootGeneration != b.historyBoot || changed.Epoch != b.historyEpoch || changed.Snapshot.Incarnation != b.history.Incarnation {
+	if changed.Ref != b.binding.Ref || changed.ThreadID != b.historyThreadID {
+		return nil
+	}
+	if changed.BootGeneration != b.historyBoot || changed.Epoch != b.historyEpoch || changed.Snapshot.Incarnation != b.history.Incarnation {
+		b.reconcile = true
 		return nil
 	}
 	return b.applyInterruptedTurns(changed.Turns)

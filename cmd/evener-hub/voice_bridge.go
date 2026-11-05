@@ -44,6 +44,10 @@ type voiceBridge struct {
 	workKind     string
 	workers      sync.WaitGroup
 
+	reconcile      bool
+	reconciling    bool
+	reconciliation chan voiceWorkResult
+
 	generation       uint64
 	awaitingFence    bool
 	history          appwire.SnapshotIdentity
@@ -157,6 +161,7 @@ func (b *voiceBridge) run() {
 	}
 	b.client = client
 	b.work = make(chan voiceWorkResult)
+	b.reconciliation = make(chan voiceWorkResult)
 	defer b.close()
 	read, err := b.client.ThreadRead(b.ctx, appwire.ThreadReadParams{Ref: b.binding.Ref, IncludeTurns: true, Subscribe: true, ItemLimit: appwire.TranscriptItemPageLimit})
 	if err != nil || !b.validSpeechRead(read) {
@@ -184,6 +189,9 @@ func (b *voiceBridge) run() {
 		return voiceWorkResult{err: b.recoverIntents(ctx)}
 	})
 	for {
+		if b.reconcile && !b.reconciling {
+			b.beginSpeechReconciliation()
+		}
 		if b.retiring != nil && b.workCancel == nil {
 			provider, delivery := b.provider, *b.retiring
 			b.beginWork("retired", func(ctx context.Context) voiceWorkResult {
@@ -237,6 +245,13 @@ func (b *voiceBridge) run() {
 			if !ok {
 				return
 			}
+			if notification.Method == appwire.NotifyEvenerThreadResync {
+				var changed appwire.ThreadResyncParams
+				if json.Unmarshal(notification.Params, &changed) != nil {
+					return
+				}
+				b.applySpeechResync(changed)
+			}
 			if notification.Method == appwire.NotifyHistoryUpdated {
 				var changed appwire.HistoryUpdatedParams
 				if json.Unmarshal(notification.Params, &changed) != nil {
@@ -265,6 +280,19 @@ func (b *voiceBridge) run() {
 				_ = b.reportError("speech_failed")
 				return
 			}
+		case result := <-b.reconciliation:
+			b.reconciling = false
+			if voiceHistoryCursorStale(result.err) {
+				b.reconcile = true
+				continue
+			}
+			if result.err != nil || b.applySpeechAuthority(result.read) != nil {
+				_ = b.reportError("speech_failed")
+				return
+			}
+			// Only authority is applied here. Selecting new speech still uses the
+			// ordinary work slot, so it cannot race input or provider setup.
+			b.refresh = true
 		case result := <-b.work:
 			kind := b.workKind
 			b.workCancel()
@@ -283,12 +311,9 @@ func (b *voiceBridge) run() {
 				continue
 			}
 			if result.err != nil {
-				var wire appwire.WireError
-				if kind == "history" && errors.As(result.err, &wire) {
-					if data, ok := appwire.DecodedErrorData(wire.Data); ok && data.EvenerErrorInfo == appwire.ErrorTranscriptItemCursorStale {
-						b.refresh = true
-						continue
-					}
+				if kind == "history" && voiceHistoryCursorStale(result.err) {
+					b.refresh = true
+					continue
 				}
 				_ = b.reportError("input_failed")
 				return
@@ -380,6 +405,30 @@ func (b *voiceBridge) beginWork(kind string, work func(context.Context) voiceWor
 			}
 		}
 	})
+}
+
+// A recovery read cannot occupy the provider work slot: the read may prove
+// that the execution owning an unacknowledged setup was interrupted. Workers
+// only read, and the run loop alone applies their results and retires speech.
+func (b *voiceBridge) beginSpeechReconciliation() {
+	b.reconcile, b.reconciling = false, true
+	history, cursor := b.history, appwire.ClonePointer(b.speechCursor)
+	b.workers.Go(func() {
+		read, err := b.readSpeechHistory(b.ctx, history, cursor)
+		select {
+		case b.reconciliation <- voiceWorkResult{read: read, err: err}:
+		case <-b.ctx.Done():
+		}
+	})
+}
+
+func voiceHistoryCursorStale(err error) bool {
+	var wire appwire.WireError
+	if !errors.As(err, &wire) {
+		return false
+	}
+	data, ok := appwire.DecodedErrorData(wire.Data)
+	return ok && data.EvenerErrorInfo == appwire.ErrorTranscriptItemCursorStale
 }
 
 func (b *voiceBridge) control(control voiceControl) error {
