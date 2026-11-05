@@ -878,6 +878,7 @@ export interface EvenerSubagentPreviewResponse {
 
 export interface EvenerThread {
   conversationProvenance?: ConversationProvenanceState;
+  pendingAsk?: PendingAskState;
   /**
    * Manager is the session's start-time Manager property, reported by the
    * session itself. It is not a runtime setting: nothing can turn it on or
@@ -2970,6 +2971,18 @@ export interface PathsCompleteParams {
 
 export interface PathsCompleteResponse {
   data: string[];
+}
+
+export interface PendingAskCall {
+  turnId: string;
+  callId: string;
+}
+
+export interface PendingAskState {
+  version: number;
+  instanceId: string;
+  revision: number;
+  calls: PendingAskCall[];
 }
 
 export interface PendingMutation {

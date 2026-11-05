@@ -746,7 +746,8 @@ type Session struct {
 	// the entry gate, the goal engine's arm-don't-kick paths, Compact's guard
 	// — survive a restart (ask-attention-tiering spec §2); it is not itself
 	// part of persisted SessionMeta.
-	askPending []askQuestion
+	askPending         []askQuestion
+	askPendingRevision uint64
 
 	// askPendingCallArgs holds each pending ask_user call's own arguments
 	// (already normalized, spec §5.1's shape), one entry per call, in call

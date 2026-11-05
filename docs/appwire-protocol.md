@@ -358,6 +358,7 @@ the shared [TypeScript client](../appwire-client/typescript/README.md).
 | `thread/closed` | [ThreadClosedParams](#threadclosedparams) | Session ended. |
 | `thread/status/changed` | [ThreadStatusChangedParams](#threadstatuschangedparams) | Thread status (type + active flags) changed. |
 | `thread/queueChanged` | [ThreadQueueChangedParams](#threadqueuechangedparams) | The per-session input queue depth/preview changed. |
+| `thread/conversation-provenance/changed` | [ConversationProvenanceChangedParams](#conversationprovenancechangedparams) | Authoritative conversational admission, retirement or request coverage changed. |
 | `evener/thread/name/changed` | [ThreadNameChangedParams](#threadnamechangedparams) | The session title changed (generated or user-renamed). |
 | `thread/model/changed` | [ThreadModelChangedParams](#threadmodelchangedparams) | The session's model/provider changed mid-session (thread/model/set or an equivalent switch). |
 | `thread/reasoning-effort/changed` | [ThreadReasoningEffortChangedParams](#threadreasoningeffortchangedparams) | The session's reasoning effort changed mid-session (thread/reasoning-effort/set). |
@@ -773,6 +774,51 @@ Underlying Go kind: `string` (no struct fields).
 | Field | Go type | Omitempty | Embedded |
 |-------|---------|-----------|----------|
 | `commands` | [][appwire.CommandDescriptor](#commanddescriptor) |  |  |
+
+
+### `ConversationFrontier`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `id` | string |  |  |
+| `baseId` | string | yes |  |
+| `addedInputs` | []string | yes |  |
+| `removedInputs` | []string | yes |  |
+
+
+### `ConversationOutputProvenance`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `version` | int |  |  |
+| `instanceId` | string |  |  |
+| `runGeneration` | uint64 |  |  |
+| `requestId` | string |  |  |
+| `frontierId` | string |  |  |
+| `sourceItemId` | string |  |  |
+
+
+### `ConversationProvenanceChangedParams`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `threadId` | string |  |  |
+| `ref` | string |  |  |
+| `provenance` | \*[appwire.ConversationProvenanceState](#conversationprovenancestate) |  |  |
+
+
+### `ConversationProvenanceState`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `version` | int |  |  |
+| `authoritative` | bool |  |  |
+| `revision` | uint64 |  |  |
+| `instanceId` | string |  |  |
+| `admittedInputs` | []string |  |  |
+| `retiredInputs` | []string |  |  |
+| `consumedFrontierId` | string | yes |  |
+| `frontiers` | [][appwire.ConversationFrontier](#conversationfrontier) |  |  |
 
 
 ### `DaemonBlocker`
@@ -1225,6 +1271,8 @@ Underlying Go kind: `string` (no struct fields).
 
 | Field | Go type | Omitempty | Embedded |
 |-------|---------|-----------|----------|
+| `conversationProvenance` | \*[appwire.ConversationProvenanceState](#conversationprovenancestate) | yes |  |
+| `pendingAsk` | \*[appwire.PendingAskState](#pendingaskstate) | yes |  |
 | `manager` | bool | yes |  |
 | `resumeRequired` | bool | yes |  |
 | `resumeOnlyFoldable` | bool | yes |  |
@@ -1353,6 +1401,8 @@ Underlying Go kind: `string` (no struct fields).
 
 | Field | Go type | Omitempty | Embedded |
 |-------|---------|-----------|----------|
+| `conversationProvenance` | bool | yes |  |
+| `voice` | bool | yes |  |
 | `sessionTools` | bool | yes |  |
 | `threadList` | bool |  |  |
 | `threadTurnsList` | bool |  |  |
@@ -2995,6 +3045,24 @@ Underlying Go kind: `string` (no struct fields).
 | `data` | []string |  |  |
 
 
+### `PendingAskCall`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `turnId` | string |  |  |
+| `callId` | string |  |  |
+
+
+### `PendingAskState`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `version` | int |  |  |
+| `instanceId` | string |  |  |
+| `revision` | uint64 |  |  |
+| `calls` | [][appwire.PendingAskCall](#pendingaskcall) |  |  |
+
+
 ### `PendingMutation`
 
 | Field | Go type | Omitempty | Embedded |
@@ -4424,6 +4492,7 @@ Underlying Go kind: `string` (no struct fields).
 
 | Field | Go type | Omitempty | Embedded |
 |-------|---------|-----------|----------|
+| `conversationProvenance` | \*[appwire.ConversationOutputProvenance](#conversationoutputprovenance) | yes |  |
 | `actor` | \*[appwire.SessionActor](#sessionactor) | yes |  |
 | `observation` | \*[appwire.SessionObservationMetadata](#sessionobservationmetadata) | yes |  |
 | `authorship` | \*[appwire.TranscriptAuthorship](#transcriptauthorship) | yes |  |
