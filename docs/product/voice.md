@@ -51,6 +51,10 @@ The transcript remains the authority even when speech is suppressed or stopped.
 After that baseline, the bridge follows matching-snapshot history pages back to
 its speech cursor, including output committed during playback or reconnect fencing.
 
+Compaction during a model request preserves that request's exact input coverage
+when its response is committed. Inputs admitted or incorporated after dispatch
+cannot become part of that response's provenance.
+
 Question speech uses the successful executor's canonical public state, including
 the full ordered questions and options. The current pending owner must name the
 same execution and call. Original tool arguments, navigation previews and legacy
@@ -72,6 +76,8 @@ watermark in the provider's 24 kHz sample timeline.
 Native playback limits outstanding audio. A physical buffer-drain acknowledgement
 releases queue capacity even while the provider is still generating that item.
 Cumulative played evidence and provider-gated completion remain intact.
+The device accepts the hub's nonempty, even-length PCM16LE packets through 64 KiB
+of decoded audio, independently of the outstanding playback limit.
 
 At utterance start, the journal pins the binding's latest presentation identity,
 including an explicit absence when nothing has been presented. Preparing the
@@ -95,9 +101,10 @@ A newer typed admission also retires stale speech before a fresh reply exists.
 Delayed old audio and output from a request that did not consume the correction
 cannot become the new reply.
 
-An explicit session Stop retires the speech fence for a start that never reached
-canonical input history. Inputs recorded before interruption remain required
-across compaction and restore.
+An explicit session Stop or definitive input-preparation failure retires the
+speech fence only for inputs that never reached canonical history. Inputs
+recorded before interruption or failure remain required across compaction and
+restore. Accepted or unsettled inputs continue to fence stale replies.
 
 Disconnect aborts incomplete audio input. Journaled text intents and receipts
 remain durable. Disarm and takeover retire the listening binding without
