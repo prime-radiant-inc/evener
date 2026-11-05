@@ -214,7 +214,10 @@ public struct PlaybackTimeline {
     public mutating func append(delivery: String, generation: Int, item: String, providerSamples: Int, outputSamples: Int, outputRate: Double, outputStart: Int? = nil) throws {
         guard providerSamples > 0, outputSamples > 0, outputRate > 0, !ended.contains(item) else { throw PlaybackError.invalid }
         guard chunks.count < 8192, ended.count < 128 else { throw PlaybackError.overflow }
-        guard chunks.filter({ !completed.contains($0.item) }).reduce(providerSamples, { $0 + $1.providerSamples }) <= 720000 else { throw PlaybackError.overflow }
+        // Physical drains release queue capacity even while the provider item
+        // remains open. Keep drained chunks for cumulative played evidence and
+        // provider-gated receipts, but charge only buffers not yet fully drained.
+        guard chunks.filter({ $0.end > drainedEnd }).reduce(providerSamples, { $0 + $1.providerSamples }) <= 720000 else { throw PlaybackError.overflow }
         if chunks.contains(where: { $0.item == item }), chunks.last?.item != item { throw PlaybackError.itemOrder }
         let start = max(scheduledOutputSamples, outputStart ?? scheduledOutputSamples)
         chunks.append(Chunk(delivery: delivery, generation: generation, item: item, start: start, end: start + outputSamples, providerSamples: providerSamples))
