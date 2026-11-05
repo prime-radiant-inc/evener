@@ -2,6 +2,23 @@ import Foundation
 
 public struct VoiceFailure: Error { public let code: String; public init(_ code: String) { self.code = code } }
 
+/// A complete mono 24 kHz PCM16LE packet, before hardware-rate conversion.
+public struct VoicePlaybackPacket {
+    private let pcm: Data
+    public var sampleCount: Int { pcm.count / 2 }
+    public init(_ pcm: Data) throws {
+        // Match the hub's decoded PCM byte cap, not one second of audio.
+        guard !pcm.isEmpty, pcm.count % 2 == 0, pcm.count <= 64 * 1024 else { throw VoiceFailure("audio_packet_invalid") }
+        self.pcm = pcm
+    }
+    public func copySamples(to channel: UnsafeMutableBufferPointer<Float>) {
+        precondition(channel.count >= sampleCount)
+        pcm.withUnsafeBytes { bytes in
+            for i in 0..<sampleCount { channel[i] = Float(Int16(littleEndian: bytes.loadUnaligned(fromByteOffset: i * 2, as: Int16.self))) / 32768 }
+        }
+    }
+}
+
 public func voiceExpiry(_ value: String) -> Date? {
     let formatter = ISO8601DateFormatter()
     formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
