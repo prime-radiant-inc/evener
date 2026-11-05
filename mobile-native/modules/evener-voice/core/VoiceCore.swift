@@ -196,7 +196,7 @@ public struct VoiceController {
         let actions = abort(reason: "capture_interrupted")
         state = .recovering
         if advanceGeneration { minimumGeneration += 1 }
-        quietRing.removeAll()
+        quietRing.removeAll(); followupUntil = nil
         return actions + [.flushOutput]
     }
     public mutating func disarm() -> [VoiceAction] {
