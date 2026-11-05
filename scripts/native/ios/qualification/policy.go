@@ -12,6 +12,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"strings"
 )
 
 var (
@@ -42,6 +43,55 @@ func prebuildCommand(phase string) []string {
 // installed native graph and writes its complete sorted-key JSON form.
 func canonicalProjectCommand(script, native, project, canonical string) []string {
 	return []string{"node", script, native, project, canonical}
+}
+
+// podUnlockNeeded reports whether CocoaPods refused installation because a
+// local podspec's recorded version changed — the only failure the runner
+// unlocks. Any other failure stays a surfaced error for review.
+func podUnlockNeeded(installLog []byte) bool {
+	return strings.Contains(string(installLog),
+		"It seems like you've changed the version of the dependency")
+}
+
+// localPodNames returns the local development pods the committed lock declares
+// under EXTERNAL SOURCES (a :path: or a local :podspec:). These are the SDK-
+// and app-owned roots a `pod update` may unlock; registry pods never appear
+// here and keep their locked versions.
+func localPodNames(lock []byte) []string {
+	var names []string
+	inSources := false
+	entry := ""
+	for line := range strings.SplitSeq(string(lock), "\n") {
+		line = strings.TrimSuffix(line, "\r")
+		switch {
+		case line == "EXTERNAL SOURCES:":
+			inSources = true
+		case !inSources:
+		case line == "":
+		case !strings.HasPrefix(line, " "):
+			return names
+		case strings.HasPrefix(line, "    :path:"):
+			if entry != "" {
+				names = append(names, entry)
+				entry = ""
+			}
+		case strings.HasPrefix(line, "    :podspec:") && !strings.Contains(line, "://"):
+			if entry != "" {
+				names = append(names, entry)
+				entry = ""
+			}
+		case strings.HasPrefix(line, "  ") && strings.HasSuffix(line, ":"):
+			entry = strings.TrimSuffix(strings.TrimSpace(line), ":")
+		}
+	}
+	return names
+}
+
+// podUnlockCommand unlocks the named local pods and only those: the registry
+// pins the lock also carries are never named and keep their locked versions.
+func podUnlockCommand(names []string) []string {
+	args := append([]string{"bundle", "exec", "pod", "update"}, names...)
+	return append(args, "--no-repo-update", "--project-directory=ios")
 }
 
 func checkLock(ctx context.Context, committed, resolved, output string) error {

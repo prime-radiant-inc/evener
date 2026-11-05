@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"slices"
+	"strings"
 	"testing"
 )
 
@@ -248,6 +249,76 @@ func TestProjectCanonicalizationRunsTheInstalledParser(t *testing.T) {
 	want := []string{"node", script, native, project, canonical}
 	if got := canonicalProjectCommand(script, native, project, canonical); !slices.Equal(got, want) {
 		t.Fatalf("canonicalization argv = %v, want %v", got, want)
+	}
+}
+
+func TestPodUnlockTriggersOnlyOnChangedVersionRefusal(t *testing.T) {
+	t.Parallel()
+	// Verbatim CocoaPods 1.16.2 refusal captured from Mac run 41969592127.
+	refusal := "[!] CocoaPods could not find compatible versions for pod \"ReactNativeDependencies\":\n" +
+		"  In snapshot (Podfile.lock):\n" +
+		"    ReactNativeDependencies (from `../node_modules/react-native/third-party-podspecs/ReactNativeDependencies.podspec`)\n" +
+		"\n" +
+		"  In Podfile:\n" +
+		"    ReactNativeDependencies (from `../node_modules/react-native/third-party-podspecs/ReactNativeDependencies.podspec`)\n" +
+		"\n" +
+		"It seems like you've changed the version of the dependency `ReactNativeDependencies` and it differs from the version stored in `Pods/Local Podspecs`.\n" +
+		"You should run `pod update ReactNativeDependencies --no-repo-update` to apply changes made locally.\n"
+	if !podUnlockNeeded([]byte(refusal)) {
+		t.Fatal("the changed-local-podspec refusal must trigger the SDK unlock")
+	}
+	for name, failure := range map[string]string{
+		"missing podspec":  "No podspec for `ReactNativeDependencies` found in the specified paths.\n",
+		"resolution error": "[!] CocoaPods could not find compatible versions for pod \"Expo\":\n  In snapshot (Podfile.lock): Expo (= 57.0.23)\n",
+		"empty log":        "",
+	} {
+		if podUnlockNeeded([]byte(failure)) {
+			t.Fatalf("%s must not trigger the unlock", name)
+		}
+	}
+}
+
+func TestLocalPodNamesCoverSdkOwnedSourcesOnly(t *testing.T) {
+	t.Parallel()
+	// The committed lock uses CRLF. Registry pods resolve from SPEC REPOS and
+	// have no EXTERNAL SOURCES entry; local development pods appear there with
+	// :path: or a local :podspec:.
+	lock := strings.ReplaceAll(`PODS:
+  - EXApplication (58.1.2):
+    - ExpoModulesCore
+
+SPEC REPOS:
+  trunk:
+    - libwebp
+    - SDWebImageWebPCoder
+
+EXTERNAL SOURCES:
+  EXApplication:
+    :path: "../node_modules/expo-application/ios"
+  hermes-engine:
+    :podspec: "../node_modules/react-native/sdks/hermes-engine/hermes-engine.podspec"
+    :tag: hermes-v250829098.0.17
+  ReactNativeDependencies:
+    :podspec: "../node_modules/react-native/third-party-podspecs/ReactNativeDependencies.podspec"
+
+SPEC CHECKSUMS:
+  EXApplication: 36d54f24eb98a1d63ee9e840e7bd8e949c6f598591c1ad19b2a18cd0d80428d1
+
+PODFILE CHECKSUM: 2d90de0738a5a44d8e6ee4b30a9577c8020d12b4a
+
+COCOAPODS: 1.16.2
+`, "\n", "\r\n")
+	want := []string{"EXApplication", "hermes-engine", "ReactNativeDependencies"}
+	if got := localPodNames([]byte(lock)); !slices.Equal(got, want) {
+		t.Fatalf("local pods = %v, want %v", got, want)
+	}
+}
+
+func TestPodUnlockKeepsRepoFlagOrder(t *testing.T) {
+	t.Parallel()
+	want := []string{"bundle", "exec", "pod", "update", "Expo", "hermes-engine", "--no-repo-update", "--project-directory=ios"}
+	if got := podUnlockCommand([]string{"Expo", "hermes-engine"}); !slices.Equal(got, want) {
+		t.Fatalf("unlock argv = %v, want %v", got, want)
 	}
 }
 
