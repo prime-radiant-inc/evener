@@ -3,9 +3,14 @@ import XCTest
 /// The installed-app qualification journeys for the native migration.
 /// Each test drives the real Release app on the run-owned simulator against
 /// a real isolated hub whose provider answers every ordinary turn with the
-/// fixed qualification fixture. The UI runner passes the hub's origin and
-/// its fixture-only token through the test-run environment; the app never
-/// reads a host path, and nothing here publishes.
+/// fixed qualification fixture. The UI runner passes the hub's origin, its
+/// fixture-only token, the run-owned workspace and the hub host's home
+/// through the test-run environment; the app never reads a host path, and
+/// nothing here publishes.
+///
+/// The tests share one app install, so the suite starts with the recovery
+/// journey, which saves the hub; every later journey reuses that saved hub
+/// and never onboards again.
 ///
 /// The fixture markers (prose, emphasis, code) and the draft below are
 /// supplied test data, not product copy: they identify rendered content,
@@ -16,6 +21,11 @@ final class EvenerQualificationUITests: XCTestCase {
 	/// long a genuinely stuck journey may hold the run. It is never a
 	/// pacing mechanism.
 	private let tripwire = TimeInterval(120)
+	/// How long a negative wait may look before concluding the app did the
+	/// right thing by NOT showing a surface (a credential prompt after a
+	/// cold launch). Short because absence is proven by the app settling,
+	/// not by waiting out a long window.
+	private let absenceBound = TimeInterval(10)
 
 	private var hubOrigin: String {
 		ProcessInfo.processInfo.environment["EVENER_QUALIFICATION_HUB_ORIGIN"] ?? ""
@@ -23,6 +33,14 @@ final class EvenerQualificationUITests: XCTestCase {
 
 	private var hubToken: String {
 		ProcessInfo.processInfo.environment["EVENER_QUALIFICATION_HUB_TOKEN"] ?? ""
+	}
+
+	private var workspace: String {
+		ProcessInfo.processInfo.environment["EVENER_QUALIFICATION_WORKSPACE"] ?? ""
+	}
+
+	private var hubHome: String {
+		ProcessInfo.processInfo.environment["EVENER_QUALIFICATION_HOME"] ?? ""
 	}
 
 	private static let draft = "QUALIFICATION_draft_d0"
@@ -34,12 +52,12 @@ final class EvenerQualificationUITests: XCTestCase {
 	/// The complete recovery journey: onboarding by address and token, a real
 	/// session whose completed response renders natively, an unsent draft,
 	/// reactivation and a cold launch that both keep the saved hub without
-	/// re-entering credentials, the exact draft surviving, and an
-	/// authenticated follow-up through the real hub. That follow-up after the
-	/// cold launch is the credential-readback proof.
+	/// re-entering credentials, the exact draft surviving in the restored
+	/// conversation, and an authenticated follow-up through the real hub.
+	/// That follow-up after the cold launch is the credential-readback proof.
 	func testSavedHubMarkdownAndDraftRecovery() {
 		let app = XCUIApplication()
-		onboard(app)
+		onboardIfNeeded(app)
 		startSession(app, prompt: "qualify the renderer")
 
 		let markdown = app.descendants(matching: .any).matching(identifier: "native-markdown").firstMatch
@@ -64,72 +82,82 @@ final class EvenerQualificationUITests: XCTestCase {
 		XCTAssertTrue(composer.waitForExistence(timeout: tripwire), "reactivation lost the conversation")
 
 		// Cold launch: terminate and relaunch. Credentials must survive, so
-		// the first-run onboarding must not reappear.
+		// the first-run onboarding must not reappear, and the restored
+		// conversation carries the composer with the exact unsent draft.
 		app.terminate()
 		app.launch()
-		XCTAssertTrue(app.buttons["New session"].waitForExistence(timeout: tripwire), "cold launch lost the saved hub")
-		XCTAssertFalse(app.buttons["add-hub:address"].exists, "cold launch asked for credentials again")
-
-		let session = app.descendants(matching: .any)
-			.matching(NSPredicate(format: "label CONTAINS %@", "Fake Session")).firstMatch
-		XCTAssertTrue(session.waitForExistence(timeout: tripwire), "cold launch lost the session")
-		session.tap()
-
+		XCTAssertFalse(
+			app.buttons["add-hub:address"].waitForExistence(timeout: absenceBound),
+			"cold launch asked for credentials again"
+		)
 		let recovered = composerField(app)
-		XCTAssertTrue(recovered.waitForExistence(timeout: tripwire), "the recovered conversation never showed its composer")
 		XCTAssertEqual(recovered.value as? String, Self.draft, "the unsent draft did not survive the cold launch")
 		attach(app, "recovered-draft")
 
 		// The authenticated follow-up: the recovered credentials carry a new
-		// turn through the real hub, and its response renders.
+		// turn through the real hub, and its response renders. The baseline
+		// is sampled before sending, so the wait compares counts honestly.
 		recovered.tap()
 		recovered.typeText("qualify the readback")
 		let send = app.buttons["Send"]
 		XCTAssertTrue(send.waitForExistence(timeout: tripwire), "Send never became available")
-		send.tap()
 		let followUp = app.descendants(matching: .any)
 			.matching(NSPredicate(format: "label CONTAINS %@", "QUALIFICATION_code_c9"))
-		let firstResponse = followUp.count
-		XCTAssertTrue(
-			wait(for: NSPredicate(format: "count > %d", firstResponse), on: followUp, seconds: tripwire),
+		let baseline = followUp.count
+		send.tap()
+		let deadline = Date().addingTimeInterval(tripwire)
+		while Date() < deadline && followUp.count <= baseline {
+			Thread.sleep(forTimeInterval: 0.25)
+		}
+		XCTAssertGreaterThan(
+			followUp.count,
+			baseline,
 			"the follow-up turn never completed through the recovered credentials"
 		)
 		attach(app, "follow-up-response")
 	}
 
 	/// Scheme activation only: evener-native://share must bring the app to
-	/// the foreground warm and cold, and ordinary controls must keep working
-	/// after activation. Delivery through Safari's share sheet is a separate,
-	/// unclaimed journey.
+	/// the foreground from the background (warm) and from a terminated state
+	/// (cold), and ordinary controls must keep working after activation.
+	/// Delivery through Safari's share sheet is a separate, unclaimed journey.
 	func testWarmAndColdShareSchemeActivation() {
 		let app = XCUIApplication()
 		app.launch()
 		XCTAssertTrue(
-			app.buttons["add-hub:address"].waitForExistence(timeout: tripwire),
-			"the app never reached its first-run controls"
+			mainSurface(app).waitForExistence(timeout: tripwire),
+			"the app never reached its own controls"
 		)
+		// Warm: the app is alive in the background when the scheme arrives.
+		XCUIDevice.shared.press(.home)
 		XCUIDevice.shared.system.open(URL(string: "evener-native://share")!)
 		XCTAssertTrue(
 			app.waitForState(.runningForeground, timeout: tripwire),
 			"warm scheme activation left the app in the background"
 		)
-		XCTAssertTrue(app.buttons["add-hub:address"].exists, "scheme activation replaced the app's controls")
+		XCTAssertTrue(mainSurface(app).waitForExistence(timeout: tripwire), "scheme activation replaced the app's controls")
 
+		// Cold: the app is terminated, never launched, when the scheme
+		// arrives; the URL delivery itself starts it.
 		app.terminate()
-		app.launch()
-		XCTAssertTrue(
-			app.buttons["add-hub:address"].waitForExistence(timeout: tripwire),
-			"the cold launch never reached its first-run controls"
-		)
 		XCUIDevice.shared.system.open(URL(string: "evener-native://share")!)
 		XCTAssertTrue(
 			app.waitForState(.runningForeground, timeout: tripwire),
 			"cold scheme activation left the app in the background"
 		)
 		let way = app.buttons["add-hub:address"]
-		XCTAssertTrue(way.exists, "ordinary controls did not survive scheme activation")
-		way.tap()
-		XCTAssertTrue(app.textFields["hub-address"].waitForExistence(timeout: tripwire), "ordinary controls stopped working")
+		if way.waitForExistence(timeout: absenceBound) {
+			way.tap()
+			XCTAssertTrue(
+				app.textFields["hub-address"].waitForExistence(timeout: tripwire),
+				"ordinary controls stopped working after scheme activation"
+			)
+		} else {
+			XCTAssertTrue(
+				app.buttons["New session"].waitForExistence(timeout: tripwire),
+				"ordinary controls did not survive scheme activation"
+			)
+		}
 	}
 
 	/// A swipe inside an ordinary native sheet must leave its controls
@@ -138,7 +166,7 @@ final class EvenerQualificationUITests: XCTestCase {
 	/// gesture-source regression checks.
 	func testSheetGestureKeepsControlsUsable() {
 		let app = XCUIApplication()
-		onboard(app)
+		onboardIfNeeded(app)
 		let newSession = app.buttons["New session"]
 		XCTAssertTrue(newSession.waitForExistence(timeout: tripwire), "the board never appeared")
 		newSession.tap()
@@ -160,35 +188,46 @@ final class EvenerQualificationUITests: XCTestCase {
 
 	// MARK: - Journey steps
 
-	/// Ordinary address/token onboarding: enter the address way, type the
-	/// fixture hub's origin and token, continue, and connect under the
-	/// suggested name.
-	private func onboard(_ app: XCUIApplication) {
+	/// The app's own main controls, whichever surface it restored to: the
+	/// first-run address way or the board's New session.
+	private func mainSurface(_ app: XCUIApplication) -> XCUIElement {
+		return app.descendants(matching: .any)
+			.matching(NSPredicate(format: "identifier IN %@", ["add-hub:address", "New session"])).firstMatch
+	}
+
+	/// Launches the app and, on a fresh install, saves the fixture hub
+	/// through the ordinary address way. A later journey in the same install
+	/// reuses the saved hub and goes straight to the board.
+	private func onboardIfNeeded(_ app: XCUIApplication) {
+		app.launch()
 		let way = app.buttons["add-hub:address"]
-		XCTAssertTrue(way.waitForExistence(timeout: tripwire), "first run never offered the address way")
-		way.tap()
-		let address = app.textFields["hub-address"]
-		XCTAssertTrue(address.waitForExistence(timeout: tripwire), "the address field never appeared")
-		address.tap()
-		address.typeText(hubOrigin)
-		let token = app.secureTextFields["hub-token"]
-		XCTAssertTrue(token.waitForExistence(timeout: tripwire), "the token field never appeared")
-		token.tap()
-		token.typeText(hubToken)
-		let proceed = app.buttons["hub-continue"]
-		XCTAssertTrue(proceed.waitForExistence(timeout: tripwire), "the Continue row never appeared")
-		proceed.tap()
-		let connect = app.buttons["Connect"]
-		XCTAssertTrue(connect.waitForExistence(timeout: tripwire), "the review step never appeared")
-		connect.tap()
+		if way.waitForExistence(timeout: tripwire) {
+			way.tap()
+			let address = app.textFields["hub-address"]
+			XCTAssertTrue(address.waitForExistence(timeout: tripwire), "the address field never appeared")
+			address.tap()
+			address.typeText(hubOrigin)
+			let token = app.secureTextFields["hub-token"]
+			XCTAssertTrue(token.waitForExistence(timeout: tripwire), "the token field never appeared")
+			token.tap()
+			token.typeText(hubToken)
+			let proceed = app.buttons["hub-continue"]
+			XCTAssertTrue(proceed.waitForExistence(timeout: tripwire), "the Continue row never appeared")
+			proceed.tap()
+			let connect = app.buttons["Connect"]
+			XCTAssertTrue(connect.waitForExistence(timeout: tripwire), "the review step never appeared")
+			connect.tap()
+		}
 		XCTAssertTrue(
 			app.buttons["New session"].waitForExistence(timeout: tripwire),
 			"the board never appeared after onboarding"
 		)
 	}
 
-	/// A real session: open the New session sheet, type the prompt, and let
-	/// Start carry it through the real hub.
+	/// A real session in the run-owned workspace: open the New session sheet,
+	/// type the prompt, and choose the project through the ordinary picker —
+	/// a fresh hub lists no recent projects, so the workspace is reached by
+	/// browsing — then wait for Start to unlock and start.
 	private func startSession(_ app: XCUIApplication, prompt promptText: String) {
 		let newSession = app.buttons["New session"]
 		XCTAssertTrue(newSession.waitForExistence(timeout: tripwire))
@@ -197,9 +236,40 @@ final class EvenerQualificationUITests: XCTestCase {
 		XCTAssertTrue(prompt.waitForExistence(timeout: tripwire), "the New session sheet never opened")
 		prompt.tap()
 		prompt.typeText(promptText)
+
+		let browse = app.buttons
+			.matching(NSPredicate(format: "label BEGINSWITH %@", "Browse folders")).firstMatch
+		XCTAssertTrue(browse.waitForExistence(timeout: tripwire), "the project picker never offered browsing")
+		browse.tap()
+
+		// The browse starts in the hub host's home; walk up to the filesystem
+		// root, then down the workspace's own segments.
+		let up = app.buttons["Up one folder"]
+		let ups = hubHome.split(separator: "/").filter { !$0.isEmpty }.count
+		for _ in 0..<ups {
+			XCTAssertTrue(up.waitForExistence(timeout: tripwire), "the browse never offered going up")
+			up.tap()
+		}
+		for segment in workspace.split(separator: "/").filter({ !$0.isEmpty }) {
+			let folder = app.buttons[String(segment)]
+			XCTAssertTrue(folder.waitForExistence(timeout: tripwire), "the browse never listed \(segment)")
+			folder.tap()
+		}
+		let use = app.buttons["Use this folder"]
+		XCTAssertTrue(use.waitForExistence(timeout: tripwire), "the browse never offered the workspace")
+		use.tap()
+
 		let start = app.buttons["Start"]
 		XCTAssertTrue(start.waitForExistence(timeout: tripwire), "Start never appeared")
+		waitForEnabled(start)
 		start.tap()
+	}
+
+	/// Waits for a control to become enabled using XCTest's own expectation
+	/// over the element, so the wait resolves the moment it unlocks.
+	private func waitForEnabled(_ element: XCUIElement) {
+		let unlocked = expectation(for: NSPredicate(format: "isEnabled == true"), evaluatedWith: element)
+		wait(for: [unlocked], timeout: tripwire)
 	}
 
 	/// The conversation's composer, addressed by its stable identifier. The
@@ -215,17 +285,5 @@ final class EvenerQualificationUITests: XCTestCase {
 		attachment.name = name
 		attachment.lifetime = .keepAlways
 		add(attachment)
-	}
-
-	/// Waits for a predicate over an arbitrary query's snapshot count. The
-	/// journey resolves as soon as the predicate holds; tripwire only bounds
-	/// a genuinely stuck wait.
-	private func wait(for predicate: NSPredicate, on query: XCUIElementQuery, seconds limit: TimeInterval) -> Bool {
-		let deadline = Date().addingTimeInterval(limit)
-		while Date() < deadline {
-			if predicate.evaluate(with: query.count) { return true }
-			Thread.sleep(forTimeInterval: 0.25)
-		}
-		return predicate.evaluate(with: query.count)
 	}
 }

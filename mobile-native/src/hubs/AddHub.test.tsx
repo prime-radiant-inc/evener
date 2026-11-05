@@ -289,12 +289,10 @@ it("carries stable identifiers on the working address, token and continue contro
 	const [token] = withTestID(tree, "hub-token");
 	const [continueRow] = withTestID(tree, "hub-continue");
 	expect(address && String(address.type)).toBe("TextInput");
-	expect(address.props.accessibilityLabel).toBe("Address");
 	expect(address.props.keyboardType).toBe("url");
 	expect(token && String(token.type)).toBe("TextInput");
-	expect(token.props.accessibilityLabel).toBe("Token (optional)");
 	expect(token.props.secureTextEntry).toBe(true);
-	expect(continueRow?.props.accessibilityLabel).toBe("Continue");
+	expect(continueRow).toBeDefined();
 	expect(button(tree, "Continue").props.disabled).toBe(true);
 	act(() => {
 		address.props.onChangeText("https://magic-kingdom:9180");

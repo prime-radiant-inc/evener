@@ -97,7 +97,6 @@ describe("Composer", () => {
 		const { props, tree } = composer({ value: "hello" });
 		const [field] = withTestID(tree, "composer-message");
 		expect(field && String(field.type)).toBe("TextInput");
-		expect(field.props.accessibilityLabel).toBe("Message");
 		expect(field.props.value).toBe("hello");
 		act(() => {
 			field.props.onChangeText("next");

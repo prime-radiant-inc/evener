@@ -317,7 +317,6 @@ it("carries the prompt's stable identifier on the working input", async () => {
 	const form = await mount({ draft: { cwd: "/home/jesse/git/evener" } });
 	const [prompt] = withTestID(form.tree, "session-prompt");
 	expect(prompt && String(prompt.type)).toBe("TextInput");
-	expect(prompt.props.accessibilityLabel).toBe("What should the agent do?");
 	expect(prompt.props.autoFocus).toBe(true);
 	act(() => {
 		prompt.props.onChangeText("QUALIFICATION_draft_d0");

@@ -82,22 +82,36 @@ fi
 # .../DerivedData/Build/Products/Release-iphonesimulator/Evener.app
 derived_data="$(cd "$(dirname "$app_path")/../../.." && pwd -P)"
 
-# Private run state: none of this reaches the output directory.
-run_dir="$(mktemp -d "${TMPDIR:-/tmp}/evener-ui-qualification.XXXXXX")"
+# Private run state: none of this reaches the output directory. scratch_dir
+# mints both directories and scratch_rm reclaims them; no recursive delete in
+# this script ever takes a path argument.
+scratch_dir run_dir evener-ui-qualification
+scratch_dir workspace evener-ui-qualification-workspace
 config_home="$run_dir/config"
 state_home="$run_dir/state"
 cache_home="$run_dir/cache"
-workspace="$run_dir/workspace"
 mkdir -p "$config_home/evener" "$state_home" "$cache_home" "$workspace"
 chmod 700 "$run_dir" "$config_home" "$state_home" "$cache_home" "$workspace"
 
 provider_pid=""
 hub_pid=""
+daemons_stopped=0
 provider_binary="$run_dir/fixture-provider"
 evener_binary="$run_dir/evener"
 
 cleanup() {
 	status=$?
+	# The hub deliberately outlives the daemons it spawns, and it announces
+	# each one's pid in its log; stop this run's daemons before its state goes.
+	if [ -f "$output/hub.log" ] && [ "$daemons_stopped" -eq 0 ]; then
+		while read -r daemon_pid; do
+			[ -n "$daemon_pid" ] || continue
+			kill -0 "$daemon_pid" 2>/dev/null || continue
+			ps -o args= -p "$daemon_pid" 2>/dev/null | grep -qF -- "$run_dir" || continue
+			kill -TERM "$daemon_pid" 2>/dev/null || true
+		done < <(grep -oE 'daemon session=[^ ]+ pid=[0-9]+' "$output/hub.log" | grep -oE '[0-9]+$')
+		daemons_stopped=1
+	fi
 	if [ -n "$hub_pid" ]; then
 		kill -TERM "$hub_pid" 2>/dev/null || true
 		for _ in $(seq 1 50); do
@@ -114,7 +128,7 @@ cleanup() {
 		done
 		kill -KILL "$provider_pid" 2>/dev/null || true
 	fi
-	rm -rf "$run_dir"
+	scratch_rm
 	exit "$status"
 }
 trap cleanup EXIT
@@ -172,6 +186,13 @@ base_url = "$provider_base"
 api_key = "fakellm-not-a-secret"
 EOF
 export EVENER_PROVIDERS_CONFIG="$config_home/evener/providers.toml"
+
+# A quiet disposable hub, the same choice the ratelimited-provider fixture
+# makes: without this the hub refreshes seeded plugin marketplaces over the
+# network the moment it starts.
+cat >"$config_home/evener/hub.toml" <<'EOF'
+plugin_auto_upgrade = false
+EOF
 
 log "starting the isolated hub"
 "$evener_binary" hub -addr 127.0.0.1:0 -evener "$evener_binary" >"$output/hub.log" 2>&1 &
@@ -260,9 +281,10 @@ fi
 /usr/libexec/PlistBuddy -c "Add :$ui_key:EnvironmentVariables dict" "$private_run" >/dev/null
 /usr/libexec/PlistBuddy -c "Add :$ui_key:EnvironmentVariables:EVENER_QUALIFICATION_HUB_ORIGIN string $hub_origin" "$private_run" >/dev/null
 /usr/libexec/PlistBuddy -c "Add :$ui_key:EnvironmentVariables:EVENER_QUALIFICATION_HUB_TOKEN string $hub_token" "$private_run" >/dev/null
+/usr/libexec/PlistBuddy -c "Add :$ui_key:EnvironmentVariables:EVENER_QUALIFICATION_WORKSPACE string $workspace" "$private_run" >/dev/null
+/usr/libexec/PlistBuddy -c "Add :$ui_key:EnvironmentVariables:EVENER_QUALIFICATION_HOME string $HOME" "$private_run" >/dev/null
 
 xcresult="$output/ui.xcresult"
-rm -rf "$xcresult"
 log "running the qualification journeys"
 set +e
 xcodebuild test-without-building \

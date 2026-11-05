@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -99,7 +100,7 @@ func TestFixtureProviderCompletesTurnAndStops(t *testing.T) {
 	}
 	if _, err := http.Post(baseURL+"/chat/completions", "application/json", strings.NewReader(request)); err == nil {
 		t.Fatal("listener survived cancellation")
-	} else if !errors.Is(err, context.DeadlineExceeded) && !strings.Contains(err.Error(), "connection refused") {
+	} else if !errors.Is(err, syscall.ECONNREFUSED) {
 		t.Fatalf("unexpected post-cancellation failure: %v", err)
 	}
 }
