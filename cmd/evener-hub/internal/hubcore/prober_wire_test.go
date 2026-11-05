@@ -259,7 +259,7 @@ func TestStatusProberReadsAppWireStatusIncludingNonAgentJobs(t *testing.T) {
 // snapshot cut as the status and the diagnostics the probe carries.
 func TestStatusProberCarriesDaemonCapabilities(t *testing.T) {
 	// Wire the production seam set so the daemon's idle answer is the
-	// production shape: every capability but fork is true at idle.
+	// production shape, including its explicit voice support advertisement.
 	prober, entry := startProbeDaemon(t, probeDaemonConfig{
 		sessionID: "th_wire_caps",
 		state:     appwire.ThreadStatusIdle,
@@ -273,7 +273,8 @@ func TestStatusProberCarriesDaemonCapabilities(t *testing.T) {
 		t.Fatal("CapabilitiesKnown = false, want true: the probe must carry the daemon's capabilities answer")
 	}
 	want := appwire.ThreadCapabilities{
-		Send: true, Steer: true, Interrupt: true, Queue: true,
+		VoicePresentationContextV1: true,
+		Send:                       true, Steer: true, Interrupt: true, Queue: true,
 		Compact: true, Clear: true, Shutdown: true, ChangeModel: true,
 		ChangeVisionModel: true, Rename: true, Goal: true, SharedNotes: true,
 		SkillInput: true, CommandInput: true, StopSubagent: true, // ForkFromTurn stays the daemon's hardwired false.
