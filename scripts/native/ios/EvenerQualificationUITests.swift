@@ -351,8 +351,10 @@ final class EvenerQualificationUITests: XCTestCase {
 	/// clear is judged by the field reading empty, never by a tap count: a
 	/// restored draft can leave the field holding far more than the text
 	/// just typed, and the deletes can drop under load the same way typing
-	/// does. Secure fields hide their text, so they are checked by their
-	/// bullet count.
+	/// does. An empty field reads as its own placeholder, so that reading
+	/// counts as empty too — no journey types its placeholder into a field.
+	/// Secure fields hide their text, so they are checked by their bullet
+	/// count.
 	private func typeWholeText(
 		_ app: XCUIApplication,
 		_ field: XCUIElement,
@@ -371,7 +373,7 @@ final class EvenerQualificationUITests: XCTestCase {
 			var clears = 0
 			while clears < 12 && Date() < deadline {
 				let held = field.value as? String ?? ""
-				if held.isEmpty {
+				if held.isEmpty || held == (field.placeholderValue ?? "") {
 					break
 				}
 				for _ in 0..<24 where remove.exists && Date() < deadline {
