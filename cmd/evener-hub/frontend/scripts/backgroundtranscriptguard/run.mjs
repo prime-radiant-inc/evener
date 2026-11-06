@@ -693,21 +693,22 @@ function domainContent(domain) {
 // one window the model applied. The first read that returned turns is the
 // reconnect's initial replacement: its turns and recorded items are the base.
 // A later read on the same connection is a merge into what the model already
-// holds (the entry route keeps the reader's older edge), so its items join
-// their turn by identity and a later copy of a shared item supersedes the
-// base's — the latest copy the merge applies. A window-capped read can stop in
-// the middle of a turn, so one turn's items legitimately arrive from two reads.
+// holds: applyReadResponse (appwire-client/typescript/transcriptHistory.ts) is
+// the authority, and it keeps the reader's older edge, joins items to their
+// turn by identity, and lets a later copy of a shared item supersede the
+// base's. A window-capped read can stop in the middle of a turn, so one turn's
+// items legitimately arrive from two reads.
 function composeReconnectWindow(newConnectionReads) {
   const turns = [];
   const byTurn = new Map();
   for (const read of newConnectionReads) {
     if (!Array.isArray(read.window) || read.window.length === 0) continue;
     for (const responseTurn of read.window) {
-      const key = responseTurn.turnId ?? "";
-      let turn = byTurn.get(key);
+      const turnId = responseTurn.turnId ?? null;
+      let turn = byTurn.get(turnId);
       if (!turn) {
-        turn = { turnId: responseTurn.turnId ?? null, items: [] };
-        byTurn.set(key, turn);
+        turn = { turnId, items: [] };
+        byTurn.set(turnId, turn);
         turns.push(turn);
       }
       for (const item of responseTurn.items ?? []) {
@@ -756,16 +757,16 @@ function reconnectValidator(before, evidence, applied = {}) {
   // that returned the union's oldest turn).
   const recordedItems = (items) => (items ?? []).filter((item) => item.type !== "systemMessage");
   const expectedWindow = composeReconnectWindow(newConnectionReads);
-  const edgeReads =
+  const edgeRead =
     expectedWindow.length === 0
-      ? []
-      : newConnectionReads.filter(
+      ? undefined
+      : newConnectionReads.find(
           (read) =>
             Array.isArray(read.window) &&
             read.window.length > 0 &&
-            (read.window[0].turnId ?? "") === (expectedWindow[0].turnId ?? ""),
+            (read.window[0].turnId ?? "") === (expectedWindow[0].turnId ?? "") &&
+            read.olderCursor === appliedCursor,
         );
-  const cursorMatches = edgeReads.some((read) => read.olderCursor === appliedCursor);
   let lastAppliedIndex = -1;
   const windowMatches =
     Array.isArray(appliedWindow) &&
@@ -778,10 +779,8 @@ function reconnectValidator(before, evidence, applied = {}) {
         recordedItems(appliedWindow[appliedIndex].items),
       );
     });
-  const appliedMatches = cursorMatches && windowMatches;
-  const reported = appliedMatches
-    ? edgeReads.find((read) => read.olderCursor === appliedCursor) ?? edgeReads[0]
-    : newConnectionReads[newConnectionReads.length - 1];
+  const appliedMatches = edgeRead !== undefined && windowMatches;
+  const reported = appliedMatches ? edgeRead : newConnectionReads[newConnectionReads.length - 1];
   return {
     reconnected,
     newReads,

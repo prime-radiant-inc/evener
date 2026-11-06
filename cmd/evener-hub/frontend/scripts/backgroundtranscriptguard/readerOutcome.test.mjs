@@ -462,7 +462,7 @@ describe("finding 1b: overlapping partial-turn reads on the reconnect connection
 
   // The target domain readTargetDomain returns: the display turns flattened, in
   // order, with the model's own cursor.
-  function domainOf(model) {
+  function domainOfModel(model) {
     return {
       cursor: model.olderCursor ?? "",
       items: model.turns
@@ -486,7 +486,7 @@ describe("finding 1b: overlapping partial-turn reads on the reconnect connection
   function mergedDomain() {
     let model = hydrateThread(readResponse([olderTurn, gapHead], "243"), REF, NOW);
     model = applyReadResponse(model, readResponse([olderTurn, gapHead], "243"), NOW);
-    return domainOf(applyReadResponse(model, readResponse([gapTail, afterTurn], "248"), NOW));
+    return domainOfModel(applyReadResponse(model, readResponse([gapTail, afterTurn], "248"), NOW));
   }
 
   const overlapPath = path.join(scratchRoot, "overlapping-partial-turns.jsonl");
@@ -502,6 +502,13 @@ describe("finding 1b: overlapping partial-turn reads on the reconnect connection
     ].join("\n"),
   );
 
+  // The guard's check against the shared overlap trace for one candidate model.
+  const validate = (domain) =>
+    guard.reconnectValidator(before, guard.targetPagingEvidence(REF, overlapPath), {
+      cursor: domain.cursor,
+      domain,
+    });
+
   test("required: the applied window is the ordered union of both reads", () => {
     const domain = mergedDomain();
     expect(domain.cursor).toBe("243");
@@ -510,10 +517,7 @@ describe("finding 1b: overlapping partial-turn reads on the reconnect connection
       "item_agent_248",
       "item_agent_249",
     ]);
-    const check = guard.reconnectValidator(before, guard.targetPagingEvidence(REF, overlapPath), {
-      cursor: domain.cursor,
-      domain,
-    });
+    const check = validate(domain);
     expect(check.newConnectionReads).toBe(2);
     expect(check.appliedMatches).toBe(true);
   });
@@ -522,22 +526,13 @@ describe("finding 1b: overlapping partial-turn reads on the reconnect connection
     // Only the reconnect read applied: turn_m50 stops at item_user_247.
     let model = hydrateThread(readResponse([olderTurn, gapHead], "243"), REF, NOW);
     model = applyReadResponse(model, readResponse([olderTurn, gapHead], "243"), NOW);
-    const domain = domainOf(model);
-    const check = guard.reconnectValidator(before, guard.targetPagingEvidence(REF, overlapPath), {
-      cursor: domain.cursor,
-      domain,
-    });
-    expect(check.appliedMatches).toBe(false);
+    expect(validate(domainOfModel(model)).appliedMatches).toBe(false);
   });
 
   test("RED: a follow-up window that replaced the reconnect read is rejected", () => {
     // Only the follow-up read applied: turn_m49 and item_user_247 are gone.
-    const domain = domainOf(hydrateThread(readResponse([gapTail, afterTurn], "248"), REF, NOW));
-    const check = guard.reconnectValidator(before, guard.targetPagingEvidence(REF, overlapPath), {
-      cursor: domain.cursor,
-      domain,
-    });
-    expect(check.appliedMatches).toBe(false);
+    const domain = domainOfModel(hydrateThread(readResponse([gapTail, afterTurn], "248"), REF, NOW));
+    expect(validate(domain).appliedMatches).toBe(false);
   });
 
   test("RED: the merged turn's items reordered are rejected", () => {
@@ -546,11 +541,7 @@ describe("finding 1b: overlapping partial-turn reads on the reconnect connection
     const merged = domain.items.filter((item) => item.turnId === "turn_m50");
     const items = [...domain.items];
     items.splice(head, merged.length, merged[0], merged[2], merged[1]);
-    const check = guard.reconnectValidator(before, guard.targetPagingEvidence(REF, overlapPath), {
-      cursor: domain.cursor,
-      domain: { ...domain, items },
-    });
-    expect(check.appliedMatches).toBe(false);
+    expect(validate({ ...domain, items }).appliedMatches).toBe(false);
   });
 
   test("RED: foreign content inside the merged turn is rejected", () => {
@@ -566,11 +557,7 @@ describe("finding 1b: overlapping partial-turn reads on the reconnect connection
       arguments: undefined,
       status: "completed",
     });
-    const check = guard.reconnectValidator(before, guard.targetPagingEvidence(REF, overlapPath), {
-      cursor: domain.cursor,
-      domain: { ...domain, items },
-    });
-    expect(check.appliedMatches).toBe(false);
+    expect(validate({ ...domain, items }).appliedMatches).toBe(false);
   });
 });
 
