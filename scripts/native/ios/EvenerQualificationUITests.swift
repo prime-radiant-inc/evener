@@ -223,11 +223,9 @@ final class EvenerQualificationUITests: XCTestCase {
 			let token = app.secureTextFields["hub-token"]
 			tap(token, "the token field never appeared")
 			token.typeText(hubToken)
-			// The token's return key takes the keyboard down before the
-			// review appears: a keyboard left up covers the review's Connect
-			// row, and a synthesized tap at that point lands on the keyboard
-			// window, never reaching the app.
-			token.typeText("\n")
+			// A keyboard left up covers the review's Connect row, and the
+			// tap lands on the keyboard window instead of the app.
+			dismissKeyboard(app, from: token)
 			tap(app.buttons["hub-continue"], "the Continue row never appeared")
 			tap(app.buttons["Connect"], "the review step never appeared")
 		}
@@ -245,6 +243,8 @@ final class EvenerQualificationUITests: XCTestCase {
 		let prompt = openNewSession(app)
 		tap(prompt, "the sheet's prompt never became tappable")
 		prompt.typeText(promptText)
+		// The sheet's picker sits where the prompt's keyboard can cover it.
+		dismissKeyboard(app, from: nil)
 
 		let browse = app.buttons
 			.matching(NSPredicate(format: "label BEGINSWITH %@", "Browse folders")).firstMatch
@@ -283,6 +283,32 @@ final class EvenerQualificationUITests: XCTestCase {
 		}
 		XCTAssertTrue(prompt.waitForExistence(timeout: 2), "the New session sheet never opened")
 		return prompt
+	}
+
+	/// Takes the keyboard down after typing in a form the journey is about to
+	/// leave. A keyboard left up covers the next control: the tap lands on
+	/// the keyboard window or is refused as not hittable, and the review's
+	/// Connect and the sheet's picker both sit under it. A single-line
+	/// field's return key dismisses but can race under load, and a multiline
+	/// one takes the newline as text, so the press is tried first, then the
+	/// form's own drag-to-dismiss, and the keyboard's absence is checked
+	/// rather than assumed.
+	private func dismissKeyboard(_ app: XCUIApplication, from field: XCUIElement?) {
+		let keyboard = app.keyboards.firstMatch
+		let deadline = Date().addingTimeInterval(tripwire)
+		while keyboard.exists && Date() < deadline {
+			if let field = field, field.exists {
+				field.typeText("\n")
+			}
+			if keyboard.exists {
+				let form = app.scrollViews.firstMatch
+				if form.exists {
+					form.swipeUp()
+				}
+			}
+			Thread.sleep(forTimeInterval: 0.5)
+		}
+		XCTAssertFalse(keyboard.exists, "the keyboard never came down")
 	}
 
 	/// Taps only once the control has a real frame. A control that registers
