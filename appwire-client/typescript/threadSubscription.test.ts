@@ -40,6 +40,47 @@ test("a status frame keeps shared metadata current across a closed and re-opened
   transcript.release();
 });
 
+test("a read issued before a newer status frame cannot revert the shared status", async () => {
+  const client = activityClient(),
+    late = deferred<ThreadReadResponse>(),
+    entered = deferred<void>();
+  const active: ThreadReadResponse = {
+    thread: { ...threadFixture().thread, id: "wire-root", sessionId: "root-session", status: { type: "active" } },
+  };
+  let reads = 0;
+  client.on("thread/read", () => {
+    reads += 1;
+    if (reads === 1) return active;
+    entered.resolve();
+    return late.promise;
+  });
+  const transcript = acquireThreadSubscription(client, activityRef);
+  await transcript.ensure();
+  expect(transcript.metadata?.()?.status).toEqual({ type: "active" });
+
+  // This read is issued while the thread is active; the frame that lands
+  // while it is on the wire is newer than the snapshot it will carry.
+  const inspector = acquireThreadSubscription(client, activityRef);
+  const pending = inspector.read({ includeTurns: true });
+  await entered.promise;
+  client.emitNotification({
+    method: "thread/status/changed",
+    params: { ref: activityRef, threadId: "wire-root", status: { type: "idle" } },
+  });
+  expect(transcript.metadata?.()?.status).toEqual({ type: "idle" });
+
+  late.resolve(active);
+  expect(await pending).toBe(active);
+  expect(transcript.metadata?.()?.status).toEqual({ type: "idle" });
+  inspector.release();
+  const reopened = acquireThreadSubscription(client, activityRef);
+  await reopened.ensure();
+  expect(reopened.metadata?.()?.status).toEqual({ type: "idle" });
+  expect(callsTo(client, "thread/read")).toBe(2);
+  reopened.release();
+  transcript.release();
+});
+
 test("shared leases expose only admitted runtime metadata, including after a rich read", async () => {
   const client = activityClient(),
     removed = deferred<void>();

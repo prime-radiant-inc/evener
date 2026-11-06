@@ -42,6 +42,11 @@ interface Membership {
   // and the next empty release must unsubscribe it.
   orphanedSubscribe: boolean;
   metadata: ThreadSubscriptionMetadata | null;
+  // The newest thread/status/changed admitted for this membership and the
+  // thread it named. A read issued before that revision carries an older
+  // snapshot and must not revert the shared status (issue #4878 PAR).
+  statusRevision: number;
+  statusThreadId: string;
 }
 
 // All owners of a connection join this membership table. Transcript hydration
@@ -61,6 +66,8 @@ class ThreadSubscriptions {
         member.subscribed = false;
         member.transition = null;
         member.metadata = null;
+        member.statusRevision = 0;
+        member.statusThreadId = "";
         member.orphanedSubscribe = false;
         this.releaseEmpty(member);
       }
@@ -77,14 +84,16 @@ class ThreadSubscriptions {
   private admitStatus(notification: Extract<AnyNotification, { method: "thread/status/changed" }>): void {
     const { ref, threadId, status } = notification.params;
     const direct = this.members.get(ref);
-    if (direct?.metadata) this.admitMemberStatus(direct, status);
+    if (direct?.metadata) this.admitMemberStatus(direct, threadId, status);
     for (const member of this.members.values()) {
-      if (member !== direct && member.metadata?.threadId === threadId) this.admitMemberStatus(member, status);
+      if (member !== direct && member.metadata?.threadId === threadId) this.admitMemberStatus(member, threadId, status);
     }
   }
 
-  private admitMemberStatus(member: Membership, status: ThreadStatus): void {
+  private admitMemberStatus(member: Membership, threadId: string, status: ThreadStatus): void {
     if (!member.metadata) return;
+    member.statusRevision += 1;
+    member.statusThreadId = threadId;
     member.metadata = { ...member.metadata, status: copyStatus(status) };
   }
 
@@ -101,6 +110,8 @@ class ThreadSubscriptions {
         outstandingAcquisitions: 0,
         orphanedSubscribe: false,
         metadata: null,
+        statusRevision: 0,
+        statusThreadId: "",
       };
       this.members.set(ref, member);
     }
@@ -123,13 +134,14 @@ class ThreadSubscriptions {
       }
       if (!held.subscribed) return this.acquireWire(held, params);
       const generation = this.generation;
+      const statusRevision = held.statusRevision;
       const response = await this.client.request("thread/read", {
         ...params,
         ref,
         subscribe: false,
         replaceSubscription: false,
       });
-      if (!released) this.admitMetadata(held, response, generation);
+      if (!released) this.admitMetadata(held, response, generation, statusRevision);
       return response;
     };
     return {
@@ -173,6 +185,7 @@ class ThreadSubscriptions {
   private acquireWire(member: Membership, params: ThreadSubscriptionReadParams): Promise<ThreadReadResponse> {
     const generation = this.generation;
     const epoch = ++member.transitionEpoch;
+    const statusRevision = member.statusRevision;
     member.outstandingAcquisitions += 1;
     const response = this.client.request("thread/read", {
       ...params,
@@ -189,7 +202,7 @@ class ThreadSubscriptions {
       // A failure propagates: reads joined on this transition must see it.
       if (generation === this.generation && epoch === member.transitionEpoch) {
         member.subscribed = true;
-        this.admitMetadata(member, result, generation);
+        this.admitMetadata(member, result, generation, statusRevision);
         return;
       }
       if (generation !== this.generation || member.subscribed) return;
@@ -213,12 +226,21 @@ class ThreadSubscriptions {
     return response;
   }
 
-  private admitMetadata(member: Membership, { thread }: ThreadReadResponse, generation: number): void {
+  private admitMetadata(
+    member: Membership,
+    { thread }: ThreadReadResponse,
+    generation: number,
+    readStatusRevision: number,
+  ): void {
     if (generation !== this.generation || this.client.state !== "ready" || member.holders === 0) return;
+    // A status frame that landed after this read was issued is newer than the
+    // read's snapshot: keep it rather than letting the late read revert the
+    // status a re-acquired store would see.
+    const newer = member.statusRevision > readStatusRevision && member.statusThreadId === thread.id;
     member.metadata = {
       threadId: thread.id,
       sessionId: thread.sessionId ?? thread.id,
-      status: copyStatus(thread.status),
+      status: copyStatus((newer ? member.metadata?.status : undefined) ?? thread.status),
     };
   }
 
