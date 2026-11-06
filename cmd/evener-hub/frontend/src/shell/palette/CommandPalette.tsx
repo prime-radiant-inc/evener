@@ -482,11 +482,12 @@ function PaletteBody({
     [mode, query, ctx, searchResp, selectedCommand, enumItems, showingHelp, visibleCatalog, needsYouChoices],
   );
 
-  // Reset the active row whenever the row list is rebuilt (§2.3/§2.4:
-  // active = first row, or none when empty), except that an arrow-picked
-  // command keeps its highlight when late search or needs-you rows land.
-  // Keyed on the view memo, which only changes when the data deps do - never
-  // on a bare activeIndex change.
+  // Reset the active row whenever the row list is rebuilt (§2.3/§2.4): an
+  // empty query highlights the first row; a non-empty query highlights the
+  // exact command, else the first non-command result, else nothing. An
+  // arrow-picked command keeps its highlight when late rows land. Keyed on
+  // the view memo, which only changes when the data deps do - never on a bare
+  // activeIndex change.
   const previousViewRef = useRef(view);
   const previousQueryRef = useRef(query);
   const userMovedRef = useRef(false);

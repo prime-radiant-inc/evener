@@ -314,6 +314,22 @@ test("arrow-down then Enter on the handoff row hands off to the composer", async
   expect(screen.queryByRole("dialog")).toBeNull();
 });
 
+test("arrow-down onto the first command in command-filter runs it instead of sending raw text", async () => {
+  const user = userEvent.setup();
+  focusSession("ref_a");
+  const send = vi.spyOn(threadsStore.getState(), "send");
+
+  render(
+    <NeedsYouProvider>
+      <CommandPalette />
+    </NeedsYouProvider>,
+  );
+  act(() => openPalette("/e"));
+  await user.keyboard("{ArrowDown}{Enter}");
+
+  expect(send).not.toHaveBeenCalled();
+});
+
 // --- clearToSearch and showHelp UI callbacks (lines 248-251) ---
 
 test("/search command clears to search mode", async () => {
