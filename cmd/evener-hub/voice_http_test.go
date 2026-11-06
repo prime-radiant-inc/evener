@@ -190,6 +190,9 @@ func TestE2E_VoiceArmDefaultsToOpenAIInstance(t *testing.T) {
 	if testing.Short() {
 		t.Skip("live-stack e2e: builds binaries and runs a hub + daemon")
 	}
+	// A dev shell's keys add the curated openai instance, which outranks house.
+	t.Setenv("OPENAI_API_KEY", "")
+	t.Setenv("EVENER_CREDENTIALS_CONFIG", "")
 	provider := newFakeLLMProvider(t)
 	stack := startHubStackOnProvider(t, fmt.Sprintf(`
 default = "fake"
