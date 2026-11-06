@@ -14,12 +14,45 @@ import {
 import {
   applyReadModel,
   applyReadResponse,
+  frontierFromCursor,
   hydrateThread,
   mergeTranscriptItemVersioned,
   mergeTranscriptTurnVersioned,
+  olderFrontierOf,
 } from "./transcriptHistory";
 import { markItemTextOmitted } from "./transcriptItems";
 import type { ThreadReadResponse } from "./types.gen";
+
+// A v6 read response for the standard test thread. `olderCursor` absent is a
+// source read that named no older history; a value is the opaque continuation.
+function historyRead(olderCursor?: string): ThreadReadResponse {
+  return {
+    thread: testThread(),
+    bootGeneration: "",
+    epoch: 1,
+    snapshot: { incarnation: "inc-1", length: 1 },
+    ...(olderCursor === undefined ? {} : { olderCursor }),
+  } as ThreadReadResponse;
+}
+
+test("hydrateThread records a real read's older-frontier provenance (#5585)", () => {
+  const cursorless = hydrateThread(historyRead(), "ref_t", 1000);
+  expect(cursorless.olderCursor).toBeUndefined();
+  // A source read with no cursor names the end of older history; it is not
+  // the same state as a cache seed that never asked.
+  expect(cursorless.olderFrontier).toBe("none");
+
+  const windowed = hydrateThread(historyRead("cursor-1"), "ref_t", 1000);
+  expect(windowed.olderCursor).toBe("cursor-1");
+  expect(windowed.olderFrontier).toBe("cursor-1");
+});
+
+test("a model that never recorded a frontier is unknown, never source-named none (#5585)", () => {
+  expect(olderFrontierOf({})).toBe("unknown");
+  expect(olderFrontierOf({ olderFrontier: "none" })).toBe("none");
+  expect(frontierFromCursor({})).toBe("none");
+  expect(frontierFromCursor({ olderCursor: "c9" })).toBe("c9");
+});
 
 test("versioned entry merge rejects older input and preserves richer equal-version text", () => {
   const held: ItemModel = { id: "item-1", turnId: "turn-1", type: "assistant", text: "known text" };

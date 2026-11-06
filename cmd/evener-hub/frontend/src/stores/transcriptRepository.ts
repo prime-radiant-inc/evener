@@ -16,6 +16,7 @@ import {
   mergeTranscriptItemVersioned,
   mergeTranscriptReaderWindow,
   mergeTranscriptTurnVersioned,
+  olderHistoryExhausted,
   pruneBackgroundHistoryBodies,
   readDisposition,
   resolvePendingEscalation,
@@ -26,6 +27,7 @@ import {
   type ThreadReadResponse,
   type ThreadTurnsListResponse,
   type TurnModel,
+  withOlderFrontier,
 } from "@evener/appwire-client";
 import nacl from "tweetnacl";
 import { type EntryRetainedBody, type EntryWriteAdmission, entryWriteAdmissionFor } from "./entryWriteAdmission";
@@ -1173,11 +1175,6 @@ export class TranscriptRepository {
     return true;
   }
 
-  /** True once a source read (opening or suffix) has been accepted in this lifetime. */
-  #hasAcceptedSourceRead(): boolean {
-    return this.#coverageReadId !== undefined;
-  }
-
   /**
    * Serve an older page from the certified local cache where this baseline's
    * coverage permits. `reconcile` means the cache holds a connected chain for
@@ -1356,12 +1353,11 @@ export class TranscriptRepository {
     if (window.stale) {
       if (window.coverage.length > 0) return { kind: "reconcile" };
       const newest = this.#model ?? current;
-      // A cursorless frontier is only history end when an accepted source read
-      // named it; until then the missing cursor means not-yet-known, so the
-      // server decides.
-      return newest.olderCursor || !this.#hasAcceptedSourceRead()
-        ? { kind: "server" }
-        : { kind: "exhausted", model: newest };
+      // A cursorless frontier is only history end when a source read or page
+      // named it "none" (#5585). A cache seed's frontier is unknown, so the
+      // server decides; the olderCursor-alone test could not tell the two
+      // apart and had to re-derive them from read admission.
+      return olderHistoryExhausted(newest) ? { kind: "exhausted", model: newest } : { kind: "server" };
     }
     if (window.rows.length === 0) {
       // Certified local coverage below the oldest row ended. Only a frontier
@@ -1369,7 +1365,8 @@ export class TranscriptRepository {
       // remains on the network.
       if (window.complete && window.serverCursor === undefined) {
         this.#localReadContinuation = undefined;
-        return { kind: "exhausted", model: { ...(this.#model ?? current), olderCursor: undefined } };
+        // The certified chain ended: a source-named "no more history".
+        return { kind: "exhausted", model: withOlderFrontier(this.#model ?? current, undefined) };
       }
       return { kind: "server" };
     }
@@ -1378,7 +1375,7 @@ export class TranscriptRepository {
     const newest = this.#model ?? current;
     const restored = this.#restoreWindow(newest, window.rows, turnMetadata, () => this.#acceptsLifetime(lifetime));
     if (!restored) return { kind: "server" };
-    const model: ThreadModel = window.complete ? { ...restored, olderCursor: window.serverCursor } : restored;
+    const model: ThreadModel = window.complete ? withOlderFrontier(restored, window.serverCursor) : restored;
     // Evaluate the caller's ownership guard immediately before publication,
     // with no await between: the attached-reader subscription publishes this
     // model synchronously, so a guard that ran only after this method returned
@@ -2810,11 +2807,22 @@ export class TranscriptRepository {
       // omitted by its response. Carry compatible preflight bodies and turns
       // into its write. Newer rows already include the reducer's version/richness
       // merge, so retain one object per key for admission and pending cleanup.
+      const outstandingReplacement = this.#uncommittedReplacementFrom;
+      // An inherited replacement must not outlive the authority of the read
+      // that produced it (#4651). Once a newer read has committed a
+      // replacement, the prior's floor is superseded: carrying it would delete
+      // the newer durable items and re-write the prior's stale payloads under
+      // this read's newer authority. Only the replacement still known to be
+      // uncommitted may travel.
+      const inheritableReplacement = (prior: Parameters<SessionEntryCache["commitBatch"]>[0]): boolean =>
+        prior.replacement === undefined ||
+        (outstandingReplacement !== undefined && comparePosition(outstandingReplacement, prior.replacement.from) === 0);
       const inherited = [...this.#preflightWrites]
         .filter(
           ([prior, entry]) =>
             entry.revision === this.#sourceRevision &&
-            (prior.coverage?.kind === "read" || prior.coverage?.kind === "suffix"),
+            (prior.coverage?.kind === "read" || prior.coverage?.kind === "suffix") &&
+            inheritableReplacement(prior),
         )
         .map(([prior]) => prior);
       if (inherited.length > 0) {
@@ -3132,10 +3140,20 @@ export class TranscriptRepository {
         if (!superseded && batch.coverage && outcome.coverage !== "not-extended") {
           this.#committedCoverage = { coverage: batch.coverage, revision: issuedRevision };
           this.#committedCoverageBoundary = batch.coverage.boundary;
-          this.#committedCoverageSnapshot = batch.coverage.representedSnapshot;
-          this.#committedCoverageReadId = batch.coverage.readId;
-          this.#committedCoverageContinuityId =
-            batch.coverage.kind === "suffix" ? batch.coverage.continuityId : undefined;
+          // A page certificate certifies an older range under its baseline
+          // authority; it is not the read certificate a reopened opening cut
+          // names. Overwriting the read id (and the snapshot/continuity paired
+          // with it) with the page's own request id made #coversOpeningCut ask
+          // the latest window for a read certificate no read ever carried, so
+          // a reopen reported recovery-needed despite persisted bodies and
+          // certificates (#4648). The page's authority was already validated
+          // at acceptance and by the cache's own authority fence.
+          if (batch.coverage.kind !== "page") {
+            this.#committedCoverageSnapshot = batch.coverage.representedSnapshot;
+            this.#committedCoverageReadId = batch.coverage.readId;
+            this.#committedCoverageContinuityId =
+              batch.coverage.kind === "suffix" ? batch.coverage.continuityId : undefined;
+          }
         }
         this.#admission.release(bodies, this);
         for (const row of batch.items) {
