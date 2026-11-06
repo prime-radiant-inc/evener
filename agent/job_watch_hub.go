@@ -31,10 +31,7 @@ const (
 	// armed while its session-tools binding cannot answer state reads, before
 	// connection recovery counts as exhausted and the watch ends durably with
 	// re-registration guidance. A connection restored inside the budget
-	// retains the watch (job-control.md: a restored connection retains the
-	// watch); five fixed two-second rounds ended every armed watch when a
-	// reconnect under load outlasted them, tearing down monitoring for
-	// outages the binding signal would have recovered a minute later.
+	// retains the watch (job-control.md).
 	hubWatchStateOutageBudget = 2 * time.Minute
 	// hubWatchStateRetryCeiling caps the backoff between failed state reads.
 	hubWatchStateRetryCeiling = 30 * time.Second
@@ -366,9 +363,7 @@ func (jm *jobManager) onHubObservationLookup(watchID string, update appwire.Sess
 		// continues: the hub runtime refreshes right after forwarding the
 		// notification, and the snapshot from that re-read resumes the watch
 		// and replays recorded evidence (deduplicated by hubSeen). It is not
-		// an observation loss, so it must not deliver an interruption notice;
-		// one per resync cycle read as repeated stale "waiting for recovery"
-		// frames on targets that never stopped working.
+		// an observation loss, so it owes no interruption notice.
 		return nil
 	}
 	if update.Snapshot != nil {

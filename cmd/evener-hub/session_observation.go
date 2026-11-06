@@ -331,8 +331,7 @@ func (b *boundSessionOperations) Watch(ctx context.Context, request appwire.Sess
 						// subscription on the fresh authoritative cut instead of
 						// ending it: the watcher replays the window under its
 						// own dedup and the drain continues, so a transient
-						// rebuild recovers without re-registration. Ending here
-						// silently stopped completion delivery on live lanes.
+						// rebuild recovers without re-registration.
 					}
 					pending = *fresh
 				}

@@ -4,6 +4,7 @@ import (
 	"context"
 	"sync"
 	"testing"
+	"time"
 
 	"primeradiant.com/evener/appwire"
 )
@@ -50,7 +51,10 @@ func (c *flakyStateClient) failNext(n int) {
 func TestManagerWatchResolvesTransientFailureWithoutRebind(t *testing.T) {
 	const ref, instance, generation = "local:worker", "worker-instance", "7@worker"
 	ctx := t.Context()
-	root := newMessagingRoot(t, newMessagingAdapter(), func(cfg *SessionConfig) { cfg.Manager = true })
+	root := newMessagingRoot(t, newMessagingAdapter(), func(cfg *SessionConfig) {
+		cfg.Manager = true
+		cfg.testOnly.hubWatchRetryDelay = time.Millisecond
+	})
 	first := make(chan appwire.SessionWatchUpdate, 1)
 	first <- appwire.SessionWatchUpdate{
 		Snapshot: &appwire.ThreadReadResponse{BootGeneration: generation, Thread: appwire.Thread{Evener: appwire.EvenerThread{Ref: ref, InstanceID: instance}}},
