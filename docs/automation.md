@@ -139,7 +139,9 @@ carry source-qualified refs and meaningful `new`, `needs_you`, `error`, or
 `disappeared` events. Read each entry's `level`, `askPending`,
 `approvalPending`, and `needsResponse` fields to decide what needs action;
 the roster is not a synthesized summary. A per-target watch can also fire for
-the same change, so holding both can produce two wakes.
+the same change, so holding both can produce two wakes. A roster watch create
+takes the ordinary `note` payload beside the hub object, and that note rides
+every roster frame.
 
 The broker confirms disappearance across two consecutive attention
 publications. A genuine end is reported one attention tick later; a Clear
@@ -262,7 +264,12 @@ their Manager's turn ends, and their watch notices are not delegate reports.
 Manager `job_watch` supports local and remote targets through the same shared
 hub subscriptions as human clients. For an existing remote worker, attach
 `job_watch(operation="create", hub={ref:"HOST:WORKSPACE_ID",events:["question"],completion:true})`
-before sending input. Remote question/answer/completion and saved Manager
+before sending input. Hub watch creates take the ordinary watch arguments that
+apply to a session watch: `note` rides every delivery, and `every` throttles
+observation fires where the hub object selects exactly one event kind.
+Arguments that cannot apply to a session watch — job-output triggers, self
+timers, assistant.tool filters — are refused with an error naming the
+argument. Remote question/answer/completion and saved Manager
 attribution are checked through real two-hub SSH acceptance, without a browser.
 An idle completion watch anchors to the latest execution identity in the same
 indexed history cut as its snapshot, not a later model-change or delivery turn;

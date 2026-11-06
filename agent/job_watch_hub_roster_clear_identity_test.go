@@ -28,7 +28,7 @@ func testHubRosterWatchRebindClearSameRef(t *testing.T, before, after appwire.Ro
 	root := newMessagingRoot(t, newMessagingAdapter(), nil)
 	jm := root.jobManager
 	jm.enqueue = root.enqueueJobNotification
-	result, err := jm.configureHubRosterWatch(t.Context(), "local:manager")
+	result, err := jm.configureHubRosterWatch(t.Context(), "local:manager", "")
 	if err != nil {
 		t.Fatal(err)
 	}
