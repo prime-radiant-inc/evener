@@ -3,6 +3,7 @@
 package plugins
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"syscall"
@@ -187,5 +188,53 @@ func TestAddMarketplaceRefusesFIFOCatalogWithoutBlocking(t *testing.T) {
 	})
 	if err == nil {
 		t.Fatal("a marketplace with a FIFO catalog was registered")
+	}
+}
+
+// TestDetectNPMBinServerRefusesFIFOWithoutBlocking pins the package.json read
+// that decides whether a bare npm plugin gets an MCP server wired. A FIFO there
+// must read as "not an npm repo" instead of parking the install.
+func TestDetectNPMBinServerRefusesFIFOWithoutBlocking(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	mkfifoAt(t, filepath.Join(dir, "package.json"))
+
+	servers := withinFIFODeadline(t, "detectNPMBinServer(FIFO package.json)", func() json.RawMessage {
+		wired, _ := detectNPMBinServer(dir, "p")
+		return wired
+	})
+	if servers != nil {
+		t.Fatalf("a FIFO package.json wired an MCP server: %s", servers)
+	}
+}
+
+// TestEnsureManifestFallbackRefusesFIFOPackageJSONWithoutBlocking pins the same
+// read one level up, on the path a manifest-less plugin install takes.
+func TestEnsureManifestFallbackRefusesFIFOPackageJSONWithoutBlocking(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	mkfifoAt(t, filepath.Join(dir, "package.json"))
+
+	err := withinFIFODeadline(t, "ensureManifestFallback(FIFO package.json)", func() error {
+		_, fallbackErr := ensureManifestFallback(dir, true, CatalogPlugin{Name: "p"})
+		return fallbackErr
+	})
+	if err != nil {
+		t.Fatalf("a FIFO package.json failed the fallback manifest: %v", err)
+	}
+}
+
+// TestPluginManifestVersionRefusesFIFOWithoutBlocking pins the version read of
+// plugin.json: a FIFO must report no version instead of parking the caller.
+func TestPluginManifestVersionRefusesFIFOWithoutBlocking(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	mkfifoAt(t, filepath.Join(dir, ".claude-plugin", "plugin.json"))
+
+	version := withinFIFODeadline(t, "pluginManifestVersion(FIFO plugin.json)", func() string {
+		return pluginManifestVersion(dir)
+	})
+	if version != "" {
+		t.Fatalf("a FIFO plugin.json reported version %q", version)
 	}
 }

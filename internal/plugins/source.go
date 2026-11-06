@@ -270,6 +270,26 @@ func readPrefix(path string, limit int64) ([]byte, error) {
 	return io.ReadAll(io.LimitReader(file, limit))
 }
 
+// maxMetadataFileBytes bounds each small plugin metadata file read: a
+// marketplace catalog, a plugin.json, a package.json. These are small JSON
+// documents, and the bound keeps a hostile or corrupted source from being
+// pulled into memory whole.
+const maxMetadataFileBytes = 8 << 20
+
+// readMetadataFile reads one metadata file whole through readPrefix, so a FIFO
+// substituted for it fails instead of parking the caller, and refuses anything
+// larger than maxMetadataFileBytes (#4847).
+func readMetadataFile(path string) ([]byte, error) {
+	data, err := readPrefix(path, maxMetadataFileBytes+1)
+	if err != nil {
+		return nil, err
+	}
+	if len(data) > maxMetadataFileBytes {
+		return nil, fmt.Errorf("%s is larger than %d bytes", filepath.Base(path), maxMetadataFileBytes)
+	}
+	return data, nil
+}
+
 func isHexObjectID(text string) bool {
 	if len(text) != 40 && len(text) != 64 {
 		return false

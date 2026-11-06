@@ -3,7 +3,6 @@ package plugins
 import (
 	"encoding/json"
 	"fmt"
-	"os"
 	"path/filepath"
 
 	agentplugin "primeradiant.com/evener/agent/plugin"
@@ -30,7 +29,7 @@ func validatePluginDir(dir string) error {
 // any error or absence), for computeVersion.
 func pluginManifestVersion(dir string) string {
 	for _, mf := range []string{".claude-plugin", ".codex-plugin"} {
-		data, err := os.ReadFile(filepath.Join(dir, mf, "plugin.json"))
+		data, err := readMetadataFile(filepath.Join(dir, mf, "plugin.json"))
 		if err != nil {
 			continue
 		}
