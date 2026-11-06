@@ -4,7 +4,7 @@ import { ActivityPageBoundary } from "./ActivityPageBoundary";
 // to the shared owner without acquiring another reader or retry loop.
 
 import { activityNodeID, type SessionDelegate } from "@evener/appwire-client";
-import { useLayoutEffect } from "react";
+import { useId, useLayoutEffect } from "react";
 import { openTranscript } from "../../panes/session/transcript/openTranscript";
 import { enterAgentCascade } from "../../panes/zoom/actions";
 import { useSessionActivity } from "../../stores/sessionActivity";
@@ -32,7 +32,10 @@ function drill(sub: SessionDelegate): void {
 export function AgentsTab({ scope, now, onDrill = drill }: ActivityTabBodyProps) {
   const inactiveSuffix = "inactive-delegates";
   const foldID = `${scope.leaf.ref}\0${inactiveSuffix}`;
-  const inactiveListID = `${scope.leaf.ref}-${inactiveSuffix}`;
+  // The sidebar and an ActivityPeek can both render this body for one ref:
+  // the persisted fold key stays ref-based, but the controlled list id must
+  // be unique per rendered surface.
+  const inactiveListID = useId();
   const foldOpen = isDisclosureOpen(foldID, false);
   const shown = useActivitySidebarStore((state) => state.views.get(scope.leaf.ref)?.categories.agents?.shown ?? PAGE);
   const { snapshot, loadMore } = useSessionActivity(scope.leaf.ref, "session", "delegates");

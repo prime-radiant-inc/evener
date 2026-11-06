@@ -4,8 +4,18 @@ import { SessionActivityStore } from "./sessionActivityStore";
 import { activityClient, activityRef, activityState, threadFixture } from "./sessionActivityTestUtils";
 import { deferred } from "./testing/deferred";
 import { callsTo } from "./testing/fakeClient";
-import { acquireThreadSubscription } from "./threadSubscription";
+import { acquireThreadSubscription, retireThreadSubscriptions, wireThreadSubscriptions } from "./threadSubscription";
 import type { ThreadReadResponse } from "./types.gen";
+
+test("wireThreadSubscriptions wires one registry and retirement releases it", () => {
+  const client = activityClient();
+  wireThreadSubscriptions(client);
+  expect(client.listenerCount).toBe(2); // connection state + status notifications
+  wireThreadSubscriptions(client);
+  expect(client.listenerCount).toBe(2); // idempotent for one client
+  retireThreadSubscriptions(client);
+  expect(client.listenerCount).toBe(0);
+});
 
 test("a status frame keeps shared metadata current across a closed and re-opened viewer", async () => {
   const client = activityClient();

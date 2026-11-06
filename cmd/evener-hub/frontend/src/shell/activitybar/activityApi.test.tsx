@@ -210,6 +210,53 @@ it("inactive subagents disclosure publishes its expansion state and controlled l
   expect(document.getElementById(controls as string)).toBeTruthy();
 });
 
+it("two activity surfaces for one session publish distinct inactive-list ids", async () => {
+  const client = activityClient();
+  client.on("evener/thread/delegates/list", ({ ref, scope }) => ({
+    context: activityContext(ref),
+    scope: scope ?? "session",
+    delegates: [
+      activityDelegate({
+        delegateId: "first",
+        childRef: "remote:first",
+        description: "first inactive",
+        terminal: true,
+        status: "completed",
+        lifecycle: "idle",
+      }),
+    ],
+    page: { complete: true, issues: [] },
+  }));
+  connectionStore.getState().connect(client);
+  // The sidebar and an ActivityPeek render the same body for the same ref.
+  render(
+    <>
+      <section data-testid="sidebar">
+        <AgentsTab now={NOW} scope={scope()} />
+      </section>
+      <section data-testid="peek">
+        <AgentsTab now={NOW} scope={scope()} />
+      </section>
+    </>,
+  );
+  const folds = await screen.findAllByRole("button", { name: "Inactive subagents (1)" });
+  expect(folds).toHaveLength(2);
+  // The fold state is keyed by ref and therefore shared; the controlled list
+  // id must still be unique per rendered surface.
+  fireEvent.click(folds[0]!);
+  const controls = folds.map((fold) => fold.getAttribute("aria-controls"));
+  expect(controls[0]).toBeTruthy();
+  expect(controls[1]).toBeTruthy();
+  expect(controls[0]).not.toBe(controls[1]);
+  const sidebar = screen.getByTestId("sidebar");
+  const peek = screen.getByTestId("peek");
+  for (const [index, id] of controls.entries()) {
+    expect(document.querySelectorAll(`[id="${id}"]`)).toHaveLength(1);
+    const surface = index === 0 ? sidebar : peek;
+    expect(surface.contains(document.getElementById(id as string))).toBe(true);
+  }
+});
+
 it("closed inactive history does not scan, and disclosed rows page only near the visible boundary", async () => {
   const client = activityClient();
   let observations = 0,
