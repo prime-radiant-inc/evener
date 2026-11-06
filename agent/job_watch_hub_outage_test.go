@@ -8,6 +8,12 @@ import (
 	"primeradiant.com/evener/appwire"
 )
 
+// hubWatchTestHangGuard sits far above every wait in the hub-watch tests:
+// each completes in milliseconds once its seam-scaled event fires, so this
+// ceiling exists only to fail a wedged producer instead of hanging the
+// suite, never to pace the test.
+const hubWatchTestHangGuard = 5 * time.Second
+
 // A binding outage longer than a handful of failed state reads must not end a
 // watch whose connection comes back (job-control.md: a restored connection
 // retains the watch). The old recovery loop counted five consecutive failed
@@ -60,7 +66,7 @@ func TestManagerWatchSurvivesBindingOutageUntilConnectionRestores(t *testing.T) 
 	for range 7 {
 		select {
 		case <-base.offlineReads:
-		case <-time.After(5 * time.Second):
+		case <-time.After(hubWatchTestHangGuard):
 			if !managerHubWatchPresent(jm, watchID) {
 				t.Fatal("binding outage ended the watch before the connection restored; a restored connection must retain the watch")
 			}
@@ -83,12 +89,12 @@ func TestManagerWatchSurvivesBindingOutageUntilConnectionRestores(t *testing.T) 
 	base.mu.Lock()
 	base.offline = false
 	base.mu.Unlock()
-	awaitWithin(t, 5*time.Second, "rebind after connection restore", func() { <-base.watches })
+	awaitWithin(t, hubWatchTestHangGuard, "rebind after connection restore", func() { <-base.watches })
 	accepted := true
 	terminal := appwire.SessionObservationMetadata{Ref: ref, InstanceID: instance, GenerationID: generation, EntryID: "terminal:A", TurnID: "A", CausalKnown: true, TerminalAccepted: &accepted, EndTurn: true, EndReason: "done"}
 	second <- appwire.SessionWatchUpdate{Event: "communicate", Metadata: terminal}
 
-	awaitWithin(t, 5*time.Second, "watch completion after outage recovery", func() { <-base.ended })
+	awaitWithin(t, hubWatchTestHangGuard, "watch completion after outage recovery", func() { <-base.ended })
 	if got := countWatchSends(t, jm, watchID, instance+"/"+generation+"/terminal:A:communicate:completed"); got != 1 {
 		t.Fatalf("completion deliveries after outage recovery=%d, want 1", got)
 	}
@@ -137,7 +143,7 @@ func TestManagerWatchOutagePastBudgetEndsDurably(t *testing.T) {
 	base.offline = true
 	base.mu.Unlock()
 	close(first)
-	awaitWithin(t, 5*time.Second, "durable end after the outage outlasted the budget", func() { <-base.ended })
+	awaitWithin(t, hubWatchTestHangGuard, "durable end after the outage outlasted the budget", func() { <-base.ended })
 	if managerHubWatchPresent(jm, watchID) {
 		t.Fatal("outage past the budget left the watch armed")
 	}
@@ -197,7 +203,7 @@ func TestManagerWatchBindingAnsweredInsideBudgetRetainsWatch(t *testing.T) {
 	for range 5 {
 		select {
 		case <-base.offlineReads:
-		case <-time.After(5 * time.Second):
+		case <-time.After(hubWatchTestHangGuard):
 			t.Fatal("state reads stopped failing while the binding was still offline")
 		}
 	}
@@ -214,11 +220,11 @@ func TestManagerWatchBindingAnsweredInsideBudgetRetainsWatch(t *testing.T) {
 	base.mu.Lock()
 	base.offline = false
 	base.mu.Unlock()
-	awaitWithin(t, 5*time.Second, "rebind after the binding answered inside the budget", func() { <-base.watches })
+	awaitWithin(t, hubWatchTestHangGuard, "rebind after the binding answered inside the budget", func() { <-base.watches })
 	accepted := true
 	terminal := appwire.SessionObservationMetadata{Ref: ref, InstanceID: instance, GenerationID: generation, EntryID: "terminal:A", TurnID: "A", CausalKnown: true, TerminalAccepted: &accepted, EndTurn: true, EndReason: "done"}
 	second <- appwire.SessionWatchUpdate{Event: "communicate", Metadata: terminal}
-	awaitWithin(t, 5*time.Second, "watch completion after in-budget recovery", func() { <-base.ended })
+	awaitWithin(t, hubWatchTestHangGuard, "watch completion after in-budget recovery", func() { <-base.ended })
 	if got := countWatchSends(t, jm, watchID, instance+"/"+generation+"/terminal:A:communicate:completed"); got != 1 {
 		t.Fatalf("completion deliveries after in-budget recovery=%d, want 1", got)
 	}

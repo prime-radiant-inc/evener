@@ -2,7 +2,6 @@ package agent
 
 import (
 	"testing"
-	"time"
 
 	"primeradiant.com/evener/agent/internal/tool"
 	"primeradiant.com/evener/appwire"
@@ -75,7 +74,7 @@ func TestManagerWatchConsumesRotatedHistorySnapshot(t *testing.T) {
 	}
 	stream <- rotated
 
-	awaitWithin(t, 5*time.Second, "watch completion on the rotated history", func() { <-base.ended })
+	awaitWithin(t, hubWatchTestHangGuard, "watch completion on the rotated history", func() { <-base.ended })
 	if got := countWatchSends(t, jm, watchID, instance+"/"+generation+"/terminal:A:communicate:completed"); got != 1 {
 		t.Fatalf("completion deliveries on the rotated history=%d, want 1 (the rebuilt window recorded the terminal verdict)", got)
 	}
