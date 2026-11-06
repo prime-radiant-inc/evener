@@ -109,6 +109,12 @@ type Manager struct {
 	// once per round.
 	assumedWindowDisclosed bool
 
+	// lastSummaryFailureRepeat is the signature of the most recently
+	// published summary failure (warning or daemon log), guarded by mu. An
+	// automatic pass failing the same way as the one before it stays quiet —
+	// see summary_failure.go.
+	lastSummaryFailureRepeat string
+
 	// Thresholds are fractions (0.0–1.0) of the context window.
 	// ObservationMaskThreshold and ThinkingClearThreshold are not used by the
 	// default compaction path (MaybeCompact/ForceCompact) because in-place

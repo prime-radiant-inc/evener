@@ -13,14 +13,18 @@ import (
 
 // SummaryAttempt contains bounded route metadata, never provider response text.
 type SummaryAttempt struct {
-	Provider  string `json:"provider,omitempty"`
-	Model     string `json:"model,omitempty"`
-	Route     string `json:"route"`
-	Kind      string `json:"kind"`
-	Stage     string `json:"stage"`
-	Reason    string `json:"reason,omitempty"`
-	Status    int    `json:"status,omitempty"`
-	Retryable *bool  `json:"retryable,omitempty"`
+	Provider string `json:"provider,omitempty"`
+	Model    string `json:"model,omitempty"`
+	Route    string `json:"route"`
+	Kind     string `json:"kind"`
+	Stage    string `json:"stage"`
+	Reason   string `json:"reason,omitempty"`
+	Status   int    `json:"status,omitempty"`
+	// Attempts is how many samples this route produced in the resolution:
+	// one plus every same-route resample of a rejected reply. Zero (omitted)
+	// for a failure that reached no call.
+	Attempts  int   `json:"attempts,omitempty"`
+	Retryable *bool `json:"retryable,omitempty"`
 }
 
 // SummaryFailure separates the terminal attempt from the last failed sample of
@@ -101,6 +105,9 @@ func SummaryFailureInfo(failure SummaryFailure) (string, Info) {
 	}
 	if a.Reason != "" {
 		message += ", " + a.Reason
+	}
+	if a.Attempts > 1 {
+		message += fmt.Sprintf(" after %d attempts", a.Attempts)
 	}
 	info := Info{Source: SourceEvener, Title: "Summary failure", Hint: "The cause is unknown. Inspect the safe summary diagnostic in the daemon log."}
 	if a.Stage == "provider" {
