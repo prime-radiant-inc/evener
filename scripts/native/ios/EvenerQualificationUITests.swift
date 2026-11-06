@@ -179,12 +179,12 @@ final class EvenerQualificationUITests: XCTestCase {
 		let app = XCUIApplication()
 		onboardIfNeeded(app)
 		let prompt = openNewSession(app)
-		// The gesture swipes the form's rows, not the focused prompt: a
-		// swipe over a first-responder text view can turn into a text
-		// selection, and the selection holds the next tap.
-		let anchor = app.buttons
-			.matching(NSPredicate(format: "label BEGINSWITH %@", "Browse folders")).firstMatch
-		XCTAssertTrue(anchor.waitForExistence(timeout: tripwire), "the sheet never offered its picker row")
+		// The gesture swipes the form's own labels, not a control (a swipe
+		// on a row can land as its press) and not the focused prompt (a swipe
+		// over a first-responder text view can turn into a text selection,
+		// and the selection holds the next tap).
+		let anchor = app.staticTexts["Where"]
+		XCTAssertTrue(anchor.waitForExistence(timeout: tripwire), "the sheet's form never showed")
 		anchor.swipeUp()
 		anchor.swipeDown()
 
@@ -238,8 +238,9 @@ final class EvenerQualificationUITests: XCTestCase {
 			// drag-to-dismiss, rather than pressing the secure field's
 			// return key: on iOS that press can leave the keyboard's
 			// autofill accessory window over the content, eating presses
-			// that every check says landed.
-			dismissKeyboard(app, draggingOn: app.buttons["hub-continue"])
+			// that every check says landed. The drag rides a static label:
+			// a swipe on a control can land as its press.
+			dismissKeyboard(app, draggingOn: app.staticTexts["Token (optional)"])
 			tap(app.buttons["hub-continue"], "the Continue row never appeared")
 			// The board is Connect's own effect, checked like every other
 			// step: the press can deaden in the settling window every fresh
@@ -267,7 +268,7 @@ final class EvenerQualificationUITests: XCTestCase {
 		let browse = app.buttons
 			.matching(NSPredicate(format: "label BEGINSWITH %@", "Browse folders")).firstMatch
 		// The sheet's picker sits where the prompt's keyboard can cover it.
-		dismissKeyboard(app, draggingOn: browse)
+		dismissKeyboard(app, draggingOn: app.staticTexts["Where"])
 		tap(browse, "the project picker never offered browsing")
 
 		// The browse starts in the hub host's home; walk up to the filesystem
@@ -334,10 +335,11 @@ final class EvenerQualificationUITests: XCTestCase {
 	}
 
 	/// Dismisses the keyboard by dragging the form, its own drag-to-dismiss,
-	/// on the row the journey wants next. A multiline field takes a return
-	/// key as text, so it cannot dismiss that way. Best effort, and only a
-	/// few tries: a keyboard that stays up is judged where it blocks, by the
-	/// next step's own wait.
+	/// on a static label inside it. A multiline field takes a return key as
+	/// text, so it cannot dismiss that way, and the drag must ride a label:
+	/// a swipe that starts on a control can land as that control's press.
+	/// Best effort, and only a few tries: a keyboard that stays up is judged
+	/// where it blocks, by the next step's own wait.
 	private func dismissKeyboard(_ app: XCUIApplication, draggingOn anchor: XCUIElement) {
 		let keyboard = app.keyboards.firstMatch
 		for _ in 0..<3 where keyboard.exists {
