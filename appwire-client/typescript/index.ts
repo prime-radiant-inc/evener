@@ -847,6 +847,7 @@ export {
   applyReadResponse,
   collectAuthoritativeMutationIds,
   comparePositions,
+  frontierFromCursor,
   hydrateThread,
   ITEM_OMISSION_TOLERANT_FIELDS,
   invalidateHistory,
@@ -856,10 +857,13 @@ export {
   mergeTranscriptItemVersioned,
   mergeTranscriptReaderWindow,
   mergeTranscriptTurnVersioned,
+  olderFrontierOf,
+  olderHistoryExhausted,
   prependOlderTurns,
   pruneBackgroundHistoryBodies,
   readDisposition,
   readWindowBounds,
+  withOlderFrontier,
 } from "./transcriptHistory";
 export {
   copyItemTextPresence,

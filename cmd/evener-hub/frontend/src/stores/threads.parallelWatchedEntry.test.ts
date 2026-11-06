@@ -1,7 +1,12 @@
 import { ALL_CAPABILITIES as CAPABILITIES, type TestThreadOverrides, testThread } from "../threadTestUtils";
 import "fake-indexeddb/auto";
 import type { AnyNotification, ThreadReadResponse, ThreadSubscriptionLease } from "@evener/appwire-client";
-import { acquireThreadSubscription, RequestTimeoutError, WireError } from "@evener/appwire-client";
+import {
+  acquireThreadSubscription,
+  olderHistoryExhausted,
+  RequestTimeoutError,
+  WireError,
+} from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { nextMacrotask } from "@evener/appwire-client/testing/macrotask";
 import { act, cleanup, renderHook } from "@testing-library/react";
@@ -507,6 +512,12 @@ describe("useThreadsStore.watchThread", () => {
 
     const model = threadsStore.getState().watchedThreads.get("ref_a");
     expect(model?.threadId).toBe("thr_ref_a");
+    // The hub omits OlderCursor and Snapshot for includeTurns:false, so this
+    // read never asked for history: its missing cursor is unknown, not a
+    // source-named end of older history.
+    expect(model?.olderCursor).toBeUndefined();
+    expect(model?.olderFrontier).toBe("unknown");
+    expect(olderHistoryExhausted(model!)).toBe(false);
 
     fake.emitNotification({
       method: "thread/status/changed",

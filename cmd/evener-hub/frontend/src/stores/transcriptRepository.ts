@@ -16,6 +16,7 @@ import {
   mergeTranscriptItemVersioned,
   mergeTranscriptReaderWindow,
   mergeTranscriptTurnVersioned,
+  olderHistoryExhausted,
   pruneBackgroundHistoryBodies,
   readDisposition,
   resolvePendingEscalation,
@@ -26,6 +27,7 @@ import {
   type ThreadReadResponse,
   type ThreadTurnsListResponse,
   type TurnModel,
+  withOlderFrontier,
 } from "@evener/appwire-client";
 import nacl from "tweetnacl";
 import { type EntryRetainedBody, type EntryWriteAdmission, entryWriteAdmissionFor } from "./entryWriteAdmission";
@@ -1360,10 +1362,7 @@ export class TranscriptRepository {
       // named it "none" (#5585). A cache seed's frontier is unknown, so the
       // server decides; the olderCursor-alone test could not tell the two
       // apart and had to re-derive them from read admission.
-      const frontier = newest.olderFrontier ?? "unknown";
-      return newest.olderCursor !== undefined || frontier !== "none"
-        ? { kind: "server" }
-        : { kind: "exhausted", model: newest };
+      return olderHistoryExhausted(newest) ? { kind: "exhausted", model: newest } : { kind: "server" };
     }
     if (window.rows.length === 0) {
       // Certified local coverage below the oldest row ended. Only a frontier
@@ -1371,15 +1370,8 @@ export class TranscriptRepository {
       // remains on the network.
       if (window.complete && window.serverCursor === undefined) {
         this.#localReadContinuation = undefined;
-        return {
-          kind: "exhausted",
-          model: {
-            ...(this.#model ?? current),
-            olderCursor: undefined,
-            // The certified chain ended: a source-named "no more history".
-            olderFrontier: "none",
-          },
-        };
+        // The certified chain ended: a source-named "no more history".
+        return { kind: "exhausted", model: withOlderFrontier(this.#model ?? current, undefined) };
       }
       return { kind: "server" };
     }
@@ -1388,13 +1380,7 @@ export class TranscriptRepository {
     const newest = this.#model ?? current;
     const restored = this.#restoreWindow(newest, window.rows, turnMetadata, () => this.#acceptsLifetime(lifetime));
     if (!restored) return { kind: "server" };
-    const model: ThreadModel = window.complete
-      ? {
-          ...restored,
-          olderCursor: window.serverCursor,
-          olderFrontier: window.serverCursor === undefined ? "none" : window.serverCursor,
-        }
-      : restored;
+    const model: ThreadModel = window.complete ? withOlderFrontier(restored, window.serverCursor) : restored;
     // Evaluate the caller's ownership guard immediately before publication,
     // with no await between: the attached-reader subscription publishes this
     // model synchronously, so a guard that ran only after this method returned
@@ -2827,20 +2813,21 @@ export class TranscriptRepository {
       // into its write. Newer rows already include the reducer's version/richness
       // merge, so retain one object per key for admission and pending cleanup.
       const outstandingReplacement = this.#uncommittedReplacementFrom;
+      // An inherited replacement must not outlive the authority of the read
+      // that produced it (#4651). Once a newer read has committed a
+      // replacement, the prior's floor is superseded: carrying it would delete
+      // the newer durable items and re-write the prior's stale payloads under
+      // this read's newer authority. Only the replacement still known to be
+      // uncommitted may travel.
+      const inheritableReplacement = (prior: Parameters<SessionEntryCache["commitBatch"]>[0]): boolean =>
+        prior.replacement === undefined ||
+        (outstandingReplacement !== undefined && comparePosition(outstandingReplacement, prior.replacement.from) === 0);
       const inherited = [...this.#preflightWrites]
         .filter(
           ([prior, entry]) =>
             entry.revision === this.#sourceRevision &&
             (prior.coverage?.kind === "read" || prior.coverage?.kind === "suffix") &&
-            // An inherited replacement must not outlive the authority of the
-            // read that produced it (#4651). Once a newer read has committed a
-            // replacement, the prior's floor is superseded: carrying it would
-            // delete the newer durable items and re-write the prior's stale
-            // payloads under this read's newer authority. Only the replacement
-            // still known to be uncommitted may travel.
-            (prior.replacement === undefined ||
-              (outstandingReplacement !== undefined &&
-                comparePosition(outstandingReplacement, prior.replacement.from) === 0)),
+            inheritableReplacement(prior),
         )
         .map(([prior]) => prior);
       if (inherited.length > 0) {

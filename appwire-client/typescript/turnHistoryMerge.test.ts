@@ -115,6 +115,17 @@ test("prependOlderTurns keeps order and advances olderCursor", () => {
 
   expect(result.turns.map((t) => t.id)).toEqual(["turn_0", "turn_1", "turn_2"]);
   expect(result.olderCursor).toBe("cursor_0");
+  expect(result.olderFrontier).toBe("cursor_0");
+});
+
+test("a page that names no successor cursor names the frontier exhausted", () => {
+  const thread = testThread({ turns: [{ id: "turn_2", status: "completed", itemsView: "full", items: [] }] });
+  const model = hydrateThread({ thread, olderCursor: "cursor_1" }, thread.evener.ref, 1000);
+
+  const result = prependOlderTurns(model, { data: [], nextCursor: undefined } as unknown as ThreadTurnsListResponse);
+
+  expect(result.olderCursor).toBeUndefined();
+  expect(result.olderFrontier).toBe("none");
 });
 
 // ThreadTurnsListResponse.data is typed as a required Turn[], but that's a

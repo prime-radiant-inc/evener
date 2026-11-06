@@ -6,6 +6,10 @@
 import { compareBootGeneration } from "./bootGeneration";
 import type { HistoryState, ItemModel, OlderFrontier, ThreadModel, TurnModel } from "./model";
 import { SYSTEM_PRELUDE_TURN_ID } from "./model";
+import { frontierFromCursor, olderFrontierOf, withOlderFrontier } from "./olderFrontier";
+
+export { frontierFromCursor, olderFrontierOf, olderHistoryExhausted, withOlderFrontier } from "./olderFrontier";
+
 import {
   copyItemTextPresence,
   imageSessionRouteForSession,
@@ -61,18 +65,6 @@ export const EMPTY_HISTORY: HistoryState = {
   deferredPages: [],
   turns: [],
 };
-
-/** The frontier provenance a real read response names: its cursor, or a
- * source-named end of history when it carries none (#5585). */
-export function frontierFromRead(resp: { olderCursor?: string }): OlderFrontier {
-  return resp.olderCursor ?? "none";
-}
-
-/** A model's frontier provenance. A model that never recorded one — a cache
- * seed, or a model assembled by hand — is explicitly UNKNOWN, never "none". */
-export function olderFrontierOf(model: Pick<ThreadModel, "olderFrontier">): OlderFrontier {
-  return model.olderFrontier ?? "unknown";
-}
 
 type ReadIdentity = Pick<HistoryState, "bootGeneration" | "epoch" | "incarnation" | "length">;
 
@@ -819,12 +811,15 @@ export function applyReadResponse<M extends ThreadModel>(
   model: M,
   resp: ThreadReadResponse,
   now: number,
+  // The caller's frontier verdict. A read that did not ask for history (the
+  // hub omits OlderCursor and Snapshot for includeTurns:false) must pass
+  // "unknown": its absent cursor is not a source-named end of history.
+  frontier: OlderFrontier = frontierFromCursor(resp),
 ): ThreadModel & ModelExtras<M> {
   const held = model.history ?? EMPTY_HISTORY;
   const disposition = readDisposition(held, resp);
   if (disposition === "discard") return publicModel<M>(model);
   const fields = threadFields(resp, model.ref, now);
-  const frontier = frontierFromRead(resp);
   const imageSessionRoute = imageSessionRouteForSession(fields.imageSessionId ?? fields.threadId);
   const fresh = splitWireTurns(resp.thread.turns ?? [], imageSessionRoute);
   let turns: TurnModel[];
@@ -1079,13 +1074,7 @@ function mergeVersionedPage<M extends ThreadModel>(
       const turns = mergeHistory(range ? dropItemsInRange(held.turns, range[0], range[1]) : held.turns, fresh);
       // A page that names no successor cursor names the end of older history
       // for the range it serves (#5585).
-      const next = takeCursor
-        ? {
-            ...model,
-            olderCursor: resp.nextCursor,
-            olderFrontier: resp.nextCursor === undefined ? "none" : resp.nextCursor,
-          }
-        : model;
+      const next = takeCursor ? withOlderFrontier(model, resp.nextCursor) : model;
       // The held length never advances from a page: a page's snapshot length
       // is the transcript length the index had at read time, not a promise
       // that everything through it was delivered - Before only returns items
@@ -1126,9 +1115,14 @@ export function publicModel<M extends ThreadModel>(value: unknown): ThreadModel 
 // hydrateThread builds a thread's whole model from one read. A v6 read (one
 // that names its snapshot) builds versioned history and the overlay; a pre-v6
 // read keeps the unversioned turns it always had.
-export function hydrateThread(resp: ThreadReadResponse, ref: string, now: number): ThreadModel {
+export function hydrateThread(
+  resp: ThreadReadResponse,
+  ref: string,
+  now: number,
+  frontier: OlderFrontier = frontierFromCursor(resp),
+): ThreadModel {
   const fields = threadFields(resp, ref, now);
-  const olderFrontier = frontierFromRead(resp);
+  const olderFrontier = frontier;
   const imageSessionRoute = imageSessionRouteForSession(fields.imageSessionId ?? fields.threadId);
   if (!resp.snapshot) {
     return {
