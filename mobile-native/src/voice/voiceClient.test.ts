@@ -13,6 +13,7 @@ const state: VoiceSnapshot = {
 	canonical: "",
 	generated: "",
 	bindingId: "binding",
+	provider: "",
 };
 const target = {
 	hub: { id: "hub", name: "Hub", origin: "http://127.0.0.1:9180" },

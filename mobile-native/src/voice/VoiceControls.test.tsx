@@ -22,6 +22,7 @@ it("arms in one tap with a visible disclosure, keeps takeover explicit, and send
 		canonical: "",
 		generated: "",
 		bindingId: "",
+		provider: "",
 	};
 	const native: NativeVoicePort = {
 		deviceId: async () => "install",

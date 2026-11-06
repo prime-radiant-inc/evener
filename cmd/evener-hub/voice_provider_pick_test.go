@@ -8,9 +8,10 @@ import (
 
 func TestPickOpenAIVoiceProvider(t *testing.T) {
 	instances := []registry.Instance{
+		{Name: "openai-codex", ProviderID: "openai-codex", Base: "openai-codex", Protocol: registry.ProtocolOpenAIResponses},
+		{Name: "openai", ProviderID: "openai", Base: "openai", Protocol: registry.ProtocolOpenAIResponses},
+		{Name: "groq", ProviderID: "groq", Base: "groq", Protocol: registry.ProtocolOpenAIChat},
 		{Name: "anthropic", Protocol: registry.ProtocolAnthropic},
-		{Name: "gateway", Protocol: registry.ProtocolOpenAIResponses},
-		{Name: "groq", Protocol: registry.ProtocolOpenAIChat},
 	}
 	for _, test := range []struct {
 		name        string
@@ -18,10 +19,13 @@ func TestPickOpenAIVoiceProvider(t *testing.T) {
 		defaultName string
 		want        string
 	}{
-		{name: "named-wins", named: "groq", defaultName: "gateway", want: "groq"},
-		{name: "default-is-openai", defaultName: "gateway", want: "gateway"},
-		{name: "default-not-openai-falls-to-first-openai", defaultName: "anthropic", want: "gateway"},
-		{name: "no-default-falls-to-first-openai", want: "gateway"},
+		{name: "named-wins", named: "groq", defaultName: "openai", want: "groq"},
+		{name: "openai-default", defaultName: "openai", want: "openai"},
+		// A Codex login speaks the OpenAI protocol but not OpenAI's Realtime endpoint.
+		{name: "skips-codex-ranked-first", defaultName: "groq", want: "openai"},
+		{name: "openai-compatible-default-falls-through", defaultName: "groq", want: "openai"},
+		{name: "non-openai-default-falls-through", defaultName: "anthropic", want: "openai"},
+		{name: "no-default-falls-to-openai", want: "openai"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			got, err := pickOpenAIVoiceProvider(test.named, test.defaultName, instances)
@@ -32,5 +36,10 @@ func TestPickOpenAIVoiceProvider(t *testing.T) {
 	}
 	if _, err := pickOpenAIVoiceProvider("", "", []registry.Instance{{Name: "anthropic", Protocol: registry.ProtocolAnthropic}}); err == nil {
 		t.Fatal("no OpenAI-transport instance must refuse voice rather than name a non-Realtime provider")
+	}
+	if _, err := pickOpenAIVoiceProvider("", "groq", []registry.Instance{
+		{Name: "groq", ProviderID: "groq", Base: "groq", Protocol: registry.ProtocolOpenAIChat},
+	}); err == nil {
+		t.Fatal("an OpenAI-compatible instance must not be chosen as the Realtime provider")
 	}
 }

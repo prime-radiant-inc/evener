@@ -64,9 +64,10 @@ function Controls({ client, target }: { client: VoiceClient; target: VoiceTarget
 							not speaker identification.
 						</Copy>
 						<Copy muted>
-							Voice uses the hub's OpenAI Realtime provider, separate from the manager's model provider. Audio is not
-							used for API training by default, but is retained for abuse monitoring up to 30 days; store:false is not
-							zero retention.
+							Voice uses{" "}
+							{state.provider ? `the hub's ${state.provider} provider` : "the hub's OpenAI Realtime provider"}, separate
+							from the manager's model provider. Audio is not used for API training by default, but is retained for
+							abuse monitoring up to 30 days; store:false is not zero retention.
 						</Copy>
 					</View>
 					<View style={{ flexDirection: "row", flexWrap: "wrap" }}>
