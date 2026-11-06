@@ -14,14 +14,10 @@ import (
 // suite, never to pace the test.
 const hubWatchTestHangGuard = 5 * time.Second
 
-// A binding outage longer than a handful of failed state reads must not end a
-// watch whose connection comes back (job-control.md: a restored connection
-// retains the watch). The old recovery loop counted five consecutive failed
-// state reads as exhausted connection recovery, so an outage of roughly
-// twenty seconds under load tore down every armed watch with an
-// "observation unreachable" end notice while the binding was still coming
-// back. The watch stays armed through the outage here, and the completion
-// observed on the restored connection still delivers.
+// A binding outage must not end a watch whose connection comes back
+// (job-control.md: a restored connection retains the watch). The watch stays
+// armed through the outage here, and the completion observed on the restored
+// connection still delivers.
 func TestManagerWatchSurvivesBindingOutageUntilConnectionRestores(t *testing.T) {
 	const ref, instance, generation = "local:worker", "worker-instance", "7@worker"
 	ctx := t.Context()
@@ -158,8 +154,7 @@ func TestManagerWatchOutagePastBudgetEndsDurably(t *testing.T) {
 // The outage budget's end decision must follow a fresh read, not a sleep: a
 // binding that answers again inside the budget retains the watch even when its
 // answer lands in the final backoff window, after the last scheduled read and
-// before the deadline. Ending there reused the previous read's error and
-// slept past the deadline without ever observing the recovery.
+// before the deadline.
 func TestManagerWatchBindingAnsweredInsideBudgetRetainsWatch(t *testing.T) {
 	const ref, instance, generation = "local:worker", "worker-instance", "7@worker"
 	root := newMessagingRoot(t, newMessagingAdapter(), func(cfg *SessionConfig) {
@@ -214,8 +209,8 @@ func TestManagerWatchBindingAnsweredInsideBudgetRetainsWatch(t *testing.T) {
 	base.streams <- second
 	root.HubBindingChanged()
 	// The binding answers again at roughly 1.7s: inside the budget, in the
-	// window after the last scheduled read (about 1.5s) that an unreformed
-	// loop would have slept through, with margin for a loaded runner.
+	// window after the last scheduled read (about 1.5s) that the deadline-
+	// capped backoff must still re-read, with margin for a loaded runner.
 	time.Sleep(200 * time.Millisecond)
 	base.mu.Lock()
 	base.offline = false

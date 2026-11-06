@@ -87,23 +87,18 @@ func TestManagerWatchResolvesTransientFailureWithoutRebind(t *testing.T) {
 	case <-ctx.Done():
 		t.Fatal("watch did not suspend")
 	}
+	// Queue the injected failure before the connection heals: a retry landing
+	// between the two steps must still observe a failing read, and only the
+	// read after that can prove the connection healthy again.
+	client.failNext(1)
 	base.mu.Lock()
 	base.offline = false
 	base.mu.Unlock()
-	client.failNext(1)
 
-	select {
-	case <-client.failed:
-	case <-ctx.Done():
-		t.Fatal("watch never retried after a transient failure")
-	}
+	awaitWithin(t, hubWatchTestHangGuard, "transient failure observed by the retry", func() { <-client.failed })
 	// The retry proves the connection healthy again, so the watch must resolve
 	// into a durable end notice rather than staying suspended.
-	select {
-	case <-base.ended:
-	case <-ctx.Done():
-		t.Fatal("watch stayed suspended after a transient failure; it waits for a rebind that may never come")
-	}
+	awaitWithin(t, hubWatchTestHangGuard, "durable end after the transient failure", func() { <-base.ended })
 	jm := root.jobManager
 	noticed := false
 	for _, event := range loadJobStoreEvents(t, jm) {

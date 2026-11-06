@@ -17,8 +17,7 @@ import (
 // and incarnation, same ref, instance and boot generation) is a transient
 // rebuild, which the watch contract says must recover without re-registration.
 // The subscription must re-anchor on the fresh authoritative cut and keep
-// delivering recorded evidence; ending it here silently stopped completion
-// delivery on live lanes after every history recovery under load.
+// delivering recorded evidence.
 func TestManagerWatchSurvivesSameTargetHistoryRotation(t *testing.T) {
 	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
 	defer cancel()

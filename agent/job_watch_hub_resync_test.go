@@ -9,9 +9,7 @@ import (
 // A resync re-reads authoritative state while the notification drain continues
 // (job-control.md). On a target whose observations keep flowing across the
 // resync it is not an observation loss, so it must not deliver an
-// interruption notice: every resync cycle on a live lane delivered another
-// identical stale "waiting for recovery" frame to the watching Manager while
-// the lane was demonstrably mid-turn.
+// interruption notice.
 func TestManagerWatchResyncOnFlowingObservationDeliversNoInterruptionNotice(t *testing.T) {
 	root := newMessagingRoot(t, newMessagingAdapter(), func(cfg *SessionConfig) { cfg.Manager = true })
 	jm := root.jobManager
