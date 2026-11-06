@@ -2,6 +2,7 @@ package llm
 
 import (
 	"bytes"
+	"encoding/base64"
 	"image"
 	pngenc "image/png"
 	"testing"
@@ -33,6 +34,31 @@ func TestRasterMediaTypeDecodesFullyAndRejectsTruncatedImages(t *testing.T) {
 		if got, err := RasterMediaType(data); err == nil {
 			t.Errorf("RasterMediaType(%s) = (%q, nil), want an error", name, got)
 		}
+	}
+}
+
+// DataURI builds the data:<mime>;base64, prefix and streams the payload into
+// one growing buffer. The previous EncodeToString + Sprintf path allocated
+// four payload-sized buffers, so a 12 MB document made ~64 MB of transient
+// garbage (#5488). Pin both the encoded output and the allocation count.
+func TestDataURISinglePayloadAllocation(t *testing.T) {
+	payload := bytes.Repeat([]byte{0xAB}, 1<<20)
+	got := DataURI("application/pdf", payload)
+	want := "data:application/pdf;base64," + base64.StdEncoding.EncodeToString(payload)
+	if got != want {
+		t.Fatalf("DataURI output differs from base64.StdEncoding over the same payload")
+	}
+	if allocs := testing.AllocsPerRun(20, func() { _ = DataURI("application/pdf", payload) }); allocs > 3 {
+		t.Fatalf("DataURI allocates %.0f times for a 1 MiB payload, want <= 3", allocs)
+	}
+}
+
+func BenchmarkDataURI(b *testing.B) {
+	payload := bytes.Repeat([]byte{0xAB}, 1<<20)
+	b.SetBytes(int64(len(payload)))
+	b.ReportAllocs()
+	for b.Loop() {
+		_ = DataURI("application/pdf", payload)
 	}
 }
 

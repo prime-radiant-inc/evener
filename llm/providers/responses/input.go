@@ -200,20 +200,22 @@ func toResponsesInput(msgs []llm.Message, imageCap string) (instructions string,
 							content = append(content, img)
 						}
 					case llm.ContentDocument:
-						// Bytes ride file_data as a data URI; a source URL
-						// rides file_data unchanged when no bytes are set.
-						fileData := llm.DocumentFileData(p.Document)
-						if fileData == "" && p.Document != nil {
-							fileData = p.Document.URL
-						}
-						if fileData != "" {
-							entry := map[string]any{
-								"type":      "input_file",
-								"file_data": fileData,
+						// Bytes ride file_data as an inline data URI; a source
+						// URL uses the Responses API's separate file_url field.
+						// file_data is inline content only, so a URL there is the
+						// wrong wire shape (#5491).
+						entry := map[string]any{"type": "input_file"}
+						if p.Document != nil {
+							if fileData := llm.DocumentFileData(p.Document); fileData != "" {
+								entry["file_data"] = fileData
+							} else if p.Document.URL != "" {
+								entry["file_url"] = p.Document.URL
 							}
 							if p.Document.FileName != "" {
 								entry["filename"] = p.Document.FileName
 							}
+						}
+						if len(entry) > 1 {
 							content = append(content, entry)
 						}
 					case llm.ContentAudio:
