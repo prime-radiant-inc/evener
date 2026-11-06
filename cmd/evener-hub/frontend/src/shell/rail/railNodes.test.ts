@@ -187,11 +187,11 @@ describe("resource projection semantics", () => {
     expect(displayState(session({ state: "idle", approval_pending: true }))).toBe("awaiting");
     expect(displayState(session({ state: "errored", approval_pending: true }))).toBe("errored");
   });
-  test("a project's session waiting on an approval sorts ahead of its working sibling", () => {
+  test("a project's session keeps its wire row when it starts waiting on an approval", () => {
     const working = session({ row_id: "working", ref: "working", state: "active" });
     const approval = session({ row_id: "approval", ref: "approval", state: "active", approval_pending: true });
     const [node] = projectNodes([project({ sessions: [working, approval] })], closed);
-    expect(node?.children.map((child) => child.id)).toEqual(["approval", "working"]);
+    expect(node?.children.map((child) => child.id)).toEqual(["working", "approval"]);
   });
   test("projects current/recent rows and deterministic bounded overflow pages", () => {
     const rows = [
@@ -362,10 +362,10 @@ describe("host grouping (organize by)", () => {
     const localCopy = local?.children[0];
     expect(localCopy).toMatchObject({ kind: "project", project: { key: "evener" } });
     expect(childIds(localCopy)).toEqual(["navigation:local:l1"]);
-    // The needs-you-first sort survives the per-host filter.
+    // The wire order survives the per-host filter.
     expect(devbox?.children.map((child) => child.id)).toEqual(["projectnode:evener@devbox"]);
     const devboxCopy = devbox?.children[0];
-    expect(childIds(devboxCopy)).toEqual(["navigation:devbox:d2", "navigation:devbox:d1"]);
+    expect(childIds(devboxCopy)).toEqual(["navigation:devbox:d1", "navigation:devbox:d2"]);
   });
 
   test("hostProjectNodes re-ids the project's overflow under the one copy that carries it", () => {

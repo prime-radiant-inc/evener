@@ -6,7 +6,7 @@ import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { MotionProvider } from "../../motion";
 import { installLocalStorage, MemoryStorage } from "../../storageTestUtils";
 import { connectionStore, resetConnectionStoreForTests } from "../../stores/connection";
-import { sessionActivitySnapshot } from "../../stores/sessionActivity";
+import { sessionActivitySnapshot, settleSessionActivityForTests } from "../../stores/sessionActivity";
 import {
   activityClient,
   activityContext,
@@ -232,11 +232,16 @@ test.each(["refresh", "reconnect"] as const)(
     fireEvent.click(screen.getByRole("radio", { name: "About" }));
     await screen.findByText("owner");
     fireEvent.click(screen.getByRole("radio", { name: /Jobs/ }));
-    const restored = await screen.findByRole("button", { name: /History 22 revision 0/ });
-    await waitFor(() => {
-      expect(client.calls.filter((call) => call.method === "evener/thread/jobs/list")).toHaveLength(6);
-      expect(sessionActivitySnapshot(client, ref, "session")?.jobs.loading).toBe(false);
+    // The re-observed jobs read walks to the retained boundary page by page,
+    // paced by the store's own clock. Await the walk's registered read span —
+    // an awaitable completion — instead of polling a condition ceiling that
+    // load can push the pacing past.
+    await act(async () => {
+      await settleSessionActivityForTests(client, ref, "session", "jobs");
     });
+    const restored = screen.getByRole("button", { name: /History 22 revision 0/ });
+    expect(client.calls.filter((call) => call.method === "evener/thread/jobs/list")).toHaveLength(6);
+    expect(sessionActivitySnapshot(client, ref, "session")?.jobs.loading).toBe(false);
     expect(restored.getBoundingClientRect().top).toBe(-12);
     expect(screen.getByText("30 completed jobs").closest("details")?.open).toBe(true);
     expect(activitySidebarStore.getState().views.get(ref)?.categories.jobs?.anchor).toEqual(saved);
@@ -250,14 +255,72 @@ test.each(["refresh", "reconnect"] as const)(
         client.emitReady();
       }
     });
-    const fresh = await screen.findByRole("button", { name: /History 22 revision 1/ });
-    await waitFor(() => expect(sessionActivitySnapshot(client, ref, "session")?.jobs.loading).toBe(false));
+    // Same for the recovery walk: it re-reads every page to the boundary on
+    // the store's pacing, so await its span rather than watching a deadline.
+    await act(async () => {
+      await settleSessionActivityForTests(client, ref, "session", "jobs");
+    });
+    const fresh = screen.getByRole("button", { name: /History 22 revision 1/ });
+    expect(sessionActivitySnapshot(client, ref, "session")?.jobs.loading).toBe(false);
     expect(fresh.getBoundingClientRect().top).toBe(-12);
     expect(screen.getByText("30 completed jobs").closest("details")?.open).toBe(true);
     expect(activitySidebarStore.getState().views.get(ref)?.categories.jobs?.anchor).toEqual(saved);
     expect(client.calls.filter((call) => call.method === "evener/thread/jobs/list")).toHaveLength(9);
   },
 );
+
+test("a refresh walk whose paced pages answer slower than a condition-watch ceiling still restores the anchored display", async () => {
+  // The 2026-11-05 load flake: the round-trip convergence above judged the
+  // notification-driven refresh walk through findByRole's 1000ms ceiling while
+  // the walk is real work the store paces on its own clock (100ms between
+  // pages) with an awaitable completion. Seeding slow page answers here turns
+  // that load exposure deterministic: three pages at 350ms plus the store's
+  // two pacing gaps outlast any condition-watch ceiling, so the assertions
+  // must await the walk's actual completion instead of polling a deadline.
+  const client = activityClient();
+  let revision = 0;
+  let slowPages = false;
+  client.on("evener/thread/jobs/list", async ({ cursor }) => {
+    if (slowPages) await new Promise<void>((resolve) => setTimeout(resolve, 350));
+    const offset = cursor ? Number(cursor) : 0;
+    return {
+      context: activityContext(),
+      scope: "session",
+      jobs: jobs.slice(offset, offset + 10).map((job) => ({
+        ...job,
+        terminal: true,
+        outcome: "success",
+        status: "completed",
+        description: `${job.description} revision ${revision}`,
+      })),
+      page: { complete: offset === 20, issues: [], ...(offset < 20 ? { nextCursor: String(offset + 10) } : {}) },
+    };
+  });
+  connectionStore.getState().connect(client);
+  installFocusedScope(ref);
+  activitySidebarStore.getState().openWith("jobs");
+  mount();
+  fireEvent.click(await screen.findByText("10 completed jobs"));
+  await act(async () => Visibility.latest().emit(true));
+  await screen.findByRole("button", { name: /History 19 revision 0/ });
+  await act(async () => Visibility.latest().emit(true));
+  await screen.findByRole("button", { name: /History 22 revision 0/ });
+  viewport().scrollTop = 22 * ROW_HEIGHT + 12;
+  fireEvent.scroll(viewport());
+  const saved = activitySidebarStore.getState().views.get(ref)?.categories.jobs?.anchor;
+  expect(saved).toEqual(anchor);
+
+  revision = 1;
+  slowPages = true;
+  act(() => client.emitNotification(activityChangedNotification({ ref, threadId: "owner" }, ["jobs"])));
+  await act(async () => {
+    await settleSessionActivityForTests(client, ref, "session", "jobs");
+  });
+  const fresh = screen.getByRole("button", { name: /History 22 revision 1/ });
+  expect(fresh.getBoundingClientRect().top).toBe(-12);
+  expect(activitySidebarStore.getState().views.get(ref)?.categories.jobs?.anchor).toEqual(saved);
+  expect(client.calls.filter((call) => call.method === "evener/thread/jobs/list")).toHaveLength(6);
+});
 
 test("reload retains a clamped anchor until existing page demand supplies its trailing extent", async () => {
   prepareRetainedAnchor();
