@@ -694,7 +694,8 @@ function PaletteBody({
       return;
     }
     if (mode === "command-filter") {
-      // An explicitly arrow-navigated selection wins.
+      // The highlighted row runs when the user arrowed or clicked to it, or
+      // typed a name; a bare "/" falls through so Enter doesn't fire row 0.
       const picked = userMovedRef.current || query.replace(/^\/+/, "").trim() !== "";
       if (picked && item?.kind === "command") {
         activateCommand(item.command);
