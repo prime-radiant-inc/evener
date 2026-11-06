@@ -688,7 +688,7 @@ func formatJobWatchInspect(out jobWatchInspectToolResult) string {
 // watchIntArg reads an integer job_watch argument strictly: absent or null is
 // (0, false, nil); an int or an integral, finite float64 is its value; anything
 // else (a string, 1.5, NaN) is invalid_request naming the field. Providers hand
-// numbers over as float64, so silently truncating would hide a model error.
+// numbers over as exact JSON numbers, so truncating would hide a model error.
 // optionalWholeIntArg cannot stand in for it: that helper rejects negative
 // values and native ints, and this one hands every integer to
 // normalizeWatchArgs, which owns the per-field bounds.
@@ -705,6 +705,12 @@ func watchIntArg(args map[string]any, key string) (int, bool, error) {
 		return 0, false, nil
 	}
 	switch v := raw.(type) {
+	case json.Number:
+		n, ok := tool.WholeNumberInt(v)
+		if !ok {
+			return 0, false, fmt.Errorf("invalid_request: %s must be an integer", key)
+		}
+		return n, true, nil
 	case int:
 		return v, true, nil
 	case float64:
@@ -895,6 +901,12 @@ func watchTriggerArgumentIsNeutral(name string, value any, a watchArgs) bool {
 
 func watchIntegerValue(value any) int {
 	switch v := value.(type) {
+	case json.Number:
+		n, ok := tool.WholeNumberInt(v)
+		if !ok {
+			return -1
+		}
+		return n
 	case int:
 		return v
 	case float64:

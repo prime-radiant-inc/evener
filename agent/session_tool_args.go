@@ -1,10 +1,13 @@
 package agent
 
 import (
+	"encoding/json"
 	"fmt"
 	"math"
 	"strings"
 	"time"
+
+	"primeradiant.com/evener/agent/internal/tool"
 )
 
 // Decoders for model-supplied tool arguments, shared by every session tool.
@@ -27,7 +30,7 @@ func optionalIntArg(args map[string]any, key string) *int {
 	if !ok {
 		return nil
 	}
-	if n, ok := v.(float64); ok {
+	if n, ok := approximateToolNumber(v); ok {
 		ni := int(n)
 		return &ni
 	}
@@ -70,6 +73,13 @@ func optionalWholeIntArg(args map[string]any, key string) (*int, error) {
 	if !ok || v == nil {
 		return nil, nil
 	}
+	if number, ok := v.(json.Number); ok {
+		n, whole := tool.WholeNumberInt(number)
+		if !whole || n < 0 || n >= math.MaxInt {
+			return nil, fmt.Errorf("invalid_request: %s must be a non-negative whole number, got %v", key, number)
+		}
+		return &n, nil
+	}
 	n, ok := v.(float64)
 	if !ok {
 		return nil, fmt.Errorf("invalid_request: %s must be a whole number, got %T", key, v)
@@ -79,6 +89,20 @@ func optionalWholeIntArg(args map[string]any, key string) (*int, error) {
 	}
 	i := int(n)
 	return &i, nil
+}
+
+// approximateToolNumber is only for legacy scalar readers that already consume
+// float64. Preserve their unchecked truncation, overflow and default branches.
+func approximateToolNumber(value any) (float64, bool) {
+	switch n := value.(type) {
+	case float64:
+		return n, true
+	case json.Number:
+		f, _ := n.Float64()
+		return f, true
+	default:
+		return 0, false
+	}
 }
 
 // optionalTimeArg extracts an optional RFC3339 timestamp from tool arguments.

@@ -461,7 +461,7 @@ func (s *Session) runPreToolHooks(ctx context.Context, call *llm.ToolCallData, p
 	hi.ToolName = toolname.EvenerToClaude(call.Name)
 	hi.ToolUseID = call.ID
 	if !prep.RawArgumentsRejected && len(call.Arguments) > 0 {
-		_ = json.Unmarshal(call.Arguments, &hi.ToolInput)
+		hi.ToolInput, _ = tool.DecodeArguments(call.Arguments)
 	}
 
 	preResult := s.hookRunner.RunPreToolUse(s.apiLogContext(ctx), hi)
@@ -563,11 +563,9 @@ func applyUpdatedToolInput(call *llm.ToolCallData, updated map[string]any) error
 	if call == nil || len(updated) == 0 {
 		return nil
 	}
-	args := map[string]any{}
-	if len(call.Arguments) > 0 {
-		if err := json.Unmarshal(call.Arguments, &args); err != nil {
-			return err
-		}
+	args, err := tool.DecodeArguments(call.Arguments)
+	if err != nil {
+		return err
 	}
 	maps.Copy(args, updated)
 	b, err := json.Marshal(args)

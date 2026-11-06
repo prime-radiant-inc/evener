@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"maps"
 	"strconv"
 	"strings"
@@ -65,7 +64,9 @@ func prepareToolCall(call llm.ToolCallData, t *tool.RegisteredTool, visibleNames
 	args := map[string]any{}
 	var pendingJSONChanges []repair.Change
 	if len(res.Call.Arguments) > 0 { // raw len, mirroring ExecuteCall (no TrimSpace)
-		if err := json.Unmarshal(res.Call.Arguments, &args); err != nil {
+		var err error
+		args, err = tool.DecodeArguments(res.Call.Arguments)
+		if err != nil {
 			// A length-stopped turn cut the argument stream mid-JSON. Never
 			// repair that: closing the open string would execute a silently
 			// truncated call (e.g. write half a file). Fail with the real
@@ -75,8 +76,9 @@ func prepareToolCall(call llm.ToolCallData, t *tool.RegisteredTool, visibleNames
 				return res
 			}
 			repaired, c := repair.RepairJSON(res.Call.Arguments)
-			args = map[string]any{}
-			if err2 := json.Unmarshal(repaired, &args); err2 != nil {
+			var err2 error
+			args, err2 = tool.DecodeArguments(repaired)
+			if err2 != nil {
 				// Show the model's own bytes and the original parse error
 				// (its offset refers to them, not the repaired form).
 				res.PrevalErr = repair.ExplainJSONError(requestedVisible, t.Definition.Parameters, err, res.Call.Arguments)
@@ -160,7 +162,7 @@ func prepareToolCall(call llm.ToolCallData, t *tool.RegisteredTool, visibleNames
 		}
 	}
 
-	if err := t.Schema.Validate(args); err != nil {
+	if err := tool.ValidateArguments(t.Schema, args); err != nil {
 		// A length stop that cut the stream before any argument byte leaves
 		// empty args; on a tool with required parameters that reads as a
 		// "missing required field" schema error — the same misdiagnosis the
@@ -189,7 +191,7 @@ func prepareToolCall(call llm.ToolCallData, t *tool.RegisteredTool, visibleNames
 				}
 			}
 		}
-		if err2 := t.Schema.Validate(healed); err2 != nil {
+		if err2 := tool.ValidateArguments(t.Schema, healed); err2 != nil {
 			// Retained-read normalization was already applied to args. Preserve
 			// that real, applied change in telemetry even when another field
 			// remains invalid; failed generic repairs and envelope fills remain
@@ -304,21 +306,15 @@ func decodeDefaultCommunicateOutputString(encoded string) (map[string]any, error
 	if err := withinJSONDepth(encoded, maxCommunicateOutputJSONDepth); err != nil {
 		return nil, err
 	}
-	decoder := json.NewDecoder(strings.NewReader(encoded))
-	var decoded any
-	if err := decoder.Decode(&decoded); err != nil {
+	if len(encoded) == 0 {
 		return nil, errors.New("is not valid JSON")
 	}
-	var extra any
-	if err := decoder.Decode(&extra); err != io.EOF {
-		if err == nil {
-			return nil, errors.New("contains trailing content")
-		}
-		return nil, errors.New("contains trailing invalid content")
-	}
-	output, ok := decoded.(map[string]any)
-	if !ok {
+	if strings.TrimSpace(encoded) == "null" {
 		return nil, errors.New("does not decode to an object")
+	}
+	output, err := tool.DecodeArguments([]byte(encoded))
+	if err != nil {
+		return nil, fmt.Errorf("does not decode to an object: %w", err)
 	}
 	return output, nil
 }
@@ -518,6 +514,9 @@ func isNeutralRetainedInteger(value any) bool {
 	switch value := value.(type) {
 	case nil:
 		return true
+	case json.Number:
+		n, ok := tool.WholeNumberInt(value)
+		return ok && n == 0
 	case float64:
 		return value == 0
 	case float32:
