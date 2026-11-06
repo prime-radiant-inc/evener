@@ -119,3 +119,11 @@ condition = "AND"
 regexTarget = "match"
 paths = ['''^mobile-native/src/generated/mermaidPage\.ts$''']
 regexes = ['''^p\.keyCount,v=p\.atlasCount;$''']
+
+# Wake-trial UserDefaults key, not a credential. Preserve its persisted identity.
+[[rules.allowlists]]
+description = "wake-trial UserDefaults storage key"
+condition = "AND"
+regexTarget = "secret"
+paths = ['''^mobile-native/modules/evener-voice/core/WakeTrialLedger\.swift$''']
+regexes = ['''^evener\.voice\.wakeTrials\.v1$''']

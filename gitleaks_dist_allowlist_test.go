@@ -96,6 +96,8 @@ func anyGitleaksPathMatches(t *testing.T, paths []string, target string) bool {
 const (
 	mermaidGeneratedPath = "mobile-native/src/generated/mermaidPage.ts"
 	mermaidVendorCounts  = "p.keyCount,v=p.atlasCount;"
+	wakeTrialLedgerPath  = "mobile-native/modules/evener-voice/core/WakeTrialLedger.swift"
+	wakeTrialStorageKey  = "evener.voice.wakeTrials.v1"
 )
 
 func TestGitleaksMermaidExceptionScope(t *testing.T) {
@@ -143,8 +145,57 @@ func TestGitleaksMermaidExceptionScope(t *testing.T) {
 	t.Fatal("no scoped generic-api-key exception for the generated Mermaid vendor expression")
 }
 
+func TestGitleaksWakeTrialExceptionScope(t *testing.T) {
+	t.Parallel()
+	var cfg gitleaksConfig
+	if _, err := toml.DecodeFile(".gitleaks.toml", &cfg); err != nil {
+		t.Fatal(err)
+	}
+	if anyGitleaksPathMatches(t, cfg.Allowlist.Paths, wakeTrialLedgerPath) {
+		t.Fatal("wake-trial source must not be globally path-allowlisted")
+	}
+	for _, rule := range cfg.Rules {
+		if rule.ID != "generic-api-key" {
+			continue
+		}
+		for _, allowlist := range rule.Allowlists {
+			if !anyGitleaksPathMatches(t, allowlist.Paths, wakeTrialLedgerPath) {
+				continue
+			}
+			if allowlist.Condition != "AND" || allowlist.RegexTarget != "secret" {
+				t.Fatal("wake-trial exception must require both the path and the exact extracted value")
+			}
+			for _, path := range []string{
+				"mobile-native/modules/evener-voice/core/VoiceCore.swift",
+				"other/" + wakeTrialLedgerPath,
+				wakeTrialLedgerPath + ".backup",
+			} {
+				if anyGitleaksPathMatches(t, allowlist.Paths, path) {
+					t.Errorf("wake-trial exception also matches path %q", path)
+				}
+			}
+			for _, tc := range []struct {
+				value string
+				allow bool
+			}{
+				{wakeTrialStorageKey, true},
+				{wakeTrialStorageKey + "-other", false},
+				{"prefix-" + wakeTrialStorageKey, false},
+				{"evener.voice.wakeTrials.v2", false},
+				{"evenerXvoiceXwakeTrialsXv1", false},
+			} {
+				if got := anyGitleaksPathMatches(t, allowlist.Regexes, tc.value); got != tc.allow {
+					t.Errorf("value %q: allow=%v, want %v", tc.value, got, tc.allow)
+				}
+			}
+			return
+		}
+	}
+	t.Fatal("no scoped generic-api-key exception for the wake-trial UserDefaults key")
+}
+
 // The real engine is opt-in so default tests need no ambient tool installation.
-func TestGitleaksMermaidSecretDetection(t *testing.T) {
+func TestGitleaksScopedSecretDetection(t *testing.T) {
 	if os.Getenv("EVENER_GITLEAKS_TESTS") != "1" {
 		t.Skip("set EVENER_GITLEAKS_TESTS=1 with gitleaks installed")
 	}
@@ -159,6 +210,7 @@ func TestGitleaksMermaidSecretDetection(t *testing.T) {
 	}
 	// A deterministic synthetic credential exercises the actual generic rule.
 	credential := `api_key="` + strings.Repeat("aB3dE7gH9kL2", 3) + `";`
+	persistedWakeKey := `private let key = "` + wakeTrialStorageKey + `"`
 	for _, tc := range []struct {
 		name     string
 		path     string
@@ -169,6 +221,10 @@ func TestGitleaksMermaidSecretDetection(t *testing.T) {
 		{"vendor-other-path", "mobile-native/src/vendor.ts", mermaidVendorCounts, 1},
 		{"credential-same-line", mermaidGeneratedPath, mermaidVendorCounts + credential, 1},
 		{"credential-other-path", "mobile-native/src/vendor.ts", mermaidVendorCounts + credential, 2},
+		{"wake-trial-key", wakeTrialLedgerPath, persistedWakeKey, 0},
+		{"wake-trial-key-other-path", "mobile-native/modules/evener-voice/core/VoiceCore.swift", persistedWakeKey, 1},
+		{"wake-trial-changed-key", wakeTrialLedgerPath, strings.ReplaceAll(persistedWakeKey, ".v1", ".v2"), 1},
+		{"wake-trial-credential-same-line", wakeTrialLedgerPath, persistedWakeKey + "; " + credential, 1},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
