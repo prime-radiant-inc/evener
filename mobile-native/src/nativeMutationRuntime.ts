@@ -1,5 +1,6 @@
 import { openDatabaseSync } from "expo-sqlite";
 import * as Crypto from "expo-crypto";
+import type { DraftSubmissionLedgerSQLite } from "./draftSubmissionLedger";
 import type { AppwireClientLike, ThreadReadResponse } from "@evener/appwire-client";
 import { collectAuthoritativeMutationIds } from "@evener/appwire-client";
 import {
@@ -44,6 +45,9 @@ export interface NativeMutationRuntimeOptions {
 
 type NativeStorage = MutationOutboxStorage<MutationAttachmentRef> &
 	QueuedMessageStorage & {
+		/** The durable submission obligations, on the same database as the
+		 * moved mutation rows. */
+		submissionLedger: DraftSubmissionLedgerSQLite;
 		readRecoveryResend(targetRef: string, sourceIds: readonly string[]): Promise<RecoveryResendCommit | undefined>;
 		acknowledgeRecoveryResend(targetRef: string, clientMutationId: string): Promise<void>;
 		listOutbox(targetRef?: string): Promise<MutationOutboxRecord<MutationAttachmentRef>[]>;

@@ -41,6 +41,7 @@ import {
 	settlementRetiresRecovery,
 } from "@evener/appwire-client/state/mutation";
 import { type SqliteSync, type SqliteSyncRunResult, withSavepoint } from "./sqliteSync";
+import { DraftSubmissionLedgerSQLite } from "./draftSubmissionLedger";
 
 // This app's SecureRandomSource: expo-crypto's synchronous randomUUID and
 // getRandomValues, the native module every other id-generating call site in
@@ -176,6 +177,10 @@ export class MutationOutboxSQLite<A extends MutationAttachmentRef = MutationAtta
 	implements MutationOutboxStorage<A>, QueuedMessageStorage<A>
 {
 	readonly db: SqliteSync;
+	/** The durable submission obligations: a submission records one before
+	 * transport on this database, so its completion survives restarts and
+	 * handoffs without any in-memory chain. */
+	readonly submissionLedger: DraftSubmissionLedgerSQLite;
 	readonly #createMutationId: () => string;
 	readonly #now: () => number;
 	readonly #getOwnClientId: () => string | undefined;
@@ -185,6 +190,7 @@ export class MutationOutboxSQLite<A extends MutationAttachmentRef = MutationAtta
 		const randomSource = options.randomSource ?? nativeRandomSource();
 		this.#createMutationId = options.createMutationId ?? (() => createSecureUUID(randomSource));
 		this.#now = options.now ?? Date.now;
+		this.submissionLedger = new DraftSubmissionLedgerSQLite(db, { now: this.#now });
 		this.#getOwnClientId = options.getOwnClientId ?? (() => undefined);
 		const schema = (table: string) => `CREATE TABLE IF NOT EXISTS ${table} (
 			client_mutation_id TEXT PRIMARY KEY, version INTEGER NOT NULL,

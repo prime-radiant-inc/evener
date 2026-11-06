@@ -244,7 +244,10 @@ test("a migrated resend receipt reconciles under the resumed ref and clears its 
 	await reconcileEditedResends(f.runtime, resumedKey, resumed);
 	expect(resumed.getSnapshot().record).toMatchObject({ unconfirmed: null });
 	expect(await f.runtime.readRecoveryResend(resumedKey, [captured])).toBeUndefined();
-	expect(f.repository.read(resumedDestination)).toEqual({ draft: "", unconfirmed: null });
+	// The hop's settlement durably released the composition's cited source:
+	// the migrated receipt's row cannot restore into the resumed draft.
+	expect(f.repository.read(resumedDestination)).toMatchObject({ draft: "", unconfirmed: null });
+	expect(f.repository.read(resumedDestination).releasedRecoveryIds).toEqual(["mutation-1"]);
 });
 
 test("successful built-in completion durably cleans only captured sources without replay", async () => {
@@ -1442,6 +1445,133 @@ test("retained Edit rejects stale thread identity before preclear or append", as
 	});
 	expect(f.document.getSnapshot().record.composer?.recoveryIds).toBeUndefined();
 	expect(await f.runtime.storage.getRecovery(id)).toMatchObject({ recoveryKind: "editing" });
+});
+
+test("an open obligation's capture survives resend reconciliation at an adopted destination", async () => {
+	const f = fixture();
+	const captured = await f.enqueue();
+	f.document.edit("current");
+	expect(await editQueuedMessageIntoDraft(f.runtime, key, captured, f.document)).toBe("restored");
+	f.document.edit("edited recovered text");
+
+	const library = new DraftLibrary(
+		() => f.repository,
+		undefined,
+		() => f.runtime.storage.submissionLedger,
+	);
+	const source = library.open(destination);
+	let finish!: () => void;
+	const submitted = source.submitBuiltinCommand(
+		() =>
+			new Promise<boolean>((resolve) => {
+				finish = () => resolve(true);
+			}),
+	);
+	// Another waiting message is what drives the resume and moves the
+	// claimed row's recovery to the resumed identity.
+	await f.enqueue();
+
+	const resumedRef = "session-resumed";
+	const resumedKey = nativeMutationTargetKey(destination.hubId, resumedRef);
+	const resumedDestination = { hubId: destination.hubId, sessionRef: resumedRef };
+	expect(
+		f.runtime.storage.retarget(key, {
+			ref: resumedKey,
+			wireRef: resumedRef,
+			threadId: "thread-2",
+			instanceId: "instance-2",
+		}),
+	).toHaveLength(1);
+	expect(library.handoff(destination, resumedDestination)).toBe(true);
+	const resumed = library.open(resumedDestination);
+	// The adopted destination is not submitting; only the ledger shows that
+	// the command is still running.
+	expect(resumed.getSnapshot().submitting).toBe(false);
+
+	// The screen's recovery effect order: retry, read the open obligations,
+	// then reconcile with those exclusions.
+	library.retryPendingHandoffs();
+	const pendingObligations = library.openObligationRecoveryIds(resumedDestination);
+	expect(pendingObligations).toEqual(new Set([captured]));
+	await reconcileEditedResends(f.runtime, resumedKey, resumed, () => pendingObligations);
+	// The still-running command keeps its capture...
+	expect(resumed.getSnapshot().record).toMatchObject({ unconfirmed: "edited recovered text" });
+
+	// ...so its completion attaches and records the command's sources.
+	finish();
+	await submitted;
+	expect(resumed.getSnapshot().record).toMatchObject({
+		unconfirmed: null,
+		completedCommandRecoveryIds: [captured],
+	});
+	expect(f.repository.read(resumedDestination)).toMatchObject({
+		unconfirmed: null,
+		completedCommandRecoveryIds: [captured],
+	});
+});
+
+test("reconciliation re-reads obligation ownership inside the serialized operation", async () => {
+	const f = fixture();
+	const captured = await f.enqueue();
+	f.document.edit("current");
+	expect(await editQueuedMessageIntoDraft(f.runtime, key, captured, f.document)).toBe("restored");
+	f.document.edit("edited recovered text");
+
+	const library = new DraftLibrary(
+		() => f.repository,
+		undefined,
+		() => f.runtime.storage.submissionLedger,
+	);
+	const source = library.open(destination);
+	let finish!: () => void;
+	const submitted = source.submitBuiltinCommand(
+		() =>
+			new Promise<boolean>((resolve) => {
+				finish = () => resolve(true);
+			}),
+	);
+	// Another waiting message is what drives the resume and moves the
+	// claimed row's recovery to the resumed identity.
+	await f.enqueue();
+
+	const resumedRef = "session-resumed";
+	const resumedKey = nativeMutationTargetKey(destination.hubId, resumedRef);
+	const resumedDestination = { hubId: destination.hubId, sessionRef: resumedRef };
+	expect(
+		f.runtime.storage.retarget(key, {
+			ref: resumedKey,
+			wireRef: resumedRef,
+			threadId: "thread-2",
+			instanceId: "instance-2",
+		}),
+	).toHaveLength(1);
+	expect(library.handoff(destination, resumedDestination)).toBe(true);
+	const resumed = library.open(resumedDestination);
+	// The adopted destination is not submitting; only the ledger shows that
+	// the command is still running.
+	expect(resumed.getSnapshot().submitting).toBe(false);
+
+	// The screen captured its exclusion set before the handoff adopted the
+	// running command's capture here. Ownership is passed as a reader, so the
+	// serialized reconciliation observes the handoff's ownership when it
+	// actually runs instead of restoring the capture with stale exclusions
+	// and clearing the token its completion still needs.
+	await reconcileEditedResends(f.runtime, resumedKey, resumed, () =>
+		library.openObligationRecoveryIds(resumedDestination),
+	);
+	// The still-running command keeps its capture...
+	expect(resumed.getSnapshot().record).toMatchObject({ unconfirmed: "edited recovered text" });
+	// ...so its completion attaches and records the command's sources.
+	finish();
+	await submitted;
+	expect(resumed.getSnapshot().record).toMatchObject({
+		unconfirmed: null,
+		completedCommandRecoveryIds: [captured],
+	});
+	expect(f.repository.read(resumedDestination)).toMatchObject({
+		unconfirmed: null,
+		completedCommandRecoveryIds: [captured],
+	});
 });
 
 test("retained Edit rejects stale instance identity before preclear or append", async () => {
