@@ -114,8 +114,10 @@ Debug totals cover retained records only, exclude incomplete/interrupted attempt
 and keep model/settings cohorts separate. Warmup and gaps do not count as scored
 audio. Record qualification evidence before older attempts age out. Targets are
 ≥60 intended trials, ≥95% detection and 30 h negative audio; none are claimed by
-this runtime implementation. Periodic bridge updates run only for active trials
-or changed wake state/score, not unchanged quiet listening or repeated errors.
+this runtime implementation. Periodic bridge updates run only during an active
+trial or on a changed wake state or wake error. A classifier score that moves
+while merely armed does not republish the whole voice state, so the debug
+panel's live score comes from trials and quiet listening stays off the bridge.
 
 ## Checks
 
