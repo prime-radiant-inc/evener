@@ -1159,9 +1159,12 @@ test("a completed intent group closes after its trailing tool calls", () => {
   };
   const entry = {
     kind: "intent" as const,
-    id: "tool",
+    id: "intent:tool" as const,
     turnId: "turn_1",
     sourceIndex: 0,
+    sourceItemId: "tool",
+    rationale: "",
+    failed: false,
     item: source.items[0]!,
   };
   render(withConfig(NO_ROUND_TIMINGS, <ProjectedIntentGroup entries={[entry]} separatorTurn={source} />));
