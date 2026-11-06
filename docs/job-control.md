@@ -101,8 +101,11 @@ Clearing, replacing or canceling the subscription stops its recovery.
 Missing required evidence, wrong requested turns, incompatible ref, instance
 or generation, and history truncation end observation immediately. A
 same-target history discontinuity — a new epoch or incarnation for the same
-ref, instance and generation — re-anchors the observation on the fresh cut
-instead of ending it. Permanent request refusals and typed history failures also end it;
+ref, instance and generation — re-anchors the observation when it arrives as
+the fresh cut a re-read serves. One surfacing mid-read — while a continuing
+gap is still paging, or against a held cut a live continuation verdict still
+needs — ends the observation with re-registration guidance instead. Permanent
+request refusals and typed history failures also end it;
 none is a negative verdict. Exhausted retries end the watch with one durable
 end notice and re-registration guidance, never inferred completion. Index
 traversal checks cancellation between reads; existing catch-up and OS I/O may

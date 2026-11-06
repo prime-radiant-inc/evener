@@ -148,3 +148,78 @@ func TestManagerWatchOutagePastBudgetEndsDurably(t *testing.T) {
 		t.Fatalf("durable end notices=%d, want 1", got)
 	}
 }
+
+// The outage budget's end decision must follow a fresh read, not a sleep: a
+// binding that answers again inside the budget retains the watch even when its
+// answer lands in the final backoff window, after the last scheduled read and
+// before the deadline. Ending there reused the previous read's error and
+// slept past the deadline without ever observing the recovery.
+func TestManagerWatchBindingAnsweredInsideBudgetRetainsWatch(t *testing.T) {
+	const ref, instance, generation = "local:worker", "worker-instance", "7@worker"
+	root := newMessagingRoot(t, newMessagingAdapter(), func(cfg *SessionConfig) {
+		cfg.Manager = true
+		cfg.testOnly.hubWatchRetryDelay = 20 * time.Millisecond
+		cfg.testOnly.hubWatchStateOutageBudget = 500 * time.Millisecond
+	})
+	snapshot := appwire.SessionWatchUpdate{
+		Snapshot: &appwire.ThreadReadResponse{BootGeneration: generation, Thread: appwire.Thread{Evener: appwire.EvenerThread{Ref: ref, InstanceID: instance}}},
+		Metadata: appwire.SessionObservationMetadata{Ref: ref, InstanceID: instance, GenerationID: generation},
+	}
+	first := make(chan appwire.SessionWatchUpdate, 1)
+	first <- snapshot
+	base := &managerRecoverClient{
+		view:         appwire.ManagerView{Ref: "local:manager", InstanceID: "manager-instance", Manager: true},
+		streams:      make(chan chan appwire.SessionWatchUpdate, 2),
+		watches:      make(chan struct{}, 2),
+		offlineReads: make(chan struct{}, 16),
+		ended:        make(chan struct{}, 2),
+	}
+	base.streams <- first
+	root.SetHubClient(base)
+	res, err := root.configureHubWatchRuntime(t.Context(), map[string]any{"operation": "create", "hub": map[string]any{"ref": ref, "events": []string{"communicate"}, "completion": true}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	watchID := res.(tool.StateResult).State.(jobWatchToolResult).WatchID
+	<-base.watches
+	jm := root.jobManager
+	if jm == nil {
+		t.Fatal("missing journal owner")
+	}
+
+	// Outage. With the 20ms base the failed reads land at roughly 0, 20, 60,
+	// 140 and 300ms, and the next backoff would sleep well past the 500ms
+	// deadline.
+	base.mu.Lock()
+	base.offline = true
+	base.mu.Unlock()
+	close(first)
+	for range 5 {
+		select {
+		case <-base.offlineReads:
+		case <-time.After(5 * time.Second):
+			t.Fatal("state reads stopped failing while the binding was still offline")
+		}
+	}
+	// A rebind signal arrives now, while the binding is still down, so the
+	// loop consumes it here and every later wakeup is the backoff timer's.
+	second := make(chan appwire.SessionWatchUpdate, 4)
+	second <- snapshot
+	base.streams <- second
+	root.HubBindingChanged()
+	// The binding answers again at roughly 340ms: inside the budget, in the
+	// window after the last scheduled read (about 300ms) that the unreformed
+	// loop would have slept through.
+	time.Sleep(40 * time.Millisecond)
+	base.mu.Lock()
+	base.offline = false
+	base.mu.Unlock()
+	awaitWithin(t, 5*time.Second, "rebind after the binding answered inside the budget", func() { <-base.watches })
+	accepted := true
+	terminal := appwire.SessionObservationMetadata{Ref: ref, InstanceID: instance, GenerationID: generation, EntryID: "terminal:A", TurnID: "A", CausalKnown: true, TerminalAccepted: &accepted, EndTurn: true, EndReason: "done"}
+	second <- appwire.SessionWatchUpdate{Event: "communicate", Metadata: terminal}
+	awaitWithin(t, 5*time.Second, "watch completion after in-budget recovery", func() { <-base.ended })
+	if got := countWatchSends(t, jm, watchID, instance+"/"+generation+"/terminal:A:communicate:completed"); got != 1 {
+		t.Fatalf("completion deliveries after in-budget recovery=%d, want 1", got)
+	}
+}

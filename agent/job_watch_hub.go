@@ -1121,22 +1121,31 @@ func (s *Session) consumeHubWatch(ctx context.Context, id string, request appwir
 				if outageStart.IsZero() {
 					outageStart = time.Now()
 				}
+				// Exhausted recovery is decided on this fresh failed read, so
+				// the durable end always follows evidence from inside the
+				// outage window: a binding that answers again within the
+				// budget is observed before recovery counts as exhausted.
+				if time.Since(outageStart) >= s.hubWatchStateOutageBudget() {
+					_ = jm.endHubWatchUntilPersisted(id, "observation unreachable: "+stateErr.Error()+"; re-register", nil)
+					return
+				}
 			}
-			// A rebind resolves the ambiguity immediately; otherwise retry after a
-			// bounded backoff. An outage that outlasts the budget ends the watch
-			// durably rather than retrying a broken read forever: the Manager
-			// gets a notice it can act on instead of an observation that
-			// silently stopped. A connection restored inside the budget
-			// retains the watch.
+			// A rebind resolves the ambiguity immediately; otherwise retry after
+			// a bounded backoff that never sleeps past the outage budget's
+			// deadline. Repeated failures end the watch durably rather than
+			// retrying a broken read forever: the Manager gets a notice it can
+			// act on instead of an observation that silently stopped.
+			next := s.hubWatchStateRetryDelay(stateFailures)
+			if stateErr != nil {
+				if remaining := s.hubWatchStateOutageBudget() - time.Since(outageStart); remaining < next {
+					next = remaining
+				}
+			}
 			select {
 			case <-ctx.Done():
 				return
 			case <-signal:
-			case <-time.After(s.hubWatchStateRetryDelay(stateFailures)):
-			}
-			if stateErr != nil && time.Since(outageStart) >= s.hubWatchStateOutageBudget() {
-				_ = jm.endHubWatchUntilPersisted(id, "observation unreachable: "+stateErr.Error()+"; re-register", nil)
-				return
+			case <-time.After(next):
 			}
 		}
 		if ctx.Err() != nil || !managerHubWatchPresent(jm, id) {
