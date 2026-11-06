@@ -27,7 +27,27 @@ final class VoiceService {
     private var delivery = ""
     private var activeGeneration = 0
     private var lastProgress = 0.0
+    private let wakeTrials = WakeTrialLedger()
+    private var wakeState = "paused"
+    private var wakeScore: Float?
+    private var wakeError = ""
+    private var wakeDetections = 0
+    private var lastWakeScore: Float?
+    private var lastWakeActivation = -Double.infinity
+    private var lastWakePublish = 0.0
+    private var publishedWakeState = "paused"
+    private var publishedWakeScore: Float?
+    private var publishedWakeError = ""
+    private var lastTrialSave = 0.0
     private init() {
+        audio.wakeResult = { [weak self] result in self?.heardWake(result) }
+        audio.wakeFailed = { [weak self] reason, samples in
+            guard let self else { return }
+            let changed = self.wakeError != reason
+            self.wakeState = "warming"; self.wakeError = reason
+            self.wakeTrials.dropped(samples)
+            if changed { self.publish() }
+        }
         audio.capture = { [weak self] pcm, speech, at in
             guard let self else { return }
             if self.connected, self.controller.state == .recovering {
@@ -71,9 +91,57 @@ final class VoiceService {
     private func state() -> [String: Any] {
         ["state": controller.state.rawValue, "capturing": audio.capturing, "cloudMicrophone": controller.cloudMicrophone,
          "route": audio.route, "speakerConsentRequired": !speakerConsent, "error": error ?? "", "interpreted": interpreted,
-         "custody": custody, "canonical": canonical, "generated": generated, "bindingId": configuration?["bindingId"] as? String ?? ""]
+         "custody": custody, "canonical": canonical, "generated": generated, "bindingId": configuration?["bindingId"] as? String ?? "",
+         "wake": ["state": audio.wakeListening ? wakeState : "paused", "phrase": audio.wakeModels?.phrase ?? "",
+                  "modelId": audio.wakeModels?.id ?? "", "score": wakeScore as Any? ?? NSNull(),
+                  "lastDetectionScore": lastWakeScore as Any? ?? NSNull(), "detections": wakeDetections,
+                  "error": wakeError, "trials": wakeTrials.json]]
     }
-    private func publish() { listener?(state()) }
+    private func publish() {
+        if audio.setWakeListening(connected && audio.capturing && controller.state == .quiet) {
+            wakeState = "warming"; wakeScore = nil
+        }
+        publishedWakeState = audio.wakeListening ? wakeState : "paused"
+        publishedWakeScore = wakeScore; publishedWakeError = wakeError
+        lastWakePublish = now
+        listener?(state())
+    }
+    private func heardWake(_ result: WakeWordResult) {
+        guard connected, controller.state == .quiet else { return }
+        wakeState = result.state.rawValue; wakeScore = result.score; wakeError = ""
+        wakeTrials.record(result)
+        guard result.detected else { return }
+        wakeDetections += 1; lastWakeScore = result.score
+        // Trial mode is local-only, even on a false activation. Normal wake uses
+        // exactly Talk's input_start/cue/acknowledgement path, never a JS RPC.
+        if !wakeTrials.running, let settings = audio.wakeModels?.settings,
+           now - lastWakeActivation >= Double(settings.holdoffMs) {
+            lastWakeActivation = now
+            perform(controller.wake(at: now))
+        }
+        publish()
+    }
+    func startWakeTrial(completion: @escaping (Result<Void, Error>) -> Void) {
+        worker.async {
+            do {
+                guard self.connected, self.audio.capturing, self.controller.state == .quiet,
+                      let models = self.audio.wakeModels else { throw VoiceFailure("wake_trial_requires_quiet") }
+                try self.wakeTrials.start(modelId: models.id, phrase: models.phrase, settings: models.settings, at: Date().timeIntervalSince1970)
+                self.audio.resetWake(); self.wakeState = "warming"; self.wakeScore = nil
+                self.publish(); completion(.success(()))
+            } catch { completion(.failure(error)) }
+        }
+    }
+    func finishWakeTrial(_ label: String, completion: @escaping (Result<Void, Error>) -> Void) {
+        worker.async {
+            do {
+                guard let label = WakeTrialLabel(rawValue: label) else { throw VoiceFailure("wake_trial_label_invalid") }
+                try self.wakeTrials.finish(label)
+                self.audio.resetWake(); self.wakeState = "warming"; self.wakeScore = nil
+                self.publish(); completion(.success(()))
+            } catch { completion(.failure(error)) }
+        }
+    }
     func arm(_ value: String, completion: @escaping (Result<Void, Error>) -> Void) {
         worker.async {
             do {
@@ -108,6 +176,7 @@ final class VoiceService {
     func talk() {
         let pressed = now
         worker.async {
+            guard !self.wakeTrials.running else { return }
             if self.controller.state == .speaking { self.perform(self.controller.stopSpeaking(played: self.audio.watermark())) }
             self.perform(self.controller.talk(at: pressed))
         }
@@ -115,6 +184,7 @@ final class VoiceService {
     func stopSpeaking() { worker.async { self.perform(self.controller.stopSpeaking(played: self.audio.watermark())) } }
     func disarm() { worker.async { self.disarmNow(); self.publish() } }
     private func disarmNow() {
+        wakeTrials.interrupt()
         perform(controller.disarm())
         socket.close(); configuration = nil; connected = false
         audio.deactivate(); reconnectAt = .distantFuture; renewAt = .distantFuture; recoverAudioAt = .distantFuture
@@ -169,6 +239,11 @@ final class VoiceService {
         let previous = controller.state
         perform(controller.tick(at: now))
         if previous != controller.state { publish() }
+        if audio.wakeListening, now - lastWakePublish >= 500,
+           wakeTrials.running || wakeState != publishedWakeState || wakeScore != publishedWakeScore || wakeError != publishedWakeError {
+            publish()
+        }
+        if wakeTrials.running, now - lastTrialSave >= 5000 { lastTrialSave = now; wakeTrials.save() }
         if now - lastProgress >= 200 { audio.reportProgress(); lastProgress = now }
     }
     private func receive(_ event: [String: Any]) {
@@ -187,7 +262,7 @@ final class VoiceService {
             interpreted = event["text"] as? String ?? ""; custody = event["custody"] as? String ?? ""
         case "speech_start":
             guard let generation = event["generation"] as? Int, let id = event["deliveryId"] as? String else { return }
-            switch controller.admitSpeech(generation: generation, speakerConsent: speakerConsent) {
+            switch controller.admitSpeech(generation: generation, speakerConsent: speakerConsent && !wakeTrials.running) {
             case .accepted: break
             case .rejected(let actions): perform(actions); return
             }

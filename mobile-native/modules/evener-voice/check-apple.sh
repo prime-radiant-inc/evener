@@ -10,6 +10,19 @@ runtime=$(cd "$1" && pwd)
 mkdir "$2"
 output=$(cd "$2" && pwd)
 test -f "$source_dir/resources/silero_vad.onnx"
+# Preview assets are test-only. Install the optional preview once, then run the
+# default installer again, before this check. The app bundle gets only selection.
+copy_wake_models() {
+  python3 - "$1" "$source_dir/resources" "$2" <<'PY'
+import json, pathlib, shutil, sys
+manifest, resources, output = map(pathlib.Path, sys.argv[1:])
+data = json.loads(manifest.read_text())
+shutil.copyfile(manifest, output / "wake-models.json")
+for key in ("melspectrogram", "embedding", "classifier"):
+    name = data[key]["file"]
+    shutil.copyfile(resources / name, output / name)
+PY
+}
 # The runtime directory contains the published Objective-C pod archive plus the
 # C pod archive: objectivec/, Headers/, onnxruntime.xcframework/.
 mkdir "$output/include"
@@ -32,16 +45,32 @@ for platform in simulator device macos; do
   if [[ "$platform" == macos ]]; then
     mkdir "$output/$platform/EvenerVoiceModels.bundle"
     cp "$source_dir/resources/silero_vad.onnx" "$output/$platform/EvenerVoiceModels.bundle/"
+    copy_wake_models "$source_dir/resources/wake-models.json" "$output/$platform/EvenerVoiceModels.bundle"
     printf '%s\n' '<?xml version="1.0"?><plist version="1.0"><dict><key>CFBundleIdentifier</key><string>com.primeradiant.evener.voice-smoke-model</string></dict></plist>' > "$output/$platform/EvenerVoiceModels.bundle/Info.plist"
     SDKROOT="$sdk" xcrun --sdk "$sdk_name" swiftc -swift-version 5 -parse-as-library -target "$target" -sdk "$sdk" \
       -I "$output/include" -F "$framework" -framework onnxruntime -lc++ \
       "$source_dir/core/VoiceCore.swift" "$source_dir/ios/SileroVAD.swift" "$source_dir/runtime-tests/VADSmoke.swift" \
       "$output/$platform/"*.o -o "$output/$platform/VADSmoke"
     "$output/$platform/VADSmoke"
+    test_frameworks="$(xcrun --sdk macosx --show-sdk-platform-path)/Developer/Library/Frameworks"
+    test_libs="$(xcrun --sdk macosx --show-sdk-platform-path)/Developer/usr/lib"
+    test_bundle="$output/$platform/WakeWordTests.xctest"
+    mkdir -p "$test_bundle/Contents/MacOS" "$test_bundle/Contents/Resources"
+    cp -R "$output/$platform/EvenerVoiceModels.bundle" "$test_bundle/Contents/Resources/"
+    mkdir "$test_bundle/Contents/Resources/PreviewWakeModels"
+    copy_wake_models "$source_dir/wake-models.pretrained.json" "$test_bundle/Contents/Resources/PreviewWakeModels"
+    printf '%s\n' '<?xml version="1.0"?><plist version="1.0"><dict><key>CFBundleIdentifier</key><string>com.primeradiant.evener.wake-tests</string><key>CFBundleExecutable</key><string>WakeWordTests</string><key>CFBundlePackageType</key><string>BNDL</string></dict></plist>' > "$test_bundle/Contents/Info.plist"
+    SDKROOT="$sdk" xcrun --sdk "$sdk_name" swiftc -swift-version 5 -emit-library -module-name EvenerWakeTests -target "$target" -sdk "$sdk" \
+      -I "$output/include" -F "$framework" -framework onnxruntime -lc++ \
+      -I "$test_libs" -L "$test_libs" -Xlinker -rpath -Xlinker "$test_libs" \
+      -F "$test_frameworks" -framework XCTest -Xlinker -rpath -Xlinker "$test_frameworks" \
+      "$source_dir/core/"*.swift "$source_dir/ios/OpenWakeWordDetector.swift" "$source_dir/runtime-tests/WakeWordTests.swift" \
+      "$output/$platform/"*.o -o "$test_bundle/Contents/MacOS/WakeWordTests"
+    xcrun xctest "$test_bundle"
   else
     SDKROOT="$sdk" xcrun --sdk "$sdk_name" swiftc -swift-version 5 -target "$target" -sdk "$sdk" \
       -I "$output/include" -F "$framework" -framework onnxruntime -lc++ -emit-library -module-name EvenerVoiceRuntime \
-      "$source_dir/core/VoiceCore.swift" "$source_dir/ios/SileroVAD.swift" "$source_dir/ios/VoiceAudioDevice.swift" \
+      "$source_dir/core/"*.swift "$source_dir/ios/SileroVAD.swift" "$source_dir/ios/OpenWakeWordDetector.swift" "$source_dir/ios/VoiceAudioDevice.swift" \
       "$source_dir/ios/VoiceSocket.swift" "$source_dir/ios/VoiceService.swift" "$source_dir/ios/VoiceAuthorization.swift" \
       "$output/$platform/"*.o -o "$output/$platform/libEvenerVoiceRuntime.dylib"
     file "$output/$platform/libEvenerVoiceRuntime.dylib"

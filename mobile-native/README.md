@@ -254,9 +254,12 @@ do not establish installed-device rendering or touch behavior.
   production responsiveness.
 - Opt-in voice offers manager selection, Arm/Disarm, Talk and Stop through the
   [native voice owner](modules/evener-voice/README.md). The native service owns
-  microphone and playback independently of foreground chat sockets. Wake
-  activation is unavailable; microphone, audible barge-in, locked listening and
-  battery remain physical-device qualification gates. See the
+  microphone and playback independently of foreground chat sockets. Local
+  openWakeWord activation defaults to the custom **Hey Evener.** model at **0.99**,
+  with persisted **Debug · Wake trials** for qualification. Offline synthetic,
+  speaker-disjoint results are 598/600 positives and zero false accepts over
+  2.09 h negatives, not physical qualification. Acoustic accuracy, microphone, audible barge-in, locked listening
+  and battery remain physical-device qualification gates. See the
   [voice contract](../docs/product/voice.md).
 
 Run the native gate against the exact candidate being qualified and record its

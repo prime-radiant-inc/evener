@@ -1,22 +1,86 @@
-import { createHash } from "node:crypto";
-import { readFile, writeFile } from "node:fs/promises";
-const target = new URL("./resources/silero_vad.onnx", import.meta.url);
-const expected = "6b99cbfd39246b6706f98ec13c7c50c6b299181f2474fa05cbc8046acc274396";
-let bytes;
+import { createHash, randomUUID } from "node:crypto";
+import { readFile, rename, rm, writeFile } from "node:fs/promises";
+import { basename, resolve } from "node:path";
+import { pathToFileURL } from "node:url";
+
+function validateWakeManifest(manifest) {
+	if (["id", "phrase"].some((key) => typeof manifest?.[key] !== "string" || !manifest[key].trim()))
+		throw new Error("Invalid wake manifest: id and phrase must be non-empty strings");
+	const s = manifest.settings;
+	// Match WakeWordSettings.validate(), including Swift's Float conversion.
+	if (
+		!s ||
+		!Number.isFinite(s.threshold) ||
+		s.threshold <= 0 ||
+		s.threshold > 1 ||
+		Math.fround(s.threshold) <= 0 ||
+		!Number.isFinite(s.releaseThreshold) ||
+		s.releaseThreshold < 0 ||
+		Math.fround(s.releaseThreshold) >= Math.fround(s.threshold) ||
+		!Number.isInteger(s.hopSamples) ||
+		s.hopSamples < 1280 ||
+		s.hopSamples > 16000 ||
+		s.hopSamples % 1280 !== 0 ||
+		!Number.isSafeInteger(s.holdoffMs) ||
+		s.holdoffMs < 0 ||
+		!Number.isInteger(s.embeddingFrames) ||
+		s.embeddingFrames < 1 ||
+		s.embeddingFrames > 120
+	)
+		throw new Error("Invalid wake manifest: settings must satisfy WakeWordSettings.validate()");
+}
+
+async function ensureAsset(asset, base) {
+	if (basename(asset.file) !== asset.file || !asset.file.endsWith(".onnx") || !/^[a-f0-9]{64}$/.test(asset.sha256))
+		throw new Error("Invalid model filename or checksum");
+	const target = new URL(`./resources/${asset.file}`, import.meta.url);
+	let bytes;
+	try {
+		bytes = await readFile(target);
+	} catch (error) {
+		if (error.code !== "ENOENT") throw error;
+	}
+	if (!bytes) {
+		if (asset.source) bytes = await readFile(new URL(asset.source, base));
+		else {
+			const response = await fetch(asset.url);
+			if (!response.ok) throw new Error(`${asset.file} download failed: ${response.status}`);
+			bytes = Buffer.from(await response.arrayBuffer());
+		}
+		if (createHash("sha256").update(bytes).digest("hex") !== asset.sha256)
+			throw new Error(`${asset.file} checksum mismatch`);
+		await writeFile(target, bytes, { flag: "wx" });
+	}
+	if (createHash("sha256").update(bytes).digest("hex") !== asset.sha256)
+		throw new Error(`Existing ${asset.file} checksum mismatch; refusing to replace it`);
+	console.log(`${asset.file} checksum verified`);
+	return { file: asset.file, sha256: asset.sha256 };
+}
+
+const args = process.argv.slice(2);
+if (args.length && (args.length !== 2 || args[0] !== "--wake-manifest"))
+	throw new Error("usage: node ensure-model.mjs [--wake-manifest PATH]");
+const manifestURL = args.length
+	? pathToFileURL(resolve(args[1]))
+	: new URL("./wake-models.custom.json", import.meta.url);
+const manifest = JSON.parse(await readFile(manifestURL, "utf8"));
+validateWakeManifest(manifest);
+await ensureAsset({
+	file: "silero_vad.onnx",
+	sha256: "6b99cbfd39246b6706f98ec13c7c50c6b299181f2474fa05cbc8046acc274396",
+	url: "https://raw.githubusercontent.com/snakers4/silero-vad/5cd2ba54db059f961e7545d4f211b44f005a6dfb/files/silero_vad.onnx",
+});
+const packaged = { id: manifest.id, phrase: manifest.phrase, settings: manifest.settings };
+for (const key of ["melspectrogram", "embedding", "classifier"])
+	packaged[key] = await ensureAsset(manifest[key], manifestURL);
+// This is a generated build input. Training artifacts are only read, never moved
+// or rewritten. Do not package source URLs or a developer's absolute paths.
+const output = new URL("./resources/wake-models.json", import.meta.url);
+const temporary = new URL(`./resources/.wake-models-${randomUUID()}.tmp`, import.meta.url);
 try {
-	bytes = await readFile(target);
-} catch (error) {
-	if (error.code !== "ENOENT") throw error;
+	await writeFile(temporary, `${JSON.stringify(packaged, null, 2)}\n`, { flag: "wx" });
+	await rename(temporary, output);
+} finally {
+	await rm(temporary, { force: true });
 }
-if (!bytes) {
-	const response = await fetch(
-		"https://raw.githubusercontent.com/snakers4/silero-vad/5cd2ba54db059f961e7545d4f211b44f005a6dfb/files/silero_vad.onnx",
-	);
-	if (!response.ok) throw new Error(`Silero model download failed: ${response.status}`);
-	bytes = Buffer.from(await response.arrayBuffer());
-	if (createHash("sha256").update(bytes).digest("hex") !== expected) throw new Error("Silero model checksum mismatch");
-	await writeFile(target, bytes, { flag: "wx" });
-}
-if (createHash("sha256").update(bytes).digest("hex") !== expected)
-	throw new Error("Existing Silero model checksum mismatch; refusing to replace it");
-console.log("Silero V5 model checksum verified");
+console.log(`Wake model packaged: ${manifest.id} (${manifest.phrase})`);

@@ -1,5 +1,8 @@
 import { expect, it } from "vitest";
 import { VoiceClient, VoiceError, type NativeVoicePort, type VoiceSnapshot } from "./voiceClient";
+import activation from "../../modules/evener-voice/runtime-tests/fixtures/wake-activation.json";
+import recordedTrials from "../../modules/evener-voice/runtime-tests/fixtures/wake-trials.json";
+import type { WakeSnapshot, WakeTrialAttempt } from "./wakeTrials";
 
 const state: VoiceSnapshot = {
 	state: "quiet",
@@ -47,6 +50,12 @@ function device() {
 		allowSpeaker: () => {
 			actions.push("allowSpeaker");
 		},
+		startWakeTrial: async () => {
+			actions.push("startWakeTrial");
+		},
+		finishWakeTrial: async (label) => {
+			actions.push(`finishWakeTrial:${label}`);
+		},
 		snapshot: async () => state,
 		addListener: () => ({ remove() {} }),
 	};
@@ -83,6 +92,61 @@ const grant = {
 	sampleRate: 24000,
 	policy: { trailingSilenceMs: 600, maxUtteranceMs: 30000, followupMs: 12000, idleInputMs: 30000 },
 };
+
+it("projects real native wake activation without another Talk or authorization request", async () => {
+	const hardware = device();
+	let emit: (value: VoiceSnapshot) => void = () => {};
+	hardware.native.addListener = (_event, listener) => {
+		emit = listener;
+		return { remove() {} };
+	};
+	const client = new VoiceClient(
+		hardware.native,
+		async () => {
+			throw new Error("wake must not read broad auth");
+		},
+		() => false,
+	);
+	const stop = client.listen();
+	const replay: VoiceSnapshot = { ...state, ...activation, state: "conversing", wake: activation.wake as WakeSnapshot };
+	emit(replay);
+	await Promise.resolve();
+	expect(client.getSnapshot()).toMatchObject({ state: "conversing", cloudMicrophone: false, wake: { detections: 1 } });
+	expect(client.getSnapshot().wake?.lastDetectionScore).toBeGreaterThan(0.5);
+	emit(replay);
+	expect(client.getSnapshot().wake?.detections).toBe(1);
+	expect(hardware.actions).toEqual([]);
+	stop();
+});
+
+it("keeps trial commands native and recovers persisted counters from snapshot", async () => {
+	const hardware = device();
+	hardware.native.snapshot = async () => ({
+		...state,
+		wake: { ...activation.wake, trials: recordedTrials as WakeTrialAttempt[] } as WakeSnapshot,
+	});
+	const client = new VoiceClient(
+		hardware.native,
+		async () => {
+			throw new Error("trials are local");
+		},
+		() => true,
+	);
+	const stop = client.listen();
+	await Promise.resolve();
+	expect(client.getSnapshot().wake?.trials).toHaveLength(3);
+	await client.startWakeTrial();
+	await client.finishWakeTrial("positive");
+	await client.finishWakeTrial("negative");
+	await client.finishWakeTrial("falseActivation");
+	expect(hardware.actions).toEqual([
+		"startWakeTrial",
+		"finishWakeTrial:positive",
+		"finishWakeTrial:negative",
+		"finishWakeTrial:falseActivation",
+	]);
+	stop();
+});
 
 it("keeps the profile hostname but pins socket and recovery to the issuance address", async () => {
 	const hardware = device();
