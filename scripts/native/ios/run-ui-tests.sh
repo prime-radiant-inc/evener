@@ -295,7 +295,6 @@ inject_environment() {
 inject_environment EVENER_QUALIFICATION_HUB_ORIGIN "$hub_origin"
 inject_environment EVENER_QUALIFICATION_HUB_TOKEN "$hub_token"
 inject_environment EVENER_QUALIFICATION_WORKSPACE "$workspace"
-inject_environment EVENER_QUALIFICATION_HOME "$HOME"
 chmod 600 "$private_run"
 
 xcresult="$output/ui.xcresult"

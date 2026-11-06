@@ -39,10 +39,6 @@ final class EvenerQualificationUITests: XCTestCase {
 		ProcessInfo.processInfo.environment["EVENER_QUALIFICATION_WORKSPACE"] ?? ""
 	}
 
-	private var hubHome: String {
-		ProcessInfo.processInfo.environment["EVENER_QUALIFICATION_HOME"] ?? ""
-	}
-
 	private static let draft = "QUALIFICATION_draft_d0"
 
 	override func setUp() {
@@ -301,11 +297,19 @@ final class EvenerQualificationUITests: XCTestCase {
 		}
 		tap(browse, "the project picker never offered browsing")
 
-		// The browse starts in the hub host's home; walk up to the filesystem
-		// root, then down the workspace's own segments.
+		// The browse starts in the hub host's home, where the phone cannot
+		// name the directory it is in and no up row exists: enter one of the
+		// home's own folders first, then climb until the up row ends at the
+		// filesystem root, and come down the workspace's own segments from
+		// there. The hub resolves a symlinked folder by its target, so the
+		// walk crosses /var.
+		tap(app.buttons["Library"], "the hub host's home never offered a folder to enter")
 		let up = app.buttons["Up one folder"]
-		let ups = hubHome.split(separator: "/").filter { !$0.isEmpty }.count
-		for _ in 0..<ups {
+		XCTAssertTrue(
+			up.waitForExistence(timeout: tripwire),
+			"entering the home's Library never offered climbing out of it"
+		)
+		while up.exists {
 			tap(up, "the browse never offered going up")
 		}
 		for segment in workspace.split(separator: "/").filter({ !$0.isEmpty }) {
