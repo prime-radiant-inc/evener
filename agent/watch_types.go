@@ -132,11 +132,11 @@ func formatQuietWindow(window time.Duration) string {
 }
 
 // formatQuietDuration renders a measured quiet silence for the notification
-// text. A measured silence lands floored to whole minutes: the wake fires on
-// the first check tick at or past its due boundary, so flooring keeps the
-// first wake's text the window's own "10m" instead of naming check-tick
-// jitter, and it only ever understates, by under a minute. A silence past an
-// hour reads as hours:minutes. Below a minute the default duration string
+// text. A measured silence lands floored to whole minutes: the first wake's
+// measurement is the window exactly, and a repeat's is measured from the
+// prior wake's admitted tick, so flooring keeps the clean "20m"/"3h5m" forms
+// instead of naming each boundary's sub-minute offset. Flooring only ever
+// understates, by under a minute. Below a minute the default duration string
 // keeps a test-scaled window truthful (e.g. "50ms").
 func formatQuietDuration(d time.Duration) string {
 	if d < time.Minute {

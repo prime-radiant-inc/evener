@@ -2522,7 +2522,15 @@ func TestDelegateResourceSupervision_QuietWatchdogRepeatFramesNameTheMeasuredSil
 	root, _, lease, clock := newStableQuietSupervisionHarness(t)
 	var frames []string
 	for i := 1; i <= 3; i++ {
-		clock.Advance(delegateQuietWindow)
+		// Window 3's tick lands two minutes past its due boundary: the frame
+		// must still name the silence at the boundary ("30m"), not at the
+		// admitted tick ("32m"), which is what keeps a deferred or re-admitted
+		// claim re-minting identical content under one stretch identity.
+		if i == 3 {
+			clock.Advance(delegateQuietWindow + 2*time.Minute)
+		} else {
+			clock.Advance(delegateQuietWindow)
+		}
 		if err := root.runDelegateQuietWatchdogTick(lease, clock.Now()); err != nil {
 			t.Fatalf("window %d tick: %v", i, err)
 		}
