@@ -88,6 +88,11 @@ type delegateDeliveryClaim struct {
 	// held marks a plan its receiver deferred to its next round because it
 	// was mid-turn.
 	held bool
+	// startRefused marks the claim a transient refusal kept for its retry
+	// while the owner was beginning an attention turn. Such a claim is
+	// deferred delivery, not work in flight, so a start admission must not
+	// count it.
+	startRefused bool
 }
 
 type delegateDeliveryPlan struct {
@@ -266,6 +271,7 @@ func (c *delegateTreeController) BeginDelivery(plan delegateDeliveryPlan) (_ del
 		// deliverDelegatePacket, so clear it here too or the retry's waiter
 		// match would fail and strand the claim permanently.
 		claim.waiter = nil
+		claim.startRefused = true
 		retry = true
 		return delegateDeliveryToken{}, false, errDelegateDeliveryRetry
 	}
@@ -816,13 +822,32 @@ func (c *delegateTreeController) hasColdDeliveryWorkForOwnerLocked(ownerDelegate
 }
 
 func (c *delegateTreeController) hasDeliveryWorkForOwnerLocked(ownerDelegateID string) bool {
+	return c.deliveryWorkForOwnerLocked(ownerDelegateID, false)
+}
+
+// hasDeliveryWorkForOwnerBlockingStartLocked is hasDeliveryWorkForOwnerLocked
+// for a start admission. A claim the transient delivery arm kept for its retry
+// is deferred delivery, not work in flight: counting it would release the very
+// attention start whose reservation deferred the delivery, after
+// acceptDelegateAttention already consumed its trigger. The marker lives only
+// on the claim and dies with it — every admission deletes the claim — so it
+// can never suppress a later real delivery-work check.
+func (c *delegateTreeController) hasDeliveryWorkForOwnerBlockingStartLocked(ownerDelegateID string) bool {
+	return c.deliveryWorkForOwnerLocked(ownerDelegateID, true)
+}
+
+func (c *delegateTreeController) deliveryWorkForOwnerLocked(ownerDelegateID string, skipStartRefused bool) bool {
 	if ownerDelegateID == "" {
 		return false
 	}
 	for _, claim := range c.deliveryClaims {
-		if claim != nil && claim.ownerID == ownerDelegateID {
-			return true
+		if claim == nil || claim.ownerID != ownerDelegateID {
+			continue
 		}
+		if skipStartRefused && claim.startRefused {
+			continue
+		}
+		return true
 	}
 	for _, receipt := range c.deliveries {
 		if receipt != nil && receipt.ownerID == ownerDelegateID {
