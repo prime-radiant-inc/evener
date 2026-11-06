@@ -23,7 +23,9 @@ type SummaryAttempt struct {
 	Retryable *bool  `json:"retryable,omitempty"`
 }
 
-// SummaryFailure separates the terminal route from earlier failed routes.
+// SummaryFailure separates the terminal attempt from the last failed sample of
+// each route that attempted the work (the terminal route's own earlier samples
+// included), at most two entries.
 type SummaryFailure struct {
 	Terminal SummaryAttempt   `json:"terminal"`
 	Previous []SummaryAttempt `json:"previous,omitempty"`
@@ -138,7 +140,7 @@ func SummaryFailureInfo(failure SummaryFailure) (string, Info) {
 	case "invalid_request":
 		info.Title, info.Hint = "Summary request rejected", "Check that this model supports the summary request."
 	case "rejected_output":
-		info.Title, info.Hint = "Summary output rejected", "The response could not safely replace the conversation. Retry or choose a more capable summary model."
+		info.Title, info.Hint = "Summary output rejected", "The response could not safely replace the conversation. Evener retried the summary routes automatically; a more capable summary model may work better if this repeats."
 	}
 	if a.Route == "cheap" {
 		info.Hint += " This is the fast/cheap model, which may be configured separately from the main model."

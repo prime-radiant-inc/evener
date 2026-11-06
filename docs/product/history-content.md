@@ -143,7 +143,13 @@ This shared metadata does not change human-interaction permissions.
 A failed conversation summary leaves the existing history or the operation's
 deterministic checkpoint available. The authoritative transcript is unchanged.
 The next eligible compaction can install a valid summary and continue normal
-model work. Model selection, fallback eligibility, retry counts and warning
+model work. A summarizer reply that fails local validation — an empty reply, a
+reply with no summary section, an empty condensation batch, or a session-log
+fork reply that does not parse as a JSON entry — is one bad sample: the route
+that produced it is resampled up to two more times, then the next route takes
+over as before, and a later sample that passes installs the summary without a
+warning. Cut-off replies (the model's own output limit) and deterministic
+failures get no resample. Model selection, fallback eligibility and warning
 visibility are unchanged; repeated failed compactions can still warn.
 
 Context management emits `summary_failure` with the selected provider/model,
@@ -154,8 +160,10 @@ model. CLI, AppWire, browser, native and Notification hooks carry these
 existing message/title/hint fields without a new renderer or visibility policy.
 Predictive-checkpoint recovery retains its informational `context_budget` code.
 
-The runtime's typed `summary_failure` record separates the terminal route from
-prior failed routes. It includes controlled category, stage and validation reason
+The runtime's typed `summary_failure` record separates the terminal attempt
+from the last failed sample of each route that attempted the work (the
+terminal route's own earlier samples included), at most two. It includes
+controlled category, stage and validation reason
 values, validated HTTP status and retryability when known. Provider/model names
 come from routing, are bounded to 256 bytes each and have control characters
 removed from display. A pre-selection failure has no invented model identity.

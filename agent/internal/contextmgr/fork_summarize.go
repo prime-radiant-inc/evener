@@ -17,7 +17,11 @@ import (
 // forkSummarize makes a side LLM call using a cheap model to produce a
 // sessionlog.SessionLogEntry summarizing the most recent action in turns. The
 // prompt explicitly preserves failure signals so errors are not lost during
-// summarization.
+// summarization. A reply that does not parse as a JSON entry — an empty reply
+// never does — is one bad sample, and is resampled within the same per-route
+// budget the conversation summary uses before the failure surfaces; the
+// exhausted error never embeds the raw reply, because it reaches the user as a
+// warning and warnings never carry conversation-adjacent text.
 func forkSummarize(ctx context.Context, cheap *cheapmodel.Caller, profile *provider.Profile, turns []schema.Turn, turnNumber int) (sessionlog.SessionLogEntry, error) {
 	prompt := buildSummarizePrompt(turns)
 
@@ -25,22 +29,25 @@ func forkSummarize(ctx context.Context, cheap *cheapmodel.Caller, profile *provi
 		Messages: []llm.Message{llm.User(prompt)},
 	}
 
-	resp, err := cheap.Complete(ctx, profile, req)
-	if err != nil {
-		return sessionlog.SessionLogEntry{}, fmt.Errorf("fork summarize: %w", err)
+	for sample := 1; ; sample++ {
+		resp, err := cheap.Complete(ctx, profile, req)
+		if err != nil {
+			return sessionlog.SessionLogEntry{}, fmt.Errorf("fork summarize: %w", err)
+		}
+
+		text := strings.TrimSpace(resp.Text())
+		// Strip markdown code fences if the model wraps JSON in them.
+		text = stripCodeFence(text)
+
+		var entry sessionlog.SessionLogEntry
+		if err := json.Unmarshal([]byte(text), &entry); err == nil {
+			entry.Turn = turnNumber
+			return entry, nil
+		}
+		if sample >= summarizerRouteAttempts || ctx.Err() != nil {
+			return sessionlog.SessionLogEntry{}, fmt.Errorf("fork summarize: %w", errSummaryForkReply)
+		}
 	}
-
-	text := strings.TrimSpace(resp.Text())
-	// Strip markdown code fences if the model wraps JSON in them.
-	text = stripCodeFence(text)
-
-	var entry sessionlog.SessionLogEntry
-	if err := json.Unmarshal([]byte(text), &entry); err != nil {
-		return sessionlog.SessionLogEntry{}, fmt.Errorf("fork summarize: failed to parse JSON: %w (raw: %s)", err, text)
-	}
-
-	entry.Turn = turnNumber
-	return entry, nil
 }
 
 // buildSummarizePrompt renders the recent turns and the summarization

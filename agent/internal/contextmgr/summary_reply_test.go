@@ -13,17 +13,12 @@ import (
 )
 
 // summarizeReplying runs one summarization whose model replies with reply and
-// returns the summarizer's result.
+// returns the summarizer's result. The model answers every sample with the
+// same reply, so a rejected reply stays rejected across the route's retries.
 func summarizeReplying(t *testing.T, reply, instructions string) ([]schema.Turn, error) {
 	t.Helper()
-	adapter := &fakeAdapter{
-		name: "openai",
-		steps: []func(req llm.Request) llm.Response{
-			func(llm.Request) llm.Response { return llm.Response{Message: llm.Assistant(reply)} },
-		},
-	}
 	client := llm.NewClient()
-	client.Register(adapter)
+	client.Register(alwaysReplying(func(llm.Request) string { return reply }))
 	cm := NewManager(NewOpenAIProfile("gpt-5.2"), client, cheapmodel.New(client))
 	history := []schema.Turn{
 		{Kind: schema.TurnUserInput, Message: llm.User("Fix the auth bug")},
@@ -111,8 +106,9 @@ func TestSummarizeWithLLM_InstructionsRequireOnlyANonEmptyReply(t *testing.T) {
 	}
 }
 
-// A configured cheap model whose reply is not a summary falls through to the
-// session model, like a cheap model that fails outright.
+// A configured cheap model whose reply is not a summary is resampled within
+// its route's budget, then falls through to the session model, like a cheap
+// model that fails outright.
 func TestSummarizeWithLLM_RejectedCheapReplyFallsBackToSessionModel(t *testing.T) {
 	for name, tc := range map[string]struct {
 		sessionReply string
@@ -122,12 +118,21 @@ func TestSummarizeWithLLM_RejectedCheapReplyFallsBackToSessionModel(t *testing.T
 		"session model narrates":   {"I'll check the task list first.", false},
 	} {
 		t.Run(name, func(t *testing.T) {
-			adapter := &fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
-				func(llm.Request) llm.Response {
-					return llm.Response{Message: llm.Assistant("I'll read the plan, then check current state.")}
-				},
-				func(llm.Request) llm.Response { return llm.Response{Message: llm.Assistant(tc.sessionReply)} },
-			}}
+			cheapNarration := func(llm.Request) llm.Response {
+				return llm.Response{Message: llm.Assistant("I'll read the plan, then check current state.")}
+			}
+			steps := []func(llm.Request) llm.Response{cheapNarration, cheapNarration, cheapNarration}
+			if tc.wantStored {
+				steps = append(steps, func(llm.Request) llm.Response {
+					return llm.Response{Message: llm.Assistant(tc.sessionReply)}
+				})
+			} else {
+				sessionNarration := func(llm.Request) llm.Response {
+					return llm.Response{Message: llm.Assistant(tc.sessionReply)}
+				}
+				steps = append(steps, sessionNarration, sessionNarration, sessionNarration)
+			}
+			adapter := &fakeAdapter{name: "openai", steps: steps}
 			client := llm.NewClient()
 			client.Register(adapter)
 			profile := provider.WithCheapModel(NewOpenAIProfile("gpt-5.2"), "gpt-5-mini")
@@ -144,8 +149,12 @@ func TestSummarizeWithLLM_RejectedCheapReplyFallsBackToSessionModel(t *testing.T
 			for _, r := range adapter.Requests() {
 				models = append(models, r.Model)
 			}
-			if strings.Join(models, " ") != "gpt-5-mini gpt-5.2" {
-				t.Fatalf("summary models = %q, want [gpt-5-mini gpt-5.2]", models)
+			want := strings.Join([]string{"gpt-5-mini", "gpt-5-mini", "gpt-5-mini", "gpt-5.2"}, " ")
+			if !tc.wantStored {
+				want = strings.Join([]string{"gpt-5-mini", "gpt-5-mini", "gpt-5-mini", "gpt-5.2", "gpt-5.2", "gpt-5.2"}, " ")
+			}
+			if strings.Join(models, " ") != want {
+				t.Fatalf("summary models = %q, want [%s]", models, want)
 			}
 			if !tc.wantStored {
 				if err == nil {

@@ -71,8 +71,8 @@ func TestSummaryFailureRoutingAndRecovery(t *testing.T) {
 		wantCalls        []string
 		priorKind        string
 	}{
-		{"validation then failure", "cheap-fixture", false, false, []string{"cheap-fixture", "active-fixture"}, "rejected_output"},
-		{"validation then success", "cheap-fixture", false, true, []string{"cheap-fixture", "active-fixture"}, ""},
+		{"validation then failure", "cheap-fixture", false, false, []string{"cheap-fixture", "cheap-fixture", "cheap-fixture", "active-fixture"}, "rejected_output"},
+		{"validation then success", "cheap-fixture", false, true, []string{"cheap-fixture", "cheap-fixture", "cheap-fixture", "active-fixture"}, ""},
 		{"refusal then failure", "cheap-fixture", true, false, []string{"cheap-fixture", "active-fixture"}, "invalid_request"},
 		{"no cheap route", "", false, false, []string{"active-fixture"}, ""},
 		{"unservable cheap route", "missing-instance/cheap-fixture", false, false, []string{"active-fixture"}, ""},
@@ -189,6 +189,8 @@ func TestSummaryFailureValidationReasons(t *testing.T) {
 	}
 }
 
+// A rejected reply is still a successful API call, and every resample of both
+// routes stays one logical group that settles on the API outcome alone.
 func TestSummaryFailureValidationPreservesAPISuccess(t *testing.T) {
 	t.Parallel()
 	client, logger, path := contextManagerAttemptClient(t,
@@ -208,7 +210,7 @@ func TestSummaryFailureValidationPreservesAPISuccess(t *testing.T) {
 	if err := logger.Close(); err != nil {
 		t.Fatal(err)
 	}
-	assertContextManagerLogicalGroup(t, readContextManagerAttemptRecords(t, path), apilog.AttemptSuccess)
+	assertContextManagerLogicalGroup(t, readContextManagerAttemptRecords(t, path), 6, apilog.AttemptSuccess)
 }
 
 func TestSummaryFailureUncondensablePartnerMessages(t *testing.T) {
