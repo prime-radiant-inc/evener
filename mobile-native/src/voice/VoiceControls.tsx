@@ -5,6 +5,7 @@ import { HeaderButton } from "../sheet/HeaderButton";
 import { Copy, ErrorMessage } from "../ui";
 import { defaultVoiceOptions, type VoiceClient, type VoiceTarget, VoiceError } from "./voiceClient";
 import { useVoiceClient } from "./voiceContext";
+import { WakeTrialControls } from "./WakeTrialControls";
 
 export function VoiceControls({ target }: { target: VoiceTarget }) {
 	const client = useVoiceClient();
@@ -52,8 +53,18 @@ function Controls({ client, target }: { client: VoiceClient; target: VoiceTarget
 									? "Microphone · Sending cloud audio"
 									: "Microphone · Local only"
 								: "Listening paused"
-							: "Disarmed · Talk activation, wake is not qualified"}
+							: "Disarmed · Local wake preview, not acoustically qualified"}
 					</Copy>
+					{state.wake?.phrase ? (
+						<Copy muted>
+							Wake: {state.wake.phrase} · {state.wake.state}
+						</Copy>
+					) : null}
+					{state.wake?.detections ? (
+						<Copy>
+							Heard wake · score {state.wake.lastDetectionScore?.toFixed(4)} · {state.wake.detections} detections
+						</Copy>
+					) : null}
 					{state.route ? <Copy muted>Route: {state.route} · physical qualification pending</Copy> : null}
 					{!target.manager && !armed ? (
 						<Copy muted>Select an existing manager session, or explicitly start one with Start as Manager.</Copy>
@@ -91,7 +102,13 @@ function Controls({ client, target }: { client: VoiceClient; target: VoiceTarget
 						)}
 						<HeaderButton
 							label="Talk"
-							disabled={!armed || !same || !state.capturing || state.state === "recovering"}
+							disabled={
+								!armed ||
+								!same ||
+								!state.capturing ||
+								state.state === "recovering" ||
+								state.wake?.trials.at(-1)?.running
+							}
 							onPress={() => client.talk()}
 						/>
 						<HeaderButton label="Stop speaking" disabled={!armed} onPress={() => client.stopSpeaking()} />
@@ -111,6 +128,7 @@ function Controls({ client, target }: { client: VoiceClient; target: VoiceTarget
 					{state.interpreted ? <Copy selectable>Interpreted: {state.interpreted}</Copy> : null}
 					{state.custody ? <Copy muted>Delivery: {state.custody}</Copy> : null}
 					{state.canonical ? <Copy selectable>Canonical reply: {state.canonical}</Copy> : null}
+					<WakeTrialControls client={client} state={state} />
 					<ErrorMessage
 						message={error || (state.error ? `Voice paused (${state.error}). Text remains available.` : null)}
 					/>

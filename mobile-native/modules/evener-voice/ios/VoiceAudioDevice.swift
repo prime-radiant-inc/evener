@@ -12,6 +12,9 @@ final class VoiceAudioDevice {
     private var outputConverter: AVAudioConverter?
     private var outputFormat: AVAudioFormat?
     private var detector: SileroVAD?
+    private var wakeStream: WakeWordStream?
+    private(set) var wakeListening = false
+    private(set) var wakeModels: WakeWordModels?
     private var engineGeneration = 0
     private var outputGeneration = 0
     private var overflow: DispatchSourceUserDataAdd?
@@ -29,6 +32,8 @@ final class VoiceAudioDevice {
     var recover: ((_ publicRoute: Bool) -> Void)?
     var played: ((PlayedReceipt) -> Void)?
     var outputDrained: (() -> Void)?
+    var wakeResult: ((WakeWordResult) -> Void)?
+    var wakeFailed: ((String, Int) -> Void)?
     init(worker: DispatchQueue) {
         self.worker = worker
         let center = NotificationCenter.default
@@ -83,12 +88,26 @@ final class VoiceAudioDevice {
         outputConverter = AVAudioConverter(from: mono24, to: output)
         outputFormat = output
         detector = try SileroVAD()
+        let wake = try OpenWakeWordDetector(manifestURL: WakeWordModels.bundledManifest())
+        wakeModels = wake.models
+        let stream = WakeWordStream(detector: wake, receiver: worker)
+        let wakeGeneration = engineGeneration
+        stream.received = { [weak self] result in
+            guard let self, self.wakeListening, self.engineGeneration == wakeGeneration else { return }
+            self.wakeResult?(result)
+        }
+        stream.failed = { [weak self] reason, samples in
+            guard let self, self.wakeListening, self.engineGeneration == wakeGeneration else { return }
+            self.wakeFailed?(reason, samples)
+        }
+        wakeStream = stream
         engine.attach(player)
         engine.connect(player, to: engine.mainMixerNode, format: output)
         let generation = engineGeneration
         let drops = DispatchSource.makeUserDataAddSource(queue: worker)
         drops.setEventHandler { [weak self] in
             guard let self, self.engineGeneration == generation else { return }
+            self.wakeStream?.reset()
             self.failed?("capture_overflow")
         }
         drops.resume(); overflow = drops
@@ -117,7 +136,9 @@ final class VoiceAudioDevice {
                     let input = try self.convert(copy, with: self.input24)
                     let vad = try self.convert(copy, with: self.input16)
                     guard let samples = input.floatChannelData?[0], let vadSamples = vad.floatChannelData?[0], let detector = self.detector else { throw VoiceFailure("audio_format_invalid") }
-                    let speech = try detector.process(Array(UnsafeBufferPointer(start: vadSamples, count: Int(vad.frameLength))))
+                    let mono16 = Array(UnsafeBufferPointer(start: vadSamples, count: Int(vad.frameLength)))
+                    let speech = try detector.process(mono16)
+                    if self.wakeListening { self.wakeStream?.submit(mono16) }
                     self.capturing = true
                     self.lastCaptureAt = ProcessInfo.processInfo.systemUptime * 1000
                     var pcm = [Int16](repeating: 0, count: Int(input.frameLength))
@@ -132,12 +153,20 @@ final class VoiceAudioDevice {
     }
     func stop() {
         engineGeneration += 1; capturing = false; running = false
+        wakeListening = false; wakeStream?.reset(); wakeStream = nil
         flushOutput()
         engine.stop()
         engine.inputNode.removeTap(onBus: 0)
         overflow?.cancel(); overflow = nil
         detector = nil; input24 = nil; input16 = nil; outputConverter = nil
     }
+    @discardableResult func setWakeListening(_ enabled: Bool) -> Bool {
+        guard enabled != wakeListening else { return false }
+        wakeListening = enabled
+        wakeStream?.reset()
+        return true
+    }
+    func resetWake() { wakeStream?.reset() }
     func deactivate() {
         stop()
         try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
