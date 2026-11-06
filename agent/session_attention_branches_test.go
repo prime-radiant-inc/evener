@@ -421,6 +421,52 @@ func TestResumeHistorySkipsSupersededDelegateAttentionTurns(t *testing.T) {
 	}
 }
 
+// The coordinate mappers must count the same turns the history build keeps:
+// a superseded attention row that the drop removes shifts every later
+// position left, so a reopen marker or a fork boundary after it maps one
+func TestHistoryIndexCountsSupersededAttentionRowsAsSkipped(t *testing.T) {
+	t.Parallel()
+	row := func(id, text string) transcript.Entry {
+		turn := schema.NewTurn(schema.TurnSteering, llm.User(text))
+		turn.AttentionID = id
+		return transcript.Entry{Turn: turn}
+	}
+	marker := func(id string, generation uint64) transcript.Entry {
+		turn := schema.NewTurn(schema.TurnAttentionResolution, llm.System("x"))
+		turn.AttentionResolution = &schema.AttentionResolutionInfo{AttentionID: id, Disposition: "consumed", ResumeGeneration: generation}
+		return transcript.Entry{Turn: turn}
+	}
+	reopenMarker := func(turnID string) transcript.Entry {
+		turn := schema.NewTurn(schema.TurnReopen, llm.System("x"))
+		turn.TurnID = turnID
+		return transcript.Entry{Turn: turn}
+	}
+	// The superseded row sits before the reopen marker, so the marker's
+	// attempt start and any later fork boundary both shift past it.
+	reopened := delegateAttentionReopenID("attn_report", 2)
+	entries := []transcript.Entry{
+		{Turn: schema.NewTurn(schema.TurnUserInput, llm.User("first"))},
+		row("attn_report", "the report content"),
+		marker("attn_report", 2),
+		row(reopened, "the report content"),
+		reopenMarker("t_attempt"),
+		{Turn: schema.NewTurn(schema.TurnUserInput, llm.User("after"))},
+	}
+	// The kept history before the marker: the user turn, the consumed
+	// marker's resolution turn and the reopened copy — the superseded source
+	// is gone, so the marker's attempt starts one position left of where an
+	// uncorrected count lands it.
+	starts := latestAttemptStarts(entries, nil)
+	if starts["t_attempt"] != 3 {
+		t.Fatalf("latest attempt start = %d, want 3 with the superseded source skipped", starts["t_attempt"])
+	}
+	// A fork boundary at the turn after the marker maps through the same
+	// skip rule.
+	if got := resumedDivergence(entries, 5, nil); got != 3 {
+		t.Fatalf("resumed divergence = %d, want 3 with the superseded source skipped", got)
+	}
+}
+
 func TestFoldDelegateAttention_ConflictingContent(t *testing.T) {
 	t.Parallel()
 	// Two steering turns with same attentionID but different content -> error.
