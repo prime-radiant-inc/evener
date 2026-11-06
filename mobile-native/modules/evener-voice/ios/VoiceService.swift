@@ -36,7 +36,6 @@ final class VoiceService {
     private var lastWakeActivation = -Double.infinity
     private var lastWakePublish = 0.0
     private var publishedWakeState = "paused"
-    private var publishedWakeScore: Float?
     private var publishedWakeError = ""
     private var lastTrialSave = 0.0
     private init() {
@@ -102,7 +101,7 @@ final class VoiceService {
             wakeState = "warming"; wakeScore = nil
         }
         publishedWakeState = audio.wakeListening ? wakeState : "paused"
-        publishedWakeScore = wakeScore; publishedWakeError = wakeError
+        publishedWakeError = wakeError
         lastWakePublish = now
         listener?(state())
     }
@@ -240,7 +239,9 @@ final class VoiceService {
         perform(controller.tick(at: now))
         if previous != controller.state { publish() }
         if audio.wakeListening, now - lastWakePublish >= 500,
-           wakeTrials.running || wakeState != publishedWakeState || wakeScore != publishedWakeScore || wakeError != publishedWakeError {
+           WakePublishPolicy.shouldPublish(trialRunning: wakeTrials.running, state: wakeState,
+                                           publishedState: publishedWakeState,
+                                           error: wakeError, publishedError: publishedWakeError) {
             publish()
         }
         if wakeTrials.running, now - lastTrialSave >= 5000 { lastTrialSave = now; wakeTrials.save() }
