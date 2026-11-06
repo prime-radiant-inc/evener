@@ -60,9 +60,10 @@ Serif 4 and JetBrains Mono remain. The ramp is 12/13/15/20/26/34. The phone
 top bar uses the serif face. Markdown `h3` is never smaller than its prose.
 
 **Rail.** The `evener` wordmark sits above the brand row. The brand row keeps
-the identity (the hub name, or `hub` before it arrives), the named
-`<N> needs you` Chip and the three action buttons on one row. The chip is a
-passive label, not a control.
+the identity (the hub name, or `hub` before it arrives) and the three action
+buttons on one row. The named `<N> needs you` Chip sits on its own header line
+below it, so it cannot clip at the 280px default width. The chip is a passive
+label, not a control.
 
 **Attention.** The floating needs-you control shows a 6px attention dot,
 "Needs you", and the destination title clamped to two lines. Its accessible
