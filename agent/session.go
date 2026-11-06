@@ -1145,6 +1145,25 @@ type Session struct {
 	// trigger as consumed first, so only this latch tells a fold to keep its
 	// turn; promoteStagedAttentionCoverage clears it. Guarded by attentionMu.
 	attentionAcceptedID string
+	// attentionLatchedReachedRequest records that the trigger
+	// attentionAcceptedID latches reached a settled request — the report was
+	// presented — even where that request settled as a responses-continuation
+	// delta, which credits no coverage but was built from the turns it
+	// carried. The reopen then owes nothing: the model answered the report,
+	// and a fresh identity would duplicate it. The reopen decision consumes
+	// the record with the latch; every fresh latch resets it. Guarded by
+	// attentionMu.
+	attentionLatchedReachedRequest bool
+	// attentionAutomaticDriveHolds names pending rows a user's stop quieted
+	// from automatic drives: the stopped generation's commit left the
+	// delegate armed for every other pending row, and that stale armed wake
+	// drives without a re-arm, so the drive's own reads keep a held row out
+	// of its claim and its riders while the rows the stop never touched
+	// still present. Any successful arm releases the holds — a wake from a
+	// new event may present the row — and the map is in-memory on purpose:
+	// a restart reconciles wakes from the durable fold, which cannot hold
+	// a quiet. Guarded by attentionMu.
+	attentionAutomaticDriveHolds map[string]struct{}
 
 	// turnNameRetryMu guards turnNameRetry alone. The paced wake it schedules
 	// runs while the session goroutine is mid-stand-down, so it must not queue

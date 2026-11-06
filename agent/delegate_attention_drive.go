@@ -51,7 +51,7 @@ func (s *Session) driveDelegateAttention(sub *subagent) bool {
 		ids = []string{retryID}
 	} else {
 		var err error
-		ids, err = sub.sess.pendingDelegateAttentionIDs()
+		ids, err = sub.sess.automaticDelegateAttentionIDs()
 		if err != nil {
 			s.emit(warningDataFromError("inspect delegate attention", err))
 			return true
@@ -133,7 +133,7 @@ func (s *Session) driveDelegateAttention(sub *subagent) bool {
 	if retryID := s.delegateController.reservedAttentionID(sub.sess); retryID != "" {
 		ids = []string{retryID}
 	} else {
-		pending, err := sub.sess.pendingDelegateAttentionIDs()
+		pending, err := sub.sess.automaticDelegateAttentionIDs()
 		if err != nil {
 			s.emit(warningDataFromError("inspect delegate attention", err))
 			return true
@@ -236,7 +236,7 @@ func (s *Session) reopenFailedDelegateAttention(sub *subagent, attentionID strin
 	if closed {
 		return
 	}
-	if err := sub.sess.reopenConsumedDelegateAttention(attentionID); err != nil {
+	if _, err := sub.sess.reopenConsumedDelegateAttention(attentionID); err != nil {
 		s.emit(warningDataFromError("reopen unpresented delegate attention", err))
 	}
 }

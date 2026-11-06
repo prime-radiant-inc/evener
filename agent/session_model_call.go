@@ -288,12 +288,27 @@ func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t
 	// turn projects the controller's own later snapshot, which can hold turns
 	// appended after historyTurns was taken.
 	presentedTurns := historyTurns
+	// presentedBoundary is the unfiltered snapshot length the skill-rebuild
+	// path below uses to find turns appended since the snapshot: the
+	// held-attention filter can shrink the projected list without reopening
+	// that window.
+	presentedBoundary := len(historyTurns)
 	if lease, ok := ctx.Value(delegateRunLeaseContextKey{}).(delegateLease); ok && s.delegateController != nil {
 		claim, claimErr := s.delegateController.BeginModelRequest(lease)
 		if claimErr != nil {
 			return nil, "", nil, llm.Request{}, nil, "", claimErr
 		}
 		snapshot := s.delegateModelHistorySnapshot()
+		presentedBoundary = len(snapshot)
+		if ctx.Value(delegateAttentionRunContextKey{}) != nil {
+			// An automatic attention drive projects the resident history,
+			// including the turns a reopen retained — a user-stopped run's
+			// held row would ride this drive's presentation, the immediate
+			// restart the stop exists to prevent — so its turn is kept out
+			// of the projection. A send builds no attention run and still
+			// presents it.
+			snapshot = s.dropHeldDelegateAttentionTurns(snapshot)
+		}
 		presentedTurns = snapshot
 		history, claimErr = s.delegateController.CompleteModelRequest(claim, snapshot, scope)
 		if claimErr != nil {
@@ -340,8 +355,9 @@ func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t
 		// not the round snapshot (historyTurns): a leased delegate round
 		// projects the controller's later snapshot, which can already hold the
 		// turns that landed in between and would otherwise be appended again.
-		if len(s.history) > len(presentedTurns) {
-			appended = append(appended, s.history[len(presentedTurns):]...)
+		if len(s.history) > presentedBoundary {
+			appended = append(appended, s.history[presentedBoundary:]...)
+			presentedBoundary = len(s.history)
 		}
 		historyTurns = append([]schema.Turn{}, s.history...)
 		s.mu.Unlock()

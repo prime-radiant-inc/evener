@@ -424,6 +424,7 @@ func TestResumeHistorySkipsSupersededDelegateAttentionTurns(t *testing.T) {
 // The coordinate mappers must count the same turns the history build keeps:
 // a superseded attention row that the drop removes shifts every later
 // position left, so a reopen marker or a fork boundary after it maps one
+// turn too far right unless the index applies the drop's skip rule too.
 func TestHistoryIndexCountsSupersededAttentionRowsAsSkipped(t *testing.T) {
 	t.Parallel()
 	row := func(id, text string) transcript.Entry {

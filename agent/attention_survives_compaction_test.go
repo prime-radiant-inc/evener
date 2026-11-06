@@ -313,6 +313,62 @@ func TestAcceptedDelegateAttentionTriggerFoldsAwayOncePresented(t *testing.T) {
 	}
 }
 
+// A settled request that carried the latched trigger presented the report, a
+// responses-continuation delta included: a delta credits no coverage — its
+// older items live in server-side state this session cannot verify — but the
+// turns the delta was built from reached the model all the same. The reopen
+// must read that reach: a report the model already answered is not owed
+// again, and re-delivering it would duplicate it while the resident and
+// resume drops move the answered report below the reply that answered it. A
+// delta that settled without the trigger presented nothing, and its reopen
+// is still owed.
+func TestSettledResponsesDeltaCarriedLatchIsNotReopened(t *testing.T) {
+	t.Parallel()
+	leaseCtx := context.WithValue(context.Background(), delegateRunLeaseContextKey{}, delegateLease{delegateID: "dlg_target", generation: 1})
+	pendingReopen := func(sess *Session) string {
+		pending, err := sess.pendingDelegateAttentionIDs()
+		if err != nil {
+			t.Fatalf("read pending delegate attention: %v", err)
+		}
+		for _, id := range pending {
+			if strings.Contains(id, delegateAttentionReopenMarker) {
+				return id
+			}
+		}
+		return ""
+	}
+
+	// The delta's own items carried the latched trigger and settled.
+	sess := acceptedTriggerSession(t)
+	sess.stagePresentedAttentionCoverage(leaseCtx, currentHistory(t, sess))
+	sess.promoteStagedAttentionCoverage(llm.Request{HistoryMode: llm.HistoryModeResponsesDelta})
+	if _, err := sess.reopenLatchedDelegateAttention(); err != nil {
+		t.Fatalf("reopenLatchedDelegateAttention: %v", err)
+	}
+	if reopened := pendingReopen(sess); reopened != "" {
+		t.Fatalf("the reopen re-delivered a report a settled delta already presented (%q)", reopened)
+	}
+
+	// A delta that settled without the latched trigger presented nothing.
+	sess = acceptedTriggerSession(t)
+	history := currentHistory(t, sess)
+	at := indexOfTurnText(history, acceptedTriggerText)
+	if at < 0 {
+		t.Fatal("the fixture's history does not hold the latched trigger's turn")
+	}
+	withoutTrigger := make([]schema.Turn, 0, len(history)-1)
+	withoutTrigger = append(withoutTrigger, history[:at]...)
+	withoutTrigger = append(withoutTrigger, history[at+1:]...)
+	sess.stagePresentedAttentionCoverage(leaseCtx, withoutTrigger)
+	sess.promoteStagedAttentionCoverage(llm.Request{HistoryMode: llm.HistoryModeResponsesDelta})
+	if _, err := sess.reopenLatchedDelegateAttention(); err != nil {
+		t.Fatalf("reopenLatchedDelegateAttention: %v", err)
+	}
+	if reopened := pendingReopen(sess); reopened == "" {
+		t.Fatal("the reopen skipped a trigger no settled request presented (no pending row holds a reopened identity)")
+	}
+}
+
 const acceptedTriggerText = `<delegate-notification delegate_id="dlg_worker" kind="update">TRIGGER_ITEM</delegate-notification>`
 
 // acceptedTriggerSession is a delegate runtime that has accepted an attention

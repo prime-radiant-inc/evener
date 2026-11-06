@@ -1924,8 +1924,19 @@ func (a *subagent) run(ctx context.Context, input string, inputProvenance *prove
 		// deliberately stopped child, a closing receiver and a closing
 		// tree are not reopened: their teardowns own the discard, and a
 		// fresh row would race it (reopenLatchedDelegateAttention guards).
-		if reopenErr := a.sess.reopenLatchedDelegateAttention(); reopenErr != nil {
+		reopenID, reopenErr := a.sess.reopenLatchedDelegateAttention()
+		if reopenErr != nil {
 			a.sess.emit(warningDataFromError("reopen unpresented delegate attention", reopenErr))
+		}
+		// A user's stop owns the quiet on the drive's read too: the stopped
+		// generation's commit left the delegate armed for every other
+		// pending row, and that stale armed wake drives without any re-arm,
+		// so the reopened report would ride the next generation it starts.
+		// Hold it from the automatic drives; the rows the stop never touched
+		// keep their presentation, and the arm that later presents them —
+		// or any fresh arm — releases the hold.
+		if userStopped && reopenID != "" {
+			a.sess.holdDelegateAttentionFromAutomaticDrive(reopenID)
 		}
 	}
 	if stableRun && a.sess.delegateController != nil {
@@ -1945,11 +1956,14 @@ func (a *subagent) run(ctx context.Context, input string, inputProvenance *prove
 		if pending, pendingErr := a.sess.pendingDelegateAttentionIDs(); pendingErr != nil {
 			a.sess.emit(warningDataFromError("inspect remaining delegate attention", pendingErr))
 		} else if len(pending) != 0 {
-			// A run the user stopped owns the quiet: the reopen above kept its
-			// report pending and recoverable — a later attention row, a
-			// restart reconcile or an explicit send presents it — but
-			// re-arming here would at once drive the generation the user just
-			// cancelled.
+			// A run the user stopped owns the quiet on the drive's read as
+			// well as this tail's write: the reopen above held its report out
+			// of the stale armed wake the stopped generation's commit left
+			// behind, which still drives for the rows the stop never touched,
+			// so the report stays pending and recoverable through a wake from
+			// a new event — a later attention row, a restart reconcile or an
+			// explicit send — never the stale armed one. Re-arming here would
+			// at once drive the generation the user just cancelled.
 			if !userStopped {
 				if armErr := a.sess.armDelegateAttention(pending[0]); armErr != nil {
 					a.sess.emit(warningDataFromError("rearm remaining delegate attention", armErr))
