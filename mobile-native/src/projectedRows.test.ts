@@ -150,7 +150,7 @@ describe("projectedRow — item entries", () => {
 				hint: fixture.warning.hint,
 			});
 			if (warning?.kind !== "notice") throw new Error("producer warning lost its notice row");
-			for (const identifier of ["openai/summary-model-8af1", "429", "rate_limit"])
+			for (const identifier of ["openai/gpt-5.2", "rejected_output", "empty_reply"])
 				expect(warning.text).toContain(identifier);
 			expect(rows.some((row) => row.id === fixture.recovery.id)).toBe(false);
 		}
