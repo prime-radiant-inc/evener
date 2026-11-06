@@ -12,6 +12,7 @@ import (
 
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/internal/tool"
+	"primeradiant.com/evener/agent/internal/tool/repair"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/identifier"
@@ -224,16 +225,24 @@ func managerDelegateDefinition(def llm.ToolDefinition, ordinary bool) llm.ToolDe
 	} else {
 		params["required"] = []string{"prompt", "hub"}
 	}
-	// reasoning_effort survives the prune in both variants, so its description
-	// append asserts the property directly; name survives only the ordinary
-	// variant's clone — the hub-only prune deletes it — so its append is
-	// guarded on presence. The base definition guarantees both descriptions
-	// are strings.
+	// The base definition guarantees both descriptions are strings. The
+	// ordinary variant distinguishes its branches with appended clauses:
+	// name exists there and the base effort default (inherit from parent)
+	// holds only of the ordinary branch. The hub-only variant has one
+	// branch, so it gets hub-creation descriptions directly — the inherited
+	// prompt description coaches task_list, fork_context and isolation
+	// arguments that branch refuses, and an absent effort keeps the hub's
+	// launch default, not a parent's.
 	if name, ok := props["name"].(map[string]any); ok {
 		name["description"] = strings.TrimSpace(name["description"].(string) + " Not accepted on the Manager hub branch: a hub-created session is not an owned delegate, so the name never surfaces; the created ref and the session's prompt-derived title identify it.")
 	}
 	effort := props["reasoning_effort"].(map[string]any)
-	effort["description"] = strings.TrimSpace(effort["description"].(string) + " With hub, it sets the created session's reasoning effort.")
+	if ordinary {
+		effort["description"] = strings.TrimSpace(effort["description"].(string) + " With hub, it sets the created session's reasoning effort.")
+	} else {
+		props["prompt"].(map[string]any)["description"] = "The created session's opening prompt, submitted after creation and the requested watch are confirmed. State the assignment the new session should start with, including any paths or constraints it needs; it starts with no other context."
+		effort["description"] = "Reasoning effort for the created session (low, medium, or high). Absent keeps the hub's launch default."
+	}
 	def.Description += " In a Manager session, hub={cwd,model,watch} creates an independent top-level session, attaches the requested watch and reads its initial state before sending prompt; reasoning_effort sets the created session's reasoning effort, and the other owned-delegate arguments do not apply to hub creation and are refused. hub.host names any host the hub can reach; absent means this hub. Creation, watch and input are reported separately. A failed watch leaves the created session empty; an unknown launch is never retried, and an unknown or unreachable host is refused by the hub. Hub results are not owned delegate reports."
 	strictFalse := false
 	def.Strict = &strictFalse
@@ -282,16 +291,34 @@ func (s *Session) composeHubDelegateTool() {
 	// flows to the refusal without a second hand-maintained list. PreValidate
 	// runs in both the pre-dispatch preparation and registry dispatch, ahead
 	// of schema validation and repair in each.
-	hubBranch := hubBranchArgumentNames(tool.WithIntentParameter(registered.Definition).Parameters)
+	intentParams := tool.WithIntentParameter(registered.Definition).Parameters
+	hubBranch := hubBranchArgumentNames(intentParams)
+	declared, _ := intentParams["properties"].(map[string]any)
 	registered.PreValidate = func(args map[string]any) error {
-		if _, hubCall := args["hub"]; !hubCall {
+		hub, hubCall := args["hub"]
+		// A null hub marks a call the caller did not configure as hub
+		// creation: repair drops it and the owned-delegate arguments stay
+		// legitimate, so the refusal must not classify the call as a hub one.
+		if !hubCall || hub == nil {
 			return nil
 		}
 		var extras []string
-		for field := range args {
-			if _, accepted := hubBranch[field]; !accepted {
-				extras = append(extras, field)
+		for field, value := range args {
+			if _, accepted := hubBranch[field]; accepted {
+				continue
 			}
+			// A null is never a configured argument — repair drops it as an
+			// empty optional or an unknown key — and an empty string the
+			// declared property's enum does not list is the same placeholder
+			// habit. Skip exactly what repair would drop; the refusal names
+			// only arguments the caller actually sent.
+			if value == nil {
+				continue
+			}
+			if prop, _ := declared[field].(map[string]any); prop != nil && repair.EmptyMeansAbsent(prop, value) {
+				continue
+			}
+			extras = append(extras, field)
 		}
 		if len(extras) == 0 {
 			return nil

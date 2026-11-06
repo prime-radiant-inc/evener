@@ -98,6 +98,66 @@ func TestManagerDelegateHubExtraRefusedAtRegistryDispatch(t *testing.T) {
 	}
 }
 
+// Null placeholders are repair's to drop, not the hub-branch refusal's to
+// reject: a model that sends null for fields it means to leave out gets the
+// same healed call it always did — the refusal names only configured
+// arguments.
+func TestManagerDelegateHubCallNullPlaceholdersAreNotRefused(t *testing.T) {
+	t.Parallel()
+	if refusal := managerDelegateHubCall(t, `{"prompt":"worker task","hub":{"cwd":"/tmp","model":"openai/gpt-5.2","watch":{"completion":true}},"name":null,"agent_type":null,"intent":"spawn the worker"}`); refusal != "" {
+		t.Fatalf("hub-branch call with null placeholders was refused: %s", refusal)
+	}
+}
+
+// An empty string on an enum-typed optional is the same placeholder habit:
+// the isolation enum does not list it, repair drops it, and the refusal must
+// not name it.
+func TestManagerDelegateHubCallEmptyEnumPlaceholderIsNotRefused(t *testing.T) {
+	t.Parallel()
+	if refusal := managerDelegateHubCall(t, `{"prompt":"worker task","hub":{"cwd":"/tmp","model":"openai/gpt-5.2","watch":{"completion":true}},"isolation":"","intent":"spawn the worker"}`); refusal != "" {
+		t.Fatalf("hub-branch call with an empty enum placeholder was refused: %s", refusal)
+	}
+}
+
+// A null hub object is the ordinary branch's placeholder, not a hub creation:
+// the refusal must not misclassify the call and refuse its owned-delegate
+// arguments.
+func TestManagerDelegateOrdinaryCallWithNullHubIsNotRefused(t *testing.T) {
+	t.Parallel()
+	if refusal := managerDelegateHubCall(t, `{"prompt":"worker task","hub":null,"name":"worker-lane","intent":"spawn the worker"}`); refusal != "" {
+		t.Fatalf("ordinary call carrying a null hub was refused: %s", refusal)
+	}
+}
+
+// The hub-only variant has one branch, so its property descriptions must
+// coach hub creation rather than the owned-delegate arguments that branch
+// refuses: a Manager whose only path is hub creation would otherwise be told
+// to put steps in task_list, use fork_context and isolation, and that an
+// absent effort inherits from a parent that does not exist.
+func TestManagerDelegateHubOnlyDescriptionsCoachHubCreation(t *testing.T) {
+	t.Parallel()
+	root := newMessagingRoot(t, newMessagingAdapter(), func(cfg *SessionConfig) { cfg.Manager = true })
+	root.mu.Lock()
+	root.profile = &provider.Profile{}
+	root.rebuildToolDefsCache()
+	root.mu.Unlock()
+	registered := root.reg.Get("delegate")
+	if registered == nil {
+		t.Fatal("Manager delegate tool not registered")
+	}
+	props, _ := registered.Definition.Parameters["properties"].(map[string]any)
+	prompt, _ := props["prompt"].(map[string]any)["description"].(string)
+	for _, field := range []string{"task_list", "fork_context", "isolation"} {
+		if strings.Contains(prompt, field) {
+			t.Fatalf("hub-only prompt description coaches the refused argument %s", field)
+		}
+	}
+	effort, _ := props["reasoning_effort"].(map[string]any)["description"].(string)
+	if !strings.Contains(effort, "launch default") {
+		t.Fatalf("hub-only effort description does not name the hub's launch default: %s", effort)
+	}
+}
+
 // The explainer must not misattribute a hub-branch schema failure to the
 // supplied prompt against the real composed schema the session registers, not
 // only the mirrored fixture in the repair package. The session-level refusals
