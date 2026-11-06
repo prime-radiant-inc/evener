@@ -35,6 +35,12 @@ func forkSummarize(ctx context.Context, cheap *cheapmodel.Caller, profile *provi
 		if err != nil {
 			return sessionlog.SessionLogEntry{}, fmt.Errorf("fork summarize: %w", err)
 		}
+		if resp.Finish.Reason == llm.FinishReasonLength {
+			// A truncated reply hit the model's output cap, which a fresh
+			// sample hits again: like the conversation summary's cut-off
+			// replies, it gets no resample.
+			return sessionlog.SessionLogEntry{}, fmt.Errorf("fork summarize: %w", errSummaryForkReply)
+		}
 
 		text := strings.TrimSpace(resp.Text())
 		// Strip markdown code fences if the model wraps JSON in them.

@@ -131,7 +131,9 @@ func TestSummarizeWithLLM_RejectedCheapReplyFallsBackToSessionModel(t *testing.T
 				sessionNarration := func(llm.Request) llm.Response {
 					return llm.Response{Message: llm.Assistant(tc.sessionReply)}
 				}
-				steps = append(steps, sessionNarration, sessionNarration, sessionNarration)
+				for range 3 {
+					steps = append(steps, sessionNarration)
+				}
 			}
 			adapter := &fakeAdapter{name: "openai", steps: steps}
 			client := llm.NewClient()

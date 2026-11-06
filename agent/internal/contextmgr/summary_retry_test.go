@@ -264,6 +264,29 @@ func TestSummarizationDoesNotResampleAnEmptyCutOffReply(t *testing.T) {
 	}
 }
 
+// A fork reply the model truncated is an output-limit cut, not a bad sample:
+// it costs exactly one call, like the conversation summary's cut-off replies.
+func TestForkSummarizeDoesNotResampleACutOffReply(t *testing.T) {
+	t.Parallel()
+	cutOffReply := llm.Response{
+		Message: llm.Assistant(`{"action":"sh`),
+		Finish:  llm.FinishReason{Reason: llm.FinishReasonLength},
+	}
+	client, calls := summarizerScript(func(int, llm.Request) (llm.Response, error) {
+		return cutOffReply, nil
+	})
+	profile := testProfile("openai", "active-fixture", 1000)
+	_, err := forkSummarize(context.Background(), cheapmodel.New(client), profile, canaryHistory(), 7)
+	if err == nil {
+		t.Fatal("cut-off fork reply accepted, want a failure")
+	}
+	// The fork resolves the cheap-model ref, whose default comes from the
+	// refreshable catalog, so the pin is the sample count, not the model.
+	if got := calls(); len(got) != 1 {
+		t.Fatalf("fork calls = %v, want a single call", got)
+	}
+}
+
 // A condensation batch reply that comes back empty at the model's output limit
 // is an output-limit cut, not an empty batch, so it is not resampled either.
 func TestCondensePartnerMessagesDoesNotResampleAnEmptyCutOffReply(t *testing.T) {
