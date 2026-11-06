@@ -12,26 +12,33 @@
 # on that head, and dispatches the workflow itself when nothing appeared.
 # Any run already on the head, pull_request (GitHub delivered) or
 # workflow_dispatch (someone covered it manually), counts as covered, so
-# the watchdog never double-dispatches.
+# the watchdog never double-dispatches. A cancelled run does not count, so a
+# cancelled dispatch is re-dispatched rather than trusted. Run one
+# invocation per push: two watchdogs racing each other (or a manual dispatch)
+# land in the workflow's own dispatch concurrency group, and the newer run
+# cancels the in-flight older one; the watchdog then reports whatever run
+# actually covers the head.
 #
 # The default workflow, ios-qualification.yml, is the native lane's macOS
 # simulator qualification: its workflow_dispatch trigger takes no inputs, it
 # builds and qualifies without publishing anything, and a dispatch run
 # shares no concurrency group with a pull_request run, so a watchdog
-# dispatch cannot cancel one. Pass --workflow to also verify other
-# workflows; only workflows with a workflow_dispatch trigger can be
-# re-dispatched (ci.yml has none, so a dropped CI run can be reported, not
-# replaced; every run found on the head is listed, so a missing CI run
-# stays visible either way). A workflow with paths filters only fires when
-# the push touches them: run the watchdog after a push you expect to
-# trigger it.
+# dispatch cannot cancel one. It fires on pull_request only when the push
+# touches its trigger paths (mobile-native/, appwire-client/typescript/,
+# scripts/native/ and friends): run the watchdog after a push you expect to
+# trigger it, since on other pushes no run is expected and the watchdog
+# would dispatch one needlessly. Pass --workflow (repeatable) to check
+# different workflows instead of the default; only workflows with a
+# workflow_dispatch trigger can be re-dispatched (ci.yml has none: a missing
+# ci.yml run is reported with reason=dispatch-refused, not replaced, though
+# every run found on the head is listed, so it stays visible).
 #
 #   scripts/ops/pr-ci-watchdog.sh --pr N [--workflow FILE]... [--wait SECONDS]
 #                                 [--sha SHA] [--dry-run] [--repo OWNER/NAME]
 #
 # --pr is the pull request just pushed. --workflow repeats; each is a file
-# under .github/workflows/ that should have a run for the head (default
-# ios-qualification.yml). --wait is how long to poll for the run before
+# under .github/workflows/, and together they replace the default list
+# (ios-qualification.yml). --wait is how long to poll for the run before
 # concluding the event was dropped (default 300 seconds, checked every 20;
 # --wait 0 checks once). --sha checks a specific head commit instead of the
 # PR's current head, once, without polling, and never dispatches: a
@@ -53,18 +60,25 @@
 #                                (exit 0: the event was dropped; we
 #                                dispatched and confirmed the run exists)
 #   CIWATCH missing workflow=F head=SHA reason=R
-#                                (exit 1: no run and no dispatch happened;
-#                                R is one of --sha-check-only, dry-run,
-#                                head-moved, dispatch-unconfirmed)
-# Exit 2: usage error, the PR could not be resolved, or a gh call failed
-# (the message says which).
+#                                (exit 1: no run covers the head; R is one
+#                                of --sha-check-only, dry-run, head-moved,
+#                                pr-closed, dispatch-refused, or
+#                                dispatch-unconfirmed, where a dispatch was
+#                                accepted but no run ever registered, so
+#                                look before dispatching anything yourself)
+# Exit 2: usage error, the PR could not be resolved, or a run lookup
+# failed (the message says which).
 set -euo pipefail
 
-usage() { sed -n '2,60p' "$0" | sed 's/^# \{0,1\}//'; exit 2; }
+usage() { sed -n '2,70p' "$0" | sed 's/^# \{0,1\}//'; exit 2; }
 
 repo="prime-radiant-inc/evener" pr="" wait=300 sha="" dry_run=false
 workflows=()
 while [ $# -gt 0 ]; do
+  case "$1" in
+    --repo|--pr|--workflow|--wait|--sha)
+      [ $# -ge 2 ] || { echo "missing value for $1" >&2; usage; } ;;
+  esac
   case "$1" in
     --repo) repo="$2"; shift 2 ;;
     --pr) pr="$2"; shift 2 ;;
@@ -133,6 +147,7 @@ run_of_workflow() {
   local want="$1" last="" prrun="" path event status id url
   while IFS=$'\t' read -r path event status id url; do
     [ -n "${path:-}" ] || continue
+    [ "$status" != "cancelled" ] || continue  # a cancelled run covers nothing
     [ "${path##*/}" = "$want" ] || continue
     last=$(printf '%s\t%s\t%s\t%s' "$event" "$status" "$id" "$url")
     if [ "$event" = "pull_request" ]; then prrun="$last"; fi
@@ -205,20 +220,30 @@ for w in "${workflows[@]}"; do
     echo "CIWATCH missing workflow=$w head=$check_oid reason=--sha-check-only"
     rc=1
   else
-    if ! cur=$(gh pr view "$pr" --repo "$repo" --json headRefOid --jq '.headRefOid' 2>&1); then
+    if ! cur=$(gh pr view "$pr" --repo "$repo" --json state,headRefOid \
+      --jq '[.state, .headRefOid] | @tsv' 2>&1); then
       echo "CIWATCH resolve failed while re-checking the head: gh pr view $pr said: $cur" >&2
       exit 2
     fi
-    if [ "$cur" != "$head_oid" ]; then
-      echo "$w: no run on $check_oid, and the PR head moved to $cur during the wait; not dispatching for a stale head; re-run for the new push"
+    IFS=$'\t' read -r cur_state cur_oid <<<"$cur"
+    if [ "$cur_state" != "OPEN" ]; then
+      echo "$w: no run on $check_oid, and the PR is now $cur_state; not dispatching for a closed PR"
+      echo "CIWATCH missing workflow=$w head=$check_oid reason=pr-closed"
+      rc=1
+      continue
+    fi
+    if [ "$cur_oid" != "$head_oid" ]; then
+      echo "$w: no run on $check_oid, and the PR head moved to $cur_oid during the wait; not dispatching for a stale head; re-run for the new push"
       echo "CIWATCH missing workflow=$w head=$check_oid reason=head-moved"
       rc=1
       continue
     fi
     echo "$w: no run on $check_oid after ${wait}s; GitHub dropped the event; dispatching $w on $head_branch"
     if ! gh workflow run "$w" --repo "$repo" --ref "$head_branch" 2>&1; then
-      echo "CIWATCH dispatch failed: gh workflow run $w --ref $head_branch did not accept the dispatch; a workflow without a workflow_dispatch trigger reports this" >&2
-      exit 2
+      echo "$w: dispatch refused, nothing was created; a workflow without a workflow_dispatch trigger, or a ref missing the workflow file, reports this" >&2
+      echo "CIWATCH missing workflow=$w head=$check_oid reason=dispatch-refused"
+      rc=1
+      continue
     fi
     # gh workflow run returns before GitHub registers the run; confirm the
     # run exists so the verdict names one the operator can watch.
@@ -239,7 +264,7 @@ for w in "${workflows[@]}"; do
       fi
       now=$(date +%s)
       if [ "$now" -ge "$deadline2" ]; then
-        echo "$w: dispatch accepted but no run registered on $head_oid within 90s; look for it at https://github.com/$repo/actions/workflows/$w"
+        echo "$w: dispatch accepted but no run covers $head_oid within 90s (a cancelled run does not count); look for it at https://github.com/$repo/actions/workflows/$w"
         echo "CIWATCH missing workflow=$w head=$check_oid reason=dispatch-unconfirmed"
         rc=1
         break
