@@ -119,9 +119,11 @@ source bindings and focus remain workspace-owned. See
 [design system](../web-ui/design-system.md#design-model-an-editorial-instrument).
 
 S02's Rail owns the sidebar boundary and session-row geometry for navigation
-context cards. HoverCard's shared floating layer owns the body portal,
-measurement and reveal/dismiss lifetime. It observes the visible card and its
-side-anchored row so placement follows sidebar resizing. Session cards float beside the rail
+context cards, and it lists projects by name and each project's sessions
+newest-created first so activity does not move rows. HoverCard's shared
+floating layer owns the body portal, measurement and reveal/dismiss lifetime.
+It observes the visible card and its side-anchored row so placement follows
+sidebar resizing. Session cards float beside the rail
 with viewport-aware fallback; other floating descriptions keep their placement.
 Three listener lifetimes stay distinct, and none grows with the number of
 mounted cards. One shared document-scoped tracker, one owner per Document,

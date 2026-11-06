@@ -2729,6 +2729,12 @@ export interface NavigationSessionSummary {
    */
   archived?: boolean;
   updated_at?: string;
+  /**
+   * CreatedAt is when the session started. A project's rows are ordered by
+   * it, newest first, so a client that joins the Current and Recent tiers
+   * can keep that order across the tier boundary.
+   */
+  created_at?: string;
   more_subagents?: number;
   /**
    * Subagents is a live root's whole-tree subagent tally, counted by its

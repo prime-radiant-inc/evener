@@ -343,7 +343,7 @@ func fuzzScenarioBuildTree_GroupsByProjectWithSubagentsAndForks(t *testing.T) {
 		t.Errorf("name: %q", proj.Name)
 	}
 
-	// Top-level sessions: 01ACTIVE then 01OTHER (by recency).
+	// Top-level sessions: 01ACTIVE then 01OTHER (newest created first).
 	// 01OLDORIG is NOT top-level — it's the snapshotted original under 01ACTIVE.
 	sessions := allSessions(proj)
 	if len(sessions) != 2 {
@@ -628,14 +628,14 @@ func fuzzScenarioLiveTier_ApprovalRanksWithAwaiting(t *testing.T) {
 	}
 }
 
-func fuzzScenarioBuildTree_OrdersProjectSessionsByUpdatedCreatedTitleAndID(t *testing.T) {
+func fuzzScenarioBuildTree_OrdersProjectSessionsByCreatedTitleAndID(t *testing.T) {
 	updated := time.Date(2026, 5, 11, 12, 0, 0, 0, time.UTC)
 	metas := []schema.SessionMeta{
 		{ID: "02wMz5Txv2enqVTitaig6F", CreatedAt: updated.Add(-2 * time.Hour), UpdatedAt: updated, OriginalPrompt: "beta task",
 			EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/alpha"}},
 		{ID: "02wMz5Txv1C3Hut0M8GCeB", CreatedAt: updated.Add(-time.Hour), UpdatedAt: updated, OriginalPrompt: "alpha task",
 			EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/alpha"}},
-		{ID: "02wMz5Txv47YP64RR3B9YJ", CreatedAt: updated.Add(-3 * time.Hour), UpdatedAt: updated.Add(-time.Hour), OriginalPrompt: "bravo task",
+		{ID: "02wMz5Txv47YP64RR3B9YJ", CreatedAt: updated.Add(-3 * time.Hour), UpdatedAt: updated, OriginalPrompt: "bravo task",
 			EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/alpha"}},
 		{ID: "02wMz5Txv5aIxgf9yVdd0N", CreatedAt: updated.Add(-3 * time.Hour), UpdatedAt: updated.Add(-time.Hour), OriginalPrompt: "alpha task",
 			EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/alpha"}},
@@ -652,6 +652,9 @@ func fuzzScenarioBuildTree_OrdersProjectSessionsByUpdatedCreatedTitleAndID(t *te
 	for _, node := range sessions {
 		got = append(got, node.ID)
 	}
+	// Newest creation first. The two oldest share an instant, so title then ID
+	// break that tie. The newest-updated row is not the newest-created one, so
+	// an update-time sort cannot produce this order.
 	want := []string{"02wMz5Txv1C3Hut0M8GCeB", "02wMz5Txv2enqVTitaig6F", "02wMz5Txv5aIxgf9yVdd0N", "02wMz5Txv47YP64RR3B9YJ"}
 	if strings.Join(got, ",") != strings.Join(want, ",") {
 		t.Fatalf("order=%v, want %v", got, want)
@@ -878,8 +881,7 @@ func fuzzScenarioBuildTreeSessionTiersAndProjectOrder(t *testing.T) {
 	if len(alpha.Current) != 1 || len(alpha.Archived) != 1 || len(alpha.Recent) != 0 {
 		t.Fatalf("alpha tiers: current=%d recent=%d archived=%d", len(alpha.Current), len(alpha.Recent), len(alpha.Archived))
 	}
-	// Projects ordered by last-activity desc: alpha's most recent touch was 1h
-	// ago, beta's was 48h ago -> alpha first.
+	// Projects are ordered by name, so alpha precedes beta.
 	if len(tree.Projects) < 2 || tree.Projects[0].Name != "alpha" {
 		t.Fatalf("project order wrong: %+v", projectNames(tree.Projects))
 	}
@@ -946,8 +948,8 @@ func fuzzScenarioBuildTreeManualSessionArchiveAndUnarchive(t *testing.T) {
 }
 
 func fuzzScenarioBuildTreeE2eProjectsClassifyByRecency(t *testing.T) {
-	// The evener-e2e-* prefix bucket is gone: a fresh e2e project flows through the
-	// normal model (active, ordered by recency), and a stale one auto-archives.
+	// The evener-e2e-* prefix bucket is gone: a fresh e2e project flows through
+	// the normal model (active, classified by age), and a stale one auto-archives.
 	now := time.Unix(1_700_000_000, 0)
 	mk := func(id, proj string, updatedAgo time.Duration) schema.SessionMeta {
 		return schema.SessionMeta{ID: id, CreatedAt: now.Add(-updatedAgo), UpdatedAt: now.Add(-updatedAgo),
@@ -1363,55 +1365,46 @@ func TestBuildTree_MalformedSubagentLineageTerminatesWithoutRows(t *testing.T) {
 	}
 }
 
-func fuzzScenarioBuildTree_OrdersProjectsByLastActivity(t *testing.T) {
-	// Active projects are emitted newest-first by their most recent
-	// last-activity (max last-activity across the project's sessions), not by
-	// when a session merely started.
+func fuzzScenarioBuildTree_OrdersProjectsByName(t *testing.T) {
+	// Projects are emitted in name order. The clock order below deliberately
+	// disagrees with the name order, so a recency sort cannot pass this.
 	now := time.Unix(1_700_000_000, 0)
 	mk := func(id, proj string, createdAgo, updatedAgo time.Duration) schema.SessionMeta {
 		return schema.SessionMeta{ID: id, CreatedAt: now.Add(-createdAgo), UpdatedAt: now.Add(-updatedAgo),
 			EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/" + proj}}
 	}
 	metas := []schema.SessionMeta{
-		// touched-older's sessions were both CREATED before touched-newer's only
-		// session, so max-CreatedAt ordering would rank touched-newer first. But
-		// one of touched-older's sessions was TOUCHED more recently than
-		// anything in touched-newer, which should lift touched-older to the top.
-		mk("01R2", "touched-older", 3*time.Hour, 3*time.Hour),
-		mk("01R3", "touched-older", 2*time.Hour, 1*time.Minute),
-		mk("01R1", "touched-newer", 10*time.Minute, 10*time.Minute),
+		mk("01R1", "zulu", 10*time.Minute, 10*time.Minute),
+		mk("01R2", "alpha", 3*time.Hour, 3*time.Hour),
+		mk("01R3", "mike", 2*time.Hour, 2*time.Hour),
 	}
 	tree := BuildTreeAt(metas, nil, map[ArchiveKey]bool{}, now)
 	got := projectNames(tree.Projects)
-	want := []string{"touched-older", "touched-newer"}
+	want := []string{"alpha", "mike", "zulu"}
 	if strings.Join(got, ",") != strings.Join(want, ",") {
 		t.Fatalf("project order = %v, want %v", got, want)
 	}
 }
 
-func fuzzScenarioBuildTree_OrdersProjectsByLastActivityNotCreatedAt(t *testing.T) {
-	// A project's ordering key is last ACTIVITY, not session start: a project
-	// whose only session was created long ago but touched moments ago must
-	// outrank a project whose only session was created recently but has sat
-	// stale (untouched) since. Sorting by max CreatedAt (the pre-change
-	// behavior) gets this backwards — it ranks the freshly-started-but-stale
-	// project first.
+func fuzzScenarioBuildTree_OrdersProjectsByNameNotLastActivity(t *testing.T) {
+	// A project's position does not move when its sessions are touched. The
+	// project touched moments ago is named "zulu" and the stale project is
+	// named "alpha"; name order puts alpha first even though zulu is the
+	// more recently active one.
 	now := time.Unix(1_700_000_000, 0)
 	mk := func(id, proj string, createdAgo, updatedAgo time.Duration) schema.SessionMeta {
 		return schema.SessionMeta{ID: id, CreatedAt: now.Add(-createdAgo), UpdatedAt: now.Add(-updatedAgo),
 			EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/" + proj}}
 	}
 	metas := []schema.SessionMeta{
-		// old-but-touched: session started 30 days ago, touched 1 minute ago.
-		mk("01OLD", "old-but-touched", 30*24*time.Hour, 1*time.Minute),
-		// new-but-stale: session started 10 minutes ago, never touched since.
-		mk("02wMz5Txv1C3Hut0M8GCeB", "new-but-stale", 10*time.Minute, 10*time.Minute),
+		mk("01OLD", "zulu", 30*24*time.Hour, 1*time.Minute),
+		mk("02wMz5Txv1C3Hut0M8GCeB", "alpha", 10*time.Minute, 10*time.Minute),
 	}
 	tree := BuildTreeAt(metas, nil, map[ArchiveKey]bool{}, now)
 	got := projectNames(tree.Projects)
-	want := []string{"old-but-touched", "new-but-stale"}
+	want := []string{"alpha", "zulu"}
 	if strings.Join(got, ",") != strings.Join(want, ",") {
-		t.Fatalf("project order = %v, want %v (must order by last activity, not session start)", got, want)
+		t.Fatalf("project order = %v, want %v (must order by name, not activity)", got, want)
 	}
 }
 
@@ -1480,7 +1473,7 @@ func fuzzScenarioBuildTree_CapsSessionsPerTierWithOverflowCounts(t *testing.T) {
 	total := maxSidebarSessionsPerTier + 7
 	metas := make([]schema.SessionMeta, 0, total)
 	for i := range total {
-		// Spread updated times (distinct titles too).
+		// Spread created times (distinct titles too).
 		metas = append(metas, schema.SessionMeta{
 			ID:             fmt.Sprintf("01CUR%03d", i),
 			OriginalPrompt: fmt.Sprintf("current task %d", i),
@@ -1496,9 +1489,9 @@ func fuzzScenarioBuildTree_CapsSessionsPerTierWithOverflowCounts(t *testing.T) {
 	if proj.MoreCurrent != 7 {
 		t.Errorf("MoreCurrent = %d, want 7", proj.MoreCurrent)
 	}
-	// The kept rows are the most-recent N: the very first (newest) survives.
+	// The kept rows are the newest-created N: the very first survives.
 	if proj.Current[0].ID != "01CUR000" {
-		t.Errorf("Current[0] = %q, want most-recent 01CUR000", proj.Current[0].ID)
+		t.Errorf("Current[0] = %q, want newest-created 01CUR000", proj.Current[0].ID)
 	}
 }
 
