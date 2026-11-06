@@ -203,16 +203,10 @@ func moveEntry(src, dst, marker string) error {
 	return os.Remove(marker)
 }
 
-// entryLstat is the pre-open metadata check the archive copy and the migration
-// both make before they open a file as content. It is a variable so a test can
-// replay what a FIFO swapped in between that check and the open looks like
-// (#4847); production code always uses os.Lstat.
-var entryLstat = os.Lstat
-
 // copyEntryExact copies one directory, file, or symlink for a cross-filesystem
 // archive move.
 func copyEntryExact(src, dst string) error {
-	info, err := entryLstat(src)
+	info, err := os.Lstat(src)
 	if err != nil {
 		return err
 	}

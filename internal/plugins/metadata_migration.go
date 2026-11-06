@@ -191,10 +191,19 @@ func collectGitEntries(root string) ([]string, []string) {
 // target may be an ancestor or mixed-content directory, so the entry is left
 // in place and the store stays unverified rather than moving content.
 func (m *Manager) unsafeGitEntry(entry string) bool {
-	info, err := entryLstat(entry)
+	info, err := os.Lstat(entry)
 	if err != nil {
 		return true
 	}
+	return m.unsafeGitEntryInfo(entry, info)
+}
+
+// unsafeGitEntryInfo decides whether an entry is unsafe given what the metadata
+// check already returned. Taking that result as an argument lets a test supply
+// the regular-file metadata that a FIFO swapped in after the check would have
+// produced, so the check-then-open gap is pinned without a mutable package
+// global (#4847).
+func (m *Manager) unsafeGitEntryInfo(entry string, info os.FileInfo) bool {
 	if info.Mode()&os.ModeSymlink != 0 {
 		target, err := os.Readlink(entry)
 		if err != nil {

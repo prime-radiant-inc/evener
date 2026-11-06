@@ -18,6 +18,22 @@ import (
 // tripwires in agent/command and agent/skill.
 const fifoDeadline = 5 * time.Second
 
+// withinFIFODeadline runs call in its own goroutine and fails the test if it
+// has not returned within fifoDeadline, naming what blocked.
+func withinFIFODeadline[T any](t *testing.T, what string, call func() T) T {
+	t.Helper()
+	done := make(chan T, 1)
+	go func() { done <- call() }()
+	select {
+	case result := <-done:
+		return result
+	case <-time.After(fifoDeadline):
+		t.Fatalf("%s did not return (a FIFO was opened with a blocking open)", what)
+		var zero T
+		return zero
+	}
+}
+
 // mkfifoAt creates a writerless named pipe at path.
 func mkfifoAt(t *testing.T, path string) {
 	t.Helper()
@@ -29,67 +45,51 @@ func mkfifoAt(t *testing.T, path string) {
 	}
 }
 
-// swapInFIFOAfterCheck replays the substitution #4847 describes without a
-// timing race: the pre-open check reports a regular file while the path itself
-// is a writerless FIFO by the time the open happens. Only the metadata check is
-// substituted; the open and every later step are the real ones.
-func swapInFIFOAfterCheck(t *testing.T) {
-	t.Helper()
-	decoy := filepath.Join(t.TempDir(), "regular")
-	if err := os.WriteFile(decoy, []byte("gitdir: ../elsewhere\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	decoyInfo, err := os.Lstat(decoy)
-	if err != nil {
-		t.Fatal(err)
-	}
-	restore := entryLstat
-	entryLstat = func(string) (os.FileInfo, error) { return decoyInfo, nil }
-	t.Cleanup(func() { entryLstat = restore })
-}
-
-// TestCopyEntryExactRefusesFIFOSwappedInAfterLstat pins the archive copy used
-// by cross-filesystem metadata moves: the Lstat says regular, the path is a
-// FIFO, and the copy must refuse it instead of blocking on the open.
-func TestCopyEntryExactRefusesFIFOSwappedInAfterLstat(t *testing.T) {
+// TestCopyRegularFileRefusesFIFOWithoutBlocking pins the one open every archive
+// and payload copy funnels through: the caller's metadata check has passed, and
+// the path is a writerless FIFO. The copy must refuse it instead of parking on
+// the open.
+func TestCopyRegularFileRefusesFIFOWithoutBlocking(t *testing.T) {
+	t.Parallel()
 	fifo := filepath.Join(t.TempDir(), "config")
 	mkfifoAt(t, fifo)
-	swapInFIFOAfterCheck(t)
-	dst := filepath.Join(t.TempDir(), "archived")
+	dst := filepath.Join(t.TempDir(), "copied")
 
-	done := make(chan error, 1)
-	go func() { done <- copyEntryExact(fifo, dst) }()
-	select {
-	case err := <-done:
-		if err == nil {
-			t.Fatal("a FIFO swapped in after the regular-file check was archived")
-		}
-	case <-time.After(fifoDeadline):
-		t.Fatal("copyEntryExact did not return (a FIFO was opened with a blocking open)")
+	err := withinFIFODeadline(t, "copyRegularFile(FIFO)", func() error {
+		return copyRegularFile(fifo, dst, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	})
+	if err == nil {
+		t.Fatal("a copy read a FIFO whose metadata check had said regular file")
 	}
-	if _, err := os.Lstat(dst); !os.IsNotExist(err) {
-		t.Fatalf("the refused archive entry left %s behind: %v", dst, err)
+	if _, statErr := os.Lstat(dst); !os.IsNotExist(statErr) {
+		t.Fatalf("the refused copy left %s behind: %v", dst, statErr)
 	}
 }
 
 // TestUnsafeGitEntryRefusesFIFOSwappedInAfterLstat pins the migration's .git
-// pointer read: a FIFO swapped in after the regular-file check must leave the
-// store unverified rather than hang the migration.
+// pointer read. The metadata check reported a regular pointer file and the
+// entry on disk is a writerless FIFO: the migration must leave the store
+// unverified instead of hanging.
 func TestUnsafeGitEntryRefusesFIFOSwappedInAfterLstat(t *testing.T) {
-	entry := filepath.Join(t.TempDir(), ".git")
+	t.Parallel()
+	dir := t.TempDir()
+	entry := filepath.Join(dir, ".git")
 	mkfifoAt(t, entry)
-	swapInFIFOAfterCheck(t)
-	m := NewManager(t.TempDir())
+	pointer := filepath.Join(dir, "pointer")
+	if err := os.WriteFile(pointer, []byte("gitdir: ../elsewhere\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	checked, err := os.Lstat(pointer)
+	if err != nil {
+		t.Fatal(err)
+	}
 
-	done := make(chan bool, 1)
-	go func() { done <- m.unsafeGitEntry(entry) }()
-	select {
-	case unsafe := <-done:
-		if !unsafe {
-			t.Fatal("a FIFO named .git was reported as a clean metadata pointer")
-		}
-	case <-time.After(fifoDeadline):
-		t.Fatal("unsafeGitEntry did not return (a FIFO was opened with a blocking open)")
+	m := NewManager(t.TempDir())
+	unsafe := withinFIFODeadline(t, "unsafeGitEntry(FIFO)", func() bool {
+		return m.unsafeGitEntryInfo(entry, checked)
+	})
+	if !unsafe {
+		t.Fatal("a FIFO named .git was reported as a clean metadata pointer")
 	}
 }
 
@@ -103,21 +103,15 @@ func TestCopyTreeRefusesFIFOWithoutBlocking(t *testing.T) {
 	mkfifoAt(t, filepath.Join(src, "pipe"))
 	dst := filepath.Join(t.TempDir(), "copied")
 
-	done := make(chan error, 1)
-	go func() { done <- copyTree(src, dst) }()
-	select {
-	case err := <-done:
-		if err == nil {
-			t.Fatal("a plugin source FIFO was copied as content")
-		}
-	case <-time.After(fifoDeadline):
-		t.Fatal("copyTree did not return (a source FIFO was opened with a blocking open)")
+	err := withinFIFODeadline(t, "copyTree(FIFO)", func() error { return copyTree(src, dst) })
+	if err == nil {
+		t.Fatal("a plugin source FIFO was copied as content")
 	}
 }
 
 // TestCopyTreeRefusesSymlinkToFIFOWithoutBlocking pins the dereferencing source
 // copy: a companion-file link that resolves to a named pipe must be refused,
-// because os.Open on the link would otherwise block on the pipe.
+// because opening the link would otherwise block on the pipe.
 func TestCopyTreeRefusesSymlinkToFIFOWithoutBlocking(t *testing.T) {
 	t.Parallel()
 	src := t.TempDir()
@@ -127,18 +121,12 @@ func TestCopyTreeRefusesSymlinkToFIFOWithoutBlocking(t *testing.T) {
 	}
 	dst := filepath.Join(t.TempDir(), "copied")
 
-	done := make(chan error, 1)
-	go func() { done <- copyTree(src, dst) }()
-	select {
-	case err := <-done:
-		if err == nil {
-			t.Fatal("a companion link resolving to a FIFO was copied as content")
-		}
-	case <-time.After(fifoDeadline):
-		t.Fatal("copyTree did not return (a linked FIFO was opened with a blocking open)")
+	err := withinFIFODeadline(t, "copyTree(linked FIFO)", func() error { return copyTree(src, dst) })
+	if err == nil {
+		t.Fatal("a companion link resolving to a FIFO was copied as content")
 	}
-	if _, err := os.Stat(filepath.Join(dst, "companion.txt")); !os.IsNotExist(err) {
-		t.Fatalf("the refused companion link was materialized: %v", err)
+	if _, statErr := os.Stat(filepath.Join(dst, "companion.txt")); !os.IsNotExist(statErr) {
+		t.Fatalf("the refused companion link was materialized: %v", statErr)
 	}
 }
 
@@ -148,31 +136,21 @@ func TestCopyTreeRefusesSymlinkToFIFOWithoutBlocking(t *testing.T) {
 func TestReadPrefixRefusesFIFOWithoutBlocking(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
-	mkfifoAt(t, filepath.Join(dir, "HEAD"))
+	head := filepath.Join(dir, "HEAD")
+	mkfifoAt(t, head)
 
-	type read struct{ err error }
-	done := make(chan read, 1)
-	go func() {
-		_, err := readPrefix(filepath.Join(dir, "HEAD"), 4<<10)
-		done <- read{err: err}
-	}()
-	select {
-	case res := <-done:
-		if res.err == nil {
-			t.Fatal("readPrefix read a FIFO")
-		}
-	case <-time.After(fifoDeadline):
-		t.Fatal("readPrefix did not return (a FIFO was opened with a blocking open)")
+	var data []byte
+	err := withinFIFODeadline(t, "readPrefix(FIFO)", func() error {
+		var readErr error
+		data, readErr = readPrefix(head, 4<<10)
+		return readErr
+	})
+	if err == nil {
+		t.Fatalf("readPrefix read a FIFO: %q", data)
 	}
-
-	adminDone := make(chan bool, 1)
-	go func() { adminDone <- looksLikeGitAdministration(dir) }()
-	select {
-	case looks := <-adminDone:
-		if looks {
-			t.Fatal("a FIFO HEAD looked like Git administration")
-		}
-	case <-time.After(fifoDeadline):
-		t.Fatal("looksLikeGitAdministration did not return (a FIFO HEAD was opened with a blocking open)")
+	if withinFIFODeadline(t, "looksLikeGitAdministration(FIFO HEAD)", func() bool {
+		return looksLikeGitAdministration(dir)
+	}) {
+		t.Fatal("a FIFO HEAD looked like Git administration")
 	}
 }
