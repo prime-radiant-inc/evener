@@ -9,7 +9,7 @@
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { makeTranscriptDisplayConfig } from "@evener/appwire-client";
+import { applyReadResponse, hydrateThread, makeTranscriptDisplayConfig } from "@evener/appwire-client";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { createElement } from "react";
 import { afterAll, afterEach, beforeAll, describe, expect, test } from "vitest";
@@ -396,6 +396,181 @@ describe("finding 1: reconnect window", () => {
   test("repaired: a same-connection refresh is not a reconnect", () => {
     const ev = guard.targetPagingEvidence(REF, sameConnPath);
     expect(guard.reconnectValidator(before, ev, { cursor: "c2", domain: appliedWindow() }).reconnected).toBe(false);
+  });
+});
+
+// --- finding 1b: two overlapping partial-turn reads on one reconnected connection ---
+//
+// A window-capped read can stop in the middle of a turn. After a reconnect the
+// first new-connection read then ends at item_user_247 and the follow-up read
+// starts at entry 248 of the same turn_m50. The entry route merges the
+// follow-up into the history it holds and keeps the older edge (cursor 243),
+// so the applied turn_m50 is the ordered union of both reads, not either
+// read's own window. The comparison must accept that merge while still
+// rejecting a model that applied only one of the two reads, lost content, or
+// reordered it.
+describe("finding 1b: overlapping partial-turn reads on the reconnect connection", () => {
+  const before = { readResponses: 1, connections: ["conn-1"] };
+  const NOW = 4000;
+  const wireItem = (turnId, entry, type, text, id) => ({
+    id: id ?? `item_${entry}`,
+    turnId,
+    type,
+    position: { entry, item: 0 },
+    version: entry,
+    text,
+  });
+  const wireTurn = (id, items) => ({ id, itemsView: "full", status: "completed", version: 1, items });
+  const olderTurn = wireTurn("turn_m49", [
+    wireItem("turn_m49", 243, "userMessage", "older ask", "item_user_243"),
+    wireItem("turn_m49", 244, "commandExecution", "", "item_cmd_244"),
+    wireItem("turn_m49", 245, "agentMessage", "older reply", "item_agent_245"),
+  ]);
+  const gapHead = wireTurn("turn_m50", [wireItem("turn_m50", 247, "userMessage", "gap ask", "item_user_247")]);
+  const gapTail = wireTurn("turn_m50", [
+    wireItem("turn_m50", 247, "userMessage", "gap ask", "item_user_247"),
+    wireItem("turn_m50", 248, "agentMessage", "gap answer", "item_agent_248"),
+    wireItem("turn_m50", 249, "agentMessage", "gap done", "item_agent_249"),
+  ]);
+  const afterTurn = wireTurn("turn_m51", [wireItem("turn_m51", 250, "agentMessage", "after", "item_agent_250")]);
+
+  function readResponse(turns, olderCursor) {
+    return {
+      thread: {
+        id: "tgt",
+        sessionId: "sess_tgt",
+        preview: "",
+        ephemeral: false,
+        modelProvider: "anthropic/claude-sonnet-4-5",
+        createdAt: 1000,
+        updatedAt: 1000,
+        status: { type: "idle" },
+        cwd: "/tmp/project",
+        cliVersion: "1.0.0",
+        source: "evener",
+        turns,
+        evener: { ref: REF, capabilities: {}, queue: { revision: 0 } },
+      },
+      requestGeneration: 1,
+      bootGeneration: "1",
+      epoch: 0,
+      snapshot: { incarnation: "inc_a", length: 100 },
+      overlay: [],
+      olderCursor,
+    };
+  }
+
+  // The target domain readTargetDomain returns: the display turns flattened, in
+  // order, with the model's own cursor.
+  function domainOf(model) {
+    return {
+      cursor: model.olderCursor ?? "",
+      items: model.turns
+        .filter((turn) => turn.id !== "turn_system")
+        .flatMap((turn) =>
+          turn.items.map((item) => ({
+            turnId: turn.id,
+            id: item.id,
+            type: item.type,
+            text: item.text ?? "",
+            output: item.output ?? "",
+            arguments: item.argumentsJSON ?? undefined,
+            status: item.status ?? null,
+          })),
+        ),
+    };
+  }
+
+  // The production path: a model holding the pre-gap window applies the
+  // reconnect read, then merges the follow-up read on the same connection.
+  function mergedDomain() {
+    let model = hydrateThread(readResponse([olderTurn, gapHead], "243"), REF, NOW);
+    model = applyReadResponse(model, readResponse([olderTurn, gapHead], "243"), NOW);
+    return domainOf(applyReadResponse(model, readResponse([gapTail, afterTurn], "248"), NOW));
+  }
+
+  const overlapPath = path.join(scratchRoot, "overlapping-partial-turns.jsonl");
+  writeFileSync(
+    overlapPath,
+    [
+      readReq("conn-1", 1),
+      readRes("conn-1", 1, "243", [olderTurn, gapHead]),
+      readReq("conn-2", 1),
+      readRes("conn-2", 1, "243", [olderTurn, gapHead]),
+      readReq("conn-2", 2),
+      readRes("conn-2", 2, "248", [gapTail, afterTurn]),
+    ].join("\n"),
+  );
+
+  test("required: the applied window is the ordered union of both reads", () => {
+    const domain = mergedDomain();
+    expect(domain.cursor).toBe("243");
+    expect(domain.items.filter((item) => item.turnId === "turn_m50").map((item) => item.id)).toEqual([
+      "item_user_247",
+      "item_agent_248",
+      "item_agent_249",
+    ]);
+    const check = guard.reconnectValidator(before, guard.targetPagingEvidence(REF, overlapPath), {
+      cursor: domain.cursor,
+      domain,
+    });
+    expect(check.newConnectionReads).toBe(2);
+    expect(check.appliedMatches).toBe(true);
+  });
+
+  test("RED: an initial replacement that ignores the follow-up merge is rejected", () => {
+    // Only the reconnect read applied: turn_m50 stops at item_user_247.
+    let model = hydrateThread(readResponse([olderTurn, gapHead], "243"), REF, NOW);
+    model = applyReadResponse(model, readResponse([olderTurn, gapHead], "243"), NOW);
+    const domain = domainOf(model);
+    const check = guard.reconnectValidator(before, guard.targetPagingEvidence(REF, overlapPath), {
+      cursor: domain.cursor,
+      domain,
+    });
+    expect(check.appliedMatches).toBe(false);
+  });
+
+  test("RED: a follow-up window that replaced the reconnect read is rejected", () => {
+    // Only the follow-up read applied: turn_m49 and item_user_247 are gone.
+    const domain = domainOf(hydrateThread(readResponse([gapTail, afterTurn], "248"), REF, NOW));
+    const check = guard.reconnectValidator(before, guard.targetPagingEvidence(REF, overlapPath), {
+      cursor: domain.cursor,
+      domain,
+    });
+    expect(check.appliedMatches).toBe(false);
+  });
+
+  test("RED: the merged turn's items reordered are rejected", () => {
+    const domain = mergedDomain();
+    const head = domain.items.findIndex((item) => item.turnId === "turn_m50");
+    const merged = domain.items.filter((item) => item.turnId === "turn_m50");
+    const items = [...domain.items];
+    items.splice(head, merged.length, merged[0], merged[2], merged[1]);
+    const check = guard.reconnectValidator(before, guard.targetPagingEvidence(REF, overlapPath), {
+      cursor: domain.cursor,
+      domain: { ...domain, items },
+    });
+    expect(check.appliedMatches).toBe(false);
+  });
+
+  test("RED: foreign content inside the merged turn is rejected", () => {
+    const domain = mergedDomain();
+    const head = domain.items.findIndex((item) => item.turnId === "turn_m50");
+    const items = [...domain.items];
+    items.splice(head + 1, 0, {
+      turnId: "turn_m50",
+      id: "item_stale",
+      type: "agentMessage",
+      text: "stale",
+      output: "",
+      arguments: undefined,
+      status: "completed",
+    });
+    const check = guard.reconnectValidator(before, guard.targetPagingEvidence(REF, overlapPath), {
+      cursor: domain.cursor,
+      domain: { ...domain, items },
+    });
+    expect(check.appliedMatches).toBe(false);
   });
 });
 
