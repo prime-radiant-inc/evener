@@ -7,6 +7,39 @@ import { callsTo } from "./testing/fakeClient";
 import { acquireThreadSubscription } from "./threadSubscription";
 import type { ThreadReadResponse } from "./types.gen";
 
+test("a status frame keeps shared metadata current across a closed and re-opened viewer", async () => {
+  const client = activityClient();
+  const response: ThreadReadResponse = {
+    thread: { ...threadFixture().thread, id: "wire-root", sessionId: "root-session", status: { type: "active" } },
+  };
+  client.on("thread/read", () => response);
+  // The transcript owner keeps the wire subscription alive across the
+  // inspector's lifetime, so re-opening must reuse it rather than re-read.
+  const transcript = acquireThreadSubscription(client, activityRef);
+  await transcript.ensure();
+  const inspector = acquireThreadSubscription(client, activityRef);
+  await inspector.ensure();
+  expect(inspector.metadata?.()?.status).toEqual({ type: "active" });
+
+  client.emitNotification({
+    method: "thread/status/changed",
+    params: { ref: activityRef, threadId: "wire-root", status: { type: "idle" } },
+  });
+  expect(transcript.metadata?.()?.status).toEqual({ type: "idle" });
+
+  inspector.release();
+  const reopened = acquireThreadSubscription(client, activityRef);
+  await reopened.ensure();
+  expect(callsTo(client, "thread/read")).toBe(1);
+  expect(reopened.metadata?.()).toEqual({
+    threadId: "wire-root",
+    sessionId: "root-session",
+    status: { type: "idle" },
+  });
+  reopened.release();
+  transcript.release();
+});
+
 test("shared leases expose only admitted runtime metadata, including after a rich read", async () => {
   const client = activityClient(),
     removed = deferred<void>();

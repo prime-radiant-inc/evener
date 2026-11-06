@@ -1,7 +1,10 @@
 import type { AppwireClientLike } from "./clientLike";
-import type { ThreadReadParams, ThreadReadResponse, ThreadStatus } from "./types.gen";
+import type { AnyNotification, ThreadReadParams, ThreadReadResponse, ThreadStatus } from "./types.gen";
 
-export type ThreadSubscriptionClient = Pick<AppwireClientLike, "request" | "onStateChange" | "state">;
+export type ThreadSubscriptionClient = Pick<
+  AppwireClientLike,
+  "request" | "onNotification" | "onStateChange" | "state"
+>;
 export type ThreadSubscriptionReadParams = Omit<ThreadReadParams, "ref" | "subscribe" | "replaceSubscription">;
 export interface ThreadSubscriptionMetadata {
   readonly threadId: string;
@@ -44,6 +47,7 @@ class ThreadSubscriptions {
   private members = new Map<string, Membership>();
   private generation = 0;
   private stopState: () => void;
+  private stopNotifications: () => void;
 
   constructor(private readonly client: ThreadSubscriptionClient) {
     this.stopState = client.onStateChange((state) => {
@@ -57,6 +61,25 @@ class ThreadSubscriptions {
         this.releaseEmpty(member);
       }
     });
+    // The shared status is the one view a re-acquired store has before its
+    // first read: a released turn's idle frame must land here too, or a
+    // reopened viewer falls back to the status the original read admitted
+    // (issue #4878).
+    this.stopNotifications = client.onNotification((notification) => {
+      if (notification.method === "thread/status/changed") this.admitStatus(notification);
+    });
+  }
+
+  private admitStatus(notification: Extract<AnyNotification, { method: "thread/status/changed" }>): void {
+    const { ref, threadId, status } = notification.params;
+    for (const member of this.members.values()) {
+      const metadata = member.metadata;
+      if (!metadata || (ref !== member.ref && metadata.threadId !== threadId)) continue;
+      member.metadata = {
+        ...metadata,
+        status: { type: status.type, ...(status.activeFlags ? { activeFlags: [...status.activeFlags] } : {}) },
+      };
+    }
   }
 
   acquire(ref: string): ThreadSubscriptionLease {
@@ -223,6 +246,7 @@ class ThreadSubscriptions {
     if (this.members.get(member.ref) === member) this.members.delete(member.ref);
     if (this.members.size === 0) {
       this.stopState();
+      this.stopNotifications();
       registries.delete(this.client);
     }
   }

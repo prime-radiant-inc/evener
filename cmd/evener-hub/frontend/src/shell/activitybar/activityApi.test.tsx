@@ -15,6 +15,7 @@ import {
   activitySummary,
   activityWatch,
 } from "../../stores/sessionActivityTestUtils";
+import { resetDisclosureStoreForTests } from "../../widgets/disclosure/disclosureStore";
 import { deriveScope } from "../statusbar/statusScope";
 import { resetWorkspaceStoreForTests, workspaceStore } from "../workspace";
 import { AgentsTab } from "./AgentsTab";
@@ -31,6 +32,7 @@ afterEach(() => {
   cleanup();
   resetConnectionStoreForTests();
   resetWorkspaceStoreForTests();
+  resetDisclosureStoreForTests();
   vi.restoreAllMocks();
 });
 const NOW = Date.parse("2026-10-05T00:00:00Z");
@@ -178,6 +180,34 @@ it("definitive unavailable jobs never claim empty or remain a loading promise", 
   expect(screen.queryByText("No jobs at this level.")).toBeNull();
   expect(screen.queryByRole("status", { name: "Loading" })).toBeNull();
   expect(screen.queryByRole("button", { name: /retry|repair/i })).toBeNull();
+});
+
+it("inactive subagents disclosure publishes its expansion state and controlled list", async () => {
+  const client = activityClient();
+  client.on("evener/thread/delegates/list", ({ ref, scope }) => ({
+    context: activityContext(ref),
+    scope: scope ?? "session",
+    delegates: [
+      activityDelegate({
+        delegateId: "first",
+        childRef: "remote:first",
+        description: "first inactive",
+        terminal: true,
+        status: "completed",
+        lifecycle: "idle",
+      }),
+    ],
+    page: { complete: true, issues: [] },
+  }));
+  connectionStore.getState().connect(client);
+  render(<AgentsTab now={NOW} scope={scope()} />);
+  const fold = await screen.findByRole("button", { name: "Inactive subagents (1)" });
+  expect(fold.getAttribute("aria-expanded")).toBe("false");
+  fireEvent.click(fold);
+  expect(fold.getAttribute("aria-expanded")).toBe("true");
+  const controls = fold.getAttribute("aria-controls");
+  expect(controls).toBeTruthy();
+  expect(document.getElementById(controls as string)).toBeTruthy();
 });
 
 it("closed inactive history does not scan, and disclosed rows page only near the visible boundary", async () => {
