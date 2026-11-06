@@ -57,14 +57,16 @@ func TestManagerDelegateHubCallExtraArgumentDoesNotClaimMissingPrompt(t *testing
 }
 
 // A hub call carrying several extras names every rejected argument at once, so
-// one retry removes them all instead of discovering one per round trip.
+// one retry removes them all instead of discovering one per round trip. An
+// out-of-enum value is still a configured argument: the refusal must name it
+// rather than silently skip it as a placeholder.
 func TestManagerDelegateHubCallNamesEveryRejectedArgument(t *testing.T) {
 	t.Parallel()
-	refusal := managerDelegateHubCall(t, `{"prompt":"worker task","hub":{"cwd":"/tmp","model":"openai/gpt-5.2","watch":{"completion":true}},"name":"watch-delivery-fix","agent_type":"default","intent":"spawn the worker"}`)
+	refusal := managerDelegateHubCall(t, `{"prompt":"worker task","hub":{"cwd":"/tmp","model":"openai/gpt-5.2","watch":{"completion":true}},"name":"watch-delivery-fix","agent_type":"default","sandbox":"bogus","intent":"spawn the worker"}`)
 	if refusal == "" {
 		t.Fatal("hub-branch call with extra arguments was accepted")
 	}
-	for _, field := range []string{"name", "agent_type"} {
+	for _, field := range []string{"name", "agent_type", "sandbox"} {
 		if !strings.Contains(refusal, field) {
 			t.Fatalf("refusal did not name the rejected argument %s: %s", field, refusal)
 		}
@@ -155,6 +157,29 @@ func TestManagerDelegateHubOnlyDescriptionsCoachHubCreation(t *testing.T) {
 	effort, _ := props["reasoning_effort"].(map[string]any)["description"].(string)
 	if !strings.Contains(effort, "launch default") {
 		t.Fatalf("hub-only effort description does not name the hub's launch default: %s", effort)
+	}
+}
+
+// A hub-only profile judges placeholders against the owned-delegate property
+// schemas, exactly like the ordinary variant: its pruned top level does not
+// declare isolation, but repair still drops an empty-enum value there as an
+// unknown key, so the refusal must not name it.
+func TestManagerDelegateHubOnlyEmptyEnumPlaceholderIsNotRefused(t *testing.T) {
+	t.Parallel()
+	root := newMessagingRoot(t, newMessagingAdapter(), func(cfg *SessionConfig) { cfg.Manager = true })
+	root.mu.Lock()
+	root.profile = &provider.Profile{}
+	root.rebuildToolDefsCache()
+	root.mu.Unlock()
+	registered := root.reg.Get("delegate")
+	if registered == nil {
+		t.Fatal("Manager delegate tool not registered")
+	}
+	res := prepareToolCall(llm.ToolCallData{ID: "hub-only-enum", Name: "delegate",
+		Arguments: json.RawMessage(`{"prompt":"worker task","hub":{"cwd":"/tmp","model":"openai/gpt-5.2","watch":{"completion":true}},"isolation":"","intent":"spawn the worker"}`),
+	}, registered, []string{"delegate"}, "delegate", "communicate", "")
+	if res.PrevalErr != "" {
+		t.Fatalf("hub-only call with an empty enum placeholder was refused: %s", res.PrevalErr)
 	}
 }
 

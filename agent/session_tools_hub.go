@@ -293,7 +293,11 @@ func (s *Session) composeHubDelegateTool() {
 	// of schema validation and repair in each.
 	intentParams := tool.WithIntentParameter(registered.Definition).Parameters
 	hubBranch := hubBranchArgumentNames(intentParams)
-	declared, _ := intentParams["properties"].(map[string]any)
+	// Placeholders are judged against the owned-delegate property schemas of
+	// the unpruned base, not the composed top level: the hub-only variant
+	// prunes its own properties, but repair still drops an empty-enum value
+	// there as an unknown key, so the refusal must skip it on both variants.
+	declared, _ := tool.WithIntentParameter(base.Definition).Parameters["properties"].(map[string]any)
 	registered.PreValidate = func(args map[string]any) error {
 		hub, hubCall := args["hub"]
 		// A null hub marks a call the caller did not configure as hub
@@ -310,13 +314,16 @@ func (s *Session) composeHubDelegateTool() {
 			// A null is never a configured argument — repair drops it as an
 			// empty optional or an unknown key — and an empty string the
 			// declared property's enum does not list is the same placeholder
-			// habit. Skip exactly what repair would drop; the refusal names
-			// only arguments the caller actually sent.
+			// habit. Skip exactly what repair would drop; any other value,
+			// including an out-of-enum one, is configured and the refusal
+			// names it.
 			if value == nil {
 				continue
 			}
-			if prop, _ := declared[field].(map[string]any); prop != nil && repair.EmptyMeansAbsent(prop, value) {
-				continue
+			if value == "" {
+				if prop, _ := declared[field].(map[string]any); prop != nil && repair.EmptyMeansAbsent(prop, value) {
+					continue
+				}
 			}
 			extras = append(extras, field)
 		}
