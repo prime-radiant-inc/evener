@@ -689,6 +689,38 @@ function domainContent(domain) {
   return domain.items.map((i) => (i.text ?? "") + (i.output ?? "")).join("\n");
 }
 
+// composeReconnectWindow folds the reads the new connection issued into the
+// one window the model applied. The first read that returned turns is the
+// reconnect's initial replacement: its turns and recorded items are the base.
+// A later read on the same connection is a merge into what the model already
+// holds: applyReadResponse (appwire-client/typescript/transcriptHistory.ts) is
+// the authority, and it keeps the reader's older edge, joins items to their
+// turn by identity, and lets a later copy of a shared item supersede the
+// base's. A window-capped read can stop in the middle of a turn, so one turn's
+// items legitimately arrive from two reads.
+function composeReconnectWindow(newConnectionReads) {
+  const turns = [];
+  const byTurn = new Map();
+  for (const read of newConnectionReads) {
+    if (!Array.isArray(read.window) || read.window.length === 0) continue;
+    for (const responseTurn of read.window) {
+      const turnId = responseTurn.turnId ?? null;
+      let turn = byTurn.get(turnId);
+      if (!turn) {
+        turn = { turnId, items: [] };
+        byTurn.set(turnId, turn);
+        turns.push(turn);
+      }
+      for (const item of responseTurn.items ?? []) {
+        const index = turn.items.findIndex((held) => held.id === item.id && held.type === item.type);
+        if (index === -1) turn.items.push(item);
+        else turn.items[index] = item;
+      }
+    }
+  }
+  return turns;
+}
+
 // Owning reconnect validator (finding 4): the reconnect's authoritative read
 // must arrive on a connection NOT seen before, and the applied model window
 // (cursor) must match that read's response. A same-connection refresh is not a
@@ -717,23 +749,38 @@ function reconnectValidator(before, evidence, applied = {}) {
   //
   // The new connection may read the thread again after the reconnect read (a
   // follow-up refresh). The model keeps the older edge it already holds, so its
-  // cursor and window stay the reconnect read's: the applied model matches the
-  // new connection's read that carries them, not necessarily the last one.
+  // cursor stays the edge read's, but a window-capped read can stop in the
+  // middle of a turn: the follow-up then supplies the rest of that same turn,
+  // and the applied window is the ordered union of every new-connection read,
+  // not any one read's window. Compose that union and compare the applied model
+  // against it turn by turn; the cursor must still be the edge read's (the one
+  // that returned the union's oldest turn).
   const recordedItems = (items) => (items ?? []).filter((item) => item.type !== "systemMessage");
-  const appliedBy = (read) =>
-    read.olderCursor === appliedCursor &&
-    Array.isArray(read.window) &&
-    read.window.length > 0 &&
+  const expectedWindow = composeReconnectWindow(newConnectionReads);
+  const edgeRead =
+    expectedWindow.length === 0
+      ? undefined
+      : newConnectionReads.find(
+          (read) =>
+            Array.isArray(read.window) &&
+            read.window.length > 0 &&
+            (read.window[0].turnId ?? "") === (expectedWindow[0].turnId ?? "") &&
+            read.olderCursor === appliedCursor,
+        );
+  let lastAppliedIndex = -1;
+  const windowMatches =
     Array.isArray(appliedWindow) &&
-    read.window.every((responseTurn) => {
-      const appliedTurn = appliedWindow.find((turn) => turn.turnId === responseTurn.turnId);
-      return (
-        appliedTurn !== undefined &&
-        orderedHistoryEqual(recordedItems(responseTurn.items), recordedItems(appliedTurn.items))
+    expectedWindow.every((expectedTurn) => {
+      const appliedIndex = appliedWindow.findIndex((turn) => turn.turnId === expectedTurn.turnId);
+      if (appliedIndex === -1 || appliedIndex <= lastAppliedIndex) return false;
+      lastAppliedIndex = appliedIndex;
+      return orderedHistoryEqual(
+        recordedItems(expectedTurn.items),
+        recordedItems(appliedWindow[appliedIndex].items),
       );
     });
-  const appliedRead = newConnectionReads.find(appliedBy);
-  const reported = appliedRead ?? newConnectionReads[newConnectionReads.length - 1];
+  const appliedMatches = edgeRead !== undefined && windowMatches;
+  const reported = appliedMatches ? edgeRead : newConnectionReads[newConnectionReads.length - 1];
   return {
     reconnected,
     newReads,
@@ -742,8 +789,37 @@ function reconnectValidator(before, evidence, applied = {}) {
     responseWindow: reported?.window ?? null,
     appliedWindow,
     appliedCursor,
-    appliedMatches: appliedRead !== undefined,
+    appliedMatches,
   };
+}
+
+// waitForReconnectApplied polls the target's applied model against the
+// reconnect trace until they agree. The trace is re-read on every poll: the new
+// connection can issue its follow-up read after waitForNewTargetRead returned,
+// and a frozen snapshot would keep composeReconnectWindow at the reconnect
+// read's window while the model already holds the merged turn, so the check
+// would fail for the whole wait.
+async function waitForReconnectApplied({
+  before,
+  readEvidence,
+  readDomain,
+  deadlineMs,
+  pollMs = 150,
+  now = Date.now,
+  sleep = delay,
+}) {
+  const startedAt = now();
+  const deadline = startedAt + deadlineMs;
+  let evidence = readEvidence();
+  let domain = await readDomain();
+  let check = reconnectValidator(before, evidence, { cursor: domain?.cursor ?? "", domain });
+  while (!check.appliedMatches && now() < deadline) {
+    await sleep(pollMs);
+    evidence = readEvidence();
+    domain = await readDomain();
+    check = reconnectValidator(before, evidence, { cursor: domain?.cursor ?? "", domain });
+  }
+  return { evidence, domain, check, waitedMs: now() - startedAt };
 }
 
 // observedConnection reads the app's own connection state through the dev
@@ -1463,10 +1539,18 @@ async function runEntryProductionJourney(driver, harnessUrl) {
   }));
   const nativeTurns = completed.turns;
   const nativeCoverage = completed.coverage;
+  // Identity is (transcriptKey, id, turnId). Index the native rows once so the
+  // join is linear, and keep every row per identity: a duplicate native row
+  // must still read as two matches.
+  const nativeByIdentity = new Map();
+  for (const row of nativeItems) {
+    const key = JSON.stringify([row.transcriptKey, row.item?.id, row.item?.turnId]);
+    const bucket = nativeByIdentity.get(key);
+    if (bucket) bucket.push(row);
+    else nativeByIdentity.set(key, [row]);
+  }
   const rendererToNative = recordedRendererItems.map((item) => {
-    const matches = nativeItems.filter(
-      (row) => row.transcriptKey === item.transcriptKey && row.item?.id === item.id && row.item?.turnId === item.turnId,
-    );
+    const matches = nativeByIdentity.get(JSON.stringify([item.transcriptKey, item.id, item.turnId])) ?? [];
     const native = matches[0] ?? null;
     const identityMatches =
       native !== null &&
@@ -1484,6 +1568,28 @@ async function runEntryProductionJourney(driver, harnessUrl) {
   });
   const comparePosition = (left, right) =>
     left.entry - right.entry || left.item - right.item || (left.sub ?? 0) - (right.sub ?? 0);
+  // A renderer item with no native row is either a lost row or a row the
+  // comparison window cannot reach. Record whether the native store holds the
+  // same item id under another transcript key, and what the same key holds, so
+  // the retained audit answers that without the live browser.
+  const unmatchedRendererItems = recordedRendererItems.flatMap((item, index) => {
+    const match = rendererToNative[index];
+    if (match.matches === 1 && match.identityMatches) return [];
+    return [
+      {
+        id: item.id,
+        turnId: item.turnId,
+        transcriptKey: item.transcriptKey,
+        position: item.position,
+        nativeSameId: nativeItems
+          .filter((row) => row.item?.id === item.id)
+          .map((row) => ({ transcriptKey: row.transcriptKey, turnId: row.item?.turnId })),
+        nativeSameKey: nativeItems
+          .filter((row) => row.transcriptKey === item.transcriptKey)
+          .map((row) => ({ id: row.item?.id, turnId: row.item?.turnId })),
+      },
+    ];
+  });
   const nativeCoverageMatches = nativeItems.map((row) => ({
     id: row.item?.id,
     turnId: row.item?.turnId,
@@ -1538,6 +1644,7 @@ async function runEntryProductionJourney(driver, harnessUrl) {
     nativeTurns,
     nativeCoverage,
     rendererToNative,
+    unmatchedRendererItems,
     nativeCoverageMatches,
     itemTurnMatches,
   };
@@ -1549,7 +1656,7 @@ async function runEntryProductionJourney(driver, harnessUrl) {
     shellRows: outputRegion?.shellRows ?? 0,
     renderedOutputText: outputText,
     renderedToolItemCount: renderedToolItems.length,
-    rendererToNativeMatches: rendererToNative.every((match) => match.matches === 1 && match.identityMatches),
+    rendererToNativeMatches: unmatchedRendererItems.length === 0,
     itemTurnMatches,
     producerItemsCovered:
       producerCoverage.length === 2 && producerCoverage.every((match) => match.coveringRows.length > 0),
@@ -1577,8 +1684,10 @@ async function runEntryProductionJourney(driver, harnessUrl) {
       );
     }
   }
-  if (rendererToNative.some((match) => match.matches !== 1 || !match.identityMatches)) {
-    throw new Error(`renderer items do not map one-to-one to native entry items: ${JSON.stringify(rendererToNative)}`);
+  if (unmatchedRendererItems.length !== 0) {
+    throw new Error(
+      `renderer items do not map one-to-one to native entry items: ${JSON.stringify({ rendererToNative, unmatchedRendererItems })}`,
+    );
   }
   if (producerCoverage.length !== 2 || producerCoverage.some((match) => match.coveringRows.length === 0)) {
     throw new Error(
@@ -1780,24 +1889,20 @@ async function runEntryProductionJourney(driver, harnessUrl) {
   // Correlate the NEW connection's target authoritative read and its applied
   // replacement window/cursor: the entry route publishes the repository's
   // accepted model through its subscription, so poll for the applied window.
-  const reconnect = await waitForNewTargetRead(driver, SESSION_B, preGapReads, 30000);
+  await waitForNewTargetRead(driver, SESSION_B, preGapReads, 30000);
   const reconnectBefore = { readResponses: preGapReads, connections: preGapConnections };
-  const appliedStartedAt = Date.now();
-  const appliedDeadline = appliedStartedAt + driver.reactions.deadline(20000);
-  let reconnectDomain = await readTargetDomain(driver, SESSION_B);
-  let reconnectCheck = reconnectValidator(reconnectBefore, reconnect, {
-    cursor: reconnectDomain?.cursor ?? "",
-    domain: reconnectDomain,
+  const applied = await waitForReconnectApplied({
+    before: reconnectBefore,
+    readEvidence: () => targetPagingEvidence(SESSION_B),
+    readDomain: () => readTargetDomain(driver, SESSION_B),
+    deadlineMs: driver.reactions.deadline(20000),
   });
-  while (!reconnectCheck.appliedMatches && Date.now() < appliedDeadline) {
-    await delay(150);
-    reconnectDomain = await readTargetDomain(driver, SESSION_B);
-    reconnectCheck = reconnectValidator(reconnectBefore, reconnect, {
-      cursor: reconnectDomain?.cursor ?? "",
-      domain: reconnectDomain,
-    });
-  }
-  if (reconnectCheck.appliedMatches) driver.reactions.observe(Date.now() - appliedStartedAt);
+  // The trace was re-read on every poll, so these are the final read set: a
+  // follow-up read that landed after the first snapshot is composed here too.
+  const reconnect = applied.evidence;
+  const reconnectDomain = applied.domain;
+  const reconnectCheck = applied.check;
+  if (reconnectCheck.appliedMatches) driver.reactions.observe(applied.waitedMs);
   const reconnectTraceAfter = traceBytes();
   const reconnectedHasGap = domainContent(reconnectDomain).includes(GAP_SENTINEL);
   driver.milestone("reconnected-latest-window", {
@@ -2225,7 +2330,16 @@ async function runTwoTabFencing(driver, endpoint, harnessUrl) {
     const resurrectedRows = resurrected === null ? 0 : resurrected.rows.length;
     driver.milestone("two-tab-delete-refusal", { ref, routePresent, rowsAfterOpen: resurrectedRows });
     if (routePresent === true) {
-      throw new Error("two-tab delete: the sibling's fresh acquisition opened a route for a deleted ref");
+      // Name the route state that survived the refusal: which open status it
+      // reported, whether a store model exists, and its history key distinguish
+      // a resurrected repository from a route object that never had one.
+      const route = await evaluate(
+        tab.send,
+        `window.backgroundTranscriptEvidence.entryRoute(${JSON.stringify(ref)})`,
+      );
+      throw new Error(
+        `two-tab delete: the sibling's fresh acquisition opened a route for a deleted ref: ${JSON.stringify({ route, rowsAfterOpen: resurrectedRows })}`,
+      );
     }
     if (resurrectedRows !== 0) {
       throw new Error(`two-tab delete: a fresh sibling acquisition resurrected ${resurrectedRows} durable rows`);
@@ -2933,10 +3047,12 @@ export {
   renderedOutputExpr,
   retainedHistoryValidator,
   samplePeaksOnce,
+  targetDomainExpr,
   targetPagingEvidence,
   traceBytes,
   transcriptState,
   waitForDisconnected,
   waitForProducerOperationApplied,
+  waitForReconnectApplied,
   waitForRenderedOutput,
 };

@@ -2,7 +2,9 @@
 package frontmatter
 
 import (
+	"errors"
 	"fmt"
+	"io"
 	"strings"
 
 	"gopkg.in/yaml.v3"
@@ -77,10 +79,88 @@ func Parse(raw string) (Document, error) {
 
 	meta := make(map[string]any)
 	if strings.TrimSpace(yamlStr) != "" {
-		if err := yaml.Unmarshal([]byte(yamlStr), &meta); err != nil {
+		if err := parseBlock(yamlStr, &meta); err != nil {
 			return Document{}, fmt.Errorf("parsing frontmatter YAML: %w", err)
 		}
 	}
 
 	return Document{Meta: meta, Body: body, Framing: Framed}, nil
+}
+
+// parseBlock decodes block as exactly one YAML document, requiring that
+// nothing follows it but the document-end marker, comments and blank lines.
+// yaml.Unmarshal reads only the first document and silently ignores the rest,
+// so a control field written after "..." would vanish; a document end that
+// closes the block is harmless, anything after it is an error.
+func parseBlock(block string, meta *map[string]any) error {
+	decoder := yaml.NewDecoder(strings.NewReader(block))
+	var tree yaml.Node
+	// A block of only comments or whitespace holds no document at all, so the
+	// decoder reports io.EOF; yaml.Unmarshal treated that as an empty mapping.
+	if err := decoder.Decode(&tree); err != nil && !errors.Is(err, io.EOF) {
+		return err
+	}
+	var extra yaml.Node
+	if err := decoder.Decode(&extra); !errors.Is(err, io.EOF) {
+		if err == nil {
+			return errors.New("frontmatter has content after its YAML document end")
+		}
+		return fmt.Errorf("frontmatter has content after its YAML document end: %w", err)
+	}
+	if len(tree.Content) == 0 {
+		return nil
+	}
+	// tree is a document node; its first child is the mapping that decodes into
+	// map[string]any, so that mapping's keys are compared as strings.
+	if err := MappingKeysUnique(tree.Content[0], true); err != nil {
+		return err
+	}
+	return tree.Decode(meta)
+}
+
+// MappingKeysUnique reports an error when a mapping in node declares the same
+// key twice, or a key that cannot be read as a scalar. Keys are compared as a
+// decode treats them, without rewriting nodes (which could turn an alias into
+// a merge directive): aliases resolved to the scalar they name, strings when
+// the mapping decodes to map[string]any (stringKeys), and decoded scalar
+// values otherwise, as nested mappings retain their key types. yaml.v3's own
+// duplicate check compares an alias node's anchor name instead of what it
+// resolves to, so "*key: 'false'" beside "user-invocable: true" slips through
+// and the decode silently keeps one value. Merge keys are just keys here; only
+// keys written in this mapping are compared, so a merged mapping's keys do not
+// count as duplicates of the explicit ones that override them. Contained nodes
+// are visited, not followed through aliases, which can recurse.
+func MappingKeysUnique(node *yaml.Node, stringKeys bool) error {
+	if node.Kind == yaml.MappingNode {
+		seen := make(map[any]*yaml.Node, len(node.Content)/2)
+		for i := 0; i < len(node.Content); i += 2 {
+			key := node.Content[i]
+			if key.Kind == yaml.AliasNode {
+				key = key.Alias
+			}
+			if key == nil || key.Kind != yaml.ScalarNode {
+				return errors.New("frontmatter mapping key is not a scalar")
+			}
+			var decoded any
+			if stringKeys {
+				var text string
+				if err := key.Decode(&text); err != nil {
+					return err
+				}
+				decoded = text
+			} else if err := key.Decode(&decoded); err != nil {
+				return err
+			}
+			if first, ok := seen[decoded]; ok {
+				return fmt.Errorf("frontmatter mapping key %v is already defined at line %d", decoded, first.Line)
+			}
+			seen[decoded] = key
+		}
+	}
+	for _, child := range node.Content {
+		if err := MappingKeysUnique(child, false); err != nil {
+			return err
+		}
+	}
+	return nil
 }

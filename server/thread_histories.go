@@ -110,8 +110,20 @@ func (r *threadHistories) ensureLocked(
 	resync func(epoch uint64),
 	cost func(model string) *registry.Cost,
 ) *threadHistory {
+	var publication *historyPublication
+	if p, ok := r.publications.Load(threadID); ok {
+		publication = p.(*historyPublication)
+	}
 	if h := r.get(threadID); h != nil {
-		if p, ok := r.publications.Load(threadID); !ok || p == h.historyPublication {
+		if publication == nil || publication == h.historyPublication {
+			return h
+		}
+		publication.mu.Lock()
+		paired := publication.paired
+		publication.mu.Unlock()
+		if !paired {
+			// Binding may fail before attach publishes. Keep the readable
+			// history until the replacement has a complete boundary.
 			return h
 		}
 		// A new producer with the same persisted instance ID owns a new
@@ -123,10 +135,6 @@ func (r *threadHistories) ensureLocked(
 		return nil
 	}
 	epoch = max(epoch, r.lastEpoch[threadID])
-	var publication *historyPublication
-	if p, ok := r.publications.Load(threadID); ok {
-		publication = p.(*historyPublication)
-	}
 	h := newThreadHistory(threadHistoryConfig{
 		publication:    publication,
 		threadID:       threadID,
@@ -156,12 +164,11 @@ func (r *threadHistories) ensureLocked(
 func (r *threadHistories) publicationForProducer(threadID string) *historyPublication {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	publication := &historyPublication{paired: true}
+	publication := &historyPublication{}
 	if h := r.get(threadID); h != nil {
 		h.mu.Lock()
 		if !h.paired && !h.closed {
 			publication = h.historyPublication
-			publication.paired = true
 			publication.completeLength = h.recordedLength
 			publication.stagedEnd = h.recordedLength
 		}

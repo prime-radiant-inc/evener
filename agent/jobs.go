@@ -13,7 +13,6 @@ import (
 	"regexp"
 	"slices"
 	"sort"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -613,12 +612,11 @@ type listFilter struct {
 	IncludeDescendants bool
 }
 
-// jobsDir returns the per-session job directory: <stateDir>/sessions/<id>.
+// jobsDir is the session work dir the job stores, delegate journal, and
+// worktrees live under; it exists so the agent package's many call sites keep
+// one short name for schema.SessionWorkDir.
 func jobsDir(stateDir, sessionID string) string {
-	if strings.TrimSpace(stateDir) == "" {
-		return filepath.Join(os.TempDir(), "evener-jobs", sessionID)
-	}
-	return filepath.Join(schema.SessionsDir(stateDir), sessionID)
+	return schema.SessionWorkDir(stateDir, sessionID)
 }
 
 type jobStoreOpener func(string) (*jobstore.Store, error)

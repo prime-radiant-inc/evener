@@ -150,7 +150,20 @@ func DataURI(mimeType string, data []byte) string {
 	if mimeType == "" {
 		mimeType = "application/octet-stream"
 	}
-	return fmt.Sprintf("data:%s;base64,%s", mimeType, base64.StdEncoding.EncodeToString(data))
+	// One allocation for the whole result: grow the builder to the exact final
+	// size, stream the payload straight into it, and let String share the
+	// buffer instead of copying it. Multi-MB document and image payloads make
+	// the old EncodeToString + Sprintf path's four full-size buffers hurt.
+	const marker = ";base64,"
+	var b strings.Builder
+	b.Grow(len("data:") + len(mimeType) + len(marker) + base64.StdEncoding.EncodedLen(len(data)))
+	b.WriteString("data:")
+	b.WriteString(mimeType)
+	b.WriteString(marker)
+	enc := base64.NewEncoder(base64.StdEncoding, &b)
+	_, _ = enc.Write(data)
+	_ = enc.Close()
+	return b.String()
 }
 
 // DocumentFileData returns the payload a document part rides the wire as
@@ -160,7 +173,7 @@ func DataURI(mimeType string, data []byte) string {
 // that supplies both never silently switches sources. A document with no
 // bytes returns "" — whether a source URL can ride the wire is per protocol
 // (Anthropic wraps it in a url source, Google in fileData, Responses passes
-// it through, and Chat Completions has no URL file mechanism).
+// it as file_url, and Chat Completions has no URL file mechanism).
 func DocumentFileData(doc *DocumentData) string {
 	if doc == nil || len(doc.Data) == 0 {
 		return ""

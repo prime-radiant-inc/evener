@@ -5,7 +5,8 @@ import type { MethodName, MethodTypes, Thread, ThreadClearResponse, ThreadReadRe
 import { FakeClient, type RequestHandler } from "@evener/appwire-client/testing/fakeClient";
 import { nextMacrotask } from "@evener/appwire-client/testing/macrotask";
 import { connectionStore } from "./connection";
-import { MutationOutboxIndexedDB, MutationStorageTimeoutError } from "./mutationOutboxIndexedDB";
+import { type MutationOutboxIndexedDB, MutationStorageTimeoutError } from "./mutationOutboxIndexedDB";
+import { pumpIndexedDBUntil } from "./testing/indexedDBPump";
 import { threadsStore } from "./threads";
 
 export function readResponse(ref: string, overrides: TestThreadOverrides = {}): ThreadReadResponse {
@@ -108,10 +109,12 @@ export async function ensureActiveMutationTarget(fake: FakeClient, ref: string):
   await threadsStore.getState().ensureThread(ref);
 }
 
+// flushIndexedDBUntil spends up to maxTurns probe reads, stopping early once
+// `done` holds. The pump's arrival result is deliberately ignored: call sites
+// use both shapes - a real condition, and a fixed pump through `() => false` -
+// and the assertion each call site makes afterwards is the oracle.
 export async function flushIndexedDBUntil(done: () => boolean | Promise<boolean>, maxTurns = 30): Promise<void> {
-  const probe = new MutationOutboxIndexedDB();
-  for (let turn = 0; turn < maxTurns && !(await done()); turn += 1) await probe.listTargetRefs();
-  probe.close();
+  await pumpIndexedDBUntil({ until: done, turns: maxTurns });
 }
 
 // settleCallerContinuations yields to the task queue exactly once, which the

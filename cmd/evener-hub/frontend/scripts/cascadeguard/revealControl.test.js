@@ -10,7 +10,7 @@
 // document) so the helper never depends on a browsing context.
 import { beforeEach, expect, test } from "vitest";
 import { REFUSED_BUTTON_SELECTOR } from "../browserGuardCdp.mjs";
-import { revealControl, revealControlStep } from "./revealControl.mjs";
+import { revealControl, revealControlStep, revealReadyExpr } from "./revealControl.mjs";
 
 const CONTAINER = '[data-testid="activity-sidebar"]';
 const MISSING_TARGET = `${CONTAINER} [data-activity-anchor="delegate:missing"]`;
@@ -49,6 +49,10 @@ function clickRecorder(root) {
     button.addEventListener("click", (event) => { clicked.id = event.currentTarget.id; });
   return clicked;
 }
+
+// The gate `reveal` polls before its loop. Evaluate it exactly as the driver
+// does: one page expression over the mounted sidebar.
+const gate = (selector) => new Function(`return ${revealReadyExpr(selector, CONTAINER, REFUSED_BUTTON_SELECTOR)}`)();
 
 test("a closed inactive disclosure beside a current row is the control", () => {
   expect(pick(sidebar(`${current("a")}${fold()}`))).toBe("inactive-fold");
@@ -121,4 +125,33 @@ test("the driver's expression does not press a control that is not topmost", () 
   const clicked = clickRecorder(root);
   expect(evaluateStep(root, MISSING_TARGET, document.body)).toBeNull();
   expect(clicked.id).toBeNull();
+});
+
+test("the gate accepts a page boundary when the first page holds only current rows", () => {
+  const root = sidebar(`${current("a")}${loadMore()}`);
+  expect(gate(MISSING_TARGET)).toBe(true);
+  const clicked = clickRecorder(root);
+  expect(evaluateStep(root, MISSING_TARGET, root.querySelector("#load-more"))).toEqual({ before: root.textContent });
+  expect(clicked.id).toBe("load-more");
+});
+
+test("the gate accepts a closed fold beside a current row", () => {
+  sidebar(`${current("a")}${fold()}`);
+  expect(gate(MISSING_TARGET)).toBe(true);
+});
+
+test("the gate is satisfied by the target itself", () => {
+  sidebar(`${current("a")}${fold()}`);
+  expect(gate(`${CONTAINER} [data-activity-anchor="delegate:a"]`)).toBe(true);
+});
+
+test("the gate stays shut while the only page boundary is refused", () => {
+  const root = sidebar(`${current("a")}${loadMore("load-more-refused")}`);
+  root.querySelector("#load-more-refused").setAttribute("aria-disabled", "true");
+  expect(gate(MISSING_TARGET)).toBe(false);
+});
+
+test("the gate stays shut for a collection with no usable control", () => {
+  sidebar(current("a"));
+  expect(gate(MISSING_TARGET)).toBe(false);
 });

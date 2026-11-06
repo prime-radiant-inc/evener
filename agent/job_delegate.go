@@ -278,7 +278,7 @@ func (s *Session) delegateWorktreeReport(isolation, workingDir string) *delegate
 }
 
 func (s *Session) delegateDisposalHint(desc delegatestore.Descriptor, delegateID string) string {
-	if s == nil || desc.OwnerSessionID != s.id || !s.canInstructTool("manage_worktree") || !isDelegateID(delegateID) {
+	if s == nil || delegateCreatorSessionID(desc.VisibleSessionID, desc.OwnerSessionID) != s.id || !s.canInstructTool("manage_worktree") || !isDelegateID(delegateID) {
 		return ""
 	}
 	return fmt.Sprintf("When you're done with this delegate's work (e.g., after merging it), dispose its worktree and branch: manage_worktree op=dispose id=%s.", delegateID)

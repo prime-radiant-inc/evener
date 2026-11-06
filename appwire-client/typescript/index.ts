@@ -495,6 +495,7 @@ export type {
   ItemImage,
   ItemModel,
   ModelRetryState,
+  OlderFrontier,
   ThreadDiagnostics,
   ThreadModel,
   TurnModel,
@@ -696,7 +697,7 @@ export type {
   ThreadSubscriptionMetadata,
   ThreadSubscriptionReadParams,
 } from "./threadSubscription";
-export { acquireThreadSubscription } from "./threadSubscription";
+export { acquireThreadSubscription, retireThreadSubscriptions, wireThreadSubscriptions } from "./threadSubscription";
 export type { SessionTokens, TokenPair, UsageSummary } from "./threadUsage";
 export { sessionTokens, threadUsageSummary, tokenUnitLabel, turnUsageTokens } from "./threadUsage";
 export {
@@ -846,6 +847,7 @@ export {
   applyReadResponse,
   collectAuthoritativeMutationIds,
   comparePositions,
+  frontierFromCursor,
   hydrateThread,
   ITEM_OMISSION_TOLERANT_FIELDS,
   invalidateHistory,
@@ -855,10 +857,13 @@ export {
   mergeTranscriptItemVersioned,
   mergeTranscriptReaderWindow,
   mergeTranscriptTurnVersioned,
+  olderFrontierOf,
+  olderHistoryExhausted,
   prependOlderTurns,
   pruneBackgroundHistoryBodies,
   readDisposition,
   readWindowBounds,
+  withOlderFrontier,
 } from "./transcriptHistory";
 export {
   copyItemTextPresence,
