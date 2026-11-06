@@ -504,6 +504,29 @@ test("backward gap paging requests the live-adjacent bytes and keeps its indepen
   expect(unloaded?.getAttribute("data-source-end")).toBe("917504");
 });
 
+// #4770: a backward wheel can reach the loaded window's start and still issue
+// no history read. TanStack Virtual measures the rows the wheel scrolled past
+// and applies their height corrections to scrollTop, replacing the wheel's
+// target, so the "Output not loaded" marker ends up just above the viewport.
+// Demand inspection must page from the geometric boundary instead: the first
+// loaded row is fully above the viewport top.
+test("a backward wheel stranded past the loaded boundary pages from the hidden marker", async () => {
+  mountJob();
+  const data = Array.from({ length: 20 }, (_, index) => `L${String(index).padStart(2, "0")}\n`).join("");
+  // Live rows start at 100, so the single unloaded marker covers bytes 0-100.
+  await respond(textPage(100, data, 180, 0));
+  const scroller = port();
+  expect(peer.requests("evener/jobs/output")).toHaveLength(1);
+  // Capture a reading position two rows below the boundary...
+  await act(async () => scroll(scroller, 60));
+  // ...then wheel up so the first loaded row's bottom sits at the viewport top
+  // and the marker is no longer visible.
+  await act(async () => scroll(scroller, 40));
+  expect(peer.requests("evener/jobs/output")).toHaveLength(2);
+  const request = await peer.request("evener/jobs/output", 1);
+  expect(request.params).toEqual({ ref: "ref_root", jobId: "job_x", beforeBytes: 100, maxBytes: 100 });
+});
+
 test("a real inactive DockHost tab remounts the later-page byte row at the same pixel", async () => {
   vi.stubGlobal("ResizeObserver", StubResizeObserver);
   await import("../welcome");

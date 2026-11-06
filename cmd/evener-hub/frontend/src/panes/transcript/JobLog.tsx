@@ -20,7 +20,13 @@ import { AnsiLineContent } from "../../widgets/codeblock/ansiLine";
 import { requireClass } from "../../widgets/internal/requireClass";
 import { isAtBottom } from "../session/transcript/flow/scrollMetrics";
 import { type JobLogReader, type JobLogScrollCapture, retainedJobLogReader } from "./jobLogReader";
-import { type JobLogRow, type JobLogWindows, jobLogRows, jobLogSourceBytes } from "./jobLogWindow";
+import {
+  type JobLogRow,
+  type JobLogWindows,
+  jobLogDemandGapIndex,
+  jobLogRows,
+  jobLogSourceBytes,
+} from "./jobLogWindow";
 import styles from "./transcript.module.css";
 
 const CLASS = {
@@ -162,7 +168,6 @@ export function JobLog({ jobRef, parentRef, paneId }: { jobRef: string; parentRe
 function JobLogBody({ reader, jobId, paneId }: { reader: JobLogReader; jobId: string; paneId?: string }) {
   const snapshot = useSyncExternalStore(reader.subscribe, reader.getSnapshot);
   const rows = useMemo(() => jobLogDisplayRows(snapshot.windows, jobId), [snapshot.windows, jobId]);
-  const gaps = useMemo(() => rows.flatMap((row, index) => (row.kind === "unloaded" ? [{ row, index }] : [])), [rows]);
   const list = useRef<VirtualListHandle>(null);
   const virtualizer = useRef<Virtualizer<HTMLDivElement, HTMLDivElement> | null>(null);
   const previousRows = useRef<JobLogDisplayRow[] | null>(null);
@@ -232,16 +237,19 @@ function JobLogBody({ reader, jobId, paneId }: { reader: JobLogReader; jobId: st
       const rect = element.getBoundingClientRect();
       return element.dataset.joblogKind === "unloaded" && rect.bottom >= viewport.top && rect.top <= viewport.bottom;
     });
-    const gapIndex =
-      gaps.find(
-        ({ row }) =>
-          row.startBytes === Number(marker?.dataset.sourceStart) ||
-          (previous !== null &&
-            !(previous.following && following) &&
-            byte !== undefined &&
-            ((previous.byteOffset < row.startBytes && byte >= row.endBytes) ||
-              (previous.byteOffset >= row.endBytes && byte < row.startBytes))),
-      )?.index ?? -1;
+    const gapIndex = jobLogDemandGapIndex({
+      rows,
+      markerStartBytes: marker ? Number(marker.dataset.sourceStart) : undefined,
+      previous,
+      byteOffset: byte,
+      following,
+      geometry: {
+        viewportTop: viewport.top,
+        renderedBottom: (startBytes) =>
+          elements.find((element) => Number(element.dataset.sourceStart) === startBytes)?.getBoundingClientRect()
+            .bottom,
+      },
+    });
     const gap = rows[gapIndex];
     if (gap && gap.kind === "unloaded") {
       const direction = (previous?.byteOffset ?? byte ?? 0) >= gap.endBytes ? "backward" : "forward";

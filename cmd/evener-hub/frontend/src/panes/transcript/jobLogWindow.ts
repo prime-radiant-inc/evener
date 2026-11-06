@@ -22,6 +22,62 @@ export type JobLogWindows = {
 export type JobLogDemand = { direction: "backward" | "forward"; boundaryBytes: number; limitBytes: number };
 export type JobLogPageSelection = { beforeBytes: number; maxBytes: number };
 
+/** A rendered display row: output text, or a missing byte interval's marker. */
+export type JobLogDemandRow =
+  | { kind: "output"; row: { offsetBytes: number; endBytes: number } }
+  | { kind: "unloaded" | "pruned"; startBytes: number; endBytes: number };
+
+export type JobLogBoundaryGeometry = {
+  viewportTop: number;
+  /** Bottom edge of the rendered output row that starts at this byte, if it is rendered. */
+  renderedBottom: (startBytes: number) => number | undefined;
+};
+
+/** The unloaded gap a scroll at this position must page from, or -1.
+ *
+ * A gap is demanded when its marker is on screen or when the reading position
+ * crossed it in either direction. The returned index addresses the gap row. */
+export function jobLogDemandGapIndex(input: {
+  rows: readonly JobLogDemandRow[];
+  markerStartBytes: number | undefined;
+  previous: { byteOffset: number; following: boolean } | null;
+  byteOffset: number | undefined;
+  following: boolean;
+  geometry: JobLogBoundaryGeometry;
+}): number {
+  const { rows, markerStartBytes, previous, byteOffset, following } = input;
+  const crossed = (row: { startBytes: number; endBytes: number }) =>
+    previous !== null &&
+    !(previous.following && following) &&
+    byteOffset !== undefined &&
+    ((previous.byteOffset < row.startBytes && byteOffset >= row.endBytes) ||
+      (previous.byteOffset >= row.endBytes && byteOffset < row.startBytes));
+  for (let index = 0; index < rows.length; index++) {
+    const row = rows[index];
+    if (row?.kind !== "unloaded") continue;
+    if (row.startBytes === markerStartBytes || crossed(row)) return index;
+  }
+  // A backward wheel that reaches the loaded window's start can leave the
+  // unloaded marker just above the viewport: measuring the rows the wheel
+  // scrolled past adjusts the offset to keep the visible content still, and the
+  // marker ends up off-screen. The viewport is nonetheless at the paging
+  // boundary - the first loaded row has been scrolled fully past the top - so
+  // page from the gap above it even though the marker cannot be seen. Without
+  // this, the wheel that reached the boundary strands the reader until an
+  // unrelated scroll reveals the marker again.
+  if (previous !== null && !following && byteOffset !== undefined && byteOffset < previous.byteOffset) {
+    for (let index = 0; index < rows.length; index++) {
+      const row = rows[index];
+      if (row?.kind !== "unloaded") continue;
+      const next = rows[index + 1];
+      if (next?.kind !== "output" || next.row.offsetBytes !== row.endBytes) continue;
+      const bottom = input.geometry.renderedBottom(next.row.offsetBytes);
+      if (bottom !== undefined && bottom <= input.geometry.viewportTop) return index;
+    }
+  }
+  return -1;
+}
+
 export function emptyJobLogWindows(): JobLogWindows {
   return { older: null, live: null, retainedStartBytes: 0, totalBytes: 0 };
 }
