@@ -1325,6 +1325,93 @@ func TestWorktreePrune_OrphanArmSparesLaneWhileRetainedChildNotifies(t *testing.
 	})
 }
 
+// A presentation start that consumes a retained child's report owes the
+// delegate that presentation no matter what its own launch does: the consume
+// marker acceptDelegateAttention writes is irreversible by design (it fences
+// concurrent double presentation), so a start that fails after it landed must
+// re-deliver the same content, or the report is silently lost — the fold
+// reads the row as resolved forever and no retry can even see what it owes.
+// The scripted failure is the lane's: the launch revalidates the isolation
+// lane and refuses while another session's lock holds it, the same refusal a
+// live tree can hit under a handoff or a foreign prune. Every failure between
+// the accept and the presented turn strands identically, so the contract the
+// test pins is the recovery, not the refusal's cause: after the failed start,
+// the report still reaches the lane-owning delegate's attention turn.
+func TestDelegateAttentionFailedStartReopensConsumedReport(t *testing.T) {
+	t.Parallel()
+	r := newWorktreeRepo(t)
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	var wedgeOnce sync.Once
+	var wedgedSession atomic.Value
+	wedge := func(req llm.Request) llm.Response {
+		wedgedSession.Store(req.SessionID)
+		wedgeOnce.Do(func() { close(entered) })
+		<-release
+		return agenttest.FinalResponse("done")
+	}
+	lane := spawnSharedDescendantLane(t, r, "reopen-failed-start", "dlg_reopentest00001", "034reopenplaceholder01", wedge)
+
+	// The restored runtime's notify edge can drive the presentation during the
+	// spawn's tail, before this test takes control. Disarm it so the drive
+	// under test is exactly the one this test scripts: nil keeps every later
+	// notify a no-op and leaves the test loop below the only driver.
+	lane.delegateSess.SetNotifyFunc(nil)
+
+	// Hold the lane for a foreign session before the first presentation can
+	// launch: the launch's lane revalidation refuses on the foreign lock, the
+	// same precondition TestDelegateWakeRefusesForeignHeldInheritedLane pins
+	// for a notification drive.
+	const foreignSID = "034foreignholder0001"
+	adoptForeignLane(t, r, lane.lanePath, foreignSID)
+
+	// Drive the presentation. The drive accepts the report — the consume
+	// marker lands — and its launch then refuses on the foreign lane.
+	turnStartDeadline := time.Now().Add(30 * time.Second)
+	go func() {
+		for time.Now().Before(turnStartDeadline) {
+			lane.root.driveDelegateAttention(lane.delegateSub)
+			time.Sleep(200 * time.Millisecond)
+			select {
+			case <-entered:
+				return
+			default:
+			}
+		}
+	}()
+	// The refusal is the scenario's proof of fire: the launch stamps the
+	// drain-abandoned mark exactly when it refuses the lane.
+	waitForCondition(t, 30*time.Second, "the presentation start to refuse the foreign-held lane", func() bool {
+		return lane.root.childDrainAbandoned(lane.delegateSess.id)
+	})
+
+	// Give the lane back: an unlocked lane is re-locked under the tree's own
+	// marker at the next launch, so nothing but the stranded report can keep
+	// the presentation from running now.
+	wtGit(t, r.mainRoot, "worktree", "unlock", lane.lanePath)
+
+	select {
+	case <-entered:
+	case <-time.After(time.Until(turnStartDeadline)):
+		pending, pendErr := lane.delegateSess.pendingDelegateAttentionIDs()
+		_, locked, reason := r.laneLocked(t, lane.lanePath)
+		t.Fatalf("the failed start lost the retained child's report (pending attention=%d (%v); lane locked=%v reason=%q)",
+			len(pending), pendErr, locked, reason)
+	}
+	if got, _ := wedgedSession.Load().(string); got != lane.delegateSess.id {
+		t.Fatalf("the reopened presentation ran on session %q, want the lane-owning delegate %q", got, lane.delegateSess.id)
+	}
+
+	// The wedged turn settles cleanly once released.
+	close(release)
+	waitForCondition(t, 30*time.Second, "the delegate's attention turn to finish after release", func() bool {
+		lane.delegateSub.mu.Lock()
+		running := lane.delegateSub.running
+		lane.delegateSub.mu.Unlock()
+		return !running
+	})
+}
+
 // A silent live tool call is active delegate work the per-report refreshes
 // cannot see: a foreground shell reports activity once before it starts and
 // then stays silent, the quiet watchdog is minutes away, and a foreign

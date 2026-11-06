@@ -1638,7 +1638,8 @@ func communicateNudge(toolName string) string {
 
 func (a *subagent) run(ctx context.Context, input string, inputProvenance *provenance.Causal) {
 	kind := EntryUserInput
-	if _, attention := ctx.Value(delegateAttentionRunContextKey{}).(struct{}); attention {
+	_, attentionRun := ctx.Value(delegateAttentionRunContextKey{}).(struct{})
+	if attentionRun {
 		kind = EntryDelegateAttention
 	}
 	lease, stableRun := ctx.Value(delegateRunLeaseContextKey{}).(delegateLease)
@@ -1918,6 +1919,15 @@ func (a *subagent) run(ctx context.Context, input string, inputProvenance *prove
 	// needs-attention projection itself instead of leaving it for a parent
 	// drive that may never come.
 	if stableRun {
+		if attentionRun && !attentionRunPresentedItsReport(err) {
+			// The presentation turn died before its request could carry the
+			// report, and the accept that started it consumed the row. Reopen
+			// it so the re-arm below wakes a drive that presents it instead of
+			// letting the consumed marker strand the report silently.
+			if reopenErr := a.sess.reopenLatchedDelegateAttention(); reopenErr != nil {
+				a.sess.emit(warningDataFromError("reopen unpresented delegate attention", reopenErr))
+			}
+		}
 		if pending, pendingErr := a.sess.pendingDelegateAttentionIDs(); pendingErr != nil {
 			a.sess.emit(warningDataFromError("inspect remaining delegate attention", pendingErr))
 		} else if len(pending) != 0 {
@@ -1946,6 +1956,21 @@ func (a *subagent) run(ctx context.Context, input string, inputProvenance *prove
 			a.sess.scheduleIdleRuntimeRelease(lease.generation)
 		}
 	}
+}
+
+// attentionRunPresentedItsReport reports whether an attention-triggered run's
+// outcome proves the model request already carried the report it owed: the
+// model-behavior failures and budget exhaustion happen after the call ran.
+// Every other failure can land before the first request, where the consumed
+// row would otherwise be lost with nothing left to present.
+func attentionRunPresentedItsReport(err error) bool {
+	if err == nil {
+		return true
+	}
+	if _, exhausted := budgetExhaustionFromError(err); exhausted {
+		return true
+	}
+	return errors.Is(err, errBareTextWithoutResultTool) || errors.Is(err, errEmptyResponseExhausted)
 }
 
 // announceFinishedGeneration is a stable run's last step for its finished

@@ -162,6 +162,14 @@ func (s *Session) driveDelegateAttention(sub *subagent) bool {
 	started, err := s.delegateController.CommitStart(reservation)
 	if err != nil {
 		s.emit(warningDataFromError("commit delegate attention", err))
+		// A busy commit released the reservation, so nothing retries this
+		// start: without the reopen the consume marker acceptDelegateAttention
+		// already wrote would strand the report forever. A failed journal append
+		// keeps the reservation, so the sticky retry re-presents it and the
+		// reopen is left to that retry's own failure.
+		if errors.Is(err, errDelegateTargetBusy) {
+			s.reopenFailedDelegateAttention(sub, ids[0])
+		}
 		s.delegateController.retryDelegateAttentionLater()
 		return true
 	}
@@ -172,13 +180,48 @@ func (s *Session) driveDelegateAttention(sub *subagent) bool {
 	launchErr := s.launchAcceptedDelegateAttention(sub, started)
 	launched = launchErr == nil
 	if launchErr != nil {
-		plans, finishErr := s.delegateController.FailCommittedRestart(started.lease, delegatePermanentStartFailure(launchErr, "launch_failed"))
+		// finishUnlaunchedGeneration, not FailCommittedRestart: an attention
+		// generation's binding is born ready, and FailCommittedRestart refuses
+		// ready bindings — its cleanup would no-op and leave the delegate
+		// running in the controller's live state forever, ineligible for every
+		// later start. The send path releases an unlaunched generation this
+		// same way, quiescence report included, or the delegate stays refused
+		// as still finalizing.
+		plans, finishErr := s.delegateController.finishUnlaunchedGeneration(started.lease, launchErr)
 		if executeErr := s.executeDelegateMutationPlans(plans); finishErr == nil {
 			finishErr = executeErr
 		}
+		s.releaseFinishedGeneration(started.lease, sub.sess)
 		s.emit(warningDataFromError("launch delegate attention", errors.Join(launchErr, finishErr)))
+		// The committed start closed and the launch refused, so this
+		// generation will never present the report it consumed.
+		s.reopenFailedDelegateAttention(sub, ids[0])
+		s.delegateController.retryDelegateAttentionLater()
 	}
 	return true
+}
+
+// reopenFailedDelegateAttention restores a report a presentation start
+// consumed and then abandoned. A closing owner and a deliberately stopped
+// child are left to their teardown: those paths already discard pending
+// attention, and a report re-delivered into a tearing-down tree would only
+// race the discard.
+func (s *Session) reopenFailedDelegateAttention(sub *subagent, attentionID string) {
+	if s == nil || sub == nil || sub.sess == nil || attentionID == "" {
+		return
+	}
+	if s.childStopGated(sub.sess.id) {
+		return
+	}
+	s.mu.Lock()
+	closed := s.closingOrClosedLocked()
+	s.mu.Unlock()
+	if closed {
+		return
+	}
+	if err := sub.sess.reopenConsumedDelegateAttention(attentionID); err != nil {
+		s.emit(warningDataFromError("reopen unpresented delegate attention", err))
+	}
 }
 
 func (s *Session) launchAcceptedDelegateAttention(sub *subagent, started delegateStartCommit) error {

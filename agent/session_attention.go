@@ -726,6 +726,66 @@ func (s *Session) pendingDelegateAttentionIDs() ([]string, error) {
 	return s.pendingDelegateAttentionIDsLocked()
 }
 
+// reopenConsumedDelegateAttention restores an attention item a presentation
+// start consumed but will never present: the start failed after the consume
+// marker landed. The marker is irreversible by design — it fences concurrent
+// double presentation — so the recovery re-delivers the same content under a
+// fresh identity keyed by the failed start's generation. Replaying the same
+// failed generation is idempotent (the same identity and content is a no-op),
+// and a later failed generation keys a fresh identity, so however many starts
+// fail, the next drive reads the report as pending and presents it instead of
+// silently losing it. An item that survived its failed start needs nothing:
+// the ordinary retry still presents it, and re-delivering it would present
+// the same report twice.
+func (s *Session) reopenConsumedDelegateAttention(attentionID string) error {
+	if s == nil {
+		return errors.New("delegate attention session is nil")
+	}
+	if attentionID == "" {
+		return errors.New("delegate attention reopen identity is incomplete")
+	}
+	s.attentionMu.Lock()
+	fold, err := s.delegateAttentionFoldLocked()
+	if err != nil {
+		s.attentionMu.Unlock()
+		return err
+	}
+	disposition, consumed := fold.resolutions[attentionID]
+	message, hasContent := fold.content[attentionID]
+	generation := fold.resumeGenerations[attentionID]
+	s.attentionMu.Unlock()
+	if !consumed || disposition != delegateAttentionConsumed {
+		return nil
+	}
+	if !hasContent {
+		return fmt.Errorf("attention %q was consumed without content to reopen", attentionID)
+	}
+	reopenID := fmt.Sprintf("%s/reopened/%d", attentionID, generation)
+	if _, resolved := fold.resolutions[reopenID]; resolved {
+		// This failed generation already reopened and the reopened row was
+		// consumed again; its own failed start reopens under its own key.
+		return nil
+	}
+	_, err = s.appendDelegateAttentionMessageDurably(reopenID, message)
+	return err
+}
+
+// reopenLatchedDelegateAttention reopens the accepted trigger a failed
+// attention-triggered run latched but never presented: the presentation turn
+// died before its request could carry the report.
+func (s *Session) reopenLatchedDelegateAttention() error {
+	if s == nil {
+		return errors.New("delegate attention session is nil")
+	}
+	s.attentionMu.Lock()
+	latched := s.attentionAcceptedID
+	s.attentionMu.Unlock()
+	if latched == "" {
+		return nil
+	}
+	return s.reopenConsumedDelegateAttention(latched)
+}
+
 func (s *Session) pendingDelegateAttentionIDsLocked() ([]string, error) {
 	fold, err := s.delegateAttentionFoldLocked()
 	if err != nil {
