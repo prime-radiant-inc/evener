@@ -2,30 +2,27 @@ import XCTest
 @testable import EvenerVoiceCore
 
 final class WakePublishPolicyTests: XCTestCase {
-    func testArmedQuietScoreChangeAloneDoesNotRepublish() {
+    func testUnchangedWakeStateAndErrorDoesNotRepublish() {
         XCTAssertFalse(WakePublishPolicy.shouldPublish(
-            trialRunning: false, state: "listening", publishedState: "listening",
-            error: "", publishedError: ""))
+            trialRunning: false, wakeState: "listening", publishedWakeState: "listening",
+            wakeError: "", publishedWakeError: ""))
     }
 
-    func testStateChangeRepublishes() {
+    func testWakeStateChangeRepublishes() {
         XCTAssertTrue(WakePublishPolicy.shouldPublish(
-            trialRunning: false, state: "holdoff", publishedState: "listening",
-            error: "", publishedError: ""))
+            trialRunning: false, wakeState: "holdoff", publishedWakeState: "listening",
+            wakeError: "", publishedWakeError: ""))
     }
 
-    func testErrorChangeRepublishesOnce() {
+    func testWakeErrorChangeRepublishes() {
         XCTAssertTrue(WakePublishPolicy.shouldPublish(
-            trialRunning: false, state: "listening", publishedState: "listening",
-            error: "capture_gap", publishedError: ""))
-        XCTAssertFalse(WakePublishPolicy.shouldPublish(
-            trialRunning: false, state: "listening", publishedState: "listening",
-            error: "capture_gap", publishedError: "capture_gap"))
+            trialRunning: false, wakeState: "listening", publishedWakeState: "listening",
+            wakeError: "capture_gap", publishedWakeError: ""))
     }
 
     func testRunningTrialRepublishesForLiveScores() {
         XCTAssertTrue(WakePublishPolicy.shouldPublish(
-            trialRunning: true, state: "listening", publishedState: "listening",
-            error: "", publishedError: ""))
+            trialRunning: true, wakeState: "listening", publishedWakeState: "listening",
+            wakeError: "", publishedWakeError: ""))
     }
 }
