@@ -200,7 +200,12 @@ func (v *voiceService) arm(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if request.Provider == "" {
-		request.Provider = "openai"
+		name, err := v.web.defaultOpenAIVoiceProvider()
+		if err != nil {
+			voiceHTTPError(w, http.StatusServiceUnavailable, "voice_provider_unavailable")
+			return
+		}
+		request.Provider = name
 	}
 	if request.Model == "" {
 		request.Model = "gpt-realtime-2.1"
@@ -295,6 +300,56 @@ func (s *WebServer) voiceClient(ctx context.Context) (*appwire.Client, error) {
 }
 
 func (s *WebServer) voiceProvider(ctx context.Context, name string) (string, http.Header, error) {
+	name, err := s.defaultOpenAIVoiceProviderOr(name)
+	if err != nil {
+		return "", nil, err
+	}
+	return s.voiceProviderByName(ctx, name)
+}
+
+// defaultOpenAIVoiceProvider names the instance voice uses when Arm names none:
+// the configured default when it speaks an OpenAI transport, else the first
+// instance that does. A hub whose credentials live under another instance name
+// still arms without the caller guessing that name.
+func (s *WebServer) defaultOpenAIVoiceProvider() (string, error) {
+	return s.defaultOpenAIVoiceProviderOr("")
+}
+
+func (s *WebServer) defaultOpenAIVoiceProviderOr(name string) (string, error) {
+	if name != "" {
+		return name, nil
+	}
+	if s.auth == nil || s.auth.registry() == nil {
+		return "", errors.New("voice provider registry unavailable")
+	}
+	r := s.auth.registry()
+	defaultName, _, _ := r.DefaultInstance()
+	return pickOpenAIVoiceProvider(name, defaultName, r.Instances())
+}
+
+// pickOpenAIVoiceProvider chooses voice's instance from the caller's name, the
+// hub's default, and the configured instances.
+func pickOpenAIVoiceProvider(name, defaultName string, instances []registry.Instance) (string, error) {
+	if name != "" {
+		return name, nil
+	}
+	openAI := func(protocol string) bool {
+		return protocol == registry.ProtocolOpenAIChat || protocol == registry.ProtocolOpenAIResponses
+	}
+	for _, inst := range instances {
+		if inst.Name == defaultName && openAI(inst.Protocol) {
+			return inst.Name, nil
+		}
+	}
+	for _, inst := range instances {
+		if openAI(inst.Protocol) {
+			return inst.Name, nil
+		}
+	}
+	return "", errors.New("voice provider unavailable: no OpenAI-transport instance")
+}
+
+func (s *WebServer) voiceProviderByName(ctx context.Context, name string) (string, http.Header, error) {
 	if s.auth == nil || s.auth.registry() == nil {
 		return "", nil, errors.New("voice provider registry unavailable")
 	}

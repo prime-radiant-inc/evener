@@ -7,7 +7,7 @@ import { VoiceClient, type NativeVoicePort, type VoiceSnapshot } from "./voiceCl
 
 vi.mock("react-native", async () => (await import("../renderNative.testkit")).nativeModuleMock());
 
-it("requires disclosure consent, keeps takeover explicit, and sends Talk only to native", async () => {
+it("arms in one tap with a visible disclosure, keeps takeover explicit, and sends Talk only to native", async () => {
 	const actions: string[] = [];
 	const requests: Record<string, unknown>[] = [];
 	let state: VoiceSnapshot = {
@@ -89,8 +89,9 @@ it("requires disclosure consent, keeps takeover explicit, and sends Talk only to
 	await act(async () => {
 		button("Arm").props.onPress();
 	});
-	// Arm goes straight to the hub; there is no consent or settings panel.
+	// Arm goes straight to the hub; the disclosure is always visible beside it.
 	expect(button("I understand · Arm voice")).toBeUndefined();
+	expect(tree.root.findByProps({ testID: "voice-arm-disclosure" })).toBeDefined();
 	expect(requests).toHaveLength(1);
 	expect(requests[0].takeover).toBe(false);
 	expect(actions).toEqual([]);

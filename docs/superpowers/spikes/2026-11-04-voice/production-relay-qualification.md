@@ -79,6 +79,10 @@ The catalog confirmed `gpt-realtime-2.1-mini`; the real provider's
 accepted `marin` with app-owned endpointing and mono24k input/output. Inventory
 alone was not treated as inference access.
 
+`gpt-realtime-2.1` is the shipping default now; repeating this run exercises it
+unless `EVENER_VOICE_RELAY_MODEL=gpt-realtime-2.1-mini` names the comparison
+model recorded above.
+
 ## Observed end-to-end evidence
 
 | Boundary | Evidence |

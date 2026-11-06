@@ -58,6 +58,17 @@ function Controls({ client, target }: { client: VoiceClient; target: VoiceTarget
 					{!target.manager && !armed ? (
 						<Copy muted>Select an existing manager session, or explicitly start one with Start as Manager.</Copy>
 					) : null}
+					<View testID="voice-arm-disclosure">
+						<Copy muted>
+							Arming lets nearby people or recordings issue requests and hear replies, including while locked. Wake is
+							not speaker identification.
+						</Copy>
+						<Copy muted>
+							Voice uses the hub's OpenAI Realtime provider, separate from the manager's model provider. Audio is not
+							used for API training by default, but is retained for abuse monitoring up to 30 days; store:false is not
+							zero retention.
+						</Copy>
+					</View>
 					<View style={{ flexDirection: "row", flexWrap: "wrap" }}>
 						{armed ? (
 							<HeaderButton

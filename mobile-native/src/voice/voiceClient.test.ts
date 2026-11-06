@@ -169,7 +169,7 @@ it("arms only an advertised manager and sends no RPC or PCM through foreground a
 		ref: "local:chief",
 		expectedInstanceId: "instance",
 		deviceId: "install",
-		provider: "openai",
+		provider: "",
 		model: "gpt-realtime-2.1",
 		voice: "marin",
 		takeover: false,
