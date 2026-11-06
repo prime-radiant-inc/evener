@@ -352,6 +352,21 @@ test("Enter runs a command matched by its full title above a handoff row", async
   expect(insert.current?.text).toBeUndefined();
 });
 
+test("Enter on a bare slash does not run the highlighted row", async () => {
+  const user = userEvent.setup();
+  focusSession("ref_a");
+
+  render(
+    <NeedsYouProvider>
+      <CommandPalette />
+    </NeedsYouProvider>,
+  );
+  act(() => openPalette("/"));
+  await user.keyboard("{Enter}");
+
+  expect(screen.getByRole("dialog")).toBeTruthy();
+});
+
 // --- clearToSearch and showHelp UI callbacks (lines 248-251) ---
 
 test("/search command clears to search mode", async () => {

@@ -695,7 +695,7 @@ function PaletteBody({
     }
     if (mode === "command-filter") {
       // An explicitly arrow-navigated selection wins.
-      const picked = userMovedRef.current || query.trim() !== "";
+      const picked = userMovedRef.current || query.replace(/^\/+/, "").trim() !== "";
       if (picked && item?.kind === "command") {
         activateCommand(item.command);
         return;
