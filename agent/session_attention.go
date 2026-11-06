@@ -13,6 +13,7 @@ import (
 	"reflect"
 	"slices"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -279,24 +280,27 @@ func extendDelegateAttention(prior delegateAttentionFold, entries []transcript.E
 	return fold, nil
 }
 
-// delegateAttentionResumeClaimConflict scans the fold's resume claims for an
-// id other than attentionID that claims the same generation. One generation
-// presents one report, so two ids cannot both claim it — except the rows a
-// reopen re-delivered under a fresh identity: their source was consumed by a
-// start that never journaled the generation (the reservation was released),
-// so the re-delivered row takes over the claim its source left, and a chain
-// of failed starts supersedes every ancestor's stale claim, not only the
-// immediate parent (delegateAttentionReopenSource waives the whole chain).
-// Map order cannot change the verdict: the scan visits every claim and
-// conflicts on the first one the waiver does not cover.
+// delegateAttentionResumeClaimConflict scans the fold's resume claims for a
+// live claim on the same generation by an id other than attentionID. One
+// generation presents one report, so two ids cannot both claim it. A claim
+// is live until its own reopen row exists: the failed start re-delivered
+// the same report under the fresh identity, so the claim it left binds
+// nothing and any pending row may take the generation over — the same
+// liveness the restore read applies to owed starts, so the two cannot
+// disagree about which claims still bind. Map order cannot change the
+// verdict: the scan visits every claim and conflicts on the first live one.
 func delegateAttentionResumeClaimConflict(fold delegateAttentionFold, attentionID string, generation uint64) (string, bool) {
 	if generation == 0 {
 		return "", false
 	}
 	for previousID, claimed := range fold.resumeGenerations {
-		if claimed == generation && previousID != attentionID && !delegateAttentionReopenSource(attentionID, previousID, generation) {
-			return previousID, true
+		if claimed != generation || previousID == attentionID {
+			continue
 		}
+		if _, superseded := fold.content[delegateAttentionReopenID(previousID, claimed)]; superseded {
+			continue
+		}
+		return previousID, true
 	}
 	return "", false
 }
@@ -886,32 +890,32 @@ func delegateAttentionReopenID(sourceID string, generation uint64) string {
 	return sourceID + delegateAttentionReopenSuffix(generation)
 }
 
-// delegateAttentionReopenSuffix is the wire format of one reopen segment: the
-// builder and the parser share it, so the id a failed start re-delivers under
-// and the chain the validator strips cannot drift apart.
+// delegateAttentionReopenMarker prefixes the generation in every reopen
+// segment: the one definition of the segment's constant part, shared by the
+// builder and the id stripper so the two cannot drift apart.
+const delegateAttentionReopenMarker = "/reopened/"
+
+// delegateAttentionReopenSuffix is the wire format of one reopen segment,
+// keyed by the failed start's generation.
 func delegateAttentionReopenSuffix(generation uint64) string {
-	return fmt.Sprintf("/reopened/%d", generation)
+	return fmt.Sprintf("%s%d", delegateAttentionReopenMarker, generation)
 }
 
-// delegateAttentionReopenSource reports whether id reduces to sourceID by
-// stripping reopen segments, each keyed by generation. Starts that keep
-// failing unjournaled at the same generation re-deliver one report under
-// ever-deeper identities (X → X/reopened/g → X/reopened/g/reopened/g), so a
-// reopened row supersedes the resume claim of every ancestor in its chain,
-// not only its immediate parent. A segment keyed differently, or a chain that
-// bottoms out anywhere but sourceID, does not match.
-func delegateAttentionReopenSource(id, sourceID string, generation uint64) bool {
-	if generation == 0 {
-		return id == sourceID
-	}
-	suffix := delegateAttentionReopenSuffix(generation)
-	for id != sourceID {
-		if !strings.HasSuffix(id, suffix) {
-			return false
+// stripDelegateAttentionReopenSegments reduces id to the identity its reopen
+// chain was minted from: reopen segments are only ever appended, so trimming
+// every trailing marker+generation segment leaves the original row's id. An
+// id that does not end in a well-formed segment is returned unchanged.
+func stripDelegateAttentionReopenSegments(id string) string {
+	for {
+		at := strings.LastIndex(id, delegateAttentionReopenMarker)
+		if at < 0 {
+			return id
 		}
-		id = strings.TrimSuffix(id, suffix)
+		if _, err := strconv.ParseUint(id[at+len(delegateAttentionReopenMarker):], 10, 64); err != nil {
+			return id
+		}
+		id = id[:at]
 	}
-	return true
 }
 
 func (s *Session) pendingDelegateAttentionIDsLocked() ([]string, error) {

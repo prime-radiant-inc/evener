@@ -1766,6 +1766,167 @@ func TestDelegateAttentionBusyCommitReopensConsumedReport(t *testing.T) {
 	})
 }
 
+// A busy CommitStart's reopen supersedes the report's resume claim, so the
+// claim the failed start left on the recycled generation binds nothing: a
+// second pending row must be able to take that generation, or the stale
+// claim refuses every later accept and strands both rows — the failed accept
+// leaks its reservation, and the drive pinned to that reservation retries the
+// same refusal forever, so neither the second row nor the reopened report is
+// ever presented. The commit-fault seam refuses exactly the first commit as
+// busy; the second row pends before the drives, so the first drive consumes
+// the report and the second drive must present the second row with the
+// reopened report riding along.
+func TestDelegateAttentionSupersededClaimDoesNotBlockSecondPendingRow(t *testing.T) {
+	t.Parallel()
+	r := newWorktreeRepo(t)
+	const secondRowID = "delegate:second-pending-row-owed-reply"
+	const secondRowContent = "second-pending-row: which cursor holds the merge base?"
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	var releaseOnce sync.Once
+	t.Cleanup(func() { releaseOnce.Do(func() { close(release) }) })
+	var wedgeOnce sync.Once
+	var wedgedSession atomic.Value
+	var sawSecondRow atomic.Bool
+	wedge := func(req llm.Request) llm.Response {
+		wedgedSession.Store(req.SessionID)
+		if requestMessagesContainText(req.Messages, secondRowContent) {
+			sawSecondRow.Store(true)
+		}
+		wedgeOnce.Do(func() { close(entered) })
+		<-release
+		return agenttest.FinalResponse("done")
+	}
+	lane := spawnSharedDescendantLane(t, r, "superseded-claim-second-row", "dlg_superseded0001", "034superseded0001", wedge)
+	lane.delegateSess.SetNotifyFunc(nil)
+	// The shared child's restored notify edge can launch its own pending
+	// notification turn, which would consume the scripted wedge step this
+	// test's presentation parks in; disarm it so the test loop below is the
+	// only driver.
+	lane.sharedSub.sess.SetNotifyFunc(nil)
+
+	// Flush a report delivery the spawn deferred past its last drain cut, so
+	// the drives below see the row however the classification landed (an
+	// empty queue is a no-op), and wait for the report row to pend BEFORE the
+	// second row lands: the first drive must consume the report, not the
+	// second row, so the reopened claim is the report's own.
+	var flushMu sync.Mutex
+	var flushErr error
+	flush := func() {
+		lane.delegateSub.mu.Lock()
+		busy := lane.delegateSub.running || lane.delegateSub.driving || lane.delegateSub.finalizing
+		lane.delegateSub.mu.Unlock()
+		if busy {
+			return
+		}
+		if err := lane.delegateSess.flushPendingDelegateDeliveries(); err != nil {
+			flushMu.Lock()
+			flushErr = err
+			flushMu.Unlock()
+		}
+	}
+	var pendingBefore []string
+	// TRIPWIRE: the report row pends within a couple of flushes of the spawn;
+	// the bound only fires on a genuine hang, not a loaded shard's tail.
+	waitForCondition(t, 30*time.Second, "the retained child's report to pend before the second row", func() bool {
+		pending, err := lane.delegateSess.pendingDelegateAttentionIDs()
+		pendingBefore = pending
+		return err == nil && len(pending) >= 1
+	})
+	reportID := pendingBefore[0]
+	if reportID == secondRowID {
+		t.Fatalf("the first pending row is the test's own second row (%v)", pendingBefore)
+	}
+	if _, err := lane.delegateSess.appendDelegateNotificationDurably(secondRowID, secondRowContent); err != nil {
+		t.Fatalf("pend the second row: %v", err)
+	}
+
+	// Refuse exactly the first attention commit as busy: its reopen is the
+	// claim the second row must take over.
+	var faults atomic.Int32
+	updateSessionTestConfig(lane.root, func(cfg *testConfig) {
+		cfg.delegateAttentionCommitStartFault = func() error {
+			if faults.Add(1) <= 1 {
+				return errDelegateTargetBusy
+			}
+			return nil
+		}
+	})
+
+	go func() {
+		deadline := time.Now().Add(30 * time.Second)
+		for time.Now().Before(deadline) {
+			flush()
+			lane.root.driveDelegateAttention(lane.delegateSub)
+			time.Sleep(200 * time.Millisecond)
+			select {
+			case <-entered:
+				return
+			default:
+			}
+		}
+	}()
+	select {
+	case <-entered:
+	// TRIPWIRE: the second drive presents the second row within a couple of
+	// loop passes; the bound only fires on a genuine hang, not a loaded
+	// shard's scheduling delay.
+	case <-time.After(30 * time.Second):
+		flushMu.Lock()
+		lastFlushErr := flushErr
+		flushMu.Unlock()
+		fold, foldErr := readDelegateAttentionFold(lane.delegateSess.TranscriptPath(), lane.delegateSess.id)
+		conflict := "fold unreadable"
+		if foldErr == nil {
+			if err := validateDelegateAttentionResolutions(fold, []string{secondRowID}, delegateAttentionConsumed, fold.resumeGenerations[reportID]); err != nil {
+				conflict = err.Error()
+			} else {
+				conflict = "none"
+			}
+		}
+		pending, pendErr := lane.delegateSess.pendingDelegateAttentionIDs()
+		t.Fatalf("the superseded claim stranded both rows (report=%q pending=%d (%v); claims=%v second-row accept=%q; flush=%v)",
+			reportID, len(pending), pendErr, fold.resumeGenerations, conflict, lastFlushErr)
+	}
+	if got, _ := wedgedSession.Load().(string); got != lane.delegateSess.id {
+		t.Fatalf("the presentation ran on session %q, want the lane-owning delegate %q", got, lane.delegateSess.id)
+	}
+	if !sawSecondRow.Load() {
+		t.Fatal("the presentation's request did not carry the second row's content")
+	}
+
+	// The wedged turn settles cleanly once released.
+	releaseOnce.Do(func() { close(release) })
+	// TRIPWIRE: the released turn settles within seconds once the model call
+	// returns; the bound only fires on a genuine hang.
+	waitForCondition(t, 30*time.Second, "the delegate's attention turn to finish after release", func() bool {
+		lane.delegateSub.mu.Lock()
+		running := lane.delegateSub.running
+		lane.delegateSub.mu.Unlock()
+		return !running
+	})
+
+	// Both rows delivered: the second row claimed the recycled generation the
+	// superseded claim pinned, and the reopened report rode the presentation.
+	// TRIPWIRE: the turn's markers land within seconds of the settle; the
+	// bound only fires on a genuine hang.
+	waitForCondition(t, 30*time.Second, "both rows to resolve after the presentation", func() bool {
+		fold, err := readDelegateAttentionFold(lane.delegateSess.TranscriptPath(), lane.delegateSess.id)
+		return err == nil && len(fold.pendingIDs()) == 0
+	})
+	fold, foldErr := readDelegateAttentionFold(lane.delegateSess.TranscriptPath(), lane.delegateSess.id)
+	if foldErr != nil {
+		t.Fatalf("read the delegate's attention fold after the presentation: %v", foldErr)
+	}
+	gen := fold.resumeGenerations[reportID]
+	if fold.resumeGenerations[secondRowID] != gen || gen == 0 {
+		t.Fatalf("the second row claimed generation %d, want the report's recycled generation %d", fold.resumeGenerations[secondRowID], gen)
+	}
+	if _, resolved := fold.resolutions[delegateAttentionReopenID(reportID, gen)]; !resolved {
+		t.Fatalf("the reopened report row was never resolved (claims=%v resolutions=%v)", fold.resumeGenerations, fold.resolutions)
+	}
+}
+
 // A stop admitted between a reopen's teardown guards and its durable append
 // owns the row the append then lands: the stop's discard enumerated attention
 // by the ids it knew at plan time, and nothing notes the fresh identity, so

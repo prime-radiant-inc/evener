@@ -618,10 +618,14 @@ func deliverDelegatePacket(plan delegateDeliveryPlan, receiver delegateDeliveryR
 func delegateAttentionID(deliveryID string) string { return "delegate:" + deliveryID }
 
 // isDelegateUpdateAttentionID reports whether attentionID names a delegate
-// update's delivery rather than a generation's report.
+// update's delivery rather than a generation's report. A failed presentation
+// start re-delivers a consumed row under a reopened identity, so the reopen
+// chain is stripped first: a reopened update row must keep the update's
+// classification, or the finalization drain stops waking a turn for the
+// child's question.
 func isDelegateUpdateAttentionID(attentionID string) bool {
 	deliveryID, ok := strings.CutPrefix(attentionID, delegateAttentionID(""))
-	return ok && delegatestore.IsUpdateDeliveryID(deliveryID)
+	return ok && delegatestore.IsUpdateDeliveryID(stripDelegateAttentionReopenSegments(deliveryID))
 }
 
 // completeDelegateDeliveryCommits acknowledges one tool call's delivery

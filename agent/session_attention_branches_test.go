@@ -121,9 +121,18 @@ func TestValidateDelegateAttentionResolutions_ReopenSupersedesSourceClaim(t *tes
 	if err := validateDelegateAttentionResolutions(fold, []string{reopened}, delegateAttentionConsumed, 5); err != nil {
 		t.Fatalf("reopened row claiming its source's generation: %v", err)
 	}
-	// Any id that is not the claimant's own reopen still refuses.
+	// A claim superseded by its own reopen row binds nothing: the re-delivered
+	// row reaches its presentation through the ordinary pending path, so any
+	// other pending row may take the generation over.
+	if err := validateDelegateAttentionResolutions(fold, []string{"attn_1"}, delegateAttentionConsumed, 5); err != nil {
+		t.Fatalf("second row claiming a superseded claim's generation: %v", err)
+	}
+	// A live claim still refuses every other claimant: no reopen row exists
+	// to supersede it, so the generation is not free.
+	fold.resolutions["attn_3"] = delegateAttentionConsumed
+	fold.resumeGenerations["attn_3"] = 5
 	if err := validateDelegateAttentionResolutions(fold, []string{"attn_1"}, delegateAttentionConsumed, 5); err == nil {
-		t.Fatal("resume generation already claimed by a non-source attention should error")
+		t.Fatal("resume generation already claimed by a live attention should error")
 	}
 }
 
@@ -133,6 +142,10 @@ func TestValidateDelegateAttentionResolutions_ChainedReopenSupersedesAncestorCla
 	fold.order = append(fold.order, "attn_1")
 	reopened := delegateAttentionReopenID("attn_2", 5)
 	grandchild := delegateAttentionReopenID(reopened, 5)
+	// Every reopen appends its row before the next start can consume it, so
+	// each ancestor's superseding row is in the fold the chain leaves.
+	fold.content[reopened] = llm.User("hello")
+	fold.order = append(fold.order, reopened)
 	fold.content[grandchild] = llm.User("hello")
 	fold.order = append(fold.order, grandchild)
 	// Both ancestors' consume markers claim generation 5: the first start
@@ -146,9 +159,10 @@ func TestValidateDelegateAttentionResolutions_ChainedReopenSupersedesAncestorCla
 	if err := validateDelegateAttentionResolutions(fold, []string{grandchild}, delegateAttentionConsumed, 5); err != nil {
 		t.Fatalf("chained reopen claiming its ancestors' generation: %v", err)
 	}
-	// An id outside the chain still refuses against either ancestor's claim.
-	if err := validateDelegateAttentionResolutions(fold, []string{"attn_1"}, delegateAttentionConsumed, 5); err == nil {
-		t.Fatal("resume generation already claimed by a non-source attention should error")
+	// Every ancestor claim is superseded by its own reopen row, so the
+	// generation is free for any pending row, not only the chain's next link.
+	if err := validateDelegateAttentionResolutions(fold, []string{"attn_1"}, delegateAttentionConsumed, 5); err != nil {
+		t.Fatalf("an id outside the chain claiming a fully superseded generation: %v", err)
 	}
 }
 
@@ -292,6 +306,47 @@ func TestFoldDelegateAttention_ResumeGenerationConflict(t *testing.T) {
 		{Turn: attn1}, {Turn: res1}, {Turn: attn2}, {Turn: res2},
 	}); err == nil {
 		t.Fatal("two attentions with same resume generation should error")
+	}
+}
+
+// The write side agrees with the validator about which claims still bind:
+// replaying a transcript whose superseded claim is followed by another row's
+// takeover of the same generation folds cleanly when — and only when — the
+// reopen row that supersedes the claim precedes the takeover marker.
+func TestFoldDelegateAttention_SupersededClaimReleasesGeneration(t *testing.T) {
+	t.Parallel()
+	row := func(id, text string) transcript.Entry {
+		turn := schema.NewTurn(schema.TurnSteering, llm.User(text))
+		turn.AttentionID = id
+		return transcript.Entry{Turn: turn}
+	}
+	marker := func(id string, generation uint64) transcript.Entry {
+		turn := schema.NewTurn(schema.TurnAttentionResolution, llm.System("x"))
+		turn.AttentionResolution = &schema.AttentionResolutionInfo{AttentionID: id, Disposition: "consumed", ResumeGeneration: generation}
+		return transcript.Entry{Turn: turn}
+	}
+	// The busy start's reopen row precedes the second row's takeover marker,
+	// the order every live drive appends in.
+	reopened := delegateAttentionReopenID("attn_x", 5)
+	waived := []transcript.Entry{
+		row("attn_x", "the report"),
+		marker("attn_x", 5),
+		row(reopened, "the report"),
+		row("attn_z", "the second row"),
+		marker("attn_z", 5),
+	}
+	if _, err := foldDelegateAttention(waived); err != nil {
+		t.Fatalf("folding a superseded claim's takeover: %v", err)
+	}
+	// Without the reopen row the claim is live and the takeover refuses.
+	live := []transcript.Entry{
+		row("attn_x", "the report"),
+		marker("attn_x", 5),
+		row("attn_z", "the second row"),
+		marker("attn_z", 5),
+	}
+	if _, err := foldDelegateAttention(live); err == nil {
+		t.Fatal("a live claim's generation should refuse a second claimant")
 	}
 }
 
