@@ -343,13 +343,15 @@ if [ "$failures" != "0" ]; then
 fi
 
 # The three intended identities, exactly; each must appear as an executed
-# test case with a passed result and no skipped outcome.
+# test case with a passed result and no skipped outcome. The result bundle
+# names a test case with its method's parentheses ("testX()"), so the match
+# is on the bare method name as a prefix.
 for intended in \
 	testSavedHubMarkdownAndDraftRecovery \
 	testSheetGestureKeepsControlsUsable \
 	testWarmAndColdShareSchemeActivation; do
 	node="$(jq -r --arg id "$intended" '
-		[ .. | objects | select(.name? == $id) ] | if length == 0 then "absent"
+		[ .. | objects | select((.name? // "") | startswith($id)) ] | if length == 0 then "absent"
 		else (.[0].result? // "unknown") end' "$tests_json")"
 	if [ "$node" = "absent" ] || [ -z "$node" ]; then
 		echo "$SCRIPT_NAME: intended test $intended did not execute" >&2
