@@ -351,10 +351,13 @@ final class EvenerQualificationUITests: XCTestCase {
 	/// clear is judged by the field reading empty, never by a tap count: a
 	/// restored draft can leave the field holding far more than the text
 	/// just typed, and the deletes can drop under load the same way typing
-	/// does. An empty field reads as its own placeholder, so that reading
-	/// counts as empty too — no journey types its placeholder into a field.
-	/// Secure fields hide their text, so they are checked by their bullet
-	/// count.
+	/// does. A restored draft can park the caret anywhere - and a delete
+	/// only removes what is before it - so each burst first taps the
+	/// field's own bottom-right corner, where a tap places the caret at the
+	/// end of the last line. An empty field reads as its own placeholder,
+	/// so that reading counts as empty too — no journey types its
+	/// placeholder into a field. Secure fields hide their text, so they are
+	/// checked by their bullet count.
 	private func typeWholeText(
 		_ app: XCUIApplication,
 		_ field: XCUIElement,
@@ -376,6 +379,7 @@ final class EvenerQualificationUITests: XCTestCase {
 				if held.isEmpty || held == (field.placeholderValue ?? "") {
 					break
 				}
+				field.coordinate(withNormalizedOffset: CGVector(dx: 0.9, dy: 0.9)).tap()
 				for _ in 0..<24 where remove.exists && Date() < deadline {
 					remove.tap()
 				}
