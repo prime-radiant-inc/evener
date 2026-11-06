@@ -3958,6 +3958,7 @@ test("notes/urls pushes for a different thread are ignored (same object returned
 // refetches when a transcript-shaped frame leaves `turns` untouched.
 const SCALAR_ONLY_NOTIFICATIONS = [
   "thread/queueChanged",
+  "thread/conversation-provenance/changed",
   "thread/status/changed",
   "thread/model/changed",
   "thread/reasoning-effort/changed",
@@ -4006,6 +4007,41 @@ test("every wire notification is classified as scalar-only or transcript-shaped"
   expect([...classified].sort()).toEqual([...NOTIFICATION_NAMES].sort());
   for (const method of SCALAR_ONLY_NOTIFICATIONS) expect(notificationTouchesTranscript(method)).toBe(false);
   for (const method of TRANSCRIPT_SHAPED_NOTIFICATIONS) expect(notificationTouchesTranscript(method)).toBe(true);
+});
+
+test("conversation provenance updates liveness without changing transcript authority", () => {
+  const model = testHydrateV6({ turns: [fragmentTurn("turn_1", ["item_1"])] });
+  const notification: AnyNotification = {
+    method: "thread/conversation-provenance/changed",
+    params: {
+      threadId: model.threadId,
+      ref: model.ref,
+      provenance: {
+        version: 1,
+        authoritative: true,
+        revision: 2,
+        instanceId: "instance_1",
+        admittedInputs: ["input_1"],
+        retiredInputs: [],
+        consumedFrontierId: "frontier_1",
+        frontiers: [{ id: "frontier_1", addedInputs: ["input_1"] }],
+      },
+    },
+  };
+  expect(itemAt(turnAt(model, 0), 0).id).toBe("item_1");
+  const updated = applyNotification(model, notification, 2000);
+  expect(updated.lastFrameAt).toBe(2000);
+  expect(updated.turns).toBe(model.turns);
+  expect(updated.history).toBe(model.history);
+  expect(updated.overlay).toBe(model.overlay);
+  expect(notificationTouchesTranscript(notification.method)).toBe(false);
+  expect(
+    applyNotification(
+      model,
+      { ...notification, params: { ...notification.params, threadId: "other_thread", ref: "other_ref" } },
+      2000,
+    ),
+  ).toBe(model);
 });
 
 test("a method with no reducer case is transcript-shaped", () => {

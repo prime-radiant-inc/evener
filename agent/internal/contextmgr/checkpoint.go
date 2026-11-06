@@ -36,6 +36,7 @@ func checkpoint(history []schema.Turn, preserveRecent int, meta *CompactionMeta,
 // turn stands for (history[:cutoff]), or nil when nothing was folded. A
 // summary completing the same fold reads the partner's messages from them.
 func checkpointFold(history []schema.Turn, preserveRecent int, meta *CompactionMeta, resultToolName string) ([]schema.Turn, []schema.Turn) {
+	preserveRecent = preservePendingAskTail(history, preserveRecent, meta)
 	if attentionTransparentTurnCount(history) <= preserveRecent {
 		return history, nil
 	}

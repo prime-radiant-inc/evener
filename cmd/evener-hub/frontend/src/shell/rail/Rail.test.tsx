@@ -1252,6 +1252,80 @@ describe("resource-backed Rail", () => {
     });
     expect(removedPage.projects[0]).not.toBe(twoPages.projects[0]);
   });
+  test("joins a project's current and recent rows newest-created first", () => {
+    const catalogKey = { kind: "catalog", catalog: "projects", offset: 0, limit: 100 } as const;
+    const projectKey = { kind: "project", projectKey: "p" } as const;
+    const projectSummary = { key: "p", name: "Project", session_count: 2 };
+    const projectSummaryKey = scopedEntityKey(catalogKey, "1");
+    const catalog = normalizedResource(
+      catalogKey,
+      { projects: [projectSummary] },
+      {
+        metadata: {},
+        entities: [{ key: projectSummaryKey, kind: "project", value: projectSummary }],
+        containers: [
+          {
+            key: navigationRootContainerKey(catalogKey, "projects"),
+            owner: { kind: "resource_root", slot: "projects" },
+            children: [projectSummaryKey],
+          },
+        ],
+      },
+    );
+    const projectEntityKey = scopedEntityKey(projectKey, "2");
+    const currentKey = scopedEntityKey(projectKey, "3");
+    const recentKey = scopedEntityKey(projectKey, "4");
+    const root = normalizedResource(
+      projectKey,
+      { current_remaining: 0, recent_remaining: 0, archived_remaining: 0 },
+      {
+        metadata: { current_remaining: 0, recent_remaining: 0, archived_remaining: 0 },
+        entities: [
+          { key: projectEntityKey, kind: "project", value: { key: "p" } },
+          sessionEntity(
+            currentKey,
+            summary({
+              ref: "current",
+              session_id: "current",
+              title: "Current",
+              created_at: "2026-01-01T00:00:00Z",
+            }),
+          ),
+          sessionEntity(
+            recentKey,
+            summary({
+              ref: "recent",
+              session_id: "recent",
+              title: "Recent",
+              created_at: "2026-06-01T00:00:00Z",
+            }),
+          ),
+        ],
+        containers: [
+          {
+            key: navigationOwnedContainerKey(projectEntityKey, "current"),
+            owner: { kind: "entity", entityKey: projectEntityKey, slot: "current" },
+            children: [currentKey],
+          },
+          {
+            key: navigationOwnedContainerKey(projectEntityKey, "recent"),
+            owner: { kind: "entity", entityKey: projectEntityKey, slot: "recent" },
+            children: [recentKey],
+          },
+          {
+            key: navigationOwnedContainerKey(projectEntityKey, "archived"),
+            owner: { kind: "entity", entityKey: projectEntityKey, slot: "archived" },
+            children: [],
+          },
+          childContainer(currentKey),
+          childContainer(recentKey),
+        ],
+      },
+    );
+    installState([catalog, root]);
+    const adapted = adaptNavigationResources(navigationStore.getState());
+    expect(adapted.projects[0]?.sessions.map((row) => row.title)).toEqual(["Recent", "Current"]);
+  });
   test("toasts a global overflow failure and permits a deterministic retry", async () => {
     const loadSection = vi.fn().mockRejectedValueOnce(new Error("offline")).mockResolvedValueOnce(undefined);
     installState([sectionResource("live", [summary({ title: "Live" })], 3)]);

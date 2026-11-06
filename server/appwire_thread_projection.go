@@ -49,6 +49,11 @@ func (s *Server) appThreadWithDiagnosticsLocked(diagnostics func(DetailedStatus)
 	if threadID == "" {
 		threadID = status.SessionID
 	}
+	if h := s.appHistories.get(threadID); h != nil {
+		if state := h.conversationProvenance(); state != nil {
+			envelope.ConversationProvenance = state
+		}
+	}
 	if ref == "" {
 		ref = appwire.Ref{SourceID: sourceID, ThreadID: threadID}.String()
 	}
@@ -108,42 +113,44 @@ func (s *Server) appThreadWithDiagnosticsLocked(diagnostics func(DetailedStatus)
 		Path:          filepath.Base(workingDir),
 		Source:        sourceID,
 		Evener: appwire.EvenerThread{
-			Ref:                   ref,
-			InstanceID:            threadID,
-			Profile:               status.Profile,
-			TurnCount:             status.Turns,
-			ActiveTurnID:          activeTurnID,
-			ContextPressure:       pressure,
-			ContextUsed:           metrics.Used,
-			ContextWindow:         metrics.Window,
-			ContextRemaining:      metrics.Remaining,
-			ContextAssumed:        metrics.Assumed,
-			Capabilities:          s.appCapabilitiesLocked(status.State, processing),
-			Diagnostics:           threadDiagnostics,
-			Queue:                 queue,
-			PendingMutations:      pendingMutations,
-			Tasks:                 taskAggregate,
-			Goal:                  goalState,
-			HumanNote:             humanNote,
-			AgentNote:             agentNote,
-			SessionURLs:           sessionURLs,
-			Usage:                 usage,
-			Cost:                  appwire.EstimateCost(s.costFor(status.Profile+"/"+status.Model), usage),
-			WorkMillis:            workMillis,
-			ActiveTurnStartedAt:   activeTurnStartedAt,
-			FailedToolCalls:       failedToolCalls,
-			AskPending:            askPending,
-			PendingQuestion:       pendingQuestion,
-			Failure:               failure,
-			PendingEscalations:    pendingEscalations,
-			ReasoningEffort:       reasoningEffort,
-			ReasoningEffortLevels: reasoningEffortLevels,
-			SupportsReasoning:     supportsReasoning,
-			VisionModel:           visionModel,
-			Manager:               manager,
-			LastTurnEndedAt:       lastTurnEndedAt,
-			LastMessage:           lastMessage,
-			Access:                access,
+			ConversationProvenance: appwire.CloneConversationProvenance(envelope.ConversationProvenance),
+			PendingAsk:             appwire.ClonePendingAsk(envelope.PendingAsk),
+			Ref:                    ref,
+			InstanceID:             threadID,
+			Profile:                status.Profile,
+			TurnCount:              status.Turns,
+			ActiveTurnID:           activeTurnID,
+			ContextPressure:        pressure,
+			ContextUsed:            metrics.Used,
+			ContextWindow:          metrics.Window,
+			ContextRemaining:       metrics.Remaining,
+			ContextAssumed:         metrics.Assumed,
+			Capabilities:           s.appCapabilitiesLocked(status.State, processing),
+			Diagnostics:            threadDiagnostics,
+			Queue:                  queue,
+			PendingMutations:       pendingMutations,
+			Tasks:                  taskAggregate,
+			Goal:                   goalState,
+			HumanNote:              humanNote,
+			AgentNote:              agentNote,
+			SessionURLs:            sessionURLs,
+			Usage:                  usage,
+			Cost:                   appwire.EstimateCost(s.costFor(status.Profile+"/"+status.Model), usage),
+			WorkMillis:             workMillis,
+			ActiveTurnStartedAt:    activeTurnStartedAt,
+			FailedToolCalls:        failedToolCalls,
+			AskPending:             askPending,
+			PendingQuestion:        pendingQuestion,
+			Failure:                failure,
+			PendingEscalations:     pendingEscalations,
+			ReasoningEffort:        reasoningEffort,
+			ReasoningEffortLevels:  reasoningEffortLevels,
+			SupportsReasoning:      supportsReasoning,
+			VisionModel:            visionModel,
+			Manager:                manager,
+			LastTurnEndedAt:        lastTurnEndedAt,
+			LastMessage:            lastMessage,
+			Access:                 access,
 		},
 	}
 }
@@ -416,7 +423,8 @@ func (s *Server) appCapabilitiesLocked(state string, processing bool) appwire.Th
 	steerAvailable := s.retrySafeTurns.Steer != nil
 	clearAvailable := s.clearFunc != nil && !active && !closed && s.clearBlockedReasonLocked() == ""
 	return appwire.ThreadCapabilities{
-		Send: !active && !closed,
+		VoicePresentationContextV1: s.retrySafeTurns.Start != nil && steerAvailable,
+		Send:                       !active && !closed,
 		// Steer answers "can this harness steer", not "is there a turn to steer
 		// right now": clients apply the status themselves (the web's canSteer
 		// requires active for turn/steer), and the daemon accepts

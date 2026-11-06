@@ -24,6 +24,7 @@ import (
 // details captured across one model call (including any fallback retries) for
 // the attempted or successful semantic assistant turn.
 type ModelAttemptMetadata struct {
+	conversation   *conversationRequest
 	HistoryMode    llm.HistoryMode
 	EndpointFamily string
 	// Protocol is the wire protocol of the attempt that answered, read back
@@ -411,6 +412,7 @@ func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t
 	// follows the skill rebuilds because credit belongs to what the request
 	// actually carries.
 	s.stagePresentedAttentionCoverage(ctx, presentedTurns)
+	s.stageConversationInputs(presentedTurns)
 	return profile, sys, history, req, fullHistory, reasoningEffort, nil
 }
 
@@ -1410,6 +1412,7 @@ func (s *Session) callModelWithFallback(ctx context.Context, profile *provider.P
 		return withPreviews(modelResp), req, attempt, usedProfile, err
 	}
 	attempt = completeAttemptMetadata(attempt, modelResp.Response)
+	attempt.conversation = modelResp.conversation
 	attempt.Protocol = group.Protocol()
 	group.SettleResult(callCtx, nil)
 	for _, warning := range modelResp.Response.Warnings {
@@ -1695,6 +1698,7 @@ func (rs replayScope) webSearchReplayEligible(t schema.Turn) bool {
 // pass through unchanged (identical to legacy expansion). tool_call/tool_result
 // and text/image content is never touched.
 func (rs replayScope) projectTurnMessage(t schema.Turn, inFlight bool) llm.Message {
+	t.Message = projectVoicePresentation(t)
 	if !rs.active() || inFlight {
 		return t.Message
 	}
@@ -1781,9 +1785,9 @@ func expandHistory(historyTurns []schema.Turn, scope replayScope) []llm.Message 
 		switch t.Kind {
 		case schema.TurnSteering:
 			if len(pendingToolCalls) > 0 {
-				deferredSteering = append(deferredSteering, t.Message)
+				deferredSteering = append(deferredSteering, scope.projectTurnMessage(t, inFlight))
 			} else {
-				history = append(history, t.Message)
+				history = append(history, scope.projectTurnMessage(t, inFlight))
 			}
 		case schema.TurnToolResults:
 			// Expand aggregated tool results into individual messages.
@@ -1821,7 +1825,7 @@ func expandHistory(historyTurns []schema.Turn, scope replayScope) []llm.Message 
 		case schema.TurnCheckpoint, schema.TurnSummary:
 			// Compaction turns carry user-role messages; include as-is.
 			endToolRound()
-			history = append(history, t.Message)
+			history = append(history, scope.projectTurnMessage(t, inFlight))
 		case schema.TurnHookCompleted, schema.TurnAttentionResolution:
 			// Presentational telemetry and attention resolution can appear inside
 			// a tool round without interrupting it.

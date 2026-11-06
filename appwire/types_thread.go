@@ -61,6 +61,8 @@ type TaskAggregate struct {
 }
 
 type EvenerThread struct {
+	ConversationProvenance *ConversationProvenanceState `json:"conversationProvenance,omitempty"`
+	PendingAsk             *PendingAskState             `json:"pendingAsk,omitempty"`
 	// Manager is the session's start-time Manager property, reported by the
 	// session itself. It is not a runtime setting: nothing can turn it on or
 	// off after the session starts.
@@ -563,14 +565,15 @@ type SandboxEscalationResolveParams struct {
 }
 
 type ThreadCapabilities struct {
-	Send         bool `json:"send"`
-	Steer        bool `json:"steer"`
-	Interrupt    bool `json:"interrupt"`
-	Compact      bool `json:"compact"`
-	Clear        bool `json:"clear"`
-	ForkFromTurn bool `json:"forkFromTurn"`
-	Shutdown     bool `json:"shutdown"`
-	ChangeModel  bool `json:"changeModel"`
+	VoicePresentationContextV1 bool `json:"voicePresentationContextV1,omitempty"`
+	Send                       bool `json:"send"`
+	Steer                      bool `json:"steer"`
+	Interrupt                  bool `json:"interrupt"`
+	Compact                    bool `json:"compact"`
+	Clear                      bool `json:"clear"`
+	ForkFromTurn               bool `json:"forkFromTurn"`
+	Shutdown                   bool `json:"shutdown"`
+	ChangeModel                bool `json:"changeModel"`
 	// ChangeVisionModel advertises support for thread/vision-model/set. True for
 	// a live evener session whose daemon wires a vision-model hook.
 	ChangeVisionModel bool `json:"changeVisionModel"`

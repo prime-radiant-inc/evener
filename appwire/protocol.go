@@ -387,6 +387,7 @@ var Notifications = []NotificationSpec{
 	{NotifyThreadClosed, ThreadClosedParams{}, "Session ended."},
 	{NotifyThreadStatusChanged, ThreadStatusChangedParams{}, "Thread status (type + active flags) changed."},
 	{NotifyThreadQueueChanged, ThreadQueueChangedParams{}, "The per-session input queue depth/preview changed."},
+	{NotifyConversationProvenanceChanged, ConversationProvenanceChangedParams{}, "Authoritative conversational admission, retirement or request coverage changed."},
 	{NotifyThreadNameChanged, ThreadNameChangedParams{}, "The session title changed (generated or user-renamed)."},
 	{NotifyThreadModelChanged, ThreadModelChangedParams{}, "The session's model/provider changed mid-session (thread/model/set or an equivalent switch)."},
 	{NotifyThreadReasoningEffortChanged, ThreadReasoningEffortChangedParams{}, "The session's reasoning effort changed mid-session (thread/reasoning-effort/set)."},

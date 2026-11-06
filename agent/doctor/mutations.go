@@ -155,6 +155,7 @@ func Mutations(stateBase, selector string) (MutationReport, error) {
 // added to the runtime snapshot must break this decode loudly instead of being
 // silently dropped from a diagnosis.
 type clientMutationStoreFile struct {
+	ConversationRevision   uint64                                `json:"conversation_revision"`
 	HumanNote              *string                               `json:"human_note"`
 	Version                int                                   `json:"version"`
 	SessionID              string                                `json:"session_id"`
@@ -174,24 +175,25 @@ type clientMutationStoreFile struct {
 }
 
 type clientMutationStoreRecord struct {
-	Actor               clientMutationStoreActor                `json:"actor"`
-	ClientMutationID    string                                  `json:"client_mutation_id"`
-	Method              string                                  `json:"method"`
-	Payload             json.RawMessage                         `json:"payload"`
-	Preconditions       json.RawMessage                         `json:"preconditions"`
-	StableTurnID        string                                  `json:"stable_turn_id"`
-	StableQueueEntryIDs []string                                `json:"stable_queue_entry_ids"`
-	AnswerToTurnIDs     []string                                `json:"answer_to_turn_ids"`
-	PayloadHash         string                                  `json:"payload_hash"`
-	OperationState      string                                  `json:"operation_state"`
-	ExecutionState      string                                  `json:"execution_state"`
-	ProjectionState     string                                  `json:"projection_state"`
-	Result              json.RawMessage                         `json:"result"`
-	Rejection           *clientMutationStoreRejection           `json:"rejection"`
-	Failure             json.RawMessage                         `json:"failure"`
-	AttemptGeneration   uint64                                  `json:"attempt_generation"`
-	SteeringKind        string                                  `json:"steering_kind"`
-	CommandPreparations []clientMutationStoreCommandPreparation `json:"command_preparations"`
+	ConversationInputIDs []string                                `json:"conversation_input_ids"`
+	Actor                clientMutationStoreActor                `json:"actor"`
+	ClientMutationID     string                                  `json:"client_mutation_id"`
+	Method               string                                  `json:"method"`
+	Payload              json.RawMessage                         `json:"payload"`
+	Preconditions        json.RawMessage                         `json:"preconditions"`
+	StableTurnID         string                                  `json:"stable_turn_id"`
+	StableQueueEntryIDs  []string                                `json:"stable_queue_entry_ids"`
+	AnswerToTurnIDs      []string                                `json:"answer_to_turn_ids"`
+	PayloadHash          string                                  `json:"payload_hash"`
+	OperationState       string                                  `json:"operation_state"`
+	ExecutionState       string                                  `json:"execution_state"`
+	ProjectionState      string                                  `json:"projection_state"`
+	Result               json.RawMessage                         `json:"result"`
+	Rejection            *clientMutationStoreRejection           `json:"rejection"`
+	Failure              json.RawMessage                         `json:"failure"`
+	AttemptGeneration    uint64                                  `json:"attempt_generation"`
+	SteeringKind         string                                  `json:"steering_kind"`
+	CommandPreparations  []clientMutationStoreCommandPreparation `json:"command_preparations"`
 }
 
 type clientMutationStoreCommandPreparation struct {

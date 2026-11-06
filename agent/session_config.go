@@ -374,7 +374,8 @@ type spawnConfig struct {
 	// inherited unchanged like descendantEvent; each descendant installs it as
 	// its own transcript's recorded-entry hook, so it runs under that
 	// transcript's append lock.
-	descendantRecorded func(sessionID string, rec transcript.Record)
+	descendantRecorded    func(sessionID string, rec transcript.Record)
+	descendantPublication func(sessionID string) TranscriptPublicationHooks
 
 	// parentDelegateID is the durable delegate handle that owns this child
 	// session in its parent.

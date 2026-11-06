@@ -318,5 +318,12 @@ func MergeThreadItems(existing, incoming appwire.ThreadItem) appwire.ThreadItem 
 	if incoming.ID == "" {
 		incoming.ID = existing.ID
 	}
+	if incoming.ConversationProvenance == nil {
+		incoming.ConversationProvenance = existing.ConversationProvenance
+	}
+	if incoming.ConversationProvenance != nil {
+		incoming.ConversationProvenance = appwire.ClonePointer(incoming.ConversationProvenance)
+		incoming.ConversationProvenance.SourceItemID = incoming.ID
+	}
 	return incoming
 }

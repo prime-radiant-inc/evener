@@ -1123,21 +1123,23 @@ func newHubAppServerWithNavigationAndTrace(cfg hubcore.WebConfig, sources *appso
 			return appserver.SubscriptionAdmissionResolution{Key: key, Intent: appserver.SubscriptionAdmissionResolved}
 		},
 		Features: appwire.FeatureSet{
-			SessionTools:              cfg.HubID != "",
-			ThreadList:                true,
-			ThreadTurnsList:           true,
-			TurnStart:                 true,
-			TurnSteer:                 true,
-			ThreadClear:               true,
-			ThreadShutdown:            true,
-			ForkFromTurn:              true,
-			Tasks:                     true,
-			TranscriptList:            true,
-			ModelList:                 true,
-			DirectoryComplete:         true,
-			Auth:                      true,
-			TranscriptDisplaySettings: true,
-			KeybindingsSettings:       true,
+			SessionTools:               cfg.HubID != "",
+			Voice:                      true,
+			VoicePresentationContextV1: true,
+			ThreadList:                 true,
+			ThreadTurnsList:            true,
+			TurnStart:                  true,
+			TurnSteer:                  true,
+			ThreadClear:                true,
+			ThreadShutdown:             true,
+			ForkFromTurn:               true,
+			Tasks:                      true,
+			TranscriptList:             true,
+			ModelList:                  true,
+			DirectoryComplete:          true,
+			Auth:                       true,
+			TranscriptDisplaySettings:  true,
+			KeybindingsSettings:        true,
 		},
 	})
 	// One credentials store for every credential surface this server builds.
@@ -1460,6 +1462,9 @@ func registerThreadHandlers(
 		return subagentPreviewFromThread(resp.Thread, ref, params.Limit), nil
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodThreadStart, func(ctx context.Context, params appwire.ThreadStartParams) (appwire.ThreadStartResponse, error) {
+		if err := validateHubVoicePresentation(ctx, params.Input, appwire.MethodThreadStart, ""); err != nil {
+			return appwire.ThreadStartResponse{}, err
+		}
 		resp, err := hubThreadStart(ctx, cfg, sources, params)
 		if err != nil {
 			return appwire.ThreadStartResponse{}, err
@@ -1492,11 +1497,17 @@ func registerThreadHandlers(
 		if params.ManagerProof != nil {
 			return appwire.TurnStartResponse{}, appwire.InvalidParams("actor metadata is not a human input argument")
 		}
+		if err := validateHubVoicePresentation(ctx, params.Input, appwire.MethodTurnStart, params.ExpectedInstanceID); err != nil {
+			return appwire.TurnStartResponse{}, err
+		}
 		return operations.Start(ctx, params)
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodTurnSteer, func(ctx context.Context, params appwire.TurnSteerParams) (appwire.TurnSteerResponse, error) {
 		if params.ManagerProof != nil {
 			return appwire.TurnSteerResponse{}, appwire.InvalidParams("actor metadata is not a human input argument")
+		}
+		if err := validateHubVoicePresentation(ctx, params.Input, appwire.MethodTurnSteer, params.ExpectedInstanceID); err != nil {
+			return appwire.TurnSteerResponse{}, err
 		}
 		return operations.Steer(ctx, params)
 	})
@@ -1529,11 +1540,17 @@ func registerThreadHandlers(
 		if params.ManagerProof != nil {
 			return appwire.TurnQueueResponse{}, appwire.InvalidParams("actor metadata is not a human input argument")
 		}
+		if err := validateHubVoicePresentation(ctx, params.Input, appwire.MethodTurnQueue, params.ExpectedInstanceID); err != nil {
+			return appwire.TurnQueueResponse{}, err
+		}
 		return operations.Queue(ctx, params)
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodTurnDrainAsSteer, func(ctx context.Context, params appwire.TurnDrainAsSteerParams) (appwire.TurnDrainAsSteerResponse, error) {
 		if params.ManagerProof != nil {
 			return appwire.TurnDrainAsSteerResponse{}, appwire.InvalidParams("actor metadata is not a human input argument")
+		}
+		if err := validateHubVoicePresentation(ctx, params.Input, appwire.MethodTurnDrainAsSteer, params.ExpectedInstanceID); err != nil {
+			return appwire.TurnDrainAsSteerResponse{}, err
 		}
 		if err := validateAppWireInputItems(params.Input); err != nil {
 			return appwire.TurnDrainAsSteerResponse{}, appwire.InvalidParams(err.Error())
