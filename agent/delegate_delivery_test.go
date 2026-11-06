@@ -50,6 +50,38 @@ func TestDelegateControllerSecondDeliveryWaitsForFirstLiveAck(t *testing.T) {
 	}
 }
 
+// A delivery the controller refuses for a transient reason — its owner is
+// beginning an attention turn, or a stop probe is running — carries no error,
+// but the refusal drops the plan's claim and leaves the durable pending
+// delivery unowned. Reporting that outcome as success loses the delivery:
+// once the transient condition clears, nothing re-plans it, so a completed
+// child's report never reaches its parent as durable attention and no pending
+// attention, deferred delivery, or error names the loss (#5564). The refusal
+// must be reported as retryable so its receiver retries the delivery.
+func TestDelegateControllerTransientRefusalLeavesDeliveryRetryable(t *testing.T) {
+	c, _, plan := controllerWithNestedDelegateDeliveries(t)
+	if plan.ownerDelegateID == "" {
+		t.Fatalf("nested delivery owner = %q, want the parent delegate", plan.ownerDelegateID)
+	}
+	c.mu.Lock()
+	c.reservations[9001] = &delegateStartRecord{token: 9001, delegateID: plan.ownerDelegateID, trigger: delegatestore.TriggerAttention}
+	c.mu.Unlock()
+	_, err := deliverDelegatePacket(plan, plan.receiver)
+	if !errors.Is(err, errDelegateDeliveryRetry) {
+		t.Fatalf("refused delivery error = %v, want a retryable refusal", err)
+	}
+	c.mu.Lock()
+	delete(c.reservations, 9001)
+	c.mu.Unlock()
+	if !c.deliveryPending(plan.delegateID, plan.deliveryID) {
+		t.Fatal("the refused delivery is no longer pending")
+	}
+	replay := c.ReplayDeliveries()
+	if len(replay) != 1 || replay[0].deliveryID != plan.deliveryID {
+		t.Fatalf("re-planned deliveries = %#v, want the refused report", replay)
+	}
+}
+
 func TestDelegateControllerBlockedFirstDeliveryPreservesSecondInlineWaiter(t *testing.T) {
 	c, firstPlan, _, secondPlan, secondWaiter := controllerWithTwoDelegateDeliveries(t, true, true)
 	if firstPlan.waiter == nil || secondPlan != nil {
