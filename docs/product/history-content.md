@@ -79,8 +79,26 @@ transport recovery remain owned by their existing subsystems.
 A failed conversation summary leaves the existing history or the operation's
 deterministic checkpoint available. The authoritative transcript is unchanged.
 The next eligible compaction can install a valid summary and continue normal
-model work. Model selection, fallback eligibility, retry counts and warning
-visibility are unchanged; repeated failed compactions can still warn.
+model work.
+
+A reply rejected by local validation — empty, missing its summary section,
+cut off at the output limit, or an empty condensation batch — is retried on
+its own route up to two more times before that route gives up, on both summary
+surfaces: the conversation summary and the session-log fork summary, whose
+unparseable replies retry the same way. The configured cheap route spends its
+retries before the session-model fallback runs; provider errors keep their
+existing owners (the LLM client retries transient ones, permanent ones still
+trigger the route fallback) and are never re-rolled at the summary layer. Each
+route's attempt count is published in the `summary_failure` diagnostic.
+
+An automatic compaction pass that fails identically to the previously
+published failure stays quiet: the warning is news once per streak, not once
+per pass. A different failure signature, a summarize layer that runs to
+completion, or an explicit `/compact` or `compact_context` (which always
+report their outcome) re-arms or refreshes publication. A session-initiated
+recovery fold suppresses repeats like the pre-request pass. Daemon-log
+records follow the warning emission, so a suppressed repeat logs nothing
+either.
 
 Context management emits `summary_failure` with the selected provider/model,
 terminal failure category and available HTTP status in the existing warning

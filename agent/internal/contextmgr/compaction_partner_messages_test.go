@@ -1025,8 +1025,9 @@ func cutOffCheapModel(models *[]string) *stubSummarizeAdapter {
 	}}
 }
 
-// A cheap model's summary cut off at its output limit falls back to the
-// session model like any other rejected reply, so compaction still succeeds.
+// A cheap model's summary cut off at its output limit spends its re-roll
+// budget on its own route, then the session model summarizes, so compaction
+// still succeeds.
 func TestForceCompact_CutOffCheapSummaryFallsBackToTheSessionModel(t *testing.T) {
 	var models []string
 	client := llm.NewClient()
@@ -1038,8 +1039,8 @@ func TestForceCompact_CutOffCheapSummaryFallsBackToTheSessionModel(t *testing.T)
 	if history[0].Kind != schema.TurnSummary {
 		t.Fatalf("history starts with a %s, want the session model's summary (models %q)", history[0].Kind, models)
 	}
-	if strings.Join(models, " ") != "gpt-5-mini gpt-5.2" {
-		t.Fatalf("summary models = %q, want the cheap model then the session model", models)
+	if strings.Join(models, " ") != "gpt-5-mini gpt-5-mini gpt-5-mini gpt-5.2" {
+		t.Fatalf("summary models = %q, want the cheap model's three attempts then the session model", models)
 	}
 }
 

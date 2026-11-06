@@ -59,12 +59,62 @@ func shouldFallbackSummarizationModel(ctx context.Context, err error) bool {
 	}
 }
 
+// summaryRerollAttempts is how many times a route re-rolls a reply its local
+// validation rejected, before the resolution moves on to the fallback route
+// or fails. A rejected reply was a successful API call, so no other layer
+// retries it — the LLM client's retry policy owns provider errors — and one
+// more sample is cheap against the fold it saves: weak and abliterated
+// models emit rejected replies (empty, malformed, truncated) intermittently.
+// Deterministic local failures (uncondensable partner messages, a missing
+// model) and API errors are never re-rolled.
+const summaryRerollAttempts = 2
+
 // summarizationResult retains the selected route for validation that spans
 // multiple otherwise successful model calls, such as partner condensation.
 type summarizationResult struct {
 	llm.Response
 	route summarizationRoute
 	role  string
+}
+
+// rerollRejectedReply runs one summarization route until its reply is
+// accepted by judge, its re-roll budget is spent on rejected replies, or the
+// provider errors: an API error is never re-rolled, because the LLM client's
+// retry policy has already exhausted the transient ones behind it. A
+// cancellation between attempts replaces the rejection, so the failure
+// reports what actually stopped the resolution. All attempts share one API
+// attempt group — the caller's when it opened one (completeSummarization's
+// whole resolution), a fresh one otherwise (the fork summary) — so re-rolls
+// settle as one logical group on both summary surfaces.
+func rerollRejectedReply(ctx context.Context, call func(context.Context) (llm.Response, error), judge func(llm.Response) error) (resp llm.Response, attempts int, callErr, rejected error) {
+	callCtx, scope := llm.BeginAPIAttemptGroupScope(ctx)
+	defer scope.SettleResult(callErr)
+	resp, callErr = call(callCtx)
+	attempts = 1
+	if callErr == nil {
+		rejected = judge(resp)
+	}
+	for rejected != nil && callErr == nil && attempts <= summaryRerollAttempts {
+		if err := ctx.Err(); err != nil {
+			callErr, rejected = err, nil
+			break
+		}
+		resp, callErr = call(callCtx)
+		attempts++
+		rejected = nil
+		if callErr == nil {
+			rejected = judge(resp)
+		}
+	}
+	return
+}
+
+// routeAttempt is one route's outcome inside a summarization resolution.
+type routeAttempt struct {
+	resp     llm.Response
+	attempts int
+	apiErr   error
+	rejected error
 }
 
 // completeSummarization runs prompt on the summarizer's routes. The cheap
@@ -74,10 +124,11 @@ type summarizationResult struct {
 // failures than a model refusal as worth another model, and retries on the
 // session model — but only when the cheap caller has not already run it.
 //
-// accept, when non-nil, judges a reply; a rejected reply also falls through to
-// the session model, and is returned as an error if that reply is rejected
-// too. A rejected reply was still a successful API call, so the attempt group
-// settles on the API error alone.
+// accept, when non-nil, judges a reply; a rejected reply re-rolls the same
+// route up to summaryRerollAttempts times before the resolution falls through
+// to the session model, and is returned as an error when that reply is
+// rejected too. A rejected reply was still a successful API call, so the
+// attempt group settles on the API error alone.
 func (cm *Manager) completeSummarization(ctx context.Context, profile *provider.Profile, prompt string, accept func(llm.Response) error) (summarizationResult, error) {
 	routes := summarizationModels(profile)
 	if len(routes) == 0 {
@@ -91,35 +142,51 @@ func (cm *Manager) completeSummarization(ctx context.Context, profile *provider.
 	}
 	req := llm.Request{Messages: []llm.Message{llm.User(prompt)}, AdapterTimeout: cm.AdapterTimeout}
 	callCtx, attemptGroupScope := llm.BeginAPIAttemptGroupScope(ctx)
-	resp, ranSessionModel, apiErr := cm.cheap.CompleteConfigured(callCtx, profile, req)
-	var rejected error
-	if apiErr == nil {
-		rejected = judge(resp)
+
+	// attemptRoute adapts rerollRejectedReply to this resolution's judge.
+	// The whole resolution shares attemptGroupScope: rerollRejectedReply's
+	// own scope is a no-op under it, so both routes' re-rolls settle with it.
+	attemptRoute := func(run func(context.Context) (llm.Response, error)) routeAttempt {
+		resp, attempts, apiErr, rejected := rerollRejectedReply(callCtx, run, judge)
+		return routeAttempt{resp: resp, attempts: attempts, apiErr: apiErr, rejected: rejected}
 	}
+
+	var cheapRanSession bool
+	cheap := attemptRoute(func(callCtx context.Context) (llm.Response, error) {
+		resp, ranSession, err := cm.cheap.CompleteConfigured(callCtx, profile, req)
+		cheapRanSession = ranSession
+		return resp, err
+	})
+	resp, apiErr, rejected := cheap.resp, cheap.apiErr, cheap.rejected
 	route, role := routes[0], "cheap"
-	if ranSessionModel {
+	if cheapRanSession {
 		route, role = summarizationRoute{provider: profile.ID(), model: profile.Model()}, "session"
 	}
-	describe := func() *summaryFailureError {
+	describe := func(attempts int) *summaryFailureError {
+		var failure *summaryFailureError
 		if apiErr != nil {
-			return summaryFailure(apiErr, route, role)
+			failure = summaryFailure(apiErr, route, role)
+		} else {
+			failure = summaryFailure(rejected, route, role)
 		}
-		return summaryFailure(rejected, route, role)
+		if failure != nil {
+			failure.detail.Terminal.Attempts = attempts
+		}
+		return failure
 	}
-	failure := describe()
-	if !ranSessionModel && len(routes) > 1 && (rejected != nil || apiErr != nil && shouldFallbackSummarizationModel(ctx, apiErr)) {
+	failure := describe(cheap.attempts)
+	if !cheapRanSession && len(routes) > 1 && (rejected != nil || apiErr != nil && shouldFallbackSummarizationModel(ctx, apiErr)) {
 		// More than one route means the second is the session model, distinct
 		// from the configured cheap one; the caller ran only the cheap one.
 		sessionRoute := routes[len(routes)-1]
 		req.Provider, req.Model = sessionRoute.provider, sessionRoute.model
-		resp, apiErr = cm.client.Complete(callCtx, req)
-		rejected = nil
-		if apiErr == nil {
-			rejected = judge(resp)
-		}
+		session := attemptRoute(func(callCtx context.Context) (llm.Response, error) {
+			return cm.client.Complete(callCtx, req)
+		})
+		resp, apiErr, rejected = session.resp, session.apiErr, session.rejected
 		route, role = sessionRoute, "session"
 		previous := failure
-		failure = describe()
+		failure = describe(session.attempts)
 		if failure != nil && previous != nil {
 			failure.detail.Previous = previous.detail.Previous
 			failure.detail.Previous = append(failure.detail.Previous, previous.detail.Terminal)

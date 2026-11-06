@@ -71,8 +71,8 @@ func TestSummaryFailureRoutingAndRecovery(t *testing.T) {
 		wantCalls        []string
 		priorKind        string
 	}{
-		{"validation then failure", "cheap-fixture", false, false, []string{"cheap-fixture", "active-fixture"}, "rejected_output"},
-		{"validation then success", "cheap-fixture", false, true, []string{"cheap-fixture", "active-fixture"}, ""},
+		{"validation then failure", "cheap-fixture", false, false, []string{"cheap-fixture", "cheap-fixture", "cheap-fixture", "active-fixture"}, "rejected_output"},
+		{"validation then success", "cheap-fixture", false, true, []string{"cheap-fixture", "cheap-fixture", "cheap-fixture", "active-fixture"}, ""},
 		{"refusal then failure", "cheap-fixture", true, false, []string{"cheap-fixture", "active-fixture"}, "invalid_request"},
 		{"no cheap route", "", false, false, []string{"active-fixture"}, ""},
 		{"unservable cheap route", "missing-instance/cheap-fixture", false, false, []string{"active-fixture"}, ""},
@@ -208,7 +208,10 @@ func TestSummaryFailureValidationPreservesAPISuccess(t *testing.T) {
 	if err := logger.Close(); err != nil {
 		t.Fatal(err)
 	}
-	assertContextManagerLogicalGroup(t, readContextManagerAttemptRecords(t, path), apilog.AttemptSuccess)
+	// Both routes re-roll their rejected replies (three attempts each), and
+	// the whole resolution is still one logical attempt group whose settlement
+	// reports the transport success the rejections were.
+	assertContextManagerLogicalGroup(t, readContextManagerAttemptRecords(t, path), apilog.AttemptSuccess, 6)
 }
 
 func TestSummaryFailureUncondensablePartnerMessages(t *testing.T) {

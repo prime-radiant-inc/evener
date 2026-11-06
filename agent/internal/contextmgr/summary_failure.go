@@ -2,6 +2,8 @@ package contextmgr
 
 import (
 	"errors"
+	"strconv"
+	"strings"
 
 	"primeradiant.com/evener/agent/diagnostic"
 	"primeradiant.com/evener/agent/events"
@@ -76,6 +78,86 @@ func summaryFailure(err error, route summarizationRoute, role string) *summaryFa
 		failure.detail.Terminal = summaryAttempt(route, role, err)
 	}
 	return failure
+}
+
+// summaryFailureSignature identifies a summary failure by its safe diagnostic
+// shape: every route's provider, model, kind, reason, HTTP status and attempt
+// count, terminal first. Two failures with the same signature differ in
+// nothing the warning or its daemon-log record would say, so the second is
+// not news.
+func summaryFailureSignature(failure *diagnostic.SummaryFailure) string {
+	if failure == nil {
+		return ""
+	}
+	var b strings.Builder
+	write := func(attempt diagnostic.SummaryAttempt) {
+		b.WriteString(attempt.Provider)
+		b.WriteByte('/')
+		b.WriteString(attempt.Model)
+		b.WriteByte('|')
+		b.WriteString(attempt.Kind)
+		b.WriteByte('|')
+		b.WriteString(attempt.Reason)
+		b.WriteByte('|')
+		b.WriteString(strconv.Itoa(attempt.Status))
+		b.WriteByte('|')
+		b.WriteString(strconv.Itoa(attempt.Attempts))
+		b.WriteByte('|')
+	}
+	write(failure.Terminal)
+	for _, previous := range failure.Previous {
+		write(previous)
+	}
+	return b.String()
+}
+
+// shouldPublishSummaryFailure reports whether a summary failure's warning
+// should publish. An automatic pass (suppressRepeats) publishes only when the
+// failure differs from the most recently published one. An explicit compaction
+// always publishes and refreshes the latch, so an identical following
+// automatic failure stays quiet: the user just heard this one.
+func (cm *Manager) shouldPublishSummaryFailure(failure *diagnostic.SummaryFailure, suppressRepeats bool) bool {
+	if !suppressRepeats {
+		cm.publishSummaryFailureRepeat(failure)
+		return true
+	}
+	return cm.claimSummaryFailureRepeat(failure)
+}
+
+// claimSummaryFailureRepeat reports whether an automatic pass should publish
+// this summary failure's warning: true when its signature differs from the
+// most recently published one, false when it repeats it. A claimed signature
+// is stored, so the next identical failure stays quiet until a different
+// failure publishes or clearSummaryFailureRepeat re-arms publication.
+func (cm *Manager) claimSummaryFailureRepeat(failure *diagnostic.SummaryFailure) bool {
+	signature := summaryFailureSignature(failure)
+	cm.mu.Lock()
+	defer cm.mu.Unlock()
+	if signature != "" && signature == cm.lastSummaryFailureRepeat {
+		return false
+	}
+	cm.lastSummaryFailureRepeat = signature
+	return true
+}
+
+// publishSummaryFailureRepeat records a failure published unconditionally —
+// explicit compaction always reports its outcome — so an identical following
+// automatic failure stays quiet: the user just heard this one.
+func (cm *Manager) publishSummaryFailureRepeat(failure *diagnostic.SummaryFailure) {
+	if signature := summaryFailureSignature(failure); signature != "" {
+		cm.mu.Lock()
+		cm.lastSummaryFailureRepeat = signature
+		cm.mu.Unlock()
+	}
+}
+
+// clearSummaryFailureRepeat re-arms warning publication after a summarize
+// layer ran to completion, installed or not: either way the fold is no longer
+// stuck on the failure it was repeating.
+func (cm *Manager) clearSummaryFailureRepeat() {
+	cm.mu.Lock()
+	cm.lastSummaryFailureRepeat = ""
+	cm.mu.Unlock()
 }
 
 // summarizerFailureWarning never passes a raw error to a prose classifier:

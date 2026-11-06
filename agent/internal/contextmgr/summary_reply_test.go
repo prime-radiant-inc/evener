@@ -16,12 +16,19 @@ import (
 // returns the summarizer's result.
 func summarizeReplying(t *testing.T, reply, instructions string) ([]schema.Turn, error) {
 	t.Helper()
-	adapter := &fakeAdapter{
-		name: "openai",
-		steps: []func(req llm.Request) llm.Response{
-			func(llm.Request) llm.Response { return llm.Response{Message: llm.Assistant(reply)} },
-		},
-	}
+	return summarizeReplyingFrom(t, func(llm.Request) llm.Response {
+		return llm.Response{Message: llm.Assistant(reply)}
+	}, instructions)
+}
+
+// summarizeReplyingFrom is summarizeReplying for a model whose replies come
+// from the scripted function, for cases where the reply must change between
+// attempts.
+func summarizeReplyingFrom(t *testing.T, reply func(llm.Request) llm.Response, instructions string) ([]schema.Turn, error) {
+	t.Helper()
+	adapter := &stubSummarizeAdapter{name: "openai", respFn: func(req llm.Request) (llm.Response, error) {
+		return reply(req), nil
+	}}
 	client := llm.NewClient()
 	client.Register(adapter)
 	cm := NewManager(NewOpenAIProfile("gpt-5.2"), client, cheapmodel.New(client))
@@ -100,19 +107,24 @@ func TestSummarizeWithLLM_StoresReplyWithRequiredSection(t *testing.T) {
 	}
 }
 
-// Caller instructions replace the required sections, so only an empty reply is
-// rejected under them.
+// Caller instructions replace the required sections, so only an empty reply
+// is rejected under them. A model that keeps replying empty exhausts its
+// re-roll budget and still fails the fold.
 func TestSummarizeWithLLM_InstructionsRequireOnlyANonEmptyReply(t *testing.T) {
 	if _, err := summarizeReplying(t, "Kept: the auth fix and its failing test.", "keep only the auth work"); err != nil {
 		t.Fatalf("summarizeWithLLM: %v", err)
 	}
-	if _, err := summarizeReplying(t, "", "keep only the auth work"); err == nil {
+	adapterReply := func(llm.Request) llm.Response {
+		return llm.Response{Message: llm.Assistant("")}
+	}
+	if _, err := summarizeReplyingFrom(t, adapterReply, "keep only the auth work"); err == nil {
 		t.Fatal("summarizeWithLLM stored an empty reply under instructions, want an error")
 	}
 }
 
-// A configured cheap model whose reply is not a summary falls through to the
-// session model, like a cheap model that fails outright.
+// A configured cheap model whose reply is not a summary spends its re-roll
+// budget on its own route first; the session model is tried the same way, like
+// a cheap model that fails outright.
 func TestSummarizeWithLLM_RejectedCheapReplyFallsBackToSessionModel(t *testing.T) {
 	for name, tc := range map[string]struct {
 		sessionReply string
@@ -122,11 +134,13 @@ func TestSummarizeWithLLM_RejectedCheapReplyFallsBackToSessionModel(t *testing.T
 		"session model narrates":   {"I'll check the task list first.", false},
 	} {
 		t.Run(name, func(t *testing.T) {
-			adapter := &fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
-				func(llm.Request) llm.Response {
-					return llm.Response{Message: llm.Assistant("I'll read the plan, then check current state.")}
-				},
-				func(llm.Request) llm.Response { return llm.Response{Message: llm.Assistant(tc.sessionReply)} },
+			var models []string
+			adapter := &stubSummarizeAdapter{name: "openai", respFn: func(req llm.Request) (llm.Response, error) {
+				models = append(models, req.Model)
+				if req.Model == "gpt-5-mini" {
+					return llm.Response{Message: llm.Assistant("I'll read the plan, then check current state.")}, nil
+				}
+				return llm.Response{Message: llm.Assistant(tc.sessionReply)}, nil
 			}}
 			client := llm.NewClient()
 			client.Register(adapter)
@@ -140,12 +154,12 @@ func TestSummarizeWithLLM_RejectedCheapReplyFallsBackToSessionModel(t *testing.T
 
 			result, err := cm.summarizeWithLLM(context.Background(), history, 1)
 
-			var models []string
-			for _, r := range adapter.Requests() {
-				models = append(models, r.Model)
+			wantModels := []string{"gpt-5-mini", "gpt-5-mini", "gpt-5-mini", "gpt-5.2"}
+			if !tc.wantStored {
+				wantModels = append(wantModels, "gpt-5.2", "gpt-5.2")
 			}
-			if strings.Join(models, " ") != "gpt-5-mini gpt-5.2" {
-				t.Fatalf("summary models = %q, want [gpt-5-mini gpt-5.2]", models)
+			if strings.Join(models, " ") != strings.Join(wantModels, " ") {
+				t.Fatalf("summary models = %q, want %q", models, wantModels)
 			}
 			if !tc.wantStored {
 				if err == nil {

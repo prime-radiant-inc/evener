@@ -4,16 +4,129 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"sync/atomic"
 	"testing"
 
 	"primeradiant.com/evener/agent/internal/cheapmodel"
 	"primeradiant.com/evener/agent/internal/sessionlog"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/llm"
+	"primeradiant.com/evener/llm/apilog"
 )
 
 // stubSummarizeAdapter (the minimal llm provider stub) lives in
 // testhelpers_test.go, shared with the strategy tests.
+
+// A reply that fails JSON parsing is this surface's rejected reply: the same
+// route is tried again before the caller is told the fork summary failed.
+func TestForkSummarizeRetriesRejectedReply(t *testing.T) {
+	entry := sessionlog.SessionLogEntry{Action: "shell", Summary: "Ran the build.", Outcome: "success", FilesTouched: []string{"main.go"}}
+	entryJSON, _ := json.Marshal(entry)
+	var calls atomic.Int32
+	adapter := &stubSummarizeAdapter{
+		name: "openai",
+		respFn: func(llm.Request) (llm.Response, error) {
+			if calls.Add(1) == 1 {
+				return llm.Response{Message: llm.Assistant("not json")}, nil
+			}
+			return llm.Response{Message: llm.Assistant(string(entryJSON))}, nil
+		},
+	}
+	client := llm.NewClient()
+	client.Register(adapter)
+	turns := []schema.Turn{
+		{Kind: schema.TurnToolResults, Message: llm.ToolResultNamed("c1", "shell", "PASS", false)},
+	}
+
+	got, err := forkSummarize(context.Background(), cheapmodel.New(client), NewOpenAIProfile("gpt-5.2"), turns, 3)
+	if err != nil {
+		t.Fatalf("forkSummarize: %v", err)
+	}
+	if calls.Load() != 2 {
+		t.Fatalf("calls = %d, want the rejected attempt plus one retry", calls.Load())
+	}
+	if got.Turn != 3 || got.Action != "shell" {
+		t.Fatalf("entry = %+v, want the retried reply's entry", got)
+	}
+}
+
+// A model that keeps producing unparseable replies spends the same re-roll
+// budget as the conversation surface before the error reaches the strategy,
+// and the budget-exhausted error still wraps the JSON parse cause.
+func TestForkSummarizeExhaustsThreeAttempts(t *testing.T) {
+	var calls atomic.Int32
+	adapter := &stubSummarizeAdapter{
+		name: "openai",
+		respFn: func(llm.Request) (llm.Response, error) {
+			calls.Add(1)
+			return llm.Response{Message: llm.Assistant("still not json")}, nil
+		},
+	}
+	client := llm.NewClient()
+	client.Register(adapter)
+	turns := []schema.Turn{
+		{Kind: schema.TurnToolResults, Message: llm.ToolResultNamed("c1", "shell", "PASS", false)},
+	}
+
+	_, err := forkSummarize(context.Background(), cheapmodel.New(client), NewOpenAIProfile("gpt-5.2"), turns, 1)
+	if err == nil {
+		t.Fatal("forkSummarize stored an unparseable reply")
+	}
+	if calls.Load() != 3 {
+		t.Fatalf("calls = %d, want three attempts", calls.Load())
+	}
+	var syntaxErr *json.SyntaxError
+	if !errors.As(err, &syntaxErr) {
+		t.Fatalf("exhausted-budget error lost the parse cause: %v", err)
+	}
+}
+
+// The fork summary's re-rolls settle as ONE logical attempt group, like the
+// conversation surface's: three transport successes and one settlement.
+func TestForkSummarizeReRollsSettleAsOneAttemptGroup(t *testing.T) {
+	client, logger, path := contextManagerAttemptClient(t, &contextManagerAttemptAdapter{name: "openai", text: "not json"})
+	turns := []schema.Turn{
+		{Kind: schema.TurnToolResults, Message: llm.ToolResultNamed("c1", "shell", "PASS", false)},
+	}
+
+	_, err := forkSummarize(context.Background(), cheapmodel.New(client), NewOpenAIProfile("gpt-5.2"), turns, 1)
+	if err == nil {
+		t.Fatal("forkSummarize stored an unparseable reply")
+	}
+	if err := logger.Close(); err != nil {
+		t.Fatal(err)
+	}
+	assertContextManagerLogicalGroup(t, readContextManagerAttemptRecords(t, path), apilog.AttemptSuccess, 3)
+}
+
+// Cancellation between attempts stops the fork summary and reports the
+// cancellation, not the parse failure of the last reply.
+func TestForkSummarizeRetriesStopOnCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	var calls atomic.Int32
+	adapter := &stubSummarizeAdapter{
+		name: "openai",
+		respFn: func(llm.Request) (llm.Response, error) {
+			calls.Add(1)
+			cancel()
+			return llm.Response{Message: llm.Assistant("not json")}, nil
+		},
+	}
+	client := llm.NewClient()
+	client.Register(adapter)
+	turns := []schema.Turn{
+		{Kind: schema.TurnToolResults, Message: llm.ToolResultNamed("c1", "shell", "PASS", false)},
+	}
+
+	_, err := forkSummarize(ctx, cheapmodel.New(client), NewOpenAIProfile("gpt-5.2"), turns, 1)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("forkSummarize err = %v, want the cancellation", err)
+	}
+	if calls.Load() != 1 {
+		t.Fatalf("calls = %d, want no retry after cancellation", calls.Load())
+	}
+}
 
 func TestForkSummarize_RoutesToCheapProvider(t *testing.T) {
 	// A configured cross-provider cheap model must route the summarize side call

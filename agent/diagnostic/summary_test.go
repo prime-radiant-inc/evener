@@ -14,6 +14,48 @@ import (
 	"primeradiant.com/evener/llm"
 )
 
+// A route's attempt count rides the wire with the rest of the diagnostic,
+// and is omitted when that route made no call.
+func TestSummaryAttemptAttemptsWireField(t *testing.T) {
+	t.Parallel()
+	made, err := json.Marshal(SummaryAttempt{Route: "session", Kind: "rejected_output", Attempts: 3})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(made), `"attempts":3`) {
+		t.Fatalf("attempt count missing from wire: %s", made)
+	}
+	none, err := json.Marshal(SummaryAttempt{Route: "none", Kind: "configuration"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(none), "attempts") {
+		t.Fatalf("attempt count present without calls: %s", none)
+	}
+}
+
+// The failure message states how many calls the terminal route made when its
+// re-roll budget was spent, like it states the HTTP status.
+func TestSummaryFailureInfoStatesAttemptCount(t *testing.T) {
+	t.Parallel()
+	attempt := SummaryAttemptFromError("provider-fixture", "active-fixture", "session", errors.New("opaque"))
+	attempt.Kind, attempt.Stage, attempt.Reason = "rejected_output", "validation", "empty_reply"
+	attempt.Attempts = 3
+	message, info := SummaryFailureInfo(SummaryFailure{Terminal: attempt})
+	if !strings.Contains(message, strconv.Itoa(3)) {
+		t.Fatalf("attempt count missing from message: %q", message)
+	}
+	if info.Title == "" || info.Hint == "" {
+		t.Fatalf("missing user-facing fields: %+v", info)
+	}
+	single := attempt
+	single.Attempts = 1
+	otherMessage, _ := SummaryFailureInfo(SummaryFailure{Terminal: single})
+	if otherMessage == message {
+		t.Fatalf("single attempt reads as a spent budget: %q", otherMessage)
+	}
+}
+
 // Dropping typed classification, retry disposition, or identifier bounding must
 // fail independently of the warning's authored prose.
 func TestSummaryFailureDiagnostics(t *testing.T) {

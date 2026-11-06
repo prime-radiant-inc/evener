@@ -146,6 +146,74 @@ func TestSummaryFailureJourney(t *testing.T) {
 	}
 }
 
+// A rejected reply re-rolls into recovery inside the same compaction: the
+// model's first empty reply costs nothing — the summary installs from the
+// retry, no failure warning or daemon-log record surfaces, and the session
+// continues. Replacing the process logger keeps this test serial like the
+// others in this file.
+func TestSummaryFailureJourneyRejectedReplyReRollsIntoRecovery(t *testing.T) {
+	var output bytes.Buffer
+	previous := slog.Default()
+	slog.SetDefault(slog.New(slog.NewJSONHandler(&output, nil)))
+	t.Cleanup(func() { slog.SetDefault(previous) })
+
+	stateDir := t.TempDir()
+	var summaryCalls atomic.Int32
+	adapter := &agenttest.ModelTrackingAdapter{Provider: "openai", Respond: func(req llm.Request) (llm.Response, error) {
+		if req.Model != "cheap-fixture" {
+			return agenttest.FinalResponse("next-turn-5c8e"), nil
+		}
+		if summaryCalls.Add(1) == 1 {
+			return llm.Response{Message: llm.Assistant("")}, nil
+		}
+		return llm.Response{Message: llm.Assistant("## Progress\nsummary-rerolled-6f2b")}, nil
+	}}
+	client := llm.NewClient()
+	client.Register(adapter)
+	sess := newSession(t, withClient(client), withProfile(WithCheapModel(NewOpenAIProfile("gpt-5.2"), "cheap-fixture")), withDir(stateDir), withoutGitSnapshot(), withConfig(SessionConfig{
+		StateDir: stateDir, AgentsDocPath: filepath.Join(stateDir, "absent-AGENTS.md"),
+	}))
+	if err := sess.Rename("summary-reroll-journey"); err != nil {
+		t.Fatal(err)
+	}
+	collect := drainEvents(sess)
+	sess.contextMgr.PreserveRecentTurns = 2
+	for i := range 12 {
+		turn := schema.NewTurn(schema.TurnUserInput, llm.User(fmt.Sprintf("reroll-human-%02d-4b3c", i)))
+		sess.recordTurn(turn, turn)
+	}
+	if err := sess.Compact(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if summaryCalls.Load() != 2 {
+		t.Fatalf("summary attempts = %d, want the rejected reply plus its retry", summaryCalls.Load())
+	}
+	if !slices.ContainsFunc(currentHistory(t, sess), func(turn schema.Turn) bool {
+		return turn.Kind == schema.TurnSummary && strings.Contains(turn.Message.Text(), "summary-rerolled-6f2b")
+	}) {
+		t.Error("the retried reply did not install as the summary")
+	}
+	if _, err := sess.ProcessInput(context.Background(), "continue-after-reroll-0a1b", nil); err != nil {
+		t.Fatal(err)
+	}
+	sess.Close()
+	completed := false
+	for _, ev := range collect() {
+		if warning, ok := ev.Data.(events.WarningData); ok && warning.Code == "summary_failure" {
+			t.Error("a self-healed compaction published a summary failure")
+		}
+		if ev.Kind == events.EventTurnEnded {
+			completed = true
+		}
+	}
+	if !completed {
+		t.Error("next turn did not complete")
+	}
+	if got := len(summaryFailureLogRecords(t, output.Bytes())); got != 0 {
+		t.Errorf("self-healed compaction logged %d failure records", got)
+	}
+}
+
 func TestSummaryFailureChildWithUnreadEvents(t *testing.T) {
 	for _, brokenSink := range []bool{false, true} {
 		t.Run(fmt.Sprintf("broken_sink_%t", brokenSink), func(t *testing.T) {

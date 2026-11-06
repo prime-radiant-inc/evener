@@ -18,6 +18,11 @@ import (
 // sessionlog.SessionLogEntry summarizing the most recent action in turns. The
 // prompt explicitly preserves failure signals so errors are not lost during
 // summarization.
+//
+// A reply that fails to parse as the entry JSON is this surface's rejected
+// reply, and is re-rolled on the same route through rerollRejectedReply — the
+// same step the conversation summary uses — before the error reaches the
+// caller, so both surfaces' retry behavior stays in step.
 func forkSummarize(ctx context.Context, cheap *cheapmodel.Caller, profile *provider.Profile, turns []schema.Turn, turnNumber int) (sessionlog.SessionLogEntry, error) {
 	prompt := buildSummarizePrompt(turns)
 
@@ -25,20 +30,26 @@ func forkSummarize(ctx context.Context, cheap *cheapmodel.Caller, profile *provi
 		Messages: []llm.Message{llm.User(prompt)},
 	}
 
-	resp, err := cheap.Complete(ctx, profile, req)
-	if err != nil {
-		return sessionlog.SessionLogEntry{}, fmt.Errorf("fork summarize: %w", err)
-	}
-
-	text := strings.TrimSpace(resp.Text())
-	// Strip markdown code fences if the model wraps JSON in them.
-	text = stripCodeFence(text)
-
 	var entry sessionlog.SessionLogEntry
-	if err := json.Unmarshal([]byte(text), &entry); err != nil {
-		return sessionlog.SessionLogEntry{}, fmt.Errorf("fork summarize: failed to parse JSON: %w (raw: %s)", err, text)
+	var raw string
+	_, _, callErr, rejected := rerollRejectedReply(ctx, func(callCtx context.Context) (llm.Response, error) {
+		return cheap.Complete(callCtx, profile, req)
+	}, func(reply llm.Response) error {
+		// Strip markdown code fences if the model wraps JSON in them.
+		raw = stripCodeFence(strings.TrimSpace(reply.Text()))
+		var parsed sessionlog.SessionLogEntry
+		if err := json.Unmarshal([]byte(raw), &parsed); err != nil {
+			return err
+		}
+		entry = parsed
+		return nil
+	})
+	if callErr != nil {
+		return sessionlog.SessionLogEntry{}, fmt.Errorf("fork summarize: %w", callErr)
 	}
-
+	if rejected != nil {
+		return sessionlog.SessionLogEntry{}, fmt.Errorf("fork summarize: failed to parse JSON: %w (raw: %s)", rejected, raw)
+	}
 	entry.Turn = turnNumber
 	return entry, nil
 }

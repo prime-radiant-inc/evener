@@ -19,6 +19,7 @@ test("summary failure survives strict current-state decoding with its real route
     kind: "rate_limit",
     stage: "provider",
     status: 429,
+    attempts: 1,
     retryable: true,
   });
   const original = hydrateThread(summaryFailureWireRead(), "local:summary-fixture", 0);

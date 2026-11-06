@@ -13,14 +13,18 @@ import (
 
 // SummaryAttempt contains bounded route metadata, never provider response text.
 type SummaryAttempt struct {
-	Provider  string `json:"provider,omitempty"`
-	Model     string `json:"model,omitempty"`
-	Route     string `json:"route"`
-	Kind      string `json:"kind"`
-	Stage     string `json:"stage"`
-	Reason    string `json:"reason,omitempty"`
-	Status    int    `json:"status,omitempty"`
-	Retryable *bool  `json:"retryable,omitempty"`
+	Provider string `json:"provider,omitempty"`
+	Model    string `json:"model,omitempty"`
+	Route    string `json:"route"`
+	Kind     string `json:"kind"`
+	Stage    string `json:"stage"`
+	Reason   string `json:"reason,omitempty"`
+	Status   int    `json:"status,omitempty"`
+	// Attempts is how many calls this route made in the resolution: one plus
+	// every same-route re-roll of a rejected reply. Zero (omitted) for a
+	// failure that reached no call.
+	Attempts  int   `json:"attempts,omitempty"`
+	Retryable *bool `json:"retryable,omitempty"`
 }
 
 // SummaryFailure separates the terminal route from earlier failed routes.
@@ -100,6 +104,9 @@ func SummaryFailureInfo(failure SummaryFailure) (string, Info) {
 	if a.Reason != "" {
 		message += ", " + a.Reason
 	}
+	if a.Attempts > 1 {
+		message += fmt.Sprintf(" after %d attempts", a.Attempts)
+	}
 	info := Info{Source: SourceEvener, Title: "Summary failure", Hint: "The cause is unknown. Inspect the safe summary diagnostic in the daemon log."}
 	if a.Stage == "provider" {
 		info.Source = SourceProvider
@@ -138,7 +145,7 @@ func SummaryFailureInfo(failure SummaryFailure) (string, Info) {
 	case "invalid_request":
 		info.Title, info.Hint = "Summary request rejected", "Check that this model supports the summary request."
 	case "rejected_output":
-		info.Title, info.Hint = "Summary output rejected", "The response could not safely replace the conversation. Retry or choose a more capable summary model."
+		info.Title, info.Hint = "Summary output rejected", "Evener retried the reply and it still could not safely replace the conversation. If this keeps repeating, choose a more capable summary model."
 	}
 	if a.Route == "cheap" {
 		info.Hint += " This is the fast/cheap model, which may be configured separately from the main model."

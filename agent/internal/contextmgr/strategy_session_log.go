@@ -90,7 +90,7 @@ func (s *SessionLogStrategy) ManageContext(ctx context.Context, history *[]schem
 		s.cm.applyLayer(ctx, emitFn, history, prof, "observation_mask", "", func(h []schema.Turn) ([]schema.Turn, error) {
 			maskObservations(h, s.cm.PreserveRecentTurns, s.cm.resultToolName())
 			return h, nil
-		})
+		}, true)
 		compacted = true
 		p, prof = estimatePressure()
 	}
@@ -100,7 +100,7 @@ func (s *SessionLogStrategy) ManageContext(ctx context.Context, history *[]schem
 		s.cm.applyLayer(ctx, emitFn, history, prof, "thinking_clear", "", func(h []schema.Turn) ([]schema.Turn, error) {
 			clearThinking(h, s.cm.PreserveRecentTurns)
 			return h, nil
-		})
+		}, true)
 		compacted = true
 		p, prof = estimatePressure()
 	}
@@ -115,7 +115,7 @@ func (s *SessionLogStrategy) ManageContext(ctx context.Context, history *[]schem
 			h, folded = s.sessionLogCheckpointWithMeta(h, s.cm.PreserveRecentTurns, s.cm.metaFor(ctx))
 			checkpointed = folded
 			return h, nil
-		})
+		}, true)
 		compacted = true
 		p, prof = estimatePressure()
 	}
@@ -124,7 +124,7 @@ func (s *SessionLogStrategy) ManageContext(ctx context.Context, history *[]schem
 	if p >= s.cm.SummarizeThreshold && s.cm.client != nil {
 		if s.cm.applyLayer(ctx, emitFn, history, prof, "summarize", schema.TurnSummary, func(h []schema.Turn) ([]schema.Turn, error) {
 			return s.cm.summarizeFold(ctx, h, s.cm.PreserveRecentTurns, "", checkpointed)
-		}) {
+		}, true) {
 			compacted = true
 		}
 	}

@@ -17,6 +17,7 @@ interface SummaryFailureWireFixture {
         kind: string;
         stage: string;
         status: number;
+        attempts: number;
         retryable: boolean;
       };
     };
