@@ -8,16 +8,18 @@
 import { describe, expect, test } from "vitest";
 import { displayTurnStatus } from "./itemFailure";
 import type { ThreadModel } from "./model";
+import { applyNotification } from "./reducer";
 import {
   applyHistoryReadFailure,
-  applyNotification,
   applyReadModel,
   applyReadResponse,
   hydrateThread,
   invalidateHistory,
   issueLatestWindowRead,
   mergeOlderItemPage,
-} from "./reducer";
+  pruneBackgroundHistoryBodies,
+} from "./transcriptHistory";
+import { itemTextPresence } from "./transcriptItems";
 import type {
   AnyNotification,
   HistoryChanges,
@@ -127,6 +129,36 @@ function read(
     ...(options.olderCursor ? { olderCursor: options.olderCursor } : {}),
   };
 }
+
+test.each([
+  { type: "steering", source: "user", steeringKind: undefined },
+  { type: "steering", source: undefined, steeringKind: "interrupted" },
+  { type: "steering", source: "daemon", steeringKind: undefined },
+  { type: "steering", source: "user", steeringKind: "human-note" },
+  { type: "steering", source: undefined, steeringKind: undefined },
+  { type: "agentMessage", source: "user", steeringKind: "interrupted" },
+])("background pruning keeps only steering boundary metadata for $type/$source/$steeringKind", (metadata) => {
+  const body = item("turn_boundary", 0, {
+    ...metadata,
+    text: "BODY_SENTINEL",
+    argumentsJson: "ARGUMENT_SENTINEL",
+  });
+  const model = hydrateThread(read([turn("turn_boundary", 1, [body])]), REF, NOW);
+  const pruned = pruneBackgroundHistoryBodies(model);
+  const identity = pruned.history?.turns[0]?.items[0];
+  if (!identity) throw new Error("Missing canonical identity");
+  expect(identity.id).toBe(body.id);
+  expect(identity.text).toBe("");
+  expect(itemTextPresence(identity)).toBe("omitted");
+  expect(identity.argumentsJSON).toBeUndefined();
+  expect(identity.source).toBe(metadata.type === "steering" ? metadata.source : undefined);
+  expect(identity.steeringKind).toBe(metadata.type === "steering" ? metadata.steeringKind : undefined);
+  // Retaining classification must not turn an identity-only item into a body.
+  expect(pruned.turns.flatMap((turn) => turn.items)).toEqual([]);
+  const again = pruneBackgroundHistoryBodies(pruned);
+  expect(again.history?.turns).toEqual(pruned.history?.turns);
+  expect(again.turns.flatMap((turn) => turn.items)).toEqual([]);
+});
 
 function page(turns: Turn[], options: Snapshot & { authoritative?: boolean } = {}): ThreadTurnsListResponse {
   return {
@@ -556,6 +588,28 @@ describe("authoritative (daemonless) reads", () => {
     expect(refreshed?.status).toBe("completed");
     expect(refreshed?.output).toBe("done");
   });
+});
+
+test("hydrated read changes obey held-only merge and stale or replacement identity gates", () => {
+  const tool = item("t1", 0, { type: "commandExecution", callId: "call_1", status: "inProgress", text: undefined });
+  const model = mergeOlderItemPage(hydrate([turn("t2", 6, [item("t2", 5)])]), page([turn("t1", 1, [tool])]));
+  const changes: HistoryChanges = {
+    items: [{ ...tool, status: "completed", output: "finished", version: 101 }, item("unloaded", 2)],
+  };
+  const fresh = hydrate([turn("t2", 6, [item("t2", 5)])], { length: 101 });
+  const next = applyReadModel(model, fresh, changes);
+  expect(shown(next)).toEqual([
+    ["t1", [itemKey("t1", 0)]],
+    ["t2", [itemKey("t2", 5)]],
+  ]);
+  expect(next.turns[0]?.items[0]).toMatchObject({ status: "completed", output: "finished" });
+  expect(applyReadModel(model, hydrate([], { length: 99 }), changes)).toBe(model);
+  const replacement = applyReadModel(
+    model,
+    hydrate([turn("new", 1, [item("new", 0)])], { incarnation: "inc_new" }),
+    changes,
+  );
+  expect(shown(replacement)).toEqual([["new", [itemKey("new", 0)]]]);
 });
 
 describe("the live overlay", () => {

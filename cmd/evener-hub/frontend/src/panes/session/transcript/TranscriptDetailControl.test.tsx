@@ -138,7 +138,14 @@ test("sets and clears only the browser-local value for the selected layout", asy
 
 test("keeps Custom and Advanced extras truthful in the editor summary", () => {
   const custom = makeTranscriptDisplayConfig(
-    { kind: "custom", toolIntent: true, toolCalls: false, reasoning: true, expandByDefault: false },
+    {
+      kind: "custom",
+      toolIntent: true,
+      toolCalls: false,
+      reasoning: true,
+      expandByDefault: false,
+      thinkingOpenByDefault: false,
+    },
     { roundTimings: true, systemEvents: true },
   );
   seedStore({ local: { desktop: custom } });
@@ -277,7 +284,7 @@ test("sets and resets only Mobile local state when Desktop local state already e
   expect(transcriptDisplayStore.getState().hub).toEqual({ desktop: hubDesktop, mobile: hubMobile });
 });
 
-test("composes the controlled overlay only from shared Buttons and Dialog/Sheet public APIs", () => {
+test("composes the controlled overlay only from shared controls and Dialog/Sheet public APIs", () => {
   const here = dirname(fileURLToPath(import.meta.url));
   const source = readFileSync(join(here, "TranscriptDetailControl.tsx"), "utf8");
 

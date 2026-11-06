@@ -83,6 +83,10 @@ type Options struct {
 	// handshake. Defaults: "evener-hub" and buildinfo.Version().
 	ClientName    string
 	ClientVersion string
+	// SessionToolsHubID is this hub's persisted nonsecret ID. On every attach,
+	// the connection owner identifies before publishing the channel. A bearer
+	// token authenticates the route, not the particular peer ID.
+	SessionToolsHubID string
 
 	// BackoffBase/BackoffMax bound the reconnect delay. Defaults 500ms / 30s.
 	BackoffBase time.Duration

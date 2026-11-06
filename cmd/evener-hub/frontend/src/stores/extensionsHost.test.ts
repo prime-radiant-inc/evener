@@ -3,7 +3,7 @@
 import type { HostRow, MarketplaceEntry } from "@evener/appwire-client";
 import { afterEach, beforeEach, expect, test } from "vitest";
 import { connectReadyFakeClient } from "../testing/connectionTestUtils";
-import { connectionStore } from "./connection";
+import { connectionStore, resetConnectionStoreForTests } from "./connection";
 import { extensionsInstanceForHost, extensionsStore, resetExtensionsStoreForTests } from "./extensions";
 import { hostsStore } from "./hosts";
 
@@ -31,14 +31,14 @@ function hostRow(overrides: Partial<HostRow> & Pick<HostRow, "name">): HostRow {
 }
 
 beforeEach(() => {
-  connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
+  resetConnectionStoreForTests();
   resetExtensionsStoreForTests();
   hostsStore.getState().resetForTests();
 });
 
 afterEach(() => {
   resetExtensionsStoreForTests();
-  connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
+  resetConnectionStoreForTests();
 });
 
 test("the local hub resolves to the controller's own store and issues the plain call", async () => {

@@ -305,17 +305,22 @@ export function TurnBlock({
     const ItemRenderer = itemRendererFor(item.type);
     const opensExchange = exchangeOpeners?.has(item.id);
     const closesExchange = exchangeClosers?.has(item.id);
+    // One display key per entry: the row key, the renderer's stable identity
+    // and the anchor all share it.
+    const displayKey = entryDisplayKey(entry);
     const renderedItem = (
       <ItemRenderer
         item={item}
         turn={shownTurn}
         live={isItemLive(item)}
         sessionRef={sessionRef}
+        displayKey={displayKey}
         opensExchange={opensExchange}
         closesExchange={closesExchange}
         agentLabel={agentLabel}
         projectedSummary={entry.kind === "critical" ? entry.summary : undefined}
         contentFree={entry.kind === "thinking"}
+        contentFreeLive={entry.kind === "thinking" ? entry.live : undefined}
         redacted={entry.kind === "critical" && entry.redacted}
         renderContext={itemRenderContext}
         thread={thread}
@@ -328,18 +333,13 @@ export function TurnBlock({
     );
     if (rowRoleFor(item, { opensExchange }) === "speaker") {
       renderedEntries.push(
-        <div key={entryDisplayKey(entry)} {...viewAnchorFor(entry)}>
+        <div key={displayKey} {...viewAnchorFor(entry)}>
           {renderedItem}
         </div>,
       );
     } else {
       renderedEntries.push(
-        <div
-          key={entryDisplayKey(entry)}
-          className={CLASS.runContent}
-          data-testid="run-content"
-          {...viewAnchorFor(entry)}
-        >
+        <div key={displayKey} className={CLASS.runContent} data-testid="run-content" {...viewAnchorFor(entry)}>
           {renderedItem}
         </div>,
       );

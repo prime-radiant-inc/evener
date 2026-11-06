@@ -1,9 +1,11 @@
 package transcriptindex
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"maps"
+	"slices"
 	"sort"
 	"strings"
 
@@ -102,9 +104,8 @@ type builder struct {
 	// logical-turn/group boundaries (e.g. a standalone HOOK_COMPLETED
 	// closing the assistant's group before its result arrives) — matching
 	// the full read's single registry, threaded for the whole scan. This
-	// state applies to legacy entries only (applyLegacy): a new-format
-	// COMMUNICATE entry carries its message explicitly, so applyIdentity
-	// never needs it. An item's own Context (see itemRecord) persists only
+	// state also covers inherited identity-format calls, whose transcript-only
+	// COMMUNICATE records are excluded from forks. An item's Context persists only
 	// the position each is at, not the projected item content: the reader
 	// replays the referenced raw entries to reconstruct the values, so build
 	// time only needs enough to decide the affected items' structure
@@ -253,7 +254,7 @@ func (b *builder) applyLegacy(ordinal uint64, offset int64, length uint32, entry
 			b.calls[item.CallID] = slot
 		}
 	}
-	b.recordCommState(entry, turnID, seed, base)
+	b.recordCommState(entry, turnID, seed, base, items)
 	return b.stampTurn(b.turnSlot, entry, ordinal, offset, length)
 }
 
@@ -349,19 +350,20 @@ func (b *builder) communicateContext(callID string) (strRef, error) {
 // comment). Called after the entry's items are recorded, so
 // communicateContext above still sees the state as it stood when this entry
 // was projected.
-func (b *builder) recordCommState(entry *schema.Turn, turnID string, seed map[string]string, c contributor) {
+func (b *builder) recordCommState(entry *schema.Turn, turnID string, seed map[string]string, c contributor, items []appwire.ThreadItem) {
 	if entry.Kind == schema.TurnAssistant {
 		var lastText string
+		// Read the actual projected messages: legacy text parts and identity
+		// text runs have different segmentation, and empty runs show nothing.
+		for _, item := range items {
+			if item.Type == "agentMessage" {
+				lastText = strings.TrimSpace(item.Text)
+			}
+		}
 		for _, part := range entry.Message.Content {
-			switch part.Kind {
-			case llm.ContentText:
-				if part.Text != "" {
-					lastText = strings.TrimSpace(part.Text)
-				}
-			case llm.ContentToolCall:
-				if part.ToolCall != nil && part.ToolCall.Name == "communicate" {
-					b.commCalls[part.ToolCall.ID] = commState{rawArgs: part.ToolCall.SentArguments(), pos: c, turnID: turnID}
-				}
+			if part.Kind == llm.ContentToolCall && part.ToolCall != nil && part.ToolCall.Name == "communicate" &&
+				(entry.Format != schema.TurnFormatIdentity || entry.Authorship != nil && entry.Authorship.Inherited) {
+				b.commCalls[part.ToolCall.ID] = commState{rawArgs: part.ToolCall.SentArguments(), pos: c, turnID: turnID}
 			}
 		}
 		// Mirrors ProjectTurn: only a non-empty text updates the sticky
@@ -418,10 +420,18 @@ func (b *builder) applyIdentity(ordinal uint64, offset int64, length uint32, ent
 	c := contributor{Offset: offset, Ordinal: ordinal, Length: length}
 	switch entry.Kind {
 	case schema.TurnTool, schema.TurnToolResults:
+		if err := b.completeCommunications(slot, entry, c); err != nil {
+			return err
+		}
 		if err := b.applyResults(slot, summary, entry, c); err != nil {
 			return err
 		}
 	case schema.TurnCommunicate:
+		// A dedicated delivery consumes inherited reconstruction even when
+		// its visible message is suppressed as an assistant-text echo.
+		if entry.Communicate != nil {
+			delete(b.commCalls, entry.Communicate.CallID)
+		}
 		echoes, err := b.echoesAwaiting(summary, entry)
 		if err != nil {
 			return err
@@ -430,6 +440,8 @@ func (b *builder) applyIdentity(ordinal uint64, offset int64, length uint32, ent
 			if err := b.appendItems(slot, entry, c, nil, nil); err != nil {
 				return err
 			}
+		} else if err := b.attachCommunicationEcho(summary, entry, c); err != nil {
+			return err
 		}
 	default:
 		if err := b.appendItems(slot, entry, c, nil, nil); err != nil {
@@ -473,6 +485,9 @@ func (b *builder) place(ordinal uint64, offset int64, entry *schema.Turn) (uint6
 	if err != nil {
 		return 0, err
 	}
+	if kind == turnKindExecution {
+		b.x.meta.LatestExecutionTurnSlot = slot + 1
+	}
 	switch kind {
 	case turnKindExecution, turnKindPrelude:
 		b.open[id] = slot
@@ -505,10 +520,17 @@ func turnKindOf(kind schema.TurnSpanKind) uint32 {
 // findTurn searches the summaries, newest first, for the new-format turn id.
 // Legacy turns never match: a new-format entry never joins one.
 func (b *builder) findTurn(id string) (uint64, bool, error) {
+	return b.x.findTurn(context.Background(), id)
+}
+
+func (x *Index) findTurn(ctx context.Context, id string) (uint64, bool, error) {
 	const chunk = 256
-	for end := b.x.turns.n; end > 0; {
+	for end := x.turns.n; end > 0; {
+		if err := ctx.Err(); err != nil {
+			return 0, false, err
+		}
 		start := end - min(end, chunk)
-		buf, err := b.x.turns.read(start, int(end-start))
+		buf, err := x.turns.read(start, int(end-start))
 		if err != nil {
 			return 0, false, err
 		}
@@ -517,7 +539,7 @@ func (b *builder) findTurn(id string) (uint64, bool, error) {
 			if record.Kind == turnKindLegacy || int(record.ID.Len) != len(id) {
 				continue
 			}
-			name, err := b.x.strings.get(record.ID)
+			name, err := x.strings.get(record.ID)
 			if err != nil {
 				return 0, false, err
 			}
@@ -563,6 +585,8 @@ func (b *builder) applyResults(slot uint64, summary turnRecord, entry *schema.Tu
 		if part.Kind == llm.ContentToolResult && part.ToolResult != nil && part.ToolResult.Name == "" {
 			if call, ok := calls[part.ToolResult.ToolCallID]; ok {
 				seed[part.ToolResult.ToolCallID] = call.name
+			} else if _, ok := b.commCalls[part.ToolResult.ToolCallID]; ok {
+				seed[part.ToolResult.ToolCallID] = "communicate"
 			}
 		}
 	}
@@ -634,10 +658,10 @@ func (b *builder) interruptAwaitedCalls(summary turnRecord, completion contribut
 // item absorb (when set) does not take. seed names the entry's nameless tool
 // results.
 func (b *builder) appendItems(slot uint64, entry *schema.Turn, c contributor, seed map[string]string, absorb func(appwire.ThreadItem) (bool, error)) error {
-	// New-format entries never need CommRawArgs/LastAssistantText: a
-	// COMMUNICATE entry carries its message explicitly, so seed's tool
-	// names are all this registry ever needs.
-	reg := &apptranscript.ToolCallRegistry{Names: seed}
+	reg := &apptranscript.ToolCallRegistry{
+		Names: b.registryNames(seed), CommRawArgs: b.registryCommArgs(),
+		LastAssistantText: b.lastAssistantText, LastAssistantTurnID: b.lastAssistantTurnID,
+	}
 	items, parts := apptranscript.ProjectEntryParts(entry.TurnID, int(c.Ordinal)+1, *entry, reg, apptranscript.AddressedImageProjector, apptranscript.ToolResultOutputImages)
 	for i, item := range items {
 		if absorb != nil {
@@ -649,31 +673,130 @@ func (b *builder) appendItems(slot uint64, entry *schema.Turn, c contributor, se
 				continue
 			}
 		}
-		if _, err := b.appendItem(item, parts[i], slot, c); err != nil {
+		var context strRef
+		if callID, ok := communicateResultCallID(entry, parts[i], seed); ok {
+			var err error
+			if context, err = b.communicateContext(callID); err != nil {
+				return err
+			}
+		}
+		if _, err := b.appendItemWithContext(item, parts[i], slot, c, context); err != nil {
 			return err
 		}
 	}
+	b.recordCommState(entry, entry.TurnID, seed, c, items)
 	return nil
 }
 
-// appendItem appends the record of an item the entry c opens at part.
-func (b *builder) appendItem(item appwire.ThreadItem, part int, turnSlot uint64, c contributor) (uint64, error) {
-	return b.appendItemWithContext(item, part, turnSlot, c, strRef{})
-}
-
-// appendItemWithContext is appendItem plus an explicit Context: only
-// applyLegacy's deferred communicate results ever need one (see
-// communicateContext); every other caller passes the zero strRef.
+// appendItemWithContext appends the record of an item the entry c opens at
+// part. Only deferred communicate results need Context (communicateContext).
 func (b *builder) appendItemWithContext(item appwire.ThreadItem, part int, turnSlot uint64, c contributor, context strRef) (uint64, error) {
 	version := c.Ordinal + 1
 	record := itemRecord{Entry: version, Part: uint32(part), Turn: uint32(turnSlot), Version: version, Opener: c, Context: context}
-	if apptranscript.MergesByCallID(item) {
+	if apptranscript.MergesByCallID(item) || item.Type == "agentMessage" && item.Observation != nil && item.CallID != "" {
 		var err error
 		if record.Call, err = b.x.strings.putString(item.CallID); err != nil {
 			return 0, err
 		}
 	}
 	return b.x.items.append(encodeItemInto(b.itemBuf[:], record))
+}
+
+// completeCommunications links a typed result to the earlier COMMUNICATE item
+// of the same logical turn. Looking up recorded item rows rather than an
+// in-memory pending map also works after an index handle reload or catch-up.
+func (b *builder) completeCommunications(slot uint64, entry *schema.Turn, c contributor) error {
+	for _, part := range entry.Message.Content {
+		if part.Kind != llm.ContentToolResult || part.ToolResult == nil || part.ToolResult.ToolCallID == "" {
+			continue
+		}
+		id := part.ToolResult.ToolCallID
+		if apptranscript.CommunicateTerminalAccepted(*entry, id) == nil {
+			continue
+		}
+		const batch = 128
+		for end := b.x.items.n; end > 0; {
+			start := end - min(end, batch)
+			buf, err := b.x.items.read(start, int(end-start))
+			if err != nil {
+				return err
+			}
+			found := false
+			for position := end; position > start; position-- {
+				record := decodeItem(buf[(position-1-start)*itemRecordSize:])
+				if uint64(record.Turn) != slot || record.Call.Len == 0 || record.Opener.Ordinal >= c.Ordinal {
+					continue
+				}
+				matches, err := b.communicationMatches(record, id)
+				if err != nil {
+					return err
+				}
+				if !matches {
+					continue
+				}
+				if err := b.addContributor(position-1, c, c.Ordinal+1); err != nil {
+					return err
+				}
+				found = true
+				break
+			}
+			if found {
+				break
+			}
+			end = start
+		}
+	}
+	return nil
+}
+
+// A visible assistant row can carry several echoing calls. Its Call field is
+// only the first, so match the recorded contributors rather than that shortcut.
+func (b *builder) communicationMatches(record itemRecord, id string) (bool, error) {
+	data, err := b.x.strings.get(record.Middle)
+	if err != nil {
+		return false, err
+	}
+	contributors, err := decodeContributors(data)
+	if err != nil {
+		return false, err
+	}
+	contributors = append(contributors, record.Opener)
+	if record.Completer.Length > 0 {
+		contributors = append(contributors, record.Completer)
+	}
+	for _, c := range contributors {
+		entry, err := b.x.readEntry(c.Offset, c.Length)
+		if err != nil {
+			return false, err
+		}
+		if entry.Kind == schema.TurnCommunicate && entry.Communicate != nil && entry.Communicate.CallID == id {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+// attachCommunicationEcho keeps the visible assistant item and records the
+// suppressed message as its contributor, so acceptance can still find its call.
+func (b *builder) attachCommunicationEcho(summary turnRecord, entry *schema.Turn, c contributor) error {
+	awaiting, err := b.awaitingEntry(summary)
+	if err != nil {
+		return err
+	}
+	items, parts := apptranscript.ProjectEntryParts(entry.TurnID, int(summary.AwaitingOrdinal)+1, *awaiting, nil, nil, nil)
+	for i := range slices.Backward(items) {
+		if items[i].Type != "agentMessage" {
+			continue
+		}
+		slot, found, err := b.x.findItem(appwire.ThreadItemPosition{Entry: summary.AwaitingOrdinal + 1, Item: uint32(parts[i])})
+		if err != nil {
+			return err
+		}
+		if found {
+			return b.addContributor(slot, c, c.Ordinal+1)
+		}
+	}
+	return nil
 }
 
 // echoesAwaiting reports whether a COMMUNICATE entry's message repeats the
@@ -872,6 +995,17 @@ func (b *builder) addContributor(slot uint64, c contributor, version uint64) err
 	}
 	record.Completer = c
 	record.Version = version
+	if record.Call.Len == 0 {
+		entry, err := b.x.readEntry(c.Offset, c.Length)
+		if err != nil {
+			return err
+		}
+		if entry.Kind == schema.TurnCommunicate && entry.Communicate != nil {
+			if record.Call, err = b.x.strings.putString(entry.Communicate.CallID); err != nil {
+				return err
+			}
+		}
+	}
 	// Logged before the write, like stampTurn: an extension interrupted
 	// between the two must leave a leftover update-log row behind it, or a
 	// later CatchUpTo for a length short of this entry could truncate the

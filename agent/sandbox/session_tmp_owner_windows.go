@@ -24,3 +24,11 @@ func scratchEntryOwnedByProcess(path string) (bool, error) {
 	}
 	return true, nil
 }
+
+// scratchInfoOwnedByProcess is scratchEntryOwnedByProcess over a stat the
+// caller already holds; Windows has no POSIX uid to compare, and the caller
+// reaching here already holds a successful Lstat, which is the whole of the
+// path-based check above.
+func scratchInfoOwnedByProcess(info os.FileInfo) bool {
+	return info != nil
+}

@@ -99,6 +99,14 @@ npx tsx scripts/check-hub.mts http://127.0.0.1:9180 /path/to/auth-token
 
 No script in the default tests calls a real hub or LLM provider.
 
+One runtime rule the green suite cannot catch: a `useAnimatedStyle` (or any
+other react-native-worklets worklet) body runs on the UI runtime, so it cannot
+call an ordinary app function. The vitest testkit executes the updater as
+plain JavaScript on the JS thread, so a worklet that calls app code
+typechecks and passes every test, then crashes the screen on device. Hoist
+any such call to the component body and capture its result in the closure;
+the worklet may then only read numbers and animated values.
+
 ## Queued-message recovery
 
 Transcript ghosts and the Queue sheet offer local Edit and Remove for safely
@@ -145,6 +153,14 @@ at every level. See the [shared-notes guide](../docs/web-ui/shared-notes.md).
 The dated 8 September execution checkpoint remains in the development archive. Its simulator and controller results identify earlier artifacts; use the current acceptance index for the joined checkpoint journey.
 
 ## Older-history recovery
+
+A session opens at the **latest** (live end), never at a saved reading position
+(`openingTarget` in `src/readerPosition.ts`). The one exception is the
+unread-reply jump — opening at the start of a reply that finished since the
+reader last reached the end — which lives behind the "Open at unread replies"
+setting (Display page, default on). The position store still records
+`turnsSeen` for that jump to read; do not reintroduce a saved-position opening
+default.
 
 [`useOlderHistory`](src/session/useOlderHistory.ts) shares browse and Find demand
 through [`HistoryPaging`](../appwire-client/typescript/historyPaging.ts). Transient
@@ -235,7 +251,13 @@ do not establish installed-device rendering or touch behavior.
   offline and stale-input rules remain unchanged.
 - Historical production roster reads were slow. Representative-data measurement
   and normal deployment verification remain open; tiny fixtures do not establish
-  production responsiveness. Voice/barge-in is outside v1.
+  production responsiveness.
+- Opt-in voice offers manager selection, Arm/Disarm, Talk and Stop through the
+  [native voice owner](modules/evener-voice/README.md). The native service owns
+  microphone and playback independently of foreground chat sockets. Wake
+  activation is unavailable; microphone, audible barge-in, locked listening and
+  battery remain physical-device qualification gates. See the
+  [voice contract](../docs/product/voice.md).
 
 Run the native gate against the exact candidate being qualified and record its
 result with that revision. Passing automated tests, type checking and the Metro

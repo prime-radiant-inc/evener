@@ -16,6 +16,7 @@ import (
 
 	"github.com/spf13/afero"
 
+	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/appwire"
 )
 
@@ -23,6 +24,36 @@ var (
 	errClientMutationMismatch = errors.New("client mutation ID reused with a different method or payload")
 	errClientMutationOwner    = errors.New("client mutation owner is no longer active")
 )
+
+func validateSessionActor(actor schema.SessionActor) error {
+	switch actor.Kind {
+	case "human":
+		if actor.ManagerRef == "" {
+			return nil
+		}
+	case "manager":
+		if ref, err := appwire.ParseRef(actor.ManagerRef); err == nil && ref.String() == actor.ManagerRef {
+			return nil
+		}
+	}
+	return appwire.InvalidParams("invalid session actor")
+}
+
+func wireSessionActor(actor schema.SessionActor) appwire.SessionActor {
+	if actor.Kind == "" {
+		actor.Kind = "human"
+	} // transcripts predating actor metadata
+	return appwire.SessionActor{Kind: actor.Kind, ManagerRef: actor.ManagerRef}
+}
+
+func (s *Session) clientMutationActor(id string) schema.SessionActor {
+	if id != "" && s.clientMutations != nil {
+		if record, ok := s.clientMutations.snapshot().Journal[id]; ok && record.Actor.Kind != "" {
+			return record.Actor
+		}
+	}
+	return schema.SessionActor{Kind: "human"}
+}
 
 // NormalizeClientMutationError converts Session mutation failures into the
 // structured AppWire contract at the daemon boundary. Existing WireErrors are
@@ -90,24 +121,29 @@ type clientMutationRejection struct {
 }
 
 type clientMutationRecord struct {
-	ClientMutationID    string                          `json:"client_mutation_id"`
-	Method              string                          `json:"method"`
-	Payload             json.RawMessage                 `json:"payload,omitempty"`
-	Preconditions       clientMutationPreconditions     `json:"preconditions,omitzero"`
-	StableTurnID        string                          `json:"stable_turn_id,omitempty"`
-	StableQueueEntryIDs []string                        `json:"stable_queue_entry_ids,omitempty"`
-	PayloadHash         string                          `json:"payload_hash"`
-	OperationState      clientMutationOperationState    `json:"operation_state"`
-	ExecutionState      string                          `json:"execution_state"`
-	ProjectionState     appwire.MutationProjectionState `json:"projection_state"`
-	Result              json.RawMessage                 `json:"result,omitempty"`
-	Rejection           *clientMutationRejection        `json:"rejection,omitempty"`
-	Failure             *clientMutationFailure          `json:"failure,omitempty"`
-	AttemptGeneration   uint64                          `json:"attempt_generation"`
-	CommandPreparations []selectedCommandPreparation    `json:"command_preparations,omitempty"`
+	ConversationInputIDs []string                        `json:"conversation_input_ids,omitempty"`
+	Actor                schema.SessionActor             `json:"actor,omitzero"`
+	ClientMutationID     string                          `json:"client_mutation_id"`
+	Method               string                          `json:"method"`
+	Payload              json.RawMessage                 `json:"payload,omitempty"`
+	Preconditions        clientMutationPreconditions     `json:"preconditions,omitzero"`
+	StableTurnID         string                          `json:"stable_turn_id,omitempty"`
+	StableQueueEntryIDs  []string                        `json:"stable_queue_entry_ids,omitempty"`
+	PayloadHash          string                          `json:"payload_hash"`
+	OperationState       clientMutationOperationState    `json:"operation_state"`
+	ExecutionState       string                          `json:"execution_state"`
+	ProjectionState      appwire.MutationProjectionState `json:"projection_state"`
+	Result               json.RawMessage                 `json:"result,omitempty"`
+	Rejection            *clientMutationRejection        `json:"rejection,omitempty"`
+	Failure              *clientMutationFailure          `json:"failure,omitempty"`
+	AttemptGeneration    uint64                          `json:"attempt_generation"`
+	CommandPreparations  []selectedCommandPreparation    `json:"command_preparations,omitempty"`
 	// SteeringKind is accepted atomically with a typed pending notification.
 	// Reconstruction restores it onto the delivered steering entry.
 	SteeringKind string `json:"steering_kind,omitempty"`
+	// AnswerToTurnIDs is private retry intent captured at carrier claim. Only
+	// a successful steering append publishes it as answer evidence.
+	AnswerToTurnIDs []string `json:"answer_to_turn_ids,omitempty"`
 }
 
 type clientMutationFailure struct {
@@ -115,6 +151,7 @@ type clientMutationFailure struct {
 }
 
 type clientMutationQueueEntry struct {
+	Actor            schema.SessionActor `json:"actor,omitzero"`
 	ID               string              `json:"id"`
 	ClientMutationID string              `json:"client_mutation_id"`
 	Input            []appwire.InputItem `json:"input"`
@@ -143,6 +180,7 @@ type clientMutationInterruptFence struct {
 type clientMutationPendingExecutions map[string]appwire.PendingMutation
 
 type clientMutationSnapshot struct {
+	ConversationRevision uint64 `json:"conversation_revision,omitempty"`
 	// HumanNote is absent until canonical authority has been established; empty is a saved clear.
 	HumanNote *string `json:"human_note,omitempty"`
 	Version   int     `json:"version"`
@@ -227,6 +265,7 @@ type clientMutationSnapshot struct {
 }
 
 type clientMutationRequest struct {
+	Actor            schema.SessionActor
 	ClientMutationID string
 	Method           string
 	Payload          json.RawMessage
@@ -253,6 +292,7 @@ func newClientMutationRequest(method, id string, payload any) (clientMutationReq
 	}
 	sum := sha256.Sum256(canonical)
 	return clientMutationRequest{
+		Actor:            schema.SessionActor{Kind: "human"},
 		ClientMutationID: id,
 		Method:           method,
 		Payload:          canonical,
@@ -263,6 +303,7 @@ func newClientMutationRequest(method, id string, payload any) (clientMutationReq
 // clientMutationSpec names what differs between the retry-safe input
 // mutations; acceptClientMutation owns everything they share.
 type clientMutationSpec struct {
+	actor  schema.SessionActor
 	method string
 	id     string
 	// payload is hashed to recognise a retry. Pass a pointer to the params so
@@ -288,7 +329,7 @@ func (s *Session) acceptClientMutation(spec clientMutationSpec, prepare, effect 
 	}
 	defer release()
 	if spec.input != nil {
-		input, err := appwire.NormalizeMutationInput(*spec.input)
+		input, err := appwire.NormalizeVoicePresentationInput(*spec.input, spec.method, spec.actor.Kind, s.ID())
 		if err != nil {
 			return clientMutationLookup{}, appwire.InvalidParams(err.Error())
 		}
@@ -301,13 +342,36 @@ func (s *Session) acceptClientMutation(spec clientMutationSpec, prepare, effect 
 	if err != nil {
 		return clientMutationLookup{}, err
 	}
+	if spec.actor.Kind != "" {
+		if err := validateSessionActor(spec.actor); err != nil {
+			return clientMutationLookup{}, err
+		}
+		request.Actor = spec.actor
+	}
 	request.Preconditions = spec.preconditions
 	lookup, err := s.clientMutations.executeAtomic(request, func(snapshot *clientMutationSnapshot, record *clientMutationRecord) error {
 		if snapshot.InterruptFence != nil && !spec.allowDuringInterrupt {
 			rejectClientMutation(record, appwire.Conflict("turn interrupt is pending"))
 			return nil
 		}
-		return prepare(snapshot, record)
+		if err := prepare(snapshot, record); err != nil {
+			return err
+		}
+		if record.OperationState != clientMutationOperationRejected {
+			if spec.input != nil && len(*spec.input) > 0 {
+				record.ConversationInputIDs = append(record.ConversationInputIDs, "client:"+record.ClientMutationID)
+			}
+			if record.Method == clientMutationMethodDrain || record.Method == clientMutationMethodPromote {
+				for _, entry := range snapshot.InputQueue {
+					if slices.Contains(record.StableQueueEntryIDs, entry.ID) {
+						record.ConversationInputIDs = append(record.ConversationInputIDs, snapshot.Journal[entry.ClientMutationID].ConversationInputIDs...)
+					}
+				}
+			}
+			slices.Sort(record.ConversationInputIDs)
+			record.ConversationInputIDs = slices.Compact(record.ConversationInputIDs)
+		}
+		return nil
 	}, effect)
 	if err != nil {
 		return clientMutationLookup{}, err
@@ -323,8 +387,17 @@ func (s *Session) acceptClientMutation(spec clientMutationSpec, prepare, effect 
 // accepted pending execution in the journal, and an identical retry returns
 // the same stable turn rather than creating another logical turn.
 func (s *Session) AcceptClientMutationStart(params appwire.TurnStartParams) (appwire.TurnStartResponse, error) {
+	return s.AcceptClientMutationStartAs(params, schema.SessionActor{Kind: "human"})
+}
+
+// AcceptClientMutationStartAs accepts or replays a start attributed to actor.
+func (s *Session) AcceptClientMutationStartAs(params appwire.TurnStartParams, actor schema.SessionActor) (appwire.TurnStartResponse, error) {
+	if err := validateSessionActor(actor); err != nil {
+		return appwire.TurnStartResponse{}, err
+	}
 	var response appwire.TurnStartResponse
 	lookup, err := s.acceptClientMutation(clientMutationSpec{
+		actor:   actor,
 		method:  clientMutationMethodStart,
 		id:      params.ClientMutationID,
 		payload: &params,
@@ -396,6 +469,7 @@ func (s *Session) AcceptClientMutationStart(params appwire.TurnStartParams) (app
 			snapshot.ActiveTurnID = record.StableTurnID
 		}
 		snapshot.PendingExecutions[record.ClientMutationID] = appwire.PendingMutation{
+			Actor:            wireSessionActor(record.Actor),
 			ClientMutationID: record.ClientMutationID,
 			Method:           record.Method,
 			Input:            cloneClientMutationInput(params.Input),
@@ -1595,6 +1669,7 @@ func (s *clientMutationStore) executeAtomic(
 	if !exists {
 		next := cloneClientMutationSnapshot(s.state)
 		current = clientMutationRecord{
+			Actor:            request.Actor,
 			ClientMutationID: request.ClientMutationID,
 			Method:           request.Method,
 			Payload:          append(json.RawMessage(nil), request.Payload...),
@@ -1613,6 +1688,7 @@ func (s *clientMutationStore) executeAtomic(
 		next.Journal[request.ClientMutationID] = current
 		next = cloneClientMutationSnapshot(next)
 		current = next.Journal[request.ClientMutationID]
+		next.ConversationRevision = s.state.ConversationRevision + 1
 		if _, err := saveClientMutationSnapshotFS(s.fs, s.stateDir, s.sessionID, next, clientMutationWriteReservation, s.faults); err != nil {
 			return clientMutationLookup{}, err
 		}
@@ -1632,6 +1708,7 @@ func (s *clientMutationStore) executeAtomic(
 		next := cloneClientMutationSnapshot(s.state)
 		current.AttemptGeneration++
 		next.Journal[request.ClientMutationID] = current
+		next.ConversationRevision = s.state.ConversationRevision + 1
 		if _, err := saveClientMutationSnapshotFS(s.fs, s.stateDir, s.sessionID, next, clientMutationWriteReservation, s.faults); err != nil {
 			return clientMutationLookup{}, err
 		}
@@ -1655,6 +1732,7 @@ func (s *clientMutationStore) executeAtomic(
 	if err := validateClientMutationSnapshot(next, s.sessionID); err != nil {
 		return clientMutationLookup{}, err
 	}
+	next.ConversationRevision = s.state.ConversationRevision + 1
 	renamed, err := saveClientMutationSnapshotFS(s.fs, s.stateDir, s.sessionID, next, clientMutationWriteEffect, s.faults)
 	if renamed {
 		s.commitStateLocked(next)
@@ -1731,6 +1809,7 @@ func (s *clientMutationStore) reservePrepared(
 	next.Journal[request.ClientMutationID] = record
 	next = cloneClientMutationSnapshot(next)
 	record = next.Journal[request.ClientMutationID]
+	next.ConversationRevision = s.state.ConversationRevision + 1
 	if _, err := saveClientMutationSnapshotFS(s.fs, s.stateDir, s.sessionID, next, clientMutationWriteReservation, s.faults); err != nil {
 		return clientMutationLookup{}, err
 	}
@@ -1799,6 +1878,7 @@ func (s *clientMutationStore) update(lease *clientMutationLease, mutate func(*cl
 		return err
 	}
 
+	next.ConversationRevision = s.state.ConversationRevision + 1
 	renamed, err := saveClientMutationSnapshotFS(s.fs, s.stateDir, s.sessionID, next, clientMutationWriteEffect, s.faults)
 	if renamed {
 		s.commitStateLocked(next)
@@ -1883,6 +1963,14 @@ func (s *clientMutationStore) snapshot() clientMutationSnapshot {
 	return cloneClientMutationSnapshot(s.state)
 }
 
+// conversationInputIDs returns caller-owned IDs from one committed record
+// without cloning the rest of the journal.
+func (s *clientMutationStore) conversationInputIDs(mutationID string) []string {
+	s.stateMu.RLock()
+	defer s.stateMu.RUnlock()
+	return slices.Clone(s.state.Journal[mutationID].ConversationInputIDs)
+}
+
 // committedHumanNote reads the committed canonical human note under stateMu
 // without cloning the journal. The notes cut carries it for lock-free readers;
 // the metadata write reads it here so the persisted projection always names the
@@ -1958,6 +2046,7 @@ func (s *clientMutationStore) mutate(mutate func(*clientMutationSnapshot) error)
 	if err := validateClientMutationSnapshot(next, s.sessionID); err != nil {
 		return err
 	}
+	next.ConversationRevision = s.state.ConversationRevision + 1
 	renamed, err := saveClientMutationSnapshotFS(s.fs, s.stateDir, s.sessionID, next, clientMutationWriteEffect, s.faults)
 	if renamed {
 		s.commitStateLocked(next)
@@ -2036,9 +2125,11 @@ func cloneClientMutationSnapshot(src clientMutationSnapshot) clientMutationSnaps
 
 func cloneClientMutationRecord(src clientMutationRecord) clientMutationRecord {
 	dst := src
+	dst.AnswerToTurnIDs = slices.Clone(src.AnswerToTurnIDs)
 	dst.Payload = append(json.RawMessage(nil), src.Payload...)
 	dst.Preconditions = cloneClientMutationPreconditions(src.Preconditions)
 	dst.StableQueueEntryIDs = append([]string(nil), src.StableQueueEntryIDs...)
+	dst.ConversationInputIDs = slices.Clone(src.ConversationInputIDs)
 	dst.CommandPreparations = slices.Clone(src.CommandPreparations)
 	dst.Result = append(json.RawMessage(nil), src.Result...)
 	if src.Rejection != nil {
@@ -2065,6 +2156,7 @@ func cloneClientMutationInput(src []appwire.InputItem) []appwire.InputItem {
 	dst := make([]appwire.InputItem, len(src))
 	for i, item := range src {
 		dst[i] = item
+		dst[i].VoicePresentation = appwire.CloneVoicePresentation(item.VoicePresentation)
 		dst[i].Data = append([]byte(nil), item.Data...)
 		dst[i].Mentions = slices.Clone(item.Mentions)
 		if item.Metadata != nil {

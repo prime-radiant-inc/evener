@@ -45,7 +45,14 @@ test("narrow full editor selects every preset and restores Custom without changi
   onTestFinished(installMobileViewport());
   const user = userEvent.setup();
   const initial = makeTranscriptDisplayConfig(
-    { kind: "custom", toolIntent: true, toolCalls: false, reasoning: true, expandByDefault: true },
+    {
+      kind: "custom",
+      toolIntent: true,
+      toolCalls: false,
+      reasoning: true,
+      expandByDefault: true,
+      thinkingOpenByDefault: true,
+    },
     { roundTimings: true, tokenCounts: true, hookExits: "all" },
   );
   const changes: TranscriptDisplayConfigV1[] = [];
@@ -71,6 +78,7 @@ test("narrow full editor selects every preset and restores Custom without changi
     toolCalls: false,
     reasoning: false,
     expandByDefault: true,
+    thinkingOpenByDefault: true,
   });
   expect(changes.at(-1)?.advanced).toEqual(initial.advanced);
 });
@@ -122,12 +130,20 @@ test("renders six explicit choices and gives Full its full accessible name", () 
   expect(screen.queryByText(/Current detail|Critical rows remain visible/)).toBeNull();
 });
 
-test("keeps Custom selected for all 16 explicit Custom vectors", () => {
+test("keeps Custom selected for all 32 explicit Custom vectors", () => {
   const booleans = [false, true];
   const vectors = booleans.flatMap((toolIntent) =>
     booleans.flatMap((toolCalls) =>
       booleans.flatMap((reasoning) =>
-        booleans.map((expandByDefault) => ({ toolIntent, toolCalls, reasoning, expandByDefault })),
+        booleans.flatMap((expandByDefault) =>
+          booleans.map((thinkingOpenByDefault) => ({
+            toolIntent,
+            toolCalls,
+            reasoning,
+            expandByDefault,
+            thinkingOpenByDefault,
+          })),
+        ),
       ),
     ),
   );
@@ -142,6 +158,40 @@ test("keeps Custom selected for all 16 explicit Custom vectors", () => {
       expect(screen.getByRole("radio", { name }).getAttribute("aria-checked")).toBe("false");
     }
     unmount();
+  }
+});
+
+test("the thinking-open switch toggles only its own content field", async () => {
+  const user = userEvent.setup();
+  let current = makeTranscriptDisplayConfig({
+    kind: "custom",
+    toolIntent: true,
+    toolCalls: true,
+    reasoning: false,
+    expandByDefault: false,
+    thinkingOpenByDefault: false,
+  });
+  const changes: TranscriptDisplayConfigV1[] = [];
+  const view = render(<TranscriptDetailEditor value={current} onChange={(next) => changes.push(next)} />);
+  const owner = (next: TranscriptDisplayConfigV1) => {
+    current = next;
+    view.rerender(<TranscriptDetailEditor value={current} onChange={(next2) => changes.push(next2)} />);
+  };
+
+  await user.click(clickAdvanced());
+  const thinkingOpen = () => screen.getByRole("switch", { name: "Thinking open by default" });
+  expect(thinkingOpen().getAttribute("aria-checked")).toBe("false");
+  const before = changes.length;
+  await user.click(thinkingOpen());
+  owner(changes.at(-1)!);
+  expect(changes.at(-1)?.content).toEqual({ ...currentContentBaseline(), thinkingOpenByDefault: true });
+  await user.click(thinkingOpen());
+  owner(changes.at(-1)!);
+  expect(changes.at(-1)?.content).toEqual({ ...currentContentBaseline(), thinkingOpenByDefault: false });
+  expect(changes).toHaveLength(before + 2);
+
+  function currentContentBaseline() {
+    return { kind: "custom" as const, toolIntent: true, toolCalls: true, reasoning: false, expandByDefault: false };
   }
 });
 
@@ -213,6 +263,7 @@ test("received Custom values refresh the mounted cache", async () => {
     toolCalls: false,
     reasoning: true,
     expandByDefault: false,
+    thinkingOpenByDefault: false,
   });
   const customB = makeTranscriptDisplayConfig({
     kind: "custom",
@@ -220,6 +271,7 @@ test("received Custom values refresh the mounted cache", async () => {
     toolCalls: false,
     reasoning: true,
     expandByDefault: true,
+    thinkingOpenByDefault: true,
   });
   const preset = makeTranscriptDisplayConfig({ kind: "preset", level: "tools" });
   const changes: TranscriptDisplayConfigV1[] = [];
@@ -239,6 +291,7 @@ test("an aborted Custom render cannot poison the committed mounted cache", () =>
     toolCalls: false,
     reasoning: false,
     expandByDefault: false,
+    thinkingOpenByDefault: false,
   });
   const preset = makeTranscriptDisplayConfig({ kind: "preset", level: "tools" });
   const uncommittedCustom = makeTranscriptDisplayConfig({
@@ -247,6 +300,7 @@ test("an aborted Custom render cannot poison the committed mounted cache", () =>
     toolCalls: false,
     reasoning: true,
     expandByDefault: true,
+    thinkingOpenByDefault: true,
   });
   const never = new Promise<never>(() => {});
   let update: (next: { value: TranscriptDisplayConfigV1; suspend: boolean }) => void = () => {};
@@ -309,7 +363,14 @@ test("content and Advanced changes remain independent in both directions", async
   const user = userEvent.setup();
   const changes: TranscriptDisplayConfigV1[] = [];
   const initial = makeTranscriptDisplayConfig(
-    { kind: "custom", toolIntent: false, toolCalls: true, reasoning: false, expandByDefault: true },
+    {
+      kind: "custom",
+      toolIntent: false,
+      toolCalls: true,
+      reasoning: false,
+      expandByDefault: true,
+      thinkingOpenByDefault: true,
+    },
     { tokenCounts: true, systemEvents: true, hookExits: "successful" },
   );
   render(<ControlledEditor initial={initial} onChange={(next) => changes.push(next)} />);
@@ -333,7 +394,14 @@ test("Disclosure summary counts only Metrics and Diagnostics extras", async () =
   presetView.unmount();
 
   const config = makeTranscriptDisplayConfig(
-    { kind: "custom", toolIntent: true, toolCalls: false, reasoning: true, expandByDefault: false },
+    {
+      kind: "custom",
+      toolIntent: true,
+      toolCalls: false,
+      reasoning: true,
+      expandByDefault: false,
+      thinkingOpenByDefault: false,
+    },
     { roundTimings: true, systemEvents: true },
   );
   render(<TranscriptDetailEditor value={config} onChange={() => {}} />);

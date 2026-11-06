@@ -69,38 +69,115 @@ func forceStopThread(ctx context.Context, cfg hubcore.WebConfig, params appwire.
 		return err
 	}
 	defer releaseEntryDrain()
-	recoveryTarget := cfg.ResumeLocks.RecoveryState(ref.ThreadID).ResumeSessionID
-	entry, err := forceStopEntry(cfg.RunDir, ref.ThreadID, cfg.DaemonProcesses, nil, recoveryTarget, params.ExpectedDaemon)
+	run := &forceStopRun{
+		cfg: cfg, params: params, sources: sources, ref: ref,
+		canceledResumes: canceledResumes, entryResumeAliases: entryResumeAliases,
+	}
+	defer func() { run.cleanup(stopErr) }()
+	if err := run.openProcess(ctx); err != nil {
+		return err
+	}
+	if err := run.takeReservations(ctx); err != nil {
+		return err
+	}
+	if err := run.confirmOwnership(ctx); err != nil {
+		return run.refuse(err)
+	}
+	if err := run.persistRecovery(); err != nil {
+		return err
+	}
+	return run.stop(ctx)
+}
+
+// forceStopRun carries one local force stop through its phases: open the
+// verified process and fence its descendants, take the alias reservations,
+// re-check ownership under them, persist the recovery authority, then stop the
+// process. The phases run in that order; each registers the release it owes,
+// and cleanup runs those releases in reverse registration order.
+type forceStopRun struct {
+	cfg                hubcore.WebConfig
+	params             appwire.ThreadForceStopParams
+	sources            *appsource.Registry
+	ref                appwire.Ref
+	canceledResumes    bool
+	entryResumeAliases []string
+
+	recoveryTarget string
+	entry          rendezvous.Entry
+	target         daemonprocess.Target
+	controller     daemonprocess.Controller
+	process        daemonprocess.Process
+	exited         bool
+	descendants    *forceStopDescendants
+	// preCancellationDescendants are the descendant fences installed before
+	// the resume drain in takeReservations: a post-drain refusal that canceled
+	// nothing rejects exactly these alongside its own recovery fence. The
+	// post-termination scan appends to descendants.fences only after
+	// termination was attempted; its fences are never rejected.
+	preCancellationDescendants []*hubcore.ForceStopFence
+	aliases                    []string
+	// deletionFenceAliases covers the entry-active Resume's ownership group as
+	// well: a record naming one of its aliases must refuse this request the
+	// same way one naming the daemon's own aliases does, whether the entry
+	// drain ran or was deferred to the drain in takeReservations. The extra
+	// aliases are validated refusal-only before the drain, then reserved
+	// alongside the daemon's own aliases through the authoritative re-check
+	// and the process-control operation, so no record can publish on them
+	// after the final fence check and race the force-stop signal.
+	deletionFenceAliases []string
+	fenceRecovery        *hubcore.ForceStopFence
+	// reserved records every per-alias reservation this request holds, in
+	// acquisition order; the release walks it backward.
+	reserved []string
+	cleanups []func(stopErr error)
+}
+
+func (r *forceStopRun) onCleanup(fn func(stopErr error)) {
+	r.cleanups = append(r.cleanups, fn)
+}
+
+func (r *forceStopRun) cleanup(stopErr error) {
+	for _, fn := range slices.Backward(r.cleanups) {
+		fn(stopErr)
+	}
+}
+
+// openProcess verifies the daemon's rendezvous entry and process, and fences
+// its descendants. The expected-daemon identity is compared against verified
+// discovery before any admission or recovery fence, so a stale row can never
+// signal a replacement process.
+func (r *forceStopRun) openProcess(ctx context.Context) error {
+	cfg, ref := r.cfg, r.ref
+	r.recoveryTarget = cfg.ResumeLocks.RecoveryState(ref.ThreadID).ResumeSessionID
+	entry, err := forceStopEntry(cfg.RunDir, ref.ThreadID, cfg.DaemonProcesses, nil, r.recoveryTarget, r.params.ExpectedDaemon)
 	if err != nil {
 		return appwire.Unavailable(err.Error())
 	}
-	// A caller-rendered daemon identity is compared against verified
-	// discovery before any admission or recovery fence, so a stale row can
-	// never signal a replacement process.
-	if err := expectedDaemonConflict(entry, params.ExpectedDaemon); err != nil {
+	r.entry = entry
+	if err := expectedDaemonConflict(entry, r.params.ExpectedDaemon); err != nil {
 		return err
 	}
 	// Verify the process before interrupting RPCs. Kill verifies this retained
 	// process handle again after ownership and deletion reservations are held.
-	controller := cfg.DaemonProcesses
-	if controller == nil {
-		controller = daemonprocess.NewController()
+	r.controller = cfg.DaemonProcesses
+	if r.controller == nil {
+		r.controller = daemonprocess.NewController()
 	}
-	target := hubcore.DaemonTarget(entry)
-	process, err := controller.Open(target)
-	exited := errors.Is(err, daemonprocess.ErrExited)
-	if err != nil && !exited {
+	r.target = hubcore.DaemonTarget(entry)
+	r.process, err = r.controller.Open(r.target)
+	r.exited = errors.Is(err, daemonprocess.ErrExited)
+	if err != nil && !r.exited {
 		return appwire.Unavailable(fmt.Sprintf("cannot verify daemon for force stop: %v", err))
 	}
-	defer func() {
-		if process == nil {
+	r.onCleanup(func(error) {
+		if r.process == nil {
 			return
 		}
-		if err := process.Close(); err != nil {
+		if err := r.process.Close(); err != nil {
 			log.Printf("force stop process handle cleanup: %v", err)
 		}
-	}()
-	if exited && recoveryTarget != "" && target.SessionID != recoveryTarget {
+	})
+	if r.exited && r.recoveryTarget != "" && r.target.SessionID != r.recoveryTarget {
 		return appwire.Unavailable("exited daemon claim does not match session recovery authority")
 	}
 	// Descendants share the stopped process, but keep independent transcript
@@ -108,58 +185,57 @@ func forceStopThread(ctx context.Context, cfg hubcore.WebConfig, params appwire.
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	descendants := &forceStopDescendants{locks: cfg.ResumeLocks, stateDir: entry.StateDir, sessionID: target.SessionID, fenced: make(map[string]bool)}
-	defer descendants.finish()
+	r.descendants = &forceStopDescendants{locks: cfg.ResumeLocks, stateDir: entry.StateDir, sessionID: r.target.SessionID, fenced: make(map[string]bool)}
+	r.onCleanup(func(error) { r.descendants.finish() })
 	// These are admission fences, not aliases or durable resume targets. Hub
 	// restart drops the old connections and queued requests altogether.
-	if err := descendants.scan(ctx); err != nil {
+	if err := r.descendants.scan(ctx); err != nil {
 		return err
 	}
-	// preCancellationDescendants are the descendant fences installed before
-	// the drain below: a post-drain refusal that canceled nothing rejects
-	// exactly these alongside its own recovery fence. The post-termination
-	// scan below appends to descendants.fences only after termination was
-	// attempted; its fences are never rejected.
-	preCancellationDescendants := slices.Clone(descendants.fences)
-	aliases := forceStopAliases(entry)
-	// The deletion fence covers the entry-active Resume's ownership group as
-	// well: a record naming one of its aliases must refuse this request the
-	// same way one naming the daemon's own aliases does, whether the entry
-	// drain above ran or was deferred to the drain below. The extra aliases
-	// are validated refusal-only before the drain, then reserved alongside
-	// the daemon's own aliases through the authoritative re-check and the
-	// process-control operation, so no record can publish on them after the
-	// final fence check and race the force-stop signal.
-	deletionFenceAliases := aliases
-	if len(entryResumeAliases) != 0 {
-		deletionFenceAliases = append(slices.Clone(aliases), entryResumeAliases...)
-		slices.Sort(deletionFenceAliases)
-		deletionFenceAliases = slices.Compact(deletionFenceAliases)
+	r.preCancellationDescendants = slices.Clone(r.descendants.fences)
+	r.aliases = forceStopAliases(entry)
+	r.deletionFenceAliases = r.aliases
+	if len(r.entryResumeAliases) != 0 {
+		r.deletionFenceAliases = append(slices.Clone(r.aliases), r.entryResumeAliases...)
+		slices.Sort(r.deletionFenceAliases)
+		r.deletionFenceAliases = slices.Compact(r.deletionFenceAliases)
 	}
-	fenceRecovery := cfg.ResumeLocks.BeginForceStop(aliases)
-	defer func() { fenceRecovery.Finish(stopErr == nil) }()
+	return nil
+}
+
+// rejectFences rolls back the fences of a refusal that canceled nothing and
+// advanced no admission epoch: only the connection sequences this fence and
+// the descendant fences wrote.
+func (r *forceStopRun) rejectFences() {
+	r.descendants.reject()
+	r.fenceRecovery.Reject()
+}
+
+// takeReservations installs the recovery fence, takes every alias reservation
+// the deletion fence needs, cancels in-flight Resumes and begins local
+// recovery. A refusal here that canceled nothing is admission-neutral.
+func (r *forceStopRun) takeReservations(ctx context.Context) error {
+	cfg := r.cfg
+	r.fenceRecovery = cfg.ResumeLocks.BeginForceStop(r.aliases)
+	r.onCleanup(func(stopErr error) { r.fenceRecovery.Finish(stopErr == nil) })
 	// Clear gives one daemon stable and current session aliases. Lock both so
 	// resume or deletion through either alias cannot race exit confirmation.
-	// reserved records every per-alias reservation this request holds, in
-	// acquisition order; the deferred release walks it backward.
-	var reserved []string
-	defer func() { unlockForceStopReservations(cfg.ResumeLocks, reserved) }()
+	r.onCleanup(func(error) { unlockForceStopReservations(cfg.ResumeLocks, r.reserved) })
 	// Deletion publication takes the same per-alias reservations an in-flight
 	// Resume holds across its launch. Take them before cancelling whenever they
 	// are free, so the deletion re-check under them is the final validation and
 	// runs before cancelActiveResumes aborts a Resume the request may still have
 	// to refuse. A reservation an in-flight launch already holds blocks deletion
 	// publication itself, so that case keeps the cancel-then-acquire order, and
-	// the re-check after ownership below stays authoritative.
-	reservationsHeld := tryLockForceStopReservations(cfg.ResumeLocks, aliases)
+	// the re-check after ownership stays authoritative.
+	reservationsHeld := tryLockForceStopReservations(cfg.ResumeLocks, r.aliases)
 	if reservationsHeld {
-		reserved = append(reserved, aliases...)
-		if err := deletionFenceErrorForGroup(cfg, deletionFenceAliases); err != nil {
+		r.reserved = append(r.reserved, r.aliases...)
+		if err := deletionFenceErrorForGroup(cfg, r.deletionFenceAliases); err != nil {
 			// The refusal canceled nothing: the fence advanced no admission
 			// epoch at begin, so only the connection sequences — this
 			// fence's and the descendant fences' — roll back.
-			descendants.reject()
-			fenceRecovery.Reject()
+			r.rejectFences()
 			return err
 		}
 	}
@@ -173,175 +249,185 @@ func forceStopThread(ctx context.Context, cfg hubcore.WebConfig, params appwire.
 	// Resume-originated claim can appear between this check and the
 	// cancellation; a launch already holding a reservation keeps the
 	// cancel-then-acquire order, where a claim landing during the drain stays
-	// subject to the authoritative post-ownership reread below.
-	if params.ExpectedDaemon != nil {
-		if err := expectedDaemonRevalidationError(cfg, ref.ThreadID, recoveryTarget, params.ExpectedDaemon); err != nil {
-			// Refused before any cancellation: the fence published no
-			// admission epoch at begin, so the in-flight Resume the refusal
-			// preserves still completes its recovery clear against the epoch
-			// it was admitted under; Reject rolls back only the connection
-			// sequences this fence — and the descendant fences — wrote.
-			descendants.reject()
-			fenceRecovery.Reject()
+	// subject to the authoritative post-ownership reread.
+	if r.params.ExpectedDaemon != nil {
+		if err := expectedDaemonRevalidationError(cfg, r.ref.ThreadID, r.recoveryTarget, r.params.ExpectedDaemon); err != nil {
+			// Refused before any cancellation: the in-flight Resume the
+			// refusal preserves still completes its recovery clear against the
+			// epoch it was admitted under.
+			r.rejectFences()
 			return err
 		}
 	}
 	// A Resume can register after the initial snapshot while process discovery
 	// is running. The fence now prevents new registrations; cancel and drain
 	// any operation that entered that window before waiting for ownership.
-	releaseResumes, drainCanceled, err := cancelActiveResumes(ctx, cfg.ResumeLocks, aliases)
+	releaseResumes, drainCanceled, err := cancelActiveResumes(ctx, cfg.ResumeLocks, r.aliases)
 	if err != nil {
 		return forceStopResumeStopError(err)
 	}
-	canceledResumes = canceledResumes || drainCanceled
-	defer releaseResumes()
-	// A refusal after the drain publishes the fence's epoch advance only when
-	// the drain actually stopped a Resume (its Finish lands unrejected). A
-	// drain that canceled nothing leaves the refusal admission-neutral, the
-	// way the pre-cancellation refusals above are: the fence advanced no
-	// epoch at begin, and the connection-level sequences this fence — and the
-	// pre-cancellation descendant fences — wrote roll back before the release
-	// below. The post-termination scan's fences are
-	// excluded: termination was attempted and the stop's follow-through must
-	// stale connections admitted before it.
-	refuseStop := func(err error) error {
-		if !canceledResumes {
-			// The refusal canceled nothing, so it must not leave the descendant
-			// fences' advance behind either.
-			for _, fence := range preCancellationDescendants {
-				fence.Reject()
-			}
-			fenceRecovery.Reject()
-		}
-		return err
-	}
-	if sources != nil {
-		if source, ok := sources.Source(appwire.LocalSourceID); ok {
+	r.canceledResumes = r.canceledResumes || drainCanceled
+	r.onCleanup(func(error) { releaseResumes() })
+	if r.sources != nil {
+		if source, ok := r.sources.Source(appwire.LocalSourceID); ok {
 			if local, ok := source.(*appsource.LocalDaemonSource); ok {
-				release := local.BeginRecovery(entry)
-				defer release()
+				release := local.BeginRecovery(r.entry)
+				r.onCleanup(func(error) { release() })
 			}
 		}
 	}
-	// The authoritative re-check below, and the process-control operation it
-	// guards, must be final for every alias a deletion record may name — not
-	// only the daemon's own aliases but also the entry-active Resume's group
-	// aliases the deletion-fence set resolved. Reserve the complete
-	// deduplicated set across both: take the extra aliases whenever they are
-	// free, and when one is held — by an in-flight launch or an unrelated
-	// action — hand the daemon aliases back and take the complete set in one
-	// sorted pass. Waiting for a held alias while holding the others could
-	// deadlock a registration already parked on them; the sorted pass uses the
-	// acquisition order RegisterResume and a launch use, so it cannot.
-	deletionFenceExtras := slices.DeleteFunc(slices.Clone(deletionFenceAliases), func(id string) bool {
-		return slices.Contains(aliases, id)
+	// The authoritative re-check, and the process-control operation it guards,
+	// must be final for every alias a deletion record may name — not only the
+	// daemon's own aliases but also the entry-active Resume's group aliases the
+	// deletion-fence set resolved. Reserve the complete deduplicated set across
+	// both: take the extra aliases whenever they are free, and when one is held
+	// — by an in-flight launch or an unrelated action — hand the daemon aliases
+	// back and take the complete set in one sorted pass. Waiting for a held
+	// alias while holding the others could deadlock a registration already
+	// parked on them; the sorted pass uses the acquisition order RegisterResume
+	// and a launch use, so it cannot.
+	deletionFenceExtras := slices.DeleteFunc(slices.Clone(r.deletionFenceAliases), func(id string) bool {
+		return slices.Contains(r.aliases, id)
 	})
 	if reservationsHeld && !tryLockForceStopReservations(cfg.ResumeLocks, deletionFenceExtras) {
-		unlockForceStopReservations(cfg.ResumeLocks, reserved)
-		reserved, reservationsHeld = nil, false
+		unlockForceStopReservations(cfg.ResumeLocks, r.reserved)
+		r.reserved, reservationsHeld = nil, false
 	} else if reservationsHeld {
-		reserved = append(reserved, deletionFenceExtras...)
+		r.reserved = append(r.reserved, deletionFenceExtras...)
 	}
 	if !reservationsHeld {
-		for _, id := range deletionFenceAliases {
+		for _, id := range r.deletionFenceAliases {
 			if err := cfg.ResumeLocks.For(id).LockContext(ctx); err != nil {
-				return refuseStop(err)
+				return r.refuse(err)
 			}
-			reserved = append(reserved, id)
+			r.reserved = append(r.reserved, id)
 		}
 	}
+	return nil
+}
+
+// refuse returns err after a refusal past the resume drain. It publishes the
+// fence's epoch advance only when the drain actually stopped a Resume (the
+// fence's Finish lands unrejected). A drain that canceled nothing leaves the
+// refusal admission-neutral, the way the pre-cancellation refusals are: the
+// connection-level sequences this fence — and the pre-cancellation descendant
+// fences — wrote roll back before the release. The post-termination scan's
+// fences are excluded: termination was attempted and the stop's follow-through
+// must stale connections admitted before it.
+func (r *forceStopRun) refuse(err error) error {
+	if !r.canceledResumes {
+		r.rejectPreCancellationDescendants()
+		r.fenceRecovery.Reject()
+	}
+	return err
+}
+
+func (r *forceStopRun) rejectPreCancellationDescendants() {
+	for _, fence := range r.preCancellationDescendants {
+		fence.Reject()
+	}
+}
+
+// confirmOwnership re-checks, with every reservation held, that the request
+// still addresses the same daemon and that nothing fences the stop.
+func (r *forceStopRun) confirmOwnership(ctx context.Context) error {
+	cfg, ref := r.cfg, r.ref
 	if err := ctx.Err(); err != nil {
-		return refuseStop(err)
+		return err
 	}
 	currentTarget := cfg.ResumeLocks.RecoveryState(ref.ThreadID).ResumeSessionID
-	if currentTarget != recoveryTarget {
-		return refuseStop(appwire.Unavailable("session recovery authority changed; retry force stop"))
+	if currentTarget != r.recoveryTarget {
+		return appwire.Unavailable("session recovery authority changed; retry force stop")
 	}
-	current, err := forceStopRereadEntry(cfg.RunDir, ref.ThreadID, entry, cfg.DaemonProcesses, currentTarget, params.ExpectedDaemon)
+	current, err := forceStopRereadEntry(cfg.RunDir, ref.ThreadID, r.entry, cfg.DaemonProcesses, currentTarget, r.params.ExpectedDaemon)
 	if err != nil {
-		return refuseStop(appwire.Unavailable(err.Error()))
+		return appwire.Unavailable(err.Error())
 	}
-	if err := expectedDaemonConflict(current, params.ExpectedDaemon); err != nil {
-		return refuseStop(err)
+	if err := expectedDaemonConflict(current, r.params.ExpectedDaemon); err != nil {
+		return err
 	}
 	// A deletion record may name any alias in the ownership group, not only
 	// the one the request addressed — including the entry-active Resume's
-	// group. Loop over every alias here, the way the reservationsHeld branch
-	// and confirmedStoppedWithoutClaim already do, so a sibling-alias fence
+	// group. Loop over every alias here, the way takeReservations and
+	// confirmedStoppedWithoutClaim already do, so a sibling-alias fence
 	// cannot slip past the cancel-then-acquire fallback before the
 	// exited/kill branch.
-	if err := deletionFenceErrorForGroup(cfg, deletionFenceAliases); err != nil {
-		return refuseStop(err)
+	if err := deletionFenceErrorForGroup(cfg, r.deletionFenceAliases); err != nil {
+		return err
 	}
-	if exited {
+	if r.exited {
 		// There is no retained process handle to reverify. An unchanged marker
 		// alone cannot confirm absence after waiting for ownership.
-		process, err = controller.Open(target)
+		r.process, err = r.controller.Open(r.target)
 		if !errors.Is(err, daemonprocess.ErrExited) {
 			if err == nil {
 				err = errors.New("daemon is live after initial exit observation")
 			}
-			return refuseStop(appwire.Unavailable(fmt.Sprintf("daemon exit is not confirmed: %v", err)))
+			return appwire.Unavailable(fmt.Sprintf("daemon exit is not confirmed: %v", err))
 		}
 		// An exited claim cannot replace newer authority held by any alias
 		// it would overwrite, even when the requested alias still names it.
-		for _, alias := range aliases {
+		for _, alias := range r.aliases {
 			authority := cfg.ResumeLocks.RecoveryState(alias).ResumeSessionID
-			if authority != "" && authority != target.SessionID {
-				return refuseStop(appwire.Unavailable("exited daemon claim conflicts with alias recovery authority"))
+			if authority != "" && authority != r.target.SessionID {
+				return appwire.Unavailable("exited daemon claim conflicts with alias recovery authority")
 			}
 		}
 	}
-	if err := ctx.Err(); err != nil {
-		return refuseStop(err)
-	}
-	// Commit recovery authority before the signal can take effect. Interrupted
-	// signaling conservatively retains the explicit-Resume requirement.
-	if committed, err := cfg.ResumeLocks.PersistForceStopWithOwner(aliases, target.SessionID, target); err != nil {
-		if !committed {
-			// Nothing committed and nothing signaled, so this refusal canceled
-			// nothing: like every other such refusal it stays admission-neutral
-			// — an unrejected Finish would mint an epoch and sequence advance
-			// for a record that never landed.
-			return refuseStop(wireRefusal(appwire.Unavailable, fmt.Errorf("%w: %w", errPersistSessionRecovery, err)))
-		}
-		// The record landed (the rename committed; a later sync step failed):
-		// the recovery obligation is installed, so this refusal DID mutate the
-		// world and the root fence must publish — pre-stop admissions are stale
-		// and the obligation stands for the explicit Resume to answer. No
-		// signal ever reached the shared process, though, so the
-		// pre-cancellation descendant fences guard processes nothing happened
-		// to: they reject like every refusal that canceled nothing.
-		if !canceledResumes {
-			for _, fence := range preCancellationDescendants {
-				fence.Reject()
-			}
-		}
-		return wireRefusal(appwire.Unavailable, fmt.Errorf("%w: %w", errPersistSessionRecovery, err))
-	}
-	if exited {
-		if err := cfg.ResumeLocks.ConfirmForceStop(target.SessionID); err != nil {
-			return appwire.Unavailable(fmt.Sprintf("persist confirmed daemon exit: %v", err))
-		}
-		refreshAfterForceStop(ctx, cfg)
+	return ctx.Err()
+}
+
+// persistRecovery commits recovery authority before the signal can take
+// effect. Interrupted signaling conservatively retains the explicit-Resume
+// requirement.
+func (r *forceStopRun) persistRecovery() error {
+	committed, err := r.cfg.ResumeLocks.PersistForceStopWithOwner(r.aliases, r.target.SessionID, r.target)
+	if err == nil {
 		return nil
 	}
-	if err := process.Kill(); err != nil && !errors.Is(err, daemonprocess.ErrExited) {
-		return appwire.Unavailable(fmt.Sprintf("cannot force stop daemon: %v", err))
+	refusal := wireRefusal(appwire.Unavailable, fmt.Errorf("%w: %w", errPersistSessionRecovery, err))
+	if !committed {
+		// Nothing committed and nothing signaled, so this refusal canceled
+		// nothing: like every other such refusal it stays admission-neutral
+		// — an unrejected Finish would mint an epoch and sequence advance
+		// for a record that never landed.
+		return r.refuse(refusal)
 	}
-	exitCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
-	defer cancel()
-	if err := process.Wait(exitCtx); err != nil {
-		return appwire.Unavailable(fmt.Sprintf("daemon exit is not confirmed: %v", err))
+	// The record landed (the rename committed; a later sync step failed):
+	// the recovery obligation is installed, so this refusal DID mutate the
+	// world and the root fence must publish — pre-stop admissions are stale
+	// and the obligation stands for the explicit Resume to answer. No
+	// signal ever reached the shared process, though, so the
+	// pre-cancellation descendant fences guard processes nothing happened
+	// to: they reject like every refusal that canceled nothing.
+	if !r.canceledResumes {
+		r.rejectPreCancellationDescendants()
 	}
-	// Exit makes the ownership journal stable. Capture delegates created while
-	// termination was in progress before releasing any recovery admission fence.
-	scanCtx, cancelScan := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
-	defer cancelScan()
-	if err := descendants.scan(scanCtx); err != nil {
-		return err
+	return refusal
+}
+
+// stop signals the verified process, waits for its exit, fences the delegates
+// created while it was terminating, and confirms the stop.
+func (r *forceStopRun) stop(ctx context.Context) error {
+	cfg := r.cfg
+	if !r.exited {
+		if err := r.process.Kill(); err != nil && !errors.Is(err, daemonprocess.ErrExited) {
+			return appwire.Unavailable(fmt.Sprintf("cannot force stop daemon: %v", err))
+		}
+		exitCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+		defer cancel()
+		if err := r.process.Wait(exitCtx); err != nil {
+			return appwire.Unavailable(fmt.Sprintf("daemon exit is not confirmed: %v", err))
+		}
+		// Exit makes the ownership journal stable. Capture delegates created while
+		// termination was in progress before releasing any recovery admission fence.
+		scanCtx, cancelScan := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+		defer cancelScan()
+		if err := r.descendants.scan(scanCtx); err != nil {
+			return err
+		}
 	}
-	if err := cfg.ResumeLocks.ConfirmForceStop(target.SessionID); err != nil {
+	if err := cfg.ResumeLocks.ConfirmForceStop(r.target.SessionID); err != nil {
 		return appwire.Unavailable(fmt.Sprintf("persist confirmed daemon exit: %v", err))
 	}
 	refreshAfterForceStop(ctx, cfg)

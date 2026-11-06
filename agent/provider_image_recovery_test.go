@@ -147,7 +147,7 @@ func TestProviderImageRecovery(t *testing.T) {
 				t.Fatalf("tool effects = %#v, want one original input", toolInputs)
 			}
 			providerRecoveryHistory(t, sess.history, original)
-			_, entries, skipped, err := readTranscript(path, "")
+			_, entries, skipped, err := readTranscript(context.Background(), path, "")
 			if err != nil || skipped != 0 {
 				t.Fatalf("transcript read: skipped=%d err=%v", skipped, err)
 			}

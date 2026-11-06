@@ -527,6 +527,7 @@ func NewSession(client *llm.Client, profile *provider.Profile, env execenv.Execu
 		ownsArtifactStore:             ownsArtifactStore,
 		subscriberCountFn:             cfg.spawn.subscriberCount,
 	}
+	s.bindDescendantTranscriptPublication()
 	s.bufferArtifactStoreWarning(artifactStoreErr)
 	// Publish the first committed notes cut before anything can read one: a
 	// fresh session's live store is empty, and its mutation store may already
@@ -599,6 +600,16 @@ func NewSession(client *llm.Client, profile *provider.Profile, env execenv.Execu
 	if err != nil {
 		return nil, err
 	}
+	// initSessionState minted this root's process livelock as its last step,
+	// so every failure below this point — a fallible constructor step after
+	// init — must give it back: a construction that never came to life must
+	// not hold false-live evidence until process exit (review round 6,
+	// finding 4). On success the normal close path releases it.
+	defer func() {
+		if !initComplete {
+			s.releaseSessionLivelock()
+		}
+	}()
 
 	// initSessionState (via initMCP) may have set s.mcpMgr to a manager holding
 	// live server connections; every error return below this point must close
@@ -789,8 +800,12 @@ type RestoreSessionConfig struct {
 	// the live parent's, replacing whatever the delegate saved.
 	parentMemoryProjectID string
 	StateDir              string
-	Project               identifier.Project
-	ResolveProfile        func(ref string) (*provider.Profile, error)
+	// RendezvousDir is the hosting daemon's rendezvous run directory, the
+	// same field SessionConfig carries — see its doc there. The host that
+	// resolved it for its own registration supplies it here too.
+	RendezvousDir  string
+	Project        identifier.Project
+	ResolveProfile func(ref string) (*provider.Profile, error)
 	// StartupModelListing reuses a listing the launcher already fetched for
 	// this session's model instance instead of fetching it again.
 	StartupModelListing     *StartupModelListing
@@ -882,7 +897,7 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	// A delegate's own environment was named when it was prepared, and a shared
 	// delegate is handed its parent's, so only a root restore names env.
 	if restoreCfg.spawn.parentSessionID == "" {
-		nameRootScratch(env, restoredScratchTreeRoot(meta), meta.ID)
+		nameRootScratch(env, meta.RestoredScratchTreeRoot(), meta.ID)
 	}
 
 	restoreComplete := false
@@ -945,6 +960,7 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	}
 	cfg.LifetimeContext = restoreCfg.LifetimeContext
 	cfg.StateDir = canonicalStateDir(restoreCfg.StateDir)
+	cfg.RendezvousDir = restoreCfg.RendezvousDir
 	cfg.Project = restoreCfg.Project
 	cfg.ResolveProfile = restoreCfg.ResolveProfile
 	cfg.AcquireSessionOwnership = restoreCfg.AcquireSessionOwnership
@@ -1170,6 +1186,8 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 		ownsArtifactStore:           ownsArtifactStore,
 		subscriberCountFn:           cfg.spawn.subscriberCount,
 	}
+	s.bindDescendantTranscriptPublication()
+	s.restoreConversation(transcriptEntries)
 	s.bufferArtifactStoreWarning(artifactStoreErr)
 	s.retirementController.Store(cfg.spawn.retirementController)
 	s.initEnvContext(meta.EnvContext)
@@ -1310,7 +1328,7 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	// A delegate resumed on its own keeps its scratch in its root's tree, and
 	// Meta() keeps recording that root for the next resume.
 	if restoreCfg.spawn.parentSessionID == "" {
-		if root := restoredScratchTreeRoot(meta); root != meta.ID {
+		if root := meta.RestoredScratchTreeRoot(); root != meta.ID {
 			s.restoredScratchTreeRoot = root
 		}
 	}
@@ -1346,6 +1364,15 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	if err != nil {
 		return nil, err
 	}
+	// The restore twin of NewSession's post-init livelock release: the mint
+	// happened inside initSessionState, and any restore-replay failure below
+	// must not leave the restored root reading live until process exit
+	// (review round 6, finding 4).
+	defer func() {
+		if !restoreComplete {
+			s.releaseSessionLivelock()
+		}
+	}()
 
 	// initSessionState (via initMCP) may have set s.mcpMgr to a manager holding
 	// live server connections; every error return below this point must close
@@ -1405,7 +1432,7 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	// one turn behind the file. Both refresh triggers share it so there is
 	// one refresh, not two mechanisms.
 	refreshFromDisk := func(reason string) error {
-		refreshed, err := readTranscriptFull(transcriptPath(s.stateDir, s.id), s.stateDir)
+		refreshed, err := readTranscriptFull(context.Background(), transcriptPath(s.stateDir, s.id), s.stateDir)
 		if err != nil {
 			return fmt.Errorf("refresh transcript after %s: %w", reason, err)
 		}
@@ -1533,7 +1560,6 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	if !restoreCfg.deferRestoreSideEffects {
 		s.recomputeRestoredState(divergenceTurn, attemptStarts)
 	}
-
 	s.emitSessionStartEnvelope(events.SessionStartData{
 		Profile:           profile.ID(),
 		Model:             profile.Model(),
@@ -1761,6 +1787,14 @@ func (s *Session) initSessionState(sessionStartKind plugin.SessionStartKind, run
 	// before the permanent prompt and inventory carry it.
 	s.dropUnavailableSkillPreloads()
 
+	// Manager is a start-time property carried by the session itself: the
+	// hub tools are installed here, before the first tool cache build, and no
+	// later hub state read can add or remove them. hubClient may still be nil
+	// at this point; it is transport, not authority.
+	s.mu.Lock()
+	s.hubEnabled = s.cfg.Manager
+	s.mu.Unlock()
+
 	// Cache instruction docs once; reused every round for system prompt rebuilds.
 	s.projectDocs, s.projectDocsTruncated = LoadInstructionDocs(s.currentEnv(), personalDocPath(s.cfg.AgentsDocPath), s.profile.ProjectDocFiles()...)
 
@@ -1776,6 +1810,13 @@ func (s *Session) initSessionState(sessionStartKind plugin.SessionStartKind, run
 		// prompt carrying their complete instructions was admitted.
 		s.seedFrozenSkillPreloads()
 	}
+
+	// Take the root session's process livelock (issue #5471): the lifetime
+	// flock whose release-by-OS at process death is what a later prune's
+	// owner-liveness REPORTING reads. Root sessions only, non-blocking, and
+	// silent on failure — nothing gates or retries on it (see
+	// acquireSessionLivelock).
+	s.acquireSessionLivelock()
 
 	return s.promptSourceLog, nil
 }
@@ -2578,7 +2619,7 @@ func reconnectRecoveryWarning(name string) events.WarningData {
 // on resume, and removed when the hub archives or deletes the session. A
 // scratch the environment already minted is unaffected. rootID is the tree the
 // scratch lives in: the session's own ID, except for a delegate resumed as a
-// top-level session (restoredScratchTreeRoot).
+// top-level session (SessionMeta.RestoredScratchTreeRoot).
 func nameRootScratch(env execenv.ExecutionEnvironment, rootID, sessionID string) {
 	local, ok := env.(*execenv.LocalExecutionEnvironment)
 	if !ok {
@@ -2587,20 +2628,6 @@ func nameRootScratch(env execenv.ExecutionEnvironment, rootID, sessionID string)
 	if root, _ := local.ScratchIdentity(); root == "" {
 		local.SetScratchIdentity(rootID, sessionID)
 	}
-}
-
-// restoredScratchTreeRoot is the root whose scratch tree a restored top-level
-// session's scratch lives in. A delegate resumed on its own (`serve --resume
-// <delegate>`) keeps its directory in the tree of the root that spawned it,
-// which its meta records, so it reopens what it had and goes when that root is
-// archived.
-func restoredScratchTreeRoot(meta schema.SessionMeta) string {
-	for _, root := range []string{meta.ScratchTreeRootID, meta.JobTreeRootSessionID} {
-		if root = strings.TrimSpace(root); meta.IsSubagent && schema.ValidateSessionID(root) == nil {
-			return root
-		}
-	}
-	return meta.ID
 }
 
 // PickFreshSessionID picks the ID a new top-level session will take, unless cfg

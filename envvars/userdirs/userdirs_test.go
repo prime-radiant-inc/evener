@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
 )
 
@@ -54,6 +55,35 @@ func TestSubdir(t *testing.T) {
 	}
 	if got := Subdir("", "skills"); got != "" {
 		t.Fatalf("Subdir(empty root) = %q, want empty", got)
+	}
+}
+
+func TestPluginStore(t *testing.T) {
+	t.Parallel()
+
+	if got := PluginStore("/cfg/evener"); got != "/cfg/evener/plugins" {
+		t.Fatalf("PluginStore() = %q, want %q", got, "/cfg/evener/plugins")
+	}
+	got := PluginContentDirs("/cfg/evener/plugins")
+	want := []string{"/cfg/evener/plugins/cache", "/cfg/evener/plugins/bundled"}
+	if !slices.Equal(got, want) {
+		t.Fatalf("PluginContentDirs() = %v, want %v", got, want)
+	}
+	// An unavailable config root stays unavailable rather than turning into a
+	// relative plugin store.
+	if got := PluginStore(""); got != "" {
+		t.Fatalf("PluginStore(unavailable root) = %q, want empty", got)
+	}
+}
+
+func TestUserSkills(t *testing.T) {
+	t.Parallel()
+
+	if got := UserSkills("/cfg/evener"); got != "/cfg/evener/skills" {
+		t.Fatalf("UserSkills() = %q, want %q", got, "/cfg/evener/skills")
+	}
+	if got := UserSkills(""); got != "" {
+		t.Fatalf("UserSkills(unavailable root) = %q, want empty", got)
 	}
 }
 

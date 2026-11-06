@@ -3,7 +3,7 @@
 import type { HostRow, LaunchOptionSchemaResponse } from "@evener/appwire-client";
 import { afterEach, beforeEach, expect, test } from "vitest";
 import { connectReadyFakeClient } from "../testing/connectionTestUtils";
-import { connectionStore } from "./connection";
+import { resetConnectionStoreForTests } from "./connection";
 import { hostsStore } from "./hosts";
 import {
   launchConfigStore,
@@ -46,14 +46,14 @@ function schema(agent: string): LaunchOptionSchemaResponse {
 }
 
 beforeEach(() => {
-  connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
+  resetConnectionStoreForTests();
   resetLaunchConfigStoreForTests();
   resetLaunchConfigHostStoresForTests();
   hostsStore.getState().resetForTests();
 });
 
 afterEach(() => {
-  connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
+  resetConnectionStoreForTests();
   resetLaunchConfigHostStoresForTests();
 });
 

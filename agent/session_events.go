@@ -147,6 +147,11 @@ func (s *Session) emitSessionStartEnvelope(start events.SessionStartData, prompt
 	// carries it so a subagent's thread reports its own access (S15).
 	start.Sandbox = s.cfg.Sandbox
 	start.SandboxNet = appwire.ClonePointer(s.cfg.SandboxNet)
+	// Construction (including restored worktree re-entry) has installed the
+	// environment before this seed. Do not use the cached launch directory.
+	s.mu.Lock()
+	start.WorkingDir = s.envInfo.WorkingDir
+	s.mu.Unlock()
 	store := s.getOrCreateTaskStore()
 	_ = store.MutateAndPublish(func(epoch, revision uint64) error {
 		// Sample current work only after entering the shared store's publication

@@ -6,6 +6,7 @@ import type {
   ThreadTurnsListResponse,
 } from "@evener/appwire-client";
 import { encodeTranscriptItem } from "@evener/appwire-client";
+import { deferred } from "@evener/appwire-client/testing/deferred";
 import { IDBFactory, IDBKeyRange, IDBObjectStore } from "fake-indexeddb";
 import { afterEach, expect, it, vi } from "vitest";
 import { EntryWriteAdmission } from "./entryWriteAdmission";
@@ -154,16 +155,6 @@ function capturingScheduler() {
     };
   };
   return { scheduled, scheduler, cancelledCount: () => cancelCount };
-}
-
-function deferred<T>() {
-  let resolve!: (value: T) => void;
-  let reject!: (error: unknown) => void;
-  const promise = new Promise<T>((res, rej) => {
-    resolve = res;
-    reject = rej;
-  });
-  return { promise, resolve, reject };
 }
 
 async function keysInCache(cache: ReturnType<typeof createEntryCacheFixture>["cache"]): Promise<string[]> {

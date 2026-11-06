@@ -1299,12 +1299,15 @@ func TestSkillDelivery_ProjectionModelSwitch(t *testing.T) {
 		}))
 	// Switch the model between the tool result and the committing dispatch, so
 	// the request is projected for a different provider/protocol target.
+	// applyModelSwitch, not SetModel: this checkpoint runs mid-turn, so the
+	// folded SetModel would queue the switch for the boundary; this test
+	// pins the mid-turn projection machinery, which needs the immediate swap.
 	var switchedMidTurn atomic.Bool
 	updateSessionTestConfig(s, func(cfg *testConfig) {
 		cfg.execToolCheckpoint = func(name string) {
 			if name == "after_execute" && !switchedMidTurn.Swap(true) {
-				if err := s.SetModel("openai/gpt-5.2"); err != nil {
-					t.Errorf("SetModel: %v", err)
+				if err := s.applyModelSwitch("openai/gpt-5.2", "", nil, modelSwitchFence{}); err != nil {
+					t.Errorf("applyModelSwitch: %v", err)
 				}
 			}
 		}
@@ -1342,24 +1345,34 @@ func TestSkillDelivery_ProjectionModelSwitch(t *testing.T) {
 // recorded assistant turn is an anchor candidate for the next request's delta
 // planning. The plan reports the phase4d fixture fingerprints.
 type skillContinuationAdapter struct {
+	// The scripted steps live in the shared engine: the step is read under
+	// its mutex and run outside it, so a blocked step never holds the script
+	// and no fixture can assign the slice beside a drive.
+	script agenttest.Script[func(req llm.Request) (llm.Response, error)]
+
 	mu       sync.Mutex
 	requests []llm.Request
-	steps    []func(req llm.Request) (llm.Response, error)
-	i        int
 }
 
 func (a *skillContinuationAdapter) Name() string { return "openai" }
 
+// setSteps scripts the adapter's response sequence; a concurrent drive reads
+// the script through the engine's mutex, so scripting the next turn beside a
+// running one cannot race.
+func (a *skillContinuationAdapter) setSteps(steps []func(req llm.Request) (llm.Response, error)) {
+	a.script.Replace(steps)
+}
+
 func (a *skillContinuationAdapter) Complete(_ context.Context, req llm.Request) (llm.Response, error) {
 	a.mu.Lock()
 	a.requests = append(a.requests, req)
-	i := a.i
-	a.i++
+	i := len(a.requests) - 1
 	a.mu.Unlock()
-	if i >= len(a.steps) {
+	step, ok := a.script.Next()
+	if !ok {
 		return agenttest.FinalResponse("done"), nil
 	}
-	resp, err := a.steps[i](req)
+	resp, err := step(req)
 	if err != nil {
 		return resp, err
 	}
@@ -1385,6 +1398,32 @@ func (a *skillContinuationAdapter) Stream(context.Context, llm.Request) (llm.Str
 
 func (a *skillContinuationAdapter) PlanResponsesContinuation(req llm.Request) (llm.ResponsesContinuationPlan, error) {
 	return phase4DIContinuationPlan(req), nil
+}
+
+// Scripting the next turn beside a running drive must not race: the step is
+// read under the engine's mutex and run outside it, and setSteps writes under
+// the same mutex.
+func TestSkillContinuationAdapterScriptingIsRaceFreeUnderConcurrentDrive(t *testing.T) {
+	adapter := &skillContinuationAdapter{}
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		for range 100 {
+			_, _ = adapter.Complete(context.Background(), llm.Request{})
+		}
+	}()
+	go func() {
+		defer wg.Done()
+		for range 100 {
+			adapter.setSteps([]func(req llm.Request) (llm.Response, error){
+				func(llm.Request) (llm.Response, error) {
+					return agenttest.FinalResponse("done"), nil
+				},
+			})
+		}
+	}()
+	wg.Wait()
 }
 
 func (a *skillContinuationAdapter) Requests() []llm.Request {
@@ -1436,7 +1475,7 @@ func TestSkillDelivery_ResponsesContinuationPlanning(t *testing.T) {
 	source := filepath.Join(root, "skills", "opaque", "SKILL.md")
 	adapter := &skillContinuationAdapter{}
 	s := newContinuationSession(t, adapter, root)
-	adapter.steps = []func(req llm.Request) (llm.Response, error){
+	adapter.setSteps([]func(req llm.Request) (llm.Response, error){
 		func(req llm.Request) (llm.Response, error) {
 			return agenttest.ToolCallResponse(useSkillCall("skill-1", "opaque")), nil
 		},
@@ -1449,7 +1488,7 @@ func TestSkillDelivery_ResponsesContinuationPlanning(t *testing.T) {
 		func(req llm.Request) (llm.Response, error) {
 			return agenttest.ToolCallResponse(communicateCall("done-2", "ok")), nil
 		},
-	}
+	})
 	// Plant a prior anchor so every round (including the first) plans a
 	// continuation delta instead of opening with full history.
 	s.mu.Lock()
@@ -1535,7 +1574,7 @@ func TestSkillDelivery_FullHistoryRecovery(t *testing.T) {
 		},
 	}, nil)
 	adapter := &skillContinuationAdapter{}
-	adapter.steps = []func(req llm.Request) (llm.Response, error){
+	adapter.setSteps([]func(req llm.Request) (llm.Response, error){
 		// Round 0: the model calls use_skill.
 		func(req llm.Request) (llm.Response, error) {
 			return agenttest.ToolCallResponse(useSkillCall("skill-1", "opaque")), nil
@@ -1546,7 +1585,7 @@ func TestSkillDelivery_FullHistoryRecovery(t *testing.T) {
 		func(req llm.Request) (llm.Response, error) {
 			return agenttest.ToolCallResponse(communicateCall("done-1", "ok")), nil
 		},
-	}
+	})
 	s := newContinuationSession(t, adapter, root)
 	// Plant a prior anchor so round 0/1 plan continuation deltas.
 	s.mu.Lock()

@@ -2,7 +2,7 @@ import { canonicalSkillNames } from "../../composerInput";
 import type { ThreadModel } from "../../model";
 import type { InputItem, PendingMutation } from "../../types.gen";
 import { type ComposerVerb, composerVerb } from "./composerMethods";
-import type { MutationOptimisticRecord, MutationOutboxRecord } from "./records";
+import { effectiveWireId, type MutationOptimisticRecord, type MutationOutboxRecord } from "./records";
 
 export type PendingMethod = ComposerVerb;
 // "canceled" is the durable Stop cancellation state surfaced as-is: the entry
@@ -79,9 +79,8 @@ export function skillMarkers(names: readonly string[]): string {
 }
 
 // The one entry-body composition every in-flight surface renders - the
-// chips for sends, the held-steer ghost stack for steer/drain/promote
-// (steering-ghost spec §2): the matching text-plus-markers preview
-// PendingChips used to compose inline, extracted so the ghost is not a
+// chips for sends, the held-steer ghost stack for steer/drain/promote:
+// the matching text-plus-markers preview PendingChips used to compose inline, extracted so the ghost is not a
 // second copy of the chip's composition. Contentless input still composes
 // to "" - the matching-key contract queueEntryPreviewText carries above.
 export function pendingEntryPreview(entry: {
@@ -148,7 +147,7 @@ function ownUnsettledInput(
 const DEFAULT_MAX_DISPLAY_LENGTH = 140;
 
 // The client-side visual cap layered on top of the daemon's own first-line
-// truncation (parity-m5-composer.md §B) - independent of and smaller than
+// truncation - independent of and smaller than
 // most real messages, so this mostly matters for a single very long line.
 export function truncateForDisplay(text: string, max: number = DEFAULT_MAX_DISPLAY_LENGTH): string {
   if (text.length <= max) return text;
@@ -215,6 +214,11 @@ function outboxEntry(
 ): PendingTurnEntry | undefined {
   const method = composerVerb(record.method);
   if (!method) return undefined;
+  // A superseded row is settled terminal work: its send lives in the fresh
+  // row a mint or reconcile queued (which projects on its own), so the dead
+  // predecessor leaves every pending surface - it is not a pending entry in
+  // any state.
+  if (record.state === "superseded") return undefined;
   const preview = inputPreview(outboxInput(record));
   const queueEntryId = method === "promote" ? record.payload.expectedEntryId : undefined;
   const queueRevision = method === "drain" ? record.payload.expectedQueueRevision : undefined;
@@ -290,9 +294,16 @@ export function reconcilePendingEntries(
   const entries = new Map<string, PendingTurnEntry>();
 
   for (const record of outbox) {
-    if (record.targetRef !== ref || reflected.has(record.clientMutationId)) continue;
+    // Key the durable side by the record's effective wire id - the same key
+    // space the daemon's feed names - and let a reflected feed id retire a
+    // durable replacement that carries it: a replacement owns a fresh storage
+    // key while traveling under its predecessor's wire id, and any other
+    // keying projects the one composition twice. The entry's own id stays
+    // the storage key; only the projection's identity is the wire id.
+    const wireId = effectiveWireId(record);
+    if (record.targetRef !== ref || reflected.has(wireId)) continue;
     const entry = outboxEntry(record, isOwnMutationRecord);
-    if (entry) entries.set(entry.id, entry);
+    if (entry) entries.set(wireId, entry);
   }
 
   for (const mutation of model?.pendingMutations ?? []) {
@@ -312,7 +323,7 @@ export function reconcilePendingEntries(
   // daemon sorts pendingMutations lexicographically by id, so their
   // relative order is stable within a snapshot only). The stable sort keeps
   // array order for equal createdAt - a same-millisecond double-submit
-  // keeps submission order in-session, a corner the spec accepts. This is
+  // keeps submission order in-session, an accepted corner. This is
   // the ONE home of the rule: queue rows, chips, and the held-steer ghost
   // stack all render this order.
   return [...entries.values()].sort((left, right) => {

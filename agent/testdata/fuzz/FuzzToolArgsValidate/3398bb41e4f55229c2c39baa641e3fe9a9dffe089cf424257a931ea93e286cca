@@ -1,3 +1,0 @@
-go test fuzz v1
-int(10)
-[]byte("{\"include_children\":false,\"job_id\":\"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\",\"max_wait_ms\":0,\"purpose\":\"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\"}")

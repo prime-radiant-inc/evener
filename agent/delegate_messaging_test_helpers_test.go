@@ -27,7 +27,7 @@ type messagingAdapter struct {
 	mu       sync.Mutex
 	rootID   string
 	markers  []string
-	scripts  map[string][]func(llm.Request) llm.Response
+	scripts  map[string]*agenttest.Script[func(llm.Request) llm.Response]
 	sessions map[string]string
 	requests map[string][]llm.Request
 	arrived  chan struct{}
@@ -36,7 +36,7 @@ type messagingAdapter struct {
 func newMessagingAdapter(markers ...string) *messagingAdapter {
 	return &messagingAdapter{
 		markers:  markers,
-		scripts:  make(map[string][]func(llm.Request) llm.Response),
+		scripts:  make(map[string]*agenttest.Script[func(llm.Request) llm.Response]),
 		sessions: make(map[string]string),
 		requests: make(map[string][]llm.Request),
 		arrived:  make(chan struct{}, 1),
@@ -53,7 +53,12 @@ func (*messagingAdapter) Stream(context.Context, llm.Request) (llm.Stream, error
 func (a *messagingAdapter) script(key string, steps ...func(llm.Request) llm.Response) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	a.scripts[key] = append(a.scripts[key], steps...)
+	script := a.scripts[key]
+	if script == nil {
+		script = &agenttest.Script[func(llm.Request) llm.Response]{}
+		a.scripts[key] = script
+	}
+	script.Append(steps...)
 }
 
 func (a *messagingAdapter) requestsFor(key string) []llm.Request {
@@ -104,18 +109,19 @@ func (a *messagingAdapter) Complete(_ context.Context, req llm.Request) (llm.Res
 	a.mu.Lock()
 	key := a.keyLocked(req)
 	a.requests[key] = append(a.requests[key], req)
-	var step func(llm.Request) llm.Response
-	if steps := a.scripts[key]; len(steps) > 0 {
-		step, a.scripts[key] = steps[0], steps[1:]
-	}
+	script := a.scripts[key]
 	a.mu.Unlock()
+	// Wake the request pollers before the step runs: a step may block on a
+	// gate the poller's assertion opens, so the signal must not wait for it.
 	select {
 	case a.arrived <- struct{}{}:
 	default:
 	}
 	response := agenttest.FinalResponse("done")
-	if step != nil {
-		response = step(req)
+	if script != nil {
+		if step, ok := script.Shift(); ok {
+			response = step(req)
+		}
 	}
 	response.Provider = a.Name()
 	response.Model = req.Model

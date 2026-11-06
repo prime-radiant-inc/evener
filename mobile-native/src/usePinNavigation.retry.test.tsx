@@ -36,7 +36,6 @@ vi.mock("expo-sqlite/kv-store", () => ({
 		getAllKeysSync: () => [...kv.keys()],
 	},
 }));
-vi.mock("expo-crypto", () => ({ randomUUID: () => "uuid" }));
 vi.mock("./ConnectionProvider", () => ({ useConnection: () => harness.connection }));
 vi.mock("@react-navigation/native", () => ({ useIsFocused: () => true }));
 

@@ -148,6 +148,12 @@ type toolDeps struct {
 	// end_turn=true is called while work is still in flight.
 	runningJobIDs func() []string
 
+	// wakeableWork reports whether a resting session can be woken; see
+	// Session.hasWakeableWork for the sources it counts. The communicate
+	// handler refuses end_reason waiting_on_work when it returns false.
+	// Nil disables the refusal.
+	wakeableWork func() bool
+
 	// turnEndsProcess mirrors SessionConfig.TurnEndsProcess so the end_turn
 	// warning can tell the truth about what happens to those jobs. Captured by
 	// value: the flag is fixed for a session's lifetime.
@@ -378,6 +384,7 @@ func newToolDeps(s *Session) *toolDeps {
 		skillInventory:         s.skillInventorySnapshot,
 		setCommunicateTerminal: s.acceptCommunicateTerminal,
 		runningJobIDs:          func() []string { return sessionRunningWorkIDs(s) },
+		wakeableWork:           s.hasWakeableWork,
 		turnEndsProcess:        s.cfg.TurnEndsProcess,
 		offersEndReason:        s.hasHumanPartnerToAsk(),
 		memoryToolsStripped:    memoryNamespaceUnavailable(s.cfg),
@@ -487,7 +494,7 @@ func registerCoreTools(reg *tool.Registry, s *Session) error {
 	if err := registerJobTools(reg, s, deps); err != nil {
 		return err
 	}
-	if err := registerStableDelegateTool(reg, s); err != nil {
+	if err := registerDelegateTool(reg, s); err != nil {
 		return err
 	}
 	if s.modelSnapshot != nil {

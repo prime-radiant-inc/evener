@@ -8,11 +8,15 @@ package appwire
 // appwire — only this plain-data result crosses the boundary, in the
 // direction hubcore already imports (kata 4j2t).
 type AttentionEntry struct {
-	ID         string `json:"threadId"`
-	Title      string `json:"title"`
-	Project    string `json:"project"`
-	Level      string `json:"level"`
-	AskPending bool   `json:"askPending,omitempty"`
+	Ref string `json:"ref,omitempty"`
+	// RosterInstanceID identifies the session occupying Ref in roster updates.
+	// Clear changes it without changing the workspace ref or threadId.
+	RosterInstanceID string `json:"rosterInstanceId,omitempty"`
+	ID               string `json:"threadId"`
+	Title            string `json:"title"`
+	Project          string `json:"project"`
+	Level            string `json:"level"`
+	AskPending       bool   `json:"askPending,omitempty"`
 	// ApprovalPending is true while the session is blocked on a sandbox
 	// escalation a human must allow or deny (M7). It is why an
 	// escalation-promoted session's Level is needs_you; AskPending is the

@@ -522,12 +522,14 @@ function renderedOutputExpr(ref) {
 // waitForTargetRunning observes the actual running state of the target's own
 // turn (an in-progress turn or a live overlay), not merely finished text.
 async function waitForTargetRunning(driver, ref, timeoutMs = 30000) {
-  const deadline = Date.now() + timeoutMs;
+  const startedAt = Date.now();
+  const deadline = startedAt + driver.reactions.deadline(timeoutMs);
   let last = null;
   while (Date.now() < deadline) {
     const d = await readTargetDomain(driver, ref);
     last = d;
     if (d && (d.turns.some((t) => (t.status ?? "").toLowerCase().includes("progress")) || d.overlayKeys.length > 0)) {
+      driver.reactions.observe(Date.now() - startedAt);
       return true;
     }
     await new Promise((r) => setTimeout(r, 100));
@@ -538,11 +540,15 @@ async function waitForTargetRunning(driver, ref, timeoutMs = 30000) {
 // waitForRenderedOutput waits for the shell OUTPUT region (the CodeBlock that
 // owns the "Copy output" control) to show the produced literal.
 async function waitForRenderedOutput(driver, ref, marker, timeoutMs = 30000) {
-  const deadline = Date.now() + timeoutMs;
+  const startedAt = Date.now();
+  const deadline = startedAt + driver.reactions.deadline(timeoutMs);
   let last = null;
   while (Date.now() < deadline) {
     last = await evaluate(driver.send, renderedOutputExpr(ref)).catch(() => null);
-    if (last?.outputRegions === 1 && last.outputs[0]?.includes(marker)) return last;
+    if (last?.outputRegions === 1 && last.outputs[0]?.includes(marker)) {
+      driver.reactions.observe(Date.now() - startedAt);
+      return last;
+    }
     await new Promise((r) => setTimeout(r, 100));
   }
   return false;
@@ -561,7 +567,8 @@ async function readShellOutputRegion(driver, ref, marker, timeoutMs = 30000) {
   // wait (the observed failure was driver.click finding no element at its own
   // box lookup, not a wrong selector). Wait until the control is present AND
   // has a non-zero box before clicking; never click into the void.
-  const deadline = Date.now() + timeoutMs;
+  const startedAt = Date.now();
+  const deadline = startedAt + driver.reactions.deadline(timeoutMs);
   let clicked = false;
   while (Date.now() < deadline && !clicked) {
     const ready = await evaluate(
@@ -578,6 +585,7 @@ async function readShellOutputRegion(driver, ref, marker, timeoutMs = 30000) {
       try {
         await driver.click(toggleSelector);
         clicked = true;
+        driver.reactions.observe(Date.now() - startedAt);
       } catch {
         await delay(100);
       }
@@ -756,10 +764,14 @@ async function observedConnection(driver) {
 // waitForDisconnected waits for the app's own connection state to leave the
 // connected state, not navigator.onLine alone.
 async function waitForDisconnected(driver, timeoutMs = 15000) {
-  const deadline = Date.now() + timeoutMs;
+  const startedAt = Date.now();
+  const deadline = startedAt + driver.reactions.deadline(timeoutMs);
   while (Date.now() < deadline) {
     const { appState } = await observedConnection(driver);
-    if (appState !== null && appState !== undefined && appState !== "ready") return true;
+    if (appState !== null && appState !== undefined && appState !== "ready") {
+      driver.reactions.observe(Date.now() - startedAt);
+      return true;
+    }
     await new Promise((r) => setTimeout(r, 100));
   }
   return false;
@@ -1770,7 +1782,8 @@ async function runEntryProductionJourney(driver, harnessUrl) {
   // accepted model through its subscription, so poll for the applied window.
   const reconnect = await waitForNewTargetRead(driver, SESSION_B, preGapReads, 30000);
   const reconnectBefore = { readResponses: preGapReads, connections: preGapConnections };
-  const appliedDeadline = Date.now() + 20000;
+  const appliedStartedAt = Date.now();
+  const appliedDeadline = appliedStartedAt + driver.reactions.deadline(20000);
   let reconnectDomain = await readTargetDomain(driver, SESSION_B);
   let reconnectCheck = reconnectValidator(reconnectBefore, reconnect, {
     cursor: reconnectDomain?.cursor ?? "",
@@ -1784,6 +1797,7 @@ async function runEntryProductionJourney(driver, harnessUrl) {
       domain: reconnectDomain,
     });
   }
+  if (reconnectCheck.appliedMatches) driver.reactions.observe(Date.now() - appliedStartedAt);
   const reconnectTraceAfter = traceBytes();
   const reconnectedHasGap = domainContent(reconnectDomain).includes(GAP_SENTINEL);
   driver.milestone("reconnected-latest-window", {
@@ -1947,10 +1961,14 @@ function nativeEntryEvidenceExpression(ref = SESSION_B) {
 }
 
 async function waitForNativeEntryEvidence(driver, predicate, label, ref = SESSION_B) {
-  const deadline = Date.now() + 30000;
+  const startedAt = Date.now();
+  const deadline = startedAt + driver.reactions.deadline(30000);
   while (Date.now() < deadline) {
     const value = await evaluate(driver.send, nativeEntryEvidenceExpression(ref));
-    if (value && predicate(value)) return value;
+    if (value && predicate(value)) {
+      driver.reactions.observe(Date.now() - startedAt);
+      return value;
+    }
     await delay(100);
   }
   throw new Error(`timed out waiting for ${label}`);
@@ -1977,11 +1995,15 @@ async function scrollSentinelIntoView(driver, ref, wanted, rounds = 8) {
 // restore that needed the wire still shows up as a read/page in the caller's
 // trace window.
 async function waitForRestoredDomain(driver, ref, sentinel, timeoutMs = 30000) {
-  const deadline = Date.now() + timeoutMs;
+  const startedAt = Date.now();
+  const deadline = startedAt + driver.reactions.deadline(timeoutMs);
   let last = null;
   while (Date.now() < deadline) {
     last = await readTargetDomain(driver, ref).catch(() => null);
-    if (last && (last.items?.length ?? 0) > 0 && domainContent(last).includes(sentinel)) return last;
+    if (last && (last.items?.length ?? 0) > 0 && domainContent(last).includes(sentinel)) {
+      driver.reactions.observe(Date.now() - startedAt);
+      return last;
+    }
     await delay(150);
   }
   return last;
@@ -2037,12 +2059,16 @@ async function openSessionInCurrentShell(driver, ref) {
 // waitForNewTargetRead waits for the target's read count to advance past its
 // pre-gap value, returning refreshed evidence (the reconnect's authoritative
 // read on a new connection).
-async function waitForNewTargetRead(_driver, ref, beforeReads, timeoutMs = 30000) {
-  const deadline = Date.now() + timeoutMs;
+async function waitForNewTargetRead(driver, ref, beforeReads, timeoutMs = 30000) {
+  const startedAt = Date.now();
+  const deadline = startedAt + driver.reactions.deadline(timeoutMs);
   let ev = targetPagingEvidence(ref);
   while (Date.now() < deadline) {
     ev = targetPagingEvidence(ref);
-    if (ev.readResponses > beforeReads) return ev;
+    if (ev.readResponses > beforeReads) {
+      driver.reactions.observe(Date.now() - startedAt);
+      return ev;
+    }
     await new Promise((r) => setTimeout(r, 150));
   }
   return ev;
@@ -2063,10 +2089,19 @@ async function runJourney(driver, entryProduction = false, harnessUrl) {
 // runTwoTabFencing drives the entry route's Clear and delete fences across two
 // REAL tabs sharing one native BroadcastChannel and one IndexedDB. The first tab
 // is the journey's own page; the second is a real second document on the same
-// guard harness. Only the fence entry points are invoked (threads.clearCachedSessions
-// and markCacheSessionsDeleted, the same effect set a real Clear/delete owes the
-// cache); the propagation and the durable removal are the browser's own.
+// guard harness. The real stopped-project delete action removes the source as
+// well as its cache, and Clear uses threads.clearCachedSessions. Propagation and
+// durable removal are the browser's own.
 async function runTwoTabFencing(driver, endpoint, harnessUrl) {
+  const call = (send, method, ...args) =>
+    evaluate(send, `window.backgroundTranscriptGuard.${method}(${args.map((arg) => JSON.stringify(arg)).join(",")})`);
+  // Preserve B's producer transcript for the Go owner's independent history
+  // assertions. Stop A before the sibling boots, so it cannot acquire a live
+  // background lease while this phase is preparing a fresh deleted-ref open.
+  const ref = SESSION_A;
+  const stopped = await fetch(new URL("/background-guard/stop-sustained", HUB_URL), { method: "POST" });
+  if (!stopped.ok) throw new Error(`two-tab stop: ${await stopped.text()}`);
+  const project = await stopped.json();
   const opened = await openPage(endpoint, "about:blank");
   const tab = await connectPage(endpoint, opened.id);
   try {
@@ -2090,7 +2125,8 @@ async function runTwoTabFencing(driver, endpoint, harnessUrl) {
            const deadline = Date.now() + 30000;
            while (Date.now() < deadline) {
              if (typeof window.backgroundTranscriptEvidence !== "undefined" &&
-                 typeof window.backgroundTranscriptGuard !== "undefined") return true;
+                 typeof window.backgroundTranscriptGuard !== "undefined" &&
+                 window.backgroundTranscriptEvidence.connectionState() === "ready") return true;
              await new Promise((resolve) => setTimeout(resolve, 100));
            }
            return { booted: typeof window.backgroundTranscriptBooted, evidence: typeof window.backgroundTranscriptEvidence,
@@ -2111,13 +2147,10 @@ async function runTwoTabFencing(driver, endpoint, harnessUrl) {
     // rail row is pressed.
     await driver.send("Page.bringToFront");
     await waitForResponsiveHost(driver);
-    const call = (send, method, ...args) =>
-      evaluate(send, `window.backgroundTranscriptGuard.${method}(${args.map((arg) => JSON.stringify(arg)).join(",")})`);
     const fence = (send, ref) => call(send, "fenceState", ref);
     const durable = (send, ref) => evaluate(send, nativeEntryEvidenceExpression(ref));
 
     // ---- delete fence: one tab deletes, the sibling observes over the channel ----
-    const ref = SESSION_B;
     const seeded = await durable(tab.send, ref);
     if (!seeded || seeded.rows.length === 0) {
       throw new Error(`two-tab delete: the target has no durable entry rows to fence: ${JSON.stringify(seeded)}`);
@@ -2127,8 +2160,11 @@ async function runTwoTabFencing(driver, endpoint, harnessUrl) {
     if (aBefore.deletedRefs.includes(ref) || bBefore.deletedRefs.includes(ref)) {
       throw new Error(`two-tab delete: the ref was already fenced: ${JSON.stringify({ aBefore, bBefore })}`);
     }
-    await call(driver.send, "delete", ref);
-    const suppressDeadline = Date.now() + 15000;
+    const deletion = await call(driver.send, "delete", project.key, project.workingDir);
+    if (!deletion.deleted.some((id) => id === ref || `local:${id}` === ref) || deletion.skipped.length !== 0) {
+      throw new Error(`two-tab delete: the source session was not deleted: ${JSON.stringify(deletion)}`);
+    }
+    const suppressDeadline = Date.now() + driver.reactions.deadline(15000);
     let bAfter = await fence(tab.send, ref);
     while (bAfter.lifetime?.suppressed !== true && Date.now() < suppressDeadline) {
       await delay(100);
@@ -2137,7 +2173,7 @@ async function runTwoTabFencing(driver, endpoint, harnessUrl) {
     const aAfter = await fence(driver.send, ref);
     // The durable heal is asynchronous (deleteCachedRefs), so poll for the rows
     // to leave the shared IndexedDB rather than reading one instant.
-    const removeDeadline = Date.now() + 15000;
+    const removeDeadline = Date.now() + driver.reactions.deadline(15000);
     let removed = await durable(tab.send, ref);
     while (removed && removed.rows.length > 0 && Date.now() < removeDeadline) {
       await delay(100);
@@ -2163,12 +2199,17 @@ async function runTwoTabFencing(driver, endpoint, harnessUrl) {
     if (!(removed === null || removed.rows.length === 0)) {
       throw new Error("two-tab delete: the durable record still exists in the shared IndexedDB");
     }
+    const sourceReadOutcome = await call(tab.send, "sourceReadOutcome", ref);
+    driver.milestone("two-tab-delete-source", { ref, sourceReadOutcome });
+    if (sourceReadOutcome !== "rejected") {
+      throw new Error("two-tab delete: the target remains readable on the source after deletion");
+    }
     // The sibling's fresh acquisition must not resurrect the deleted session:
     // the deletion fence refuses the hydration and no route or durable row
     // appears. Poll the real condition (the ref acquired no route) rather than
     // sleeping a fixed interval.
     await call(tab.send, "open", ref);
-    const refusalDeadline = Date.now() + 15000;
+    const refusalDeadline = Date.now() + driver.reactions.deadline(15000);
     let routePresent = await evaluate(
       tab.send,
       `window.backgroundTranscriptEvidence.entryRoute(${JSON.stringify(ref)}).present`,
@@ -2191,12 +2232,12 @@ async function runTwoTabFencing(driver, endpoint, harnessUrl) {
     }
 
     // ---- clear fence: a held old-epoch lease is suppressed, not rebound ----
-    await driver.openSession(SESSION_A);
-    const armDeadline = Date.now() + 15000;
-    let aClearBefore = await fence(driver.send, SESSION_A);
+    await driver.openSession(SESSION_B);
+    const armDeadline = Date.now() + driver.reactions.deadline(15000);
+    let aClearBefore = await fence(driver.send, SESSION_B);
     while (aClearBefore.lifetime?.leaseEpoch === undefined && Date.now() < armDeadline) {
       await delay(100);
-      aClearBefore = await fence(driver.send, SESSION_A);
+      aClearBefore = await fence(driver.send, SESSION_B);
     }
     if (aClearBefore.lifetime?.leaseEpoch === undefined) {
       throw new Error(`two-tab clear: the holding tab never captured a cache lease: ${JSON.stringify(aClearBefore)}`);
@@ -2205,14 +2246,14 @@ async function runTwoTabFencing(driver, endpoint, harnessUrl) {
     if (!cleared.committed) {
       throw new Error(`two-tab clear: the sibling clear did not commit: ${JSON.stringify(cleared)}`);
     }
-    const clearDeadline = Date.now() + 15000;
-    let aClearAfter = await fence(driver.send, SESSION_A);
+    const clearDeadline = Date.now() + driver.reactions.deadline(15000);
+    let aClearAfter = await fence(driver.send, SESSION_B);
     while (aClearAfter.lifetime?.suppressed !== true && Date.now() < clearDeadline) {
       await delay(100);
-      aClearAfter = await fence(driver.send, SESSION_A);
+      aClearAfter = await fence(driver.send, SESSION_B);
     }
     driver.milestone("two-tab-clear-fence", {
-      ref: SESSION_A,
+      ref: SESSION_B,
       epochBefore: aClearBefore.lifetime?.leaseEpoch ?? null,
       epochAfter: aClearAfter.lifetime?.leaseEpoch ?? null,
       suppressed: aClearAfter.lifetime?.suppressed === true,
@@ -2240,12 +2281,20 @@ async function runTwoTabFencing(driver, endpoint, harnessUrl) {
 }
 
 async function waitForEvidenceGlobal(driver) {
-  const deadline = Date.now() + 90000;
+  const startedAt = Date.now();
+  const deadline = startedAt + driver.reactions.deadline(90000);
   while (Date.now() < deadline) {
     const present = await evaluate(driver.send, "typeof window.backgroundTranscriptEvidence !== 'undefined'").catch(
       () => false,
     );
-    if (present) return true;
+    if (present) {
+      // The page boot is this run's first observed reaction. Recording it
+      // sizes every later wait from the machine this guard actually got,
+      // instead of leaving the first composer and display waits at a floor
+      // a loaded runner can miss.
+      driver.reactions.observe(Date.now() - startedAt);
+      return true;
+    }
     await new Promise((resolve) => setTimeout(resolve, 100));
   }
   return false;

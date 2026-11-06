@@ -22,7 +22,7 @@ import (
 // jobsListSource is a minimal appsource.Source test double that stubs the
 // live path's ListJobs/JobOutput responses; every other (large) Source method
 // falls through to the embedded relayLifecycleSource's stub implementation
-// (app_rpc_test.go), mirroring taskListSource's existing override pattern.
+// (app_rpc_helpers_test.go), mirroring taskListSource's existing override pattern.
 type jobsListSource struct {
 	relayLifecycleSource
 	id           string

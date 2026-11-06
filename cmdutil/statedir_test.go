@@ -69,19 +69,19 @@ func TestStateRootFromLookup(t *testing.T) {
 			// combinations alike resolve no home.
 			name:    "windows ignores homedrive and homepath",
 			goos:    "windows",
-			env:     map[string]string{envvars.HomeDrive.Name: "D:", envvars.HomePath.Name: `\Users\u`},
+			env:     map[string]string{"HOMEDRIVE": "D:", "HOMEPATH": `\Users\u`},
 			wantErr: true,
 		},
 		{
 			name:    "windows ignores a lone homedrive",
 			goos:    "windows",
-			env:     map[string]string{envvars.HomeDrive.Name: "D:"},
+			env:     map[string]string{"HOMEDRIVE": "D:"},
 			wantErr: true,
 		},
 		{
 			name:    "windows ignores a lone homepath",
 			goos:    "windows",
-			env:     map[string]string{envvars.HomePath.Name: `\Users\u`},
+			env:     map[string]string{"HOMEPATH": `\Users\u`},
 			wantErr: true,
 		},
 		{

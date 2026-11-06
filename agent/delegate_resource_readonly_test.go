@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -12,19 +13,20 @@ import (
 
 	"primeradiant.com/evener/agent/internal/clock"
 	"primeradiant.com/evener/agent/internal/delegatestore"
+	"primeradiant.com/evener/agent/internal/jobstore"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/identifier"
 )
 
-func TestStableDelegateReadOnly_HistoricalSendRendersWithoutLiveAlias(t *testing.T) {
+func TestDelegateReadOnly_HistoricalSendRendersWithoutLiveAlias(t *testing.T) {
 	got := toolInputSummary("job_send_message", json.RawMessage(`{"target":"job_historical_activation","message":"what happened?"}`))
 	if got != "job_historical_activation `what happened?`" {
 		t.Fatalf("historical send summary = %q", got)
 	}
 }
 
-func TestStableDelegateReadOnly_ActivityPreservesTimingUsageQuietWorktreeAndDiagnostics(t *testing.T) {
+func TestDelegateReadOnly_ActivityPreservesTimingUsageQuietWorktreeAndDiagnostics(t *testing.T) {
 	t.Parallel()
 	stateDir := t.TempDir()
 	s := newSession(t,
@@ -46,7 +48,7 @@ func TestStableDelegateReadOnly_ActivityPreservesTimingUsageQuietWorktreeAndDiag
 	startedAt := time.Unix(10, 0).UTC()
 	latestAt := time.Unix(14, 0).UTC()
 	endedAt := time.Unix(18, 0).UTC()
-	finish := stableDelegateFinishFromRun(delegateTerminalRunInputs{
+	finish := delegateFinishFromRun(delegateTerminalRunInputs{
 		result:                  "complete",
 		communicated:            true,
 		structuredResult:        nil,
@@ -65,7 +67,7 @@ func TestStableDelegateReadOnly_ActivityPreservesTimingUsageQuietWorktreeAndDiag
 	})
 	seedStableReadonlyFinish(t, s, "dlg_rich", descriptor, startedAt, finish, true)
 
-	tree, err := s.JobActivityTree(appwire.JobsListParams{})
+	tree, err := s.JobActivityTree(t.Context(), appwire.JobsListParams{})
 	if err != nil {
 		t.Fatalf("JobActivityTree: %v", err)
 	}
@@ -114,7 +116,7 @@ func TestStableDelegateReadOnly_ActivityPreservesTimingUsageQuietWorktreeAndDiag
 	}
 }
 
-func TestStableDelegateReadOnly_OneSampledClockDrivesQuietRunningAndDuration(t *testing.T) {
+func TestDelegateReadOnly_OneSampledClockDrivesQuietRunningAndDuration(t *testing.T) {
 	t.Parallel()
 	s := newSession(t, withoutGitSnapshot())
 	seedStableToolRunningDelegate(t, s, "dlg_clock_a", "", time.Unix(100, 0).UTC())
@@ -123,7 +125,7 @@ func TestStableDelegateReadOnly_OneSampledClockDrivesQuietRunningAndDuration(t *
 	counting := &stableReadonlyCountingClock{Clock: s.sclock(), now: now}
 	s.clock = counting
 
-	tree, err := s.JobActivityTree(appwire.JobsListParams{})
+	tree, err := s.JobActivityTree(t.Context(), appwire.JobsListParams{})
 	if err != nil {
 		t.Fatalf("JobActivityTree: %v", err)
 	}
@@ -148,7 +150,7 @@ func TestStableDelegateReadOnly_OneSampledClockDrivesQuietRunningAndDuration(t *
 	}
 }
 
-func TestStableDelegateReadOnly_ColdAndLiveProjectionMatch(t *testing.T) {
+func TestDelegateReadOnly_ColdAndLiveProjectionMatch(t *testing.T) {
 	t.Parallel()
 	stateDir := t.TempDir()
 	s := newSession(t,
@@ -158,13 +160,13 @@ func TestStableDelegateReadOnly_ColdAndLiveProjectionMatch(t *testing.T) {
 	)
 	descriptor := stableReadonlyDescriptor(s, "dlg_parity")
 	startedAt := time.Unix(100, 0).UTC()
-	finish := stableDelegateFinishFromRun(delegateTerminalRunInputs{
+	finish := delegateFinishFromRun(delegateTerminalRunInputs{
 		result: "done", communicated: true, descriptor: descriptor,
 		startedAt: startedAt, latestActivityAt: startedAt.Add(time.Second), endedAt: startedAt.Add(2 * time.Second),
 	})
 	seedStableReadonlyFinish(t, s, "dlg_parity", descriptor, startedAt, finish, true)
 
-	live, err := s.JobActivityTree(appwire.JobsListParams{})
+	live, err := s.JobActivityTree(t.Context(), appwire.JobsListParams{})
 	if err != nil {
 		t.Fatalf("live JobActivityTree: %v", err)
 	}
@@ -179,7 +181,7 @@ func TestStableDelegateReadOnly_ColdAndLiveProjectionMatch(t *testing.T) {
 	}
 }
 
-func TestStableDelegateReadOnly_ActivityProjectsPublicLifecycleAndInternalPhase(t *testing.T) {
+func TestDelegateReadOnly_ActivityProjectsPublicLifecycleAndInternalPhase(t *testing.T) {
 	t.Parallel()
 	stateDir := t.TempDir()
 	s := newSession(t,
@@ -225,7 +227,7 @@ func TestStableDelegateReadOnly_ActivityProjectsPublicLifecycleAndInternalPhase(
 		t.Fatalf("seed stable activity phases: %v", err)
 	}
 
-	live, err := s.JobActivityTree(appwire.JobsListParams{})
+	live, err := s.JobActivityTree(t.Context(), appwire.JobsListParams{})
 	if err != nil {
 		t.Fatalf("live JobActivityTree: %v", err)
 	}
@@ -250,7 +252,7 @@ func TestStableDelegateReadOnly_ActivityProjectsPublicLifecycleAndInternalPhase(
 	}
 }
 
-func TestStableDelegateReadOnly_MissingFilesRemainMissing(t *testing.T) {
+func TestDelegateReadOnly_MissingFilesRemainMissing(t *testing.T) {
 	t.Parallel()
 	stateDir := t.TempDir()
 	sessionID := identifier.MustNewSessionID()
@@ -398,4 +400,48 @@ func seedStableReadonlyTornJournal(t *testing.T, stateDir, sessionID string) str
 		t.Fatal(err)
 	}
 	return path
+}
+
+// A cancelled evener/jobs/list request stops the live session's tree build
+// before it opens the next exited descendant's job journal.
+func TestJobActivityTree_CancelReachesDescendantScans(t *testing.T) {
+	stateDir := t.TempDir()
+	s := newSession(t,
+		withDir(stateDir),
+		withConfig(SessionConfig{StateDir: stateDir, MaxSubagentDepth: 1}),
+		withoutGitSnapshot(),
+	)
+	startedAt := time.Unix(10, 0).UTC()
+	for _, id := range []string{"dlg_a", "dlg_b"} {
+		descriptor := stableReadonlyDescriptor(s, id)
+		finish := delegateFinishFromRun(delegateTerminalRunInputs{
+			result:           "complete",
+			communicated:     true,
+			descriptor:       descriptor,
+			startedAt:        startedAt,
+			latestActivityAt: startedAt,
+			endedAt:          startedAt.Add(time.Second),
+		})
+		seedStableReadonlyFinish(t, s, id, descriptor, startedAt, finish, true)
+		s1cov_writeJobLog(t, stateDir, descriptor.ChildSessionID,
+			jobstore.Event{Kind: jobstore.EventJobStarted, TS: startedAt, JobID: "job_" + id, Type: jobstore.JobShell, OwnerSessionID: descriptor.ChildSessionID, VisibleToSession: descriptor.ChildSessionID, StartedAt: &startedAt},
+		)
+	}
+
+	ctx, cancel := context.WithCancel(t.Context())
+	var scanned int
+	original := scanJobJournal
+	scanJobJournal = func(ctx context.Context, path string, fromOffset int64, limits jobstore.ScanLimits) ([]jobstore.Event, int64, error) {
+		scanned++
+		cancel()
+		return original(ctx, path, fromOffset, limits)
+	}
+	t.Cleanup(func() { scanJobJournal = original })
+
+	if _, err := s.JobActivityTree(ctx, appwire.JobsListParams{}); !errors.Is(err, context.Canceled) {
+		t.Fatalf("JobActivityTree error = %v, want context.Canceled", err)
+	}
+	if scanned != 1 {
+		t.Fatalf("scanned %d job journals after the request was cancelled, want 1", scanned)
+	}
 }

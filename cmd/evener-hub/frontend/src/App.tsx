@@ -1,6 +1,7 @@
 import { lazy, Suspense, useEffect } from "react";
-import { AppShell } from "./shell/AppShell";
 import { syncThemeColor } from "./stores/prefs";
+
+const WorkspaceRoute = lazy(() => import("./shell/AppShell").then((module) => ({ default: module.AppShell })));
 
 // Dev-only routes, at /dev/widgets, /dev/surfaces, /dev/type and
 // /dev/harness. import.meta.env.DEV
@@ -61,5 +62,9 @@ export function App() {
       </Suspense>
     );
   }
-  return <AppShell />;
+  return (
+    <Suspense fallback={null}>
+      <WorkspaceRoute />
+    </Suspense>
+  );
 }

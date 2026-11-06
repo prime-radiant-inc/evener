@@ -7,11 +7,14 @@ import (
 	"reflect"
 	"slices"
 	"strings"
+	"time"
 
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/internal/contextmgr"
 	"primeradiant.com/evener/agent/plugin"
 	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/agent/transcript"
+	"primeradiant.com/evener/identifier"
 	"primeradiant.com/evener/llm"
 )
 
@@ -209,6 +212,24 @@ func (s *Session) publishFoldTransaction(snapLen, snapRevision, snapAppends int,
 		s.attentionMu.Unlock()
 		return nil, false, refusal
 	}
+	var pendingAskTail, retainedTail []schema.Turn
+	if commit.stagedCompactionCount() > 0 && s.stateDir != "" {
+		// One immutable read under the transcript door serves both selectors.
+		_, entries, _, err := readTranscript(context.Background(), transcriptPath(s.stateDir, s.id), s.stateDir)
+		if err != nil {
+			s.attentionMu.Unlock()
+			return nil, false, fmt.Errorf("read retained compaction tail: %w", err)
+		}
+		retainedTail = retainedFoldReplayTail(entries, folded)
+		if ids := s.pendingAskTurnIDs(); len(ids) > 0 {
+			pendingAskTail, err = pendingAskReplayTail(entries, ids)
+		}
+		if err != nil {
+			s.attentionMu.Unlock()
+			s.emit(bareWarningDataFromError("preserve pending ask during compaction", err))
+			return nil, false, err
+		}
+	}
 	// A fold may summarize away the turn behind a pending attention item.
 	// Attention turns are not folded content: the item stays pending until a
 	// turn presents it, and a turn that cannot see it would never consume it.
@@ -233,11 +254,19 @@ func (s *Session) publishFoldTransaction(snapLen, snapRevision, snapAppends int,
 	}
 	s.mu.Lock()
 	previousEnvironmentIDs := environmentTurnIDs(s.history)
+	voiceBefore := latestVoicePresentationTurn(s.history)
+	conversationBefore := s.conversationInputsLocked(s.history[:min(snapLen, len(s.history))])
 	published, ok = s.publishFoldedHistory(snapLen, snapRevision, folded)
 	if !ok {
 		s.mu.Unlock()
 		s.attentionMu.Unlock()
 		return nil, false, nil
+	}
+	if commit.prepareConversationLocked != nil {
+		commit.prepareConversationLocked(conversationBefore, published)
+	}
+	if commit.prepareVoicePresentationLocked != nil {
+		commit.prepareVoicePresentationLocked(voiceBefore, published)
 	}
 	// The appended turns may reallocate, so the history takes the new slice.
 	published, restoredAt := withAttentionTurns(published, keptAttention)
@@ -271,10 +300,30 @@ func (s *Session) publishFoldTransaction(snapLen, snapRevision, snapAppends int,
 	// the same to a stale snapshot's start.
 	tailStart := snapAppends - s.persistedAppendLogBase
 	tailStart = max(0, min(tailStart, len(s.persistedAppendLog)))
-	rewriteTail := make([]schema.Turn, 0, len(s.persistedAppendLog)-tailStart)
+	// OriginalOrdinal identifies a record, not its place in published history:
+	// a concurrent input can be written before the note it follows live.
+	// Keep concurrent pairs after staged steering, even when pending-ask
+	// custody also selected them from the transcript.
+	concurrentOrdinals := make(map[uint64]bool)
+	for _, persisted := range s.persistedAppendLog[tailStart:] {
+		if persisted.Kind != "" && persisted.OriginalOrdinal != nil {
+			concurrentOrdinals[*persisted.OriginalOrdinal] = true
+		}
+	}
+	retainedTail = mergeFoldReplayTail(retainedTail, pendingAskTail, concurrentOrdinals)
+	pendingByOrdinal := make(map[uint64]schema.Turn, len(pendingAskTail))
+	for _, turn := range pendingAskTail {
+		pendingByOrdinal[*turn.OriginalOrdinal] = turn
+	}
+	var rewriteTail []schema.Turn
 	for _, persisted := range s.persistedAppendLog[tailStart:] {
 		if persisted.Kind == "" {
 			continue // a tombstone: its write recorded nothing, so nothing re-appends
+		}
+		if persisted.OriginalOrdinal != nil {
+			if original, ok := pendingByOrdinal[*persisted.OriginalOrdinal]; ok {
+				persisted = original
+			}
 		}
 		rewriteTail = append(rewriteTail, persisted)
 	}
@@ -313,8 +362,18 @@ func (s *Session) publishFoldTransaction(snapLen, snapRevision, snapAppends int,
 	if hook := s.cfg.testOnly.beforeFoldTranscriptCommit; hook != nil {
 		hook()
 	}
-	markerLanded := commit.commitTranscriptsLocked()
 	var mergedTailWriteErrs []error
+	// The staged writer invokes this only after a marker lands and before
+	// new steering. Together the phases match the published history:
+	// marker, retained snapshot, staged steering, concurrent append pairs.
+	commit.replayRetainedLocked = func() {
+		for _, turn := range retainedTail {
+			if _, err := s.recordTranscriptLocked(turn, transcript.DoorDurable, transcript.PlaceVerbatim); err != nil {
+				mergedTailWriteErrs = append(mergedTailWriteErrs, err)
+			}
+		}
+	}
+	markerLanded := commit.commitTranscriptsLocked()
 	// The rewrite exists only to carry these pairs PAST a marker this fold
 	// landed, because ResumeHistory anchors on the last one and discards
 	// everything before it. A model request publishes a fold whether or not a
@@ -325,7 +384,13 @@ func (s *Session) publishFoldTransaction(snapLen, snapRevision, snapAppends int,
 	// fold's marker would make the anchored read return the pair twice.
 	if markerLanded {
 		for _, turn := range rewriteTail {
-			if err := s.writeTranscriptDurableLocked(turn); err != nil {
+			place := transcript.PlaceSession
+			if turn.OriginalOrdinal != nil {
+				if _, ok := pendingByOrdinal[*turn.OriginalOrdinal]; ok {
+					place = transcript.PlaceVerbatim
+				}
+			}
+			if _, err := s.recordTranscriptLocked(turn, transcript.DoorDurable, place); err != nil {
 				mergedTailWriteErrs = append(mergedTailWriteErrs, err)
 			}
 		}
@@ -347,6 +412,106 @@ func (s *Session) publishFoldTransaction(snapLen, snapRevision, snapAppends int,
 	// receipt's phase advances, and the metadata save persists the result.
 	s.commitSkillCompactionPublication(commit)
 	return published, true, nil
+}
+
+// retainedFoldReplayTail returns persisted forms in the fold's published order.
+// Never serialize live tool results: they can contain private evidence absent
+// from the durable form. An original ordinal is identity, not chronology.
+func retainedFoldReplayTail(entries []transcript.Entry, folded []schema.Turn) []schema.Turn {
+	type key struct {
+		kind, mutation string
+		timestamp      time.Time
+	}
+	keyOf := func(turn schema.Turn) key {
+		// Persisted timestamps have no monotonic reading. Canonicalizing the
+		// location and stripping that reading preserves Timestamp.Equal matching.
+		return key{string(turn.Kind), turn.ClientMutationID, turn.Timestamp.Round(0).UTC()}
+	}
+	candidates := make(map[key][]int)
+	for i, entry := range entries {
+		if entry.Turn.OriginalOrdinal == nil {
+			k := keyOf(entry.Turn)
+			candidates[k] = append(candidates[k], i)
+		}
+	}
+	used := make(map[uint64]bool)
+	// Reserve explicit identities before fallback matching equal timestamps.
+	for _, turn := range folded {
+		if turn.OriginalOrdinal != nil {
+			used[*turn.OriginalOrdinal] = true
+		}
+	}
+	var tail []schema.Turn
+	for _, live := range slices.Backward(folded) {
+		if live.Kind.TranscriptOnly() || isSessionNameCompactionTurn(live) {
+			continue
+		}
+		ordinal := -1
+		if live.OriginalOrdinal != nil {
+			if *live.OriginalOrdinal < uint64(len(entries)) {
+				ordinal = int(*live.OriginalOrdinal)
+			}
+		} else {
+			k := keyOf(live)
+			matches := candidates[k]
+			for len(matches) > 0 {
+				last := matches[len(matches)-1]
+				matches = matches[:len(matches)-1]
+				if !used[uint64(last)] {
+					ordinal = last
+					break
+				}
+			}
+			candidates[k] = matches
+		}
+		if ordinal >= 0 {
+			original := uint64(ordinal)
+			used[original] = true
+			persisted := entries[ordinal].Turn
+			persisted.OriginalOrdinal = &original
+			tail = append(tail, persisted)
+		}
+	}
+	slices.Reverse(tail)
+	return tail
+}
+
+// mergeFoldReplayTail keeps retained records in published order. Pending-only
+// custody records go before their next shared retained record, or at the end.
+// Concurrent pairs belong after new steering, never in this pre-steering tail.
+func mergeFoldReplayTail(retained, pending []schema.Turn, concurrent map[uint64]bool) []schema.Turn {
+	shared := make(map[uint64]bool, len(retained))
+	for _, turn := range retained {
+		shared[*turn.OriginalOrdinal] = true
+	}
+	before := make(map[uint64][]schema.Turn)
+	var extra []schema.Turn
+	seen := make(map[uint64]bool)
+	for _, turn := range pending {
+		id := *turn.OriginalOrdinal
+		if concurrent[id] || seen[id] {
+			continue
+		}
+		seen[id] = true
+		if shared[id] {
+			before[id] = extra
+			extra = nil
+		} else {
+			extra = append(extra, turn)
+		}
+	}
+	var merged []schema.Turn
+	seen = make(map[uint64]bool)
+	for _, turn := range retained {
+		id := *turn.OriginalOrdinal
+		if concurrent[id] || seen[id] {
+			continue
+		}
+		seen[id] = true
+		merged = append(merged, before[id]...)
+		merged = append(merged, turn)
+	}
+	return append(merged, extra...)
 }
 
 // foldWithForceCompact snapshots s.history, runs ForceCompact with the given
@@ -476,7 +641,9 @@ func (s *Session) steerCompactionTranscriptReminderForFold(publishedRevision int
 // commitTranscriptsLocked appends the fold's own transcript entries and MUST
 // run under the same attentionMu hold that decided the publish; it reports
 // whether a CHECKPOINT/SUMMARY marker actually landed, which decides whether
-// the tail rewrite has an anchor to carry pairs past. flush commits the
+// the tail rewrite has an anchor to carry pairs past. After a marker lands it
+// calls replayRetainedLocked before writing new steering, preserving published
+// order while concurrent append pairs remain after the steering. flush commits the
 // remaining deferred effects, outside the locks. A losing fold runs none of
 // them.
 //
@@ -500,16 +667,19 @@ func (s *Session) steerCompactionTranscriptReminderForFold(publishedRevision int
 // commitTranscriptsLocked and delivered (with its metadata save) by
 // commitSkillCompactionPublication after the flush.
 type foldCommit struct {
-	claimNoteLocked              func()
-	commitTranscriptsLocked      func() bool
-	flush                        func()
-	resetEnvContextTrackerLocked func(bool)
-	publishedRevision            int
-	actualCompaction             bool
-	captured                     *schema.SkillCompactionOperation
-	stagedCompactionCount        func() int
-	claimCompactionLocked        func()
-	receipt                      *schema.SkillCompactionReceipt
+	prepareVoicePresentationLocked func(schema.Turn, []schema.Turn)
+	prepareConversationLocked      func([]string, []schema.Turn)
+	claimNoteLocked                func()
+	commitTranscriptsLocked        func() bool
+	replayRetainedLocked           func()
+	flush                          func()
+	resetEnvContextTrackerLocked   func(bool)
+	publishedRevision              int
+	actualCompaction               bool
+	captured                       *schema.SkillCompactionOperation
+	stagedCompactionCount          func() int
+	claimCompactionLocked          func()
+	receipt                        *schema.SkillCompactionReceipt
 }
 
 // foldPublicationID renders the winning publication's identity from the
@@ -677,8 +847,8 @@ func (s *Session) stageCompactionEffects(ctx context.Context, history *[]schema.
 	// self-compact nudge latch.
 	//
 	// commitTranscriptsLocked appends the fold's own transcript entries
-	// (checkpoint/summary turns, then the steering turns the fold injected,
-	// in their history order) while the publication transaction still holds
+	// (checkpoint/summary turns, retained replay, then injected steering,
+	// in their published order) while the publication transaction still holds
 	// attentionMu — the transcript door — so no concurrently recorded
 	// turn's entry can sequence between the publish and these markers
 	// (ResumeHistory anchors on the LAST compaction marker and discards
@@ -688,6 +858,53 @@ func (s *Session) stageCompactionEffects(ctx context.Context, history *[]schema.
 	// carries the typed record a restart reconciles from. Write errors are
 	// carried into flush, where emitting is safe again.
 	commit := &foldCommit{}
+	commit.prepareVoicePresentationLocked = func(latest schema.Turn, published []schema.Turn) {
+		if len(pendingCompactionTurns) == 0 || latest.VoicePresentation == nil {
+			return
+		}
+		for _, turn := range published {
+			if turn.VoicePresentation != nil && turn.VoicePresentationInputID == latest.VoicePresentationInputID {
+				return // The owning input or an earlier marker survived the fold.
+			}
+		}
+		last := len(pendingCompactionTurns) - 1
+		marker := &pendingCompactionTurns[last]
+		copyVoicePresentationAssociation(marker, latest)
+		for i := len(published) - 1; i >= 0; i-- {
+			if published[i].Kind == marker.Kind && published[i].Message.Text() == marker.Message.Text() {
+				copyVoicePresentationAssociation(&published[i], latest)
+				break
+			}
+		}
+	}
+	var conversationInputs []string
+	var conversationNode *schema.ConversationFrontier
+	var conversationRef string
+	commit.prepareConversationLocked = func(before []string, published []schema.Turn) {
+		if len(pendingCompactionTurns) == 0 {
+			return
+		}
+		retained := s.conversationInputsLocked(published)
+		for _, id := range before {
+			if _, ok := slices.BinarySearch(retained, id); !ok {
+				conversationInputs = append(conversationInputs, id)
+			}
+		}
+		conversationNode = s.conversationDeltaLocked(identifier.MustNewTurnID(), conversationInputs)
+		conversationRef = s.conversation.frontierID
+		if conversationNode != nil {
+			conversationRef = conversationNode.ID
+		}
+		last := len(pendingCompactionTurns) - 1
+		pendingCompactionTurns[last].ConversationFrontier = conversationNode
+		pendingCompactionTurns[last].ConversationCoverageRef = conversationRef
+		marker := pendingCompactionTurns[last]
+		for i := range published {
+			if published[i].Kind == marker.Kind && published[i].Message.Text() == marker.Message.Text() {
+				published[i].ConversationCoverageRef = conversationRef
+			}
+		}
+	}
 	var compactionTurnWriteErrs []error
 	var steeringWriteErrs []error
 	commitTranscriptsLocked := func() bool {
@@ -713,6 +930,9 @@ func (s *Session) stageCompactionEffects(ctx context.Context, history *[]schema.
 			if compactionTurnWriteErrs[i] == nil && isSessionNameCompactionTurn(turn) {
 				markerLanded = true
 			}
+		}
+		if markerLanded && commit.replayRetainedLocked != nil {
+			commit.replayRetainedLocked()
 		}
 		steeringWriteErrs = s.writeSteeringTurnRecordsLocked(pendingSteering)
 		return markerLanded
@@ -773,55 +993,8 @@ func (s *Session) stageCompactionEffects(ctx context.Context, history *[]schema.
 	// the first EventContextCompaction, and strategyInjected accumulates
 	// across however many times a strategy reports (ordinarily once).
 	injectedTurns := func() int { return len(pendingSteering) + strategyInjected }
-	// The generation-matched publication claim, run by the winning publish
-	// inside its s.mu critical section (see foldCommit). actualCompaction is
-	// decided by the publisher from the staged EventContextCompaction
-	// payloads; the claim itself matches the captured operation's generation
-	// AND note generation against the live pending operation, so a fold
-	// whose intent was superseded or cleared mid-flight claims nothing. The
-	// publication identity is minted from the lifecycle revision the claim
-	// stamps — persisted in every snapshot and receipt, and bumped exactly
-	// once per recorded publication, so a restored session's publications
-	// can never re-mint a prior publication's identity. A real compaction
-	// that captured no operation still records the absent-selection
-	// reminder handoff.
 	commit.stagedCompactionCount = func() int { return len(pendingCompactionEvents) }
-	commit.claimCompactionLocked = func() {
-		captured := commit.captured
-		pending := s.skillLifecycle.PendingCompaction
-		claim := commit.actualCompaction && pending != nil && captured != nil &&
-			pending.Generation == captured.Generation && pending.NoteGeneration == captured.NoteGeneration
-		var receipt *schema.SkillCompactionReceipt
-		if claim {
-			pending.Phase = skillCompactionPhasePublished
-			s.skillLifecycle.Revision++
-			pending.PublicationID = foldPublicationID(s.skillLifecycle.Revision)
-			claimed := *pending
-			claimed.Selection.Names = slices.Clone(pending.Selection.Names)
-			receipt = &schema.SkillCompactionReceipt{
-				Revision:  s.skillLifecycle.Revision,
-				SessionID: s.id,
-				Operation: claimed,
-				Phase:     skillCompactionReceiptPublished,
-			}
-		} else if commit.actualCompaction {
-			// The reminder handoff is itself a lifecycle mutation: it bumps
-			// the revision like any other receipt, so a restart reconciles
-			// it from the transcript even if the post-flush save never ran.
-			s.skillLifecycle.Revision++
-			receipt = &schema.SkillCompactionReceipt{
-				Revision:  s.skillLifecycle.Revision,
-				SessionID: s.id,
-				Operation: schema.SkillCompactionOperation{PublicationID: foldPublicationID(s.skillLifecycle.Revision)},
-				Phase:     skillCompactionReceiptPublished,
-				Reason:    skillCompactionReminderNoOperation,
-			}
-		}
-		if receipt != nil {
-			s.recordSkillCompactionHandoffLocked(*receipt)
-			commit.receipt = receipt
-		}
-	}
+	commit.claimCompactionLocked = func() { s.claimCompactionLocked(commit) }
 	commit.claimNoteLocked = func() {
 		if noteClaimLocked != nil {
 			noteClaimLocked()
@@ -830,6 +1003,55 @@ func (s *Session) stageCompactionEffects(ctx context.Context, history *[]schema.
 	commit.commitTranscriptsLocked = commitTranscriptsLocked
 	commit.flush = flush
 	return ctx, emitFn, commit, injectedTurns
+}
+
+// claimCompactionLocked is the generation-matched publication claim, run by
+// the winning publish inside its s.mu critical section (see foldCommit).
+// actualCompaction is decided by the publisher from the staged
+// EventContextCompaction payloads; the claim itself matches the captured
+// operation's generation AND note generation against the live pending
+// operation, so a fold whose intent was superseded or cleared mid-flight
+// claims nothing. The publication identity is minted from the lifecycle
+// revision the claim stamps — persisted in every snapshot and receipt, and
+// bumped exactly once per recorded publication, so a restored session's
+// publications can never re-mint a prior publication's identity. A real
+// compaction that captured no operation still records the absent-selection
+// reminder handoff. Callers must hold s.mu.
+func (s *Session) claimCompactionLocked(commit *foldCommit) {
+	captured := commit.captured
+	pending := s.skillLifecycle.PendingCompaction
+	claim := commit.actualCompaction && pending != nil && captured != nil &&
+		pending.Generation == captured.Generation && pending.NoteGeneration == captured.NoteGeneration
+	var receipt *schema.SkillCompactionReceipt
+	if claim {
+		pending.Phase = skillCompactionPhasePublished
+		s.skillLifecycle.Revision++
+		pending.PublicationID = foldPublicationID(s.skillLifecycle.Revision)
+		claimed := *pending
+		claimed.Selection.Names = slices.Clone(pending.Selection.Names)
+		receipt = &schema.SkillCompactionReceipt{
+			Revision:  s.skillLifecycle.Revision,
+			SessionID: s.id,
+			Operation: claimed,
+			Phase:     skillCompactionReceiptPublished,
+		}
+	} else if commit.actualCompaction {
+		// The reminder handoff is itself a lifecycle mutation: it bumps
+		// the revision like any other receipt, so a restart reconciles
+		// it from the transcript even if the post-flush save never ran.
+		s.skillLifecycle.Revision++
+		receipt = &schema.SkillCompactionReceipt{
+			Revision:  s.skillLifecycle.Revision,
+			SessionID: s.id,
+			Operation: schema.SkillCompactionOperation{PublicationID: foldPublicationID(s.skillLifecycle.Revision)},
+			Phase:     skillCompactionReceiptPublished,
+			Reason:    skillCompactionReminderNoOperation,
+		}
+	}
+	if receipt != nil {
+		s.recordSkillCompactionHandoffLocked(*receipt)
+		commit.receipt = receipt
+	}
 }
 
 func consumeMatchingCompactionArtifact(existing *[]schema.Turn, turn schema.Turn) bool {
@@ -975,7 +1197,10 @@ func (s *Session) flushSteeringTurnRecords(records []steeringTurnRecord) {
 
 // buildCompactionMeta gathers session-level metadata for enriching compaction summaries.
 func (s *Session) buildCompactionMeta() contextmgr.CompactionMeta {
-	meta := contextmgr.CompactionMeta{}
+	meta := contextmgr.CompactionMeta{PendingAskTurnIDs: s.pendingAskTurnIDs()}
+	for _, call := range s.PendingAskCalls().Calls {
+		meta.PendingAskCallIDs = append(meta.PendingAskCallIDs, call.CallID)
+	}
 
 	// Session id — only populated for persistent sessions (stateDir set), where transcript tools are available.
 	if s.stateDir != "" {

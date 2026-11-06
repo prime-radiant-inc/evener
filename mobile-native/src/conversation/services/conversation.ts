@@ -26,6 +26,7 @@ import type {
 	ModelListParams,
 	ModelListResponse,
 	MutationReceipt,
+	SnapshotIdentity,
 	Thread,
 	ThreadCapabilities,
 	ThreadClearResponse,
@@ -112,9 +113,18 @@ export interface ConversationServiceOptions<ReadLease = unknown> {
 
 export interface ConversationReadProjection {
 	conversation: MobileConversation;
+	// The store applies out-of-window changes to the older pages it holds.
+	changes?: ThreadReadResponse["changes"];
 	olderCursor: string | null;
 	hasEarlierItems?: boolean;
 	hasLaterItems?: boolean;
+	// True only on the stale-snapshot recovery path: the server refused the
+	// held window as predating its bounded update log, and the fresh window
+	// below replaces the held history instead of merging with it. A merge
+	// would keep the older pages' stale content — an item that changed while
+	// the client was disconnected — and advance the snapshot length past the
+	// skipped update with no way back.
+	replacedHeldHistory?: boolean;
 }
 
 // The canonical service interface — preserved for screen test mocks that only
@@ -164,7 +174,7 @@ export interface ConversationRecoveryActions {
 // state). It extends the canonical ConversationService with the live-only
 // methods that must not be optional-fallback to the old open() path.
 export interface LiveConversationService extends ConversationService {
-	readProjection(ref: string): Promise<ConversationReadProjection>;
+	readProjection(ref: string, heldSnapshot?: SnapshotIdentity): Promise<ConversationReadProjection>;
 }
 
 export interface ConversationModelCatalog {
@@ -635,23 +645,42 @@ export function createConversationService<ReadLease = unknown>(
 			return conversation;
 		},
 
-		async readProjection(threadRef) {
+		async readProjection(threadRef, heldSnapshot) {
 			const pagingInstance =
 				ref === threadRef ? instanceId : pendingProjection?.ref === threadRef ? pendingProjection.instanceId : null;
 			const expectedThreadId = threadId ?? undefined;
 			const epoch = beginOpen(threadRef);
 			const readLease = options.onReadStart?.(threadRef, expectedThreadId);
-			const read = subscribedRead(threadRef).read({
-				includeTurns: true,
-				itemsView: "fragment",
-				itemLimit: READ_ITEM_LIMIT,
-			});
+			const readOnce = (snapshot?: SnapshotIdentity) =>
+				subscribedRead(threadRef).read({
+					includeTurns: true,
+					itemsView: "fragment",
+					itemLimit: READ_ITEM_LIMIT,
+					...(snapshot ? { heldSnapshot: snapshot } : {}),
+				});
 			// The publish is the whole projected read: the raw response, the
 			// projection work and pair commit, and then the host's read fence. Paging
 			// waits on it (see PendingProjection), so a page can never be seated
 			// against a projection the publish has not installed.
 			const publish = (async (): Promise<ConversationReadProjection> => {
-				const response: ThreadReadResponse = await read;
+				let response: ThreadReadResponse;
+				let replacedHeldHistory = false;
+				try {
+					response = await readOnce(heldSnapshot);
+				} catch (error) {
+					// A held snapshot that predates the server's bounded update log
+					// is refused with transcriptItemCursorStale. The refusal
+					// indicts the held window, not the thread: without a
+					// fallback, every refresh and reconnect re-derives the same
+					// stale window from the retained history and fails the same
+					// way, so the conversation cannot recover. Retry exactly once
+					// with no held snapshot: the fresh window replaces the held
+					// history through this same publish, and the draft lives in
+					// the store, untouched here.
+					if (heldSnapshot === undefined || !isStaleCursorError(error)) throw error;
+					response = await readOnce(undefined);
+					replacedHeldHistory = true;
+				}
 				// Compute ALL response-derived projection work BEFORE committing the
 				// pair — a throw in hydration or projectConversation (or a
 				// malformed response) leaves ref+capabilities null/fail-closed. Only
@@ -686,7 +715,9 @@ export function createConversationService<ReadLease = unknown>(
 				if (openEpoch === epoch) await reconcileRead(readLease, response);
 				return {
 					conversation,
+					changes: response.changes,
 					olderCursor,
+					...(replacedHeldHistory ? { replacedHeldHistory: true } : {}),
 					hasEarlierItems: thread.turns?.some((turn) => turn.hasEarlierItems === true) ?? false,
 					hasLaterItems: thread.turns?.some((turn) => turn.hasLaterItems === true) ?? false,
 				};

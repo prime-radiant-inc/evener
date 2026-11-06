@@ -341,8 +341,17 @@ func TestServerShutdownWithFullWebSocketRequestQueue(t *testing.T) {
 	case <-ctx.Done():
 		t.Fatal("receive loop did not reach full queue")
 	}
+	_, frame, err := conn.Read(ctx)
+	if err != nil {
+		t.Fatalf("read overflow refusal: %v", err)
+	}
+	var refusal appwire.Message
+	if err := json.Unmarshal(frame, &refusal); err != nil {
+		t.Fatalf("decode overflow refusal: %v", err)
+	}
+	requireQueueRefusal(t, "overflow before shutdown", refusal, 4, "", appwire.RetryDispositionNone)
 	// The serial worker remains blocked and the preceding request fills its
-	// only queue slot. Cancellation must end enqueueRequest without another Recv.
+	// only queue slot. Shutdown must close the connection without releasing it.
 	shutdownCtx, shutdownCancel := context.WithTimeout(ctx, 2*time.Second)
 	defer shutdownCancel()
 	if err := server.Shutdown(shutdownCtx); err != nil {

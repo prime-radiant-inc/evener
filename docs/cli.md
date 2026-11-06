@@ -79,6 +79,13 @@ Each command owns its flags. Run `evener COMMAND --help` before scripting a subc
 
 For client startup and authentication, see [Integrations](integrations.md). `serve` also accepts daemon-specific options such as `--run-dir`, `--app-replay-size` (default 1000), `--non-interactive`, `--model-fallback` (repeatable) and `--daemon-idle-timeout` (default 0, automatic retirement disabled). It does not accept every one-shot option, including `--timeout` or `--ask-responder`.
 
+`serve --manager` starts this session as a Manager of the sessions its hub can
+reach. It is a start-time property, not a setting: the daemon persists it with
+the session, and nothing turns it off. The same flag is what the hub passes for
+a session launched with the web form's Start as Manager switch; `evener run`
+has no Manager mode because a one-shot run session has no hub connection to
+manage through.
+
 ## Upgrade binaries
 
 Syntax: `evener upgrade [flags] [release|snapshot|vTAG]`. Put flags before the
@@ -181,7 +188,7 @@ runtime meaning across flags.
 | `--fast-cheap-model` | `""` | auxiliary model for side calls (naming, summarization, web fetch); 'provider/model' may use a different provider than --model, or a bare 'model' for the active provider |
 | `--vision-model` | `""` | vision side-channel model: 'off' disables image description, 'provider/model' or bare 'model' routes it (default: the session model) |
 | `--dir` | `""` | working directory (default: current directory) |
-| `--system-prompt` | `""` | path to a custom system prompt file |
+| `--system-prompt` | `""` | path to a custom system prompt file, replacing only the persona block of the system prompt; tool documentation, global AGENTS.md guidance and the skill catalog are still appended after it |
 | `--state-dir` | `""` | override runtime state directory (default: XDG-computed) |
 | `--disable-memory` | `false` | disable native memory for this session, including on resume |
 | `--resume` | `""` | resume a previous session by id |

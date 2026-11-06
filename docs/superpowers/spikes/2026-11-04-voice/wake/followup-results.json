@@ -1,0 +1,2517 @@
+{
+  "label": "SYNTHETIC DIAGNOSTICS, NOT WAKE RELIABILITY OR iPHONE QUALIFICATION",
+  "followup_sha256": "a9145a892f87254f0f8fe8456ecc8eb6195079bc9121ef8fe44bf175a6c84d02",
+  "baseline_sha256": "68fb8c6f0193b5b2da1ceadb3d7dccd559d21e00abc07e390a014ec73717fa8b",
+  "baseline_reproduction_sha256": "80d74015f95b03c06a09c09ef376e7da8899d5ebc951b9f2f5c1d1ce6033cf2e",
+  "settings": {
+    "num_threads": 1,
+    "sample_rate": 16000,
+    "feature_dim": 80,
+    "max_active_paths": 4,
+    "keywords_score": 1.0,
+    "keywords_threshold": 0.25,
+    "num_trailing_blanks": 1,
+    "provider": "cpu"
+  },
+  "chunk_samples": 1280,
+  "canonical": {
+    "tokens": [
+      "▁HE",
+      "Y",
+      "▁EVEN",
+      "ER"
+    ],
+    "ids": [
+      49,
+      17,
+      274,
+      38
+    ]
+  },
+  "flite_phones": {
+    "Hey Evener": [
+      "pau",
+      "hh",
+      "ey",
+      "iy",
+      "v",
+      "ax",
+      "n",
+      "er",
+      "pau"
+    ],
+    "Hey even er": [
+      "pau",
+      "hh",
+      "ey",
+      "iy",
+      "v",
+      "ax",
+      "n",
+      "er",
+      "pau"
+    ],
+    "Hey evening": [
+      "pau",
+      "hh",
+      "ey",
+      "iy",
+      "v",
+      "n",
+      "ih",
+      "ng",
+      "pau"
+    ],
+    "Light up": [
+      "pau",
+      "l",
+      "ay",
+      "t",
+      "ah",
+      "p",
+      "pau"
+    ]
+  },
+  "phonetic_input": "hh ey iy v n er",
+  "baseline_clips": [
+    {
+      "id": "awb_wake",
+      "category": "wake_alone",
+      "expected_hits": 1,
+      "observed_hits": 0,
+      "samples_fed": 36080,
+      "decode_calls": 6,
+      "wav_sha256": "f2a27982685a28f51232ebea36719169fb672c2a56aa1fe7fe69ffe4d4e51a89",
+      "pcm_sha256": "9a63a33e59f017cf011ed70d932ead325e2f6dd831c04d8d187530ff73829db0"
+    },
+    {
+      "id": "awb_command",
+      "category": "wake_command",
+      "expected_hits": 1,
+      "observed_hits": 0,
+      "samples_fed": 58400,
+      "decode_calls": 10,
+      "wav_sha256": "31ce14c7baf97e5a8e0df52d0dba16e7ecd1644c9f365da2fc5848cd90725daf",
+      "pcm_sha256": "4b9001d5608d8b33d697bff9b2696850fdf53f0e3769bab2a8237e074caad0eb"
+    },
+    {
+      "id": "awb_ordinary1",
+      "category": "ordinary",
+      "expected_hits": 0,
+      "observed_hits": 0,
+      "samples_fed": 55120,
+      "decode_calls": 10,
+      "wav_sha256": "443310b443406a31ecb4971d36944fb243a312aca47ae26b9569ff1f041b0327",
+      "pcm_sha256": "34a2e1a6a75bc80adad4c01c55ad7a197399367684f88448fd1119d8932ae1c6"
+    },
+    {
+      "id": "awb_ordinary2",
+      "category": "ordinary",
+      "expected_hits": 0,
+      "observed_hits": 0,
+      "samples_fed": 52560,
+      "decode_calls": 9,
+      "wav_sha256": "c6bc9a48ae8b8d946f88da94b35bb6fe6133602cb077377f6c70dccc02493acf",
+      "pcm_sha256": "79b52705e2c0c350fe65436817e46ac777245cdc3c90fa63d8774bef2313eed0"
+    },
+    {
+      "id": "awb_everyone",
+      "category": "near_miss",
+      "expected_hits": 0,
+      "observed_hits": 0,
+      "samples_fed": 37440,
+      "decode_calls": 6,
+      "wav_sha256": "63fc1144a4503e9956cf2b65d371c2495b43ad4ed96079ee922e2dea1a32b04b",
+      "pcm_sha256": "2774415085620908380474b8340d0083d93d605defea582a598811f7d877c55e"
+    },
+    {
+      "id": "awb_evening",
+      "category": "near_miss",
+      "expected_hits": 0,
+      "observed_hits": 0,
+      "samples_fed": 37200,
+      "decode_calls": 6,
+      "wav_sha256": "3d33875f2beb7a9d01160ac3ea61a7afcb9c7d07a554ca1a62caed971fb2060a",
+      "pcm_sha256": "1853bae2db3fa424417b7eb575108c58e57b283fc29f6abfafb921204bb784c0"
+    },
+    {
+      "id": "awb_evan",
+      "category": "near_miss",
+      "expected_hits": 0,
+      "observed_hits": 0,
+      "samples_fed": 34320,
+      "decode_calls": 6,
+      "wav_sha256": "3d49c1602bbb60c3b17045cfd014cca23bacfb3d9368c4b11e08a77159b2924e",
+      "pcm_sha256": "12363eb715d0c8add6379a680b47ed815e4d33f3c18f3f7107c0bd4d05edd11c"
+    },
+    {
+      "id": "awb_even",
+      "category": "near_miss",
+      "expected_hits": 0,
+      "observed_hits": 0,
+      "samples_fed": 34800,
+      "decode_calls": 6,
+      "wav_sha256": "8ce652add5f688db885d1ec544fbf1828caa10121a468c691b28644ce21d0a02",
+      "pcm_sha256": "c05859f21cb9cc11a7a7d02ace31f2a1700994c8f786e7664345eb8fac51a1b1"
+    },
+    {
+      "id": "awb_evelyn",
+      "category": "near_miss",
+      "expected_hits": 0,
+      "observed_hits": 0,
+      "samples_fed": 36640,
+      "decode_calls": 6,
+      "wav_sha256": "b1d8578acaccc038ca4661cf9ec2906f1a3410bea1e5694dd748b3a1662b1748",
+      "pcm_sha256": "7b9fca0936393a47a509a2158b2072c36011e8372595eb1958644affb5cf3905"
+    },
+    {
+      "id": "awb_bare",
+      "category": "near_miss",
+      "expected_hits": 0,
+      "observed_hits": 0,
+      "samples_fed": 33200,
+      "decode_calls": 6,
+      "wav_sha256": "af2a4bccb2b892f1d02280fe262e18f2af441237f8df2c4b97e985d85281cc43",
+      "pcm_sha256": "bd65b5717cc87234e0a5b33260379672a8421eb3164ad064acb04e806a31bc71"
+    },
+    {
+      "id": "awb_playback",
+      "category": "assistant_playback",
+      "expected_hits": 1,
+      "observed_hits": 0,
+      "samples_fed": 36080,
+      "decode_calls": 6,
+      "wav_sha256": "f2a27982685a28f51232ebea36719169fb672c2a56aa1fe7fe69ffe4d4e51a89",
+      "pcm_sha256": "9a63a33e59f017cf011ed70d932ead325e2f6dd831c04d8d187530ff73829db0"
+    },
+    {
+      "id": "kal_wake",
+      "category": "wake_alone",
+      "expected_hits": 1,
+      "observed_hits": 0,
+      "samples_fed": 37624,
+      "decode_calls": 6,
+      "wav_sha256": "c0aab8026fa577188cec8e86014028b7b453b92fbd4ad9514763eca2b71d135b",
+      "pcm_sha256": "fd084e7109883962cb7362f0dcf5880dc62bfe6ef7e030f6eff8cb757cf8c6c9"
+    },
+    {
+      "id": "kal_command",
+      "category": "wake_command",
+      "expected_hits": 1,
+      "observed_hits": 0,
+      "samples_fed": 60878,
+      "decode_calls": 11,
+      "wav_sha256": "38d1d380587b7491b5a218731cfe0b9341f8870cdb1071ced8d2b3a5b6aac9fe",
+      "pcm_sha256": "1e5b1bb883b04b73be1388fe589fa3ce602369bd7885cba2a45c4bb885fbdbe5"
+    },
+    {
+      "id": "kal_ordinary1",
+      "category": "ordinary",
+      "expected_hits": 0,
+      "observed_hits": 0,
+      "samples_fed": 57462,
+      "decode_calls": 10,
+      "wav_sha256": "e0fdd66eb1e25c54727a001d524de33bcdb6b4e8a0998a3947d35311c044fe87",
+      "pcm_sha256": "60aa016d997e1de598eba0bf8b51e6a1477def194131e4331b7ca63021c790a8"
+    },
+    {
+      "id": "kal_ordinary2",
+      "category": "ordinary",
+      "expected_hits": 0,
+      "observed_hits": 0,
+      "samples_fed": 49508,
+      "decode_calls": 9,
+      "wav_sha256": "a89b3427b43e0f39b28e8e71c3bf8f3fab03de4ac926e65aec76483ec027da37",
+      "pcm_sha256": "b29dbd0fe351732c9b32924cb8925d79b2056e547e667c4903f27e6b29ab0d89"
+    },
+    {
+      "id": "kal_everyone",
+      "category": "near_miss",
+      "expected_hits": 0,
+      "observed_hits": 0,
+      "samples_fed": 38986,
+      "decode_calls": 7,
+      "wav_sha256": "4f1f51eba7d58c99b8da6fc6da1f3d9aaeabb885c869439cf54140e28200b49b",
+      "pcm_sha256": "d3573449cbd109e4ba0c6b6f3a0c89b995cbff48a5aa5a7995104fd9cd9191aa"
+    },
+    {
+      "id": "kal_evening",
+      "category": "near_miss",
+      "expected_hits": 0,
+      "observed_hits": 0,
+      "samples_fed": 38046,
+      "decode_calls": 7,
+      "wav_sha256": "dfd4a6226e70913792ff5b95a6b1481d285b678c941da78e86987caccbd92521",
+      "pcm_sha256": "4ad2be8d8ac14acbfe8d06c113f5fc1aadefc86a7722888f20e45d89084b35ef"
+    },
+    {
+      "id": "kal_evan",
+      "category": "near_miss",
+      "expected_hits": 0,
+      "observed_hits": 0,
+      "samples_fed": 36246,
+      "decode_calls": 6,
+      "wav_sha256": "5a471a4f7a0d4aea98feab98f2e47cc8569e446cb64f830c0a3617c1eb113299",
+      "pcm_sha256": "c304c9add9aa3f21de3c7567129014df23a32a24ade134b599bb3fb4ed8b43f6"
+    },
+    {
+      "id": "kal_even",
+      "category": "near_miss",
+      "expected_hits": 0,
+      "observed_hits": 0,
+      "samples_fed": 36724,
+      "decode_calls": 6,
+      "wav_sha256": "d5f929aa5c4ed1805435c207cec2dabd3b89d676646a53cc81e0b24db67f8563",
+      "pcm_sha256": "840c123e458124c19f8b2bf6825e5c9cda8f6bf372612332f1951b8a3ac0c5d3"
+    },
+    {
+      "id": "kal_evelyn",
+      "category": "near_miss",
+      "expected_hits": 0,
+      "observed_hits": 0,
+      "samples_fed": 37306,
+      "decode_calls": 6,
+      "wav_sha256": "0dcc669f6776b3541296969944d93984732a7ea6a6a6d42ed6338c5c267ddd9d",
+      "pcm_sha256": "6b38ed2f3a0da7837061031c9a8748b0b9adff52f12ca4a7dfd716682f5afea9"
+    },
+    {
+      "id": "kal_bare",
+      "category": "near_miss",
+      "expected_hits": 0,
+      "observed_hits": 0,
+      "samples_fed": 32800,
+      "decode_calls": 5,
+      "wav_sha256": "4cabfcc03b54094d13aeab50db1feaaed2840f806cd2d4aec3ab4fde9207e7fd",
+      "pcm_sha256": "99e858c97f66f8e0d47086a867b6fb162fe2e802529c2dc30b51a41ee0195f33"
+    },
+    {
+      "id": "kal_playback",
+      "category": "assistant_playback",
+      "expected_hits": 1,
+      "observed_hits": 0,
+      "samples_fed": 37624,
+      "decode_calls": 6,
+      "wav_sha256": "c0aab8026fa577188cec8e86014028b7b453b92fbd4ad9514763eca2b71d135b",
+      "pcm_sha256": "fd084e7109883962cb7362f0dcf5880dc62bfe6ef7e030f6eff8cb757cf8c6c9"
+    },
+    {
+      "id": "kal16_wake",
+      "category": "wake_alone",
+      "expected_hits": 1,
+      "observed_hits": 0,
+      "samples_fed": 37625,
+      "decode_calls": 6,
+      "wav_sha256": "910daaa5baaff2c7cb27437c6f8a29cc7268e054d4f65e41119835d6b3582ded",
+      "pcm_sha256": "d7c1612b3e24f72f35b94b35b5385ec856c55fc077a1845355366f3bcce4cd45"
+    },
+    {
+      "id": "kal16_command",
+      "category": "wake_command",
+      "expected_hits": 1,
+      "observed_hits": 0,
+      "samples_fed": 60879,
+      "decode_calls": 11,
+      "wav_sha256": "c809e7784e3b2a7281323c39f715125408b66bfb7bc86675e1d310594c1797d6",
+      "pcm_sha256": "4b293057959342b25e4495aff40eb4f61c07e337b7ef37fdc8cbccf7213a01a2"
+    },
+    {
+      "id": "kal16_ordinary1",
+      "category": "ordinary",
+      "expected_hits": 0,
+      "observed_hits": 0,
+      "samples_fed": 55366,
+      "decode_calls": 10,
+      "wav_sha256": "36c15346f7400a939141b134e1de4c0b0acb3cd346d758cb2d62e6aaf7d5cc5b",
+      "pcm_sha256": "e5c960fc16caaad5a6c3c73c67043f9bef6c03cede337cfeb8ea99a6bcd9647f"
+    },
+    {
+      "id": "kal16_ordinary2",
+      "category": "ordinary",
+      "expected_hits": 0,
+      "observed_hits": 0,
+      "samples_fed": 49508,
+      "decode_calls": 9,
+      "wav_sha256": "45f5bd3d5d920eef20cfa523e663fcb652880e60757b3ac290d43e1bd010294a",
+      "pcm_sha256": "a4698b751e00f3106d82a99783ac65b019435cb716685ff6d192dc619a199409"
+    },
+    {
+      "id": "kal16_everyone",
+      "category": "near_miss",
+      "expected_hits": 0,
+      "observed_hits": 0,
+      "samples_fed": 38447,
+      "decode_calls": 7,
+      "wav_sha256": "edef11809013fc3c93d5a97f93cb8ba98de1bae3c54d23e4fa91c25abefed4bc",
+      "pcm_sha256": "bdd5f621058c8a1cc67fdf9735866edcf71c9ded612d0cfce5bba6363d2f3091"
+    },
+    {
+      "id": "kal16_evening",
+      "category": "near_miss",
+      "expected_hits": 0,
+      "observed_hits": 0,
+      "samples_fed": 38046,
+      "decode_calls": 7,
+      "wav_sha256": "5b1998c56d2c7bd103d679f691a8dd4820c9fabf2e60f39aa9b34d3736293e46",
+      "pcm_sha256": "d1d563e1a0b0cfcd95eafff760ce684814d29277b58e21355ca9d5925ce4c518"
+    },
+    {
+      "id": "kal16_evan",
+      "category": "near_miss",
+      "expected_hits": 0,
+      "observed_hits": 0,
+      "samples_fed": 36246,
+      "decode_calls": 6,
+      "wav_sha256": "3ac5a3695d093b075cb6b15ae98df410fc48bf27b1ea9ec4aa753d7c3ddcc052",
+      "pcm_sha256": "805d61f311df390305531f889da6d9360a7c602cb15245a354604c81ef20620b"
+    },
+    {
+      "id": "kal16_even",
+      "category": "near_miss",
+      "expected_hits": 0,
+      "observed_hits": 0,
+      "samples_fed": 36725,
+      "decode_calls": 6,
+      "wav_sha256": "18774e0e2b38399bd21bdafb8a4ca4c401e44986c238d00b8401ed63c492af3d",
+      "pcm_sha256": "414cddcc59c258a3fffae4c5ef9606597e8b49dabc9914bdea35e30089860ff3"
+    },
+    {
+      "id": "kal16_evelyn",
+      "category": "near_miss",
+      "expected_hits": 0,
+      "observed_hits": 0,
+      "samples_fed": 37307,
+      "decode_calls": 6,
+      "wav_sha256": "3b3b92f613dffebada18aa1da7e64d86814110b6192edfba0ed8fda8d60362c7",
+      "pcm_sha256": "8ad789161a56ec6c9f47bf6f5d083de7a94f0fc0409fc7f868aebf8f98569d44"
+    },
+    {
+      "id": "kal16_bare",
+      "category": "near_miss",
+      "expected_hits": 0,
+      "observed_hits": 0,
+      "samples_fed": 32800,
+      "decode_calls": 5,
+      "wav_sha256": "80c870730e4e0943df36af18d4d514cd9f96515ce55a53ce73a29040e327e882",
+      "pcm_sha256": "ff62a2217a4dae7fb093c8d9215e1ff14b9588843677936e3ce65b43f91605d7"
+    },
+    {
+      "id": "kal16_playback",
+      "category": "assistant_playback",
+      "expected_hits": 1,
+      "observed_hits": 0,
+      "samples_fed": 37625,
+      "decode_calls": 6,
+      "wav_sha256": "910daaa5baaff2c7cb27437c6f8a29cc7268e054d4f65e41119835d6b3582ded",
+      "pcm_sha256": "d7c1612b3e24f72f35b94b35b5385ec856c55fc077a1845355366f3bcce4cd45"
+    },
+    {
+      "id": "rms_wake",
+      "category": "wake_alone",
+      "expected_hits": 1,
+      "observed_hits": 0,
+      "samples_fed": 38400,
+      "decode_calls": 7,
+      "wav_sha256": "25850fbdeaa4414aaa19d44f5321049e22d4306fcea6f3fd7e87b01f508543c8",
+      "pcm_sha256": "b8744f521c89d48823d0a1535b12690618294a3f88791d09e6d9ca3d62f3896b"
+    },
+    {
+      "id": "rms_command",
+      "category": "wake_command",
+      "expected_hits": 1,
+      "observed_hits": 0,
+      "samples_fed": 59280,
+      "decode_calls": 11,
+      "wav_sha256": "09e152ff89b62bf388f9f67deb5d0d08452533d946f25d770af4e801755831c9",
+      "pcm_sha256": "7afb62bb38f728bd392f48dde1ec059c459c1e76e0cd6e13cc571e296211345f"
+    },
+    {
+      "id": "rms_ordinary1",
+      "category": "ordinary",
+      "expected_hits": 0,
+      "observed_hits": 0,
+      "samples_fed": 60640,
+      "decode_calls": 11,
+      "wav_sha256": "3d1e46cc7118c6f03b2b9cc996f049722bc257d8cec68bf45988c33e3cacbc1f",
+      "pcm_sha256": "245fcd9d49c02f2f0caa672cbb80d476324409f8b813a73aa56f44440b9e32b4"
+    },
+    {
+      "id": "rms_ordinary2",
+      "category": "ordinary",
+      "expected_hits": 0,
+      "observed_hits": 0,
+      "samples_fed": 57440,
+      "decode_calls": 10,
+      "wav_sha256": "18eb3aaf14e3bcc65d544c84d1931d65bfa5bd5eaad2553616cb23e0094932aa",
+      "pcm_sha256": "b22bfc6b6ae54b92142c4cd2283a445a78438d6612dabe277798eac8134e2d46"
+    },
+    {
+      "id": "rms_everyone",
+      "category": "near_miss",
+      "expected_hits": 0,
+      "observed_hits": 0,
+      "samples_fed": 41120,
+      "decode_calls": 7,
+      "wav_sha256": "d48731ecd5fe318500be3cec2fd64c2e465203636ce13daeaeab5802696ebeb0",
+      "pcm_sha256": "e09b929650b4b66649d1176e50fbac71a453be8a2beb9da7bb25199f4f87aeb5"
+    },
+    {
+      "id": "rms_evening",
+      "category": "near_miss",
+      "expected_hits": 0,
+      "observed_hits": 0,
+      "samples_fed": 35440,
+      "decode_calls": 6,
+      "wav_sha256": "f3b91420ed1cb0b6ae10a7c7ab59d9fbf8cf941feee898f2136a694f8f27f55d",
+      "pcm_sha256": "8499dc371462c4798cec2846faafe3fe1b6652d36b4b5759e469f805972586bd"
+    },
+    {
+      "id": "rms_evan",
+      "category": "near_miss",
+      "expected_hits": 0,
+      "observed_hits": 0,
+      "samples_fed": 35760,
+      "decode_calls": 6,
+      "wav_sha256": "1fc201d6c017bab1db40a2b62576fad0224d8f6cce86af2978ba0947d1774680",
+      "pcm_sha256": "e205514c0132f8773653595920d93a086cbfb614d95bdfea2cc5d6e6ce7da798"
+    },
+    {
+      "id": "rms_even",
+      "category": "near_miss",
+      "expected_hits": 0,
+      "observed_hits": 0,
+      "samples_fed": 36720,
+      "decode_calls": 6,
+      "wav_sha256": "e0320147daafcee63e03a4d514bc6981d881039ac5919f2eb0b7cb3e3faec314",
+      "pcm_sha256": "2e3efc11656a513b957084c668ee00b0f5c8b08d54616591aa413559c8943eff"
+    },
+    {
+      "id": "rms_evelyn",
+      "category": "near_miss",
+      "expected_hits": 0,
+      "observed_hits": 0,
+      "samples_fed": 37200,
+      "decode_calls": 6,
+      "wav_sha256": "b06107ed50883f2452511fb9e8902318db45d3c5f88999575b921a8f4689551a",
+      "pcm_sha256": "c0850735f095b08d3224e2fd1851c68e35f093dc68100f34a348dac3d84a93e3"
+    },
+    {
+      "id": "rms_bare",
+      "category": "near_miss",
+      "expected_hits": 0,
+      "observed_hits": 0,
+      "samples_fed": 34080,
+      "decode_calls": 6,
+      "wav_sha256": "8c6b2fb4161c2607621c48b14e08565181ada01a4b66e5b4500b75a6f50f9326",
+      "pcm_sha256": "77aee8d70f078af24a1fe4e0666b31063650defebe2eb7608450064e049a6344"
+    },
+    {
+      "id": "rms_playback",
+      "category": "assistant_playback",
+      "expected_hits": 1,
+      "observed_hits": 0,
+      "samples_fed": 38400,
+      "decode_calls": 7,
+      "wav_sha256": "25850fbdeaa4414aaa19d44f5321049e22d4306fcea6f3fd7e87b01f508543c8",
+      "pcm_sha256": "b8744f521c89d48823d0a1535b12690618294a3f88791d09e6d9ca3d62f3896b"
+    },
+    {
+      "id": "slt_wake",
+      "category": "wake_alone",
+      "expected_hits": 1,
+      "observed_hits": 0,
+      "samples_fed": 39280,
+      "decode_calls": 7,
+      "wav_sha256": "2d792f4bc6aa5b8628ca5ce8712d5d7050e755957c6af981642da7200f2ee1e3",
+      "pcm_sha256": "a5f76c153fbb60025bd7fa5b48581aedb7793377d770e94e1e541d14c88632a7"
+    },
+    {
+      "id": "slt_command",
+      "category": "wake_command",
+      "expected_hits": 1,
+      "observed_hits": 0,
+      "samples_fed": 65120,
+      "decode_calls": 12,
+      "wav_sha256": "11247959ddc7c174dbf67c86cecadd8ec4436f3a904c83144d75fa0aa9993572",
+      "pcm_sha256": "b5ded18da025d455cae6fa8ad05e5352c8886189af9518351a6223d273e546dd"
+    },
+    {
+      "id": "slt_ordinary1",
+      "category": "ordinary",
+      "expected_hits": 0,
+      "observed_hits": 0,
+      "samples_fed": 58400,
+      "decode_calls": 10,
+      "wav_sha256": "f6b709f95fcaa2e0d476a62b709a3972a750f986e09e16ee1b2a180228c62381",
+      "pcm_sha256": "ba8f62f6505bbc46918d8265aa5dba4a06d384589dc7c8c9c7a670a46579f853"
+    },
+    {
+      "id": "slt_ordinary2",
+      "category": "ordinary",
+      "expected_hits": 0,
+      "observed_hits": 0,
+      "samples_fed": 50880,
+      "decode_calls": 9,
+      "wav_sha256": "c444c8e1d7a6b05e7b63c78b0b8c5f98eefb30c26f7eaf25f7f468a5110aea2b",
+      "pcm_sha256": "295509c801e532093466156d20252e981107a24fee48283f168fc82814a603e9"
+    },
+    {
+      "id": "slt_everyone",
+      "category": "near_miss",
+      "expected_hits": 0,
+      "observed_hits": 0,
+      "samples_fed": 39520,
+      "decode_calls": 7,
+      "wav_sha256": "9d2a4383b3957d480e21f575717f277a820c59fde38e18f502877150edbe5769",
+      "pcm_sha256": "e14135b054680dbd5c1267c552676ff4ea9da95a2d2d89e07072e9e108494c99"
+    },
+    {
+      "id": "slt_evening",
+      "category": "near_miss",
+      "expected_hits": 0,
+      "observed_hits": 0,
+      "samples_fed": 38320,
+      "decode_calls": 7,
+      "wav_sha256": "9f1e231e544ab1ea7525bd069d6a0f3ec65b958c6be2dbf25b8acc124dbf8734",
+      "pcm_sha256": "a6f6c23cf79126babf12031612d0dc3f12549b1ce169889aa4316176de001d18"
+    },
+    {
+      "id": "slt_evan",
+      "category": "near_miss",
+      "expected_hits": 0,
+      "observed_hits": 0,
+      "samples_fed": 37440,
+      "decode_calls": 6,
+      "wav_sha256": "9928ccb55f8fac08c4f0927762c08db2e549073b209124a474695904109dd179",
+      "pcm_sha256": "027e56cf8d1fe68a3ec183e614538f307f88db38dad9f9103c325df03410e759"
+    },
+    {
+      "id": "slt_even",
+      "category": "near_miss",
+      "expected_hits": 0,
+      "observed_hits": 0,
+      "samples_fed": 37760,
+      "decode_calls": 6,
+      "wav_sha256": "065936aa839b06b4913e46070c4b2b70f02a5d4295dc70707fc24ca8803f2e3c",
+      "pcm_sha256": "2f42a8f54c89cf7fba86009528fca6b371477309bb60a9e00bf986abf36d3476"
+    },
+    {
+      "id": "slt_evelyn",
+      "category": "near_miss",
+      "expected_hits": 0,
+      "observed_hits": 0,
+      "samples_fed": 38240,
+      "decode_calls": 7,
+      "wav_sha256": "aa0cdaead33aa5978a04627246febfb27128ac2eff75221f21e21f2613f7bc3d",
+      "pcm_sha256": "077d864bd484abaaaa8edb57f07981d08c9f3064500499bd3249f5720ec2e9fd"
+    },
+    {
+      "id": "slt_bare",
+      "category": "near_miss",
+      "expected_hits": 0,
+      "observed_hits": 0,
+      "samples_fed": 33440,
+      "decode_calls": 6,
+      "wav_sha256": "e581ec64f4ca401fd94ff06eda4ea848a6cfcc42aeafc6cc42f3de0a8a681fc3",
+      "pcm_sha256": "10fd372c1d0d88bbcb09ca5683532b96526c7fc331eacf28fce29180c519f332"
+    },
+    {
+      "id": "slt_playback",
+      "category": "assistant_playback",
+      "expected_hits": 1,
+      "observed_hits": 0,
+      "samples_fed": 39280,
+      "decode_calls": 7,
+      "wav_sha256": "2d792f4bc6aa5b8628ca5ce8712d5d7050e755957c6af981642da7200f2ee1e3",
+      "pcm_sha256": "a5f76c153fbb60025bd7fa5b48581aedb7793377d770e94e1e541d14c88632a7"
+    },
+    {
+      "id": "silence",
+      "category": "silence",
+      "expected_hits": 0,
+      "observed_hits": 0,
+      "samples_fed": 80000,
+      "decode_calls": 15,
+      "wav_sha256": "262d1f34f300560a4c82ba8127ddea9e1d72946f187fdbd3e8f70ee096077aec",
+      "pcm_sha256": "b9ce164d30e4101b009fe4be765a070593cfbdd48f897853de159a8c177fabe8"
+    },
+    {
+      "id": "noise",
+      "category": "noise",
+      "expected_hits": 0,
+      "observed_hits": 0,
+      "samples_fed": 80000,
+      "decode_calls": 15,
+      "wav_sha256": "13cdbab13c2b1ae0cb65df31b13ee70fcc25723ffe6ca99a3691ec58588ddd37",
+      "pcm_sha256": "71dfe368eef14e2e80c8d85f287266759cc22ff454195160b948a2787f10e7c0"
+    }
+  ],
+  "fresh_synthesis": {
+    "model": "gpt-4o-mini-tts-2025-12-15",
+    "voice": "cedar",
+    "endpoint": "https://api.openai.com/v1/audio/speech",
+    "input_format": "24000 Hz mono signed little-endian PCM16",
+    "instructions": "Speak naturally and clearly in American English. Pronounce Evener as EE-vuh-ner. Say only the supplied text.",
+    "requests": [
+      {
+        "id": "wake",
+        "category": "positive",
+        "text": "Hey Evener",
+        "request_id": "req_c51a2aae476243cabf59a79690b99716",
+        "raw_sha256": "05659f84ae0e33d8713ff5ac6feda84b38f82748b32f617f98946c2004dc78ae",
+        "raw_bytes": 98400,
+        "wav_sha256": "2be27f6c06fdd52ebf28d9b5031a12e1e1fb52deceae0a773000a7173512948b",
+        "pcm_sha256": "a62febd74981498d344ed08a9be24f60fca6b36d321916c927c0779bdea92368",
+        "samples": 53600
+      },
+      {
+        "id": "command",
+        "category": "positive",
+        "text": "Hey Evener tell me my next meeting",
+        "request_id": "req_7ce051adc69a4a9180e20be21b9108ff",
+        "raw_sha256": "deb47e8a3c48499dc638f045f173af9a246582c980f70081b114eec9244515e6",
+        "raw_bytes": 172800,
+        "wav_sha256": "c3959b25add25a0d81bd40729343373f1f3ed18df68ac5a6664a48b3acba4844",
+        "pcm_sha256": "25e4cc3cf18a4fa05f05f791986ae0e4c4aa07befbd8476c624c26de3e0a6fea",
+        "samples": 78400
+      },
+      {
+        "id": "everyone",
+        "category": "negative",
+        "text": "Hey everyone",
+        "request_id": "req_ea015d37a161452893685305af693334",
+        "raw_sha256": "bf5b5ca14259b91971ad110b56c409ae1ee89fe2def49f8f018edd77f9cefd0d",
+        "raw_bytes": 196800,
+        "wav_sha256": "d59fde9d6a02cd40feef83d1d29f001d72c5e56b934fa591963c91085da51774",
+        "pcm_sha256": "9c43f94621a16277e4c4e5bae7bd7c0fc5f932c52581c56b30fb1e9a487f839c",
+        "samples": 86400
+      },
+      {
+        "id": "even",
+        "category": "negative",
+        "text": "Hey even",
+        "request_id": "req_7fbc314799f04be8a09aa87bba86ec42",
+        "raw_sha256": "609409b9581b1d4c5a1852934538706ec234da6a39bdf747a0fce2fab35c60bd",
+        "raw_bytes": 69600,
+        "wav_sha256": "acde84e951c52280f5dea7e75fe3125fe469e9d006084f78353a6f08551938a8",
+        "pcm_sha256": "1c48e1c4aac853f31d0ac0aa0bc851a9625404af07c6430c7cffd55cd5c4bb88",
+        "samples": 44000
+      },
+      {
+        "id": "ordinary",
+        "category": "negative",
+        "text": "Please list my upcoming meetings",
+        "request_id": "req_c188ab164ac0415f95cc5cf07c053be7",
+        "raw_sha256": "d7c26b79fc8d15c3706e546746bdcc4fd669bbf1eb941bb5e3a1a1b2a074e6bc",
+        "raw_bytes": 127200,
+        "wav_sha256": "17d4562feb02b56ea79a3ad82d251f19349ed1af1dbccd27a52d1ccf7aecccfe",
+        "pcm_sha256": "0fd12e47904725fee0d205399c167f509bb248083fc57cc26695990b2c06d00e",
+        "samples": 63200
+      },
+      {
+        "id": "light_up",
+        "category": "calibration",
+        "text": "Light up",
+        "request_id": "req_9861d58016934aefb2a289092fb13583",
+        "raw_sha256": "077c932613b43636cde7d813815f3ca6a426217d0d6f92476d5609748f02a44f",
+        "raw_bytes": 103200,
+        "wav_sha256": "6c7f781e3b6b4fde5dc862106f518fabd070688aa4acebfe4c7a582da6338d8f",
+        "pcm_sha256": "97858fe99bc98070ec2d8881c33adf0b985be79f30c2dab212ac3ea983fb8e76",
+        "samples": 55200
+      }
+    ]
+  },
+  "diagnostics": [
+    {
+      "id": "awb_wake",
+      "input": "Hey Evener",
+      "wav_sha256": "f2a27982685a28f51232ebea36719169fb672c2a56aa1fe7fe69ffe4d4e51a89",
+      "pcm_sha256": "9a63a33e59f017cf011ed70d932ead325e2f6dd831c04d8d187530ff73829db0",
+      "target_kws": {
+        "samples_fed": 36080,
+        "audio_seconds": 2.255,
+        "decode_calls": 6,
+        "wall_seconds": 0.049898,
+        "cpu_seconds": 0.0499,
+        "wall_rtf": 0.022128,
+        "cpu_rtf": 0.022129,
+        "result_observations": [],
+        "reset_after_hit": true,
+        "reset_calls": 0
+      },
+      "unbiased_asr": {
+        "decode_calls": 6,
+        "samples_fed": 36080,
+        "result": {
+          "text": "HE NORTH",
+          "tokens": [
+            " HE",
+            " NO",
+            "R",
+            "TH"
+          ],
+          "timestamps": [
+            0.8,
+            1.2,
+            1.36,
+            1.44
+          ],
+          "ys_probs": [
+            -1.117179,
+            -1.684725,
+            -0.60476,
+            -2.353964
+          ],
+          "lm_probs": [],
+          "context_scores": [],
+          "segment": 0,
+          "words": [],
+          "num_trailing_blanks": 11,
+          "start_time": 0.0,
+          "is_final": false,
+          "is_eof": false
+        }
+      }
+    },
+    {
+      "id": "kal_wake",
+      "input": "Hey Evener",
+      "wav_sha256": "c0aab8026fa577188cec8e86014028b7b453b92fbd4ad9514763eca2b71d135b",
+      "pcm_sha256": "fd084e7109883962cb7362f0dcf5880dc62bfe6ef7e030f6eff8cb757cf8c6c9",
+      "target_kws": {
+        "samples_fed": 37624,
+        "audio_seconds": 2.3515,
+        "decode_calls": 6,
+        "wall_seconds": 0.041856,
+        "cpu_seconds": 0.041831,
+        "wall_rtf": 0.0178,
+        "cpu_rtf": 0.017789,
+        "result_observations": [],
+        "reset_after_hit": true,
+        "reset_calls": 0
+      },
+      "unbiased_asr": {
+        "decode_calls": 6,
+        "samples_fed": 37624,
+        "result": {
+          "text": "THEY EVEN ARE",
+          "tokens": [
+            " THEY",
+            " EVEN",
+            " ARE"
+          ],
+          "timestamps": [
+            0.96,
+            1.08,
+            1.4
+          ],
+          "ys_probs": [
+            -1.950807,
+            -0.40943,
+            -1.843071
+          ],
+          "lm_probs": [],
+          "context_scores": [],
+          "segment": 0,
+          "words": [],
+          "num_trailing_blanks": 12,
+          "start_time": 0.0,
+          "is_final": false,
+          "is_eof": false
+        }
+      }
+    },
+    {
+      "id": "kal16_wake",
+      "input": "Hey Evener",
+      "wav_sha256": "910daaa5baaff2c7cb27437c6f8a29cc7268e054d4f65e41119835d6b3582ded",
+      "pcm_sha256": "d7c1612b3e24f72f35b94b35b5385ec856c55fc077a1845355366f3bcce4cd45",
+      "target_kws": {
+        "samples_fed": 37625,
+        "audio_seconds": 2.35156,
+        "decode_calls": 6,
+        "wall_seconds": 0.04318,
+        "cpu_seconds": 0.043075,
+        "wall_rtf": 0.018362,
+        "cpu_rtf": 0.018317,
+        "result_observations": [],
+        "reset_after_hit": true,
+        "reset_calls": 0
+      },
+      "unbiased_asr": {
+        "decode_calls": 6,
+        "samples_fed": 37625,
+        "result": {
+          "text": "I EVEN",
+          "tokens": [
+            " I",
+            " EVEN"
+          ],
+          "timestamps": [
+            0.96,
+            1.04
+          ],
+          "ys_probs": [
+            -1.991529,
+            -0.978556
+          ],
+          "lm_probs": [],
+          "context_scores": [],
+          "segment": 0,
+          "words": [],
+          "num_trailing_blanks": 21,
+          "start_time": 0.0,
+          "is_final": false,
+          "is_eof": false
+        }
+      }
+    },
+    {
+      "id": "rms_wake",
+      "input": "Hey Evener",
+      "wav_sha256": "25850fbdeaa4414aaa19d44f5321049e22d4306fcea6f3fd7e87b01f508543c8",
+      "pcm_sha256": "b8744f521c89d48823d0a1535b12690618294a3f88791d09e6d9ca3d62f3896b",
+      "target_kws": {
+        "samples_fed": 38400,
+        "audio_seconds": 2.4,
+        "decode_calls": 7,
+        "wall_seconds": 0.061609,
+        "cpu_seconds": 0.061611,
+        "wall_rtf": 0.02567,
+        "cpu_rtf": 0.025671,
+        "result_observations": [],
+        "reset_after_hit": true,
+        "reset_calls": 0
+      },
+      "unbiased_asr": {
+        "decode_calls": 7,
+        "samples_fed": 38400,
+        "result": {
+          "text": "HE EVEN EARTH",
+          "tokens": [
+            " HE",
+            " EVEN",
+            " E",
+            "AR",
+            "TH"
+          ],
+          "timestamps": [
+            0.72,
+            0.96,
+            1.32,
+            1.36,
+            1.44
+          ],
+          "ys_probs": [
+            -1.718592,
+            -0.622191,
+            -2.158652,
+            -0.544693,
+            -0.894026
+          ],
+          "lm_probs": [],
+          "context_scores": [],
+          "segment": 0,
+          "words": [],
+          "num_trailing_blanks": 19,
+          "start_time": 0.0,
+          "is_final": false,
+          "is_eof": false
+        }
+      }
+    },
+    {
+      "id": "slt_wake",
+      "input": "Hey Evener",
+      "wav_sha256": "2d792f4bc6aa5b8628ca5ce8712d5d7050e755957c6af981642da7200f2ee1e3",
+      "pcm_sha256": "a5f76c153fbb60025bd7fa5b48581aedb7793377d770e94e1e541d14c88632a7",
+      "target_kws": {
+        "samples_fed": 39280,
+        "audio_seconds": 2.455,
+        "decode_calls": 7,
+        "wall_seconds": 0.053092,
+        "cpu_seconds": 0.053094,
+        "wall_rtf": 0.021626,
+        "cpu_rtf": 0.021627,
+        "result_observations": [],
+        "reset_after_hit": true,
+        "reset_calls": 0
+      },
+      "unbiased_asr": {
+        "decode_calls": 7,
+        "samples_fed": 39280,
+        "result": {
+          "text": "HEY EVEN HER",
+          "tokens": [
+            " HE",
+            "Y",
+            " EVEN",
+            " HER"
+          ],
+          "timestamps": [
+            0.68,
+            0.76,
+            0.96,
+            1.4
+          ],
+          "ys_probs": [
+            -1.893732,
+            -0.686228,
+            -1.295329,
+            -1.561878
+          ],
+          "lm_probs": [],
+          "context_scores": [],
+          "segment": 0,
+          "words": [],
+          "num_trailing_blanks": 20,
+          "start_time": 0.0,
+          "is_final": false,
+          "is_eof": false
+        }
+      }
+    },
+    {
+      "id": "reduced_schwa",
+      "input": "hh ey iy v n er",
+      "wav_sha256": "4c9441b7caf2d06355bc7cbe851f7b9381a9d98ad8f7274248ccf20f221740bb",
+      "pcm_sha256": "8ef5f1064ae177d10c57b3904361aa9ee256e205e744507e1afb6e6b46cf075f",
+      "target_kws": {
+        "samples_fed": 30880,
+        "audio_seconds": 1.93,
+        "decode_calls": 5,
+        "wall_seconds": 0.038831,
+        "cpu_seconds": 0.038813,
+        "wall_rtf": 0.02012,
+        "cpu_rtf": 0.02011,
+        "result_observations": [],
+        "reset_after_hit": true,
+        "reset_calls": 0
+      },
+      "unbiased_asr": {
+        "decode_calls": 5,
+        "samples_fed": 30880,
+        "result": {
+          "text": "NAIVE",
+          "tokens": [
+            " NA",
+            "IVE"
+          ],
+          "timestamps": [
+            0.64,
+            0.8
+          ],
+          "ys_probs": [
+            -1.653069,
+            -1.471292
+          ],
+          "lm_probs": [],
+          "context_scores": [],
+          "segment": 0,
+          "words": [],
+          "num_trailing_blanks": 19,
+          "start_time": 0.0,
+          "is_final": false,
+          "is_eof": false
+        }
+      }
+    },
+    {
+      "id": "flite_light_up",
+      "input": "Light up",
+      "wav_sha256": "910fcd355af3fbde4941fe36278cb729ff1b9810a203cefc3fa84a64dce3af2d",
+      "pcm_sha256": "3eeff2bf69c5b6c4983aa8633b944971ffd9c8295db6500d4f6403b83fe3fe87",
+      "target_kws": {
+        "samples_fed": 35200,
+        "audio_seconds": 2.2,
+        "decode_calls": 6,
+        "wall_seconds": 0.050169,
+        "cpu_seconds": 0.050153,
+        "wall_rtf": 0.022804,
+        "cpu_rtf": 0.022797,
+        "result_observations": [],
+        "reset_after_hit": true,
+        "reset_calls": 0
+      },
+      "unbiased_asr": {
+        "decode_calls": 6,
+        "samples_fed": 35200,
+        "result": {
+          "text": "LIKE UP",
+          "tokens": [
+            " LIKE",
+            " UP"
+          ],
+          "timestamps": [
+            0.8,
+            1.12
+          ],
+          "ys_probs": [
+            -0.937555,
+            -1.290568
+          ],
+          "lm_probs": [],
+          "context_scores": [],
+          "segment": 0,
+          "words": [],
+          "num_trailing_blanks": 19,
+          "start_time": 0.0,
+          "is_final": false,
+          "is_eof": false
+        }
+      }
+    },
+    {
+      "id": "fresh_wake",
+      "input": "Hey Evener",
+      "wav_sha256": "2be27f6c06fdd52ebf28d9b5031a12e1e1fb52deceae0a773000a7173512948b",
+      "pcm_sha256": "a62febd74981498d344ed08a9be24f60fca6b36d321916c927c0779bdea92368",
+      "target_kws": {
+        "samples_fed": 53600,
+        "audio_seconds": 3.35,
+        "decode_calls": 10,
+        "wall_seconds": 0.080355,
+        "cpu_seconds": 0.080358,
+        "wall_rtf": 0.023987,
+        "cpu_rtf": 0.023987,
+        "result_observations": [],
+        "reset_after_hit": true,
+        "reset_calls": 0
+      },
+      "unbiased_asr": {
+        "decode_calls": 10,
+        "samples_fed": 53600,
+        "result": {
+          "text": "HEY EVEN A",
+          "tokens": [
+            " HE",
+            "Y",
+            " EVEN",
+            " A"
+          ],
+          "timestamps": [
+            0.72,
+            0.84,
+            1.08,
+            1.48
+          ],
+          "ys_probs": [
+            -0.817418,
+            -0.716279,
+            -0.70785,
+            -1.225004
+          ],
+          "lm_probs": [],
+          "context_scores": [],
+          "segment": 0,
+          "words": [],
+          "num_trailing_blanks": 42,
+          "start_time": 0.0,
+          "is_final": false,
+          "is_eof": false
+        }
+      }
+    },
+    {
+      "id": "fresh_command",
+      "input": "Hey Evener tell me my next meeting",
+      "wav_sha256": "c3959b25add25a0d81bd40729343373f1f3ed18df68ac5a6664a48b3acba4844",
+      "pcm_sha256": "25e4cc3cf18a4fa05f05f791986ae0e4c4aa07befbd8476c624c26de3e0a6fea",
+      "target_kws": {
+        "samples_fed": 78400,
+        "audio_seconds": 4.9,
+        "decode_calls": 14,
+        "wall_seconds": 0.109683,
+        "cpu_seconds": 0.109048,
+        "wall_rtf": 0.022384,
+        "cpu_rtf": 0.022255,
+        "result_observations": [],
+        "reset_after_hit": true,
+        "reset_calls": 0
+      },
+      "unbiased_asr": {
+        "decode_calls": 14,
+        "samples_fed": 78400,
+        "result": {
+          "text": "HEY EVEN A TELL ME MY NEXT MEETING",
+          "tokens": [
+            " HE",
+            "Y",
+            " EVEN",
+            " A",
+            " TELL",
+            " ME",
+            " MY",
+            " NEXT",
+            " ME",
+            "ET",
+            "ING"
+          ],
+          "timestamps": [
+            0.64,
+            0.76,
+            0.96,
+            1.36,
+            1.76,
+            1.96,
+            2.16,
+            2.36,
+            2.6,
+            2.72,
+            2.84
+          ],
+          "ys_probs": [
+            -0.885448,
+            -0.531956,
+            -0.443134,
+            -1.6185,
+            -0.427665,
+            -0.279952,
+            -0.370329,
+            -0.116764,
+            -0.463038,
+            -0.710783,
+            -0.048292
+          ],
+          "lm_probs": [],
+          "context_scores": [],
+          "segment": 0,
+          "words": [],
+          "num_trailing_blanks": 40,
+          "start_time": 0.0,
+          "is_final": false,
+          "is_eof": false
+        }
+      }
+    },
+    {
+      "id": "fresh_everyone",
+      "input": "Hey everyone",
+      "wav_sha256": "d59fde9d6a02cd40feef83d1d29f001d72c5e56b934fa591963c91085da51774",
+      "pcm_sha256": "9c43f94621a16277e4c4e5bae7bd7c0fc5f932c52581c56b30fb1e9a487f839c",
+      "target_kws": {
+        "samples_fed": 86400,
+        "audio_seconds": 5.4,
+        "decode_calls": 16,
+        "wall_seconds": 0.135691,
+        "cpu_seconds": 0.135694,
+        "wall_rtf": 0.025128,
+        "cpu_rtf": 0.025129,
+        "result_observations": [],
+        "reset_after_hit": true,
+        "reset_calls": 0
+      },
+      "unbiased_asr": {
+        "decode_calls": 16,
+        "samples_fed": 86400,
+        "result": {
+          "text": "HEY EVERYONE HEY EVERYONE",
+          "tokens": [
+            " HE",
+            "Y",
+            " EVERY",
+            "ONE",
+            " HE",
+            "Y",
+            " EVERY",
+            "ONE"
+          ],
+          "timestamps": [
+            0.52,
+            0.68,
+            1.12,
+            1.48,
+            2.96,
+            3.12,
+            3.64,
+            3.96
+          ],
+          "ys_probs": [
+            -0.528471,
+            -0.629469,
+            -0.517981,
+            -0.342826,
+            -0.655028,
+            -0.546428,
+            -0.320136,
+            -0.518652
+          ],
+          "lm_probs": [],
+          "context_scores": [],
+          "segment": 0,
+          "words": [],
+          "num_trailing_blanks": 28,
+          "start_time": 0.0,
+          "is_final": false,
+          "is_eof": false
+        }
+      }
+    },
+    {
+      "id": "fresh_even",
+      "input": "Hey even",
+      "wav_sha256": "acde84e951c52280f5dea7e75fe3125fe469e9d006084f78353a6f08551938a8",
+      "pcm_sha256": "1c48e1c4aac853f31d0ac0aa0bc851a9625404af07c6430c7cffd55cd5c4bb88",
+      "target_kws": {
+        "samples_fed": 44000,
+        "audio_seconds": 2.75,
+        "decode_calls": 8,
+        "wall_seconds": 0.070789,
+        "cpu_seconds": 0.070693,
+        "wall_rtf": 0.025741,
+        "cpu_rtf": 0.025707,
+        "result_observations": [],
+        "reset_after_hit": true,
+        "reset_calls": 0
+      },
+      "unbiased_asr": {
+        "decode_calls": 8,
+        "samples_fed": 44000,
+        "result": {
+          "text": "HEY EVEN",
+          "tokens": [
+            " HE",
+            "Y",
+            " EVEN"
+          ],
+          "timestamps": [
+            0.52,
+            0.76,
+            1.28
+          ],
+          "ys_probs": [
+            -0.646311,
+            -0.361803,
+            -0.102221
+          ],
+          "lm_probs": [],
+          "context_scores": [],
+          "segment": 0,
+          "words": [],
+          "num_trailing_blanks": 31,
+          "start_time": 0.0,
+          "is_final": false,
+          "is_eof": false
+        }
+      }
+    },
+    {
+      "id": "fresh_ordinary",
+      "input": "Please list my upcoming meetings",
+      "wav_sha256": "17d4562feb02b56ea79a3ad82d251f19349ed1af1dbccd27a52d1ccf7aecccfe",
+      "pcm_sha256": "0fd12e47904725fee0d205399c167f509bb248083fc57cc26695990b2c06d00e",
+      "target_kws": {
+        "samples_fed": 63200,
+        "audio_seconds": 3.95,
+        "decode_calls": 11,
+        "wall_seconds": 0.138798,
+        "cpu_seconds": 0.098143,
+        "wall_rtf": 0.035139,
+        "cpu_rtf": 0.024846,
+        "result_observations": [],
+        "reset_after_hit": true,
+        "reset_calls": 0
+      },
+      "unbiased_asr": {
+        "decode_calls": 11,
+        "samples_fed": 63200,
+        "result": {
+          "text": "PLEASE LIST MY UPCOMING MEETINGS",
+          "tokens": [
+            " P",
+            "LE",
+            "AS",
+            "E",
+            " LI",
+            "S",
+            "T",
+            " MY",
+            " UP",
+            "CO",
+            "M",
+            "ING",
+            " ME",
+            "ET",
+            "ING",
+            "S"
+          ],
+          "timestamps": [
+            0.72,
+            0.76,
+            0.88,
+            1.04,
+            1.32,
+            1.4,
+            1.48,
+            1.6,
+            1.76,
+            1.96,
+            2.04,
+            2.08,
+            2.24,
+            2.36,
+            2.44,
+            2.64
+          ],
+          "ys_probs": [
+            -0.476867,
+            -0.346004,
+            -0.441709,
+            -0.625248,
+            -0.464762,
+            -0.706127,
+            -0.171593,
+            -0.203856,
+            -0.194822,
+            -0.195118,
+            -0.128061,
+            -0.164404,
+            -0.646049,
+            -0.160884,
+            -0.291131,
+            -0.348866
+          ],
+          "lm_probs": [],
+          "context_scores": [],
+          "segment": 0,
+          "words": [],
+          "num_trailing_blanks": 21,
+          "start_time": 0.0,
+          "is_final": false,
+          "is_eof": false
+        }
+      }
+    },
+    {
+      "id": "fresh_light_up",
+      "input": "Light up",
+      "wav_sha256": "6c7f781e3b6b4fde5dc862106f518fabd070688aa4acebfe4c7a582da6338d8f",
+      "pcm_sha256": "97858fe99bc98070ec2d8881c33adf0b985be79f30c2dab212ac3ea983fb8e76",
+      "target_kws": {
+        "samples_fed": 55200,
+        "audio_seconds": 3.45,
+        "decode_calls": 10,
+        "wall_seconds": 0.104754,
+        "cpu_seconds": 0.093237,
+        "wall_rtf": 0.030363,
+        "cpu_rtf": 0.027025,
+        "result_observations": [],
+        "reset_after_hit": true,
+        "reset_calls": 0
+      },
+      "unbiased_asr": {
+        "decode_calls": 10,
+        "samples_fed": 55200,
+        "result": {
+          "text": "LIGHT UP",
+          "tokens": [
+            " ",
+            "L",
+            "IGHT",
+            " UP"
+          ],
+          "timestamps": [
+            0.64,
+            0.68,
+            0.76,
+            1.32
+          ],
+          "ys_probs": [
+            -0.412631,
+            -0.050167,
+            -0.346593,
+            -0.754092
+          ],
+          "lm_probs": [],
+          "context_scores": [],
+          "segment": 0,
+          "words": [],
+          "num_trailing_blanks": 46,
+          "start_time": 0.0,
+          "is_final": false,
+          "is_eof": false
+        }
+      }
+    }
+  ],
+  "controls": {
+    "alternate_phrase": {
+      "keyword_file": "▁HE Y ▁EVEN ▁HER @HEY_EVEN_HER\n",
+      "input_wav_sha256": "2d792f4bc6aa5b8628ca5ce8712d5d7050e755957c6af981642da7200f2ee1e3",
+      "measurement": {
+        "samples_fed": 39280,
+        "audio_seconds": 2.455,
+        "decode_calls": 7,
+        "wall_seconds": 0.055359,
+        "cpu_seconds": 0.055143,
+        "wall_rtf": 0.022549,
+        "cpu_rtf": 0.022462,
+        "result_observations": [
+          {
+            "keyword": "HEY_EVEN_HER",
+            "fed_seconds": 1.76
+          }
+        ],
+        "reset_after_hit": true,
+        "reset_calls": 1
+      }
+    },
+    "synthetic_light_up": {
+      "keyword_file": "▁ L IGHT ▁UP @LIGHT_UP\n",
+      "input_wav_sha256": "910fcd355af3fbde4941fe36278cb729ff1b9810a203cefc3fa84a64dce3af2d",
+      "measurement": {
+        "samples_fed": 35200,
+        "audio_seconds": 2.2,
+        "decode_calls": 6,
+        "wall_seconds": 0.045139,
+        "cpu_seconds": 0.045119,
+        "wall_rtf": 0.020518,
+        "cpu_rtf": 0.020509,
+        "result_observations": [],
+        "reset_after_hit": true,
+        "reset_calls": 0
+      }
+    },
+    "fresh_light_up": {
+      "keyword_file": "▁ L IGHT ▁UP @LIGHT_UP\n",
+      "input_wav_sha256": "6c7f781e3b6b4fde5dc862106f518fabd070688aa4acebfe4c7a582da6338d8f",
+      "measurement": {
+        "samples_fed": 55200,
+        "audio_seconds": 3.45,
+        "decode_calls": 10,
+        "wall_seconds": 0.089818,
+        "cpu_seconds": 0.088278,
+        "wall_rtf": 0.026034,
+        "cpu_rtf": 0.025588,
+        "result_observations": [
+          {
+            "keyword": "LIGHT_UP",
+            "fed_seconds": 1.44
+          }
+        ],
+        "reset_after_hit": true,
+        "reset_calls": 1
+      }
+    }
+  },
+  "threshold_zero": {
+    "purpose": "Threshold-only rejection diagnostic, NOT a proposed operating point",
+    "settings": {
+      "num_threads": 1,
+      "sample_rate": 16000,
+      "feature_dim": 80,
+      "max_active_paths": 4,
+      "keywords_score": 1.0,
+      "keywords_threshold": 0.0,
+      "num_trailing_blanks": 1,
+      "provider": "cpu"
+    },
+    "clips": [
+      {
+        "id": "awb_wake",
+        "category": "wake_alone",
+        "wav_sha256": "f2a27982685a28f51232ebea36719169fb672c2a56aa1fe7fe69ffe4d4e51a89",
+        "samples_fed": 36080,
+        "audio_seconds": 2.255,
+        "decode_calls": 6,
+        "wall_seconds": 0.05424,
+        "cpu_seconds": 0.054241,
+        "wall_rtf": 0.024053,
+        "cpu_rtf": 0.024054,
+        "result_observations": [],
+        "reset_after_hit": true,
+        "reset_calls": 0
+      },
+      {
+        "id": "awb_command",
+        "category": "wake_command",
+        "wav_sha256": "31ce14c7baf97e5a8e0df52d0dba16e7ecd1644c9f365da2fc5848cd90725daf",
+        "samples_fed": 58400,
+        "audio_seconds": 3.65,
+        "decode_calls": 10,
+        "wall_seconds": 0.086665,
+        "cpu_seconds": 0.083067,
+        "wall_rtf": 0.023744,
+        "cpu_rtf": 0.022758,
+        "result_observations": [],
+        "reset_after_hit": true,
+        "reset_calls": 0
+      },
+      {
+        "id": "awb_ordinary1",
+        "category": "ordinary",
+        "wav_sha256": "443310b443406a31ecb4971d36944fb243a312aca47ae26b9569ff1f041b0327",
+        "samples_fed": 55120,
+        "audio_seconds": 3.445,
+        "decode_calls": 10,
+        "wall_seconds": 0.079526,
+        "cpu_seconds": 0.078437,
+        "wall_rtf": 0.023085,
+        "cpu_rtf": 0.022768,
+        "result_observations": [],
+        "reset_after_hit": true,
+        "reset_calls": 0
+      },
+      {
+        "id": "awb_ordinary2",
+        "category": "ordinary",
+        "wav_sha256": "c6bc9a48ae8b8d946f88da94b35bb6fe6133602cb077377f6c70dccc02493acf",
+        "samples_fed": 52560,
+        "audio_seconds": 3.285,
+        "decode_calls": 9,
+        "wall_seconds": 0.080045,
+        "cpu_seconds": 0.079663,
+        "wall_rtf": 0.024367,
+        "cpu_rtf": 0.024251,
+        "result_observations": [],
+        "reset_after_hit": true,
+        "reset_calls": 0
+      },
+      {
+        "id": "awb_everyone",
+        "category": "near_miss",
+        "wav_sha256": "63fc1144a4503e9956cf2b65d371c2495b43ad4ed96079ee922e2dea1a32b04b",
+        "samples_fed": 37440,
+        "audio_seconds": 2.34,
+        "decode_calls": 6,
+        "wall_seconds": 0.053064,
+        "cpu_seconds": 0.053067,
+        "wall_rtf": 0.022677,
+        "cpu_rtf": 0.022678,
+        "result_observations": [],
+        "reset_after_hit": true,
+        "reset_calls": 0
+      },
+      {
+        "id": "awb_evening",
+        "category": "near_miss",
+        "wav_sha256": "3d33875f2beb7a9d01160ac3ea61a7afcb9c7d07a554ca1a62caed971fb2060a",
+        "samples_fed": 37200,
+        "audio_seconds": 2.325,
+        "decode_calls": 6,
+        "wall_seconds": 0.047189,
+        "cpu_seconds": 0.046641,
+        "wall_rtf": 0.020296,
+        "cpu_rtf": 0.020061,
+        "result_observations": [],
+        "reset_after_hit": true,
+        "reset_calls": 0
+      },
+      {
+        "id": "awb_evan",
+        "category": "near_miss",
+        "wav_sha256": "3d49c1602bbb60c3b17045cfd014cca23bacfb3d9368c4b11e08a77159b2924e",
+        "samples_fed": 34320,
+        "audio_seconds": 2.145,
+        "decode_calls": 6,
+        "wall_seconds": 0.043842,
+        "cpu_seconds": 0.043845,
+        "wall_rtf": 0.020439,
+        "cpu_rtf": 0.020441,
+        "result_observations": [],
+        "reset_after_hit": true,
+        "reset_calls": 0
+      },
+      {
+        "id": "awb_even",
+        "category": "near_miss",
+        "wav_sha256": "8ce652add5f688db885d1ec544fbf1828caa10121a468c691b28644ce21d0a02",
+        "samples_fed": 34800,
+        "audio_seconds": 2.175,
+        "decode_calls": 6,
+        "wall_seconds": 0.051015,
+        "cpu_seconds": 0.050423,
+        "wall_rtf": 0.023455,
+        "cpu_rtf": 0.023183,
+        "result_observations": [],
+        "reset_after_hit": true,
+        "reset_calls": 0
+      },
+      {
+        "id": "awb_evelyn",
+        "category": "near_miss",
+        "wav_sha256": "b1d8578acaccc038ca4661cf9ec2906f1a3410bea1e5694dd748b3a1662b1748",
+        "samples_fed": 36640,
+        "audio_seconds": 2.29,
+        "decode_calls": 6,
+        "wall_seconds": 0.048953,
+        "cpu_seconds": 0.048431,
+        "wall_rtf": 0.021377,
+        "cpu_rtf": 0.021149,
+        "result_observations": [],
+        "reset_after_hit": true,
+        "reset_calls": 0
+      },
+      {
+        "id": "awb_bare",
+        "category": "near_miss",
+        "wav_sha256": "af2a4bccb2b892f1d02280fe262e18f2af441237f8df2c4b97e985d85281cc43",
+        "samples_fed": 33200,
+        "audio_seconds": 2.075,
+        "decode_calls": 6,
+        "wall_seconds": 0.05271,
+        "cpu_seconds": 0.052464,
+        "wall_rtf": 0.025402,
+        "cpu_rtf": 0.025284,
+        "result_observations": [],
+        "reset_after_hit": true,
+        "reset_calls": 0
+      },
+      {
+        "id": "awb_playback",
+        "category": "assistant_playback",
+        "wav_sha256": "f2a27982685a28f51232ebea36719169fb672c2a56aa1fe7fe69ffe4d4e51a89",
+        "samples_fed": 36080,
+        "audio_seconds": 2.255,
+        "decode_calls": 6,
+        "wall_seconds": 0.051035,
+        "cpu_seconds": 0.051028,
+        "wall_rtf": 0.022632,
+        "cpu_rtf": 0.022629,
+        "result_observations": [],
+        "reset_after_hit": true,
+        "reset_calls": 0
+      },
+      {
+        "id": "kal_wake",
+        "category": "wake_alone",
+        "wav_sha256": "c0aab8026fa577188cec8e86014028b7b453b92fbd4ad9514763eca2b71d135b",
+        "samples_fed": 37624,
+        "audio_seconds": 2.3515,
+        "decode_calls": 6,
+        "wall_seconds": 0.058975,
+        "cpu_seconds": 0.057108,
+        "wall_rtf": 0.02508,
+        "cpu_rtf": 0.024286,
+        "result_observations": [],
+        "reset_after_hit": true,
+        "reset_calls": 0
+      },
+      {
+        "id": "kal_command",
+        "category": "wake_command",
+        "wav_sha256": "38d1d380587b7491b5a218731cfe0b9341f8870cdb1071ced8d2b3a5b6aac9fe",
+        "samples_fed": 60878,
+        "audio_seconds": 3.80488,
+        "decode_calls": 11,
+        "wall_seconds": 0.103833,
+        "cpu_seconds": 0.100432,
+        "wall_rtf": 0.027289,
+        "cpu_rtf": 0.026396,
+        "result_observations": [],
+        "reset_after_hit": true,
+        "reset_calls": 0
+      },
+      {
+        "id": "kal_ordinary1",
+        "category": "ordinary",
+        "wav_sha256": "e0fdd66eb1e25c54727a001d524de33bcdb6b4e8a0998a3947d35311c044fe87",
+        "samples_fed": 57462,
+        "audio_seconds": 3.59138,
+        "decode_calls": 10,
+        "wall_seconds": 0.094512,
+        "cpu_seconds": 0.091816,
+        "wall_rtf": 0.026316,
+        "cpu_rtf": 0.025566,
+        "result_observations": [],
+        "reset_after_hit": true,
+        "reset_calls": 0
+      },
+      {
+        "id": "kal_ordinary2",
+        "category": "ordinary",
+        "wav_sha256": "a89b3427b43e0f39b28e8e71c3bf8f3fab03de4ac926e65aec76483ec027da37",
+        "samples_fed": 49508,
+        "audio_seconds": 3.09425,
+        "decode_calls": 9,
+        "wall_seconds": 0.104501,
+        "cpu_seconds": 0.085306,
+        "wall_rtf": 0.033773,
+        "cpu_rtf": 0.027569,
+        "result_observations": [],
+        "reset_after_hit": true,
+        "reset_calls": 0
+      },
+      {
+        "id": "kal_everyone",
+        "category": "near_miss",
+        "wav_sha256": "4f1f51eba7d58c99b8da6fc6da1f3d9aaeabb885c869439cf54140e28200b49b",
+        "samples_fed": 38986,
+        "audio_seconds": 2.43662,
+        "decode_calls": 7,
+        "wall_seconds": 0.095964,
+        "cpu_seconds": 0.071918,
+        "wall_rtf": 0.039384,
+        "cpu_rtf": 0.029516,
+        "result_observations": [],
+        "reset_after_hit": true,
+        "reset_calls": 0
+      },
+      {
+        "id": "kal_evening",
+        "category": "near_miss",
+        "wav_sha256": "dfd4a6226e70913792ff5b95a6b1481d285b678c941da78e86987caccbd92521",
+        "samples_fed": 38046,
+        "audio_seconds": 2.37787,
+        "decode_calls": 7,
+        "wall_seconds": 0.079775,
+        "cpu_seconds": 0.072852,
+        "wall_rtf": 0.033549,
+        "cpu_rtf": 0.030637,
+        "result_observations": [],
+        "reset_after_hit": true,
+        "reset_calls": 0
+      },
+      {
+        "id": "kal_evan",
+        "category": "near_miss",
+        "wav_sha256": "5a471a4f7a0d4aea98feab98f2e47cc8569e446cb64f830c0a3617c1eb113299",
+        "samples_fed": 36246,
+        "audio_seconds": 2.26538,
+        "decode_calls": 6,
+        "wall_seconds": 0.063358,
+        "cpu_seconds": 0.058892,
+        "wall_rtf": 0.027968,
+        "cpu_rtf": 0.025997,
+        "result_observations": [],
+        "reset_after_hit": true,
+        "reset_calls": 0
+      },
+      {
+        "id": "kal_even",
+        "category": "near_miss",
+        "wav_sha256": "d5f929aa5c4ed1805435c207cec2dabd3b89d676646a53cc81e0b24db67f8563",
+        "samples_fed": 36724,
+        "audio_seconds": 2.29525,
+        "decode_calls": 6,
+        "wall_seconds": 0.052454,
+        "cpu_seconds": 0.052377,
+        "wall_rtf": 0.022853,
+        "cpu_rtf": 0.02282,
+        "result_observations": [],
+        "reset_after_hit": true,
+        "reset_calls": 0
+      },
+      {
+        "id": "kal_evelyn",
+        "category": "near_miss",
+        "wav_sha256": "0dcc669f6776b3541296969944d93984732a7ea6a6a6d42ed6338c5c267ddd9d",
+        "samples_fed": 37306,
+        "audio_seconds": 2.33162,
+        "decode_calls": 6,
+        "wall_seconds": 0.056753,
+        "cpu_seconds": 0.056609,
+        "wall_rtf": 0.02434,
+        "cpu_rtf": 0.024279,
+        "result_observations": [],
+        "reset_after_hit": true,
+        "reset_calls": 0
+      },
+      {
+        "id": "kal_bare",
+        "category": "near_miss",
+        "wav_sha256": "4cabfcc03b54094d13aeab50db1feaaed2840f806cd2d4aec3ab4fde9207e7fd",
+        "samples_fed": 32800,
+        "audio_seconds": 2.05,
+        "decode_calls": 5,
+        "wall_seconds": 0.047056,
+        "cpu_seconds": 0.045382,
+        "wall_rtf": 0.022954,
+        "cpu_rtf": 0.022138,
+        "result_observations": [],
+        "reset_after_hit": true,
+        "reset_calls": 0
+      },
+      {
+        "id": "kal_playback",
+        "category": "assistant_playback",
+        "wav_sha256": "c0aab8026fa577188cec8e86014028b7b453b92fbd4ad9514763eca2b71d135b",
+        "samples_fed": 37624,
+        "audio_seconds": 2.3515,
+        "decode_calls": 6,
+        "wall_seconds": 0.053082,
+        "cpu_seconds": 0.05271,
+        "wall_rtf": 0.022574,
+        "cpu_rtf": 0.022415,
+        "result_observations": [],
+        "reset_after_hit": true,
+        "reset_calls": 0
+      },
+      {
+        "id": "kal16_wake",
+        "category": "wake_alone",
+        "wav_sha256": "910daaa5baaff2c7cb27437c6f8a29cc7268e054d4f65e41119835d6b3582ded",
+        "samples_fed": 37625,
+        "audio_seconds": 2.35156,
+        "decode_calls": 6,
+        "wall_seconds": 0.048071,
+        "cpu_seconds": 0.047921,
+        "wall_rtf": 0.020442,
+        "cpu_rtf": 0.020378,
+        "result_observations": [],
+        "reset_after_hit": true,
+        "reset_calls": 0
+      },
+      {
+        "id": "kal16_command",
+        "category": "wake_command",
+        "wav_sha256": "c809e7784e3b2a7281323c39f715125408b66bfb7bc86675e1d310594c1797d6",
+        "samples_fed": 60879,
+        "audio_seconds": 3.80494,
+        "decode_calls": 11,
+        "wall_seconds": 0.10624,
+        "cpu_seconds": 0.103348,
+        "wall_rtf": 0.027922,
+        "cpu_rtf": 0.027162,
+        "result_observations": [],
+        "reset_after_hit": true,
+        "reset_calls": 0
+      },
+      {
+        "id": "kal16_ordinary1",
+        "category": "ordinary",
+        "wav_sha256": "36c15346f7400a939141b134e1de4c0b0acb3cd346d758cb2d62e6aaf7d5cc5b",
+        "samples_fed": 55366,
+        "audio_seconds": 3.46037,
+        "decode_calls": 10,
+        "wall_seconds": 0.084272,
+        "cpu_seconds": 0.084277,
+        "wall_rtf": 0.024353,
+        "cpu_rtf": 0.024355,
+        "result_observations": [],
+        "reset_after_hit": true,
+        "reset_calls": 0
+      },
+      {
+        "id": "kal16_ordinary2",
+        "category": "ordinary",
+        "wav_sha256": "45f5bd3d5d920eef20cfa523e663fcb652880e60757b3ac290d43e1bd010294a",
+        "samples_fed": 49508,
+        "audio_seconds": 3.09425,
+        "decode_calls": 9,
+        "wall_seconds": 0.07252,
+        "cpu_seconds": 0.072482,
+        "wall_rtf": 0.023437,
+        "cpu_rtf": 0.023425,
+        "result_observations": [],
+        "reset_after_hit": true,
+        "reset_calls": 0
+      },
+      {
+        "id": "kal16_everyone",
+        "category": "near_miss",
+        "wav_sha256": "edef11809013fc3c93d5a97f93cb8ba98de1bae3c54d23e4fa91c25abefed4bc",
+        "samples_fed": 38447,
+        "audio_seconds": 2.40294,
+        "decode_calls": 7,
+        "wall_seconds": 0.062892,
+        "cpu_seconds": 0.062777,
+        "wall_rtf": 0.026173,
+        "cpu_rtf": 0.026125,
+        "result_observations": [],
+        "reset_after_hit": true,
+        "reset_calls": 0
+      },
+      {
+        "id": "kal16_evening",
+        "category": "near_miss",
+        "wav_sha256": "5b1998c56d2c7bd103d679f691a8dd4820c9fabf2e60f39aa9b34d3736293e46",
+        "samples_fed": 38046,
+        "audio_seconds": 2.37787,
+        "decode_calls": 7,
+        "wall_seconds": 0.05123,
+        "cpu_seconds": 0.051179,
+        "wall_rtf": 0.021545,
+        "cpu_rtf": 0.021523,
+        "result_observations": [],
+        "reset_after_hit": true,
+        "reset_calls": 0
+      },
+      {
+        "id": "kal16_evan",
+        "category": "near_miss",
+        "wav_sha256": "3ac5a3695d093b075cb6b15ae98df410fc48bf27b1ea9ec4aa753d7c3ddcc052",
+        "samples_fed": 36246,
+        "audio_seconds": 2.26538,
+        "decode_calls": 6,
+        "wall_seconds": 0.049109,
+        "cpu_seconds": 0.048921,
+        "wall_rtf": 0.021678,
+        "cpu_rtf": 0.021595,
+        "result_observations": [],
+        "reset_after_hit": true,
+        "reset_calls": 0
+      },
+      {
+        "id": "kal16_even",
+        "category": "near_miss",
+        "wav_sha256": "18774e0e2b38399bd21bdafb8a4ca4c401e44986c238d00b8401ed63c492af3d",
+        "samples_fed": 36725,
+        "audio_seconds": 2.29531,
+        "decode_calls": 6,
+        "wall_seconds": 0.050183,
+        "cpu_seconds": 0.050113,
+        "wall_rtf": 0.021863,
+        "cpu_rtf": 0.021833,
+        "result_observations": [],
+        "reset_after_hit": true,
+        "reset_calls": 0
+      },
+      {
+        "id": "kal16_evelyn",
+        "category": "near_miss",
+        "wav_sha256": "3b3b92f613dffebada18aa1da7e64d86814110b6192edfba0ed8fda8d60362c7",
+        "samples_fed": 37307,
+        "audio_seconds": 2.33169,
+        "decode_calls": 6,
+        "wall_seconds": 0.05161,
+        "cpu_seconds": 0.051097,
+        "wall_rtf": 0.022134,
+        "cpu_rtf": 0.021914,
+        "result_observations": [],
+        "reset_after_hit": true,
+        "reset_calls": 0
+      },
+      {
+        "id": "kal16_bare",
+        "category": "near_miss",
+        "wav_sha256": "80c870730e4e0943df36af18d4d514cd9f96515ce55a53ce73a29040e327e882",
+        "samples_fed": 32800,
+        "audio_seconds": 2.05,
+        "decode_calls": 5,
+        "wall_seconds": 0.045285,
+        "cpu_seconds": 0.044601,
+        "wall_rtf": 0.02209,
+        "cpu_rtf": 0.021757,
+        "result_observations": [],
+        "reset_after_hit": true,
+        "reset_calls": 0
+      },
+      {
+        "id": "kal16_playback",
+        "category": "assistant_playback",
+        "wav_sha256": "910daaa5baaff2c7cb27437c6f8a29cc7268e054d4f65e41119835d6b3582ded",
+        "samples_fed": 37625,
+        "audio_seconds": 2.35156,
+        "decode_calls": 6,
+        "wall_seconds": 0.049404,
+        "cpu_seconds": 0.048727,
+        "wall_rtf": 0.021009,
+        "cpu_rtf": 0.020721,
+        "result_observations": [],
+        "reset_after_hit": true,
+        "reset_calls": 0
+      },
+      {
+        "id": "rms_wake",
+        "category": "wake_alone",
+        "wav_sha256": "25850fbdeaa4414aaa19d44f5321049e22d4306fcea6f3fd7e87b01f508543c8",
+        "samples_fed": 38400,
+        "audio_seconds": 2.4,
+        "decode_calls": 7,
+        "wall_seconds": 0.072005,
+        "cpu_seconds": 0.067842,
+        "wall_rtf": 0.030002,
+        "cpu_rtf": 0.028267,
+        "result_observations": [],
+        "reset_after_hit": true,
+        "reset_calls": 0
+      },
+      {
+        "id": "rms_command",
+        "category": "wake_command",
+        "wav_sha256": "09e152ff89b62bf388f9f67deb5d0d08452533d946f25d770af4e801755831c9",
+        "samples_fed": 59280,
+        "audio_seconds": 3.705,
+        "decode_calls": 11,
+        "wall_seconds": 0.101585,
+        "cpu_seconds": 0.099603,
+        "wall_rtf": 0.027418,
+        "cpu_rtf": 0.026883,
+        "result_observations": [],
+        "reset_after_hit": true,
+        "reset_calls": 0
+      },
+      {
+        "id": "rms_ordinary1",
+        "category": "ordinary",
+        "wav_sha256": "3d1e46cc7118c6f03b2b9cc996f049722bc257d8cec68bf45988c33e3cacbc1f",
+        "samples_fed": 60640,
+        "audio_seconds": 3.79,
+        "decode_calls": 11,
+        "wall_seconds": 0.090816,
+        "cpu_seconds": 0.085181,
+        "wall_rtf": 0.023962,
+        "cpu_rtf": 0.022475,
+        "result_observations": [],
+        "reset_after_hit": true,
+        "reset_calls": 0
+      },
+      {
+        "id": "rms_ordinary2",
+        "category": "ordinary",
+        "wav_sha256": "18eb3aaf14e3bcc65d544c84d1931d65bfa5bd5eaad2553616cb23e0094932aa",
+        "samples_fed": 57440,
+        "audio_seconds": 3.59,
+        "decode_calls": 10,
+        "wall_seconds": 0.070505,
+        "cpu_seconds": 0.070488,
+        "wall_rtf": 0.019639,
+        "cpu_rtf": 0.019635,
+        "result_observations": [],
+        "reset_after_hit": true,
+        "reset_calls": 0
+      },
+      {
+        "id": "rms_everyone",
+        "category": "near_miss",
+        "wav_sha256": "d48731ecd5fe318500be3cec2fd64c2e465203636ce13daeaeab5802696ebeb0",
+        "samples_fed": 41120,
+        "audio_seconds": 2.57,
+        "decode_calls": 7,
+        "wall_seconds": 0.050653,
+        "cpu_seconds": 0.050656,
+        "wall_rtf": 0.019709,
+        "cpu_rtf": 0.01971,
+        "result_observations": [],
+        "reset_after_hit": true,
+        "reset_calls": 0
+      },
+      {
+        "id": "rms_evening",
+        "category": "near_miss",
+        "wav_sha256": "f3b91420ed1cb0b6ae10a7c7ab59d9fbf8cf941feee898f2136a694f8f27f55d",
+        "samples_fed": 35440,
+        "audio_seconds": 2.215,
+        "decode_calls": 6,
+        "wall_seconds": 0.040518,
+        "cpu_seconds": 0.040508,
+        "wall_rtf": 0.018293,
+        "cpu_rtf": 0.018288,
+        "result_observations": [],
+        "reset_after_hit": true,
+        "reset_calls": 0
+      },
+      {
+        "id": "rms_evan",
+        "category": "near_miss",
+        "wav_sha256": "1fc201d6c017bab1db40a2b62576fad0224d8f6cce86af2978ba0947d1774680",
+        "samples_fed": 35760,
+        "audio_seconds": 2.235,
+        "decode_calls": 6,
+        "wall_seconds": 0.044058,
+        "cpu_seconds": 0.043995,
+        "wall_rtf": 0.019713,
+        "cpu_rtf": 0.019685,
+        "result_observations": [],
+        "reset_after_hit": true,
+        "reset_calls": 0
+      },
+      {
+        "id": "rms_even",
+        "category": "near_miss",
+        "wav_sha256": "e0320147daafcee63e03a4d514bc6981d881039ac5919f2eb0b7cb3e3faec314",
+        "samples_fed": 36720,
+        "audio_seconds": 2.295,
+        "decode_calls": 6,
+        "wall_seconds": 0.045614,
+        "cpu_seconds": 0.045618,
+        "wall_rtf": 0.019876,
+        "cpu_rtf": 0.019877,
+        "result_observations": [],
+        "reset_after_hit": true,
+        "reset_calls": 0
+      },
+      {
+        "id": "rms_evelyn",
+        "category": "near_miss",
+        "wav_sha256": "b06107ed50883f2452511fb9e8902318db45d3c5f88999575b921a8f4689551a",
+        "samples_fed": 37200,
+        "audio_seconds": 2.325,
+        "decode_calls": 6,
+        "wall_seconds": 0.047715,
+        "cpu_seconds": 0.047703,
+        "wall_rtf": 0.020522,
+        "cpu_rtf": 0.020518,
+        "result_observations": [],
+        "reset_after_hit": true,
+        "reset_calls": 0
+      },
+      {
+        "id": "rms_bare",
+        "category": "near_miss",
+        "wav_sha256": "8c6b2fb4161c2607621c48b14e08565181ada01a4b66e5b4500b75a6f50f9326",
+        "samples_fed": 34080,
+        "audio_seconds": 2.13,
+        "decode_calls": 6,
+        "wall_seconds": 0.050001,
+        "cpu_seconds": 0.049996,
+        "wall_rtf": 0.023475,
+        "cpu_rtf": 0.023472,
+        "result_observations": [],
+        "reset_after_hit": true,
+        "reset_calls": 0
+      },
+      {
+        "id": "rms_playback",
+        "category": "assistant_playback",
+        "wav_sha256": "25850fbdeaa4414aaa19d44f5321049e22d4306fcea6f3fd7e87b01f508543c8",
+        "samples_fed": 38400,
+        "audio_seconds": 2.4,
+        "decode_calls": 7,
+        "wall_seconds": 0.066163,
+        "cpu_seconds": 0.064139,
+        "wall_rtf": 0.027568,
+        "cpu_rtf": 0.026724,
+        "result_observations": [],
+        "reset_after_hit": true,
+        "reset_calls": 0
+      },
+      {
+        "id": "slt_wake",
+        "category": "wake_alone",
+        "wav_sha256": "2d792f4bc6aa5b8628ca5ce8712d5d7050e755957c6af981642da7200f2ee1e3",
+        "samples_fed": 39280,
+        "audio_seconds": 2.455,
+        "decode_calls": 7,
+        "wall_seconds": 0.061844,
+        "cpu_seconds": 0.061467,
+        "wall_rtf": 0.025191,
+        "cpu_rtf": 0.025037,
+        "result_observations": [],
+        "reset_after_hit": true,
+        "reset_calls": 0
+      },
+      {
+        "id": "slt_command",
+        "category": "wake_command",
+        "wav_sha256": "11247959ddc7c174dbf67c86cecadd8ec4436f3a904c83144d75fa0aa9993572",
+        "samples_fed": 65120,
+        "audio_seconds": 4.07,
+        "decode_calls": 12,
+        "wall_seconds": 0.109469,
+        "cpu_seconds": 0.106953,
+        "wall_rtf": 0.026896,
+        "cpu_rtf": 0.026278,
+        "result_observations": [],
+        "reset_after_hit": true,
+        "reset_calls": 0
+      },
+      {
+        "id": "slt_ordinary1",
+        "category": "ordinary",
+        "wav_sha256": "f6b709f95fcaa2e0d476a62b709a3972a750f986e09e16ee1b2a180228c62381",
+        "samples_fed": 58400,
+        "audio_seconds": 3.65,
+        "decode_calls": 10,
+        "wall_seconds": 0.090401,
+        "cpu_seconds": 0.089713,
+        "wall_rtf": 0.024767,
+        "cpu_rtf": 0.024579,
+        "result_observations": [],
+        "reset_after_hit": true,
+        "reset_calls": 0
+      },
+      {
+        "id": "slt_ordinary2",
+        "category": "ordinary",
+        "wav_sha256": "c444c8e1d7a6b05e7b63c78b0b8c5f98eefb30c26f7eaf25f7f468a5110aea2b",
+        "samples_fed": 50880,
+        "audio_seconds": 3.18,
+        "decode_calls": 9,
+        "wall_seconds": 0.096829,
+        "cpu_seconds": 0.085018,
+        "wall_rtf": 0.030449,
+        "cpu_rtf": 0.026735,
+        "result_observations": [],
+        "reset_after_hit": true,
+        "reset_calls": 0
+      },
+      {
+        "id": "slt_everyone",
+        "category": "near_miss",
+        "wav_sha256": "9d2a4383b3957d480e21f575717f277a820c59fde38e18f502877150edbe5769",
+        "samples_fed": 39520,
+        "audio_seconds": 2.47,
+        "decode_calls": 7,
+        "wall_seconds": 0.073745,
+        "cpu_seconds": 0.065639,
+        "wall_rtf": 0.029856,
+        "cpu_rtf": 0.026574,
+        "result_observations": [],
+        "reset_after_hit": true,
+        "reset_calls": 0
+      },
+      {
+        "id": "slt_evening",
+        "category": "near_miss",
+        "wav_sha256": "9f1e231e544ab1ea7525bd069d6a0f3ec65b958c6be2dbf25b8acc124dbf8734",
+        "samples_fed": 38320,
+        "audio_seconds": 2.395,
+        "decode_calls": 7,
+        "wall_seconds": 0.073204,
+        "cpu_seconds": 0.066895,
+        "wall_rtf": 0.030565,
+        "cpu_rtf": 0.027931,
+        "result_observations": [],
+        "reset_after_hit": true,
+        "reset_calls": 0
+      },
+      {
+        "id": "slt_evan",
+        "category": "near_miss",
+        "wav_sha256": "9928ccb55f8fac08c4f0927762c08db2e549073b209124a474695904109dd179",
+        "samples_fed": 37440,
+        "audio_seconds": 2.34,
+        "decode_calls": 6,
+        "wall_seconds": 0.089672,
+        "cpu_seconds": 0.05737,
+        "wall_rtf": 0.038321,
+        "cpu_rtf": 0.024517,
+        "result_observations": [],
+        "reset_after_hit": true,
+        "reset_calls": 0
+      },
+      {
+        "id": "slt_even",
+        "category": "near_miss",
+        "wav_sha256": "065936aa839b06b4913e46070c4b2b70f02a5d4295dc70707fc24ca8803f2e3c",
+        "samples_fed": 37760,
+        "audio_seconds": 2.36,
+        "decode_calls": 6,
+        "wall_seconds": 0.058202,
+        "cpu_seconds": 0.056485,
+        "wall_rtf": 0.024662,
+        "cpu_rtf": 0.023934,
+        "result_observations": [],
+        "reset_after_hit": true,
+        "reset_calls": 0
+      },
+      {
+        "id": "slt_evelyn",
+        "category": "near_miss",
+        "wav_sha256": "aa0cdaead33aa5978a04627246febfb27128ac2eff75221f21e21f2613f7bc3d",
+        "samples_fed": 38240,
+        "audio_seconds": 2.39,
+        "decode_calls": 7,
+        "wall_seconds": 0.063085,
+        "cpu_seconds": 0.062702,
+        "wall_rtf": 0.026395,
+        "cpu_rtf": 0.026235,
+        "result_observations": [],
+        "reset_after_hit": true,
+        "reset_calls": 0
+      },
+      {
+        "id": "slt_bare",
+        "category": "near_miss",
+        "wav_sha256": "e581ec64f4ca401fd94ff06eda4ea848a6cfcc42aeafc6cc42f3de0a8a681fc3",
+        "samples_fed": 33440,
+        "audio_seconds": 2.09,
+        "decode_calls": 6,
+        "wall_seconds": 0.058081,
+        "cpu_seconds": 0.056513,
+        "wall_rtf": 0.02779,
+        "cpu_rtf": 0.02704,
+        "result_observations": [],
+        "reset_after_hit": true,
+        "reset_calls": 0
+      },
+      {
+        "id": "slt_playback",
+        "category": "assistant_playback",
+        "wav_sha256": "2d792f4bc6aa5b8628ca5ce8712d5d7050e755957c6af981642da7200f2ee1e3",
+        "samples_fed": 39280,
+        "audio_seconds": 2.455,
+        "decode_calls": 7,
+        "wall_seconds": 0.058589,
+        "cpu_seconds": 0.057577,
+        "wall_rtf": 0.023865,
+        "cpu_rtf": 0.023453,
+        "result_observations": [],
+        "reset_after_hit": true,
+        "reset_calls": 0
+      },
+      {
+        "id": "silence",
+        "category": "silence",
+        "wav_sha256": "262d1f34f300560a4c82ba8127ddea9e1d72946f187fdbd3e8f70ee096077aec",
+        "samples_fed": 80000,
+        "audio_seconds": 5.0,
+        "decode_calls": 15,
+        "wall_seconds": 0.11616,
+        "cpu_seconds": 0.116108,
+        "wall_rtf": 0.023232,
+        "cpu_rtf": 0.023222,
+        "result_observations": [],
+        "reset_after_hit": true,
+        "reset_calls": 0
+      },
+      {
+        "id": "noise",
+        "category": "noise",
+        "wav_sha256": "13cdbab13c2b1ae0cb65df31b13ee70fcc25723ffe6ca99a3691ec58588ddd37",
+        "samples_fed": 80000,
+        "audio_seconds": 5.0,
+        "decode_calls": 15,
+        "wall_seconds": 0.113693,
+        "cpu_seconds": 0.113347,
+        "wall_rtf": 0.022739,
+        "cpu_rtf": 0.022669,
+        "result_observations": [],
+        "reset_after_hit": true,
+        "reset_calls": 0
+      },
+      {
+        "id": "fresh_wake",
+        "category": "positive",
+        "wav_sha256": "2be27f6c06fdd52ebf28d9b5031a12e1e1fb52deceae0a773000a7173512948b",
+        "samples_fed": 53600,
+        "audio_seconds": 3.35,
+        "decode_calls": 10,
+        "wall_seconds": 0.094082,
+        "cpu_seconds": 0.090005,
+        "wall_rtf": 0.028084,
+        "cpu_rtf": 0.026867,
+        "result_observations": [],
+        "reset_after_hit": true,
+        "reset_calls": 0
+      },
+      {
+        "id": "fresh_command",
+        "category": "positive",
+        "wav_sha256": "c3959b25add25a0d81bd40729343373f1f3ed18df68ac5a6664a48b3acba4844",
+        "samples_fed": 78400,
+        "audio_seconds": 4.9,
+        "decode_calls": 14,
+        "wall_seconds": 0.126784,
+        "cpu_seconds": 0.126207,
+        "wall_rtf": 0.025874,
+        "cpu_rtf": 0.025756,
+        "result_observations": [],
+        "reset_after_hit": true,
+        "reset_calls": 0
+      },
+      {
+        "id": "fresh_everyone",
+        "category": "negative",
+        "wav_sha256": "d59fde9d6a02cd40feef83d1d29f001d72c5e56b934fa591963c91085da51774",
+        "samples_fed": 86400,
+        "audio_seconds": 5.4,
+        "decode_calls": 16,
+        "wall_seconds": 0.145042,
+        "cpu_seconds": 0.141811,
+        "wall_rtf": 0.02686,
+        "cpu_rtf": 0.026261,
+        "result_observations": [],
+        "reset_after_hit": true,
+        "reset_calls": 0
+      },
+      {
+        "id": "fresh_even",
+        "category": "negative",
+        "wav_sha256": "acde84e951c52280f5dea7e75fe3125fe469e9d006084f78353a6f08551938a8",
+        "samples_fed": 44000,
+        "audio_seconds": 2.75,
+        "decode_calls": 8,
+        "wall_seconds": 0.088074,
+        "cpu_seconds": 0.079698,
+        "wall_rtf": 0.032027,
+        "cpu_rtf": 0.028981,
+        "result_observations": [],
+        "reset_after_hit": true,
+        "reset_calls": 0
+      },
+      {
+        "id": "fresh_ordinary",
+        "category": "negative",
+        "wav_sha256": "17d4562feb02b56ea79a3ad82d251f19349ed1af1dbccd27a52d1ccf7aecccfe",
+        "samples_fed": 63200,
+        "audio_seconds": 3.95,
+        "decode_calls": 11,
+        "wall_seconds": 0.118779,
+        "cpu_seconds": 0.102762,
+        "wall_rtf": 0.030071,
+        "cpu_rtf": 0.026016,
+        "result_observations": [],
+        "reset_after_hit": true,
+        "reset_calls": 0
+      }
+    ]
+  },
+  "official_calibration": {
+    "purpose": "Pipeline calibration only, NOT HEY EVENER accuracy or AEC evidence",
+    "transcript": "0.wav AFTER EARLY NIGHTFALL THE YELLOW LAMPS WOULD LIGHT UP HERE AND THERE THE SQUALID QUARTER OF THE BROTHELS",
+    "keywords_file": "▁ L IGHT ▁UP\n▁LOVE LY ▁CHI L D\n▁FOR E VER\n",
+    "archive_members_sha256": {
+      "test_wavs/0.wav": "6bc58a4efdf20daac252b6b1502632601a71efe0308f6757dc1eda34891a7e4f",
+      "test_wavs/test_keywords.txt": "fd9c3b504ab922bc96ce8613eff02193f8a5526fcf74a14df436c7af74ad649d",
+      "test_wavs/trans.txt": "55ca91f3ee53c324b2f802f63c50cacc8931da846c4aaa35f115680201ff904b",
+      "README.md": "74e42d37d63acd2366b042151d576fcc0c4917a41de339414a37f1e79f4e80e2"
+    },
+    "trailing_silence_seconds": 1.0,
+    "single": {
+      "samples_fed": 122000,
+      "audio_seconds": 7.625,
+      "decode_calls": 23,
+      "wall_seconds": 0.182273,
+      "cpu_seconds": 0.182186,
+      "wall_rtf": 0.023905,
+      "cpu_rtf": 0.023893,
+      "result_observations": [
+        {
+          "keyword": "LIGHT UP",
+          "fed_seconds": 3.68
+        }
+      ],
+      "reset_after_hit": true,
+      "reset_calls": 1
+    },
+    "continuous_repeat": {
+      "samples_fed": 244000,
+      "audio_seconds": 15.25,
+      "decode_calls": 47,
+      "wall_seconds": 0.403221,
+      "cpu_seconds": 0.375561,
+      "wall_rtf": 0.026441,
+      "cpu_rtf": 0.024627,
+      "result_observations": [
+        {
+          "keyword": "LIGHT UP",
+          "fed_seconds": 3.68
+        },
+        {
+          "keyword": "LIGHT UP",
+          "fed_seconds": 11.36
+        }
+      ],
+      "reset_after_hit": true,
+      "reset_calls": 2
+    },
+    "omitted_reset_repeat": {
+      "samples_fed": 244000,
+      "audio_seconds": 15.25,
+      "decode_calls": 47,
+      "wall_seconds": 0.34241,
+      "cpu_seconds": 0.332539,
+      "wall_rtf": 0.022453,
+      "cpu_rtf": 0.021806,
+      "result_observations": [
+        {
+          "keyword": "LIGHT UP",
+          "fed_seconds": 3.68
+        },
+        {
+          "keyword": "LIGHT UP",
+          "fed_seconds": 11.36
+        }
+      ],
+      "reset_after_hit": false,
+      "reset_calls": 0
+    }
+  },
+  "runtime_sources_sha256": {
+    "utils.py": "8226d02f91fe42f7f048ae04353b5874f4917aff72f3c0e7dd9aaec528bdac41",
+    "online_recognizer.py": "a80620a5eb35e06a190584c2c643e5210bff672410283e5a8f106655c1519c9e",
+    "keyword_spotter.py": "6b8ed936d10e98c066a993e8dc58342aa8f4f0f04083706b178e3fe7fb5a4452"
+  }
+}

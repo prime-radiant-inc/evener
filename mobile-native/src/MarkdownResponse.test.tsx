@@ -214,10 +214,6 @@ vi.mock("react-native-gesture-handler/ReanimatedSwipeable", async () =>
 	(await import("./renderNative.testkit")).gestureHandlerModuleMock(),
 );
 
-vi.mock("expo-crypto", () => ({
-	randomUUID: () => "memoization-test-uuid",
-	getRandomValues: (array: Uint8Array) => array,
-}));
 vi.mock("expo-sqlite", async () => {
 	const { openSqliteSyncDouble } = await import("./sqliteSync.testkit");
 	return {

@@ -275,8 +275,9 @@ func (cm *Manager) ForceCompact(
 	if cm.client != nil {
 		// The summarizer returns the input unchanged for short or unsafe history,
 		// which must not count a pre-existing summary as a newly generated one.
-		canSummarize := attentionTransparentTurnCount(*history) > cm.PreserveRecentTurns &&
-			safeCutoff(*history, attentionTransparentRecentCutoff(*history, cm.PreserveRecentTurns)) >= 0
+		preserveRecent := preservePendingAskTail(*history, cm.PreserveRecentTurns, cm.metaFor(ctx))
+		canSummarize := attentionTransparentTurnCount(*history) > preserveRecent &&
+			foldCutoff(*history, preserveRecent) >= 0
 		ok := cm.applyLayer(ctx, emitFn, history, prof, "summarize", schema.TurnSummary, func(h []schema.Turn) ([]schema.Turn, error) {
 			return cm.summarizeFold(ctx, h, cm.PreserveRecentTurns, instructions, checkpointed)
 		})

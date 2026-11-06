@@ -103,6 +103,16 @@ stays the honest liveness signal. Every other idle pulse or shimmer remains
 banned, and `widgets/loader`'s own doc note no longer claims its motion is
 reserved away from agent liveness.
 
+**Superseded 2026-11-01 (unfoldable thinking traces).** The placeholder's
+"never any rendered text" and the redacted row's "no disclosure" are both
+reversed: a settled thought is a collapsed, unfoldable trace row at every
+level but Chat (whose live placeholder keeps this content-free grammar), and a
+broken turn's thought unfolds behind its unchanged neutral label. The live
+current thought still shows only the Loader and an approximate token figure.
+Every thinking disclosure's initial state is the "Thinking open by default"
+switch, with the reader's explicit choice winning. See the Web Hub UI guide's
+Settings section for the current contract.
+
 ## Editorial instrument (2026-09-09)
 The user approved a comprehensive Tufte-inspired editorial direction and the
 `editorial-instrument` / `tools-and-collaborators` studies. The governing

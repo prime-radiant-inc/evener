@@ -1656,7 +1656,7 @@ func TestRetirementDelegateAttentionSourceRefusal(t *testing.T) {
 		t.Fatalf("refusal changed original attention transcript: %v", err)
 	}
 	finish()
-	if !root.driveStableDelegateAttention(sub) {
+	if !root.driveDelegateAttention(sub) {
 		t.Fatal("real attention owner did not accept original source")
 	}
 	retirementSettleDelegate(t, root, d)
@@ -1713,7 +1713,7 @@ func TestRetirementDelegateAttentionPendingBlocks(t *testing.T) {
 	}) {
 		t.Fatalf("pending attention lost its original owner: %+v", state)
 	}
-	if !root.driveStableDelegateAttention(sub) {
+	if !root.driveDelegateAttention(sub) {
 		t.Fatal("real attention owner did not accept original source")
 	}
 	retirementSettleDelegate(t, root, d)

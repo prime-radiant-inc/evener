@@ -2,6 +2,7 @@
 
 import { describe, expect, test } from "vitest";
 import type { ItemModel, ThreadModel } from "../../model";
+import { ownPendingSend } from "./pendingEntries";
 import type { PendingTurnsDraftPort, PendingTurnsThreadsPort } from "./pendingTurns";
 import { awaitingFirstFrameSend, blockedEntries, createPendingTurnsStore, recoveryEntries } from "./pendingTurns";
 import type { ClientIdentity, MutationOptimisticRecord } from "./records";
@@ -145,7 +146,7 @@ describe("createPendingTurnsStore", () => {
       // The settle deletes the durable record out of the projection...
       store.setState({ outbox: new Map(), optimistic: new Map() });
       // ...and the carrier still holds the createdAt a reload-after-settle cannot
-      // re-discover (steering-ghost spec §4).
+      // re-discover.
       expect(store.getState().submittedHere.get("own-1")).toBe(1234);
     });
   });
@@ -396,6 +397,55 @@ describe("createPendingTurnsStore", () => {
       expect(store.pendingTurnEntries("ref-a")).toEqual([
         expect.objectContaining({ id: "cmid-1", source: "authoritative", fromThisClient: true }),
       ]);
+    });
+
+    // Round-3 review M-B (half 2), the replacement corner of the invariant
+    // above: a replacement owns a fresh storage key while traveling under its
+    // predecessor's wire id - the id the daemon's feed names. Discovery keyed
+    // on the storage key strands the ownership trail the moment
+    // authoritative reconciliation settles the replacement's durable copy
+    // out of the outbox: the map points at a dead key while the lineage's
+    // successor still needs the "mine" answer for Send/Queue routing.
+    // Discovery keys the WIRE id, which is stable across the mints.
+    test("a replacement's discovery keys its wire id, so ownership survives the storage-key churn", () => {
+      const store = createPendingTurnsStore({
+        threads: fakeThreadsPort({
+          "ref-a": threadModel({
+            turns: [],
+            pendingMutations: [
+              {
+                clientMutationId: "original-1",
+                method: "turn/start",
+                input: [{ type: "text", text: "hello" }],
+                executionState: "claimed",
+                projectionState: "pending",
+              },
+            ],
+          }),
+        }),
+        draft: fakeDraftPort(),
+        identity: fakeIdentity("client-x"),
+      });
+      // The replacement row this client's own reconcile minted: fresh storage
+      // key, inherited wire id, this client's provenance.
+      store.recordSubmittedHere({
+        outbox: [
+          outboxRecord({
+            clientMutationId: "replacement-2",
+            originClientId: "client-x",
+            payload: { clientMutationId: "original-1" },
+          }),
+        ],
+        optimistic: [],
+      });
+      // The replacement's durable copy has settled out of the outbox; the
+      // authoritative feed names the wire id.
+      expect(store.getState().outbox.size).toBe(0);
+      const entries = store.pendingTurnEntries("ref-a");
+      expect(entries).toEqual([
+        expect.objectContaining({ id: "original-1", source: "authoritative", fromThisClient: true }),
+      ]);
+      expect(ownPendingSend(entries)).toBe(true);
     });
   });
 });

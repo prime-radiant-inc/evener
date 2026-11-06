@@ -23,7 +23,7 @@ export function CommentSheet({ route }: NativeStackScreenProps<Routes, "CommentS
 	const scale = useTextScale();
 	const add = () => {
 		documentMemory(hubId).addComment(
-			{ sessionRef, path, ...(root === "artifacts" ? { root } : {}) },
+			{ sessionRef, path, ...(root !== undefined ? { root } : {}) },
 			{ blockIndex, blockHash, quote, text: text.trim() },
 		);
 		sheet.finish();

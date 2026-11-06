@@ -6,6 +6,7 @@ import {
   isImagePath,
   parseFileReference,
   resolveFileLink,
+  type ServedRoots,
 } from "@evener/appwire-client/docContent";
 import { MERMAID_DIAGRAM_ATTR } from "../../../../widgets/mermaid/markers";
 import { browserDocPort } from "../../../doc/browserDocPort";
@@ -29,14 +30,16 @@ interface TextOffset {
  * inline formatting, but ambiguous multi-node references remain unchanged. */
 export function enhanceFileReferences(
   root: HTMLElement,
-  context: { sessionRef: string; cwd: string; sourcePaneId: string; artifactsDir?: string },
+  context: { sessionRef: string; cwd: string; sourcePaneId: string; artifactsDir?: string; scratchDir?: string },
 ): () => void {
   const epoch = {};
   epochs.set(root, epoch);
   const cleanups: Array<() => void> = [];
+  const ownerDocument = root.ownerDocument;
   const owns = (node: Node) => epochs.get(root) === epoch && root.contains(node);
   const qualifiedRef = context.sessionRef.includes(":") ? context.sessionRef : `local:${context.sessionRef}`;
   if (!isValidTranscriptRef(qualifiedRef) || !context.cwd || !context.sourcePaneId) return () => {};
+  const served: ServedRoots = { artifactsDir: context.artifactsDir, scratchDir: context.scratchDir };
 
   function activate(link: HTMLAnchorElement, request: DocumentOpenRequest) {
     const href = link.getAttribute("href");
@@ -60,20 +63,20 @@ export function enhanceFileReferences(
 
   for (const link of root.querySelectorAll<HTMLAnchorElement>("a[href]")) {
     if (link.closest(`pre, [data-entity-host], [${MERMAID_DIAGRAM_ATTR}]`)) continue;
-    const served = resolveAnchorReference(link.getAttribute("href") ?? "", context.cwd, context.artifactsDir);
-    if (served === undefined) continue;
-    activate(link, { session: context.sessionRef, reference: served, sourcePaneId: context.sourcePaneId });
+    const reference = resolveAnchorReference(link.getAttribute("href") ?? "", context.cwd, served);
+    if (reference === undefined) continue;
+    activate(link, { session: context.sessionRef, reference, sourcePaneId: context.sourcePaneId });
   }
 
   // Retain the original Text as an empty anchor, just like the entity pass.
   // Restoration touches only this epoch's still-owned DOM, not a newer render.
   function wrap(node: Text, spans: ReturnType<typeof findFileReferences>) {
     const original = node.data;
-    const fragment = document.createDocumentFragment();
+    const fragment = ownerDocument.createDocumentFragment();
     let cursor = 0;
     for (const span of spans) {
       fragment.append(original.slice(cursor, span.start));
-      const link = document.createElement("a");
+      const link = ownerDocument.createElement("a");
       link.textContent = original.slice(span.start, span.end);
       fragment.append(link);
       activate(link, { session: context.sessionRef, reference: span.reference, sourcePaneId: context.sourcePaneId });
@@ -94,7 +97,7 @@ export function enhanceFileReferences(
   let offsets: TextOffset[] = [];
   const codeElements: Array<{ element: HTMLElement; start: number; end: number }> = [];
   function flush() {
-    const matches = findFileReferences(text, context.cwd);
+    const matches = findFileReferences(text, context.cwd, served);
     for (const offset of offsets) {
       const contained = matches
         .filter((span) => span.start >= offset.start && span.end <= offset.end)
@@ -116,15 +119,15 @@ export function enhanceFileReferences(
         tokenEnds[index] = tokenEnd;
       }
       for (const code of codeElements) {
-        const reference = parseFileReference(code.element.textContent, "code", context.cwd);
+        const reference = parseFileReference(code.element.textContent, "code", context.cwd, served);
         if (!reference) continue;
         // Code is a whole-element surface, not a suffix of a longer token.
         // Only surrounding delimiters may share its whitespace/quote token.
         const before = text.slice(tokenStarts[code.start], code.start);
         const after = text.slice(code.end, tokenEnds[code.end]);
         if (!/^[([{<]*$/u.test(before) || !/^[)\]}>.,;:!?…]*$/u.test(after)) continue;
-        const child = code.element.firstChild;
-        if (!(child instanceof Text) || code.element.childNodes.length !== 1) continue;
+        if (code.element.firstChild?.nodeType !== Node.TEXT_NODE || code.element.childNodes.length !== 1) continue;
+        const child = code.element.firstChild as Text;
         wrap(child, [{ start: 0, end: child.data.length, reference }]);
       }
     }
@@ -134,25 +137,29 @@ export function enhanceFileReferences(
   }
 
   function walk(node: Node) {
-    if (node instanceof Text) {
-      offsets.push({ node, start: text.length, end: text.length + node.data.length });
-      text += node.data;
+    // Adopted DOM can mix constructors from the opener and popout windows.
+    if (node.nodeType === Node.TEXT_NODE) {
+      const textNode = node as Text;
+      offsets.push({ node: textNode, start: text.length, end: text.length + textNode.data.length });
+      text += textNode.data;
       return;
     }
-    if (!(node instanceof HTMLElement)) return;
-    if (node.matches(EXCLUDED)) {
+    if (node.nodeType !== Node.ELEMENT_NODE) return;
+    const element = node as HTMLElement;
+    if (element.namespaceURI !== "http://www.w3.org/1999/xhtml") return;
+    if (element.matches(EXCLUDED)) {
       text += "\0"; // Not whitespace: a barrier must not authorize an adjacent suffix.
       return;
     }
-    if (node.tagName === "CODE") {
+    if (element.tagName === "CODE") {
       const start = text.length;
-      text += node.textContent;
-      codeElements.push({ element: node, start, end: text.length });
+      text += element.textContent;
+      codeElements.push({ element, start, end: text.length });
       return;
     }
-    const block = node.matches(BLOCKS);
+    const block = element.matches(BLOCKS);
     if (block) flush();
-    for (const child of [...node.childNodes]) walk(child);
+    for (const child of [...element.childNodes]) walk(child);
     if (block) flush();
   }
   for (const child of [...root.childNodes]) walk(child);

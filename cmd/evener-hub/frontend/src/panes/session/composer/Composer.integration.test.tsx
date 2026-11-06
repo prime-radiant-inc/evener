@@ -42,6 +42,7 @@ import { installControlledImageEncoding } from "../testing/imageEncoding";
 import { askDockStore, resetAskDockStoreForTests } from "./askDock/askDockStore";
 import { ackAskUserCall } from "./askDock/askDockTestUtils";
 import { Composer as ComposerView } from "./Composer";
+import { stampRecoveryOwner } from "./composerTestUtils";
 import { readComposerDraft, readDraft, writeComposerDraft } from "./draft";
 import { usePendingTurnEntries } from "./queue";
 import { resetPendingTurnsStoreForTests, subscribeComposerSubmissionCommitted } from "./queue/pendingTurnsStore";
@@ -461,7 +462,9 @@ test.each([
         })
       : null;
     if (original) {
-      await storage.transferToRecovery(original.clientMutationId, "rejected");
+      const seeded = await storage.transferToRecovery(original.clientMutationId, "rejected");
+      if (!seeded) throw new Error("missing recovery fixture");
+      await stampRecoveryOwner(storage, seeded);
       // Automatic restoration must adopt an already-advanced durable revision,
       // not assume zero: Send below persists through that lease.
       const bumped = await storage.updateRecoveryInput(
@@ -472,7 +475,7 @@ test.each([
         undefined,
         undefined,
         undefined,
-        0,
+        1,
       );
       if (!bumped) throw new Error("missing advanced revision fixture");
     }
@@ -561,8 +564,12 @@ test.each([
     attachments: [],
     optimisticDisplay: { method: "turn/start", input },
   });
-  await storage.transferToRecovery(original.clientMutationId, "rejected");
+  const seeded = await storage.transferToRecovery(original.clientMutationId, "rejected");
+  if (!seeded) throw new Error("missing recovery fixture");
   const pane: OpenPaneRecord = { id: "session-1", type: "session", params: { ref: "root" }, slot: "main" };
+  // The pane record carries no composer seat, so its id is this pane's
+  // composition owner; the row must be owned by the pane that restores it.
+  await stampRecoveryOwner(storage, seeded, pane.id);
   workspaceStore.setState({ panes: [pane], focusedPaneId: pane.id });
   const lifetime = conversationPaneLifetime(pane);
   const source = lifetime.composer;
@@ -579,7 +586,7 @@ test.each([
     };
   });
   const hold = holdNextWriteTransaction(
-    pending === "recovery edit" ? ["recovery"] : ["outbox", "optimistic", "recovery", "sequences"],
+    pending === "recovery edit" ? ["recovery", "outbox"] : ["outbox", "optimistic", "recovery", "sequences"],
   );
   try {
     let completion: Promise<boolean> | undefined;
@@ -812,7 +819,9 @@ test.each(["success", "failure"] as const)(
       attachments: [],
       optimisticDisplay: { method: "turn/start", input },
     });
-    await storage.transferToRecovery(original.clientMutationId, "rejected");
+    const seeded = await storage.transferToRecovery(original.clientMutationId, "rejected");
+    if (!seeded) throw new Error("missing recovery fixture");
+    await stampRecoveryOwner(storage, seeded);
     const source = createTestComposerSource("root");
     const fake = await mountComposer("root", skillFocusThread("root"), source);
     await settleActivityDiscovery("root");
@@ -1264,7 +1273,14 @@ test("a second message queues behind a committed start even when recovery projec
     expect(await act(async () => secondRequest)).toBe("turn/queue");
   } finally {
     spy.mockRestore();
-    for (const hold of held) hold.release();
+    // The released reads complete the projection's stalled work, and its
+    // completion publishes to the mounted components - own those updates in
+    // this test's act window. The flush itself runs AFTER the outer act: a
+    // flush inside one cannot settle the work its own rounds' effects start
+    // (testFlushScopeHygiene pins that rule).
+    await act(async () => {
+      for (const hold of held) hold.release();
+    });
     await flushPendingTurnsProjectionForTests();
   }
 });
@@ -1382,7 +1398,9 @@ test("the composer resends recovered text while recovery projection callbacks ar
     attachments: [],
     optimisticDisplay: { method: "turn/start", input: [{ type: "text", text: "recover me" }] },
   });
-  await storage.transferToRecovery(original.clientMutationId, "rejected");
+  const seeded = await storage.transferToRecovery(original.clientMutationId, "rejected");
+  if (!seeded) throw new Error("missing recovery fixture");
+  await stampRecoveryOwner(storage, seeded);
   const fake = await mountComposer("ref_a");
   // The steer is awaited where it arrives: the recovery reads held below keep
   // the projection work open, so a flush could not settle until they are
@@ -1407,14 +1425,25 @@ test("the composer resends recovered text while recovery projection callbacks ar
     await user.keyboard(" edited");
     await user.click(composerSteerButton());
     await waitFor(() => expect(textarea()?.textContent).toBe(""));
-    expect(await storage.getRecovery(original.clientMutationId)).toBeUndefined();
-    await act(async () => steerSent.promise);
+    // The resend's reconciliation read publishes to the mounted components
+    // once it lands; keep its publish inside this test's act window.
+    await act(async () => {
+      expect(await storage.getRecovery(original.clientMutationId)).toBeUndefined();
+      await steerSent.promise;
+    });
     expect(fake.calls.filter((call) => call.method === "turn/steer")).toHaveLength(1);
     const call = fake.calls.find((call) => call.method === "turn/steer");
     expect(call?.params).toEqual(expect.objectContaining({ input: [{ type: "text", text: "recover me edited" }] }));
   } finally {
     spy.mockRestore();
-    for (const hold of held) hold.release();
+    // The released reads complete the projection's stalled work, and its
+    // completion publishes to the mounted components - own those updates in
+    // this test's act window. The flush itself runs AFTER the outer act: a
+    // flush inside one cannot settle the work its own rounds' effects start
+    // (testFlushScopeHygiene pins that rule).
+    await act(async () => {
+      for (const hold of held) hold.release();
+    });
     await flushPendingTurnsProjectionForTests();
   }
 });
@@ -1435,7 +1464,9 @@ test("rejected inline skill input restores its atoms and resends edited prose wi
     attachments: [],
     optimisticDisplay: { method: "turn/start", input },
   });
-  await storage.transferToRecovery(original.clientMutationId, "rejected");
+  const seeded = await storage.transferToRecovery(original.clientMutationId, "rejected");
+  if (!seeded) throw new Error("missing recovery fixture");
+  await stampRecoveryOwner(storage, seeded);
   const fake = await mountComposer("ref_a", {
     evener: {
       ref: "ref_a",
@@ -2230,7 +2261,8 @@ test.each([
   // a stronger, more meaningful signal than probing the `inert` IDL
   // property directly, and it also proves the textarea can't be tabbed to.
   await waitFor(() => expect(textarea()).toBeNull());
-  expect(screen.queryByRole("button", { name: /session actions/i })).toBeNull();
+  expect(screen.getAllByRole("button", { name: /session actions/i })).toHaveLength(1);
+  expect(screen.getAllByRole("button", { name: /session actions/i, hidden: true })).toHaveLength(1);
   expect(screen.queryByRole("button", { name: "Send" })).toBeNull();
   expect(screen.queryByRole("button", { name: "Stop" })).toBeNull();
   // Nothing ask-shaped renders here: the answering surface is the

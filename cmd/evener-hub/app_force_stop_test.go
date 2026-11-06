@@ -921,7 +921,7 @@ func TestHubForceStopRejectsWaitingMutationUntilExplicitResume(t *testing.T) {
 			go func() {
 				close(started)
 				if method == appwire.MethodThreadModelSet {
-					mutation <- setThreadModelWithResume(t.Context(), cfg, sources, appwire.ThreadModelSetParams{Ref: ref, Model: "test", ModelProvider: "test"})
+					mutation <- setThreadModelWithResume(t.Context(), cfg, sources, nil, appwire.ThreadModelSetParams{Ref: ref, Model: "test", ModelProvider: "test"})
 				} else {
 					mutation <- compactThreadWithResume(t.Context(), cfg, sources, appwire.ThreadCompactStartParams{Ref: ref})
 				}

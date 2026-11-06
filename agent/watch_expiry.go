@@ -146,13 +146,22 @@ func (jm *jobManager) noticeUnrestoredWatchEnds() error {
 	}
 	recs := jobstore.Fold(stored)
 	spoke := watchGenerationsThatSpoke(stored)
+	ended := make(map[watchFrameOrigin]bool)
+	for _, event := range stored {
+		if event.WatchSend != nil && event.WatchSend.EndNotice {
+			ended[watchFrameOrigin{watchID: event.WatchSend.Key.WatchID, generation: event.WatchSend.Key.WatchGeneration}] = true
+		}
+	}
 	for _, watch := range jm.watchesLostAtRestore {
-		if watch.SendTo == "" || spoke[watchFrameOrigin{watchID: watch.WatchID, generation: watch.Generation}] {
+		origin := watchFrameOrigin{watchID: watch.WatchID, generation: watch.Generation}
+		if watch.SendTo == "" || ended[origin] || (!hubWatchLostAtRestart(watch) && spoke[origin]) {
 			continue
 		}
 		var trigger string
-		if watch.SourceDelegateID != "" {
-			trigger = watchLostAtRestartStableDelegateMessage(watch.SourceDelegateID)
+		if hubWatchLostAtRestart(watch) {
+			trigger = "watch ended: Manager runtime restarted; observation of " + watch.HubRef + " stopped, re-register if still needed"
+		} else if watch.SourceDelegateID != "" {
+			trigger = watchLostAtRestartDelegateMessage(watch.SourceDelegateID)
 		} else if isWatchSessionTarget(watch.Target) {
 			// A session-target watch (source "self" or "parent") has no job
 			// record: its target is this session's own live event stream, not a

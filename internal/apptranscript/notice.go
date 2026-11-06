@@ -5,8 +5,10 @@ import (
 	"fmt"
 	"strings"
 
+	"primeradiant.com/evener/agent/provenance"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/llm"
 )
 
 // NoticeAnnouncement is how a presentational notice displays: the
@@ -30,15 +32,65 @@ func CommunicateItem(turnID string, entryIndex int, entry schema.Turn) (appwire.
 		return appwire.ThreadItem{}, false
 	}
 	item := appwire.ThreadItem{
-		Type:   "agentMessage",
-		ID:     fmt.Sprintf("item_assistant_%d_0", entryIndex),
-		TurnID: turnID,
-		Text:   entry.Communicate.Message,
-		CallID: entry.Communicate.CallID,
-		Status: appwire.TurnStatusCompleted,
+		Authorship: ProjectAuthorship(entry.Authorship),
+		Type:       "agentMessage",
+		ID:         fmt.Sprintf("item_assistant_%d_0", entryIndex),
+		TurnID:     turnID,
+		Text:       entry.Communicate.Message,
+		CallID:     entry.Communicate.CallID,
+		Status:     appwire.TurnStatusCompleted,
+		Observation: &appwire.SessionObservationMetadata{
+			TurnID: turnID, EndTurn: entry.Communicate.EndTurn,
+			EndReason:   entry.Communicate.EndReason,
+			CausalKnown: entry.CausalKnown, Causal: provenance.Clone(entry.Causal),
+		},
+	}
+	if p := entry.ConversationProvenance; p != nil {
+		item.ConversationProvenance = &appwire.ConversationOutputProvenance{Version: p.Version, InstanceID: p.InstanceID,
+			RunGeneration: p.RunGeneration, RequestID: p.RequestID, FrontierID: p.FrontierID, SourceItemID: item.ID}
 	}
 	item.StartedAt = entryStartedAt(entry)
 	return item, true
+}
+
+// CommunicateTerminalAccepted reads the result of exactly this communicate
+// call. A COMMUNICATE entry was written before arbitration, so neither its
+// presence nor its end reason can prove that it won the terminal capture.
+func CommunicateTerminalAccepted(entry schema.Turn, callID string) *bool {
+	if callID == "" || entry.Kind != schema.TurnToolResults && entry.Kind != schema.TurnTool {
+		return nil
+	}
+	for _, part := range entry.Message.Content {
+		if part.Kind != llm.ContentToolResult || part.ToolResult == nil {
+			continue
+		}
+		result := part.ToolResult
+		if result.ToolCallID != callID || result.IsError {
+			continue
+		}
+		var typedState struct {
+			Accepted *bool `json:"communicate_accepted"`
+			EndTurn  *bool `json:"communicate_end_turn"`
+		}
+		if json.Unmarshal(result.ToolState, &typedState) == nil && typedState.Accepted != nil && typedState.EndTurn != nil && *typedState.EndTurn {
+			return typedState.Accepted
+		}
+		var encoded []byte
+		switch value := result.Content.(type) {
+		case string:
+			encoded = []byte(value)
+		case json.RawMessage:
+			encoded = value
+		}
+		var state struct {
+			Accepted *bool `json:"accepted"`
+			EndTurn  *bool `json:"end_turn"`
+		}
+		if json.Unmarshal(encoded, &state) == nil && state.EndTurn != nil && *state.EndTurn {
+			return state.Accepted
+		}
+	}
+	return nil
 }
 
 // entryStartedAt is an entry's recorded instant as a startedAt, or nil when
@@ -68,8 +120,16 @@ func NoticeItem(turnID string, entryIndex int, entry schema.Turn) (appwire.Threa
 		return appwire.ThreadItem{}, false
 	}
 	item.TranscriptEntryIndex = entryIndex
+	item.Actor = projectedActor(entry.Notice.Actor)
 	item.StartedAt = entryStartedAt(entry)
 	return item, true
+}
+
+func projectedActor(actor schema.SessionActor) *appwire.SessionActor {
+	if actor.Kind == "" {
+		return nil
+	}
+	return &appwire.SessionActor{Kind: actor.Kind, ManagerRef: actor.ManagerRef}
 }
 
 func noticeAnnouncement(notice schema.NoticeInfo) (NoticeAnnouncement, bool) {

@@ -7,6 +7,7 @@ import (
 	"testing"
 	"unicode/utf8"
 
+	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/llm"
 )
@@ -69,5 +70,25 @@ func TestPendingQuestion_SurvivesRestore(t *testing.T) {
 	restored := restoreAskSession(t, meta, dir)
 	if got := restored.PendingQuestion(); !reflect.DeepEqual(got, want) {
 		t.Fatalf("restored PendingQuestion = %+v, want %+v", got, want)
+	}
+}
+
+func TestQuestionsFromAskCallsOutsideHistory(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name    string
+		history []schema.Turn
+		index   int
+	}{
+		{name: "at-end", history: []schema.Turn{{Kind: schema.TurnUserInput}}, index: 1},
+		{name: "empty", index: 0},
+		{name: "before-start", history: []schema.Turn{{Kind: schema.TurnUserInput}}, index: -1},
+		{name: "past-end", history: []schema.Turn{{Kind: schema.TurnUserInput}}, index: 2},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := questionsFromAskCalls(tc.history, tc.index, map[string]bool{"x": true}); got != nil {
+				t.Fatalf("questions from absent result: %+v", got)
+			}
+		})
 	}
 }
