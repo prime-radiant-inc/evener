@@ -21,7 +21,7 @@ func TestManagerWatchSurvivesBindingOutageUntilConnectionRestores(t *testing.T) 
 	root := newMessagingRoot(t, newMessagingAdapter(), func(cfg *SessionConfig) {
 		cfg.Manager = true
 		cfg.testOnly.hubWatchRetryDelay = time.Millisecond
-		cfg.testOnly.hubWatchStateOutageBudget = time.Second
+		cfg.testOnly.hubWatchStateOutageBudget = 5 * time.Second
 	})
 	snapshot := appwire.SessionWatchUpdate{
 		Snapshot: &appwire.ThreadReadResponse{BootGeneration: generation, Thread: appwire.Thread{Evener: appwire.EvenerThread{Ref: ref, InstanceID: instance}}},
@@ -79,15 +79,18 @@ func TestManagerWatchSurvivesBindingOutageUntilConnectionRestores(t *testing.T) 
 		t.Fatal("binding outage ended the watch before the connection restored; a restored connection must retain the watch")
 	}
 
-	// Restore: the binding answers again and is reinstalled. The watch must
-	// re-anchor on it and still complete on the terminal observation.
-	base.mu.Lock()
-	base.offline = false
-	base.mu.Unlock()
+	// Restore: the binding is reinstalled and answers again. The signal lands
+	// before any state read can succeed against the restored binding, so no
+	// retry can resolve against the old binding identity and end the watch as
+	// an unexpected subscription end; the watch must re-anchor and still
+	// complete on the terminal observation.
 	second := make(chan appwire.SessionWatchUpdate, 4)
 	second <- snapshot
 	base.streams <- second
 	root.HubBindingChanged()
+	base.mu.Lock()
+	base.offline = false
+	base.mu.Unlock()
 	select {
 	case <-base.watches:
 	case <-ctx.Done():
@@ -97,14 +100,80 @@ func TestManagerWatchSurvivesBindingOutageUntilConnectionRestores(t *testing.T) 
 	terminal := appwire.SessionObservationMetadata{Ref: ref, InstanceID: instance, GenerationID: generation, EntryID: "terminal:A", TurnID: "A", CausalKnown: true, TerminalAccepted: &accepted, EndTurn: true, EndReason: "done"}
 	second <- appwire.SessionWatchUpdate{Event: "communicate", Metadata: terminal}
 
-	deadline := time.Now().Add(5 * time.Second)
-	for managerHubWatchPresent(jm, watchID) {
-		if time.Now().After(deadline) {
-			t.Fatal("watch survived the outage but did not complete on the restored connection")
-		}
-		time.Sleep(10 * time.Millisecond)
+	select {
+	case <-base.ended:
+	case <-time.After(5 * time.Second):
+		t.Fatal("watch survived the outage but did not complete on the restored connection")
 	}
 	if got := countWatchSends(t, jm, watchID, instance+"/"+generation+"/terminal:A:communicate:completed"); got != 1 {
 		t.Fatalf("completion deliveries after outage recovery=%d, want 1", got)
+	}
+}
+
+// The outage budget's other half: a binding outage that outlasts the budget
+// ends the watch durably with re-registration guidance, never an inferred
+// verdict, and the loss itself owes exactly one interruption notice
+// (job-control.md).
+func TestManagerWatchOutagePastBudgetEndsDurably(t *testing.T) {
+	const ref, instance, generation = "local:worker", "worker-instance", "7@worker"
+	ctx := t.Context()
+	root := newMessagingRoot(t, newMessagingAdapter(), func(cfg *SessionConfig) {
+		cfg.Manager = true
+		cfg.testOnly.hubWatchRetryDelay = time.Millisecond
+		cfg.testOnly.hubWatchStateOutageBudget = 50 * time.Millisecond
+	})
+	first := make(chan appwire.SessionWatchUpdate, 1)
+	first <- appwire.SessionWatchUpdate{
+		Snapshot: &appwire.ThreadReadResponse{BootGeneration: generation, Thread: appwire.Thread{Evener: appwire.EvenerThread{Ref: ref, InstanceID: instance}}},
+		Metadata: appwire.SessionObservationMetadata{Ref: ref, InstanceID: instance, GenerationID: generation},
+	}
+	base := &managerRecoverClient{
+		view:         appwire.ManagerView{Ref: "local:manager", InstanceID: "manager-instance", Manager: true},
+		streams:      make(chan chan appwire.SessionWatchUpdate, 1),
+		watches:      make(chan struct{}, 1),
+		offlineReads: make(chan struct{}, 16),
+		ended:        make(chan struct{}, 2),
+	}
+	base.streams <- first
+	root.SetHubClient(base)
+	if _, err := root.configureHubWatchRuntime(ctx, map[string]any{"operation": "create", "hub": map[string]any{"ref": ref, "events": []string{"communicate"}, "completion": true}}); err != nil {
+		t.Fatal(err)
+	}
+	<-base.watches
+	jm := root.jobManager
+	if jm == nil {
+		t.Fatal("missing journal owner")
+	}
+	jm.mu.Lock()
+	var watchID string
+	for _, cfg := range jm.watches {
+		if cfg.hubRef == ref {
+			watchID = cfg.watchID
+		}
+	}
+	jm.mu.Unlock()
+	if watchID == "" {
+		t.Fatal("registration did not arm a watch")
+	}
+
+	// The binding goes offline for the rest of the test; the outage outlasts
+	// the 50ms budget, so connection recovery is exhausted.
+	base.mu.Lock()
+	base.offline = true
+	base.mu.Unlock()
+	close(first)
+	select {
+	case <-base.ended:
+	case <-time.After(5 * time.Second):
+		t.Fatal("outage that outlasted the budget did not end the watch")
+	}
+	if managerHubWatchPresent(jm, watchID) {
+		t.Fatal("outage past the budget left the watch armed")
+	}
+	if got := countWatchSends(t, jm, watchID, ref+"#interruption"); got != 1 {
+		t.Fatalf("interruption notices for the loss episode=%d, want 1", got)
+	}
+	if got := countWatchSends(t, jm, watchID, ref+"#ended"); got != 1 {
+		t.Fatalf("durable end notices=%d, want 1", got)
 	}
 }

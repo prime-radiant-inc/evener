@@ -1147,6 +1147,9 @@ func (s *Session) hubWatchStateRetryDelay(failures int) time.Duration {
 	if s.cfg.testOnly.hubWatchRetryDelay > 0 {
 		base = s.cfg.testOnly.hubWatchRetryDelay
 	}
+	if base > hubWatchStateRetryCeiling {
+		base = hubWatchStateRetryCeiling
+	}
 	if failures < 1 {
 		return base
 	}

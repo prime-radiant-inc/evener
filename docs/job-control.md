@@ -90,9 +90,9 @@ infers a link from an older record that lacks one. For a different terminal
 execution, the watch asks the existing history reader for a single-cut verdict;
 it keeps no continuation graph or terminal backlog. The existing subscription
 consumer retains the original candidate and held history cut while retrying a
-transient read-call failure. It uses the watch state-read policy: a two-second
-budget per call, two seconds between retries, and at most five consecutive
-failed calls. An operation timeout while the watch remains alive, transport
+transient read-call failure. That answer-continuation retry reads with a
+two-second budget per call, two seconds between retries, and at most five
+consecutive failed calls. An operation timeout while the watch remains alive, transport
 unavailability, index contention or rebuilding, and an unclassified internal
 read error can recover without re-registration. The watch keeps its ID and
 pending-send identities and emits one interruption notice for that episode.
@@ -110,10 +110,11 @@ hard wall-clock bound on underlying I/O.
 The watch keeps its ID and pending notices through a connection interruption.
 It sends one interruption notice for the loss, then checks the Manager caller's
 ref and instance before resubscribing. A restored connection retains the watch
-only when the target also has the same ref, instance and generation. Connection
-recovery is bounded by an outage budget rather than a retry count: a binding
-that answers again within the budget retains the watch, and only an outage that
-outlasts it counts as exhausted connection recovery. A replaced caller or
+only when the target also has the same ref, instance and generation. Recovery
+from a binding that cannot answer state reads is bounded by an outage budget
+rather than a retry count: a binding that answers again within the budget
+retains the watch, and only an outage that outlasts it counts as exhausted
+connection recovery. A replaced caller or
 target, an unsupported observation, or exhausted connection recovery ends the
 watch durably with re-registration guidance. A runtime restart likewise
 ends continuing hub watches and sends a re-registration notice, including
