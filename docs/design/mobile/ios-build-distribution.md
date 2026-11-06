@@ -77,7 +77,7 @@ inside the run's own simulator lifetime. That child builds the runtime pair,
 starts the scripted loopback provider and an isolated hub under private XDG
 directories with `HOME` inherited, registers the generated-only
 `EvenerQualificationUITests` target, and injects the fixture-only connection
-data into a private copy of the test-run configuration. Before the target is
+data into the generated test-run configuration in place. Before the target is
 registered it first proves the red side: naming the intended tests against the
 as-generated project must fail. The result bundle must show all three intended
 journeys executed with zero failures and none skipped; a partial, unreadable or

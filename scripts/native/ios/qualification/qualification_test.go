@@ -125,6 +125,8 @@ func TestBundleMetadataRequiresIdentityAndSharedGroup(t *testing.T) {
 }
 
 // The real Mac control: verification of an owned copy must fail once the
+// share extension is removed from it, while the untouched build keeps
+// verifying.
 func TestVerifyAppRejectsCopiedBuildWithoutExtension(t *testing.T) {
 	if runtime.GOOS != "darwin" {
 		t.Skip("requires the real macOS signing tools")
@@ -155,6 +157,8 @@ func TestVerifyAppRejectsCopiedBuildWithoutExtension(t *testing.T) {
 }
 
 // buildControlAppFixture assembles the smallest app that verifyApp accepts:
+// a host bundle and its share extension, each with a compiled binary and a
+// real ad-hoc signature carrying the shared capability's entitlements.
 func buildControlAppFixture(t *testing.T, r *runner) string {
 	t.Helper()
 	ctx := context.Background()
@@ -444,9 +448,10 @@ func TestPodUnlockTriggersOnlyOnChangedVersionRefusal(t *testing.T) {
 
 func TestLocalPodNamesCoverSdkOwnedSourcesOnly(t *testing.T) {
 	t.Parallel()
-	// The committed lock uses CRLF. Registry pods resolve from SPEC REPOS and
-	// have no EXTERNAL SOURCES entry; local development pods appear there with
-	// :path: or a local :podspec:.
+	// Registry pods resolve from SPEC REPOS and have no EXTERNAL SOURCES
+	// entry; local development pods appear there with :path: or a local
+	// :podspec:. The fixture is CRLF so the parser is proven against either
+	// line ending; the committed lock is LF.
 	lock := strings.ReplaceAll(`PODS:
   - EXApplication (58.1.2):
     - ExpoModulesCore

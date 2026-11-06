@@ -219,7 +219,7 @@ const podLockPath = "mobile-native/Podfile.lock"
 
 // TestGitleaksPodLockChecksumScope pins the committed pod lock's SPEC CHECKSUMS
 // false positive: gitleaks' generic-api-key rule sees the pod name
-// "React-cxxstableapi" followed by that podspec's SHA-256 digest and mistakes
+// "React-cxxstableapi" followed by that podspec's SHA-1 digest and mistakes
 // the checksum line for a key (observed when the Expo 58 lock landed). The
 // exception must allowlist only checksum-shaped lines in the lock itself, so
 // another match in the lock, including a real credential, still fails.

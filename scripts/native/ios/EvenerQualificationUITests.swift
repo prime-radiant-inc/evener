@@ -113,6 +113,16 @@ final class EvenerQualificationUITests: XCTestCase {
 			"the follow-up turn never completed through the recovered credentials"
 		)
 		attach(app, "follow-up-response")
+
+		// Leave the install where the later journeys expect it: the app
+		// reopens its frontmost route on launch, so ending inside the
+		// conversation would reopen the conversation over the Board and
+		// hide the compose button from every later journey.
+		tap(app.navigationBars.buttons.firstMatch, "the conversation never offered a way back")
+		XCTAssertTrue(
+			app.buttons["new-session"].waitForExistence(timeout: tripwire),
+			"the board never reappeared after the conversation"
+		)
 	}
 
 	/// Scheme activation only: evener-native://share must bring the app to
@@ -160,8 +170,9 @@ final class EvenerQualificationUITests: XCTestCase {
 
 	/// A swipe inside an ordinary native sheet must leave its controls
 	/// usable: scroll the New session sheet's form, then press its Cancel and
-	/// see the sheet dismiss. This complements the three upstream
-	/// gesture-source regression checks.
+	/// see the sheet close back to the Board. The Board's own row gestures
+	/// have their own regression checks; this is the sheet's side of the
+	/// interplay.
 	func testSheetGestureKeepsControlsUsable() {
 		let app = XCUIApplication()
 		onboardIfNeeded(app)
@@ -174,6 +185,10 @@ final class EvenerQualificationUITests: XCTestCase {
 		sheet.swipeDown()
 
 		tap(app.buttons["Cancel"], "the sheet's Cancel vanished after swipes")
+		XCTAssertTrue(
+			prompt.waitForNonExistence(timeout: tripwire),
+			"the sheet never closed after Cancel"
+		)
 		XCTAssertTrue(
 			app.buttons["new-session"].waitForExistence(timeout: tripwire),
 			"the sheet's Cancel stopped working after swipes"
@@ -196,9 +211,14 @@ final class EvenerQualificationUITests: XCTestCase {
 	/// reuses the saved hub and goes straight to the board.
 	private func onboardIfNeeded(_ app: XCUIApplication) {
 		app.launch()
-		let way = app.buttons["add-hub:address"]
-		if way.waitForExistence(timeout: tripwire) {
-			tap(way, "the first-run address way disappeared before its tap")
+		// The app opens wherever it left off: the first-run pairing way on
+		// a fresh install, the board on a saved one. Waiting on the way
+		// alone would hold the full tripwire once the hub is saved, for a
+		// screen that can never appear.
+		let surface = mainSurface(app)
+		XCTAssertTrue(surface.waitForExistence(timeout: tripwire), "the app never reached its own controls")
+		if surface.identifier == "add-hub:address" {
+			tap(surface, "the first-run address way disappeared before its tap")
 			let address = app.textFields["hub-address"]
 			tap(address, "the address field never appeared")
 			address.typeText(hubOrigin)

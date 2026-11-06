@@ -14,12 +14,12 @@
 # WHAT IT DOES: builds the runtime pair and the evener binary, starts the
 # fixture provider and an isolated hub under private XDG directories with
 # HOME inherited, reads the fixture-only connection data from a mode-0600
-# private file, injects it into a private copy of the generated test-run
-# configuration, registers the UI test target, runs the three journeys
-# against the Release app the parent built on the parent's simulator, and
-# validates the xcresult: every intended test identity executed, none
-# skipped, zero failures. The private state never reaches the output
-# directory or any uploaded artifact.
+# private file, injects it into the generated test-run configuration in
+# place, registers the UI test target, runs the three journeys against the
+# Release app the parent built on the parent's simulator, and validates the
+# xcresult: every intended test identity executed, none skipped, zero
+# failures. The private state never reaches the output directory or any
+# uploaded artifact.
 #
 # USAGE (from the build runner only, on macOS):
 #   run-ui-tests.sh --build-identity ABSOLUTE_JSON --output ABSOLUTE_DIR
