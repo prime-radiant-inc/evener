@@ -2477,26 +2477,6 @@ func TestDelegateResourceSupervision_QuietWatchdogRepeatsEachWindowWhileSilent(t
 	}
 }
 
-// quietFrameText returns the durable frame text behind one quiet attention.
-func quietFrameText(t *testing.T, root *Session, attentionID string) string {
-	t.Helper()
-	fold, err := readDelegateAttentionFold(transcriptPath(root.stateDir, root.id), root.id)
-	if err != nil {
-		t.Fatalf("read quiet attention fold: %v", err)
-	}
-	message, ok := fold.content[attentionID]
-	if !ok {
-		t.Fatalf("quiet attention %q has no durable content", attentionID)
-	}
-	for _, part := range message.Content {
-		if part.Kind == llm.ContentText && part.Text != "" {
-			return part.Text
-		}
-	}
-	t.Fatalf("quiet attention %q has no text part: %#v", attentionID, message.Content)
-	return ""
-}
-
 // quietFrameSilence extracts the duration token a quiet frame carries — the
 // same token the shared client parses out of the sentence
 // ("quiet for <token>; last activity: <RFC 3339>").
@@ -2511,16 +2491,12 @@ func quietFrameSilence(t *testing.T, frame string) string {
 	return frame[start+len(prefix) : end]
 }
 
-// A repeat of one silent stretch must say how long the delegate has actually
-// been quiet. The first wake names the quiet window; each later wake of the
-// same stretch names the silence measured at its own due boundary, so a
-// long-silent delegate reads as an ongoing "quiet for 20m", "quiet for 30m",
-// ... silence instead of a byte-identical "quiet for 10m" re-stating the
-// window — the field signature that read as stale re-feeds of one stored
-// frame.
+// A repeat of one silent stretch must name the silence measured at its due
+// boundary — the first wake names the window, each later wake the ongoing
+// total — instead of re-stating the window byte-identically, which read in
+// the field as stale re-feeds of one stored frame.
 func TestDelegateResourceSupervision_QuietWatchdogRepeatFramesNameTheMeasuredSilence(t *testing.T) {
 	root, _, lease, clock := newStableQuietSupervisionHarness(t)
-	var frames []string
 	for i := 1; i <= 3; i++ {
 		// Window 3's tick lands two minutes past its due boundary: the frame
 		// must still name the silence at the boundary ("30m"), not at the
@@ -2534,19 +2510,18 @@ func TestDelegateResourceSupervision_QuietWatchdogRepeatFramesNameTheMeasuredSil
 		if err := root.runDelegateQuietWatchdogTick(lease, clock.Now()); err != nil {
 			t.Fatalf("window %d tick: %v", i, err)
 		}
-		got := pendingQuietAttention(t, root)
-		if len(got) != i {
-			t.Fatalf("after %d quiet window(s) attention = %#v, want %d", i, got, i)
+		fold := rootAttentionFold(t, root)
+		if len(fold.order) != i {
+			t.Fatalf("after %d quiet window(s) attention = %#v, want %d", i, fold.order, i)
 		}
-		if want := delegateQuietAttentionIDForStretch(lease, uint64(i)); got[len(got)-1] != want {
-			t.Fatalf("window %d attention id = %q, want %q", i, got[len(got)-1], want)
+		attentionID := fold.order[len(fold.order)-1]
+		if want := delegateQuietAttentionIDForStretch(lease, uint64(i)); attentionID != want {
+			t.Fatalf("window %d attention id = %q, want %q", i, attentionID, want)
 		}
-		frames = append(frames, quietFrameText(t, root, got[len(got)-1]))
-	}
-	for i, frame := range frames {
-		want := fmt.Sprintf("%dm", int(time.Duration(i+1)*delegateQuietWindow/time.Minute))
+		frame := fold.content[attentionID].Text()
+		want := fmt.Sprintf("%dm", i*int(delegateQuietWindow/time.Minute))
 		if got := quietFrameSilence(t, frame); got != want {
-			t.Fatalf("window %d frame silence = %q, want the measured silence %q (frame %q)", i+1, got, want, frame)
+			t.Fatalf("window %d frame silence = %q, want the measured silence %q (frame %q)", i, got, want, frame)
 		}
 	}
 }

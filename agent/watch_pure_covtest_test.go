@@ -48,7 +48,7 @@ func TestCovQuietWatchdogMessage(t *testing.T) {
 
 	// A measured silence lands floored to whole minutes.
 	got = quietWatchdogMessage(90*time.Second, now)
-	if !strings.Contains(got, "1m") || strings.Contains(got, "1m30s") {
+	if !strings.Contains(got, "quiet for 1m;") {
 		t.Fatalf("floored silence: %q", got)
 	}
 }

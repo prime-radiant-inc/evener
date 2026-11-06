@@ -244,10 +244,8 @@ func delegateQuietAttentionIDForStretch(lease delegateLease, sequence uint64) st
 }
 
 // delegateQuietAttentionContent builds one quiet notice's frame. quietFor is
-// the silence the wake reports, measured at its due boundary so every mint of
-// one stretch identity carries the same content: a deferred or re-admitted
-// claim re-computes the same text instead of folding a second content under
-// the same attention id.
+// the silence the wake reports, measured at its due boundary (see
+// BeginQuietAttention).
 func delegateQuietAttentionContent(lease delegateLease, quietFor time.Duration, activityAt time.Time) string {
 	return fmt.Sprintf(
 		"<delegate-notification delegate_id=%q>%s</delegate-notification>",
@@ -306,14 +304,11 @@ func (c *delegateTreeController) BeginQuietAttention(receiver *Session, lease de
 	if live.quietNotified {
 		quietSince = live.quietNotifiedAt
 	}
-	// The frame names the silence at the wake's due boundary, not the window
-	// constant: the first wake names the window, and each repeat of the same
-	// silent stretch names the ongoing total ("quiet for 20m", "quiet for
-	// 3h5m"), so an owner can tell a continuing silence from a fresh quiet
-	// event instead of receiving byte-identical frames that read as stale
-	// re-feeds. Measuring at the due boundary keeps the content a function of
-	// the committed quiet state alone, so a re-admitted claim re-mints the
-	// same content under the same stretch identity.
+	// The frame names the silence at the wake's due boundary: the first wake
+	// names the window and each repeat of the stretch the ongoing total, so an
+	// owner can tell a continuing silence from a fresh quiet event. The
+	// boundary is committed quiet state, so a deferred or re-admitted claim
+	// re-mints the same content under the same stretch identity.
 	due := quietSince.Add(delegateQuietWindow)
 	if now.Before(due) {
 		return nil, nil

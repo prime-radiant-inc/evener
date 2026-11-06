@@ -111,11 +111,8 @@ var (
 )
 
 // quietWatchdogMessage is the owner-notification reason a quiet running delegate
-// triggers. quiet is the silence the wake reports, measured at its due
-// boundary: the first wake's is the window itself and a repeat's is the full
-// silence so far, so a long-silent delegate reads as an ongoing "quiet for
-// 20m", "quiet for 30m", ... silence instead of a byte-identical re-statement
-// of the window that reads as a fresh quiet event each time.
+// triggers. quiet is the silence the wake reports: the first wake names the
+// window, and each repeat of one silent stretch names the ongoing total.
 func quietWatchdogMessage(quiet time.Duration, lastActivity time.Time) string {
 	return fmt.Sprintf("quiet for %s; last activity: %s", formatQuietDuration(quiet), lastActivity.Format(time.RFC3339Nano))
 }
@@ -131,12 +128,10 @@ func formatQuietWindow(window time.Duration) string {
 	return window.String()
 }
 
-// formatQuietDuration renders a measured quiet silence for the notification
-// text. A measured silence lands floored to whole minutes: the first wake's
-// measurement is the window exactly, and a repeat's is measured from the
-// prior wake's admitted tick, so flooring keeps the clean "20m"/"3h5m" forms
-// instead of naming each boundary's sub-minute offset. Flooring only ever
-// understates, by under a minute. Below a minute the default duration string
+// formatQuietDuration renders a measured quiet silence, floored to whole
+// minutes — it only ever understates, by under a minute — where the exact
+// formatQuietWindow never floors a configured threshold. A silence past an
+// hour reads as hours:minutes; below a minute the default duration string
 // keeps a test-scaled window truthful (e.g. "50ms").
 func formatQuietDuration(d time.Duration) string {
 	if d < time.Minute {
