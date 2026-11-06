@@ -36,7 +36,6 @@ final class VoiceService {
     private var lastWakeActivation = -Double.infinity
     private var lastWakePublish = 0.0
     private var publishedWakeState = "paused"
-    private var publishedWakeScore: Float?
     private var publishedWakeError = ""
     private var lastTrialSave = 0.0
     private init() {
@@ -88,12 +87,13 @@ final class VoiceService {
     func observe(_ listener: (([String: Any]) -> Void)?) { worker.async { self.listener = listener; self.publish() } }
     // The service and its completions stay on the worker. The Expo adapter owns Swift tasks.
     func snapshot(completion: @escaping ([String: Any]) -> Void) { worker.async { completion(self.state()) } }
+    private var visibleWakeState: String { audio.wakeListening ? wakeState : "paused" }
     private func state() -> [String: Any] {
         ["state": controller.state.rawValue, "capturing": audio.capturing, "cloudMicrophone": controller.cloudMicrophone,
          "route": audio.route, "speakerConsentRequired": !speakerConsent, "error": error ?? "", "interpreted": interpreted,
          "custody": custody, "canonical": canonical, "generated": generated, "bindingId": configuration?["bindingId"] as? String ?? "",
-         "wake": ["state": audio.wakeListening ? wakeState : "paused", "phrase": audio.wakeModels?.phrase ?? "",
-                  "modelId": audio.wakeModels?.id ?? "", "score": wakeScore as Any? ?? NSNull(),
+         "wake": ["state": visibleWakeState, "phrase": audio.wakeModels?.phrase ?? "",
+                  "modelId": audio.wakeModels?.id ?? "", "score": (wakeTrials.running ? wakeScore : nil) as Any? ?? NSNull(),
                   "lastDetectionScore": lastWakeScore as Any? ?? NSNull(), "detections": wakeDetections,
                   "error": wakeError, "trials": wakeTrials.json]]
     }
@@ -101,8 +101,8 @@ final class VoiceService {
         if audio.setWakeListening(connected && audio.capturing && controller.state == .quiet) {
             wakeState = "warming"; wakeScore = nil
         }
-        publishedWakeState = audio.wakeListening ? wakeState : "paused"
-        publishedWakeScore = wakeScore; publishedWakeError = wakeError
+        publishedWakeState = visibleWakeState
+        publishedWakeError = wakeError
         lastWakePublish = now
         listener?(state())
     }
@@ -240,7 +240,9 @@ final class VoiceService {
         perform(controller.tick(at: now))
         if previous != controller.state { publish() }
         if audio.wakeListening, now - lastWakePublish >= 500,
-           wakeTrials.running || wakeState != publishedWakeState || wakeScore != publishedWakeScore || wakeError != publishedWakeError {
+           WakePublishPolicy.shouldPublish(trialRunning: wakeTrials.running, wakeState: visibleWakeState,
+                                           publishedWakeState: publishedWakeState,
+                                           wakeError: wakeError, publishedWakeError: publishedWakeError) {
             publish()
         }
         if wakeTrials.running, now - lastTrialSave >= 5000 { lastTrialSave = now; wakeTrials.save() }
