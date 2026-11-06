@@ -328,6 +328,11 @@ test("arrow-down onto the first command in command-filter runs it instead of sen
   await user.keyboard("{ArrowDown}{Enter}");
 
   expect(send).not.toHaveBeenCalled();
+  await waitFor(() => {
+    const closed = screen.queryByRole("dialog") === null;
+    const argsPill = document.querySelector('[class*="_pill_"]');
+    expect(closed || argsPill !== null).toBe(true);
+  });
 });
 
 // --- clearToSearch and showHelp UI callbacks (lines 248-251) ---
