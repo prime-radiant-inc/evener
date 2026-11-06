@@ -357,6 +357,14 @@ var observeHubRelay func(*hubRelay)
 // must not be a plain variable's unsynchronized access.
 var observeHubRelayWait atomic.Pointer[func()]
 
+// fireObserveHubRelayWait reports a relay wait. Production never installs an
+// observation, so this is a no-op there.
+func fireObserveHubRelayWait() {
+	if observe := observeHubRelayWait.Load(); observe != nil {
+		(*observe)()
+	}
+}
+
 // Test-only observations for the bounded pending-delivery queue, its delivery
 // input, and authoritative route publication. Production never stores them;
 // each call site is one load and nil check.

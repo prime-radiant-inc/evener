@@ -77,9 +77,7 @@ func (r *hubRelay) acquireRelaySession(
 		return state, nil
 	}
 	waitForStoppedGeneration := func(done <-chan struct{}) error {
-		if observe := observeHubRelayWait.Load(); observe != nil {
-			(*observe)()
-		}
+		fireObserveHubRelayWait()
 		select {
 		case <-done:
 			return nil
@@ -197,9 +195,7 @@ func (r *hubRelay) acquireRelaySession(
 					for _, closeHandle := range closeHandles {
 						r.closeRelayHandle(closeHandle)
 					}
-					if observe := observeHubRelayWait.Load(); observe != nil {
-						(*observe)()
-					}
+					fireObserveHubRelayWait()
 					select {
 					case <-drain:
 						continue

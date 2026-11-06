@@ -992,21 +992,14 @@ func TestHubRelayDaemonGoneReachesJoiningSubscriberOnTheSameRoute(t *testing.T) 
 			retainedOnce.Do(func() { close(departureRetained) })
 		}
 	}
-	previousPending := observeHubRelayPending.Swap(&pendingObservation)
-	t.Cleanup(func() { observeHubRelayPending.Store(previousPending) })
+	t.Cleanup(installAtomicObserver(&observeHubRelayPending, pendingObservation))
 
 	daemon := startAliasRecoveryDaemon(t, sessionID, sessionID)
-	var gateArmed atomic.Bool
-	gateEntered, gateRelease := make(chan struct{}, 1), make(chan struct{})
+	var gateArmed *atomic.Bool
+	var gateEntered <-chan struct{}
+	var gateRelease func()
 	hub := openSubscribedHubWithSetup(ctx, t, daemon.entry, sessionID, nil, func(server *appserver.Server) {
-		// Fires after the joining read's source handoff is prepared and before
-		// its downstream subscription registers.
-		server.SetBeforeSubscriptionGate(func() {
-			if gateArmed.CompareAndSwap(true, false) {
-				gateEntered <- struct{}{}
-				<-gateRelease
-			}
-		})
+		gateArmed, gateEntered, gateRelease = installRelayProgressGate(ctx, server)
 	})
 	joining := dialHubRPC(t, hub.wire)
 	t.Cleanup(func() { _ = joining.Close() })
@@ -1033,7 +1026,7 @@ func TestHubRelayDaemonGoneReachesJoiningSubscriberOnTheSameRoute(t *testing.T) 
 	case <-ctx.Done():
 		t.Fatal("the daemon-gone delivery never reached the relay fan-out")
 	}
-	close(gateRelease)
+	gateRelease()
 	if err := <-joiningRead; err != nil {
 		t.Fatalf("joining ThreadRead: %v", err)
 	}

@@ -26,9 +26,7 @@ func (r *hubRelay) startAcknowledgedFanout(
 			ref          string
 			thread       appwire.Thread
 			argsByCallID map[string]string
-			// commands is the state's in-flight command count when the
-			// target was resolved. A read holding one may still be
-			// binding its downstream subscription.
+			// commands is the in-flight command count when the target resolved.
 			commands int
 		}
 		type pendingRelayDelivery struct {
@@ -324,9 +322,7 @@ func (r *hubRelay) startAcknowledgedFanout(
 			if pending {
 				pendingDeliveries = append(pendingDeliveries, pendingRelayDelivery{delivery: delivery, routingKey: routingKey, routing: routing})
 				recordPending()
-				if observe := observeHubRelayWait.Load(); observe != nil {
-					(*observe)()
-				}
+				fireObserveHubRelayWait()
 				if delivery.Proceed != nil {
 					delivery.Proceed()
 				}

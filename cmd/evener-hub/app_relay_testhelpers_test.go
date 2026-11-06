@@ -2,6 +2,7 @@ package hub
 
 import (
 	"context"
+	"sync/atomic"
 
 	"primeradiant.com/evener/appwire"
 )
@@ -41,13 +42,17 @@ func (r *hubRelay) stopCanonicalRelay(ref appwire.Ref) {
 	}
 }
 
-// installObserveHubRelayWait installs fn as the relay's wait observation and
-// returns a function that restores the previous one. The relay's background
-// fan-out reads the seam and can outlive the installing test's last
-// assertion, so install and restore both go through the atomic pointer.
+// installAtomicObserver stores value in p and returns a function that restores
+// the previous value. The relay's background goroutines read these seams and
+// can outlive the installing test's last assertion, so install and restore
+// both go through the atomic pointer.
+func installAtomicObserver[T any](p *atomic.Pointer[T], value T) func() {
+	previous := p.Swap(&value)
+	return func() { p.Store(previous) }
+}
+
 func installObserveHubRelayWait(fn func()) func() {
-	previous := observeHubRelayWait.Swap(&fn)
-	return func() { observeHubRelayWait.Store(previous) }
+	return installAtomicObserver(&observeHubRelayWait, fn)
 }
 
 func (r *hubRelay) stopRelay(relayKey string) {
