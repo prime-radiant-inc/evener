@@ -33,7 +33,7 @@ var hubObservationEvents = [...]string{"status", "question", "approval", "commun
 
 const hubRosterWatchKey = "hub:roster"
 
-const rosterRecoveryFrame = "roster_resync: true\nrecovery: re-register job_watch with hub={\"scope\":\"top_level\"} for a fresh snapshot\n"
+const rosterRecoveryFrame = "roster_resync: true\nrecovery: re-register the same roster watch — job_watch with hub={\"scope\":\"top_level\"} and the same note — for a fresh snapshot\n"
 
 // The pending send rail replaces earlier frames for the same watch key.
 // Merge only roster frames there, after it finds the actual undelivered state.
@@ -209,7 +209,7 @@ func (jm *jobManager) onHubRoster(id string, update appwire.SessionWatchUpdate) 
 		jm.mu.Unlock()
 		return nil
 	}
-	trigger := "roster resync: re-register job_watch hub={scope:top_level} for a fresh snapshot"
+	trigger := "roster resync: re-register the same roster watch — job_watch with hub={scope:top_level} and the same note — for a fresh snapshot"
 	var payload string
 	if !r.Resync {
 		type rosterChange struct {
