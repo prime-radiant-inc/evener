@@ -58,7 +58,15 @@ class ThreadSubscriptions {
   private stopState: () => void;
   private stopNotifications: () => void;
 
-  constructor(private readonly client: ThreadSubscriptionClient) {
+  constructor(
+    private readonly client: ThreadSubscriptionClient,
+    // A registry wired by the connection owner lives for that connection: it
+    // keeps its listeners while its last member departs, so a later store
+    // action does not re-register them (the lazy per-action wiring the
+    // threads store's wiring test forbids). A registry created by a bare
+    // acquisition retires with its last member.
+    private readonly connectionOwned = false,
+  ) {
     this.stopState = client.onStateChange((state) => {
       if (state === "ready") return;
       this.generation += 1;
@@ -269,15 +277,36 @@ class ThreadSubscriptions {
       return;
     }
     if (this.members.get(member.ref) === member) this.members.delete(member.ref);
-    if (this.members.size === 0) {
-      this.stopState();
-      this.stopNotifications();
-      registries.delete(this.client);
-    }
+    if (!this.connectionOwned && this.members.size === 0) this.retire();
+  }
+
+  /** The connection owner is letting go of the client: every member goes with
+   * it, and its handlers stop. The status feed goes first and the connection
+   * listener last, so a caller observing the connection listener's release
+   * sees the retired registry's final handler leave with it. */
+  retire(): void {
+    this.members.clear();
+    this.stopNotifications();
+    this.stopState();
+    registries.delete(this.client);
   }
 }
 
 const registries = new WeakMap<ThreadSubscriptionClient, ThreadSubscriptions>();
+
+/** Wire a connection's shared subscription registry at connect time, before
+ * any thread is acquired: the registry's state/notification handlers belong
+ * to the connection, not to whichever store action happens to subscribe
+ * first. Idempotent for one client. */
+export function wireThreadSubscriptions(client: ThreadSubscriptionClient): void {
+  if (registries.has(client)) return;
+  registries.set(client, new ThreadSubscriptions(client, true));
+}
+
+/** Retire a connection's registry when its owner lets go of the client. */
+export function retireThreadSubscriptions(client: ThreadSubscriptionClient): void {
+  registries.get(client)?.retire();
+}
 
 /** Acquire one additive thread subscription lifetime. Every transcript and
  * activity owner of this connection must join, rather than unsubscribe or

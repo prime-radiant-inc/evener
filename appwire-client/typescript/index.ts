@@ -696,7 +696,7 @@ export type {
   ThreadSubscriptionMetadata,
   ThreadSubscriptionReadParams,
 } from "./threadSubscription";
-export { acquireThreadSubscription } from "./threadSubscription";
+export { acquireThreadSubscription, retireThreadSubscriptions, wireThreadSubscriptions } from "./threadSubscription";
 export type { SessionTokens, TokenPair, UsageSummary } from "./threadUsage";
 export { sessionTokens, threadUsageSummary, tokenUnitLabel, turnUsageTokens } from "./threadUsage";
 export {
