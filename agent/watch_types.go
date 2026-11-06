@@ -111,10 +111,10 @@ var (
 )
 
 // quietWatchdogMessage is the owner-notification reason a quiet running delegate
-// triggers. It names the actual window so the text stays truthful when tests
-// scale the window down (the production window renders as "10m").
-func quietWatchdogMessage(window time.Duration, lastActivity time.Time) string {
-	return fmt.Sprintf("quiet for %s; last activity: %s", formatQuietWindow(window), lastActivity.Format(time.RFC3339Nano))
+// triggers. quiet is the silence the wake reports: the first wake names the
+// window, and each repeat of one silent stretch names the ongoing total.
+func quietWatchdogMessage(quiet time.Duration, lastActivity time.Time) string {
+	return fmt.Sprintf("quiet for %s; last activity: %s", formatQuietDuration(quiet), lastActivity.Format(time.RFC3339Nano))
 }
 
 // formatQuietWindow renders a quiet window for the notification text. A
@@ -126,6 +126,26 @@ func formatQuietWindow(window time.Duration) string {
 		return fmt.Sprintf("%dm", window/time.Minute)
 	}
 	return window.String()
+}
+
+// formatQuietDuration renders a measured quiet silence, floored to whole
+// minutes — it only ever understates, by under a minute — where the exact
+// formatQuietWindow never floors a configured threshold. A silence past an
+// hour reads as hours:minutes; below a minute the default duration string
+// keeps a test-scaled window truthful (e.g. "50ms").
+func formatQuietDuration(d time.Duration) string {
+	if d < time.Minute {
+		return d.String()
+	}
+	minutes := int(d / time.Minute)
+	if minutes < 60 {
+		return fmt.Sprintf("%dm", minutes)
+	}
+	hours := minutes / 60
+	if minutes%60 == 0 {
+		return fmt.Sprintf("%dh", hours)
+	}
+	return fmt.Sprintf("%dh%dm", hours, minutes%60)
 }
 
 // watchEndedUnfiredMessage is the single end-notice text a watch delivers on its
