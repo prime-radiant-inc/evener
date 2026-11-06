@@ -30,6 +30,7 @@ import (
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/appwire/appwiretest"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubedge"
+	"primeradiant.com/evener/execsupport/fsatomic"
 	"primeradiant.com/evener/test/e2e/fakellm"
 )
 
@@ -175,7 +176,7 @@ func TestAgentCascadeBrowser(t *testing.T) {
 			// releases it unchanged.
 			if strings.Contains(input, "CASCADE_ATTENTION_HELD_INPUT") {
 				toolOwners[call.ToolCallID()] = 0
-				if err := publishRendezvous(filepath.Join(artifacts, "attention-held-call.json"), []byte(`{"input":"CASCADE_ATTENTION_HELD_INPUT"}`)); err != nil {
+				if err := fsatomic.WriteWithoutSync(filepath.Join(artifacts, "attention-held-call.json"), []byte(`{"input":"CASCADE_ATTENTION_HELD_INPUT"}`), 0600); err != nil {
 					scriptErr <- err
 					return
 				}
@@ -219,7 +220,7 @@ func TestAgentCascadeBrowser(t *testing.T) {
 					scriptErr <- fmt.Errorf("source input reached role %d, want root", role)
 					return
 				}
-				if err := os.WriteFile(filepath.Join(artifacts, "provider-held.json"), []byte(`{"role":0,"input":"CASCADE_BUSY_INPUT"}`), 0600); err != nil {
+				if err := fsatomic.WriteWithoutSync(filepath.Join(artifacts, "provider-held.json"), []byte(`{"role":0,"input":"CASCADE_BUSY_INPUT"}`), 0600); err != nil {
 					scriptErr <- err
 					return
 				}
@@ -663,23 +664,11 @@ func cascadeOwnerDelegates(ctx context.Context, client *appwire.Client, owner st
 
 func cascadeRoleToken(role int) string { return fmt.Sprintf("CASCADE_ROLE_%d_SENTINEL", role) }
 
-// publishRendezvous makes a driver-visible rendezvous file appear only once all
-// of its bytes are there. The driver observes these paths by existence and then
-// parses them, so a plain write's create-before-bytes window hands it an empty
-// file. The rename is atomic because the temp name is in the same directory,
-// and each path has exactly one writer.
-func publishRendezvous(path string, body []byte) error {
-	if err := os.WriteFile(path+".tmp", body, 0600); err != nil {
-		return err
-	}
-	return os.Rename(path+".tmp", path)
-}
-
 // TestCascadeRendezvousReplacesThePathNotItsContents pins the publish contract
-// the driver relies on. Rewriting the destination in place (os.WriteFile) would
-// satisfy a content check but leave a reader that already opened it looking at
-// the old file, and leave the create-before-bytes window that this helper
-// exists to remove.
+// the driver's rendezvous files rely on. Rewriting a destination in place
+// (os.WriteFile) would satisfy a content check but leave a reader that already
+// opened it looking at the old file, and leave the create-before-bytes window
+// the driver's existence-then-parse poll cannot survive.
 func TestCascadeRendezvousReplacesThePathNotItsContents(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "attention-held.json")
@@ -690,7 +679,7 @@ func TestCascadeRendezvousReplacesThePathNotItsContents(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := publishRendezvous(path, []byte(`{"ref":"fresh"}`)); err != nil {
+	if err := fsatomic.WriteWithoutSync(path, []byte(`{"ref":"fresh"}`), 0600); err != nil {
 		t.Fatal(err)
 	}
 	after, err := os.Stat(path)
@@ -707,8 +696,8 @@ func TestCascadeRendezvousReplacesThePathNotItsContents(t *testing.T) {
 	if string(body) != `{"ref":"fresh"}` {
 		t.Fatalf("published body = %q, want the complete new content", body)
 	}
-	if _, err := os.Stat(path + ".tmp"); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("publish left its temp name behind: %v", err)
+	if leftovers, err := filepath.Glob(path + ".tmp-*"); err != nil || len(leftovers) != 0 {
+		t.Fatalf("publish left temp files behind: %v (glob err %v)", leftovers, err)
 	}
 }
 
@@ -1235,7 +1224,7 @@ func cascadeCreateAttentionSessions(ctx context.Context, t *testing.T, client *a
 			if err != nil {
 				return err
 			}
-			return publishRendezvous(readyPath, body)
+			return fsatomic.WriteWithoutSync(readyPath, body, 0600)
 		}
 		if time.Now().After(deadline) {
 			return fmt.Errorf("attention tier never reached %d rows (last read %d, err %v)", cascadeAttentionSessions, len(rows), err)
@@ -1275,7 +1264,7 @@ func cascadeHeldAttentionSession(ctx context.Context, watcher *fsnotify.Watcher,
 	if err != nil {
 		return err
 	}
-	if err := publishRendezvous(readyPath, body); err != nil {
+	if err := fsatomic.WriteWithoutSync(readyPath, body, 0600); err != nil {
 		return err
 	}
 	if err := cascadeAwaitCommandAt(ctx, watcher, controlPath, 2, "release-attention-response"); err != nil {

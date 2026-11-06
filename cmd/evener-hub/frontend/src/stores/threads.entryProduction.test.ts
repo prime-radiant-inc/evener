@@ -7129,7 +7129,7 @@ it("ordinary disk-only read-proven deletion keeps cached content visible while h
 // installs no repository. The deletion fence, not a missing promise, is the
 // outcome (see the ensureThread UI-01 cases), and the browser guard reads the
 // same fact as entryRoute(ref).present before it asserts no route appeared.
-it("a fresh acquisition of a hub-deleted ref installs no entry route", async () => {
+it("a fresh acquisition of a hub-deleted ref installs no entry repository", async () => {
   cache();
   let reads = 0;
   const client = new FakeClient("ready");
