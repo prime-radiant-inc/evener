@@ -21,7 +21,7 @@ const config = {
 	expo: {
 		name: "Evener",
 		slug: "evener-native",
-		version: "0.3.0",
+		version: "0.3.18",
 		orientation: "portrait",
 		icon: "./assets/evener-icon.png",
 		userInterfaceStyle: "automatic",

@@ -300,6 +300,15 @@ func (b *voiceBridge) run() {
 			if result.provider != nil {
 				b.provider = result.provider
 			}
+			if kind == "input_aborted" {
+				// Setup may finish just as the abort cancels it. Retire its
+				// connection before starting any subsequently queued utterance.
+				if b.provider != nil {
+					_ = b.provider.Close()
+					b.provider = nil
+				}
+				continue
+			}
 			if kind == "speech" && b.retiring != nil {
 				// Setup was interrupted before acknowledgement. Its connection
 				// cannot safely carry the new utterance, even if setup just won.
@@ -474,7 +483,25 @@ func (b *voiceBridge) control(control voiceControl) error {
 		})
 	case "input_abort":
 		if b.turn != nil && b.turn.Sequence == control.Sequence {
-			return context.Canceled
+			// input_end transfers ownership to durable intent preparation.
+			// A delayed capture abort must not cancel that work.
+			if b.workKind == "intent" {
+				return nil
+			}
+			if err := b.journal.AbortTurn(b.ctx, b.turn.ID); err != nil {
+				return err
+			}
+			if b.workKind == "input_started" {
+				b.workCancel()
+				b.workKind = "input_aborted"
+			}
+			if b.provider != nil && (b.inputReady || b.workKind == "input_aborted") {
+				_ = b.provider.Close()
+				b.provider = nil
+			}
+			b.turn, b.inputReady, b.inputQueued = nil, false, false
+			b.nextFrame, b.inputSamples = 0, 0
+			b.refresh = true
 		}
 	case "played":
 		return b.recordPlayed(control)

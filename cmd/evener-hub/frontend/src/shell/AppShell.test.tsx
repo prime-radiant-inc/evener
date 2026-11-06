@@ -315,6 +315,8 @@ async function warmRoute(
 // beforeAll pattern for the same reason: the slow part of lazy-loading is
 // the transform/import work, an awaitable completion, not something to race
 // with a widened findBy deadline.
+let savedCascadeLayout: string | null = null;
+
 beforeAll(async () => {
   globalThis.ResizeObserver = StubResizeObserver;
   installLocalStorage(new MemoryStorage());
@@ -322,6 +324,7 @@ beforeAll(async () => {
   await import("../panes/session/Session");
   await import("../panes/settings/Settings");
   await import("../panes/spawn/Spawn");
+  await import("../panes/zoom/Zoom");
   // AppShell.tsx now React.lazy()s DockHost itself (Task 7's bundle split -
   // dockview is dead weight on the mobile path) - pre-warmed for the same
   // reason as the two panes above.
@@ -334,6 +337,19 @@ beforeAll(async () => {
   await warmRoute("/new", (wait) => screen.findByRole("button", { name: "Start" }, wait));
   await warmRoute("/s/local:ref_warm", (wait) => screen.findByText(/loading transcript/i, undefined, wait));
   await warmRoute("/settings/hub", (wait) => screen.findByRole("navigation", { name: "Settings sections" }, wait));
+
+  // The six startup-cascade tests below all consume the SAME saved six-edge
+  // layout - only the restore half differs per test - so the real save runs
+  // ONCE here instead of six times inside the tests' own 5s windows (#4679:
+  // the family rode 40-60% of the default testTimeout and struck it under
+  // workstation load; the save's bytes are asserted against the same constants
+  // every time, so nothing about it is test-specific). This pass also warms
+  // the sessionZoom pane's lazy payload with a real render: this file pre-warms
+  // every other pane type it renders, but the zoom pane is the one it renders
+  // cold - each test's retype otherwise pays the zoom chunk's on-demand
+  // transform plus react-dom's real-timer fallback-reveal throttle outside
+  // act, both awaitable completions nobody was awaiting.
+  savedCascadeLayout = await saveOrderingCascade();
 });
 
 beforeEach(() => {
@@ -424,9 +440,12 @@ function orderingClient() {
   return client;
 }
 
-// Prepare legacy in-place intent using real retype, pane registration,
+// Prepare the saved six-edge cascade using real retype, pane registration,
 // Dockview, and DockHost's synchronous final-save flush. No fabricated layout.
-async function saveOrderingCascade(): Promise<void> {
+// Runs ONCE in beforeAll: every startup test below restores these same bytes,
+// so the mount/save cycle belongs to the file's warm-up (60s hook budget),
+// not inside each test's own 5s window. Returns the saved layout bytes.
+async function saveOrderingCascade(): Promise<string> {
   const client = orderingClient();
   connectionStore.getState().connect(client);
   const sourceId = workspaceStore.getState().openPane("session", { ref: "local:root" });
@@ -463,6 +482,7 @@ async function saveOrderingCascade(): Promise<void> {
   resetThreadsStoreForTests();
   resetNavigationStoreForTests();
   connectionStore.setState({ client: null, state: "idle" });
+  return raw;
 }
 
 test.each([
@@ -473,7 +493,6 @@ test.each([
   { order: "restoration-before-location", routeRef: "local:different-root" },
   { order: "cached-location-with-warm-host", routeRef: "local:different-root" },
 ] as const)("startup $order respects route $routeRef against a saved six-edge cascade", async ({ order, routeRef }) => {
-  await saveOrderingCascade();
   const client = orderingClient();
   const reply = deferred<void>();
   const requested = deferred<void>();
@@ -501,7 +520,7 @@ test.each([
     }
   }
   // Copy the exact saved bytes into the observed external storage root.
-  const saved = localStorage.getItem(LAYOUT_KEY);
+  const saved = savedCascadeLayout;
   if (saved === null) throw new Error("Missing saved startup fixture");
   const storage = new StartupStorage();
   storage.setItem(LAYOUT_KEY, saved);
