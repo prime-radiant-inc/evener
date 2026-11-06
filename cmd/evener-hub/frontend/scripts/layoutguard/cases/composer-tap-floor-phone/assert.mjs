@@ -6,6 +6,14 @@ export default function assert(m) {
   if (!m.coarse) {
     failures.push("the case did not render with a coarse pointer, so the tap-floor arm it names is not exercised");
   }
+  for (const [index, model] of m.models.entries()) {
+    if (model.width < 1) {
+      failures.push(`model trigger ${index + 1} has no visible width`);
+    }
+    if (model.scrollWidth > model.clientWidth + TOLERANCE) {
+      failures.push(`model trigger ${index + 1} scrolls horizontally (${model.scrollWidth}px in ${model.clientWidth}px)`);
+    }
+  }
   if (m.effort.width < TAP_MIN - TOLERANCE || m.effort.height < TAP_MIN - TOLERANCE) {
     failures.push(
       `the reasoning-effort target is ${m.effort.width.toFixed(1)}x${m.effort.height.toFixed(1)}, below the ${TAP_MIN}px tap floor`,

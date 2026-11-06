@@ -835,6 +835,22 @@ test("an arrow-picked command runs even without an exact name match", async () =
   await waitFor(() => expect(window.location.pathname).toBe("/settings"));
 });
 
+test("typing a new query resets the highlight after an arrow pick", async () => {
+  const user = userEvent.setup();
+  setNeedsYouRows(null);
+  render(
+    <NeedsYouProvider>
+      <CommandPalette />
+    </NeedsYouProvider>,
+  );
+  act(() => openPalette());
+  await user.keyboard("{ArrowDown}{ArrowDown}");
+  const input = screen.getByRole("combobox");
+  expect(input.getAttribute("aria-activedescendant")).toBe("palette-row-2");
+  await user.type(input, "s");
+  await waitFor(() => expect(input.getAttribute("aria-activedescendant")).toBe("palette-row-0"));
+});
+
 test("search mode keeps the side-effecting upgrade command behind the slash prefix", () => {
   setNeedsYouRows(null);
   render(

@@ -487,9 +487,16 @@ function PaletteBody({
   // command keeps its highlight when late search or needs-you rows land.
   // Keyed on the view memo, which only changes when the data deps do - never
   // on a bare activeIndex change.
+  const previousViewRef = useRef(view);
+  const previousQueryRef = useRef(query);
   useEffect(() => {
+    const previousView = previousViewRef.current;
+    const queryChanged = previousQueryRef.current !== query;
+    previousViewRef.current = view;
+    previousQueryRef.current = query;
     setActiveIndex((previous) => {
-      const selected = view.items[previous];
+      if (queryChanged) return view.items.length > 0 ? 0 : -1;
+      const selected = previousView.items[previous];
       if (selected?.kind === "command") {
         const next = view.items.findIndex((item) => item.kind === "command" && item.command.id === selected.command.id);
         if (next >= 0) return next;

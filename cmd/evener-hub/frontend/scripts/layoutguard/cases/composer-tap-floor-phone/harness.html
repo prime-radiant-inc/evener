@@ -32,6 +32,12 @@
                 <span class="chevron">⌄</span>
               </button>
             </span>
+              <span class="model">
+                <button class="trigger" type="button" data-model="vision">
+                  <span class="value" data-model-value>vision</span>
+                  <span class="chevron">⌄</span>
+                </button>
+              </span>
             <span class="effortTrigger" data-effort>
               <span class="separator" aria-hidden="true">·</span>
               <span class="effortValue" aria-hidden="true">high</span>
@@ -63,6 +69,11 @@ window.measure = () => ({
   viewport: { width: window.innerWidth, height: window.innerHeight },
   coarse: window.matchMedia("(any-pointer: coarse)").matches,
   effort: box(effort),
+  models: [...document.querySelectorAll("[data-model]")].map((model) => ({
+    ...box(model),
+    clientWidth: model.clientWidth,
+    scrollWidth: model.scrollWidth,
+  })),
   row: { ...box(row), clientWidth: row.clientWidth, scrollWidth: row.scrollWidth },
   body: box(body),
 });
