@@ -1,6 +1,7 @@
 package frontmatter
 
 import (
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -71,6 +72,140 @@ func TestParse_InvalidYAML(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "frontmatter") {
 		t.Errorf("error should mention frontmatter, got %q", err.Error())
+	}
+}
+
+// Issue #4698: yaml.Unmarshal reads only the first YAML document, so anything
+// after a document-end marker vanished without an error. A control field after
+// "..." silently fell back to its default. Parse must reject trailing content
+// rather than truncate it.
+func TestParse_RejectsContentAfterDocumentEnd(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct{ name, raw string }{
+		{
+			"trailing control field",
+			"---\nname: probe\ndescription: \"LEGACY: sample\"\n...\nuser-invocable: false\n---\nBody.\n",
+		},
+		{
+			"trailing garbage",
+			"---\nname: probe\n...\n[\n---\nBody.\n",
+		},
+		{
+			"second document",
+			"---\nname: probe\n...\n--- # another document\nname: other\n---\nBody.\n",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			doc, err := Parse(tc.raw)
+			if err == nil {
+				t.Fatalf("Parse accepted content after the document end: %#v", doc.Meta)
+			}
+			if !reflect.DeepEqual(doc, Document{}) {
+				t.Errorf("Parse error returned non-zero Document: %#v", doc)
+			}
+			if !strings.Contains(err.Error(), "frontmatter") {
+				t.Errorf("error should mention frontmatter, got %q", err.Error())
+			}
+		})
+	}
+}
+
+// A terminal "..." ends the document harmlessly: it follows every field and
+// nothing but comments or blank lines comes after it. Parse keeps accepting
+// that shape.
+func TestParse_AcceptsTerminalDocumentEnd(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct{ name, raw string }{
+		{"bare terminal end", "---\nname: probe\n...\n---\nBody.\n"},
+		{"terminal end with comment", "---\nname: probe\n... # end\n---\nBody.\n"},
+		{"terminal end then comment line", "---\nname: probe\n...\n# final comment\n---\nBody.\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			doc, err := Parse(tc.raw)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if doc.Meta["name"] != "probe" {
+				t.Errorf("name = %#v, want probe", doc.Meta["name"])
+			}
+			if doc.Body != "Body.\n" {
+				t.Errorf("Body = %q, want %q", doc.Body, "Body.\n")
+			}
+		})
+	}
+}
+
+// Issue #4701: yaml.v3's duplicate-key check compares an alias node's anchor
+// name ("key") instead of the scalar it resolves to ("user-invocable"), so a
+// mapping that declares a resolved key twice decodes without error and the
+// later value silently overwrites the earlier one. Parse must reject the
+// duplicate before the decode loses one of the values.
+func TestParse_RejectsDuplicateResolvedKeys(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct{ name, block string }{
+		{
+			"alias duplicate user control",
+			"name: fixture\ndescription: 'LEGACY: fixture'\nmetadata: &key user-invocable\n*key: 'false'\nuser-invocable: true\n",
+		},
+		{
+			"alias duplicate model control",
+			"name: fixture\ndescription: 'LEGACY: fixture'\nmetadata: &key disable-model-invocation\n*key: 'true'\ndisable-model-invocation: false\n",
+		},
+		{
+			"alias duplicate allowed tools",
+			"name: fixture\ndescription: 'LEGACY: fixture'\nmetadata: &key allowed-tools\n*key: [true]\nallowed-tools: [read_file]\n",
+		},
+		{
+			"anchored duplicate key",
+			"name: fixture\ndescription: 'LEGACY: fixture'\n&key user-invocable: 'false'\n*key: true\n",
+		},
+		{
+			"encoded duplicate control",
+			"name: fixture\ndescription: 'LEGACY: fixture'\n!!binary dXNlci1pbnZvY2FibGU=: 'false'\nuser-invocable: true\n",
+		},
+		{
+			"nested alias duplicate",
+			"name: fixture\ndescription: 'LEGACY: fixture'\nmetadata:\n  key: &key nested\n  *key: one\n  nested: two\n",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			doc, err := Parse("---\n" + tc.block + "---\nBODY\n")
+			if err == nil {
+				t.Fatalf("Parse accepted duplicate resolved keys: %#v", doc.Meta)
+			}
+			if !reflect.DeepEqual(doc, Document{}) {
+				t.Errorf("Parse error returned non-zero Document: %#v", doc)
+			}
+		})
+	}
+}
+
+// Rejecting duplicates must not reject YAML's legitimate alias and merge
+// forms: an alias key that appears once, and a merge key that folds another
+// mapping in without declaring its keys here.
+func TestParse_PreservesAliasAndMergeSemantics(t *testing.T) {
+	t.Parallel()
+	doc, err := Parse("---\nname: fixture\ndescription: 'LEGACY: fixture'\nmetadata: {user-key: &user user-invocable}\n*user: false\n---\nBODY\n")
+	if err != nil {
+		t.Fatalf("alias key rejected: %v", err)
+	}
+	if doc.Meta["user-invocable"] != false {
+		t.Errorf("user-invocable = %#v, want false", doc.Meta["user-invocable"])
+	}
+
+	doc, err = Parse("---\nbase: &base\n  a: 1\nmerged:\n  <<: *base\n  a: 2\n---\nBODY\n")
+	if err != nil {
+		t.Fatalf("merge key rejected: %v", err)
+	}
+	merged, ok := doc.Meta["merged"].(map[string]any)
+	if !ok {
+		t.Fatalf("merged = %#v, want map[string]any", doc.Meta["merged"])
+	}
+	if merged["a"] != 2 {
+		t.Errorf("merged[a] = %#v, want 2", merged["a"])
 	}
 }
 
