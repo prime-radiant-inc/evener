@@ -138,7 +138,12 @@ export class VoiceClient {
 				JSON.stringify({ ref: target.ref, expectedInstanceId: target.instanceId, deviceId, ...options, takeover }),
 			);
 			pinnedOrigin = response.origin;
-			const result = JSON.parse(response.body);
+			let result;
+			try {
+				result = JSON.parse(response.body);
+			} catch {
+				throw new VoiceError("arm_failed");
+			}
 			if (response.status < 200 || response.status >= 300)
 				throw new VoiceError(result.code ?? result.error?.code ?? "arm_failed");
 			granted = result as Grant;

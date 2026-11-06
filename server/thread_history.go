@@ -796,7 +796,7 @@ func (h *threadHistory) fillOverlayGap() error {
 			end = min(end, h.completeLength)
 		}
 		h.mu.Unlock()
-		if gap == nil || gap.offset >= end {
+		if gap == nil || gap.offset > end {
 			return nil
 		}
 		records, nextOrdinal, err := readRecordedEntries(h.path, *gap, end)
