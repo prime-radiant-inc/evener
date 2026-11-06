@@ -853,6 +853,7 @@ function PaletteBody({
   );
 
   function activateFromClick(index: number) {
+    userMovedRef.current = true;
     setActiveIndex(index);
     const item = view.items[index];
     if (!item) return;
