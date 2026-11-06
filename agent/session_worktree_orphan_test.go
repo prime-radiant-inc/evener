@@ -1395,6 +1395,12 @@ func TestDelegateAttentionFailedStartReopensConsumedReport(t *testing.T) {
 	// under test is exactly the one this test scripts: nil keeps every later
 	// notify a no-op and leaves the test loop below the only driver.
 	lane.delegateSess.SetNotifyFunc(nil)
+	// The shared child's restored runtime carries the same wired edge, and its
+	// pending notification turn answers the same scripted adapter step the
+	// delegate's presentation is waiting on. A turn that launches on its own
+	// would consume the wedge step and leave the recovery presenting to the
+	// adapter's fallback, so that edge is disarmed for the same reason.
+	lane.sharedSub.sess.SetNotifyFunc(nil)
 
 	// Hold the lane for a foreign session before the first presentation can
 	// launch: the launch's lane revalidation refuses on the foreign lock, the
@@ -1405,9 +1411,30 @@ func TestDelegateAttentionFailedStartReopensConsumedReport(t *testing.T) {
 
 	// Drive the presentation. The drive accepts the report — the consume
 	// marker lands — and its launch then refuses on the foreign lane.
+	// The report can be classified while the delegate is processing and
+	// deferred to its delivery queue, where only the turn-end drain that
+	// already passed would pump it. Flush the queue before each drive so a
+	// deferred report is appended deterministically; an empty queue makes it
+	// a no-op.
 	turnStartDeadline := time.Now().Add(30 * time.Second)
+	var flushMu sync.Mutex
+	var flushErr error
+	flush := func() {
+		lane.delegateSub.mu.Lock()
+		busy := lane.delegateSub.running || lane.delegateSub.driving || lane.delegateSub.finalizing
+		lane.delegateSub.mu.Unlock()
+		if busy {
+			return
+		}
+		if err := lane.delegateSess.flushPendingDelegateDeliveries(); err != nil {
+			flushMu.Lock()
+			flushErr = err
+			flushMu.Unlock()
+		}
+	}
 	go func() {
 		for time.Now().Before(turnStartDeadline) {
+			flush()
 			lane.root.driveDelegateAttention(lane.delegateSub)
 			time.Sleep(200 * time.Millisecond)
 			select {
@@ -1419,6 +1446,10 @@ func TestDelegateAttentionFailedStartReopensConsumedReport(t *testing.T) {
 	}()
 	// The refusal is the scenario's proof of fire: the launch stamps the
 	// drain-abandoned mark exactly when it refuses the lane.
+	// TRIPWIRE: the refusal stamps within a couple of drive passes of the
+	// adoption — the flush above makes the report presentable on the first
+	// pass however its delivery was classified — so the bound only fires on a
+	// genuine hang, absorbing a loaded shard's spawn tail and git retries.
 	waitForCondition(t, 30*time.Second, "the presentation start to refuse the foreign-held lane", func() bool {
 		return lane.root.childDrainAbandoned(lane.delegateSess.id)
 	})
@@ -1436,8 +1467,12 @@ func TestDelegateAttentionFailedStartReopensConsumedReport(t *testing.T) {
 	case <-time.After(time.Until(recoveryDeadline)):
 		pending, pendErr := lane.delegateSess.pendingDelegateAttentionIDs()
 		_, locked, reason := r.laneLocked(t, lane.lanePath)
-		t.Fatalf("the failed start lost the retained child's report (pending attention=%d (%v); lane locked=%v reason=%q)",
-			len(pending), pendErr, locked, reason)
+		flushMu.Lock()
+		lastFlushErr := flushErr
+		flushMu.Unlock()
+		deferred := lane.delegateSess.hasPendingDelegateDeliveries()
+		t.Fatalf("the failed start lost the retained child's report (pending attention=%d (%v); lane locked=%v reason=%q; deferred deliveries=%v flush=%v)",
+			len(pending), pendErr, locked, reason, deferred, lastFlushErr)
 	}
 	if got, _ := wedgedSession.Load().(string); got != lane.delegateSess.id {
 		t.Fatalf("the reopened presentation ran on session %q, want the lane-owning delegate %q", got, lane.delegateSess.id)
@@ -1445,6 +1480,9 @@ func TestDelegateAttentionFailedStartReopensConsumedReport(t *testing.T) {
 
 	// The wedged turn settles cleanly once released.
 	releaseOnce.Do(func() { close(release) })
+	// TRIPWIRE: the released turn settles within seconds once the model call
+	// returns; 30s only fires on a genuine hang, not a loaded shard's
+	// scheduling delay between the release and the settle.
 	waitForCondition(t, 30*time.Second, "the delegate's attention turn to finish after release", func() bool {
 		lane.delegateSub.mu.Lock()
 		running := lane.delegateSub.running
@@ -1480,11 +1518,35 @@ func TestDelegateAttentionStopMidPresentationDoesNotReopenReport(t *testing.T) {
 	}
 	lane := spawnSharedDescendantLane(t, r, "stop-mid-presentation", "dlg_stopmidpresnt01", "034stopmidpresnt01", wedge)
 	lane.delegateSess.SetNotifyFunc(nil)
+	// The shared child's restored notify edge can launch its own pending
+	// notification turn, which would consume the scripted wedge step this
+	// test's presentation parks in; disarm it so the test loop below is the
+	// only driver.
+	lane.sharedSub.sess.SetNotifyFunc(nil)
 
 	// Drive the presentation and let its first model request park.
+	// Flush a report delivery the spawn deferred past its last drain cut, so
+	// the drive below sees the row however the classification landed (an
+	// empty queue is a no-op).
+	var flushMu sync.Mutex
+	var flushErr error
+	flush := func() {
+		lane.delegateSub.mu.Lock()
+		busy := lane.delegateSub.running || lane.delegateSub.driving || lane.delegateSub.finalizing
+		lane.delegateSub.mu.Unlock()
+		if busy {
+			return
+		}
+		if err := lane.delegateSess.flushPendingDelegateDeliveries(); err != nil {
+			flushMu.Lock()
+			flushErr = err
+			flushMu.Unlock()
+		}
+	}
 	go func() {
 		deadline := time.Now().Add(30 * time.Second)
 		for time.Now().Before(deadline) {
+			flush()
 			lane.root.driveDelegateAttention(lane.delegateSub)
 			time.Sleep(200 * time.Millisecond)
 			select {
@@ -1496,8 +1558,17 @@ func TestDelegateAttentionStopMidPresentationDoesNotReopenReport(t *testing.T) {
 	}()
 	select {
 	case <-entered:
+	// TRIPWIRE: the loop's drives launch the parked presentation within a
+	// couple of 200ms passes; the bound only fires on a genuine hang, not a
+	// loaded shard's scheduling delay.
 	case <-time.After(30 * time.Second):
-		t.Fatal("the presentation never reached its model request")
+		flushMu.Lock()
+		lastFlushErr := flushErr
+		flushMu.Unlock()
+		deferred := lane.delegateSess.hasPendingDelegateDeliveries()
+		pending, pendErr := lane.delegateSess.pendingDelegateAttentionIDs()
+		t.Fatalf("the presentation never reached its model request (pending attention=%d (%v); deferred deliveries=%v flush=%v)",
+			len(pending), pendErr, deferred, lastFlushErr)
 	}
 
 	// The parent deliberately stops the delegate mid-presentation, the same
@@ -1511,6 +1582,8 @@ func TestDelegateAttentionStopMidPresentationDoesNotReopenReport(t *testing.T) {
 	// The parked request finishes once released; the settle converts its
 	// clean end to context.Canceled because the stop asked for the cancel.
 	releaseOnce.Do(func() { close(release) })
+	// TRIPWIRE: the cancelled presentation settles within seconds of the
+	// wedge opening; the bound only fires on a genuine hang.
 	waitForCondition(t, 30*time.Second, "the stopped presentation turn to settle", func() bool {
 		lane.delegateSub.mu.Lock()
 		running := lane.delegateSub.running
@@ -1526,11 +1599,15 @@ func TestDelegateAttentionStopMidPresentationDoesNotReopenReport(t *testing.T) {
 	lane.delegateSub.mu.Unlock()
 	select {
 	case <-runDone:
+	// TRIPWIRE: the settle tail — the reopen decision included — finishes
+	// right after the turn settles; the bound only fires on a genuine hang.
 	case <-time.After(30 * time.Second):
 		t.Fatal("the stopped presentation run never completed its settle tail")
 	}
 	// The stop owned the finish: the owner's row gate proves the generation
 	// settled as deliberately stopped, so the hook below ran for a stop.
+	// TRIPWIRE: the stopped generation reaches the owner's row gate within
+	// seconds of the settle; the bound only fires on a genuine hang.
 	waitForCondition(t, 30*time.Second, "the stopped generation to reach the owner's row gate", func() bool {
 		return lane.root.childStopGated(lane.delegateSess.id)
 	})
@@ -1586,6 +1663,11 @@ func TestDelegateAttentionBusyCommitReopensConsumedReport(t *testing.T) {
 	}
 	lane := spawnSharedDescendantLane(t, r, "busy-commit-reopen", "dlg_busycommit00001", "034busycommit00001", wedge)
 	lane.delegateSess.SetNotifyFunc(nil)
+	// The shared child's restored notify edge can launch its own pending
+	// notification turn, which would consume the scripted wedge step this
+	// test's recovery parks in; disarm it so the test loop below is the only
+	// driver.
+	lane.sharedSub.sess.SetNotifyFunc(nil)
 
 	// Refuse the first two attention commits as busy: the second refusal
 	// chains — the first's reopened row is consumed by the retry, which fails
@@ -1604,9 +1686,28 @@ func TestDelegateAttentionBusyCommitReopensConsumedReport(t *testing.T) {
 
 	// The chained busy drives consume the report and reopen it twice; the
 	// third drive presents the twice-re-delivered row.
+	// Flush a report delivery the spawn deferred past its last drain cut, so
+	// the drive below sees the row however the classification landed (an
+	// empty queue is a no-op).
+	var flushMu sync.Mutex
+	var flushErr error
+	flush := func() {
+		lane.delegateSub.mu.Lock()
+		busy := lane.delegateSub.running || lane.delegateSub.driving || lane.delegateSub.finalizing
+		lane.delegateSub.mu.Unlock()
+		if busy {
+			return
+		}
+		if err := lane.delegateSess.flushPendingDelegateDeliveries(); err != nil {
+			flushMu.Lock()
+			flushErr = err
+			flushMu.Unlock()
+		}
+	}
 	go func() {
 		deadline := time.Now().Add(30 * time.Second)
 		for time.Now().Before(deadline) {
+			flush()
 			lane.root.driveDelegateAttention(lane.delegateSub)
 			time.Sleep(200 * time.Millisecond)
 			select {
@@ -1618,10 +1719,17 @@ func TestDelegateAttentionBusyCommitReopensConsumedReport(t *testing.T) {
 	}()
 	select {
 	case <-entered:
+	// TRIPWIRE: the third drive presents the twice-reopened row within a
+	// couple of loop passes; the bound only fires on a genuine hang, not a
+	// loaded shard's scheduling delay.
 	case <-time.After(30 * time.Second):
 		pending, pendErr := lane.delegateSess.pendingDelegateAttentionIDs()
-		t.Fatalf("the busy commit lost the retained child's report (pending attention=%d (%v))",
-			len(pending), pendErr)
+		flushMu.Lock()
+		lastFlushErr := flushErr
+		flushMu.Unlock()
+		deferred := lane.delegateSess.hasPendingDelegateDeliveries()
+		t.Fatalf("the busy commit lost the retained child's report (pending attention=%d (%v); deferred deliveries=%v flush=%v)",
+			len(pending), pendErr, deferred, lastFlushErr)
 	}
 	if got, _ := wedgedSession.Load().(string); got != lane.delegateSess.id {
 		t.Fatalf("the reopened presentation ran on session %q, want the lane-owning delegate %q", got, lane.delegateSess.id)
@@ -1629,6 +1737,8 @@ func TestDelegateAttentionBusyCommitReopensConsumedReport(t *testing.T) {
 
 	// The wedged turn settles cleanly once released.
 	releaseOnce.Do(func() { close(release) })
+	// TRIPWIRE: the released turn settles within seconds once the model call
+	// returns; the bound only fires on a genuine hang.
 	waitForCondition(t, 30*time.Second, "the delegate's attention turn to finish after release", func() bool {
 		lane.delegateSub.mu.Lock()
 		running := lane.delegateSub.running
@@ -1707,9 +1817,29 @@ func TestDelegateAttentionStopAdmittedDuringReopenResolvesFreshRow(t *testing.T)
 	// Drive the presentation: the busy arm reopens the consumed report, the
 	// seam admits the stop mid-window, and the loop's own drives end once the
 	// reopened row is no longer pending.
+	// Flush a report delivery the spawn deferred past its last drain cut
+	// before the first drive: the loop returns on the drive's false, which a
+	// stranded deferred row would report as nothing owed (an empty queue is a
+	// no-op).
+	var flushMu sync.Mutex
+	var flushErr error
+	flush := func() {
+		lane.delegateSub.mu.Lock()
+		busy := lane.delegateSub.running || lane.delegateSub.driving || lane.delegateSub.finalizing
+		lane.delegateSub.mu.Unlock()
+		if busy {
+			return
+		}
+		if err := lane.delegateSess.flushPendingDelegateDeliveries(); err != nil {
+			flushMu.Lock()
+			flushErr = err
+			flushMu.Unlock()
+		}
+	}
 	go func() {
 		deadline := time.Now().Add(30 * time.Second)
 		for time.Now().Before(deadline) {
+			flush()
 			if !lane.root.driveDelegateAttention(lane.delegateSub) {
 				return
 			}
@@ -1718,12 +1848,22 @@ func TestDelegateAttentionStopAdmittedDuringReopenResolvesFreshRow(t *testing.T)
 	}()
 	select {
 	case <-stopAdmitted:
+	// TRIPWIRE: the seam admits the stop inside the first reopen window, a
+	// couple of drive passes in; the bound only fires on a genuine hang.
 	case <-time.After(30 * time.Second):
-		t.Fatal("the reopen window never admitted the stop")
+		flushMu.Lock()
+		lastFlushErr := flushErr
+		flushMu.Unlock()
+		deferred := lane.delegateSess.hasPendingDelegateDeliveries()
+		pending, pendErr := lane.delegateSess.pendingDelegateAttentionIDs()
+		t.Fatalf("the reopen window never admitted the stop (pending attention=%d (%v); deferred deliveries=%v flush=%v)",
+			len(pending), pendErr, deferred, lastFlushErr)
 	}
 
 	// The re-check's contract: the stop owns the freshly appended row, so
 	// nothing pending survives and the fold records the hand-off.
+	// TRIPWIRE: the re-check resolves the fresh row at the append that raced
+	// the admitted stop, within seconds; the bound only fires on a hang.
 	waitForCondition(t, 30*time.Second, "the reopen's fresh row to be resolved for the stop admitted mid-window", func() bool {
 		fold, foldErr := readDelegateAttentionFold(lane.delegateSess.TranscriptPath(), lane.delegateSess.id)
 		if foldErr != nil {
