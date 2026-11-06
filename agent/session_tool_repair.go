@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"io"
 	"maps"
-	"sort"
 	"strconv"
 	"strings"
 	"unicode/utf8"
@@ -90,10 +89,6 @@ func prepareToolCall(call llm.ToolCallData, t *tool.RegisteredTool, visibleNames
 		}
 	}
 	if errText := unsupportedDelegateWaitOption(call.Name, args); errText != "" {
-		res.PrevalErr = errText
-		return res
-	}
-	if errText := hubDelegateOwnedArgumentError(call.Name, t.Definition.Parameters, args); errText != "" {
 		res.PrevalErr = errText
 		return res
 	}
@@ -574,44 +569,6 @@ func unsupportedDelegateWaitOption(toolName string, args map[string]any) string 
 		}
 	}
 	return ""
-}
-
-// hubDelegateOwnedArgumentError prevents argument repair from silently
-// dropping an owned-delegate argument a hub-creation delegate call carried.
-// On the hub branch the schema's anyOf (when the ordinary branch is composed)
-// or its closed top level (when it is not) would refuse the argument anyway,
-// but repair runs before validation: without this refusal a Manager-only
-// profile's closed schema lets repair drop the argument and start an unnamed
-// session while the caller still believes it supplied the name. Refusing
-// before repair, with the argument named, makes the retry drop it
-// deliberately instead.
-func hubDelegateOwnedArgumentError(toolName string, params, args map[string]any) string {
-	if toolName != "delegate" {
-		return ""
-	}
-	if _, hubCall := args["hub"]; !hubCall {
-		return ""
-	}
-	// Only the composed Manager schema declares hub; an ordinary delegate
-	// call that carries a stray hub object is repair's to handle, and its
-	// owned-delegate arguments stay legitimate.
-	props, _ := params["properties"].(map[string]any)
-	if _, managerBranch := props["hub"]; !managerBranch {
-		return ""
-	}
-	var extras []string
-	for field := range args {
-		switch field {
-		case "prompt", "hub", "intent", "reasoning_effort":
-		default:
-			extras = append(extras, field)
-		}
-	}
-	if len(extras) == 0 {
-		return ""
-	}
-	sort.Strings(extras)
-	return fmt.Sprintf("invalid_request: delegate hub creation does not accept %s; it is an owned-delegate argument, the call was not applied and no session was created. Hub creation takes prompt, hub and reasoning_effort.", extras[0])
 }
 
 // retiredTaskListShapeError prevents argument repair from silently turning

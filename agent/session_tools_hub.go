@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"maps"
 	"slices"
 	"strings"
@@ -188,17 +189,23 @@ func (s *Session) composeHubRegistry() {
 // hub. A hub call creates a top-level session instead; none of its result is an
 // owned delegate report or an acknowledgement of one.
 func managerDelegateDefinition(def llm.ToolDefinition, ordinary bool) llm.ToolDefinition {
+	// The registered definition is the single source for property schemas and
+	// descriptions. The hub-only variant prunes to what hub creation accepts,
+	// so its closed top level declares nothing else; the ordinary variant
+	// keeps the owned-delegate surface for the ordinary arm's branch.
 	var params map[string]any
-	if ordinary {
-		data, _ := json.Marshal(def.Parameters)
-		_ = json.Unmarshal(data, &params)
-	} else {
-		params = map[string]any{"type": "object", "additionalProperties": false, "properties": map[string]any{
-			"prompt":           map[string]any{"type": "string"},
-			"reasoning_effort": map[string]any{"type": "string", "enum": []string{"low", "medium", "high"}},
-		}}
-	}
+	data, _ := json.Marshal(def.Parameters)
+	_ = json.Unmarshal(data, &params)
 	props := params["properties"].(map[string]any)
+	if !ordinary {
+		for name := range props {
+			switch name {
+			case "prompt", "reasoning_effort", "intent":
+			default:
+				delete(props, name)
+			}
+		}
+	}
 	props["hub"] = map[string]any{
 		"type": "object", "additionalProperties": false,
 		"properties": map[string]any{
@@ -217,16 +224,13 @@ func managerDelegateDefinition(def llm.ToolDefinition, ordinary bool) llm.ToolDe
 	} else {
 		params["required"] = []string{"prompt", "hub"}
 	}
+	// The base definition guarantees both descriptions, so the appends assert
+	// directly like the rest of this file's composition.
 	if name, ok := props["name"].(map[string]any); ok {
-		if desc, ok := name["description"].(string); ok {
-			name["description"] = strings.TrimSpace(desc + " Not accepted on the Manager hub branch: a hub-created session is not an owned delegate, so the name never surfaces; the created ref and the session's prompt-derived title identify it.")
-		}
+		name["description"] = strings.TrimSpace(name["description"].(string) + " Not accepted on the Manager hub branch: a hub-created session is not an owned delegate, so the name never surfaces; the created ref and the session's prompt-derived title identify it.")
 	}
-	if effort, ok := props["reasoning_effort"].(map[string]any); ok {
-		if desc, ok := effort["description"].(string); ok {
-			effort["description"] = strings.TrimSpace(desc + " With hub, it sets the created session's reasoning effort.")
-		}
-	}
+	effort := props["reasoning_effort"].(map[string]any)
+	effort["description"] = strings.TrimSpace(effort["description"].(string) + " With hub, it sets the created session's reasoning effort.")
 	def.Description += " In a Manager session, hub={cwd,model,watch} creates an independent top-level session, attaches the requested watch and reads its initial state before sending prompt; reasoning_effort sets the created session's reasoning effort, and the other owned-delegate arguments do not apply to hub creation and are refused. hub.host names any host the hub can reach; absent means this hub. Creation, watch and input are reported separately. A failed watch leaves the created session empty; an unknown launch is never retried, and an unknown or unreachable host is refused by the hub. Hub results are not owned delegate reports."
 	strictFalse := false
 	def.Strict = &strictFalse
@@ -265,6 +269,32 @@ func (s *Session) composeHubDelegateTool() {
 	registered := *base
 	ordinary := s.hubOrdinaryAvailable(name)
 	registered.Definition = managerDelegateDefinition(registered.Definition, ordinary)
+	// The hub branch refuses owned-delegate arguments before argument repair
+	// can drop them: a Manager-only profile's closed top level would
+	// otherwise let repair silently discard a named argument and start a
+	// session the caller believes it configured. Register applies the shared
+	// intent parameter to the definition it stores, so derive the accepted
+	// set from the intent-carrying form and a future hub-branch argument
+	// flows to the refusal without a second hand-maintained list. PreValidate
+	// runs in both the pre-dispatch preparation and registry dispatch, ahead
+	// of schema validation and repair in each.
+	hubBranch := hubBranchArgumentNames(tool.WithIntentParameter(registered.Definition).Parameters)
+	registered.PreValidate = func(args map[string]any) error {
+		if _, hubCall := args["hub"]; !hubCall {
+			return nil
+		}
+		var extras []string
+		for field := range args {
+			if _, accepted := hubBranch[field]; !accepted {
+				extras = append(extras, field)
+			}
+		}
+		if len(extras) == 0 {
+			return nil
+		}
+		slices.Sort(extras)
+		return fmt.Errorf("invalid_request: delegate hub creation does not accept %s; it is an owned-delegate argument, the call was not applied and no session was created", extras[0])
+	}
 	registered.Schema = nil
 	registered.Execute = nil
 	registered.Exec = func(ctx context.Context, env execenv.ExecutionEnvironment, args map[string]any) (any, error) {
@@ -277,6 +307,24 @@ func (s *Session) composeHubDelegateTool() {
 		return base.Exec(ctx, env, args)
 	}
 	_ = s.reg.Register(registered)
+}
+
+// hubBranchArgumentNames returns the hub branch's accepted argument names:
+// the anyOf arm that declares a hub property when the ordinary branch is
+// composed, else the pruned closed top level. The only arm declaring a hub
+// property is the hub branch itself.
+func hubBranchArgumentNames(params map[string]any) map[string]any {
+	if arms, ok := params["anyOf"].([]any); ok {
+		for _, raw := range arms {
+			arm, _ := raw.(map[string]any)
+			props, _ := arm["properties"].(map[string]any)
+			if _, hub := props["hub"]; hub {
+				return props
+			}
+		}
+	}
+	props, _ := params["properties"].(map[string]any)
+	return props
 }
 
 type managerCreateStage struct {

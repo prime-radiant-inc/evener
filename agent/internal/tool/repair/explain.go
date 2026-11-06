@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"math"
 	"math/big"
 	"reflect"
@@ -1046,68 +1047,53 @@ func oneOfConstraintMessage(toolName string, params map[string]any, keyword, key
 	return b.String()
 }
 
-// oneOfExampleMatchesExactlyOneBranch reports whether minimalExample(params) —
-// the top-level required properties — satisfies exactly one branch of the root
-// oneOf, making it a usable template rather than one that would match zero or
-// several. It answers only when every branch it has to judge constrains nothing
-// but presence, where the answer is exact; a branch that constrains values
-// returns false rather than guess.
-func oneOfExampleMatchesExactlyOneBranch(params map[string]any) bool {
-	arms, _ := params["oneOf"].([]any)
+// exampleBranchMatchCount reports how many arms of the root combinator an
+// object carrying exactly the top-level required properties satisfies. ok is
+// false when any arm it has to judge constrains a value (presence cannot
+// decide it) or when no usable arm list exists, so the caller must not emit an
+// example rather than guess.
+func exampleBranchMatchCount(params map[string]any, keyword string) (matched int, ok bool) {
+	arms, _ := params[keyword].([]any)
 	if len(arms) == 0 {
-		return false
+		return 0, false
 	}
 	keys := map[string]bool{}
 	for _, name := range requiredNames(params) {
 		keys[name] = true
 	}
-	satisfiedCount := 0
 	for _, raw := range arms {
 		arm, _ := raw.(map[string]any)
 		if arm == nil {
-			return false
+			return 0, false
 		}
 		satisfied, known := armOutcome(arm, keys)
 		if !known {
 			// Whether the branch matches cannot be decided from presence, so
-			// the example cannot be shown to match exactly one.
-			return false
+			// the example cannot be shown to match any arm.
+			return 0, false
 		}
 		if satisfied {
-			satisfiedCount++
+			matched++
 		}
 	}
-	return satisfiedCount == 1
+	return matched, true
 }
 
-// anyOfExampleMatchesABranch reports whether minimalExample(params) — the
-// top-level required properties — satisfies at least one branch of the root
-// anyOf, making it a usable template: anyOf needs one match, not exactly one.
-// Like the oneOf gate it answers only when every branch it has to judge
-// constrains nothing but presence, where the answer is exact.
+// oneOfExampleMatchesExactlyOneBranch reports whether minimalExample(params) —
+// the top-level required properties — satisfies exactly one branch of the root
+// oneOf, making it a usable template rather than one that would match zero or
+// several.
+func oneOfExampleMatchesExactlyOneBranch(params map[string]any) bool {
+	matched, ok := exampleBranchMatchCount(params, "oneOf")
+	return ok && matched == 1
+}
+
+// anyOfExampleMatchesABranch reports whether minimalExample(params) satisfies
+// at least one branch of the root anyOf, making it a usable template: anyOf
+// needs one match, not exactly one.
 func anyOfExampleMatchesABranch(params map[string]any) bool {
-	arms, _ := params["anyOf"].([]any)
-	if len(arms) == 0 {
-		return false
-	}
-	keys := map[string]bool{}
-	for _, name := range requiredNames(params) {
-		keys[name] = true
-	}
-	for _, raw := range arms {
-		arm, _ := raw.(map[string]any)
-		if arm == nil {
-			return false
-		}
-		satisfied, known := armOutcome(arm, keys)
-		if !known {
-			return false
-		}
-		if satisfied {
-			return true
-		}
-	}
-	return false
+	matched, ok := exampleBranchMatchCount(params, "anyOf")
+	return ok && matched > 0
 }
 
 // armOutcome reports whether an object carrying exactly keys satisfies a
@@ -1513,14 +1499,7 @@ func refWrappedKeywordLocation(keywordLocation string) bool {
 // mismatch rather than coach a retry with the very value the example would
 // include.
 func armNotProhibition(arm, forbidden map[string]any) string {
-	return notProhibitionInContext(forbidden, armTypedObject(arm))
-}
-
-// notProhibitionInContext renders the prohibition for the strict rule
-// (objectTypedOK false: a "type" on the negated schema genuinely
-// discriminates) or the arm-typed-object rule described above.
-func notProhibitionInContext(forbidden map[string]any, objectTypedOK bool) string {
-	if !isPresenceOnlySchema(forbidden, objectTypedOK) {
+	if !isPresenceOnlySchema(forbidden, armTypedObject(arm)) {
 		return ""
 	}
 	names := requiredNames(forbidden)
@@ -1621,29 +1600,19 @@ func branchRequirement(branch any) string {
 
 // armAcceptedArgumentNames returns the closed set of argument names an arm
 // with additionalProperties:false accepts, sorted for deterministic
-// rendering, or nil when the arm declares no closed set. Only names the arm
-// itself declares count: an absent or schema-typed additionalProperties
-// leaves the arm open, and an empty properties map on a closed arm accepts
-// nothing, which no production arm does.
+// rendering, or nil when the arm declares no closed set. An absent or
+// schema-typed additionalProperties leaves the arm open, and an empty
+// properties map on a closed arm accepts nothing, which no production arm
+// does.
 func armAcceptedArgumentNames(schema map[string]any) []string {
-	raw, present := schema["additionalProperties"]
-	if !present {
-		return nil
-	}
-	closed, isBool := raw.(bool)
-	if !isBool || closed {
+	if schema["additionalProperties"] != false {
 		return nil
 	}
 	props := schemaProps(schema)
 	if len(props) == 0 {
 		return nil
 	}
-	names := make([]string, 0, len(props))
-	for name := range props {
-		names = append(names, name)
-	}
-	sort.Strings(names)
-	return names
+	return slices.Sorted(maps.Keys(props))
 }
 
 // scalarRequirement renders a branch that names no required properties — a

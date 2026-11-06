@@ -52,9 +52,6 @@ func TestManagerDelegateHubCallExtraArgumentDoesNotClaimMissingPrompt(t *testing
 	if !strings.Contains(refusal, "name") {
 		t.Fatalf("refusal did not name the rejected argument: %s", refusal)
 	}
-	if !strings.Contains(refusal, "reasoning_effort") {
-		t.Fatalf("refusal did not name the accepted argument set: %s", refusal)
-	}
 }
 
 // A hub-branch call that validates still has to reach the wire with its
