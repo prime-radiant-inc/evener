@@ -2483,7 +2483,7 @@ function SpawnForm({
                 ? "Waiting for the host to answer; Start is available when it does."
                 : undefined;
   return (
-    <PaneScaffold title="New session" mobileTitle="New session">
+    <PaneScaffold title="New session" mobileTitle="New session" scaffoldMarker="spawn">
       <div className={CLASS.form}>
         {staleNotice !== null && (
           <InlineNotice
