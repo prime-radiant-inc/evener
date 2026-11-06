@@ -1484,6 +1484,27 @@ async function runEntryProductionJourney(driver, harnessUrl) {
   });
   const comparePosition = (left, right) =>
     left.entry - right.entry || left.item - right.item || (left.sub ?? 0) - (right.sub ?? 0);
+  // A renderer item with no native row is either a lost row or a row the
+  // comparison window cannot reach. Record whether the native store holds the
+  // same item id under another transcript key, and what the same key holds, so
+  // the retained audit answers that without the live browser.
+  const unmatchedRendererItems = recordedRendererItems
+    .filter((item) => {
+      const match = rendererToNative.find((candidate) => candidate.id === item.id && candidate.turnId === item.turnId);
+      return !match || match.matches !== 1 || !match.identityMatches;
+    })
+    .map((item) => ({
+      id: item.id,
+      turnId: item.turnId,
+      transcriptKey: item.transcriptKey,
+      position: item.position,
+      nativeSameId: nativeItems
+        .filter((row) => row.item?.id === item.id)
+        .map((row) => ({ transcriptKey: row.transcriptKey, turnId: row.item?.turnId })),
+      nativeSameKey: nativeItems
+        .filter((row) => row.transcriptKey === item.transcriptKey)
+        .map((row) => ({ id: row.item?.id, turnId: row.item?.turnId })),
+    }));
   const nativeCoverageMatches = nativeItems.map((row) => ({
     id: row.item?.id,
     turnId: row.item?.turnId,
@@ -1538,6 +1559,7 @@ async function runEntryProductionJourney(driver, harnessUrl) {
     nativeTurns,
     nativeCoverage,
     rendererToNative,
+    unmatchedRendererItems,
     nativeCoverageMatches,
     itemTurnMatches,
   };
@@ -1578,7 +1600,9 @@ async function runEntryProductionJourney(driver, harnessUrl) {
     }
   }
   if (rendererToNative.some((match) => match.matches !== 1 || !match.identityMatches)) {
-    throw new Error(`renderer items do not map one-to-one to native entry items: ${JSON.stringify(rendererToNative)}`);
+    throw new Error(
+      `renderer items do not map one-to-one to native entry items: ${JSON.stringify({ rendererToNative, unmatchedRendererItems })}`,
+    );
   }
   if (producerCoverage.length !== 2 || producerCoverage.some((match) => match.coveringRows.length === 0)) {
     throw new Error(
