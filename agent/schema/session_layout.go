@@ -1,6 +1,10 @@
 package schema
 
-import "path/filepath"
+import (
+	"os"
+	"path/filepath"
+	"strings"
+)
 
 // SessionsSubdir is the directory, under a state directory, where every
 // session's flat files live: the transcript and event-log JSONL, the API log,
@@ -19,6 +23,10 @@ const (
 	// SessionLogSuffix names a session's event log.
 	SessionLogSuffix = ".log.jsonl"
 )
+
+// SessionDelegateJournalName names the per-session delegates journal, the
+// lifecycle authority every reader of a session's delegate subtree folds.
+const SessionDelegateJournalName = "delegates.jsonl"
 
 // SessionArtifactSuffixes lists every flat file a session owns that goes away
 // with it. The tombstone (SessionMetaTombstoneSuffix) is excluded: it must
@@ -55,4 +63,22 @@ func SessionAPILogPath(stateDir, sessionID string) string {
 // SessionLogPath returns the session's event log path.
 func SessionLogPath(stateDir, sessionID string) string {
 	return filepath.Join(SessionsDir(stateDir), sessionID+SessionLogSuffix)
+}
+
+// SessionDelegateJournalPath returns the session's delegates journal path:
+// <stateDir>/sessions/<sessionID>/delegates.jsonl.
+func SessionDelegateJournalPath(stateDir, sessionID string) string {
+	return filepath.Join(SessionWorkDir(stateDir, sessionID), SessionDelegateJournalName)
+}
+
+// SessionWorkDir returns the session's own directory under sessions/, where its
+// jobs, delegates journal, and worktrees live: <stateDir>/sessions/<sessionID>.
+// An unpersisted session (no durable state directory) keeps that directory under
+// the evener-owned temp base instead, so its files never resolve against the
+// process working directory.
+func SessionWorkDir(stateDir, sessionID string) string {
+	if strings.TrimSpace(stateDir) == "" {
+		return filepath.Join(os.TempDir(), "evener-jobs", sessionID)
+	}
+	return filepath.Join(SessionsDir(stateDir), sessionID)
 }

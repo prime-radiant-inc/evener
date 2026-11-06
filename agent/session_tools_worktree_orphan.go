@@ -3,7 +3,6 @@ package agent
 import (
 	"context"
 	"os"
-	"path/filepath"
 	"strings"
 	"time"
 
@@ -115,7 +114,7 @@ func (s *Session) parentStoreClosedDelegate(ctx context.Context, parentSID, dele
 	owner := delegateJournalOwner(s.stateDir, parentSID)
 	state, ok := memo[owner]
 	if !ok {
-		events, _, err := delegatestore.ScanEvents(ctx, delegateJournalPath(s.stateDir, owner), delegatestore.ScanLimits{})
+		events, _, err := delegatestore.ScanEvents(ctx, schema.SessionDelegateJournalPath(s.stateDir, owner), delegatestore.ScanLimits{})
 		if err != nil {
 			return false
 		}
@@ -142,12 +141,6 @@ func delegateJournalOwner(stateDir, sid string) string {
 		}
 	}
 	return sid
-}
-
-// delegateJournalPath is the per-session delegates journal the doctor tools
-// read: <stateDir>/sessions/<sid>/delegates.jsonl.
-func delegateJournalPath(stateDir, sessionID string) string {
-	return filepath.Join(jobsDir(stateDir, sessionID), "delegates.jsonl")
 }
 
 // isExpectedDelegateMarker reports whether a lock file's contents are the

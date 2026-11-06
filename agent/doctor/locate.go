@@ -177,7 +177,7 @@ func pathsFor(b bucket, sid string) Paths {
 		APILogPath:     schema.SessionAPILogPath(b.dir, sid),
 		MetaPath:       schema.SessionMetaPath(b.dir, sid),
 		JobsPath:       filepath.Join(sess, sid, "jobs.jsonl"),
-		DelegatesPath:  filepath.Join(sess, sid, "delegates.jsonl"),
+		DelegatesPath:  schema.SessionDelegateJournalPath(b.dir, sid),
 		MutationsPath:  filepath.Join(b.dir, "mutations", sid+".json"),
 	}
 }

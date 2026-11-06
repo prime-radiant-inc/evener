@@ -45,7 +45,7 @@ func (r *wtRepo) pruneOrphanedOp(t *testing.T, days float64) (map[string]any, er
 // same signal the session listings read.
 func seedOrphanParent(t *testing.T, r *wtRepo, sid, dlg, closureReason string, lastActive time.Time) {
 	t.Helper()
-	store, err := delegatestore.Open(delegateJournalPath(r.stateDir, sid))
+	store, err := delegatestore.Open(schema.SessionDelegateJournalPath(r.stateDir, sid))
 	if err != nil {
 		t.Fatalf("open parent delegates journal: %v", err)
 	}
