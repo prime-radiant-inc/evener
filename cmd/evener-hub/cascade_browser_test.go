@@ -175,7 +175,7 @@ func TestAgentCascadeBrowser(t *testing.T) {
 			// releases it unchanged.
 			if strings.Contains(input, "CASCADE_ATTENTION_HELD_INPUT") {
 				toolOwners[call.ToolCallID()] = 0
-				if err := os.WriteFile(filepath.Join(artifacts, "attention-held-call.json"), []byte(`{"input":"CASCADE_ATTENTION_HELD_INPUT"}`), 0600); err != nil {
+				if err := publishRendezvous(filepath.Join(artifacts, "attention-held-call.json"), []byte(`{"input":"CASCADE_ATTENTION_HELD_INPUT"}`)); err != nil {
 					scriptErr <- err
 					return
 				}
@@ -662,6 +662,55 @@ func cascadeOwnerDelegates(ctx context.Context, client *appwire.Client, owner st
 }
 
 func cascadeRoleToken(role int) string { return fmt.Sprintf("CASCADE_ROLE_%d_SENTINEL", role) }
+
+// publishRendezvous makes a driver-visible rendezvous file appear only once all
+// of its bytes are there. The driver observes these paths by existence and then
+// parses them, so a plain write's create-before-bytes window hands it an empty
+// file. The rename is atomic because the temp name is in the same directory,
+// and each path has exactly one writer.
+func publishRendezvous(path string, body []byte) error {
+	if err := os.WriteFile(path+".tmp", body, 0600); err != nil {
+		return err
+	}
+	return os.Rename(path+".tmp", path)
+}
+
+// TestCascadeRendezvousReplacesThePathNotItsContents pins the publish contract
+// the driver relies on. Rewriting the destination in place (os.WriteFile) would
+// satisfy a content check but leave a reader that already opened it looking at
+// the old file, and leave the create-before-bytes window that this helper
+// exists to remove.
+func TestCascadeRendezvousReplacesThePathNotItsContents(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "attention-held.json")
+	if err := os.WriteFile(path, []byte(`{"ref":"stale"}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	before, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := publishRendezvous(path, []byte(`{"ref":"fresh"}`)); err != nil {
+		t.Fatal(err)
+	}
+	after, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if os.SameFile(before, after) {
+		t.Fatal("publish rewrote the destination in place instead of replacing it")
+	}
+	body, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(body) != `{"ref":"fresh"}` {
+		t.Fatalf("published body = %q, want the complete new content", body)
+	}
+	if _, err := os.Stat(path + ".tmp"); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("publish left its temp name behind: %v", err)
+	}
+}
 
 // cascadeAttentionIndex recognises one attention fixture session's first input.
 // Those inputs carry no cascade role sentinel, so they are answered before the
@@ -1186,7 +1235,7 @@ func cascadeCreateAttentionSessions(ctx context.Context, t *testing.T, client *a
 			if err != nil {
 				return err
 			}
-			return os.WriteFile(readyPath, body, 0600)
+			return publishRendezvous(readyPath, body)
 		}
 		if time.Now().After(deadline) {
 			return fmt.Errorf("attention tier never reached %d rows (last read %d, err %v)", cascadeAttentionSessions, len(rows), err)
@@ -1226,7 +1275,7 @@ func cascadeHeldAttentionSession(ctx context.Context, watcher *fsnotify.Watcher,
 	if err != nil {
 		return err
 	}
-	if err := os.WriteFile(readyPath, body, 0600); err != nil {
+	if err := publishRendezvous(readyPath, body); err != nil {
 		return err
 	}
 	if err := cascadeAwaitCommandAt(ctx, watcher, controlPath, 2, "release-attention-response"); err != nil {
