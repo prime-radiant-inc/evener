@@ -330,7 +330,7 @@ test("arrow-down onto the first command in command-filter runs it instead of sen
   expect(send).not.toHaveBeenCalled();
   await waitFor(() => {
     const closed = screen.queryByRole("dialog") === null;
-    const argsPill = document.querySelector('[class*="_pill_"]');
+    const argsPill = screen.queryByRole("button", { name: "back to command list" });
     expect(closed || argsPill !== null).toBe(true);
   });
 });
