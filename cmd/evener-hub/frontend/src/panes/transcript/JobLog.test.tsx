@@ -517,14 +517,29 @@ test("a backward wheel stranded past the loaded boundary pages from the hidden m
   await respond(textPage(100, data, 180, 0));
   const scroller = port();
   expect(peer.requests("evener/jobs/output")).toHaveLength(1);
-  // Capture a reading position two rows below the boundary...
+  // One backward wheel from the tail leaves the wheel's target past the first
+  // loaded row: its bottom is 20px above the viewport top and the marker is
+  // 40px above, so only the geometric boundary can find the gap.
   await act(async () => scroll(scroller, 60));
-  // ...then wheel up so the first loaded row's bottom sits at the viewport top
-  // and the marker is no longer visible.
-  await act(async () => scroll(scroller, 40));
   expect(peer.requests("evener/jobs/output")).toHaveLength(2);
   const request = await peer.request("evener/jobs/output", 1);
   expect(request.params).toEqual({ ref: "ref_root", jobId: "job_x", beforeBytes: 100, maxBytes: 100 });
+});
+
+test("a geometric boundary demand leaves the viewport where the reader put it", async () => {
+  mountJob();
+  const data = Array.from({ length: 20 }, (_, index) => `L${String(index).padStart(2, "0")}\n`).join("");
+  await respond(textPage(100, data, 180, 0));
+  const scroller = port();
+  expect(peer.requests("evener/jobs/output")).toHaveLength(1);
+  // The boundary row ends 90px above the viewport top: inside the one-viewport
+  // allowance, but far enough that scrolling to the gap would jump the reader
+  // most of a screen.
+  await act(async () => scroll(scroller, 130));
+  expect(peer.requests("evener/jobs/output")).toHaveLength(2);
+  expect(scroller.scrollTop).toBe(130);
+  const first = scroller.querySelector<HTMLElement>('[data-joblog-kind="output"][data-source-start="120"]');
+  expect(first?.getBoundingClientRect().top).toBe(-10);
 });
 
 test("a fast backward jump pages from the boundary row before it renders", async () => {

@@ -348,9 +348,10 @@ const base = {
 };
 
 test("pages backward at the geometric boundary when measurement hides the unloaded marker", () => {
-  const gapIndex = jobLogDemandGapIndex(base);
-  expect(gapIndex).toBe(1);
-  expect(backwardRows[gapIndex]).toMatchObject({ kind: "unloaded", startBytes: 100, endBytes: 200 });
+  const { index, geometric } = jobLogDemandGapIndex(base);
+  expect(index).toBe(1);
+  expect(geometric).toBe(true);
+  expect(backwardRows[index]).toMatchObject({ kind: "unloaded", startBytes: 100, endBytes: 200 });
 });
 
 test("does not page at the boundary while the first loaded row is still visible", () => {
@@ -359,11 +360,14 @@ test("does not page at the boundary while the first loaded row is still visible"
       ...base,
       geometry: { ...base.geometry, rowBottom: (index) => (index === 2 ? 60 : undefined) },
     }),
-  ).toBe(-1);
+  ).toEqual({ index: -1, geometric: false });
 });
 
 test("does not page at the backward boundary when the wheel advanced forward", () => {
-  expect(jobLogDemandGapIndex({ ...base, previous: { byteOffset: 210, following: false }, byteOffset: 250 })).toBe(-1);
+  expect(jobLogDemandGapIndex({ ...base, previous: { byteOffset: 210, following: false }, byteOffset: 250 })).toEqual({
+    index: -1,
+    geometric: false,
+  });
 });
 
 test("does not page from the gap while the reader is deeper inside the loaded window", () => {
@@ -372,11 +376,14 @@ test("does not page from the gap while the reader is deeper inside the loaded wi
       ...base,
       geometry: { ...base.geometry, rowBottom: (index) => (index === 2 ? -200 : undefined) },
     }),
-  ).toBe(-1);
+  ).toEqual({ index: -1, geometric: false });
 });
 
 test("still pages from a visible marker and from a crossed gap", () => {
-  expect(jobLogDemandGapIndex({ ...base, markerStartBytes: 100, previous: null })).toBe(1);
+  expect(jobLogDemandGapIndex({ ...base, markerStartBytes: 100, previous: null })).toEqual({
+    index: 1,
+    geometric: false,
+  });
   // The reading position was past the gap and is now before it.
-  expect(jobLogDemandGapIndex({ ...base, byteOffset: 50 })).toBe(1);
+  expect(jobLogDemandGapIndex({ ...base, byteOffset: 50 })).toEqual({ index: 1, geometric: false });
 });

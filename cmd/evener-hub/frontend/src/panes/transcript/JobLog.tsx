@@ -238,7 +238,7 @@ function JobLogBody({ reader, jobId, paneId }: { reader: JobLogReader; jobId: st
       const rect = element.getBoundingClientRect();
       return element.dataset.joblogKind === "unloaded" && rect.bottom >= viewport.top && rect.top <= viewport.bottom;
     });
-    const gapIndex = jobLogDemandGapIndex({
+    const decision = jobLogDemandGapIndex({
       rows,
       gaps,
       markerStartBytes: marker ? Number(marker.dataset.sourceStart) : undefined,
@@ -258,6 +258,7 @@ function JobLogBody({ reader, jobId, paneId }: { reader: JobLogReader; jobId: st
         },
       },
     });
+    const gapIndex = decision.index;
     const gap = rows[gapIndex];
     if (gap && gap.kind === "unloaded") {
       const direction = (previous?.byteOffset ?? byte ?? 0) >= gap.endBytes ? "backward" : "forward";
@@ -285,7 +286,10 @@ function JobLogBody({ reader, jobId, paneId }: { reader: JobLogReader; jobId: st
         direction === "backward" ? "start" : "end",
       );
       // A missing interval is a paging boundary, not a shortcut to its far side.
-      if (restore.current === null)
+      // A geometric boundary gap is already at the viewport edge: scrolling to it
+      // would jump the reader up to a screen, while the prepended page lands
+      // above the reader anyway.
+      if (restore.current === null && !decision.geometric)
         list.current?.scrollToIndex(gapIndex, { align: direction === "forward" ? "end" : "start" });
     } else if (capture) {
       reader.capture(capture);
