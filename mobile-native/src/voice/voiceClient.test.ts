@@ -1,5 +1,5 @@
 import { expect, it } from "vitest";
-import { VoiceClient, type NativeVoicePort, type VoiceSnapshot } from "./voiceClient";
+import { VoiceClient, VoiceError, type NativeVoicePort, type VoiceSnapshot } from "./voiceClient";
 
 const state: VoiceSnapshot = {
 	state: "quiet",
@@ -209,6 +209,31 @@ it("keeps busy takeover explicit and refuses background broad credential reads",
 	await expect(client.arm(target)).rejects.toMatchObject({ code: "binding_owned" });
 	expect(requests).toBe(1);
 	expect(hardware.actions).toEqual([]);
+});
+
+it.each([
+	{ status: 502, body: "<html>Bad Gateway</html>" },
+	{ status: 401, body: "" },
+])("maps an invalid JSON $status arm response to VoiceError and allows retry", async ({ status, body }) => {
+	const hardware = device();
+	let requests = 0;
+	const client = makeClient(
+		hardware.native,
+		async () => "broad-fixture",
+		() => true,
+		async () => (++requests === 1 ? new Response(body, { status }) : Response.json(grant)),
+	);
+	const pending = client.arm(target);
+	await expect(pending).rejects.toBeInstanceOf(VoiceError);
+	await expect(pending).rejects.toMatchObject({ code: "arm_failed" });
+	expect(requests).toBe(1);
+	expect(hardware.actions).toEqual([]);
+	expect(client.getTarget()).toBeNull();
+	await client.arm(target);
+	expect(requests).toBe(2);
+	expect(hardware.actions).toEqual(["arm"]);
+	expect(hardware.configuration()).toEqual({ ...grant, origin: target.hub.origin, deviceId: "install" });
+	expect(client.getTarget()).toEqual(target);
 });
 
 it("revokes a late arm response after logout instead of starting microphone", async () => {

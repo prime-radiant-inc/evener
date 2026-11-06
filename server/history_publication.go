@@ -12,7 +12,7 @@ import (
 // this leaf lock. No callback or I/O runs while it is held.
 type historyPublication struct {
 	mu             sync.Mutex
-	paired         bool
+	paired         bool // the producer has completed at least one publication
 	completeLength int64
 	stagedEnd      int64
 	provenance     *appwire.ConversationProvenanceState
@@ -48,6 +48,7 @@ func (p *historyPublication) complete(length int64, next *appwire.ConversationPr
 		p.mu.Unlock()
 		return
 	}
+	p.paired = true
 	p.adoptLocked(next)
 	p.completeLength = max(p.completeLength, length)
 	if h != nil && p.stagedEnd <= p.completeLength {
