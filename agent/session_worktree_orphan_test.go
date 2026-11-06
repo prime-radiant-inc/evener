@@ -18,6 +18,7 @@ import (
 	"primeradiant.com/evener/agent/internal/jobstore"
 	"primeradiant.com/evener/agent/internal/worktree"
 	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/llm"
 )
 
@@ -1529,9 +1530,12 @@ func TestDelegateAttentionStopMidPresentationDoesNotReopenReport(t *testing.T) {
 // the consume marker already paid for: the busy arm must reopen the report
 // exactly as a refused launch does, or a commit that loses its race strands
 // the report with no reservation and no pending row left. The commit-fault
-// seam wedges the first commit with errDelegateTargetBusy deterministically —
-// the same class CI's flake hit, where a start consumed the report and then
-// its commit failed.
+// seam wedges the first two commits with errDelegateTargetBusy
+// deterministically — the same class CI's flake hit, where a start consumed
+// the report and then its commit failed — and the second refusal chains: the
+// retry's reopened row fails unjournaled at the same generation, so the
+// re-delivery nests one reopen identity deeper and its own retry must still
+// claim that generation against both ancestor consume markers.
 func TestDelegateAttentionBusyCommitReopensConsumedReport(t *testing.T) {
 	t.Parallel()
 	r := newWorktreeRepo(t)
@@ -1550,18 +1554,23 @@ func TestDelegateAttentionBusyCommitReopensConsumedReport(t *testing.T) {
 	lane := spawnSharedDescendantLane(t, r, "busy-commit-reopen", "dlg_busycommit00001", "034busycommit00001", wedge)
 	lane.delegateSess.SetNotifyFunc(nil)
 
-	// Refuse exactly the first attention commit as busy.
-	var faultOnce sync.Once
+	// Refuse the first two attention commits as busy: the second refusal
+	// chains — the first's reopened row is consumed by the retry, which fails
+	// unjournaled at the same generation, so the second reopen re-delivers
+	// under the grandchild identity X/reopened/g/reopened/g and the retry of
+	// THAT must still be able to claim the generation both ancestors pin.
+	var faults atomic.Int32
 	updateSessionTestConfig(lane.root, func(cfg *testConfig) {
 		cfg.delegateAttentionCommitStartFault = func() error {
-			var err error
-			faultOnce.Do(func() { err = errDelegateTargetBusy })
-			return err
+			if faults.Add(1) <= 2 {
+				return errDelegateTargetBusy
+			}
+			return nil
 		}
 	})
 
-	// The first drive consumes the report and its commit refuses; the busy
-	// arm reopens the row, so the next drive presents it.
+	// The chained busy drives consume the report and reopen it twice; the
+	// third drive presents the twice-re-delivered row.
 	go func() {
 		deadline := time.Now().Add(30 * time.Second)
 		for time.Now().Before(deadline) {
@@ -1593,6 +1602,129 @@ func TestDelegateAttentionBusyCommitReopensConsumedReport(t *testing.T) {
 		lane.delegateSub.mu.Unlock()
 		return !running
 	})
+}
+
+// A stop admitted between a reopen's teardown guards and its durable append
+// owns the row the append then lands: the stop's discard enumerated attention
+// by the ids it knew at plan time, and nothing notes the fresh identity, so
+// without a re-check the row would survive as pending on a deliberately
+// stopped delegate. The seam pins the race — it admits the stop exactly inside
+// the guard-to-append window — and a failing attention-transcript opener
+// holds that stop in flight for the whole assertion: the stop driver's
+// completion cannot collect its evidence, while the reopen's own append and
+// the re-check's discard write through the receiver's resident writer. The
+// reopen must re-check the teardown predicates after its append and hand the
+// fresh row to the stop that admitted mid-window.
+func TestDelegateAttentionStopAdmittedDuringReopenResolvesFreshRow(t *testing.T) {
+	t.Parallel()
+	r := newWorktreeRepo(t)
+	lane := spawnSharedDescendantLane(t, r, "stop-during-reopen", "dlg_stopreopen0001", "034stopreopen0001")
+	lane.delegateSess.SetNotifyFunc(nil)
+
+	// Hold the stop the seam admits in flight: its driver cannot complete
+	// without reading the covered members' attention transcripts, and the
+	// failing opener refuses that read until the test restores it for cleanup.
+	tree := lane.root.delegateController
+	tree.mu.Lock()
+	realAttentionOpen := tree.attentionOpen
+	tree.attentionOpen = func(path, expectedSessionID string) (*transcript.Writer, []transcript.Entry, error) {
+		return nil, nil, errors.New("test: attention transcript unavailable")
+	}
+	tree.mu.Unlock()
+	var restoreOnce sync.Once
+	t.Cleanup(func() {
+		restoreOnce.Do(func() {
+			tree.mu.Lock()
+			tree.attentionOpen = realAttentionOpen
+			tree.mu.Unlock()
+		})
+	})
+
+	// Refuse exactly the delegate's first attention commit as busy: its
+	// reopen is the one the stop must catch.
+	var faults atomic.Int32
+	updateSessionTestConfig(lane.root, func(cfg *testConfig) {
+		cfg.delegateAttentionCommitStartFault = func() error {
+			if faults.Add(1) <= 1 {
+				return errDelegateTargetBusy
+			}
+			return nil
+		}
+	})
+
+	// Admit the stop exactly inside the reopen's guard-to-append window. The
+	// reopen reads its seam on the delegate's own config, and the idle
+	// delegate's cancel plan is empty — the admission itself is the event.
+	stopAdmitted := make(chan struct{})
+	var stopOnce sync.Once
+	updateSessionTestConfig(lane.delegateSess, func(cfg *testConfig) {
+		cfg.delegateAttentionBeforeReopenAppend = func() {
+			stopOnce.Do(func() {
+				_, cancelPlan, _, err := lane.root.delegateController.StopSubtree(rootDelegateActor(lane.root.delegateRootSessionID), lane.fixture.delegateID)
+				if err != nil {
+					t.Errorf("StopSubtree inside the reopen window: %v", err)
+					return
+				}
+				executeDelegateCancelPlan(cancelPlan)
+				close(stopAdmitted)
+			})
+		}
+	})
+
+	// Drive the presentation: the busy arm reopens the consumed report, the
+	// seam admits the stop mid-window, and the loop's own drives end once the
+	// reopened row is no longer pending.
+	go func() {
+		deadline := time.Now().Add(30 * time.Second)
+		for time.Now().Before(deadline) {
+			if !lane.root.driveDelegateAttention(lane.delegateSub) {
+				return
+			}
+			time.Sleep(200 * time.Millisecond)
+		}
+	}()
+	select {
+	case <-stopAdmitted:
+	case <-time.After(30 * time.Second):
+		t.Fatal("the reopen window never admitted the stop")
+	}
+
+	// The re-check's contract: the stop owns the freshly appended row, so
+	// nothing pending survives and the fold records the hand-off.
+	waitForCondition(t, 30*time.Second, "the reopen's fresh row to be resolved for the stop admitted mid-window", func() bool {
+		fold, foldErr := readDelegateAttentionFold(lane.delegateSess.TranscriptPath(), lane.delegateSess.id)
+		if foldErr != nil {
+			return false
+		}
+		for _, id := range fold.pendingIDs() {
+			if strings.Contains(id, "/reopened/") {
+				return false
+			}
+		}
+		return true
+	})
+	fold, foldErr := readDelegateAttentionFold(lane.delegateSess.TranscriptPath(), lane.delegateSess.id)
+	if foldErr != nil {
+		t.Fatalf("read the delegate's attention fold: %v", foldErr)
+	}
+	resolved := false
+	for id, disposition := range fold.resolutions {
+		if !strings.Contains(id, "/reopened/") {
+			continue
+		}
+		resolved = true
+		if disposition != delegateAttentionDiscarded {
+			t.Fatalf("the reopened row resolved as %q, want discarded for the admitted stop", disposition)
+		}
+	}
+	if !resolved {
+		t.Fatal("the reopen never appended a fresh row for the re-check to resolve")
+	}
+	// The stop the re-check answered really is the one in flight: the failing
+	// opener keeps its driver from completing past this point.
+	if !lane.root.delegateController.attentionReopenRefused(lane.fixture.delegateID) {
+		t.Fatal("the stop admitted mid-window is no longer in flight")
+	}
 }
 
 // A silent live tool call is active delegate work the per-report refreshes

@@ -182,6 +182,11 @@ type testConfig struct {
 	// tests can pin the busy arm's recovery deterministically without racing
 	// a real busy. Nil in production.
 	delegateAttentionCommitStartFault func() error
+	// delegateAttentionBeforeReopenAppend observes the instant a reopen's
+	// durable append is about to land, after every teardown guard has run.
+	// Tests pause it there so a stop admitted into the guard-to-append window
+	// can be pinned. Nil in production.
+	delegateAttentionBeforeReopenAppend func()
 	// delegateAttentionBeforeGuardRelease observes an attention drive that
 	// launched no run, while it still holds the child's drive guard. Tests
 	// pause it there so another drive is refused on that guard. Nil in

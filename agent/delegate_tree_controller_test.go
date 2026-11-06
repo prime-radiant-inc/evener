@@ -512,6 +512,7 @@ var delegateControllerDormancyExpectedInventory = map[delegateControllerDormancy
 	{filename: "jobs_activity.go", function: "loadLiveActivityBase", kind: "lifecycle method", symbol: "Snapshot"}:                                                                     1,
 	{filename: "session_attention.go", function: "(*Session).acceptDelegateAttention", kind: "session attention method", symbol: "resolveAttentionDurablyForGeneration"}:               1,
 	{filename: "session_attention.go", function: "(*Session).resolveAttentionDurably", kind: "session attention method", symbol: "resolveAttentionDurablyForGeneration"}:               1,
+	{filename: "session_attention.go", function: "(*Session).reopenConsumedDelegateAttention", kind: "session attention method", symbol: "resolveAttentionDurably"}:                    1,
 	{filename: "session_attention.go", function: "(*Session).finishAttentionTurn", kind: "session attention method", symbol: "resolveAttentionDurably"}:                                1,
 	{filename: "session_attention.go", function: "(*Session).finishRootDelegateAttentionTurn", kind: "session attention method", symbol: "resolveAttentionDurably"}:                    1,
 	{filename: "session_events.go", function: "(*Session).SetDescendantEventFunc", kind: "lifecycle method", symbol: "Snapshot"}:                                                       1,

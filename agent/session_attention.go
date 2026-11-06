@@ -278,7 +278,7 @@ func extendDelegateAttention(prior delegateAttentionFold, entries []transcript.E
 					// resume claim its source left on a generation that never
 					// journaled, so the fold keeps both markers without treating
 					// the pair as a conflicting double claim.
-					if resolution.AttentionID == delegateAttentionReopenID(previousID, resolution.ResumeGeneration) {
+					if delegateAttentionReopenSource(resolution.AttentionID, previousID, resolution.ResumeGeneration) {
 						continue
 					}
 					return delegateAttentionFold{}, fmt.Errorf("resume generation %d claims attention %q and %q", resolution.ResumeGeneration, previousID, resolution.AttentionID)
@@ -744,7 +744,9 @@ func (s *Session) pendingDelegateAttentionIDs() ([]string, error) {
 // fail, the next drive reads the report as pending and presents it instead of
 // silently losing it. An item that survived its failed start needs nothing:
 // the ordinary retry still presents it, and re-delivering it would present
-// the same report twice.
+// the same report twice. A stop or close admitted between the caller's
+// teardown guards and the append is re-checked after it, and the row that
+// teardown now owns is resolved as discarded instead of surviving it.
 func (s *Session) reopenConsumedDelegateAttention(attentionID string) error {
 	if s == nil {
 		return errors.New("delegate attention session is nil")
@@ -774,6 +776,12 @@ func (s *Session) reopenConsumedDelegateAttention(attentionID string) error {
 		// consumed again; its own failed start reopens under its own key.
 		return nil
 	}
+	if observer := s.cfg.testOnly.delegateAttentionBeforeReopenAppend; observer != nil {
+		// A test seam, nil in production: the teardown guards have all run by
+		// here, so a test can admit a stop into exactly the window between
+		// them and the durable append below.
+		observer()
+	}
 	_, err = s.appendDelegateAttentionMessageDurably(reopenID, message)
 	if err == nil {
 		s.attentionMu.Lock()
@@ -787,6 +795,27 @@ func (s *Session) reopenConsumedDelegateAttention(attentionID string) error {
 			s.attentionAcceptedID = ""
 		}
 		s.attentionMu.Unlock()
+		// The teardown guards ran before the append, but a stop or close can
+		// admit while it was in flight, and the fresh id is invisible to that
+		// stop's plan-time enumeration (no wake notes it), so the row would
+		// survive as pending on a deliberately stopped delegate. Re-check the
+		// same predicates and hand the row to the teardown that now owns it:
+		// the discard resolves it durably, the same resolution the stop's own
+		// machinery would have written had the row existed at plan time.
+		s.mu.Lock()
+		receiverClosed := s.closingOrClosedLocked()
+		s.mu.Unlock()
+		if receiverClosed {
+			// A closed writer treats the append as a successful no-op, so the
+			// row never landed: the receiver's own teardown owns everything
+			// its transcript still held, and there is nothing to resolve.
+			return nil
+		}
+		if s.delegateController.attentionReopenRefused(s.owningDelegateID) {
+			if resolveErr := s.resolveAttentionDurably([]string{reopenID}, delegateAttentionDiscarded); resolveErr != nil {
+				return resolveErr
+			}
+		}
 	}
 	return err
 }
@@ -828,6 +857,27 @@ func (s *Session) reopenLatchedDelegateAttention() error {
 // over the resume claim its source left on the generation that never ran.
 func delegateAttentionReopenID(sourceID string, generation uint64) string {
 	return fmt.Sprintf("%s/reopened/%d", sourceID, generation)
+}
+
+// delegateAttentionReopenSource reports whether id reduces to sourceID by
+// stripping reopen segments, each keyed by generation. Starts that keep
+// failing unjournaled at the same generation re-deliver one report under
+// ever-deeper identities (X → X/reopened/g → X/reopened/g/reopened/g), so a
+// reopened row supersedes the resume claim of every ancestor in its chain,
+// not only its immediate parent. A segment keyed differently, or a chain that
+// bottoms out anywhere but sourceID, does not match.
+func delegateAttentionReopenSource(id, sourceID string, generation uint64) bool {
+	if generation == 0 {
+		return id == sourceID
+	}
+	suffix := fmt.Sprintf("/reopened/%d", generation)
+	for id != sourceID {
+		if !strings.HasSuffix(id, suffix) {
+			return false
+		}
+		id = strings.TrimSuffix(id, suffix)
+	}
+	return true
 }
 
 func (s *Session) pendingDelegateAttentionIDsLocked() ([]string, error) {
@@ -2075,10 +2125,11 @@ func validateDelegateAttentionResolutions(fold delegateAttentionFold, ids []stri
 					// under a fresh identity: its source was consumed by a
 					// start that never committed (the reservation was
 					// released), so the generation was never journaled and the
-					// retry of it presents the re-delivered row. The stale
-					// claim must not strand the very recovery the reopen
-					// performed.
-					if attentionID == delegateAttentionReopenID(previousID, resumeGeneration) {
+					// retry of it presents the re-delivered row. Chained
+					// failures nest the identity one reopen deeper per
+					// refusal, so the whole chain supersedes the stale claim
+					// rather than only its immediate parent.
+					if delegateAttentionReopenSource(attentionID, previousID, resumeGeneration) {
 						continue
 					}
 					return fmt.Errorf("resume generation %d already claims attention %q", resumeGeneration, previousID)

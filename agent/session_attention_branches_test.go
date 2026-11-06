@@ -127,6 +127,31 @@ func TestValidateDelegateAttentionResolutions_ReopenSupersedesSourceClaim(t *tes
 	}
 }
 
+func TestValidateDelegateAttentionResolutions_ChainedReopenSupersedesAncestorClaims(t *testing.T) {
+	fold := newDelegateAttentionFold()
+	fold.content["attn_1"] = llm.User("hello")
+	fold.order = append(fold.order, "attn_1")
+	reopened := delegateAttentionReopenID("attn_2", 5)
+	grandchild := delegateAttentionReopenID(reopened, 5)
+	fold.content[grandchild] = llm.User("hello")
+	fold.order = append(fold.order, grandchild)
+	// Both ancestors' consume markers claim generation 5: the first start
+	// failed unjournaled, and so did the retry that consumed its reopen.
+	fold.resolutions["attn_2"] = delegateAttentionConsumed
+	fold.resumeGenerations["attn_2"] = 5
+	fold.resolutions[reopened] = delegateAttentionConsumed
+	fold.resumeGenerations[reopened] = 5
+
+	// The twice-re-delivered row may claim the generation every ancestor pins.
+	if err := validateDelegateAttentionResolutions(fold, []string{grandchild}, delegateAttentionConsumed, 5); err != nil {
+		t.Fatalf("chained reopen claiming its ancestors' generation: %v", err)
+	}
+	// An id outside the chain still refuses against either ancestor's claim.
+	if err := validateDelegateAttentionResolutions(fold, []string{"attn_1"}, delegateAttentionConsumed, 5); err == nil {
+		t.Fatal("resume generation already claimed by a non-source attention should error")
+	}
+}
+
 func TestFoldDelegateDeliveryCommits(t *testing.T) {
 	t.Parallel()
 	// Empty commits -> no-op.
