@@ -347,8 +347,12 @@ final class EvenerQualificationUITests: XCTestCase {
 	/// Types into a field and checks the text arrived whole, clearing and
 	/// retyping when it did not. A busy app can drop synthesized keystrokes
 	/// mid-burst, and a silently shortened address surfaces only much later,
-	/// as a review with a malformed hub and an empty suggested name. Secure
-	/// fields hide their text, so they are checked by their bullet count.
+	/// as a review with a malformed hub and an empty suggested name. The
+	/// clear is judged by the field reading empty, never by a tap count: a
+	/// restored draft can leave the field holding far more than the text
+	/// just typed, and the deletes can drop under load the same way typing
+	/// does. Secure fields hide their text, so they are checked by their
+	/// bullet count.
 	private func typeWholeText(
 		_ app: XCUIApplication,
 		_ field: XCUIElement,
@@ -358,16 +362,25 @@ final class EvenerQualificationUITests: XCTestCase {
 	) {
 		let deadline = Date().addingTimeInterval(tripwire)
 		while Date() < deadline {
-			field.typeText(text)
 			if let value = field.value as? String, landed(value) {
 				return
 			}
-			// Some keystroke in the burst was dropped: clear what arrived
-			// and type again.
+			// Clear what the field holds — an empty field costs one read —
+			// then type the whole text again.
 			let remove = app.keyboards.keys["delete"]
-			for _ in 0..<(text.count + 4) where remove.exists {
-				remove.tap()
+			var clears = 0
+			while clears < 12 && Date() < deadline {
+				let held = field.value as? String ?? ""
+				if held.isEmpty {
+					break
+				}
+				for _ in 0..<24 where remove.exists && Date() < deadline {
+					remove.tap()
+				}
+				clears += 1
 			}
+			guard Date() < deadline else { break }
+			field.typeText(text)
 		}
 		XCTFail("\(what): the field reads \(field.value ?? "nothing")")
 	}
