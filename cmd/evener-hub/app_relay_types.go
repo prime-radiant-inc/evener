@@ -351,7 +351,24 @@ func patchStatusCapabilities(notification appwire.Notification, patch func(appwi
 }
 
 var observeHubRelay func(*hubRelay)
-var observeHubRelayWait func()
+
+// observeHubRelayWait is read by the relay's background goroutines. Tests
+// swap it while a fan-out may still be running, so the read and the restore
+// must not be a plain variable's unsynchronized access.
+var observeHubRelayWait atomic.Pointer[func()]
+
+// fireObserveHubRelayWait reports a relay wait. Production never installs an
+// observation, so this is a no-op there.
+func fireObserveHubRelayWait() {
+	if observe := observeHubRelayWait.Load(); observe != nil {
+		(*observe)()
+	}
+}
+
+// observeHubRelayDaemonGoneRetention runs after a daemon-gone delivery's
+// target pass and before its retention is decided, so a test can release a
+// joining read at that boundary. Production leaves it nil.
+var observeHubRelayDaemonGoneRetention atomic.Pointer[func()]
 
 // Test-only observations for the bounded pending-delivery queue, its delivery
 // input, and authoritative route publication. Production never stores them;

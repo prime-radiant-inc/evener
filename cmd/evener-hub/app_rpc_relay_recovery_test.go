@@ -2092,9 +2092,8 @@ func TestHubRPCThreadReadPropagatesInFlightRelaySubscribeFailure(t *testing.T) {
 		release: make(chan struct{}),
 	}
 	waiterJoined := make(chan struct{}, 1)
-	previousObserveWait := observeHubRelayWait
-	observeHubRelayWait = func() { waiterJoined <- struct{}{} }
-	t.Cleanup(func() { observeHubRelayWait = previousObserveWait })
+	restoreWait := installObserveHubRelayWait(func() { waiterJoined <- struct{}{} })
+	t.Cleanup(restoreWait)
 	srv := httptest.NewUnstartedServer(nil)
 	cfg := hubcore.WebConfig{HubAddr: srv.Listener.Addr().String(), Past: hubcore.NewPastIndex("")}
 	web := NewWebServer(cfg)

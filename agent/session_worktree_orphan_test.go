@@ -45,7 +45,7 @@ func (r *wtRepo) pruneOrphanedOp(t *testing.T, days float64) (map[string]any, er
 // same signal the session listings read.
 func seedOrphanParent(t *testing.T, r *wtRepo, sid, dlg, closureReason string, lastActive time.Time) {
 	t.Helper()
-	store, err := delegatestore.Open(delegateJournalPath(r.stateDir, sid))
+	store, err := delegatestore.Open(schema.SessionDelegateJournalPath(r.stateDir, sid))
 	if err != nil {
 		t.Fatalf("open parent delegates journal: %v", err)
 	}
@@ -585,6 +585,9 @@ func TestDelegateSendReLocksUnlockedLaneForRetainedChild(t *testing.T) {
 	first := (delegateRuntime{owner: root}).send(context.Background(), fixture.delegateID, "first turn", 10_000)
 	if first.result.Err != nil {
 		t.Fatalf("first send: %v", first.result.Err)
+	}
+	if first.result.TimedOut {
+		t.Fatalf("the lane-owning delegate's first send timed out; the presentation window cannot start with the spawn still in flight")
 	}
 	if sub := root.subagents.get(fixture.childID); sub == nil || sub.sess == nil {
 		t.Fatalf("delegate %s is not retained after its run", fixture.childID)
@@ -1190,9 +1193,29 @@ func TestWorktreePrune_OrphanArmSparesLaneWhileRetainedChildNotifies(t *testing.
 	// below share one deadline: a loop budget shorter than the tripwire
 	// strands an arm that lands in the gap — nothing drives the turn again
 	// until the owner's quiet-watch, past the tripwire.
+	// The report can be classified while the root is processing and deferred
+	// to the root's delivery queue, where only the background retry would
+	// pump it. Flush the queue before each drive so a deferred report is
+	// appended deterministically; an empty queue makes it a no-op.
 	turnStartDeadline := time.Now().Add(30 * time.Second)
+	var flushMu sync.Mutex
+	var flushErr error
+	flush := func() {
+		lane.delegateSub.mu.Lock()
+		busy := lane.delegateSub.running || lane.delegateSub.driving || lane.delegateSub.finalizing
+		lane.delegateSub.mu.Unlock()
+		if busy {
+			return
+		}
+		if err := lane.delegateSess.flushPendingDelegateDeliveries(); err != nil {
+			flushMu.Lock()
+			flushErr = err
+			flushMu.Unlock()
+		}
+	}
 	go func() {
 		for time.Now().Before(turnStartDeadline) {
+			flush()
 			lane.root.driveDelegateAttention(lane.delegateSub)
 			time.Sleep(200 * time.Millisecond)
 			select {
@@ -1204,7 +1227,10 @@ func TestWorktreePrune_OrphanArmSparesLaneWhileRetainedChildNotifies(t *testing.
 	}()
 	select {
 	case <-entered:
-	// TRIPWIRE: the armed attention turns over within seconds of the send settling; the shared deadline only fires on a genuine hang. It covers a shard loaded with the rest of this package's parallel tests, where spawn and the arm both stretch.
+	// TRIPWIRE: the armed attention turns over within seconds of the send
+	// settling; the shared deadline only fires on a genuine hang. It covers a
+	// shard loaded with the rest of this package's parallel tests, where spawn
+	// and the arm both stretch.
 	case <-time.After(time.Until(turnStartDeadline)):
 		// Reproduce the drive's own preconditions, in its order, so the
 		// failure names the one that declined: the drive's boolean cannot.
@@ -1235,14 +1261,21 @@ func TestWorktreePrune_OrphanArmSparesLaneWhileRetainedChildNotifies(t *testing.
 		// attention never armed, or a gate held the launch. Name which.
 		pending, pendErr := lane.delegateSess.pendingDelegateAttentionIDs()
 		childPending, childPendErr := lane.sharedSub.sess.pendingDelegateAttentionIDs()
+		flushMu.Lock()
+		lastFlushErr := flushErr
+		flushMu.Unlock()
+		deferred := lane.delegateSess.hasPendingDelegateDeliveries()
+		lane.sharedSub.mu.Lock()
+		childRunning, childClosed, childFinalizing := lane.sharedSub.running, lane.sharedSub.closed, lane.sharedSub.finalizing
+		lane.sharedSub.mu.Unlock()
 		stopGated := lane.root.childStopGated(lane.delegateSess.id)
 		fatalGated := lane.root.childFatalRunGated(lane.delegateSess.id)
 		drainAbandoned := lane.root.childDrainAbandoned(lane.delegateSess.id)
 		drainGrace := lane.root.childDrainGracePending(lane.delegateSess.id)
 		committedStart := lane.root.childCommittedSendStart(lane.delegateSess.id)
-		t.Fatalf("the retained child's report was never presented (lane locked=%v reason=%q, delegate sub closed=%v running=%v driving=%v finalizing=%v disposeGated=%v attentionDriveRefused=%v; retirement mutation=%v, lane validation=%v, drive slot=%v, driver closing=%v; pending attention=%d (%v), child pending=%d (%v), gates: stop=%v fatal=%v drainAbandoned=%v drainGrace=%v committedSendStart=%v)",
+		t.Fatalf("the retained child's report was never presented (lane locked=%v reason=%q, delegate sub closed=%v running=%v driving=%v finalizing=%v disposeGated=%v attentionDriveRefused=%v; retirement mutation=%v, lane validation=%v, drive slot=%v, driver closing=%v; pending attention=%d (%v), child pending=%d (%v), child run=%v/%v/%v, deferred deliveries=%v flush=%v, gates: stop=%v fatal=%v drainAbandoned=%v drainGrace=%v committedSendStart=%v)",
 			locked, reason, closed, running, driving, finalizing, disposeGated, attentionRefused, mutErr, revalErr, driveSlotOK, driverClosing,
-			len(pending), pendErr, len(childPending), childPendErr, stopGated, fatalGated, drainAbandoned, drainGrace, committedStart)
+			len(pending), pendErr, len(childPending), childPendErr, childRunning, childClosed, childFinalizing, deferred, lastFlushErr, stopGated, fatalGated, drainAbandoned, drainGrace, committedStart)
 	}
 	lane.delegateSub.mu.Lock()
 	delegateRunning := lane.delegateSub.running

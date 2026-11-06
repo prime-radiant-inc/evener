@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"os"
-	"path/filepath"
 	"slices"
 
 	"primeradiant.com/evener/agent/activitybound"
@@ -274,7 +273,7 @@ func activityContextFromDelegates(result *appwire.SessionActivityContext, rootID
 	return true
 }
 func (read *sessionActivityRead) delegatePath() string {
-	return filepath.Join(jobsDir(read.stateDir, read.rootID), "delegates.jsonl")
+	return schema.SessionDelegateJournalPath(read.stateDir, read.rootID)
 }
 func (read *sessionActivityRead) advanceDelegates(ctx context.Context) (bool, error) {
 	if read.index.controller != nil {

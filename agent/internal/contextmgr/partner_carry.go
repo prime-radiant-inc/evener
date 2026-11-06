@@ -266,10 +266,16 @@ func (cm *Manager) condensePartnerMessages(ctx context.Context, prof *provider.P
 				end++
 			}
 			resp, err := cm.completeSummarization(ctx, prof, partnerBatchPrompt+strings.Join(lines[start:end], ""), func(reply llm.Response) error {
+				// The cut-off check decides first, so a truncated reply is an
+				// output-limit rejection no route resamples, never an empty
+				// batch a fresh sample could fix.
+				if err := checkNotCutOff(reply); err != nil {
+					return err
+				}
 				if strings.TrimSpace(reply.Text()) == "" {
 					return errSummaryEmptyBatch
 				}
-				return checkNotCutOff(reply)
+				return nil
 			})
 			if err != nil {
 				return "", err

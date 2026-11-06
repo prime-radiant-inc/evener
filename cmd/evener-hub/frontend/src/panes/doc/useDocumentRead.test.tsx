@@ -6,6 +6,7 @@ import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { act, cleanup, fireEvent, renderHook, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { connectionStore, resetConnectionStoreForTests } from "../../stores/connection";
+import { ALL_CAPABILITIES } from "../../threadTestUtils";
 import { useDocumentRead } from "./useDocumentRead";
 
 // Local complete wire fixture, matching the transcript tests' hydration shape.
@@ -23,21 +24,7 @@ const thread: Thread = {
   source: "evener",
   evener: {
     ref: "remote:034MXwo6BpPH0QQCgdICSf",
-    capabilities: {
-      send: true,
-      steer: true,
-      interrupt: true,
-      compact: true,
-      clear: true,
-      forkFromTurn: true,
-      shutdown: true,
-      changeModel: true,
-      changeVisionModel: true,
-      queue: true,
-      goal: true,
-      sharedNotes: true,
-      rename: true,
-    },
+    capabilities: ALL_CAPABILITIES,
     queue: { revision: 0 },
   },
 };

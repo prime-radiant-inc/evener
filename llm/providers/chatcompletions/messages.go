@@ -297,6 +297,30 @@ func hasImageOrDocumentContent(parts []llm.ContentPart) bool {
 	return false
 }
 
+// hasImageContent reports whether parts carry an image the chat wire emits as
+// an image_url part: a ContentImage with a URL or bytes. It mirrors
+// buildMultimodalParts' image arm, which drops an image part with neither.
+func hasImageContent(parts []llm.ContentPart) bool {
+	for _, p := range parts {
+		if p.Kind == llm.ContentImage && p.Image != nil && (p.Image.URL != "" || len(p.Image.Data) > 0) {
+			return true
+		}
+	}
+	return false
+}
+
+// requestHasImagePart reports whether any user message will emit an image_url
+// part. Only user messages reach buildMultimodalParts; assistant and tool
+// messages never ride an image on the chat wire.
+func requestHasImagePart(messages []llm.Message) bool {
+	for _, m := range messages {
+		if m.Role == llm.RoleUser && hasImageContent(m.Content) {
+			return true
+		}
+	}
+	return false
+}
+
 // buildMultimodalParts converts content parts to Chat Completions content array format
 // with {"type": "text", ...} and {"type": "image_url", ...} objects.
 func buildMultimodalParts(parts []llm.ContentPart, caps registry.Caps) []map[string]any {

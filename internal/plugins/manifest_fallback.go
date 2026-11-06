@@ -12,7 +12,7 @@ import (
 
 var (
 	manifestStat          = os.Stat
-	manifestReadFile      = os.ReadFile
+	manifestReadFile      = readMetadataFile
 	manifestMarshal       = json.Marshal
 	manifestMarshalIndent = json.MarshalIndent
 	manifestMkdirAll      = os.MkdirAll

@@ -7,6 +7,7 @@ import type { AppwireClientLike, ThreadItemPosition, ThreadModel } from "@evener
 import {
   comparePositions,
   encodeTranscriptItem,
+  olderHistoryExhausted,
   pruneBackgroundHistoryBodies,
   threadModelFromCache,
 } from "@evener/appwire-client";
@@ -421,7 +422,15 @@ export function olderTranscriptPageKey(ref: string): string | null | undefined {
   // never this key. Tag both kinds so an opaque server cursor cannot collide.
   if (local)
     return JSON.stringify(["local", route?.repository?.getBaselineIdentity(), local.entry, local.item, local.sub ?? 0]);
-  return model.olderCursor ? JSON.stringify(["server", model.olderCursor]) : null;
+  if (model.olderCursor) return JSON.stringify(["server", model.olderCursor]);
+  // A cursorless frontier is only exhausted when a source read or page named
+  // it "none" (#5585). Until then the demand must reach the authoritative read
+  // that establishes it: returning null here made HistoryPaging skip
+  // loadOlderTurns and settle the demand as "no more history" (#5586).
+  const authority = route?.repository?.getBaselineIdentity();
+  return authority !== undefined && !olderHistoryExhausted(model)
+    ? JSON.stringify(["frontier-unknown", authority])
+    : null;
 }
 
 // Publish the repository's own model into the real store. Called while the

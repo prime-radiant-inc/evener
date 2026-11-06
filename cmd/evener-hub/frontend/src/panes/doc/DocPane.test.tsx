@@ -27,6 +27,7 @@ import DocPane from "./DocPane";
 import docpaneStyles from "./docpane.module.css";
 import { type DocParams, openDocBeside } from "./openDoc";
 import "./index";
+import { ALL_CAPABILITIES } from "../../threadTestUtils";
 
 const ref = "remote:034MXwo6BpPH0QQCgdICSf";
 function thread(cwd = "/work/a"): Thread {
@@ -44,21 +45,7 @@ function thread(cwd = "/work/a"): Thread {
     source: "evener",
     evener: {
       ref,
-      capabilities: {
-        send: true,
-        steer: true,
-        interrupt: true,
-        compact: true,
-        clear: true,
-        forkFromTurn: true,
-        shutdown: true,
-        changeModel: true,
-        changeVisionModel: true,
-        queue: true,
-        goal: true,
-        sharedNotes: true,
-        rename: true,
-      },
+      capabilities: ALL_CAPABILITIES,
       queue: { revision: 0 },
     },
   };

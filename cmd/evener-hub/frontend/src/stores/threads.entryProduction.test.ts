@@ -1,10 +1,18 @@
-import type { AnyNotification, CachedSessionItem, HistoryUpdatedParams, ThreadItem } from "@evener/appwire-client";
+import type {
+  AnyNotification,
+  CachedSessionItem,
+  CachedSessionRecord,
+  HistoryUpdatedParams,
+  ThreadItem,
+} from "@evener/appwire-client";
 import {
   ErrorTranscriptHistoryFailed,
   encodeTranscriptItem,
+  HistoryPaging,
   hydrateThread,
   type ThreadReadResponse,
   type Turn,
+  threadModelFromCache,
   WireError,
 } from "@evener/appwire-client";
 import { currentRead } from "@evener/appwire-client/testing/currentTranscript";
@@ -25,7 +33,10 @@ import { installBackgroundTranscriptOptionsForTests } from "./backgroundTranscri
 import { setCacheChannelFactoryForTests } from "./cacheLifetime";
 import { connectionStore } from "./connection";
 import {
+  entryTranscriptRoute,
+  olderTranscriptPageKey,
   productionEntryTranscriptForTests,
+  publishEntryTranscriptModel,
   setProductionEntryCacheForTests,
   setSessionCacheOpenBackstopForTests,
   setSessionCacheStalledOpenForTests,
@@ -40,6 +51,7 @@ import {
   type TranscriptItemRow,
 } from "./sessionCacheSchema";
 import { SessionEntryCache } from "./sessionEntryCache";
+import { pumpIndexedDBUntil } from "./testing/indexedDBPump";
 import { isMutationPinned } from "./threadOwners";
 import {
   acquireBackgroundThread,
@@ -56,6 +68,7 @@ import {
   subscribeCacheWrites,
   threadsStore,
 } from "./threads";
+import { TranscriptRepository } from "./transcriptRepository";
 
 let factory: IDBFactory;
 const caches: SessionEntryCache[] = [];
@@ -436,6 +449,234 @@ async function seedDiskOnlyOpening(withPages = false): Promise<SessionEntryCache
   expect(threadsStore.getState().threads.has("local:a")).toBe(false);
   return storage;
 }
+
+// seedCursorlessCacheRecord commits a body-only entry record whose header names
+// no older cursor: the partial-eviction reopen shape, where the published
+// cache seed is not a source statement about the frontier.
+async function seedCursorlessCacheRecord(storage: SessionEntryCache): Promise<void> {
+  const key = entryHistoryKey({ ...identity, clientId: location.origin });
+  const rows = [1, 2, 3].map((entry) => {
+    const item = turn(`cached-${entry}`, entry).items![0]!;
+    return { historyKey: key, transcriptKey: `cached-${entry}`, position: { entry, item: 0 }, version: 1, item };
+  });
+  const outcome = await storage.commitBatch({
+    historyKey: key,
+    clearEpoch: 0,
+    items: rows,
+    sessionMetadata: {
+      historyKey: key,
+      requestedRefs: [{ clientId: location.origin, ref: "local:a" }],
+      resolvedIdentity: { ...identity, clientId: location.origin },
+      savedAt: 1,
+      accessedAt: 1,
+      formatVersion: 3,
+      cachedHeader: {
+        ref: "local:a",
+        threadId: "thread-a",
+        name: "",
+        modelProvider: "test/provider",
+        model: "test/provider",
+        imageSessionId: "session-a",
+        savedAt: 1,
+        history: {
+          bootGeneration: "1",
+          epoch: 1,
+          incarnation: "inc-a",
+          length: 3,
+          appliedGeneration: 0,
+          issuedGeneration: 0,
+        },
+      },
+    },
+  });
+  expect(outcome.outcome).toBe("committed");
+}
+
+// installCursorlessSeedRoute builds the partial-eviction reopen state without a
+// source read: the route owns a repository whose seed model came from a cache
+// record with no older cursor and no frontier provenance (threadModelFromCache
+// records none), published as the store model. Its older demand must therefore
+// be "server", never a source-named exhaustion.
+async function installCursorlessSeedRoute(options: { seedEntries?: number[]; trustedSeed?: boolean } = {}): Promise<{
+  client: FakeClient;
+  readsBefore: number;
+  release: () => Promise<unknown>;
+}> {
+  const storage = cache();
+  setProductionEntryCacheForTests(storage);
+  await seedCursorlessCacheRecord(storage);
+  const client = connect();
+  // Own the ref so a refresh may issue: canonicalThreadOwnerActive gates it.
+  const background = acquireBackgroundThread("local:a");
+  await background.ready;
+  const key = entryHistoryKey({ ...identity, clientId: location.origin });
+  const route = entryTranscriptRoute("local:a");
+  if (!route) throw new Error("expected an entry route");
+  route.cache = storage;
+  route.historyKey = key;
+  route.identity = { ...identity, clientId: location.origin };
+  route.cachedUnverified = false;
+  const seedEntries = options.seedEntries ?? [];
+  const seedTurns = seedEntries.map((entry) => {
+    const turnId = `cache-turn-${entry}`;
+    const item = {
+      ...turn(`row-${entry}`, entry).items![0]!,
+      id: `row-${entry}`,
+      transcriptKey: `row-${entry}`,
+      turnId,
+      text: `row-${entry}`,
+    } as unknown as CachedSessionItem;
+    return { id: turnId, status: "completed" as const, items: [item] };
+  });
+  const snapshotLength = Math.max(3, ...seedEntries);
+  const record: CachedSessionRecord = {
+    ref: "local:a",
+    threadId: "thread-a",
+    name: "",
+    modelProvider: "test/provider",
+    model: "test/provider",
+    imageSessionId: "session-a",
+    savedAt: 1,
+    history: {
+      bootGeneration: "1",
+      epoch: 1,
+      incarnation: "inc-a",
+      length: snapshotLength,
+      appliedGeneration: 0,
+      issuedGeneration: 0,
+      turns: seedTurns,
+    },
+  };
+  const repository = new TranscriptRepository(storage, {
+    ref: "local:a",
+    threadId: "thread-a",
+    historyKey: key,
+    identity: route.identity,
+    clearEpoch: 0,
+    lifetime: route.lifetime,
+    seedModel: threadModelFromCache(record, storage.now()),
+    ...(options.trustedSeed
+      ? {
+          seedAuthority: {
+            trustedCurrentSource: true as const,
+            bootGeneration: "1",
+            epoch: 1,
+            incarnation: "inc-a",
+            snapshotLength,
+          },
+        }
+      : {}),
+  });
+  route.repository = repository;
+  route.reader = repository.attachReader();
+  route.unsubscribeRepository = repository.subscribe(() => publishEntryTranscriptModel("local:a"));
+  threadsStore.setState((state) => ({
+    threads: new Map(state.threads).set("local:a", repository.getSnapshot()!),
+  }));
+  const model = threadsStore.getState().threads.get("local:a");
+  expect(model?.olderCursor).toBeUndefined();
+  expect(model?.olderFrontier).toBeUndefined();
+  expect(productionEntryTranscriptForTests("local:a").repository).toBe(repository);
+  return {
+    client,
+    readsBefore: client.calls.filter((call) => call.method === "thread/read").length,
+    release: () => background.release(),
+  };
+}
+
+it("a cursorless cache seed's older demand reaches the authoritative read (#5586)", async () => {
+  const { client, readsBefore, release } = await installCursorlessSeedRoute();
+  try {
+    await threadsStore.getState().loadOlderTurns("local:a");
+    // Before #5586's verdict the demand dead-ended at the no-cursor fallthrough:
+    // the repository had routed it to "server", not "exhausted", and no network
+    // read followed.
+    expect(client.calls.filter((call) => call.method === "thread/read")).toHaveLength(readsBefore + 1);
+  } finally {
+    await release();
+  }
+});
+
+it("a cursorless seed's armed local continuation reaches the authoritative read (#5586)", async () => {
+  const { client, readsBefore, release } = await installCursorlessSeedRoute();
+  try {
+    const route = entryTranscriptRoute("local:a");
+    expect(route?.repository).toBeDefined();
+    // The local open arms this continuation (entryTranscriptRoutes.ts).
+    // Reproduce the arming directly: a body-only cache record certifies no
+    // opening cut, so this fixture cannot derive it from a restore.
+    route!.localBefore = { entry: 1, item: 0 };
+    await threadsStore.getState().loadOlderTurns("local:a");
+    expect(client.calls.filter((call) => call.method === "thread/read")).toHaveLength(readsBefore + 1);
+  } finally {
+    await release();
+  }
+});
+
+it("HistoryPaging drives a cursorless seed's older demand through the authoritative read (#5586)", async () => {
+  const { client, readsBefore, release } = await installCursorlessSeedRoute();
+  try {
+    // The recovery read answers with a fresh cursorless window: the demand
+    // settles as exhausted and the scheduling key advances to null.
+    const recovered = response("local:a", [turn("recovered", 5)]);
+    recovered.snapshot = { incarnation: "inc-a", length: 5 };
+    client.on("thread/read", (params) => ({ ...recovered, requestGeneration: params.requestGeneration }));
+    // Without a cursor the page key used to be null, so HistoryPaging skipped
+    // loadOlderTurns and settled the demand as no more history.
+    expect(olderTranscriptPageKey("local:a")).not.toBeNull();
+    const paging = new HistoryPaging(
+      () => olderTranscriptPageKey("local:a"),
+      () => threadsStore.getState().loadOlderTurns("local:a"),
+    );
+    const releaseConsumer = paging.activate("test");
+    try {
+      await paging.request("test");
+    } finally {
+      releaseConsumer();
+    }
+    expect(client.calls.filter((call) => call.method === "thread/read")).toHaveLength(readsBefore + 1);
+    expect(olderTranscriptPageKey("local:a")).toBeNull();
+    expect(threadsStore.getState().threads.get("local:a")?.olderFrontier).toBe("none");
+  } finally {
+    await release();
+  }
+});
+
+it("HistoryPaging advances the key when a cursorless seed holds rows below the recovery window (#5586)", async () => {
+  // A trusted seed with recorded rows below the recovery read's window: the
+  // held-older-pages rule used to preserve the seed's unknown frontier, so the
+  // page key never advanced and HistoryPaging retried forever.
+  const { client, readsBefore, release } = await installCursorlessSeedRoute({
+    seedEntries: [1, 2, 3],
+    trustedSeed: true,
+  });
+  try {
+    // The recovery read names a window above the held rows and no older
+    // cursor. Paging from that frontier re-merges the rows already held.
+    const recovered = response("local:a", [turn("recovered", 4)]);
+    recovered.snapshot = { incarnation: "inc-a", length: 5 };
+    client.on("thread/read", (params) => ({ ...recovered, requestGeneration: params.requestGeneration }));
+    expect(olderTranscriptPageKey("local:a")).not.toBeNull();
+    const paging = new HistoryPaging(
+      () => olderTranscriptPageKey("local:a"),
+      () => threadsStore.getState().loadOlderTurns("local:a"),
+    );
+    const releaseConsumer = paging.activate("test");
+    try {
+      await paging.request("test");
+    } finally {
+      releaseConsumer();
+    }
+    // One recovery read advances the key and settles the demand; a second read
+    // would mean the loop.
+    expect(client.calls.filter((call) => call.method === "thread/read")).toHaveLength(readsBefore + 1);
+    expect(olderTranscriptPageKey("local:a")).toBeNull();
+    expect(threadsStore.getState().threads.get("local:a")?.olderFrontier).toBe("none");
+    expect(paging.getSnapshot().pending).toBe(false);
+  } finally {
+    await release();
+  }
+});
 
 // emitHistoryUpdated emits one history/updated notification carrying this
 // file's standard thread identity plus the caller's distinct content — the
@@ -3609,20 +3850,49 @@ it("a foreground opening whose storage read fails transiently still converges th
   failingWindowReads = 1;
   setSessionCacheStalledOpenForTests(250);
   setSessionCacheOpenBackstopForTests(40);
+  // Freeze the deadline clock: the open's 40ms backstop, the 250ms stalled
+  // windows, and the chain's paced retry then expire exactly when this test
+  // advances the clock, so machine load cannot reorder the withheld reads
+  // against them. Each fake millisecond is spent beside one real storage
+  // read, which is what lets fake-indexeddb's real macrotasks deliver the
+  // scripted reads in their order.
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
   try {
-    await threadsStore.getState().ensureThread(ref);
+    const opened = threadsStore.getState().ensureThread(ref);
     // The refusal must not end recovery for good: the pane is still
     // body-suppressed with healthy storage just one read away, so the chain
     // hands to source recovery and the recorded display converges exactly as
-    // the twice-miss strand does. Wait on the convergence itself: a loaded
-    // runner can outrun a fixed two-second window between the open, the
-    // refusal and the re-arm, and a chain that never re-arms still fails
-    // honestly at the ceiling instead of hanging.
-    await vi.waitFor(() => expect(bodies()).toEqual(Array.from({ length: 200 }, (_, index) => `row-${index + 26}`)), {
-      timeout: 15_000,
+    // the twice-miss strand does.
+    const expected = Array.from({ length: 200 }, (_, index) => `row-${index + 26}`);
+    const converged = await pumpIndexedDBUntil({
+      turns: 800,
+      until: () => {
+        const seen = bodies();
+        return seen?.length === expected.length && seen.every((text, index) => text === expected[index]);
+      },
+      onTurn: async () => {
+        await vi.advanceTimersByTimeAsync(1);
+      },
     });
+    // On the failing path the open may still be parked or may reject; the
+    // convergence assertion below is the failure this test reports, so mark it
+    // handled rather than awaiting a state the clock never reached.
+    if (!converged) opened.catch(() => undefined);
+    expect(
+      converged,
+      `pane did not converge within 800 fake milliseconds: ${JSON.stringify({
+        openStatus: productionEntryTranscriptForTests(ref).lastLocalOpenStatus ?? "unset",
+        bodies: bodies()?.length ?? 0,
+        withheldWindowReads,
+        failingWindowReads,
+      })}`,
+    ).toBe(true);
+    await opened;
+    await settleEntryTranscriptForTests(ref);
+    expect(bodies()).toEqual(expected);
     expect(threadsStore.getState().threads.get(ref)?.olderCursor).toBeDefined();
   } finally {
+    vi.useRealTimers();
     setSessionCacheOpenBackstopForTests(10000);
     setSessionCacheStalledOpenForTests(5000);
     threadsStore.getState().releaseThread(ref);
@@ -6151,10 +6421,12 @@ it("a recovery span finishing wakes the reopened claim's parked certification de
     () => new Promise(() => {}) as ReturnType<typeof realGetLatestWindow>,
     () => new Promise(() => {}) as ReturnType<typeof realGetLatestWindow>,
     () => new Promise(() => {}) as ReturnType<typeof realGetLatestWindow>,
-    () => {
+    (...args: unknown[]) => {
       certificationParked = true;
       certificationEntered.resolve();
-      return certificationReleased.promise.then(() => undefined) as ReturnType<typeof realGetLatestWindow>;
+      return certificationReleased.promise.then(() =>
+        realGetLatestWindow(...(args as Parameters<typeof realGetLatestWindow>)),
+      );
     },
     (...args: unknown[]) =>
       certificationEntered.promise.then(() =>
@@ -7123,6 +7395,35 @@ it("ordinary disk-only read-proven deletion keeps cached content visible while h
     rejectRead?.();
     await opening;
   }
+});
+
+// The entry route's own contract for a hub-deleted ref: a fresh acquisition
+// installs no repository. The deletion fence, not a missing promise, is the
+// outcome (see the ensureThread UI-01 cases), and the browser guard reads the
+// same fact as entryRoute(ref).present before it asserts no route appeared.
+it("a fresh acquisition of a hub-deleted ref installs no entry repository", async () => {
+  cache();
+  let reads = 0;
+  const client = new FakeClient("ready");
+  client.on("thread/read", () => {
+    reads += 1;
+    throw new WireError("target deleted", -32001, {
+      evenerErrorInfo: "actionUnavailable",
+      mutationOutcome: "targetDeleted",
+      retryDisposition: "none",
+    });
+  });
+  client.on("thread/unsubscribe", () => ({}));
+  connectionStore.getState().connect(client);
+
+  await threadsStore.getState().ensureThread("local:gone");
+  await settleProjectionWorkForTests();
+
+  expect(reads).toBe(1);
+  expect(threadsStore.getState().deletedRefs.has("local:gone")).toBe(true);
+  const route = productionEntryTranscriptForTests("local:gone");
+  expect(route.repository).toBeUndefined();
+  expect(route.reader).toBeUndefined();
 });
 
 it("ordinary content clear retires the old entry history so a late old push cannot restore it", async () => {

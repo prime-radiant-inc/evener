@@ -154,6 +154,34 @@ test.each([
   expect(client.calls).toHaveLength(2);
 });
 
+test("a reopened activity store reads a released status from the reused subscription, not stale metadata", async () => {
+  const client = runtimeClient();
+  client.on("thread/read", () => ({
+    thread: { ...threadFixture().thread, id: "wire-root", sessionId: "root-session", status: { type: "active" } },
+  }));
+  // A transcript owner holds the same ref across the inspector's lifetime, so
+  // the subscription survives close and re-open and no fresh read confirms it.
+  const transcript = acquireThreadSubscription(client, activityRef);
+  await transcript.ensure();
+  const closed = owner(client);
+  closed.start();
+  await activityState(closed, () => closed.getSnapshot().summary !== null);
+  expect(closed.getSnapshot().runtime?.status).toEqual({ type: "active" });
+  client.emitNotification({
+    method: "thread/status/changed",
+    params: { ref: activityRef, threadId: "wire-root", status: { type: "idle" } },
+  });
+  expect(closed.getSnapshot().runtime?.status).toEqual({ type: "idle" });
+
+  closed.dispose();
+  const reopened = owner(client);
+  reopened.start();
+  await activityState(reopened, () => reopened.getSnapshot().summary !== null);
+  expect(reopened.getSnapshot().runtime?.status).toEqual({ type: "idle" });
+  expect(callsTo(client, "thread/read")).toBe(1);
+  transcript.release();
+});
+
 test("disconnect publishes unknown runtime and refuses status from the disconnected generation", async () => {
   const client = runtimeClient(),
     store = owner(client);

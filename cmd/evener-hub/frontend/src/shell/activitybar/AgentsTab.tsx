@@ -4,7 +4,7 @@ import { ActivityPageBoundary } from "./ActivityPageBoundary";
 // to the shared owner without acquiring another reader or retry loop.
 
 import { activityNodeID, type SessionDelegate } from "@evener/appwire-client";
-import { useLayoutEffect } from "react";
+import { useId, useLayoutEffect } from "react";
 import { openTranscript } from "../../panes/session/transcript/openTranscript";
 import { enterAgentCascade } from "../../panes/zoom/actions";
 import { useSessionActivity } from "../../stores/sessionActivity";
@@ -30,7 +30,12 @@ function drill(sub: SessionDelegate): void {
 }
 
 export function AgentsTab({ scope, now, onDrill = drill }: ActivityTabBodyProps) {
-  const foldID = `${scope.leaf.ref}\0inactive-delegates`;
+  const inactiveSuffix = "inactive-delegates";
+  const foldID = `${scope.leaf.ref}\0${inactiveSuffix}`;
+  // The sidebar and an ActivityPeek can both render this body for one ref:
+  // the persisted fold key stays ref-based, but the controlled list id must
+  // be unique per rendered surface.
+  const inactiveListID = useId();
   const foldOpen = isDisclosureOpen(foldID, false);
   const shown = useActivitySidebarStore((state) => state.views.get(scope.leaf.ref)?.categories.agents?.shown ?? PAGE);
   const { snapshot, loadMore } = useSessionActivity(scope.leaf.ref, "session", "delegates");
@@ -67,12 +72,18 @@ export function AgentsTab({ scope, now, onDrill = drill }: ActivityTabBodyProps)
       {inactive.length > 0 ? (
         <>
           <div className={CLASS.foldButton}>
-            <Button variant="quiet" size="sm" onClick={() => toggleDisclosure(foldID, false)}>
+            <Button
+              variant="quiet"
+              size="sm"
+              aria-expanded={foldOpen}
+              aria-controls={foldOpen ? inactiveListID : undefined}
+              onClick={() => toggleDisclosure(foldID, false)}
+            >
               <Chevron direction={foldOpen ? "down" : "right"} /> Inactive subagents ({inactive.length})
             </Button>
           </div>
           {foldOpen ? (
-            <>
+            <div id={inactiveListID} className={CLASS.stack}>
               {inactive.slice(0, visible).map((sub) => (
                 <AgentRow
                   key={activityNodeID({ ...sub, kind: "delegate" })}
@@ -92,7 +103,7 @@ export function AgentsTab({ scope, now, onDrill = drill }: ActivityTabBodyProps)
                   Show {Math.min(PAGE, inactive.length - visible)} more · {inactive.length - visible} remaining
                 </Button>
               ) : null}
-            </>
+            </div>
           ) : null}
         </>
       ) : null}
