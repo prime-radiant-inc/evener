@@ -182,8 +182,10 @@ final class EvenerQualificationUITests: XCTestCase {
 		// The gesture swipes the form's own labels, not a control (a swipe
 		// on a row can land as its press) and not the focused prompt (a swipe
 		// over a first-responder text view can turn into a text selection,
-		// and the selection holds the next tap).
-		let anchor = app.staticTexts["Where"]
+		// and the selection holds the next tap). A nested label registers on
+		// both its outer and inner text, so the query takes its first match:
+		// a find that must be unique would refuse the doubled label.
+		let anchor = app.staticTexts["Where"].firstMatch
 		XCTAssertTrue(anchor.waitForExistence(timeout: tripwire), "the sheet's form never showed")
 		anchor.swipeUp()
 		anchor.swipeDown()
@@ -240,7 +242,7 @@ final class EvenerQualificationUITests: XCTestCase {
 			// autofill accessory window over the content, eating presses
 			// that every check says landed. The drag rides a static label:
 			// a swipe on a control can land as its press.
-			dismissKeyboard(app, draggingOn: app.staticTexts["Token (optional)"])
+				dismissKeyboard(app, draggingOn: app.staticTexts["Token (optional)"].firstMatch)
 			tap(app.buttons["hub-continue"], "the Continue row never appeared")
 			// The board is Connect's own effect, checked like every other
 			// step: the press can deaden in the settling window every fresh
@@ -268,7 +270,7 @@ final class EvenerQualificationUITests: XCTestCase {
 		let browse = app.buttons
 			.matching(NSPredicate(format: "label BEGINSWITH %@", "Browse folders")).firstMatch
 		// The sheet's picker sits where the prompt's keyboard can cover it.
-		dismissKeyboard(app, draggingOn: app.staticTexts["Where"])
+		dismissKeyboard(app, draggingOn: app.staticTexts["Where"].firstMatch)
 		tap(browse, "the project picker never offered browsing")
 
 		// The browse starts in the hub host's home; walk up to the filesystem
@@ -338,6 +340,8 @@ final class EvenerQualificationUITests: XCTestCase {
 	/// on a static label inside it. A multiline field takes a return key as
 	/// text, so it cannot dismiss that way, and the drag must ride a label:
 	/// a swipe that starts on a control can land as that control's press.
+	/// Nested labels register on both their outer and inner text, so the
+	/// anchor must already be resolved to a single match.
 	/// Best effort, and only a few tries: a keyboard that stays up is judged
 	/// where it blocks, by the next step's own wait.
 	private func dismissKeyboard(_ app: XCUIApplication, draggingOn anchor: XCUIElement) {
