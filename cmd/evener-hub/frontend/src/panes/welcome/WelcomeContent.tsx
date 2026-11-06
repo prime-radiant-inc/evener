@@ -1,7 +1,8 @@
+import { CHORD_HINTS } from "../../shell/palette/helpRows";
 import { navigate, paneToURL } from "../../shell/routing";
 import { selectLiveRows, selectNeedsYouRows } from "../../stores/navigation/selectors";
 import { type NavigationStoreState, useNavigationStore } from "../../stores/navigation/store";
-import { Button, KeyHint, ShortcutList, type ShortcutListItem } from "../../widgets";
+import { Button, KeyHint, ShortcutList } from "../../widgets";
 import { requireClass } from "../../widgets/internal/requireClass";
 import styles from "./welcome.module.css";
 
@@ -10,15 +11,6 @@ const CLASS = {
   hints: requireClass(styles.hints, "welcome.module.css", "hints"),
   hintFooter: requireClass(styles.hintFooter, "welcome.module.css", "hintFooter"),
 };
-
-// T6: the chords a new person has no other way to discover from this cold
-// pane - palette/helpRows.tsx's HELP_ROWS is the source of truth for all
-// three (Mod+K/Mod+I/Mod+J); order matches HELP_ROWS' own listing.
-export const CHORD_HINTS: ShortcutListItem[] = [
-  { keys: ["Mod", "K"], label: "command palette" },
-  { keys: ["Mod", "I"], label: "focus the composer" },
-  { keys: ["Mod", "J"], label: "next session needing you" },
-];
 
 export interface WelcomeContentProps {
   note?: string;

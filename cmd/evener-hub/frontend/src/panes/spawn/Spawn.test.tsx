@@ -310,12 +310,17 @@ test("the card effort control keeps a distinct accessible name with Advanced opt
     }),
   );
   await settled();
-  expect(screen.getByTestId("spawn-chord-hints")).toBeTruthy();
 
   await user.click(screen.getByRole("button", { name: "Advanced options" }));
 
   expect(screen.getByLabelText("Prompt reasoning effort")).toBe(effortControl());
   expect(screen.getAllByLabelText(/reasoning effort/i)).toHaveLength(2);
+});
+
+test("the cold-start spawn pane carries the chord hints when no session is open", async () => {
+  renderSpawn(readyClient());
+  await settled();
+  expect(screen.getByTestId("spawn-chord-hints")).toBeTruthy();
 });
 
 /** The visible effort readout (aria-hidden: the select speaks the value). */

@@ -12,11 +12,9 @@
 }
 
 /* Layout only: the widget's own box is Button's, so a caller-side container
- * sets the compact ceiling and lets the label truncate inside it. The slot is
- * a one-column flex with stretch, not a plain block: Button is an inline-flex
- * shrink-to-fit box, so a plain block would let the nowrap label keep its full
- * min-content width and overflow the slot. Stretched to the slot's width,
- * Button hands that width to its own label, which already truncates. */
+ * sets the compact ceiling. The slot is a one-column flex with stretch, not a
+ * plain block: Button is an inline-flex shrink-to-fit box, and stretching the
+ * slot hands Button the ceiling; the label clamps to two lines inside it. */
 .nextSlot {
   display: flex;
   flex-direction: column;

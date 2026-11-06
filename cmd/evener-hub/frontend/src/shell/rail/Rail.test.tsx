@@ -781,9 +781,8 @@ describe("resource-backed Rail", () => {
   test("the identity block names the product and a needs-you count", () => {
     installState([], manifest({ attentionSummary: { needsYou: 2, error: 0, working: 0 } }));
     render(<Rail />);
-    const brand = within(screen.getByTestId("rail-brand"));
     expect(screen.getByText("evener")).toBeTruthy();
-    expect(brand.getByText("2 needs you")).toBeTruthy();
+    expect(screen.getByTestId("rail-needs-you").textContent).toContain("2 needs you");
   });
 
   // The header's three icons are drawn, not typed: global.css subsets the sans

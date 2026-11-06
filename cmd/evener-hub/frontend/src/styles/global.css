@@ -30,6 +30,7 @@
 @font-face {
   font-family: "Schibsted Grotesk Variable";
   font-style: italic;
+  font-weight: 400 900;
   font-display: swap;
   src: url("../../node_modules/@fontsource-variable/schibsted-grotesk/files/schibsted-grotesk-latin-wght-italic.woff2")
     format("woff2-variations");
@@ -70,16 +71,17 @@ body {
 }
 
 ::selection {
-  background: var(--accent-bg);
+  background: var(--selection-bg);
   color: var(--ink-hi);
 }
 
 /* One scrollbar treatment for every app-owned scroller: a thin edge-strong
- * thumb on the local surface. Firefox/Chromium honor these; WebKit keeps its
- * native paint until it supports them. */
-* {
+ * thumb on the local surface. Both properties inherit, so the root carries
+ * them once. Firefox/Chromium honor these; WebKit keeps its native paint
+ * until it supports them. */
+:root {
   scrollbar-width: thin;
-  scrollbar-color: var(--edge-strong) transparent;
+  scrollbar-color: var(--ink-low) transparent;
 }
 
 /* The mobile app shell owns the viewport; panes provide their own scroll

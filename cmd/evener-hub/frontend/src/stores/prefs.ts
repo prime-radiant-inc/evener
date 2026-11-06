@@ -404,7 +404,7 @@ function applyTheme(value: ThemePref): void {
 // light paper. getComputedStyle resolves the custom property against the
 // theme attribute just set; a DOM without the token sheet (tests) leaves the
 // meta's default untouched.
-function syncThemeColor(): void {
+export function syncThemeColor(): void {
   const meta = document.querySelector('meta[name="theme-color"]');
   if (meta === null) return;
   const surface = getComputedStyle(document.documentElement).getPropertyValue("--surface-0").trim();

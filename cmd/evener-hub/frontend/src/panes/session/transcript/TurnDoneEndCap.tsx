@@ -15,13 +15,21 @@ const CLASS = {
  * status surface. */
 export function TurnDoneEndCap({ turn }: { turn: TurnModel }) {
   const durationMs = turn.durationMs;
-  if (durationMs === undefined || durationMs <= 0) return null;
-  const hasAgentOutput = turn.items.some((item) => item.type === "agentMessage" || (item.toolName ?? "") !== "");
+  if (durationMs === undefined) return null;
+  let toolCalls = 0;
+  let hasAgentOutput = false;
+  for (const item of turn.items) {
+    if ((item.toolName ?? "") !== "") {
+      toolCalls += 1;
+      hasAgentOutput = true;
+    } else if (item.type === "agentMessage") {
+      hasAgentOutput = true;
+    }
+  }
   if (!hasAgentOutput) return null;
-  const toolCalls = turn.items.filter((item) => (item.toolName ?? "") !== "").length;
   return (
     <div className={CLASS.cap} data-testid="turn-done" data-turn-duration-ms={durationMs}>
-      <span>Done in {formatWorkDuration(durationMs)}</span>
+      <span>{durationMs > 0 ? `Done in ${formatWorkDuration(durationMs)}` : "Done"}</span>
       {toolCalls > 0 && (
         <>
           <span className={CLASS.separator} aria-hidden="true">

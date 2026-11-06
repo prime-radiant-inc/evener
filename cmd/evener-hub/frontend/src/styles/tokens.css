@@ -61,6 +61,7 @@
   --danger-edge: color-mix(in oklab, var(--danger) 40%, var(--edge));
   --accent-bg: color-mix(in oklab, var(--accent) 15%, var(--surface-1));
   --accent-edge: color-mix(in oklab, var(--accent) 40%, var(--edge));
+  --selection-bg: color-mix(in oklab, var(--accent) 40%, var(--surface-1));
 
   /* -ink companions: the hue as TEXT. Call sites that set a hue as color:
    * use -ink; glyphs, borders, and washes use the bare hue. Contract-tested
@@ -113,7 +114,7 @@
   --ansi-bright-white: #FFFFFF;
 
   /* --- type -------------------------------------------------------------
-   * Inter for UI, Source Serif 4 for prose, JetBrains Mono for code/paths/
+   * Schibsted Grotesk for UI, Source Serif 4 for prose, JetBrains Mono for code/paths/
    * timings (never for chrome labels). All variable fonts, self-hosted
    * from @fontsource-variable packages — see src/styles/global.css.
    */
@@ -270,6 +271,7 @@
   --danger-edge: color-mix(in oklab, var(--danger) 40%, var(--edge));
   --accent-bg: color-mix(in oklab, var(--accent) 15%, var(--surface-1));
   --accent-edge: color-mix(in oklab, var(--accent) 40%, var(--edge));
+  --selection-bg: color-mix(in oklab, var(--accent) 40%, var(--surface-1));
 
   /* AA-darkened text forms of the four hues, derived to clear 4.5:1 on
    * both light surfaces and each hue's own near-white -bg tint (the

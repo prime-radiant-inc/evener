@@ -1015,16 +1015,7 @@ function NavigationRail({
       <div className={CLASS.header}>
         <span className={CLASS.wordmark}>evener</span>
         <div data-testid="rail-brand" className={CLASS.brand}>
-          <span className={CLASS.brandIdentity}>
-            {serverInfo?.name && serverInfo.name !== "evener" ? serverInfo.name : "local hub"}
-          </span>
-          {needsYou > 0 && (
-            <span className={CLASS.needsYou} data-testid="rail-needs-you">
-              <Chip tone="attention" kind="needs-you">
-                {needsYou} needs you
-              </Chip>
-            </span>
-          )}
+          <span className={CLASS.brandIdentity}>{serverInfo?.name ?? "hub"}</span>
           <IconButton
             data-testid="rail-settings"
             label="Settings"
@@ -1054,6 +1045,13 @@ function NavigationRail({
             />
           )}
         </div>
+        {needsYou > 0 && (
+          <span className={CLASS.needsYou} data-testid="rail-needs-you">
+            <Chip tone="attention" kind="needs-you">
+              {needsYou} needs you
+            </Chip>
+          </span>
+        )}
         <div className={CLASS.newSession}>
           <Button variant="primary" onClick={() => navigate("/new")}>
             + New session

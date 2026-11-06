@@ -356,7 +356,11 @@ export function TurnBlock({
       >
         {renderedEntries}
         {failure && <TurnFailureEndCap error={failure} turnId={sourceTurn.id} sessionRef={sessionRef} />}
-        {!failure && displayStatus === "completed" && <TurnDoneEndCap turn={sourceTurn} />}
+        {!failure && displayStatus === "completed" && (
+          <div className={CLASS.runContent} data-testid="turn-done-row">
+            <TurnDoneEndCap turn={sourceTurn} />
+          </div>
+        )}
         {showTurnSeparator && <TurnSeparator turn={sourceTurn} />}
       </div>
     </>

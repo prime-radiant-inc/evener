@@ -10,8 +10,8 @@
  * font-size applies and dense chrome never needs a pin. A true reading
  * surface (agent messages, the doc pane) pins
  * --prose-font-size: var(--font-size-prose) on an ancestor to keep the 18px
- * reading step. Body text composes with the host; headings and GFM tables
- * stay on the fixed document ramp below regardless - the known boundary.
+ * reading step. Body text composes with the host; h1/h2 and GFM tables use
+ * the fixed document ramp below, while h3 follows the composed prose size.
  *
  * --markdown-font is the family the --markdown-ink pattern already set:
  * serif is the conversation's reading voice, and report bubbles take the sans

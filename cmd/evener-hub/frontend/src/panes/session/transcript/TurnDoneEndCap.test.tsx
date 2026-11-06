@@ -46,3 +46,10 @@ test("a user-only turn renders no end-cap", () => {
   );
   expect(screen.queryByTestId("turn-done")).toBeNull();
 });
+
+test("a completed turn with a zero duration closes without a fabricated duration", () => {
+  render(<TurnDoneEndCap turn={turn({ durationMs: 0, items: [item("a", "shell")] })} />);
+  const cap = screen.getByTestId("turn-done");
+  expect(cap.textContent).toContain("Done");
+  expect(cap.textContent).not.toContain(" in ");
+});

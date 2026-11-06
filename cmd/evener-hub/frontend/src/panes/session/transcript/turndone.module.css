@@ -6,7 +6,7 @@
   align-items: center;
   gap: var(--space-1);
   margin-top: var(--rhythm-group);
-  color: var(--ink-low);
+  color: var(--ink-mid);
   font-family: var(--font-sans);
   font-size: var(--font-size-caption);
   line-height: var(--line-height-ui);
@@ -14,10 +14,4 @@
 
 .separator {
   color: var(--edge-strong);
-}
-
-@media (min-width: 700px) {
-  .cap {
-    padding-left: var(--speaker-gutter);
-  }
 }

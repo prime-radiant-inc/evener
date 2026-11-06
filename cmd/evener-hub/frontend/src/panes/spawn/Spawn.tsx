@@ -34,10 +34,11 @@ import { useStore } from "zustand";
 import { useClient } from "../../shell/clientContext";
 import { resolveHeadBranch } from "../../shell/gitLocation";
 import { splitModelId } from "../../shell/palette/commands";
+import { CHORD_HINTS } from "../../shell/palette/helpRows";
 import type { PaneProps } from "../../shell/paneRegistry";
 import { navigate, paneToURL } from "../../shell/routing";
 import { useMountAutofocus } from "../../shell/useMountAutofocus";
-import { useWorkspaceStore } from "../../shell/workspace";
+import { useHasSessionPane } from "../../shell/workspace";
 import { useExtensionsStore } from "../../stores/extensions";
 import { withLaunchConfig } from "../../stores/launchConfig";
 import { selectDisplaySources, selectSources } from "../../stores/navigation/selectors";
@@ -84,7 +85,6 @@ import {
   ConnectProviderDialogBoundary,
   useConnectProviderDialogChunk,
 } from "../settings/sections/credentials/ConnectProviderDialogBoundary";
-import { CHORD_HINTS } from "../welcome/WelcomeContent";
 import { AdvancedOptions } from "./AdvancedOptions";
 import {
   ACCESS_MODE_OPTIONS,
@@ -2456,18 +2456,26 @@ function SpawnForm({
     harnesses.length > 0
       ? harnesses.map((h) => ({ value: h.id, label: h.label }))
       : [{ value: "evener", label: "evener" }];
-  const hasSession = useWorkspaceStore((state) => state.panes.some((pane) => pane.type === "session"));
-  const startBlockedReason = busy
-    ? undefined
-    : providerRequired
-      ? "Connect a provider to start."
-      : modelRequired && slashModelBootstrap === null
-        ? "Choose a model to start."
-        : pluginSelectionBlocked
-          ? "Resolve the plugin selection to start."
-          : hostCatalogPending || modelHostPending
-            ? "Waiting for the host to answer; Start is available when it does."
-            : undefined;
+  const hasSession = useHasSessionPane();
+  const startBlocked =
+    busy ||
+    (modelRequired && slashModelBootstrap === null) ||
+    providerRequired ||
+    pluginSelectionBlocked ||
+    hostCatalogPending ||
+    modelHostPending;
+  const startBlockedReason =
+    !startBlocked || busy
+      ? undefined
+      : providerRequired
+        ? "Connect a provider to start."
+        : modelRequired && slashModelBootstrap === null
+          ? "Choose a model to start."
+          : pluginSelectionBlocked
+            ? "Resolve the plugin selection to start."
+            : hostCatalogPending || modelHostPending
+              ? "Waiting for the host to answer; Start is available when it does."
+              : undefined;
   return (
     <PaneScaffold title="New session" mobileTitle="New session">
       <div className={CLASS.form}>
@@ -2602,7 +2610,11 @@ function SpawnForm({
             data-testid="spawn-provider-prerequisite"
             action={
               <>
-                {providerSetupIsLocal && <Button onClick={openProviderSetup}>Connect provider</Button>}
+                {providerSetupIsLocal && (
+                  <Button variant="secondary" onClick={openProviderSetup}>
+                    Connect provider
+                  </Button>
+                )}
                 <Button variant="quiet" onClick={() => void providerSetup.retry()}>
                   Retry provider check
                 </Button>
@@ -2807,14 +2819,7 @@ function SpawnForm({
                     aria-label="Start"
                     icon={busy ? undefined : <SendIcon />}
                     onClick={() => void handleSpawn()}
-                    disabled={
-                      busy ||
-                      (modelRequired && slashModelBootstrap === null) ||
-                      providerRequired ||
-                      pluginSelectionBlocked ||
-                      hostCatalogPending ||
-                      modelHostPending
-                    }
+                    disabled={startBlocked}
                   >
                     {busy ? (
                       <StartingLoader startedAt={busyStartedAt ?? Date.now()} />

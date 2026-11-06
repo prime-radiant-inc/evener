@@ -982,6 +982,24 @@ test("--ink-low and --ink-mid clear 4.5:1 on the page and pane surfaces in both 
   }
 });
 
+test("the selection wash is visibly distinct from the page in both themes", () => {
+  const themes = [
+    { name: "dark", block: extractBlock(TOKENS_CSS, /(?:^|\n):root(?:\s*,\s*\[data-theme="dark"\])?\s*\{/) },
+    { name: "light", block: extractBlock(TOKENS_CSS, /\[data-theme="light"\][^{]*\{/) },
+  ];
+  for (const theme of themes) {
+    const accent = declaredToken(theme.block, "--accent");
+    const surface1 = declaredToken(theme.block, "--surface-1");
+    const surface0 = declaredToken(theme.block, "--surface-0");
+    expect(accent).toBeDefined();
+    expect(surface1).toBeDefined();
+    expect(surface0).toBeDefined();
+    if (!accent || !surface1 || !surface0) continue;
+    const wash = oklabMix(parseHexColor(accent), parseHexColor(surface1), 0.4);
+    expect(contrastRatio(wash, parseHexColor(surface0)), `${theme.name} selection vs page`).toBeGreaterThanOrEqual(1.4);
+  }
+});
+
 // --- (d) z-index values must use the token ladder ----------------------
 //
 // Every z-index in the app comes from the token ladder (--z-raised, --z-sticky-bar,

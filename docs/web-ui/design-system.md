@@ -270,7 +270,7 @@ flat, a field is visibly editable, and a floating layer retains a boundary and d
 Use whitespace, aligned columns and fine rules instead of nested boxes and tinted bands.
 
 **Three faces with distinct jobs.** Source Serif 4 for reading prose and editorial page
-headings; Instrument Sans for controls, labels, tables and compact operations; JetBrains Mono for code,
+headings; Schibsted Grotesk for controls, labels, tables and compact operations; JetBrains Mono for code,
 commands, paths and machine identifiers. Comparable operational figures use tabular sans,
 not monospace. Keep authored text and machine evidence visibly distinct.
 
@@ -350,7 +350,7 @@ token names are retained. The table is a reference; `tokens.css` is authoritativ
 | Floating layer `--surface-2` | `#201F1C` | `#FBF8F0` |
 | Evidence inset `--surface-inset` | `#1B1A17` | `#F0EBDF` |
 | Hover / selected `--hover-1/2` | `#28261F` / `#32302A` | `#E8E2D2` / `#DCD5C3` |
-| Editable field `--field` | `#26241F` | `#F7F3E9` |
+| Editable field `--field` | `#26241F` | `#F4EFE3` |
 | Fine / strong edge | `#35322B` / `#524E44` | `#D4CDBE` / `#A8A091` |
 | High / medium / low ink | `#F4F0E4` / `#B4AFA1` / `#9C9789` | `#201F1A` / `#57544A` / `#6B675B` |
 

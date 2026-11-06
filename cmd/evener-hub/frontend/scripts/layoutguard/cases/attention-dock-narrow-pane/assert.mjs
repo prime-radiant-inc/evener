@@ -25,6 +25,11 @@ export default function assert(measurement) {
       `the fixture's title fits its ${label.clientWidth}x${label.clientHeight}px slot, so this case proves nothing about a long target title`,
     );
   }
+  if (label.clientHeight < 2 * label.lineHeight - TOLERANCE) {
+    failures.push(
+      `the title clamps to ${(label.clientHeight / label.lineHeight).toFixed(1)} lines; the control must keep two`,
+    );
+  }
 
   return failures.length === 0
     ? {

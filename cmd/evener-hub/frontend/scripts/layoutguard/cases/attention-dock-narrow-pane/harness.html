@@ -68,6 +68,7 @@ window.measure = () => {
       clientWidth: label.clientWidth,
       scrollHeight: label.scrollHeight,
       clientHeight: label.clientHeight,
+      lineHeight: parseFloat(getComputedStyle(label).lineHeight),
     },
   };
 };
