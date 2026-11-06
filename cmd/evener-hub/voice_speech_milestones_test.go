@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"encoding/base64"
 	"fmt"
+	"net/url"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -20,7 +21,10 @@ func TestE2E_VoiceSpeechCountersPersistOnlyAtMilestones(t *testing.T) {
 			f := newVoiceCorrectionStack(t)
 			// Count actual INSERT/UPDATE writes in SQLite, not calls to a mocked
 			// journal or the bridge's own bookkeeping.
-			db, err := sql.Open("sqlite", filepath.Join(f.stack.home, "state", "evener", "voice", "journal.db"))
+			// The hub also writes this journal. Apply bounded busy waiting to every
+			// connection so counter setup and reads wait for its writer to finish.
+			dsn := url.URL{Scheme: "file", Path: filepath.Join(f.stack.home, "state", "evener", "voice", "journal.db"), RawQuery: "_pragma=busy_timeout(5000)"}
+			db, err := sql.Open("sqlite", dsn.String())
 			if err != nil {
 				t.Fatal(err)
 			}

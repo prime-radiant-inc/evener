@@ -1,12 +1,14 @@
 package server
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"primeradiant.com/evener/agent"
 	"primeradiant.com/evener/agent/events"
@@ -21,12 +23,16 @@ import (
 func TestHistoryPublicationWaitsForRestoreAttach(t *testing.T) {
 	const managerInput = "restore-manager-391"
 	responses := make(chan llm.Response, 8)
+	var draining atomic.Bool
 	client := llm.NewClient()
 	client.Register(&readFrontierProvider{complete: func(req llm.Request) llm.Response {
 		if !requestHasTool(req, "communicate") {
 			return llm.Response{Message: llm.Assistant("fixture-title-391")}
 		}
 		if slices.Contains(userTexts(req), managerInput) {
+			if draining.Load() {
+				return parityCommunicate("drain-result-391", "drain-output-391", true)
+			}
 			return <-responses
 		}
 		return parityCommunicate("child-result-391", "child-output-391", true)
@@ -65,12 +71,26 @@ func TestHistoryPublicationWaitsForRestoreAttach(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	drain := func() {
+		t.Helper()
+		// The idle event precedes the finalization tail. Reclamation needs the
+		// whole tail and its completion delivery settled, not just the event.
+		draining.Store(true)
+		defer draining.Store(false)
+		ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+		defer cancel()
+		if _, err := sess.DrainJobTree(ctx); err != nil {
+			t.Fatal(err)
+		}
+	}
 	run("target-create-391", "delegate", map[string]any{"prompt": "target-input-391"})
 	child := <-idle
+	drain()
 	// Creating another delegate reclaims the first runtime through its real
 	// resource owner, so the next send must run restoreIdle rather than reuse it.
 	run("other-create-391", "delegate", map[string]any{"prompt": "other-input-391"})
 	<-idle
+	drain()
 	if child.DelegateID == "" || child.ChildSessionID == "" || child.Lifecycle != "idle" {
 		t.Fatalf("target did not settle idle: %+v", child)
 	}
@@ -108,10 +128,14 @@ func TestHistoryPublicationWaitsForRestoreAttach(t *testing.T) {
 	assertSavedInput(h)
 
 	var binds, completes atomic.Int64
+	jobsPath := filepath.Join(dir, "sessions", child.ChildSessionID, "jobs.jsonl")
 	sess.SetDescendantTranscriptPublicationFunc(func(id string) agent.TranscriptPublicationHooks {
 		hooks, _ := srv.transcriptPublicationHooks(id)
 		if id == child.ChildSessionID {
-			binds.Add(1)
+			bind := binds.Add(1)
+			if info, err := os.Stat(jobsPath); err != nil || !info.Mode().IsRegular() {
+				t.Errorf("job-store fault was installed before publication bind: info=%v err=%v", info, err)
+			}
 			length, readErr := srv.appHistoryForID(id).RecordedLength()
 			t.Logf("restore bound before attach: bind=%d complete=%d length=%d baseline=%d", binds.Load(), completes.Load(), length, baseline)
 			if readErr != nil || length < baseline {
@@ -123,17 +147,20 @@ func TestHistoryPublicationWaitsForRestoreAttach(t *testing.T) {
 				completes.Add(1)
 				published(length, state)
 			}
+			if bind == 1 {
+				// Fault the real job-store open only after this bind. Earlier
+				// installation can fail admission or reclamation before restore.
+				if err := os.Rename(jobsPath, jobsPath+".saved"); err != nil {
+					t.Errorf("save job store after publication bind: %v", err)
+					return hooks
+				}
+				if err := os.Mkdir(jobsPath, 0o700); err != nil {
+					t.Errorf("fault job store after publication bind: %v", err)
+				}
+			}
 		}
 		return hooks
 	})
-	// The real job-store open follows publication binding and precedes attach.
-	jobsPath := filepath.Join(dir, "sessions", child.ChildSessionID, "jobs.jsonl")
-	if err := os.Rename(jobsPath, jobsPath+".saved"); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Mkdir(jobsPath, 0o700); err != nil {
-		t.Fatal(err)
-	}
 	run("failed-restore-391", "delegate_send", map[string]any{"to": child.DelegateID, "message": "retry-input-391", "max_wait_ms": 10000})
 	if binds.Load() != 1 || completes.Load() != 0 {
 		t.Fatalf("restore did not fail between bind and attach: binds=%d completes=%d", binds.Load(), completes.Load())
