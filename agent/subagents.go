@@ -1902,6 +1902,7 @@ func (a *subagent) run(ctx context.Context, input string, inputProvenance *prove
 	}
 	a.mu.Lock()
 	a.finalizing = false
+	userStopped := a.userStopRequested
 	a.mu.Unlock()
 	if restoreParentDriveNotify != nil && a.sess.peekNotifications() > 0 {
 		a.sess.notify()
@@ -1944,8 +1945,15 @@ func (a *subagent) run(ctx context.Context, input string, inputProvenance *prove
 		if pending, pendingErr := a.sess.pendingDelegateAttentionIDs(); pendingErr != nil {
 			a.sess.emit(warningDataFromError("inspect remaining delegate attention", pendingErr))
 		} else if len(pending) != 0 {
-			if armErr := a.sess.armDelegateAttention(pending[0]); armErr != nil {
-				a.sess.emit(warningDataFromError("rearm remaining delegate attention", armErr))
+			// A run the user stopped owns the quiet: the reopen above kept its
+			// report pending and recoverable — a later attention row, a
+			// restart reconcile or an explicit send presents it — but
+			// re-arming here would at once drive the generation the user just
+			// cancelled.
+			if !userStopped {
+				if armErr := a.sess.armDelegateAttention(pending[0]); armErr != nil {
+					a.sess.emit(warningDataFromError("rearm remaining delegate attention", armErr))
+				}
 			}
 		} else if clearErr := a.sess.delegateController.clearResolvedDelegateAttention(a.sess.owningDelegateID); clearErr != nil {
 			a.sess.emit(warningDataFromError("clear resolved delegate attention", clearErr))

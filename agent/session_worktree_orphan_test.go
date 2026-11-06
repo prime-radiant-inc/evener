@@ -19,6 +19,7 @@ import (
 	"primeradiant.com/evener/agent/internal/worktree"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/agent/transcript"
+	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/llm"
 )
 
@@ -1924,6 +1925,154 @@ func TestDelegateAttentionSupersededClaimDoesNotBlockSecondPendingRow(t *testing
 	}
 	if _, resolved := fold.resolutions[delegateAttentionReopenID(reportID, gen)]; !resolved {
 		t.Fatalf("the reopened report row was never resolved (claims=%v resolutions=%v)", fold.resumeGenerations, fold.resolutions)
+	}
+}
+
+// A user's stop of an in-flight attention presentation owns the quiet. The
+// settle tail still reopens the consumed report — the row stays pending and
+// recoverable through a later wake, a restart reconcile or an explicit send —
+// but nothing may re-arm the automatic drive: a re-arm would at once start
+// the generation the user just cancelled and re-present the report. The
+// owner's notify hop is wired the way the daemon runs it, so the arm's
+// consequence reaches a committed generation without the test driving it.
+func TestDelegateAttentionUserStopsRunWithoutReArmingTheReport(t *testing.T) {
+	t.Parallel()
+	r := newWorktreeRepo(t)
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	var releaseOnce sync.Once
+	t.Cleanup(func() { releaseOnce.Do(func() { close(release) }) })
+	var wedgeOnce sync.Once
+	wedge := func(req llm.Request) llm.Response {
+		wedgeOnce.Do(func() { close(entered) })
+		<-release
+		return agenttest.FinalResponse("done")
+	}
+	lane := spawnSharedDescendantLane(t, r, "user-stop-no-rearm", "dlg_userstop00001", "034userstop00001", wedge)
+	lane.delegateSess.SetNotifyFunc(nil)
+	// The shared child's restored notify edge can launch its own pending
+	// notification turn, which would consume the scripted wedge step this
+	// test's presentation parks in; disarm it so the test loop below is the
+	// only driver.
+	lane.sharedSub.sess.SetNotifyFunc(nil)
+	// The auto path a re-arm feeds: the controller's paced retry notifies the
+	// owner session, whose drive pass selects the armed wake — the same hop
+	// the daemon runs, so the arm's consequence is observable without the
+	// test's own loop.
+	lane.root.SetNotifyFunc(func() { go lane.root.drivePendingDelegateAttention() })
+
+	// A generation committing after the user's stop is the undo this test
+	// forbids; the gate arms only once the stop has been requested, so the
+	// parked presentation's own commit does not trip it.
+	var userStopped atomic.Bool
+	restarted := make(chan struct{})
+	var restartOnce sync.Once
+	updateSessionTestConfig(lane.root, func(cfg *testConfig) {
+		cfg.delegateAttentionStartCommitted = func(*subagent) {
+			if userStopped.Load() {
+				restartOnce.Do(func() { close(restarted) })
+			}
+		}
+	})
+
+	// Flush a report delivery the spawn deferred past its last drain cut, so
+	// the drive below sees the row however the classification landed (an
+	// empty queue is a no-op).
+	var flushMu sync.Mutex
+	var flushErr error
+	flush := func() {
+		lane.delegateSub.mu.Lock()
+		busy := lane.delegateSub.running || lane.delegateSub.driving || lane.delegateSub.finalizing
+		lane.delegateSub.mu.Unlock()
+		if busy {
+			return
+		}
+		if err := lane.delegateSess.flushPendingDelegateDeliveries(); err != nil {
+			flushMu.Lock()
+			flushErr = err
+			flushMu.Unlock()
+		}
+	}
+	go func() {
+		deadline := time.Now().Add(30 * time.Second)
+		for time.Now().Before(deadline) {
+			flush()
+			lane.root.driveDelegateAttention(lane.delegateSub)
+			time.Sleep(200 * time.Millisecond)
+			select {
+			case <-entered:
+				return
+			default:
+			}
+		}
+	}()
+	select {
+	case <-entered:
+	// TRIPWIRE: the first drive presents the report within a couple of loop
+	// passes; the bound only fires on a genuine hang, not a loaded shard's
+	// scheduling delay.
+	case <-time.After(30 * time.Second):
+		flushMu.Lock()
+		lastFlushErr := flushErr
+		flushMu.Unlock()
+		pending, pendErr := lane.delegateSess.pendingDelegateAttentionIDs()
+		t.Fatalf("the presentation never reached its model request (pending attention=%d (%v); flush=%v)",
+			len(pending), pendErr, lastFlushErr)
+	}
+
+	// The user stops the run while its first model request is still parked:
+	// the trigger is latched and nothing has presented. The run's own done
+	// channel is captured before the release, because a restarted generation
+	// would reset it.
+	if got, err := lane.root.StopDelegateRun(lane.fixture.delegateID); err != nil || got != appwire.DelegateStopStopping {
+		t.Fatalf("StopDelegateRun = %q, %v; want stopping", got, err)
+	}
+	userStopped.Store(true)
+	lane.delegateSub.mu.Lock()
+	runDone := lane.delegateSub.done
+	lane.delegateSub.mu.Unlock()
+	// The parked request settles through the cancel; the settle tail — the
+	// reopen and the re-arm decision included — runs before the run's done
+	// channel closes.
+	releaseOnce.Do(func() { close(release) })
+	select {
+	case <-runDone:
+	// TRIPWIRE: the cancelled run settles within seconds of the release; the
+	// bound only fires on a genuine hang.
+	case <-time.After(30 * time.Second):
+		t.Fatal("the user-stopped run never completed its settle tail")
+	}
+
+	// The contract: no new attention generation may commit after the user's
+	// stop — the re-arm is the only door that would open one, and the user's
+	// stop closes it. The paced retry fires within seconds of the settle, so
+	// a window this wide only misses a genuinely hung retry.
+	select {
+	case <-restarted:
+		fold, foldErr := readDelegateAttentionFold(lane.delegateSess.TranscriptPath(), lane.delegateSess.id)
+		pending, pendErr := lane.delegateSess.pendingDelegateAttentionIDs()
+		t.Fatalf("the user's stop was undone: a new attention generation committed (pending=%d (%v) fold=%v err=%v)",
+			len(pending), pendErr, foldErr, fold)
+	// TRIPWIRE: absence bound — nothing arms the stopped delegate's wake, so
+	// no drive may select it; the bound only fires on a genuine hang.
+	case <-time.After(20 * time.Second):
+	}
+
+	// The stop owned the quiet, not the loss: the reopen kept the report
+	// pending under its fresh identity, recoverable by a later wake, a
+	// restart reconcile or an explicit send.
+	fold, foldErr := readDelegateAttentionFold(lane.delegateSess.TranscriptPath(), lane.delegateSess.id)
+	if foldErr != nil {
+		t.Fatalf("read the delegate's attention fold after the stop: %v", foldErr)
+	}
+	var reopenedPending bool
+	for _, id := range fold.pendingIDs() {
+		if strings.Contains(id, "/reopened/") {
+			reopenedPending = true
+		}
+	}
+	if !reopenedPending {
+		t.Fatalf("the user-stopped run's report was not left pending and recoverable (pending=%v resolutions=%v)", fold.pendingIDs(), fold.resolutions)
 	}
 }
 

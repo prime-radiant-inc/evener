@@ -146,9 +146,52 @@ func resumeHistoryIndexed(entries []transcript.Entry) ([]schema.Turn, []int) {
 			turns = append(turns, e.Turn)
 		}
 	}
+	turns = dropSupersededDelegateAttentionTurns(entries, turns)
 
 	repaired, _, insertedAt := repairOrphanedToolResultsIndexed(turns)
 	return repaired, insertedAt
+}
+
+// dropSupersededDelegateAttentionTurns removes the consumed attention rows a
+// reopen superseded from a history being resumed off the transcript. The
+// resident history drops the source's turn at the reopen — the reopened row
+// carries the same content to the next presentation — and a history rebuilt
+// from the durable transcript must hold that same view, or every later
+// request shows the same report twice. The fold, not the history, is the
+// delivery ledger: both rows stay in the transcript, and the source's turn
+// is skipped exactly while its reopen row exists in the fold.
+func dropSupersededDelegateAttentionTurns(entries []transcript.Entry, turns []schema.Turn) []schema.Turn {
+	if !slices.ContainsFunc(entries, func(e transcript.Entry) bool {
+		return e.Turn.AttentionID != ""
+	}) {
+		return turns
+	}
+	fold, err := foldDelegateAttention(entries)
+	if err != nil {
+		// A history build never fails on a fold it cannot verify: the ledger's
+		// own reader reports the corruption, and the history keeps the
+		// transcript's turns as it found them.
+		return turns
+	}
+	superseded := make(map[string]bool, len(fold.resumeGenerations))
+	for id, generation := range fold.resumeGenerations {
+		if generation != 0 && fold.resolutions[id] == delegateAttentionConsumed {
+			if _, reopened := fold.content[delegateAttentionReopenID(id, generation)]; reopened {
+				superseded[id] = true
+			}
+		}
+	}
+	if len(superseded) == 0 {
+		return turns
+	}
+	kept := make([]schema.Turn, 0, len(turns))
+	for _, turn := range turns {
+		if superseded[turn.AttentionID] {
+			continue
+		}
+		kept = append(kept, turn)
+	}
+	return kept
 }
 
 // ResumeHistory extracts the history needed for session resume from transcript entries.

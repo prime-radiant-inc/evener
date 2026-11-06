@@ -350,6 +350,77 @@ func TestFoldDelegateAttention_SupersededClaimReleasesGeneration(t *testing.T) {
 	}
 }
 
+// History resumed from the transcript must match the resident view the
+// reopen's drop keeps: a consumed attention row superseded by its own reopen
+// never reached a request — every reopen fires only after a start that
+// failed before presenting — and the reopened row carries the same content
+// to the next presentation, so a history that replays the source alongside
+// the copy shows the same report twice in every later request. The source's
+// turn is skipped exactly while its reopen row exists in the fold; the
+// transcript keeps both rows, because the fold, not the history, is the
+// delivery ledger.
+func TestResumeHistorySkipsSupersededDelegateAttentionTurns(t *testing.T) {
+	t.Parallel()
+	row := func(id, text string) transcript.Entry {
+		turn := schema.NewTurn(schema.TurnSteering, llm.User(text))
+		turn.AttentionID = id
+		return transcript.Entry{Turn: turn}
+	}
+	marker := func(id string, generation uint64) transcript.Entry {
+		turn := schema.NewTurn(schema.TurnAttentionResolution, llm.System("x"))
+		turn.AttentionResolution = &schema.AttentionResolutionInfo{AttentionID: id, Disposition: "consumed", ResumeGeneration: generation}
+		return transcript.Entry{Turn: turn}
+	}
+	attentionIDs := func(turns []schema.Turn) map[string]int {
+		counts := map[string]int{}
+		for _, turn := range turns {
+			if turn.AttentionID != "" {
+				counts[turn.AttentionID]++
+			}
+		}
+		return counts
+	}
+
+	// The transcript a busy-settled presentation leaves: the report consumed
+	// for a start that never presented, and the reopen's fresh row carrying
+	// the same content.
+	reopened := delegateAttentionReopenID("attn_report", 2)
+	history, _ := resumeHistoryIndexed([]transcript.Entry{
+		row("attn_report", "the report content"),
+		marker("attn_report", 2),
+		row(reopened, "the report content"),
+	})
+	counts := attentionIDs(history)
+	if counts["attn_report"] != 0 || counts[reopened] != 1 {
+		t.Fatalf("resumed history attention ids = %v, want the superseded source gone and its reopened copy alone", counts)
+	}
+
+	// A consumed row no reopen has superseded keeps its turn: the resident
+	// view keeps it too, and its generation still owes the presentation.
+	history, _ = resumeHistoryIndexed([]transcript.Entry{
+		row("attn_owed", "still owed"),
+		marker("attn_owed", 2),
+	})
+	if counts = attentionIDs(history); counts["attn_owed"] != 1 {
+		t.Fatalf("resumed history attention ids = %v, want the unsuperseded consumed row kept", counts)
+	}
+
+	// A chained reopen supersedes every ancestor: each consumed link's own
+	// reopen row exists, so only the deepest re-delivery stays.
+	grandchild := delegateAttentionReopenID(reopened, 2)
+	history, _ = resumeHistoryIndexed([]transcript.Entry{
+		row("attn_report", "the report content"),
+		marker("attn_report", 2),
+		row(reopened, "the report content"),
+		marker(reopened, 2),
+		row(grandchild, "the report content"),
+	})
+	counts = attentionIDs(history)
+	if counts["attn_report"] != 0 || counts[reopened] != 0 || counts[grandchild] != 1 {
+		t.Fatalf("resumed history attention ids = %v, want only the chained reopen's deepest row", counts)
+	}
+}
+
 func TestFoldDelegateAttention_ConflictingContent(t *testing.T) {
 	t.Parallel()
 	// Two steering turns with same attentionID but different content -> error.
