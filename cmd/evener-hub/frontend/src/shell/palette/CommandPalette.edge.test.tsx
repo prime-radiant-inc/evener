@@ -159,6 +159,23 @@ describe("remote search results", () => {
     expect(within(results).queryAllByRole("option")).toHaveLength(0);
   });
 
+  test("a failed search still raises an alert when commands match the query", async () => {
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+    scriptSearchFailure();
+
+    render(
+      <NeedsYouProvider>
+        <CommandPalette />
+      </NeedsYouProvider>,
+    );
+    act(() => openPalette());
+    await user.type(screen.getByRole("combobox"), "settings");
+
+    const results = screen.getByRole("listbox");
+    await waitFor(() => expect(within(results).getByRole("alert")).toBeTruthy());
+    expect(within(results).getAllByRole("option").length).toBeGreaterThan(0);
+  });
+
   // --- search result activation: live/past with newTab (lines 505-506) ---
 
   test("Mod+Enter on a search result opens it in a new tab", async () => {
@@ -232,11 +249,48 @@ test("Shift+Enter on an in-session search result closes the palette without navi
   await user.type(screen.getByRole("combobox"), "search");
 
   await waitFor(() => expect(paletteRowsOfKind("insession")).toHaveLength(1));
-  await user.keyboard("{Shift>}{Enter}{/Shift}");
+  await user.keyboard("{ArrowDown}{Shift>}{Enter}{/Shift}");
 
   expect(screen.queryByRole("dialog")).toBeNull();
   expect(window.location.pathname).toBe("/");
   expect(anchors).toHaveLength(0);
+});
+
+test("Enter on a plain query prefers the first session hit over the leading command", async () => {
+  const user = userEvent.setup();
+  scriptSearch({ live: [], past: [] });
+  focusSession("ref_a", { turns: [turn([item("i1", "sea term found here")])] });
+
+  render(
+    <NeedsYouProvider>
+      <CommandPalette />
+    </NeedsYouProvider>,
+  );
+  act(() => openPalette());
+  await user.type(screen.getByRole("combobox"), "sea");
+  await waitFor(() => expect(paletteRowsOfKind("insession")).toHaveLength(1));
+
+  await user.keyboard("{Enter}");
+  await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+  expect(window.location.pathname).toBe("/");
+});
+
+test("ArrowUp to a leading command runs the highlighted command", async () => {
+  const user = userEvent.setup();
+  scriptSearch({ live: [], past: [] });
+  focusSession("ref_a", { turns: [turn([item("i1", "set term found here")])] });
+
+  render(
+    <NeedsYouProvider>
+      <CommandPalette />
+    </NeedsYouProvider>,
+  );
+  act(() => openPalette());
+  await user.type(screen.getByRole("combobox"), "set");
+  await waitFor(() => expect(paletteRowsOfKind("insession")).toHaveLength(1));
+
+  await user.keyboard("{ArrowUp}{Enter}");
+  await waitFor(() => expect(window.location.pathname).toBe("/settings"));
 });
 
 // --- enterPressed: handoff via arrow+Enter (lines 519-524) ---

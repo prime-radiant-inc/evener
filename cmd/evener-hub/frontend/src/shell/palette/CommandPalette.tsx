@@ -100,7 +100,7 @@ const CLASS = {
 // the placeholder itself - since a user hunting for the shortcut legend
 // (real-browser report) checked every settings section but never learned
 // this palette even has a "/" command mode or a "?" shortcut view.
-const SEARCH_PLACEHOLDER = "search live + past sessions · / for commands · ? for shortcuts";
+const SEARCH_PLACEHOLDER = "search · / commands · ? help";
 const SEARCH_DEBOUNCE_MS = 150;
 
 // Live-row status dot: the search API's normalized state (hubcore.
@@ -332,7 +332,7 @@ function PaletteBody({
     const initialDemand =
       needsYouCount === 0 && !!navigation.manifest?.data && selectSectionCanDemand("needs_you", navigation);
     const overflowDemand =
-      needsYouCount > 0 && activeIndex >= needsYouCount - 1 && selectSectionRemaining("needs_you", navigation) > 0;
+      needsYouCount > 0 && activeIndex === needsYouCount - 1 && selectSectionRemaining("needs_you", navigation) > 0;
     if (!initialDemand && !overflowDemand) return;
     const offset = selectNextSectionOffset("needs_you", navigation);
     const pageID = keyID({ kind: "section", section: "needs_you", offset, limit: 50 });
@@ -483,14 +483,48 @@ function PaletteBody({
   );
 
   // Reset the active row whenever the row list is rebuilt (§2.3/§2.4:
-  // active = first row, or none when empty). Keyed on the view memo, which
-  // only changes when the data deps do - never on a bare activeIndex change.
+  // active = first row, or none when empty), except that an arrow-picked
+  // command keeps its highlight when late search or needs-you rows land.
+  // Keyed on the view memo, which only changes when the data deps do - never
+  // on a bare activeIndex change.
+  const previousViewRef = useRef(view);
+  const previousQueryRef = useRef(query);
+  const userMovedRef = useRef(false);
   useEffect(() => {
-    setActiveIndex(view.items.length > 0 ? 0 : -1);
-  }, [view]);
+    const previousView = previousViewRef.current;
+    const queryChanged = previousQueryRef.current !== query;
+    previousViewRef.current = view;
+    previousQueryRef.current = query;
+    setActiveIndex((previous) => {
+      const q = query.replace(/^\/+/, "").trim().toLowerCase();
+      const exactCommand =
+        q === ""
+          ? -1
+          : view.items.findIndex(
+              (item) =>
+                item.kind === "command" &&
+                (item.command.id.toLowerCase() === q || item.command.title.toLowerCase() === q),
+            );
+      const firstResult = q === "" ? -1 : view.items.findIndex((item) => item.kind !== "command");
+      const fallback =
+        exactCommand >= 0 ? exactCommand : firstResult >= 0 ? firstResult : view.items.length > 0 ? 0 : -1;
+      if (queryChanged) {
+        userMovedRef.current = false;
+        return fallback;
+      }
+      if (!userMovedRef.current) return fallback;
+      const selected = previousView.items[previous];
+      if (selected?.kind === "command") {
+        const next = view.items.findIndex((item) => item.kind === "command" && item.command.id === selected.command.id);
+        if (next >= 0) return next;
+      }
+      return fallback;
+    });
+  }, [view, query]);
 
   function move(dir: number) {
     if (view.items.length === 0) return;
+    userMovedRef.current = true;
     setActiveIndex((prev) => (prev + dir + view.items.length) % view.items.length);
   }
 
@@ -643,12 +677,17 @@ function PaletteBody({
       if (newTab) openInNewTab(url);
       else openSessionByRef(item.row.result.ref);
     }
+    if (item.kind === "command") {
+      // Search mode now shows app-global commands alongside session hits, so
+      // those rows must run exactly like their command-filter counterparts.
+      activateCommand(item.command);
+    }
   }
 
   function enterPressed() {
     const item = view.items[activeIndex];
     if (mode === "search") {
-      if (item) activateResult(item, false);
+      if (item) activateSearchItem(item, false);
       return;
     }
     if (mode === "command-filter") {
@@ -708,6 +747,13 @@ function PaletteBody({
     }
   }
 
+  function activateSearchItem(item: PaletteItem, newTab: boolean) {
+    // The reset effect already puts the default highlight on what Enter should
+    // act on, and move() makes an arrow pick explicit, so the highlighted row
+    // is always the row Enter runs.
+    activateResult(item, newTab);
+  }
+
   function onKeyDown(e: KeyboardEvent<HTMLInputElement>) {
     if (e.key === "ArrowDown") {
       e.preventDefault();
@@ -719,7 +765,7 @@ function PaletteBody({
       if (mode === "search") {
         e.preventDefault();
         const item = view.items[activeIndex];
-        if (item) activateResult(item, true);
+        if (item) activateSearchItem(item, true);
       }
     } else if (e.key === "Enter" && e.shiftKey) {
       if (mode === "search") {
@@ -847,6 +893,30 @@ function buildView(args: {
     entries.push({ type: "row", item, index: items.length });
     items.push(item);
   };
+  const pushRecent = (recent: ScopedCommand[]) => {
+    if (recent.length) {
+      entries.push({ type: "header", section: "recent", label: "Recent" });
+      for (const command of recent) push({ kind: "command", command });
+    }
+  };
+  const pushCommands = (commands: ScopedCommand[], alwaysShowHeader = false) => {
+    if (commands.length || alwaysShowHeader) {
+      entries.push({ type: "header", section: "commands", label: "Commands" });
+      for (const command of commands) push({ kind: "command", command });
+    }
+  };
+  const pushCommandMatches = (filter: string) => {
+    const { recent, commands } = filterCommands(ctx, filter);
+    const searchVisible = (command: ScopedCommand) => command.id !== "upgrade" && command.id !== "search";
+    const q = filter.replace(/^\/+/, "").toLowerCase().trim();
+    const named = q
+      ? commands
+          .filter(searchVisible)
+          .filter((command) => command.id.toLowerCase().startsWith(q) || command.title.toLowerCase().startsWith(q))
+      : commands.filter(searchVisible);
+    pushRecent(recent.filter(searchVisible));
+    pushCommands(named);
+  };
 
   // The help panel is inert (§2.8, search.js:695-696,713): no navigable rows
   // underneath, so ArrowDown/Enter can't fire a hidden registry command.
@@ -854,22 +924,28 @@ function buildView(args: {
   if (showingHelp) return { entries, items };
 
   if (mode === "search") {
-    // UX fix: the empty-query view used to render nothing at all (no live/
-    // past results to show without a search term). It now lists needs-you
-    // sessions instead, when there are any - Mod+J's own tree-order list,
-    // opened the same way (needsYouCycle.ts). A non-empty query keeps the
-    // existing live/past/in-session behavior untouched below.
-    if (!query.trim() && needsYouChoices.length > 0) {
-      entries.push({ type: "header", section: "needs-you", label: "Needs you" });
-      for (const choice of needsYouChoices) push({ kind: "needsYou", choice });
+    const trimmed = query.trim();
+    // The empty-query view leads with needs-you sessions (Mod+J's own
+    // tree-order list, opened the same way - needsYouCycle.ts), then the
+    // app-global Commands list, so the palette shows what it can do instead
+    // of opening as a near-blank card. A plain query puts matching commands
+    // ahead of live/past/in-session search: typing "settings" finds
+    // "Open settings" without requiring the "/" prefix.
+    if (!trimmed) {
+      if (needsYouChoices.length > 0) {
+        entries.push({ type: "header", section: "needs-you", label: "Needs you" });
+        for (const choice of needsYouChoices) push({ kind: "needsYou", choice });
+      }
+      pushCommandMatches("");
       return { entries, items };
     }
     // Subagent hits group under their top-level session (shared client
     // rule): a matched live anchor nests its family inline, an absent anchor
     // arrives greyed, and a topLevel-less (older-hub) response stays flat.
+    pushCommandMatches(query);
     const grouped = groupSearchResults(searchResp?.live ?? [], searchResp?.past ?? []);
     const model = focusedModel(ctx.sessionRef);
-    const inSession = model && query.trim() ? findInSessionMatches(model, query.trim()) : [];
+    const inSession = model ? findInSessionMatches(model, trimmed) : [];
     if (grouped.live.length) {
       entries.push({ type: "header", section: "live", label: "Live" });
       for (const row of grouped.live) {
@@ -891,10 +967,7 @@ function buildView(args: {
 
   if (mode === "command-filter") {
     const { recent, commands } = filterCommands(ctx, query);
-    if (recent.length) {
-      entries.push({ type: "header", section: "recent", label: "Recent" });
-      for (const command of recent) push({ kind: "command", command });
-    }
+    pushRecent(recent);
     // The ONE handoff row (2026-08-14 decision): the typed name prefixes a
     // session-scoped command (built-in or plugin) - shown ahead of the
     // app-global Commands section, since it's the more specific answer to
@@ -905,8 +978,7 @@ function buildView(args: {
       entries.push({ type: "header", section: "handoff", label: "Continue in the composer" });
       push({ kind: "handoff", query, hasFocusedSession: ctx.sessionRef !== null });
     }
-    entries.push({ type: "header", section: "commands", label: "Commands" });
-    for (const command of commands) push({ kind: "command", command });
+    pushCommands(commands, true);
     return { entries, items };
   }
 
@@ -960,7 +1032,7 @@ function renderResults(args: {
   }
 
   if (view.items.length > 0) {
-    return view.entries.map((entry) =>
+    const rows = view.entries.map((entry) =>
       entry.type === "header" ? (
         <div className={CLASS.sectionHeader} key={`h-${entry.section}`} data-section={entry.section}>
           <Eyebrow>{entry.label}</Eyebrow>
@@ -975,6 +1047,14 @@ function renderResults(args: {
           onActivate={onActivate}
         />
       ),
+    );
+    return mode === "search" && searchFailed ? (
+      <>
+        <InlineNotice tone="danger">Search failed</InlineNotice>
+        {rows}
+      </>
+    ) : (
+      rows
     );
   }
 

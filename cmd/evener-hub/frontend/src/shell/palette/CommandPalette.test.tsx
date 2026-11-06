@@ -796,7 +796,7 @@ test("a deliberate needs-you selection still opens after the superseding modal c
   expect(currentAttentionEntryToken()).not.toBeNull();
 });
 
-test("the empty-query view keeps its old (empty) behavior when there are no needs-you sessions", () => {
+test("the empty-query view lists Commands when there are no needs-you sessions", () => {
   setNeedsYouRows(null);
   render(
     <NeedsYouProvider>
@@ -805,7 +805,77 @@ test("the empty-query view keeps its old (empty) behavior when there are no need
   );
   act(() => openPalette());
 
-  expect(screen.queryByRole("option")).toBeNull();
+  expect(paletteSection("commands")).not.toBeNull();
+  expect(screen.getAllByRole("option").length).toBeGreaterThan(0);
+});
+
+test("Enter on the empty-query Commands list runs the highlighted command", async () => {
+  const user = userEvent.setup();
+  setNeedsYouRows(null);
+  render(
+    <NeedsYouProvider>
+      <CommandPalette />
+    </NeedsYouProvider>,
+  );
+  act(() => openPalette());
+  await user.keyboard("{Enter}");
+  await waitFor(() => expect(window.location.pathname).toBe("/new"));
+});
+
+test("an arrow-picked command runs even without an exact name match", async () => {
+  const user = userEvent.setup();
+  setNeedsYouRows(null);
+  render(
+    <NeedsYouProvider>
+      <CommandPalette />
+    </NeedsYouProvider>,
+  );
+  act(() => openPalette());
+  await user.keyboard("{ArrowDown}{ArrowDown}{Enter}");
+  await waitFor(() => expect(window.location.pathname).toBe("/settings"));
+});
+
+test("typing a new query resets the highlight after an arrow pick", async () => {
+  const user = userEvent.setup();
+  setNeedsYouRows(null);
+  render(
+    <NeedsYouProvider>
+      <CommandPalette />
+    </NeedsYouProvider>,
+  );
+  act(() => openPalette());
+  await user.keyboard("{ArrowDown}{ArrowDown}");
+  const input = screen.getByRole("combobox");
+  expect(input.getAttribute("aria-activedescendant")).toBe("palette-row-2");
+  await user.type(input, "s");
+  await waitFor(() => expect(input.getAttribute("aria-activedescendant")).toBe("palette-row-0"));
+});
+
+test("late needs-you rows take the default selection from the Command list", async () => {
+  setNeedsYouRows(null);
+  render(
+    <NeedsYouProvider>
+      <CommandPalette />
+    </NeedsYouProvider>,
+  );
+  act(() => openPalette());
+  const input = screen.getByRole("combobox");
+  expect(input.getAttribute("aria-activedescendant")).toBe("palette-row-0");
+
+  act(() => setNeedsYouRows(needsYouRows()));
+  await waitFor(() => expect(screen.getByRole("option", { name: /Session A/i })).toBeTruthy());
+  expect(input.getAttribute("aria-activedescendant")).toBe("palette-row-0");
+});
+
+test("search mode keeps the side-effecting upgrade command behind the slash prefix", () => {
+  setNeedsYouRows(null);
+  render(
+    <NeedsYouProvider>
+      <CommandPalette />
+    </NeedsYouProvider>,
+  );
+  act(() => openPalette());
+  expect(screen.queryByRole("option", { name: /Upgrade Evener/ })).toBeNull();
 });
 
 // The manifest count refreshes on its own schedule, so a settled empty page
@@ -1227,6 +1297,23 @@ test("typing after /help leaves the help panel and returns to a real command lis
   await user.type(screen.getByRole("combobox"), "settings");
   expect(paletteSection("help")).toBeNull();
   expect(screen.getByRole("option", { name: /Open settings/ })).toBeTruthy();
+});
+
+test("a plain-word query finds an app-global command without a slash prefix", async () => {
+  const user = userEvent.setup();
+  scriptSearch({ live: [], past: [] });
+  render(
+    <NeedsYouProvider>
+      <CommandPalette />
+    </NeedsYouProvider>,
+  );
+  act(() => openPalette());
+  await user.type(screen.getByRole("combobox"), "settings");
+  expect(await screen.findByRole("option", { name: /Open settings/ })).toBeTruthy();
+
+  await user.keyboard("{Enter}");
+  await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+  expect(window.location.pathname).toBe("/settings");
 });
 
 // --- search mode ---
