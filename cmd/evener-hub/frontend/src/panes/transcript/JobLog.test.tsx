@@ -527,6 +527,26 @@ test("a backward wheel stranded past the loaded boundary pages from the hidden m
   expect(request.params).toEqual({ ref: "ref_root", jobId: "job_x", beforeBytes: 100, maxBytes: 100 });
 });
 
+test("a fast backward jump pages from the boundary row before it renders", async () => {
+  // A viewport taller than the overscan band is what lets the boundary row sit
+  // fully above the viewport yet outside the rendered window.
+  restoreGeometry();
+  restoreGeometry = installJobLogGeometry(500, 20);
+  mountJob();
+  const data = Array.from({ length: 100 }, (_, index) => `L${String(index).padStart(2, "0")}\n`).join("");
+  await respond(textPage(100, data, 500, 0));
+  const scroller = port();
+  expect(peer.requests("evener/jobs/output")).toHaveLength(1);
+  expect(scroller.querySelector('[data-source-start="100"]')).toBeNull();
+  // The boundary row (index 1) ends 200px above the viewport top, well outside
+  // the six-row overscan, so the rendered window does not contain it when the
+  // scroll event inspects. The demand's own scroll to the gap then mounts it.
+  await act(async () => scroll(scroller, 240));
+  expect(peer.requests("evener/jobs/output")).toHaveLength(2);
+  const request = await peer.request("evener/jobs/output", 1);
+  expect(request.params).toEqual({ ref: "ref_root", jobId: "job_x", beforeBytes: 100, maxBytes: 100 });
+});
+
 test("a real inactive DockHost tab remounts the later-page byte row at the same pixel", async () => {
   vi.stubGlobal("ResizeObserver", StubResizeObserver);
   await import("../welcome");

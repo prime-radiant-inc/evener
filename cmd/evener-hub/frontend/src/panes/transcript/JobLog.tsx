@@ -168,6 +168,7 @@ export function JobLog({ jobRef, parentRef, paneId }: { jobRef: string; parentRe
 function JobLogBody({ reader, jobId, paneId }: { reader: JobLogReader; jobId: string; paneId?: string }) {
   const snapshot = useSyncExternalStore(reader.subscribe, reader.getSnapshot);
   const rows = useMemo(() => jobLogDisplayRows(snapshot.windows, jobId), [snapshot.windows, jobId]);
+  const gaps = useMemo(() => rows.flatMap((row, index) => (row.kind === "unloaded" ? [{ row, index }] : [])), [rows]);
   const list = useRef<VirtualListHandle>(null);
   const virtualizer = useRef<Virtualizer<HTMLDivElement, HTMLDivElement> | null>(null);
   const previousRows = useRef<JobLogDisplayRow[] | null>(null);
@@ -192,13 +193,13 @@ function JobLogBody({ reader, jobId, paneId }: { reader: JobLogReader; jobId: st
     if (!scroller || !mounted.current) return;
     // Byte-count and status notes can move the scroll port inside the pane.
     const originTop = scroller.closest(`.${CLASS.body}`)?.getBoundingClientRect().top ?? 0;
+    const instance = virtualizer.current;
     const pending = restore.current;
     if (pending !== null) {
       const item = rows[restorationIndex(pending)];
       const element = scroller.querySelector<HTMLElement>(
         `[data-index="${restorationIndex(pending)}"] [data-joblog-kind]`,
       );
-      const instance = virtualizer.current;
       if (!instance) return;
       if (!element) {
         list.current?.scrollToIndex(restorationIndex(pending), { align: pending.following ? "end" : "start" });
@@ -239,15 +240,20 @@ function JobLogBody({ reader, jobId, paneId }: { reader: JobLogReader; jobId: st
     });
     const gapIndex = jobLogDemandGapIndex({
       rows,
+      gaps,
       markerStartBytes: marker ? Number(marker.dataset.sourceStart) : undefined,
       previous,
       byteOffset: byte,
       following,
       geometry: {
         viewportTop: viewport.top,
-        renderedBottom: (startBytes) =>
-          elements.find((element) => Number(element.dataset.sourceStart) === startBytes)?.getBoundingClientRect()
-            .bottom,
+        viewportHeight: viewport.bottom - viewport.top,
+        // The virtualizer measures every row, so the boundary row's position
+        // survives even when a fast scroll has not rendered it yet.
+        rowBottom: (rowIndex) => {
+          const item = instance?.measurementsCache[rowIndex];
+          return item === undefined ? undefined : item.end - scroller.scrollTop;
+        },
       },
     });
     const gap = rows[gapIndex];

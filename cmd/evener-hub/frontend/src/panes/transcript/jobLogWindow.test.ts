@@ -333,17 +333,22 @@ const backwardRows: JobLogDemandRow[] = [
   { kind: "output", row: { offsetBytes: 200, endBytes: 300 } },
   { kind: "output", row: { offsetBytes: 300, endBytes: 400 } },
 ];
+const backwardGaps = backwardRows.flatMap((row, index) => (row.kind === "unloaded" ? [{ row, index }] : []));
+
+// Viewport top 50, height 100. The first loaded row (index 2) ends at 48, two
+// pixels above the viewport top.
+const base = {
+  rows: backwardRows,
+  gaps: backwardGaps,
+  markerStartBytes: undefined,
+  previous: { byteOffset: 250, following: false },
+  byteOffset: 210,
+  following: false,
+  geometry: { viewportTop: 50, viewportHeight: 100, rowBottom: (index: number) => (index === 2 ? 48 : undefined) },
+};
 
 test("pages backward at the geometric boundary when measurement hides the unloaded marker", () => {
-  const gapIndex = jobLogDemandGapIndex({
-    rows: backwardRows,
-    markerStartBytes: undefined,
-    previous: { byteOffset: 250, following: false },
-    byteOffset: 210,
-    following: false,
-    // The first loaded row's bottom (48) is above the viewport top (50).
-    geometry: { viewportTop: 50, renderedBottom: (startBytes) => (startBytes === 200 ? 48 : undefined) },
-  });
+  const gapIndex = jobLogDemandGapIndex(base);
   expect(gapIndex).toBe(1);
   expect(backwardRows[gapIndex]).toMatchObject({ kind: "unloaded", startBytes: 100, endBytes: 200 });
 });
@@ -351,44 +356,27 @@ test("pages backward at the geometric boundary when measurement hides the unload
 test("does not page at the boundary while the first loaded row is still visible", () => {
   expect(
     jobLogDemandGapIndex({
-      rows: backwardRows,
-      markerStartBytes: undefined,
-      previous: { byteOffset: 250, following: false },
-      byteOffset: 210,
-      following: false,
-      geometry: { viewportTop: 50, renderedBottom: (startBytes) => (startBytes === 200 ? 60 : undefined) },
+      ...base,
+      geometry: { ...base.geometry, rowBottom: (index) => (index === 2 ? 60 : undefined) },
     }),
   ).toBe(-1);
 });
 
 test("does not page at the backward boundary when the wheel advanced forward", () => {
+  expect(jobLogDemandGapIndex({ ...base, previous: { byteOffset: 210, following: false }, byteOffset: 250 })).toBe(-1);
+});
+
+test("does not page from the gap while the reader is deeper inside the loaded window", () => {
   expect(
     jobLogDemandGapIndex({
-      rows: backwardRows,
-      markerStartBytes: undefined,
-      previous: { byteOffset: 210, following: false },
-      byteOffset: 250,
-      following: false,
-      geometry: { viewportTop: 50, renderedBottom: (startBytes) => (startBytes === 200 ? 48 : undefined) },
+      ...base,
+      geometry: { ...base.geometry, rowBottom: (index) => (index === 2 ? -200 : undefined) },
     }),
   ).toBe(-1);
 });
 
 test("still pages from a visible marker and from a crossed gap", () => {
-  const base = {
-    rows: backwardRows,
-    byteOffset: 210,
-    following: false,
-    geometry: { viewportTop: 50, renderedBottom: () => undefined },
-  };
   expect(jobLogDemandGapIndex({ ...base, markerStartBytes: 100, previous: null })).toBe(1);
   // The reading position was past the gap and is now before it.
-  expect(
-    jobLogDemandGapIndex({
-      ...base,
-      markerStartBytes: undefined,
-      previous: { byteOffset: 250, following: false },
-      byteOffset: 50,
-    }),
-  ).toBe(1);
+  expect(jobLogDemandGapIndex({ ...base, byteOffset: 50 })).toBe(1);
 });

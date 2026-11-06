@@ -27,10 +27,17 @@ export type JobLogDemandRow =
   | { kind: "output"; row: { offsetBytes: number; endBytes: number } }
   | { kind: "unloaded" | "pruned"; startBytes: number; endBytes: number };
 
+/** An unloaded display row and its index in the display rows. */
+export type JobLogGapCandidate = {
+  row: { startBytes: number; endBytes: number };
+  index: number;
+};
+
 export type JobLogBoundaryGeometry = {
   viewportTop: number;
-  /** Bottom edge of the rendered output row that starts at this byte, if it is rendered. */
-  renderedBottom: (startBytes: number) => number | undefined;
+  viewportHeight: number;
+  /** Client-space bottom of the display row at this index, measured or estimated. */
+  rowBottom: (rowIndex: number) => number | undefined;
 };
 
 /** The unloaded gap a scroll at this position must page from, or -1.
@@ -39,22 +46,21 @@ export type JobLogBoundaryGeometry = {
  * crossed it in either direction. The returned index addresses the gap row. */
 export function jobLogDemandGapIndex(input: {
   rows: readonly JobLogDemandRow[];
+  gaps: readonly JobLogGapCandidate[];
   markerStartBytes: number | undefined;
   previous: { byteOffset: number; following: boolean } | null;
   byteOffset: number | undefined;
   following: boolean;
   geometry: JobLogBoundaryGeometry;
 }): number {
-  const { rows, markerStartBytes, previous, byteOffset, following } = input;
+  const { rows, gaps, markerStartBytes, previous, byteOffset, following, geometry } = input;
   const crossed = (row: { startBytes: number; endBytes: number }) =>
     previous !== null &&
     !(previous.following && following) &&
     byteOffset !== undefined &&
     ((previous.byteOffset < row.startBytes && byteOffset >= row.endBytes) ||
       (previous.byteOffset >= row.endBytes && byteOffset < row.startBytes));
-  for (let index = 0; index < rows.length; index++) {
-    const row = rows[index];
-    if (row?.kind !== "unloaded") continue;
+  for (const { row, index } of gaps) {
     if (row.startBytes === markerStartBytes || crossed(row)) return index;
   }
   // A backward wheel that reaches the loaded window's start can leave the
@@ -65,15 +71,18 @@ export function jobLogDemandGapIndex(input: {
   // page from the gap above it even though the marker cannot be seen. Without
   // this, the wheel that reached the boundary strands the reader until an
   // unrelated scroll reveals the marker again.
-  if (previous !== null && !following && byteOffset !== undefined && byteOffset < previous.byteOffset) {
-    for (let index = 0; index < rows.length; index++) {
-      const row = rows[index];
-      if (row?.kind !== "unloaded") continue;
-      const next = rows[index + 1];
-      if (next?.kind !== "output" || next.row.offsetBytes !== row.endBytes) continue;
-      const bottom = input.geometry.renderedBottom(next.row.offsetBytes);
-      if (bottom !== undefined && bottom <= input.geometry.viewportTop) return index;
-    }
+  if (previous === null || following || byteOffset === undefined || byteOffset >= previous.byteOffset) return -1;
+  for (const { row, index } of gaps) {
+    const next = rows[index + 1];
+    if (next?.kind !== "output" || next.row.offsetBytes !== row.endBytes) continue;
+    const bottom = geometry.rowBottom(index + 1);
+    if (bottom === undefined) continue;
+    // The first loaded row must be fully above the viewport, but only just: a
+    // row more than a viewport above means the reader is inside the loaded
+    // window, where scrolling to the gap would teleport it.
+    const distance = geometry.viewportTop - bottom;
+    if (distance < 0 || distance > geometry.viewportHeight) continue;
+    return index;
   }
   return -1;
 }
