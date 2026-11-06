@@ -193,7 +193,10 @@ func managerDelegateDefinition(def llm.ToolDefinition, ordinary bool) llm.ToolDe
 		data, _ := json.Marshal(def.Parameters)
 		_ = json.Unmarshal(data, &params)
 	} else {
-		params = map[string]any{"type": "object", "additionalProperties": false, "properties": map[string]any{"prompt": map[string]any{"type": "string"}}}
+		params = map[string]any{"type": "object", "additionalProperties": false, "properties": map[string]any{
+			"prompt":           map[string]any{"type": "string"},
+			"reasoning_effort": map[string]any{"type": "string", "enum": []string{"low", "medium", "high"}},
+		}}
 	}
 	props := params["properties"].(map[string]any)
 	props["hub"] = map[string]any{
@@ -209,12 +212,22 @@ func managerDelegateDefinition(def llm.ToolDefinition, ordinary bool) llm.ToolDe
 	if ordinary {
 		params["anyOf"] = []any{
 			map[string]any{"type": "object", "not": map[string]any{"type": "object", "required": []string{"hub"}}},
-			map[string]any{"type": "object", "required": []string{"hub"}, "properties": map[string]any{"hub": props["hub"], "prompt": props["prompt"], "intent": map[string]any{"type": "string"}}, "additionalProperties": false},
+			map[string]any{"type": "object", "required": []string{"hub"}, "properties": map[string]any{"hub": props["hub"], "prompt": props["prompt"], "reasoning_effort": props["reasoning_effort"], "intent": map[string]any{"type": "string"}}, "additionalProperties": false},
 		}
 	} else {
 		params["required"] = []string{"prompt", "hub"}
 	}
-	def.Description += " In a Manager session, hub={cwd,model,watch} creates an independent top-level session, attaches the requested watch and reads its initial state before sending prompt. hub.host names any host the hub can reach; absent means this hub. Creation, watch and input are reported separately. A failed watch leaves the created session empty; an unknown launch is never retried, and an unknown or unreachable host is refused by the hub. Hub results are not owned delegate reports."
+	if name, ok := props["name"].(map[string]any); ok {
+		if desc, ok := name["description"].(string); ok {
+			name["description"] = strings.TrimSpace(desc + " Not accepted on the Manager hub branch: a hub-created session is not an owned delegate, so the name never surfaces; the created ref and the session's prompt-derived title identify it.")
+		}
+	}
+	if effort, ok := props["reasoning_effort"].(map[string]any); ok {
+		if desc, ok := effort["description"].(string); ok {
+			effort["description"] = strings.TrimSpace(desc + " With hub, it sets the created session's reasoning effort.")
+		}
+	}
+	def.Description += " In a Manager session, hub={cwd,model,watch} creates an independent top-level session, attaches the requested watch and reads its initial state before sending prompt; reasoning_effort sets the created session's reasoning effort, and the other owned-delegate arguments do not apply to hub creation and are refused. hub.host names any host the hub can reach; absent means this hub. Creation, watch and input are reported separately. A failed watch leaves the created session empty; an unknown launch is never retried, and an unknown or unreachable host is refused by the hub. Hub results are not owned delegate reports."
 	strictFalse := false
 	def.Strict = &strictFalse
 	def.Parameters = params
@@ -294,7 +307,7 @@ type managerCreateOutcome struct {
 
 func (s *Session) createHubDelegate(ctx context.Context, args map[string]any) (any, error) {
 	for key := range args {
-		if key != "prompt" && key != "hub" && key != "intent" {
+		if key != "prompt" && key != "hub" && key != "intent" && key != "reasoning_effort" {
 			return nil, appwire.InvalidParams("hub creation cannot combine owned delegate arguments")
 		}
 	}
@@ -302,6 +315,9 @@ func (s *Session) createHubDelegate(ctx context.Context, args map[string]any) (a
 	if strings.TrimSpace(prompt) == "" {
 		return nil, appwire.InvalidParams("prompt is required")
 	}
+	// The schema enum-constrains the effort; an empty value keeps the hub's
+	// launch default.
+	effort, _ := args["reasoning_effort"].(string)
 	raw, err := json.Marshal(args["hub"])
 	if err != nil {
 		return nil, err
@@ -335,7 +351,7 @@ func (s *Session) createHubDelegate(ctx context.Context, args map[string]any) (a
 	}
 	out := managerCreateOutcome{Created: managerCreateStage{Status: "unknown"}, Watch: managerWatchStage{Status: "notAttached"}, Input: managerInputStage{Status: "notSubmitted"}}
 	created, err := client.Invoke(ctx, appwire.SessionOperationRequest{Create: &appwire.ThreadStartParams{
-		Harness: "evener", Source: sourceID, CWD: hub.CWD, Model: hub.Model,
+		Harness: "evener", Source: sourceID, CWD: hub.CWD, Model: hub.Model, ReasoningEffort: effort,
 	}})
 	if err != nil {
 		out.Created.Error = err.Error()

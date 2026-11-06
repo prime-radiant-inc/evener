@@ -215,7 +215,9 @@ grant Manager status or choose a different caller.
 ## Start an independent worker from a Manager
 
 A Manager can call `delegate` with `prompt` and
-`hub:{cwd,model,watch:{events,completion}}`. This creates an empty, independent
+`hub:{cwd,model,watch:{events,completion}}`, plus an optional
+`reasoning_effort` that sets the created session's reasoning effort (absent
+keeps the hub's launch default). This creates an empty, independent
 ordinary top-level session on the Manager's local hub. It attaches the requested
 `job_watch` and reads its initial state **before** submitting the prompt with
 `turn/start`. Use `events:["question","communicate"]` and `completion:true` to
@@ -246,6 +248,13 @@ resolves or refuses the host, and the receiving hub spawns locally under its
 own working-directory and model validation, so the created worker is
 addressed by its `HOST:WORKSPACE_ID` reference. Discovery of an empty remote
 host and its model catalog does not create a worker there on its own.
+
+Hub creation takes only `prompt`, `hub` and `reasoning_effort`. The
+owned-delegate arguments (`name`, `agent_type`, `task_list`, `isolation`,
+`sandbox` and the rest) do not apply to it and are refused with the argument
+named rather than dropped: a created worker is not an owned delegate, so it is
+identified by its ref and its prompt-derived title. Give a worker a display
+name with `session_control`'s `rename` on its returned ref.
 
 The `delegate` result reports `created`, `watch` and `input` separately. A
 successful creation followed by a failed watch returns the worker ref, leaves

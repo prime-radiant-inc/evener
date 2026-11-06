@@ -1,0 +1,120 @@
+package agent
+
+import (
+	"encoding/json"
+	"strings"
+	"testing"
+
+	"primeradiant.com/evener/agent/provider"
+	"primeradiant.com/evener/llm"
+)
+
+// managerDelegateHubCall drives one Manager-mode delegate tool call through the
+// real pre-dispatch path: the registry's composed schema, argument repair, and
+// the schema-error explainer. It returns the prepared call's refusal, empty
+// when the call validates.
+func managerDelegateHubCall(t *testing.T, args string) string {
+	t.Helper()
+	root := newMessagingRoot(t, newMessagingAdapter(), func(cfg *SessionConfig) { cfg.Manager = true })
+	registered := root.reg.Get("delegate")
+	if registered == nil {
+		t.Fatal("Manager delegate tool not registered")
+	}
+	res := prepareToolCall(llm.ToolCallData{ID: "hub-call", Name: "delegate", Arguments: json.RawMessage(args)},
+		registered, []string{"delegate"}, "delegate", "communicate", "")
+	return res.PrevalErr
+}
+
+// The hub-branch delegate call accepts reasoning_effort: the wire start
+// params and the hub's own launch resolution already carry a spawn-time
+// effort, so refusing it at the tool schema rejected a valid argument.
+func TestManagerDelegateHubCallAcceptsReasoningEffort(t *testing.T) {
+	t.Parallel()
+	if refusal := managerDelegateHubCall(t, `{"prompt":"worker task","hub":{"cwd":"/tmp","model":"openai/gpt-5.2","watch":{"completion":true}},"reasoning_effort":"high","intent":"spawn the worker"}`); refusal != "" {
+		t.Fatalf("hub-branch call with reasoning_effort was refused: %s", refusal)
+	}
+}
+
+// An extra owned-delegate argument the hub branch genuinely does not take must
+// be refused with the argument named — not silently dropped by argument
+// repair, and never explained as a missing supplied argument. The schema's
+// prompt parameter was present in every reported failure; the old explanation
+// named it anyway.
+func TestManagerDelegateHubCallExtraArgumentDoesNotClaimMissingPrompt(t *testing.T) {
+	t.Parallel()
+	refusal := managerDelegateHubCall(t, `{"prompt":"worker task","hub":{"cwd":"/tmp","model":"openai/gpt-5.2","watch":{"completion":true}},"name":"watch-delivery-fix","intent":"spawn the worker"}`)
+	if refusal == "" {
+		t.Fatal("hub-branch call with an extra owned-delegate argument was accepted")
+	}
+	if strings.Contains(refusal, "Required arguments: prompt") {
+		t.Fatalf("refusal claimed the supplied prompt argument was missing: %s", refusal)
+	}
+	if !strings.Contains(refusal, "name") {
+		t.Fatalf("refusal did not name the rejected argument: %s", refusal)
+	}
+	if !strings.Contains(refusal, "reasoning_effort") {
+		t.Fatalf("refusal did not name the accepted argument set: %s", refusal)
+	}
+}
+
+// A hub-branch call that validates still has to reach the wire with its
+// reasoning effort: the create request the hub receives carries it, so the
+// spawned session starts at the requested effort rather than the launch
+// default.
+func TestManagerDelegateHubCreatePassesReasoningEffortToTheSpawn(t *testing.T) {
+	t.Parallel()
+	worker := newTestSession(t)
+	client := &managerCreationClient{worker: worker}
+	root := newMessagingRoot(t, newMessagingAdapter(), func(cfg *SessionConfig) { cfg.Manager = true })
+	root.SetHubClient(client)
+	out, err := root.createHubDelegate(t.Context(), map[string]any{
+		"prompt":           "worker task",
+		"reasoning_effort": "high",
+		"hub":              map[string]any{"cwd": t.TempDir(), "model": "openai/gpt-5.2", "watch": map[string]any{"events": []string{}, "completion": true}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	created, ok := out.(managerCreateOutcome)
+	if !ok || created.Created.Status != "created" || created.Input.Status != "submitted" {
+		t.Fatalf("creation stages = %#v", out)
+	}
+	if len(client.createReqs) != 1 || client.createReqs[0].ReasoningEffort != "high" {
+		t.Fatalf("create requests = %+v, want one carrying reasoning_effort high", client.createReqs)
+	}
+}
+
+// A Manager profile without the ordinary delegate surface composes a closed
+// hub-creation schema. Without the prevalidation refusal, argument repair
+// would silently drop the undeclared extra and start a session the caller
+// believes it named; the refusal must fire before repair can, naming the
+// argument instead.
+func TestManagerDelegateHubOnlyCallExtraArgumentNamesTheRejectedArgument(t *testing.T) {
+	t.Parallel()
+	root := newMessagingRoot(t, newMessagingAdapter(), func(cfg *SessionConfig) { cfg.Manager = true })
+	// Drop the profile's delegate definition so only the Manager hub branch
+	// composes, mirroring the composition matrix's profile-omitted mode.
+	root.mu.Lock()
+	root.profile = &provider.Profile{}
+	root.rebuildToolDefsCache()
+	root.mu.Unlock()
+	registered := root.reg.Get("delegate")
+	if registered == nil {
+		t.Fatal("Manager delegate tool not registered")
+	}
+	res := prepareToolCall(llm.ToolCallData{ID: "hub-only", Name: "delegate",
+		Arguments: json.RawMessage(`{"prompt":"worker task","hub":{"cwd":"/tmp","model":"openai/gpt-5.2","watch":{"completion":true}},"name":"watch-delivery-fix","intent":"spawn the worker"}`),
+	}, registered, []string{"delegate"}, "delegate", "communicate", "")
+	if res.PrevalErr == "" {
+		t.Fatal("hub-only call with an extra owned-delegate argument was accepted")
+	}
+	if strings.Contains(res.PrevalErr, "Required arguments: prompt") || strings.Contains(res.PrevalErr, "Required arguments: hub") {
+		t.Fatalf("refusal claimed a supplied required argument was missing: %s", res.PrevalErr)
+	}
+	if !strings.Contains(res.PrevalErr, "name") {
+		t.Fatalf("refusal did not name the rejected argument: %s", res.PrevalErr)
+	}
+	if len(res.Changes) != 0 {
+		t.Fatalf("refusal still recorded argument changes: %+v", res.Changes)
+	}
+}
