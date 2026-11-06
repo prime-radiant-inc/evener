@@ -159,6 +159,23 @@ describe("remote search results", () => {
     expect(within(results).queryAllByRole("option")).toHaveLength(0);
   });
 
+  test("a failed search still raises an alert when commands match the query", async () => {
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+    scriptSearchFailure();
+
+    render(
+      <NeedsYouProvider>
+        <CommandPalette />
+      </NeedsYouProvider>,
+    );
+    act(() => openPalette());
+    await user.type(screen.getByRole("combobox"), "search");
+
+    const results = screen.getByRole("listbox");
+    await waitFor(() => expect(within(results).getByRole("alert")).toBeTruthy());
+    expect(within(results).getAllByRole("option").length).toBeGreaterThan(0);
+  });
+
   // --- search result activation: live/past with newTab (lines 505-506) ---
 
   test("Mod+Enter on a search result opens it in a new tab", async () => {

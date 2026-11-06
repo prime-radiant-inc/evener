@@ -21,6 +21,7 @@ import { resetAskDockStoreForTests } from "./composer/askDock/askDockStore";
 import * as ComposerModule from "./composer/Composer";
 import { refreshPendingTurnsProjection, resetPendingTurnsStoreForTests } from "./composer/queue/pendingTurnsStore";
 import { flushPendingTurnsProjectionForTests } from "./composer/queue/testing/flushPendingTurnsProjection";
+import { RECOVERY_HINT_DELAY_MS } from "./Session";
 import "./index";
 import { CommittedSession as Session } from "./testing/CommittedSession";
 import { resetTranscriptPagingForTests } from "./transcript/useTranscript";
@@ -184,7 +185,7 @@ test("a loading session shows a skeleton, delays its recovery affordance, and ha
   expect(screen.queryByRole("button", { name: "Verbosity" })).toBeNull();
 
   await act(async () => {
-    await vi.advanceTimersByTimeAsync(8_000);
+    await vi.advanceTimersByTimeAsync(RECOVERY_HINT_DELAY_MS);
   });
   expect(screen.getByTestId("session-loading-recovery")).toBeTruthy();
 });

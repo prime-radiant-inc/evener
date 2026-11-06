@@ -356,6 +356,9 @@ function assertResult(result) {
   if (!result.railNewSession?.secondary) {
     failures.push("the rail's New session control lost its secondary treatment");
   }
+  if (result.primaryButtons > 1) {
+    failures.push(`the shell route shows ${result.primaryButtons} filled primaries, expected at most one`);
+  }
 
   // The property the bug broke: with a tree taller than the viewport, the
   // RAIL's own body must be the box that scrolls...

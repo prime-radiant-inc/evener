@@ -3,6 +3,9 @@ const TOLERANCE = 0.5;
 
 export default function assert(m) {
   const failures = [];
+  if (!m.coarse) {
+    failures.push("the case did not render with a coarse pointer, so the tap-floor arm it names is not exercised");
+  }
   if (m.effort.width < TAP_MIN - TOLERANCE || m.effort.height < TAP_MIN - TOLERANCE) {
     failures.push(
       `the reasoning-effort target is ${m.effort.width.toFixed(1)}x${m.effort.height.toFixed(1)}, below the ${TAP_MIN}px tap floor`,

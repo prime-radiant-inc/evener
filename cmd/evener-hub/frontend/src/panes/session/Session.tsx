@@ -35,22 +35,24 @@ export interface SessionPaneParams {
 }
 
 const EMPTY_THREADS = new Map<string, ThreadModel>();
-const RECOVERY_HINT_DELAY_MS = 8_000;
+export const RECOVERY_HINT_DELAY_MS = 8_000;
 
 function SessionLoading({ sessionRef, repairing }: { sessionRef: string; repairing: boolean }) {
   const [showRecovery, setShowRecovery] = useState(false);
+  const local = sessionRef.startsWith("local:");
   useEffect(() => {
+    if (!local) return;
     const timer = setTimeout(() => setShowRecovery(true), RECOVERY_HINT_DELAY_MS);
     return () => clearTimeout(timer);
-  }, []);
+  }, [local]);
   return (
     <div className={styles.loading}>
       <Loader label={repairing ? "Repairing session history" : "Loading transcript"} />
       <div className={styles.loadingSkeleton} data-testid="session-loading-skeleton" aria-hidden="true">
         <Skeleton lines={4} />
       </div>
-      {showRecovery && sessionRef.startsWith("local:") && (
-        <div className={styles.loadingRecovery} data-testid="session-loading-recovery">
+      {showRecovery && local && (
+        <div data-testid="session-loading-recovery" aria-live="polite">
           <p className={styles.loadingHint}>If the session is unresponsive, you can stop its process to recover it.</p>
           <SessionForceStopRecovery sessionRef={sessionRef} />
         </div>
@@ -213,7 +215,6 @@ export default function Session({ params, paneId, focused: paneFocused }: PanePr
               focused={paneFocused}
               scaffoldMarker={`session:${ref}`}
               title={title}
-              footer={null}
               edgeFooter={edgeFooter}
             >
               <SessionLoading key={ref} sessionRef={ref} repairing={repairingRef} />

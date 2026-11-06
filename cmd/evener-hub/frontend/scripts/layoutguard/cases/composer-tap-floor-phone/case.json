@@ -14,7 +14,8 @@
     "width": 390,
     "height": 844,
     "deviceScaleFactor": 2,
-    "mobile": true
+    "mobile": true,
+    "touch": true
   },
   "mutation": {
     "declaration": "statusrow.module.css: remove the phone/coarse min-width and min-height from .effortTrigger",

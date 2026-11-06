@@ -1241,6 +1241,10 @@ test("a plain-word query finds an app-global command without a slash prefix", as
   act(() => openPalette());
   await user.type(screen.getByRole("combobox"), "settings");
   expect(await screen.findByRole("option", { name: /Open settings/ })).toBeTruthy();
+
+  await user.keyboard("{Enter}");
+  await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+  expect(window.location.pathname).toBe("/settings");
 });
 
 // --- search mode ---

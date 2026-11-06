@@ -28,7 +28,7 @@ function paneHtml(id, kind, frame) {
     return `
       <div class="pane" data-pane>
         <div class="header" data-pane-frame="${frame}"><h2 class="title" id="title-${id}">Settings</h2></div>
-        <div class="body">
+        <div class="body" data-pane-scaffold="${frame}">
           <div class="shell">
             <nav class="nav" id="nav-${id}"><div class="standIn"></div></nav>
             <div class="content" id="content-${id}"><div class="standIn"></div></div>
@@ -36,12 +36,12 @@ function paneHtml(id, kind, frame) {
         </div>
       </div>`;
   }
-  const contentClass = kind === "spawn" ? "form" : "measure";
+  const contentClass = kind === "spawn" ? "form" : "turn";
   const contentId = kind === "spawn" ? `form-${id}` : `content-${id}`;
   return `
     <div class="pane" data-pane>
       <div class="header" data-pane-frame="${frame}"><h2 class="title" id="title-${id}">${kind === "spawn" ? "New session" : "Session"}</h2></div>
-      <div class="body">
+      <div class="body" data-pane-scaffold="${frame}">
         <div class="${contentClass}" id="${contentId}"><div class="standIn"></div><div class="standIn"></div></div>
       </div>
     </div>`;

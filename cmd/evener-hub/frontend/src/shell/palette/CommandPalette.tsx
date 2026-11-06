@@ -100,7 +100,7 @@ const CLASS = {
 // the placeholder itself - since a user hunting for the shortcut legend
 // (real-browser report) checked every settings section but never learned
 // this palette even has a "/" command mode or a "?" shortcut view.
-const SEARCH_PLACEHOLDER = "search live + past sessions · / for commands · ? for shortcuts";
+const SEARCH_PLACEHOLDER = "search · / commands · ? help";
 const SEARCH_DEBOUNCE_MS = 150;
 
 // Live-row status dot: the search API's normalized state (hubcore.
@@ -643,6 +643,11 @@ function PaletteBody({
       if (newTab) openInNewTab(url);
       else openSessionByRef(item.row.result.ref);
     }
+    if (item.kind === "command") {
+      // Search mode now shows app-global commands alongside session hits, so
+      // those rows must run exactly like their command-filter counterparts.
+      activateCommand(item.command);
+    }
   }
 
   function enterPressed() {
@@ -847,16 +852,28 @@ function buildView(args: {
     entries.push({ type: "row", item, index: items.length });
     items.push(item);
   };
-  const pushCommandMatches = (filter: string) => {
-    const { recent, commands } = filterCommands(ctx, filter);
+  const pushRecent = (recent: ScopedCommand[]) => {
     if (recent.length) {
       entries.push({ type: "header", section: "recent", label: "Recent" });
       for (const command of recent) push({ kind: "command", command });
     }
-    if (commands.length) {
+  };
+  const pushCommands = (commands: ScopedCommand[], alwaysShowHeader = false) => {
+    if (commands.length || alwaysShowHeader) {
       entries.push({ type: "header", section: "commands", label: "Commands" });
       for (const command of commands) push({ kind: "command", command });
     }
+  };
+  const pushCommandMatches = (filter: string) => {
+    const { recent, commands } = filterCommands(ctx, filter);
+    const q = filter.replace(/^\/+/, "").toLowerCase().trim();
+    const named = q
+      ? commands.filter(
+          (command) => command.id.toLowerCase().startsWith(q) || command.title.toLowerCase().startsWith(q),
+        )
+      : commands;
+    pushRecent(recent);
+    pushCommands(named);
   };
 
   // The help panel is inert (§2.8, search.js:695-696,713): no navigable rows
@@ -865,13 +882,14 @@ function buildView(args: {
   if (showingHelp) return { entries, items };
 
   if (mode === "search") {
+    const trimmed = query.trim();
     // The empty-query view leads with needs-you sessions (Mod+J's own
     // tree-order list, opened the same way - needsYouCycle.ts), then the
     // app-global Commands list, so the palette shows what it can do instead
     // of opening as a near-blank card. A plain query puts matching commands
     // ahead of live/past/in-session search: typing "settings" finds
     // "Open settings" without requiring the "/" prefix.
-    if (!query.trim()) {
+    if (!trimmed) {
       if (needsYouChoices.length > 0) {
         entries.push({ type: "header", section: "needs-you", label: "Needs you" });
         for (const choice of needsYouChoices) push({ kind: "needsYou", choice });
@@ -885,7 +903,7 @@ function buildView(args: {
     pushCommandMatches(query);
     const grouped = groupSearchResults(searchResp?.live ?? [], searchResp?.past ?? []);
     const model = focusedModel(ctx.sessionRef);
-    const inSession = model && query.trim() ? findInSessionMatches(model, query.trim()) : [];
+    const inSession = model ? findInSessionMatches(model, trimmed) : [];
     if (grouped.live.length) {
       entries.push({ type: "header", section: "live", label: "Live" });
       for (const row of grouped.live) {
@@ -907,10 +925,7 @@ function buildView(args: {
 
   if (mode === "command-filter") {
     const { recent, commands } = filterCommands(ctx, query);
-    if (recent.length) {
-      entries.push({ type: "header", section: "recent", label: "Recent" });
-      for (const command of recent) push({ kind: "command", command });
-    }
+    pushRecent(recent);
     // The ONE handoff row (2026-08-14 decision): the typed name prefixes a
     // session-scoped command (built-in or plugin) - shown ahead of the
     // app-global Commands section, since it's the more specific answer to
@@ -921,8 +936,7 @@ function buildView(args: {
       entries.push({ type: "header", section: "handoff", label: "Continue in the composer" });
       push({ kind: "handoff", query, hasFocusedSession: ctx.sessionRef !== null });
     }
-    entries.push({ type: "header", section: "commands", label: "Commands" });
-    for (const command of commands) push({ kind: "command", command });
+    pushCommands(commands, true);
     return { entries, items };
   }
 
@@ -976,7 +990,7 @@ function renderResults(args: {
   }
 
   if (view.items.length > 0) {
-    return view.entries.map((entry) =>
+    const rows = view.entries.map((entry) =>
       entry.type === "header" ? (
         <div className={CLASS.sectionHeader} key={`h-${entry.section}`} data-section={entry.section}>
           <Eyebrow>{entry.label}</Eyebrow>
@@ -991,6 +1005,14 @@ function renderResults(args: {
           onActivate={onActivate}
         />
       ),
+    );
+    return mode === "search" && searchFailed ? (
+      <>
+        <InlineNotice tone="danger">Search failed</InlineNotice>
+        {rows}
+      </>
+    ) : (
+      rows
     );
   }
 

@@ -48,7 +48,7 @@
 }
 
 /* The sidebar owns its own chrome: a header zone stacking the identity/
- * status/actions row and the primary "+ New session" button - a column so none of it
+ * status/actions row and the secondary "+ New session" button - a column so none of it
  * steals a full-width top bar's worth of the workspace's vertical space. */
 .header {
   flex: none;
