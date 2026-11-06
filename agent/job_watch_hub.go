@@ -1150,10 +1150,7 @@ func (s *Session) hubWatchStateRetryDelay(failures int) time.Duration {
 	if failures < 1 {
 		return base
 	}
-	shift := failures - 1
-	if shift > 6 {
-		shift = 6
-	}
+	shift := min(failures-1, 6)
 	delay := base << shift
 	if delay <= 0 || delay > hubWatchStateRetryCeiling {
 		return hubWatchStateRetryCeiling
