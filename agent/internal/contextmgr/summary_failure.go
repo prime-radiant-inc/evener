@@ -19,6 +19,7 @@ const (
 	errSummaryEmptyBatch     summaryRejectionError = "empty_batch"
 	errSummaryUncondensable  summaryRejectionError = "uncondensable_partner_messages"
 	errSummaryMissingModel   summaryRejectionError = "missing_model"
+	errSummaryForkReply      summaryRejectionError = "fork_reply_unparseable"
 )
 
 func (reason summaryRejectionError) Error() string {
@@ -35,6 +36,8 @@ func (reason summaryRejectionError) Error() string {
 		return "partner messages did not condense to fit the summarizer"
 	case errSummaryMissingModel:
 		return "summarization model is empty"
+	case errSummaryForkReply:
+		return "the fork summary reply was not a JSON session-log entry"
 	default:
 		return "summary output rejected"
 	}
