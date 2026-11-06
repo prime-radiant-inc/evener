@@ -31,7 +31,10 @@
 # different workflows instead of the default; only workflows with a
 # workflow_dispatch trigger can be re-dispatched (ci.yml has none: a missing
 # ci.yml run is reported with reason=dispatch-refused, not replaced, though
-# every run found on the head is listed, so it stays visible).
+# every run found on the head is listed, so it stays visible). The default
+# workflow file itself reaches main with the native journey PR (#5615);
+# until then, branches without it get reason=workflow-absent and are
+# neither waited on nor dispatched.
 #
 #   scripts/ops/pr-ci-watchdog.sh --pr N [--workflow FILE]... [--wait SECONDS]
 #                                 [--sha SHA] [--dry-run] [--repo OWNER/NAME]
@@ -62,15 +65,19 @@
 #   CIWATCH missing workflow=F head=SHA reason=R
 #                                (exit 1: no run covers the head; R is one
 #                                of --sha-check-only, dry-run, head-moved,
-#                                pr-closed, dispatch-refused, or
-#                                dispatch-unconfirmed, where a dispatch was
-#                                accepted but no run ever registered, so
-#                                look before dispatching anything yourself)
-# Exit 2: usage error, the PR could not be resolved, or a run lookup
-# failed (the message says which).
+#                                pr-closed, workflow-absent (the workflow
+#                                file is not on the PR's branch, so the
+#                                watchdog neither expects nor dispatches
+#                                a run of it), dispatch-refused, or
+#                                dispatch-unconfirmed,
+#                                where a dispatch was accepted but no run
+#                                ever registered, so look before dispatching
+#                                anything yourself)
+# Exit 2: usage error, the PR could not be resolved or is not open, or a
+# run lookup failed (the message says which).
 set -euo pipefail
 
-usage() { sed -n '2,70p' "$0" | sed 's/^# \{0,1\}//'; exit 2; }
+usage() { sed -n '2,77p' "$0" | sed 's/^# \{0,1\}//'; exit 2; }
 
 repo="prime-radiant-inc/evener" pr="" wait=300 sha="" dry_run=false
 workflows=()
@@ -144,6 +151,30 @@ fetch_runs() {
   printf '%s\n' "$out"
 }
 
+# workflow_present says whether the workflow file exists on the PR's branch,
+# the ref a dispatch would target, so a missing run can be told apart from a
+# workflow this branch cannot dispatch before any waiting starts. A lookup
+# that fails for any reason other than 404 is treated as present: the
+# dispatch attempt reports its own failure.
+workflow_present() {
+  local err
+  if err=$(gh api "repos/$repo/contents/.github/workflows/$1?ref=$head_branch" --jq '.path' 2>&1); then
+    return 0
+  fi
+  case "$err" in
+    *"HTTP 404"*) return 1 ;;
+    *) echo "CIWATCH presence lookup failed for $1 (treated as present): $err" >&2; return 0 ;;
+  esac
+}
+
+# absent_has says whether $1 was recorded as absent; the newline-bounded
+# match keeps one file name from matching inside another.
+absent_has() {
+  [ -n "$absent" ] || return 1
+  case $'\n'"$absent" in *$'\n'"$1"$'\n'*) return 0 ;; esac
+  return 1
+}
+
 # classify_runs reads runs_raw once and records the run covering each
 # expected workflow in cov_event/cov_status/cov_id/cov_url, keyed like
 # workflows: a pull_request run beats a dispatch, the newest within each
@@ -177,6 +208,19 @@ missing_workflows() {
   printf '%s' "$out"
 }
 
+# await_missing recomputes the wait set after a poll: expected workflows
+# with no covering run, minus the ones recorded as absent (their file is
+# not on the checked head, so waiting cannot produce a run).
+await_missing() {
+  local i out=""
+  for i in "${!workflows[@]}"; do
+    if [ -n "${cov_event[i]:-}" ]; then continue; fi
+    if absent_has "${workflows[i]}"; then continue; fi
+    out="$out${workflows[i]}"$'\n'
+  done
+  printf '%s' "$out"
+}
+
 echo "PR #$pr on $repo: branch $head_branch, head $head_oid"
 if [ "$check_oid" != "$head_oid" ]; then
   echo "checking --sha $check_oid; a --sha check never dispatches"
@@ -186,8 +230,27 @@ echo "expecting a run of: ${workflows[*]}"
 runs_raw="$(fetch_runs)" || exit 2
 classify_runs
 missing="$(missing_workflows)"
+# A missing workflow whose file is not on the PR's branch can never gain a
+# run by waiting and cannot be dispatched: record it once so the wait and
+# the dispatch path skip it and the verdict can say what actually happened.
+absent=""
+if [ -n "$missing" ]; then
+  kept=""
+  while IFS= read -r w; do
+    [ -n "$w" ] || continue
+    if workflow_present "$w"; then
+      kept="$kept$w"$'\n'
+    else
+      absent="$absent$w"$'\n'
+    fi
+  done <<<"$missing"
+  missing="$kept"
+fi
 if [ -n "$missing" ] && [ "$wait" -gt 0 ]; then
   echo "missing after first check: $(printf '%s' "$missing" | tr '\n' ' ')polling for up to ${wait}s"
+fi
+if [ -n "$absent" ]; then
+  echo "workflow file absent from the PR branch (not a dropped event, not waiting, not dispatching): $(printf '%s' "$absent" | tr '\n' ' ')"
 fi
 deadline=$(( $(date +%s) + wait ))
 while [ -n "$missing" ]; do
@@ -197,7 +260,7 @@ while [ -n "$missing" ]; do
   sleep $(( left < 20 ? left : 20 ))
   runs_raw="$(fetch_runs)" || exit 2
   classify_runs
-  missing="$(missing_workflows)"
+  missing="$(await_missing)"
 done
 
 if [ -n "$runs_raw" ]; then
@@ -223,6 +286,10 @@ for i in "${!workflows[@]}"; do
     fi
     echo "$w: covered by a $event run (status $status); $note"
     echo "CIWATCH covered workflow=$w by=$event run=$id url=$url"
+  elif absent_has "$w"; then
+    echo "$w: no run on $check_oid, and the workflow file is not on the PR branch; the watchdog cannot expect or dispatch a run of it; this is not a dropped event"
+    echo "CIWATCH missing workflow=$w head=$check_oid reason=workflow-absent"
+    rc=1
   elif [ "$dry_run" = true ]; then
     echo "$w: no run on $check_oid; GitHub dropped the event; dry run, would dispatch on $head_branch:"
     echo "  gh workflow run $w --repo $repo --ref $head_branch"
