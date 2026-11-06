@@ -16,6 +16,25 @@
   container-type: inline-size;
 }
 
+/* The disabled Start's reason sits beside the prompt card, in caption ink
+ * rather than another notice, so the form gains a reason without gaining a
+ * second status surface. */
+.startReason {
+  margin: 0;
+  color: var(--ink-mid);
+  font-family: var(--font-sans);
+  font-size: var(--font-size-caption);
+  line-height: var(--line-height-ui);
+}
+
+/* First-run chord hints: the Welcome pane's vocabulary, carried onto the
+ * spawn pane the no-provider redirect opens. Quiet, below the form. */
+.chordHints {
+  display: flex;
+  justify-content: center;
+  margin-top: var(--space-4);
+}
+
 /* The Start button's word. It rides beside the paper-plane glyph while the
  * pane has room; at the compact boundary (the same 559px the composer's
  * SessionChrome chips swap at) the word drops and the glyph carries the

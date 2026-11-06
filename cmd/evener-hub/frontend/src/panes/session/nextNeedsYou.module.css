@@ -25,16 +25,40 @@
   max-width: min(18rem, 55vw);
 }
 
+.nextStack {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-1);
+  min-width: 0;
+  text-align: start;
+}
+
 .nextLead {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
   flex: none;
   color: var(--ink-mid);
+  font-size: var(--font-size-caption);
+}
+
+.nextDot {
+  flex: none;
+  width: 6px;
+  height: 6px;
+  border-radius: var(--radius-pill);
+  background: var(--attention);
 }
 
 .nextLabel {
   min-width: 0;
   overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  white-space: normal;
+  line-height: var(--line-height-ui);
 }
 
 .ellipsis {

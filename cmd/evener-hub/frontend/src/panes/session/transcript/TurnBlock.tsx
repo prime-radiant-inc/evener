@@ -26,6 +26,7 @@ import { rowRoleFor } from "./layoutRoles";
 import { TurnSeparator } from "./messages";
 import { ToolCallItem } from "./ToolCallItem";
 import { ToolRunGroup } from "./ToolRunGroup";
+import { TurnDoneEndCap } from "./TurnDoneEndCap";
 import { TurnFailureEndCap } from "./TurnFailureEndCap";
 import { toolRendererFor } from "./toolRenderers";
 import { foldTurnEntries, type ToolRun } from "./toolRuns";
@@ -355,6 +356,7 @@ export function TurnBlock({
       >
         {renderedEntries}
         {failure && <TurnFailureEndCap error={failure} turnId={sourceTurn.id} sessionRef={sessionRef} />}
+        {!failure && displayStatus === "completed" && <TurnDoneEndCap turn={sourceTurn} />}
         {showTurnSeparator && <TurnSeparator turn={sourceTurn} />}
       </div>
     </>

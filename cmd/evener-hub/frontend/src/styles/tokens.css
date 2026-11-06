@@ -24,19 +24,19 @@
    * washes. Raised layers (menus, dialogs) share --surface-1's value and
    * carry their depth via --shadow-overlay instead of a lighter fill.
    */
-  --surface-0: #191918; /* app background — page */
-  --surface-canvas: #1D1D1B; /* pane wells, rail */
-  --surface-1: #232320; /* structural content */
-  --surface-2: #232320; /* raised: menus, dialogs — depth comes from shadow */
-  --surface-inset: #20201E; /* evidence insets, gutters */
-  --hover-1: #2B2B28; /* resting hover wash */
-  --hover-2: #33332F; /* pressed / selected */
-  --field: #292926; /* form-control background (sunken fields) */
-  --edge: #34342F; /* hairline borders */
-  --edge-strong: #51514A; /* control borders, overlay rings */
-  --ink-hi: #F2F1EB; /* primary text */
-  --ink-mid: #B0AFA6; /* secondary text */
-  --ink-low: #99998F; /* placeholders, disabled, timestamps — AA, token-contract */
+  --surface-0: #141412; /* app background — page */
+  --surface-canvas: #191917; /* pane wells, rail — the tinted structural ground */
+  --surface-1: #201F1C; /* structural content */
+  --surface-2: #201F1C; /* raised: menus, dialogs — depth comes from shadow */
+  --surface-inset: #1B1A17; /* evidence insets, gutters */
+  --hover-1: #28261F; /* resting hover wash */
+  --hover-2: #32302A; /* pressed / selected */
+  --field: #26241F; /* form-control background (sunken fields) */
+  --edge: #35322B; /* hairline borders */
+  --edge-strong: #524E44; /* control borders, overlay rings */
+  --ink-hi: #F4F0E4; /* primary text */
+  --ink-mid: #B4AFA1; /* secondary text */
+  --ink-low: #9C9789; /* placeholders, disabled, timestamps — AA, token-contract */
 
   /* --- the four attention-family hues (dark) --------------------------
    * Exactly one meaning per hue, everywhere in the app. Reaching for one
@@ -88,7 +88,7 @@
    * >=3:1 for the --ink-low marker — the contract computes all of it).
    */
   --diff-add-bg: #19251A;
-  --diff-del-bg: #170B17;
+  --diff-del-bg: #241621;
 
   /* --- terminal notation (dark) ---------------------------------------
    * Carried over from the Fjord tuning; still legible on the neutral
@@ -117,7 +117,7 @@
    * timings (never for chrome labels). All variable fonts, self-hosted
    * from @fontsource-variable packages — see src/styles/global.css.
    */
-  --font-sans: "Inter Variable", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  --font-sans: "Schibsted Grotesk Variable", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
   --font-prose: "Source Serif 4 Variable", Georgia, "Times New Roman", serif;
   --font-mono: "JetBrains Mono Variable", ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
 
@@ -236,20 +236,20 @@
 [data-theme="light"] {
   color-scheme: light;
 
-  --surface-0: #FAF9F6;
-  --surface-canvas: #F1F0EB;
-  --surface-1: #FCFBF8;
-  --surface-2: #FCFBF8;
-  --surface-inset: #F4F3EE;
-  --hover-1: #F0EFE9;
-  --hover-2: #E5E4DD;
-  --field: #F4F3EF;
-  --edge: #DDDCD4;
-  --edge-strong: #B7B6AC;
-  --ink-hi: #252521;
-  --ink-mid: #5F5F57;
+  --surface-0: #F4F0E6;
+  --surface-canvas: #EBE6D8;
+  --surface-1: #FBF8F0;
+  --surface-2: #FBF8F0;
+  --surface-inset: #F0EBDF;
+  --hover-1: #E8E2D2;
+  --hover-2: #DCD5C3;
+  --field: #F4EFE3;
+  --edge: #D4CDBE;
+  --edge-strong: #A8A091;
+  --ink-hi: #201F1A;
+  --ink-mid: #57544A;
   /* Quiet text still clears AA on both page and structural surface. */
-  --ink-low: #6D6D64;
+  --ink-low: #6B675B;
 
   /* Deviation from Beautiful UI's #EF720C: its 15%/24% -bg tints on white
    * render salmon/peach (#FFEBE0/#FFDFCD, oklch hue ~51deg), while the design
@@ -286,8 +286,8 @@
   --tooltip-border: #3A3C40;
 
   /* Diff notation remains domain-specific rather than a status signal. */
-  --diff-add-bg: #E9F4EE;
-  --diff-del-bg: #F5EAF0;
+  --diff-add-bg: #DCEDE3;
+  --diff-del-bg: #F0E0E9;
 
   /* Grayscale entries follow the new neutral inks; chromatic entries carry
    * over from the Ledger tuning (all AA-checked against warm paper, which
@@ -336,9 +336,9 @@ body {
   --font-size-ui: calc(13px * var(--font-scale)); /* dense chrome: rail rows, status row, tables, chips, controls */
   --font-size-body: calc(15px * var(--font-scale)); /* composer, forms, settings values */
   --font-size-prose: calc(18px * var(--font-scale)); /* reading text in either viewport */
-  --font-size-pane-title: calc(18px * var(--font-scale)); /* pane/sheet/dialog titles: sentence case, semibold */
-  --font-size-page-title: calc(22px * var(--font-scale)); /* section headings, the spawn heading */
-  --font-size-display: calc(28px * var(--font-scale)); /* welcome hero only */
+  --font-size-pane-title: calc(20px * var(--font-scale)); /* pane/sheet/dialog titles: sentence case, semibold */
+  --font-size-page-title: calc(26px * var(--font-scale)); /* section headings, the spawn heading */
+  --font-size-display: calc(34px * var(--font-scale)); /* welcome hero only */
   /* Every editable control (input, select, textarea, and the raw ones a pane
    * renders itself) sizes its text from this: the ui step on desktop, the
    * 16px body step on phones, because iOS Safari zooms into any focused

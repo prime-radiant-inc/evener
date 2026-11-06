@@ -37,6 +37,7 @@ import { splitModelId } from "../../shell/palette/commands";
 import type { PaneProps } from "../../shell/paneRegistry";
 import { navigate, paneToURL } from "../../shell/routing";
 import { useMountAutofocus } from "../../shell/useMountAutofocus";
+import { useWorkspaceStore } from "../../shell/workspace";
 import { useExtensionsStore } from "../../stores/extensions";
 import { withLaunchConfig } from "../../stores/launchConfig";
 import { selectDisplaySources, selectSources } from "../../stores/navigation/selectors";
@@ -62,6 +63,7 @@ import {
   PromptCard,
   Select,
   SendIcon,
+  ShortcutList,
   Tooltip,
   useToasts,
   VisuallyHidden,
@@ -82,6 +84,7 @@ import {
   ConnectProviderDialogBoundary,
   useConnectProviderDialogChunk,
 } from "../settings/sections/credentials/ConnectProviderDialogBoundary";
+import { CHORD_HINTS } from "../welcome/WelcomeContent";
 import { AdvancedOptions } from "./AdvancedOptions";
 import {
   ACCESS_MODE_OPTIONS,
@@ -186,6 +189,8 @@ export const CONNECT_ATTACH_TIMEOUT_MS = 35 * 60_000;
 
 const CLASS = {
   form: requireClass(styles.form, "spawn.module.css", "form"),
+  startReason: requireClass(styles.startReason, "spawn.module.css", "startReason"),
+  chordHints: requireClass(styles.chordHints, "spawn.module.css", "chordHints"),
   cfgDir: requireClass(styles.cfgDir, "spawn.module.css", "cfgDir"),
   branch: requireClass(styles.branch, "spawn.module.css", "branch"),
   directoryButton: requireClass(styles.directoryButton, "spawn.module.css", "directoryButton"),
@@ -2451,6 +2456,18 @@ function SpawnForm({
     harnesses.length > 0
       ? harnesses.map((h) => ({ value: h.id, label: h.label }))
       : [{ value: "evener", label: "evener" }];
+  const hasSession = useWorkspaceStore((state) => state.panes.some((pane) => pane.type === "session"));
+  const startBlockedReason = busy
+    ? undefined
+    : providerRequired
+      ? "Connect a provider to start."
+      : modelRequired && slashModelBootstrap === null
+        ? "Choose a model to start."
+        : pluginSelectionBlocked
+          ? "Resolve the plugin selection to start."
+          : hostCatalogPending || modelHostPending
+            ? "Waiting for the host to answer; Start is available when it does."
+            : undefined;
   return (
     <PaneScaffold title="New session" mobileTitle="New session">
       <div className={CLASS.form}>
@@ -2782,7 +2799,7 @@ function SpawnForm({
                 </div>
               }
               actions={
-                <Tooltip label={`Start the agent · ${chordLabel(["Mod", "Enter"])}`}>
+                <Tooltip label={startBlockedReason ?? `Start the agent · ${chordLabel(["Mod", "Enter"])}`}>
                   <Button
                     variant="primary"
                     size="xs"
@@ -2810,6 +2827,11 @@ function SpawnForm({
             />
           </Dropzone>
         </div>
+        {startBlockedReason !== undefined && (
+          <p className={CLASS.startReason} data-testid="spawn-start-reason">
+            {startBlockedReason}
+          </p>
+        )}
         <InlineNotice
           data-testid="spawn-effective-access"
           data-state={resolveStatus}
@@ -3011,6 +3033,11 @@ function SpawnForm({
             </FormRow>
           </AdvancedOptions>
         </div>
+        {!hasSession && (
+          <div className={CLASS.chordHints} data-testid="spawn-chord-hints">
+            <ShortcutList items={CHORD_HINTS} />
+          </div>
+        )}
       </div>
 
       <ConfirmDialog

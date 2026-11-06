@@ -310,6 +310,7 @@ test("the card effort control keeps a distinct accessible name with Advanced opt
     }),
   );
   await settled();
+  expect(screen.getByTestId("spawn-chord-hints")).toBeTruthy();
 
   await user.click(screen.getByRole("button", { name: "Advanced options" }));
 
@@ -2560,6 +2561,7 @@ test("retrying missing provider setup discovers a local server started afterward
   connectionStore.getState().connect(client);
   renderSpawn(client);
   await screen.findByRole("button", { name: "Connect provider" });
+  expect(screen.getByTestId("spawn-start-reason").textContent).toContain("Connect a provider to start");
   const retry = screen.getByRole("button", { name: "Retry provider check" });
   available = true;
   await user.click(retry);

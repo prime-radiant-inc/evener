@@ -52,7 +52,9 @@
 }
 
 .root h3 {
-  font-size: var(--font-size-body);
+  /* Never smaller than the prose it heads: the heading earns its place from
+   * weight here, not from shrinking below the reading size. */
+  font-size: inherit;
   letter-spacing: var(--tracking-display);
 }
 

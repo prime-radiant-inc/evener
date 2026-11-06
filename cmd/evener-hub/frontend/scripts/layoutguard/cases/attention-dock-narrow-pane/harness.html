@@ -32,9 +32,14 @@
     <div class="attentionDock" data-testid="attention-dock">
       <div class="root" data-testid="next-needs-you">
         <div class="nextSlot">
-          <button class="button secondary md" type="button" data-testid="next">
-            <span class="nextLead">Next</span>
-            <span class="nextLabel" data-label>Merging the release branch and re-running the browser guard</span>
+          <button class="button secondary md wrap" type="button" data-testid="next">
+            <span class="nextStack">
+              <span class="nextLead"><span class="nextDot"></span>Needs you</span>
+              <span class="nextLabel" data-label
+                >Merging the release branch, re-running the browser guard, and refreshing the evidence for the next
+                session</span
+              >
+            </span>
           </button>
         </div>
         <button class="button secondary squareMd" type="button" aria-label="More needs-you sessions">
@@ -57,7 +62,13 @@ window.measure = () => {
     dock: rectOf(document.querySelector('[data-testid="attention-dock"]')),
     control: rectOf(document.querySelector('[data-testid="next-needs-you"]')),
     next: rectOf(document.querySelector('[data-testid="next"]')),
-    label: { rect: rectOf(label), scrollWidth: label.scrollWidth, clientWidth: label.clientWidth },
+    label: {
+      rect: rectOf(label),
+      scrollWidth: label.scrollWidth,
+      clientWidth: label.clientWidth,
+      scrollHeight: label.scrollHeight,
+      clientHeight: label.clientHeight,
+    },
   };
 };
 </script>

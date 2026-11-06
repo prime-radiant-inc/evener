@@ -1,0 +1,23 @@
+/* The settled turn's quiet close: caption ink, aligned to the run column on
+ * desktop, never a badge or a second status surface. */
+.cap {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-1);
+  margin-top: var(--rhythm-group);
+  color: var(--ink-low);
+  font-family: var(--font-sans);
+  font-size: var(--font-size-caption);
+  line-height: var(--line-height-ui);
+}
+
+.separator {
+  color: var(--edge-strong);
+}
+
+@media (min-width: 700px) {
+  .cap {
+    padding-left: var(--speaker-gutter);
+  }
+}

@@ -8,20 +8,31 @@
  * applies the base tokens to the document root.
  *
  * Source Serif 4 uses the package CSS (normal + real italic, OFL-1.1).
- * Inter and JetBrains use the latin woff2 variable-font subset pre-built by the
- * @fontsource-variable packages, imported straight from node_modules so no
- * binary is committed to this repo. One file per family covers every
- * weight (100–800/900 variable axes), replacing the three-per-family
- * static Plex files of the pre-retheme system. Unicode ranges are the
- * packages' own latin cut.
+ * Schibsted Grotesk, JetBrains Mono and Source Serif 4 are the latin woff2
+ * variable-font subsets pre-built by the @fontsource-variable packages,
+ * imported straight from node_modules so no binary is committed to this repo.
+ * One file per family covers every weight the app uses (Schibsted Grotesk
+ * 400–900), replacing the three-per-family static Plex files of the
+ * pre-retheme system. Unicode ranges are the packages' own latin cut.
  */
 
 @font-face {
-  font-family: "Inter Variable";
+  font-family: "Schibsted Grotesk Variable";
   font-style: normal;
-  font-weight: 100 900;
+  font-weight: 400 900;
   font-display: swap;
-  src: url("../../node_modules/@fontsource-variable/inter/files/inter-latin-wght-normal.woff2") format("woff2-variations");
+  src: url("../../node_modules/@fontsource-variable/schibsted-grotesk/files/schibsted-grotesk-latin-wght-normal.woff2")
+    format("woff2-variations");
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329,
+    U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+
+@font-face {
+  font-family: "Schibsted Grotesk Variable";
+  font-style: italic;
+  font-display: swap;
+  src: url("../../node_modules/@fontsource-variable/schibsted-grotesk/files/schibsted-grotesk-latin-wght-italic.woff2")
+    format("woff2-variations");
   unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329,
     U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
 }
@@ -51,6 +62,24 @@ body {
   font-size: var(--font-size-body);
   font-weight: var(--font-weight-regular);
   line-height: var(--line-height-body);
+  /* Browser surfaces belong to the palette too: the caret, native control
+   * accents (checkbox/radio/range) and selection are part of the app, not a
+   * user-agent default. */
+  caret-color: var(--accent);
+  accent-color: var(--accent);
+}
+
+::selection {
+  background: var(--accent-bg);
+  color: var(--ink-hi);
+}
+
+/* One scrollbar treatment for every app-owned scroller: a thin edge-strong
+ * thumb on the local surface. Firefox/Chromium honor these; WebKit keeps its
+ * native paint until it supports them. */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--edge-strong) transparent;
 }
 
 /* The mobile app shell owns the viewport; panes provide their own scroll

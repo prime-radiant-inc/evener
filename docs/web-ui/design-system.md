@@ -270,8 +270,8 @@ flat, a field is visibly editable, and a floating layer retains a boundary and d
 Use whitespace, aligned columns and fine rules instead of nested boxes and tinted bands.
 
 **Three faces with distinct jobs.** Source Serif 4 for reading prose and editorial page
-headings; Inter for controls, labels, tables and compact operations; JetBrains Mono for code,
-commands, paths and machine identifiers. Comparable operational figures use tabular Inter,
+headings; Instrument Sans for controls, labels, tables and compact operations; JetBrains Mono for code,
+commands, paths and machine identifiers. Comparable operational figures use tabular sans,
 not monospace. Keep authored text and machine evidence visibly distinct.
 
 **Geometry is not decoration.** Preserve the shared reading/wide measure, alignment,
@@ -344,19 +344,19 @@ token names are retained. The table is a reference; `tokens.css` is authoritativ
 
 | Role | Dark | Light |
 |---|---|---|
-| Page `--surface-0` | `#191918` | `#FAF9F6` |
-| Wells/rail `--surface-canvas` | `#1D1D1B` | `#F1F0EB` |
-| Evidence/structural fill `--surface-1` | `#232320` | `#FCFBF8` |
-| Floating layer `--surface-2` | `#232320` | `#FCFBF8` |
-| Evidence inset `--surface-inset` | `#20201E` | `#F4F3EE` |
-| Hover / selected `--hover-1/2` | `#2B2B28` / `#33332F` | `#F0EFE9` / `#E5E4DD` |
-| Editable field `--field` | `#292926` | `#F4F3EF` |
-| Fine / strong edge | `#34342F` / `#51514A` | `#DDDCD4` / `#B7B6AC` |
-| High / medium / low ink | `#F2F1EB` / `#B0AFA6` / `#99998F` | `#252521` / `#5F5F57` / `#6D6D64` |
+| Page `--surface-0` | `#141412` | `#F4F0E6` |
+| Wells/rail `--surface-canvas` | `#191917` | `#EBE6D8` |
+| Evidence/structural fill `--surface-1` | `#201F1C` | `#FBF8F0` |
+| Floating layer `--surface-2` | `#201F1C` | `#FBF8F0` |
+| Evidence inset `--surface-inset` | `#1B1A17` | `#F0EBDF` |
+| Hover / selected `--hover-1/2` | `#28261F` / `#32302A` | `#E8E2D2` / `#DCD5C3` |
+| Editable field `--field` | `#26241F` | `#F7F3E9` |
+| Fine / strong edge | `#35322B` / `#524E44` | `#D4CDBE` / `#A8A091` |
+| High / medium / low ink | `#F4F0E4` / `#B4AFA1` / `#9C9789` | `#201F1A` / `#57544A` / `#6B675B` |
 
 Card and PaneScaffold share the page ground rather than manufacturing raised
 surfaces. Evidence and overlays still have their own grounds. Fine borders are structure,
-not text. Low ink clears 4.5:1 on page and evidence surfaces: dark 6.12/5.48, light 4.96/5.05.
+not text. Low ink clears 4.5:1 on page and evidence surfaces: dark 6.33/5.65, light 4.97/5.32.
 Readable secondary metadata uses medium ink; low ink stays placeholders, disabled and timestamps.
 
 The four semantic hues keep their names, roles, 15% OKLab `-bg` washes and 40% `-edge`
@@ -366,22 +366,24 @@ The tests compute every semantic pairing, including each hue's own wash, at ≥4
 Tooltips retain their inverted mini-palette. ANSI roles and values are unchanged.
 
 Diff notation remains independent of semantic status. Dark add/delete stays `#19251A` /
-`#170B17`; light is `#E9F4EE` / `#F5EAF0`. Background contrast against the page stays within
+`#241621`; light is `#DCEDE3` / `#F0E0E9`. Background contrast against the page stays within
 1.05–1.2, content ≥4.5, marker ≥3, with additions lighter in grayscale and explicit +/− signs.
-The PWA manifest and HTML theme-color are synchronized to the dark page `#191918`.
+The PWA manifest and HTML theme-color are synchronized to the dark page `#141412`; once a
+theme is applied, `applyTheme` rewrites the meta to the active page ground so light-theme
+browser chrome does not stay dark.
 
 **Type** — three shared families, no CDN font requests:
 
-- `--font-sans`: `"Inter Variable"` plus system sans fallbacks. Controls, labels, operational tables.
+- `--font-sans`: `"Schibsted Grotesk Variable"` plus system sans fallbacks. Controls, labels, operational tables.
 - `--font-prose`: `"Source Serif 4 Variable", Georgia, "Times New Roman", serif`. Reading and page headings.
 - `--font-mono`: `"JetBrains Mono Variable"` plus system monospace fallbacks. Machine evidence.
 
-Inter and JetBrains Mono remain wired to their package Latin variable WOFF2 files. Source Serif 4
+Schibsted Grotesk, JetBrains Mono and Source Serif 4 are wired to their package Latin variable WOFF2 files. Source Serif 4
 uses the package's actual exported normal CSS and `wght-italic.css` for real italics; all assets
 are served locally by Vite/the built frontend, with package Unicode-range subsetting.
 
-The existing `--font-size-caption/ui/body/pane-title/page-title/display` ramp remains
-12/13/15/18/22/28px. **`--font-size-prose: calc(18px * var(--font-scale))` is new**, declared on
+The `--font-size-caption/ui/body/pane-title/page-title/display` ramp is
+12/13/15/20/26/34px. **`--font-size-prose: calc(18px * var(--font-scale))` is new**, declared on
 `body` alongside that ramp so S/M/L/XL (0.9/1/1.1/1.25) scale reading text too. Phone body remains
 16px; editable phone controls use `max(16px, var(--font-size-body))`, even under S. The serif
 reading step is 18px at M in both viewports. Weights are 400/500/600; leading body/ui/title is
@@ -390,7 +392,7 @@ reading step is 18px at M in both viewports. Weights are 400/500/600; leading bo
 Markdown keeps the prose face but composes with its host's size (the root falls back to `1em`);
 reading surfaces pin `--prose-font-size: var(--font-size-prose)` on the host that owns their
 prose, and `--markdown-ink` stays the ink hook. Inline code stays JetBrains Mono at 0.86em with a quiet underline; fenced code
-explicitly keeps the mono face. Markdown tables use Inter at body size, tabular figures,
+explicitly keeps the mono face. Markdown tables use the sans face at body size, tabular figures,
 wrapping labels and fine horizontal rules. PaneScaffold and EmptyState headings use the serif;
 buttons, fields, dialog labels and other compact operational headings do not inherit it globally.
 `faces.test.ts` pins the new contract and the unchanged operational sans rules; `/dev/type`
