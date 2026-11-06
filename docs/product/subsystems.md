@@ -255,10 +255,11 @@ the target's ordinary human owners and retain the caller's actor identity.
 Manager worker creation reaches any host the Manager's hub can reach: the
 create block's optional `host` is forwarded as the start source, the hub's own
 roster resolves or refuses it, and the receiving hub spawns locally under its
-own validation. The create call takes only `prompt`, `hub` and
-`reasoning_effort`, which sets the created session's effort; owned-delegate
+own validation. The create call takes `prompt`, `hub` and
+`reasoning_effort` (which sets the created session's effort) plus the shared
+`intent` argument every tool accepts; owned-delegate
 arguments such as `name` do not apply to a created worker and are refused
-with the argument named rather than silently dropped, while a worker's
+with the arguments named rather than silently dropped, while a worker's
 display name comes from `session_control`'s `rename` on its returned ref. See
 [automation](../automation.md#manager-sessions), [job control](../job-control.md#manager-observation-evidence),
 and [remote operations](../evener-hub-remote-operations.md#remote-manager-and-input-support).

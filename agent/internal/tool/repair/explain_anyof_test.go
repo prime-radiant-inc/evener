@@ -33,6 +33,7 @@ func managerDelegateAnyOfParams() map[string]any {
 					"hub":              map[string]any{"type": "object"},
 					"prompt":           map[string]any{"type": "string"},
 					"reasoning_effort": map[string]any{"type": "string", "enum": []string{"low", "medium", "high"}},
+					"intent":           map[string]any{"type": "string"},
 				},
 			},
 		},
@@ -58,6 +59,7 @@ func TestExplainSchemaError_AnyOfBranchFailureDoesNotNameSuppliedRequired(t *tes
 	wantMsg(t, msg, "Branch 0 requires", "message must render the ordinary arm's rule")
 	wantMsg(t, msg, "Branch 1 requires", "message must render the hub arm's rule")
 	wantMsg(t, msg, "reasoning_effort", "hub arm must name its accepted-argument set")
+	wantMsg(t, msg, "intent", "hub arm's accepted set includes the shared intent parameter")
 }
 
 // The hub arm's accepted-argument set renders for any closed arm, naming the
@@ -151,4 +153,47 @@ func TestExplainSchemaError_AnyOfExampleMatchesABranchOrIsOmitted(t *testing.T) 
 	msg := ExplainSchemaError("probe_tool", params, map[string]any{"to": "local:s", "message": "m", "input_mode": "start"}, "", "/anyOf/0/not")
 	wantMsg(t, msg, "anyOf constraint", "message must name the anyOf constraint")
 	notMsg(t, msg, `{"to"`, "example satisfied no anyOf arm and would coach a failing retry")
+}
+
+// An arm that carries its own oneOf/allOf/anyOf beside the clauses the branch
+// renderer describes has a constraint the prose cannot name. The Manager
+// delegate_send input arm has exactly that shape — its required list plus a
+// sibling oneOf (message or input) plus a `not` — and a call that satisfies
+// every required name but neither oneOf option must not be told "Branch 1
+// requires: send all of <the four it already sent>, do not send
+// max_wait_ms": every rendered clause would be satisfied while the actually
+// missing requirement stays unnamed. The arm must be withheld so the caller
+// gets the honest generic mismatch instead of confident misdirection.
+func TestExplainSchemaError_ArmWithSiblingCombinatorIsWithheld(t *testing.T) {
+	params := map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"to":                   map[string]any{"type": "string"},
+			"input_mode":           map[string]any{"type": "string"},
+			"client_mutation_id":   map[string]any{"type": "string"},
+			"expected_instance_id": map[string]any{"type": "string"},
+			"message":              map[string]any{"type": "string"},
+			"input":                map[string]any{"type": "array"},
+		},
+		"required": []any{"to"},
+		"anyOf": []any{
+			map[string]any{"type": "object", "required": []any{"message"}, "not": map[string]any{"type": "object", "anyOf": []any{
+				map[string]any{"type": "object", "required": []any{"input_mode"}},
+			}}},
+			map[string]any{"type": "object", "required": []any{"to", "input_mode", "client_mutation_id", "expected_instance_id"},
+				"oneOf": []any{
+					map[string]any{"type": "object", "required": []any{"message"}},
+					map[string]any{"type": "object", "required": []any{"input"}},
+				},
+				"not": map[string]any{"type": "object", "required": []any{"max_wait_ms"}}},
+		},
+	}
+	// Every required name the arm-1 prose could list is supplied here; the
+	// failure is the arm's own oneOf — neither message nor input was sent.
+	args := map[string]any{"to": "local:s", "input_mode": "start", "client_mutation_id": "m1", "expected_instance_id": "i1"}
+	for _, kwLoc := range []string{"/anyOf/1/oneOf", "/anyOf/1/required", "/anyOf/1"} {
+		msg := ExplainSchemaError("delegate_send", params, args, "", kwLoc)
+		notMsg(t, msg, "Branch 1 requires", "arm carrying a sibling oneOf must not present its satisfied clauses as the requirement (cause "+kwLoc+")")
+		notMsg(t, msg, "Required arguments: to", "a supplied required argument must not be claimed missing (cause "+kwLoc+")")
+	}
 }

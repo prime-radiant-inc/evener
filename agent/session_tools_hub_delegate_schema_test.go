@@ -1,10 +1,12 @@
 package agent
 
 import (
+	"context"
 	"encoding/json"
 	"strings"
 	"testing"
 
+	"primeradiant.com/evener/agent/internal/tool/repair"
 	"primeradiant.com/evener/agent/provider"
 	"primeradiant.com/evener/llm"
 )
@@ -51,6 +53,80 @@ func TestManagerDelegateHubCallExtraArgumentDoesNotClaimMissingPrompt(t *testing
 	}
 	if !strings.Contains(refusal, "name") {
 		t.Fatalf("refusal did not name the rejected argument: %s", refusal)
+	}
+}
+
+// A hub call carrying several extras names every rejected argument at once, so
+// one retry removes them all instead of discovering one per round trip.
+func TestManagerDelegateHubCallNamesEveryRejectedArgument(t *testing.T) {
+	t.Parallel()
+	refusal := managerDelegateHubCall(t, `{"prompt":"worker task","hub":{"cwd":"/tmp","model":"openai/gpt-5.2","watch":{"completion":true}},"name":"watch-delivery-fix","agent_type":"default","intent":"spawn the worker"}`)
+	if refusal == "" {
+		t.Fatal("hub-branch call with extra arguments was accepted")
+	}
+	for _, field := range []string{"name", "agent_type"} {
+		if !strings.Contains(refusal, field) {
+			t.Fatalf("refusal did not name the rejected argument %s: %s", field, refusal)
+		}
+	}
+}
+
+// The refusal covers the registry's dispatch path too: a call preparation
+// never saw — a hook rewrote its arguments mid-flight — reaches ExecuteCall,
+// where the same PreValidate must refuse before generic schema validation and
+// repair can drop the extra.
+func TestManagerDelegateHubExtraRefusedAtRegistryDispatch(t *testing.T) {
+	t.Parallel()
+	root := newMessagingRoot(t, newMessagingAdapter(), func(cfg *SessionConfig) { cfg.Manager = true })
+	registered := root.reg.Get("delegate")
+	if registered == nil {
+		t.Fatal("Manager delegate tool not registered")
+	}
+	res := root.reg.ExecuteCall(context.Background(), nil, llm.ToolCallData{
+		ID:        "dispatch-hub-extra",
+		Name:      "delegate",
+		Arguments: json.RawMessage(`{"prompt":"worker task","hub":{"cwd":"/tmp","model":"openai/gpt-5.2","watch":{"completion":true}},"name":"watch-delivery-fix","intent":"spawn the worker"}`),
+	})
+	if !res.IsError {
+		t.Fatalf("dispatched hub call with an extra argument was applied: %+v", res)
+	}
+	if !strings.Contains(res.Output, "name") {
+		t.Fatalf("dispatch refusal did not name the rejected argument: %s", res.Output)
+	}
+	if strings.Contains(res.Output, "Required arguments: prompt") {
+		t.Fatalf("dispatch refusal claimed the supplied prompt argument was missing: %s", res.Output)
+	}
+}
+
+// The explainer must not misattribute a hub-branch schema failure to the
+// supplied prompt against the real composed schema the session registers, not
+// only the mirrored fixture in the repair package. The session-level refusals
+// above are intercepted by PreValidate before schema validation, so this is
+// the one place the registered definition's own failure reaches the
+// explainer.
+func TestManagerDelegateHubExtraSchemaExplanationDoesNotNameSuppliedPrompt(t *testing.T) {
+	t.Parallel()
+	root := newMessagingRoot(t, newMessagingAdapter(), func(cfg *SessionConfig) { cfg.Manager = true })
+	registered := root.reg.Get("delegate")
+	if registered == nil {
+		t.Fatal("Manager delegate tool not registered")
+	}
+	args := map[string]any{
+		"prompt": "worker task",
+		"hub":    map[string]any{"cwd": "/tmp", "model": "openai/gpt-5.2", "watch": map[string]any{"completion": true}},
+		"name":   "watch-delivery-fix",
+	}
+	err := registered.Schema.Validate(args)
+	if err == nil {
+		t.Fatal("hub-branch call with an extra argument validated against the composed schema")
+	}
+	msg := repair.ExplainSchemaError("delegate", registered.Definition.Parameters, args,
+		offendingField(err), offendingKeywordLocation(err))
+	if strings.Contains(msg, "Required arguments: prompt") {
+		t.Fatalf("explanation claimed the supplied prompt argument was missing: %s", msg)
+	}
+	if !strings.Contains(msg, "reasoning_effort") {
+		t.Fatalf("explanation did not render the hub arm's accepted-argument set: %s", msg)
 	}
 }
 

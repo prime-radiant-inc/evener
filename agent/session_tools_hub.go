@@ -224,8 +224,11 @@ func managerDelegateDefinition(def llm.ToolDefinition, ordinary bool) llm.ToolDe
 	} else {
 		params["required"] = []string{"prompt", "hub"}
 	}
-	// The base definition guarantees both descriptions, so the appends assert
-	// directly like the rest of this file's composition.
+	// reasoning_effort survives the prune in both variants, so its description
+	// append asserts the property directly; name survives only the ordinary
+	// variant's clone — the hub-only prune deletes it — so its append is
+	// guarded on presence. The base definition guarantees both descriptions
+	// are strings.
 	if name, ok := props["name"].(map[string]any); ok {
 		name["description"] = strings.TrimSpace(name["description"].(string) + " Not accepted on the Manager hub branch: a hub-created session is not an owned delegate, so the name never surfaces; the created ref and the session's prompt-derived title identify it.")
 	}
@@ -269,10 +272,11 @@ func (s *Session) composeHubDelegateTool() {
 	registered := *base
 	ordinary := s.hubOrdinaryAvailable(name)
 	registered.Definition = managerDelegateDefinition(registered.Definition, ordinary)
-	// The hub branch refuses owned-delegate arguments before argument repair
-	// can drop them: a Manager-only profile's closed top level would
-	// otherwise let repair silently discard a named argument and start a
-	// session the caller believes it configured. Register applies the shared
+	// The hub branch refuses arguments outside its accepted set before
+	// argument repair can drop them: a Manager-only profile's closed top
+	// level would otherwise let repair silently discard a named argument and
+	// start a session the caller believes it configured. Every rejected name
+	// is listed so one retry removes them all. Register applies the shared
 	// intent parameter to the definition it stores, so derive the accepted
 	// set from the intent-carrying form and a future hub-branch argument
 	// flows to the refusal without a second hand-maintained list. PreValidate
@@ -293,7 +297,7 @@ func (s *Session) composeHubDelegateTool() {
 			return nil
 		}
 		slices.Sort(extras)
-		return fmt.Errorf("invalid_request: delegate hub creation does not accept %s; it is an owned-delegate argument, the call was not applied and no session was created", extras[0])
+		return fmt.Errorf("invalid_request: delegate hub creation does not accept %s; the call was not applied and no session was created", strings.Join(extras, ", "))
 	}
 	registered.Schema = nil
 	registered.Execute = nil

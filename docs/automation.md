@@ -249,9 +249,11 @@ own working-directory and model validation, so the created worker is
 addressed by its `HOST:WORKSPACE_ID` reference. Discovery of an empty remote
 host and its model catalog does not create a worker there on its own.
 
-Hub creation takes only `prompt`, `hub` and `reasoning_effort`. The
+Hub creation takes `prompt`, `hub` and `reasoning_effort` (which sets the
+created session's effort), plus the shared `intent` argument every tool
+accepts. The
 owned-delegate arguments (`name`, `agent_type`, `task_list`, `isolation`,
-`sandbox` and the rest) do not apply to it and are refused with the argument
+`sandbox` and the rest) do not apply to it and are refused with the arguments
 named rather than dropped: a created worker is not an owned delegate, so it is
 identified by its ref and its prompt-derived title. Give a worker a display
 name with `session_control`'s `rename` on its returned ref.

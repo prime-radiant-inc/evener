@@ -1013,6 +1013,9 @@ func oneOfConstraintMessage(toolName string, params map[string]any, keyword, key
 	}
 	rendered := false
 	for i, br := range branches {
+		if armCarriesSiblingCombinator(br) {
+			continue
+		}
 		desc := branchRequirement(br)
 		if desc == "" {
 			continue
@@ -1544,6 +1547,28 @@ func isPresenceOnlySchema(schema map[string]any, objectTypedOK bool) bool {
 func armTypedObject(arm map[string]any) bool {
 	typ, _ := arm["type"].(string)
 	return typ == "object"
+}
+
+// armCarriesSiblingCombinator reports whether a branch arm declares its own
+// oneOf/allOf/anyOf beside the clauses branchRequirement renders. The root
+// branch message's only content is that prose, so such an arm would enumerate
+// requirements the call may already satisfy while its unrendered sibling
+// constraint — possibly the one actually failing — stays unnamed; the root
+// message skips the arm and, when no other arm renders, falls back to the
+// honest generic mismatch. The nested property message still renders these
+// arms: its example machinery already declines on unevaluated applicators,
+// and its intro names the argument the conditional rule constrains.
+func armCarriesSiblingCombinator(branch any) bool {
+	arm, _ := branch.(map[string]any)
+	if arm == nil {
+		return false
+	}
+	for _, key := range []string{"oneOf", "allOf", "anyOf"} {
+		if _, carries := arm[key]; carries {
+			return true
+		}
+	}
+	return false
 }
 
 // branchRequirement renders one branch's requirement in prose: the
