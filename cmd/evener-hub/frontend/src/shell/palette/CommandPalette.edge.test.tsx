@@ -335,6 +335,23 @@ test("arrow-down onto the first command in command-filter runs it instead of sen
   });
 });
 
+test("Enter runs a command matched by its full title above a handoff row", async () => {
+  const user = userEvent.setup();
+  focusSession("ref_a");
+
+  render(
+    <NeedsYouProvider>
+      <CommandPalette />
+    </NeedsYouProvider>,
+  );
+  act(() => openPalette("/go to dashboard"));
+  await user.keyboard("{Enter}");
+
+  await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+  const { result: insert } = renderHook(() => useQuoteInsertRequest("ref_a"));
+  expect(insert.current?.text).toBeUndefined();
+});
+
 // --- clearToSearch and showHelp UI callbacks (lines 248-251) ---
 
 test("/search command clears to search mode", async () => {
