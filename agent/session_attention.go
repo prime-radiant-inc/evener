@@ -741,8 +741,15 @@ func (s *Session) pendingDelegateAttentionIDs() ([]string, error) {
 // fresh identity keyed by the failed start's generation. Replaying the same
 // failed generation is idempotent (the same identity and content is a no-op),
 // and a later failed generation keys a fresh identity, so however many starts
-// fail, the next drive reads the report as pending and presents it instead of
-// silently losing it. An item that survived its failed start needs nothing:
+// fail, the report reads as pending instead of silently being lost. Which
+// drive presents it depends on the failure: a refused commit never replaced
+// the controller's wake, so the paced retry re-drives it in-process; a start
+// that committed and then lost its launch to a refused lane revalidation
+// leaves the child stamped drain-abandoned, and that stamp deliberately quiets
+// every drive loop instead of churning against the foreign-held lane — the row
+// is presented when a later attention row for the delegate re-arms a wake,
+// when a restart reconciles the wake from the transcript, or when an explicit
+// send revives the lane. An item that survived its failed start needs nothing:
 // the ordinary retry still presents it, and re-delivering it would present
 // the same report twice. A stop or close admitted between the caller's
 // teardown guards and the append is re-checked after it, and the row that
