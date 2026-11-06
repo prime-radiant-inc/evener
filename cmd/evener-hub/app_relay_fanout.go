@@ -26,6 +26,10 @@ func (r *hubRelay) startAcknowledgedFanout(
 			ref          string
 			thread       appwire.Thread
 			argsByCallID map[string]string
+			// commands is the state's in-flight command count when the
+			// target was resolved. A read holding one may still be
+			// binding its downstream subscription.
+			commands int
 		}
 		type pendingRelayDelivery struct {
 			delivery   appsource.RelayDelivery
@@ -78,6 +82,7 @@ func (r *hubRelay) startAcknowledgedFanout(
 				ref:          state.relayKey,
 				thread:       state.thread,
 				argsByCallID: state.argsByCallID,
+				commands:     state.commands,
 			}
 			if state.thread.ID != "" {
 				target.threadID = state.thread.ID
@@ -234,6 +239,14 @@ func (r *hubRelay) startAcknowledgedFanout(
 			targets, _ := lookupTargets("", relayNotificationUntargeted)
 			for _, target := range targets {
 				if pending.served[target.relayKey] {
+					continue
+				}
+				// A read in flight on this route is about to install its
+				// downstream subscription. Counting the route served now
+				// would announce the departure to the subscribers already
+				// present and lose it for the one joining, so the route is
+				// served once that read releases.
+				if target.commands != 0 {
 					continue
 				}
 				// A route published but not yet subscribed to has nobody

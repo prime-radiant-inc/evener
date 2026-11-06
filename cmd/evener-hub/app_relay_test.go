@@ -744,6 +744,7 @@ func TestHubRelayKeepsDiallingAnUnconfirmedClaimAndAnnouncesGoneOnlyWhenItIsGone
 type subscribedHub struct {
 	runDir string
 	roster *hubcore.Roster
+	wire   *httptest.Server
 	client *appwire.Client
 }
 
@@ -751,6 +752,13 @@ type subscribedHub struct {
 // hub over a roster of it (with identity, if given, standing in for the
 // host's process inspection), and subscribes a client to sessionID.
 func openSubscribedHub(ctx context.Context, t *testing.T, entry rendezvous.Entry, sessionID string, identity func(rendezvous.Entry) hubcore.ProcessIdentity) subscribedHub {
+	t.Helper()
+	return openSubscribedHubWithSetup(ctx, t, entry, sessionID, identity, nil)
+}
+
+// openSubscribedHubWithSetup is openSubscribedHub with a hook that runs on the
+// hub's AppWire server before it serves a connection.
+func openSubscribedHubWithSetup(ctx context.Context, t *testing.T, entry rendezvous.Entry, sessionID string, identity func(rendezvous.Entry) hubcore.ProcessIdentity, setup func(*appserver.Server)) subscribedHub {
 	t.Helper()
 	runDir := t.TempDir()
 	writeRendezvous(t, runDir, entry)
@@ -764,6 +772,9 @@ func openSubscribedHub(ctx context.Context, t *testing.T, entry rendezvous.Entry
 	}
 	sources := newHubSourceRegistry(hubcore.WebConfig{Roster: roster})
 	server := newHubAppServer(hubcore.WebConfig{HubStateRoot: t.TempDir(), Past: hubcore.NewPastIndex(""), Roster: roster}, sources)
+	if setup != nil {
+		setup(server)
+	}
 	wire := httptest.NewServer(http.HandlerFunc(server.ServeWebSocket))
 	t.Cleanup(wire.Close)
 	client := dialHubRPC(t, wire)
@@ -774,7 +785,7 @@ func openSubscribedHub(ctx context.Context, t *testing.T, entry rendezvous.Entry
 	if _, err := client.ThreadRead(ctx, appwire.ThreadReadParams{Ref: "local:" + sessionID, Subscribe: true}); err != nil {
 		t.Fatal(err)
 	}
-	return subscribedHub{runDir: runDir, roster: roster, client: client}
+	return subscribedHub{runDir: runDir, roster: roster, wire: wire, client: client}
 }
 
 // The daemon-gone announcement is addressed to every subscriber of the
@@ -959,6 +970,77 @@ func TestHubRelayDaemonGoneAnnouncedBetweenPublishAndSubscribeStillArrives(t *te
 		t.Fatalf("child ThreadRead: %v", err)
 	}
 	awaitRelayResync(t, child.Notifications(), "gap-child", childRef, 5*time.Second)
+}
+
+// A departure announced while a second client is joining the same route must
+// reach that client once its subscription lands. Counting a route served on
+// its subscriber count alone hands the announcement to the incumbent and
+// loses it for the subscriber still binding.
+func TestHubRelayDaemonGoneReachesJoiningSubscriberOnTheSameRoute(t *testing.T) {
+	const sessionID = "same-route"
+	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+	defer cancel()
+	rootRef := appwire.Ref{SourceID: appwire.LocalSourceID, ThreadID: sessionID}.String()
+
+	// The retained delivery proves the real daemon's departure reached the
+	// fan-out while the joining read still held its command owner, which is
+	// the ordering this test needs before it releases that read.
+	departureRetained := make(chan struct{})
+	var retainedOnce sync.Once
+	pendingObservation := func(n int) {
+		if n >= 1 {
+			retainedOnce.Do(func() { close(departureRetained) })
+		}
+	}
+	previousPending := observeHubRelayPending.Swap(&pendingObservation)
+	t.Cleanup(func() { observeHubRelayPending.Store(previousPending) })
+
+	daemon := startAliasRecoveryDaemon(t, sessionID, sessionID)
+	var gateArmed atomic.Bool
+	gateEntered, gateRelease := make(chan struct{}, 1), make(chan struct{})
+	hub := openSubscribedHubWithSetup(ctx, t, daemon.entry, sessionID, nil, func(server *appserver.Server) {
+		// Fires after the joining read's source handoff is prepared and before
+		// its downstream subscription registers.
+		server.SetBeforeSubscriptionGate(func() {
+			if gateArmed.CompareAndSwap(true, false) {
+				gateEntered <- struct{}{}
+				<-gateRelease
+			}
+		})
+	})
+	joining := dialHubRPC(t, hub.wire)
+	t.Cleanup(func() { _ = joining.Close() })
+	if _, err := joining.Initialize(ctx, appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+	gateArmed.Store(true)
+	joiningRead := make(chan error, 1)
+	go func() {
+		_, err := joining.ThreadRead(ctx, appwire.ThreadReadParams{Ref: rootRef, Subscribe: true})
+		joiningRead <- err
+	}()
+	awaitActivityRelaySignal(ctx, t, gateEntered, "joining read did not reach the subscription gate")
+
+	if err := daemon.Kill(); err != nil {
+		t.Fatal(err)
+	}
+	if err := daemon.Wait(ctx); err != nil {
+		t.Fatal(err)
+	}
+	hub.roster.Refresh()
+	select {
+	case <-departureRetained:
+	case <-ctx.Done():
+		t.Fatal("the daemon-gone delivery never reached the relay fan-out")
+	}
+	close(gateRelease)
+	if err := <-joiningRead; err != nil {
+		t.Fatalf("joining ThreadRead: %v", err)
+	}
+	// The joining subscriber hears the departure after its own response, and
+	// the subscriber that was already on the route still hears it.
+	awaitRelayResync(t, joining.Notifications(), sessionID, rootRef, 10*time.Second)
+	awaitRelayResync(t, hub.client.Notifications(), sessionID, rootRef, 10*time.Second)
 }
 
 // A legacy rendezvous entry names no session; the probe resolves one and the
