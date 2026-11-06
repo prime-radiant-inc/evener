@@ -527,6 +527,7 @@ func NewSession(client *llm.Client, profile *provider.Profile, env execenv.Execu
 		ownsArtifactStore:             ownsArtifactStore,
 		subscriberCountFn:             cfg.spawn.subscriberCount,
 	}
+	s.bindDescendantTranscriptPublication()
 	s.bufferArtifactStoreWarning(artifactStoreErr)
 	// Publish the first committed notes cut before anything can read one: a
 	// fresh session's live store is empty, and its mutation store may already
@@ -1185,6 +1186,8 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 		ownsArtifactStore:           ownsArtifactStore,
 		subscriberCountFn:           cfg.spawn.subscriberCount,
 	}
+	s.bindDescendantTranscriptPublication()
+	s.restoreConversation(transcriptEntries)
 	s.bufferArtifactStoreWarning(artifactStoreErr)
 	s.retirementController.Store(cfg.spawn.retirementController)
 	s.initEnvContext(meta.EnvContext)

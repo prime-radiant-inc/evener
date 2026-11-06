@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"primeradiant.com/evener/agent/provenance"
+	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/llm"
 )
 
@@ -447,8 +448,12 @@ type Turn struct {
 	// Communicate carries a delivered message on TurnCommunicate entries.
 	Communicate *CommunicateInfo `json:"communicate,omitempty"`
 	// Completion carries how an execution ended on TurnCompletion entries.
-	Completion              *TurnCompletionInfo      `json:"completion,omitempty"`
-	DelegateDeliveryCommits []DelegateDeliveryCommit `json:"delegate_delivery_commits,omitempty"`
+	Completion              *TurnCompletionInfo           `json:"completion,omitempty"`
+	ConversationCoverageRef string                        `json:"conversation_coverage_ref,omitempty"`
+	ConversationFrontier    *ConversationFrontier         `json:"conversation_frontier,omitempty"`
+	ConversationInputIDs    []string                      `json:"conversation_input_ids,omitempty"`
+	ConversationProvenance  *ConversationOutputProvenance `json:"conversation_provenance,omitempty"`
+	DelegateDeliveryCommits []DelegateDeliveryCommit      `json:"delegate_delivery_commits,omitempty"`
 	// Error carries the diagnostic of a terminally failed turn. Set only on
 	// TurnFailure turns; nil everywhere else.
 	Error *TurnFailureInfo `json:"error,omitempty"`
@@ -516,7 +521,9 @@ type Turn struct {
 	TurnKind TurnSpanKind `json:"turn_kind,omitempty"`
 	// Usage carries the token-usage stats reported by the provider; set only on
 	// assistant turns.
-	Usage llm.Usage `json:"usage"`
+	Usage                    llm.Usage                         `json:"usage"`
+	VoicePresentation        *appwire.VoicePresentationContext `json:"voice_presentation,omitempty"`
+	VoicePresentationInputID string                            `json:"voice_presentation_input_id,omitempty"`
 }
 
 // NewTurn creates a Turn with the current UTC time.

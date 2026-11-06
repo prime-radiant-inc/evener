@@ -1,6 +1,7 @@
 import {
   type AppwireClientLike,
   type SessionActivityCollection,
+  type SessionActivityResource,
   type SessionActivityScope,
   type SessionActivitySnapshot,
   SessionActivityStore,
@@ -64,6 +65,21 @@ export function sessionActivitySnapshot(
   scope: SessionActivityScope,
 ): SessionActivitySnapshot | null {
   return ownedStore(client, ref, scope)?.getSnapshot() ?? null;
+}
+
+/** Awaits the owned store's registered read span for one resource — a paced
+ * refresh walk included — without adding holders or demand, so a suite that
+ * drives an invalidation converges on the walk's actual completion rather
+ * than a condition-watch ceiling the walk's real-clock pacing can outlast
+ * under load. Call it inside act() so the walk's final publish has flushed
+ * React work before the next assertion reads the DOM. */
+export function settleSessionActivityForTests(
+  client: AppwireClientLike,
+  ref: string,
+  scope: SessionActivityScope,
+  resource: SessionActivityResource,
+): Promise<void> {
+  return ownedStore(client, ref, scope)?.settleForTests(resource) ?? Promise.resolve();
 }
 
 export function useSessionActivity(

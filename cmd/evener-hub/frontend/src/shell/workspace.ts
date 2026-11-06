@@ -1172,6 +1172,12 @@ export function useWorkspaceStore<T>(selector?: (state: WorkspaceStoreState) => 
   return selector ? useStore(workspaceStore, selector) : useStore(workspaceStore);
 }
 
+/** Whether any session pane is open. One predicate for the cold-start hints
+ * on both Welcome and Spawn, so the two panes cannot disagree about "open". */
+export function useHasSessionPane(): boolean {
+  return useWorkspaceStore((state) => state.panes.some((pane) => pane.type === "session"));
+}
+
 // resetWorkspaceStoreForTests resets every module-private/store field to its
 // initial state - workspace.ts is a singleton store (one pane list, one
 // dockviewApi reference, one id counter) shared by the whole app, so

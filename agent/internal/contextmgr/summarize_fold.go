@@ -17,6 +17,25 @@ func foldCutoff(history []schema.Turn, preserveRecent int) int {
 	return safeCutoff(history, attentionTransparentRecentCutoff(history, preserveRecent))
 }
 
+// preservePendingAskTail keeps the existing source records and every later
+// boundary needed to restore an unresolved question. Older history remains
+// foldable. Once admission clears the pending owner, the ordinary cutoff wins.
+func preservePendingAskTail(history []schema.Turn, preserveRecent int, meta *CompactionMeta) int {
+	if meta != nil && (len(meta.PendingAskTurnIDs) > 0 || len(meta.PendingAskCallIDs) > 0) {
+		for i, turn := range history {
+			if turn.TurnID != "" && slices.Contains(meta.PendingAskTurnIDs, turn.TurnID) {
+				return max(preserveRecent, attentionTransparentTurnCount(history[i:]))
+			}
+			for _, part := range turn.Message.Content {
+				if call := part.ToolCall; call != nil && call.ID != "" && slices.Contains(meta.PendingAskCallIDs, call.ID) {
+					return max(preserveRecent, attentionTransparentTurnCount(history[i:]))
+				}
+			}
+		}
+	}
+	return preserveRecent
+}
+
 // summarizeFold calls the cheap model to summarize old history, replacing it
 // with a single user message that holds the summary and preserving the most
 // recent turns. A non-empty instructions replaces the default
@@ -28,6 +47,7 @@ func foldCutoff(history []schema.Turn, preserveRecent int) int {
 // summary folds, under the carry's own cap. With checkpointed nil they are
 // read from the turns the summary folds.
 func (cm *Manager) summarizeFold(ctx context.Context, history []schema.Turn, preserveRecent int, instructions string, checkpointed []schema.Turn) ([]schema.Turn, error) {
+	preserveRecent = preservePendingAskTail(history, preserveRecent, cm.metaFor(ctx))
 	if attentionTransparentTurnCount(history) <= preserveRecent {
 		return history, nil
 	}

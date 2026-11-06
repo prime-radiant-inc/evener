@@ -47,7 +47,7 @@
   text-overflow: ellipsis;
   text-align: center;
   color: var(--ink-hi);
-  font-family: var(--font-sans);
+  font-family: var(--font-prose);
   font-size: var(--font-size-pane-title);
   font-weight: var(--font-weight-semibold);
   line-height: var(--line-height-title);

@@ -1425,6 +1425,17 @@ func (i *PastIndex) RootIndex() *RootIndex {
 	return built
 }
 
+// ConfirmAbsent reports whether a fresh disk probe establishes that no project
+// holds this session's metadata. A Find miss alone cannot establish absence:
+// unreadable or corrupt metadata also produces a miss.
+func (i *PastIndex) ConfirmAbsent(sessionID string) bool {
+	if identifier.ValidateSessionID(sessionID) != nil || i.stateGlob == "" {
+		return false
+	}
+	_, found, determinate := i.probeOne(sessionID)
+	return !found && determinate
+}
+
 // Find returns the entry for a given session_id.
 func (i *PastIndex) Find(sessionID string) (PastEntry, bool) {
 	if identifier.ValidateSessionID(sessionID) != nil {

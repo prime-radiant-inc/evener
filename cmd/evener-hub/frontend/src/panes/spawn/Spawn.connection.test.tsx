@@ -1213,6 +1213,7 @@ test("retrying missing provider setup discovers a local server started afterward
   connectionStore.getState().connect(client);
   renderSpawn(client);
   await screen.findByRole("button", { name: "Connect provider" });
+  expect(screen.getByTestId("spawn-start-reason").textContent).toContain("Connect a provider to start");
   const retry = screen.getByRole("button", { name: "Retry provider check" });
   available = true;
   await user.click(retry);

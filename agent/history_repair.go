@@ -35,15 +35,23 @@ func repairOrphanedToolResultsIndexed(history []schema.Turn) ([]schema.Turn, int
 		return history, 0, nil
 	}
 
-	out := make([]schema.Turn, 0, len(history))
+	var out []schema.Turn
+	copiedThrough := 0
 	var pending []llm.ToolCallData
 	repairs := 0
 	var insertedAt []int
 
-	flushPending := func() {
+	flushPending := func(at int) {
 		if len(pending) == 0 {
 			return
 		}
+		// An already-valid history needs no copy. On repair, copy each
+		// untouched span once into a new slice, never into the source history.
+		if out == nil {
+			out = make([]schema.Turn, 0, len(history)+1)
+		}
+		out = append(out, history[copiedThrough:at]...)
+		copiedThrough = at
 		insertedAt = append(insertedAt, len(out))
 		out = append(out, syntheticToolResultsTurn(pending))
 		repairs += len(pending)
@@ -63,20 +71,17 @@ func repairOrphanedToolResultsIndexed(history []schema.Turn) ([]schema.Turn, int
 		pending = dst
 	}
 
-	for _, turn := range history {
+	for i, turn := range history {
 		if turn.Kind.TranscriptOnly() {
 			// Never model history; resume keeps these out. One that got here
 			// keeps its place and interrupts no tool round.
-			out = append(out, turn)
 			continue
 		}
 		switch turn.Kind {
 		case schema.TurnAssistant:
-			flushPending()
-			out = append(out, turn)
+			flushPending(i)
 			pending = assistantToolCalls(turn.Message)
 		case schema.TurnTool, schema.TurnToolResults:
-			out = append(out, turn)
 			for _, part := range turn.Message.Content {
 				if part.Kind == llm.ContentToolResult && part.ToolResult != nil {
 					removePending(part.ToolResult.ToolCallID)
@@ -87,17 +92,16 @@ func repairOrphanedToolResultsIndexed(history []schema.Turn) ([]schema.Turn, int
 			// while a tool is still running. Preserve their chronological order
 			// without treating the pending call as interrupted. expandHistory
 			// keeps model-visible steering after the matching result on the wire.
-			out = append(out, turn)
 		default:
-			flushPending()
-			out = append(out, turn)
+			flushPending(i)
 		}
 	}
-	flushPending()
+	flushPending(len(history))
 
 	if repairs == 0 {
 		return history, 0, nil
 	}
+	out = append(out, history[copiedThrough:]...)
 	// Repair must produce well-formed history: every assistant tool call now has a
 	// matching tool result, so a second pass finds nothing left to repair. If this
 	// trips, the synthetic-result insertion missed a call and a downstream provider

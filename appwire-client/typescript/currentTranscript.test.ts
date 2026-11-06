@@ -1065,6 +1065,14 @@ describe("current transcript checkpoints", () => {
     // field, so the deferred-page validators cannot drift without a red build.
     const everyItemField: Required<ThreadItem> = {
       type: "toolCall",
+      conversationProvenance: {
+        version: 1,
+        instanceId: "instance",
+        runGeneration: 1,
+        requestId: "request",
+        frontierId: "frontier",
+        sourceItemId: "item_full",
+      },
       actor: { kind: "manager", managerRef: "hub:manager" },
       observation: {
         ref: "local:observed",

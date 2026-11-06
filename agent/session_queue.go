@@ -23,9 +23,10 @@ type queuedInputDrainContextKey struct{}
 type queuedClientMutationContextKey struct{}
 
 type queuedClientMutationIdentity struct {
-	ClientMutationID string
-	StableTurnID     string
-	QueueEntryID     string
+	VoicePresentation *appwire.VoicePresentationContext
+	ClientMutationID  string
+	StableTurnID      string
+	QueueEntryID      string
 	// SteeringCarrier marks the synthetic entry claimSteeringCarrierInput
 	// builds for pending user steering: ClientMutationID is the steer's,
 	// StableTurnID the id it reserved, and there is no content of its own.
@@ -65,10 +66,11 @@ func (s *Session) announceClaimedInput(announce func(), giveBack func() error) e
 // queued input, for a caller that holds the input rather than the context.
 func queuedClientMutationIdentityOf(queued queuedInput) queuedClientMutationIdentity {
 	return queuedClientMutationIdentity{
-		ClientMutationID: queued.ClientMutationID,
-		StableTurnID:     queued.StableTurnID,
-		QueueEntryID:     queued.ID,
-		SteeringCarrier:  queued.SteeringCarrier,
+		VoicePresentation: appwire.CloneVoicePresentation(queued.VoicePresentation),
+		ClientMutationID:  queued.ClientMutationID,
+		StableTurnID:      queued.StableTurnID,
+		QueueEntryID:      queued.ID,
+		SteeringCarrier:   queued.SteeringCarrier,
 	}
 }
 
@@ -110,9 +112,10 @@ func WithQueuedInputDrainOnInterruptHandler(ctx context.Context, rootCtx context
 // watch origin (nil for human/system-authored steering) so consuming the
 // message folds its watch keys into the turn's active provenance.
 type steeringMessage struct {
-	Actor  schema.SessionActor `json:"actor,omitzero"`
-	Text   string              `json:"text,omitempty"`
-	Images []ImageAttachment   `json:"images,omitempty"`
+	VoicePresentation *appwire.VoicePresentationContext `json:"voice_presentation,omitempty"`
+	Actor             schema.SessionActor               `json:"actor,omitzero"`
+	Text              string                            `json:"text,omitempty"`
+	Images            []ImageAttachment                 `json:"images,omitempty"`
 	// SkillNames carries the canonical skill identities a durable client
 	// steering input selected. Identities only, never bodies: the complete
 	// instructions load from the recorded sources at consumption.
@@ -394,11 +397,12 @@ func (s *Session) deliverHookUserMessage(text string) {
 // queue snapshot so a promote-by-index request can verify the entry it meant
 // is still the entry at that index (review F1, issue #22).
 type queuedInput struct {
-	ID               string            `json:"id"`
-	ClientMutationID string            `json:"client_mutation_id,omitempty"`
-	StableTurnID     string            `json:"stable_turn_id,omitempty"`
-	Text             string            `json:"text,omitempty"`
-	Images           []ImageAttachment `json:"images,omitempty"`
+	VoicePresentation *appwire.VoicePresentationContext `json:"voice_presentation,omitempty"`
+	ID                string                            `json:"id"`
+	ClientMutationID  string                            `json:"client_mutation_id,omitempty"`
+	StableTurnID      string                            `json:"stable_turn_id,omitempty"`
+	Text              string                            `json:"text,omitempty"`
+	Images            []ImageAttachment                 `json:"images,omitempty"`
 	// SkillNames carries the canonical skill identities this durable input
 	// selected. Identities only, never bodies: the complete instructions load
 	// from the recorded sources at actual consumption.
@@ -992,6 +996,10 @@ func (s *Session) consumeSteeringMessage(msg steeringMessage) steeringConsumptio
 	}
 	t.SteeringKind = msg.Kind
 	t.ClientMutationID = msg.ClientMutationID
+	attachVoicePresentation(&t, msg.VoicePresentation, msg.ClientMutationID)
+	if msg.ClientMutationID != "" || msg.Source == events.SteeringSourceUser {
+		t.ConversationInputIDs = s.conversationInputIDs(msg.ClientMutationID)
+	}
 	t.Actor = msg.Actor
 	t.StableTurnID = msg.StableTurnID
 	if steeringAnswersAsk(msg.Source, steeringOrigin{kind: msg.Kind}, "") {
@@ -1085,12 +1093,13 @@ func (s *Session) consumeSteeringMessage(msg steeringMessage) steeringConsumptio
 // shape prepareSelectedInput consumes, keeping the durable ownership identity.
 func queuedInputFromSteering(msg steeringMessage) queuedInput {
 	return queuedInput{
-		ClientMutationID: msg.ClientMutationID,
-		StableTurnID:     msg.StableTurnID,
-		Text:             msg.Text,
-		Images:           msg.Images,
-		SkillNames:       msg.SkillNames,
-		CommandNames:     msg.CommandNames,
+		VoicePresentation: appwire.CloneVoicePresentation(msg.VoicePresentation),
+		ClientMutationID:  msg.ClientMutationID,
+		StableTurnID:      msg.StableTurnID,
+		Text:              msg.Text,
+		Images:            msg.Images,
+		SkillNames:        msg.SkillNames,
+		CommandNames:      msg.CommandNames,
 	}
 }
 

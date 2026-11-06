@@ -15,7 +15,7 @@ func (h *threadHistory) answerContinuation(ctx context.Context, params appwire.T
 	if err := ctx.Err(); err != nil {
 		return verdict, snapshot, err
 	}
-	err := h.read(func(idx *transcriptindex.Index) error {
+	err := h.read(func(idx *transcriptindex.Snapshot) error {
 		var err error
 		verdict.Matches, snapshot, err = idx.AnswerContinuation(ctx, query.AncestorTurnID, query.CandidateTurnID, params.HeldSnapshot)
 		return err
@@ -47,7 +47,7 @@ func (h *threadHistory) capture() historyCapture {
 // version as it does for a notification that races a read.
 func (h *threadHistory) latest(c historyCapture, threadRef string, limit int) (turns []appwire.Turn, olderCursor string, snapshot appwire.SnapshotIdentity, latestExecutionTurnID string, overlay []appwire.OverlayItem, err error) {
 	var window transcriptindex.Window
-	err = h.read(func(idx *transcriptindex.Index) (err error) {
+	err = h.read(func(idx *transcriptindex.Snapshot) (err error) {
 		window, err = idx.Latest(limit)
 		return err
 	})
@@ -74,7 +74,7 @@ func (h *threadHistory) latest(c historyCapture, threadRef string, limit int) (t
 // appwire.TranscriptItemCursorStale(): the client re-reads the latest window.
 func (h *threadHistory) before(threadRef string, params appwire.ThreadTurnsListParams) (turns []appwire.Turn, olderCursor string, snapshot appwire.SnapshotIdentity, err error) {
 	var window transcriptindex.Window
-	err = h.read(func(idx *transcriptindex.Index) error {
+	err = h.read(func(idx *transcriptindex.Snapshot) error {
 		incarnation, err := idx.Incarnation()
 		if err != nil {
 			return err
@@ -106,7 +106,7 @@ func (h *threadHistory) before(threadRef string, params appwire.ThreadTurnsListP
 // (recoverForRead); if that fails the read is appwire.TranscriptHistoryFailed,
 // naming the entry, and pushes nothing. A read that starts once the history
 // began closing is refused with errThreadHistoryClosed.
-func (h *threadHistory) read(fn func(*transcriptindex.Index) error) error {
+func (h *threadHistory) read(fn func(*transcriptindex.Snapshot) error) error {
 	if err := h.beginRead(); err != nil {
 		return err
 	}
@@ -122,7 +122,7 @@ func (h *threadHistory) read(fn func(*transcriptindex.Index) error) error {
 	return h.readIndex(length, fn)
 }
 
-func (h *threadHistory) readIndex(length int64, fn func(*transcriptindex.Index) error) error {
+func (h *threadHistory) readIndex(length int64, fn func(*transcriptindex.Snapshot) error) error {
 	idx, err := h.cache.Acquire(h.path)
 	if err != nil {
 		return err
@@ -131,7 +131,7 @@ func (h *threadHistory) readIndex(length int64, fn func(*transcriptindex.Index) 
 	if err := idx.CatchUpTo(length); err != nil {
 		return err
 	}
-	return fn(idx)
+	return idx.ReadAt(length, fn)
 }
 
 // page regroups a window into turn fragments priced by their model, with the

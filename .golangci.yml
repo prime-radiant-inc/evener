@@ -184,6 +184,20 @@ linters:
         linters:
           - tagliatelle
 
+      # Device voice controls, their journal records and presentation fixtures
+      # use AppWire camelCase. The second pass in .golangci-appwire.yml checks
+      # these exact files; upstream voice_realtime.go stays snake_case here.
+      - path: '^cmd/evener-hub/(voice_bridge|voice_http(_test)?|e2e_voice_presentation_test|internal/hubcore/voice_journal(_presentation_test)?)\.go$'
+        linters:
+          - tagliatelle
+      # Only the presentation projection's InputID crosses naming regimes in
+      # these agent files. In particular, the live test's tool-result fields
+      # remain snake_case and are still checked by this pass.
+      - path: '^agent/session_voice_presentation(_test|_live_test)?\.go$'
+        source: '^\s*InputID\s'
+        linters:
+          - tagliatelle
+
       # modernize's embedlit fires on retainedSearchOptions' nested
       # jobstore.SearchOptions literal, but flattening it does not compile:
       # promoted fields of an embedded struct cannot be keyed in the outer

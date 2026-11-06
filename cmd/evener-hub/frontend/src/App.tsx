@@ -1,4 +1,5 @@
-import { lazy, Suspense } from "react";
+import { lazy, Suspense, useEffect } from "react";
+import { syncThemeColor } from "./stores/prefs";
 
 const WorkspaceRoute = lazy(() => import("./shell/AppShell").then((module) => ({ default: module.AppShell })));
 
@@ -27,6 +28,12 @@ const DevHarnessRoute = import.meta.env.DEV
   : null;
 
 export function App() {
+  // The token sheet is loaded before this module (main.tsx's import order);
+  // run the meta sync after mount so a dev-server stylesheet that arrives
+  // late still gets the active page ground.
+  useEffect(() => {
+    syncThemeColor();
+  }, []);
   if (WidgetGallery !== null && window.location.pathname === "/dev/widgets") {
     return (
       <Suspense fallback={null}>

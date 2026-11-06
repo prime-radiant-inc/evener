@@ -213,7 +213,7 @@ func TestHistoryCloseWaitsForAReadInFlight(t *testing.T) {
 	inRead, release := make(chan struct{}), make(chan struct{})
 	readDone := make(chan error, 1)
 	go func() {
-		readDone <- hx.history.read(func(*transcriptindex.Index) error {
+		readDone <- hx.history.read(func(*transcriptindex.Snapshot) error {
 			close(inRead)
 			<-release
 			return nil
@@ -236,7 +236,7 @@ func TestHistoryCloseWaitsForAReadInFlight(t *testing.T) {
 	if err := <-readDone; err != nil {
 		t.Fatalf("the read in flight: %v", err)
 	}
-	if err := hx.history.read(func(*transcriptindex.Index) error { return nil }); !errors.Is(err, errThreadHistoryClosed) {
+	if err := hx.history.read(func(*transcriptindex.Snapshot) error { return nil }); !errors.Is(err, errThreadHistoryClosed) {
 		t.Fatalf("a read after close = %v, want it refused as closed", err)
 	}
 }

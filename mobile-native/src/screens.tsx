@@ -123,6 +123,8 @@ import {
 	exactRestoreDue,
 } from "./readerPosition";
 import { type SessionDestination, SessionMenu } from "./SessionMenu";
+import { VoiceControls } from "./voice/VoiceControls";
+import { useVoiceClient } from "./voice/voiceContext";
 import { canonicalFailureAction, type ErrorAction, errorAction } from "./session/errorAction";
 import { TURN_CONTINUATION_TEXT } from "@evener/appwire-client";
 import {
@@ -420,6 +422,7 @@ function ConversationScreenView({
 	attachment: NativeConversationAttachment;
 }) {
 	const { activeProfile, profiles, client, state: connectionState } = useConnection();
+	const voiceClient = useVoiceClient();
 	const focused = useScreenInFront(route.key);
 	const colors = useColors();
 	const textScale = useTextScale();
@@ -2278,6 +2281,8 @@ function ConversationScreenView({
 	// already on its way, "notKept" when the phone couldn't keep it to send (the
 	// store reports why), "notStopped" when nothing was tried.
 	async function stop(): Promise<"stopped" | "stopping" | "notKept" | "notStopped"> {
+		const voiceTarget = voiceClient?.getTarget();
+		if (voiceTarget?.hub.id === route.params.hubId && voiceTarget.ref === route.params.ref) voiceClient?.stopSpeaking();
 		if (stopBusy.current) return "stopping";
 		if (!service || !connectionReady.current || store.getState().pendingSubmission !== null) return "notStopped";
 		stopBusy.current = true;
@@ -3731,6 +3736,20 @@ function ConversationScreenView({
 						}}
 						onLayout={bottomBar.onLayout}
 					>
+						{activeProfile && conversation ? (
+							<VoiceControls
+								target={{
+									hub: activeProfile,
+									ref: route.params.ref,
+									instanceId: conversation.instanceId ?? "",
+									manager: conversation.manager === true,
+									voiceAvailable:
+										client?.initializeResult?.features != null &&
+										"voice" in client.initializeResult.features &&
+										client.initializeResult.features.voice === true,
+								}}
+							/>
+						) : null}
 						<ScrollView
 							style={{ ...shrinkingScroller, marginBottom: 4 }}
 							contentContainerStyle={{ gap: 4, paddingHorizontal: 12 }}

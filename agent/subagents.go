@@ -756,6 +756,7 @@ func subagentConfigFromFrozenDescriptor(frozenConfig schema.ConfigSnapshot, pare
 	subCfg.ForceRealIO = parentCfg.ForceRealIO
 	subCfg.spawn.descendantEvent = parentCfg.spawn.descendantEvent
 	subCfg.spawn.descendantRecorded = parentCfg.spawn.descendantRecorded
+	subCfg.spawn.descendantPublication = parentCfg.spawn.descendantPublication
 	subCfg.spawn.driveCounter = parentCfg.spawn.driveCounter
 	subCfg.spawn.treeCounter = parentCfg.spawn.treeCounter
 	subCfg.spawn.jobActivityClock = parentCfg.spawn.jobActivityClock

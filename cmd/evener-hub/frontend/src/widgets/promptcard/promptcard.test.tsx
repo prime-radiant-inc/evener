@@ -130,6 +130,12 @@ test("the card owns the focus ring for the seamless field inside it", () => {
   expect(moduleCss()).toMatch(/\.card:focus-within\s*\{[^}]*outline: var\(--focus-ring\)/);
 });
 
+test("the focus ring sits on the card edge, so the field shows one line instead of two", () => {
+  const rule = /\.card:focus-within\s*\{([^}]*)\}/.exec(moduleCss())?.[1] ?? "";
+  expect(rule).toMatch(/outline-offset:\s*0;/);
+  expect(rule).toMatch(/border-color:\s*var\(--accent\);/);
+});
+
 // Queried only after focusing: jsdom's selector engine caches a :focus-within
 // result per element, so an earlier "not yet focused" call on the same node
 // would keep answering false afterwards.
