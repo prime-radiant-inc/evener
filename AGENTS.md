@@ -244,6 +244,11 @@ loading them, since each opens a socket the moment its body runs.
   no check is outstanding, and roborev's combined review names your exact
   head. Run it as its own background job: a `&` inside a job orphans it, and
   an orphaned job once killed both the comment post and the detector silently.
+- **A push that produced no CI run.** GitHub has dropped `pull_request`
+  events outright for some PRs. After pushing, run
+  `scripts/ops/pr-ci-watchdog.sh --pr <N>`: it verifies the expected workflow
+  run appeared on the pushed head, and dispatches the workflow itself when
+  GitHub dropped the event, without double-dispatching when GitHub behaved.
 - **Green is not clean.** `roborev_check=SUCCESS` says the review *ran*, not
   that it found nothing — the combined comment's body carries the findings.
   Read it every round, plus the per-commit surface: `roborev list --open` in the
