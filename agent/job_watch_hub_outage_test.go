@@ -94,6 +94,9 @@ func TestManagerWatchSurvivesBindingOutageUntilConnectionRestores(t *testing.T) 
 	if got := countWatchSends(t, jm, watchID, instance+"/"+generation+"/terminal:A:communicate:completed"); got != 1 {
 		t.Fatalf("completion deliveries after outage recovery=%d, want 1", got)
 	}
+	if got := countWatchSends(t, jm, watchID, ref+"#interruption"); got != 0 {
+		t.Fatalf("interruption notices across the in-budget outage=%d, want 0", got)
+	}
 }
 
 // A stream-end blip that rebinds inside the outage budget is not a loss the

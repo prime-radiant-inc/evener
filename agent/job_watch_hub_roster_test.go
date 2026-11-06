@@ -639,6 +639,106 @@ func TestHubRosterWatchRuntimeSubscription(t *testing.T) {
 	root.jobManager.mu.Unlock()
 }
 
+// The stream-end ruling covers the fleet roster watch: it rides the same
+// subscription consumer, so a binding blip that rebinds inside the outage
+// budget must not interrupt the roster observation with an incident-looking
+// frame. The rebound stream's fresh roster snapshot still delivers its
+// evidence (job-control.md).
+func TestHubRosterWatchStreamEndReboundDeliversNoInterruptionNotice(t *testing.T) {
+	t.Parallel()
+	root := newMessagingRoot(t, newMessagingAdapter(), func(cfg *SessionConfig) {
+		cfg.Manager = true
+		cfg.testOnly.hubWatchRetryDelay = time.Millisecond
+		cfg.testOnly.hubWatchStateOutageBudget = 5 * time.Second
+	})
+	first := make(chan appwire.SessionWatchUpdate, 1)
+	first <- rosterUpdate(1, true, rosterEntry("local:a", "new"))
+	base := &managerRecoverClient{
+		view:         appwire.ManagerView{Ref: "local:manager", InstanceID: "manager-instance", Manager: true},
+		streams:      make(chan chan appwire.SessionWatchUpdate, 2),
+		watches:      make(chan struct{}, 2),
+		offlineReads: make(chan struct{}, 16),
+		ended:        make(chan struct{}, 2),
+	}
+	base.streams <- first
+	root.SetHubClient(base)
+	if _, err := root.configureHubWatchRuntime(t.Context(), map[string]any{"operation": "create", "hub": map[string]any{"scope": "top_level"}}); err != nil {
+		t.Fatal(err)
+	}
+	<-base.watches
+	jm := root.jobManager
+	if jm == nil {
+		t.Fatal("missing journal owner")
+	}
+	var watchID string
+	jm.mu.Lock()
+	for _, cfg := range jm.watches {
+		if cfg.hubRef == hubRosterWatchKey {
+			watchID = cfg.watchID
+		}
+	}
+	jm.mu.Unlock()
+	if watchID == "" {
+		t.Fatal("roster watch missing")
+	}
+
+	// The blip: the stream dies and the binding stops answering. The roster
+	// watch must stay armed while recovery is in progress.
+	base.mu.Lock()
+	base.offline = true
+	base.mu.Unlock()
+	close(first)
+	for range 2 {
+		select {
+		case <-base.offlineReads:
+		case <-time.After(hubWatchTestHangGuard):
+			if !managerHubWatchPresent(jm, watchID) {
+				t.Fatal("stream-end blip ended the roster watch before the binding restored")
+			}
+			t.Fatal("state reads stopped failing while the binding was still offline")
+		}
+	}
+	if !managerHubWatchPresent(jm, watchID) {
+		t.Fatal("stream-end blip ended the roster watch before the binding restored")
+	}
+
+	// The blip ends on its own: the binding answers again inside the budget
+	// and the rebind delivers the fresh roster snapshot on the rebound stream.
+	// Closing the rebound stream on the healthy connection then ends the
+	// watch durably, which decisively closes the episode: every send the
+	// blip owed is recorded by the time the end notice fires.
+	second := make(chan appwire.SessionWatchUpdate, 4)
+	second <- rosterUpdate(2, true, rosterEntry("local:a", "new"), rosterEntry("local:b", "new"))
+	base.streams <- second
+	root.HubBindingChanged()
+	base.mu.Lock()
+	base.offline = false
+	base.mu.Unlock()
+	awaitWithin(t, hubWatchTestHangGuard, "roster rebind after the binding restored", func() { <-base.watches })
+	close(second)
+	awaitWithin(t, hubWatchTestHangGuard, "roster watch ended on the closed rebound stream", func() { <-base.ended })
+	var sawReboundEvidence bool
+	for _, send := range rosterTestEvents(t, jm, watchID) {
+		if !strings.Contains(send.Frame, "roster_events: ") {
+			continue
+		}
+		for _, entry := range rosterFrameEntries(t, send.Frame) {
+			if entry.Ref == "local:b" {
+				sawReboundEvidence = true
+			}
+		}
+	}
+	if !sawReboundEvidence {
+		t.Fatal("rebound roster snapshot never delivered the fresh baseline's evidence")
+	}
+	if got := countWatchSends(t, jm, watchID, hubRosterWatchKey+"#interruption"); got != 0 {
+		t.Fatalf("interruption notices across the roster blip=%d, want 0", got)
+	}
+	if got := countWatchSends(t, jm, watchID, hubRosterWatchKey+"#ended"); got != 1 {
+		t.Fatalf("durable end notices=%d, want 1", got)
+	}
+}
+
 func TestHubRosterWatchDelta(t *testing.T) {
 	t.Parallel()
 	jm, id := rosterTestWatch(t)
