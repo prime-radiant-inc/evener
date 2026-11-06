@@ -191,10 +191,22 @@ final class EvenerQualificationUITests: XCTestCase {
 		anchor.swipeDown()
 
 		// Cancel, checked by its effect like every other step: the first
-		// press can be lost to a selection the swipe left behind.
+		// press can be lost to a selection the swipe left behind, and a
+		// retained draft riding in the prompt makes Cancel ask before
+		// discarding — the journey answers Keep draft, which closes the
+		// sheet with the draft kept, and never presses into the asking
+		// alert.
 		let deadline = Date().addingTimeInterval(tripwire)
 		while prompt.waitForExistence(timeout: 2) && Date() < deadline {
+			let keep = app.buttons["Keep draft"].firstMatch
+			if keep.exists {
+				tap(keep, "the draft alert never offered keeping it")
+				continue
+			}
 			tap(app.buttons["Cancel"], "the sheet's Cancel vanished after swipes")
+			if keep.waitForExistence(timeout: 2) {
+				tap(keep, "the draft alert never offered keeping it")
+			}
 		}
 		XCTAssertTrue(
 			prompt.waitForNonExistence(timeout: tripwire),
@@ -276,6 +288,17 @@ final class EvenerQualificationUITests: XCTestCase {
 			.matching(NSPredicate(format: "label BEGINSWITH %@", "Browse folders")).firstMatch
 		// The sheet's picker sits where the prompt's keyboard can cover it.
 		dismissKeyboard(app, draggingOn: app.staticTexts["Where"].firstMatch)
+		// The project picker is its own screen behind the form's Project
+		// row; the browse way lives on that screen, named for the host. The
+		// row's press can land in the push's settling window, so it is
+		// checked by its own effect like every other step: the picker's own
+		// browse row.
+		let project = app.buttons
+			.matching(NSPredicate(format: "label BEGINSWITH %@", "Project")).firstMatch
+		let picked = Date().addingTimeInterval(tripwire)
+		while !browse.waitForExistence(timeout: 2) && Date() < picked {
+			tap(project, "the form never offered choosing a project")
+		}
 		tap(browse, "the project picker never offered browsing")
 
 		// The browse starts in the hub host's home; walk up to the filesystem
