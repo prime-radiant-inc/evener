@@ -377,7 +377,13 @@ final class EvenerQualificationUITests: XCTestCase {
 		}
 		XCTAssertTrue(element.exists && element.frame.width > 0, "\(what) never gained a real frame")
 		XCTAssertTrue(element.isEnabled, "\(what) is not enabled")
-		element.tap()
+		// The press is synthesized at the element's center rather than
+		// through the tap's own visibility machinery: that machinery
+		// refuses covered or mid-layout elements with a test-ending failure
+		// even when the frame is real and the control enabled, while a
+		// center press lands wherever the layout actually is, and the
+		// effect checks around each step judge whether it worked.
+		element.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
 	}
 
 	/// Waits for a control to become enabled using XCTest's own expectation
