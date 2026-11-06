@@ -31,17 +31,30 @@ for platform in simulator device macos; do
   done
   if [[ "$platform" == macos ]]; then
     mkdir "$output/$platform/EvenerVoiceModels.bundle"
-    cp "$source_dir/resources/silero_vad.onnx" "$output/$platform/EvenerVoiceModels.bundle/"
+    cp "$source_dir/resources/"*.onnx "$source_dir/resources/wake-models.json" "$output/$platform/EvenerVoiceModels.bundle/"
     printf '%s\n' '<?xml version="1.0"?><plist version="1.0"><dict><key>CFBundleIdentifier</key><string>com.primeradiant.evener.voice-smoke-model</string></dict></plist>' > "$output/$platform/EvenerVoiceModels.bundle/Info.plist"
     SDKROOT="$sdk" xcrun --sdk "$sdk_name" swiftc -swift-version 5 -parse-as-library -target "$target" -sdk "$sdk" \
       -I "$output/include" -F "$framework" -framework onnxruntime -lc++ \
       "$source_dir/core/VoiceCore.swift" "$source_dir/ios/SileroVAD.swift" "$source_dir/runtime-tests/VADSmoke.swift" \
       "$output/$platform/"*.o -o "$output/$platform/VADSmoke"
     "$output/$platform/VADSmoke"
+    test_frameworks="$(xcrun --sdk macosx --show-sdk-platform-path)/Developer/Library/Frameworks"
+    test_libs="$(xcrun --sdk macosx --show-sdk-platform-path)/Developer/usr/lib"
+    test_bundle="$output/$platform/WakeWordTests.xctest"
+    mkdir -p "$test_bundle/Contents/MacOS" "$test_bundle/Contents/Resources"
+    cp -R "$output/$platform/EvenerVoiceModels.bundle" "$test_bundle/Contents/Resources/"
+    printf '%s\n' '<?xml version="1.0"?><plist version="1.0"><dict><key>CFBundleIdentifier</key><string>com.primeradiant.evener.wake-tests</string><key>CFBundleExecutable</key><string>WakeWordTests</string><key>CFBundlePackageType</key><string>BNDL</string></dict></plist>' > "$test_bundle/Contents/Info.plist"
+    SDKROOT="$sdk" xcrun --sdk "$sdk_name" swiftc -swift-version 5 -emit-library -module-name EvenerWakeTests -target "$target" -sdk "$sdk" \
+      -I "$output/include" -F "$framework" -framework onnxruntime -lc++ \
+      -I "$test_libs" -L "$test_libs" -Xlinker -rpath -Xlinker "$test_libs" \
+      -F "$test_frameworks" -framework XCTest -Xlinker -rpath -Xlinker "$test_frameworks" \
+      "$source_dir/core/"*.swift "$source_dir/ios/OpenWakeWordDetector.swift" "$source_dir/runtime-tests/WakeWordTests.swift" \
+      "$output/$platform/"*.o -o "$test_bundle/Contents/MacOS/WakeWordTests"
+    xcrun xctest "$test_bundle"
   else
     SDKROOT="$sdk" xcrun --sdk "$sdk_name" swiftc -swift-version 5 -target "$target" -sdk "$sdk" \
       -I "$output/include" -F "$framework" -framework onnxruntime -lc++ -emit-library -module-name EvenerVoiceRuntime \
-      "$source_dir/core/VoiceCore.swift" "$source_dir/ios/SileroVAD.swift" "$source_dir/ios/VoiceAudioDevice.swift" \
+      "$source_dir/core/"*.swift "$source_dir/ios/SileroVAD.swift" "$source_dir/ios/OpenWakeWordDetector.swift" "$source_dir/ios/VoiceAudioDevice.swift" \
       "$source_dir/ios/VoiceSocket.swift" "$source_dir/ios/VoiceService.swift" "$source_dir/ios/VoiceAuthorization.swift" \
       "$output/$platform/"*.o -o "$output/$platform/libEvenerVoiceRuntime.dylib"
     file "$output/$platform/libEvenerVoiceRuntime.dylib"

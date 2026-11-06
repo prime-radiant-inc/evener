@@ -1,0 +1,16 @@
+openWakeWord: Copyright 2022 David Scripka and contributors.
+https://github.com/dscripka/openWakeWord/tree/v0.6.0
+
+The Swift streaming implementation follows openWakeWord v0.6.0's feature
+windowing, PCM scaling, and mel transform. It uses deterministic live-audio
+warmup instead of random initial embeddings. Code is Apache-2.0, see
+openWakeWord-LICENSE. Google's speech_embedding backbone is Apache-2.0:
+https://tfhub.dev/google/speech_embedding/1
+
+Pretrained Alexa v0.1 is by openWakeWord and is distributed unchanged from
+the v0.5.1 release. The upstream pretrained models are licensed under Creative
+Commons Attribution-NonCommercial-ShareAlike 4.0 International:
+https://creativecommons.org/licenses/by-nc-sa/4.0/
+See openWakeWord-MODEL-LICENSE. This is a personal-use runtime preview, not
+the Hey Evener production classifier. Replace it with the separately trained
+Hey Evener artifact and its licensing before any broader distribution.

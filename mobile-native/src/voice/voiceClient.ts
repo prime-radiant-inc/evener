@@ -1,4 +1,5 @@
 import type { HubProfile } from "../connection";
+import type { WakeSnapshot, WakeTrialLabel } from "./wakeTrials";
 
 export interface VoiceSnapshot {
 	state: "disarmed" | "recovering" | "quiet" | "conversing" | "speaking";
@@ -14,6 +15,7 @@ export interface VoiceSnapshot {
 	bindingId: string;
 	/** The hub's voice provider instance chosen for this binding; empty until armed. */
 	provider: string;
+	wake?: WakeSnapshot;
 }
 export interface NativeVoicePort {
 	deviceId(): Promise<string>;
@@ -29,6 +31,8 @@ export interface NativeVoicePort {
 	stopSpeaking(): void;
 	disarm(): void;
 	allowSpeaker(): void;
+	startWakeTrial(): Promise<void>;
+	finishWakeTrial(label: WakeTrialLabel): Promise<void>;
 	snapshot(): Promise<VoiceSnapshot>;
 	addListener(event: "state", listener: (state: VoiceSnapshot) => void): { remove(): void };
 }
@@ -201,6 +205,12 @@ export class VoiceClient {
 	allowSpeaker() {
 		this.native.allowSpeaker();
 	}
+	async startWakeTrial() {
+		await this.native.startWakeTrial();
+	}
+	async finishWakeTrial(label: WakeTrialLabel) {
+		await this.native.finishWakeTrial(label);
+	}
 	async disarm() {
 		++this.operation;
 		this.pending = false;
@@ -209,7 +219,7 @@ export class VoiceClient {
 		const binding = this.binding;
 		this.binding = null;
 		this.selection = null;
-		this.publish(disarmed);
+		this.publish({ ...disarmed, wake: this.value.wake });
 		if (binding) await this.revoke(binding);
 	}
 	/** Hub removal/logout retires pending arm as well as an existing binding. Background alone does not. */

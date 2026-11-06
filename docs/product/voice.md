@@ -18,7 +18,7 @@ flowchart LR
     Bridge --> Phone
 ```
 
-The phone owns microphone processing, local speech detection, immediate output
+The phone owns microphone processing, local speech and wake detection, immediate output
 stopping and played-sample acknowledgements. The hub owns the scoped listening
 grant, provider connection, intent journal and speech selection. Ordinary session
 admission and the existing manager own execution. The speech provider cannot
@@ -179,10 +179,58 @@ cleanup. Ordinary deletion works again when the blocking condition clears.
 ## Client and qualification boundaries
 
 Voice controls are native iOS controls; browser and ordinary text input retain
-their existing owners. The native module exposes Talk and Stop speaking. Wake
-recognition is unavailable until a shipping detector is qualified. Attached
-presentation evidence supports references such as "the second one"; model
+their existing owners. The native module exposes Talk, Stop speaking and a local
+openWakeWord preview. Jesse chose a custom **Hey Evener** classifier; until that
+separate training artifact is installed, the preview listens for **Alexa** using
+openWakeWord's pretrained classifier. This is personal-use runtime evidence, not
+a qualified shipping wake word. Attached presentation evidence supports
+references such as "the second one"; model
 reference-resolution quality requires a separate live qualification.
+
+```mermaid
+flowchart LR
+    Capture[Existing voice-processed capture, 16 kHz branch] --> Queue[Bounded off-callback wake worker]
+    Queue --> Detector[Mel model, speech embedding, classifier]
+    Detector --> Trial[Debug trial, local counts only]
+    Detector --> Wake[Armed and quiet, score and holdoff gate]
+    Wake --> Talk[Existing Talk input_start and local cue]
+    Talk --> Ack[Hub input_started acknowledgement]
+    Ack --> Audio[Post-activation microphone frames]
+```
+
+The replaceable [`WakeWordDetecting`](../../mobile-native/modules/evener-voice/core/WakeWordDetector.swift)
+boundary consumes mono 16 kHz samples. The ONNX implementation uses 80 ms
+embedding strides, configured batch hops, threshold, release threshold and
+holdoff. Inference runs on a separate bounded queue, never on the audio tap or
+AEC graph. Startup and dropped audio require fresh context. Quiet audio stays
+on the device; there are no hub wake predictions or pre-activation cloud frames.
+A detection in armed quiet state enters the same controller and socket path as
+Talk, updates the local heard-wake score and gives the same cue. Speak the
+request after the cue. Existing VAD follow-up and interruption rules are unchanged.
+
+Open **Voice → Debug · Wake trials**, arm, then start an attempt. Wait for
+**Listening**, play or speak the trial audio, and mark **Positive**, **Negative**
+or **False activation**. Positive means an intended wake, including a miss.
+Trials suppress conversation activation and Talk, count every debounced detection,
+show scores and scored-audio duration, and retain per-attempt model/settings on
+the phone. Native UserDefaults owns persistence through JS suspension; no PCM is
+stored. Detections and labels save immediately; ongoing duration checkpoints
+every five seconds. A process restart marks an unfinished attempt interrupted,
+never counts downtime, and excludes it from qualification totals.
+
+Counters keep different model/settings cohorts separate. The targets remain
+**at least 60 intended trials, at least 95% detection, and 30 hours of negative
+audio**. Warmup, unavailable capture and dropped frames do not count as scored
+time. These counters are a harness, not proof that those gates were met. Actual
+Swift/ONNX tests use committed spoken positive and negative WAVs; neither they
+nor JS replay tests establish physical-phone acoustic accuracy or battery life.
+
+Model paths and checksums come from a packaged manifest, not a hardcoded training
+artifact location. The [native module's model-swap procedure](../../mobile-native/modules/evener-voice/README.md#swapping-the-wake-model)
+copies a selected local classifier into the resource bundle without moving or
+rewriting the training lane's artifact. The default pretrained classifier is
+CC BY-NC-SA 4.0 and must be replaced with the custom model and appropriate notices
+before broader distribution.
 
 The real-stack tests in
 [`e2e_voice_arm_provenance_test.go`](../../cmd/evener-hub/e2e_voice_arm_provenance_test.go),

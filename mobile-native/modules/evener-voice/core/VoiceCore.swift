@@ -93,6 +93,10 @@ public struct VoiceController {
         // readiness is separate, and the current generation remains eligible.
         return [.send(.interrupt(minimumGeneration - 1, [:]))]
     }
+    public mutating func wake(at now: Double) -> [VoiceAction] {
+        guard state == .quiet else { return [] }
+        return talk(at: now)
+    }
     public mutating func talk(at now: Double) -> [VoiceAction] {
         guard state == .quiet || state == .conversing || state == .speaking, !active else { return [] }
         sequence += 1; frame = 0; active = true; admitted = false

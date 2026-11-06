@@ -43,6 +43,16 @@ public final class EvenerVoiceModule: Module {
         Function("stopSpeaking") { VoiceService.shared.stopSpeaking() }
         Function("disarm") { VoiceService.shared.disarm() }
         Function("allowSpeaker") { VoiceService.shared.allowSpeaker() }
+        AsyncFunction("startWakeTrial") { () async throws in
+            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+                VoiceService.shared.startWakeTrial { continuation.resume(with: $0) }
+            }
+        }
+        AsyncFunction("finishWakeTrial") { (label: String) async throws in
+            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+                VoiceService.shared.finishWakeTrial(label) { continuation.resume(with: $0) }
+            }
+        }
         AsyncFunction("snapshot") {
             await withCheckedContinuation { continuation in
                 VoiceService.shared.snapshot { continuation.resume(returning: $0) }
