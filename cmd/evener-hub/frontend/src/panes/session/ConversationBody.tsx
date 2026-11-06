@@ -152,7 +152,7 @@ export function ConversationBody({
   const renderParts = (parts: ConversationParts) =>
     render({
       ...parts,
-      footer: parts.state === "deleted" && seat.sessionMenu ? <UnavailablePresentationControl /> : parts.footer,
+      footer: parts.state !== "live" && seat.sessionMenu ? <UnavailablePresentationControl /> : parts.footer,
     });
   return (
     <SandboxEscalationOwner key={ref} sessionRef={ref}>

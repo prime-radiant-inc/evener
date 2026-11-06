@@ -166,7 +166,9 @@ test("a slow-but-alive ref keeps showing the loading placeholder, never the dele
 
 test("a loading session shows a skeleton, delays its recovery affordance, and has no presentation footer", async () => {
   vi.useFakeTimers();
-  onTestFinished(() => vi.useRealTimers());
+  onTestFinished(() => {
+    vi.useRealTimers();
+  });
   const fake = connectReadyFakeClient();
   fake.on("thread/read", () => new Promise<ThreadReadResponse>(() => {}));
 

@@ -232,7 +232,7 @@ test("Shift+Enter on an in-session search result closes the palette without navi
   await user.type(screen.getByRole("combobox"), "search");
 
   await waitFor(() => expect(paletteRowsOfKind("insession")).toHaveLength(1));
-  await user.keyboard("{Shift>}{Enter}{/Shift}");
+  await user.keyboard("{ArrowDown}{Shift>}{Enter}{/Shift}");
 
   expect(screen.queryByRole("dialog")).toBeNull();
   expect(window.location.pathname).toBe("/");

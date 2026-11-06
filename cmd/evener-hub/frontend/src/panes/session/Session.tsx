@@ -213,10 +213,10 @@ export default function Session({ params, paneId, focused: paneFocused }: PanePr
               focused={paneFocused}
               scaffoldMarker={`session:${ref}`}
               title={title}
-              footer={footer}
+              footer={null}
               edgeFooter={edgeFooter}
             >
-              <SessionLoading sessionRef={ref} repairing={repairingRef} />
+              <SessionLoading key={ref} sessionRef={ref} repairing={repairingRef} />
             </PaneScaffold>
           );
         }
