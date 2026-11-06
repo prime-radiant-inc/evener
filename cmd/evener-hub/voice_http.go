@@ -203,7 +203,7 @@ func (v *voiceService) arm(w http.ResponseWriter, r *http.Request) {
 		request.Provider = "openai"
 	}
 	if request.Model == "" {
-		request.Model = "gpt-realtime-2.1-mini"
+		request.Model = "gpt-realtime-2.1"
 	}
 	if request.Voice == "" {
 		request.Voice = "marin"

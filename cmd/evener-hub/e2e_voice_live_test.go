@@ -51,7 +51,7 @@ func TestE2E_VoiceLiveProductionRelay(t *testing.T) {
 	pcm := voiceLiveFixture(ctx, t)
 	model, voice := os.Getenv("EVENER_VOICE_RELAY_MODEL"), os.Getenv("EVENER_VOICE_RELAY_VOICE")
 	if model == "" {
-		model = "gpt-realtime-2.1-mini"
+		model = "gpt-realtime-2.1"
 	}
 	if voice == "" {
 		voice = "marin"

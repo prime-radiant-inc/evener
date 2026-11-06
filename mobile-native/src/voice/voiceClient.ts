@@ -42,7 +42,7 @@ export interface VoiceOptions {
 	model: string;
 	voice: string;
 }
-export const defaultVoiceOptions: VoiceOptions = { provider: "openai", model: "gpt-realtime-2.1-mini", voice: "marin" };
+export const defaultVoiceOptions: VoiceOptions = { provider: "openai", model: "gpt-realtime-2.1", voice: "marin" };
 export class VoiceError extends Error {
 	constructor(readonly code: string) {
 		super(code);
