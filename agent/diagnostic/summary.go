@@ -144,6 +144,8 @@ func SummaryFailureInfo(failure SummaryFailure) (string, Info) {
 		switch a.Reason {
 		case "output_limit":
 			info.Hint = "The summary was cut off at the model's output limit. Choose a summary model with enough output capacity."
+		case "uncondensable_partner_messages":
+			info.Hint = "The partner's messages could not be condensed to fit the summarizer's input budget. A summary model with a larger context window may work better."
 		default:
 			info.Hint = "The response could not safely replace the conversation. Evener resamples rejected summary replies automatically; a more capable summary model may work better if this repeats."
 		}

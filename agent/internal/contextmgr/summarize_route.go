@@ -138,9 +138,11 @@ func priorSummaryAttempts(attempts []diagnostic.SummaryAttempt) []diagnostic.Sum
 // already in flight.
 //
 // accept, when non-nil, judges a reply; a rejected reply also falls through to
-// the session model, and is returned as an error if that reply is rejected
-// too. A rejected reply was still a successful API call, so the attempt group
-// settles on the API error alone.
+// the session model — any rejected cheap-rung sample keeps the session rung
+// eligible, even when a later resample fails at the API level — and is
+// returned as an error if that reply is rejected too. A rejected reply was
+// still a successful API call, so the attempt group settles on the API error
+// alone.
 func (cm *Manager) completeSummarization(ctx context.Context, profile *provider.Profile, prompt string, accept func(llm.Response) error) (summarizationResult, error) {
 	routes := summarizationModels(profile)
 	if len(routes) == 0 {
@@ -205,19 +207,25 @@ func (cm *Manager) completeSummarization(ctx context.Context, profile *provider.
 	}
 
 	ranSessionModel := false
+	// cheapRejected remembers the cheap rung produced a rejected sample, so a
+	// resample that later fails at the API level — transient or not — cannot
+	// strand the fallback that rejection had earned. It is read only when the
+	// rung ends without a success.
+	cheapRejected := false
 	for {
 		resp, ranSessionModel, apiErr = cm.cheap.CompleteConfigured(callCtx, profile, req)
 		if ranSessionModel {
 			recordSample(sessionRoute, "session", resp, apiErr)
 		} else {
 			recordSample(routes[0], "cheap", resp, apiErr)
+			cheapRejected = cheapRejected || rejected != nil
 		}
 		if !resample(route, rejected) {
 			break
 		}
 	}
 	if !ranSessionModel && len(routes) > 1 && callCtx.Err() == nil &&
-		(rejected != nil || apiErr != nil && shouldFallbackSummarizationModel(ctx, apiErr)) {
+		(rejected != nil || apiErr != nil && (shouldFallbackSummarizationModel(ctx, apiErr) || cheapRejected)) {
 		// More than one route means the second is the session model, distinct
 		// from the configured cheap one; the caller ran only the cheap one.
 		for {

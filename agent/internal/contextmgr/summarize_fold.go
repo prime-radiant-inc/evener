@@ -38,13 +38,16 @@ func preservePendingAskTail(history []schema.Turn, preserveRecent int, meta *Com
 
 // summaryAccept is the conversation summary's reply validation, shared with
 // the retry tests so they exercise the production rule: a summary section
-// with content that was not cut off at the model's output limit.
+// with content that was not cut off at the model's output limit. The cut-off
+// check decides first, so a reply the model truncated — even one that came
+// back empty or section-less — is an output-limit rejection, which no route
+// resamples, and not a resample-worthy bad sample.
 func summaryAccept(instructions string) func(llm.Response) error {
 	return func(reply llm.Response) error {
-		if err := checkSummaryReply(reply.Text(), instructions); err != nil {
+		if err := checkNotCutOff(reply); err != nil {
 			return err
 		}
-		return checkNotCutOff(reply)
+		return checkSummaryReply(reply.Text(), instructions)
 	}
 }
 

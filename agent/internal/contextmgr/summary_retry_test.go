@@ -242,6 +242,75 @@ func TestSummarizationSampleBudgetFollowsAMidLoopRefusal(t *testing.T) {
 	}
 }
 
+// A reply the model truncated that came back empty is an output-limit cut, not
+// a bad sample: it gets no resample whatever its text says, and reports the
+// output limit, because the cut-off check decides the reason.
+func TestSummarizationDoesNotResampleAnEmptyCutOffReply(t *testing.T) {
+	t.Parallel()
+	cutOffEmpty := llm.Response{Finish: llm.FinishReason{Reason: llm.FinishReasonLength}}
+	client, calls := summarizerScript(func(int, llm.Request) (llm.Response, error) {
+		return cutOffEmpty, nil
+	})
+	profile := WithCheapModel(testProfile("openai", "active-fixture", 1000), "cheap-fixture")
+	cm := retryTestManager(client, profile)
+	_, err := cm.completeSummarization(context.Background(), profile, "prompt", summaryAccept(""))
+	if err == nil {
+		t.Fatal("cut-off replies accepted, want a failure")
+	}
+	assertCallSequence(t, calls(), "cheap-fixture", "active-fixture")
+	failure := summarizerFailureWarning(err).SummaryFailure
+	if failure == nil || failure.Terminal.Reason != "output_limit" {
+		t.Fatalf("want the output-limit rejection as terminal, got %+v", failure)
+	}
+}
+
+// A condensation batch reply that comes back empty at the model's output limit
+// is an output-limit cut, not an empty batch, so it is not resampled either.
+func TestCondensePartnerMessagesDoesNotResampleAnEmptyCutOffReply(t *testing.T) {
+	t.Parallel()
+	cutOffEmpty := llm.Response{Finish: llm.FinishReason{Reason: llm.FinishReasonLength}}
+	client, calls := summarizerScript(func(int, llm.Request) (llm.Response, error) {
+		return cutOffEmpty, nil
+	})
+	profile := testProfile("openai", "active-fixture", 1000)
+	cm := retryTestManager(client, profile)
+	_, err := cm.condensePartnerMessages(context.Background(), profile, []string{strings.Repeat("x", 101)}, 100)
+	if err == nil {
+		t.Fatal("cut-off batch replies accepted, want a failure")
+	}
+	assertCallSequence(t, calls(), "active-fixture")
+	failure := summarizerFailureWarning(err).SummaryFailure
+	if failure == nil || failure.Terminal.Reason != "output_limit" {
+		t.Fatalf("want the output-limit rejection as terminal, got %+v", failure)
+	}
+}
+
+// A transient failure on a cheap-rung resample does not strand an earlier
+// rejected sample: the session rung stays eligible and recovers the fold.
+func TestSummarizationFallsBackToSessionModelAfterALaterCheapRouteError(t *testing.T) {
+	t.Parallel()
+	cheapErr := llm.ErrorFromHTTPStatus("openai", 503, "cheap overloaded", nil, nil)
+	client, calls := summarizerScript(func(call int, req llm.Request) (llm.Response, error) {
+		if req.Model == "cheap-fixture" {
+			if call == 1 {
+				return rejectedSummaryReply, nil
+			}
+			return llm.Response{}, cheapErr
+		}
+		return acceptedSummaryReply, nil
+	})
+	profile := WithCheapModel(testProfile("openai", "active-fixture", 1000), "cheap-fixture")
+	cm := retryTestManager(client, profile)
+	resp, err := cm.completeSummarization(context.Background(), profile, "prompt", summaryAccept(""))
+	if err != nil {
+		t.Fatalf("completeSummarization: %v", err)
+	}
+	if !strings.Contains(resp.Text(), "Recovered.") {
+		t.Fatalf("summary = %q, want the session model's reply", resp.Text())
+	}
+	assertCallSequence(t, calls(), "cheap-fixture", "cheap-fixture", "active-fixture")
+}
+
 // The whole-journey contract: a fold whose first samples are rejected installs
 // the later sample's summary and warns nobody.
 func TestSummarizeFoldRecoversFromRejectedRepliesWithoutAWarning(t *testing.T) {
