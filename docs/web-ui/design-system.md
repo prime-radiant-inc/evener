@@ -265,7 +265,8 @@ not establish reading comfort or usability. The accessibility gaps in §8 remain
 
 ## 1. Direction (the design law)
 
-**Reading before chrome.** Warm neutral paper/ink, not sepia decoration. Dark remains the
+**Reading before chrome.** Cool neutral paper/ink, not sepia decoration, with the rail one
+visible step from the page. Dark remains the
 default; `system`, `light`, and `dark` preferences keep their existing behavior. A page is
 flat, a field is visibly editable, and a floating layer retains a boundary and depth.
 Use whitespace, aligned columns and fine rules instead of nested boxes and tinted bands.
@@ -340,36 +341,36 @@ theme; the light-theme block (`[data-theme="light"]`) redeclares every color tok
 same name, and `token-contract.test.ts` (§4) fails CI if a token exists in one theme's block
 but not the other's.
 
-**Color** — the warm neutral roles below are implemented in both theme blocks. All existing
+**Color** — the cool neutral roles below are implemented in both theme blocks. All existing
 token names are retained. The table is a reference; `tokens.css` is authoritative.
 
 | Role | Dark | Light |
 |---|---|---|
-| Page `--surface-0` | `#141412` | `#F4F0E6` |
-| Wells/rail `--surface-canvas` | `#191917` | `#EBE6D8` |
-| Evidence/structural fill `--surface-1` | `#201F1C` | `#FBF8F0` |
-| Floating layer `--surface-2` | `#201F1C` | `#FBF8F0` |
-| Evidence inset `--surface-inset` | `#1B1A17` | `#F0EBDF` |
-| Hover / selected `--hover-1/2` | `#28261F` / `#32302A` | `#E8E2D2` / `#DCD5C3` |
-| Editable field `--field` | `#26241F` | `#F4EFE3` |
-| Fine / strong edge | `#35322B` / `#524E44` | `#D4CDBE` / `#A8A091` |
-| High / medium / low ink | `#F4F0E4` / `#B4AFA1` / `#9C9789` | `#201F1A` / `#57544A` / `#6B675B` |
+| Page `--surface-0` | `#111214` | `#F6F7F9` |
+| Wells/rail `--surface-canvas` | `#16181C` | `#EEF0F3` |
+| Evidence/structural fill `--surface-1` | `#1D2025` | `#FFFFFF` |
+| Floating layer `--surface-2` | `#1D2025` | `#FFFFFF` |
+| Evidence inset `--surface-inset` | `#191C21` | `#F2F4F7` |
+| Hover / selected `--hover-1/2` | `#252931` / `#2E333C` | `#E7EAEF` / `#DCE0E7` |
+| Editable field `--field` | `#23272E` | `#F1F3F6` |
+| Fine / strong edge | `#333842` / `#4C535F` | `#D5D9E0` / `#A7AEBA` |
+| High / medium / low ink | `#F1F3F6` / `#B2B7C0` / `#9AA1AC` | `#1A1D23` / `#555B66` / `#626873` |
 
 Card and PaneScaffold share the page ground rather than manufacturing raised
 surfaces. Evidence and overlays still have their own grounds. Fine borders are structure,
-not text. Low ink clears 4.5:1 on page and evidence surfaces: dark 6.33/5.65, light 4.97/5.32.
+not text. Low ink clears 4.5:1 on page and evidence surfaces: dark 7.20/6.56, light 5.23/5.09.
 Readable secondary metadata uses medium ink; low ink stays placeholders, disabled and timestamps.
 
 The four semantic hues keep their names, roles, 15% OKLab `-bg` washes and 40% `-edge`
 companions. Text uses `-ink`, never the bare hue. Light alive/danger/accent text colors are
-`#12763B` / `#C51D23` / `#0064C2`, darkened to preserve AA on their own warm tinted grounds.
+`#12763B` / `#C51D23` / `#0064C2`, darkened to preserve AA on their own tinted grounds.
 The tests compute every semantic pairing, including each hue's own wash, at ≥4.5:1.
 Tooltips retain their inverted mini-palette. ANSI roles and values are unchanged.
 
-Diff notation remains independent of semantic status. Dark add/delete stays `#19251A` /
-`#241621`; light is `#DCEDE3` / `#F0E0E9`. Background contrast against the page stays within
+Diff notation remains independent of semantic status. Dark add/delete stays `#16261B` /
+`#261722`; light is `#DCEFE4` / `#F3DFE8`. Background contrast against the page stays within
 1.05–1.2, content ≥4.5, marker ≥3, with additions lighter in grayscale and explicit +/− signs.
-The PWA manifest and HTML theme-color are synchronized to the dark page `#141412`; once a
+The PWA manifest and HTML theme-color are synchronized to the dark page `#111214`; once a
 theme is applied, `applyTheme` rewrites the meta to the active page ground so light-theme
 browser chrome does not stay dark.
 

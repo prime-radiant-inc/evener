@@ -10,6 +10,6 @@
     "declaration": "styles/tokens.css: :root, [data-theme=\"dark\"] { ... } (reverted the selector to :root only, dropping nested-dark-pane scoping from 8b06eb411)",
     "verified": "2026-09-09",
     "expect": "fail",
-    "note": "Re-verified against the 2026-11-05 warm-paper palette. In an isolated frontend copy, baseline passed; removing only the nested dark selector failed all three dark probes: --surface-1 resolved to #FBF8F0 instead of #201F1C, pane background to rgb(244, 240, 230) instead of rgb(20, 20, 18), and surface probe to rgb(251, 248, 240) instead of rgb(32, 31, 28). Restoring the selector passed. Light custom-property and painted-surface probes remain unchanged in scope and strength."
+    "note": "Re-verified against the 2026-11-06 cool-neutral palette. In an isolated frontend copy, baseline passed; removing only the nested dark selector fails all three dark probes: --surface-1 resolves to #FFFFFF instead of #1D2025, pane background to rgb(246, 247, 249) instead of rgb(17, 18, 20), and surface probe to rgb(255, 255, 255) instead of rgb(29, 32, 37). Restoring the selector passes. Light custom-property and painted-surface probes remain unchanged in scope and strength."
   }
 }

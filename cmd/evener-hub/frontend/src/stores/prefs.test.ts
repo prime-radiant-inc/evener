@@ -255,13 +255,13 @@ describe("setTheme", () => {
   test("updates the browser theme-color meta to the resolved page ground", () => {
     const meta = document.createElement("meta");
     meta.setAttribute("name", "theme-color");
-    meta.setAttribute("content", "#141412");
+    meta.setAttribute("content", "#111214");
     document.head.append(meta);
     vi.spyOn(window, "getComputedStyle").mockReturnValue({
-      getPropertyValue: (name: string) => (name === "--surface-0" ? "#F4F0E6" : ""),
+      getPropertyValue: (name: string) => (name === "--surface-0" ? "#F6F7F9" : ""),
     } as CSSStyleDeclaration);
     prefsStore.getState().setTheme("light");
-    expect(meta.getAttribute("content")).toBe("#F4F0E6");
+    expect(meta.getAttribute("content")).toBe("#F6F7F9");
     meta.remove();
   });
 });

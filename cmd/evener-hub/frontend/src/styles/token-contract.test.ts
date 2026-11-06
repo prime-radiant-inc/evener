@@ -828,7 +828,7 @@ test("the canonical dark token block directly scopes nested dark wrappers", () =
   expect(darkBlock).toContain("color-scheme: dark;");
   // Approved 2026-09-09 editorial-instrument spec replaces the neutral palette;
   // this still pins direct nested-theme scoping, not a second palette block.
-  expect(darkBlock).toContain("--surface-1: #201F1C;");
+  expect(darkBlock).toContain("--surface-1: #1D2025;");
 });
 
 // --- (f) the -ink text companions clear AA in both themes ---------------

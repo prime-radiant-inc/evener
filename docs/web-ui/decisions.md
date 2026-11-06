@@ -5,6 +5,16 @@ alternatives, and what source review found at the time. The current
 [design system](design-system.md#design-model-an-editorial-instrument) governs new work;
 dated verdicts below are not a competing current mandate.
 
+## 2026-11-06 cool neutral palette
+
+Jesse rejected the warm paper ground as beige. The light page, rail and message
+slip sat within a few RGB points of the same yellow-tinted value, so the rail
+lost its structural boundary and the user's slip read as the page. The palette
+moves to cool neutral: light page `#F6F7F9`, rail `#EEF0F3`, content `#FFFFFF`,
+message slip `#F2F4F7`; dark page `#111214`, rail `#16181C`, content `#1D2025`.
+The blue accent, semantic hues, type and layout are unchanged. The PWA manifest
+and HTML theme-color follow the new dark page.
+
 ## 2026-11-05 web UI glow-up: make the editorial world visible
 
 An Impeccable critique scored the web UI 26/40 and found the transcript authored
@@ -21,6 +31,7 @@ focus, links and selection. The user's own words move from the option-B
 `--accent-bg` wash to a paper slip (`--surface-inset` plus one `--edge` hairline),
 using the neutral-wash fallback recorded in the 2026-09-13 entry. Settings
 selection keeps its accent wash and rule, now 1px.
+The warm values in this entry were replaced by the 2026-11-06 cool neutral entry.
 
 **Type.** Schibsted Grotesk replaces Inter for operations (the deterministic
 detector's only finding: Inter is an overused face). Source Serif 4 and JetBrains
