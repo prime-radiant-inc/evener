@@ -252,7 +252,7 @@ type activityJournalState struct {
 }
 
 func scanRootDelegateState(ctx context.Context, stateDir, rootSessionID string) (delegatestore.State, activityJournalState, []string, error) {
-	path := filepath.Join(jobsDir(stateDir, rootSessionID), "delegates.jsonl")
+	path := schema.SessionDelegateJournalPath(stateDir, rootSessionID)
 	result, err := historicalDelegateFoldCache.Get(ctx, path, extendHistoricalDelegateFold)
 	if err != nil {
 		if errors.Is(err, delegatestore.ErrLineTooLong) {
@@ -417,18 +417,18 @@ func loadHistoricalActivityBase(stateDir, sessionID string, required bool, cache
 		return activityLoadedBase{}, err
 	}
 	return activityLoadedBase{snapshot: activitySessionSnapshot{
-		SessionID:       sessionID,
-		Ref:             encodeRef("", sessionID),
-		Label:           activityLabelFromMeta(sessionID, meta, metaErr),
-		RootID:          rootID,
-		Revision:        activityRevisionFromMeta(meta),
-		Jobs:            jobs,
-		LiveJobs:        map[string]*jobstore.JobRecord{},
-		StableDelegates: stable,
-		Usage:           historicalActivityUsage(stateDir, sessionID, meta),
-		Diagnostics:     diagnostics,
-		JobsEpoch:       jobsEpoch,
-		DelegatesEpoch:  delegates.epoch,
+		SessionID:      sessionID,
+		Ref:            encodeRef("", sessionID),
+		Label:          activityLabelFromMeta(sessionID, meta, metaErr),
+		RootID:         rootID,
+		Revision:       activityRevisionFromMeta(meta),
+		Jobs:           jobs,
+		LiveJobs:       map[string]*jobstore.JobRecord{},
+		Delegates:      stable,
+		Usage:          historicalActivityUsage(stateDir, sessionID, meta),
+		Diagnostics:    diagnostics,
+		JobsEpoch:      jobsEpoch,
+		DelegatesEpoch: delegates.epoch,
 
 		JobsJournalAbsent:          jobsAbsent,
 		DelegatesJournalAbsent:     delegates.absent,

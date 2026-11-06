@@ -33,10 +33,11 @@ import {
   refreshLoadedArchivedLists,
   resetArchivedListStoreForTests,
 } from "../../stores/archivedList";
-import { connectionStore } from "../../stores/connection";
+import { setCacheChannelFactoryForTests } from "../../stores/cacheLifetime";
+import { connectionStore, resetConnectionStoreForTests } from "../../stores/connection";
 import { navigationStore, resetNavigationStoreForTests } from "../../stores/navigation/store";
 import { prefsStore, resetPrefsStoreForTests } from "../../stores/prefs";
-import { resetThreadsStoreForTests, setCacheChannelFactoryForTests, threadsStore } from "../../stores/threads";
+import { resetThreadsStoreForTests, threadsStore } from "../../stores/threads";
 import { getToasts, resetToastStoreForTests } from "../../widgets/toast/store";
 import { hoverForTooltip } from "../../widgets/tooltip/tooltipTestUtils";
 import { activitySidebarStore, resetActivitySidebarStoreForTests } from "../activitybar/activitySidebarStore";
@@ -337,7 +338,7 @@ function stubScrollIntoView(): () => void {
 }
 
 beforeEach(() => {
-  connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
+  resetConnectionStoreForTests();
   resetNavigationStoreForTests();
   resetNavigationStoreForTests();
   resetToastStoreForTests();
@@ -346,7 +347,7 @@ beforeEach(() => {
 });
 afterEach(() => {
   cleanup();
-  connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
+  resetConnectionStoreForTests();
   vi.unstubAllGlobals();
 });
 
@@ -778,8 +779,15 @@ describe("resource-backed Rail", () => {
     }
   });
 
-  // The header's three icons are drawn, not typed: global.css subsets Inter to
-  // Latin, so the text glyphs these buttons carried (the gear, the magnifier,
+  test("the identity block names the product and a needs-you count", () => {
+    installState([], manifest({ attentionSummary: { needsYou: 2, error: 0, working: 0 } }));
+    render(<Rail />);
+    expect(screen.getByText("evener")).toBeTruthy();
+    expect(screen.getByTestId("rail-needs-you").textContent).toContain("2 needs you");
+  });
+
+  // The header's three icons are drawn, not typed: global.css subsets the sans
+  // face to Latin, so the text glyphs these buttons carried (the gear, the magnifier,
   // the burger) came from whatever system fallback happened to have those code
   // points, at whatever weight it drew them - right beside the app's own SVG
   // chevrons and open-box icon.
@@ -1250,6 +1258,80 @@ describe("resource-backed Rail", () => {
       resources: new Map([...baseResources, [keyID(pageTwo.key), pageTwo as ResourceState]]),
     });
     expect(removedPage.projects[0]).not.toBe(twoPages.projects[0]);
+  });
+  test("joins a project's current and recent rows newest-created first", () => {
+    const catalogKey = { kind: "catalog", catalog: "projects", offset: 0, limit: 100 } as const;
+    const projectKey = { kind: "project", projectKey: "p" } as const;
+    const projectSummary = { key: "p", name: "Project", session_count: 2 };
+    const projectSummaryKey = scopedEntityKey(catalogKey, "1");
+    const catalog = normalizedResource(
+      catalogKey,
+      { projects: [projectSummary] },
+      {
+        metadata: {},
+        entities: [{ key: projectSummaryKey, kind: "project", value: projectSummary }],
+        containers: [
+          {
+            key: navigationRootContainerKey(catalogKey, "projects"),
+            owner: { kind: "resource_root", slot: "projects" },
+            children: [projectSummaryKey],
+          },
+        ],
+      },
+    );
+    const projectEntityKey = scopedEntityKey(projectKey, "2");
+    const currentKey = scopedEntityKey(projectKey, "3");
+    const recentKey = scopedEntityKey(projectKey, "4");
+    const root = normalizedResource(
+      projectKey,
+      { current_remaining: 0, recent_remaining: 0, archived_remaining: 0 },
+      {
+        metadata: { current_remaining: 0, recent_remaining: 0, archived_remaining: 0 },
+        entities: [
+          { key: projectEntityKey, kind: "project", value: { key: "p" } },
+          sessionEntity(
+            currentKey,
+            summary({
+              ref: "current",
+              session_id: "current",
+              title: "Current",
+              created_at: "2026-01-01T00:00:00Z",
+            }),
+          ),
+          sessionEntity(
+            recentKey,
+            summary({
+              ref: "recent",
+              session_id: "recent",
+              title: "Recent",
+              created_at: "2026-06-01T00:00:00Z",
+            }),
+          ),
+        ],
+        containers: [
+          {
+            key: navigationOwnedContainerKey(projectEntityKey, "current"),
+            owner: { kind: "entity", entityKey: projectEntityKey, slot: "current" },
+            children: [currentKey],
+          },
+          {
+            key: navigationOwnedContainerKey(projectEntityKey, "recent"),
+            owner: { kind: "entity", entityKey: projectEntityKey, slot: "recent" },
+            children: [recentKey],
+          },
+          {
+            key: navigationOwnedContainerKey(projectEntityKey, "archived"),
+            owner: { kind: "entity", entityKey: projectEntityKey, slot: "archived" },
+            children: [],
+          },
+          childContainer(currentKey),
+          childContainer(recentKey),
+        ],
+      },
+    );
+    installState([catalog, root]);
+    const adapted = adaptNavigationResources(navigationStore.getState());
+    expect(adapted.projects[0]?.sessions.map((row) => row.title)).toEqual(["Recent", "Current"]);
   });
   test("toasts a global overflow failure and permits a deterministic retry", async () => {
     const loadSection = vi.fn().mockRejectedValueOnce(new Error("offline")).mockResolvedValueOnce(undefined);

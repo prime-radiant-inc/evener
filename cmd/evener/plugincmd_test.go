@@ -88,9 +88,7 @@ func captureAdd(t *testing.T) *marketplaceAddCapture {
 	t.Helper()
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	m := &marketplaceAddCapture{}
-	oldManager := newPluginManager
-	newPluginManager = func() pluginManager { return m }
-	t.Cleanup(func() { newPluginManager = oldManager })
+	swapPluginManager(t, m)
 	return m
 }
 
@@ -258,9 +256,7 @@ func TestPluginMarketplaceRemove_CloneRemovalFailureReportsRemovedWithLitter(t *
 	}
 	root := t.TempDir()
 	mgr := plugins.NewManager(root)
-	oldManager := newPluginManager
-	newPluginManager = func() pluginManager { return mgr }
-	t.Cleanup(func() { newPluginManager = oldManager })
+	swapPluginManager(t, mgr)
 
 	clone := filepath.Join(root, "marketplaces", "acme")
 	if err := os.MkdirAll(clone, 0o755); err != nil {
@@ -518,9 +514,7 @@ func TestPluginListEffective_ResolverOutputAndDisabledExclusion(t *testing.T) {
 	writeTask3Plugin(t, explicitDir, "explicit-plugin")
 
 	manager := &task3EffectiveListManager{pluginManager: registry, resolver: registry}
-	oldManager := newPluginManager
-	newPluginManager = func() pluginManager { return manager }
-	t.Cleanup(func() { newPluginManager = oldManager })
+	swapPluginManager(t, manager)
 	var out, errb bytes.Buffer
 	if err := runPlugin([]string{"list", "--effective", "--json", "--plugin-dir", explicitDir}, nil, &out, &errb); err != nil {
 		t.Fatalf("effective list: %v\nstderr: %s", err, errb.String())
@@ -724,6 +718,198 @@ func TestPluginInstall_RequiresConfirmation(t *testing.T) {
 	err := runPlugin([]string{"install", "widget@acme"}, nil, &out, &errb)
 	if err == nil {
 		t.Fatal("install without --yes should require confirmation")
+	}
+}
+
+// installCapture records whether the install command reached the manager's
+// Install; the embedded interface supplies the methods this path never calls.
+type installCapture struct {
+	pluginManager
+	calls int
+}
+
+func (m *installCapture) SeedDefaultMarketplaces(context.Context) (bool, error) {
+	return false, nil
+}
+
+func (m *installCapture) Install(context.Context, string, string) (plugins.InstallEntry, error) {
+	m.calls++
+	return plugins.InstallEntry{Version: "1", InstallPath: "/tmp/plugin"}, nil
+}
+
+// TestPluginInstall_YesAfterSpecIsRejected pins the contract issue #5473 hit:
+// the flag parser stops at the first positional, so a --yes placed after the
+// <plugin>@<marketplace> spec is never read as a flag. The command used to
+// swallow it silently and then demand the confirmation the user had just
+// supplied on the same line. A trailing argument is now rejected with the
+// accepted form — the same contract marketplace add keeps
+// (TestPluginMarketplaceAdd_RefAfterSourceIsRejected) — and the --yes-first
+// form still satisfies the confirmation and reaches Install.
+func TestPluginInstall_YesAfterSpecIsRejected(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	m := &installCapture{}
+	swapPluginManager(t, m)
+
+	var out, errb bytes.Buffer
+	err := runPlugin([]string{"install", "widget@acme", "--yes"}, nil, &out, &errb)
+	if !errors.Is(err, errUnexpectedArguments) {
+		t.Fatalf("install <spec> --yes: err = %v\nstderr: %s", err, errb.String())
+	}
+	if m.calls != 0 {
+		t.Fatalf("Install called %d times with a trailing --yes, want 0", m.calls)
+	}
+
+	if err := runPlugin([]string{"install", "--yes", "widget@acme"}, nil, &out, &errb); err != nil {
+		t.Fatalf("install --yes <spec>: %v\nstderr: %s", err, errb.String())
+	}
+	if m.calls != 1 {
+		t.Fatalf("Install called %d times for the --yes-first form, want 1", m.calls)
+	}
+}
+
+// swapPluginManager installs m as the command package's plugin manager for
+// the test's lifetime, restoring the previous one on cleanup.
+func swapPluginManager(t *testing.T, m pluginManager) {
+	t.Helper()
+	oldManager := newPluginManager
+	newPluginManager = func() pluginManager { return m }
+	t.Cleanup(func() { newPluginManager = oldManager })
+}
+
+// pluginCallCapture counts every manager method the plugin commands can
+// reach, so a rejection test can assert the command never touched the store;
+// the embedded interface supplies the methods the tested paths never call.
+type pluginCallCapture struct {
+	pluginManager
+	calls int
+}
+
+func (m *pluginCallCapture) SeedDefaultMarketplaces(context.Context) (bool, error) {
+	return false, nil
+}
+
+func (m *pluginCallCapture) Install(context.Context, string, string) (plugins.InstallEntry, error) {
+	m.calls++
+	return plugins.InstallEntry{}, nil
+}
+
+func (m *pluginCallCapture) Remove(context.Context, string, string) error {
+	m.calls++
+	return nil
+}
+
+func (m *pluginCallCapture) SetEnabled(context.Context, string, string, bool) error {
+	m.calls++
+	return nil
+}
+
+func (m *pluginCallCapture) UpdateAll(context.Context) ([]plugins.InstallEntry, error) {
+	m.calls++
+	return nil, nil
+}
+
+func (m *pluginCallCapture) Upgrade(context.Context, string, string) (plugins.InstallEntry, error) {
+	m.calls++
+	return plugins.InstallEntry{}, nil
+}
+
+func (m *pluginCallCapture) SetAutoUpgrade(context.Context, string, string, bool) error {
+	m.calls++
+	return nil
+}
+
+func (m *pluginCallCapture) Gc(context.Context) ([]string, error) {
+	m.calls++
+	return nil, nil
+}
+
+func (m *pluginCallCapture) RemoveMarketplace(context.Context, string) error {
+	m.calls++
+	return nil
+}
+
+func (m *pluginCallCapture) RefreshMarketplace(context.Context, string) error {
+	m.calls++
+	return nil
+}
+
+func (m *pluginCallCapture) Browse(context.Context, string) (plugins.Catalog, error) {
+	m.calls++
+	return plugins.Catalog{}, nil
+}
+
+func (m *pluginCallCapture) UpdateAutoUpgrade(context.Context) ([]plugins.UpgradedPlugin, error) {
+	m.calls++
+	return nil, nil
+}
+
+// TestPluginCommandsRejectTrailingArguments pins the arity contract issue
+// #5479 found: Go's flag package stops parsing at the first positional, and
+// a command that guards only against a missing argument silently drops
+// whatever follows it and reports success — `plugin remove <spec> stray`
+// removed the plugin and ignored `stray`. Every command that takes one
+// positional (or none, for gc and --all) must reject the surplus loudly and
+// never reach the manager.
+func TestPluginCommandsRejectTrailingArguments(t *testing.T) {
+	cases := []struct {
+		name string
+		args []string
+	}{
+		{name: "remove", args: []string{"remove", "widget@acme", "stray"}},
+		{name: "enable", args: []string{"enable", "widget@acme", "stray"}},
+		{name: "disable", args: []string{"disable", "widget@acme", "stray"}},
+		{name: "upgrade", args: []string{"upgrade", "widget@acme", "stray"}},
+		{name: "upgrade --all", args: []string{"upgrade", "--all", "stray"}},
+		{name: "auto-upgrade", args: []string{"auto-upgrade", "widget@acme", "stray"}},
+		{name: "gc", args: []string{"gc", "stray"}},
+		{name: "marketplace remove", args: []string{"marketplace", "remove", "acme", "stray"}},
+		{name: "marketplace refresh", args: []string{"marketplace", "refresh", "acme", "stray"}},
+		{name: "marketplace browse", args: []string{"marketplace", "browse", "acme", "stray"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+			m := &pluginCallCapture{}
+			swapPluginManager(t, m)
+
+			var out, errb bytes.Buffer
+			err := runPlugin(tc.args, nil, &out, &errb)
+			if !errors.Is(err, errUnexpectedArguments) {
+				t.Fatalf("runPlugin(%v) err = %v\nstderr: %s", tc.args, err, errb.String())
+			}
+			if m.calls != 0 {
+				t.Fatalf("a manager method was called %d times despite the trailing argument, want 0", m.calls)
+			}
+		})
+	}
+}
+
+// TestPluginCommandsOptionsFirstFormsWork pins the other half of the arity
+// contract: the options-first forms the rejection errors teach are exactly
+// the ones the parser accepts, so a user following the error's advice
+// succeeds on the next try.
+func TestPluginCommandsOptionsFirstFormsWork(t *testing.T) {
+	cases := []struct {
+		name string
+		args []string
+	}{
+		{name: "auto-upgrade --off", args: []string{"auto-upgrade", "--off", "widget@acme"}},
+		{name: "marketplace browse --json", args: []string{"marketplace", "browse", "--json", "acme"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+			m := &pluginCallCapture{}
+			swapPluginManager(t, m)
+
+			var out, errb bytes.Buffer
+			if err := runPlugin(tc.args, nil, &out, &errb); err != nil {
+				t.Fatalf("runPlugin(%v): %v\nstderr: %s", tc.args, err, errb.String())
+			}
+			if m.calls != 1 {
+				t.Fatalf("a manager method was called %d times for the options-first form, want 1", m.calls)
+			}
+		})
 	}
 }
 

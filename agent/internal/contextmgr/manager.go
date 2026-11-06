@@ -24,6 +24,12 @@ import (
 type CompactionMeta struct {
 	SessionID       string   // session id; non-empty only when the session is persistent (has a stateDir)
 	ActivatedSkills []string // skill names activated during this session
+	// PendingAskTurnIDs is an operation-local snapshot from the session's
+	// pending owner. Folds retain that execution tail, not a reconstructed ask.
+	PendingAskTurnIDs []string
+	// Live history can precede the writer's TurnID placement. Exact call IDs
+	// identify the same source there without changing transcript identity.
+	PendingAskCallIDs []string
 
 	// AvailableTranscriptTools names the transcript tools this session's
 	// registry actually serves. Compaction artifacts tell the agent how to

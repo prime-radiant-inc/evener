@@ -182,6 +182,9 @@ func TestDaemonlessThreadReadIsTheIndexLatestWindow(t *testing.T) {
 	if response.Snapshot == nil || *response.Snapshot != (appwire.SnapshotIdentity{Incarnation: window.Incarnation, Length: window.Length}) {
 		t.Fatalf("daemonless snapshot = %+v, want the index's {%s %d}", response.Snapshot, window.Incarnation, window.Length)
 	}
+	if response.LatestExecutionTurnID != window.LatestExecutionTurnID || response.LatestExecutionTurnID != "turn_m2" {
+		t.Fatalf("daemonless latest execution = %q, want index cut %q (turn_m2)", response.LatestExecutionTurnID, window.LatestExecutionTurnID)
+	}
 	if response.RequestGeneration != 7 {
 		t.Fatalf("requestGeneration = %d, want the request's 7 echoed", response.RequestGeneration)
 	}

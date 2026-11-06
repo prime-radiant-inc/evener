@@ -42,8 +42,8 @@ func TestDrainTurnKeepsTheLatestAcceptedReport(t *testing.T) {
 	if reply, reported := s.communicatedReply(); !reported || reply != "REPLY_B" || s.CommunicateOutput() != "OUTPUT_B" {
 		t.Fatalf("reply=%q reported=%v output=%q, want report B restored", reply, reported, s.CommunicateOutput())
 	}
-	assertDelegateReportMessage(t, stableDelegateFinish(s, "REPLY_B", nil), "REPORT_B", output)
-	assertDelegateReportMessage(t, (&subagent{sess: s}).stableDelegateFinish("REPLY_B", nil), "REPORT_B", output)
+	assertDelegateReportMessage(t, buildDelegateFinish(s, "REPLY_B", nil), "REPORT_B", output)
+	assertDelegateReportMessage(t, (&subagent{sess: s}).buildDelegateFinish("REPLY_B", nil), "REPORT_B", output)
 }
 
 // Only the failure of a turn that reported nothing is swallowed: an unrelated

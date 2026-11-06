@@ -1,7 +1,6 @@
 // deriveSendQueueAvailability computes whether the composer's Send and
 // Queue actions are currently available, ported from the legacy composer's
-// send-vs-queue capability precedence (parity-m5-composer.md §A, lines
-// 64-71, citing cmd/evener-hub/assets/renderer.js:479-513):
+// send-vs-queue capability precedence:
 //
 //   1. ended/closed              -> send=false, queue=false (tier 6 first)
 //   2. [DROPPED - see below]
@@ -37,10 +36,8 @@
 // not caught up with. Both reads are the same rule: the bit is the harness's,
 // the status is the client's.
 //
-// The active tier checks `statusType === "active"` ALONE - verified directly
-// against the cited renderer.js:479-513 (updateThreadState's sendBtn
-// branches), which key only on the `state` string and `this.liveSendCap`/
-// `this.liveQueueCap`; nowhere in that chain does it read activeTurnId.
+// The active tier checks `statusType === "active"` ALONE; the capability flags
+// and the status string are the only inputs, and nothing reads activeTurnId.
 // Folding an activeTurnId check into THIS gate would add a real race this
 // store must not have: thread/status/changed (which flips
 // ThreadModel.status.type to "active") and turn/started (which populates

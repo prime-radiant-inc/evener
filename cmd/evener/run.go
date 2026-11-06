@@ -190,14 +190,10 @@ func run(ctx context.Context, cfg runConfig) error {
 	if err := startupInterrupted(ctx, stepSeedingMarketplaces); err != nil {
 		return err
 	}
-	if _, err := agent.ParseProviderIdleTimeout(cfg.providerIdleTimeout); err != nil {
-		return err
-	}
-	apiLogEnabled, err := parseAPILog(cfg.apiLog)
+	settings, err := resolveLaunchSettings(cfg.providerIdleTimeout, cfg.apiLog, cfg.openAIResponsesContinuation)
 	if err != nil {
 		return err
 	}
-	openAIResponsesContinuation := resolveOpenAIResponsesContinuation(cfg.openAIResponsesContinuation, nil)
 
 	// Compute runtime state directory.
 	// Priority: --state-dir flag > EVENER_STATE_DIR env > XDG-computed default.
@@ -288,7 +284,7 @@ func run(ctx context.Context, cfg runConfig) error {
 		return err
 	}
 
-	reserveSession, closeAPILog, err := runAttachAPILogger(client, stateDir, cfg.stderr, apiLogEnabled)
+	reserveSession, closeAPILog, err := runAttachAPILogger(client, stateDir, cfg.stderr, settings.apiLogEnabled)
 	if err != nil {
 		return err
 	}
@@ -390,7 +386,7 @@ func run(ctx context.Context, cfg runConfig) error {
 		NonInteractive:              true,
 		TurnEndsProcess:             true,
 		SystemPromptAsUser:          cfg.systemPromptAsUser,
-		OpenAIResponsesContinuation: openAIResponsesContinuation,
+		OpenAIResponsesContinuation: settings.openAIResponsesContinuation,
 		ProviderIdleTimeout:         cfg.providerIdleTimeout,
 		ResolveProfile:              cmdutil.BuildResolveProfile(client),
 		StartupModelListing:         startupListing,
@@ -444,7 +440,7 @@ func run(ctx context.Context, cfg runConfig) error {
 			StartupModelListing:         startupListing,
 			AcquireSessionOwnership:     reserveSession,
 			OwnershipAlreadyAcquired:    true,
-			OpenAIResponsesContinuation: openAIResponsesContinuation,
+			OpenAIResponsesContinuation: settings.openAIResponsesContinuation,
 			ProviderIdleTimeout:         cfg.providerIdleTimeout,
 			TurnEndsProcess:             baseSessionCfg.TurnEndsProcess,
 		})

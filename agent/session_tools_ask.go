@@ -40,6 +40,8 @@ const (
 // (spec §5.1, §6); this struct carries the question and its option labels,
 // never the options' details.
 type askQuestion struct {
+	TurnID   string
+	CallID   string
 	Header   string
 	Question string
 	// Options are the question's option labels, in the order the call
@@ -94,6 +96,21 @@ func (s *Session) HasPendingAsk() bool {
 	return s.askPendingCount() > 0
 }
 
+// PendingAskCalls reads exact execution references from the pending owner once.
+// Legacy restored questions carry no call identity and remain text-only.
+func (s *Session) PendingAskCalls() *appwire.PendingAskState {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	state := &appwire.PendingAskState{Version: 1, InstanceID: s.id, Revision: s.askPendingRevision, Calls: []appwire.PendingAskCall{}}
+	for _, question := range s.askPending {
+		ref := appwire.PendingAskCall{TurnID: question.TurnID, CallID: question.CallID}
+		if ref.TurnID != "" && ref.CallID != "" && !slices.Contains(state.Calls, ref) {
+			state.Calls = append(state.Calls, ref)
+		}
+	}
+	return state
+}
+
 // PendingQuestion is the first question of the session's pending ask, which
 // its Needs you row names (S1b), cut to the wire's bounds; nil while no
 // question waits. It reads the pending set in one hold of s.mu, so the
@@ -124,6 +141,9 @@ func (s *Session) PendingQuestion() *appwire.PendingQuestion {
 // stale after either ran; every replacement site now calls this instead.
 // Callers hold s.mu already.
 func (s *Session) setAskPendingLocked(pending []askQuestion) {
+	if pending != nil || len(s.askPending) != 0 {
+		s.askPendingRevision++
+	}
 	s.askPending = pending
 	s.askPendingCallArgs = nil
 }
@@ -133,9 +153,35 @@ func (s *Session) setAskPendingLocked(pending []askQuestion) {
 // (already normalized) arguments to askPendingCallArgs — one entry per
 // call, not per question, so the two slices generally differ in length.
 // Callers hold s.mu already.
-func (s *Session) appendAskPendingLocked(parsed []askQuestion, argsJSON []byte) {
+func (s *Session) appendAskPendingLocked(parsed []askQuestion, argsJSON []byte, callID string) {
+	for i := range parsed {
+		parsed[i].TurnID = s.execution.turnID
+		parsed[i].CallID = callID
+	}
 	s.askPending = append(s.askPending, parsed...)
 	s.askPendingCallArgs = append(s.askPendingCallArgs, argsJSON)
+	s.askPendingRevision++
+}
+
+// pendingAskTurnIDs reads the same pending set durable admission will clear.
+// A restored question without recorded execution identity supplies no link.
+func (s *Session) pendingAskTurnIDs() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var ids []string
+	for _, question := range s.askPending {
+		ids = appendAnswerTurnIDs(ids, question.TurnID)
+	}
+	return ids
+}
+
+func appendAnswerTurnIDs(ids []string, more ...string) []string {
+	for _, id := range more {
+		if id != "" && !slices.Contains(ids, id) {
+			ids = append(ids, id)
+		}
+	}
+	return ids
 }
 
 // clearAskPending empties the pending set. Callers: durable user-input
@@ -391,30 +437,6 @@ func parseAskQuestions(args map[string]any) ([]askQuestion, error) {
 	return parsed, nil
 }
 
-// AskUserOption is one option of a pending ask_user question, with its full
-// detail text. askQuestion above (the session's own pending-set state, and
-// PendingQuestion's wire projection) deliberately carries only option
-// labels — this type exists for an external ask-responder
-// (`evener run --ask-responder`) that needs to see exactly what the model
-// asked, detail and recommendation included.
-type AskUserOption struct {
-	Label       string `json:"label"`
-	Detail      string `json:"detail,omitempty"`
-	Recommended bool   `json:"recommended,omitempty"`
-}
-
-// AskUserQuestion is one question from a pending ask_user call, with full
-// option detail and the call's optional fields: whether several options may
-// be chosen, why the answer matters, and the fallback the model would take.
-type AskUserQuestion struct {
-	Header       string          `json:"header,omitempty"`
-	Question     string          `json:"question"`
-	MultiSelect  bool            `json:"multi_select,omitempty"`
-	Why          string          `json:"why,omitempty"`
-	IfUnanswered string          `json:"if_unanswered,omitempty"`
-	Options      []AskUserOption `json:"options,omitempty"`
-}
-
 // ParseAskUserCallArguments parses one ask_user call's arguments, as the
 // session records them for PendingAskArguments (already normalized; parsing
 // them again is a no-op), into its full questions, including each
@@ -426,7 +448,7 @@ type AskUserQuestion struct {
 // PendingQuestion (bounded to the wire's shape, one question, labels only)
 // nor the session's own askPending (labels only, spec §5.1) carries enough
 // for a responder to answer well.
-func ParseAskUserCallArguments(argsJSON []byte) ([]AskUserQuestion, error) {
+func ParseAskUserCallArguments(argsJSON []byte) ([]schema.AskUserQuestion, error) {
 	var args map[string]any
 	if err := json.Unmarshal(argsJSON, &args); err != nil {
 		return nil, fmt.Errorf("ask_user arguments: %w", err)
@@ -439,18 +461,22 @@ func ParseAskUserCallArguments(argsJSON []byte) ([]AskUserQuestion, error) {
 	if err != nil {
 		return nil, err
 	}
-	// parseAskQuestions validated the shape and carries header, question, and
+	return projectAskUserQuestions(normalized, parsed), nil
+}
+
+func projectAskUserQuestions(normalized map[string]any, parsed []askQuestion) []schema.AskUserQuestion {
+	// parseAskQuestions checked semantics and carries header, question, and
 	// labels; the optional fields (detail, recommended, multi_select, why,
 	// if_unanswered) are read from the same normalized call.
 	raw, _ := normalized["questions"].([]any)
-	out := make([]AskUserQuestion, 0, len(parsed))
+	out := make([]schema.AskUserQuestion, 0, len(parsed))
 	for i, q := range parsed {
 		var qm map[string]any
 		if i < len(raw) {
 			qm, _ = raw[i].(map[string]any)
 		}
 		rawOpts, _ := qm["options"].([]any)
-		options := make([]AskUserOption, 0, len(q.Options))
+		options := make([]schema.AskUserOption, 0, len(q.Options))
 		for j, label := range q.Options {
 			var om map[string]any
 			if j < len(rawOpts) {
@@ -458,12 +484,12 @@ func ParseAskUserCallArguments(argsJSON []byte) ([]AskUserQuestion, error) {
 			}
 			detail, _ := om["detail"].(string)
 			recommended, _ := om["recommended"].(bool)
-			options = append(options, AskUserOption{Label: label, Detail: detail, Recommended: recommended})
+			options = append(options, schema.AskUserOption{Label: label, Detail: detail, Recommended: recommended})
 		}
 		multiSelect, _ := qm["multi_select"].(bool)
 		why, _ := qm["why"].(string)
 		ifUnanswered, _ := qm["if_unanswered"].(string)
-		out = append(out, AskUserQuestion{
+		out = append(out, schema.AskUserQuestion{
 			Header:       q.Header,
 			Question:     q.Question,
 			MultiSelect:  multiSelect,
@@ -472,7 +498,7 @@ func ParseAskUserCallArguments(argsJSON []byte) ([]AskUserQuestion, error) {
 			Options:      options,
 		})
 	}
-	return out, nil
+	return out
 }
 
 // registerAskTool registers ask_user. registerCoreTools calls this only when
@@ -510,12 +536,13 @@ func registerAskTool(reg *tool.Registry, s *Session, deps *toolDeps) {
 			if err != nil {
 				return nil, fmt.Errorf("ask_user: marshal arguments: %w", err)
 			}
+			questions := projectAskUserQuestions(args, parsed)
 
 			s.mu.Lock()
-			s.appendAskPendingLocked(parsed, argsJSON)
+			s.appendAskPendingLocked(parsed, argsJSON, callIDFromContext(ctx))
 			s.mu.Unlock()
 
-			return askUserAckText, nil
+			return tool.StateResult{Output: askUserAckText, State: schema.AskUserState{Version: 1, Questions: questions}}, nil
 		},
 	})
 }
@@ -773,10 +800,21 @@ func endedOnNeedsResponse(history []schema.Turn, toolResultsIdx int, attemptStar
 }
 
 // communicateEndReasonOf is the end reason an accepted turn-ending
-// communicate call recorded in its result's tool state, or "".
+// communicate call recorded in its result's tool state, or "". Typed state
+// rides every result path, so a rejected or nonterminal call recording its
+// own requested reason is not restorable evidence: the input settled on the
+// call it accepted. States without explicit verdict fields predate them and
+// were only ever written on the accepted terminal path, so their reason
+// still counts.
 func communicateEndReasonOf(result *llm.ToolResultData) string {
 	var state communicateEndState
 	if json.Unmarshal(result.ToolState, &state) != nil {
+		return ""
+	}
+	if state.Accepted != nil && !*state.Accepted {
+		return ""
+	}
+	if state.EndTurn != nil && !*state.EndTurn {
 		return ""
 	}
 	return state.EndReason
@@ -923,6 +961,18 @@ func deriveRestoredAskPending(history []schema.Turn, divergenceTurn int, origins
 // whose arguments fail to unmarshal or fail parseAskQuestions's validation
 // is skipped, not fatal (spec §2: "rebuild what parses").
 func questionsFromAskCalls(history []schema.Turn, toolResultsIdx int, wantCallIDs map[string]bool) []askQuestion {
+	if toolResultsIdx < 0 || toolResultsIdx >= len(history) {
+		return nil
+	}
+	canonical := map[string]schema.AskUserState{}
+	for _, part := range history[toolResultsIdx].Message.Content {
+		if result := part.ToolResult; result != nil && result.Name == askUserToolName && !result.IsError {
+			var state schema.AskUserState
+			if json.Unmarshal(result.ToolState, &state) == nil && state.Version == 1 && len(state.Questions) > 0 {
+				canonical[result.ToolCallID] = state
+			}
+		}
+	}
 	for j := toolResultsIdx - 1; j >= 0; j-- {
 		if history[j].Kind != schema.TurnAssistant {
 			continue
@@ -930,6 +980,16 @@ func questionsFromAskCalls(history []schema.Turn, toolResultsIdx int, wantCallID
 		var out []askQuestion
 		for _, call := range assistantToolCalls(history[j].Message) {
 			if call.Name != "ask_user" || !wantCallIDs[call.ID] {
+				continue
+			}
+			if state, ok := canonical[call.ID]; ok {
+				for _, q := range state.Questions {
+					pending := askQuestion{TurnID: history[j].TurnID, CallID: call.ID, Header: q.Header, Question: q.Question}
+					for _, option := range q.Options {
+						pending.Options = append(pending.Options, option.Label)
+					}
+					out = append(out, pending)
+				}
 				continue
 			}
 			var args map[string]any
@@ -944,6 +1004,9 @@ func questionsFromAskCalls(history []schema.Turn, toolResultsIdx int, wantCallID
 			parsed, err := parseAskQuestions(normalized)
 			if err != nil {
 				continue // semantic violation on a hand-edited/drifted transcript; skip
+			}
+			for i := range parsed {
+				parsed[i].TurnID = history[j].TurnID
 			}
 			out = append(out, parsed...)
 		}

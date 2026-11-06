@@ -13,10 +13,13 @@
 
 /* The card is the prompt surface's one visible box, so it carries the focus
  * affordance for the seamless textarea inside it (which draws no ring of its
- * own) - the same 2px accent outline every interactive control here uses. */
+ * own) - the same 2px accent outline every interactive control here uses.
+ * The ring sits on the card's own edge and the hairline takes the accent too,
+ * so the two read as one line instead of a card outline inside a focus ring. */
 .card:focus-within {
   outline: var(--focus-ring);
-  outline-offset: 2px;
+  outline-offset: 0;
+  border-color: var(--accent);
 }
 
 /* The author-level .card display:flex above outranks the UA stylesheet's

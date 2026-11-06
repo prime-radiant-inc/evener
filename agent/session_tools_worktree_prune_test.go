@@ -3,12 +3,14 @@ package agent
 import (
 	"context"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/internal/worktree"
 )
 
@@ -37,12 +39,20 @@ func (r *wtRepo) listOp(t *testing.T) (map[string]any, error) {
 
 // pruneOp drives the prune operation through the registered tool surface.
 func (r *wtRepo) pruneOp(t *testing.T) (map[string]any, error) {
+	return r.pruneOpArgs(t, nil)
+}
+
+// pruneOpArgs drives the prune operation with extra tool arguments beyond the
+// operation name (the orphan arm's orphaned_delegate_days).
+func (r *wtRepo) pruneOpArgs(t *testing.T, extra map[string]any) (map[string]any, error) {
 	t.Helper()
 	rt := r.s.reg.Get("manage_worktree")
 	if rt == nil {
 		t.Fatal("registry is missing manage_worktree")
 	}
-	out, err := rt.Exec(t.Context(), r.s.currentEnv(), map[string]any{"operation": "prune"})
+	args := map[string]any{"operation": "prune"}
+	maps.Copy(args, extra)
+	out, err := rt.Exec(t.Context(), r.s.currentEnv(), args)
 	if err != nil {
 		return nil, err
 	}
@@ -233,7 +243,7 @@ func TestWorktreePrune_NotInGitRepo(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir() // not a git repo at all
 	s := newSession(t, withDir(dir))
-	_, err := s.worktreePrune(context.Background())
+	_, err := s.worktreePrune(context.Background(), 0)
 	if err == nil || !strings.Contains(err.Error(), "not in a git repository") {
 		t.Fatalf("prune outside a git repo: err = %v, want the not-in-a-git-repository error", err)
 	}
@@ -1422,5 +1432,34 @@ func TestWorktreePrune_Sweep3_SkippedWhenNonManagedPrunable(t *testing.T) {
 	}
 	if !found {
 		t.Error("non-managed prunable sibling was deregistered; sweep 3 must have skipped")
+	}
+}
+
+// A prune whose request is cancelled after the worktree listing stops before
+// it collects any lane: the sweeps inherit the request context.
+func TestWorktreePrune_CancelReachesSweeps(t *testing.T) {
+	r := newWorktreeRepo(t)
+	path := r.addManagedWorktreeFixture(t, "unchanged")
+
+	ctx, cancel := context.WithCancel(t.Context())
+	t.Cleanup(cancel)
+	// The runner itself ignores cancellation, so only the sweeps' own check of
+	// the context can stop the collection.
+	r.s.cfg.testOnly.worktreeGitRunner = func(_ context.Context, env execenv.ExecutionEnvironment) worktree.GitRunner {
+		inner := gitRunner(context.WithoutCancel(ctx), env)
+		return func(args ...string) (string, error) {
+			out, err := inner(args...)
+			if len(args) > 1 && args[0] == "worktree" && args[1] == "list" {
+				cancel()
+			}
+			return out, err
+		}
+	}
+
+	if _, err := r.s.worktreePrune(ctx, 0); err != nil {
+		t.Fatalf("prune: %v", err)
+	}
+	if _, statErr := os.Stat(path); statErr != nil {
+		t.Fatalf("lane collected after the request was cancelled: %v", statErr)
 	}
 }

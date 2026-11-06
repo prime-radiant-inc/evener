@@ -15,7 +15,7 @@ jobs:
   # notarized equivalent.
   build:
     name: Build unsigned release artifacts
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
         with:
@@ -212,7 +212,7 @@ jobs:
     name: Refresh snapshot channel
     if: github.ref == 'refs/heads/main'
     needs: sign-macos
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     permissions:
       contents: write
     concurrency:
@@ -260,7 +260,7 @@ jobs:
     name: Publish release
     if: startsWith(github.ref, 'refs/tags/v')
     needs: sign-macos
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     permissions:
       contents: write
     steps:

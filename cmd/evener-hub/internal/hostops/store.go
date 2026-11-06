@@ -166,6 +166,12 @@ type snapshot struct {
 	// never moves backward, and the zero Time means no pass has observed a clock
 	// yet. It is optional on read for the same reason as Tokens.
 	WallClockHighWaterMark time.Time `json:"wallClockHighWaterMark"`
+	// HostRecords is the hub's machine-record family and the instant it was
+	// imported (hostrecords.go). Nil is a store whose records still live
+	// elsewhere: the key arrived after the store shipped, so a file without it
+	// is a store that has imported nothing, and every write emits it once it
+	// exists.
+	HostRecords *hostRecordsState `json:"hostRecords,omitempty"`
 }
 
 // storeCell is the lock-and-state cell one store file's handlers share.
@@ -256,6 +262,26 @@ func Open(path string) (*Store, error) {
 // store opened with the zero policy behaves exactly like Open.
 func OpenWithRetention(path string, policy RetentionPolicy) (*Store, error) {
 	return openFSWithRetention(afero.NewOsFs(), path, storeFaults{}, policy)
+}
+
+// OpenWithDirSync is Open with the directory sync replaced by sync, so a test
+// can drive the failure behind a landed rename (RenameLanded) through callers
+// that must confirm durability before they go on.
+func OpenWithDirSync(path string, sync func(dir string) error) (*Store, error) {
+	faults := storeFaults{syncDir: func(_ afero.Fs, dir string) error { return sync(dir) }}
+	return openFSWithRetention(afero.NewOsFs(), path, faults, RetentionPolicy{})
+}
+
+// SyncDir makes the store file's directory entry durable. A write that returns
+// RenameLanded published its state but could not prove the rename survives a
+// crash; a caller about to move something else forward (the host file, a
+// stripped legacy section) calls this first and waits for it to succeed.
+func (s *Store) SyncDir() error {
+	sync := syncDirFS
+	if s.faults.syncDir != nil {
+		sync = s.faults.syncDir
+	}
+	return sync(s.fs, filepath.Dir(s.path))
 }
 
 // openFS is the construction seam beneath Open: it builds a Store over an
@@ -671,6 +697,10 @@ type storeFile struct {
 	// WallClockHighWaterMark is optional on read: absent, null and the zero
 	// instant all mean no pass has observed a clock yet.
 	WallClockHighWaterMark time.Time `json:"wallClockHighWaterMark"`
+	// HostRecords is optional on read (see snapshot.HostRecords). It is held raw
+	// so an absent key (nil) can be told from a present one: a present family,
+	// null included, must decode in full.
+	HostRecords json.RawMessage `json:"hostRecords"`
 }
 
 // compensationFile is the decode shape of one pendingCompensation record. Every
@@ -958,6 +988,13 @@ func readStoreFS(fs afero.Fs, path string) (snapshot, error) {
 		// year-one string a zero mark marshals to — reads as "no mark yet"
 		// (wallClockMark).
 		WallClockHighWaterMark: wallClockMark(file.WallClockHighWaterMark),
+	}
+	if file.HostRecords != nil {
+		family, err := decodeHostRecordsRegion(file.HostRecords)
+		if err != nil {
+			return snapshot{}, fmt.Errorf("%w: %s: %w", ErrStoreCorrupt, path, err)
+		}
+		state.HostRecords = family
 	}
 	if file.Tombstones != nil {
 		state.Tombstones = make([]Tombstone, len(*file.Tombstones))
@@ -1279,7 +1316,7 @@ var ownedObjectKeys = map[string]map[string]struct{}{
 	"": keysOf("version", "sequence", "allocatorHighWaterMark", "records", "boundaries",
 		"tokens", "probeEpochs", "probeEpochSeq", "guardEpoch", "wallClockHighWaterMark",
 		"compactSeq", "tombstones", "compactionMarks", "compactionFloor", "removedHosts",
-		"pendingCompensation", "fencingQuarantines"),
+		"pendingCompensation", "fencingQuarantines", "hostRecords"),
 	"records[]": keysOf("id", "clientOperationId", "host", "kind", "state", "generation",
 		"incarnationId", "fencingEpoch", "orphanBoundary", "orphanResolved", "attestation",
 		"progress", "result", "pendingSpawns", "createdAt", "updatedAt", "hostRemoved", "sequence"),
@@ -1308,6 +1345,7 @@ var ownedObjectKeys = map[string]map[string]struct{}{
 	// The armed compensation records are objects this store decodes, and their
 	// preimage rows carry the whole token schema, so both key sets are
 	// canonical too.
+	"hostRecords":                  hostRecordsKeys,
 	"pendingCompensation[]":        keysOf("host", "phase", "rows", "stashReference", "generation"),
 	"pendingCompensation[].rows[]": keysOf(tokenKeys...),
 }
@@ -1761,6 +1799,16 @@ func validateSnapshot(state snapshot) error {
 			return err
 		}
 	}
+	if family := state.HostRecords; family != nil {
+		// The import instant dates the marker; a zero one is the absence default,
+		// not an import.
+		if family.ImportedAt.IsZero() {
+			return fmt.Errorf("%w: the host-record family carries no import instant", ErrInvalidHostRecords)
+		}
+		if err := family.validate(); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
@@ -1784,6 +1832,7 @@ func cloneSnapshot(state snapshot) snapshot {
 	out.ProbeEpochs = slices.Clone(state.ProbeEpochs)
 	out.ProbeEpochSeq = maps.Clone(state.ProbeEpochSeq)
 	out.GuardEpoch = cloneGuardEpoch(state.GuardEpoch)
+	out.HostRecords = cloneHostRecordsState(state.HostRecords)
 	return out
 }
 

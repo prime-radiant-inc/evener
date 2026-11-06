@@ -27,6 +27,10 @@ export interface SpawnRequest {
   // OMITTED from the wire so a local spawn stays byte-identical to before the
   // host picker existed; any other value names the host/source to target.
   source?: string;
+  // Start the session as a Manager. A start-time property carried by
+  // ThreadStartParams.manager; false is OMITTED from the wire so an ordinary
+  // launch stays byte-identical to before this control existed.
+  manager?: boolean;
 }
 
 export interface SpawnResult {
@@ -57,6 +61,7 @@ export async function startThread(client: AppwireClientLike, req: SpawnRequest):
   const launchOverrides = mergeAccessModeSandbox(req.launchOverrides, req.accessMode ?? "");
   if (launchOverrides) params.launchOverrides = launchOverrides;
   if (req.source && req.source !== "local") params.source = req.source;
+  if (req.manager) params.manager = true;
   const resp = await client.request("thread/start", params);
   return { ref: resp.thread.evener.ref };
 }

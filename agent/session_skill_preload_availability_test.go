@@ -161,7 +161,7 @@ func TestRestoredDelegateDropsUnfollowablePreloadRecord(t *testing.T) {
 	t.Parallel()
 	gardenMetadata := preloadMetadataFixture(gardeningMemorySkillName)
 	followableMetadata := preloadMetadataFixture(followablePreloadName)
-	fixture := newColdStableDelegateFixtureConfigured(t, "", func(descriptor *delegatestore.Descriptor) {
+	fixture := newColdDelegateFixtureConfigured(t, "", func(descriptor *delegatestore.Descriptor) {
 		descriptor.FrozenSkillNames = []string{gardeningMemorySkillName, followablePreloadName}
 		descriptor.FrozenSkillBodies = []string{
 			renderedPreloadFixture(gardeningMemorySkillName, gardeningPreloadSentinel),
@@ -169,9 +169,9 @@ func TestRestoredDelegateDropsUnfollowablePreloadRecord(t *testing.T) {
 		}
 		descriptor.FrozenSkillMetadata = []schema.FrozenSkillPreload{gardenMetadata, followableMetadata}
 	})
-	fixture.adapter.steps = []func(llm.Request) llm.Response{
+	fixture.adapter.setSteps([]func(llm.Request) llm.Response{
 		func(llm.Request) llm.Response { return agenttest.ToolCallResponse(communicateCall("done-1", "ok")) },
-	}
+	})
 	ordinary := schema.OrdinarySkillActivation{
 		Identity: schema.SkillContentIdentity{
 			Name:           gardeningMemorySkillName,

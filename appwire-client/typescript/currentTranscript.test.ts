@@ -1,19 +1,13 @@
 import { describe, expect, it } from "vitest";
 import type { ItemModel } from "./model";
-import {
-  applyNotification,
-  applyReadModel,
-  currentTranscriptState,
-  decodeCurrentTranscriptState,
-  hydrateThread,
-  mergeOlderItemPage,
-  threadModelFromCurrentState,
-} from "./reducer";
+import { applyNotification } from "./reducer";
 import { currentRead, textDelta } from "./testing/currentTranscript";
 import { notificationWireItem } from "./testing/notificationWireFixtures";
 import { appendChunk, chunkViewBackingForTests } from "./testing/reducerHooks";
 import { subagentCallItems } from "./testing/subagentWireFixtures";
 import { toolWireItems } from "./testing/toolWireFixtures";
+import { currentTranscriptState, decodeCurrentTranscriptState, threadModelFromCurrentState } from "./transcriptCache";
+import { applyReadModel, hydrateThread, mergeOlderItemPage } from "./transcriptHistory";
 import { itemTextPresence, markItemIdentityOnly, markItemTextOmitted } from "./transcriptItems";
 import {
   type EvenerDelegateInfo,
@@ -35,6 +29,28 @@ function readWithItems(ref: string, items: ThreadItem[]) {
 }
 
 describe("current transcript checkpoints", () => {
+  it("preserves typed Manager speaker across hydrate and current-state restore", () => {
+    const ref = "local:worker";
+    const original = hydrateThread(
+      readWithItems(ref, [
+        {
+          type: "userMessage",
+          id: "item_1",
+          turnId: "turn_1",
+          text: "same text",
+          actor: { kind: "manager", managerRef: "local:manager" },
+        },
+      ]),
+      ref,
+      1,
+    );
+    expect(original.turns[0]?.items[0]?.actor).toEqual({ kind: "manager", managerRef: "local:manager" });
+    const encoded = currentTranscriptState(original);
+    const decoded = decodeCurrentTranscriptState(JSON.parse(JSON.stringify(encoded)));
+    if (!decoded) throw new Error("actor invalidated saved transcript");
+    const restored = threadModelFromCurrentState(decoded);
+    expect(restored.turns[0]?.items[0]?.actor).toEqual({ kind: "manager", managerRef: "local:manager" });
+  });
   it("preserves a live stream so the restored reducer can continue its fold", () => {
     const original = hydrateThread(currentRead("local:one"), "local:one", 10);
     const encoded = currentTranscriptState(original);
@@ -1049,6 +1065,31 @@ describe("current transcript checkpoints", () => {
     // field, so the deferred-page validators cannot drift without a red build.
     const everyItemField: Required<ThreadItem> = {
       type: "toolCall",
+      conversationProvenance: {
+        version: 1,
+        instanceId: "instance",
+        runGeneration: 1,
+        requestId: "request",
+        frontierId: "frontier",
+        sourceItemId: "item_full",
+      },
+      actor: { kind: "manager", managerRef: "hub:manager" },
+      observation: {
+        ref: "local:observed",
+        instanceId: "observed-instance",
+        generationId: "observed-generation",
+        causalKnown: false,
+      },
+      authorship: {
+        author: {
+          kind: "agent",
+          sessionRef: "local:child",
+          ownerRef: "local:root",
+          delegateId: "dlg_child",
+          delegateName: "Worker",
+        },
+        inherited: true,
+      },
       id: "item_full",
       transcriptKey: "key_full",
       position: { entry: 1, item: 2, sub: 3 },

@@ -476,7 +476,7 @@ func TestHubTOMLStoreRoundTrip(t *testing.T) {
 	if err := writeHubTOMLHosts(path, want); err != nil {
 		t.Fatalf("write: %v", err)
 	}
-	cfg, err := LoadConfig(path)
+	cfg, err := loadWithRecords(path)
 	if err != nil {
 		t.Fatalf("load: %v", err)
 	}
@@ -501,7 +501,7 @@ func TestHubTOMLStoreRoundTrip(t *testing.T) {
 		t.Fatalf("hub.toml mode = %o, want 600", info.Mode().Perm())
 	}
 	// A missing hub.toml loads as the default config, not an error.
-	cfg, err = LoadConfig(filepath.Join(dir, "nowhere", "hub.toml"))
+	cfg, err = loadWithRecords(filepath.Join(dir, "nowhere", "hub.toml"))
 	if err != nil || len(cfg.Hosts) != 0 {
 		t.Fatalf("missing hub.toml = %+v, %v; want no hosts, nil", cfg.Hosts, err)
 	}
@@ -1057,7 +1057,7 @@ func TestHostManageAddRollsHubTOMLBackWhenLiveInsertFails(t *testing.T) {
 	}
 	// ...and neither may the durable file: a restart must not resurrect the
 	// add this call reported as failed.
-	cfg, err := LoadConfig(configPath)
+	cfg, err := loadWithRecords(configPath)
 	if err != nil {
 		t.Fatalf("load hub.toml: %v", err)
 	}
@@ -1377,7 +1377,7 @@ func TestHostManageRemoveCommitsWithRemnantWhenLiveTeardownFails(t *testing.T) {
 	if storeHas(m.cfg.store, "side") {
 		t.Fatal("the committed-with-teardown-failure removal left its store row live")
 	}
-	cfg, err := LoadConfig(configPath)
+	cfg, err := loadWithRecords(configPath)
 	if err != nil {
 		t.Fatalf("load hub.toml: %v", err)
 	}
@@ -1673,7 +1673,7 @@ func waitHubTOMLLacks(t *testing.T, configPath, name string) {
 	t.Helper()
 	deadline := time.Now().Add(5 * time.Second)
 	for {
-		cfg, err := LoadConfig(configPath)
+		cfg, err := loadWithRecords(configPath)
 		found := false
 		for _, e := range cfg.Hosts {
 			if e.Name == name {
@@ -2035,7 +2035,7 @@ func TestHostManageAddRefusesAHeldGateWithTheTypedBusyError(t *testing.T) {
 	if _, ok := reg.Get("held"); ok {
 		t.Fatal("an add refused by a held gate inserted the entry anyway")
 	}
-	cfg, err := LoadConfig(configPath)
+	cfg, err := loadWithRecords(configPath)
 	if err != nil {
 		t.Fatalf("load hub.toml: %v", err)
 	}

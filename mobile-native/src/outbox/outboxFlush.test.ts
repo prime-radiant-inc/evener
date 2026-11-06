@@ -7,8 +7,6 @@ import { openSqliteSyncDouble, type SqliteDoubleDatabase } from "../sqliteSync.t
 import { OutboxFlush, parseTargetKey } from "./outboxFlush";
 
 vi.mock("expo-sqlite", () => ({ openDatabaseSync: vi.fn() }));
-vi.mock("expo-crypto", () => ({ randomUUID: () => "test-uuid", getRandomValues: (array: Uint8Array) => array }));
-
 let database: SqliteDoubleDatabase | undefined;
 afterEach(() => {
 	database?.close();

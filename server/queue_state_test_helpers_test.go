@@ -33,6 +33,30 @@ func queueIDs(sess *agent.Session) []string {
 	return queue.IDs
 }
 
+// steeringInputs reads the steering a client's steer, drain or promote (or a
+// human note) has durably accepted and the active turn has not yet taken: one
+// input list per accepted mutation.
+func steeringInputs(sess *agent.Session) [][]appwire.InputItem {
+	_, pending := sess.ClientMutationProjection()
+	var out [][]appwire.InputItem
+	for _, mutation := range pending {
+		switch mutation.Method {
+		case appwire.MethodTurnSteer, appwire.MethodTurnDrainAsSteer, appwire.MethodTurnPromoteQueuedAsSteer, appwire.MethodNotesHumanSet:
+			if mutation.ExecutionState == "accepted" {
+				out = append(out, mutation.Input)
+			}
+		}
+	}
+	return out
+}
+
+// durablyAcceptedMutations counts the mutations the session's durable store
+// holds as pending: queued inputs, steering and active starts alike.
+func durablyAcceptedMutations(sess *agent.Session) int {
+	_, pending := sess.ClientMutationProjection()
+	return len(pending)
+}
+
 func queueTexts(sess *agent.Session) []string {
 	queue, _ := sess.ClientMutationProjection()
 	return queue.Texts

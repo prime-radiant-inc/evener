@@ -767,3 +767,64 @@ func TestRecentSetForgetsItsOldestPastCapacity(t *testing.T) {
 		t.Fatalf("after a delete and two puts: len %d, 2 present %v; want 3 and false", set.len(), ok)
 	}
 }
+
+func TestAuthorshipOverlay(t *testing.T) {
+	o := newOverlay()
+	t.Cleanup(o.Close)
+	send := func(_ *Overlay, data events.EventData) []Change { return o.Event(events.SessionEvent{Data: data}) }
+	author := &schema.TranscriptAuthorship{Author: schema.TranscriptAuthor{Kind: schema.TranscriptAuthorAgent, SessionID: "parent"}, Inherited: true}
+	send(o, events.ExecutionStartedData{TurnID: "turn"})
+	send(o, events.RoundStartedData{RoundID: "round", Authorship: author})
+	author.Author.SessionID = "mutated"
+	check := func(items []appwire.OverlayItem) {
+		t.Helper()
+		for _, item := range items {
+			b, err := json.Marshal(item.Item)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var fields map[string]json.RawMessage
+			if err := json.Unmarshal(b, &fields); err != nil {
+				t.Fatal(err)
+			}
+			if string(fields["authorship"]) != `{"author":{"kind":"agent","sessionRef":"local:parent"},"inherited":true}` {
+				t.Errorf("%s authorship=%s", item.Key, fields["authorship"])
+			}
+		}
+	}
+	for _, data := range []events.EventData{events.AssistantTextDeltaData{Delta: "first"}, events.ReasoningSummaryDeltaData{Delta: "thought"}, events.CommunicatePreviewStartData{CallID: "call", Authorship: &schema.TranscriptAuthorship{Author: schema.TranscriptAuthor{Kind: schema.TranscriptAuthorAgent, SessionID: "parent"}, Inherited: true}}} {
+		changes := send(o, data)
+		if len(changes) != 1 {
+			t.Fatalf("changes=%v", changes)
+		}
+		check([]appwire.OverlayItem{upserted(t, changes[0])})
+	}
+	check(o.Snapshot())
+	send(o, events.AssistantTextResetData{})
+	send(o, events.AssistantTextDeltaData{Delta: "retry"})
+	snap := o.Snapshot()
+	if len(snap) != 1 || snap[0].StreamID != "round/2" || snap[0].Item.Text != "retry" {
+		t.Fatalf("retry=%+v", snap)
+	}
+	check(snap)
+	o.Recorded(transcript.Record{Recorded: true, Turn: schema.Turn{Kind: schema.TurnAssistant, RoundID: "round"}})
+	if len(o.Snapshot()) != 0 {
+		t.Fatal("recorded stream still present")
+	}
+}
+
+// The accessors a measurement reads start at zero, and a closed overlay
+// ignores later recorded entries rather than growing its anchor.
+func TestOverlayAccessorsStartCleanAndClosedIgnoresRecords(t *testing.T) {
+	t.Parallel()
+	o := newOverlay()
+	if got := o.NoticeBytes(); got != 0 {
+		t.Fatalf("NoticeBytes = %d on a fresh overlay", got)
+	}
+	o.Close()
+	before := o.Snapshot()
+	o.Recorded(assistantRecord(1, "t1", "r1", textPart("after close")))
+	if after := o.Snapshot(); len(after) != len(before) {
+		t.Fatalf("a record after Close changed the snapshot: %d -> %d", len(before), len(after))
+	}
+}

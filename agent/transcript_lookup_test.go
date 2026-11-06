@@ -2,6 +2,7 @@ package agent
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"os"
@@ -653,7 +654,7 @@ func TestReadMarkdownTranscript_LegacyBucketBareIDOmitsEmptyTranscriptRef(t *tes
 	}, "legacy content")
 
 	deps := &toolDeps{stateDir: current, sessionID: "02wMz5TxvEMoJEDTDGOTil"}
-	result, err := execReadTranscript(deps, map[string]any{
+	result, err := execReadTranscript(context.Background(), deps, map[string]any{
 		"transcript_ref": "02wMz5Txv5aIxgf9yVdd0N",
 		"format":         "markdown",
 	})
@@ -687,7 +688,7 @@ func TestReadOutlineTranscript_LegacyBucketBareIDOmitsEmptyTranscriptRef(t *test
 	}, "legacy content")
 
 	deps := &toolDeps{stateDir: current, sessionID: "02wMz5TxvEMoJEDTDGOTil"}
-	result, err := execReadTranscript(deps, map[string]any{
+	result, err := execReadTranscript(context.Background(), deps, map[string]any{
 		"transcript_ref": "02wMz5Txv5aIxgf9yVdd0N",
 		"format":         "outline",
 	})
@@ -721,7 +722,7 @@ func TestReadRawTranscript_LegacyBucketBareIDOmitsEmptyTranscriptRef(t *testing.
 	}, "legacy content")
 
 	deps := &toolDeps{stateDir: current, sessionID: "02wMz5TxvEMoJEDTDGOTil"}
-	result, err := execReadTranscript(deps, map[string]any{
+	result, err := execReadTranscript(context.Background(), deps, map[string]any{
 		"transcript_ref": "02wMz5Txv5aIxgf9yVdd0N",
 		"format":         "jsonl",
 	})
@@ -794,7 +795,7 @@ func TestFind_LegacyBucketTextFormatShowsBareIDAddressing(t *testing.T) {
 	}, "legacy content")
 
 	deps := &toolDeps{stateDir: current, sessionID: "02wMz5TxvEMoJEDTDGOTil"}
-	v, err := execFindSessionTranscripts(deps, map[string]any{"scope": scopeAllProjects})
+	v, err := execFindSessionTranscripts(context.Background(), deps, map[string]any{"scope": scopeAllProjects})
 	if err != nil {
 		t.Fatalf("execFindSessionTranscripts: %v", err)
 	}
@@ -867,7 +868,7 @@ func TestReadAPILogSummary_LegacyBucketBareIDOmitsEmptyTranscriptRef(t *testing.
 	}
 
 	deps := &toolDeps{stateDir: current, sessionID: "02wMz5TxvEMoJEDTDGOTil"}
-	result, err := execReadSessionTranscript(deps, map[string]any{
+	result, err := execReadSessionTranscript(context.Background(), deps, map[string]any{
 		"transcript_ref": "02wMz5Txv5aIxgf9yVdd0N",
 		"source":         "api_log",
 	})
@@ -1087,7 +1088,7 @@ func TestReadAPILogSummary_SymlinkedSidecarRejected(t *testing.T) {
 		t.Fatal(err)
 	}
 	deps := &toolDeps{stateDir: current, sessionID: "02wMz5TxvEMoJEDTDGOTil"}
-	_, err := execReadSessionTranscript(deps, map[string]any{
+	_, err := execReadSessionTranscript(context.Background(), deps, map[string]any{
 		"transcript_ref": "local:" + sid,
 		"source":         apiLogSource,
 	})
@@ -1360,7 +1361,7 @@ func TestFind_SymlinkedEvenerAncestorOmitsSymlinkedBucketSession(t *testing.T) {
 	deps := &toolDeps{stateDir: linkedCurrent, sessionID: "02wMz5TxvEMoJEDTDGOTil"}
 	// find with scope=all_projects must surface the symlinked prefix refusal
 	// as an error, not silently return an empty result.
-	_, err := execFindSessionTranscripts(deps, map[string]any{"scope": scopeAllProjects})
+	_, err := execFindSessionTranscripts(context.Background(), deps, map[string]any{"scope": scopeAllProjects})
 	if err == nil {
 		t.Fatal("find with scope=all_projects returned no error when the evener/ " +
 			"ancestor is a symlink; the security refusal must be surfaced")
@@ -1801,7 +1802,7 @@ func TestFind_SymlinkedEvenerPrefixSurfacesRefusal(t *testing.T) {
 	deps := &toolDeps{stateDir: linkedCurrent, sessionID: "02wMz5TxvEMoJEDTDGOTil"}
 	// find with scope=all_projects must surface the refusal as an error,
 	// not silently return an empty result.
-	_, err := execFindSessionTranscripts(deps, map[string]any{"scope": scopeAllProjects})
+	_, err := execFindSessionTranscripts(context.Background(), deps, map[string]any{"scope": scopeAllProjects})
 	if err == nil {
 		t.Fatal("find with scope=all_projects returned no error when the evener/ " +
 			"prefix is a symlink; the security refusal must be surfaced, not hidden " +

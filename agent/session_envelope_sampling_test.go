@@ -79,6 +79,10 @@ var envelopeSamplingForbiddenLocks = []envelopeSamplingLock{
 		s.memoryMu.Lock()
 		return s.memoryMu.Unlock
 	}},
+	{owner: "Session", field: "modelSwitchPublishMu", hold: func(s *Session) func() {
+		s.modelSwitchPublishMu.Lock()
+		return s.modelSwitchPublishMu.Unlock
+	}},
 	{owner: "Session", field: "restMu", hold: func(s *Session) func() {
 		s.restMu.Lock()
 		return s.restMu.Unlock
@@ -134,6 +138,10 @@ var envelopeSamplingForbiddenLocks = []envelopeSamplingLock{
 	{owner: "Session", field: "drainAbandonedMu", hold: func(s *Session) func() {
 		s.drainAbandonedMu.Lock()
 		return s.drainAbandonedMu.Unlock
+	}},
+	{owner: "Session", field: "laneEvidenceMu", hold: func(s *Session) func() {
+		s.laneEvidenceMu.Lock()
+		return s.laneEvidenceMu.Unlock
 	}},
 	{owner: "subagent", field: "mu", hold: func(s *Session) func() {
 		sub := &subagent{id: "envelope-sampling-probe", done: make(chan struct{})}

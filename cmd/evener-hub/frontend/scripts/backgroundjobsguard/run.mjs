@@ -2,10 +2,11 @@
 // Run through TestBackgroundJobsBrowser. JSON stdin supplies an isolated real
 // hub and Go-owned producer barriers, never frontend state or RPC responses.
 import assert from "node:assert/strict";
-import { readFileSync, writeFileSync } from "node:fs";
+import { readFileSync, statSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { Driver } from "../skillguard/run.mjs";
 import { evaluate, navigateTo } from "../browserGuardCdp.mjs";
+import { awaitProducerAcknowledgement } from "./acknowledgement.mjs";
 
 if (process.argv.includes("--help")) {
   console.log("Usage: go test -tags browserguard ./cmd/evener-hub -run '^TestBackgroundJobsBrowser$' -count=1 -v\nRun from the repository root after make build-web. The Go fixture supplies JSON stdin and retains browser evidence.");
@@ -398,24 +399,23 @@ async function runOutputPagingJourney(fixture) {
     await waitFrames(() => outputCalls(after).some(request => page(request)?.totalBytes >= totalBytes && bytes(page(request)).includes(Buffer.from(marker))), `real latest contains ${marker}`);
   };
   let phase = 1;
+  let acknowledgedBytes = 0;
+  // The producer writes the phase payload to the oracle file before it flushes
+  // the same bytes to the job's stdout, so the oracle's current size tells us
+  // how much the hub still has to drain and the acknowledgement wait can be
+  // sized for it rather than for a fixed floor (#4632).
+  const emittedBytes = () => {
+    try { return statSync(fixture.outputOraclePath).size; } catch { return acknowledgedBytes; }
+  };
   const control = async command => {
     const ackPath = path.join(fixture.artifactDir, `phase-${String(++phase).padStart(2,'0')}.json`);
-    return new Promise((resolve, reject) => {
-      // Poll rather than fs.watch: the producer writes in place with os.WriteFile
-      // and macOS coalesces directory events, so the only event can arrive while
-      // the acknowledgement is still empty.
-      const poll = setInterval(check, 100);
-      const timer = setTimeout(() => finish(new Error(`producer did not acknowledge ${command}`)), 15000);
-      function finish(error, value) { clearInterval(poll); clearTimeout(timer); error ? reject(error) : resolve(value); }
-      function check() {
-        let value;
-        try { value = JSON.parse(readFileSync(ackPath,'utf8')); } catch { return; }
-        if (value.command !== command) { finish(new Error(`wrong producer acknowledgement ${q(value)}`)); return; }
-        finish(null,value);
-      }
-      driver.control(`output-${command}`);
-      check();
+    driver.control(`output-${command}`);
+    const acknowledgement = await awaitProducerAcknowledgement({
+      driver, ackPath, command,
+      pendingBytes: () => Math.max(0, emittedBytes() - acknowledgedBytes),
     });
+    acknowledgedBytes = acknowledgement.totalBytes;
+    return acknowledgement;
   };
   const assertAnchor = async baseline => {
     await wait(`(() => { const value=${stateExpr}; const row=value?.rows.find(row=>row.kind==='output' && row.start===${baseline.start}); return row?.visible && Math.abs(row.top-(${baseline.top}))<=2; })()`, 'same byte row stays within two pixels');

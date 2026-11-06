@@ -153,6 +153,7 @@ func (s *SessionLogStrategy) sessionLogCheckpoint(history []schema.Turn, preserv
 // sessionLogCheckpointWithMeta also returns the turns the checkpoint folded
 // (nil when it folded nothing), for a summary completing the same fold.
 func (s *SessionLogStrategy) sessionLogCheckpointWithMeta(history []schema.Turn, preserveRecent int, meta *CompactionMeta) ([]schema.Turn, []schema.Turn) {
+	preserveRecent = preservePendingAskTail(history, preserveRecent, meta)
 	if attentionTransparentTurnCount(history) <= preserveRecent {
 		return history, nil
 	}

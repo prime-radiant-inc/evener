@@ -99,6 +99,26 @@ type DelegateStopSource interface {
 	StopDelegate(context.Context, appwire.DelegateStopParams) (appwire.DelegateStopResponse, error)
 }
 
+// JobStopSource forwards the two typed human job_stop modes to their owner.
+type JobStopSource interface {
+	StopJob(context.Context, appwire.SessionStopRequest) (appwire.SessionStopResponse, error)
+}
+
+// PeerHubJobStopSource is a JobStopSource whose StopJob forwards into a
+// peer hub's session control instead of the owning daemon's job-stop owner.
+// The receiving control validates the request against the session its ref
+// addresses, so the forwarded request must keep the ADDRESSED session's ref:
+// a stop rewritten to the root arrives there as a descendant-owned job read
+// against the root, and the peer control refuses it as not owned by the
+// addressed session. The local daemon source is not a peer: its daemon
+// requires the root ref as the mutation target.
+type PeerHubJobStopSource interface {
+	JobStopSource
+	// StopsJobsThroughPeerControl marks StopJob as forwarding into a peer
+	// hub's session control.
+	StopsJobsThroughPeerControl() bool
+}
+
 // ItemCandidateSource exposes positioned item candidates alongside the source
 // methods used by ordinary callers.
 type ItemCandidateSource interface {

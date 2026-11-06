@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"path/filepath"
 	"sort"
 	"time"
 
@@ -387,7 +386,7 @@ func SessionOwnsDelegate(ctx context.Context, stateDir, parentSessionID, childSe
 	if err := schema.ValidateSessionID(rootID); err != nil {
 		return false, err
 	}
-	path := filepath.Join(jobsDir(stateDir, rootID), "delegates.jsonl")
+	path := schema.SessionDelegateJournalPath(stateDir, rootID)
 	result, err := historicalDelegateFoldCache.Get(ctx, path, extendHistoricalDelegateFold)
 	if err != nil {
 		return false, err
@@ -432,7 +431,7 @@ func SessionOwnedDelegateIDs(ctx context.Context, stateDir, sessionID string) ([
 	if err := schema.ValidateSessionID(rootID); err != nil {
 		return nil, err
 	}
-	path := filepath.Join(jobsDir(stateDir, rootID), "delegates.jsonl")
+	path := schema.SessionDelegateJournalPath(stateDir, rootID)
 	result, err := historicalDelegateFoldCache.Get(ctx, path, extendHistoricalDelegateFold)
 	if errors.Is(err, os.ErrNotExist) {
 		return nil, nil
@@ -505,12 +504,20 @@ func delegateStatusInfoFromSnapshot(now time.Time, rootID string, row delegateSn
 // terminal packet whose metadata runs past the payload cap and never parses such
 // a document; a diagnostics status is not that frame, so it keeps them.
 func delegateFrameStatusInfo(now time.Time, rootID string, row delegateSnapshot) DelegateStatusInfo {
-	return delegateStatusInfo(now, rootID, row, true)
+	out := delegateStatusInfo(now, rootID, row, true)
+	if !delegateRunTerminal(row.lastOutcome, row.currentRunOpen) {
+		out.Outcome = ""
+		out.Reason = ""
+		out.Error = ""
+		out.RunEndedAt = ""
+		out.Terminal = false
+	}
+	return out
 }
 
 func delegateStatusInfo(now time.Time, rootID string, row delegateSnapshot, boundedMetadata bool) DelegateStatusInfo {
 	descriptor := row.descriptor
-	timing := projectStableDelegateStatus(now, row)
+	timing := projectDelegateStatus(now, row)
 	out := DelegateStatusInfo{
 		DelegateID:          row.id,
 		RunGeneration:       row.generation,

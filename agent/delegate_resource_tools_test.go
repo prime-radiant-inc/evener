@@ -17,7 +17,7 @@ import (
 	"primeradiant.com/evener/llm"
 )
 
-func TestStableDelegateTools_CreateSendStopStatusUseDelegateID(t *testing.T) {
+func TestDelegateTools_CreateSendStopStatusUseDelegateID(t *testing.T) {
 	t.Parallel()
 	s := newSession(t, withoutGitSnapshot())
 	for _, tc := range []struct {
@@ -50,7 +50,7 @@ func TestStableDelegateTools_CreateSendStopStatusUseDelegateID(t *testing.T) {
 	if _, exists := properties["max_wait_ms"]; exists {
 		t.Fatal("delegate creation exposes max_wait_ms")
 	}
-	wire, err := marshalStableDelegateCreateResult(stableDelegateCreateResult{
+	wire, err := marshalDelegateCreateResult(delegateCreateResult{
 		DelegateID: "dlg_stable", ChildSessionID: "ses_child", Type: "delegate", Status: "running", TranscriptRef: "local:ses_child",
 	}, 1<<20)
 	if err != nil {
@@ -70,7 +70,7 @@ func TestStableDelegateTools_CreateSendStopStatusUseDelegateID(t *testing.T) {
 	}
 }
 
-func TestStableDelegateTools_StatusReadsMetadataWithoutPacketOrAck(t *testing.T) {
+func TestDelegateTools_StatusReadsMetadataWithoutPacketOrAck(t *testing.T) {
 	t.Parallel()
 	s := newSession(t, withoutGitSnapshot())
 	id := "dlg_status_metadata"
@@ -119,7 +119,7 @@ func TestStableDelegateTools_StatusReadsMetadataWithoutPacketOrAck(t *testing.T)
 	}
 }
 
-func TestStableDelegateTools_StatusAndListProjectPublicLifecycle(t *testing.T) {
+func TestDelegateTools_StatusAndListProjectPublicLifecycle(t *testing.T) {
 	t.Parallel()
 	s := newSession(t, withoutGitSnapshot())
 	settlingID := "dlg_public_settling"
@@ -207,7 +207,7 @@ func TestStableDelegateTools_StatusAndListProjectPublicLifecycle(t *testing.T) {
 	}
 }
 
-func TestStableDelegateTools_StatusRejectsActivationAlias(t *testing.T) {
+func TestDelegateTools_StatusRejectsActivationAlias(t *testing.T) {
 	t.Parallel()
 	s := newSession(t, withoutGitSnapshot())
 	started := time.Unix(10, 0).UTC()
@@ -222,7 +222,7 @@ func TestStableDelegateTools_StatusRejectsActivationAlias(t *testing.T) {
 	}
 }
 
-func TestStableDelegateTools_StopIgnoresIncludeChildrenAndRemainsRecursive(t *testing.T) {
+func TestDelegateTools_StopIgnoresIncludeChildrenAndRemainsRecursive(t *testing.T) {
 	t.Parallel()
 	s := newSession(t, withoutGitSnapshot())
 	c := s.delegateController
@@ -265,7 +265,7 @@ func TestStableDelegateTools_StopIgnoresIncludeChildrenAndRemainsRecursive(t *te
 	<-stop.done
 }
 
-func TestStableDelegateTools_WaitIgnoredReasonIsOwnField(t *testing.T) {
+func TestDelegateTools_WaitIgnoredReasonIsOwnField(t *testing.T) {
 	t.Parallel()
 	value, err := marshalDelegateSendResult(sendMessageResult{
 		DelegateID: "dlg_live", Type: "delegate", Status: jobstore.StatusRunning, Action: "steered",
@@ -283,7 +283,7 @@ func TestStableDelegateTools_WaitIgnoredReasonIsOwnField(t *testing.T) {
 	}
 }
 
-func TestStableDelegateTools_LiveSteerRejectsIgnoredWait(t *testing.T) {
+func TestDelegateTools_LiveSteerRejectsIgnoredWait(t *testing.T) {
 	s := newSession(t, withoutGitSnapshot())
 	delegateID := "dlg_live_wait"
 	seedStableToolRunningDelegate(t, s, delegateID, "", time.Unix(10, 0).UTC())
@@ -310,7 +310,7 @@ func TestStableDelegateTools_LiveSteerRejectsIgnoredWait(t *testing.T) {
 	}
 }
 
-func TestStableDelegateTools_ListUnifiesShellAndDelegateCandidates(t *testing.T) {
+func TestDelegateTools_ListUnifiesShellAndDelegateCandidates(t *testing.T) {
 	t.Parallel()
 	s := newSession(t, withoutGitSnapshot())
 	seedStableToolDelegate(t, s, "dlg_list", "", time.Unix(10, 0).UTC(), time.Unix(20, 0).UTC())
@@ -325,7 +325,7 @@ func TestStableDelegateTools_ListUnifiesShellAndDelegateCandidates(t *testing.T)
 	}
 }
 
-func TestStableDelegateTools_ListPreservesTypeStatusAndVisibilityFilters(t *testing.T) {
+func TestDelegateTools_ListPreservesTypeStatusAndVisibilityFilters(t *testing.T) {
 	t.Parallel()
 	s := newSession(t, withoutGitSnapshot())
 	seedStableToolDelegate(t, s, "dlg_direct_idle", "", time.Unix(10, 0).UTC(), time.Unix(20, 0).UTC())
@@ -352,9 +352,9 @@ func TestStableDelegateTools_ListPreservesTypeStatusAndVisibilityFilters(t *test
 	}
 }
 
-func TestStableDelegateTools_ListOwnerWinsDedupeAndSortsBeforePaging(t *testing.T) {
-	tree := newStableDelegateShellTree(t)
-	rec := createStableDelegateShell(t, tree.childJM, "owner copy wins")
+func TestDelegateTools_ListOwnerWinsDedupeAndSortsBeforePaging(t *testing.T) {
+	tree := newDelegateShellTree(t)
+	rec := createDelegateShell(t, tree.childJM, "owner copy wins")
 	result := stableToolListResult(t, tree.root, map[string]any{
 		"type":                []any{"shell"},
 		"include_descendants": true,
@@ -369,7 +369,7 @@ func TestStableDelegateTools_ListOwnerWinsDedupeAndSortsBeforePaging(t *testing.
 	}
 }
 
-func TestStableDelegateTools_ListPreservesOffsetLimitCountTotal(t *testing.T) {
+func TestDelegateTools_ListPreservesOffsetLimitCountTotal(t *testing.T) {
 	t.Parallel()
 	s := newSession(t, withoutGitSnapshot())
 	seedStableToolDelegate(t, s, "dlg_page_1", "", time.Unix(10, 0).UTC(), time.Unix(20, 0).UTC())
@@ -386,7 +386,7 @@ func TestStableDelegateTools_ListPreservesOffsetLimitCountTotal(t *testing.T) {
 	}
 }
 
-func TestStableDelegateTools_ListPreservesTurnSlotsAllowanceAndWatchDiagnostics(t *testing.T) {
+func TestDelegateTools_ListPreservesTurnSlotsAllowanceAndWatchDiagnostics(t *testing.T) {
 	t.Parallel()
 	s := newSession(t, withoutGitSnapshot())
 	s.treeCounter = newTreeCounter(7)
@@ -562,7 +562,7 @@ func seedStableToolShell(t *testing.T, jm *jobManager, id string, startedAt time
 // keeps the newest result in its own fields and adds the earlier one, in the
 // same shape, under earlier_results; its text shows the earlier one first
 // (#3906).
-func TestStableDelegateTools_SendReplyCarriesEarlierResults(t *testing.T) {
+func TestDelegateTools_SendReplyCarriesEarlierResults(t *testing.T) {
 	t.Parallel()
 	valid := false
 	value, err := marshalDelegateSendResult(sendMessageResult{
@@ -599,7 +599,7 @@ func TestStableDelegateTools_SendReplyCarriesEarlierResults(t *testing.T) {
 
 // Several earlier results in a reply are numbered oldest first, ahead of the
 // labelled latest result.
-func TestStableDelegateTools_SendReplyNumbersSeveralEarlierResults(t *testing.T) {
+func TestDelegateTools_SendReplyNumbersSeveralEarlierResults(t *testing.T) {
 	t.Parallel()
 	packet := func(message string) delegatestore.TerminalPacket {
 		return delegatestore.TerminalPacket{Kind: delegatestore.PacketReported, Message: json.RawMessage(`"` + message + `"`)}

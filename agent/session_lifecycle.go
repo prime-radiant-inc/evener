@@ -617,6 +617,9 @@ func (s *Session) ProcessInputKind(ctx context.Context, input string, images []I
 }
 
 func (s *Session) processInputWithProvenance(ctx context.Context, input string, images []ImageAttachment, p *provenance.Causal) (string, error) {
+	// This internal entry is used for harness nudges and stop-hook input, not
+	// a client's message. Keep that evidence distinct from session placement.
+	ctx = context.WithValue(ctx, internalTranscriptInputKey{}, true)
 	return s.processInputKindWithProvenance(ctx, input, images, EntryUserInput, p)
 }
 
@@ -626,6 +629,12 @@ func (s *Session) processInputKindWithProvenance(ctx context.Context, input stri
 		return "", admissionErr
 	}
 	defer release()
+	// A delegate child's turn keeps the marker parent's activity evidence
+	// fresh for its whole life, silent stretches included; see
+	// startLaneEvidenceTicker. Stopped before the retirement release, so no
+	// tick outlives the turn.
+	stopEvidenceTicker := s.startLaneEvidenceTicker(ctx)
+	defer stopEvidenceTicker()
 	// Stamp the session id for the whole turn so LLM side calls made from tools
 	// (web fetch summaries, naming, in-turn compaction) attribute to this
 	// session in the per-session API log. callModelWithFallback layers its
@@ -687,6 +696,13 @@ func (s *Session) processInputKindWithProvenance(ctx context.Context, input stri
 		s.mu.Lock()
 		s.goalInTurn = false
 		s.mu.Unlock()
+		// The last act before going idle: a switch queued while this input ran
+		// whose moment already passed (the pick landed after the final turn
+		// returned, so no further turn of this input applies it) would
+		// otherwise wait for a turn that nothing schedules. The session is idle
+		// here, so the switch applies now and its marker is persisted before
+		// the process can retire. Between-turn picks are the loop site above's.
+		s.applyPendingModelSwitch()
 	}()
 
 	// A test-only seam: fail the turn before its user entry is recorded, the
@@ -759,6 +775,14 @@ func (s *Session) processInputKindWithProvenance(ctx context.Context, input stri
 		// does not — /par #4).
 		ranKind := nextKind
 		ranClientMutation := queuedClientMutationFromContext(processCtx)
+		// A model switch queued during the previous turn - or picked in the
+		// window after that turn settled but before this one starts - applies
+		// here, and only here: the previous processOneInput has returned, so
+		// its deferred settlement (attention finalizers included) already ran
+		// and cannot clobber the switch's own recovery, and this turn has not
+		// been admitted yet, so it opens on the picked model with the switch
+		// marker between the two turns.
+		s.applyPendingModelSwitch()
 		out, progressed, err := s.processOneInput(processCtx, next, nextImages, nextKind, nextProvenance)
 		// The durable name of the turn that just ran, read before this turn's
 		// completion below releases it. An interrupt's marker is that turn's
@@ -2127,6 +2151,7 @@ func (s *Session) returnAcceptedUserTurn(queuedIdentity queuedClientMutationIden
 // failed once still accepts the next record, and whether that is right for
 // every producer is the audit in #1181, not this path's rule to settle.
 func (s *Session) appendUserInputTurnRefusingPoison(turn schema.Turn) error {
+	turn.AnswerToTurnIDs = s.pendingAskTurnIDs()
 	err := s.appendTurnAfterTranscriptWrite(
 		turn,
 		func() error { return s.writeTranscriptSyncedLocked(turn) },
@@ -2242,6 +2267,10 @@ func (s *Session) acceptUserInputWithSkillSelection(ctx context.Context, input s
 	if queuedIdentity.ClientMutationID == "" {
 		if !preseededInput {
 			turn := schema.NewTurn(schema.TurnUserInput, buildSelectedUserInputMessage(input, images, skillInputNames(skillInput)))
+			turn.ConversationInputIDs = s.conversationInputIDs("")
+			if internal, _ := ctx.Value(internalTranscriptInputKey{}).(bool); !internal {
+				turn.Authorship = humanTranscriptAuthorship()
+			}
 			if selected := durableSkillSelectionFromContext(ctx); selected != nil {
 				turn.CommandInput = selected.CommandInput
 				turn.Message = appendSelectedCommands(turn.Message, selected.CommandInput, selected.CommandBodies)
@@ -2258,12 +2287,16 @@ func (s *Session) acceptUserInputWithSkillSelection(ctx context.Context, input s
 		}
 	} else {
 		turn := schema.NewTurn(schema.TurnUserInput, buildSelectedUserInputMessage(input, images, skillInputNames(skillInput)))
+		turn.ConversationInputIDs = s.conversationInputIDs(queuedIdentity.ClientMutationID)
+		turn.Authorship = humanTranscriptAuthorship()
 		if selected := durableSkillSelectionFromContext(ctx); selected != nil {
 			turn.CommandInput = selected.CommandInput
 			turn.Message = appendSelectedCommands(turn.Message, selected.CommandInput, selected.CommandBodies)
 		}
 		turn.ClientMutationID = queuedIdentity.ClientMutationID
+		attachVoicePresentation(&turn, queuedIdentity.VoicePresentation, queuedIdentity.ClientMutationID)
 		turn.StableTurnID = queuedIdentity.StableTurnID
+		turn.Actor = s.clientMutationActor(queuedIdentity.ClientMutationID)
 		if skillInput != nil {
 			turn.SkillState = &schema.SkillTurnState{Input: skillInput}
 		}
@@ -2295,6 +2328,7 @@ func (s *Session) acceptUserInputWithSkillSelection(ctx context.Context, input s
 				return failure
 			}
 		}
+		turn.AnswerToTurnIDs = s.pendingAskTurnIDs()
 		if err := s.appendTurnAfterTranscriptWrite(
 			turn,
 			func() error { return s.appendClientMutationTranscriptLocked(turn) },
@@ -2415,7 +2449,7 @@ func (s *Session) acceptDelegateAttentionInput() {
 // stands down before reaching here when a served session could not be named, so
 // every wake that gets this far can address its own turn.
 func (s *Session) acceptNotificationInput(ctx context.Context, turnID string) (proceed bool) {
-	s.drivePendingStableDelegateAttention()
+	s.drivePendingDelegateAttention()
 	// Drive signal (b) (spec §3): a child driven on its pending caller-targeted
 	// watch sends may have no token queued yet (the drive was launched on the
 	// hasPendingWatchSends signal, not a token enqueue). Enqueue the OWN session's

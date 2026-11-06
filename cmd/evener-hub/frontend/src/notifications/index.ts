@@ -2,7 +2,7 @@
 // favicon badge, OS notifications, the alert sound, and single-tab (Web
 // Locks) leader election, all driven off navigationStore + prefsStore +
 // workspaceStore + connectionStore. AppShell calls initNotifications() once
-// at module evaluation, beside initPrefs().
+// at module evaluation; navigation connection binding is surface-independent.
 //
 // Every channel is read EXCLUSIVELY from the shipped prefs store (title ON,
 // favicon/os/sound OFF by default — stores/prefs.ts's loadNotifications and
@@ -14,9 +14,9 @@
 
 import type { NavigationSessionSummary } from "@evener/appwire-client";
 import { workspaceStore } from "../shell/workspace";
-import { connectionStore, readyConnectionTransition } from "../stores/connection";
+import { connectionStore } from "../stores/connection";
 import { selectLiveRows, selectNeedsYouRows } from "../stores/navigation/selectors";
-import { initNavigation, navigationStore, resetNavigationStoreForTests } from "../stores/navigation/store";
+import { navigationStore, resetNavigationStoreForTests } from "../stores/navigation/store";
 import { prefsStore } from "../stores/prefs";
 import { type AttentionEntry, detectFires, snapshotFromNavigation } from "./attention";
 import { fireOsNotification, playTone } from "./channels";
@@ -128,21 +128,6 @@ export function initNotifications(): void {
 
   electLeader();
 
-  // Navigation is authoritative when the handshake advertises it. The
-  // microtask lets AppShell wire its client during the same mount before the
-  // navigation store is initialized.
-  queueMicrotask(() => {
-    const { client, state } = connectionStore.getState();
-    if (client && state === "ready") initNavigation(client);
-  });
-
-  subscriptions.push(
-    connectionStore.subscribe((state, prev) => {
-      // The client check only narrows for TS; readyConnectionTransition
-      // already guarantees a wired client.
-      if (state.client && readyConnectionTransition(state, prev)) initNavigation(state.client);
-    }),
-  );
   subscriptions.push(
     navigationStore.subscribe((state, prev) => {
       if (state.attention !== prev.attention) onNavigationAttention();

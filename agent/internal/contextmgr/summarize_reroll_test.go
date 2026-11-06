@@ -30,10 +30,10 @@ func TestSummarizeRecoversFromRejectedSessionReply(t *testing.T) {
 	cm := NewManager(profile, client, cheapmodel.New(client))
 	history := pingPongHistory("fix the auth bug", "I'll fix it", "run the tests", "all green")
 
-	result, err := cm.summarizeWithLLM(context.Background(), history, 2)
+	result, err := cm.summarizeFold(context.Background(), history, 2, "", nil)
 
 	if err != nil {
-		t.Fatalf("summarizeWithLLM: %v", err)
+		t.Fatalf("summarizeFold: %v", err)
 	}
 	if calls.Load() != 2 {
 		t.Fatalf("calls = %d, want 2 (one rejected, one retry)", calls.Load())

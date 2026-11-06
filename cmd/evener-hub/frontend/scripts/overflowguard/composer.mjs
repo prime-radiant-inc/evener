@@ -88,7 +88,7 @@ export async function typeComposerDraft(send, text = "browser-proof") {
 }
 async function clearDraft(send) {
   await tap(send, await point(send, editor), false);
-  await key(send, "a", "KeyA", 65, 2);
+  await key(send, "a", "KeyA", 65, process.platform === "darwin" ? 4 : 2);
   await key(send, "Backspace", "Backspace", 8);
   await until(send, `document.querySelector('${control("stop")}')`);
 }

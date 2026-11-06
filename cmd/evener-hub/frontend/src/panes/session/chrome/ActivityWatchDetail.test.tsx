@@ -15,7 +15,7 @@ import {
 import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
 import { Profiler } from "react";
 import { afterEach, describe, expect, test, vi } from "vitest";
-import { connectionStore } from "../../../stores/connection";
+import { connectionStore, resetConnectionStoreForTests } from "../../../stores/connection";
 import { acquireSessionActivity } from "../../../stores/sessionActivity";
 import {
   activityClient,
@@ -31,7 +31,7 @@ import { ActivityWatchDetail } from "./ActivityRowDetail";
 afterEach(() => {
   cleanup();
   resetThreadsStoreForTests();
-  connectionStore.setState({ client: null, state: "idle" });
+  resetConnectionStoreForTests();
 });
 
 const NOW = Date.parse("2026-08-05T15:00:12.000Z");

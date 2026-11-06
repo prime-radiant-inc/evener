@@ -7,31 +7,26 @@ import {
 import "fake-indexeddb/auto";
 import type {
   AnyNotification,
-  ConnectionState,
   HistoryUpdatedParams,
   Thread,
   ThreadClearResponse,
   ThreadReadResponse,
 } from "@evener/appwire-client";
 import { acquireThreadSubscription, type ThreadSubscriptionLease } from "@evener/appwire-client";
-import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
+import type { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { resetPendingTurnsStoreForTests } from "../panes/session/composer/queue/pendingTurnsStore";
 import { resetWorkspaceStoreForTests } from "../shell/workspace";
-import { connectionStore } from "./connection";
+import { connectReadyFakeClient } from "../testing/connectionTestUtils";
+import { resetConnectionStoreForTests } from "./connection";
+import { productionEntryTranscriptForTests, setProductionEntryCacheForTests } from "./entryTranscriptRoutes";
 import { SessionEntryCache } from "./sessionEntryCache";
-import {
-  pendingThreadHydrationUpdatesForTests,
-  productionEntryTranscriptForTests,
-  resetThreadsStoreForTests,
-  setProductionEntryCacheForTests,
-  threadsStore,
-} from "./threads";
+import { pendingThreadHydrationUpdatesForTests, resetThreadsStoreForTests, threadsStore } from "./threads";
 
 let cache: SessionEntryCache;
 beforeEach(() => {
-  connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
+  resetConnectionStoreForTests();
   resetThreadsStoreForTests();
   resetPendingTurnsStoreForTests();
   resetWorkspaceStoreForTests();
@@ -48,7 +43,7 @@ beforeEach(() => {
 afterEach(() => {
   for (const lease of establishedMemberships.splice(0)) lease.release();
   resetThreadsStoreForTests();
-  connectionStore.setState({ state: "idle", client: null });
+  resetConnectionStoreForTests();
   cache.close();
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
@@ -155,12 +150,6 @@ async function emitAtResponseCut(
   );
 }
 
-function connectFakeClient(state: ConnectionState = "ready"): FakeClient {
-  const fake = new FakeClient(state);
-  connectionStore.getState().connect(fake);
-  return fake;
-}
-
 // emitHistoryUpdated emits one history/updated notification carrying this
 // file's standard thread identity plus the caller's distinct content — the
 // snapshot, items or turns — and any identity field that differs.
@@ -173,7 +162,7 @@ function emitHistoryUpdated(
 
 describe("useThreadsStore.ensureThread", () => {
   test("an initial authoritative snapshot supersedes notifications buffered before its response", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     const authoritativeSnapshot = readResponse("ref_a", {
       status: { type: "active" },
       turns: [
@@ -226,7 +215,7 @@ describe("useThreadsStore.ensureThread", () => {
   });
 
   test("frames before the response cut leave no trace: nothing published to reach, and the cut drops the buffer", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     let resolveRead: ((response: ThreadReadResponse) => void) | null = null;
     fake.on(
       "thread/read",
@@ -290,7 +279,7 @@ describe("useThreadsStore.ensureThread", () => {
     // frame outright: post-cut frames have no other route into the model, and
     // handleNotification also withholds them from the stale published model
     // while a hydration is pending.
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     const cut = { reached: false };
     let resolveRead: ((response: ThreadReadResponse) => void) | null = null;
     fake.on(
@@ -356,7 +345,7 @@ describe("useThreadsStore.ensureThread", () => {
   });
 
   test("a ref-qualified announcement frame is buffered on its thread id, not on the active turn", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     const cut = { reached: false };
     let resolveRead: ((response: ThreadReadResponse) => void) | null = null;
     fake.on(
@@ -427,7 +416,7 @@ describe("useThreadsStore.ensureThread", () => {
     // buffer as turn/started + turn/completed. Both must be buffered, in
     // order, or the published snapshot shows a turn that never opened or one
     // that never ended.
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     const cut = { reached: false };
     let resolveRead: ((response: ThreadReadResponse) => void) | null = null;
     fake.on(
@@ -480,7 +469,7 @@ describe("useThreadsStore.ensureThread", () => {
   });
 
   test("a thread resync publishes its authoritative replacement snapshot", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     const replacementRead: { resolve: ((response: ThreadReadResponse) => void) | null } = { resolve: null };
     let readCount = 0;
     fake.on("thread/read", (params) => {
@@ -541,7 +530,7 @@ describe("useThreadsStore.ensureThread", () => {
   });
 
   test("a refresh preserves a live active turn omitted by the snapshot cut", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     let readCount = 0;
     const cut = { reached: false };
     let resolveRefresh: ((response: ThreadReadResponse) => void) | null = null;
@@ -638,7 +627,7 @@ describe("useThreadsStore.ensureThread", () => {
   });
 
   test("a refresh does not preserve a same-numbered turn from a replaced instance", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     let readCount = 0;
     fake.on("thread/read", (params) => {
       readCount += 1;
@@ -702,7 +691,7 @@ describe("useThreadsStore.ensureThread", () => {
   });
 
   test("a thread resync bumps the ref's hydration generation", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     fake.on("thread/read", (params) => echoRead(readResponse("ref_a"), params.requestGeneration));
     await threadsStore.getState().ensureThread("ref_a");
     const initial = threadsStore.getState().hydrations.get("ref_a");
@@ -718,7 +707,7 @@ describe("useThreadsStore.ensureThread", () => {
   });
 
   test("a targeted resync preserves identical ordered streaming deltas and their frame times", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     const snapshot = versionedReadResponse("ref_a", {
       status: { type: "active", activeFlags: ["streaming"] },
       turns: [
@@ -790,7 +779,7 @@ describe("useThreadsStore.ensureThread", () => {
   });
 
   test("a targeted resync does not replay a pre-response delta already represented by its snapshot", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     const initial = versionedReadResponse("ref_a", {
       status: { type: "active", activeFlags: ["streaming"] },
       turns: [
@@ -844,7 +833,7 @@ describe("useThreadsStore.ensureThread", () => {
   });
 
   test("a targeted resync does not replay a pre-response item start already represented by its snapshot", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     const replacementRead: { resolve: ((response: ThreadReadResponse) => void) | null } = { resolve: null };
     let readCount = 0;
     fake.on("thread/read", (params) => {
@@ -903,7 +892,7 @@ describe("useThreadsStore.ensureThread", () => {
   });
 
   test("a targeted resync does not replay a pre-response turn start already represented by its snapshot", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     const replacementRead: { resolve: ((response: ThreadReadResponse) => void) | null } = { resolve: null };
     let readCount = 0;
     fake.on("thread/read", (params) => {
@@ -945,7 +934,7 @@ describe("useThreadsStore.ensureThread", () => {
   });
 
   test("a targeted resync does not replay a pre-response queue change already represented by its snapshot", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     const replacementRead: { resolve: ((response: ThreadReadResponse) => void) | null } = { resolve: null };
     let readCount = 0;
     fake.on("thread/read", (params) => {
@@ -989,7 +978,7 @@ describe("useThreadsStore.ensureThread", () => {
   });
 
   test("a thread resync supersedes an initial same-epoch open hydration", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     await establishMembership(fake);
     const reads: Array<(response: ThreadReadResponse) => void> = [];
     fake.on(
@@ -1030,7 +1019,7 @@ describe("useThreadsStore.ensureThread", () => {
   });
 
   test("a second thread resync supersedes the first targeted refresh in the same epoch", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     const replacementReads: Array<(response: ThreadReadResponse) => void> = [];
     let readCount = 0;
     fake.on("thread/read", (params) => {
@@ -1083,7 +1072,7 @@ describe("useThreadsStore.ensureThread", () => {
   });
 
   test("a thread resync for an untracked ref does not read it", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     fake.on("thread/read", (params) => echoRead(readResponse("ref_untracked"), params.requestGeneration));
 
     fake.emitNotification({
@@ -1096,7 +1085,7 @@ describe("useThreadsStore.ensureThread", () => {
   });
 
   test("an initial snapshot supersedes threadId-only notifications buffered after ref routing", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     const box: { resolveRead: ((response: ThreadReadResponse) => void) | null } = { resolveRead: null };
     fake.on(
       "thread/read",
@@ -1154,7 +1143,7 @@ describe("useThreadsStore.ensureThread", () => {
   });
 
   test("an initial snapshot supersedes v2 notifications buffered after thread identity is established", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     const box: { resolveRead: ((response: ThreadReadResponse) => void) | null } = { resolveRead: null };
     fake.on(
       "thread/read",
@@ -1216,7 +1205,7 @@ describe("useThreadsStore.ensureThread", () => {
   });
 
   test("a resync that supersedes a pre-clear hydrate routes post-cut frames by its own snapshot's thread id", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     const cut = { reached: false };
     const resyncReads: Array<(response: ThreadReadResponse) => void> = [];
     let readCount = 0;

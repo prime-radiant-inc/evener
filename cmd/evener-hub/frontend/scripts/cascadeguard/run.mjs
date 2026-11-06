@@ -5,7 +5,7 @@ import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { Driver } from "../skillguard/run.mjs";
 import { evaluate, navigateTo, queryAccessibilityTree, REFUSED_BUTTON_SELECTOR } from "../browserGuardCdp.mjs";
-import { revealControlStep } from "./revealControl.mjs";
+import { revealControlStep, revealReadyExpr } from "./revealControl.mjs";
 import { attentionJourney } from "./attention.mjs";
 
 const fixture = JSON.parse(readFileSync(0, "utf8"));
@@ -394,7 +394,7 @@ async function openSourceVerbosity() {
   await driver.clickAt(verbosity.x, verbosity.y);
   return wait(`(() => {
     const panel = document.querySelector('[data-testid="transcript-detail-control"]');
-    const selected = panel?.querySelector('[role="radio"][aria-checked="true"]')?.textContent.trim();
+    const selected = panel?.querySelector('section[aria-label="Transcript detail editor"] [role="radio"][aria-checked="true"]')?.textContent.trim();
     return selected ? { selected, local:panel.textContent.includes('Local Desktop view') } : null;
   })()`, "the real Verbosity dialog exposes its current preset");
 }
@@ -417,7 +417,7 @@ async function nativePositioningInterruption(input) {
   assert.ok(["Chat", "Tools"].includes(original.selected), "the native interruption starts from a real Chat or Tools preset");
   if (original.selected !== "Chat") {
     await clickVerbosityChoice("Chat");
-    await wait('document.querySelector("[data-testid=transcript-detail-control] [role=radio][aria-checked=true]")?.textContent.trim() === "Chat"', "the real source has a Chat baseline before the measurement hold");
+    await wait(`document.querySelector('[data-testid="transcript-detail-control"] section[aria-label="Transcript detail editor"] [role="radio"][aria-checked="true"]')?.textContent.trim() === "Chat"`, "the real source has a Chat baseline before the measurement hold");
   }
   const before = await settledReadingPoint(sourcePortExpr, "native interruption before width");
   assert.ok(!before.followingBottom && before.height > before.viewport && before.offset < -100,
@@ -437,7 +437,7 @@ async function nativePositioningInterruption(input) {
     await wait(`window.innerWidth === 920 && (${sourcePortExpr})?.clientWidth !== ${before.width}`, "interruption preparation changes actual source width");
     const other = "Tools";
     await clickVerbosityChoice(other);
-    await wait(`document.querySelector('[data-testid="transcript-detail-control"] [role="radio"][aria-checked="true"]')?.textContent.trim() === ${q(other)}`, "the real source preset change is published");
+    await wait(`document.querySelector('[data-testid="transcript-detail-control"] section[aria-label="Transcript detail editor"] [role="radio"][aria-checked="true"]')?.textContent.trim() === ${q(other)}`, "the real source preset change is published");
     await key("Escape", 27);
     await wait('document.querySelector("[data-testid=transcript-detail-control]") === null', "Verbosity closes before input reaches the source port");
     observation.prepared = await wait(`(() => {
@@ -562,7 +562,7 @@ async function nativePositioningInterruption(input) {
   })()`);
   await openSourceVerbosity();
   await clickVerbosityChoice(original.local ? original.selected : "Use hub default", original.local ? "radio" : "button");
-  await wait(`document.querySelector('[data-testid="transcript-detail-control"] [role="radio"][aria-checked="true"]')?.textContent.trim() === ${q(original.selected)}`, "native UI restores the original source preset");
+  await wait(`document.querySelector('[data-testid="transcript-detail-control"] section[aria-label="Transcript detail editor"] [role="radio"][aria-checked="true"]')?.textContent.trim() === ${q(original.selected)}`, "native UI restores the original source preset");
   await key("Escape", 27);
   await wait('document.querySelector("[data-testid=transcript-detail-control]") === null', "restored Verbosity dialog closes");
   await driver.send("Emulation.setDeviceMetricsOverride", { width:1000, height:900, deviceScaleFactor:1, mobile:false });
@@ -1558,7 +1558,7 @@ const sidebarEntranceSettled = `(() => {
 
 async function reveal(edge, container) {
   const selector = `${container} ${row(edge)}`;
-  await wait(`document.querySelector(${q(selector)}) !== null || [...document.querySelectorAll(${q(`${container} button`)})].some(b => b.textContent.trim().startsWith('Inactive subagents ('))`, "real direct delegate collection");
+  await wait(revealReadyExpr(selector, container, REFUSED_BUTTON_SELECTOR), "real direct delegate collection");
   for (let boundary = 0; boundary < 10; boundary++) {
     if (await read(`document.querySelector(${q(selector)}) !== null`)) return selector;
     // The control is found and activated in one page turn (see

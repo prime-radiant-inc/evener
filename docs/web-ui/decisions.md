@@ -5,6 +5,53 @@ alternatives, and what source review found at the time. The current
 [design system](design-system.md#design-model-an-editorial-instrument) governs new work;
 dated verdicts below are not a competing current mandate.
 
+## 2026-11-06 cool neutral palette
+
+Jesse rejected the warm paper ground as beige. The light page, rail and message
+slip sat within a few RGB points of the same yellow-tinted value, so the rail
+lost its structural boundary and the user's slip read as the page. The palette
+moves to cool neutral: light page `#F6F7F9`, rail `#EEF0F3`, content `#FFFFFF`,
+message slip `#F2F4F7`; dark page `#111214`, rail `#16181C`, content `#1D2025`.
+The blue accent, semantic hues, type and layout are unchanged. The PWA manifest
+and HTML theme-color follow the new dark page.
+
+## 2026-11-05 web UI glow-up: make the editorial world visible
+
+An Impeccable critique scored the web UI 26/40 and found the transcript authored
+but the shell interchangeable: accent blue carried the primary CTA, the user's
+bubble, the selected settings row, links and every focus ring; the warm paper was
+3–9 RGB points from white and read neutral; and the type ramp differed by two
+points at each step. Jesse chose to make the editorial world visible and to take
+every finding.
+
+**Palette.** The page ground and rail canvas are now visibly warm (`#F4F0E6` /
+`#EBE6D8` light, `#141412` / `#191917` dark). Accent is spent once: the primary
+action is ink on paper (`--ink-hi` fill, `--surface-0` text), and accent remains
+focus, links and selection. The user's own words move from the option-B
+`--accent-bg` wash to a paper slip (`--surface-inset` plus one `--edge` hairline),
+using the neutral-wash fallback recorded in the 2026-09-13 entry. Settings
+selection keeps its accent wash and rule, now 1px.
+The warm values in this entry were replaced by the 2026-11-06 cool neutral entry.
+
+**Type.** Schibsted Grotesk replaces Inter for operations (the deterministic
+detector's only finding: Inter is an overused face). Source Serif 4 and JetBrains
+Mono remain. The ramp's display steps rise to pane-title 20, page-title 26 and
+display 34; the phone top-bar title keeps the serif face. Markdown's `h3` is no
+longer smaller than the prose it heads.
+
+**Operate surfaces.** The rail gains an `evener` wordmark and a named
+"N needs you" chip instead of a bare count. The floating needs-you control leads
+with "Needs you" and clamps the question to two lines. A disabled Start names its
+reason beside the prompt card, and the cold-start chord hints ride onto `/new`
+when no session is open. A settled completed turn closes with a factual end-cap:
+"Done in 2m · 4 tool calls".
+
+**Craft.** The ask-dock answer field uses the app face, an AA placeholder and the
+shared focus ring. Browser selection, caret, native-control accent and scrollbars
+come from the palette; `applyTheme` rewrites the `theme-color` meta to the active
+page ground. Interaction contracts, semantic hue meanings, widget APIs and the
+honest-liveness rules are unchanged.
+
 ## 2026-09-13 message prominence in the editorial transcript (option B)
 
 Jesse picked **option B (filled bubbles)** from the A/B/C mockup round for
@@ -66,6 +113,16 @@ arriving, so it keeps pulsing if the stream stalls; Cadence's decaying trace
 stays the honest liveness signal. Every other idle pulse or shimmer remains
 banned, and `widgets/loader`'s own doc note no longer claims its motion is
 reserved away from agent liveness.
+
+**Superseded 2026-11-01 (unfoldable thinking traces).** The placeholder's
+"never any rendered text" and the redacted row's "no disclosure" are both
+reversed: a settled thought is a collapsed, unfoldable trace row at every
+level but Chat (whose live placeholder keeps this content-free grammar), and a
+broken turn's thought unfolds behind its unchanged neutral label. The live
+current thought still shows only the Loader and an approximate token figure.
+Every thinking disclosure's initial state is the "Thinking open by default"
+switch, with the reader's explicit choice winning. See the Web Hub UI guide's
+Settings section for the current contract.
 
 ## Editorial instrument (2026-09-09)
 The user approved a comprehensive Tufte-inspired editorial direction and the

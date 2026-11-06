@@ -266,6 +266,7 @@ func writeForkChildWithConfig(fs afero.Fs, stateDir, parentID string, parentHead
 	// Replay prefix entries into the child transcript.
 	for _, entry := range prefixEntries {
 		// A copy keeps the identity it was recorded with.
+		entry.Turn.Authorship = inheritedTranscriptAuthorship(entry.Turn.Authorship)
 		if _, err := tw.Record(entry.Turn, transcript.RecordOptions{Door: transcript.DoorBuffered, Place: transcript.PlaceVerbatim}); err != nil {
 			return "", fmt.Errorf("append prefix turn to child transcript: %w", err)
 		}
@@ -281,6 +282,7 @@ func writeForkChildWithConfig(fs afero.Fs, stateDir, parentID string, parentHead
 	// divergence fork (aside forks pass nil and copy the tip verbatim).
 	if editedMessage != nil {
 		editedTurn := schema.NewTurn(schema.TurnUserInput, llm.User(*editedMessage))
+		editedTurn.Authorship = humanTranscriptAuthorship()
 		// Written with no session to run it: a delivery turn of its own.
 		if _, err := tw.Record(editedTurn, transcript.RecordOptions{Door: transcript.DoorBuffered, Place: transcript.PlaceDelivery}); err != nil {
 			return "", fmt.Errorf("append edited turn to child transcript: %w", err)
@@ -297,6 +299,8 @@ func writeForkChildWithConfig(fs afero.Fs, stateDir, parentID string, parentHead
 	if config != nil {
 		childConfig = config.Clone()
 	}
+	// A fork or aside is a new ordinary session, not a resumed Manager.
+	childConfig.Manager = false
 	// A fork child is written as a root, so it keeps a restricted root parent's
 	// memory-save verdict but never inherits a delegate parent's save-tool
 	// removal: the child registers the save tools when it launches. An aside

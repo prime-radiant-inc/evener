@@ -35,13 +35,13 @@ import {
 	type PluginsStore,
 	runGatedMutation,
 } from "@evener/appwire-client/state/extensions";
-import { compactDuration } from "@evener/appwire-client";
 import type { ConversationClientLike } from "../conversation/services/conversation";
 import { isReady } from "../connectionDisplay";
 import { destructiveButton } from "../haptics";
 import { INSTALLED_PLUGINS_FAILED, MarketplaceBrowser } from "../MarketplaceBrowser";
 import { HUB_NO_LONGER_SELECTED, useRetainedScreenConnection } from "../retainedScreen";
 import { space } from "../design/tokens";
+import { timeAgo } from "../session/format";
 import { Group, GroupedPage, GroupFooter, GroupGap, Row, Segmented, SwitchRow } from "../sheet/Grouped";
 import { ModalSheet } from "../sheet/ModalSheet";
 import { SearchField } from "../sheet/SearchField";
@@ -753,22 +753,18 @@ function Plugins({
 							<Row label={`Path on ${hubName}`} sub={entry.installPath} machineSub />
 							{entry.gitCommitSha ? <Row label="Commit" sub={entry.gitCommitSha} machineSub /> : null}
 							{/* The hub sends 0 for a time it doesn't know. */}
-							{entry.installedAt > 0 ? <Row label="Installed" value={agoText(entry.installedAt)} /> : null}
-							{entry.lastUpdated > 0 ? <Row label="Updated" value={agoText(entry.lastUpdated)} /> : null}
+							{entry.installedAt > 0 ? (
+								<Row label="Installed" value={timeAgo(Date.now() - entry.installedAt * 1000)} />
+							) : null}
+							{entry.lastUpdated > 0 ? (
+								<Row label="Updated" value={timeAgo(Date.now() - entry.lastUpdated * 1000)} />
+							) : null}
 						</Group>
 					</GroupedPage>
 				</ModalSheet>
 			)}
 		</GroupedPage>
 	);
-}
-
-/** How long ago a time the hub sends in Unix seconds was: "3d ago", or
- * "just now" under a second, including a time a clock ahead of this phone's
- * put in the future. */
-function agoText(unixSeconds: number): string {
-	const ms = Date.now() - unixSeconds * 1000;
-	return ms < 1000 ? "just now" : `${compactDuration(ms)} ago`;
 }
 
 /** The installed plugins by marketplace, in the order the hub lists them. */

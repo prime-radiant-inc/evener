@@ -7,7 +7,7 @@ import { MotionProvider } from "../../motion";
 import { NOW_TICK_MS } from "../../panes/session/liveness";
 import { CommittedSession } from "../../panes/session/testing/CommittedSession";
 import { installLocalStorage, MemoryStorage } from "../../storageTestUtils";
-import { connectionStore } from "../../stores/connection";
+import { connectionStore, resetConnectionStoreForTests } from "../../stores/connection";
 import { sessionActivitySnapshot } from "../../stores/sessionActivity";
 import {
   activityClient,
@@ -36,7 +36,7 @@ afterEach(() => {
   resetWorkspaceStoreForTests();
   resetActivitySidebarStoreForTests();
   resetThreadsStoreForTests();
-  connectionStore.setState({ client: null, state: "idle" });
+  resetConnectionStoreForTests();
   vi.restoreAllMocks();
   vi.useRealTimers();
   vi.unstubAllGlobals();

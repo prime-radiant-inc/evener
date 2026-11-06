@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"maps"
-	"os"
 	"slices"
 	"sort"
 	"sync"
@@ -15,6 +14,7 @@ import (
 	"github.com/spf13/afero"
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/envvars"
+	"primeradiant.com/evener/execsupport/componentlog"
 	"primeradiant.com/evener/identifier"
 	"primeradiant.com/evener/rendezvous"
 )
@@ -23,12 +23,19 @@ import (
 // rendezvous-file metadata with dynamic state resolved via AppWire.
 type LiveEntry struct {
 	rendezvous.Entry
-	SessionID         string
+	SessionID string
+	// RosterInstanceID preserves a remote session's identity when SessionID
+	// is its stable, source-qualified tree key. Local entries use SessionID.
+	RosterInstanceID  string
 	Status            string   // most-recent daemon state ("active", "idle", "awaiting", etc.)
 	ActiveFlags       []string // the status flags the daemon reported alongside Status
 	Crashed           bool     // true only for a retained record whose daemon PID is confirmed gone
 	PendingAsk        bool     // true while the daemon reports an unanswered ask_user question
 	PendingEscalation bool     // true while the daemon reports a blocked sandbox-exemption escalation (M7)
+	// Manager is the session's own start-time Manager property, as its daemon
+	// projects it. It is fixed for the session's life, so one probe answer
+	// stays current for the entry's lifetime.
+	Manager bool
 	// PendingEscalations is the daemon's blocked escalation cards, in the order
 	// it raised them, so the oldest is first. Every producer sets it from the
 	// same read as PendingEscalation, which stays len(PendingEscalations) > 0.
@@ -136,6 +143,9 @@ type ProbeResult struct {
 	ActiveFlags       []string
 	PendingAsk        bool
 	PendingEscalation bool
+	// Manager mirrors LiveEntry.Manager: the session's own start-time Manager
+	// property, as its daemon projects it on the root row.
+	Manager bool
 	// PendingEscalations mirrors LiveEntry.PendingEscalations: the blocked
 	// cards from the same root row, in raise order.
 	PendingEscalations []appwire.SandboxEscalationRequested
@@ -1203,7 +1213,7 @@ func (r *Roster) Watch(ctx context.Context) error {
 			r.Refresh()
 		case err := <-w.Errors():
 			if err != nil {
-				fmt.Fprintf(os.Stderr, "[hub] fsnotify error on %s: %v\n", r.runDir, err)
+				componentlog.New("hub").Error("fsnotify error", "dir", r.runDir, "err", err)
 			}
 			r.Refresh()
 		case <-ticker.C():

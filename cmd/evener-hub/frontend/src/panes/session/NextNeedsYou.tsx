@@ -29,7 +29,9 @@ const HOLD_SLOP_PX = 10;
 const CLASS = {
   root: requireClass(styles.root, "nextNeedsYou.module.css", "root"),
   nextSlot: requireClass(styles.nextSlot, "nextNeedsYou.module.css", "nextSlot"),
+  nextStack: requireClass(styles.nextStack, "nextNeedsYou.module.css", "nextStack"),
   nextLead: requireClass(styles.nextLead, "nextNeedsYou.module.css", "nextLead"),
+  nextDot: requireClass(styles.nextDot, "nextNeedsYou.module.css", "nextDot"),
   nextLabel: requireClass(styles.nextLabel, "nextNeedsYou.module.css", "nextLabel"),
   ellipsis: requireClass(styles.ellipsis, "nextNeedsYou.module.css", "ellipsis"),
   list: requireClass(styles.list, "nextNeedsYou.module.css", "list"),
@@ -387,6 +389,7 @@ function OwnedNextNeedsYou({
         <Button
           variant="secondary"
           size="md"
+          wrap
           data-testid="next-needs-you-next"
           aria-label={nextAccessibleName}
           onPointerDown={handleNextPointerDown}
@@ -397,8 +400,13 @@ function OwnedNextNeedsYou({
           onLostPointerCapture={handleLostPointerCapture}
           onClick={handleNextClick}
         >
-          <span className={CLASS.nextLead}>Next</span>
-          {nextTitle !== "" && <span className={CLASS.nextLabel}>{nextTitle}</span>}
+          <span className={CLASS.nextStack}>
+            <span className={CLASS.nextLead}>
+              <span className={CLASS.nextDot} aria-hidden="true" />
+              Needs you
+            </span>
+            {nextTitle !== "" && <span className={CLASS.nextLabel}>{nextTitle}</span>}
+          </span>
         </Button>
       </div>
       <Popover

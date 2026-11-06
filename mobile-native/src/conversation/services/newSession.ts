@@ -33,6 +33,8 @@ export interface NewSessionParams {
 	modelProvider?: string;
 	model?: string;
 	reasoningEffort?: string;
+	/** Start the session with the Manager role. False is omitted from the wire. */
+	manager?: boolean;
 	launchOverrides?: LaunchConfigLayer;
 }
 
@@ -70,6 +72,9 @@ export function createNewSessionService(client: ConversationClientLike): NewSess
 			}
 			if (params.reasoningEffort !== undefined) {
 				wireParams.reasoningEffort = params.reasoningEffort;
+			}
+			if (params.manager) {
+				wireParams.manager = true;
 			}
 			if (params.launchOverrides !== undefined) {
 				wireParams.launchOverrides = params.launchOverrides;

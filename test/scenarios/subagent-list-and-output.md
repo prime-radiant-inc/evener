@@ -8,9 +8,9 @@ non-consuming.
 **Identity.** A delegate is not a job and is not addressed like one.
 `delegate` creation is asynchronous, returns `delegate_id` /
 `child_session_id` / `transcript_ref` and no `job_id`
-(`agent/session_tools_delegate.go#stableDelegateCreateResult`), and rejects
+(`agent/session_tools_delegate.go#delegateCreateResult`), and rejects
 `max_wait_ms` outright with `invalid_request: delegate creation does not
-accept max_wait_ms` (`agent/session_tools_delegate.go#stableDelegateCreateTool`).
+accept max_wait_ms` (`agent/session_tools_delegate.go#delegateCreateTool`).
 `read_transcript`'s own description is normative here: "A stable
 delegate's session ref reads its conversation; delegates never use job:
 refs", and a `job:<job_id>` ref "reads shell output only". There is no
@@ -51,7 +51,7 @@ one value, `shell` (`agent/internal/jobstore/record.go#JobType`).
   outcome reason rides the row's `[started · reason · exit · bytes]` tail,
   not the status column. The row's structured state does carry `task`,
   populated from the descriptor (`agent/session_tools_job_list.go#jobListEntry`;
-  `agent/session_tools_job_list.go#projectStableDelegateListItem`), but
+  `agent/session_tools_job_list.go#projectDelegateListItem`), but
   `formatJobList` never prints it — the model-facing line shows a label
   taken from `description`. Assert on the printed line, and read the task
   text from the child's transcript rather than expecting the listing to

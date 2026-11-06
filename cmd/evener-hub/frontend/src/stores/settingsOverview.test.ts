@@ -2,7 +2,7 @@ import { friendlyErrorMessage, type SettingsOverviewResponse } from "@evener/app
 import { act, cleanup, renderHook } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { connectReadyFakeClient } from "../testing/connectionTestUtils";
-import { connectionStore } from "./connection";
+import { resetConnectionStoreForTests } from "./connection";
 import {
   resetSettingsOverviewStoreForTests,
   settingsOverviewStore,
@@ -21,7 +21,7 @@ const SAMPLE_RESPONSE: SettingsOverviewResponse = {
 };
 
 beforeEach(() => {
-  connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
+  resetConnectionStoreForTests();
   resetSettingsOverviewStoreForTests();
 });
 

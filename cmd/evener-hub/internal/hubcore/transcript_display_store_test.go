@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"math"
 	"path/filepath"
 	"reflect"
@@ -248,6 +249,31 @@ func TestTranscriptDisplayStoreMalformedSnapshotFallsBackAndBlocksPatches(t *tes
 	}
 }
 
+func TestTranscriptDisplayStoreKeepsExplicitThinkingOpenFromSnapshot(t *testing.T) {
+	// A stored five-field custom whose thinkingOpenByDefault diverges from
+	// expandByDefault carries an EXPLICIT presentation choice; presence must
+	// be reported, or the legacy fixup would overwrite it after a restart.
+	root := t.TempDir()
+	snapshot := `{"version":1,"desktop":{"revision":2,"config":{"version":1,"content":{"kind":"custom","custom":{"toolIntent":true,"toolCalls":true,"reasoning":false,"expandByDefault":true,"thinkingOpenByDefault":false}},"advanced":{"roundTimings":false,"tokenCounts":false,"estimatedCost":false,"systemEvents":false,"promptEvents":false,"hookExits":"none"}}},"mobile":{"revision":0,"config":{"version":1,"content":{"kind":"preset","level":"intent"},"advanced":{"roundTimings":false,"tokenCounts":false,"estimatedCost":false,"systemEvents":false,"promptEvents":false,"hookExits":"none"}}}}`
+	if err := writeTranscriptDisplayStateFile(afero.NewOsFs(), root, []byte(snapshot)); err != nil {
+		t.Fatal(err)
+	}
+	store, err := NewTranscriptDisplayStore(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	custom := store.Snapshot().Desktop.Config.Content.Custom
+	if custom == nil {
+		t.Fatalf("desktop custom missing")
+	}
+	if custom.ThinkingOpenByDefault {
+		t.Fatalf("explicit thinkingOpenByDefault=false was overwritten by expandByDefault")
+	}
+	if !custom.ExpandByDefault {
+		t.Fatalf("expandByDefault = false, want the stored true")
+	}
+}
+
 func TestTranscriptDisplayStoreEmptySnapshotUsesShippedDefaults(t *testing.T) {
 	root := t.TempDir()
 	if err := writeTranscriptDisplayStateFile(afero.NewOsFs(), root, nil); err != nil {
@@ -259,6 +285,53 @@ func TestTranscriptDisplayStoreEmptySnapshotUsesShippedDefaults(t *testing.T) {
 	}
 	if got, want := store.Snapshot(), appwire.TranscriptDisplayShippedDefaults(); !reflect.DeepEqual(got, want) {
 		t.Fatalf("empty snapshot=%#v, want %#v", got, want)
+	}
+}
+
+func TestTranscriptDisplayStoreLoadsOlderCustomSnapshotWithThinkingOpenFixup(t *testing.T) {
+	// A snapshot written before the thinkingOpenByDefault field existed
+	// carries the four-field custom vector; loading it keeps the meaning the
+	// stored vector had (expandByDefault opened reasoning-on thinking), and
+	// the served canonical snapshot carries the resolved field. Removal
+	// condition: delete with the 4-field acceptance once the minimum
+	// supported client bundle encodes the five-field shape.
+	for _, test := range []struct {
+		name             string
+		expandByDefault  bool
+		wantThinkingOpen bool
+	}{
+		{"expand on keeps thinking open", true, true},
+		{"expand off keeps thinking collapsed", false, false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			root := t.TempDir()
+			snapshot := fmt.Sprintf(
+				`{"version":1,"desktop":{"revision":2,"config":{"version":1,"content":{"kind":"custom","custom":{"toolIntent":true,"toolCalls":true,"reasoning":true,"expandByDefault":%t}},"advanced":{"roundTimings":false,"tokenCounts":false,"estimatedCost":false,"systemEvents":false,"promptEvents":false,"hookExits":"none"}}},"mobile":{"revision":0,"config":{"version":1,"content":{"kind":"preset","level":"intent"},"advanced":{"roundTimings":false,"tokenCounts":false,"estimatedCost":false,"systemEvents":false,"promptEvents":false,"hookExits":"none"}}}}`,
+				test.expandByDefault,
+			)
+			if err := writeTranscriptDisplayStateFile(afero.NewOsFs(), root, []byte(snapshot)); err != nil {
+				t.Fatal(err)
+			}
+			store, err := NewTranscriptDisplayStore(root)
+			if err != nil {
+				t.Fatal(err)
+			}
+			served := store.Snapshot()
+			custom := served.Desktop.Config.Content.Custom
+			if custom == nil {
+				t.Fatalf("desktop custom missing: %#v", served)
+			}
+			if custom.ThinkingOpenByDefault != test.wantThinkingOpen {
+				t.Fatalf("thinkingOpenByDefault = %v, want %v", custom.ThinkingOpenByDefault, test.wantThinkingOpen)
+			}
+			encoded, err := json.Marshal(served)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !bytes.Contains(encoded, []byte(`"thinkingOpenByDefault":`)) {
+				t.Fatalf("served snapshot is not canonical 5-field custom: %s", encoded)
+			}
+		})
 	}
 }
 

@@ -9,6 +9,7 @@ import (
 	"sync/atomic"
 
 	"primeradiant.com/evener/agent"
+	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/buildinfo"
 	"primeradiant.com/evener/internal/appprojector"
@@ -41,10 +42,15 @@ type InputMessage struct {
 // per-session client-mutation state machine.
 type RetrySafeTurnFunctions struct {
 	Start     func(appwire.TurnStartParams) (appwire.TurnStartResponse, error)
+	StartAs   func(appwire.TurnStartParams, schema.SessionActor) (appwire.TurnStartResponse, error)
 	Steer     func(appwire.TurnSteerParams) (appwire.TurnSteerResponse, error)
+	SteerAs   func(appwire.TurnSteerParams, schema.SessionActor) (appwire.TurnSteerResponse, error)
 	Queue     func(appwire.TurnQueueParams) (appwire.TurnQueueResponse, error)
+	QueueAs   func(appwire.TurnQueueParams, schema.SessionActor) (appwire.TurnQueueResponse, error)
 	Drain     func(appwire.TurnDrainAsSteerParams) (appwire.TurnDrainAsSteerResponse, error)
+	DrainAs   func(appwire.TurnDrainAsSteerParams, schema.SessionActor) (appwire.TurnDrainAsSteerResponse, error)
 	Promote   func(appwire.TurnPromoteQueuedAsSteerParams) (appwire.TurnPromoteQueuedAsSteerResponse, error)
+	PromoteAs func(appwire.TurnPromoteQueuedAsSteerParams, schema.SessionActor) (appwire.TurnPromoteQueuedAsSteerResponse, error)
 	Cancel    func(appwire.TurnCancelQueuedParams) (appwire.TurnCancelQueuedResponse, error)
 	Interrupt func(context.Context, appwire.TurnInterruptParams) (appwire.TurnInterruptResponse, error)
 }
@@ -200,6 +206,10 @@ type ServerConfig struct {
 	HubToken      string
 	AllowedHost   string
 	StateDir      string
+	// Logf receives server-initiated diagnostics a peer cannot see from its
+	// side, such as connection eviction. Without it the serve daemon has no
+	// server-side log at all.
+	Logf func(format string, args ...any)
 }
 
 // appDescendantProjection is the in-memory AppWire view of one in-process
@@ -272,7 +282,8 @@ type Server struct {
 	appEnvelope threadEnvelope
 	// appEnvelopeSource is the seam the bridge samples session state through at
 	// the moments it changes. It is NEVER consulted by a read.
-	appEnvelopeSource ThreadEnvelopeSource
+	appEnvelopeSource           ThreadEnvelopeSource
+	appEnvelopeSourceGeneration uint64
 	// appActivity is the root tree's pulse meter (S5). The projection commits
 	// feed it and the thread list reads it, all under mu; see activityMeter.
 	appActivity activityMeter
@@ -296,10 +307,12 @@ type Server struct {
 	appDescendantLiveWatchesFunc func(threadIDs []string) map[string][]agent.WatchStatusInfo
 	// appSubagentTallyFunc reads the root session's whole-tree subagent tally
 	// for the thread list's root row (S3); nil disables it.
-	appSubagentTallyFunc func() (appwire.SubagentTally, bool)
-	retrySafeTurns       RetrySafeTurnFunctions
-	cancelFunc           context.CancelFunc
-	goalFunc             func(objective string) (bool, error)
+	appSubagentTallyFunc       func() (appwire.SubagentTally, bool)
+	retrySafeTurns             RetrySafeTurnFunctions
+	resolveManagerActor        func(appwire.SessionActorProof) (schema.SessionActor, error)
+	sandboxEscalationResolveAs func(string, bool, schema.SessionActor) error
+	cancelFunc                 context.CancelFunc
+	goalFunc                   func(objective string) (bool, error)
 	// notesHumanSetFunc is called by the appwire notes/human/set method. The
 	// callback returns the full atomic acceptance result, including its receipt.
 	notesHumanSetFunc func(outerID, note string) (appwire.NotesHumanSetResponse, error)
@@ -319,7 +332,7 @@ type Server struct {
 	listModelsFunc           func(context.Context) ([]appwire.ModelDescriptor, error)
 	appSessionActivity       sessionActivityHooks
 	tasksFn                  func() []appwire.Task
-	jobsFn                   func(appwire.JobsListParams) (any, error)
+	jobsFn                   func(context.Context, appwire.JobsListParams) (any, error)
 	jobOutputFn              func(jobID string, beforeBytes *int64, maxBytes int64) (data appwire.JobOutputPage, found bool, err error)
 	jobGetFn                 func(jobID string) (data appwire.JobActivityJob, found bool, err error)
 	shutdownFunc             func()
@@ -340,6 +353,7 @@ type Server struct {
 	// delegateStopFunc ends one delegate's current run at the user's request
 	// (S6). nil when no session is attached.
 	delegateStopFunc func(delegateID string) (appwire.DelegateStopOutcome, error)
+	jobStopFunc      func(context.Context, appwire.SessionStopRequest) (appwire.SessionStopResponse, error)
 	processing       bool
 	// appMutationGate serializes retry-safe turn mutations with thread/clear.
 	// A clear must not rotate the live instance while an old-generation turn
@@ -387,20 +401,23 @@ func NewServer(cfg ServerConfig) *Server {
 			ServerName: "evener-serve",
 			Version:    buildinfo.Version(),
 			SourceID:   "local",
+			Logf:       cfg.Logf,
 			SubscriptionAdmissionResolver: func(msg appwire.Message) appserver.SubscriptionAdmissionResolution {
 				return runtime.resolveSubscriptionAdmission(msg)
 			},
 			Features: appwire.FeatureSet{
-				ThreadList:        true,
-				ThreadTurnsList:   true,
-				TurnStart:         true,
-				TurnSteer:         true,
-				ThreadClear:       true,
-				ThreadShutdown:    true,
-				ForkFromTurn:      false,
-				Tasks:             true,
-				ModelList:         true,
-				DirectoryComplete: false,
+				VoicePresentationContextV1: true,
+				ConversationProvenance:     true,
+				ThreadList:                 true,
+				ThreadTurnsList:            true,
+				TurnStart:                  true,
+				TurnSteer:                  true,
+				ThreadClear:                true,
+				ThreadShutdown:             true,
+				ForkFromTurn:               false,
+				Tasks:                      true,
+				ModelList:                  true,
+				DirectoryComplete:          false,
 			},
 		}),
 		// AppReplaySize bounds notification RETENTION, which is transport
@@ -499,6 +516,21 @@ func (s *Server) UpdateSessionInfo(sessionID, model, profile string) {
 	s.mu.Unlock()
 }
 
+// UpdateSessionInfoFrom sets session identity fields from a sample that runs
+// under the server lock. A caller whose read raced a newer model-changed
+// projection - the daemon's model-set hook reading the profile while a turn
+// boundary commits a queued switch - would otherwise install a stale snapshot
+// after the projection already installed the new model, regressing the cache
+// with no corrective event behind it. Sampling inside the write's critical
+// section installs whatever the session reports at write time, so the cache
+// can only move forward.
+func (s *Server) UpdateSessionInfoFrom(sessionID string, sample func() (model, profile string)) {
+	s.mu.Lock()
+	model, profile := sample()
+	s.updateSessionInfoLocked(sessionID, model, profile)
+	s.mu.Unlock()
+}
+
 func (s *Server) updateSessionInfoLocked(sessionID, model, profile string) {
 	s.status.SessionID = sessionID
 	s.status.Model = model
@@ -551,11 +583,24 @@ func (s *Server) SetSandboxEscalationResolveFunc(fn func(escalationID string, ap
 	s.mu.Unlock()
 }
 
+func (s *Server) SetSandboxEscalationResolveAsFunc(fn func(string, bool, schema.SessionActor) error) {
+	s.mu.Lock()
+	s.sandboxEscalationResolveAs = fn
+	s.mu.Unlock()
+}
+
 // SetDelegateStopFunc sets the callback evener/delegate/stop hands a delegate
 // id to (S6). Wiring it advertises the stopSubagent capability.
 func (s *Server) SetDelegateStopFunc(fn func(delegateID string) (appwire.DelegateStopOutcome, error)) {
 	s.mu.Lock()
 	s.delegateStopFunc = fn
+	s.mu.Unlock()
+}
+
+// SetJobStopFunc binds the existing human job_stop owner to the typed AppWire route.
+func (s *Server) SetJobStopFunc(fn func(context.Context, appwire.SessionStopRequest) (appwire.SessionStopResponse, error)) {
+	s.mu.Lock()
+	s.jobStopFunc = fn
 	s.mu.Unlock()
 }
 
@@ -686,7 +731,7 @@ func (s *Server) SetTasksFunc(fn func() []appwire.Task) {
 // an error if it cannot read one: an unreadable durable root must reach the
 // caller as a failure, never as the empty success a job-less session answers
 // with.
-func (s *Server) SetJobsFunc(fn func(appwire.JobsListParams) (any, error)) {
+func (s *Server) SetJobsFunc(fn func(context.Context, appwire.JobsListParams) (any, error)) {
 	s.mu.Lock()
 	s.jobsFn = fn
 	s.mu.Unlock()

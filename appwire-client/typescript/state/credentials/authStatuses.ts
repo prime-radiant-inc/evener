@@ -22,6 +22,7 @@ import { createFrameworkFreeStore, type FrameworkFreeStore } from "../../framewo
 import type { AuthStatusResponse } from "../../types.gen";
 import { createListRevision, readRevisioned } from "../extensions/listRevision";
 import { attachLifecycle, createStoreLifecycle, type HostLifecycle } from "../extensions/storeLifecycle";
+import { REFETCH_DEBOUNCE_MS } from "../refetchDebounce";
 
 export type AuthStatusesClient = Pick<AppwireClient, "request" | "onNotification">;
 
@@ -45,14 +46,12 @@ export interface AuthStatusesStore extends FrameworkFreeStore<AuthStatusesState>
   dispose(): void;
 }
 
-export const AUTH_STATUSES_REFETCH_DEBOUNCE_MS = 250;
-
 export function createAuthStatusesStore(client: AuthStatusesClient): AuthStatusesStore {
   const listRevision = createListRevision();
 
   const lifecycle = createStoreLifecycle<AuthStatusesState>(client, {
     method: "evener/auth/updated",
-    debounceMs: AUTH_STATUSES_REFETCH_DEBOUNCE_MS,
+    debounceMs: REFETCH_DEBOUNCE_MS,
     store: () => store,
     refetch: (state) => state.fetchAuthStatuses(),
     revision: listRevision,

@@ -42,12 +42,14 @@ import (
 // refreshFacets always stores a freshly sampled value and never mutates one in
 // place, so a reader that copies the struct can hand the slices straight out.
 type threadEnvelope struct {
-	ContextPressure  float64
-	ContextMetrics   ContextMetrics
-	Detailed         *DetailedStatus
-	Queue            appwire.QueueState
-	PendingMutations []appwire.PendingMutation
-	Tasks            *appwire.TaskAggregate
+	ConversationProvenance *appwire.ConversationProvenanceState
+	PendingAsk             *appwire.PendingAskState
+	ContextPressure        float64
+	ContextMetrics         ContextMetrics
+	Detailed               *DetailedStatus
+	Queue                  appwire.QueueState
+	PendingMutations       []appwire.PendingMutation
+	Tasks                  *appwire.TaskAggregate
 	// TaskStoreOwnerSessionID is projection routing state. It never enters
 	// EvenerThread or any other public AppWire shape.
 	TaskStoreOwnerSessionID string
@@ -115,6 +117,10 @@ type threadEnvelope struct {
 	// the sandbox request its meta persists. A session's sandbox is fixed when
 	// it starts, so the seed at identity install is the sample that matters.
 	Access *appwire.ThreadAccess
+	// Manager is the session's start-time Manager property, persisted in its
+	// meta. Like Access it is fixed when the session starts, so the seed at
+	// identity install is the sample that matters: nothing can move it later.
+	Manager bool
 }
 
 // ThreadEnvelopeSource supplies the live session values the thread envelope
@@ -278,6 +284,7 @@ var facetsByEvent = map[events.EventKind]envelopeFacet{
 	// rewrites history outright, and an idle /compact has no turn boundary to
 	// rescue the preview it can change.
 	events.EventAssistantTextEnd:  facetContext | facetWork,
+	events.EventCommunicate:       facetContext,
 	events.EventContextCompaction: facetContext | facetMeta,
 	events.EventCompactionTurn:    facetContext,
 
@@ -316,6 +323,8 @@ var facetsByEvent = map[events.EventKind]envelopeFacet{
 func (s *Server) SetThreadEnvelopeSource(src ThreadEnvelopeSource) {
 	s.mu.Lock()
 	s.appEnvelopeSource = src
+	s.appEnvelopeSourceGeneration++
+	s.appEnvelope.PendingAsk = nil
 	s.mu.Unlock()
 }
 
@@ -356,6 +365,7 @@ func (s *Server) refreshThreadEnvelopeForEvent(ev events.SessionEvent) {
 func (s *Server) refreshFacets(facets envelopeFacet) {
 	s.mu.RLock()
 	src := s.appEnvelopeSource
+	sourceGeneration := s.appEnvelopeSourceGeneration
 	threadID := s.appThreadID
 	sourceID := s.appSourceID
 	taskCarrierGeneration := s.appEnvelope.taskCarrierGeneration
@@ -387,6 +397,11 @@ func (s *Server) refreshFacets(facets envelopeFacet) {
 	if facets&facetQueue != 0 {
 		next.Queue, next.PendingMutations = src.ClientMutationProjection()
 	}
+	if facets&(facetQueue|facetContext) != 0 {
+		if provenance, ok := src.(conversationProvenanceSource); ok {
+			next.ConversationProvenance = provenance.ConversationProvenance()
+		}
+	}
 	if facets&facetTasks != 0 {
 		next.Tasks = src.TaskAggregate()
 		next.TaskStoreOwnerSessionID = threadID
@@ -404,6 +419,11 @@ func (s *Server) refreshFacets(facets envelopeFacet) {
 	}
 	if facets&facetAsk != 0 {
 		next.PendingQuestion = src.PendingQuestion()
+		if pending, ok := src.(interface {
+			PendingAskCalls() *appwire.PendingAskState
+		}); ok {
+			next.PendingAsk = appwire.ClonePendingAsk(pending.PendingAskCalls())
+		}
 	}
 	if facets&facetTurnFailure != 0 {
 		next.Failure = src.RestingFailure()
@@ -436,6 +456,7 @@ func (s *Server) refreshFacets(facets envelopeFacet) {
 			}
 			next.LastMessage = meta.LastMessage
 			next.Access = appwire.SessionAccess(meta.Config.Sandbox, meta.Config.SandboxNet)
+			next.Manager = meta.Manager
 		}
 		if facets&facetGoal != 0 {
 			if meta.Goal != nil {
@@ -471,7 +492,7 @@ func (s *Server) refreshFacets(facets envelopeFacet) {
 	// failure count and escalation cards under its successor's identity, with
 	// nothing afterwards to correct it. The fix is NOT to sample under the gate:
 	// that is the I/O this change exists to move off it.
-	if s.appThreadID == threadID && s.appSourceID == sourceID {
+	if s.appThreadID == threadID && s.appSourceID == sourceID && s.appEnvelopeSourceGeneration == sourceGeneration {
 		assignFacets := facets
 		if assignFacets&facetTasks != 0 && s.appEnvelope.taskCarrierGeneration != taskCarrierGeneration {
 			assignFacets &^= facetTasks
@@ -493,6 +514,7 @@ func (s *Server) refreshFacets(facets envelopeFacet) {
 		s.appEnvelope.assign(assignFacets, next, cwdStale, notesStale, urlsStale)
 	}
 	s.mu.Unlock()
+	s.commitConversationProvenance(threadID, sourceID, ref, next.ConversationProvenance)
 }
 
 // assign copies exactly the named facets out of next. notesStale and urlsStale
@@ -545,6 +567,11 @@ func (e *threadEnvelope) assign(facets envelopeFacet, next threadEnvelope, cwdSt
 	}
 	if facets&facetAsk != 0 {
 		e.PendingQuestion = next.PendingQuestion
+		// Revisions are comparable only within one installed source and instance.
+		// Source replacement clears PendingAsk before accepting its reset counter.
+		if next.PendingAsk != nil && (e.PendingAsk == nil || e.PendingAsk.InstanceID != next.PendingAsk.InstanceID || e.PendingAsk.Revision < next.PendingAsk.Revision) {
+			e.PendingAsk = next.PendingAsk
+		}
 	}
 	if facets&facetTurnFailure != 0 {
 		e.Failure = next.Failure
@@ -569,5 +596,6 @@ func (e *threadEnvelope) assign(facets envelopeFacet, next threadEnvelope, cwdSt
 		e.LastTurnEndedAt = next.LastTurnEndedAt
 		e.LastMessage = next.LastMessage
 		e.Access = next.Access
+		e.Manager = next.Manager
 	}
 }

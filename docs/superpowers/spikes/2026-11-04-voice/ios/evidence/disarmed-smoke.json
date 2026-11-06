@@ -1,0 +1,70 @@
+{
+  "capture" : {
+    "buffers" : 0,
+    "frames" : 0,
+    "maximumCallbackGapSeconds" : 0
+  },
+  "completed" : 0,
+  "engineRunning" : false,
+  "events" : [
+    {
+      "fields" : {
+        "microphone_audio_export" : "never",
+        "wake_and_asr" : "not_implemented"
+      },
+      "kind" : "created",
+      "secondsSinceProbeStart" : 4.17e-07
+    },
+    {
+      "fields" : {
+
+      },
+      "kind" : "application_foreground",
+      "secondsSinceProbeStart" : 0.205126458
+    },
+    {
+      "fields" : {
+
+      },
+      "kind" : "view_appeared",
+      "secondsSinceProbeStart" : 1.437217875
+    },
+    {
+      "fields" : {
+        "generation" : "1",
+        "reason" : "disarmed_smoke"
+      },
+      "kind" : "playback_stop",
+      "secondsSinceProbeStart" : 1.437277
+    },
+    {
+      "fields" : {
+        "generation" : "0"
+      },
+      "kind" : "stale_synthesis_rejected",
+      "secondsSinceProbeStart" : 1.439744375
+    },
+    {
+      "fields" : {
+
+      },
+      "kind" : "disarmed_smoke_passed",
+      "secondsSinceProbeStart" : 1.439756458
+    }
+  ],
+  "generation" : 1,
+  "inputPorts" : [
+
+  ],
+  "os" : "27.0",
+  "outputPorts" : [
+    "Speaker"
+  ],
+  "phase" : "disarmed",
+  "runtime" : "ios_simulator",
+  "scheduled" : 0,
+  "schema" : 1,
+  "sessionSampleRate" : 48000,
+  "staleCallbacks" : 1,
+  "voiceProcessingEnabled" : false
+}

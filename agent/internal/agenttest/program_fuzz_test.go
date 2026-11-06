@@ -25,14 +25,12 @@ func FuzzAgenttestAdaptersProgram(f *testing.F) {
 		req := llm.Request{Model: model, Messages: []llm.Message{llm.User(text)}}
 		ctx := context.Background()
 
-		fake := &FakeAdapter{
-			Provider: "fake",
-			Steps: []func(llm.Request) llm.Response{
-				func(got llm.Request) llm.Response {
-					return llm.Response{Message: llm.Assistant(text + "|" + got.Model)}
-				},
+		fake := &FakeAdapter{Provider: "fake"}
+		fake.SetSteps([]func(llm.Request) llm.Response{
+			func(got llm.Request) llm.Response {
+				return llm.Response{Message: llm.Assistant(text + "|" + got.Model)}
 			},
-		}
+		})
 		if fake.Name() != "fake" {
 			t.Fatalf("FakeAdapter.Name = %q", fake.Name())
 		}

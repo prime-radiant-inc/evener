@@ -225,13 +225,15 @@ func (r *hubRelay) startAcknowledgedFanout(
 			return handle.commandOwners != 0 && !handle.stopping
 		}
 		// serveDaemonGone publishes a daemon-gone delivery to every current
-		// route it has not reached yet. It reports whether a route is
-		// still being bound, in which case the delivery stays retained so
-		// that route hears it too once bound: the announcement is
-		// addressed to every subscriber of the daemon, including one whose
-		// subscription is mid-flight.
+		// route it has not reached yet. It reports whether a route still
+		// needs it - one being bound, or one this pass deferred so a
+		// joining subscriber can finish binding - in which case the
+		// delivery stays retained and a later pass serves it. The
+		// announcement is addressed to every subscriber of the daemon,
+		// including one whose subscription is mid-flight.
 		serveDaemonGone := func(pending *pendingRelayDelivery) bool {
 			targets, _ := lookupTargets("", relayNotificationUntargeted)
+			deferred := false
 			for _, target := range targets {
 				if pending.served[target.relayKey] {
 					continue
@@ -239,12 +241,38 @@ func (r *hubRelay) startAcknowledgedFanout(
 				// A route published but not yet subscribed to has nobody
 				// to hear this yet; it is served once its read releases.
 				if r.server.SubscriberCount(target.relayKey) == 0 {
+					deferred = true
 					continue
 				}
-				pending.served[target.relayKey] = true
+				// A read in flight on this route is about to install its
+				// downstream subscription. Counting the route served now
+				// would announce the departure to the subscribers already
+				// present and lose it for the one joining, so the route is
+				// served once that read releases. Read the count and mark
+				// the route under the lock command owners change it under,
+				// so a release racing this pass cannot both miss the
+				// deferral and leave the route served to nobody.
+				r.mu.Lock()
+				ready := !target.handle.stopping && !target.state.retiring &&
+					target.handle.relayKeys[target.relayKey] == target.state &&
+					r.relayed[target.relayKey] == target.handle &&
+					target.state.commands == 0
+				if ready {
+					pending.served[target.relayKey] = true
+				}
+				r.mu.Unlock()
+				if !ready {
+					deferred = true
+					continue
+				}
 				publishTarget(pending.delivery, target)
 			}
-			return routesPending()
+			// Test-only: the target pass is done and retention is decided
+			// below. Production never installs an observation.
+			if observe := observeHubRelayDaemonGoneRetention.Load(); observe != nil {
+				(*observe)()
+			}
+			return routesPending() || deferred
 		}
 		processPending := func() {
 			captureRouteChange()
@@ -311,9 +339,7 @@ func (r *hubRelay) startAcknowledgedFanout(
 			if pending {
 				pendingDeliveries = append(pendingDeliveries, pendingRelayDelivery{delivery: delivery, routingKey: routingKey, routing: routing})
 				recordPending()
-				if observeHubRelayWait != nil {
-					observeHubRelayWait()
-				}
+				fireObserveHubRelayWait()
 				if delivery.Proceed != nil {
 					delivery.Proceed()
 				}

@@ -19,24 +19,24 @@ func TestSession_OpenAIResponsesContinuationPhase10DeltaCarriesFullHistoryShadow
 		PlanResponsesContinuationFunc: func(req llm.Request) (llm.ResponsesContinuationPlan, error) {
 			return phase4DIContinuationPlan(req), nil
 		},
-		Steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response {
-				if req.HistoryMode != llm.HistoryModeResponsesDelta {
-					t.Fatalf("HistoryMode = %q, want responses_delta", req.HistoryMode)
-				}
-				if req.FullHistoryInputTokensEstimate != 777 {
-					t.Fatalf("FullHistoryInputTokensEstimate = %d, want 777", req.FullHistoryInputTokensEstimate)
-				}
-				if req.InputTokensEstimate <= 0 {
-					t.Fatalf("InputTokensEstimate = %d, want positive dispatched estimate", req.InputTokensEstimate)
-				}
-				if requestMessagesContainText(req.Messages, "phase10 prior user marker") {
-					t.Fatalf("delta request included prior marker: %+v", req.Messages)
-				}
-				return agenttest.FinalResponse("phase 10 delta")
-			},
-		},
 	}
+	adapter.SetSteps([]func(req llm.Request) llm.Response{
+		func(req llm.Request) llm.Response {
+			if req.HistoryMode != llm.HistoryModeResponsesDelta {
+				t.Fatalf("HistoryMode = %q, want responses_delta", req.HistoryMode)
+			}
+			if req.FullHistoryInputTokensEstimate != 777 {
+				t.Fatalf("FullHistoryInputTokensEstimate = %d, want 777", req.FullHistoryInputTokensEstimate)
+			}
+			if req.InputTokensEstimate <= 0 {
+				t.Fatalf("InputTokensEstimate = %d, want positive dispatched estimate", req.InputTokensEstimate)
+			}
+			if requestMessagesContainText(req.Messages, "phase10 prior user marker") {
+				t.Fatalf("delta request included prior marker: %+v", req.Messages)
+			}
+			return agenttest.FinalResponse("phase 10 delta")
+		},
+	})
 	client := llm.NewClient()
 	client.Register(adapter)
 
@@ -82,25 +82,25 @@ func TestSession_OpenAIResponsesContinuationPhase10ShadowUnavailableUsesFullHist
 		PlanResponsesContinuationFunc: func(req llm.Request) (llm.ResponsesContinuationPlan, error) {
 			return phase4DIContinuationPlan(req), nil
 		},
-		Steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response {
-				if req.HistoryMode != llm.HistoryModeFullHistory {
-					t.Fatalf("HistoryMode = %q, want full_history", req.HistoryMode)
-				}
-				if req.PreviousResponseID != "" {
-					t.Fatalf("PreviousResponseID = %q, want empty", req.PreviousResponseID)
-				}
-				if req.ContinuationDiagnostic != "continuation_shadow_estimate_unavailable" {
-					t.Fatalf("ContinuationDiagnostic = %q", req.ContinuationDiagnostic)
-				}
-				if !requestMessagesContainText(req.Messages, "phase10 prior user marker") ||
-					!requestMessagesContainText(req.Messages, "phase10 current user marker") {
-					t.Fatalf("full-history request missing markers: %+v", req.Messages)
-				}
-				return agenttest.FinalResponse("phase 10 full history")
-			},
-		},
 	}
+	adapter.SetSteps([]func(req llm.Request) llm.Response{
+		func(req llm.Request) llm.Response {
+			if req.HistoryMode != llm.HistoryModeFullHistory {
+				t.Fatalf("HistoryMode = %q, want full_history", req.HistoryMode)
+			}
+			if req.PreviousResponseID != "" {
+				t.Fatalf("PreviousResponseID = %q, want empty", req.PreviousResponseID)
+			}
+			if req.ContinuationDiagnostic != "continuation_shadow_estimate_unavailable" {
+				t.Fatalf("ContinuationDiagnostic = %q", req.ContinuationDiagnostic)
+			}
+			if !requestMessagesContainText(req.Messages, "phase10 prior user marker") ||
+				!requestMessagesContainText(req.Messages, "phase10 current user marker") {
+				t.Fatalf("full-history request missing markers: %+v", req.Messages)
+			}
+			return agenttest.FinalResponse("phase 10 full history")
+		},
+	})
 	client := llm.NewClient()
 	client.Register(adapter)
 	sess, err := NewSession(client, withTestSessionNamer(client, NewOpenAIProfile("gpt-5.4")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
@@ -139,14 +139,14 @@ func TestSession_OpenAIResponsesContinuationPhase10PressureUsesFullHistoryShadow
 		PlanResponsesContinuationFunc: func(req llm.Request) (llm.ResponsesContinuationPlan, error) {
 			return phase4DIContinuationPlan(req), nil
 		},
-		Steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response {
-				resp := agenttest.FinalResponse("phase 10 pressure")
-				resp.Usage = llm.Usage{InputTokens: 10, OutputTokens: 1, TotalTokens: 11}
-				return resp
-			},
-		},
 	}
+	adapter.SetSteps([]func(req llm.Request) llm.Response{
+		func(req llm.Request) llm.Response {
+			resp := agenttest.FinalResponse("phase 10 pressure")
+			resp.Usage = llm.Usage{InputTokens: 10, OutputTokens: 1, TotalTokens: 11}
+			return resp
+		},
+	})
 	client := llm.NewClient()
 	client.Register(adapter)
 	sess, err := NewSession(client, withTestSessionNamer(client, NewOpenAIProfile("gpt-5.4")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{

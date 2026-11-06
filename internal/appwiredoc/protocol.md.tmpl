@@ -136,6 +136,12 @@ at high-water depth is refused in band as `connectionBackpressure` with
 started, so an identical retry is safe. The message states what happened on
 the hub and promises nothing about what a client will do.
 
+Once the queue is at capacity, any further request — reads and other
+non-mutations included — is refused in band with the same
+`connectionBackpressure` envelope and `data.cause "queueSaturated"`, but with
+`retryDisposition "none"`: the hard-cap refusal does not promise that an
+identical retry is safe. Let the connection drain and retry deliberately.
+
 ## Explicit skill and command input
 
 Input-bearing requests accept canonical selections alongside text and images:

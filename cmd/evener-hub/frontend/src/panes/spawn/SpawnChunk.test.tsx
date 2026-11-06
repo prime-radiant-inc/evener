@@ -7,7 +7,7 @@ import { holdChunk } from "../../lazyChunkTestUtils";
 import { ClientProvider } from "../../shell/clientContext";
 import * as pageReload from "../../shell/pageReload";
 import { installLocalStorage, MemoryStorage } from "../../storageTestUtils";
-import { connectionStore } from "../../stores/connection";
+import { connectionStore, resetConnectionStoreForTests } from "../../stores/connection";
 import { resetCredentialsStoreForTests } from "../../stores/credentials";
 import { resetExtensionsStoreForTests } from "../../stores/extensions";
 import { Toast } from "../../widgets";
@@ -109,7 +109,7 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup();
-  connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
+  resetConnectionStoreForTests();
   resetExtensionsStoreForTests();
   vi.unstubAllGlobals();
   window.history.pushState({}, "", "/");

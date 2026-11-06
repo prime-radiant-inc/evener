@@ -277,6 +277,34 @@ function certsConnected(left: TranscriptCoverageRow, right: TranscriptCoverageRo
   return false;
 }
 
+// Restore linkage: the same recorded-coverage edges that connect a certified
+// chain, minus the continuation authority guard. The owed fill answers a
+// presence question — does this held range stand certified beside the live
+// baseline? — not a continuation question, so a spanning certificate a
+// replacement trimmed still proves its retained rows even though no
+// continuation may ever cross the replacement boundary: the trim records
+// that boundary as the retained range's provenance edge, and the baseline's
+// own certificate covers it. Authority still fences every continuation and
+// cursor handoff elsewhere; only presence consults across it.
+function restoreLinked(left: TranscriptCoverageRow, right: TranscriptCoverageRow): boolean {
+  if (left.rangeId === right.rangeId) return true;
+  if (
+    left.start !== null &&
+    left.end !== null &&
+    right.start !== null &&
+    right.end !== null &&
+    comparePosition(left.start, right.end) <= 0 &&
+    comparePosition(right.start, left.end) <= 0
+  ) {
+    return true;
+  }
+  if (left.before !== null && left.before !== undefined && positionCoveredBy(left.before, right)) return true;
+  if (right.before !== null && right.before !== undefined && positionCoveredBy(right.before, left)) return true;
+  if (left.requestCursor !== undefined && left.requestCursor === right.serverCursor) return true;
+  if (right.requestCursor !== undefined && right.requestCursor === left.serverCursor) return true;
+  return false;
+}
+
 // The connected certified component anchored at `anchor`: every certificate
 // reachable through range overlap or recorded page provenance. Later reads
 // never erase a page certificate, so this walks the full certified older
@@ -578,6 +606,7 @@ async function scanReplacementItems(
   const removed = { bytes: 0, items: 0 };
   const keptTurns = new Set<string>();
   const removedTurns = new Set<string>();
+  let keptBelow: ThreadItemPosition | undefined;
   await new Promise<void>((resolve, reject) => {
     const request = itemStore.index("historyKey").openCursor(historyKey);
     request.onerror = () => reject(request.error);
@@ -592,12 +621,13 @@ async function scanReplacementItems(
         remove?.(cursor);
       } else {
         keptTurns.add(row.item.turnId);
+        if (!keptBelow || comparePosition(row.position, keptBelow) > 0) keptBelow = row.position;
       }
       cursor.continue();
     };
   });
   for (const turnId of keptTurns) removedTurns.delete(turnId);
-  return { removed, removedTurns };
+  return { removed, removedTurns, keptBelow };
 }
 
 // The one version/richness computation for writes and capacity memo checks.
@@ -1030,7 +1060,7 @@ export class SessionEntryCache {
     const turnStore = transaction.objectStore(ENTRY_TURN_STORE);
     const coverageStore = transaction.objectStore(ENTRY_COVERAGE_STORE);
     // Stream the rows, retaining only turn identities, not a second history body.
-    const { removed, removedTurns } = await scanReplacementItems(itemStore, historyKey, from, (cursor) => {
+    const { removed, removedTurns, keptBelow } = await scanReplacementItems(itemStore, historyKey, from, (cursor) => {
       itemStore.delete(cursor.primaryKey);
     });
     for (const turnId of removedTurns) {
@@ -1048,8 +1078,44 @@ export class SessionEntryCache {
         if (!cursor) return resolve();
         const row = cursor.value as TranscriptCoverageRow;
         // Retain wholly older certificates, never a certificate spanning removed
-        // content. Empty certificates have no retained interval to certify.
+        // content: a spanning row is deleted. Its retained interval below the
+        // replacement boundary still certifies content that stands, so it is
+        // re-minted as a fresh certificate whose `before` records the
+        // replacement boundary — the retained range provably abuts the new
+        // baseline, whatever the position lattice looks like between them
+        // (item indices are legitimately sparse, so no numeric adjacency is
+        // ever inferred). The fresh row drops the replaced read's identity and
+        // cursor: the old certificate's extent and continuation claims died
+        // with the content it spanned, and only the retained interval's
+        // presence survives. The `kept:` prefix sorts before the live
+        // certificate prefixes, so a snapshot tie in latest-window selection
+        // always resolves to the live read's certificate. An empty retained
+        // interval certifies nothing and is only deleted.
         if (row.end === null || comparePosition(row.end, from) >= 0) {
+          if (
+            row.start !== null &&
+            keptBelow !== undefined &&
+            comparePosition(row.start, from) < 0 &&
+            comparePosition(row.start, keptBelow) <= 0
+          ) {
+            const kept: TranscriptCoverageRow = {
+              historyKey: row.historyKey,
+              rangeId: `kept:${row.rangeId}`,
+              kind: row.kind,
+              start: row.start,
+              end: keptBelow,
+              before: from,
+              representedSnapshot: row.representedSnapshot,
+              ...(row.requestCursor !== undefined ? { requestCursor: row.requestCursor } : {}),
+              ...(row.authority !== undefined ? { authority: row.authority } : {}),
+              boundary: `kept:${row.rangeId}`,
+            };
+            removed.bytes += encodedBytes(row) - encodedBytes(kept);
+            coverageStore.delete(cursor.primaryKey);
+            coverageStore.put(kept);
+            cursor.continue();
+            return;
+          }
           removed.bytes += encodedBytes(row);
           coverageStore.delete(cursor.primaryKey);
         }
@@ -1684,6 +1750,62 @@ export class SessionEntryCache {
         boundary: anchor.boundary,
         ...(verifiedComplete && frontier?.cursor !== undefined ? { serverCursor: frontier.cursor } : {}),
       };
+    } catch (error) {
+      await complete.catch(() => {});
+      throw error;
+    }
+  }
+
+  /**
+   * The recorded-coverage component the owed fill may restore below `before`:
+   * every certificate linked to the boundary's own certificate by recorded
+   * coverage — range overlap, page provenance, or a recorded cursor
+   * succession — never by numeric item adjacency. Item positions are
+   * legitimately sparse (a part index skips merged runs and hidden calls, an
+   * entry can project no items at all), so a numeric gap proves nothing about
+   * coverage; only the records' own extents and provenance edges do.
+   *
+   * Linkage here answers presence, not continuation: a spanning certificate
+   * a replacement trimmed still proves its retained rows, because the
+   * replacement recorded its boundary as the retained range's provenance
+   * edge, and the baseline's own certificate covers that boundary. The
+   * authority token that fences continuation chains does not apply. A
+   * boundary with no recorded certificate returns an empty component: the
+   * rows below it are owed to the server-paging machinery that owns cursors,
+   * never stitched.
+   */
+  async getRestoreCoverage(historyKey: string, before: ThreadItemPosition): Promise<readonly TranscriptCoverageRow[]> {
+    if (!isPosition(before)) throw new RangeError("entry restore coverage requires a real boundary position");
+    const database = await this.#connection.open();
+    const transaction = database.transaction([ENTRY_COVERAGE_STORE], "readonly");
+    const complete = transactionCompletion(transaction);
+    try {
+      const coverageStore = transaction.objectStore(ENTRY_COVERAGE_STORE);
+      const ranges = await requestResult(
+        coverageStore.getAll(this.#keyRange.bound([historyKey, ""], [historyKey, "\uffff"])) as IDBRequest<
+          TranscriptCoverageRow[]
+        >,
+      );
+      const anchor = chooseOlderAnchor(ranges, before);
+      if (!anchor) {
+        await complete;
+        return [];
+      }
+      const component = [anchor];
+      const seen = new Set([anchor.rangeId]);
+      let added = true;
+      while (added) {
+        added = false;
+        for (const candidate of ranges) {
+          if (seen.has(candidate.rangeId)) continue;
+          if (!component.some((member) => restoreLinked(candidate, member))) continue;
+          component.push(candidate);
+          seen.add(candidate.rangeId);
+          added = true;
+        }
+      }
+      await complete;
+      return component;
     } catch (error) {
       await complete.catch(() => {});
       throw error;

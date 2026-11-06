@@ -96,11 +96,6 @@ type hostCommitPlan struct {
 	Known   []hostreg.Host
 	// Tombstone rides a removal's own write, exactly as before.
 	Tombstone *hostTombstoneStage
-	// StoreSync rides a removal's own write when it has a token row to purge:
-	// the cross-file commit intent (deploy-pipeline 08b §9) hub.toml's atomic
-	// write carries, so the store purge that applies it is recoverable after a
-	// crash.
-	StoreSync *pendingHostStoreSync
 	// Pinned is the committed teardown target the marker stages before any
 	// teardown executes.
 	Pinned HostPendingTeardown
@@ -117,6 +112,9 @@ type hostCommitPlan struct {
 	// reconcileFingerprint is the fingerprint the commit staged against (the
 	// validation read's).
 	reconcileFingerprint string
+	// hostFingerprint digests the entry hub.toml held for the host when a
+	// removal staged against it.
+	hostFingerprint string
 }
 
 // stagedMarker builds the marker one commit's step-(2) write carries.
@@ -128,6 +126,7 @@ func (m *hubHostManager) stagedMarker(plan *hostCommitPlan, now time.Time) HostS
 		TeardownStarted:      false,
 		Phase:                hostStagedPhaseStaged,
 		ReconcileFingerprint: plan.reconcileFingerprint,
+		HostFingerprint:      plan.hostFingerprint,
 		Provisional:          plan.Receipt,
 		PendingTeardown:      plan.Pinned,
 	}
@@ -141,9 +140,6 @@ func stagedChange(plan *hostCommitPlan, marker HostStagedReceipt) hostPersistCha
 	}
 	if plan.Tombstone != nil {
 		change.tombstone = plan.Tombstone
-	}
-	if plan.StoreSync != nil {
-		change.storeSync = plan.StoreSync
 	}
 	return change
 }
@@ -182,10 +178,51 @@ func (m *hubHostManager) stageCommit(plan *hostCommitPlan, now time.Time) error 
 // installed into — so without both drops the rollback write re-emits them, the
 // marker survives to be finalized (fabricating a `committed` receipt for a
 // refused mutation) and the provisional receipt survives as a dedup hit.
-func compensationChange(plan *hostCommitPlan) hostPersistChange {
-	return hostPersistChange{
-		dropMarker: plan.Name, dropReceipt: plan.Key, dropStoreSync: plan.Name,
+func (m *hubHostManager) compensationChange(plan *hostCommitPlan) hostPersistChange {
+	change := hostPersistChange{
+		dropMarker: plan.Name, dropReceipt: plan.Key,
+		hostFileFirst: true,
 	}
+	marker, staged := m.cfg.store.stagedSnapshot()[plan.Name]
+	if !staged {
+		// A staging write that published but could not be confirmed returned
+		// before the manager installed its records; the store holds the marker.
+		if store, ok := m.recordStore().(hostOpsRecordStore); ok {
+			if set, err := store.records(); err == nil {
+				marker, staged = set.StagedReceipts[plan.Name]
+			}
+		}
+	}
+	if staged {
+		// The staged re-add spent the generation and presence epoch its entry
+		// carries, whatever the store's marks say now.
+		change.restore, change.restoreSpent = m.consumedRestore(marker, plan.Name, HostGeneration{Generation: plan.Entry.Generation, PresenceEpoch: plan.Entry.PresenceEpoch})
+		change.restoreName = plan.Name
+	}
+	return change
+}
+
+// consumedRestore is what rolling back a staged re-add puts back: the history
+// the staging write purged to make room for it, with the removal's identity
+// untouched (the removed host's operation records are marked by it). The
+// generation and presence epoch the re-add spent stay spent: they are returned
+// separately, for the name's high-water mark.
+func (m *hubHostManager) consumedRestore(marker HostStagedReceipt, name string, spent HostGeneration) (*HostConsumedRecords, HostGeneration) {
+	if scope, ok := parseHostReceiptScopedKey(marker.Key); !ok || scope.Kind != hostMutationAdd {
+		return nil, HostGeneration{}
+	}
+	if held, ok := m.cfg.store.highWaterSnapshot()[name]; ok {
+		spent.Generation = max(spent.Generation, held.Generation)
+		spent.PresenceEpoch = max(spent.PresenceEpoch, held.PresenceEpoch)
+	}
+	spent.Generation = max(spent.Generation, marker.Provisional.Generation)
+	if marker.Consumed == nil {
+		// Nothing was purged to make room (the removal's tombstone had expired),
+		// but the add still spent its counters.
+		return nil, spent
+	}
+	restore := *marker.Consumed
+	return &restore, spent
 }
 
 // flipRuntimeSwapped runs spec §5's step (3)'s second half: the runtime phase
@@ -198,15 +235,47 @@ func (m *hubHostManager) flipRuntimeSwapped(plan *hostCommitPlan) error {
 	if err := m.checkOwnFingerprint(plan); err != nil {
 		return err
 	}
+	return m.persistFlip(plan, false)
+}
+
+// flipAddRuntimeSwapped is the add's flip. The add's host change is already in
+// hub.toml and a foreign edit since is the finalizing write's collision to
+// judge, so the flip writes the records alone and never the host list.
+func (m *hubHostManager) flipAddRuntimeSwapped(plan *hostCommitPlan) error {
+	if !m.recordsInStore() {
+		// The records are hub.toml's own sections: the finalizing write carries
+		// the flip.
+		plan.Marker = m.stagedMarker(plan, m.nowTime())
+		plan.Marker.SwapStarted = true
+		plan.Marker.TeardownStarted = true
+		plan.Marker.Phase = hostStagedPhaseRuntimeSwapped
+		return nil
+	}
+	return m.persistFlip(plan, true)
+}
+
+func (m *hubHostManager) persistFlip(plan *hostCommitPlan, recordsOnly bool) error {
 	marker := plan.Marker
 	marker.SwapStarted = true
 	marker.TeardownStarted = true
 	marker.Phase = hostStagedPhaseRuntimeSwapped
-	if err := m.persistHosts(plan.Entries, plan.Known, stagedChange(plan, marker)); err != nil {
+	if staged, ok := m.cfg.store.stagedSnapshot()[plan.Name]; ok {
+		// What a re-add's staging write purged stays with the marker, for a
+		// compensation to give back.
+		marker.Consumed = staged.Consumed
+	}
+	change := stagedChange(plan, marker)
+	change.recordsOnly = recordsOnly
+	if err := m.persistHosts(plan.Entries, plan.Known, change); err != nil {
 		return err
 	}
 	plan.Marker = marker
-	plan.lastFingerprint, _ = hubTOMLFingerprintAt(m.cfg.configPath)
+	if !recordsOnly {
+		// The write above was this mutation's own to hub.toml; a records-only
+		// flip leaves the last fingerprint at the one the staging write made, so
+		// a foreign edit since still reads as a collision.
+		plan.lastFingerprint, _ = hubTOMLFingerprintAt(m.cfg.configPath)
+	}
 	return nil
 }
 
@@ -278,11 +347,11 @@ func (m *hubHostManager) adoptedPreimage(plan *hostCommitPlan, previous []hostre
 // carries for name. ok is false when the file is unreadable, undecodable, or
 // carries no such entry — every case where there is nothing to adopt.
 func (m *hubHostManager) hubTOMLFileEntry(name string) (hostreg.Host, bool) {
-	cfg, ok := m.hostFileRecords()
+	hosts, ok := m.recordStore().hosts()
 	if !ok {
 		return hostreg.Host{}, false
 	}
-	for _, entry := range hostRegistryEntries(cfg) {
+	for _, entry := range hosts {
 		if entry.Name == name {
 			return entry, true
 		}
@@ -329,8 +398,8 @@ func (m *hubHostManager) finalizeReceipt(plan *hostCommitPlan, receipt HostMutat
 		if adopted, ok := m.hubTOMLFileEntries(); ok {
 			entries = adopted
 		}
-		if fileCfg, ok := m.hostFileRecords(); ok {
-			carryReceipts = fileCfg.MutationReceipts
+		if doc, ok := m.recordStore().load(); ok {
+			carryReceipts = doc.Records.MutationReceipts
 		}
 	}
 	// The change is built from the FINAL receipt: the collision branch above may
@@ -390,11 +459,7 @@ func (m *hubHostManager) reconcileRuntimeToFileLocked(name string) {
 // hubTOMLFileEntries reads the selected hub.toml and returns the live entry set
 // it carries, in file order — the set a collision write adopts.
 func (m *hubHostManager) hubTOMLFileEntries() ([]hostreg.Host, bool) {
-	cfg, ok := m.hostFileRecords()
-	if !ok {
-		return nil, false
-	}
-	return hostRegistryEntries(cfg), true
+	return m.recordStore().hosts()
 }
 
 // reconcileRenameCollision is the post-rename re-read (spec §11: "the dropped
@@ -562,7 +627,7 @@ func (m *hubHostManager) finalizeOrphanMarkerIfAny(ctx context.Context, name str
 	// carries — the marker would drop while its finalized outcome, remnant, or
 	// `bootRecovered` marker never rendered.
 	known := ownedEntrySet(entries, name)
-	if err := m.persistHosts(entries, known, hostPersistChange{marker: &pendingHostMarker{Name: name, Marker: claimed}}); err != nil {
+	if err := m.persistHosts(entries, known, hostPersistChange{marker: &pendingHostMarker{Name: name, Marker: claimed}, recordsOnly: m.recordsInStore()}); err != nil {
 		m.cfg.mu.Unlock()
 		return nil, err
 	}
@@ -620,6 +685,9 @@ func (m *hubHostManager) finalizeOrphanMarkerIfAny(ctx context.Context, name str
 	change := hostPersistChange{
 		receipt:    &pendingHostReceipt{Key: marker.Key, Receipt: receipt},
 		dropMarker: name,
+		// A landed commit's host change is already in hub.toml; settling its
+		// records never rewrites the host list.
+		recordsOnly: m.recordsInStore(),
 	}
 	if runErr != nil {
 		seam := remnant.Seam

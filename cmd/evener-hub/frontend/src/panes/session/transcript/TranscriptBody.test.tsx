@@ -9,7 +9,7 @@ import {
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { createRef, type RefObject, StrictMode, useRef, useState } from "react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
-import { connectionStore } from "../../../stores/connection";
+import { connectionStore, resetConnectionStoreForTests } from "../../../stores/connection";
 import { sessionActivitySnapshot } from "../../../stores/sessionActivity";
 import { activityClient, activitySummary } from "../../../stores/sessionActivityTestUtils";
 import { threadsStore } from "../../../stores/threads";
@@ -526,6 +526,7 @@ describe("TranscriptBody", () => {
         toolCalls: false,
         reasoning: false,
         expandByDefault: false,
+        thinkingOpenByDefault: false,
       });
       let hideTools: () => void = () => {
         throw new Error("focus fallback harness did not mount");
@@ -868,6 +869,7 @@ describe("TranscriptBody", () => {
       toolCalls: false,
       reasoning: false,
       expandByDefault: true,
+      thinkingOpenByDefault: true,
     });
     const intentClosed = makeTranscriptDisplayConfig({
       kind: "custom",
@@ -875,6 +877,7 @@ describe("TranscriptBody", () => {
       toolCalls: false,
       reasoning: false,
       expandByDefault: false,
+      thinkingOpenByDefault: false,
     });
     const { rerender } = render(
       <TranscriptBody model={fixture} config={intentOpen} surface="preview" disclosureScope="preview:single" />,
@@ -965,6 +968,7 @@ describe("TranscriptBody", () => {
       toolCalls: false,
       reasoning: false,
       expandByDefault: true,
+      thinkingOpenByDefault: true,
     });
     const initial = { ...crossTurnFixture, turns: crossTurnFixture.turns.slice(0, 2) } as ThreadModel;
     const finalTurn = crossTurnFixture.turns[2];
@@ -1455,7 +1459,7 @@ test.each([
     ]);
   } finally {
     cleanup();
-    connectionStore.setState({ client: null, state: "idle" });
+    resetConnectionStoreForTests();
   }
 });
 
