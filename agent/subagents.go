@@ -1906,6 +1906,27 @@ func (a *subagent) run(ctx context.Context, input string, inputProvenance *prove
 	if restoreParentDriveNotify != nil && a.sess.peekNotifications() > 0 {
 		a.sess.notify()
 	}
+	// The unpresented trigger is reopened BEFORE the generation is announced:
+	// the announce's release wakes the parent's drive, and a drive that wins
+	// that wake can accept another pending row and re-latch the trigger before
+	// the tail below could read it — reopening the live generation's own
+	// trigger as a duplicate while the failed run's trigger stays consumed.
+	// Before the release no drive can reserve this delegate, so the latch the
+	// reopen reads is exactly the failed run's own. FinishGeneration has
+	// already journaled the outcome, so the stop and close guards inside the
+	// reopen still see this run's settled state.
+	if stableRun && attentionRun && !attentionRunPresentedItsReport(err) {
+		// The presentation turn died before its request could carry the
+		// report, and the accept that started it consumed the row. Reopen
+		// it so the re-arm below wakes a drive that presents it instead of
+		// letting the consumed marker strand the report silently. A
+		// deliberately stopped child, a closing receiver and a closing
+		// tree are not reopened: their teardowns own the discard, and a
+		// fresh row would race it (reopenLatchedDelegateAttention guards).
+		if reopenErr := a.sess.reopenLatchedDelegateAttention(); reopenErr != nil {
+			a.sess.emit(warningDataFromError("reopen unpresented delegate attention", reopenErr))
+		}
+	}
 	if stableRun && a.sess.delegateController != nil {
 		if hook := a.sess.cfg.testOnly.subagentBeforeGenerationAnnounced; hook != nil {
 			hook(a)
@@ -1920,18 +1941,6 @@ func (a *subagent) run(ctx context.Context, input string, inputProvenance *prove
 	// needs-attention projection itself instead of leaving it for a parent
 	// drive that may never come.
 	if stableRun {
-		if attentionRun && !attentionRunPresentedItsReport(err) {
-			// The presentation turn died before its request could carry the
-			// report, and the accept that started it consumed the row. Reopen
-			// it so the re-arm below wakes a drive that presents it instead of
-			// letting the consumed marker strand the report silently. A
-			// deliberately stopped child, a closing receiver and a closing
-			// tree are not reopened: their teardowns own the discard, and a
-			// fresh row would race it (reopenLatchedDelegateAttention guards).
-			if reopenErr := a.sess.reopenLatchedDelegateAttention(); reopenErr != nil {
-				a.sess.emit(warningDataFromError("reopen unpresented delegate attention", reopenErr))
-			}
-		}
 		if pending, pendingErr := a.sess.pendingDelegateAttentionIDs(); pendingErr != nil {
 			a.sess.emit(warningDataFromError("inspect remaining delegate attention", pendingErr))
 		} else if len(pending) != 0 {

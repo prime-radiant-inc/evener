@@ -1459,6 +1459,25 @@ func TestDelegateAttentionFailedStartReopensConsumedReport(t *testing.T) {
 	// the presentation from running now.
 	wtGit(t, r.mainRoot, "worktree", "unlock", lane.lanePath)
 
+	// The recovery needs its own driver window: the first loop's deadline was
+	// set before the refusal wait, so a slow refusal under load leaves that
+	// loop little or no time to re-drive after the unlock — the exact load
+	// shape this test pins. This second driver runs to its own fresh budget,
+	// so the refusal's duration cannot starve the recovery.
+	go func() {
+		deadline := time.Now().Add(30 * time.Second)
+		for time.Now().Before(deadline) {
+			flush()
+			lane.root.driveDelegateAttention(lane.delegateSub)
+			time.Sleep(200 * time.Millisecond)
+			select {
+			case <-entered:
+				return
+			default:
+			}
+		}
+	}()
+
 	// The recovery window has its own budget: a slow refusal under load must
 	// not eat into it, which is the load-flake shape this test pins.
 	recoveryDeadline := time.Now().Add(30 * time.Second)

@@ -159,6 +159,16 @@ func (c *delegateTreeController) owedAttentionStartsFromTranscripts() ([]delegat
 		})
 		journalGeneration := generations[ref.delegateID]
 		for _, resume := range resumes {
+			// A claim superseded by its own reopen owes nothing: the failed
+			// start re-delivered the same report under the fresh identity the
+			// reopen minted, and that pending row reaches its presentation
+			// through the ordinary pending path. Admitting the superseded
+			// claim instead would double-present the report, and a chained
+			// refusal's next claim would read as a second owed generation for
+			// one delegate.
+			if _, reopened := fold.content[delegateAttentionReopenID(resume.attentionID, resume.generation)]; reopened {
+				continue
+			}
 			lease := delegateLease{delegateID: ref.delegateID, generation: resume.generation}
 			if trigger, exists := runStarts[lease]; exists {
 				if trigger != delegatestore.TriggerAttention {

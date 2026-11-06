@@ -828,6 +828,16 @@ func (s *Session) reopenConsumedDelegateAttention(attentionID string) error {
 			// its transcript still held, and there is nothing to resolve.
 			return nil
 		}
+		// The superseded source's resident copy never reached a request —
+		// every reopen fires only after a start that failed before presenting
+		// — and the reopened row that just landed carries the same content to
+		// the next one, so the resident copy would only duplicate the report
+		// in every later request. Drop it from the resident history; the
+		// transcript row stays, because the fold, not the history, is the
+		// delivery ledger.
+		s.attentionMu.Lock()
+		s.dropResidentDelegateAttentionTurnLocked(attentionID)
+		s.attentionMu.Unlock()
 		if s.delegateController.attentionReopenRefused(s.owningDelegateID) {
 			if resolveErr := s.resolveAttentionDurably([]string{reopenID}, delegateAttentionDiscarded); resolveErr != nil {
 				return resolveErr
@@ -1799,6 +1809,27 @@ func (s *Session) removeUnverifiedDelegateAttentionTurn(turn schema.Turn) {
 			s.bumpHistoryRevisionLocked()
 			return
 		}
+	}
+}
+
+// dropResidentDelegateAttentionTurnLocked removes attentionID's steering turn
+// from the resident history only — the transcript row stays, so the fold still
+// reads the row's content and resolution. The caller holds attentionMu. The
+// turnHistoryBaseline shift mirrors removeUnverifiedDelegateAttentionTurn: a
+// deletion strictly before the boundary moves the boundary with it.
+func (s *Session) dropResidentDelegateAttentionTurnLocked(attentionID string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for index := range s.history {
+		if s.history[index].AttentionID != attentionID || s.history[index].Kind != schema.TurnSteering {
+			continue
+		}
+		s.history = append(s.history[:index], s.history[index+1:]...)
+		if index < s.turnHistoryBaseline {
+			s.turnHistoryBaseline--
+		}
+		s.bumpHistoryRevisionLocked()
+		return
 	}
 }
 
