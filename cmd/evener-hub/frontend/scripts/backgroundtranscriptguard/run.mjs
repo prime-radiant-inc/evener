@@ -2225,7 +2225,16 @@ async function runTwoTabFencing(driver, endpoint, harnessUrl) {
     const resurrectedRows = resurrected === null ? 0 : resurrected.rows.length;
     driver.milestone("two-tab-delete-refusal", { ref, routePresent, rowsAfterOpen: resurrectedRows });
     if (routePresent === true) {
-      throw new Error("two-tab delete: the sibling's fresh acquisition opened a route for a deleted ref");
+      // Name the route state that survived the refusal: which open status it
+      // reported, whether a store model exists, and its history key distinguish
+      // a resurrected repository from a route object that never had one.
+      const route = await evaluate(
+        tab.send,
+        `window.backgroundTranscriptEvidence.entryRoute(${JSON.stringify(ref)})`,
+      );
+      throw new Error(
+        `two-tab delete: the sibling's fresh acquisition opened a route for a deleted ref: ${JSON.stringify({ route, rowsAfterOpen: resurrectedRows })}`,
+      );
     }
     if (resurrectedRows !== 0) {
       throw new Error(`two-tab delete: a fresh sibling acquisition resurrected ${resurrectedRows} durable rows`);
