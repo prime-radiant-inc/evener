@@ -496,7 +496,7 @@ async function seedCursorlessCacheRecord(storage: SessionEntryCache): Promise<vo
 // record with no older cursor and no frontier provenance (threadModelFromCache
 // records none), published as the store model. Its older demand must therefore
 // be "server", never a source-named exhaustion.
-async function installCursorlessSeedRoute(): Promise<{
+async function installCursorlessSeedRoute(options: { seedEntries?: number[]; trustedSeed?: boolean } = {}): Promise<{
   client: FakeClient;
   readsBefore: number;
   release: () => Promise<unknown>;
@@ -515,6 +515,19 @@ async function installCursorlessSeedRoute(): Promise<{
   route.historyKey = key;
   route.identity = { ...identity, clientId: location.origin };
   route.cachedUnverified = false;
+  const seedEntries = options.seedEntries ?? [];
+  const seedTurns = seedEntries.map((entry) => {
+    const turnId = `cache-turn-${entry}`;
+    const item = {
+      ...turn(`row-${entry}`, entry).items![0]!,
+      id: `row-${entry}`,
+      transcriptKey: `row-${entry}`,
+      turnId,
+      text: `row-${entry}`,
+    } as unknown as CachedSessionItem;
+    return { id: turnId, status: "completed" as const, items: [item] };
+  });
+  const snapshotLength = Math.max(3, ...seedEntries);
   const record: CachedSessionRecord = {
     ref: "local:a",
     threadId: "thread-a",
@@ -527,10 +540,10 @@ async function installCursorlessSeedRoute(): Promise<{
       bootGeneration: "1",
       epoch: 1,
       incarnation: "inc-a",
-      length: 3,
+      length: snapshotLength,
       appliedGeneration: 0,
       issuedGeneration: 0,
-      turns: [],
+      turns: seedTurns,
     },
   };
   const repository = new TranscriptRepository(storage, {
@@ -541,6 +554,17 @@ async function installCursorlessSeedRoute(): Promise<{
     clearEpoch: 0,
     lifetime: route.lifetime,
     seedModel: threadModelFromCache(record, storage.now()),
+    ...(options.trustedSeed
+      ? {
+          seedAuthority: {
+            trustedCurrentSource: true as const,
+            bootGeneration: "1",
+            epoch: 1,
+            incarnation: "inc-a",
+            snapshotLength,
+          },
+        }
+      : {}),
   });
   route.repository = repository;
   route.reader = repository.attachReader();
@@ -612,6 +636,42 @@ it("HistoryPaging drives a cursorless seed's older demand through the authoritat
     expect(client.calls.filter((call) => call.method === "thread/read")).toHaveLength(readsBefore + 1);
     expect(olderTranscriptPageKey("local:a")).toBeNull();
     expect(threadsStore.getState().threads.get("local:a")?.olderFrontier).toBe("none");
+  } finally {
+    await release();
+  }
+});
+
+it("HistoryPaging advances the key when a cursorless seed holds rows below the recovery window (#5586)", async () => {
+  // A trusted seed with recorded rows below the recovery read's window: the
+  // held-older-pages rule used to preserve the seed's unknown frontier, so the
+  // page key never advanced and HistoryPaging retried forever.
+  const { client, readsBefore, release } = await installCursorlessSeedRoute({
+    seedEntries: [1, 2, 3],
+    trustedSeed: true,
+  });
+  try {
+    // The recovery read names a window above the held rows and no older
+    // cursor. Paging from that frontier re-merges the rows already held.
+    const recovered = response("local:a", [turn("recovered", 4)]);
+    recovered.snapshot = { incarnation: "inc-a", length: 5 };
+    client.on("thread/read", (params) => ({ ...recovered, requestGeneration: params.requestGeneration }));
+    expect(olderTranscriptPageKey("local:a")).not.toBeNull();
+    const paging = new HistoryPaging(
+      () => olderTranscriptPageKey("local:a"),
+      () => threadsStore.getState().loadOlderTurns("local:a"),
+    );
+    const releaseConsumer = paging.activate("test");
+    try {
+      await paging.request("test");
+    } finally {
+      releaseConsumer();
+    }
+    // One recovery read advances the key and settles the demand; a second read
+    // would mean the loop.
+    expect(client.calls.filter((call) => call.method === "thread/read")).toHaveLength(readsBefore + 1);
+    expect(olderTranscriptPageKey("local:a")).toBeNull();
+    expect(threadsStore.getState().threads.get("local:a")?.olderFrontier).toBe("none");
+    expect(paging.getSnapshot().pending).toBe(false);
   } finally {
     await release();
   }

@@ -833,10 +833,15 @@ export function applyReadResponse<M extends ThreadModel>(
     // Older pages the client holds keep their own cursor.
     const oldest = earliestPosition(turns);
     if (oldest && (!window || comparePositions(oldest, window[0]) < 0)) {
-      olderCursor = model.olderCursor;
-      // Held older pages keep their own provenance too: a seeded model's
-      // frontier stays unknown even though it supplied the cursor.
-      olderFrontier = olderFrontierOf(model);
+      // Held older pages keep their own cursor only when they recorded a
+      // provenance. A seed's unknown frontier is not evidence of a held
+      // continuation: keeping it would leave a cursorless recovery read with
+      // an unchanged frontier, and older-demand would retry forever. Taking
+      // the response's cursor just re-merges rows already held.
+      if (olderFrontierOf(model) !== "unknown") {
+        olderCursor = model.olderCursor;
+        olderFrontier = olderFrontierOf(model);
+      }
     }
     turns = mergeHistory(turns, fresh);
     if (resp.changes) {
@@ -961,8 +966,12 @@ export function applyReadModel<M extends ThreadModel>(
     // Older pages the client holds keep their own cursor.
     const oldest = earliestPosition(turns);
     if (oldest && (!window || comparePositions(oldest, window[0]) < 0)) {
-      olderCursor = model.olderCursor;
-      olderFrontier = olderFrontierOf(model);
+      // Same rule as applyReadResponse: only a KNOWN held frontier outlives
+      // the read's own.
+      if (olderFrontierOf(model) !== "unknown") {
+        olderCursor = model.olderCursor;
+        olderFrontier = olderFrontierOf(model);
+      }
     }
     turns = mergeHistory(turns, fragment);
     if (changes) {
