@@ -560,6 +560,19 @@ func (jm *jobManager) suspendHubWatch(watchID string) error {
 	return nil
 }
 
+// suspendHubWatchQuiet marks the episode that suspendHubWatch notices,
+// without delivering the interruption frame: the stream-end arm defers the
+// loss notice until the rebind outcome is known, so a rebind that succeeds
+// inside the outage budget owes no frame, while every recovery that fails
+// still ends the watch durably with re-registration guidance (job-control.md).
+func (jm *jobManager) suspendHubWatchQuiet(watchID string) {
+	jm.mu.Lock()
+	defer jm.mu.Unlock()
+	if _, cfg, ok := jm.watchConfigByIDLocked(watchID); ok && cfg.hubRef != "" {
+		cfg.hubSuspended = true
+	}
+}
+
 func (jm *jobManager) resumeHubWatch(watchID string) {
 	jm.mu.Lock()
 	defer jm.mu.Unlock()
@@ -1057,10 +1070,12 @@ func (s *Session) consumeHubWatch(ctx context.Context, id string, request appwir
 		if ctx.Err() != nil || !managerHubWatchPresent(jm, id) {
 			return
 		}
-		if err := jm.suspendHubWatch(id); err != nil {
-			_ = jm.endHubWatchUntilPersisted(id, "observation interruption failed: "+err.Error(), nil)
-			return
-		}
+		// The stream-end arm stays quiet while recovery is in progress: the
+		// interruption notice is deferred until the rebind outcome is known,
+		// so a rebind that succeeds inside the outage budget delivers no
+		// frame, and every recovery that fails below ends the watch durably
+		// with re-registration guidance (job-control.md).
+		jm.suspendHubWatchQuiet(id)
 		for ctx.Err() == nil && managerHubWatchPresent(jm, id) {
 			s.mu.Lock()
 			client, signal := s.hubClient, s.hubWatchSignal
