@@ -306,18 +306,18 @@ final class EvenerQualificationUITests: XCTestCase {
 
 		// The fixture hub has no default model, so the form's Hub default
 		// starts nothing: the hub refuses the start with "model is
-		// required". Choose the fixture's own model on the Model screen;
-		// the row's press can land in the push's settling window, so it is
-		// checked by its own effect like every other step: the model
-		// screen's own row for the fixture's model.
-		let fakeModel = app.buttons["fake-test-model"]
+		// required". Choose the fixture's own model on the Model screen,
+		// where its row is titled by the model's display name ("Fake Test
+		// Model"), not its id. The form row's press can land in the push's
+		// settling window, so it is re-pressed only while the form still
+		// shows it; the model screen's own row is then waited for with the
+		// full bound, because the hub's model list arrives asynchronously.
+		let modelRow = app.buttons
+			.matching(NSPredicate(format: "label BEGINSWITH %@", "Model")).firstMatch
+		let fakeModel = app.buttons["Fake Test Model"]
 		let modeled = Date().addingTimeInterval(tripwire)
-		while !fakeModel.waitForExistence(timeout: 2) && Date() < modeled {
-			tap(
-				app.buttons
-					.matching(NSPredicate(format: "label BEGINSWITH %@", "Model")).firstMatch,
-				"the form never offered choosing a model"
-			)
+		while !fakeModel.waitForExistence(timeout: 2) && Date() < modeled && modelRow.exists {
+			tap(modelRow, "the form never offered choosing a model")
 		}
 		tap(fakeModel, "the model screen never offered the fixture's model")
 
