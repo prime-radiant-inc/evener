@@ -68,6 +68,47 @@ func delegateAttentionProjectionEligible(state delegatestore.State, delegateID s
 	return true
 }
 
+// attentionReopenRefused reports whether a deliberate stop or the tree's
+// close owns delegateID's teardown, so a failed presentation start must leave
+// its consumed report to that teardown instead of re-delivering it. A stop's
+// discard machinery enumerates attention by the ids it knew at plan time, so
+// a row appended under a fresh identity after that enumeration can outlive
+// the teardown and wake paced retries for a delegate that was deliberately
+// stopped — the same policy the owner's drives enforce with childStopGated,
+// read here from the controller's own ledgers so a run settling after the
+// stop plan completed is covered too.
+func (c *delegateTreeController) attentionReopenRefused(delegateID string) bool {
+	if c == nil {
+		return true
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.attentionReopenRefusedLocked(delegateID)
+}
+
+func (c *delegateTreeController) attentionReopenRefusedLocked(delegateID string) bool {
+	if c.closing {
+		return true
+	}
+	aggregate := c.durable[delegateID]
+	if aggregate == nil {
+		return true
+	}
+	if aggregate.PendingStopSeq != 0 || aggregate.Phase == delegatestore.PhaseStopping || aggregate.Phase == delegatestore.PhaseClosed {
+		return true
+	}
+	if c.stopCoversLocked(delegateID) {
+		return true
+	}
+	// The deliberately stopped finish outlives the stop plan that asked for
+	// it: the aggregate's latest settled generation stays stopped-by-parent
+	// until a newer generation runs, which is exactly the sticky gate the
+	// owner's own drives read (delegateRowStopGated).
+	return delegateRunTerminal(aggregate.LatestOutcome, aggregate.CurrentRunOpen) &&
+		aggregate.LatestOutcome.Status == delegatestore.OutcomeStopped &&
+		aggregate.LatestOutcome.Reason == delegatestore.ReasonStoppedByParent
+}
+
 func readExistingDelegateAttentionFold(path, expectedSessionID string) (delegateAttentionFold, error) {
 	// The pre-stat is this boundary's strict shape: a transcript missing here
 	// is an error, where readDelegateAttentionFold keeps missing-as-empty for

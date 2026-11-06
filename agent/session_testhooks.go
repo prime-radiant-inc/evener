@@ -175,6 +175,13 @@ type testConfig struct {
 	// generation is committed and its run goroutine does not exist yet. Tests use
 	// it to drive the child from a second goroutine at exactly that point.
 	delegateAttentionStartCommitted func(*subagent)
+	// delegateAttentionCommitStartFault, when set, is consulted just before
+	// the attention drive commits a presentation start; a non-nil error stands
+	// in for a commit the controller refused — a busy-class error also aborts
+	// the start, mirroring the reservation a real busy commit released, so
+	// tests can pin the busy arm's recovery deterministically without racing
+	// a real busy. Nil in production.
+	delegateAttentionCommitStartFault func() error
 	// delegateAttentionBeforeGuardRelease observes an attention drive that
 	// launched no run, while it still holds the child's drive guard. Tests
 	// pause it there so another drive is refused on that guard. Nil in

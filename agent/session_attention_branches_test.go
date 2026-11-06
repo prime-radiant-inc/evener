@@ -105,6 +105,28 @@ func TestValidateDelegateAttentionResolutions_ResumeGenerationConflict(t *testin
 	}
 }
 
+func TestValidateDelegateAttentionResolutions_ReopenSupersedesSourceClaim(t *testing.T) {
+	fold := newDelegateAttentionFold()
+	fold.content["attn_1"] = llm.User("hello")
+	fold.order = append(fold.order, "attn_1")
+	fold.resolutions["attn_2"] = delegateAttentionConsumed
+	fold.resumeGenerations["attn_2"] = 5
+
+	// The row re-delivered under attn_2's reopen identity may claim the same
+	// generation: the source's claim belongs to a start that never committed,
+	// so the retry of that generation presents the re-delivered row.
+	reopened := delegateAttentionReopenID("attn_2", 5)
+	fold.content[reopened] = llm.User("hello")
+	fold.order = append(fold.order, reopened)
+	if err := validateDelegateAttentionResolutions(fold, []string{reopened}, delegateAttentionConsumed, 5); err != nil {
+		t.Fatalf("reopened row claiming its source's generation: %v", err)
+	}
+	// Any id that is not the claimant's own reopen still refuses.
+	if err := validateDelegateAttentionResolutions(fold, []string{"attn_1"}, delegateAttentionConsumed, 5); err == nil {
+		t.Fatal("resume generation already claimed by a non-source attention should error")
+	}
+}
+
 func TestFoldDelegateDeliveryCommits(t *testing.T) {
 	t.Parallel()
 	// Empty commits -> no-op.

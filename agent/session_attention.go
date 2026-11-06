@@ -273,6 +273,14 @@ func extendDelegateAttention(prior delegateAttentionFold, entries []transcript.E
 		if resolution.ResumeGeneration != 0 {
 			for previousID, generation := range fold.resumeGenerations {
 				if generation == resolution.ResumeGeneration && previousID != resolution.AttentionID {
+					// The same supersession the write-side validator waives: a
+					// row re-delivered under its reopen identity may take over the
+					// resume claim its source left on a generation that never
+					// journaled, so the fold keeps both markers without treating
+					// the pair as a conflicting double claim.
+					if resolution.AttentionID == delegateAttentionReopenID(previousID, resolution.ResumeGeneration) {
+						continue
+					}
 					return delegateAttentionFold{}, fmt.Errorf("resume generation %d claims attention %q and %q", resolution.ResumeGeneration, previousID, resolution.AttentionID)
 				}
 			}
@@ -760,22 +768,49 @@ func (s *Session) reopenConsumedDelegateAttention(attentionID string) error {
 	if !hasContent {
 		return fmt.Errorf("attention %q was consumed without content to reopen", attentionID)
 	}
-	reopenID := fmt.Sprintf("%s/reopened/%d", attentionID, generation)
+	reopenID := delegateAttentionReopenID(attentionID, generation)
 	if _, resolved := fold.resolutions[reopenID]; resolved {
 		// This failed generation already reopened and the reopened row was
 		// consumed again; its own failed start reopens under its own key.
 		return nil
 	}
 	_, err = s.appendDelegateAttentionMessageDurably(reopenID, message)
+	if err == nil {
+		s.attentionMu.Lock()
+		if s.attentionAcceptedID == attentionID {
+			// The reopened row supersedes the latched trigger — same content,
+			// fresh identity — and the fold keeps the latched trigger's turn
+			// alongside every pending row, so an unleased turn in this window
+			// would render the identical report twice in one request. The
+			// latch is consumed-and-superseded; the next accept re-latches on
+			// the row it presents.
+			s.attentionAcceptedID = ""
+		}
+		s.attentionMu.Unlock()
+	}
 	return err
 }
 
 // reopenLatchedDelegateAttention reopens the accepted trigger a failed
 // attention-triggered run latched but never presented: the presentation turn
-// died before its request could carry the report.
+// died before its request could carry the report. A receiver whose own
+// teardown is discarding its pending attention, and a receiver a deliberate
+// stop or the tree's close owns, are left to that teardown — re-delivering
+// into either would race the discard and strand a fresh row the teardown's
+// plan-time enumeration never knew, the same policy reopenFailedDelegateAttention
+// enforces for the drive arms.
 func (s *Session) reopenLatchedDelegateAttention() error {
 	if s == nil {
 		return errors.New("delegate attention session is nil")
+	}
+	s.mu.Lock()
+	closed := s.closingOrClosedLocked()
+	s.mu.Unlock()
+	if closed {
+		return nil
+	}
+	if s.delegateController.attentionReopenRefused(s.owningDelegateID) {
+		return nil
 	}
 	s.attentionMu.Lock()
 	latched := s.attentionAcceptedID
@@ -784,6 +819,15 @@ func (s *Session) reopenLatchedDelegateAttention() error {
 		return nil
 	}
 	return s.reopenConsumedDelegateAttention(latched)
+}
+
+// delegateAttentionReopenID is the fresh identity a failed presentation start
+// re-delivers its consumed report under: keyed by the failed start's generation
+// so a replay of the same failure is idempotent and a later failure keys a
+// fresh row. The validator recognizes the format so a reopened row can take
+// over the resume claim its source left on the generation that never ran.
+func delegateAttentionReopenID(sourceID string, generation uint64) string {
+	return fmt.Sprintf("%s/reopened/%d", sourceID, generation)
 }
 
 func (s *Session) pendingDelegateAttentionIDsLocked() ([]string, error) {
@@ -2026,6 +2070,17 @@ func validateDelegateAttentionResolutions(fold delegateAttentionFold, ids []stri
 		if resumeGeneration != 0 {
 			for previousID, generation := range fold.resumeGenerations {
 				if generation == resumeGeneration && previousID != attentionID {
+					// One generation presents one report, so two ids cannot
+					// both claim it — except the row a reopen re-delivered
+					// under a fresh identity: its source was consumed by a
+					// start that never committed (the reservation was
+					// released), so the generation was never journaled and the
+					// retry of it presents the re-delivered row. The stale
+					// claim must not strand the very recovery the reopen
+					// performed.
+					if attentionID == delegateAttentionReopenID(previousID, resumeGeneration) {
+						continue
+					}
 					return fmt.Errorf("resume generation %d already claims attention %q", resumeGeneration, previousID)
 				}
 			}

@@ -159,7 +159,22 @@ func (s *Session) driveDelegateAttention(sub *subagent) bool {
 		s.delegateController.retryDelegateAttentionLater()
 		return true
 	}
-	started, err := s.delegateController.CommitStart(reservation)
+	var commitErr error
+	if fault := s.cfg.testOnly.delegateAttentionCommitStartFault; fault != nil {
+		// A test seam, nil in production: its error stands in for a commit the
+		// controller refused, so the recovery arms below can be pinned without
+		// racing a real refusal. A busy refusal releases the reservation, so
+		// the seam aborts the start on that error class to mirror the release
+		// a real busy commit performed before the arm below reads it.
+		if commitErr = fault(); commitErr != nil && errors.Is(commitErr, errDelegateTargetBusy) {
+			_ = s.delegateController.AbortStart(reservation)
+		}
+	}
+	var started delegateStartCommit
+	if commitErr == nil {
+		started, commitErr = s.delegateController.CommitStart(reservation)
+	}
+	err = commitErr
 	if err != nil {
 		s.emit(warningDataFromError("commit delegate attention", err))
 		// A busy commit released the reservation, so nothing retries this
@@ -202,15 +217,18 @@ func (s *Session) driveDelegateAttention(sub *subagent) bool {
 }
 
 // reopenFailedDelegateAttention restores a report a presentation start
-// consumed and then abandoned. A closing owner and a deliberately stopped
-// child are left to their teardown: those paths already discard pending
-// attention, and a report re-delivered into a tearing-down tree would only
-// race the discard.
+// consumed and then abandoned. A closing owner, a closing tree and a
+// deliberately stopped child are left to their teardown: those paths already
+// discard pending attention, and a report re-delivered into a tearing-down
+// tree would only race the discard.
 func (s *Session) reopenFailedDelegateAttention(sub *subagent, attentionID string) {
 	if s == nil || sub == nil || sub.sess == nil || attentionID == "" {
 		return
 	}
 	if s.childStopGated(sub.sess.id) {
+		return
+	}
+	if s.delegateController.attentionReopenRefused(sub.sess.owningDelegateID) {
 		return
 	}
 	s.mu.Lock()

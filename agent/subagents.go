@@ -1924,7 +1924,10 @@ func (a *subagent) run(ctx context.Context, input string, inputProvenance *prove
 			// The presentation turn died before its request could carry the
 			// report, and the accept that started it consumed the row. Reopen
 			// it so the re-arm below wakes a drive that presents it instead of
-			// letting the consumed marker strand the report silently.
+			// letting the consumed marker strand the report silently. A
+			// deliberately stopped child, a closing receiver and a closing
+			// tree are not reopened: their teardowns own the discard, and a
+			// fresh row would race it (reopenLatchedDelegateAttention guards).
 			if reopenErr := a.sess.reopenLatchedDelegateAttention(); reopenErr != nil {
 				a.sess.emit(warningDataFromError("reopen unpresented delegate attention", reopenErr))
 			}

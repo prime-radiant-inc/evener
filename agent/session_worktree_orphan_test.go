@@ -1351,6 +1351,10 @@ func TestDelegateAttentionFailedStartReopensConsumedReport(t *testing.T) {
 		return agenttest.FinalResponse("done")
 	}
 	lane := spawnSharedDescendantLane(t, r, "reopen-failed-start", "dlg_reopentest00001", "034reopenplaceholder01", wedge)
+	// The wedge parks a model call until release: close it from cleanup so a
+	// fatal anywhere below cannot leak the parked turn past test end.
+	var releaseOnce sync.Once
+	t.Cleanup(func() { releaseOnce.Do(func() { close(release) }) })
 
 	// The restored runtime's notify edge can drive the presentation during the
 	// spawn's tail, before this test takes control. Disarm it so the drive
@@ -1390,9 +1394,12 @@ func TestDelegateAttentionFailedStartReopensConsumedReport(t *testing.T) {
 	// the presentation from running now.
 	wtGit(t, r.mainRoot, "worktree", "unlock", lane.lanePath)
 
+	// The recovery window has its own budget: a slow refusal under load must
+	// not eat into it, which is the load-flake shape this test pins.
+	recoveryDeadline := time.Now().Add(30 * time.Second)
 	select {
 	case <-entered:
-	case <-time.After(time.Until(turnStartDeadline)):
+	case <-time.After(time.Until(recoveryDeadline)):
 		pending, pendErr := lane.delegateSess.pendingDelegateAttentionIDs()
 		_, locked, reason := r.laneLocked(t, lane.lanePath)
 		t.Fatalf("the failed start lost the retained child's report (pending attention=%d (%v); lane locked=%v reason=%q)",
@@ -1403,7 +1410,183 @@ func TestDelegateAttentionFailedStartReopensConsumedReport(t *testing.T) {
 	}
 
 	// The wedged turn settles cleanly once released.
-	close(release)
+	releaseOnce.Do(func() { close(release) })
+	waitForCondition(t, 30*time.Second, "the delegate's attention turn to finish after release", func() bool {
+		lane.delegateSub.mu.Lock()
+		running := lane.delegateSub.running
+		lane.delegateSub.mu.Unlock()
+		return !running
+	})
+}
+
+// A deliberate stop that cancels an in-flight attention presentation owns the
+// report's teardown, not the settle tail: the stop's discard machinery
+// enumerated the attention ids it knew at plan time, so a reopen appending a
+// fresh row lands past that enumeration: it strands on the stopped child when
+// the stop has already completed — waking paced retries for a deliberately
+// stopped delegate and presenting on restart — and when the stop's
+// completion-discard catches it late, the row still transiently exists and
+// the discard resolves an id the stop never knew. The presentation here parks
+// in its first model request, the stop cancels it, and the released turn
+// settles through the cancelRequested conversion (context.Canceled) — exactly
+// the settle the reopen hook sees, which must leave the consumed report to
+// the stop instead of appending a reopened row at all.
+func TestDelegateAttentionStopMidPresentationDoesNotReopenReport(t *testing.T) {
+	t.Parallel()
+	r := newWorktreeRepo(t)
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	var releaseOnce sync.Once
+	t.Cleanup(func() { releaseOnce.Do(func() { close(release) }) })
+	var wedgeOnce sync.Once
+	wedge := func(req llm.Request) llm.Response {
+		wedgeOnce.Do(func() { close(entered) })
+		<-release
+		return agenttest.FinalResponse("done")
+	}
+	lane := spawnSharedDescendantLane(t, r, "stop-mid-presentation", "dlg_stopmidpresnt01", "034stopmidpresnt01", wedge)
+	lane.delegateSess.SetNotifyFunc(nil)
+
+	// Drive the presentation and let its first model request park.
+	go func() {
+		deadline := time.Now().Add(30 * time.Second)
+		for time.Now().Before(deadline) {
+			lane.root.driveDelegateAttention(lane.delegateSub)
+			time.Sleep(200 * time.Millisecond)
+			select {
+			case <-entered:
+				return
+			default:
+			}
+		}
+	}()
+	select {
+	case <-entered:
+	case <-time.After(30 * time.Second):
+		t.Fatal("the presentation never reached its model request")
+	}
+
+	// The parent deliberately stops the delegate mid-presentation, the same
+	// production stop a user or the tree's close drives.
+	_, cancelPlan, _, err := lane.root.delegateController.StopSubtree(rootDelegateActor(lane.root.delegateRootSessionID), lane.fixture.delegateID)
+	if err != nil {
+		t.Fatalf("StopSubtree: %v", err)
+	}
+	executeDelegateCancelPlan(cancelPlan)
+
+	// The parked request finishes once released; the settle converts its
+	// clean end to context.Canceled because the stop asked for the cancel.
+	releaseOnce.Do(func() { close(release) })
+	waitForCondition(t, 30*time.Second, "the stopped presentation turn to settle", func() bool {
+		lane.delegateSub.mu.Lock()
+		running := lane.delegateSub.running
+		lane.delegateSub.mu.Unlock()
+		return !running
+	})
+	// The settle tail — the reopen decision included — runs before the run's
+	// done channel closes; waiting it out keeps the pending read below from
+	// racing the hook. A stopped delegate never resumes, so the channel read
+	// under the lock is this run's own.
+	lane.delegateSub.mu.Lock()
+	runDone := lane.delegateSub.done
+	lane.delegateSub.mu.Unlock()
+	select {
+	case <-runDone:
+	case <-time.After(30 * time.Second):
+		t.Fatal("the stopped presentation run never completed its settle tail")
+	}
+	// The stop owned the finish: the owner's row gate proves the generation
+	// settled as deliberately stopped, so the hook below ran for a stop.
+	waitForCondition(t, 30*time.Second, "the stopped generation to reach the owner's row gate", func() bool {
+		return lane.root.childStopGated(lane.delegateSess.id)
+	})
+
+	// The guard's contract: the stop owns the report's teardown, so the fold
+	// must never gain a reopened row for it — neither a pending one nor one
+	// the stop's own late-discard machinery resolved afterwards. The reopened
+	// id is the observable: without the guard the settle hook appends it under
+	// the failed generation's key, and whether that row then strands or is
+	// discarded depends only on which side of the stop's completion the append
+	// lands — the id is in the fold either way.
+	fold, foldErr := readDelegateAttentionFold(lane.delegateSess.TranscriptPath(), lane.delegateSess.id)
+	if foldErr != nil {
+		t.Fatalf("read the delegate's attention fold after the stop: %v", foldErr)
+	}
+	for id := range fold.resolutions {
+		if strings.Contains(id, "/reopened/") {
+			t.Fatalf("a deliberately stopped delegate gained a reopened attention row (id=%q disposition=%q)",
+				id, fold.resolutions[id])
+		}
+	}
+	for _, id := range fold.pendingIDs() {
+		if strings.Contains(id, "/reopened/") {
+			t.Fatalf("a deliberately stopped delegate kept a reopened pending row (id=%q)", id)
+		}
+	}
+}
+
+// A busy CommitStart released the reservation, so nothing retries the start
+// the consume marker already paid for: the busy arm must reopen the report
+// exactly as a refused launch does, or a commit that loses its race strands
+// the report with no reservation and no pending row left. The commit-fault
+// seam wedges the first commit with errDelegateTargetBusy deterministically —
+// the same class CI's flake hit, where a start consumed the report and then
+// its commit failed.
+func TestDelegateAttentionBusyCommitReopensConsumedReport(t *testing.T) {
+	t.Parallel()
+	r := newWorktreeRepo(t)
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	var releaseOnce sync.Once
+	t.Cleanup(func() { releaseOnce.Do(func() { close(release) }) })
+	var wedgeOnce sync.Once
+	var wedgedSession atomic.Value
+	wedge := func(req llm.Request) llm.Response {
+		wedgedSession.Store(req.SessionID)
+		wedgeOnce.Do(func() { close(entered) })
+		<-release
+		return agenttest.FinalResponse("done")
+	}
+	lane := spawnSharedDescendantLane(t, r, "busy-commit-reopen", "dlg_busycommit00001", "034busycommit00001", wedge)
+	lane.delegateSess.SetNotifyFunc(nil)
+
+	// Refuse exactly the first attention commit as busy.
+	var faultOnce sync.Once
+	updateSessionTestConfig(lane.root, func(cfg *testConfig) {
+		cfg.delegateAttentionCommitStartFault = func() error {
+			var err error
+			faultOnce.Do(func() { err = errDelegateTargetBusy })
+			return err
+		}
+	})
+
+	// The first drive consumes the report and its commit refuses; the busy
+	// arm reopens the row, so the next drive presents it.
+	go func() {
+		deadline := time.Now().Add(30 * time.Second)
+		for time.Now().Before(deadline) {
+			lane.root.driveDelegateAttention(lane.delegateSub)
+			time.Sleep(200 * time.Millisecond)
+			select {
+			case <-entered:
+				return
+			default:
+			}
+		}
+	}()
+	select {
+	case <-entered:
+	case <-time.After(30 * time.Second):
+		pending, pendErr := lane.delegateSess.pendingDelegateAttentionIDs()
+		t.Fatalf("the busy commit lost the retained child's report (pending attention=%d (%v))",
+			len(pending), pendErr)
+	}
+	if got, _ := wedgedSession.Load().(string); got != lane.delegateSess.id {
+		t.Fatalf("the reopened presentation ran on session %q, want the lane-owning delegate %q", got, lane.delegateSess.id)
+	}
+
+	// The wedged turn settles cleanly once released.
+	releaseOnce.Do(func() { close(release) })
 	waitForCondition(t, 30*time.Second, "the delegate's attention turn to finish after release", func() bool {
 		lane.delegateSub.mu.Lock()
 		running := lane.delegateSub.running
