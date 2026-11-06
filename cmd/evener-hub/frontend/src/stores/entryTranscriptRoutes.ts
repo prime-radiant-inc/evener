@@ -1189,14 +1189,12 @@ function launchEntryOpeningRecovery(ref: string, route: EntryTranscriptRoute): v
       // the view is followed by the local re-open that promotes its
       // restored bodies into the display — the loop's next attempt. A source
       // response that already healed the display needs no further cache
-      // read to converge. The re-open is itself bounded by the stalled-open
-      // window, and a read that outlasts it — healthy but slow, the
-      // CI-load shape a deadline-shrinking test reproduces deterministically
-      // — used to end the chain with the pane still owed its
-      // convergence: the miss set the route's markers, but no caller
-      // follows the chain's own re-open, so nothing ever re-armed.
-      // Re-entering the paced attempts closes that: the storage chain gets
-      // one fresh paced budget behind the handoff (the baseline its
+      // read to converge. The re-open is an attempt like any other, bounded
+      // by the stalled-open window: a read that outlasts it — healthy but
+      // slow — re-enters the paced attempts below rather than ending the
+      // chain, because the miss sets the route's markers and no caller
+      // follows the chain's own re-open to re-arm them. The storage chain
+      // gets one fresh paced budget behind the handoff (the baseline its
       // re-open certifies just changed), still bounded by the handoff cap
       // above.
       if (holdsCompleteForegroundWindow(store().getState().threads.get(ref), route.repository)) return;

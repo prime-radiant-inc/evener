@@ -3634,14 +3634,13 @@ it("a foreground opening whose storage read fails transiently still converges th
   }
 }, 30_000);
 
-// The chain's own terminal open used to be a blind spot: the promotion
-// re-open that follows the source handoff raced the stalled-open window
-// with its result discarded, so a healthy-but-slow read at exactly that open
-// — the loaded-runner shape — ended the chain with the pane still
-// body-suppressed. The miss set the route's markers, but no caller follows
-// the chain's internal re-open, so nothing ever re-armed. The chain must
-// treat its re-open like any other attempt: a missed window re-enters the
-// paced attempts, and the paced retry promotes the recorded range.
+// The chain's terminal open is an attempt like any other. The promotion
+// re-open that follows the source handoff races the stalled-open window,
+// and a read that outlasts it — healthy but slow, the loaded-runner shape
+// — re-enters the paced attempts instead of ending the chain: the miss
+// sets the route's markers, and no caller follows the chain's internal
+// re-open, so the chain itself must pace the retry that promotes the
+// recorded range. This pins exactly that sequence.
 it("a recovery chain whose promotion re-open outlasts the stalled window still converges the recorded display", async () => {
   const storage = cache();
   const realGetLatestWindow = storage.getLatestWindow.bind(storage);
@@ -3699,17 +3698,45 @@ it("a recovery chain whose promotion re-open outlasts the stalled window still c
   delayedWindowReads = 1;
   setSessionCacheStalledOpenForTests(250);
   setSessionCacheOpenBackstopForTests(40);
+  // Freeze the deadline clock for the gated phase: with the windows shrunk
+  // to 250ms/40ms, machine load — not the seeded delay — decides whether a
+  // healthy read outlasts a window, and the full suite's parallel load can
+  // make the paced retry's healthy read miss too, exhausting the chain's
+  // bounded budget (the merge-candidate failure). Under fake timers the
+  // frozen clock decides every deadline: the seeded 300ms delay misses the
+  // re-open's 250ms window deterministically, and the paced retry's healthy
+  // read faces no wall-clock race at all.
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
   try {
     const opened = threadsStore.getState().ensureThread(ref);
-    // The chain registers its whole span — the paced attempts, the source
-    // handoff and the delayed re-open's successor — so the settle awaits the
-    // convergence itself: a chain that ended on the re-open's miss would
-    // settle non-converged and fail the assertions below.
+    // One fake millisecond per turn, each turn pumping one real storage read:
+    // fake-indexeddb delivers its IDB events on real macrotasks (Node's
+    // setImmediate), which a frozen clock never yields on its own, so the
+    // pump lets the chain's own storage work progress while the clock alone
+    // decides every deadline. The withheld reads never answer; the 40ms
+    // backstops and the 250ms stalled windows fire exactly when the clock
+    // reaches them; the re-open's 300ms seeded delay sits past its 250ms
+    // window, so the miss fires deterministically — machine load cannot
+    // reorder any of it.
+    const pump = new MutationOutboxIndexedDB({ indexedDB: factory });
+    try {
+      for (let tick = 0; tick < 800; tick += 1) {
+        await vi.advanceTimersByTimeAsync(1);
+        await pump.listTargetRefs();
+      }
+    } finally {
+      pump.close();
+    }
+    // The re-entering paced retry's healthy read answered off the clock; the
+    // chain registers its whole span, so the settle awaits the convergence
+    // itself: a chain that ended on the re-open's miss would settle
+    // non-converged and fail the assertions below.
     await opened;
     await settleEntryTranscriptForTests(ref);
     expect(bodies()).toEqual(Array.from({ length: 200 }, (_, index) => `row-${index + 26}`));
     expect(threadsStore.getState().threads.get(ref)?.olderCursor).toBeDefined();
   } finally {
+    vi.useRealTimers();
     setSessionCacheOpenBackstopForTests(10000);
     setSessionCacheStalledOpenForTests(5000);
     threadsStore.getState().releaseThread(ref);
