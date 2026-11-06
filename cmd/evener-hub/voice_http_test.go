@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"path/filepath"
@@ -16,6 +17,8 @@ import (
 	"github.com/coder/websocket"
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
+	"primeradiant.com/evener/internal/e2ecap"
+	"primeradiant.com/evener/test/e2e/fakellm"
 )
 
 func TestE2E_VoiceArmBindsExistingManager(t *testing.T) {
@@ -177,4 +180,66 @@ func voiceTestPost(ctx context.Context, t *testing.T, stack hubStack, path, toke
 		t.Fatal(err)
 	}
 	return response.StatusCode, raw
+}
+
+// An Arm that names no provider uses the hub's OpenAI instance, not its
+// OpenAI-compatible default, and both the response and the binding name it.
+func TestE2E_VoiceArmDefaultsToOpenAIInstance(t *testing.T) {
+	e2ecap.RequireLoopbackBind(t)
+	e2ecap.RequireProcessInspect(t)
+	if testing.Short() {
+		t.Skip("live-stack e2e: builds binaries and runs a hub + daemon")
+	}
+	provider := newFakeLLMProvider(t)
+	stack := startHubStackOnProvider(t, fmt.Sprintf(`
+default = "fake"
+
+[providers.fake]
+base     = "openai-compatible"
+base_url = %q
+api_key  = "fakellm-not-a-secret"
+
+[providers.house]
+base     = "openai"
+base_url = %q
+api_key  = "fakellm-not-a-secret"
+`, provider.BaseURL(), provider.BaseURL()), "fake/"+fakellm.ModelID)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	defer cancel()
+	client := stack.dialRPC(ctx, t)
+	ref := startManagerThread(ctx, t, client, stack, "VOICE-ARM-DEFAULT-OPENING")
+	request, err := provider.Next(ctx.Done())
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.RespondToolCall("communicate", communicateArgs("VOICE-ARM-DEFAULT-READY"))
+	awaitThread(ctx, t, client, ref, "manager settled", func(thread appwire.Thread) bool {
+		return thread.Evener.ActiveTurnID == ""
+	})
+	read, err := client.ThreadRead(ctx, appwire.ThreadReadParams{Ref: ref})
+	if err != nil {
+		t.Fatal(err)
+	}
+	status, raw := voiceTestPost(ctx, t, stack, "/api/voice/arm", stack.token, map[string]any{
+		"ref": ref, "expectedInstanceId": read.Thread.Evener.InstanceID, "deviceId": "installation-default",
+	})
+	if status != http.StatusOK {
+		t.Fatalf("Arm without a provider status = %d", status)
+	}
+	var armed voiceArmResponse
+	if err := json.Unmarshal(raw, &armed); err != nil {
+		t.Fatal(err)
+	}
+	if armed.Provider != "house" {
+		t.Fatalf("Arm chose provider %q, want the OpenAI instance %q", armed.Provider, "house")
+	}
+	journal, err := hubcore.NewVoiceJournal(filepath.Join(stack.home, "state", "evener"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = journal.Close() }()
+	binding, err := journal.Binding(ctx, armed.BindingID)
+	if err != nil || binding.Provider != "house" {
+		t.Fatalf("binding provider = %q, err = %v, want house", binding.Provider, err)
+	}
 }
