@@ -243,13 +243,18 @@ final class EvenerQualificationUITests: XCTestCase {
 			// that every check says landed. The drag rides a static label:
 			// a swipe on a control can land as its press.
 				dismissKeyboard(app, draggingOn: app.staticTexts["Token (optional)"].firstMatch)
+			answerSavePasswordSheet(app)
 			tap(app.buttons["hub-continue"], "the Continue row never appeared")
 			// The board is Connect's own effect, checked like every other
 			// step: the press can deaden in the settling window every fresh
 			// screen has, and the app's own guard makes a repeat press safe.
+			// iOS's save-password sheet can lie over the review and swallow
+			// the press until it is answered, so each iteration answers it
+			// first.
 			let board = app.buttons["new-session"]
 			let shown = Date().addingTimeInterval(tripwire)
 			while !board.waitForExistence(timeout: 4) && Date() < shown && app.buttons["Connect"].exists {
+				answerSavePasswordSheet(app)
 				tap(app.buttons["Connect"], "the review step never appeared")
 			}
 		}
@@ -302,6 +307,7 @@ final class EvenerQualificationUITests: XCTestCase {
 		let prompt = app.descendants(matching: .any).matching(identifier: "session-prompt").firstMatch
 		let deadline = Date().addingTimeInterval(tripwire)
 		while !prompt.waitForExistence(timeout: 2) && Date() < deadline {
+			answerSavePasswordSheet(app)
 			tap(app.buttons["new-session"], "the board's compose button never appeared")
 		}
 		XCTAssertTrue(prompt.waitForExistence(timeout: 2), "the New session sheet never opened")
@@ -352,6 +358,27 @@ final class EvenerQualificationUITests: XCTestCase {
 			}
 			Thread.sleep(forTimeInterval: 0.5)
 		}
+	}
+
+	/// Answers iOS's save-password sheet when the autofill agent raises it
+	/// over the content. The token field reads as a login to iOS, so around
+	/// the form's continuation the agent — a separate process — lays a
+	/// "Save Password?" sheet over the review that silently swallows every
+	/// press beneath it until it is answered, while each covered row still
+	/// reads valid, enabled, and framed. "Not Now" is the ordinary answer;
+	/// the journey never saves credentials outside the app's own storage.
+	/// Best effort: a sheet that is absent, or that vanishes before the
+	/// answer lands, just leaves the next press to the caller's own effect
+	/// check.
+	private func answerSavePasswordSheet(_ app: XCUIApplication) {
+		let notNow = app.buttons["Not Now"].firstMatch
+		guard notNow.exists else { return }
+		let settled = Date().addingTimeInterval(2)
+		while Date() < settled && !(notNow.exists && notNow.frame.width > 0 && notNow.isEnabled) {
+			Thread.sleep(forTimeInterval: 0.25)
+		}
+		guard notNow.exists && notNow.frame.width > 0 && notNow.isEnabled else { return }
+		notNow.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
 	}
 
 	/// Taps only once the control has a real frame. A control that registers
