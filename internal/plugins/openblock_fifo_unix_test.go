@@ -154,3 +154,38 @@ func TestReadPrefixRefusesFIFOWithoutBlocking(t *testing.T) {
 		t.Fatal("a FIFO HEAD looked like Git administration")
 	}
 }
+
+// TestParseCatalogRefusesFIFOWithoutBlocking pins the catalog read. A
+// directory-kind marketplace is read in place, so a writerless FIFO at
+// .claude-plugin/marketplace.json must fail the parse instead of parking it.
+func TestParseCatalogRefusesFIFOWithoutBlocking(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	mkfifoAt(t, filepath.Join(root, ".claude-plugin", "marketplace.json"))
+
+	err := withinFIFODeadline(t, "ParseCatalog(FIFO)", func() error {
+		_, parseErr := ParseCatalog(root)
+		return parseErr
+	})
+	if err == nil {
+		t.Fatal("a FIFO marketplace.json parsed as a catalog")
+	}
+}
+
+// TestAddMarketplaceRefusesFIFOCatalogWithoutBlocking pins the wedge the FIFO
+// causes at its widest: AddMarketplace parses the catalog while holding the
+// store lock, so a blocking read there parks every later plugin operation.
+func TestAddMarketplaceRefusesFIFOCatalogWithoutBlocking(t *testing.T) {
+	t.Parallel()
+	src := t.TempDir()
+	mkfifoAt(t, filepath.Join(src, ".claude-plugin", "marketplace.json"))
+	m, ctx := newManagerCtx(t)
+
+	err := withinFIFODeadline(t, "AddMarketplace(FIFO catalog)", func() error {
+		_, addErr := m.AddMarketplace(ctx, "acme", Source{Kind: SourceDirectory, Path: src})
+		return addErr
+	})
+	if err == nil {
+		t.Fatal("a marketplace with a FIFO catalog was registered")
+	}
+}

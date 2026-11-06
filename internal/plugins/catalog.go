@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"os"
 	"path/filepath"
 	"time"
 )
@@ -92,6 +91,11 @@ type catalogHeader struct {
 	Plugins     []json.RawMessage `json:"plugins"`
 }
 
+// maxCatalogBytes bounds the marketplace catalog one marketplace.json read
+// loads. A catalog is a small JSON index, and the bound keeps a hostile or
+// corrupted source from being pulled into memory whole.
+const maxCatalogBytes = 8 << 20
+
 // ParseCatalog reads <marketplaceRoot>/.claude-plugin/marketplace.json.
 //
 // The top-level fields and the plugin list itself must be well-formed JSON —
@@ -101,11 +105,19 @@ type catalogHeader struct {
 // skipped and its name recorded in Catalog.SkippedPlugins instead of failing
 // ParseCatalog for the whole marketplace (design spec §7) — every other
 // plugin in the marketplace remains browsable and installable.
+//
+// The read goes through readPrefix's non-blocking open, so a FIFO substituted
+// for the catalog fails here instead of parking on the open. That matters
+// because AddMarketplace parses inside the store lock: a blocked parse wedges
+// every later plugin operation (#4847).
 func ParseCatalog(marketplaceRoot string) (Catalog, error) {
 	p := filepath.Join(marketplaceRoot, ".claude-plugin", "marketplace.json")
-	data, err := os.ReadFile(p)
+	data, err := readPrefix(p, maxCatalogBytes+1)
 	if err != nil {
 		return Catalog{}, fmt.Errorf("reading %s: %w", p, err)
+	}
+	if len(data) > maxCatalogBytes {
+		return Catalog{}, fmt.Errorf("reading %s: catalog is larger than %d bytes", p, maxCatalogBytes)
 	}
 	var h catalogHeader
 	if err := json.Unmarshal(data, &h); err != nil {
