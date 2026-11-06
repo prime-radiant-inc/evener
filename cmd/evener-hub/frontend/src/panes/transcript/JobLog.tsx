@@ -249,10 +249,12 @@ function JobLogBody({ reader, jobId, paneId }: { reader: JobLogReader; jobId: st
         viewportTop: viewport.top,
         viewportHeight: viewport.bottom - viewport.top,
         // The virtualizer measures every row, so the boundary row's position
-        // survives even when a fast scroll has not rendered it yet.
+        // survives even when a fast scroll has not rendered it yet. Row
+        // measurements are content-local; shift them into the viewport's
+        // client space so they compare with viewport.top.
         rowBottom: (rowIndex) => {
           const item = instance?.measurementsCache[rowIndex];
-          return item === undefined ? undefined : item.end - scroller.scrollTop;
+          return item === undefined ? undefined : viewport.top + item.end - scroller.scrollTop;
         },
       },
     });

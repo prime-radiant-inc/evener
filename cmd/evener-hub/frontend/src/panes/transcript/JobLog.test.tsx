@@ -547,6 +547,23 @@ test("a fast backward jump pages from the boundary row before it renders", async
   expect(request.params).toEqual({ ref: "ref_root", jobId: "job_x", beforeBytes: 100, maxBytes: 100 });
 });
 
+test("measures the boundary row in the viewport's client space when the scroller is offset", async () => {
+  // The scroll port starts 150px down the window. A boundary row 80px above the
+  // viewport top must still be within the one-viewport boundary allowance.
+  restoreGeometry();
+  restoreGeometry = installJobLogGeometry(100, 20, 150);
+  mountJob();
+  const data = Array.from({ length: 20 }, (_, index) => `L${String(index).padStart(2, "0")}\n`).join("");
+  await respond(textPage(100, data, 180, 0));
+  const scroller = port();
+  expect(peer.requests("evener/jobs/output")).toHaveLength(1);
+  await act(async () => scroll(scroller, 120));
+  await act(async () => scroll(scroller, 90));
+  expect(peer.requests("evener/jobs/output")).toHaveLength(2);
+  const request = await peer.request("evener/jobs/output", 1);
+  expect(request.params).toEqual({ ref: "ref_root", jobId: "job_x", beforeBytes: 100, maxBytes: 100 });
+});
+
 test("a real inactive DockHost tab remounts the later-page byte row at the same pixel", async () => {
   vi.stubGlobal("ResizeObserver", StubResizeObserver);
   await import("../welcome");
