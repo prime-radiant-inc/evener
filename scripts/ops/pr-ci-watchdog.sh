@@ -107,24 +107,28 @@ for w in "${workflows[@]}"; do
   case "$w" in '') echo "--workflow takes a workflow file name" >&2; usage ;; esac
 done
 workflows=("${workflows[@]##*/}")
+cov_event=() cov_status=() cov_id=() cov_url=()  # per-workflow covering run, set by classify_runs
 
-# resolve prints the PR's state, head branch and head SHA in one query, so
-# the verdict is about the head GitHub has right now. It stops the script
-# when the lookup fails (a failure inside "$(...)" alone would not).
-if ! out=$(gh pr view "$pr" --repo "$repo" --json state,headRefName,headRefOid \
-  --jq '[.state, .headRefName, .headRefOid] | @tsv' 2>&1); then
-  echo "CIWATCH resolve failed: gh pr view $pr --repo $repo said: $out" >&2
-  exit 2
-fi
-IFS=$'\t' read -r state head_branch head_oid <<<"$out"
+# resolve_pr prints the PR's state, head branch and head SHA in one query,
+# so every decision is about the head GitHub has right now. It stops the
+# script when the lookup fails (a failure inside "$(...)" alone would not).
+resolve_pr() {
+  local out
+  if ! out=$(gh pr view "$pr" --repo "$repo" --json state,headRefName,headRefOid \
+    --jq '[.state, .headRefName, .headRefOid] | @tsv' 2>&1); then
+    echo "CIWATCH resolve failed: gh pr view $pr --repo $repo said: $out" >&2
+    exit 2
+  fi
+  printf '%s\n' "$out"
+}
+
+pr_line="$(resolve_pr)" || exit 2
+IFS=$'\t' read -r state head_branch head_oid <<<"$pr_line"
 if [ "$state" != "OPEN" ]; then
   echo "CIWATCH refused: PR $pr is $state, not OPEN; a $state PR gets no pull_request events and dispatching would build a stale head" >&2
   exit 2
 fi
-check_oid="$head_oid"
-if [ -n "$sha" ]; then
-  check_oid="$sha"
-fi
+check_oid="${sha:-$head_oid}"
 
 # fetch_runs prints one tab-separated line per run on the head, oldest
 # first: path, event, status, id, url. It stops the script on a failed
@@ -140,29 +144,35 @@ fetch_runs() {
   printf '%s\n' "$out"
 }
 
-# run_of_workflow prints the run covering the given workflow file (event,
-# status, id, url), preferring a pull_request run over a dispatch and the
-# newest within each kind; nothing when the workflow has no run on the head.
-run_of_workflow() {
-  local want="$1" last="" prrun="" path event status id url
+# classify_runs reads runs_raw once and records the run covering each
+# expected workflow in cov_event/cov_status/cov_id/cov_url, keyed like
+# workflows: a pull_request run beats a dispatch, the newest within each
+# kind wins, and a cancelled run covers nothing. merge-enqueue's refresh()
+# sets its state the same way, so a verdict never mixes two observations.
+classify_runs() {
+  local i path event status id url base
+  for i in "${!workflows[@]}"; do
+    cov_event[i]="" cov_status[i]="" cov_id[i]="" cov_url[i]=""
+  done
   while IFS=$'\t' read -r path event status id url; do
     [ -n "${path:-}" ] || continue
     [ "$status" != "cancelled" ] || continue  # a cancelled run covers nothing
-    [ "${path##*/}" = "$want" ] || continue
-    last=$(printf '%s\t%s\t%s\t%s' "$event" "$status" "$id" "$url")
-    if [ "$event" = "pull_request" ]; then prrun="$last"; fi
+    base="${path##*/}"
+    for i in "${!workflows[@]}"; do
+      [ "$base" = "${workflows[i]}" ] || continue
+      if [ "$event" = "pull_request" ] || [ "${cov_event[i]:-}" != "pull_request" ]; then
+        cov_event[i]="$event" cov_status[i]="$status" cov_id[i]="$id" cov_url[i]="$url"
+      fi
+    done
   done <<<"$runs_raw"
-  if [ -n "$prrun" ]; then printf '%s' "$prrun"; else printf '%s' "$last"; fi
 }
 
 # missing_workflows prints the expected workflows with no run on the head,
 # one per line; nothing at all when every expected workflow is covered.
 missing_workflows() {
-  local w out=""
-  for w in "${workflows[@]}"; do
-    if [ -z "$(run_of_workflow "$w")" ]; then
-      out="$out$w"$'\n'
-    fi
+  local i out=""
+  for i in "${!workflows[@]}"; do
+    [ -n "${cov_event[i]:-}" ] || out="$out${workflows[i]}"$'\n'
   done
   printf '%s' "$out"
 }
@@ -174,6 +184,7 @@ fi
 echo "expecting a run of: ${workflows[*]}"
 
 runs_raw="$(fetch_runs)" || exit 2
+classify_runs
 missing="$(missing_workflows)"
 if [ -n "$missing" ] && [ "$wait" -gt 0 ]; then
   echo "missing after first check: $(printf '%s' "$missing" | tr '\n' ' ')polling for up to ${wait}s"
@@ -185,6 +196,7 @@ while [ -n "$missing" ]; do
   left=$(( deadline - now ))
   sleep $(( left < 20 ? left : 20 ))
   runs_raw="$(fetch_runs)" || exit 2
+  classify_runs
   missing="$(missing_workflows)"
 done
 
@@ -199,10 +211,11 @@ else
 fi
 
 rc=0
-for w in "${workflows[@]}"; do
-  line="$(run_of_workflow "$w")"
-  if [ -n "$line" ]; then
-    IFS=$'\t' read -r event status id url <<<"$line"
+rechecked=false
+for i in "${!workflows[@]}"; do
+  w="${workflows[i]}"
+  if [ -n "${cov_event[i]:-}" ]; then
+    event="${cov_event[i]}" status="${cov_status[i]}" id="${cov_id[i]}" url="${cov_url[i]}"
     if [ "$event" = "pull_request" ]; then
       note="GitHub delivered the event"
     else
@@ -220,12 +233,11 @@ for w in "${workflows[@]}"; do
     echo "CIWATCH missing workflow=$w head=$check_oid reason=--sha-check-only"
     rc=1
   else
-    if ! cur=$(gh pr view "$pr" --repo "$repo" --json state,headRefOid \
-      --jq '[.state, .headRefOid] | @tsv' 2>&1); then
-      echo "CIWATCH resolve failed while re-checking the head: gh pr view $pr said: $cur" >&2
-      exit 2
+    if [ "$rechecked" != true ]; then
+      pr_line="$(resolve_pr)" || exit 2
+      IFS=$'\t' read -r cur_state _ cur_oid <<<"$pr_line"
+      rechecked=true
     fi
-    IFS=$'\t' read -r cur_state cur_oid <<<"$cur"
     if [ "$cur_state" != "OPEN" ]; then
       echo "$w: no run on $check_oid, and the PR is now $cur_state; not dispatching for a closed PR"
       echo "CIWATCH missing workflow=$w head=$check_oid reason=pr-closed"
@@ -250,9 +262,9 @@ for w in "${workflows[@]}"; do
     deadline2=$(( $(date +%s) + 90 ))
     while :; do
       runs_raw="$(fetch_runs)" || exit 2
-      line="$(run_of_workflow "$w")"
-      if [ -n "$line" ]; then
-        IFS=$'\t' read -r event status id url <<<"$line"
+      classify_runs
+      if [ -n "${cov_event[i]:-}" ]; then
+        event="${cov_event[i]}" status="${cov_status[i]}" id="${cov_id[i]}" url="${cov_url[i]}"
         if [ "$event" = "pull_request" ]; then
           echo "$w: GitHub delivered the event while the dispatch was in flight; run $id covers the head, and the extra dispatch run cannot cancel it"
           echo "CIWATCH covered workflow=$w by=$event run=$id url=$url"
