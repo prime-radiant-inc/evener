@@ -179,14 +179,12 @@ export interface PendingTurnsStore<A extends MutationAttachmentRef = MutationAtt
   // `submittedHere`. A no-op (no `setState`, `getState()` unchanged) when
   // every discovered id is already known.
   recordSubmittedHere(snapshot: { outbox: MutationOutboxRecord<A>[]; optimistic: MutationOptimisticRecord<A>[] }): void;
-  // Claims a submission this client dispatched WITHOUT a durable record -
-  // the storage-failure direct send. That send leaves nothing in the outbox
-  // or optimistic store for `recordSubmittedHere` to discover, but the
-  // daemon's authoritative projection still lists its clientMutationId as
-  // pending; without this the only provenance carrier is empty and the
-  // entry reads as another client's (no ghost, `ownPendingSend` false).
-  // Written at the send's own success boundary, and never pruned. A no-op
-  // when the id is already known.
+  // Claims a submission dispatched WITHOUT a durable record - the
+  // storage-failure direct send. That send leaves nothing for
+  // `recordSubmittedHere` to discover, yet the daemon's pending projection
+  // still names its clientMutationId; without this the entry reads as another
+  // client's (no ghost, `ownPendingSend` false). Written at the send's success
+  // boundary, never pruned, and a no-op when the id is already known.
   recordDirectSend(clientMutationId: string, createdAt: number): void;
   // Replaces each of `targets`' outbox, optimistic and recovery records with
   // `snapshot`'s (replaceTargetRecords). A no-op (no `setState`, `getState()`
@@ -234,8 +232,17 @@ export function createPendingTurnsStore<A extends MutationAttachmentRef = Mutati
     submittedHere: new Map(),
   })) as PendingTurnsStore<A>;
 
-  store.recordSubmittedHere = (snapshot) => {
+  // The one writer of `submittedHere`: durable discovery and the direct
+  // fallback both land their id -> createdAt pairs here in one setState, and
+  // neither publishes when every id is already known.
+  function recordSubmitted(entries: ReadonlyArray<readonly [string, number]>): void {
     const known = store.getState().submittedHere;
+    const discovered = entries.filter(([id]) => !known.has(id));
+    if (discovered.length === 0) return;
+    store.setState((state) => ({ submittedHere: new Map([...state.submittedHere, ...discovered]) }));
+  }
+
+  store.recordSubmittedHere = (snapshot) => {
     // The outbox is shared per origin: another client's records read back
     // out of it are visible here but are not this store's submissions, and
     // claiming them would reroute this store's own routing behind their
@@ -252,17 +259,12 @@ export function createPendingTurnsStore<A extends MutationAttachmentRef = Mutati
       // stranding the lineage's ownership trail; the wire id is stable
       // across every mint. Ordinary rows - wire id === storage key, every
       // native row and most web rows - keep byte-identical behavior.
-      .map((record) => [effectiveWireId(record), record.createdAt] as const)
-      .filter(([id]) => !known.has(id));
-    if (discovered.length === 0) return;
-    store.setState((state) => ({ submittedHere: new Map([...state.submittedHere, ...discovered]) }));
+      .map((record) => [effectiveWireId(record), record.createdAt] as const);
+    recordSubmitted(discovered);
   };
 
   store.recordDirectSend = (clientMutationId, createdAt) => {
-    if (store.getState().submittedHere.has(clientMutationId)) return;
-    store.setState((state) => ({
-      submittedHere: new Map([...state.submittedHere, [clientMutationId, createdAt]]),
-    }));
+    recordSubmitted([[clientMutationId, createdAt]]);
   };
 
   store.projectSnapshot = (targets, snapshot) => {
