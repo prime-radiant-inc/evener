@@ -197,10 +197,12 @@ export function ProjectedIntentGroup({
             ))}
           </div>
         </Disclosure>
+        {separatorTurn && separatorTurn.status === "completed" && !asTurnError(separatorTurn.error) && (
+          <div className={transcriptStyles.intentGroupItems} data-testid="turn-done-row">
+            <TurnDoneEndCap turn={separatorTurn} />
+          </div>
+        )}
       </div>
-      {separatorTurn && separatorTurn.status === "completed" && !asTurnError(separatorTurn.error) && (
-        <TurnDoneEndCap turn={separatorTurn} />
-      )}
       {separatorTurn && <TurnSeparator turn={separatorTurn} />}
     </>
   );
