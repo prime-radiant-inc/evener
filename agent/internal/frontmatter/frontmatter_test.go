@@ -169,6 +169,13 @@ func TestParse_RejectsDuplicateResolvedKeys(t *testing.T) {
 			"nested alias duplicate",
 			"name: fixture\ndescription: 'LEGACY: fixture'\nmetadata:\n  key: &key nested\n  *key: one\n  nested: two\n",
 		},
+		{
+			// The alias resolves to the integer 1, which decodes into the root
+			// map[string]any as the string "1"; the quoted key is already that
+			// string. Comparing decoded scalar values keeps them distinct.
+			"root alias key beside its string spelling",
+			"name: fixture\ndescription: 'LEGACY: fixture'\nmetadata: &key 1\n*key: a\n\"1\": b\n",
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()

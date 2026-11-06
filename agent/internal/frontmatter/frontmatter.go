@@ -110,7 +110,9 @@ func parseBlock(block string, meta *map[string]any) error {
 		// A comment-only block leaves meta empty, as yaml.Unmarshal did.
 		return nil
 	}
-	if err := mappingKeysUnique(&tree, true); err != nil {
+	// tree is a document node; its first child is the mapping that decodes into
+	// map[string]any, so that mapping's keys are compared as strings.
+	if err := mappingKeysUnique(tree.Content[0], true); err != nil {
 		return err
 	}
 	return tree.Decode(meta)
