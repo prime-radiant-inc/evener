@@ -18,6 +18,8 @@ public struct WakeTrialAttempt: Codable {
 
 /// Counts survive JS suspension. Only scores/counts are persisted, never PCM.
 public final class WakeTrialLedger {
+    // Keep the latest qualification runs without unbounded storage/bridge payloads.
+    private static let maximumAttempts = 256
     private let defaults: UserDefaults
     private let key = "evener.voice.wakeTrials.v1"
     public private(set) var attempts: [WakeTrialAttempt]
@@ -27,6 +29,7 @@ public final class WakeTrialLedger {
         attempts = defaults.data(forKey: key).flatMap { try? JSONDecoder().decode([WakeTrialAttempt].self, from: $0) } ?? []
         // A process restart is not evidence that the microphone kept running.
         interrupt()
+        if attempts.count > Self.maximumAttempts { save() }
     }
     public func start(modelId: String, phrase: String, settings: WakeWordSettings, at: Double) throws {
         guard !running, attempts.last?.label != nil || attempts.isEmpty else { throw VoiceFailure("wake_trial_unmarked") }
@@ -57,7 +60,10 @@ public final class WakeTrialLedger {
         attempts[attempts.count - 1].interrupted = true
         save()
     }
-    public func save() { defaults.set(try? JSONEncoder().encode(attempts), forKey: key) }
+    public func save() {
+        if attempts.count > Self.maximumAttempts { attempts.removeFirst(attempts.count - Self.maximumAttempts) }
+        defaults.set(try? JSONEncoder().encode(attempts), forKey: key)
+    }
     public var json: [[String: Any]] {
         guard let data = try? JSONEncoder().encode(attempts) else { return [] }
         return (try? JSONSerialization.jsonObject(with: data)) as? [[String: Any]] ?? []

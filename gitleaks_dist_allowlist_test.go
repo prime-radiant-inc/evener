@@ -97,6 +97,7 @@ const (
 	mermaidGeneratedPath = "mobile-native/src/generated/mermaidPage.ts"
 	mermaidVendorCounts  = "p.keyCount,v=p.atlasCount;"
 	wakeTrialLedgerPath  = "mobile-native/modules/evener-voice/core/WakeTrialLedger.swift"
+	wakeTrialFixturePath = "mobile-native/modules/evener-voice/tests/WakeTrialLedgerTests.swift"
 	wakeTrialStorageKey  = "evener.voice.wakeTrials.v1"
 )
 
@@ -147,11 +148,21 @@ func TestGitleaksMermaidExceptionScope(t *testing.T) {
 
 func TestGitleaksWakeTrialExceptionScope(t *testing.T) {
 	t.Parallel()
+	assertWakeTrialExceptionScope(t, wakeTrialLedgerPath)
+}
+
+func TestGitleaksWakeTrialFixtureExceptionScope(t *testing.T) {
+	t.Parallel()
+	assertWakeTrialExceptionScope(t, wakeTrialFixturePath)
+}
+
+func assertWakeTrialExceptionScope(t *testing.T, targetPath string) {
+	t.Helper()
 	var cfg gitleaksConfig
 	if _, err := toml.DecodeFile(".gitleaks.toml", &cfg); err != nil {
 		t.Fatal(err)
 	}
-	if anyGitleaksPathMatches(t, cfg.Allowlist.Paths, wakeTrialLedgerPath) {
+	if anyGitleaksPathMatches(t, cfg.Allowlist.Paths, targetPath) {
 		t.Fatal("wake-trial source must not be globally path-allowlisted")
 	}
 	for _, rule := range cfg.Rules {
@@ -159,7 +170,7 @@ func TestGitleaksWakeTrialExceptionScope(t *testing.T) {
 			continue
 		}
 		for _, allowlist := range rule.Allowlists {
-			if !anyGitleaksPathMatches(t, allowlist.Paths, wakeTrialLedgerPath) {
+			if !anyGitleaksPathMatches(t, allowlist.Paths, targetPath) {
 				continue
 			}
 			if allowlist.Condition != "AND" || allowlist.RegexTarget != "secret" {
@@ -167,8 +178,9 @@ func TestGitleaksWakeTrialExceptionScope(t *testing.T) {
 			}
 			for _, path := range []string{
 				"mobile-native/modules/evener-voice/core/VoiceCore.swift",
-				"other/" + wakeTrialLedgerPath,
-				wakeTrialLedgerPath + ".backup",
+				"mobile-native/modules/evener-voice/tests/WakeWordTriggerTests.swift",
+				"other/" + targetPath,
+				targetPath + ".backup",
 			} {
 				if anyGitleaksPathMatches(t, allowlist.Paths, path) {
 					t.Errorf("wake-trial exception also matches path %q", path)
@@ -211,6 +223,7 @@ func TestGitleaksScopedSecretDetection(t *testing.T) {
 	// A deterministic synthetic credential exercises the actual generic rule.
 	credential := `api_key="` + strings.Repeat("aB3dE7gH9kL2", 3) + `";`
 	persistedWakeKey := `private let key = "` + wakeTrialStorageKey + `"`
+	fixtureWakeKey := `defaults.set(data, forKey: "` + wakeTrialStorageKey + `")`
 	for _, tc := range []struct {
 		name     string
 		path     string
@@ -225,6 +238,10 @@ func TestGitleaksScopedSecretDetection(t *testing.T) {
 		{"wake-trial-key-other-path", "mobile-native/modules/evener-voice/core/VoiceCore.swift", persistedWakeKey, 1},
 		{"wake-trial-changed-key", wakeTrialLedgerPath, strings.ReplaceAll(persistedWakeKey, ".v1", ".v2"), 1},
 		{"wake-trial-credential-same-line", wakeTrialLedgerPath, persistedWakeKey + "; " + credential, 1},
+		{"wake-trial-fixture-key", wakeTrialFixturePath, fixtureWakeKey, 0},
+		{"wake-trial-fixture-other-path", "mobile-native/modules/evener-voice/tests/WakeWordTriggerTests.swift", fixtureWakeKey, 1},
+		{"wake-trial-fixture-changed-key", wakeTrialFixturePath, strings.ReplaceAll(fixtureWakeKey, ".v1", ".v2"), 1},
+		{"wake-trial-fixture-credential-same-line", wakeTrialFixturePath, fixtureWakeKey + "; " + credential, 1},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()

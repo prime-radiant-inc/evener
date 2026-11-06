@@ -127,3 +127,11 @@ condition = "AND"
 regexTarget = "secret"
 paths = ['''^mobile-native/modules/evener-voice/core/WakeTrialLedger\.swift$''']
 regexes = ['''^evener\.voice\.wakeTrials\.v1$''']
+
+# The migration regression seeds the wake-trial UserDefaults key independently.
+[[rules.allowlists]]
+description = "wake-trial UserDefaults storage key fixture"
+condition = "AND"
+regexTarget = "secret"
+paths = ['''^mobile-native/modules/evener-voice/tests/WakeTrialLedgerTests\.swift$''']
+regexes = ['''^evener\.voice\.wakeTrials\.v1$''']

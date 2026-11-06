@@ -6,7 +6,8 @@ clips / 2.089803 hours**. Two positives were missed.
 
 This is an **offline synthetic qualification**, not a qualified iPhone wake
 feature. The classifier is trained here, not copied from openWakeWord's
-non-commercial pretrained phrase models. No Swift detector or hub code is changed.
+non-commercial pretrained phrase models. The [native integration](../../README.md)
+ships this bundle through the Swift detector at the same 0.99 threshold.
 Human recordings, phone acoustics and the design's ≥60 intended trials at ≥95%
 detection plus ≥30 hours of negative audio remain untested.
 
@@ -38,7 +39,8 @@ sweep did not select or change the shipped threshold:
 | **0.99, pinned** | **598/600** | **0** | **0** |
 
 The committed assets in `mobile-native/modules/evener-voice/resources/wake-word/`
-are ready for the separate native integration lane, not yet wired into Swift:
+are the default Swift runtime bundle selected by
+[`wake-models.custom.json`](../../wake-models.custom.json):
 
 | Artifact | Bytes | Purpose |
 | --- | ---: | --- |
@@ -244,10 +246,15 @@ checks all ONNX graphs/shapes/checksums and disjoint positive audio, and compare
 cached training features against independent `Model.predict` calls on real
 speech, a confuser, a positive and procedural noise.
 
-The iOS module currently pins ONNX Runtime 1.20.0; this lane tested Python CPU
-1.20.1 only. Native bundling, Swift buffering, AVAudioEngine resampling,
-microphone gain, phone CPU/battery and full on-device inference are **not tested**.
-Keep audio local until the separate native detector admits activation.
+The trainer uses Python ONNX Runtime 1.20.1. The native integration uses ONNX
+Runtime 1.20.0 and passed six real WAV XCTest cases on m5max, including the
+packaged custom model: **one Hey Evener detection, peak 0.9999996**, and **zero**
+negative-fixture detections, peak **0.0004506111**, at 0.99. See the
+[native checks and limits](../../README.md#checks) for the Swift/ONNX commands,
+fixture provenance and device/simulator runtime link evidence.
+AVAudioEngine resampling, microphone gain, phone CPU/battery and physical-device
+inference remain **untested**. Audio stays local until native activation and
+the existing input-start acknowledgement.
 
 ## Data gaps
 

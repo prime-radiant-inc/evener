@@ -44,6 +44,10 @@ node modules/evener-voice/ensure-model.mjs
 
 The same check runs during `npm ci` postinstall. It downloads pinned Silero when absent and copies the custom wake assets from the tracked `resources/wake-word/` export. It verifies SHA-256 before writing, refuses to replace a bad existing file and verifies every selected file. Installed root-level ONNX copies and the generated `resources/wake-models.json` are ignored in Git. The three trainer originals are tracked and each fits the repository's 1 MiB file limit.
 
+Wake manifests must have non-empty IDs/phrases and satisfy the Swift settings
+limits before any assets are installed. Generated JSON is replaced atomically;
+a truncated output from an earlier install does not prevent recovery.
+
 - Model: `https://raw.githubusercontent.com/snakers4/silero-vad/5cd2ba54db059f961e7545d4f211b44f005a6dfb/files/silero_vad.onnx`
 - SHA-256: `6b99cbfd39246b6706f98ec13c7c50c6b299181f2474fa05cbc8046acc274396`
 - Runtime: CocoaPods `onnxruntime-objc` **1.20.0**, which pins `onnxruntime-c` **1.20.0**. Both are MIT, with upstream iOS minimum 13.0. This app/module stays at 16.4.
@@ -104,10 +108,14 @@ procedural noise. These offline numbers do not establish room, microphone,
 locked-phone or long-duration accuracy.
 
 Trial detections/labels save immediately, ongoing scored duration every five
-seconds. No PCM is stored. Debug totals exclude incomplete/interrupted attempts
+seconds. No PCM is stored. The ledger retains the **latest 256 attempts**, pruning
+oldest records on load/save without discarding the current unmarked attempt.
+Debug totals cover retained records only, exclude incomplete/interrupted attempts
 and keep model/settings cohorts separate. Warmup and gaps do not count as scored
-audio. Targets are ≥60 intended trials, ≥95% detection and 30 h negative audio;
-none are claimed by this runtime implementation.
+audio. Record qualification evidence before older attempts age out. Targets are
+≥60 intended trials, ≥95% detection and 30 h negative audio; none are claimed by
+this runtime implementation. Periodic bridge updates run only for active trials
+or changed wake state/score, not unchanged quiet listening or repeated errors.
 
 ## Checks
 
@@ -121,6 +129,12 @@ npm run test:voice-core
 ```
 
 Swift Package tests run the portable controller/timeline. On macOS they also run the actual Foundation transport against a real loopback HTTP peer, including HTTP and WebSocket redirects and hostname pinning. The Python peer is an OS/network boundary, not a substitute voice controller. Removing HTTP redirect rejection makes the test observe a request at the forbidden destination.
+
+The dependency-free core tests also cover wake trigger hysteresis/holdoff and
+trial start/finish/interruption/retention. A semaphore-controlled slow/throwing
+detector stub proves the stream's two-block bound, stale-epoch fencing and reset
+after capture gaps or inference errors. Those mechanics tests do not claim model
+accuracy; the separate WAV/ONNX checks below supply real inference evidence.
 
 Consent tests exercise the production admission policy used by `VoiceService`.
 The loopback WebSocket test observes the denied generation's interrupt before

@@ -35,13 +35,18 @@ final class VoiceService {
     private var lastWakeScore: Float?
     private var lastWakeActivation = -Double.infinity
     private var lastWakePublish = 0.0
+    private var publishedWakeState = "paused"
+    private var publishedWakeScore: Float?
+    private var publishedWakeError = ""
     private var lastTrialSave = 0.0
     private init() {
         audio.wakeResult = { [weak self] result in self?.heardWake(result) }
         audio.wakeFailed = { [weak self] reason, samples in
             guard let self else { return }
+            let changed = self.wakeError != reason
             self.wakeState = "warming"; self.wakeError = reason
-            self.wakeTrials.dropped(samples); self.publish()
+            self.wakeTrials.dropped(samples)
+            if changed { self.publish() }
         }
         audio.capture = { [weak self] pcm, speech, at in
             guard let self else { return }
@@ -96,6 +101,9 @@ final class VoiceService {
         if audio.setWakeListening(connected && audio.capturing && controller.state == .quiet) {
             wakeState = "warming"; wakeScore = nil
         }
+        publishedWakeState = audio.wakeListening ? wakeState : "paused"
+        publishedWakeScore = wakeScore; publishedWakeError = wakeError
+        lastWakePublish = now
         listener?(state())
     }
     private func heardWake(_ result: WakeWordResult) {
@@ -231,7 +239,10 @@ final class VoiceService {
         let previous = controller.state
         perform(controller.tick(at: now))
         if previous != controller.state { publish() }
-        if audio.wakeListening, now - lastWakePublish >= 500 { lastWakePublish = now; publish() }
+        if audio.wakeListening, now - lastWakePublish >= 500,
+           wakeTrials.running || wakeState != publishedWakeState || wakeScore != publishedWakeScore || wakeError != publishedWakeError {
+            publish()
+        }
         if wakeTrials.running, now - lastTrialSave >= 5000 { lastTrialSave = now; wakeTrials.save() }
         if now - lastProgress >= 200 { audio.reportProgress(); lastProgress = now }
     }

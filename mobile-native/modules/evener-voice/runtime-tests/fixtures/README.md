@@ -22,7 +22,7 @@ inject classifier results.
 `wake-activation.json` and `wake-trials.json` contain actual Swift/ONNX 1.20.0
 detector, controller and ledger observations from `check-apple.sh` on m5max,
 2026-11-06, projected into the bridge shape. They do not run VoiceService or the
-microphone. The five runtime tests write new receipts
+microphone. The six runtime tests write new receipts
 under the check's `macos/` output; copy them here when deliberately refreshing
 the JS bridge replay inputs. They include a positive attempt, a negative attempt
 interrupted by reconstruction, and a completed negative attempt. UUIDs identify
