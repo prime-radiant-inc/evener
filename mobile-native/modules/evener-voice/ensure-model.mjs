@@ -40,7 +40,7 @@ if (args.length && (args.length !== 2 || args[0] !== "--wake-manifest"))
 	throw new Error("usage: node ensure-model.mjs [--wake-manifest PATH]");
 const manifestURL = args.length
 	? pathToFileURL(resolve(args[1]))
-	: new URL("./wake-models.pretrained.json", import.meta.url);
+	: new URL("./wake-models.custom.json", import.meta.url);
 const manifest = JSON.parse(await readFile(manifestURL, "utf8"));
 const packaged = { id: manifest.id, phrase: manifest.phrase, settings: manifest.settings };
 for (const key of ["melspectrogram", "embedding", "classifier"])

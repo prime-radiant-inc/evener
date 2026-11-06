@@ -1,6 +1,6 @@
 # Native voice owner
 
-Opt-in iOS Talk and local openWakeWord preview, not release or acoustic qualification. The app subscriber owns the service independently of screens and JS foreground sockets. The default pretrained phrase is **Alexa**, not **Hey Evener**. The custom classifier is a separate training deliverable.
+Opt-in iOS Talk and local openWakeWord detection, not release or acoustic qualification. The app subscriber owns the service independently of screens and JS foreground sockets. The default shipped phrase is **Hey Evener.**, using the custom classifier at threshold **0.99**. Pretrained Alexa remains an optional personal-use preview, not the shipped default.
 
 ## Boundaries
 
@@ -42,13 +42,14 @@ Run from `mobile-native`:
 node modules/evener-voice/ensure-model.mjs
 ```
 
-The same check runs during `npm ci` postinstall. It downloads the pinned Silero and openWakeWord artifacts when absent, verifies SHA-256 before writing, refuses to replace a bad existing file and verifies every selected file. ONNX files and the generated `resources/wake-models.json` are ignored in Git because the repository limits tracked file size.
+The same check runs during `npm ci` postinstall. It downloads pinned Silero when absent and copies the custom wake assets from the tracked `resources/wake-word/` export. It verifies SHA-256 before writing, refuses to replace a bad existing file and verifies every selected file. Installed root-level ONNX copies and the generated `resources/wake-models.json` are ignored in Git. The three trainer originals are tracked and each fits the repository's 1 MiB file limit.
 
 - Model: `https://raw.githubusercontent.com/snakers4/silero-vad/5cd2ba54db059f961e7545d4f211b44f005a6dfb/files/silero_vad.onnx`
 - SHA-256: `6b99cbfd39246b6706f98ec13c7c50c6b299181f2474fa05cbc8046acc274396`
 - Runtime: CocoaPods `onnxruntime-objc` **1.20.0**, which pins `onnxruntime-c` **1.20.0**. Both are MIT, with upstream iOS minimum 13.0. This app/module stays at 16.4.
 - Silero is MIT. Notices live in `resources/` and are included with the model in CocoaPods' `EvenerVoiceModels.bundle`. The runtime checks the model checksum before inference. The app module itself does not introduce an open-source license grant.
-- `wake-models.pretrained.json` pins openWakeWord v0.5.1 release assets (mel, Google speech embedding and Alexa v0.1), their SHA-256 values, and settings. Streaming feature semantics follow openWakeWord v0.6.0. The runtime verifies all three hashes. Upstream code/backbone is Apache-2.0; the pretrained classifier is CC BY-NC-SA 4.0, personal-use preview only. Notices and license texts are bundled.
+- `wake-models.custom.json` is the default installer manifest. It pins the custom classifier and the trainer's paired mel/embedding models, including their modified FP16 weight storage with FP32 operators. Do not substitute the upstream feature assets for these. Streaming feature semantics follow openWakeWord v0.6.0, and the runtime verifies all three hashes. The first-party classifier and Apache-2.0 feature models retain their training-data notices in `resources/wake-word/NOTICE.md`.
+- `wake-models.pretrained.json` retains the upstream Alexa option and its original feature assets. That classifier is CC BY-NC-SA 4.0, personal-use preview only. Notices and license texts are bundled.
 
 `Podfile.lock` records the module and both ONNX pods. Update it only through the
 normal [full-app prebuild and pod installation flow](../../../docs/design/mobile/ios-build-distribution.md).
@@ -56,8 +57,8 @@ normal [full-app prebuild and pod installation flow](../../../docs/design/mobile
 ### Swapping the wake model
 
 No change to the training lane's export path is required. Copy
-`wake-models.pretrained.json` to a local manifest and keep the two feature assets.
-Set `id` to a unique model revision, `phrase` to `Hey Evener`, and `classifier`
+`wake-models.custom.json` to a local manifest and keep the classifier's paired feature assets.
+Set `id` to a unique model revision, `phrase` to the trained phrase, and `classifier`
 to an object containing `file` (a new bundle basename ending in `.onnx`),
 `sha256`, and `source` (an absolute path or a path relative to that manifest).
 `url` is also supported for pinned downloaded assets. `source` is read-only;
@@ -65,13 +66,21 @@ the installer copies it into `resources/` under `file`, never moves the export.
 Use a new filename when changing bytes; mismatched existing files are refused.
 
 ```sh
-# Run after npm ci, which packages the personal-use pretrained preview by default.
+# Run after npm ci, which packages Hey Evener by default.
 node modules/evener-voice/ensure-model.mjs --wake-manifest /absolute/custom-wake.json
+# Optional personal-use Alexa preview:
+node modules/evener-voice/ensure-model.mjs --wake-manifest modules/evener-voice/wake-models.pretrained.json
+# Restore the shipped custom model:
+node modules/evener-voice/ensure-model.mjs
 ```
 
 Rebuild the app with the normal pod/prebuild flow. `settings.embeddingFrames`
 must match the binary classifier's `[1, frames, 96]` input. Default settings are
-threshold 0.5, release threshold 0.2, hop 1280 samples and holdoff 2500 ms.
+threshold **0.99**, release threshold **0.5**, hop **1280** samples, holdoff
+**2500 ms**, and **16** embedding frames. The release threshold is deliberately
+well below detection: another detection requires both expired holdoff and a
+score having fallen below 0.5, not just fluctuations near 0.99. This conservative
+hysteresis choice is not a newly calibrated detection threshold.
 `hopSamples` batches multiples of the trained 1280-sample/80 ms stride, not a
 change to the model's time scale. The detector can also load an explicit manifest
 URL, so its boundary is independent of the bundle convention. Record a new model
@@ -79,10 +88,20 @@ ID/settings cohort for qualification, update model notices and rerun real WAV
 checks with matching positive audio. Do not treat the Alexa tests as Hey Evener
 accuracy evidence.
 
-The installer does not delete earlier models. CocoaPods bundles `resources/*`,
-so before broader distribution inspect that directory and remove unused preview
-ONNX copies, including `alexa_v0.1.onnx`, after selecting the custom manifest.
-Changing the manifest alone does not remove their licensing obligations.
+The installer does not delete earlier models. CocoaPods selects only Silero,
+the generated manifest's three ONNX files, and notices. Cached Alexa/upstream
+ONNX copies and duplicate trainer originals are not included in the default app
+bundle. Selecting a different manifest requires the normal pod/prebuild flow.
+
+### Evidence and remaining gates
+
+The trainer's [held-out evaluation](tools/wake-word/results/evaluation.json)
+recorded **598/600 positive clips (99.67%)** and **zero false accepts over
+2.089803 hours (2.09 h) of negatives** at 0.99. Positives are synthetic Piper
+speech with speaker-disjoint training/calibration/test splits, not held-out
+human recordings. Negatives mix Piper confusers, real LibriSpeech speech and
+procedural noise. These offline numbers do not establish room, microphone,
+locked-phone or long-duration accuracy.
 
 Trial detections/labels save immediately, ongoing scored duration every five
 seconds. No PCM is stored. Debug totals exclude incomplete/interrupted attempts
@@ -115,6 +134,9 @@ socket. They do not exercise AVAudioEngine scheduling or hardware-rate conversio
 On an Apple Silicon Mac, unpack the published ONNX 1.20.0 archives into a private directory (containing `objectivec/`, `Headers/`, `onnxruntime.xcframework/`) and run:
 
 ```sh
+# Keep the five original preview regression cases available as test-only assets.
+node modules/evener-voice/ensure-model.mjs --wake-manifest modules/evener-voice/wake-models.pretrained.json
+node modules/evener-voice/ensure-model.mjs
 bash modules/evener-voice/check-apple.sh /absolute/extracted-runtime /absolute/new-output
 ```
 
@@ -123,13 +145,17 @@ Public archives:
 - `https://download.onnxruntime.ai/pod-archive-onnxruntime-objc-1.20.0.zip`
 - `https://download.onnxruntime.ai/pod-archive-onnxruntime-c-1.20.0.zip`
 
-The script compiles the actual Objective-C runtime and links the production voice runtime for arm64 iOS device and simulator, then runs actual model loading plus 100 recurrent silence windows on macOS. It also builds an Apple XCTest bundle and runs five real wake-model WAV tests: positive/negative detection, states and Talk admission, chunk/reset/repeated-phrase behavior, configured batch/threshold, and trial persistence/restart. It creates a new output directory and never generates an app, signs, installs or uploads anything. **It excludes the Expo bridge** and does not replace an app build.
+The script compiles the actual Objective-C runtime and links the production voice runtime for arm64 iOS device and simulator, then runs actual model loading plus 100 recurrent silence windows on macOS. It builds an Apple XCTest bundle and runs six real wake-model WAV tests: the packaged custom model must detect the held-out Hey Evener fixture once and the negative fixture zero times at 0.99; the five original preview cases retain their positive/negative, state/Talk admission, chunk/reset/repeated-phrase, configured batch/threshold and trial persistence assertions. Preview assets are isolated in a test-only directory, not the app's model bundle. The script creates a new output directory and never generates an app, signs, installs or uploads anything. **It excludes the Expo bridge** and does not replace an app build.
 
 The WAVs and provenance live in `runtime-tests/fixtures/`. The same test run writes
 `macos/wake-activation.json` and `macos/wake-trials.json`; the committed copies are
 replayed by JS activation, counter and UI tests, not generated detector scores.
-On 2026-11-06, Apple Silicon macOS/ONNX 1.20.0 measured one Alexa detection
-(peak 0.9999999) and no detections for spoken “Hey Jane” (peak 0.00028333068).
+Those receipts retain the original Alexa regression inputs. On 2026-11-06,
+m5max/ONNX 1.20.0 measured **one custom Hey Evener detection, peak 0.9999996**,
+and **zero** detections for spoken “Hey Jane”, peak **0.0004506111**, at 0.99.
+The five preview regressions also passed (Alexa peak 0.9999999, negative peak
+0.00028333068). The custom fixture is 58,234 bytes of held-out synthetic speech,
+not a physical microphone recording. Do not lower 0.99 to make this check pass.
 `make test-native` runs the JS/Metro/typecheck/script gate, **not Swift**; run
 `swift test --package-path modules/evener-voice` and `check-apple.sh` separately.
 
@@ -144,4 +170,4 @@ Physical iPhone microphone/playout, leading-phoneme retention, endpoint latency,
 barge-in/AEC, route transitions, interruption recovery, extended locked operation,
 battery and the complete phone-to-manager journey require their own checks. App
 builds, scripted hub journeys and synthetic timeline tests cannot prove these.
-The runtime preview is not a qualified Hey Evener model. Locked listening remains a requirement, not a claimed result.
+The custom runtime is not an acoustically qualified Hey Evener release. Locked listening remains a requirement, not a claimed result.

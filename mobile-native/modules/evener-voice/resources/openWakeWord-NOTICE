@@ -7,10 +7,12 @@ warmup instead of random initial embeddings. Code is Apache-2.0, see
 openWakeWord-LICENSE. Google's speech_embedding backbone is Apache-2.0:
 https://tfhub.dev/google/speech_embedding/1
 
-Pretrained Alexa v0.1 is by openWakeWord and is distributed unchanged from
-the v0.5.1 release. The upstream pretrained models are licensed under Creative
+Optional pretrained Alexa v0.1 is by openWakeWord and is distributed unchanged
+from the v0.5.1 release when selected with wake-models.pretrained.json. It is
+not included in the default Hey Evener model bundle. The upstream pretrained
+phrase models are licensed under Creative
 Commons Attribution-NonCommercial-ShareAlike 4.0 International:
 https://creativecommons.org/licenses/by-nc-sa/4.0/
-See openWakeWord-MODEL-LICENSE. This is a personal-use runtime preview, not
-the Hey Evener production classifier. Replace it with the separately trained
-Hey Evener artifact and its licensing before any broader distribution.
+See openWakeWord-MODEL-LICENSE. Alexa remains a personal-use runtime preview.
+The default first-party Hey Evener classifier, its modified feature assets and
+training-data attribution are described in wake-word/NOTICE.md, also bundled.

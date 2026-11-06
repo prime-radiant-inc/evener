@@ -3,12 +3,16 @@ import XCTest
 
 final class WakeWordTests: XCTestCase {
     private func detector() throws -> OpenWakeWordDetector {
-        try OpenWakeWordDetector(manifestURL: WakeWordModels.bundledManifest())
+        // Preserve the preview regression tests without shipping its ONNX files.
+        try OpenWakeWordDetector(manifestURL: previewManifest())
+    }
+    private func previewManifest() -> URL {
+        Bundle(for: WakeWordTests.self).resourceURL!.appendingPathComponent("PreviewWakeModels/wake-models.json")
     }
     private func fixture(_ name: String) throws -> [Float] {
         let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().appendingPathComponent("fixtures")
         let bytes = try Data(contentsOf: root.appendingPathComponent(name))
-        // Both committed fixtures have canonical 44-byte PCM WAV headers.
+        // The committed fixtures have canonical 44-byte PCM WAV headers.
         XCTAssertEqual(String(data: bytes.prefix(4), encoding: .ascii), "RIFF")
         XCTAssertEqual(String(data: bytes[8..<12], encoding: .ascii), "WAVE")
         let rate = bytes.withUnsafeBytes { $0.loadUnaligned(fromByteOffset: 24, as: UInt32.self).littleEndian }
@@ -28,6 +32,31 @@ final class WakeWordTests: XCTestCase {
             result += try detector.process(Array(samples[start..<min(start + chunk, samples.count)]))
         }
         return result
+    }
+    func testPackagedCustomHeyEvenerAndNegativeAtFixedThreshold() throws {
+        let engine = try OpenWakeWordDetector(manifestURL: WakeWordModels.bundledManifest())
+        XCTAssertEqual(engine.models.phrase, "Hey Evener.")
+        XCTAssertEqual(engine.settings.threshold, 0.99)
+        XCTAssertEqual(engine.settings.releaseThreshold, 0.5)
+        XCTAssertEqual(engine.settings.hopSamples, 1280)
+        XCTAssertEqual(engine.settings.holdoffMs, 2500)
+        XCTAssertEqual(engine.settings.embeddingFrames, 16)
+        let positive = try run(engine, samples: fixture("hey-evener.wav"), chunk: 317)
+        engine.reset()
+        let negative = try run(engine, samples: fixture("negative-hey-jane.wav"), chunk: 1280)
+        let positivePeak = positive.compactMap(\.score).max() ?? 0
+        let negativePeak = negative.compactMap(\.score).max() ?? 1
+        print("CUSTOM HEY EVENER: threshold=\(engine.settings.threshold), detections=\(positive.filter(\.detected).count), peak=\(positivePeak)")
+        print("CUSTOM NEGATIVE: detections=\(negative.filter(\.detected).count), peak=\(negativePeak)")
+        XCTAssertEqual(positive.filter(\.detected).count, 1, "custom peak=\(positivePeak)")
+        XCTAssertGreaterThanOrEqual(positivePeak, 0.99)
+        XCTAssertEqual(negative.filter(\.detected).count, 0, "negative peak=\(negativePeak)")
+        XCTAssertLessThan(negativePeak, 0.99)
+        XCTAssertTrue(negative.contains { $0.score != nil }, "all three custom models must run")
+        XCTAssertEqual(positive.first?.state, .warming)
+        XCTAssertEqual(positive.filter(\.detected).first?.state, .holdoff)
+        XCTAssertEqual(positive.last?.state, .listening)
+        XCTAssertEqual(negative.last?.state, .listening)
     }
     func testSpokenWakeActivatesOnceAndUsesTalkAdmission() throws {
         let engine = try detector()
@@ -115,7 +144,7 @@ final class WakeWordTests: XCTestCase {
         try JSONSerialization.data(withJSONObject: value, options: [.sortedKeys, .prettyPrinted]).write(to: output)
     }
     func testModelManifestControlsBatchHopAndThreshold() throws {
-        let original = try WakeWordModels.bundledManifest()
+        let original = previewManifest()
         var json = try JSONSerialization.jsonObject(with: Data(contentsOf: original)) as! [String: Any]
         for key in ["melspectrogram", "embedding", "classifier"] {
             var asset = json[key] as! [String: Any]

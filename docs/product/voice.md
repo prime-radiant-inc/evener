@@ -180,10 +180,9 @@ cleanup. Ordinary deletion works again when the blocking condition clears.
 
 Voice controls are native iOS controls; browser and ordinary text input retain
 their existing owners. The native module exposes Talk, Stop speaking and a local
-openWakeWord preview. Jesse chose a custom **Hey Evener** classifier; until that
-separate training artifact is installed, the preview listens for **Alexa** using
-openWakeWord's pretrained classifier. This is personal-use runtime evidence, not
-a qualified shipping wake word. Attached presentation evidence supports
+openWakeWord detector. The shipped default is the custom **Hey Evener.**
+classifier at threshold **0.99**, not pretrained Alexa. The model is integrated,
+not physically qualified. Attached presentation evidence supports
 references such as "the second one"; model
 reference-resolution quality requires a separate live qualification.
 
@@ -201,7 +200,10 @@ flowchart LR
 The replaceable [`WakeWordDetecting`](../../mobile-native/modules/evener-voice/core/WakeWordDetector.swift)
 boundary consumes mono 16 kHz samples. The ONNX implementation uses 80 ms
 embedding strides, configured batch hops, threshold, release threshold and
-holdoff. Inference runs on a separate bounded queue, never on the audio tap or
+holdoff. The custom default uses 1280-sample hops, 16 embedding frames and a
+2500 ms holdoff. A release threshold of 0.5 requires a clear score drop before
+rearming, avoiding repeated detections from fluctuations near 0.99. It does not
+lower the detection threshold. Inference runs on a separate bounded queue, never on the audio tap or
 AEC graph. Startup and dropped audio require fresh context. Quiet audio stays
 on the device; there are no hub wake predictions or pre-activation cloud frames.
 A detection in armed quiet state enters the same controller and socket path as
@@ -225,12 +227,26 @@ time. These counters are a harness, not proof that those gates were met. Actual
 Swift/ONNX tests use committed spoken positive and negative WAVs; neither they
 nor JS replay tests establish physical-phone acoustic accuracy or battery life.
 
+The trainer's [offline held-out report](../../mobile-native/modules/evener-voice/tools/wake-word/results/evaluation.json)
+records **598/600 positives (99.67%)** and **zero false accepts over 2.09 h of
+negatives** at 0.99. Positive speech is synthetic Piper output with
+speaker-disjoint training/calibration/test splits, not human wake recordings.
+Negatives combine Piper confusers, real LibriSpeech speech and procedural noise.
+The exact negative duration is 2.089803 h, not the required 30 h. On m5max,
+Swift/ONNX 1.20.0 detected the committed custom WAV once (peak 0.9999996) and
+the negative WAV zero times (peak 0.0004506111), without changing 0.99.
+The ≥60 physical trials, ≥95% detection, 30 h negatives, microphone/AEC,
+locked-duration and battery gates remain open.
+
 Model paths and checksums come from a packaged manifest, not a hardcoded training
 artifact location. The [native module's model-swap procedure](../../mobile-native/modules/evener-voice/README.md#swapping-the-wake-model)
 copies a selected local classifier into the resource bundle without moving or
-rewriting the training lane's artifact. The default pretrained classifier is
-CC BY-NC-SA 4.0 and must be replaced with the custom model and appropriate notices
-before broader distribution.
+rewriting the training lane's artifact. From `mobile-native`, run
+`node modules/evener-voice/ensure-model.mjs --wake-manifest /absolute/custom-wake.json`,
+then rebuild through the normal pod/prebuild flow. With no option, postinstall
+selects `wake-models.custom.json` and its paired feature models. CocoaPods bundles
+only the selected models and notices, not unused pretrained ONNX copies.
+`wake-models.pretrained.json` remains an optional CC BY-NC-SA 4.0 Alexa preview.
 
 The real-stack tests in
 [`e2e_voice_arm_provenance_test.go`](../../cmd/evener-hub/e2e_voice_arm_provenance_test.go),
