@@ -45,7 +45,7 @@ func TestDelegateQuietAttentionContent(t *testing.T) {
 	t.Parallel()
 	lease := delegateLease{delegateID: "dlg_x<y>", generation: 1}
 	at := time.Date(2026, 8, 23, 10, 0, 0, 0, time.UTC)
-	got := delegateQuietAttentionContent(lease, at)
+	got := delegateQuietAttentionContent(lease, delegateQuietWindow, at)
 	if !strings.HasPrefix(got, "<delegate-notification") {
 		t.Fatalf("expected delegate-notification wrapper, got %q", got)
 	}
