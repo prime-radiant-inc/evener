@@ -507,7 +507,7 @@ function PaletteBody({
             );
       const firstResult = q === "" ? -1 : view.items.findIndex((item) => item.kind !== "command");
       const fallback =
-        exactCommand >= 0 ? exactCommand : firstResult >= 0 ? firstResult : view.items.length > 0 ? 0 : -1;
+        exactCommand >= 0 ? exactCommand : firstResult >= 0 ? firstResult : q === "" && view.items.length > 0 ? 0 : -1;
       if (queryChanged) {
         userMovedRef.current = false;
         return fallback;

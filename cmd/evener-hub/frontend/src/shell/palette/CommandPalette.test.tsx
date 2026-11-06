@@ -848,7 +848,7 @@ test("typing a new query resets the highlight after an arrow pick", async () => 
   const input = screen.getByRole("combobox");
   expect(input.getAttribute("aria-activedescendant")).toBe("palette-row-2");
   await user.type(input, "s");
-  await waitFor(() => expect(input.getAttribute("aria-activedescendant")).toBe("palette-row-0"));
+  await waitFor(() => expect(input.getAttribute("aria-activedescendant")).toBeNull());
 });
 
 test("late needs-you rows take the default selection from the Command list", async () => {

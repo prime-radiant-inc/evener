@@ -259,7 +259,7 @@ test("Shift+Enter on an in-session search result closes the palette without navi
 test("Enter on a plain query prefers the first session hit over the leading command", async () => {
   const user = userEvent.setup();
   scriptSearch({ live: [], past: [] });
-  focusSession("ref_a", { turns: [turn([item("i1", "sea term found here")])] });
+  focusSession("ref_a", { turns: [turn([item("i1", "set term found here")])] });
 
   render(
     <NeedsYouProvider>
@@ -267,7 +267,7 @@ test("Enter on a plain query prefers the first session hit over the leading comm
     </NeedsYouProvider>,
   );
   act(() => openPalette());
-  await user.type(screen.getByRole("combobox"), "sea");
+  await user.type(screen.getByRole("combobox"), "set");
   await waitFor(() => expect(paletteRowsOfKind("insession")).toHaveLength(1));
 
   await user.keyboard("{Enter}");
