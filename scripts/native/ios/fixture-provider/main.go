@@ -2,11 +2,11 @@
 
 // Command fixture-provider serves the scripted loopback LLM boundary for the
 // native UI qualification journey: every ordinary session round is answered
-// with the fixed qualification fixture, so the installed app's rendering,
-// draft and recovery behavior is driven by known text instead of a live
-// provider. It writes its endpoint to a private readiness file and stops when
-// cancelled. No provider option is added to production code; this is
-// qualification tooling only.
+// with the fixed qualification fixture through the agent's own result tool,
+// so the installed app's rendering, draft and recovery behavior is driven by
+// known text instead of a live provider. It writes its endpoint to a private
+// readiness file and stops when cancelled. No provider option is added to
+// production code; this is qualification tooling only.
 package main
 
 import (
@@ -82,6 +82,16 @@ func run(ctx context.Context, readyFile string) error {
 			}
 			return err
 		}
-		call.RespondText(qualificationFixture)
+		// The fixture answers as the agent's user-facing message: a
+		// bare-text reply bypasses the result tool, and the daemon steers
+		// each such round ("keep working") until the bare-text budget fails
+		// the session mid-journey. The communicate call with end_turn is
+		// the product's path for exactly this text, so the turn completes
+		// once and the markers render through the ordinary message
+		// pipeline.
+		call.RespondToolCall("communicate", map[string]any{
+			"message":  qualificationFixture,
+			"end_turn": true,
+		})
 	}
 }

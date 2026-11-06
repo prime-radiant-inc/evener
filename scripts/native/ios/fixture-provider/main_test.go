@@ -44,10 +44,10 @@ func waitReady(t *testing.T, ready string) string {
 
 // TestFixtureProviderCompletesTurnAndStops drives the provider through its
 // actual HTTP boundary: an ordinary tool-bearing session round is answered
-// with the fixed qualification fixture, the readiness file is private, and
-// cancelling the context stops the listener. Requests without tools are the
-// namer's auto-answered calls, so the tool-bearing body is the session loop's
-// own round.
+// with the fixed qualification fixture through the agent's result tool, the
+// readiness file is private, and cancelling the context stops the listener.
+// Requests without tools are the namer's auto-answered calls, so the
+// tool-bearing body is the session loop's own round.
 func TestFixtureProviderCompletesTurnAndStops(t *testing.T) {
 	t.Parallel()
 	ready := filepath.Join(t.TempDir(), "ready.json")
@@ -66,7 +66,12 @@ func TestFixtureProviderCompletesTurnAndStops(t *testing.T) {
 		Choices []struct {
 			FinishReason string `json:"finish_reason"`
 			Message      struct {
-				Content string `json:"content"`
+				ToolCalls []struct {
+					Function struct {
+						Name      string `json:"name"`
+						Arguments string `json:"arguments"`
+					} `json:"function"`
+				} `json:"tool_calls"`
 			} `json:"message"`
 		} `json:"choices"`
 	}
@@ -77,12 +82,29 @@ func TestFixtureProviderCompletesTurnAndStops(t *testing.T) {
 		t.Fatalf("expected one completion choice, got %+v", reply.Choices)
 	}
 	choice := reply.Choices[0]
-	if choice.FinishReason != "stop" {
-		t.Fatalf("turn did not complete at the provider: finish_reason %q", choice.FinishReason)
+	if choice.FinishReason != "tool_calls" {
+		t.Fatalf("fixture answer is not a tool call: finish_reason %q", choice.FinishReason)
+	}
+	if len(choice.Message.ToolCalls) != 1 {
+		t.Fatalf("expected one result-tool call, got %+v", choice.Message.ToolCalls)
+	}
+	call := choice.Message.ToolCalls[0].Function
+	if call.Name != "communicate" {
+		t.Fatalf("fixture answered through %q, not the result tool", call.Name)
+	}
+	var args struct {
+		Message string `json:"message"`
+		EndTurn bool   `json:"end_turn"`
+	}
+	if err := json.Unmarshal([]byte(call.Arguments), &args); err != nil {
+		t.Fatalf("result-tool arguments are not JSON: %v", err)
+	}
+	if !args.EndTurn {
+		t.Fatal("result-tool call does not end the turn")
 	}
 	for _, marker := range []string{"QUALIFICATION_prose_a7", "**QUALIFICATION_emphasis_b8**", "QUALIFICATION_code_c9"} {
-		if !strings.Contains(choice.Message.Content, marker) {
-			t.Fatalf("fixture answer lost %q: %q", marker, choice.Message.Content)
+		if !strings.Contains(args.Message, marker) {
+			t.Fatalf("fixture answer lost %q: %q", marker, args.Message)
 		}
 	}
 
