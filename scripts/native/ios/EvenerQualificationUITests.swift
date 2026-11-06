@@ -205,6 +205,11 @@ final class EvenerQualificationUITests: XCTestCase {
 			let token = app.secureTextFields["hub-token"]
 			tap(token, "the token field never appeared")
 			token.typeText(hubToken)
+			// The token's return key takes the keyboard down before the
+			// review appears: a keyboard left up covers the review's Connect
+			// row, and a synthesized tap at that point lands on the keyboard
+			// window, never reaching the app.
+			token.typeText("\n")
 			tap(app.buttons["hub-continue"], "the Continue row never appeared")
 			tap(app.buttons["Connect"], "the review step never appeared")
 		}
@@ -249,13 +254,19 @@ final class EvenerQualificationUITests: XCTestCase {
 
 	/// Taps only once the control has a real frame. A control that registers
 	/// in the accessibility tree during a screen push exists before layout
-	/// gives it a hit point; a tap at that moment computes {-1, -1} and lands
-	/// nowhere, and the screen behind it never changes. Hittability is the
-	/// tap's own readiness test, and it settles the moment the screen does.
+	/// gives it a frame, and a tap at that moment computes {-1, -1} and lands
+	/// nowhere. Hittability is deliberately not the gate: the tap itself
+	/// scrolls rows the keyboard or the fold covers into view, so waiting on
+	/// hittability here would deadlock on exactly those rows. A disabled
+	/// control is refused loudly instead of letting the press vanish.
 	private func tap(_ element: XCUIElement, _ what: String) {
 		XCTAssertTrue(element.waitForExistence(timeout: tripwire), what)
-		let ready = expectation(for: NSPredicate(format: "isHittable == true"), evaluatedWith: element)
-		wait(for: [ready], timeout: tripwire)
+		let deadline = Date().addingTimeInterval(tripwire)
+		while Date() < deadline && !(element.exists && element.frame.width > 0 && element.isEnabled) {
+			Thread.sleep(forTimeInterval: 0.25)
+		}
+		XCTAssertTrue(element.exists && element.frame.width > 0, "\(what) never gained a real frame")
+		XCTAssertTrue(element.isEnabled, "\(what) is not enabled")
 		element.tap()
 	}
 
