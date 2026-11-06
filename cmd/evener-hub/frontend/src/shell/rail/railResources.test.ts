@@ -60,4 +60,10 @@ describe("project session order", () => {
     const newer = row({ row_id: "navigation:new", updated_at: "2026-06-01T00:00:00Z" });
     expect([older, newer].sort(compareProjectSessions)).toEqual([newer, older]);
   });
+
+  test("places an untimestamped row after every timestamped row", () => {
+    const timestamped = row({ row_id: "navigation:timestamped", created_at: "2026-01-01T00:00:00Z" });
+    const untimestamped = row({ row_id: "navigation:untimestamped" });
+    expect([untimestamped, timestamped].sort(compareProjectSessions)).toEqual([timestamped, untimestamped]);
+  });
 });

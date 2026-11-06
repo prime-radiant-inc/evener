@@ -147,8 +147,12 @@ function sessionCreatedAt(row: RailSession): number | undefined {
 export function compareProjectSessions(a: RailSession, b: RailSession): number {
   const at = sessionCreatedAt(a);
   const bt = sessionCreatedAt(b);
-  // A row the hub timestamped neither way keeps its input position.
-  if (at === undefined || bt === undefined) return 0;
+  // Untimestamped rows form one class at the end; two of them keep their
+  // input order. Treating a row with one timestamped neighbour as equal to
+  // both would make the comparator non-transitive.
+  if (at === undefined && bt === undefined) return 0;
+  if (at === undefined) return 1;
+  if (bt === undefined) return -1;
   if (at !== bt) return bt - at;
   const foldedTitle = a.title.localeCompare(b.title, undefined, { sensitivity: "base" });
   if (foldedTitle !== 0) return foldedTitle;

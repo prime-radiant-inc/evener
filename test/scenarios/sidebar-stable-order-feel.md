@@ -2,13 +2,16 @@
 
 **What this covers**: the two sidebar lists do not reorder on activity.
 Projects are emitted in name order (`ProjectNameLess`,
-`cmd/evener-hub/internal/hubcore/tree.go`), and a project's sessions are
-emitted newest-created first (`ProjectSessionOrderLess`,
-`cmd/evener-hub/internal/hubcore/session_order.go`). `UpdatedAt` drives each
-row's age, not its position. The AppWire navigation projection re-sorts merged
-project buckets by name and merged session tiers by creation order, and the
-rail joins the Current and Recent tiers with the same key, so the visible list
-keeps creation order across the tier boundary.
+`cmd/evener-hub/internal/hubcore/tree.go`; `:1415`), and a project's sessions
+are emitted newest-created first (`ProjectSessionOrderLess`,
+`cmd/evener-hub/internal/hubcore/session_order.go`; `:38`). `UpdatedAt` drives
+each row's age, not its position. The AppWire navigation projection re-sorts
+merged project buckets by name
+(`cmd/evener-hub/navigation_projection.go`; `:385`) and merged session tiers
+by creation order (`:585`), and the rail joins the Current and Recent tiers
+with the same key
+(`cmd/evener-hub/frontend/src/shell/rail/railResources.ts`; `:147`), so the
+visible list keeps creation order across the tier boundary.
 
 Layer (1), the comparators, is pinned deterministically by the hubcore
 scenarios `fuzzScenarioBuildTree_OrdersProjectsByName`,
