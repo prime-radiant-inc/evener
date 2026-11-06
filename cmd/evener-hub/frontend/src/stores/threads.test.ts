@@ -42,6 +42,7 @@ import {
   setMutationStorageForTests,
   threadsStore,
 } from "./threads";
+import { flushIndexedDBUntil } from "./threadsSessionActionsTestUtils";
 
 const establishedMemberships: ThreadSubscriptionLease[] = [];
 async function establishMembership(fake: FakeClient, ref = "ref_a"): Promise<void> {
@@ -179,12 +180,6 @@ async function deleteMutationDatabase(): Promise<void> {
 // fresh real SessionEntryCache over a private fake-IDB database, so no fixture
 // can write into a shared database.
 let entryCache: SessionEntryCache;
-
-async function flushIndexedDBUntil(done: () => boolean, maxTurns = 30): Promise<void> {
-  const probe = new MutationOutboxIndexedDB();
-  for (let turn = 0; turn < maxTurns && !done(); turn += 1) await probe.listTargetRefs();
-  probe.close();
-}
 
 function mutationReceipt(clientMutationId: string, disposition = "applied") {
   return appliedReceipt(clientMutationId, "thr_ref_a", { disposition });
