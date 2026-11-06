@@ -238,7 +238,7 @@ func managerDelegateDefinition(def llm.ToolDefinition, ordinary bool) llm.ToolDe
 	}
 	effort := props["reasoning_effort"].(map[string]any)
 	if ordinary {
-		effort["description"] = strings.TrimSpace(effort["description"].(string) + " With hub, it sets the created session's reasoning effort.")
+		effort["description"] = strings.TrimSpace(effort["description"].(string) + " With hub, it sets the created session's reasoning effort; absent keeps the hub's launch default.")
 	} else {
 		props["prompt"].(map[string]any)["description"] = "The created session's opening prompt, submitted after creation and the requested watch are confirmed. State the assignment the new session should start with, including any paths or constraints it needs; it starts with no other context."
 		effort["description"] = "Reasoning effort for the created session (low, medium, or high). Absent keeps the hub's launch default."

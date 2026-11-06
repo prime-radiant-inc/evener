@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"primeradiant.com/evener/agent/internal/tool"
 	"primeradiant.com/evener/agent/internal/tool/repair"
 	"primeradiant.com/evener/agent/provider"
 	"primeradiant.com/evener/llm"
@@ -182,6 +183,25 @@ func TestManagerDelegateHubOnlyEmptyEnumPlaceholderIsNotRefused(t *testing.T) {
 	}, registered, []string{"delegate"}, "delegate", "communicate", "")
 	if res.PrevalErr != "" {
 		t.Fatalf("hub-only call with an empty enum placeholder was refused: %s", res.PrevalErr)
+	}
+}
+
+// The ordinary variant's effort description must state the hub branch's
+// absent-effort default too: the base "inherits from parent" text alone
+// would tell a hub caller the new session inherits the parent's effort,
+// where the hub's launch default applies.
+func TestManagerDelegateEffortDescriptionStatesHubDefault(t *testing.T) {
+	t.Parallel()
+	root := newMessagingRoot(t, newMessagingAdapter(), func(cfg *SessionConfig) { cfg.Manager = true })
+	registered := root.reg.Get("delegate")
+	if registered == nil {
+		t.Fatal("Manager delegate tool not registered")
+	}
+	hubBranch := hubBranchArgumentNames(tool.WithIntentParameter(registered.Definition).Parameters)
+	effort, _ := hubBranch["reasoning_effort"].(map[string]any)
+	description, _ := effort["description"].(string)
+	if !strings.Contains(description, "launch default") {
+		t.Fatalf("ordinary variant's effort description does not state the hub default: %s", description)
 	}
 }
 
