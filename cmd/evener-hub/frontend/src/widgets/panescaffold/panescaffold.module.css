@@ -19,6 +19,16 @@
   border-bottom: 1px solid var(--edge);
 }
 
+/* Single-column panes centre their content on --session-measure; the header
+ * must use the same measure or the page title floats off the column it names.
+ * The marker comes from PaneScaffold's existing scaffoldMarker, so the header
+ * opts in without a new layout prop. Settings keeps the default inset because
+ * its title belongs to the nav column, not the content column. */
+.header[data-pane-frame^="session:"],
+.header[data-pane-frame="spawn"] {
+  padding-inline: max(var(--space-5), calc((100% - var(--session-measure)) / 2));
+}
+
 /* Editorial page heading; controls and metadata keep the sans face. */
 .title {
   flex: 1 1 auto;

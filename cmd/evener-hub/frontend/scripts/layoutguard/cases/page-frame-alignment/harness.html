@@ -1,0 +1,85 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=1440, initial-scale=1">
+<title>page-frame-alignment layoutguard harness</title>
+<link rel="stylesheet" href="tokens.css">
+<link rel="stylesheet" href="resolved.css">
+<style>
+  *, *::before, *::after { transition: none !important; animation: none !important; }
+  html, body { margin: 0; overflow: hidden; background: var(--surface-0); font-family: var(--font-sans); color: var(--ink-hi); }
+  .fixtures { display: flex; flex-direction: column; gap: 12px; padding: 0; }
+  .fixtureLabel { color: var(--ink-low); font: var(--font-size-caption) var(--font-mono); padding: 4px 8px; }
+  .pane { height: 260px; }
+  .shell { min-height: 0; }
+  .nav { flex: none; }
+  .content, .measure, .form { min-height: 0; }
+  .standIn { height: 20px; border-radius: var(--radius-control); background: var(--surface-2); }
+</style>
+</head>
+<body data-font-size="m">
+<main class="fixtures"></main>
+<script>
+const fixtures = __LAYOUTGUARD_WIDTH_MATRIX__;
+
+function paneHtml(id, kind, frame) {
+  if (kind === "settings") {
+    return `
+      <div class="pane" data-pane>
+        <div class="header" data-pane-frame="${frame}"><h2 class="title" id="title-${id}">Settings</h2></div>
+        <div class="body">
+          <div class="shell">
+            <nav class="nav" id="nav-${id}"><div class="standIn"></div></nav>
+            <div class="content" id="content-${id}"><div class="standIn"></div></div>
+          </div>
+        </div>
+      </div>`;
+  }
+  const contentClass = kind === "spawn" ? "form" : "measure";
+  const contentId = kind === "spawn" ? `form-${id}` : `content-${id}`;
+  return `
+    <div class="pane" data-pane>
+      <div class="header" data-pane-frame="${frame}"><h2 class="title" id="title-${id}">${kind === "spawn" ? "New session" : "Session"}</h2></div>
+      <div class="body">
+        <div class="${contentClass}" id="${contentId}"><div class="standIn"></div><div class="standIn"></div></div>
+      </div>
+    </div>`;
+}
+
+const root = document.querySelector(".fixtures");
+for (const spec of fixtures) {
+  const section = document.createElement("section");
+  section.className = "fixture";
+  section.style.width = `${spec.width}px`;
+  const label = document.createElement("div");
+  label.className = "fixtureLabel";
+  label.textContent = `${spec.width}px`;
+  section.append(label);
+  const id = spec.width;
+  section.insertAdjacentHTML("beforeend", paneHtml(`session-${id}`, "session", "session:local:frame"));
+  section.insertAdjacentHTML("beforeend", paneHtml(`spawn-${id}`, "spawn", "spawn"));
+  section.insertAdjacentHTML("beforeend", paneHtml(`settings-${id}`, "settings", ""));
+  root.append(section);
+}
+
+function left(el) {
+  return el.getBoundingClientRect().left;
+}
+
+window.measure = () =>
+  fixtures.map((spec) => {
+    const id = spec.width;
+    return {
+      width: spec.width,
+      sessionTitle: left(document.getElementById(`title-session-${id}`)),
+      sessionContent: left(document.getElementById(`content-session-${id}`)),
+      spawnTitle: left(document.getElementById(`title-spawn-${id}`)),
+      spawnForm: left(document.getElementById(`form-spawn-${id}`)),
+      settingsTitle: left(document.getElementById(`title-settings-${id}`)),
+      settingsNav: left(document.getElementById(`nav-settings-${id}`)),
+    };
+  });
+</script>
+</body>
+</html>

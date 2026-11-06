@@ -164,6 +164,29 @@ test("a slow-but-alive ref keeps showing the loading placeholder, never the dele
   expect(screen.getByTestId("pane-edge-footer")).toBeTruthy();
 });
 
+test("a loading session shows a skeleton, delays its recovery affordance, and has no presentation footer", async () => {
+  vi.useFakeTimers();
+  onTestFinished(() => vi.useRealTimers());
+  const fake = connectReadyFakeClient();
+  fake.on("thread/read", () => new Promise<ThreadReadResponse>(() => {}));
+
+  render(
+    <ClientProvider client={fake}>
+      <Session params={{ ref: "local:ref_a" }} paneId="p1" focused={true} />
+    </ClientProvider>,
+  );
+
+  await flushUntil(() => fake.calls.some((c) => c.method === "thread/read"));
+  expect(screen.getByTestId("session-loading-skeleton")).toBeTruthy();
+  expect(screen.queryByTestId("session-loading-recovery")).toBeNull();
+  expect(screen.queryByRole("button", { name: "Verbosity" })).toBeNull();
+
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(8_000);
+  });
+  expect(screen.getByTestId("session-loading-recovery")).toBeTruthy();
+});
+
 // #4343's client-visible half: a daemonless read whose transcript index is
 // being rebuilt in the background answers the typed transcriptIndexRebuilding
 // discriminant. The store owns the paced retry, the flag, and the label the

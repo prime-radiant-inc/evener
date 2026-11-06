@@ -75,8 +75,8 @@
   line-height: var(--line-height-title);
 }
 
-/* Stretches the primary Button to the rail's full width without touching the
- * widget's own computed className (Button owns its class list). */
+/* Stretches the New-session Button to the rail's full width without touching
+ * the widget's own computed className (Button owns its class list). */
 .newSession {
   display: grid;
 }

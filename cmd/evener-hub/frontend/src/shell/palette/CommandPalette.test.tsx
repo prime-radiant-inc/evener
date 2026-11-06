@@ -796,7 +796,7 @@ test("a deliberate needs-you selection still opens after the superseding modal c
   expect(currentAttentionEntryToken()).not.toBeNull();
 });
 
-test("the empty-query view keeps its old (empty) behavior when there are no needs-you sessions", () => {
+test("the empty-query view lists Commands when there are no needs-you sessions", () => {
   setNeedsYouRows(null);
   render(
     <NeedsYouProvider>
@@ -805,7 +805,8 @@ test("the empty-query view keeps its old (empty) behavior when there are no need
   );
   act(() => openPalette());
 
-  expect(screen.queryByRole("option")).toBeNull();
+  expect(paletteSection("commands")).not.toBeNull();
+  expect(screen.getAllByRole("option").length).toBeGreaterThan(0);
 });
 
 // The manifest count refreshes on its own schedule, so a settled empty page
@@ -1227,6 +1228,19 @@ test("typing after /help leaves the help panel and returns to a real command lis
   await user.type(screen.getByRole("combobox"), "settings");
   expect(paletteSection("help")).toBeNull();
   expect(screen.getByRole("option", { name: /Open settings/ })).toBeTruthy();
+});
+
+test("a plain-word query finds an app-global command without a slash prefix", async () => {
+  const user = userEvent.setup();
+  scriptSearch({ live: [], past: [] });
+  render(
+    <NeedsYouProvider>
+      <CommandPalette />
+    </NeedsYouProvider>,
+  );
+  act(() => openPalette());
+  await user.type(screen.getByRole("combobox"), "settings");
+  expect(await screen.findByRole("option", { name: /Open settings/ })).toBeTruthy();
 });
 
 // --- search mode ---

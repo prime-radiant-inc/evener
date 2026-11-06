@@ -847,6 +847,17 @@ function buildView(args: {
     entries.push({ type: "row", item, index: items.length });
     items.push(item);
   };
+  const pushCommandMatches = (filter: string) => {
+    const { recent, commands } = filterCommands(ctx, filter);
+    if (recent.length) {
+      entries.push({ type: "header", section: "recent", label: "Recent" });
+      for (const command of recent) push({ kind: "command", command });
+    }
+    if (commands.length) {
+      entries.push({ type: "header", section: "commands", label: "Commands" });
+      for (const command of commands) push({ kind: "command", command });
+    }
+  };
 
   // The help panel is inert (§2.8, search.js:695-696,713): no navigable rows
   // underneath, so ArrowDown/Enter can't fire a hidden registry command.
@@ -854,19 +865,24 @@ function buildView(args: {
   if (showingHelp) return { entries, items };
 
   if (mode === "search") {
-    // UX fix: the empty-query view used to render nothing at all (no live/
-    // past results to show without a search term). It now lists needs-you
-    // sessions instead, when there are any - Mod+J's own tree-order list,
-    // opened the same way (needsYouCycle.ts). A non-empty query keeps the
-    // existing live/past/in-session behavior untouched below.
-    if (!query.trim() && needsYouChoices.length > 0) {
-      entries.push({ type: "header", section: "needs-you", label: "Needs you" });
-      for (const choice of needsYouChoices) push({ kind: "needsYou", choice });
+    // The empty-query view leads with needs-you sessions (Mod+J's own
+    // tree-order list, opened the same way - needsYouCycle.ts), then the
+    // app-global Commands list, so the palette shows what it can do instead
+    // of opening as a near-blank card. A plain query puts matching commands
+    // ahead of live/past/in-session search: typing "settings" finds
+    // "Open settings" without requiring the "/" prefix.
+    if (!query.trim()) {
+      if (needsYouChoices.length > 0) {
+        entries.push({ type: "header", section: "needs-you", label: "Needs you" });
+        for (const choice of needsYouChoices) push({ kind: "needsYou", choice });
+      }
+      pushCommandMatches("");
       return { entries, items };
     }
     // Subagent hits group under their top-level session (shared client
     // rule): a matched live anchor nests its family inline, an absent anchor
     // arrives greyed, and a topLevel-less (older-hub) response stays flat.
+    pushCommandMatches(query);
     const grouped = groupSearchResults(searchResp?.live ?? [], searchResp?.past ?? []);
     const model = focusedModel(ctx.sessionRef);
     const inSession = model && query.trim() ? findInSessionMatches(model, query.trim()) : [];

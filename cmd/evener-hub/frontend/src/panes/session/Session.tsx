@@ -11,7 +11,7 @@
 // registration, the session menu, and the deleted/loading scaffold faces
 // with their pane-only affordances (the Close button, force-stop recovery).
 import type { ThreadModel } from "@evener/appwire-client";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useStore } from "zustand";
 import { attentionEntryOwnsReader } from "../../shell/attentionHistory";
 import { conversationPaneLifetime } from "../../shell/paneLifetime";
@@ -23,7 +23,7 @@ import { useIsMobile } from "../../shell/useIsMobile";
 import { carryComposerSeatForPlacement, workspaceStore } from "../../shell/workspace";
 import { useNavigationStore } from "../../stores/navigation/store";
 import { threadsStore, useThreadsStore } from "../../stores/threads";
-import { Button, EmptyState, InlineNotice, Loader, PaneScaffold } from "../../widgets";
+import { Button, EmptyState, InlineNotice, Loader, PaneScaffold, Skeleton } from "../../widgets";
 import { ConversationBody, type ConversationSeat } from "./ConversationBody";
 import { RepoLocation } from "./composer/RepoLocation";
 import styles from "./session.module.css";
@@ -35,6 +35,29 @@ export interface SessionPaneParams {
 }
 
 const EMPTY_THREADS = new Map<string, ThreadModel>();
+const RECOVERY_HINT_DELAY_MS = 8_000;
+
+function SessionLoading({ sessionRef, repairing }: { sessionRef: string; repairing: boolean }) {
+  const [showRecovery, setShowRecovery] = useState(false);
+  useEffect(() => {
+    const timer = setTimeout(() => setShowRecovery(true), RECOVERY_HINT_DELAY_MS);
+    return () => clearTimeout(timer);
+  }, []);
+  return (
+    <div className={styles.loading}>
+      <Loader label={repairing ? "Repairing session history" : "Loading transcript"} />
+      <div className={styles.loadingSkeleton} data-testid="session-loading-skeleton" aria-hidden="true">
+        <Skeleton lines={4} />
+      </div>
+      {showRecovery && sessionRef.startsWith("local:") && (
+        <div className={styles.loadingRecovery} data-testid="session-loading-recovery">
+          <p className={styles.loadingHint}>If the session is unresponsive, you can stop its process to recover it.</p>
+          <SessionForceStopRecovery sessionRef={sessionRef} />
+        </div>
+      )}
+    </div>
+  );
+}
 
 function SessionForceStopRecovery({ sessionRef }: { sessionRef: string }) {
   const [open, setOpen] = useState(false);
@@ -193,17 +216,7 @@ export default function Session({ params, paneId, focused: paneFocused }: PanePr
               footer={footer}
               edgeFooter={edgeFooter}
             >
-              <div className={styles.loading}>
-                <Loader label={repairingRef ? "Repairing session history" : "Loading transcript"} />
-                {ref.startsWith("local:") && (
-                  <>
-                    <p className={styles.loadingHint}>
-                      If the session is unresponsive, you can stop its process to recover it.
-                    </p>
-                    <SessionForceStopRecovery sessionRef={ref} />
-                  </>
-                )}
-              </div>
+              <SessionLoading sessionRef={ref} repairing={repairingRef} />
             </PaneScaffold>
           );
         }

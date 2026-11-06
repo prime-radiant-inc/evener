@@ -119,7 +119,7 @@ export function PaneScaffold({
 
   return (
     <div ref={paneRef} className={CLASS.pane}>
-      <div className={CLASS.header}>
+      <div className={CLASS.header} data-pane-frame={scaffoldMarker}>
         {title !== undefined && (
           <h2 className={CLASS.title}>
             {mobileTitle === undefined ? (

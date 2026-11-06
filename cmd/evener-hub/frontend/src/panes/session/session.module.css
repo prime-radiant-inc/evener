@@ -136,6 +136,19 @@
   line-height: var(--line-height-body);
 }
 
+.loadingSkeleton {
+  width: 100%;
+  max-width: 42rem;
+  text-align: left;
+}
+
+.loadingRecovery {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-3);
+}
+
 /* Composer + status row, stacked in PaneScaffold's shrinkable footer slot. */
 .footer {
   flex: 1 1 auto;

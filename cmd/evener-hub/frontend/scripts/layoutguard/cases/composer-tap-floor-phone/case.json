@@ -1,0 +1,25 @@
+{
+  "name": "composer-tap-floor-phone",
+  "description": "At a phone viewport the reasoning-effort trigger in the composer status row must still meet the app's 44px tap floor in both axes, and the status row must not gain horizontal overflow to make room for it.",
+  "cssFiles": [
+    "styles/global.css",
+    "styles/tokens.css",
+    "panes/session/chrome/sessionchrome.module.css",
+    "panes/session/chrome/statusrow.module.css",
+    "panes/session/chrome/modelswitch.module.css",
+    "widgets/meter/meter.module.css",
+    "widgets/visuallyhidden/visuallyhidden.module.css"
+  ],
+  "viewport": {
+    "width": 390,
+    "height": 844,
+    "deviceScaleFactor": 2,
+    "mobile": true
+  },
+  "mutation": {
+    "declaration": "statusrow.module.css: remove the phone/coarse min-width and min-height from .effortTrigger",
+    "verified": "2026-11-06",
+    "expect": "fail",
+    "note": "Without the floor the effort trigger measures about 30x27 at 390px; the case fails on both axes."
+  }
+}
