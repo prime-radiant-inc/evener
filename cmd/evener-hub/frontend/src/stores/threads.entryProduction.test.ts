@@ -7157,6 +7157,35 @@ it("ordinary disk-only read-proven deletion keeps cached content visible while h
   }
 });
 
+// The entry route's own contract for a hub-deleted ref: a fresh acquisition
+// installs no repository. The deletion fence, not a missing promise, is the
+// outcome (see the ensureThread UI-01 cases), and the browser guard reads the
+// same fact as entryRoute(ref).present before it asserts no route appeared.
+it("a fresh acquisition of a hub-deleted ref installs no entry repository", async () => {
+  cache();
+  let reads = 0;
+  const client = new FakeClient("ready");
+  client.on("thread/read", () => {
+    reads += 1;
+    throw new WireError("target deleted", -32001, {
+      evenerErrorInfo: "actionUnavailable",
+      mutationOutcome: "targetDeleted",
+      retryDisposition: "none",
+    });
+  });
+  client.on("thread/unsubscribe", () => ({}));
+  connectionStore.getState().connect(client);
+
+  await threadsStore.getState().ensureThread("local:gone");
+  await settleProjectionWorkForTests();
+
+  expect(reads).toBe(1);
+  expect(threadsStore.getState().deletedRefs.has("local:gone")).toBe(true);
+  const route = productionEntryTranscriptForTests("local:gone");
+  expect(route.repository).toBeUndefined();
+  expect(route.reader).toBeUndefined();
+});
+
 it("ordinary content clear retires the old entry history so a late old push cannot restore it", async () => {
   const storage = cache();
   const client = connect();

@@ -1463,10 +1463,18 @@ async function runEntryProductionJourney(driver, harnessUrl) {
   }));
   const nativeTurns = completed.turns;
   const nativeCoverage = completed.coverage;
+  // Identity is (transcriptKey, id, turnId). Index the native rows once so the
+  // join is linear, and keep every row per identity: a duplicate native row
+  // must still read as two matches.
+  const nativeByIdentity = new Map();
+  for (const row of nativeItems) {
+    const key = JSON.stringify([row.transcriptKey, row.item?.id, row.item?.turnId]);
+    const bucket = nativeByIdentity.get(key);
+    if (bucket) bucket.push(row);
+    else nativeByIdentity.set(key, [row]);
+  }
   const rendererToNative = recordedRendererItems.map((item) => {
-    const matches = nativeItems.filter(
-      (row) => row.transcriptKey === item.transcriptKey && row.item?.id === item.id && row.item?.turnId === item.turnId,
-    );
+    const matches = nativeByIdentity.get(JSON.stringify([item.transcriptKey, item.id, item.turnId])) ?? [];
     const native = matches[0] ?? null;
     const identityMatches =
       native !== null &&
@@ -1484,6 +1492,28 @@ async function runEntryProductionJourney(driver, harnessUrl) {
   });
   const comparePosition = (left, right) =>
     left.entry - right.entry || left.item - right.item || (left.sub ?? 0) - (right.sub ?? 0);
+  // A renderer item with no native row is either a lost row or a row the
+  // comparison window cannot reach. Record whether the native store holds the
+  // same item id under another transcript key, and what the same key holds, so
+  // the retained audit answers that without the live browser.
+  const unmatchedRendererItems = recordedRendererItems.flatMap((item, index) => {
+    const match = rendererToNative[index];
+    if (match.matches === 1 && match.identityMatches) return [];
+    return [
+      {
+        id: item.id,
+        turnId: item.turnId,
+        transcriptKey: item.transcriptKey,
+        position: item.position,
+        nativeSameId: nativeItems
+          .filter((row) => row.item?.id === item.id)
+          .map((row) => ({ transcriptKey: row.transcriptKey, turnId: row.item?.turnId })),
+        nativeSameKey: nativeItems
+          .filter((row) => row.transcriptKey === item.transcriptKey)
+          .map((row) => ({ id: row.item?.id, turnId: row.item?.turnId })),
+      },
+    ];
+  });
   const nativeCoverageMatches = nativeItems.map((row) => ({
     id: row.item?.id,
     turnId: row.item?.turnId,
@@ -1538,6 +1568,7 @@ async function runEntryProductionJourney(driver, harnessUrl) {
     nativeTurns,
     nativeCoverage,
     rendererToNative,
+    unmatchedRendererItems,
     nativeCoverageMatches,
     itemTurnMatches,
   };
@@ -1549,7 +1580,7 @@ async function runEntryProductionJourney(driver, harnessUrl) {
     shellRows: outputRegion?.shellRows ?? 0,
     renderedOutputText: outputText,
     renderedToolItemCount: renderedToolItems.length,
-    rendererToNativeMatches: rendererToNative.every((match) => match.matches === 1 && match.identityMatches),
+    rendererToNativeMatches: unmatchedRendererItems.length === 0,
     itemTurnMatches,
     producerItemsCovered:
       producerCoverage.length === 2 && producerCoverage.every((match) => match.coveringRows.length > 0),
@@ -1577,8 +1608,10 @@ async function runEntryProductionJourney(driver, harnessUrl) {
       );
     }
   }
-  if (rendererToNative.some((match) => match.matches !== 1 || !match.identityMatches)) {
-    throw new Error(`renderer items do not map one-to-one to native entry items: ${JSON.stringify(rendererToNative)}`);
+  if (unmatchedRendererItems.length !== 0) {
+    throw new Error(
+      `renderer items do not map one-to-one to native entry items: ${JSON.stringify({ rendererToNative, unmatchedRendererItems })}`,
+    );
   }
   if (producerCoverage.length !== 2 || producerCoverage.some((match) => match.coveringRows.length === 0)) {
     throw new Error(
@@ -2225,7 +2258,16 @@ async function runTwoTabFencing(driver, endpoint, harnessUrl) {
     const resurrectedRows = resurrected === null ? 0 : resurrected.rows.length;
     driver.milestone("two-tab-delete-refusal", { ref, routePresent, rowsAfterOpen: resurrectedRows });
     if (routePresent === true) {
-      throw new Error("two-tab delete: the sibling's fresh acquisition opened a route for a deleted ref");
+      // Name the route state that survived the refusal: which open status it
+      // reported, whether a store model exists, and its history key distinguish
+      // a resurrected repository from a route object that never had one.
+      const route = await evaluate(
+        tab.send,
+        `window.backgroundTranscriptEvidence.entryRoute(${JSON.stringify(ref)})`,
+      );
+      throw new Error(
+        `two-tab delete: the sibling's fresh acquisition opened a route for a deleted ref: ${JSON.stringify({ route, rowsAfterOpen: resurrectedRows })}`,
+      );
     }
     if (resurrectedRows !== 0) {
       throw new Error(`two-tab delete: a fresh sibling acquisition resurrected ${resurrectedRows} durable rows`);

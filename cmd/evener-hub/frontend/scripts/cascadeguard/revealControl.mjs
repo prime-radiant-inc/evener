@@ -41,3 +41,14 @@ export function revealControlStep(selector, container, refusedSelector) {
     return { before };
   })()`;
 }
+
+// The gate `reveal` polls before its loop: the collection is usable once the
+// target is reachable or the loop has a control to press. A direct collection
+// whose first page holds only current rows has no fold yet, so the gate must
+// accept the page boundary the loop would press; waiting for a fold alone
+// leaves a later-page target unreachable. The control is chosen by the same
+// revealControl the loop presses.
+export function revealReadyExpr(selector, container, refusedSelector) {
+  return `(() => document.querySelector(${JSON.stringify(selector)}) !== null
+    || (${revealControl})(document.querySelector(${JSON.stringify(container)}), ${JSON.stringify(refusedSelector)}) !== null)()`;
+}
