@@ -98,9 +98,11 @@ read error can recover without re-registration. The watch keeps its ID and
 pending-send identities and emits one interruption notice for that episode.
 Clearing, replacing or canceling the subscription stops its recovery.
 
-Missing required evidence, wrong requested turns, incompatible ref, instance,
-generation, epoch or history incarnation, and history truncation end observation
-immediately. Permanent request refusals and typed history failures also end it;
+Missing required evidence, wrong requested turns, incompatible ref, instance
+or generation, and history truncation end observation immediately. A
+same-target history discontinuity — a new epoch or incarnation for the same
+ref, instance and generation — re-anchors the observation on the fresh cut
+instead of ending it. Permanent request refusals and typed history failures also end it;
 none is a negative verdict. Exhausted retries end the watch with one durable
 end notice and re-registration guidance, never inferred completion. Index
 traversal checks cancellation between reads; existing catch-up and OS I/O may
@@ -128,7 +130,10 @@ subscription path. Use a canonical `HOST:WORKSPACE_ID` ref for a remote target.
 Resync re-reads the authoritative snapshot even for completion-only watches,
 while the notification drain continues, and a stream that keeps draining owes no
 interruption notice for it: the notice belongs to observation loss, not to the
-re-read that follows it. Each Manager and human client keeps
+re-read that follows it. The re-read rebuilds recorded evidence only. Status
+events are stream signals, not recorded history, so a watch waiting on status
+events can miss the ones that fired during the relay gap, and the re-read
+carries no separate sign of them. Each Manager and human client keeps
 its own subscription lifetime. Remote question/answer/completion is qualified;
 sandbox approval caused by a live remote prompt remains unexercised end to end.
 Manager schemas come from session configuration and remain present during a

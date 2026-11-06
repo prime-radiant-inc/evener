@@ -950,9 +950,16 @@ func (s *Session) consumeHubWatch(ctx context.Context, id string, request appwir
 			return jm.onHubRoster(id, update)
 		}
 		if read := update.Snapshot; read != nil && read.Snapshot != nil {
-			if held != nil && (held.Incarnation != read.Snapshot.Incarnation || read.Snapshot.Length < held.Length || epoch != read.Epoch) {
+			sameHistory := held != nil && held.Incarnation == read.Snapshot.Incarnation && epoch == read.Epoch
+			if sameHistory && read.Snapshot.Length < held.Length {
 				return errors.New("answer continuation history identity changed")
 			}
+			// A same-target history rebuild replaces the window the held
+			// cut sampled. The snapshot branch below replays the fresh
+			// recorded window under the watch's own delivery dedup, so the
+			// held cut re-anchors on it instead of ending the watch
+			// (job-control.md: index contention or rebuilding recovers
+			// without re-registration).
 			cut := *read.Snapshot
 			held, epoch = &cut, read.Epoch
 		}
