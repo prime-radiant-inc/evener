@@ -595,3 +595,25 @@ func TestDisposeUnadoptedSubagentSessionLeavesTheParentsProcessesAlone(t *testin
 	parentEnv.Cleanup()
 	<-exited
 }
+
+// A hub-creation call never launches the ordinary delegate the sandbox guard
+// protects: the hub branch refuses every owned-delegate argument by name,
+// placeholders included, so the guard must leave those calls to it instead of
+// preempting with the ordinary surface's availability message. A null hub
+// still marks an ordinary call and keeps the guard.
+func TestSandboxControlsGuardSkipsHubCalls(t *testing.T) {
+	t.Parallel()
+	params := map[string]any{"properties": map[string]any{"prompt": map[string]any{"type": "string"}}}
+	hubCall := map[string]any{
+		"prompt":  "worker task",
+		"hub":     map[string]any{"cwd": "/tmp", "model": "m", "watch": map[string]any{"completion": true}},
+		"sandbox": "read-only",
+	}
+	if err := rejectUnavailableDelegateSandboxControls("delegate", params, hubCall); err != nil {
+		t.Fatalf("hub call was refused by the sandbox controls guard: %v", err)
+	}
+	nullHub := map[string]any{"prompt": "worker task", "hub": nil, "sandbox": "read-only"}
+	if err := rejectUnavailableDelegateSandboxControls("delegate", params, nullHub); err == nil {
+		t.Fatal("ordinary call with a null hub lost the sandbox controls guard")
+	}
+}

@@ -1555,9 +1555,12 @@ func armTypedObject(arm map[string]any) bool {
 // requirements the call may already satisfy while its unrendered sibling
 // constraint — possibly the one actually failing — stays unnamed; the root
 // message skips the arm and, when no other arm renders, falls back to the
-// honest generic mismatch. The nested property message still renders these
-// arms: its example machinery already declines on unevaluated applicators,
-// and its intro names the argument the conditional rule constrains.
+// honest generic mismatch. Describable arms still render beside a skipped
+// one: a caller that can satisfy a describable branch is told what that
+// takes, so withholding them would trade real guidance for uniformity. The
+// nested property message still renders these arms too: its example
+// machinery already declines on unevaluated applicators, and its intro
+// names the argument the conditional rule constrains.
 func armCarriesSiblingCombinator(branch any) bool {
 	arm, _ := branch.(map[string]any)
 	if arm == nil {

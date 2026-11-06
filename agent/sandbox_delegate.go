@@ -54,6 +54,14 @@ func rejectUnavailableDelegateSandboxControls(toolName string, parameters, args 
 	if toolName != "delegate" {
 		return nil
 	}
+	// A hub-creation call never launches the ordinary delegate this guard
+	// protects: the hub branch refuses every owned-delegate argument by
+	// name, placeholders included, so the guard must not preempt it with
+	// the ordinary surface's availability message. A null hub marks an
+	// ordinary call, which keeps the guard.
+	if hub, hubCall := args["hub"]; hubCall && hub != nil {
+		return nil
+	}
 	properties, _ := parameters["properties"].(map[string]any)
 	invalid := make([]string, 0, 2)
 	// sandbox_net is checked even though the combined-enum schema has no such

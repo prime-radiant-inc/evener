@@ -59,14 +59,16 @@ func TestManagerDelegateHubCallExtraArgumentDoesNotClaimMissingPrompt(t *testing
 // A hub call carrying several extras names every rejected argument at once, so
 // one retry removes them all instead of discovering one per round trip. An
 // out-of-enum value is still a configured argument: the refusal must name it
-// rather than silently skip it as a placeholder.
+// rather than silently skip it as a placeholder. isolation is enum-typed on
+// every host, unlike sandbox, whose declaration depends on the session's
+// sandbox backend.
 func TestManagerDelegateHubCallNamesEveryRejectedArgument(t *testing.T) {
 	t.Parallel()
-	refusal := managerDelegateHubCall(t, `{"prompt":"worker task","hub":{"cwd":"/tmp","model":"openai/gpt-5.2","watch":{"completion":true}},"name":"watch-delivery-fix","agent_type":"default","sandbox":"bogus","intent":"spawn the worker"}`)
+	refusal := managerDelegateHubCall(t, `{"prompt":"worker task","hub":{"cwd":"/tmp","model":"openai/gpt-5.2","watch":{"completion":true}},"name":"watch-delivery-fix","agent_type":"default","isolation":"bogus","intent":"spawn the worker"}`)
 	if refusal == "" {
 		t.Fatal("hub-branch call with extra arguments was accepted")
 	}
-	for _, field := range []string{"name", "agent_type", "sandbox"} {
+	for _, field := range []string{"name", "agent_type", "isolation"} {
 		if !strings.Contains(refusal, field) {
 			t.Fatalf("refusal did not name the rejected argument %s: %s", field, refusal)
 		}
