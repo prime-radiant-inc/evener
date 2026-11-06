@@ -10,6 +10,7 @@
     "panes/session/chrome/modelswitch.module.css",
     "widgets/promptcard/promptcard.module.css",
     "widgets/button/button.module.css",
+    "widgets/iconbutton/iconbutton.module.css",
     "widgets/meter/meter.module.css",
     "widgets/visuallyhidden/visuallyhidden.module.css"
   ],
