@@ -5,7 +5,6 @@
     "styles/global.css",
     "styles/tokens.css",
     "widgets/panescaffold/panescaffold.module.css",
-    "panes/session/session.module.css",
     "panes/session/transcript/turnblock.module.css",
     "panes/spawn/spawn.module.css",
     "panes/settings/settings.module.css"

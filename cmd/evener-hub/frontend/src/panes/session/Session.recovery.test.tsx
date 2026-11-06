@@ -43,6 +43,7 @@ import * as ComposerModule from "./composer/Composer";
 import { readDraft, writeDraft } from "./composer/draft";
 import { refreshPendingTurnsProjection, resetPendingTurnsStoreForTests } from "./composer/queue/pendingTurnsStore";
 import { flushPendingTurnsProjectionForTests } from "./composer/queue/testing/flushPendingTurnsProjection";
+import { RECOVERY_HINT_DELAY_MS } from "./Session";
 import "./index";
 import { CommittedSession as Session } from "./testing/CommittedSession";
 import { resetTranscriptPagingForTests } from "./transcript/useTranscript";
@@ -270,6 +271,9 @@ test.each(["success", "refused"])(
     await waitFor(() => expect(fake.calls.some((call) => call.method === "thread/read")).toBe(true));
     expect(threadsStore.getState().threads.has(ref)).toBe(false);
     const refresh = vi.spyOn(threadsStore.getState(), "refreshThread");
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, RECOVERY_HINT_DELAY_MS + 50));
+    });
     const user = userEvent.setup();
     await user.click(screen.getByRole("button", { name: "Force shutdown…" }));
     expect(fake.calls.filter((call) => call.method === "evener/thread/forceStop")).toHaveLength(0);
@@ -304,6 +308,7 @@ test.each(["success", "refused"])(
     expect(fake.calls.filter((call) => call.method === "evener/thread/forceStop")).toHaveLength(1);
     expect(fake.calls.filter((call) => call.method === "thread/resume")).toHaveLength(0);
   },
+  20_000,
 );
 
 test.each(["success", "refused"])("hydrated restart recovery works without navigation: %s", async (outcome) => {
