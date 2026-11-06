@@ -365,6 +365,11 @@ func fireObserveHubRelayWait() {
 	}
 }
 
+// observeHubRelayDaemonGoneRetention runs after a daemon-gone delivery's
+// target pass and before its retention is decided, so a test can release a
+// joining read at that boundary. Production leaves it nil.
+var observeHubRelayDaemonGoneRetention atomic.Pointer[func()]
+
 // Test-only observations for the bounded pending-delivery queue, its delivery
 // input, and authoritative route publication. Production never stores them;
 // each call site is one load and nil check.

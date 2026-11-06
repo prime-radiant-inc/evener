@@ -1036,6 +1036,81 @@ func TestHubRelayDaemonGoneReachesJoiningSubscriberOnTheSameRoute(t *testing.T) 
 	awaitRelayResync(t, hub.client.Notifications(), sessionID, rootRef, 10*time.Second)
 }
 
+// The fan-out decides retention after its per-route target pass. A joining
+// read that releases between the route's command check and that retention
+// decision must not let the delivery be dropped for the whole route: the
+// deferral itself has to keep the delivery pending.
+func TestHubRelayDaemonGoneRetainsDeferredRouteAfterJoiningReadReleases(t *testing.T) {
+	const sessionID = "release-before-retention"
+	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+	defer cancel()
+	rootRef := appwire.Ref{SourceID: appwire.LocalSourceID, ThreadID: sessionID}.String()
+
+	var relays *hubRelay
+	previousObserveRelay := observeHubRelay
+	observeHubRelay = func(r *hubRelay) { relays = r }
+	t.Cleanup(func() { observeHubRelay = previousObserveRelay })
+
+	// Park the fan-out after it deferred the joining route and before it
+	// reads retention, then release the read's command owner while parked.
+	retentionReached := make(chan struct{})
+	releaseRetention := make(chan struct{})
+	var retentionOnce sync.Once
+	t.Cleanup(installAtomicObserver(&observeHubRelayDaemonGoneRetention, func() {
+		retentionOnce.Do(func() {
+			close(retentionReached)
+			select {
+			case <-releaseRetention:
+			case <-ctx.Done():
+			}
+		})
+	}))
+
+	daemon := startAliasRecoveryDaemon(t, sessionID, sessionID)
+	var gateArmed *atomic.Bool
+	var gateEntered <-chan struct{}
+	var gateRelease func()
+	hub := openSubscribedHubWithSetup(ctx, t, daemon.entry, sessionID, nil, func(server *appserver.Server) {
+		gateArmed, gateEntered, gateRelease = installRelayProgressGate(ctx, server)
+	})
+	if relays == nil {
+		t.Fatal("hub relay was not observed")
+	}
+	joining := dialHubRPC(t, hub.wire)
+	t.Cleanup(func() { _ = joining.Close() })
+	if _, err := joining.Initialize(ctx, appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+	gateArmed.Store(true)
+	joiningRead := make(chan error, 1)
+	go func() {
+		_, err := joining.ThreadRead(ctx, appwire.ThreadReadParams{Ref: rootRef, Subscribe: true})
+		joiningRead <- err
+	}()
+	awaitActivityRelaySignal(ctx, t, gateEntered, "joining read did not reach the subscription gate")
+
+	if err := daemon.Kill(); err != nil {
+		t.Fatal(err)
+	}
+	if err := daemon.Wait(ctx); err != nil {
+		t.Fatal(err)
+	}
+	hub.roster.Refresh()
+	awaitActivityRelaySignal(ctx, t, retentionReached, "fan-out did not defer the joining route")
+	gateRelease()
+	if err := <-joiningRead; err != nil {
+		t.Fatalf("joining ThreadRead: %v", err)
+	}
+	awaitActivityRelayCondition(ctx, t, func() bool {
+		return relays.relayCommandCount(rootRef) == 0
+	}, "joining read did not release its command owner")
+	close(releaseRetention)
+	// Both the incumbent and the released joining subscriber still hear the
+	// departure once the deferred route is served.
+	awaitRelayResync(t, hub.client.Notifications(), sessionID, rootRef, 10*time.Second)
+	awaitRelayResync(t, joining.Notifications(), sessionID, rootRef, 10*time.Second)
+}
+
 // A legacy rendezvous entry names no session; the probe resolves one and the
 // relay session is keyed by it. The departure announcement carries that
 // resolved id, or it never finds the relay session to tell.
