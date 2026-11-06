@@ -2475,11 +2475,13 @@ function SpawnForm({
         ? "Connect a provider to start."
         : modelRequired && slashModelBootstrap === null
           ? "Choose a model to start."
-          : pluginSelectionBlocked
-            ? "Resolve the plugin selection to start."
-            : hostCatalogPending || modelHostPending
-              ? "Waiting for the host to answer; Start is available when it does."
-              : undefined;
+          : explicitSelectionLoading
+            ? "Waiting for the host to answer; Start is available when it does."
+            : pluginSelectionBlocked
+              ? "Resolve the plugin selection to start."
+              : hostCatalogPending || modelHostPending
+                ? "Waiting for the host to answer; Start is available when it does."
+                : undefined;
   return (
     <PaneScaffold title="New session" mobileTitle="New session">
       <div className={CLASS.form}>

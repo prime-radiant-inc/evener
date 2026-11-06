@@ -1167,6 +1167,11 @@ test("a completed intent group closes after its trailing tool calls", () => {
     failed: false,
     item: source.items[0]!,
   };
-  render(withConfig(NO_ROUND_TIMINGS, <ProjectedIntentGroup entries={[entry]} separatorTurn={source} />));
+  const config = makeTranscriptDisplayConfig({ kind: "preset", level: "activity" }, { roundTimings: true });
+  render(
+    withConfig(config, <ProjectedIntentGroup rowId="intent-group-row" entries={[entry]} separatorTurn={source} />),
+  );
   expect(screen.getByTestId("turn-done")).toBeTruthy();
+  const group = document.querySelector('[data-transcript-row-id="intent-group-row"]');
+  expect(group?.contains(screen.getByTestId("turn-separator"))).toBe(true);
 });
