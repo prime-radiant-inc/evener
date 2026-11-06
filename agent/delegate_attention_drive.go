@@ -174,15 +174,14 @@ func (s *Session) driveDelegateAttention(sub *subagent) bool {
 	if commitErr == nil {
 		started, commitErr = s.delegateController.CommitStart(reservation)
 	}
-	err = commitErr
-	if err != nil {
-		s.emit(warningDataFromError("commit delegate attention", err))
+	if commitErr != nil {
+		s.emit(warningDataFromError("commit delegate attention", commitErr))
 		// A busy commit released the reservation, so nothing retries this
 		// start: without the reopen the consume marker acceptDelegateAttention
 		// already wrote would strand the report forever. A failed journal append
 		// keeps the reservation, so the sticky retry re-presents it and the
 		// reopen is left to that retry's own failure.
-		if errors.Is(err, errDelegateTargetBusy) {
+		if errors.Is(commitErr, errDelegateTargetBusy) {
 			s.reopenFailedDelegateAttention(sub, ids[0])
 		}
 		s.delegateController.retryDelegateAttentionLater()

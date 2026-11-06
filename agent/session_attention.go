@@ -270,25 +270,35 @@ func extendDelegateAttention(prior delegateAttentionFold, entries []transcript.E
 			}
 			continue
 		}
-		if resolution.ResumeGeneration != 0 {
-			for previousID, generation := range fold.resumeGenerations {
-				if generation == resolution.ResumeGeneration && previousID != resolution.AttentionID {
-					// The same supersession the write-side validator waives: a
-					// row re-delivered under its reopen identity may take over the
-					// resume claim its source left on a generation that never
-					// journaled, so the fold keeps both markers without treating
-					// the pair as a conflicting double claim.
-					if delegateAttentionReopenSource(resolution.AttentionID, previousID, resolution.ResumeGeneration) {
-						continue
-					}
-					return delegateAttentionFold{}, fmt.Errorf("resume generation %d claims attention %q and %q", resolution.ResumeGeneration, previousID, resolution.AttentionID)
-				}
-			}
+		if previousID, conflict := delegateAttentionResumeClaimConflict(fold, resolution.AttentionID, resolution.ResumeGeneration); conflict {
+			return delegateAttentionFold{}, fmt.Errorf("resume generation %d claims attention %q and %q", resolution.ResumeGeneration, previousID, resolution.AttentionID)
 		}
 		fold.resolutions[resolution.AttentionID] = disposition
 		fold.resumeGenerations[resolution.AttentionID] = resolution.ResumeGeneration
 	}
 	return fold, nil
+}
+
+// delegateAttentionResumeClaimConflict scans the fold's resume claims for an
+// id other than attentionID that claims the same generation. One generation
+// presents one report, so two ids cannot both claim it — except the rows a
+// reopen re-delivered under a fresh identity: their source was consumed by a
+// start that never journaled the generation (the reservation was released),
+// so the re-delivered row takes over the claim its source left, and a chain
+// of failed starts supersedes every ancestor's stale claim, not only the
+// immediate parent (delegateAttentionReopenSource waives the whole chain).
+// Map order cannot change the verdict: the scan visits every claim and
+// conflicts on the first one the waiver does not cover.
+func delegateAttentionResumeClaimConflict(fold delegateAttentionFold, attentionID string, generation uint64) (string, bool) {
+	if generation == 0 {
+		return "", false
+	}
+	for previousID, claimed := range fold.resumeGenerations {
+		if claimed == generation && previousID != attentionID && !delegateAttentionReopenSource(attentionID, previousID, generation) {
+			return previousID, true
+		}
+	}
+	return "", false
 }
 
 func foldDelegateDeliveryCommits(fold *delegateAttentionFold, turn schema.Turn) error {
@@ -863,7 +873,14 @@ func (s *Session) reopenLatchedDelegateAttention() error {
 // fresh row. The validator recognizes the format so a reopened row can take
 // over the resume claim its source left on the generation that never ran.
 func delegateAttentionReopenID(sourceID string, generation uint64) string {
-	return fmt.Sprintf("%s/reopened/%d", sourceID, generation)
+	return sourceID + delegateAttentionReopenSuffix(generation)
+}
+
+// delegateAttentionReopenSuffix is the wire format of one reopen segment: the
+// builder and the parser share it, so the id a failed start re-delivers under
+// and the chain the validator strips cannot drift apart.
+func delegateAttentionReopenSuffix(generation uint64) string {
+	return fmt.Sprintf("/reopened/%d", generation)
 }
 
 // delegateAttentionReopenSource reports whether id reduces to sourceID by
@@ -877,7 +894,7 @@ func delegateAttentionReopenSource(id, sourceID string, generation uint64) bool 
 	if generation == 0 {
 		return id == sourceID
 	}
-	suffix := fmt.Sprintf("/reopened/%d", generation)
+	suffix := delegateAttentionReopenSuffix(generation)
 	for id != sourceID {
 		if !strings.HasSuffix(id, suffix) {
 			return false
@@ -2124,24 +2141,8 @@ func validateDelegateAttentionResolutions(fold delegateAttentionFold, ids []stri
 		if _, pending := fold.content[attentionID]; !pending {
 			return fmt.Errorf("attention %q is not pending", attentionID)
 		}
-		if resumeGeneration != 0 {
-			for previousID, generation := range fold.resumeGenerations {
-				if generation == resumeGeneration && previousID != attentionID {
-					// One generation presents one report, so two ids cannot
-					// both claim it — except the row a reopen re-delivered
-					// under a fresh identity: its source was consumed by a
-					// start that never committed (the reservation was
-					// released), so the generation was never journaled and the
-					// retry of it presents the re-delivered row. Chained
-					// failures nest the identity one reopen deeper per
-					// refusal, so the whole chain supersedes the stale claim
-					// rather than only its immediate parent.
-					if delegateAttentionReopenSource(attentionID, previousID, resumeGeneration) {
-						continue
-					}
-					return fmt.Errorf("resume generation %d already claims attention %q", resumeGeneration, previousID)
-				}
-			}
+		if previousID, conflict := delegateAttentionResumeClaimConflict(fold, attentionID, resumeGeneration); conflict {
+			return fmt.Errorf("resume generation %d already claims attention %q", resumeGeneration, previousID)
 		}
 	}
 	return nil

@@ -1966,15 +1966,13 @@ func (a *subagent) run(ctx context.Context, input string, inputProvenance *prove
 // outcome proves the model request already carried the report it owed: the
 // model-behavior failures and budget exhaustion happen after the call ran.
 // Every other failure can land before the first request, where the consumed
-// row would otherwise be lost with nothing left to present.
+// row would otherwise be lost with nothing left to present. The verdict is
+// the run-end taxonomy classifyRunEnd owns, read from its own projections: a
+// run settles ordinarily exactly when it ended nil or on a model-behavior
+// sentinel, and the exhausted status is the budget exhaustion.
 func attentionRunPresentedItsReport(err error) bool {
-	if err == nil {
-		return true
-	}
-	if _, exhausted := budgetExhaustionFromError(err); exhausted {
-		return true
-	}
-	return errors.Is(err, errBareTextWithoutResultTool) || errors.Is(err, errEmptyResponseExhausted)
+	end := classifyRunEnd(err, false)
+	return end.mode == delegateSettlementOrdinary || end.status == SubagentExhausted
 }
 
 // announceFinishedGeneration is a stable run's last step for its finished

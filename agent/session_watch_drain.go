@@ -7,7 +7,6 @@ import (
 	"strings"
 
 	"primeradiant.com/evener/agent/events"
-	"primeradiant.com/evener/agent/internal/delegatestore"
 	"primeradiant.com/evener/agent/internal/jobstore"
 	"primeradiant.com/evener/agent/provenance"
 )
@@ -327,10 +326,7 @@ func (s *Session) releaseChildCommittedSendStart(childSessionID string) {
 // and asks several questions of each row, so it must not re-snapshot the whole
 // controller to ask this one.
 func delegateRowStopGated(row delegateSnapshot) bool {
-	if !delegateRunTerminal(row.lastOutcome, row.currentRunOpen) {
-		return false
-	}
-	return row.lastOutcome.Status == delegatestore.OutcomeStopped && row.lastOutcome.Reason == delegatestore.ReasonStoppedByParent
+	return delegateOutcomeStopGated(row.lastOutcome, row.currentRunOpen)
 }
 
 // settleDrivenChildForwardedPendings marks the parent's forwarded pending COPIES
