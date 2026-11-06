@@ -748,30 +748,9 @@ function PaletteBody({
   }
 
   function activateSearchItem(item: PaletteItem, newTab: boolean) {
-    // An arrow-picked command is the user's explicit choice, even when it is
-    // not an exact name match.
-    if (item.kind === "command" && activeIndex !== 0) {
-      activateCommand(item.command);
-      return;
-    }
-    if (item.kind === "command" && query.trim()) {
-      const exact = query.replace(/^\/+/, "").trim().toLowerCase();
-      const named = exact === item.command.id.toLowerCase() || exact === item.command.title.toLowerCase();
-      if (named) {
-        activateCommand(item.command);
-        return;
-      }
-      // A leading command is a shortcut, not the answer to a session query:
-      // prefer the first session hit, and fall back to the command only when
-      // the query matched nothing else.
-      const firstResult = view.items.find((candidate) => candidate.kind !== "command");
-      if (firstResult) {
-        activateResult(firstResult, newTab);
-        return;
-      }
-      activateCommand(item.command);
-      return;
-    }
+    // The reset effect already puts the default highlight on what Enter should
+    // act on, and move() makes an arrow pick explicit, so the highlighted row
+    // is always the row Enter runs.
     activateResult(item, newTab);
   }
 

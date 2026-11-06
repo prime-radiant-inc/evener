@@ -275,6 +275,24 @@ test("Enter on a plain query prefers the first session hit over the leading comm
   expect(window.location.pathname).toBe("/");
 });
 
+test("ArrowUp to a leading command runs the highlighted command", async () => {
+  const user = userEvent.setup();
+  scriptSearch({ live: [], past: [] });
+  focusSession("ref_a", { turns: [turn([item("i1", "set term found here")])] });
+
+  render(
+    <NeedsYouProvider>
+      <CommandPalette />
+    </NeedsYouProvider>,
+  );
+  act(() => openPalette());
+  await user.type(screen.getByRole("combobox"), "set");
+  await waitFor(() => expect(paletteRowsOfKind("insession")).toHaveLength(1));
+
+  await user.keyboard("{ArrowUp}{Enter}");
+  await waitFor(() => expect(window.location.pathname).toBe("/settings"));
+});
+
 // --- enterPressed: handoff via arrow+Enter (lines 519-524) ---
 
 test("arrow-down then Enter on the handoff row hands off to the composer", async () => {
