@@ -241,9 +241,10 @@ echo "expecting a run of: ${workflows[*]}"
 runs_raw="$(fetch_runs)" || exit 2
 classify_runs
 missing="$(missing_workflows)"
-# A missing workflow whose file is not on the PR's branch can never gain a
-# run by waiting and cannot be dispatched: record it once so the wait and
-# the dispatch path skip it and the verdict can say what actually happened.
+# A missing workflow whose file is on neither the PR branch nor its base
+# branch can never gain a run by waiting and cannot be dispatched: record it
+# once so the wait and the dispatch path skip it and the verdict can say
+# what actually happened.
 absent=""
 undispatchable=""
 if [ -n "$missing" ]; then
@@ -265,7 +266,7 @@ if [ -n "$missing" ] && [ "$wait" -gt 0 ]; then
   echo "missing after first check: $(printf '%s' "$missing" | tr '\n' ' ')polling for up to ${wait}s"
 fi
 if [ -n "$absent" ]; then
-  echo "workflow file absent from the PR branch (not a dropped event, not waiting, not dispatching): $(printf '%s' "$absent" | tr '\n' ' ')"
+  echo "workflow file absent from the PR branch and its base branch (not a dropped event, not waiting, not dispatching): $(printf '%s' "$absent" | tr '\n' ' ')"
 fi
 if [ -n "$undispatchable" ]; then
   echo "workflow file on the base branch but not this one (still waiting for GitHub's own run; no dispatch can cover the push): $(printf '%s' "$undispatchable" | tr '\n' ' ')"
@@ -305,7 +306,7 @@ for i in "${!workflows[@]}"; do
     echo "$w: covered by a $event run (status $status); $note"
     echo "CIWATCH covered workflow=$w by=$event run=$id url=$url"
   elif list_has "$absent" "$w"; then
-    echo "$w: no run on $check_oid, and the workflow file is not on the PR branch; the watchdog cannot expect or dispatch a run of it; this is not a dropped event"
+    echo "$w: no run on $check_oid, and the workflow file is not on the PR branch or its base branch; the watchdog cannot expect or dispatch a run of it; this is not a dropped event"
     echo "CIWATCH missing workflow=$w head=$check_oid reason=workflow-absent"
     rc=1
   elif list_has "$undispatchable" "$w"; then
