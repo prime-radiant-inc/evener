@@ -116,11 +116,11 @@ still finish after the caller stops waiting, so the operation budget is not a
 hard wall-clock bound on underlying I/O.
 
 The watch keeps its ID and pending notices through a connection interruption.
-A stream end delivers no interruption notice while recovery is still possible:
-the watch suspends quietly, checks the Manager caller's ref and instance
-before resubscribing, and a rebind that succeeds inside the outage budget owes
-no notice at all. The notice belongs to a loss the Manager must act on, not to
-a blip that recovers by itself; delivered up front it reads as an incident on a
+A stream end suspends the watch quietly while recovery is in progress: it
+checks the Manager caller's ref and instance before resubscribing, and a
+rebind that succeeds inside the outage budget delivers no interruption
+notice. The notice belongs to a loss the Manager must act on, not to a blip
+that recovers by itself; delivered up front it reads as an incident on a
 healthy lane. A restored connection retains the watch
 only when the target also has the same ref, instance and generation. Recovery
 from a binding that cannot answer state reads is bounded by an outage budget

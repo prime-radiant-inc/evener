@@ -1070,11 +1070,8 @@ func (s *Session) consumeHubWatch(ctx context.Context, id string, request appwir
 		if ctx.Err() != nil || !managerHubWatchPresent(jm, id) {
 			return
 		}
-		// The stream-end arm stays quiet while recovery is in progress: the
-		// interruption notice is deferred until the rebind outcome is known,
-		// so a rebind that succeeds inside the outage budget delivers no
-		// frame, and every recovery that fails below ends the watch durably
-		// with re-registration guidance (job-control.md).
+		// Quiet: the rebind loop's outcome decides whether this loss is
+		// noticed at all (job-control.md).
 		jm.suspendHubWatchQuiet(id)
 		for ctx.Err() == nil && managerHubWatchPresent(jm, id) {
 			s.mu.Lock()

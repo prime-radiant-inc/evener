@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"primeradiant.com/evener/agent/internal/jobstore"
+	"primeradiant.com/evener/agent/internal/tool"
 	"primeradiant.com/evener/appwire"
 )
 
@@ -662,24 +663,15 @@ func TestHubRosterWatchStreamEndReboundDeliversNoInterruptionNotice(t *testing.T
 	}
 	base.streams <- first
 	root.SetHubClient(base)
-	if _, err := root.configureHubWatchRuntime(t.Context(), map[string]any{"operation": "create", "hub": map[string]any{"scope": "top_level"}}); err != nil {
+	res, err := root.configureHubWatchRuntime(t.Context(), map[string]any{"operation": "create", "hub": map[string]any{"scope": "top_level"}})
+	if err != nil {
 		t.Fatal(err)
 	}
+	watchID := res.(tool.StateResult).State.(jobWatchToolResult).WatchID
 	<-base.watches
 	jm := root.jobManager
 	if jm == nil {
 		t.Fatal("missing journal owner")
-	}
-	var watchID string
-	jm.mu.Lock()
-	for _, cfg := range jm.watches {
-		if cfg.hubRef == hubRosterWatchKey {
-			watchID = cfg.watchID
-		}
-	}
-	jm.mu.Unlock()
-	if watchID == "" {
-		t.Fatal("roster watch missing")
 	}
 
 	// The blip: the stream dies and the binding stops answering. The roster
