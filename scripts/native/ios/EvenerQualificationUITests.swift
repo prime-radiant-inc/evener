@@ -176,9 +176,7 @@ final class EvenerQualificationUITests: XCTestCase {
 	func testSheetGestureKeepsControlsUsable() {
 		let app = XCUIApplication()
 		onboardIfNeeded(app)
-		tap(app.buttons["new-session"], "the board never appeared")
-		let prompt = app.descendants(matching: .any).matching(identifier: "session-prompt").firstMatch
-		XCTAssertTrue(prompt.waitForExistence(timeout: tripwire), "the New session sheet never opened")
+		let prompt = openNewSession(app)
 
 		let sheet = prompt.firstMatch
 		sheet.swipeUp()
@@ -244,9 +242,8 @@ final class EvenerQualificationUITests: XCTestCase {
 	/// a fresh hub lists no recent projects, so the workspace is reached by
 	/// browsing — then wait for Start to unlock and start.
 	private func startSession(_ app: XCUIApplication, prompt promptText: String) {
-		tap(app.buttons["new-session"], "the board's compose button never appeared")
-		let prompt = app.descendants(matching: .any).matching(identifier: "session-prompt").firstMatch
-		tap(prompt, "the New session sheet never opened")
+		let prompt = openNewSession(app)
+		tap(prompt, "the sheet's prompt never became tappable")
 		prompt.typeText(promptText)
 
 		let browse = app.buttons
@@ -270,6 +267,22 @@ final class EvenerQualificationUITests: XCTestCase {
 		XCTAssertTrue(start.waitForExistence(timeout: tripwire), "Start never appeared")
 		waitForEnabled(start)
 		tap(start, "Start never appeared")
+	}
+
+	/// Opens the New session sheet, tapping again when the first tap lands
+	/// inside the board's settling window: right after the board appears, the
+	/// compose button can carry a valid frame at one instant and an invalid
+	/// one at the next, and a tap synthesized in that window computes {-1, -1}
+	/// and goes nowhere. The journey checks its own effect, the sheet's
+	/// prompt, rather than pretending to predict the settled moment.
+	private func openNewSession(_ app: XCUIApplication) -> XCUIElement {
+		let prompt = app.descendants(matching: .any).matching(identifier: "session-prompt").firstMatch
+		let deadline = Date().addingTimeInterval(tripwire)
+		while !prompt.waitForExistence(timeout: 2) && Date() < deadline {
+			tap(app.buttons["new-session"], "the board's compose button never appeared")
+		}
+		XCTAssertTrue(prompt.waitForExistence(timeout: 2), "the New session sheet never opened")
+		return prompt
 	}
 
 	/// Taps only once the control has a real frame. A control that registers
