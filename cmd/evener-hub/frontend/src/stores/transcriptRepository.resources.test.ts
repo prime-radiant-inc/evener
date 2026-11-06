@@ -9,6 +9,7 @@ import { encodeTranscriptItem } from "@evener/appwire-client";
 import { deferred } from "@evener/appwire-client/testing/deferred";
 import { IDBFactory, IDBKeyRange, IDBObjectStore } from "fake-indexeddb";
 import { afterEach, expect, it, vi } from "vitest";
+import { ALL_CAPABILITIES } from "../threadTestUtils";
 import { EntryWriteAdmission } from "./entryWriteAdmission";
 import {
   ENTRY_ITEM_STORE,
@@ -33,22 +34,6 @@ const identity: TranscriptResolvedIdentity = {
 const ref = "ref-a";
 const threadId = "thread-a";
 const historyKey = entryHistoryKey(identity);
-const CAPABILITIES = {
-  send: true,
-  steer: true,
-  interrupt: true,
-  compact: true,
-  clear: true,
-  forkFromTurn: true,
-  shutdown: true,
-  changeModel: true,
-  changeVisionModel: true,
-  queue: true,
-  goal: true,
-  sharedNotes: true,
-  rename: true,
-};
-
 function item(label: string, entry: number, version = entry): ThreadItem {
   return {
     type: "agentMessage",
@@ -76,7 +61,7 @@ function read(label: string, length = 1): ThreadReadResponse {
       cliVersion: "test",
       source: "evener",
       turns: [{ id: "turn_1", itemsView: "full", status: "completed", version: length, items: [item(label, length)] }],
-      evener: { ref, capabilities: CAPABILITIES, queue: { revision: 0 } },
+      evener: { ref, capabilities: ALL_CAPABILITIES, queue: { revision: 0 } },
     },
     bootGeneration: "1",
     epoch: 0,

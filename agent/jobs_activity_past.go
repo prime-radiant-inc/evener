@@ -252,7 +252,7 @@ type activityJournalState struct {
 }
 
 func scanRootDelegateState(ctx context.Context, stateDir, rootSessionID string) (delegatestore.State, activityJournalState, []string, error) {
-	path := filepath.Join(jobsDir(stateDir, rootSessionID), "delegates.jsonl")
+	path := schema.SessionDelegateJournalPath(stateDir, rootSessionID)
 	result, err := historicalDelegateFoldCache.Get(ctx, path, extendHistoricalDelegateFold)
 	if err != nil {
 		if errors.Is(err, delegatestore.ErrLineTooLong) {

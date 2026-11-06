@@ -40,6 +40,7 @@ import {
   type TranscriptItemRow,
 } from "./sessionCacheSchema";
 import { SessionEntryCache } from "./sessionEntryCache";
+import { pumpIndexedDBUntil } from "./testing/indexedDBPump";
 import { isMutationPinned } from "./threadOwners";
 import {
   acquireBackgroundThread,
@@ -3609,20 +3610,49 @@ it("a foreground opening whose storage read fails transiently still converges th
   failingWindowReads = 1;
   setSessionCacheStalledOpenForTests(250);
   setSessionCacheOpenBackstopForTests(40);
+  // Freeze the deadline clock: the open's 40ms backstop, the 250ms stalled
+  // windows, and the chain's paced retry then expire exactly when this test
+  // advances the clock, so machine load cannot reorder the withheld reads
+  // against them. Each fake millisecond is spent beside one real storage
+  // read, which is what lets fake-indexeddb's real macrotasks deliver the
+  // scripted reads in their order.
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
   try {
-    await threadsStore.getState().ensureThread(ref);
+    const opened = threadsStore.getState().ensureThread(ref);
     // The refusal must not end recovery for good: the pane is still
     // body-suppressed with healthy storage just one read away, so the chain
     // hands to source recovery and the recorded display converges exactly as
-    // the twice-miss strand does. Wait on the convergence itself: a loaded
-    // runner can outrun a fixed two-second window between the open, the
-    // refusal and the re-arm, and a chain that never re-arms still fails
-    // honestly at the ceiling instead of hanging.
-    await vi.waitFor(() => expect(bodies()).toEqual(Array.from({ length: 200 }, (_, index) => `row-${index + 26}`)), {
-      timeout: 15_000,
+    // the twice-miss strand does.
+    const expected = Array.from({ length: 200 }, (_, index) => `row-${index + 26}`);
+    const converged = await pumpIndexedDBUntil({
+      turns: 800,
+      until: () => {
+        const seen = bodies();
+        return seen?.length === expected.length && seen.every((text, index) => text === expected[index]);
+      },
+      onTurn: async () => {
+        await vi.advanceTimersByTimeAsync(1);
+      },
     });
+    // On the failing path the open may still be parked or may reject; the
+    // convergence assertion below is the failure this test reports, so mark it
+    // handled rather than awaiting a state the clock never reached.
+    if (!converged) opened.catch(() => undefined);
+    expect(
+      converged,
+      `pane did not converge within 800 fake milliseconds: ${JSON.stringify({
+        openStatus: productionEntryTranscriptForTests(ref).lastLocalOpenStatus ?? "unset",
+        bodies: bodies()?.length ?? 0,
+        withheldWindowReads,
+        failingWindowReads,
+      })}`,
+    ).toBe(true);
+    await opened;
+    await settleEntryTranscriptForTests(ref);
+    expect(bodies()).toEqual(expected);
     expect(threadsStore.getState().threads.get(ref)?.olderCursor).toBeDefined();
   } finally {
+    vi.useRealTimers();
     setSessionCacheOpenBackstopForTests(10000);
     setSessionCacheStalledOpenForTests(5000);
     threadsStore.getState().releaseThread(ref);
@@ -6151,10 +6181,12 @@ it("a recovery span finishing wakes the reopened claim's parked certification de
     () => new Promise(() => {}) as ReturnType<typeof realGetLatestWindow>,
     () => new Promise(() => {}) as ReturnType<typeof realGetLatestWindow>,
     () => new Promise(() => {}) as ReturnType<typeof realGetLatestWindow>,
-    () => {
+    (...args: unknown[]) => {
       certificationParked = true;
       certificationEntered.resolve();
-      return certificationReleased.promise.then(() => undefined) as ReturnType<typeof realGetLatestWindow>;
+      return certificationReleased.promise.then(() =>
+        realGetLatestWindow(...(args as Parameters<typeof realGetLatestWindow>)),
+      );
     },
     (...args: unknown[]) =>
       certificationEntered.promise.then(() =>

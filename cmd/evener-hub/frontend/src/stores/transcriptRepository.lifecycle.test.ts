@@ -14,6 +14,7 @@ import type {
 } from "@evener/appwire-client";
 import { IDBFactory, IDBKeyRange, IDBObjectStore } from "fake-indexeddb";
 import { afterEach, expect, test, vi } from "vitest";
+import { ALL_CAPABILITIES } from "../threadTestUtils";
 import { entryHistoryKey, type TranscriptResolvedIdentity } from "./sessionCacheSchema";
 import { SessionEntryCache } from "./sessionEntryCache";
 import { createEntryCacheFixture } from "./testing/entryCacheFixture";
@@ -29,22 +30,6 @@ const identity: TranscriptResolvedIdentity = {
 const ref = "ref-a";
 const threadId = "thread-a";
 const historyKey = entryHistoryKey(identity);
-const CAPABILITIES = {
-  send: true,
-  steer: true,
-  interrupt: true,
-  compact: true,
-  clear: true,
-  forkFromTurn: true,
-  shutdown: true,
-  changeModel: true,
-  changeVisionModel: true,
-  queue: true,
-  goal: true,
-  sharedNotes: true,
-  rename: true,
-};
-
 function itemOf(entry: number, version = entry, text = `row-${entry}`): ThreadItem {
   return {
     type: "agentMessage",
@@ -84,7 +69,7 @@ function readOf(
           items: entries.map((entry) => itemOf(entry)),
         },
       ],
-      evener: { ref, capabilities: CAPABILITIES, queue: { revision: 0 } },
+      evener: { ref, capabilities: ALL_CAPABILITIES, queue: { revision: 0 } },
     },
     bootGeneration: "1",
     epoch: 0,

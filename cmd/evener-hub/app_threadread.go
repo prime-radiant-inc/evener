@@ -1346,7 +1346,7 @@ func pastEntryDelegateStatus(ctx context.Context, entry hubcore.PastEntry) ([]ag
 	if schema.ValidateSessionID(rootID) != nil {
 		return nil, nil, nil //nolint:nilerr // malformed stored metadata has no safe delegate projection; the thread itself remains readable
 	}
-	path := filepath.Join(entry.StateDir, "sessions", rootID, "delegates.jsonl")
+	path := schema.SessionDelegateJournalPath(entry.StateDir, rootID)
 	if _, err := os.Stat(path); err != nil {
 		if os.IsNotExist(err) {
 			return nil, nil, nil

@@ -11,6 +11,7 @@ import {
 import { deferred } from "@evener/appwire-client/testing/deferred";
 import { IDBDatabase, IDBObjectStore } from "fake-indexeddb";
 import { afterEach, expect, it, vi } from "vitest";
+import { ALL_CAPABILITIES } from "../threadTestUtils";
 import { entryWriteAdmissionFor } from "./entryWriteAdmission";
 import { requestResult, transactionCompletion } from "./idbConnection";
 import {
@@ -36,22 +37,6 @@ const identity: TranscriptResolvedIdentity = {
 const ref = "ref-a";
 const threadId = "thread-a";
 const historyKey = entryHistoryKey(identity);
-const CAPABILITIES = {
-  send: true,
-  steer: true,
-  interrupt: true,
-  compact: true,
-  clear: true,
-  forkFromTurn: true,
-  shutdown: true,
-  changeModel: true,
-  changeVisionModel: true,
-  queue: true,
-  goal: true,
-  sharedNotes: true,
-  rename: true,
-};
-
 function read(label: string, length = 1, transcriptKey = `item-${label}`): ThreadReadResponse {
   return {
     thread: {
@@ -85,7 +70,7 @@ function read(label: string, length = 1, transcriptKey = `item-${label}`): Threa
           ],
         },
       ],
-      evener: { ref, capabilities: CAPABILITIES, queue: { revision: 0 } },
+      evener: { ref, capabilities: ALL_CAPABILITIES, queue: { revision: 0 } },
     },
     bootGeneration: "1",
     epoch: 0,
@@ -374,7 +359,7 @@ it.each(
   await entered.promise;
   const recovery = { ...read("recovery", 2), requestGeneration: 2 };
   recovery.thread.evener.resumeRequired = true;
-  recovery.thread.evener.capabilities = { ...CAPABILITIES, send: false };
+  recovery.thread.evener.capabilities = { ...ALL_CAPABILITIES, send: false };
   if (outcome === "stale-generation") {
     expect(
       owner.acceptRead(
