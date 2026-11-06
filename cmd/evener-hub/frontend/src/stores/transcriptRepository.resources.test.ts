@@ -1138,6 +1138,103 @@ it("preserves replacement deletions inherited from a delayed read preflight", as
   }
 });
 
+it("does not inherit a superseded replacement over a newer committed item (#4651)", async () => {
+  const { owner: unused, makeCache, offer } = capacityFixture(100_000);
+  unused.dispose();
+  const cache = makeCache(6_500);
+  const owner = repository(cache, 1, undefined, capturingScheduler().scheduler, new EntryWriteAdmission(100_000));
+  const reader = owner.attachReader();
+  const gate = deferred<void>();
+  const reached = deferred<void>();
+  try {
+    // Establish the intrinsic capacity refusal that routes the later reads
+    // through the held preflight path.
+    await offer(owner);
+    expect(
+      owner.acceptRead(
+        { ...readItems("base", 3, [item("target", 1, 1), item("keep", 2, 2)]), requestGeneration: 2 },
+        { lifetime: 1, readId: "base", boundary: "base" },
+      ),
+    ).toBe(true);
+    await owner.settled();
+
+    // A: a replacement preflight held in its capacity lookup. Its payload
+    // carries the stale version of item-target.
+    const realPlan = cache.planCapacity.bind(cache);
+    vi.spyOn(cache, "planCapacity").mockImplementationOnce(async (batch) => {
+      expect(batch.coverage?.readId).toBe("a");
+      const plan = await realPlan(batch);
+      reached.resolve();
+      await gate.promise;
+      return plan;
+    });
+    expect(
+      owner.acceptRead(
+        {
+          ...readItems("a", 6, [item("target", 1, 1), item("a-payload", 5, 5)]),
+          authoritative: true,
+          requestGeneration: 3,
+        },
+        { lifetime: 1, readId: "a", boundary: "a" },
+      ),
+    ).toBe(true);
+    await reached.promise;
+
+    // B: a plain merge read (no replacement of its own) updates item-target
+    // and inherits A's replacement scope into its write, committing it
+    // durably. A's preflight stays held.
+    const commits = vi.spyOn(cache, "commitBatch");
+    expect(
+      owner.acceptRead(
+        {
+          ...readItems("b", 7, [{ ...item("target", 1, 2), text: "newer durable" }, item("b", 6, 6)]),
+          requestGeneration: 4,
+        },
+        { lifetime: 1, readId: "b", boundary: "b" },
+      ),
+    ).toBe(true);
+    await vi.waitFor(() => expect(commits).toHaveBeenCalledTimes(1));
+    expect(await commits.mock.results[0]!.value).toMatchObject({ outcome: "committed" });
+
+    // C: an ordinary merge read that omits item-target. It may inherit A's
+    // payloads below the committed replacement, but A's replacement scope and
+    // its stale item-target must not travel with C's newer authority.
+    expect(
+      owner.acceptRead(
+        { ...readItems("c", 8, [item("c", 7, 7)]), requestGeneration: 5 },
+        { lifetime: 1, readId: "c", boundary: "c" },
+      ),
+    ).toBe(true);
+    await vi.waitFor(() => expect(commits).toHaveBeenCalledTimes(2));
+    expect(await commits.mock.results[1]!.value).toMatchObject({ outcome: "committed" });
+    gate.resolve();
+    await owner.settled();
+
+    const durable = await cache.getLatest(historyKey, 40);
+    expect(durable.find((row) => row.transcriptKey === "item-target")).toMatchObject({
+      version: 2,
+      item: { text: "newer durable" },
+    });
+    // Prune and reopen: the accepted newer version is what a restored pane
+    // sees, with no stale version written.
+    reader.dispose();
+    const reopened = owner.attachReader();
+    try {
+      const opened = await reopened.openLocal(40);
+      expect(
+        opened.model?.turns.flatMap((turn) => turn.items).find((entry) => entry.transcriptKey === "item-target"),
+      ).toMatchObject({ version: 2, text: "newer durable" });
+    } finally {
+      reopened.dispose();
+    }
+  } finally {
+    gate.resolve();
+    await owner.settled().catch(() => {});
+    reader.dispose();
+    owner.dispose();
+  }
+});
+
 it("persists a distinct page request after intrinsic capacity refusal", async () => {
   const { owner: unused, makeCache, offer } = capacityFixture(100_000);
   unused.dispose();

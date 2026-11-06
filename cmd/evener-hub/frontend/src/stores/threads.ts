@@ -8017,6 +8017,20 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
           await refreshTrackedThread(client, capturedEpoch, capturedRef, true);
           return;
         }
+        if (!capturedCursor && model.olderFrontier !== "none") {
+          // Deliberate verdict (#5586): a cursorless frontier is exhausted only
+          // when a source read or page named it "none". A cache seed's frontier
+          // is unknown, and the repository deliberately routes it to "server"
+          // rather than latching "exhausted" (#5567). With no cursor there is no
+          // ordinary continuation to send, so the demand must reach the
+          // authoritative read that establishes the frontier; returning here
+          // would dead-end it with no network read. A source-named "none" falls
+          // through to the ordinary no-cursor return below (genuine history end).
+          if (!stillOwned()) return;
+          fixtureState.localBefore = undefined;
+          await refreshTrackedThread(client, capturedEpoch, capturedRef, true);
+          return;
+        }
       }
       // No server cursor does not imply no local bodies: try the repository
       // first, and never manufacture a wire cursor from its local boundary.

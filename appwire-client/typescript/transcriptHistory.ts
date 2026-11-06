@@ -4,7 +4,7 @@
 // these live in `reducer.ts`.
 
 import { compareBootGeneration } from "./bootGeneration";
-import type { HistoryState, ItemModel, ThreadModel, TurnModel } from "./model";
+import type { HistoryState, ItemModel, OlderFrontier, ThreadModel, TurnModel } from "./model";
 import { SYSTEM_PRELUDE_TURN_ID } from "./model";
 import {
   copyItemTextPresence,
@@ -61,6 +61,18 @@ export const EMPTY_HISTORY: HistoryState = {
   deferredPages: [],
   turns: [],
 };
+
+/** The frontier provenance a real read response names: its cursor, or a
+ * source-named end of history when it carries none (#5585). */
+export function frontierFromRead(resp: { olderCursor?: string }): OlderFrontier {
+  return resp.olderCursor ?? "none";
+}
+
+/** A model's frontier provenance. A model that never recorded one — a cache
+ * seed, or a model assembled by hand — is explicitly UNKNOWN, never "none". */
+export function olderFrontierOf(model: Pick<ThreadModel, "olderFrontier">): OlderFrontier {
+  return model.olderFrontier ?? "unknown";
+}
 
 type ReadIdentity = Pick<HistoryState, "bootGeneration" | "epoch" | "incarnation" | "length">;
 
@@ -812,10 +824,12 @@ export function applyReadResponse<M extends ThreadModel>(
   const disposition = readDisposition(held, resp);
   if (disposition === "discard") return publicModel<M>(model);
   const fields = threadFields(resp, model.ref, now);
+  const frontier = frontierFromRead(resp);
   const imageSessionRoute = imageSessionRouteForSession(fields.imageSessionId ?? fields.threadId);
   const fresh = splitWireTurns(resp.thread.turns ?? [], imageSessionRoute);
   let turns: TurnModel[];
   let olderCursor = resp.olderCursor;
+  let olderFrontier = frontier;
   if (disposition === "replace") {
     turns = mergeHistory([], fresh);
   } else {
@@ -823,7 +837,12 @@ export function applyReadResponse<M extends ThreadModel>(
     turns = resp.authoritative ? dropItemsInRange(held.turns, window?.[0] ?? { entry: 0, item: 0 }) : held.turns;
     // Older pages the client holds keep their own cursor.
     const oldest = earliestPosition(turns);
-    if (oldest && (!window || comparePositions(oldest, window[0]) < 0)) olderCursor = model.olderCursor;
+    if (oldest && (!window || comparePositions(oldest, window[0]) < 0)) {
+      olderCursor = model.olderCursor;
+      // Held older pages keep their own provenance too: a seeded model's
+      // frontier stays unknown even though it supplied the cursor.
+      olderFrontier = olderFrontierOf(model);
+    }
     turns = mergeHistory(turns, fresh);
     if (resp.changes) {
       turns = mergeHistory(turns, wireFragment(resp.changes.turns, resp.changes.items, imageSessionRoute), true);
@@ -844,7 +863,15 @@ export function applyReadResponse<M extends ThreadModel>(
   const clearedArtifacts = fields.artifactsDir === undefined ? { artifactsDir: undefined } : {};
   const clearedScratch = fields.scratchDir === undefined ? { scratchDir: undefined } : {};
   let next = withDisplay(
-    { ...base, ...fields, ...clearedArtifacts, ...clearedScratch, ...runningTurn(resp.thread), olderCursor },
+    {
+      ...base,
+      ...fields,
+      ...clearedArtifacts,
+      ...clearedScratch,
+      ...runningTurn(resp.thread),
+      olderCursor,
+      olderFrontier,
+    },
     history,
     overlayRecord(resp.overlay),
   );
@@ -930,6 +957,7 @@ export function applyReadModel<M extends ThreadModel>(
   const fragment = turnModelsToFragment(freshHistory?.turns ?? fresh.turns);
   let turns: TurnModel[];
   let olderCursor = fresh.olderCursor;
+  let olderFrontier = olderFrontierOf(fresh);
   if (disposition === "replace") {
     turns = mergeHistory([], fragment);
   } else {
@@ -937,7 +965,10 @@ export function applyReadModel<M extends ThreadModel>(
     turns = held.turns;
     // Older pages the client holds keep their own cursor.
     const oldest = earliestPosition(turns);
-    if (oldest && (!window || comparePositions(oldest, window[0]) < 0)) olderCursor = model.olderCursor;
+    if (oldest && (!window || comparePositions(oldest, window[0]) < 0)) {
+      olderCursor = model.olderCursor;
+      olderFrontier = olderFrontierOf(model);
+    }
     turns = mergeHistory(turns, fragment);
     if (changes) {
       const imageSessionRoute = imageSessionRouteForSession(fresh.imageSessionId ?? fresh.threadId);
@@ -992,6 +1023,7 @@ export function applyReadModel<M extends ThreadModel>(
       ...clearedScratch,
       ...(freshRunningTurnId ? { runningTurnId: freshRunningTurnId } : {}),
       olderCursor,
+      olderFrontier,
     },
     history,
     freshOverlay ?? {},
@@ -1045,7 +1077,15 @@ function mergeVersionedPage<M extends ThreadModel>(
       const fresh = splitWireTurns(resp.data ?? [], modelImageSessionRoute(model));
       const range = resp.authoritative ? fragmentRange(fresh.items) : undefined;
       const turns = mergeHistory(range ? dropItemsInRange(held.turns, range[0], range[1]) : held.turns, fresh);
-      const next = takeCursor ? { ...model, olderCursor: resp.nextCursor } : model;
+      // A page that names no successor cursor names the end of older history
+      // for the range it serves (#5585).
+      const next = takeCursor
+        ? {
+            ...model,
+            olderCursor: resp.nextCursor,
+            olderFrontier: resp.nextCursor === undefined ? "none" : resp.nextCursor,
+          }
+        : model;
       // The held length never advances from a page: a page's snapshot length
       // is the transcript length the index had at read time, not a promise
       // that everything through it was delivered - Before only returns items
@@ -1088,10 +1128,12 @@ export function publicModel<M extends ThreadModel>(value: unknown): ThreadModel 
 // read keeps the unversioned turns it always had.
 export function hydrateThread(resp: ThreadReadResponse, ref: string, now: number): ThreadModel {
   const fields = threadFields(resp, ref, now);
+  const olderFrontier = frontierFromRead(resp);
   const imageSessionRoute = imageSessionRouteForSession(fields.imageSessionId ?? fields.threadId);
   if (!resp.snapshot) {
     return {
       ...fields,
+      olderFrontier,
       turns: mergeToolCallsByCallId((resp.thread.turns ?? []).map((turn) => wireToTurnModel(turn, imageSessionRoute))),
     };
   }
@@ -1104,7 +1146,11 @@ export function hydrateThread(resp: ThreadReadResponse, ref: string, now: number
     deferredPages: [],
     turns: mergeHistory([], fresh),
   };
-  return withDisplay({ ...fields, turns: [], ...runningTurn(resp.thread) }, history, overlayRecord(resp.overlay));
+  return withDisplay(
+    { ...fields, olderFrontier, turns: [], ...runningTurn(resp.thread) },
+    history,
+    overlayRecord(resp.overlay),
+  );
 }
 
 /** The first and last item positions of a read response's fresh window: the

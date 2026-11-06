@@ -495,6 +495,7 @@ export type {
   ItemImage,
   ItemModel,
   ModelRetryState,
+  OlderFrontier,
   ThreadDiagnostics,
   ThreadModel,
   TurnModel,

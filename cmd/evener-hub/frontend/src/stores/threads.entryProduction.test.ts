@@ -1,10 +1,17 @@
-import type { AnyNotification, CachedSessionItem, HistoryUpdatedParams, ThreadItem } from "@evener/appwire-client";
+import type {
+  AnyNotification,
+  CachedSessionItem,
+  CachedSessionRecord,
+  HistoryUpdatedParams,
+  ThreadItem,
+} from "@evener/appwire-client";
 import {
   ErrorTranscriptHistoryFailed,
   encodeTranscriptItem,
   hydrateThread,
   type ThreadReadResponse,
   type Turn,
+  threadModelFromCache,
   WireError,
 } from "@evener/appwire-client";
 import { currentRead } from "@evener/appwire-client/testing/currentTranscript";
@@ -25,7 +32,9 @@ import { installBackgroundTranscriptOptionsForTests } from "./backgroundTranscri
 import { setCacheChannelFactoryForTests } from "./cacheLifetime";
 import { connectionStore } from "./connection";
 import {
+  entryTranscriptRoute,
   productionEntryTranscriptForTests,
+  publishEntryTranscriptModel,
   setProductionEntryCacheForTests,
   setSessionCacheOpenBackstopForTests,
   setSessionCacheStalledOpenForTests,
@@ -56,6 +65,7 @@ import {
   subscribeCacheWrites,
   threadsStore,
 } from "./threads";
+import { TranscriptRepository } from "./transcriptRepository";
 
 let factory: IDBFactory;
 const caches: SessionEntryCache[] = [];
@@ -436,6 +446,145 @@ async function seedDiskOnlyOpening(withPages = false): Promise<SessionEntryCache
   expect(threadsStore.getState().threads.has("local:a")).toBe(false);
   return storage;
 }
+
+// seedCursorlessCacheRecord commits a body-only entry record whose header names
+// no older cursor: the partial-eviction reopen shape, where the published
+// cache seed is not a source statement about the frontier.
+async function seedCursorlessCacheRecord(storage: SessionEntryCache): Promise<void> {
+  const key = entryHistoryKey({ ...identity, clientId: location.origin });
+  const rows = [1, 2, 3].map((entry) => {
+    const item = turn(`cached-${entry}`, entry).items![0]!;
+    return { historyKey: key, transcriptKey: `cached-${entry}`, position: { entry, item: 0 }, version: 1, item };
+  });
+  const outcome = await storage.commitBatch({
+    historyKey: key,
+    clearEpoch: 0,
+    items: rows,
+    sessionMetadata: {
+      historyKey: key,
+      requestedRefs: [{ clientId: location.origin, ref: "local:a" }],
+      resolvedIdentity: { ...identity, clientId: location.origin },
+      savedAt: 1,
+      accessedAt: 1,
+      formatVersion: 3,
+      cachedHeader: {
+        ref: "local:a",
+        threadId: "thread-a",
+        name: "",
+        modelProvider: "test/provider",
+        model: "test/provider",
+        imageSessionId: "session-a",
+        savedAt: 1,
+        history: {
+          bootGeneration: "1",
+          epoch: 1,
+          incarnation: "inc-a",
+          length: 3,
+          appliedGeneration: 0,
+          issuedGeneration: 0,
+        },
+      },
+    },
+  });
+  expect(outcome.outcome).toBe("committed");
+}
+
+// installCursorlessSeedRoute builds the partial-eviction reopen state without a
+// source read: the route owns a repository whose seed model came from a cache
+// record with no older cursor and no frontier provenance (threadModelFromCache
+// records none), published as the store model. Its older demand must therefore
+// be "server", never a source-named exhaustion.
+async function installCursorlessSeedRoute(): Promise<{
+  client: FakeClient;
+  readsBefore: number;
+  release: () => Promise<unknown>;
+}> {
+  const storage = cache();
+  setProductionEntryCacheForTests(storage);
+  await seedCursorlessCacheRecord(storage);
+  const client = connect();
+  // Own the ref so a refresh may issue: canonicalThreadOwnerActive gates it.
+  const background = acquireBackgroundThread("local:a");
+  await background.ready;
+  const key = entryHistoryKey({ ...identity, clientId: location.origin });
+  const route = entryTranscriptRoute("local:a");
+  if (!route) throw new Error("expected an entry route");
+  route.cache = storage;
+  route.historyKey = key;
+  route.identity = { ...identity, clientId: location.origin };
+  route.cachedUnverified = false;
+  const record: CachedSessionRecord = {
+    ref: "local:a",
+    threadId: "thread-a",
+    name: "",
+    modelProvider: "test/provider",
+    model: "test/provider",
+    imageSessionId: "session-a",
+    savedAt: 1,
+    history: {
+      bootGeneration: "1",
+      epoch: 1,
+      incarnation: "inc-a",
+      length: 3,
+      appliedGeneration: 0,
+      issuedGeneration: 0,
+      turns: [],
+    },
+  };
+  const repository = new TranscriptRepository(storage, {
+    ref: "local:a",
+    threadId: "thread-a",
+    historyKey: key,
+    identity: route.identity,
+    clearEpoch: 0,
+    lifetime: route.lifetime,
+    seedModel: threadModelFromCache(record, storage.now()),
+  });
+  route.repository = repository;
+  route.reader = repository.attachReader();
+  route.unsubscribeRepository = repository.subscribe(() => publishEntryTranscriptModel("local:a"));
+  threadsStore.setState((state) => ({
+    threads: new Map(state.threads).set("local:a", repository.getSnapshot()!),
+  }));
+  const model = threadsStore.getState().threads.get("local:a");
+  expect(model?.olderCursor).toBeUndefined();
+  expect(model?.olderFrontier).toBeUndefined();
+  expect(productionEntryTranscriptForTests("local:a").repository).toBe(repository);
+  return {
+    client,
+    readsBefore: client.calls.filter((call) => call.method === "thread/read").length,
+    release: () => background.release(),
+  };
+}
+
+it("a cursorless cache seed's older demand reaches the authoritative read (#5586)", async () => {
+  const { client, readsBefore, release } = await installCursorlessSeedRoute();
+  try {
+    await threadsStore.getState().loadOlderTurns("local:a");
+    // Before #5586's verdict the demand dead-ended at the no-cursor fallthrough:
+    // the repository had routed it to "server", not "exhausted", and no network
+    // read followed.
+    expect(client.calls.filter((call) => call.method === "thread/read")).toHaveLength(readsBefore + 1);
+  } finally {
+    await release();
+  }
+});
+
+it("a cursorless seed's armed local continuation reaches the authoritative read (#5586)", async () => {
+  const { client, readsBefore, release } = await installCursorlessSeedRoute();
+  try {
+    const route = entryTranscriptRoute("local:a");
+    expect(route?.repository).toBeDefined();
+    // The local open arms this continuation (entryTranscriptRoutes.ts).
+    // Reproduce the arming directly: a body-only cache record certifies no
+    // opening cut, so this fixture cannot derive it from a restore.
+    route!.localBefore = { entry: 1, item: 0 };
+    await threadsStore.getState().loadOlderTurns("local:a");
+    expect(client.calls.filter((call) => call.method === "thread/read")).toHaveLength(readsBefore + 1);
+  } finally {
+    await release();
+  }
+});
 
 // emitHistoryUpdated emits one history/updated notification carrying this
 // file's standard thread identity plus the caller's distinct content — the

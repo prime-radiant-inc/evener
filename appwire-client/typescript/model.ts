@@ -288,6 +288,10 @@ export interface HistoryState {
   turns: TurnModel[];
 }
 
+/** Older-history frontier provenance (#5585). A cursor is opaque, so
+ * `"unknown"` and `"none"` are sentinels the source never returns. */
+export type OlderFrontier = "unknown" | "none" | (string & {});
+
 export interface ThreadModel {
   ref: string;
   parentRef?: string;
@@ -376,6 +380,17 @@ export interface ThreadModel {
   // changed.
   jobsTreeRevision: number | null;
   olderCursor?: string;
+  /**
+   * The provenance of the older-history frontier (#5585). `"unknown"`: no
+   * accepted source read has named one — a cache seed, or a model assembled by
+   * hand. `"none"`: a source read or page named no older history. Any other
+   * value is the opaque cursor the source returned.
+   *
+   * `olderCursor` alone cannot tell an unknown frontier from a source-named
+   * "no more history", so consumers that need that distinction read this
+   * field, treating an absent value as `"unknown"` (olderFrontierOf).
+   */
+  olderFrontier?: OlderFrontier;
   lastFrameAt: number; // liveness input
   // The in-flight model-call retry, when one is pending (evener/thread/modelRetry).
   // Liveness input, and deliberately NOT a lastFrameAt restamp: the model has
