@@ -793,6 +793,35 @@ function reconnectValidator(before, evidence, applied = {}) {
   };
 }
 
+// waitForReconnectApplied polls the target's applied model against the
+// reconnect trace until they agree. The trace is re-read on every poll: the new
+// connection can issue its follow-up read after waitForNewTargetRead returned,
+// and a frozen snapshot would keep composeReconnectWindow at the reconnect
+// read's window while the model already holds the merged turn, so the check
+// would fail for the whole wait.
+async function waitForReconnectApplied({
+  before,
+  readEvidence,
+  readDomain,
+  deadlineMs,
+  pollMs = 150,
+  now = Date.now,
+  sleep = delay,
+}) {
+  const startedAt = now();
+  const deadline = startedAt + deadlineMs;
+  let evidence = readEvidence();
+  let domain = await readDomain();
+  let check = reconnectValidator(before, evidence, { cursor: domain?.cursor ?? "", domain });
+  while (!check.appliedMatches && now() < deadline) {
+    await sleep(pollMs);
+    evidence = readEvidence();
+    domain = await readDomain();
+    check = reconnectValidator(before, evidence, { cursor: domain?.cursor ?? "", domain });
+  }
+  return { evidence, domain, check, waitedMs: now() - startedAt };
+}
+
 // observedConnection reads the app's own connection state through the dev
 // evidence getter (the same module graph as the app), independently of
 // navigator.onLine.
@@ -1827,24 +1856,20 @@ async function runEntryProductionJourney(driver, harnessUrl) {
   // Correlate the NEW connection's target authoritative read and its applied
   // replacement window/cursor: the entry route publishes the repository's
   // accepted model through its subscription, so poll for the applied window.
-  const reconnect = await waitForNewTargetRead(driver, SESSION_B, preGapReads, 30000);
+  await waitForNewTargetRead(driver, SESSION_B, preGapReads, 30000);
   const reconnectBefore = { readResponses: preGapReads, connections: preGapConnections };
-  const appliedStartedAt = Date.now();
-  const appliedDeadline = appliedStartedAt + driver.reactions.deadline(20000);
-  let reconnectDomain = await readTargetDomain(driver, SESSION_B);
-  let reconnectCheck = reconnectValidator(reconnectBefore, reconnect, {
-    cursor: reconnectDomain?.cursor ?? "",
-    domain: reconnectDomain,
+  const applied = await waitForReconnectApplied({
+    before: reconnectBefore,
+    readEvidence: () => targetPagingEvidence(SESSION_B),
+    readDomain: () => readTargetDomain(driver, SESSION_B),
+    deadlineMs: driver.reactions.deadline(20000),
   });
-  while (!reconnectCheck.appliedMatches && Date.now() < appliedDeadline) {
-    await delay(150);
-    reconnectDomain = await readTargetDomain(driver, SESSION_B);
-    reconnectCheck = reconnectValidator(reconnectBefore, reconnect, {
-      cursor: reconnectDomain?.cursor ?? "",
-      domain: reconnectDomain,
-    });
-  }
-  if (reconnectCheck.appliedMatches) driver.reactions.observe(Date.now() - appliedStartedAt);
+  // The trace was re-read on every poll, so these are the final read set: a
+  // follow-up read that landed after the first snapshot is composed here too.
+  const reconnect = applied.evidence;
+  const reconnectDomain = applied.domain;
+  const reconnectCheck = applied.check;
+  if (reconnectCheck.appliedMatches) driver.reactions.observe(applied.waitedMs);
   const reconnectTraceAfter = traceBytes();
   const reconnectedHasGap = domainContent(reconnectDomain).includes(GAP_SENTINEL);
   driver.milestone("reconnected-latest-window", {
@@ -2980,10 +3005,12 @@ export {
   renderedOutputExpr,
   retainedHistoryValidator,
   samplePeaksOnce,
+  targetDomainExpr,
   targetPagingEvidence,
   traceBytes,
   transcriptState,
   waitForDisconnected,
   waitForProducerOperationApplied,
+  waitForReconnectApplied,
   waitForRenderedOutput,
 };

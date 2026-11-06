@@ -460,25 +460,11 @@ describe("finding 1b: overlapping partial-turn reads on the reconnect connection
     };
   }
 
-  // The target domain readTargetDomain returns: the display turns flattened, in
-  // order, with the model's own cursor.
+  // The target domain readTargetDomain returns, through the guard's own
+  // projection so the test cannot drift from what the guard reads.
   function domainOfModel(model) {
-    return {
-      cursor: model.olderCursor ?? "",
-      items: model.turns
-        .filter((turn) => turn.id !== "turn_system")
-        .flatMap((turn) =>
-          turn.items.map((item) => ({
-            turnId: turn.id,
-            id: item.id,
-            type: item.type,
-            text: item.text ?? "",
-            output: item.output ?? "",
-            arguments: item.argumentsJSON ?? undefined,
-            status: item.status ?? null,
-          })),
-        ),
-    };
+    evidenceModel = model;
+    return evalExpr(guard.targetDomainExpr(REF));
   }
 
   // The production path: a model holding the pre-gap window applies the
@@ -542,6 +528,38 @@ describe("finding 1b: overlapping partial-turn reads on the reconnect connection
     const items = [...domain.items];
     items.splice(head, merged.length, merged[0], merged[2], merged[1]);
     expect(validate({ ...domain, items }).appliedMatches).toBe(false);
+  });
+
+  test("required: a follow-up read that lands after the first trace snapshot is composed", async () => {
+    // The guard's first trace snapshot can predate the follow-up read. The poll
+    // must re-read the trace, or the composed window stays at the reconnect
+    // read while the model already holds the merged turn.
+    const earlyPath = path.join(scratchRoot, "overlapping-partial-turns-early.jsonl");
+    writeFileSync(
+      earlyPath,
+      [
+        readReq("conn-1", 1),
+        readRes("conn-1", 1, "243", [olderTurn, gapHead]),
+        readReq("conn-2", 1),
+        readRes("conn-2", 1, "243", [olderTurn, gapHead]),
+      ].join("\n"),
+    );
+    const early = guard.targetPagingEvidence(REF, earlyPath);
+    const full = guard.targetPagingEvidence(REF, overlapPath);
+    const domain = mergedDomain();
+    expect(guard.reconnectValidator(before, early, { cursor: domain.cursor, domain }).appliedMatches).toBe(false);
+    let evidenceReads = 0;
+    const applied = await guard.waitForReconnectApplied({
+      before,
+      readEvidence: () => (evidenceReads++ === 0 ? early : full),
+      readDomain: async () => domain,
+      deadlineMs: 1000,
+      sleep: async () => {},
+    });
+    expect(evidenceReads).toBeGreaterThan(1);
+    expect(applied.check.appliedMatches).toBe(true);
+    expect(applied.check.newConnectionReads).toBe(2);
+    expect(applied.evidence.lastReadOlderCursor).toBe("248");
   });
 
   test("RED: foreign content inside the merged turn is rejected", () => {
