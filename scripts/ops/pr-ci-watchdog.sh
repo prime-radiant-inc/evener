@@ -34,7 +34,11 @@
 # every run found on the head is listed, so it stays visible). The default
 # workflow file itself reaches main with the native journey PR (#5615);
 # until then, branches without it get reason=workflow-absent and are
-# neither waited on nor dispatched.
+# neither waited on nor dispatched. The reverse split also exists: the base
+# branch can hold the workflow file while the PR branch does not, so GitHub
+# can still deliver a pull_request run from the merge ref. The watchdog
+# waits for that run, but no dispatch can cover the push, and a run that
+# never appears is reported as reason=undispatchable.
 #
 #   scripts/ops/pr-ci-watchdog.sh --pr N [--workflow FILE]... [--wait SECONDS]
 #                                 [--sha SHA] [--dry-run] [--repo OWNER/NAME]
@@ -66,9 +70,13 @@
 #                                (exit 1: no run covers the head; R is one
 #                                of --sha-check-only, dry-run, head-moved,
 #                                pr-closed, workflow-absent (the workflow
-#                                file is not on the PR's branch, so the
-#                                watchdog neither expects nor dispatches
-#                                a run of it), dispatch-refused, or
+#                                file is not on the PR's branch or on the
+#                                base branch, so the watchdog neither
+#                                expects nor dispatches a run of it),
+#                                undispatchable (the file is on the base
+#                                branch but not the PR's; a run can still
+#                                arrive, but no dispatch can cover the
+#                                push), dispatch-refused, or
 #                                dispatch-unconfirmed,
 #                                where a dispatch was accepted but no run
 #                                ever registered, so look before dispatching
@@ -77,7 +85,7 @@
 # run lookup failed (the message says which).
 set -euo pipefail
 
-usage() { sed -n '2,77p' "$0" | sed 's/^# \{0,1\}//'; exit 2; }
+usage() { sed -n '2,85p' "$0" | sed 's/^# \{0,1\}//'; exit 2; }
 
 repo="prime-radiant-inc/evener" pr="" wait=300 sha="" dry_run=false
 workflows=()
@@ -116,13 +124,15 @@ done
 workflows=("${workflows[@]##*/}")
 cov_event=() cov_status=() cov_id=() cov_url=()  # per-workflow covering run, set by classify_runs
 
-# resolve_pr prints the PR's state, head branch and head SHA in one query,
-# so every decision is about the head GitHub has right now. It stops the
-# script when the lookup fails (a failure inside "$(...)" alone would not).
+# resolve_pr prints the PR's state, head branch, base branch and head SHA in
+# one query, so every decision is about the head GitHub has right now. It
+# stops the script when the lookup fails (a failure inside "$(...)" alone
+# would not).
 resolve_pr() {
   local out
-  if ! out=$(gh pr view "$pr" --repo "$repo" --json state,headRefName,headRefOid \
-    --jq '[.state, .headRefName, .headRefOid] | @tsv' 2>&1); then
+  if ! out=$(gh pr view "$pr" --repo "$repo" \
+    --json state,headRefName,baseRefName,headRefOid \
+    --jq '[.state, .headRefName, .baseRefName, .headRefOid] | @tsv' 2>&1); then
     echo "CIWATCH resolve failed: gh pr view $pr --repo $repo said: $out" >&2
     exit 2
   fi
@@ -130,7 +140,7 @@ resolve_pr() {
 }
 
 pr_line="$(resolve_pr)" || exit 2
-IFS=$'\t' read -r state head_branch head_oid <<<"$pr_line"
+IFS=$'\t' read -r state head_branch base_branch head_oid <<<"$pr_line"
 if [ "$state" != "OPEN" ]; then
   echo "CIWATCH refused: PR $pr is $state, not OPEN; a $state PR gets no pull_request events and dispatching would build a stale head" >&2
   exit 2
@@ -151,27 +161,28 @@ fetch_runs() {
   printf '%s\n' "$out"
 }
 
-# workflow_present says whether the workflow file exists on the PR's branch,
-# the ref a dispatch would target, so a missing run can be told apart from a
-# workflow this branch cannot dispatch before any waiting starts. A lookup
-# that fails for any reason other than 404 is treated as present: the
-# dispatch attempt reports its own failure.
+# workflow_present says whether the workflow file exists on the named ref,
+# so a missing run can be told apart from a workflow this branch cannot
+# dispatch before any waiting starts. A lookup that fails for any reason
+# other than 404 is treated as present: the dispatch attempt reports its
+# own failure.
 workflow_present() {
   local err
-  if err=$(gh api "repos/$repo/contents/.github/workflows/$1?ref=$head_branch" --jq '.path' 2>&1); then
+  if err=$(gh api "repos/$repo/contents/.github/workflows/$1?ref=$2" --jq '.path' 2>&1); then
     return 0
   fi
   case "$err" in
     *"HTTP 404"*) return 1 ;;
-    *) echo "CIWATCH presence lookup failed for $1 (treated as present): $err" >&2; return 0 ;;
+    *) echo "CIWATCH presence lookup failed for $1 on $2 (treated as present): $err" >&2; return 0 ;;
   esac
 }
 
-# absent_has says whether $1 was recorded as absent; the newline-bounded
+# list_has says whether $2 is one of the newline-separated entries in $1;
+# the newline-bounded
 # match keeps one file name from matching inside another.
-absent_has() {
-  [ -n "$absent" ] || return 1
-  case $'\n'"$absent" in *$'\n'"$1"$'\n'*) return 0 ;; esac
+list_has() {
+  [ -n "${1:-}" ] || return 1
+  case $'\n'"$1" in *$'\n'"$2"$'\n'*) return 0 ;; esac
   return 1
 }
 
@@ -215,7 +226,7 @@ await_missing() {
   local i out=""
   for i in "${!workflows[@]}"; do
     if [ -n "${cov_event[i]:-}" ]; then continue; fi
-    if absent_has "${workflows[i]}"; then continue; fi
+    if list_has "$absent" "${workflows[i]}"; then continue; fi
     out="$out${workflows[i]}"$'\n'
   done
   printf '%s' "$out"
@@ -234,11 +245,15 @@ missing="$(missing_workflows)"
 # run by waiting and cannot be dispatched: record it once so the wait and
 # the dispatch path skip it and the verdict can say what actually happened.
 absent=""
+undispatchable=""
 if [ -n "$missing" ]; then
   kept=""
   while IFS= read -r w; do
     [ -n "$w" ] || continue
-    if workflow_present "$w"; then
+    if workflow_present "$w" "$head_branch"; then
+      kept="$kept$w"$'\n'
+    elif workflow_present "$w" "$base_branch"; then
+      undispatchable="$undispatchable$w"$'\n'
       kept="$kept$w"$'\n'
     else
       absent="$absent$w"$'\n'
@@ -251,6 +266,9 @@ if [ -n "$missing" ] && [ "$wait" -gt 0 ]; then
 fi
 if [ -n "$absent" ]; then
   echo "workflow file absent from the PR branch (not a dropped event, not waiting, not dispatching): $(printf '%s' "$absent" | tr '\n' ' ')"
+fi
+if [ -n "$undispatchable" ]; then
+  echo "workflow file on the base branch but not this one (still waiting for GitHub's own run; no dispatch can cover the push): $(printf '%s' "$undispatchable" | tr '\n' ' ')"
 fi
 deadline=$(( $(date +%s) + wait ))
 while [ -n "$missing" ]; do
@@ -286,9 +304,13 @@ for i in "${!workflows[@]}"; do
     fi
     echo "$w: covered by a $event run (status $status); $note"
     echo "CIWATCH covered workflow=$w by=$event run=$id url=$url"
-  elif absent_has "$w"; then
+  elif list_has "$absent" "$w"; then
     echo "$w: no run on $check_oid, and the workflow file is not on the PR branch; the watchdog cannot expect or dispatch a run of it; this is not a dropped event"
     echo "CIWATCH missing workflow=$w head=$check_oid reason=workflow-absent"
+    rc=1
+  elif list_has "$undispatchable" "$w"; then
+    echo "$w: no run on $check_oid after ${wait}s, and the workflow file is on the base branch but not this one; a dispatch cannot cover this push; merge the base branch to make this workflow dispatchable"
+    echo "CIWATCH missing workflow=$w head=$check_oid reason=undispatchable"
     rc=1
   elif [ "$dry_run" = true ]; then
     echo "$w: no run on $check_oid; GitHub dropped the event; dry run, would dispatch on $head_branch:"
@@ -302,7 +324,7 @@ for i in "${!workflows[@]}"; do
   else
     if [ "$rechecked" != true ]; then
       pr_line="$(resolve_pr)" || exit 2
-      IFS=$'\t' read -r cur_state _ cur_oid <<<"$pr_line"
+      IFS=$'\t' read -r cur_state _ _ cur_oid <<<"$pr_line"
       rechecked=true
     fi
     if [ "$cur_state" != "OPEN" ]; then
