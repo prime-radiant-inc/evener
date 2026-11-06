@@ -1857,6 +1857,7 @@ func (p navigationProjection) seenThrough(ref appwire.Ref, live bool) *time.Time
 func cloneNavigationSummary(summary hubapi.NavigationSessionSummary) hubapi.NavigationSessionSummary {
 	clone := summary
 	clone.UpdatedAt = appwire.ClonePointer(summary.UpdatedAt)
+	clone.CreatedAt = appwire.ClonePointer(summary.CreatedAt)
 	clone.TurnEndedAt = appwire.ClonePointer(summary.TurnEndedAt)
 	clone.SeenThrough = appwire.ClonePointer(summary.SeenThrough)
 	clone.Tasks = appwire.ClonePointer(summary.Tasks)

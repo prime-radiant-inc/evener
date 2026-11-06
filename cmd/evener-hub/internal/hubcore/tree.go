@@ -261,7 +261,8 @@ const (
 	// (Current/Recent/Archived) emits in the sidebar. A project with hundreds
 	// of one-shot runs would otherwise bloat the partial; the kept rows are the
 	// newest-created N and the overflow is summarised as a quiet "+N older"
-	// note.
+	// note. A long-lived active session older than those rows can be capped
+	// away here; Live and Needs you still carry it.
 	maxSidebarSessionsPerTier = 50
 	// SidebarSessionPageSize is the maximum number of capped-away rows a
 	// single rail pagination request may reveal.
