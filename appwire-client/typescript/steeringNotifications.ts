@@ -570,7 +570,10 @@ function delegatePacketNotification(
 }
 
 // The quiet watchdog's one sentence, agent's quietWatchdogMessage
-// ("quiet for 10m; last activity: <RFC 3339>"), HTML-escaped into the body.
+// ("quiet for 10m; last activity: <RFC 3339>"), HTML-escaped into the body. The
+// duration names the silence measured at the wake's due boundary: the first
+// wake's token is the window, and a repeat of the same silent stretch names the
+// ongoing total ("20m", "3h5m").
 function parseQuietWatchdog(body: string): ParsedNotification["quiet"] | null {
   const match = /^quiet for (\S+); last activity: (\S+)$/.exec(decodeNotificationEntities(body));
   if (!match?.[1] || !match[2]) return null;

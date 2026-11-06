@@ -243,11 +243,16 @@ func delegateQuietAttentionIDForStretch(lease delegateLease, sequence uint64) st
 	return fmt.Sprintf("quiet:%s:%d:%d", lease.delegateID, lease.generation, sequence)
 }
 
-func delegateQuietAttentionContent(lease delegateLease, activityAt time.Time) string {
+// delegateQuietAttentionContent builds one quiet notice's frame. quietFor is
+// the silence the wake reports, measured at its due boundary so every mint of
+// one stretch identity carries the same content: a deferred or re-admitted
+// claim re-computes the same text instead of folding a second content under
+// the same attention id.
+func delegateQuietAttentionContent(lease delegateLease, quietFor time.Duration, activityAt time.Time) string {
 	return fmt.Sprintf(
 		"<delegate-notification delegate_id=%q>%s</delegate-notification>",
 		html.EscapeString(lease.delegateID),
-		html.EscapeString(quietWatchdogMessage(delegateQuietWindow, activityAt)),
+		html.EscapeString(quietWatchdogMessage(quietFor, activityAt)),
 	)
 }
 
@@ -301,7 +306,16 @@ func (c *delegateTreeController) BeginQuietAttention(receiver *Session, lease de
 	if live.quietNotified {
 		quietSince = live.quietNotifiedAt
 	}
-	if now.Before(quietSince.Add(delegateQuietWindow)) {
+	// The frame names the silence at the wake's due boundary, not the window
+	// constant: the first wake names the window, and each repeat of the same
+	// silent stretch names the ongoing total ("quiet for 20m", "quiet for
+	// 3h5m"), so an owner can tell a continuing silence from a fresh quiet
+	// event instead of receiving byte-identical frames that read as stale
+	// re-feeds. Measuring at the due boundary keeps the content a function of
+	// the committed quiet state alone, so a re-admitted claim re-mints the
+	// same content under the same stretch identity.
+	due := quietSince.Add(delegateQuietWindow)
+	if now.Before(due) {
 		return nil, nil
 	}
 	if live.quietSequence == 0 {
@@ -315,7 +329,7 @@ func (c *delegateTreeController) BeginQuietAttention(receiver *Session, lease de
 		activityAt:  activityAt,
 		notifiedAt:  now,
 		attentionID: delegateQuietAttentionIDForStretch(lease, live.quietSequence),
-		content:     delegateQuietAttentionContent(lease, activityAt),
+		content:     delegateQuietAttentionContent(lease, due.Sub(activityAt), activityAt),
 		receiver:    receiver,
 		done:        make(chan struct{}),
 	}

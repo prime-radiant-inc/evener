@@ -1661,7 +1661,10 @@ Rules:
 - Evener supervises each running stable delegate with a built-in quiet watchdog.
   Ten minutes without parent-observable activity emits one owner attention keyed
   by `delegate_id`, and it repeats once per further ten-minute window while the
-  delegate stays silent and running. Fresh activity resets the baseline, so a
+  delegate stays silent and running. Each frame names the silence measured
+  from the last parent-observable activity, so a repeat reports the ongoing
+  total — "quiet for 20m", then "quiet for 3h5m" — instead of re-stating the
+  window as a fresh quiet event. Fresh activity resets the baseline, so a
   progressing delegate never fires. The watchdog only reports—it never steers,
   resumes, or stops the delegate.
 - Notification delivery state is internal; there is no `job_ack`.
