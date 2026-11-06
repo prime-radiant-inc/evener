@@ -45,6 +45,21 @@ func hubWorkerSnapshot() appwire.SessionWatchUpdate {
 	}
 }
 
+// hubWorkerObserve feeds one communicate observation of local:worker to the
+// watch, or — with terminal — an accepted terminal-done entry that satisfies a
+// completion watch.
+func hubWorkerObserve(jm *jobManager, watchID, entry string, terminal bool) error {
+	metadata := appwire.SessionObservationMetadata{
+		Ref: "local:worker", InstanceID: "worker-instance", GenerationID: "7@worker",
+		EntryID: entry, CausalKnown: true,
+	}
+	if terminal {
+		accepted := true
+		metadata.EndTurn, metadata.EndReason, metadata.TerminalAccepted = true, "done", &accepted
+	}
+	return jm.onHubObservation(watchID, appwire.SessionWatchUpdate{Event: "communicate", Metadata: metadata})
+}
+
 func hubCreateResultState(t *testing.T, result any) jobWatchToolResult {
 	t.Helper()
 	stateResult, ok := result.(tool.StateResult)
@@ -129,13 +144,7 @@ func TestHubWatchNoteRidesCreateListInspectAndDelivery(t *testing.T) {
 		t.Fatalf("inspect note=%q, want %q", inspect.Note, note)
 	}
 
-	if err := jm.onHubObservation(state.WatchID, appwire.SessionWatchUpdate{
-		Event: "communicate",
-		Metadata: appwire.SessionObservationMetadata{
-			Ref: "local:worker", InstanceID: "worker-instance", GenerationID: "7@worker",
-			EntryID: "result", CausalKnown: true,
-		},
-	}); err != nil {
+	if err := hubWorkerObserve(jm, state.WatchID, "result", false); err != nil {
 		t.Fatal(err)
 	}
 	sends := hubWatchPendingSends(t, jm, state.WatchID)
@@ -218,6 +227,70 @@ func TestHubWatchNoteChangeReplacesWatch(t *testing.T) {
 	}
 }
 
+// An identical re-registration is the same watch, so an armed throttle keeps
+// counting: the observations before it still count, and the next Nth
+// observation delivers as if nothing had been re-registered.
+func TestHubWatchIdenticalRegistrationContinuesThrottleCount(t *testing.T) {
+	t.Parallel()
+	root := newMessagingRoot(t, newMessagingAdapter(), nil)
+	jm := root.jobManager
+	register := func() watchResult {
+		result, err := jm.configureHubWatchContext(t.Context(), "local:worker", "worker-instance", "7@worker", "local:manager", []string{"communicate"}, false, "counting the fleet", 2)
+		if err != nil {
+			t.Fatalf("hub watch create rejected: %v", err)
+		}
+		return result
+	}
+	first := register()
+	if first.ReplacedExisting {
+		t.Fatal("first registration replaced a watch")
+	}
+	if err := hubWorkerObserve(jm, first.WatchID, "first", false); err != nil {
+		t.Fatal(err)
+	}
+	again := register()
+	if again.ReplacedExisting || again.WatchID != first.WatchID {
+		t.Fatalf("identical re-registration replaced the watch: replaced=%v id=%q want %q", again.ReplacedExisting, again.WatchID, first.WatchID)
+	}
+	if err := hubWorkerObserve(jm, first.WatchID, "second", false); err != nil {
+		t.Fatal(err)
+	}
+	sends := hubWatchPendingSends(t, jm, first.WatchID)
+	wantIdentity := "worker-instance/7@worker/second:communicate"
+	if len(sends) != 1 || sends[0].TriggerIdentity != wantIdentity {
+		t.Fatalf("delivered observation identities=%v, want exactly [%s] (the count survived re-registration)", hubWatchSentIdentities(sends), wantIdentity)
+	}
+}
+
+// A roster re-registration with a changed note replaces the roster watch —
+// the same identity rule as a target watch — while an identical one is the
+// same registration.
+func TestHubRosterWatchNoteChangeReplacesWatch(t *testing.T) {
+	t.Parallel()
+	root := newMessagingRoot(t, newMessagingAdapter(), nil)
+	jm := root.jobManager
+	if _, err := jm.configureHubRosterWatch(t.Context(), "local:manager", "first note"); err != nil {
+		t.Fatal(err)
+	}
+	second, err := jm.configureHubRosterWatch(t.Context(), "local:manager", "second note")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !second.ReplacedExisting {
+		t.Fatal("roster re-registration with a changed note did not replace the watch")
+	}
+	if inspect := jm.inspectWatchByID(second.WatchID); inspect.Note != "second note" {
+		t.Fatalf("live roster watch note after replacement=%q, want the second note", inspect.Note)
+	}
+	third, err := jm.configureHubRosterWatch(t.Context(), "local:manager", "second note")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if third.ReplacedExisting {
+		t.Fatal("identical roster re-registration replaced the watch")
+	}
+}
+
 // every maps onto the hub event vocabulary: with one selected kind, each Nth
 // matching observation delivers. A replay of a suppressed entry is not a new
 // occurrence — it must not advance the throttle count.
@@ -236,13 +309,7 @@ func TestHubWatchEveryThrottlesObservationFires(t *testing.T) {
 	jm := root.jobManager
 
 	observe := func(entry string) error {
-		return jm.onHubObservation(state.WatchID, appwire.SessionWatchUpdate{
-			Event: "communicate",
-			Metadata: appwire.SessionObservationMetadata{
-				Ref: "local:worker", InstanceID: "worker-instance", GenerationID: "7@worker",
-				EntryID: entry, CausalKnown: true,
-			},
-		})
+		return hubWorkerObserve(jm, state.WatchID, entry, false)
 	}
 	for _, entry := range []string{"first", "second", "third"} {
 		if err := observe(entry); err != nil {
@@ -279,13 +346,7 @@ func TestHubWatchEveryOneDeliversEveryObservation(t *testing.T) {
 	jm := root.jobManager
 
 	for _, entry := range []string{"first", "second"} {
-		if err := jm.onHubObservation(state.WatchID, appwire.SessionWatchUpdate{
-			Event: "communicate",
-			Metadata: appwire.SessionObservationMetadata{
-				Ref: "local:worker", InstanceID: "worker-instance", GenerationID: "7@worker",
-				EntryID: entry, CausalKnown: true,
-			},
-		}); err != nil {
+		if err := hubWorkerObserve(jm, state.WatchID, entry, false); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -311,21 +372,10 @@ func TestHubWatchCompletionDeliversDespiteEveryThrottle(t *testing.T) {
 	state := hubCreateResultState(t, result)
 	jm := root.jobManager
 
-	observe := func(entry string, terminal bool) error {
-		metadata := appwire.SessionObservationMetadata{
-			Ref: "local:worker", InstanceID: "worker-instance", GenerationID: "7@worker",
-			EntryID: entry, CausalKnown: true,
-		}
-		if terminal {
-			accepted := true
-			metadata.EndTurn, metadata.EndReason, metadata.TerminalAccepted = true, "done", &accepted
-		}
-		return jm.onHubObservation(state.WatchID, appwire.SessionWatchUpdate{Event: "communicate", Metadata: metadata})
-	}
-	if err := observe("suppressed", false); err != nil {
+	if err := hubWorkerObserve(jm, state.WatchID, "suppressed", false); err != nil {
 		t.Fatal(err)
 	}
-	if err := observe("done-entry", true); err != nil {
+	if err := hubWorkerObserve(jm, state.WatchID, "done-entry", true); err != nil {
 		t.Fatal(err)
 	}
 	if managerWatchActive(jm, state.WatchID) {
@@ -355,6 +405,7 @@ func TestHubWatchEveryRequiresOneSelectedKind(t *testing.T) {
 		hub  map[string]any
 	}{
 		{"no selected kind", map[string]any{"ref": "local:worker", "completion": true}},
+		{"no selected kind or completion", map[string]any{"ref": "local:worker"}},
 		{"several selected kinds", map[string]any{"ref": "local:worker", "events": []string{"communicate", "question"}}},
 		{"roster scope", map[string]any{"scope": "top_level"}},
 	}

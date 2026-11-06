@@ -217,11 +217,6 @@ type watchConfig struct {
 	hubTurnID          string
 	hubSeen            map[string]bool
 	hubSuspended       bool
-	// hubEventCount counts matching observations of a target-scope hub watch
-	// whose triggerEvery throttles fires, so each Nth observation delivers.
-	// In-memory like the ordinary path's eventCount: a hub watch does not
-	// survive a runtime restart.
-	hubEventCount      int
 	rosterRevision     uint64
 	rosterBaseline     map[string]appwire.AttentionEntry
 	rosterBound        bool
