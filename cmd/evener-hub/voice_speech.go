@@ -188,7 +188,7 @@ func (b *voiceBridge) applyProvenance(state *appwire.ConversationProvenanceState
 // Retire presentation before waiting for provider acknowledgement. The manager
 // is untouched, and its recorded reply remains available as canonical text.
 func (b *voiceBridge) retireSpeech() error {
-	if err := b.updateDelivery(hubcore.SpeechDeliveryUpdate{Interrupted: !b.playbackFinished()}); err != nil {
+	if err := b.updateDelivery(b.ctx, hubcore.SpeechDeliveryUpdate{Interrupted: !b.playbackFinished()}); err != nil {
 		return err
 	}
 	b.retiring, b.delivery = b.delivery, nil
@@ -299,9 +299,22 @@ func (b *voiceBridge) playbackFinished() bool {
 	return true
 }
 
-func (b *voiceBridge) updateDelivery(update hubcore.SpeechDeliveryUpdate) error {
+// Chunk counters stay in memory. A milestone flushes every pending item before
+// marking completion or interruption, which fence further generated samples.
+func (b *voiceBridge) updateDelivery(ctx context.Context, update hubcore.SpeechDeliveryUpdate) error {
 	update.Epoch, update.PresentationGeneration = b.binding.Epoch, b.delivery.PresentationGeneration
-	delivery, err := b.journal.UpdateSpeechDelivery(b.ctx, b.delivery.ID, update)
+	update.GeneratedTranscript = &b.delivery.GeneratedTranscript
+	for _, item := range b.delivery.Items {
+		if update.Item != nil && update.Item.ItemID == item.ItemID {
+			continue
+		}
+		if _, err := b.journal.UpdateSpeechDelivery(ctx, b.delivery.ID, hubcore.SpeechDeliveryUpdate{
+			Epoch: update.Epoch, PresentationGeneration: update.PresentationGeneration, Item: &item,
+		}); err != nil {
+			return err
+		}
+	}
+	delivery, err := b.journal.UpdateSpeechDelivery(ctx, b.delivery.ID, update)
 	if err == nil {
 		b.delivery = &delivery
 	}
@@ -318,16 +331,25 @@ func (b *voiceBridge) providerEvent(event VoiceRealtimeEvent) error {
 	message := map[string]any{"deliveryId": event.DeliveryID, "generation": event.Generation, "responseId": event.ResponseID, "itemId": event.ItemID}
 	switch event.Kind {
 	case "audio":
-		item := hubcore.SpeechDeliveryItem{ResponseID: event.ResponseID, ItemID: event.ItemID}
-		for _, existing := range b.delivery.Items {
+		index := -1
+		for i, existing := range b.delivery.Items {
 			if existing.ItemID == event.ItemID {
-				item = existing
+				index = i
+				break
 			}
 		}
+		newItem := index < 0
+		if newItem {
+			index = len(b.delivery.Items)
+			b.delivery.Items = append(b.delivery.Items, hubcore.SpeechDeliveryItem{ResponseID: event.ResponseID, ItemID: event.ItemID})
+		}
+		item := &b.delivery.Items[index]
 		item.GeneratedSamples += int64(len(event.PCM) / 2)
 		item.QueuedSamples = item.GeneratedSamples
-		if err := b.updateDelivery(hubcore.SpeechDeliveryUpdate{Item: &item}); err != nil {
-			return err
+		if newItem {
+			if err := b.updateDelivery(b.ctx, hubcore.SpeechDeliveryUpdate{}); err != nil {
+				return err
+			}
 		}
 		message["type"], message["pcm"], message["sampleRate"] = "audio", base64.StdEncoding.EncodeToString(event.PCM), 24000
 	case "transcript_delta", "transcript_done":
@@ -343,16 +365,13 @@ func (b *voiceBridge) providerEvent(event VoiceRealtimeEvent) error {
 			return nil
 		}
 		b.transcripts[event.ItemID] += text
-		transcript := b.delivery.GeneratedTranscript + text
-		if err := b.updateDelivery(hubcore.SpeechDeliveryUpdate{GeneratedTranscript: &transcript}); err != nil {
-			return err
-		}
+		b.delivery.GeneratedTranscript += text
 		message["type"], message["text"] = "speech_text", text
 	case "output_done":
 		if event.Status != "completed" {
 			return hubcore.ErrVoiceConflict
 		}
-		if err := b.updateDelivery(hubcore.SpeechDeliveryUpdate{OutputComplete: true}); err != nil {
+		if err := b.updateDelivery(b.ctx, hubcore.SpeechDeliveryUpdate{OutputComplete: true}); err != nil {
 			return err
 		}
 		for _, item := range b.delivery.Items {
@@ -369,9 +388,17 @@ func (b *voiceBridge) providerEvent(event VoiceRealtimeEvent) error {
 }
 
 func (b *voiceBridge) recordPlayed(control voiceControl) error {
-	delivery, err := b.journal.SpeechDelivery(b.ctx, control.DeliveryID)
-	if err != nil {
-		return err
+	var delivery hubcore.SpeechDelivery
+	current := b.delivery != nil && b.delivery.ID == control.DeliveryID
+	if current {
+		// Device progress may be ahead of the last durable milestone.
+		delivery = *b.delivery
+	} else {
+		var err error
+		delivery, err = b.journal.SpeechDelivery(b.ctx, control.DeliveryID)
+		if err != nil {
+			return err
+		}
 	}
 	if delivery.BindingID != b.binding.ID || delivery.Epoch != b.binding.Epoch || delivery.PresentationGeneration != control.Generation {
 		return hubcore.ErrVoiceStale
@@ -382,16 +409,17 @@ func (b *voiceBridge) recordPlayed(control voiceControl) error {
 		}
 		item.PlayedSamples = control.Samples
 		item.PlaybackComplete = item.PlaybackComplete || control.Complete
-		updated, err := b.journal.UpdateSpeechDelivery(b.ctx, delivery.ID, hubcore.SpeechDeliveryUpdate{Epoch: delivery.Epoch, PresentationGeneration: control.Generation, Item: &item})
-		if err != nil {
-			return err
-		}
-		if b.delivery != nil && b.delivery.ID == delivery.ID {
+		update := hubcore.SpeechDeliveryUpdate{Epoch: delivery.Epoch, PresentationGeneration: control.Generation, Item: &item}
+		if current {
 			wasFinished := b.playbackFinished()
-			b.delivery = &updated
+			if err := b.updateDelivery(b.ctx, update); err != nil {
+				return err
+			}
 			if !wasFinished && b.playbackFinished() {
 				b.refresh = true
 			}
+		} else if _, err := b.journal.UpdateSpeechDelivery(b.ctx, delivery.ID, update); err != nil {
+			return err
 		}
 		return nil
 	}

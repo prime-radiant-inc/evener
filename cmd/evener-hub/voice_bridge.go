@@ -44,6 +44,8 @@ type voiceBridge struct {
 	workKind     string
 	workers      sync.WaitGroup
 
+	closeProviderAfterWork bool
+
 	reconcile      bool
 	reconciling    bool
 	reconciliation chan voiceWorkResult
@@ -192,6 +194,10 @@ func (b *voiceBridge) run() {
 		if b.reconcile && !b.reconciling {
 			b.beginSpeechReconciliation()
 		}
+		if b.retiring != nil && b.workCancel == nil && b.provider == nil {
+			// A closed connection has no provider response left to interrupt.
+			b.retiring = nil
+		}
 		if b.retiring != nil && b.workCancel == nil {
 			provider, delivery := b.provider, *b.retiring
 			b.beginWork("retired", func(ctx context.Context) voiceWorkResult {
@@ -300,13 +306,16 @@ func (b *voiceBridge) run() {
 			if result.provider != nil {
 				b.provider = result.provider
 			}
-			if kind == "input_aborted" {
-				// Setup may finish just as the abort cancels it. Retire its
-				// connection before starting any subsequently queued utterance.
-				if b.provider != nil {
-					_ = b.provider.Close()
-					b.provider = nil
+			if kind == "input_aborted" || b.closeProviderAfterWork {
+				// An aborted input's connection may still belong to setup or
+				// retirement. Close it only after that owner has settled.
+				if b.closeAbortedProvider() != nil {
+					_ = b.reportError("input_failed")
+					return
 				}
+				b.closeProviderAfterWork = false
+			}
+			if kind == "input_aborted" {
 				continue
 			}
 			if kind == "speech" && b.retiring != nil {
@@ -397,6 +406,9 @@ func (b *voiceBridge) close() {
 	if b.delivery != nil {
 		ctx, cancel := context.WithTimeout(context.WithoutCancel(b.ctx), time.Second)
 		defer cancel()
+		// Preserve pending chunks on disconnect. A revoked binding may refuse
+		// them, but retirement of its already-durable evidence must still run.
+		_ = b.updateDelivery(ctx, hubcore.SpeechDeliveryUpdate{})
 		_, _ = b.journal.UpdateSpeechDelivery(ctx, b.delivery.ID, hubcore.SpeechDeliveryUpdate{Epoch: b.binding.Epoch, PresentationGeneration: b.delivery.PresentationGeneration, Interrupted: !b.playbackFinished()})
 	}
 }
@@ -496,8 +508,13 @@ func (b *voiceBridge) control(control voiceControl) error {
 				b.workKind = "input_aborted"
 			}
 			if b.provider != nil && (b.inputReady || b.workKind == "input_aborted") {
-				_ = b.provider.Close()
-				b.provider = nil
+				if b.workCancel == nil || b.workKind == "input_aborted" {
+					if err := b.closeAbortedProvider(); err != nil {
+						return err
+					}
+				} else {
+					b.closeProviderAfterWork = true
+				}
 			}
 			b.turn, b.inputReady, b.inputQueued = nil, false, false
 			b.nextFrame, b.inputSamples = 0, 0
@@ -528,6 +545,29 @@ func (b *voiceBridge) control(control voiceControl) error {
 		b.cancel()
 	default:
 		return b.reportError("unsupported_control")
+	}
+	return nil
+}
+
+// Closing an aborted input also ends speech owned by that provider. Unlike
+// retireSpeech, it must not queue an Interrupt against the closed connection.
+func (b *voiceBridge) closeAbortedProvider() error {
+	if b.delivery != nil && !b.playbackFinished() {
+		if err := b.updateDelivery(b.ctx, hubcore.SpeechDeliveryUpdate{Interrupted: true}); err != nil {
+			return err
+		}
+		if err := b.advanceGeneration(); err != nil {
+			return err
+		}
+		if err := b.send(map[string]any{"type": "stop", "generation": b.generation}); err != nil {
+			return err
+		}
+	}
+	b.delivery, b.retiring = nil, nil
+	b.deliveryTurnID, b.transcripts = "", nil
+	if b.provider != nil {
+		_ = b.provider.Close()
+		b.provider = nil
 	}
 	return nil
 }
