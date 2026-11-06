@@ -822,6 +822,30 @@ test("Enter on the empty-query Commands list runs the highlighted command", asyn
   await waitFor(() => expect(window.location.pathname).toBe("/new"));
 });
 
+test("an arrow-picked command runs even without an exact name match", async () => {
+  const user = userEvent.setup();
+  setNeedsYouRows(null);
+  render(
+    <NeedsYouProvider>
+      <CommandPalette />
+    </NeedsYouProvider>,
+  );
+  act(() => openPalette());
+  await user.keyboard("{ArrowDown}{ArrowDown}{Enter}");
+  await waitFor(() => expect(window.location.pathname).toBe("/settings"));
+});
+
+test("search mode keeps the side-effecting upgrade command behind the slash prefix", () => {
+  setNeedsYouRows(null);
+  render(
+    <NeedsYouProvider>
+      <CommandPalette />
+    </NeedsYouProvider>,
+  );
+  act(() => openPalette());
+  expect(screen.queryByRole("option", { name: /Upgrade Evener/ })).toBeNull();
+});
+
 // The manifest count refreshes on its own schedule, so a settled empty page
 // must end demand even while the manifest still reports rows (#4958's
 // zero-row path asked from the count alone).

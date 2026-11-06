@@ -653,25 +653,7 @@ function PaletteBody({
   function enterPressed() {
     const item = view.items[activeIndex];
     if (mode === "search") {
-      if (item?.kind === "command" && query.trim()) {
-        const exact = query.replace(/^\/+/, "").trim().toLowerCase();
-        const named = exact === item.command.id.toLowerCase() || exact === item.command.title.toLowerCase();
-        if (named) {
-          activateCommand(item.command);
-          return;
-        }
-        // A leading command is a shortcut, not the answer to a session query:
-        // prefer the first session hit, and fall back to the command only when
-        // the query matched nothing else.
-        const firstResult = view.items.find((candidate) => candidate.kind !== "command");
-        if (firstResult) {
-          activateResult(firstResult, false);
-          return;
-        }
-        activateCommand(item.command);
-        return;
-      }
-      if (item) activateResult(item, false);
+      if (item) activateSearchItem(item, false);
       return;
     }
     if (mode === "command-filter") {
@@ -731,6 +713,34 @@ function PaletteBody({
     }
   }
 
+  function activateSearchItem(item: PaletteItem, newTab: boolean) {
+    // An arrow-picked command is the user's explicit choice, even when it is
+    // not an exact name match.
+    if (item.kind === "command" && activeIndex !== 0) {
+      activateCommand(item.command);
+      return;
+    }
+    if (item.kind === "command" && query.trim()) {
+      const exact = query.replace(/^\/+/, "").trim().toLowerCase();
+      const named = exact === item.command.id.toLowerCase() || exact === item.command.title.toLowerCase();
+      if (named) {
+        activateCommand(item.command);
+        return;
+      }
+      // A leading command is a shortcut, not the answer to a session query:
+      // prefer the first session hit, and fall back to the command only when
+      // the query matched nothing else.
+      const firstResult = view.items.find((candidate) => candidate.kind !== "command");
+      if (firstResult) {
+        activateResult(firstResult, newTab);
+        return;
+      }
+      activateCommand(item.command);
+      return;
+    }
+    activateResult(item, newTab);
+  }
+
   function onKeyDown(e: KeyboardEvent<HTMLInputElement>) {
     if (e.key === "ArrowDown") {
       e.preventDefault();
@@ -742,7 +752,7 @@ function PaletteBody({
       if (mode === "search") {
         e.preventDefault();
         const item = view.items[activeIndex];
-        if (item) activateResult(item, true);
+        if (item) activateSearchItem(item, true);
       }
     } else if (e.key === "Enter" && e.shiftKey) {
       if (mode === "search") {
@@ -884,13 +894,14 @@ function buildView(args: {
   };
   const pushCommandMatches = (filter: string) => {
     const { recent, commands } = filterCommands(ctx, filter);
+    const searchVisible = (command: ScopedCommand) => command.id !== "upgrade";
     const q = filter.replace(/^\/+/, "").toLowerCase().trim();
     const named = q
-      ? commands.filter(
-          (command) => command.id.toLowerCase().startsWith(q) || command.title.toLowerCase().startsWith(q),
-        )
-      : commands;
-    pushRecent(recent);
+      ? commands
+          .filter(searchVisible)
+          .filter((command) => command.id.toLowerCase().startsWith(q) || command.title.toLowerCase().startsWith(q))
+      : commands.filter(searchVisible);
+    pushRecent(recent.filter(searchVisible));
     pushCommands(named);
   };
 
