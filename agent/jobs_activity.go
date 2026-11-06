@@ -663,7 +663,7 @@ func loadLiveActivityBase(s *Session) (activityLoadedBase, error) {
 	}
 	if s.delegateController != nil {
 		for _, row := range s.delegateController.Snapshot().rows {
-			if row.descriptor.OwnerSessionID == s.ID() {
+			if delegateCreatorSessionID(row.descriptor.VisibleSessionID, row.descriptor.OwnerSessionID) == s.ID() {
 				snapshot.Delegates[row.id] = row
 			}
 		}

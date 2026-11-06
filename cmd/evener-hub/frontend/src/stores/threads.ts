@@ -56,9 +56,11 @@ import {
   notificationRoutingKey,
   pruneBackgroundHistoryBodies,
   resolvePendingEscalation,
+  retireThreadSubscriptions,
   SHUT_DOWN_STATUSES,
   type ThreadSubscriptionLease,
   WireError,
+  wireThreadSubscriptions,
 } from "@evener/appwire-client";
 import {
   COMPOSER_METHODS,
@@ -7095,12 +7097,17 @@ async function handleReady(
 // updated by the caller, so a stale firing between the two calls still sees
 // the outgoing client's identity (never a half-swapped one).
 function teardownWiring(): void {
+  const outgoingClient = getWiredClient();
   const epoch = advanceReadyEpoch();
   residencyIfCreated?.connection(epoch, false);
   threadsStore.setState({ mutationAuthorityRefs: new Set() });
   // Old leases belong to the outgoing client. The next hydration joins the
   // replacement client's membership without affecting activity owners.
   releaseThreadSubscriptions();
+  // The subscription registry belongs to the outgoing connection too: retire
+  // its handlers rather than letting them fire for a client this store no
+  // longer holds.
+  if (outgoingClient) retireThreadSubscriptions(outgoingClient);
   retireAllOwnedHydrations();
   dispatchReadyClient = null;
   dispatchReadyEpoch = -1;
@@ -7115,6 +7122,10 @@ function rewireClient(client: AppwireClientLike): void {
   if (client === getWiredClient()) return;
   teardownWiring();
   setWiredClient(client);
+  // Wire the shared subscription registry here, at connection time, so its
+  // notification handler is registered once per connection instead of on the
+  // first store action that happens to acquire a thread subscription.
+  wireThreadSubscriptions(client);
   unwireNotification = client.onNotification(handleNotification);
   unwireReady = client.onReady(
     readyGenerationCallback(client, getWiredClient, () => {
