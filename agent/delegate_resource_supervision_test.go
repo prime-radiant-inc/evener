@@ -2526,6 +2526,55 @@ func TestDelegateResourceSupervision_QuietWatchdogRepeatFramesNameTheMeasuredSil
 	}
 }
 
+// A quiet claim dropped because the receiver is mid-turn re-admits under the
+// same stretch identity once the receiver is idle, and the re-admitted frame
+// carries the content the dropped claim minted: the silence is measured at
+// the wake's due boundary, which no re-admission moves, so receiver-busy time
+// cannot shift it. Measuring at the admitted tick instead would re-mint a
+// different content under the same attention id on every re-admission, which
+// the durable fold rejects as conflicting content — wedging the watchdog on
+// that id forever.
+func TestDelegateResourceSupervision_QuietWatchdogDeferredClaimReadmitsIdenticalContent(t *testing.T) {
+	root, _, lease, clock := newStableQuietSupervisionHarness(t)
+	clock.Advance(delegateQuietWindow + 2*time.Minute)
+
+	// The receiver is mid-turn: the tick mints the stretch's first claim and
+	// drops it uncommitted, so nothing appends yet.
+	root.mu.Lock()
+	idle := root.state
+	root.state = SessionProcessing
+	root.mu.Unlock()
+	if err := root.runDelegateQuietWatchdogTick(lease, clock.Now()); err != nil {
+		t.Fatal(err)
+	}
+	if got := pendingQuietAttention(t, root); len(got) != 0 {
+		t.Fatalf("deferred quiet attention = %#v, want none appended", got)
+	}
+
+	// A later tick, with the receiver idle again, re-admits the same stretch
+	// identity. The frame must name the due-boundary silence — the window —
+	// not the re-admission tick's later measurement.
+	root.mu.Lock()
+	root.state = idle
+	root.mu.Unlock()
+	clock.Advance(3 * time.Minute)
+	if err := root.runDelegateQuietWatchdogTick(lease, clock.Now()); err != nil {
+		t.Fatal(err)
+	}
+	fold := rootAttentionFold(t, root)
+	if len(fold.order) != 1 {
+		t.Fatalf("re-admitted quiet attention = %#v, want exactly one", fold.order)
+	}
+	attentionID := fold.order[0]
+	if want := delegateQuietAttentionIDForStretch(lease, 1); attentionID != want {
+		t.Fatalf("re-admitted attention id = %q, want %q", attentionID, want)
+	}
+	want := fmt.Sprintf("%dm", int(delegateQuietWindow/time.Minute))
+	if got := quietFrameSilence(t, fold.content[attentionID].Text()); got != want {
+		t.Fatalf("re-admitted frame silence = %q, want the due-boundary silence %q", got, want)
+	}
+}
+
 // quietSteerHarness is the quiet supervision harness with a steer-capable
 // target runtime on the shared fake clock, so a persisted steer's timestamp is
 // the exact virtual instant the test chooses.
