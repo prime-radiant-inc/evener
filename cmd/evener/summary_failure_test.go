@@ -28,7 +28,7 @@ func TestSummaryFailureWarningKeepsRouteInCLI(t *testing.T) {
 	close(channel)
 	var output bytes.Buffer
 	<-drainEventsHuman(channel, &output)
-	for _, identifier := range []string{"summary_failure", "openai/summary-model-8af1", "429", "rate_limit"} {
+	for _, identifier := range []string{"summary_failure", "openai/gpt-5.2", "rejected_output", "empty_reply"} {
 		if !strings.Contains(output.String(), identifier) {
 			t.Errorf("printed warning lost %s", identifier)
 		}

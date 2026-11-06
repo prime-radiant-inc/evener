@@ -279,6 +279,9 @@ not monospace. Keep authored text and machine evidence visibly distinct.
 **Geometry is not decoration.** Preserve the shared reading/wide measure, alignment,
 font-size preferences, timestamp rail, safe-area/keyboard rules and 899px mobile boundary.
 Do not shrink targets or hide overflow as a substitute for containing wide evidence.
+The page frame follows the column it names: a session or spawn header shares its content
+measure, while the settings header stays on the nav axis. The header takes this from the
+pane's existing scaffold marker, not a second layout prop.
 
 **Color is meaning.** Attention = a human/action is needed; alive = active work;
 danger = failure/destruction; accent = links, focus and selection. No decorative status

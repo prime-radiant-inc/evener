@@ -193,6 +193,9 @@ func (cm *Manager) completeSummarization(ctx context.Context, profile *provider.
 			sampleErr = rejected
 		}
 		failure := summaryFailure(sampleErr, answered, answeredRole)
+		// The sample's attempt count is its route's own sample count at this
+		// moment: one plus every same-route resample before it.
+		failure.detail.Terminal.Attempts = samplesByRoute[answered]
 		samples = append(samples, failure.detail.Previous...)
 		samples = append(samples, failure.detail.Terminal)
 		lastFailure = failure

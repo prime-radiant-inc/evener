@@ -349,6 +349,16 @@ function assertResult(result) {
   // measurement of a loaded shell, not of an empty one that never drew the
   // rail (docs/developing-evener/testing.md's unfalsifiable-fixture trap).
   if (result.treeRows < 120) failures.push(`expected the tall tree in the page, found ${result.treeRows} rows`);
+  if (!result.railNewSession?.present) failures.push("the rail's New session control did not render");
+  if (result.railNewSession?.primary) {
+    failures.push("the rail's New session control is a filled primary and outranks the current task");
+  }
+  if (!result.railNewSession?.secondary) {
+    failures.push("the rail's New session control lost its secondary treatment");
+  }
+  if (result.primaryButtons > 1) {
+    failures.push(`the shell route shows ${result.primaryButtons} filled primaries, expected at most one`);
+  }
 
   // The property the bug broke: with a tree taller than the viewport, the
   // RAIL's own body must be the box that scrolls...
