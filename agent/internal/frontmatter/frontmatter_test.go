@@ -58,6 +58,36 @@ func TestParse_EmptyFrontmatter(t *testing.T) {
 	}
 }
 
+// A block holding only comments or whitespace has no YAML document at all, so
+// the decoder reports io.EOF. yaml.Unmarshal treated it as an empty mapping and
+// Parse must keep that behavior instead of reporting a parse error.
+func TestParse_CommentOnlyAndBlankFrontmatter(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct{ name, raw string }{
+		{"comment only", "---\n# only a comment\n---\nBody.\n"},
+		{"blank", "---\n\n---\nBody.\n"},
+		{"whitespace", "---\n \t\n---\nBody.\n"},
+		{"comment and blank", "---\n\n# comment\n\n---\nBody.\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			doc, err := Parse(tc.raw)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if doc.Meta == nil {
+				t.Error("Meta should not be nil")
+			}
+			if len(doc.Meta) != 0 {
+				t.Errorf("Meta should be empty, got %#v", doc.Meta)
+			}
+			if doc.Body != "Body.\n" {
+				t.Errorf("Body = %q, want %q", doc.Body, "Body.\n")
+			}
+		})
+	}
+}
+
 func TestParse_InvalidYAML(t *testing.T) {
 	raw := "---\n: bad: yaml: [unclosed\n---\nBody.\n"
 	doc, err := Parse(raw)

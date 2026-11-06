@@ -95,39 +95,42 @@ func Parse(raw string) (Document, error) {
 func parseBlock(block string, meta *map[string]any) error {
 	decoder := yaml.NewDecoder(strings.NewReader(block))
 	var tree yaml.Node
-	if err := decoder.Decode(&tree); err != nil {
+	// A block of only comments or whitespace holds no document at all, so the
+	// decoder reports io.EOF; yaml.Unmarshal treated that as an empty mapping.
+	if err := decoder.Decode(&tree); err != nil && !errors.Is(err, io.EOF) {
 		return err
 	}
 	var extra yaml.Node
-	switch err := decoder.Decode(&extra); {
-	case errors.Is(err, io.EOF):
-	case err != nil:
+	if err := decoder.Decode(&extra); !errors.Is(err, io.EOF) {
+		if err == nil {
+			return errors.New("frontmatter has content after its YAML document end")
+		}
 		return fmt.Errorf("frontmatter has content after its YAML document end: %w", err)
-	default:
-		return errors.New("frontmatter has content after its YAML document end")
 	}
 	if len(tree.Content) == 0 {
-		// A comment-only block leaves meta empty, as yaml.Unmarshal did.
 		return nil
 	}
 	// tree is a document node; its first child is the mapping that decodes into
 	// map[string]any, so that mapping's keys are compared as strings.
-	if err := mappingKeysUnique(tree.Content[0], true); err != nil {
+	if err := MappingKeysUnique(tree.Content[0], true); err != nil {
 		return err
 	}
 	return tree.Decode(meta)
 }
 
-// mappingKeysUnique reports an error when a mapping in node declares the same
-// key twice, comparing keys as the decode does: aliases resolved to the scalar
-// they name, strings at the root where meta is map[string]any, and decoded
-// scalar values in nested mappings. yaml.v3's own duplicate check compares an
-// alias node's anchor name instead of what it resolves to, so
-// "*key: 'false'" beside "user-invocable: true" slips through and the decode
-// silently keeps one value. Merge keys are just keys here; only keys written
-// in this mapping are compared, so a merged mapping's keys do not count as
-// duplicates of the explicit ones that override them.
-func mappingKeysUnique(node *yaml.Node, stringKeys bool) error {
+// MappingKeysUnique reports an error when a mapping in node declares the same
+// key twice, or a key that cannot be read as a scalar. Keys are compared as a
+// decode treats them, without rewriting nodes (which could turn an alias into
+// a merge directive): aliases resolved to the scalar they name, strings when
+// the mapping decodes to map[string]any (stringKeys), and decoded scalar
+// values otherwise, as nested mappings retain their key types. yaml.v3's own
+// duplicate check compares an alias node's anchor name instead of what it
+// resolves to, so "*key: 'false'" beside "user-invocable: true" slips through
+// and the decode silently keeps one value. Merge keys are just keys here; only
+// keys written in this mapping are compared, so a merged mapping's keys do not
+// count as duplicates of the explicit ones that override them. Contained nodes
+// are visited, not followed through aliases, which can recurse.
+func MappingKeysUnique(node *yaml.Node, stringKeys bool) error {
 	if node.Kind == yaml.MappingNode {
 		seen := make(map[any]*yaml.Node, len(node.Content)/2)
 		for i := 0; i < len(node.Content); i += 2 {
@@ -136,8 +139,7 @@ func mappingKeysUnique(node *yaml.Node, stringKeys bool) error {
 				key = key.Alias
 			}
 			if key == nil || key.Kind != yaml.ScalarNode {
-				// The decoder rejects keys that are not scalars.
-				continue
+				return errors.New("frontmatter mapping key is not a scalar")
 			}
 			var decoded any
 			if stringKeys {
@@ -156,7 +158,7 @@ func mappingKeysUnique(node *yaml.Node, stringKeys bool) error {
 		}
 	}
 	for _, child := range node.Content {
-		if err := mappingKeysUnique(child, false); err != nil {
+		if err := MappingKeysUnique(child, false); err != nil {
 			return err
 		}
 	}
