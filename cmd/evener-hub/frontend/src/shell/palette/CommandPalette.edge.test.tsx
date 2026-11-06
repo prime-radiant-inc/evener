@@ -259,7 +259,7 @@ test("Shift+Enter on an in-session search result closes the palette without navi
 test("Enter on a plain query prefers the first session hit over the leading command", async () => {
   const user = userEvent.setup();
   scriptSearch({ live: [], past: [] });
-  focusSession("ref_a", { turns: [turn([item("i1", "sea term found here")])] });
+  focusSession("ref_a", { turns: [turn([item("i1", "set term found here")])] });
 
   render(
     <NeedsYouProvider>
@@ -267,7 +267,7 @@ test("Enter on a plain query prefers the first session hit over the leading comm
     </NeedsYouProvider>,
   );
   act(() => openPalette());
-  await user.type(screen.getByRole("combobox"), "sea");
+  await user.type(screen.getByRole("combobox"), "set");
   await waitFor(() => expect(paletteRowsOfKind("insession")).toHaveLength(1));
 
   await user.keyboard("{Enter}");
@@ -312,6 +312,59 @@ test("arrow-down then Enter on the handoff row hands off to the composer", async
   const { result: insert } = renderHook(() => useQuoteInsertRequest("ref_a"));
   expect(insert.current?.text).toBe("/interrupt ");
   expect(screen.queryByRole("dialog")).toBeNull();
+});
+
+test("arrow-down onto the first command in command-filter runs it instead of sending raw text", async () => {
+  const user = userEvent.setup();
+  focusSession("ref_a");
+  const send = vi.spyOn(threadsStore.getState(), "send");
+
+  render(
+    <NeedsYouProvider>
+      <CommandPalette />
+    </NeedsYouProvider>,
+  );
+  act(() => openPalette("/e"));
+  await user.keyboard("{ArrowDown}{Enter}");
+
+  expect(send).not.toHaveBeenCalled();
+  await waitFor(() => {
+    const closed = screen.queryByRole("dialog") === null;
+    const argsPill = screen.queryByRole("button", { name: "back to command list" });
+    expect(closed || argsPill !== null).toBe(true);
+  });
+});
+
+test("Enter runs a command matched by its full title above a handoff row", async () => {
+  const user = userEvent.setup();
+  focusSession("ref_a");
+
+  render(
+    <NeedsYouProvider>
+      <CommandPalette />
+    </NeedsYouProvider>,
+  );
+  act(() => openPalette("/go to dashboard"));
+  await user.keyboard("{Enter}");
+
+  await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+  const { result: insert } = renderHook(() => useQuoteInsertRequest("ref_a"));
+  expect(insert.current?.text).toBeUndefined();
+});
+
+test("Enter on a bare slash does not run the highlighted row", async () => {
+  const user = userEvent.setup();
+  focusSession("ref_a");
+
+  render(
+    <NeedsYouProvider>
+      <CommandPalette />
+    </NeedsYouProvider>,
+  );
+  act(() => openPalette("/"));
+  await user.keyboard("{Enter}");
+
+  expect(screen.getByRole("dialog")).toBeTruthy();
 });
 
 // --- clearToSearch and showHelp UI callbacks (lines 248-251) ---

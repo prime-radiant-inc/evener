@@ -482,11 +482,12 @@ function PaletteBody({
     [mode, query, ctx, searchResp, selectedCommand, enumItems, showingHelp, visibleCatalog, needsYouChoices],
   );
 
-  // Reset the active row whenever the row list is rebuilt (§2.3/§2.4:
-  // active = first row, or none when empty), except that an arrow-picked
-  // command keeps its highlight when late search or needs-you rows land.
-  // Keyed on the view memo, which only changes when the data deps do - never
-  // on a bare activeIndex change.
+  // Reset the active row whenever the row list is rebuilt (§2.3/§2.4): an
+  // empty query highlights the first row; a non-empty query highlights the
+  // exact command, else the first non-command result, else nothing. An
+  // arrow-picked command keeps its highlight when late rows land. Keyed on
+  // the view memo, which only changes when the data deps do - never on a bare
+  // activeIndex change.
   const previousViewRef = useRef(view);
   const previousQueryRef = useRef(query);
   const userMovedRef = useRef(false);
@@ -507,7 +508,7 @@ function PaletteBody({
             );
       const firstResult = q === "" ? -1 : view.items.findIndex((item) => item.kind !== "command");
       const fallback =
-        exactCommand >= 0 ? exactCommand : firstResult >= 0 ? firstResult : view.items.length > 0 ? 0 : -1;
+        exactCommand >= 0 ? exactCommand : firstResult >= 0 ? firstResult : q === "" && view.items.length > 0 ? 0 : -1;
       if (queryChanged) {
         userMovedRef.current = false;
         return fallback;
@@ -525,7 +526,9 @@ function PaletteBody({
   function move(dir: number) {
     if (view.items.length === 0) return;
     userMovedRef.current = true;
-    setActiveIndex((prev) => (prev + dir + view.items.length) % view.items.length);
+    setActiveIndex((prev) =>
+      prev < 0 ? (dir > 0 ? 0 : view.items.length - 1) : (prev + dir + view.items.length) % view.items.length,
+    );
   }
 
   function enterArgsMode(command: Command) {
@@ -691,12 +694,14 @@ function PaletteBody({
       return;
     }
     if (mode === "command-filter") {
-      // An explicitly arrow-navigated selection wins.
-      if (activeIndex !== 0 && item?.kind === "command") {
+      // The highlighted row runs when the user arrowed or clicked to it, or
+      // typed a name; a bare "/" falls through so Enter doesn't fire row 0.
+      const picked = userMovedRef.current || query.replace(/^\/+/, "").trim() !== "";
+      if (picked && item?.kind === "command") {
         activateCommand(item.command);
         return;
       }
-      if (activeIndex !== 0 && item?.kind === "handoff") {
+      if (picked && item?.kind === "handoff") {
         activateHandoff();
         return;
       }
@@ -850,6 +855,7 @@ function PaletteBody({
   );
 
   function activateFromClick(index: number) {
+    userMovedRef.current = true;
     setActiveIndex(index);
     const item = view.items[index];
     if (!item) return;
