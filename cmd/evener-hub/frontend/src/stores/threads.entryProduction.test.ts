@@ -6151,10 +6151,12 @@ it("a recovery span finishing wakes the reopened claim's parked certification de
     () => new Promise(() => {}) as ReturnType<typeof realGetLatestWindow>,
     () => new Promise(() => {}) as ReturnType<typeof realGetLatestWindow>,
     () => new Promise(() => {}) as ReturnType<typeof realGetLatestWindow>,
-    () => {
+    (...args: unknown[]) => {
       certificationParked = true;
       certificationEntered.resolve();
-      return certificationReleased.promise.then(() => undefined) as ReturnType<typeof realGetLatestWindow>;
+      return certificationReleased.promise.then(() =>
+        realGetLatestWindow(...(args as Parameters<typeof realGetLatestWindow>)),
+      );
     },
     (...args: unknown[]) =>
       certificationEntered.promise.then(() =>
