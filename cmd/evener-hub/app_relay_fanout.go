@@ -324,8 +324,8 @@ func (r *hubRelay) startAcknowledgedFanout(
 			if pending {
 				pendingDeliveries = append(pendingDeliveries, pendingRelayDelivery{delivery: delivery, routingKey: routingKey, routing: routing})
 				recordPending()
-				if observeHubRelayWait != nil {
-					observeHubRelayWait()
+				if observe := observeHubRelayWait.Load(); observe != nil {
+					(*observe)()
 				}
 				if delivery.Proceed != nil {
 					delivery.Proceed()

@@ -41,6 +41,15 @@ func (r *hubRelay) stopCanonicalRelay(ref appwire.Ref) {
 	}
 }
 
+// installObserveHubRelayWait installs fn as the relay's wait observation and
+// returns a function that restores the previous one. The relay's background
+// fan-out reads the seam and can outlive the installing test's last
+// assertion, so install and restore both go through the atomic pointer.
+func installObserveHubRelayWait(fn func()) func() {
+	previous := observeHubRelayWait.Swap(&fn)
+	return func() { observeHubRelayWait.Store(previous) }
+}
+
 func (r *hubRelay) stopRelay(relayKey string) {
 	var closeHandles []*hubRelayHandle
 	r.mu.Lock()

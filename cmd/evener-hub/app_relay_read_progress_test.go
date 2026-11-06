@@ -394,7 +394,7 @@ func TestHubRelayRoutePublicationUnblocksPendingDelivery(t *testing.T) {
 	// notification parks once behind unresolved routing. Later same-target
 	// notifications join that pending queue without another wait callback.
 	waits := make(chan struct{}, 8)
-	observeHubRelayWait = func() { waits <- struct{}{} }
+	installObserveHubRelayWait(func() { waits <- struct{}{} })
 	type outcome struct {
 		response appwire.ThreadReadResponse
 		err      error
@@ -573,11 +573,12 @@ func newHubRelayProgressFixtureWithSessionTools(t *testing.T, hooks hubcore.Rela
 
 	var relays *hubRelay
 	var pendingWait atomic.Bool
-	previousFunctions, previousWait := observeHubRelay, observeHubRelayWait
+	previousFunctions := observeHubRelay
 	observeHubRelay = func(f *hubRelay) { relays = f }
-	observeHubRelayWait = func() { pendingWait.Store(true) }
+	restoreWait := installObserveHubRelayWait(func() { pendingWait.Store(true) })
 	t.Cleanup(func() {
-		observeHubRelay, observeHubRelayWait = previousFunctions, previousWait
+		observeHubRelay = previousFunctions
+		restoreWait()
 	})
 
 	daemon := daemonserver.NewServer(daemonserver.ServerConfig{})

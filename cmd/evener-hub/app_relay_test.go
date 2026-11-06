@@ -2042,9 +2042,8 @@ func TestHubRelayCanceledRemapStopsWaitingForPublicationDrain(t *testing.T) {
 	resolveMu.Unlock()
 	drainWait := make(chan struct{})
 	var drainOnce sync.Once
-	previousWait := observeHubRelayWait
-	observeHubRelayWait = func() { drainOnce.Do(func() { close(drainWait) }) }
-	t.Cleanup(func() { observeHubRelayWait = previousWait })
+	restoreWait := installObserveHubRelayWait(func() { drainOnce.Do(func() { close(drainWait) }) })
+	t.Cleanup(restoreWait)
 	readCtx, cancelRead := context.WithCancel(t.Context())
 	result := make(chan error, 1)
 	go func() {
@@ -2147,9 +2146,8 @@ func TestHubRelayRouteCallbackPanicRestoresDisplacedOwnershipAndReleasesCommand(
 	resolveMu.Lock()
 	resolved = canonicalNew
 	resolveMu.Unlock()
-	previousWait := observeHubRelayWait
-	observeHubRelayWait = func() { panic("route drain observer panic") }
-	t.Cleanup(func() { observeHubRelayWait = previousWait })
+	restoreWait := installObserveHubRelayWait(func() { panic("route drain observer panic") })
+	t.Cleanup(restoreWait)
 	recovered := make(chan any, 1)
 	go func() {
 		defer func() { recovered <- recover() }()
@@ -2159,7 +2157,7 @@ func TestHubRelayRouteCallbackPanicRestoresDisplacedOwnershipAndReleasesCommand(
 		close(releasePublication)
 		t.Fatal("replacement route callback did not re-panic")
 	}
-	observeHubRelayWait = previousWait
+	restoreWait()
 	if got := relays.relayCommandCount(relayKey); got != 0 {
 		close(releasePublication)
 		t.Fatalf("hub command ownership leaked after route callback panic: %d", got)
@@ -2342,9 +2340,8 @@ func TestHubRelayUnknownTargetDoesNotHeadOfLineBlockKnownDelivery(t *testing.T) 
 	<-secondEntered
 	waitEntered := make(chan struct{})
 	var waitOnce sync.Once
-	previous := observeHubRelayWait
-	observeHubRelayWait = func() { waitOnce.Do(func() { close(waitEntered) }) }
-	t.Cleanup(func() { observeHubRelayWait = previous })
+	restoreWait := installObserveHubRelayWait(func() { waitOnce.Do(func() { close(waitEntered) }) })
+	t.Cleanup(restoreWait)
 	unknownAck := make(chan struct{})
 	deliveries <- appsource.RelayDelivery{
 		Notification: appwire.Notification{Method: appwire.NotifyOverlayDelta, Params: []byte(`{"ref":"local:foreign"}`)},
@@ -2636,9 +2633,8 @@ func TestHubRelayRemapRetainsAuthoritativeRouteDuringReplacementRead(t *testing.
 	resolveMu.Unlock()
 	replacementResult := make(chan error, 1)
 	deliveryPending := make(chan struct{})
-	previousObserveWait := observeHubRelayWait
-	observeHubRelayWait = func() { close(deliveryPending) }
-	t.Cleanup(func() { observeHubRelayWait = previousObserveWait })
+	restoreWait := installObserveHubRelayWait(func() { close(deliveryPending) })
+	t.Cleanup(restoreWait)
 	go func() {
 		_, err := client.ThreadRead(context.Background(), appwire.ThreadReadParams{
 			Ref: downstreamRef, Subscribe: true, ReplaceSubscription: true,
@@ -3600,14 +3596,13 @@ func TestHubRelayPendingFrameWakesOnARoutePublishItRaced(t *testing.T) {
 	parked := make(chan struct{})
 	resumeListener := make(chan struct{})
 	var parkOnce sync.Once
-	previousObserveWait := observeHubRelayWait
-	observeHubRelayWait = func() {
+	restoreWait := installObserveHubRelayWait(func() {
 		parkOnce.Do(func() {
 			close(parked)
 			<-resumeListener
 		})
-	}
-	t.Cleanup(func() { observeHubRelayWait = previousObserveWait })
+	})
+	t.Cleanup(restoreWait)
 
 	replacementResult := make(chan error, 1)
 	go func() {

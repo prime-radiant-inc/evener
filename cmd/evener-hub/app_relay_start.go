@@ -163,8 +163,8 @@ func (r *hubRelay) claimRelayHandle(ctx context.Context, target relayStartTarget
 		}
 		ready := existing.ready
 		r.mu.Unlock()
-		if observeHubRelayWait != nil {
-			observeHubRelayWait()
+		if observe := observeHubRelayWait.Load(); observe != nil {
+			(*observe)()
 		}
 
 		select {
