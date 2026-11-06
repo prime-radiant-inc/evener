@@ -45,6 +45,10 @@ import { sessionInfoHosts } from "./session/SessionInfoSheet";
 const harness = vi.hoisted(() => ({
 	connection: {} as Record<string, unknown>,
 	kvFailure: "" as "" | "read" | "write",
+	handoffReadFailure: false,
+	handoffWriteFailure: false,
+	handoffEdgesReads: 0,
+	handoffEdgesReadFailFrom: 0,
 	rpcFailure: "" as string,
 	reopenKV: () => {},
 	manipulate: vi.fn(),
@@ -114,12 +118,52 @@ vi.mock("expo-sqlite", async () => {
 			let port = sqlite.ports.get(database);
 			if (!port) {
 				let opened = openSqliteSyncDouble(join(sqlite.directory, database));
+				// Failing the handoff ledger's queries models a ledger that
+				// exists but cannot be read: ownership stays unknown, which
+				// the screen must treat as defer, never as empty.
+				const handoffReadFails = (sql: unknown) =>
+					harness.handoffReadFailure &&
+					database === "evener-mutations.db" &&
+					(String(sql).includes("draft_handoff") || String(sql).includes("draft_submission"));
+				// Fails the Nth-and-later handoff graph reads while every earlier
+				// read succeeds, so a test can fail one specific ownership read in
+				// the screen's sequence (the initial read, the serialized
+				// coordinator's re-read, the pendingness read) in isolation.
+				const edgesReadFails = (sql: unknown) => {
+					if (!harness.handoffEdgesReadFailFrom || database !== "evener-mutations.db") return false;
+					if (!String(sql).includes("FROM draft_handoff_edges")) return false;
+					const index = ++harness.handoffEdgesReads;
+					return index >= harness.handoffEdgesReadFailFrom;
+				};
+				// Fails the handoff ledger's row writes while its reads succeed:
+				// a storage whose pending-handoff decisions cannot record, so a
+				// claimed transfer strands until the writes recover. Schema
+				// statements stay healthy - the ledger can open and read.
+				const handoffWriteFails = (sql: unknown) => {
+					if (!harness.handoffWriteFailure || database !== "evener-mutations.db") return false;
+					const text = String(sql).trimStart();
+					if (!/^(INSERT|UPDATE|DELETE|REPLACE)\b/i.test(text)) return false;
+					return text.includes("draft_handoff") || text.includes("draft_submission");
+				};
 				// A stable platform handle delegates to the reopened on-disk database.
 				port = {
-					execSync: (...args: Parameters<SqliteSync["execSync"]>) => opened.port.execSync(...args),
-					runSync: (...args: Parameters<SqliteSync["runSync"]>) => opened.port.runSync(...args),
-					getFirstSync: (...args: Parameters<SqliteSync["getFirstSync"]>) => opened.port.getFirstSync(...args),
-					getAllSync: (...args: Parameters<SqliteSync["getAllSync"]>) => opened.port.getAllSync(...args),
+					execSync: (...args: Parameters<SqliteSync["execSync"]>) => {
+						if (handoffWriteFails(args[0])) throw new Error("handoff write failed");
+						return opened.port.execSync(...args);
+					},
+					runSync: (...args: Parameters<SqliteSync["runSync"]>) => {
+						if (handoffWriteFails(args[0])) throw new Error("handoff write failed");
+						return opened.port.runSync(...args);
+					},
+					getFirstSync: (...args: Parameters<SqliteSync["getFirstSync"]>) => {
+						if (handoffReadFails(args[0])) throw new Error("handoff read failed");
+						return opened.port.getFirstSync(...args);
+					},
+					getAllSync: (...args: Parameters<SqliteSync["getAllSync"]>) => {
+						if (handoffReadFails(args[0])) throw new Error("handoff read failed");
+						if (edgesReadFails(args[0])) throw new Error(`handoff edges read #${harness.handoffEdgesReads} failed`);
+						return opened.port.getAllSync(...args);
+					},
 				};
 				sqlite.handles.push({ close: () => opened.database.close() });
 				sqlite.reopen.push(() => {
@@ -227,6 +271,10 @@ let serial = 0;
 afterEach(async () => {
 	unmountMountedTrees();
 	harness.kvFailure = "";
+	harness.handoffReadFailure = false;
+	harness.handoffWriteFailure = false;
+	harness.handoffEdgesReads = 0;
+	harness.handoffEdgesReadFailFrom = 0;
 	harness.rpcFailure = "";
 	await getNativeMutationRuntime().stop();
 });
@@ -692,6 +740,169 @@ it("actual screen restores an interrupted Edit after cached identity Retry", asy
 	]);
 });
 
+it("actual screen retries a deferred ownership read without user action", async () => {
+	const f = await mount();
+	await f.offline();
+	const source = await enqueue(f, "ownership retry source");
+	act(() => f.tree.unmount());
+	await act(async () => {
+		const claimed = await f.runtime.storage.transferToRecovery(source.clientMutationId, "editing");
+		expect(claimed?.clientMutationId).toBe(source.clientMutationId);
+	});
+	// The ledger exists but its ownership read fails: unknown ownership defers
+	// restoration rather than restoring a possibly running command's sources,
+	// and the deferral is not the user's to repair.
+	harness.handoffReadFailure = true;
+	const tree = await f.recreateOffline();
+	await settle();
+	expect(tree.root.findAllByProps({ accessibilityLabel: "Retry" })).toHaveLength(0);
+	expect(f.document.getSnapshot().record.composer?.recoveryIds).toBeUndefined();
+	harness.handoffReadFailure = false;
+	// No Retry press, no remount: the screen retries the deferred read on its
+	// own timer and the interrupted capture converges to the draft.
+	await act(async () => {
+		await new Promise((resolve) => setTimeout(resolve, 1500));
+	});
+	await settle();
+	expect(f.document.getSnapshot().record).toMatchObject({
+		draft: "ownership retry source",
+		composer: { recoveryIds: [source.clientMutationId] },
+	});
+	expect((await f.runtime.read(f.targetKey)).recovery.map((row) => row.clientMutationId)).toEqual([
+		source.clientMutationId,
+	]);
+});
+
+it("actual screen defers restoration while pending handoffs are unreadable", async () => {
+	const f = await mount();
+	await f.offline();
+	const source = await enqueue(f, "pendingness retry source");
+	act(() => f.tree.unmount());
+	await act(async () => {
+		const claimed = await f.runtime.storage.transferToRecovery(source.clientMutationId, "editing");
+		expect(claimed?.clientMutationId).toBe(source.clientMutationId);
+	});
+	// The graph read backing the pendingness gate fails while the ownership
+	// reads before it succeed: the screen must read that as unknown pendingness
+	// and defer restoration, not as handoff-free.
+	harness.handoffEdgesReads = 0;
+	harness.handoffEdgesReadFailFrom = 5;
+	const tree = await f.recreateOffline();
+	await settle();
+	expect(tree.root.findAllByProps({ accessibilityLabel: "Retry" })).toHaveLength(0);
+	expect(f.document.getSnapshot().record.composer?.recoveryIds).toBeUndefined();
+	harness.handoffEdgesReadFailFrom = 0;
+	// No user action, no remount: the deferred restoration retries itself.
+	await act(async () => {
+		await new Promise((resolve) => setTimeout(resolve, 1500));
+	});
+	await settle();
+	expect(f.document.getSnapshot().record).toMatchObject({
+		draft: "pendingness retry source",
+		composer: { recoveryIds: [source.clientMutationId] },
+	});
+});
+
+it("actual screen completes a pending handoff after its write failures recover", async () => {
+	const f = await mount();
+	await f.offline();
+	// A sibling identity holds work destined for this screen: the retarget
+	// records the identity change, so a pending handoff edge points here and
+	// the screen's reconciliation must wait for it.
+	const sibling = `sibling-of-${f.ref}`;
+	nativeDrafts().write({ hubId: "hub-1", sessionRef: sibling }, { draft: "incoming work", unconfirmed: null });
+	act(() => {
+		f.runtime.storage.retarget(nativeMutationTargetKey("hub-1", sibling), {
+			ref: f.targetKey,
+			wireRef: f.ref,
+			threadId: f.thread.id,
+			instanceId: "instance",
+		});
+	});
+	// The handoff ledger's writes fail: the claim cannot record, so the
+	// effect's retry pass defers with the edge still pending. Its reads stay
+	// healthy, so the pendingness is known - not unreadable.
+	harness.handoffWriteFailure = true;
+	const tree = await f.recreateOffline();
+	await settle();
+	expect(drafts.hasPendingHandoff({ hubId: "hub-1", sessionRef: f.ref })).toBe(true);
+	// No user-facing failure is surfaced for the user to repair.
+	expect(tree.root.findAllByProps({ accessibilityLabel: "Retry" })).toHaveLength(0);
+	harness.handoffWriteFailure = false;
+	// No Retry press, no remount: the screen retries the pending handoff on
+	// its own timer, and restoring the storage alone completes the transfer.
+	await act(async () => {
+		await new Promise((resolve) => setTimeout(resolve, 1500));
+	});
+	await settle();
+	expect(drafts.hasPendingHandoff({ hubId: "hub-1", sessionRef: f.ref })).toBe(false);
+	expect(f.document.getSnapshot().record.draft).toBe("incoming work");
+});
+
+it("actual screen retries a settle deferred on unknown ownership after awaits", async () => {
+	const f = await mount();
+	await f.offline();
+	const source = await enqueue(f, "deferred settle source");
+	act(() => f.tree.unmount());
+	await act(async () => {
+		const claimed = await f.runtime.storage.transferToRecovery(source.clientMutationId, "editing");
+		expect(claimed?.clientMutationId).toBe(source.clientMutationId);
+	});
+	const tree = await f.recreateOffline();
+	await settle();
+	// The screen restored the captured edit into the live draft.
+	expect(f.document.getSnapshot().record.composer?.recoveryIds).toEqual([source.clientMutationId]);
+	await act(async () => {
+		f.document.edit("edited recovered text");
+	});
+	await reconnect(f);
+	act(() => tree.unmount());
+	// The resubmitted recovered message resolves as an admission: its capture
+	// stays for receipt reconciliation, and the resend receipt is durable -
+	// planted with no screen mounted to consume it.
+	await act(async () => {
+		await f.document.submit(async (text, images, context) => {
+			await f.runtime.submit({
+				kind: "send",
+				hubId: "hub-1",
+				targetRef: f.ref,
+				threadId: `thread-${f.ref}`,
+				instanceId: "instance",
+				recoverySourceIds: context.recoverySourceIds,
+				input: buildComposerInput(
+					text,
+					images,
+					context.composer?.skillNames ?? [],
+					context.composer?.commandNames ?? [],
+					context.composer?.mentions ?? [],
+				),
+				composer: { text, attachments: [], skillNames: [], commandNames: [], mentions: [] },
+			});
+			return true;
+		});
+	});
+	await settle();
+	expect(f.document.getSnapshot().record.unconfirmedComposer?.recoveryIds).toEqual([source.clientMutationId]);
+	expect(await f.runtime.readRecoveryResend(f.targetKey, [source.clientMutationId])).toBeDefined();
+	// The ownership read inside the serialized reconciliation fails while the
+	// reads before it succeed: the settle defers, and only the screen's own
+	// retry can finish it.
+	harness.handoffEdgesReads = 0;
+	harness.handoffEdgesReadFailFrom = 5;
+	await f.recreateOffline();
+	await settle();
+	expect(f.document.getSnapshot().record.unconfirmedComposer?.recoveryIds).toEqual([source.clientMutationId]);
+	harness.handoffEdgesReadFailFrom = 0;
+	// No user action, no remount: the deferred settle retries itself and the
+	// receipt reconciles.
+	await act(async () => {
+		await new Promise((resolve) => setTimeout(resolve, 1500));
+	});
+	await settle();
+	expect(f.document.getSnapshot().record.unconfirmed).toBeNull();
+	expect(f.document.getSnapshot().record.unconfirmedComposer).toBeUndefined();
+});
+
 it("actual screen releases owned recovery when text-only composition becomes empty", async () => {
 	const f = await mount();
 	await f.offline();
@@ -1086,7 +1297,11 @@ it("actual screen completes edited /compact without sending and does not replay 
 it("actual screen protects and retries cleanup after /compact success without rerunning it", async () => {
 	const { f, source } = await prepareRecoveredCompact();
 	const db = sqlite.ports.get("evener-mutations.db") as SqliteSync;
-	db.execSync("PRAGMA query_only = ON");
+	// Fail only the cleanup delete: the ledger shares this database, and a
+	// globally read-only store would (correctly) refuse to start a submission.
+	db.execSync(
+		`CREATE TRIGGER fail_compact_cleanup BEFORE DELETE ON mutation_recovery WHEN OLD.client_mutation_id = '${source.clientMutationId}' BEGIN SELECT RAISE(ABORT, 'cleanup failed'); END`,
+	);
 	await act(async () => pressable(f.tree, "Compact transcript")?.props.onPress());
 	await settle();
 	expect(f.requests.filter((r) => r.method === "thread/compact/start")).toHaveLength(1);
@@ -1105,7 +1320,7 @@ it("actual screen protects and retries cleanup after /compact success without re
 	await act(async () => pressable(f.tree, "Retry saving")?.props.onPress());
 	await settle();
 	expect(f.document.getSnapshot().record.completedCommandRecoveryIds).toEqual([source.clientMutationId]);
-	db.execSync("PRAGMA query_only = OFF");
+	db.execSync("DROP TRIGGER fail_compact_cleanup");
 	await act(async () => pressable(f.tree, "Retry")?.props.onPress());
 	await settle();
 	expect(f.document.getSnapshot().record.completedCommandRecoveryIds ?? []).toEqual([]);

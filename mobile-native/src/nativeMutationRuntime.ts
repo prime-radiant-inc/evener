@@ -1,5 +1,6 @@
 import { openDatabaseSync } from "expo-sqlite";
 import * as Crypto from "expo-crypto";
+import type { DraftHandoffLedger } from "./draftHandoffLedger";
 import type { AppwireClientLike, ThreadReadResponse } from "@evener/appwire-client";
 import { collectAuthoritativeMutationIds } from "@evener/appwire-client";
 import {
@@ -44,6 +45,9 @@ export interface NativeMutationRuntimeOptions {
 
 type NativeStorage = MutationOutboxStorage<MutationAttachmentRef> &
 	QueuedMessageStorage & {
+		/** The durable identity-resume handoff graph, written in retarget's
+		 * savepoint on the same database as the moved mutation rows. */
+		handoffLedger: DraftHandoffLedger;
 		readRecoveryResend(targetRef: string, sourceIds: readonly string[]): Promise<RecoveryResendCommit | undefined>;
 		acknowledgeRecoveryResend(targetRef: string, clientMutationId: string): Promise<void>;
 		listOutbox(targetRef?: string): Promise<MutationOutboxRecord<MutationAttachmentRef>[]>;

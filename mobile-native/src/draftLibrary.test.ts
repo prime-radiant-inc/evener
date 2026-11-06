@@ -1,4 +1,6 @@
 import { afterEach, describe, expect, it } from "vitest";
+import { DraftHandoffLedgerSQLite } from "./draftHandoffLedgerSQLite";
+import { MutationOutboxSQLite } from "./mutationOutboxStorage";
 import { DraftLibrary } from "./draftLibrary";
 import { type DraftDestination, DraftRepository } from "./draftRepository";
 import { openSqliteSyncDouble, type SqliteDoubleDatabase } from "./sqliteSync.testkit";
@@ -11,7 +13,29 @@ function setup() {
 	const { database: db, port } = openSqliteSyncDouble();
 	databases.push(db);
 	const repository = new DraftRepository(port);
-	return { library: new DraftLibrary(() => repository), repository, db };
+	const { database: ledgerDb, port: ledgerPort } = openSqliteSyncDouble();
+	databases.push(ledgerDb);
+	// Production constructs the ledger over the mutation outbox's database,
+	// so row-ownership queries read real mutation tables.
+	new MutationOutboxSQLite(ledgerPort, {
+		createMutationId: () => `mutation-${databases.length}`,
+		now: () => 1000,
+	});
+	let next = 0;
+	const ledger = new DraftHandoffLedgerSQLite(ledgerPort, {
+		now: () => 1000,
+		createId: () => `id-${++next}`,
+	});
+	return {
+		library: new DraftLibrary(
+			() => repository,
+			undefined,
+			() => ledger,
+		),
+		repository,
+		db,
+		ledger,
+	};
 }
 
 describe("drafts across navigation", () => {
@@ -168,6 +192,53 @@ describe("drafts across navigation", () => {
 		});
 	});
 
+	it("a completion preserves a destination's unsaved edits and pending image", async () => {
+		const { library, repository, db } = setup();
+		const from = { hubId: "one", sessionRef: "old" };
+		const to = { hubId: "one", sessionRef: "resumed" };
+		const source = library.open(from);
+		source.edit("pending message");
+		let settle!: (sent: boolean) => void;
+		const submitted = source.submit(
+			() =>
+				new Promise<boolean>((resolve) => {
+					settle = resolve;
+				}),
+		);
+		const token = repository.read(from).unconfirmedCaptureToken;
+		if (token === undefined) throw new Error("missing source capture token");
+		expect(library.handoff(from, to)).toBe(true);
+
+		// The destination holds newer unsaved edits and a pending image after a
+		// failed save; the completion must merge into that live document instead
+		// of replacing it with the older persisted record.
+		const destination = library.open(to);
+		db.exec(
+			"CREATE TRIGGER reject_resumed BEFORE UPDATE ON drafts WHEN NEW.session_ref = 'resumed' BEGIN SELECT RAISE(ABORT, 'full'); END",
+		);
+		destination.edit("edited after the handoff");
+		destination.addImage({ id: "late-photo", marker: 1, mediaType: "image/png", data: "AQID" });
+		expect(destination.getSnapshot().error).not.toBeNull();
+		db.exec("DROP TRIGGER reject_resumed");
+
+		settle(true);
+		await submitted;
+		expect(destination.getSnapshot().record).toMatchObject({
+			draft: "edited after the handoff[image 1]",
+			unconfirmed: null,
+			images: [{ id: "late-photo", marker: 1, mediaType: "image/png" }],
+		});
+		expect(destination.getSnapshot().error).toBeNull();
+		expect(repository.read(to)).toMatchObject({
+			draft: "edited after the handoff[image 1]",
+			unconfirmed: null,
+		});
+		expect(repository.read(to).unconfirmedCaptureToken).toBeUndefined();
+		expect(repository.imageInputs(to, [{ id: "late-photo", marker: 1, mediaType: "image/png" }])).toEqual([
+			expect.objectContaining({ data: "AQID" }),
+		]);
+	});
+
 	it("leaves a destination with selection-only metadata untouched", () => {
 		const { library, repository } = setup();
 		const from = { hubId: "one", sessionRef: "old" };
@@ -213,6 +284,17 @@ describe("drafts across navigation", () => {
 		const { database: db, port } = openSqliteSyncDouble();
 		databases.push(db);
 		const repository = new DraftRepository(port);
+		const { database: ledgerDb, port: ledgerPort } = openSqliteSyncDouble();
+		databases.push(ledgerDb);
+		new MutationOutboxSQLite(ledgerPort, {
+			createMutationId: () => `mutation-${databases.length}`,
+			now: () => 1000,
+		});
+		let next = 0;
+		const ledger = new DraftHandoffLedgerSQLite(ledgerPort, {
+			now: () => 1000,
+			createId: () => `id-${++next}`,
+		});
 		let failedReads = 2;
 		const storage = {
 			read: (destination: DraftDestination) => {
@@ -228,7 +310,11 @@ describe("drafts across navigation", () => {
 			imageInputs: repository.imageInputs.bind(repository),
 			refsWithDrafts: repository.refsWithDrafts.bind(repository),
 		};
-		const library = new DraftLibrary(() => storage);
+		const library = new DraftLibrary(
+			() => storage,
+			undefined,
+			() => ledger,
+		);
 		const from = { hubId: "one", sessionRef: "old" };
 		const to = { hubId: "one", sessionRef: "resumed" };
 		repository.write(from, { draft: "edited recovery", unconfirmed: null });
@@ -324,5 +410,38 @@ describe("drafts across navigation", () => {
 		library.removeHub("one");
 		expect(source.getSnapshot().loaded).toBe(false);
 		expect(repository.read(from)).toEqual({ draft: "", unconfirmed: null });
+	});
+
+	it("delivers an in-flight built-in completion to the resumed destination", async () => {
+		const { library, repository, ledger } = setup();
+		const from = { hubId: "one", sessionRef: "old" };
+		const to = { hubId: "one", sessionRef: "resumed" };
+		repository.write(from, {
+			draft: "current",
+			unconfirmed: null,
+			composer: { recoveryIds: ["recovered-a"] },
+		});
+		const source = library.open(from);
+		let finish!: () => void;
+		const submitted = source.submitBuiltinCommand(
+			() =>
+				new Promise<boolean>((resolve) => {
+					finish = () => resolve(true);
+				}),
+		);
+		const token = repository.read(from).unconfirmedCaptureToken;
+		if (token === undefined) throw new Error("missing capture token");
+		expect(library.handoff(from, to)).toBe(true);
+
+		finish();
+		await submitted;
+		expect(repository.read(to)).toMatchObject({
+			draft: "",
+			unconfirmed: null,
+			completedCommandRecoveryIds: ["recovered-a"],
+		});
+		expect(ledger.readGraph().obligations).toMatchObject([
+			{ obligationId: token, origin: from, state: "completed", completedCommandIds: ["recovered-a"] },
+		]);
 	});
 });

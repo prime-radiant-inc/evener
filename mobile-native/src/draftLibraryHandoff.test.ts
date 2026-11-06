@@ -1,0 +1,902 @@
+import { afterEach, describe, expect, test, vi } from "vitest";
+import type { DraftHandoffEdge, DraftHandoffEndpoint, DraftHandoffLedger } from "./draftHandoffLedger";
+import { DraftHandoffLedgerSQLite } from "./draftHandoffLedgerSQLite";
+import { MutationOutboxSQLite } from "./mutationOutboxStorage";
+import { DraftLibrary } from "./draftLibrary";
+import { terminalDestination } from "./draftHandoffGraph";
+import { type DraftDestination, DraftRepository } from "./draftRepository";
+import { openSqliteSyncDouble, type SqliteDoubleDatabase } from "./sqliteSync.testkit";
+
+const databases: SqliteDoubleDatabase[] = [];
+afterEach(() => {
+	for (const db of databases.splice(0)) db.close();
+});
+
+const endpoint = (sessionRef: string): DraftHandoffEndpoint => ({ hubId: "hub", sessionRef });
+const destination = (sessionRef: string): DraftDestination => ({ hubId: "hub", sessionRef });
+
+function setup(): {
+	ledger: DraftHandoffLedgerSQLite;
+	ledgerDatabase: SqliteDoubleDatabase;
+	repository: DraftRepository;
+	draftDatabase: SqliteDoubleDatabase;
+	library: (accessor?: () => DraftHandoffLedger) => DraftLibrary;
+} {
+	const drafts = openSqliteSyncDouble();
+	databases.push(drafts.database);
+	const mutations = openSqliteSyncDouble();
+	databases.push(mutations.database);
+	// Production constructs the ledger over the mutation outbox's database,
+	// so row-ownership queries read real mutation tables.
+	new MutationOutboxSQLite(mutations.port, {
+		createMutationId: () => `mutation-${databases.length}`,
+		now: () => 1000,
+	});
+	let next = 0;
+	const ledger = new DraftHandoffLedgerSQLite(mutations.port, {
+		now: () => 1000,
+		createId: () => `id-${++next}`,
+	});
+	const repository = new DraftRepository(drafts.port);
+	return {
+		ledger,
+		ledgerDatabase: mutations.database,
+		repository,
+		draftDatabase: drafts.database,
+		library: (accessor = () => ledger) => new DraftLibrary(() => repository, undefined, accessor),
+	};
+}
+
+/** Fails the named ledger method a fixed number of times, then delegates. */
+function flaky(ledger: DraftHandoffLedger, method: keyof DraftHandoffLedger, times: number): DraftHandoffLedger {
+	let remaining = times;
+	return new Proxy(ledger, {
+		get(target, property) {
+			const value = Reflect.get(target, property, target);
+			if (property === method && typeof value === "function")
+				return (...args: unknown[]) => {
+					if (remaining-- > 0) throw new Error(`injected ${String(method)} failure`);
+					return (value as (...inner: unknown[]) => unknown).apply(target, args);
+				};
+			return typeof value === "function" ? (value as (...inner: unknown[]) => unknown).bind(target) : value;
+		},
+	}) as DraftHandoffLedger;
+}
+
+function edgeFor(ledger: DraftHandoffLedger, from: string, to: string): DraftHandoffEdge | undefined {
+	return ledger.readGraph().edges.find((edge) => edge.from.sessionRef === from && edge.to.sessionRef === to);
+}
+
+describe("durable handoff library", () => {
+	test("settles an accepted hop and records its deliveries", () => {
+		const { ledger, repository, library } = setup();
+		repository.write(destination("a"), {
+			draft: "edited",
+			unconfirmed: null,
+			composer: { recoveryIds: ["recovered-a"] },
+			completedCommandRecoveryIds: ["completed-a"],
+			releasedRecoveryIds: ["released-a"],
+		});
+		expect(library().handoff(destination("a"), destination("b"))).toBe(true);
+		const edge = edgeFor(ledger, "a", "b");
+		expect(edge).toMatchObject({ state: "settled", claimAt: null });
+		expect(edge?.deliveredHash).not.toBeNull();
+		expect(ledger.readGraph().deliveries).toEqual(
+			expect.arrayContaining([
+				expect.objectContaining({ destination: endpoint("b"), recoveryId: "completed-a", disposition: "completed" }),
+				expect.objectContaining({ destination: endpoint("b"), recoveryId: "recovered-a", disposition: "released" }),
+				expect.objectContaining({ destination: endpoint("b"), recoveryId: "released-a", disposition: "released" }),
+			]),
+		);
+		expect(repository.read(destination("a"))).toEqual({ draft: "", unconfirmed: null });
+		expect(repository.read(destination("b"))).toMatchObject({ draft: "edited" });
+	});
+
+	test("refuses an occupied destination, delivers exclusions, and keeps both drafts", () => {
+		const { ledger, repository, library } = setup();
+		repository.write(destination("a"), {
+			draft: "mine",
+			unconfirmed: null,
+			composer: { recoveryIds: ["recovered-a"] },
+		});
+		repository.write(destination("b"), { draft: "theirs", unconfirmed: null });
+
+		expect(library().handoff(destination("a"), destination("b"))).toBe(false);
+		expect(edgeFor(ledger, "a", "b")).toMatchObject({ state: "refused" });
+		expect(repository.read(destination("a")).draft).toBe("mine");
+		expect(repository.read(destination("b"))).toMatchObject({
+			draft: "theirs",
+			releasedRecoveryIds: ["recovered-a"],
+		});
+		expect(ledger.readGraph().deliveries).toContainEqual(
+			expect.objectContaining({ destination: endpoint("b"), recoveryId: "recovered-a", disposition: "released" }),
+		);
+	});
+
+	test("refuses when another chain already owns the destination", () => {
+		const { ledger, repository, library } = setup();
+		const owner = ledger.createEdge({ chainId: "other", from: endpoint("x"), to: endpoint("b") });
+		ledger.claimDestination(owner.edgeId);
+		ledger.settleEdge(owner.edgeId, [], "owner");
+		repository.write(destination("a"), { draft: "mine", unconfirmed: null });
+
+		expect(library().handoff(destination("a"), destination("b"))).toBe(false);
+		expect(edgeFor(ledger, "a", "b")).toMatchObject({ state: "refused" });
+		expect(repository.read(destination("a")).draft).toBe("mine");
+		expect(repository.read(destination("b")).draft).toBe("");
+	});
+
+	test("a refusal defers while the destination cannot load its saved record", () => {
+		const { ledger, repository, draftDatabase, library } = setup();
+		// Another chain already owns the destination, so the hop is refused.
+		const owner = ledger.createEdge({ chainId: "other", from: endpoint("x"), to: endpoint("b") });
+		ledger.claimDestination(owner.edgeId);
+		ledger.settleEdge(owner.edgeId, [], "owner");
+		repository.write(destination("a"), {
+			draft: "mine",
+			unconfirmed: null,
+			composer: { recoveryIds: ["recovered-a"] },
+		});
+		// The destination holds work, but its record cannot load: a parked
+		// composition references an image whose bytes are gone.
+		draftDatabase.exec(
+			`INSERT INTO drafts (hub_id, session_ref, draft, unconfirmed, parked_composition)
+			 VALUES ('hub', 'b', 'theirs', NULL,
+			 '[{"id":"park","text":"parked","images":[{"id":"missing","marker":1,"mediaType":"image/png"}]}]')`,
+		);
+		expect(() => repository.read(destination("b"))).toThrow();
+
+		const draftLibrary = library();
+		expect(draftLibrary.handoff(destination("a"), destination("b"))).toBe(false);
+		// The refusal defers instead of merging dispositions through the
+		// destination's unreadable record, so no work is replaced.
+		expect(edgeFor(ledger, "a", "b")?.state).toBe("pending");
+		expect(repository.read(destination("a")).draft).toBe("mine");
+
+		// The record becomes readable again: the refusal proceeds.
+		draftDatabase.exec("UPDATE drafts SET parked_composition = NULL WHERE hub_id = 'hub' AND session_ref = 'b'");
+		draftLibrary.retryPendingHandoffs();
+		expect(edgeFor(ledger, "a", "b")?.state).toBe("refused");
+		expect(repository.read(destination("b"))).toMatchObject({
+			draft: "theirs",
+			releasedRecoveryIds: ["recovered-a"],
+		});
+	});
+
+	test("cleans settled and refused edges on retry, and a second retry is a no-op", () => {
+		const { ledger, repository, library } = setup();
+		repository.write(destination("a"), { draft: "edited", unconfirmed: null });
+		const draftLibrary = library();
+		expect(draftLibrary.handoff(destination("a"), destination("b"))).toBe(true);
+		draftLibrary.retryPendingHandoffs();
+		expect(edgeFor(ledger, "a", "b")).toMatchObject({ state: "cleaned" });
+		const state = ledger.readGraph();
+		draftLibrary.retryPendingHandoffs();
+		expect(ledger.readGraph().edges).toEqual(state.edges);
+		expect(ledger.readGraph().deliveries).toEqual(state.deliveries);
+		expect(repository.read(destination("b"))).toMatchObject({ draft: "edited" });
+	});
+
+	test("a claim failure leaves the edge pending and a retry settles it", () => {
+		const { ledger, repository, library } = setup();
+		repository.write(destination("a"), { draft: "edited", unconfirmed: null });
+		let failures = 1;
+		const flakyLedger = new Proxy(ledger, {
+			get(target, property) {
+				const value = Reflect.get(target, property, target);
+				if (property === "claimDestination" && typeof value === "function")
+					return (...args: unknown[]) => {
+						if (failures-- > 0) throw new Error("injected claim failure");
+						return (value as (...inner: unknown[]) => unknown).apply(target, args);
+					};
+				return typeof value === "function" ? (value as (...inner: unknown[]) => unknown).bind(target) : value;
+			},
+		}) as DraftHandoffLedger;
+		const draftLibrary = library(() => flakyLedger);
+
+		expect(draftLibrary.handoff(destination("a"), destination("b"))).toBe(false);
+		expect(edgeFor(ledger, "a", "b")?.state).toBe("pending");
+		expect(repository.read(destination("a")).draft).toBe("edited");
+		draftLibrary.retryPendingHandoffs();
+		expect(edgeFor(ledger, "a", "b")?.state).toBe("settled");
+		expect(repository.read(destination("b"))).toMatchObject({ draft: "edited" });
+	});
+
+	test("a drafts write failure leaves the edge pending and the source draft intact", () => {
+		const { ledger, repository, draftDatabase, library } = setup();
+		repository.write(destination("a"), { draft: "edited", unconfirmed: null });
+		draftDatabase.exec(
+			"CREATE TRIGGER reject_b BEFORE INSERT ON drafts WHEN NEW.session_ref = 'b' BEGIN SELECT RAISE(ABORT, 'full'); END",
+		);
+		const draftLibrary = library();
+
+		expect(draftLibrary.handoff(destination("a"), destination("b"))).toBe(false);
+		// The delivered hash records the intended write before the compose; the
+		// source still holds it, so a retry composes again.
+		expect(edgeFor(ledger, "a", "b")?.state).toBe("pending");
+		expect(edgeFor(ledger, "a", "b")?.deliveredHash).not.toBeNull();
+		expect(repository.read(destination("a")).draft).toBe("edited");
+		draftDatabase.exec("DROP TRIGGER reject_b");
+		draftLibrary.retryPendingHandoffs();
+		expect(edgeFor(ledger, "a", "b")?.state).toBe("settled");
+	});
+
+	test("a delivered-hash write failure leaves the source to retry the compose", () => {
+		const { ledger, repository, library } = setup();
+		repository.write(destination("a"), { draft: "edited", unconfirmed: null });
+		const flakyLedger = flaky(ledger, "recordDelivered", 1);
+		const draftLibrary = library(() => flakyLedger);
+
+		expect(draftLibrary.handoff(destination("a"), destination("b"))).toBe(false);
+		expect(edgeFor(ledger, "a", "b")).toMatchObject({ state: "pending", deliveredHash: null });
+		expect(repository.read(destination("a")).draft).toBe("edited");
+		expect(repository.read(destination("b")).draft).toBe("");
+		// The next retry uses the real ledger and settles.
+		draftLibrary.retryPendingHandoffs();
+		expect(edgeFor(ledger, "a", "b")?.state).toBe("settled");
+		expect(repository.read(destination("b"))).toMatchObject({ draft: "edited" });
+	});
+
+	test("a retry does not settle an uncomposed edge whose capture never transferred", () => {
+		const { ledger, repository, draftDatabase, library } = setup();
+		// A source holding only an in-flight capture fingerprints exactly like
+		// an empty destination: the composition fingerprint excludes unconfirmed
+		// content and completion markers.
+		repository.write(destination("a"), {
+			draft: "",
+			unconfirmed: "in flight",
+			unconfirmedCaptureToken: "token-1",
+		});
+		draftDatabase.exec(
+			"CREATE TRIGGER reject_b BEFORE INSERT ON drafts WHEN NEW.session_ref = 'b' BEGIN SELECT RAISE(ABORT, 'full'); END",
+		);
+		const draftLibrary = library();
+
+		expect(draftLibrary.handoff(destination("a"), destination("b"))).toBe(false);
+		expect(edgeFor(ledger, "a", "b")?.deliveredHash).not.toBeNull();
+		draftDatabase.exec("DROP TRIGGER reject_b");
+
+		draftLibrary.retryPendingHandoffs();
+		const edge = edgeFor(ledger, "a", "b");
+		expect(edge?.state).toBe("settled");
+		expect(edge?.composedAt).not.toBeNull();
+		expect(repository.read(destination("b"))).toMatchObject({
+			unconfirmed: "in flight",
+			unconfirmedCaptureToken: "token-1",
+		});
+		expect(repository.read(destination("a"))).toEqual({ draft: "", unconfirmed: null });
+	});
+
+	test("a retry re-delivers completion markers a failed transfer dropped", () => {
+		const { ledger, repository, draftDatabase, library } = setup();
+		repository.write(destination("a"), {
+			draft: "",
+			unconfirmed: null,
+			composer: { skillNames: ["review"] },
+			completedCommandRecoveryIds: ["done-1"],
+			releasedRecoveryIds: ["rel-1"],
+		});
+		draftDatabase.exec(
+			"CREATE TRIGGER reject_b BEFORE INSERT ON drafts WHEN NEW.session_ref = 'b' BEGIN SELECT RAISE(ABORT, 'full'); END",
+		);
+		const draftLibrary = library();
+
+		expect(draftLibrary.handoff(destination("a"), destination("b"))).toBe(false);
+		expect(edgeFor(ledger, "a", "b")?.deliveredHash).not.toBeNull();
+		draftDatabase.exec("DROP TRIGGER reject_b");
+
+		draftLibrary.retryPendingHandoffs();
+		expect(edgeFor(ledger, "a", "b")?.state).toBe("settled");
+		expect(repository.read(destination("b"))).toMatchObject({
+			composer: { skillNames: ["review"] },
+			completedCommandRecoveryIds: ["done-1"],
+			releasedRecoveryIds: ["rel-1"],
+		});
+		expect(ledger.readGraph().deliveries).toEqual(
+			expect.arrayContaining([
+				expect.objectContaining({ destination: endpoint("b"), recoveryId: "done-1", disposition: "completed" }),
+				expect.objectContaining({ destination: endpoint("b"), recoveryId: "rel-1", disposition: "released" }),
+			]),
+		);
+		expect(repository.read(destination("a"))).toEqual({ draft: "", unconfirmed: null });
+	});
+
+	test("a claimed transfer survives a competing refusal's disposition markers", () => {
+		const { ledger, repository, draftDatabase, library } = setup();
+		// A→B claims B, but its transfer fails.
+		repository.write(destination("a"), { draft: "a's work", unconfirmed: null });
+		draftDatabase.exec(
+			"CREATE TRIGGER reject_b BEFORE INSERT ON drafts WHEN NEW.session_ref = 'b' BEGIN SELECT RAISE(ABORT, 'full'); END",
+		);
+		const draftLibrary = library();
+		expect(draftLibrary.handoff(destination("a"), destination("b"))).toBe(false);
+		draftDatabase.exec("DROP TRIGGER reject_b");
+
+		// A recovered X→B handoff loses the claim and refuses: its release
+		// markers land in B, which still holds no composition.
+		repository.write(destination("x"), { draft: "", unconfirmed: null, releasedRecoveryIds: ["rel-1"] });
+		expect(draftLibrary.handoff(destination("x"), destination("b"))).toBe(false);
+		expect(edgeFor(ledger, "x", "b")?.state).toBe("refused");
+		expect(repository.read(destination("b"))).toMatchObject({ draft: "", releasedRecoveryIds: ["rel-1"] });
+
+		// A→B's retry must not read those disposition-only markers as
+		// existing work: the claimed transfer lands, preserving the markers.
+		draftLibrary.retryPendingHandoffs();
+		expect(repository.read(destination("b"))).toMatchObject({ draft: "a's work", releasedRecoveryIds: ["rel-1"] });
+		expect(edgeFor(ledger, "a", "b")).toMatchObject({ state: "settled" });
+		// The live document adopts the merged markers too: an edit from here
+		// must not overwrite the preserved dispositions in storage.
+		const live = draftLibrary.open(destination("b"));
+		expect(live.getSnapshot().record).toMatchObject({ draft: "a's work", releasedRecoveryIds: ["rel-1"] });
+		live.edit("more work");
+		expect(repository.read(destination("b"))).toMatchObject({ draft: "more work", releasedRecoveryIds: ["rel-1"] });
+	});
+
+	test("a failed pair-history read defers the identity change", () => {
+		const { ledger, repository, draftDatabase, library } = setup();
+		repository.write(destination("a"), { draft: "a's work", unconfirmed: null });
+		draftDatabase.exec(
+			"CREATE TRIGGER reject_b BEFORE INSERT ON drafts WHEN NEW.session_ref = 'b' BEGIN SELECT RAISE(ABORT, 'full'); END",
+		);
+		const draftLibrary = library();
+		expect(draftLibrary.handoff(destination("a"), destination("b"))).toBe(false);
+		draftDatabase.exec("DROP TRIGGER reject_b");
+		expect(edgeFor(ledger, "a", "b")?.state).toBe("pending");
+
+		// The pair history becomes unreadable: the identity-change action must
+		// defer its decision instead of throwing through the resume flow,
+		// leaving the durable edge for a later retry.
+		const unreadable = new Proxy(ledger, {
+			get(target, property) {
+				const value = Reflect.get(target, property, target);
+				if (property === "edgesBetween" && typeof value === "function")
+					return (...args: unknown[]) => {
+						void args;
+						throw new Error("history unreadable");
+					};
+				return typeof value === "function" ? (value as (...inner: unknown[]) => unknown).bind(target) : value;
+			},
+		}) as DraftHandoffLedger;
+		const deferred = library(() => unreadable);
+		expect(deferred.handoff(destination("a"), destination("b"))).toBe(false);
+		expect(edgeFor(ledger, "a", "b")?.state).toBe("pending");
+
+		// Once the history reads again, the same action completes the
+		// identity change.
+		expect(draftLibrary.handoff(destination("a"), destination("b"))).toBe(true);
+		expect(repository.read(destination("b"))).toMatchObject({ draft: "a's work" });
+	});
+
+	test("an uncomposed edge whose transfer landed settles from durable capture proof", () => {
+		const { ledger, repository, library } = setup();
+		repository.write(destination("a"), {
+			draft: "",
+			unconfirmed: "in flight",
+			unconfirmedCaptureToken: "token-1",
+		});
+		const flakyLedger = flaky(flaky(ledger, "recordComposed", 1), "settleEdge", 1);
+		const draftLibrary = library(() => flakyLedger);
+
+		expect(draftLibrary.handoff(destination("a"), destination("b"))).toBe(false);
+		expect(edgeFor(ledger, "a", "b")).toMatchObject({ state: "pending" });
+		expect(repository.read(destination("b"))).toMatchObject({
+			unconfirmed: "in flight",
+			unconfirmedCaptureToken: "token-1",
+		});
+
+		const transfer = vi.spyOn(repository, "transfer");
+		draftLibrary.retryPendingHandoffs();
+		expect(edgeFor(ledger, "a", "b")?.state).toBe("settled");
+		expect(transfer).not.toHaveBeenCalled();
+	});
+
+	test("a settlement failure is retried from the recorded hash without moving drafts again", () => {
+		const { ledger, repository, library } = setup();
+		repository.write(destination("a"), { draft: "edited", unconfirmed: null });
+		const flakyLedger = flaky(ledger, "settleEdge", 1);
+		const draftLibrary = library(() => flakyLedger);
+
+		expect(draftLibrary.handoff(destination("a"), destination("b"))).toBe(false);
+		expect(edgeFor(ledger, "a", "b")).toMatchObject({ state: "pending" });
+		expect(edgeFor(ledger, "a", "b")?.deliveredHash).not.toBeNull();
+		expect(repository.read(destination("a"))).toEqual({ draft: "", unconfirmed: null });
+		const transfer = vi.spyOn(repository, "transfer");
+		draftLibrary.retryPendingHandoffs();
+		expect(edgeFor(ledger, "a", "b")?.state).toBe("settled");
+		expect(transfer).not.toHaveBeenCalled();
+		expect(repository.read(destination("b"))).toMatchObject({ draft: "edited" });
+	});
+
+	test("a destination edited after a failed settlement is refused on retry", () => {
+		const { ledger, repository, library } = setup();
+		repository.write(destination("a"), {
+			draft: "edited",
+			unconfirmed: null,
+			composer: { recoveryIds: ["recovered-a"] },
+		});
+		const flakyLedger = flaky(ledger, "settleEdge", 1);
+		const draftLibrary = library(() => flakyLedger);
+		expect(draftLibrary.handoff(destination("a"), destination("b"))).toBe(false);
+		expect(edgeFor(ledger, "a", "b")).toMatchObject({ state: "pending" });
+
+		// The destination gains work after this edge wrote its own record.
+		draftLibrary.open(destination("b")).edit("typed later");
+		draftLibrary.retryPendingHandoffs();
+		expect(edgeFor(ledger, "a", "b")).toMatchObject({ state: "refused" });
+		expect(repository.read(destination("b")).draft).toBe("typed later");
+		expect(repository.read(destination("b")).releasedRecoveryIds).toEqual(["recovered-a"]);
+	});
+
+	test("an open-obligation hop settles after its completion without resurrecting the source", async () => {
+		const { ledger, repository, library } = setup();
+		repository.write(destination("a"), {
+			draft: "current",
+			unconfirmed: null,
+			composer: { recoveryIds: ["recovered-a"] },
+		});
+		const draftLibrary = library();
+		const source = draftLibrary.open(destination("a"));
+		let finish!: () => void;
+		const submitted = source.submitBuiltinCommand(
+			() =>
+				new Promise<boolean>((resolve) => {
+					finish = () => resolve(true);
+				}),
+		);
+		const token = repository.read(destination("a")).unconfirmedCaptureToken;
+		if (token === undefined) throw new Error("missing capture token");
+
+		// The composition moves while the obligation is still open, but the edge
+		// must not settle yet.
+		expect(draftLibrary.handoff(destination("a"), destination("b"))).toBe(true);
+		expect(edgeFor(ledger, "a", "b")).toMatchObject({ state: "pending" });
+		expect(repository.read(destination("b"))).toMatchObject({
+			draft: "",
+			unconfirmed: "current",
+			unconfirmedCaptureToken: token,
+		});
+
+		finish();
+		await submitted;
+		// The completion clears the destination's capture and records the command.
+		expect(repository.read(destination("b"))).toMatchObject({
+			unconfirmed: null,
+			completedCommandRecoveryIds: ["recovered-a"],
+		});
+
+		draftLibrary.retryPendingHandoffs();
+		expect(edgeFor(ledger, "a", "b")).toMatchObject({ resolvedAs: "settled" });
+		expect(repository.read(destination("b"))).toMatchObject({
+			draft: "",
+			unconfirmed: null,
+			completedCommandRecoveryIds: ["recovered-a"],
+		});
+		expect(ledger.readGraph().deliveries).toContainEqual(
+			expect.objectContaining({ destination: endpoint("b"), recoveryId: "recovered-a", disposition: "completed" }),
+		);
+		expect(edgeFor(ledger, "a", "b")?.composedAt).not.toBeNull();
+	});
+
+	test("a repeated handoff after cleanup does not re-deliver the retired source", () => {
+		const { ledger, repository, library } = setup();
+		repository.write(destination("a"), { draft: "edited", unconfirmed: null });
+		const draftLibrary = library();
+		expect(draftLibrary.handoff(destination("a"), destination("b"))).toBe(true);
+		draftLibrary.retryPendingHandoffs();
+		expect(edgeFor(ledger, "a", "b")).toMatchObject({ state: "cleaned" });
+
+		draftLibrary.open(destination("b")).edit("");
+		expect(draftLibrary.handoff(destination("a"), destination("b"))).toBe(false);
+		expect(repository.read(destination("b")).draft).toBe("");
+		expect(repository.read(destination("a"))).toEqual({ draft: "", unconfirmed: null });
+		// No second edge was recorded for the same pair.
+		expect(
+			ledger.readGraph().edges.filter((edge) => edge.from.sessionRef === "a" && edge.to.sessionRef === "b"),
+		).toHaveLength(1);
+	});
+
+	test("a plain send's completion clears the destination capture and settles", async () => {
+		const { ledger, repository, library } = setup();
+		repository.write(destination("a"), { draft: "current", unconfirmed: null });
+		const draftLibrary = library();
+		const source = draftLibrary.open(destination("a"));
+		let settle!: (sent: boolean) => void;
+		const submitted = source.submit(
+			() =>
+				new Promise<boolean>((resolve) => {
+					settle = () => resolve(true);
+				}),
+		);
+		const token = repository.read(destination("a")).unconfirmedCaptureToken;
+		if (token === undefined) throw new Error("missing capture token");
+
+		expect(draftLibrary.handoff(destination("a"), destination("b"))).toBe(true);
+		expect(repository.read(destination("b"))).toMatchObject({
+			unconfirmed: "current",
+			unconfirmedCaptureToken: token,
+		});
+
+		settle(true);
+		await submitted;
+		draftLibrary.retryPendingHandoffs();
+		expect(edgeFor(ledger, "a", "b")).toMatchObject({ resolvedAs: "settled" });
+		expect(repository.read(destination("b"))).toMatchObject({ draft: "", unconfirmed: null });
+		expect(repository.read(destination("b")).unconfirmedCaptureToken).toBeUndefined();
+	});
+
+	test("recovery does not restore a capture whose submission is still running", async () => {
+		const { ledger, repository, library } = setup();
+		repository.write(destination("a"), {
+			draft: "current",
+			unconfirmed: null,
+			composer: { recoveryIds: ["recovered-a"] },
+		});
+		const draftLibrary = library();
+		const source = draftLibrary.open(destination("a"));
+		let settle!: (sent: boolean) => void;
+		const submitted = source.submit(
+			() =>
+				new Promise<boolean>((resolve) => {
+					settle = () => resolve(true);
+				}),
+		);
+		const token = repository.read(destination("a")).unconfirmedCaptureToken;
+		if (token === undefined) throw new Error("missing capture token");
+		expect(draftLibrary.handoff(destination("a"), destination("b"))).toBe(true);
+
+		// The screen must skip this row while the obligation is open.
+		expect(draftLibrary.openObligationRecoveryIds(destination("b"))).toEqual(new Set(["recovered-a"]));
+		expect(edgeFor(ledger, "a", "b")?.state).toBe("pending");
+
+		settle(true);
+		await submitted;
+		draftLibrary.retryPendingHandoffs();
+		expect(edgeFor(ledger, "a", "b")?.resolvedAs).toBe("settled");
+		// The send resolved as a message admission: its recovered capture settles
+		// through the resend receipt, not through the handoff graph, so it stays
+		// recoverable input instead of being cleared here.
+		expect(repository.read(destination("b"))).toMatchObject({
+			unconfirmed: "current",
+			unconfirmedComposer: { recoveryIds: ["recovered-a"] },
+		});
+		expect(draftLibrary.openObligationRecoveryIds(destination("b"))).toEqual(new Set());
+	});
+
+	test("a transfer without its composed marker keeps destination recovery suppressed", async () => {
+		const { ledger, repository, library } = setup();
+		repository.write(destination("a"), {
+			draft: "current",
+			unconfirmed: null,
+			composer: { recoveryIds: ["recovered-a"] },
+		});
+		const flakyLedger = flaky(ledger, "recordComposed", 1);
+		const draftLibrary = library(() => flakyLedger);
+		const source = draftLibrary.open(destination("a"));
+		let settle!: (sent: boolean) => void;
+		const submitted = source.submitBuiltinCommand(
+			() =>
+				new Promise<boolean>((resolve) => {
+					settle = () => resolve(true);
+				}),
+		);
+		const token = repository.read(destination("a")).unconfirmedCaptureToken;
+		if (token === undefined) throw new Error("missing capture token");
+		expect(draftLibrary.handoff(destination("a"), destination("b"))).toBe(true);
+		// The transfer committed without its composed marker: durable capture
+		// evidence places the running submission at the destination while the
+		// graph still names the origin as the chain's terminal.
+		expect(repository.read(destination("b")).unconfirmedCaptureToken).toBe(token);
+		// The screen's restore guard follows the durable capture, so the
+		// destination's reconciliation must skip the still-running command's row.
+		expect(draftLibrary.openObligationRecoveryIds(destination("b"))).toEqual(new Set(["recovered-a"]));
+		expect(draftLibrary.openObligationRecoveryIds(destination("a"))).toEqual(new Set());
+
+		settle(true);
+		await submitted;
+		draftLibrary.retryPendingHandoffs();
+		expect(edgeFor(ledger, "a", "b")?.resolvedAs).toBe("settled");
+		expect(repository.read(destination("b")).completedCommandRecoveryIds).toEqual(["recovered-a"]);
+		expect(repository.read(destination("a"))).toEqual({ draft: "", unconfirmed: null });
+	});
+
+	test("an unavailable mutation store keeps ordinary draft access working", () => {
+		const { repository, library } = setup();
+		const unavailable = library(() => {
+			throw new Error("mutation store unavailable");
+		});
+		// Opening, editing, and querying all read an unreachable ledger as no
+		// ledger instead of taking draft access down with it.
+		const document = unavailable.open(destination("a"));
+		document.edit("current");
+		expect(repository.read(destination("a")).draft).toBe("current");
+		expect(unavailable.handoff(destination("a"), destination("b"))).toBe(false);
+		expect(unavailable.hasPendingHandoff(destination("b"))).toBeUndefined();
+		// An unreachable ledger is unknown ownership and unknown pendingness,
+		// never empty: restoration and the handoff gate defer instead of
+		// reading the outage as "nothing is running" or "nothing incoming".
+		expect(unavailable.openObligationRecoveryIds(destination("a"))).toBeUndefined();
+		expect(() => unavailable.retryPendingHandoffs()).not.toThrow();
+	});
+
+	test("an unreadable graph leaves pending handoffs unknown, not absent", async () => {
+		const { ledger, repository, library } = setup();
+		repository.write(destination("a"), { draft: "current", unconfirmed: null });
+		const source = library().open(destination("a"));
+		source.edit("current");
+		let finish!: (sent: boolean) => void;
+		const submitted = source.submit(
+			() =>
+				new Promise<boolean>((resolve) => {
+					finish = resolve;
+				}),
+		);
+		// The open obligation keeps the transferred edge from settling, so a
+		// handoff is durably pending at the destination.
+		expect(library().handoff(destination("a"), destination("b"))).toBe(true);
+		const failing = flaky(ledger, "readOutstandingGraph", 1);
+		const unreadable = library(() => failing);
+		// A failed graph read is unknown pendingness, never "no pending
+		// handoff": the caller defers whatever a pending transfer would own.
+		expect(unreadable.hasPendingHandoff(destination("b"))).toBeUndefined();
+		// The read recovers: pendingness reads as it durably is.
+		expect(unreadable.hasPendingHandoff(destination("b"))).toBe(true);
+		finish(true);
+		await submitted;
+	});
+
+	test("a failed completion adoption retries through the live document, not behind it", async () => {
+		const { ledger, repository } = setup();
+		// The completion's first save attempt fails; the next succeeds.
+		let failedWrites = 0;
+		const flakyRepository = new Proxy(repository, {
+			get(target, property) {
+				const value = Reflect.get(target, property, target);
+				if (property === "write" && typeof value === "function")
+					return (...args: unknown[]) => {
+						if (failedWrites > 0) {
+							failedWrites--;
+							throw new Error("draft save failed");
+						}
+						return (value as (...inner: unknown[]) => unknown).apply(target, args);
+					};
+				return typeof value === "function" ? (value as (...inner: unknown[]) => unknown).bind(target) : value;
+			},
+		}) as DraftRepository;
+		// The graph read fails while the resolution routes, so the
+		// reconciliation pass - not the resolution - makes the completion's
+		// first and only delivery attempt, exactly the crash shape between a
+		// resolution and its capture clear. The edge's own work stays blocked
+		// until the assertions ran: deliver retries an errored destination's
+		// save and a settle adopts into it, and either would persist over the
+		// live document's error and hide the strand the fix must prevent.
+		let blockEdgeWork = false;
+		let failGraphReads = false;
+		const guardedLedger = new Proxy(ledger, {
+			get(target, property) {
+				const value = Reflect.get(target, property, target);
+				if (typeof value !== "function") return value;
+				if ((property === "claimDestination" || property === "settleEdge") && blockEdgeWork)
+					return () => {
+						throw new Error("edge work blocked");
+					};
+				if (property === "readOutstandingGraph" && failGraphReads)
+					return () => {
+						throw new Error("graph read failed");
+					};
+				return (value as (...inner: unknown[]) => unknown).bind(target);
+			},
+		}) as DraftHandoffLedger;
+		const draftLibrary = new DraftLibrary(
+			() => flakyRepository,
+			undefined,
+			() => guardedLedger,
+		);
+		repository.write(destination("a"), {
+			draft: "current",
+			unconfirmed: null,
+			composer: { recoveryIds: ["recovered-a"] },
+		});
+		const source = draftLibrary.open(destination("a"));
+		let finish!: () => void;
+		const submitted = source.submitBuiltinCommand(
+			() =>
+				new Promise<boolean>((resolve) => {
+					finish = () => resolve(true);
+				}),
+		);
+		const token = repository.read(destination("a")).unconfirmedCaptureToken;
+		if (token === undefined) throw new Error("missing capture token");
+		expect(draftLibrary.handoff(destination("a"), destination("b"))).toBe(true);
+		// The destination's live document holds the transferred capture.
+		const live = draftLibrary.open(destination("b"));
+		expect(live.getSnapshot().record.unconfirmedCaptureToken).toBe(token);
+		blockEdgeWork = true;
+		failedWrites = 1;
+		failGraphReads = true;
+		finish();
+		await submitted;
+		failGraphReads = false;
+		draftLibrary.retryPendingHandoffs();
+		// The completion merged through the live document's own save path: its
+		// error cleared instead of an acknowledged completion landing behind a
+		// direct repository write that leaves the composer unable to submit.
+		expect(live.getSnapshot().error).toBeNull();
+		expect(live.getSnapshot().record.completedCommandRecoveryIds).toEqual(["recovered-a"]);
+		expect(repository.read(destination("b")).completedCommandRecoveryIds).toEqual(["recovered-a"]);
+		blockEdgeWork = false;
+		draftLibrary.retryPendingHandoffs();
+		expect(edgeFor(ledger, "a", "b")?.resolvedAs).toBe("settled");
+	});
+
+	test("a failed resolution notifies consumers and unblocks the chain", async () => {
+		const { ledger, repository, library } = setup();
+		repository.write(destination("a"), {
+			draft: "current",
+			unconfirmed: null,
+			composer: { recoveryIds: ["recovered-a"] },
+		});
+		const draftLibrary = library();
+		let transitions = 0;
+		const unsubscribe = draftLibrary.onObligationTransition(() => {
+			transitions++;
+		});
+		const source = draftLibrary.open(destination("a"));
+		let settle!: (sent: boolean) => void;
+		const submitted = source.submitBuiltinCommand(
+			() =>
+				new Promise<boolean>((resolve) => {
+					settle = resolve;
+				}),
+		);
+		const token = repository.read(destination("a")).unconfirmedCaptureToken;
+		if (token === undefined) throw new Error("missing capture token");
+		expect(draftLibrary.handoff(destination("a"), destination("b"))).toBe(true);
+		// The destination adopted the running command mid-flight: its recovery
+		// effect excludes the still-open obligation's sources.
+		expect(repository.read(destination("b")).unconfirmedCaptureToken).toBe(token);
+		expect(draftLibrary.openObligationRecoveryIds(destination("b"))).toEqual(new Set(["recovered-a"]));
+
+		// The command fails after the destination has mounted. The resolution
+		// publishes and schedules the handoff pass, so the suppression lifts and
+		// the chain unblocks without a remount or an explicit retry.
+		settle(false);
+		await submitted;
+		await Promise.resolve();
+		expect(transitions).toBe(1);
+		expect(draftLibrary.openObligationRecoveryIds(destination("b"))).toEqual(new Set());
+		expect(edgeFor(ledger, "a", "b")?.state).not.toBe("pending");
+		// A failed capture stays recoverable input at its owner.
+		expect(repository.read(destination("b"))).toMatchObject({ unconfirmed: "current" });
+		unsubscribe();
+	});
+
+	test("a refusal write failure leaves the hop pending until the ledger accepts it", () => {
+		const { ledger, repository, library } = setup();
+		repository.write(destination("a"), {
+			draft: "mine",
+			unconfirmed: null,
+			composer: { recoveryIds: ["recovered-a"] },
+		});
+		repository.write(destination("b"), { draft: "theirs", unconfirmed: null });
+		const flakyLedger = flaky(ledger, "refuseEdge", 1);
+		const draftLibrary = library(() => flakyLedger);
+
+		expect(draftLibrary.handoff(destination("a"), destination("b"))).toBe(false);
+		expect(edgeFor(ledger, "a", "b")?.state).toBe("pending");
+		draftLibrary.retryPendingHandoffs();
+		expect(edgeFor(ledger, "a", "b")?.state).toBe("refused");
+		expect(repository.read(destination("b")).draft).toBe("theirs");
+		expect(repository.read(destination("a")).draft).toBe("mine");
+	});
+
+	test("a cleanup failure leaves the settled edge for the next retry", () => {
+		const { ledger, repository, library } = setup();
+		repository.write(destination("a"), { draft: "edited", unconfirmed: null });
+		const flakyLedger = flaky(ledger, "cleanEdge", 1);
+		const draftLibrary = library(() => flakyLedger);
+		expect(draftLibrary.handoff(destination("a"), destination("b"))).toBe(true);
+
+		draftLibrary.retryPendingHandoffs();
+		expect(edgeFor(ledger, "a", "b")?.state).toBe("settled");
+		draftLibrary.retryPendingHandoffs();
+		expect(edgeFor(ledger, "a", "b")?.state).toBe("cleaned");
+	});
+
+	test("an inherited submission's completion reaches a two-hop terminal", async () => {
+		const { ledger, repository, library } = setup();
+		repository.write(destination("a"), {
+			draft: "current",
+			unconfirmed: null,
+			composer: { recoveryIds: ["recovered-a"] },
+		});
+		const draftLibrary = library();
+		const source = draftLibrary.open(destination("a"));
+		let finish!: () => void;
+		const submitted = source.submitBuiltinCommand(
+			() =>
+				new Promise<boolean>((resolve) => {
+					finish = () => resolve(true);
+				}),
+		);
+		expect(draftLibrary.handoff(destination("a"), destination("b"))).toBe(true);
+		expect(draftLibrary.handoff(destination("b"), destination("c"))).toBe(true);
+		expect(edgeFor(ledger, "a", "b")?.state).toBe("pending");
+		expect(edgeFor(ledger, "b", "c")?.state).toBe("pending");
+
+		finish();
+		await submitted;
+		// The completion is delivered by the ledger to the terminal identity.
+		expect(repository.read(destination("c"))).toMatchObject({
+			draft: "",
+			unconfirmed: null,
+			completedCommandRecoveryIds: ["recovered-a"],
+		});
+		draftLibrary.retryPendingHandoffs();
+		expect(edgeFor(ledger, "b", "c")?.resolvedAs).toBe("settled");
+		expect(edgeFor(ledger, "a", "b")?.resolvedAs).toBe("settled");
+		expect(repository.read(destination("a"))).toEqual({ draft: "", unconfirmed: null });
+		expect(repository.read(destination("b"))).toEqual({ draft: "", unconfirmed: null });
+		expect(repository.read(destination("c")).completedCommandRecoveryIds).toEqual(["recovered-a"]);
+	});
+
+	test("an obligation abandoned by a previous process resolves as failed and settles its edge", () => {
+		const { ledger, repository, library } = setup();
+		// Termination between submission start and resolution: the capture and
+		// its open obligation are durable, and no live document owns the
+		// submission in this process.
+		repository.write(destination("a"), {
+			draft: "",
+			unconfirmed: "typed but never resolved",
+			unconfirmedCaptureToken: "abandoned-token",
+			unconfirmedComposer: { recoveryIds: ["recovered-a"] },
+		});
+		ledger.beginSubmission("abandoned-token", endpoint("a"), ["recovered-a"]);
+
+		const draftLibrary = library();
+		expect(draftLibrary.handoff(destination("a"), destination("b"))).toBe(true);
+		// The open obligation owns the row until it completes: the edge waits
+		// and destination recovery stays suppressed.
+		expect(edgeFor(ledger, "a", "b")?.state).toBe("pending");
+		expect(draftLibrary.openObligationRecoveryIds(destination("b"))).toEqual(new Set(["recovered-a"]));
+
+		draftLibrary.retryPendingHandoffs();
+		// The abandoned in-flight ownership is released as failed — the state
+		// that leaves the capture recoverable instead of consuming it.
+		expect(ledger.readGraph().obligations).toMatchObject([{ state: "failed" }]);
+		expect(edgeFor(ledger, "a", "b")?.state).toBe("settled");
+		expect(draftLibrary.openObligationRecoveryIds(destination("b"))).toEqual(new Set());
+		expect(repository.read(destination("b"))).toMatchObject({
+			unconfirmed: "typed but never resolved",
+			unconfirmedCaptureToken: "abandoned-token",
+		});
+		expect(repository.read(destination("a"))).toEqual({ draft: "", unconfirmed: null });
+	});
+
+	test("a recovered first transfer reaches the terminal of a chain whose next hop exists", () => {
+		const { ledger, repository, draftDatabase, library } = setup();
+		repository.write(destination("a"), { draft: "delayed work", unconfirmed: null });
+		const draftLibrary = library();
+		// The first hop's transfer fails after its delivered hash is recorded.
+		draftDatabase.exec(
+			"CREATE TRIGGER reject_b BEFORE INSERT ON drafts WHEN NEW.session_ref = 'b' BEGIN SELECT RAISE(ABORT, 'full'); END",
+		);
+		expect(draftLibrary.handoff(destination("a"), destination("b"))).toBe(false);
+		expect(edgeFor(ledger, "a", "b")?.deliveredHash).not.toBeNull();
+		// The chain continues while the first hop is still pending: the second
+		// hop must not move the source's not-yet-landed composition.
+		expect(draftLibrary.handoff(destination("b"), destination("c"))).toBe(false);
+		expect(edgeFor(ledger, "b", "c")).toMatchObject({ state: "pending" });
+
+		draftDatabase.exec("DROP TRIGGER reject_b");
+		draftLibrary.retryPendingHandoffs();
+		// The recovered composition reaches the terminal identity...
+		expect(repository.read(destination("c"))).toMatchObject({ draft: "delayed work" });
+		expect(edgeFor(ledger, "a", "b")?.state).toBe("settled");
+		expect(edgeFor(ledger, "b", "c")?.state).toBe("settled");
+		// ...and the graph's terminal names the identity that holds it.
+		const graph = ledger.readGraph();
+		expect(terminalDestination(graph.edges, endpoint("a"))).toEqual(endpoint("c"));
+		expect(repository.read(destination("a"))).toEqual({ draft: "", unconfirmed: null });
+		expect(repository.read(destination("b"))).toEqual({ draft: "", unconfirmed: null });
+	});
+});
