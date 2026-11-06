@@ -525,7 +525,9 @@ function PaletteBody({
   function move(dir: number) {
     if (view.items.length === 0) return;
     userMovedRef.current = true;
-    setActiveIndex((prev) => (prev + dir + view.items.length) % view.items.length);
+    setActiveIndex((prev) =>
+      prev < 0 ? (dir > 0 ? 0 : view.items.length - 1) : (prev + dir + view.items.length) % view.items.length,
+    );
   }
 
   function enterArgsMode(command: Command) {
@@ -692,11 +694,11 @@ function PaletteBody({
     }
     if (mode === "command-filter") {
       // An explicitly arrow-navigated selection wins.
-      if (activeIndex !== 0 && item?.kind === "command") {
+      if (userMovedRef.current && item?.kind === "command") {
         activateCommand(item.command);
         return;
       }
-      if (activeIndex !== 0 && item?.kind === "handoff") {
+      if (userMovedRef.current && item?.kind === "handoff") {
         activateHandoff();
         return;
       }

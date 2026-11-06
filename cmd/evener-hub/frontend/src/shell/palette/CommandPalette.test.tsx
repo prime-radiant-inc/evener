@@ -851,6 +851,24 @@ test("typing a new query resets the highlight after an arrow pick", async () => 
   await waitFor(() => expect(input.getAttribute("aria-activedescendant")).toBeNull());
 });
 
+test("ArrowUp from an unhighlighted list lands on the last row", async () => {
+  const user = userEvent.setup();
+  setNeedsYouRows(null);
+  scriptSearch({ live: [], past: [] });
+  render(
+    <NeedsYouProvider>
+      <CommandPalette />
+    </NeedsYouProvider>,
+  );
+  act(() => openPalette());
+  const input = screen.getByRole("combobox");
+  await user.type(input, "s");
+  await waitFor(() => expect(input.getAttribute("aria-activedescendant")).toBeNull());
+  const last = screen.getAllByRole("option").length - 1;
+  await user.keyboard("{ArrowUp}");
+  expect(input.getAttribute("aria-activedescendant")).toBe(`palette-row-${last}`);
+});
+
 test("late needs-you rows take the default selection from the Command list", async () => {
   setNeedsYouRows(null);
   render(
