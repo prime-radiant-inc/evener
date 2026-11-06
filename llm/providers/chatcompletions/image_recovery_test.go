@@ -12,6 +12,7 @@ import (
 	"image/jpeg"
 	"image/png"
 	"io"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -25,6 +26,74 @@ import (
 )
 
 const imageRejection = `{"error":{"message":"Image normalization failed","type":"invalid_request_error"}}`
+
+// Stage 0 seeds the digest only for requests an image repair stage could
+// change. When the typed request emits no image, repairMessages can never
+// advance, so the full-body marshal is skipped (#5489). An unmarshalable
+// value makes the old unconditional json.Marshal fail, proving the new path
+// does not serialize.
+func TestImageRecoveryStageZeroSkipsMarshalWithoutImagePart(t *testing.T) {
+	body := map[string]any{
+		"messages":    []map[string]any{{"role": "user", "content": []map[string]any{{"type": "text", "text": "hi"}}}},
+		"unsupported": math.Inf(1),
+	}
+	r := &imageRecovery{}
+	if err := r.prepare(context.Background(), body); err != nil {
+		t.Fatalf("prepare with no image part serialized the body: %v", err)
+	}
+	if r.originalSize != 0 || len(r.sent) != 0 {
+		t.Fatalf("stage 0 seeded originalSize=%d sent=%d without an image part, want both zero", r.originalSize, len(r.sent))
+	}
+}
+
+func TestImageRecoveryStageZeroSerializesWithImagePart(t *testing.T) {
+	body := map[string]any{
+		"messages": []map[string]any{{"role": "user", "content": []map[string]any{
+			{"type": "image_url", "image_url": map[string]any{"url": "data:image/jpeg;base64,AAAA"}},
+		}}},
+	}
+	r := &imageRecovery{hasImagePart: true, sent: map[[32]byte]bool{}}
+	if err := r.prepare(context.Background(), body); err != nil {
+		t.Fatalf("prepare: %v", err)
+	}
+	if r.originalSize == 0 || len(r.sent) != 1 {
+		t.Fatalf("originalSize=%d sent=%d, want the stage-0 digest seeded", r.originalSize, len(r.sent))
+	}
+}
+
+// requestHasImagePart mirrors buildMultimodalParts' image arm: only a user
+// ContentImage with a URL or bytes rides the chat wire as image_url.
+func TestRequestHasImagePart(t *testing.T) {
+	cases := []struct {
+		name string
+		msgs []llm.Message
+		want bool
+	}{
+		{"url image", []llm.Message{{Role: llm.RoleUser, Content: []llm.ContentPart{
+			{Kind: llm.ContentImage, Image: &llm.ImageData{URL: "https://example.com/i.png"}},
+		}}}, true},
+		{"byte image", []llm.Message{{Role: llm.RoleUser, Content: []llm.ContentPart{
+			{Kind: llm.ContentImage, Image: &llm.ImageData{Data: []byte("png")}},
+		}}}, true},
+		{"nil image is dropped by the builder", []llm.Message{{Role: llm.RoleUser, Content: []llm.ContentPart{
+			{Kind: llm.ContentImage},
+		}}}, false},
+		{"empty image is dropped by the builder", []llm.Message{{Role: llm.RoleUser, Content: []llm.ContentPart{
+			{Kind: llm.ContentImage, Image: &llm.ImageData{}},
+		}}}, false},
+		{"assistant image never rides the wire", []llm.Message{{Role: llm.RoleAssistant, Content: []llm.ContentPart{
+			{Kind: llm.ContentImage, Image: &llm.ImageData{URL: "https://example.com/i.png"}},
+		}}}, false},
+		{"document only", []llm.Message{{Role: llm.RoleUser, Content: []llm.ContentPart{
+			{Kind: llm.ContentDocument, Document: &llm.DocumentData{Data: []byte("%PDF")}},
+		}}}, false},
+	}
+	for _, tc := range cases {
+		if got := requestHasImagePart(tc.msgs); got != tc.want {
+			t.Errorf("%s: requestHasImagePart = %v, want %v", tc.name, got, tc.want)
+		}
+	}
+}
 
 func recoveryJPEG(t *testing.T, profile []byte) []byte {
 	t.Helper()

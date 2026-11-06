@@ -68,9 +68,8 @@ func TestHubRelayStopDuringInitializationCancelsSharedHandleAndAllowsFreshStart(
 		t.Fatal("initial relay placeholder was not published")
 	}
 	waiterJoined := make(chan struct{}, 1)
-	previousObserveWait := observeHubRelayWait
-	observeHubRelayWait = func() { waiterJoined <- struct{}{} }
-	defer func() { observeHubRelayWait = previousObserveWait }()
+	restoreWait := installObserveHubRelayWait(func() { waiterJoined <- struct{}{} })
+	defer restoreWait()
 	go func() {
 		startResults <- relays.startRelay(context.Background(), source, appwire.ThreadReadParams{}, source.thread)
 	}()
@@ -108,7 +107,7 @@ func TestHubRelayStopDuringInitializationCancelsSharedHandleAndAllowsFreshStart(
 	default:
 	}
 
-	observeHubRelayWait = previousObserveWait
+	restoreWait()
 	freshResult := make(chan error, 1)
 	go func() {
 		freshResult <- relays.startRelay(context.Background(), source, appwire.ThreadReadParams{}, source.thread)
@@ -323,9 +322,8 @@ func TestHubRelayPostStopCommandWaitsForFreshGeneration(t *testing.T) {
 	relays.stopRelay(relayKey)
 
 	postStopDeferred := make(chan struct{})
-	previousObserveWait := observeHubRelayWait
-	observeHubRelayWait = func() { close(postStopDeferred) }
-	t.Cleanup(func() { observeHubRelayWait = previousObserveWait })
+	restoreWait := installObserveHubRelayWait(func() { close(postStopDeferred) })
+	t.Cleanup(restoreWait)
 	postStopResult := startRead()
 	select {
 	case <-postStopDeferred:
@@ -492,9 +490,8 @@ func TestHubRelayStopCoversOverlappingPendingGenerations(t *testing.T) {
 	resolved = canonicalA
 	resolveMu.Unlock()
 	deferred := make(chan struct{}, 3)
-	previousObserveWait := observeHubRelayWait
-	observeHubRelayWait = func() { deferred <- struct{}{} }
-	t.Cleanup(func() { observeHubRelayWait = previousObserveWait })
+	restoreWait := installObserveHubRelayWait(func() { deferred <- struct{}{} })
+	t.Cleanup(restoreWait)
 	postStop := startRead()
 	select {
 	case <-deferred:
@@ -733,9 +730,8 @@ func TestHubRelayCanonicalStopRetainsBusyPublishedHandleUntilFreshGeneration(t *
 
 	deferred := make(chan struct{})
 	var deferredOnce sync.Once
-	previousObserveWait := observeHubRelayWait
-	observeHubRelayWait = func() { deferredOnce.Do(func() { close(deferred) }) }
-	t.Cleanup(func() { observeHubRelayWait = previousObserveWait })
+	restoreWait := installObserveHubRelayWait(func() { deferredOnce.Do(func() { close(deferred) }) })
+	t.Cleanup(restoreWait)
 	postStopResult := startRead()
 	select {
 	case <-deferred:
@@ -865,9 +861,8 @@ func TestHubRelayCanonicalStopRetainsOverlappingPendingStates(t *testing.T) {
 
 	deferred := make(chan struct{})
 	var deferredOnce sync.Once
-	previousObserveWait := observeHubRelayWait
-	observeHubRelayWait = func() { deferredOnce.Do(func() { close(deferred) }) }
-	t.Cleanup(func() { observeHubRelayWait = previousObserveWait })
+	restoreWait := installObserveHubRelayWait(func() { deferredOnce.Do(func() { close(deferred) }) })
+	t.Cleanup(restoreWait)
 	postStop := startRead(relayA)
 	select {
 	case <-deferred:
@@ -969,9 +964,8 @@ func TestHubRelayCanonicalStopWaitsForInitializingAcquire(t *testing.T) {
 	relays.stopCanonicalRelay(canonical)
 	waiting := make(chan struct{})
 	var waitingOnce sync.Once
-	previousWait := observeHubRelayWait
-	observeHubRelayWait = func() { waitingOnce.Do(func() { close(waiting) }) }
-	t.Cleanup(func() { observeHubRelayWait = previousWait })
+	restoreWait := installObserveHubRelayWait(func() { waitingOnce.Do(func() { close(waiting) }) })
+	t.Cleanup(restoreWait)
 	later := start()
 	select {
 	case <-waiting:
@@ -1161,9 +1155,8 @@ func TestHubRelayCanonicalStopRetainsInitializingHandleUntilListenCancellationRe
 	}
 	waiting := make(chan struct{})
 	var waitOnce sync.Once
-	previousWait := observeHubRelayWait
-	observeHubRelayWait = func() { waitOnce.Do(func() { close(waiting) }) }
-	t.Cleanup(func() { observeHubRelayWait = previousWait })
+	restoreWait := installObserveHubRelayWait(func() { waitOnce.Do(func() { close(waiting) }) })
+	t.Cleanup(restoreWait)
 	later := start()
 	select {
 	case <-waiting:
@@ -1231,9 +1224,8 @@ func TestHubRelayInitiatingRequestCancellationStopsInitialSubscribeAndAllowsFres
 	}
 
 	waiterJoined := make(chan struct{}, 1)
-	previousObserveWait := observeHubRelayWait
-	observeHubRelayWait = func() { waiterJoined <- struct{}{} }
-	defer func() { observeHubRelayWait = previousObserveWait }()
+	restoreWait := installObserveHubRelayWait(func() { waiterJoined <- struct{}{} })
+	defer restoreWait()
 	go func() {
 		startResults <- relays.startRelay(context.Background(), source, appwire.ThreadReadParams{}, source.thread)
 	}()
@@ -1265,7 +1257,7 @@ func TestHubRelayInitiatingRequestCancellationStopsInitialSubscribeAndAllowsFres
 	default:
 	}
 
-	observeHubRelayWait = previousObserveWait
+	restoreWait()
 	freshResult := make(chan error, 1)
 	go func() {
 		freshResult <- relays.startRelay(context.Background(), source, appwire.ThreadReadParams{}, source.thread)

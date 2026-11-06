@@ -405,13 +405,10 @@ func TestDeletionFenceTurnStartDoesNotWaitForRelayWhileOwningTarget(t *testing.T
 	defer relays.stopRelay("local:" + threadID)
 
 	waiterJoined := make(chan struct{}, 1)
-	previousObserveWait := observeHubRelayWait
-	observeHubRelayWait = func() {
+	restoreWait := installObserveHubRelayWait(func() {
 		waiterJoined <- struct{}{}
-	}
-	t.Cleanup(func() {
-		observeHubRelayWait = previousObserveWait
 	})
+	t.Cleanup(restoreWait)
 
 	initializerDone := make(chan error, 1)
 	go func() {

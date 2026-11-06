@@ -7,7 +7,7 @@ import { VoiceClient, type NativeVoicePort, type VoiceSnapshot } from "./voiceCl
 
 vi.mock("react-native", async () => (await import("../renderNative.testkit")).nativeModuleMock());
 
-it("requires disclosure consent, keeps takeover explicit, and sends Talk only to native", async () => {
+it("arms in one tap with a visible disclosure, keeps takeover explicit, and sends Talk only to native", async () => {
 	const actions: string[] = [];
 	const requests: Record<string, unknown>[] = [];
 	let state: VoiceSnapshot = {
@@ -22,6 +22,7 @@ it("requires disclosure consent, keeps takeover explicit, and sends Talk only to
 		canonical: "",
 		generated: "",
 		bindingId: "",
+		provider: "",
 	};
 	const native: NativeVoicePort = {
 		deviceId: async () => "install",
@@ -68,6 +69,7 @@ it("requires disclosure consent, keeps takeover explicit, and sends Talk only to
 				epoch: "opaque",
 				grant: "fixture",
 				expiresAt: "2030-01-01T00:00:00Z",
+				provider: "openai",
 			}),
 		};
 	};
@@ -89,24 +91,9 @@ it("requires disclosure consent, keeps takeover explicit, and sends Talk only to
 	await act(async () => {
 		button("Arm").props.onPress();
 	});
-	expect(requests).toHaveLength(0);
-	expect(actions).toEqual([]);
-	expect(button("Talk").props.disabled).toBe(true);
-	await act(async () => {
-		button("Cancel").props.onPress();
-	});
+	// Arm goes straight to the hub; the disclosure is always visible beside it.
 	expect(button("I understand · Arm voice")).toBeUndefined();
-	expect(requests).toHaveLength(0);
-	expect(actions).toEqual([]);
-	expect(button("Talk").props.disabled).toBe(true);
-	await act(async () => {
-		button("Arm").props.onPress();
-	});
-	expect(requests).toHaveLength(0);
-	expect(actions).toEqual([]);
-	await act(async () => {
-		button("I understand · Arm voice").props.onPress();
-	});
+	expect(tree.root.findByProps({ testID: "voice-arm-disclosure" })).toBeDefined();
 	expect(requests).toHaveLength(1);
 	expect(requests[0].takeover).toBe(false);
 	expect(actions).toEqual([]);
@@ -117,6 +104,7 @@ it("requires disclosure consent, keeps takeover explicit, and sends Talk only to
 	});
 	expect(requests[1].takeover).toBe(true);
 	expect(button("Talk").props.disabled).toBe(false);
+	expect(JSON.stringify(tree.toJSON())).toContain("openai");
 	await act(async () => {
 		button("Talk").props.onPress();
 		button("Stop speaking").props.onPress();

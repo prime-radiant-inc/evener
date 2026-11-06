@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"os"
 	"path/filepath"
 	"time"
 )
@@ -101,9 +100,14 @@ type catalogHeader struct {
 // skipped and its name recorded in Catalog.SkippedPlugins instead of failing
 // ParseCatalog for the whole marketplace (design spec §7) — every other
 // plugin in the marketplace remains browsable and installable.
+//
+// The read goes through readMetadataFile's non-blocking open, so a FIFO
+// substituted for the catalog fails here instead of parking on the open. That
+// matters because AddMarketplace parses inside the store lock: a blocked parse
+// wedges every later plugin operation (#4847).
 func ParseCatalog(marketplaceRoot string) (Catalog, error) {
 	p := filepath.Join(marketplaceRoot, ".claude-plugin", "marketplace.json")
-	data, err := os.ReadFile(p)
+	data, err := readMetadataFile(p)
 	if err != nil {
 		return Catalog{}, fmt.Errorf("reading %s: %w", p, err)
 	}

@@ -133,6 +133,7 @@ agent/session_poisoned_wake_gate_test.go	1
 agent/session_queue_cancel_test.go	1
 agent/session_queue_promote_test.go	2
 agent/session_resolve_profile_test.go	1
+agent/session_set_model_test.go	1
 agent/session_surface_behavior_test.go	1
 agent/session_tool_repair_issue621_test.go	13
 agent/session_tool_repair_oneof_multimatch_test.go	3

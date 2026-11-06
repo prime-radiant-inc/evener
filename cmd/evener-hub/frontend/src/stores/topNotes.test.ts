@@ -3,6 +3,7 @@ import { act, renderHook, waitFor } from "@testing-library/react";
 import { beforeEach, expect, test } from "vitest";
 import { cascadeClient, cascadeContext } from "../panes/zoom/cascadeTestUtils";
 import { resetWorkspaceStoreForTests, workspaceStore } from "../shell/workspace";
+import { ALL_CAPABILITIES } from "../threadTestUtils";
 import { connectionStore } from "./connection";
 import { resetPanelStoreEvictionForTests } from "./panelStoreEviction";
 import { acquireSessionActivity, sessionActivitySnapshot } from "./sessionActivity";
@@ -15,22 +16,6 @@ beforeEach(() => {
   resetWorkspaceStoreForTests();
   resetThreadsStoreForTests();
 });
-
-const FULL_CAPABILITIES = {
-  send: true,
-  steer: true,
-  interrupt: true,
-  compact: true,
-  clear: true,
-  forkFromTurn: true,
-  shutdown: true,
-  changeModel: true,
-  changeVisionModel: true,
-  queue: true,
-  goal: true,
-  sharedNotes: true,
-  rename: true,
-} as const;
 
 function makeModel(overrides: Partial<ThreadModel> = {}): ThreadModel {
   const { jobsTreeRevision = null, ...rest } = overrides;
@@ -49,7 +34,7 @@ function makeModel(overrides: Partial<ThreadModel> = {}): ThreadModel {
     tasks: null,
     jobsUpdatedAt: null,
     lastFrameAt: 0,
-    capabilities: FULL_CAPABILITIES,
+    capabilities: ALL_CAPABILITIES,
     goal: null,
     humanNote: "",
     agentNote: "",

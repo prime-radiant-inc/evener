@@ -54,6 +54,7 @@ export type CurrentTranscriptFields = Pick<
   | "jobsUpdatedAt"
   | "jobsTreeRevision"
   | "olderCursor"
+  | "olderFrontier"
   | "lastFrameAt"
   | "modelRetry"
   | "goal"
@@ -736,6 +737,7 @@ export function validCurrentFields(value: unknown): value is CurrentTranscriptFi
   if (value.parentRef !== undefined && typeof value.parentRef !== "string") return false;
   if (value.imageSessionId !== undefined && typeof value.imageSessionId !== "string") return false;
   if (value.olderCursor !== undefined && typeof value.olderCursor !== "string") return false;
+  if (value.olderFrontier !== undefined && typeof value.olderFrontier !== "string") return false;
   if (value.cost !== undefined && value.cost !== null && typeof value.cost !== "string") return false;
   if (value.failedToolCalls !== undefined && !isFiniteNumber(value.failedToolCalls)) return false;
   if (value.activeTurnId !== undefined && typeof value.activeTurnId !== "string") return false;

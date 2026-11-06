@@ -13,6 +13,7 @@ const state: VoiceSnapshot = {
 	canonical: "",
 	generated: "",
 	bindingId: "binding",
+	provider: "",
 };
 const target = {
 	hub: { id: "hub", name: "Hub", origin: "http://127.0.0.1:9180" },
@@ -169,8 +170,8 @@ it("arms only an advertised manager and sends no RPC or PCM through foreground a
 		ref: "local:chief",
 		expectedInstanceId: "instance",
 		deviceId: "install",
-		provider: "openai",
-		model: "gpt-realtime-2.1-mini",
+		provider: "",
+		model: "gpt-realtime-2.1",
 		voice: "marin",
 		takeover: false,
 	});

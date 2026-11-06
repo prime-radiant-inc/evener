@@ -100,7 +100,7 @@ func parseSkillDocument(data []byte) (frontmatter.Document, bool, error) {
 	if !errors.Is(decoder.Decode(&extra), io.EOF) {
 		return document, false, err
 	}
-	if !recoveryMappingKeysUnique(root, true) {
+	if frontmatter.MappingKeysUnique(root, true) != nil {
 		return document, false, err
 	}
 	var meta map[string]any
@@ -108,43 +108,4 @@ func parseSkillDocument(data []byte) (frontmatter.Document, bool, error) {
 		return document, false, err
 	}
 	return frontmatter.Document{Meta: meta, Body: body, Framing: frontmatter.Framed}, true, nil
-}
-
-// Compare decoded keys without rewriting nodes, which could turn an alias into
-// a merge directive. The root decodes to map[string]any, while nested mappings
-// retain their scalar key types. Visit contained nodes only, since aliases can
-// recurse.
-func recoveryMappingKeysUnique(node *yaml.Node, stringKeys bool) bool {
-	if node.Kind == yaml.MappingNode {
-		seen := make(map[any]bool, len(node.Content)/2)
-		for i := 0; i < len(node.Content); i += 2 {
-			key := node.Content[i]
-			if key.Kind == yaml.AliasNode {
-				key = key.Alias
-			}
-			if key == nil || key.Kind != yaml.ScalarNode {
-				return false
-			}
-			var decoded any
-			if stringKeys {
-				var text string
-				if err := key.Decode(&text); err != nil {
-					return false
-				}
-				decoded = text
-			} else if err := key.Decode(&decoded); err != nil {
-				return false
-			}
-			if seen[decoded] {
-				return false
-			}
-			seen[decoded] = true
-		}
-	}
-	for _, child := range node.Content {
-		if !recoveryMappingKeysUnique(child, false) {
-			return false
-		}
-	}
-	return true
 }

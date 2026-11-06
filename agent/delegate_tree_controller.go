@@ -903,11 +903,20 @@ func delegateRowVisibleTo(s *Session, parentID, ownerSessionID, visibleSessionID
 	if parentID != "" {
 		return true
 	}
-	creator := visibleSessionID
-	if creator == "" {
-		creator = ownerSessionID
-	}
+	creator := delegateCreatorSessionID(visibleSessionID, ownerSessionID)
 	return ownerSessionID == "" || creator == s.id || ownerSessionID == s.id
+}
+
+// delegateCreatorSessionID is the session that ran a delegate's create — the
+// identity a session's own delegate listings must key on. ReserveCreate
+// records the physical root that admitted the runtime as OwnerSessionID and
+// the creating session as VisibleSessionID (issue #4904); only descriptors
+// written before that split fall back to the owner.
+func delegateCreatorSessionID(visibleSessionID, ownerSessionID string) string {
+	if visibleSessionID != "" {
+		return visibleSessionID
+	}
+	return ownerSessionID
 }
 
 // closeStableWorktreeResumability atomically revalidates that a direct-owned

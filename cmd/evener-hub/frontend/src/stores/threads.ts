@@ -44,6 +44,7 @@ import {
   canonicalSkillNames,
   collectAuthoritativeMutationIds,
   errorText,
+  frontierFromCursor,
   hydrateThread,
   type InputAttachment,
   invalidateHistory,
@@ -54,11 +55,14 @@ import {
   mergeOlderItemPage,
   mutationErrorData,
   notificationRoutingKey,
+  olderHistoryExhausted,
   pruneBackgroundHistoryBodies,
   resolvePendingEscalation,
+  retireThreadSubscriptions,
   SHUT_DOWN_STATUSES,
   type ThreadSubscriptionLease,
   WireError,
+  wireThreadSubscriptions,
 } from "@evener/appwire-client";
 import {
   COMPOSER_METHODS,
@@ -4271,6 +4275,10 @@ async function readThreadHydration(
   // the items TranscriptItemCursorStale exists to protect, since the window
   // alone cannot answer for them. hydrateThread discards the held history
   // instead, matching the hub's intent.
+  // The hub only sets OlderCursor/Snapshot inside IncludeTurns, so a lean
+  // watched read never asked for history: its absent cursor is not a
+  // source-named end of older history (#5585).
+  const frontier = includeTurns ? frontierFromCursor(response) : "unknown";
   const model =
     !discardHeldHistory && pending.baseModel?.history !== undefined
       ? tracked
@@ -4282,8 +4290,8 @@ async function readThreadHydration(
             threadsStore.getState().cacheLifetimes.get(ref),
             threadsStore.getState().threads.get(ref),
           )
-        : applyReadResponse(pending.baseModel, response, now)
-      : hydrateThread(response, ref, now);
+        : applyReadResponse(pending.baseModel, response, now, frontier)
+      : hydrateThread(response, ref, now, frontier);
   // The response cut retires buffered input from the legacy hydrator because
   // its snapshot is authoritative for that route. The entry repository also
   // receives this input, but only comparable versions may supersede the read:
@@ -7095,12 +7103,17 @@ async function handleReady(
 // updated by the caller, so a stale firing between the two calls still sees
 // the outgoing client's identity (never a half-swapped one).
 function teardownWiring(): void {
+  const outgoingClient = getWiredClient();
   const epoch = advanceReadyEpoch();
   residencyIfCreated?.connection(epoch, false);
   threadsStore.setState({ mutationAuthorityRefs: new Set() });
   // Old leases belong to the outgoing client. The next hydration joins the
   // replacement client's membership without affecting activity owners.
   releaseThreadSubscriptions();
+  // The subscription registry belongs to the outgoing connection too: retire
+  // its handlers rather than letting them fire for a client this store no
+  // longer holds.
+  if (outgoingClient) retireThreadSubscriptions(outgoingClient);
   retireAllOwnedHydrations();
   dispatchReadyClient = null;
   dispatchReadyEpoch = -1;
@@ -7115,6 +7128,10 @@ function rewireClient(client: AppwireClientLike): void {
   if (client === getWiredClient()) return;
   teardownWiring();
   setWiredClient(client);
+  // Wire the shared subscription registry here, at connection time, so its
+  // notification handler is registered once per connection instead of on the
+  // first store action that happens to acquire a thread subscription.
+  wireThreadSubscriptions(client);
   unwireNotification = client.onNotification(handleNotification);
   unwireReady = client.onReady(
     readyGenerationCallback(client, getWiredClient, () => {
@@ -7931,6 +7948,7 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
       if (!model) return;
       const capturedRef = model.ref;
       const capturedCursor = model.olderCursor;
+      const capturedFrontier = model.olderFrontier;
       const capturedHydrations = threadsStore.getState().hydrations.get(ref) ?? 0;
       const capturedPageGeneration = olderPageGeneration(ref);
       const fixture = entryTranscriptRoute(ref);
@@ -7952,6 +7970,7 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
           getReadyEpoch() === capturedEpoch &&
           current.ref === capturedRef &&
           current.olderCursor === capturedCursor &&
+          current.olderFrontier === capturedFrontier &&
           fixtureState?.localBefore === capturedLocalBefore &&
           (threadsStore.getState().hydrations.get(ref) ?? 0) === capturedHydrations &&
           olderPageGeneration(ref) === capturedPageGeneration &&
@@ -7966,6 +7985,12 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
       // frontier runs the bounded reconciliation; no local certificate is an
       // ordinary server continuation.
       if (fixtureState && fixtureRepository) {
+        const recoverAuthoritatively = async (): Promise<boolean> => {
+          if (!stillOwned()) return false;
+          fixtureState.localBefore = undefined;
+          await refreshTrackedThread(client, capturedEpoch, capturedRef, true);
+          return true;
+        };
         const outcome = await fixtureRepository.loadOlderPage(
           TRANSCRIPT_ITEM_PAGE_SIZE,
           fixtureState.lifetime,
@@ -8012,9 +8037,19 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
           // A local-only scheduling key is never an opaque source cursor.
           // If its cache lookup is unavailable, recover through the normal
           // authoritative read rather than sending the display key on the wire.
-          if (!stillOwned()) return;
-          fixtureState.localBefore = undefined;
-          await refreshTrackedThread(client, capturedEpoch, capturedRef, true);
+          await recoverAuthoritatively();
+          return;
+        }
+        if (!capturedCursor && !olderHistoryExhausted(model)) {
+          // Deliberate verdict (#5586): a cursorless frontier is exhausted only
+          // when a source read or page named it "none". A cache seed's frontier
+          // is unknown, and the repository deliberately routes it to "server"
+          // rather than latching "exhausted" (#5567). With no cursor there is no
+          // ordinary continuation to send, so the demand must reach the
+          // authoritative read that establishes the frontier; returning here
+          // would dead-end it with no network read. A source-named "none" falls
+          // through to the ordinary no-cursor return below (genuine history end).
+          await recoverAuthoritatively();
           return;
         }
       }

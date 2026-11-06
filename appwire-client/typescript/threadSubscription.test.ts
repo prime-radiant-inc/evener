@@ -4,8 +4,92 @@ import { SessionActivityStore } from "./sessionActivityStore";
 import { activityClient, activityRef, activityState, threadFixture } from "./sessionActivityTestUtils";
 import { deferred } from "./testing/deferred";
 import { callsTo } from "./testing/fakeClient";
-import { acquireThreadSubscription } from "./threadSubscription";
+import { acquireThreadSubscription, retireThreadSubscriptions, wireThreadSubscriptions } from "./threadSubscription";
 import type { ThreadReadResponse } from "./types.gen";
+
+test("wireThreadSubscriptions wires one registry and retirement releases it", () => {
+  const client = activityClient();
+  wireThreadSubscriptions(client);
+  expect(client.listenerCount).toBe(2); // connection state + status notifications
+  wireThreadSubscriptions(client);
+  expect(client.listenerCount).toBe(2); // idempotent for one client
+  retireThreadSubscriptions(client);
+  expect(client.listenerCount).toBe(0);
+});
+
+test("a status frame keeps shared metadata current across a closed and re-opened viewer", async () => {
+  const client = activityClient();
+  const response: ThreadReadResponse = {
+    thread: { ...threadFixture().thread, id: "wire-root", sessionId: "root-session", status: { type: "active" } },
+  };
+  client.on("thread/read", () => response);
+  // The transcript owner keeps the wire subscription alive across the
+  // inspector's lifetime, so re-opening must reuse it rather than re-read.
+  const transcript = acquireThreadSubscription(client, activityRef);
+  await transcript.ensure();
+  const inspector = acquireThreadSubscription(client, activityRef);
+  await inspector.ensure();
+  expect(inspector.metadata?.()?.status).toEqual({ type: "active" });
+
+  client.emitNotification({
+    method: "thread/status/changed",
+    params: { ref: activityRef, threadId: "wire-root", status: { type: "idle" } },
+  });
+  expect(transcript.metadata?.()?.status).toEqual({ type: "idle" });
+
+  inspector.release();
+  const reopened = acquireThreadSubscription(client, activityRef);
+  await reopened.ensure();
+  expect(callsTo(client, "thread/read")).toBe(1);
+  expect(reopened.metadata?.()).toEqual({
+    threadId: "wire-root",
+    sessionId: "root-session",
+    status: { type: "idle" },
+  });
+  reopened.release();
+  transcript.release();
+});
+
+test("a read issued before a newer status frame cannot revert the shared status", async () => {
+  const client = activityClient(),
+    late = deferred<ThreadReadResponse>(),
+    entered = deferred<void>();
+  const active: ThreadReadResponse = {
+    thread: { ...threadFixture().thread, id: "wire-root", sessionId: "root-session", status: { type: "active" } },
+  };
+  let reads = 0;
+  client.on("thread/read", () => {
+    reads += 1;
+    if (reads === 1) return active;
+    entered.resolve();
+    return late.promise;
+  });
+  const transcript = acquireThreadSubscription(client, activityRef);
+  await transcript.ensure();
+  expect(transcript.metadata?.()?.status).toEqual({ type: "active" });
+
+  // This read is issued while the thread is active; the frame that lands
+  // while it is on the wire is newer than the snapshot it will carry.
+  const inspector = acquireThreadSubscription(client, activityRef);
+  const pending = inspector.read({ includeTurns: true });
+  await entered.promise;
+  client.emitNotification({
+    method: "thread/status/changed",
+    params: { ref: activityRef, threadId: "wire-root", status: { type: "idle" } },
+  });
+  expect(transcript.metadata?.()?.status).toEqual({ type: "idle" });
+
+  late.resolve(active);
+  expect(await pending).toBe(active);
+  expect(transcript.metadata?.()?.status).toEqual({ type: "idle" });
+  inspector.release();
+  const reopened = acquireThreadSubscription(client, activityRef);
+  await reopened.ensure();
+  expect(reopened.metadata?.()?.status).toEqual({ type: "idle" });
+  expect(callsTo(client, "thread/read")).toBe(2);
+  reopened.release();
+  transcript.release();
+});
 
 test("shared leases expose only admitted runtime metadata, including after a rich read", async () => {
   const client = activityClient(),

@@ -1,6 +1,6 @@
 import { useState, useSyncExternalStore } from "react";
 import { View } from "react-native";
-import { Group, Row, TextFieldRow } from "../sheet/Grouped";
+import { Row } from "../sheet/Grouped";
 import { HeaderButton } from "../sheet/HeaderButton";
 import { Copy, ErrorMessage } from "../ui";
 import { defaultVoiceOptions, type VoiceClient, type VoiceTarget, VoiceError } from "./voiceClient";
@@ -14,11 +14,9 @@ export function VoiceControls({ target }: { target: VoiceTarget }) {
 function Controls({ client, target }: { client: VoiceClient; target: VoiceTarget }) {
 	const state = useSyncExternalStore(client.subscribe, client.getSnapshot);
 	const [expanded, setExpanded] = useState(false);
-	const [consent, setConsent] = useState(false);
 	const [busy, setBusy] = useState(false);
 	const [takeover, setTakeover] = useState(false);
 	const [error, setError] = useState<string | null>(null);
-	const [options, setOptions] = useState(defaultVoiceOptions);
 	const bound = client.getTarget();
 	const armed = state.state !== "disarmed";
 	const same = bound?.ref === target.ref && bound.hub.id === target.hub.id;
@@ -26,8 +24,7 @@ function Controls({ client, target }: { client: VoiceClient; target: VoiceTarget
 		setBusy(true);
 		setError(null);
 		try {
-			await client.arm(target, options, replace);
-			setConsent(false);
+			await client.arm(target, defaultVoiceOptions, replace);
 			setTakeover(false);
 		} catch (failure) {
 			if (failure instanceof VoiceError && failure.code === "binding_owned") setTakeover(true);
@@ -61,6 +58,18 @@ function Controls({ client, target }: { client: VoiceClient; target: VoiceTarget
 					{!target.manager && !armed ? (
 						<Copy muted>Select an existing manager session, or explicitly start one with Start as Manager.</Copy>
 					) : null}
+					<View testID="voice-arm-disclosure">
+						<Copy muted>
+							Arming lets nearby people or recordings issue requests and hear replies, including while locked. Wake is
+							not speaker identification.
+						</Copy>
+						<Copy muted>
+							Voice uses{" "}
+							{state.provider ? `the hub's ${state.provider} provider` : "the hub's OpenAI Realtime provider"}, separate
+							from the manager's model provider. Audio is not used for API training by default, but is retained for
+							abuse monitoring up to 30 days; store:false is not zero retention.
+						</Copy>
+					</View>
 					<View style={{ flexDirection: "row", flexWrap: "wrap" }}>
 						{armed ? (
 							<HeaderButton
@@ -72,7 +81,13 @@ function Controls({ client, target }: { client: VoiceClient; target: VoiceTarget
 								}}
 							/>
 						) : (
-							<HeaderButton label="Arm" disabled={!target.manager || busy} onPress={() => setConsent(true)} />
+							<HeaderButton
+								label="Arm"
+								disabled={!target.manager || busy}
+								onPress={() => {
+									void arm();
+								}}
+							/>
 						)}
 						<HeaderButton
 							label="Talk"
@@ -84,51 +99,14 @@ function Controls({ client, target }: { client: VoiceClient; target: VoiceTarget
 					{state.speakerConsentRequired ? (
 						<Row label="Allow future speech on iPhone speaker" onPress={() => client.allowSpeaker()} />
 					) : null}
-					{consent && !armed ? (
-						<Group>
-							<Copy>
-								While armed, nearby people or recordings can issue requests and hear replies, including while locked.
-								Voice is not speaker authentication. Existing tool approvals still need the authenticated screen.
-							</Copy>
-							<Copy>
-								Talk starts cloud audio. Quiet listening stays on this phone. Wake activation is unavailable. Speech may
-								paraphrase the canonical reply below. The voice provider may differ from your manager model. OpenAI API
-								audio is not used for training by default, but default abuse-monitoring retention is 30 days, not zero.
-							</Copy>
-							<TextFieldRow
-								label="Voice provider instance"
-								value={options.provider}
-								onChangeText={(provider) => setOptions({ ...options, provider })}
-							/>
-							<TextFieldRow
-								label="Voice model"
-								value={options.model}
-								onChangeText={(model) => setOptions({ ...options, model })}
-							/>
-							<TextFieldRow
-								label="Voice"
-								value={options.voice}
-								onChangeText={(voice) => setOptions({ ...options, voice })}
-							/>
-							<HeaderButton
-								label="I understand · Arm voice"
-								busy={busy}
-								disabled={busy}
-								onPress={() => {
-									void arm();
-								}}
-							/>
-							{takeover ? (
-								<HeaderButton
-									label="Take over the other armed device"
-									disabled={busy}
-									onPress={() => {
-										void arm(true);
-									}}
-								/>
-							) : null}
-							<HeaderButton label="Cancel" disabled={busy} onPress={() => setConsent(false)} />
-						</Group>
+					{takeover && !armed ? (
+						<HeaderButton
+							label="Take over the other armed device"
+							disabled={busy}
+							onPress={() => {
+								void arm(true);
+							}}
+						/>
 					) : null}
 					{state.interpreted ? <Copy selectable>Interpreted: {state.interpreted}</Copy> : null}
 					{state.custody ? <Copy muted>Delivery: {state.custody}</Copy> : null}

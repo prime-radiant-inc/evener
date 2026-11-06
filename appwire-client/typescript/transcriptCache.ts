@@ -75,6 +75,7 @@ const CURRENT_TRANSCRIPT_FIELD_KEYS = [
   "jobsUpdatedAt",
   "jobsTreeRevision",
   "olderCursor",
+  "olderFrontier",
   "lastFrameAt",
   "modelRetry",
   "goal",
