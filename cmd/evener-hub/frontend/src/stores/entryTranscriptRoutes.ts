@@ -1110,7 +1110,7 @@ function launchEntryOpeningRecovery(ref: string, route: EntryTranscriptRoute): v
     // and a promotion re-open that misses its stalled window re-enters the
     // paced attempts below instead of ending the chain. The cap keeps
     // storage that never answers from looping the handoff.
-    let sourceHandoffs = 0;
+    let sourceHandedOff = false;
     for (;;) {
       const opened = await openEntryTranscript(ref, true);
       if (opened) {
@@ -1162,8 +1162,8 @@ function launchEntryOpeningRecovery(ref: string, route: EntryTranscriptRoute): v
       // discards the failed history wholesale, so the gate cannot outlive
       // the state it describes.
       if (store().getState().threads.get(ref)?.history?.failed !== undefined) return;
-      if (sourceHandoffs >= 1) return;
-      sourceHandoffs += 1;
+      if (sourceHandedOff) return;
+      sourceHandedOff = true;
       route.repository?.beginFreshBaseline();
       publishEntryTranscriptModel(ref);
       try {
@@ -1193,11 +1193,10 @@ function launchEntryOpeningRecovery(ref: string, route: EntryTranscriptRoute): v
       // by the stalled-open window: a read that outlasts it — healthy but
       // slow — re-enters the paced attempts below rather than ending the
       // chain, because the miss sets the route's markers and no caller
-      // follows the chain's own re-open to re-arm them. The storage chain
-      // gets one fresh paced budget behind the handoff (the baseline its
-      // re-open certifies just changed), still bounded by the handoff cap
-      // above.
+      // follows the chain's own re-open to re-arm them.
       if (holdsCompleteForegroundWindow(store().getState().threads.get(ref), route.repository)) return;
+      // The handoff changed the baseline its re-open certifies, so the
+      // chain gets one fresh paced budget behind it.
       stalledAttempts = 0;
     }
   })().then(
