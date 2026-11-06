@@ -1147,18 +1147,7 @@ func (s *Session) hubWatchStateRetryDelay(failures int) time.Duration {
 	if s.cfg.testOnly.hubWatchRetryDelay > 0 {
 		base = s.cfg.testOnly.hubWatchRetryDelay
 	}
-	if base > hubWatchStateRetryCeiling {
-		base = hubWatchStateRetryCeiling
-	}
-	if failures < 1 {
-		return base
-	}
-	shift := min(failures-1, 6)
-	delay := base << shift
-	if delay <= 0 || delay > hubWatchStateRetryCeiling {
-		return hubWatchStateRetryCeiling
-	}
-	return delay
+	return backoffDelay(max(failures-1, 0), min(base, hubWatchStateRetryCeiling), hubWatchStateRetryCeiling)
 }
 
 // hubWatchStateOutageBudget bounds how long the rebind loop keeps a watch

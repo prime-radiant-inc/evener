@@ -2,7 +2,6 @@ package hub
 
 import (
 	"context"
-	"encoding/json"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -71,11 +70,7 @@ func TestManagerWatchSurvivesSameTargetHistoryRotation(t *testing.T) {
 		t.Fatal(ctx.Err())
 	}
 	emitResync := func() {
-		raw, err := json.Marshal(appwire.ThreadResyncParams{Ref: ref, ThreadID: "target"})
-		if err != nil {
-			t.Fatal(err)
-		}
-		pool.emit(t, appwire.Notification{Method: appwire.NotifyEvenerThreadResync, Params: raw})
+		pool.emit(t, *appwire.NotificationMessage(appwire.NotifyEvenerThreadResync, appwire.ThreadResyncParams{Ref: ref, ThreadID: "target"}).Notification)
 	}
 	emitResync()
 	// The re-read after the resync serves the rotated history. The runtime must
@@ -104,11 +99,7 @@ reanchored:
 	item := appwire.ThreadItem{ID: "rotated-done", TranscriptKey: "rotated-done", Observation: &appwire.SessionObservationMetadata{
 		TurnID: "watched-turn", EntryID: "rotated-done", EndTurn: true, EndReason: "done", TerminalAccepted: &accepted, CausalKnown: true,
 	}}
-	raw, err := json.Marshal(appwire.HistoryUpdatedParams{Ref: ref, ThreadID: "target", BootGeneration: "1", Epoch: 2, Snapshot: appwire.SnapshotIdentity{Incarnation: "history-b", Length: 3}, Items: []appwire.ThreadItem{item}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	pool.emit(t, appwire.Notification{Method: appwire.NotifyHistoryUpdated, Params: raw})
+	pool.emit(t, *appwire.NotificationMessage(appwire.NotifyHistoryUpdated, appwire.HistoryUpdatedParams{Ref: ref, ThreadID: "target", BootGeneration: "1", Epoch: 2, Snapshot: appwire.SnapshotIdentity{Incarnation: "history-b", Length: 3}, Items: []appwire.ThreadItem{item}}).Notification)
 	for {
 		select {
 		case u, ok := <-updates:

@@ -4,6 +4,7 @@ import (
 	"testing"
 	"time"
 
+	"primeradiant.com/evener/agent/internal/tool"
 	"primeradiant.com/evener/appwire"
 )
 
@@ -38,24 +39,15 @@ func TestManagerWatchSurvivesBindingOutageUntilConnectionRestores(t *testing.T) 
 	}
 	base.streams <- first
 	root.SetHubClient(base)
-	if _, err := root.configureHubWatchRuntime(ctx, map[string]any{"operation": "create", "hub": map[string]any{"ref": ref, "events": []string{"communicate"}, "completion": true}}); err != nil {
+	res, err := root.configureHubWatchRuntime(ctx, map[string]any{"operation": "create", "hub": map[string]any{"ref": ref, "events": []string{"communicate"}, "completion": true}})
+	if err != nil {
 		t.Fatal(err)
 	}
+	watchID := res.(tool.StateResult).State.(jobWatchToolResult).WatchID
 	<-base.watches
 	jm := root.jobManager
 	if jm == nil {
 		t.Fatal("missing journal owner")
-	}
-	jm.mu.Lock()
-	var watchID string
-	for _, cfg := range jm.watches {
-		if cfg.hubRef == ref {
-			watchID = cfg.watchID
-		}
-	}
-	jm.mu.Unlock()
-	if watchID == "" {
-		t.Fatal("registration did not arm a watch")
 	}
 
 	// Outage: the stream dies and every state read fails. The watch must keep
@@ -91,20 +83,12 @@ func TestManagerWatchSurvivesBindingOutageUntilConnectionRestores(t *testing.T) 
 	base.mu.Lock()
 	base.offline = false
 	base.mu.Unlock()
-	select {
-	case <-base.watches:
-	case <-ctx.Done():
-		t.Fatal("restored connection did not re-anchor the watch subscription")
-	}
+	awaitWithin(t, 5*time.Second, "rebind after connection restore", func() { <-base.watches })
 	accepted := true
 	terminal := appwire.SessionObservationMetadata{Ref: ref, InstanceID: instance, GenerationID: generation, EntryID: "terminal:A", TurnID: "A", CausalKnown: true, TerminalAccepted: &accepted, EndTurn: true, EndReason: "done"}
 	second <- appwire.SessionWatchUpdate{Event: "communicate", Metadata: terminal}
 
-	select {
-	case <-base.ended:
-	case <-time.After(5 * time.Second):
-		t.Fatal("watch survived the outage but did not complete on the restored connection")
-	}
+	awaitWithin(t, 5*time.Second, "watch completion after outage recovery", func() { <-base.ended })
 	if got := countWatchSends(t, jm, watchID, instance+"/"+generation+"/terminal:A:communicate:completed"); got != 1 {
 		t.Fatalf("completion deliveries after outage recovery=%d, want 1", got)
 	}
@@ -136,24 +120,15 @@ func TestManagerWatchOutagePastBudgetEndsDurably(t *testing.T) {
 	}
 	base.streams <- first
 	root.SetHubClient(base)
-	if _, err := root.configureHubWatchRuntime(ctx, map[string]any{"operation": "create", "hub": map[string]any{"ref": ref, "events": []string{"communicate"}, "completion": true}}); err != nil {
+	res, err := root.configureHubWatchRuntime(ctx, map[string]any{"operation": "create", "hub": map[string]any{"ref": ref, "events": []string{"communicate"}, "completion": true}})
+	if err != nil {
 		t.Fatal(err)
 	}
+	watchID := res.(tool.StateResult).State.(jobWatchToolResult).WatchID
 	<-base.watches
 	jm := root.jobManager
 	if jm == nil {
 		t.Fatal("missing journal owner")
-	}
-	jm.mu.Lock()
-	var watchID string
-	for _, cfg := range jm.watches {
-		if cfg.hubRef == ref {
-			watchID = cfg.watchID
-		}
-	}
-	jm.mu.Unlock()
-	if watchID == "" {
-		t.Fatal("registration did not arm a watch")
 	}
 
 	// The binding goes offline for the rest of the test; the outage outlasts
@@ -162,11 +137,7 @@ func TestManagerWatchOutagePastBudgetEndsDurably(t *testing.T) {
 	base.offline = true
 	base.mu.Unlock()
 	close(first)
-	select {
-	case <-base.ended:
-	case <-time.After(5 * time.Second):
-		t.Fatal("outage that outlasted the budget did not end the watch")
-	}
+	awaitWithin(t, 5*time.Second, "durable end after the outage outlasted the budget", func() { <-base.ended })
 	if managerHubWatchPresent(jm, watchID) {
 		t.Fatal("outage past the budget left the watch armed")
 	}
