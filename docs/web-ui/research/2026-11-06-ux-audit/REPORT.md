@@ -142,7 +142,7 @@ Ranking is by user impact: how often the surface is seen, how much it blocks, an
 
 **Evidence**
 
-- `shots/warning-retry.png`: the warning is 670x107 at x=537. Text: "Summary output rejected"; "Summary failed for session model lunaroute/deepseek-4.1-flash-abliterated: rejected_output, empty_reply"; "The response could not safely replace the conversation. Retry or choose a more capable summary model. Existing history or the checkpoint remains available."
+- `shots/15-warning-retry.png`: the warning is 670x107 at x=537. Text: "Summary output rejected"; "Summary failed for session model lunaroute/deepseek-4.1-flash-abliterated: rejected_output, empty_reply"; "The response could not safely replace the conversation. Retry or choose a more capable summary model. Existing history or the checkpoint remains available."
 - Measured: the warning row contains **zero** `button` or `a` elements.
 - Source: `cmd/evener-hub/frontend/src/panes/session/transcript/messages/WarningItem.tsx:74-87` renders `Chip`, message, hint only. `WarningBlock` has no action slot, so every warning of this family is text-only.
 - The raw wire codes (`rejected_output, empty_reply`) are shown to the reader before any plain-language cause.

@@ -483,10 +483,19 @@ function PaletteBody({
   );
 
   // Reset the active row whenever the row list is rebuilt (§2.3/§2.4:
-  // active = first row, or none when empty). Keyed on the view memo, which
-  // only changes when the data deps do - never on a bare activeIndex change.
+  // active = first row, or none when empty), except that an arrow-picked
+  // command keeps its highlight when late search or needs-you rows land.
+  // Keyed on the view memo, which only changes when the data deps do - never
+  // on a bare activeIndex change.
   useEffect(() => {
-    setActiveIndex(view.items.length > 0 ? 0 : -1);
+    setActiveIndex((previous) => {
+      const selected = view.items[previous];
+      if (selected?.kind === "command") {
+        const next = view.items.findIndex((item) => item.kind === "command" && item.command.id === selected.command.id);
+        if (next >= 0) return next;
+      }
+      return view.items.length > 0 ? 0 : -1;
+    });
   }, [view]);
 
   function move(dir: number) {
