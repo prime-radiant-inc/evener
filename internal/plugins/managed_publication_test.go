@@ -54,6 +54,43 @@ func TestCopyTreeSkipsGitAndRefusesGitAlias(t *testing.T) {
 	}
 }
 
+// TestManagedInstallRefusesCompanionLinkToGitConfig is the end-to-end check
+// for #4768: it runs the real materializer and publication path over a local
+// directory fixture whose differently named link resolves to .git/config. The
+// sentinel is nonsecret. The install must refuse, and no copy of the sentinel
+// may reach the store.
+func TestManagedInstallRefusesCompanionLinkToGitConfig(t *testing.T) {
+	skipWithoutGit(t)
+	const sentinel = "nonsecret-plugin-path-safety-sentinel"
+	src := t.TempDir()
+	writeTestFile(t, filepath.Join(src, ".git", "config"), "[core]\n\trepositoryformatversion = 0\n# "+sentinel+"\n")
+	writeTestFile(t, filepath.Join(src, "README.md"), "content")
+	if err := os.Symlink(".git/config", filepath.Join(src, "companion.txt")); err != nil {
+		t.Fatal(err)
+	}
+	marketRepo := filepath.Join(t.TempDir(), "market")
+	writeSourceCatalog(t, marketRepo, "widget", `{"source":"directory","path":"`+src+`"}`)
+	m, ctx := newManagerCtx(t)
+	if _, err := m.AddMarketplace(ctx, "", Source{Kind: SourceURL, URL: marketRepo}); err != nil {
+		t.Fatal(err)
+	}
+
+	entry, err := m.Install(ctx, "widget", "acme")
+	if err == nil {
+		t.Fatalf("a companion link to .git/config was published: %+v", entry)
+	}
+	if cacheContains(t, m.Root, sentinel) {
+		t.Fatal("Git metadata reached the store through a differently named link")
+	}
+	items, listErr := m.List(ctx)
+	if listErr != nil {
+		t.Fatal(listErr)
+	}
+	if len(items) != 0 {
+		t.Fatalf("the refused install was registered: %+v", items)
+	}
+}
+
 func TestCopiedSourceAllowsOrdinaryLinkUnderGitNamespace(t *testing.T) {
 	src := filepath.Join(t.TempDir(), ".git", "acme", "revision")
 	writeTestFile(t, filepath.Join(src, "docs", "guide.md"), "guide")

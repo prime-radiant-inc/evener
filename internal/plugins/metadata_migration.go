@@ -191,7 +191,7 @@ func collectGitEntries(root string) ([]string, []string) {
 // target may be an ancestor or mixed-content directory, so the entry is left
 // in place and the store stays unverified rather than moving content.
 func (m *Manager) unsafeGitEntry(entry string) bool {
-	info, err := os.Lstat(entry)
+	info, err := entryLstat(entry)
 	if err != nil {
 		return true
 	}
@@ -215,7 +215,7 @@ func (m *Manager) unsafeGitEntry(entry string) bool {
 	if info.Size() > maxGitPointerBytes {
 		return true
 	}
-	file, err := os.Open(entry)
+	file, err := openRegularNoBlock(entry)
 	if err != nil {
 		return true
 	}

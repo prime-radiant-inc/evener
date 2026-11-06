@@ -257,8 +257,12 @@ func looksLikeGitAdministration(dir string) bool {
 	return false
 }
 
+// readPrefix reads at most limit bytes from path. The open is non-blocking and
+// lands on the descriptor's own mode, so a FIFO named HEAD or config in a
+// candidate source declines the probe instead of parking source selection on
+// the open (#4847).
 func readPrefix(path string, limit int64) ([]byte, error) {
-	file, err := os.Open(path)
+	file, err := openRegularNoBlock(path)
 	if err != nil {
 		return nil, err
 	}
@@ -293,7 +297,9 @@ func isHexPair(name string) bool {
 // copyTree recursively copies src to dst (files, dirs, and symlink targets as
 // regular files), creating directories as needed and overwriting existing files.
 // Every entry named .git is skipped, and a symlink reaching Git metadata is
-// refused: those bytes must never enter a published plugin tree (#4768).
+// refused: those bytes must never enter a published plugin tree (#4768). A
+// named pipe or other non-regular entry fails the copy rather than blocking on
+// its open (#4847).
 func copyTree(src, dst string) error {
 	info, err := sourceStat(src)
 	if err != nil {

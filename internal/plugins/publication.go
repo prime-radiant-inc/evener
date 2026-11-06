@@ -203,10 +203,16 @@ func moveEntry(src, dst, marker string) error {
 	return os.Remove(marker)
 }
 
+// entryLstat is the pre-open metadata check the archive copy and the migration
+// both make before they open a file as content. It is a variable so a test can
+// replay what a FIFO swapped in between that check and the open looks like
+// (#4847); production code always uses os.Lstat.
+var entryLstat = os.Lstat
+
 // copyEntryExact copies one directory, file, or symlink for a cross-filesystem
 // archive move.
 func copyEntryExact(src, dst string) error {
-	info, err := os.Lstat(src)
+	info, err := entryLstat(src)
 	if err != nil {
 		return err
 	}
@@ -226,8 +232,15 @@ func copyEntryExact(src, dst string) error {
 	}
 }
 
+// errNotRegular reports a path that is no longer the regular file the caller's
+// earlier metadata check saw.
+var errNotRegular = errors.New("not a regular file")
+
+// copyRegularFile copies one file's bytes and permissions. The source is opened
+// through openRegularNoBlock, so a FIFO substituted for the regular file the
+// caller checked fails the copy instead of blocking on its open (#4847).
 func copyRegularFile(src, dst string, flags int, mode fs.FileMode) error {
-	in, err := os.Open(src)
+	in, err := openRegularNoBlock(src)
 	if err != nil {
 		return err
 	}
