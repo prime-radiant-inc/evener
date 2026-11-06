@@ -109,6 +109,10 @@ export async function ensureActiveMutationTarget(fake: FakeClient, ref: string):
   await threadsStore.getState().ensureThread(ref);
 }
 
+// flushIndexedDBUntil spends up to maxTurns probe reads, stopping early once
+// `done` holds. The pump's arrival result is deliberately ignored: call sites
+// use both shapes - a real condition, and a fixed pump through `() => false` -
+// and the assertion each call site makes afterwards is the oracle.
 export async function flushIndexedDBUntil(done: () => boolean | Promise<boolean>, maxTurns = 30): Promise<void> {
   await pumpIndexedDBUntil({ until: done, turns: maxTurns });
 }

@@ -24,9 +24,9 @@ const (
 	SessionLogSuffix = ".log.jsonl"
 )
 
-// SessionDelegateJournalName names the per-session delegates journal, the
+// sessionDelegateJournalName names the per-session delegates journal, the
 // lifecycle authority every reader of a session's delegate subtree folds.
-const SessionDelegateJournalName = "delegates.jsonl"
+const sessionDelegateJournalName = "delegates.jsonl"
 
 // SessionArtifactSuffixes lists every flat file a session owns that goes away
 // with it. The tombstone (SessionMetaTombstoneSuffix) is excluded: it must
@@ -68,7 +68,7 @@ func SessionLogPath(stateDir, sessionID string) string {
 // SessionDelegateJournalPath returns the session's delegates journal path:
 // <stateDir>/sessions/<sessionID>/delegates.jsonl.
 func SessionDelegateJournalPath(stateDir, sessionID string) string {
-	return filepath.Join(SessionWorkDir(stateDir, sessionID), SessionDelegateJournalName)
+	return filepath.Join(SessionWorkDir(stateDir, sessionID), sessionDelegateJournalName)
 }
 
 // SessionWorkDir returns the session's own directory under sessions/, where its

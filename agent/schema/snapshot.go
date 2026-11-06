@@ -399,7 +399,7 @@ func SessionDir(stateDir, sessionID string) (string, error) {
 	if err := ValidateSessionID(sessionID); err != nil {
 		return "", err
 	}
-	return filepath.Join(stateDir, SessionsSubdir, sessionID), nil
+	return SessionWorkDir(stateDir, sessionID), nil
 }
 
 // SessionArtifactsDir returns the directory a session's retained artifacts

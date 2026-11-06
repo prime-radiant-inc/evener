@@ -167,7 +167,6 @@ func globBuckets(projects string) ([]bucket, error) {
 // suffix on the transcript path. The client-mutation store is a third shape
 // again: a flat <sid>.json under a bucket-level mutations/ dir beside sessions/.
 func pathsFor(b bucket, sid string) Paths {
-	sess := schema.SessionsDir(b.dir)
 	return Paths{
 		SessionID:      sid,
 		TranscriptRef:  refFor(b.projectID, sid),
@@ -176,7 +175,7 @@ func pathsFor(b bucket, sid string) Paths {
 		TranscriptPath: schema.SessionTranscriptPath(b.dir, sid),
 		APILogPath:     schema.SessionAPILogPath(b.dir, sid),
 		MetaPath:       schema.SessionMetaPath(b.dir, sid),
-		JobsPath:       filepath.Join(sess, sid, "jobs.jsonl"),
+		JobsPath:       filepath.Join(schema.SessionWorkDir(b.dir, sid), "jobs.jsonl"),
 		DelegatesPath:  schema.SessionDelegateJournalPath(b.dir, sid),
 		MutationsPath:  filepath.Join(b.dir, "mutations", sid+".json"),
 	}
