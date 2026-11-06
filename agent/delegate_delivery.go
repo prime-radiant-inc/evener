@@ -71,11 +71,12 @@ type delegateDeliveryClaimToken struct {
 	deliveryID string
 }
 
-// errDelegateDeliveryRetry reports a delivery plan the controller refused for
-// a transient reason: its owner is beginning an attention turn, or a stop
-// probe is running. Nothing is in flight and nothing errored, but the durable
-// pending delivery is left unowned, so the caller must retry it rather than
-// treat the refusal as a completed delivery.
+// errDelegateDeliveryRetry reports a delivery plan the controller refused
+// because its owner is beginning an attention turn. Nothing is in flight and
+// nothing errored, but the owner cannot take an appended attention row in the
+// middle of that start, so the caller must retry the plan rather than treat
+// the refusal as a completed delivery. A stop, a close, or a missing owner is
+// permanent and stays a nil refusal.
 var errDelegateDeliveryRetry = errors.New("delegate delivery refused; retry")
 
 type delegateDeliveryClaim struct {
@@ -260,7 +261,11 @@ func (c *delegateTreeController) BeginDelivery(plan delegateDeliveryPlan) (_ del
 		// Transient: the owner is beginning an attention turn and cannot take
 		// an appended attention row in the middle of that start. Keep the
 		// claim so this exact plan stays valid for the retry the caller
-		// queues; deleting it would strand the durable pending delivery.
+		// queues; deleting it would strand the durable pending delivery. The
+		// waiter, if any, was already answered with the fallback resolution by
+		// deliverDelegatePacket, so clear it here too or the retry's waiter
+		// match would fail and strand the claim permanently.
+		claim.waiter = nil
 		retry = true
 		return delegateDeliveryToken{}, false, errDelegateDeliveryRetry
 	}
@@ -965,13 +970,15 @@ func (s *Session) executeDelegateMutationPlans(plans delegateMutationPlans) erro
 		next, err := s.deliverDelegatedPlan(plan)
 		if errors.Is(err, errDelegateDeliveryRetry) {
 			// The controller refused this parcel transiently and kept its
-			// claim. Queue it, and everything still unprocessed behind it, on
-			// the sessions that will deliver them; the enclosing settlement
-			// must not fail or read the refusal as a completed delivery.
-			for _, pending := range append([]delegateDeliveryPlan{plan}, append(queue[i+1:], next.deliveries...)...) {
-				s.delegateController.queueRefusedDelegateDelivery(pending)
-			}
-			return nil
+			// claim. Queue only this plan: the plans behind it were never
+			// tried, so they must keep their own claims and waiters and go
+			// through their normal paths. Passing a never-tried waiter-bearing
+			// plan through the retry would clear its waiter while its claim
+			// still held it, and the retry would then fail the waiter match
+			// permanently. The refused plan is no longer in queue, so the loop
+			// makes progress.
+			s.delegateController.queueRefusedDelegateDelivery(plan)
+			continue
 		}
 		if err != nil {
 			s.requeueReplayableDelegateDeliveries(queue[i+1:])
@@ -1005,26 +1012,49 @@ func (s *Session) deliverDelegatedPlan(plan delegateDeliveryPlan) (delegateMutat
 // on the session that will deliver it: the owner's live receiver, or the root
 // when the owner has no resident session. The controller kept the plan's claim,
 // so the plan in hand stays valid and is retried by that session's own flush.
-func (c *delegateTreeController) queueRefusedDelegateDelivery(plan delegateDeliveryPlan) {
+// It returns the session it queued on, or nil when none could take the parcel;
+// in that case it releases the kept claim so a later store re-plan
+// (ReplayDeliveries) can pick the delivery up — a claimed delivery is never
+// re-planned.
+func (c *delegateTreeController) queueRefusedDelegateDelivery(plan delegateDeliveryPlan) *Session {
 	if c == nil {
-		return
+		return nil
 	}
 	c.mu.Lock()
 	receiver := c.deliveryReceiverLocked(plan.ownerDelegateID)
-	session, _ := receiver.(*Session)
-	if session == nil {
-		session = c.rootRuntime
-	}
+	target, _ := receiver.(*Session)
+	fallback := c.rootRuntime
 	c.mu.Unlock()
-	if session == nil {
-		return
+	if target == nil {
+		target = fallback
 	}
-	release, err := session.beginRetirementMutation("delegate_delivery")
-	if err != nil {
-		return
+	if target != nil {
+		if release, err := target.beginRetirementMutation("delegate_delivery"); err == nil {
+			target.enqueueDelegateDelivery(delegateDeliveryRetryPlan(plan))
+			release()
+			return target
+		} else if target != fallback && fallback != nil {
+			if release, fallbackErr := fallback.beginRetirementMutation("delegate_delivery"); fallbackErr == nil {
+				fallback.enqueueDelegateDelivery(delegateDeliveryRetryPlan(plan))
+				release()
+				return fallback
+			}
+		}
 	}
-	defer release()
-	session.enqueueDelegateDelivery(delegateDeliveryRetryPlan(plan))
+	c.dropDeliveryClaim(plan)
+	return nil
+}
+
+// dropDeliveryClaim releases plan's claim on its delivery without admitting it,
+// so a parcel no session can retry is still re-plannable from the durable
+// store.
+func (c *delegateTreeController) dropDeliveryClaim(plan delegateDeliveryPlan) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if claim := c.deliveryClaims[plan.deliveryID]; claim != nil && claim.token == plan.claim {
+		delete(c.deliveryClaims, plan.deliveryID)
+		c.evidenceVersion++
+	}
 }
 
 // delegateDeliveryRetryPlan prepares the plan in hand for its retry. A
@@ -1034,8 +1064,10 @@ func (c *delegateTreeController) queueRefusedDelegateDelivery(plan delegateDeliv
 // and closing arms return the permanent nil refusal instead. The waiter is
 // still cleared defensively so that if a future transient arm ever admits one,
 // the retry delivers the packet as a notification instead of re-resolving a
-// claim its caller already saw fall back. Carried plans are excluded on the
-// same ground: their owner sits in a tool round.
+// claim its caller already saw fall back; BeginDelivery's transient arm clears
+// the claim's waiter in the same step, so the retry's waiter match holds.
+// Carried plans are excluded on the same ground: their owner sits in a tool
+// round.
 func delegateDeliveryRetryPlan(plan delegateDeliveryPlan) delegateDeliveryPlan {
 	plan.waiter = nil
 	return plan
@@ -1244,11 +1276,15 @@ func (s *Session) flushPendingDelegateDeliveries() error {
 			plans, err = s.deliverDelegatedPlan(plan)
 		}
 		if errors.Is(err, errDelegateDeliveryRetry) {
-			// Queue the retry on the session that will deliver it and end this
-			// pass for every receiver shape: retrying inside the pass that
-			// refused would spin on a guard that has not cleared yet.
-			s.delegateController.queueRefusedDelegateDelivery(plan)
-			return nil
+			// Queue the retry on the session that will deliver it. End this
+			// pass only when the plan went back onto this same session's
+			// queue: retrying it here would spin on a guard that has not
+			// cleared. A plan queued elsewhere leaves this queue unprocessed
+			// and unwoken, so keep draining it.
+			if target := s.delegateController.queueRefusedDelegateDelivery(plan); target == s {
+				return nil
+			}
+			continue
 		}
 		if err != nil {
 			s.requeueReplayableDelegateDeliveries(nil)
