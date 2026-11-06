@@ -122,7 +122,9 @@ their own relay subscriptions, and watch notices never answer human questions.
 Local and remote Manager watches use the hub's shared, connection-owned
 subscription path. Use a canonical `HOST:WORKSPACE_ID` ref for a remote target.
 Resync re-reads the authoritative snapshot even for completion-only watches,
-while the notification drain continues. Each Manager and human client keeps
+while the notification drain continues, and a stream that keeps draining owes no
+interruption notice for it: the notice belongs to observation loss, not to the
+re-read that follows it. Each Manager and human client keeps
 its own subscription lifetime. Remote question/answer/completion is qualified;
 sandbox approval caused by a live remote prompt remains unexercised end to end.
 Manager schemas come from session configuration and remain present during a

@@ -276,7 +276,11 @@ func (b *boundSessionOperations) Watch(ctx context.Context, request appwire.Sess
 				recoveryParams.HeldSnapshot = previous.Snapshot
 				recoveryParams.ItemLimit = appwire.TranscriptItemPageLimit
 				response, err := client.ThreadRead(watchCtx, recoveryParams)
-				if err == nil && publish(readResult{response: &response}) && response.Thread.Evener.Ref == initial.Metadata.Ref && response.Thread.Evener.InstanceID == initial.Metadata.InstanceID && response.BootGeneration == initial.Metadata.GenerationID && params.IncludeTurns {
+				if err == nil && publish(readResult{response: &response}) && response.Thread.Evener.Ref == initial.Metadata.Ref && response.Thread.Evener.InstanceID == initial.Metadata.InstanceID && response.BootGeneration == initial.Metadata.GenerationID && params.IncludeTurns && observationHistoryContinues(previous, response) {
+					// A same-target discontinuity (an index rebuild behind a
+					// resync) has no continuable gap to page: the main loop
+					// re-anchors on the fresh cut, so paging must not turn the
+					// expected discontinuity into a fatal error.
 					err = recoverObservationHistory(watchCtx, client, ref.String(), previous, response, func(items []appwire.ThreadItem) bool {
 						return publish(readResult{items: items})
 					})
@@ -294,16 +298,19 @@ func (b *boundSessionOperations) Watch(ctx context.Context, request appwire.Sess
 				}
 				if fresh := result.response; fresh != nil {
 					meta := appwire.SessionObservationMetadata{Ref: fresh.Thread.Evener.Ref, InstanceID: fresh.Thread.Evener.InstanceID, GenerationID: fresh.BootGeneration}
-					forward, replacement := observationSnapshotDisposition(initial.Metadata, held, *fresh)
-					if !forward {
-						return
-					}
+					_, replacement := observationSnapshotDisposition(initial.Metadata, held, *fresh)
 					if replacement {
 						if !send(appwire.SessionWatchUpdate{Snapshot: fresh, Metadata: meta}) {
 							return
 						}
 						return // The runtime ends the old watch from this replacement cut.
 					}
+					// A same-target history discontinuity re-anchors the
+					// subscription on the fresh authoritative cut instead of
+					// ending it: the watcher replays the window under its own
+					// dedup and the drain continues, so a transient rebuild
+					// recovers without re-registration. Ending here silently
+					// stopped completion delivery on live lanes.
 					if !send(appwire.SessionWatchUpdate{Snapshot: fresh, Metadata: meta}) {
 						return
 					}

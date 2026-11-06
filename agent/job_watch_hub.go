@@ -349,11 +349,14 @@ func (jm *jobManager) onHubObservationLookup(watchID string, update appwire.Sess
 		return nil
 	}
 	if update.Notification != nil && update.Notification.Method == appwire.NotifyEvenerThreadResync {
-		matches := update.Metadata.Ref == cfg.hubRef && update.Metadata.InstanceID == cfg.hubInstance && update.Metadata.GenerationID == cfg.hubGeneration
 		jm.mu.Unlock()
-		if matches {
-			return jm.suspendHubWatch(watchID)
-		}
+		// A resync re-reads authoritative state while the notification drain
+		// continues: the hub runtime refreshes right after forwarding the
+		// notification, and the snapshot from that re-read resumes the watch
+		// and replays recorded evidence (deduplicated by hubSeen). It is not
+		// an observation loss, so it must not deliver an interruption notice;
+		// one per resync cycle read as repeated stale "waiting for recovery"
+		// frames on targets that never stopped working.
 		return nil
 	}
 	if update.Snapshot != nil {
