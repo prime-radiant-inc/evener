@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -24,6 +25,7 @@ func TestHistoryPublicationWaitsForRestoreAttach(t *testing.T) {
 	const managerInput = "restore-manager-391"
 	responses := make(chan llm.Response, 8)
 	var draining atomic.Bool
+	var extraResponses atomic.Int64
 	client := llm.NewClient()
 	client.Register(&readFrontierProvider{complete: func(req llm.Request) llm.Response {
 		if !requestHasTool(req, "communicate") {
@@ -33,7 +35,13 @@ func TestHistoryPublicationWaitsForRestoreAttach(t *testing.T) {
 			if draining.Load() {
 				return parityCommunicate("drain-result-391", "drain-output-391", true)
 			}
-			return <-responses
+			select {
+			case response := <-responses:
+				return response
+			default:
+				id := "fixture-extra-391-" + strconv.FormatInt(extraResponses.Add(1), 10)
+				return parityCommunicate(id, "fixture-output-391", true)
+			}
 		}
 		return parityCommunicate("child-result-391", "child-output-391", true)
 	}})
@@ -63,6 +71,18 @@ func TestHistoryPublicationWaitsForRestoreAttach(t *testing.T) {
 		}
 	}()
 	t.Cleanup(func() { sess.Close(); <-rootEventsDone })
+	awaitIdle := func(callID string) events.DelegateUpdatedData {
+		t.Helper()
+		ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+		defer cancel()
+		select {
+		case data := <-idle:
+			return data
+		case <-ctx.Done():
+			t.Fatalf("waiting for idle after %s: %v", callID, ctx.Err())
+			return events.DelegateUpdatedData{}
+		}
+	}
 	run := func(callID, tool string, args map[string]any) {
 		t.Helper()
 		responses <- parityResponse(parityCall(callID, tool, args))
@@ -84,12 +104,12 @@ func TestHistoryPublicationWaitsForRestoreAttach(t *testing.T) {
 		}
 	}
 	run("target-create-391", "delegate", map[string]any{"prompt": "target-input-391"})
-	child := <-idle
+	child := awaitIdle("target-create-391")
 	drain()
 	// Creating another delegate reclaims the first runtime through its real
 	// resource owner, so the next send must run restoreIdle rather than reuse it.
 	run("other-create-391", "delegate", map[string]any{"prompt": "other-input-391"})
-	<-idle
+	awaitIdle("other-create-391")
 	drain()
 	if child.DelegateID == "" || child.ChildSessionID == "" || child.Lifecycle != "idle" {
 		t.Fatalf("target did not settle idle: %+v", child)
@@ -185,6 +205,21 @@ func TestHistoryPublicationWaitsForRestoreAttach(t *testing.T) {
 		t.Fatalf("successful restore did not publish new history and provenance: length=%d baseline=%d err=%v", length, baseline, err)
 	}
 	assertSavedInput(after)
+	if pending := len(responses); pending != 0 {
+		t.Fatalf("scripted responses were not consumed: %d remain", pending)
+	}
+	// Later requests still contain managerInput in their history. They must
+	// finish even when no scripted response remains and draining is false.
+	t.Log("issuing extra manager requests with the scripted response queue empty")
+	beforeExtras := extraResponses.Load()
+	for _, input := range []string{"extra-manager-input-391", "extra-manager-input-392"} {
+		if _, err := sess.ProcessInput(t.Context(), input, nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got := extraResponses.Load() - beforeExtras; got < 2 {
+		t.Fatalf("extra manager requests did not exercise the empty-queue fallback: got %d, want at least 2", got)
+	}
 }
 
 func TestHistoryPublicationIgnoresIncompleteReplacement(t *testing.T) {
