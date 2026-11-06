@@ -110,6 +110,14 @@ func (r *imageRecovery) prepare(ctx context.Context, body map[string]any) error 
 			r.warnings = []llm.Warning{{Code: llm.WarningCodeImageColorUnmanaged, Message: unmanagedImageCaveat}}
 		}
 	}
+	// Stage 0 only seeds the digest and original size so a later repair stage
+	// can tell whether it produced a distinct, smaller body. repairMessages
+	// touches only image_url parts, so without one no later stage can advance
+	// and the serialization is pure waste — the transport marshals the same
+	// body again for the request (#5489).
+	if r.stage == 0 && !bodyHasImagePart(body) {
+		return nil
+	}
 	encoded, err := json.Marshal(body)
 	if err != nil {
 		return err
@@ -126,6 +134,53 @@ func (r *imageRecovery) prepare(ctx context.Context, body map[string]any) error 
 		return ctx.Err()
 	}
 	return nil
+}
+
+// bodyHasImagePart reports whether any message content part is the image_url
+// shape repairMessages can repair. It inspects the built body directly rather
+// than serializing it.
+func bodyHasImagePart(body map[string]any) bool {
+	isImagePart := func(part map[string]any) bool {
+		if part == nil || part["type"] != "image_url" {
+			return false
+		}
+		_, ok := part["image_url"].(map[string]any)
+		return ok
+	}
+	hasImage := func(content any) bool {
+		switch parts := content.(type) {
+		case []map[string]any:
+			for _, part := range parts {
+				if isImagePart(part) {
+					return true
+				}
+			}
+		case []any:
+			for _, value := range parts {
+				part, _ := value.(map[string]any)
+				if isImagePart(part) {
+					return true
+				}
+			}
+		}
+		return false
+	}
+	switch messages := body["messages"].(type) {
+	case []map[string]any:
+		for _, message := range messages {
+			if hasImage(message["content"]) {
+				return true
+			}
+		}
+	case []any:
+		for _, value := range messages {
+			message, _ := value.(map[string]any)
+			if message != nil && hasImage(message["content"]) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // repairMessages copies the final wire subtree, including typed overlays and

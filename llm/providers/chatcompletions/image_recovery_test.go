@@ -12,6 +12,7 @@ import (
 	"image/jpeg"
 	"image/png"
 	"io"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -25,6 +26,63 @@ import (
 )
 
 const imageRejection = `{"error":{"message":"Image normalization failed","type":"invalid_request_error"}}`
+
+// Stage 0 seeds the digest only for requests an image repair stage could
+// change. With no image_url part, repairMessages can never advance, so the
+// full-body marshal is skipped (#5489). An unmarshalable value makes the old
+// unconditional json.Marshal fail, proving the new path does not serialize.
+func TestImageRecoveryStageZeroSkipsMarshalWithoutImagePart(t *testing.T) {
+	body := map[string]any{
+		"messages":    []map[string]any{{"role": "user", "content": []map[string]any{{"type": "text", "text": "hi"}}}},
+		"unsupported": math.Inf(1),
+	}
+	r := &imageRecovery{}
+	if err := r.prepare(context.Background(), body); err != nil {
+		t.Fatalf("prepare with no image part serialized the body: %v", err)
+	}
+	if r.originalSize != 0 || len(r.sent) != 0 {
+		t.Fatalf("stage 0 seeded originalSize=%d sent=%d without an image part, want both zero", r.originalSize, len(r.sent))
+	}
+}
+
+func TestImageRecoveryStageZeroSerializesWithImagePart(t *testing.T) {
+	body := map[string]any{
+		"messages": []map[string]any{{"role": "user", "content": []map[string]any{
+			{"type": "image_url", "image_url": map[string]any{"url": "data:image/jpeg;base64,AAAA"}},
+		}}},
+	}
+	r := &imageRecovery{sent: map[[32]byte]bool{}}
+	if err := r.prepare(context.Background(), body); err != nil {
+		t.Fatalf("prepare: %v", err)
+	}
+	if r.originalSize == 0 || len(r.sent) != 1 {
+		t.Fatalf("originalSize=%d sent=%d, want the stage-0 digest seeded", r.originalSize, len(r.sent))
+	}
+}
+
+func TestBodyHasImagePart(t *testing.T) {
+	imagePart := map[string]any{"type": "image_url", "image_url": map[string]any{"url": "data:image/png;base64,AAAA"}}
+	textPart := map[string]any{"type": "text", "text": "hi"}
+	built := func(part map[string]any) map[string]any {
+		return map[string]any{"messages": []map[string]any{{"content": []map[string]any{part}}}}
+	}
+	cases := []struct {
+		name string
+		body map[string]any
+		want bool
+	}{
+		{"built content slice", built(imagePart), true},
+		{"decoded content slice", map[string]any{"messages": []any{map[string]any{"content": []any{imagePart}}}}, true},
+		{"text only", built(textPart), false},
+		{"image_url without an object", built(map[string]any{"type": "image_url", "image_url": "nope"}), false},
+		{"no messages", map[string]any{}, false},
+	}
+	for _, tc := range cases {
+		if got := bodyHasImagePart(tc.body); got != tc.want {
+			t.Errorf("%s: bodyHasImagePart = %v, want %v", tc.name, got, tc.want)
+		}
+	}
+}
 
 func recoveryJPEG(t *testing.T, profile []byte) []byte {
 	t.Helper()
