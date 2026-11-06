@@ -73,7 +73,8 @@ type summarizationResult struct {
 // sample plus two same-route retries. A rejected reply is a successful API
 // call whose content failed validation — usually one bad sample from a small
 // or lightly aligned model — so a fresh sample on the same route is worth
-// more than the next route.
+// more than the next route. The session-log fork summary shares this count
+// deliberately, so both summary surfaces resample in step.
 const summarizerRouteAttempts = 3
 
 // retryableSummaryRejection reports whether a local validation rejection is a
@@ -102,9 +103,10 @@ func retryableSummaryRejection(err error) bool {
 func priorSummaryAttempts(attempts []diagnostic.SummaryAttempt) []diagnostic.SummaryAttempt {
 	var kept []diagnostic.SummaryAttempt
 	for _, attempt := range attempts {
+		route := summarizationRoute{provider: attempt.Provider, model: attempt.Model}
 		replaced := false
 		for i := range kept {
-			if kept[i].Provider == attempt.Provider && kept[i].Model == attempt.Model {
+			if (summarizationRoute{provider: kept[i].Provider, model: kept[i].Model}) == route {
 				kept[i] = attempt
 				replaced = true
 				break
@@ -144,6 +146,9 @@ func (cm *Manager) completeSummarization(ctx context.Context, profile *provider.
 	if len(routes) == 0 {
 		return summarizationResult{}, errSummaryMissingModel
 	}
+	// sessionRoute is the active session model's route: the second route when
+	// a cheap model is configured, the only one otherwise.
+	sessionRoute := routes[len(routes)-1]
 	judge := func(resp llm.Response) error {
 		if accept == nil {
 			return nil
@@ -181,10 +186,11 @@ func (cm *Manager) completeSummarization(ctx context.Context, profile *provider.
 			lastFailure = nil
 			return
 		}
-		failure := summaryFailure(apiErr, answered, answeredRole)
-		if failure == nil {
-			failure = summaryFailure(rejected, answered, answeredRole)
+		sampleErr := apiErr
+		if sampleErr == nil {
+			sampleErr = rejected
 		}
+		failure := summaryFailure(sampleErr, answered, answeredRole)
 		samples = append(samples, failure.detail.Previous...)
 		samples = append(samples, failure.detail.Terminal)
 		lastFailure = failure
@@ -193,22 +199,20 @@ func (cm *Manager) completeSummarization(ctx context.Context, profile *provider.
 	// resample reports whether the route that just answered should produce
 	// another sample: only a rejected sample of the retryable kind, within the
 	// route's budget, on a run that is still live.
-	resample := func() bool {
-		return rejected != nil && retryableSummaryRejection(rejected) &&
-			samplesByRoute[route] < summarizerRouteAttempts && callCtx.Err() == nil
+	resample := func(answered summarizationRoute, rejection error) bool {
+		return rejection != nil && retryableSummaryRejection(rejection) &&
+			samplesByRoute[answered] < summarizerRouteAttempts && callCtx.Err() == nil
 	}
 
 	ranSessionModel := false
 	for {
-		var ran bool
-		resp, ran, apiErr = cm.cheap.CompleteConfigured(callCtx, profile, req)
-		ranSessionModel = ran
+		resp, ranSessionModel, apiErr = cm.cheap.CompleteConfigured(callCtx, profile, req)
 		if ranSessionModel {
-			recordSample(summarizationRoute{provider: profile.ID(), model: profile.Model()}, "session", resp, apiErr)
+			recordSample(sessionRoute, "session", resp, apiErr)
 		} else {
 			recordSample(routes[0], "cheap", resp, apiErr)
 		}
-		if !resample() {
+		if !resample(route, rejected) {
 			break
 		}
 	}
@@ -216,12 +220,11 @@ func (cm *Manager) completeSummarization(ctx context.Context, profile *provider.
 		(rejected != nil || apiErr != nil && shouldFallbackSummarizationModel(ctx, apiErr)) {
 		// More than one route means the second is the session model, distinct
 		// from the configured cheap one; the caller ran only the cheap one.
-		sessionRoute := routes[len(routes)-1]
 		for {
 			req.Provider, req.Model = sessionRoute.provider, sessionRoute.model
 			resp, apiErr = cm.client.Complete(callCtx, req)
 			recordSample(sessionRoute, "session", resp, apiErr)
-			if !resample() {
+			if !resample(route, rejected) {
 				break
 			}
 		}
@@ -231,7 +234,7 @@ func (cm *Manager) completeSummarization(ctx context.Context, profile *provider.
 	if lastFailure != nil {
 		// The last recorded sample is the terminal attempt itself; the rest
 		// reduce to one entry per route.
-		lastFailure.detail.Previous = priorSummaryAttempts(samples[:max(len(samples)-1, 0)])
+		lastFailure.detail.Previous = priorSummaryAttempts(samples[:len(samples)-1])
 		return result, lastFailure
 	}
 	return result, nil

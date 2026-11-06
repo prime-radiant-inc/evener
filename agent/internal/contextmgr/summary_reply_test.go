@@ -2,6 +2,7 @@ package contextmgr
 
 import (
 	"context"
+	"slices"
 	"strings"
 	"testing"
 
@@ -149,12 +150,12 @@ func TestSummarizeWithLLM_RejectedCheapReplyFallsBackToSessionModel(t *testing.T
 			for _, r := range adapter.Requests() {
 				models = append(models, r.Model)
 			}
-			want := strings.Join([]string{"gpt-5-mini", "gpt-5-mini", "gpt-5-mini", "gpt-5.2"}, " ")
+			want := []string{"gpt-5-mini", "gpt-5-mini", "gpt-5-mini", "gpt-5.2"}
 			if !tc.wantStored {
-				want = strings.Join([]string{"gpt-5-mini", "gpt-5-mini", "gpt-5-mini", "gpt-5.2", "gpt-5.2", "gpt-5.2"}, " ")
+				want = append(want, "gpt-5.2", "gpt-5.2")
 			}
-			if strings.Join(models, " ") != want {
-				t.Fatalf("summary models = %q, want [%s]", models, want)
+			if !slices.Equal(models, want) {
+				t.Fatalf("summary models = %v, want %v", models, want)
 			}
 			if !tc.wantStored {
 				if err == nil {

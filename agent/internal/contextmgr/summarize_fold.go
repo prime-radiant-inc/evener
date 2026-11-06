@@ -36,6 +36,18 @@ func preservePendingAskTail(history []schema.Turn, preserveRecent int, meta *Com
 	return preserveRecent
 }
 
+// summaryAccept is the conversation summary's reply validation, shared with
+// the retry tests so they exercise the production rule: a summary section
+// with content that was not cut off at the model's output limit.
+func summaryAccept(instructions string) func(llm.Response) error {
+	return func(reply llm.Response) error {
+		if err := checkSummaryReply(reply.Text(), instructions); err != nil {
+			return err
+		}
+		return checkNotCutOff(reply)
+	}
+}
+
 // summarizeFold calls the cheap model to summarize old history, replacing it
 // with a single user message that holds the summary and preserving the most
 // recent turns. A non-empty instructions replaces the default
@@ -184,12 +196,7 @@ func (cm *Manager) summarizeFold(ctx context.Context, history []schema.Turn, pre
 
 	prompt := buildSummaryPrompt(b.String(), instructions)
 
-	resp, err := cm.completeSummarization(ctx, sumProfile, prompt, func(reply llm.Response) error {
-		if err := checkSummaryReply(reply.Text(), instructions); err != nil {
-			return err
-		}
-		return checkNotCutOff(reply)
-	})
+	resp, err := cm.completeSummarization(ctx, sumProfile, prompt, summaryAccept(instructions))
 	if err != nil {
 		return nil, err
 	}

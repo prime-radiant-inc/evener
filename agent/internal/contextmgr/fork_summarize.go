@@ -18,10 +18,11 @@ import (
 // sessionlog.SessionLogEntry summarizing the most recent action in turns. The
 // prompt explicitly preserves failure signals so errors are not lost during
 // summarization. A reply that does not parse as a JSON entry — an empty reply
-// never does — is one bad sample, and is resampled within the same per-route
-// budget the conversation summary uses before the failure surfaces; the
-// exhausted error never embeds the raw reply, because it reaches the user as a
-// warning and warnings never carry conversation-adjacent text.
+// never does — is one bad sample, and is resampled within the sample budget
+// the conversation summary uses (summarizerRouteAttempts keeps both surfaces
+// in step) before the failure surfaces; the exhausted error never embeds the
+// raw reply, because it reaches the user as a warning and warnings never
+// carry conversation-adjacent text.
 func forkSummarize(ctx context.Context, cheap *cheapmodel.Caller, profile *provider.Profile, turns []schema.Turn, turnNumber int) (sessionlog.SessionLogEntry, error) {
 	prompt := buildSummarizePrompt(turns)
 

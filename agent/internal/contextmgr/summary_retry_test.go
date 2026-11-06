@@ -26,14 +26,12 @@ func summarizerScript(next func(call int, req llm.Request) (llm.Response, error)
 	return client, func() []string { return append([]string(nil), calls...) }
 }
 
-// summaryAcceptance is the validator the conversation summary runs on each
-// summarizer reply (summarizeFold's accept): a summary section with content
-// that was not cut off at the model's output limit.
-func summaryAcceptance(reply llm.Response) error {
-	if err := checkSummaryReply(reply.Text(), ""); err != nil {
-		return err
+// assertCallSequence pins the models the summarizer called, in order.
+func assertCallSequence(t *testing.T, got []string, want ...string) {
+	t.Helper()
+	if !slices.Equal(got, want) {
+		t.Fatalf("summarizer calls = %v, want %v", got, want)
 	}
-	return checkNotCutOff(reply)
 }
 
 var (
@@ -59,16 +57,14 @@ func TestSummarizationRecoversOnALaterSampleWithoutFallingBack(t *testing.T) {
 	})
 	profile := WithCheapModel(testProfile("openai", "active-fixture", 1000), "cheap-fixture")
 	cm := retryTestManager(client, profile)
-	resp, err := cm.completeSummarization(context.Background(), profile, "prompt", summaryAcceptance)
+	resp, err := cm.completeSummarization(context.Background(), profile, "prompt", summaryAccept(""))
 	if err != nil {
 		t.Fatalf("completeSummarization: %v", err)
 	}
 	if !strings.Contains(resp.Text(), "Recovered.") {
 		t.Fatalf("summary = %q, want the third sample's reply", resp.Text())
 	}
-	if got := calls(); strings.Join(got, " ") != "cheap-fixture cheap-fixture cheap-fixture" {
-		t.Fatalf("routes = %v, want three cheap-route calls", got)
-	}
+	assertCallSequence(t, calls(), "cheap-fixture", "cheap-fixture", "cheap-fixture")
 }
 
 // A route whose every sample is rejected hands the summary to the next route
@@ -84,16 +80,14 @@ func TestSummarizationFallsBackToSessionModelAfterCheapRouteRetries(t *testing.T
 	})
 	profile := WithCheapModel(testProfile("openai", "active-fixture", 1000), "cheap-fixture")
 	cm := retryTestManager(client, profile)
-	resp, err := cm.completeSummarization(context.Background(), profile, "prompt", summaryAcceptance)
+	resp, err := cm.completeSummarization(context.Background(), profile, "prompt", summaryAccept(""))
 	if err != nil {
 		t.Fatalf("completeSummarization: %v", err)
 	}
 	if !strings.Contains(resp.Text(), "Recovered.") {
 		t.Fatalf("summary = %q, want the session model's reply", resp.Text())
 	}
-	if got := calls(); strings.Join(got, " ") != "cheap-fixture cheap-fixture cheap-fixture active-fixture" {
-		t.Fatalf("routes = %v, want three cheap-route calls then the session model", got)
-	}
+	assertCallSequence(t, calls(), "cheap-fixture", "cheap-fixture", "cheap-fixture", "active-fixture")
 }
 
 // When every route exhausts its samples, the failure still shows one attempt
@@ -106,13 +100,11 @@ func TestSummarizationRecordsOneAttemptPerRouteWhenEverySampleFails(t *testing.T
 	})
 	profile := WithCheapModel(testProfile("openai", "active-fixture", 1000), "cheap-fixture")
 	cm := retryTestManager(client, profile)
-	_, err := cm.completeSummarization(context.Background(), profile, "prompt", summaryAcceptance)
+	_, err := cm.completeSummarization(context.Background(), profile, "prompt", summaryAccept(""))
 	if err == nil {
 		t.Fatal("every sample rejected, want a failure")
 	}
-	if got := calls(); len(got) != 6 {
-		t.Fatalf("routes = %v, want three samples per route", got)
-	}
+	assertCallSequence(t, calls(), "cheap-fixture", "cheap-fixture", "cheap-fixture", "active-fixture", "active-fixture", "active-fixture")
 	failure := summarizerFailureWarning(err).SummaryFailure
 	if failure == nil {
 		t.Fatal("missing summary failure diagnostic")
@@ -142,13 +134,11 @@ func TestSummarizationSingleRouteRecordsItsOwnRetries(t *testing.T) {
 	})
 	profile := testProfile("openai", "active-fixture", 1000)
 	cm := retryTestManager(client, profile)
-	_, err := cm.completeSummarization(context.Background(), profile, "prompt", summaryAcceptance)
+	_, err := cm.completeSummarization(context.Background(), profile, "prompt", summaryAccept(""))
 	if err == nil {
 		t.Fatal("every sample rejected, want a failure")
 	}
-	if got := calls(); len(got) != 3 {
-		t.Fatalf("routes = %v, want three samples on the one route", got)
-	}
+	assertCallSequence(t, calls(), "active-fixture", "active-fixture", "active-fixture")
 	failure := summarizerFailureWarning(err).SummaryFailure
 	if failure == nil || len(failure.Previous) != 1 ||
 		failure.Previous[0].Route != "session" || failure.Previous[0].Model != "active-fixture" {
@@ -169,13 +159,11 @@ func TestSummarizationDoesNotRetryAnOutputLimitCut(t *testing.T) {
 	})
 	profile := WithCheapModel(testProfile("openai", "active-fixture", 1000), "cheap-fixture")
 	cm := retryTestManager(client, profile)
-	_, err := cm.completeSummarization(context.Background(), profile, "prompt", summaryAcceptance)
+	_, err := cm.completeSummarization(context.Background(), profile, "prompt", summaryAccept(""))
 	if err == nil {
 		t.Fatal("cut-off replies accepted, want a failure")
 	}
-	if got := calls(); strings.Join(got, " ") != "cheap-fixture active-fixture" {
-		t.Fatalf("routes = %v, want one attempt per route", got)
-	}
+	assertCallSequence(t, calls(), "cheap-fixture", "active-fixture")
 	failure := summarizerFailureWarning(err).SummaryFailure
 	if failure == nil || failure.Terminal.Reason != "output_limit" {
 		t.Fatalf("want the output-limit rejection as terminal, got %+v", failure)
@@ -191,12 +179,10 @@ func TestSummarizationMakesNoExtraCallWhenTheFirstReplyIsValid(t *testing.T) {
 	})
 	profile := WithCheapModel(testProfile("openai", "active-fixture", 1000), "cheap-fixture")
 	cm := retryTestManager(client, profile)
-	if _, err := cm.completeSummarization(context.Background(), profile, "prompt", summaryAcceptance); err != nil {
+	if _, err := cm.completeSummarization(context.Background(), profile, "prompt", summaryAccept("")); err != nil {
 		t.Fatalf("completeSummarization: %v", err)
 	}
-	if got := calls(); strings.Join(got, " ") != "cheap-fixture" {
-		t.Fatalf("routes = %v, want a single call", got)
-	}
+	assertCallSequence(t, calls(), "cheap-fixture")
 }
 
 // A cancelled run unwinds on the attempt in flight: no retry and no session
@@ -210,13 +196,11 @@ func TestSummarizationStopsRetryingWhenTheRunIsCancelled(t *testing.T) {
 	})
 	profile := WithCheapModel(testProfile("openai", "active-fixture", 1000), "cheap-fixture")
 	cm := retryTestManager(client, profile)
-	_, err := cm.completeSummarization(ctx, profile, "prompt", summaryAcceptance)
+	_, err := cm.completeSummarization(ctx, profile, "prompt", summaryAccept(""))
 	if err == nil {
 		t.Fatal("rejected reply on a cancelled run, want a failure")
 	}
-	if got := calls(); len(got) != 1 {
-		t.Fatalf("routes = %v, want the one in-flight attempt only", got)
-	}
+	assertCallSequence(t, calls(), "cheap-fixture")
 	if rejection, ok := errors.AsType[summaryRejectionError](err); !ok || rejection != errSummaryEmptyReply {
 		t.Fatalf("terminal = %v, want the rejected sample as the failure", err)
 	}
@@ -239,15 +223,11 @@ func TestSummarizationSampleBudgetFollowsAMidLoopRefusal(t *testing.T) {
 	})
 	profile := WithCheapModel(testProfile("openai", "active-fixture", 1000), "cheap-fixture")
 	cm := retryTestManager(client, profile)
-	_, err := cm.completeSummarization(context.Background(), profile, "prompt", summaryAcceptance)
+	_, err := cm.completeSummarization(context.Background(), profile, "prompt", summaryAccept(""))
 	if err == nil {
 		t.Fatal("every sample rejected, want a failure")
 	}
-	got := calls()
-	want := []string{"cheap-fixture", "cheap-fixture", "active-fixture", "active-fixture", "active-fixture"}
-	if !slices.Equal(got, want) {
-		t.Fatalf("routes = %v, want %v", got, want)
-	}
+	assertCallSequence(t, calls(), "cheap-fixture", "cheap-fixture", "active-fixture", "active-fixture", "active-fixture")
 	failure := summarizerFailureWarning(err).SummaryFailure
 	if failure == nil {
 		t.Fatal("missing summary failure diagnostic")
@@ -311,9 +291,7 @@ func TestCondensePartnerMessagesRetriesAnEmptyBatchReply(t *testing.T) {
 	if !strings.Contains(condensed, "condensed-3f9a") {
 		t.Fatalf("condensation = %q, want the third sample's reply", condensed)
 	}
-	if got := calls(); len(got) != 3 {
-		t.Fatalf("batch calls = %v, want three samples", got)
-	}
+	assertCallSequence(t, calls(), "active-fixture", "active-fixture", "active-fixture")
 }
 
 // The session-log fork summary shares the conversation summary's failure
@@ -335,6 +313,8 @@ func TestForkSummarizeRetriesAnUnparseableReply(t *testing.T) {
 	if entry.Action != "shell" || entry.Turn != 7 {
 		t.Fatalf("entry = %+v, want the third sample's parsed entry", entry)
 	}
+	// The fork resolves the cheap-model ref, whose default comes from the
+	// refreshable catalog, so the pin is the sample count, not the model.
 	if got := calls(); len(got) != 3 {
 		t.Fatalf("fork calls = %v, want three samples", got)
 	}
