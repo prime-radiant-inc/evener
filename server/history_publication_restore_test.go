@@ -188,9 +188,10 @@ func TestHistoryPublicationWaitsForRestoreAttach(t *testing.T) {
 }
 
 func TestHistoryPublicationIgnoresIncompleteReplacement(t *testing.T) {
-	r := newTestThreadHistories(t)
 	const id = "replacement-393"
 	path := writeDelegateTranscript(t, id, "saved-input-394")
+	// Cleanup is LIFO: join history projections before removing their TempDir.
+	r := newTestThreadHistories(t)
 	h := r.ensure(id, "local:"+id, path, 0, 0, "1", noopHistoryPublish, noopHistoryResync, nil)
 	length, err := h.RecordedLength()
 	if err != nil {
