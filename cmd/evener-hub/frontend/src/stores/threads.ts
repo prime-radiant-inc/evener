@@ -5157,6 +5157,41 @@ const MUTATION_FALLBACK_SEND_ATTEMPTS = 2;
 // clientMutationId, so the daemon dedups them.
 const MUTATION_FALLBACK_SEND_READY_WAIT_MS = 10_000;
 
+// A composer send this tab dispatched as a plain request because its durable
+// write failed: the id the daemon will list as pending, with no outbox or
+// optimistic row anywhere to prove whose submission it is.
+export interface DirectSendAdmission {
+  targetRef: string;
+  clientMutationId: string;
+  createdAt: number;
+}
+
+// The pending-turns projection's provenance seam for the direct fallback.
+// `recordSubmittedHere` can only discover ids from durable records, and this
+// send has none; the listener records the id before any authoritative read
+// can name it, so the daemon's pending projection reads as this client's own
+// submission rather than another tab's.
+const directSendAdmissionListeners = new Set<(admission: DirectSendAdmission) => void>();
+
+export function subscribeDirectSendAdmission(listener: (admission: DirectSendAdmission) => void): () => void {
+  directSendAdmissionListeners.add(listener);
+  return () => {
+    directSendAdmissionListeners.delete(listener);
+  };
+}
+
+function noteDirectSendAdmission(targetRef: string, clientMutationId: string): void {
+  const admission: DirectSendAdmission = { targetRef, clientMutationId, createdAt: Date.now() };
+  for (const listener of directSendAdmissionListeners) {
+    try {
+      listener(admission);
+    } catch (error) {
+      // A provenance recorder must never turn a delivered send into a failure.
+      console.error("Direct-send admission listener failed", error);
+    }
+  }
+}
+
 // The imperative transport for a mutation whose durable write could not be
 // made: the same plain RPC the non-durable operations issue. Delivery here is
 // at-least-once, not deduplicated: the id is freshly minted and NOTHING durable
@@ -5177,6 +5212,10 @@ async function dispatchMutationDirectly(client: AppwireClientLike, intent: Mutat
         params: Record<string, unknown>,
       ) => Promise<unknown>;
       await request.call(target, intent.method, { ...intent.payload, clientMutationId });
+      // The send is this tab's, so an authoritative read that lists it as
+      // pending must not classify it as another client's. Every retry above
+      // reused this one id, so it is recorded once, on the attempt that landed.
+      noteDirectSendAdmission(intent.targetRef, clientMutationId);
       return;
     } catch (err) {
       if (err instanceof WireError || attempt >= MUTATION_FALLBACK_SEND_ATTEMPTS) throw mapConflict(err);

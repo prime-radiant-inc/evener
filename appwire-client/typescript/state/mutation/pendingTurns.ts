@@ -179,6 +179,15 @@ export interface PendingTurnsStore<A extends MutationAttachmentRef = MutationAtt
   // `submittedHere`. A no-op (no `setState`, `getState()` unchanged) when
   // every discovered id is already known.
   recordSubmittedHere(snapshot: { outbox: MutationOutboxRecord<A>[]; optimistic: MutationOptimisticRecord<A>[] }): void;
+  // Claims a submission this client dispatched WITHOUT a durable record -
+  // the storage-failure direct send. That send leaves nothing in the outbox
+  // or optimistic store for `recordSubmittedHere` to discover, but the
+  // daemon's authoritative projection still lists its clientMutationId as
+  // pending; without this the only provenance carrier is empty and the
+  // entry reads as another client's (no ghost, `ownPendingSend` false).
+  // Written at the send's own success boundary, and never pruned. A no-op
+  // when the id is already known.
+  recordDirectSend(clientMutationId: string, createdAt: number): void;
   // Replaces each of `targets`' outbox, optimistic and recovery records with
   // `snapshot`'s (replaceTargetRecords). A no-op (no `setState`, `getState()`
   // unchanged) when the snapshot holds what the store already does: most
@@ -247,6 +256,13 @@ export function createPendingTurnsStore<A extends MutationAttachmentRef = Mutati
       .filter(([id]) => !known.has(id));
     if (discovered.length === 0) return;
     store.setState((state) => ({ submittedHere: new Map([...state.submittedHere, ...discovered]) }));
+  };
+
+  store.recordDirectSend = (clientMutationId, createdAt) => {
+    if (store.getState().submittedHere.has(clientMutationId)) return;
+    store.setState((state) => ({
+      submittedHere: new Map([...state.submittedHere, [clientMutationId, createdAt]]),
+    }));
   };
 
   store.projectSnapshot = (targets, snapshot) => {

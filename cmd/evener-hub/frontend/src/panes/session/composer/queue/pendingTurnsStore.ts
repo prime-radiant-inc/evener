@@ -43,6 +43,7 @@ import {
   resendRecoveryMutation,
   retryBlockedMutation,
   setPendingProjectionLoaded,
+  subscribeDirectSendAdmission,
   subscribeMutationPersistence,
   threadsStore,
   transientRefusalRetryPending,
@@ -83,6 +84,16 @@ const pendingTurnsStore = createPendingTurnsStore<MutationAttachment>({
   threads: threadsPort,
   draft: draftPort,
   identity: { isOwnMutationRecord },
+});
+
+// The direct fallback's provenance seam: a composer send whose durable write
+// failed has no outbox or optimistic row for `recordSubmittedHere` to
+// discover, so the store is told directly the moment the send lands. Without
+// this the daemon's authoritative pending projection would read the send as
+// another client's: no ghost, `ownPendingSend` false, and a fast second Send
+// routed as turn/start while the first turn runs.
+subscribeDirectSendAdmission(({ clientMutationId, createdAt }) => {
+  pendingTurnsStore.recordDirectSend(clientMutationId, createdAt);
 });
 
 installQueuedMutationProjection({

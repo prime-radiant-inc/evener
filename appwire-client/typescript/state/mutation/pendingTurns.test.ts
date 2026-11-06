@@ -151,6 +151,56 @@ describe("createPendingTurnsStore", () => {
     });
   });
 
+  describe("recordDirectSend", () => {
+    test("claims an id with no durable record, so the daemon's pending projection reads as this client's", () => {
+      const store = createPendingTurnsStore({
+        threads: fakeThreadsPort({
+          "ref-a": threadModel({
+            turns: [],
+            pendingMutations: [
+              {
+                clientMutationId: "cmid-direct",
+                method: "turn/start",
+                input: [{ type: "text", text: "sent with no durable row" }],
+                executionState: "claimed",
+                projectionState: "pending",
+              },
+            ],
+          }),
+        }),
+        draft: fakeDraftPort(),
+        identity: fakeIdentity("client-x"),
+      });
+
+      store.recordDirectSend("cmid-direct", 9876);
+
+      // Nothing durable exists to describe the send: the direct fallback wrote
+      // no outbox or optimistic row.
+      expect(store.getState().outbox.size).toBe(0);
+      expect(store.getState().optimistic.size).toBe(0);
+      expect(store.getState().submittedHere.get("cmid-direct")).toBe(9876);
+      expect(store.pendingTurnEntries("ref-a")).toEqual([
+        expect.objectContaining({ id: "cmid-direct", source: "authoritative", fromThisClient: true, createdAt: 9876 }),
+      ]);
+      expect(ownPendingSend(store.pendingTurnEntries("ref-a"))).toBe(true);
+    });
+
+    test("is a no-op when the id is already known", () => {
+      const store = createPendingTurnsStore({
+        threads: fakeThreadsPort(),
+        draft: fakeDraftPort(),
+        identity: fakeIdentity("client-x"),
+      });
+      store.recordDirectSend("cmid-direct", 9876);
+      const stateAfterFirst = store.getState();
+
+      store.recordDirectSend("cmid-direct", 1234);
+
+      expect(store.getState()).toBe(stateAfterFirst); // no new setState published
+      expect(store.getState().submittedHere.get("cmid-direct")).toBe(9876);
+    });
+  });
+
   describe("projectSnapshot", () => {
     // A durable read of ref-a as storage hands it back: new objects on every
     // call, with the same content.
