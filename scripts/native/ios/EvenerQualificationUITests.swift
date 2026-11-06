@@ -304,6 +304,23 @@ final class EvenerQualificationUITests: XCTestCase {
 		)
 		tap(app.buttons["Use this folder"], "the browse never offered the workspace")
 
+		// The fixture hub has no default model, so the form's Hub default
+		// starts nothing: the hub refuses the start with "model is
+		// required". Choose the fixture's own model on the Model screen;
+		// the row's press can land in the push's settling window, so it is
+		// checked by its own effect like every other step: the model
+		// screen's own row for the fixture's model.
+		let fakeModel = app.buttons["fake-test-model"]
+		let modeled = Date().addingTimeInterval(tripwire)
+		while !fakeModel.waitForExistence(timeout: 2) && Date() < modeled {
+			tap(
+				app.buttons
+					.matching(NSPredicate(format: "label BEGINSWITH %@", "Model")).firstMatch,
+				"the form never offered choosing a model"
+			)
+		}
+		tap(fakeModel, "the model screen never offered the fixture's model")
+
 		let start = app.buttons["Start"]
 		XCTAssertTrue(start.waitForExistence(timeout: tripwire), "Start never appeared")
 		waitForEnabled(start)
