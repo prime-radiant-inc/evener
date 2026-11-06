@@ -61,6 +61,7 @@ import { ReaderScreen } from "./src/reader/ReaderScreen";
 import { replaceAnimation } from "./src/session/titleSwipe";
 import { TasksSheet } from "./src/TasksSheet";
 import { ErrorMessage, useColors } from "./src/ui";
+import { VoiceProvider } from "./src/voice/VoiceProvider";
 
 const Stack = createNativeStackNavigator<Routes>();
 const navigationRef = createNavigationContainerRef<Routes>();
@@ -85,13 +86,15 @@ export default function App() {
 				<SafeAreaProvider>
 					<DisplayProvider value={displayPreferences}>
 						<ConnectionProvider>
-							<NativePreferencesProvider>
-								<NativeConversationSessionsProvider>
-									<AlertsProvider>
-										<Navigation />
-									</AlertsProvider>
-								</NativeConversationSessionsProvider>
-							</NativePreferencesProvider>
+							<VoiceProvider>
+								<NativePreferencesProvider>
+									<NativeConversationSessionsProvider>
+										<AlertsProvider>
+											<Navigation />
+										</AlertsProvider>
+									</NativeConversationSessionsProvider>
+								</NativePreferencesProvider>
+							</VoiceProvider>
 						</ConnectionProvider>
 					</DisplayProvider>
 				</SafeAreaProvider>

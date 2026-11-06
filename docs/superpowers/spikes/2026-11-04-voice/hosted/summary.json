@@ -1,0 +1,111 @@
+{
+  "schema": "evener-hosted-voice-summary-v1",
+  "date_utc": "2026-11-04",
+  "analyzed_sample_count_per_candidate": 1,
+  "actual_sessions_including_pilots": 4,
+  "corrective_retries_used": 2,
+  "pilot_exclusions": [
+    {
+      "attempt_index": 0,
+      "reason": "Live correction was triggered by audio packet arrival, not spoken result; excluded as barge-in evidence."
+    },
+    {
+      "attempt_index": 2,
+      "reason": "Initial Mini simulated playout used independent per-item clocks; reported 467ms offset is not a valid single-FIFO offset."
+    }
+  ],
+  "inventory": {
+    "http_status": 200,
+    "inference_performed": false,
+    "model_count": 140,
+    "requested_models": {
+      "gpt-live-1": true,
+      "gpt-realtime-2.1": true,
+      "gpt-realtime-2.1-mini": true
+    }
+  },
+  "live": {
+    "attempt_index": 1,
+    "model_resolved": "gpt-live-1",
+    "elapsed_s": 25.555,
+    "latency": {
+      "approx_request_end_ms": 6348.1,
+      "first_packet_after_request_end_ms": -4828.5,
+      "first_pcm_peak_ge_185_after_request_end_ms": 1561.2,
+      "first_delegation_after_request_end_ms": 903.9,
+      "first_completed_tool_call_after_request_end_ms": null,
+      "input_wall_duration_ms": 5513.2
+    },
+    "audio_received_bytes": 1090560,
+    "reported_usage": {
+      "seconds": 23.0
+    },
+    "calculated_usd": 0.019166666666666665,
+    "input_transcript": " Please look up the status of Project Alpha. Give me a brief status report Wait, I meant Project Beta, not Alpha. Please check Beta instead",
+    "output_transcript": "Okay. Alpha is runningSure, I'll check Beta.Beta is blocked while a test’s being repaired. Nothing has been written or deployed.",
+    "delegation_event_fields": [
+      "type",
+      "event_id",
+      "offset_ms",
+      "delegation"
+    ],
+    "delegation_task_text_present": false,
+    "completed_user_turn_event_observed": false,
+    "explicit_speech_cancel_ack_observed": false,
+    "fixture_task_selection": "Scripted Alpha then Beta, never inferred from transcript deltas.",
+    "interpretation": "Correction preserved in returned transcript; durable intent boundary and exact spoken delivery not established."
+  },
+  "realtime_mini": {
+    "attempt_index": 3,
+    "model_resolved": "gpt-realtime-2.1-mini",
+    "elapsed_s": 17.844,
+    "latency": {
+      "approx_request_end_ms": 6758.3,
+      "first_packet_after_request_end_ms": 1492.8,
+      "first_pcm_peak_ge_185_after_request_end_ms": 1492.8,
+      "first_delegation_after_request_end_ms": null,
+      "first_completed_tool_call_after_request_end_ms": 1046.4,
+      "input_wall_duration_ms": 5388.2
+    },
+    "audio_received_bytes": 736800,
+    "responses": 4,
+    "vendor_tool_arguments": [
+      {
+        "project": "Alpha"
+      },
+      {
+        "project": "Beta"
+      }
+    ],
+    "cancel_ack_status": "cancelled",
+    "cancel_ack_reason": "client_cancelled",
+    "cancel_ack_after_send_ms": 88.3,
+    "truncate_ack_after_send_ms": 90.6,
+    "truncate_confirmed_simulated_audio_end_ms": 470,
+    "output_transcript": "Summary: Fixture only. Alpha is running. Two checks have passed and one is still in progress. No writesGot it, switching to Beta. Let me check its status for you.Summary: Beta is blocked while a test is being repaired. No writes or deployments have been made.",
+    "reported_usage_uncached_upper_usd": 0.0111834,
+    "input_transcription_enabled": false,
+    "physical_playback": false
+  },
+  "all_attempt_cost_upper_usd": [
+    0.018333333333333333,
+    0.019166666666666665,
+    0.0133128,
+    0.0111834
+  ],
+  "reported_usage_total_uncached_upper_usd": 0.0619962,
+  "total_reserved_usd": 0.6,
+  "authorized_budget_usd": 1,
+  "billing_invoice_checked": false,
+  "checks": "Independent assertions passed for all session/model/frame limits, fixture hashes, Alpha/Beta arguments, matching cancellation and truncation acknowledgements, and independently recomputed costs.",
+  "limits": [
+    "No iPhone or locked/background device qualification",
+    "No microphone, speaker, actual playback, AEC or wake word",
+    "No Evener manager calls or side effects",
+    "No p95 or model quality ranking",
+    "No exact TTS fidelity guarantee",
+    "Returned transcripts include generated but cancelled/unplayed text",
+    "Full gpt-realtime-2.1 inventoried only, not measured"
+  ],
+  "final_probe_sha256": "948c1d0a7ab7f76708accca4b9ceb1c1ab80a5a88ffa049bef0cbb5780079798"
+}

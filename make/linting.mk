@@ -106,34 +106,34 @@ lint-internal: build-dev
 # from the repo root, and a module-list-driven linter only reaches what the
 # list names.
 #
-# The second run is the server/appwire_*.go camelCase regime. tagliatelle's
-# overrides are per-package and those files share package `server` with 119
-# snake_case tags, so the split cannot live in one config; .golangci-appwire.yml
-# holds the other half and explains itself.
+# The second run checks the AppWire and device voice camelCase regimes.
+# tagliatelle's overrides are per-package, but these files share packages
+# with snake_case surfaces; .golangci-appwire.yml retains only the exact
+# wire files/fields and holds the other half of the split.
 #
 # The module-lint sweep runs a second time with GOOS=darwin whenever the host
 # is not darwin. golangci-lint compiles only the files its GOOS selects, so a
 # Linux CI host's pass compiles no _darwin.go file and a darwin-only finding
 # reaches main unlinted, first failing the gate for whoever next runs it on a
 # Mac (agent/execenv/process_boundary_darwin.go arrived with five findings this
-# way, #2847). The appwire pass is one module and needs no such repeat.
+# way, #2847). The separately scoped AppWire/voice pass runs on the host.
 ## golangci-lint across every workspace module, plus the second
-## appwire-specific camelCase pass over server/appwire_*.go. The module sweep
+## AppWire/voice camelCase pass over explicitly scoped wire files. The module sweep
 ## repeats with GOOS=darwin off darwin so _darwin.go files are linted in CI.
-## See "The server/appwire_*.go camelCase regime" in
+## See "The AppWire and voice camelCase regimes" in
 ## docs/developing-evener/linting.md.
 ## proves: golangci-lint's full ruleset (struct-tag casing, formatting,
 ##   exported-doc comments, and the rest) passes across every FUZZ_GO_MODULES
 ##   workspace module for the host GOOS and, off darwin, for GOOS=darwin, so a
-##   darwin-only source is linted on a Linux host (#2928); and the appwire
-##   camelCase regime holds for server/appwire_*.go.
+##   darwin-only source is linted on a Linux host (#2928); and AppWire/voice
+##   camelCase holds without exempting unrelated snake_case surfaces.
 ## trigger: Required CI (via make lint); local pre-merge.
 ## requires: golangci-lint. Runs against FUZZ_GO_MODULES, not GO_MODULES, so
 ##   the fuzz module's ordinary Go is covered too.
 ## fails-when: golangci-lint fails for any module, under the host GOOS or, off
 ##   darwin, under GOOS=darwin.
 lint-golangci: build-dev
-	$(call run_quiet_lint,set -e; export GOLANGCI_LINT_CACHE="$(GOLANGCI_LINT_CACHE)"; host_goos="$$(go env GOOS)"; MODULES="$(FUZZ_GO_MODULES)" ./evener-dev dev module-lint; if [ "$$host_goos" != darwin ]; then MODULES="$(FUZZ_GO_MODULES)" GOOS=darwin ./evener-dev dev module-lint; fi; golangci-lint run --allow-parallel-runners --config .golangci-appwire.yml ./server/...)
+	$(call run_quiet_lint,set -e; export GOLANGCI_LINT_CACHE="$(GOLANGCI_LINT_CACHE)"; host_goos="$$(go env GOOS)"; MODULES="$(FUZZ_GO_MODULES)" ./evener-dev dev module-lint; if [ "$$host_goos" != darwin ]; then MODULES="$(FUZZ_GO_MODULES)" GOOS=darwin ./evener-dev dev module-lint; fi; golangci-lint run --allow-parallel-runners --config .golangci-appwire.yml ./server/... ./agent ./cmd/evener-hub ./cmd/evener-hub/internal/hubcore)
 
 ## Remove the current worktree's golangci-lint cache without touching sibling
 ## worktrees or the user's global golangci-lint cache.

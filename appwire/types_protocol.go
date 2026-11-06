@@ -305,11 +305,12 @@ const (
 )
 
 const (
-	NotifyThreadStarted       = "thread/started"
-	NotifyThreadClosed        = "thread/closed"
-	NotifyThreadStatusChanged = "thread/status/changed"
-	NotifyThreadQueueChanged  = "thread/queueChanged"
-	NotifyThreadNameChanged   = "evener/thread/name/changed"
+	NotifyThreadStarted                 = "thread/started"
+	NotifyThreadClosed                  = "thread/closed"
+	NotifyThreadStatusChanged           = "thread/status/changed"
+	NotifyThreadQueueChanged            = "thread/queueChanged"
+	NotifyConversationProvenanceChanged = "thread/conversation-provenance/changed"
+	NotifyThreadNameChanged             = "evener/thread/name/changed"
 	// NotifyThreadModelChanged pushes a mid-session model/provider switch so
 	// clients converge without re-reading the thread. See ThreadModelChangedParams.
 	NotifyThreadModelChanged = "thread/model/changed"

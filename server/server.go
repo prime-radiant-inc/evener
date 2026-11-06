@@ -282,7 +282,8 @@ type Server struct {
 	appEnvelope threadEnvelope
 	// appEnvelopeSource is the seam the bridge samples session state through at
 	// the moments it changes. It is NEVER consulted by a read.
-	appEnvelopeSource ThreadEnvelopeSource
+	appEnvelopeSource           ThreadEnvelopeSource
+	appEnvelopeSourceGeneration uint64
 	// appActivity is the root tree's pulse meter (S5). The projection commits
 	// feed it and the thread list reads it, all under mu; see activityMeter.
 	appActivity activityMeter
@@ -405,16 +406,18 @@ func NewServer(cfg ServerConfig) *Server {
 				return runtime.resolveSubscriptionAdmission(msg)
 			},
 			Features: appwire.FeatureSet{
-				ThreadList:        true,
-				ThreadTurnsList:   true,
-				TurnStart:         true,
-				TurnSteer:         true,
-				ThreadClear:       true,
-				ThreadShutdown:    true,
-				ForkFromTurn:      false,
-				Tasks:             true,
-				ModelList:         true,
-				DirectoryComplete: false,
+				VoicePresentationContextV1: true,
+				ConversationProvenance:     true,
+				ThreadList:                 true,
+				ThreadTurnsList:            true,
+				TurnStart:                  true,
+				TurnSteer:                  true,
+				ThreadClear:                true,
+				ThreadShutdown:             true,
+				ForkFromTurn:               false,
+				Tasks:                      true,
+				ModelList:                  true,
+				DirectoryComplete:          false,
 			},
 		}),
 		// AppReplaySize bounds notification RETENTION, which is transport

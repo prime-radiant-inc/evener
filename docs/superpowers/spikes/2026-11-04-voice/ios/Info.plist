@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+    <key>CFBundleExecutable</key><string>VoiceProbe</string>
+    <key>CFBundleIdentifier</key><string>dev.evener.experimental.voiceprobe20261104</string>
+    <key>CFBundleName</key><string>VoiceProbe</string>
+    <key>CFBundleDisplayName</key><string>Voice Probe</string>
+    <key>CFBundlePackageType</key><string>APPL</string>
+    <key>CFBundleVersion</key><string>1</string>
+    <key>CFBundleShortVersionString</key><string>0.0.1</string>
+    <key>MinimumOSVersion</key><string>17.0</string>
+    <key>LSRequiresIPhoneOS</key><true/>
+    <key>UIDeviceFamily</key><array><integer>1</integer></array>
+    <key>NSMicrophoneUsageDescription</key><string>Arm this throwaway probe to count audio callbacks. Microphone audio is never stored or uploaded.</string>
+    <key>UIBackgroundModes</key><array><string>audio</string></array>
+    <key>UIApplicationSceneManifest</key><dict>
+        <key>UIApplicationSupportsMultipleScenes</key><false/>
+    </dict>
+    <key>UILaunchScreen</key><dict/>
+</dict></plist>

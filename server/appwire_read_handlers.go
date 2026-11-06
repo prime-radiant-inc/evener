@@ -241,6 +241,14 @@ func (s *Server) finishAppThreadRead(params appwire.ThreadReadParams, cut appThr
 		response.LatestExecutionTurnID = latestExecutionTurnID
 		response.Overlay = overlay
 	}
+	// History may have advanced after the subscription cut. Its immutable
+	// producer snapshot must cover the entries just projected, not the older
+	// envelope captured before projection. This never samples a live Session.
+	if cut.history != nil {
+		if state := cut.history.conversationProvenance(); state != nil {
+			response.Thread.Evener.ConversationProvenance = appwire.CloneConversationProvenance(state)
+		}
+	}
 	if err := appwire.ValidateThreadReadItemResponse(response); err != nil {
 		if cut.history != nil {
 			return appwire.ThreadReadResponse{}, appwire.WithHistoryReadIdentity(appserver.WireError(err), response.BootGeneration, response.Epoch)

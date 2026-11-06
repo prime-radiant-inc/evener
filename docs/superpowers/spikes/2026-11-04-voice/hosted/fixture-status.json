@@ -1,0 +1,12 @@
+{
+  "Alpha": {
+    "project": "Alpha",
+    "status": "running",
+    "summary": "Fixture only. Alpha is running. Two checks have passed and one check is still in progress. No writes or deployments have been made. This report comes from the local test file."
+  },
+  "Beta": {
+    "project": "Beta",
+    "status": "blocked",
+    "summary": "Fixture only. Beta is blocked while a test is being repaired. No writes or deployments have been made."
+  }
+}

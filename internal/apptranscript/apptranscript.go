@@ -1087,6 +1087,10 @@ func toolCallItem(turnID string, turnIndex, part int, turn schema.Turn) appwire.
 		Description:   description,
 		Status:        appwire.TurnStatusInProgress,
 	}
+	if p := turn.ConversationProvenance; call.Name == "ask_user" && p != nil {
+		item.ConversationProvenance = &appwire.ConversationOutputProvenance{Version: p.Version, InstanceID: p.InstanceID,
+			RunGeneration: p.RunGeneration, RequestID: p.RequestID, FrontierID: p.FrontierID, SourceItemID: item.ID}
+	}
 	// The entry's recorded timestamp is the server truth for when the call
 	// was issued (issue #37); a zero timestamp mints no stamp.
 	if !turn.Timestamp.IsZero() {

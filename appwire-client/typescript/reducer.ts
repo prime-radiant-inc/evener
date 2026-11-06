@@ -258,6 +258,7 @@ export function applyOverlayEndForTranscriptHandoff<M extends ThreadModel>(
 // has no case for, is transcript-shaped.
 const THREAD_SCALAR_ONLY_METHODS: ReadonlySet<string> = new Set([
   "thread/queueChanged",
+  "thread/conversation-provenance/changed",
   "thread/status/changed",
   "thread/model/changed",
   "thread/reasoning-effort/changed",
@@ -323,6 +324,13 @@ function applyNotificationToThread<M extends ThreadModel>(model: M, n: AnyNotifi
     case "thread/queueChanged": {
       if (!notificationTargetsThread(n, model)) return model;
       return { ...model, queue: n.params.queue, lastFrameAt: now };
+    }
+
+    case "thread/conversation-provenance/changed": {
+      if (!notificationTargetsThread(n, model)) return model;
+      // The hub voice bridge consumes this control evidence. It carries no
+      // transcript change, so text clients keep their history and overlays.
+      return { ...model, lastFrameAt: now };
     }
 
     case "thread/status/changed": {

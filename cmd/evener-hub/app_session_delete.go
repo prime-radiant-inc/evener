@@ -38,17 +38,6 @@ func (s *WebServer) sessionDelete(ctx context.Context, params appwire.SessionDel
 		return appwire.SessionDeleteResponse{}, appwire.InternalError("past index not configured")
 	}
 	pe, ok := s.cfg.Past.Find(threadID)
-	if !ok {
-		// A canceled request must fail before it can scrub decisions for a
-		// session it never decided to delete.
-		if err := ctx.Err(); err != nil {
-			return appwire.SessionDeleteResponse{}, err
-		}
-		if decisionErrors := s.scrubSessionDecisions(threadID); len(decisionErrors) > 0 {
-			return appwire.SessionDeleteResponse{}, appwire.InternalError(strings.Join(decisionErrors, "; "))
-		}
-		return s.sessionDeleteResponse(ctx, nil, nil, "")
-	}
 
 	target := hubcore.DeletionTarget{Ref: localAppRef(threadID), ThreadID: threadID}
 	record := hubcore.DeletionRecord{Targets: []hubcore.DeletionTarget{target}}
@@ -72,6 +61,19 @@ func (s *WebServer) sessionDelete(ctx context.Context, params appwire.SessionDel
 	// fail before the destructive cleanup, as the fresh project-delete path does.
 	if err := ctx.Err(); err != nil {
 		return appwire.SessionDeleteResponse{}, err
+	}
+	if !ok {
+		// The shared owner confirmed absence. A prior deletion's tombstone
+		// supplies the real bucket for retrying any unfinished artifact cleanup.
+		if stateDir := stateDirs[threadID]; stateDir != "" {
+			if err := s.cleanupProjectDeletionTarget(stateDir, threadID); err != nil {
+				return s.sessionDeleteResponse(ctx, nil, []projectDeleteSkip{{ID: threadID, Reason: err.Error()}}, "")
+			}
+		}
+		if decisionErrors := s.scrubSessionDecisions(threadID); len(decisionErrors) > 0 {
+			return appwire.SessionDeleteResponse{}, appwire.InternalError(strings.Join(decisionErrors, "; "))
+		}
+		return s.sessionDeleteResponse(ctx, nil, nil, "")
 	}
 
 	deleted, skip, decisionErrors := s.cleanupProjectDeletionTargetAndDecisions(pe.StateDir, threadID)
