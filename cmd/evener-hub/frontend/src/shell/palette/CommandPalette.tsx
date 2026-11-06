@@ -503,7 +503,7 @@ function PaletteBody({
       }
       return view.items.length > 0 ? 0 : -1;
     });
-  }, [view]);
+  }, [view, query]);
 
   function move(dir: number) {
     if (view.items.length === 0) return;
