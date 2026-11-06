@@ -8,6 +8,7 @@ import type {
 import {
   ErrorTranscriptHistoryFailed,
   encodeTranscriptItem,
+  HistoryPaging,
   hydrateThread,
   type ThreadReadResponse,
   type Turn,
@@ -33,6 +34,7 @@ import { setCacheChannelFactoryForTests } from "./cacheLifetime";
 import { connectionStore } from "./connection";
 import {
   entryTranscriptRoute,
+  olderTranscriptPageKey,
   productionEntryTranscriptForTests,
   publishEntryTranscriptModel,
   setProductionEntryCacheForTests,
@@ -581,6 +583,35 @@ it("a cursorless seed's armed local continuation reaches the authoritative read 
     route!.localBefore = { entry: 1, item: 0 };
     await threadsStore.getState().loadOlderTurns("local:a");
     expect(client.calls.filter((call) => call.method === "thread/read")).toHaveLength(readsBefore + 1);
+  } finally {
+    await release();
+  }
+});
+
+it("HistoryPaging drives a cursorless seed's older demand through the authoritative read (#5586)", async () => {
+  const { client, readsBefore, release } = await installCursorlessSeedRoute();
+  try {
+    // The recovery read answers with a fresh cursorless window: the demand
+    // settles as exhausted and the scheduling key advances to null.
+    const recovered = response("local:a", [turn("recovered", 5)]);
+    recovered.snapshot = { incarnation: "inc-a", length: 5 };
+    client.on("thread/read", (params) => ({ ...recovered, requestGeneration: params.requestGeneration }));
+    // Without a cursor the page key used to be null, so HistoryPaging skipped
+    // loadOlderTurns and settled the demand as no more history.
+    expect(olderTranscriptPageKey("local:a")).not.toBeNull();
+    const paging = new HistoryPaging(
+      () => olderTranscriptPageKey("local:a"),
+      () => threadsStore.getState().loadOlderTurns("local:a"),
+    );
+    const releaseConsumer = paging.activate("test");
+    try {
+      await paging.request("test");
+    } finally {
+      releaseConsumer();
+    }
+    expect(client.calls.filter((call) => call.method === "thread/read")).toHaveLength(readsBefore + 1);
+    expect(olderTranscriptPageKey("local:a")).toBeNull();
+    expect(threadsStore.getState().threads.get("local:a")?.olderFrontier).toBe("none");
   } finally {
     await release();
   }

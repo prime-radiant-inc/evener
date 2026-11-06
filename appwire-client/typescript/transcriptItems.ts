@@ -545,7 +545,6 @@ export function threadFields(resp: ThreadReadResponse, ref: string, now: number)
     jobsUpdatedAt: null,
     jobsTreeRevision: null,
     olderCursor: resp.olderCursor,
-    olderFrontier: resp.olderCursor === undefined ? "none" : resp.olderCursor,
     lastFrameAt: now,
     capabilities: thread.evener.capabilities,
     capabilitySource: "read",

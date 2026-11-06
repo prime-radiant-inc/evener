@@ -1235,6 +1235,101 @@ it("does not inherit a superseded replacement over a newer committed item (#4651
   }
 });
 
+it("keeps an inherited authoritative preflight's rows after an earlier committed replacement (#4651)", async () => {
+  const { owner: unused, makeCache, offer } = capacityFixture(100_000);
+  unused.dispose();
+  const cache = makeCache(6_500);
+  const owner = repository(cache, 1, undefined, capturingScheduler().scheduler, new EntryWriteAdmission(100_000));
+  const reader = owner.attachReader();
+  const gate = deferred<void>();
+  const reached = deferred<void>();
+  try {
+    await offer(owner);
+    expect(
+      owner.acceptRead(
+        {
+          ...readItems("base", 4, [item("a", 1, 1), item("b", 2, 2), item("c", 3, 3)]),
+          requestGeneration: 2,
+        },
+        { lifetime: 1, readId: "base", boundary: "base" },
+      ),
+    ).toBe(true);
+    await owner.settled();
+    // R1 commits a replacement at X1 = entry 1.
+    expect(
+      owner.acceptRead(
+        {
+          ...readItems("r1", 5, [item("r1a", 1, 1), item("r1b", 2, 2)]),
+          authoritative: true,
+          requestGeneration: 3,
+        },
+        { lifetime: 1, readId: "r1", boundary: "r1" },
+      ),
+    ).toBe(true);
+    await owner.settled();
+    expect((await cache.getLatest(historyKey, 40)).map((row) => row.transcriptKey).sort()).toEqual([
+      "item-r1a",
+      "item-r1b",
+    ]);
+
+    // A2: authoritative replacement from X2 = entry 2, held in its capacity
+    // preflight. Its rows sit at or above the earlier committed floor.
+    const realPlan = cache.planCapacity.bind(cache);
+    vi.spyOn(cache, "planCapacity").mockImplementationOnce(async (batch) => {
+      expect(batch.coverage?.readId).toBe("a2");
+      const plan = await realPlan(batch);
+      reached.resolve();
+      await gate.promise;
+      return plan;
+    });
+    expect(
+      owner.acceptRead(
+        {
+          ...readItems("a2", 6, [item("a2b", 2, 2), item("a2c", 3, 3)]),
+          authoritative: true,
+          requestGeneration: 4,
+        },
+        { lifetime: 1, readId: "a2", boundary: "a2" },
+      ),
+    ).toBe(true);
+    await reached.promise;
+
+    // Q: a plain merge read whose window starts above X2. It omits A2's rows,
+    // inherits A2's replacement, and must rewrite them: a position filter
+    // anchored on R1's earlier floor would drop them, and Q's commit would
+    // delete [X2, Q's window start) without rewriting it.
+    const commits = vi.spyOn(cache, "commitBatch");
+    expect(
+      owner.acceptRead(
+        { ...readItems("q", 7, [item("q", 4, 4)]), requestGeneration: 5 },
+        { lifetime: 1, readId: "q", boundary: "q" },
+      ),
+    ).toBe(true);
+    await vi.waitFor(() => expect(commits).toHaveBeenCalledTimes(1));
+    expect(await commits.mock.results[0]!.value).toMatchObject({ outcome: "committed" });
+    gate.resolve();
+    await owner.settled();
+
+    const durable = await cache.getLatest(historyKey, 40);
+    expect(durable.map((row) => row.transcriptKey)).toEqual(expect.arrayContaining(["item-a2b", "item-a2c", "item-q"]));
+    reader.dispose();
+    const reopened = owner.attachReader();
+    try {
+      const opened = await reopened.openLocal(40);
+      expect(opened.model?.turns.flatMap((turn) => turn.items).map((entry) => entry.transcriptKey)).toEqual(
+        expect.arrayContaining(["item-a2b", "item-a2c"]),
+      );
+    } finally {
+      reopened.dispose();
+    }
+  } finally {
+    gate.resolve();
+    await owner.settled().catch(() => {});
+    reader.dispose();
+    owner.dispose();
+  }
+});
+
 it("persists a distinct page request after intrinsic capacity refusal", async () => {
   const { owner: unused, makeCache, offer } = capacityFixture(100_000);
   unused.dispose();

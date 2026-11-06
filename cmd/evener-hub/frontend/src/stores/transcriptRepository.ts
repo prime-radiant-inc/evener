@@ -443,11 +443,6 @@ export class TranscriptRepository {
   #localOlder: { before: ThreadItemPosition; floor: ThreadItemPosition; sourceRevision: number } | undefined;
   #replacementRevision = 0;
   #uncommittedReplacementFrom: ThreadItemPosition | undefined;
-  // The deepest replacement floor that has actually committed. Everything at
-  // or above it is the durable record's own authoritative content: a later
-  // ordinary read may inherit payloads below it, but must never re-write or
-  // delete that scope from an older, superseded read (#4651).
-  #committedReplacementFrom: ThreadItemPosition | undefined;
   #baselineIdentity = "";
   #readerCount = 0;
   #coverageBoundary: string | undefined;
@@ -2841,19 +2836,7 @@ export class TranscriptRepository {
           replacement: replacementFrom ? { from: replacementFrom } : undefined,
           items: [
             ...new Map(
-              [
-                // Payloads a committed replacement already superseded stay
-                // superseded: inheriting them would resurrect content the
-                // durable record's newer replacement deleted (#4651).
-                ...inherited.flatMap((prior) =>
-                  prior.items.filter(
-                    (row) =>
-                      this.#committedReplacementFrom === undefined ||
-                      comparePosition(row.position, this.#committedReplacementFrom) < 0,
-                  ),
-                ),
-                ...batch.items,
-              ].map((row) => [row.transcriptKey, row]),
+              [...inherited.flatMap((prior) => prior.items), ...batch.items].map((row) => [row.transcriptKey, row]),
             ).values(),
           ],
           turns: [
@@ -3108,16 +3091,7 @@ export class TranscriptRepository {
           if (this.#pending.get(row.transcriptKey) === row) this.#pending.delete(row.transcriptKey);
         }
       } else if (outcome.outcome === "committed") {
-        if (batch.replacement && !superseded) {
-          this.#uncommittedReplacementFrom = undefined;
-          // The deepest committed floor is the boundary above which the
-          // durable record is its own authoritative content (#4651).
-          this.#committedReplacementFrom =
-            this.#committedReplacementFrom === undefined ||
-            comparePosition(batch.replacement.from, this.#committedReplacementFrom) < 0
-              ? batch.replacement.from
-              : this.#committedReplacementFrom;
-        }
+        if (batch.replacement && !superseded) this.#uncommittedReplacementFrom = undefined;
         this.#retryAttempt = 0;
         // Restoration is conditioned on the outcome's coverage, not the offered
         // input: only an `extended` certificate actually repairs the chain (an
