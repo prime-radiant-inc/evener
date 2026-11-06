@@ -234,9 +234,12 @@ final class EvenerQualificationUITests: XCTestCase {
 			let token = app.secureTextFields["hub-token"]
 			tap(token, "the token field never appeared")
 			typeWholeText(app, token, hubToken, "the hub token never landed whole") { $0.count == hubToken.count }
-			// A keyboard left up covers the review's Connect row, and the
-			// tap lands on the keyboard window instead of the app.
-			dismissKeyboard(app, withReturnKeyOf: token)
+			// The form is dragged past the keyboard, the app's own
+			// drag-to-dismiss, rather than pressing the secure field's
+			// return key: on iOS that press can leave the keyboard's
+			// autofill accessory window over the content, eating presses
+			// that every check says landed.
+			dismissKeyboard(app, draggingOn: app.buttons["hub-continue"])
 			tap(app.buttons["hub-continue"], "the Continue row never appeared")
 			// The board is Connect's own effect, checked like every other
 			// step: the press can deaden in the settling window every fresh
@@ -328,23 +331,6 @@ final class EvenerQualificationUITests: XCTestCase {
 			}
 		}
 		XCTFail("\(what): the field reads \(field.value ?? "nothing")")
-	}
-
-	/// Dismisses the keyboard with a single-line field's return key. A
-	/// keyboard left up covers the next control — the tap lands on the
-	/// keyboard window or is refused as not hittable — and the press can
-	/// race the field's focus handling under load, so the keyboard's
-	/// absence is checked and the press retried.
-	private func dismissKeyboard(_ app: XCUIApplication, withReturnKeyOf field: XCUIElement) {
-		let keyboard = app.keyboards.firstMatch
-		let deadline = Date().addingTimeInterval(tripwire)
-		while keyboard.exists && Date() < deadline {
-			if field.exists {
-				field.typeText("\n")
-			}
-			Thread.sleep(forTimeInterval: 0.5)
-		}
-		XCTAssertFalse(keyboard.exists, "the keyboard never came down")
 	}
 
 	/// Dismisses the keyboard by dragging the form, its own drag-to-dismiss,
