@@ -375,9 +375,8 @@ func TestHubWatchEveryRequiresOneSelectedKind(t *testing.T) {
 }
 
 // Structurally inapplicable ordinary arguments are refused each with an error
-// naming that argument and why, before any client contact — never the old
-// blanket "cannot combine ordinary watch arguments" refusal that hid even the
-// arguments that do work.
+// naming that argument and why, before any client contact — the refusal says
+// which of the two vocabularies the call reached for.
 func TestHubWatchRefusesInapplicableOrdinaryArgumentsSeparately(t *testing.T) {
 	t.Parallel()
 	cases := []struct {

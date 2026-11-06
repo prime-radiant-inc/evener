@@ -719,11 +719,10 @@ func (jm *jobManager) lockHubRosterReplacement(ctx context.Context) (func(), err
 // ordinary arguments select triggers a session watch cannot express (a concrete
 // job's output or progress, a self timer, an assistant.tool filter, or the
 // ordinary source spelling), and a refusal naming the argument tells the
-// caller which world it reached for; the old blanket rejection hid even the
-// arguments that work. Present-but-neutral values read as omitted, exactly as
-// on the ordinary path, because providers materialize optional properties.
-// Keys are visited in sorted order so a call with several inapplicable
-// arguments always reports the same one first.
+// caller which of the two vocabularies it reached for. Present-but-neutral
+// values read as omitted, exactly as on the ordinary path, because providers
+// materialize optional properties. Keys are visited in sorted order so a call
+// with several inapplicable arguments always reports the same one first.
 func hubWatchOrdinaryArgs(args map[string]any) (watchArgs, error) {
 	a := watchArgs{Note: stringArg(args, "note")}
 	n, ok, err := watchIntArg(args, "every")
