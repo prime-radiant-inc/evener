@@ -18,6 +18,10 @@ export interface ThreadSubscriptionLease {
   release(): void;
 }
 
+function copyStatus(status: ThreadStatus): ThreadStatus {
+  return { type: status.type, ...(status.activeFlags ? { activeFlags: [...status.activeFlags] } : {}) };
+}
+
 interface Membership {
   ref: string;
   holders: number;
@@ -72,14 +76,16 @@ class ThreadSubscriptions {
 
   private admitStatus(notification: Extract<AnyNotification, { method: "thread/status/changed" }>): void {
     const { ref, threadId, status } = notification.params;
+    const direct = this.members.get(ref);
+    if (direct?.metadata) this.admitMemberStatus(direct, status);
     for (const member of this.members.values()) {
-      const metadata = member.metadata;
-      if (!metadata || (ref !== member.ref && metadata.threadId !== threadId)) continue;
-      member.metadata = {
-        ...metadata,
-        status: { type: status.type, ...(status.activeFlags ? { activeFlags: [...status.activeFlags] } : {}) },
-      };
+      if (member !== direct && member.metadata?.threadId === threadId) this.admitMemberStatus(member, status);
     }
+  }
+
+  private admitMemberStatus(member: Membership, status: ThreadStatus): void {
+    if (!member.metadata) return;
+    member.metadata = { ...member.metadata, status: copyStatus(status) };
   }
 
   acquire(ref: string): ThreadSubscriptionLease {
@@ -212,10 +218,7 @@ class ThreadSubscriptions {
     member.metadata = {
       threadId: thread.id,
       sessionId: thread.sessionId ?? thread.id,
-      status: {
-        type: thread.status.type,
-        ...(thread.status.activeFlags ? { activeFlags: [...thread.status.activeFlags] } : {}),
-      },
+      status: copyStatus(thread.status),
     };
   }
 

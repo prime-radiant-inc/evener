@@ -30,8 +30,9 @@ function drill(sub: SessionDelegate): void {
 }
 
 export function AgentsTab({ scope, now, onDrill = drill }: ActivityTabBodyProps) {
-  const foldID = `${scope.leaf.ref}\0inactive-delegates`;
-  const inactiveListID = `${scope.leaf.ref}-inactive-delegates`;
+  const inactiveSuffix = "inactive-delegates";
+  const foldID = `${scope.leaf.ref}\0${inactiveSuffix}`;
+  const inactiveListID = `${scope.leaf.ref}-${inactiveSuffix}`;
   const foldOpen = isDisclosureOpen(foldID, false);
   const shown = useActivitySidebarStore((state) => state.views.get(scope.leaf.ref)?.categories.agents?.shown ?? PAGE);
   const { snapshot, loadMore } = useSessionActivity(scope.leaf.ref, "session", "delegates");
