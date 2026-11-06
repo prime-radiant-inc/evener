@@ -69,6 +69,7 @@ it("arms in one tap with a visible disclosure, keeps takeover explicit, and send
 				epoch: "opaque",
 				grant: "fixture",
 				expiresAt: "2030-01-01T00:00:00Z",
+				provider: "openai",
 			}),
 		};
 	};
@@ -103,6 +104,7 @@ it("arms in one tap with a visible disclosure, keeps takeover explicit, and send
 	});
 	expect(requests[1].takeover).toBe(true);
 	expect(button("Talk").props.disabled).toBe(false);
+	expect(JSON.stringify(tree.toJSON())).toContain("openai");
 	await act(async () => {
 		button("Talk").props.onPress();
 		button("Stop speaking").props.onPress();

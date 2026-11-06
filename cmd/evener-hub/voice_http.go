@@ -301,53 +301,6 @@ func (s *WebServer) voiceClient(ctx context.Context) (*appwire.Client, error) {
 }
 
 func (s *WebServer) voiceProvider(ctx context.Context, name string) (string, http.Header, error) {
-	return s.voiceProviderByName(ctx, name)
-}
-
-// defaultOpenAIVoiceProvider names the instance voice uses when Arm names none:
-// the configured default when it is an OpenAI instance, else the first OpenAI
-// instance. A hub whose credentials live under another instance name still arms
-// without the caller guessing that name.
-func (s *WebServer) defaultOpenAIVoiceProvider() (string, error) {
-	if s.auth == nil || s.auth.registry() == nil {
-		return "", errors.New("voice provider registry unavailable")
-	}
-	r := s.auth.registry()
-	defaultName, _, _ := r.DefaultInstance()
-	return pickOpenAIVoiceProvider("", defaultName, r.Instances())
-}
-
-func isOpenAIProtocol(protocol string) bool {
-	return protocol == registry.ProtocolOpenAIChat || protocol == registry.ProtocolOpenAIResponses
-}
-
-// isOpenAIVoiceInstance reports whether inst is OpenAI itself. Other
-// OpenAI-protocol instances (a Codex login, Groq, OpenRouter) speak the chat
-// protocol but not OpenAI's Realtime endpoint.
-func isOpenAIVoiceInstance(inst registry.Instance) bool {
-	return inst.ProviderID == "openai" || inst.Base == "openai"
-}
-
-// pickOpenAIVoiceProvider chooses voice's instance from the caller's name, the
-// hub's default, and the configured instances.
-func pickOpenAIVoiceProvider(name, defaultName string, instances []registry.Instance) (string, error) {
-	if name != "" {
-		return name, nil
-	}
-	for _, inst := range instances {
-		if inst.Name == defaultName && isOpenAIVoiceInstance(inst) {
-			return inst.Name, nil
-		}
-	}
-	for _, inst := range instances {
-		if isOpenAIVoiceInstance(inst) {
-			return inst.Name, nil
-		}
-	}
-	return "", errors.New("voice provider unavailable: no OpenAI-transport instance")
-}
-
-func (s *WebServer) voiceProviderByName(ctx context.Context, name string) (string, http.Header, error) {
 	if s.auth == nil || s.auth.registry() == nil {
 		return "", nil, errors.New("voice provider registry unavailable")
 	}
@@ -382,6 +335,46 @@ func (s *WebServer) voiceProviderByName(ctx context.Context, name string) (strin
 		return "", nil, err
 	}
 	return u.String(), req.Header, nil
+}
+
+// defaultOpenAIVoiceProvider names the instance voice uses when Arm names none:
+// the configured default when it is an OpenAI instance, else the first OpenAI
+// instance. A hub whose credentials live under another instance name still arms
+// without the caller guessing that name.
+func (s *WebServer) defaultOpenAIVoiceProvider() (string, error) {
+	if s.auth == nil || s.auth.registry() == nil {
+		return "", errors.New("voice provider registry unavailable")
+	}
+	r := s.auth.registry()
+	defaultName, _, _ := r.DefaultInstance()
+	return pickOpenAIVoiceProvider(defaultName, r.Instances())
+}
+
+func isOpenAIProtocol(protocol string) bool {
+	return protocol == registry.ProtocolOpenAIChat || protocol == registry.ProtocolOpenAIResponses
+}
+
+// isOpenAIVoiceInstance reports whether inst is OpenAI itself. Other
+// OpenAI-protocol instances (a Codex login, Groq, OpenRouter) speak the chat
+// protocol but not OpenAI's Realtime endpoint.
+func isOpenAIVoiceInstance(inst registry.Instance) bool {
+	return inst.ProviderID == "openai" || inst.Base == "openai"
+}
+
+// pickOpenAIVoiceProvider chooses voice's instance from the hub's default and
+// configured instances.
+func pickOpenAIVoiceProvider(defaultName string, instances []registry.Instance) (string, error) {
+	for _, inst := range instances {
+		if inst.Name == defaultName && isOpenAIVoiceInstance(inst) {
+			return inst.Name, nil
+		}
+	}
+	for _, inst := range instances {
+		if isOpenAIVoiceInstance(inst) {
+			return inst.Name, nil
+		}
+	}
+	return "", errors.New("voice provider unavailable: no OpenAI-transport instance")
 }
 
 func voiceOpaqueID() string {
