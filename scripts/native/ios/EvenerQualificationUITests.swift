@@ -73,7 +73,7 @@ final class EvenerQualificationUITests: XCTestCase {
 
 		let composer = composerField(app)
 		tap(composer, "the composer never appeared")
-		composer.typeText(Self.draft)
+		typeWholeText(app, composer, Self.draft, "the draft never landed whole") { $0 == Self.draft }
 
 		// Reactivation keeps the hub: background, return, and the journey is
 		// still where it was.
@@ -98,7 +98,9 @@ final class EvenerQualificationUITests: XCTestCase {
 		// turn through the real hub, and its response renders. The baseline
 		// is sampled before sending, so the wait compares counts honestly.
 		tap(recovered, "the composer never appeared")
-		recovered.typeText("qualify the readback")
+		typeWholeText(app, recovered, "qualify the readback", "the follow-up never landed whole") {
+			$0 == "qualify the readback"
+		}
 		let followUp = app.descendants(matching: .any)
 			.matching(NSPredicate(format: "label CONTAINS %@", "QUALIFICATION_code_c9"))
 		let baseline = followUp.count
@@ -228,15 +230,22 @@ final class EvenerQualificationUITests: XCTestCase {
 			tap(surface, "the first-run address way disappeared before its tap")
 			let address = app.textFields["hub-address"]
 			tap(address, "the address field never appeared")
-			address.typeText(hubOrigin)
+			typeWholeText(app, address, hubOrigin, "the hub address never landed whole") { $0 == hubOrigin }
 			let token = app.secureTextFields["hub-token"]
 			tap(token, "the token field never appeared")
-			token.typeText(hubToken)
+			typeWholeText(app, token, hubToken, "the hub token never landed whole") { $0.count == hubToken.count }
 			// A keyboard left up covers the review's Connect row, and the
 			// tap lands on the keyboard window instead of the app.
 			dismissKeyboard(app, withReturnKeyOf: token)
 			tap(app.buttons["hub-continue"], "the Continue row never appeared")
-			tap(app.buttons["Connect"], "the review step never appeared")
+			// The board is Connect's own effect, checked like every other
+			// step: the press can deaden in the settling window every fresh
+			// screen has, and the app's own guard makes a repeat press safe.
+			let board = app.buttons["new-session"]
+			let shown = Date().addingTimeInterval(tripwire)
+			while !board.waitForExistence(timeout: 4) && Date() < shown && app.buttons["Connect"].exists {
+				tap(app.buttons["Connect"], "the review step never appeared")
+			}
 		}
 		XCTAssertTrue(
 			app.buttons["new-session"].waitForExistence(timeout: tripwire),
@@ -251,7 +260,7 @@ final class EvenerQualificationUITests: XCTestCase {
 	private func startSession(_ app: XCUIApplication, prompt promptText: String) {
 		let prompt = openNewSession(app)
 		tap(prompt, "the sheet's prompt never became tappable")
-		prompt.typeText(promptText)
+		typeWholeText(app, prompt, promptText, "the session prompt never landed whole") { $0 == promptText }
 		let browse = app.buttons
 			.matching(NSPredicate(format: "label BEGINSWITH %@", "Browse folders")).firstMatch
 		// The sheet's picker sits where the prompt's keyboard can cover it.
@@ -291,6 +300,34 @@ final class EvenerQualificationUITests: XCTestCase {
 		}
 		XCTAssertTrue(prompt.waitForExistence(timeout: 2), "the New session sheet never opened")
 		return prompt
+	}
+
+	/// Types into a field and checks the text arrived whole, clearing and
+	/// retyping when it did not. A busy app can drop synthesized keystrokes
+	/// mid-burst, and a silently shortened address surfaces only much later,
+	/// as a review with a malformed hub and an empty suggested name. Secure
+	/// fields hide their text, so they are checked by their bullet count.
+	private func typeWholeText(
+		_ app: XCUIApplication,
+		_ field: XCUIElement,
+		_ text: String,
+		_ what: String,
+		landed: (String) -> Bool
+	) {
+		let deadline = Date().addingTimeInterval(tripwire)
+		while Date() < deadline {
+			field.typeText(text)
+			if let value = field.value as? String, landed(value) {
+				return
+			}
+			// Some keystroke in the burst was dropped: clear what arrived
+			// and type again.
+			let remove = app.keyboards.keys["delete"]
+			for _ in 0..<(text.count + 4) where remove.exists {
+				remove.tap()
+			}
+		}
+		XCTFail("\(what): the field reads \(field.value ?? "nothing")")
 	}
 
 	/// Dismisses the keyboard with a single-line field's return key. A
