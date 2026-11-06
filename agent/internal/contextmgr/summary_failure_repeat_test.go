@@ -2,7 +2,6 @@ package contextmgr
 
 import (
 	"context"
-	"strconv"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -70,6 +69,38 @@ func TestMaybeCompactSuppressesRepeatedIdenticalSummaryFailure(t *testing.T) {
 	cm.MaybeCompact(context.Background(), &history, 0, emit)
 	if got := countSummaryFailureWarnings(*warnings); got != 2 {
 		t.Fatalf("summary failure warnings after re-arm = %d, want 2", got)
+	}
+}
+
+// A summarize layer that completes without installing anything re-arms
+// publication too: on a window too small to summarize, the layer runs as a
+// successful no-op, and the next identical automatic failure must warn again.
+func TestNoOpSummarizeLayerStillReArmsRepeatPublication(t *testing.T) {
+	t.Parallel()
+	empty := &atomic.Bool{}
+	empty.Store(true)
+	cm := summaryRepeatManager(emptyThenValidReply(empty))
+	history := canaryHistory()
+	emit, warnings := warningsFrom()
+
+	cm.MaybeCompact(context.Background(), &history, 0, emit)
+	if got := countSummaryFailureWarnings(*warnings); got != 1 {
+		t.Fatalf("summary failure warnings = %d, want the first only (warnings %v)", got, *warnings)
+	}
+
+	// A window whose input limit falls below the summarizing minimum makes the
+	// summarize layer a successful no-op: it runs to completion, installs
+	// nothing, and that completion re-arms publication.
+	cm.SetProfile(testOpenAIProfileWithContextWindow(minSummarizingWindow / 2))
+	cm.MaybeCompact(context.Background(), &history, 0, emit)
+	if got := countSummaryFailureWarnings(*warnings); got != 1 {
+		t.Fatalf("no-op pass added warnings: %d", got)
+	}
+
+	cm.SetProfile(testOpenAIProfileWithContextWindow(minSummarizingWindow))
+	cm.MaybeCompact(context.Background(), &history, 0, emit)
+	if got := countSummaryFailureWarnings(*warnings); got != 2 {
+		t.Fatalf("summary failure warnings after a no-op completion = %d, want the re-armed failure to warn", got)
 	}
 }
 
@@ -219,5 +250,4 @@ func TestSummaryFailureRepeatLatchConcurrentAccess(t *testing.T) {
 	if !cm.claimSummaryFailureRepeat(&diagnostic.SummaryFailure{Terminal: diagnostic.SummaryAttempt{Route: "session", Kind: "rejected_output", Reason: "empty_reply", Status: 500, Attempts: 3}}) {
 		t.Fatal("a failure differing only in status was suppressed as a repeat")
 	}
-	_ = strconv.Itoa(0)
 }

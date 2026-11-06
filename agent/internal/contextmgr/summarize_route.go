@@ -88,7 +88,9 @@ type summarizationResult struct {
 // settle as one logical group on both summary surfaces.
 func rerollRejectedReply(ctx context.Context, call func(context.Context) (llm.Response, error), judge func(llm.Response) error) (resp llm.Response, attempts int, callErr, rejected error) {
 	callCtx, scope := llm.BeginAPIAttemptGroupScope(ctx)
-	defer scope.SettleResult(callErr)
+	// The settle must read callErr at return time: a deferred call with
+	// callErr as an argument would capture it before any call ran.
+	defer func() { scope.SettleResult(callErr) }()
 	resp, callErr = call(callCtx)
 	attempts = 1
 	if callErr == nil {

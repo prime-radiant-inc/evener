@@ -99,6 +99,57 @@ func TestForkSummarizeReRollsSettleAsOneAttemptGroup(t *testing.T) {
 	assertContextManagerLogicalGroup(t, readContextManagerAttemptRecords(t, path), apilog.AttemptSuccess, 3)
 }
 
+// A provider error that ends the fork summary's re-rolls settles the group on
+// that error: the durable record must not call a failed logical call a
+// success.
+func TestForkSummarizeSettlesItsGroupOnTheFinalError(t *testing.T) {
+	providerErr := llm.ErrorFromHTTPStatus("openai", 503, "unavailable", nil, nil)
+	var calls atomic.Int32
+	client, logger, path := contextManagerAttemptClient(t,
+		&contextManagerAttemptAdapter{name: "openai", callFn: func() (string, error) {
+			if calls.Add(1) == 1 {
+				return "not json", nil
+			}
+			return "", providerErr
+		}})
+	turns := []schema.Turn{
+		{Kind: schema.TurnToolResults, Message: llm.ToolResultNamed("c1", "shell", "PASS", false)},
+	}
+
+	_, err := forkSummarize(context.Background(), cheapmodel.New(client), NewOpenAIProfile("gpt-5.2"), turns, 1)
+	if err == nil {
+		t.Fatal("forkSummarize succeeded through a provider error")
+	}
+	if err := logger.Close(); err != nil {
+		t.Fatal(err)
+	}
+	assertContextManagerLogicalGroup(t, readContextManagerAttemptRecords(t, path), apilog.AttemptProviderReject, 2)
+}
+
+// A cancellation between the fork summary's attempts settles the group as a
+// caller cancellation, not a success.
+func TestForkSummarizeSettlesItsGroupOnCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	client, logger, path := contextManagerAttemptClient(t,
+		&contextManagerAttemptAdapter{name: "openai", callFn: func() (string, error) {
+			cancel()
+			return "not json", nil
+		}})
+	turns := []schema.Turn{
+		{Kind: schema.TurnToolResults, Message: llm.ToolResultNamed("c1", "shell", "PASS", false)},
+	}
+
+	_, err := forkSummarize(ctx, cheapmodel.New(client), NewOpenAIProfile("gpt-5.2"), turns, 1)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("forkSummarize err = %v, want the cancellation", err)
+	}
+	if err := logger.Close(); err != nil {
+		t.Fatal(err)
+	}
+	assertContextManagerLogicalGroup(t, readContextManagerAttemptRecords(t, path), apilog.AttemptCallerCancel, 1)
+}
+
 // Cancellation between attempts stops the fork summary and reports the
 // cancellation, not the parse failure of the last reply.
 func TestForkSummarizeRetriesStopOnCancellation(t *testing.T) {

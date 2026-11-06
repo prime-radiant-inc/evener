@@ -219,10 +219,11 @@ func TestSummaryFailureUncondensablePartnerMessages(t *testing.T) {
 	for _, tc := range []struct {
 		name, cheap, model, route string
 		refused                   bool
+		wantCalls                 int
 	}{
-		{"session", "", "active-fixture", "session", false},
-		{"cheap", "cheap-fixture", "cheap-fixture", "cheap", false},
-		{"refused cheap", "cheap-fixture", "active-fixture", "session", true},
+		{"session", "", "active-fixture", "session", false, 11},
+		{"cheap", "cheap-fixture", "cheap-fixture", "cheap", false, 11},
+		{"refused cheap", "cheap-fixture", "active-fixture", "session", true, 12},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			client := llm.NewClient()
@@ -238,10 +239,10 @@ func TestSummaryFailureUncondensablePartnerMessages(t *testing.T) {
 			cm := NewManager(profile, client, cheapmodel.New(client))
 			lines := []string{strings.Repeat("x", 6001)}
 			original := append([]string(nil), lines...)
-			_, err := cm.condensePartnerMessages(context.Background(), cm.currentProfile(), lines, 6000)
-			if !errors.Is(err, errSummaryUncondensable) || len(calls) < 4 {
-				t.Fatal("non-shrinking summary was accepted")
-			}
+		_, err := cm.condensePartnerMessages(context.Background(), cm.currentProfile(), lines, 6000)
+		if !errors.Is(err, errSummaryUncondensable) || len(calls) != tc.wantCalls {
+			t.Fatalf("condensation err = %v, calls = %d (%v), want exactly %d calls and the uncondensable rejection", err, len(calls), calls, tc.wantCalls)
+		}
 			if !reflect.DeepEqual(lines, original) {
 				t.Fatal("condensation changed the original messages")
 			}

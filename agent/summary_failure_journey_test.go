@@ -214,6 +214,87 @@ func TestSummaryFailureJourneyRejectedReplyReRollsIntoRecovery(t *testing.T) {
 	}
 }
 
+// The exhaustion end of the re-roll ladder keeps the session alive exactly as
+// the single-call failure did: every route's rejected replies spend their
+// budget, the history stands untouched, the next turn completes, and the
+// model-recovery fold's identical repeat stays suppressed. Replacing the
+// process logger keeps this test serial like the others in this file.
+func TestSummaryFailureJourneyRejectedReplyExhaustionKeepsHistory(t *testing.T) {
+	var output bytes.Buffer
+	previous := slog.Default()
+	slog.SetDefault(slog.New(slog.NewJSONHandler(&output, nil)))
+	t.Cleanup(func() { slog.SetDefault(previous) })
+
+	stateDir := t.TempDir()
+	var summaryCalls atomic.Int32
+	adapter := &agenttest.ModelTrackingAdapter{Provider: "openai", Respond: func(req llm.Request) (llm.Response, error) {
+		// Both summarize routes must reject: the cheap route by its model
+		// name, the session route (the conversation's own model) by the
+		// summarize request's single-message shape.
+		if req.Model == "cheap-fixture" || len(req.Messages) == 1 {
+			summaryCalls.Add(1)
+			return llm.Response{Message: llm.Assistant("")}, nil
+		}
+		return agenttest.FinalResponse("next-turn-9d7f"), nil
+	}}
+	client := llm.NewClient()
+	client.Register(adapter)
+	sess := newSession(t, withClient(client), withProfile(WithCheapModel(NewOpenAIProfile("gpt-5.2"), "cheap-fixture")), withDir(stateDir), withoutGitSnapshot(), withConfig(SessionConfig{
+		StateDir: stateDir, AgentsDocPath: filepath.Join(stateDir, "absent-AGENTS.md"),
+	}))
+	if err := sess.Rename("summary-exhaustion-journey"); err != nil {
+		t.Fatal(err)
+	}
+	collect := drainEvents(sess)
+	sess.contextMgr.PreserveRecentTurns = 2
+	var humanMarkers []string
+	for i := range 12 {
+		marker := fmt.Sprintf("exhaustion-human-%02d-52c9", i)
+		humanMarkers = append(humanMarkers, marker)
+		turn := schema.NewTurn(schema.TurnUserInput, llm.User(marker))
+		sess.recordTurn(turn, turn)
+	}
+
+	sess.forceCompactForModelRecovery(context.Background())
+	sess.forceCompactForModelRecovery(context.Background())
+
+	history, err := json.Marshal(currentHistory(t, sess))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, marker := range humanMarkers {
+		if !bytes.Contains(history, []byte(marker)) {
+			t.Errorf("exhausted compaction lost human input %s", marker)
+		}
+	}
+	if summaryCalls.Load() != 12 {
+		t.Fatalf("summary attempts across both folds = %d, want 12 (three per route, two routes, two folds)", summaryCalls.Load())
+	}
+	if _, err := sess.ProcessInput(context.Background(), "continue-after-exhaustion-71b2", nil); err != nil {
+		t.Fatal(err)
+	}
+	sess.Close()
+	warnings := 0
+	completed := false
+	for _, ev := range collect() {
+		if warning, ok := ev.Data.(events.WarningData); ok && warning.Code == "summary_failure" {
+			warnings++
+			if warning.SummaryFailure == nil || warning.SummaryFailure.Terminal.Attempts != 3 {
+				t.Error("exhaustion warning lost its terminal attempt count")
+			}
+		}
+		if ev.Kind == events.EventTurnEnded {
+			completed = true
+		}
+	}
+	if warnings != 1 || !completed {
+		t.Errorf("warnings = %d, next turn completed = %v, want the first failure only and a completed turn", warnings, completed)
+	}
+	if got := len(summaryFailureLogRecords(t, output.Bytes())); got != 1 {
+		t.Errorf("suppressed repeat logged another record: %d", got)
+	}
+}
+
 func TestSummaryFailureChildWithUnreadEvents(t *testing.T) {
 	for _, brokenSink := range []bool{false, true} {
 		t.Run(fmt.Sprintf("broken_sink_%t", brokenSink), func(t *testing.T) {

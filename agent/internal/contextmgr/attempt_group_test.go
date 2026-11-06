@@ -20,16 +20,23 @@ type contextManagerAttemptAdapter struct {
 	name string
 	err  error
 	text string
+	// callFn, when set, overrides the fixed text/err with per-call outcomes
+	// for tests whose route calls differ call to call.
+	callFn func() (string, error)
 }
 
 func (a *contextManagerAttemptAdapter) Name() string { return a.name }
 
 func (a *contextManagerAttemptAdapter) Complete(ctx context.Context, req llm.Request) (llm.Response, error) {
 	startedAt := time.Unix(1_700_000_000, 0).UTC()
+	text, err := a.text, a.err
+	if a.callFn != nil {
+		text, err = a.callFn()
+	}
 	response := llm.Response{
 		Provider: a.name,
 		Model:    req.Model,
-		Message:  llm.Assistant(a.text),
+		Message:  llm.Assistant(text),
 		Finish:   llm.FinishReason{Reason: llm.FinishReasonStop},
 	}
 	attempt := llm.BeginAPIAttempt(ctx, llm.APIAttemptMeta{
@@ -47,16 +54,16 @@ func (a *contextManagerAttemptAdapter) Complete(ctx context.Context, req llm.Req
 		Outcome:      apilog.AttemptSuccess,
 		FinishedAt:   startedAt.Add(time.Millisecond),
 	}
-	if a.err != nil {
+	if err != nil {
 		result.StatusCode = http.StatusBadRequest
 		result.ResponseBody = []byte(`{"error":"unavailable"}`)
 		result.Response = nil
 		result.Outcome = apilog.AttemptProviderReject
 		result.ErrorClass = "permanent"
-		result.Err = a.err
+		result.Err = err
 	}
 	attempt.Complete(result)
-	return response, a.err
+	return response, err
 }
 
 func (*contextManagerAttemptAdapter) Stream(context.Context, llm.Request) (llm.Stream, error) {
