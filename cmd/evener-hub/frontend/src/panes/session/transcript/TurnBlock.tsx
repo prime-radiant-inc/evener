@@ -202,8 +202,8 @@ export function ProjectedIntentGroup({
             <TurnDoneEndCap turn={separatorTurn} />
           </div>
         )}
+        {separatorTurn && <TurnSeparator turn={separatorTurn} />}
       </div>
-      {separatorTurn && <TurnSeparator turn={separatorTurn} />}
     </>
   );
 }
