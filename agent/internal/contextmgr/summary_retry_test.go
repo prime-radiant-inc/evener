@@ -3,6 +3,7 @@ package contextmgr
 import (
 	"context"
 	"errors"
+	"slices"
 	"strings"
 	"testing"
 
@@ -218,6 +219,46 @@ func TestSummarizationStopsRetryingWhenTheRunIsCancelled(t *testing.T) {
 	}
 	if rejection, ok := errors.AsType[summaryRejectionError](err); !ok || rejection != errSummaryEmptyReply {
 		t.Fatalf("terminal = %v, want the rejected sample as the failure", err)
+	}
+}
+
+// A refusal landing between resamples moves the remaining budget onto the
+// session route through the cheap caller's own fallback, exactly as a refusal
+// on the first sample would; the session rung stays suppressed because the
+// cheap caller already ran the session model.
+func TestSummarizationSampleBudgetFollowsAMidLoopRefusal(t *testing.T) {
+	t.Parallel()
+	client, calls := summarizerScript(func(call int, req llm.Request) (llm.Response, error) {
+		if req.Model == "cheap-fixture" {
+			if call == 1 {
+				return rejectedSummaryReply, nil
+			}
+			return llm.Response{}, llm.ErrorFromHTTPStatus("openai", 400, "provided model identifier is invalid", nil, nil)
+		}
+		return rejectedSummaryReply, nil
+	})
+	profile := WithCheapModel(testProfile("openai", "active-fixture", 1000), "cheap-fixture")
+	cm := retryTestManager(client, profile)
+	_, err := cm.completeSummarization(context.Background(), profile, "prompt", summaryAcceptance)
+	if err == nil {
+		t.Fatal("every sample rejected, want a failure")
+	}
+	got := calls()
+	want := []string{"cheap-fixture", "cheap-fixture", "active-fixture", "active-fixture", "active-fixture"}
+	if !slices.Equal(got, want) {
+		t.Fatalf("routes = %v, want %v", got, want)
+	}
+	failure := summarizerFailureWarning(err).SummaryFailure
+	if failure == nil {
+		t.Fatal("missing summary failure diagnostic")
+	}
+	if failure.Terminal.Route != "session" || failure.Terminal.Reason != "empty_reply" {
+		t.Fatalf("wrong terminal: %+v", failure.Terminal)
+	}
+	if len(failure.Previous) != 2 ||
+		failure.Previous[0].Route != "cheap" || failure.Previous[0].Model != "cheap-fixture" ||
+		failure.Previous[1].Route != "session" || failure.Previous[1].Model != "active-fixture" {
+		t.Fatalf("want one entry per route in previous, got %+v", failure.Previous)
 	}
 }
 

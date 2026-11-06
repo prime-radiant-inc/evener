@@ -143,14 +143,17 @@ This shared metadata does not change human-interaction permissions.
 A failed conversation summary leaves the existing history or the operation's
 deterministic checkpoint available. The authoritative transcript is unchanged.
 The next eligible compaction can install a valid summary and continue normal
-model work. A summarizer reply that fails local validation — an empty reply, a
-reply with no summary section, an empty condensation batch, or a session-log
-fork reply that does not parse as a JSON entry — is one bad sample: the route
-that produced it is resampled up to two more times, then the next route takes
-over as before, and a later sample that passes installs the summary without a
-warning. Cut-off replies (the model's own output limit) and deterministic
-failures get no resample. Model selection, fallback eligibility and warning
-visibility are unchanged; repeated failed compactions can still warn.
+model work. A locally rejected summarizer reply is one bad sample, not a route
+verdict. The conversation summary resamples such a reply — an empty reply, a
+reply with no summary section, an empty condensation batch — up to two more
+times on the route that produced it before the next route takes over, and a
+later sample that passes installs the summary without a warning. The
+session-log fork summary resamples a reply that does not parse as a JSON entry
+within the same budget before its error surfaces; the next completed tool
+round attempts the fork again. Cut-off replies (the model's own output limit)
+and deterministic failures get no resample, and a cancelled run resamples
+nothing. Model selection, fallback eligibility and warning visibility are
+unchanged; repeated failed compactions can still warn.
 
 Context management emits `summary_failure` with the selected provider/model,
 terminal failure category and available HTTP status in the existing warning
