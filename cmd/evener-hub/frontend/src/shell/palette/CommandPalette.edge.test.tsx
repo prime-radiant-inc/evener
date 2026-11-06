@@ -256,6 +256,25 @@ test("Shift+Enter on an in-session search result closes the palette without navi
   expect(anchors).toHaveLength(0);
 });
 
+test("Enter on a plain query prefers the first session hit over the leading command", async () => {
+  const user = userEvent.setup();
+  scriptSearch({ live: [], past: [] });
+  focusSession("ref_a", { turns: [turn([item("i1", "sea term found here")])] });
+
+  render(
+    <NeedsYouProvider>
+      <CommandPalette />
+    </NeedsYouProvider>,
+  );
+  act(() => openPalette());
+  await user.type(screen.getByRole("combobox"), "sea");
+  await waitFor(() => expect(paletteRowsOfKind("insession")).toHaveLength(1));
+
+  await user.keyboard("{Enter}");
+  await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+  expect(window.location.pathname).toBe("/");
+});
+
 // --- enterPressed: handoff via arrow+Enter (lines 519-524) ---
 
 test("arrow-down then Enter on the handoff row hands off to the composer", async () => {

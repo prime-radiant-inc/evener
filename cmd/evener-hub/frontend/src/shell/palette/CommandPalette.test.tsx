@@ -809,6 +809,19 @@ test("the empty-query view lists Commands when there are no needs-you sessions",
   expect(screen.getAllByRole("option").length).toBeGreaterThan(0);
 });
 
+test("Enter on the empty-query Commands list runs the highlighted command", async () => {
+  const user = userEvent.setup();
+  setNeedsYouRows(null);
+  render(
+    <NeedsYouProvider>
+      <CommandPalette />
+    </NeedsYouProvider>,
+  );
+  act(() => openPalette());
+  await user.keyboard("{Enter}");
+  await waitFor(() => expect(window.location.pathname).toBe("/new"));
+});
+
 // The manifest count refreshes on its own schedule, so a settled empty page
 // must end demand even while the manifest still reports rows (#4958's
 // zero-row path asked from the count alone).

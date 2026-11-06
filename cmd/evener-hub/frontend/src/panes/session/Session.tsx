@@ -51,12 +51,16 @@ function SessionLoading({ sessionRef, repairing }: { sessionRef: string; repairi
       <div className={styles.loadingSkeleton} data-testid="session-loading-skeleton" aria-hidden="true">
         <Skeleton lines={4} />
       </div>
-      {showRecovery && local && (
-        <div data-testid="session-loading-recovery" aria-live="polite">
-          <p className={styles.loadingHint}>If the session is unresponsive, you can stop its process to recover it.</p>
-          <SessionForceStopRecovery sessionRef={sessionRef} />
-        </div>
-      )}
+      <div aria-live="polite">
+        {showRecovery && local && (
+          <div data-testid="session-loading-recovery">
+            <p className={styles.loadingHint}>
+              If the session is unresponsive, you can stop its process to recover it.
+            </p>
+            <SessionForceStopRecovery sessionRef={sessionRef} />
+          </div>
+        )}
+      </div>
     </div>
   );
 }

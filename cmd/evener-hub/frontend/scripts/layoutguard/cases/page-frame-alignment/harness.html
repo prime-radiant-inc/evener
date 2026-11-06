@@ -27,7 +27,7 @@ function paneHtml(id, kind, frame) {
   if (kind === "settings") {
     return `
       <div class="pane" data-pane>
-        <div class="header" data-pane-frame="${frame}"><h2 class="title" id="title-${id}">Settings</h2></div>
+        <div class="header"><h2 class="title" id="title-${id}">Settings</h2></div>
         <div class="body" data-pane-scaffold="${frame}">
           <div class="shell">
             <nav class="nav" id="nav-${id}"><div class="standIn"></div></nav>
@@ -40,7 +40,7 @@ function paneHtml(id, kind, frame) {
   const contentId = kind === "spawn" ? `form-${id}` : `content-${id}`;
   return `
     <div class="pane" data-pane>
-      <div class="header" data-pane-frame="${frame}"><h2 class="title" id="title-${id}">${kind === "spawn" ? "New session" : "Session"}</h2></div>
+      <div class="header"><h2 class="title" id="title-${id}">${kind === "spawn" ? "New session" : "Session"}</h2></div>
       <div class="body" data-pane-scaffold="${frame}">
         <div class="${contentClass}" id="${contentId}"><div class="standIn"></div><div class="standIn"></div></div>
       </div>

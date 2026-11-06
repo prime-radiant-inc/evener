@@ -20,7 +20,7 @@
     { "width": 1920 }
   ],
   "mutation": {
-    "declaration": "panescaffold.module.css: remove the .header[data-pane-frame^=\"session:\"], .header[data-pane-frame=\"spawn\"] padding-inline rule",
+    "declaration": "panescaffold.module.css: remove the .pane:has(> .body[data-pane-scaffold^=\"session:\"]) > .header and .pane:has(> .body[data-pane-scaffold=\"spawn\"]) > .header padding-inline rule",
     "verified": "2026-11-06",
     "expect": "fail",
     "note": "Without the rule the header keeps its 24px inset and the title sits 204px left of the 704px reading column at 1440px."

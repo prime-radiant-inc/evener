@@ -332,7 +332,7 @@ function PaletteBody({
     const initialDemand =
       needsYouCount === 0 && !!navigation.manifest?.data && selectSectionCanDemand("needs_you", navigation);
     const overflowDemand =
-      needsYouCount > 0 && activeIndex >= needsYouCount - 1 && selectSectionRemaining("needs_you", navigation) > 0;
+      needsYouCount > 0 && activeIndex === needsYouCount - 1 && selectSectionRemaining("needs_you", navigation) > 0;
     if (!initialDemand && !overflowDemand) return;
     const offset = selectNextSectionOffset("needs_you", navigation);
     const pageID = keyID({ kind: "section", section: "needs_you", offset, limit: 50 });
@@ -653,6 +653,24 @@ function PaletteBody({
   function enterPressed() {
     const item = view.items[activeIndex];
     if (mode === "search") {
+      if (item?.kind === "command" && query.trim()) {
+        const exact = query.replace(/^\/+/, "").trim().toLowerCase();
+        const named = exact === item.command.id.toLowerCase() || exact === item.command.title.toLowerCase();
+        if (named) {
+          activateCommand(item.command);
+          return;
+        }
+        // A leading command is a shortcut, not the answer to a session query:
+        // prefer the first session hit, and fall back to the command only when
+        // the query matched nothing else.
+        const firstResult = view.items.find((candidate) => candidate.kind !== "command");
+        if (firstResult) {
+          activateResult(firstResult, false);
+          return;
+        }
+        activateCommand(item.command);
+        return;
+      }
       if (item) activateResult(item, false);
       return;
     }

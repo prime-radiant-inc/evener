@@ -553,7 +553,6 @@ node scripts/layoutguard/run.mjs transcript-measure
 | `shots/07-phone-session.png` | Phone session; truncated model; Stop/Steer not running |
 | `shots/08-phone-new-session.png` | Phone `/new`; stacked form |
 | `shots/09-phone-settings.png` | Phone settings list |
-| `shots/10-phone-drawer.png` | Phone sessions drawer |
 | `shots/11-model-picker.png` | Model picker; dense metadata; Retry models |
 | `shots/12-session-menu.png` | Session actions menu; destructive items unmarked |
 | `shots/13-live-turn.png` | Live turn; Stop/Steer; needs-you float |
