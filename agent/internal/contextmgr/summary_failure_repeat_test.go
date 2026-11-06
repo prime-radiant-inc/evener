@@ -225,15 +225,13 @@ func TestSummaryFailureRepeatLatchConcurrentAccess(t *testing.T) {
 
 	var wg sync.WaitGroup
 	for range 8 {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			for range 100 {
 				cm.claimSummaryFailureRepeat(emptyReply)
 				cm.publishSummaryFailureRepeat(outputLimit)
 				cm.clearSummaryFailureRepeat()
 			}
-		}()
+		})
 	}
 	wg.Wait()
 
