@@ -65,6 +65,9 @@ func TestCovFormatQuietDuration(t *testing.T) {
 	if got := formatQuietDuration(63 * time.Minute); got != "1h3m" {
 		t.Fatalf("1h3m = %q", got)
 	}
+	if got := formatQuietDuration(time.Hour); got != "1h" {
+		t.Fatalf("1h = %q", got)
+	}
 	if got := formatQuietDuration(3*time.Hour + 5*time.Minute); got != "3h5m" {
 		t.Fatalf("3h5m = %q", got)
 	}
