@@ -145,7 +145,15 @@ func SummaryFailureInfo(failure SummaryFailure) (string, Info) {
 	case "invalid_request":
 		info.Title, info.Hint = "Summary request rejected", "Check that this model supports the summary request."
 	case "rejected_output":
-		info.Title, info.Hint = "Summary output rejected", "Evener retried the reply and it still could not safely replace the conversation. If this keeps repeating, choose a more capable summary model."
+		info.Title = "Summary output rejected"
+		// Only a route that spent its re-roll budget was retried; an
+		// uncondensable batch fails before any re-roll and its guidance
+		// must not claim one.
+		if a.Attempts > 1 {
+			info.Hint = "Evener retried the reply and it still could not safely replace the conversation. If this keeps repeating, choose a more capable summary model."
+		} else {
+			info.Hint = "The reply could not safely replace the conversation. If this keeps repeating, choose a more capable summary model."
+		}
 	}
 	if a.Route == "cheap" {
 		info.Hint += " This is the fast/cheap model, which may be configured separately from the main model."

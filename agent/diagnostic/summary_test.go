@@ -56,6 +56,25 @@ func TestSummaryFailureInfoStatesAttemptCount(t *testing.T) {
 	}
 }
 
+// An uncondensable failure never re-rolled, so its guidance must not read
+// like the re-rolled exhaustion's: the hints differ when the facts differ.
+func TestSummaryFailureInfoUncondensableHintDiffersFromReRolled(t *testing.T) {
+	t.Parallel()
+	exhausted := SummaryAttemptFromError("provider-fixture", "active-fixture", "session", errors.New("opaque"))
+	exhausted.Kind, exhausted.Stage, exhausted.Reason = "rejected_output", "validation", "empty_reply"
+	exhausted.Attempts = 3
+	_, rolled := SummaryFailureInfo(SummaryFailure{Terminal: exhausted})
+
+	uncondensable := exhausted
+	uncondensable.Reason = "uncondensable_partner_messages"
+	uncondensable.Attempts = 0
+	_, plain := SummaryFailureInfo(SummaryFailure{Terminal: uncondensable})
+
+	if plain.Hint == rolled.Hint {
+		t.Fatalf("uncondensable failure reads as a spent re-roll budget: %q", plain.Hint)
+	}
+}
+
 // Dropping typed classification, retry disposition, or identifier bounding must
 // fail independently of the warning's authored prose.
 func TestSummaryFailureDiagnostics(t *testing.T) {

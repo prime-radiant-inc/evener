@@ -239,10 +239,10 @@ func TestSummaryFailureUncondensablePartnerMessages(t *testing.T) {
 			cm := NewManager(profile, client, cheapmodel.New(client))
 			lines := []string{strings.Repeat("x", 6001)}
 			original := append([]string(nil), lines...)
-		_, err := cm.condensePartnerMessages(context.Background(), cm.currentProfile(), lines, 6000)
-		if !errors.Is(err, errSummaryUncondensable) || len(calls) != tc.wantCalls {
-			t.Fatalf("condensation err = %v, calls = %d (%v), want exactly %d calls and the uncondensable rejection", err, len(calls), calls, tc.wantCalls)
-		}
+			_, err := cm.condensePartnerMessages(context.Background(), cm.currentProfile(), lines, 6000)
+			if !errors.Is(err, errSummaryUncondensable) || len(calls) != tc.wantCalls {
+				t.Fatalf("condensation err = %v, calls = %d (%v), want exactly %d calls and the uncondensable rejection", err, len(calls), calls, tc.wantCalls)
+			}
 			if !reflect.DeepEqual(lines, original) {
 				t.Fatal("condensation changed the original messages")
 			}
