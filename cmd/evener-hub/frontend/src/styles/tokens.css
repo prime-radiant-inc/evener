@@ -8,7 +8,7 @@
  * palette. Every consumer just writes var(--name) and never branches on
  * theme.
  *
- * Editorial instrument (2026-09-09): warm paper/ink, reading serif and flat
+ * Editorial instrument (2026-09-09): neutral paper/ink, reading serif and flat
  * structural surfaces. Supersedes Beautiful UI's aesthetic mandate, not its
  * interaction contracts or attribution: MIT, Copyright (c) 2026 Shane Levine,
  * https://www.beautifului.dev — see LICENSES/beautiful-ui.txt.
@@ -19,24 +19,24 @@
   color-scheme: dark;
 
   /* --- surfaces + ink (dark, default) ----------------------------------
-   * Warm neutral roles: page, pane wells, evidence, insets/code gutters
+   * Cool neutral roles: page, pane wells, evidence, insets/code gutters
    * and the two interaction
    * washes. Raised layers (menus, dialogs) share --surface-1's value and
    * carry their depth via --shadow-overlay instead of a lighter fill.
    */
-  --surface-0: #141412; /* app background — page */
-  --surface-canvas: #191917; /* pane wells, rail — the tinted structural ground */
-  --surface-1: #201F1C; /* structural content */
-  --surface-2: #201F1C; /* raised: menus, dialogs — depth comes from shadow */
-  --surface-inset: #1B1A17; /* evidence insets, gutters */
-  --hover-1: #28261F; /* resting hover wash */
-  --hover-2: #32302A; /* pressed / selected */
-  --field: #26241F; /* form-control background (sunken fields) */
-  --edge: #35322B; /* hairline borders */
-  --edge-strong: #524E44; /* control borders, overlay rings */
-  --ink-hi: #F4F0E4; /* primary text */
-  --ink-mid: #B4AFA1; /* secondary text */
-  --ink-low: #9C9789; /* placeholders, disabled, timestamps — AA, token-contract */
+  --surface-0: #111214; /* app background — page */
+  --surface-canvas: #16181C; /* pane wells, rail — the tinted structural ground */
+  --surface-1: #1D2025; /* structural content */
+  --surface-2: #1D2025; /* raised: menus, dialogs — depth comes from shadow */
+  --surface-inset: #191C21; /* evidence insets, gutters */
+  --hover-1: #252931; /* resting hover wash */
+  --hover-2: #2E333C; /* pressed / selected */
+  --field: #23272E; /* form-control background (sunken fields) */
+  --edge: #333842; /* hairline borders */
+  --edge-strong: #4C535F; /* control borders, overlay rings */
+  --ink-hi: #F1F3F6; /* primary text */
+  --ink-mid: #B2B7C0; /* secondary text */
+  --ink-low: #9AA1AC; /* placeholders, disabled, timestamps — AA, token-contract */
 
   /* --- the four attention-family hues (dark) --------------------------
    * Exactly one meaning per hue, everywhere in the app. Reaching for one
@@ -88,8 +88,8 @@
    * neutral surfaces (quiet 1.05–1.2x vs --surface-0, AA for content,
    * >=3:1 for the --ink-low marker — the contract computes all of it).
    */
-  --diff-add-bg: #19251A;
-  --diff-del-bg: #241621;
+  --diff-add-bg: #16261B;
+  --diff-del-bg: #261722;
 
   /* --- terminal notation (dark) ---------------------------------------
    * Carried over from the Fjord tuning; still legible on the neutral
@@ -228,7 +228,7 @@
   --motion-easing-standard: ease-out;
 }
 
-/* Light theme: warm paper, neutral ink. Nested wrappers support the real
+/* Light theme: cool paper, neutral ink. Nested wrappers support the real
  * gallery's side-by-side comparison. Overlays retain a distinct surface;
  * structural cards rely on spacing/rules, not elevation. Semantic -ink
  * companions clear AA against surfaces and their own tinted backgrounds.
@@ -237,20 +237,20 @@
 [data-theme="light"] {
   color-scheme: light;
 
-  --surface-0: #F4F0E6;
-  --surface-canvas: #EBE6D8;
-  --surface-1: #FBF8F0;
-  --surface-2: #FBF8F0;
-  --surface-inset: #F0EBDF;
-  --hover-1: #E8E2D2;
-  --hover-2: #DCD5C3;
-  --field: #F4EFE3;
-  --edge: #D4CDBE;
-  --edge-strong: #A8A091;
-  --ink-hi: #201F1A;
-  --ink-mid: #57544A;
+  --surface-0: #F6F7F9;
+  --surface-canvas: #EEF0F3;
+  --surface-1: #FFFFFF;
+  --surface-2: #FFFFFF;
+  --surface-inset: #F2F4F7;
+  --hover-1: #E7EAEF;
+  --hover-2: #DCE0E7;
+  --field: #F1F3F6;
+  --edge: #D5D9E0;
+  --edge-strong: #A7AEBA;
+  --ink-hi: #1A1D23;
+  --ink-mid: #555B66;
   /* Quiet text still clears AA on both page and structural surface. */
-  --ink-low: #6B675B;
+  --ink-low: #626873;
 
   /* Deviation from Beautiful UI's #EF720C: its 15%/24% -bg tints on white
    * render salmon/peach (#FFEBE0/#FFDFCD, oklch hue ~51deg), while the design
@@ -288,11 +288,11 @@
   --tooltip-border: #3A3C40;
 
   /* Diff notation remains domain-specific rather than a status signal. */
-  --diff-add-bg: #DCEDE3;
-  --diff-del-bg: #F0E0E9;
+  --diff-add-bg: #DCEFE4;
+  --diff-del-bg: #F3DFE8;
 
   /* Grayscale entries follow the new neutral inks; chromatic entries carry
-   * over from the Ledger tuning (all AA-checked against warm paper, which
+   * over from the Ledger tuning (all AA-checked against the light canvas, which
    * was darker than these surfaces — margins only improved). Re-tune during
    * the gallery review if any read off-palette. */
   --ansi-black: #1F2124;
