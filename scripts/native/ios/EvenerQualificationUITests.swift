@@ -169,27 +169,36 @@ final class EvenerQualificationUITests: XCTestCase {
 	}
 
 	/// A swipe inside an ordinary native sheet must leave its controls
-	/// usable: scroll the New session sheet's form, then press its Cancel and
-	/// see the sheet close back to the Board. The Board's own row gestures
-	/// have their own regression checks; this is the sheet's side of the
-	/// interplay.
+	/// usable: swipe the New session sheet's form rows, then press its
+	/// Cancel and see the sheet close back to the Board. The Board's own row
+	/// gestures have their own regression checks; this is the sheet's side of
+	/// the interplay.
 	func testSheetGestureKeepsControlsUsable() {
 		let app = XCUIApplication()
 		onboardIfNeeded(app)
 		let prompt = openNewSession(app)
+		// The gesture swipes the form's rows, not the focused prompt: a
+		// swipe over a first-responder text view can turn into a text
+		// selection, and the selection holds the next tap.
+		let anchor = app.buttons
+			.matching(NSPredicate(format: "label BEGINSWITH %@", "Browse folders")).firstMatch
+		XCTAssertTrue(anchor.waitForExistence(timeout: tripwire), "the sheet never offered its picker row")
+		anchor.swipeUp()
+		anchor.swipeDown()
 
-		let sheet = prompt.firstMatch
-		sheet.swipeUp()
-		sheet.swipeDown()
-
-		tap(app.buttons["Cancel"], "the sheet's Cancel vanished after swipes")
+		// Cancel, checked by its effect like every other step: the first
+		// press can be lost to a selection the swipe left behind.
+		let deadline = Date().addingTimeInterval(tripwire)
+		while prompt.waitForExistence(timeout: 2) && Date() < deadline {
+			tap(app.buttons["Cancel"], "the sheet's Cancel vanished after swipes")
+		}
 		XCTAssertTrue(
 			prompt.waitForNonExistence(timeout: tripwire),
 			"the sheet never closed after Cancel"
 		)
 		XCTAssertTrue(
 			app.buttons["new-session"].waitForExistence(timeout: tripwire),
-			"the sheet's Cancel stopped working after swipes"
+			"the board never returned after the sheet closed"
 		)
 	}
 
@@ -225,7 +234,7 @@ final class EvenerQualificationUITests: XCTestCase {
 			token.typeText(hubToken)
 			// A keyboard left up covers the review's Connect row, and the
 			// tap lands on the keyboard window instead of the app.
-			dismissKeyboard(app, from: token)
+			dismissKeyboard(app, withReturnKeyOf: token)
 			tap(app.buttons["hub-continue"], "the Continue row never appeared")
 			tap(app.buttons["Connect"], "the review step never appeared")
 		}
@@ -243,11 +252,10 @@ final class EvenerQualificationUITests: XCTestCase {
 		let prompt = openNewSession(app)
 		tap(prompt, "the sheet's prompt never became tappable")
 		prompt.typeText(promptText)
-		// The sheet's picker sits where the prompt's keyboard can cover it.
-		dismissKeyboard(app, from: nil)
-
 		let browse = app.buttons
 			.matching(NSPredicate(format: "label BEGINSWITH %@", "Browse folders")).firstMatch
+		// The sheet's picker sits where the prompt's keyboard can cover it.
+		dismissKeyboard(app, draggingOn: browse)
 		tap(browse, "the project picker never offered browsing")
 
 		// The browse starts in the hub host's home; walk up to the filesystem
@@ -285,30 +293,36 @@ final class EvenerQualificationUITests: XCTestCase {
 		return prompt
 	}
 
-	/// Takes the keyboard down after typing in a form the journey is about to
-	/// leave. A keyboard left up covers the next control: the tap lands on
-	/// the keyboard window or is refused as not hittable, and the review's
-	/// Connect and the sheet's picker both sit under it. A single-line
-	/// field's return key dismisses but can race under load, and a multiline
-	/// one takes the newline as text, so the press is tried first, then the
-	/// form's own drag-to-dismiss, and the keyboard's absence is checked
-	/// rather than assumed.
-	private func dismissKeyboard(_ app: XCUIApplication, from field: XCUIElement?) {
+	/// Dismisses the keyboard with a single-line field's return key. A
+	/// keyboard left up covers the next control — the tap lands on the
+	/// keyboard window or is refused as not hittable — and the press can
+	/// race the field's focus handling under load, so the keyboard's
+	/// absence is checked and the press retried.
+	private func dismissKeyboard(_ app: XCUIApplication, withReturnKeyOf field: XCUIElement) {
 		let keyboard = app.keyboards.firstMatch
 		let deadline = Date().addingTimeInterval(tripwire)
 		while keyboard.exists && Date() < deadline {
-			if let field = field, field.exists {
+			if field.exists {
 				field.typeText("\n")
-			}
-			if keyboard.exists {
-				let form = app.scrollViews.firstMatch
-				if form.exists {
-					form.swipeUp()
-				}
 			}
 			Thread.sleep(forTimeInterval: 0.5)
 		}
 		XCTAssertFalse(keyboard.exists, "the keyboard never came down")
+	}
+
+	/// Dismisses the keyboard by dragging the form, its own drag-to-dismiss,
+	/// on the row the journey wants next. A multiline field takes a return
+	/// key as text, so it cannot dismiss that way. Best effort, and only a
+	/// few tries: a keyboard that stays up is judged where it blocks, by the
+	/// next step's own wait.
+	private func dismissKeyboard(_ app: XCUIApplication, draggingOn anchor: XCUIElement) {
+		let keyboard = app.keyboards.firstMatch
+		for _ in 0..<3 where keyboard.exists {
+			if anchor.exists {
+				anchor.swipeUp()
+			}
+			Thread.sleep(forTimeInterval: 0.5)
+		}
 	}
 
 	/// Taps only once the control has a real frame. A control that registers
