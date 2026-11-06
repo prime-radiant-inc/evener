@@ -102,7 +102,10 @@ Missing required evidence, wrong requested turns, incompatible ref, instance
 or generation, and history truncation end observation immediately. A
 same-target history discontinuity — a new epoch or incarnation for the same
 ref, instance and generation — re-anchors the observation when it arrives as
-the fresh cut a re-read serves. One surfacing mid-read — while a continuing
+the fresh cut a re-read serves. The re-anchor replays the rebuilt history's
+latest window; unlike a continuing thread's re-read it does not page further
+back, so recorded evidence older than that window is not replayed to the
+watcher. One surfacing mid-read — while a continuing
 gap is still paging, or against a held cut a live continuation verdict still
 needs — ends the observation with re-registration guidance instead. Permanent
 request refusals and typed history failures also end it;

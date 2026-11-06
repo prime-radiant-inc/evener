@@ -158,8 +158,8 @@ func TestManagerWatchBindingAnsweredInsideBudgetRetainsWatch(t *testing.T) {
 	const ref, instance, generation = "local:worker", "worker-instance", "7@worker"
 	root := newMessagingRoot(t, newMessagingAdapter(), func(cfg *SessionConfig) {
 		cfg.Manager = true
-		cfg.testOnly.hubWatchRetryDelay = 20 * time.Millisecond
-		cfg.testOnly.hubWatchStateOutageBudget = 500 * time.Millisecond
+		cfg.testOnly.hubWatchRetryDelay = 100 * time.Millisecond
+		cfg.testOnly.hubWatchStateOutageBudget = 2500 * time.Millisecond
 	})
 	snapshot := appwire.SessionWatchUpdate{
 		Snapshot: &appwire.ThreadReadResponse{BootGeneration: generation, Thread: appwire.Thread{Evener: appwire.EvenerThread{Ref: ref, InstanceID: instance}}},
@@ -187,9 +187,9 @@ func TestManagerWatchBindingAnsweredInsideBudgetRetainsWatch(t *testing.T) {
 		t.Fatal("missing journal owner")
 	}
 
-	// Outage. With the 20ms base the failed reads land at roughly 0, 20, 60,
-	// 140 and 300ms, and the next backoff would sleep well past the 500ms
-	// deadline.
+	// Outage. With the 100ms base the failed reads land at roughly 0, 100,
+	// 300, 700 and 1500ms, and the next backoff would sleep well past the
+	// 2.5s deadline.
 	base.mu.Lock()
 	base.offline = true
 	base.mu.Unlock()
@@ -207,10 +207,10 @@ func TestManagerWatchBindingAnsweredInsideBudgetRetainsWatch(t *testing.T) {
 	second <- snapshot
 	base.streams <- second
 	root.HubBindingChanged()
-	// The binding answers again at roughly 340ms: inside the budget, in the
-	// window after the last scheduled read (about 300ms) that the unreformed
-	// loop would have slept through.
-	time.Sleep(40 * time.Millisecond)
+	// The binding answers again at roughly 1.7s: inside the budget, in the
+	// window after the last scheduled read (about 1.5s) that an unreformed
+	// loop would have slept through, with margin for a loaded runner.
+	time.Sleep(200 * time.Millisecond)
 	base.mu.Lock()
 	base.offline = false
 	base.mu.Unlock()
