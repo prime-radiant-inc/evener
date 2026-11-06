@@ -779,8 +779,15 @@ describe("resource-backed Rail", () => {
     }
   });
 
-  // The header's three icons are drawn, not typed: global.css subsets Inter to
-  // Latin, so the text glyphs these buttons carried (the gear, the magnifier,
+  test("the identity block names the product and a needs-you count", () => {
+    installState([], manifest({ attentionSummary: { needsYou: 2, error: 0, working: 0 } }));
+    render(<Rail />);
+    expect(screen.getByText("evener")).toBeTruthy();
+    expect(screen.getByTestId("rail-needs-you").textContent).toContain("2 needs you");
+  });
+
+  // The header's three icons are drawn, not typed: global.css subsets the sans
+  // face to Latin, so the text glyphs these buttons carried (the gear, the magnifier,
   // the burger) came from whatever system fallback happened to have those code
   // points, at whatever weight it drew them - right beside the app's own SVG
   // chevrons and open-box icon.

@@ -118,6 +118,16 @@ test("the recommended option carries an accent suffix right after its bold label
   expect(rule?.[1]).toMatch(/color:\s*var\(--accent-ink\)/);
 });
 
+test("the free-answer field keeps the app face, an AA placeholder and the shared focus ring", () => {
+  const css = cardCss();
+  const field = css.match(/\.textInput\s*\{([^}]*)\}/);
+  expect(field?.[1]).toMatch(/font-family:\s*var\(--font-sans\)/);
+  const placeholder = css.match(/\.textInput::placeholder\s*\{([^}]*)\}/);
+  expect(placeholder?.[1]).toMatch(/color:\s*var\(--ink-low\)/);
+  const focus = css.match(/\.textInput:focus-visible\s*\{([^}]*)\}/);
+  expect(focus?.[1]).toMatch(/outline:\s*var\(--focus-ring\)/);
+});
+
 test("the recommended option renders first regardless of input order", () => {
   const q = question({
     options: [

@@ -4,16 +4,16 @@
 // retain both custom-property and actual painted-surface checks.
 export default function assert(measurement) {
   const failures = [];
-  if (measurement.darkSurface1 !== "#232320") {
-    failures.push(`dark pane --surface-1 resolved to ${measurement.darkSurface1}, want #232320`);
+  if (measurement.darkSurface1 !== "#201F1C") {
+    failures.push(`dark pane --surface-1 resolved to ${measurement.darkSurface1}, want #201F1C`);
   }
-  if (measurement.darkPaneSurface0 !== "rgb(25, 25, 24)") {
+  if (measurement.darkPaneSurface0 !== "rgb(20, 20, 18)") {
     failures.push(`dark pane background resolved to ${measurement.darkPaneSurface0}, want dark --surface-0`);
   }
-  if (measurement.darkProbeSurface1 !== "rgb(35, 35, 32)") {
+  if (measurement.darkProbeSurface1 !== "rgb(32, 31, 28)") {
     failures.push(`dark surface probe resolved to ${measurement.darkProbeSurface1}, want dark --surface-1`);
   }
-  if (measurement.lightSurface1 !== "#FCFBF8" || measurement.lightProbeSurface1 !== "rgb(252, 251, 248)") {
+  if (measurement.lightSurface1 !== "#FBF8F0" || measurement.lightProbeSurface1 !== "rgb(251, 248, 240)") {
     failures.push("light pane no longer resolves its own light --surface-1");
   }
   return failures.length === 0

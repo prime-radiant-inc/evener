@@ -251,6 +251,19 @@ describe("setTheme", () => {
     expect(prefsStore.getState().theme).toBe("system");
     expect(document.documentElement.hasAttribute("data-theme")).toBe(false);
   });
+
+  test("updates the browser theme-color meta to the resolved page ground", () => {
+    const meta = document.createElement("meta");
+    meta.setAttribute("name", "theme-color");
+    meta.setAttribute("content", "#141412");
+    document.head.append(meta);
+    vi.spyOn(window, "getComputedStyle").mockReturnValue({
+      getPropertyValue: (name: string) => (name === "--surface-0" ? "#F4F0E6" : ""),
+    } as CSSStyleDeclaration);
+    prefsStore.getState().setTheme("light");
+    expect(meta.getAttribute("content")).toBe("#F4F0E6");
+    meta.remove();
+  });
 });
 
 // fakeMatchMedia stands in for window.matchMedia (which this project's own

@@ -15,7 +15,7 @@ import { accessibleName } from "../../../accessibleNameTestUtils";
 import { readModuleCss } from "../../../styles/cssBlock";
 import { TranscriptRenderProvider } from "../../../transcriptDisplay/renderContext";
 import { resetDisclosureStoreForTests } from "../../../widgets/disclosure/disclosureStore";
-import { isItemLive, TurnBlock } from "./TurnBlock";
+import { isItemLive, ProjectedIntentGroup, TurnBlock } from "./TurnBlock";
 import { type ItemRenderProps, ignoringTurn, itemRendererFor, registerItemRenderer } from "./types";
 import "./tools";
 
@@ -1131,4 +1131,42 @@ test("a streamed reply keeps its DOM node when history records its round", () =>
 
   rerender(withConfig(config, <TurnBlock turn={recorded} />));
   expect(container.querySelector('[data-testid="agent-message-item"]')).toBe(before);
+});
+
+const NO_ROUND_TIMINGS = makeTranscriptDisplayConfig(
+  { kind: "preset", level: "activity" },
+  { roundTimings: false, systemEvents: true, promptEvents: true },
+);
+
+test("the completion cap waits for the turn's last fragment", () => {
+  const projected = turn(
+    [item({ type: "userMessage", text: "go" }), item({ id: "answer", type: "agentMessage", text: "done" })],
+    { status: "completed", durationMs: 134_000 },
+    NO_ROUND_TIMINGS,
+  );
+  const { rerender } = render(withConfig(NO_ROUND_TIMINGS, <TurnBlock turn={projected} showTurnSeparator={false} />));
+  expect(screen.queryByTestId("turn-done")).toBeNull();
+  rerender(withConfig(NO_ROUND_TIMINGS, <TurnBlock turn={projected} />));
+  expect(screen.getByTestId("turn-done")).toBeTruthy();
+});
+
+test("a completed intent group closes after its trailing tool calls", () => {
+  const source: TurnModel = {
+    id: "turn_1",
+    status: "completed",
+    durationMs: 134_000,
+    items: [item({ id: "tool", type: "commandExecution", toolName: "shell" })],
+  };
+  const entry = {
+    kind: "intent" as const,
+    id: "intent:tool" as const,
+    turnId: "turn_1",
+    sourceIndex: 0,
+    sourceItemId: "tool",
+    rationale: "",
+    failed: false,
+    item: source.items[0]!,
+  };
+  render(withConfig(NO_ROUND_TIMINGS, <ProjectedIntentGroup entries={[entry]} separatorTurn={source} />));
+  expect(screen.getByTestId("turn-done")).toBeTruthy();
 });

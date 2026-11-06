@@ -61,6 +61,12 @@ test("the card effort control keeps a distinct accessible name with Advanced opt
 });
 installSpawnTestHooks();
 
+test("the cold-start spawn pane carries the chord hints when no session is open", async () => {
+  renderSpawn(readyClient());
+  await settled();
+  expect(screen.getByTestId("spawn-chord-hints")).toBeTruthy();
+});
+
 // --- the page's shape ------------------------------------------------------
 //
 // Prompt card first, taking the page's slack; ONE configuration row beneath it

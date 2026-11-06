@@ -77,7 +77,7 @@ const COMPOSER_SEND_STATES = [
 ];
 const NARROW_DESKTOP_SEND_GEOMETRY = {
   m: { width: 70.890625, height: 24 },
-  xl: { width: 82.109375, height: 24 },
+  xl: { width: 81.53125, height: 24 },
 };
 
 // The unbooted-page seam (see navigateTo in browserGuardCdp.mjs): a network
