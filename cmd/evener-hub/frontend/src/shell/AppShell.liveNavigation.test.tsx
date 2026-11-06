@@ -461,17 +461,23 @@ test("live-next demand-load retries after the page request fails", async () => {
   // between the count gate and the press and the press's read registered as
   // one attempt too many ("expected 3 to be 2"). Two properties make the
   // scenario machine-timing-independent instead:
-  //  - every page-two wire read is HELD until this test settles it, and the
-  //    navigation revalidator dedupes concurrent reads of the same page into
-  //    one in-flight request, so at most one page-two request exists at any
-  //    moment and every reader - the background owner's paced retries
-  //    included - joins exactly the request this test settles;
+  //  - page-two wire reads are HELD until this test settles them - no reader
+  //    can outrun the test, and a concurrent reader (the background owner's
+  //    paced retry) dedupes onto the very request the test settles. A HELD
+  //    read is not the last word, though: a FORCED retry landing on an
+  //    in-flight read marks the revalidator entry for a chained rerun, and
+  //    the load promise only settles once that rerun's NEW request lands
+  //    (revalidator.ts raise/start). Arming a phase before each settle makes
+  //    a chained rerun settle the same way at once instead of being held
+  //    forever, so the demand's awaited reads always complete;
   //  - the chord's own reads are counted at their store boundary
   //    (loadSection("live", offset > 0)), which the background owner's
   //    background page lease never touches, so no retry schedule can perturb
   //    the fail/fail/succeed sequence the presses drive.
   let demandLoads = 0;
   const demandPages: ReturnType<NavigationStoreState["loadSection"]>[] = [];
+  type PageTwoPhase = "hold" | "fail" | "succeed";
+  let pageTwoPhase: PageTwoPhase = "hold";
   const held: {
     params: NavigationReadParams | null;
     resolve: ((response: NavigationReadResponse) => void) | null;
@@ -479,13 +485,18 @@ test("live-next demand-load retries after the page request fails", async () => {
   } = { params: null, resolve: null, reject: null };
   const firstRead = deferred<void>();
   const client = navClientWithDeferredLivePageTwo({
-    onPageTwo: (params) =>
-      new Promise<NavigationReadResponse>((resolve, reject) => {
+    onPageTwo: (params) => {
+      if (pageTwoPhase === "fail") throw new Error("transient read failure");
+      if (pageTwoPhase === "succeed") {
+        return wireSnapshot(params, { sessions: [LIVE_CYCLE_B], remaining: 0, truncated: false }, '"test"');
+      }
+      return new Promise<NavigationReadResponse>((resolve, reject) => {
         held.params = params;
         held.resolve = resolve;
         held.reject = reject;
         firstRead.resolve();
-      }),
+      });
+    },
   });
   // The chord's demand reads page two through loadSection; the background
   // roster owner reads through its own background page lease instead, so
@@ -510,9 +521,11 @@ test("live-next demand-load retries after the page request fails", async () => {
   await firstRead.promise;
   const firstReject = held.reject;
   if (!firstReject) throw new Error("page-two request was not issued");
+  pageTwoPhase = "fail";
   await act(async () => {
     firstReject(new Error("transient read failure"));
   });
+  pageTwoPhase = "hold";
   await user.click(rail().getByText("Live A"));
   await waitFor(() => {
     expect(workspaceStore.getState().mainPane()?.params).toEqual({ ref: "local:live-a" });
@@ -522,14 +535,32 @@ test("live-next demand-load retries after the page request fails", async () => {
   // stays and no navigation happens.
   await user.keyboard("{Alt>}{Shift>}{ArrowRight}{/Shift>}{/Alt}");
   expect(demandLoads).toBe(1);
+  // While the demand's page-two read is in flight, force a rerun exactly the
+  // way the background owner's paced retry does (an invalidation whose
+  // sequence gap forces every loaded key): the revalidator marks the
+  // in-flight entry and chains a NEW request onto the load promise once it
+  // lands. The fail phase armed below must settle that chained request too,
+  // or the awaited demand read never completes.
+  await act(async () => {
+    client.emitNotification({
+      method: "evener/navigation/invalidated",
+      params: {
+        generationId: "generation_test",
+        sequence: 1,
+        targets: [{ kind: "section", section: "live" }],
+      },
+    });
+  });
   const demandReject = held.reject;
   if (!demandReject) throw new Error("page-two request was not issued");
+  pageTwoPhase = "fail";
   await act(async () => {
     demandReject(new Error("transient read failure"));
   });
   const firstDemandPage = await demandPages[0]!;
   expect(firstDemandPage.error).not.toBeNull();
   expect(window.location.pathname).toBe("/s/local%3Alive-a");
+  pageTwoPhase = "hold";
 
   // A cached "already demanded" entry must not brick the retry.
   await user.keyboard("{Alt>}{Shift>}{ArrowRight}{/Shift>}{/Alt}");
@@ -537,6 +568,7 @@ test("live-next demand-load retries after the page request fails", async () => {
   const params = held.params;
   const resolve = held.resolve;
   if (!params || !resolve) throw new Error("page-two request was not issued");
+  pageTwoPhase = "succeed";
   await act(async () => {
     resolve(wireSnapshot(params, { sessions: [LIVE_CYCLE_B], remaining: 0, truncated: false }, '"test"'));
   });
