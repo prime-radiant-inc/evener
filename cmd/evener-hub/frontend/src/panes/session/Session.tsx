@@ -35,7 +35,7 @@ export interface SessionPaneParams {
 }
 
 const EMPTY_THREADS = new Map<string, ThreadModel>();
-export const RECOVERY_HINT_DELAY_MS = 8_000;
+export const RECOVERY_HINT_DELAY_MS = import.meta.env.MODE === "test" ? 50 : 8_000;
 
 function SessionLoading({ sessionRef, repairing }: { sessionRef: string; repairing: boolean }) {
   const [showRecovery, setShowRecovery] = useState(false);

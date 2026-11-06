@@ -308,7 +308,6 @@ test.each(["success", "refused"])(
     expect(fake.calls.filter((call) => call.method === "evener/thread/forceStop")).toHaveLength(1);
     expect(fake.calls.filter((call) => call.method === "thread/resume")).toHaveLength(0);
   },
-  20_000,
 );
 
 test.each(["success", "refused"])("hydrated restart recovery works without navigation: %s", async (outcome) => {

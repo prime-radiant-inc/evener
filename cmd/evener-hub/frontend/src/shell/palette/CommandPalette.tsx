@@ -489,24 +489,42 @@ function PaletteBody({
   // on a bare activeIndex change.
   const previousViewRef = useRef(view);
   const previousQueryRef = useRef(query);
+  const userMovedRef = useRef(false);
   useEffect(() => {
     const previousView = previousViewRef.current;
     const queryChanged = previousQueryRef.current !== query;
     previousViewRef.current = view;
     previousQueryRef.current = query;
     setActiveIndex((previous) => {
-      if (queryChanged) return view.items.length > 0 ? 0 : -1;
+      const q = query.replace(/^\/+/, "").trim().toLowerCase();
+      const exactCommand =
+        q === ""
+          ? -1
+          : view.items.findIndex(
+              (item) =>
+                item.kind === "command" &&
+                (item.command.id.toLowerCase() === q || item.command.title.toLowerCase() === q),
+            );
+      const firstResult = q === "" ? -1 : view.items.findIndex((item) => item.kind !== "command");
+      const fallback =
+        exactCommand >= 0 ? exactCommand : firstResult >= 0 ? firstResult : view.items.length > 0 ? 0 : -1;
+      if (queryChanged) {
+        userMovedRef.current = false;
+        return fallback;
+      }
+      if (!userMovedRef.current) return fallback;
       const selected = previousView.items[previous];
       if (selected?.kind === "command") {
         const next = view.items.findIndex((item) => item.kind === "command" && item.command.id === selected.command.id);
         if (next >= 0) return next;
       }
-      return view.items.length > 0 ? 0 : -1;
+      return fallback;
     });
   }, [view, query]);
 
   function move(dir: number) {
     if (view.items.length === 0) return;
+    userMovedRef.current = true;
     setActiveIndex((prev) => (prev + dir + view.items.length) % view.items.length);
   }
 
@@ -910,7 +928,7 @@ function buildView(args: {
   };
   const pushCommandMatches = (filter: string) => {
     const { recent, commands } = filterCommands(ctx, filter);
-    const searchVisible = (command: ScopedCommand) => command.id !== "upgrade";
+    const searchVisible = (command: ScopedCommand) => command.id !== "upgrade" && command.id !== "search";
     const q = filter.replace(/^\/+/, "").toLowerCase().trim();
     const named = q
       ? commands

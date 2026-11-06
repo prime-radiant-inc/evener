@@ -169,7 +169,7 @@ describe("remote search results", () => {
       </NeedsYouProvider>,
     );
     act(() => openPalette());
-    await user.type(screen.getByRole("combobox"), "search");
+    await user.type(screen.getByRole("combobox"), "settings");
 
     const results = screen.getByRole("listbox");
     await waitFor(() => expect(within(results).getByRole("alert")).toBeTruthy());

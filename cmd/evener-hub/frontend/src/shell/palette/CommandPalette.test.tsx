@@ -851,6 +851,22 @@ test("typing a new query resets the highlight after an arrow pick", async () => 
   await waitFor(() => expect(input.getAttribute("aria-activedescendant")).toBe("palette-row-0"));
 });
 
+test("late needs-you rows take the default selection from the Command list", async () => {
+  setNeedsYouRows(null);
+  render(
+    <NeedsYouProvider>
+      <CommandPalette />
+    </NeedsYouProvider>,
+  );
+  act(() => openPalette());
+  const input = screen.getByRole("combobox");
+  expect(input.getAttribute("aria-activedescendant")).toBe("palette-row-0");
+
+  act(() => setNeedsYouRows(needsYouRows()));
+  await waitFor(() => expect(screen.getByRole("option", { name: /Session A/i })).toBeTruthy());
+  expect(input.getAttribute("aria-activedescendant")).toBe("palette-row-0");
+});
+
 test("search mode keeps the side-effecting upgrade command behind the slash prefix", () => {
   setNeedsYouRows(null);
   render(
