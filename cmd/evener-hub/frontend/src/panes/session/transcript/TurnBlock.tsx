@@ -198,6 +198,9 @@ export function ProjectedIntentGroup({
           </div>
         </Disclosure>
       </div>
+      {separatorTurn && separatorTurn.status === "completed" && !asTurnError(separatorTurn.error) && (
+        <TurnDoneEndCap turn={separatorTurn} />
+      )}
       {separatorTurn && <TurnSeparator turn={separatorTurn} />}
     </>
   );
@@ -356,7 +359,7 @@ export function TurnBlock({
       >
         {renderedEntries}
         {failure && <TurnFailureEndCap error={failure} turnId={sourceTurn.id} sessionRef={sessionRef} />}
-        {!failure && displayStatus === "completed" && (
+        {!failure && displayStatus === "completed" && showTurnSeparator && (
           <div className={CLASS.runContent} data-testid="turn-done-row">
             <TurnDoneEndCap turn={sourceTurn} />
           </div>

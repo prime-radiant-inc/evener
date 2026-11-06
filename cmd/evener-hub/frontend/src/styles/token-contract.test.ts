@@ -991,11 +991,16 @@ test("the selection wash is visibly distinct from the page in both themes", () =
     const accent = declaredToken(theme.block, "--accent");
     const surface1 = declaredToken(theme.block, "--surface-1");
     const surface0 = declaredToken(theme.block, "--surface-0");
+    const declared = declaredToken(theme.block, "--selection-bg");
     expect(accent).toBeDefined();
     expect(surface1).toBeDefined();
     expect(surface0).toBeDefined();
-    if (!accent || !surface1 || !surface0) continue;
-    const wash = oklabMix(parseHexColor(accent), parseHexColor(surface1), 0.4);
+    expect(declared).toBeDefined();
+    if (!accent || !surface1 || !surface0 || !declared) continue;
+    const percentage = /var\(--accent\) (\d+)%, var\(--surface-1\)/.exec(declared);
+    expect(percentage, `${theme.name} selection mix`).not.toBeNull();
+    if (!percentage) continue;
+    const wash = oklabMix(parseHexColor(accent), parseHexColor(surface1), Number(percentage[1]) / 100);
     expect(contrastRatio(wash, parseHexColor(surface0)), `${theme.name} selection vs page`).toBeGreaterThanOrEqual(1.4);
   }
 });

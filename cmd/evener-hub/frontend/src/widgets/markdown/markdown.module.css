@@ -52,9 +52,9 @@
 }
 
 .root h3 {
-  /* Never smaller than the prose it heads: the heading earns its place from
-   * weight here, not from shrinking below the reading size. */
-  font-size: inherit;
+  /* Never smaller than the prose it heads or the h4 step below it: a host
+   * that renders markdown at caption size must not invert the headings. */
+  font-size: max(1em, var(--font-size-body));
   letter-spacing: var(--tracking-display);
 }
 

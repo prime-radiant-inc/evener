@@ -77,8 +77,10 @@ on `/new`. The provider notice keeps Connect and its re-check action.
 **Completion.** A settled completed turn with agent output closes with
 "Done in <work time>" and, when present, "N tool calls". A real `0ms` turn
 closes with "Done" and no fabricated duration. The cap uses the existing
-run-column wrapper so it shares the turn gutter. A failed turn keeps its
-existing diagnostic end-cap. A user-only turn gets no end-cap.
+run-column wrapper so it shares the turn gutter. With Round timings on, the
+turn separator carries the exact duration and the cap reads "Done" so the
+same duration is not printed twice. A failed turn keeps its existing
+diagnostic end-cap. A user-only turn gets no end-cap.
 
 **Browser surfaces.** `::selection` uses a dedicated 40%-accent
 `--selection-bg` wash and high ink, so the highlight is visibly distinct from

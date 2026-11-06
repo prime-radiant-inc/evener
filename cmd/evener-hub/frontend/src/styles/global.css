@@ -75,11 +75,12 @@ body {
   color: var(--ink-hi);
 }
 
-/* One scrollbar treatment for every app-owned scroller: a thin edge-strong
- * thumb on the local surface. Both properties inherit, so the root carries
- * them once. Firefox/Chromium honor these; WebKit keeps its native paint
+/* One scrollbar treatment for every app-owned scroller: a thin ink-low thumb
+ * on the local surface. scrollbar-color inherits, but scrollbar-width does
+ * not in every engine, so the universal selector applies both to every
+ * scroller. Firefox/Chromium honor these; WebKit keeps its native paint
  * until it supports them. */
-:root {
+* {
   scrollbar-width: thin;
   scrollbar-color: var(--ink-low) transparent;
 }

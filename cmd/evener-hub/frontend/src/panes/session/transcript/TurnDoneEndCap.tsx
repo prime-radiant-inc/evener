@@ -1,4 +1,5 @@
 import type { TurnModel } from "@evener/appwire-client";
+import { useTranscriptRenderContext } from "../../../transcriptDisplay/renderContext";
 import { requireClass } from "../../../widgets/internal/requireClass";
 import { formatWorkDuration } from "../chrome/statusFormat";
 import styles from "./turndone.module.css";
@@ -14,6 +15,7 @@ const CLASS = {
  * interrupted turns therefore stop looking identical without a second
  * status surface. */
 export function TurnDoneEndCap({ turn }: { turn: TurnModel }) {
+  const { metadata } = useTranscriptRenderContext();
   const durationMs = turn.durationMs;
   if (durationMs === undefined) return null;
   let toolCalls = 0;
@@ -29,7 +31,7 @@ export function TurnDoneEndCap({ turn }: { turn: TurnModel }) {
   if (!hasAgentOutput) return null;
   return (
     <div className={CLASS.cap} data-testid="turn-done" data-turn-duration-ms={durationMs}>
-      <span>{durationMs > 0 ? `Done in ${formatWorkDuration(durationMs)}` : "Done"}</span>
+      <span>{durationMs > 0 && !metadata.roundTimings ? `Done in ${formatWorkDuration(durationMs)}` : "Done"}</span>
       {toolCalls > 0 && (
         <>
           <span className={CLASS.separator} aria-hidden="true">
