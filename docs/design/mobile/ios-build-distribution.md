@@ -110,13 +110,15 @@ The runner verifies actual tool versions, uses the non-secret fixture team
 `EVENERCI01` for prebuild, compares repeated generated output, and resolves from
 the committed pod lock. A changed or missing lock, failed resolver, deployment
 install or build, missing extension, or invalid identity/entitlement fails the
-run. A resolver error requires diagnosis of its named SDK-owned roots and
-necessary closure. Never delete the input lock or update every pod.
+run. A resolver error requires diagnosis against the lock's own local
+development pods. Never delete the input lock.
 When CocoaPods refuses the committed lock because its own local development
-pods changed version references, the runner unlocks exactly those named local
-pods in a single `pod update --no-repo-update`; registry pins stay locked. The
-result is still compared against the committed lock, so the candidate and its
-diff remain reviewable failure evidence.
+pods changed version references, the runner re-resolves every local development
+pod the lock declares in a single `pod update --no-repo-update`; registry pods
+reachable only through those local pods may move with their parents, so the
+candidate diff against the committed lock is the guard. The result is still
+compared against the committed lock, and the candidate and its diff remain
+reviewable failure evidence.
 
 Review `Podfile.lock.candidate` and `Podfile.lock.diff` with `build-identity.json`.
 Match its `sourceRevision` and `npmLockSha256` to the tested branch before applying

@@ -341,8 +341,10 @@ It discovers and deletes only its own iPhone simulator. Output must not exist;
 diagnostics include source revision, npm/pod digests, tool identities, the pod
 candidate/diff and `DerivedData`. A changed lock fails and requires review, never
 an automatic source update. When CocoaPods refuses the committed lock because
-its local development pods changed, the runner unlocks only those pods to
-produce the reviewable candidate and diff. Linux refuses before generation.
+its local development pods changed, the runner re-resolves every local
+development pod the lock declares to produce the reviewable candidate and diff;
+registry pods reachable only through them may move, so the diff is reviewed
+before the candidate is applied. Linux refuses before generation.
 
 The separate `iOS qualification` workflow runs this path with `--with-ui` on
 native pull requests without release credentials, so its green path always

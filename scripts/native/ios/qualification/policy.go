@@ -55,9 +55,10 @@ func podUnlockNeeded(installLog []byte) bool {
 }
 
 // localPodNames returns the local development pods the committed lock declares
-// under EXTERNAL SOURCES (a :path: or a local :podspec:). These are the SDK-
-// and app-owned roots a `pod update` may unlock; registry pods never appear
-// here and keep their locked versions.
+// under EXTERNAL SOURCES (a :path: or a local :podspec:). These are the pods a
+// `pod update` re-resolves. Registry pods never appear here, but those
+// reachable only through these local pods may move with them, which is why
+// the candidate is compared against the committed lock before review.
 func localPodNames(lock []byte) []string {
 	var names []string
 	inSources := false
@@ -88,8 +89,11 @@ func localPodNames(lock []byte) []string {
 	return names
 }
 
-// podUnlockCommand unlocks the named local pods and only those: the registry
-// pins the lock also carries are never named and keep their locked versions.
+// podUnlockCommand re-resolves the local development pods the lock declares —
+// every one of them, not only the pod the refusal names, because the closure
+// the named pod needs is not derivable from the refusal text. Registry pins
+// reachable only through those local pods may move with their parents, so the
+// candidate diff is reviewed before it is applied.
 func podUnlockCommand(names []string) []string {
 	args := append([]string{"bundle", "exec", "pod", "update"}, names...)
 	return append(args, "--no-repo-update", "--project-directory=ios")
