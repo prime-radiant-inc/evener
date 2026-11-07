@@ -22,10 +22,11 @@ const config = {
 		name: "Evener",
 		slug: "evener-native",
 		version: "0.3.18",
-		// Both iPhone Duo displays: the outer is wider than tall, and the inner
-		// display's split layout supports landscape. Expo maps "default" to
-		// every interface orientation.
-		orientation: "default",
+		// Portrait-only for now: the Duo's outer display is wider than tall and
+		// the inner display's split works in portrait, but landscape on a
+		// regular iPhone would run content under the notch and Dynamic Island
+		// until left/right safe-area handling is qualified.
+		orientation: "portrait",
 		icon: "./assets/evener-icon.png",
 		userInterfaceStyle: "automatic",
 		backgroundColor: "#0a0a0e",

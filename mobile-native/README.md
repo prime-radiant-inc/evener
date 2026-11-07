@@ -37,8 +37,9 @@ The app fills both iPhone Duo displays. The outer display keeps the Board
 single-pane. The inner display puts the Board on the left and the open
 conversation on the right; the Board's search, scroll and live state keep
 running while the conversation is open. The split is chosen by window size (both
-sides at least 600 points), not by device name. `app.config.js` declares all
-orientations so the outer display's wider-than-tall window works.
+sides at least 600 points), not by device name. The app stays portrait: both
+Duo displays are taller than wide, and landscape on a regular iPhone still needs
+left/right safe-area handling.
 
 A conversation opened from the Board uses the split. Conversations opened from a
 root route (a share, an alert, a restored root location) still open full screen;

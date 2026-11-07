@@ -12,9 +12,9 @@ at least 600 points on both sides is an inner display. The Duo outer display is
 landscape stays below the height boundary. The boundary is `isDuoInner` in
 `src/duo/duoLayout.ts`.
 
-The app declares all orientations in `app.config.js`; a portrait-only app cannot
-fill the Duo's wider outer display. The existing safe-area and window-dimension
-layout handles the rest of the adaptation.
+The app stays portrait. Both Duo displays are taller than wide, and the inner
+split works in portrait. Landscape on a regular iPhone is a follow-up: it needs
+left/right safe-area handling before the app declares it.
 
 ## Wide layout
 
@@ -57,7 +57,6 @@ layout adds no new persistence.
 - A Board test proves an embedded Board reports an opened conversation to the
   split instead of pushing a root route.
 - `make test-native` covers the bundle, app tests, type checks and Biome.
-- A Release build on the iPhone Duo simulator captures the outer display, the
-  inner display with no conversation, and the inner display with a conversation.
-  The same build rotates on the inner display. A draft written before folding
-  remains after unfolding.
+- A Release build captures the outer display, the wide split with no
+  conversation, and the wide split with a conversation. A draft written before
+  folding remains after unfolding.

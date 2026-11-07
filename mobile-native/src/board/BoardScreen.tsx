@@ -425,11 +425,13 @@ function Board({
 	};
 
 	const newSession = () => navigation.navigate("NewSession", { hubId, hubName });
-	const openSession = (row: NavigationSessionSummary) => {
-		seen.markRead(actionsClient, [row], lastMovedAt);
-		const params = { hubId, ref: row.ref, title: row.title };
+	const openConversationRoute = (params: Routes["Conversation"]) => {
 		if (onOpenConversation) onOpenConversation(params);
 		else navigation.navigate("Conversation", params);
+	};
+	const openSession = (row: NavigationSessionSummary) => {
+		seen.markRead(actionsClient, [row], lastMovedAt);
+		openConversationRoute({ hubId, ref: row.ref, title: row.title });
 	};
 	// A search result the Board has loaded opens like its row, so it's
 	// marked seen the same way. Any other session marks itself seen when its
@@ -438,11 +440,7 @@ function Board({
 		rememberSearch();
 		const row = loadedRows.find((loaded) => loaded.ref === result.ref);
 		if (row) openSession(row);
-		else {
-			const params = { hubId, ref: result.ref, title: result.title };
-			if (onOpenConversation) onOpenConversation(params);
-			else navigation.navigate("Conversation", params);
-		}
+		else openConversationRoute({ hubId, ref: result.ref, title: result.title });
 	};
 
 	// Where each section starts in the scroller, for the chips and the

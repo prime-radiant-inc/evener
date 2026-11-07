@@ -59,13 +59,13 @@ against their actual services separately from custom-scheme launch checks.
 
 ### iPhone Duo layout
 
-`app.config.js` sets `orientation: "default"`, which Expo maps to portrait and
-landscape; the Duo outer display is wider than tall. The native client selects
-its split layout from the window's point size
+The native client selects its split layout from the window's point size
 ([`src/duo/duoLayout.ts`](../../../mobile-native/src/duo/duoLayout.ts)), not from
 the device name: both sides at least 600 points. The `Sessions` screen renders
 the Board beside a nested conversation navigator on the inner display, and the
-root stack header is hidden there in favor of the Board's inline header.
+root stack header is hidden there in favor of the Board's inline header. The app
+stays `orientation: "portrait"`: landscape on a regular iPhone still needs
+left/right safe-area handling, and the Duo's inner split works in portrait.
 
 Simulator qualification uses the `iPhone Duo` device type on the iOS 27.1
 runtime, captures the outer display, the empty split and an open conversation,

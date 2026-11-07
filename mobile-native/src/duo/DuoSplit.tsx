@@ -32,6 +32,7 @@ import { StopSubagentSheet } from "../subagents/StopSubagentSheet";
 import { SubagentScreen } from "../subagents/SubagentScreen";
 import { TasksSheet } from "../TasksSheet";
 import { allowFontScaling, useColors, useTextScale } from "../ui";
+import { DetailPaneWidthContext } from "./paneWidth";
 
 /** The right pane's routes: the conversation and everything it can open,
  * plus the empty route the pane starts on. */
@@ -44,14 +45,24 @@ const DetailNavigationContext = createContext<((navigation: DetailNavigation | n
 /** The Duo's inner display: the Board stays on the left and the conversation
  * opens beside it. The Board remains the root stack's focused Sessions
  * screen, so its live, search and scroll state keeps running. */
-export function DuoSplit({ navigation, route }: NativeStackScreenProps<Routes, "Sessions">) {
+export function DuoSplit({
+	navigation,
+	route,
+	onFold,
+}: NativeStackScreenProps<Routes, "Sessions"> & {
+	/** Folding back to the outer display opens the conversation full screen
+	 * instead of dropping it with the unmounted split. */
+	onFold?: (params: Routes["Conversation"]) => void;
+}) {
 	const { width } = useWindowDimensions();
 	const { palette } = useColors();
 	const rootOptions = useRootStackOptions();
 	const [detailNavigation, setDetailNavigation] = useState<DetailNavigation | null>(null);
 	const pending = useRef<Routes["Conversation"] | null>(null);
+	const lastOpened = useRef<Routes["Conversation"] | null>(null);
 	const openConversation = useCallback(
 		(params: Routes["Conversation"]) => {
+			lastOpened.current = params;
 			const detail = detailNavigation;
 			if (!detail) {
 				pending.current = params;
@@ -72,7 +83,14 @@ export function DuoSplit({ navigation, route }: NativeStackScreenProps<Routes, "
 		pending.current = null;
 		openConversation(params);
 	}, [detailNavigation, openConversation]);
+	useEffect(
+		() => () => {
+			if (lastOpened.current && navigation.isFocused()) onFold?.(lastOpened.current);
+		},
+		[navigation, onFold],
+	);
 	const sidebarWidth = Math.min(380, Math.max(280, Math.round(width * 0.36)));
+	const detailWidth = width - sidebarWidth - 1;
 	return (
 		<View style={{ flex: 1, flexDirection: "row", backgroundColor: palette.page }}>
 			<View style={{ width: sidebarWidth }}>
@@ -86,65 +104,76 @@ export function DuoSplit({ navigation, route }: NativeStackScreenProps<Routes, "
 			</View>
 			<View style={{ width: 1, backgroundColor: palette.edge }} />
 			<View style={{ flex: 1 }}>
-				<DetailNavigationContext.Provider value={setDetailNavigation}>
-					<DetailStack.Navigator initialRouteName="DuoDetail" screenOptions={rootOptions}>
-						<DetailStack.Screen name="DuoDetail" component={DuoDetail} options={{ headerShown: false }} />
-						<DetailStack.Screen
-							name="Conversation"
-							component={ConversationScreen}
-							options={({ route }) => ({
-								title: route.params.title || "Conversation",
-								animationTypeForReplace: replaceAnimation(route.params),
-							})}
-						/>
-						<DetailStack.Screen name="Reader" component={ReaderScreen} options={{ title: "" }} />
-						<DetailStack.Screen name="Activity" component={ActivityScreen} options={{ title: "" }} />
-						<DetailStack.Screen
-							name="Subagent"
-							component={SubagentScreen}
-							options={({ route }) => ({ title: route.params.title || "Subagent" })}
-						/>
-						<DetailStack.Screen name="ShellJob" component={ShellJobScreen} options={{ title: "Shell job" }} />
-						<DetailStack.Screen name="Fork" component={ForkScreen} options={{ title: "Fork conversation" }} />
-						<DetailStack.Screen
-							name="SessionDeletion"
-							component={SessionDeletionScreen}
-							options={{ title: "Delete saved session" }}
-						/>
-						<DetailStack.Screen
-							name="PinAssignment"
-							component={PinAssignmentScreen}
-							options={{ title: "Pin to category" }}
-						/>
-						<DetailStack.Screen
-							name="SessionLocation"
-							component={SessionLocationScreen}
-							options={({ route }) => ({ title: route.params.location.title })}
-						/>
-						<DetailStack.Group screenOptions={{ contentStyle: { backgroundColor: palette.canvas } }}>
-							<DetailStack.Screen name="TasksSheet" component={TasksSheet} options={SHEET_ROUTES.TasksSheet} />
-							<DetailStack.Screen name="NotesSheet" component={NotesSheet} options={SHEET_ROUTES.NotesSheet} />
-							<DetailStack.Screen name="QueueSheet" component={QueueSheet} options={SHEET_ROUTES.QueueSheet} />
-							<DetailStack.Screen name="OutlineSheet" component={OutlineSheet} options={SHEET_ROUTES.OutlineSheet} />
-							<DetailStack.Screen name="CommentSheet" component={CommentSheet} options={SHEET_ROUTES.CommentSheet} />
-							<DetailStack.Screen name="CommentsSheet" component={CommentsSheet} options={SHEET_ROUTES.CommentsSheet} />
-							<DetailStack.Screen name="ReviewSheet" component={ReviewSheet} options={SHEET_ROUTES.ReviewSheet} />
+				<DetailPaneWidthContext.Provider value={detailWidth}>
+					<DetailNavigationContext.Provider value={setDetailNavigation}>
+						<DetailStack.Navigator initialRouteName="DuoDetail" screenOptions={rootOptions}>
+							<DetailStack.Screen name="DuoDetail" component={DuoDetail} options={{ headerShown: false }} />
+							<DetailStack.Screen name="Sessions" component={DuoEmpty} options={{ headerShown: false }} />
 							<DetailStack.Screen
-								name="SessionInfoSheet"
-								component={SessionInfoSheet}
-								options={SHEET_ROUTES.SessionInfoSheet}
+								name="Conversation"
+								component={ConversationScreen}
+								options={({ route }) => ({
+									title: route.params.title || "Conversation",
+									animationTypeForReplace: replaceAnimation(route.params),
+								})}
 							/>
-							<DetailStack.Screen name="ModelSheet" component={ModelSheet} options={SHEET_ROUTES.ModelSheet} />
-							<DetailStack.Screen name="CommandsSheet" component={CommandsSheet} options={SHEET_ROUTES.CommandsSheet} />
-							<DetailStack.Screen name="FilesSheet" component={FilesSheet} options={SHEET_ROUTES.FilesSheet} />
+							<DetailStack.Screen name="Reader" component={ReaderScreen} options={{ title: "" }} />
+							<DetailStack.Screen name="Activity" component={ActivityScreen} options={{ title: "" }} />
 							<DetailStack.Screen
-								name="StopSubagentSheet"
-								component={StopSubagentSheet}
-								options={SHEET_ROUTES.StopSubagentSheet}
+								name="Subagent"
+								component={SubagentScreen}
+								options={({ route }) => ({ title: route.params.title || "Subagent" })}
 							/>
-						</DetailStack.Group>
-					</DetailStack.Navigator>
-				</DetailNavigationContext.Provider>
+							<DetailStack.Screen name="ShellJob" component={ShellJobScreen} options={{ title: "Shell job" }} />
+							<DetailStack.Screen name="Fork" component={ForkScreen} options={{ title: "Fork conversation" }} />
+							<DetailStack.Screen
+								name="SessionDeletion"
+								component={SessionDeletionScreen}
+								options={{ title: "Delete saved session" }}
+							/>
+							<DetailStack.Screen
+								name="PinAssignment"
+								component={PinAssignmentScreen}
+								options={{ title: "Pin to category" }}
+							/>
+							<DetailStack.Screen
+								name="SessionLocation"
+								component={SessionLocationScreen}
+								options={({ route }) => ({ title: route.params.location.title })}
+							/>
+							<DetailStack.Group screenOptions={{ contentStyle: { backgroundColor: palette.canvas } }}>
+								<DetailStack.Screen name="TasksSheet" component={TasksSheet} options={SHEET_ROUTES.TasksSheet} />
+								<DetailStack.Screen name="NotesSheet" component={NotesSheet} options={SHEET_ROUTES.NotesSheet} />
+								<DetailStack.Screen name="QueueSheet" component={QueueSheet} options={SHEET_ROUTES.QueueSheet} />
+								<DetailStack.Screen name="OutlineSheet" component={OutlineSheet} options={SHEET_ROUTES.OutlineSheet} />
+								<DetailStack.Screen name="CommentSheet" component={CommentSheet} options={SHEET_ROUTES.CommentSheet} />
+								<DetailStack.Screen
+									name="CommentsSheet"
+									component={CommentsSheet}
+									options={SHEET_ROUTES.CommentsSheet}
+								/>
+								<DetailStack.Screen name="ReviewSheet" component={ReviewSheet} options={SHEET_ROUTES.ReviewSheet} />
+								<DetailStack.Screen
+									name="SessionInfoSheet"
+									component={SessionInfoSheet}
+									options={SHEET_ROUTES.SessionInfoSheet}
+								/>
+								<DetailStack.Screen name="ModelSheet" component={ModelSheet} options={SHEET_ROUTES.ModelSheet} />
+								<DetailStack.Screen
+									name="CommandsSheet"
+									component={CommandsSheet}
+									options={SHEET_ROUTES.CommandsSheet}
+								/>
+								<DetailStack.Screen name="FilesSheet" component={FilesSheet} options={SHEET_ROUTES.FilesSheet} />
+								<DetailStack.Screen
+									name="StopSubagentSheet"
+									component={StopSubagentSheet}
+									options={SHEET_ROUTES.StopSubagentSheet}
+								/>
+							</DetailStack.Group>
+						</DetailStack.Navigator>
+					</DetailNavigationContext.Provider>
+				</DetailPaneWidthContext.Provider>
 			</View>
 		</View>
 	);

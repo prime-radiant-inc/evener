@@ -7,7 +7,7 @@ import {
 } from "@react-navigation/native";
 import { createNativeStackNavigator, type NativeStackScreenProps } from "@react-navigation/native-stack";
 import { StatusBar } from "expo-status-bar";
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { ActivityIndicator, useColorScheme, useWindowDimensions, View } from "react-native";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
 import { KeyboardProvider } from "react-native-keyboard-controller";
@@ -28,6 +28,7 @@ import { ForkScreen } from "./src/ForkScreen";
 import { locationForRoute, restoredStack, routeToSave } from "./src/location";
 import { NativePreferencesProvider } from "./src/NativePreferencesProvider";
 import { locations } from "./src/nativeLocation";
+import { stackRoutes } from "./src/navigationRoutes";
 import { NewSessionSheet } from "./src/newSession/NewSessionSheet";
 import { outboxFlush } from "./src/outbox/nativeOutboxFlush";
 import { PinAssignmentScreen } from "./src/PinAssignmentScreen";
@@ -68,11 +69,6 @@ import { VoiceProvider } from "./src/voice/VoiceProvider";
 const Stack = createNativeStackNavigator<Routes>();
 const navigationRef = createNavigationContainerRef<Routes>();
 const sharePort = appGroupSharePort();
-
-/** The root stack's routes up to the focused one, as alerts read them. */
-function stackRoutes(state: NavigationState) {
-	return state.routes.slice(0, state.index + 1).map((route) => ({ name: route.name, params: route.params }));
-}
 
 // Runs before the first render, so the first frame already has the
 // appearance chosen in Display (spec 12), native chrome included.
@@ -289,5 +285,9 @@ function Navigation() {
  * on the Duo's inner display. */
 function SessionsScreen(props: NativeStackScreenProps<Routes, "Sessions">) {
 	const { width, height } = useWindowDimensions();
-	return isDuoInner(width, height) ? <DuoSplit {...props} /> : <BoardScreen {...props} />;
+	const openOnRoot = useCallback(
+		(params: Routes["Conversation"]) => props.navigation.navigate("Conversation", params),
+		[props.navigation],
+	);
+	return isDuoInner(width, height) ? <DuoSplit {...props} onFold={openOnRoot} /> : <BoardScreen {...props} />;
 }
