@@ -275,6 +275,7 @@ func assertPrivateModuleEnv(t *testing.T, record map[string]string, module, ambi
 // ambient HOME in place would flip an assertion even with every helper test
 // green.
 func TestModuleRunnerRunsSelectedModulesWithPrivateHomes(t *testing.T) {
+	t.Parallel()
 	root, modules, ctrl := newRunnerFixture(t)
 	observeDir := filepath.Join(root, "observe")
 	if err := os.MkdirAll(observeDir, 0o755); err != nil {
@@ -332,6 +333,7 @@ func TestModuleRunnerRunsSelectedModulesWithPrivateHomes(t *testing.T) {
 // default-split case stayed green. The waved modules are deliberately absent
 // from MODULES, and a module present only in MODULES must stay unrun.
 func TestModuleRunnerHonorsWaveOverrides(t *testing.T) {
+	t.Parallel()
 	root, modules, ctrl := newRunnerFixture(t)
 	observeDir := filepath.Join(root, "observe")
 	if err := os.MkdirAll(observeDir, 0o755); err != nil {
@@ -368,6 +370,7 @@ func TestModuleRunnerHonorsWaveOverrides(t *testing.T) {
 // status reaches the runner's exit code and its output is surfaced, and that a
 // failed run keeps its logs for the reader.
 func TestModuleRunnerPropagatesAModuleFailure(t *testing.T) {
+	t.Parallel()
 	_, modules, ctrl := newRunnerFixture(t)
 	writeRunnerFixtureModule(t, modules, "bad", `package fixture
 
@@ -404,6 +407,7 @@ func TestBad(t *testing.T) { t.Fatal("fixture failure") }
 // executes nothing, so the runner must fail the whole run rather than prove
 // nothing.
 func TestModuleRunnerRefusesAZeroTestRun(t *testing.T) {
+	t.Parallel()
 	_, modules, ctrl := newRunnerFixture(t)
 	// A test file with no Test, Example, or Fuzz entrypoint: the gate's
 	// Test/Example surface executes nothing, so the guard is unambiguous.
@@ -450,6 +454,7 @@ func TestCounted(t *testing.T) {
 // once -- the capture adds no second run. The count file is the measurement; the
 // rows are asserted structurally.
 func TestModuleRunnerCapturesTheTimingRowsItAlreadyRan(t *testing.T) {
+	t.Parallel()
 	root, modules, ctrl := newRunnerFixture(t)
 	writeRunnerFixtureModule(t, modules, "timingmod", countingModuleSrc())
 	counts := filepath.Join(root, "counts")
@@ -501,6 +506,7 @@ func writeRunnerFixtureFile(t *testing.T, path, content string) {
 // otherwise green run as missing that package's terminal event. The fixture's
 // `legacy` package exists only without the `special` tag.
 func TestModuleRunnerEnumerationHonorsTheCallersBuildFlags(t *testing.T) {
+	t.Parallel()
 	root, modules, ctrl := newRunnerFixture(t)
 	mod := filepath.Join(modules, "tagmod")
 	writeRunnerFixtureFile(t, filepath.Join(mod, "go.mod"), "module example.com/tagmod\n\ngo 1.21\n")
@@ -548,6 +554,7 @@ func TestLegacy(t *testing.T) {}
 // the enclosing run's measurement, and read them even when that run failed —
 // the opposite of the green-run-only contract the capture rests on.
 func TestModuleRunnerLeavesAnEnclosingTimingDestinationUntouched(t *testing.T) {
+	// Not parallel: t.Setenv simulates an enclosing measured run's ambient destination.
 	_, modules, ctrl := newRunnerFixture(t)
 	writeRunnerFixtureModule(t, modules, "plainmod", `package fixture
 
@@ -581,6 +588,7 @@ func TestPlain(t *testing.T) {}
 // successful measurements and force the whole lane to run again. The run must
 // fail, leave nothing at the destination, and keep the captured rows.
 func TestModuleRunnerKeepsItsRowsWhenTheTimingExportFails(t *testing.T) {
+	t.Parallel()
 	root, modules, ctrl := newRunnerFixture(t)
 	writeRunnerFixtureModule(t, modules, "timingmod", `package fixture
 
@@ -617,6 +625,7 @@ func TestTimed(t *testing.T) {}
 // The destination must be refused through the export-failure path, with the
 // captured rows retained.
 func TestModuleRunnerRefusesADirectoryTimingDestination(t *testing.T) {
+	t.Parallel()
 	root, modules, ctrl := newRunnerFixture(t)
 	writeRunnerFixtureModule(t, modules, "timingmod", `package fixture
 
@@ -657,6 +666,7 @@ func TestTimed(t *testing.T) {}
 // so the plant is provably before the export rather than racing it: a test that
 // only hoped to win the race could pass against the vulnerable implementation.
 func TestModuleRunnerDoesNotWriteThroughASiblingSymlink(t *testing.T) {
+	t.Parallel()
 	if runtime.GOOS == "windows" {
 		t.Skip("the module runner is a bash script")
 	}
