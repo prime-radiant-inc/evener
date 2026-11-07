@@ -19,6 +19,7 @@ import type { PaneProps } from "../../shell/paneRegistry";
 import { navigate, paneToURL, refParam } from "../../shell/routing";
 import { ForceStopDialog } from "../../shell/sessionMenu/ForceStopDialog";
 import { StatusBar } from "../../shell/statusbar/StatusBar";
+import { useIsMobile } from "../../shell/useIsMobile";
 import { carryComposerSeatForPlacement, workspaceStore } from "../../shell/workspace";
 import { useNavigationStore } from "../../stores/navigation/store";
 import { threadsStore, useThreadsStore } from "../../stores/threads";
@@ -94,6 +95,7 @@ function SessionForceStopRecovery({ sessionRef }: { sessionRef: string }) {
 
 export default function Session({ params, paneId, focused: paneFocused }: PaneProps<SessionPaneParams>) {
   const { ref } = params;
+  const isMobile = useIsMobile();
   const pane = useStore(workspaceStore, (state) =>
     state.panes.find((record) => record.id === paneId && record.type === "session" && refParam(record.params) === ref),
   );
@@ -135,9 +137,10 @@ export default function Session({ params, paneId, focused: paneFocused }: PanePr
 
   const footerCwd = !deletedRef && model ? model.cwd : null;
   const edgeFooter = useMemo(() => {
-    const location = footerCwd === null ? null : <RepoLocation cwd={footerCwd} local={ref.startsWith("local:")} />;
+    const location =
+      footerCwd === null ? null : <RepoLocation cwd={footerCwd} local={ref.startsWith("local:")} link={!isMobile} />;
     return <StatusBar sessionRef={ref} paneId={paneId} leading={location} />;
-  }, [footerCwd, paneId, ref]);
+  }, [footerCwd, isMobile, paneId, ref]);
 
   const seat = useMemo<ConversationSeat>(
     () => ({

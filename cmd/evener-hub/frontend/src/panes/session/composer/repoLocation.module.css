@@ -1,5 +1,5 @@
 /* One quiet caption line for the session's working dir and git branch. It sits
- * in the desktop pane footer. No border or
+ * in the pane footer. No border or
  * background of its own. The inline padding aligns it with nearby content. */
 .line {
   display: flex;

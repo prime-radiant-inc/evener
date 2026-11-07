@@ -377,6 +377,8 @@ async function measureComposerFooter(cdpEndpoint, url, width, safeAreaSupported)
           const lastBottom = cards.length ? Math.max(...cards.map((card) => card.getBoundingClientRect().bottom)) : null;
           const metadata = pane?.querySelector('[data-testid="composer-repo-location"]');
           const path = metadata?.querySelector('[data-testid="composer-repo-path"]');
+          const edgeFooter = pane?.querySelector('[data-testid="pane-edge-footer"]');
+          const statusbar = pane?.querySelector('[data-testid="statusbar"]');
           const probe = document.createElement('div');
           probe.style.cssText = 'position:fixed;visibility:hidden;pointer-events:none;height:env(safe-area-inset-bottom, 0px)';
           document.body.append(probe);
@@ -390,6 +392,8 @@ async function measureComposerFooter(cdpEndpoint, url, width, safeAreaSupported)
             cards: cards.length, footerBottom,
             lastBottom, gap: lastBottom === null || footerBottom === null ? null : footerBottom - lastBottom,
             paddingBottom: footer ? Number.parseFloat(getComputedStyle(footer).paddingBottom) : null,
+            edgeFooterBottom: edgeFooter?.getBoundingClientRect().bottom ?? null,
+            statusPaddingBottom: statusbar ? Number.parseFloat(getComputedStyle(statusbar).paddingBottom) : null,
             metadataCount: pane?.querySelectorAll('[data-testid="composer-repo-location"]').length ?? 0,
             metadataVisible: metadata?.checkVisibility({ checkOpacity: true, checkVisibilityCSS: true }) ?? false,
             pathVisible: path?.checkVisibility({ checkOpacity: true, checkVisibilityCSS: true }) ?? false,
@@ -421,17 +425,33 @@ function assertComposerFooter(measurement, width) {
   }
   if (measurement.cards !== 1) failures.push(`visible composer cards=${measurement.cards}, expected 1`);
   if (mobile) {
+    // The phone keeps the working-directory line and the activity chips in
+    // the pane's flush edge footer now, so the composer dock no longer owns
+    // the pane's bottom edge or its safe-area band. The dock keeps its normal
+    // 12px padding; the status bar below it carries the inset.
+    if (
+      measurement.metadataCount !== 1 ||
+      !measurement.metadataVisible ||
+      !measurement.pathVisible ||
+      !measurement.metadataInEdgeFooter ||
+      measurement.path !== "/Users/jesse/prime-radiant/toil-suite/evener"
+    ) {
+      failures.push("phone working-path metadata missing from the visible edge footer");
+    }
     if (
       measurement.paneBottom === null ||
-      measurement.footerBottom === null ||
-      !nearlyEqual(measurement.footerBottom, measurement.paneBottom)
+      measurement.edgeFooterBottom === null ||
+      !nearlyEqual(measurement.edgeFooterBottom, measurement.paneBottom)
     ) {
-      failures.push(`footer bottom=${measurement.footerBottom}px, pane bottom=${measurement.paneBottom}px`);
+      failures.push(`edge footer bottom=${measurement.edgeFooterBottom}px, pane bottom=${measurement.paneBottom}px`);
     }
-    if (measurement.metadataCount !== 0)
-      failures.push(`composer-repo-location still exists (${measurement.metadataCount})`);
-    if (measurement.gap === null || !nearlyEqual(measurement.gap, requiredClearance)) {
-      failures.push(`card-to-footer gap=${measurement.gap}px, required safe-area clearance=${requiredClearance}px`);
+    if (measurement.gap === null || !nearlyEqual(measurement.gap, 12)) {
+      failures.push(`card-to-footer gap=${measurement.gap}px, expected 12px above the edge footer`);
+    }
+    if (measurement.statusPaddingBottom === null || !nearlyEqual(measurement.statusPaddingBottom, requiredClearance)) {
+      failures.push(
+        `status bar bottom padding=${measurement.statusPaddingBottom}px, expected safe-area clearance=${requiredClearance}px`,
+      );
     }
   } else {
     // overflowharness-entry.tsx supplies this fixture path, independent of the checkout.
@@ -1362,7 +1382,7 @@ async function main() {
             console.log(`${label} ... FAIL - ${failures.join("; ")}; ${JSON.stringify(measurement)}`);
           } else {
             console.log(
-              `${label} ... PASS - gap=${measurement.gap}px, desktop metadata=${measurement.metadataVisible}`,
+              `${label} ... PASS - gap=${measurement.gap}px, metadata visible=${measurement.metadataVisible}`,
             );
           }
         }

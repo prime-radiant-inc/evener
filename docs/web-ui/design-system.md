@@ -120,8 +120,11 @@ losing the conversation that made the evidence relevant.
   the working-directory line takes a row of its own, and the chips sit on a row below at
   the 44px tap floor, scrolling sideways rather than shrinking a target when they outgrow
   the width. Chips show their glyph and count when the width cannot also carry a name.
-  The bar owns the home-indicator band, so the composer dock above it gives that inset up;
-  the inset yields when the on-screen keyboard covers that area.
+  The caption-height path row shows the branch unlinked, below the touch floor. The bar
+  owns the home-indicator band, so the composer dock above it gives that inset up; the
+  inset yields when the on-screen keyboard covers that area. The bar stays available
+  while the composer is focused, so the counts remain one tap away, and spends its height
+  above the keyboard rather than disappearing.
 - **Keep session inspection together.** Both session action menus offer Overview, retaining
   the intended session's category choice. `/status` selects About without toggling a
   standalone Details pane. About reuses the shared Details renderer and its accounting.

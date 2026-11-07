@@ -100,6 +100,22 @@ test("shows the branch unlinked when the origin is not a recognized forge", asyn
   expect(screen.queryByTestId("forge-mark")).toBeNull();
 });
 
+// The phone footer's caption row is below the touch floor, so Session declines
+// the forge anchor there: the branch still shows, but no outbound link sits
+// under a thumb aiming for the chips below.
+test("shows the branch unlinked when the caller declines the forge link", async () => {
+  const client = clientReporting({ head: "feature/x", originUrl: "git@github.com:owner/repo.git" });
+  render(
+    <ClientProvider client={client}>
+      <RepoLocation cwd="/repo" local link={false} />
+    </ClientProvider>,
+  );
+
+  expect((await screen.findByTestId("composer-repo-branch")).textContent).toBe("feature/x");
+  expect(screen.queryByTestId("composer-repo-link")).toBeNull();
+  expect(screen.queryByTestId("forge-mark")).toBeNull();
+});
+
 test("shows the branch unlinked when the repo has no origin remote", async () => {
   const client = clientReporting({ head: "main" });
   renderLocation("/repo", client);

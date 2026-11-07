@@ -1218,7 +1218,10 @@ test("mobile keeps the session's status footer with its path and activity counts
   const footer = within(screen.getByTestId("pane-edge-footer"));
   expect(footer.getByTestId("statusbar")).toBeTruthy();
   expect(footer.getByTestId("composer-repo-path").textContent).toBe("/work/mobile");
-  expect((await footer.findByTestId("composer-repo-ref")).textContent).toBe("owner/repo#mobile-branch");
+  // The caption row is below the touch floor, so the phone shows the branch
+  // as plain text rather than an outbound forge link.
+  expect((await footer.findByTestId("composer-repo-branch")).textContent).toBe("mobile-branch");
+  expect(footer.queryByTestId("composer-repo-link")).toBeNull();
   const user = userEvent.setup();
   // A chip is the phone's one-tap way into the full-screen Overview list.
   await user.click(await footer.findByRole("button", { name: /Jobs, 1 of 3 running/ }));

@@ -1,6 +1,6 @@
 // RepoLocation: the session's one-line origin strip - the working directory
 // this session runs in, and the repository and branch checked out there.
-// Session.tsx places it in the pane's desktop activity footer, where
+// Session.tsx places it in the pane's activity footer, where
 // "where is this agent working, and on what" is
 // answerable without opening Session details.
 //
@@ -11,6 +11,11 @@
 // reference cannot say; a worktree session's cwd is not its project root, and a
 // repo can be cloned anywhere. Without a recognized forge the branch alone is
 // shown, as plain text. The cwd is never a link.
+//
+// A phone renders the line in the same footer but passes `link={false}`: that
+// row is caption-height, below the phone's touch floor, so an outbound anchor
+// there would sit under a thumb aiming for the chips below it. The branch still
+// shows, as plain text.
 //
 // Both truncatable spans middle-truncate under pressure, not end-truncate: the
 // path's and the reference's ENDINGS - the project directory, the branch - are
@@ -47,6 +52,9 @@ export interface RepoLocationProps {
   // unrelated local repository that merely shares the path; those sessions get
   // the working dir alone.
   local: boolean;
+  // Whether the repo reference links to its forge. False where the line is a
+  // caption row on a phone, below the touch floor.
+  link?: boolean;
 }
 
 const CLASS = {
@@ -124,9 +132,9 @@ interface ResolvedLocation {
   originUrl: string;
 }
 
-// Memoized to keep the line stable in the desktop pane footer while the
+// Memoized to keep the line stable in the pane footer while the
 // session's cwd and locality are unchanged.
-export const RepoLocation = memo(function RepoLocation({ cwd, local }: RepoLocationProps) {
+export const RepoLocation = memo(function RepoLocation({ cwd, local, link = true }: RepoLocationProps) {
   const client = useClient();
   const [resolved, setResolved] = useState<ResolvedLocation | null>(null);
 
@@ -173,7 +181,7 @@ export const RepoLocation = memo(function RepoLocation({ cwd, local }: RepoLocat
         <MiddleTruncated text={cwd} cutOf={proportionalCut} />
       </span>
       {branch !== "" &&
-        (remote !== null ? (
+        (remote !== null && link ? (
           <a
             className={CLASS.link}
             href={remote.repoUrl}
