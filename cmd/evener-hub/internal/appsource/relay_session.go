@@ -375,7 +375,7 @@ func (s *relaySession) readWithRoutePublication(
 		s.mu.Unlock()
 		if !valid {
 			s.cancelCapture(capture)
-			return RelayReadResult{}, relayConnectionReplaced("relay connection ended before route publication")
+			return RelayReadResult{}, appwire.RetryableSessionUnavailable("relay connection ended before route publication")
 		}
 		publicationErr := routes.Publish(ctx, response.Thread)
 		if publicationErr != nil {
@@ -399,7 +399,7 @@ func (s *relaySession) readWithRoutePublication(
 	s.mu.Unlock()
 	if !valid {
 		s.cancelCapture(capture)
-		return RelayReadResult{}, relayConnectionReplaced("relay connection ended during thread rejoin")
+		return RelayReadResult{}, appwire.RetryableSessionUnavailable("relay connection ended during thread rejoin")
 	}
 
 	return RelayReadResult{
@@ -410,20 +410,6 @@ func (s *relaySession) readWithRoutePublication(
 			generation: capture.generation,
 		},
 	}, nil
-}
-
-// relayConnectionReplaced reports a read cut by the relay's daemon connection
-// being replaced. Automatic retry is safe: recovery publishes a resync, and
-// the next read re-establishes the thread's authority on the new connection.
-func relayConnectionReplaced(message string) appwire.WireError {
-	return appwire.WireError{
-		Code:    appwire.CodeUnavailable,
-		Message: message,
-		Data: appwire.ErrorData{
-			EvenerErrorInfo:  appwire.ErrorSessionUnavailable,
-			RetryDisposition: appwire.RetryDispositionAutomatic,
-		},
-	}
 }
 
 func (s *relaySession) ensureConnection(ctx context.Context) (*relayConnection, error) {
@@ -459,7 +445,7 @@ func (s *relaySession) ensureConnection(ctx context.Context) (*relayConnection, 
 	if s.closed || s.epoch != epoch || s.connection != nil {
 		s.mu.Unlock()
 		_ = transport.Close()
-		return nil, relayConnectionReplaced("relay connection was superseded")
+		return nil, appwire.RetryableSessionUnavailable("relay connection was superseded")
 	}
 	s.connection = connection
 	s.mu.Unlock()

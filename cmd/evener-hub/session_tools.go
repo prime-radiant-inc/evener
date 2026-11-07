@@ -661,7 +661,7 @@ func (o *sessionOperations) read(ctx context.Context, params appwire.ThreadReadP
 	}
 	if read.handoff != nil {
 		if !relays.captureThreadRead(ctx, params, read) {
-			return appwire.ThreadReadResponse{}, appwire.SessionUnavailable("thread subscription is unavailable")
+			return appwire.ThreadReadResponse{}, appwire.RetryableSessionUnavailable("thread subscription is unavailable")
 		}
 	} else if params.AnswerContinuation == nil && sourceSupportsThreadRelay(source) && (params.Subscribe || relayOnThreadRead(source)) {
 		// A source with no relay fan-out is never relayed, even for a

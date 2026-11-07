@@ -1100,6 +1100,20 @@ func SessionUnavailable(message string) WireError {
 	}
 }
 
+// RetryableSessionUnavailable reports a transport loss or a connection
+// replaced under a request, not a verdict on the session. Automatic retry is
+// safe: the caller re-reads once the replacement connection is live.
+func RetryableSessionUnavailable(message string) WireError {
+	return WireError{
+		Code:    CodeUnavailable,
+		Message: message,
+		Data: ErrorData{
+			EvenerErrorInfo:  ErrorSessionUnavailable,
+			RetryDisposition: RetryDispositionAutomatic,
+		},
+	}
+}
+
 func HubLaunchError(message string) WireError {
 	return WireError{
 		Code:    CodeUnavailable,
