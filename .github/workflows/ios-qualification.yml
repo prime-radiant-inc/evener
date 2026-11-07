@@ -9,6 +9,13 @@ on:
       - "scripts/native/**"
       - "scripts/lib/scratch-lib.sh"
       - "scripts/ops/build-runtime-pair.sh"
+      - "Makefile"
+      - "make/**"
+      # The lane runs `make build-runtime` on macOS; the required CI lanes run
+      # the same recipes only on Linux, so a macOS-only recipe break is
+      # otherwise unguarded. Hub and daemon Go sources stay out deliberately:
+      # every Go lane builds and gates them, and this lane exists to qualify
+      # native and shared-client changes.
       - "test/e2e/fakellm/**"
       - "internal/devtool/procgroup/**"
       - "execsupport/procgroup/**"
