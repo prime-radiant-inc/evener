@@ -129,6 +129,9 @@ func TestWriteWithDirSyncReportsPublishedWhenTheSyncFails(t *testing.T) {
 	}
 }
 
+// TestWriteWithoutSyncPublishesContentsAtTheRequestedMode checks the published
+// contents, the requested mode, and that publishing replaces the path rather
+// than rewriting the existing file in place.
 func TestWriteWithoutSyncPublishesContentsAtTheRequestedMode(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "cache.json")
@@ -150,9 +153,6 @@ func TestWriteWithoutSyncPublishesContentsAtTheRequestedMode(t *testing.T) {
 	if err != nil || info.Mode().Perm() != 0o640 {
 		t.Fatalf("mode = %v, %v; want 0640", info, err)
 	}
-	// A reader that already opened the destination must keep the old file.
-	// Rewriting the contents in place would satisfy the checks above while
-	// stranding that reader on stale bytes.
 	if os.SameFile(before, info) {
 		t.Fatal("publish rewrote the destination in place instead of replacing it")
 	}
