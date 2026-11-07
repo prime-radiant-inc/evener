@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"primeradiant.com/evener/internal/devtool/gatesurface"
 	"primeradiant.com/evener/internal/devtool/procgroup"
 )
 
@@ -179,6 +180,23 @@ type moduleRunnerResult struct {
 	exitCode int
 }
 
+// runGateCommand runs cmd and decodes its exit status into a
+// moduleRunnerResult. label names the command in the failure message for an
+// error that is not an exit status, such as a missing binary.
+func runGateCommand(t *testing.T, cmd *exec.Cmd, label string) moduleRunnerResult {
+	t.Helper()
+	out, err := cmd.CombinedOutput()
+	result := moduleRunnerResult{output: string(out)}
+	if err != nil {
+		var exitErr *exec.ExitError
+		if !errors.As(err, &exitErr) {
+			t.Fatalf("run %s: %v\n%s", label, err, out)
+		}
+		result.exitCode = exitErr.ExitCode()
+	}
+	return result
+}
+
 // runModuleRunner runs the real gate from workDir, which holds the fixture
 // modules. workDir is the process CWD, so the gate's relative `cd "$m"` reaches
 // the fixtures while its repo root still resolves from the script's own
@@ -206,16 +224,7 @@ func runModuleRunnerWithFlags(t *testing.T, workDir string, flags []string, env 
 	cmd := exec.Command("bash", append([]string{script}, flags...)...)
 	cmd.Dir = workDir
 	cmd.Env = runnerEnv(t, env...)
-	out, err := cmd.CombinedOutput()
-	result := moduleRunnerResult{output: string(out)}
-	if err != nil {
-		var exitErr *exec.ExitError
-		if !errors.As(err, &exitErr) {
-			t.Fatalf("run %s: %v\n%s", moduleRunnerScript, err, out)
-		}
-		result.exitCode = exitErr.ExitCode()
-	}
-	return result
+	return runGateCommand(t, cmd, moduleRunnerScript)
 }
 
 // runnerRetainedLogDir returns the "... full logs: <dir>" path a failing run
@@ -428,18 +437,26 @@ func TestModuleRunnerRefusesAZeroTestRun(t *testing.T) {
 	}
 }
 
-// hubIntegrationRootFixtureSrc is the root module's fixture for the
-// hub-integration skip toggle: a test named after a GATE_HUB_INTEGRATION_RUN
-// member, which records its own execution, beside an ordinary test that always
-// runs so the gate's zero-test refusal does not decide either case.
-const hubIntegrationRootFixtureSrc = `package fixture
+// hubIntegrationMember is a real member of GATE_HUB_INTEGRATION_RUN, taken from
+// the Go home of the shared surface (byte-pinned to the shell lib by the
+// gatesurface drift tests). Fixtures name their test after it, so a rename of
+// the surface moves the fixture with it instead of failing the skip assertion
+// as though the gate were broken.
+var hubIntegrationMember = strings.Split(strings.TrimSuffix(strings.TrimPrefix(gatesurface.HubIntegrationRun, "^("), ")$"), "|")[0]
+
+// markerTestSrc is a fixture test named hubIntegrationMember that records its
+// execution in $EVENER_RUNNER_TEST_MARKER, so a case can tell whether the gate
+// ran it. extra is appended verbatim: an always-run test keeps a run off the
+// gate's zero-test refusal.
+func markerTestSrc(pkg string, extra ...string) string {
+	return fmt.Sprintf(`package %s
 
 import (
 	"os"
 	"testing"
 )
 
-func TestHostDeployFilesystemSafety(t *testing.T) {
+func %s(t *testing.T) {
 	path := os.Getenv("EVENER_RUNNER_TEST_MARKER")
 	if path == "" {
 		t.Fatal("EVENER_RUNNER_TEST_MARKER is unset")
@@ -448,9 +465,9 @@ func TestHostDeployFilesystemSafety(t *testing.T) {
 		t.Fatal(err)
 	}
 }
-
-func TestOrdinary(t *testing.T) {}
-`
+%s
+`, pkg, hubIntegrationMember, strings.Join(extra, "\n"))
+}
 
 // TestModuleRunnerKeepsHubIntegrationOnlyWhenTold pins the
 // EVENER_GATE_KEEP_HUB_INTEGRATION contract the race lane depends on: the
@@ -467,7 +484,7 @@ func TestModuleRunnerKeepsHubIntegrationOnlyWhenTold(t *testing.T) {
 	writeTestFile(t, filepath.Join(modules, "go.mod"),
 		[]byte("module example.com/fixtureroot\n\ngo 1.21\n"), 0o644)
 	writeTestFile(t, filepath.Join(modules, "fixture_test.go"),
-		[]byte(hubIntegrationRootFixtureSrc), 0o644)
+		[]byte(markerTestSrc("fixture", "func TestOrdinary(t *testing.T) {}")), 0o644)
 	marker := filepath.Join(root, "hub-integration-ran")
 
 	// The skip reaches the root module's own go test, so the fixture is that
@@ -507,11 +524,7 @@ func TestModuleRunnerKeepsHubIntegrationOnlyWhenTold(t *testing.T) {
 func newHubIntegrationTargetFixture(t *testing.T, testSrc string) (root, marker string) {
 	t.Helper()
 	root = t.TempDir()
-	lib, err := os.ReadFile(filepath.Join("scripts", "lib", "gate-surface-lib.sh"))
-	if err != nil {
-		t.Fatalf("reading the shared gate-surface lib: %v", err)
-	}
-	writeTestFile(t, filepath.Join(root, "scripts", "lib", "gate-surface-lib.sh"), lib, 0o644)
+	copyRepositoryFile(t, ".", root, "scripts/lib/gate-surface-lib.sh", 0o644)
 	writeTestFile(t, filepath.Join(root, "go.mod"),
 		[]byte("module example.com/hubfixture\n\ngo 1.21\n"), 0o644)
 	writeTestFile(t, filepath.Join(root, "cmd", "evener-hub", "hub_test.go"),
@@ -538,16 +551,7 @@ func runHubIntegrationTarget(t *testing.T, root string, extraEnv ...string) modu
 	cmd := exec.Command("make", "-f", makefile, "test-hub-integration")
 	cmd.Dir = root
 	cmd.Env = runnerEnv(t, append([]string{"GOWORK=off", "MAKEFLAGS=", "MFLAGS="}, extraEnv...)...)
-	out, err := cmd.CombinedOutput()
-	result := moduleRunnerResult{output: string(out)}
-	if err != nil {
-		var exitErr *exec.ExitError
-		if !errors.As(err, &exitErr) {
-			t.Fatalf("run make test-hub-integration: %v\n%s", err, out)
-		}
-		result.exitCode = exitErr.ExitCode()
-	}
-	return result
+	return runGateCommand(t, cmd, "make test-hub-integration")
 }
 
 // TestHubIntegrationTargetRefusesAZeroMatch pins the refusal in
@@ -560,24 +564,7 @@ func runHubIntegrationTarget(t *testing.T, root string, extraEnv ...string) modu
 // passing.
 func TestHubIntegrationTargetRefusesAZeroMatch(t *testing.T) {
 	t.Parallel()
-	memberSrc := `package hub
-
-import (
-	"os"
-	"testing"
-)
-
-func TestHostDeployFilesystemSafety(t *testing.T) {
-	path := os.Getenv("EVENER_RUNNER_TEST_MARKER")
-	if path == "" {
-		t.Fatal("EVENER_RUNNER_TEST_MARKER is unset")
-	}
-	if err := os.WriteFile(path, []byte("ran\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-}
-`
-	root, marker := newHubIntegrationTargetFixture(t, memberSrc)
+	root, marker := newHubIntegrationTargetFixture(t, markerTestSrc("hub"))
 	matched := runHubIntegrationTarget(t, root, "EVENER_RUNNER_TEST_MARKER="+marker)
 	if matched.exitCode != 0 {
 		t.Fatalf("test-hub-integration exit = %d for a fixture whose test matches the shipped regex:\n%s", matched.exitCode, matched.output)
