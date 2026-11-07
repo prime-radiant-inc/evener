@@ -5,7 +5,7 @@ import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { Driver } from "../skillguard/run.mjs";
 import { evaluate, navigateTo, queryAccessibilityTree, REFUSED_BUTTON_SELECTOR } from "../browserGuardCdp.mjs";
-import { revealControlStep } from "./revealControl.mjs";
+import { revealControlStep, revealReadyExpr } from "./revealControl.mjs";
 import { attentionJourney } from "./attention.mjs";
 
 const fixture = JSON.parse(readFileSync(0, "utf8"));
@@ -1558,7 +1558,7 @@ const sidebarEntranceSettled = `(() => {
 
 async function reveal(edge, container) {
   const selector = `${container} ${row(edge)}`;
-  await wait(`document.querySelector(${q(selector)}) !== null || [...document.querySelectorAll(${q(`${container} button`)})].some(b => b.textContent.trim().startsWith('Inactive subagents ('))`, "real direct delegate collection");
+  await wait(revealReadyExpr(selector, container, REFUSED_BUTTON_SELECTOR), "real direct delegate collection");
   for (let boundary = 0; boundary < 10; boundary++) {
     if (await read(`document.querySelector(${q(selector)}) !== null`)) return selector;
     // The control is found and activated in one page turn (see

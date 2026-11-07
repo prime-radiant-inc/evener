@@ -30,7 +30,7 @@ func (s *Session) bootstrapDelegateResources() error {
 	if warning, ok := legacyDelegateStateWarning(s.stateDir, s.id); ok {
 		s.pendingHookWarnings = append(s.pendingHookWarnings, warning)
 	}
-	path := filepath.Join(jobsDir(s.stateDir, s.id), "delegates.jsonl")
+	path := schema.SessionDelegateJournalPath(s.stateDir, s.id)
 	store, err := delegatestore.Open(path)
 	if err != nil {
 		return fmt.Errorf("open delegate store: %w", err)

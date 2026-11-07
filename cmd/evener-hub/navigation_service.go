@@ -179,7 +179,9 @@ type NavigationResourceKey = navigationResourceKey
 // single hub. Its source capture and pure projection are separated so a changed
 // source can never publish an incoherent projection under an older key.
 type NavigationService struct {
-	mu sync.Mutex
+	// Shared by the attention loop and this hub's bound Manager operations.
+	roster attentionBroker
+	mu     sync.Mutex
 
 	source        navigationSource
 	deleteSession sessionDeleteHandler

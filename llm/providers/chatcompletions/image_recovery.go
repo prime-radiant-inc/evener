@@ -27,6 +27,7 @@ type imageRecovery struct {
 	lastSize       int
 	requireSmaller bool
 	managed        bool
+	hasImagePart   bool
 	warnings       []llm.Warning
 	sent           map[[sha256.Size]byte]bool
 }
@@ -35,7 +36,10 @@ type imageRecovery struct {
 // stream, its decoder and the session retain ownership of any later failures.
 func runImageRecovery[T any](ctx context.Context, p *Protocol, req llm.Request, res registry.Resolved, stream bool, send func(*protocolhttp.Call, *imageRecovery) (T, error)) (T, error) {
 	var zero T
-	recovery := &imageRecovery{sent: make(map[[sha256.Size]byte]bool)}
+	recovery := &imageRecovery{
+		sent:         make(map[[sha256.Size]byte]bool),
+		hasImagePart: requestHasImagePart(req.Messages),
+	}
 	var originalErr, lastErr error
 	for {
 		if err := ctx.Err(); recovery.stage > 0 && err != nil {
@@ -109,6 +113,13 @@ func (r *imageRecovery) prepare(ctx context.Context, body map[string]any) error 
 		if unmanaged {
 			r.warnings = []llm.Warning{{Code: llm.WarningCodeImageColorUnmanaged, Message: unmanagedImageCaveat}}
 		}
+	}
+	// Stage 0 only seeds the digest and original size so a later repair stage
+	// can tell whether it produced a distinct, smaller body. repairMessages
+	// touches only image_url parts, so a request whose typed messages emit no
+	// image can never advance a repair stage; skip the serialization (#5489).
+	if r.stage == 0 && !r.hasImagePart {
+		return nil
 	}
 	encoded, err := json.Marshal(body)
 	if err != nil {

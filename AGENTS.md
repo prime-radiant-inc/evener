@@ -73,9 +73,9 @@ is the canonical pre/post-merge sequence. Tool versions are pinned in
 The full suite runs faster in CI than on this workstation, the race, fuzz, and
 frontend lanes included. Do not block a push on a long local full-suite run:
 run the fast, targeted tests for what you changed, push, and let CI run the
-full suite as the source of truth. Reserve a local full run (`make test`,
-`make merge-approval-gate`) for when you need it, such as reproducing a CI
-failure.
+full suite as the source of truth. Reserve a local full run
+(`make merge-approval-gate`, which includes `make test-hub-integration`) for
+when you need it, such as reproducing a CI failure.
 
 Run the heavy local gates one at a time — `make test-web`, `make vet` and
 `make lint` — not as parallel background jobs: they compete for the same CPU,
@@ -244,6 +244,12 @@ loading them, since each opens a socket the moment its body runs.
   no check is outstanding, and roborev's combined review names your exact
   head. Run it as its own background job: a `&` inside a job orphans it, and
   an orphaned job once killed both the comment post and the detector silently.
+- **A push that produced no CI run.** GitHub has dropped `pull_request`
+  events outright for some PRs. After a push you expect to trigger a workflow,
+  run `scripts/ops/pr-ci-watchdog.sh --pr <N>`: it verifies the expected run
+  appeared on the pushed head (its default, ios-qualification.yml, only fires
+  on native-path pushes) and dispatches the workflow itself when GitHub
+  dropped the event, without double-dispatching when GitHub behaved.
 - **Green is not clean.** `roborev_check=SUCCESS` says the review *ran*, not
   that it found nothing — the combined comment's body carries the findings.
   Read it every round, plus the per-commit surface: `roborev list --open` in the

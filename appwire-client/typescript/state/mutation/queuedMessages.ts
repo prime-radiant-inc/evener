@@ -22,6 +22,32 @@ export interface QueuedMessageStorage<A extends MutationAttachmentRef = Mutation
 
 // Called only on a durable read inside the host's write transaction. The
 // policy is checked separately against that same row, never the rendered copy.
+// The capture a Retry's mint carries: the press-time snapshot
+// getOutboxWithStopEpoch read - the row as the click saw it, plus both stop
+// epochs it crosses. The record half is optional exactly as the snapshot
+// returns it: a row another tab settled between the capture and the mint is
+// a refusal the mint's own re-read decides.
+export interface MutationRetryCapture<A extends MutationAttachmentRef = MutationAttachmentRef> {
+  record: MutationOutboxRecord<A> | undefined;
+  stopEpoch: number;
+  displayedStopEpoch: number;
+}
+
+// The web recovery fence's storage surface. The base contract above stays the
+// whole shared surface - hosts without displayed-ref rows implement it alone
+// and are never forced to grow a web-only fence. The web runtime's retargeted
+// resends cross a still-displayed ref whose Stop epoch the click must capture
+// alongside the destination's, and its parked rows re-queue only through the
+// explicit-Retry mint, so the web store declares this extension and the
+// conformance suite's web describe pins it.
+export interface WebQueuedMessageStorage<A extends MutationAttachmentRef = MutationAttachmentRef>
+  extends QueuedMessageStorage<A> {
+  getOutboxWithStopEpoch(
+    id: string,
+  ): Promise<{ record: MutationOutboxRecord<A> | undefined; stopEpoch: number; displayedStopEpoch: number }>;
+  mintRetryFromRow(id: string, capture: MutationRetryCapture<A>): Promise<MutationOutboxRecord<A> | undefined>;
+}
+
 export function matchesQueuedMessageSnapshot(record: MutationOutboxRecord, expected: MutationOutboxRecord): boolean {
   return (
     record.clientMutationId === expected.clientMutationId &&

@@ -43,6 +43,15 @@ func (jm *jobManager) snapshotWatchSendFrame(d watchSendDelivery) watchSendDeliv
 		Data:       d.eventData,
 		Provenance: provenance.Clone(d.triggerProvenance),
 	}, d.triggerProvenance)
+	if d.rosterInitial {
+		d.frame += "roster_initial: true\n"
+	}
+	if d.rosterResync {
+		d.frame += rosterRecoveryFrame
+	}
+	if d.rosterPayload != "" {
+		d.frame += "roster_events: " + d.rosterPayload + "\n"
+	}
 	if notice := selfInfluenceNotice(d.selfInfluence, d.gradientDepth, d.truncated); notice != "" {
 		d.frame = notice + "\n" + d.frame
 	}
@@ -106,12 +115,17 @@ func (jm *jobManager) recordWatchSend(d watchSendDelivery, terminalEvents ...[]j
 // never delivers (spec §3); the owner's loop drains and delivers on wake. With
 // nothing recorded there is nothing to drain, so the owner is left undisturbed.
 func (jm *jobManager) recordWatchSendsAndKick(deliveries []watchSendDelivery) {
-	tokens, recorded := jm.recordWatchSends(deliveries)
+	_ = jm.recordWatchSendsAndKickErr(deliveries)
+}
+
+func (jm *jobManager) recordWatchSendsAndKickErr(deliveries []watchSendDelivery) error {
+	tokens, recorded, err := jm.recordWatchSends(deliveries)
 	// A queued token wakes the owner by itself; a kick is what covers a
 	// recorded send that queued nothing.
 	if queued := jm.enqueueNotifications(tokens); recorded && !queued {
 		jm.kick()
 	}
+	return err
 }
 
 // recordWatchSends is the durable half of recordWatchSendsAndKick: it persists
@@ -119,13 +133,17 @@ func (jm *jobManager) recordWatchSendsAndKick(deliveries []watchSendDelivery) {
 // them, so a caller with more to say about the same event can wake the owner
 // once for all of it. recorded reports whether anything was persisted at all —
 // with tokens empty, that is what still owes the owner a kick.
-func (jm *jobManager) recordWatchSends(deliveries []watchSendDelivery) (tokens []jobNotification, recorded bool) {
+// The first error is returned after every send has been attempted.
+func (jm *jobManager) recordWatchSends(deliveries []watchSendDelivery) (tokens []jobNotification, recorded bool, err error) {
 	if len(deliveries) == 0 {
-		return nil, false
+		return nil, false, nil
 	}
 	deliveries = jm.snapshotWatchSendFrames(deliveries)
 	for _, d := range deliveries {
-		state, _, ok, _ := jm.recordWatchSend(d)
+		state, _, ok, recordErr := jm.recordWatchSend(d)
+		if err == nil {
+			err = recordErr
+		}
 		if !ok {
 			continue // recordWatchSend already produced diagnostics/drops
 		}
@@ -140,7 +158,7 @@ func (jm *jobManager) recordWatchSends(deliveries []watchSendDelivery) (tokens [
 			tokens = append(tokens, watchSendTokenNotification("", state))
 		}
 	}
-	return tokens, recorded
+	return tokens, recorded, err
 }
 
 func (jm *jobManager) watchSendState(d watchSendDelivery, resolvedSendTo string) jobstore.WatchSendState {
@@ -682,6 +700,9 @@ func (jm *jobManager) planWatchSendPending(state jobstore.WatchSendState, d watc
 		}
 		previous := *existing
 		record.previous = &previous
+		if d.watchTarget == hubRosterWatchKey {
+			state.Frame = mergeHubRosterFrames(existing.Frame, state.Frame)
+		}
 		state.CoalescedCount = existing.CoalescedCount + 1
 		state.CreatedAt = existing.CreatedAt
 		// The coalesced frame stands in for both the superseded delivery and this

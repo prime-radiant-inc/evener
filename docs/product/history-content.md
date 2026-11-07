@@ -143,20 +143,36 @@ This shared metadata does not change human-interaction permissions.
 A failed conversation summary leaves the existing history or the operation's
 deterministic checkpoint available. The authoritative transcript is unchanged.
 The next eligible compaction can install a valid summary and continue normal
-model work. Model selection, fallback eligibility, retry counts and warning
-visibility are unchanged; repeated failed compactions can still warn.
+model work. A locally rejected summarizer reply is one bad sample, not a route
+verdict. The conversation summary resamples such a reply — an empty reply, a
+reply with no summary section, an empty condensation batch — up to two more
+times on the route that produced it before the next route takes over, and a
+later sample that passes installs the summary without a warning. The
+session-log fork summary resamples a reply that does not parse as a JSON entry
+within the same budget before its error surfaces; the next completed tool
+round attempts the fork again. Cut-off replies (the model's own output limit)
+and deterministic failures get no resample, and a cancelled run resamples
+nothing. Model selection and fallback eligibility are unchanged; an automatic
+pass failing identically to the previously published failure warns once per
+streak, while explicit `/compact` and `compact_context` always report their
+outcome, and a completing summarize layer — including a no-op fold on a window
+too small to summarize — re-arms the warning.
 
 Context management emits `summary_failure` with the selected provider/model,
 terminal failure category and available HTTP status in the existing warning
-message. Advice distinguishes a failed fast/cheap route from the session model,
+message, stating the terminal route's sample count once it exceeds one. Advice
+distinguishes a failed fast/cheap route from the session model,
 since changing the main model need not change an independently configured summary
 model. CLI, AppWire, browser, native and Notification hooks carry these
 existing message/title/hint fields without a new renderer or visibility policy.
 Predictive-checkpoint recovery retains its informational `context_budget` code.
 
-The runtime's typed `summary_failure` record separates the terminal route from
-prior failed routes. It includes controlled category, stage and validation reason
-values, validated HTTP status and retryability when known. Provider/model names
+The runtime's typed `summary_failure` record separates the terminal attempt
+from the last failed sample of each route that attempted the work (the
+terminal route's own earlier samples included), at most two. It includes
+controlled category, stage and validation reason
+values, validated HTTP status and retryability when known, and each attempt's
+route sample count. Provider/model names
 come from routing, are bounded to 256 bytes each and have control characters
 removed from display. A pre-selection failure has no invented model identity.
 Provider messages, response bodies, raw error codes, prompts, summaries, headers

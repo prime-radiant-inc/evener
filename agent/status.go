@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"path/filepath"
 	"sort"
 	"time"
 
@@ -387,7 +386,7 @@ func SessionOwnsDelegate(ctx context.Context, stateDir, parentSessionID, childSe
 	if err := schema.ValidateSessionID(rootID); err != nil {
 		return false, err
 	}
-	path := filepath.Join(jobsDir(stateDir, rootID), "delegates.jsonl")
+	path := schema.SessionDelegateJournalPath(stateDir, rootID)
 	result, err := historicalDelegateFoldCache.Get(ctx, path, extendHistoricalDelegateFold)
 	if err != nil {
 		return false, err
@@ -432,7 +431,7 @@ func SessionOwnedDelegateIDs(ctx context.Context, stateDir, sessionID string) ([
 	if err := schema.ValidateSessionID(rootID); err != nil {
 		return nil, err
 	}
-	path := filepath.Join(jobsDir(stateDir, rootID), "delegates.jsonl")
+	path := schema.SessionDelegateJournalPath(stateDir, rootID)
 	result, err := historicalDelegateFoldCache.Get(ctx, path, extendHistoricalDelegateFold)
 	if errors.Is(err, os.ErrNotExist) {
 		return nil, nil

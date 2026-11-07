@@ -393,7 +393,7 @@ func closeRegistryWithADetachedReadParked(t *testing.T) *registryClosingOverAPar
 	}
 	t.Cleanup(c.releaseRead)
 	go func() {
-		c.readDone <- h.read(func(*transcriptindex.Index) error {
+		c.readDone <- h.read(func(*transcriptindex.Snapshot) error {
 			close(inRead)
 			<-release
 			return nil

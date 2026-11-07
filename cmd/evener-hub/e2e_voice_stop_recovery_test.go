@@ -1,0 +1,311 @@
+package hub
+
+import (
+	"context"
+	"encoding/base64"
+	"encoding/json"
+	"fmt"
+	"net"
+	"net/http"
+	"net/http/httptest"
+	"path/filepath"
+	"sync"
+	"sync/atomic"
+	"testing"
+	"time"
+
+	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/cmd/evener-hub/internal/appsource"
+	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
+	"primeradiant.com/evener/rendezvous"
+)
+
+func TestE2E_VoiceSessionStopRecoversRelayGap(t *testing.T) {
+	for _, phase := range []string{"playing", "session", "response"} {
+		t.Run(phase, func(t *testing.T) { voiceStopRelayGap(t, phase) })
+	}
+}
+
+func voiceStopRelayGap(t *testing.T, phase string) {
+	t.Helper()
+	f := newVoiceCorrectionStack(t)
+	gap, observer := voiceStopRecoveryHub(t, f, nil)
+	const reply = "STOP-RELAY-OUTPUT-281"
+	f.admit(t, "STOP-RELAY-INPUT-281", false)
+	voiceStopContinue(f.next(t), reply)
+	held := f.next(t)
+	start := voiceJourneyEvent(t, f.device, "speech_start")
+	var peer realtimePeer
+	if phase == "session" {
+		select {
+		case peer = <-f.peers:
+		case <-f.ctx.Done():
+			t.Fatal("provider did not connect")
+		}
+		if peer.read()["type"] != "session.update" {
+			t.Fatal("provider setup not reached")
+		}
+	} else {
+		peer = f.openSpeaker(t)
+		f.speechRequest(t, peer, start, reply)
+	}
+	old := f.delivery(t, start["deliveryId"].(string))
+	const response, item = "stop-relay-response", "stop-relay-item"
+	if phase == "playing" {
+		voiceCorrectionAudio(peer, old, response, item, base64.StdEncoding.EncodeToString(make([]byte, 960)))
+		voiceJourneyEvent(t, f.device, "audio")
+		f.device.send(fmt.Sprintf(`{"type":"played","deliveryId":%q,"generation":%d,"itemId":%q,"samples":240}`, old.ID, old.PresentationGeneration, item))
+		f.waitDelivery(t, old.ID, func(d hubcore.SpeechDelivery) bool { return len(d.Items) == 1 && d.Items[0].PlayedSamples == 240 })
+	}
+	running := f.read(t)
+	source := voiceCorrectionItem(running, reply)
+	if source.TurnID == "" || source.TurnID != running.Thread.Evener.ActiveTurnID {
+		t.Fatal("playing speech is not owned by held execution")
+	}
+	gap.drop(t)
+	select {
+	case <-gap.redial:
+	case <-f.ctx.Done():
+		t.Fatal("real relay did not try to recover its closed daemon connection")
+	}
+	voiceStopExecution(t, f, held, source.TurnID)
+	if f.delivery(t, old.ID).Interrupted {
+		t.Fatal("Stop reached voice before relay recovery, gap scenario not established")
+	}
+	gap.resume()
+	voiceStopWaitResync(t, f, observer, running.Thread.ID)
+	t.Logf("real daemon connection dropped and redial held through accepted Stop of %s, relay resync observed, provider phase=%s with no completion or acknowledgement release", source.TurnID, phase)
+	if phase == "playing" {
+		voiceStopFence(t, f, old)
+		voiceStopProvider(t, peer, old, response, item, false)
+		return
+	}
+	// This combined retirement/close budget is below the provider timeout.
+	ctx, cancel := context.WithTimeout(f.ctx, 2*time.Second)
+	defer cancel()
+	limited := *f
+	limited.ctx = ctx
+	voiceStopFence(t, &limited, old)
+	_, _, err := peer.conn.Read(ctx)
+	if err == nil || ctx.Err() != nil {
+		t.Fatal("recovery still waits for provider acknowledgement")
+	}
+}
+
+func TestE2E_VoiceSessionStopResyncAlonePreservesSpeech(t *testing.T) {
+	f := newVoiceCorrectionStack(t)
+	var hold atomic.Bool
+	entered, release := make(chan struct{}, 1), make(chan struct{})
+	var once sync.Once
+	releaseRead := func() { once.Do(func() { close(release) }) }
+	defer releaseRead()
+	gap, observer := voiceStopRecoveryHub(t, f, func() {
+		if hold.Load() {
+			select {
+			case entered <- struct{}{}:
+			default:
+			}
+			<-release
+		}
+	})
+	const reply = "STOP-RESYNC-ONLY-OUTPUT-283"
+	f.admit(t, "STOP-RESYNC-ONLY-INPUT-283", false)
+	voiceStopContinue(f.next(t), reply)
+	_ = f.next(t) // The actual execution stays active throughout recovery.
+	start := voiceJourneyEvent(t, f.device, "speech_start")
+	var peer realtimePeer
+	select {
+	case peer = <-f.peers:
+	case <-f.ctx.Done():
+		t.Fatal("provider did not connect")
+	}
+	if peer.read()["type"] != "session.update" {
+		t.Fatal("provider setup not reached")
+	}
+	running := f.read(t)
+	hold.Store(true)
+	gap.drop(t)
+	select {
+	case <-gap.redial:
+	case <-f.ctx.Done():
+		t.Fatal("relay never redialed")
+	}
+	gap.resume()
+	voiceStopWaitResync(t, f, observer, running.Thread.ID)
+	ctx, cancel := context.WithTimeout(f.ctx, 2*time.Second)
+	defer cancel()
+	select {
+	case <-entered:
+	case <-ctx.Done():
+		t.Fatal("resync did not start an authoritative read while provider setup was pending")
+	}
+	peer.ctx = ctx
+	peer.send(`{"type":"session.updated","session":{"type":"realtime","audio":{"input":{"format":{"type":"audio/pcm","rate":24000},"turn_detection":null},"output":{"format":{"type":"audio/pcm","rate":24000},"voice":"marin"}},"tools":[],"output_modalities":["text"]}}`)
+	old := f.speechRequest(t, peer, start, reply)
+	voiceCorrectionAudio(peer, old, "resync-only-response", "resync-only-item", "AQACAA==")
+	device := f.device
+	device.ctx = ctx
+	audio := voiceJourneyEvent(t, device, "audio")
+	if audio["deliveryId"] != old.ID || audio["generation"] != float64(old.PresentationGeneration) || f.delivery(t, old.ID).Interrupted {
+		t.Fatal("resync alone silenced speech or blocked it behind the held history read")
+	}
+	t.Log("provider setup and device audio progressed while the recovery read was held, without any Stop")
+	releaseRead()
+	voiceCorrectionDone(peer, old, "resync-only-response", "resync-only-item")
+	voiceJourneyEvent(t, device, "speech_end")
+	voiceJourneyEvent(t, device, "delivery_end")
+}
+
+func TestVoiceSpeechRecoveryHintsRequireAuthoritativeRead(t *testing.T) {
+	for _, kind := range []string{"ref-only", "matching", "other-ref", "other-thread", "epoch", "incarnation", "boot"} {
+		t.Run(kind, func(t *testing.T) {
+			delivery := &hubcore.SpeechDelivery{ID: "speaking", PresentationGeneration: 7}
+			b := &voiceBridge{binding: hubcore.VoiceBinding{Ref: "local:manager"}, historyThreadID: "manager", historyBoot: "boot", historyEpoch: 3, history: appwire.SnapshotIdentity{Incarnation: "history"}, delivery: delivery, deliveryTurnID: "execution", generation: 7}
+			wantRead := true
+			switch kind {
+			case "ref-only", "matching", "other-ref", "other-thread":
+				params := appwire.ThreadResyncParams{Ref: b.binding.Ref, ThreadID: b.historyThreadID}
+				switch kind {
+				case "ref-only":
+					params.ThreadID = ""
+				case "other-ref":
+					params.Ref += "-other"
+					wantRead = false
+				case "other-thread":
+					params.ThreadID += "-other"
+					wantRead = false
+				}
+				b.applySpeechResync(params)
+			default:
+				params := appwire.HistoryUpdatedParams{Ref: b.binding.Ref, ThreadID: b.historyThreadID, BootGeneration: b.historyBoot, Epoch: b.historyEpoch, Snapshot: b.history, Turns: []appwire.Turn{{ID: "execution", Status: appwire.TurnStatusInterrupted}}}
+				switch kind {
+				case "epoch":
+					params.Epoch++
+				case "incarnation":
+					params.Snapshot.Incarnation += "-new"
+				case "boot":
+					params.BootGeneration += "-new"
+				}
+				if err := b.applySpeechHistoryUpdate(params); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if b.reconcile != wantRead || b.delivery != delivery || b.generation != 7 || b.retiring != nil || len(b.interruptedTurns) != 0 {
+				t.Fatal("recovery hint changed speech authority or requested the wrong refresh")
+			}
+		})
+	}
+}
+
+func voiceStopWaitResync(t *testing.T, f *voiceCorrectionStack, observer *appwire.Client, threadID string) {
+	t.Helper()
+	for {
+		select {
+		case notification := <-observer.Notifications():
+			if notification.Method != appwire.NotifyEvenerThreadResync {
+				continue
+			}
+			var params appwire.ThreadResyncParams
+			if err := json.Unmarshal(notification.Params, &params); err != nil {
+				t.Fatal(err)
+			}
+			if params.Ref != f.ref || (params.ThreadID != "" && params.ThreadID != threadID) {
+				t.Fatalf("recovery resync did not name bound manager: got=%+v ref=%q thread=%q", params, f.ref, threadID)
+			}
+			return
+		case <-f.ctx.Done():
+			t.Fatal("real relay did not broadcast resync")
+		}
+	}
+}
+
+// Only the TCP transport is faulted. Both hubs use the original live manager,
+// its mutation journal and transcript, and the production local source/relay.
+func voiceStopRecoveryHub(t *testing.T, f *voiceCorrectionStack, beforeRead func()) (*voiceStopTransportGap, *appwire.Client) {
+	t.Helper()
+	_ = f.device.conn.CloseNow()
+	root := filepath.Join(f.stack.home, "state", "evener")
+	entries, err := rendezvous.List(filepath.Join(root, "run"))
+	if err != nil || len(entries) != 1 || entries[0].InstanceID != f.instance {
+		t.Fatalf("live manager rendezvous not found: count=%d err=%v", len(entries), err)
+	}
+	gap := &voiceStopTransportGap{redial: make(chan struct{}, 1)}
+	transport := &http.Transport{DialContext: gap.dial}
+	t.Cleanup(transport.CloseIdleConnections)
+	source := appsource.NewLocalDaemonSource("local", func() []rendezvous.Entry { return entries }, &http.Client{Transport: transport})
+	config := filepath.Join(f.stack.home, "config", "evener")
+	auth := newTestAuthController(t, t.TempDir(), t.TempDir(), filepath.Join(config, "providers.toml"))
+	srv := httptest.NewUnstartedServer(nil)
+	web := NewWebServer(hubcore.WebConfig{HubAddr: srv.Listener.Addr().String(), AuthToken: f.stack.token, HubStateRoot: root, Registry: auth.reg, Past: hubcore.NewPastIndex(""), RelayHooks: hubcore.RelayLifecycleHooks{BeforeReadThread: beforeRead}})
+	web.sources.Add(source)
+	srv.Config.Handler = web.Handler()
+	srv.Start()
+	t.Cleanup(srv.Close)
+	t.Cleanup(func() { gap.resume(); _ = web.appRPC.Shutdown(context.Background()) })
+	second := f.stack
+	second.addr = srv.Listener.Addr().String()
+	observer := second.dialRPC(f.ctx, t)
+	if _, err := observer.ThreadRead(f.ctx, appwire.ThreadReadParams{Ref: f.ref, Subscribe: true}); err != nil {
+		t.Fatal(err)
+	}
+	conn := voiceJourneyConnect(f.ctx, t, "ws://"+second.addr+f.armed.SocketPath, f.headers)
+	t.Cleanup(func() { _ = conn.CloseNow() })
+	f.device = realtimePeer{conn: conn, ctx: f.ctx, t: t}
+	voiceJourneyAcknowledgeReady(t, f.device, voiceJourneyEvent(t, f.device, "ready"), 0)
+	voiceJourneyEvent(t, f.device, "stop")
+	return gap, observer
+}
+
+type voiceStopTransportGap struct {
+	mu          sync.Mutex
+	connections []net.Conn
+	gate        chan struct{}
+	redial      chan struct{}
+}
+
+func (g *voiceStopTransportGap) dial(ctx context.Context, network, address string) (net.Conn, error) {
+	g.mu.Lock()
+	gate := g.gate
+	g.mu.Unlock()
+	if gate != nil {
+		select {
+		case g.redial <- struct{}{}:
+		default:
+		}
+		select {
+		case <-gate:
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
+	conn, err := (&net.Dialer{}).DialContext(ctx, network, address)
+	if err == nil {
+		g.mu.Lock()
+		g.connections = append(g.connections, conn)
+		g.mu.Unlock()
+	}
+	return conn, err
+}
+
+func (g *voiceStopTransportGap) drop(t *testing.T) {
+	t.Helper()
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if len(g.connections) == 0 {
+		t.Fatal("no real daemon transport to drop")
+	}
+	g.gate = make(chan struct{})
+	for _, conn := range g.connections {
+		_ = conn.Close()
+	}
+	g.connections = nil
+}
+
+func (g *voiceStopTransportGap) resume() {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if g.gate != nil {
+		close(g.gate)
+		g.gate = nil
+	}
+}

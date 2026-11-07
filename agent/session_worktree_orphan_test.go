@@ -45,7 +45,7 @@ func (r *wtRepo) pruneOrphanedOp(t *testing.T, days float64) (map[string]any, er
 // same signal the session listings read.
 func seedOrphanParent(t *testing.T, r *wtRepo, sid, dlg, closureReason string, lastActive time.Time) {
 	t.Helper()
-	store, err := delegatestore.Open(delegateJournalPath(r.stateDir, sid))
+	store, err := delegatestore.Open(schema.SessionDelegateJournalPath(r.stateDir, sid))
 	if err != nil {
 		t.Fatalf("open parent delegates journal: %v", err)
 	}
@@ -586,6 +586,9 @@ func TestDelegateSendReLocksUnlockedLaneForRetainedChild(t *testing.T) {
 	if first.result.Err != nil {
 		t.Fatalf("first send: %v", first.result.Err)
 	}
+	if first.result.TimedOut {
+		t.Fatalf("the lane-owning delegate's first send timed out; the presentation window cannot start with the spawn still in flight")
+	}
 	if sub := root.subagents.get(fixture.childID); sub == nil || sub.sess == nil {
 		t.Fatalf("delegate %s is not retained after its run", fixture.childID)
 	}
@@ -752,10 +755,41 @@ func TestDelegateWakeRefusesForeignHeldLane(t *testing.T) {
 type sharedDescendantLane struct {
 	fixture          coldDelegateFixture
 	lanePath         string
-	delegateSess     *Session // the lane-owning delegate's runtime, which drives the child's wake
+	root             *Session  // the fixture's root, which owns the lane-owning delegate
+	delegateSub      *subagent // the lane-owning delegate, as root sees it
+	delegateSess     *Session  // the lane-owning delegate's runtime, which drives the child's wake
 	sharedSub        *subagent
 	sharedDelegateID string
 	finish           func(llm.Request) llm.Response
+	// classifications records every delegateDeliveryClassified fire in this
+	// tree, so a tripwire can name whether the retained child's report reached
+	// the delivery admission path at all and with which deferral.
+	classifications *delegateDeliveryClassificationLog
+}
+
+// delegateDeliveryClassificationLog is the thread-safe record behind the
+// fixture's delegateDeliveryClassified hook.
+type delegateDeliveryClassificationLog struct {
+	mu     sync.Mutex
+	events []string
+}
+
+func (l *delegateDeliveryClassificationLog) observe(s *Session, deferred bool) {
+	if l == nil || s == nil {
+		return
+	}
+	l.mu.Lock()
+	l.events = append(l.events, fmt.Sprintf("%s deferred=%t", s.id, deferred))
+	l.mu.Unlock()
+}
+
+func (l *delegateDeliveryClassificationLog) snapshot() []string {
+	if l == nil {
+		return nil
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return append([]string(nil), l.events...)
 }
 
 // spawnSharedDescendantLane builds that tree: a cold fixture delegate with an
@@ -763,10 +797,10 @@ type sharedDescendantLane struct {
 // one non-isolated child sharing the lane and then finishes, leaving both the
 // delegate and its child retained. The fixture lives in the repo harness's
 // state dir, so a harness-session prune reads the same parent evidence the
-// orphan arm reads. notificationTurn, when given, scripts the retained
-// child's next notification turn up front — the fake adapter serves its steps
-// by a cursor that survives reassignment, so a step appended after the cursor
-// would never be served.
+// orphan arm reads. notificationTurn, when given, scripts the delegate's
+// attention turn presenting the retained child's report up front — the fake
+// adapter serves its steps by a cursor that survives reassignment, so a step
+// appended after the cursor would never be served.
 func spawnSharedDescendantLane(t *testing.T, r *wtRepo, laneName, standInDlg, standInSID string, notificationTurn ...func(llm.Request) llm.Response) *sharedDescendantLane {
 	t.Helper()
 	var lanePath string
@@ -791,6 +825,13 @@ func spawnSharedDescendantLane(t *testing.T, r *wtRepo, laneName, standInDlg, st
 		t.Fatalf("restore root: %v", err)
 	}
 	t.Cleanup(root.Close)
+	// Record delivery classification across the whole tree. The hook rides the
+	// root's test config into every child session created afterwards
+	// (subagentConfigFromFrozenDescriptor re-takes testOnly from the live
+	// parent), so it names whether the child's report reached delivery
+	// admission and whether that admission was deferred.
+	classifications := &delegateDeliveryClassificationLog{}
+	root.cfg.testOnly.delegateDeliveryClassified = classifications.observe
 	wtGit(t, r.mainRoot, "worktree", "unlock", lanePath)
 	wtGit(t, r.mainRoot, "worktree", "lock", "--reason", worktree.FormatDelegateMarker(fixture.delegateID, fixture.meta.ID), lanePath)
 	finish := func(llm.Request) llm.Response {
@@ -809,9 +850,9 @@ func spawnSharedDescendantLane(t *testing.T, r *wtRepo, laneName, standInDlg, st
 		notify = notificationTurn[0]
 	}
 	// The delegate's turn spawns its child, the child's turn finishes, the
-	// delegate's follow-up turn finishes, and the retained child's next
-	// notification turn answers the scripted step (or the adapter's bare-text
-	// fallback when none is given).
+	// delegate's follow-up turn finishes, and the delegate's attention turn
+	// presenting the retained child's report answers the scripted step (or the
+	// adapter's bare-text fallback when none is given).
 	fixture.adapter.setSteps([]func(llm.Request) llm.Response{spawn, finish, finish, notify})
 	first := (delegateRuntime{owner: root}).send(context.Background(), fixture.delegateID, "first turn", 10_000)
 	if first.result.Err != nil {
@@ -845,10 +886,13 @@ func spawnSharedDescendantLane(t *testing.T, r *wtRepo, laneName, standInDlg, st
 	return &sharedDescendantLane{
 		fixture:          fixture,
 		lanePath:         lanePath,
+		root:             root,
+		delegateSub:      delegateSub,
 		delegateSess:     delegateSub.sess,
 		sharedSub:        sharedSub,
 		sharedDelegateID: sharedDelegateID,
 		finish:           finish,
+		classifications:  classifications,
 	}
 }
 
@@ -1146,24 +1190,26 @@ func TestWorktreePrune_OrphanArmSparesLaneWhileDelegateReportsActivity(t *testin
 }
 
 // A retained child still owes its parent the report of the run that left it
-// retained, and that report is delivered by the child's own attention run —
-// the turn that presents it — not by the notification drive turn a launch
-// reports: with nothing queued the drive turn renders nothing, makes no model
-// request, and finishes. The owed attention arms a moment after the spawning
-// send settles, so a drive that reads it once can miss and must try again; the
-// loop below drives the same wake-edge the owner's own machinery drives until
-// the child's turn actually starts. Through all of it the tree is alive: the
-// running turn's ongoing activity reports refresh the marker parent's
-// evidence, or a foreign prune — whose live-work view cannot see the turn —
-// judges the tree inactive past the operator's threshold and collects the
-// clean, unchanged checkout mid-report.
+// retained. Delivery appends that report as durable attention on the parent's
+// own transcript, and the parent's attention turn presents it — not the
+// child's notification drive turn, which with nothing queued renders nothing,
+// makes no model request, and finishes. The owed attention arms a moment after
+// the spawning send settles, so a drive that reads it once can miss and must
+// try again; the loop below drives the parent's own attention primitive until
+// its turn actually starts. Through all of it the tree is alive: the running
+// turn's ongoing activity reports refresh the marker parent's evidence, or a
+// foreign prune — whose live-work view cannot see the turn — judges the tree
+// inactive past the operator's threshold and collects the clean, unchanged
+// checkout mid-report.
 func TestWorktreePrune_OrphanArmSparesLaneWhileRetainedChildNotifies(t *testing.T) {
 	t.Parallel()
 	r := newWorktreeRepo(t)
 	entered := make(chan struct{})
 	release := make(chan struct{})
 	var wedgeOnce sync.Once
-	wedge := func(llm.Request) llm.Response {
+	var wedgedSession atomic.Value
+	wedge := func(req llm.Request) llm.Response {
+		wedgedSession.Store(req.SessionID)
 		wedgeOnce.Do(func() { close(entered) })
 		<-release
 		return agenttest.FinalResponse("done")
@@ -1171,19 +1217,43 @@ func TestWorktreePrune_OrphanArmSparesLaneWhileRetainedChildNotifies(t *testing.
 	lane := spawnSharedDescendantLane(t, r, "active-notify-lane", "dlg_waketest0000008", "034placeholder000000012", wedge)
 	parentTranscript := schema.SessionTranscriptPath(lane.fixture.stateDir, lane.fixture.meta.ID)
 
-	// The retained child's turn wedges inside its first model call: the tree
-	// is alive, the child runs a turn, and the lane's marker parent stays
-	// idle. The drive keeps retrying the wake-edge because the owed attention
-	// arms asynchronously: the drive turn a launch reports runs empty until
-	// it does, and exiting on the first launch would strand the wedge turn on
-	// the owner's slow quiet-watch retry. The drive loop and the tripwire
+	// The retained child's report reaches its parent as a durable attention
+	// row, and the parent's attention turn — the turn that presents the
+	// report — wedges inside its first model call. The tree is alive, the
+	// parent runs a turn, and the lane's own marker parent stays idle. The
+	// drive keeps retrying that parent's wake-edge because the owed attention
+	// arms asynchronously: an attempt that reads it once can miss it, and
+	// exiting on the first attempt would strand the wedge turn on the owner's
+	// slow quiet-watch retry. The loop drives the same attention primitive the
+	// owner's wake-edge uses, so the scripted step is the presentation turn
+	// itself and never an empty notification drive. The loop and the tripwire
 	// below share one deadline: a loop budget shorter than the tripwire
 	// strands an arm that lands in the gap — nothing drives the turn again
 	// until the owner's quiet-watch, past the tripwire.
+	// The report can be classified while the root is processing and deferred
+	// to the root's delivery queue, where only the background retry would
+	// pump it. Flush the queue before each drive so a deferred report is
+	// appended deterministically; an empty queue makes it a no-op.
 	turnStartDeadline := time.Now().Add(30 * time.Second)
+	var flushMu sync.Mutex
+	var flushErr error
+	flush := func() {
+		lane.delegateSub.mu.Lock()
+		busy := lane.delegateSub.running || lane.delegateSub.driving || lane.delegateSub.finalizing
+		lane.delegateSub.mu.Unlock()
+		if busy {
+			return
+		}
+		if err := lane.delegateSess.flushPendingDelegateDeliveries(); err != nil {
+			flushMu.Lock()
+			flushErr = err
+			flushMu.Unlock()
+		}
+	}
 	go func() {
 		for time.Now().Before(turnStartDeadline) {
-			lane.delegateSess.driveChildIfNotStopGated(lane.sharedSub)
+			flush()
+			lane.root.driveDelegateAttention(lane.delegateSub)
 			time.Sleep(200 * time.Millisecond)
 			select {
 			case <-entered:
@@ -1194,17 +1264,21 @@ func TestWorktreePrune_OrphanArmSparesLaneWhileRetainedChildNotifies(t *testing.
 	}()
 	select {
 	case <-entered:
-	// TRIPWIRE: the armed attention turns over within seconds of the send settling; the shared deadline only fires on a genuine hang. It covers a shard loaded with the rest of this package's parallel tests, where spawn and the arm both stretch.
+	// TRIPWIRE: the armed attention turns over within seconds of the send
+	// settling; the shared deadline only fires on a genuine hang. It covers a
+	// shard loaded with the rest of this package's parallel tests, where spawn
+	// and the arm both stretch.
 	case <-time.After(time.Until(turnStartDeadline)):
 		// Reproduce the drive's own preconditions, in its order, so the
 		// failure names the one that declined: the drive's boolean cannot.
 		// All of them green names the other failure mode — the wake-edge
 		// keeps launching empty turns because the owed attention never
 		// armed.
-		shared := lane.sharedSub
-		shared.mu.Lock()
-		closed, running, driving, attentionRefused := shared.closed, shared.running, shared.driving, shared.attentionDriveRefused
-		shared.mu.Unlock()
+		delegate := lane.delegateSub
+		delegate.mu.Lock()
+		closed, running, driving, finalizing := delegate.closed, delegate.running, delegate.driving, delegate.finalizing
+		disposeGated, attentionRefused := delegate.disposeGated, delegate.attentionDriveRefused
+		delegate.mu.Unlock()
 		_, locked, reason := r.laneLocked(t, lane.lanePath)
 		mutRelease, mutErr := lane.delegateSess.beginRetirementMutation("delegate_drive")
 		if mutErr == nil {
@@ -1222,15 +1296,82 @@ func TestWorktreePrune_OrphanArmSparesLaneWhileRetainedChildNotifies(t *testing.
 		// notification-drive preconditions above say nothing about them, and
 		// all of them green leaves exactly two failure modes — the owed
 		// attention never armed, or a gate held the launch. Name which.
-		pending, pendErr := lane.sharedSub.sess.pendingDelegateAttentionIDs()
-		stopGated := lane.delegateSess.childStopGated(lane.sharedSub.sess.id)
-		fatalGated := lane.delegateSess.childFatalRunGated(lane.sharedSub.sess.id)
-		drainAbandoned := lane.delegateSess.childDrainAbandoned(lane.sharedSub.sess.id)
-		drainGrace := lane.delegateSess.childDrainGracePending(lane.sharedSub.sess.id)
-		committedStart := lane.delegateSess.childCommittedSendStart(lane.sharedSub.sess.id)
-		t.Fatalf("the retained child's turn never started (lane locked=%v reason=%q, sub closed=%v running=%v driving=%v attentionDriveRefused=%v; retirement mutation=%v, lane validation=%v, drive slot=%v, driver closing=%v; pending attention=%d (%v), gates: stop=%v fatal=%v drainAbandoned=%v drainGrace=%v committedSendStart=%v)",
-			locked, reason, closed, running, driving, attentionRefused, mutErr, revalErr, driveSlotOK, driverClosing,
-			len(pending), pendErr, stopGated, fatalGated, drainAbandoned, drainGrace, committedStart)
+		pending, pendErr := lane.delegateSess.pendingDelegateAttentionIDs()
+		childPending, childPendErr := lane.sharedSub.sess.pendingDelegateAttentionIDs()
+		flushMu.Lock()
+		lastFlushErr := flushErr
+		flushMu.Unlock()
+		deferred := lane.delegateSess.hasPendingDelegateDeliveries()
+		lane.sharedSub.mu.Lock()
+		childRunning, childClosed, childFinalizing := lane.sharedSub.running, lane.sharedSub.closed, lane.sharedSub.finalizing
+		lane.sharedSub.mu.Unlock()
+		stopGated := lane.root.childStopGated(lane.delegateSess.id)
+		fatalGated := lane.root.childFatalRunGated(lane.delegateSess.id)
+		drainAbandoned := lane.root.childDrainAbandoned(lane.delegateSess.id)
+		drainGrace := lane.root.childDrainGracePending(lane.delegateSess.id)
+		committedStart := lane.root.childCommittedSendStart(lane.delegateSess.id)
+		// The in-memory queue above is not the durable head: the report can wait
+		// in the journal while the session queue is empty, and the reverse.
+		// durable is keyed by delegate id, so read the parent delegate's own
+		// aggregate (lane.fixture.delegateID) and the retained child's
+		// (lane.sharedDelegateID) rather than either child session id.
+		controller := lane.root.delegateController
+		controller.mu.Lock()
+		delegatePhase, delegateGen, delegateOpen := "", uint64(0), false
+		var delegateDurable []string
+		if agg := controller.durable[lane.fixture.delegateID]; agg != nil {
+			delegatePhase, delegateGen, delegateOpen = string(agg.Phase), agg.Generation, agg.CurrentRunOpen
+			for _, pending := range agg.PendingDeliveries {
+				delegateDurable = append(delegateDurable, pending.DeliveryID)
+			}
+		}
+		childPhase, childGen, childOpen, childPrepared := "", uint64(0), false, false
+		var childDurable []string
+		if agg := controller.durable[lane.sharedDelegateID]; agg != nil {
+			childPhase, childGen, childOpen, childPrepared = string(agg.Phase), agg.Generation, agg.CurrentRunOpen, agg.PreparedTerminal != nil
+			for _, pending := range agg.PendingDeliveries {
+				childDurable = append(childDurable, pending.DeliveryID)
+			}
+		}
+		reportDeliveryID := delegateDeliveryID(lane.sharedDelegateID, 1)
+		claimPresent, claimWaiter, claimHeld, claimStartRefused := false, false, false, false
+		if claim := controller.deliveryClaims[reportDeliveryID]; claim != nil {
+			claimPresent, claimWaiter, claimHeld, claimStartRefused = true, claim.waiter != nil, claim.held, claim.startRefused
+		}
+		receiptPresent, receiptRetryable, receiptInline := false, false, false
+		if receipt := controller.deliveryReceiptLocked(reportDeliveryID); receipt != nil {
+			receiptPresent, receiptRetryable, receiptInline = true, receipt.retryable, receipt.inline
+		}
+		ownerLive := controller.live[lane.fixture.delegateID]
+		ownerLivePresent := ownerLive != nil
+		ownerRuntimeSet := ownerLive != nil && ownerLive.runtime != nil
+		ownerRuntimeIsDelegate := ownerLive != nil && ownerLive.runtime == lane.delegateSess
+		ownerBinding := ownerLive != nil && ownerLive.binding != nil
+		receiverType := fmt.Sprintf("%T", controller.deliveryReceiverLocked(lane.fixture.delegateID))
+		controller.mu.Unlock()
+		classifications := lane.classifications.snapshot()
+		sharedSessionID := lane.sharedSub.sess.id
+		tracked := lane.delegateSess.subagents.get(sharedSessionID) != nil
+		lane.sharedSub.mu.Lock()
+		childStatus, childTurns, childEndEmitted := lane.sharedSub.status, lane.sharedSub.turnsUsed, lane.sharedSub.endEmitted
+		lane.sharedSub.mu.Unlock()
+		t.Fatalf("the retained child's report was never presented (lane locked=%v reason=%q, delegate sub closed=%v running=%v driving=%v finalizing=%v disposeGated=%v attentionDriveRefused=%v; retirement mutation=%v, lane validation=%v, drive slot=%v, driver closing=%v; pending attention=%d (%v), child pending=%d (%v), child run=%v/%v/%v, deferred deliveries=%v flush=%v, gates: stop=%v fatal=%v drainAbandoned=%v drainGrace=%v committedSendStart=%v; durable: delegate phase=%s gen=%d open=%v pending=%v; child phase=%s gen=%d open=%v prepared=%v pending=%v; report %s claim=%v(waiter=%v held=%v startRefused=%v) receipt=%v(retryable=%v inline=%v); owner live=%v runtimeSet=%v runtimeIsDelegate=%v binding=%v receiver=%s; classified=%v; child sub session=%s status=%v turns=%d endEmitted=%v tracked=%v)",
+			locked, reason, closed, running, driving, finalizing, disposeGated, attentionRefused, mutErr, revalErr, driveSlotOK, driverClosing,
+			len(pending), pendErr, len(childPending), childPendErr, childRunning, childClosed, childFinalizing, deferred, lastFlushErr, stopGated, fatalGated, drainAbandoned, drainGrace, committedStart,
+			delegatePhase, delegateGen, delegateOpen, delegateDurable,
+			childPhase, childGen, childOpen, childPrepared, childDurable,
+			reportDeliveryID, claimPresent, claimWaiter, claimHeld, claimStartRefused, receiptPresent, receiptRetryable, receiptInline,
+			ownerLivePresent, ownerRuntimeSet, ownerRuntimeIsDelegate, ownerBinding, receiverType,
+			classifications, sharedSessionID, childStatus, childTurns, childEndEmitted, tracked)
+	}
+	lane.delegateSub.mu.Lock()
+	delegateRunning := lane.delegateSub.running
+	lane.delegateSub.mu.Unlock()
+	if !delegateRunning {
+		t.Fatal("the retention turn started somewhere other than the lane-owning delegate's run")
+	}
+	if got, _ := wedgedSession.Load().(string); got != lane.delegateSess.id {
+		t.Fatalf("the presentation turn ran on session %q, want the lane-owning delegate %q", got, lane.delegateSess.id)
 	}
 
 	// The injected report below must be publication-eligible. The wedged turn
@@ -1296,10 +1437,10 @@ func TestWorktreePrune_OrphanArmSparesLaneWhileRetainedChildNotifies(t *testing.
 	// drive launched it.
 	close(release)
 	// TRIPWIRE: the released turn settles within seconds once the model call returns; 30s only fires on a genuine hang. The deadline absorbs a loaded shard's scheduling delay between the release and the settle.
-	waitForCondition(t, 30*time.Second, "the retained child's turn to finish after release", func() bool {
-		lane.sharedSub.mu.Lock()
-		running := lane.sharedSub.running
-		lane.sharedSub.mu.Unlock()
+	waitForCondition(t, 30*time.Second, "the delegate's attention turn to finish after release", func() bool {
+		lane.delegateSub.mu.Lock()
+		running := lane.delegateSub.running
+		lane.delegateSub.mu.Unlock()
 		return !running
 	})
 }

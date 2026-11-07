@@ -29,6 +29,23 @@ function readWithItems(ref: string, items: ThreadItem[]) {
 }
 
 describe("current transcript checkpoints", () => {
+  it("preserves older-frontier provenance across a checkpoint restore", () => {
+    const ref = "local:worker";
+    const roundTrip = (read: ReturnType<typeof readWithItems>) => {
+      const encoded = currentTranscriptState(hydrateThread(read, ref, 1));
+      const decoded = decodeCurrentTranscriptState(JSON.parse(JSON.stringify(encoded)));
+      return threadModelFromCurrentState(decoded!);
+    };
+
+    const windowed = roundTrip({ ...readWithItems(ref, []), olderCursor: "cursor_1" });
+    expect(windowed?.olderCursor).toBe("cursor_1");
+    expect(windowed?.olderFrontier).toBe("cursor_1");
+
+    const exhausted = roundTrip({ ...readWithItems(ref, []), olderCursor: undefined });
+    expect(exhausted?.olderCursor).toBeUndefined();
+    expect(exhausted?.olderFrontier).toBe("none");
+  });
+
   it("preserves typed Manager speaker across hydrate and current-state restore", () => {
     const ref = "local:worker";
     const original = hydrateThread(
@@ -1065,6 +1082,14 @@ describe("current transcript checkpoints", () => {
     // field, so the deferred-page validators cannot drift without a red build.
     const everyItemField: Required<ThreadItem> = {
       type: "toolCall",
+      conversationProvenance: {
+        version: 1,
+        instanceId: "instance",
+        runGeneration: 1,
+        requestId: "request",
+        frontierId: "frontier",
+        sourceItemId: "item_full",
+      },
       actor: { kind: "manager", managerRef: "hub:manager" },
       observation: {
         ref: "local:observed",

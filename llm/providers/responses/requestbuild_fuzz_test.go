@@ -453,8 +453,11 @@ func FuzzResponsesBuildBody(f *testing.F) {
 			if data != "data:application/pdf;base64,JWZ1enotcGRm" {
 				t.Fatalf("a data document with no claimed media type defaults to pdf: %s", inputJSON)
 			}
-			if files[1]["file_data"] != "https://example.invalid/d.pdf" || files[1]["filename"] != "d.pdf" {
-				t.Fatalf("a URL document carries its URL and filename: %s", inputJSON)
+			if files[1]["file_url"] != "https://example.invalid/d.pdf" || files[1]["filename"] != "d.pdf" {
+				t.Fatalf("a URL document carries its URL in file_url and its filename: %s", inputJSON)
+			}
+			if _, ok := files[1]["file_data"]; ok {
+				t.Fatalf("a URL document must not put its URL in file_data: %s", inputJSON)
 			}
 		case 4:
 			var images []map[string]any

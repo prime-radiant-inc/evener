@@ -13,7 +13,6 @@ import (
 	"regexp"
 	"slices"
 	"sort"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -86,6 +85,9 @@ type jobManager struct {
 	noticesInFlight int
 	watches         map[watchKey]*watchConfig
 	terminalFlush   map[*watchConfig]bool
+	// hubRosterReplacement serializes roster setup through failure cleanup.
+	// Initialized under jm.mu, acquired without holding jm.mu or Session.mu.
+	hubRosterReplacement chan struct{}
 	// watchHistory is a bounded, latest-trimmed ring of watches that have left
 	// the active set, surfaced by job_list so a fired-then-removed watch stays
 	// legible. Guarded by jm.mu.
@@ -610,12 +612,11 @@ type listFilter struct {
 	IncludeDescendants bool
 }
 
-// jobsDir returns the per-session job directory: <stateDir>/sessions/<id>.
+// jobsDir is the session work dir the job stores, delegate journal, and
+// worktrees live under; it exists so the agent package's many call sites keep
+// one short name for schema.SessionWorkDir.
 func jobsDir(stateDir, sessionID string) string {
-	if strings.TrimSpace(stateDir) == "" {
-		return filepath.Join(os.TempDir(), "evener-jobs", sessionID)
-	}
-	return filepath.Join(schema.SessionsDir(stateDir), sessionID)
+	return schema.SessionWorkDir(stateDir, sessionID)
 }
 
 type jobStoreOpener func(string) (*jobstore.Store, error)
@@ -1865,7 +1866,7 @@ func (jm *jobManager) armFinalizedJob(run *runningJob, terminal *terminalJob) er
 		jm.mu.Unlock()
 		ownNotices = jm.routeWatchNotifications(watchNotifications)
 		var tokens []jobNotification
-		tokens, watchSendRecorded = jm.recordWatchSends(watchDeliveries)
+		tokens, watchSendRecorded, _ = jm.recordWatchSends(watchDeliveries)
 		ownNotices = append(ownNotices, tokens...)
 	} else {
 		jm.mu.Unlock()

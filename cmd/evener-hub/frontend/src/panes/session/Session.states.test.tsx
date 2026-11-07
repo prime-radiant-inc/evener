@@ -21,6 +21,7 @@ import { resetAskDockStoreForTests } from "./composer/askDock/askDockStore";
 import * as ComposerModule from "./composer/Composer";
 import { refreshPendingTurnsProjection, resetPendingTurnsStoreForTests } from "./composer/queue/pendingTurnsStore";
 import { flushPendingTurnsProjectionForTests } from "./composer/queue/testing/flushPendingTurnsProjection";
+import { RECOVERY_HINT_DELAY_MS } from "./Session";
 import "./index";
 import { CommittedSession as Session } from "./testing/CommittedSession";
 import { resetTranscriptPagingForTests } from "./transcript/useTranscript";
@@ -162,6 +163,31 @@ test("a slow-but-alive ref keeps showing the loading placeholder, never the dele
   expect(screen.getByRole("status")).toBeTruthy();
   expect(emptyStateReasons(document.body)).toEqual([]);
   expect(screen.getByTestId("pane-edge-footer")).toBeTruthy();
+});
+
+test("a loading session shows a skeleton, delays its recovery affordance, and has no presentation footer", async () => {
+  vi.useFakeTimers();
+  onTestFinished(() => {
+    vi.useRealTimers();
+  });
+  const fake = connectReadyFakeClient();
+  fake.on("thread/read", () => new Promise<ThreadReadResponse>(() => {}));
+
+  render(
+    <ClientProvider client={fake}>
+      <Session params={{ ref: "local:ref_a" }} paneId="p1" focused={true} />
+    </ClientProvider>,
+  );
+
+  await flushUntil(() => fake.calls.some((c) => c.method === "thread/read"));
+  expect(screen.getByTestId("session-loading-skeleton")).toBeTruthy();
+  expect(screen.queryByTestId("session-loading-recovery")).toBeNull();
+  expect(screen.queryByRole("button", { name: "Verbosity" })).toBeNull();
+
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(RECOVERY_HINT_DELAY_MS);
+  });
+  expect(screen.getByTestId("session-loading-recovery")).toBeTruthy();
 });
 
 // #4343's client-visible half: a daemonless read whose transcript index is

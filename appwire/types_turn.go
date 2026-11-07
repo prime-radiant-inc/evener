@@ -179,24 +179,25 @@ var AllThreadItemEventKinds = []string{
 }
 
 type ThreadItem struct {
-	Actor                *SessionActor               `json:"actor,omitempty"`
-	Observation          *SessionObservationMetadata `json:"observation,omitempty"`
-	Authorship           *TranscriptAuthorship       `json:"authorship,omitempty"`
-	Type                 string                      `json:"type"`
-	ID                   string                      `json:"id"`
-	TranscriptKey        string                      `json:"transcriptKey,omitempty"`
-	Position             *ThreadItemPosition         `json:"position,omitempty"`
-	TurnID               string                      `json:"turnId,omitempty"`
-	TranscriptEntryIndex int                         `json:"transcriptEntryIndex,omitempty"`
-	Text                 string                      `json:"text,omitempty"`
-	Delta                string                      `json:"delta,omitempty"`
-	Images               []InputItem                 `json:"images,omitempty"`
-	ToolName             string                      `json:"toolName,omitempty"`
-	CallID               string                      `json:"callId,omitempty"`
-	ArgumentsJSON        string                      `json:"argumentsJson,omitempty"`
-	Description          string                      `json:"description,omitempty"`
-	Output               string                      `json:"output,omitempty"`
-	Error                string                      `json:"error,omitempty"`
+	ConversationProvenance *ConversationOutputProvenance `json:"conversationProvenance,omitempty"`
+	Actor                  *SessionActor                 `json:"actor,omitempty"`
+	Observation            *SessionObservationMetadata   `json:"observation,omitempty"`
+	Authorship             *TranscriptAuthorship         `json:"authorship,omitempty"`
+	Type                   string                        `json:"type"`
+	ID                     string                        `json:"id"`
+	TranscriptKey          string                        `json:"transcriptKey,omitempty"`
+	Position               *ThreadItemPosition           `json:"position,omitempty"`
+	TurnID                 string                        `json:"turnId,omitempty"`
+	TranscriptEntryIndex   int                           `json:"transcriptEntryIndex,omitempty"`
+	Text                   string                        `json:"text,omitempty"`
+	Delta                  string                        `json:"delta,omitempty"`
+	Images                 []InputItem                   `json:"images,omitempty"`
+	ToolName               string                        `json:"toolName,omitempty"`
+	CallID                 string                        `json:"callId,omitempty"`
+	ArgumentsJSON          string                        `json:"argumentsJson,omitempty"`
+	Description            string                        `json:"description,omitempty"`
+	Output                 string                        `json:"output,omitempty"`
+	Error                  string                        `json:"error,omitempty"`
 	// OutputImages is omitzero; see the nil-vs-empty rule in output_images.go.
 	// Images stays omitempty: nothing removes an item's input images.
 	OutputImages []OutputImage `json:"outputImages,omitzero"`
@@ -284,15 +285,16 @@ type InputMention struct {
 }
 
 type InputItem struct {
-	Type      string            `json:"type"`
-	Text      string            `json:"text,omitempty"`
-	Mentions  []InputMention    `json:"mentions,omitempty"`
-	URL       string            `json:"url,omitempty"`
-	MediaType string            `json:"mediaType,omitempty"`
-	Data      []byte            `json:"data,omitempty"`
-	Name      string            `json:"name,omitempty"`
-	Path      string            `json:"path,omitempty"`
-	Metadata  map[string]string `json:"metadata,omitempty"`
+	Type              string                    `json:"type"`
+	Text              string                    `json:"text,omitempty"`
+	Mentions          []InputMention            `json:"mentions,omitempty"`
+	URL               string                    `json:"url,omitempty"`
+	MediaType         string                    `json:"mediaType,omitempty"`
+	Data              []byte                    `json:"data,omitempty"`
+	Name              string                    `json:"name,omitempty"`
+	Path              string                    `json:"path,omitempty"`
+	Metadata          map[string]string         `json:"metadata,omitempty"`
+	VoicePresentation *VoicePresentationContext `json:"voicePresentation,omitempty"`
 }
 
 type ThreadListParams struct {

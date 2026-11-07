@@ -106,6 +106,7 @@ func (s *Session) nextJobTreeRevision(kind events.EventKind) (string, uint64, bo
 // history, registered tools, context-management state, subagents, plugins, MCP
 // connections, and persistence settings.
 type Session struct {
+	conversation           conversationState
 	hubClient              SessionHubClient
 	hubGeneration          uint64
 	hubEnabled             bool
@@ -653,6 +654,9 @@ type Session struct {
 	// transcriptRecorded is the recorded-entry hook installed on every writer
 	// the session attaches; guarded by mu. See SetTranscriptRecordedFunc.
 	transcriptRecorded func(transcript.Record)
+	// transcriptPublished runs after adoption, outside mu and the append lock,
+	// while attentionMu still excludes the next canonical mutation.
+	transcriptPublished func(int64, *appwire.ConversationProvenanceState)
 	// recoveredTurnClaimReturned bounds the recovered turn's give-back to ONE
 	// in-process retry. The first failure of the inherited turn before its prompt
 	// is recorded hands its claim back, and the runner wake drives the immediate
@@ -745,7 +749,8 @@ type Session struct {
 	// the entry gate, the goal engine's arm-don't-kick paths, Compact's guard
 	// — survive a restart (ask-attention-tiering spec §2); it is not itself
 	// part of persisted SessionMeta.
-	askPending []askQuestion
+	askPending         []askQuestion
+	askPendingRevision uint64
 
 	// askPendingCallArgs holds each pending ask_user call's own arguments
 	// (already normalized, spec §5.1's shape), one entry per call, in call
@@ -2757,6 +2762,9 @@ func (s *Session) recordTranscriptLocked(t schema.Turn, door transcript.Door, pl
 	s.mu.Lock()
 	s.noteRecordedLocked(rec)
 	s.mu.Unlock()
+	if rec.Recorded {
+		s.publishTranscriptLocked(rec.Offset + rec.Length)
+	}
 	return rec, err
 }
 
@@ -2863,6 +2871,8 @@ func (s *Session) holdTurnUntilTranscriptReady(t schema.Turn) bool {
 // writer could not be opened, and marking those ready is what stops their turns
 // accumulating for the session's lifetime.
 func (s *Session) attachTranscript(w *transcript.Writer) {
+	s.attentionMu.Lock()
+	defer s.attentionMu.Unlock()
 	s.mu.Lock()
 	s.setTranscriptLocked(w)
 	s.transcriptReady = true
@@ -2870,7 +2880,11 @@ func (s *Session) attachTranscript(w *transcript.Writer) {
 	s.pendingTranscriptTurns = nil
 	s.mu.Unlock()
 	for _, t := range held {
-		if _, err := w.Record(t, transcript.RecordOptions{Door: transcript.DoorBuffered, Place: transcript.PlaceSession}); err != nil {
+		rec, err := w.Record(t, transcript.RecordOptions{Door: transcript.DoorBuffered, Place: transcript.PlaceSession})
+		s.mu.Lock()
+		s.noteRecordedLocked(rec)
+		s.mu.Unlock()
+		if err != nil {
 			// Buffered, not emitted directly (kata et0x): attachTranscript always
 			// runs before its caller's emitSessionStartEnvelope, so SESSION_START
 			// has not fired yet — same reasoning as the NewSession transcript-
@@ -2878,6 +2892,7 @@ func (s *Session) attachTranscript(w *transcript.Writer) {
 			s.pendingTranscriptWarnings = append(s.pendingTranscriptWarnings, events.WarningData{Message: fmt.Sprintf("transcript write failed: %v", err)})
 		}
 	}
+	s.publishTranscriptLocked(w.RecordedLength())
 	// A replayed append whose whole line landed but did not sync returned nil
 	// and queued its diagnostic on the writer; buffer it the same way, since
 	// SESSION_START has not fired yet.
@@ -2946,18 +2961,37 @@ func (s *Session) appendAssistantTurn(resp llm.Response, finalAttempt ModelAttem
 		RoundID:                         s.roundIDForModelCall(),
 	}
 	t.Authorship = s.roundTranscriptAuthorship()
-	err := s.appendTurnAfterTranscriptWrite(
-		t,
-		func() error { return s.writeTranscriptDurableLocked(t) },
-		func() {
-			s.history = append(s.history, t)
-			// The round's entry is recorded: the next model call is a new
-			// round (a pause_turn continuation, a bare-text retry, the next
-			// tool round).
-			s.roundID = ""
-			s.noteAgentMessageLocked(lastAgentText(t.Message))
-		},
-	)
+	err := func() error {
+		s.attentionMu.Lock()
+		defer s.attentionMu.Unlock()
+		if request := finalAttempt.conversation; request != nil {
+			// Compaction may publish while the provider is running. Base the
+			// delta on the current canonical frontier under the transcript door,
+			// but keep exactly the inputs that this request actually presented.
+			s.mu.Lock()
+			p := request.provenance
+			p.FrontierID = s.conversation.frontierID
+			t.ConversationFrontier = s.conversationDeltaLocked(p.RequestID, request.inputs)
+			if t.ConversationFrontier != nil {
+				p.FrontierID = t.ConversationFrontier.ID
+			}
+			t.ConversationProvenance = &p
+			s.mu.Unlock()
+		}
+		return s.appendTurnAfterTranscriptWriteLocked(
+			t,
+			func() error { return s.writeTranscriptDurableLocked(t) },
+			func() {
+				s.history = append(s.history, t)
+				// The round's entry is recorded: the next model call is a new
+				// round (a pause_turn continuation, a bare-text retry, the next
+				// tool round).
+				s.roundID = ""
+				s.noteAgentMessageLocked(lastAgentText(t.Message))
+			},
+		)
+	}()
+	s.surfaceTranscriptWarnings()
 	if err != nil {
 		s.emit(events.WarningData{Message: fmt.Sprintf("transcript write failed: %v", err)})
 	}

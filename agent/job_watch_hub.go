@@ -30,6 +30,226 @@ const (
 
 var hubObservationEvents = [...]string{"status", "question", "approval", "communicate"}
 
+const hubRosterWatchKey = "hub:roster"
+
+const rosterRecoveryFrame = "roster_resync: true\nrecovery: re-register job_watch with hub={\"scope\":\"top_level\"} for a fresh snapshot\n"
+
+// The pending send rail replaces earlier frames for the same watch key.
+// Merge only roster frames there, after it finds the actual undelivered state.
+// Resync and authoritative initials replace earlier pending entries. Deltas,
+// including ordinary rebind changes, retain pending entries and initial markers.
+func mergeHubRosterFrames(previous, current string) string {
+	if strings.Contains(current, "\nroster_resync: true\n") ||
+		strings.Contains(current, "\nroster_initial: true\n") {
+		return current
+	}
+	oldPayload := rosterFrameField(previous, "roster_events: ")
+	newPayload := rosterFrameField(current, "roster_events: ")
+	if oldPayload != "" && newPayload != "" {
+		var old, next []json.RawMessage
+		if json.Unmarshal([]byte(oldPayload), &old) == nil && json.Unmarshal([]byte(newPayload), &next) == nil {
+			positions := make(map[string]int, len(old))
+			merged := make([]json.RawMessage, 0, len(old)+len(next))
+			for _, entry := range append(old, next...) {
+				var ref struct {
+					Ref string `json:"ref"`
+				}
+				if json.Unmarshal(entry, &ref) != nil || ref.Ref == "" {
+					continue
+				}
+				if at, found := positions[ref.Ref]; found {
+					merged[at] = entry
+				} else {
+					positions[ref.Ref] = len(merged)
+					merged = append(merged, entry)
+				}
+			}
+			if encoded, err := json.Marshal(merged); err == nil {
+				current = strings.Replace(current, "roster_events: "+newPayload+"\n", "roster_events: "+string(encoded)+"\n", 1)
+			}
+		}
+	}
+	if strings.Contains(previous, "\nroster_resync: true\n") && !strings.Contains(current, "\nroster_resync: true\n") {
+		current += rosterRecoveryFrame
+	} else if strings.Contains(previous, "\nroster_initial: true\n") {
+		current += "roster_initial: true\n"
+	}
+	return current
+}
+
+func rosterFrameField(frame, field string) string {
+	for line := range strings.SplitSeq(frame, "\n") {
+		if value, found := strings.CutPrefix(line, field); found {
+			return value
+		}
+	}
+	return ""
+}
+
+// A roster occupies one ordinary live-watch slot and journal identity. Its
+// source is top_level, while the reserved target keys its registration.
+func (jm *jobManager) configureHubRosterWatch(ctx context.Context, caller string) (watchResult, error) {
+	a := watchArgs{Target: hubRosterWatchKey, Source: hubRosterWatchKey, Send: &watchSendArgs{To: runtimeMessageAliasCaller}, ReceiverSendInternal: true}
+	cfg, err := newWatchConfig(a, jm.now(), "")
+	if err != nil {
+		return watchResult{}, err
+	}
+	cfg.sourcePublic = "top_level"
+	cfg.hubRef, cfg.hubCaller = hubRosterWatchKey, caller
+	cfg.configHash += ":top_level:" + caller
+	key := watchKey{VisibleSessionID: jm.sessionID, Target: hubRosterWatchKey, SendTo: runtimeMessageAliasCaller}
+	jm.mu.Lock()
+	if err := ctx.Err(); err != nil {
+		jm.mu.Unlock()
+		return watchResult{}, err
+	}
+	existing := jm.watches[key]
+	if existing == nil && len(jm.watches) >= maxLiveWatches {
+		jm.mu.Unlock()
+		return watchResult{}, errors.New("invalid_request: too many live watches")
+	}
+	equal, detached, dropped, err := jm.persistWatchReplacementLocked(key, cfg)
+	if err != nil {
+		jm.mu.Unlock()
+		return watchResult{}, err
+	}
+	if equal {
+		cfg = existing
+	} else {
+		if existing != nil {
+			jm.recordWatchEndedLocked(key, existing, "replaced")
+			closeWatchConfig(existing)
+		}
+		jm.watches[key] = cfg
+	}
+	result := watchResultFromConfig(cfg, existing != nil && !equal)
+	jm.mu.Unlock()
+	jm.removeWatchSendTerminalSnapshots(dropped)
+	jm.forgetDetachedWatchSendConfigsIfEmpty(detached)
+	return result, nil
+}
+
+// A transport rebind restarts hub revisions, but keeps the old baseline until
+// its replacement snapshot arrives so unchanged entries do not wake the Manager.
+func (jm *jobManager) resetHubRosterRevision(id string) {
+	jm.mu.Lock()
+	defer jm.mu.Unlock()
+	if _, cfg, ok := jm.watchConfigByIDLocked(id); ok && cfg.hubRef == hubRosterWatchKey {
+		cfg.rosterBound = false
+	}
+}
+
+func (jm *jobManager) onHubRoster(id string, update appwire.SessionWatchUpdate) error {
+	if update.Roster == nil {
+		return nil
+	}
+	r := update.Roster
+	jm.mu.Lock()
+	_, cfg, ok := jm.watchConfigByIDLocked(id)
+	if !ok || cfg.hubRef != hubRosterWatchKey || cfg.rejectingDelivery || (cfg.rosterBound && r.Revision <= cfg.rosterRevision) {
+		jm.mu.Unlock()
+		return nil
+	}
+	cfg.rosterRevision, cfg.rosterBound = r.Revision, true
+	var changed []appwire.RosterEvent
+	deliverInitial := r.Initial && (cfg.rosterBaseline == nil || cfg.rosterNeedsResync)
+	switch {
+	case r.Resync:
+		alreadyResync := cfg.rosterNeedsResync
+		cfg.rosterBaseline = nil
+		cfg.rosterNeedsResync = true
+		if alreadyResync {
+			jm.mu.Unlock()
+			return nil
+		}
+	case r.Initial:
+		cfg.rosterNeedsResync = false
+		next := make(map[string]appwire.AttentionEntry, len(r.Events))
+		for _, event := range r.Events {
+			if event.Ref == "" {
+				continue
+			}
+			next[event.Ref] = event.AttentionEntry
+			if old, known := cfg.rosterBaseline[event.Ref]; !known || old != event.AttentionEntry {
+				if !deliverInitial && (!known || old.ID != event.ID || old.RosterInstanceID != event.RosterInstanceID) {
+					event.Kind = "new"
+				}
+				changed = append(changed, event)
+			}
+		}
+		for ref, old := range cfg.rosterBaseline {
+			if _, present := next[ref]; !present {
+				changed = append(changed, appwire.RosterEvent{AttentionEntry: old, Kind: "disappeared"})
+			}
+		}
+		cfg.rosterBaseline = next
+	default:
+		if cfg.rosterBaseline == nil {
+			if !cfg.rosterNeedsResync {
+				cfg.rosterBaseline = make(map[string]appwire.AttentionEntry)
+			}
+		}
+		for _, event := range r.Events {
+			if event.Ref == "" {
+				continue
+			}
+			if !cfg.rosterNeedsResync {
+				if event.Kind == "disappeared" {
+					delete(cfg.rosterBaseline, event.Ref)
+				} else {
+					cfg.rosterBaseline[event.Ref] = event.AttentionEntry
+				}
+			}
+			changed = append(changed, event)
+		}
+	}
+	if !r.Resync && !deliverInitial && len(changed) == 0 {
+		jm.mu.Unlock()
+		return nil
+	}
+	trigger := "roster resync: re-register job_watch hub={scope:top_level} for a fresh snapshot"
+	var payload string
+	if !r.Resync {
+		type rosterChange struct {
+			Ref             string `json:"ref"`
+			Title           string `json:"title"`
+			Level           string `json:"level"`
+			Kind            string `json:"kind"`
+			AskPending      bool   `json:"askPending"`      //nolint:tagliatelle // The model-visible roster contract uses askPending.
+			ApprovalPending bool   `json:"approvalPending"` //nolint:tagliatelle // The model-visible roster contract uses approvalPending.
+			NeedsResponse   bool   `json:"needsResponse"`   //nolint:tagliatelle // The model-visible roster contract uses needsResponse.
+		}
+		refs := make([]rosterChange, 0, len(changed))
+		for _, event := range changed {
+			refs = append(refs, rosterChange{event.Ref, event.Title, event.Level, event.Kind, event.AskPending, event.ApprovalPending, event.NeedsResponse})
+		}
+		encoded, err := json.Marshal(refs)
+		if err != nil {
+			jm.mu.Unlock()
+			return err
+		}
+		payload = string(encoded)
+		trigger = fmt.Sprintf("roster revision %d, %d changes", r.Revision, len(changed))
+	}
+	delivery := jm.watchSendSnapshot(cfg, hubRosterWatchKey, trigger, events.SessionEvent{SessionID: jm.sessionID})
+	delivery.rosterPayload = payload
+	delivery.rosterInitial, delivery.rosterResync = deliverInitial, r.Resync
+	jm.mu.Unlock()
+	if err := jm.recordWatchSendsAndKickErr([]watchSendDelivery{delivery}); err != nil {
+		jm.mu.Lock()
+		// The baseline advanced before persistence. A fresh snapshot must now
+		// replace it authoritatively, even if the hub restarts its revisions.
+		if _, current, ok := jm.watchConfigByIDLocked(id); ok && current.hubRef == hubRosterWatchKey {
+			current.rosterBaseline = nil
+			current.rosterNeedsResync = true
+			current.rosterRevision, current.rosterBound = 0, false
+		}
+		jm.mu.Unlock()
+		return err
+	}
+	return nil
+}
+
 func hubObservationSelector(event string) bool {
 	return slices.Contains(hubObservationEvents[:], event)
 }
@@ -440,6 +660,28 @@ func (jm *jobManager) endHubWatchUntilPersisted(watchID, reason string, completi
 // that spoke before the runtime died; no continuing hub watch is restored.
 func hubWatchLostAtRestart(w *jobstore.WatchRecord) bool { return w != nil && w.HubRef != "" }
 
+// The roster's durable ID is reused across registrations. One setup owns the
+// entire join/open/install transaction, including cleanup, so neither an old
+// failure nor an uninstalled initial snapshot can affect a later registration.
+func (jm *jobManager) lockHubRosterReplacement(ctx context.Context) (func(), error) {
+	jm.mu.Lock()
+	if jm.hubRosterReplacement == nil {
+		jm.hubRosterReplacement = make(chan struct{}, 1)
+	}
+	gate := jm.hubRosterReplacement
+	jm.mu.Unlock()
+	select {
+	case gate <- struct{}{}:
+		if err := ctx.Err(); err != nil {
+			<-gate
+			return nil, err
+		}
+		return func() { <-gate }, nil
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+}
+
 func (s *Session) configureHubWatchRuntime(ctx context.Context, args map[string]any) (any, error) {
 	for key := range args {
 		if key != "operation" && key != "hub" && key != "intent" {
@@ -459,8 +701,24 @@ func (s *Session) configureHubWatchRuntime(ctx context.Context, args map[string]
 		return nil, err
 	}
 	request = *decoded
-	if _, err := appwire.ParseRef(request.Ref); err != nil {
-		return nil, appwire.InvalidParams(err.Error())
+	if request.Scope == "top_level" {
+		var supplied map[string]json.RawMessage
+		if err := json.Unmarshal(encoded, &supplied); err != nil {
+			return nil, appwire.InvalidParams(err.Error())
+		}
+		_, refPresent := supplied["ref"]
+		_, completionPresent := supplied["completion"]
+		_, eventsPresent := supplied["events"]
+		if refPresent || completionPresent || eventsPresent {
+			return nil, appwire.InvalidParams("scope cannot combine ref, completion or events")
+		}
+	} else {
+		if request.Scope != "" {
+			return nil, appwire.InvalidParams("unsupported watch scope")
+		}
+		if _, err := appwire.ParseRef(request.Ref); err != nil {
+			return nil, appwire.InvalidParams(err.Error())
+		}
 	}
 	s.mu.Lock()
 	client, enabled, closing := s.hubClient, s.hubEnabled, s.closing
@@ -468,8 +726,10 @@ func (s *Session) configureHubWatchRuntime(ctx context.Context, args map[string]
 	if client == nil || !enabled || closing {
 		return nil, appwire.InvalidRequest("Manager tool unavailable")
 	}
-	if err := validateHubWatchSelectors(request.Events, request.Completion); err != nil {
-		return nil, appwire.InvalidParams(err.Error())
+	if request.Scope == "" {
+		if err := validateHubWatchSelectors(request.Events, request.Completion); err != nil {
+			return nil, appwire.InvalidParams(err.Error())
+		}
 	}
 	state, err := client.State(ctx)
 	if err != nil {
@@ -477,6 +737,51 @@ func (s *Session) configureHubWatchRuntime(ctx context.Context, args map[string]
 	}
 	if !state.Manager {
 		return nil, appwire.InvalidRequest("session is not a Manager")
+	}
+	var rosterManager *jobManager
+	if request.Scope == "top_level" {
+		rosterManager, err = sessionJobManager(s)
+		if err != nil {
+			return nil, err
+		}
+		unlock, err := rosterManager.lockHubRosterReplacement(ctx)
+		if err != nil {
+			return nil, err
+		}
+		defer unlock()
+	}
+	var rosterHandoffID string
+	var rosterHandoffDone <-chan struct{}
+	defer func() {
+		if rosterHandoffID != "" {
+			rosterManager.mu.Lock()
+			_, cfg, ok := rosterManager.watchConfigByIDLocked(rosterHandoffID)
+			owns := ok && cfg.rosterConsumerDone == rosterHandoffDone
+			rosterManager.mu.Unlock()
+			if owns {
+				_ = rosterManager.endHubWatchUntilPersisted(rosterHandoffID, "roster replacement subscription failed", nil)
+			}
+		}
+	}()
+	if rosterManager != nil {
+		jm := rosterManager
+		jm.mu.Lock()
+		cfg := jm.watches[watchKey{VisibleSessionID: jm.sessionID, Target: hubRosterWatchKey, SendTo: runtimeMessageAliasCaller}]
+		var id string
+		var done <-chan struct{}
+		if cfg != nil {
+			id, done = cfg.watchID, cfg.rosterConsumerDone
+		}
+		jm.mu.Unlock()
+		if done != nil {
+			rosterHandoffID, rosterHandoffDone = id, done
+			s.cancelHubWatch(id)
+			select {
+			case <-done:
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			}
+		}
 	}
 	watchCtx, cancel := context.WithCancel(context.Background())
 	stopSetupCancellation := context.AfterFunc(ctx, cancel)
@@ -493,7 +798,7 @@ func (s *Session) configureHubWatchRuntime(ctx context.Context, args map[string]
 		cancel()
 		return nil, ctx.Err()
 	}
-	if first.Snapshot == nil || first.Metadata.Ref != request.Ref || first.Metadata.InstanceID == "" || first.Metadata.GenerationID == "" {
+	if (request.Scope == "top_level" && (first.Roster == nil || !first.Roster.Initial)) || (request.Scope == "" && (first.Snapshot == nil || first.Metadata.Ref != request.Ref || first.Metadata.InstanceID == "" || first.Metadata.GenerationID == "")) {
 		cancel()
 		return nil, appwire.Unavailable("observation has no authoritative target generation")
 	}
@@ -502,7 +807,12 @@ func (s *Session) configureHubWatchRuntime(ctx context.Context, args map[string]
 		cancel()
 		return nil, err
 	}
-	result, err := jm.configureHubWatchContext(ctx, request.Ref, first.Metadata.InstanceID, first.Metadata.GenerationID, state.Ref, request.Events, request.Completion)
+	var result watchResult
+	if request.Scope == "top_level" {
+		result, err = jm.configureHubRosterWatch(ctx, state.Ref)
+	} else {
+		result, err = jm.configureHubWatchContext(ctx, request.Ref, first.Metadata.InstanceID, first.Metadata.GenerationID, state.Ref, request.Events, request.Completion)
+	}
 	if err != nil {
 		cancel()
 		return nil, err
@@ -525,13 +835,33 @@ func (s *Session) configureHubWatchRuntime(ctx context.Context, args map[string]
 		}
 		return nil, err
 	}
-	if s.installHubWatchSubscription(jm, result.WatchID, cancel) {
-		go s.consumeHubWatch(watchCtx, result.WatchID, request, state.Ref, state.InstanceID, updates, first)
+	var done chan struct{}
+	if request.Scope == "top_level" {
+		done = make(chan struct{})
+	}
+	installed := s.installHubWatchSubscription(jm, result.WatchID, cancel, done)
+	// A rejected install means another registration already installed a consumer
+	// or the durable watch ended; do not end the winner in the deferred cleanup.
+	rosterHandoffID = ""
+	if installed {
+		if request.Scope == "top_level" {
+			// Only the installed transport may reset revisions or apply its initial.
+			// The replacement gate keeps another setup out until this is complete.
+			rosterHandoffID, rosterHandoffDone = result.WatchID, done
+			jm.resetHubRosterRevision(result.WatchID)
+			if err := jm.onHubRoster(result.WatchID, first); err != nil {
+				s.cancelHubWatch(result.WatchID)
+				close(done)
+				return nil, err
+			}
+			rosterHandoffID = ""
+		}
+		go s.consumeHubWatch(watchCtx, result.WatchID, request, state.Ref, state.InstanceID, updates, first, done)
 	}
 	return marshalWatchResult(result, jobToolResultDefaultMaxChar)
 }
 
-func (s *Session) installHubWatchSubscription(jm *jobManager, id string, cancel context.CancelFunc) bool {
+func (s *Session) installHubWatchSubscription(jm *jobManager, id string, cancel context.CancelFunc, done ...chan struct{}) bool {
 	s.mu.Lock()
 	if s.hubWatchCancels == nil {
 		s.hubWatchCancels = map[string]context.CancelFunc{}
@@ -551,6 +881,13 @@ func (s *Session) installHubWatchSubscription(jm *jobManager, id string, cancel 
 		}
 	}
 	s.hubWatchCancels[id] = cancel
+	if len(done) != 0 && done[0] != nil {
+		jm.mu.Lock()
+		if _, cfg, ok := jm.watchConfigByIDLocked(id); ok {
+			cfg.rosterConsumerDone = done[0]
+		}
+		jm.mu.Unlock()
+	}
 	s.mu.Unlock()
 	for _, stop := range retired {
 		stop()
@@ -577,7 +914,10 @@ const hubWatchReadBudget = 2 * time.Second
 // callerRef and callerInstance name the Manager whose binding admitted the
 // watch: a recheck ends the watch if the binding no longer serves that same
 // Manager session.
-func (s *Session) consumeHubWatch(ctx context.Context, id string, request appwire.SessionWatchRequest, callerRef, callerInstance string, updates <-chan appwire.SessionWatchUpdate, initial appwire.SessionWatchUpdate) {
+func (s *Session) consumeHubWatch(ctx context.Context, id string, request appwire.SessionWatchRequest, callerRef, callerInstance string, updates <-chan appwire.SessionWatchUpdate, initial appwire.SessionWatchUpdate, done ...chan struct{}) {
+	if len(done) != 0 && done[0] != nil {
+		defer close(done[0])
+	}
 	defer s.cancelHubWatch(id)
 	jm := s.jobManager
 	if jm == nil {
@@ -590,6 +930,9 @@ func (s *Session) consumeHubWatch(ctx context.Context, id string, request appwir
 	var held *appwire.SnapshotIdentity
 	var epoch uint64
 	observe := func(update appwire.SessionWatchUpdate) error {
+		if request.Scope == "top_level" {
+			return jm.onHubRoster(id, update)
+		}
 		if read := update.Snapshot; read != nil && read.Snapshot != nil {
 			if held != nil && (held.Incarnation != read.Snapshot.Incarnation || read.Snapshot.Length < held.Length || epoch != read.Epoch) {
 				return errors.New("answer continuation history identity changed")
@@ -677,7 +1020,7 @@ func (s *Session) consumeHubWatch(ctx context.Context, id string, request appwir
 				if !ok {
 					break stream
 				}
-				if update.Snapshot != nil && (update.Metadata.Ref != initial.Metadata.Ref || update.Metadata.InstanceID != initial.Metadata.InstanceID || update.Metadata.GenerationID != initial.Metadata.GenerationID) {
+				if request.Scope == "" && update.Snapshot != nil && (update.Metadata.Ref != initial.Metadata.Ref || update.Metadata.InstanceID != initial.Metadata.InstanceID || update.Metadata.GenerationID != initial.Metadata.GenerationID) {
 					_ = jm.endHubWatchUntilPersisted(id, "target replaced; re-register", nil)
 					return
 				}
@@ -734,9 +1077,12 @@ func (s *Session) consumeHubWatch(ctx context.Context, id string, request appwir
 					case <-ctx.Done():
 						return
 					}
-					if snapshot.Snapshot == nil || snapshot.Metadata.InstanceID != initial.Metadata.InstanceID || snapshot.Metadata.GenerationID != initial.Metadata.GenerationID || snapshot.Metadata.Ref != initial.Metadata.Ref {
+					if (request.Scope == "top_level" && (snapshot.Roster == nil || !snapshot.Roster.Initial)) || (request.Scope == "" && (snapshot.Snapshot == nil || snapshot.Metadata.InstanceID != initial.Metadata.InstanceID || snapshot.Metadata.GenerationID != initial.Metadata.GenerationID || snapshot.Metadata.Ref != initial.Metadata.Ref)) {
 						_ = jm.endHubWatchUntilPersisted(id, "target replaced or observation unavailable; re-register", nil)
 						return
+					}
+					if request.Scope == "top_level" {
+						jm.resetHubRosterRevision(id)
 					}
 					updates, initial, boundSignal = rebound, snapshot, signal
 					break

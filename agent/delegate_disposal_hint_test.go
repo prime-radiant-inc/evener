@@ -62,6 +62,23 @@ func TestDisposalHint_StableOwnershipAndToolGate(t *testing.T) {
 	}
 }
 
+func TestDisposalHint_UsesCreatorNotPhysicalOwner(t *testing.T) {
+	t.Parallel()
+	s := newTestSession(t)
+	id := "dlg_01ISODISPOSALHINT0000001"
+	// A delegate this session created: the root admitted the runtime, so the
+	// owner is someone else and only VisibleSessionID names this session.
+	desc := delegatestore.Descriptor{OwnerSessionID: "root-session", VisibleSessionID: s.id}
+	if got := s.delegateDisposalHint(desc, id); got != wantDisposalSentence {
+		t.Fatalf("creator disposal hint = %q, want %q", got, wantDisposalSentence)
+	}
+	// The physical owner is not the creator and must not receive the hint.
+	desc = delegatestore.Descriptor{OwnerSessionID: s.id, VisibleSessionID: "another-session"}
+	if got := s.delegateDisposalHint(desc, id); got != "" {
+		t.Fatalf("physical-owner hint = %q, want none", got)
+	}
+}
+
 func TestDisposalHint_NonIsolatedDelegateHasNoReport(t *testing.T) {
 	t.Parallel()
 	s := newTestSession(t)

@@ -25,6 +25,7 @@ export type {
   MutationOutboxOptions,
   MutationOutboxStorage,
   MutationStopBarrier,
+  MutationStopCapture,
   MutationVisibilityTarget,
 } from "./outbox";
 export { isClientReady, MutationOutbox } from "./outbox";
@@ -53,6 +54,7 @@ export type {
 export {
   awaitingFirstFrameSend,
   blockedEntries,
+  canceledEntries,
   createPendingTurnsStore,
   outboxEntriesByState,
   recoveryEntries,
@@ -66,7 +68,11 @@ export type {
 export { createMutationProjectionFence, replaceTargetRecords } from "./projection";
 export type { MutationProjectionWorkPorts, MutationProjectionWorkTracker } from "./projectionWork";
 export { createMutationProjectionWorkTracker } from "./projectionWork";
-export type { QueuedMessageStorage } from "./queuedMessages";
+export type {
+  MutationRetryCapture,
+  QueuedMessageStorage,
+  WebQueuedMessageStorage,
+} from "./queuedMessages";
 export { canEditQueuedMessage, canRemoveQueuedMessage, matchesQueuedMessageSnapshot } from "./queuedMessages";
 export type {
   ClientIdentity,
@@ -84,6 +90,7 @@ export {
   acceptedRecord,
   carriesOptimisticInput,
   createClientIdentity,
+  effectiveWireId,
   retainsAcceptedCopy,
   settlementRetiresRecovery,
 } from "./records";

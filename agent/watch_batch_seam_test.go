@@ -418,7 +418,7 @@ func TestRecordWatchSendsWakesOwnerOnDurablePrefix(t *testing.T) {
 		failEvictionWrite(t, jm)
 		var queued []jobNotification
 		jm.enqueue = func(n jobNotification) { queued = append(queued, n) }
-		tokens, recorded := jm.recordWatchSends([]watchSendDelivery{build("target_overflow")})
+		tokens, recorded, _ := jm.recordWatchSends([]watchSendDelivery{build("target_overflow")})
 		if !recorded {
 			t.Fatal("recordWatchSends on a durable prefix: recorded=false, want true (the pending frame is journaled and owes the owner a wake)")
 		}

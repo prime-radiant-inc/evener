@@ -172,6 +172,10 @@ func (l liveThreadEnvelopeSource) ClientMutationProjection() (appwire.QueueState
 	return l.session().ClientMutationProjection()
 }
 
+func (l liveThreadEnvelopeSource) ConversationProvenance() *appwire.ConversationProvenanceState {
+	return l.session().ConversationProvenance()
+}
+
 // TaskAggregate reports nil on a persisted-store failure. That is unavailable
 // task state, not an authoritative empty list, and the wire distinguishes them.
 func (l liveThreadEnvelopeSource) TaskAggregate() *appwire.TaskAggregate {
@@ -203,6 +207,10 @@ func (l liveThreadEnvelopeSource) FailedToolCalls() (int, bool) {
 
 func (l liveThreadEnvelopeSource) PendingQuestion() *appwire.PendingQuestion {
 	return l.session().PendingQuestion()
+}
+
+func (l liveThreadEnvelopeSource) PendingAskCalls() *appwire.PendingAskState {
+	return l.session().PendingAskCalls()
 }
 
 func (l liveThreadEnvelopeSource) RestingFailure() *appwire.ThreadFailure {

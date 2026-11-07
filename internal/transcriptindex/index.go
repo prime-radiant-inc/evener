@@ -300,6 +300,13 @@ type Index struct {
 	// refusing marks a handle opened by OpenRefusing: it runs no full
 	// rebuild and never blocks on the sidecar's lock, in any operation.
 	refusing bool
+	// readView borrows the parent's shared lock and transcript handle. Its
+	// derived records are private when reconstruction at an older cut is needed.
+	readView bool
+	// cutView retains only the last exceptional reconstruction, never one per
+	// entry or reader. The ordinary current-boundary path releases it.
+	cutView   *Index
+	cutLength int64
 }
 
 // Open returns the index for the transcript at path, kept in dir. A missing,
@@ -387,6 +394,14 @@ func (x *Index) Rebuild(length int64) error {
 	return x.locked(true, func() error { return x.rebuild(length, "") })
 }
 
+// RebuildAtLeast repairs a shared sidecar without discarding bytes another
+// handle already indexed. Readers still apply their own publication cut.
+func (x *Index) RebuildAtLeast(length int64) error {
+	x.mu.Lock()
+	defer x.mu.Unlock()
+	return x.locked(true, func() error { return x.rebuild(max(length, x.meta.Length), "") })
+}
+
 // RebuildIfStillRefused rebuilds the sidecar only while the live build is
 // still the one the caller's refusal named — the repair path's revalidation.
 // A registration can land after another repair already committed a fresh
@@ -422,6 +437,9 @@ func (x *Index) locked(exclusive bool, fn func() error) error {
 }
 
 func (x *Index) lockedMode(exclusive, nonblocking bool, fn func() error) error {
+	if x.readView {
+		return fn()
+	}
 	if x.lock == nil {
 		return errors.New("transcript index is closed")
 	}

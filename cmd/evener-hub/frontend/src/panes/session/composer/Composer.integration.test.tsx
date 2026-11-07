@@ -586,7 +586,7 @@ test.each([
     };
   });
   const hold = holdNextWriteTransaction(
-    pending === "recovery edit" ? ["recovery"] : ["outbox", "optimistic", "recovery", "sequences"],
+    pending === "recovery edit" ? ["recovery", "outbox"] : ["outbox", "optimistic", "recovery", "sequences"],
   );
   try {
     let completion: Promise<boolean> | undefined;

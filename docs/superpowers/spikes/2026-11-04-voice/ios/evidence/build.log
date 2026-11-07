@@ -1,0 +1,36 @@
++ SDKROOT=/Applications/Xcode.app/Contents/Developer/Platforms/iPhoneSimulator.platform/Developer/SDKs/iPhoneSimulator.sdk
++ /Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/swiftc -swift-version 6 -parse-as-library -sdk /Applications/Xcode.app/Contents/Developer/Platforms/iPhoneSimulator.platform/Developer/SDKs/iPhoneSimulator.sdk -target arm64-apple-ios17.0-simulator -module-cache-path /tmp/evener-voice-ios.3G5Ols/build-simulator-reviewed/module-cache -framework SwiftUI -framework UIKit -framework AVFoundation -framework UniformTypeIdentifiers /tmp/evener-voice-ios.3G5Ols/source-reviewed/Sources/PlaybackFence.swift /tmp/evener-voice-ios.3G5Ols/source-reviewed/Sources/AudioProbe.swift /tmp/evener-voice-ios.3G5Ols/source-reviewed/Sources/VoiceProbeApp.swift -o /tmp/evener-voice-ios.3G5Ols/build-simulator-reviewed/VoiceProbe.app/VoiceProbe
++ /usr/bin/file /tmp/evener-voice-ios.3G5Ols/build-simulator-reviewed/VoiceProbe.app/VoiceProbe
+/tmp/evener-voice-ios.3G5Ols/build-simulator-reviewed/VoiceProbe.app/VoiceProbe: Mach-O 64-bit executable arm64
++ SDKROOT=/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk
++ /Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/swiftc -swift-version 6 -parse-as-library -sdk /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk -target arm64-apple-macosx14.0 -module-cache-path /tmp/evener-voice-ios.3G5Ols/build-simulator-reviewed/module-cache-macos /tmp/evener-voice-ios.3G5Ols/source-reviewed/Sources/PlaybackFence.swift /tmp/evener-voice-ios.3G5Ols/source-reviewed/Tests/PlaybackFenceCheck.swift -o /tmp/evener-voice-ios.3G5Ols/build-simulator-reviewed/PlaybackFenceCheck
++ /tmp/evener-voice-ios.3G5Ols/build-simulator-reviewed/PlaybackFenceCheck
+PASS: current accepted, stopped rejected, replacement accepted, previous rejected
++ SDKROOT=/Applications/Xcode.app/Contents/Developer/Platforms/iPhoneOS.platform/Developer/SDKs/iPhoneOS.sdk
++ /Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/swiftc -swift-version 6 -parse-as-library -sdk /Applications/Xcode.app/Contents/Developer/Platforms/iPhoneOS.platform/Developer/SDKs/iPhoneOS.sdk -target arm64-apple-ios17.0 -module-cache-path /tmp/evener-voice-ios.3G5Ols/build-device-reviewed/module-cache -framework SwiftUI -framework UIKit -framework AVFoundation -framework UniformTypeIdentifiers /tmp/evener-voice-ios.3G5Ols/source-reviewed/Sources/PlaybackFence.swift /tmp/evener-voice-ios.3G5Ols/source-reviewed/Sources/AudioProbe.swift /tmp/evener-voice-ios.3G5Ols/source-reviewed/Sources/VoiceProbeApp.swift -o /tmp/evener-voice-ios.3G5Ols/build-device-reviewed/VoiceProbe-UNSIGNED-NOT-INSTALLABLE
++ /usr/bin/file /tmp/evener-voice-ios.3G5Ols/build-device-reviewed/VoiceProbe-UNSIGNED-NOT-INSTALLABLE
+/tmp/evener-voice-ios.3G5Ols/build-device-reviewed/VoiceProbe-UNSIGNED-NOT-INSTALLABLE: Mach-O 64-bit executable arm64
++ SDKROOT=/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk
++ /Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/swiftc -swift-version 6 -parse-as-library -sdk /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk -target arm64-apple-macosx14.0 -module-cache-path /tmp/evener-voice-ios.3G5Ols/build-device-reviewed/module-cache-macos /tmp/evener-voice-ios.3G5Ols/source-reviewed/Sources/PlaybackFence.swift /tmp/evener-voice-ios.3G5Ols/source-reviewed/Tests/PlaybackFenceCheck.swift -o /tmp/evener-voice-ios.3G5Ols/build-device-reviewed/PlaybackFenceCheck
++ /tmp/evener-voice-ios.3G5Ols/build-device-reviewed/PlaybackFenceCheck
+PASS: current accepted, stopped rejected, replacement accepted, previous rejected
+/tmp/evener-voice-ios.3G5Ols/build-simulator-reviewed/VoiceProbe.app/VoiceProbe:
+Load command 11
+      cmd LC_BUILD_VERSION
+  cmdsize 32
+ platform IOSSIMULATOR
+    minos 17.0
+      sdk 27.2
+   ntools 1
+     tool LD
+  version 27106.1
+/tmp/evener-voice-ios.3G5Ols/build-device-reviewed/VoiceProbe-UNSIGNED-NOT-INSTALLABLE:
+Load command 11
+      cmd LC_BUILD_VERSION
+  cmdsize 32
+ platform IOS
+    minos 17.0
+      sdk 27.2
+   ntools 1
+     tool LD
+  version 27106.1

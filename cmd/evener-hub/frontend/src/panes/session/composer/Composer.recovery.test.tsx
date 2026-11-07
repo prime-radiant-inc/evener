@@ -791,7 +791,7 @@ test.each([
   const submittedText = image ? "edit me [image 1]" : "retry me";
   expect(textarea().textContent).toBe(submittedText);
 
-  const hold = holdNextWriteTransaction(["recovery"]);
+  const hold = holdNextWriteTransaction(["recovery", "outbox"]);
   const written = hold.reached;
   try {
     fireEvent.click(submitButton());
@@ -850,6 +850,74 @@ test("a /queue typed over a recovered edit resends its body atomically", async (
   expect(rows.at(-1)?.payload).toMatchObject({ input: [{ type: "text", text: "replacement" }] });
   expect(textarea().textContent).toBe("");
   expect(readDraft("ref_a")).toBe("");
+});
+
+// Round-8 review High: a byte-identical replay of a delivery-uncertain wire
+// keeps the wire's identity AS A UNIT - id, method, and payload, the three
+// fields the daemon's journal replays together. destinationSendRoute rerouted
+// a Send pressed while the destination was busy (busy with the wire's OWN
+// outstanding sibling attempt) into a QUEUE, and the rebuilt intent's
+// turn/queue method broke byte-identity on the method half - a fresh id for
+// a composition whose sibling RPC could still apply: double delivery, the
+// harm this endpoint exists to kill, reached through a client-side route
+// choice. The replay submits under the ORIGINAL method and the inherited
+// wire id; the route cannot mint a second wire for the same composition.
+test("a rerouted Send of an unchanged delivery-uncertain replay keeps the original method and wire identity", async () => {
+  const storage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(storage);
+  // Wire W: an attempted turn/start whose response never came back.
+  const original = await storage.enqueueIntent({
+    targetRef: "ref_a",
+    threadId: "thread_a",
+    method: "turn/start",
+    // The payload exactly as a real submit builds it: the replay's
+    // byte-identity is judged against this frozen composition.
+    payload: { ref: "ref_a", expectedInstanceId: "thr_ref_a", input: [{ type: "text", text: "retry me" }] },
+    attachments: [],
+    optimisticDisplay: { method: "turn/start", input: [{ type: "text", text: "retry me" }] },
+  });
+  await storage.markAttempted(original.clientMutationId);
+  await storage.markUnknown(original.clientMutationId, "blockedUnknown");
+  // Retry settles the predecessor superseded and mints the replacement with
+  // the inherited wire id; its attempt is the outstanding sibling RPC that
+  // makes the destination busy.
+  const capture = await storage.getOutboxWithStopEpoch(original.clientMutationId);
+  const replacement = await storage.mintRetryFromRow(original.clientMutationId, {
+    record: capture.record,
+    stopEpoch: capture.stopEpoch,
+    displayedStopEpoch: 0,
+  });
+  if (!replacement) throw new Error("mint failed");
+  expect(replacement.payload.clientMutationId).toBe(original.clientMutationId);
+  await storage.markAttempted(replacement.clientMutationId);
+  // The predecessor's late PRE-DAEMON refusal leaves the wire's composition
+  // in recovery, delivery-uncertain, with the frozen original method.
+  const recovery = await storage.transferToRecovery(original.clientMutationId, "rejected", "invalid params", {
+    wireDeliveryUncertain: true,
+  });
+  if (!recovery) throw new Error("failed to seed recovery");
+  // The seeded row must carry this pane's seat for the composer to adopt it.
+  await stampRecoveryOwner(storage, recovery);
+  await mountComposer("ref_a", {
+    status: { type: "active" },
+    evener: { ref: "ref_a", capabilities: FULL_CAPABILITIES, queue: { revision: 0 } },
+  });
+  await flushPendingTurnsProjectionForTests();
+  expect(textarea().textContent).toBe("retry me");
+  // The Send press routes as a queue behind the wire's own outstanding
+  // attempt - but the composition is unchanged, so the resend is a REPLAY.
+  fireEvent.click(submitButton());
+  await flushPendingTurnsProjectionForTests();
+  await waitFor(async () => expect(await storage.getRecovery(recovery.clientMutationId)).toBeUndefined());
+  const resent = (await storage.listOutbox("ref_a")).find(
+    (row) => row.clientMutationId !== replacement.clientMutationId,
+  );
+  if (!resent) throw new Error("no resent row");
+  // The replay keeps the ORIGINAL method and the inherited wire id: the
+  // daemon's journal dedupes it against the sibling's outstanding attempt
+  // instead of applying the composition twice under two ids.
+  expect(resent.method).toBe("turn/start");
+  expect(resent.payload.clientMutationId).toBe(original.clientMutationId);
 });
 
 test("a failed /queue resend keeps the invocation as the recovery composer text", async () => {

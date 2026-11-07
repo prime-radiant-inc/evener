@@ -118,6 +118,12 @@ export interface ArchivedListResponse {
 }
 
 export interface AttentionChanged {
+  ref?: string;
+  /**
+   * RosterInstanceID identifies the session occupying Ref in roster updates.
+   * Clear changes it without changing the workspace ref or threadId.
+   */
+  rosterInstanceId?: string;
   threadId: string;
   title: string;
   project: string;
@@ -422,6 +428,39 @@ export interface CommandDescriptor {
 
 export interface CommandListResponse {
   commands: CommandDescriptor[];
+}
+
+export interface ConversationFrontier {
+  id: string;
+  baseId?: string;
+  addedInputs?: string[];
+  removedInputs?: string[];
+}
+
+export interface ConversationOutputProvenance {
+  version: number;
+  instanceId: string;
+  runGeneration: number;
+  requestId: string;
+  frontierId: string;
+  sourceItemId: string;
+}
+
+export interface ConversationProvenanceChangedParams {
+  threadId: string;
+  ref: string;
+  provenance: ConversationProvenanceState | null;
+}
+
+export interface ConversationProvenanceState {
+  version: number;
+  authoritative: boolean;
+  revision: number;
+  instanceId: string;
+  admittedInputs: string[];
+  retiredInputs: string[];
+  consumedFrontierId?: string;
+  frontiers: ConversationFrontier[];
 }
 
 export interface DaemonBlocker {
@@ -838,6 +877,8 @@ export interface EvenerSubagentPreviewResponse {
 }
 
 export interface EvenerThread {
+  conversationProvenance?: ConversationProvenanceState;
+  pendingAsk?: PendingAskState;
   /**
    * Manager is the session's start-time Manager property, reported by the
    * session itself. It is not a runtime setting: nothing can turn it on or
@@ -1187,6 +1228,9 @@ export interface FavoriteSetResponse {
 }
 
 export interface FeatureSet {
+  voicePresentationContextV1?: boolean;
+  conversationProvenance?: boolean;
+  voice?: boolean;
   sessionTools?: boolean;
   threadList: boolean;
   threadTurnsList: boolean;
@@ -1705,6 +1749,7 @@ export interface InputItem {
   name?: string;
   path?: string;
   metadata?: Record<string, string>;
+  voicePresentation?: VoicePresentationContext;
 }
 
 export interface InputMention {
@@ -2723,6 +2768,12 @@ export interface NavigationSessionSummary {
    */
   archived?: boolean;
   updated_at?: string;
+  /**
+   * CreatedAt is when the session started. A project's rows are ordered by
+   * it, newest first, so a client that joins the Current and Recent tiers
+   * can keep that order across the tier boundary.
+   */
+  created_at?: string;
   more_subagents?: number;
   /**
    * Subagents is a live root's whole-tree subagent tally, counted by its
@@ -2928,6 +2979,18 @@ export interface PathsCompleteParams {
 
 export interface PathsCompleteResponse {
   data: string[];
+}
+
+export interface PendingAskCall {
+  turnId: string;
+  callId: string;
+}
+
+export interface PendingAskState {
+  version: number;
+  instanceId: string;
+  revision: number;
+  calls: PendingAskCall[];
 }
 
 export interface PendingMutation {
@@ -3188,6 +3251,35 @@ export interface RepoLaunchConfigStatus {
   hash?: string;
   trust: string;
   preview?: string;
+}
+
+export interface RosterEvent {
+  ref?: string;
+  /**
+   * RosterInstanceID identifies the session occupying Ref in roster updates.
+   * Clear changes it without changing the workspace ref or threadId.
+   */
+  rosterInstanceId?: string;
+  threadId: string;
+  title: string;
+  project: string;
+  level: string;
+  askPending?: boolean;
+  /**
+   * ApprovalPending is true while the session is blocked on a sandbox
+   * escalation a human must allow or deny (M7). It is why an
+   * escalation-promoted session's Level is needs_you; AskPending is the
+   * question's equivalent.
+   */
+  approvalPending?: boolean;
+  /**
+   * NeedsResponse is true while the session rests awaiting with no pending
+   * question: its turn ended with end_reason needs_response, asking for a
+   * reply. A plain reply rests idle and never carries it. Additive: an
+   * older hub omits it, decoding as false.
+   */
+  needsResponse?: boolean;
+  kind: string;
 }
 
 export interface SandboxEscalationRequested {
@@ -3768,6 +3860,13 @@ export interface SessionPinUnpinResponse {
   navigation: NavigationMutation;
 }
 
+export interface SessionRosterUpdate {
+  revision: number;
+  initial?: boolean;
+  resync?: boolean;
+  events?: RosterEvent[];
+}
+
 export interface SessionRuntimeCancel {
   bindingId: string;
   requestId: number;
@@ -3896,13 +3995,15 @@ export interface SessionWatch {
 }
 
 export interface SessionWatchRequest {
-  ref: string;
+  ref?: string;
+  scope?: string;
   events?: string[];
   completion?: boolean;
 }
 
 export interface SessionWatchUpdate {
   snapshot?: ThreadReadResponse;
+  roster?: SessionRosterUpdate;
   notification?: Notification;
   event?: string;
   metadata: SessionObservationMetadata;
@@ -4196,6 +4297,7 @@ export interface ThreadActivity {
 }
 
 export interface ThreadCapabilities {
+  voicePresentationContextV1?: boolean;
   send: boolean;
   steer: boolean;
   interrupt: boolean;
@@ -4358,6 +4460,7 @@ export interface ThreadForkResponse {
 }
 
 export interface ThreadItem {
+  conversationProvenance?: ConversationOutputProvenance;
   actor?: SessionActor;
   observation?: SessionObservationMetadata;
   authorship?: TranscriptAuthorship;
@@ -5195,6 +5298,34 @@ export interface UrlsUpdatedParams {
 export interface Value {
 }
 
+export interface VoicePresentationContext {
+  version: number;
+  deliveryId: string;
+  bindingId: string;
+  epoch: string;
+  instanceId: string;
+  canonicalSourceItemId: string;
+  originatingRequestId: string;
+  frontierId: string;
+  runGeneration: number;
+  presentationGeneration: number;
+  generatedTranscript: string;
+  transcriptTruncated: boolean;
+  outputComplete: boolean;
+  interrupted: boolean;
+  sampleRateHz: number;
+  items: VoicePresentationItem[];
+}
+
+export interface VoicePresentationItem {
+  responseId: string;
+  itemId: string;
+  generatedSamples: number;
+  queuedSamples: number;
+  playedSamples: number;
+  playbackComplete: boolean;
+}
+
 export interface WarningParams {
   threadId: string;
   ref: string;
@@ -5425,6 +5556,7 @@ export const NOTIFICATION_NAMES = [
   "thread/closed",
   "thread/status/changed",
   "thread/queueChanged",
+  "thread/conversation-provenance/changed",
   "evener/thread/name/changed",
   "thread/model/changed",
   "thread/reasoning-effort/changed",
@@ -5621,8 +5753,8 @@ export const WIRE_FIELD_KEYS = {
   ThreadItemPosition: ["entry", "item", "sub"],
   TurnError: ["message", "additionalDetails", "codexErrorInfo", "source", "title", "hint", "cause"],
   DiagnosticCause: ["kind", "provider", "model", "status"],
-  ThreadItem: ["actor", "observation", "authorship", "type", "id", "transcriptKey", "position", "turnId", "transcriptEntryIndex", "text", "delta", "images", "toolName", "callId", "argumentsJson", "description", "output", "error", "outputImages", "status", "prevalOnly", "startedAt", "completedAt", "durationMs", "exitCode", "raw", "eventKind", "source", "steeringKind", "clientMutationId", "version", "roundId", "completedAtEntry"],
-  InputItem: ["type", "text", "mentions", "url", "mediaType", "data", "name", "path", "metadata"],
+  ThreadItem: ["conversationProvenance", "actor", "observation", "authorship", "type", "id", "transcriptKey", "position", "turnId", "transcriptEntryIndex", "text", "delta", "images", "toolName", "callId", "argumentsJson", "description", "output", "error", "outputImages", "status", "prevalOnly", "startedAt", "completedAt", "durationMs", "exitCode", "raw", "eventKind", "source", "steeringKind", "clientMutationId", "version", "roundId", "completedAtEntry"],
+  InputItem: ["type", "text", "mentions", "url", "mediaType", "data", "name", "path", "metadata", "voicePresentation"],
   InputMention: ["kind", "name", "offset"],
   OutputImage: ["source", "name", "mediaType", "size", "url", "sha", "path"],
   QueueState: ["depth", "revision", "preview", "ids", "clientMutationIds", "texts", "skillNames", "commandNames", "mentions"],
@@ -5802,6 +5934,7 @@ export interface NotificationTypes {
   "thread/closed": ThreadClosedParams;
   "thread/status/changed": ThreadStatusChangedParams;
   "thread/queueChanged": ThreadQueueChangedParams;
+  "thread/conversation-provenance/changed": ConversationProvenanceChangedParams;
   "evener/thread/name/changed": ThreadNameChangedParams;
   "thread/model/changed": ThreadModelChangedParams;
   "thread/reasoning-effort/changed": ThreadReasoningEffortChangedParams;

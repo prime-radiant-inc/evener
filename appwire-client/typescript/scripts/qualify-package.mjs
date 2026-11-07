@@ -461,7 +461,7 @@ transcriptStore.getState().refreshHubDefaults().then(() => {
   unmarkAttempted: () => Promise.resolve(false),
   markUnknown: () => Promise.resolve(false),
   settleReceipt: () => Promise.resolve(false),
-  settleApplied: () => Promise.resolve(false),
+  settleApplied: () => Promise.resolve(undefined),
   restoreProvenAbsent: () => Promise.resolve([]),
   transferToRecovery: () => Promise.resolve(undefined),`;
   // The qualification manifest: every specifier package.json publishes, with

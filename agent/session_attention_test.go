@@ -4337,23 +4337,29 @@ func TestDelegateAttention_PrelaunchRecoveryDoesNotWaitForUnlaunchedRunner(t *te
 		t.Fatalf("execute stop plans: %v", err)
 	}
 	executeDelegateCancelPlan(cancelPlan)
-	for range 3 {
-		plans, err := c.Reconcile(emptyDelegateReconcileEvidence(c))
-		if err != nil {
-			t.Fatalf("Reconcile prelaunch recovery: %v", err)
-		}
-		if err := root.executeDelegateMutationPlans(plans); err != nil {
-			t.Fatalf("execute prelaunch recovery plans: %v", err)
-		}
+	c.mu.Lock()
+	live := c.live[fixture.delegateID]
+	pendingRecoveryRunner := live != nil && live.recoveryRunnerPending
+	c.mu.Unlock()
+	if pendingRecoveryRunner {
+		t.Fatalf("prelaunch recovery waited for an unlaunched runner: pending recovery runner live=%#v", live)
 	}
-	select {
-	case <-stop.done:
-	default:
+	// TRIPWIRE: a stop that waits on an unlaunched runner never completes; 5s only fires on that hang.
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := c.drainStop(ctx, c.stopForResult(stop), root); err != nil {
 		c.mu.Lock()
-		live := c.live[fixture.delegateID]
+		live = c.live[fixture.delegateID]
 		aggregate := c.durable[fixture.delegateID]
 		c.mu.Unlock()
-		t.Fatalf("prelaunch recovery waited for an unlaunched runner: live=%#v aggregate=%#v", live, aggregate)
+		t.Fatalf("prelaunch recovery waited for an unlaunched runner: %v live=%#v aggregate=%#v", err, live, aggregate)
+	}
+	if !channelClosed(stop.done) {
+		c.mu.Lock()
+		live = c.live[fixture.delegateID]
+		aggregate := c.durable[fixture.delegateID]
+		c.mu.Unlock()
+		t.Fatalf("prelaunch recovery waited for an unlaunched runner: stop not done live=%#v aggregate=%#v", live, aggregate)
 	}
 }
 

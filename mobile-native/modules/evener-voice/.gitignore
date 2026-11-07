@@ -1,0 +1,3 @@
+resources/*.onnx
+resources/wake-models.json
+.build/

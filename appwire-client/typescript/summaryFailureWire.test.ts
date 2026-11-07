@@ -10,12 +10,21 @@ test("summary failure survives strict current-state decoding with its real route
   const fixture = summaryFailureWireFixture();
   expect(fixture.warning.summary_failure.terminal).toEqual({
     provider: "openai",
+    model: "gpt-5.2",
+    route: "session",
+    kind: "rejected_output",
+    stage: "validation",
+    reason: "empty_reply",
+    attempts: 3,
+  });
+  expect(fixture.warning.summary_failure.previous?.[0]).toEqual({
+    provider: "openai",
     model: "summary-model-8af1",
     route: "cheap",
-    kind: "rate_limit",
-    stage: "provider",
-    status: 429,
-    retryable: true,
+    kind: "rejected_output",
+    stage: "validation",
+    reason: "empty_reply",
+    attempts: 3,
   });
   const original = hydrateThread(summaryFailureWireRead(), "local:summary-fixture", 0);
   const state = currentTranscriptState(original);
@@ -28,7 +37,12 @@ test("summary failure survives strict current-state decoding with its real route
   expect(warning).toBeDefined();
   if (!warning) throw new Error("producer warning was lost");
   expect(warning.raw).toEqual({
-    warning: { code: "summary_failure", source: "provider", title: fixture.warning.title, hint: fixture.warning.hint },
+    warning: {
+      code: "summary_failure",
+      source: fixture.warning.source,
+      title: fixture.warning.title,
+      hint: fixture.warning.hint,
+    },
   });
   expect(isInformationalWarning(warning)).toBe(false);
   const notice = attentionWarningNotice(warning);
@@ -37,7 +51,7 @@ test("summary failure survives strict current-state decoding with its real route
     title: fixture.warning.title,
     hint: fixture.warning.hint,
   });
-  for (const identifier of ["openai/summary-model-8af1", "429", "rate_limit"])
+  for (const identifier of ["openai/gpt-5.2", "rejected_output", "empty_reply"])
     expect(notice?.message).toContain(identifier);
   expect(items.find((item) => item.id === fixture.recovery.id)).toMatchObject({
     raw: { compaction: { layer: "summarize" } },

@@ -181,6 +181,17 @@
   color: var(--ink-mid);
 }
 
+/* The effort trigger is the row's only control that the status line's own
+ * compact rules can shrink below the app's tap floor. At phone and coarse
+ * widths keep a full 44px target in both axes; the value stays centred in it. */
+@media (max-width: 899px), (any-pointer: coarse) {
+  .effortTrigger {
+    justify-content: center;
+    min-width: var(--tap-min);
+    min-height: var(--tap-min);
+  }
+}
+
 /* A REAL native <select>, laid over its own readout at zero opacity: the row
  * gets a borderless value-as-control, and the control keeps every native
  * behavior a hand-built listbox would have thrown away - tab order, arrow keys,
