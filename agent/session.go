@@ -1146,14 +1146,21 @@ type Session struct {
 	// turn; promoteStagedAttentionCoverage clears it. Guarded by attentionMu.
 	attentionAcceptedID string
 	// attentionLatchedReachedRequest records that the trigger
-	// attentionAcceptedID latches reached a settled request — the report was
-	// presented — even where that request settled as a responses-continuation
-	// delta, which credits no coverage but was built from the turns it
-	// carried. The reopen then owes nothing: the model answered the report,
-	// and a fresh identity would duplicate it. The reopen decision consumes
-	// the record with the latch; every fresh latch resets it. Guarded by
+	// attentionAcceptedID latches reached a settled request — the request
+	// actually carried its turn to the model — even where that request
+	// settled as a responses-continuation delta, which credits no coverage.
+	// The reopen then owes nothing: the model answered the report, and a
+	// fresh identity would duplicate it. The reopen decision consumes the
+	// record with the latch; every fresh latch resets it. Guarded by
 	// attentionMu.
 	attentionLatchedReachedRequest bool
+	// attentionDeltaCarriedIDs holds the attention identities among the turns
+	// the request this build planned as a responses-continuation delta
+	// actually carries: the delta sends only the turns past its anchor, so a
+	// staged identity before the anchor never reached the model. The planning
+	// seam records the set on every build; promote consumes it when a round
+	// settles as that delta. Guarded by attentionMu.
+	attentionDeltaCarriedIDs map[string]struct{}
 	// attentionAutomaticDriveHolds names pending rows a user's stop quieted
 	// from automatic drives: the stopped generation's commit left the
 	// delegate armed for every other pending row, and that stale armed wake

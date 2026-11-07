@@ -293,6 +293,10 @@ func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t
 	// held-attention filter can shrink the projected list without reopening
 	// that window.
 	presentedBoundary := len(historyTurns)
+	// heldDropped reports that this request's projection kept a held row out
+	// — a nonstandard view of the resident history that must not seed or
+	// continue from a stored anchor.
+	heldDropped := false
 	if lease, ok := ctx.Value(delegateRunLeaseContextKey{}).(delegateLease); ok && s.delegateController != nil {
 		claim, claimErr := s.delegateController.BeginModelRequest(lease)
 		if claimErr != nil {
@@ -306,8 +310,18 @@ func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t
 			// held row would ride this drive's presentation, the immediate
 			// restart the stop exists to prevent — so its turn is kept out
 			// of the projection. A send builds no attention run and still
-			// presents it.
-			snapshot = s.dropHeldDelegateAttentionTurns(snapshot)
+			// presents it. Each drop shifts every later turn one position
+			// left, so the in-flight boundary — an index into the
+			// projection — moves with each drop strictly before it, the
+			// same rule the resident drop applies to the baseline.
+			filtered, droppedAt := s.dropHeldDelegateAttentionTurns(snapshot)
+			heldDropped = len(droppedAt) > 0
+			for _, at := range droppedAt {
+				if at < inFlightFrom {
+					scope.InFlightFrom--
+				}
+			}
+			snapshot = filtered
 		}
 		presentedTurns = snapshot
 		history, claimErr = s.delegateController.CompleteModelRequest(claim, snapshot, scope)
@@ -329,7 +343,7 @@ func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t
 		return profile, sys, history, req, nil, reasoningEffort, err
 	}
 	initialBudget := budget
-	req, fullHistory = s.applyResponsesContinuationAnchorPlanning(ctx, profile, req, historyTurns, true)
+	req, fullHistory = s.applyResponsesContinuationAnchorPlanning(ctx, profile, req, historyTurns, true, heldDropped)
 	if req, budget, err = budgetModelDispatchRequestWithBudget(profile, req); err != nil {
 		return profile, sys, history, req, fullHistory, reasoningEffort, err
 	}
@@ -377,7 +391,7 @@ func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t
 			return true, budgetErr
 		}
 		req, budget = budgetedReq, budgeted
-		req, fullHistory = s.applyResponsesContinuationAnchorPlanning(ctx, profile, req, historyTurns, true)
+		req, fullHistory = s.applyResponsesContinuationAnchorPlanning(ctx, profile, req, historyTurns, true, heldDropped)
 		budgetedReq, budgeted, budgetErr = budgetModelDispatchRequestWithBudget(profile, req)
 		if budgetErr != nil {
 			return true, budgetErr
@@ -580,8 +594,28 @@ func (s *Session) growTurnHistoryBaseline(restoredAt []int) {
 
 // applyResponsesContinuationAnchorPlanning returns the request to dispatch and,
 // when it planned a continuation delta, the full-history message list the delta
-// was cut from, for the retry a rejected anchor forces.
-func (s *Session) applyResponsesContinuationAnchorPlanning(ctx context.Context, profile *provider.Profile, req llm.Request, historyTurns []schema.Turn, stream bool) (llm.Request, []llm.Message) {
+// was cut from, for the retry a rejected anchor forces. heldDropped reports
+// that the request's projection kept a held row out.
+func (s *Session) applyResponsesContinuationAnchorPlanning(ctx context.Context, profile *provider.Profile, req llm.Request, historyTurns []schema.Turn, stream bool, heldDropped bool) (llm.Request, []llm.Message) {
+	// Every build re-plans, so the carried identities must describe the
+	// request this build settles: start from none, and only a planned delta
+	// records its own.
+	s.attentionMu.Lock()
+	s.attentionDeltaCarriedIDs = nil
+	s.attentionMu.Unlock()
+	if heldDropped {
+		// A projection that kept a held row out is a nonstandard view of the
+		// resident history: no stored exchange matches its prefix, and the
+		// state its own exchange would store is missing turns the resident
+		// history keeps. It must not continue from an anchor, and the
+		// exchange it settles must not become one — dispatch full-history
+		// with no continuation metadata, so the response turn records no
+		// anchor fingerprint and no later request continues from it.
+		if req.HistoryMode == "" {
+			req.HistoryMode = llm.HistoryModeFullHistory
+		}
+		return req, nil
+	}
 	if llm.ResponsesContinuationMode(strings.TrimSpace(s.cfg.OpenAIResponsesContinuation)) != llm.ResponsesContinuationAuto {
 		if req.HistoryMode == "" {
 			req.HistoryMode = llm.HistoryModeFullHistory
@@ -668,6 +702,7 @@ func (s *Session) applyResponsesContinuationAnchorPlanning(ctx context.Context, 
 			StoragePolicyLabel:      plan.StoragePolicyLabel,
 			StorageScopeFingerprint: plan.StorageScopeFingerprint,
 		}
+		s.recordAttentionDeltaCarriedIDs(candidate.Delta)
 		return responsesContinuationWithInputEstimate(target, req), fullHistory
 	}
 
@@ -790,6 +825,26 @@ func responsesContinuationTurnKinds(turns []schema.Turn) []string {
 		kinds = append(kinds, string(turn.Kind))
 	}
 	return kinds
+}
+
+// recordAttentionDeltaCarriedIDs records the attention identities among the
+// turns a planned responses-continuation delta actually carries: the delta
+// sends only the turns past its anchor, so those are the only projection turns
+// that reach the model when the request settles as that delta.
+func (s *Session) recordAttentionDeltaCarriedIDs(delta []schema.Turn) {
+	var carried map[string]struct{}
+	for _, turn := range delta {
+		if turn.AttentionID == "" {
+			continue
+		}
+		if carried == nil {
+			carried = make(map[string]struct{}, len(delta))
+		}
+		carried[turn.AttentionID] = struct{}{}
+	}
+	s.attentionMu.Lock()
+	s.attentionDeltaCarriedIDs = carried
+	s.attentionMu.Unlock()
 }
 
 func (s *Session) responsesContinuationSupportRegistry() map[llm.ResponsesEndpointFamily]llm.ResponsesContinuationSupport {

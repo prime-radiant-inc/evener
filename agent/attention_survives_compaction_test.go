@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/internal/delegatestore"
@@ -317,12 +318,13 @@ func TestAcceptedDelegateAttentionTriggerFoldsAwayOncePresented(t *testing.T) {
 // A settled request that carried the latched trigger presented the report, a
 // responses-continuation delta included: a delta credits no coverage — its
 // older items live in server-side state this session cannot verify — but the
-// turns the delta was built from reached the model all the same. The reopen
+// turns the delta actually carried reached the model all the same. The reopen
 // must read that reach: a report the model already answered is not owed
 // again, and re-delivering it would duplicate it while the resident and
-// resume drops move the answered report below the reply that answered it. A
-// delta that settled without the trigger presented nothing, and its reopen
-// is still owed.
+// resume drops move the answered report below the reply that answered it.
+// Carriage is not staging: the staged set is the whole projection, while a
+// delta carries only the turns past its anchor — a latch staged before the
+// anchor was never carried, presented nothing, and its reopen is still owed.
 func TestSettledResponsesDeltaCarriedLatchIsNotReopened(t *testing.T) {
 	t.Parallel()
 	leaseCtx := context.WithValue(context.Background(), delegateRunLeaseContextKey{}, delegateLease{delegateID: "dlg_target", generation: 1})
@@ -339,9 +341,16 @@ func TestSettledResponsesDeltaCarriedLatchIsNotReopened(t *testing.T) {
 		return ""
 	}
 
-	// The delta's own items carried the latched trigger and settled.
+	// The delta's own items carried the latched trigger and settled. The
+	// planning seam records exactly this set — the identities among the turns
+	// past the delta's anchor — so seeding it stands in for a planned delta
+	// whose suffix held the trigger's turn, the same way the hand staging
+	// above stands in for the request build.
 	sess := acceptedTriggerSession(t)
 	sess.stagePresentedAttentionCoverage(leaseCtx, currentHistory(t, sess))
+	sess.attentionMu.Lock()
+	sess.attentionDeltaCarriedIDs = map[string]struct{}{sess.attentionAcceptedID: {}}
+	sess.attentionMu.Unlock()
 	sess.promoteStagedAttentionCoverage(llm.Request{HistoryMode: llm.HistoryModeResponsesDelta})
 	if _, err := sess.reopenLatchedDelegateAttention(); err != nil {
 		t.Fatalf("reopenLatchedDelegateAttention: %v", err)
@@ -367,6 +376,105 @@ func TestSettledResponsesDeltaCarriedLatchIsNotReopened(t *testing.T) {
 	}
 	if reopened := pendingReopen(sess); reopened == "" {
 		t.Fatal("the reopen skipped a trigger no settled request presented (no pending row holds a reopened identity)")
+	}
+
+	// A latch staged but never carried: the delta's anchor sat past the
+	// latch's turn, so the request the round settled carried only newer
+	// items. The staged set still holds the latch — staging is candidacy
+	// over the whole projection — but the model never saw the report, and
+	// the reopen must fire.
+	sess = acceptedTriggerSession(t)
+	sess.stagePresentedAttentionCoverage(leaseCtx, currentHistory(t, sess))
+	sess.promoteStagedAttentionCoverage(llm.Request{HistoryMode: llm.HistoryModeResponsesDelta})
+	if _, err := sess.reopenLatchedDelegateAttention(); err != nil {
+		t.Fatalf("reopenLatchedDelegateAttention: %v", err)
+	}
+	if reopened := pendingReopen(sess); reopened == "" {
+		t.Fatal("the reopen skipped a staged-but-uncarried latch: the delta settled from an anchor past the trigger's turn and carried newer items only")
+	}
+}
+
+// A projection that kept a held row out is a nonstandard view of the resident
+// history: no stored exchange matches its prefix, and the state its own
+// exchange would store is missing turns the resident history keeps. The
+// request must not continue from an anchor, and the exchange it settles must
+// record no continuation metadata — a later request that continued from this
+// exchange's server state would silently drop the held row; the report's own
+// run would anchor past its turn, carry only newer items, and the model would
+// answer around a report it was never shown.
+func TestHeldAttentionProjectionSeedsNoContinuationAnchor(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	adapter := &agenttest.FakeAdapter{
+		Provider: "openai",
+		PlanResponsesContinuationFunc: func(req llm.Request) (llm.ResponsesContinuationPlan, error) {
+			return phase4DIContinuationPlan(req), nil
+		},
+	}
+	client := llm.NewClient()
+	client.Register(adapter)
+	sess, err := NewSession(client, withTestSessionNamer(client, NewOpenAIProfile("gpt-5.4")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
+		StateDir:                    dir,
+		OpenAIResponsesContinuation: "auto",
+		MaxSubagentDepth:            1,
+		testOnly: testConfig{
+			responsesContinuationSupportRegistry: map[llm.ResponsesEndpointFamily]llm.ResponsesContinuationSupport{
+				llm.ResponsesEndpointFamilyOpenAIPublic: phase4DIEnabledSupport(),
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	defer sess.Close()
+	drainSessionEvents(sess)
+
+	controller, _ := newDelegateControllerTestHarness(t, 1, 1)
+	seedDelegateControllerRunning(t, controller, "dlg_target", "")
+	lease := delegateLease{delegateID: "dlg_target", generation: 1}
+	sess.delegateController = controller
+	sess.owningDelegateID = "dlg_target"
+	controller.mu.Lock()
+	controller.live[lease.delegateID].runtime = sess
+	controller.live[lease.delegateID].binding.runtime = sess
+	controller.mu.Unlock()
+
+	const heldID = "delegate:dlg_worker/delivery/1/reopened/2"
+	held := schema.NewTurn(schema.TurnSteering, llm.User("held report"))
+	held.AttentionID = heldID
+	anchor := responsesContinuationEligibleAssistantTurn("resp_phase4d_anchor")
+	anchor.ResponseIDHash = "cont-handle-v1:response_id:phase4d"
+	anchor.ResponseRequestFingerprint = "cont-req-v1:phase4d"
+	anchor.ResponseStorageScopeFingerprint = "cont-scope-v1:phase4d"
+	sess.mu.Lock()
+	sess.history = []schema.Turn{
+		held,
+		anchor,
+		schema.NewTurn(schema.TurnEnvironment, llm.User("environment context")),
+	}
+	sess.mu.Unlock()
+	sess.attentionMu.Lock()
+	sess.attentionAutomaticDriveHolds = map[string]struct{}{heldID: {}}
+	sess.attentionMu.Unlock()
+
+	ctx := context.WithValue(context.WithValue(context.Background(), delegateRunLeaseContextKey{}, lease), delegateAttentionRunContextKey{}, struct{}{})
+	var timings events.RoundTimings
+	_, _, _, req, _, _, err := sess.prepareModelRequestWithError(ctx, 1, &timings)
+	if err != nil {
+		t.Fatalf("prepare model request: %v", err)
+	}
+	if req.HistoryMode != llm.HistoryModeFullHistory {
+		t.Fatalf("HistoryMode = %q, want full history: a projection that dropped a held row is a nonstandard view and must not continue from a stored anchor", req.HistoryMode)
+	}
+	if req.PreviousResponseID != "" {
+		t.Fatalf("PreviousResponseID = %q, want empty: the filtered projection must not continue from an anchor", req.PreviousResponseID)
+	}
+	if req.Continuation != nil {
+		t.Fatalf("Continuation metadata = %+v, want none: the exchange this request settles must not become a later anchor", req.Continuation)
+	}
+	_, meta := singleAttemptRequestMetadata(req)
+	if meta.ContextMarker != "" || meta.RequestFingerprint != "" {
+		t.Fatalf("attempt metadata = %+v, want no anchor fields: the settled exchange must not record a continuation fingerprint", meta)
 	}
 }
 

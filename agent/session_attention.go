@@ -1088,24 +1088,28 @@ func (s *Session) automaticDelegateAttentionIDs() ([]string, error) {
 // stop exists to prevent. The resident history keeps the turn: an explicit
 // send presents it, and so does the fresh arm that releases the hold. Turns
 // without an attention identity, and turns whose row is not held, project
-// unchanged.
-func (s *Session) dropHeldDelegateAttentionTurns(turns []schema.Turn) []schema.Turn {
+// unchanged. The positions of the dropped turns are returned in the input's
+// coordinates: a drop shifts every later turn one position left, so the
+// caller's in-flight boundary — an index into the projection — moves with
+// each drop strictly before it.
+func (s *Session) dropHeldDelegateAttentionTurns(turns []schema.Turn) (kept []schema.Turn, droppedAt []int) {
 	s.attentionMu.Lock()
 	holds := s.attentionAutomaticDriveHolds
 	s.attentionMu.Unlock()
 	if len(holds) == 0 {
-		return turns
+		return turns, nil
 	}
-	kept := make([]schema.Turn, 0, len(turns))
-	for _, turn := range turns {
+	kept = make([]schema.Turn, 0, len(turns))
+	for i, turn := range turns {
 		if turn.AttentionID != "" {
 			if _, held := holds[turn.AttentionID]; held {
+				droppedAt = append(droppedAt, i)
 				continue
 			}
 		}
 		kept = append(kept, turn)
 	}
-	return kept
+	return kept, droppedAt
 }
 
 // delegateAttentionFoldLocked folds the session's own transcript; the zero fold
@@ -1549,31 +1553,41 @@ func (s *Session) stagePresentedAttentionCoverage(ctx context.Context, presented
 // call settled as settled, the request that actually answered. Called by the
 // round loop on the success path only.
 //
-// A responses-continuation delta carries only new items; any older steering
-// turn lives in server-side state this session cannot verify, so a round that
-// settled as a delta credits nothing and the items keep their wake for a
-// full-history turn. A delta whose call fell back to a full-history request
-// settled as that request, which carried every staged turn.
-// The latch is separate: the delta was built from the staged turns, so a
-// latch it carried reached the model, and the reach is recorded before the
-// credit is skipped.
+// A responses-continuation delta carries only the turns past its anchor; any
+// older steering turn lives in server-side state this session cannot verify,
+// so a round that settled as a delta credits nothing and the items keep their
+// wake for a full-history turn. A delta whose call fell back to a full-history
+// request settled as that request, which carried every staged turn.
+// The latch is separate and reads carriage, not staging: the planning seam
+// records the identities the delta actually carries, so a latch it carried
+// reached the model — its reopen owes nothing — while a latch merely staged
+// before the anchor did not, and its reopen is still owed. The reach is
+// recorded before the credit is skipped.
 func (s *Session) promoteStagedAttentionCoverage(settled llm.Request) {
 	s.attentionMu.Lock()
 	defer s.attentionMu.Unlock()
 	staged := s.attentionStagedIDs
 	s.attentionStagedIDs = nil
+	carried := s.attentionDeltaCarriedIDs
+	s.attentionDeltaCarriedIDs = nil
 	if len(staged) == 0 {
 		return
 	}
-	// A latch among the staged turns reached a settled request even when that
-	// request settles as a delta: the delta's own items are the turns this
-	// session built into it, so the latch proves the report presented. Record
-	// the reach before the delta early-return, which credits no coverage —
-	// the older items keep their wake for a full-history turn, but a
-	// presented trigger owes no reopen.
+	// A latch counts as reached only when the settled request actually
+	// carried its turn to the model. A full-history request — the fallback a
+	// rejected anchor earns included — carries every staged turn; a delta
+	// carries only the turns past its anchor, and the staged set is the
+	// whole projection, so a latch staged before the anchor never reached
+	// the model. Record the reach before the delta early-return, which
+	// credits no coverage — the older items keep their wake for a
+	// full-history turn, but a presented trigger owes no reopen.
 	latchedReached := false
 	if s.attentionAcceptedID != "" {
-		_, latchedReached = staged[s.attentionAcceptedID]
+		if settled.HistoryMode == llm.HistoryModeResponsesDelta {
+			_, latchedReached = carried[s.attentionAcceptedID]
+		} else {
+			_, latchedReached = staged[s.attentionAcceptedID]
+		}
 	}
 	if latchedReached {
 		s.attentionLatchedReachedRequest = true
@@ -1599,6 +1613,7 @@ func (s *Session) resetAttentionCoverage() {
 	s.attentionMu.Lock()
 	s.attentionCoveredIDs = nil
 	s.attentionStagedIDs = nil
+	s.attentionDeltaCarriedIDs = nil
 	s.attentionMu.Unlock()
 }
 
