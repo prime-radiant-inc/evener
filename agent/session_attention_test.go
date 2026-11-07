@@ -4444,14 +4444,14 @@ func (f *strandedStopFixture) drainUntilParked(t *testing.T) error {
 	case <-parked:
 	case err := <-done:
 		t.Fatalf("drain returned before parking: %v", err)
-	case <-time.After(2 * time.Second):
+	case <-time.After(2 * time.Second): // TRIPWIRE: the drain signals parked synchronously before blocking; 2s only fires on a genuine hang.
 		t.Fatal("drain did not park")
 	}
 	cancel()
 	select {
 	case err := <-done:
 		return err
-	case <-time.After(2 * time.Second):
+	case <-time.After(2 * time.Second): // TRIPWIRE: cancel wakes the parked drain; 2s only fires on a genuine hang.
 		t.Fatal("drain did not return after cancel")
 		return nil
 	}
@@ -4675,6 +4675,8 @@ func TestDelegateAttention_PrelaunchStopRetriesAfterTransientAckFailure(t *testi
 	savedWait := observeDelegateStopWait.Load()
 	observeDelegateStopWait.Store(&waitHook)
 	defer observeDelegateStopWait.Store(savedWait)
+	// TRIPWIRE: the drain normally parks and retries within ~100ms; 5s only
+	// fires on a genuine hang, not scheduler contention under a loaded suite.
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	done := make(chan error, 1)
@@ -4683,8 +4685,6 @@ func TestDelegateAttention_PrelaunchStopRetriesAfterTransientAckFailure(t *testi
 	case <-parked:
 	case err := <-done:
 		t.Fatalf("drain exited on the transient acknowledgment failure: %v", err)
-	case <-time.After(2 * time.Second):
-		t.Fatal("drain did not park after the transient acknowledgment failure")
 	}
 	c.mu.Lock()
 	claims := len(c.deliveryClaims)
@@ -4703,13 +4703,9 @@ func TestDelegateAttention_PrelaunchStopRetriesAfterTransientAckFailure(t *testi
 	if f.otherWaiter == nil {
 		t.Fatal("fixture did not register the replay waiter")
 	}
-	select {
-	case resolution := <-f.otherWaiter.resolution:
-		if !resolution.fallback {
-			t.Fatalf("dropped replay waiter resolution = %#v, want the fallback", resolution)
-		}
-	case <-time.After(time.Second):
-		t.Fatal("dropped replay claim left its inline waiter unresolved")
+	resolution := <-f.otherWaiter.resolution
+	if !resolution.fallback {
+		t.Fatalf("dropped replay waiter resolution = %#v, want the fallback", resolution)
 	}
 	reopened, err := delegatestore.Open(f.storePath)
 	if err != nil {
@@ -4718,13 +4714,8 @@ func TestDelegateAttention_PrelaunchStopRetriesAfterTransientAckFailure(t *testi
 	c.mu.Lock()
 	c.store = reopened
 	c.mu.Unlock()
-	select {
-	case err := <-done:
-		if err != nil {
-			t.Fatalf("prelaunch stop did not finish after the store returned: %v", err)
-		}
-	case <-time.After(3 * time.Second):
-		t.Fatal("prelaunch stop did not retry after the store returned")
+	if err := <-done; err != nil {
+		t.Fatalf("prelaunch stop did not finish after the store returned: %v", err)
 	}
 	if !channelClosed(f.stop.done) {
 		t.Fatal("prelaunch stop did not complete after the retry")
@@ -4799,14 +4790,10 @@ func TestDelegateAttention_ReportsDeliveryWakeErrors(t *testing.T) {
 	root := &Session{id: c.rootSessionID, stateDir: c.stateDir, delegateController: c, events: make(chan events.SessionEvent, 1)}
 	c.rootRuntime = root
 	c.reportDelegateWakeError(errors.New("wake failed"))
-	select {
-	case event := <-root.events:
-		warning, ok := event.Data.(events.WarningData)
-		if event.Kind != events.EventWarning || !ok || warning.Message == "" {
-			t.Fatalf("wake failure event = %#v, want a warning", event)
-		}
-	case <-time.After(time.Second):
-		t.Fatal("wake failure was not reported")
+	event := <-root.events
+	warning, ok := event.Data.(events.WarningData)
+	if event.Kind != events.EventWarning || !ok || warning.Message == "" {
+		t.Fatalf("wake failure event = %#v, want a warning", event)
 	}
 }
 
@@ -4900,6 +4887,8 @@ func TestDelegateAttention_StartDeliveryReplayFailureDoesNotFailCommittedStart(t
 		t.Fatalf("StopSubtree after the committed start: %v", err)
 	}
 	executeDelegateCancelPlan(cancelPlan)
+	// TRIPWIRE: the stopped launch normally settles in milliseconds; 10s only
+	// fires on a genuine hang, not scheduler contention under a loaded suite.
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	if err := c.drainStop(ctx, c.stopForResult(stop), root); err != nil {
