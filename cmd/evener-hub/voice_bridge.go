@@ -241,6 +241,11 @@ func (b *voiceBridge) run() {
 			return
 		case control := <-controls:
 			if err := b.control(control); err != nil {
+				if control.Type == "renew" && voiceRelayOutage(err) {
+					// The renewal read met the relay cut. Keep the session and
+					// let the next renewal retry; the grant has not expired.
+					continue
+				}
 				_ = b.reportError("input_failed")
 				return
 			}
@@ -292,6 +297,13 @@ func (b *voiceBridge) run() {
 				b.reconcile = true
 				continue
 			}
+			if voiceRelayOutage(result.err) {
+				// Retry through the authoritative reconciliation read; while
+				// the relay is down that read parks in recovery's redial and
+				// applies any accepted Stop once the connection returns.
+				b.reconcile = true
+				continue
+			}
 			if result.err != nil || b.applySpeechAuthority(result.read) != nil {
 				_ = b.reportError("speech_failed")
 				return
@@ -331,6 +343,10 @@ func (b *voiceBridge) run() {
 			if result.err != nil {
 				if kind == "history" && voiceHistoryCursorStale(result.err) {
 					b.refresh = true
+					continue
+				}
+				if kind == "history" && voiceRelayOutage(result.err) {
+					b.reconcile = true
 					continue
 				}
 				_ = b.reportError("input_failed")
@@ -450,6 +466,23 @@ func voiceHistoryCursorStale(err error) bool {
 	}
 	data, ok := appwire.DecodedErrorData(wire.Data)
 	return ok && data.EvenerErrorInfo == appwire.ErrorTranscriptItemCursorStale
+}
+
+// voiceRelayOutage reports a read the relay cut because its daemon connection
+// was replaced (the relay marks that read automatically retryable). That is an
+// outage, not a verdict on the held execution: keep presenting and let the
+// authoritative reconciliation read apply any accepted Stop once the
+// connection returns.
+func voiceRelayOutage(err error) bool {
+	if !isSessionUnavailableError(err) {
+		return false
+	}
+	var wire appwire.WireError
+	if !errors.As(err, &wire) {
+		return false
+	}
+	data, ok := appwire.DecodedErrorData(wire.Data)
+	return ok && data.RetryDisposition == appwire.RetryDispositionAutomatic
 }
 
 func (b *voiceBridge) control(control voiceControl) error {
