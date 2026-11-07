@@ -3133,8 +3133,44 @@ func TestDelegateAttentionResidentDrivePassDoesNotRebuildReleasedStopHold(t *tes
 		<-release
 		return agenttest.FinalResponse("done")
 	}
+	// Seed the announce hold the scripted presentation step requires: the
+	// delegate's spawn turn consumes the three scripted steps before the
+	// presentation, and without the hold the retained child's report delivery
+	// can be classified deferred while that turn is still running, pump at the
+	// next request build, and ride the spawn turn's own tool-result request —
+	// the coverage consume then resolves the report and the scripted step this
+	// test parks in never runs. Holding the announce parks the child's
+	// finalize tail — and the report delivery with it — until the fixture has
+	// returned with the spawn turn closed, so the report can only arrive as
+	// the pending row the drive below presents.
+	holdSharedDescendantAnnounce("resident-released-hold")
 	lane := spawnSharedDescendantLane(t, r, "resident-released-hold", "dlg_residenthold01", "034residenthold1", wedge)
+	var announceHoldOnce sync.Once
+	releaseAnnounceHold := func() { announceHoldOnce.Do(func() { close(lane.announceHold) }) }
+	// A fatal before the release would park the held finalize tail forever, so
+	// the cleanup mirror guarantees the parked tail can always finish.
+	t.Cleanup(releaseAnnounceHold)
+	releaseAnnounceHold()
+	// The seeded window's end is the delegate's own finalize tail closing its
+	// run, re-arm included; the retained child's report becomes a pending row
+	// inside that window, and waiting the tail out keeps the presentation below
+	// from racing the row's landing.
+	lane.delegateSub.mu.Lock()
+	delegateDone := lane.delegateSub.done
+	lane.delegateSub.mu.Unlock()
+	select {
+	case <-delegateDone:
+	// TRIPWIRE: the tail finishes within a couple of drain passes of the
+	// release; the bound only fires on a genuine hang, absorbing a loaded
+	// shard's stretched finalize tails and git retries.
+	case <-time.After(15 * time.Second):
+		t.Fatalf("the delegate's finalize tail never finished after the seeded announce release")
+	}
 	lane.delegateSess.SetNotifyFunc(nil)
+	// The shared child's restored notify edge can launch its own pending
+	// notification turn, which would consume the scripted wedge step this
+	// test's presentation parks in; disarm it so the test loop below is the
+	// only driver.
 	lane.sharedSub.sess.SetNotifyFunc(nil)
 
 	// Present the retained child's report and park it in its first model
@@ -3149,8 +3185,126 @@ func TestDelegateAttentionResidentDrivePassDoesNotRebuildReleasedStopHold(t *tes
 	case <-time.After(30 * time.Second):
 		lastFlushErr := flushErr()
 		pending, pendErr := lane.delegateSess.pendingDelegateAttentionIDs()
-		t.Fatalf("the presentation never reached its model request (pending attention=%d (%v); flush=%v)",
-			len(pending), pendErr, lastFlushErr)
+		childPending, childPendErr := lane.sharedSub.sess.pendingDelegateAttentionIDs()
+		lane.delegateSub.mu.Lock()
+		closed, running, driving, finalizing := lane.delegateSub.closed, lane.delegateSub.running, lane.delegateSub.driving, lane.delegateSub.finalizing
+		attentionRefused := lane.delegateSub.attentionDriveRefused
+		lane.delegateSub.mu.Unlock()
+		lane.sharedSub.mu.Lock()
+		childRunning, childClosed, childFinalizing := lane.sharedSub.running, lane.sharedSub.closed, lane.sharedSub.finalizing
+		childStatus, childTurns, childEndEmitted := lane.sharedSub.status, lane.sharedSub.turnsUsed, lane.sharedSub.endEmitted
+		lane.sharedSub.mu.Unlock()
+		deferred := lane.delegateSess.hasPendingDelegateDeliveries()
+		stopGated := lane.root.childStopGated(lane.delegateSess.id)
+		fatalGated := lane.root.childFatalRunGated(lane.delegateSess.id)
+		committedStart := lane.root.childCommittedSendStart(lane.delegateSess.id)
+		reserved := lane.root.delegateController.reservedAttentionID(lane.delegateSub.sess)
+		reopenRefused := lane.root.delegateController.attentionReopenRefused(lane.fixture.delegateID)
+		controller := lane.root.delegateController
+		controller.mu.Lock()
+		blockingStartWork := controller.hasDeliveryWorkForOwnerBlockingStartLocked(lane.fixture.delegateID)
+		hasReservation := controller.hasAttentionStartReservationLocked(lane.fixture.delegateID)
+		needsAttention := false
+		var notedWakes []string
+		if agg := controller.durable[lane.fixture.delegateID]; agg != nil {
+			needsAttention = agg.NeedsAttention
+		}
+		if state := controller.attention[lane.fixture.delegateID]; state != nil {
+			for wakeID := range state.wakeIDs {
+				notedWakes = append(notedWakes, wakeID)
+			}
+		}
+		ownDeliveryID := delegateDeliveryID(lane.fixture.delegateID, 1)
+		ownClaimPresent, ownClaimHeld, ownClaimStartRefused := false, false, false
+		if claim := controller.deliveryClaims[ownDeliveryID]; claim != nil {
+			ownClaimPresent, ownClaimHeld, ownClaimStartRefused = true, claim.held, claim.startRefused
+		}
+		ownReceiptPresent, ownReceiptRetryable, ownReceiptInline := false, false, false
+		if receipt := controller.deliveryReceiptLocked(ownDeliveryID); receipt != nil {
+			ownReceiptPresent, ownReceiptRetryable, ownReceiptInline = true, receipt.retryable, receipt.inline
+		}
+		delegatePhase, delegateGen, delegateOpen := "", uint64(0), false
+		var delegateDurable []string
+		if agg := controller.durable[lane.fixture.delegateID]; agg != nil {
+			delegatePhase, delegateGen, delegateOpen = string(agg.Phase), agg.Generation, agg.CurrentRunOpen
+			for _, pending := range agg.PendingDeliveries {
+				delegateDurable = append(delegateDurable, pending.DeliveryID)
+			}
+		}
+		childPhase, childGen, childOpen, childPrepared := "", uint64(0), false, false
+		var childDurable []string
+		if agg := controller.durable[lane.sharedDelegateID]; agg != nil {
+			childPhase, childGen, childOpen, childPrepared = string(agg.Phase), agg.Generation, agg.CurrentRunOpen, agg.PreparedTerminal != nil
+			for _, pending := range agg.PendingDeliveries {
+				childDurable = append(childDurable, pending.DeliveryID)
+			}
+		}
+		reportDeliveryID := delegateDeliveryID(lane.sharedDelegateID, 1)
+		claimPresent, claimWaiter, claimHeld, claimStartRefused := false, false, false, false
+		if claim := controller.deliveryClaims[reportDeliveryID]; claim != nil {
+			claimPresent, claimWaiter, claimHeld, claimStartRefused = true, claim.waiter != nil, claim.held, claim.startRefused
+		}
+		receiptPresent, receiptRetryable, receiptInline := false, false, false
+		if receipt := controller.deliveryReceiptLocked(reportDeliveryID); receipt != nil {
+			receiptPresent, receiptRetryable, receiptInline = true, receipt.retryable, receipt.inline
+		}
+		ownerLive := controller.live[lane.fixture.delegateID]
+		ownerLivePresent := ownerLive != nil
+		ownerRuntimeIsDelegate := ownerLive != nil && ownerLive.runtime == lane.delegateSess
+		receiverType := fmt.Sprintf("%T", controller.deliveryReceiverLocked(lane.fixture.delegateID))
+		controller.mu.Unlock()
+		classifications := lane.classifications.snapshot()
+		// The scripted adapter serves every session in the fixture from one
+		// FIFO, and the wedge is the fourth step: the request log names which
+		// session's turn consumed each step and how far the script got, so a
+		// presentation that never started is distinguishable from one whose
+		// request someone else took.
+		var requestLog []string
+		for i, req := range lane.fixture.adapter.Requests() {
+			requestLog = append(requestLog, fmt.Sprintf("%d:%s", i+1, req.SessionID))
+		}
+		fold, foldErr := readDelegateAttentionFold(lane.delegateSess.TranscriptPath(), lane.delegateSess.id)
+		liveResolutions := fmt.Sprintf("%v", foldErr)
+		if foldErr == nil {
+			// The coverage consume a settled round's presented steering turns
+			// earns writes a generation-0 marker; a reserved attention start's
+			// accept writes its generation. The row's generation names the
+			// writer, so the dump carries it.
+			liveResolutions = fmt.Sprintf("%v order=%v resumeGenerations=%v", fold.resolutions, fold.order, fold.resumeGenerations)
+		}
+		// The resident history's turn kinds with their attention identities: a
+		// report steering turn sitting before the delegate's final exchange
+		// means the follow-up request projected the report, while one after it
+		// is the dedicated presentation the scripted wedge step expects.
+		var historyLog []string
+		lane.delegateSess.mu.Lock()
+		for _, turn := range lane.delegateSess.history {
+			switch {
+			case turn.AttentionID != "":
+				historyLog = append(historyLog, "steering:"+turn.AttentionID)
+			case turn.Kind == schema.TurnUserInput:
+				historyLog = append(historyLog, "user")
+			case turn.Kind == schema.TurnAssistant:
+				historyLog = append(historyLog, "assistant")
+			case turn.Kind == schema.TurnToolResults:
+				historyLog = append(historyLog, "tool-results")
+			}
+		}
+		lane.delegateSess.mu.Unlock()
+		if len(historyLog) > 24 {
+			historyLog = historyLog[len(historyLog)-24:]
+		}
+		t.Fatalf("the presentation never reached its model request (pending attention=%d (%v), child pending=%d (%v), flush=%v, deferred deliveries=%v, requests=%v; delegate sub closed=%v running=%v driving=%v finalizing=%v attentionDriveRefused=%v, child run=%v/%v/%v status=%v turns=%d endEmitted=%v; gates: stop=%v fatal=%v committedSendStart=%v, reserved attention=%q, reopen refused=%v; controller: blockingStartWork=%v hasReservation=%v needsAttention=%v notedWakes=%v; durable: delegate phase=%s gen=%d open=%v pending=%v, own delivery %s claim=%v(held=%v startRefused=%v) receipt=%v(retryable=%v inline=%v); child phase=%s gen=%d open=%v prepared=%v pending=%v; report %s claim=%v(waiter=%v held=%v startRefused=%v) receipt=%v(retryable=%v inline=%v); owner live=%v runtimeIsDelegate=%v receiver=%s; classified=%v; live fold: %s; resident history: %v)",
+			len(pending), pendErr, len(childPending), childPendErr, lastFlushErr, deferred, requestLog,
+			closed, running, driving, finalizing, attentionRefused, childRunning, childClosed, childFinalizing, childStatus, childTurns, childEndEmitted,
+			stopGated, fatalGated, committedStart, reserved, reopenRefused,
+			blockingStartWork, hasReservation, needsAttention, notedWakes,
+			delegatePhase, delegateGen, delegateOpen, delegateDurable,
+			ownDeliveryID, ownClaimPresent, ownClaimHeld, ownClaimStartRefused, ownReceiptPresent, ownReceiptRetryable, ownReceiptInline,
+			childPhase, childGen, childOpen, childPrepared, childDurable,
+			reportDeliveryID, claimPresent, claimWaiter, claimHeld, claimStartRefused, receiptPresent, receiptRetryable, receiptInline,
+			ownerLivePresent, ownerRuntimeIsDelegate, receiverType,
+			classifications, liveResolutions, historyLog)
 	}
 
 	// The user stops the parked run; its settle reopens the consumed report
