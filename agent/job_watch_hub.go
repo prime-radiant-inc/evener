@@ -28,10 +28,10 @@ const (
 	// retry loop.
 	hubWatchStateFailureLimit = 5
 	// hubWatchStateOutageBudget bounds how long the rebind loop keeps a watch
-	// armed while its session-tools binding cannot answer state reads, before
+	// armed through failed state reads or retryable rebind attempts, before
 	// connection recovery counts as exhausted and the watch ends durably with
-	// re-registration guidance. A connection restored inside the budget
-	// retains the watch (job-control.md).
+	// re-registration guidance. A connection restored and rebound inside the
+	// budget retains the watch (job-control.md).
 	hubWatchStateOutageBudget = 2 * time.Minute
 	// hubWatchStateRetryCeiling caps the backoff between failed state reads.
 	hubWatchStateRetryCeiling = 30 * time.Second
@@ -1085,13 +1085,11 @@ func (s *Session) consumeHubWatch(ctx context.Context, id string, request appwir
 			// bounded retry: a healthy connection then reaches the same
 			// "ended unexpectedly" arm a successful read would have reached,
 			// instead of parking on a signal that only fires on a rebind.
-			var stateErr error
+			var recoveryErr error
 			stateCtx, cancel := context.WithTimeout(ctx, hubWatchReadBudget)
 			state, err := client.State(stateCtx)
 			cancel()
 			if err == nil {
-				stateFailures = 0
-				outageStart = time.Time{}
 				if !state.Manager || state.Ref != callerRef || state.InstanceID != callerInstance {
 					_ = jm.endHubWatchUntilPersisted(id, "Manager binding no longer serves this session; re-register", nil)
 					return
@@ -1116,37 +1114,42 @@ func (s *Session) consumeHubWatch(ctx context.Context, id string, request appwir
 						jm.resetHubRosterRevision(id)
 					}
 					updates, initial, boundSignal = rebound, snapshot, signal
+					stateFailures = 0
+					outageStart = time.Time{}
 					break
 				}
 				if permanentHubWatchError(watchErr) {
 					_ = jm.endHubWatchUntilPersisted(id, "observation subscription rejected: "+watchErr.Error(), nil)
 					return
 				}
+				recoveryErr = watchErr
 			} else {
-				stateErr = err
-				stateFailures++
-				if outageStart.IsZero() {
-					outageStart = time.Now()
-				}
-				// Exhausted recovery is decided on this fresh failed read, so
-				// the durable end always follows evidence from inside the
-				// outage window: a binding that answers again within the
-				// budget is observed before recovery counts as exhausted.
-				if time.Since(outageStart) >= s.hubWatchStateOutageBudget() {
-					_ = jm.endHubWatchUntilPersisted(id, "observation unreachable: "+stateErr.Error()+"; re-register", nil)
-					return
-				}
+				recoveryErr = err
+			}
+			stateFailures++
+			if outageStart.IsZero() {
+				outageStart = time.Now()
+			}
+			// Exhausted recovery is decided on this fresh failure, so the
+			// durable end always follows evidence from inside the outage
+			// window: a recovery that answers again and rebinds within the
+			// budget is observed before recovery counts as exhausted. The
+			// budget bounds the whole episode, so a binding whose rebind
+			// attempts keep failing retryably accrues the same window and no
+			// loss retries forever unheard (job-control.md).
+			if time.Since(outageStart) >= s.hubWatchStateOutageBudget() {
+				_ = jm.endHubWatchUntilPersisted(id, "observation unreachable: "+recoveryErr.Error()+"; re-register", nil)
+				return
 			}
 			// A rebind resolves the ambiguity immediately; otherwise retry after
 			// a bounded backoff that never sleeps past the outage budget's
-			// deadline. Repeated failures end the watch durably rather than
-			// retrying a broken read forever: the Manager gets a notice it can
+			// deadline. An episode that outlasts the budget ends the watch
+			// durably rather than retrying a broken recovery forever: the
+			// Manager gets a notice it can
 			// act on instead of an observation that silently stopped.
 			next := s.hubWatchStateRetryDelay(stateFailures)
-			if stateErr != nil {
-				if remaining := s.hubWatchStateOutageBudget() - time.Since(outageStart); remaining < next {
-					next = remaining
-				}
+			if remaining := s.hubWatchStateOutageBudget() - time.Since(outageStart); remaining < next {
+				next = remaining
 			}
 			select {
 			case <-ctx.Done():
@@ -1161,8 +1164,8 @@ func (s *Session) consumeHubWatch(ctx context.Context, id string, request appwir
 	}
 }
 
-// hubWatchStateRetryDelay paces consecutive failed state reads in the rebind
-// loop: the base delay at the first failure, doubling per failure after that
+// hubWatchStateRetryDelay paces consecutive failed recovery attempts in the
+// rebind loop: the base delay at the first failure, doubling per failure after that
 // and capped at hubWatchStateRetryCeiling. The testOnly seam shrinks the base
 // for deterministic tests; zero keeps the production base.
 func (s *Session) hubWatchStateRetryDelay(failures int) time.Duration {

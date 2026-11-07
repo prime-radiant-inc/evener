@@ -123,9 +123,10 @@ notice. The notice belongs to a loss the Manager must act on, not to a blip
 that recovers by itself; delivered up front it reads as an incident on a
 healthy lane. A restored connection retains the watch
 only when the target also has the same ref, instance and generation. Recovery
-from a binding that cannot answer state reads is bounded by an outage budget
-rather than a retry count: a binding that answers again within the budget
-retains the watch, and only an outage that outlasts it counts as exhausted
+is bounded by one outage budget rather than a retry count, whether the
+binding cannot answer state reads or its rebind attempts keep failing with
+retryable errors: a recovery that rebinds within the budget retains the
+watch, and only an outage that outlasts it counts as exhausted
 connection recovery. A replaced caller or
 target, an unsupported observation, exhausted connection recovery, or a
 subscription that ended on a healthy connection ends the
