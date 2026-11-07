@@ -382,8 +382,15 @@ async function measureComposerFooter(cdpEndpoint, url, width, safeAreaSupported)
           document.body.append(probe);
           const actualSafeArea = probe.getBoundingClientRect().height;
           probe.remove();
-          const measure = async (focused) => {
-            if (focused) textbox?.focus();
+          const measure = async (focus) => {
+            if (focus === "editor") textbox?.focus();
+            else if (focus === "button") {
+              // Start from a non-editing composer, then focus a control. The
+              // editing state must not turn on for a button alone.
+              textbox?.blur();
+              await frame();
+              pane?.querySelector('[data-testid="composer-attach"]')?.focus();
+            }
             else textbox?.blur();
             await frame();
             const cards = [...(footer?.querySelectorAll('[data-testid="composer-input-card"]') ?? [])]
@@ -395,7 +402,7 @@ async function measureComposerFooter(cdpEndpoint, url, width, safeAreaSupported)
             const statusbar = pane?.querySelector('[data-testid="statusbar"]');
             const footerBottom = footer?.getBoundingClientRect().bottom ?? null;
             return {
-              safeArea: ${safeArea}, keyboard: ${keyboard}, actualSafeArea, focused,
+              safeArea: ${safeArea}, keyboard: ${keyboard}, actualSafeArea, focus,
               mobile: matchMedia('(max-width: 899px)').matches,
               paneBottom: pane?.getBoundingClientRect().bottom ?? null,
               cards: cards.length, footerBottom,
@@ -411,7 +418,9 @@ async function measureComposerFooter(cdpEndpoint, url, width, safeAreaSupported)
               metadataInEdgeFooter: Boolean(metadata?.closest('[data-testid="pane-edge-footer"]')),
             };
           };
-          return [await measure(false), ...(matchMedia('(max-width: 899px)').matches ? [await measure(true)] : [])];
+          return matchMedia('(max-width: 899px)').matches
+            ? [await measure("none"), await measure("editor"), await measure("button")]
+            : [await measure("none")];
         })()`,
           )),
         );
@@ -436,9 +445,9 @@ function assertComposerFooter(measurement, width) {
     failures.push(`safe-area emulation=${measurement.actualSafeArea}px, expected ${measurement.safeArea}px`);
   }
   if (measurement.cards !== 1) failures.push(`visible composer cards=${measurement.cards}, expected 1`);
-  // While the composer is focused the phone status bar hides, so the dock is
+  // While the composer is editing the phone status bar hides, so the dock is
   // the pane's bottom edge again and carries the safe-area clearance itself.
-  if (mobile && measurement.focused) {
+  if (mobile && measurement.focus === "editor") {
     if (measurement.statusbarDisplay !== "none")
       failures.push(`phone status bar is still visible with the composer focused (${measurement.statusbarDisplay})`);
     if (
@@ -468,6 +477,10 @@ function assertComposerFooter(measurement, width) {
     failures.push(`${mobile ? "phone" : "desktop"} working-path metadata missing from the visible edge footer`);
   }
   if (mobile) {
+    // Focus on a composer control is not editing: pressing Attach without a
+    // focused editor must not hide the bar and move the dock under the click.
+    if (measurement.focus === "button" && measurement.statusbarDisplay === "none")
+      failures.push("phone status bar hid for a composer button focus without editing");
     // The phone keeps the working-directory line and the activity chips in
     // the pane's flush edge footer now, so the composer dock no longer owns
     // the pane's bottom edge or its safe-area band. The dock keeps its normal
@@ -1400,7 +1413,7 @@ async function main() {
         );
         for (const measurement of measurements) {
           const failures = assertComposerFooter(measurement, width);
-          const label = `${width}px composer footer safe-area=${measurement.safeArea} keyboard=${measurement.keyboard}${measurement.focused ? " focused" : ""}`;
+          const label = `${width}px composer footer safe-area=${measurement.safeArea} keyboard=${measurement.keyboard}${measurement.focus !== "none" ? ` ${measurement.focus}` : ""}`;
           if (failures.length > 0) {
             failed++;
             console.log(`${label} ... FAIL - ${failures.join("; ")}; ${JSON.stringify(measurement)}`);

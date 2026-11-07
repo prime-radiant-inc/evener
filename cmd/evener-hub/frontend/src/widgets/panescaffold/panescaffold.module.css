@@ -170,11 +170,12 @@
     padding-bottom: var(--space-3);
   }
 
-  /* While focus is in the composer the status bar hides (it would sit between
+  /* While the composer is editing the status bar hides (it would sit between
    * the input and the keyboard), so the dock is the bottom edge again and
    * takes the home-indicator band back for the case where focus outlives the
-   * keyboard. focus-within also holds while a composer control is pressed. */
-  :global(body):has([data-composer]:focus-within) .footerBeforeEdge {
+   * keyboard. The editing attribute also holds while a composer control or
+   * menu owns focus. */
+  :global(body):has([data-composer-editing]) .footerBeforeEdge {
     padding-bottom: max(0px, env(safe-area-inset-bottom) - var(--keyboard-inset, 0px));
   }
 }

@@ -721,6 +721,63 @@ test("the composer anchor carries its owning ref and pane id for the hold-hint o
   expect(anchor?.getAttribute("data-composer-pane")).toBe("pane_anchor");
 });
 
+test("the composer editing attribute follows the editor, not composer controls", async () => {
+  const user = userEvent.setup();
+  const fake = connectReadyFakeClient();
+  fake.on("thread/read", () => readResponse("ref_editing"));
+  await threadsStore.getState().ensureThread("ref_editing");
+  render(
+    <ClientProvider client={fake}>
+      <Toast />
+      <Composer
+        ref="ref_editing"
+        paneId="pane_editing"
+        source={createTestComposerSource("ref_editing")}
+        focused={false}
+      />
+    </ClientProvider>,
+  );
+  await settleActivityDiscovery("ref_editing");
+  await flushPendingTurnsProjectionForTests();
+
+  const anchor = screen.getByTestId("composer-form").closest("[data-composer]");
+  const editor = screen.getByRole("textbox", { name: "Message" });
+  expect(anchor?.hasAttribute("data-composer-editing")).toBe(false);
+
+  // Pressing a composer control from an unfocused composer is not editing:
+  // the phone footer must stay visible and the dock must not move under it.
+  await user.click(screen.getByTestId("composer-attach"));
+  expect(anchor?.hasAttribute("data-composer-editing")).toBe(false);
+
+  // The editor's own focus is the editing signal.
+  await act(async () => {
+    editor.focus();
+  });
+  await waitFor(() => expect(anchor?.hasAttribute("data-composer-editing")).toBe(true));
+
+  // A composer control keeps it while the editor is the editing surface.
+  await user.click(screen.getByTestId("composer-attach"));
+  expect(anchor?.hasAttribute("data-composer-editing")).toBe(true);
+
+  // A portaled composer menu keeps it too (focus leaves the composer's DOM).
+  const menu = document.createElement("ul");
+  menu.setAttribute("role", "menu");
+  menu.tabIndex = -1;
+  document.body.append(menu);
+  await act(async () => {
+    menu.focus();
+  });
+  expect(anchor?.hasAttribute("data-composer-editing")).toBe(true);
+  menu.remove();
+
+  // Leaving the editor entirely clears it.
+  await act(async () => {
+    editor.focus();
+    editor.blur();
+  });
+  await waitFor(() => expect(anchor?.hasAttribute("data-composer-editing")).toBe(false));
+});
+
 test("the current-task control opens this column's tasks without stealing cascade focus", async () => {
   const user = userEvent.setup();
   const overrides = { evener: currentWorkEvener({ task: true }) };

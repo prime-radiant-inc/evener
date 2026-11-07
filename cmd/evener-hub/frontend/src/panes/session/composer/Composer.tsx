@@ -30,6 +30,7 @@ import {
 import {
   type FormEvent,
   memo,
+  type FocusEvent as ReactFocusEvent,
   type KeyboardEvent as ReactKeyboardEvent,
   useCallback,
   useEffect,
@@ -178,12 +179,33 @@ export function Composer({ ref, paneId, focused, mountAutofocus = true, source, 
   );
   const fileInputRef = useRef<HTMLInputElement>(null);
   const formRef = useRef<HTMLFormElement>(null);
+  const formAnchorRef = useRef<HTMLDivElement>(null);
   const submitButtonRef = useRef<HTMLButtonElement>(null);
   const tasksPanelRef = useRef<TasksPanelHandle>(null);
   // Set by scheduleCursorRestore below; consumed (and cleared) by the
   // cursor-restore layout effect in the commit that carries the edit.
   const cursorToRestoreRef = useRef<number | null>(null);
   const [cursorRestoreSeq, setCursorRestoreSeq] = useState(0);
+  // True while the editor itself holds focus (the phone keyboard's signal).
+  // Focus on a composer button alone must not set it: pressing Send or Attach
+  // from an unfocused composer should not hide the pane footer.
+  const [editorFocused, setEditorFocused] = useState(false);
+  const noteComposerFocus = useCallback((event: ReactFocusEvent<HTMLDivElement>) => {
+    if ((event.target as Element).closest('[role="textbox"]')) setEditorFocused(true);
+  }, []);
+  const noteComposerBlur = useCallback(() => {
+    // The next focus target is only known after the focusout/focusin pair, so
+    // decide in a microtask. Focus staying inside the composer, or in one of
+    // its portaled menus, keeps editing on; anything else ends it.
+    queueMicrotask(() => {
+      const anchor = formAnchorRef.current;
+      if (!anchor) return;
+      const active = anchor.ownerDocument.activeElement;
+      if (active && (anchor.contains(active) || active.closest('[role="menu"], [role="listbox"], [role="dialog"]')))
+        return;
+      setEditorFocused(false);
+    });
+  }, []);
   // Parks the caret a programmatic edit wants and forces a commit, so the
   // layout effect below applies it even when the edit left `text` unchanged.
   const scheduleCursorRestore = useCallback((cursor: number): void => {
@@ -885,7 +907,16 @@ export function Composer({ ref, paneId, focused, mountAutofocus = true, source, 
         // owning pane id, so the overlay can anchor to the FOCUSED pane's
         // composer when several are mounted - including an ordinary pane and a
         // cascade column showing the same conversation.
-        <div className={CLASS.formAnchor} data-composer={ref} data-composer-pane={paneId}>
+        // biome-ignore lint/a11y/noStaticElementInteractions: this anchor only observes editor focus for the phone footer's editing state; it is a container, not an interactive control
+        <div
+          ref={formAnchorRef}
+          className={CLASS.formAnchor}
+          data-composer={ref}
+          data-composer-pane={paneId}
+          data-composer-editing={editorFocused ? "" : undefined}
+          onFocus={noteComposerFocus}
+          onBlur={noteComposerBlur}
+        >
           {/* Anchored above the control row inside the card below, opening
               upward - see slashcompletionmenu.module.css's header comment
               for the anchored-float recipe. Mounted only

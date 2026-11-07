@@ -152,13 +152,14 @@
     display: inline-flex;
   }
 
-  /* A focused composer means the on-screen keyboard is up on a phone: the
+  /* An editing composer means the on-screen keyboard is up on a phone: the
    * glance strip would sit between the input and the keyboard, spending its
-   * height from the remaining transcript. It returns when focus leaves the
-   * composer, and focus-within (not the textbox alone) keeps it hidden while
-   * the user presses Send or another composer control, so the dock does not
-   * jump under the pointer. */
-  :global(body):has([data-composer]:focus-within) .bar {
+   * height from the remaining transcript. The composer sets this attribute
+   * from its editor's focus, and keeps it while focus stays in the composer
+   * or one of its menus, so pressing Send or another composer control does
+   * not move the dock under the pointer. It clears when the editor is no
+   * longer the editing surface. */
+  :global(body):has([data-composer-editing]) .bar {
     display: none;
   }
 }
