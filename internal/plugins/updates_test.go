@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
@@ -551,7 +552,7 @@ func TestCheckUpdates_WarnsAboutAPluginKeyWithNoMarketplace(t *testing.T) {
 // hungRemoteTripwire bounds how long a test waits for a check to cut off the
 // hung remote. TRIPWIRE: the remote's own cancellation is the signal; this
 // only turns a check that never answers into a failure instead of a hung test
-// binary, far above the 50ms deadline so a loaded runner does not trip it.
+// binary, far above the check's deadline so a loaded runner does not trip it.
 const hungRemoteTripwire = 90 * time.Second
 
 // A remote that never answers is cut off by the check's overall deadline, not
@@ -564,38 +565,79 @@ const hungRemoteTripwire = 90 * time.Second
 // seconds on a loaded runner (git_signal_unix_test.go), so a bound on the
 // check's elapsed time measures the machine. The marketplace is pinned so the
 // refresh that opens the check runs no real git before the remote is asked.
+// The remote also reports whether it was live when asked, so a deadline that
+// expired before the check reached it fails instead of passing vacuously.
 func TestCheckUpdates_OverallDeadlineCutsOffAHungRemote(t *testing.T) {
 	f := installURLPlugin(t, unpinned)
 	pinMarketplaceToItsHead(t, f.m, "acme")
 	realGit, realDeadline := gitRun, updateCheckDeadline
 	t.Cleanup(func() { gitRun, updateCheckDeadline = realGit, realDeadline })
-	updateCheckDeadline = 50 * time.Millisecond
-	cause := make(chan error, 1)
+	// 500ms leaves a loaded runner room to reach the fake, while staying far
+	// under the 20s per-remote timeout.
+	updateCheckDeadline = 500 * time.Millisecond
+	type hungCall struct {
+		cause error
+		live  bool
+	}
+	calls := make(chan hungCall, 1)
+	unexpectedGit := make(chan string, 1)
 	gitRun = func(ctx context.Context, dir string, args ...string) (string, error) {
 		if len(args) > 0 && args[0] == "ls-remote" {
+			live := ctx.Err() == nil
 			<-ctx.Done()
-			cause <- context.Cause(ctx)
+			calls <- hungCall{cause: context.Cause(ctx), live: live}
 			return "", ctx.Err()
 		}
-		t.Errorf("git %v ran before the hung remote; the fixture must keep real git out of this check", args)
+		select {
+		case unexpectedGit <- fmt.Sprintf("git %v", args):
+		default:
+		}
 		return "", errors.New("real git must not run")
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	checked := make(chan error, 1)
-	go func() { checked <- f.m.CheckUpdates(ctx) }()
-	select {
-	case got := <-cause:
-		if !errors.Is(got, errUpdateCheckDeadline) {
-			t.Fatalf("the hung remote was ended by %v, want the check's overall deadline", got)
+	finished := make(chan struct{})
+	go func() {
+		defer close(finished)
+		checked <- f.m.CheckUpdates(ctx)
+	}()
+	// The restore cleanup above is registered first, so it runs after this one
+	// and never swaps the seams out from under a running check.
+	t.Cleanup(func() {
+		cancel()
+		select {
+		case <-finished:
+		case <-time.After(hungRemoteTripwire):
+			t.Error("CheckUpdates did not return after the test canceled it")
 		}
+	})
+	var call hungCall
+	select {
+	case call = <-calls:
 	case err := <-checked:
 		t.Fatalf("CheckUpdates answered before the hung remote was cut off: %v", err)
 	case <-time.After(hungRemoteTripwire):
 		t.Fatal("the check never cut off the hung remote")
 	}
-	if err := <-checked; err != nil {
-		t.Fatalf("CheckUpdates: %v", err)
+	if !call.live {
+		t.Fatal("the check asked the hung remote only after its deadline had passed; the overall deadline did not cut off a live hang")
+	}
+	if !errors.Is(call.cause, errUpdateCheckDeadline) {
+		t.Fatalf("the hung remote was ended by %v, want the check's overall deadline", call.cause)
+	}
+	select {
+	case err := <-checked:
+		if err != nil {
+			t.Fatalf("CheckUpdates: %v", err)
+		}
+	case <-time.After(hungRemoteTripwire):
+		t.Fatal("CheckUpdates did not return after the hung remote was cut off")
+	}
+	select {
+	case args := <-unexpectedGit:
+		t.Fatalf("%s ran before the hung remote; the fixture must keep real git out of this check", args)
+	default:
 	}
 	if listedUpdateAvailable(t, f.m) {
 		t.Fatal("plugin whose remote hung listed as having an update")
