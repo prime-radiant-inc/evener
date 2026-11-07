@@ -909,7 +909,6 @@ func (s *Session) configureHubWatchRuntime(ctx context.Context, args map[string]
 	}
 	s.mu.Lock()
 	client, enabled, closing := s.hubClient, s.hubEnabled, s.closing
-	boundSignal := s.hubWatchSignal
 	s.mu.Unlock()
 	if client == nil || !enabled || closing {
 		return nil, appwire.InvalidRequest("Manager tool unavailable")
@@ -969,6 +968,16 @@ func (s *Session) configureHubWatchRuntime(ctx context.Context, args map[string]
 	watchCtx, cancel := context.WithCancel(context.Background())
 	stopSetupCancellation := context.AfterFunc(ctx, cancel)
 	defer stopSetupCancellation()
+	// Pair the transport with the binding it is opened against: a handoff or
+	// binding change during setup must not leave it carrying an older signal.
+	s.mu.Lock()
+	client, enabled, closing = s.hubClient, s.hubEnabled, s.closing
+	boundSignal := s.hubWatchSignal
+	s.mu.Unlock()
+	if client == nil || !enabled || closing {
+		cancel()
+		return nil, appwire.InvalidRequest("Manager tool unavailable")
+	}
 	updates, err := client.Watch(watchCtx, request)
 	if err != nil {
 		cancel()
@@ -1110,6 +1119,16 @@ func (s *Session) consumeHubWatch(ctx context.Context, id string, request appwir
 	if jm == nil {
 		return
 	}
+	// A canceled consumer has been superseded: a re-registration (or
+	// shutdown) canceled this transport and owns the durable watch now. Its
+	// cancellation or a closed subscription it left behind is not evidence
+	// that the target is gone, and ending the watch here would discard the
+	// baseline the replacement is about to compare its snapshot against.
+	endWatch := func(reason string) {
+		if ctx.Err() == nil {
+			_ = jm.endHubWatchUntilPersisted(id, reason, nil)
+		}
+	}
 	stateFailures := 0
 	var outageStart time.Time
 	var held *appwire.SnapshotIdentity
@@ -1196,7 +1215,7 @@ func (s *Session) consumeHubWatch(ctx context.Context, id string, request appwir
 			if ctx.Err() != nil {
 				return
 			}
-			_ = jm.endHubWatchUntilPersisted(id, "observation snapshot failed: "+err.Error(), nil)
+			endWatch("observation snapshot failed: " + err.Error())
 			return
 		}
 		if !managerHubWatchPresent(jm, id) {
@@ -1213,14 +1232,14 @@ func (s *Session) consumeHubWatch(ctx context.Context, id string, request appwir
 					break stream
 				}
 				if request.Scope == "" && update.Snapshot != nil && (update.Metadata.Ref != initial.Metadata.Ref || update.Metadata.InstanceID != initial.Metadata.InstanceID || update.Metadata.GenerationID != initial.Metadata.GenerationID) {
-					_ = jm.endHubWatchUntilPersisted(id, "target replaced; re-register", nil)
+					endWatch("target replaced; re-register")
 					return
 				}
 				if err := observe(update); err != nil {
 					if ctx.Err() != nil {
 						return
 					}
-					_ = jm.endHubWatchUntilPersisted(id, "observation failed: "+err.Error(), nil)
+					endWatch("observation failed: " + err.Error())
 					return
 				}
 				if !managerHubWatchPresent(jm, id) {
@@ -1252,11 +1271,11 @@ func (s *Session) consumeHubWatch(ctx context.Context, id string, request appwir
 			cancel()
 			if err == nil {
 				if !state.Manager || state.Ref != callerRef || state.InstanceID != callerInstance {
-					_ = jm.endHubWatchUntilPersisted(id, "Manager binding no longer serves this session; re-register", nil)
+					endWatch("Manager binding no longer serves this session; re-register")
 					return
 				}
 				if signal == boundSignal {
-					_ = jm.endHubWatchUntilPersisted(id, "observation subscription ended unexpectedly; re-register", nil)
+					endWatch("observation subscription ended unexpectedly; re-register")
 					return
 				}
 				rebound, watchErr := client.Watch(ctx, request)
@@ -1277,7 +1296,7 @@ func (s *Session) consumeHubWatch(ctx context.Context, id string, request appwir
 						return
 					}
 					if (request.Scope == "top_level" && (snapshot.Roster == nil || !snapshot.Roster.Initial)) || (request.Scope == "" && (snapshot.Snapshot == nil || snapshot.Metadata.InstanceID != initial.Metadata.InstanceID || snapshot.Metadata.GenerationID != initial.Metadata.GenerationID || snapshot.Metadata.Ref != initial.Metadata.Ref)) {
-						_ = jm.endHubWatchUntilPersisted(id, "target replaced or observation unavailable; re-register", nil)
+						endWatch("target replaced or observation unavailable; re-register")
 						return
 					}
 					if request.Scope == "top_level" {
@@ -1289,17 +1308,12 @@ func (s *Session) consumeHubWatch(ctx context.Context, id string, request appwir
 					break
 				}
 				if permanentHubWatchError(watchErr) {
-					_ = jm.endHubWatchUntilPersisted(id, "observation subscription rejected: "+watchErr.Error(), nil)
+					endWatch("observation subscription rejected: " + watchErr.Error())
 					return
 				}
 				recoveryErr = watchErr
 			} else {
 				recoveryErr = err
-			}
-			// A canceled consumer has been superseded too; its cancellation is
-			// not a fresh outage that may end the watch.
-			if ctx.Err() != nil {
-				return
 			}
 			stateFailures++
 			if outageStart.IsZero() {
@@ -1313,7 +1327,7 @@ func (s *Session) consumeHubWatch(ctx context.Context, id string, request appwir
 			// attempts keep failing retryably accrues the same window and no
 			// loss retries forever unheard (job-control.md).
 			if time.Since(outageStart) >= s.hubWatchStateOutageBudget() {
-				_ = jm.endHubWatchUntilPersisted(id, "observation unreachable: "+recoveryErr.Error()+"; re-register", nil)
+				endWatch("observation unreachable: " + recoveryErr.Error() + "; re-register")
 				return
 			}
 			// A rebind resolves the ambiguity immediately; otherwise retry after

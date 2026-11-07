@@ -52,6 +52,21 @@ func (p *rosterLateBindPeer) Watch(context.Context, appwire.SessionWatchRequest)
 	return p.updates, nil
 }
 
+// rosterBlockingStatePeer holds the consumer's binding check open so the
+// re-registration handoff can cancel the consumer while that read is in
+// flight.
+type rosterBlockingStatePeer struct {
+	*managerSetupCancelClient
+	entered chan struct{}
+	release chan struct{}
+}
+
+func (p *rosterBlockingStatePeer) State(context.Context) (appwire.ManagerView, error) {
+	close(p.entered)
+	<-p.release
+	return p.view, nil
+}
+
 // rosterFrameNotification drains exactly one model-visible roster frame.
 func rosterFrameNotification(t *testing.T, root *Session) deliverableJobNotification {
 	t.Helper()
@@ -172,6 +187,7 @@ func TestHubRosterWatchLateConsumerKeepsWatch(t *testing.T) {
 			updates:                  rebound,
 		}
 		// The old subscription belongs to the binding installed now.
+		root.HubBindingChanged()
 		binding := currentHubSignal(root)
 		updates := make(chan appwire.SessionWatchUpdate)
 		close(updates)
@@ -181,6 +197,9 @@ func TestHubRosterWatchLateConsumerKeepsWatch(t *testing.T) {
 		}
 		// The transport is replaced before the consumer goroutine starts.
 		root.SetHubClient(peer)
+		if binding == currentHubSignal(root) {
+			t.Fatal("replacement did not install a new binding signal")
+		}
 		go root.consumeHubWatch(base, id, appwire.SessionWatchRequest{Scope: "top_level"}, "local:manager", "manager-instance", binding, updates, rosterUpdate(1, true, a), done)
 		synctest.Wait()
 		jm.mu.Lock()
@@ -197,6 +216,48 @@ func TestHubRosterWatchLateConsumerKeepsWatch(t *testing.T) {
 		}
 		if rosterFrameField(got.notification.watchSendFrame, "roster_initial: ") != "" {
 			t.Fatalf("late rebind frame is a full initial, not a delta: %s", got.notification.watchSendFrame)
+		}
+	})
+}
+
+// A re-registration handoff cancels the installed consumer. If the consumer's
+// binding check answers after that cancellation, the consumer must not treat
+// the healthy answer as an ended subscription and delete the durable watch
+// the replacement is about to reuse.
+func TestHubRosterWatchSupersededStateEndKeepsWatch(t *testing.T) {
+	t.Parallel()
+	synctest.Test(t, func(t *testing.T) {
+		root, jm, id, a, _ := rosterDeliveryFixture(t)
+		base, cancel := context.WithCancel(t.Context())
+		peer := &rosterBlockingStatePeer{
+			managerSetupCancelClient: &managerSetupCancelClient{view: appwire.ManagerView{Ref: "local:manager", InstanceID: "manager-instance", Manager: true}},
+			entered:                  make(chan struct{}),
+			release:                  make(chan struct{}),
+		}
+		root.SetHubClient(peer)
+		updates := make(chan appwire.SessionWatchUpdate)
+		close(updates)
+		done := make(chan struct{})
+		if !root.installHubWatchSubscription(jm, id, cancel, done) {
+			t.Fatal("roster subscription not installed")
+		}
+		go root.consumeHubWatch(base, id, appwire.SessionWatchRequest{Scope: "top_level"}, "local:manager", "manager-instance", currentHubSignal(root), updates, rosterUpdate(1, true, a), done)
+		// The consumer's state read is in flight when the handoff cancels it.
+		<-peer.entered
+		root.cancelHubWatch(id)
+		close(peer.release)
+		synctest.Wait()
+		select {
+		case <-done:
+		default:
+			t.Fatal("superseded consumer did not exit")
+		}
+		jm.mu.Lock()
+		_, cfg, live := jm.watchConfigByIDLocked(id)
+		retained := live && len(cfg.rosterBaseline) == 1 && cfg.rosterBaseline[a.Ref] == a.AttentionEntry
+		jm.mu.Unlock()
+		if !retained {
+			t.Fatal("a superseded consumer ended the durable roster watch after its state read answered")
 		}
 	})
 }
