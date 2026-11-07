@@ -930,15 +930,31 @@ func delegateAttentionReopenSuffix(generation uint64) string {
 // id that does not end in a well-formed segment is returned unchanged.
 func stripDelegateAttentionReopenSegments(id string) string {
 	for {
-		at := strings.LastIndex(id, delegateAttentionReopenMarker)
-		if at < 0 {
+		source, _, ok := cutDelegateAttentionReopenSegment(id)
+		if !ok {
 			return id
 		}
-		if _, err := strconv.ParseUint(id[at+len(delegateAttentionReopenMarker):], 10, 64); err != nil {
-			return id
-		}
-		id = id[:at]
+		id = source
 	}
+}
+
+// cutDelegateAttentionReopenSegment trims one trailing reopen segment off id,
+// reporting the source identity the segment was minted from and the failed
+// start's generation it keyed. An id that does not end in a well-formed
+// segment reports itself whole with ok false — the one definition of the
+// segment's shape, shared by the id stripper, which loops cuts down to the
+// base, and the cold restore's derived hold, which keys the immediate
+// source's resume claim.
+func cutDelegateAttentionReopenSegment(id string) (source string, generation uint64, ok bool) {
+	at := strings.LastIndex(id, delegateAttentionReopenMarker)
+	if at < 0 {
+		return id, 0, false
+	}
+	generation, err := strconv.ParseUint(id[at+len(delegateAttentionReopenMarker):], 10, 64)
+	if err != nil {
+		return id, 0, false
+	}
+	return id[:at], generation, true
 }
 
 func (s *Session) pendingDelegateAttentionIDsLocked() ([]string, error) {
@@ -1024,14 +1040,11 @@ func (s *Session) deriveHeldDelegateAttentionFromOutcome() {
 	}
 	var held []string
 	for _, id := range fold.pendingIDs() {
-		at := strings.LastIndex(id, delegateAttentionReopenMarker)
-		if at < 0 {
+		source, _, ok := cutDelegateAttentionReopenSegment(id)
+		if !ok {
 			continue
 		}
-		if _, err := strconv.ParseUint(id[at+len(delegateAttentionReopenMarker):], 10, 64); err != nil {
-			continue
-		}
-		if fold.resumeGenerations[id[:at]] != generation {
+		if fold.resumeGenerations[source] != generation {
 			continue
 		}
 		if _, wakeNoted := noted[id]; wakeNoted {

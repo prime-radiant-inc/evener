@@ -1076,11 +1076,16 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	// Where each reopened turn's latest attempt begins in resumeHistory: the
 	// restored state reads an end reason from that attempt alone.
 	var attemptStarts map[string]int
+	// The superseded attention identities the history build and the
+	// coordinate mappers below share: the transcript folds for them once,
+	// not once per reopen marker and boundary they map.
+	var superseded map[string]bool
 	if restoreCfg.resumeHistory != nil {
 		resumeHistory = append([]schema.Turn(nil), restoreCfg.resumeHistory...)
 	} else if len(transcriptEntries) > 0 {
-		resumeHistory, repairInsertions = resumeHistoryIndexed(transcriptEntries)
-		attemptStarts = latestAttemptStarts(transcriptEntries, repairInsertions)
+		superseded = supersededDelegateAttentionIDs(transcriptEntries)
+		resumeHistory, repairInsertions = resumeHistoryIndexedWithSuperseded(transcriptEntries, superseded)
+		attemptStarts = latestAttemptStarts(transcriptEntries, repairInsertions, superseded)
 	}
 	if resumeHistory == nil {
 		resumeHistory = []schema.Turn{}
@@ -1101,7 +1106,7 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 		// transcript-only entries, and repair insertions before the fork
 		// boundary shift it right by one each (resumedDivergence carries the
 		// mechanism).
-		divergenceTurn = resumedDivergence(transcriptEntries, divergenceTurn, repairInsertions)
+		divergenceTurn = resumedDivergence(transcriptEntries, divergenceTurn, repairInsertions, superseded)
 	}
 	resumeHistory = escapeHistoryWithSessionProvenance(resumeHistory, divergenceTurn, clientMutations.steeringOrigins())
 	restoredClientMutationTurns := make(map[string]string)

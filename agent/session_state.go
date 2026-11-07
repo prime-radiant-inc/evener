@@ -549,6 +549,10 @@ func (s *Session) finishProcessingAtRestoredFailureBoundary(ctx context.Context)
 	var restoredHistory []schema.Turn
 	var restoredRepairInsertions []int
 	var restoredEntries []transcript.Entry
+	// The superseded attention identities the history build and the
+	// coordinate mappers below share: the transcript folds for them once,
+	// not once per reopen marker and boundary they map.
+	var restoredSuperseded map[string]bool
 	path := s.TranscriptPath()
 	s.attentionMu.Lock()
 	if path != "" {
@@ -556,7 +560,8 @@ func (s *Session) finishProcessingAtRestoredFailureBoundary(ctx context.Context)
 		// transcript must still be read to reconcile the boundary.
 		_, entries, _, err := readTranscript(context.Background(), path, s.stateDir)
 		if err == nil {
-			restoredHistory, restoredRepairInsertions = resumeHistoryIndexed(entries)
+			restoredSuperseded = supersededDelegateAttentionIDs(entries)
+			restoredHistory, restoredRepairInsertions = resumeHistoryIndexedWithSuperseded(entries, restoredSuperseded)
 			restoredEntries = entries
 		}
 	}
@@ -575,7 +580,7 @@ func (s *Session) finishProcessingAtRestoredFailureBoundary(ctx context.Context)
 		// Map the immutable full-transcript divergence into the resumed
 		// history's coordinates (retained window, skipped transcript-only
 		// entries and repair insertions) before consulting journal provenance.
-		divergence = resumedDivergence(restoredEntries, divergence, restoredRepairInsertions)
+		divergence = resumedDivergence(restoredEntries, divergence, restoredRepairInsertions, restoredSuperseded)
 	}
 	origins := s.clientMutations.steeringOrigins()
 	if restoredHistory == nil {
@@ -589,7 +594,7 @@ func (s *Session) finishProcessingAtRestoredFailureBoundary(ctx context.Context)
 		release(transitioned, turnMS)
 		return
 	}
-	state := deriveRestoredState(restoredHistory, divergence, origins, latestAttemptStarts(restoredEntries, restoredRepairInsertions))
+	state := deriveRestoredState(restoredHistory, divergence, origins, latestAttemptStarts(restoredEntries, restoredRepairInsertions, restoredSuperseded))
 	pending, isAskRound := deriveRestoredAskPending(restoredHistory, divergence, origins)
 	transitioned, turnMS := s.transitionProcessingAtBoundaryLocked(state)
 	if transitioned {
