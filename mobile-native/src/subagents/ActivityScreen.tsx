@@ -88,7 +88,8 @@ export function ActivityScreen({ route, navigation }: NativeStackScreenProps<Rou
 	const { width } = useWindowDimensions();
 	// A list opened in the Duo split's detail pane is narrower than the window;
 	// its summary strip spans the pane.
-	const paneWidth = useDetailPaneWidth() ?? width;
+	const detailPaneWidth = useDetailPaneWidth();
+	const paneWidth = detailPaneWidth ?? width;
 	const { tree, snapshot } = useFollowedSubagentTree(hubId, ref, threadId);
 
 	const activity = useMemo(() => (snapshot.tree ? flattenActivity(snapshot.tree, title) : []), [snapshot.tree, title]);
@@ -354,7 +355,10 @@ export function ActivityScreen({ route, navigation }: NativeStackScreenProps<Rou
 	);
 
 	return (
-		<SafeAreaView edges={["left", "right"]} style={{ flex: 1, backgroundColor: palette.page }}>
+		<SafeAreaView
+			edges={detailPaneWidth === null ? ["left", "right"] : ["right"]}
+			style={{ flex: 1, backgroundColor: palette.page }}
+		>
 			<FlatList
 				data={items}
 				keyboardDismissMode="on-drag"

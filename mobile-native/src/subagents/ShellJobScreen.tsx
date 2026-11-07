@@ -13,6 +13,7 @@ import { Text, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { AnsiOutputList } from "../AnsiOutputList";
 import { fonts } from "../design/tokens";
+import { useDetailPaneWidth } from "../duo/paneWidth";
 import type { Routes } from "../screens";
 import { allowFontScaling, useColors, useTextScale } from "../ui";
 import { flattenJobs, type ShellJobRow, shellJobMeta, shellJobOwner } from "./subagentModel";
@@ -20,6 +21,7 @@ import { type ShellJobOutput, useShellJobOutput } from "./useShellJobOutput";
 import { useFollowedSubagentTree } from "./useSubagentTree";
 
 export function ShellJobScreen({ route }: NativeStackScreenProps<Routes, "ShellJob">) {
+	const detailPaneWidth = useDetailPaneWidth();
 	const { hubId, jobId, ownerRef, coordinator } = route.params;
 	const { palette } = useColors();
 	const scale = useTextScale();
@@ -60,7 +62,10 @@ export function ShellJobScreen({ route }: NativeStackScreenProps<Routes, "ShellJ
 		</View>
 	);
 	return (
-		<SafeAreaView edges={["left", "right"]} style={{ flex: 1, backgroundColor: palette.page }}>
+		<SafeAreaView
+			edges={detailPaneWidth === null ? ["left", "right"] : ["right"]}
+			style={{ flex: 1, backgroundColor: palette.page }}
+		>
 			<AnsiOutputList
 				text={output.status === "read" ? output.text : ""}
 				header={header}

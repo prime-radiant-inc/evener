@@ -48,7 +48,10 @@ vi.mock("react-native", async () => ({
 		addEventListener: () => ({ remove: () => {} }),
 	},
 }));
-vi.mock("react-native-safe-area-context", () => ({ SafeAreaView: "SafeAreaView" }));
+vi.mock("react-native-safe-area-context", () => ({
+	SafeAreaView: "SafeAreaView",
+	useSafeAreaInsets: () => ({ top: 0, bottom: 0, left: 0, right: 0 }),
+}));
 vi.mock("expo-clipboard", () => ({ setStringAsync: async () => {} }));
 vi.mock("expo-web-browser", () => ({
 	openBrowserAsync: async () => ({ type: "dismiss" }),

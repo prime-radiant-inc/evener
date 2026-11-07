@@ -25,6 +25,7 @@ import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context"
 import { useHeldAlertCount, useHoldAlerts } from "../alerts/alertsContext";
 import { copyText } from "../clipboard";
 import { useConnection } from "../ConnectionProvider";
+import { useDetailPaneWidth } from "../duo/paneWidth";
 import { HubProfiles } from "../connection";
 import type { Routes } from "../screens";
 import { timeAgo } from "../session/format";
@@ -109,6 +110,7 @@ export function ReaderScreen({ route, navigation }: NativeStackScreenProps<Route
 	const { palette } = useColors();
 	const scale = useTextScale();
 	const insets = useSafeAreaInsets();
+	const detailPaneWidth = useDetailPaneWidth();
 	const list = useRef<FlatList<Row>>(null);
 
 	// This visit's view of the past: the version you last read. A re-read
@@ -523,7 +525,10 @@ export function ReaderScreen({ route, navigation }: NativeStackScreenProps<Route
 	);
 
 	return (
-		<SafeAreaView edges={["left", "right"]} style={{ flex: 1, backgroundColor: palette.page }}>
+		<SafeAreaView
+			edges={detailPaneWidth === null ? ["left", "right"] : ["right"]}
+			style={{ flex: 1, backgroundColor: palette.page }}
+		>
 			<FlatList
 				ref={list}
 				data={rows}
