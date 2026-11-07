@@ -177,8 +177,8 @@ func TestDelegateControllerRefusedBatchQueuesOnlyTheRefusedPlan(t *testing.T) {
 		t.Fatalf("refused plans = %#v, want one waiterless report", refusedPlans)
 	}
 	// The second plan: a never-tried waiter-bearing report for the root.
-	seedDelegateControllerIdleOwnedBy(t, c, "dlg_waiter", root.id)
-	waiterLease, waiter := startDelegateDeliveryGenerationFor(t, c, root.id, "dlg_waiter", true)
+	seedDelegateControllerIdle(t, c, "dlg_waiter", "")
+	waiterLease, waiter := startDelegateDeliveryGeneration(t, c, "dlg_waiter", true)
 	delivered := finishDelegateDeliveryGeneration(t, c, waiterLease, "waiter report").deliveries
 	if len(delivered) != 1 || delivered[0].waiter == nil {
 		t.Fatalf("second plan = %#v, want one waiter-bearing report", delivered)
@@ -251,6 +251,51 @@ func TestDelegateControllerFlushKeepsDrainingAfterTransientRefusal(t *testing.T)
 	}
 	if !owner.hasPendingDelegateDeliveries() {
 		t.Fatal("the refused plan was not queued on its live owner")
+	}
+}
+
+// A delivery whose flush fails is requeued on the session that will deliver
+// it. When that session is the plan's own receiver and still mid-turn, the
+// requeue must hold the claim exactly as acceptDelegateDeliveryPlan's deferred
+// branch does: the owner's next inline wait to the same child carries only a
+// held head, and without the hold the reply strands the wait until its ceiling
+// (#3906).
+func TestDelegateRequeueWhileReceiverProcessingHoldsTheHead(t *testing.T) {
+	c, _ := newDelegateControllerTestHarness(t, 3, 1)
+	seedDelegateControllerIdle(t, c, "dlg_target", "")
+	// A processing receiver with no transcript writer: the first delivery
+	// fails its durable append, so the flush requeues it while the receiver is
+	// still mid-turn.
+	root := &Session{id: "root-session", stateDir: c.stateDir, delegateController: c, state: SessionProcessing}
+	c.rootRuntime = root
+
+	firstLease, _ := startDelegateDeliveryGeneration(t, c, "dlg_target", false)
+	first := finishDelegateDeliveryGeneration(t, c, firstLease, "first").deliveries
+	if len(first) != 1 {
+		t.Fatalf("first generation's plans = %#v, want one report", first)
+	}
+	root.enqueueDelegateDelivery(first[0])
+	if err := root.flushPendingDelegateDeliveries(); err == nil {
+		t.Fatal("the flush delivered a report with no transcript writer")
+	}
+	if !root.hasPendingDelegateDeliveries() {
+		t.Fatal("the failed delivery was not requeued on its mid-turn receiver")
+	}
+
+	// The owner now sends to the same child with an inline wait in that turn:
+	// the reply must carry the requeued report instead of leaving the wait to
+	// run to its ceiling.
+	secondLease, waiter := startDelegateDeliveryGeneration(t, c, "dlg_target", true)
+	plans := finishDelegateDeliveryGeneration(t, c, secondLease, "second")
+	if len(plans.deliveries) != 1 || len(plans.deliveries[0].carried) != 1 {
+		t.Fatalf("second generation's plans = %#v, want one carrying the requeued head", plans.deliveries)
+	}
+	if _, err := deliverDelegatePacket(plans.deliveries[0], nil); err != nil {
+		t.Fatalf("deliver the reply: %v", err)
+	}
+	resolution := waitedResolution(t, waiter)
+	if resolution.fallback || resolution.commit == nil || len(resolution.earlier) != 1 {
+		t.Fatalf("resolution = %#v, want the requeued report carried ahead of the reply", resolution)
 	}
 }
 
@@ -1034,7 +1079,7 @@ func TestDelegateControllerUpdateHeadLeavesTheInlineWaiter(t *testing.T) {
 
 func startDelegateDeliveryGeneration(t *testing.T, c *delegateTreeController, delegateID string, withWaiter bool) (delegateLease, *delegateInlineWaiter) {
 	t.Helper()
-	reservation, err := c.ReserveStart(rootDelegateActor("root-session"), delegateID)
+	reservation, err := c.ReserveStart(rootDelegateActor(c.rootSessionID), delegateID)
 	if err != nil {
 		t.Fatalf("ReserveStart: %v", err)
 	}
@@ -1050,53 +1095,6 @@ func startDelegateDeliveryGeneration(t *testing.T, c *delegateTreeController, de
 		t.Fatalf("CommitStart: %v", err)
 	}
 	return started.lease, waiter
-}
-
-// startDelegateDeliveryGenerationFor is startDelegateDeliveryGeneration for a
-// controller whose root session is not the harness default.
-func startDelegateDeliveryGenerationFor(t *testing.T, c *delegateTreeController, rootSessionID, delegateID string, withWaiter bool) (delegateLease, *delegateInlineWaiter) {
-	t.Helper()
-	reservation, err := c.ReserveStart(rootDelegateActor(rootSessionID), delegateID)
-	if err != nil {
-		t.Fatalf("ReserveStart: %v", err)
-	}
-	var waiter *delegateInlineWaiter
-	if withWaiter {
-		waiter, err = c.RegisterInlineWaiter(reservation)
-		if err != nil {
-			t.Fatalf("RegisterInlineWaiter: %v", err)
-		}
-	}
-	started, err := c.CommitStart(reservation)
-	if err != nil {
-		t.Fatalf("CommitStart: %v", err)
-	}
-	return started.lease, waiter
-}
-
-// seedDelegateControllerIdleOwnedBy seeds an idle delegate whose descriptor
-// names ownerSessionID as its root session, so a controller whose root session
-// is not the harness default can authorize a start on it.
-func seedDelegateControllerIdleOwnedBy(t *testing.T, c *delegateTreeController, id, ownerSessionID string) {
-	t.Helper()
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	_, err := c.appendLocked(delegatestore.Event{
-		Kind:       delegatestore.EventDelegateCreated,
-		DelegateID: id,
-		Created: &delegatestore.DelegateCreated{Descriptor: delegatestore.Descriptor{
-			ChildSessionID:  "child-" + id,
-			TranscriptRef:   "local:child-" + id,
-			OwnerSessionID:  ownerSessionID,
-			Task:            "test task",
-			AgentType:       "general",
-			ToolNameCeiling: []string{"communicate"},
-			Resumable:       true,
-		}},
-	})
-	if err != nil {
-		t.Fatalf("seed delegate %s: %v", id, err)
-	}
 }
 
 func finishDelegateDeliveryGeneration(t *testing.T, c *delegateTreeController, lease delegateLease, message string) delegateMutationPlans {
