@@ -4771,9 +4771,9 @@ func TestDelegateAttention_PrelaunchStopExecutesRetryPlans(t *testing.T) {
 // typed-nil root runtime.
 func TestDelegateAttention_WakeDeliveryReceiverBranches(t *testing.T) {
 	c, _ := newDelegateControllerTestHarness(t, 1, 1)
-	var notified int32
+	var notified atomic.Int32
 	root := &Session{id: c.rootSessionID, stateDir: c.stateDir, delegateController: c}
-	root.notifyFunc = func() { atomic.AddInt32(&notified, 1) }
+	root.notifyFunc = func() { notified.Add(1) }
 	c.mu.Lock()
 	c.rootRuntime = root
 	c.mu.Unlock()
@@ -4783,7 +4783,7 @@ func TestDelegateAttention_WakeDeliveryReceiverBranches(t *testing.T) {
 	if err := c.wakeDeliveryReceiver(coldDelegateDeliveryReceiver{}, "delegate:missing"); err != nil {
 		t.Fatalf("cold receiver wake: %v", err)
 	}
-	if got := atomic.LoadInt32(&notified); got != 1 {
+	if got := notified.Load(); got != 1 {
 		t.Fatalf("root wake count = %d, want 1 from the cold receiver", got)
 	}
 	var typedNil *Session
