@@ -449,6 +449,59 @@ describe("last mobile location", () => {
 		expect(routeToSave({ index: 0, routes: [tasks] })).toBeUndefined();
 	});
 
+	it("saves the page in the Duo split's detail pane, not the Board behind it", () => {
+		const placeholder = { key: "placeholder", name: "Sessions" };
+		const conversation = {
+			key: "conversation",
+			name: "Conversation",
+			params: { hubId: "studio", ref: "local:s1", title: "Fix it" },
+		};
+		const tasks = {
+			key: "tasks",
+			name: "TasksSheet",
+			params: { hubId: "studio", ref: "local:s1", threadId: "s1", hasTasks: true },
+		};
+		const reader = {
+			key: "reader",
+			name: "Reader",
+			params: {
+				hubId: "studio",
+				sessionRef: "local:s1",
+				path: "docs/a.md",
+				sessionTitle: "Fix it",
+			},
+		};
+		const split = (detail: readonly { key: string; name: string; params?: object }[]) => ({
+			index: 0,
+			routes: [{ key: "board", name: "Sessions", state: { index: detail.length - 1, routes: detail } }],
+		});
+		const savedLocation = (detail: readonly { key: string; name: string; params?: object }[]) => {
+			const route = routeToSave(split(detail));
+			return route ? locationForRoute(route, "studio") : null;
+		};
+		const conversationSaved = savedLocation([placeholder, conversation]);
+		expect(conversationSaved).toEqual({
+			hubId: "studio",
+			conversation: { ref: "local:s1", title: "Fix it" },
+		});
+		if (!conversationSaved) throw new Error("the split saved no location");
+		expect(restoredStack(conversationSaved).routes.map((route) => route.name)).toEqual([
+			"Hubs",
+			"Sessions",
+			"Conversation",
+		]);
+		expect(savedLocation([placeholder, conversation, tasks])).toEqual({
+			hubId: "studio",
+			conversation: { ref: "local:s1", title: "Fix it" },
+		});
+		expect(savedLocation([placeholder, conversation, reader])).toMatchObject({
+			hubId: "studio",
+			conversation: { ref: "local:s1", title: "Fix it" },
+			reader: { sessionRef: "local:s1", path: "docs/a.md" },
+		});
+		expect(savedLocation([placeholder])).toEqual({ hubId: "studio" });
+	});
+
 	it("reopens a document over its session after a relaunch", () => {
 		const disk = storage();
 		const repository = new LocationRepository(disk);
