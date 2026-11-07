@@ -649,18 +649,7 @@ func deliverDelegatePacket(plan delegateDeliveryPlan, receiver delegateDeliveryR
 	if err != nil {
 		return plans, err
 	}
-	switch receiver := receiver.(type) {
-	case *Session:
-		if receiver.isRootDelegateAttentionReceiver() {
-			err = receiver.armDelegateAttention(attentionID)
-		} else {
-			receiver.notify()
-			plan.controller.notifyDelegateAttention()
-		}
-	case coldDelegateDeliveryReceiver:
-		plan.controller.notifyDelegateAttention()
-	}
-	return plans, err
+	return plans, plan.controller.wakeDeliveryReceiver(receiver, attentionID)
 }
 
 func delegateAttentionID(deliveryID string) string { return "delegate:" + deliveryID }
@@ -1088,10 +1077,21 @@ func (c *delegateTreeController) queueRefusedDelegateDelivery(plan delegateDeliv
 func (c *delegateTreeController) dropDeliveryClaim(plan delegateDeliveryPlan) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if claim := c.deliveryClaims[plan.deliveryID]; claim != nil && claim.token == plan.claim {
-		delete(c.deliveryClaims, plan.deliveryID)
-		c.evidenceVersion++
+	c.dropDeliveryClaimLocked(plan)
+}
+
+// dropDeliveryClaimLocked is dropDeliveryClaim under the caller's c.mu. The
+// claim owns the delivery's inline waiter, which claimDelegateWaiterLocked
+// removed from the live state; dropping the claim must answer that waiter with
+// the fallback or it outlives the claim.
+func (c *delegateTreeController) dropDeliveryClaimLocked(plan delegateDeliveryPlan) {
+	claim := c.deliveryClaims[plan.deliveryID]
+	if claim == nil || claim.token != plan.claim {
+		return
 	}
+	delete(c.deliveryClaims, plan.deliveryID)
+	resolveDelegateInlineClaim(claim.waiter, delegateInlineResolution{fallback: true})
+	c.evidenceVersion++
 }
 
 // delegateDeliveryRetryPlan prepares the plan in hand for its retry. A
