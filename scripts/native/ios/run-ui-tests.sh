@@ -19,7 +19,10 @@
 # Release app the parent built on the parent's simulator, and validates the
 # xcresult: every intended test identity executed, none skipped, zero
 # failures. The private state never reaches the output directory or any
-# uploaded artifact.
+# uploaded artifact, except this run's own daemon logs: their round
+# diagnostics (steers, turn completions, the reason a round stopped) are
+# copied out before the state goes, they belong to the fixture-only session,
+# and they never carry credentials.
 #
 # USAGE (from the build runner only, on macOS):
 #   run-ui-tests.sh --build-identity ABSOLUTE_JSON --output ABSOLUTE_DIR
@@ -30,6 +33,7 @@ set -euo pipefail
 SCRIPT_NAME="run-ui-tests"
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd -P)"
 source "$repo_root/scripts/lib/scratch-lib.sh"
+usage() { sed -n '2,27p' "$0" | sed 's/^# \{0,1\}//'; exit 0; }
 
 identity=""
 output=""
@@ -44,6 +48,9 @@ while [ $# -gt 0 ]; do
 		[ $# -ge 2 ] || { echo "$SCRIPT_NAME: --output needs a path" >&2; exit 2; }
 		output="$2"
 		shift 2
+		;;
+	-h|--help)
+		usage
 		;;
 	*)
 		echo "$SCRIPT_NAME: unknown flag: $1" >&2
@@ -93,6 +100,7 @@ hub_pid=""
 daemons_stopped=0
 run_dir=""
 workspace=""
+state_home=""
 workspace_link="$HOME/evener-qualification-workspace"
 
 cleanup() {
@@ -127,6 +135,16 @@ cleanup() {
 		done
 		kill -KILL "$provider_pid" 2>/dev/null || true
 	fi
+	# The daemon's log is the decisive failure artifact — steers, turn
+	# completions, the reason a round stopped — and it lives in the private
+	# state scratch_rm is about to reclaim. Copy this run's daemon logs out
+	# before they go; they carry round diagnostics for the fixture-only
+	# session, never credentials. This script's own --output is the parent's
+	# ui directory, so the logs land directly in the uploaded set.
+	for daemon_log in "$state_home"/evener/run/logs/daemon-*.log; do
+		[ -f "$daemon_log" ] || continue
+		cp "$daemon_log" "$output/" 2>/dev/null || true
+	done
 	scratch_rm
 	exit "$status"
 }
