@@ -185,10 +185,17 @@ type testConfig struct {
 	// delegateAttentionArmFault, when set, is consulted at the top of
 	// armDelegateAttention; a non-nil error stands in for an arm the
 	// controller refused, so a test can pin the hold-release paths that do
-	// not run through a successful arm. The retry timer re-arms through
-	// armDelegateAttentionOnce and bypasses the fault, mirroring a refused
-	// arm whose paced retry later succeeds. Nil in production.
+	// not run through a successful arm. A faulted arm is retained for the
+	// paced retry exactly as a real refusal is, and the retry re-arms
+	// through armDelegateAttentionOnce, bypassing the fault — a refused arm
+	// whose paced retry later succeeds. Nil in production.
 	delegateAttentionArmFault func() error
+	// delegateAttentionHoldReleased, when set, observes each release of the
+	// automatic drives' holds: the site names the wake that ended them — a
+	// committed child delivery or a successful arm — with the ids that
+	// release dropped. A release that dropped nothing observes nothing.
+	// Nil in production.
+	delegateAttentionHoldReleased func(site delegateHoldReleaseSite, released []string)
 	// delegateAttentionBeforeReopenAppend observes the instant a reopen's
 	// durable append is about to land, after every teardown guard has run.
 	// Tests pause it there so a stop admitted into the guard-to-append window
