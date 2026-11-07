@@ -116,6 +116,25 @@ test("shows the branch unlinked when the caller declines the forge link", async 
   expect(screen.queryByTestId("forge-mark")).toBeNull();
 });
 
+// The unlinked phone form must yield like the linked ref does, not hold its
+// full width and squeeze the working directory away.
+test("middle-truncates an unlinked branch so it yields to the working dir", async () => {
+  const branch = "feature/a-branch-name-that-is-far-too-long-for-a-phone";
+  const client = clientReporting({ head: branch, originUrl: "git@github.com:owner/repo.git" });
+  render(
+    <ClientProvider client={client}>
+      <RepoLocation cwd="/repo" local link={false} />
+    </ClientProvider>,
+  );
+
+  const rendered = await screen.findByTestId("composer-repo-branch");
+  expect(rendered.children).toHaveLength(2);
+  const head = rendered.children[0]?.textContent ?? "";
+  const tail = rendered.children[1]?.textContent ?? "";
+  expect(head + tail).toBe(branch);
+  expect(tail.endsWith("phone")).toBe(true);
+});
+
 test("shows the branch unlinked when the repo has no origin remote", async () => {
   const client = clientReporting({ head: "main" });
   renderLocation("/repo", client);

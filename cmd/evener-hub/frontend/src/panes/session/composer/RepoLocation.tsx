@@ -201,6 +201,13 @@ export const RepoLocation = memo(function RepoLocation({ cwd, local, link = true
               <MiddleTruncated text={reference} cutOf={branchMarkerCut} />
             </span>
           </a>
+        ) : remote !== null ? (
+          // The unlinked form (a phone footer's caption row) keeps the
+          // shrinkable, middle-truncating layout: the branch must yield to
+          // the working directory rather than squeeze it to nothing.
+          <span className={CLASS.ref} title={branch} data-testid="composer-repo-branch">
+            <MiddleTruncated text={branch} cutOf={proportionalCut} />
+          </span>
         ) : (
           <span className={CLASS.branch} title={branch} data-testid="composer-repo-branch">
             {branch}

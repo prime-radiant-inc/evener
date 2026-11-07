@@ -30,10 +30,11 @@
   color: var(--ink-mid);
 }
 
-/* `owner/repo#branch`, beside the forge's mark. It may shrink as a last resort,
- * after the path has given up all of its room, and ellipsizes rather than
- * pushing the line out of the pane. The row lays out the middle-truncation
- * pair: the head clamps, the tail keeps the branch on screen. */
+/* `owner/repo#branch` beside the forge's mark, and the phone footer's unlinked
+ * branch (the same shrinkable form, without the mark). It may shrink as a last
+ * resort, after the path has given up all of its room, and ellipsizes rather
+ * than pushing the line out of the pane. The row lays out the middle-
+ * truncation pair: the head clamps, the tail keeps the branch on screen. */
 .ref {
   flex: 0 1 auto;
   min-width: 0;
