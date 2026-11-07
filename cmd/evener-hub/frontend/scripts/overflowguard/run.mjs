@@ -424,20 +424,21 @@ function assertComposerFooter(measurement, width) {
     failures.push(`safe-area emulation=${measurement.actualSafeArea}px, expected ${measurement.safeArea}px`);
   }
   if (measurement.cards !== 1) failures.push(`visible composer cards=${measurement.cards}, expected 1`);
+  // overflowharness-entry.tsx supplies this fixture path, independent of the checkout.
+  if (
+    measurement.metadataCount !== 1 ||
+    !measurement.metadataVisible ||
+    !measurement.pathVisible ||
+    !measurement.metadataInEdgeFooter ||
+    measurement.path !== "/Users/jesse/prime-radiant/toil-suite/evener"
+  ) {
+    failures.push(`${mobile ? "phone" : "desktop"} working-path metadata missing from the visible edge footer`);
+  }
   if (mobile) {
     // The phone keeps the working-directory line and the activity chips in
     // the pane's flush edge footer now, so the composer dock no longer owns
     // the pane's bottom edge or its safe-area band. The dock keeps its normal
     // 12px padding; the status bar below it carries the inset.
-    if (
-      measurement.metadataCount !== 1 ||
-      !measurement.metadataVisible ||
-      !measurement.pathVisible ||
-      !measurement.metadataInEdgeFooter ||
-      measurement.path !== "/Users/jesse/prime-radiant/toil-suite/evener"
-    ) {
-      failures.push("phone working-path metadata missing from the visible edge footer");
-    }
     if (
       measurement.paneBottom === null ||
       measurement.edgeFooterBottom === null ||
@@ -454,16 +455,6 @@ function assertComposerFooter(measurement, width) {
       );
     }
   } else {
-    // overflowharness-entry.tsx supplies this fixture path, independent of the checkout.
-    if (
-      measurement.metadataCount !== 1 ||
-      !measurement.metadataVisible ||
-      !measurement.pathVisible ||
-      !measurement.metadataInEdgeFooter ||
-      measurement.path !== "/Users/jesse/prime-radiant/toil-suite/evener"
-    ) {
-      failures.push("desktop working-path metadata missing from the visible edge footer");
-    }
     if (!nearlyEqual(measurement.paddingBottom, 12) || measurement.gap === null || !nearlyEqual(measurement.gap, 12)) {
       failures.push(
         `desktop bottom padding/gap=${measurement.paddingBottom}/${measurement.gap}px, expected unchanged 12px`,

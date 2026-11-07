@@ -181,7 +181,7 @@ export const RepoLocation = memo(function RepoLocation({ cwd, local, link = true
         <MiddleTruncated text={cwd} cutOf={proportionalCut} />
       </span>
       {branch !== "" &&
-        (remote !== null && link ? (
+        (link && remote !== null ? (
           <a
             className={CLASS.link}
             href={remote.repoUrl}
@@ -201,10 +201,10 @@ export const RepoLocation = memo(function RepoLocation({ cwd, local, link = true
               <MiddleTruncated text={reference} cutOf={branchMarkerCut} />
             </span>
           </a>
-        ) : remote !== null ? (
-          // The unlinked form (a phone footer's caption row) keeps the
-          // shrinkable, middle-truncating layout: the branch must yield to
-          // the working directory rather than squeeze it to nothing.
+        ) : !link ? (
+          // The phone footer's caption row keeps the shrinkable,
+          // middle-truncating layout whatever the remote: the branch must
+          // yield to the working directory rather than squeeze it to nothing.
           <span className={CLASS.ref} title={branch} data-testid="composer-repo-branch">
             <MiddleTruncated text={branch} cutOf={proportionalCut} />
           </span>
