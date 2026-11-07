@@ -4850,8 +4850,9 @@ func replaceChildTranscriptWithFS(t *testing.T, fs afero.Fs) func(*Session) {
 // the send therefore does not witness the failed send: sample the count at the
 // rollback boundary, after every failed-send step and before the rollback
 // releases the claim and re-drives the child, and require zero there. The
-// re-drive's own notification turn reaches the provider after that sample, so
-// this test also proves it distinguishes the two.
+// re-drive's own notification turn reaches the provider after that sample, and
+// the failed send's input never appears in a request, so the test also proves
+// it distinguishes the two.
 //
 // Regression for the provider-count arm of #4844.
 func TestDelegateAttention_PrelaunchFailedSendDoesNotReachProvider(t *testing.T) {
@@ -4879,8 +4880,9 @@ func TestDelegateAttention_PrelaunchFailedSendDoesNotReachProvider(t *testing.T)
 		}
 	}
 
-	outcome := (delegateRuntime{owner: root}).send(context.Background(), fixture.delegateID, "start successor", 0)
-	if outcome.result.Err == nil || !strings.Contains(outcome.result.Err.Error(), "injected attention resolution sync failure") {
+	const input = "start successor"
+	outcome := (delegateRuntime{owner: root}).send(context.Background(), fixture.delegateID, input, 0)
+	if outcome.result.Err == nil || !errors.Is(outcome.result.Err, errInjectedAttentionFailNextSync) {
 		t.Fatalf("prelaunch send = %#v, want the injected input-write failure", outcome.result)
 	}
 	if redrivenChild != fixture.childID {
@@ -4890,8 +4892,16 @@ func TestDelegateAttention_PrelaunchFailedSendDoesNotReachProvider(t *testing.T)
 		t.Fatalf("prelaunch failed send reached provider %d times before its re-drive", atRollback)
 	}
 	root.sendersWG.Wait()
-	if after := len(fixture.adapter.Requests()); after == 0 {
+	requests := fixture.adapter.Requests()
+	if len(requests) == 0 {
 		t.Fatal("re-driven notification turn reached provider 0 times; the test cannot distinguish the failed send from the notification turn")
+	}
+	for _, request := range requests {
+		for _, message := range request.Messages {
+			if strings.Contains(message.Text(), input) {
+				t.Fatalf("failed send's input reached the provider: %q", message.Text())
+			}
+		}
 	}
 }
 
@@ -5230,6 +5240,10 @@ func newAttentionFailNextSyncFS() *attentionFailNextSyncFS {
 	return &attentionFailNextSyncFS{Fs: afero.NewOsFs()}
 }
 
+// errInjectedAttentionFailNextSync is the sync failure attentionFailNextSyncFS
+// injects. The production path wraps it, so tests match it with errors.Is.
+var errInjectedAttentionFailNextSync = errors.New("injected attention resolution sync failure")
+
 func (fs *attentionFailNextSyncFS) Create(name string) (afero.File, error) {
 	file, err := fs.Fs.Create(name)
 	if err != nil {
@@ -5380,7 +5394,7 @@ func (file *attentionFailNextSyncFile) Sync() error {
 		if succeed {
 			return file.File.Sync()
 		}
-		return errors.New("injected attention resolution sync failure")
+		return errInjectedAttentionFailNextSync
 	}
 	return file.File.Sync()
 }
