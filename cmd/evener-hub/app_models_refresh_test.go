@@ -6,7 +6,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync/atomic"
@@ -23,11 +22,12 @@ import (
 // In particular, a provider diagnostic is a successful RPC, not a transport error.
 func TestModelListExplicitRefreshRecoversProvider(t *testing.T) {
 	root := t.TempDir()
-	binary := filepath.Join(root, "evener")
-	build := exec.CommandContext(t.Context(), "go", "build", "-o", binary, "../evener")
-	if out, err := build.CombinedOutput(); err != nil {
-		t.Fatalf("build: %v\n%s", err, out)
-	}
+	// The daemon this test launches is the ordinary evener binary, which
+	// TestMain already builds once for the whole test process. A private
+	// `go build ../evener` here was the same package and the same binary, built
+	// again: on a cold compile that was most of this test's eleven seconds, and
+	// every shard process paid it once.
+	binary := filepath.Join(liveStackBinaries(t, repoRootForTestMain()), "evener")
 	for _, item := range os.Environ() {
 		key, _, _ := strings.Cut(item, "=")
 		switch key {

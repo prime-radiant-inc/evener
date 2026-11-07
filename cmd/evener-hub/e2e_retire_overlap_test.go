@@ -32,6 +32,10 @@ func TestE2E_RetireOverlappedByAnotherOwnershipAction(t *testing.T) {
 	// by gating the daemon's answer, so the retire is provably past its check.
 	for _, overlap := range []string{"force stop", "delete", "resume"} {
 		t.Run(overlap, func(t *testing.T) {
+			// Each case builds its own provider and hub and holds only its own
+			// provider's namer, so the three overlaps run side by side rather
+			// than paying three stack startups in sequence.
+			t.Parallel()
 			provider, err := fakellm.New()
 			if err != nil {
 				t.Fatalf("start fake provider: %v", err)

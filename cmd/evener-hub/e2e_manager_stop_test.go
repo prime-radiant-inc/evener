@@ -25,6 +25,10 @@ import (
 func TestE2E_ManagerLocalTypedJobStop(t *testing.T) {
 	for _, mode := range []string{"job", "owned_delegate"} {
 		t.Run(mode, func(t *testing.T) {
+			// Each mode builds its own provider, hub and session tree and
+			// reaches no process-wide state, so the two stops overlap instead
+			// of paying two full stack startups in sequence.
+			t.Parallel()
 			stack, provider := startE2EHubStack(t)
 			ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 			defer cancel()
@@ -468,7 +472,12 @@ func TestManagerTypedStopPIDPublication(t *testing.T) {
 
 func TestManagerTypedStopCleanupOwnership(t *testing.T) {
 	for _, phase := range []string{"before_pid_capture", "before_manager_stop"} {
-		t.Run(phase, func(t *testing.T) { typedStopCleanupOwnership(t, phase == "before_pid_capture") })
+		t.Run(phase, func(t *testing.T) {
+			// Each phase builds its own provider, hub and session tree, so the
+			// two reads of the same cleanup window can overlap.
+			t.Parallel()
+			typedStopCleanupOwnership(t, phase == "before_pid_capture")
+		})
 	}
 }
 

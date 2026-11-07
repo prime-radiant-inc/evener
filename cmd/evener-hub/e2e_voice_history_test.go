@@ -18,6 +18,10 @@ func TestE2E_VoiceSpeechReachesOlderHistoryPages(t *testing.T) {
 			name = "reconnect_fence"
 		}
 		t.Run(name, func(t *testing.T) {
+			// Each case builds its own provider, hub and voice binding, and
+			// reaches no process-wide state, so the two journeys overlap
+			// instead of paying two full stack startups one after another.
+			t.Parallel()
 			f := newVoiceCorrectionStack(t)
 			var ready map[string]any
 			var peer realtimePeer

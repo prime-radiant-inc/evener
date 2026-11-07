@@ -803,7 +803,16 @@ func startManagerAcceptanceSSHFixture(ctx context.Context, t *testing.T, provide
 
 func cleanupManagerAcceptanceFixture(t *testing.T, host *hostSSH, addr, configPath, binaryPath, hostDir string) {
 	t.Helper()
-	shutdownProved := stopHostListener(t, host, addr, configPath, binaryPath)
+	cleanupManagerAcceptanceFixtureWithin(t, host, addr, configPath, binaryPath, hostDir, hostListenerProofBudget)
+}
+
+// cleanupManagerAcceptanceFixtureWithin is cleanupManagerAcceptanceFixture with
+// an explicit graceful-shutdown proof budget. A test that holds the hub at an
+// exit barrier is proving the cleanup refuses to report success; it can bound
+// that refusal with a short budget instead of the production deadline.
+func cleanupManagerAcceptanceFixtureWithin(t *testing.T, host *hostSSH, addr, configPath, binaryPath, hostDir string, proofBudget time.Duration) {
+	t.Helper()
+	shutdownProved := stopHostListenerWithin(t, host, addr, configPath, binaryPath, proofBudget)
 	if err := host.tryRun(hostDaemonReapCommand(hostDir)); err != nil {
 		t.Errorf("reap SSH-hosted daemons: %v", err)
 		retainHostCleanupRoot(t)

@@ -804,7 +804,24 @@ func (h *hostSSH) sha256IfFile(path string) string {
 // the caller to remove the directory the hub ran from.
 func stopHostListener(t *testing.T, host *hostSSH, addr, configPath, binaryPath string) bool {
 	t.Helper()
-	if err := stopHostListenerProof(host, addr, configPath, binaryPath); err != nil {
+	return stopHostListenerWithin(t, host, addr, configPath, binaryPath, hostListenerProofBudget)
+}
+
+// hostListenerProofBudget is the production budget a graceful-shutdown proof
+// allows a host hub's listener and process to disappear. A real host can take
+// seconds to reap a hub, so the caller waits it out. Tests that deliberately
+// hold the process at an exit barrier forever — proving that cleanup does NOT
+// report success while it is alive — use stopHostListenerWithin with a short
+// budget: the assertion is the negative verdict, not how long the real host
+// gets.
+const hostListenerProofBudget = 10 * time.Second
+
+// stopHostListenerWithin is stopHostListener with an explicit graceful-proof
+// budget, so a barrier test can observe the refusal without sitting out the
+// production deadline.
+func stopHostListenerWithin(t *testing.T, host *hostSSH, addr, configPath, binaryPath string, proofBudget time.Duration) bool {
+	t.Helper()
+	if err := stopHostListenerProofWithin(host, addr, configPath, binaryPath, proofBudget); err != nil {
 		t.Errorf("stopping the deploy check's host hub on %s (config %s): %v", addr, configPath, err)
 		retainHostCleanupRoot(t)
 		if reapErr := host.tryRun(hostHubReapCommand(configPath, binaryPath)); reapErr != nil {
@@ -857,14 +874,19 @@ exit 1`
 	return "env EVENER_HUB_BIN=" + shellquote.RemoteWord(binaryPath) + " EVENER_HUB_CONFIG=" + shellquote.RemoteWord(configPath) + " bash -c " + shellquote.RemoteWord(script)
 }
 
-func stopHostListenerProof(host *hostSSH, addr, configPath, binaryPath string) error {
+// stopHostListenerProofWithin stops this case's hub and proves both that its
+// listener is gone and that no process row still has the fixture binary and
+// exact config path, within an explicit graceful-shutdown budget. Every probe
+// that answers is still required to prove both; only the refusal's deadline
+// moves.
+func stopHostListenerProofWithin(host *hostSSH, addr, configPath, binaryPath string, proofBudget time.Duration) error {
 	port := addr[strings.LastIndex(addr, ":")+1:]
 	kill := hostHubKillCommand(addr, configPath, binaryPath)
 	if err := host.tryRun(kill); err != nil {
 		return fmt.Errorf("kill command failed: %w", err)
 	}
 	probe := hostListenerProbeScript(port)
-	deadline := time.Now().Add(10 * time.Second)
+	deadline := time.Now().Add(proofBudget)
 	for time.Now().Before(deadline) {
 		// Only a probe that ran (nil error) and answered hostNoListenerMarker proves
 		// the port is clear. A probe that could not run, or an answer this code
@@ -881,7 +903,7 @@ func stopHostListenerProof(host *hostSSH, addr, configPath, binaryPath string) e
 		}
 		time.Sleep(250 * time.Millisecond)
 	}
-	return fmt.Errorf("shutdown on %s is unproved after 10s", addr)
+	return fmt.Errorf("shutdown on %s is unproved after %s", addr, proofBudget)
 }
 
 // hostListenerProbeAbsent reports whether out — the answer of the shared
