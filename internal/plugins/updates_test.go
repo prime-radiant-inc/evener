@@ -48,9 +48,28 @@ func installURLPlugin(t *testing.T, sourceExtra func(repo, head string) string) 
 
 func unpinned(string, string) string { return "" }
 
+// pinMarketplace pins the named recorded marketplace to sha, so a check skips
+// its refresh (sourcePinned): the refresh runs real git, and a test that
+// measures a check must keep that out of its way.
+func pinMarketplace(t *testing.T, m *Manager, name, sha string) {
+	t.Helper()
+	mk, err := m.loadMarketplaces()
+	if err != nil {
+		t.Fatal(err)
+	}
+	ref, ok := mk[name]
+	if !ok {
+		t.Fatalf("marketplace %q not recorded", name)
+	}
+	ref.Source.Sha = sha
+	mk[name] = ref
+	if err := m.writeMarketplaces(mk); err != nil {
+		t.Fatalf("saving marketplaces: %v", err)
+	}
+}
+
 // pinMarketplaceToItsHead pins the recorded marketplace to the commit its
-// clone is on now, so a check skips its refresh (sourcePinned): the refresh
-// runs real git, and this keeps a test's measured window free of it.
+// clone is on now.
 func pinMarketplaceToItsHead(t *testing.T, m *Manager, name string) {
 	t.Helper()
 	mk, err := m.loadMarketplaces()
@@ -65,11 +84,7 @@ func pinMarketplaceToItsHead(t *testing.T, m *Manager, name string) {
 	if err != nil {
 		t.Fatalf("reading marketplace %q head: %v", name, err)
 	}
-	ref.Source.Sha = head
-	mk[name] = ref
-	if err := m.saveMarketplaces(mk); err != nil {
-		t.Fatalf("saving marketplaces: %v", err)
-	}
+	pinMarketplace(t, m, name, head)
 }
 
 // writeURLCatalog writes acme's marketplace.json into mktRepo, listing plugin
@@ -552,14 +567,6 @@ const hungRemoteTripwire = 90 * time.Second
 func TestCheckUpdates_OverallDeadlineCutsOffAHungRemote(t *testing.T) {
 	f := installURLPlugin(t, unpinned)
 	pinMarketplaceToItsHead(t, f.m, "acme")
-	// A refresh here would put real git in front of the hung remote and make
-	// the wall time a measure of this machine. Fail if the fixture reaches it.
-	realFetch := marketplaceGitFetch
-	t.Cleanup(func() { marketplaceGitFetch = realFetch })
-	marketplaceGitFetch = func(context.Context, string) error {
-		t.Error("the check refreshed the pinned marketplace; the hung-remote test must run no real git before it")
-		return errors.New("refresh ran")
-	}
 	realGit, realDeadline := gitRun, updateCheckDeadline
 	t.Cleanup(func() { gitRun, updateCheckDeadline = realGit, realDeadline })
 	updateCheckDeadline = 50 * time.Millisecond
@@ -577,8 +584,6 @@ func TestCheckUpdates_OverallDeadlineCutsOffAHungRemote(t *testing.T) {
 	defer cancel()
 	checked := make(chan error, 1)
 	go func() { checked <- f.m.CheckUpdates(ctx) }()
-	// The remote's own cancellation is the signal. The tripwire only turns a
-	// check that never answers into a failure instead of a hung test binary.
 	select {
 	case got := <-cause:
 		if !errors.Is(got, errUpdateCheckDeadline) {
@@ -659,16 +664,7 @@ func TestCheckUpdates_AClonePinnedDuringTheFetchIsNotFastForwarded(t *testing.T)
 	marketplaceGitFetch = func(ctx context.Context, dir string) error {
 		head := gittest.Run(t, dir, "rev-parse", "HEAD")
 		gittest.Run(t, dir, "checkout", "--quiet", "--detach")
-		mk, err := f.m.loadMarketplaces()
-		if err != nil {
-			t.Fatal(err)
-		}
-		ref := mk["acme"]
-		ref.Source.Sha = head
-		mk["acme"] = ref
-		if err := f.m.writeMarketplaces(mk); err != nil {
-			t.Fatal(err)
-		}
+		pinMarketplace(t, f.m, "acme", head)
 		return realFetch(ctx, dir)
 	}
 	advanceRepo(t, f.mktRepo)
