@@ -3035,6 +3035,11 @@ func TestDelegateAttentionHeldUpdateDoesNotLoopTheFinalizationDrain(t *testing.T
 			}
 			journal = strings.Join(parts, " | ")
 		}
+		// The parked presentation holds the scripted adapter's mutex while it
+		// waits on release; the request count below needs that mutex, so
+		// unblock the step first or the timeout diagnostic deadlocks instead
+		// of failing.
+		releaseOnce.Do(func() { close(release) })
 		t.Fatalf("the presentation never reached its model request (pending attention=%d (%v); adapter requests=%d; resolutions=%s; resumeGens=%s; journal=%s; flush=%v)",
 			len(pending), pendErr, len(lane.fixture.adapter.Requests()), resolutions, resumeGens, journal, lastFlushErr)
 	}
