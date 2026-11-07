@@ -909,6 +909,7 @@ func (s *Session) configureHubWatchRuntime(ctx context.Context, args map[string]
 	}
 	s.mu.Lock()
 	client, enabled, closing := s.hubClient, s.hubEnabled, s.closing
+	boundSignal := s.hubWatchSignal
 	s.mu.Unlock()
 	if client == nil || !enabled || closing {
 		return nil, appwire.InvalidRequest("Manager tool unavailable")
@@ -1038,7 +1039,7 @@ func (s *Session) configureHubWatchRuntime(ctx context.Context, args map[string]
 			}
 			rosterHandoffID = ""
 		}
-		go s.consumeHubWatch(watchCtx, result.WatchID, request, state.Ref, state.InstanceID, updates, first, done)
+		go s.consumeHubWatch(watchCtx, result.WatchID, request, state.Ref, state.InstanceID, boundSignal, updates, first, done)
 	}
 	return marshalWatchResult(result, jobToolResultDefaultMaxChar)
 }
@@ -1095,8 +1096,12 @@ const hubWatchReadBudget = 2 * time.Second
 // durable watch state, delivery identities, provenance and restart teardown.
 // callerRef and callerInstance name the Manager whose binding admitted the
 // watch: a recheck ends the watch if the binding no longer serves that same
-// Manager session.
-func (s *Session) consumeHubWatch(ctx context.Context, id string, request appwire.SessionWatchRequest, callerRef, callerInstance string, updates <-chan appwire.SessionWatchUpdate, initial appwire.SessionWatchUpdate, done ...chan struct{}) {
+// Manager session. boundSignal identifies the hub binding the consumed
+// transport was opened against: a change since then means a replacement
+// transport exists, so a closed stream is a rebind rather than a stream
+// that ended on a healthy connection. It is passed in because the consumer
+// goroutine can start after that replacement is installed.
+func (s *Session) consumeHubWatch(ctx context.Context, id string, request appwire.SessionWatchRequest, callerRef, callerInstance string, boundSignal <-chan struct{}, updates <-chan appwire.SessionWatchUpdate, initial appwire.SessionWatchUpdate, done ...chan struct{}) {
 	if len(done) != 0 && done[0] != nil {
 		defer close(done[0])
 	}
@@ -1105,9 +1110,6 @@ func (s *Session) consumeHubWatch(ctx context.Context, id string, request appwir
 	if jm == nil {
 		return
 	}
-	s.mu.Lock()
-	boundSignal := s.hubWatchSignal
-	s.mu.Unlock()
 	stateFailures := 0
 	var outageStart time.Time
 	var held *appwire.SnapshotIdentity
@@ -1265,6 +1267,15 @@ func (s *Session) consumeHubWatch(ctx context.Context, id string, request appwir
 					case <-ctx.Done():
 						return
 					}
+					// A canceled consumer has been superseded: a re-registration
+					// (or shutdown) canceled this transport and owns the durable
+					// watch now. Its closed rebind subscription can win the select
+					// above, but an empty update is not evidence that the target is
+					// unavailable. Ending the watch here would discard the baseline
+					// the replacement is about to compare its snapshot against.
+					if ctx.Err() != nil {
+						return
+					}
 					if (request.Scope == "top_level" && (snapshot.Roster == nil || !snapshot.Roster.Initial)) || (request.Scope == "" && (snapshot.Snapshot == nil || snapshot.Metadata.InstanceID != initial.Metadata.InstanceID || snapshot.Metadata.GenerationID != initial.Metadata.GenerationID || snapshot.Metadata.Ref != initial.Metadata.Ref)) {
 						_ = jm.endHubWatchUntilPersisted(id, "target replaced or observation unavailable; re-register", nil)
 						return
@@ -1284,6 +1295,11 @@ func (s *Session) consumeHubWatch(ctx context.Context, id string, request appwir
 				recoveryErr = watchErr
 			} else {
 				recoveryErr = err
+			}
+			// A canceled consumer has been superseded too; its cancellation is
+			// not a fresh outage that may end the watch.
+			if ctx.Err() != nil {
+				return
 			}
 			stateFailures++
 			if outageStart.IsZero() {
