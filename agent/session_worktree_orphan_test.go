@@ -1624,14 +1624,14 @@ func (l *sharedDescendantLane) releaseSeededAnnounceHold(t *testing.T) {
 		t.Fatalf("no announce hold was taken for this lane: register one with holdSharedDescendantAnnounce before the spawn")
 	}
 	l.announceRelease()
-	// TRIPWIRE: the tail finishes within a couple of drain passes of the
-	// release; the bound only fires on a genuine hang, absorbing a loaded
-	// shard's stretched finalize tails and git retries.
 	l.delegateSub.mu.Lock()
 	done := l.delegateSub.done
 	l.delegateSub.mu.Unlock()
 	select {
 	case <-done:
+	// TRIPWIRE: the tail finishes within a couple of drain passes of the
+	// release; the bound only fires on a genuine hang, absorbing a loaded
+	// shard's stretched finalize tails and git retries.
 	case <-time.After(15 * time.Second):
 		t.Fatalf("the delegate's finalize tail never finished after the seeded announce release")
 	}
