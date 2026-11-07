@@ -4823,6 +4823,88 @@ func TestDelegateAttention_FailedStopDeliveryAckSignalsStopProgress(t *testing.T
 	c.mu.Unlock()
 }
 
+// replaceChildTranscriptWithFS swaps a restored child's transcript writer for
+// one on fs, so a send test can inject a sync fault in the start-input path.
+func replaceChildTranscriptWithFS(t *testing.T, fs afero.Fs) func(*Session) {
+	t.Helper()
+	return func(child *Session) {
+		t.Helper()
+		child.mu.Lock()
+		oldWriter := child.transcript
+		child.mu.Unlock()
+		if err := oldWriter.Close(); err != nil {
+			t.Fatalf("close restored child transcript: %v", err)
+		}
+		writer, err := transcript.NewWriterWithFS(fs, transcriptPath(child.stateDir, child.id), transcript.Header{SessionID: child.id})
+		if err != nil {
+			t.Fatalf("replace child transcript: %v", err)
+		}
+		child.attachTranscript(writer)
+	}
+}
+
+// A send that fails before launchSubagentRun owns no runner, so the failed send
+// itself must not reach the provider. Releasing its committed start re-drives
+// the child, and that re-drive can launch a notification or attention turn
+// which calls the provider on its own goroutine. The total request count after
+// the send therefore does not witness the failed send: sample the count at the
+// rollback boundary, after every failed-send step and before the rollback
+// releases the claim and re-drives the child, and require zero there. The
+// re-drive's own notification turn reaches the provider after that sample, and
+// the failed send's input never appears in a request, so the test also proves
+// it distinguishes the two.
+//
+// Regression for the provider-count arm of #4844.
+func TestDelegateAttention_PrelaunchFailedSendDoesNotReachProvider(t *testing.T) {
+	fixture := newColdDelegateFixture(t, "")
+	root, err := restoreDelegateResourceBootstrapSession(fixture.client, fixture.profile, fixture.workspace, fixture.meta, fixture.stateDir)
+	if err != nil {
+		t.Fatalf("restore root: %v", err)
+	}
+	defer root.Close()
+	fs := newAttentionFailNextSyncFS()
+	var atRollback int
+	var redrivenChild string
+	root.cfg.testOnly.delegateSendRollbackBeforeRedrive = func(childSessionID string) {
+		atRollback = len(fixture.adapter.Requests())
+		redrivenChild = childSessionID
+	}
+	replaceTranscript := replaceChildTranscriptWithFS(t, fs)
+	root.delegateRestoreBeforeSideEffects = func(child *Session) {
+		replaceTranscript(child)
+		child.cfg.testOnly.delegateInitialInputAppend = func(*Session) {
+			// Fail the input write's own fsync, before launchSubagentRun. The
+			// failure batch that closes the generation appends to the store,
+			// which stays open.
+			fs.failNextSync()
+		}
+	}
+
+	const input = "start successor"
+	outcome := (delegateRuntime{owner: root}).send(context.Background(), fixture.delegateID, input, 0)
+	if outcome.result.Err == nil || !errors.Is(outcome.result.Err, errInjectedAttentionFailNextSync) {
+		t.Fatalf("prelaunch send = %#v, want the injected input-write failure", outcome.result)
+	}
+	if redrivenChild != fixture.childID {
+		t.Fatalf("failed send re-drove child %q, want %q", redrivenChild, fixture.childID)
+	}
+	if atRollback != 0 {
+		t.Fatalf("prelaunch failed send reached provider %d times before its re-drive", atRollback)
+	}
+	root.sendersWG.Wait()
+	requests := fixture.adapter.Requests()
+	if len(requests) == 0 {
+		t.Fatal("re-driven notification turn reached provider 0 times; the test cannot distinguish the failed send from the notification turn")
+	}
+	for _, request := range requests {
+		for _, message := range request.Messages {
+			if strings.Contains(message.Text(), input) {
+				t.Fatalf("failed send's input reached the provider: %q", message.Text())
+			}
+		}
+	}
+}
+
 // Once the start is committed and its input durable, an ack-only delivery
 // failure is requeued and warned about instead of failing the start or latching
 // finalization recovery. The stop repair stays the backstop for durable states.
@@ -4837,18 +4919,9 @@ func TestDelegateAttention_StartDeliveryReplayFailureDoesNotFailCommittedStart(t
 	seedDelegateControllerIdle(t, c, "dlg_nested_source", fixture.delegateID)
 	seedDelegateControllerDelivery(t, c, "dlg_nested_source")
 	fs := newAttentionFailNextSyncFS()
+	replaceTranscript := replaceChildTranscriptWithFS(t, fs)
 	root.delegateRestoreBeforeSideEffects = func(child *Session) {
-		child.mu.Lock()
-		oldWriter := child.transcript
-		child.mu.Unlock()
-		if err := oldWriter.Close(); err != nil {
-			t.Fatalf("close restored child transcript: %v", err)
-		}
-		writer, err := transcript.NewWriterWithFS(fs, transcriptPath(child.stateDir, child.id), transcript.Header{SessionID: child.id})
-		if err != nil {
-			t.Fatalf("replace child transcript: %v", err)
-		}
-		child.attachTranscript(writer)
+		replaceTranscript(child)
 		child.cfg.testOnly.delegateInitialInputAppend = func(*Session) {
 			// The input write and the notification write land; closing the store
 			// on the notification's sync leaves only the acknowledgment append to
@@ -5167,6 +5240,10 @@ func newAttentionFailNextSyncFS() *attentionFailNextSyncFS {
 	return &attentionFailNextSyncFS{Fs: afero.NewOsFs()}
 }
 
+// errInjectedAttentionFailNextSync is the sync failure attentionFailNextSyncFS
+// injects. The production path wraps it, so tests match it with errors.Is.
+var errInjectedAttentionFailNextSync = errors.New("injected attention resolution sync failure")
+
 func (fs *attentionFailNextSyncFS) Create(name string) (afero.File, error) {
 	file, err := fs.Fs.Create(name)
 	if err != nil {
@@ -5317,7 +5394,7 @@ func (file *attentionFailNextSyncFile) Sync() error {
 		if succeed {
 			return file.File.Sync()
 		}
-		return errors.New("injected attention resolution sync failure")
+		return errInjectedAttentionFailNextSync
 	}
 	return file.File.Sync()
 }
