@@ -4,6 +4,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -71,7 +72,7 @@ func TestE2eUnsetEvenerEnvDropsOperatorOverrides(t *testing.T) {
 		t.Fatalf("probe script failed: %v\n%s", err, out)
 	}
 	reported := map[string]bool{}
-	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+	for line := range strings.SplitSeq(strings.TrimSpace(string(out)), "\n") {
 		fields := strings.Fields(line)
 		if len(fields) != 2 || (fields[0] != "UNSET" && fields[0] != "SURVIVED") {
 			t.Fatalf("unexpected probe output %q", line)
@@ -90,14 +91,7 @@ func TestE2eUnsetEvenerEnvDropsOperatorOverrides(t *testing.T) {
 				t.Errorf("helper unset %s, which it does not own: the list is exact", name)
 			}
 		default:
-			wanted := false
-			for _, override := range evenerEnvOverrides {
-				if name == override {
-					wanted = true
-					break
-				}
-			}
-			if !wanted {
+			if !slices.Contains(evenerEnvOverrides, name) {
 				t.Fatalf("unexpected variable %q in probe output", name)
 			}
 			reported[name] = true
