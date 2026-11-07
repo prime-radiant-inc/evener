@@ -27,8 +27,8 @@ export function ComposeButton({
 }: {
 	disabled: boolean;
 	onPress: () => void;
-	/** The safe area's right edge on a full-screen landscape phone; the split's
-	 * left pane passes 0 because its right edge is the divider. */
+	/** Extra inset from the window's right edge, added to the button's own
+	 * 16pt edge. */
 	rightInset?: number;
 }) {
 	const { palette } = useColors();

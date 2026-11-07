@@ -227,6 +227,9 @@ function Board({
 	const { bottom: bottomInset, left: leftInset, right: rightInset } = useSafeAreaInsets();
 	const composeRoom = composeButtonRoom(bottomInset);
 	const boardUnderBar = underBar(composeRoom);
+	// The split's left pane ends at the divider, not the screen's right safe
+	// area, so only a full-screen Board insets against that edge.
+	const paneRightInset = duoEmbedded ? 0 : rightInset;
 
 	// Declared before the client binding so a first focus resumes an unbound
 	// controller rather than one whose reads just went out.
@@ -1169,7 +1172,7 @@ function Board({
 				onLayout={(event) => setHeaderPanel({ height: event.nativeEvent.layout.height, onGlass: navGlass })}
 			>
 				{chips.length && !searching ? (
-					<View style={{ paddingLeft: leftInset, paddingRight: duoEmbedded ? 0 : rightInset }}>
+					<View style={{ paddingLeft: leftInset, paddingRight: paneRightInset }}>
 						<Chips chips={chips} onGlass={navGlass} />
 					</View>
 				) : null}
@@ -1189,7 +1192,7 @@ function Board({
 					contentContainerStyle={{
 						paddingBottom: 24 + boardUnderBar.endPadding,
 						paddingLeft: leftInset,
-						paddingRight: duoEmbedded ? 0 : rightInset,
+						paddingRight: paneRightInset,
 						minHeight: windowHeight + searchFieldHeight,
 					}}
 					// The Board runs under its compose button, its end and its
@@ -1282,7 +1285,7 @@ function Board({
 			</View>
 			{/* The compose button floats over the Board's end, so the Board runs
 			    under it; the toast slot sits above it. */}
-			<ComposeButton disabled={!connected} onPress={newSession} rightInset={duoEmbedded ? 0 : rightInset} />
+			<ComposeButton disabled={!connected} onPress={newSession} rightInset={paneRightInset} />
 		</View>
 	);
 }
@@ -1722,21 +1725,21 @@ function DuoBoardHeader({
 	onSearch: () => void;
 }) {
 	const { palette } = useColors();
-	const insets = useSafeAreaInsets();
+	const { top, left } = useSafeAreaInsets();
 	const scale = useTextScale();
 	return (
 		<View
 			style={{
-				paddingTop: insets.top,
-				paddingLeft: insets.left,
-				minHeight: insets.top + 44,
+				paddingTop: top,
+				paddingLeft: left,
+				minHeight: top + 44,
 				flexDirection: "row",
 				alignItems: "center",
 				justifyContent: "space-between",
 				backgroundColor: palette.page,
 			}}
 		>
-			<HubButton hubName={hubName} onOpen={onOpenHub} maxWidth={Math.max(80, width - insets.left - 72)} />
+			<HubButton hubName={hubName} onOpen={onOpenHub} maxWidth={Math.max(80, width - left - 72)} />
 			<Pressable
 				accessibilityRole="button"
 				accessibilityLabel="Search sessions"

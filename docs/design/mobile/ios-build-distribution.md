@@ -64,9 +64,9 @@ The native client selects its split layout from the window's point size
 the device name: both sides at least 600 points. The `Sessions` screen renders
 the Board beside a nested conversation navigator on the inner display, and the
 root stack header is hidden there in favor of the Board's inline header. The app
-supports landscape (`orientation: "default"`); the Board and conversation inset
-their content by the left/right safe areas, so the notch and Dynamic Island stay
-clear.
+supports landscape (`orientation: "default"`); the Board, conversation, agent and
+job screens, and the alert banner inset their content by the left/right safe
+areas, so the notch and Dynamic Island stay clear.
 
 Simulator qualification uses the `iPhone Duo` device type on the iOS 27.1
 runtime, captures the outer display, the empty split and an open conversation,

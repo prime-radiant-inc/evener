@@ -10,6 +10,7 @@ import { useIsFocused } from "@react-navigation/native";
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
 import { useMemo } from "react";
 import { Text, View } from "react-native";
+import { SafeAreaView } from "react-native-safe-area-context";
 import { AnsiOutputList } from "../AnsiOutputList";
 import { fonts } from "../design/tokens";
 import type { Routes } from "../screens";
@@ -59,13 +60,13 @@ export function ShellJobScreen({ route }: NativeStackScreenProps<Routes, "ShellJ
 		</View>
 	);
 	return (
-		<View style={{ flex: 1, backgroundColor: palette.page }}>
+		<SafeAreaView edges={["left", "right"]} style={{ flex: 1, backgroundColor: palette.page }}>
 			<AnsiOutputList
 				text={output.status === "read" ? output.text : ""}
 				header={header}
 				contentContainerStyle={{ padding: 16, paddingBottom: 24 }}
 			/>
-		</View>
+		</SafeAreaView>
 	);
 }
 

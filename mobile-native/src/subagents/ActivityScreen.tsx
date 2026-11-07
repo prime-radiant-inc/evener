@@ -8,6 +8,7 @@ import type { SessionActivityCounts, SessionActivitySummary } from "@evener/appw
 import { SymbolView } from "expo-symbols";
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { FlatList, Pressable, Text, useWindowDimensions, View } from "react-native";
+import { SafeAreaView } from "react-native-safe-area-context";
 import { BandHeader } from "../board/BoardRow";
 import { useConnection } from "../ConnectionProvider";
 import { ChipStrip } from "../design/ChipStrip";
@@ -352,7 +353,7 @@ export function ActivityScreen({ route, navigation }: NativeStackScreenProps<Rou
 	);
 
 	return (
-		<View style={{ flex: 1, backgroundColor: palette.page }}>
+		<SafeAreaView edges={["left", "right"]} style={{ flex: 1, backgroundColor: palette.page }}>
 			<FlatList
 				data={items}
 				keyboardDismissMode="on-drag"
@@ -375,7 +376,7 @@ export function ActivityScreen({ route, navigation }: NativeStackScreenProps<Rou
 			<View pointerEvents="box-none" style={{ position: "absolute", left: 0, right: 0, bottom: 16 }}>
 				<Toast toast={toast.toast} dismiss={toast.dismiss} />
 			</View>
-		</View>
+		</SafeAreaView>
 	);
 }
 

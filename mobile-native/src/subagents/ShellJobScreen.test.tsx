@@ -19,6 +19,7 @@ import { JOB_OUTPUT_REREAD_MS } from "./useShellJobOutput";
 const harness = vi.hoisted(() => ({ connection: {} as Record<string, unknown>, focused: true }));
 
 vi.mock("react-native", async () => (await import("../renderNative.testkit")).nativeModuleMock());
+vi.mock("react-native-safe-area-context", () => ({ SafeAreaView: "SafeAreaView" }));
 vi.mock("@react-navigation/native", async () => {
 	const { useEffect } = await import("react");
 	return {

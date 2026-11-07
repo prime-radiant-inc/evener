@@ -38,8 +38,9 @@ single-pane. The inner display puts the Board on the left and the open
 conversation on the right; the Board's search, scroll and live state keep
 running while the conversation is open. The split is chosen by window size (both
 sides at least 600 points), not by device name. Landscape is supported: a regular
-iPhone in landscape keeps the single-pane Board and conversation, and the Board
-and conversation inset their content by the left/right safe areas.
+iPhone in landscape keeps the single-pane Board and conversation, and the Board,
+conversation, agent and job screens, and the alert banner inset their content by
+the left/right safe areas.
 
 A conversation opened from the Board uses the split. Conversations opened from a
 root route (a share, an alert, a restored root location) still open full screen;

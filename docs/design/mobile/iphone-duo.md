@@ -15,7 +15,8 @@ landscape stays below the height boundary. The boundary is `isDuoInner` in
 The app supports landscape. Both Duo displays rotate, the inner display keeps
 the split when it is wide enough, and a regular iPhone in landscape keeps the
 single-pane Board and conversation. The Board's rows, chips and compose button,
-and the conversation's content, stay inside the left/right safe areas.
+the conversation, the agent and job screens, and the alert banner stay inside
+the left/right safe areas.
 
 ## Wide layout
 
