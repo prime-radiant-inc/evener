@@ -182,7 +182,7 @@ function VoiceBar({
 	const scale = useTextScale();
 	const tone = TONES[phase];
 	const headline = boundRef ? `Voice is on for ${shortRef(boundRef)}` : barHeadline(phase, phrase, speakerOff);
-	const actionVisible = phase === "disarmed" || phase === "listening" || phase === "speaking";
+	const actionVisible = phase === "disarmed" || phase === "listening" || phase === "speaking" || phase === "talking";
 	return (
 		<View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
 			<Pressable
@@ -349,7 +349,7 @@ function Details({ state, forceOpen = false }: { state: VoiceSnapshot; forceOpen
 						}” is a phrase, not a voiceprint.`}
 					</Copy>
 					<Copy muted>
-						{`When you talk, audio goes to ${state.provider || "OpenAI Realtime"}. The provider keeps it for abuse monitoring for up to 30 days. Audio is not used for model training by default.`}
+						{`When you talk, audio goes to ${state.provider || "OpenAI Realtime"}, which can be a different provider from the manager's model. It keeps audio for abuse monitoring for up to 30 days. Audio is not used for model training by default.`}
 					</Copy>
 				</>
 			) : null}

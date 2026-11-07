@@ -27,7 +27,12 @@ export function voicePresentation(state: VoiceSnapshot, justHeard = false): Voic
 	// the heard flash has to outrank it or it would never be seen.
 	if (justHeard && state.capturing && !trialRunning) return { phase: "heard", primary: "talk", talkEnabled };
 	if (state.state === "speaking") return { phase: "speaking", primary: "stop", talkEnabled: false };
-	if (state.state === "conversing") return { phase: "talking", primary: "none", talkEnabled: false };
+	// Native can sit in `conversing` with no live turn (Stop during a reply,
+	// rejected speech, a late provider error), and Talk is the only way out
+	// because wake listening needs quiet. `cloudMicrophone` marks a live turn.
+	if (state.state === "conversing") {
+		return { phase: "talking", primary: "talk", talkEnabled: state.capturing && !state.cloudMicrophone };
+	}
 	// Routine turn aborts (input_idle, input_start_timeout, recoverable provider
 	// errors) leave `error` set while the phone stays armed and listening, so
 	// only a stopped capture makes the whole surface read as stopped.

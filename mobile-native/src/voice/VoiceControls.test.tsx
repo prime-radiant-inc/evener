@@ -330,6 +330,11 @@ it("keeps Stop live while Evener speaks", async () => {
 		button("Stop").props.onPress();
 	});
 	expect(actions).toEqual(["stop"]);
+	// Stop leaves native conversing with no live turn; Talk must be the way out.
+	await act(async () => {
+		emit({ ...armed, state: "conversing", cloudMicrophone: false });
+	});
+	expect(button("Talk").props.disabled).toBe(false);
 });
 
 it("calls a routine abort a finished turn, not a stopped voice", async () => {

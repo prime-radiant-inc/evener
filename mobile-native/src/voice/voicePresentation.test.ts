@@ -34,10 +34,16 @@ it("shows the heard-you state only when told a detection just happened", () => {
 	expect(voicePresentation({ ...quiet, capturing: false }, true).phase).toBe("listening");
 });
 
-it("swaps the primary action to stop while a turn runs or the manager speaks", () => {
-	expect(voicePresentation({ ...quiet, state: "conversing" })).toMatchObject({ phase: "talking", primary: "none" });
+it("offers Stop while the manager speaks and Talk out of a finished turn", () => {
 	expect(voicePresentation({ ...quiet, state: "speaking" })).toMatchObject({ phase: "speaking", primary: "stop" });
-	expect(voicePresentation({ ...quiet, state: "conversing" }).talkEnabled).toBe(false);
+	// A stored conversing state with no streaming turn is the state Stop leaves
+	// behind; Talk is the only way out because wake listening needs quiet.
+	expect(voicePresentation({ ...quiet, state: "conversing", cloudMicrophone: false })).toMatchObject({
+		phase: "talking",
+		primary: "talk",
+		talkEnabled: true,
+	});
+	expect(voicePresentation({ ...quiet, state: "conversing", cloudMicrophone: true }).talkEnabled).toBe(false);
 });
 
 it("reports recovery and errors above the quiet states", () => {
@@ -53,9 +59,11 @@ it("reports recovery and errors above the quiet states", () => {
 });
 
 it("keeps a stale routine abort from hiding the live state or gating Talk", () => {
-	expect(voicePresentation({ ...quiet, state: "conversing", error: "input_idle" })).toMatchObject({
+	expect(
+		voicePresentation({ ...quiet, state: "conversing", error: "input_idle", cloudMicrophone: false }),
+	).toMatchObject({
 		phase: "talking",
-		primary: "none",
+		primary: "talk",
 	});
 	expect(voicePresentation({ ...quiet, error: "input_idle" })).toMatchObject({
 		phase: "listening",
