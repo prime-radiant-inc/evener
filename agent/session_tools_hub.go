@@ -432,6 +432,9 @@ func (s *Session) createHubDelegate(ctx context.Context, args map[string]any) (a
 	s.mu.Lock()
 	client, enabled := s.hubClient, s.hubEnabled
 	s.mu.Unlock()
+	if client == nil {
+		client = s.waitForHubClient(ctx, hubClientBindingWait)
+	}
 	if client == nil || !enabled {
 		return nil, appwire.InvalidRequest("Manager tool unavailable")
 	}
@@ -645,6 +648,9 @@ func (s *Session) composeHubInputTools() {
 		s.mu.Lock()
 		client, enabled := s.hubClient, s.hubEnabled
 		s.mu.Unlock()
+		if client == nil {
+			client = s.waitForHubClient(ctx, hubClientBindingWait)
+		}
 		if !enabled || client == nil {
 			return nil, appwire.InvalidRequest("Manager tool unavailable")
 		}
@@ -708,6 +714,9 @@ func (s *Session) invokeHubInput(ctx context.Context, args map[string]any) (any,
 	s.mu.Lock()
 	client, enabled := s.hubClient, s.hubEnabled
 	s.mu.Unlock()
+	if client == nil {
+		client = s.waitForHubClient(ctx, hubClientBindingWait)
+	}
 	if !enabled || client == nil {
 		return nil, appwire.InvalidRequest("Manager tool unavailable")
 	}
@@ -731,6 +740,9 @@ func (s *Session) invokeHubRead(ctx context.Context, name string, args map[strin
 	client := s.hubClient
 	denied := s.hubToolDenied(name)
 	s.mu.Unlock()
+	if client == nil && !denied {
+		client = s.waitForHubClient(ctx, hubClientBindingWait)
+	}
 	if denied || client == nil {
 		return nil, appwire.InvalidRequest("Manager tool unavailable")
 	}
