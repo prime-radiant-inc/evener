@@ -219,12 +219,11 @@ func TestManagerWatchRuntimeRebindAndCallerReplacement(t *testing.T) {
 					ends++
 				}
 			}
-			wantedInterruptions := 1
-			if !replaceCaller {
-				wantedInterruptions = 2 // Closing the rebound stream is a second loss episode.
-			}
-			if interruptions != wantedInterruptions || ends != 1 {
-				t.Fatalf("watch notices: interruptions=%d, want %d; ends=%d, want 1", interruptions, wantedInterruptions, ends)
+			// No episode delivers an interruption frame: the rebind episode
+			// recovers inside the outage budget, and the closed rebound stream
+			// ends through the durable re-register notice (job-control.md).
+			if interruptions != 0 || ends != 1 {
+				t.Fatalf("watch notices: interruptions=%d, want 0; ends=%d, want 1", interruptions, ends)
 			}
 		})
 	}

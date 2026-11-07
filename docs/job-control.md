@@ -116,15 +116,22 @@ still finish after the caller stops waiting, so the operation budget is not a
 hard wall-clock bound on underlying I/O.
 
 The watch keeps its ID and pending notices through a connection interruption.
-It sends one interruption notice for the loss, then checks the Manager caller's
-ref and instance before resubscribing. A restored connection retains the watch
+A stream end suspends the watch quietly while recovery is in progress: it
+checks the Manager caller's ref and instance before resubscribing, and a
+rebind that succeeds inside the outage budget delivers no interruption
+notice. The notice belongs to a loss the Manager must act on, not to a blip
+that recovers by itself; delivered up front it reads as an incident on a
+healthy lane. A restored connection retains the watch
 only when the target also has the same ref, instance and generation. Recovery
-from a binding that cannot answer state reads is bounded by an outage budget
-rather than a retry count: a binding that answers again within the budget
-retains the watch, and only an outage that outlasts it counts as exhausted
+is bounded by one outage budget rather than a retry count, whether the
+binding cannot answer state reads or its rebind attempts keep failing with
+retryable errors: a recovery that rebinds within the budget retains the
+watch, and only an outage that outlasts it counts as exhausted
 connection recovery. A replaced caller or
-target, an unsupported observation, or exhausted connection recovery ends the
-watch durably with re-registration guidance. A runtime restart likewise
+target, an unsupported observation, exhausted connection recovery, or a
+subscription that ended on a healthy connection ends the
+watch durably with re-registration guidance, and that durable end is the one
+notice a genuine loss delivers. A runtime restart likewise
 ends continuing hub watches and sends a re-registration notice, including
 watches that had already reported events. Reconnect never revives an ended watch.
 Unstamped replay entries remain readable in history and generate a replay-gap
