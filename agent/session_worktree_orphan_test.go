@@ -1402,6 +1402,8 @@ func TestWorktreePrune_OrphanArmSparesLaneWhileRetainedChildNotifies(t *testing.
 	r := newWorktreeRepo(t)
 	entered := make(chan struct{})
 	release := make(chan struct{})
+	var releaseOnce sync.Once
+	t.Cleanup(func() { releaseOnce.Do(func() { close(release) }) })
 	var wedgeOnce sync.Once
 	var wedgedSession atomic.Value
 	wedge := func(req llm.Request) llm.Response {
@@ -1512,6 +1514,10 @@ func TestWorktreePrune_OrphanArmSparesLaneWhileRetainedChildNotifies(t *testing.
 		drainGrace := lane.root.childDrainGracePending(lane.delegateSess.id)
 		committedStart := lane.root.childCommittedSendStart(lane.delegateSess.id)
 		diag := lane.attentionDiagnostics()
+		// The parked presentation holds the scripted adapter's mutex while it
+		// waits on release; the request log below needs that mutex, so unblock
+		// the step first or the timeout diagnostic deadlocks instead of failing.
+		releaseOnce.Do(func() { close(release) })
 		requestLog, liveResolutions := lane.attentionScriptEvidence()
 		classifications := lane.classifications.snapshot()
 		sharedSessionID := lane.sharedSub.sess.id
@@ -1599,7 +1605,7 @@ func TestWorktreePrune_OrphanArmSparesLaneWhileRetainedChildNotifies(t *testing.
 	// The wedged turn settles cleanly once released: the run flag clears at
 	// the settle, so waiting on it proves the turn finished, not just that a
 	// drive launched it.
-	close(release)
+	releaseOnce.Do(func() { close(release) })
 	// TRIPWIRE: the released turn settles within seconds once the model call returns; 30s only fires on a genuine hang. The deadline absorbs a loaded shard's scheduling delay between the release and the settle.
 	waitForCondition(t, 30*time.Second, "the delegate's attention turn to finish after release", func() bool {
 		lane.delegateSub.mu.Lock()
@@ -3286,6 +3292,10 @@ func TestDelegateAttentionResidentDrivePassDoesNotRebuildReleasedStopHold(t *tes
 		reserved := lane.root.delegateController.reservedAttentionID(lane.delegateSub.sess)
 		reopenRefused := lane.root.delegateController.attentionReopenRefused(lane.fixture.delegateID)
 		diag := lane.attentionDiagnostics()
+		// The parked presentation holds the scripted adapter's mutex while it
+		// waits on release; the request log below needs that mutex, so unblock
+		// the step first or the timeout diagnostic deadlocks instead of failing.
+		releaseOnce.Do(func() { close(release) })
 		requestLog, liveResolutions := lane.attentionScriptEvidence()
 		classifications := lane.classifications.snapshot()
 		// The resident history's turn kinds with their attention identities: a
