@@ -1,4 +1,4 @@
-import { useNavigation } from "@react-navigation/native";
+import { useNavigation, useNavigationState } from "@react-navigation/native";
 import {
 	createNativeStackNavigator,
 	type NativeStackNavigationProp,
@@ -31,15 +31,14 @@ import { ShellJobScreen } from "../subagents/ShellJobScreen";
 import { StopSubagentSheet } from "../subagents/StopSubagentSheet";
 import { SubagentScreen } from "../subagents/SubagentScreen";
 import { TasksSheet } from "../TasksSheet";
+import { activeConversation } from "../navigationRoutes";
 import { allowFontScaling, useColors, useTextScale } from "../ui";
 import { DetailPaneWidthContext } from "./paneWidth";
 
-/** The right pane's routes: the conversation and everything it can open,
- * plus the empty route the pane starts on. */
-type DetailRoutes = Routes & { DuoDetail: undefined };
-type DetailNavigation = NativeStackNavigationProp<DetailRoutes>;
+/** The right pane's routes: the conversation and everything it can open. */
+type DetailNavigation = NativeStackNavigationProp<Routes>;
 
-const DetailStack = createNativeStackNavigator<DetailRoutes>();
+const DetailStack = createNativeStackNavigator<Routes>();
 const DetailNavigationContext = createContext<((navigation: DetailNavigation | null) => void) | null>(null);
 
 /** The Duo's inner display: the Board stays on the left and the conversation
@@ -59,10 +58,13 @@ export function DuoSplit({
 	const rootOptions = useRootStackOptions();
 	const [detailNavigation, setDetailNavigation] = useState<DetailNavigation | null>(null);
 	const pending = useRef<Routes["Conversation"] | null>(null);
-	const lastOpened = useRef<Routes["Conversation"] | null>(null);
+	const active = useNavigationState(activeConversation);
+	const lastActive = useRef<Routes["Conversation"] | null>(null);
+	useEffect(() => {
+		lastActive.current = active;
+	}, [active]);
 	const openConversation = useCallback(
 		(params: Routes["Conversation"]) => {
-			lastOpened.current = params;
 			const detail = detailNavigation;
 			if (!detail) {
 				pending.current = params;
@@ -72,7 +74,7 @@ export function DuoSplit({
 			// stacking and clears a Reader or Activity the old one opened.
 			detail.reset({
 				index: 1,
-				routes: [{ name: "DuoDetail" }, { name: "Conversation", params }],
+				routes: [{ name: "Sessions" }, { name: "Conversation", params }],
 			});
 		},
 		[detailNavigation],
@@ -85,7 +87,7 @@ export function DuoSplit({
 	}, [detailNavigation, openConversation]);
 	useEffect(
 		() => () => {
-			if (lastOpened.current && navigation.isFocused()) onFold?.(lastOpened.current);
+			if (lastActive.current && navigation.isFocused()) onFold?.(lastActive.current);
 		},
 		[navigation, onFold],
 	);
@@ -106,9 +108,8 @@ export function DuoSplit({
 			<View style={{ flex: 1 }}>
 				<DetailPaneWidthContext.Provider value={detailWidth}>
 					<DetailNavigationContext.Provider value={setDetailNavigation}>
-						<DetailStack.Navigator initialRouteName="DuoDetail" screenOptions={rootOptions}>
-							<DetailStack.Screen name="DuoDetail" component={DuoDetail} options={{ headerShown: false }} />
-							<DetailStack.Screen name="Sessions" component={DuoEmpty} options={{ headerShown: false }} />
+						<DetailStack.Navigator initialRouteName="Sessions" screenOptions={rootOptions}>
+							<DetailStack.Screen name="Sessions" component={DetailPlaceholder} options={{ headerShown: false }} />
 							<DetailStack.Screen
 								name="Conversation"
 								component={ConversationScreen}
@@ -124,7 +125,11 @@ export function DuoSplit({
 								component={SubagentScreen}
 								options={({ route }) => ({ title: route.params.title || "Subagent" })}
 							/>
-							<DetailStack.Screen name="ShellJob" component={ShellJobScreen} options={{ title: "Shell job" }} />
+							<DetailStack.Screen
+								name="ShellJob"
+								component={ShellJobScreen}
+								options={({ route }) => ({ title: route.params.title || "Shell job" })}
+							/>
 							<DetailStack.Screen name="Fork" component={ForkScreen} options={{ title: "Fork conversation" }} />
 							<DetailStack.Screen
 								name="SessionDeletion"
@@ -182,7 +187,7 @@ export function DuoSplit({
 /** The pane's first route. It hands the split its navigation object so a Board
  * tap can open a conversation without the split reaching into the navigator's
  * internals. */
-function DuoDetail() {
+function DetailPlaceholder() {
 	const setDetailNavigation = useContext(DetailNavigationContext);
 	const navigation = useNavigation<DetailNavigation>();
 	useEffect(() => {
