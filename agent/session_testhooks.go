@@ -543,4 +543,15 @@ type testConfig struct {
 	// classified cap-shaped by a clock op that has nothing to do with the
 	// stream.
 	contentWindowClock func() time.Time
+
+	// hubWatchRetryDelay overrides the rebind loop's failed-state-read retry
+	// base delay (hubWatchRetryDelay) for tests, so a binding-outage scenario
+	// runs in milliseconds instead of seconds. Zero keeps the production delay.
+	hubWatchRetryDelay time.Duration
+
+	// hubWatchStateOutageBudget overrides how long the rebind loop keeps a
+	// watch armed through consecutive failed state reads
+	// (hubWatchStateOutageBudget) for tests. Zero keeps the production
+	// budget.
+	hubWatchStateOutageBudget time.Duration
 }

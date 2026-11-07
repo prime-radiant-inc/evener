@@ -90,8 +90,10 @@ func TestManagerWatchResyncProjectedCompletion(t *testing.T) {
 					sends++
 				}
 			}
-			if completed != 1 || sends != 2 {
-				t.Fatalf("completed=%d sends=%d, want one completion and interruption plus terminal", completed, sends)
+			// A resync re-reads authoritative state while the drain continues,
+			// so it owes no interruption notice; only the completion sends.
+			if completed != 1 || sends != 1 {
+				t.Fatalf("completed=%d sends=%d, want one completion and no interruption notice", completed, sends)
 			}
 			if winner.Observation.EntryID != "" || winner.Observation.GenerationID != "" {
 				t.Fatal("snapshot adaptation modified recorded provenance")
@@ -191,7 +193,9 @@ func TestManagerWatchPagedCompletionReplay(t *testing.T) {
 			sends++
 		}
 	}
-	if completed != 1 || sends != 2 {
-		t.Fatalf("completed=%d sends=%d, want one completion and interruption plus terminal", completed, sends)
+	// A resync re-reads authoritative state while the drain continues, so it
+	// owes no interruption notice; only the completion sends.
+	if completed != 1 || sends != 1 {
+		t.Fatalf("completed=%d sends=%d, want one completion and no interruption notice", completed, sends)
 	}
 }
