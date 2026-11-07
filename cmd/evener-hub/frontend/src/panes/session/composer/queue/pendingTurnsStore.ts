@@ -43,6 +43,7 @@ import {
   resendRecoveryMutation,
   retryBlockedMutation,
   setPendingProjectionLoaded,
+  subscribeDirectSendAdmission,
   subscribeMutationPersistence,
   threadsStore,
   transientRefusalRetryPending,
@@ -83,6 +84,11 @@ const pendingTurnsStore = createPendingTurnsStore<MutationAttachment>({
   threads: threadsPort,
   draft: draftPort,
   identity: { isOwnMutationRecord },
+});
+
+// The direct fallback's provenance seam: see pendingTurns' recordDirectSend.
+subscribeDirectSendAdmission(({ clientMutationId, createdAt }) => {
+  pendingTurnsStore.recordDirectSend(clientMutationId, createdAt);
 });
 
 installQueuedMutationProjection({
