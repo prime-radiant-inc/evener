@@ -61,7 +61,7 @@ func (s *Session) Compact(ctx context.Context) error {
 	// A transcript that has stopped accepting records is the other
 	// refusal, and it is reported as itself: telling the operator to try again
 	// would send them back to a fold that can only fail the same way.
-	if ok, refusal := s.foldWithForceCompact(ctx, "", nil); !ok {
+	if ok, refusal := s.foldWithForceCompact(ctx, "", nil, false); !ok {
 		if refusal != nil {
 			return refusal
 		}
@@ -541,7 +541,12 @@ func mergeFoldReplayTail(retained, pending []schema.Turn, concurrent map[uint64]
 // publication race this retries, and the poisoned-transcript error for the
 // refusal it does not retry, since no second fold can make that writer accept
 // the markers.
-func (s *Session) foldWithForceCompact(ctx context.Context, instructions string, captured *schema.SkillCompactionOperation) (ok bool, refusal error) {
+//
+// automatic marks a fold the session runs on its own initiative (model
+// recovery) rather than one a user or agent requested: an identical
+// consecutive summary failure stays suppressed, like the pre-request pass,
+// instead of always publishing.
+func (s *Session) foldWithForceCompact(ctx context.Context, instructions string, captured *schema.SkillCompactionOperation, automatic bool) (ok bool, refusal error) {
 	const maxAttempts = 2
 	for range maxAttempts {
 		s.mu.Lock()
@@ -553,7 +558,11 @@ func (s *Session) foldWithForceCompact(ctx context.Context, instructions string,
 
 		compactionCtx, emitFn, commit, foldInjectedCount := s.stageCompactionEffects(ctx, &histCopy)
 		commit.captured = captured
-		s.contextMgr.ForceCompact(compactionCtx, &histCopy, instructions, emitFn)
+		if automatic {
+			s.contextMgr.ForceCompactAutomatic(compactionCtx, &histCopy, instructions, emitFn)
+		} else {
+			s.contextMgr.ForceCompact(compactionCtx, &histCopy, instructions, emitFn)
+		}
 		postLen := len(histCopy)
 		injected := foldInjectedCount()
 

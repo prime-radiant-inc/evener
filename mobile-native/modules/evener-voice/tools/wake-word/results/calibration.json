@@ -1,0 +1,108 @@
+{
+  "corpus_sha256": "79f3e44f902cfe19dd0fcf9c4d00fee7f304f478ef6b46aa2f7a631fe808bf09",
+  "detected_positive_clips": 599,
+  "false_accept_events": 0,
+  "false_accepts_per_hour": 0.0,
+  "groups": {
+    "librispeech/negative": {
+      "activation_events": 0,
+      "clips": 561,
+      "detected_clips": 0,
+      "detected_fraction": 0.0,
+      "events_per_hour": 0.0,
+      "hours": 1.0823444965277778,
+      "minimum_clip_peak": 5.960464477539063e-08,
+      "peak": 0.12320947647094727,
+      "samples": 62343043
+    },
+    "piper/negative": {
+      "activation_events": 0,
+      "clips": 800,
+      "detected_clips": 0,
+      "detected_fraction": 0.0,
+      "events_per_hour": 0.0,
+      "hours": 0.6772662673611111,
+      "minimum_clip_peak": 9.834766387939453e-07,
+      "peak": 0.9711156487464905,
+      "samples": 39010537
+    },
+    "piper/positive": {
+      "activation_events": 601,
+      "clips": 600,
+      "detected_clips": 599,
+      "detected_fraction": 0.9983333333333333,
+      "events_per_hour": 1312.2170264798888,
+      "hours": 0.45800350694444447,
+      "minimum_clip_peak": 0.9802238941192627,
+      "peak": 1.0,
+      "samples": 26381002
+    },
+    "procedural/negative": {
+      "activation_events": 0,
+      "clips": 10,
+      "detected_clips": 0,
+      "detected_fraction": 0.0,
+      "events_per_hour": 0.0,
+      "hours": 0.16666666666666666,
+      "minimum_clip_peak": 9.834766387939453e-07,
+      "peak": 0.00498586893081665,
+      "samples": 9600000
+    }
+  },
+  "models": {
+    "embedding_model.onnx": "79b5db230f6fd7a4a5bb1b28e58778d5c1cf5cee0fa4e3cb5ac481872463b45d",
+    "hey_evener.onnx": "a519522a2fa56b8a1c761fc71a17ff38e9c8d980c0584610214f61d42cf6851d",
+    "melspectrogram.onnx": "fd9edc912b9c020a36d55e1f0d0355976dcec1d4606e6f9a037035456f72df75"
+  },
+  "negative_clips": 1371,
+  "negative_hours": 1.9262774305555557,
+  "positive_clips": 600,
+  "seconds": 210.50001906394027,
+  "split": "calibration",
+  "threshold": 0.99,
+  "threshold_sweep": [
+    {
+      "detected_positive_clips": 600,
+      "false_accept_events": 4,
+      "false_accepts_per_hour": 2.076544082669527,
+      "positive_clips": 600,
+      "threshold": 0.25
+    },
+    {
+      "detected_positive_clips": 600,
+      "false_accept_events": 2,
+      "false_accepts_per_hour": 1.0382720413347635,
+      "positive_clips": 600,
+      "threshold": 0.5
+    },
+    {
+      "detected_positive_clips": 600,
+      "false_accept_events": 2,
+      "false_accepts_per_hour": 1.0382720413347635,
+      "positive_clips": 600,
+      "threshold": 0.75
+    },
+    {
+      "detected_positive_clips": 600,
+      "false_accept_events": 2,
+      "false_accepts_per_hour": 1.0382720413347635,
+      "positive_clips": 600,
+      "threshold": 0.9
+    },
+    {
+      "detected_positive_clips": 600,
+      "false_accept_events": 1,
+      "false_accepts_per_hour": 0.5191360206673817,
+      "positive_clips": 600,
+      "threshold": 0.95
+    },
+    {
+      "detected_positive_clips": 599,
+      "false_accept_events": 0,
+      "false_accepts_per_hour": 0.0,
+      "positive_clips": 600,
+      "threshold": 0.99
+    }
+  ],
+  "warmup_peak": 9.760260581970215e-05
+}

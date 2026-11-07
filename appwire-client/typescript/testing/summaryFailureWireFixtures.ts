@@ -2,6 +2,18 @@ import recorded from "../../../agent/testdata/summaryfailurewire/events.json?raw
 import type { ThreadItem, ThreadReadResponse } from "../types.gen";
 import { currentRead } from "./currentTranscript";
 
+interface SummaryFailureWireAttempt {
+  provider: string;
+  model: string;
+  route: string;
+  kind: string;
+  stage: string;
+  status?: number;
+  reason?: string;
+  attempts?: number;
+  retryable?: boolean;
+}
+
 interface SummaryFailureWireFixture {
   warning: {
     message: string;
@@ -10,15 +22,8 @@ interface SummaryFailureWireFixture {
     title: string;
     hint: string;
     summary_failure: {
-      terminal: {
-        provider: string;
-        model: string;
-        route: string;
-        kind: string;
-        stage: string;
-        status: number;
-        retryable: boolean;
-      };
+      terminal: SummaryFailureWireAttempt;
+      previous?: SummaryFailureWireAttempt[];
     };
   };
   item: ThreadItem;

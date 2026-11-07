@@ -1,3 +1,5 @@
+require 'json'
+
 Pod::Spec.new do |s|
   s.name = 'EvenerVoice'
   s.version = '0.1.0'
@@ -13,6 +15,11 @@ Pod::Spec.new do |s|
   s.dependency 'ExpoModulesCore'
   s.dependency 'onnxruntime-objc', '1.20.0'
   s.source_files = 'ios/**/*.{h,m,mm,swift}', 'core/**/*.swift'
-  s.resource_bundles = { 'EvenerVoiceModels' => ['resources/*'] }
+  # postinstall generates this manifest. Keep cached preview models and the
+  # training export out of the app, without deleting either from the checkout.
+  wake = JSON.parse(File.read(File.join(__dir__, 'resources/wake-models.json')))
+  models = %w[melspectrogram embedding classifier].map { |key| "resources/#{wake.fetch(key).fetch('file')}" }
+  notices = ['resources/*-LICENSE', 'resources/*-NOTICE', 'resources/wake-word/*.txt', 'resources/wake-word/NOTICE.md']
+  s.resource_bundles = { 'EvenerVoiceModels' => ['resources/silero_vad.onnx', 'resources/wake-models.json'] + models + notices }
   s.pod_target_xcconfig = { 'DEFINES_MODULE' => 'YES' }
 end

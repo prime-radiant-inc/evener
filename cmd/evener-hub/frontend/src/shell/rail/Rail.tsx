@@ -1053,7 +1053,7 @@ function NavigationRail({
           </span>
         )}
         <div className={CLASS.newSession}>
-          <Button variant="primary" onClick={() => navigate("/new")}>
+          <Button variant="secondary" onClick={() => navigate("/new")}>
             + New session
           </Button>
         </div>

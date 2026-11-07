@@ -761,6 +761,35 @@ type sharedDescendantLane struct {
 	sharedSub        *subagent
 	sharedDelegateID string
 	finish           func(llm.Request) llm.Response
+	// classifications records every delegateDeliveryClassified fire in this
+	// tree, so a tripwire can name whether the retained child's report reached
+	// the delivery admission path at all and with which deferral.
+	classifications *delegateDeliveryClassificationLog
+}
+
+// delegateDeliveryClassificationLog is the thread-safe record behind the
+// fixture's delegateDeliveryClassified hook.
+type delegateDeliveryClassificationLog struct {
+	mu     sync.Mutex
+	events []string
+}
+
+func (l *delegateDeliveryClassificationLog) observe(s *Session, deferred bool) {
+	if l == nil || s == nil {
+		return
+	}
+	l.mu.Lock()
+	l.events = append(l.events, fmt.Sprintf("%s deferred=%t", s.id, deferred))
+	l.mu.Unlock()
+}
+
+func (l *delegateDeliveryClassificationLog) snapshot() []string {
+	if l == nil {
+		return nil
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return append([]string(nil), l.events...)
 }
 
 // spawnSharedDescendantLane builds that tree: a cold fixture delegate with an
@@ -796,6 +825,13 @@ func spawnSharedDescendantLane(t *testing.T, r *wtRepo, laneName, standInDlg, st
 		t.Fatalf("restore root: %v", err)
 	}
 	t.Cleanup(root.Close)
+	// Record delivery classification across the whole tree. The hook rides the
+	// root's test config into every child session created afterwards
+	// (subagentConfigFromFrozenDescriptor re-takes testOnly from the live
+	// parent), so it names whether the child's report reached delivery
+	// admission and whether that admission was deferred.
+	classifications := &delegateDeliveryClassificationLog{}
+	root.cfg.testOnly.delegateDeliveryClassified = classifications.observe
 	wtGit(t, r.mainRoot, "worktree", "unlock", lanePath)
 	wtGit(t, r.mainRoot, "worktree", "lock", "--reason", worktree.FormatDelegateMarker(fixture.delegateID, fixture.meta.ID), lanePath)
 	finish := func(llm.Request) llm.Response {
@@ -856,6 +892,7 @@ func spawnSharedDescendantLane(t *testing.T, r *wtRepo, laneName, standInDlg, st
 		sharedSub:        sharedSub,
 		sharedDelegateID: sharedDelegateID,
 		finish:           finish,
+		classifications:  classifications,
 	}
 }
 
@@ -1273,9 +1310,59 @@ func TestWorktreePrune_OrphanArmSparesLaneWhileRetainedChildNotifies(t *testing.
 		drainAbandoned := lane.root.childDrainAbandoned(lane.delegateSess.id)
 		drainGrace := lane.root.childDrainGracePending(lane.delegateSess.id)
 		committedStart := lane.root.childCommittedSendStart(lane.delegateSess.id)
-		t.Fatalf("the retained child's report was never presented (lane locked=%v reason=%q, delegate sub closed=%v running=%v driving=%v finalizing=%v disposeGated=%v attentionDriveRefused=%v; retirement mutation=%v, lane validation=%v, drive slot=%v, driver closing=%v; pending attention=%d (%v), child pending=%d (%v), child run=%v/%v/%v, deferred deliveries=%v flush=%v, gates: stop=%v fatal=%v drainAbandoned=%v drainGrace=%v committedSendStart=%v)",
+		// The in-memory queue above is not the durable head: the report can wait
+		// in the journal while the session queue is empty, and the reverse.
+		// durable is keyed by delegate id, so read the parent delegate's own
+		// aggregate (lane.fixture.delegateID) and the retained child's
+		// (lane.sharedDelegateID) rather than either child session id.
+		controller := lane.root.delegateController
+		controller.mu.Lock()
+		delegatePhase, delegateGen, delegateOpen := "", uint64(0), false
+		var delegateDurable []string
+		if agg := controller.durable[lane.fixture.delegateID]; agg != nil {
+			delegatePhase, delegateGen, delegateOpen = string(agg.Phase), agg.Generation, agg.CurrentRunOpen
+			for _, pending := range agg.PendingDeliveries {
+				delegateDurable = append(delegateDurable, pending.DeliveryID)
+			}
+		}
+		childPhase, childGen, childOpen, childPrepared := "", uint64(0), false, false
+		var childDurable []string
+		if agg := controller.durable[lane.sharedDelegateID]; agg != nil {
+			childPhase, childGen, childOpen, childPrepared = string(agg.Phase), agg.Generation, agg.CurrentRunOpen, agg.PreparedTerminal != nil
+			for _, pending := range agg.PendingDeliveries {
+				childDurable = append(childDurable, pending.DeliveryID)
+			}
+		}
+		reportDeliveryID := delegateDeliveryID(lane.sharedDelegateID, 1)
+		claimPresent, claimWaiter, claimHeld, claimStartRefused := false, false, false, false
+		if claim := controller.deliveryClaims[reportDeliveryID]; claim != nil {
+			claimPresent, claimWaiter, claimHeld, claimStartRefused = true, claim.waiter != nil, claim.held, claim.startRefused
+		}
+		receiptPresent, receiptRetryable, receiptInline := false, false, false
+		if receipt := controller.deliveryReceiptLocked(reportDeliveryID); receipt != nil {
+			receiptPresent, receiptRetryable, receiptInline = true, receipt.retryable, receipt.inline
+		}
+		ownerLive := controller.live[lane.fixture.delegateID]
+		ownerLivePresent := ownerLive != nil
+		ownerRuntimeSet := ownerLive != nil && ownerLive.runtime != nil
+		ownerRuntimeIsDelegate := ownerLive != nil && ownerLive.runtime == lane.delegateSess
+		ownerBinding := ownerLive != nil && ownerLive.binding != nil
+		receiverType := fmt.Sprintf("%T", controller.deliveryReceiverLocked(lane.fixture.delegateID))
+		controller.mu.Unlock()
+		classifications := lane.classifications.snapshot()
+		sharedSessionID := lane.sharedSub.sess.id
+		tracked := lane.delegateSess.subagents.get(sharedSessionID) != nil
+		lane.sharedSub.mu.Lock()
+		childStatus, childTurns, childEndEmitted := lane.sharedSub.status, lane.sharedSub.turnsUsed, lane.sharedSub.endEmitted
+		lane.sharedSub.mu.Unlock()
+		t.Fatalf("the retained child's report was never presented (lane locked=%v reason=%q, delegate sub closed=%v running=%v driving=%v finalizing=%v disposeGated=%v attentionDriveRefused=%v; retirement mutation=%v, lane validation=%v, drive slot=%v, driver closing=%v; pending attention=%d (%v), child pending=%d (%v), child run=%v/%v/%v, deferred deliveries=%v flush=%v, gates: stop=%v fatal=%v drainAbandoned=%v drainGrace=%v committedSendStart=%v; durable: delegate phase=%s gen=%d open=%v pending=%v; child phase=%s gen=%d open=%v prepared=%v pending=%v; report %s claim=%v(waiter=%v held=%v startRefused=%v) receipt=%v(retryable=%v inline=%v); owner live=%v runtimeSet=%v runtimeIsDelegate=%v binding=%v receiver=%s; classified=%v; child sub session=%s status=%v turns=%d endEmitted=%v tracked=%v)",
 			locked, reason, closed, running, driving, finalizing, disposeGated, attentionRefused, mutErr, revalErr, driveSlotOK, driverClosing,
-			len(pending), pendErr, len(childPending), childPendErr, childRunning, childClosed, childFinalizing, deferred, lastFlushErr, stopGated, fatalGated, drainAbandoned, drainGrace, committedStart)
+			len(pending), pendErr, len(childPending), childPendErr, childRunning, childClosed, childFinalizing, deferred, lastFlushErr, stopGated, fatalGated, drainAbandoned, drainGrace, committedStart,
+			delegatePhase, delegateGen, delegateOpen, delegateDurable,
+			childPhase, childGen, childOpen, childPrepared, childDurable,
+			reportDeliveryID, claimPresent, claimWaiter, claimHeld, claimStartRefused, receiptPresent, receiptRetryable, receiptInline,
+			ownerLivePresent, ownerRuntimeSet, ownerRuntimeIsDelegate, ownerBinding, receiverType,
+			classifications, sharedSessionID, childStatus, childTurns, childEndEmitted, tracked)
 	}
 	lane.delegateSub.mu.Lock()
 	delegateRunning := lane.delegateSub.running

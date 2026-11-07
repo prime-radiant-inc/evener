@@ -1587,7 +1587,7 @@ func (s *Session) forceCompactForModelRecovery(ctx context.Context) {
 	// precedes.
 	// The content-filter recovery fold captures no compaction operation —
 	// it is not any intent's requesting caller.
-	_, _ = s.foldWithForceCompact(ctx, "", nil)
+	_, _ = s.foldWithForceCompact(ctx, "", nil, true)
 	s.maybeAutoSave()
 }
 

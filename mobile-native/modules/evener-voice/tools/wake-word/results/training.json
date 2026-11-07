@@ -1,0 +1,16 @@
+{
+  "export_max_absolute_error": 1.277871604088432e-07,
+  "hard_negative_epochs": 10,
+  "hard_negative_windows": 240,
+  "hidden_layers": [
+    64,
+    32
+  ],
+  "initial_epochs": 28,
+  "loss": 0.0005995146603032212,
+  "model_sha256": "a519522a2fa56b8a1c761fc71a17ff38e9c8d980c0584610214f61d42cf6851d",
+  "seconds": 63.73697324004024,
+  "seed": 20261106,
+  "train_negative_windows": 99084,
+  "train_positive_windows": 21126
+}

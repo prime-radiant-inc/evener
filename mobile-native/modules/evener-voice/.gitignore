@@ -1,2 +1,3 @@
-resources/silero_vad.onnx
+resources/*.onnx
+resources/wake-models.json
 .build/
