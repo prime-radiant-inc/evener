@@ -132,7 +132,7 @@ func TestE2E_VoiceHistorySnapshotAdvanceKeepsCursor(t *testing.T) {
 		f.next(t).RespondToolCall("read_file", map[string]any{"file_path": filepath.Join(f.stack.workDir, "NOTES.md"), "intent": "Reading the fixture to advance real history"})
 	}
 	request := f.next(t)
-	stale := f.read(t)
+	stale := f.readLiveManager(t, "stale history before backfill")
 	if stale.OlderCursor == "" || voiceCorrectionItem(stale, "SNAPSHOT-FIRST-191").ID != "" {
 		t.Fatal("fixture lacks an earlier unsaid page")
 	}

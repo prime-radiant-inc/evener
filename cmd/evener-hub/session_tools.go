@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"time"
 
 	"primeradiant.com/evener/appwire"
@@ -409,26 +410,32 @@ func statusFollowUp(ref string) appwire.SessionStatusFollowUp {
 	return appwire.SessionStatusFollowUp{Tool: "job_status", Arguments: appwire.SessionStatusArguments{Hub: appwire.SessionStatusTarget{Ref: ref}}}
 }
 
-// liveReadAttempts bounds the live reads a non-subscribing client read may
-// make before the hub considers the saved transcript. A live source that
-// fails one read is not gone: answering with the persisted transcript would
-// hand the caller a daemonless projection — no mutation authority, no
-// published provenance — that reads exactly like a replaced manager. A
-// subscribing read never falls back this way, so only the silent path pays
-// the retry.
+// liveReadAttempts bounds the live reads a read may make before the hub
+// considers the saved transcript. A live source that fails one read is not
+// gone: answering with the persisted transcript would hand the caller a
+// daemonless projection — no mutation authority, no published provenance —
+// that reads exactly like a replaced manager.
 const liveReadAttempts = 3
 
-// liveReadRetryDelay paces those attempts.
-const liveReadRetryDelay = 10 * time.Millisecond
+// liveReadRetryDelay paces the second retry. The first retry is immediate: a
+// route-publication race clears at once, while a retried read that must
+// reconnect gets the relay's own retry floor.
+const liveReadRetryDelay = relayRetryMinDelay
+
+// liveReadRetryBudget bounds everything the retry adds to one read. The
+// caller's ownership recovery still performs its own live read before the
+// saved transcript, and the web client's thread/read deadline is far shorter
+// than several slow live reads, so a slow failure must fall through instead of
+// tripling it.
+const liveReadRetryBudget = 2 * time.Second
 
 // liveThreadRead reads the live source, retrying a failed read before the
 // caller decides whether the saved transcript may answer instead. The retry is
 // bounded by liveReadAttempts, honors the request's cancellation, and applies
 // only where a failure would otherwise be answered with the saved transcript
-// silently: a captured, non-subscribing client read. A subscribing read
-// surfaces its failure, so it needs no retry here. Each attempt acquires the
-// relay again, so a dropped daemon connection reconnects; the caller's
-// ownership recovery still runs once the attempts are spent.
+// silently (see savedFallbackAnswers). Each attempt acquires the relay again,
+// so a dropped daemon connection reconnects; the caller's ownership recovery
+// still runs once the attempts or the budget are spent.
 func liveThreadRead(
 	ctx context.Context,
 	relays *hubRelay,
@@ -436,19 +443,34 @@ func liveThreadRead(
 	params appwire.ThreadReadParams,
 	capture bool,
 ) (*hubThreadReadResult, error) {
-	if !capture || params.Subscribe {
+	read := func(ctx context.Context) (*hubThreadReadResult, error) {
 		return relays.readThreadWithSubscription(ctx, source, params, capture)
 	}
+	if !savedFallbackAnswers(source, params) {
+		return read(ctx)
+	}
+	started := time.Now()
 	var err error
 	for attempt := range liveReadAttempts {
-		// The first retry is immediate: the failed read is usually a relay
-		// race, not a contended resource. Only a second retry is paced.
+		readCtx, cancel := ctx, func() {}
 		if attempt > 1 {
-			if waitErr := relays.retryClock.Wait(ctx, liveReadRetryDelay); waitErr != nil {
+			remaining := liveReadRetryBudget - time.Since(started)
+			if remaining <= 0 {
+				break
+			}
+			if waitErr := relays.retryClock.Wait(ctx, min(liveReadRetryDelay, remaining)); waitErr != nil {
 				return nil, waitErr
 			}
 		}
-		read, readErr := relays.readThreadWithSubscription(ctx, source, params, capture)
+		if attempt > 0 {
+			remaining := liveReadRetryBudget - time.Since(started)
+			if remaining <= 0 {
+				break
+			}
+			readCtx, cancel = context.WithTimeout(ctx, remaining)
+		}
+		read, readErr := read(readCtx)
+		cancel()
 		if readErr == nil {
 			return read, nil
 		}
@@ -456,13 +478,50 @@ func liveThreadRead(
 		if ctx.Err() != nil {
 			return nil, ctx.Err()
 		}
-		// A dead session cannot answer a retry; the caller's own recovery
-		// refreshes the roster before it falls back to the saved transcript.
-		if isDeadSessionError(err) {
-			return nil, err
+		if !retryableLiveReadFailure(err) {
+			return nil, readErr
 		}
 	}
 	return nil, err
+}
+
+// savedFallbackAnswers reports whether a failed live read here is answered from
+// the persisted transcript instead of surfacing its error: every
+// non-subscribing read, and a subscribing read from a source without an atomic
+// live handoff.
+func savedFallbackAnswers(source appsource.Source, params appwire.ThreadReadParams) bool {
+	if !params.Subscribe {
+		return true
+	}
+	_, atomic := source.(appsource.RelaySessionSource)
+	return !atomic
+}
+
+// retryableLiveReadFailure reports whether another live read could succeed: the
+// relay or the daemon link was unavailable, or the source named the failure
+// retryable. A dead or deleted session, a protocol refusal, a daemon that
+// cannot initialize, and any failure the request context already ended are
+// terminal.
+func retryableLiveReadFailure(err error) bool {
+	if err == nil || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return false
+	}
+	if isDeadSessionError(err) || isTargetDeletedError(err) {
+		return false
+	}
+	var mismatch appwire.ProtocolVersionMismatchError
+	var initialize appsource.DaemonInitializeError
+	if errors.As(err, &mismatch) || errors.As(err, &initialize) {
+		return false
+	}
+	var wire appwire.WireError
+	if !errors.As(err, &wire) {
+		return true
+	}
+	if data, ok := appwire.DecodedErrorData(wire.Data); ok && data.RetryDisposition == appwire.RetryDispositionAutomatic {
+		return true
+	}
+	return isSessionUnavailableError(err)
 }
 
 func (o *sessionOperations) Read(ctx context.Context, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
