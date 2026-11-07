@@ -675,12 +675,18 @@ func (s *Session) armDelegateAttention(attentionID string) error {
 	s.mu.Lock()
 	armFault := s.cfg.testOnly.delegateAttentionArmFault
 	s.mu.Unlock()
+	var err error
 	if armFault != nil {
-		if err := armFault(); err != nil {
-			return err
-		}
+		// The fault stands in for an arm the controller refused, so its
+		// error flows through the same retention below: a faulted arm is
+		// recorded for the paced retry exactly as a real refusal is, and
+		// the retry re-arms through armDelegateAttentionOnce, past the
+		// fault.
+		err = armFault()
 	}
-	err := s.armDelegateAttentionOnce(attentionID)
+	if err == nil {
+		err = s.armDelegateAttentionOnce(attentionID)
+	}
 	s.attentionMu.Lock()
 	if err != nil {
 		if s.delegateAttentionArmIDs == nil {
