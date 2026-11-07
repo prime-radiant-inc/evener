@@ -9,7 +9,7 @@ on:
       - "scripts/native/**"
       - "scripts/lib/scratch-lib.sh"
       - "scripts/ops/build-runtime-pair.sh"
-      - "test/e2e/fakllm/**"
+      - "test/e2e/fakellm/**"
       - "internal/devtool/procgroup/**"
       - "execsupport/procgroup/**"
       - "go.mod"
