@@ -4823,6 +4823,67 @@ func TestDelegateAttention_FailedStopDeliveryAckSignalsStopProgress(t *testing.T
 	c.mu.Unlock()
 }
 
+// A send that fails before launchSubagentRun owns no runner, so the failed send
+// itself must not reach the provider. Releasing its committed start re-drives
+// the child, and that re-drive can launch a notification or attention turn
+// which calls the provider on its own goroutine. The total request count after
+// the send therefore does not witness the failed send: sample the count at the
+// rollback boundary, after every failed-send step and immediately before the
+// re-drive, and require zero there. The re-drive's own notification turn
+// reaches the provider after that sample, so this test also proves it
+// distinguishes the two.
+//
+// Regression for the provider-count arm of #4844.
+func TestDelegateAttention_PrelaunchFailedSendDoesNotReachProvider(t *testing.T) {
+	fixture := newColdDelegateFixture(t, "")
+	root, err := restoreDelegateResourceBootstrapSession(fixture.client, fixture.profile, fixture.workspace, fixture.meta, fixture.stateDir)
+	if err != nil {
+		t.Fatalf("restore root: %v", err)
+	}
+	defer root.Close()
+	fs := newAttentionFailNextSyncFS()
+	atRollback := -1
+	var redrivenChild string
+	root.cfg.testOnly.delegateSendRollbackBeforeRedrive = func(childSessionID string) {
+		atRollback = len(fixture.adapter.Requests())
+		redrivenChild = childSessionID
+	}
+	root.delegateRestoreBeforeSideEffects = func(child *Session) {
+		child.mu.Lock()
+		oldWriter := child.transcript
+		child.mu.Unlock()
+		if err := oldWriter.Close(); err != nil {
+			t.Fatalf("close restored child transcript: %v", err)
+		}
+		writer, err := transcript.NewWriterWithFS(fs, transcriptPath(child.stateDir, child.id), transcript.Header{SessionID: child.id})
+		if err != nil {
+			t.Fatalf("replace child transcript: %v", err)
+		}
+		child.attachTranscript(writer)
+		child.cfg.testOnly.delegateInitialInputAppend = func(*Session) {
+			// Fail the input write's own fsync, before launchSubagentRun. The
+			// failure batch that closes the generation appends to the store,
+			// which stays open.
+			fs.failSyncAfter(0, nil)
+		}
+	}
+
+	outcome := (delegateRuntime{owner: root}).send(context.Background(), fixture.delegateID, "start successor", 0)
+	if outcome.result.Err == nil || !strings.Contains(outcome.result.Err.Error(), "injected attention resolution sync failure") {
+		t.Fatalf("prelaunch send = %#v, want the injected input-write failure", outcome.result)
+	}
+	if redrivenChild != fixture.childID {
+		t.Fatalf("failed send re-drove child %q, want %q", redrivenChild, fixture.childID)
+	}
+	if atRollback != 0 {
+		t.Fatalf("prelaunch failed send reached provider %d times before its re-drive", atRollback)
+	}
+	root.sendersWG.Wait()
+	if after := len(fixture.adapter.Requests()); after == 0 {
+		t.Fatal("re-driven notification turn reached provider 0 times; the test cannot distinguish the failed send from the notification turn")
+	}
+}
+
 // Once the start is committed and its input durable, an ack-only delivery
 // failure is requeued and warned about instead of failing the start or latching
 // finalization recovery. The stop repair stays the backstop for durable states.

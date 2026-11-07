@@ -226,6 +226,9 @@ func (runtime delegateRuntime) send(ctx context.Context, delegateID, message str
 			// This runs from the deferred rollback after every failure exit
 			// (aborted reservation, failed commit, failed restore, blocked
 			// hand-off, start-input failure), and send holds no lock here.
+			if observer := s.cfg.testOnly.delegateSendRollbackBeforeRedrive; observer != nil {
+				observer(committedChildID)
+			}
 			s.redriveLiveChild(committedChildID)
 		}
 	}()
