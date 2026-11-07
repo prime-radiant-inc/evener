@@ -141,6 +141,31 @@ func TestStreamMappedFinishReason(t *testing.T) {
 	t.Fatal("no finish event")
 }
 
+// TestStreamToolCallThoughtSignature survives the SSE delta state machine and
+// lands on the settled response used to build the next assistant turn.
+func TestStreamToolCallThoughtSignature(t *testing.T) {
+	sse := `data: {"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_gemini","type":"function","function":{"name":"read_file","arguments":"{\"path\":\"x\"}"},"extra_content":{"google":{"thought_signature":"sig-1"}}}]},"finish_reason":"tool_calls"}]}` + "\n\n" +
+		"data: [DONE]\n\n"
+	events, terminal := chatStreamEvents(t, sse, nil)
+	if terminal != nil {
+		t.Fatalf("stream error: %v", terminal)
+	}
+	for _, ev := range events {
+		if ev.Type != llm.StreamEventFinish {
+			continue
+		}
+		if ev.Response == nil {
+			t.Fatal("finish event has no response")
+		}
+		calls := ev.Response.ToolCalls()
+		if len(calls) != 1 || calls[0].ThoughtSignature != "sig-1" {
+			t.Fatalf("tool calls = %+v, want one call with the Gemini signature", calls)
+		}
+		return
+	}
+	t.Fatal("no finish event")
+}
+
 // TestStreamInbandErrorWithoutMessage pins the message-less in-band error
 // chunk: with only a code, the stream still ends typed with that status.
 func TestStreamInbandErrorWithoutMessage(t *testing.T) {

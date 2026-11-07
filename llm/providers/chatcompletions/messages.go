@@ -412,14 +412,20 @@ func toolCallsFromParts(parts []llm.ContentPart) []map[string]any {
 	var calls []map[string]any
 	for _, p := range parts {
 		if p.Kind == llm.ContentToolCall && p.ToolCall != nil {
-			calls = append(calls, map[string]any{
+			call := map[string]any{
 				"id":   p.ToolCall.ID,
 				"type": "function",
 				"function": map[string]any{
 					"name":      p.ToolCall.Name,
 					"arguments": openaichat.ToolArgumentsString(p.ToolCall.Arguments),
 				},
-			})
+			}
+			if sig := strings.TrimSpace(p.ToolCall.ThoughtSignature); sig != "" {
+				call["extra_content"] = map[string]any{
+					"google": map[string]any{"thought_signature": sig},
+				}
+			}
+			calls = append(calls, call)
 		}
 	}
 	return calls
