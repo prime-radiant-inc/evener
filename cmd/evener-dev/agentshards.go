@@ -95,7 +95,7 @@ type shardsConfig struct {
 	stderr         io.Writer
 	signals        <-chan os.Signal
 	// liveStack builds ./cmd/evener once, before any child runs, and exports
-	// the directory to every process through shardrun.LiveStackBinEnv. The
+	// the directory to every process through shardrun.PrebuiltBinDirEnv. The
 	// hub package's TestMain warms the same binaries otherwise, once per shard
 	// and once for the survey.
 	liveStack bool
@@ -124,9 +124,15 @@ func runAgentShards(args []string) int {
 
 // runHubShards builds from the repository root, the module cmd/evener-hub
 // belongs to, so path-valued build flags resolve where the gate's root-module
-// go test resolves them; the shards still run in the package directory.
+// go test resolves them; the shards still run in the package directory. It also
+// owns the live-stack prebuild: the hub tests share ./cmd/evener, and a module
+// without that package (the shard fixtures) has no live stack to build.
 func runHubShards(args []string) int {
-	return runPackageShards("hub", ".", filepath.Join("cmd", "evener-hub"), "HUB", true, args)
+	liveStack := false
+	if info, err := os.Stat(filepath.Join("cmd", "evener")); err == nil && info.IsDir() {
+		liveStack = true
+	}
+	return runPackageShards("hub", ".", filepath.Join("cmd", "evener-hub"), "HUB", liveStack, args)
 }
 
 // runCLIShards shards cmd/evener, the CLI's ~340 mostly-serial serve and run
@@ -808,28 +814,24 @@ func writeFileAtomic(path string, data []byte) error {
 // prepareLiveStack builds ./cmd/evener once for the whole run and returns the
 // environment that hands the directory to every child. The hub package's
 // TestMain warms these binaries before m.Run, so without this build each shard
-// and the survey pay for their own compile. A module with no cmd/evener (the
-// shard fixtures) has no live stack to build; an outer runner's directory wins
+// and the survey pay for their own compile. An outer runner's directory wins
 // over building another copy.
 func (cfg shardsConfig) prepareLiveStack(in *interrupter, logdir string) ([]string, error) {
-	if dir := os.Getenv(shardrun.LiveStackBinEnv); dir != "" {
-		return []string{shardrun.LiveStackWarmEnv + "=1"}, nil
-	}
-	if info, err := os.Stat(filepath.Join(cfg.moduleDir, "cmd", "evener")); err != nil || !info.IsDir() {
-		return nil, nil
+	if dir := os.Getenv(shardrun.PrebuiltBinDirEnv); dir != "" {
+		return []string{shardrun.PrebuiltBinWarmEnv + "=1"}, nil
 	}
 	dir := filepath.Join(logdir, "live-stack-bin")
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return nil, fmt.Errorf("build live-stack binaries: %w", err)
 	}
 	buildLog := filepath.Join(logdir, "live-stack-build.log")
-	if err := cfg.runToLog(in, buildLog, cfg.moduleDir, "go", "build", "-o", filepath.Join(dir, "evener"), "./cmd/evener"); err != nil {
+	if err := cfg.runToLog(in, buildLog, cfg.moduleDir, "go", "build", "-o", filepath.Join(dir, shardrun.PrebuiltBinName), shardrun.PrebuiltBinTarget); err != nil {
 		data, _ := os.ReadFile(buildLog)
 		return nil, fmt.Errorf("build live-stack binaries: %w\n%s", err, data)
 	}
 	return []string{
-		shardrun.LiveStackBinEnv + "=" + dir,
-		shardrun.LiveStackWarmEnv + "=1",
+		shardrun.PrebuiltBinDirEnv + "=" + dir,
+		shardrun.PrebuiltBinWarmEnv + "=1",
 	}, nil
 }
 

@@ -20,6 +20,7 @@ import (
 
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/identifier"
+	"primeradiant.com/evener/internal/devtool/shardrun"
 	"primeradiant.com/evener/test/e2e/fakellm"
 )
 
@@ -518,8 +519,8 @@ func (s hubStack) dialRPC(ctx context.Context, t *testing.T) *appwire.Client {
 	return client
 }
 
-// liveStackBinaries builds evener and evener-hub once per test binary and hands
-// every stack the same directory. Each `go build` is a heavy compile running
+// liveStackBinaries builds evener once per test binary and hands every stack
+// the same directory. The `go build` is a heavy compile running
 // inside an already-parallel `go test ./...`; doing it per test spiked the
 // load enough to starve an unrelated package's FIFO handshake into its
 // 10-minute package timeout. The binaries are read-only to their users, so
@@ -582,7 +583,7 @@ func liveStackBinaries(t *testing.T, repoRoot string) string {
 func liveStackBinariesBuild(repoRoot string) {
 	liveStackBuild.once.Do(func() {
 		if dir := os.Getenv(liveStackBinEnv); dir != "" {
-			if _, err := os.Stat(filepath.Join(dir, "evener")); err != nil {
+			if _, err := os.Stat(filepath.Join(dir, shardrun.PrebuiltBinName)); err != nil {
 				liveStackBuild.err = fmt.Errorf("%s names %q: %w", liveStackBinEnv, dir, err)
 				return
 			}
@@ -596,13 +597,10 @@ func liveStackBinariesBuild(repoRoot string) {
 			return
 		}
 		liveStackBuild.dir = dir
-		for _, target := range []string{"./cmd/evener/"} {
-			build := exec.Command("go", "build", "-o", filepath.Join(dir, filepath.Base(target)), target)
-			build.Dir = repoRoot
-			if out, buildErr := build.CombinedOutput(); buildErr != nil {
-				liveStackBuild.err = fmt.Errorf("build %s: %w\n%s", target, buildErr, out)
-				return
-			}
+		build := exec.Command("go", "build", "-o", filepath.Join(dir, shardrun.PrebuiltBinName), shardrun.PrebuiltBinTarget)
+		build.Dir = repoRoot
+		if out, buildErr := build.CombinedOutput(); buildErr != nil {
+			liveStackBuild.err = fmt.Errorf("build %s: %w\n%s", shardrun.PrebuiltBinTarget, buildErr, out)
 		}
 	})
 }

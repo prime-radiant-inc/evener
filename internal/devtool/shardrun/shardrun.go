@@ -21,15 +21,23 @@ import (
 // RunFileEnv names the file holding this shard's -test.run regex.
 const RunFileEnv = "EVENER_SHARD_RUN_FILE"
 
-// LiveStackBinEnv names a directory of prebuilt live-stack binaries. A shard
-// runner that builds them once exports it to every process it starts, and the
-// receiving TestMain uses the binaries instead of building its own copy.
-const LiveStackBinEnv = "EVENER_HUB_LIVE_STACK_BIN"
+// PrebuiltBinDirEnv names a directory of binaries a shard runner built once.
+// It exports the directory to every process it starts, and the receiving
+// TestMain uses those binaries instead of building its own copy.
+const PrebuiltBinDirEnv = "EVENER_HUB_LIVE_STACK_BIN"
 
-// LiveStackWarmEnv marks a process whose live-stack binaries are already built
-// or cannot be used by its selection. TestMain skips its warm build when it is
-// set, and sets it in its own environment so descendants inherit the decision.
-const LiveStackWarmEnv = "EVENER_HUB_LIVE_STACK_WARM"
+// PrebuiltBinWarmEnv marks a process whose prebuilt binaries are already built.
+// TestMain skips its warm build when it is set and sets it only when it has
+// binaries to hand down, so a child re-executed with a different selection can
+// judge its own needs.
+const PrebuiltBinWarmEnv = "EVENER_HUB_LIVE_STACK_WARM"
+
+// PrebuiltBinTarget and PrebuiltBinName are the package a shard runner builds
+// once and the file it writes: the evener binary the hub package's tests share.
+const (
+	PrebuiltBinTarget = "./cmd/evener"
+	PrebuiltBinName   = "evener"
+)
 
 // ConfigureRunFile sets -test.run from the file RunFileEnv names, and does
 // nothing when the variable is unset. Call it from TestMain after flag.Parse,
