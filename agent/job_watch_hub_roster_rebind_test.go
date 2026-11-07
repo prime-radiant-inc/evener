@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"testing/synctest"
@@ -46,9 +47,11 @@ func (p *rosterSupersededPeer) Watch(context.Context, appwire.SessionWatchReques
 type rosterLateBindPeer struct {
 	*managerSetupCancelClient
 	updates chan appwire.SessionWatchUpdate
+	watches atomic.Int32
 }
 
 func (p *rosterLateBindPeer) Watch(context.Context, appwire.SessionWatchRequest) (<-chan appwire.SessionWatchUpdate, error) {
+	p.watches.Add(1)
 	return p.updates, nil
 }
 
@@ -65,6 +68,31 @@ func (p *rosterBlockingStatePeer) State(context.Context) (appwire.ManagerView, e
 	close(p.entered)
 	<-p.release
 	return p.view, nil
+}
+
+// rosterFirstBindingPeer answers the consumer's first binding check only after
+// the transport was replaced. Its own subscription must not serve the rebind.
+type rosterFirstBindingPeer struct {
+	*managerSetupCancelClient
+	entered chan struct{}
+	release chan struct{}
+	once    sync.Once
+	watches atomic.Int32
+}
+
+func (p *rosterFirstBindingPeer) State(context.Context) (appwire.ManagerView, error) {
+	p.once.Do(func() {
+		close(p.entered)
+		<-p.release
+	})
+	return p.view, nil
+}
+
+func (p *rosterFirstBindingPeer) Watch(context.Context, appwire.SessionWatchRequest) (<-chan appwire.SessionWatchUpdate, error) {
+	p.watches.Add(1)
+	closed := make(chan appwire.SessionWatchUpdate)
+	close(closed)
+	return closed, nil
 }
 
 // rosterFrameNotification drains exactly one model-visible roster frame.
@@ -258,6 +286,60 @@ func TestHubRosterWatchSupersededStateEndKeepsWatch(t *testing.T) {
 		jm.mu.Unlock()
 		if !retained {
 			t.Fatal("a superseded consumer ended the durable roster watch after its state read answered")
+		}
+	})
+}
+
+// A transport reconnect can land while the recovery loop's state check is in
+// flight. The check answers for the new binding while the loop's earlier
+// signal sample is stale. The consumer must retry against the new binding
+// instead of ending the watch and discarding its roster baseline.
+func TestHubRosterWatchReconnectDuringStateKeepsWatch(t *testing.T) {
+	t.Parallel()
+	synctest.Test(t, func(t *testing.T) {
+		root, jm, id, a, b := rosterDeliveryFixture(t)
+		base, cancel := context.WithCancel(t.Context())
+		rebound := make(chan appwire.SessionWatchUpdate, 1)
+		rebound <- rosterUpdate(2, true, a, b)
+		first := &rosterFirstBindingPeer{
+			managerSetupCancelClient: &managerSetupCancelClient{view: appwire.ManagerView{Ref: "local:manager", InstanceID: "manager-instance", Manager: true}},
+			entered:                  make(chan struct{}),
+			release:                  make(chan struct{}),
+		}
+		fresh := &rosterLateBindPeer{
+			managerSetupCancelClient: &managerSetupCancelClient{view: appwire.ManagerView{Ref: "local:manager", InstanceID: "manager-instance", Manager: true}},
+			updates:                  rebound,
+		}
+		root.SetHubClient(first)
+		updates := make(chan appwire.SessionWatchUpdate)
+		close(updates)
+		done := make(chan struct{})
+		if !root.installHubWatchSubscription(jm, id, cancel, done) {
+			t.Fatal("roster subscription not installed")
+		}
+		go root.consumeHubWatch(base, id, appwire.SessionWatchRequest{Scope: "top_level"}, "local:manager", "manager-instance", currentHubSignal(root), updates, rosterUpdate(1, true, a), done)
+		// The state check is in flight when the transport reconnects.
+		<-first.entered
+		root.SetHubClient(fresh)
+		close(first.release)
+		synctest.Wait()
+		if got := first.watches.Load(); got != 0 {
+			t.Fatalf("the replaced binding served %d rebinds", got)
+		}
+		if got := fresh.watches.Load(); got != 1 {
+			t.Fatalf("replacement binding served %d rebinds, want one", got)
+		}
+		jm.mu.Lock()
+		_, cfg, live := jm.watchConfigByIDLocked(id)
+		retained := live && len(cfg.rosterBaseline) == 2 && cfg.rosterBaseline[b.Ref] == b.AttentionEntry
+		jm.mu.Unlock()
+		if !retained {
+			t.Fatal("a reconnect during the state check ended the durable roster watch instead of recovering")
+		}
+		got := rosterFrameNotification(t, root)
+		entries := rosterFrameEntries(t, got.notification.watchSendFrame)
+		if len(entries) != 1 || entries[0].Ref != b.Ref || entries[0].Kind != "new" {
+			t.Fatalf("reconnect roster entries=%+v, want only local:b as new", entries)
 		}
 	})
 }

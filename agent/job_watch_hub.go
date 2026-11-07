@@ -1274,6 +1274,30 @@ func (s *Session) consumeHubWatch(ctx context.Context, id string, request appwir
 					endWatch("Manager binding no longer serves this session; re-register")
 					return
 				}
+				// State answers for the binding installed now, not the one
+				// sampled above. A reconnect that landed during the read must
+				// be resolved against the new binding instead of being
+				// mistaken for a stream that ended on a healthy connection. A
+				// reconnect landing after this check still reaches the end
+				// below; that residual window is the branch width, not the
+				// state read.
+				s.mu.Lock()
+				currentSignal := s.hubWatchSignal
+				s.mu.Unlock()
+				if currentSignal != signal {
+					// The binding moved under the read. Count the retry
+					// against the outage budget so a binding that keeps moving
+					// is still bounded by one recovery episode.
+					stateFailures++
+					if outageStart.IsZero() {
+						outageStart = time.Now()
+					}
+					if time.Since(outageStart) >= s.hubWatchStateOutageBudget() {
+						endWatch("observation unreachable: binding changed during recovery; re-register")
+						return
+					}
+					continue
+				}
 				if signal == boundSignal {
 					endWatch("observation subscription ended unexpectedly; re-register")
 					return
