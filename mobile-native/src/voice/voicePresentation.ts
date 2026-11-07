@@ -19,12 +19,17 @@ export function voicePresentation(state: VoiceSnapshot, justHeard = false): Voic
 	if (state.state === "disarmed") return { phase: "disarmed", primary: "arm", talkEnabled: false };
 	const trialRunning = state.wake?.trials.at(-1)?.running === true;
 	const capturing = state.capturing && !trialRunning && state.state === "quiet";
-	const talkEnabled = capturing && state.state !== "recovering" && state.error === "";
+	const talkEnabled = capturing && state.state !== "recovering";
 	if (trialRunning) return { phase: "trial", primary: "talk", talkEnabled: false };
 	if (state.state === "recovering") return { phase: "recovering", primary: "talk", talkEnabled: false };
-	if (state.error) return { phase: "error", primary: "talk", talkEnabled: false };
+	// A wake detection publishes the conversing state in the same snapshot, so
+	// the heard flash has to outrank it or it would never be seen.
+	if (justHeard && state.capturing && !trialRunning) return { phase: "heard", primary: "talk", talkEnabled };
 	if (state.state === "speaking") return { phase: "speaking", primary: "stop", talkEnabled: false };
 	if (state.state === "conversing") return { phase: "talking", primary: "stop", talkEnabled: false };
-	if (justHeard && capturing) return { phase: "heard", primary: "talk", talkEnabled };
+	// Routine turn aborts (input_idle, input_start_timeout, recoverable provider
+	// errors) leave `error` set while the phone stays armed and listening, so
+	// only a stopped capture makes the whole surface read as stopped.
+	if (state.error && !capturing) return { phase: "error", primary: "talk", talkEnabled: false };
 	return { phase: "listening", primary: "talk", talkEnabled };
 }

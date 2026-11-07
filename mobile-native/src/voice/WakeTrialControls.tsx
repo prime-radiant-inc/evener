@@ -60,13 +60,13 @@ export function WakeTrialControls({ client, state }: { client: VoiceClient; stat
 						}
 						fraction={progress.detection.fraction}
 						tick={progress.detection.of ? progress.detection.target : undefined}
-						met={progress.detection.fraction >= progress.detection.target}
+						met={progress.trials.fraction >= 1 && progress.detection.fraction >= progress.detection.target}
 					/>
 					<Meter
 						label="Background audio"
 						value={`${progress.negatives.hours.toFixed(2)} of ${progress.negatives.target} h`}
 						fraction={progress.negatives.fraction}
-						met={progress.negatives.fraction >= 1}
+						met={progress.negatives.fraction >= 1 && summary.falseActivations === 0}
 					/>
 					<Copy muted>
 						False alarms: {summary.falseActivations} across {summary.negativeAttempts} background attempts

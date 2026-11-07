@@ -59,6 +59,10 @@ function Controls({ client, target }: { client: VoiceClient; target: VoiceTarget
 	const same = bound?.ref === target.ref && bound.hub.id === target.hub.id;
 	const presented = voicePresentation(state, justHeard);
 	const talkEnabled = presented.talkEnabled && same;
+	// Stop is about the reply already playing, so it does not need capture or
+	// this session's binding; everything else needs Talk's conditions.
+	const actionEnabled =
+		presented.primary === "stop" ? same : presented.primary === "arm" ? target.manager && !busy : talkEnabled;
 	const arm = async (replace = false) => {
 		setBusy(true);
 		setError(null);
@@ -87,11 +91,12 @@ function Controls({ client, target }: { client: VoiceClient; target: VoiceTarget
 			<VoiceBar
 				phase={presented.phase}
 				primary={presented.primary}
-				primaryEnabled={presented.primary === "arm" ? target.manager && !busy : talkEnabled}
+				primaryEnabled={actionEnabled}
 				expanded={expanded}
 				phrase={state.wake?.phrase ?? ""}
 				speakerOff={state.speakerConsentRequired}
-				onPrimary={primary}
+				boundRef={armed && !same ? bound?.ref : undefined}
+				onPrimary={presented.phase === "disarmed" ? () => setExpanded(true) : primary}
 				onToggle={() => setExpanded(!expanded)}
 			/>
 			{expanded ? (
@@ -107,12 +112,10 @@ function Controls({ client, target }: { client: VoiceClient; target: VoiceTarget
 							phase={presented.phase}
 							phrase={state.wake?.phrase ?? ""}
 							speakerOff={state.speakerConsentRequired}
+							boundRef={armed && !same ? bound?.ref : undefined}
 						/>
-						<PrimaryControl
-							primary={presented.primary}
-							enabled={presented.primary === "arm" ? target.manager && !busy : talkEnabled}
-							onPress={primary}
-						/>
+						{armed ? null : <Details state={state} forceOpen />}
+						<PrimaryControl primary={presented.primary} enabled={actionEnabled} onPress={primary} />
 						<View style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: 4 }}>
 							{armed ? (
 								<Button text quiet label="Turn voice off" onPress={() => void disarm(client, setError)} />
@@ -127,7 +130,7 @@ function Controls({ client, target }: { client: VoiceClient; target: VoiceTarget
 							<Row label="Allow replies on the iPhone speaker" onPress={() => client.allowSpeaker()} />
 						) : null}
 						<WakeReceipt state={state} />
-						<Details state={state} />
+						{armed ? <Details state={state} /> : null}
 						<WakeTrialControls client={client} state={state} />
 						<Copy muted>{footnote(state, presented.phase)}</Copy>
 						<ErrorMessage
@@ -158,6 +161,7 @@ function VoiceBar({
 	expanded,
 	phrase,
 	speakerOff,
+	boundRef,
 	onPrimary,
 	onToggle,
 }: {
@@ -167,13 +171,14 @@ function VoiceBar({
 	expanded: boolean;
 	phrase: string;
 	speakerOff: boolean;
+	boundRef?: string;
 	onPrimary(): void;
 	onToggle(): void;
 }) {
 	const { palette } = useColors();
 	const scale = useTextScale();
 	const tone = TONES[phase];
-	const headline = barHeadline(phase, phrase, speakerOff);
+	const headline = boundRef ? `Voice is on for ${shortRef(boundRef)}` : barHeadline(phase, phrase, speakerOff);
 	const actionVisible = phase === "disarmed" || phase === "listening" || phase === "speaking";
 	return (
 		<View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
@@ -216,6 +221,10 @@ function barAction(primary: "arm" | "talk" | "stop") {
 	return primary === "arm" ? "Turn on" : primary === "talk" ? "Talk" : "Stop";
 }
 
+function shortRef(ref: string) {
+	return ref.replace(/^local:/, "");
+}
+
 function barHeadline(phase: VoicePhase, phrase: string, speakerOff: boolean) {
 	const wake = phrase ? `“${phrase}”` : "the wake word";
 	switch (phase) {
@@ -238,7 +247,17 @@ function barHeadline(phase: VoicePhase, phrase: string, speakerOff: boolean) {
 	}
 }
 
-function PanelHeader({ phase, phrase, speakerOff }: { phase: VoicePhase; phrase: string; speakerOff: boolean }) {
+function PanelHeader({
+	phase,
+	phrase,
+	speakerOff,
+	boundRef,
+}: {
+	phase: VoicePhase;
+	phrase: string;
+	speakerOff: boolean;
+	boundRef?: string;
+}) {
 	const { palette } = useColors();
 	const tone = TONES[phase];
 	return (
@@ -256,15 +275,17 @@ function PanelHeader({ phase, phrase, speakerOff }: { phase: VoicePhase; phrase:
 				<SymbolView name={tone.symbol} size={20} tintColor={palette[tone.ink]} />
 			</View>
 			<View style={{ flexShrink: 1, gap: 2 }}>
-				<Copy>{barHeadline(phase, phrase, speakerOff)}</Copy>
+				<Copy>{boundRef ? `Voice is on for ${shortRef(boundRef)}` : barHeadline(phase, phrase, speakerOff)}</Copy>
 				<Copy muted>
-					{phase === "disarmed"
-						? "Wake-word detection stays on this iPhone."
-						: phase === "listening"
-							? "Tap Talk, or just say the wake word."
-							: phase === "trial"
-								? "One attempt at a time, saved on this iPhone."
-								: "Tap the bar to see what voice is doing."}
+					{boundRef
+						? "Talk starts a turn there. Open that session to talk to it."
+						: phase === "disarmed"
+							? "Wake-word detection stays on this iPhone."
+							: phase === "listening"
+								? "Tap Talk, or just say the wake word."
+								: phase === "trial"
+									? "One attempt at a time, saved on this iPhone."
+									: "Tap the bar to see what voice is doing."}
 				</Copy>
 			</View>
 		</View>
@@ -297,21 +318,26 @@ function WakeReceipt({ state }: { state: VoiceSnapshot }) {
 }
 
 /** The paragraphs that used to fill the panel, behind one row. */
-function Details({ state }: { state: VoiceSnapshot }) {
+function Details({ state, forceOpen = false }: { state: VoiceSnapshot; forceOpen?: boolean }) {
 	const [open, setOpen] = useState(false);
+	const shown = open || forceOpen;
 	return (
 		<View testID="voice-arm-disclosure" style={{ gap: 8 }}>
-			<Button
-				text
-				quiet
-				label="Voice & privacy"
-				expanded={open}
-				onPress={() => {
-					haptic("selection");
-					setOpen(!open);
-				}}
-			/>
-			{open ? (
+			{forceOpen ? (
+				<Copy muted>Voice & privacy</Copy>
+			) : (
+				<Button
+					text
+					quiet
+					label="Voice & privacy"
+					expanded={open}
+					onPress={() => {
+						haptic("selection");
+						setOpen(!open);
+					}}
+				/>
+			)}
+			{shown ? (
 				<>
 					<Copy muted>
 						{`Anyone nearby can talk to Evener and hear replies, even when your iPhone is locked. “${

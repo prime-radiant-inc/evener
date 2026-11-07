@@ -46,10 +46,25 @@ it("reports recovery and errors above the quiet states", () => {
 		primary: "talk",
 		talkEnabled: false,
 	});
-	expect(voicePresentation({ ...quiet, error: "capture_paused" })).toMatchObject({
+	expect(voicePresentation({ ...quiet, capturing: false, error: "capture_paused" })).toMatchObject({
 		phase: "error",
 		talkEnabled: false,
 	});
+});
+
+it("keeps a stale routine abort from hiding the live state or gating Talk", () => {
+	expect(voicePresentation({ ...quiet, state: "conversing", error: "input_idle" })).toMatchObject({
+		phase: "talking",
+		primary: "stop",
+	});
+	expect(voicePresentation({ ...quiet, error: "input_idle" })).toMatchObject({
+		phase: "listening",
+		talkEnabled: true,
+	});
+});
+
+it("shows the heard flash even when the detection starts a turn", () => {
+	expect(voicePresentation({ ...quiet, state: "conversing" }, true).phase).toBe("heard");
 });
 
 it("keeps talk disabled while a wake trial owns the microphone", () => {

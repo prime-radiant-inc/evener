@@ -3,7 +3,7 @@ import { expect, it, vi } from "vitest";
 import { render } from "../renderNative.testkit";
 import { VoiceControls } from "./VoiceControls";
 import { VoiceContext } from "./voiceContext";
-import { VoiceClient, type NativeVoicePort, type VoiceSnapshot } from "./voiceClient";
+import { defaultVoiceOptions, VoiceClient, type NativeVoicePort, type VoiceSnapshot } from "./voiceClient";
 import activation from "../../modules/evener-voice/runtime-tests/fixtures/wake-activation.json";
 import recordedTrials from "../../modules/evener-voice/runtime-tests/fixtures/wake-trials.json";
 import type { WakeSnapshot, WakeTrialAttempt } from "./wakeTrials";
@@ -96,9 +96,15 @@ it("arms in one tap with a visible disclosure, keeps takeover explicit, and send
 	await act(async () => {
 		button("Turn on").props.onPress();
 	});
-	// Arm goes straight to the hub; the disclosure is always visible beside it.
+	// The bar's Turn on opens the panel; nothing arms until the panel's control.
+	expect(requests).toHaveLength(0);
+	// Arm is explained before it happens, not after.
 	expect(button("I understand · Arm voice")).toBeUndefined();
 	expect(tree.root.findByProps({ testID: "voice-arm-disclosure" })).toBeDefined();
+	expect(JSON.stringify(tree.toJSON())).toContain("Anyone nearby can talk to Evener");
+	await act(async () => {
+		button("Turn on voice").props.onPress();
+	});
 	expect(requests).toHaveLength(1);
 	expect(requests[0].takeover).toBe(false);
 	expect(actions).toEqual([]);
@@ -243,4 +249,81 @@ it("shows measured wake receipts and sends trial labels to the native owner", as
 	}
 	expect(actions).toEqual(["start", "positive", "start", "negative", "start", "falseActivation"]);
 	unlisten();
+});
+
+it("keeps Stop live while Evener speaks", async () => {
+	const actions: string[] = [];
+	let emit: (state: VoiceSnapshot) => void = () => {};
+	const armed: VoiceSnapshot = {
+		state: "quiet",
+		capturing: true,
+		cloudMicrophone: true,
+		route: "iPhone speaker",
+		speakerConsentRequired: false,
+		error: "",
+		interpreted: "",
+		custody: "",
+		canonical: "",
+		generated: "",
+		bindingId: "binding",
+		provider: "openai",
+	};
+	const native: NativeVoicePort = {
+		deviceId: async () => "install",
+		validateTransport: async () => {},
+		authorize: async (origin) => ({
+			origin,
+			status: 200,
+			body: JSON.stringify({
+				bindingId: "binding",
+				epoch: "opaque",
+				grant: "fixture",
+				expiresAt: "2030-01-01T00:00:00Z",
+				provider: "openai",
+			}),
+		}),
+		arm: async () => {},
+		snapshot: async () => armed,
+		addListener: (_event, listener) => {
+			emit = listener;
+			return { remove() {} };
+		},
+		talk: () => actions.push("talk"),
+		stopSpeaking: () => actions.push("stop"),
+		disarm: () => {},
+		allowSpeaker: () => {},
+		startWakeTrial: async () => {},
+		finishWakeTrial: async () => {},
+	};
+	const client = new VoiceClient(
+		native,
+		async () => "",
+		() => true,
+	);
+	client.listen();
+	const target = {
+		hub: { id: "hub", name: "Hub", origin: "http://127.0.0.1:9180" },
+		ref: "chief",
+		instanceId: "instance",
+		manager: true,
+		voiceAvailable: true,
+	};
+	const tree = render(
+		<VoiceContext.Provider value={client}>
+			<VoiceControls target={target} />
+		</VoiceContext.Provider>,
+	);
+	const button = (label: string) =>
+		tree.root.findAll((node) => String(node.type) === "Pressable" && node.props.accessibilityLabel === label)[0];
+	await act(async () => {
+		await client.arm(target, defaultVoiceOptions, false);
+	});
+	await act(async () => {
+		emit({ ...armed, state: "speaking" });
+	});
+	expect(button("Stop").props.disabled).toBe(false);
+	await act(async () => {
+		button("Stop").props.onPress();
+	});
+	expect(actions).toEqual(["stop"]);
 });
