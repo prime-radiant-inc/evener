@@ -210,9 +210,9 @@ A detection in armed quiet state enters the same controller and socket path as
 Talk, updates the local heard-wake score and gives the same cue. Speak the
 request after the cue. Existing VAD follow-up and interruption rules are unchanged.
 
-Open **Voice → Debug · Wake trials**, arm, then start an attempt. Wait for
-**Listening**, play or speak the trial audio, and mark **Positive**, **Negative**
-or **False activation**. Positive means an intended wake, including a miss.
+Open **Voice → Test wake word**, turn voice on, then start a test. Wait for
+**Listening**, play or speak the trial audio, and mark **Intended**, **Background**
+or **False alarm**. Intended means an intended wake, including a miss.
 Trials suppress conversation activation and Talk, count every debounced detection,
 show scores and scored-audio duration, and retain per-attempt model/settings on
 the phone. Native UserDefaults owns persistence through JS suspension; no PCM is

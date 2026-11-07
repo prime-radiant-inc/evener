@@ -39,7 +39,9 @@ concurrency:
 env:
   NODE_VERSION: "22.13.1"
   RUBY_VERSION: "3.3.6"
-  XCODE_VERSION: "26.6"
+  # The xcode-27 preview image carries Xcode 27.1 at
+  # /Applications/Xcode_27.1.app; the select step below switches to it.
+  XCODE_VERSION: "27.1"
   IOS_BUNDLE_IDENTIFIER: com.primeradiant.evener.native
 
 jobs:
@@ -55,7 +57,7 @@ jobs:
 
   archive-and-upload:
     if: (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) || (github.event_name == 'workflow_dispatch' && inputs.recovery_run_id == '' && github.ref == 'refs/heads/main')
-    runs-on: macos-26
+    runs-on: xcode-27
     timeout-minutes: 90
     steps:
       - name: Check out source
@@ -340,7 +342,7 @@ jobs:
 
   verify-upload:
     if: github.event_name == 'workflow_dispatch' && inputs.recovery_run_id != '' && github.ref == 'refs/heads/main'
-    runs-on: macos-26
+    runs-on: xcode-27
     permissions:
       contents: read
       actions: read
