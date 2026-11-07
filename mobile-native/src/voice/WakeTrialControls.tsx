@@ -113,6 +113,7 @@ export function WakeTrialControls({ client, state }: { client: VoiceClient; stat
 							/>
 						))}
 					</View>
+					<Copy muted>These meters are evidence, not proof the physical gates were met.</Copy>
 					<Copy muted>
 						Wait for Listening, then say “{wake.phrase || "the wake word"}”, and mark Intended, even if it missed.
 						Background is for other audio. Tests stay on this iPhone and never start a conversation; results apply to

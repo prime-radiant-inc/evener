@@ -439,7 +439,7 @@ it("calls a routine abort a finished turn, not a stopped voice", async () => {
 		.findAll((node) => String(node.type) === "Text")
 		.map((node) => node.children.join(""))
 		.join("\n");
-	expect(text).toContain("Last turn ended (input_idle)");
+	expect(text).toContain("A turn ended early (input_idle)");
 	expect(text).not.toContain("Voice stopped");
 	// The footnote describes the state, not a state that no longer holds.
 	expect(text).toContain("until you talk");
