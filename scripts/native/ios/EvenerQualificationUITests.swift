@@ -104,12 +104,11 @@ final class EvenerQualificationUITests: XCTestCase {
 		}
 		let followUp = app.descendants(matching: .any)
 			.matching(NSPredicate(format: "label CONTAINS %@", "QUALIFICATION_code_c9"))
-		let firstResponseDeadline = Date().addingTimeInterval(tripwire)
-		while Date() < firstResponseDeadline && followUp.count < 1 {
-			Thread.sleep(forTimeInterval: 0.25)
-		}
+		XCTAssertTrue(
+			followUp.firstMatch.waitForExistence(timeout: tripwire),
+			"the restored first response never rendered"
+		)
 		let baseline = followUp.count
-		XCTAssertGreaterThan(baseline, 0, "the restored first response never rendered")
 		tap(app.buttons["Send"], "Send never became available")
 		let deadline = Date().addingTimeInterval(tripwire)
 		while Date() < deadline && followUp.count <= baseline {
