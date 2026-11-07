@@ -180,18 +180,23 @@ export function Composer({ ref, paneId, focused, mountAutofocus = true, source, 
   const fileInputRef = useRef<HTMLInputElement>(null);
   const formRef = useRef<HTMLFormElement>(null);
   const formAnchorRef = useRef<HTMLDivElement>(null);
+  // A composer press (Send, Attach, a menu trigger) can blur the editor to
+  // body on touch without moving focus to the pressed control. Hold the
+  // editing state through that task so the footer does not move under the tap.
+  const composerPointerRef = useRef(false);
   const submitButtonRef = useRef<HTMLButtonElement>(null);
   const tasksPanelRef = useRef<TasksPanelHandle>(null);
   // Set by scheduleCursorRestore below; consumed (and cleared) by the
   // cursor-restore layout effect in the commit that carries the edit.
   const cursorToRestoreRef = useRef<number | null>(null);
   const [cursorRestoreSeq, setCursorRestoreSeq] = useState(0);
-  // True while the editor itself holds focus (the phone keyboard's signal).
-  // Focus on a composer button alone must not set it: pressing Send or Attach
-  // from an unfocused composer should not hide the pane footer.
-  const [editorFocused, setEditorFocused] = useState(false);
+  // The editor's own focus is the phone keyboard's signal. It is a DOM
+  // attribute rather than React state so focus does not re-render the
+  // composer; focus on a composer button alone must not set it, or pressing
+  // Send or Attach from an unfocused composer would hide the pane footer.
   const noteComposerFocus = useCallback((event: ReactFocusEvent<HTMLDivElement>) => {
-    if ((event.target as Element).closest('[role="textbox"]')) setEditorFocused(true);
+    if ((event.target as Element).closest('[role="textbox"]'))
+      formAnchorRef.current?.setAttribute("data-composer-editing", "");
   }, []);
   const noteComposerBlur = useCallback(() => {
     // The next focus target is only known after the focusout/focusin pair, so
@@ -200,11 +205,32 @@ export function Composer({ ref, paneId, focused, mountAutofocus = true, source, 
     queueMicrotask(() => {
       const anchor = formAnchorRef.current;
       if (!anchor) return;
+      if (composerPointerRef.current) return;
       const active = anchor.ownerDocument.activeElement;
       if (active && (anchor.contains(active) || active.closest('[role="menu"], [role="listbox"], [role="dialog"]')))
         return;
-      setEditorFocused(false);
+      anchor.removeAttribute("data-composer-editing");
     });
+  }, []);
+  useEffect(() => {
+    const anchor = formAnchorRef.current;
+    if (!anchor) return undefined;
+    const doc = anchor.ownerDocument;
+    // A press outside the composer (its portaled menus included) ends editing
+    // at the press itself: touch may leave focus on body, so no blur follows.
+    const onPointerDown = (event: PointerEvent) => {
+      if (!anchor.hasAttribute("data-composer-editing")) return;
+      const target = event.target as Element | null;
+      if (
+        target &&
+        typeof target.closest === "function" &&
+        (anchor.contains(target) || target.closest('[role="menu"], [role="listbox"], [role="dialog"]'))
+      )
+        return;
+      anchor.removeAttribute("data-composer-editing");
+    };
+    doc.addEventListener("pointerdown", onPointerDown, true);
+    return () => doc.removeEventListener("pointerdown", onPointerDown, true);
   }, []);
   // Parks the caret a programmatic edit wants and forces a commit, so the
   // layout effect below applies it even when the edit left `text` unchanged.
@@ -913,9 +939,14 @@ export function Composer({ ref, paneId, focused, mountAutofocus = true, source, 
           className={CLASS.formAnchor}
           data-composer={ref}
           data-composer-pane={paneId}
-          data-composer-editing={editorFocused ? "" : undefined}
           onFocus={noteComposerFocus}
           onBlur={noteComposerBlur}
+          onPointerDown={() => {
+            composerPointerRef.current = true;
+            setTimeout(() => {
+              composerPointerRef.current = false;
+            }, 0);
+          }}
         >
           {/* Anchored above the control row inside the card below, opening
               upward - see slashcompletionmenu.module.css's header comment

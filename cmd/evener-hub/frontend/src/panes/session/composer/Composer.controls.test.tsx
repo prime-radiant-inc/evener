@@ -759,7 +759,25 @@ test("the composer editing attribute follows the editor, not composer controls",
   await user.click(screen.getByTestId("composer-attach"));
   expect(anchor?.hasAttribute("data-composer-editing")).toBe(true);
 
+  // A touch press on a composer control can blur the editor to body without
+  // focusing the control; the press itself keeps the editing state.
+  await act(async () => {
+    fireEvent.pointerDown(screen.getByTestId("composer-attach"));
+    editor.blur();
+  });
+  expect(anchor?.hasAttribute("data-composer-editing")).toBe(true);
+
+  // A press outside the composer ends it, even when focus stayed on body.
+  await act(async () => {
+    fireEvent.pointerDown(document.body);
+  });
+  await waitFor(() => expect(anchor?.hasAttribute("data-composer-editing")).toBe(false));
+
   // A portaled composer menu keeps it too (focus leaves the composer's DOM).
+  await act(async () => {
+    editor.focus();
+  });
+  await waitFor(() => expect(anchor?.hasAttribute("data-composer-editing")).toBe(true));
   const menu = document.createElement("ul");
   menu.setAttribute("role", "menu");
   menu.tabIndex = -1;

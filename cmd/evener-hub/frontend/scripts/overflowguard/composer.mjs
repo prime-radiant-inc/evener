@@ -82,7 +82,12 @@ async function tap(send, p, touch) {
   }
 }
 export async function typeComposerDraft(send, text = "browser-proof") {
-  await tap(send, await point(send, editor), false);
+  // Focus programmatically: a trusted tap on the editor starts the phone
+  // footer's editing move, and that pointerup would land where the editor
+  // used to be. The gesture under test is the Send press; the draft setup
+  // only needs the editor focused and the resulting layout settled.
+  await evaluate(send, `document.querySelector(${JSON.stringify(editor)}).focus()`);
+  await evaluate(send, "new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)))");
   await send("Input.insertText", { text });
   await until(send, `document.querySelector('${control("submit")}')`);
   // The editor's focus starts the phone footer's editing state, which moves

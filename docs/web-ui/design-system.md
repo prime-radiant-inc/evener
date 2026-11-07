@@ -123,9 +123,9 @@ losing the conversation that made the evidence relevant.
   The caption-height path row shows the branch unlinked, below the touch floor. The bar
   owns the home-indicator band, so the composer dock above it gives that inset up; the
   inset yields when the on-screen keyboard covers that area. The bar hides while the
-  composer is editing and returns when the editor loses focus outside the composer; the
-  composer dock is then the pane's bottom edge and takes the band back, including when
-  focus outlives the keyboard.
+  composer is editing and returns when focus or a press leaves the composer; the composer
+  dock is then the pane's bottom edge and takes the band back, including when focus
+  outlives the keyboard.
 - **Keep session inspection together.** Both session action menus offer Overview, retaining
   the intended session's category choice. `/status` selects About without toggling a
   standalone Details pane. About reuses the shared Details renderer and its accounting.
