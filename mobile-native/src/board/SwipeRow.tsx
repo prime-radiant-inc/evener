@@ -21,8 +21,8 @@
 // band opens is closed without acting, read from window points, as a second
 // guard for a caller that cannot supply its inset.
 import { type SFSymbol, SymbolView } from "expo-symbols";
-import { type ReactNode, useMemo, useRef } from "react";
-import { type AccessibilityActionEvent, Pressable, Text, useWindowDimensions, View } from "react-native";
+import { type ReactNode, useMemo, useRef, useState } from "react";
+import { type AccessibilityActionEvent, Pressable, Text, View } from "react-native";
 import { GestureDetector, usePanGesture } from "react-native-gesture-handler";
 import ReanimatedSwipeable, {
 	SwipeDirection,
@@ -118,7 +118,10 @@ export function SwipeRow({
 	children,
 }: SwipeRowProps) {
 	const { palette } = useColors();
-	const { width } = useWindowDimensions();
+	const [rowWidth, setRowWidth] = useState(0);
+	// A full swipe acts past half the row. Until the row has laid out, no drag
+	// can reach the threshold.
+	const half = rowWidth > 0 ? rowWidth / 2 : Number.MAX_SAFE_INTEGER;
 	const swipeable = useRef<SwipeableMethods>(null);
 	// Where the touch that may become a swipe began, in window points.
 	const startX = useRef(Number.POSITIVE_INFINITY);
@@ -180,7 +183,7 @@ export function SwipeRow({
 		<GestureDetector gesture={releaseTracker}>
 			{/* The detector attaches to a native view of its own, apart from the
 			 * one the swipeable's detector holds. */}
-			<View collapsable={false}>
+			<View collapsable={false} onLayout={(event) => setRowWidth(event.nativeEvent.layout.width)}>
 				<ReanimatedSwipeable
 					ref={swipeable}
 					enabled={enabled}
@@ -188,8 +191,8 @@ export function SwipeRow({
 					hitSlop={edgeBandSlop}
 					dragOffsetFromLeft={SWIPE_ACTIVATION_PT}
 					dragOffsetFromRight={-SWIPE_ACTIVATION_PT}
-					leftThreshold={width / 2}
-					rightThreshold={destructive ? width / 2 : undefined}
+					leftThreshold={half}
+					rightThreshold={destructive ? half : undefined}
 					renderLeftActions={leading ? panel([leading]) : undefined}
 					renderRightActions={
 						destructive ? destructivePanel(destructive) : trailing.length > 0 ? panel(trailing) : undefined
@@ -200,7 +203,7 @@ export function SwipeRow({
 					onSwipeableWillOpen={(direction) => {
 						if (startsInEdgeZone(startX.current)) close();
 						const dragged = direction === LEADING_OPENED ? dragX.current : -dragX.current;
-						fullSwipe.current = dragged > width / 2;
+						fullSwipe.current = dragged > half;
 					}}
 					// The swipeable says it has opened when the open animation ends:
 					// a spring of about half a second, or the next frame under Reduce

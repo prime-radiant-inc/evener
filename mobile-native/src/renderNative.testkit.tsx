@@ -489,6 +489,11 @@ export function swipeRowFully(
 	{ pageX = 200 }: { pageX?: number } = {},
 ) {
 	if (!swipeable) throw new Error("no swipeable row");
+	// The row sizes its full-swipe threshold from its own layout. Lay it out at
+	// the 390-point width these tests drive it at before the touch arrives.
+	let row = swipeable.parent;
+	while (row && typeof row.props.onLayout !== "function") row = row.parent;
+	if (row) act(() => row?.props.onLayout({ nativeEvent: { layout: { x: 0, y: 0, width: 390, height: 60 } } }));
 	act(() => swipeable.findByProps({ testID: "swipe-row-content" }).props.onTouchStart({ nativeEvent: { pageX } }));
 	releaseSwipeRow(swipeable, direction === "right" ? 250 : -250);
 	openSwipeRow(swipeable, direction);

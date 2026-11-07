@@ -86,6 +86,13 @@ test('the scene forwards warm and cold links and foreground lifecycle to the sha
  }
 });
 
+test('the app stays portrait until landscape safe areas are qualified', () => {
+	// The Duo's inner display splits in portrait. Landscape on a regular iPhone
+	// needs left/right safe-area handling first; until then the app keeps the
+	// orientation it qualified under.
+	assert.equal(app.orientation, 'portrait');
+});
+
 test('scene prebuild preserves application identity, linking and unrelated plist values', async () => {
  const existing = {
   CFBundleIdentifier: 'com.primeradiant.evener.native',
