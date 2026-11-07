@@ -266,26 +266,10 @@ EOF
 log "starting the isolated hub"
 "$evener_binary" hub -addr 127.0.0.1:0 -evener "$evener_binary" >"$output/hub.log" 2>&1 &
 hub_pid=$!
-hub_port=""
-for _ in $(seq 1 600); do
-	hub_port="$(grep -oE 'listening on 127\.0\.0\.1:[0-9]+' "$output/hub.log" 2>/dev/null | grep -oE '[0-9]+$')" || true
-	[ -n "$hub_port" ] && break
-	kill -0 "$hub_pid" 2>/dev/null || {
-		echo "hub exited before it started listening:" >&2
-		cat "$output/hub.log" >&2
-		exit 1
-	}
-	sleep 0.1
-done
-if [ -z "$hub_port" ]; then
-	echo "hub never started listening" >&2
-	exit 1
-fi
+e2e_wait_for_port "$output/hub.log" "$hub_pid" hub
+hub_port="$e2e_port"
 hub_origin="http://127.0.0.1:$hub_port"
-if ! curl -s -o /dev/null "$hub_origin/"; then
-	echo "hub did not answer at $hub_origin" >&2
-	exit 1
-fi
+e2e_health_check "$hub_origin"
 
 # The fixture-only connection data, kept in one private mode-0600 file. It is
 # read back to build the test-run environment and never printed or uploaded.

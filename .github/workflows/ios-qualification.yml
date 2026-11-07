@@ -8,6 +8,7 @@ on:
       - "appwire-client/typescript/**"
       - "scripts/native/**"
       - "scripts/lib/scratch-lib.sh"
+      - "scripts/lib/e2e-lib.sh"
       - "scripts/ops/build-runtime-pair.sh"
       - "Makefile"
       - "make/**"
