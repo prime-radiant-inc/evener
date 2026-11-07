@@ -332,6 +332,19 @@ type testConfig struct {
 	// like every testOnly field.
 	delegateIdleReleaseDelay *time.Duration
 
+	// disableRestoredDelegateNotifyDrive suppresses the parent-drive notify
+	// edge a cold-restored delegate runtime installs at restore time (see
+	// restoreIdle): that edge lets the owner present the restored delegate's
+	// armed reports without waiting for its own next pass, and it fires from
+	// inside the restore — before any test-side SetNotifyFunc(nil) disarm can
+	// reach it. A fixture whose tests script the delegate's presentation
+	// drives themselves sets this on the root, so a report arming while the
+	// fixture's send is still settling stays pending until the test's own loop
+	// drives it. False in production: the edge is how a restored delegate's
+	// reports reach the model without waiting for the owner's next pass.
+	// Inherited by child configs like every testOnly field.
+	disableRestoredDelegateNotifyDrive bool
+
 	// needsResponseQuietPeriod overrides needsResponseQuietPeriodDefault for
 	// tests; zero rests awaiting at the settle itself. Nil keeps the
 	// production default.

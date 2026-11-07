@@ -804,7 +804,12 @@ func (s *Session) reopenConsumedDelegateAttention(attentionID string) (string, e
 		// consumed again; its own failed start reopens under its own key.
 		return "", nil
 	}
-	if observer := s.cfg.testOnly.delegateAttentionBeforeReopenAppend; observer != nil {
+	// The seam is runtime-mutable through updateSessionTestConfig, so its
+	// read shares the setter's session mutex.
+	s.mu.Lock()
+	observer := s.cfg.testOnly.delegateAttentionBeforeReopenAppend
+	s.mu.Unlock()
+	if observer != nil {
 		// A test seam, nil in production: the teardown guards have all run by
 		// here, so a test can admit a stop into exactly the window between
 		// them and the durable append below.
@@ -990,11 +995,16 @@ func (s *Session) holdDelegateAttentionFromAutomaticDrive(attentionID string) {
 // enough to find the rows the stop owns. A pending row is held when it is a
 // well-formed reopen whose immediate source's resume claim sits at the
 // delegate's current durable generation — the generation the user-stopped run
-// settled — and that generation's last outcome was cancelled, and the
-// controller does not already note the row's wake: a noted wake is a new
-// event's arm (a restart reconcile or a fresh delivery), which presents the
-// row exactly as it would have presented it against the resident hold. Every
-// other reopen stays presentable on the restore: busy and refused-launch
+// settled — and that generation's last run was attention-triggered and settled
+// cancelled, and the controller does not already note the row's wake: the
+// resident quiet holds an attention run's report alone, and a send that
+// commits a recycled generation settles the same cancelled outcome without
+// owing that quiet. A noted wake is a new event's arm (a restart reconcile or
+// a fresh delivery), which presents the row exactly as it would have
+// presented it against the resident hold. Every other reopen stays
+// presentable on the restore: a busy reopen whose send settled the recycled
+// generation matches the outcome and generation exactly, so the run's trigger
+// — not a generation mismatch — is what leaves it presentable; refused-launch
 // reopens key to a generation the journal never reached, and a subtree stop's
 // rows keep their own sticky quiet. The derived hold writes the same map the
 // settle tail wrote, so the arm that presents any remaining pending row
@@ -1010,6 +1020,7 @@ func (s *Session) deriveHeldDelegateAttentionFromOutcome() {
 	if aggregate := controller.durable[s.owningDelegateID]; aggregate != nil {
 		generation = aggregate.Generation
 		stopped = !aggregate.CurrentRunOpen &&
+			aggregate.Trigger == delegatestore.TriggerAttention &&
 			aggregate.LatestOutcome != nil &&
 			aggregate.LatestOutcome.Status == delegatestore.OutcomeCancelled
 	}

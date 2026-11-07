@@ -524,6 +524,7 @@ func deriveHeldFixture(t *testing.T, outcome delegatestore.OutcomeStatus, reason
 	controller.mu.Lock()
 	aggregate := controller.durable["dlg_hold"]
 	aggregate.Generation = 1
+	aggregate.Trigger = delegatestore.TriggerAttention
 	aggregate.CurrentRunOpen = false
 	aggregate.LatestOutcome = &delegatestore.Outcome{
 		Status:  outcome,
@@ -616,6 +617,39 @@ func TestDeriveHeldDelegateAttentionFromOutcome(t *testing.T) {
 		}
 		if !slices.Contains(ids, reopenedID) {
 			t.Fatalf("a failed launch's reopened row must stay presentable on the restore: %v", ids)
+		}
+	})
+
+	t.Run("stopped send at the recycled generation owes no attention quiet", func(t *testing.T) {
+		t.Parallel()
+		sess, reopenedID := deriveHeldFixture(t, delegatestore.OutcomeCancelled, "cancelled")
+		// The reviewed shape: a busy refusal reopened the source at the
+		// recycled generation, and a SEND — not an attention run — committed
+		// and settled that generation before the paced retry presented the
+		// reopen. The send's user stop settles cancelled at the same
+		// generation the reopen claims, so the generation and outcome match
+		// the attention quiet exactly; only the run's trigger distinguishes
+		// the send. The resident gate holds attention runs' reports alone,
+		// so the restored session must not hold the reopen either.
+		controller := sess.delegateController
+		controller.mu.Lock()
+		aggregate := controller.durable["dlg_hold"]
+		aggregate.Trigger = delegatestore.TriggerOwnerInput
+		controller.durable["dlg_hold"] = aggregate
+		controller.mu.Unlock()
+		sess.deriveHeldDelegateAttentionFromOutcome()
+		sess.attentionMu.Lock()
+		held := sess.delegateAttentionHeldFromAutomaticDriveLocked(reopenedID)
+		sess.attentionMu.Unlock()
+		if held {
+			t.Fatal("a stopped send at the recycled generation held the busy reopen: the resident quiet covers attention runs alone")
+		}
+		ids, err := sess.automaticDelegateAttentionIDs()
+		if err != nil {
+			t.Fatalf("read the drive-side rows: %v", err)
+		}
+		if !slices.Contains(ids, reopenedID) {
+			t.Fatalf("the stopped send's busy reopen must stay presentable on the restore: %v", ids)
 		}
 	})
 }

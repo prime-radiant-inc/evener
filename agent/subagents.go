@@ -1987,7 +1987,12 @@ func (a *subagent) run(ctx context.Context, input string, inputProvenance *prove
 		// on report success would strand that replacement, which has no
 		// finalize tail of its own. The retention rationale and the fixture
 		// opt-out live on the seam's field comment.
-		if !a.sess.cfg.testOnly.disableDelegateIdleRelease {
+		// The seam is runtime-mutable through updateSessionTestConfig, so its
+		// read shares the setter's session mutex.
+		a.sess.mu.Lock()
+		releaseDisabled := a.sess.cfg.testOnly.disableDelegateIdleRelease
+		a.sess.mu.Unlock()
+		if !releaseDisabled {
 			a.sess.scheduleIdleRuntimeRelease(lease.generation)
 		}
 	}

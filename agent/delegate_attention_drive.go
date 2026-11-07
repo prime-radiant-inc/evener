@@ -160,7 +160,13 @@ func (s *Session) driveDelegateAttention(sub *subagent) bool {
 		return true
 	}
 	var commitErr error
-	if fault := s.cfg.testOnly.delegateAttentionCommitStartFault; fault != nil {
+	// The seam is runtime-mutable through updateSessionTestConfig, so its
+	// read shares the setter's session mutex — the convention every
+	// mid-run-mutable test seam follows.
+	s.mu.Lock()
+	fault := s.cfg.testOnly.delegateAttentionCommitStartFault
+	s.mu.Unlock()
+	if fault != nil {
 		// A test seam, nil in production: its error stands in for a commit the
 		// controller refused, so the recovery arms below can be pinned without
 		// racing a real refusal. A busy refusal releases the reservation, so

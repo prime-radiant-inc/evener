@@ -229,7 +229,19 @@ func (runtime delegateRuntime) restoreIdle(started delegateStartCommit) (*subage
 		endedAt:          &now,
 		stableDescriptor: &stableDescriptor,
 	}
-	child.SetNotifyFunc(func() { s.driveChildIfNotStopGated(sub) })
+	// The parent-drive notify edge installed here fires from inside the
+	// restore, so a test-side disarm cannot fence it in the window before the
+	// test takes control; fixtures that script the restored delegate's
+	// presentation drives themselves suppress the edge through the owner's
+	// test config (the read shares the setter's session mutex).
+	s.mu.Lock()
+	notifyDriveSuppressed := s.cfg.testOnly.disableRestoredDelegateNotifyDrive
+	s.mu.Unlock()
+	if notifyDriveSuppressed {
+		child.SetNotifyFunc(nil)
+	} else {
+		child.SetNotifyFunc(func() { s.driveChildIfNotStopGated(sub) })
+	}
 	return sub, true, nil
 }
 
