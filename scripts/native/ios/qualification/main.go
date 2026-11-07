@@ -326,10 +326,16 @@ func (r *runner) projectIdentity(ctx context.Context, phase, script, base string
 }
 
 // resolvePods installs against the copied committed lock. When CocoaPods
-// refuses because a local podspec version changed, the lock's own local
-// development pods are unlocked with one `pod update --no-repo-update`;
-// registry pins are never named and keep their locked versions. A second
-// install then completes the candidate lock for review.
+// refuses because a local podspec version changed, the lock's local
+// development pods are unlocked with one `pod update --no-repo-update`; a
+// second install completes the candidate lock for review. The unlock is
+// deliberately broad, every local pod rather than only the one the refusal
+// names, because the closure the named pod needs is not derivable from the
+// refusal text. Registry pods reachable only through those local pods may
+// move with their parents (the voice-pod candidate moved onnxruntime
+// alongside the new EvenerVoice pod), so the committed-lock comparison plus
+// review is what keeps unrelated movement out of the branch, not this
+// unlock's breadth.
 func (r *runner) resolvePods(ctx context.Context, committedLock []byte) error {
 	if _, err := r.commandOutput(ctx, "pod-resolve", false, "bundle", "exec", "pod", "install", "--project-directory=ios"); err == nil {
 		return nil

@@ -213,13 +213,18 @@ flowchart TD
 ```
 
 Keep the old lock as the resolution input. If CocoaPods requires unlocking SDK
-pods, diagnose its error and update only the named SDK-owned roots and their
-necessary closure. Preserve unrelated pins; do not delete the lock or mass
-update pods. Upload candidate lock, diff, source revision, npm-lock digest and
-tool versions even when the resolver reports a mismatch. It is evidence, not a
-green result. No bot commit or write token. Apply the reviewed candidate in the
-branch and rerun at its new head. The final qualifying run must also pass
-`pod install --deployment` without altering the committed lock.
+pods, diagnose its error and resolve through the lock's own local development
+pods: the unlock deliberately re-resolves every local pod, not just the one
+the refusal names, because the named pod's needed closure is not derivable
+from the refusal text. Registry pods reachable only through those local pods
+may move with their parents, so the committed-lock comparison plus review is
+what keeps unrelated movement out of the branch, not the unlock's breadth.
+Do not delete the lock. Upload candidate lock, diff, source revision,
+npm-lock digest and tool versions even when the resolver reports a mismatch.
+It is evidence, not a green result. No bot commit or write token. Apply the
+reviewed candidate in the branch and rerun at its new head. The final
+qualifying run must also pass `pod install --deployment` without altering
+the committed lock.
 
 ### Real simulator smoke
 
