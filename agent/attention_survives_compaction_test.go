@@ -315,17 +315,15 @@ func TestAcceptedDelegateAttentionTriggerFoldsAwayOncePresented(t *testing.T) {
 	}
 }
 
-// A settled request that carried the latched trigger presented the report, a
-// responses-continuation delta included: a delta credits no coverage — its
-// older items live in server-side state this session cannot verify — but the
-// turns the delta actually carried reached the model all the same. The reopen
-// must read that reach: a report the model already answered is not owed
-// again, and re-delivering it would duplicate it while the resident and
-// resume drops move the answered report below the reply that answered it.
-// Carriage is not staging: the staged set is the whole projection, while a
-// delta carries only the turns past its anchor — a latch staged before the
-// anchor was never carried, presented nothing, and its reopen is still owed.
-func TestSettledResponsesDeltaCarriedLatchIsNotReopened(t *testing.T) {
+// A responses-continuation delta never carries an attention delivery: every
+// one is a steering turn, and the eligibility rules reject any delta whose
+// suffix holds a steering turn. A round that settles as a delta therefore
+// presented no attention at all — it credits no coverage and clears no latch —
+// so a latched trigger's reopen stays owed even when the staged set, the whole
+// projection, holds it. Suppressing the reopen on staging alone would lose the
+// report: nothing else presented it. Only a settled full-history request may
+// clear the latch, because only that form can have carried the report.
+func TestSettledResponsesDeltaLeavesTheLatchedReopenOwed(t *testing.T) {
 	t.Parallel()
 	leaseCtx := context.WithValue(context.Background(), delegateRunLeaseContextKey{}, delegateLease{delegateID: "dlg_target", generation: 1})
 	pendingReopen := func(sess *Session) string {
@@ -341,56 +339,18 @@ func TestSettledResponsesDeltaCarriedLatchIsNotReopened(t *testing.T) {
 		return ""
 	}
 
-	// The delta's own items carried the latched trigger and settled. The
-	// planning seam records exactly this set — the identities among the turns
-	// past the delta's anchor — so seeding it stands in for a planned delta
-	// whose suffix held the trigger's turn, the same way the hand staging
-	// above stands in for the request build.
+	// The strongest witness: the latch sits in the staged set — the staged
+	// set is the whole projection — and the round still settled as a delta.
+	// The delta provably carried no steering turn, so the model saw no
+	// report, and the reopen must fire.
 	sess := acceptedTriggerSession(t)
 	sess.stagePresentedAttentionCoverage(leaseCtx, currentHistory(t, sess))
-	sess.attentionMu.Lock()
-	sess.attentionDeltaCarriedIDs = map[string]struct{}{sess.attentionAcceptedID: {}}
-	sess.attentionMu.Unlock()
-	sess.promoteStagedAttentionCoverage(llm.Request{HistoryMode: llm.HistoryModeResponsesDelta})
-	if _, err := sess.reopenLatchedDelegateAttention(); err != nil {
-		t.Fatalf("reopenLatchedDelegateAttention: %v", err)
-	}
-	if reopened := pendingReopen(sess); reopened != "" {
-		t.Fatalf("the reopen re-delivered a report a settled delta already presented (%q)", reopened)
-	}
-
-	// A delta that settled without the latched trigger presented nothing.
-	sess = acceptedTriggerSession(t)
-	history := currentHistory(t, sess)
-	at := indexOfTurnText(history, acceptedTriggerText)
-	if at < 0 {
-		t.Fatal("the fixture's history does not hold the latched trigger's turn")
-	}
-	withoutTrigger := make([]schema.Turn, 0, len(history)-1)
-	withoutTrigger = append(withoutTrigger, history[:at]...)
-	withoutTrigger = append(withoutTrigger, history[at+1:]...)
-	sess.stagePresentedAttentionCoverage(leaseCtx, withoutTrigger)
 	sess.promoteStagedAttentionCoverage(llm.Request{HistoryMode: llm.HistoryModeResponsesDelta})
 	if _, err := sess.reopenLatchedDelegateAttention(); err != nil {
 		t.Fatalf("reopenLatchedDelegateAttention: %v", err)
 	}
 	if reopened := pendingReopen(sess); reopened == "" {
-		t.Fatal("the reopen skipped a trigger no settled request presented (no pending row holds a reopened identity)")
-	}
-
-	// A latch staged but never carried: the delta's anchor sat past the
-	// latch's turn, so the request the round settled carried only newer
-	// items. The staged set still holds the latch — staging is candidacy
-	// over the whole projection — but the model never saw the report, and
-	// the reopen must fire.
-	sess = acceptedTriggerSession(t)
-	sess.stagePresentedAttentionCoverage(leaseCtx, currentHistory(t, sess))
-	sess.promoteStagedAttentionCoverage(llm.Request{HistoryMode: llm.HistoryModeResponsesDelta})
-	if _, err := sess.reopenLatchedDelegateAttention(); err != nil {
-		t.Fatalf("reopenLatchedDelegateAttention: %v", err)
-	}
-	if reopened := pendingReopen(sess); reopened == "" {
-		t.Fatal("the reopen skipped a staged-but-uncarried latch: the delta settled from an anchor past the trigger's turn and carried newer items only")
+		t.Fatal("the reopen skipped a latched trigger a settled delta provably did not carry (no pending row holds a reopened identity)")
 	}
 }
 

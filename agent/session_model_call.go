@@ -597,12 +597,6 @@ func (s *Session) growTurnHistoryBaseline(restoredAt []int) {
 // was cut from, for the retry a rejected anchor forces. heldDropped reports
 // that the request's projection kept a held row out.
 func (s *Session) applyResponsesContinuationAnchorPlanning(ctx context.Context, profile *provider.Profile, req llm.Request, historyTurns []schema.Turn, stream bool, heldDropped bool) (llm.Request, []llm.Message) {
-	// Every build re-plans, so the carried identities must describe the
-	// request this build settles: start from none, and only a planned delta
-	// records its own.
-	s.attentionMu.Lock()
-	s.attentionDeltaCarriedIDs = nil
-	s.attentionMu.Unlock()
 	if heldDropped {
 		// A projection that kept a held row out is a nonstandard view of the
 		// resident history: no stored exchange matches its prefix, and the
@@ -702,7 +696,6 @@ func (s *Session) applyResponsesContinuationAnchorPlanning(ctx context.Context, 
 			StoragePolicyLabel:      plan.StoragePolicyLabel,
 			StorageScopeFingerprint: plan.StorageScopeFingerprint,
 		}
-		s.recordAttentionDeltaCarriedIDs(candidate.Delta)
 		return responsesContinuationWithInputEstimate(target, req), fullHistory
 	}
 
@@ -825,26 +818,6 @@ func responsesContinuationTurnKinds(turns []schema.Turn) []string {
 		kinds = append(kinds, string(turn.Kind))
 	}
 	return kinds
-}
-
-// recordAttentionDeltaCarriedIDs records the attention identities among the
-// turns a planned responses-continuation delta actually carries: the delta
-// sends only the turns past its anchor, so those are the only projection turns
-// that reach the model when the request settles as that delta.
-func (s *Session) recordAttentionDeltaCarriedIDs(delta []schema.Turn) {
-	var carried map[string]struct{}
-	for _, turn := range delta {
-		if turn.AttentionID == "" {
-			continue
-		}
-		if carried == nil {
-			carried = make(map[string]struct{}, len(delta))
-		}
-		carried[turn.AttentionID] = struct{}{}
-	}
-	s.attentionMu.Lock()
-	s.attentionDeltaCarriedIDs = carried
-	s.attentionMu.Unlock()
 }
 
 func (s *Session) responsesContinuationSupportRegistry() map[llm.ResponsesEndpointFamily]llm.ResponsesContinuationSupport {

@@ -886,17 +886,6 @@ func (s *Session) reopenLatchedDelegateAttention() (string, error) {
 	}
 	s.attentionMu.Lock()
 	latched := s.attentionAcceptedID
-	if latched != "" && s.attentionLatchedReachedRequest {
-		// The latched trigger reached a settled request — the report was
-		// presented — so the reopen owes nothing: re-delivering would
-		// duplicate a report the model answered while the drops move the
-		// answered original out of the history the answer replied to.
-		// Consume the record with the latch: the trigger is
-		// consumed-and-presented, and the next accept latches fresh.
-		s.attentionAcceptedID = ""
-		s.attentionLatchedReachedRequest = false
-		latched = ""
-	}
 	s.attentionMu.Unlock()
 	if latched == "" {
 		return "", nil
@@ -1189,7 +1178,6 @@ func insertAttentionTurn(history []schema.Turn, turn schema.Turn, later []schema
 func (s *Session) holdAcceptedTrigger(attentionID string) {
 	s.attentionMu.Lock()
 	s.attentionAcceptedID = attentionID
-	s.attentionLatchedReachedRequest = false
 	s.attentionMu.Unlock()
 }
 
@@ -1553,49 +1541,22 @@ func (s *Session) stagePresentedAttentionCoverage(ctx context.Context, presented
 // call settled as settled, the request that actually answered. Called by the
 // round loop on the success path only.
 //
-// A responses-continuation delta carries only the turns past its anchor; any
-// older steering turn lives in server-side state this session cannot verify,
-// so a round that settled as a delta credits nothing and the items keep their
-// wake for a full-history turn. A delta whose call fell back to a full-history
-// request settled as that request, which carried every staged turn.
-// The latch is separate and reads carriage, not staging: the planning seam
-// records the identities the delta actually carries, so a latch it carried
-// reached the model — its reopen owes nothing — while a latch merely staged
-// before the anchor did not, and its reopen is still owed. The reach is
-// recorded before the credit is skipped.
+// A responses-continuation delta never carries an attention delivery: every
+// one is a steering turn, and the eligibility rules reject any delta whose
+// suffix holds a steering turn. A round that settled as a delta therefore
+// presented no attention at all — it credits no coverage and clears no latch,
+// so a latched trigger's reopen stays owed. A delta whose call fell back to a
+// full-history request settled as that request, which carried every staged
+// turn.
 func (s *Session) promoteStagedAttentionCoverage(settled llm.Request) {
 	s.attentionMu.Lock()
 	defer s.attentionMu.Unlock()
 	staged := s.attentionStagedIDs
 	s.attentionStagedIDs = nil
-	carried := s.attentionDeltaCarriedIDs
-	s.attentionDeltaCarriedIDs = nil
-	if len(staged) == 0 {
+	if len(staged) == 0 || settled.HistoryMode == llm.HistoryModeResponsesDelta {
 		return
 	}
-	// A latch counts as reached only when the settled request actually
-	// carried its turn to the model. A full-history request — the fallback a
-	// rejected anchor earns included — carries every staged turn; a delta
-	// carries only the turns past its anchor, and the staged set is the
-	// whole projection, so a latch staged before the anchor never reached
-	// the model. Record the reach before the delta early-return, which
-	// credits no coverage — the older items keep their wake for a
-	// full-history turn, but a presented trigger owes no reopen.
-	latchedReached := false
-	if s.attentionAcceptedID != "" {
-		if settled.HistoryMode == llm.HistoryModeResponsesDelta {
-			_, latchedReached = carried[s.attentionAcceptedID]
-		} else {
-			_, latchedReached = staged[s.attentionAcceptedID]
-		}
-	}
-	if latchedReached {
-		s.attentionLatchedReachedRequest = true
-	}
-	if settled.HistoryMode == llm.HistoryModeResponsesDelta {
-		return
-	}
-	if latchedReached {
+	if _, presented := staged[s.attentionAcceptedID]; presented && s.attentionAcceptedID != "" {
 		s.attentionAcceptedID = ""
 	}
 	covered := s.attentionCoveredIDs
@@ -1613,7 +1574,6 @@ func (s *Session) resetAttentionCoverage() {
 	s.attentionMu.Lock()
 	s.attentionCoveredIDs = nil
 	s.attentionStagedIDs = nil
-	s.attentionDeltaCarriedIDs = nil
 	s.attentionMu.Unlock()
 }
 
