@@ -13,9 +13,9 @@
 // shown, as plain text. The cwd is never a link.
 //
 // A phone renders the line in the same footer but passes `link={false}`: that
-// row is caption-height, below the phone's touch floor, so an outbound anchor
-// there would sit under a thumb aiming for the chips below it. The branch still
-// shows, as plain text.
+// line is caption-height, below the phone's touch floor, so an outbound anchor
+// there would sit under a thumb aiming for the chips at the end of the row.
+// The branch still shows, as plain text.
 //
 // Both truncatable spans middle-truncate under pressure, not end-truncate: the
 // path's and the reference's ENDINGS - the project directory, the branch - are
@@ -202,7 +202,7 @@ export const RepoLocation = memo(function RepoLocation({ cwd, local, link = true
             </span>
           </a>
         ) : !link ? (
-          // The phone footer's caption row keeps the shrinkable,
+          // The phone footer's caption line keeps the shrinkable,
           // middle-truncating layout whatever the remote: the branch must
           // yield to the working directory rather than squeeze it to nothing.
           <span className={CLASS.ref} title={branch} data-testid="composer-repo-branch">
