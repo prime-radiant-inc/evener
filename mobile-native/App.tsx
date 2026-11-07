@@ -5,10 +5,10 @@ import {
 	NavigationContainer,
 	type NavigationState,
 } from "@react-navigation/native";
-import { createNativeStackNavigator } from "@react-navigation/native-stack";
+import { createNativeStackNavigator, type NativeStackScreenProps } from "@react-navigation/native-stack";
 import { StatusBar } from "expo-status-bar";
 import { useEffect, useState } from "react";
-import { ActivityIndicator, useColorScheme, View } from "react-native";
+import { ActivityIndicator, useColorScheme, useWindowDimensions, View } from "react-native";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
 import { KeyboardProvider } from "react-native-keyboard-controller";
 import { SafeAreaProvider } from "react-native-safe-area-context";
@@ -20,6 +20,8 @@ import { RowMenuSheet } from "./src/board/RowMenu";
 import { ConnectionProvider, useConnection } from "./src/ConnectionProvider";
 import { DisplayProvider } from "./src/display/displayContext";
 import { displayPreferences, followAppearanceChoice } from "./src/display/nativeDisplay";
+import { isDuoInner } from "./src/duo/duoLayout";
+import { DuoSplit } from "./src/duo/DuoSplit";
 import { HubSheet } from "./src/hub/HubSheet";
 import { FirstRunScreen } from "./src/hubs/FirstRunScreen";
 import { ForkScreen } from "./src/ForkScreen";
@@ -141,6 +143,8 @@ function Navigation() {
 		}
 	}, [state, activeProfile?.id, loading]);
 	const colors = useColors();
+	const { width, height } = useWindowDimensions();
+	const duoWide = isDuoInner(width, height);
 	const rootStackOptions = useRootStackOptions();
 	const dark = useColorScheme() === "dark";
 	if (loading)
@@ -175,7 +179,7 @@ function Navigation() {
 				<StatusBar style={dark ? "light" : "dark"} />
 				<Stack.Navigator screenOptions={rootStackOptions}>
 					<Stack.Screen name="Hubs" component={FirstRunScreen} options={{ headerShown: false }} />
-					<Stack.Screen name="Sessions" component={BoardScreen} />
+					<Stack.Screen name="Sessions" component={SessionsScreen} options={{ headerShown: !duoWide }} />
 					<Stack.Screen
 						name="SessionDeletion"
 						component={SessionDeletionScreen}
@@ -279,4 +283,11 @@ function Navigation() {
 			</NavigationContainer>
 		</View>
 	);
+}
+
+/** The Board alone on the outer display and the Board beside a conversation
+ * on the Duo's inner display. */
+function SessionsScreen(props: NativeStackScreenProps<Routes, "Sessions">) {
+	const { width, height } = useWindowDimensions();
+	return isDuoInner(width, height) ? <DuoSplit {...props} /> : <BoardScreen {...props} />;
 }

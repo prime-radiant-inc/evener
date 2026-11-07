@@ -40,6 +40,12 @@ test('prebuild delegates window startup to the Expo scene lifecycle', async () =
  assert.equal((swift.match(/RCTLinkingManager\.application\s*\(/g) ?? []).length, 2);
 });
 
+test('the app declares both orientations the Duo displays need', () => {
+	// Expo maps "default" to portrait and landscape in Info.plist. The outer
+	// display is wider than tall, and the inner display's split also turns.
+	assert.equal(app.orientation, 'default');
+});
+
 test('scene prebuild preserves application identity, linking and unrelated plist values', async () => {
  const existing = {
   CFBundleIdentifier: 'com.primeradiant.evener.native',
