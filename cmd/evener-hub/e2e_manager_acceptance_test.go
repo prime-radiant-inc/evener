@@ -780,7 +780,7 @@ func startManagerAcceptanceSSHFixture(ctx context.Context, t *testing.T, provide
 		t.Fatal(err)
 	}
 	t.Cleanup(func() {
-		cleanupManagerAcceptanceFixture(t, host, addr, hostDir+"/"+hostDeployToml, hostDir+"/bin/evener-real", hostDir)
+		cleanupManagerAcceptanceFixture(t, host, addr, hostDir+"/"+hostDeployToml, hostDir+"/bin/evener-real", hostDir, hostListenerProofBudget, false)
 	})
 	host.writeFile(hostDir+"/"+hostDeployToml, hostDeployConfig(hostDir, addr))
 	localBinary := filepath.Join(liveStackBinaries(t, repoRootForTestMain()), "evener")
@@ -801,9 +801,18 @@ func startManagerAcceptanceSSHFixture(ctx context.Context, t *testing.T, provide
 	return local, human, host, hostDir, addr, remoteHost
 }
 
-func cleanupManagerAcceptanceFixture(t *testing.T, host *hostSSH, addr, configPath, binaryPath, hostDir string) {
+// cleanupManagerAcceptanceFixture stops the fixture's host hub and reaps its
+// daemons, within the given proof budget. alreadySignaled says the caller has
+// already run the hub kill command and proved the listener closed; the cleanup
+// then proves without signalling again.
+func cleanupManagerAcceptanceFixture(t *testing.T, host *hostSSH, addr, configPath, binaryPath, hostDir string, proofBudget time.Duration, alreadySignaled bool) {
 	t.Helper()
-	shutdownProved := stopHostListener(t, host, addr, configPath, binaryPath)
+	var shutdownProved bool
+	if alreadySignaled {
+		shutdownProved = stopHostListenerAlreadySignaled(t, host, addr, configPath, binaryPath, proofBudget)
+	} else {
+		shutdownProved = stopHostListenerWithin(t, host, addr, configPath, binaryPath, proofBudget)
+	}
 	if err := host.tryRun(hostDaemonReapCommand(hostDir)); err != nil {
 		t.Errorf("reap SSH-hosted daemons: %v", err)
 		retainHostCleanupRoot(t)

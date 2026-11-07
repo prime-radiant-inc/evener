@@ -18,16 +18,17 @@ func TestE2E_ManagerQuestionContinuation(t *testing.T) {
 	if testing.Short() {
 		t.Skip("live-stack e2e: builds binaries and runs hub + daemons")
 	}
-	for _, scenario := range []struct{ pending, twice bool }{{false, false}, {true, false}, {false, true}} {
-		pending := scenario.pending
-		name := "progress_before_question"
-		if pending {
-			name = "attach_pending_question"
-		}
-		if scenario.twice {
-			name = "two_successive_questions"
-		}
-		t.Run(name, func(t *testing.T) {
+	scenarios := []struct {
+		name           string
+		pending, twice bool
+	}{
+		{"progress_before_question", false, false},
+		{"attach_pending_question", true, false},
+		{"two_successive_questions", false, true},
+	}
+	cases := make([]concurrentCase, 0, len(scenarios))
+	for _, scenario := range scenarios {
+		cases = append(cases, concurrentCase{name: scenario.name, run: func(t *testing.T) {
 			provider, err := fakellm.New()
 			if err != nil {
 				t.Fatal(err)
@@ -67,7 +68,7 @@ func TestE2E_ManagerQuestionContinuation(t *testing.T) {
 					t.Fatalf("no armed watch: %+v", watches)
 				}
 			}
-			if !pending {
+			if !scenario.pending {
 				register()
 				managerCall.RespondToolCall("communicate", communicateArgs("await question"))
 			}
@@ -92,7 +93,7 @@ func TestE2E_ManagerQuestionContinuation(t *testing.T) {
 				instance = thread.Evener.InstanceID
 				return thread.Evener.AskPending
 			})
-			if pending {
+			if scenario.pending {
 				register()
 			} else {
 				managerCall, err = provider.Next(ctx.Done())
@@ -185,6 +186,7 @@ func TestE2E_ManagerQuestionContinuation(t *testing.T) {
 				}
 				time.Sleep(20 * time.Millisecond)
 			}
-		})
+		}})
 	}
+	runCasesConcurrently(t, cases)
 }

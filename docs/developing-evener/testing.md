@@ -935,9 +935,10 @@ A wall ceiling on a test whose time tracks runner load measures the runner, not
 the code, so such tests are deliberately unclassified: dev-tool compile and CLI
 tests, install tests, large transcript fixtures, gate-runner integration, and
 bounded-wait unit tests whose whole job is to sit out a wait. A live-stack E2E
-that starts one stack per subtest (`TestE2E_RetireOverlappedByAnotherOwnershipAction`)
-is the sum of its stack starts, so it stays out of the class too. A parallel test
-whose wall time tracks its package's parallel load
+that runs several runner-bound stacks at once
+(`TestE2E_RetireOverlappedByAnotherOwnershipAction`) measures the runner's
+capacity to host them rather than its own code, so it stays out of the class
+too. A parallel test whose wall time tracks its package's parallel load
 (`TestLoadSessionJobActivityTree_TuesdayFullyFoldsAndFullyPaginates`) stays out of
 its topical class for the same reason. A class of one member is a smell, so the
 web repo-audit test is split into one case per slice of the tracked TypeScript
