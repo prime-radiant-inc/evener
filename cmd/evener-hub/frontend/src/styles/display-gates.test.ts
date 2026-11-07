@@ -229,4 +229,5 @@ test("the phone session status bar stacks the path over touch-floor chips and ow
   expect(phone!.body).toMatch(/\.bar\s*\{[^}]*padding:\s*0 var\(--space-2\) max\(0px,\s*env\(safe-area-inset-bottom\)/);
   expect(phone!.body).toMatch(/\.leading\s*\{[^}]*flex:\s*1 1 100%/);
   expect(phone!.body).toMatch(/\.chips\s*\{[^}]*flex:\s*1 1 100%[^}]*overflow-x:\s*auto/);
+  expect(phone!.body).toMatch(/:global\(body\):has\(\[data-composer\]:focus-within\) \.bar \{\s*display: none;/);
 });

@@ -267,6 +267,11 @@ test("the footer fills to the screen's bottom edge while keeping its content cle
   expect(css).toMatch(
     /@media \(max-width: 899px\) \{[\s\S]*?\.footerBeforeEdge \{[^}]*padding-bottom: var\(--space-3\)/,
   );
+  // While the composer is focused the status bar hides, so the dock takes
+  // the home-indicator band back (focus can outlive the keyboard).
+  expect(css).toMatch(
+    /:global\(body\):has\(\[data-composer\]:focus-within\) \.footerBeforeEdge \{[^}]*padding-bottom: max\(0px, env\(safe-area-inset-bottom\) - var\(--keyboard-inset, 0px\)\)/,
+  );
 });
 
 // Footer-less panes (welcome, settings, spawn, doc) had their end-of-scroll

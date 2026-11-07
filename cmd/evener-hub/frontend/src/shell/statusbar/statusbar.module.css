@@ -151,4 +151,14 @@
   .chipGlyph {
     display: inline-flex;
   }
+
+  /* A focused composer means the on-screen keyboard is up on a phone: the
+   * glance strip would sit between the input and the keyboard, spending its
+   * height from the remaining transcript. It returns when focus leaves the
+   * composer, and focus-within (not the textbox alone) keeps it hidden while
+   * the user presses Send or another composer control, so the dock does not
+   * jump under the pointer. */
+  :global(body):has([data-composer]:focus-within) .bar {
+    display: none;
+  }
 }

@@ -122,9 +122,9 @@ losing the conversation that made the evidence relevant.
   the width. Chips show their glyph and count when the width cannot also carry a name.
   The caption-height path row shows the branch unlinked, below the touch floor. The bar
   owns the home-indicator band, so the composer dock above it gives that inset up; the
-  inset yields when the on-screen keyboard covers that area. The bar stays available
-  while the composer is focused, so the counts remain one tap away, and spends its height
-  above the keyboard rather than disappearing.
+  inset yields when the on-screen keyboard covers that area. The bar hides while focus
+  is in the composer and returns when focus leaves; the composer dock is then the pane's
+  bottom edge and takes the band back, including when focus outlives the keyboard.
 - **Keep session inspection together.** Both session action menus offer Overview, retaining
   the intended session's category choice. `/status` selects About without toggling a
   standalone Details pane. About reuses the shared Details renderer and its accounting.

@@ -356,6 +356,10 @@ async function measureComposerFooter(cdpEndpoint, url, width, safeAreaSupported)
     await assertGuardOrigin(send, new URL(url).host);
     await evaluate(send, "window.settled");
     await waitForFonts(send);
+    // Headless Chrome's page does not have window focus, so a programmatic
+    // textbox focus would set activeElement without matching :focus (and the
+    // phone footer's focus rule would never apply in the measurement).
+    await send("Emulation.setFocusEmulationEnabled", { enabled: true });
     const viewportDiagnostic = diagnoseRealizedViewport({ width, height: 900 }, await realizedViewport(send));
     if (viewportDiagnostic) throw new Error(viewportDiagnostic);
     const measurements = [];
@@ -365,43 +369,51 @@ async function measureComposerFooter(cdpEndpoint, url, width, safeAreaSupported)
       if (safeAreaSupported) await send("Emulation.setSafeAreaInsetsOverride", { insets: { bottom: safeArea } });
       for (const keyboard of mobile ? [0, 12, 300] : [0]) {
         measurements.push(
-          await evaluate(
+          ...(await evaluate(
             send,
             `(async () => {
           document.documentElement.style.setProperty('--keyboard-inset', '${keyboard}px');
-          await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+          const frame = () => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
           const pane = document.getElementById('oh-pane');
           const footer = pane?.querySelector('[data-testid="pane-footer"]');
-          const cards = [...(footer?.querySelectorAll('[data-testid="composer-input-card"]') ?? [])]
-            .filter((card) => card.checkVisibility({ checkOpacity: true, checkVisibilityCSS: true }));
-          const lastBottom = cards.length ? Math.max(...cards.map((card) => card.getBoundingClientRect().bottom)) : null;
-          const metadata = pane?.querySelector('[data-testid="composer-repo-location"]');
-          const path = metadata?.querySelector('[data-testid="composer-repo-path"]');
-          const edgeFooter = pane?.querySelector('[data-testid="pane-edge-footer"]');
-          const statusbar = pane?.querySelector('[data-testid="statusbar"]');
+          const textbox = pane?.querySelector('[data-composer] [role="textbox"]');
           const probe = document.createElement('div');
           probe.style.cssText = 'position:fixed;visibility:hidden;pointer-events:none;height:env(safe-area-inset-bottom, 0px)';
           document.body.append(probe);
           const actualSafeArea = probe.getBoundingClientRect().height;
           probe.remove();
-          const footerBottom = footer?.getBoundingClientRect().bottom ?? null;
-          return {
-            safeArea: ${safeArea}, keyboard: ${keyboard}, actualSafeArea,
-            mobile: matchMedia('(max-width: 899px)').matches,
-            paneBottom: pane?.getBoundingClientRect().bottom ?? null,
-            cards: cards.length, footerBottom,
-            lastBottom, gap: lastBottom === null || footerBottom === null ? null : footerBottom - lastBottom,
-            paddingBottom: footer ? Number.parseFloat(getComputedStyle(footer).paddingBottom) : null,
-            edgeFooterBottom: edgeFooter?.getBoundingClientRect().bottom ?? null,
-            statusPaddingBottom: statusbar ? Number.parseFloat(getComputedStyle(statusbar).paddingBottom) : null,
-            metadataCount: pane?.querySelectorAll('[data-testid="composer-repo-location"]').length ?? 0,
-            metadataVisible: metadata?.checkVisibility({ checkOpacity: true, checkVisibilityCSS: true }) ?? false,
-            pathVisible: path?.checkVisibility({ checkOpacity: true, checkVisibilityCSS: true }) ?? false,
-            path: path?.getAttribute('title') ?? null,
-            metadataInEdgeFooter: Boolean(metadata?.closest('[data-testid="pane-edge-footer"]')),
+          const measure = async (focused) => {
+            if (focused) textbox?.focus();
+            else textbox?.blur();
+            await frame();
+            const cards = [...(footer?.querySelectorAll('[data-testid="composer-input-card"]') ?? [])]
+              .filter((card) => card.checkVisibility({ checkOpacity: true, checkVisibilityCSS: true }));
+            const lastBottom = cards.length ? Math.max(...cards.map((card) => card.getBoundingClientRect().bottom)) : null;
+            const metadata = pane?.querySelector('[data-testid="composer-repo-location"]');
+            const path = metadata?.querySelector('[data-testid="composer-repo-path"]');
+            const edgeFooter = pane?.querySelector('[data-testid="pane-edge-footer"]');
+            const statusbar = pane?.querySelector('[data-testid="statusbar"]');
+            const footerBottom = footer?.getBoundingClientRect().bottom ?? null;
+            return {
+              safeArea: ${safeArea}, keyboard: ${keyboard}, actualSafeArea, focused,
+              mobile: matchMedia('(max-width: 899px)').matches,
+              paneBottom: pane?.getBoundingClientRect().bottom ?? null,
+              cards: cards.length, footerBottom,
+              lastBottom, gap: lastBottom === null || footerBottom === null ? null : footerBottom - lastBottom,
+              paddingBottom: footer ? Number.parseFloat(getComputedStyle(footer).paddingBottom) : null,
+              edgeFooterBottom: edgeFooter?.getBoundingClientRect().bottom ?? null,
+              statusbarDisplay: statusbar ? getComputedStyle(statusbar).display : null,
+              statusPaddingBottom: statusbar ? Number.parseFloat(getComputedStyle(statusbar).paddingBottom) : null,
+              metadataCount: pane?.querySelectorAll('[data-testid="composer-repo-location"]').length ?? 0,
+              metadataVisible: metadata?.checkVisibility({ checkOpacity: true, checkVisibilityCSS: true }) ?? false,
+              pathVisible: path?.checkVisibility({ checkOpacity: true, checkVisibilityCSS: true }) ?? false,
+              path: path?.getAttribute('title') ?? null,
+              metadataInEdgeFooter: Boolean(metadata?.closest('[data-testid="pane-edge-footer"]')),
+            };
           };
+          return [await measure(false), ...(matchMedia('(max-width: 899px)').matches ? [await measure(true)] : [])];
         })()`,
-          ),
+          )),
         );
       }
     }
@@ -424,6 +436,27 @@ function assertComposerFooter(measurement, width) {
     failures.push(`safe-area emulation=${measurement.actualSafeArea}px, expected ${measurement.safeArea}px`);
   }
   if (measurement.cards !== 1) failures.push(`visible composer cards=${measurement.cards}, expected 1`);
+  // While the composer is focused the phone status bar hides, so the dock is
+  // the pane's bottom edge again and carries the safe-area clearance itself.
+  if (mobile && measurement.focused) {
+    if (measurement.statusbarDisplay !== "none")
+      failures.push(`phone status bar is still visible with the composer focused (${measurement.statusbarDisplay})`);
+    if (
+      measurement.paneBottom === null ||
+      measurement.footerBottom === null ||
+      !nearlyEqual(measurement.footerBottom, measurement.paneBottom)
+    ) {
+      failures.push(
+        `focused composer dock bottom=${measurement.footerBottom}px, pane bottom=${measurement.paneBottom}px`,
+      );
+    }
+    if (measurement.paddingBottom === null || !nearlyEqual(measurement.paddingBottom, requiredClearance)) {
+      failures.push(
+        `focused composer dock padding=${measurement.paddingBottom}px, expected safe-area clearance=${requiredClearance}px`,
+      );
+    }
+    return failures;
+  }
   // overflowharness-entry.tsx supplies this fixture path, independent of the checkout.
   if (
     measurement.metadataCount !== 1 ||
@@ -1367,7 +1400,7 @@ async function main() {
         );
         for (const measurement of measurements) {
           const failures = assertComposerFooter(measurement, width);
-          const label = `${width}px composer footer safe-area=${measurement.safeArea} keyboard=${measurement.keyboard}`;
+          const label = `${width}px composer footer safe-area=${measurement.safeArea} keyboard=${measurement.keyboard}${measurement.focused ? " focused" : ""}`;
           if (failures.length > 0) {
             failed++;
             console.log(`${label} ... FAIL - ${failures.join("; ")}; ${JSON.stringify(measurement)}`);

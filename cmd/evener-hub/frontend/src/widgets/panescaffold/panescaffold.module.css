@@ -169,6 +169,14 @@
   .footerBeforeEdge {
     padding-bottom: var(--space-3);
   }
+
+  /* While focus is in the composer the status bar hides (it would sit between
+   * the input and the keyboard), so the dock is the bottom edge again and
+   * takes the home-indicator band back for the case where focus outlives the
+   * keyboard. focus-within also holds while a composer control is pressed. */
+  :global(body):has([data-composer]:focus-within) .footerBeforeEdge {
+    padding-bottom: max(0px, env(safe-area-inset-bottom) - var(--keyboard-inset, 0px));
+  }
 }
 
 /* squircle-proto: continuous (Apple-style) corner curvature where the engine
