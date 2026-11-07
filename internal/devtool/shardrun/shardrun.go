@@ -26,10 +26,10 @@ const RunFileEnv = "EVENER_SHARD_RUN_FILE"
 // TestMain uses those binaries instead of building its own copy.
 const PrebuiltBinDirEnv = "EVENER_HUB_LIVE_STACK_BIN"
 
-// PrebuiltBinWarmEnv marks a process whose prebuilt binaries are already built.
-// TestMain skips its warm build when it is set and sets it only when it has
-// binaries to hand down, so a child re-executed with a different selection can
-// judge its own needs.
+// PrebuiltBinWarmEnv marks a process that must not warm the binaries: they are
+// already built, or the caller only lists tests. TestMain sets it only when it
+// has binaries to hand down, so a child re-executed with a different selection
+// can judge its own needs; a caller that only lists tests sets it directly.
 const PrebuiltBinWarmEnv = "EVENER_HUB_LIVE_STACK_WARM"
 
 // PrebuiltBinTarget and PrebuiltBinName are the package a shard runner builds

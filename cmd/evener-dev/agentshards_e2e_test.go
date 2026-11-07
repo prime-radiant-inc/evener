@@ -16,6 +16,7 @@ import (
 	"testing"
 
 	"primeradiant.com/evener/execsupport/shellquote"
+	"primeradiant.com/evener/internal/devtool/shardrun"
 )
 
 // fixtureModule returns the absolute path of the real test module the
@@ -786,7 +787,15 @@ func hubFixtureLiveStackRoot(t *testing.T) string {
 // go.mod rather than an ambient GOWORK, GOENV or GOFLAGS.
 func hubFixtureToolchainEnv(t *testing.T) []string {
 	t.Helper()
-	return []string{"TMPDIR=" + t.TempDir(), "HUB_SHARD_CACHE_DIR=" + t.TempDir(), "GOWORK=off", "GOENV=off", "GOFLAGS="}
+	return []string{
+		"TMPDIR=" + t.TempDir(),
+		"HUB_SHARD_CACHE_DIR=" + t.TempDir(),
+		"GOWORK=off", "GOENV=off", "GOFLAGS=",
+		// A hub-shards run publishes these into its children. A fixture run
+		// must decide its own prebuild, not inherit an outer runner's.
+		shardrun.PrebuiltBinDirEnv + "=",
+		shardrun.PrebuiltBinWarmEnv + "=",
+	}
 }
 
 // TestHubShardsReadsItsOwnVariablesAndPackage pins the hub-shards entry point:
@@ -891,7 +900,7 @@ func TestHubShardsBuildsTheLiveStackBinariesOnce(t *testing.T) {
 	}
 	builds := 0
 	for line := range strings.SplitSeq(string(data), "\n") {
-		if strings.HasPrefix(line, "build ") && strings.Contains(line, "./cmd/evener") {
+		if strings.HasPrefix(line, "build ") && strings.HasSuffix(line, " "+shardrun.PrebuiltBinTarget) {
 			builds++
 		}
 	}

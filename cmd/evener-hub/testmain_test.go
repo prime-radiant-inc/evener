@@ -1,6 +1,7 @@
 package hub
 
 import (
+	"bytes"
 	"flag"
 	"fmt"
 	"go/ast"
@@ -27,9 +28,10 @@ import (
 )
 
 // testEnv is the throwaway environment TestMain builds and removes. Anything a
-// test needs for the whole run rather than for one case — the live-stack
-// binaries, for one — belongs under testEnv.Root, so the Discard below is the
-// only cleanup path that has to exist.
+// test needs for the whole run rather than for one case belongs under
+// testEnv.Root, so the Discard below is the only cleanup path that has to
+// exist. The exception is a live-stack directory a shard runner exported:
+// that one lives in the runner's scratch, which the runner cleans up.
 var testEnv *hubtestenv.Env
 
 const detachHelperRunDirEnv = "EVENER_HUB_DETACH_HELPER_RUN_DIR"
@@ -163,13 +165,22 @@ const probeLiveStackDirEnv = "HUB_PROBE_LIVE_STACK_DIR"
 
 // TestLiveStackBinariesUseTheExportedDirectory is the re-executed half: it
 // proves liveStackBinariesBuild uses the directory a parent exported instead of
-// compiling its own copy.
+// compiling its own copy, and that TestMain bound it before this test could
+// clear the environment the way many tests do.
 func TestLiveStackBinariesUseTheExportedDirectory(t *testing.T) {
 	if os.Getenv(probeLiveStackDirEnv) != "1" {
 		t.Skip("re-executed helper for TestTestMainUsesTheExportedLiveStackDirectory")
 	}
+	want := os.Getenv(liveStackBinEnv)
+	if want == "" {
+		t.Fatal("TestMain did not bind the exported directory before the test started")
+	}
+	// Tests clear EVENER_* variables while building their own isolated
+	// environments. The directory TestMain bound has to survive that.
+	_ = os.Unsetenv(liveStackBinEnv)
+	_ = os.Unsetenv(liveStackWarmEnv)
 	dir := liveStackBinaries(t, repoRootForTestMain())
-	if want := os.Getenv(liveStackBinEnv); dir != want {
+	if dir != want {
 		t.Fatalf("liveStackBinaries = %q, want the exported directory %q", dir, want)
 	}
 	out, err := exec.Command(filepath.Join(dir, "evener"), "probe").CombinedOutput()
@@ -191,12 +202,62 @@ func TestTestMainUsesTheExportedLiveStackDirectory(t *testing.T) {
 		t.Fatal(err)
 	}
 	out, err := reexecSelf(t, "^TestLiveStackBinariesUseTheExportedDirectory$",
-		liveStackWarmEnv+"=1",
+		liveStackWarmEnv+"=",
 		liveStackBinEnv+"="+dir,
 		probeLiveStackDirEnv+"=1",
+		// Without the bound directory this process has no toolchain to build
+		// one with, so a regression fails fast instead of building a second copy.
+		"PATH="+t.TempDir(),
 	)
 	if err != nil {
 		t.Fatalf("the exported live-stack directory did not reach the test: %v\n%s", err, out)
+	}
+}
+
+// TestLiveStackBuildIsBoundBeforeTestsClearTheEnvironment is deliberately not a
+// live-stack test by the classifier: it reads the once-guarded build state
+// without calling liveStackBinaries. That is what makes it prove TestMain's
+// early bind: with the directory exported but the warm marker unset, a TestMain
+// that waited for liveStackBinaries to bind would leave the state empty.
+func TestLiveStackBuildIsBoundBeforeTestsClearTheEnvironment(t *testing.T) {
+	if os.Getenv(probeLiveStackDirEnv) != "1" {
+		t.Skip("re-executed helper for TestTestMainBindsTheExportedLiveStackDirectory")
+	}
+	want := os.Getenv(liveStackBinEnv)
+	if want == "" {
+		t.Fatal("TestMain did not bind the exported directory before the test started")
+	}
+	_ = os.Unsetenv(liveStackBinEnv)
+	_ = os.Unsetenv(liveStackWarmEnv)
+	if liveStackBuild.dir != want {
+		t.Fatalf("liveStackBuild.dir = %q, want the bound directory %q", liveStackBuild.dir, want)
+	}
+	out, err := exec.Command(filepath.Join(want, "evener"), "probe").CombinedOutput()
+	if err != nil {
+		t.Fatalf("running the bound binary: %v\n%s", err, out)
+	}
+	if got := strings.TrimSpace(string(out)); got != "exported-live-stack" {
+		t.Fatalf("bound binary printed %q", got)
+	}
+}
+
+func TestTestMainBindsTheExportedLiveStackDirectory(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the bound-binary probe is a POSIX shell script")
+	}
+	dir := t.TempDir()
+	probe := "#!/bin/sh\necho exported-live-stack\n"
+	if err := os.WriteFile(filepath.Join(dir, "evener"), []byte(probe), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	out, err := reexecSelf(t, "^TestLiveStackBuildIsBoundBeforeTestsClearTheEnvironment$",
+		liveStackWarmEnv+"=",
+		liveStackBinEnv+"="+dir,
+		probeLiveStackDirEnv+"=1",
+		"PATH="+t.TempDir(),
+	)
+	if err != nil {
+		t.Fatalf("TestMain did not bind the exported live-stack directory early: %v\n%s", err, out)
 	}
 }
 
@@ -284,7 +345,7 @@ func TestMain(m *testing.M) {
 		if warmErr == nil {
 			_ = os.Setenv(liveStackWarmEnv, "1")
 		}
-	} else if os.Getenv(liveStackWarmEnv) == "" && liveStackTestSelected(effectiveRunPattern()) {
+	} else if os.Getenv(liveStackWarmEnv) == "" && liveStackTestSelected(effectiveRunPattern(), effectiveSkipPattern()) {
 		warmErr = warmLiveStackBinaries(repoRoot)
 		if warmErr == nil && repoRoot != "" {
 			_ = os.Setenv(liveStackWarmEnv, "1")
@@ -329,9 +390,18 @@ func effectiveRunPattern() string {
 	return ""
 }
 
-// liveStackTestSelected reports whether run selects a test that can start a
-// live stack. TestMain warms the binaries only when one can be used: a shard
-// whose -run selection holds only unit tests must not pay for a build it never
+// effectiveSkipPattern is the -test.skip regex m.Run will apply. Empty skips
+// nothing.
+func effectiveSkipPattern() string {
+	if f := flag.Lookup("test.skip"); f != nil {
+		return f.Value.String()
+	}
+	return ""
+}
+
+// liveStackTestSelected reports whether the run/skip selection contains a test
+// that can start a live stack. TestMain warms the binaries only when one can be
+// used: a selection holding only unit tests must not pay for a build it never
 // touches.
 //
 // The classifier reads the package's test sources rather than a hand-kept name
@@ -339,30 +409,44 @@ func effectiveRunPattern() string {
 // missed test costs nothing worse than the lazy build every live-stack test
 // paid before the warm existed. A scan that cannot run is treated as "may need
 // them": the warm is the safe answer when the selection cannot be classified.
-func liveStackTestSelected(run string) bool {
-	names, ok := liveStackTestNames()
-	if !ok {
-		return true
-	}
-	if len(names) == 0 {
-		return false
-	}
+func liveStackTestSelected(run, skip string) bool {
 	if run == "" {
+		// No -run means every test, so the common unfiltered go test run needs
+		// no scan at all.
 		return true
 	}
-	// testing matches each '/'-separated element of -run against one level of
-	// test name, so only the first element can select a top-level test.
-	top := strings.SplitN(run, "/", 2)[0]
-	pattern, err := regexp.Compile(top)
+	names, ok := liveStackTestNames()
+	if !ok || len(names) == 0 {
+		return true
+	}
+	runPattern, err := regexp.Compile(topLevelPattern(run))
 	if err != nil {
 		return true
 	}
-	for name := range names {
-		if pattern.MatchString(name) {
+	var skipPattern *regexp.Regexp
+	if skip != "" {
+		skipPattern, err = regexp.Compile(topLevelPattern(skip))
+		if err != nil {
 			return true
 		}
 	}
+	for name := range names {
+		if !runPattern.MatchString(name) {
+			continue
+		}
+		if skipPattern != nil && skipPattern.MatchString(name) {
+			continue
+		}
+		return true
+	}
 	return false
+}
+
+// topLevelPattern is the part of a testing -run/-skip regex that can select a
+// top-level test. testing matches each '/'-separated element against one level
+// of test name.
+func topLevelPattern(pattern string) string {
+	return strings.SplitN(pattern, "/", 2)[0]
 }
 
 // liveStackEntryPoints are the test helpers that reach a live stack. A test is
@@ -397,7 +481,17 @@ func scanLiveStackTestNames() (names map[string]bool, ok bool) {
 	refs := make(map[string]map[string]bool)
 	tests := make(map[string]bool)
 	for _, path := range files {
-		file, err := parser.ParseFile(fset, path, nil, parser.SkipObjectResolution)
+		src, err := os.ReadFile(path)
+		if err != nil {
+			return nil, false
+		}
+		// The entry-point names are rare. Reading every file is cheap; parsing
+		// only the ones that mention an entry point keeps the scan off TestMain's
+		// startup path for the hundreds of test files that cannot reach a stack.
+		if !referencesLiveStack(src) {
+			continue
+		}
+		file, err := parser.ParseFile(fset, path, src, parser.SkipObjectResolution)
 		if err != nil {
 			return nil, false
 		}
@@ -434,6 +528,16 @@ func scanLiveStackTestNames() (names map[string]bool, ok bool) {
 	return names, true
 }
 
+// referencesLiveStack reports whether src mentions a live-stack entry point.
+func referencesLiveStack(src []byte) bool {
+	for name := range liveStackEntryPoints {
+		if bytes.Contains(src, []byte(name)) {
+			return true
+		}
+	}
+	return false
+}
+
 // reachesLiveStack walks name's references to a live-stack entry point. seen
 // keeps a self-referential helper from looping.
 func reachesLiveStack(name string, refs map[string]map[string]bool, seen map[string]bool) bool {
@@ -458,19 +562,21 @@ func TestLiveStackTestSelection(t *testing.T) {
 	for _, tc := range []struct {
 		name string
 		run  string
+		skip string
 		want bool
 	}{
-		{"everything", "", true},
-		{"a live-stack test", "^TestE2E_TurnControlReachesTheSession$", true},
-		{"a live-stack test selected below the top level", "^TestE2E_TurnControlReachesTheSession$/a case", true},
-		{"a test that reuses the shared binary", "^TestModelListExplicitRefreshRecoversProvider$", true},
-		{"a unit test", "^TestGoSubprocessesCacheOutsideTheTestRoot$", false},
-		{"the shard wiring test", "^TestMainAppliesTheShardRunFile$", false},
-		{"nothing", "^TestNoSuchTest$", false},
+		{"everything", "", "", true},
+		{"a live-stack test", "^TestE2E_TurnControlReachesTheSession$", "", true},
+		{"a live-stack test selected below the top level", "^TestE2E_TurnControlReachesTheSession$/a case", "", true},
+		{"a test that reuses the shared binary", "^TestModelListExplicitRefreshRecoversProvider$", "", true},
+		{"a live-stack test skipped by the selection", "^TestE2E_TurnControlReachesTheSession$", "^TestE2E_TurnControlReachesTheSession$", false},
+		{"a unit test", "^TestGoSubprocessesCacheOutsideTheTestRoot$", "", false},
+		{"the shard wiring test", "^TestMainAppliesTheShardRunFile$", "", false},
+		{"nothing", "^TestNoSuchTest$", "", false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := liveStackTestSelected(tc.run); got != tc.want {
-				t.Fatalf("liveStackTestSelected(%q) = %v, want %v", tc.run, got, tc.want)
+			if got := liveStackTestSelected(tc.run, tc.skip); got != tc.want {
+				t.Fatalf("liveStackTestSelected(%q, %q) = %v, want %v", tc.run, tc.skip, got, tc.want)
 			}
 		})
 	}
