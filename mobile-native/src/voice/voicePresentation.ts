@@ -15,7 +15,7 @@ export interface VoicePresentation {
 /** Derive the surface's state from the voice snapshot. `justHeard` lets the
  * caller flash the heard-you state for a moment after a detection; the snapshot
  * itself carries no detection time, and the detection count never resets. */
-export function voicePresentation(state: VoiceSnapshot, justHeard = false, waitingForReply = false): VoicePresentation {
+export function voicePresentation(state: VoiceSnapshot, justHeard = false): VoicePresentation {
 	if (state.state === "disarmed") return { phase: "disarmed", primary: "arm", talkEnabled: false };
 	const trialRunning = state.wake?.trials.at(-1)?.running === true;
 	const capturing = state.capturing && !trialRunning && state.state === "quiet";
@@ -30,8 +30,8 @@ export function voicePresentation(state: VoiceSnapshot, justHeard = false, waiti
 	// rejected speech, a late provider error), and Talk is the only way out
 	// because wake listening needs quiet. `cloudMicrophone` marks a live turn.
 	if (state.state === "conversing") {
-		// While the manager composes a reply, no turn is streaming either, but
-		// Talk would start speech that later barges in on that reply.
+		// Talk stays enabled through the wait for a reply, because a wait that
+		// never becomes a reply would otherwise trap the user.
 		return {
 			phase: "talking",
 			primary: "talk",

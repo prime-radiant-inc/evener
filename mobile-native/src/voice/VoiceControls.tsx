@@ -72,7 +72,7 @@ function Controls({ client, target }: { client: VoiceClient; target: VoiceTarget
 	if (state.state !== "conversing" || state.cloudMicrophone) turnStarting.current = false;
 	previousState.current = state.state;
 	const starting = state.state === "conversing" && !state.cloudMicrophone && turnStarting.current;
-	const presented = voicePresentation(state, justHeard, waitingForReply);
+	const presented = voicePresentation(state, justHeard);
 	const talkEnabled = presented.talkEnabled && same;
 	// Playback is this device's, so Stop does not need this session's binding or
 	// a live capture; everything else needs Talk's conditions.
@@ -232,7 +232,9 @@ function VoiceBar({
 				})}
 			>
 				<SymbolView name={tone.symbol} size={20 * scale} tintColor={palette[tone.ink]} />
-				<Copy numberOfLines={2}>{headline}</Copy>
+				<View style={{ flexShrink: 1 }}>
+					<Copy numberOfLines={2}>{headline}</Copy>
+				</View>
 				<View style={{ flex: 1 }} />
 				<SymbolView name={expanded ? "chevron.down" : "chevron.up"} size={13} tintColor={palette.inkMid} />
 			</Pressable>
@@ -428,7 +430,7 @@ function footnote(state: VoiceSnapshot) {
 function errorLine(state: VoiceSnapshot, phase: VoicePhase) {
 	if (phase === "error" || state.state === "disarmed") return `Voice stopped (${state.error}). Text chat still works.`;
 	if (state.state === "recovering") return `Audio reconnecting (${state.error}).`;
-	return `Last turn ended (${state.error}).`;
+	return `A turn ended early (${state.error}).`;
 }
 
 /** The spec's readout: bound session, audio route, whether the microphone is
