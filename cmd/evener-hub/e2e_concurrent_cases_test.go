@@ -22,7 +22,8 @@ type concurrentCase struct {
 // case's own t.Run from its own goroutine keeps every case on its own
 // *testing.T (so a case's t.Fatal stops that case and not the batch, and the
 // test-goroutine vet check stays clean) while the parent's duration is the wall
-// of the whole batch.
+// of the whole batch. Every case runs at once, so one parent can hold two or
+// three hub/daemon stacks in a single test slot.
 func runCasesConcurrently(t *testing.T, cases []concurrentCase) {
 	t.Helper()
 	var wg sync.WaitGroup

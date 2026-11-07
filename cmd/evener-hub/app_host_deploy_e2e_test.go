@@ -807,16 +807,33 @@ func stopHostListener(t *testing.T, host *hostSSH, addr, configPath, binaryPath 
 	return stopHostListenerWithin(t, host, addr, configPath, binaryPath, hostListenerProofBudget)
 }
 
-// hostListenerProofBudget is the production graceful-shutdown proof budget. A
-// test whose fixture holds the hub at an exit barrier forever uses a short
-// budget instead: it asserts the refusal, not how long a real host gets.
+// hostListenerProofBudget is the host fixture's default graceful-shutdown proof
+// deadline. A test whose fixture holds the hub at an exit barrier forever uses a
+// short budget instead: it asserts the refusal, not how long a real host gets.
 const hostListenerProofBudget = 10 * time.Second
 
 // stopHostListenerWithin is stopHostListener with an explicit proof budget.
 func stopHostListenerWithin(t *testing.T, host *hostSSH, addr, configPath, binaryPath string, proofBudget time.Duration) bool {
 	t.Helper()
-	if err := stopHostListenerProofWithin(host, addr, configPath, binaryPath, proofBudget); err != nil {
-		t.Errorf("stopping the deploy check's host hub on %s (config %s): %v", addr, configPath, err)
+	return stopHostListenerAfterProof(t, host, addr, configPath, binaryPath,
+		stopHostListenerProofWithin(host, addr, configPath, binaryPath, proofBudget))
+}
+
+// stopHostListenerAlreadySignaled is stopHostListenerWithin for a caller that
+// has already run the hub kill command and proved the listener closed: it
+// proves and reaps, but never signals again.
+func stopHostListenerAlreadySignaled(t *testing.T, host *hostSSH, addr, configPath, binaryPath string, proofBudget time.Duration) bool {
+	t.Helper()
+	return stopHostListenerAfterProof(t, host, addr, configPath, binaryPath,
+		proveHostListenerGone(host, addr, configPath, binaryPath, proofBudget))
+}
+
+// stopHostListenerAfterProof reports and reaps an unproved graceful shutdown,
+// returning false so the caller retains the directory.
+func stopHostListenerAfterProof(t *testing.T, host *hostSSH, addr, configPath, binaryPath string, proofErr error) bool {
+	t.Helper()
+	if proofErr != nil {
+		t.Errorf("stopping the deploy check's host hub on %s (config %s): %v", addr, configPath, proofErr)
 		retainHostCleanupRoot(t)
 		if reapErr := host.tryRun(hostHubReapCommand(configPath, binaryPath)); reapErr != nil {
 			t.Errorf("reaping owned host hub processes on %s (config %s): %v", addr, configPath, reapErr)
@@ -868,14 +885,19 @@ exit 1`
 	return "env EVENER_HUB_BIN=" + shellquote.RemoteWord(binaryPath) + " EVENER_HUB_CONFIG=" + shellquote.RemoteWord(configPath) + " bash -c " + shellquote.RemoteWord(script)
 }
 
-// stopHostListenerProofWithin is the proof behind stopHostListener, with an
-// explicit budget.
+// stopHostListenerProofWithin signals the hub and then proves it is gone.
 func stopHostListenerProofWithin(host *hostSSH, addr, configPath, binaryPath string, proofBudget time.Duration) error {
-	port := addr[strings.LastIndex(addr, ":")+1:]
-	kill := hostHubKillCommand(addr, configPath, binaryPath)
-	if err := host.tryRun(kill); err != nil {
+	if err := host.tryRun(hostHubKillCommand(addr, configPath, binaryPath)); err != nil {
 		return fmt.Errorf("kill command failed: %w", err)
 	}
+	return proveHostListenerGone(host, addr, configPath, binaryPath, proofBudget)
+}
+
+// proveHostListenerGone proves the listener and every process row carrying the
+// fixture binary and exact config path are gone, within the budget. Every probe
+// that answers is required to prove both; the budget only bounds the refusal.
+func proveHostListenerGone(host *hostSSH, addr, configPath, binaryPath string, proofBudget time.Duration) error {
+	port := addr[strings.LastIndex(addr, ":")+1:]
 	probe := hostListenerProbeScript(port)
 	deadline := time.Now().Add(proofBudget)
 	for time.Now().Before(deadline) {

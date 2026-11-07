@@ -213,6 +213,11 @@ func (r *hubRuntime) bump() { r.inputs.Bump() }
 func (r *hubRuntime) pokeAttention() {
 	r.inputs.Bump()
 	r.pokeAttentionWatcher()
+	r.pokeRemoteRefresher()
+}
+
+// pokeRemoteRefresher nudges the remote-thread cache's refresher.
+func (r *hubRuntime) pokeRemoteRefresher() {
 	select {
 	case r.remotePoke <- struct{}{}:
 	default:

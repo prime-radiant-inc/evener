@@ -28,7 +28,6 @@ func TestE2E_ManagerQuestionContinuation(t *testing.T) {
 	}
 	cases := make([]concurrentCase, 0, len(scenarios))
 	for _, scenario := range scenarios {
-		pending, twice := scenario.pending, scenario.twice
 		cases = append(cases, concurrentCase{name: scenario.name, run: func(t *testing.T) {
 			provider, err := fakellm.New()
 			if err != nil {
@@ -69,7 +68,7 @@ func TestE2E_ManagerQuestionContinuation(t *testing.T) {
 					t.Fatalf("no armed watch: %+v", watches)
 				}
 			}
-			if !pending {
+			if !scenario.pending {
 				register()
 				managerCall.RespondToolCall("communicate", communicateArgs("await question"))
 			}
@@ -94,7 +93,7 @@ func TestE2E_ManagerQuestionContinuation(t *testing.T) {
 				instance = thread.Evener.InstanceID
 				return thread.Evener.AskPending
 			})
-			if pending {
+			if scenario.pending {
 				register()
 			} else {
 				managerCall, err = provider.Next(ctx.Done())
@@ -136,7 +135,7 @@ func TestE2E_ManagerQuestionContinuation(t *testing.T) {
 			if questionTurn == "" || answerTurn == "" || answerTurn == questionTurn {
 				t.Fatalf("execution transition absent: question=%s answer=%s", questionTurn, answerTurn)
 			}
-			if twice {
+			if scenario.twice {
 				workerCall.RespondToolCall("ask_user", map[string]any{"questions": []any{map[string]any{"question": "SECOND-QUESTION", "options": []any{map[string]any{"label": "Yes", "detail": "continue"}, map[string]any{"label": "No", "detail": "stop"}}}}})
 				awaitThread(ctx, t, human, worker, "second pending question", func(thread appwire.Thread) bool { return thread.Evener.AskPending })
 				managerCall, err = provider.Next(ctx.Done())

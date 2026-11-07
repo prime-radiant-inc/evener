@@ -36,7 +36,7 @@ func TestRosterChangePokesTheAttentionWatcher(t *testing.T) {
 		attentionPoke: make(chan struct{}, 1),
 		remotePoke:    make(chan struct{}, 1),
 	}
-	r.wireNavigationInvalidation(NewWebServer(hubcore.WebConfig{HubStateRoot: root}))
+	r.wireNavigationInvalidation(newTestWebServer(t))
 
 	writeRendezvous(t, runDir, rendezvous.Entry{
 		Protocol:   appwire.ProtocolVersion,
