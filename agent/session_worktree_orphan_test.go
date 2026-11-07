@@ -1274,7 +1274,39 @@ func TestWorktreePrune_OrphanArmSparesLaneWhileRetainedChildNotifies(t *testing.
 		<-release
 		return agenttest.FinalResponse("done")
 	}
+	// Seed the announce hold the scripted presentation step requires: the
+	// delegate's spawn turn consumes the three scripted steps before the
+	// presentation, and without the hold the retained child's report delivery
+	// can be classified deferred while that turn is still running, pump at the
+	// next request build, and ride the spawn turn's own tool-result request —
+	// the coverage consume then resolves the report and the scripted step this
+	// test parks in never runs. Holding the announce parks the child's
+	// finalize tail — and the report delivery with it — until the fixture has
+	// returned with the spawn turn closed, so the report can only arrive as
+	// the pending row the drive below presents.
+	holdSharedDescendantAnnounce("active-notify-lane")
 	lane := spawnSharedDescendantLane(t, r, "active-notify-lane", "dlg_waketest0000008", "034placeholder000000012", wedge)
+	var announceHoldOnce sync.Once
+	releaseAnnounceHold := func() { announceHoldOnce.Do(func() { close(lane.announceHold) }) }
+	// A fatal before the release would park the held finalize tail forever, so
+	// the cleanup mirror guarantees the parked tail can always finish.
+	t.Cleanup(releaseAnnounceHold)
+	releaseAnnounceHold()
+	// The seeded window's end is the delegate's own finalize tail closing its
+	// run, re-arm included; the retained child's report becomes a pending row
+	// inside that window, and waiting the tail out keeps the presentation below
+	// from racing the row's landing.
+	lane.delegateSub.mu.Lock()
+	delegateDone := lane.delegateSub.done
+	lane.delegateSub.mu.Unlock()
+	select {
+	case <-delegateDone:
+	// TRIPWIRE: the tail finishes within a couple of drain passes of the
+	// release; the bound only fires on a genuine hang, absorbing a loaded
+	// shard's stretched finalize tails and git retries.
+	case <-time.After(15 * time.Second):
+		t.Fatalf("the delegate's finalize tail never finished after the seeded announce release")
+	}
 	parentTranscript := schema.SessionTranscriptPath(lane.fixture.stateDir, lane.fixture.meta.ID)
 
 	// The retained child's report reaches its parent as a durable attention
@@ -1415,14 +1447,28 @@ func TestWorktreePrune_OrphanArmSparesLaneWhileRetainedChildNotifies(t *testing.
 		lane.sharedSub.mu.Lock()
 		childStatus, childTurns, childEndEmitted := lane.sharedSub.status, lane.sharedSub.turnsUsed, lane.sharedSub.endEmitted
 		lane.sharedSub.mu.Unlock()
-		t.Fatalf("the retained child's report was never presented (lane locked=%v reason=%q, delegate sub closed=%v running=%v driving=%v finalizing=%v disposeGated=%v attentionDriveRefused=%v; retirement mutation=%v, lane validation=%v, drive slot=%v, driver closing=%v; pending attention=%d (%v), child pending=%d (%v), child run=%v/%v/%v, deferred deliveries=%v flush=%v, gates: stop=%v fatal=%v drainAbandoned=%v drainGrace=%v committedSendStart=%v; durable: delegate phase=%s gen=%d open=%v pending=%v; child phase=%s gen=%d open=%v prepared=%v pending=%v; report %s claim=%v(waiter=%v held=%v startRefused=%v) receipt=%v(retryable=%v inline=%v); owner live=%v runtimeSet=%v runtimeIsDelegate=%v binding=%v receiver=%s; classified=%v; child sub session=%s status=%v turns=%d endEmitted=%v tracked=%v)",
+		// The scripted adapter serves every session in the fixture from one
+		// FIFO, so the request log names which session's turn consumed each
+		// step; the fold's resolutions and resume generations name the writer
+		// of any consume marker (a generation-0 resolution is the coverage
+		// consume of a settled round that presented the row).
+		var requestLog []string
+		for i, req := range lane.fixture.adapter.Requests() {
+			requestLog = append(requestLog, fmt.Sprintf("%d:%s", i+1, req.SessionID))
+		}
+		fold, foldErr := readDelegateAttentionFold(lane.delegateSess.TranscriptPath(), lane.delegateSess.id)
+		liveResolutions := fmt.Sprintf("%v", foldErr)
+		if foldErr == nil {
+			liveResolutions = fmt.Sprintf("%v order=%v resumeGenerations=%v", fold.resolutions, fold.order, fold.resumeGenerations)
+		}
+		t.Fatalf("the retained child's report was never presented (lane locked=%v reason=%q, delegate sub closed=%v running=%v driving=%v finalizing=%v disposeGated=%v attentionDriveRefused=%v; retirement mutation=%v, lane validation=%v, drive slot=%v, driver closing=%v; pending attention=%d (%v), child pending=%d (%v), child run=%v/%v/%v, deferred deliveries=%v flush=%v, gates: stop=%v fatal=%v drainAbandoned=%v drainGrace=%v committedSendStart=%v; durable: delegate phase=%s gen=%d open=%v pending=%v; child phase=%s gen=%d open=%v prepared=%v pending=%v; report %s claim=%v(waiter=%v held=%v startRefused=%v) receipt=%v(retryable=%v inline=%v); owner live=%v runtimeSet=%v runtimeIsDelegate=%v binding=%v receiver=%s; classified=%v; child sub session=%s status=%v turns=%d endEmitted=%v tracked=%v; requests=%v; live fold: %s)",
 			locked, reason, closed, running, driving, finalizing, disposeGated, attentionRefused, mutErr, revalErr, driveSlotOK, driverClosing,
 			len(pending), pendErr, len(childPending), childPendErr, childRunning, childClosed, childFinalizing, deferred, lastFlushErr, stopGated, fatalGated, drainAbandoned, drainGrace, committedStart,
 			delegatePhase, delegateGen, delegateOpen, delegateDurable,
 			childPhase, childGen, childOpen, childPrepared, childDurable,
 			reportDeliveryID, claimPresent, claimWaiter, claimHeld, claimStartRefused, receiptPresent, receiptRetryable, receiptInline,
 			ownerLivePresent, ownerRuntimeSet, ownerRuntimeIsDelegate, ownerBinding, receiverType,
-			classifications, sharedSessionID, childStatus, childTurns, childEndEmitted, tracked)
+			classifications, sharedSessionID, childStatus, childTurns, childEndEmitted, tracked, requestLog, liveResolutions)
 	}
 	lane.delegateSub.mu.Lock()
 	delegateRunning := lane.delegateSub.running
