@@ -52,6 +52,10 @@ func runnerEnv(t *testing.T, overrides ...string) []string {
 	controlled := map[string]bool{
 		"MODULES": true, "WAVE1": true, "WAVE2": true, "WEB": true,
 		"TMPDIR": true, "EVENER_RUNNER_TEST_OBSERVE": true,
+		// The race lane exports this to keep the hub-integration set in its
+		// shards. A case that inherits it would silently run the default-gate
+		// fixture with the skip already lifted.
+		"EVENER_GATE_KEEP_HUB_INTEGRATION": true,
 		// The timing capture's controls. An enclosing measured run exports
 		// EVENER_GATE_TIMING_TSV, and a fixture runner that inherited it would
 		// write fixture-package rows over the real --measured destination — and
@@ -421,6 +425,179 @@ func TestModuleRunnerRefusesAZeroTestRun(t *testing.T) {
 	}
 	if !strings.Contains(result.output, "ran zero tests") {
 		t.Errorf("runner did not explain the silent no-op:\n%s", result.output)
+	}
+}
+
+// hubIntegrationRootFixtureSrc is the root module's fixture for the
+// hub-integration skip toggle: a test named after a GATE_HUB_INTEGRATION_RUN
+// member, which records its own execution, beside an ordinary test that always
+// runs so the gate's zero-test refusal does not decide either case.
+const hubIntegrationRootFixtureSrc = `package fixture
+
+import (
+	"os"
+	"testing"
+)
+
+func TestHostDeployFilesystemSafety(t *testing.T) {
+	path := os.Getenv("EVENER_RUNNER_TEST_MARKER")
+	if path == "" {
+		t.Fatal("EVENER_RUNNER_TEST_MARKER is unset")
+	}
+	if err := os.WriteFile(path, []byte("ran\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestOrdinary(t *testing.T) {}
+`
+
+// TestModuleRunnerKeepsHubIntegrationOnlyWhenTold pins the
+// EVENER_GATE_KEEP_HUB_INTEGRATION contract the race lane depends on: the
+// default gate skips the tests GATE_HUB_INTEGRATION_RUN names, and setting the
+// toggle to 1 runs them. Until this case, only the drift tests compared the
+// regex text, so a misspelled toggle in the script would have left the race
+// lane quietly skipping the deploy-host, retirement, and live-stack cases while
+// every check stayed green. The fixture's test is a real member of that list and
+// records its execution, so a skip that stopped reaching go test fails the
+// default case and a toggle that stopped lifting it fails the kept case.
+func TestModuleRunnerKeepsHubIntegrationOnlyWhenTold(t *testing.T) {
+	t.Parallel()
+	root, modules, ctrl := newRunnerFixture(t)
+	writeTestFile(t, filepath.Join(modules, "go.mod"),
+		[]byte("module example.com/fixtureroot\n\ngo 1.21\n"), 0o644)
+	writeTestFile(t, filepath.Join(modules, "fixture_test.go"),
+		[]byte(hubIntegrationRootFixtureSrc), 0o644)
+	marker := filepath.Join(root, "hub-integration-ran")
+
+	// The skip reaches the root module's own go test, so the fixture is that
+	// module. Its hub and CLI shard runners are other cases' business: both run
+	// inline, leaving the root go test to carry the skip under test.
+	base := append(controlledScratchEnv(ctrl),
+		"MODULES=.",
+		"HUB_SHARDS=0", "CLI_SHARDS=0", "ROOT_REST=1",
+		"EVENER_RUNNER_TEST_MARKER="+marker,
+	)
+
+	skipped := runModuleRunner(t, modules, base...)
+	if skipped.exitCode != 0 {
+		t.Fatalf("default runner exit = %d, want 0:\n%s", skipped.exitCode, skipped.output)
+	}
+	if _, err := os.Stat(marker); !os.IsNotExist(err) {
+		t.Fatalf("the default gate ran a GATE_HUB_INTEGRATION_RUN member (marker stat err = %v):\n%s", err, skipped.output)
+	}
+
+	kept := runModuleRunner(t, modules, envOverride(base, "EVENER_GATE_KEEP_HUB_INTEGRATION=1")...)
+	if kept.exitCode != 0 {
+		t.Fatalf("EVENER_GATE_KEEP_HUB_INTEGRATION=1 runner exit = %d, want 0:\n%s", kept.exitCode, kept.output)
+	}
+	got, err := os.ReadFile(marker)
+	if err != nil {
+		t.Fatalf("EVENER_GATE_KEEP_HUB_INTEGRATION=1 did not run the GATE_HUB_INTEGRATION_RUN member: %v\n%s", err, kept.output)
+	}
+	if string(got) != "ran\n" {
+		t.Fatalf("the hub-integration fixture wrote %q, want %q", got, "ran\n")
+	}
+}
+
+// newHubIntegrationTargetFixture lays out a tiny stand-in hub package at the
+// path `make test-hub-integration` tests, plus the real shared gate-surface lib
+// the recipe sources, so the target runs its own recipe against the fixture
+// instead of the repository's cmd/evener-hub.
+func newHubIntegrationTargetFixture(t *testing.T, testSrc string) (root, marker string) {
+	t.Helper()
+	root = t.TempDir()
+	lib, err := os.ReadFile(filepath.Join("scripts", "lib", "gate-surface-lib.sh"))
+	if err != nil {
+		t.Fatalf("reading the shared gate-surface lib: %v", err)
+	}
+	writeTestFile(t, filepath.Join(root, "scripts", "lib", "gate-surface-lib.sh"), lib, 0o644)
+	writeTestFile(t, filepath.Join(root, "go.mod"),
+		[]byte("module example.com/hubfixture\n\ngo 1.21\n"), 0o644)
+	writeTestFile(t, filepath.Join(root, "cmd", "evener-hub", "hub_test.go"),
+		[]byte(testSrc), 0o644)
+	return root, filepath.Join(root, "hub-integration-ran")
+}
+
+// runHubIntegrationTarget runs the real make/testing.mk test-hub-integration
+// recipe with root as the working directory. MAKEFLAGS is cleared: this test
+// itself runs under make, and a jobserver the child cannot reach only adds
+// noise to the run being judged.
+func runHubIntegrationTarget(t *testing.T, root string, extraEnv ...string) moduleRunnerResult {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Skip("the target is a make recipe backed by a shell")
+	}
+	makefile, err := filepath.Abs(filepath.Join("make", "testing.mk"))
+	if err != nil {
+		t.Fatalf("abs make/testing.mk: %v", err)
+	}
+	if _, err := os.Stat(makefile); err != nil {
+		t.Fatalf("stat %s: %v", makefile, err)
+	}
+	cmd := exec.Command("make", "-f", makefile, "test-hub-integration")
+	cmd.Dir = root
+	cmd.Env = runnerEnv(t, append([]string{"GOWORK=off", "MAKEFLAGS=", "MFLAGS="}, extraEnv...)...)
+	out, err := cmd.CombinedOutput()
+	result := moduleRunnerResult{output: string(out)}
+	if err != nil {
+		var exitErr *exec.ExitError
+		if !errors.As(err, &exitErr) {
+			t.Fatalf("run make test-hub-integration: %v\n%s", err, out)
+		}
+		result.exitCode = exitErr.ExitCode()
+	}
+	return result
+}
+
+// TestHubIntegrationTargetRefusesAZeroMatch pins the refusal in
+// `make test-hub-integration`: `go test -run` exits 0 when its pattern matches
+// no test, so a GATE_HUB_INTEGRATION_RUN that stopped matching would let the
+// target pass while running nothing — the exact silent no-op PR #222 shipped in
+// a Makefile copy. The positive control first proves the target can pass and
+// execute a real list member on this fixture; the same fixture with a
+// non-member test name must then fail with the refusal message instead of
+// passing.
+func TestHubIntegrationTargetRefusesAZeroMatch(t *testing.T) {
+	t.Parallel()
+	memberSrc := `package hub
+
+import (
+	"os"
+	"testing"
+)
+
+func TestHostDeployFilesystemSafety(t *testing.T) {
+	path := os.Getenv("EVENER_RUNNER_TEST_MARKER")
+	if path == "" {
+		t.Fatal("EVENER_RUNNER_TEST_MARKER is unset")
+	}
+	if err := os.WriteFile(path, []byte("ran\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+`
+	root, marker := newHubIntegrationTargetFixture(t, memberSrc)
+	matched := runHubIntegrationTarget(t, root, "EVENER_RUNNER_TEST_MARKER="+marker)
+	if matched.exitCode != 0 {
+		t.Fatalf("test-hub-integration exit = %d for a fixture whose test matches the shipped regex:\n%s", matched.exitCode, matched.output)
+	}
+	if _, err := os.Stat(marker); err != nil {
+		t.Fatalf("the target did not execute the matching fixture test: %v\n%s", err, matched.output)
+	}
+
+	root, _ = newHubIntegrationTargetFixture(t, `package hub
+
+import "testing"
+
+func TestUnrelated(t *testing.T) {}
+`)
+	zero := runHubIntegrationTarget(t, root)
+	if zero.exitCode == 0 {
+		t.Fatalf("test-hub-integration exit = 0 when GATE_HUB_INTEGRATION_RUN matched no test; the refusal did not fire:\n%s", zero.output)
+	}
+	if !strings.Contains(zero.output, "matched no tests") {
+		t.Fatalf("test-hub-integration failed without the zero-match refusal message:\n%s", zero.output)
 	}
 }
 
