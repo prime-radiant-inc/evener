@@ -1,6 +1,6 @@
 import { expect, it } from "vitest";
 import recorded from "../../modules/evener-voice/runtime-tests/fixtures/wake-trials.json";
-import { summarizeWakeTrials, type WakeTrialAttempt } from "./wakeTrials";
+import { qualificationProgress, summarizeWakeTrials, type WakeTrialAttempt } from "./wakeTrials";
 
 const attempts = recorded as WakeTrialAttempt[];
 it("counts real WAV trials once per attempt and excludes interrupted audio", () => {
@@ -36,4 +36,33 @@ it("does not transfer qualification across classifier or threshold changes", () 
 	const threshold = { ...attempts[0], settings: { ...attempts[0].settings, threshold: 0.8 } };
 	expect(summarizeWakeTrials([...attempts, threshold]).negativeAttempts).toBe(0);
 	expect(summarizeWakeTrials([{ ...attempts[0], label: undefined, running: true }]).positiveAttempts).toBe(0);
+});
+
+const empty = {
+	positiveAttempts: 0,
+	positiveDetected: 0,
+	extraDetections: 0,
+	negativeAttempts: 0,
+	falseActivations: 0,
+	markedFalseActivations: 0,
+	negativeHours: 0,
+};
+it("starts every qualification meter empty", () => {
+	const progress = qualificationProgress(empty);
+	expect(progress.trials).toMatchObject({ done: 0, target: 60, fraction: 0 });
+	expect(progress.detection).toMatchObject({ done: 0, of: 0, target: 0.95, fraction: 0 });
+	expect(progress.negatives).toMatchObject({ hours: 0, target: 30, fraction: 0 });
+});
+it("fills the meters in proportion to the recorded evidence", () => {
+	const progress = qualificationProgress({ ...empty, positiveAttempts: 30, positiveDetected: 30, negativeHours: 7.5 });
+	expect(progress.trials.fraction).toBeCloseTo(0.5);
+	expect(progress.detection.fraction).toBeCloseTo(1);
+	expect(progress.negatives.fraction).toBeCloseTo(0.25);
+});
+it("counts a miss against detection and keeps every meter at full once passed", () => {
+	const partial = qualificationProgress({ ...empty, positiveAttempts: 20, positiveDetected: 15 });
+	expect(partial.detection.fraction).toBeCloseTo(0.75);
+	const passed = qualificationProgress({ ...empty, positiveAttempts: 80, positiveDetected: 80, negativeHours: 40 });
+	expect(passed.trials.fraction).toBe(1);
+	expect(passed.negatives.fraction).toBe(1);
 });
