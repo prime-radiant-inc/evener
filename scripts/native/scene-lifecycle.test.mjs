@@ -36,7 +36,7 @@ async function generate(input = template) {
  return {
   plist: await apply('infoPlist', structuredClone(input.plist)),
   appDelegate: (await apply('appDelegate', { language: 'swift', contents: input.appDelegate })).contents,
-  sceneDelegate: input.sceneDelegate,
+  sceneDelegate: (await apply('sceneDelegate', { language: 'swift', contents: input.sceneDelegate })).contents,
  };
 }
 
