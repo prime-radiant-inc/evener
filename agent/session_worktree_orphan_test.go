@@ -1286,16 +1286,9 @@ func TestWorktreePrune_OrphanArmSparesLaneWhileRetainedChildNotifies(t *testing.
 		<-release
 		return agenttest.FinalResponse("done")
 	}
-	// Seed the announce hold the scripted presentation step requires: the
-	// delegate's spawn turn consumes the three scripted steps before the
-	// presentation, and without the hold the retained child's report delivery
-	// can be classified deferred while that turn is still running, pump at the
-	// next request build, and ride the spawn turn's own tool-result request —
-	// the coverage consume then resolves the report and the scripted step this
-	// test parks in never runs. Holding the announce parks the child's
-	// finalize tail — and the report delivery with it — until the fixture has
-	// returned with the spawn turn closed, so the report can only arrive as
-	// the pending row the drive below presents.
+	// Seed the announce hold the scripted presentation step requires — the
+	// window it closes and the coverage race it prevents are stated at
+	// spawnSharedDescendantLane's refusal.
 	holdSharedDescendantAnnounce("active-notify-lane")
 	lane := spawnSharedDescendantLane(t, r, "active-notify-lane", "dlg_waketest0000008", "034placeholder000000012", wedge)
 	lane.releaseSeededAnnounceHold(t)
@@ -1553,12 +1546,10 @@ func TestWorktreePrune_OrphanArmSparesLaneWhileRetainedChildNotifies(t *testing.
 // landing.
 func (l *sharedDescendantLane) releaseSeededAnnounceHold(t *testing.T) {
 	t.Helper()
-	var once sync.Once
-	release := func() { once.Do(func() { close(l.announceHold) }) }
-	// A fatal before the release would park the held finalize tail forever, so
-	// the cleanup mirror guarantees the parked tail can always finish.
-	t.Cleanup(release)
-	release()
+	if l.announceHold == nil {
+		t.Fatalf("no announce hold was taken for this lane: register one with holdSharedDescendantAnnounce before the spawn")
+	}
+	close(l.announceHold)
 	// TRIPWIRE: the tail finishes within a couple of drain passes of the
 	// release; the bound only fires on a genuine hang, absorbing a loaded
 	// shard's stretched finalize tails and git retries.
@@ -3204,16 +3195,9 @@ func TestDelegateAttentionResidentDrivePassDoesNotRebuildReleasedStopHold(t *tes
 		<-release
 		return agenttest.FinalResponse("done")
 	}
-	// Seed the announce hold the scripted presentation step requires: the
-	// delegate's spawn turn consumes the three scripted steps before the
-	// presentation, and without the hold the retained child's report delivery
-	// can be classified deferred while that turn is still running, pump at the
-	// next request build, and ride the spawn turn's own tool-result request —
-	// the coverage consume then resolves the report and the scripted step this
-	// test parks in never runs. Holding the announce parks the child's
-	// finalize tail — and the report delivery with it — until the fixture has
-	// returned with the spawn turn closed, so the report can only arrive as
-	// the pending row the drive below presents.
+	// Seed the announce hold the scripted presentation step requires — the
+	// window it closes and the coverage race it prevents are stated at
+	// spawnSharedDescendantLane's refusal.
 	holdSharedDescendantAnnounce("resident-released-hold")
 	lane := spawnSharedDescendantLane(t, r, "resident-released-hold", "dlg_residenthold01", "034residenthold1", wedge)
 	lane.releaseSeededAnnounceHold(t)
@@ -3264,6 +3248,7 @@ func TestDelegateAttentionResidentDrivePassDoesNotRebuildReleasedStopHold(t *tes
 			for wakeID := range state.wakeIDs {
 				notedWakes = append(notedWakes, wakeID)
 			}
+			slices.Sort(notedWakes)
 		}
 		ownDeliveryID := delegateDeliveryID(lane.fixture.delegateID, 1)
 		ownClaimPresent, ownClaimHeld, ownClaimStartRefused := false, false, false
