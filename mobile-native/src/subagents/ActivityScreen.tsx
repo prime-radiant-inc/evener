@@ -8,7 +8,7 @@ import type { SessionActivityCounts, SessionActivitySummary } from "@evener/appw
 import { SymbolView } from "expo-symbols";
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { FlatList, Pressable, Text, useWindowDimensions, View } from "react-native";
-import { SafeAreaView } from "react-native-safe-area-context";
+import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
 import { BandHeader } from "../board/BoardRow";
 import { useConnection } from "../ConnectionProvider";
 import { ChipStrip } from "../design/ChipStrip";
@@ -192,6 +192,7 @@ export function ActivityScreen({ route, navigation }: NativeStackScreenProps<Rou
 	}, [focused, boundary, boundaryKeys, tree, delegatePage, jobPage]);
 	const toast = useToast();
 	const showToast = toast.show;
+	const { left, right } = useSafeAreaInsets();
 	useEffect(() => {
 		if (!focused || subagents.length === 0) return;
 		for (const stopped of requests.reconcile(ref, subagents)) showToast({ text: `“${stopped.title}” stopped` });
@@ -373,7 +374,7 @@ export function ActivityScreen({ route, navigation }: NativeStackScreenProps<Rou
 				windowSize={7}
 				contentContainerStyle={{ paddingBottom: 24 }}
 			/>
-			<View pointerEvents="box-none" style={{ position: "absolute", left: 0, right: 0, bottom: 16 }}>
+			<View pointerEvents="box-none" style={{ position: "absolute", left, right, bottom: 16 }}>
 				<Toast toast={toast.toast} dismiss={toast.dismiss} />
 			</View>
 		</SafeAreaView>

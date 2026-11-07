@@ -27,6 +27,7 @@ import {
 	View,
 	useWindowDimensions,
 } from "react-native";
+import { SafeAreaView } from "react-native-safe-area-context";
 import { fonts, type Palette, scaledType, space, uiType } from "../design/tokens";
 import { haptic } from "../haptics";
 import { allowFontScaling, useColors, useTextScale } from "../ui";
@@ -41,16 +42,18 @@ const GLYPH = 22;
 export function GroupedPage({ children, scrollRef }: { children: ReactNode; scrollRef?: Ref<ScrollView> }) {
 	const { palette } = useColors();
 	return (
-		<ScrollView
-			ref={scrollRef}
-			style={{ flex: 1, backgroundColor: palette.canvas }}
-			contentContainerStyle={{ paddingBottom: 32 }}
-			keyboardShouldPersistTaps="handled"
-			keyboardDismissMode="on-drag"
-			automaticallyAdjustKeyboardInsets={Platform.OS === "ios"}
-		>
-			{children}
-		</ScrollView>
+		<SafeAreaView edges={["left", "right"]} style={{ flex: 1, backgroundColor: palette.canvas }}>
+			<ScrollView
+				ref={scrollRef}
+				style={{ flex: 1, backgroundColor: palette.canvas }}
+				contentContainerStyle={{ paddingBottom: 32 }}
+				keyboardShouldPersistTaps="handled"
+				keyboardDismissMode="on-drag"
+				automaticallyAdjustKeyboardInsets={Platform.OS === "ios"}
+			>
+				{children}
+			</ScrollView>
+		</SafeAreaView>
 	);
 }
 

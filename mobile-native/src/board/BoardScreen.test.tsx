@@ -744,6 +744,11 @@ it("insets the Board inside the landscape safe areas, and the split pane only on
 	const nav = navigation();
 	const tree = await mount(nav);
 	expect(boardScroller(tree).props.contentContainerStyle).toMatchObject({ paddingLeft: 21, paddingRight: 21 });
+	expect(tree.root.findByProps({ testID: "board-chips" }).props.style).toMatchObject({
+		paddingLeft: 21,
+		paddingRight: 21,
+	});
+	expect(tree.root.findByProps({ testID: "board-toast" }).props.style).toMatchObject({ left: 21, right: 21 });
 	const compose = tree.root
 		.findAll((node) => node.props.accessibilityLabel === "New session" && typeof node.props.style === "function")
 		.at(-1);
@@ -754,6 +759,11 @@ it("insets the Board inside the landscape safe areas, and the split pane only on
 	);
 	await settleMicrotasks();
 	expect(boardScroller(split).props.contentContainerStyle).toMatchObject({ paddingLeft: 21, paddingRight: 0 });
+	expect(split.root.findByProps({ testID: "board-chips" }).props.style).toMatchObject({
+		paddingLeft: 21,
+		paddingRight: 0,
+	});
+	expect(split.root.findByProps({ testID: "duo-board-header" }).props.style).toMatchObject({ paddingLeft: 21 });
 	const splitCompose = split.root
 		.findAll((node) => node.props.accessibilityLabel === "New session" && typeof node.props.style === "function")
 		.at(-1);

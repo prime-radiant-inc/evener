@@ -1172,7 +1172,7 @@ function Board({
 				onLayout={(event) => setHeaderPanel({ height: event.nativeEvent.layout.height, onGlass: navGlass })}
 			>
 				{chips.length && !searching ? (
-					<View style={{ paddingLeft: leftInset, paddingRight: paneRightInset }}>
+					<View testID="board-chips" style={{ paddingLeft: leftInset, paddingRight: paneRightInset }}>
 						<Chips chips={chips} onGlass={navGlass} />
 					</View>
 				) : null}
@@ -1278,7 +1278,7 @@ function Board({
 				<View
 					testID="board-toast"
 					pointerEvents="box-none"
-					style={{ position: "absolute", left: 0, right: 0, bottom: composeRoom + FLOAT_GAP }}
+					style={{ position: "absolute", left: leftInset, right: paneRightInset, bottom: composeRoom + FLOAT_GAP }}
 				>
 					<Toast toast={toast.toast} dismiss={toast.dismiss} />
 				</View>
@@ -1729,6 +1729,7 @@ function DuoBoardHeader({
 	const scale = useTextScale();
 	return (
 		<View
+			testID="duo-board-header"
 			style={{
 				paddingTop: top,
 				paddingLeft: left,

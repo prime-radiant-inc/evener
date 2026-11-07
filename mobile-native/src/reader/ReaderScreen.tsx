@@ -21,7 +21,7 @@ import {
 	View,
 	type ViewToken,
 } from "react-native";
-import { useSafeAreaInsets } from "react-native-safe-area-context";
+import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
 import { useHeldAlertCount, useHoldAlerts } from "../alerts/alertsContext";
 import { copyText } from "../clipboard";
 import { useConnection } from "../ConnectionProvider";
@@ -523,7 +523,7 @@ export function ReaderScreen({ route, navigation }: NativeStackScreenProps<Route
 	);
 
 	return (
-		<View style={{ flex: 1, backgroundColor: palette.page }}>
+		<SafeAreaView edges={["left", "right"]} style={{ flex: 1, backgroundColor: palette.page }}>
 			<FlatList
 				ref={list}
 				data={rows}
@@ -629,7 +629,7 @@ export function ReaderScreen({ route, navigation }: NativeStackScreenProps<Route
 					</View>
 				</View>
 			) : null}
-		</View>
+		</SafeAreaView>
 	);
 }
 

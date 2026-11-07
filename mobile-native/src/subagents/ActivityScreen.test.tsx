@@ -46,7 +46,6 @@ vi.mock("react-native", async () => ({
 	TextInput: "TextInput",
 	useWindowDimensions: () => ({ width: 393, height: 852, fontScale: 1, scale: 3 }),
 }));
-vi.mock("react-native-safe-area-context", () => ({ SafeAreaView: "SafeAreaView" }));
 vi.mock("@react-navigation/native", async () => {
 	const { useEffect } = await import("react");
 	return {
