@@ -48,6 +48,30 @@ func installURLPlugin(t *testing.T, sourceExtra func(repo, head string) string) 
 
 func unpinned(string, string) string { return "" }
 
+// pinMarketplaceToItsHead pins the recorded marketplace to the commit its
+// clone is on now, so a check skips its refresh (sourcePinned): the refresh
+// runs real git, and this keeps a test's measured window free of it.
+func pinMarketplaceToItsHead(t *testing.T, m *Manager, name string) {
+	t.Helper()
+	mk, err := m.loadMarketplaces()
+	if err != nil {
+		t.Fatal(err)
+	}
+	ref, ok := mk[name]
+	if !ok {
+		t.Fatalf("marketplace %q not recorded", name)
+	}
+	head, err := gitHeadSHA(context.Background(), ref.InstallLocation)
+	if err != nil {
+		t.Fatalf("reading marketplace %q head: %v", name, err)
+	}
+	ref.Source.Sha = head
+	mk[name] = ref
+	if err := m.saveMarketplaces(mk); err != nil {
+		t.Fatalf("saving marketplaces: %v", err)
+	}
+}
+
 // writeURLCatalog writes acme's marketplace.json into mktRepo, listing plugin
 // by a url source at pluginRepo with sourceExtra appended to that source.
 func writeURLCatalog(t *testing.T, mktRepo, plugin, pluginRepo, sourceExtra string) {
@@ -509,31 +533,67 @@ func TestCheckUpdates_WarnsAboutAPluginKeyWithNoMarketplace(t *testing.T) {
 	}
 }
 
+// hungRemoteTripwire bounds how long a test waits for a check to cut off the
+// hung remote. TRIPWIRE: the remote's own cancellation is the signal; this
+// only turns a check that never answers into a failure instead of a hung test
+// binary, far above the 50ms deadline so a loaded runner does not trip it.
+const hungRemoteTripwire = 90 * time.Second
+
 // A remote that never answers is cut off by the check's overall deadline, not
 // only by its own updateCheckTimeout, so the check answers before a client
 // waiting on it gives up. The hung remote is warned about like any other
 // remote that cannot be read.
+//
+// The cause the remote's context ended with, not the check's wall time, is
+// what shows which deadline cut it off: process creation alone has taken
+// seconds on a loaded runner (git_signal_unix_test.go), so a bound on the
+// check's elapsed time measures the machine. The marketplace is pinned so the
+// refresh that opens the check runs no real git before the remote is asked.
 func TestCheckUpdates_OverallDeadlineCutsOffAHungRemote(t *testing.T) {
 	f := installURLPlugin(t, unpinned)
+	pinMarketplaceToItsHead(t, f.m, "acme")
+	// A refresh here would put real git in front of the hung remote and make
+	// the wall time a measure of this machine. Fail if the fixture reaches it.
+	realFetch := marketplaceGitFetch
+	t.Cleanup(func() { marketplaceGitFetch = realFetch })
+	marketplaceGitFetch = func(context.Context, string) error {
+		t.Error("the check refreshed the pinned marketplace; the hung-remote test must run no real git before it")
+		return errors.New("refresh ran")
+	}
 	realGit, realDeadline := gitRun, updateCheckDeadline
 	t.Cleanup(func() { gitRun, updateCheckDeadline = realGit, realDeadline })
 	updateCheckDeadline = 50 * time.Millisecond
+	cause := make(chan error, 1)
 	gitRun = func(ctx context.Context, dir string, args ...string) (string, error) {
 		if len(args) > 0 && args[0] == "ls-remote" {
 			<-ctx.Done()
+			cause <- context.Cause(ctx)
 			return "", ctx.Err()
 		}
-		return realGit(ctx, dir, args...)
+		t.Errorf("git %v ran before the hung remote; the fixture must keep real git out of this check", args)
+		return "", errors.New("real git must not run")
 	}
-	start := time.Now()
-	if checkThenList(t, f.m) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	checked := make(chan error, 1)
+	go func() { checked <- f.m.CheckUpdates(ctx) }()
+	// The remote's own cancellation is the signal. The tripwire only turns a
+	// check that never answers into a failure instead of a hung test binary.
+	select {
+	case got := <-cause:
+		if !errors.Is(got, errUpdateCheckDeadline) {
+			t.Fatalf("the hung remote was ended by %v, want the check's overall deadline", got)
+		}
+	case err := <-checked:
+		t.Fatalf("CheckUpdates answered before the hung remote was cut off: %v", err)
+	case <-time.After(hungRemoteTripwire):
+		t.Fatal("the check never cut off the hung remote")
+	}
+	if err := <-checked; err != nil {
+		t.Fatalf("CheckUpdates: %v", err)
+	}
+	if listedUpdateAvailable(t, f.m) {
 		t.Fatal("plugin whose remote hung listed as having an update")
-	}
-	// The warning names the deadline whichever timeout ended the hang, so
-	// only the time taken shows the overall deadline, not the 20s
-	// per-remote one, cut it off.
-	if elapsed := time.Since(start); elapsed > 2*time.Second {
-		t.Fatalf("check took %v; the overall deadline did not cut off the hung remote", elapsed)
 	}
 	if w := f.warnings(); !strings.Contains(w, "checking widget@acme for updates: "+errUpdateCheckDeadline.Error()) {
 		t.Fatalf("no warning names the hung plugin: %q", w)
