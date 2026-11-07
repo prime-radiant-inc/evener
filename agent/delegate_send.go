@@ -122,16 +122,6 @@ func channelClosed(ch <-chan struct{}) bool {
 	}
 }
 
-// finishUnlaunchedGeneration fails a generation whose input was admitted but
-// whose run never launched (launch_failed). No run finalizes its runtime, so
-// the caller must release it (releaseFinishedGeneration) once the returned
-// plans (which carry the generation's idle snapshot and result) have been
-// executed, whether or not that failed, or the delegate stays refused as
-// still finalizing.
-func (c *delegateTreeController) finishUnlaunchedGeneration(lease delegateLease, cause error) (delegateMutationPlans, error) {
-	return c.FinishGeneration(lease, delegatePermanentStartFailure(cause, "launch_failed"))
-}
-
 // releaseFinishedGeneration releases runtime's finished generation so the
 // delegate takes its next start, warning if the report fails.
 func (s *Session) releaseFinishedGeneration(lease delegateLease, runtime *Session) {
@@ -381,13 +371,17 @@ func (runtime delegateRuntime) send(ctx context.Context, delegateID, message str
 		s.sendersWG.Done()
 		return runtime.stableSendFailureOutcomeAfterDispatch(ctx, started, waiter, maxWaitMS, plans, err, nil)
 	}
-	if err := s.executeDelegateMutationPlans(plans); err != nil {
-		s.sendersWG.Done()
-		failurePlans, finishErr := s.delegateController.finishUnlaunchedGeneration(started.lease, err)
-		// The release runs once the failure is announced, whatever that did.
-		return runtime.stableSendFailureOutcomeAfterDispatch(ctx, started, waiter, maxWaitMS, failurePlans, errors.Join(err, finishErr), func() {
-			s.releaseFinishedGeneration(started.lease, sub.sess)
-		})
+	// The start is committed and its input durable. Publish the snapshots
+	// first, then execute the owed-delivery replay as best effort: an
+	// acknowledgment failure there is not the start's failure and must not
+	// latch finalization recovery or leave an unlaunched runner. Requeue the
+	// parcels and warn; a covering stop still repairs any receipt left behind.
+	if execErr := s.executeDelegateMutationPlans(delegateMutationPlans{updates: plans.updates}); execErr != nil {
+		s.emit(warningDataFromError("delegate start snapshots failed to publish", execErr))
+	}
+	if execErr := s.executeDelegateMutationPlans(delegateMutationPlans{deliveries: plans.deliveries}); execErr != nil {
+		s.requeueReplayableDelegateDeliveries(nil)
+		s.emit(warningDataFromError("delegate start delivery replay failed", execErr))
 	}
 	runCtx, runCancel := context.WithCancel(started.ctx)
 	runCtx = context.WithValue(runCtx, delegateRunLeaseContextKey{}, started.lease)
