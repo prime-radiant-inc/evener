@@ -126,7 +126,7 @@
 
   .chips {
     display: flex;
-    flex: none;
+    flex: 0 1 auto;
     min-width: 0;
     justify-content: flex-end;
     gap: var(--space-1);

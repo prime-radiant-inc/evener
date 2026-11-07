@@ -227,6 +227,6 @@ test("the phone session status bar keeps the path beside touch-floor chips and o
   expect(phone!.body).toMatch(/\.bar\s*\{[^}]*flex-wrap:\s*nowrap/);
   expect(phone!.body).toMatch(/\.bar\s*\{[^}]*padding:\s*0 var\(--space-2\) max\(0px,\s*env\(safe-area-inset-bottom\)/);
   expect(phone!.body).toMatch(/\.leading\s*\{[^}]*flex:\s*1 1 auto[^}]*min-width:\s*48px/);
-  expect(phone!.body).toMatch(/\.chips\s*\{[^}]*flex:\s*none[^}]*overflow-x:\s*auto/);
+  expect(phone!.body).toMatch(/\.chips\s*\{[^}]*flex:\s*0 1 auto[^}]*overflow-x:\s*auto/);
   expect(phone!.body).toMatch(/:global\(body\):has\(\[data-composer-editing\]\) \.bar \{\s*display: none;/);
 });

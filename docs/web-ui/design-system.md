@@ -118,11 +118,11 @@ losing the conversation that made the evidence relevant.
   “Overview kind” label. About is the fifth category and has no footer counter.
   Phones keep the same footer at the pane's bottom edge, where it is the touch surface,
   and keep it on one line: the working-directory line takes the flexible width and the
-  chips sit at its end at the 44px tap floor. Where the width cannot also carry a name, a
-  chip shows its glyph and a single active count (settled for Tasks); the full active/total
-  fraction stays in its accessible name and the Overview. The path truncates before a
-  target shrinks, and the bar never wraps to a second row. The caption-height path shows
-  the branch unlinked, below the touch floor. The bar
+  chips sit at its end at the 44px tap floor. A phone chip shows its glyph, its name when
+  the width can carry it, and a single active count (settled for Tasks); the full
+  active/total fraction stays in its accessible name, tooltip and the Overview. The path
+  truncates before a target shrinks, and the bar never wraps to a second row. The
+  caption-height path shows the branch unlinked, below the touch floor. The bar
   owns the home-indicator band, so the composer dock above it gives that inset up; the
   inset yields when the on-screen keyboard covers that area. The bar hides while the
   composer is editing and returns when focus or a press leaves the composer; the composer
