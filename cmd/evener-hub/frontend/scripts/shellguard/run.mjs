@@ -800,12 +800,17 @@ async function measureOverview(send) {
           .find(e => !e.closest('[data-pane-footer-fixture]'));
         if (!bar) return null;
         const path = bar.querySelector('[data-testid="composer-repo-path"]');
+        const chips = Array.from(bar.querySelectorAll('[data-activity-tab]'));
+        const chipRow = chips[0]?.parentElement ?? null;
         return {
           box: box(bar),
           path: path && box(path),
-          chips: Array.from(bar.querySelectorAll('[data-activity-tab]'), element => ({
+          chips: chips.map(element => ({
             tab: element.dataset.activityTab, box: box(element)
           })),
+          chipRow: chipRow && {
+            box: box(chipRow), scrollWidth: chipRow.scrollWidth, clientWidth: chipRow.clientWidth
+          },
         };
       })(),
       document: { width: document.documentElement.scrollWidth, height: document.documentElement.scrollHeight },
@@ -970,6 +975,19 @@ function assertOverview(result, viewport, theme) {
           chip.box.right > footer.box.right + 1
         )
           failures.push(`phone session footer chip ${chip.tab} misses the tap floor: ${JSON.stringify(chip.box)}`);
+      }
+      const row = footer.chipRow;
+      if (!row || row.box === null || row.box.left < footer.box.left - 1 || row.box.right > footer.box.right + 1)
+        failures.push(`phone session footer chip row escapes the bar: ${JSON.stringify(row)}`);
+      else {
+        if (row.scrollWidth > row.clientWidth + 1)
+          failures.push(
+            `phone session footer clips its chips (${row.scrollWidth}px in ${row.clientWidth}px): ${JSON.stringify(row)}`,
+          );
+        for (const chip of footer.chips) {
+          if (chip.box.left < row.box.left - 1 || chip.box.right > row.box.right + 1)
+            failures.push(`phone session footer chip ${chip.tab} is clipped by its row: ${JSON.stringify(chip.box)}`);
+        }
       }
       if (!footer.path || footer.path.width <= 0 || footer.path.right > viewport.width + 1)
         failures.push(`phone session footer lost its working directory: ${JSON.stringify(footer)}`);
