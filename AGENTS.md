@@ -73,9 +73,9 @@ is the canonical pre/post-merge sequence. Tool versions are pinned in
 The full suite runs faster in CI than on this workstation, the race, fuzz, and
 frontend lanes included. Do not block a push on a long local full-suite run:
 run the fast, targeted tests for what you changed, push, and let CI run the
-full suite as the source of truth. Reserve a local full run (`make test`,
-`make merge-approval-gate`) for when you need it, such as reproducing a CI
-failure.
+full suite as the source of truth. Reserve a local full run
+(`make merge-approval-gate`, which includes `make test-hub-integration`) for
+when you need it, such as reproducing a CI failure.
 
 Run the heavy local gates one at a time — `make test-web`, `make vet` and
 `make lint` — not as parallel background jobs: they compete for the same CPU,

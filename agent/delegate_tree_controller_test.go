@@ -491,7 +491,7 @@ var delegateControllerDormancyExpectedInventory = map[delegateControllerDormancy
 	{filename: "delegate_send.go", function: "(*Session).releaseFinishedGeneration", kind: "lifecycle method", symbol: "ReportFinalizationQuiesced"}:                                   1,
 	{filename: "delegate_delivery.go", function: "prepareColdDelegateDeliveryReplay", kind: "dormant function", symbol: "deliverDelegatePacket"}:                                       1,
 	{filename: "delegate_delivery.go", function: "deliverColdDelegatePacket", kind: "dormant function", symbol: "deliverDelegatePacket"}:                                               2,
-	{filename: "delegate_delivery.go", function: "(*Session).executeDelegateMutationPlans", kind: "dormant function", symbol: "deliverDelegatePacket"}:                                 1,
+	{filename: "delegate_delivery.go", function: "(*Session).deliverDelegatedPlan", kind: "dormant function", symbol: "deliverDelegatePacket"}:                                         1,
 	{filename: "delegate_delivery.go", function: "(*Session).executeDelegateMutationPlans", kind: "lifecycle method", symbol: "RequireFinalizationRecovery"}:                           1,
 	{filename: "delegate_delivery.go", function: "(*Session).requeueReplayableDelegateDeliveries", kind: "lifecycle method", symbol: "ReplayDeliveries"}:                               1,
 	{filename: "delegate_delivery.go", function: "(*Session).acceptDelegateDeliveryPlan", kind: "dormant function", symbol: "deliverDelegatePacket"}:                                   1,
