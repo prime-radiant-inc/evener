@@ -215,12 +215,10 @@ func testManagerOwnedDescendantWatch(t *testing.T, missingGeneration, lateTermin
 	sess.SetHubClient(bound)
 	done := make(chan error, 1)
 	var turns sync.WaitGroup
-	turns.Add(1)
-	go func() {
-		defer turns.Done()
+	turns.Go(func() {
 		_, err := sess.ProcessInput(ctx, "descendant-watch-root", nil)
 		done <- err
-	}()
+	})
 	t.Cleanup(func() { cancel(); turns.Wait(); sess.Close() })
 	var childID string
 	select {
