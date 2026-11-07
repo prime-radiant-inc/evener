@@ -602,3 +602,25 @@ func TestUntrackStopLockedEachStopMap(t *testing.T) {
 		untrackStopLocked(&delegateTreeController{}, func(s *delegateStopState) map[uint64]struct{} { return s.starts }, 1)
 	})
 }
+
+// A retryable delivery admission is deferred delivery, not work in flight: its
+// acknowledgement append failed, so it is re-planned. A covering stop must not
+// wait for it. An admission that is still present and not retryable does gate
+// the stop, and one already settled does not.
+func TestStopHasInFlightDeliveriesLocked(t *testing.T) {
+	t.Parallel()
+	token := delegateDeliveryToken{processID: 7, deliveryID: "dlg_1/delivery/1"}
+	c := &delegateTreeController{deliveries: map[uint64]*delegateDeliveryAdmission{}}
+	stop := &delegateStopState{deliveries: map[delegateDeliveryToken]struct{}{token: {}}}
+	if c.stopHasInFlightDeliveriesLocked(stop) {
+		t.Fatal("an admission no longer present gated the stop")
+	}
+	c.deliveries[token.processID] = &delegateDeliveryAdmission{token: token}
+	if !c.stopHasInFlightDeliveriesLocked(stop) {
+		t.Fatal("an in-flight admission did not gate the stop")
+	}
+	c.deliveries[token.processID].retryable = true
+	if c.stopHasInFlightDeliveriesLocked(stop) {
+		t.Fatal("a retryable admission gated the stop")
+	}
+}

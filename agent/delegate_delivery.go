@@ -607,6 +607,16 @@ func deliverDelegatePacket(plan delegateDeliveryPlan, receiver delegateDeliveryR
 		resolveDelegateInlineClaim(plan.waiter, delegateInlineResolution{fallback: true})
 		return delegateMutationPlans{}, errDelegateStaleLease
 	}
+	// A plan whose in-memory claim was dropped while its durable head stayed
+	// pending is not a completed delivery: the head still owes the owner an
+	// attention row, and nothing else holds it. Re-plan it from the store before
+	// admission; otherwise the flush that dequeued it returns clean and the
+	// report strands until a restore replay. newHeadDeliveryPlanLocked refuses a
+	// head that is still claimed, so a fresh plan is never replaced.
+	if replan := plan.controller.replanStaleDelivery(plan); replan != nil {
+		plan = *replan
+		receiver = plan.receiver
+	}
 	token, admitted, err := plan.controller.BeginDelivery(plan)
 	if err != nil || !admitted {
 		resolveDelegateInlineClaim(plan.waiter, delegateInlineResolution{fallback: true})
@@ -650,6 +660,25 @@ func deliverDelegatePacket(plan delegateDeliveryPlan, receiver delegateDeliveryR
 		return plans, err
 	}
 	return plans, plan.controller.wakeDeliveryReceiver(receiver, attentionID)
+}
+
+// replanStaleDelivery re-plans a delivery whose claim is gone but whose durable
+// head is still this delivery. It reports nil when the durable state has moved
+// on (the head was settled, replaced, or stopped), which is a permanent refusal.
+func (c *delegateTreeController) replanStaleDelivery(plan delegateDeliveryPlan) *delegateDeliveryPlan {
+	if c == nil || plan.controller != c || plan.deliveryID == "" || len(plan.carried) != 0 {
+		return nil
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	aggregate := c.durable[plan.delegateID]
+	if aggregate == nil || len(aggregate.PendingDeliveries) == 0 {
+		return nil
+	}
+	if aggregate.PendingDeliveries[0].DeliveryID != plan.deliveryID {
+		return nil
+	}
+	return c.newHeadDeliveryPlanLocked(plan.delegateID, plan.deliveryID)
 }
 
 func delegateAttentionID(deliveryID string) string { return "delegate:" + deliveryID }
