@@ -137,8 +137,8 @@ export default function Session({ params, paneId, focused: paneFocused }: PanePr
 
   const footerCwd = !deletedRef && model ? model.cwd : null;
   const edgeFooter = useMemo(() => {
-    if (isMobile) return undefined;
-    const location = footerCwd === null ? null : <RepoLocation cwd={footerCwd} local={ref.startsWith("local:")} />;
+    const location =
+      footerCwd === null ? null : <RepoLocation cwd={footerCwd} local={ref.startsWith("local:")} link={!isMobile} />;
     return <StatusBar sessionRef={ref} paneId={paneId} leading={location} />;
   }, [footerCwd, isMobile, paneId, ref]);
 

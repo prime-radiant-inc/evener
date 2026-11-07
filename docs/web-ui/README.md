@@ -326,7 +326,7 @@ details through the shared Details renderer and adds no footer counter.
 `/status` opens About and keeps it open on repeated use. Its completion reads
 “Show session details in Overview” and remains searchable by details and info.
 Saved standalone Details panes remain available. `/tasks` retains its existing
-standalone pane toggle. Desktop footer counters still focus their owning pane
+standalone pane toggle. Footer counters still focus their owning pane
 before selecting their category. A checked desktop session-menu Overview action
 closes that session's sidebar; the rail action opens the requested session.
 
