@@ -775,7 +775,10 @@ func (c *delegateTreeController) commitStart(reservation *delegateStartReservati
 		cancel = c.releaseReservationLocked(record)
 		return delegateStartCommit{}, errDelegateTargetBusy
 	}
-	if c.hasDeliveryWorkForOwnerLocked(record.delegateID) {
+	// A claim the transient delivery arm kept for its retry is deferred
+	// delivery, not work in flight: counting it would abort the attention start
+	// whose reservation deferred that delivery.
+	if c.hasDeliveryWorkForOwnerBlockingStartLocked(record.delegateID) {
 		cancel = c.releaseReservationLocked(record)
 		return delegateStartCommit{}, errDelegateTargetBusy
 	}

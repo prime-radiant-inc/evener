@@ -242,7 +242,7 @@ func TestSteeringNotificationWireFixtures(t *testing.T) {
 			note: "The quiet watchdog: a plain-text body with no packet and no name attribute.",
 			turn: notificationWireAttention(
 				delegateQuietAttentionID(delegateLease{delegateID: "dlg_1", generation: 1}),
-				delegateQuietAttentionContent(delegateLease{delegateID: "dlg_1", generation: 1}, wireFixtureStart.Add(time.Minute)),
+				delegateQuietAttentionContent(delegateLease{delegateID: "dlg_1", generation: 1}, delegateQuietWindow, wireFixtureStart.Add(time.Minute)),
 			),
 		},
 		{

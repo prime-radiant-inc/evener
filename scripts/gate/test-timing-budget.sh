@@ -239,7 +239,7 @@ else
 		# the same bash 3.2 reason: a failed outer redirection must land here,
 		# not be eaten by `!`.
 		( cd "$repo_root/$m" && go test -json -count=1 $short \
-			-run "$GATE_TEST_RUN" -skip "$GATE_FUZZ_TEST_SKIP" "${pkgs[@]}" ) >"$log" 2>"$log.stderr"
+			-run "$GATE_TEST_RUN" -skip "$(gate_shard_skip "$GATE_FUZZ_TEST_SKIP" "$GATE_HUB_INTEGRATION_RUN")" "${pkgs[@]}" ) >"$log" 2>"$log.stderr"
 		gt_status=$?
 		if [ "$gt_status" -ne 0 ]; then
 			echo "test-timing-budget: go test in $m exited nonzero (see $log and $log.stderr)" >&2

@@ -57,6 +57,7 @@ type voiceArmResponse struct {
 	SocketPath string      `json:"socketPath"`
 	SampleRate int         `json:"sampleRate"`
 	Policy     voicePolicy `json:"policy"`
+	Provider   string      `json:"provider"`
 }
 
 type voiceService struct {
@@ -200,10 +201,15 @@ func (v *voiceService) arm(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if request.Provider == "" {
-		request.Provider = "openai"
+		name, err := v.web.defaultOpenAIVoiceProvider()
+		if err != nil {
+			voiceHTTPError(w, http.StatusServiceUnavailable, "voice_provider_unavailable")
+			return
+		}
+		request.Provider = name
 	}
 	if request.Model == "" {
-		request.Model = "gpt-realtime-2.1-mini"
+		request.Model = "gpt-realtime-2.1"
 	}
 	if request.Voice == "" {
 		request.Voice = "marin"
@@ -236,7 +242,7 @@ func (v *voiceService) arm(w http.ResponseWriter, r *http.Request) {
 	}
 	v.refreshSocket(r.Context(), binding.Ref)
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(voiceArmResponse{BindingID: bindingID, Epoch: epoch, Grant: grant, ExpiresAt: expires, SocketPath: "/api/voice/socket", SampleRate: 24000, Policy: currentVoicePolicy()})
+	_ = json.NewEncoder(w).Encode(voiceArmResponse{BindingID: bindingID, Epoch: epoch, Grant: grant, ExpiresAt: expires, SocketPath: "/api/voice/socket", SampleRate: 24000, Policy: currentVoicePolicy(), Provider: request.Provider})
 }
 
 func (v *voiceService) refreshSocket(ctx context.Context, ref string) {
@@ -302,7 +308,7 @@ func (s *WebServer) voiceProvider(ctx context.Context, name string) (string, htt
 	if err != nil {
 		return "", nil, err
 	}
-	if resolved.Protocol != registry.ProtocolOpenAIChat && resolved.Protocol != registry.ProtocolOpenAIResponses {
+	if !isOpenAIProtocol(resolved.Protocol) {
 		return "", nil, errors.New("voice provider does not use an OpenAI transport")
 	}
 	u, err := url.Parse(resolved.Transport.BaseURL)
@@ -329,6 +335,46 @@ func (s *WebServer) voiceProvider(ctx context.Context, name string) (string, htt
 		return "", nil, err
 	}
 	return u.String(), req.Header, nil
+}
+
+// defaultOpenAIVoiceProvider names the instance voice uses when Arm names none:
+// the configured default when it is an OpenAI instance, else the first OpenAI
+// instance. A hub whose credentials live under another instance name still arms
+// without the caller guessing that name.
+func (s *WebServer) defaultOpenAIVoiceProvider() (string, error) {
+	if s.auth == nil || s.auth.registry() == nil {
+		return "", errors.New("voice provider registry unavailable")
+	}
+	r := s.auth.registry()
+	defaultName, _, _ := r.DefaultInstance()
+	return pickOpenAIVoiceProvider(defaultName, r.Instances())
+}
+
+func isOpenAIProtocol(protocol string) bool {
+	return protocol == registry.ProtocolOpenAIChat || protocol == registry.ProtocolOpenAIResponses
+}
+
+// isOpenAIVoiceInstance reports whether inst is OpenAI itself. Other
+// OpenAI-protocol instances (a Codex login, Groq, OpenRouter) speak the chat
+// protocol but not OpenAI's Realtime endpoint.
+func isOpenAIVoiceInstance(inst registry.Instance) bool {
+	return inst.ProviderID == "openai" || inst.Base == "openai"
+}
+
+// pickOpenAIVoiceProvider chooses voice's instance from the hub's default and
+// configured instances.
+func pickOpenAIVoiceProvider(defaultName string, instances []registry.Instance) (string, error) {
+	for _, inst := range instances {
+		if inst.Name == defaultName && isOpenAIVoiceInstance(inst) {
+			return inst.Name, nil
+		}
+	}
+	for _, inst := range instances {
+		if isOpenAIVoiceInstance(inst) {
+			return inst.Name, nil
+		}
+	}
+	return "", errors.New("voice provider unavailable: no OpenAI-transport instance")
 }
 
 func voiceOpaqueID() string {

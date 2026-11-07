@@ -5,6 +5,23 @@ alternatives, and what source review found at the time. The current
 [design system](design-system.md#design-model-an-editorial-instrument) governs new work;
 dated verdicts below are not a competing current mandate.
 
+## 2026-11-06 five structural UX fixes
+
+An Impeccable-based audit found the amateurish feel was structural, not
+chromatic. Five fixes are approved and implemented together:
+
+- **One page frame.** Session and spawn headers share their content measure;
+  settings keeps the nav axis. The header opts in through the existing
+  scaffold marker, not a second layout prop.
+- **An honest loading face.** A session that has not hydrated shows a skeleton,
+  keeps the recovery copy and force-stop control behind an 8s threshold, and no
+  longer shows the transcript presentation control in its footer.
+- **The rail CTA is secondary.** "+ New session" no longer competes with the
+  route's own primary action.
+- **The palette shows commands.** Opening it lists app-global commands; a plain
+  word such as `settings` finds "Open settings" without the `/` prefix.
+- **The phone effort control meets the 44px tap floor** in both axes.
+
 ## 2026-11-06 cool neutral palette
 
 Jesse rejected the warm paper ground as beige. The light page, rail and message

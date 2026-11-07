@@ -200,8 +200,8 @@ All cards are required future behavior, not passing tests. `pending` means no ex
    → AC-1: Qualification depends on the physical behaviors, not the protocol spike, compilation, voiceChat selection or disarmed stale-callback check alone.
 2. Qualify the selected wake/VAD package, including immediate post-wake command onset and uncertain detected-start cases.
    → AC-3: The package is selected using qualification rather than the prior all-miss result; Hey Evener is not imposed as a required spelling or assumed qualified model, and onset loss is checked without pre-wake upload.
-3. Run voice quality checks with gpt-realtime-2.1-mini first, then apply the same checks to gpt-realtime-2.1 before making the full model available.
-   → AC-2: The full model is offered through the same adapter only after the same checks; inventory visibility and comparative protocol history are not substituted for inference or speech-quality evidence.
+3. Run the live voice quality checks on the shipping default gpt-realtime-2.1, and keep gpt-realtime-2.1-mini as the cheaper comparison through the same adapter.
+   → AC-2: The shipped model passes the same checks; inventory visibility and comparative protocol history are not substituted for inference or speech-quality evidence.
 
 **Final observables:**
 - The future qualification record distinguishes measured native/model behavior from limited historical evidence; this extraction claims no gate has passed.

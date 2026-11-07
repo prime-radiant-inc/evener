@@ -6,7 +6,7 @@ var targets: [Target] = [
 ]
 #if os(macOS)
 targets += [
-    .target(name: "EvenerVoiceTransport", dependencies: ["EvenerVoiceCore"], path: "ios", exclude: ["EvenerVoiceModule.swift", "SileroVAD.swift", "VoiceAudioDevice.swift", "VoiceService.swift"], sources: ["VoiceSocket.swift", "VoiceAuthorization.swift"]),
+    .target(name: "EvenerVoiceTransport", dependencies: ["EvenerVoiceCore"], path: "ios", exclude: ["EvenerVoiceModule.swift", "SileroVAD.swift", "OpenWakeWordDetector.swift", "VoiceAudioDevice.swift", "VoiceService.swift"], sources: ["VoiceSocket.swift", "VoiceAuthorization.swift"]),
     .testTarget(name: "EvenerVoiceTransportTests", dependencies: ["EvenerVoiceTransport", "EvenerVoiceCore"], path: "transport-tests")
 ]
 #endif

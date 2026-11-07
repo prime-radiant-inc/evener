@@ -1,4 +1,5 @@
 import type { HubProfile } from "../connection";
+import type { WakeSnapshot, WakeTrialLabel } from "./wakeTrials";
 
 export interface VoiceSnapshot {
 	state: "disarmed" | "recovering" | "quiet" | "conversing" | "speaking";
@@ -12,6 +13,9 @@ export interface VoiceSnapshot {
 	canonical: string;
 	generated: string;
 	bindingId: string;
+	/** The hub's voice provider instance chosen for this binding; empty until armed. */
+	provider: string;
+	wake?: WakeSnapshot;
 }
 export interface NativeVoicePort {
 	deviceId(): Promise<string>;
@@ -27,6 +31,8 @@ export interface NativeVoicePort {
 	stopSpeaking(): void;
 	disarm(): void;
 	allowSpeaker(): void;
+	startWakeTrial(): Promise<void>;
+	finishWakeTrial(label: WakeTrialLabel): Promise<void>;
 	snapshot(): Promise<VoiceSnapshot>;
 	addListener(event: "state", listener: (state: VoiceSnapshot) => void): { remove(): void };
 }
@@ -42,7 +48,7 @@ export interface VoiceOptions {
 	model: string;
 	voice: string;
 }
-export const defaultVoiceOptions: VoiceOptions = { provider: "openai", model: "gpt-realtime-2.1-mini", voice: "marin" };
+export const defaultVoiceOptions: VoiceOptions = { provider: "", model: "gpt-realtime-2.1", voice: "marin" };
 export class VoiceError extends Error {
 	constructor(readonly code: string) {
 		super(code);
@@ -56,6 +62,7 @@ interface Grant {
 	socketPath: string;
 	sampleRate: number;
 	policy: Record<string, number>;
+	provider?: string;
 }
 const disarmed: VoiceSnapshot = {
 	state: "disarmed",
@@ -69,6 +76,7 @@ const disarmed: VoiceSnapshot = {
 	canonical: "",
 	generated: "",
 	bindingId: "",
+	provider: "",
 };
 
 /** Foreground authorization only. PCM and grants never enter this owner's observable state or an outbox. */
@@ -77,6 +85,7 @@ export class VoiceClient {
 	private listeners = new Set<() => void>();
 	private selection: VoiceTarget | null = null;
 	private binding: { hub: HubProfile; origin: string; bindingId: string; epoch: string } | null = null;
+	private providerName = "";
 	private operation = 0;
 	private pending = false;
 	private pendingHub: string | null = null;
@@ -97,8 +106,9 @@ export class VoiceClient {
 		if (value.state === "disarmed") {
 			this.binding = null;
 			this.selection = null;
+			this.providerName = "";
 		}
-		this.value = value;
+		this.value = { ...value, provider: this.providerName };
 		for (const listener of this.listeners) listener();
 	}
 	listen() {
@@ -147,6 +157,7 @@ export class VoiceClient {
 			if (response.status < 200 || response.status >= 300)
 				throw new VoiceError(result.code ?? result.error?.code ?? "arm_failed");
 			granted = result as Grant;
+			this.providerName = typeof granted.provider === "string" ? granted.provider : "";
 			if (operation !== this.operation || !this.foreground()) throw new VoiceError("arm_cancelled");
 			await this.native.arm(JSON.stringify({ ...granted, origin: pinnedOrigin, deviceId }));
 			if (operation !== this.operation || !this.foreground()) {
@@ -194,6 +205,12 @@ export class VoiceClient {
 	allowSpeaker() {
 		this.native.allowSpeaker();
 	}
+	async startWakeTrial() {
+		await this.native.startWakeTrial();
+	}
+	async finishWakeTrial(label: WakeTrialLabel) {
+		await this.native.finishWakeTrial(label);
+	}
 	async disarm() {
 		++this.operation;
 		this.pending = false;
@@ -202,7 +219,7 @@ export class VoiceClient {
 		const binding = this.binding;
 		this.binding = null;
 		this.selection = null;
-		this.publish(disarmed);
+		this.publish({ ...disarmed, wake: this.value.wake });
 		if (binding) await this.revoke(binding);
 	}
 	/** Hub removal/logout retires pending arm as well as an existing binding. Background alone does not. */

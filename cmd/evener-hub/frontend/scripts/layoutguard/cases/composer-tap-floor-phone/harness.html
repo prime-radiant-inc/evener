@@ -1,0 +1,90 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=390, initial-scale=1">
+<title>composer-tap-floor-phone layoutguard harness</title>
+<link rel="stylesheet" href="tokens.css">
+<link rel="stylesheet" href="resolved.css">
+<style>
+  *, *::before, *::after { transition: none !important; animation: none !important; }
+  body { margin: 0; background: var(--surface-1); font-family: var(--font-sans); color: var(--ink-hi); }
+  .fixtures { display: flex; flex-direction: column; gap: 8px; padding: 8px; }
+  .fixtureLabel { color: var(--ink-low); font: var(--font-size-caption) var(--font-mono); }
+  .composerBox { width: 100%; box-sizing: border-box; }
+</style>
+</head>
+<body data-font-size="m">
+<!-- Composer.tsx renders the status row through SessionChrome's `.body`/`.row`
+     hierarchy. The effort trigger is a transparent native <select> laid over
+     its own readout, so its painted target is the .effortTrigger span. -->
+<main class="fixtures">
+  <section class="fixture">
+    <div class="fixtureLabel">390px phone, status row with a reasoning-effort control</div>
+    <div class="composerBox" data-composer>
+      <div class="card">
+        <div class="controls">
+          <div class="leading">
+            <button class="button quiet xs squareXs attachmentControl" type="button" aria-label="Attach image">+</button>
+            <div class="inline">
+        <div class="body" data-status-body>
+          <div class="row" data-status>
+          <span class="identity">
+            <span class="model">
+              <button class="trigger" type="button" data-model>
+                <span class="value" data-model-value>deepseek-4.1-flash-abliterated</span>
+                <span class="chevron">⌄</span>
+              </button>
+            </span>
+              <span class="model">
+                <button class="trigger" type="button" data-model="vision">
+                  <span class="value" data-model-value>vision</span>
+                  <span class="chevron">⌄</span>
+                </button>
+              </span>
+            <span class="effortTrigger" data-effort>
+              <span class="separator" aria-hidden="true">·</span>
+              <span class="effortValue" aria-hidden="true">high</span>
+              <span class="effortChevron" aria-hidden="true">⌄</span>
+              <select class="effortSelect" aria-label="Reasoning effort"><option>high</option></select>
+            </span>
+          </span>
+          <span class="visuallyHidden"><meter aria-label="Context: 67k of 100k tokens used, 67 percent" min="0" value="67000" max="100000"></meter></span>
+          <span class="context" aria-hidden="true">
+            <span class="contextPercent">67%</span>
+          </span>
+          <span class="item mono queue"><span class="queueCompact">Q12</span></span>
+          </div>
+        </div>
+        <div class="right"><button class="sessionActionControl" type="button" aria-label="Session actions">⋯</button></div>
+            </div>
+          </div>
+          <div class="actions"><button class="button primary xs" type="button">Send</button></div>
+        </div>
+      </div>
+    </div>
+  </section>
+</main>
+<script>
+function box(el) {
+  const r = el.getBoundingClientRect();
+  return { width: r.width, height: r.height, left: r.left, right: r.right };
+}
+const row = document.querySelector("[data-status]");
+const effort = document.querySelector("[data-effort]");
+const body = document.querySelector("[data-status-body]");
+window.measure = () => ({
+  viewport: { width: window.innerWidth, height: window.innerHeight },
+  coarse: window.matchMedia("(any-pointer: coarse)").matches,
+  effort: box(effort),
+  models: [...document.querySelectorAll("[data-model]")].map((model) => ({
+    ...box(model),
+    clientWidth: model.clientWidth,
+    scrollWidth: model.scrollWidth,
+  })),
+  row: { ...box(row), clientWidth: row.clientWidth, scrollWidth: row.scrollWidth },
+  body: box(body),
+});
+</script>
+</body>
+</html>

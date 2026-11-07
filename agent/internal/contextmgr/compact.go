@@ -66,6 +66,12 @@ func (cm *Manager) resetMeasurement() {
 // is handed to handleCompactionTurn. A layer that fails warns and leaves
 // *history untouched; applyLayer reports whether the layer ran. Pass an empty
 // headKind for in-place layers, which produce no compaction turn.
+//
+// suppressSummaryFailureRepeats routes the failure warning through the
+// manager's repeat latch: an automatic pass stays quiet when it fails exactly
+// like the previously published failure, while an explicit compaction
+// publishes and refreshes the latch. A summarize layer that runs to completion
+// (headKind TurnSummary) re-arms publication either way.
 func (cm *Manager) applyLayer(
 	ctx context.Context,
 	emitFn func(events.EventKind, events.EventData),
@@ -74,13 +80,21 @@ func (cm *Manager) applyLayer(
 	layer string,
 	headKind schema.TurnKind,
 	fn func([]schema.Turn) ([]schema.Turn, error),
+	suppressSummaryFailureRepeats bool,
 ) bool {
 	turnsBefore := len(*history)
 	before := cm.estimateTokensFor(prof, *history)
 	result, err := fn(*history)
 	if err != nil {
-		emitFn(events.EventWarning, summarizerFailureWarning(err))
+		warning := summarizerFailureWarning(err)
+		if warning.SummaryFailure != nil && !cm.shouldPublishSummaryFailure(warning.SummaryFailure, suppressSummaryFailureRepeats) {
+			return false
+		}
+		emitFn(events.EventWarning, warning)
 		return false
+	}
+	if headKind == schema.TurnSummary {
+		cm.clearSummaryFailureRepeat()
 	}
 	*history = result
 	after := cm.estimateTokensFor(prof, *history)
@@ -148,7 +162,7 @@ func (cm *Manager) MaybeCompact(
 			h, folded = checkpointFold(h, cm.PreserveRecentTurns, cm.metaFor(ctx), cm.resultToolName())
 			checkpointed = folded
 			return h, nil
-		})
+		}, true)
 		compacted = true
 		p, prof = pressure()
 	}
@@ -157,7 +171,7 @@ func (cm *Manager) MaybeCompact(
 	if p >= cm.SummarizeThreshold && cm.client != nil {
 		if cm.applyLayer(ctx, emitFn, history, prof, "summarize", schema.TurnSummary, func(h []schema.Turn) ([]schema.Turn, error) {
 			return cm.summarizeFold(ctx, h, cm.PreserveRecentTurns, "", checkpointed)
-		}) {
+		}, true) {
 			compacted = true
 		}
 	}
@@ -249,11 +263,36 @@ func assumptionStillGoverns(captured, current *provider.Profile) bool {
 // Used for user-initiated compaction (e.g. /compact command). instructions is forwarded
 // to the LLM summarization layer; pass "" for default behavior. Returns true if a summary
 // was actually generated (false when there is no client or the history is too short to summarize).
+// A summary failure always publishes its warning and refreshes the repeat latch:
+// the requester asked for this fold and must hear its outcome.
 func (cm *Manager) ForceCompact(
 	ctx context.Context,
 	history *[]schema.Turn,
 	instructions string,
 	emitFn func(events.EventKind, events.EventData),
+) (summarized bool) {
+	return cm.forceCompact(ctx, history, instructions, emitFn, false)
+}
+
+// ForceCompactAutomatic is ForceCompact for a fold the session runs on its own
+// initiative (model recovery after a provider context failure): a summary
+// failure identical to the previously published one stays suppressed, like
+// the pre-request pass, instead of always publishing.
+func (cm *Manager) ForceCompactAutomatic(
+	ctx context.Context,
+	history *[]schema.Turn,
+	instructions string,
+	emitFn func(events.EventKind, events.EventData),
+) (summarized bool) {
+	return cm.forceCompact(ctx, history, instructions, emitFn, true)
+}
+
+func (cm *Manager) forceCompact(
+	ctx context.Context,
+	history *[]schema.Turn,
+	instructions string,
+	emitFn func(events.EventKind, events.EventData),
+	suppressSummaryFailureRepeats bool,
 ) (summarized bool) {
 	// Reset token measurement so inter-layer estimates use char/4.
 	cm.resetMeasurement()
@@ -269,7 +308,7 @@ func (cm *Manager) ForceCompact(
 		h, folded = checkpointFold(h, cm.PreserveRecentTurns, cm.metaFor(ctx), cm.resultToolName())
 		checkpointed = folded
 		return h, nil
-	})
+	}, suppressSummaryFailureRepeats)
 
 	// Layer 2: LLM summarization (only if client is available).
 	if cm.client != nil {
@@ -280,7 +319,7 @@ func (cm *Manager) ForceCompact(
 			foldCutoff(*history, preserveRecent) >= 0
 		ok := cm.applyLayer(ctx, emitFn, history, prof, "summarize", schema.TurnSummary, func(h []schema.Turn) ([]schema.Turn, error) {
 			return cm.summarizeFold(ctx, h, cm.PreserveRecentTurns, instructions, checkpointed)
-		})
+		}, suppressSummaryFailureRepeats)
 		summarized = ok && canSummarize && len(*history) > 0 && (*history)[0].Kind == schema.TurnSummary
 	}
 

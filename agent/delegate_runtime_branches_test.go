@@ -408,7 +408,7 @@ func TestDelegateQuietAttentionIDAndContent(t *testing.T) {
 	if stretched != "quiet:dlg_1:3:5" {
 		t.Fatalf("stretched ID = %q, want quiet:dlg_1:3:5", stretched)
 	}
-	content := delegateQuietAttentionContent(lease, time.Unix(1000, 0).UTC())
+	content := delegateQuietAttentionContent(lease, delegateQuietWindow, time.Unix(1000, 0).UTC())
 	if !strings.Contains(content, "dlg_1") {
 		t.Fatalf("content = %q, missing delegate id", content)
 	}

@@ -27,9 +27,10 @@ These are **design-author calls for review**, not decisions Jesse already made:
 
 - Start with native iPhone, local wake/VAD, and hub-brokered Realtime WebSockets.
 - Use Realtime only to interpret speech and present verified Evener output.
-- Qualify `gpt-realtime-2.1-mini` first because its protocol was exercised. Offer
-  `gpt-realtime-2.1` through the same adapter after the same quality checks. The
-  full model was listed by the API but was not measured.
+- Ship `gpt-realtime-2.1` as the default voice model. Keep
+  `gpt-realtime-2.1-mini` as the cheaper comparison through the same adapter. The
+  full model was listed by the API but has not been measured; the live quality
+  gates apply to whichever model ships.
 - “Hey Evener” is the proposed phrase, not a qualified model or a required spelling.
 - Explicit foreground **Arm** enables a listening period that can continue locked.
   Anyone nearby can speak to it. Wake detection is not authentication.
