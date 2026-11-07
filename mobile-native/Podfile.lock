@@ -3,6 +3,9 @@ PODS:
     - ReactNativeDependencies
   - DoubleConversion (1.1.6):
     - ReactNativeDependencies
+  - EvenerVoice (0.1.0):
+    - ExpoModulesCore
+    - onnxruntime-objc (= 1.20.0)
   - EXConstants (58.0.15):
     - ExpoModulesCore
   - Expo (58.0.23):
@@ -142,6 +145,11 @@ PODS:
   - libwebp/sharpyuv (1.6.0)
   - libwebp/webp (1.6.0):
     - libwebp/sharpyuv
+  - onnxruntime-c (1.20.0)
+  - onnxruntime-objc (1.20.0):
+    - onnxruntime-objc/Core (= 1.20.0)
+  - onnxruntime-objc/Core (1.20.0):
+    - onnxruntime-c (= 1.20.0)
   - RCT-Folly (2024.11.18.00):
     - RCT-Folly/Default (= 2024.11.18.00)
     - ReactNativeDependencies
@@ -2301,6 +2309,7 @@ PODS:
 DEPENDENCIES:
   - boost (from `build/rndeps-facades/boost`)
   - DoubleConversion (from `build/rndeps-facades/DoubleConversion`)
+  - EvenerVoice (from `../modules/evener-voice`)
   - EXConstants (from `../node_modules/expo-constants/ios`)
   - Expo (from `../node_modules/expo`)
   - ExpoApplication (from `../node_modules/expo-application/ios`)
@@ -2428,6 +2437,8 @@ DEPENDENCIES:
 SPEC REPOS:
   trunk:
     - libwebp
+    - onnxruntime-c
+    - onnxruntime-objc
     - SDWebImage
     - SDWebImageWebPCoder
     - ZXingObjC
@@ -2437,6 +2448,8 @@ EXTERNAL SOURCES:
     :path: build/rndeps-facades/boost
   DoubleConversion:
     :path: build/rndeps-facades/DoubleConversion
+  EvenerVoice:
+    :path: "../modules/evener-voice"
   EXConstants:
     :path: "../node_modules/expo-constants/ios"
   Expo:
@@ -2686,6 +2699,7 @@ EXTERNAL SOURCES:
 SPEC CHECKSUMS:
   boost: 8502bfdc46e2804408af2e163049ece181009af4
   DoubleConversion: 501a575c40c0b50c89685762dd3e415e6bb26fb0
+  EvenerVoice: a26aa140bc2766cd18227fd008bbe4ed976b0078
   EXConstants: c1eb9dab7494834d85aa347165da9718cdfc21a6
   Expo: 5e153ccf91cc18517c0d0d43c90fd2fdc19eac80
   ExpoApplication: c83355b2f69f996b5d26b64fef39228e7f1e1208
@@ -2722,6 +2736,8 @@ SPEC CHECKSUMS:
   glog: 3cf7cb46f743c4bc758ae3e6d9c15bd1b4cfd6d4
   hermes-engine: 79484fc4e58f328d01b9339ef899ca633d3702ee
   libwebp: af5937a13536ef73f3784d69cc342b98961acf33
+  onnxruntime-c: 07cfff40dda7e1c54a4350bb2ad226c63150fce3
+  onnxruntime-objc: b22c5d4517e9804e47c66f1f122ec4a6aa923f86
   RCT-Folly: 82921e585c0400eda46fac1068297aa9dfb035e4
   RCTDeprecation: c62b9b3fbf0d26b76755f3ebd1c913a4fb469dde
   RCTRequired: d0563e2484633b657976195f0543e180133afd3a
