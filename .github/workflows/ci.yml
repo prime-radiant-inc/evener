@@ -452,15 +452,7 @@ jobs:
 
       - name: Prepare enforcing sandbox for root tests
         if: matrix.scope == 'root'
-        run: |
-          sudo apt-get update
-          sudo apt-get install --yes --no-install-recommends bubblewrap
-          # Ubuntu 24.04 restricts unprivileged user namespaces by default.
-          # Enable the namespace backend, not an unsandboxed test fallback.
-          sudo sysctl -w kernel.unprivileged_userns_clone=1
-          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
-          bwrap --unshare-user --unshare-pid --die-with-parent --new-session \
-            --ro-bind / / --proc /proc --dev /dev --argv0 true -- true
+        uses: ./.github/actions/enforcing-sandbox
 
       # The runner is this job's alone, but its checkout and cache restore are
       # still in the load average when the gate sizes its budgets; at 1.85
@@ -499,12 +491,31 @@ jobs:
 
       - uses: ./.github/actions/go-cache-save
 
-  tests:
-    if: always()
-    needs: [tests-parts]
+  # The hub's runner-bound integration tests: daemon retirement, host deploy,
+  # live-stack E2E, and the remote-hub source-budget cases. The default gate
+  # skips this exact set so the timing ratchet measures the stable suite; this
+  # lane runs it without a timing budget because its wall time tracks the runner.
+  hub-integration:
     runs-on: ubuntu-24.04
     steps:
-      - name: Require both test lanes
+      - uses: actions/checkout@v7
+
+      - uses: ./.github/actions/setup-toolchain
+        with:
+          go-cache-kind: tests-root
+
+      - name: Prepare enforcing sandbox
+        uses: ./.github/actions/enforcing-sandbox
+
+      - name: Hub integration tests
+        run: make test-hub-integration
+
+  tests:
+    if: always()
+    needs: [tests-parts, hub-integration]
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Require every test lane
         env:
           RESULTS: ${{ toJSON(needs) }}
         run: |

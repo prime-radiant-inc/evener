@@ -1,4 +1,4 @@
-.PHONY: test-web test-web-browser test-native test-native-bundle check-podfile-lock native-preflight api-package-preflight test-api-package test test-short test-race merge-approval-gate vet test-timing-budget test-rebaseline
+.PHONY: test-web test-web-browser test-hub-integration test-native test-native-bundle check-podfile-lock native-preflight api-package-preflight test-api-package test test-short test-race merge-approval-gate vet test-timing-budget test-rebaseline
 
 # test-web is the frontend's single gate entry point: typecheck, unit tests,
 # then lint. The three checks are independent readers of the same sources, so
@@ -49,6 +49,26 @@ test-web: web-preflight build-dev
 ##   Chrome/Chromium is nonzero.
 test-web-browser: build-web build-dev
 	@scripts/web/test-web-browser.sh
+
+# The hub's runner-bound integration tests, outside the timing ratchet. The
+# default gate and the timing ratchet skip this exact set; the target runs it
+# with the gate-surface list so the two cannot drift.
+## The hub's runner-bound integration tests, outside the timing ratchet.
+## proves: The hub's daemon-retirement, host-deploy, live-stack E2E, and
+##   remote-hub source-budget tests pass with the full stack.
+## trigger: Required CI hub-integration job; local `make merge-approval-gate`.
+## requires: Go and the live-stack binaries built by TestMain; an enforcing
+##   bwrap sandbox on CI. The default gate skips this exact set.
+## fails-when: Any selected test fails, or the pattern matches no test.
+test-hub-integration:
+	@. scripts/lib/gate-surface-lib.sh; \
+	if ! list=$$(EVENER_HUB_LIVE_STACK_WARM=1 go test ./cmd/evener-hub -list "$$GATE_HUB_INTEGRATION_RUN" 2>&1); then \
+		printf '%s\n' "$$list" >&2; exit 1; \
+	fi; \
+	if ! printf '%s\n' "$$list" | grep -q '^Test'; then \
+		echo "test-hub-integration: GATE_HUB_INTEGRATION_RUN matched no tests" >&2; exit 1; \
+	fi; \
+	go test ./cmd/evener-hub -run "$$GATE_HUB_INTEGRATION_RUN" -count=1 -timeout 30m
 
 # check:scripts is separate from check because they answer different questions
 # with different resolvers. `tsc --noEmit` reads tsconfig.check.json and proves
@@ -217,8 +237,9 @@ test-short:
 # their own capabilities and t.Skip (internal/e2ecap).
 ## The canonical serial post-merge gate: lint, build, full tests, and native/package qualification.
 ## proves: make lint, make build, ROOT_FULL=1 make test, the timing budget
-##   checked against the rows that same test run produced, make test-native and
-##   make test-api-package all pass, in that order.
+##   checked against the rows that same test run produced, make
+##   test-hub-integration, make test-native and make test-api-package all pass,
+##   in that order.
 ## trigger: Local pre-merge/post-merge; CI keeps equivalent checks in
 ##   separate named jobs.
 ## requires: Does not run fuzz search, race testing, provider calls, or
@@ -236,6 +257,7 @@ merge-approval-gate:
 		$(MAKE) docs-check && \
 		ROOT_FULL=1 EVENER_GATE_TIMING_TSV="$$tsv" $(MAKE) test && \
 		scripts/gate/test-timing-budget.sh --check --measured "$$tsv" && \
+		$(MAKE) test-hub-integration && \
 		$(MAKE) test-native test-api-package
 
 # The permanent -race gate (CI), across every non-fuzz module. AGENT_PARALLEL=6
@@ -268,6 +290,7 @@ test-race:
 		modules="$(strip $(SCOPE_MODULES_$(RACE_SCOPE)))"; \
 		test -n "$$modules" || { echo "make test-race: RACE_SCOPE=$(RACE_SCOPE) selects no modules from GO_MODULES" >&2; exit 2; }; \
 		MODULES="$$modules" WEB=0 AGENT_SHARDS=0 AGENT_PARALLEL=6 \
+		EVENER_GATE_KEEP_HUB_INTEGRATION=1 \
 		HUB_SHARDS=$$hub CLI_SHARDS=$$cli ROOT_REST=$$rest HUB_SHARD_COUNT=12 HUB_SHARD_NO_SURVEY=1 CLI_SHARD_NO_SURVEY=1 \
 		scripts/gate/run-module-tests.sh -race -short -count=1
 
