@@ -780,7 +780,7 @@ func startManagerAcceptanceSSHFixture(ctx context.Context, t *testing.T, provide
 		t.Fatal(err)
 	}
 	t.Cleanup(func() {
-		cleanupManagerAcceptanceFixture(t, host, addr, hostDir+"/"+hostDeployToml, hostDir+"/bin/evener-real", hostDir)
+		cleanupManagerAcceptanceFixture(t, host, addr, hostDir+"/"+hostDeployToml, hostDir+"/bin/evener-real", hostDir, hostListenerProofBudget)
 	})
 	host.writeFile(hostDir+"/"+hostDeployToml, hostDeployConfig(hostDir, addr))
 	localBinary := filepath.Join(liveStackBinaries(t, repoRootForTestMain()), "evener")
@@ -801,16 +801,10 @@ func startManagerAcceptanceSSHFixture(ctx context.Context, t *testing.T, provide
 	return local, human, host, hostDir, addr, remoteHost
 }
 
-func cleanupManagerAcceptanceFixture(t *testing.T, host *hostSSH, addr, configPath, binaryPath, hostDir string) {
-	t.Helper()
-	cleanupManagerAcceptanceFixtureWithin(t, host, addr, configPath, binaryPath, hostDir, hostListenerProofBudget)
-}
-
-// cleanupManagerAcceptanceFixtureWithin is cleanupManagerAcceptanceFixture with
-// an explicit graceful-shutdown proof budget. A test that holds the hub at an
-// exit barrier is proving the cleanup refuses to report success; it can bound
-// that refusal with a short budget instead of the production deadline.
-func cleanupManagerAcceptanceFixtureWithin(t *testing.T, host *hostSSH, addr, configPath, binaryPath, hostDir string, proofBudget time.Duration) {
+// cleanupManagerAcceptanceFixture stops the fixture's host hub and reaps its
+// daemons, within the given graceful-shutdown proof budget (see
+// hostListenerProofBudget).
+func cleanupManagerAcceptanceFixture(t *testing.T, host *hostSSH, addr, configPath, binaryPath, hostDir string, proofBudget time.Duration) {
 	t.Helper()
 	shutdownProved := stopHostListenerWithin(t, host, addr, configPath, binaryPath, proofBudget)
 	if err := host.tryRun(hostDaemonReapCommand(hostDir)); err != nil {

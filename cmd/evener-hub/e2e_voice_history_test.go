@@ -12,16 +12,13 @@ import (
 )
 
 func TestE2E_VoiceSpeechReachesOlderHistoryPages(t *testing.T) {
+	var cases []concurrentCase
 	for _, reconnect := range []bool{false, true} {
 		name := "playing"
 		if reconnect {
 			name = "reconnect_fence"
 		}
-		t.Run(name, func(t *testing.T) {
-			// Each case builds its own provider, hub and voice binding, and
-			// reaches no process-wide state, so the two journeys overlap
-			// instead of paying two full stack startups one after another.
-			t.Parallel()
+		cases = append(cases, concurrentCase{name: name, run: func(t *testing.T) {
 			f := newVoiceCorrectionStack(t)
 			var ready map[string]any
 			var peer realtimePeer
@@ -111,8 +108,9 @@ func TestE2E_VoiceSpeechReachesOlderHistoryPages(t *testing.T) {
 			voiceCorrectionAudio(peer, delivery, "paged-next-response", "paged-next-audio", "AgADAA==")
 			voiceCorrectionDone(peer, delivery, "paged-next-response", "paged-next-audio")
 			f.expectFinishedAudio(t, delivery, "AgADAA==")
-		})
+		}})
 	}
+	runCasesConcurrently(t, cases)
 }
 
 func TestE2E_VoiceHistorySnapshotAdvanceKeepsCursor(t *testing.T) {

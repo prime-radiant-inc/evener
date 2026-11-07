@@ -22,13 +22,9 @@ import (
 	"primeradiant.com/evener/agent/sandbox/sandboxtest"
 )
 
-// cleanupBarrierProofBudget bounds a graceful-shutdown proof in the tests
-// below that hold their hub at an exit barrier forever: the listener closes and
-// the owned PID stays present by construction, so the proof can only ever
-// refuse. Those cases assert the refusal (and that the live process was not
-// mistaken for a clean shutdown), not how long a real host gets to reap its
-// hub; sitting out hostListenerProofBudget would add ten seconds per case to
-// the default gate for the same evidence.
+// cleanupBarrierProofBudget bounds the graceful-shutdown proof in the tests
+// below, whose fixtures hold the owned process at an exit barrier: they assert
+// the refusal, not how long a real host gets to reap its hub.
 const cleanupBarrierProofBudget = time.Second
 
 const managerCleanupHelperEnv = "EVENER_MANAGER_CLEANUP_PROCESS_HELPER"
@@ -200,7 +196,9 @@ func TestManagerAcceptanceCleanupReapsDaemonAfterHubProofFailure(t *testing.T) {
 	host := &hostSSH{t: t, target: "local-process-fixture", execCommand: func(ctx context.Context, script string) *exec.Cmd {
 		return exec.CommandContext(ctx, "/bin/bash", "-c", script)
 	}}
-	cleanupManagerAcceptanceFixtureWithin(t, host, strings.TrimSpace(string(addrBytes)), config, fixtureBin, hostDir, cleanupBarrierProofBudget)
+	// Prove the barrier state first: the short proof below can only refuse it.
+	awaitListenerClosedAndProcessHeld(t, host, strings.TrimSpace(string(addrBytes)), config, fixtureBin, closedPath)
+	cleanupManagerAcceptanceFixture(t, host, strings.TrimSpace(string(addrBytes)), config, fixtureBin, hostDir, cleanupBarrierProofBudget)
 	result := managerCleanupCompositionResult{Root: os.Getenv(sandboxtest.RootVar), Retained: hostCleanupRootMustBeRetained(os.Getenv(sandboxtest.RootVar)), CleanupReturned: true}
 	hubWait := make(chan error, 1)
 	go func() { hubWait <- hub.Wait() }()
@@ -299,8 +297,11 @@ func TestStopHostListenerWaitsForTheOwnedHubProcess(t *testing.T) {
 	host := &hostSSH{t: t, target: "local-process-fixture", execCommand: func(ctx context.Context, script string) *exec.Cmd {
 		return exec.CommandContext(ctx, "/bin/bash", "-c", script)
 	}}
+	awaitListenerClosedAndProcessHeld(t, host, addr, config, fixtureBin, closedPath)
 	stopErr := stopHostListenerProofWithin(host, addr, config, fixtureBin, cleanupBarrierProofBudget)
-	waitForCleanupFile(t, closedPath)
+	if stopErr == nil {
+		t.Fatalf("stopHostListener returned success after the listener closed while its owned PID %d was still held at the exit barrier", cmd.Process.Pid)
+	}
 	if err := cmd.Process.Signal(syscall.Signal(0)); err != nil {
 		t.Fatalf("listener-close barrier did not keep owned PID %d present: %v", cmd.Process.Pid, err)
 	}
@@ -311,9 +312,6 @@ func TestStopHostListenerWaitsForTheOwnedHubProcess(t *testing.T) {
 		t.Fatalf("wait for fixture hub process: %v", err)
 	}
 	waited = true
-	if stopErr == nil {
-		t.Fatalf("stopHostListener returned success after the listener closed while its owned PID %d was still held at the exit barrier", cmd.Process.Pid)
-	}
 }
 
 func TestStopHostListenerReapsOwnedProcessAfterProofFailure(t *testing.T) {
@@ -393,6 +391,7 @@ func TestStopHostListenerReapsOwnedProcessAfterProofFailure(t *testing.T) {
 	host := &hostSSH{t: t, target: "local-process-fixture", execCommand: func(ctx context.Context, script string) *exec.Cmd {
 		return exec.CommandContext(ctx, "/bin/bash", "-c", script)
 	}}
+	awaitListenerClosedAndProcessHeld(t, host, strings.TrimSpace(string(addrBytes)), config, fixtureBin, closedPath)
 	proofSucceeded := stopHostListenerWithin(t, host, strings.TrimSpace(string(addrBytes)), config, fixtureBin, cleanupBarrierProofBudget)
 	cleanupFailed := t.Failed()
 	if proofSucceeded {
@@ -934,6 +933,29 @@ func withoutEnv(env []string, names ...string) []string {
 		}
 	}
 	return filtered
+}
+
+// awaitListenerClosedAndProcessHeld drives the fixture to the state the
+// exit-barrier tests exist for: the hub kill command has run, the helper has
+// closed its listener (its closed barrier is present), and the owned PID is
+// still alive. The graceful-shutdown proof can then only refuse, so its budget
+// can be short; asserting the state first is what stops a fast proof from
+// silently timing out before the fixture reached the case it decides.
+func awaitListenerClosedAndProcessHeld(t *testing.T, host *hostSSH, addr, configPath, binaryPath, closedPath string) {
+	t.Helper()
+	if err := host.tryRun(hostHubKillCommand(addr, configPath, binaryPath)); err != nil {
+		t.Fatalf("signal the fixture hub: %v", err)
+	}
+	waitForCleanupFile(t, closedPath)
+	port := addr[strings.LastIndex(addr, ":")+1:]
+	out, err := host.runStdout(hostListenerProbeScript(port))
+	if err != nil || !hostListenerProbeAbsent(out) {
+		t.Fatalf("the fixture listener on %s is not proven gone: err=%v out=%q", addr, err, out)
+	}
+	processes, err := host.runStdout(hostHubProcessProbeCommand(configPath, binaryPath))
+	if err != nil || hostHubProcessesAbsent(processes) {
+		t.Fatalf("the owned fixture process is not proven present: err=%v out=%q", err, processes)
+	}
 }
 
 func waitForCleanupFile(t *testing.T, path string) {

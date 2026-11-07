@@ -23,12 +23,9 @@ import (
 // Only model responses are scripted. In particular, the typed stop callback must
 // be installed by the built CLI, not by this fixture.
 func TestE2E_ManagerLocalTypedJobStop(t *testing.T) {
+	var cases []concurrentCase
 	for _, mode := range []string{"job", "owned_delegate"} {
-		t.Run(mode, func(t *testing.T) {
-			// Each mode builds its own provider, hub and session tree and
-			// reaches no process-wide state, so the two stops overlap instead
-			// of paying two full stack startups in sequence.
-			t.Parallel()
+		cases = append(cases, concurrentCase{name: mode, run: func(t *testing.T) {
 			stack, provider := startE2EHubStack(t)
 			ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 			defer cancel()
@@ -142,8 +139,9 @@ func TestE2E_ManagerLocalTypedJobStop(t *testing.T) {
 				}
 			}
 			t.Logf("%s target %s settled, shell job %s %s and PID %d gone", mode, target, jobID, jobStatus, process.Pid)
-		})
+		}})
 	}
+	runCasesConcurrently(t, cases)
 }
 
 // TestE2E_ManagerRemoteDescendantJobStop sends stop through a controller hub to
@@ -471,14 +469,13 @@ func TestManagerTypedStopPIDPublication(t *testing.T) {
 }
 
 func TestManagerTypedStopCleanupOwnership(t *testing.T) {
+	var cases []concurrentCase
 	for _, phase := range []string{"before_pid_capture", "before_manager_stop"} {
-		t.Run(phase, func(t *testing.T) {
-			// Each phase builds its own provider, hub and session tree, so the
-			// two reads of the same cleanup window can overlap.
-			t.Parallel()
+		cases = append(cases, concurrentCase{name: phase, run: func(t *testing.T) {
 			typedStopCleanupOwnership(t, phase == "before_pid_capture")
-		})
+		}})
 	}
+	runCasesConcurrently(t, cases)
 }
 
 func typedStopCleanupOwnership(t *testing.T, beforePIDCapture bool) {

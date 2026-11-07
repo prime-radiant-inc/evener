@@ -212,10 +212,7 @@ func (r *hubRuntime) bump() { r.inputs.Bump() }
 
 func (r *hubRuntime) pokeAttention() {
 	r.inputs.Bump()
-	select {
-	case r.attentionPoke <- struct{}{}:
-	default:
-	}
+	r.pokeAttentionWatcher()
 	select {
 	case r.remotePoke <- struct{}{}:
 	default:
@@ -223,10 +220,8 @@ func (r *hubRuntime) pokeAttention() {
 }
 
 // pokeAttentionWatcher nudges only the attention watcher. A local roster change
-// (a daemon appearing, leaving, or reporting a new status or pending ask) is
-// not a change to any remote source's thread list, so feeding it to remotePoke
-// as well would make the ~30s remote refresher walk every attached host for an
-// event that cannot change its answer.
+// is not a remote-source change, so feeding it to remotePoke would make the
+// ~30s remote refresher walk every attached host for nothing.
 func (r *hubRuntime) pokeAttentionWatcher() {
 	select {
 	case r.attentionPoke <- struct{}{}:
