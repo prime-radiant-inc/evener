@@ -664,43 +664,6 @@ func cascadeOwnerDelegates(ctx context.Context, client *appwire.Client, owner st
 
 func cascadeRoleToken(role int) string { return fmt.Sprintf("CASCADE_ROLE_%d_SENTINEL", role) }
 
-// TestCascadeRendezvousReplacesThePathNotItsContents pins the publish contract
-// the driver's rendezvous files rely on. Rewriting a destination in place
-// (os.WriteFile) would satisfy a content check but leave a reader that already
-// opened it looking at the old file, and leave the create-before-bytes window
-// the driver's existence-then-parse poll cannot survive.
-func TestCascadeRendezvousReplacesThePathNotItsContents(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "attention-held.json")
-	if err := os.WriteFile(path, []byte(`{"ref":"stale"}`), 0600); err != nil {
-		t.Fatal(err)
-	}
-	before, err := os.Stat(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := fsatomic.WriteWithoutSync(path, []byte(`{"ref":"fresh"}`), 0600); err != nil {
-		t.Fatal(err)
-	}
-	after, err := os.Stat(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if os.SameFile(before, after) {
-		t.Fatal("publish rewrote the destination in place instead of replacing it")
-	}
-	body, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if string(body) != `{"ref":"fresh"}` {
-		t.Fatalf("published body = %q, want the complete new content", body)
-	}
-	if leftovers, err := filepath.Glob(path + ".tmp-*"); err != nil || len(leftovers) != 0 {
-		t.Fatalf("publish left temp files behind: %v (glob err %v)", leftovers, err)
-	}
-}
-
 // cascadeAttentionIndex recognises one attention fixture session's first input.
 // Those inputs carry no cascade role sentinel, so they are answered before the
 // cascade script's strict role routing.

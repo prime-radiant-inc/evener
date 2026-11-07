@@ -1339,9 +1339,9 @@ func (s *Session) hubWatchStateRetryDelay(failures int) time.Duration {
 }
 
 // hubWatchStateOutageBudget bounds how long the rebind loop keeps a watch
-// armed through consecutive failed state reads before connection recovery
-// ends the watch durably. The testOnly seam shrinks the budget for
-// deterministic tests; zero keeps the production budget.
+// armed through failed state reads or retryable rebind attempts before
+// connection recovery ends the watch durably. The testOnly seam shrinks the
+// budget for deterministic tests; zero keeps the production budget.
 func (s *Session) hubWatchStateOutageBudget() time.Duration {
 	if s.cfg.testOnly.hubWatchStateOutageBudget > 0 {
 		return s.cfg.testOnly.hubWatchStateOutageBudget
