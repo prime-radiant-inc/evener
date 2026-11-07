@@ -760,16 +760,48 @@ test("the composer editing attribute follows the editor, not composer controls",
   expect(anchor?.hasAttribute("data-composer-editing")).toBe(true);
 
   // A touch press on a composer control can blur the editor to body without
-  // focusing the control; the press itself keeps the editing state.
+  // focusing the control, and the focus transfer lands a task after the
+  // press. The press holds editing until its click completes.
+  await act(async () => {
+    editor.focus();
+  });
+  await waitFor(() => expect(anchor?.hasAttribute("data-composer-editing")).toBe(true));
   await act(async () => {
     fireEvent.pointerDown(screen.getByTestId("composer-attach"));
+  });
+  await new Promise((resolve) => {
+    setTimeout(resolve, 0);
+  });
+  await act(async () => {
     editor.blur();
   });
   expect(anchor?.hasAttribute("data-composer-editing")).toBe(true);
+  // The press's click releases the hold.
+  await act(async () => {
+    fireEvent.click(screen.getByTestId("composer-attach"));
+  });
+  await new Promise((resolve) => {
+    setTimeout(resolve, 0);
+  });
 
   // A press outside the composer ends it, even when focus stayed on body.
   await act(async () => {
     fireEvent.pointerDown(document.body);
+  });
+  await waitFor(() => expect(anchor?.hasAttribute("data-composer-editing")).toBe(false));
+
+  // A press outside while the editor still holds focus is a transcript pan,
+  // not an editing exit; only a real focus loss ends it.
+  await act(async () => {
+    editor.focus();
+  });
+  await waitFor(() => expect(anchor?.hasAttribute("data-composer-editing")).toBe(true));
+  await act(async () => {
+    fireEvent.pointerDown(document.body);
+  });
+  expect(anchor?.hasAttribute("data-composer-editing")).toBe(true);
+  await act(async () => {
+    editor.blur();
   });
   await waitFor(() => expect(anchor?.hasAttribute("data-composer-editing")).toBe(false));
 

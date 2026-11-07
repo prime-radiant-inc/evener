@@ -184,54 +184,15 @@ export function Composer({ ref, paneId, focused, mountAutofocus = true, source, 
   // body on touch without moving focus to the pressed control. Hold the
   // editing state through that task so the footer does not move under the tap.
   const composerPointerRef = useRef(false);
+  // Torn down by the next press or unmount, so a press whose click never
+  // arrives cannot accumulate document listeners.
+  const composerPressReleaseRef = useRef<(() => void) | null>(null);
   const submitButtonRef = useRef<HTMLButtonElement>(null);
   const tasksPanelRef = useRef<TasksPanelHandle>(null);
   // Set by scheduleCursorRestore below; consumed (and cleared) by the
   // cursor-restore layout effect in the commit that carries the edit.
   const cursorToRestoreRef = useRef<number | null>(null);
   const [cursorRestoreSeq, setCursorRestoreSeq] = useState(0);
-  // The editor's own focus is the phone keyboard's signal. It is a DOM
-  // attribute rather than React state so focus does not re-render the
-  // composer; focus on a composer button alone must not set it, or pressing
-  // Send or Attach from an unfocused composer would hide the pane footer.
-  const noteComposerFocus = useCallback((event: ReactFocusEvent<HTMLDivElement>) => {
-    if ((event.target as Element).closest('[role="textbox"]'))
-      formAnchorRef.current?.setAttribute("data-composer-editing", "");
-  }, []);
-  const noteComposerBlur = useCallback(() => {
-    // The next focus target is only known after the focusout/focusin pair, so
-    // decide in a microtask. Focus staying inside the composer, or in one of
-    // its portaled menus, keeps editing on; anything else ends it.
-    queueMicrotask(() => {
-      const anchor = formAnchorRef.current;
-      if (!anchor) return;
-      if (composerPointerRef.current) return;
-      const active = anchor.ownerDocument.activeElement;
-      if (active && (anchor.contains(active) || active.closest('[role="menu"], [role="listbox"], [role="dialog"]')))
-        return;
-      anchor.removeAttribute("data-composer-editing");
-    });
-  }, []);
-  useEffect(() => {
-    const anchor = formAnchorRef.current;
-    if (!anchor) return undefined;
-    const doc = anchor.ownerDocument;
-    // A press outside the composer (its portaled menus included) ends editing
-    // at the press itself: touch may leave focus on body, so no blur follows.
-    const onPointerDown = (event: PointerEvent) => {
-      if (!anchor.hasAttribute("data-composer-editing")) return;
-      const target = event.target as Element | null;
-      if (
-        target &&
-        typeof target.closest === "function" &&
-        (anchor.contains(target) || target.closest('[role="menu"], [role="listbox"], [role="dialog"]'))
-      )
-        return;
-      anchor.removeAttribute("data-composer-editing");
-    };
-    doc.addEventListener("pointerdown", onPointerDown, true);
-    return () => doc.removeEventListener("pointerdown", onPointerDown, true);
-  }, []);
   // Parks the caret a programmatic edit wants and forces a commit, so the
   // layout effect below applies it even when the edit left `text` unchanged.
   const scheduleCursorRestore = useCallback((cursor: number): void => {
@@ -285,7 +246,85 @@ export function Composer({ ref, paneId, focused, mountAutofocus = true, source, 
 
   // Steer moves into the menu below the phone-width boundary.
   // narrowComposer.ts measures the pane, not the viewport.
-  const [narrow, composerRootRef] = useNarrowComposer();
+  const [narrow, attachNarrowRef] = useNarrowComposer();
+  const composerRootRef = useRef<HTMLDivElement | null>(null);
+  const attachComposerRoot = useCallback(
+    (element: HTMLDivElement | null) => {
+      composerRootRef.current = element;
+      attachNarrowRef(element);
+    },
+    [attachNarrowRef],
+  );
+
+  // The editor's own focus is the phone keyboard's signal. It is a DOM
+  // attribute rather than React state so focus does not re-render the
+  // composer; focus on a composer button alone must not set it.
+  const endComposerEditingSoon = (): void => {
+    // The next focus target is only known after the focusout/focusin pair, so
+    // decide in a microtask. Focus staying anywhere in the composer, or in one
+    // of its portaled menus, keeps editing on; anything else ends it.
+    queueMicrotask(() => {
+      const anchor = formAnchorRef.current;
+      const root = composerRootRef.current;
+      if (!anchor || !root) return;
+      if (composerPointerRef.current) return;
+      const active = anchor.ownerDocument.activeElement;
+      if (active && (root.contains(active) || active.closest('[role="menu"], [role="listbox"], [role="dialog"]')))
+        return;
+      anchor.removeAttribute("data-composer-editing");
+    });
+  };
+  const holdComposerPress = (): void => {
+    composerPressReleaseRef.current?.();
+    composerPointerRef.current = true;
+    const doc = composerRootRef.current?.ownerDocument;
+    if (!doc) return;
+    const release = () => {
+      composerPressReleaseRef.current = null;
+      doc.removeEventListener("click", release, true);
+      doc.removeEventListener("pointercancel", release, true);
+      // A press's focus transfer can run after the click; clear on a later
+      // task so the blur that follows still sees the hold.
+      setTimeout(() => {
+        composerPointerRef.current = false;
+      }, 0);
+    };
+    composerPressReleaseRef.current = release;
+    doc.addEventListener("click", release, true);
+    doc.addEventListener("pointercancel", release, true);
+  };
+  useEffect(
+    () => () => {
+      composerPressReleaseRef.current?.();
+    },
+    [],
+  );
+  useEffect(() => {
+    const doc = composerRootRef.current?.ownerDocument;
+    if (!doc) return undefined;
+    // A press outside the composer (its portaled menus included) ends editing
+    // when focus has already left the editor: touch may leave focus on body,
+    // so no blur follows. A press while the editor still holds focus is a
+    // transcript pan, not an editing exit; the blur path handles a real loss.
+    const onPointerDown = (event: PointerEvent) => {
+      const anchor = formAnchorRef.current;
+      const root = composerRootRef.current;
+      if (!anchor || !root || !anchor.hasAttribute("data-composer-editing")) return;
+      const target = event.target as Element | null;
+      if (
+        target &&
+        typeof target.closest === "function" &&
+        (root.contains(target) || target.closest('[role="menu"], [role="listbox"], [role="dialog"]'))
+      )
+        return;
+      const active = doc.activeElement;
+      if (active && (root.contains(active) || active.closest('[role="menu"], [role="listbox"], [role="dialog"]')))
+        return;
+      anchor.removeAttribute("data-composer-editing");
+    };
+    doc.addEventListener("pointerdown", onPointerDown, true);
+    return () => doc.removeEventListener("pointerdown", onPointerDown, true);
+  }, []);
 
   // The session menu's turn-verb items press the same handlers the row
   // buttons press. Those handlers are recreated every render (they close
@@ -789,9 +828,11 @@ export function Composer({ ref, paneId, focused, mountAutofocus = true, source, 
     event.target.value = ""; // re-picking the identical file must re-fire change
   }
 
-  function handleFollowUpFocus(): void {
+  function handleFollowUpFocus(event: ReactFocusEvent<HTMLDivElement>): void {
     followUpFocusSequenceRef.current += 1;
     setFollowUpFocused(true);
+    if ((event.target as Element).closest('[role="textbox"]'))
+      formAnchorRef.current?.setAttribute("data-composer-editing", "");
   }
 
   function handleFollowUpBlur(): void {
@@ -802,6 +843,7 @@ export function Composer({ ref, paneId, focused, mountAutofocus = true, source, 
     requestAnimationFrame(() => {
       if (mountedRef.current && followUpFocusSequenceRef.current === sequence) setFollowUpFocused(false);
     });
+    endComposerEditingSoon();
   }
 
   // Slash options prevent mousedown's default focus transfer, so only leaving
@@ -838,9 +880,10 @@ export function Composer({ ref, paneId, focused, mountAutofocus = true, source, 
   return (
     <div
       className={CLASS.composer}
-      ref={composerRootRef}
+      ref={attachComposerRoot}
       onFocusCapture={handleFollowUpFocus}
       onBlurCapture={handleFollowUpBlur}
+      onPointerDown={holdComposerPress}
     >
       {mutationWriteStalled && (
         <div className={CLASS.storageStatus} role="status" aria-label="Message storage">
@@ -933,21 +976,7 @@ export function Composer({ ref, paneId, focused, mountAutofocus = true, source, 
         // owning pane id, so the overlay can anchor to the FOCUSED pane's
         // composer when several are mounted - including an ordinary pane and a
         // cascade column showing the same conversation.
-        // biome-ignore lint/a11y/noStaticElementInteractions: this anchor only observes editor focus for the phone footer's editing state; it is a container, not an interactive control
-        <div
-          ref={formAnchorRef}
-          className={CLASS.formAnchor}
-          data-composer={ref}
-          data-composer-pane={paneId}
-          onFocus={noteComposerFocus}
-          onBlur={noteComposerBlur}
-          onPointerDown={() => {
-            composerPointerRef.current = true;
-            setTimeout(() => {
-              composerPointerRef.current = false;
-            }, 0);
-          }}
-        >
+        <div ref={formAnchorRef} className={CLASS.formAnchor} data-composer={ref} data-composer-pane={paneId}>
           {/* Anchored above the control row inside the card below, opening
               upward - see slashcompletionmenu.module.css's header comment
               for the anchored-float recipe. Mounted only
