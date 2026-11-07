@@ -1,139 +1,324 @@
-import { useState, useSyncExternalStore } from "react";
-import { View } from "react-native";
-import { Row } from "../sheet/Grouped";
-import { HeaderButton } from "../sheet/HeaderButton";
-import { Copy, ErrorMessage } from "../ui";
-import { defaultVoiceOptions, type VoiceClient, type VoiceTarget, VoiceError } from "./voiceClient";
+import { useEffect, useRef, useState, useSyncExternalStore } from "react";
+import { Pressable, View } from "react-native";
+import { SymbolView, type SFSymbol } from "expo-symbols";
+import { Button, Row } from "../sheet/Grouped";
+import { haptic } from "../haptics";
+import { Copy, ErrorMessage, useColors, useTextScale } from "../ui";
+import { defaultVoiceOptions, type VoiceClient, type VoiceSnapshot, type VoiceTarget, VoiceError } from "./voiceClient";
 import { useVoiceClient } from "./voiceContext";
+import { type VoicePhase, voicePresentation } from "./voicePresentation";
 import { WakeTrialControls } from "./WakeTrialControls";
+
+/** How long the bar says it heard the wake word: long enough to read at a
+ * glance, short enough that it never hides the next state for long. */
+const HEARD_FOR_MS = 1200;
 
 export function VoiceControls({ target }: { target: VoiceTarget }) {
 	const client = useVoiceClient();
 	if (!client || !target.voiceAvailable) return null;
 	return <Controls client={client} target={target} />;
 }
+
+type Ink = "inkHi" | "inkMid" | "aliveInk" | "attentionInk" | "dangerInk";
+
+const TONES: Record<VoicePhase, { symbol: SFSymbol; ink: Ink }> = {
+	disarmed: { symbol: "mic.slash", ink: "inkMid" },
+	listening: { symbol: "mic.fill", ink: "aliveInk" },
+	heard: { symbol: "checkmark.circle.fill", ink: "aliveInk" },
+	talking: { symbol: "waveform", ink: "aliveInk" },
+	speaking: { symbol: "speaker.wave.2.fill", ink: "inkHi" },
+	recovering: { symbol: "arrow.clockwise", ink: "attentionInk" },
+	error: { symbol: "exclamationmark.triangle.fill", ink: "dangerInk" },
+	trial: { symbol: "waveform", ink: "aliveInk" },
+};
+
 function Controls({ client, target }: { client: VoiceClient; target: VoiceTarget }) {
 	const state = useSyncExternalStore(client.subscribe, client.getSnapshot);
+	const { palette } = useColors();
 	const [expanded, setExpanded] = useState(false);
 	const [busy, setBusy] = useState(false);
 	const [takeover, setTakeover] = useState(false);
 	const [error, setError] = useState<string | null>(null);
+	const [justHeard, setJustHeard] = useState(false);
+	const seenDetections = useRef(state.wake?.detections ?? 0);
+	useEffect(() => {
+		const detections = state.wake?.detections ?? 0;
+		if (detections <= seenDetections.current) {
+			seenDetections.current = detections;
+			return;
+		}
+		seenDetections.current = detections;
+		setJustHeard(true);
+		haptic("light");
+		const timer = setTimeout(() => setJustHeard(false), HEARD_FOR_MS);
+		return () => clearTimeout(timer);
+	}, [state.wake?.detections]);
 	const bound = client.getTarget();
 	const armed = state.state !== "disarmed";
 	const same = bound?.ref === target.ref && bound.hub.id === target.hub.id;
+	const presented = voicePresentation(state, justHeard);
+	const talkEnabled = presented.talkEnabled && same;
 	const arm = async (replace = false) => {
 		setBusy(true);
 		setError(null);
 		try {
 			await client.arm(target, defaultVoiceOptions, replace);
 			setTakeover(false);
+			haptic("success");
 		} catch (failure) {
 			if (failure instanceof VoiceError && failure.code === "binding_owned") setTakeover(true);
 			else
 				setError(
-					`Voice could not arm (${failure instanceof VoiceError ? failure.code : "native_audio_unavailable"}). Text chat is unchanged.`,
+					`Voice could not start (${failure instanceof VoiceError ? failure.code : "native_audio_unavailable"}). Text chat still works.`,
 				);
 		} finally {
 			setBusy(false);
 		}
 	};
+	const primary = () => {
+		haptic("selection");
+		if (presented.primary === "arm") void arm();
+		else if (presented.primary === "stop") client.stopSpeaking();
+		else client.talk();
+	};
 	return (
-		<View testID="voice-controls">
-			<HeaderButton
-				label={expanded ? "Hide voice controls" : "Voice · Talk preview"}
-				onPress={() => setExpanded(!expanded)}
+		<View testID="voice-controls" style={{ gap: 8, paddingHorizontal: 12, paddingBottom: 6 }}>
+			<VoiceBar
+				phase={presented.phase}
+				primary={presented.primary}
+				primaryEnabled={presented.primary === "arm" ? target.manager && !busy : talkEnabled}
+				expanded={expanded}
+				phrase={state.wake?.phrase ?? ""}
+				speakerOff={state.speakerConsentRequired}
+				onPrimary={primary}
+				onToggle={() => setExpanded(!expanded)}
 			/>
 			{expanded ? (
-				<>
-					<Copy>Chief of staff · {bound?.ref ?? target.ref}</Copy>
-					<Copy muted>
-						{armed
-							? state.capturing
-								? state.cloudMicrophone
-									? "Microphone · Sending cloud audio"
-									: "Microphone · Local only"
-								: "Listening paused"
-							: "Disarmed · Local wake preview, not acoustically qualified"}
-					</Copy>
-					{state.wake?.phrase ? (
-						<Copy muted>
-							Wake: {state.wake.phrase} · {state.wake.state}
-						</Copy>
-					) : null}
-					{state.wake?.detections ? (
-						<Copy>
-							Heard wake · score {state.wake.lastDetectionScore?.toFixed(4)} · {state.wake.detections} detections
-						</Copy>
-					) : null}
-					{state.route ? <Copy muted>Route: {state.route} · physical qualification pending</Copy> : null}
-					{!target.manager && !armed ? (
-						<Copy muted>Select an existing manager session, or explicitly start one with Start as Manager.</Copy>
-					) : null}
-					<View testID="voice-arm-disclosure">
-						<Copy muted>
-							Arming lets nearby people or recordings issue requests and hear replies, including while locked. Wake is
-							not speaker identification.
-						</Copy>
-						<Copy muted>
-							Voice uses{" "}
-							{state.provider ? `the hub's ${state.provider} provider` : "the hub's OpenAI Realtime provider"}, separate
-							from the manager's model provider. Audio is not used for API training by default, but is retained for
-							abuse monitoring up to 30 days; store:false is not zero retention.
-						</Copy>
-					</View>
-					<View style={{ flexDirection: "row", flexWrap: "wrap" }}>
-						{armed ? (
-							<HeaderButton
-								label="Disarm"
-								onPress={() => {
-									void client
-										.disarm()
-										.catch(() => setError("Microphone stopped; hub revocation could not be confirmed."));
-								}}
-							/>
-						) : (
-							<HeaderButton
-								label="Arm"
-								disabled={!target.manager || busy}
-								onPress={() => {
-									void arm();
-								}}
-							/>
-						)}
-						<HeaderButton
-							label="Talk"
-							disabled={
-								!armed ||
-								!same ||
-								!state.capturing ||
-								state.state === "recovering" ||
-								state.wake?.trials.at(-1)?.running
-							}
-							onPress={() => client.talk()}
-						/>
-						<HeaderButton label="Stop speaking" disabled={!armed} onPress={() => client.stopSpeaking()} />
-					</View>
-					{state.speakerConsentRequired ? (
-						<Row label="Allow future speech on iPhone speaker" onPress={() => client.allowSpeaker()} />
-					) : null}
-					{takeover && !armed ? (
-						<HeaderButton
-							label="Take over the other armed device"
-							disabled={busy}
-							onPress={() => {
-								void arm(true);
-							}}
-						/>
-					) : null}
-					{state.interpreted ? <Copy selectable>Interpreted: {state.interpreted}</Copy> : null}
-					{state.custody ? <Copy muted>Delivery: {state.custody}</Copy> : null}
-					{state.canonical ? <Copy selectable>Canonical reply: {state.canonical}</Copy> : null}
-					<WakeTrialControls client={client} state={state} />
-					<ErrorMessage
-						message={error || (state.error ? `Voice paused (${state.error}). Text remains available.` : null)}
+				<View testID="voice-panel" style={{ gap: 12, borderRadius: 14, padding: 14, backgroundColor: palette.inset }}>
+					<PanelHeader
+						phase={presented.phase}
+						phrase={state.wake?.phrase ?? ""}
+						speakerOff={state.speakerConsentRequired}
 					/>
+					<PrimaryControl
+						primary={presented.primary}
+						enabled={presented.primary === "arm" ? target.manager && !busy : talkEnabled}
+						onPress={primary}
+					/>
+					<View style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: 4 }}>
+						{armed ? <Button text quiet label="Turn voice off" onPress={() => void disarm(client, setError)} /> : null}
+						{armed ? <Button text quiet label="Stop speaking" onPress={() => client.stopSpeaking()} /> : null}
+						{takeover && !armed ? (
+							<Button text quiet label="Use this iPhone instead" disabled={busy} onPress={() => void arm(true)} />
+						) : null}
+					</View>
+					{!target.manager && !armed ? <Copy muted>Voice needs a manager session.</Copy> : null}
+					{state.speakerConsentRequired ? (
+						<Row label="Allow replies on the iPhone speaker" onPress={() => client.allowSpeaker()} />
+					) : null}
+					<WakeReceipt state={state} />
+					<Details state={state} />
+					<WakeTrialControls client={client} state={state} />
+					<Copy muted>{footnote(state, presented.phase)}</Copy>
+					<ErrorMessage
+						message={error || (state.error ? `Voice stopped (${state.error}). Text chat still works.` : null)}
+					/>
+				</View>
+			) : null}
+		</View>
+	);
+}
+
+async function disarm(client: VoiceClient, setError: (message: string) => void) {
+	haptic("selection");
+	try {
+		await client.disarm();
+	} catch {
+		setError("Microphone stopped; hub revocation could not be confirmed.");
+	}
+}
+
+/** The bar's one line: what voice is doing, one glyph, and at most one action.
+ * It sits on the glass above the composer, so it paints no surface of its own. */
+function VoiceBar({
+	phase,
+	primary,
+	primaryEnabled,
+	expanded,
+	phrase,
+	speakerOff,
+	onPrimary,
+	onToggle,
+}: {
+	phase: VoicePhase;
+	primary: "arm" | "talk" | "stop";
+	primaryEnabled: boolean;
+	expanded: boolean;
+	phrase: string;
+	speakerOff: boolean;
+	onPrimary(): void;
+	onToggle(): void;
+}) {
+	const { palette } = useColors();
+	const scale = useTextScale();
+	const tone = TONES[phase];
+	const headline = barHeadline(phase, phrase, speakerOff);
+	const actionVisible = phase === "disarmed" || phase === "listening" || phase === "speaking";
+	return (
+		<View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
+			<Pressable
+				accessibilityRole="button"
+				accessibilityLabel="Voice"
+				accessibilityValue={{ text: headline }}
+				accessibilityHint="Opens voice controls"
+				accessibilityState={{ expanded }}
+				onPress={onToggle}
+				style={({ pressed }) => ({
+					flex: 1,
+					minHeight: 44,
+					flexDirection: "row",
+					alignItems: "center",
+					gap: 10,
+					opacity: pressed ? 0.6 : 1,
+				})}
+			>
+				<SymbolView name={tone.symbol} size={20 * scale} tintColor={palette[tone.ink]} />
+				<Copy numberOfLines={2}>{headline}</Copy>
+				<View style={{ flex: 1 }} />
+				<SymbolView name={expanded ? "chevron.down" : "chevron.up"} size={13} tintColor={palette.inkMid} />
+			</Pressable>
+			{actionVisible ? (
+				<Button
+					primary
+					compact
+					label={barAction(primary)}
+					disabled={!primaryEnabled}
+					accessibilityLabel={barAction(primary)}
+					onPress={onPrimary}
+				/>
+			) : null}
+		</View>
+	);
+}
+
+function barAction(primary: "arm" | "talk" | "stop") {
+	return primary === "arm" ? "Turn on" : primary === "talk" ? "Talk" : "Stop";
+}
+
+function barHeadline(phase: VoicePhase, phrase: string, speakerOff: boolean) {
+	const wake = phrase ? `“${phrase}”` : "the wake word";
+	switch (phase) {
+		case "disarmed":
+			return "Voice off";
+		case "listening":
+			return speakerOff ? "Listening · speaker off" : `Listening for ${wake}`;
+		case "heard":
+			return `Heard ${wake}`;
+		case "talking":
+			return "Listening to you";
+		case "speaking":
+			return "Evener is speaking";
+		case "recovering":
+			return "Reconnecting voice…";
+		case "error":
+			return "Voice stopped";
+		case "trial":
+			return "Testing wake word";
+	}
+}
+
+function PanelHeader({ phase, phrase, speakerOff }: { phase: VoicePhase; phrase: string; speakerOff: boolean }) {
+	const { palette } = useColors();
+	const tone = TONES[phase];
+	return (
+		<View style={{ flexDirection: "row", alignItems: "center", gap: 12 }}>
+			<View
+				style={{
+					width: 38,
+					height: 38,
+					borderRadius: 12,
+					alignItems: "center",
+					justifyContent: "center",
+					backgroundColor: palette.canvas,
+				}}
+			>
+				<SymbolView name={tone.symbol} size={20} tintColor={palette[tone.ink]} />
+			</View>
+			<View style={{ flexShrink: 1, gap: 2 }}>
+				<Copy>{barHeadline(phase, phrase, speakerOff)}</Copy>
+				<Copy muted>
+					{phase === "disarmed"
+						? "Wake-word detection stays on this iPhone."
+						: phase === "listening"
+							? "Tap Talk, or just say the wake word."
+							: phase === "trial"
+								? "One attempt at a time, saved on this iPhone."
+								: "Tap the bar to see what voice is doing."}
+				</Copy>
+			</View>
+		</View>
+	);
+}
+
+function PrimaryControl({
+	primary,
+	enabled,
+	onPress,
+}: {
+	primary: "arm" | "talk" | "stop";
+	enabled: boolean;
+	onPress(): void;
+}) {
+	const label = primary === "arm" ? "Turn on voice" : primary === "talk" ? "Talk" : "Stop speaking";
+	return <Button primary label={label} disabled={!enabled} accessibilityLabel={label} onPress={onPress} />;
+}
+
+/** The last detection, when there has been one: what the classifier heard and
+ * how often, never its four-decimal score. */
+function WakeReceipt({ state }: { state: VoiceSnapshot }) {
+	const wake = state.wake;
+	if (!wake?.detections) return null;
+	return (
+		<Copy muted>
+			Heard wake · {wake.phrase || "wake word"} · {wake.detections} {wake.detections === 1 ? "time" : "times"}
+		</Copy>
+	);
+}
+
+/** The paragraphs that used to fill the panel, behind one row. */
+function Details({ state }: { state: VoiceSnapshot }) {
+	const [open, setOpen] = useState(false);
+	return (
+		<View testID="voice-arm-disclosure" style={{ gap: 8 }}>
+			<Button
+				text
+				quiet
+				label="Voice & privacy"
+				expanded={open}
+				onPress={() => {
+					haptic("selection");
+					setOpen(!open);
+				}}
+			/>
+			{open ? (
+				<>
+					<Copy muted>
+						{`Anyone nearby can talk to Evener and hear replies, even when your iPhone is locked. “${
+							state.wake?.phrase || "Hey Evener"
+						}” is a phrase, not a voiceprint.`}
+					</Copy>
+					<Copy muted>
+						{`When you talk, audio goes to ${state.provider || "OpenAI Realtime"}. The provider keeps it for abuse monitoring for up to 30 days. Audio is not used for model training by default.`}
+					</Copy>
 				</>
 			) : null}
 		</View>
 	);
+}
+
+function footnote(state: VoiceSnapshot, phase: VoicePhase) {
+	if (phase === "talking" || phase === "speaking") {
+		return `While you talk, audio goes to ${state.provider || "OpenAI Realtime"}.`;
+	}
+	return "Wake-word detection stays on this iPhone.";
 }

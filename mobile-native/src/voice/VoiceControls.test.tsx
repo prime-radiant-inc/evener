@@ -91,10 +91,10 @@ it("arms in one tap with a visible disclosure, keeps takeover explicit, and send
 	const button = (label: string) =>
 		tree.root.findAll((node) => String(node.type) === "Pressable" && node.props.accessibilityLabel === label)[0];
 	await act(async () => {
-		button("Voice · Talk preview").props.onPress();
+		button("Voice").props.onPress();
 	});
 	await act(async () => {
-		button("Arm").props.onPress();
+		button("Turn on").props.onPress();
 	});
 	// Arm goes straight to the hub; the disclosure is always visible beside it.
 	expect(button("I understand · Arm voice")).toBeUndefined();
@@ -102,13 +102,17 @@ it("arms in one tap with a visible disclosure, keeps takeover explicit, and send
 	expect(requests).toHaveLength(1);
 	expect(requests[0].takeover).toBe(false);
 	expect(actions).toEqual([]);
-	expect(button("Talk").props.disabled).toBe(true);
-	expect(button("Take over the other armed device")).toBeDefined();
+	// One primary action: Talk appears once the binding is ours.
+	expect(button("Talk")).toBeUndefined();
+	expect(button("Use this iPhone instead")).toBeDefined();
 	await act(async () => {
-		button("Take over the other armed device").props.onPress();
+		button("Use this iPhone instead").props.onPress();
 	});
 	expect(requests[1].takeover).toBe(true);
 	expect(button("Talk").props.disabled).toBe(false);
+	await act(async () => {
+		button("Voice & privacy").props.onPress();
+	});
 	expect(JSON.stringify(tree.toJSON())).toContain("openai");
 	await act(async () => {
 		button("Talk").props.onPress();
@@ -117,7 +121,7 @@ it("arms in one tap with a visible disclosure, keeps takeover explicit, and send
 	expect(actions).toEqual(["arm", "talk", "stop"]);
 	expect(requests).toHaveLength(2);
 	await act(async () => {
-		button("Disarm").props.onPress();
+		button("Turn voice off").props.onPress();
 	});
 	expect(actions).toEqual(["arm", "talk", "stop", "disarm"]);
 });
@@ -213,10 +217,10 @@ it("shows measured wake receipts and sends trial labels to the native owner", as
 	const button = (label: string) =>
 		tree.root.findAll((node) => String(node.type) === "Pressable" && node.props.accessibilityLabel === label)[0];
 	await act(async () => {
-		button("Voice · Talk preview").props.onPress();
+		button("Voice").props.onPress();
 	});
 	await act(async () => {
-		button("Debug · Wake trials").props.onPress();
+		button("Test wake word").props.onPress();
 	});
 	expect(JSON.stringify(tree.toJSON())).toContain("Heard wake");
 	expect(JSON.stringify(tree.toJSON())).toContain("Alexa");
@@ -226,13 +230,13 @@ it("shows measured wake receipts and sends trial labels to the native owner", as
 			.map((node) => node.children.join(""))
 			.join("\n"),
 	).toContain(`Last score: ${recordedTrials.at(-1)!.lastScore.toFixed(4)}`);
-	expect(button("Start wake trial").props.disabled).toBe(false);
-	for (const label of ["Mark positive", "Mark negative", "Mark false activation"]) {
+	expect(button("Start test").props.disabled).toBe(false);
+	for (const label of ["Intended", "Background", "False alarm"]) {
 		await act(async () => {
-			button("Start wake trial").props.onPress();
+			button("Start test").props.onPress();
 		});
 		expect(button("Talk").props.disabled).toBe(true);
-		expect(button("Start wake trial").props.disabled).toBe(true);
+		expect(button("Start test").props.disabled).toBe(true);
 		await act(async () => {
 			button(label).props.onPress();
 		});
