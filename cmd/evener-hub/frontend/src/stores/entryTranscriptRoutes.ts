@@ -1115,6 +1115,11 @@ function launchEntryOpeningRecovery(ref: string, route: EntryTranscriptRoute): v
   pendingOpeningRecoveries.set(ref, route);
   const recovery = (async () => {
     let stalledAttempts = 0;
+    // One source handoff per chain: the handoff is the chain's last resort,
+    // and a promotion re-open that misses its stalled window re-enters the
+    // paced attempts below instead of ending the chain. The cap keeps
+    // storage that never answers from looping the handoff.
+    let sourceHandedOff = false;
     for (;;) {
       const opened = await openEntryTranscript(ref, true);
       if (opened) {
@@ -1166,9 +1171,10 @@ function launchEntryOpeningRecovery(ref: string, route: EntryTranscriptRoute): v
       // discards the failed history wholesale, so the gate cannot outlive
       // the state it describes.
       if (store().getState().threads.get(ref)?.history?.failed !== undefined) return;
+      if (sourceHandedOff) return;
+      sourceHandedOff = true;
       route.repository?.beginFreshBaseline();
       publishEntryTranscriptModel(ref);
-      let sourceReadFailed = false;
       try {
         const client = await routeHost().requireReadyClient();
         const epoch = getReadyEpoch();
@@ -1184,21 +1190,23 @@ function launchEntryOpeningRecovery(ref: string, route: EntryTranscriptRoute): v
         // owned hydration lifecycle schedules it — and the re-open below
         // promotes the view a successful read restored, so a failed one has
         // nothing to promote.
-        sourceReadFailed = true;
-      }
-      if (sourceReadFailed) {
         return;
       }
       if (entryTranscriptRoute(ref) !== route) return;
       if (foregroundHolds(ref) <= 0) return;
       // Mirror the raced recovery's full sequence: the read that replaced
       // the view is followed by the local re-open that promotes its
-      // restored bodies into the display. A source response that already
-      // healed the display needs no further cache read to converge.
-      if (!holdsCompleteForegroundWindow(store().getState().threads.get(ref), route.repository)) {
-        await openEntryTranscript(ref, true);
-      }
-      return;
+      // restored bodies into the display — the loop's next attempt. A source
+      // response that already healed the display needs no further cache
+      // read to converge. The re-open is an attempt like any other, bounded
+      // by the stalled-open window: a read that outlasts it — healthy but
+      // slow — re-enters the paced attempts below rather than ending the
+      // chain, because the miss sets the route's markers and no caller
+      // follows the chain's own re-open to re-arm them.
+      if (holdsCompleteForegroundWindow(store().getState().threads.get(ref), route.repository)) return;
+      // The handoff changed the baseline its re-open certifies, so the
+      // chain gets one fresh paced budget behind it.
+      stalledAttempts = 0;
     }
   })().then(
     () => undefined,
