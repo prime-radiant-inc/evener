@@ -1094,7 +1094,10 @@ func (s *Session) automaticDelegateAttentionIDs() ([]string, error) {
 // each drop strictly before it.
 func (s *Session) dropHeldDelegateAttentionTurns(turns []schema.Turn) (kept []schema.Turn, droppedAt []int) {
 	s.attentionMu.Lock()
-	holds := s.attentionAutomaticDriveHolds
+	// The holds map can be written on a live runtime while this projection
+	// iterates outside the lock, so the iteration walks a clone taken under
+	// the lock: the snapshot is race-free by construction.
+	holds := maps.Clone(s.attentionAutomaticDriveHolds)
 	s.attentionMu.Unlock()
 	if len(holds) == 0 {
 		return turns, nil

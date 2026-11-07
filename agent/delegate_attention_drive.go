@@ -315,15 +315,6 @@ func (s *Session) restoreColdDelegateAttentionRuntime(delegateID string, gates .
 	}
 
 	sub, err := s.reconstructDelegateAttentionRuntime(owner, started, delegateRuntimeAttachIdle, gates...)
-	if err == nil && sub != nil {
-		// The idle release may have reclaimed the runtime that held a user
-		// stop's quiet in memory; the restored session rebuilds that quiet
-		// from the durable outcome and the fold before any drive reads the
-		// rows, so the stop survives the cold restore the release put in its
-		// way. The call is a no-op for every restored runtime that owes no
-		// such stop.
-		sub.sess.deriveHeldDelegateAttentionFromOutcome()
-	}
 	return owner, sub, err
 }
 
@@ -391,6 +382,20 @@ func (s *Session) reconstructDelegateAttentionRuntime(owner *Session, started de
 		if err := sub.sess.runDeferredRestoreSideEffects(); err != nil {
 			sub.sess.emit(warningDataFromError("restored delegate side effects incomplete", err))
 		}
+	}
+	if restored {
+		// The idle release may have reclaimed the runtime that held a user
+		// stop's quiet in memory; a freshly built session rebuilds that quiet
+		// from the durable outcome and the fold before any drive reads the
+		// rows, so the stop survives the cold restore the release put in its
+		// way. A pass that only found the runtime resident never lost the
+		// quiet: its in-memory holds stand exactly as the settle tail wrote
+		// them — including any a new event's arm already released — and
+		// re-deriving from the still-settled outcome would rebuild a hold
+		// the release had cleared, stranding the row behind an extra
+		// generation. The call is a no-op for every restored runtime that
+		// owes no such stop.
+		sub.sess.deriveHeldDelegateAttentionFromOutcome()
 	}
 	finishRestore(sub, nil)
 	return sub, nil

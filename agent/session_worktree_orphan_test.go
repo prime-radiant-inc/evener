@@ -2420,6 +2420,151 @@ func TestDelegateAttentionUserStopHoldsReopenedRowFromStaleArmedWake(t *testing.
 	}
 }
 
+// A new row's successful arm releases a user stop's holds — the documented
+// release, because such an arm is a wake from a new event. A root drive pass
+// over the still-RESIDENT runtime must not rebuild that quiet from the
+// settled outcome: the runtime never lost its in-memory state, so the release
+// the new arm granted stands, and a rebuilt hold would strand the released
+// report behind an extra generation — the pass would present the new row
+// alone and the report would reach the model only after that row's own
+// settle re-arms it. The quiet is rebuilt on cold restores alone, where the
+// release machinery really did take the in-memory holds.
+func TestDelegateAttentionResidentDrivePassDoesNotRebuildReleasedStopHold(t *testing.T) {
+	t.Parallel()
+	r := newWorktreeRepo(t)
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	var releaseOnce sync.Once
+	t.Cleanup(func() { releaseOnce.Do(func() { close(release) }) })
+	var wedgeOnce sync.Once
+	wedge := func(req llm.Request) llm.Response {
+		wedgeOnce.Do(func() { close(entered) })
+		<-release
+		return agenttest.FinalResponse("done")
+	}
+	lane := spawnSharedDescendantLane(t, r, "resident-released-hold", "dlg_residenthold01", "034residenthold1", wedge)
+	lane.delegateSess.SetNotifyFunc(nil)
+	lane.sharedSub.sess.SetNotifyFunc(nil)
+
+	// Present the retained child's report and park it in its first model
+	// request: the loop's flush idiom pumps a delivery the spawn deferred
+	// past its last drain cut.
+	flushErr := lane.driveUntil(entered)
+	select {
+	case <-entered:
+	// TRIPWIRE: the loop's drives launch the parked presentation within a
+	// couple of 200ms passes; the bound only fires on a genuine hang, not a
+	// loaded shard's scheduling delay.
+	case <-time.After(30 * time.Second):
+		lastFlushErr := flushErr()
+		pending, pendErr := lane.delegateSess.pendingDelegateAttentionIDs()
+		t.Fatalf("the presentation never reached its model request (pending attention=%d (%v); flush=%v)",
+			len(pending), pendErr, lastFlushErr)
+	}
+
+	// The user stops the parked run; its settle reopens the consumed report
+	// and holds the reopened row from automatic drives.
+	if got, err := lane.root.StopDelegateRun(lane.fixture.delegateID); err != nil || got != appwire.DelegateStopStopping {
+		t.Fatalf("StopDelegateRun = %q, %v; want stopping", got, err)
+	}
+	lane.delegateSub.mu.Lock()
+	runDone := lane.delegateSub.done
+	lane.delegateSub.mu.Unlock()
+	releaseOnce.Do(func() { close(release) })
+	select {
+	case <-runDone:
+	// TRIPWIRE: the cancelled run settles within seconds of the release; the
+	// bound only fires on a genuine hang.
+	case <-time.After(30 * time.Second):
+		t.Fatal("the user-stopped run never completed its settle tail")
+	}
+	fold, foldErr := readDelegateAttentionFold(lane.delegateSess.TranscriptPath(), lane.delegateSess.id)
+	if foldErr != nil {
+		t.Fatalf("read the delegate's attention fold after the stop: %v", foldErr)
+	}
+	var reopenedID string
+	for _, id := range fold.order {
+		if strings.Contains(id, delegateAttentionReopenMarker) {
+			if reopenedID != "" {
+				t.Fatalf("the settle left two reopened rows (%q, %q)", reopenedID, id)
+			}
+			reopenedID = id
+		}
+	}
+	if reopenedID == "" {
+		t.Fatalf("the stop's settle did not reopen the consumed report (resolutions=%v)", fold.resolutions)
+	}
+	if _, resolved := fold.resolutions[reopenedID]; resolved {
+		t.Fatalf("the stop's settle presented its own reopened report (resolutions=%v)", fold.resolutions)
+	}
+	lane.delegateSess.attentionMu.Lock()
+	held := lane.delegateSess.delegateAttentionHeldFromAutomaticDriveLocked(reopenedID)
+	lane.delegateSess.attentionMu.Unlock()
+	if !held {
+		t.Fatal("premise broken: the stop's settle did not hold the reopened row from automatic drives")
+	}
+
+	// A new row arrives and its successful arm is a wake from a new event:
+	// the documented release clears the stop's holds with it.
+	const newEventRowID = "delegate:resident-hold-new-event-row"
+	const newEventRowContent = "resident-hold-new-event-row: which cursor holds the merge base?"
+	if _, err := lane.delegateSess.appendDelegateNotificationDurably(newEventRowID, newEventRowContent); err != nil {
+		t.Fatalf("pend the new event's row: %v", err)
+	}
+	if err := lane.delegateSess.armDelegateAttention(newEventRowID); err != nil {
+		t.Fatalf("arm the new event's row: %v", err)
+	}
+	lane.delegateSess.attentionMu.Lock()
+	held = lane.delegateSess.delegateAttentionHeldFromAutomaticDriveLocked(reopenedID)
+	lane.delegateSess.attentionMu.Unlock()
+	if held {
+		t.Fatal("the new event's successful arm did not release the stop's hold")
+	}
+
+	// One root drive pass over the still-resident runtime presents what the
+	// release left presentable. The pass must not rebuild the quiet: the
+	// runtime never lost its in-memory state, and the settled outcome a
+	// rebuild would read describes the stop the release already answered.
+	if !lane.root.drivePendingDelegateAttention() {
+		t.Fatal("the drive pass declined the delegate with pending attention")
+	}
+	lane.delegateSess.attentionMu.Lock()
+	rebuilt := lane.delegateSess.delegateAttentionHeldFromAutomaticDriveLocked(reopenedID)
+	lane.delegateSess.attentionMu.Unlock()
+	if rebuilt {
+		t.Fatal("the resident drive pass rebuilt the hold the new event's arm released: the runtime never lost its in-memory quiet, and the rebuilt hold strands the released report behind an extra generation")
+	}
+	// The pass arms the paced retry on its way out because the captured rider
+	// is still pending until the presentation settles; a tick landing inside
+	// that settle would claim the rider a generation of its own — a load
+	// artifact of this single-pass scenario, not the contract under pin. The
+	// presentation is in flight and resolves both rows; nothing needs the
+	// timer, and disarming it here beats the first tick by its whole pacing.
+	lane.root.resetDelegateAttentionRetry()
+
+	// The released report and the new row shared one presentation: exactly
+	// one of them carries the pass's resume claim and the other rode it — a
+	// rider resolves with no claim of its own generation. The pre-fix
+	// delayed shape instead gives each row its own claim, the released
+	// report's strictly the later.
+	// TRIPWIRE: the pass's presentation settles within seconds of the launch;
+	// the bound only fires on a genuine hang, not a loaded shard's delay.
+	waitForCondition(t, 30*time.Second, "the new event's row and the released report to present together", func() bool {
+		live, err := readDelegateAttentionFold(lane.delegateSess.TranscriptPath(), lane.delegateSess.id)
+		return err == nil && live.resolutions[newEventRowID] != "" && live.resolutions[reopenedID] != ""
+	})
+	fold, foldErr = readDelegateAttentionFold(lane.delegateSess.TranscriptPath(), lane.delegateSess.id)
+	if foldErr != nil {
+		t.Fatalf("read the delegate's attention fold after the presentation: %v", foldErr)
+	}
+	reopenedGen := fold.resumeGenerations[reopenedID]
+	newRowGen := fold.resumeGenerations[newEventRowID]
+	if (reopenedGen == 0) == (newRowGen == 0) {
+		t.Fatalf("the released report and the new row did not share one presentation (reopened gen %d, new row gen %d; resolutions=%v)",
+			reopenedGen, newRowGen, fold.resolutions)
+	}
+}
+
 // A user's stop quiets the stopped run's reopened report from automatic
 // drives, and that quiet must survive the idle release: the release is
 // transparent reclaim, thirty seconds of idleness is not a wake from a new
