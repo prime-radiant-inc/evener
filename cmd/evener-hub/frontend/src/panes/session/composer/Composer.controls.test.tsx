@@ -722,11 +722,11 @@ test("the composer anchor carries its owning ref and pane id for the hold-hint o
   expect(anchor?.getAttribute("data-composer-pane")).toBe("pane_anchor");
 });
 
-// This test's press hold clears on a zero-delay timer, so the test has to
-// yield one macrotask outside Testing Library's own waits. Deferred chrome
-// publishes can come due in that yield - handleFollowUpBlur collapses the
-// follow-up card on an animation frame, and SessionChrome can tick its now
-// clock - so keep the yield inside act() with the shared nextMacrotask.
+// This test makes two macrotask yields of its own: the focus transfer after
+// the press, and the press hold's zero-delay release timer. handleFollowUpBlur
+// collapses the follow-up card on the next animation frame, and that frame can
+// come due in either yield - so keep each one inside act() with the shared
+// nextMacrotask.
 async function waitForMacrotaskInActScope(): Promise<void> {
   await act(() => nextMacrotask());
 }
