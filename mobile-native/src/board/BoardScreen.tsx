@@ -224,9 +224,12 @@ function Board({
 	// The floating compose button's room over the Board's end, from the home
 	// indicator it clears. The Board is inset and padded by it, and the toast
 	// floats above it.
-	const { bottom: bottomInset } = useSafeAreaInsets();
+	const { bottom: bottomInset, left: leftInset, right: rightInset } = useSafeAreaInsets();
 	const composeRoom = composeButtonRoom(bottomInset);
 	const boardUnderBar = underBar(composeRoom);
+	// The split's left pane ends at the divider, not the screen's right safe
+	// area, so only a full-screen Board insets against that edge.
+	const paneRightInset = duoEmbedded ? 0 : rightInset;
 
 	// Declared before the client binding so a first focus resumes an unbound
 	// controller rather than one whose reads just went out.
@@ -1168,7 +1171,11 @@ function Board({
 				glassTop={navGlass ? headerHeight : undefined}
 				onLayout={(event) => setHeaderPanel({ height: event.nativeEvent.layout.height, onGlass: navGlass })}
 			>
-				{chips.length && !searching ? <Chips chips={chips} onGlass={navGlass} /> : null}
+				{chips.length && !searching ? (
+					<View testID="board-chips" style={{ paddingLeft: leftInset, paddingRight: paneRightInset }}>
+						<Chips chips={chips} onGlass={navGlass} />
+					</View>
+				) : null}
 			</GlassHeaderPanel>
 			<View style={{ flex: 1 }}>
 				<Animated.ScrollView
@@ -1184,6 +1191,8 @@ function Board({
 					// is tall enough to keep the field hidden.
 					contentContainerStyle={{
 						paddingBottom: 24 + boardUnderBar.endPadding,
+						paddingLeft: leftInset,
+						paddingRight: paneRightInset,
 						minHeight: windowHeight + searchFieldHeight,
 					}}
 					// The Board runs under its compose button, its end and its
@@ -1269,14 +1278,14 @@ function Board({
 				<View
 					testID="board-toast"
 					pointerEvents="box-none"
-					style={{ position: "absolute", left: 0, right: 0, bottom: composeRoom + FLOAT_GAP }}
+					style={{ position: "absolute", left: leftInset, right: paneRightInset, bottom: composeRoom + FLOAT_GAP }}
 				>
 					<Toast toast={toast.toast} dismiss={toast.dismiss} />
 				</View>
 			</View>
 			{/* The compose button floats over the Board's end, so the Board runs
 			    under it; the toast slot sits above it. */}
-			<ComposeButton disabled={!connected} onPress={newSession} />
+			<ComposeButton disabled={!connected} onPress={newSession} rightInset={paneRightInset} />
 		</View>
 	);
 }
@@ -1716,20 +1725,22 @@ function DuoBoardHeader({
 	onSearch: () => void;
 }) {
 	const { palette } = useColors();
-	const insets = useSafeAreaInsets();
+	const { top, left } = useSafeAreaInsets();
 	const scale = useTextScale();
 	return (
 		<View
+			testID="duo-board-header"
 			style={{
-				paddingTop: insets.top,
-				minHeight: insets.top + 44,
+				paddingTop: top,
+				paddingLeft: left,
+				minHeight: top + 44,
 				flexDirection: "row",
 				alignItems: "center",
 				justifyContent: "space-between",
 				backgroundColor: palette.page,
 			}}
 		>
-			<HubButton hubName={hubName} onOpen={onOpenHub} maxWidth={Math.max(80, width - 72)} />
+			<HubButton hubName={hubName} onOpen={onOpenHub} maxWidth={Math.max(80, width - left - 72)} />
 			<Pressable
 				accessibilityRole="button"
 				accessibilityLabel="Search sessions"

@@ -40,11 +40,10 @@ test('prebuild delegates window startup to the Expo scene lifecycle', async () =
  assert.equal((swift.match(/RCTLinkingManager\.application\s*\(/g) ?? []).length, 2);
 });
 
-test('the app stays portrait until landscape safe areas are qualified', () => {
-	// The Duo's inner display splits in portrait. Landscape on a regular iPhone
-	// needs left/right safe-area handling first; until then the app keeps the
-	// orientation it qualified under.
-	assert.equal(app.orientation, 'portrait');
+test('the app supports landscape with safe-area insets', () => {
+	// Expo maps "default" to portrait and landscape. The Board and conversation
+	// inset their content by the left/right safe areas.
+	assert.equal(app.orientation, 'default');
 });
 
 test('scene prebuild preserves application identity, linking and unrelated plist values', async () => {

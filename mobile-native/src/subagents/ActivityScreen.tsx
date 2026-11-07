@@ -8,6 +8,7 @@ import type { SessionActivityCounts, SessionActivitySummary } from "@evener/appw
 import { SymbolView } from "expo-symbols";
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { FlatList, Pressable, Text, useWindowDimensions, View } from "react-native";
+import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
 import { BandHeader } from "../board/BoardRow";
 import { useConnection } from "../ConnectionProvider";
 import { ChipStrip } from "../design/ChipStrip";
@@ -87,7 +88,8 @@ export function ActivityScreen({ route, navigation }: NativeStackScreenProps<Rou
 	const { width } = useWindowDimensions();
 	// A list opened in the Duo split's detail pane is narrower than the window;
 	// its summary strip spans the pane.
-	const paneWidth = useDetailPaneWidth() ?? width;
+	const detailPaneWidth = useDetailPaneWidth();
+	const paneWidth = detailPaneWidth ?? width;
 	const { tree, snapshot } = useFollowedSubagentTree(hubId, ref, threadId);
 
 	const activity = useMemo(() => (snapshot.tree ? flattenActivity(snapshot.tree, title) : []), [snapshot.tree, title]);
@@ -191,6 +193,7 @@ export function ActivityScreen({ route, navigation }: NativeStackScreenProps<Rou
 	}, [focused, boundary, boundaryKeys, tree, delegatePage, jobPage]);
 	const toast = useToast();
 	const showToast = toast.show;
+	const { left, right } = useSafeAreaInsets();
 	useEffect(() => {
 		if (!focused || subagents.length === 0) return;
 		for (const stopped of requests.reconcile(ref, subagents)) showToast({ text: `“${stopped.title}” stopped` });
@@ -352,7 +355,10 @@ export function ActivityScreen({ route, navigation }: NativeStackScreenProps<Rou
 	);
 
 	return (
-		<View style={{ flex: 1, backgroundColor: palette.page }}>
+		<SafeAreaView
+			edges={detailPaneWidth === null ? ["left", "right"] : ["right"]}
+			style={{ flex: 1, backgroundColor: palette.page }}
+		>
 			<FlatList
 				data={items}
 				keyboardDismissMode="on-drag"
@@ -372,10 +378,10 @@ export function ActivityScreen({ route, navigation }: NativeStackScreenProps<Rou
 				windowSize={7}
 				contentContainerStyle={{ paddingBottom: 24 }}
 			/>
-			<View pointerEvents="box-none" style={{ position: "absolute", left: 0, right: 0, bottom: 16 }}>
+			<View pointerEvents="box-none" style={{ position: "absolute", left, right, bottom: 16 }}>
 				<Toast toast={toast.toast} dismiss={toast.dismiss} />
 			</View>
-		</View>
+		</SafeAreaView>
 	);
 }
 

@@ -106,20 +106,22 @@ function LaunchDefaults({
 		groups.set(option.group, group);
 	}
 	return (
-		<SafeAreaView edges={["bottom", "left", "right"]} style={[styles.fill, { backgroundColor: colors.palette.canvas }]}>
-			<View style={{ alignItems: "flex-end", paddingHorizontal: space.margin }}>
-				<HeaderButton
-					strong
-					label="Save defaults"
-					disabled={!client || !state.dirty || state.loading || state.saving || state.changedElsewhere}
-					onPress={() => {
-						setNotice(null);
-						void model.save().then((saved) => {
-							if (saved && alive.current) setNotice("Launch defaults saved.");
-						});
-					}}
-				/>
-			</View>
+		<SafeAreaView edges={["bottom"]} style={[styles.fill, { backgroundColor: colors.palette.canvas }]}>
+			<SafeAreaView edges={["left", "right"]}>
+				<View style={{ alignItems: "flex-end", paddingHorizontal: space.margin }}>
+					<HeaderButton
+						strong
+						label="Save defaults"
+						disabled={!client || !state.dirty || state.loading || state.saving || state.changedElsewhere}
+						onPress={() => {
+							setNotice(null);
+							void model.save().then((saved) => {
+								if (saved && alive.current) setNotice("Launch defaults saved.");
+							});
+						}}
+					/>
+				</View>
+			</SafeAreaView>
 			<GroupedPage scrollRef={scrollRef}>
 				<View style={{ paddingHorizontal: space.labelInset }}>
 					<ErrorMessage message={state.error} testID="launch-problem:settings" />
