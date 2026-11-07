@@ -8,6 +8,8 @@ on:
       - "appwire-client/typescript/**"
       - "scripts/native/**"
       - "scripts/lib/scratch-lib.sh"
+      - "scripts/ops/build-runtime-pair.sh"
+      - "test/e2e/fakllm/**"
       - "internal/devtool/procgroup/**"
       - "execsupport/procgroup/**"
       - "go.mod"
