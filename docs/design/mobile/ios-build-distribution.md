@@ -69,9 +69,9 @@ left/right safe-area handling, and the Duo's inner split works in portrait.
 
 Simulator qualification uses the `iPhone Duo` device type on the iOS 27.1
 runtime, captures the outer display, the empty split and an open conversation,
-and rotates the inner display. An Xcode 26 build runs on both displays but does
-not extend under the status bar and camera; building with Xcode 27 supplies that
-layout.
+and rotates the inner display. The TestFlight workflow runs on the `xcode-27`
+runner with Xcode 27.1, so the release extends under the status bar and camera.
+An Xcode 26 build still runs on both displays but is inset.
 
 Run `node --test scripts/native/scene-lifecycle.test.mjs` from the repository root
 for generated configuration and repeatability checks against the installed Expo

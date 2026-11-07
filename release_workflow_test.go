@@ -84,8 +84,8 @@ func TestBinariesWorkflowSignsDarwinBeforePublishing(t *testing.T) {
 	if !ok {
 		t.Fatal("binaries workflow is missing the sign-macos job")
 	}
-	if job.RunsOn != "macos-26" {
-		t.Errorf("sign-macos runner = %q, want macos-26", job.RunsOn)
+	if job.RunsOn != "xcode-27" {
+		t.Errorf("sign-macos runner = %q, want xcode-27", job.RunsOn)
 	}
 	if !workflowNeeds(job.Needs, "build") {
 		t.Errorf("sign-macos needs = %#v, want build", job.Needs)

@@ -49,7 +49,7 @@ jobs:
   sign-macos:
     name: Sign and notarize macOS artifacts
     needs: build
-    runs-on: macos-26
+    runs-on: xcode-27
     env:
       # These are repository-level Apple credentials. The certificate is a
       # Developer ID Application certificate exported as base64 PKCS#12; the
