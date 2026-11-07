@@ -36,6 +36,7 @@ set -euo pipefail
 SCRIPT_NAME="run-ui-tests"
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd -P)"
 source "$repo_root/scripts/lib/scratch-lib.sh"
+source "$repo_root/scripts/lib/e2e-lib.sh"
 usage() { sed -n '2,/^# END-USAGE$/p' "$0" | sed 's/^# \{0,1\}//'; exit 0; }
 
 identity=""
@@ -204,6 +205,15 @@ make build-runtime >"$output/build-runtime.log" 2>&1 || {
 log "building the evener and fixture-provider binaries"
 go build -o "$evener_binary" ./cmd/evener >"$output/build-evener.log" 2>&1
 go build -o "$provider_binary" ./scripts/native/ios/fixture-provider >>"$output/build-evener.log" 2>&1
+
+# The operator's shell can carry EVENER_* overrides — an Evener agent session
+# exports them — and EVENER_STATE_DIR or EVENER_CREDENTIALS_CONFIG outrank the
+# private directories below, so an inherited value would point the fixture
+# hub at the operator's real state directory or credentials while the run
+# called itself isolated. Drop the list through the same shared helper the
+# e2e harness uses, so the two cannot drift; the fixture's own
+# EVENER_PROVIDERS_CONFIG export below is the deliberate override.
+e2e_unset_evener_env
 
 export XDG_CONFIG_HOME="$config_home"
 export XDG_STATE_HOME="$state_home"
