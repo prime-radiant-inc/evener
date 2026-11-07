@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"time"
 
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener-hub/internal/appsource"
@@ -408,6 +409,62 @@ func statusFollowUp(ref string) appwire.SessionStatusFollowUp {
 	return appwire.SessionStatusFollowUp{Tool: "job_status", Arguments: appwire.SessionStatusArguments{Hub: appwire.SessionStatusTarget{Ref: ref}}}
 }
 
+// liveReadAttempts bounds the live reads a non-subscribing client read may
+// make before the hub considers the saved transcript. A live source that
+// fails one read is not gone: answering with the persisted transcript would
+// hand the caller a daemonless projection — no mutation authority, no
+// published provenance — that reads exactly like a replaced manager. A
+// subscribing read never falls back this way, so only the silent path pays
+// the retry.
+const liveReadAttempts = 3
+
+// liveReadRetryDelay paces those attempts.
+const liveReadRetryDelay = 10 * time.Millisecond
+
+// liveThreadRead reads the live source, retrying a failed read before the
+// caller decides whether the saved transcript may answer instead. The retry is
+// bounded by liveReadAttempts, honors the request's cancellation, and applies
+// only where a failure would otherwise be answered with the saved transcript
+// silently: a captured, non-subscribing client read. A subscribing read
+// surfaces its failure, so it needs no retry here. Each attempt acquires the
+// relay again, so a dropped daemon connection reconnects; the caller's
+// ownership recovery still runs once the attempts are spent.
+func liveThreadRead(
+	ctx context.Context,
+	relays *hubRelay,
+	source appsource.Source,
+	params appwire.ThreadReadParams,
+	capture bool,
+) (*hubThreadReadResult, error) {
+	if !capture || params.Subscribe {
+		return relays.readThreadWithSubscription(ctx, source, params, capture)
+	}
+	var err error
+	for attempt := range liveReadAttempts {
+		// The first retry is immediate: the failed read is usually a relay
+		// race, not a contended resource. Only a second retry is paced.
+		if attempt > 1 {
+			if waitErr := relays.retryClock.Wait(ctx, liveReadRetryDelay); waitErr != nil {
+				return nil, waitErr
+			}
+		}
+		read, readErr := relays.readThreadWithSubscription(ctx, source, params, capture)
+		if readErr == nil {
+			return read, nil
+		}
+		err = readErr
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+		// A dead session cannot answer a retry; the caller's own recovery
+		// refreshes the roster before it falls back to the saved transcript.
+		if isDeadSessionError(err) {
+			return nil, err
+		}
+	}
+	return nil, err
+}
+
 func (o *sessionOperations) Read(ctx context.Context, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
 	// An ordinary thread/read retains its default downstream subscription when
 	// the source hands off a live relay. Internal Manager snapshot reads call
@@ -474,15 +531,7 @@ func (o *sessionOperations) read(ctx context.Context, params appwire.ThreadReadP
 		}
 		return appwire.ThreadReadResponse{}, err
 	}
-	var read *hubThreadReadResult
-	// A captured read hands its caller a downstream subscription, so its
-	// relay read holds the daemon-side feed. An internal snapshot read has
-	// no consumer and must not count as a subscriber.
-	if capture {
-		read, err = relays.readThread(ctx, source, params)
-	} else {
-		read, err = relays.readThreadSnapshot(ctx, source, params)
-	}
+	read, err := liveThreadRead(ctx, relays, source, params, capture)
 	if err != nil {
 		recovered := false
 		allowPast := allowsPastFallbackAfterLiveReadFailure(source, params, err)
@@ -520,11 +569,7 @@ func (o *sessionOperations) read(ctx context.Context, params appwire.ThreadReadP
 					source = refreshedSource
 					_, err = daemon.ResolveSubscriptionAdmission(params)
 					if err == nil {
-						if capture {
-							read, err = relays.readThread(ctx, source, params)
-						} else {
-							read, err = relays.readThreadSnapshot(ctx, source, params)
-						}
+						read, err = relays.readThreadWithSubscription(ctx, source, params, capture)
 						recovered = err == nil
 					}
 					if ctx.Err() != nil {

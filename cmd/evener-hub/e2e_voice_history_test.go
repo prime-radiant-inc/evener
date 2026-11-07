@@ -116,7 +116,7 @@ func TestE2E_VoiceSpeechReachesOlderHistoryPages(t *testing.T) {
 func TestE2E_VoiceHistorySnapshotAdvanceKeepsCursor(t *testing.T) {
 	f := newVoiceCorrectionStack(t)
 	_ = f.device.conn.CloseNow()
-	baseline := f.read(t)
+	baseline := f.readLiveManager(t, "live baseline")
 	binding, err := f.journal.Binding(f.ctx, f.armed.BindingID)
 	if err != nil {
 		t.Fatal(err)
