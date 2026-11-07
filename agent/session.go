@@ -1145,6 +1145,16 @@ type Session struct {
 	// trigger as consumed first, so only this latch tells a fold to keep its
 	// turn; promoteStagedAttentionCoverage clears it. Guarded by attentionMu.
 	attentionAcceptedID string
+	// attentionAutomaticDriveHolds names pending rows a user's stop quieted
+	// from automatic drives: the stopped generation's commit left the
+	// delegate armed for every other pending row, and that stale armed wake
+	// drives without a re-arm, so the drive's own reads keep a held row out
+	// of its claim and its riders while the rows the stop never touched
+	// still present. Any successful arm releases the holds — a wake from a
+	// new event may present the row — and the map is in-memory on purpose:
+	// a restart reconciles wakes from the durable fold, which cannot hold
+	// a quiet. Guarded by attentionMu.
+	attentionAutomaticDriveHolds map[string]struct{}
 
 	// turnNameRetryMu guards turnNameRetry alone. The paced wake it schedules
 	// runs while the session goroutine is mid-stand-down, so it must not queue

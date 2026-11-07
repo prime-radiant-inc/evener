@@ -1371,3 +1371,31 @@ func TestDelegateDrainAnnouncementReportReplacesTheEarlierReport(t *testing.T) {
 		t.Fatalf("reportPreview = %q, want report C", preview)
 	}
 }
+
+// isDelegateUpdateAttentionID must keep classifying a reopened update row as
+// an update: a failed presentation start re-delivers the consumed update
+// under a fresh reopened identity, and the finalization drain's update wake
+// keys on this classification — a reopened row that drops it leaves the
+// child's mid-work question waiting for the generation's end.
+func TestIsDelegateUpdateAttentionIDClassifiesReopenedRows(t *testing.T) {
+	t.Parallel()
+	update := delegateAttentionID(delegatestore.UpdateDeliveryID("dlg_worker", 7))
+	report := delegateAttentionID(delegateDeliveryID("dlg_worker", 3))
+	cases := []struct {
+		attentionID string
+		want        bool
+	}{
+		{update, true},
+		{delegateAttentionReopenID(update, 1), true},
+		{delegateAttentionReopenID(delegateAttentionReopenID(update, 1), 1), true},
+		{report, false},
+		{delegateAttentionReopenID(report, 1), false},
+		{delegateAttentionReopenID(delegateAttentionReopenID(report, 1), 1), false},
+		{delegateAttentionID("dlg_worker/update/7/reopened/not-a-generation"), false},
+	}
+	for _, tc := range cases {
+		if got := isDelegateUpdateAttentionID(tc.attentionID); got != tc.want {
+			t.Errorf("isDelegateUpdateAttentionID(%q) = %t, want %t", tc.attentionID, got, tc.want)
+		}
+	}
+}

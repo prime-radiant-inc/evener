@@ -74,10 +74,12 @@ func TestResumeSkipsTranscriptOnlyEntries(t *testing.T) {
 			}
 			// Plain entry d sits at interleaved index 2d+1, after a sample at
 			// 2d; a boundary before plain entry d is either index there.
+			plainSuperseded := supersededDelegateAttentionIDs(plain)
+			interleavedSuperseded := supersededDelegateAttentionIDs(interleaved)
 			for d := 0; d <= len(plain); d++ {
-				want := resumedDivergence(plain, d, plainInsertions)
+				want := resumedDivergence(plain, d, plainInsertions, plainSuperseded)
 				for _, boundary := range []int{2 * d, 2*d + 1} {
-					if got := resumedDivergence(interleaved, boundary, insertions); got != want {
+					if got := resumedDivergence(interleaved, boundary, insertions, interleavedSuperseded); got != want {
 						t.Fatalf("boundary %d (plain %d) maps to %d, want %d", boundary, d, got, want)
 					}
 				}

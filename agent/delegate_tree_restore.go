@@ -161,6 +161,16 @@ func (c *delegateTreeController) owedAttentionStartsFromTranscripts() ([]delegat
 		})
 		journalGeneration := generations[ref.delegateID]
 		for _, resume := range resumes {
+			// A claim superseded by its own reopen owes nothing: the failed
+			// start re-delivered the same report under the fresh identity the
+			// reopen minted, and that pending row reaches its presentation
+			// through the ordinary pending path. Admitting the superseded
+			// claim instead would double-present the report, and a chained
+			// refusal's next claim would read as a second owed generation for
+			// one delegate.
+			if _, reopened := fold.content[delegateAttentionReopenID(resume.attentionID, resume.generation)]; reopened {
+				continue
+			}
 			lease := delegateLease{delegateID: ref.delegateID, generation: resume.generation}
 			if trigger, exists := runStarts[lease]; exists {
 				if trigger != delegatestore.TriggerAttention {
@@ -598,6 +608,15 @@ func (c *delegateTreeController) wakeDeliveryReceiver(receiver delegateDeliveryR
 		if receiver.isRootDelegateAttentionReceiver() {
 			return receiver.armDelegateAttention(attentionID)
 		}
+		// A committed delivery is a wake from a new event in its own
+		// right: the child's report may present a row a user's stop
+		// held out of the automatic drives, so the holds end with it
+		// exactly as a successful arm ends them — and they end BEFORE
+		// the notify below fires, because the notify func drives the
+		// receiver synchronously: a hold still in place at the drive's
+		// list read would present the delivered row alone and leave
+		// the stopped report for a later generation.
+		receiver.releaseAutomaticDriveHolds()
 		receiver.notify()
 		c.notifyDelegateAttention()
 	case coldDelegateDeliveryReceiver:

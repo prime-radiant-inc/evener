@@ -185,20 +185,25 @@ func (s *Session) hasPendingStableSteering() bool {
 }
 
 // pendingDelegateUpdateAttentionIDs lists the updates from this session's own
-// delegates that no turn has consumed. A delegate run parked in its
-// finalization drain reads this to run a turn for them: a parent waiting on
-// its delegates is idle, and an update wakes an idle parent, so a delegate's
-// mid-work question is not hidden until that delegate finishes. A child's
-// report waits for the generation's end, where the next attention generation
-// takes it with everything else pending. The root's attention has its own
-// rail, so this is always empty there. A failed transcript read reads as no
-// update: the drain keeps waiting, and the generation's end still delivers
-// the attention.
+// delegates that no turn has consumed and an automatic drive may still
+// present. A delegate run parked in its finalization drain reads this to run
+// a turn for them: a parent waiting on its delegates is idle, and an update
+// wakes an idle parent, so a delegate's mid-work question is not hidden
+// until that delegate finishes. The list is the automatic drive's own, so a
+// row a user's stop holds out of the drives is owed no drain turn either —
+// the drain's turn presents exactly what a drive presents, and a held row is
+// filtered from every leased request, so a turn run for it would neither
+// present nor consume it and the drain would never fall quiet; the row waits
+// for its hold's release. A child's report waits for the generation's end,
+// where the next attention generation takes it with everything else pending.
+// The root's attention has its own rail, so this is always empty there. A
+// failed transcript read reads as no update: the drain keeps waiting, and the
+// generation's end still delivers the attention.
 func (s *Session) pendingDelegateUpdateAttentionIDs() []string {
 	if s == nil || s.owningDelegateID == "" {
 		return nil
 	}
-	ids, err := s.pendingDelegateAttentionIDs()
+	ids, err := s.automaticDelegateAttentionIDs()
 	if err != nil {
 		return nil
 	}
@@ -549,6 +554,10 @@ func (s *Session) finishProcessingAtRestoredFailureBoundary(ctx context.Context)
 	var restoredHistory []schema.Turn
 	var restoredRepairInsertions []int
 	var restoredEntries []transcript.Entry
+	// The superseded attention identities the history build and the
+	// coordinate mappers below share: the transcript folds for them once,
+	// not once per reopen marker and boundary they map.
+	var restoredSuperseded map[string]bool
 	path := s.TranscriptPath()
 	s.attentionMu.Lock()
 	if path != "" {
@@ -556,7 +565,8 @@ func (s *Session) finishProcessingAtRestoredFailureBoundary(ctx context.Context)
 		// transcript must still be read to reconcile the boundary.
 		_, entries, _, err := readTranscript(context.Background(), path, s.stateDir)
 		if err == nil {
-			restoredHistory, restoredRepairInsertions = resumeHistoryIndexed(entries)
+			restoredSuperseded = supersededDelegateAttentionIDs(entries)
+			restoredHistory, restoredRepairInsertions = resumeHistoryIndexedWithSuperseded(entries, restoredSuperseded)
 			restoredEntries = entries
 		}
 	}
@@ -575,7 +585,7 @@ func (s *Session) finishProcessingAtRestoredFailureBoundary(ctx context.Context)
 		// Map the immutable full-transcript divergence into the resumed
 		// history's coordinates (retained window, skipped transcript-only
 		// entries and repair insertions) before consulting journal provenance.
-		divergence = resumedDivergence(restoredEntries, divergence, restoredRepairInsertions)
+		divergence = resumedDivergence(restoredEntries, divergence, restoredRepairInsertions, restoredSuperseded)
 	}
 	origins := s.clientMutations.steeringOrigins()
 	if restoredHistory == nil {
@@ -589,7 +599,7 @@ func (s *Session) finishProcessingAtRestoredFailureBoundary(ctx context.Context)
 		release(transitioned, turnMS)
 		return
 	}
-	state := deriveRestoredState(restoredHistory, divergence, origins, latestAttemptStarts(restoredEntries, restoredRepairInsertions))
+	state := deriveRestoredState(restoredHistory, divergence, origins, latestAttemptStarts(restoredEntries, restoredRepairInsertions, restoredSuperseded))
 	pending, isAskRound := deriveRestoredAskPending(restoredHistory, divergence, origins)
 	transitioned, turnMS := s.transitionProcessingAtBoundaryLocked(state)
 	if transitioned {

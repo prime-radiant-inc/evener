@@ -175,6 +175,25 @@ type testConfig struct {
 	// generation is committed and its run goroutine does not exist yet. Tests use
 	// it to drive the child from a second goroutine at exactly that point.
 	delegateAttentionStartCommitted func(*subagent)
+	// delegateAttentionCommitStartFault, when set, is consulted just before
+	// the attention drive commits a presentation start; a non-nil error stands
+	// in for a commit the controller refused — a busy-class error also aborts
+	// the start, mirroring the reservation a real busy commit released, so
+	// tests can pin the busy arm's recovery deterministically without racing
+	// a real busy. Nil in production.
+	delegateAttentionCommitStartFault func() error
+	// delegateAttentionArmFault, when set, is consulted at the top of
+	// armDelegateAttention; a non-nil error stands in for an arm the
+	// controller refused, so a test can pin the hold-release paths that do
+	// not run through a successful arm. The retry timer re-arms through
+	// armDelegateAttentionOnce and bypasses the fault, mirroring a refused
+	// arm whose paced retry later succeeds. Nil in production.
+	delegateAttentionArmFault func() error
+	// delegateAttentionBeforeReopenAppend observes the instant a reopen's
+	// durable append is about to land, after every teardown guard has run.
+	// Tests pause it there so a stop admitted into the guard-to-append window
+	// can be pinned. Nil in production.
+	delegateAttentionBeforeReopenAppend func()
 	// delegateAttentionBeforeGuardRelease observes an attention drive that
 	// launched no run, while it still holds the child's drive guard. Tests
 	// pause it there so another drive is refused on that guard. Nil in
@@ -319,6 +338,19 @@ type testConfig struct {
 	// window. Nil keeps the production default. Inherited by child configs
 	// like every testOnly field.
 	delegateIdleReleaseDelay *time.Duration
+
+	// disableRestoredDelegateNotifyDrive suppresses the parent-drive notify
+	// edge a cold-restored delegate runtime installs at restore time (see
+	// restoreIdle): that edge lets the owner present the restored delegate's
+	// armed reports without waiting for its own next pass, and it fires from
+	// inside the restore — before any test-side SetNotifyFunc(nil) disarm can
+	// reach it. A fixture whose tests script the delegate's presentation
+	// drives themselves sets this on the root, so a report arming while the
+	// fixture's send is still settling stays pending until the test's own loop
+	// drives it. False in production: the edge is how a restored delegate's
+	// reports reach the model without waiting for the owner's next pass.
+	// Inherited by child configs like every testOnly field.
+	disableRestoredDelegateNotifyDrive bool
 
 	// needsResponseQuietPeriod overrides needsResponseQuietPeriodDefault for
 	// tests; zero rests awaiting at the settle itself. Nil keeps the
