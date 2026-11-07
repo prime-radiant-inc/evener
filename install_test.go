@@ -314,6 +314,7 @@ func TestNativePreflightRefusesUnreadyInstalls(t *testing.T) {
 }
 
 func TestInstallHomeGeneratedHome(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("install integration test")
 	}
@@ -433,6 +434,7 @@ func TestInstallHomeGeneratedHome(t *testing.T) {
 // failure. Asserting the output names evener-missing keeps the failure pinned
 // to the copy rather than to an unrelated build-stage error.
 func TestInstallFailsWhenABinaryCopyFails(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("install integration test")
 	}
