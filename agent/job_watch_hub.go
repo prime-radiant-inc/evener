@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"slices"
 	"strings"
 	"time"
@@ -41,7 +42,7 @@ var hubObservationEvents = [...]string{"status", "question", "approval", "commun
 
 const hubRosterWatchKey = "hub:roster"
 
-const rosterRecoveryFrame = "roster_resync: true\nrecovery: re-register job_watch with hub={\"scope\":\"top_level\"} for a fresh snapshot\n"
+const rosterRecoveryFrame = "roster_resync: true\nrecovery: re-register the same roster watch — job_watch with hub={\"scope\":\"top_level\"} and the same note — for a fresh snapshot\n"
 
 // The pending send rail replaces earlier frames for the same watch key.
 // Merge only roster frames there, after it finds the actual undelivered state.
@@ -97,8 +98,9 @@ func rosterFrameField(frame, field string) string {
 
 // A roster occupies one ordinary live-watch slot and journal identity. Its
 // source is top_level, while the reserved target keys its registration.
-func (jm *jobManager) configureHubRosterWatch(ctx context.Context, caller string) (watchResult, error) {
-	a := watchArgs{Target: hubRosterWatchKey, Source: hubRosterWatchKey, Send: &watchSendArgs{To: runtimeMessageAliasCaller}, ReceiverSendInternal: true}
+// note rides its frames like any watch's payload.
+func (jm *jobManager) configureHubRosterWatch(ctx context.Context, caller, note string) (watchResult, error) {
+	a := watchArgs{Target: hubRosterWatchKey, Source: hubRosterWatchKey, Send: &watchSendArgs{To: runtimeMessageAliasCaller}, ReceiverSendInternal: true, Note: note}
 	cfg, err := newWatchConfig(a, jm.now(), "")
 	if err != nil {
 		return watchResult{}, err
@@ -216,7 +218,7 @@ func (jm *jobManager) onHubRoster(id string, update appwire.SessionWatchUpdate) 
 		jm.mu.Unlock()
 		return nil
 	}
-	trigger := "roster resync: re-register job_watch hub={scope:top_level} for a fresh snapshot"
+	trigger := "roster resync: re-register the same roster watch — job_watch with hub={scope:top_level} and the same note — for a fresh snapshot"
 	var payload string
 	if !r.Resync {
 		type rosterChange struct {
@@ -263,7 +265,14 @@ func hubObservationSelector(event string) bool {
 	return slices.Contains(hubObservationEvents[:], event)
 }
 
-func validateHubWatchSelectors(selectors []string, completion bool) error {
+func validateHubWatchSelectors(selectors []string, completion bool, every int) error {
+	// every counts observations of one selected kind, the ordinary path's
+	// single-kind rule applied to the hub vocabulary; it is checked first so
+	// a watch that names neither events nor completion is refused for the
+	// argument it got wrong.
+	if every > 0 && len(selectors) != 1 {
+		return errors.New(`invalid_request: every requires the hub object's events to name exactly one kind (e.g. hub={"ref":"local:...","events":["communicate"]} with every 3)`)
+	}
 	if len(selectors) == 0 && !completion {
 		return errors.New("invalid_request: watch needs events or completion")
 	}
@@ -279,22 +288,30 @@ func validateHubWatchSelectors(selectors []string, completion bool) error {
 // watches. Their source is a canonical ref, not a local job or event stream.
 // caller names the Manager whose binding admitted the watch; the durable
 // identity keys on the target triple plus that caller, so two Managers
-// watching the same target keep distinct watches.
-func (jm *jobManager) configureHubWatchContext(ctx context.Context, ref, instance, generation, caller string, selectors []string, completion bool) (watchResult, error) {
+// watching the same target keep distinct watches. note is the ordinary
+// payload and rides every delivery; every > 0 throttles observation fires of
+// the single selected kind, the ordinary every-Nth semantics applied to hub
+// observations.
+func (jm *jobManager) configureHubWatchContext(ctx context.Context, ref, instance, generation, caller string, selectors []string, completion bool, note string, every int) (watchResult, error) {
 	if ref == "" || instance == "" || generation == "" || caller == "" {
 		return watchResult{}, errors.New("source_not_watchable: authoritative hub target generation and Manager caller are required")
 	}
-	if err := validateHubWatchSelectors(selectors, completion); err != nil {
+	if err := validateHubWatchSelectors(selectors, completion, every); err != nil {
 		return watchResult{}, err
 	}
-	a := watchArgs{Target: ref, Source: ref, Send: &watchSendArgs{To: runtimeMessageAliasCaller}, ReceiverSendInternal: true}
+	a := watchArgs{Target: ref, Source: ref, Send: &watchSendArgs{To: runtimeMessageAliasCaller}, ReceiverSendInternal: true, Note: note}
 	cfg, err := newWatchConfig(a, jm.now(), "")
 	if err != nil {
 		return watchResult{}, err
 	}
 	cfg.events = canonicalWatchEvents(selectors)
+	// The every-Nth count for hub observations shares the ordinary path's
+	// counter: the ordinary evaluator never advances it for a hub config,
+	// because its target (a session ref) is never an active watch target and
+	// its triggerKind stays unset.
+	cfg.triggerEvery = every
 	cfg.hubRef, cfg.hubInstance, cfg.hubGeneration, cfg.hubCaller, cfg.hubCompletion = ref, instance, generation, caller, completion
-	cfg.configHash = fmt.Sprintf("%s:%s:%s:%s:%s:%v:%v", cfg.configHash, ref, instance, generation, caller, cfg.events, completion)
+	cfg.configHash = fmt.Sprintf("%s:%s:%s:%s:%s:%v:%v:%d", cfg.configHash, ref, instance, generation, caller, cfg.events, completion, every)
 	key := watchKey{VisibleSessionID: jm.sessionID, Target: ref, SendTo: runtimeMessageAliasCaller}
 	jm.mu.Lock()
 	if err := ctx.Err(); err != nil {
@@ -499,6 +516,24 @@ func (jm *jobManager) onHubObservationLookup(watchID string, update appwire.Sess
 		jm.mu.Unlock()
 		return nil
 	}
+	// every throttles matching observations the way the ordinary path's
+	// every-Nth trigger does: each Nth selected observation delivers, the rest
+	// count silently and stay clear of the condition-fire breaker, which on
+	// the ordinary path never sees a throttled event either. A suppressed
+	// observation commits its dedup marker so a replay of the same entry is
+	// not a new occurrence. Completion is the watch's terminal condition and
+	// replay-gap evidence is recovery information, so neither is throttled.
+	// The counter is the ordinary path's own cfg.eventCount, which the
+	// ordinary evaluator never advances for a hub config (see
+	// configureHubWatchContext).
+	if m.CausalKnown && !complete && cfg.triggerEvery > 0 {
+		cfg.eventCount++
+		if cfg.eventCount%cfg.triggerEvery != 0 {
+			cfg.hubSeen[identity] = true
+			jm.mu.Unlock()
+			return nil
+		}
+	}
 	crossedBudget := false
 	if m.CausalKnown && !complete {
 		var accepted bool
@@ -692,11 +727,126 @@ func (jm *jobManager) lockHubRosterReplacement(ctx context.Context) (func(), err
 	}
 }
 
-func (s *Session) configureHubWatchRuntime(ctx context.Context, args map[string]any) (any, error) {
-	for key := range args {
-		if key != "operation" && key != "hub" && key != "intent" {
-			return nil, appwire.InvalidParams("hub watch cannot combine ordinary watch arguments")
+// hubWatchOrdinaryArgs parses the ordinary job_watch arguments that apply to a
+// hub watch and refuses each one that cannot apply, naming it.
+//
+// note is the watch's prose payload and every throttles observation fires, so
+// both behave exactly as on the ordinary path: the same parse helpers, the same
+// normalizeWatchArgs bounds, and — once the watch is configured — the same
+// cfg.note and cfg.triggerEvery storage the ordinary rails read. The remaining
+// ordinary arguments select triggers a session watch cannot express (a concrete
+// job's output or progress, a self timer, an assistant.tool filter, or the
+// ordinary source spelling), and a refusal naming the argument tells the
+// caller which of the two vocabularies it reached for. Every trigger argument
+// is parsed into the watchArgs so present-but-neutral values are judged by the
+// same watchTriggerArgumentIsNeutral the ordinary path uses, and the per-key
+// refusals run before normalizeWatchArgs, so a well-formed value of an
+// inapplicable argument is answered with the reason it cannot apply rather
+// than the bounds of a trigger it can never arm; a type-malformed value is
+// answered by its parse error, which still names the field. Keys are visited
+// in sorted order so a call with several inapplicable arguments always
+// reports the same one first.
+func hubWatchOrdinaryArgs(args map[string]any) (watchArgs, error) {
+	a := watchArgs{Note: stringArg(args, "note")}
+	for _, field := range []struct {
+		key string
+		dst *int
+	}{
+		{"every", &a.Every},
+		{"progress_interval_ms", &a.ProgressIntervalMS},
+		{"after_seconds", &a.AfterSeconds},
+		{"repeat_seconds", &a.RepeatSeconds},
+	} {
+		n, ok, err := watchIntArg(args, field.key)
+		if err != nil {
+			return watchArgs{}, err
 		}
+		if ok {
+			*field.dst = n
+		}
+	}
+	a.OutputMatch = stringArg(args, "output_match")
+	events, err := stringArrayArg(args, "events")
+	if err != nil {
+		return watchArgs{}, err
+	}
+	a.Events = events
+	a.EventFilter, err = watchEventFilterArg(args)
+	if err != nil {
+		return watchArgs{}, err
+	}
+	for _, key := range slices.Sorted(maps.Keys(args)) {
+		value := args[key]
+		switch key {
+		case "operation", "hub", "intent", "note", "every":
+			// Parsed above or owned by the hub branch below.
+		case "events", "output_match", "progress_interval_ms", "after_seconds", "repeat_seconds", "event_filter":
+			if !watchTriggerArgumentIsNeutral(key, value, a) {
+				return watchArgs{}, inapplicableHubWatchArgumentError(key)
+			}
+		case "source":
+			if !emptyStringArgument(value) {
+				return watchArgs{}, errors.New("invalid_request: a hub watch names its target in the hub object's ref, not in source")
+			}
+		case "watch_id":
+			if !emptyStringArgument(value) {
+				return watchArgs{}, errors.New("invalid_request: a hub watch create mints its own watch_id; list, inspect and clear take watch_id without the hub argument")
+			}
+		case "target":
+			if !emptyStringArgument(value) {
+				return watchArgs{}, errors.New("invalid_request: a hub watch names its target in the hub object's ref, not in target")
+			}
+		case "send":
+			if value != nil {
+				return watchArgs{}, errors.New("invalid_request: job_watch delivers to the watcher automatically; send is not a public argument")
+			}
+		case "receiver_session_id", "receiver_delegate_id":
+			if !emptyStringArgument(value) {
+				return watchArgs{}, fmt.Errorf("invalid_request: %s is derived from the watcher session and cannot be set on a hub watch", key)
+			}
+		default:
+			return watchArgs{}, fmt.Errorf("invalid_request: %q is not a job_watch argument", key)
+		}
+	}
+	if err := normalizeWatchArgs(&a); err != nil {
+		return watchArgs{}, err
+	}
+	return a, nil
+}
+
+// inapplicableHubWatchArgumentError names one ordinary trigger argument that
+// has no meaning for a watch whose subject is a session, with the reason it
+// cannot apply.
+func inapplicableHubWatchArgumentError(key string) error {
+	switch key {
+	case "events":
+		return errors.New(`invalid_request: a hub watch selects its event kinds inside the hub object (hub={"ref":...,"events":["status","question","approval","communicate"]}), not in the top-level events argument`)
+	case "output_match":
+		return errors.New("invalid_request: output_match scans a concrete job's retained output, and a hub watch observes a session, which has no output stream; select events or completion inside the hub object")
+	case "progress_interval_ms":
+		return errors.New("invalid_request: progress_interval_ms paces periodic progress on a concrete job's output, and a hub watch observes a session, which has no output stream")
+	case "after_seconds", "repeat_seconds":
+		return fmt.Errorf("invalid_request: %s arms a timer on source self, and a hub watch's source is the watched session named by the hub object's ref", key)
+	case "event_filter":
+		return errors.New("invalid_request: event_filter narrows assistant.tool events by tool_name and ok/error status, and hub observations are status, question, approval and communicate events, which carry neither")
+	}
+	return fmt.Errorf("invalid_request: %s cannot apply to a hub watch", key)
+}
+
+// emptyStringArgument reports a value that reads as omitted: null or the empty
+// string.
+func emptyStringArgument(value any) bool {
+	if value == nil {
+		return true
+	}
+	s, ok := value.(string)
+	return ok && s == ""
+}
+
+func (s *Session) configureHubWatchRuntime(ctx context.Context, args map[string]any) (any, error) {
+	ordinary, err := hubWatchOrdinaryArgs(args)
+	if err != nil {
+		return nil, appwire.InvalidParams(err.Error())
 	}
 	if args["operation"] != "create" {
 		return nil, appwire.InvalidParams("hub watches require operation=create")
@@ -730,16 +880,25 @@ func (s *Session) configureHubWatchRuntime(ctx context.Context, args map[string]
 			return nil, appwire.InvalidParams(err.Error())
 		}
 	}
+	// The roster's events are fixed and not selectable, so every has no kind
+	// to count there; the single-kind rule for target watches lives in
+	// validateHubWatchSelectors, which configureHubWatchContext re-checks for
+	// the seam it owns.
+	if ordinary.Every > 0 && request.Scope == "top_level" {
+		return nil, appwire.InvalidParams("invalid_request: every counts one selected event kind, and the top-level roster watch's events are fixed: new, needs_you, error, disappeared")
+	}
+	// Request-shape validation runs before the client is touched, so a
+	// malformed watch fails fast without a round trip.
+	if request.Scope == "" {
+		if err := validateHubWatchSelectors(request.Events, request.Completion, ordinary.Every); err != nil {
+			return nil, appwire.InvalidParams(err.Error())
+		}
+	}
 	s.mu.Lock()
 	client, enabled, closing := s.hubClient, s.hubEnabled, s.closing
 	s.mu.Unlock()
 	if client == nil || !enabled || closing {
 		return nil, appwire.InvalidRequest("Manager tool unavailable")
-	}
-	if request.Scope == "" {
-		if err := validateHubWatchSelectors(request.Events, request.Completion); err != nil {
-			return nil, appwire.InvalidParams(err.Error())
-		}
 	}
 	state, err := client.State(ctx)
 	if err != nil {
@@ -819,9 +978,9 @@ func (s *Session) configureHubWatchRuntime(ctx context.Context, args map[string]
 	}
 	var result watchResult
 	if request.Scope == "top_level" {
-		result, err = jm.configureHubRosterWatch(ctx, state.Ref)
+		result, err = jm.configureHubRosterWatch(ctx, state.Ref, ordinary.Note)
 	} else {
-		result, err = jm.configureHubWatchContext(ctx, request.Ref, first.Metadata.InstanceID, first.Metadata.GenerationID, state.Ref, request.Events, request.Completion)
+		result, err = jm.configureHubWatchContext(ctx, request.Ref, first.Metadata.InstanceID, first.Metadata.GenerationID, state.Ref, request.Events, request.Completion, ordinary.Note, ordinary.Every)
 	}
 	if err != nil {
 		cancel()

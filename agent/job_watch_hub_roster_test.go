@@ -18,7 +18,7 @@ import (
 func rosterTestWatch(t *testing.T) (*jobManager, string) {
 	t.Helper()
 	root := newMessagingRoot(t, newMessagingAdapter(), nil)
-	result, err := root.jobManager.configureHubRosterWatch(context.Background(), "local:manager")
+	result, err := root.jobManager.configureHubRosterWatch(context.Background(), "local:manager", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -98,7 +98,7 @@ func TestHubRosterWatchDeliveredFrame(t *testing.T) {
 	root := newMessagingRoot(t, newMessagingAdapter(), nil)
 	jm := root.jobManager
 	jm.enqueue = root.enqueueJobNotification
-	result, err := jm.configureHubRosterWatch(t.Context(), "local:manager")
+	result, err := jm.configureHubRosterWatch(t.Context(), "local:manager", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -126,7 +126,7 @@ func TestHubRosterWatchSettledRebindDeliversDelta(t *testing.T) {
 	root := newMessagingRoot(t, newMessagingAdapter(), nil)
 	jm := root.jobManager
 	jm.enqueue = root.enqueueJobNotification
-	result, err := jm.configureHubRosterWatch(t.Context(), "local:manager")
+	result, err := jm.configureHubRosterWatch(t.Context(), "local:manager", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -172,7 +172,7 @@ func TestHubRosterWatchPendingAppendFailureRecoversFullSnapshot(t *testing.T) {
 	root := newMessagingRoot(t, newMessagingAdapter(), nil)
 	jm := root.jobManager
 	jm.enqueue = root.enqueueJobNotification
-	result, err := jm.configureHubRosterWatch(t.Context(), "local:manager")
+	result, err := jm.configureHubRosterWatch(t.Context(), "local:manager", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -216,7 +216,7 @@ func TestHubRosterWatchPendingAppendFailureRecoversFullSnapshot(t *testing.T) {
 		t.Fatalf("failed delta persisted: pending events=%d, want only the initial", len(got))
 	}
 	root.drainJobNotifications() // Discard the persistence diagnostic before recovery.
-	registration, err := jm.configureHubRosterWatch(t.Context(), "local:manager")
+	registration, err := jm.configureHubRosterWatch(t.Context(), "local:manager", "")
 	if err != nil || registration.WatchID != result.WatchID {
 		t.Fatalf("recovery registration=%+v err=%v", registration, err)
 	}
@@ -242,7 +242,7 @@ func TestHubRosterWatchRecoveryInitialReplacesDeltaAfterSettledResync(t *testing
 	root := newMessagingRoot(t, newMessagingAdapter(), nil)
 	jm := root.jobManager
 	jm.enqueue = root.enqueueJobNotification
-	result, err := jm.configureHubRosterWatch(t.Context(), "local:manager")
+	result, err := jm.configureHubRosterWatch(t.Context(), "local:manager", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -259,7 +259,7 @@ func TestHubRosterWatchRecoveryInitialReplacesDeltaAfterSettledResync(t *testing
 	if err := jm.onHubRoster(result.WatchID, rosterUpdate(2, false, rosterEntry("local:stale", "new"))); err != nil {
 		t.Fatal(err)
 	}
-	registration, err := jm.configureHubRosterWatch(t.Context(), "local:manager")
+	registration, err := jm.configureHubRosterWatch(t.Context(), "local:manager", "")
 	if err != nil || registration.WatchID != result.WatchID {
 		t.Fatalf("recovery registration=%+v err=%v", registration, err)
 	}
@@ -287,7 +287,7 @@ func TestHubRosterWatchPendingInitialMarkerSurvivesDelta(t *testing.T) {
 			root := newMessagingRoot(t, newMessagingAdapter(), nil)
 			jm := root.jobManager
 			jm.enqueue = root.enqueueJobNotification
-			result, err := jm.configureHubRosterWatch(t.Context(), "local:manager")
+			result, err := jm.configureHubRosterWatch(t.Context(), "local:manager", "")
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -335,7 +335,7 @@ func TestHubRosterWatchWorkerClearBaseline(t *testing.T) {
 	root := newMessagingRoot(t, newMessagingAdapter(), nil)
 	jm := root.jobManager
 	jm.enqueue = root.enqueueJobNotification
-	result, err := jm.configureHubRosterWatch(t.Context(), "local:manager")
+	result, err := jm.configureHubRosterWatch(t.Context(), "local:manager", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -370,7 +370,7 @@ func TestHubRosterWatchEmptyInitial(t *testing.T) {
 	root := newMessagingRoot(t, newMessagingAdapter(), nil)
 	jm := root.jobManager
 	jm.enqueue = root.enqueueJobNotification
-	result, err := jm.configureHubRosterWatch(t.Context(), "local:manager")
+	result, err := jm.configureHubRosterWatch(t.Context(), "local:manager", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -404,7 +404,7 @@ func TestHubRosterWatchEmptyResyncRecovery(t *testing.T) {
 			root := newMessagingRoot(t, newMessagingAdapter(), nil)
 			jm := root.jobManager
 			jm.enqueue = root.enqueueJobNotification
-			result, err := jm.configureHubRosterWatch(t.Context(), "local:manager")
+			result, err := jm.configureHubRosterWatch(t.Context(), "local:manager", "")
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -489,7 +489,7 @@ func TestHubRosterWatchCoalescesUndeliveredChanges(t *testing.T) {
 	t.Parallel()
 	root := newMessagingRoot(t, newMessagingAdapter(), nil)
 	root.jobManager.enqueue = root.enqueueJobNotification
-	result, err := root.jobManager.configureHubRosterWatch(t.Context(), "local:manager")
+	result, err := root.jobManager.configureHubRosterWatch(t.Context(), "local:manager", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -537,7 +537,7 @@ func TestHubRosterWatchPreservesResyncAcrossQueuedDelta(t *testing.T) {
 	t.Parallel()
 	root := newMessagingRoot(t, newMessagingAdapter(), nil)
 	root.jobManager.enqueue = root.enqueueJobNotification
-	result, err := root.jobManager.configureHubRosterWatch(t.Context(), "local:manager")
+	result, err := root.jobManager.configureHubRosterWatch(t.Context(), "local:manager", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -573,7 +573,7 @@ func TestHubRosterWatchLargeRecoveryFrame(t *testing.T) {
 	t.Parallel()
 	root := newMessagingRoot(t, newMessagingAdapter(), nil)
 	root.jobManager.enqueue = root.enqueueJobNotification
-	result, err := root.jobManager.configureHubRosterWatch(t.Context(), "local:manager")
+	result, err := root.jobManager.configureHubRosterWatch(t.Context(), "local:manager", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -689,7 +689,7 @@ func TestHubRosterWatchRebind(t *testing.T) {
 	if err := jm.onHubRoster(id, rosterUpdate(10, true, rosterEntry("local:a", "new"), rosterEntry("local:gone", "idle"))); err != nil {
 		t.Fatal(err)
 	}
-	next, err := jm.configureHubRosterWatch(context.Background(), "local:manager")
+	next, err := jm.configureHubRosterWatch(context.Background(), "local:manager", "")
 	if err != nil || next.WatchID != id {
 		t.Fatalf("rebind config=%+v err=%v", next, err)
 	}

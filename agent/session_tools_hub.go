@@ -324,7 +324,7 @@ func (s *Session) createHubDelegate(ctx context.Context, args map[string]any) (a
 	if sourceID == "" {
 		sourceID = "local"
 	}
-	if err := validateHubWatchSelectors(hub.Watch.Events, hub.Watch.Completion); err != nil {
+	if err := validateHubWatchSelectors(hub.Watch.Events, hub.Watch.Completion, 0); err != nil {
 		return nil, appwire.InvalidParams("invalid hub watch selectors")
 	}
 	s.mu.Lock()
