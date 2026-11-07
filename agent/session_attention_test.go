@@ -4823,32 +4823,12 @@ func TestDelegateAttention_FailedStopDeliveryAckSignalsStopProgress(t *testing.T
 	c.mu.Unlock()
 }
 
-// A send that fails before launchSubagentRun owns no runner, so the failed send
-// itself must not reach the provider. Releasing its committed start re-drives
-// the child, and that re-drive can launch a notification or attention turn
-// which calls the provider on its own goroutine. The total request count after
-// the send therefore does not witness the failed send: sample the count at the
-// rollback boundary, after every failed-send step and immediately before the
-// re-drive, and require zero there. The re-drive's own notification turn
-// reaches the provider after that sample, so this test also proves it
-// distinguishes the two.
-//
-// Regression for the provider-count arm of #4844.
-func TestDelegateAttention_PrelaunchFailedSendDoesNotReachProvider(t *testing.T) {
-	fixture := newColdDelegateFixture(t, "")
-	root, err := restoreDelegateResourceBootstrapSession(fixture.client, fixture.profile, fixture.workspace, fixture.meta, fixture.stateDir)
-	if err != nil {
-		t.Fatalf("restore root: %v", err)
-	}
-	defer root.Close()
-	fs := newAttentionFailNextSyncFS()
-	atRollback := -1
-	var redrivenChild string
-	root.cfg.testOnly.delegateSendRollbackBeforeRedrive = func(childSessionID string) {
-		atRollback = len(fixture.adapter.Requests())
-		redrivenChild = childSessionID
-	}
-	root.delegateRestoreBeforeSideEffects = func(child *Session) {
+// replaceChildTranscriptWithFS swaps a restored child's transcript writer for
+// one on fs, so a send test can inject a sync fault in the start-input path.
+func replaceChildTranscriptWithFS(t *testing.T, fs afero.Fs) func(*Session) {
+	t.Helper()
+	return func(child *Session) {
+		t.Helper()
 		child.mu.Lock()
 		oldWriter := child.transcript
 		child.mu.Unlock()
@@ -4860,11 +4840,42 @@ func TestDelegateAttention_PrelaunchFailedSendDoesNotReachProvider(t *testing.T)
 			t.Fatalf("replace child transcript: %v", err)
 		}
 		child.attachTranscript(writer)
+	}
+}
+
+// A send that fails before launchSubagentRun owns no runner, so the failed send
+// itself must not reach the provider. Releasing its committed start re-drives
+// the child, and that re-drive can launch a notification or attention turn
+// which calls the provider on its own goroutine. The total request count after
+// the send therefore does not witness the failed send: sample the count at the
+// rollback boundary, after every failed-send step and before the rollback
+// releases the claim and re-drives the child, and require zero there. The
+// re-drive's own notification turn reaches the provider after that sample, so
+// this test also proves it distinguishes the two.
+//
+// Regression for the provider-count arm of #4844.
+func TestDelegateAttention_PrelaunchFailedSendDoesNotReachProvider(t *testing.T) {
+	fixture := newColdDelegateFixture(t, "")
+	root, err := restoreDelegateResourceBootstrapSession(fixture.client, fixture.profile, fixture.workspace, fixture.meta, fixture.stateDir)
+	if err != nil {
+		t.Fatalf("restore root: %v", err)
+	}
+	defer root.Close()
+	fs := newAttentionFailNextSyncFS()
+	var atRollback int
+	var redrivenChild string
+	root.cfg.testOnly.delegateSendRollbackBeforeRedrive = func(childSessionID string) {
+		atRollback = len(fixture.adapter.Requests())
+		redrivenChild = childSessionID
+	}
+	replaceTranscript := replaceChildTranscriptWithFS(t, fs)
+	root.delegateRestoreBeforeSideEffects = func(child *Session) {
+		replaceTranscript(child)
 		child.cfg.testOnly.delegateInitialInputAppend = func(*Session) {
 			// Fail the input write's own fsync, before launchSubagentRun. The
 			// failure batch that closes the generation appends to the store,
 			// which stays open.
-			fs.failSyncAfter(0, nil)
+			fs.failNextSync()
 		}
 	}
 
@@ -4898,18 +4909,9 @@ func TestDelegateAttention_StartDeliveryReplayFailureDoesNotFailCommittedStart(t
 	seedDelegateControllerIdle(t, c, "dlg_nested_source", fixture.delegateID)
 	seedDelegateControllerDelivery(t, c, "dlg_nested_source")
 	fs := newAttentionFailNextSyncFS()
+	replaceTranscript := replaceChildTranscriptWithFS(t, fs)
 	root.delegateRestoreBeforeSideEffects = func(child *Session) {
-		child.mu.Lock()
-		oldWriter := child.transcript
-		child.mu.Unlock()
-		if err := oldWriter.Close(); err != nil {
-			t.Fatalf("close restored child transcript: %v", err)
-		}
-		writer, err := transcript.NewWriterWithFS(fs, transcriptPath(child.stateDir, child.id), transcript.Header{SessionID: child.id})
-		if err != nil {
-			t.Fatalf("replace child transcript: %v", err)
-		}
-		child.attachTranscript(writer)
+		replaceTranscript(child)
 		child.cfg.testOnly.delegateInitialInputAppend = func(*Session) {
 			// The input write and the notification write land; closing the store
 			// on the notification's sync leaves only the acknowledgment append to

@@ -133,11 +133,8 @@ type testConfig struct {
 	// id-keyed claim refuses a second turn.
 	delegateSendStartClaimed func(childSessionID string)
 	// delegateSendRollbackBeforeRedrive observes a failed send's rollback after
-	// every failed-send step has run and immediately before the rollback
-	// re-drives the claimed child. That re-drive can launch a notification or
-	// attention turn which reaches the provider on its own goroutine, so tests
-	// sample the provider here to assert the failed send itself reached none.
-	// Nil in production.
+	// every failed-send step has run and before the rollback releases the child
+	// claim and re-drives the claimed child. Nil in production.
 	delegateSendRollbackBeforeRedrive func(childSessionID string)
 	// delegateDeliveryCommitsTaken observes the tool-result boundary after inline
 	// delivery commits leave the pending map and before any transcript write.
