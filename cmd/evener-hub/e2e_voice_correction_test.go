@@ -295,25 +295,56 @@ func (f *voiceCorrectionStack) connect(t *testing.T) map[string]any {
 
 func (f *voiceCorrectionStack) read(t *testing.T) appwire.ThreadReadResponse {
 	t.Helper()
-	read, err := f.client.ThreadRead(f.ctx, appwire.ThreadReadParams{Ref: f.ref, IncludeTurns: true, ItemLimit: appwire.TranscriptItemPageLimit})
-	if err != nil {
-		t.Fatal(err)
-	}
-	e := read.Thread.Evener
-	if e.InstanceID != f.instance || !e.Manager || !e.MutationStateAuthoritative || e.ConversationProvenance == nil || !e.ConversationProvenance.Authoritative {
-		t.Fatal("read lost authoritative original manager identity/provenance")
+	read := f.threadRead(t)
+	if !liveManagerThread(read, f.instance) {
+		e := read.Thread.Evener
+		t.Fatalf("read lost authoritative original manager identity/provenance: boot=%q instance=%q want %q manager=%v mutationAuthority=%v provenance=%+v", read.BootGeneration, e.InstanceID, f.instance, e.Manager, e.MutationStateAuthoritative, e.ConversationProvenance)
 	}
 	return read
 }
 
+func (f *voiceCorrectionStack) threadRead(t *testing.T) appwire.ThreadReadResponse {
+	t.Helper()
+	read, err := f.client.ThreadRead(f.ctx, appwire.ThreadReadParams{Ref: f.ref, IncludeTurns: true, ItemLimit: appwire.TranscriptItemPageLimit})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return read
+}
+
+// readLiveManager returns a read that proves the live original manager. A
+// non-subscribing read may be answered from the saved transcript while a live
+// read is transiently unavailable, and that daemonless projection carries no
+// manager identity or provenance. A baseline that needs the live manager waits
+// for it instead of treating one such answer as a lost identity.
+func (f *voiceCorrectionStack) readLiveManager(t *testing.T, boundary string) appwire.ThreadReadResponse {
+	t.Helper()
+	return f.pollRead(t, boundary, 50*time.Millisecond, func() appwire.ThreadReadResponse { return f.threadRead(t) }, func(read appwire.ThreadReadResponse) bool {
+		return liveManagerThread(read, f.instance)
+	})
+}
+
 func (f *voiceCorrectionStack) waitRead(t *testing.T, boundary string, ready func(appwire.ThreadReadResponse) bool) appwire.ThreadReadResponse {
 	t.Helper()
+	return f.pollRead(t, boundary, 0, func() appwire.ThreadReadResponse { return f.read(t) }, ready)
+}
+
+// pollRead returns a read for which ready holds. Between reads it waits for
+// the next subscription event, or for poll when the caller cannot rely on a
+// notification (a saved answer is not a state change).
+func (f *voiceCorrectionStack) pollRead(t *testing.T, boundary string, poll time.Duration, fetch func() appwire.ThreadReadResponse, ready func(appwire.ThreadReadResponse) bool) appwire.ThreadReadResponse {
+	t.Helper()
 	for {
-		read := f.read(t)
+		read := fetch()
 		if ready(read) {
 			return read
 		}
+		var tick <-chan time.Time
+		if poll > 0 {
+			tick = time.After(poll)
+		}
 		select {
+		case <-tick:
 		case _, ok := <-f.client.Notifications():
 			if !ok {
 				t.Fatalf("notifications ended before %s", boundary)
