@@ -5,12 +5,14 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"maps"
 	"slices"
 	"strings"
 
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/internal/tool"
+	"primeradiant.com/evener/agent/internal/tool/repair"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/identifier"
@@ -188,14 +190,23 @@ func (s *Session) composeHubRegistry() {
 // hub. A hub call creates a top-level session instead; none of its result is an
 // owned delegate report or an acknowledgement of one.
 func managerDelegateDefinition(def llm.ToolDefinition, ordinary bool) llm.ToolDefinition {
+	// The registered definition is the single source for property schemas and
+	// descriptions. The hub-only variant prunes to what hub creation accepts,
+	// so its closed top level declares nothing else; the ordinary variant
+	// keeps the owned-delegate surface for the ordinary arm's branch.
 	var params map[string]any
-	if ordinary {
-		data, _ := json.Marshal(def.Parameters)
-		_ = json.Unmarshal(data, &params)
-	} else {
-		params = map[string]any{"type": "object", "additionalProperties": false, "properties": map[string]any{"prompt": map[string]any{"type": "string"}}}
-	}
+	data, _ := json.Marshal(def.Parameters)
+	_ = json.Unmarshal(data, &params)
 	props := params["properties"].(map[string]any)
+	if !ordinary {
+		for name := range props {
+			switch name {
+			case "prompt", "reasoning_effort", "intent":
+			default:
+				delete(props, name)
+			}
+		}
+	}
 	props["hub"] = map[string]any{
 		"type": "object", "additionalProperties": false,
 		"properties": map[string]any{
@@ -209,12 +220,30 @@ func managerDelegateDefinition(def llm.ToolDefinition, ordinary bool) llm.ToolDe
 	if ordinary {
 		params["anyOf"] = []any{
 			map[string]any{"type": "object", "not": map[string]any{"type": "object", "required": []string{"hub"}}},
-			map[string]any{"type": "object", "required": []string{"hub"}, "properties": map[string]any{"hub": props["hub"], "prompt": props["prompt"], "intent": map[string]any{"type": "string"}}, "additionalProperties": false},
+			map[string]any{"type": "object", "required": []string{"hub"}, "properties": map[string]any{"hub": props["hub"], "prompt": props["prompt"], "reasoning_effort": props["reasoning_effort"], "intent": map[string]any{"type": "string"}}, "additionalProperties": false},
 		}
 	} else {
 		params["required"] = []string{"prompt", "hub"}
 	}
-	def.Description += " In a Manager session, hub={cwd,model,watch} creates an independent top-level session, attaches the requested watch and reads its initial state before sending prompt. hub.host names any host the hub can reach; absent means this hub. Creation, watch and input are reported separately. A failed watch leaves the created session empty; an unknown launch is never retried, and an unknown or unreachable host is refused by the hub. Hub results are not owned delegate reports."
+	// The base definition guarantees both descriptions are strings. The
+	// ordinary variant distinguishes its branches with appended clauses:
+	// name exists there and the base effort default (inherit from parent)
+	// holds only of the ordinary branch. The hub-only variant has one
+	// branch, so it gets hub-creation descriptions directly — the inherited
+	// prompt description coaches task_list, fork_context and isolation
+	// arguments that branch refuses, and an absent effort keeps the hub's
+	// launch default, not a parent's.
+	if name, ok := props["name"].(map[string]any); ok {
+		name["description"] = strings.TrimSpace(name["description"].(string) + " Not accepted on the Manager hub branch: a hub-created session is not an owned delegate, so the name never surfaces; the created ref and the session's prompt-derived title identify it.")
+	}
+	effort := props["reasoning_effort"].(map[string]any)
+	if ordinary {
+		effort["description"] = strings.TrimSpace(effort["description"].(string) + " With hub, it sets the created session's reasoning effort; absent keeps the hub's launch default.")
+	} else {
+		props["prompt"].(map[string]any)["description"] = "The created session's opening prompt, submitted after creation and the requested watch are confirmed. State the assignment the new session should start with, including any paths or constraints it needs; it starts with no other context."
+		effort["description"] = "Reasoning effort for the created session (low, medium, or high). Absent keeps the hub's launch default."
+	}
+	def.Description += " In a Manager session, hub={cwd,model,watch} creates an independent top-level session, attaches the requested watch and reads its initial state before sending prompt; reasoning_effort sets the created session's reasoning effort, and the other owned-delegate arguments do not apply to hub creation and are refused. hub.host names any host the hub can reach; absent means this hub. Creation, watch and input are reported separately. A failed watch leaves the created session empty; an unknown launch is never retried, and an unknown or unreachable host is refused by the hub. Hub results are not owned delegate reports."
 	strictFalse := false
 	def.Strict = &strictFalse
 	def.Parameters = params
@@ -252,6 +281,58 @@ func (s *Session) composeHubDelegateTool() {
 	registered := *base
 	ordinary := s.hubOrdinaryAvailable(name)
 	registered.Definition = managerDelegateDefinition(registered.Definition, ordinary)
+	// The hub branch refuses arguments outside its accepted set before
+	// argument repair can drop them: a Manager-only profile's closed top
+	// level would otherwise let repair silently discard a named argument and
+	// start a session the caller believes it configured. Every rejected name
+	// is listed so one retry removes them all. Register applies the shared
+	// intent parameter to the definition it stores, so derive the accepted
+	// set from the intent-carrying form and a future hub-branch argument
+	// flows to the refusal without a second hand-maintained list. PreValidate
+	// runs in both the pre-dispatch preparation and registry dispatch, ahead
+	// of schema validation and repair in each.
+	intentParams := tool.WithIntentParameter(registered.Definition).Parameters
+	hubBranch := hubBranchArgumentNames(intentParams)
+	// Placeholders are judged against the owned-delegate property schemas of
+	// the unpruned base, not the composed top level: the hub-only variant
+	// prunes its own properties, but repair still drops an empty-enum value
+	// there as an unknown key, so the refusal must skip it on both variants.
+	declared, _ := tool.WithIntentParameter(base.Definition).Parameters["properties"].(map[string]any)
+	registered.PreValidate = func(args map[string]any) error {
+		hub, hubCall := args["hub"]
+		// A null hub marks a call the caller did not configure as hub
+		// creation: repair drops it and the owned-delegate arguments stay
+		// legitimate, so the refusal must not classify the call as a hub one.
+		if !hubCall || hub == nil {
+			return nil
+		}
+		var extras []string
+		for field, value := range args {
+			if _, accepted := hubBranch[field]; accepted {
+				continue
+			}
+			// A null is never a configured argument — repair drops it as an
+			// empty optional or an unknown key — and an empty string the
+			// declared property's enum does not list is the same placeholder
+			// habit. Skip exactly what repair would drop; any other value,
+			// including an out-of-enum one, is configured and the refusal
+			// names it.
+			if value == nil {
+				continue
+			}
+			if value == "" {
+				if prop, _ := declared[field].(map[string]any); prop != nil && repair.EmptyMeansAbsent(prop, value) {
+					continue
+				}
+			}
+			extras = append(extras, field)
+		}
+		if len(extras) == 0 {
+			return nil
+		}
+		slices.Sort(extras)
+		return fmt.Errorf("invalid_request: delegate hub creation does not accept %s; the call was not applied and no session was created", strings.Join(extras, ", "))
+	}
 	registered.Schema = nil
 	registered.Execute = nil
 	registered.Exec = func(ctx context.Context, env execenv.ExecutionEnvironment, args map[string]any) (any, error) {
@@ -264,6 +345,24 @@ func (s *Session) composeHubDelegateTool() {
 		return base.Exec(ctx, env, args)
 	}
 	_ = s.reg.Register(registered)
+}
+
+// hubBranchArgumentNames returns the hub branch's accepted argument names:
+// the anyOf arm that declares a hub property when the ordinary branch is
+// composed, else the pruned closed top level. The only arm declaring a hub
+// property is the hub branch itself.
+func hubBranchArgumentNames(params map[string]any) map[string]any {
+	if arms, ok := params["anyOf"].([]any); ok {
+		for _, raw := range arms {
+			arm, _ := raw.(map[string]any)
+			props, _ := arm["properties"].(map[string]any)
+			if _, hub := props["hub"]; hub {
+				return props
+			}
+		}
+	}
+	props, _ := params["properties"].(map[string]any)
+	return props
 }
 
 type managerCreateStage struct {
@@ -294,7 +393,7 @@ type managerCreateOutcome struct {
 
 func (s *Session) createHubDelegate(ctx context.Context, args map[string]any) (any, error) {
 	for key := range args {
-		if key != "prompt" && key != "hub" && key != "intent" {
+		if key != "prompt" && key != "hub" && key != "intent" && key != "reasoning_effort" {
 			return nil, appwire.InvalidParams("hub creation cannot combine owned delegate arguments")
 		}
 	}
@@ -302,6 +401,9 @@ func (s *Session) createHubDelegate(ctx context.Context, args map[string]any) (a
 	if strings.TrimSpace(prompt) == "" {
 		return nil, appwire.InvalidParams("prompt is required")
 	}
+	// The schema enum-constrains the effort; an empty value keeps the hub's
+	// launch default.
+	effort, _ := args["reasoning_effort"].(string)
 	raw, err := json.Marshal(args["hub"])
 	if err != nil {
 		return nil, err
@@ -335,7 +437,7 @@ func (s *Session) createHubDelegate(ctx context.Context, args map[string]any) (a
 	}
 	out := managerCreateOutcome{Created: managerCreateStage{Status: "unknown"}, Watch: managerWatchStage{Status: "notAttached"}, Input: managerInputStage{Status: "notSubmitted"}}
 	created, err := client.Invoke(ctx, appwire.SessionOperationRequest{Create: &appwire.ThreadStartParams{
-		Harness: "evener", Source: sourceID, CWD: hub.CWD, Model: hub.Model,
+		Harness: "evener", Source: sourceID, CWD: hub.CWD, Model: hub.Model, ReasoningEffort: effort,
 	}})
 	if err != nil {
 		out.Created.Error = err.Error()
