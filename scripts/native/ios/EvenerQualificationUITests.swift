@@ -83,6 +83,13 @@ final class EvenerQualificationUITests: XCTestCase {
 			"cold launch asked for credentials again"
 		)
 		let recovered = composerField(app)
+		// The composer mounts before its restored draft loads from SQLite, so
+		// the draft's arrival is its own bounded wait; a single read could
+		// race the restore and fail a draft that did survive.
+		let restoreDeadline = Date().addingTimeInterval(tripwire)
+		while Date() < restoreDeadline && (recovered.value as? String) != Self.draft {
+			Thread.sleep(forTimeInterval: 0.25)
+		}
 		XCTAssertEqual(recovered.value as? String, Self.draft, "the unsent draft did not survive the cold launch")
 		attach(app, "recovered-draft")
 
