@@ -336,6 +336,11 @@ func (c *delegateTreeController) CompleteDelivery(token delegateDeliveryToken, c
 	defer c.retirementChanged()
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	return c.completeDeliveryLocked(token, committed)
+}
+
+// completeDeliveryLocked is CompleteDelivery's body under the caller's c.mu.
+func (c *delegateTreeController) completeDeliveryLocked(token delegateDeliveryToken, committed bool) (delegateMutationPlans, error) {
 	receipt := c.deliveries[token.processID]
 	if receipt == nil || receipt.token != token {
 		return delegateMutationPlans{}, errDelegateStaleLease
@@ -380,6 +385,13 @@ func (c *delegateTreeController) CompleteDelivery(token delegateDeliveryToken, c
 	if _, err := c.appendLocked(events...); err != nil {
 		receipt.retryable = true
 		c.evidenceVersion++
+		// A stop drain parked on this admission must wake to retry the
+		// acknowledgment; the receipt stays tracked until it lands.
+		if c.stop != nil {
+			if _, tracked := c.stop.deliveries[token]; tracked {
+				c.signalStopProgressLocked()
+			}
+		}
 		return delegateMutationPlans{}, err
 	}
 	if !receipt.inline && receipt.ownerID != "" {
