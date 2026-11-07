@@ -596,13 +596,22 @@ func deliverDelegatePacket(plan delegateDeliveryPlan, receiver delegateDeliveryR
 		return delegateMutationPlans{}, errDelegateStaleLease
 	}
 	// Re-plan a stale head before admission (see replanStaleDelivery).
+	replanned := false
 	if replan := plan.controller.replanStaleDelivery(plan); replan != nil {
 		plan = *replan
 		receiver = plan.receiver
+		replanned = true
 	}
 	token, admitted, err := plan.controller.BeginDelivery(plan)
 	if err != nil || !admitted {
 		resolveDelegateInlineClaim(plan.waiter, delegateInlineResolution{fallback: true})
+		if replanned && errors.Is(err, errDelegateDeliveryRetry) {
+			// The transient arm kept the re-planned claim. The caller requeues
+			// its original stale plan, which can only re-plan once this claim is
+			// gone; otherwise the retry fails the claim-token match and the
+			// head strands.
+			plan.controller.dropDeliveryClaim(plan)
+		}
 		return delegateMutationPlans{}, err
 	}
 	if plan.waiter != nil {

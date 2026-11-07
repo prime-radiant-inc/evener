@@ -136,6 +136,56 @@ func TestDelegateControllerStalePlanDeliversPendingHead(t *testing.T) {
 	}
 }
 
+// A re-planned claim must not outlive a transient refusal. The caller requeues
+// its original stale plan, so keeping the replan's claim makes the retry fail
+// the claim-token match and strands the head.
+func TestDelegateControllerStaleReplanReleasesClaimOnTransientRefusal(t *testing.T) {
+	fixture := newColdDelegateFixture(t, "")
+	root := restoreSupervisionRoot(t, fixture, nil)
+	owner := warmDelegateUnservedRoot(t, root, fixture).sess
+	c := root.delegateController
+	seedDelegateControllerIdle(t, c, "dlg_child", fixture.delegateID)
+	seedDelegateControllerDelivery(t, c, "dlg_child")
+	plans := c.ReplayDeliveries()
+	if len(plans) != 1 {
+		t.Fatalf("nested delivery plans = %#v", plans)
+	}
+	stale := plans[0]
+	c.dropDeliveryClaim(stale)
+
+	c.mu.Lock()
+	c.reservations[9101] = &delegateStartRecord{token: 9101, delegateID: fixture.delegateID, trigger: delegatestore.TriggerAttention}
+	c.mu.Unlock()
+	if _, err := deliverDelegatePacket(stale, stale.receiver); !errors.Is(err, errDelegateDeliveryRetry) {
+		t.Fatalf("delivery under an attention reservation = %v, want a retryable refusal", err)
+	}
+	c.mu.Lock()
+	_, claimKept := c.deliveryClaims[stale.deliveryID]
+	delete(c.reservations, 9101)
+	c.mu.Unlock()
+	if claimKept {
+		t.Fatal("a transient refusal kept the re-planned claim; the requeued stale plan cannot re-plan")
+	}
+
+	if _, err := deliverDelegatePacket(stale, stale.receiver); err != nil {
+		t.Fatalf("retry after the reservation cleared: %v", err)
+	}
+	c.mu.Lock()
+	pending := append([]delegatestore.PendingDelivery(nil), c.durable["dlg_child"].PendingDeliveries...)
+	c.mu.Unlock()
+	if len(pending) != 0 {
+		t.Fatalf("retry left %d pending deliveries: %+v", len(pending), pending)
+	}
+	attention, err := owner.pendingDelegateAttentionIDs()
+	if err != nil {
+		t.Fatalf("owner attention: %v", err)
+	}
+	want := delegateAttentionID(delegateDeliveryID("dlg_child", 1))
+	if len(attention) != 1 || attention[0] != want {
+		t.Fatalf("owner pending attention = %v, want %q", attention, want)
+	}
+}
+
 // A transient refusal must move the plan in hand to the owner's live receiver
 // and keep it there until that receiver's own flush delivers it. A live nested
 // owner with no root pump is the shape the orphan-arm wake test builds: a

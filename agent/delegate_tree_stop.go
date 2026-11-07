@@ -999,6 +999,27 @@ func (c *delegateTreeController) stopHasInFlightDeliveriesLocked(stop *delegateS
 	return false
 }
 
+// dropStoppedRetryableAdmissionsLocked removes retryable admissions whose
+// durable head the completing stop dropped. Nothing can complete or re-plan
+// them, and a leftover admission would refuse the owner's next attention start
+// (and block reclamation) until restart. Call with the controller lock held,
+// after the SubtreeStopCompleted append.
+func (c *delegateTreeController) dropStoppedRetryableAdmissionsLocked() {
+	for processID, receipt := range c.deliveries {
+		if receipt == nil || !receipt.retryable {
+			continue
+		}
+		if aggregate := c.durable[receipt.delegateID]; aggregate != nil && slices.ContainsFunc(aggregate.PendingDeliveries, func(p delegatestore.PendingDelivery) bool {
+			return p.DeliveryID == receipt.token.deliveryID
+		}) {
+			continue
+		}
+		delete(c.deliveries, processID)
+		untrackStopLocked(c, func(s *delegateStopState) map[delegateDeliveryToken]struct{} { return s.deliveries }, receipt.token)
+		c.evidenceVersion++
+	}
+}
+
 func waitForDelegateStopProgress(ctx context.Context, stop *delegateStopState) error {
 	select {
 	case <-stop.done:
