@@ -59,10 +59,10 @@ function Controls({ client, target }: { client: VoiceClient; target: VoiceTarget
 	const same = bound?.ref === target.ref && bound.hub.id === target.hub.id;
 	const presented = voicePresentation(state, justHeard);
 	const talkEnabled = presented.talkEnabled && same;
-	// Stop is about the reply already playing, so it does not need capture or
-	// this session's binding; everything else needs Talk's conditions.
+	// Playback is this device's, so Stop does not need this session's binding or
+	// a live capture; everything else needs Talk's conditions.
 	const actionEnabled =
-		presented.primary === "stop" ? same : presented.primary === "arm" ? target.manager && !busy : talkEnabled;
+		presented.primary === "stop" ? true : presented.primary === "arm" ? target.manager && !busy : talkEnabled;
 	const arm = async (replace = false) => {
 		setBusy(true);
 		setError(null);
@@ -121,7 +121,9 @@ function Controls({ client, target }: { client: VoiceClient; target: VoiceTarget
 							{armed ? (
 								<Button text quiet label="Turn voice off" onPress={() => void disarm(client, setError)} />
 							) : null}
-							{armed ? <Button text quiet label="Stop speaking" onPress={() => client.stopSpeaking()} /> : null}
+							{armed && presented.primary !== "stop" ? (
+								<Button text quiet label="Stop speaking" onPress={() => client.stopSpeaking()} />
+							) : null}
 							{takeover && !armed ? (
 								<Button text quiet label="Use this iPhone instead" disabled={busy} onPress={() => void arm(true)} />
 							) : null}
@@ -135,9 +137,14 @@ function Controls({ client, target }: { client: VoiceClient; target: VoiceTarget
 						<SessionDetails state={state} boundRef={bound?.ref} same={same} />
 						<WakeTrialControls client={client} state={state} />
 						<Copy muted>{footnote(state, presented.phase)}</Copy>
-						<ErrorMessage
-							message={error || (state.error ? `Voice stopped (${state.error}). Text chat still works.` : null)}
-						/>
+						{state.error ? (
+							<Copy muted>
+								{presented.phase === "error"
+									? `Voice stopped (${state.error}). Text chat still works.`
+									: `Last turn ended (${state.error}).`}
+							</Copy>
+						) : null}
+						<ErrorMessage message={error} />
 					</ScrollView>
 				</View>
 			) : null}
@@ -168,7 +175,7 @@ function VoiceBar({
 	onToggle,
 }: {
 	phase: VoicePhase;
-	primary: "arm" | "talk" | "stop";
+	primary: "arm" | "talk" | "stop" | "none";
 	primaryEnabled: boolean;
 	expanded: boolean;
 	phrase: string;
@@ -219,7 +226,7 @@ function VoiceBar({
 	);
 }
 
-function barAction(primary: "arm" | "talk" | "stop") {
+function barAction(primary: "arm" | "talk" | "stop" | "none") {
 	return primary === "arm" ? "Turn on" : primary === "talk" ? "Talk" : "Stop";
 }
 
@@ -299,10 +306,11 @@ function PrimaryControl({
 	enabled,
 	onPress,
 }: {
-	primary: "arm" | "talk" | "stop";
+	primary: "arm" | "talk" | "stop" | "none";
 	enabled: boolean;
 	onPress(): void;
 }) {
+	if (primary === "none") return null;
 	const label = primary === "arm" ? "Turn on voice" : primary === "talk" ? "Talk" : "Stop speaking";
 	return <Button primary label={label} disabled={!enabled} accessibilityLabel={label} onPress={onPress} />;
 }

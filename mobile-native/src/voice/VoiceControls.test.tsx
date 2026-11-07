@@ -331,3 +331,129 @@ it("keeps Stop live while Evener speaks", async () => {
 	});
 	expect(actions).toEqual(["stop"]);
 });
+
+it("calls a routine abort a finished turn, not a stopped voice", async () => {
+	const quietWithAbort: VoiceSnapshot = {
+		state: "quiet",
+		capturing: true,
+		cloudMicrophone: true,
+		route: "iPhone speaker",
+		speakerConsentRequired: false,
+		error: "input_idle",
+		interpreted: "",
+		custody: "",
+		canonical: "",
+		generated: "",
+		bindingId: "binding",
+		provider: "openai",
+	};
+	const native: NativeVoicePort = {
+		deviceId: async () => "install",
+		validateTransport: async () => {},
+		authorize: async () => {
+			throw new Error("unused");
+		},
+		arm: async () => {},
+		snapshot: async () => quietWithAbort,
+		addListener: () => ({ remove() {} }),
+		talk: () => {},
+		stopSpeaking: () => {},
+		disarm: () => {},
+		allowSpeaker: () => {},
+		startWakeTrial: async () => {},
+		finishWakeTrial: async () => {},
+	};
+	const client = new VoiceClient(
+		native,
+		async () => "",
+		() => true,
+	);
+	client.listen();
+	const tree = render(
+		<VoiceContext.Provider value={client}>
+			<VoiceControls
+				target={{
+					hub: { id: "hub", name: "Hub", origin: "http://127.0.0.1:9180" },
+					ref: "chief",
+					instanceId: "instance",
+					manager: true,
+					voiceAvailable: true,
+				}}
+			/>
+		</VoiceContext.Provider>,
+	);
+	const button = (label: string) =>
+		tree.root.findAll((node) => String(node.type) === "Pressable" && node.props.accessibilityLabel === label)[0];
+	await act(async () => {
+		button("Voice").props.onPress();
+	});
+	const text = tree.root
+		.findAll((node) => String(node.type) === "Text")
+		.map((node) => node.children.join(""))
+		.join("\n");
+	expect(text).toContain("Last turn ended (input_idle)");
+	expect(text).not.toContain("Voice stopped");
+});
+
+it("names the session voice is on for when the bar belongs to another one", async () => {
+	const armedElsewhere: VoiceSnapshot = {
+		state: "quiet",
+		capturing: true,
+		cloudMicrophone: true,
+		route: "iPhone speaker",
+		speakerConsentRequired: false,
+		error: "",
+		interpreted: "",
+		custody: "",
+		canonical: "",
+		generated: "",
+		bindingId: "binding",
+		provider: "openai",
+	};
+	const native: NativeVoicePort = {
+		deviceId: async () => "install",
+		validateTransport: async () => {},
+		authorize: async (origin) => ({
+			origin,
+			status: 200,
+			body: JSON.stringify({
+				bindingId: "binding",
+				epoch: "opaque",
+				grant: "fixture",
+				expiresAt: "2030-01-01T00:00:00Z",
+				provider: "openai",
+			}),
+		}),
+		arm: async () => {},
+		snapshot: async () => armedElsewhere,
+		addListener: () => ({ remove() {} }),
+		talk: () => {},
+		stopSpeaking: () => {},
+		disarm: () => {},
+		allowSpeaker: () => {},
+		startWakeTrial: async () => {},
+		finishWakeTrial: async () => {},
+	};
+	const client = new VoiceClient(
+		native,
+		async () => "",
+		() => true,
+	);
+	const first = {
+		hub: { id: "hub", name: "Hub", origin: "http://127.0.0.1:9180" },
+		ref: "chief",
+		instanceId: "instance",
+		manager: true,
+		voiceAvailable: true,
+	};
+	await client.arm(first, defaultVoiceOptions, false);
+	const tree = render(
+		<VoiceContext.Provider value={client}>
+			<VoiceControls target={{ ...first, ref: "other" }} />
+		</VoiceContext.Provider>,
+	);
+	const button = (label: string) =>
+		tree.root.findAll((node) => String(node.type) === "Pressable" && node.props.accessibilityLabel === label)[0];
+	expect(JSON.stringify(tree.toJSON())).toContain("Voice is on for chief");
+	expect(button("Talk").props.disabled).toBe(true);
+});

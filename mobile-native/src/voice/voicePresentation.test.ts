@@ -35,7 +35,7 @@ it("shows the heard-you state only when told a detection just happened", () => {
 });
 
 it("swaps the primary action to stop while a turn runs or the manager speaks", () => {
-	expect(voicePresentation({ ...quiet, state: "conversing" })).toMatchObject({ phase: "talking", primary: "stop" });
+	expect(voicePresentation({ ...quiet, state: "conversing" })).toMatchObject({ phase: "talking", primary: "none" });
 	expect(voicePresentation({ ...quiet, state: "speaking" })).toMatchObject({ phase: "speaking", primary: "stop" });
 	expect(voicePresentation({ ...quiet, state: "conversing" }).talkEnabled).toBe(false);
 });
@@ -55,7 +55,7 @@ it("reports recovery and errors above the quiet states", () => {
 it("keeps a stale routine abort from hiding the live state or gating Talk", () => {
 	expect(voicePresentation({ ...quiet, state: "conversing", error: "input_idle" })).toMatchObject({
 		phase: "talking",
-		primary: "stop",
+		primary: "none",
 	});
 	expect(voicePresentation({ ...quiet, error: "input_idle" })).toMatchObject({
 		phase: "listening",

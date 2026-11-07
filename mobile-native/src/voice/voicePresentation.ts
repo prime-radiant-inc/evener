@@ -6,8 +6,9 @@ export type VoicePhase = "disarmed" | "trial" | "recovering" | "error" | "speaki
 
 export interface VoicePresentation {
 	phase: VoicePhase;
-	/** The surface's one primary control. Everything else is secondary. */
-	primary: "arm" | "talk" | "stop";
+	/** The surface's one primary control. Everything else is secondary. `none`
+	 * while the user's own turn runs: stopping the reply would not end it. */
+	primary: "arm" | "talk" | "stop" | "none";
 	/** Whether Talk can start a turn now: armed, capturing, and owned by this device. */
 	talkEnabled: boolean;
 }
@@ -26,7 +27,7 @@ export function voicePresentation(state: VoiceSnapshot, justHeard = false): Voic
 	// the heard flash has to outrank it or it would never be seen.
 	if (justHeard && state.capturing && !trialRunning) return { phase: "heard", primary: "talk", talkEnabled };
 	if (state.state === "speaking") return { phase: "speaking", primary: "stop", talkEnabled: false };
-	if (state.state === "conversing") return { phase: "talking", primary: "stop", talkEnabled: false };
+	if (state.state === "conversing") return { phase: "talking", primary: "none", talkEnabled: false };
 	// Routine turn aborts (input_idle, input_start_timeout, recoverable provider
 	// errors) leave `error` set while the phone stays armed and listening, so
 	// only a stopped capture makes the whole surface read as stopped.

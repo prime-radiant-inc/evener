@@ -256,7 +256,7 @@ do not establish installed-device rendering or touch behavior.
   [native voice owner](modules/evener-voice/README.md). The native service owns
   microphone and playback independently of foreground chat sockets. Local
   openWakeWord activation defaults to the custom **Hey Evener.** model at **0.99**,
-  with persisted **Debug · Wake trials** for qualification. Offline synthetic,
+  with persisted **Test wake word** trials for qualification. Offline synthetic,
   speaker-disjoint results are 598/600 positives and zero false accepts over
   2.09 h negatives, not physical qualification. Acoustic accuracy, microphone, audible barge-in, locked listening
   and battery remain physical-device qualification gates. See the
