@@ -58,3 +58,30 @@ export function summarizeWakeTrials(attempts: readonly WakeTrialAttempt[], cohor
 		negativeHours: negative.reduce((sum, attempt) => sum + attempt.scoredSamples, 0) / 16000 / 3600,
 	};
 }
+
+const TRIAL_TARGET = 60;
+const DETECTION_TARGET = 0.95;
+const NEGATIVE_HOURS_TARGET = 30;
+
+/** The qualification gates as meters a surface can draw: what is recorded
+ * against what the protocol asks for, each clipped to one full bar. */
+export function qualificationProgress(summary: ReturnType<typeof summarizeWakeTrials>) {
+	return {
+		trials: {
+			done: summary.positiveAttempts,
+			target: TRIAL_TARGET,
+			fraction: Math.min(1, summary.positiveAttempts / TRIAL_TARGET),
+		},
+		detection: {
+			done: summary.positiveDetected,
+			of: summary.positiveAttempts,
+			target: DETECTION_TARGET,
+			fraction: summary.positiveAttempts ? summary.positiveDetected / summary.positiveAttempts : 0,
+		},
+		negatives: {
+			hours: summary.negativeHours,
+			target: NEGATIVE_HOURS_TARGET,
+			fraction: Math.min(1, summary.negativeHours / NEGATIVE_HOURS_TARGET),
+		},
+	};
+}

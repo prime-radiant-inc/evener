@@ -31,7 +31,7 @@ export function installJobLogRangeGeometry(): () => void {
 }
 
 /** Supply the browser measurements jsdom lacks, keeping the virtual list real. */
-export function installJobLogGeometry(viewportHeight = 100, rowHeight = 20): () => void {
+export function installJobLogGeometry(viewportHeight = 100, rowHeight = 20, viewportTop = 0): () => void {
   const names = ["offsetHeight", "clientHeight", "scrollHeight", "getBoundingClientRect", "scrollTo"] as const;
   const descriptors = names.map(
     (name) => [name, Object.getOwnPropertyDescriptor(HTMLElement.prototype, name)] as const,
@@ -57,7 +57,7 @@ export function installJobLogGeometry(viewportHeight = 100, rowHeight = 20): () 
         const item = this.closest<HTMLElement>("[data-index]");
         const port = this.closest<HTMLElement>(`.${virtualStyles.root}`);
         const start = Number(item?.style.transform.match(/translateY\(([-\d.]+)px\)/)?.[1] ?? 0);
-        const top = item ? start - (port?.scrollTop ?? 0) : 0;
+        const top = item ? viewportTop + start - (port?.scrollTop ?? 0) : viewportTop;
         const height = item ? rowHeight : viewportHeight;
         return { x: 0, y: top, top, bottom: top + height, left: 0, right: 500, width: 500, height, toJSON() {} };
       },

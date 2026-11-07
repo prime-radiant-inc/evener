@@ -5165,6 +5165,42 @@ const MUTATION_FALLBACK_SEND_ATTEMPTS = 2;
 // clientMutationId, so the daemon dedups them.
 const MUTATION_FALLBACK_SEND_READY_WAIT_MS = 10_000;
 
+// A small listener registry for module seams: publish isolates a throwing
+// listener from the operation that is notifying it.
+function createListenerSet<T>(label: string) {
+  const listeners = new Set<(value: T) => void>();
+  return {
+    subscribe(listener: (value: T) => void): () => void {
+      listeners.add(listener);
+      return () => {
+        listeners.delete(listener);
+      };
+    },
+    publish(value: T): void {
+      for (const listener of listeners) {
+        try {
+          listener(value);
+        } catch (error) {
+          console.error(`${label} listener failed`, error);
+        }
+      }
+    },
+  };
+}
+
+// The id a storage-fallback send minted; see pendingTurns' recordDirectSend
+// for why the pending store needs it.
+export interface DirectSendAdmission {
+  clientMutationId: string;
+  createdAt: number;
+}
+
+const directSendAdmissions = createListenerSet<DirectSendAdmission>("Direct-send admission");
+
+export function subscribeDirectSendAdmission(listener: (admission: DirectSendAdmission) => void): () => void {
+  return directSendAdmissions.subscribe(listener);
+}
+
 // The imperative transport for a mutation whose durable write could not be
 // made: the same plain RPC the non-durable operations issue. Delivery here is
 // at-least-once, not deduplicated: the id is freshly minted and NOTHING durable
@@ -5185,6 +5221,9 @@ async function dispatchMutationDirectly(client: AppwireClientLike, intent: Mutat
         params: Record<string, unknown>,
       ) => Promise<unknown>;
       await request.call(target, intent.method, { ...intent.payload, clientMutationId });
+      // Provenance for the id no durable row records: see pendingTurns'
+      // recordDirectSend.
+      directSendAdmissions.publish({ clientMutationId, createdAt: Date.now() });
       return;
     } catch (err) {
       if (err instanceof WireError || attempt >= MUTATION_FALLBACK_SEND_ATTEMPTS) throw mapConflict(err);
