@@ -90,17 +90,25 @@ infers a link from an older record that lacks one. For a different terminal
 execution, the watch asks the existing history reader for a single-cut verdict;
 it keeps no continuation graph or terminal backlog. The existing subscription
 consumer retains the original candidate and held history cut while retrying a
-transient read-call failure. It uses the watch state-read policy: a two-second
-budget per call, two seconds between retries, and at most five consecutive
-failed calls. An operation timeout while the watch remains alive, transport
+transient read-call failure. That answer-continuation retry reads with a
+two-second budget per call, two seconds between retries, and at most five
+consecutive failed calls. An operation timeout while the watch remains alive, transport
 unavailability, index contention or rebuilding, and an unclassified internal
 read error can recover without re-registration. The watch keeps its ID and
 pending-send identities and emits one interruption notice for that episode.
 Clearing, replacing or canceling the subscription stops its recovery.
 
-Missing required evidence, wrong requested turns, incompatible ref, instance,
-generation, epoch or history incarnation, and history truncation end observation
-immediately. Permanent request refusals and typed history failures also end it;
+Missing required evidence, wrong requested turns, incompatible ref, instance
+or generation, and history truncation end observation immediately. A
+same-target history discontinuity — a new epoch or incarnation for the same
+ref, instance and generation — re-anchors the observation when it arrives as
+the fresh cut a re-read serves. The re-anchor replays the rebuilt history's
+latest window; unlike a continuing thread's re-read it does not page further
+back, so recorded evidence older than that window is not replayed to the
+watcher. One surfacing mid-read — while a continuing
+gap is still paging, or against a held cut a live continuation verdict still
+needs — ends the observation with re-registration guidance instead. Permanent
+request refusals and typed history failures also end it;
 none is a negative verdict. Exhausted retries end the watch with one durable
 end notice and re-registration guidance, never inferred completion. Index
 traversal checks cancellation between reads; existing catch-up and OS I/O may
@@ -108,11 +116,22 @@ still finish after the caller stops waiting, so the operation budget is not a
 hard wall-clock bound on underlying I/O.
 
 The watch keeps its ID and pending notices through a connection interruption.
-It sends one interruption notice for the loss, then checks the Manager caller's
-ref and instance before resubscribing. A restored connection retains the watch
-only when the target also has the same ref, instance and generation. A replaced
-caller or target, an unsupported observation, or exhausted connection recovery ends
-the watch durably with re-registration guidance. A runtime restart likewise
+A stream end suspends the watch quietly while recovery is in progress: it
+checks the Manager caller's ref and instance before resubscribing, and a
+rebind that succeeds inside the outage budget delivers no interruption
+notice. The notice belongs to a loss the Manager must act on, not to a blip
+that recovers by itself; delivered up front it reads as an incident on a
+healthy lane. A restored connection retains the watch
+only when the target also has the same ref, instance and generation. Recovery
+is bounded by one outage budget rather than a retry count, whether the
+binding cannot answer state reads or its rebind attempts keep failing with
+retryable errors: a recovery that rebinds within the budget retains the
+watch, and only an outage that outlasts it counts as exhausted
+connection recovery. A replaced caller or
+target, an unsupported observation, exhausted connection recovery, or a
+subscription that ended on a healthy connection ends the
+watch durably with re-registration guidance, and that durable end is the one
+notice a genuine loss delivers. A runtime restart likewise
 ends continuing hub watches and sends a re-registration notice, including
 watches that had already reported events. Reconnect never revives an ended watch.
 Unstamped replay entries remain readable in history and generate a replay-gap
@@ -122,7 +141,12 @@ their own relay subscriptions, and watch notices never answer human questions.
 Local and remote Manager watches use the hub's shared, connection-owned
 subscription path. Use a canonical `HOST:WORKSPACE_ID` ref for a remote target.
 Resync re-reads the authoritative snapshot even for completion-only watches,
-while the notification drain continues. Each Manager and human client keeps
+while the notification drain continues, and a stream that keeps draining owes no
+interruption notice for it: the notice belongs to observation loss, not to the
+re-read that follows it. The re-read rebuilds recorded evidence only. Status
+events are stream signals, not recorded history, so a watch waiting on status
+events can miss the ones that fired during the relay gap, and the re-read
+carries no separate sign of them. Each Manager and human client keeps
 its own subscription lifetime. Remote question/answer/completion is qualified;
 sandbox approval caused by a live remote prompt remains unexercised end to end.
 Manager schemas come from session configuration and remain present during a

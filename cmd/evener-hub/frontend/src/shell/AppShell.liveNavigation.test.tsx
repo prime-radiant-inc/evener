@@ -535,12 +535,12 @@ test("live-next demand-load retries after the page request fails", async () => {
   // stays and no navigation happens.
   await user.keyboard("{Alt>}{Shift>}{ArrowRight}{/Shift>}{/Alt}");
   expect(demandLoads).toBe(1);
-  // While the demand's page-two read is in flight, force a rerun exactly the
-  // way the background owner's paced retry does (an invalidation whose
-  // sequence gap forces every loaded key): the revalidator marks the
-  // in-flight entry and chains a NEW request onto the load promise once it
-  // lands. The fail phase armed below must settle that chained request too,
-  // or the awaited demand read never completes.
+  // While the demand's page-two read is in flight, inject a targeted section
+  // invalidation — not the per-page forced refresh the background owner's
+  // paced retry issues through lease.refresh: the revalidator marks the
+  // in-flight entry for a rerun and chains a NEW request onto the load
+  // promise once it lands. The fail phase armed below must settle that
+  // chained request too, or the awaited demand read never completes.
   await act(async () => {
     client.emitNotification({
       method: "evener/navigation/invalidated",

@@ -3016,16 +3016,18 @@ it("a stale-cursor refresh that replaces the repository resumes the pending reco
     const opened = threadsStore.getState().ensureThread(ref);
     // Recovery restored the recorded range below the windowed answer, the
     // usable open cleared the route's outstanding miss, and the bounded
-    // reconciliation is pending on its first held page.
-    await vi.waitFor(() => {
-      expect(bodies()).toEqual(Array.from({ length: 200 }, (_, index) => `row-${index + 27}`));
-    });
-    await vi.waitFor(() => {
-      expect(productionEntryTranscriptForTests(ref).unresolvedOpenMiss).toBe(false);
-      expect(listReads.length).toBeGreaterThanOrEqual(1);
-    });
+    // reconciliation is pending on its first held page. The recovery chain
+    // registers its whole span, so awaiting the acquisition and its settle
+    // joins the recovery that converges the display — no wall-clock ceiling
+    // a loaded runner can outrun.
     await opened;
     await settleEntryTranscriptForTests(ref);
+    expect(bodies()).toEqual(Array.from({ length: 200 }, (_, index) => `row-${index + 27}`));
+    expect(productionEntryTranscriptForTests(ref).unresolvedOpenMiss).toBe(false);
+    // The reconciliation's first (held) page issues from the settled span's
+    // own wakeups — drain the microtask queue instead of racing a ceiling.
+    await drainSettleSteps();
+    expect(listReads.length).toBeGreaterThanOrEqual(1);
     // The competing refresh: its held-snapshot read is rejected stale and the
     // retry without the held snapshot replaces the repository with the
     // daemon's 40-item window.
@@ -3037,10 +3039,10 @@ it("a stale-cursor refresh that replaces the repository resumes the pending reco
     await settleEntryTranscriptForTests(ref);
     // The older recorded range must restore against the replacement: the
     // pane converges back to the recorded range below the wire window, not
-    // the bare 40-item cut the refresh published.
-    await vi.waitFor(() => {
-      expect(bodies()).toEqual(Array.from({ length: 200 }, (_, index) => `row-${index + 27}`));
-    });
+    // the bare 40-item cut the refresh published. The replacement's
+    // successor chain registers its whole span, so the settle above joins
+    // the recovery that restores the range.
+    expect(bodies()).toEqual(Array.from({ length: 200 }, (_, index) => `row-${index + 27}`));
   } finally {
     setSessionCacheStalledOpenForTests(5000);
     setSessionCacheOpenBackstopForTests(10000);
@@ -3135,16 +3137,18 @@ it("a stale-cursor refresh that replaces the repository resumes the reconciliati
     const opened = threadsStore.getState().ensureThread(ref);
     // Recovery restored the recorded range below the windowed answer — with
     // the CACHED row 160 the fill promoted — and the reconciliation is now
-    // pending on its first held page.
-    await vi.waitFor(() => {
-      expect(bodies()).toEqual(Array.from({ length: 200 }, (_, index) => `row-${index + 27}`));
-    });
-    await vi.waitFor(() => {
-      expect(productionEntryTranscriptForTests(ref).unresolvedOpenMiss).toBe(false);
-      expect(listReads.length).toBeGreaterThanOrEqual(1);
-    });
+    // pending on its first held page. The recovery chain registers its whole
+    // span, so awaiting the acquisition and its settle joins the recovery
+    // that converges the display — no wall-clock ceiling a loaded runner
+    // can outrun.
     await opened;
     await settleEntryTranscriptForTests(ref);
+    expect(bodies()).toEqual(Array.from({ length: 200 }, (_, index) => `row-${index + 27}`));
+    expect(productionEntryTranscriptForTests(ref).unresolvedOpenMiss).toBe(false);
+    // The reconciliation's first (held) page issues from the settled span's
+    // own wakeups — drain the microtask queue instead of racing a ceiling.
+    await drainSettleSteps();
+    expect(listReads.length).toBeGreaterThanOrEqual(1);
     // The competing refresh: its held read is rejected stale, the retry
     // replaces the repository, and the replacement's recovery successor
     // restores the range the replacing window dropped.
@@ -3153,28 +3157,28 @@ it("a stale-cursor refresh that replaces the repository resumes the reconciliati
     await vi.waitFor(() => expect(rejectHeld).toBeDefined());
     rejectHeld?.(new WireError("stale", -32000, { evenerErrorInfo: "transcriptItemCursorStale" }));
     await refreshed;
+    await settleEntryTranscriptForTests(ref);
     // The replacement's recovery successor restores the cached range below
-    // the replacing window. The reconciliation successor may already have
-    // healed the source's edited row into it, so this check pins the
-    // restored extent and leaves row 160's content to the healed assertion
-    // below.
-    await vi.waitFor(() => {
-      const restored = bodies() ?? [];
-      expect(restored).toHaveLength(200);
-      expect(restored[0]).toBe("row-27");
-      expect(restored.at(-1)).toBe("row-226");
-    });
+    // the replacing window — its registered whole span, joined by the
+    // settle above, is the recovery that restores the range. The
+    // reconciliation successor may already have healed the source's edited
+    // row into it, so this check pins the restored extent and leaves row
+    // 160's content to the healed assertion below.
+    const restored = bodies() ?? [];
+    expect(restored).toHaveLength(200);
+    expect(restored[0]).toBe("row-27");
+    expect(restored.at(-1)).toBe("row-226");
     // The reconciliation successor runs against the replacement: its own
     // page was issued after the replacement, and the source's edited row 160
     // reaches the restored display in place — with every other cached row
-    // intact around it.
-    await vi.waitFor(() => {
-      expect(listReads.length).toBeGreaterThanOrEqual(2);
-      const healed = Array.from({ length: 200 }, (_, index) =>
-        index + 27 === 160 ? "row-160-edited" : `row-${index + 27}`,
-      );
-      expect(bodies()).toEqual(healed);
-    });
+    // intact around it. Its pages issue from the settled span's wakeups;
+    // drain the microtask queue instead of racing a ceiling.
+    await drainSettleSteps();
+    expect(listReads.length).toBeGreaterThanOrEqual(2);
+    const healed = Array.from({ length: 200 }, (_, index) =>
+      index + 27 === 160 ? "row-160-edited" : `row-${index + 27}`,
+    );
+    expect(bodies()).toEqual(healed);
   } finally {
     setSessionCacheStalledOpenForTests(5000);
     setSessionCacheOpenBackstopForTests(10000);
@@ -3890,6 +3894,116 @@ it("a foreground opening whose storage read fails transiently still converges th
     await opened;
     await settleEntryTranscriptForTests(ref);
     expect(bodies()).toEqual(expected);
+    expect(threadsStore.getState().threads.get(ref)?.olderCursor).toBeDefined();
+  } finally {
+    vi.useRealTimers();
+    setSessionCacheOpenBackstopForTests(10000);
+    setSessionCacheStalledOpenForTests(5000);
+    threadsStore.getState().releaseThread(ref);
+    await lease.release();
+  }
+}, 30_000);
+
+// The chain's terminal open is an attempt like any other. The promotion
+// re-open that follows the source handoff races the stalled-open window,
+// and a read that outlasts it — healthy but slow, the loaded-runner shape
+// — re-enters the paced attempts instead of ending the chain: the miss
+// sets the route's markers, and no caller follows the chain's internal
+// re-open, so the chain itself must pace the retry that promotes the
+// recorded range. This pins exactly that sequence.
+it("a recovery chain whose promotion re-open outlasts the stalled window still converges the recorded display", async () => {
+  const storage = cache();
+  const realGetLatestWindow = storage.getLatestWindow.bind(storage);
+  setProductionEntryCacheForTests(storage);
+  const ref = "local:a";
+  const read = response(
+    ref,
+    Array.from({ length: 225 }, (_, index) => turn(`row-${index + 1}`, index + 1)),
+  );
+  read.snapshot = { incarnation: "inc-a", length: 225 };
+  connect(read);
+  const lease = acquireBackgroundThread(ref);
+  await lease.ready;
+  await settleEntryTranscriptForTests(ref);
+  const key = entryHistoryKey({ ...identity, clientId: location.origin });
+  expect(await storage.getLatest(key, 300)).toHaveLength(225);
+  const bodies = () =>
+    threadsStore
+      .getState()
+      .threads.get(ref)
+      ?.turns.flatMap((turn) => turn.items)
+      .map((item) => item.text)
+      .filter(Boolean);
+  expect(bodies()).toEqual([]);
+
+  // Reads 1-2 miss their bounds and arm the chain; read 3 fails fast (the
+  // transient refusal) so the chain hands to the source; the promotion
+  // re-open after the source read is read 4, DELAYED past the 250ms stalled
+  // window a loaded runner produces naturally. The re-open misses, and the
+  // chain must pace one more storage attempt before the display converges.
+  let withheldWindowReads = 0;
+  let failingWindowReads = 0;
+  let delayedWindowReads = 0;
+  (storage as unknown as { getLatestWindow: unknown }).getLatestWindow = (...args: unknown[]) => {
+    if (withheldWindowReads > 0) {
+      withheldWindowReads -= 1;
+      return new Promise(() => {}) as ReturnType<typeof realGetLatestWindow>;
+    }
+    if (failingWindowReads > 0) {
+      failingWindowReads -= 1;
+      return Promise.reject(new Error("storage transiently failed")) as ReturnType<typeof realGetLatestWindow>;
+    }
+    if (delayedWindowReads > 0) {
+      delayedWindowReads -= 1;
+      return new Promise((resolve) => {
+        setTimeout(() => resolve(realGetLatestWindow(...(args as Parameters<typeof realGetLatestWindow>))), 300);
+      }) as ReturnType<typeof realGetLatestWindow>;
+    }
+    return realGetLatestWindow(...(args as Parameters<typeof realGetLatestWindow>)) as ReturnType<
+      typeof realGetLatestWindow
+    >;
+  };
+  withheldWindowReads = 2;
+  failingWindowReads = 1;
+  delayedWindowReads = 1;
+  setSessionCacheStalledOpenForTests(250);
+  setSessionCacheOpenBackstopForTests(40);
+  // Freeze the deadline clock for the gated phase: with the windows shrunk
+  // to 250ms/40ms, machine load — not the seeded delay — decides whether a
+  // healthy read outlasts a window, and the full suite's parallel load can
+  // make the paced retry's healthy read miss too, exhausting the chain's
+  // bounded budget (the merge-candidate failure). Under fake timers the
+  // frozen clock decides every deadline: the seeded 300ms delay misses the
+  // re-open's 250ms window deterministically, and the paced retry's healthy
+  // read faces no wall-clock race at all.
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  try {
+    const opened = threadsStore.getState().ensureThread(ref);
+    // One fake millisecond per turn, each turn pumping one real storage read:
+    // fake-indexeddb delivers its IDB events on real macrotasks (Node's
+    // setImmediate), which a frozen clock never yields on its own, so the
+    // pump lets the chain's own storage work progress while the clock alone
+    // decides every deadline. The withheld reads never answer; the 40ms
+    // backstops and the 250ms stalled windows fire exactly when the clock
+    // reaches them; the re-open's 300ms seeded delay sits past its 250ms
+    // window, so the miss fires deterministically — machine load cannot
+    // reorder any of it.
+    const pump = new MutationOutboxIndexedDB({ indexedDB: factory });
+    try {
+      for (let tick = 0; tick < 800; tick += 1) {
+        await vi.advanceTimersByTimeAsync(1);
+        await pump.listTargetRefs();
+      }
+    } finally {
+      pump.close();
+    }
+    // The re-entering paced retry's healthy read answered off the clock; the
+    // chain registers its whole span, so the settle awaits the convergence
+    // itself: a chain that ended on the re-open's miss would settle
+    // non-converged and fail the assertions below.
+    await opened;
+    await settleEntryTranscriptForTests(ref);
+    expect(bodies()).toEqual(Array.from({ length: 200 }, (_, index) => `row-${index + 26}`));
     expect(threadsStore.getState().threads.get(ref)?.olderCursor).toBeDefined();
   } finally {
     vi.useRealTimers();

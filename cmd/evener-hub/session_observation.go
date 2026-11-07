@@ -91,9 +91,28 @@ func observationHistoryContinues(held, fresh appwire.ThreadReadResponse) bool {
 	return held.Snapshot == nil || fresh.Snapshot != nil && held.Snapshot.Incarnation == fresh.Snapshot.Incarnation && fresh.Snapshot.Length >= held.Snapshot.Length && held.Epoch == fresh.Epoch
 }
 
-func observationSnapshotDisposition(initial appwire.SessionObservationMetadata, held, fresh appwire.ThreadReadResponse) (forward, replacement bool) {
-	replacement = fresh.Thread.Evener.Ref != initial.Ref || fresh.Thread.Evener.InstanceID != initial.InstanceID || fresh.BootGeneration != initial.GenerationID
-	return replacement || observationHistoryContinues(held, fresh), replacement
+// observationDisposition classifies a fresh cut of history for the Watch
+// stream: a replaced target ends the stream, a same-target history
+// discontinuity re-anchors it on the fresh cut, and a continuing thread
+// forwards with gap paging.
+type observationDisposition int
+
+const (
+	observationReplaced observationDisposition = iota
+	observationReanchors
+	observationContinues
+)
+
+func observationSnapshotDisposition(initial appwire.SessionObservationMetadata, held, fresh appwire.ThreadReadResponse) observationDisposition {
+	replacement := fresh.Thread.Evener.Ref != initial.Ref || fresh.Thread.Evener.InstanceID != initial.InstanceID || fresh.BootGeneration != initial.GenerationID
+	switch {
+	case replacement:
+		return observationReplaced
+	case observationHistoryContinues(held, fresh):
+		return observationContinues
+	default:
+		return observationReanchors
+	}
 }
 
 // recoverObservationHistory walks only the gap back to the held window. The
@@ -276,7 +295,11 @@ func (b *boundSessionOperations) Watch(ctx context.Context, request appwire.Sess
 				recoveryParams.HeldSnapshot = previous.Snapshot
 				recoveryParams.ItemLimit = appwire.TranscriptItemPageLimit
 				response, err := client.ThreadRead(watchCtx, recoveryParams)
-				if err == nil && publish(readResult{response: &response}) && response.Thread.Evener.Ref == initial.Metadata.Ref && response.Thread.Evener.InstanceID == initial.Metadata.InstanceID && response.BootGeneration == initial.Metadata.GenerationID && params.IncludeTurns {
+				if err == nil && publish(readResult{response: &response}) && response.Thread.Evener.Ref == initial.Metadata.Ref && response.Thread.Evener.InstanceID == initial.Metadata.InstanceID && response.BootGeneration == initial.Metadata.GenerationID && params.IncludeTurns && observationHistoryContinues(previous, response) {
+					// A same-target discontinuity (an index rebuild behind a
+					// resync) has no continuable gap to page: the main loop
+					// re-anchors on the fresh cut, so paging must not turn the
+					// expected discontinuity into a fatal error.
 					err = recoverObservationHistory(watchCtx, client, ref.String(), previous, response, func(items []appwire.ThreadItem) bool {
 						return publish(readResult{items: items})
 					})
@@ -294,18 +317,21 @@ func (b *boundSessionOperations) Watch(ctx context.Context, request appwire.Sess
 				}
 				if fresh := result.response; fresh != nil {
 					meta := appwire.SessionObservationMetadata{Ref: fresh.Thread.Evener.Ref, InstanceID: fresh.Thread.Evener.InstanceID, GenerationID: fresh.BootGeneration}
-					forward, replacement := observationSnapshotDisposition(initial.Metadata, held, *fresh)
-					if !forward {
-						return
-					}
-					if replacement {
-						if !send(appwire.SessionWatchUpdate{Snapshot: fresh, Metadata: meta}) {
-							return
-						}
-						return // The runtime ends the old watch from this replacement cut.
-					}
+					disposition := observationSnapshotDisposition(initial.Metadata, held, *fresh)
 					if !send(appwire.SessionWatchUpdate{Snapshot: fresh, Metadata: meta}) {
 						return
+					}
+					switch disposition {
+					case observationReplaced:
+						// The runtime ends the old watch from this replacement cut,
+						// so the stream ends with it.
+						return
+					case observationReanchors:
+						// A same-target history discontinuity re-anchors the
+						// subscription on the fresh authoritative cut instead of
+						// ending it: the watcher replays the window under its
+						// own dedup and the drain continues, so a transient
+						// rebuild recovers without re-registration.
 					}
 					pending = *fresh
 				}

@@ -450,14 +450,18 @@ func TestObservationSnapshotDispositionPrioritizesReplacement(t *testing.T) {
 	initial := appwire.SessionObservationMetadata{Ref: "local:target", InstanceID: "old", GenerationID: "1"}
 	held := appwire.ThreadReadResponse{Epoch: 3, Snapshot: &appwire.SnapshotIdentity{Incarnation: "old-history", Length: 12}}
 	replacement := appwire.ThreadReadResponse{Epoch: 4, BootGeneration: "2", Snapshot: &appwire.SnapshotIdentity{Incarnation: "new-history", Length: 0}, Thread: appwire.Thread{Evener: appwire.EvenerThread{Ref: initial.Ref, InstanceID: "new"}}}
-	if forward, replaced := observationSnapshotDisposition(initial, held, replacement); !forward || !replaced {
-		t.Fatalf("replacement disposition=(forward %t, replaced %t), want both true despite rotated history", forward, replaced)
+	if got := observationSnapshotDisposition(initial, held, replacement); got != observationReplaced {
+		t.Fatalf("replacement disposition=%v, want observationReplaced despite rotated history", got)
 	}
 	rotatedHistory := replacement
 	rotatedHistory.Thread.Evener.InstanceID = initial.InstanceID
 	rotatedHistory.BootGeneration = initial.GenerationID
-	if forward, replaced := observationSnapshotDisposition(initial, held, rotatedHistory); forward || replaced {
-		t.Fatalf("same-target history discontinuity disposition=(forward %t, replaced %t), want both false", forward, replaced)
+	if got := observationSnapshotDisposition(initial, held, rotatedHistory); got != observationReanchors {
+		t.Fatalf("same-target history discontinuity disposition=%v, want observationReanchors", got)
+	}
+	continues := appwire.ThreadReadResponse{Epoch: held.Epoch, Snapshot: &appwire.SnapshotIdentity{Incarnation: held.Snapshot.Incarnation, Length: held.Snapshot.Length + 1}, Thread: appwire.Thread{Evener: appwire.EvenerThread{Ref: initial.Ref, InstanceID: initial.InstanceID}}, BootGeneration: initial.GenerationID}
+	if got := observationSnapshotDisposition(initial, held, continues); got != observationContinues {
+		t.Fatalf("continuing history disposition=%v, want observationContinues", got)
 	}
 }
 

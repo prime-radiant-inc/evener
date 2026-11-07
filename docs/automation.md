@@ -139,7 +139,9 @@ carry source-qualified refs and meaningful `new`, `needs_you`, `error`, or
 `disappeared` events. Read each entry's `level`, `askPending`,
 `approvalPending`, and `needsResponse` fields to decide what needs action;
 the roster is not a synthesized summary. A per-target watch can also fire for
-the same change, so holding both can produce two wakes.
+the same change, so holding both can produce two wakes. A roster watch create
+takes the ordinary `note` payload beside the hub object, and that note rides
+every roster frame.
 
 The broker confirms disappearance across two consecutive attention
 publications. A genuine end is reported one attention tick later; a Clear
@@ -215,7 +217,9 @@ grant Manager status or choose a different caller.
 ## Start an independent worker from a Manager
 
 A Manager can call `delegate` with `prompt` and
-`hub:{cwd,model,watch:{events,completion}}`. This creates an empty, independent
+`hub:{cwd,model,watch:{events,completion}}`, plus an optional
+`reasoning_effort` that sets the created session's reasoning effort (absent
+keeps the hub's launch default). This creates an empty, independent
 ordinary top-level session on the Manager's local hub. It attaches the requested
 `job_watch` and reads its initial state **before** submitting the prompt with
 `turn/start`. Use `events:["question","communicate"]` and `completion:true` to
@@ -247,6 +251,15 @@ own working-directory and model validation, so the created worker is
 addressed by its `HOST:WORKSPACE_ID` reference. Discovery of an empty remote
 host and its model catalog does not create a worker there on its own.
 
+Hub creation takes `prompt`, `hub` and `reasoning_effort` (which sets the
+created session's effort), plus the shared `intent` argument every tool
+accepts. The
+owned-delegate arguments (`name`, `agent_type`, `task_list`, `isolation`,
+`sandbox` and the rest) do not apply to it and are refused with the arguments
+named rather than dropped: a created worker is not an owned delegate, so it is
+identified by its ref and its prompt-derived title. Give a worker a display
+name with `session_control`'s `rename` on its returned ref.
+
 The `delegate` result reports `created`, `watch` and `input` separately. A
 successful creation followed by a failed watch returns the worker ref, leaves
 the worker empty, and does not submit its prompt. A successful watch followed
@@ -262,7 +275,12 @@ their Manager's turn ends, and their watch notices are not delegate reports.
 Manager `job_watch` supports local and remote targets through the same shared
 hub subscriptions as human clients. For an existing remote worker, attach
 `job_watch(operation="create", hub={ref:"HOST:WORKSPACE_ID",events:["question"],completion:true})`
-before sending input. Remote question/answer/completion and saved Manager
+before sending input. Hub watch creates take the ordinary watch arguments that
+apply to a session watch: `note` rides every delivery, and `every` throttles
+observation fires where the hub object selects exactly one event kind.
+Arguments that cannot apply to a session watch — job-output triggers, self
+timers, assistant.tool filters — are refused with an error naming the
+argument. Remote question/answer/completion and saved Manager
 attribution are checked through real two-hub SSH acceptance, without a browser.
 An idle completion watch anchors to the latest execution identity in the same
 indexed history cut as its snapshot, not a later model-change or delivery turn;

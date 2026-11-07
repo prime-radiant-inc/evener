@@ -26,7 +26,11 @@ keep their existing meanings; they are not inferred from navigation.
 
 The Manager role is fixed at session start and persists across resume, process
 restart and Clear. Its `job_watch` belongs to its receiving session's watch
-activity, even while it observes an independent worker. Its recorded snapshot
+activity, even while it observes an independent worker. A hub watch create
+takes the ordinary watch arguments that apply to a session watch — the `note`
+payload rides every delivery, and `every` throttles observation fires where
+the hub object selects exactly one event kind — and refuses the arguments a
+session watch cannot express, naming each. Its recorded snapshot
 and live entries keep causal generation/entry evidence; accepted terminal
 completion, not an idle label or an unaccepted result, ends a completion watch.
 Recorded answer links let completion follow the watched work through questions.

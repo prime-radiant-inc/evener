@@ -1616,7 +1616,8 @@ func TestWorktreePrune_OrphanArmSparesLaneWhileRetainedChildNotifies(t *testing.
 // while the delegate is past its spawn turn — the report can then only
 // present through the scripted step. Waiting the delegate's tail out, re-arm
 // included, keeps a later scripted presentation from racing the row's
-// landing.
+// landing; the report must be pending by then, so the test's own drive is the
+// only thing that can present it.
 func (l *sharedDescendantLane) releaseSeededAnnounceHold(t *testing.T) {
 	t.Helper()
 	if l.announceRelease == nil {
@@ -1633,6 +1634,11 @@ func (l *sharedDescendantLane) releaseSeededAnnounceHold(t *testing.T) {
 	case <-done:
 	case <-time.After(15 * time.Second):
 		t.Fatalf("the delegate's finalize tail never finished after the seeded announce release")
+	}
+	// The delivery cannot land inside a fixture-window run, so the report
+	// must be pending here; nothing below races the row's landing.
+	if pending, pendErr := l.delegateSess.pendingDelegateAttentionIDs(); pendErr != nil || len(pending) == 0 {
+		t.Fatalf("the retained child's report is not pending after the seeded window: pending=%v (%v)", pending, pendErr)
 	}
 }
 
@@ -1845,6 +1851,14 @@ func TestDelegateAttentionStopMidPresentationDoesNotReopenReport(t *testing.T) {
 		<-release
 		return agenttest.FinalResponse("done")
 	}
+	// The parked-tail pin (the busy-commit test's form): unpinned, the spawn
+	// can leave its interrupted presentation owed, and the first drive pass
+	// admits that owed start as a no-model-call generation whose
+	// finalization cleanup consumes the report row ahead of this test's own
+	// drive — the loaded-runner interleave that leaves the wedge turn with
+	// no row to present. The parked announce keeps the delivery outside
+	// every fixture-window run, so the loop below presents the row as a real
+	// model call after the tail closes.
 	holdSharedDescendantAnnounce("stop-mid-presentation")
 	lane := spawnSharedDescendantLane(t, r, "stop-mid-presentation", "dlg_stopmidpresnt01", "034stopmidpresnt01", wedge)
 	lane.releaseSeededAnnounceHold(t)
@@ -1971,28 +1985,7 @@ func TestDelegateAttentionBusyCommitReopensConsumedReport(t *testing.T) {
 	// row's arrival, not the fixture's return.
 	holdSharedDescendantAnnounce("busy-commit-reopen")
 	lane := spawnSharedDescendantLane(t, r, "busy-commit-reopen", "dlg_busycommit00001", "034busycommit00001", wedge)
-	lane.announceRelease()
-	// The seeded window's end is the delegate's own finalize tail closing its
-	// run: the tail re-arms whatever attention survived the window at its
-	// very end, so the wait must cover the re-arm too. The retained child's
-	// report becomes a pending row inside this window, and waiting the tail
-	// out is what keeps the wait below from racing the row's landing — a
-	// chain still mid-flight when the wait's bound fires is the loaded-runner
-	// loss this seeding pins.
-	lane.delegateSub.mu.Lock()
-	delegateDone := lane.delegateSub.done
-	lane.delegateSub.mu.Unlock()
-	select {
-	case <-delegateDone:
-	// TRIPWIRE: the tail finishes within a couple of drain passes of the
-	// release; 15s only fires on a genuine hang, absorbing a loaded shard's
-	// stretched finalize tails and git retries.
-	case <-time.After(15 * time.Second):
-		t.Fatalf("the delegate's finalize tail never finished after the seeded announce release")
-	}
-	if pending, pendErr := lane.delegateSess.pendingDelegateAttentionIDs(); pendErr != nil || len(pending) == 0 {
-		t.Fatalf("the retained child's report is not pending after the seeded window: pending=%v (%v)", pending, pendErr)
-	}
+	lane.releaseSeededAnnounceHold(t)
 	lane.delegateSess.SetNotifyFunc(nil)
 	// The shared child's restored notify edge can launch its own pending
 	// notification turn, which would consume the scripted wedge step this
@@ -2284,7 +2277,15 @@ func TestDelegateAttentionArmWakeEndsHoldsBeforeTheDrive(t *testing.T) {
 	const heldRowContent = "held-row: the stopped report the arm's wake must carry"
 	const newRowID = "delegate:new-row-owed-reply"
 	const newRowContent = "new-row: the event the arm wakes"
+	// The parked-tail pin (the busy-commit test's form): unpinned, a
+	// fixture run finishing after this test's rows append resolves every
+	// wake-noted row inside its window — the loaded-runner interleave that
+	// would sweep the held and new rows before the arm's wake reads the
+	// automatic list. The parked announce closes the tails before the rows
+	// land, so only the arm's own wake can carry them.
+	holdSharedDescendantAnnounce("arm-wake-held-row")
 	lane := spawnSharedDescendantLane(t, r, "arm-wake-held-row", "dlg_armwake0001", "034armwake0001")
+	lane.releaseSeededAnnounceHold(t)
 	// The shared child's restored notify edge can launch its own pending
 	// notification turn, which would consume the scripted step this test's
 	// presentation parks in; disarm it so the arm's own wake is the only one.
@@ -2435,7 +2436,7 @@ func TestDelegateAttentionHeldRowPresentsFromTheHistoryTail(t *testing.T) {
 		return !running
 	})
 	// The hold ends — the same production release every wake fires.
-	lane.delegateSess.releaseAutomaticDriveHolds()
+	lane.delegateSess.releaseAutomaticDriveHolds(delegateHoldReleaseArm)
 	// The held row presents through the wired arm: the arm's wake drives
 	// synchronously, and the request it builds must end on the report.
 	if err := lane.delegateSess.armDelegateAttention(heldRowID); err != nil {
@@ -2627,6 +2628,12 @@ func TestDelegateAttentionUserStopHoldsReopenedRowFromStaleArmedWake(t *testing.
 		<-release
 		return agenttest.FinalResponse("done")
 	}
+	// The parked-tail pin (the busy-commit test's form): unpinned, a
+	// fixture run finishing after this test's rows land resolves every
+	// wake-noted row inside its window — the loaded-runner interleave that
+	// would sweep the report row or the second row ahead of the loop's
+	// first drive. The parked announce closes the tails before the rows
+	// land, so the loop below is the only driver that can present them.
 	holdSharedDescendantAnnounce("user-stop-stale-wake")
 	lane := spawnSharedDescendantLane(t, r, "user-stop-stale-wake", "dlg_userstopwake01", "034userstopwake1", wedge)
 	lane.releaseSeededAnnounceHold(t)
@@ -3202,7 +3209,7 @@ func TestHeldRowsMoveToTheTailInArrivalOrder(t *testing.T) {
 		}
 		sess.holdDelegateAttentionFromAutomaticDrive(ids[i])
 	}
-	sess.releaseAutomaticDriveHolds()
+	sess.releaseAutomaticDriveHolds(delegateHoldReleaseArm)
 	var got []string
 	sess.mu.Lock()
 	for _, turn := range sess.history {
@@ -3421,14 +3428,17 @@ func TestDelegateAttentionResidentDrivePassDoesNotRebuildReleasedStopHold(t *tes
 
 // A committed child delivery is a wake from a new event in its own right:
 // the retained child's report may present a row a user's stop held out of the
-// automatic drives, so the delivery ends the holds exactly as a successful arm
-// does. Without the release on the delivery path the held report hides behind
-// an event that already arrived — a runtime whose notify edge is down or whose
-// arm the controller refuses sees no wake to end the quiet. The hold is
-// seeded through the production setter the settle tail writes with, the
-// delegate's own re-arm is refused through the arm fault so no arm can end the
-// quiet either, and the pinned announce release then delivers the child's real
-// report through the real delivery path: only the delivery may lift the hold.
+// automatic drives, so the delivery ends the holds exactly as a successful
+// arm does. Without the release on the delivery path the held report hides
+// behind an event that already arrived — a runtime whose notify edge is down
+// or whose arm the controller refuses sees no wake to end the quiet. The hold
+// is seeded through the production setter the settle tail writes with, and
+// the pinned announce release then delivers the child's real report through
+// the real delivery path. The delegate's own re-arm of the delivered row is
+// refused through the arm fault, and that refused arm's paced retry re-arms
+// past the fault as a real refusal's would — a retry that succeeds releases
+// the holds like any successful arm — so the hold's absence alone cannot name
+// the delivery as the lifter: the release must carry the delivery site's tag.
 func TestDelegateAttentionDeliveredReportReleasesUserStopHold(t *testing.T) {
 	t.Parallel()
 	r := newWorktreeRepo(t)
@@ -3442,14 +3452,25 @@ func TestDelegateAttentionDeliveredReportReleasesUserStopHold(t *testing.T) {
 	// about to deliver — the child's first report's delivery identity —
 	// written through the production setter the settle tail uses. The
 	// delegate's own re-arm of the delivered row is refused through the arm
-	// fault, so no successful arm can end the quiet ahead of the delivery:
-	// the retry timer re-arms past the fault and the pre-fix retry releases
-	// nothing either, which is the gap under pin.
+	// fault; the refused arm is retained for its paced retry, whose own
+	// release carries the arm's tag and must never satisfy the delivery
+	// assert below.
 	heldRowID := delegateAttentionID(lane.sharedSub.sess.owningDelegateID + "/delivery/1")
 	lane.delegateSess.holdDelegateAttentionFromAutomaticDrive(heldRowID)
+	var releaseMu sync.Mutex
+	var heldRowReleaseSites []delegateHoldReleaseSite
 	updateSessionTestConfig(lane.delegateSess, func(cfg *testConfig) {
 		cfg.delegateAttentionArmFault = func() error {
 			return errors.New("test: arm refused")
+		}
+		cfg.delegateAttentionHoldReleased = func(site delegateHoldReleaseSite, released []string) {
+			releaseMu.Lock()
+			defer releaseMu.Unlock()
+			for _, id := range released {
+				if id == heldRowID {
+					heldRowReleaseSites = append(heldRowReleaseSites, site)
+				}
+			}
 		}
 	})
 	lane.announceRelease()
@@ -3472,8 +3493,22 @@ func TestDelegateAttentionDeliveredReportReleasesUserStopHold(t *testing.T) {
 	if pending, pendErr := lane.delegateSess.pendingDelegateAttentionIDs(); pendErr != nil || len(pending) == 0 {
 		t.Fatalf("the retained child's report is not pending after the seeded window: pending=%v (%v)", pending, pendErr)
 	}
-	// The committed delivery is the new event: the hold it carried is gone
-	// exactly when the delivery path released it — no arm ran in between.
+	// The committed delivery is the new event: its release ended the hold
+	// under the delivery site's own tag. The paced retry's arm release
+	// carries the arm's tag instead, so it cannot satisfy this read — the
+	// hold's absence alone would pass under either lifter.
+	releaseMu.Lock()
+	sites := append([]delegateHoldReleaseSite(nil), heldRowReleaseSites...)
+	releaseMu.Unlock()
+	deliveredRelease := false
+	for _, site := range sites {
+		if site == delegateHoldReleaseDelivery {
+			deliveredRelease = true
+		}
+	}
+	if !deliveredRelease {
+		t.Fatalf("the child's delivered report did not end the hold at the delivery's release (release sites=%v)", sites)
+	}
 	lane.delegateSess.attentionMu.Lock()
 	held := lane.delegateSess.delegateAttentionHeldFromAutomaticDriveLocked(heldRowID)
 	lane.delegateSess.attentionMu.Unlock()
@@ -3517,6 +3552,14 @@ func TestDelegateAttentionUserStopHoldSurvivesIdleReleaseRestore(t *testing.T) {
 		<-release
 		return agenttest.FinalResponse("done")
 	}
+	// The parked-tail pin (the busy-commit test's form): unpinned, a
+	// fixture run finishing after this test's rows land resolves every
+	// wake-noted row inside its window — the loaded-runner interleave that
+	// would sweep the report row or the second row ahead of the loop's
+	// first drive. The parked announce closes the tails before the rows
+	// land, so the loop below is the only driver that can present them —
+	// and the fixture's armed-trigger race the note path below repairs is
+	// dead by construction, with the repair kept for the honest invariant.
 	holdSharedDescendantAnnounce("user-stop-release")
 	lane := spawnSharedDescendantLane(t, r, "user-stop-release", "dlg_userstoprel01", "034userstoprel1", wedge)
 	lane.releaseSeededAnnounceHold(t)
@@ -3907,27 +3950,7 @@ func TestDelegateAttentionStopAdmittedDuringReopenResolvesFreshRow(t *testing.T)
 	// runs.
 	holdSharedDescendantAnnounce("stop-during-reopen")
 	lane := spawnSharedDescendantLane(t, r, "stop-during-reopen", "dlg_stopreopen0001", "034stopreopen0001")
-	lane.announceRelease()
-	// The seeded window's end is the delegate's own finalize tail closing its
-	// run, re-arm included: the retained child's report becomes a pending
-	// row inside this window, and waiting the tail out keeps the reopen
-	// scenario below from driving before the row exists — a first drive that
-	// finds no row exits this test's only loop and strands the stop's whole
-	// premise.
-	lane.delegateSub.mu.Lock()
-	delegateDone := lane.delegateSub.done
-	lane.delegateSub.mu.Unlock()
-	select {
-	case <-delegateDone:
-	// TRIPWIRE: the tail finishes within a couple of drain passes of the
-	// release; 15s only fires on a genuine hang, absorbing a loaded shard's
-	// stretched finalize tails and git retries.
-	case <-time.After(15 * time.Second):
-		t.Fatalf("the delegate's finalize tail never finished after the seeded announce release")
-	}
-	if pending, pendErr := lane.delegateSess.pendingDelegateAttentionIDs(); pendErr != nil || len(pending) == 0 {
-		t.Fatalf("the retained child's report is not pending after the seeded window: pending=%v (%v)", pending, pendErr)
-	}
+	lane.releaseSeededAnnounceHold(t)
 	lane.delegateSess.SetNotifyFunc(nil)
 
 	// Hold the stop the seam admits in flight: its driver cannot complete
