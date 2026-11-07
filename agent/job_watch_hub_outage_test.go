@@ -1,6 +1,8 @@
 package agent
 
 import (
+	"context"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -94,12 +96,16 @@ func TestManagerWatchSurvivesBindingOutageUntilConnectionRestores(t *testing.T) 
 	if got := countWatchSends(t, jm, watchID, instance+"/"+generation+"/terminal:A:communicate:completed"); got != 1 {
 		t.Fatalf("completion deliveries after outage recovery=%d, want 1", got)
 	}
+	if got := countWatchSends(t, jm, watchID, ref+"#interruption"); got != 0 {
+		t.Fatalf("interruption notices across the in-budget outage=%d, want 0", got)
+	}
 }
 
 // The outage budget's other half: a binding outage that outlasts the budget
 // ends the watch durably with re-registration guidance, never an inferred
-// verdict, and the loss itself owes exactly one interruption notice
-// (job-control.md).
+// verdict. The durable end notice is the one notice the loss delivers
+// (job-control.md): the interruption frame stays silent, because recovery
+// never succeeded.
 func TestManagerWatchOutagePastBudgetEndsDurably(t *testing.T) {
 	const ref, instance, generation = "local:worker", "worker-instance", "7@worker"
 	ctx := t.Context()
@@ -143,8 +149,94 @@ func TestManagerWatchOutagePastBudgetEndsDurably(t *testing.T) {
 	if managerHubWatchPresent(jm, watchID) {
 		t.Fatal("outage past the budget left the watch armed")
 	}
-	if got := countWatchSends(t, jm, watchID, ref+"#interruption"); got != 1 {
-		t.Fatalf("interruption notices for the loss episode=%d, want 1", got)
+	if got := countWatchSends(t, jm, watchID, ref+"#interruption"); got != 0 {
+		t.Fatalf("interruption notices for the exhausted episode=%d, want 0", got)
+	}
+	if got := countWatchSends(t, jm, watchID, ref+"#ended"); got != 1 {
+		t.Fatalf("durable end notices=%d, want 1", got)
+	}
+}
+
+// failingRebindClient answers State through the base fixture but fails every
+// Watch re-subscribe after the first with a retryable unavailability: the
+// hub-degraded shape where the Manager binding answers while the observation
+// cannot.
+type failingRebindClient struct {
+	*managerRecoverClient
+	attempts atomic.Int32
+}
+
+func (c *failingRebindClient) Watch(ctx context.Context, request appwire.SessionWatchRequest) (<-chan appwire.SessionWatchUpdate, error) {
+	if c.attempts.Add(1) > 1 {
+		return nil, appwire.Unavailable("watch subscription unavailable")
+	}
+	return c.managerRecoverClient.Watch(ctx, request)
+}
+
+// The outage budget bounds the whole recovery episode, not only failed state
+// reads: a binding that answers State while its Watch re-subscribes keep
+// failing with retryable errors must still end durably with the one
+// re-register notice once the failures outlast the budget (job-control.md).
+func TestManagerWatchRetryableRebindFailuresExhaustTheOutageBudget(t *testing.T) {
+	const ref, instance, generation = "local:worker", "worker-instance", "7@worker"
+	root := newMessagingRoot(t, newMessagingAdapter(), func(cfg *SessionConfig) {
+		cfg.Manager = true
+		cfg.testOnly.hubWatchRetryDelay = time.Millisecond
+		cfg.testOnly.hubWatchStateOutageBudget = 50 * time.Millisecond
+	})
+	snapshot := appwire.SessionWatchUpdate{
+		Snapshot: &appwire.ThreadReadResponse{BootGeneration: generation, Thread: appwire.Thread{Evener: appwire.EvenerThread{Ref: ref, InstanceID: instance}}},
+		Metadata: appwire.SessionObservationMetadata{Ref: ref, InstanceID: instance, GenerationID: generation},
+	}
+	first := make(chan appwire.SessionWatchUpdate, 1)
+	first <- snapshot
+	base := &managerRecoverClient{
+		view:         appwire.ManagerView{Ref: "local:manager", InstanceID: "manager-instance", Manager: true},
+		streams:      make(chan chan appwire.SessionWatchUpdate, 1),
+		watches:      make(chan struct{}, 1),
+		offlineReads: make(chan struct{}, 16),
+		ended:        make(chan struct{}, 2),
+	}
+	base.streams <- first
+	client := &failingRebindClient{managerRecoverClient: base}
+	root.SetHubClient(client)
+	res, err := root.configureHubWatchRuntime(t.Context(), map[string]any{"operation": "create", "hub": map[string]any{"ref": ref, "events": []string{"communicate"}, "completion": true}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	watchID := res.(tool.StateResult).State.(jobWatchToolResult).WatchID
+	<-base.watches
+	jm := root.jobManager
+	if jm == nil {
+		t.Fatal("missing journal owner")
+	}
+
+	// The stream dies with the binding briefly offline so the recovery loop is
+	// observably running, then the binding answers State again while every
+	// rebind attempt fails with the retryable unavailability.
+	base.mu.Lock()
+	base.offline = true
+	base.mu.Unlock()
+	close(first)
+	select {
+	case <-base.offlineReads:
+	case <-time.After(hubWatchTestHangGuard):
+		t.Fatal("stream end did not reach the recovery loop")
+	}
+	root.HubBindingChanged()
+	base.mu.Lock()
+	base.offline = false
+	base.mu.Unlock()
+
+	// State reads now answer, so only the failing rebind attempts accrue
+	// against the budget; past it the episode must end durably, with the
+	// re-register notice as its one notice.
+	awaitWithin(t, hubWatchTestHangGuard, "durable end after retryable rebind failures outlasted the budget", func() { <-base.ended })
+	if managerHubWatchPresent(jm, watchID) {
+		t.Fatal("retryable rebind failures past the budget left the watch armed")
+	}
+	if got := countWatchSends(t, jm, watchID, ref+"#interruption"); got != 0 {
+		t.Fatalf("interruption notices across the exhausted episode=%d, want 0", got)
 	}
 	if got := countWatchSends(t, jm, watchID, ref+"#ended"); got != 1 {
 		t.Fatalf("durable end notices=%d, want 1", got)
