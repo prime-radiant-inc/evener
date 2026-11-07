@@ -639,6 +639,11 @@ const WarningCodeDelegateAttentionRestore = "delegate_attention_restore"
 // restarts. Clients show it at every level.
 const WarningCodeDelegateAttentionUndeliverable = "delegate_attention_undeliverable"
 
+// WarningCodeDelegateStartDeliveryReplay identifies the notice that a
+// committed delegate start could not replay an owed delivery. The parcel is
+// requeued and the start continues.
+const WarningCodeDelegateStartDeliveryReplay = "delegate_start_delivery_replay"
+
 // WarningCodeAttentionPaused identifies the notice that a permanent provider
 // failure (a dead credential, a spent quota) has paused delivering background
 // updates to a session until something changes. Unlike the informational

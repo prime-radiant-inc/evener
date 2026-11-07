@@ -380,9 +380,9 @@ func TestDelegateControllerAdmitsAStartOnceTheFinishedRuntimeIsReplaced(t *testi
 }
 
 // A generation whose input was admitted but whose run never launched has no
-// finalize tail: its failure hands back the generation's announcements for
-// the caller to execute, and its release lets the delegate take its next
-// start.
+// finalize tail: the durable repair finishes it directly, handing back the
+// generation's announcements for the caller to execute, and its release lets
+// the delegate take its next start.
 func TestDelegateControllerAUnlaunchedGenerationLeavesTheDelegateStartable(t *testing.T) {
 	c, _ := newDelegateControllerTestHarness(t, 2, 2)
 	seedDelegateControllerIdle(t, c, "dlg_target", "")
@@ -390,9 +390,9 @@ func TestDelegateControllerAUnlaunchedGenerationLeavesTheDelegateStartable(t *te
 	if _, err := c.AdmitStartInput(started.lease, func() error { return nil }); err != nil {
 		t.Fatalf("AdmitStartInput: %v", err)
 	}
-	plans, err := c.finishUnlaunchedGeneration(started.lease, errors.New("plans failed"))
+	plans, err := c.FinishGeneration(started.lease, delegatePermanentStartFailure(errors.New("plans failed"), "launch_failed"))
 	if err != nil {
-		t.Fatalf("finishUnlaunchedGeneration: %v", err)
+		t.Fatalf("FinishGeneration: %v", err)
 	}
 	if len(plans.updates) == 0 {
 		t.Fatal("the unlaunched generation's plans carry no idle snapshot to announce")

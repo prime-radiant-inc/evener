@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/internal/delegatestore"
 	"primeradiant.com/evener/agent/internal/jobstore"
 	"primeradiant.com/evener/agent/provenance"
@@ -120,16 +121,6 @@ func channelClosed(ch <-chan struct{}) bool {
 	default:
 		return false
 	}
-}
-
-// finishUnlaunchedGeneration fails a generation whose input was admitted but
-// whose run never launched (launch_failed). No run finalizes its runtime, so
-// the caller must release it (releaseFinishedGeneration) once the returned
-// plans (which carry the generation's idle snapshot and result) have been
-// executed, whether or not that failed, or the delegate stays refused as
-// still finalizing.
-func (c *delegateTreeController) finishUnlaunchedGeneration(lease delegateLease, cause error) (delegateMutationPlans, error) {
-	return c.FinishGeneration(lease, delegatePermanentStartFailure(cause, "launch_failed"))
 }
 
 // releaseFinishedGeneration releases runtime's finished generation so the
@@ -381,13 +372,13 @@ func (runtime delegateRuntime) send(ctx context.Context, delegateID, message str
 		s.sendersWG.Done()
 		return runtime.stableSendFailureOutcomeAfterDispatch(ctx, started, waiter, maxWaitMS, plans, err, nil)
 	}
-	if err := s.executeDelegateMutationPlans(plans); err != nil {
-		s.sendersWG.Done()
-		failurePlans, finishErr := s.delegateController.finishUnlaunchedGeneration(started.lease, err)
-		// The release runs once the failure is announced, whatever that did.
-		return runtime.stableSendFailureOutcomeAfterDispatch(ctx, started, waiter, maxWaitMS, failurePlans, errors.Join(err, finishErr), func() {
-			s.releaseFinishedGeneration(started.lease, sub.sess)
-		})
+	// The start is committed and its input durable. Publish the snapshots
+	// and replay the owed deliveries as best effort: an acknowledgment failure
+	// there is not the start's failure and must not latch finalization recovery
+	// or leave an unlaunched runner. The failure path requeues the parcels; a
+	// covering stop still repairs any receipt left behind.
+	if execErr := s.executeDelegateMutationPlans(plans); execErr != nil {
+		s.emit(warningDataFromErrorCode(events.WarningCodeDelegateStartDeliveryReplay, "delegate start delivery replay failed", execErr))
 	}
 	runCtx, runCancel := context.WithCancel(started.ctx)
 	runCtx = context.WithValue(runCtx, delegateRunLeaseContextKey{}, started.lease)

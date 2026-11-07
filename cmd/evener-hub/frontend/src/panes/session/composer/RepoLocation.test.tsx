@@ -100,6 +100,44 @@ test("shows the branch unlinked when the origin is not a recognized forge", asyn
   expect(screen.queryByTestId("forge-mark")).toBeNull();
 });
 
+// The phone footer's caption row is below the touch floor, so Session declines
+// the forge anchor there: the branch still shows, but no outbound link sits
+// under a thumb aiming for the chips below.
+test("shows the branch unlinked when the caller declines the forge link", async () => {
+  const client = clientReporting({ head: "feature/x", originUrl: "git@github.com:owner/repo.git" });
+  render(
+    <ClientProvider client={client}>
+      <RepoLocation cwd="/repo" local link={false} />
+    </ClientProvider>,
+  );
+
+  expect((await screen.findByTestId("composer-repo-branch")).textContent).toBe("feature/x");
+  expect(screen.queryByTestId("composer-repo-link")).toBeNull();
+  expect(screen.queryByTestId("forge-mark")).toBeNull();
+});
+
+// The unlinked phone form must yield like the linked ref does, not hold its
+// full width and squeeze the working directory away. It must do that with or
+// without a forge remote: a local-only branch is just as long.
+test("middle-truncates an unlinked branch so it yields to the working dir", async () => {
+  const branch = "feature/a-branch-name-that-is-far-too-long-for-a-phone";
+  for (const answer of [{ head: branch, originUrl: "git@github.com:owner/repo.git" }, { head: branch }]) {
+    const { unmount } = render(
+      <ClientProvider client={clientReporting(answer)}>
+        <RepoLocation cwd="/repo" local link={false} />
+      </ClientProvider>,
+    );
+
+    const rendered = await screen.findByTestId("composer-repo-branch");
+    expect(rendered.children).toHaveLength(2);
+    const head = rendered.children[0]?.textContent ?? "";
+    const tail = rendered.children[1]?.textContent ?? "";
+    expect(head + tail).toBe(branch);
+    expect(tail.endsWith("phone")).toBe(true);
+    unmount();
+  }
+});
+
 test("shows the branch unlinked when the repo has no origin remote", async () => {
   const client = clientReporting({ head: "main" });
   renderLocation("/repo", client);

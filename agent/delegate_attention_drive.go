@@ -200,14 +200,14 @@ func (s *Session) driveDelegateAttention(sub *subagent) bool {
 	launchErr := s.launchAcceptedDelegateAttention(sub, started)
 	launched = launchErr == nil
 	if launchErr != nil {
-		// finishUnlaunchedGeneration, not FailCommittedRestart: an attention
+		// FinishGeneration, not FailCommittedRestart: an attention
 		// generation's binding is born ready, and FailCommittedRestart refuses
 		// ready bindings — its cleanup would no-op and leave the delegate
 		// running in the controller's live state forever, ineligible for every
-		// later start. The send path releases an unlaunched generation this
-		// same way, quiescence report included, or the delegate stays refused
-		// as still finalizing.
-		plans, finishErr := s.delegateController.finishUnlaunchedGeneration(started.lease, launchErr)
+		// later start. The launch refused after the commit, so the generation
+		// is failed the way any unlaunched start is, quiescence report
+		// included, or the delegate stays refused as still finalizing.
+		plans, finishErr := s.delegateController.FinishGeneration(started.lease, delegatePermanentStartFailure(launchErr, "launch_failed"))
 		if executeErr := s.executeDelegateMutationPlans(plans); finishErr == nil {
 			finishErr = executeErr
 		}

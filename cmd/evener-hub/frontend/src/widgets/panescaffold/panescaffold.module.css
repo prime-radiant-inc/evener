@@ -162,6 +162,22 @@
     padding: var(--space-3) var(--space-4);
     padding-bottom: max(0px, env(safe-area-inset-bottom) - var(--keyboard-inset, 0px));
   }
+
+  /* The flush edge footer below this dock is the pane's bottom edge and owns
+   * the home-indicator band (the session status bar), so reserving the inset
+   * here too would leave a dead strip between the composer and that bar. */
+  .footerBeforeEdge {
+    padding-bottom: var(--space-3);
+  }
+
+  /* While the composer is editing the status bar hides (it would sit between
+   * the input and the keyboard), so the dock is the bottom edge again and
+   * takes the home-indicator band back for the case where focus outlives the
+   * keyboard. The editing attribute also holds while a composer control or
+   * menu owns focus. */
+  :global(body):has([data-composer-editing]) .footerBeforeEdge {
+    padding-bottom: max(0px, env(safe-area-inset-bottom) - var(--keyboard-inset, 0px));
+  }
 }
 
 /* squircle-proto: continuous (Apple-style) corner curvature where the engine
