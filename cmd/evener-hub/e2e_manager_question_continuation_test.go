@@ -28,6 +28,10 @@ func TestE2E_ManagerQuestionContinuation(t *testing.T) {
 			name = "two_successive_questions"
 		}
 		t.Run(name, func(t *testing.T) {
+			// Each case builds its own fake provider, hub and two daemons, and
+			// reaches no process-wide state, so the journeys overlap instead of
+			// paying three stack startups one after another.
+			t.Parallel()
 			provider, err := fakellm.New()
 			if err != nil {
 				t.Fatal(err)
