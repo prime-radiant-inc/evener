@@ -15,7 +15,7 @@ export interface VoicePresentation {
 /** Derive the surface's state from the voice snapshot. `justHeard` lets the
  * caller flash the heard-you state for a moment after a detection; the snapshot
  * itself carries no detection time, and the detection count never resets. */
-export function voicePresentation(state: VoiceSnapshot, justHeard = false): VoicePresentation {
+export function voicePresentation(state: VoiceSnapshot, justHeard = false, waitingForReply = false): VoicePresentation {
 	if (state.state === "disarmed") return { phase: "disarmed", primary: "arm", talkEnabled: false };
 	const trialRunning = state.wake?.trials.at(-1)?.running === true;
 	const capturing = state.capturing && !trialRunning && state.state === "quiet";
@@ -30,7 +30,13 @@ export function voicePresentation(state: VoiceSnapshot, justHeard = false): Voic
 	// rejected speech, a late provider error), and Talk is the only way out
 	// because wake listening needs quiet. `cloudMicrophone` marks a live turn.
 	if (state.state === "conversing") {
-		return { phase: "talking", primary: "talk", talkEnabled: state.capturing && !state.cloudMicrophone };
+		// While the manager composes a reply, no turn is streaming either, but
+		// Talk would start speech that later barges in on that reply.
+		return {
+			phase: "talking",
+			primary: "talk",
+			talkEnabled: state.capturing && !state.cloudMicrophone && !waitingForReply,
+		};
 	}
 	// Routine turn aborts (input_idle, input_start_timeout, recoverable provider
 	// errors) leave `error` set while the phone stays armed and listening, so

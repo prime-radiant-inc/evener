@@ -241,6 +241,18 @@ it("shows measured wake receipts and sends trial labels to the native owner", as
 			.join("\n"),
 	).toContain(`Last score: ${recordedTrials.at(-1)!.lastScore.toFixed(4)}`);
 	expect(button("Start test").props.disabled).toBe(false);
+	// The detector needs fresh context before it scores; the trial view has to
+	// say so, or a warm-up utterance is marked as a miss.
+	await act(async () => {
+		button("Start test").props.onPress();
+	});
+	await act(async () => {
+		emit({ ...state, wake: { ...state.wake!, state: "warming" } });
+	});
+	expect(JSON.stringify(tree.toJSON())).toContain("Getting ready");
+	await act(async () => {
+		emit(state);
+	});
 	for (const label of ["Intended", "Background", "False alarm"]) {
 		await act(async () => {
 			button("Start test").props.onPress();
@@ -251,7 +263,7 @@ it("shows measured wake receipts and sends trial labels to the native owner", as
 			button(label).props.onPress();
 		});
 	}
-	expect(actions).toEqual(["start", "positive", "start", "negative", "start", "falseActivation"]);
+	expect(actions).toEqual(["start", "start", "positive", "start", "negative", "start", "falseActivation"]);
 	unlisten();
 });
 
@@ -341,6 +353,19 @@ it("keeps Stop live while Evener speaks", async () => {
 		emit({ ...armed, state: "conversing", cloudMicrophone: true });
 	});
 	expect(JSON.stringify(tree.toJSON())).toContain("Listening to you");
+	// After the turn stops streaming, native holds conversing while the reply is
+	// composed. That is a wait, not an invitation to start another turn.
+	await act(async () => {
+		emit({ ...armed, state: "conversing", cloudMicrophone: false });
+	});
+	expect(JSON.stringify(tree.toJSON())).toContain("Waiting for Evener");
+	await act(async () => {
+		emit({ ...armed, state: "speaking" });
+	});
+	await act(async () => {
+		emit({ ...armed, state: "conversing", cloudMicrophone: false });
+	});
+	expect(JSON.stringify(tree.toJSON())).toContain("Tap Talk to reply");
 });
 
 it("calls a routine abort a finished turn, not a stopped voice", async () => {

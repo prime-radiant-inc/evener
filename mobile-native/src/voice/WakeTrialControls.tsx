@@ -72,7 +72,8 @@ export function WakeTrialControls({ client, state }: { client: VoiceClient; stat
 						False alarms: {summary.falseActivations} across {summary.negativeAttempts} background attempts
 					</Copy>
 					<Copy muted>
-						Wake: {wake.phrase || "turn voice on to load the model"} ·{" "}
+						{wake.state === "warming" ? "Getting ready…" : "Listening"} · Wake:{" "}
+						{wake.phrase || "turn voice on to load the model"} ·{" "}
 						{wake.score != null
 							? `Last score: ${wake.score.toFixed(4)}`
 							: attempt?.lastScore != null
@@ -113,9 +114,9 @@ export function WakeTrialControls({ client, state }: { client: VoiceClient; stat
 						))}
 					</View>
 					<Copy muted>
-						Say “{wake.phrase || "the wake word"}”, then mark Intended, even if it missed. Background is for other
-						audio. Tests stay on this iPhone and never start a conversation; results apply to this iPhone and this wake
-						word.
+						Wait for Listening, then say “{wake.phrase || "the wake word"}”, and mark Intended, even if it missed.
+						Background is for other audio. Tests stay on this iPhone and never start a conversation; results apply to
+						this iPhone and this wake word.
 					</Copy>
 				</>
 			) : null}

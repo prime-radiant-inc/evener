@@ -57,7 +57,14 @@ function Controls({ client, target }: { client: VoiceClient; target: VoiceTarget
 	const bound = client.getTarget();
 	const armed = state.state !== "disarmed";
 	const same = bound?.ref === target.ref && bound.hub.id === target.hub.id;
-	const presented = voicePresentation(state, justHeard);
+	// Between a streamed turn and its reply, native holds `conversing` with no
+	// live turn. Remember that a turn streamed here so the bar can say it is
+	// waiting for the reply instead of inviting a new turn.
+	const streamedTurn = useRef(false);
+	if (state.state === "conversing" && state.cloudMicrophone) streamedTurn.current = true;
+	else if (state.state !== "conversing") streamedTurn.current = false;
+	const waitingForReply = state.state === "conversing" && !state.cloudMicrophone && streamedTurn.current;
+	const presented = voicePresentation(state, justHeard, waitingForReply);
 	const talkEnabled = presented.talkEnabled && same;
 	// Playback is this device's, so Stop does not need this session's binding or
 	// a live capture; everything else needs Talk's conditions.
@@ -97,6 +104,7 @@ function Controls({ client, target }: { client: VoiceClient; target: VoiceTarget
 				phrase={state.wake?.phrase ?? ""}
 				speakerOff={state.speakerConsentRequired}
 				streaming={state.cloudMicrophone}
+				waitingForReply={waitingForReply}
 				boundRef={armed && !same ? bound?.ref : undefined}
 				onPrimary={presented.phase === "disarmed" ? () => setExpanded(true) : primary}
 				onToggle={() => setExpanded(!expanded)}
@@ -115,6 +123,7 @@ function Controls({ client, target }: { client: VoiceClient; target: VoiceTarget
 							phrase={state.wake?.phrase ?? ""}
 							speakerOff={state.speakerConsentRequired}
 							streaming={state.cloudMicrophone}
+							waitingForReply={waitingForReply}
 							boundRef={armed && !same ? bound?.ref : undefined}
 						/>
 						{armed ? null : <Details state={state} forceOpen />}
@@ -167,6 +176,7 @@ function VoiceBar({
 	phrase,
 	speakerOff,
 	streaming,
+	waitingForReply,
 	boundRef,
 	onPrimary,
 	onToggle,
@@ -178,6 +188,7 @@ function VoiceBar({
 	phrase: string;
 	speakerOff: boolean;
 	streaming: boolean;
+	waitingForReply: boolean;
 	boundRef?: string;
 	onPrimary(): void;
 	onToggle(): void;
@@ -187,7 +198,7 @@ function VoiceBar({
 	const tone = TONES[phase];
 	const headline = boundRef
 		? `Voice is on for ${shortRef(boundRef)}`
-		: barHeadline(phase, phrase, speakerOff, streaming);
+		: barHeadline(phase, phrase, speakerOff, streaming, waitingForReply);
 	const actionVisible = phase === "disarmed" || phase === "listening" || phase === "speaking" || phase === "talking";
 	return (
 		<View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
@@ -234,7 +245,13 @@ function shortRef(ref: string) {
 	return ref.replace(/^local:/, "");
 }
 
-function barHeadline(phase: VoicePhase, phrase: string, speakerOff: boolean, streaming: boolean) {
+function barHeadline(
+	phase: VoicePhase,
+	phrase: string,
+	speakerOff: boolean,
+	streaming: boolean,
+	waitingForReply: boolean,
+) {
 	const wake = phrase ? `“${phrase}”` : "the wake word";
 	switch (phase) {
 		case "disarmed":
@@ -246,7 +263,7 @@ function barHeadline(phase: VoicePhase, phrase: string, speakerOff: boolean, str
 		case "talking":
 			// Native keeps `conversing` with nothing streaming after Stop or a
 			// rejected reply, so only a live cloud turn is "listening to you".
-			return streaming ? "Listening to you" : "Tap Talk to reply";
+			return waitingForReply ? "Waiting for Evener…" : streaming ? "Listening to you" : "Tap Talk to reply";
 		case "speaking":
 			return "Evener is speaking";
 		case "recovering":
@@ -263,12 +280,14 @@ function PanelHeader({
 	phrase,
 	speakerOff,
 	streaming,
+	waitingForReply,
 	boundRef,
 }: {
 	phase: VoicePhase;
 	phrase: string;
 	speakerOff: boolean;
 	streaming: boolean;
+	waitingForReply: boolean;
 	boundRef?: string;
 }) {
 	const { palette } = useColors();
@@ -289,7 +308,9 @@ function PanelHeader({
 			</View>
 			<View style={{ flexShrink: 1, gap: 2 }}>
 				<Copy>
-					{boundRef ? `Voice is on for ${shortRef(boundRef)}` : barHeadline(phase, phrase, speakerOff, streaming)}
+					{boundRef
+						? `Voice is on for ${shortRef(boundRef)}`
+						: barHeadline(phase, phrase, speakerOff, streaming, waitingForReply)}
 				</Copy>
 				<Copy muted>
 					{boundRef
