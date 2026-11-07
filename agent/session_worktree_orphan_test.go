@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -2373,13 +2374,46 @@ func TestDelegateAttentionUserStopsRunWithoutReArmingTheReport(t *testing.T) {
 		<-release
 		return agenttest.FinalResponse("done")
 	}
+	// Seed the loaded-runner interleave this test pins: hold the retained
+	// child's announce until the fixture has returned. The fixture's send
+	// comes back while the delegate's finalization drain is still parked on
+	// the child, so the release lands the child's report delivery inside
+	// this test's window instead of the fixture's — the shape whose race
+	// dropped a CI run: the scenario's budgets below must start from the
+	// row's arrival, not the fixture's return.
+	holdSharedDescendantAnnounce("user-stop-no-rearm")
 	lane := spawnSharedDescendantLane(t, r, "user-stop-no-rearm", "dlg_userstop00001", "034userstop00001", wedge)
+	var announceHoldOnce sync.Once
+	releaseAnnounceHold := func() { announceHoldOnce.Do(func() { close(lane.announceHold) }) }
+	// A fatal before the release would park the held finalize tail forever,
+	// so the cleanup mirror guarantees the parked tail can always finish.
+	t.Cleanup(releaseAnnounceHold)
 	lane.delegateSess.SetNotifyFunc(nil)
 	// The shared child's restored notify edge can launch its own pending
 	// notification turn, which would consume the scripted wedge step this
 	// test's presentation parks in; disarm it so the test loop below is the
 	// only driver.
 	lane.sharedSub.sess.SetNotifyFunc(nil)
+	releaseAnnounceHold()
+	// The seeded window's end is the delegate's own finalize tail closing its
+	// run: the tail re-arms whatever attention survived the window at its
+	// very end, so the wait must cover the re-arm too. The retained child's
+	// report becomes a pending row inside this window, and waiting the tail
+	// out is what keeps the wait below from racing the row's landing.
+	lane.delegateSub.mu.Lock()
+	delegateDone := lane.delegateSub.done
+	lane.delegateSub.mu.Unlock()
+	select {
+	case <-delegateDone:
+	// TRIPWIRE: the tail finishes within a couple of drain passes of the
+	// release; 15s only fires on a genuine hang, absorbing a loaded shard's
+	// stretched finalize tails and git retries.
+	case <-time.After(15 * time.Second):
+		t.Fatalf("the delegate's finalize tail never finished after the seeded announce release")
+	}
+	if pending, pendErr := lane.delegateSess.pendingDelegateAttentionIDs(); pendErr != nil || len(pending) == 0 {
+		t.Fatalf("the retained child's report is not pending after the seeded window: pending=%v (%v)", pending, pendErr)
+	}
 	// The auto path a re-arm feeds: the controller's paced retry notifies the
 	// owner session, whose drive pass selects the armed wake — the same hop
 	// the daemon runs, so the arm's consequence is observable without the
@@ -2738,7 +2772,24 @@ func TestDelegateAttentionHeldUpdateDoesNotLoopTheFinalizationDrain(t *testing.T
 		<-release
 		return agenttest.FinalResponse("done")
 	}
+	// Seed the loaded-runner interleave this test pins: hold the retained
+	// child's announce until the test's own window. The fixture's send comes
+	// back while the delegate's finalization drain is still parked on the
+	// child, so the release lands the child's report delivery inside this
+	// test's window instead of the fixture's, and waiting the delegate's own
+	// tail out keeps the scenario below from racing the row's landing — the
+	// unpinned fixture can also leave the interrupted presentation owed, and
+	// the first drive pass admits that owed start as a generation that
+	// replays a prepared delivery without a model call, whose finalization
+	// cleanup consumes every wake-noted row that landed inside its window.
+	holdSharedDescendantAnnounce("held-update-drain")
 	lane := spawnSharedDescendantLane(t, r, "held-update-drain", "dlg_heldupdt0001", "034heldupdt001")
+	var announceHoldOnce sync.Once
+	releaseAnnounceHold := func() { announceHoldOnce.Do(func() { close(lane.announceHold) }) }
+	// A fatal before the release would park the held finalize tail forever,
+	// so the cleanup mirror guarantees the parked tail can always finish.
+	t.Cleanup(releaseAnnounceHold)
+
 	lane.delegateSess.SetNotifyFunc(nil)
 	// The shared child's restored notify edge can launch its own pending
 	// notification turn, which would consume the scripted wedge step this
@@ -2758,42 +2809,69 @@ func TestDelegateAttentionHeldUpdateDoesNotLoopTheFinalizationDrain(t *testing.T
 		go lane.root.drivePendingDelegateAttention()
 	})
 
-	// The spawn can leave the delegate's interrupted presentation owed: the
-	// first drive pass admits that owed start as a generation that replays a
-	// prepared delivery without a model call, and its finalization cleanup
-	// consumes every wake-noted row that landed inside its window. Pump the
-	// owed machinery out BEFORE the scenario's rows exist — drive passes
-	// until the controller's wake map, the delegate's fold, and the delegate's
-	// run state all read quiet — so the rows below land in a tree no run's
-	// finish can sweep.
-	warmupProbe := make(chan struct{})
-	lane.driveUntil(warmupProbe)
-	// TRIPWIRE: the owed replay settles within a couple of drive passes of
-	// the spawn; the bound only fires on a genuine hang.
-	waitForCondition(t, 15*time.Second, "the spawn's owed machinery to settle", func() bool {
-		pending, pendErr := lane.delegateSess.pendingDelegateAttentionIDs()
+	releaseAnnounceHold()
+	// The seeded window's end is the delegate's own finalize tail closing its
+	// run: the tail re-arms whatever attention survived the window at its
+	// very end, so the wait must cover the re-arm too.
+	lane.delegateSub.mu.Lock()
+	delegateDone := lane.delegateSub.done
+	lane.delegateSub.mu.Unlock()
+	select {
+	case <-delegateDone:
+	// TRIPWIRE: the tail finishes within a couple of drain passes of the
+	// release; 15s only fires on a genuine hang, absorbing a loaded shard's
+	// stretched finalize tails and git retries.
+	case <-time.After(15 * time.Second):
+		stuckPending, stuckPendErr := lane.delegateSess.pendingDelegateAttentionIDs()
 		lane.delegateSub.mu.Lock()
 		busy := lane.delegateSub.running || lane.delegateSub.driving || lane.delegateSub.finalizing
 		lane.delegateSub.mu.Unlock()
-		return pendErr == nil && len(pending) == 0 && !busy && !lane.root.delegateController.hasPendingDelegateAttention()
-	})
-	close(warmupProbe)
+		t.Fatalf("the delegate's finalize tail never finished after the seeded announce release (pending=%v (%v); delegate running/driving/finalizing=%t)",
+			stuckPending, stuckPendErr, busy)
+	}
+	// The window's shape: the retained child's report landed pending — the
+	// parked window's drain cut left it for the drives below.
+	reportID := delegateAttentionID(delegateDeliveryID(lane.sharedDelegateID, 1))
+	windowPending, windowPendErr := lane.delegateSess.pendingDelegateAttentionIDs()
+	if windowPendErr != nil || len(windowPending) == 0 {
+		t.Fatalf("the retained child's report is not pending after the seeded window: pending=%v (%v)", windowPending, windowPendErr)
+	}
 
-	// The spawn's scripted turns are spent — the retained child's report
-	// presented and resolved inside the spawn — so the tree is quiet and the
-	// delegate idle here. The child's mid-work question pends first, so the
-	// first drive claims it as its run's trigger; the second row behind it is
-	// the rider whose armed wake outlives the stop. The update's presentation
-	// answers a step appended past the spent script: the adapter's cursor
-	// survives reassignment, so the next model call parks in the wedge above.
+	// The report settles through the first drive before the scenario's rows
+	// exist, so the fold holds those rows alone and in append order. The
+	// drive loop is the only driver, and its pass presents the report the
+	// way the daemon's scheduled pass does.
+	reportProbe := make(chan struct{})
+	lane.driveUntil(reportProbe)
+	// TRIPWIRE: the report's presentation settles within a couple of drive
+	// passes of the window; the bound only fires on a genuine hang, not a
+	// loaded shard's scheduling delay.
+	waitForCondition(t, 30*time.Second, "the report's presentation to settle", func() bool {
+		live, err := readDelegateAttentionFold(lane.delegateSess.TranscriptPath(), lane.delegateSess.id)
+		if err != nil || live.resolutions[reportID] == "" {
+			return false
+		}
+		lane.delegateSub.mu.Lock()
+		busy := lane.delegateSub.running || lane.delegateSub.driving || lane.delegateSub.finalizing
+		lane.delegateSub.mu.Unlock()
+		return !busy
+	})
+	close(reportProbe)
+
+	// The scenario's rows pend on the quiet fold in claim order: the child's
+	// mid-work question first — the drive's claim — and the second row behind
+	// it, the rider whose armed wake outlives the stop. The update's
+	// presentation answers a step appended past the spent script: the
+	// adapter's cursor survives reassignment, so the next model call parks
+	// in the wedge above.
 	updateID := delegateAttentionID(delegatestore.UpdateDeliveryID(lane.sharedDelegateID, 1))
 	updateText := `<delegate-notification delegate_id="` + lane.sharedDelegateID + `" kind="update">which cursor holds the drain loop?</delegate-notification>`
 	if _, err := lane.delegateSess.appendDelegateNotificationDurably(updateID, updateText); err != nil {
 		t.Fatalf("pend the child's update row: %v", err)
 	}
-	const secondRowID = "delegate:held-update-second-pending-row"
-	const secondRowContent = "held-update-second-row: which cursor holds the merge base?"
-	if _, err := lane.delegateSess.appendDelegateNotificationDurably(secondRowID, secondRowContent); err != nil {
+	const riderRowID = "delegate:held-update-second-pending-row"
+	const riderRowContent = "held-update-second-row: which cursor holds the merge base?"
+	if _, err := lane.delegateSess.appendDelegateNotificationDurably(riderRowID, riderRowContent); err != nil {
 		t.Fatalf("pend the second row: %v", err)
 	}
 	lane.fixture.adapter.appendSteps(wedge)
@@ -2875,8 +2953,8 @@ func TestDelegateAttentionHeldUpdateDoesNotLoopTheFinalizationDrain(t *testing.T
 		t.Fatalf("the stop left no rider pending, so no stale armed wake exists (pending=%v resolutions=%v)",
 			stopFold.pendingIDs(), stopFold.resolutions)
 	}
-	if riderID != secondRowID {
-		t.Fatalf("the pending rider %q is not the second row, so the spawn's own rows are still in play (pending=%v resolutions=%v)",
+	if riderID != riderRowID {
+		t.Fatalf("the pending rider %q is not the scenario's second row, so earlier rows are still in play (pending=%v resolutions=%v)",
 			riderID, stopFold.pendingIDs(), stopFold.resolutions)
 	}
 	lane.delegateSub.mu.Lock()
@@ -2930,9 +3008,9 @@ func TestDelegateAttentionHeldUpdateDoesNotLoopTheFinalizationDrain(t *testing.T
 		if err != nil {
 			return 0, false
 		}
-		for i := len(events) - 1; i >= 0; i-- {
-			if events[i].DelegateID == lane.fixture.delegateID && events[i].RunFinished != nil {
-				return events[i].RunFinished.Generation, true
+		for _, ev := range slices.Backward(events) {
+			if ev.DelegateID == lane.fixture.delegateID && ev.RunFinished != nil {
+				return ev.RunFinished.Generation, true
 			}
 		}
 		return 0, false
@@ -2996,6 +3074,40 @@ func TestDelegateAttentionHeldUpdateDoesNotLoopTheFinalizationDrain(t *testing.T
 	if fold.resolutions[reopenedID] != delegateAttentionConsumed {
 		t.Fatalf("the reopened update did not resolve as presented on its own generation (resolutions=%v; %s)",
 			fold.resolutions, drainState())
+	}
+}
+
+// Rows held out of the automatic drives by back-to-back stops move to the
+// resident history's tail in the fold's arrival order when the holds release:
+// the move once looped the holds map, whose iteration order is random, so
+// with standing holds the presenting request showed the held reports in
+// whatever order the map chose.
+func TestHeldRowsMoveToTheTailInArrivalOrder(t *testing.T) {
+	t.Parallel()
+	stateDir := t.TempDir()
+	cfg := SessionConfig{StateDir: stateDir, MaxSubagentDepth: 1}
+	sess := newSession(t, withDir(stateDir), withConfig(cfg))
+	sess.owningDelegateID = "dlg_coordinator"
+	const rows = 8
+	ids := make([]string, rows)
+	for i := range ids {
+		ids[i] = fmt.Sprintf("delegate:held-order-row-%d", i+1)
+		if _, err := sess.appendDelegateNotificationDurably(ids[i], fmt.Sprintf("held-order row %d", i+1)); err != nil {
+			t.Fatalf("pend row %d: %v", i+1, err)
+		}
+		sess.holdDelegateAttentionFromAutomaticDrive(ids[i])
+	}
+	sess.releaseAutomaticDriveHolds()
+	var got []string
+	sess.mu.Lock()
+	for _, turn := range sess.history {
+		if turn.Kind == schema.TurnSteering {
+			got = append(got, turn.AttentionID)
+		}
+	}
+	sess.mu.Unlock()
+	if !slices.Equal(got, ids) {
+		t.Fatalf("the released rows moved to the tail out of arrival order: got %v, want %v", got, ids)
 	}
 }
 

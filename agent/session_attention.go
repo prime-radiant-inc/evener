@@ -1027,8 +1027,10 @@ func (s *Session) releaseAutomaticDriveHoldsLocked() {
 // row would end its request on those later exchanges — a trailing assistant
 // message the model treats as a prefill to continue instead of the report it
 // owes. The move puts the report back at the end, so the presenting request
-// ends on it. Resolved rows keep their presented positions. The caller holds
-// attentionMu.
+// ends on it. Resolved rows keep their presented positions. The moves follow
+// the fold's arrival order, so rows held by back-to-back stops re-append
+// deterministically and the presenting request shows them in the order they
+// arrived. The caller holds attentionMu.
 func (s *Session) moveHeldDelegateAttentionTurnsToTail() {
 	fold, err := s.delegateAttentionFoldLocked()
 	if err != nil {
@@ -1036,8 +1038,8 @@ func (s *Session) moveHeldDelegateAttentionTurnsToTail() {
 		// ends the quiet.
 		return
 	}
-	for attentionID := range s.attentionAutomaticDriveHolds {
-		if _, resolved := fold.resolutions[attentionID]; resolved {
+	for _, attentionID := range fold.pendingIDs() {
+		if _, held := s.attentionAutomaticDriveHolds[attentionID]; !held {
 			continue
 		}
 		var held schema.Turn
