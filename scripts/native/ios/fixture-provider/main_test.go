@@ -120,9 +120,24 @@ func TestFixtureProviderCompletesTurnAndStops(t *testing.T) {
 	if err := <-done; err != nil {
 		t.Fatalf("clean shutdown failed: %v", err)
 	}
-	if _, err := http.Post(baseURL+"/chat/completions", "application/json", strings.NewReader(request)); err == nil {
-		t.Fatal("listener survived cancellation")
-	} else if !errors.Is(err, syscall.ECONNREFUSED) {
-		t.Fatalf("unexpected post-cancellation failure: %v", err)
+	// The listener must be gone after cancellation. A dying listener's
+	// accept queue can hand the kernel one more completed handshake, which
+	// the client reads as EOF instead of a refusal, so probe until the port
+	// refuses connections outright. An answered request is the survival this
+	// check exists to catch.
+	refusalDeadline := time.Now().Add(2 * time.Second)
+	for {
+		resp, err := http.Post(baseURL+"/chat/completions", "application/json", strings.NewReader(request))
+		if err == nil {
+			resp.Body.Close()
+			t.Fatal("listener survived cancellation")
+		}
+		if errors.Is(err, syscall.ECONNREFUSED) {
+			break
+		}
+		if time.Now().After(refusalDeadline) {
+			t.Fatalf("the listener never refused connections after cancellation: %v", err)
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 }
