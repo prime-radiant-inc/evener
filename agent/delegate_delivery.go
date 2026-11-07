@@ -340,8 +340,6 @@ func (c *delegateTreeController) CompleteDelivery(token delegateDeliveryToken, c
 }
 
 // completeDeliveryLocked is CompleteDelivery's body under the caller's c.mu.
-// Reconcile uses it to retry an acknowledgment its stop tracks once the
-// delivery's executor has already returned.
 func (c *delegateTreeController) completeDeliveryLocked(token delegateDeliveryToken, committed bool) (delegateMutationPlans, error) {
 	receipt := c.deliveries[token.processID]
 	if receipt == nil || receipt.token != token {
@@ -387,6 +385,13 @@ func (c *delegateTreeController) completeDeliveryLocked(token delegateDeliveryTo
 	if _, err := c.appendLocked(events...); err != nil {
 		receipt.retryable = true
 		c.evidenceVersion++
+		// A stop drain parked on this admission must wake to retry the
+		// acknowledgment; the receipt stays tracked until it lands.
+		if c.stop != nil {
+			if _, tracked := c.stop.deliveries[token]; tracked {
+				c.signalStopProgressLocked()
+			}
+		}
 		return delegateMutationPlans{}, err
 	}
 	if !receipt.inline && receipt.ownerID != "" {
