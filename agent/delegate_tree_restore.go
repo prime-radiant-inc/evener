@@ -407,6 +407,7 @@ func (c *delegateTreeController) Reconcile(evidence delegateReconcileEvidence) (
 	}); err != nil {
 		return delegateMutationPlans{}, err
 	}
+	c.dropStoppedRetryableAdmissionsLocked()
 	close(stop.done)
 	c.stop = nil
 	c.evidenceVersion++

@@ -624,3 +624,24 @@ func TestStopHasInFlightDeliveriesLocked(t *testing.T) {
 		t.Fatal("a retryable admission gated the stop")
 	}
 }
+
+// A retryable admission whose durable head the completing stop dropped must be
+// removed too, or it refuses the owner's next attention start until restart.
+func TestDropStoppedRetryableAdmissionsLocked(t *testing.T) {
+	t.Parallel()
+	token := delegateDeliveryToken{processID: 7, deliveryID: "dlg_1/delivery/1"}
+	c := &delegateTreeController{
+		deliveries: map[uint64]*delegateDeliveryAdmission{
+			token.processID: {token: token, delegateID: "dlg_1", retryable: true},
+		},
+		durable: map[string]*delegatestore.Aggregate{"dlg_1": {}},
+		stop:    &delegateStopState{deliveries: map[delegateDeliveryToken]struct{}{token: {}}},
+	}
+	c.dropStoppedRetryableAdmissionsLocked()
+	if len(c.deliveries) != 0 {
+		t.Fatalf("retryable admission survived the stop completion: %#v", c.deliveries)
+	}
+	if len(c.stop.deliveries) != 0 {
+		t.Fatalf("retryable admission left in the stop set: %#v", c.stop.deliveries)
+	}
+}
