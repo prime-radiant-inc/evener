@@ -891,6 +891,18 @@ func spawnSharedDescendantLane(t *testing.T, r *wtRepo, laneName, standInDlg, st
 		takenAnnounceHold = hold
 		root.cfg.testOnly.subagentBeforeGenerationAnnounced = func(*subagent) { <-hold }
 	}
+	// A scripted presentation step requires a registered announce hold. The
+	// delegate's spawn turn consumes the scripted steps before the
+	// presentation, and without the hold the retained child's report delivery
+	// can be classified deferred while that turn is still running, pump at the
+	// next request build, and ride the spawn turn's own tool-result request —
+	// the coverage consume then resolves the report and the scripted step the
+	// test waits on never runs. Refuse the fixture instead of leaving that to
+	// load: holdSharedDescendantAnnounce must register the hold before the
+	// spawn, and the test releases it once the spawn turn has closed.
+	if len(notificationTurn) > 0 && notificationTurn[0] != nil && takenAnnounceHold == nil {
+		t.Fatalf("a scripted presentation step for lane %q requires a registered announce hold: call holdSharedDescendantAnnounce(%q) before spawning, or drop the scripted step for the bare-text fallback", laneName, laneName)
+	}
 	wtGit(t, r.mainRoot, "worktree", "unlock", lanePath)
 	wtGit(t, r.mainRoot, "worktree", "lock", "--reason", worktree.FormatDelegateMarker(fixture.delegateID, fixture.meta.ID), lanePath)
 	finish := func(llm.Request) llm.Response {
@@ -1765,7 +1777,30 @@ func TestDelegateAttentionStopMidPresentationDoesNotReopenReport(t *testing.T) {
 		<-release
 		return agenttest.FinalResponse("done")
 	}
+	holdSharedDescendantAnnounce("stop-mid-presentation")
 	lane := spawnSharedDescendantLane(t, r, "stop-mid-presentation", "dlg_stopmidpresnt01", "034stopmidpresnt01", wedge)
+	var announceHoldOnce sync.Once
+	releaseAnnounceHold := func() { announceHoldOnce.Do(func() { close(lane.announceHold) }) }
+	// A fatal before the release would park the held finalize tail forever, so
+	// the cleanup mirror guarantees the parked tail can always finish.
+	t.Cleanup(releaseAnnounceHold)
+	// The hold is the scripted step's determinism: the retained child's report
+	// cannot arrive before the spawn turn has closed, so it can only present
+	// through the scripted step. The seeded window's end is the delegate's own
+	// finalize tail closing its run, re-arm included; waiting the tail out
+	// keeps the presentation below from racing the row's landing.
+	releaseAnnounceHold()
+	lane.delegateSub.mu.Lock()
+	delegateDone := lane.delegateSub.done
+	lane.delegateSub.mu.Unlock()
+	select {
+	case <-delegateDone:
+	// TRIPWIRE: the tail finishes within a couple of drain passes of the
+	// release; the bound only fires on a genuine hang, absorbing a loaded
+	// shard's stretched finalize tails and git retries.
+	case <-time.After(15 * time.Second):
+		t.Fatalf("the delegate's finalize tail never finished after the seeded announce release")
+	}
 	lane.delegateSess.SetNotifyFunc(nil)
 	// The shared child's restored notify edge can launch its own pending
 	// notification turn, which would consume the scripted wedge step this
@@ -2565,7 +2600,30 @@ func TestDelegateAttentionUserStopHoldsReopenedRowFromStaleArmedWake(t *testing.
 		<-release
 		return agenttest.FinalResponse("done")
 	}
+	holdSharedDescendantAnnounce("user-stop-stale-wake")
 	lane := spawnSharedDescendantLane(t, r, "user-stop-stale-wake", "dlg_userstopwake01", "034userstopwake1", wedge)
+	var announceHoldOnce sync.Once
+	releaseAnnounceHold := func() { announceHoldOnce.Do(func() { close(lane.announceHold) }) }
+	// A fatal before the release would park the held finalize tail forever, so
+	// the cleanup mirror guarantees the parked tail can always finish.
+	t.Cleanup(releaseAnnounceHold)
+	// The hold is the scripted step's determinism: the retained child's report
+	// cannot arrive before the spawn turn has closed, so it can only present
+	// through the scripted step. The seeded window's end is the delegate's own
+	// finalize tail closing its run, re-arm included; waiting the tail out
+	// keeps the presentation below from racing the row's landing.
+	releaseAnnounceHold()
+	lane.delegateSub.mu.Lock()
+	delegateDone := lane.delegateSub.done
+	lane.delegateSub.mu.Unlock()
+	select {
+	case <-delegateDone:
+	// TRIPWIRE: the tail finishes within a couple of drain passes of the
+	// release; the bound only fires on a genuine hang, absorbing a loaded
+	// shard's stretched finalize tails and git retries.
+	case <-time.After(15 * time.Second):
+		t.Fatalf("the delegate's finalize tail never finished after the seeded announce release")
+	}
 	var warningsMu sync.Mutex
 	var warnings []string
 	go func() {
@@ -3559,7 +3617,30 @@ func TestDelegateAttentionUserStopHoldSurvivesIdleReleaseRestore(t *testing.T) {
 		<-release
 		return agenttest.FinalResponse("done")
 	}
+	holdSharedDescendantAnnounce("user-stop-release")
 	lane := spawnSharedDescendantLane(t, r, "user-stop-release", "dlg_userstoprel01", "034userstoprel1", wedge)
+	var announceHoldOnce sync.Once
+	releaseAnnounceHold := func() { announceHoldOnce.Do(func() { close(lane.announceHold) }) }
+	// A fatal before the release would park the held finalize tail forever, so
+	// the cleanup mirror guarantees the parked tail can always finish.
+	t.Cleanup(releaseAnnounceHold)
+	// The hold is the scripted step's determinism: the retained child's report
+	// cannot arrive before the spawn turn has closed, so it can only present
+	// through the scripted step. The seeded window's end is the delegate's own
+	// finalize tail closing its run, re-arm included; waiting the tail out
+	// keeps the presentation below from racing the row's landing.
+	releaseAnnounceHold()
+	lane.delegateSub.mu.Lock()
+	delegateDone := lane.delegateSub.done
+	lane.delegateSub.mu.Unlock()
+	select {
+	case <-delegateDone:
+	// TRIPWIRE: the tail finishes within a couple of drain passes of the
+	// release; the bound only fires on a genuine hang, absorbing a loaded
+	// shard's stretched finalize tails and git retries.
+	case <-time.After(15 * time.Second):
+		t.Fatalf("the delegate's finalize tail never finished after the seeded announce release")
+	}
 	var warningsMu sync.Mutex
 	var warnings []string
 	go func() {
