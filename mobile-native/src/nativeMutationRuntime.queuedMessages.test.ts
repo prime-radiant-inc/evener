@@ -445,7 +445,8 @@ test.each(["editQueuedMessage", "removeQueuedMessage"] as const)(
 		await f.runtime.storage.markAttempted("mutation-1");
 		expect(await f.runtime[action]("mutation-1", key)).toBe(action === "editQueuedMessage" ? undefined : false);
 		await f.runtime.storage.markUnknown("mutation-1", "blockedUnknown");
-		expect(await f.runtime[action]("mutation-1", key)).toBe(action === "editQueuedMessage" ? undefined : false);
+		// Uncertain delivery is the user's to clear or to send again.
+		expect(await f.runtime[action]("mutation-1", key)).toBeTruthy();
 		await f.runtime.settleIdentities(["mutation-1"]);
 		expect(await f.runtime[action]("mutation-1", key)).toBe(action === "editQueuedMessage" ? undefined : false);
 		expect(client.calls).toEqual([]);

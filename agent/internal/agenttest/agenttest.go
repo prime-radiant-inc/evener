@@ -23,34 +23,49 @@ import (
 	"primeradiant.com/evener/llm/registry"
 )
 
-// FakeAdapter is a scripted llm.ProviderAdapter. Each call to Complete runs the
-// next function in Steps (recording every request for later assertions); once
-// Steps is exhausted it returns a generic "done" assistant message.
+// FakeAdapter is a scripted llm.ProviderAdapter. Each call to Complete runs
+// the next scripted step (recording every request for later assertions); once
+// the script is exhausted it returns a generic "done" assistant message.
+// The script is owned by a Script, so every scripting operation — including
+// mid-run replacement from another goroutine — is synchronized; there is no
+// assignable steps field to race on.
 type FakeAdapter struct {
 	Provider                      string
-	Steps                         []func(req llm.Request) llm.Response
 	PlanResponsesContinuationFunc func(req llm.Request) (llm.ResponsesContinuationPlan, error)
 	LiveModelsFunc                func(ctx context.Context) ([]registry.Model, error)
 
+	script Script[func(req llm.Request) llm.Response]
+
 	mu       sync.Mutex
 	requests []llm.Request
-	i        int
 }
 
 // Name reports the provider name the adapter answers to.
 func (a *FakeAdapter) Name() string { return a.Provider }
 
+// SetSteps scripts the adapter's response sequence. A retained lane's
+// background drive can call Complete while a test scripts the next turn, so
+// the replacement goes through the Script's own mutex; the cursor survives
+// it, which is what lets a test script a turn mid-run. Call it from the test
+// goroutine, never from a scripted step: Complete holds the adapter mutex
+// while it runs the step.
+func (a *FakeAdapter) SetSteps(steps []func(req llm.Request) llm.Response) {
+	a.script.Replace(steps)
+}
+
 // Complete runs the next scripted step and stamps the provider/model fields.
 func (a *FakeAdapter) Complete(ctx context.Context, req llm.Request) (llm.Response, error) {
 	_ = ctx
+	// The adapter mutex serializes whole drives: a scripted step runs while it
+	// is held, so sessions sharing a FakeAdapter answer one at a time.
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	a.requests = append(a.requests, req)
-	if a.i >= len(a.Steps) {
+	step, ok := a.script.Next()
+	if !ok {
 		return llm.Response{Provider: a.Provider, Model: req.Model, Message: llm.Assistant("done")}, nil
 	}
-	resp := a.Steps[a.i](req)
-	a.i++
+	resp := step(req)
 	// Fill required response fields best-effort.
 	resp.Provider = a.Provider
 	if resp.Model == "" {

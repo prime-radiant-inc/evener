@@ -284,6 +284,50 @@ func TestSessionActivityAncestryCompleteness(t *testing.T) {
 	}
 }
 
+func TestSessionActivityContextDelegateNamesJSON(t *testing.T) {
+	t.Parallel()
+	var context SessionActivityContext
+	data := []byte(`{"ref":"remote:leaf","sessionId":"leaf","rootRef":"remote:root","parentRef":"remote:parent","delegateId":"dlg_leaf","delegateName":"Leaf canonical name","ancestors":[{"ref":"remote:root","sessionId":"root","title":"Root"},{"ref":"remote:parent","sessionId":"parent","delegateId":"dlg_parent","delegateName":"Parent canonical name","title":"Parent description"}],"ancestryKnown":true}`)
+	if err := json.Unmarshal(data, &context); err != nil {
+		t.Fatal(err)
+	}
+	encoded, err := json.Marshal(context)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var fields struct {
+		DelegateName string           `json:"delegateName"`
+		Ancestors    []map[string]any `json:"ancestors"`
+	}
+	if err := json.Unmarshal(encoded, &fields); err != nil {
+		t.Fatal(err)
+	}
+	if fields.DelegateName != "Leaf canonical name" || len(fields.Ancestors) != 2 || fields.Ancestors[1]["delegateName"] != "Parent canonical name" || fields.Ancestors[1]["title"] != "Parent description" {
+		t.Fatalf("name JSON roundtrip lost canonical labels or changed title: %s", encoded)
+	}
+	if _, present := fields.Ancestors[0]["delegateName"]; present {
+		t.Fatal("root breadcrumb acquired a delegate name")
+	}
+	unnamed, err := json.Marshal(SessionActivityContext{Ancestors: []SessionActivityAncestor{{}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var absent map[string]json.RawMessage
+	if err := json.Unmarshal(unnamed, &absent); err != nil {
+		t.Fatal(err)
+	}
+	if _, present := absent["delegateName"]; present {
+		t.Fatal("unnamed context emitted delegateName")
+	}
+	var ancestors []map[string]json.RawMessage
+	if err := json.Unmarshal(absent["ancestors"], &ancestors); err != nil {
+		t.Fatal(err)
+	}
+	if _, present := ancestors[0]["delegateName"]; present {
+		t.Fatal("unnamed ancestor emitted delegateName")
+	}
+}
+
 func TestSessionDelegateFailureFactsRoundTrip(t *testing.T) {
 	t.Parallel()
 	var row SessionDelegate

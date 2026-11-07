@@ -13,10 +13,13 @@ func FuzzEnvvarsSurface(f *testing.F) {
 	f.Add("on", uint8(3))
 	f.Add("\x00", uint8(4))
 	f.Add("0", uint8(255))
+	f.Add(" \t ", uint8(5))
+	f.Add("", uint8(6))
 	f.Fuzz(func(t *testing.T, raw string, _ uint8) {
 		fuzzVarHelpers(t, raw)
 		fuzzRegistry(t, raw)
 		fuzzRecorderConfig(t, raw)
+		fuzzFirstNonEmpty(t, raw)
 	})
 }
 
@@ -108,6 +111,24 @@ func fuzzRegistry(t *testing.T, raw string) {
 	}
 	if got, ok := Find("EVENER_ENVVARS_FUZZ_MISSING"); ok || got != (Var{}) {
 		t.Fatalf("Find(missing) = %#v, %v", got, ok)
+	}
+}
+
+func fuzzFirstNonEmpty(t *testing.T, raw string) {
+	t.Helper()
+
+	// FirstNonEmpty returns the first argument whose trimmed value is
+	// non-empty; whitespace-only arguments are skipped, and no non-empty
+	// argument at all yields "".
+	want := ""
+	if strings.TrimSpace(raw) != "" {
+		want = raw
+	}
+	if got := FirstNonEmpty(" \t\n", raw); got != want {
+		t.Fatalf("FirstNonEmpty(ws-only, %q) = %q, want %q", raw, got, want)
+	}
+	if got := FirstNonEmpty(); got != "" {
+		t.Fatalf("FirstNonEmpty() = %q, want empty", got)
 	}
 }
 

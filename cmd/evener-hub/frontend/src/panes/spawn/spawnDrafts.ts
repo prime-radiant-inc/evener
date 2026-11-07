@@ -50,6 +50,10 @@ interface DraftFields {
   /** Launch source id for this draft (Component 06b's host picker). "local"
    * is the default and is omitted from the wire by startThread. */
   source: string;
+  /** Start this session as a Manager of the sessions its hub can reach. A
+   * start-time property (the daemon persists it; nothing turns it off), so it
+   * belongs to the launch draft and is omitted from the wire when false. */
+  manager: boolean;
   advancedOverrides: LaunchConfigLayer;
   advancedValues: AdvancedValues;
   pluginSelection: PluginSelectionState;
@@ -93,6 +97,7 @@ function createDraft(cwd: string) {
       reasoningEffort: defaults.reasoningEffort ?? "",
       accessMode: defaults.accessMode ?? "",
       source: "local",
+      manager: false,
       advancedOverrides: {},
       advancedValues: {},
       pluginSelection: { mode: "default" },

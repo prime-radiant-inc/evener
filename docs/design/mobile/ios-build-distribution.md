@@ -57,6 +57,22 @@ recovers on foreground entry. Scene adoption does not enable multiple windows or
 configure associated domains. Test universal-link association and provider sign-in
 against their actual services separately from custom-scheme launch checks.
 
+### iPhone Duo layout
+
+The native client selects its split layout from the window's point size
+([`src/duo/duoLayout.ts`](../../../mobile-native/src/duo/duoLayout.ts)), not from
+the device name: both sides at least 600 points. The `Sessions` screen renders
+the Board beside a nested conversation navigator on the inner display, and the
+root stack header is hidden there in favor of the Board's inline header. The app
+stays `orientation: "portrait"`: landscape on a regular iPhone still needs
+left/right safe-area handling, and the Duo's inner split works in portrait.
+
+Simulator qualification uses the `iPhone Duo` device type on the iOS 27.1
+runtime, captures the outer display, the empty split and an open conversation,
+and rotates the inner display. An Xcode 26 build runs on both displays but does
+not extend under the status bar and camera; building with Xcode 27 supplies that
+layout.
+
 Run `node --test scripts/native/scene-lifecycle.test.mjs` from the repository root
 for generated configuration and repeatability checks against the installed Expo
 template. `make test-native` includes this check. Native compilation, actual

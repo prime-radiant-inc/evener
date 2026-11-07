@@ -17,6 +17,7 @@ import { friendlyErrorMessage, hostRequest, isLocalHost } from "@evener/appwire-
 import {
   type CredentialInstancesState,
   createCredentialInstancesStore,
+  REFETCH_DEBOUNCE_MS,
 } from "@evener/appwire-client/state/credentials";
 import { useEffect, useRef } from "react";
 import { createStore, useStore } from "zustand";
@@ -470,7 +471,6 @@ export async function devicePollOnHost(
 // remote spawn reads, so the wrapped notification refetches it -- debounced,
 // like the controller store's own refresh -- and never the controller's
 // listing.
-const HOST_REFETCH_DEBOUNCE_MS = 250;
 const hostRefetchTimers = new Map<string, ReturnType<typeof setTimeout>>();
 
 function scheduleHostRefetch(host: string): void {
@@ -481,7 +481,7 @@ function scheduleHostRefetch(host: string): void {
     setTimeout(() => {
       hostRefetchTimers.delete(host);
       void fetchHost(host);
-    }, HOST_REFETCH_DEBOUNCE_MS),
+    }, REFETCH_DEBOUNCE_MS),
   );
 }
 

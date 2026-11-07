@@ -1,5 +1,5 @@
 import type { ThreadModel } from "@evener/appwire-client";
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { StrictMode } from "react";
 import { afterEach, expect, test, vi } from "vitest";
 import { documentPaneState, resetWorkspaceStoreForTests, workspaceStore } from "../../../../shell/workspace";
@@ -465,6 +465,95 @@ test("hydration and context replacement update unchanged filename callbacks and 
   expect(workspaceStore.getState().panes).toBe(state);
 });
 
+test.each([false, true])("file links survive popout updates and redocking (live=%s)", (live) => {
+  const owner = workspaceStore.getState().openPane("session", { ref: thread.ref });
+  const reboundThread = { ...thread, ref: "remote:other", cwd: "/workspace/other" };
+  const reboundOwner = workspaceStore.getState().openPane("session", { ref: reboundThread.ref });
+  // A second surface for the same session must not steal the exact source binding.
+  workspaceStore.getState().openPane("transcript", { ref: reboundThread.ref });
+  const iframe = document.createElement("iframe");
+  document.body.append(iframe);
+  const popout = iframe.contentDocument;
+  if (!popout) throw new Error("missing iframe document");
+  const { container, rerender, unmount } = render(message("docs/initial.md", live, thread, owner));
+  const view = within(container);
+  const initial = view.getByRole("link");
+  const body = [
+    "docs/bare.md and `src/Makefile` and [explicit](docs/authored.md)",
+    "../**docs/unsafe.md** docs/**split.md** ../`docs/code.md`",
+    "```\ndocs/excluded.md\n```",
+  ].join("\n\n");
+  try {
+    popout.body.append(popout.adoptNode(container));
+    expect(fireEvent.click(initial)).toBe(false);
+    assertDocument(thread.ref, "docs/initial.md", thread.cwd, owner);
+
+    rerender(message(body, live, thread, owner));
+    const explicit = view.getByRole("link", { name: "explicit" });
+    expect(explicit.ownerDocument).toBe(popout);
+    expect(fireEvent.click(explicit)).toBe(false);
+    assertDocument(thread.ref, "docs/authored.md", thread.cwd, owner);
+    // The authored-link control works even when traversal loses generated links.
+    expect(view.getAllByRole("link")).toHaveLength(3);
+    const bare = view.getByRole("link", { name: "docs/bare.md" });
+    const code = view.getByRole("link", { name: "src/Makefile" });
+    expect(code.parentElement?.tagName).toBe("CODE");
+    const paragraph = bare.closest("p");
+    for (const [link, filename] of [
+      [bare, "docs/bare.md"],
+      [code, "src/Makefile"],
+    ] as const) {
+      expect(link.ownerDocument).toBe(popout);
+      expect(link.constructor).toBe(popout.createElement("a").constructor);
+      expect(link.firstChild?.constructor).toBe(popout.createTextNode("").constructor);
+      expect(fireEvent.click(link)).toBe(false);
+      assertDocument(thread.ref, filename, thread.cwd, owner);
+    }
+    expect(container.querySelector("pre a")).toBeNull();
+
+    document.body.append(document.adoptNode(container));
+    rerender(message(body, live, reboundThread, reboundOwner));
+    expect(view.getByRole("link", { name: "docs/bare.md" }).closest("p")).toBe(paragraph);
+    expect(paragraph?.ownerDocument).toBe(document);
+    expect(paragraph instanceof HTMLElement).toBe(false);
+    expect(view.getAllByRole("link")).toHaveLength(3);
+    const reboundLinks = view.getAllByRole("link");
+    for (const [name, filename] of [
+      ["docs/bare.md", "docs/bare.md"],
+      ["src/Makefile", "src/Makefile"],
+      ["explicit", "docs/authored.md"],
+    ] as const) {
+      const link = view.getByRole("link", { name });
+      const url = new URL(link.getAttribute("href") ?? "", "https://hub.example");
+      expect(url.searchParams.get("session")).toBe(reboundThread.ref);
+      expect(url.searchParams.get("path")).toBe(`${reboundThread.cwd}/${filename}`);
+      expect(fireEvent.click(link)).toBe(false);
+      assertDocument(reboundThread.ref, filename, reboundThread.cwd, reboundOwner);
+    }
+    unmount();
+    expect(paragraph?.querySelectorAll("a")).toHaveLength(1);
+    expect(explicit.getAttribute("href")).toBe("docs/authored.md");
+    expect(paragraph?.textContent).toBe("docs/bare.md and src/Makefile and explicit");
+    const panes = workspaceStore.getState().panes;
+    for (const link of [initial, bare, code, ...reboundLinks]) {
+      link.addEventListener(
+        "click",
+        (event) => {
+          expect(event.defaultPrevented).toBe(false);
+          event.preventDefault(); // Suppress navigation on detached, retired links.
+        },
+        { once: true },
+      );
+      fireEvent.click(link);
+    }
+    expect(workspaceStore.getState().panes).toBe(panes);
+  } finally {
+    unmount();
+    container.remove();
+    iframe.remove();
+  }
+});
+
 test("generated stream growth, settlement and aliases retain one action and one document", () => {
   const owner = workspaceStore.getState().openPane("session", { ref: thread.ref });
   const { rerender } = render(<StrictMode>{message("docs/a.md", true, thread, owner)}</StrictMode>);
@@ -606,9 +695,9 @@ test("a file URL inside the session cwd opens as a document too", () => {
   ]);
 });
 
-// The hub refuses any path outside cwd and the artifacts directory, so the
-// transcript must not offer a pane for one: the anchor keeps its destination
-// visible and does nothing more.
+// The hub refuses any path outside cwd, the artifacts directory, and the
+// session's scratch directory, so the transcript must not offer a pane for
+// one: the anchor keeps its destination visible and does nothing more.
 test.each([
   ["outside both roots", "/etc/passwd"],
   ["a sibling session's artifacts", "/var/state/projects/example/sessions/OTHER/artifacts/r.md"],
@@ -677,5 +766,82 @@ test("opening an artifacts link records a reference that keeps the artifacts roo
     cwd: artifactsDir,
     path: "docs-quality-repairs.md",
     readTarget: reportPath,
+  });
+});
+
+// The hub serves a session's named scratch directory as a third root, and the
+// thread snapshot names it, so the absolute paths tools write there — a
+// screenshot a browser tool saved — become document-pane requests instead of
+// inert text, whether the message shows them in code, in prose, or as a file
+// URL.
+const scratchDir = "/tmp/evener-scratch-034MXwo6BpPH0QQCgdICSf/034MXwo6BpPH0QQCgdICSf";
+const scratchThread: ThreadModel = { ...thread, scratchDir };
+const shotPath = `${scratchDir}/shot-6-message-link-fixed.png`;
+
+test.each([false, true])("a code-span scratch path opens as an image document (live=%s)", (live) => {
+  render(message(`- \`${shotPath}\` — the fixed message link`, live, scratchThread));
+  const link = screen.getByRole("link", { name: shotPath });
+  const url = new URL(link.getAttribute("href") ?? "", "https://hub.example");
+  expect(url.pathname).toBe("/doc/image");
+  expect(url.searchParams.get("session")).toBe(thread.ref);
+  expect(url.searchParams.get("path")).toBe(shotPath);
+  expect(fireEvent.click(link)).toBe(false);
+  expect(workspaceStore.getState().panes).toMatchObject([
+    {
+      type: "doc",
+      params: {
+        session: thread.ref,
+        path: "shot-6-message-link-fixed.png",
+        root: "scratch",
+        scratchTarget: shotPath,
+        kind: "image",
+      },
+    },
+  ]);
+});
+
+test.each([false, true])("a plain prose scratch path opens as an image document (live=%s)", (live) => {
+  render(message(`Screenshot at ${shotPath} shows the fix.`, live, scratchThread));
+  const link = screen.getByRole("link", { name: shotPath });
+  const url = new URL(link.getAttribute("href") ?? "", "https://hub.example");
+  expect(url.pathname).toBe("/doc/image");
+  expect(url.searchParams.get("path")).toBe(shotPath);
+  fireEvent.click(link);
+  expect(workspaceStore.getState().panes).toMatchObject([
+    { type: "doc", params: { session: thread.ref, root: "scratch", kind: "image" } },
+  ]);
+});
+
+test("a file URL inside the session scratch opens as a document too", () => {
+  render(message(`[the fix](file://${shotPath})`, false, scratchThread));
+  const link = screen.getByRole("link", { name: "the fix" });
+  const url = new URL(link.getAttribute("href") ?? "", "https://hub.example");
+  expect(url.pathname).toBe("/doc/image");
+  expect(url.searchParams.get("path")).toBe(shotPath);
+});
+
+test("a scratch path without an advertised directory stays plain text", () => {
+  render(message(`- \`${shotPath}\` — no root advertised`));
+  expect(screen.queryByRole("link")).toBeNull();
+  expect(workspaceStore.getState().panes).toEqual([]);
+});
+
+test("another session's scratch path stays plain text", () => {
+  const other = "/tmp/evener-scratch-OTHER/OTHER/shot.png";
+  render(message(`- \`${other}\` — a sibling session's scratch`, false, scratchThread));
+  expect(screen.queryByRole("link")).toBeNull();
+  expect(workspaceStore.getState().panes).toEqual([]);
+});
+
+test("opening a scratch link records a reference that keeps the scratch root", () => {
+  render(message(`- \`${shotPath}\` — the fixed message link`, false, scratchThread));
+  fireEvent.click(screen.getByRole("link", { name: shotPath }));
+  const pane = workspaceStore.getState().panes.find((candidate) => candidate.type === "doc");
+  if (!pane) throw new Error("expected a document pane");
+  expect(documentPaneState(pane)?.reference).toMatchObject({
+    root: "scratch",
+    cwd: scratchDir,
+    path: "shot-6-message-link-fixed.png",
+    readTarget: shotPath,
   });
 });

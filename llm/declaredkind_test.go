@@ -87,6 +87,19 @@ func TestDeclaredKindCoversNonHTTPTimeouts(t *testing.T) {
 	}
 }
 
+// TestDeclaredKindCoversUnsupportedEndpoint pins the endpoint-mismatch
+// sentinel: it is KindNotFound by construction, and DeclaredKind must agree
+// with Kind for it like every other constructor-produced error.
+func TestDeclaredKindCoversUnsupportedEndpoint(t *testing.T) {
+	err := llm.NewUnsupportedEndpointError("gateway", "model did not speak the protocol", nil)
+	if got := llm.Kind(err); got != llm.KindNotFound {
+		t.Fatalf("Kind(unsupported endpoint) = %v, want %v", got, llm.KindNotFound)
+	}
+	if got := llm.DeclaredKind(err); got != llm.KindNotFound {
+		t.Errorf("DeclaredKind(unsupported endpoint) = %v, want %v", got, llm.KindNotFound)
+	}
+}
+
 // TestDeclaredKindStopsAtTheValueInHand pins the one deliberate difference from
 // Kind: DeclaredKind does not unwrap. This is not an incidental limitation --
 // it is why DeclaredKind can be called on an error of unverified provenance

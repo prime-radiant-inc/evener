@@ -2,6 +2,7 @@ import type { EntityView, ThreadModel, TranscriptMetadataVisibility } from "@eve
 import {
   makeTranscriptDisplayConfig,
   presetContent,
+  projectThread,
   scopedDisclosureId,
   type TranscriptDisplayConfigV1,
 } from "@evener/appwire-client";
@@ -18,6 +19,7 @@ import {
   summaryOpenByDefault,
   type TranscriptRenderContextValue,
   TranscriptRenderProvider,
+  thinkingOpenByDefault,
   useTranscriptRenderContext,
 } from "./renderContext";
 
@@ -150,6 +152,46 @@ function baselineProvider(config: TranscriptDisplayConfigV1, eligibleDisclosureI
   );
 }
 
+test("a round-keyed thought's close is cleared when the Full baseline reaches its display key", () => {
+  // The thinking disclosure keys by the round display key, and the projector's
+  // baseline inventory names that same key (see the projector's own test), so
+  // entering Full clears an earlier close and the row reopens.
+  const thought = {
+    id: "item_reasoning_1_0",
+    turnId: "t1",
+    type: "reasoning",
+    status: "completed",
+    text: "",
+    roundId: "r-thought",
+    reasoningSummaries: [["oval"]],
+  };
+  const model = { turns: [{ id: "t1", status: "completed", items: [thought] }] } as unknown as ThreadModel;
+  const tools = makeTranscriptDisplayConfig({ kind: "preset", level: "tools" });
+  const full = makeTranscriptDisplayConfig({ kind: "preset", level: "full" });
+  const inventoryAt = (config: TranscriptDisplayConfigV1) => projectThread(model, config).eligibleDisclosureIds;
+  const providerAt = (config: TranscriptDisplayConfigV1) => (
+    <TranscriptRenderProvider config={config} disclosureScope="scope-round" eligibleDisclosureIds={inventoryAt(config)}>
+      <DisclosureProbe id="round:r-thought:reasoning" />
+    </TranscriptRenderProvider>
+  );
+  const open = () => screen.getByTestId("disclosure-round:r-thought:reasoning").dataset.open;
+
+  expect(inventoryAt(full)).toEqual(["round:r-thought:reasoning"]);
+  const view = render(providerAt(full));
+  expect(open()).toBe("true");
+  // The reader closes it at Full; the choice stands while Full holds.
+  act(() => setDisclosureOpen(scopedDisclosureId("scope-round", "round:r-thought:reasoning"), false));
+  expect(open()).toBe("false");
+  // Tools keeps the compact row's own fallback: not part of that inventory.
+  view.rerender(providerAt(tools));
+  expect(open()).toBe("false");
+  // Back to Full: the open-everything baseline clears the earlier close.
+  view.rerender(providerAt(full));
+  expect(open()).toBe("true");
+
+  cleanup();
+});
+
 test("only named Full establishes a baseline across equivalent Custom transitions", () => {
   const { rerender, unmount } = render(
     baselineProvider(makeTranscriptDisplayConfig({ kind: "preset", level: "activity" }), ["tool-a"]),
@@ -272,4 +314,20 @@ test("summaryOpenByDefault returns false for chat/intent and true for tools/acti
     true,
   );
   expect(summaryOpenByDefault({ content: { kind: "preset", level: "full" } } as TranscriptDisplayConfigV1)).toBe(true);
+});
+
+test("thinkingOpenByDefault returns true only for the full preset", () => {
+  expect(thinkingOpenByDefault({ content: { kind: "preset", level: "chat" } } as TranscriptDisplayConfigV1)).toBe(
+    false,
+  );
+  expect(thinkingOpenByDefault({ content: { kind: "preset", level: "intent" } } as TranscriptDisplayConfigV1)).toBe(
+    false,
+  );
+  expect(thinkingOpenByDefault({ content: { kind: "preset", level: "tools" } } as TranscriptDisplayConfigV1)).toBe(
+    false,
+  );
+  expect(thinkingOpenByDefault({ content: { kind: "preset", level: "activity" } } as TranscriptDisplayConfigV1)).toBe(
+    false,
+  );
+  expect(thinkingOpenByDefault({ content: { kind: "preset", level: "full" } } as TranscriptDisplayConfigV1)).toBe(true);
 });

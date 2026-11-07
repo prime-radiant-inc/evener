@@ -65,6 +65,7 @@ losing the conversation that made the evidence relevant.
 - **Let filename Open own its placement.** On a settled session route, opening
   or reopening a filename selects its document beside the exact living source
   promoted to main, including a secondary session or read-only transcript.
+  Filename links remain source-bound through popout content updates and redocking.
   The canonical document binding retains that source for Back. Reconnect and
   settled location refresh do not replay the old route over this selection.
   Route reconciliation waits until the opening stack finishes when document
@@ -267,19 +268,23 @@ not establish reading comfort or usability. The accessibility gaps in §8 remain
 
 ## 1. Direction (the design law)
 
-**Reading before chrome.** Warm neutral paper/ink, not sepia decoration. Dark remains the
+**Reading before chrome.** Cool neutral paper/ink, not sepia decoration, with the rail one
+visible step from the page. Dark remains the
 default; `system`, `light`, and `dark` preferences keep their existing behavior. A page is
 flat, a field is visibly editable, and a floating layer retains a boundary and depth.
 Use whitespace, aligned columns and fine rules instead of nested boxes and tinted bands.
 
 **Three faces with distinct jobs.** Source Serif 4 for reading prose and editorial page
-headings; Inter for controls, labels, tables and compact operations; JetBrains Mono for code,
-commands, paths and machine identifiers. Comparable operational figures use tabular Inter,
+headings; Schibsted Grotesk for controls, labels, tables and compact operations; JetBrains Mono for code,
+commands, paths and machine identifiers. Comparable operational figures use tabular sans,
 not monospace. Keep authored text and machine evidence visibly distinct.
 
 **Geometry is not decoration.** Preserve the shared reading/wide measure, alignment,
 font-size preferences, timestamp rail, safe-area/keyboard rules and 899px mobile boundary.
 Do not shrink targets or hide overflow as a substitute for containing wide evidence.
+The page frame follows the column it names: a session or spawn header shares its content
+measure, while the settings header stays on the nav axis. The header takes this from the
+pane's existing scaffold marker, not a second layout prop.
 
 **Color is meaning.** Attention = a human/action is needed; alive = active work;
 danger = failure/destruction; accent = links, focus and selection. No decorative status
@@ -342,49 +347,51 @@ theme; the light-theme block (`[data-theme="light"]`) redeclares every color tok
 same name, and `token-contract.test.ts` (§4) fails CI if a token exists in one theme's block
 but not the other's.
 
-**Color** — the warm neutral roles below are implemented in both theme blocks. All existing
+**Color** — the cool neutral roles below are implemented in both theme blocks. All existing
 token names are retained. The table is a reference; `tokens.css` is authoritative.
 
 | Role | Dark | Light |
 |---|---|---|
-| Page `--surface-0` | `#191918` | `#FAF9F6` |
-| Wells/rail `--surface-canvas` | `#1D1D1B` | `#F1F0EB` |
-| Evidence/structural fill `--surface-1` | `#232320` | `#FCFBF8` |
-| Floating layer `--surface-2` | `#232320` | `#FCFBF8` |
-| Evidence inset `--surface-inset` | `#20201E` | `#F4F3EE` |
-| Hover / selected `--hover-1/2` | `#2B2B28` / `#33332F` | `#F0EFE9` / `#E5E4DD` |
-| Editable field `--field` | `#292926` | `#F4F3EF` |
-| Fine / strong edge | `#34342F` / `#51514A` | `#DDDCD4` / `#B7B6AC` |
-| High / medium / low ink | `#F2F1EB` / `#B0AFA6` / `#99998F` | `#252521` / `#5F5F57` / `#6D6D64` |
+| Page `--surface-0` | `#111214` | `#F6F7F9` |
+| Wells/rail `--surface-canvas` | `#16181C` | `#EEF0F3` |
+| Evidence/structural fill `--surface-1` | `#1D2025` | `#FFFFFF` |
+| Floating layer `--surface-2` | `#1D2025` | `#FFFFFF` |
+| Evidence inset `--surface-inset` | `#191C21` | `#F2F4F7` |
+| Hover / selected `--hover-1/2` | `#252931` / `#2E333C` | `#E7EAEF` / `#DCE0E7` |
+| Editable field `--field` | `#23272E` | `#F1F3F6` |
+| Fine / strong edge | `#333842` / `#4C535F` | `#D5D9E0` / `#A7AEBA` |
+| High / medium / low ink | `#F1F3F6` / `#B2B7C0` / `#9AA1AC` | `#1A1D23` / `#555B66` / `#626873` |
 
 Card and PaneScaffold share the page ground rather than manufacturing raised
 surfaces. Evidence and overlays still have their own grounds. Fine borders are structure,
-not text. Low ink clears 4.5:1 on page and evidence surfaces: dark 6.12/5.48, light 4.96/5.05.
+not text. Low ink clears 4.5:1 on page and evidence surfaces: dark 7.20/6.56, light 5.23/5.09.
 Readable secondary metadata uses medium ink; low ink stays placeholders, disabled and timestamps.
 
 The four semantic hues keep their names, roles, 15% OKLab `-bg` washes and 40% `-edge`
 companions. Text uses `-ink`, never the bare hue. Light alive/danger/accent text colors are
-`#12763B` / `#C51D23` / `#0064C2`, darkened to preserve AA on their own warm tinted grounds.
+`#12763B` / `#C51D23` / `#0064C2`, darkened to preserve AA on their own tinted grounds.
 The tests compute every semantic pairing, including each hue's own wash, at ≥4.5:1.
 Tooltips retain their inverted mini-palette. ANSI roles and values are unchanged.
 
-Diff notation remains independent of semantic status. Dark add/delete stays `#19251A` /
-`#170B17`; light is `#E9F4EE` / `#F5EAF0`. Background contrast against the page stays within
+Diff notation remains independent of semantic status. Dark add/delete stays `#16261B` /
+`#261722`; light is `#DCEFE4` / `#F3DFE8`. Background contrast against the page stays within
 1.05–1.2, content ≥4.5, marker ≥3, with additions lighter in grayscale and explicit +/− signs.
-The PWA manifest and HTML theme-color are synchronized to the dark page `#191918`.
+The PWA manifest and HTML theme-color are synchronized to the dark page `#111214`; once a
+theme is applied, `applyTheme` rewrites the meta to the active page ground so light-theme
+browser chrome does not stay dark.
 
 **Type** — three shared families, no CDN font requests:
 
-- `--font-sans`: `"Inter Variable"` plus system sans fallbacks. Controls, labels, operational tables.
+- `--font-sans`: `"Schibsted Grotesk Variable"` plus system sans fallbacks. Controls, labels, operational tables.
 - `--font-prose`: `"Source Serif 4 Variable", Georgia, "Times New Roman", serif`. Reading and page headings.
 - `--font-mono`: `"JetBrains Mono Variable"` plus system monospace fallbacks. Machine evidence.
 
-Inter and JetBrains Mono remain wired to their package Latin variable WOFF2 files. Source Serif 4
+Schibsted Grotesk, JetBrains Mono and Source Serif 4 are wired to their package Latin variable WOFF2 files. Source Serif 4
 uses the package's actual exported normal CSS and `wght-italic.css` for real italics; all assets
 are served locally by Vite/the built frontend, with package Unicode-range subsetting.
 
-The existing `--font-size-caption/ui/body/pane-title/page-title/display` ramp remains
-12/13/15/18/22/28px. **`--font-size-prose: calc(18px * var(--font-scale))` is new**, declared on
+The `--font-size-caption/ui/body/pane-title/page-title/display` ramp is
+12/13/15/20/26/34px. **`--font-size-prose: calc(18px * var(--font-scale))` is new**, declared on
 `body` alongside that ramp so S/M/L/XL (0.9/1/1.1/1.25) scale reading text too. Phone body remains
 16px; editable phone controls use `max(16px, var(--font-size-body))`, even under S. The serif
 reading step is 18px at M in both viewports. Weights are 400/500/600; leading body/ui/title is
@@ -393,7 +400,7 @@ reading step is 18px at M in both viewports. Weights are 400/500/600; leading bo
 Markdown keeps the prose face but composes with its host's size (the root falls back to `1em`);
 reading surfaces pin `--prose-font-size: var(--font-size-prose)` on the host that owns their
 prose, and `--markdown-ink` stays the ink hook. Inline code stays JetBrains Mono at 0.86em with a quiet underline; fenced code
-explicitly keeps the mono face. Markdown tables use Inter at body size, tabular figures,
+explicitly keeps the mono face. Markdown tables use the sans face at body size, tabular figures,
 wrapping labels and fine horizontal rules. PaneScaffold and EmptyState headings use the serif;
 buttons, fields, dialog labels and other compact operational headings do not inherit it globally.
 `faces.test.ts` pins the new contract and the unchanged operational sans rules; `/dev/type`

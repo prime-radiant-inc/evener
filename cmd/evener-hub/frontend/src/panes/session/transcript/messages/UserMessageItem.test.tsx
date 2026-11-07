@@ -7,7 +7,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, test } from "vitest"
 import { registerPaneForTests } from "../../../../shell/paneRegistry";
 import { resetWorkspaceStoreForTests, workspaceStore } from "../../../../shell/workspace";
 import { installLocalStorage, MemoryStorage } from "../../../../storageTestUtils";
-import { connectionStore } from "../../../../stores/connection";
+import { connectionStore, resetConnectionStoreForTests } from "../../../../stores/connection";
 import { resetThreadsStoreForTests } from "../../../../stores/threads";
 import { readModuleCss } from "../../../../styles/cssBlock";
 import { ALL_CAPABILITIES as FORK_CAPABILITIES } from "../../../../threadTestUtils";
@@ -188,15 +188,16 @@ test("the body renders as a bubble wrapping the text and attachments", () => {
   expect(bubble.querySelector('[data-testid="image-gallery-thumb"]')).toBeTruthy();
 });
 
-// Option B restores the 2026-07-30 chat bubble for the user's own words:
-// an --accent-bg wash hugging the content (corners uniformly 4px under the
-// editorial scale, so no distinct tail renders). Serif prose stays; only
-// the containment returns.
-test("the user reading surface is an accent bubble hugging its content column", () => {
+// The user's own words sit on a paper slip (inset surface + one hairline)
+// hugging the content. Corners are uniformly 4px under the editorial scale,
+// so no distinct tail renders. Serif prose stays; only the containment
+// returns.
+test("the user reading surface is a paper slip hugging its content column", () => {
   const css = readModuleCss(import.meta.url, "usermessageitem.module.css");
   const body = /\.body\s*\{([^}]*)\}/.exec(css);
   expect(body).not.toBeNull();
-  expect(body![1]).toMatch(/background:\s*var\(--accent-bg\)/);
+  expect(body![1]).toMatch(/background:\s*var\(--surface-inset\)/);
+  expect(body![1]).toMatch(/border:\s*1px solid var\(--edge\)/);
   expect(body![1]).toMatch(
     /border-radius:\s*var\(--radius-control\)\s*var\(--radius-pane\)\s*var\(--radius-pane\)\s*var\(--radius-pane\)/,
   );
@@ -305,7 +306,7 @@ function connectForkClient(): FakeClient {
 
 describe("per-message fork affordance", () => {
   beforeEach(() => {
-    connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
+    resetConnectionStoreForTests();
     resetThreadsStoreForTests();
     resetWorkspaceStoreForTests();
     localStorage.clear();

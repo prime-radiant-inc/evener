@@ -5,12 +5,12 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"os"
 	"sort"
 	"strings"
 	"time"
 
 	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/execsupport/componentlog"
 	"primeradiant.com/evener/rendezvous"
 )
 
@@ -27,7 +27,7 @@ type StatusProber struct {
 // labelled like every other hub diagnostic (past.go, roster.go) — is a safe
 // destination, unlike the TUI's stderr (issue #783).
 func hubConnectionLogf(format string, args ...any) {
-	fmt.Fprintf(os.Stderr, "[hub] "+format+"\n", args...)
+	componentlog.New("hub").Info(fmt.Sprintf(format, args...))
 }
 
 // Probe implements Prober.
@@ -173,6 +173,7 @@ func ProbeResultFromThread(root appwire.Thread) ProbeResult {
 		Status:             root.Status.Type,
 		ActiveFlags:        append([]string(nil), root.Status.ActiveFlags...),
 		PendingAsk:         root.Evener.AskPending,
+		Manager:            root.Evener.Manager,
 		PendingEscalation:  len(root.Evener.PendingEscalations) > 0,
 		PendingEscalations: root.Evener.PendingEscalations,
 		PendingQuestion:    root.Evener.PendingQuestion,
@@ -205,6 +206,7 @@ func ProbeResultFromThread(root appwire.Thread) ProbeResult {
 func LiveEntryThreadFacts(in LiveEntry, r ProbeResult) LiveEntry {
 	in.Status = r.Status
 	in.PendingAsk = r.PendingAsk
+	in.Manager = r.Manager
 	in.PendingEscalation = r.PendingEscalation
 	in.PendingEscalations = r.PendingEscalations
 	in.PendingQuestion = r.PendingQuestion

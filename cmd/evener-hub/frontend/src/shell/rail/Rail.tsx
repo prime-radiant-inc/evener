@@ -15,8 +15,8 @@ import { navigationStore, useNavigationStore } from "../../stores/navigation/sto
 import { type SidebarGroupingPref, usePrefsStore } from "../../stores/prefs";
 import { threadsStore } from "../../stores/threads";
 import {
-  Badge,
   Button,
+  Chip,
   ConfirmDialog,
   DisclosureHeading,
   EmptyState,
@@ -104,7 +104,9 @@ const CLASS = {
   rail: requireClass(styles.rail, "Rail.module.css", "rail"),
   header: requireClass(styles.header, "Rail.module.css", "header"),
   brand: requireClass(styles.brand, "Rail.module.css", "brand"),
+  wordmark: requireClass(styles.wordmark, "Rail.module.css", "wordmark"),
   brandIdentity: requireClass(styles.brandIdentity, "Rail.module.css", "brandIdentity"),
+  needsYou: requireClass(styles.needsYou, "Rail.module.css", "needsYou"),
   newSession: requireClass(styles.newSession, "Rail.module.css", "newSession"),
   body: requireClass(styles.body, "Rail.module.css", "body"),
   parentScrollRail: requireClass(styles.parentScrollRail, "Rail.module.css", "parentScrollRail"),
@@ -1011,9 +1013,9 @@ function NavigationRail({
         <RailResizeHandle width={width} onCommit={onWidthChange} railRef={railRef} />
       )}
       <div className={CLASS.header}>
+        <span className={CLASS.wordmark}>evener</span>
         <div data-testid="rail-brand" className={CLASS.brand}>
-          <span className={CLASS.brandIdentity}>{serverInfo?.name ?? "evener"}</span>
-          {needsYou > 0 && <Badge count={needsYou} tone="attention" />}
+          <span className={CLASS.brandIdentity}>{serverInfo?.name ?? "hub"}</span>
           <IconButton
             data-testid="rail-settings"
             label="Settings"
@@ -1043,8 +1045,15 @@ function NavigationRail({
             />
           )}
         </div>
+        {needsYou > 0 && (
+          <span className={CLASS.needsYou} data-testid="rail-needs-you">
+            <Chip tone="attention" kind="needs-you">
+              {needsYou} needs you
+            </Chip>
+          </span>
+        )}
         <div className={CLASS.newSession}>
-          <Button variant="primary" onClick={() => navigate("/new")}>
+          <Button variant="secondary" onClick={() => navigate("/new")}>
             + New session
           </Button>
         </div>

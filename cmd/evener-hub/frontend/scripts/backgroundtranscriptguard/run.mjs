@@ -522,12 +522,14 @@ function renderedOutputExpr(ref) {
 // waitForTargetRunning observes the actual running state of the target's own
 // turn (an in-progress turn or a live overlay), not merely finished text.
 async function waitForTargetRunning(driver, ref, timeoutMs = 30000) {
-  const deadline = Date.now() + timeoutMs;
+  const startedAt = Date.now();
+  const deadline = startedAt + driver.reactions.deadline(timeoutMs);
   let last = null;
   while (Date.now() < deadline) {
     const d = await readTargetDomain(driver, ref);
     last = d;
     if (d && (d.turns.some((t) => (t.status ?? "").toLowerCase().includes("progress")) || d.overlayKeys.length > 0)) {
+      driver.reactions.observe(Date.now() - startedAt);
       return true;
     }
     await new Promise((r) => setTimeout(r, 100));
@@ -538,11 +540,15 @@ async function waitForTargetRunning(driver, ref, timeoutMs = 30000) {
 // waitForRenderedOutput waits for the shell OUTPUT region (the CodeBlock that
 // owns the "Copy output" control) to show the produced literal.
 async function waitForRenderedOutput(driver, ref, marker, timeoutMs = 30000) {
-  const deadline = Date.now() + timeoutMs;
+  const startedAt = Date.now();
+  const deadline = startedAt + driver.reactions.deadline(timeoutMs);
   let last = null;
   while (Date.now() < deadline) {
     last = await evaluate(driver.send, renderedOutputExpr(ref)).catch(() => null);
-    if (last?.outputRegions === 1 && last.outputs[0]?.includes(marker)) return last;
+    if (last?.outputRegions === 1 && last.outputs[0]?.includes(marker)) {
+      driver.reactions.observe(Date.now() - startedAt);
+      return last;
+    }
     await new Promise((r) => setTimeout(r, 100));
   }
   return false;
@@ -561,7 +567,8 @@ async function readShellOutputRegion(driver, ref, marker, timeoutMs = 30000) {
   // wait (the observed failure was driver.click finding no element at its own
   // box lookup, not a wrong selector). Wait until the control is present AND
   // has a non-zero box before clicking; never click into the void.
-  const deadline = Date.now() + timeoutMs;
+  const startedAt = Date.now();
+  const deadline = startedAt + driver.reactions.deadline(timeoutMs);
   let clicked = false;
   while (Date.now() < deadline && !clicked) {
     const ready = await evaluate(
@@ -578,6 +585,7 @@ async function readShellOutputRegion(driver, ref, marker, timeoutMs = 30000) {
       try {
         await driver.click(toggleSelector);
         clicked = true;
+        driver.reactions.observe(Date.now() - startedAt);
       } catch {
         await delay(100);
       }
@@ -681,6 +689,38 @@ function domainContent(domain) {
   return domain.items.map((i) => (i.text ?? "") + (i.output ?? "")).join("\n");
 }
 
+// composeReconnectWindow folds the reads the new connection issued into the
+// one window the model applied. The first read that returned turns is the
+// reconnect's initial replacement: its turns and recorded items are the base.
+// A later read on the same connection is a merge into what the model already
+// holds: applyReadResponse (appwire-client/typescript/transcriptHistory.ts) is
+// the authority, and it keeps the reader's older edge, joins items to their
+// turn by identity, and lets a later copy of a shared item supersede the
+// base's. A window-capped read can stop in the middle of a turn, so one turn's
+// items legitimately arrive from two reads.
+function composeReconnectWindow(newConnectionReads) {
+  const turns = [];
+  const byTurn = new Map();
+  for (const read of newConnectionReads) {
+    if (!Array.isArray(read.window) || read.window.length === 0) continue;
+    for (const responseTurn of read.window) {
+      const turnId = responseTurn.turnId ?? null;
+      let turn = byTurn.get(turnId);
+      if (!turn) {
+        turn = { turnId, items: [] };
+        byTurn.set(turnId, turn);
+        turns.push(turn);
+      }
+      for (const item of responseTurn.items ?? []) {
+        const index = turn.items.findIndex((held) => held.id === item.id && held.type === item.type);
+        if (index === -1) turn.items.push(item);
+        else turn.items[index] = item;
+      }
+    }
+  }
+  return turns;
+}
+
 // Owning reconnect validator (finding 4): the reconnect's authoritative read
 // must arrive on a connection NOT seen before, and the applied model window
 // (cursor) must match that read's response. A same-connection refresh is not a
@@ -709,23 +749,38 @@ function reconnectValidator(before, evidence, applied = {}) {
   //
   // The new connection may read the thread again after the reconnect read (a
   // follow-up refresh). The model keeps the older edge it already holds, so its
-  // cursor and window stay the reconnect read's: the applied model matches the
-  // new connection's read that carries them, not necessarily the last one.
+  // cursor stays the edge read's, but a window-capped read can stop in the
+  // middle of a turn: the follow-up then supplies the rest of that same turn,
+  // and the applied window is the ordered union of every new-connection read,
+  // not any one read's window. Compose that union and compare the applied model
+  // against it turn by turn; the cursor must still be the edge read's (the one
+  // that returned the union's oldest turn).
   const recordedItems = (items) => (items ?? []).filter((item) => item.type !== "systemMessage");
-  const appliedBy = (read) =>
-    read.olderCursor === appliedCursor &&
-    Array.isArray(read.window) &&
-    read.window.length > 0 &&
+  const expectedWindow = composeReconnectWindow(newConnectionReads);
+  const edgeRead =
+    expectedWindow.length === 0
+      ? undefined
+      : newConnectionReads.find(
+          (read) =>
+            Array.isArray(read.window) &&
+            read.window.length > 0 &&
+            (read.window[0].turnId ?? "") === (expectedWindow[0].turnId ?? "") &&
+            read.olderCursor === appliedCursor,
+        );
+  let lastAppliedIndex = -1;
+  const windowMatches =
     Array.isArray(appliedWindow) &&
-    read.window.every((responseTurn) => {
-      const appliedTurn = appliedWindow.find((turn) => turn.turnId === responseTurn.turnId);
-      return (
-        appliedTurn !== undefined &&
-        orderedHistoryEqual(recordedItems(responseTurn.items), recordedItems(appliedTurn.items))
+    expectedWindow.every((expectedTurn) => {
+      const appliedIndex = appliedWindow.findIndex((turn) => turn.turnId === expectedTurn.turnId);
+      if (appliedIndex === -1 || appliedIndex <= lastAppliedIndex) return false;
+      lastAppliedIndex = appliedIndex;
+      return orderedHistoryEqual(
+        recordedItems(expectedTurn.items),
+        recordedItems(appliedWindow[appliedIndex].items),
       );
     });
-  const appliedRead = newConnectionReads.find(appliedBy);
-  const reported = appliedRead ?? newConnectionReads[newConnectionReads.length - 1];
+  const appliedMatches = edgeRead !== undefined && windowMatches;
+  const reported = appliedMatches ? edgeRead : newConnectionReads[newConnectionReads.length - 1];
   return {
     reconnected,
     newReads,
@@ -734,8 +789,37 @@ function reconnectValidator(before, evidence, applied = {}) {
     responseWindow: reported?.window ?? null,
     appliedWindow,
     appliedCursor,
-    appliedMatches: appliedRead !== undefined,
+    appliedMatches,
   };
+}
+
+// waitForReconnectApplied polls the target's applied model against the
+// reconnect trace until they agree. The trace is re-read on every poll: the new
+// connection can issue its follow-up read after waitForNewTargetRead returned,
+// and a frozen snapshot would keep composeReconnectWindow at the reconnect
+// read's window while the model already holds the merged turn, so the check
+// would fail for the whole wait.
+async function waitForReconnectApplied({
+  before,
+  readEvidence,
+  readDomain,
+  deadlineMs,
+  pollMs = 150,
+  now = Date.now,
+  sleep = delay,
+}) {
+  const startedAt = now();
+  const deadline = startedAt + deadlineMs;
+  let evidence = readEvidence();
+  let domain = await readDomain();
+  let check = reconnectValidator(before, evidence, { cursor: domain?.cursor ?? "", domain });
+  while (!check.appliedMatches && now() < deadline) {
+    await sleep(pollMs);
+    evidence = readEvidence();
+    domain = await readDomain();
+    check = reconnectValidator(before, evidence, { cursor: domain?.cursor ?? "", domain });
+  }
+  return { evidence, domain, check, waitedMs: now() - startedAt };
 }
 
 // observedConnection reads the app's own connection state through the dev
@@ -756,10 +840,14 @@ async function observedConnection(driver) {
 // waitForDisconnected waits for the app's own connection state to leave the
 // connected state, not navigator.onLine alone.
 async function waitForDisconnected(driver, timeoutMs = 15000) {
-  const deadline = Date.now() + timeoutMs;
+  const startedAt = Date.now();
+  const deadline = startedAt + driver.reactions.deadline(timeoutMs);
   while (Date.now() < deadline) {
     const { appState } = await observedConnection(driver);
-    if (appState !== null && appState !== undefined && appState !== "ready") return true;
+    if (appState !== null && appState !== undefined && appState !== "ready") {
+      driver.reactions.observe(Date.now() - startedAt);
+      return true;
+    }
     await new Promise((r) => setTimeout(r, 100));
   }
   return false;
@@ -1451,10 +1539,18 @@ async function runEntryProductionJourney(driver, harnessUrl) {
   }));
   const nativeTurns = completed.turns;
   const nativeCoverage = completed.coverage;
+  // Identity is (transcriptKey, id, turnId). Index the native rows once so the
+  // join is linear, and keep every row per identity: a duplicate native row
+  // must still read as two matches.
+  const nativeByIdentity = new Map();
+  for (const row of nativeItems) {
+    const key = JSON.stringify([row.transcriptKey, row.item?.id, row.item?.turnId]);
+    const bucket = nativeByIdentity.get(key);
+    if (bucket) bucket.push(row);
+    else nativeByIdentity.set(key, [row]);
+  }
   const rendererToNative = recordedRendererItems.map((item) => {
-    const matches = nativeItems.filter(
-      (row) => row.transcriptKey === item.transcriptKey && row.item?.id === item.id && row.item?.turnId === item.turnId,
-    );
+    const matches = nativeByIdentity.get(JSON.stringify([item.transcriptKey, item.id, item.turnId])) ?? [];
     const native = matches[0] ?? null;
     const identityMatches =
       native !== null &&
@@ -1472,6 +1568,28 @@ async function runEntryProductionJourney(driver, harnessUrl) {
   });
   const comparePosition = (left, right) =>
     left.entry - right.entry || left.item - right.item || (left.sub ?? 0) - (right.sub ?? 0);
+  // A renderer item with no native row is either a lost row or a row the
+  // comparison window cannot reach. Record whether the native store holds the
+  // same item id under another transcript key, and what the same key holds, so
+  // the retained audit answers that without the live browser.
+  const unmatchedRendererItems = recordedRendererItems.flatMap((item, index) => {
+    const match = rendererToNative[index];
+    if (match.matches === 1 && match.identityMatches) return [];
+    return [
+      {
+        id: item.id,
+        turnId: item.turnId,
+        transcriptKey: item.transcriptKey,
+        position: item.position,
+        nativeSameId: nativeItems
+          .filter((row) => row.item?.id === item.id)
+          .map((row) => ({ transcriptKey: row.transcriptKey, turnId: row.item?.turnId })),
+        nativeSameKey: nativeItems
+          .filter((row) => row.transcriptKey === item.transcriptKey)
+          .map((row) => ({ id: row.item?.id, turnId: row.item?.turnId })),
+      },
+    ];
+  });
   const nativeCoverageMatches = nativeItems.map((row) => ({
     id: row.item?.id,
     turnId: row.item?.turnId,
@@ -1526,6 +1644,7 @@ async function runEntryProductionJourney(driver, harnessUrl) {
     nativeTurns,
     nativeCoverage,
     rendererToNative,
+    unmatchedRendererItems,
     nativeCoverageMatches,
     itemTurnMatches,
   };
@@ -1537,7 +1656,7 @@ async function runEntryProductionJourney(driver, harnessUrl) {
     shellRows: outputRegion?.shellRows ?? 0,
     renderedOutputText: outputText,
     renderedToolItemCount: renderedToolItems.length,
-    rendererToNativeMatches: rendererToNative.every((match) => match.matches === 1 && match.identityMatches),
+    rendererToNativeMatches: unmatchedRendererItems.length === 0,
     itemTurnMatches,
     producerItemsCovered:
       producerCoverage.length === 2 && producerCoverage.every((match) => match.coveringRows.length > 0),
@@ -1565,8 +1684,10 @@ async function runEntryProductionJourney(driver, harnessUrl) {
       );
     }
   }
-  if (rendererToNative.some((match) => match.matches !== 1 || !match.identityMatches)) {
-    throw new Error(`renderer items do not map one-to-one to native entry items: ${JSON.stringify(rendererToNative)}`);
+  if (unmatchedRendererItems.length !== 0) {
+    throw new Error(
+      `renderer items do not map one-to-one to native entry items: ${JSON.stringify({ rendererToNative, unmatchedRendererItems })}`,
+    );
   }
   if (producerCoverage.length !== 2 || producerCoverage.some((match) => match.coveringRows.length === 0)) {
     throw new Error(
@@ -1768,22 +1889,20 @@ async function runEntryProductionJourney(driver, harnessUrl) {
   // Correlate the NEW connection's target authoritative read and its applied
   // replacement window/cursor: the entry route publishes the repository's
   // accepted model through its subscription, so poll for the applied window.
-  const reconnect = await waitForNewTargetRead(driver, SESSION_B, preGapReads, 30000);
+  await waitForNewTargetRead(driver, SESSION_B, preGapReads, 30000);
   const reconnectBefore = { readResponses: preGapReads, connections: preGapConnections };
-  const appliedDeadline = Date.now() + 20000;
-  let reconnectDomain = await readTargetDomain(driver, SESSION_B);
-  let reconnectCheck = reconnectValidator(reconnectBefore, reconnect, {
-    cursor: reconnectDomain?.cursor ?? "",
-    domain: reconnectDomain,
+  const applied = await waitForReconnectApplied({
+    before: reconnectBefore,
+    readEvidence: () => targetPagingEvidence(SESSION_B),
+    readDomain: () => readTargetDomain(driver, SESSION_B),
+    deadlineMs: driver.reactions.deadline(20000),
   });
-  while (!reconnectCheck.appliedMatches && Date.now() < appliedDeadline) {
-    await delay(150);
-    reconnectDomain = await readTargetDomain(driver, SESSION_B);
-    reconnectCheck = reconnectValidator(reconnectBefore, reconnect, {
-      cursor: reconnectDomain?.cursor ?? "",
-      domain: reconnectDomain,
-    });
-  }
+  // The trace was re-read on every poll, so these are the final read set: a
+  // follow-up read that landed after the first snapshot is composed here too.
+  const reconnect = applied.evidence;
+  const reconnectDomain = applied.domain;
+  const reconnectCheck = applied.check;
+  if (reconnectCheck.appliedMatches) driver.reactions.observe(applied.waitedMs);
   const reconnectTraceAfter = traceBytes();
   const reconnectedHasGap = domainContent(reconnectDomain).includes(GAP_SENTINEL);
   driver.milestone("reconnected-latest-window", {
@@ -1947,10 +2066,14 @@ function nativeEntryEvidenceExpression(ref = SESSION_B) {
 }
 
 async function waitForNativeEntryEvidence(driver, predicate, label, ref = SESSION_B) {
-  const deadline = Date.now() + 30000;
+  const startedAt = Date.now();
+  const deadline = startedAt + driver.reactions.deadline(30000);
   while (Date.now() < deadline) {
     const value = await evaluate(driver.send, nativeEntryEvidenceExpression(ref));
-    if (value && predicate(value)) return value;
+    if (value && predicate(value)) {
+      driver.reactions.observe(Date.now() - startedAt);
+      return value;
+    }
     await delay(100);
   }
   throw new Error(`timed out waiting for ${label}`);
@@ -1977,11 +2100,15 @@ async function scrollSentinelIntoView(driver, ref, wanted, rounds = 8) {
 // restore that needed the wire still shows up as a read/page in the caller's
 // trace window.
 async function waitForRestoredDomain(driver, ref, sentinel, timeoutMs = 30000) {
-  const deadline = Date.now() + timeoutMs;
+  const startedAt = Date.now();
+  const deadline = startedAt + driver.reactions.deadline(timeoutMs);
   let last = null;
   while (Date.now() < deadline) {
     last = await readTargetDomain(driver, ref).catch(() => null);
-    if (last && (last.items?.length ?? 0) > 0 && domainContent(last).includes(sentinel)) return last;
+    if (last && (last.items?.length ?? 0) > 0 && domainContent(last).includes(sentinel)) {
+      driver.reactions.observe(Date.now() - startedAt);
+      return last;
+    }
     await delay(150);
   }
   return last;
@@ -2037,12 +2164,16 @@ async function openSessionInCurrentShell(driver, ref) {
 // waitForNewTargetRead waits for the target's read count to advance past its
 // pre-gap value, returning refreshed evidence (the reconnect's authoritative
 // read on a new connection).
-async function waitForNewTargetRead(_driver, ref, beforeReads, timeoutMs = 30000) {
-  const deadline = Date.now() + timeoutMs;
+async function waitForNewTargetRead(driver, ref, beforeReads, timeoutMs = 30000) {
+  const startedAt = Date.now();
+  const deadline = startedAt + driver.reactions.deadline(timeoutMs);
   let ev = targetPagingEvidence(ref);
   while (Date.now() < deadline) {
     ev = targetPagingEvidence(ref);
-    if (ev.readResponses > beforeReads) return ev;
+    if (ev.readResponses > beforeReads) {
+      driver.reactions.observe(Date.now() - startedAt);
+      return ev;
+    }
     await new Promise((r) => setTimeout(r, 150));
   }
   return ev;
@@ -2063,10 +2194,19 @@ async function runJourney(driver, entryProduction = false, harnessUrl) {
 // runTwoTabFencing drives the entry route's Clear and delete fences across two
 // REAL tabs sharing one native BroadcastChannel and one IndexedDB. The first tab
 // is the journey's own page; the second is a real second document on the same
-// guard harness. Only the fence entry points are invoked (threads.clearCachedSessions
-// and markCacheSessionsDeleted, the same effect set a real Clear/delete owes the
-// cache); the propagation and the durable removal are the browser's own.
+// guard harness. The real stopped-project delete action removes the source as
+// well as its cache, and Clear uses threads.clearCachedSessions. Propagation and
+// durable removal are the browser's own.
 async function runTwoTabFencing(driver, endpoint, harnessUrl) {
+  const call = (send, method, ...args) =>
+    evaluate(send, `window.backgroundTranscriptGuard.${method}(${args.map((arg) => JSON.stringify(arg)).join(",")})`);
+  // Preserve B's producer transcript for the Go owner's independent history
+  // assertions. Stop A before the sibling boots, so it cannot acquire a live
+  // background lease while this phase is preparing a fresh deleted-ref open.
+  const ref = SESSION_A;
+  const stopped = await fetch(new URL("/background-guard/stop-sustained", HUB_URL), { method: "POST" });
+  if (!stopped.ok) throw new Error(`two-tab stop: ${await stopped.text()}`);
+  const project = await stopped.json();
   const opened = await openPage(endpoint, "about:blank");
   const tab = await connectPage(endpoint, opened.id);
   try {
@@ -2090,7 +2230,8 @@ async function runTwoTabFencing(driver, endpoint, harnessUrl) {
            const deadline = Date.now() + 30000;
            while (Date.now() < deadline) {
              if (typeof window.backgroundTranscriptEvidence !== "undefined" &&
-                 typeof window.backgroundTranscriptGuard !== "undefined") return true;
+                 typeof window.backgroundTranscriptGuard !== "undefined" &&
+                 window.backgroundTranscriptEvidence.connectionState() === "ready") return true;
              await new Promise((resolve) => setTimeout(resolve, 100));
            }
            return { booted: typeof window.backgroundTranscriptBooted, evidence: typeof window.backgroundTranscriptEvidence,
@@ -2111,13 +2252,10 @@ async function runTwoTabFencing(driver, endpoint, harnessUrl) {
     // rail row is pressed.
     await driver.send("Page.bringToFront");
     await waitForResponsiveHost(driver);
-    const call = (send, method, ...args) =>
-      evaluate(send, `window.backgroundTranscriptGuard.${method}(${args.map((arg) => JSON.stringify(arg)).join(",")})`);
     const fence = (send, ref) => call(send, "fenceState", ref);
     const durable = (send, ref) => evaluate(send, nativeEntryEvidenceExpression(ref));
 
     // ---- delete fence: one tab deletes, the sibling observes over the channel ----
-    const ref = SESSION_B;
     const seeded = await durable(tab.send, ref);
     if (!seeded || seeded.rows.length === 0) {
       throw new Error(`two-tab delete: the target has no durable entry rows to fence: ${JSON.stringify(seeded)}`);
@@ -2127,8 +2265,11 @@ async function runTwoTabFencing(driver, endpoint, harnessUrl) {
     if (aBefore.deletedRefs.includes(ref) || bBefore.deletedRefs.includes(ref)) {
       throw new Error(`two-tab delete: the ref was already fenced: ${JSON.stringify({ aBefore, bBefore })}`);
     }
-    await call(driver.send, "delete", ref);
-    const suppressDeadline = Date.now() + 15000;
+    const deletion = await call(driver.send, "delete", project.key, project.workingDir);
+    if (!deletion.deleted.some((id) => id === ref || `local:${id}` === ref) || deletion.skipped.length !== 0) {
+      throw new Error(`two-tab delete: the source session was not deleted: ${JSON.stringify(deletion)}`);
+    }
+    const suppressDeadline = Date.now() + driver.reactions.deadline(15000);
     let bAfter = await fence(tab.send, ref);
     while (bAfter.lifetime?.suppressed !== true && Date.now() < suppressDeadline) {
       await delay(100);
@@ -2137,7 +2278,7 @@ async function runTwoTabFencing(driver, endpoint, harnessUrl) {
     const aAfter = await fence(driver.send, ref);
     // The durable heal is asynchronous (deleteCachedRefs), so poll for the rows
     // to leave the shared IndexedDB rather than reading one instant.
-    const removeDeadline = Date.now() + 15000;
+    const removeDeadline = Date.now() + driver.reactions.deadline(15000);
     let removed = await durable(tab.send, ref);
     while (removed && removed.rows.length > 0 && Date.now() < removeDeadline) {
       await delay(100);
@@ -2163,12 +2304,17 @@ async function runTwoTabFencing(driver, endpoint, harnessUrl) {
     if (!(removed === null || removed.rows.length === 0)) {
       throw new Error("two-tab delete: the durable record still exists in the shared IndexedDB");
     }
+    const sourceReadOutcome = await call(tab.send, "sourceReadOutcome", ref);
+    driver.milestone("two-tab-delete-source", { ref, sourceReadOutcome });
+    if (sourceReadOutcome !== "rejected") {
+      throw new Error("two-tab delete: the target remains readable on the source after deletion");
+    }
     // The sibling's fresh acquisition must not resurrect the deleted session:
     // the deletion fence refuses the hydration and no route or durable row
     // appears. Poll the real condition (the ref acquired no route) rather than
     // sleeping a fixed interval.
     await call(tab.send, "open", ref);
-    const refusalDeadline = Date.now() + 15000;
+    const refusalDeadline = Date.now() + driver.reactions.deadline(15000);
     let routePresent = await evaluate(
       tab.send,
       `window.backgroundTranscriptEvidence.entryRoute(${JSON.stringify(ref)}).present`,
@@ -2184,19 +2330,28 @@ async function runTwoTabFencing(driver, endpoint, harnessUrl) {
     const resurrectedRows = resurrected === null ? 0 : resurrected.rows.length;
     driver.milestone("two-tab-delete-refusal", { ref, routePresent, rowsAfterOpen: resurrectedRows });
     if (routePresent === true) {
-      throw new Error("two-tab delete: the sibling's fresh acquisition opened a route for a deleted ref");
+      // Name the route state that survived the refusal: which open status it
+      // reported, whether a store model exists, and its history key distinguish
+      // a resurrected repository from a route object that never had one.
+      const route = await evaluate(
+        tab.send,
+        `window.backgroundTranscriptEvidence.entryRoute(${JSON.stringify(ref)})`,
+      );
+      throw new Error(
+        `two-tab delete: the sibling's fresh acquisition opened a route for a deleted ref: ${JSON.stringify({ route, rowsAfterOpen: resurrectedRows })}`,
+      );
     }
     if (resurrectedRows !== 0) {
       throw new Error(`two-tab delete: a fresh sibling acquisition resurrected ${resurrectedRows} durable rows`);
     }
 
     // ---- clear fence: a held old-epoch lease is suppressed, not rebound ----
-    await driver.openSession(SESSION_A);
-    const armDeadline = Date.now() + 15000;
-    let aClearBefore = await fence(driver.send, SESSION_A);
+    await driver.openSession(SESSION_B);
+    const armDeadline = Date.now() + driver.reactions.deadline(15000);
+    let aClearBefore = await fence(driver.send, SESSION_B);
     while (aClearBefore.lifetime?.leaseEpoch === undefined && Date.now() < armDeadline) {
       await delay(100);
-      aClearBefore = await fence(driver.send, SESSION_A);
+      aClearBefore = await fence(driver.send, SESSION_B);
     }
     if (aClearBefore.lifetime?.leaseEpoch === undefined) {
       throw new Error(`two-tab clear: the holding tab never captured a cache lease: ${JSON.stringify(aClearBefore)}`);
@@ -2205,14 +2360,14 @@ async function runTwoTabFencing(driver, endpoint, harnessUrl) {
     if (!cleared.committed) {
       throw new Error(`two-tab clear: the sibling clear did not commit: ${JSON.stringify(cleared)}`);
     }
-    const clearDeadline = Date.now() + 15000;
-    let aClearAfter = await fence(driver.send, SESSION_A);
+    const clearDeadline = Date.now() + driver.reactions.deadline(15000);
+    let aClearAfter = await fence(driver.send, SESSION_B);
     while (aClearAfter.lifetime?.suppressed !== true && Date.now() < clearDeadline) {
       await delay(100);
-      aClearAfter = await fence(driver.send, SESSION_A);
+      aClearAfter = await fence(driver.send, SESSION_B);
     }
     driver.milestone("two-tab-clear-fence", {
-      ref: SESSION_A,
+      ref: SESSION_B,
       epochBefore: aClearBefore.lifetime?.leaseEpoch ?? null,
       epochAfter: aClearAfter.lifetime?.leaseEpoch ?? null,
       suppressed: aClearAfter.lifetime?.suppressed === true,
@@ -2240,12 +2395,20 @@ async function runTwoTabFencing(driver, endpoint, harnessUrl) {
 }
 
 async function waitForEvidenceGlobal(driver) {
-  const deadline = Date.now() + 90000;
+  const startedAt = Date.now();
+  const deadline = startedAt + driver.reactions.deadline(90000);
   while (Date.now() < deadline) {
     const present = await evaluate(driver.send, "typeof window.backgroundTranscriptEvidence !== 'undefined'").catch(
       () => false,
     );
-    if (present) return true;
+    if (present) {
+      // The page boot is this run's first observed reaction. Recording it
+      // sizes every later wait from the machine this guard actually got,
+      // instead of leaving the first composer and display waits at a floor
+      // a loaded runner can miss.
+      driver.reactions.observe(Date.now() - startedAt);
+      return true;
+    }
     await new Promise((resolve) => setTimeout(resolve, 100));
   }
   return false;
@@ -2884,10 +3047,12 @@ export {
   renderedOutputExpr,
   retainedHistoryValidator,
   samplePeaksOnce,
+  targetDomainExpr,
   targetPagingEvidence,
   traceBytes,
   transcriptState,
   waitForDisconnected,
   waitForProducerOperationApplied,
+  waitForReconnectApplied,
   waitForRenderedOutput,
 };

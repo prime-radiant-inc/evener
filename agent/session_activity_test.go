@@ -917,7 +917,7 @@ func TestSessionActivityCanceledDelegateFoldResumesWithoutReplay(t *testing.T) {
 	for i := range descriptors {
 		descriptors[i] = pastStableDescriptor(rootID, fmt.Sprintf("childcancel_%04d", i), "retained task")
 	}
-	writePastStableDelegates(t, stateDir, rootID, descriptors...)
+	writePastDelegates(t, stateDir, rootID, descriptors...)
 	index, err := acquireSessionActivityIndex(t.Context(), stateDir+"\x00"+rootID, nil)
 	if err != nil {
 		t.Fatal(err)
@@ -1039,7 +1039,7 @@ func TestSessionActivityRecoverableSourceAccess(t *testing.T) {
 				}
 				switch resource {
 				case "delegates":
-					writePastStableDelegates(t, stateDir, id, pastStableDescriptor(id, "accesschild1", "one"), pastStableDescriptor(id, "accesschild2", "two"))
+					writePastDelegates(t, stateDir, id, pastStableDescriptor(id, "accesschild1", "one"), pastStableDescriptor(id, "accesschild2", "two"))
 					path = filepath.Join(jobsDir(stateDir, id), "delegates.jsonl")
 					query = func() (int, error) {
 						page, err := LoadSessionActivityDelegates(t.Context(), stateDir, id, params)
@@ -1194,7 +1194,7 @@ func TestSessionActivityRejectedTailCapturePublicRecovery(t *testing.T) {
 			if kind == "jobs" {
 				writeActivityJobLogFast(t, dir, id, 2)
 			} else {
-				writePastStableDelegates(t, dir, id, pastStableDescriptor(id, "tailchild1", "one"), pastStableDescriptor(id, "tailchild2", "two"))
+				writePastDelegates(t, dir, id, pastStableDescriptor(id, "tailchild1", "one"), pastStableDescriptor(id, "tailchild2", "two"))
 				query = func() (int, error) {
 					page, err := LoadSessionActivityDelegates(t.Context(), dir, id, params)
 					return len(page.Delegates), err
@@ -1342,7 +1342,7 @@ func TestSessionActivityPausedAppendRemainsRecoverable(t *testing.T) {
 				writeActivityJobLogFast(t, dir, id, 1)
 				raw, _ = json.Marshal(jobstore.Event{Kind: jobstore.EventJobFinished, Seq: 2, JobID: "job_000000", Status: jobstore.StatusCommandExitedNonzero, TerminalGen: "failure", TS: at})
 			} else {
-				writePastStableDelegates(t, dir, id, pastStableDescriptor(id, "childpaused", "one"))
+				writePastDelegates(t, dir, id, pastStableDescriptor(id, "childpaused", "one"))
 				event := delegateControllerRunStartedEvent("dlg_paused", 1, delegatestore.TriggerInitial, at)
 				event.Seq = 2
 				event.TS = at

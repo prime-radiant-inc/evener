@@ -132,7 +132,7 @@ func TestHostRunningRequiresTheEpoch(t *testing.T) {
 			t.Fatalf("epoch %+v refusal %q does not name the missing epoch", epoch, err)
 		}
 	}
-	if _, ok := m.cfg.ops.GuardEpoch(); ok {
+	if _, ok := m.opsStore().GuardEpoch(); ok {
 		t.Fatal("an epoch-less call persisted a guard epoch")
 	}
 }
@@ -153,7 +153,7 @@ func TestHostRunningPersistsAndRefusesStaleEpochs(t *testing.T) {
 	if _, err := m.HostRunning(bridgeCtx(), appwire.HostRunningParams{FencingEpoch: appwire.FencingEpoch{BootID: "boot-1", OpSeq: 5}}); err != nil {
 		t.Fatalf("HostRunning(5): %v", err)
 	}
-	stored, ok := m.cfg.ops.GuardEpoch()
+	stored, ok := m.opsStore().GuardEpoch()
 	if !ok || stored.BootID != "boot-1" || stored.OpSeq != 5 {
 		t.Fatalf("persisted guard epoch = %+v/%v, want boot-1/5", stored, ok)
 	}
@@ -169,7 +169,7 @@ func TestHostRunningPersistsAndRefusesStaleEpochs(t *testing.T) {
 	if probed != before {
 		t.Fatal("a stale epoch was probed; the refusal must happen without probing")
 	}
-	if stored, _ := m.cfg.ops.GuardEpoch(); stored.OpSeq != 5 {
+	if stored, _ := m.opsStore().GuardEpoch(); stored.OpSeq != 5 {
 		t.Fatalf("the stale refusal moved the persisted epoch to %+v", stored)
 	}
 	if _, err := m.HostRunning(bridgeCtx(), appwire.HostRunningParams{FencingEpoch: appwire.FencingEpoch{BootID: "boot-1", OpSeq: 5}}); err != nil {
@@ -378,7 +378,7 @@ func TestHostRunningSerializesAdmissionAndProbe(t *testing.T) {
 			probeCalls++
 			call := probeCalls
 			mu.Unlock()
-			stored, _ := m.cfg.ops.GuardEpoch()
+			stored, _ := m.opsStore().GuardEpoch()
 			if call == 1 {
 				mu.Lock()
 				order = append(order, fmt.Sprintf("a-probe@%d", stored.OpSeq))
@@ -436,7 +436,7 @@ func TestHostRunningSerializesAdmissionAndProbe(t *testing.T) {
 	if order[0] != "a-probe@5" || order[1] != "a-probe-done" || order[2] != "b-probe@6" {
 		t.Fatalf("probe order = %v, want a-probe@5, a-probe-done, b-probe@6", order)
 	}
-	if stored, _ := m.cfg.ops.GuardEpoch(); stored.OpSeq != 6 {
+	if stored, _ := m.opsStore().GuardEpoch(); stored.OpSeq != 6 {
 		t.Fatalf("final guard epoch = %+v, want the second call's", stored)
 	}
 }

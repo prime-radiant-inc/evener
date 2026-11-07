@@ -1,0 +1,75 @@
+# Sanitized prerequisite evidence, m5max, 2026-11-04
+# Device names/identifiers and unrelated simulator listings omitted.
+
+$ uname -srm
+Darwin 27.0.0 arm64
+exit=0
+
+$ xcode-select -p
+/Applications/Xcode.app/Contents/Developer
+exit=0
+
+$ xcodebuild -version
+Xcode 27.2
+Build version 27B52
+exit=0
+
+$ xcodebuild -checkFirstLaunchStatus
+exit=69
+
+$ xcodebuild -showsdks
+# Relevant output only:
+iOS SDKs:
+    iOS 27.2                      -sdk iphoneos27.2
+iOS Simulator SDKs:
+    Simulator - iOS 27.2          -sdk iphonesimulator27.2
+macOS SDKs:
+    macOS 27.2                    -sdk macosx27.2
+exit=0
+
+$ xcrun devicectl list devices --timeout 20
+Install Started
+Install Failed: Authorization is required to install the packages.
+# Relevant sanitized row: physical iPhone 16 Pro (iPhone17,1), state unavailable.
+# The physical UDID and unrelated simulator identities are intentionally omitted.
+exit=0
+
+$ /Applications/Xcode.app/Contents/Developer/usr/bin/devicectl list devices --timeout 20
+Install Started
+Install Failed: Authorization is required to install the packages.
+# Same physical-device state. Bypassing xcrun did not remove the setup failure.
+exit=0
+
+$ /Applications/Xcode.app/Contents/Developer/usr/bin/simctl list runtimes --json
+Install Started
+Install Failed: Authorization is required to install the packages.
+# Relevant extracted entries:
+# iOS 27.0, build 24A434, arm64, isAvailable=true
+# com.apple.CoreSimulator.SimRuntime.iOS-27-0
+# iOS 27.1, build 24A94425, arm64, isAvailable=true
+# com.apple.CoreSimulator.SimRuntime.iOS-27-1
+exit=0
+
+$ /Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/swiftc --version
+swift-driver version: 1.168.6 Apple Swift version 6.4.2 (swiftlang-6.4.2.1.9 clang-2100.4.1.1)
+Target: arm64-apple-macosx27.0.0
+exit=0
+
+# pkgutil --expand copied package metadata into the unique remote scratch.
+# Comparing those PackageInfo versions with pkgutil --pkg-info-plist receipts:
+com.apple.pkg.CoreTypes.2000A47: bundled=1.0.0.0.1792217678 installed=MISSING receipt_exit=1
+com.apple.pkg.MobileDevice: bundled=4.0.0.0.1792217673 installed=4.0.0.0.1788417373 receipt_exit=0
+com.apple.pkg.MobileDeviceDevelopment: bundled=16.4.0.9000000001.1667398374 installed=16.4.0.9000000001.1667398374 receipt_exit=0
+com.apple.pkg.XcodeSystemResources: bundled=27.2.0.0.1792721295 installed=27.1.0.0.1790739719 receipt_exit=0
+# These values were unchanged after build and the initial simulator smoke.
+# No sudo, runFirstLaunch, authorization change, or package installation command was used.
+
+# SDKSettings.json, read directly:
+iPhoneSimulator: Version=27.2 CanonicalName=iphonesimulator27.2
+iPhoneOS: Version=27.2 CanonicalName=iphoneos27.2
+
+# Diagnosis: Xcode first-launch package setup is incomplete. Device/simulator
+# tools automatically attempt it, lack installation authorization, then still
+# perform some existing-tool operations. The measured compiler/runtime path
+# works, but the general device-install/signing toolchain is NOT qualified.
+# The unavailable physical phone is not proven to be caused by this warning.

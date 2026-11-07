@@ -42,7 +42,7 @@ type residualServeServer struct {
 	name           func(string) error
 	effort         func(string) error
 	tasks          func() []appwire.Task
-	jobs           func(appwire.JobsListParams) (any, error)
+	jobs           func(context.Context, appwire.JobsListParams) (any, error)
 	jobOutput      func(string, *int64, int64) (appwire.JobOutputPage, bool, error)
 	jobGet         func(string) (appwire.JobActivityJob, bool, error)
 	clear          func(context.Context, appwire.ThreadClearParams) error
@@ -78,7 +78,7 @@ func (s *residualServeServer) SetVisionModelFunc(f func(string) error)     { s.v
 func (s *residualServeServer) SetNameFunc(f func(string) error)            { s.name = f }
 func (s *residualServeServer) SetReasoningEffortFunc(f func(string) error) { s.effort = f }
 func (s *residualServeServer) SetTasksFunc(f func() []appwire.Task)        { s.tasks = f }
-func (s *residualServeServer) SetJobsFunc(f func(appwire.JobsListParams) (any, error)) {
+func (s *residualServeServer) SetJobsFunc(f func(context.Context, appwire.JobsListParams) (any, error)) {
 	s.jobs = f
 }
 func (s *residualServeServer) SetJobOutputFunc(f func(string, *int64, int64) (appwire.JobOutputPage, bool, error)) {
@@ -174,7 +174,7 @@ func exerciseResidualCallbacks(t *testing.T, s *residualServeServer, sessionID s
 		t.Fatal(err)
 	}
 	_ = s.tasks()
-	_, _ = s.jobs(appwire.JobsListParams{Ref: "local:" + sessionID})
+	_, _ = s.jobs(context.Background(), appwire.JobsListParams{Ref: "local:" + sessionID})
 	_, _, _ = s.jobOutput("job_1", nil, 1024)
 	_, _, _ = s.jobGet("job_1")
 }
@@ -329,7 +329,7 @@ func TestRunServeResidualCoverage(t *testing.T) {
 		d.register = func(*rvreg.Registration, string, rendezvous.Entry) error { return boom }
 		d.serveHTTP = func(*http.Server, net.Listener) error {
 			exerciseResidualCallbacks(t, captured, sessionID)
-			data, err := captured.jobs(appwire.JobsListParams{Ref: "local:" + sessionID})
+			data, err := captured.jobs(context.Background(), appwire.JobsListParams{Ref: "local:" + sessionID})
 			if err != nil {
 				t.Fatalf("jobs callback: %v", err)
 			}
@@ -353,7 +353,7 @@ func TestRunServeResidualCoverage(t *testing.T) {
 		if captured == nil || captured.jobs == nil {
 			t.Fatal("jobs callback not captured")
 		}
-		if _, err := captured.jobs(appwire.JobsListParams{Ref: "local:wrong"}); err == nil {
+		if _, err := captured.jobs(context.Background(), appwire.JobsListParams{Ref: "local:wrong"}); err == nil {
 			t.Fatal("jobs callback accepted a ref for another local session")
 		}
 	})

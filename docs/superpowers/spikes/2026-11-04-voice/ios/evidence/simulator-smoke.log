@@ -1,0 +1,160 @@
+++ /Applications/Xcode.app/Contents/Developer/usr/bin/simctl --set /tmp/evener-voice-ios.3G5Ols/smoke-reviewed/devices create VoiceProbe-Disposable com.apple.CoreSimulator.SimDeviceType.iPhone-17 com.apple.CoreSimulator.SimRuntime.iOS-27-0
+Install Started
+Install Failed: Authorization is required to install the packages.
++ created=FB9B0E64-20B6-4E5D-A3B6-3F336D850509
++ printf '%s\n' FB9B0E64-20B6-4E5D-A3B6-3F336D850509
+FB9B0E64-20B6-4E5D-A3B6-3F336D850509
+++ printf '%s\n' FB9B0E64-20B6-4E5D-A3B6-3F336D850509
+++ /usr/bin/awk '/^[0-9A-Fa-f-]+$/ && length($0) == 36 {print}'
++ device=FB9B0E64-20B6-4E5D-A3B6-3F336D850509
++ [[ -n FB9B0E64-20B6-4E5D-A3B6-3F336D850509 ]]
++ [[ FB9B0E64-20B6-4E5D-A3B6-3F336D850509 != *\
+* ]]
++ /Applications/Xcode.app/Contents/Developer/usr/bin/simctl --set /tmp/evener-voice-ios.3G5Ols/smoke-reviewed/devices boot FB9B0E64-20B6-4E5D-A3B6-3F336D850509
+Install Started
+Install Failed: Authorization is required to install the packages.
++ /usr/bin/python3 -c 'import subprocess,sys; subprocess.run(sys.argv[1:], check=True, timeout=120)' /Applications/Xcode.app/Contents/Developer/usr/bin/simctl --set /tmp/evener-voice-ios.3G5Ols/smoke-reviewed/devices bootstatus FB9B0E64-20B6-4E5D-A3B6-3F336D850509 -b
+Install Started
+Install Failed: Authorization is required to install the packages.
+Monitoring boot status for VoiceProbe-Disposable (FB9B0E64-20B6-4E5D-A3B6-3F336D850509).
+[2026-11-04 20:16:32 +0000] Status=1, isTerminal=NO, Elapsed=00:02.
+	Waiting on BackBoard
+
+[2026-11-04 20:16:37 +0000] Status=2, isTerminal=NO, Elapsed=00:07.
+	Waiting on Data Migration
+		Reason:Preparing to migrate
+		Migration Elapsed:00:02 seconds
+
+[2026-11-04 20:16:37 +0000] Status=2, isTerminal=NO, Elapsed=00:07.
+	Waiting on Data Migration
+		Reason:Gathering plugins
+		Migration Elapsed:00:02 seconds
+
+[2026-11-04 20:16:39 +0000] Status=2, isTerminal=NO, Elapsed=00:09.
+	Waiting on Data Migration
+		Reason:Running plugin com.apple.MobileContainerManager.ContainerMigrator (ContainerMigrator.migrator, user-agnostic)
+		Migration Elapsed:00:02 seconds
+
+[2026-11-04 20:16:39 +0000] Status=2, isTerminal=NO, Elapsed=00:09.
+	Waiting on Data Migration
+		Reason:Running plugin com.apple.-0LaunchServicesMigrator (00LaunchServicesMigrator.migrator, user-agnostic)
+		Migration Elapsed:00:03 seconds
+
+[2026-11-04 20:16:40 +0000] Status=2, isTerminal=NO, Elapsed=00:10.
+	Waiting on Data Migration
+		Reason:Running plugin com.apple.-0LaunchServicesMigrator (00LaunchServicesMigrator.migrator, user-agnostic)
+		Migration Elapsed:00:04 seconds
+
+[2026-11-04 20:16:41 +0000] Status=2, isTerminal=NO, Elapsed=00:11.
+	Waiting on Data Migration
+		Reason:Running plugin com.apple.-0LaunchServicesMigrator (00LaunchServicesMigrator.migrator, user-agnostic)
+		Migration Elapsed:00:05 seconds
+
+[2026-11-04 20:16:42 +0000] Status=2, isTerminal=NO, Elapsed=00:12.
+	Waiting on Data Migration
+		Reason:Running plugin com.apple.-0LaunchServicesMigrator (00LaunchServicesMigrator.migrator, user-agnostic)
+		Migration Elapsed:00:06 seconds
+
+[2026-11-04 20:16:43 +0000] Status=2, isTerminal=NO, Elapsed=00:13.
+	Waiting on Data Migration
+		Reason:Running plugin com.apple.-0LaunchServicesMigrator (00LaunchServicesMigrator.migrator, user-agnostic)
+		Migration Elapsed:00:07 seconds
+
+[2026-11-04 20:16:44 +0000] Status=2, isTerminal=NO, Elapsed=00:14.
+	Waiting on Data Migration
+		Reason:Running plugin com.apple.-0LaunchServicesMigrator (00LaunchServicesMigrator.migrator, user-agnostic)
+		Migration Elapsed:00:08 seconds
+
+[2026-11-04 20:16:45 +0000] Status=2, isTerminal=NO, Elapsed=00:15.
+	Waiting on Data Migration
+		Reason:Running plugin com.apple.-0LaunchServicesMigrator (00LaunchServicesMigrator.migrator, user-agnostic)
+		Migration Elapsed:00:09 seconds
+
+[2026-11-04 20:16:46 +0000] Status=2, isTerminal=NO, Elapsed=00:16.
+	Waiting on Data Migration
+		Reason:Running plugin com.apple.-0LaunchServicesMigrator (00LaunchServicesMigrator.migrator, user-agnostic)
+		Migration Elapsed:00:10 seconds
+
+[2026-11-04 20:16:47 +0000] Status=2, isTerminal=NO, Elapsed=00:17.
+	Waiting on Data Migration
+		Reason:Running plugin com.apple.-0LaunchServicesMigrator (00LaunchServicesMigrator.migrator, user-agnostic)
+		Migration Elapsed:00:11 seconds
+
+[2026-11-04 20:16:48 +0000] Status=2, isTerminal=NO, Elapsed=00:18.
+	Waiting on Data Migration
+		Reason:Running plugin com.apple.-0LaunchServicesMigrator (00LaunchServicesMigrator.migrator, user-agnostic)
+		Migration Elapsed:00:12 seconds
+
+[2026-11-04 20:16:49 +0000] Status=2, isTerminal=NO, Elapsed=00:19.
+	Waiting on Data Migration
+		Reason:Running plugin com.apple.-0LaunchServicesMigrator (00LaunchServicesMigrator.migrator, user-agnostic)
+		Migration Elapsed:00:13 seconds
+
+[2026-11-04 20:16:50 +0000] Status=2, isTerminal=NO, Elapsed=00:20.
+	Waiting on Data Migration
+		Reason:Running plugin com.apple.-0LaunchServicesMigrator (00LaunchServicesMigrator.migrator, user-agnostic)
+		Migration Elapsed:00:14 seconds
+
+[2026-11-04 20:16:51 +0000] Status=2, isTerminal=NO, Elapsed=00:21.
+	Waiting on Data Migration
+		Reason:Running plugin com.apple.-0LaunchServicesMigrator (00LaunchServicesMigrator.migrator, user-agnostic)
+		Migration Elapsed:00:15 seconds
+
+[2026-11-04 20:16:52 +0000] Status=2, isTerminal=NO, Elapsed=00:22.
+	Waiting on Data Migration
+		Reason:Running plugin com.apple.-0LaunchServicesMigrator (00LaunchServicesMigrator.migrator, user-agnostic)
+		Migration Elapsed:00:16 seconds
+
+[2026-11-04 20:16:53 +0000] Status=2, isTerminal=NO, Elapsed=00:23.
+	Waiting on Data Migration
+		Reason:Running plugin com.apple.-0LaunchServicesMigrator (00LaunchServicesMigrator.migrator, user-agnostic)
+		Migration Elapsed:00:17 seconds
+
+[2026-11-04 20:16:54 +0000] Status=2, isTerminal=NO, Elapsed=00:24.
+	Waiting on Data Migration
+		Reason:Running plugin com.apple.-0LaunchServicesMigrator (00LaunchServicesMigrator.migrator, user-agnostic)
+		Migration Elapsed:00:18 seconds
+
+[2026-11-04 20:16:55 +0000] Status=2, isTerminal=NO, Elapsed=00:25.
+	Waiting on Data Migration
+		Reason:Running plugin com.apple.securityd.KeychainMigrator (KeychainMigrator.migrator, user-agnostic) (Concurrent: Running plugin com.apple.appleaccount.mergebuddyprovisioningresponse.migrator (MergeBuddyProvisioningResponse.migrator, concurrent after com.apple.-0LaunchServicesMigrator))
+		Migration Elapsed:00:19 seconds
+
+[2026-11-04 20:16:56 +0000] Status=2, isTerminal=NO, Elapsed=00:26.
+	Waiting on Data Migration
+		Reason:Running plugin com.apple.securityd.KeychainMigrator (KeychainMigrator.migrator, user-agnostic) (Concurrent: Running plugin com.apple.appleaccount.mergebuddyprovisioningresponse.migrator (MergeBuddyProvisioningResponse.migrator, concurrent after com.apple.-0LaunchServicesMigrator))
+		Migration Elapsed:00:20 seconds
+
+[2026-11-04 20:16:57 +0000] Status=2, isTerminal=NO, Elapsed=00:27.
+	Waiting on Data Migration
+		Reason:Running plugin com.apple.WebBookmarks.migrator (WebBookmarks.migrator) (Concurrent: Running plugin com.apple.MobileSlideShow (MobileSlideShow.migrator, concurrent after com.apple.accounts.migrator))
+		Migration Elapsed:00:21 seconds
+
+[2026-11-04 20:16:58 +0000] Status=2, isTerminal=NO, Elapsed=00:28.
+	Waiting on Data Migration
+		Reason:Running plugin com.apple.MobileSafari.migrator (MobileSafari.migrator)
+		Migration Elapsed:00:22 seconds
+
+[2026-11-04 20:16:59 +0000] Status=2, isTerminal=NO, Elapsed=00:29.
+	Waiting on Data Migration
+		Reason:Running plugin com.apple.keyboards.migrator (KeyboardMigrator.migrator)
+		Migration Elapsed:00:23 seconds
+
+[2026-11-04 20:17:00 +0000] Status=4294967295, isTerminal=YES, Elapsed=00:30.
+	Finished
+
++ /Applications/Xcode.app/Contents/Developer/usr/bin/simctl --set /tmp/evener-voice-ios.3G5Ols/smoke-reviewed/devices install FB9B0E64-20B6-4E5D-A3B6-3F336D850509 /tmp/evener-voice-ios.3G5Ols/build-simulator-reviewed/VoiceProbe.app
+Install Started
+Install Failed: Authorization is required to install the packages.
++ /usr/bin/python3 -c 'import subprocess,sys; subprocess.run(sys.argv[1:], check=True, timeout=120)' /Applications/Xcode.app/Contents/Developer/usr/bin/simctl --set /tmp/evener-voice-ios.3G5Ols/smoke-reviewed/devices launch --console FB9B0E64-20B6-4E5D-A3B6-3F336D850509 dev.evener.experimental.voiceprobe20261104 --disarmed-smoke
+Install Started
+Install Failed: Authorization is required to install the packages.
+dev.evener.experimental.voiceprobe20261104: 54763
++ /usr/bin/python3 - /tmp/evener-voice-ios.3G5Ols/smoke-reviewed
+PASS: SwiftUI view entered, stop advanced fence, stale callback rejected, no audio graph or capture
+EVIDENCE=/tmp/evener-voice-ios.3G5Ols/smoke-reviewed/disarmed-smoke.json
++ cleanup
++ [[ -n FB9B0E64-20B6-4E5D-A3B6-3F336D850509 ]]
++ /Applications/Xcode.app/Contents/Developer/usr/bin/simctl --set /tmp/evener-voice-ios.3G5Ols/smoke-reviewed/devices shutdown FB9B0E64-20B6-4E5D-A3B6-3F336D850509
+Install Started
+Install Failed: Authorization is required to install the packages.

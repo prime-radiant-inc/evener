@@ -87,14 +87,6 @@ func TestResidentDelegateRuntime(t *testing.T) {
 	}
 }
 
-// TestReconcileRequirements covers the ReconcileRequirements method.
-func TestReconcileRequirements(t *testing.T) {
-	c, _ := newDelegateControllerTestHarness(t, 1, 1)
-	seedDelegateControllerRunning(t, c, "dlg_target", "")
-	// ReconcileRequirements should not panic for a seeded delegate.
-	_ = c.ReconcileRequirements()
-}
-
 // TestReplayDeliveries covers the ReplayDeliveries method.
 func TestReplayDeliveries(t *testing.T) {
 	c, _ := newDelegateControllerTestHarness(t, 1, 1)

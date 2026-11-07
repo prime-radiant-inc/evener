@@ -63,8 +63,8 @@ function itemEntry(it: ItemModel, isMessage = false): ProjectedEntry {
 	return { kind: "item", id: it.id, turnId: it.turnId, sourceIndex: 0, item: it, isMessage };
 }
 
-function thinkingEntry(it: ItemModel): ProjectedEntry {
-	return { kind: "thinking", id: it.id, turnId: it.turnId, sourceIndex: 0, item: it };
+function thinkingEntry(it: ItemModel, live = true): ProjectedEntry {
+	return { kind: "thinking", id: it.id, turnId: it.turnId, sourceIndex: 0, item: it, live };
 }
 
 function intentEntry(it: ItemModel, over: { failed?: boolean } = {}): ProjectedEntry {
@@ -107,6 +107,35 @@ function asksFor(callId: string): ReadonlyMap<string, AskQuestionRef[]> {
 }
 
 describe("projectedRow — item entries", () => {
+	it("SessionActor preserves the human and Manager speakers for input and steering", () => {
+		const human = projectedRow(
+			itemEntry(item({ type: "userMessage", text: "identical", actor: { kind: "human" } }), true),
+		);
+		const manager = projectedRow(
+			itemEntry(
+				item({ type: "userMessage", text: "identical", actor: { kind: "manager", managerRef: "local:manager" } }),
+				true,
+			),
+		);
+		const steer = projectedRow(
+			itemEntry(
+				item({
+					type: "steering",
+					source: "user",
+					text: "identical",
+					actor: { kind: "manager", managerRef: "local:manager" },
+				}),
+				true,
+			),
+		);
+		expect(human).toMatchObject({ kind: "user", actor: { kind: "human" } });
+		expect(manager).toMatchObject({ kind: "user", actor: { kind: "manager", managerRef: "local:manager" } });
+		expect(steer).toMatchObject({
+			kind: "user",
+			origin: "steered",
+			actor: { kind: "manager", managerRef: "local:manager" },
+		});
+	});
 	it("retains a recorded summary failure at every visibility level", () => {
 		const fixture = summaryFailureWireFixture();
 		const model = hydrateThread(summaryFailureWireRead(), "local:summary-fixture", 0);
@@ -121,7 +150,7 @@ describe("projectedRow — item entries", () => {
 				hint: fixture.warning.hint,
 			});
 			if (warning?.kind !== "notice") throw new Error("producer warning lost its notice row");
-			for (const identifier of ["openai/summary-model-8af1", "429", "rate_limit"])
+			for (const identifier of ["openai/gpt-5.2", "rejected_output", "empty_reply"])
 				expect(warning.text).toContain(identifier);
 			expect(rows.some((row) => row.id === fixture.recovery.id)).toBe(false);
 		}
@@ -913,6 +942,16 @@ describe("projectedRow — thinking entries", () => {
 		const row = projectedRow(thinkingEntry(item({ type: "reasoning", text: "secret thought" })));
 		expect(JSON.stringify(row)).not.toContain("secret thought");
 	});
+
+	it("maps a settled thinking entry to a completed trace row carrying its text", () => {
+		const row = projectedRow(thinkingEntry(item({ type: "reasoning", text: "settled thought" }), false));
+		expect(row).toMatchObject({
+			kind: "activity",
+			family: "reasoning",
+			state: "completed",
+			detail: { output: "settled thought" },
+		});
+	});
 });
 
 describe("projectedRow — intent entries", () => {
@@ -1108,7 +1147,7 @@ describe("projectedRow — intent entries", () => {
 });
 
 describe("projectedRow — critical entries", () => {
-	it("maps a redacted critical reasoning to a neutral failure row, never the thought", () => {
+	it("maps a redacted critical reasoning to a neutral failure row carrying the thought behind its label", () => {
 		const row = projectedRow(
 			criticalEntry(item({ type: "reasoning", text: "secret thought" }), "Thought not shown", true),
 		);
@@ -1116,12 +1155,13 @@ describe("projectedRow — critical entries", () => {
 			kind: "failure",
 			id: "i1",
 			title: "Thought not shown",
-			detail: "",
-			// A thought's failure row, so the transcript can read it quietly.
+			// The text rides in the detail; TimelineItem unfolds it behind the
+			// neutral title instead of printing it unconditionally.
+			detail: "secret thought",
+			// A thought's failure row, so the transcript can fold it.
 			thought: true,
 			turnId: "t1",
 		});
-		expect(JSON.stringify(row)).not.toContain("secret thought");
 	});
 
 	it("maps a critical system message to a warning notice", () => {
@@ -1868,23 +1908,24 @@ describe("the timeline projection delegates to the shared projector", () => {
 	});
 
 	it.each([
-		["chat", true],
-		["intent", true],
-		["tools", false],
-		["activity", false],
+		["chat", true, false],
+		["intent", true, true],
+		["tools", false, true],
+		["activity", false, true],
 	] as const)(
 		"level %s: keeps exactly the rows the shared projector keeps, byte-identical except its own reclassifications",
-		(level, intentRows) => {
+		(level, intentRows, settledTraceRows) => {
 			const rows = rowsAt(model, level);
 			// Visibility: every show-everything row survives except the settled
-			// thought r1, which the projector hides while the reasoning flag is
-			// off. The cross-turn r2+r3 cluster cannot form — the projector
-			// reclassifies both members — so r3 becomes its own row here. At
-			// the compact levels the settled c5 is the summarized member of
-			// the running c4's cluster, and its attachments leave with its
-			// output (review round 3: the attachments ARE output — the same
-			// summaryOnly condition drops the images with the text); at the
-			// call levels c5 is an item entry and the row returns.
+			// thought r1 at chat, where the preset stays conversation-only; the
+			// other levels keep it as a settled trace row. The cross-turn r2+r3
+			// cluster cannot form — the projector reclassifies both members —
+			// so r3 becomes its own row here. At the compact levels the settled
+			// c5 is the summarized member of the running c4's cluster, and its
+			// attachments leave with its output (review round 3: the
+			// attachments ARE output — the same summaryOnly condition drops the
+			// images with the text); at the call levels c5 is an item entry and
+			// the row returns.
 			expect(rows.map(rowId)).toEqual([
 				"u1",
 				"u1:attachments",
@@ -1894,6 +1935,7 @@ describe("the timeline projection delegates to the shared projector", () => {
 				"sys-compact",
 				"c1",
 				"c3",
+				...(settledTraceRows ? ["r1"] : []),
 				"w1",
 				"unk1",
 				"ask1",
@@ -1915,12 +1957,21 @@ describe("the timeline projection delegates to the shared projector", () => {
 			// pinned below) but its cluster's SECOND member, the settled view
 			// call c5, which the ruling summarizes. The failed c3 stays
 			// byte-identical at every level.
-			const reclassified = intentRows ? ["c1", "c4", "r2", "r3"] : ["r2", "r3"];
+			const reclassified = intentRows ? ["c1", "c4", "r1", "r2", "r3"] : ["r1", "r2", "r3"];
 			for (const row of rows) {
 				if (reclassified.includes(rowId(row))) continue;
 				expect(row).toEqual(FULL_ROWS.find((golden) => rowId(golden) === rowId(row)));
 			}
 
+			// The settled thought is a completed trace row carrying its text.
+			if (settledTraceRows) {
+				expect(rows.find((row) => rowId(row) === "r1")).toMatchObject({
+					kind: "activity",
+					family: "reasoning",
+					state: "completed",
+					detail: { output: "auditing quietly" },
+				});
+			}
 			// The live current thought becomes a content-free placeholder.
 			expect(rows.find((row) => rowId(row) === "r2")).toEqual({
 				kind: "activity",
@@ -1931,12 +1982,13 @@ describe("the timeline projection delegates to the shared projector", () => {
 				detail: {},
 				turnId: "t2",
 			});
-			// The failed turn's settled thought explains the turn without its text.
+			// The failed turn's settled thought keeps its neutral title and
+			// carries the thought behind the fold.
 			expect(rows.find((row) => rowId(row) === "r3")).toEqual({
 				kind: "failure",
 				id: "r3",
 				title: "Thought not shown",
-				detail: "",
+				detail: "final thought",
 				thought: true,
 				turnId: "t3",
 			});
@@ -2002,13 +2054,23 @@ describe("the timeline projection delegates to the shared projector", () => {
 		},
 	);
 
-	it("never leaks a hidden thought's text at any level", () => {
-		for (const level of ["chat", "intent", "tools", "activity", "full"] as const) {
-			if (level === "full") continue;
+	it("keeps the live thought's text out of every settled level and shows settled traces by level", () => {
+		for (const level of ["chat", "intent", "tools", "activity"] as const) {
 			const shown = JSON.stringify(rowsAt(model, level));
-			expect(shown).not.toContain("auditing quietly");
+			// The live current thought is content-free wherever it runs.
 			expect(shown).not.toContain("secret live thought");
-			expect(shown).not.toContain("final thought");
+			if (level === "chat") {
+				// Conversation-only: the settled healthy trace stays hidden; a
+				// broken turn's thought still explains itself, its text riding
+				// behind the failure row's fold.
+				expect(shown).not.toContain("auditing quietly");
+				expect(shown).toContain("final thought");
+			} else {
+				// Settled traces ride as collapsed rows whose text unfolds on
+				// demand, so their bodies are present at every other level.
+				expect(shown).toContain("auditing quietly");
+				expect(shown).toContain("final thought");
+			}
 		}
 		// ...while the full level still shows all three, exactly as the
 		// show-everything projection does.

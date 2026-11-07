@@ -179,21 +179,25 @@ var AllThreadItemEventKinds = []string{
 }
 
 type ThreadItem struct {
-	Type                 string              `json:"type"`
-	ID                   string              `json:"id"`
-	TranscriptKey        string              `json:"transcriptKey,omitempty"`
-	Position             *ThreadItemPosition `json:"position,omitempty"`
-	TurnID               string              `json:"turnId,omitempty"`
-	TranscriptEntryIndex int                 `json:"transcriptEntryIndex,omitempty"`
-	Text                 string              `json:"text,omitempty"`
-	Delta                string              `json:"delta,omitempty"`
-	Images               []InputItem         `json:"images,omitempty"`
-	ToolName             string              `json:"toolName,omitempty"`
-	CallID               string              `json:"callId,omitempty"`
-	ArgumentsJSON        string              `json:"argumentsJson,omitempty"`
-	Description          string              `json:"description,omitempty"`
-	Output               string              `json:"output,omitempty"`
-	Error                string              `json:"error,omitempty"`
+	ConversationProvenance *ConversationOutputProvenance `json:"conversationProvenance,omitempty"`
+	Actor                  *SessionActor                 `json:"actor,omitempty"`
+	Observation            *SessionObservationMetadata   `json:"observation,omitempty"`
+	Authorship             *TranscriptAuthorship         `json:"authorship,omitempty"`
+	Type                   string                        `json:"type"`
+	ID                     string                        `json:"id"`
+	TranscriptKey          string                        `json:"transcriptKey,omitempty"`
+	Position               *ThreadItemPosition           `json:"position,omitempty"`
+	TurnID                 string                        `json:"turnId,omitempty"`
+	TranscriptEntryIndex   int                           `json:"transcriptEntryIndex,omitempty"`
+	Text                   string                        `json:"text,omitempty"`
+	Delta                  string                        `json:"delta,omitempty"`
+	Images                 []InputItem                   `json:"images,omitempty"`
+	ToolName               string                        `json:"toolName,omitempty"`
+	CallID                 string                        `json:"callId,omitempty"`
+	ArgumentsJSON          string                        `json:"argumentsJson,omitempty"`
+	Description            string                        `json:"description,omitempty"`
+	Output                 string                        `json:"output,omitempty"`
+	Error                  string                        `json:"error,omitempty"`
 	// OutputImages is omitzero; see the nil-vs-empty rule in output_images.go.
 	// Images stays omitempty: nothing removes an item's input images.
 	OutputImages []OutputImage `json:"outputImages,omitzero"`
@@ -201,7 +205,7 @@ type ThreadItem struct {
 	// PrevalOnly is true when Error came from a pre-dispatch rejection (an
 	// unknown tool name, or arguments that failed schema validation even
 	// after repair) rather than the tool's own execution - the call never
-	// reached ExecuteCall (kata hgm1). A client uses this to tell a
+	// reached ExecuteCall. A client uses this to tell a
 	// self-corrected malformed-call bounce apart from a real execution
 	// failure or denial: same non-empty Error, different meaning. False (the
 	// default) for a real execution failure, and meaningless when Error is
@@ -214,8 +218,8 @@ type ThreadItem struct {
 	CompletedAt *int64 `json:"completedAt,omitempty"`
 	// DurationMS is the item's real server-measured runtime in milliseconds
 	// (tool-call items only). Stamped live from the event stream's own
-	// timestamps; nil when no honest span was recorded (issue #37: the web
-	// hover meta shows real times or nothing).
+	// timestamps; nil when no honest span was recorded (the web hover meta
+	// shows real times or nothing).
 	DurationMS *int64 `json:"durationMs,omitempty"`
 	// ExitCode is the exit status of the process behind this item, on the two
 	// item kinds that have one:
@@ -238,7 +242,7 @@ type ThreadItem struct {
 	EventKind ThreadItemEventKind `json:"eventKind,omitempty"`
 	// Source carries item provenance for steering items: "user" for
 	// human-sent steering (rendered as a user message), empty for
-	// daemon/system steering (issue #24).
+	// daemon/system steering.
 	Source string `json:"source,omitempty"`
 	// SteeringKind names what a daemon-originated steering item was
 	// (events.SteeringKind*), set at the injection site so a client labels it
@@ -281,15 +285,16 @@ type InputMention struct {
 }
 
 type InputItem struct {
-	Type      string            `json:"type"`
-	Text      string            `json:"text,omitempty"`
-	Mentions  []InputMention    `json:"mentions,omitempty"`
-	URL       string            `json:"url,omitempty"`
-	MediaType string            `json:"mediaType,omitempty"`
-	Data      []byte            `json:"data,omitempty"`
-	Name      string            `json:"name,omitempty"`
-	Path      string            `json:"path,omitempty"`
-	Metadata  map[string]string `json:"metadata,omitempty"`
+	Type              string                    `json:"type"`
+	Text              string                    `json:"text,omitempty"`
+	Mentions          []InputMention            `json:"mentions,omitempty"`
+	URL               string                    `json:"url,omitempty"`
+	MediaType         string                    `json:"mediaType,omitempty"`
+	Data              []byte                    `json:"data,omitempty"`
+	Name              string                    `json:"name,omitempty"`
+	Path              string                    `json:"path,omitempty"`
+	Metadata          map[string]string         `json:"metadata,omitempty"`
+	VoicePresentation *VoicePresentationContext `json:"voicePresentation,omitempty"`
 }
 
 type ThreadListParams struct {
@@ -331,10 +336,43 @@ type ThreadReadParams struct {
 	// from, so the server can answer with HistoryChanges instead of a full
 	// re-read when nothing outside the client's window changed.
 	HeldSnapshot *SnapshotIdentity `json:"heldSnapshot,omitempty"`
+	// AnswerContinuation requests only a recorded ancestry verdict and its
+	// snapshot identity. It cannot subscribe or include a transcript window.
+	AnswerContinuation *AnswerContinuationQuery `json:"answerContinuation,omitempty"`
+}
+
+type AnswerContinuationQuery struct {
+	AncestorTurnID  string `json:"ancestorTurnId"`
+	CandidateTurnID string `json:"candidateTurnId"`
+}
+
+type AnswerContinuationVerdict struct {
+	AncestorTurnID  string `json:"ancestorTurnId"`
+	CandidateTurnID string `json:"candidateTurnId"`
+	Matches         bool   `json:"matches"`
+}
+
+func (p ThreadReadParams) ValidateAnswerContinuation() error {
+	if q := p.AnswerContinuation; q != nil {
+		if err := ValidateThreadReadParams(p); err != nil {
+			return err
+		}
+		if q.AncestorTurnID == "" || q.CandidateTurnID == "" || p.Subscribe || p.ReplaceSubscription || p.IncludeTurns {
+			return InvalidParams("answerContinuation requires two execution IDs and a non-subscribing, verdict-only read")
+		}
+	}
+	return nil
 }
 
 type ThreadReadResponse struct {
 	Thread Thread `json:"thread"`
+	// TargetSessionToolsSupported reports whether the daemon serving this thread
+	// negotiated session tools. Omission means the serving hub cannot attest it.
+	TargetSessionToolsSupported *bool `json:"targetSessionToolsSupported,omitempty"`
+	// LatestExecutionTurnID is the newest recorded execution span at Snapshot,
+	// regardless of later non-execution history turns.
+	LatestExecutionTurnID string                     `json:"latestExecutionTurnId,omitempty"`
+	AnswerContinuation    *AnswerContinuationVerdict `json:"answerContinuation,omitempty"`
 	// OlderCursor is set when itemLimit truncated the returned items; pass it
 	// to thread/turns/list to fetch the page just before the window. Empty means
 	// the response already includes the oldest item.
@@ -650,6 +688,10 @@ type ThreadStartParams struct {
 	ReasoningEffort string             `json:"reasoningEffort,omitempty"`
 	NonInteractive  *bool              `json:"nonInteractive,omitempty"`
 	LaunchOverrides *LaunchConfigLayer `json:"launchOverrides,omitempty"`
+	// Manager starts this session as a Manager of the sessions its hub can
+	// reach. It is a start-time property, not a setting: the daemon persists it
+	// with the session, so a resume keeps it and nothing can turn it off.
+	Manager bool `json:"manager,omitempty"`
 }
 
 type ThreadStartResponse struct {
@@ -695,8 +737,8 @@ type ThreadForkParams struct {
 	// NOT read as one for this: send ThreadItem.TranscriptKey, never Turn.ID;
 	// the entry ordinal a live turn's own id implies coincides with its
 	// transcript entry index only on a transcript replayed from disk,
-	// because every live turn minter numbers turns off its own counter (kata
-	// 0jhh). Required unless Aside.
+	// because every live turn minter numbers turns off its own counter.
+	// Required unless Aside.
 	SourceItemKey string `json:"sourceItemKey,omitempty"`
 }
 
@@ -708,11 +750,12 @@ type ThreadForkResponse struct {
 }
 
 type TurnStartParams struct {
-	Ref                string      `json:"ref,omitempty"`
-	ThreadID           string      `json:"threadId,omitempty"`
-	ClientMutationID   string      `json:"clientMutationId"`
-	ExpectedInstanceID string      `json:"expectedInstanceId"`
-	Input              []InputItem `json:"input,omitempty"`
+	ManagerProof       *SessionActorProof `json:"managerProof,omitempty"`
+	Ref                string             `json:"ref,omitempty"`
+	ThreadID           string             `json:"threadId,omitempty"`
+	ClientMutationID   string             `json:"clientMutationId"`
+	ExpectedInstanceID string             `json:"expectedInstanceId"`
+	Input              []InputItem        `json:"input,omitempty"`
 }
 
 type TurnStartResponse struct {
@@ -728,11 +771,12 @@ type TurnStartResponse struct {
 // can survive thread/clear while its live session instance changes, and a
 // delayed old-generation intent must not run against the replacement.
 type TurnSteerParams struct {
-	Ref                string      `json:"ref,omitempty"`
-	ThreadID           string      `json:"threadId,omitempty"`
-	ClientMutationID   string      `json:"clientMutationId"`
-	ExpectedInstanceID string      `json:"expectedInstanceId"`
-	Input              []InputItem `json:"input,omitempty"`
+	ManagerProof       *SessionActorProof `json:"managerProof,omitempty"`
+	Ref                string             `json:"ref,omitempty"`
+	ThreadID           string             `json:"threadId,omitempty"`
+	ClientMutationID   string             `json:"clientMutationId"`
+	ExpectedInstanceID string             `json:"expectedInstanceId"`
+	Input              []InputItem        `json:"input,omitempty"`
 }
 
 // TurnInterruptParams cancels whatever turn the session is running. The receipt
@@ -749,10 +793,11 @@ type TurnInterruptParams struct {
 // after the active turn completes. The daemon enqueues immediately and returns;
 // no turn id is reserved or returned.
 type TurnQueueParams struct {
-	Ref                string      `json:"ref"`
-	ClientMutationID   string      `json:"clientMutationId"`
-	ExpectedInstanceID string      `json:"expectedInstanceId"`
-	Input              []InputItem `json:"input,omitempty"`
+	ManagerProof       *SessionActorProof `json:"managerProof,omitempty"`
+	Ref                string             `json:"ref"`
+	ClientMutationID   string             `json:"clientMutationId"`
+	ExpectedInstanceID string             `json:"expectedInstanceId"`
+	Input              []InputItem        `json:"input,omitempty"`
 }
 
 type MutationProjectionState string
@@ -771,6 +816,7 @@ const (
 )
 
 type MutationReceipt struct {
+	Actor            SessionActor            `json:"actor,omitzero"`
 	ClientMutationID string                  `json:"clientMutationId"`
 	Disposition      MutationDisposition     `json:"disposition"`
 	ThreadID         string                  `json:"threadId"`
@@ -783,12 +829,13 @@ type MutationReceipt struct {
 	// queued entries into itself). It rides the durable mutation result, so
 	// a replayed disposition carries the same ids the first execution did —
 	// unlike queueChanged's own copy of this fact, a replay needs no live
-	// push to settle those records (issue #1704). Absent on every receipt
+	// push to settle those records. Absent on every receipt
 	// that is not a drain's.
 	ConsumedClientMutationIDs []string `json:"consumedClientMutationIds,omitempty"`
 }
 
 type PendingMutation struct {
+	Actor            SessionActor            `json:"actor,omitzero"`
 	ClientMutationID string                  `json:"clientMutationId"`
 	Method           string                  `json:"method"`
 	Input            []InputItem             `json:"input,omitempty"`
@@ -832,11 +879,12 @@ type GoalSetResponse struct {
 // them to the in-flight turn as a single STEERING message. Input lets clients
 // atomically append the current composer payload before the drain.
 type TurnDrainAsSteerParams struct {
-	Ref                   string      `json:"ref"`
-	ClientMutationID      string      `json:"clientMutationId"`
-	ExpectedInstanceID    string      `json:"expectedInstanceId"`
-	ExpectedQueueRevision uint64      `json:"expectedQueueRevision"`
-	Input                 []InputItem `json:"input,omitempty"`
+	ManagerProof          *SessionActorProof `json:"managerProof,omitempty"`
+	Ref                   string             `json:"ref"`
+	ClientMutationID      string             `json:"clientMutationId"`
+	ExpectedInstanceID    string             `json:"expectedInstanceId"`
+	ExpectedQueueRevision uint64             `json:"expectedQueueRevision"`
+	Input                 []InputItem        `json:"input,omitempty"`
 }
 
 type TurnDrainAsSteerResponse struct {
@@ -858,11 +906,12 @@ type TurnDrainAsSteerResponse struct {
 // matches. Unlike turn/steer, no turn needs to be in flight: a queue a Stop
 // parked is promoteable as the queue strip's "run this now".
 type TurnPromoteQueuedAsSteerParams struct {
-	Ref                string `json:"ref"`
-	Index              int    `json:"index"`
-	ClientMutationID   string `json:"clientMutationId"`
-	ExpectedInstanceID string `json:"expectedInstanceId"`
-	ExpectedEntryID    string `json:"expectedEntryId"`
+	ManagerProof       *SessionActorProof `json:"managerProof,omitempty"`
+	Ref                string             `json:"ref"`
+	Index              int                `json:"index"`
+	ClientMutationID   string             `json:"clientMutationId"`
+	ExpectedInstanceID string             `json:"expectedInstanceId"`
+	ExpectedEntryID    string             `json:"expectedEntryId"`
 }
 
 type TurnPromoteQueuedAsSteerResponse struct {

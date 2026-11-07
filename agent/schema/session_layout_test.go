@@ -1,6 +1,7 @@
 package schema
 
 import (
+	"os"
 	"path/filepath"
 	"testing"
 )
@@ -18,6 +19,17 @@ func TestSessionLayoutPaths(t *testing.T) {
 		{"meta", SessionMetaPath(state, "sess_a"), filepath.Join(sessions, "sess_a.meta.json")},
 		{"api log", SessionAPILogPath(state, "sess_a"), filepath.Join(sessions, "sess_a.api.jsonl")},
 		{"event log", SessionLogPath(state, "sess_a"), filepath.Join(sessions, "sess_a.log.jsonl")},
+		{
+			"delegates journal",
+			SessionDelegateJournalPath(state, "sess_a"),
+			filepath.Join(sessions, "sess_a", "delegates.jsonl"),
+		},
+		{"session work dir", SessionWorkDir(state, "sess_a"), filepath.Join(sessions, "sess_a")},
+		{
+			"unpersisted session work dir",
+			SessionWorkDir("", "sess_a"),
+			filepath.Join(os.TempDir(), "evener-jobs", "sess_a"),
+		},
 	}
 	for _, tc := range tests {
 		if tc.got != tc.want {

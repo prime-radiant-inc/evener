@@ -139,14 +139,14 @@ func TestDelegateControllerPostUpdateRefusals(t *testing.T) {
 // caller-route WIP test 6f67c3f327.)
 func TestDelegateUpdateWakesAnIdleRoot(t *testing.T) {
 	t.Parallel()
-	fixture := newColdStableDelegateFixture(t, "")
-	fixture.adapter.steps = []func(llm.Request) llm.Response{
+	fixture := newColdDelegateFixture(t, "")
+	fixture.adapter.setSteps([]func(llm.Request) llm.Response{
 		func(llm.Request) llm.Response {
 			return agenttest.CommunicateResponse(false, "need the heading from you")
 		},
 		func(llm.Request) llm.Response { return agenttest.FinalResponse("summary written") },
 		func(llm.Request) llm.Response { return agenttest.FinalResponse("noted") },
-	}
+	})
 	root := restoreSupervisionRoot(t, fixture, nil)
 	wakes := make(chan struct{}, 1)
 	root.SetNotifyFunc(func() {
@@ -155,7 +155,7 @@ func TestDelegateUpdateWakesAnIdleRoot(t *testing.T) {
 		default:
 		}
 	})
-	warmStableDelegateUnservedRoot(t, root, fixture)
+	warmDelegateUnservedRoot(t, root, fixture)
 
 	pending := rootPendingAttention(root)
 	if len(pending) != 1 || !strings.HasPrefix(pending[0], delegateAttentionID(fixture.delegateID+"/update/")) {
@@ -243,9 +243,13 @@ func TestDelegateUpdateNotDeliveredStillSucceeds(t *testing.T) {
 			if err != nil {
 				t.Fatalf("communicate: %v", err)
 			}
+			typed, isTyped := out.(toolpkg.StateResult)
+			if !isTyped {
+				t.Fatalf("communicate result = %#v, want typed state result", out)
+			}
 			var result map[string]any
-			if err := json.Unmarshal([]byte(fmt.Sprint(out)), &result); err != nil {
-				t.Fatalf("decode result %v: %v", out, err)
+			if err := json.Unmarshal([]byte(typed.Output), &result); err != nil {
+				t.Fatalf("decode result %v: %v", typed.Output, err)
 			}
 			if result["accepted"] != true || result["delivery"] != "not_delivered" {
 				t.Fatalf("result = %v, want accepted and not_delivered", result)
@@ -479,16 +483,16 @@ func TestDelegateUpdateWaitsForTheAnswerToAPendingQuestion(t *testing.T) {
 // report, and an idle parent takes all three in one notification turn.
 func TestDelegateUpdatesArriveInOrderBeforeTheReportInOneTurn(t *testing.T) {
 	t.Parallel()
-	fixture := newColdStableDelegateFixture(t, "")
-	fixture.adapter.steps = []func(llm.Request) llm.Response{
+	fixture := newColdDelegateFixture(t, "")
+	fixture.adapter.setSteps([]func(llm.Request) llm.Response{
 		func(llm.Request) llm.Response { return agenttest.FinalResponse("warm") },
 		func(llm.Request) llm.Response { return agenttest.CommunicateResponse(false, "FIRST_UPDATE") },
 		func(llm.Request) llm.Response { return agenttest.CommunicateResponse(false, "SECOND_UPDATE") },
 		func(llm.Request) llm.Response { return agenttest.FinalResponse("THE_REPORT") },
 		func(llm.Request) llm.Response { return agenttest.FinalResponse("noted all three") },
-	}
+	})
 	root := restoreSupervisionRoot(t, fixture, nil)
-	warmStableDelegateUnservedRoot(t, root, fixture)
+	warmDelegateUnservedRoot(t, root, fixture)
 	if outcome := (delegateRuntime{owner: root}).send(context.Background(), fixture.delegateID, "go on", 0); outcome.result.Err != nil {
 		t.Fatalf("send: %v", outcome.result.Err)
 	}
@@ -1014,7 +1018,7 @@ func updateAttentionConsumedFor(t *testing.T, sess *Session) uint64 {
 
 // appendColdFixtureEvents appends events to the fixture's delegate journal
 // before any root opens it, the way a process that crashed left it.
-func appendColdFixtureEvents(t *testing.T, fixture coldStableDelegateFixture, events ...delegatestore.Event) []delegatestore.Event {
+func appendColdFixtureEvents(t *testing.T, fixture coldDelegateFixture, events ...delegatestore.Event) []delegatestore.Event {
 	t.Helper()
 	path := delegateResourceStorePath(fixture.stateDir, fixture.meta.ID)
 	stored, err := delegatestore.ReadEvents(path)
@@ -1048,7 +1052,7 @@ func TestDelegateUpdateSurvivesRestart(t *testing.T) {
 	// then that report, once each.
 	t.Run("posted while the run was still going", func(t *testing.T) {
 		t.Parallel()
-		fixture := newColdStableDelegateFixture(t, "")
+		fixture := newColdDelegateFixture(t, "")
 		startedAt := time.Unix(1_700_000_300, 0).UTC()
 		appended := appendColdFixtureEvents(t, fixture,
 			delegatestore.Event{Kind: delegatestore.EventDelegateRunStarted, TS: startedAt, DelegateID: fixture.delegateID,
@@ -1058,9 +1062,9 @@ func TestDelegateUpdateSurvivesRestart(t *testing.T) {
 		)
 		updateID := delegateAttentionID(delegatestore.UpdateDeliveryID(fixture.delegateID, appended[1].Seq))
 		reportID := delegateAttentionID(delegateDeliveryID(fixture.delegateID, 1))
-		fixture.adapter.steps = []func(llm.Request) llm.Response{
+		fixture.adapter.setSteps([]func(llm.Request) llm.Response{
 			func(llm.Request) llm.Response { return agenttest.FinalResponse("noted after the restart") },
-		}
+		})
 		root := restoreSupervisionRoot(t, fixture, nil)
 		pending := waitForRootAttention(t, root, 2)
 		if !slices.Equal(pending, []string{updateID, reportID}) {
@@ -1083,16 +1087,16 @@ func TestDelegateUpdateSurvivesRestart(t *testing.T) {
 	})
 	t.Run("delivered but not yet read", func(t *testing.T) {
 		t.Parallel()
-		fixture := newColdStableDelegateFixture(t, "")
-		fixture.adapter.steps = []func(llm.Request) llm.Response{
+		fixture := newColdDelegateFixture(t, "")
+		fixture.adapter.setSteps([]func(llm.Request) llm.Response{
 			func(llm.Request) llm.Response {
 				return agenttest.CommunicateResponse(false, "UNREAD_UPDATE: which table?")
 			},
 			func(llm.Request) llm.Response { return agenttest.FinalResponse("summary written") },
 			func(llm.Request) llm.Response { return agenttest.FinalResponse("noted after the restart") },
-		}
+		})
 		root := restoreSupervisionRoot(t, fixture, nil)
-		warmStableDelegateUnservedRoot(t, root, fixture)
+		warmDelegateUnservedRoot(t, root, fixture)
 		pending := rootPendingAttention(root)
 		if len(pending) != 1 {
 			t.Fatalf("root attention before restart = %v, want the update", pending)
@@ -1127,12 +1131,12 @@ func TestDelegateUpdateSurvivesRestart(t *testing.T) {
 // stands down; the delegate's own leased turn is admitted.
 func TestDelegateUpdateAdmitsOnlyATurnThatConsumesIt(t *testing.T) {
 	t.Parallel()
-	fixture := newColdStableDelegateFixture(t, "")
-	fixture.adapter.steps = []func(llm.Request) llm.Response{
+	fixture := newColdDelegateFixture(t, "")
+	fixture.adapter.setSteps([]func(llm.Request) llm.Response{
 		func(llm.Request) llm.Response { return agenttest.FinalResponse("warm result") },
-	}
+	})
 	root := restoreSupervisionRoot(t, fixture, nil)
-	sub := warmStableDelegateUnservedRoot(t, root, fixture)
+	sub := warmDelegateUnservedRoot(t, root, fixture)
 	waitForStableSupervisionRun(t, root, fixture.childID)
 	updateID := delegateAttentionID(delegatestore.UpdateDeliveryID(fixture.delegateID, 1))
 	if appended, err := sub.sess.appendDelegateNotificationDurably(updateID, "ADMISSION_UPDATE: which table?"); err != nil || !appended {

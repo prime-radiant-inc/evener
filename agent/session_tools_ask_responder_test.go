@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"primeradiant.com/evener/agent/internal/agenttest"
+	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/llm"
 )
@@ -21,11 +22,11 @@ func TestParseAskUserCallArgumentsBatchForm(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ParseAskUserCallArguments: %v", err)
 	}
-	want := []AskUserQuestion{
+	want := []schema.AskUserQuestion{
 		{
 			Header:   "DB choice",
 			Question: "Which database?",
-			Options: []AskUserOption{
+			Options: []schema.AskUserOption{
 				{Label: "Postgres", Detail: "Battle-tested, relational"},
 				{Label: "SQLite", Detail: "Zero ops, embedded"},
 			},
@@ -46,13 +47,13 @@ func TestParseAskUserCallArgumentsCarriesOptionalFields(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ParseAskUserCallArguments: %v", err)
 	}
-	want := []AskUserQuestion{
+	want := []schema.AskUserQuestion{
 		{
 			Question:     "Which regions?",
 			MultiSelect:  true,
 			Why:          "Sets where we deploy.",
 			IfUnanswered: "Deploy to us-east only.",
-			Options: []AskUserOption{
+			Options: []schema.AskUserOption{
 				{Label: "us-east", Detail: "Primary", Recommended: true},
 				{Label: "eu-west", Detail: "Secondary"},
 			},

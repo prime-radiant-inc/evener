@@ -4,7 +4,7 @@ import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
-import { connectionStore } from "../../../../stores/connection";
+import { connectionStore, resetConnectionStoreForTests } from "../../../../stores/connection";
 import { credentialsStore, resetCredentialsStoreForTests } from "../../../../stores/credentials";
 import { setMutationClientIdentityForTests } from "../../../../stores/mutationClientIdentity";
 import { Toast } from "../../../../widgets";
@@ -110,7 +110,7 @@ function renderSheet(
 }
 
 beforeEach(() => {
-  connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
+  resetConnectionStoreForTests();
   resetCredentialsStoreForTests();
   resetToastStoreForTests();
   // Every instance mutation now stamps originClientId, so the assertions that
@@ -2169,7 +2169,7 @@ describe("the form", () => {
     // is then torn down before the edit's response arrives.
     fake.on("evener/instance/list", () => new Promise<InstanceListResponse>(() => {}));
     void credentialsStore.getState().fetch();
-    act(() => connectionStore.setState({ client: null, state: "idle" }));
+    act(() => resetConnectionStoreForTests());
 
     await act(async () => {
       finish({ instances: [before], availableProviders: [OPENAI] });

@@ -228,6 +228,20 @@ func sessionEventStatusEffect(ev events.SessionEvent) func(*Server) {
 		}
 	case events.EventAssistantTextEnd:
 		return func(s *Server) { s.status.Turns++ }
+	case events.EventModelChanged:
+		// A committed switch rewrites the cached session info, whatever path
+		// committed it: an at-rest thread/model/set's synchronous refresh covers
+		// the RPC's own reply, but a switch queued mid-turn applies at the turn
+		// boundary with no RPC in flight, and thread/read would keep reporting
+		// the previous model until the next turn re-derived it. The event's own
+		// payload is authoritative for both the model and the instance id.
+		d, ok := ev.Data.(events.ModelChangedData)
+		if !ok {
+			return nil
+		}
+		return func(s *Server) {
+			s.updateSessionInfoLocked(ev.SessionID, d.NewModel, d.NewProvider)
+		}
 	case events.EventStatusSettled:
 		// Only a resting state settles outside a turn; anything else would
 		// store a state the projector maps differently.

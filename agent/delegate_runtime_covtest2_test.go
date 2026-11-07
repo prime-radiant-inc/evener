@@ -45,7 +45,7 @@ func TestDelegateQuietAttentionContent(t *testing.T) {
 	t.Parallel()
 	lease := delegateLease{delegateID: "dlg_x<y>", generation: 1}
 	at := time.Date(2026, 8, 23, 10, 0, 0, 0, time.UTC)
-	got := delegateQuietAttentionContent(lease, at)
+	got := delegateQuietAttentionContent(lease, delegateQuietWindow, at)
 	if !strings.HasPrefix(got, "<delegate-notification") {
 		t.Fatalf("expected delegate-notification wrapper, got %q", got)
 	}
@@ -79,20 +79,4 @@ func TestDelegateInputWasPreseededCov(t *testing.T) {
 	if delegateInputWasPreseeded(ctx, "sess1", "world") {
 		t.Fatal("expected false for mismatched input")
 	}
-}
-
-// TestBindStableDelegateActivity_NilChild covers the nil-guard for
-// bindStableDelegateActivity (lines 281-283).
-func TestBindStableDelegateActivity_NilChild(t *testing.T) {
-	t.Parallel()
-	bindStableDelegateActivity(nil, nil, delegateLease{})
-	// Should not panic.
-}
-
-// TestBindStableDelegateActivityToOwner_NilChild covers the nil-guard for
-// bindStableDelegateActivityToOwner (lines 289-292).
-func TestBindStableDelegateActivityToOwner_NilChild(t *testing.T) {
-	t.Parallel()
-	bindStableDelegateActivityToOwner(nil, nil, delegateLease{}, nil)
-	// Should not panic.
 }

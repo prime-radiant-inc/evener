@@ -1,0 +1,435 @@
+package contextmgr
+
+import (
+	"context"
+	"errors"
+	"slices"
+	"strings"
+	"testing"
+
+	"primeradiant.com/evener/agent/internal/cheapmodel"
+	"primeradiant.com/evener/agent/provider"
+	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/llm"
+)
+
+// summarizerScript builds the scripted LLM boundary for retry tests: every
+// request goes through next with its 1-based call number, and the returned
+// snapshot reports the model each call targeted, in order.
+func summarizerScript(next func(call int, req llm.Request) (llm.Response, error)) (*llm.Client, func() []string) {
+	client := llm.NewClient()
+	var calls []string
+	client.Register(&stubSummarizeAdapter{name: "openai", respFn: func(req llm.Request) (llm.Response, error) {
+		calls = append(calls, req.Model)
+		return next(len(calls), req)
+	}})
+	return client, func() []string { return append([]string(nil), calls...) }
+}
+
+// assertCallSequence pins the models the summarizer called, in order.
+func assertCallSequence(t *testing.T, got []string, want ...string) {
+	t.Helper()
+	if !slices.Equal(got, want) {
+		t.Fatalf("summarizer calls = %v, want %v", got, want)
+	}
+}
+
+var (
+	rejectedSummaryReply = llm.Response{Message: llm.Assistant("")}
+	acceptedSummaryReply = llm.Response{Message: llm.Assistant("## Progress\nRecovered.")}
+)
+
+func retryTestManager(client *llm.Client, profile *provider.Profile) *Manager {
+	return NewManager(profile, client, cheapmodel.New(client))
+}
+
+// A summarizer reply that fails local validation is one bad sample, not a
+// route verdict: the route that produced it answers up to three attempts, and
+// a sample that passes on a later attempt recovers the summary without a
+// session-model call.
+func TestSummarizationRecoversOnALaterSampleWithoutFallingBack(t *testing.T) {
+	t.Parallel()
+	client, calls := summarizerScript(func(call int, _ llm.Request) (llm.Response, error) {
+		if call <= 2 {
+			return rejectedSummaryReply, nil
+		}
+		return acceptedSummaryReply, nil
+	})
+	profile := WithCheapModel(testProfile("openai", "active-fixture", 1000), "cheap-fixture")
+	cm := retryTestManager(client, profile)
+	resp, err := cm.completeSummarization(context.Background(), profile, "prompt", summaryAccept(""))
+	if err != nil {
+		t.Fatalf("completeSummarization: %v", err)
+	}
+	if !strings.Contains(resp.Text(), "Recovered.") {
+		t.Fatalf("summary = %q, want the third sample's reply", resp.Text())
+	}
+	assertCallSequence(t, calls(), "cheap-fixture", "cheap-fixture", "cheap-fixture")
+}
+
+// A route whose every sample is rejected hands the summary to the next route
+// with its attempt budget intact: the session model answers the fold after the
+// cheap route spent its three samples.
+func TestSummarizationFallsBackToSessionModelAfterCheapRouteRetries(t *testing.T) {
+	t.Parallel()
+	client, calls := summarizerScript(func(call int, req llm.Request) (llm.Response, error) {
+		if req.Model == "cheap-fixture" {
+			return rejectedSummaryReply, nil
+		}
+		return acceptedSummaryReply, nil
+	})
+	profile := WithCheapModel(testProfile("openai", "active-fixture", 1000), "cheap-fixture")
+	cm := retryTestManager(client, profile)
+	resp, err := cm.completeSummarization(context.Background(), profile, "prompt", summaryAccept(""))
+	if err != nil {
+		t.Fatalf("completeSummarization: %v", err)
+	}
+	if !strings.Contains(resp.Text(), "Recovered.") {
+		t.Fatalf("summary = %q, want the session model's reply", resp.Text())
+	}
+	assertCallSequence(t, calls(), "cheap-fixture", "cheap-fixture", "cheap-fixture", "active-fixture")
+}
+
+// When every route exhausts its samples, the failure still shows one attempt
+// per route: the operator sees the cheap route was tried, not only the
+// terminal session attempt the two-entry cap would otherwise keep.
+func TestSummarizationRecordsOneAttemptPerRouteWhenEverySampleFails(t *testing.T) {
+	t.Parallel()
+	client, calls := summarizerScript(func(int, llm.Request) (llm.Response, error) {
+		return rejectedSummaryReply, nil
+	})
+	profile := WithCheapModel(testProfile("openai", "active-fixture", 1000), "cheap-fixture")
+	cm := retryTestManager(client, profile)
+	_, err := cm.completeSummarization(context.Background(), profile, "prompt", summaryAccept(""))
+	if err == nil {
+		t.Fatal("every sample rejected, want a failure")
+	}
+	assertCallSequence(t, calls(), "cheap-fixture", "cheap-fixture", "cheap-fixture", "active-fixture", "active-fixture", "active-fixture")
+	failure := summarizerFailureWarning(err).SummaryFailure
+	if failure == nil {
+		t.Fatal("missing summary failure diagnostic")
+	}
+	if failure.Terminal.Kind != "rejected_output" || failure.Terminal.Reason != "empty_reply" ||
+		failure.Terminal.Route != "session" || failure.Terminal.Model != "active-fixture" {
+		t.Fatalf("wrong terminal attempt: %+v", failure.Terminal)
+	}
+	if len(failure.Previous) != 2 {
+		t.Fatalf("previous attempts = %+v, want one per route", failure.Previous)
+	}
+	if failure.Previous[0].Route != "cheap" || failure.Previous[0].Model != "cheap-fixture" ||
+		failure.Previous[0].Reason != "empty_reply" {
+		t.Fatalf("cheap route evidence lost: %+v", failure.Previous[0])
+	}
+	if failure.Previous[1].Route != "session" || failure.Previous[1].Model != "active-fixture" {
+		t.Fatalf("session route retry evidence lost: %+v", failure.Previous[1])
+	}
+}
+
+// With a single summarization route, the failure's previous evidence is that
+// route's own earlier sample: the operator sees the retry happened.
+func TestSummarizationSingleRouteRecordsItsOwnRetries(t *testing.T) {
+	t.Parallel()
+	client, calls := summarizerScript(func(int, llm.Request) (llm.Response, error) {
+		return rejectedSummaryReply, nil
+	})
+	profile := testProfile("openai", "active-fixture", 1000)
+	cm := retryTestManager(client, profile)
+	_, err := cm.completeSummarization(context.Background(), profile, "prompt", summaryAccept(""))
+	if err == nil {
+		t.Fatal("every sample rejected, want a failure")
+	}
+	assertCallSequence(t, calls(), "active-fixture", "active-fixture", "active-fixture")
+	failure := summarizerFailureWarning(err).SummaryFailure
+	if failure == nil || len(failure.Previous) != 1 ||
+		failure.Previous[0].Route != "session" || failure.Previous[0].Model != "active-fixture" {
+		t.Fatalf("want the session route's own earlier sample in previous, got %+v", failure)
+	}
+}
+
+// A reply cut off at the model's output limit is a route capability, not a bad
+// sample: the route gets one attempt and the session rung takes over as before.
+func TestSummarizationDoesNotRetryAnOutputLimitCut(t *testing.T) {
+	t.Parallel()
+	cutOffReply := llm.Response{
+		Message: llm.Assistant("## Progress\npartial"),
+		Finish:  llm.FinishReason{Reason: llm.FinishReasonLength},
+	}
+	client, calls := summarizerScript(func(int, llm.Request) (llm.Response, error) {
+		return cutOffReply, nil
+	})
+	profile := WithCheapModel(testProfile("openai", "active-fixture", 1000), "cheap-fixture")
+	cm := retryTestManager(client, profile)
+	_, err := cm.completeSummarization(context.Background(), profile, "prompt", summaryAccept(""))
+	if err == nil {
+		t.Fatal("cut-off replies accepted, want a failure")
+	}
+	assertCallSequence(t, calls(), "cheap-fixture", "active-fixture")
+	failure := summarizerFailureWarning(err).SummaryFailure
+	if failure == nil || failure.Terminal.Reason != "output_limit" {
+		t.Fatalf("want the output-limit rejection as terminal, got %+v", failure)
+	}
+}
+
+// A valid first reply costs exactly one call: retries only answer a rejected
+// sample.
+func TestSummarizationMakesNoExtraCallWhenTheFirstReplyIsValid(t *testing.T) {
+	t.Parallel()
+	client, calls := summarizerScript(func(int, llm.Request) (llm.Response, error) {
+		return acceptedSummaryReply, nil
+	})
+	profile := WithCheapModel(testProfile("openai", "active-fixture", 1000), "cheap-fixture")
+	cm := retryTestManager(client, profile)
+	if _, err := cm.completeSummarization(context.Background(), profile, "prompt", summaryAccept("")); err != nil {
+		t.Fatalf("completeSummarization: %v", err)
+	}
+	assertCallSequence(t, calls(), "cheap-fixture")
+}
+
+// A cancelled run unwinds on the attempt in flight: no retry and no session
+// rung on a dead context.
+func TestSummarizationStopsRetryingWhenTheRunIsCancelled(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithCancel(context.Background())
+	client, calls := summarizerScript(func(int, llm.Request) (llm.Response, error) {
+		cancel()
+		return rejectedSummaryReply, nil
+	})
+	profile := WithCheapModel(testProfile("openai", "active-fixture", 1000), "cheap-fixture")
+	cm := retryTestManager(client, profile)
+	_, err := cm.completeSummarization(ctx, profile, "prompt", summaryAccept(""))
+	if err == nil {
+		t.Fatal("rejected reply on a cancelled run, want a failure")
+	}
+	assertCallSequence(t, calls(), "cheap-fixture")
+	if rejection, ok := errors.AsType[summaryRejectionError](err); !ok || rejection != errSummaryEmptyReply {
+		t.Fatalf("terminal = %v, want the rejected sample as the failure", err)
+	}
+}
+
+// A refusal landing between resamples moves the remaining budget onto the
+// session route through the cheap caller's own fallback, exactly as a refusal
+// on the first sample would; the session rung stays suppressed because the
+// cheap caller already ran the session model.
+func TestSummarizationSampleBudgetFollowsAMidLoopRefusal(t *testing.T) {
+	t.Parallel()
+	client, calls := summarizerScript(func(call int, req llm.Request) (llm.Response, error) {
+		if req.Model == "cheap-fixture" {
+			if call == 1 {
+				return rejectedSummaryReply, nil
+			}
+			return llm.Response{}, llm.ErrorFromHTTPStatus("openai", 400, "provided model identifier is invalid", nil, nil)
+		}
+		return rejectedSummaryReply, nil
+	})
+	profile := WithCheapModel(testProfile("openai", "active-fixture", 1000), "cheap-fixture")
+	cm := retryTestManager(client, profile)
+	_, err := cm.completeSummarization(context.Background(), profile, "prompt", summaryAccept(""))
+	if err == nil {
+		t.Fatal("every sample rejected, want a failure")
+	}
+	assertCallSequence(t, calls(), "cheap-fixture", "cheap-fixture", "active-fixture", "active-fixture", "active-fixture")
+	failure := summarizerFailureWarning(err).SummaryFailure
+	if failure == nil {
+		t.Fatal("missing summary failure diagnostic")
+	}
+	if failure.Terminal.Route != "session" || failure.Terminal.Reason != "empty_reply" {
+		t.Fatalf("wrong terminal: %+v", failure.Terminal)
+	}
+	if len(failure.Previous) != 2 ||
+		failure.Previous[0].Route != "cheap" || failure.Previous[0].Model != "cheap-fixture" ||
+		failure.Previous[1].Route != "session" || failure.Previous[1].Model != "active-fixture" {
+		t.Fatalf("want one entry per route in previous, got %+v", failure.Previous)
+	}
+}
+
+// A reply the model truncated that came back empty is an output-limit cut, not
+// a bad sample: it gets no resample whatever its text says, and reports the
+// output limit, because the cut-off check decides the reason.
+func TestSummarizationDoesNotResampleAnEmptyCutOffReply(t *testing.T) {
+	t.Parallel()
+	cutOffEmpty := llm.Response{Finish: llm.FinishReason{Reason: llm.FinishReasonLength}}
+	client, calls := summarizerScript(func(int, llm.Request) (llm.Response, error) {
+		return cutOffEmpty, nil
+	})
+	profile := WithCheapModel(testProfile("openai", "active-fixture", 1000), "cheap-fixture")
+	cm := retryTestManager(client, profile)
+	_, err := cm.completeSummarization(context.Background(), profile, "prompt", summaryAccept(""))
+	if err == nil {
+		t.Fatal("cut-off replies accepted, want a failure")
+	}
+	assertCallSequence(t, calls(), "cheap-fixture", "active-fixture")
+	failure := summarizerFailureWarning(err).SummaryFailure
+	if failure == nil || failure.Terminal.Reason != "output_limit" {
+		t.Fatalf("want the output-limit rejection as terminal, got %+v", failure)
+	}
+}
+
+// A fork reply the model truncated is an output-limit cut, not a bad sample:
+// it costs exactly one call, like the conversation summary's cut-off replies.
+func TestForkSummarizeDoesNotResampleACutOffReply(t *testing.T) {
+	t.Parallel()
+	cutOffReply := llm.Response{
+		Message: llm.Assistant(`{"action":"sh`),
+		Finish:  llm.FinishReason{Reason: llm.FinishReasonLength},
+	}
+	client, calls := summarizerScript(func(int, llm.Request) (llm.Response, error) {
+		return cutOffReply, nil
+	})
+	profile := testProfile("openai", "active-fixture", 1000)
+	_, err := forkSummarize(context.Background(), cheapmodel.New(client), profile, canaryHistory(), 7)
+	if err == nil {
+		t.Fatal("cut-off fork reply accepted, want a failure")
+	}
+	// The fork resolves the cheap-model ref, whose default comes from the
+	// refreshable catalog, so the pin is the sample count, not the model.
+	if got := calls(); len(got) != 1 {
+		t.Fatalf("fork calls = %v, want a single call", got)
+	}
+}
+
+// A condensation batch reply that comes back empty at the model's output limit
+// is an output-limit cut, not an empty batch, so it is not resampled either.
+func TestCondensePartnerMessagesDoesNotResampleAnEmptyCutOffReply(t *testing.T) {
+	t.Parallel()
+	cutOffEmpty := llm.Response{Finish: llm.FinishReason{Reason: llm.FinishReasonLength}}
+	client, calls := summarizerScript(func(int, llm.Request) (llm.Response, error) {
+		return cutOffEmpty, nil
+	})
+	profile := testProfile("openai", "active-fixture", 1000)
+	cm := retryTestManager(client, profile)
+	_, err := cm.condensePartnerMessages(context.Background(), profile, []string{strings.Repeat("x", 101)}, 100)
+	if err == nil {
+		t.Fatal("cut-off batch replies accepted, want a failure")
+	}
+	assertCallSequence(t, calls(), "active-fixture")
+	failure := summarizerFailureWarning(err).SummaryFailure
+	if failure == nil || failure.Terminal.Reason != "output_limit" {
+		t.Fatalf("want the output-limit rejection as terminal, got %+v", failure)
+	}
+}
+
+// A transient failure on a cheap-rung resample does not strand an earlier
+// rejected sample: the session rung stays eligible and recovers the fold.
+func TestSummarizationFallsBackToSessionModelAfterALaterCheapRouteError(t *testing.T) {
+	t.Parallel()
+	cheapErr := llm.ErrorFromHTTPStatus("openai", 503, "cheap overloaded", nil, nil)
+	client, calls := summarizerScript(func(call int, req llm.Request) (llm.Response, error) {
+		if req.Model == "cheap-fixture" {
+			if call == 1 {
+				return rejectedSummaryReply, nil
+			}
+			return llm.Response{}, cheapErr
+		}
+		return acceptedSummaryReply, nil
+	})
+	profile := WithCheapModel(testProfile("openai", "active-fixture", 1000), "cheap-fixture")
+	cm := retryTestManager(client, profile)
+	resp, err := cm.completeSummarization(context.Background(), profile, "prompt", summaryAccept(""))
+	if err != nil {
+		t.Fatalf("completeSummarization: %v", err)
+	}
+	if !strings.Contains(resp.Text(), "Recovered.") {
+		t.Fatalf("summary = %q, want the session model's reply", resp.Text())
+	}
+	assertCallSequence(t, calls(), "cheap-fixture", "cheap-fixture", "active-fixture")
+}
+
+// The whole-journey contract: a fold whose first samples are rejected installs
+// the later sample's summary and warns nobody.
+func TestSummarizeFoldRecoversFromRejectedRepliesWithoutAWarning(t *testing.T) {
+	t.Parallel()
+	client, _ := summarizerScript(func(call int, _ llm.Request) (llm.Response, error) {
+		if call <= 2 {
+			return rejectedSummaryReply, nil
+		}
+		return acceptedSummaryReply, nil
+	})
+	profile := testOpenAIProfileWithContextWindow(minSummarizingWindow)
+	cm := retryTestManager(client, profile)
+	cm.PreserveRecentTurns = 2
+	history := []schema.Turn{
+		schema.NewTurn(schema.TurnUserInput, llm.User("Fix the auth bug")),
+		schema.NewTurn(schema.TurnAssistant, llm.Assistant("I'll fix it")),
+		schema.NewTurn(schema.TurnAssistant, llm.Assistant("recent")),
+	}
+	emit, warnings := warningsFrom()
+	if summarized := cm.ForceCompact(context.Background(), &history, "", emit); !summarized {
+		t.Fatal("fold did not install a summary")
+	}
+	if len(*warnings) != 0 {
+		t.Fatalf("a recovered fold warned: %+v", *warnings)
+	}
+	if history[0].Kind != schema.TurnSummary || !strings.Contains(history[0].Message.Text(), "Recovered.") {
+		t.Fatalf("history head = %s, want the recovered summary", history[0].Kind)
+	}
+}
+
+// A condensation batch that answers empty twice is resampled within the
+// batch's own budget: the third sample completes the condensation.
+func TestCondensePartnerMessagesRetriesAnEmptyBatchReply(t *testing.T) {
+	t.Parallel()
+	client, calls := summarizerScript(func(call int, _ llm.Request) (llm.Response, error) {
+		if call <= 2 {
+			return rejectedSummaryReply, nil
+		}
+		return llm.Response{Message: llm.Assistant("condensed-3f9a")}, nil
+	})
+	profile := testProfile("openai", "active-fixture", 1000)
+	cm := retryTestManager(client, profile)
+	condensed, err := cm.condensePartnerMessages(context.Background(), profile, []string{strings.Repeat("x", 101)}, 100)
+	if err != nil {
+		t.Fatalf("condensePartnerMessages: %v", err)
+	}
+	if !strings.Contains(condensed, "condensed-3f9a") {
+		t.Fatalf("condensation = %q, want the third sample's reply", condensed)
+	}
+	assertCallSequence(t, calls(), "active-fixture", "active-fixture", "active-fixture")
+}
+
+// The session-log fork summary shares the conversation summary's failure
+// class: an unparseable reply is one bad sample and is resampled before the
+// failure surfaces.
+func TestForkSummarizeRetriesAnUnparseableReply(t *testing.T) {
+	t.Parallel()
+	client, calls := summarizerScript(func(call int, _ llm.Request) (llm.Response, error) {
+		if call <= 2 {
+			return llm.Response{Message: llm.Assistant("not JSON")}, nil
+		}
+		return llm.Response{Message: llm.Assistant(`{"action":"shell","summary":"ran","outcome":"success"}`)}, nil
+	})
+	profile := testProfile("openai", "active-fixture", 1000)
+	entry, err := forkSummarize(context.Background(), cheapmodel.New(client), profile, canaryHistory(), 7)
+	if err != nil {
+		t.Fatalf("forkSummarize: %v", err)
+	}
+	if entry.Action != "shell" || entry.Turn != 7 {
+		t.Fatalf("entry = %+v, want the third sample's parsed entry", entry)
+	}
+	// The fork resolves the cheap-model ref, whose default comes from the
+	// refreshable catalog, so the pin is the sample count, not the model.
+	if got := calls(); len(got) != 3 {
+		t.Fatalf("fork calls = %v, want three samples", got)
+	}
+}
+
+// A fork reply that never parses fails after the sample budget without
+// embedding the raw reply: this error surfaces as a warning, and warnings
+// never carry conversation-adjacent text.
+func TestForkSummarizeErrorCarriesNoReplyText(t *testing.T) {
+	t.Parallel()
+	const canary = "junk-fork-reply-6b1c"
+	client, calls := summarizerScript(func(int, llm.Request) (llm.Response, error) {
+		return llm.Response{Message: llm.Assistant(canary)}, nil
+	})
+	profile := testProfile("openai", "active-fixture", 1000)
+	_, err := forkSummarize(context.Background(), cheapmodel.New(client), profile, canaryHistory(), 7)
+	if err == nil {
+		t.Fatal("unparseable replies accepted, want a failure")
+	}
+	if strings.Contains(err.Error(), canary) {
+		t.Fatalf("fork error embeds the raw reply: %v", err)
+	}
+	if got := calls(); len(got) != 3 {
+		t.Fatalf("fork calls = %v, want three samples", got)
+	}
+}

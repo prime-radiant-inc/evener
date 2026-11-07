@@ -32,7 +32,6 @@ vi.mock("react-native", async () => {
 	return { ...mock, Alert: { alert: alerts.alert } };
 });
 vi.mock("react-native-safe-area-context", () => ({ SafeAreaView: "SafeAreaView" }));
-vi.mock("expo-crypto", () => ({ randomUUID: () => "fixture-uuid" }));
 vi.mock("expo-clipboard", () => ({ setStringAsync: async () => {}, getStringAsync: clipboard.getStringAsync }));
 vi.mock("expo-web-browser", () => ({
 	openBrowserAsync: async () => ({ type: "dismiss" }),

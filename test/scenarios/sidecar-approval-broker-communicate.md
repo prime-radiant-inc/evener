@@ -80,7 +80,7 @@ hand it back as an observer callback. Driving mechanism:
 - The watch has no dropped deliveries or self-loop verdict.
 - Wrong-mechanism check: `delegate_send(to="caller")` is rejected with an
   `invalid_request` error that points at `communicate`
-  (`agent/session_tools_delegate.go#stableDelegateSendTool`), and nothing reaches the
+  (`agent/session_tools_delegate.go#delegateSendTool`), and nothing reaches the
   parent. An observer that tries it and then calls
   `communicate(end_turn=true)` recovered; one that never calls `communicate`
   never delivers the terminal packet, so the parent gets no

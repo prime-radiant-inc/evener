@@ -13,7 +13,7 @@ Design documentation for the web hub (`cmd/evener-hub`).
   the [editorial-instrument rationale](design-system.md#design-model-an-editorial-instrument):
   conversation for understanding, evidence for verification and controls for intervention.
   It records behavioral consequences, tradeoffs and review questions, then tokens,
-  the editorial system (warm paper/ink, serif reading, flat structure), inline tool/delegate
+  the editorial system (cool neutral paper/ink, serif reading, flat structure), inline tool/delegate
   grammar and provenance, source coverage, type, space, motion, the cadence instrument,
   and the widget library under
   `cmd/evener-hub/frontend/src/widgets/`.
@@ -100,6 +100,11 @@ inspection failures do not prevent editing local overrides.
 Conversation display edits one device layout at a time, initially the current
 device class. Both shared layouts remain available through the layout selector.
 Use the shared default clears only the selected layout's browser-local override.
+Thinking traces render as unfoldable disclosures at every level — collapsed to
+their placeholder grammar when the Reasoning content switch is off, with the
+Chat preset staying conversation-only — and "Thinking open by default" controls
+whether they start open, broken-turn thoughts included, whose neutral label
+always remains the summary.
 Scope and the local-override action appear before the editor. Editing a shared
 default keeps both browser-local layout choices. **Use the shared default** clears
 only the selected layout's browser-local override, without writing shared defaults.

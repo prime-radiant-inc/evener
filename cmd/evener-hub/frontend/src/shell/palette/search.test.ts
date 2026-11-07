@@ -3,6 +3,7 @@
 import type { ItemModel, SearchResponse, ThreadModel, TurnModel } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { expect, test } from "vitest";
+import { ALL_CAPABILITIES } from "../../threadTestUtils";
 import { buildSnippet, fetchSearch, findInSessionMatches, highlightParts } from "./search";
 
 // --- fetchSearch: typed AppWire request ---
@@ -66,21 +67,7 @@ function modelWithTurns(turns: TurnModel[]): ThreadModel {
     jobsUpdatedAt: null,
     jobsTreeRevision: null,
     lastFrameAt: 0,
-    capabilities: {
-      send: true,
-      steer: true,
-      interrupt: true,
-      compact: true,
-      clear: true,
-      forkFromTurn: true,
-      shutdown: true,
-      changeModel: true,
-      changeVisionModel: true,
-      queue: true,
-      goal: true,
-      sharedNotes: true,
-      rename: true,
-    },
+    capabilities: ALL_CAPABILITIES,
     goal: null,
     humanNote: "",
     agentNote: "",

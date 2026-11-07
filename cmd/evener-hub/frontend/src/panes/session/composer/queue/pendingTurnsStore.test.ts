@@ -7,7 +7,7 @@ import { act, cleanup, renderHook } from "@testing-library/react";
 import { IDBFactory, IDBObjectStore } from "fake-indexeddb";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { appliedReceipt } from "../../../../mutationReceiptTestUtils";
-import { connectionStore } from "../../../../stores/connection";
+import { connectionStore, resetConnectionStoreForTests } from "../../../../stores/connection";
 import { setMutationClientIdentityForTests } from "../../../../stores/mutationClientIdentity";
 import type { MutationOutboxRecord } from "../../../../stores/mutationOutbox";
 import { MutationOutboxIndexedDB } from "../../../../stores/mutationOutboxIndexedDB";
@@ -98,7 +98,7 @@ beforeEach(() => {
   globalThis.indexedDB = new IDBFactory();
   setMutationClientIdentityForTests(undefined);
   localStorage.clear();
-  connectionStore.setState({ state: "idle", client: null, serverInfo: undefined });
+  resetConnectionStoreForTests();
   resetThreadsStoreForTests();
   resetPendingTurnsStoreForTests();
 });
@@ -311,7 +311,11 @@ test("a durable read a newer read superseded does not mark its ref loaded", asyn
     const request = getAll.apply(this, args);
     if (this.name === "recovery") {
       holds.push(holdIndexedDBEvent(request, "success"));
-      if (holds.length === 2) announceSecondHold?.();
+      // One durable read issues TWO recovery-store getAll requests on this
+      // tree - the target's own rows, then the displayed-ref half of the
+      // persistence read - so the two reads together hold four, and the
+      // fourth is the newer read's pair completing.
+      if (holds.length === 4) announceSecondHold?.();
     }
     return request;
   });
@@ -324,12 +328,15 @@ test("a durable read a newer read superseded does not mark its ref loaded", asyn
     // fails closed.
     expect(hasBlockedUnknown(ref)).toBe(true);
     // The older read resolves first, already superseded by the newer one.
+    // Both of its recovery getAlls release together.
     holds[0]?.release();
+    holds[1]?.release();
     await older;
     // The superseded read must NOT mark the ref loaded: the winning read is
     // still outstanding, and its rows are not visible yet.
     expect(hasBlockedUnknown(ref)).toBe(true);
-    holds[1]?.release();
+    holds[2]?.release();
+    holds[3]?.release();
     await newer;
     // The winning read is now the current word for the ref, so it loads.
     expect(hasBlockedUnknown(ref)).toBe(false);

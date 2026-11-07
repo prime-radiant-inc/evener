@@ -16,23 +16,24 @@ import (
 // spelled out field by field so a fixture cannot silently stop covering a field.
 func allRemoteThreadCapabilities() appwire.ThreadCapabilities {
 	return appwire.ThreadCapabilities{
-		Send:              true,
-		Steer:             true,
-		Interrupt:         true,
-		Compact:           true,
-		Clear:             true,
-		ForkFromTurn:      true,
-		Shutdown:          true,
-		ChangeModel:       true,
-		ChangeVisionModel: true,
-		Queue:             true,
-		Goal:              true,
-		SharedNotes:       true,
-		Rename:            true,
-		SkillInput:        true,
-		CommandInput:      true,
-		StopSubagent:      true,
-		PageBefore:        true,
+		VoicePresentationContextV1: true,
+		Send:                       true,
+		Steer:                      true,
+		Interrupt:                  true,
+		Compact:                    true,
+		Clear:                      true,
+		ForkFromTurn:               true,
+		Shutdown:                   true,
+		ChangeModel:                true,
+		ChangeVisionModel:          true,
+		Queue:                      true,
+		Goal:                       true,
+		SharedNotes:                true,
+		Rename:                     true,
+		SkillInput:                 true,
+		CommandInput:               true,
+		StopSubagent:               true,
+		PageBefore:                 true,
 	}
 }
 
@@ -230,6 +231,13 @@ func TestRemoteHubCapabilitiesMatchForwardedMethods(t *testing.T) {
 		{"CommandInput", map[string]func() error{
 			"StartTurn": func() error { _, err := source.StartTurn(ctx, appwire.TurnStartParams{}); return err },
 			"QueueTurn": func() error { _, err := source.QueueTurn(ctx, appwire.TurnQueueParams{}); return err },
+		}},
+		// The ordinary routes exist, but the peer's public hub input cannot
+		// accept this controller's journal-backed voice evidence. The capability
+		// stays masked even when the remote daemon advertises it.
+		{"VoicePresentationContextV1", map[string]func() error{
+			"StartTurn": func() error { _, err := source.StartTurn(ctx, appwire.TurnStartParams{}); return err },
+			"SteerTurn": func() error { _, err := source.SteerTurn(ctx, appwire.TurnSteerParams{}); return err },
 		}},
 		// The source forwards a cursorless before to a remote thread now
 		// (#3176), but the hub does not advertise PageBefore for one yet, so

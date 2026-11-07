@@ -1,9 +1,11 @@
 package gatesurface
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"regexp"
+	"strings"
 	"testing"
 )
 
@@ -47,6 +49,57 @@ func TestShellTestRunMatchesGoConstant(t *testing.T) {
 func TestShellFuzzTestSkipMatchesGoConstant(t *testing.T) {
 	if shell := shellSingleQuotedVar(t, "GATE_FUZZ_TEST_SKIP"); shell != FuzzTestSkip {
 		t.Errorf("gate surface drift: shell GATE_FUZZ_TEST_SKIP=%q, Go gatesurface.FuzzTestSkip=%q — update both homes together", shell, FuzzTestSkip)
+	}
+}
+
+// TestShellHubIntegrationRunMatchesGoConstant pins the shell lib's
+// GATE_HUB_INTEGRATION_RUN byte-equal to gatesurface.HubIntegrationRun.
+func TestShellHubIntegrationRunMatchesGoConstant(t *testing.T) {
+	if shell := shellSingleQuotedVar(t, "GATE_HUB_INTEGRATION_RUN"); shell != HubIntegrationRun {
+		t.Errorf("gate surface drift: shell GATE_HUB_INTEGRATION_RUN=%q, Go gatesurface.HubIntegrationRun=%q — update both homes together", shell, HubIntegrationRun)
+	}
+}
+
+// TestHubIntegrationRunMatchesBudgetClasses pins HubIntegrationRun to the union
+// of the three runner-bound classes in testing-budget.json, so the gate's list
+// cannot drift from the classes that define it.
+func TestHubIntegrationRunMatchesBudgetClasses(t *testing.T) {
+	raw, err := os.ReadFile("../../../testing-budget.json")
+	if err != nil {
+		t.Fatalf("reading testing-budget.json: %v", err)
+	}
+	var budget struct {
+		Classes map[string]struct {
+			Tests []string `json:"tests"`
+		} `json:"perTestCeilingClasses"` //nolint:tagliatelle // testing-budget.json's key, camelCase beside perTestCeilingSeconds
+	}
+	if err := json.Unmarshal(raw, &budget); err != nil {
+		t.Fatalf("parsing testing-budget.json: %v", err)
+	}
+	want := map[string]bool{}
+	for _, class := range []string{"deploy-host integration", "retirement", "live-stack E2E"} {
+		members, ok := budget.Classes[class]
+		if !ok {
+			t.Fatalf("testing-budget.json no longer lists class %q", class)
+		}
+		for _, name := range members.Tests {
+			want[name] = true
+		}
+	}
+	body := strings.TrimSuffix(strings.TrimPrefix(HubIntegrationRun, "^("), ")$")
+	got := map[string]bool{}
+	for name := range strings.SplitSeq(body, "|") {
+		got[name] = true
+	}
+	for name := range want {
+		if !got[name] {
+			t.Errorf("HubIntegrationRun is missing class member %q", name)
+		}
+	}
+	for name := range got {
+		if !want[name] {
+			t.Errorf("HubIntegrationRun has %q, which is not in the three runner-bound classes", name)
+		}
 	}
 }
 

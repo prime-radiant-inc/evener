@@ -8,6 +8,7 @@ package agent
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"math/rand"
@@ -576,7 +577,7 @@ func TestTranscriptGenReachesDeeper(t *testing.T) {
 		if err := os.WriteFile(path, b, 0o644); err != nil {
 			t.Fatalf("write probe: %v", err)
 		}
-		d, err := readTranscriptFull(path, "")
+		d, err := readTranscriptFull(context.Background(), path, "")
 		if err != nil {
 			return transcriptData{Skipped: -1} // sentinel: header did not decode
 		}
@@ -727,11 +728,11 @@ func TestTranscriptReadersAgreeSanity(t *testing.T) {
 		t.Fatalf("write transcript: %v", err)
 	}
 
-	full, err := readTranscriptFull(path, "")
+	full, err := readTranscriptFull(context.Background(), path, "")
 	if err != nil {
 		t.Fatalf("readTranscriptFull: %v", err)
 	}
-	lh, lentries, lskipped, err := readTranscript(path, "")
+	lh, lentries, lskipped, err := readTranscript(context.Background(), path, "")
 	if err != nil {
 		t.Fatalf("readTranscript: %v", err)
 	}

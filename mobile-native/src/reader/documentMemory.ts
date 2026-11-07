@@ -17,7 +17,7 @@ export interface DocumentKey {
 	/** Which of the session's two served roots holds it. Absent means the
 	 * session's working directory, the only root this store knew before
 	 * agents filed reports in the retained artifacts directory. */
-	root?: "artifacts";
+	root?: "artifacts" | "scratch";
 }
 
 export interface ReadingPosition {
@@ -82,11 +82,12 @@ interface DocumentRecord {
 const documentsKey = (hubId: string) => `evener.native.documents.${hubId}`;
 const trailKey = (hubId: string) => `evener.native.continue-reading.${hubId}`;
 // A working-directory document keeps the key it has always had, so positions
-// and unsent comments saved before artifacts documents existed still belong to
-// it. Only a retained artifact, the newcomer, carries its root, and that is
-// what keeps it from answering for a folder file of the same name.
+// and unsent comments saved before retained-root documents existed still
+// belong to it. Only a retained-root document (artifacts, scratch) carries its
+// root, and that is what keeps it from answering for a folder file of the
+// same name.
 const recordKey = (key: DocumentKey) =>
-	key.root === "artifacts"
+	key.root !== undefined
 		? JSON.stringify([key.sessionRef, key.path, key.root])
 		: JSON.stringify([key.sessionRef, key.path]);
 const LIMIT = 100;
@@ -171,6 +172,7 @@ function parseTrail(value: unknown): ContinueReading | null {
 	)
 		return null;
 	if (!isTime(progress) || !isTime(leftAt)) return null;
+	const root = reference.root === "artifacts" || reference.root === "scratch" ? reference.root : undefined;
 	return {
 		sessionRef,
 		path,
@@ -179,7 +181,7 @@ function parseTrail(value: unknown): ContinueReading | null {
 			cwd: reference.cwd,
 			readTarget: reference.readTarget,
 			provenance: reference.provenance,
-			...(reference.root === "artifacts" ? { root: "artifacts" as const } : {}),
+			...(root !== undefined ? { root } : {}),
 		},
 		title,
 		sessionTitle,

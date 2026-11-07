@@ -1,7 +1,7 @@
 import { useEffect } from "react";
 import type { PaneProps } from "../../shell/paneRegistry";
 import { navigate } from "../../shell/routing";
-import { useWorkspaceStore } from "../../shell/workspace";
+import { useHasSessionPane } from "../../shell/workspace";
 import { EmptyState, PaneScaffold } from "../../widgets";
 import { useProviderSetup } from "../spawn/useProviderSetup";
 import { WelcomeContent } from "./WelcomeContent";
@@ -14,7 +14,7 @@ export interface WelcomePaneParams {
 
 export default function Welcome({ params, focused }: PaneProps<WelcomePaneParams>) {
   const { status } = useProviderSetup();
-  const hasSession = useWorkspaceStore((state) => state.panes.some((pane) => pane.type === "session"));
+  const hasSession = useHasSessionPane();
   useEffect(() => {
     if (focused && !hasSession && status === "missing" && window.location.pathname === "/")
       navigate(`/new${window.location.search}${window.location.hash}`, { replace: true });

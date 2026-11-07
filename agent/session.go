@@ -106,6 +106,14 @@ func (s *Session) nextJobTreeRevision(kind events.EventKind) (string, uint64, bo
 // history, registered tools, context-management state, subagents, plugins, MCP
 // connections, and persistence settings.
 type Session struct {
+	conversation           conversationState
+	hubClient              SessionHubClient
+	hubGeneration          uint64
+	hubEnabled             bool
+	hubWatchSignal         chan struct{}
+	hubWatchCancels        map[string]context.CancelFunc
+	hubOrdinary            map[string]*tool.RegisteredTool
+	hubRegistry            *tool.Registry
 	id                     string
 	cfg                    SessionConfig
 	delegateController     *delegateTreeController
@@ -395,6 +403,17 @@ type Session struct {
 	worktreeDisposeBeforeRemove         func(lanePath string)
 	worktreeLaneStat                    func(path string) (os.FileInfo, error)
 	worktreeBeforeStrandedMarkerRelease func(lanePath string)
+	// worktreeRendezvousDir is a test-only seam naming the rendezvous run
+	// directory the owner-liveness probe consults instead of the platform
+	// default (see worktreeOwnerRendezvousDir).
+	worktreeRendezvousDir string
+
+	// livelockRelease drops this root session's process livelock, taken at
+	// init (acquireSessionLivelock). Nil for subagents (their root's process
+	// hosts them) and for a root whose take found the flock held — a second
+	// process on the same id, the documented can't-tell-apart case, which
+	// then runs with liveness visibility only, never correctness.
+	livelockRelease func()
 
 	// responseSideEffectsMu serializes a response's user-visible side-effect
 	// bundle (emit + appendTurn + counter bump) against teardown.
@@ -405,6 +424,15 @@ type Session struct {
 	// holding a subagent row's lock, and mu sits above those.
 	// LOCK ORDER: drainAbandonedMu is a leaf — nothing is acquired under it.
 	drainAbandonedMu sync.Mutex
+	// laneEvidenceMu guards the managed-job lane-evidence hold: the count of
+	// this session's running managed jobs while it is a delegate child, and
+	// the evidence ticker the first job started. A leaf like drainAbandonedMu —
+	// the job manager calls in and out of it at lifecycle transitions.
+	// LOCK ORDER: laneEvidenceMu is a leaf; the hold's ticker goroutine never
+	// re-enters it.
+	laneEvidenceMu   sync.Mutex
+	laneEvidenceJobs int
+	laneEvidenceStop func()
 	// drainAbandonedChildren maps a direct child SESSION id to the exact
 	// delegate generation the drain gave up waiting on. A resumed generation
 	// under the same child session must not inherit the old gate.
@@ -610,7 +638,8 @@ type Session struct {
 	recordedExecutions map[string]bool
 	// roundID names the open model round, "" when none is open; guarded by
 	// mu. See roundIDForModelCall.
-	roundID string
+	roundID         string
+	roundAuthorship *schema.TranscriptAuthorship
 	// lastRoundID is the latest round the session opened, and lastRoundEnded
 	// whether its EventRoundEnded was emitted; guarded by mu.
 	lastRoundID    string
@@ -625,6 +654,9 @@ type Session struct {
 	// transcriptRecorded is the recorded-entry hook installed on every writer
 	// the session attaches; guarded by mu. See SetTranscriptRecordedFunc.
 	transcriptRecorded func(transcript.Record)
+	// transcriptPublished runs after adoption, outside mu and the append lock,
+	// while attentionMu still excludes the next canonical mutation.
+	transcriptPublished func(int64, *appwire.ConversationProvenanceState)
 	// recoveredTurnClaimReturned bounds the recovered turn's give-back to ONE
 	// in-process retry. The first failure of the inherited turn before its prompt
 	// is recorded hands its claim back, and the runner wake drives the immediate
@@ -717,7 +749,8 @@ type Session struct {
 	// the entry gate, the goal engine's arm-don't-kick paths, Compact's guard
 	// — survive a restart (ask-attention-tiering spec §2); it is not itself
 	// part of persisted SessionMeta.
-	askPending []askQuestion
+	askPending         []askQuestion
+	askPendingRevision uint64
 
 	// askPendingCallArgs holds each pending ask_user call's own arguments
 	// (already normalized, spec §5.1's shape), one entry per call, in call
@@ -813,9 +846,8 @@ type Session struct {
 	// it is set once before the session goes live and never mutated after.
 	restoredMetaParentSessionID string
 	// restoredScratchTreeRoot is the root whose scratch tree a delegate resumed
-	// on its own keeps its scratch in (restoredScratchTreeRoot in
-	// session_init.go). Set once during restore and read like cfg; empty
-	// otherwise.
+	// on its own keeps its scratch in (SessionMeta.RestoredScratchTreeRoot in
+	// schema). Set once during restore and read like cfg; empty otherwise.
 	restoredScratchTreeRoot string
 
 	// pendingJobNotifs is the durable per-parent queue of pending job-completion
@@ -987,7 +1019,36 @@ type Session struct {
 	// idle session and deferring to the running drain-loop gate. ProcessInputKind
 	// sets it at entry and clears it as its last act before going idle, so
 	// "set goal + read flag" and "clear flag + go idle" are mutually exclusive.
+	// It also widens turnInFlightLocked to the whole input call, which is how
+	// SetModel decides a pick arrived mid-input and must queue for the boundary.
 	goalInTurn bool
+	// pendingModel holds a model switch requested while an input was in
+	// flight (SetModel's queue path), together with the live listing its
+	// pick-time preflight fetched, so the boundary application reuses it
+	// instead of enumerating again. The processing boundary applies it
+	// (applyPendingModelSwitch) so the next turn runs on it; guarded by s.mu.
+	// A zero value queues nothing.
+	pendingModel pendingModelSwitch
+	// modelPickSeq is the issue counter for model picks: SetModel stamps the
+	// current value under s.mu on every admission, so each pick - accepted or
+	// rejected - owns a unique, monotonic id. Guarded by s.mu.
+	modelPickSeq uint64
+	// modelPickAccepted is the issue of the newest pick an acceptance point
+	// committed: a queued store, a busy re-queue, or a profile swap. A pick
+	// whose issue is older was superseded by a newer accepted choice: its
+	// stores are skipped and its in-flight application drops. Validation
+	// failures never advance it, so a rejected pick cannot cancel an earlier
+	// accepted one. Guarded by s.mu.
+	modelPickAccepted uint64
+	// modelSwitchPublishMu serializes a switch application's commit through
+	// its publication - the profile swap, the marker record, and the
+	// EventModelChanged emit - so publications land in the order their swaps
+	// committed and a committed application always tells its story: a newer
+	// pick that has merely queued can still fail its own deferred validation,
+	// and suppressing the committed publication on its behalf would leave the
+	// session running a model no event ever named. Lock order: acquired
+	// before s.mu, never the other way.
+	modelSwitchPublishMu sync.Mutex
 	// goalDependentsHeld records that the goal gate just held its continuation
 	// because wake-pending dependents (running delegates or non-detached
 	// background jobs) guarantee a future wake: the no-progress fold was
@@ -1351,7 +1412,7 @@ func (s *Session) SetNotifyFunc(f func()) {
 	// the user, not work in progress, and waking for it at attach would restart
 	// the session and deliver the steer the user just stopped -- the open
 	// steering rail issue #174 closes (issue #146, Option C — park in place).
-	if pending || s.hasRunnableUserSteering() || s.QueueDepth() > 0 || s.hasPendingDelegateDeliveries() || s.pendingRootDelegateAttention() || s.hasPendingStableDelegateAttention() || (s.jobManager != nil && s.jobManager.hasPendingStableWatchSettlementRetry()) {
+	if pending || s.hasRunnableUserSteering() || s.QueueDepth() > 0 || s.hasPendingDelegateDeliveries() || s.pendingRootDelegateAttention() || s.hasPendingDelegateAttention() || (s.jobManager != nil && s.jobManager.hasPendingStableWatchSettlementRetry()) {
 		f()
 	}
 }
@@ -1631,6 +1692,35 @@ func (s *Session) reapplyProviderSpecificTools(oldProfile, newProfile *provider.
 	}
 }
 
+// pendingModelSwitch is a switch picked mid-input, waiting for the turn
+// boundary. The primed instance and listing are the ones the pick-time
+// preflight fetched; the boundary's applyModelSwitch reuses them so a queued
+// switch costs one live enumeration, not two. The seq is the pick generation
+// SetModel stamped, which fences the boundary application against superseding
+// picks. A zero value (empty model) means nothing is queued.
+type pendingModelSwitch struct {
+	model          string
+	primedInstance string
+	primedListing  *llm.ModelListing
+	seq            uint64
+}
+
+// modelSwitchFence bounds one switch application's commit to the pick that
+// started it. A zero value fences nothing (the immediate test seam).
+type modelSwitchFence struct {
+	// pickSeq is the issue SetModel stamped on this pick. At the commit
+	// point an issue that the acceptance watermark (modelPickAccepted) has
+	// passed means a newer accepted pick owns the outcome: the application
+	// drops instead of overwriting it.
+	pickSeq uint64
+	// queueWhenBusy re-queues the switch at the commit point instead of
+	// committing when a turn is in flight: the at-rest pickers' "land it at
+	// the next boundary" fallback, so a turn that started while the pick was
+	// still validating never has the profile swapped under it. The pending
+	// applier leaves it false - its own input call is the busy thing.
+	queueWhenBusy bool
+}
+
 // SetModel changes the model used for future LLM calls.
 // Takes effect on the next request. Returns an error (without changing any
 // session state) when the model ref cannot be resolved to a profile, when the
@@ -1639,31 +1729,177 @@ func (s *Session) reapplyProviderSpecificTools(oldProfile, newProfile *provider.
 // membership validation (see validateModelSwitchMembership). On a successful
 // switch, cfg.ModelFallbacks entries that no longer validate against the new
 // profile are dropped and reported in the model-switch marker.
+//
+// A switch requested while an input is in flight does not swap the profile
+// under the running turn's rounds: it is validated as far as a moving session
+// allows, then queued and applied at the turn boundary, so the next turn -
+// typically the message the user was typing when they picked - runs on the new
+// model and the running turn finishes on the one it started with. History
+// representability is re-checked at that boundary against the settled history;
+// a switch that fails there surfaces as a transcript warning and is dropped
+// rather than retried.
 func (s *Session) SetModel(model string) error {
 	release, admissionErr := s.beginRetirementMutation("admission")
 	if admissionErr != nil {
 		return admissionErr
 	}
 	defer release()
-	// A named Codex model may exist only in the target instance's live
-	// roster. List it before s.mu: the strict cross-provider resolve below
-	// runs under the lock and must stay a pure registry lookup, while the
-	// live rows this applies are what let it accept a model the bundled
-	// roster lags.
-	primedInstance, primedListing := s.primeCodexRoster(model)
 	s.mu.Lock()
 	if s.closingOrClosedLocked() {
 		s.mu.Unlock()
 		return nil
 	}
-	oldProfile := s.profile
-	nextProfile, crossProvider, err := s.resolveProfileForRef(s.profile, model)
+	s.modelPickSeq++
+	pickSeq := s.modelPickSeq
+	if !s.turnInFlightLocked() {
+		s.mu.Unlock()
+		return s.applyModelSwitch(model, "", nil, modelSwitchFence{pickSeq: pickSeq, queueWhenBusy: true})
+	}
+	s.mu.Unlock()
+	return s.queueModelSwitch(model, pickSeq)
+}
+
+// turnInFlightLocked reports whether an input is being processed, from its
+// admission through the last drained turn. The state covers the rounds
+// themselves; goalInTurn widens it to the whole input call, including pre-turn
+// work and the gaps between a call's drained turns. Callers hold s.mu.
+func (s *Session) turnInFlightLocked() bool {
+	return s.state == SessionProcessing || s.goalInTurn
+}
+
+// queueModelSwitch records a mid-input switch for the turn boundary. The
+// pick-time validation mirrors the at-rest path as far as a moving session
+// permits: the ref must resolve (a typo or unknown instance errors now, at
+// the picker), and membership is preflighted against a live listing. The
+// unrepresentable-history preflight is deliberately skipped - history is
+// being appended to by the running turn - and re-run by the boundary's
+// applyModelSwitch against settled history, reusing the listing this preflight
+// fetched so the boundary pays no second enumeration.
+func (s *Session) queueModelSwitch(model string, pickSeq uint64) error {
+	primedInstance, primedListing := s.primeCodexRoster(model)
+	fence := modelSwitchFence{pickSeq: pickSeq, queueWhenBusy: true}
+	s.mu.Lock()
+	if s.closingOrClosedLocked() {
+		s.mu.Unlock()
+		return nil
+	}
+	if !s.turnInFlightLocked() {
+		// The input ended while the preflight ran: the session is at rest, so
+		// the switch can apply directly instead of waiting for a boundary
+		// that already fired.
+		s.mu.Unlock()
+		return s.applyModelSwitch(model, primedInstance, primedListing, fence)
+	}
+	nextProfile, _, err := s.resolveProfileForRef(s.profile, model)
 	if err != nil {
 		s.mu.Unlock()
 		return err
 	}
-	if crossProvider {
-		nextProfile = nextProfile.WithCommunicateOverridesFrom(s.profile)
+	client := s.client
+	s.mu.Unlock()
+
+	_, primedInstance, primedListing, err = resolveModelSwitchTarget(client, nextProfile, s.id, *s.providerAdapterTimeout(), primedInstance, primedListing)
+	if err != nil {
+		return err
+	}
+
+	s.mu.Lock()
+	if s.closingOrClosedLocked() {
+		s.mu.Unlock()
+		return nil
+	}
+	if !s.turnInFlightLocked() {
+		s.mu.Unlock()
+		return s.applyModelSwitch(model, primedInstance, primedListing, fence)
+	}
+	// Last pick wins: the newest choice is what the next turn should run on.
+	// The acceptance watermark guards the store: a pick a newer accepted pick
+	// has passed was superseded, and its late store must not resurrect it
+	// over the newer choice. Storing accepts the pick, so the watermark
+	// advances with it.
+	if s.modelPickAccepted <= pickSeq {
+		s.pendingModel = pendingModelSwitch{model: model, primedInstance: primedInstance, primedListing: primedListing, seq: pickSeq}
+		s.modelPickAccepted = pickSeq
+	}
+	s.mu.Unlock()
+	return nil
+}
+
+// applyPendingModelSwitch applies queued switches once no rounds remain. Its
+// callers are the input loop's two ownership points: before admitting each
+// turn (where the previous turn's deferred settlement has already run) and at
+// the idle tail after the input drains. The guard is the PROCESSING state
+// alone, not turnInFlightLocked, because goalInTurn is still set at both
+// sites for the input call that owns them. A failed application is reported
+// as a warning and dropped, not retried: the invalid choice stays visible in
+// the transcript while a re-pick re-enters the normal path. A superseded
+// application drops silently, and the loop then re-reads the queue: a newer
+// pick may have been accepted while the superseded one was still fetching,
+// and it must still land before the turn the caller is about to admit.
+func (s *Session) applyPendingModelSwitch() {
+	for {
+		s.mu.Lock()
+		if s.state == SessionProcessing {
+			s.mu.Unlock()
+			return
+		}
+		pending := s.pendingModel
+		s.pendingModel = pendingModelSwitch{}
+		s.mu.Unlock()
+		if pending.model == "" {
+			return
+		}
+		release, admissionErr := s.beginRetirementMutation("admission")
+		if admissionErr != nil {
+			return
+		}
+		err := s.applyModelSwitch(pending.model, pending.primedInstance, pending.primedListing, modelSwitchFence{pickSeq: pending.seq})
+		release()
+		if err != nil {
+			s.emit(events.WarningData{
+				Message: "queued model switch to " + pending.model + " did not apply: " + err.Error(),
+				Source:  "model_switch",
+			})
+		}
+	}
+}
+
+// applyModelSwitch is SetModel's committed switch: resolve, validate against
+// settled history, swap the profile, record the marker turn, publish
+// EventModelChanged, and persist. The caller owns the retirement admission -
+// SetModel and the pending applier each hold one. A primed listing the caller
+// already fetched (the queue's pick-time preflight) is reused instead of a
+// fresh enumeration; nil primes here. The fence bounds the commit to the pick
+// that started it: a superseded pick drops, and an at-rest pick that finds a
+// turn in flight at the commit point queues for that turn's boundary instead
+// of swapping under it. The commit through the publication is serialized under
+// modelSwitchPublishMu, so the marker and event land in the order the swaps
+// committed; supersession is decided once, before the swap, so a committed
+// application always publishes - a newer pick that has only queued can still
+// fail its own deferred validation. The profile a commit replaces is read at
+// the commit itself: an earlier pick's application can move the session
+// through another provider while this one validates, so the
+// communicate-override carry, the provider-tool reconciliation, and the
+// marker's from-claim follow the transition that actually happened, never the
+// pick-time classification.
+func (s *Session) applyModelSwitch(model, primedInstance string, primedListing *llm.ModelListing, fence modelSwitchFence) error {
+	if primedListing == nil {
+		// A named Codex model may exist only in the target instance's live
+		// roster. List it before s.mu: the strict cross-provider resolve below
+		// runs under the lock and must stay a pure registry lookup, while the
+		// live rows this applies are what let it accept a model the bundled
+		// roster lags.
+		primedInstance, primedListing = s.primeCodexRoster(model)
+	}
+	s.mu.Lock()
+	if s.closingOrClosedLocked() {
+		s.mu.Unlock()
+		return nil
+	}
+	nextProfile, _, err := s.resolveProfileForRef(s.profile, model)
+	if err != nil {
+		s.mu.Unlock()
+		return err
 	}
 	// Unrepresentable-history preflight: reject before any state changes when
 	// the target can't faithfully carry content kinds already in history.
@@ -1677,16 +1913,60 @@ func (s *Session) SetModel(model string) error {
 	// Live model list is fetched once and reused for both metadata fill and
 	// the membership preflight below (see resolveModelSwitchTarget) — this
 	// rejects before any state changes when the target instance can
-	// enumerate its models and the requested model isn't among them.
-	nextProfile, err = resolveModelSwitchTarget(client, nextProfile, s.id, *s.providerAdapterTimeout(), primedInstance, primedListing)
+	// enumerate its models and the requested model isn't among them. The
+	// instance and listing are kept for the fence's re-queue below.
+	nextProfile, listedInstance, listing, err := resolveModelSwitchTarget(client, nextProfile, s.id, *s.providerAdapterTimeout(), primedInstance, primedListing)
 	if err != nil {
 		return err
 	}
 
+	// The publication lock spans the commit through the publication, so a
+	// second application cannot commit - and so cannot publish - inside this
+	// application's swap-to-publication window: publications land in the order
+	// their swaps committed, and a committed swap always tells its own story.
+	// Supersession is decided once, below, before the swap - a pick the
+	// watermark has passed drops without committing, and a newer pick that has
+	// merely queued must not suppress a committed publication, because that
+	// queued pick can still fail its own deferred validation and leave nothing
+	// to correct the subscribers with.
+	s.modelSwitchPublishMu.Lock()
+	defer s.modelSwitchPublishMu.Unlock()
 	s.mu.Lock()
 	if s.closingOrClosedLocked() {
 		s.mu.Unlock()
 		return nil
+	}
+	if fence.pickSeq != 0 && s.modelPickAccepted > fence.pickSeq {
+		// A newer accepted pick superseded this one while it validated; the
+		// newer choice owns the outcome, so this application drops.
+		s.mu.Unlock()
+		return nil
+	}
+	if fence.queueWhenBusy && s.turnInFlightLocked() {
+		// A turn started while this at-rest pick was still validating. Queue
+		// for that turn's boundary instead of swapping the profile under it,
+		// carrying the listing this validation already fetched. Re-queueing
+		// accepts the pick, so the watermark advances with it.
+		s.pendingModel = pendingModelSwitch{model: model, primedInstance: listedInstance, primedListing: listing, seq: fence.pickSeq}
+		if s.modelPickAccepted < fence.pickSeq {
+			s.modelPickAccepted = fence.pickSeq
+		}
+		s.mu.Unlock()
+		return nil
+	}
+	// Committing accepts the pick.
+	if fence.pickSeq > s.modelPickAccepted {
+		s.modelPickAccepted = fence.pickSeq
+	}
+	// The profile this commit actually replaces is the one the session runs
+	// right now: an earlier pick's application may have moved the session
+	// through another provider while this one validated, so every
+	// transition-relative fact - the communicate-override carry, the
+	// provider-tool reconciliation, and the marker's from-claim - is read
+	// here, under the commit lock, never from the pick-time snapshot.
+	commitPrev := s.profile
+	if commitPrev.CrossProviderRef(model) {
+		nextProfile = nextProfile.WithCommunicateOverridesFrom(commitPrev)
 	}
 	s.profile = nextProfile
 	// The namer's spent-allowance latch was learned against the profile being
@@ -1696,8 +1976,8 @@ func (s *Session) SetModel(model string) error {
 	if s.contextMgr != nil {
 		s.contextMgr.SetProfile(s.profile)
 	}
-	if crossProvider && s.reg != nil {
-		s.reapplyProviderSpecificTools(oldProfile, nextProfile)
+	if s.reg != nil {
+		s.reapplyProviderSpecificTools(commitPrev, nextProfile)
 	}
 	s.rebuildToolDefsCache()
 	// Knowledge cutoff must be recomputed BEFORE the prompt-cache refresh
@@ -1735,7 +2015,7 @@ func (s *Session) SetModel(model string) error {
 		}
 	}
 	markerText := buildModelSwitchMarkerText(modelSwitchMarkerParams{
-		oldProfile:           oldProfile,
+		oldProfile:           commitPrev,
 		nextProfile:          nextProfile,
 		contextWarning:       contextWarning,
 		contextWarningPct:    contextWarningPct,
@@ -1744,6 +2024,9 @@ func (s *Session) SetModel(model string) error {
 		droppedFallbacks:     s.lastDroppedModelFallbacks,
 	})
 	s.mu.Unlock()
+	if hook := s.cfg.testOnly.beforeModelSwitchPublish; hook != nil {
+		hook()
+	}
 	s.reportPromptRenderFailure(promptWarning)
 	// Persisted marker turn (N5): a new schema.Turn kind rendered as a
 	// systemMessage by both projection paths and excluded from
@@ -1751,13 +2034,13 @@ func (s *Session) SetModel(model string) error {
 	// client) before the live-only EventModelChanged notification below.
 	marker := schema.NewTurn(schema.TurnModelSwitch, llm.System(markerText))
 	marker.ModelSwitch = &schema.ModelSwitchInfo{
-		OldProvider: oldProfile.ID(), OldModel: oldProfile.Model(),
+		OldProvider: commitPrev.ID(), OldModel: commitPrev.Model(),
 		NewProvider: nextProfile.ID(), NewModel: nextProfile.Model(),
 	}
 	s.recordTurn(marker, marker)
 	s.emit(events.ModelChangedData{
-		OldProvider:           oldProfile.ID(),
-		OldModel:              oldProfile.Model(),
+		OldProvider:           commitPrev.ID(),
+		OldModel:              commitPrev.Model(),
 		NewProvider:           nextProfile.ID(),
 		NewModel:              nextProfile.Model(),
 		ReasoningEffortLevels: nextProfile.ReasoningEffortLevels(),
@@ -2352,18 +2635,6 @@ func (s *Session) appendTurnWithDurableTranscriptMessage(kind schema.TurnKind, l
 	return s.appendPairedTurnVia(kind, live, persisted, s.writeTranscriptDurableLocked)
 }
 
-// appendTurnWithSyncedTranscriptMessage records a turn a durability owner
-// depends on being both recorded AND synced before it commits state recovery
-// trusts. Its sole production caller is the delegate seed input (preseedInput):
-// the child is adopted and runs on the strength of that seed, and reads it back
-// from a transcript where a retained (unsynced) line is already visible — so
-// the record must be synced, not merely landed (H1). AppendDurable's
-// recorded-or-nil is the wrong door here for the same reason recordTurn's is
-// the wrong door for a skill carrier.
-func (s *Session) appendTurnWithSyncedTranscriptMessage(kind schema.TurnKind, live, persisted llm.Message) error {
-	return s.appendPairedTurnVia(kind, live, persisted, s.writeTranscriptSyncedLocked)
-}
-
 func (s *Session) appendPairedTurnVia(kind schema.TurnKind, live, persisted llm.Message, write func(schema.Turn) error) error {
 	t := schema.NewTurn(kind, live)
 	persistedTurn := t
@@ -2491,6 +2762,9 @@ func (s *Session) recordTranscriptLocked(t schema.Turn, door transcript.Door, pl
 	s.mu.Lock()
 	s.noteRecordedLocked(rec)
 	s.mu.Unlock()
+	if rec.Recorded {
+		s.publishTranscriptLocked(rec.Offset + rec.Length)
+	}
 	return rec, err
 }
 
@@ -2597,6 +2871,8 @@ func (s *Session) holdTurnUntilTranscriptReady(t schema.Turn) bool {
 // writer could not be opened, and marking those ready is what stops their turns
 // accumulating for the session's lifetime.
 func (s *Session) attachTranscript(w *transcript.Writer) {
+	s.attentionMu.Lock()
+	defer s.attentionMu.Unlock()
 	s.mu.Lock()
 	s.setTranscriptLocked(w)
 	s.transcriptReady = true
@@ -2604,7 +2880,11 @@ func (s *Session) attachTranscript(w *transcript.Writer) {
 	s.pendingTranscriptTurns = nil
 	s.mu.Unlock()
 	for _, t := range held {
-		if _, err := w.Record(t, transcript.RecordOptions{Door: transcript.DoorBuffered, Place: transcript.PlaceSession}); err != nil {
+		rec, err := w.Record(t, transcript.RecordOptions{Door: transcript.DoorBuffered, Place: transcript.PlaceSession})
+		s.mu.Lock()
+		s.noteRecordedLocked(rec)
+		s.mu.Unlock()
+		if err != nil {
 			// Buffered, not emitted directly (kata et0x): attachTranscript always
 			// runs before its caller's emitSessionStartEnvelope, so SESSION_START
 			// has not fired yet — same reasoning as the NewSession transcript-
@@ -2612,6 +2892,7 @@ func (s *Session) attachTranscript(w *transcript.Writer) {
 			s.pendingTranscriptWarnings = append(s.pendingTranscriptWarnings, events.WarningData{Message: fmt.Sprintf("transcript write failed: %v", err)})
 		}
 	}
+	s.publishTranscriptLocked(w.RecordedLength())
 	// A replayed append whose whole line landed but did not sync returned nil
 	// and queued its diagnostic on the writer; buffer it the same way, since
 	// SESSION_START has not fired yet.
@@ -2679,18 +2960,38 @@ func (s *Session) appendAssistantTurn(resp llm.Response, finalAttempt ModelAttem
 		ResponseContextMarker:           finalAttempt.ContextMarker,
 		RoundID:                         s.roundIDForModelCall(),
 	}
-	err := s.appendTurnAfterTranscriptWrite(
-		t,
-		func() error { return s.writeTranscriptDurableLocked(t) },
-		func() {
-			s.history = append(s.history, t)
-			// The round's entry is recorded: the next model call is a new
-			// round (a pause_turn continuation, a bare-text retry, the next
-			// tool round).
-			s.roundID = ""
-			s.noteAgentMessageLocked(lastAgentText(t.Message))
-		},
-	)
+	t.Authorship = s.roundTranscriptAuthorship()
+	err := func() error {
+		s.attentionMu.Lock()
+		defer s.attentionMu.Unlock()
+		if request := finalAttempt.conversation; request != nil {
+			// Compaction may publish while the provider is running. Base the
+			// delta on the current canonical frontier under the transcript door,
+			// but keep exactly the inputs that this request actually presented.
+			s.mu.Lock()
+			p := request.provenance
+			p.FrontierID = s.conversation.frontierID
+			t.ConversationFrontier = s.conversationDeltaLocked(p.RequestID, request.inputs)
+			if t.ConversationFrontier != nil {
+				p.FrontierID = t.ConversationFrontier.ID
+			}
+			t.ConversationProvenance = &p
+			s.mu.Unlock()
+		}
+		return s.appendTurnAfterTranscriptWriteLocked(
+			t,
+			func() error { return s.writeTranscriptDurableLocked(t) },
+			func() {
+				s.history = append(s.history, t)
+				// The round's entry is recorded: the next model call is a new
+				// round (a pause_turn continuation, a bare-text retry, the next
+				// tool round).
+				s.roundID = ""
+				s.noteAgentMessageLocked(lastAgentText(t.Message))
+			},
+		)
+	}()
+	s.surfaceTranscriptWarnings()
 	if err != nil {
 		s.emit(events.WarningData{Message: fmt.Sprintf("transcript write failed: %v", err)})
 	}

@@ -40,7 +40,6 @@ vi.mock("react-native", async () => ({
 	useWindowDimensions: () => ({ width: 320, height: 568, scale: 2, fontScale: harness.fontScale }),
 }));
 vi.mock("react-native-safe-area-context", () => ({ SafeAreaView: "SafeAreaView" }));
-vi.mock("expo-crypto", () => ({ randomUUID: () => "screen-test-id" }));
 vi.mock("expo-sqlite/kv-store", () => ({ Storage: harness.storage }));
 vi.mock("./ConnectionProvider", () => ({
 	useConnection: () => harness.connection,

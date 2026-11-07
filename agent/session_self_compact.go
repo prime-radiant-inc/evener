@@ -276,7 +276,7 @@ func (s *Session) applyPendingForceCompact(ctx context.Context) {
 	// caller's compaction_instructions are different: they are intent, not
 	// pressure, and the competitor did not honor them, so losing them
 	// without a trace hides real steering loss.
-	if ok, refusal := s.foldWithForceCompact(ctx, instructions, captured); !ok {
+	if ok, refusal := s.foldWithForceCompact(ctx, instructions, captured, false); !ok {
 		if strings.TrimSpace(instructions) != "" {
 			reason := "a concurrent compaction published first"
 			if refusal != nil {

@@ -84,7 +84,7 @@ func TestHubAtomicRejoinUsesRelaySessionRead(t *testing.T) {
 	}
 	// The hub commits the handoff after the response enters the connection's
 	// send queue, so this goroutine can get here before Commit runs (the same
-	// scheduling race app_rpc_test.go's retry test hit on a starved runner).
+	// scheduling race the relay retry tests in app_rpc_relay_recovery_test.go hit on a starved runner).
 	select {
 	case <-handoff.committed:
 	case <-time.After(time.Second):
@@ -744,6 +744,7 @@ func TestHubRelayKeepsDiallingAnUnconfirmedClaimAndAnnouncesGoneOnlyWhenItIsGone
 type subscribedHub struct {
 	runDir string
 	roster *hubcore.Roster
+	wire   *httptest.Server
 	client *appwire.Client
 }
 
@@ -751,6 +752,13 @@ type subscribedHub struct {
 // hub over a roster of it (with identity, if given, standing in for the
 // host's process inspection), and subscribes a client to sessionID.
 func openSubscribedHub(ctx context.Context, t *testing.T, entry rendezvous.Entry, sessionID string, identity func(rendezvous.Entry) hubcore.ProcessIdentity) subscribedHub {
+	t.Helper()
+	return openSubscribedHubWithSetup(ctx, t, entry, sessionID, identity, nil)
+}
+
+// openSubscribedHubWithSetup is openSubscribedHub with a hook that runs on the
+// hub's AppWire server before it serves a connection.
+func openSubscribedHubWithSetup(ctx context.Context, t *testing.T, entry rendezvous.Entry, sessionID string, identity func(rendezvous.Entry) hubcore.ProcessIdentity, setup func(*appserver.Server)) subscribedHub {
 	t.Helper()
 	runDir := t.TempDir()
 	writeRendezvous(t, runDir, entry)
@@ -764,6 +772,9 @@ func openSubscribedHub(ctx context.Context, t *testing.T, entry rendezvous.Entry
 	}
 	sources := newHubSourceRegistry(hubcore.WebConfig{Roster: roster})
 	server := newHubAppServer(hubcore.WebConfig{HubStateRoot: t.TempDir(), Past: hubcore.NewPastIndex(""), Roster: roster}, sources)
+	if setup != nil {
+		setup(server)
+	}
 	wire := httptest.NewServer(http.HandlerFunc(server.ServeWebSocket))
 	t.Cleanup(wire.Close)
 	client := dialHubRPC(t, wire)
@@ -774,7 +785,7 @@ func openSubscribedHub(ctx context.Context, t *testing.T, entry rendezvous.Entry
 	if _, err := client.ThreadRead(ctx, appwire.ThreadReadParams{Ref: "local:" + sessionID, Subscribe: true}); err != nil {
 		t.Fatal(err)
 	}
-	return subscribedHub{runDir: runDir, roster: roster, client: client}
+	return subscribedHub{runDir: runDir, roster: roster, wire: wire, client: client}
 }
 
 // The daemon-gone announcement is addressed to every subscriber of the
@@ -959,6 +970,145 @@ func TestHubRelayDaemonGoneAnnouncedBetweenPublishAndSubscribeStillArrives(t *te
 		t.Fatalf("child ThreadRead: %v", err)
 	}
 	awaitRelayResync(t, child.Notifications(), "gap-child", childRef, 5*time.Second)
+}
+
+// A departure announced while a second client is joining the same route must
+// reach that client once its subscription lands. Counting a route served on
+// its subscriber count alone hands the announcement to the incumbent and
+// loses it for the subscriber still binding.
+func TestHubRelayDaemonGoneReachesJoiningSubscriberOnTheSameRoute(t *testing.T) {
+	const sessionID = "same-route"
+	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+	defer cancel()
+	rootRef := appwire.Ref{SourceID: appwire.LocalSourceID, ThreadID: sessionID}.String()
+
+	// The retained delivery proves the real daemon's departure reached the
+	// fan-out while the joining read still held its command owner, which is
+	// the ordering this test needs before it releases that read.
+	departureRetained := make(chan struct{})
+	var retainedOnce sync.Once
+	pendingObservation := func(n int) {
+		if n >= 1 {
+			retainedOnce.Do(func() { close(departureRetained) })
+		}
+	}
+	t.Cleanup(installAtomicObserver(&observeHubRelayPending, pendingObservation))
+
+	daemon := startAliasRecoveryDaemon(t, sessionID, sessionID)
+	var gateArmed *atomic.Bool
+	var gateEntered <-chan struct{}
+	var gateRelease func()
+	hub := openSubscribedHubWithSetup(ctx, t, daemon.entry, sessionID, nil, func(server *appserver.Server) {
+		gateArmed, gateEntered, gateRelease = installRelayProgressGate(ctx, server)
+	})
+	joining := dialHubRPC(t, hub.wire)
+	t.Cleanup(func() { _ = joining.Close() })
+	if _, err := joining.Initialize(ctx, appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+	gateArmed.Store(true)
+	joiningRead := make(chan error, 1)
+	go func() {
+		_, err := joining.ThreadRead(ctx, appwire.ThreadReadParams{Ref: rootRef, Subscribe: true})
+		joiningRead <- err
+	}()
+	awaitActivityRelaySignal(ctx, t, gateEntered, "joining read did not reach the subscription gate")
+
+	if err := daemon.Kill(); err != nil {
+		t.Fatal(err)
+	}
+	if err := daemon.Wait(ctx); err != nil {
+		t.Fatal(err)
+	}
+	hub.roster.Refresh()
+	select {
+	case <-departureRetained:
+	case <-ctx.Done():
+		t.Fatal("the daemon-gone delivery never reached the relay fan-out")
+	}
+	gateRelease()
+	if err := <-joiningRead; err != nil {
+		t.Fatalf("joining ThreadRead: %v", err)
+	}
+	// The joining subscriber hears the departure after its own response, and
+	// the subscriber that was already on the route still hears it.
+	awaitRelayResync(t, joining.Notifications(), sessionID, rootRef, 10*time.Second)
+	awaitRelayResync(t, hub.client.Notifications(), sessionID, rootRef, 10*time.Second)
+}
+
+// The fan-out decides retention after its per-route target pass. A joining
+// read that releases between the route's command check and that retention
+// decision must not let the delivery be dropped for the whole route: the
+// deferral itself has to keep the delivery pending.
+func TestHubRelayDaemonGoneRetainsDeferredRouteAfterJoiningReadReleases(t *testing.T) {
+	const sessionID = "release-before-retention"
+	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+	defer cancel()
+	rootRef := appwire.Ref{SourceID: appwire.LocalSourceID, ThreadID: sessionID}.String()
+
+	var relays *hubRelay
+	previousObserveRelay := observeHubRelay
+	observeHubRelay = func(r *hubRelay) { relays = r }
+	t.Cleanup(func() { observeHubRelay = previousObserveRelay })
+
+	// Park the fan-out after it deferred the joining route and before it
+	// reads retention, then release the read's command owner while parked.
+	retentionReached := make(chan struct{})
+	releaseRetention := make(chan struct{})
+	var retentionOnce sync.Once
+	t.Cleanup(installAtomicObserver(&observeHubRelayDaemonGoneRetention, func() {
+		retentionOnce.Do(func() {
+			close(retentionReached)
+			select {
+			case <-releaseRetention:
+			case <-ctx.Done():
+			}
+		})
+	}))
+
+	daemon := startAliasRecoveryDaemon(t, sessionID, sessionID)
+	var gateArmed *atomic.Bool
+	var gateEntered <-chan struct{}
+	var gateRelease func()
+	hub := openSubscribedHubWithSetup(ctx, t, daemon.entry, sessionID, nil, func(server *appserver.Server) {
+		gateArmed, gateEntered, gateRelease = installRelayProgressGate(ctx, server)
+	})
+	if relays == nil {
+		t.Fatal("hub relay was not observed")
+	}
+	joining := dialHubRPC(t, hub.wire)
+	t.Cleanup(func() { _ = joining.Close() })
+	if _, err := joining.Initialize(ctx, appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+	gateArmed.Store(true)
+	joiningRead := make(chan error, 1)
+	go func() {
+		_, err := joining.ThreadRead(ctx, appwire.ThreadReadParams{Ref: rootRef, Subscribe: true})
+		joiningRead <- err
+	}()
+	awaitActivityRelaySignal(ctx, t, gateEntered, "joining read did not reach the subscription gate")
+
+	if err := daemon.Kill(); err != nil {
+		t.Fatal(err)
+	}
+	if err := daemon.Wait(ctx); err != nil {
+		t.Fatal(err)
+	}
+	hub.roster.Refresh()
+	awaitActivityRelaySignal(ctx, t, retentionReached, "fan-out did not defer the joining route")
+	gateRelease()
+	if err := <-joiningRead; err != nil {
+		t.Fatalf("joining ThreadRead: %v", err)
+	}
+	awaitActivityRelayCondition(ctx, t, func() bool {
+		return relays.relayCommandCount(rootRef) == 0
+	}, "joining read did not release its command owner")
+	close(releaseRetention)
+	// Both the incumbent and the released joining subscriber still hear the
+	// departure once the deferred route is served.
+	awaitRelayResync(t, hub.client.Notifications(), sessionID, rootRef, 10*time.Second)
+	awaitRelayResync(t, joining.Notifications(), sessionID, rootRef, 10*time.Second)
 }
 
 // A legacy rendezvous entry names no session; the probe resolves one and the
@@ -1960,9 +2110,8 @@ func TestHubRelayCanceledRemapStopsWaitingForPublicationDrain(t *testing.T) {
 	resolveMu.Unlock()
 	drainWait := make(chan struct{})
 	var drainOnce sync.Once
-	previousWait := observeHubRelayWait
-	observeHubRelayWait = func() { drainOnce.Do(func() { close(drainWait) }) }
-	t.Cleanup(func() { observeHubRelayWait = previousWait })
+	restoreWait := installObserveHubRelayWait(func() { drainOnce.Do(func() { close(drainWait) }) })
+	t.Cleanup(restoreWait)
 	readCtx, cancelRead := context.WithCancel(t.Context())
 	result := make(chan error, 1)
 	go func() {
@@ -2065,9 +2214,8 @@ func TestHubRelayRouteCallbackPanicRestoresDisplacedOwnershipAndReleasesCommand(
 	resolveMu.Lock()
 	resolved = canonicalNew
 	resolveMu.Unlock()
-	previousWait := observeHubRelayWait
-	observeHubRelayWait = func() { panic("route drain observer panic") }
-	t.Cleanup(func() { observeHubRelayWait = previousWait })
+	restoreWait := installObserveHubRelayWait(func() { panic("route drain observer panic") })
+	t.Cleanup(restoreWait)
 	recovered := make(chan any, 1)
 	go func() {
 		defer func() { recovered <- recover() }()
@@ -2077,7 +2225,7 @@ func TestHubRelayRouteCallbackPanicRestoresDisplacedOwnershipAndReleasesCommand(
 		close(releasePublication)
 		t.Fatal("replacement route callback did not re-panic")
 	}
-	observeHubRelayWait = previousWait
+	restoreWait()
 	if got := relays.relayCommandCount(relayKey); got != 0 {
 		close(releasePublication)
 		t.Fatalf("hub command ownership leaked after route callback panic: %d", got)
@@ -2260,9 +2408,8 @@ func TestHubRelayUnknownTargetDoesNotHeadOfLineBlockKnownDelivery(t *testing.T) 
 	<-secondEntered
 	waitEntered := make(chan struct{})
 	var waitOnce sync.Once
-	previous := observeHubRelayWait
-	observeHubRelayWait = func() { waitOnce.Do(func() { close(waitEntered) }) }
-	t.Cleanup(func() { observeHubRelayWait = previous })
+	restoreWait := installObserveHubRelayWait(func() { waitOnce.Do(func() { close(waitEntered) }) })
+	t.Cleanup(restoreWait)
 	unknownAck := make(chan struct{})
 	deliveries <- appsource.RelayDelivery{
 		Notification: appwire.Notification{Method: appwire.NotifyOverlayDelta, Params: []byte(`{"ref":"local:foreign"}`)},
@@ -2554,9 +2701,8 @@ func TestHubRelayRemapRetainsAuthoritativeRouteDuringReplacementRead(t *testing.
 	resolveMu.Unlock()
 	replacementResult := make(chan error, 1)
 	deliveryPending := make(chan struct{})
-	previousObserveWait := observeHubRelayWait
-	observeHubRelayWait = func() { close(deliveryPending) }
-	t.Cleanup(func() { observeHubRelayWait = previousObserveWait })
+	restoreWait := installObserveHubRelayWait(func() { close(deliveryPending) })
+	t.Cleanup(restoreWait)
 	go func() {
 		_, err := client.ThreadRead(context.Background(), appwire.ThreadReadParams{
 			Ref: downstreamRef, Subscribe: true, ReplaceSubscription: true,
@@ -2600,8 +2746,11 @@ func TestHubRelayRemapRetainsAuthoritativeRouteDuringReplacementRead(t *testing.
 	case <-time.After(time.Second):
 		t.Fatal("changed-target notification was not acknowledged after replacement routes published")
 	}
+	// The barrier rides the subscription the delta was published to, so it is
+	// sequenced behind that delta even while the read's hydration still buffers
+	// it; a hub-wide broadcast bypasses that sequencing.
 	const barrierMethod = "test/remap-read-barrier"
-	appServer.BroadcastAll(barrierMethod, map[string]any{})
+	appServer.Broadcast(downstreamRef, barrierMethod, map[string]any{})
 	timer := time.NewTimer(time.Second)
 	defer timer.Stop()
 	deltaCount := 0
@@ -3515,14 +3664,13 @@ func TestHubRelayPendingFrameWakesOnARoutePublishItRaced(t *testing.T) {
 	parked := make(chan struct{})
 	resumeListener := make(chan struct{})
 	var parkOnce sync.Once
-	previousObserveWait := observeHubRelayWait
-	observeHubRelayWait = func() {
+	restoreWait := installObserveHubRelayWait(func() {
 		parkOnce.Do(func() {
 			close(parked)
 			<-resumeListener
 		})
-	}
-	t.Cleanup(func() { observeHubRelayWait = previousObserveWait })
+	})
+	t.Cleanup(restoreWait)
 
 	replacementResult := make(chan error, 1)
 	go func() {

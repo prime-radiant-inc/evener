@@ -1,16 +1,14 @@
-import { readFileSync } from "node:fs";
-import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { useState } from "react";
 import { expect, test } from "vitest";
+import { readModuleCss } from "../../styles/cssBlock";
 import { Textarea } from "../textarea";
 import { PromptCard } from "./index";
 import promptCardStyles from "./promptcard.module.css";
 
 function moduleCss(): string {
-  return readFileSync(join(dirname(fileURLToPath(import.meta.url)), "promptcard.module.css"), "utf8");
+  return readModuleCss(import.meta.url, "promptcard.module.css");
 }
 
 /** A live card wrapping a controlled seamless field, the shape both real
@@ -130,6 +128,12 @@ test("hidden takes the card out of the interaction tree, not just out of sight",
 // is checked against the stylesheet text and the state against the DOM.
 test("the card owns the focus ring for the seamless field inside it", () => {
   expect(moduleCss()).toMatch(/\.card:focus-within\s*\{[^}]*outline: var\(--focus-ring\)/);
+});
+
+test("the focus ring sits on the card edge, so the field shows one line instead of two", () => {
+  const rule = /\.card:focus-within\s*\{([^}]*)\}/.exec(moduleCss())?.[1] ?? "";
+  expect(rule).toMatch(/outline-offset:\s*0;/);
+  expect(rule).toMatch(/border-color:\s*var\(--accent\);/);
 });
 
 // Queried only after focusing: jsdom's selector engine caches a :focus-within

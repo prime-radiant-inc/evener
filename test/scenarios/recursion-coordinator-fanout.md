@@ -269,7 +269,7 @@ default).**"); this card only runs with the raised config below.
   COORD-subject frame. Step 2 instructs the coordinator to `communicate`
   exactly `COORDINATOR_SPAWNED <each worker delegate_id>`, and a
   delegate's communicate output becomes its terminal packet's `message`
-  (`agent/subagents.go#stableDelegateFinishFromRun`), which is marshalled
+  (`agent/subagents.go#delegateFinishFromRun`), which is marshalled
   whole into the frame body
   (`agent/delegate_delivery.go#delegateNotificationContent` renders
   `<delegate-notification delegate_id="COORD">{...packet...}</delegate-notification>`).
@@ -300,7 +300,7 @@ default).**"); this card only runs with the raised config below.
   a two-valued lifecycle — `running` or `idle`, nothing else
   (`agent/delegate_tree_controller.go#captureDelegateSnapshot`, which
   maps both the idle and the closed phase to `idle`;
-  `agent/session_tools_job_status_stop.go#projectStableDelegateStatus` is what puts
+  `agent/session_tools_job_status_stop.go#projectDelegateStatus` is what puts
   that string in the listing's status column). So a stopped worker reads
   `idle` there, and NO delegate row ever reads `cancelled`, `stopped` or
   `completed` — those words belong to the latest RUN's outcome:
@@ -322,7 +322,7 @@ default).**"); this card only runs with the raised config below.
   the word cancel appears: `status` `idle`, `reason` `stopped_by_parent`,
   and `outcome` `cancelled_by_request` — meaning the request cancelled
   live runs in the subtree, versus `already_idle` when it found none
-  (`agent/session_tools_job_status_stop.go#stableDelegateStopResult`). Expect
+  (`agent/session_tools_job_status_stop.go#delegateStopJobResult`). Expect
   `previous_status` `idle`, NOT `running`: it is computed from the
   TARGET's own open run, while the outcome is computed from the whole
   subtree's (`agent/delegate_tree_stop.go#classifyDelegateStopAdmission`).

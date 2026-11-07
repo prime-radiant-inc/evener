@@ -13,11 +13,11 @@ import (
 // default envelope's shape is byte-identical to a no-schema capture, so a
 // client cannot tell them apart to decide whether to unwrap to the envelope's
 // data.
-func TestStableDelegateFinishStampsStructuredResultSource(t *testing.T) {
+func TestDelegateFinishStampsStructuredResultSource(t *testing.T) {
 	t.Parallel()
 	t.Run("a no-schema capture is the default envelope", func(t *testing.T) {
 		t.Parallel()
-		finish := stableDelegateFinishFromRun(delegateTerminalRunInputs{
+		finish := delegateFinishFromRun(delegateTerminalRunInputs{
 			result:                  "reported",
 			communicated:            true,
 			structuredResult:        map[string]any{"message": "Swept.", "data": map[string]any{"rows": 3}, "artifacts": []any{}},
@@ -29,7 +29,7 @@ func TestStableDelegateFinishStampsStructuredResultSource(t *testing.T) {
 	})
 	t.Run("a schema result is the schema source", func(t *testing.T) {
 		t.Parallel()
-		finish := stableDelegateFinishFromRun(delegateTerminalRunInputs{
+		finish := delegateFinishFromRun(delegateTerminalRunInputs{
 			result:                  "reported",
 			communicated:            true,
 			structuredResult:        map[string]any{"answer": "yes"},
@@ -44,7 +44,7 @@ func TestStableDelegateFinishStampsStructuredResultSource(t *testing.T) {
 	})
 	t.Run("a packet with no structured result carries no source", func(t *testing.T) {
 		t.Parallel()
-		finish := stableDelegateFinishFromRun(delegateTerminalRunInputs{
+		finish := delegateFinishFromRun(delegateTerminalRunInputs{
 			result:       "plain report",
 			communicated: true,
 		})

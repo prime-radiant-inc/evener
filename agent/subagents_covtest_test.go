@@ -287,27 +287,27 @@ func TestCovDelegateSettlementModeForRun(t *testing.T) {
 	}
 }
 
-// TestCovStableDelegateFatalRun covers stableDelegateFatalRun.
-func TestCovStableDelegateFatalRun2(t *testing.T) {
+// TestCovDelegateFatalRun covers delegateFatalRun.
+func TestCovDelegateFatalRun2(t *testing.T) {
 	t.Parallel()
 	// nil error — not fatal.
-	if stableDelegateFatalRun(nil) {
+	if delegateFatalRun(nil) {
 		t.Fatal("nil should not be fatal")
 	}
 	// context.Canceled — not fatal.
-	if stableDelegateFatalRun(context.Canceled) {
+	if delegateFatalRun(context.Canceled) {
 		t.Fatal("context.Canceled should not be fatal")
 	}
 	// errBareTextWithoutResultTool — not fatal.
-	if stableDelegateFatalRun(errBareTextWithoutResultTool) {
+	if delegateFatalRun(errBareTextWithoutResultTool) {
 		t.Fatal("errBareTextWithoutResultTool should not be fatal")
 	}
 	// errEmptyResponseExhausted — not fatal.
-	if stableDelegateFatalRun(errEmptyResponseExhausted) {
+	if delegateFatalRun(errEmptyResponseExhausted) {
 		t.Fatal("errEmptyResponseExhausted should not be fatal")
 	}
 	// Generic error — fatal.
-	if !stableDelegateFatalRun(errors.New("boom")) {
+	if !delegateFatalRun(errors.New("boom")) {
 		t.Fatal("generic error should be fatal")
 	}
 }
@@ -347,16 +347,16 @@ func TestCovPendingDelegateAttentionIDs_NilSession(t *testing.T) {
 	}
 }
 
-// TestCovStableDelegateRowsForSession_NilSession covers
-// stableDelegateRowsForSession.
-func TestCovStableDelegateRowsForSession_NilSession(t *testing.T) {
+// TestCovDelegateRowsForSession_NilSession covers
+// delegateRowsForSession.
+func TestCovDelegateRowsForSession_NilSession(t *testing.T) {
 	t.Parallel()
-	if got := stableDelegateRowsForSession(nil, false); got != nil {
+	if got := delegateRowsForSession(nil, false); got != nil {
 		t.Fatal("nil session should return nil")
 	}
 	// No controller.
 	s := &Session{}
-	if got := stableDelegateRowsForSession(s, false); got != nil {
+	if got := delegateRowsForSession(s, false); got != nil {
 		t.Fatal("no controller should return nil")
 	}
 }

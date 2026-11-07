@@ -149,6 +149,23 @@ remain byte-for-byte unchanged in both paths. There is no image deletion, remote
 URL fetching, new filesystem read or persistent repair cache. Other protocols,
 remote image URLs and unsupported image formats keep their existing behavior.
 
+## Document delivery (PDFs)
+
+A `read_file` of a PDF never renders pages into pixels locally: the file's raw
+bytes travel to the vision model as a base64 document part
+(`agent/session_tools_vision.go`; `input_file`/`file` parts per protocol), and
+**rendering the document is the provider's job**. Consequences:
+
+- A provider or gateway that cannot render PDF documents fails the side-channel
+  call; the session then steers the agent to "use OCR or inspect the source
+  data". There is no renderer to install locally that changes this.
+- On the `openai-chat` protocol the document part is a gateway extension; a
+  backend that ignores it sees no image at all, and the model honestly reports
+  an empty view.
+- When a task needs visual PDF reading on a provider without document support,
+  rasterize the pages to JPEG before reading them — that is the supported path,
+  not a workaround for a defect.
+
 ## Request timeouts
 
 Each request carries an `llm.AdapterTimeout`. `AdapterTimeout.Request` is the
@@ -531,6 +548,8 @@ max_output_tokens = 131072
 effort_values     = ["high", "max"]      # implies the effort control
 default_effort    = "high"               # what it runs at with nothing configured
 thinking_format   = "zai"
+[providers.work.models."deepseek-4.1-flash"]
+protocol          = "openai-chat"        # pin this one row to /chat/completions when the gateway's /responses rejects it
 
 [providers.local]
 base     = "openai-compatible"           # protocol-only pseudo-provider
@@ -823,6 +842,7 @@ It works with no credential configured.
 | 413 in any form; codes `context_length_exceeded`/`request_too_large`; a matching 400 message; Anthropic's "prompt is too long" | `KindContextLength` | non-retryable, provider message verbatim |
 | `usage_limit_reached`, `insufficient_quota`, Kimi's quota 403, the 429 "usage limit" phrase | `KindQuotaExceeded` | non-retryable, carries the reset time |
 | `rate_limit_exceeded` on 429, or any other 429 | `KindRateLimit` | retryable, honors `retry-after`/`x-ratelimit-reset-*` |
+| an error frame delivered on an HTTP 200 stream (flat `error` event, `response.failed`, or a gateway's `{"error": {...}}` wrap of an upstream rejection) | typed by the frame's own status | decoded and classified as if the gateway had returned that status as its response code: retryable when the wrapped status is retryable (a 5xx or statusless wrap), non-retryable when it names a permanent cause; the empty-stream sentinel stays armed for a 200 stream that closes without a single recognized event, which is permanent |
 | an unrecognized/unsupported request parameter | `KindInvalidRequest` | the hint names the fix: if the bad parameter is the max-tokens field's spelling, `Hint: set max_tokens_field = "<the other spelling>"`; if it's a field the row prunes, `Hint: run evener models inspect <ref> and set fields.<name> = false`; otherwise a generic hint to run `inspect` and compare the pruned-field list against the provider's documentation |
 
 The provider's own message is always included verbatim alongside the hint.
@@ -863,6 +883,13 @@ injected at construction (cycle-free: `cmd/evener` builds the closure;
   checked only against models the current instance already serves, and never
   switches instances — an unavailable plugin model falls through to the
   explicit delegate model and then the parent model.
+- A runtime switch requested while a turn is running is queued and applied at
+  the turn boundary, not refused: the running turn finishes on the model it
+  started with, the next turn (typically the message the user was typing when
+  they picked) runs on the new one, and `thread/model/changed` plus the
+  transcript's model-switch marker land at that boundary. Validation that needs
+  a settled history — unrepresentable-content checks — re-runs there; a switch
+  that fails it is dropped with a transcript warning instead of being retried.
 - The cross-instance fallback guard compares `Surface()`, not a behavior tag:
   a `model_fallbacks` entry that would switch to a different surface fails
   fast (prompt and tool surfaces differ too much to fall back silently);

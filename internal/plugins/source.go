@@ -257,13 +257,37 @@ func looksLikeGitAdministration(dir string) bool {
 	return false
 }
 
+// readPrefix reads at most limit bytes from path. The open is non-blocking and
+// lands on the descriptor's own mode, so a FIFO named HEAD or config in a
+// candidate source declines the probe instead of parking source selection on
+// the open (#4847).
 func readPrefix(path string, limit int64) ([]byte, error) {
-	file, err := os.Open(path)
+	file, err := openRegularNoBlock(path)
 	if err != nil {
 		return nil, err
 	}
 	defer func() { _ = file.Close() }()
 	return io.ReadAll(io.LimitReader(file, limit))
+}
+
+// maxMetadataFileBytes bounds each small plugin metadata file read: a
+// marketplace catalog, a plugin.json, a package.json. These are small JSON
+// documents, and the bound keeps a hostile or corrupted source from being
+// pulled into memory whole.
+const maxMetadataFileBytes = 8 << 20
+
+// readMetadataFile reads one metadata file whole through readPrefix, so a FIFO
+// substituted for it fails instead of parking the caller, and refuses anything
+// larger than maxMetadataFileBytes (#4847).
+func readMetadataFile(path string) ([]byte, error) {
+	data, err := readPrefix(path, maxMetadataFileBytes+1)
+	if err != nil {
+		return nil, err
+	}
+	if len(data) > maxMetadataFileBytes {
+		return nil, fmt.Errorf("%s is larger than %d bytes", filepath.Base(path), maxMetadataFileBytes)
+	}
+	return data, nil
 }
 
 func isHexObjectID(text string) bool {
@@ -293,7 +317,9 @@ func isHexPair(name string) bool {
 // copyTree recursively copies src to dst (files, dirs, and symlink targets as
 // regular files), creating directories as needed and overwriting existing files.
 // Every entry named .git is skipped, and a symlink reaching Git metadata is
-// refused: those bytes must never enter a published plugin tree (#4768).
+// refused: those bytes must never enter a published plugin tree (#4768). A
+// named pipe or other non-regular entry fails the copy rather than blocking on
+// its open (#4847).
 func copyTree(src, dst string) error {
 	info, err := sourceStat(src)
 	if err != nil {

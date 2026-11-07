@@ -21,12 +21,12 @@
   },
   "widthMatrix": [
     { "width": 320 },
-    { "width": 538.890625, "expectedStatusWidth": 399 },
-    { "width": 539.890625, "expectedStatusWidth": 400 },
-    { "width": 618.890625, "expectedStatusWidth": 479 },
-    { "width": 619.890625, "expectedStatusWidth": 480 },
-    { "width": 698.890625, "expectedStatusWidth": 559 },
-    { "width": 699.890625, "expectedStatusWidth": 560 },
+    { "width": 538.421875, "expectedStatusWidth": 399 },
+    { "width": 539.421875, "expectedStatusWidth": 400 },
+    { "width": 618.421875, "expectedStatusWidth": 479 },
+    { "width": 619.421875, "expectedStatusWidth": 480 },
+    { "width": 698.421875, "expectedStatusWidth": 559 },
+    { "width": 699.421875, "expectedStatusWidth": 560 },
     { "width": 900 },
     { "width": 900, "shortModel": true }
   ],

@@ -11,7 +11,7 @@ import { DockHost } from "../../shell/DockHost";
 import { conversationPaneLifetime } from "../../shell/paneLifetime";
 import { resetWorkspaceStoreForTests, workspaceStore } from "../../shell/workspace";
 import { installLocalStorage, MemoryStorage } from "../../storageTestUtils";
-import { connectionStore } from "../../stores/connection";
+import { connectionStore, resetConnectionStoreForTests } from "../../stores/connection";
 import { resetThreadsStoreForTests, threadsStore } from "../../stores/threads";
 import { emptyStateReasons } from "../../widgets/emptystate/emptyStateTestUtils";
 import virtualStyles from "../../widgets/virtuallist/virtuallist.module.css";
@@ -37,7 +37,7 @@ afterEach(() => {
   resetWorkspaceStoreForTests();
   client.close();
   resetChromeStoreForTests();
-  connectionStore.setState({ state: "idle", client: null });
+  resetConnectionStoreForTests();
   resetThreadsStoreForTests();
   vi.restoreAllMocks();
   vi.unstubAllGlobals();

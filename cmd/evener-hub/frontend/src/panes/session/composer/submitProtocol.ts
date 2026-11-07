@@ -4,7 +4,10 @@
 // when a recovery row was changed or consumed elsewhere.
 
 import type { ComposerMention } from "@evener/appwire-client";
-import { type InputAttachment, threadsStore } from "../../../stores/threads";
+import type { MutationRecoveryRecord } from "../../../stores/mutationOutbox";
+import type { DisplayedRecoveryStopCapture } from "../../../stores/mutationOutboxIndexedDB";
+import { type InputAttachment, readRecoveryWithStopEpoch, threadsStore } from "../../../stores/threads";
+import { acquireUnreadThreadClaim } from "../../../stores/useThreadModel";
 import { pushToast } from "../../../widgets/toast/store";
 
 export type DraftSelections = {
@@ -36,7 +39,9 @@ export function pushSelectionRefusal(refusal: SelectionRefusal): void {
 }
 
 // A recovery row that another surface changed ("changed") or already sent
-// ("consumed") under this one.
+// ("consumed") under this one. A resend a Stop crossed answers "sent" with a
+// born-canceled row - the composition's durable copy - so no distinct fenced
+// refusal exists.
 export type RecoveryRefusal = "changed" | "consumed";
 
 export function pushRecoveryRefusal(refusal: RecoveryRefusal): void {
@@ -55,8 +60,70 @@ export type DraftPayload = {
 };
 
 // One store call for all four routes; "drain" is the store's drainAsSteer.
-export function submitDraftToStore(route: DraftRoute, ref: string, draft: DraftPayload): Promise<void> {
+export function submitDraftToStore(
+  route: DraftRoute,
+  ref: string,
+  draft: DraftPayload,
+  compositionOwnerId?: string,
+): Promise<void> {
   const store = threadsStore.getState();
   const args = [ref, draft.text, draft.attachments, draft.skillNames, draft.commandNames, draft.mentions] as const;
-  return route === "drain" ? store.drainAsSteer(...args) : store[route](...args);
+  const call = (method: (typeof store)["send"] | (typeof store)["drainAsSteer"]) => method(...args, compositionOwnerId);
+  return route === "drain" ? call(store.drainAsSteer) : call(store[route]);
+}
+
+/** The recovery Send's synchronous intent: the press-time capture pair a
+ * recovery resend fences on, requested in the press's own synchronous
+ * prefix - before any await - so a Stop the user presses while the Send waits
+ * on persistence or destination hydration stays in the fence's future.
+ *
+ * Both halves read ONE readonly snapshot (readRecoveryWithStopEpoch):
+ * - displayedBarrier: the displayed ref's Stop fence, captured from the ref
+ *   this pane renders, INDEPENDENTLY of the row's durable destination. After
+ *   a peer retarget followed by an autosave reconciliation the two differ,
+ *   and a Stop on the still-displayed session names the displayed ref, so
+ *   deriving this capture from the destination would leave that Stop's epoch
+ *   fenced by nothing. One snapshot means one transaction per press, and
+ *   both fence halves read one consistent baseline.
+ * - durableSnapshot: the row and its current destination's Stop epoch, which
+ *   serves as both the send's destination and the destination fence's
+ *   baseline - a peer retarget that lands inside the send's own waits cannot
+ *   move the destination under the press, and one that lands between the
+ *   press and the resend is caught by the caller's target comparison. */
+export interface PressedRecoverySendIntent {
+  readonly displayedBarrier: Promise<DisplayedRecoveryStopCapture>;
+  readonly durableSnapshot: Promise<{ record: MutationRecoveryRecord | undefined; stopEpoch: number }>;
+}
+
+export function captureRecoverySendIntent(displayedRef: string, recoveryId: string): PressedRecoverySendIntent {
+  const snapshot = readRecoveryWithStopEpoch(recoveryId, displayedRef);
+  const displayedBarrier = snapshot.then((capture) => ({ stopEpoch: capture.displayedStopEpoch, displayedRef }));
+  const durableSnapshot = snapshot.then((capture) => ({ record: capture.record, stopEpoch: capture.stopEpoch }));
+  // A submission that exits through one half's rejection (the capture read
+  // failed while the Send waited) leaves the other half forever unobserved,
+  // and a rejected promise with no handler of its own surfaces as an unhandled
+  // rejection. Give each half its own inert rejection sink - callers still
+  // observe real rejections through their own await, but the unobserved half
+  // can never surface as an unhandled one (round-5 L2).
+
+  displayedBarrier.catch(() => {});
+  durableSnapshot.catch(() => {});
+  return { displayedBarrier, durableSnapshot };
+}
+
+/** Performs the resend holding the destination claim lease: a destination
+ * this tab is not already reading is hydrated under a foreground claim - the
+ * same ensureThread/releaseThread pair useThreadClaim holds a pane's
+ * subscription with - acquired only after ensureThread succeeds, so a failed
+ * acquisition (whose rollback ensureThread already performed) releases
+ * nothing, and the lease is released exactly once, after the resend. A
+ * destination another reader already tracks needs no claim and takes none. */
+export async function withRecoveryDestinationClaim<T>(destinationRef: string, perform: () => Promise<T>): Promise<T> {
+  const lease = await acquireUnreadThreadClaim(destinationRef);
+  if (lease === null) return perform();
+  try {
+    return await perform();
+  } finally {
+    lease.release();
+  }
 }

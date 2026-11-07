@@ -38,11 +38,12 @@ func flushUnpairedCommunicateItems(reg *ToolCallRegistry, turnID string) []appwi
 			continue
 		}
 		items = append(items, appwire.ThreadItem{
-			Type:   "agentMessage",
-			ID:     "item_assistant_flushed_" + callID,
-			TurnID: turnID,
-			CallID: callID,
-			Text:   msg,
+			Authorship: ProjectAuthorship(reg.CommAuthorship[callID]),
+			Type:       "agentMessage",
+			ID:         "item_assistant_flushed_" + callID,
+			TurnID:     turnID,
+			CallID:     callID,
+			Text:       msg,
 			// Completed, not InProgress or Failed. The communicate's result
 			// never arrived, so InProgress (the live preview's status) is
 			// wrong on reload — the session ended, nothing is streaming.

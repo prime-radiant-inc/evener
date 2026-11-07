@@ -18,9 +18,9 @@ import (
 // turn that landed between the two snapshots is already in the projected
 // history and is projected a second time. The request must carry it once.
 func TestDelegateSkillAppendProjectsBetweenSnapshotsTurnOnce(t *testing.T) {
-	fixture := newColdStableDelegateFixture(t, "")
+	fixture := newColdDelegateFixture(t, "")
 	const marker = "between-snapshots marker for issue 4261"
-	fixture.adapter.steps = []func(llm.Request) llm.Response{
+	fixture.adapter.setSteps([]func(llm.Request) llm.Response{
 		func(llm.Request) llm.Response { return agenttest.FinalResponse("warm") },
 		func(req llm.Request) llm.Response {
 			if got := strings.Count(requestText(req), marker); got != 1 {
@@ -28,7 +28,7 @@ func TestDelegateSkillAppendProjectsBetweenSnapshotsTurnOnce(t *testing.T) {
 			}
 			return agenttest.FinalResponse("merged")
 		},
-	}
+	})
 	root := restoreSupervisionRoot(t, fixture, nil)
 	sub := warmStableSupervisionDelegate(t, root, fixture)
 	waitForStableSupervisionRun(t, root, fixture.childID)

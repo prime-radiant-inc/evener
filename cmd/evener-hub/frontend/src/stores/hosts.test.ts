@@ -10,7 +10,7 @@ import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { FakeSocket } from "@evener/appwire-client/testing/fakeSocket";
 import { beforeEach, describe, expect, test, vi } from "vitest";
 import { connectReadyFakeClient } from "../testing/connectionTestUtils";
-import { connectionStore } from "./connection";
+import { connectionStore, resetConnectionStoreForTests } from "./connection";
 import {
   currentHostRegistration,
   hostRegistrationChanged,
@@ -37,7 +37,7 @@ function removedRow(name: string): RemovedRow {
 }
 
 beforeEach(() => {
-  connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
+  resetConnectionStoreForTests();
   hostsStore.getState().resetForTests();
 });
 
@@ -352,7 +352,7 @@ describe("mutations", () => {
       expect(outcome).toEqual({ status: "resolved", row: updatedRow });
     } finally {
       client.close();
-      connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
+      resetConnectionStoreForTests();
       vi.useRealTimers();
     }
   });
@@ -417,7 +417,7 @@ describe("mutations", () => {
       expect(outcome).toEqual({ status: "resolved" });
     } finally {
       client.close();
-      connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
+      resetConnectionStoreForTests();
       vi.useRealTimers();
     }
   });
