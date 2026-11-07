@@ -4363,9 +4363,9 @@ func TestDelegateAttention_PrelaunchRecoveryDoesNotWaitForUnlaunchedRunner(t *te
 	}
 }
 
-// delegateStopGateSnapshot names which stop-admission token still gates the
-// recovery-required finish. A stop whose only remaining token is a delivery
-// admission must not wait for a runner that never launched.
+// delegateStopGateSnapshot names which stop-admission gate can still block the
+// recovery-required finish. A stop whose only remaining delivery admission is
+// retryable must not wait for a runner that never launched.
 func delegateStopGateSnapshot(c *delegateTreeController, result delegateStopResult) string {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -4373,8 +4373,8 @@ func delegateStopGateSnapshot(c *delegateTreeController, result delegateStopResu
 	if s == nil || s.requestSeq != result.requestSeq {
 		return "no matching stop"
 	}
-	return fmt.Sprintf("active=%d starts=%d work=%d deliveries=%d quiet=%d steering=%d model=%d settlement=%d watchEnq=%d watchDel=%d claims=%d admissions=%d",
-		len(s.active), len(s.starts), len(s.work), len(s.deliveries), len(s.quietClaims),
+	return fmt.Sprintf("active=%d starts=%d work=%d deliveriesInFlight=%v quiet=%d steering=%d model=%d settlement=%d watchEnq=%d watchDel=%d claims=%d admissions=%d",
+		len(s.active), len(s.starts), len(s.work), c.stopHasInFlightDeliveriesLocked(s), len(s.quietClaims),
 		len(s.steeringClaims), len(s.modelClaims), len(s.settlementClaims),
 		len(s.watchEnqueues), len(s.watchDeliveries), len(c.deliveryClaims), len(c.deliveries))
 }

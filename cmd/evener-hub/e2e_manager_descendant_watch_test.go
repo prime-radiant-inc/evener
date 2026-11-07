@@ -423,40 +423,21 @@ func testManagerOwnedDescendantWatch(t *testing.T, missingGeneration, lateTermin
 	t.Fatalf("Manager did not consume child watch delivery: %+v", page)
 }
 
-func managerWatchReceipt(journalPath, watchID, triggerReason string) bool {
-	journal, err := os.ReadFile(journalPath)
-	if err != nil {
-		return false
-	}
-	lines := bytes.Split(journal, []byte{'\n'})
-	for _, line := range lines[:len(lines)-1] {
-		var record struct {
-			Kind      string `json:"kind"`
-			WatchSend *struct {
-				Key struct {
-					WatchID string `json:"watch_id"`
-				} `json:"key"`
-				TriggerReason string `json:"trigger_reason"`
-			} `json:"watch_send"`
-		}
-		if err := json.Unmarshal(line, &record); err != nil {
-			continue
-		}
-		if record.Kind == "watch_send_delivered" && record.WatchSend != nil && record.WatchSend.Key.WatchID == watchID && record.WatchSend.TriggerReason == triggerReason {
-			return true
-		}
-	}
-	return false
+type watchSendJournalRecord struct {
+	Kind          string
+	DeliveryID    string
+	TriggerReason string
+	UpdateSeq     uint64
 }
 
-// managerWatchJournalSnapshot lists every watch-send record for watchID, so a
-// missing completion receipt names what was recorded instead.
-func managerWatchJournalSnapshot(journalPath, watchID string) string {
+// watchSendJournalRecords decodes every watch-send record for watchID. The
+// journal is read whole: an unterminated final line is still a record.
+func watchSendJournalRecords(journalPath, watchID string) ([]watchSendJournalRecord, error) {
 	journal, err := os.ReadFile(journalPath)
 	if err != nil {
-		return "read journal: " + err.Error()
+		return nil, err
 	}
-	var rows []string
+	var rows []watchSendJournalRecord
 	for line := range bytes.SplitSeq(journal, []byte{'\n'}) {
 		if len(line) == 0 {
 			continue
@@ -475,7 +456,42 @@ func managerWatchJournalSnapshot(journalPath, watchID string) string {
 		if json.Unmarshal(line, &record) != nil || record.WatchSend == nil || record.WatchSend.Key.WatchID != watchID {
 			continue
 		}
-		rows = append(rows, fmt.Sprintf("%s delivery=%s seq=%d trigger=%q", record.Kind, record.WatchSend.DeliveryID, record.WatchSend.UpdateSeq, record.WatchSend.TriggerReason))
+		rows = append(rows, watchSendJournalRecord{
+			Kind:          record.Kind,
+			DeliveryID:    record.WatchSend.DeliveryID,
+			TriggerReason: record.WatchSend.TriggerReason,
+			UpdateSeq:     record.WatchSend.UpdateSeq,
+		})
 	}
-	return strings.Join(rows, "; ")
+	return rows, nil
+}
+
+func managerWatchReceipt(journalPath, watchID, triggerReason string) bool {
+	rows, err := watchSendJournalRecords(journalPath, watchID)
+	if err != nil {
+		return false
+	}
+	for _, row := range rows {
+		if row.Kind == "watch_send_delivered" && row.TriggerReason == triggerReason {
+			return true
+		}
+	}
+	return false
+}
+
+// managerWatchJournalSnapshot lists every watch-send record for watchID, so a
+// missing completion receipt names what was recorded instead.
+func managerWatchJournalSnapshot(journalPath, watchID string) string {
+	rows, err := watchSendJournalRecords(journalPath, watchID)
+	if err != nil {
+		return "read journal: " + err.Error()
+	}
+	if len(rows) == 0 {
+		return "none"
+	}
+	parts := make([]string, 0, len(rows))
+	for _, row := range rows {
+		parts = append(parts, fmt.Sprintf("%s delivery=%s seq=%d trigger=%q", row.Kind, row.DeliveryID, row.UpdateSeq, row.TriggerReason))
+	}
+	return strings.Join(parts, "; ")
 }
