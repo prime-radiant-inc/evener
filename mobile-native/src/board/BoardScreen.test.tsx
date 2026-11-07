@@ -715,6 +715,25 @@ it("keeps own errors and live attention while settled delegate chips stay quiet"
 	expect(nav.navigate).toHaveBeenCalledWith("Conversation", { hubId: id, ref: "local:mixed", title: "Mixed work" });
 });
 
+it("reports a Board tap to the Duo split instead of the root stack", async () => {
+	const id = hubId();
+	connect(id, hub(fleet).client, "ready");
+	const nav = navigation();
+	const opened = vi.fn();
+	const tree = render(
+		<BoardScreen
+			navigation={nav as never}
+			route={{ key: "Sessions", name: "Sessions" } as never}
+			duoEmbedded
+			onOpenConversation={opened}
+		/>,
+	);
+	await settleMicrotasks();
+	act(() => rowTitled(tree, "Fix retry loop").props.onPress());
+	expect(opened).toHaveBeenCalledWith({ hubId: id, ref: "local:fail", title: "Fix retry loop" });
+	expect(nav.navigate).not.toHaveBeenCalledWith("Conversation", expect.anything());
+});
+
 it("renders the fleet's bands in order with their counts, and Idle starts folded", async () => {
 	const id = hubId();
 	adoptedAnHourAgo(id);

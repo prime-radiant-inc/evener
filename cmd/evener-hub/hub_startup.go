@@ -212,12 +212,24 @@ func (r *hubRuntime) bump() { r.inputs.Bump() }
 
 func (r *hubRuntime) pokeAttention() {
 	r.inputs.Bump()
-	select {
-	case r.attentionPoke <- struct{}{}:
-	default:
-	}
+	r.pokeAttentionWatcher()
+	r.pokeRemoteRefresher()
+}
+
+// pokeRemoteRefresher nudges the remote-thread cache's refresher.
+func (r *hubRuntime) pokeRemoteRefresher() {
 	select {
 	case r.remotePoke <- struct{}{}:
+	default:
+	}
+}
+
+// pokeAttentionWatcher nudges only the attention watcher. A local roster change
+// is not a remote-source change, so feeding it to remotePoke would make the
+// ~30s remote refresher walk every attached host for nothing.
+func (r *hubRuntime) pokeAttentionWatcher() {
+	select {
+	case r.attentionPoke <- struct{}{}:
 	default:
 	}
 }
@@ -752,6 +764,14 @@ func (r *hubRuntime) wireNavigationInvalidation(web *WebServer) {
 	r.roster.SetOnChange(func() {
 		bump()
 		web.navigation.Invalidate(navigationChangeHint{})
+		// The attention watcher derives needs-you/working and the Manager's
+		// roster from this same snapshot, but its own loop only recomputes on a
+		// five-second tick unless something pokes it. Without this, a daemon
+		// appearing, leaving, or reporting a pending ask reached the sidebar at
+		// once (Invalidate) while attention and every armed Manager roster watch
+		// waited out the tick, up to five seconds behind the state they
+		// describe.
+		r.pokeAttentionWatcher()
 		observeSessionCredentials()
 		reconcileSessionTools(web.sources)
 	})
