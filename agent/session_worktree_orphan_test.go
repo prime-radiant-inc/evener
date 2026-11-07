@@ -756,8 +756,12 @@ func TestDelegateWakeRefusesForeignHeldLane(t *testing.T) {
 // owning it, and whose notification wake therefore validates an ancestor's
 // lane, not a lane of its own.
 type sharedDescendantLane struct {
-	fixture          coldDelegateFixture
-	lanePath         string
+	fixture  coldDelegateFixture
+	lanePath string
+	// announceHold is the channel this lane's fixture took from the
+	// announce-hold registry: every finalize tail in this tree parks on it
+	// until the test closes it.
+	announceHold     chan struct{}
 	root             *Session  // the fixture's root, which owns the lane-owning delegate
 	delegateSub      *subagent // the lane-owning delegate, as root sees it
 	delegateSess     *Session  // the lane-owning delegate's runtime, which drives the child's wake
@@ -798,28 +802,33 @@ func (l *delegateDeliveryClassificationLog) snapshot() []string {
 // The announce-hold registry seeds the loaded-runner interleave for the
 // shared-descendant fixtures: a test registers a hold under its lane name
 // before the fixture call, the fixture parks every pre-announce finalize tail
-// on it, and the test releases the hold once the fixture has returned — the
+// on the hold it takes, and the test releases the hold its fixture took — the
 // fixture's first send comes back while the lane-owning delegate's
 // finalization drain is still parked on the retained child, so the release
 // replays the shape where the child's tail completes only after the send has
-// returned. Lane names are unique per test, so parallel registrations never
-// collide.
+// returned. Repeated copies of one test share a lane name, so the registry
+// pools one channel per registration and a fixture takes exactly one; the
+// lane records which one it took and the test releases that one, so a copy
+// never releases a channel another copy's fixture parked on.
 var sharedDescendantAnnounceHoldsMu sync.Mutex
-var sharedDescendantAnnounceHolds = make(map[string]chan struct{})
+var sharedDescendantAnnounceHolds = make(map[string][]chan struct{})
 
-func holdSharedDescendantAnnounce(laneName string) chan struct{} {
+func holdSharedDescendantAnnounce(laneName string) {
 	hold := make(chan struct{})
 	sharedDescendantAnnounceHoldsMu.Lock()
-	sharedDescendantAnnounceHolds[laneName] = hold
+	sharedDescendantAnnounceHolds[laneName] = append(sharedDescendantAnnounceHolds[laneName], hold)
 	sharedDescendantAnnounceHoldsMu.Unlock()
-	return hold
 }
 
 func takeSharedDescendantAnnounceHold(laneName string) chan struct{} {
 	sharedDescendantAnnounceHoldsMu.Lock()
 	defer sharedDescendantAnnounceHoldsMu.Unlock()
-	hold := sharedDescendantAnnounceHolds[laneName]
-	delete(sharedDescendantAnnounceHolds, laneName)
+	holds := sharedDescendantAnnounceHolds[laneName]
+	if len(holds) == 0 {
+		return nil
+	}
+	hold := holds[0]
+	sharedDescendantAnnounceHolds[laneName] = holds[1:]
 	return hold
 }
 
@@ -876,7 +885,9 @@ func spawnSharedDescendantLane(t *testing.T, r *wtRepo, laneName, standInDlg, st
 	// announce is always the first to arrive: the delegate's own announce is
 	// sequenced behind its finalization drain, which waits for the child's
 	// run to return.
+	var takenAnnounceHold chan struct{}
 	if hold := takeSharedDescendantAnnounceHold(laneName); hold != nil {
+		takenAnnounceHold = hold
 		root.cfg.testOnly.subagentBeforeGenerationAnnounced = func(*subagent) { <-hold }
 	}
 	wtGit(t, r.mainRoot, "worktree", "unlock", lanePath)
@@ -933,6 +944,7 @@ func spawnSharedDescendantLane(t *testing.T, r *wtRepo, laneName, standInDlg, st
 	return &sharedDescendantLane{
 		fixture:          fixture,
 		lanePath:         lanePath,
+		announceHold:     takenAnnounceHold,
 		root:             root,
 		delegateSub:      delegateSub,
 		delegateSess:     delegateSub.sess,
@@ -1567,7 +1579,7 @@ func TestDelegateAttentionFailedStartReopensConsumedReport(t *testing.T) {
 	// drive a presentation of its own — against the still-tree-held lane,
 	// stealing the scripted step below. The fixture suppresses that edge, so
 	// nothing may present before this test's own drives.
-	announceHold := holdSharedDescendantAnnounce("reopen-failed-start")
+	holdSharedDescendantAnnounce("reopen-failed-start")
 	lane := spawnSharedDescendantLane(t, r, "reopen-failed-start", "dlg_reopentest00001", "034reopenplaceholder01", wedge)
 	// The wedge parks a model call until release: close it from cleanup so a
 	// fatal anywhere below cannot leak the parked turn past test end.
@@ -1575,7 +1587,7 @@ func TestDelegateAttentionFailedStartReopensConsumedReport(t *testing.T) {
 	t.Cleanup(func() { releaseOnce.Do(func() { close(release) }) })
 
 	var announceHoldOnce sync.Once
-	releaseAnnounceHold := func() { announceHoldOnce.Do(func() { close(announceHold) }) }
+	releaseAnnounceHold := func() { announceHoldOnce.Do(func() { close(lane.announceHold) }) }
 	// A fatal before the release would park the held finalize tail forever,
 	// so the cleanup mirror guarantees the parked tail can always finish.
 	t.Cleanup(releaseAnnounceHold)
@@ -1828,10 +1840,10 @@ func TestDelegateAttentionBusyCommitReopensConsumedReport(t *testing.T) {
 	// runner produces by stretching the parked tails, and the shape whose
 	// race dropped CI runs: the scenario's budgets below must start from the
 	// row's arrival, not the fixture's return.
-	announceHold := holdSharedDescendantAnnounce("busy-commit-reopen")
+	holdSharedDescendantAnnounce("busy-commit-reopen")
 	lane := spawnSharedDescendantLane(t, r, "busy-commit-reopen", "dlg_busycommit00001", "034busycommit00001", wedge)
 	var announceHoldOnce sync.Once
-	releaseAnnounceHold := func() { announceHoldOnce.Do(func() { close(announceHold) }) }
+	releaseAnnounceHold := func() { announceHoldOnce.Do(func() { close(lane.announceHold) }) }
 	// A fatal before the release would park the held finalize tail forever,
 	// so the cleanup mirror guarantees the parked tail can always finish.
 	t.Cleanup(releaseAnnounceHold)
@@ -2618,10 +2630,10 @@ func TestDelegateAttentionDeliveredReportReleasesUserStopHold(t *testing.T) {
 	// busy-commit test holds: the fixture's send returns while the delegate's
 	// finalization drain is still parked on the retained child, so the
 	// release lands the child's report delivery inside this test's window.
-	announceHold := holdSharedDescendantAnnounce("delivered-release-hold")
+	holdSharedDescendantAnnounce("delivered-release-hold")
 	lane := spawnSharedDescendantLane(t, r, "delivered-release-hold", "dlg_delivhold0001", "034delivhold00001")
 	var announceHoldOnce sync.Once
-	releaseAnnounceHold := func() { announceHoldOnce.Do(func() { close(announceHold) }) }
+	releaseAnnounceHold := func() { announceHoldOnce.Do(func() { close(lane.announceHold) }) }
 	// A fatal before the release would park the held finalize tail forever,
 	// so the cleanup mirror guarantees the parked tail can always finish.
 	t.Cleanup(releaseAnnounceHold)
@@ -3090,10 +3102,10 @@ func TestDelegateAttentionStopAdmittedDuringReopenResolvesFreshRow(t *testing.T)
 	// scenario's budgets from the row's arrival instead of racing the
 	// landing — the race whose loop exit and mid-chain timeout dropped CI
 	// runs.
-	announceHold := holdSharedDescendantAnnounce("stop-during-reopen")
+	holdSharedDescendantAnnounce("stop-during-reopen")
 	lane := spawnSharedDescendantLane(t, r, "stop-during-reopen", "dlg_stopreopen0001", "034stopreopen0001")
 	var announceHoldOnce sync.Once
-	releaseAnnounceHold := func() { announceHoldOnce.Do(func() { close(announceHold) }) }
+	releaseAnnounceHold := func() { announceHoldOnce.Do(func() { close(lane.announceHold) }) }
 	// A fatal before the release would park the held finalize tail forever,
 	// so the cleanup mirror guarantees the parked tail can always finish.
 	t.Cleanup(releaseAnnounceHold)
@@ -3218,9 +3230,29 @@ func TestDelegateAttentionStopAdmittedDuringReopenResolvesFreshRow(t *testing.T)
 
 	// The re-check's contract: the stop owns the freshly appended row, so
 	// nothing pending survives and the fold records the hand-off.
-	// TRIPWIRE: the re-check resolves the fresh row at the append that raced
-	// the admitted stop, within seconds; the bound only fires on a hang.
+	// The seam admits the stop BEFORE the reopen's append lands, so the wait
+	// must await the append's own durable outcome — a reopened row the
+	// re-check resolved as discarded — and not merely the absence of a
+	// pending reopened row, which is vacuously true until the append lands
+	// and lets a loaded shard's scheduling race the fold read past it.
+	// TRIPWIRE: the re-check resolves the fresh row within seconds of the
+	// admission; the bound only fires on a hang.
 	waitForCondition(t, 30*time.Second, "the reopen's fresh row to be resolved for the stop admitted mid-window", func() bool {
+		fold, foldErr := readDelegateAttentionFold(lane.delegateSess.TranscriptPath(), lane.delegateSess.id)
+		if foldErr != nil {
+			return false
+		}
+		for id, disposition := range fold.resolutions {
+			if strings.Contains(id, "/reopened/") && disposition == delegateAttentionDiscarded {
+				return true
+			}
+		}
+		return false
+	})
+	// With the hand-off recorded, nothing pending survives.
+	// TRIPWIRE: the discard clears the pending row in the same breath as
+	// the resolution; the bound only fires on a genuine hang.
+	waitForCondition(t, 30*time.Second, "the stop's hand-off to leave no reopened row pending", func() bool {
 		fold, foldErr := readDelegateAttentionFold(lane.delegateSess.TranscriptPath(), lane.delegateSess.id)
 		if foldErr != nil {
 			return false
