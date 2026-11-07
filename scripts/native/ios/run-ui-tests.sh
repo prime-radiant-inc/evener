@@ -303,13 +303,27 @@ if ! /usr/libexec/PlistBuddy -c "Print :$ui_key:EnvironmentVariables" "$private_
 fi
 inject_environment() {
 	if /usr/libexec/PlistBuddy -c "Print :$ui_key:EnvironmentVariables:$1" "$private_run" >/dev/null 2>&1; then
-		/usr/libexec/PlistBuddy -c "Set :$ui_key:EnvironmentVariables:$1 string $2" "$private_run" >/dev/null
+		# Set takes only the entry and its value; the type token belongs
+		# to Add alone.
+		/usr/libexec/PlistBuddy -c "Set :$ui_key:EnvironmentVariables:$1 $2" "$private_run" >/dev/null
 	else
 		/usr/libexec/PlistBuddy -c "Add :$ui_key:EnvironmentVariables:$1 string $2" "$private_run" >/dev/null
 	fi
 }
 inject_environment EVENER_QUALIFICATION_HUB_ORIGIN "$hub_origin"
 inject_environment EVENER_QUALIFICATION_HUB_TOKEN "$hub_token"
+# The journeys read their connection data from the test process environment:
+# each entry must round-trip through the file it was injected into, not just
+# make its Add or Set exit zero.
+verify_environment() {
+	stored="$(/usr/libexec/PlistBuddy -c "Print :$ui_key:EnvironmentVariables:$1" "$private_run" 2>/dev/null)"
+	if [ "$stored" != "$2" ]; then
+		echo "$SCRIPT_NAME: $1 did not round-trip through the test-run configuration" >&2
+		exit 1
+	fi
+}
+verify_environment EVENER_QUALIFICATION_HUB_ORIGIN "$hub_origin"
+verify_environment EVENER_QUALIFICATION_HUB_TOKEN "$hub_token"
 chmod 600 "$private_run"
 
 xcresult="$output/ui.xcresult"
