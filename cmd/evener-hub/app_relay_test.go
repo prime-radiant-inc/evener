@@ -1036,6 +1036,25 @@ func TestHubRelayDaemonGoneReachesJoiningSubscriberOnTheSameRoute(t *testing.T) 
 	awaitRelayResync(t, hub.client.Notifications(), sessionID, rootRef, 10*time.Second)
 }
 
+// parkDaemonGoneRetention parks the fan-out at its first retention decision
+// until release is called, after reporting that the decision was reached.
+func parkDaemonGoneRetention(ctx context.Context, t *testing.T) (<-chan struct{}, func()) {
+	t.Helper()
+	reached := make(chan struct{})
+	release := make(chan struct{})
+	var once sync.Once
+	t.Cleanup(installAtomicObserver(&observeHubRelayDaemonGoneRetention, func() {
+		once.Do(func() {
+			close(reached)
+			select {
+			case <-release:
+			case <-ctx.Done():
+			}
+		})
+	}))
+	return reached, sync.OnceFunc(func() { close(release) })
+}
+
 // The fan-out decides retention after its per-route target pass. A joining
 // read that releases between the route's command check and that retention
 // decision must not let the delivery be dropped for the whole route: the
@@ -1053,18 +1072,7 @@ func TestHubRelayDaemonGoneRetainsDeferredRouteAfterJoiningReadReleases(t *testi
 
 	// Park the fan-out after it deferred the joining route and before it
 	// reads retention, then release the read's command owner while parked.
-	retentionReached := make(chan struct{})
-	releaseRetention := make(chan struct{})
-	var retentionOnce sync.Once
-	t.Cleanup(installAtomicObserver(&observeHubRelayDaemonGoneRetention, func() {
-		retentionOnce.Do(func() {
-			close(retentionReached)
-			select {
-			case <-releaseRetention:
-			case <-ctx.Done():
-			}
-		})
-	}))
+	retentionReached, releaseRetention := parkDaemonGoneRetention(ctx, t)
 
 	daemon := startAliasRecoveryDaemon(t, sessionID, sessionID)
 	var gateArmed *atomic.Bool
@@ -1104,11 +1112,138 @@ func TestHubRelayDaemonGoneRetainsDeferredRouteAfterJoiningReadReleases(t *testi
 	awaitActivityRelayCondition(ctx, t, func() bool {
 		return relays.relayCommandCount(rootRef) == 0
 	}, "joining read did not release its command owner")
-	close(releaseRetention)
+	releaseRetention()
 	// Both the incumbent and the released joining subscriber still hear the
 	// departure once the deferred route is served.
 	awaitRelayResync(t, hub.client.Notifications(), sessionID, rootRef, 10*time.Second)
 	awaitRelayResync(t, joining.Notifications(), sessionID, rootRef, 10*time.Second)
+}
+
+// A route whose first subscriber is still binding has no incumbent to hear a
+// departure early. The pass sees no subscriber and the read's command owner,
+// and the read releases before retention is decided, so routesPending() alone
+// is already false at that decision: only the route's own deferral keeps the
+// delivery pending for the joiner. A second route with no subscriber and no
+// read in flight is closed: skipping it must not defer, or the delivery stayed
+// pending to hand a later first subscriber a stale resync.
+func TestHubRelayDaemonGoneRetainsRouteAwaitingItsFirstSubscriber(t *testing.T) {
+	const (
+		rootRef   = "local:first-subscriber-root"
+		childRef  = "local:first-subscriber-child"
+		closedRef = "local:first-subscriber-closed"
+	)
+	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+	defer cancel()
+	previousIdleInterval := hubRelayIdleInterval
+	hubRelayIdleInterval = time.Hour
+	t.Cleanup(func() { hubRelayIdleInterval = previousIdleInterval })
+
+	var relays *hubRelay
+	previousObserveRelay := observeHubRelay
+	observeHubRelay = func(r *hubRelay) { relays = r }
+	t.Cleanup(func() { observeHubRelay = previousObserveRelay })
+
+	var retained atomic.Int64
+	t.Cleanup(installAtomicObserver(&observeHubRelayPending, func(n int) {
+		retained.Store(int64(n))
+	}))
+
+	// Park the fan-out after it deferred the child route and before it reads
+	// retention, then release the child's read while parked.
+	retentionReached, releaseRetention := parkDaemonGoneRetention(ctx, t)
+
+	deliveries := make(chan appsource.RelayDelivery)
+	lease := &scriptedRelaySessionLease{
+		readFunc: func(params appwire.ThreadReadParams) (appsource.RelayReadResult, error) {
+			ref, err := appwire.ParseRef(params.Ref)
+			if err != nil {
+				return appsource.RelayReadResult{}, err
+			}
+			return appsource.RelayReadResult{
+				Response: appwire.ThreadReadResponse{Thread: appwire.Thread{
+					ID: ref.ThreadID, Source: ref.SourceID,
+					Evener: appwire.EvenerThread{Ref: params.Ref},
+				}},
+				Handoff: &guardedRelayHandoff{prepareAllowed: true, commitAllowed: true},
+			}, nil
+		},
+		deliveries: deliveries,
+	}
+	source := &relaySessionTestSource{
+		lease: lease,
+		resolveRelay: func(appwire.ThreadReadParams) (appwire.Ref, error) {
+			return appwire.ParseRef(rootRef)
+		},
+	}
+	sources := appsource.NewRegistry()
+	sources.Add(source)
+	appServer := newHubAppServer(hubcore.WebConfig{
+		HubStateRoot: t.TempDir(),
+		Past:         hubcore.NewPastIndex(""),
+	}, sources)
+	gateArmed, gateEntered, gateRelease := installRelayProgressGate(ctx, appServer)
+	hub := httptest.NewServer(http.HandlerFunc(appServer.ServeWebSocket))
+	defer hub.Close()
+	root := dialHubRPC(t, hub)
+	defer root.Close()
+	child := dialHubRPC(t, hub)
+	defer child.Close()
+	for _, client := range []*appwire.Client{root, child} {
+		if _, err := client.Initialize(ctx, appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+			t.Fatalf("Initialize: %v", err)
+		}
+	}
+	if _, err := root.ThreadRead(ctx, appwire.ThreadReadParams{Ref: rootRef, Subscribe: true}); err != nil {
+		t.Fatalf("root ThreadRead: %v", err)
+	}
+	if relays == nil {
+		t.Fatal("hub relay was not observed")
+	}
+	// Bind a child route, then drop its only subscriber. The route survives
+	// with no subscriber and no read in flight, the closed shape this test
+	// needs beside the route whose first subscriber is still binding.
+	if _, err := child.ThreadRead(ctx, appwire.ThreadReadParams{Ref: closedRef, Subscribe: true}); err != nil {
+		t.Fatalf("closed route ThreadRead: %v", err)
+	}
+	if _, err := child.ThreadUnsubscribe(ctx, appwire.ThreadUnsubscribeParams{Ref: closedRef}); err != nil {
+		t.Fatalf("closed route ThreadUnsubscribe: %v", err)
+	}
+	awaitActivityRelayCondition(ctx, t, func() bool {
+		return appServer.SubscriberCount(closedRef) == 0 && relays.relayCommandCount(closedRef) == 0
+	}, "closed route did not drain its subscriber and command owner")
+	gateArmed.Store(true)
+	childRead := make(chan error, 1)
+	go func() {
+		_, err := child.ThreadRead(ctx, appwire.ThreadReadParams{Ref: childRef, Subscribe: true})
+		childRead <- err
+	}()
+	awaitActivityRelaySignal(ctx, t, gateEntered, "child read did not reach the subscription gate")
+
+	// The child route has no incumbent: this pass must defer on the read's
+	// command owner alone, with no subscriber count to justify it.
+	deliveries <- appsource.RelayDelivery{
+		Notification: appsource.DaemonGoneResync(),
+		DaemonGone:   true,
+	}
+	awaitActivityRelaySignal(ctx, t, retentionReached, "fan-out did not reach the retention decision")
+
+	gateRelease()
+	if err := <-childRead; err != nil {
+		t.Fatalf("child ThreadRead: %v", err)
+	}
+	awaitActivityRelayCondition(ctx, t, func() bool {
+		return relays.relayCommandCount(childRef) == 0
+	}, "child read did not release its command owner")
+	releaseRetention()
+	awaitRelayResync(t, child.Notifications(), "first-subscriber-child", childRef, 10*time.Second)
+	// The closed route kept nobody waiting for the departure, so the delivery
+	// is complete and released rather than parked until an unrelated route
+	// change.
+	settleCtx, settleCancel := context.WithTimeout(ctx, 5*time.Second)
+	defer settleCancel()
+	awaitActivityRelayCondition(settleCtx, t, func() bool {
+		return retained.Load() == 0
+	}, "daemon-gone delivery stayed pending for a route with no read in flight")
 }
 
 // A legacy rendezvous entry names no session; the probe resolves one and the
