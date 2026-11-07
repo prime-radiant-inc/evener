@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -28,14 +29,16 @@ import (
 // Only the external model is scripted. Both the owned child and the Manager's
 // job_watch tool use real sessions, transcript projections and bound hub Watch.
 type descendantWatchProvider struct {
-	rootID     string
-	mu         sync.Mutex
-	steps      map[string]int
-	childReady chan string
-	target     chan string
-	release    chan struct{}
-	wake       <-chan struct{}
-	advanced   chan struct{}
+	rootID       string
+	mu           sync.Mutex
+	steps        map[string]int
+	childReady   chan string
+	target       chan string
+	release      chan struct{}
+	terminal     chan struct{}
+	lateTerminal bool
+	wake         <-chan struct{}
+	advanced     chan struct{}
 }
 
 type descendantWatchEnvelope struct{ sessionTaskEnvelopeSource }
@@ -74,41 +77,68 @@ func (p *descendantWatchProvider) Complete(ctx context.Context, req llm.Request)
 			}
 		case 3:
 			close(p.advanced)
+		case 4:
+		default:
+			return llm.Response{}, fmt.Errorf("unexpected Manager model call step %d", step)
 		}
-	} else if step == 0 {
-		select {
-		case p.childReady <- req.SessionID:
-		case <-ctx.Done():
-			return llm.Response{}, ctx.Err()
+	} else {
+		switch step {
+		case 0:
+			select {
+			case p.childReady <- req.SessionID:
+			case <-ctx.Done():
+				return llm.Response{}, ctx.Err()
+			}
+			select {
+			case <-p.release:
+			case <-ctx.Done():
+				return llm.Response{}, ctx.Err()
+			}
+			if !p.lateTerminal {
+				return activityRelayTool("communicate", map[string]any{"message": "descendant-watch-result", "end_turn": true, "output": map[string]any{"message": "descendant-watch-result", "data": map[string]any{}, "artifacts": []string{}}}), nil
+			}
+			return activityRelayTool("communicate", map[string]any{"message": "descendant-watch-update", "end_turn": false, "output": map[string]any{"message": "", "data": map[string]any{}, "artifacts": []string{}}}), nil
+		case 1:
+			if !p.lateTerminal {
+				return llm.Response{}, fmt.Errorf("unexpected child model call step %d", step)
+			}
+			select {
+			case <-p.terminal:
+			case <-ctx.Done():
+				return llm.Response{}, ctx.Err()
+			}
+			return activityRelayTool("communicate", map[string]any{"message": "descendant-watch-result", "end_turn": true, "output": map[string]any{"message": "descendant-watch-result", "data": map[string]any{}, "artifacts": []string{}}}), nil
+		default:
+			return llm.Response{}, fmt.Errorf("unexpected child model call step %d", step)
 		}
-		select {
-		case <-p.release:
-		case <-ctx.Done():
-			return llm.Response{}, ctx.Err()
-		}
-		return activityRelayTool("communicate", map[string]any{"message": "descendant-watch-result", "end_turn": true, "output": map[string]any{"message": "descendant-watch-result", "data": map[string]any{}, "artifacts": []string{}}}), nil
 	}
-	<-ctx.Done()
-	return llm.Response{}, ctx.Err()
+	return activityRelayTool("communicate", map[string]any{"message": "descendant-watch-manager-idle", "end_turn": true, "output": map[string]any{"message": "", "data": map[string]any{}, "artifacts": []string{}}}), nil
 }
 
 func TestE2E_ManagerOwnedDescendantWatch(t *testing.T) {
-	for _, missingGeneration := range []bool{false, true} {
-		name := "authoritative"
-		if missingGeneration {
-			name = "missing-generation-refused"
-		}
-		t.Run(name, func(t *testing.T) { testManagerOwnedDescendantWatch(t, missingGeneration) })
+	for _, tc := range []struct {
+		name              string
+		missingGeneration bool
+		lateTerminal      bool
+	}{
+		{name: "authoritative"},
+		{name: "late-terminal", lateTerminal: true},
+		{name: "missing-generation-refused", missingGeneration: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			testManagerOwnedDescendantWatch(t, tc.missingGeneration, tc.lateTerminal)
+		})
 	}
 }
 
-func testManagerOwnedDescendantWatch(t *testing.T, missingGeneration bool) {
+func testManagerOwnedDescendantWatch(t *testing.T, missingGeneration, lateTerminal bool) {
 	ctx, cancel := context.WithTimeout(t.Context(), 15*time.Second)
 	defer cancel()
 	stateDir := filepath.Join(t.TempDir(), "project-descendant-watch-0000000000")
 	workDir, runDir := t.TempDir(), t.TempDir()
 	wakes := make(chan struct{}, 32)
-	script := &descendantWatchProvider{steps: map[string]int{}, childReady: make(chan string, 1), target: make(chan string, 1), release: make(chan struct{}), wake: wakes, advanced: make(chan struct{})}
+	notified := make(chan struct{}, 1)
+	script := &descendantWatchProvider{steps: map[string]int{}, childReady: make(chan string, 1), target: make(chan string, 1), release: make(chan struct{}), terminal: make(chan struct{}), lateTerminal: lateTerminal, wake: wakes, advanced: make(chan struct{})}
 	llmClient := llm.NewClient()
 	llmClient.Register(script)
 	sess, err := agent.NewSession(llmClient, provider.NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(workDir), agent.SessionConfig{StateDir: stateDir, MaxSubagentDepth: 1, Manager: true, Sandbox: "off", AgentsDocPath: filepath.Join(workDir, "absent-AGENTS.md")})
@@ -153,6 +183,10 @@ func testManagerOwnedDescendantWatch(t *testing.T, missingGeneration bool) {
 		case wakes <- struct{}{}:
 		default:
 		}
+		select {
+		case notified <- struct{}{}:
+		default:
+		}
 	})
 	daemonHTTP := httptest.NewServer(http.HandlerFunc(daemon.AppServer().ServeWebSocket))
 	t.Cleanup(daemonHTTP.Close)
@@ -180,8 +214,12 @@ func testManagerOwnedDescendantWatch(t *testing.T, missingGeneration bool) {
 	bound := &boundSessionOperations{owner: &sessionOperations{cfg: cfg, sources: sources, server: server}, local: local, binding: appwire.SessionBinding{Ref: "local:" + rootID, InstanceID: rootID, BindingID: "descendant-watch-binding"}}
 	sess.SetHubClient(bound)
 	done := make(chan error, 1)
-	go func() { _, err := sess.ProcessInput(ctx, "descendant-watch-root", nil); done <- err }()
-	t.Cleanup(func() { cancel(); <-done; sess.Close() })
+	var turns sync.WaitGroup
+	turns.Go(func() {
+		_, err := sess.ProcessInput(ctx, "descendant-watch-root", nil)
+		done <- err
+	})
+	t.Cleanup(func() { cancel(); turns.Wait(); sess.Close() })
 	var childID string
 	select {
 	case childID = <-script.childReady:
@@ -262,76 +300,117 @@ func testManagerOwnedDescendantWatch(t *testing.T, missingGeneration bool) {
 	if first.Snapshot == nil || first.Metadata.Ref != childRef || first.Metadata.InstanceID != rootID || first.Metadata.GenerationID != wantBoot || first.Snapshot.Thread.Evener.InstanceID != child.Evener.InstanceID || first.Snapshot.BootGeneration != wantBoot {
 		t.Fatalf("watch/list identity mismatch: metadata=%+v snapshot=%+v list=%+v", first.Metadata, first.Snapshot, child)
 	}
-	close(script.release)
-	communicated := false
-	for !communicated {
-		select {
-		case update, ok := <-updates:
-			if !ok {
-				t.Fatal("watch ended before child communicate")
-			}
-			if update.Event == "communicate" && update.Metadata.EndTurn {
-				if update.Metadata.Ref != childRef || update.Metadata.InstanceID != rootID || update.Metadata.GenerationID != wantBoot {
-					t.Fatalf("child communicate identity=%+v", update.Metadata)
+	awaitChildCommunicate := func(endTurn bool) {
+		for {
+			select {
+			case update, ok := <-updates:
+				if !ok {
+					t.Fatalf("watch ended before the child communicate (end_turn=%v)", endTurn)
 				}
-				communicated = true
+				if update.Event == "communicate" && update.Metadata.EndTurn == endTurn {
+					if update.Metadata.Ref != childRef || update.Metadata.InstanceID != rootID || update.Metadata.GenerationID != wantBoot {
+						t.Fatalf("child communicate identity=%+v", update.Metadata)
+					}
+					return
+				}
+			case <-ctx.Done():
+				t.Fatal(ctx.Err())
 			}
-		case <-ctx.Done():
-			t.Fatal(ctx.Err())
 		}
 	}
-	// The actual Manager consumer must deliver the child's communicate and
-	// wake on the accepted terminal, even though delegates have no end reason.
+	// Discard any wake from before the child produced its communicate.
+	select {
+	case <-notified:
+	default:
+	}
+	close(script.release)
+	awaitChildCommunicate(!lateTerminal)
+	// The child's communicate wakes the actual Manager consumer. Let the
+	// Manager's turn finish; in the late-terminal variant the accepted terminal
+	// follows and is delivered by a later notification turn, the one the
+	// serving loop's guaranteed wake runs.
 	select {
 	case <-script.advanced:
 	case <-ctx.Done():
 		t.Fatal(ctx.Err())
 	}
-	journalPath := filepath.Join(stateDir, "sessions", rootID, "jobs.jsonl")
-	// The public delivery counter is not the completion contract: a terminal
-	// wake can end the watch without bumping it. The durable receipt in the
-	// manager's journal is, so settle on state plus that receipt together.
-	for {
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("Manager turn: %v", err)
+		}
+	case <-ctx.Done():
+		t.Fatal(ctx.Err())
+	}
+	if lateTerminal {
+		// Discard the first communicate's wake: the wait below is for the
+		// accepted terminal's own notification wake.
+		select {
+		case <-notified:
+		default:
+		}
+		close(script.terminal)
+		awaitChildCommunicate(true)
+	}
+	// The terminal send and the watch clear are one durable batch
+	// (endHubWatch), so an ended watch already owns its pending completion
+	// frame; the wake below only has to deliver it.
+	awaitActivityRelayCondition(ctx, t, func() bool {
 		page, err := sess.ListActivityWatches(ctx, appwire.SessionActivityListParams{Ref: "local:" + rootID})
 		if err != nil {
 			t.Fatal(err)
 		}
-		settled := false
-		for _, watch := range page.Watches {
-			if watch.Watch.ID == registration.WatchID && watch.State == appwire.SessionWatchStateEnded && watch.Watch.EndReason == "completed" {
-				settled = true
-			}
-		}
-		if settled && managerWatchReceipt(journalPath, registration.WatchID, "completed: accepted terminal done") {
-			break
-		}
+		return acceptanceWatchCompleted(page, registration.WatchID)
+	}, "completed manager watch")
+	select {
+	case <-notified:
+	case <-ctx.Done():
+		t.Fatalf("Manager notification wake for accepted child completion never arrived: %v", ctx.Err())
+	}
+	// The serving loop turns that wake into an EntryNotification turn. This
+	// harness drives the Manager directly and has no serving loop, so run it
+	// here; without it the completion frame stays pending and its receipt is
+	// never observable.
+	if _, err := sess.ProcessInputKind(ctx, "", nil, agent.EntryNotification); err != nil {
+		t.Fatalf("Manager notification wake: %v", err)
+	}
+	journalPath := filepath.Join(stateDir, "sessions", rootID, "jobs.jsonl")
+	// The watch has already ended, so its terminal pending send is durable and
+	// only the Manager's receipt can still appear. The public delivery counter is
+	// not the completion contract; the journaled receipt is. The accepted
+	// terminal can supersede the communicate event's wake, so that receipt is
+	// order-dependent: the communicate frame itself was asserted on the
+	// observation stream above, and the completion receipt is the wake the
+	// Manager must always receive.
+	ticker := time.NewTicker(10 * time.Millisecond)
+	defer ticker.Stop()
+	for !managerWatchReceipt(journalPath, registration.WatchID, "completed: accepted terminal done") {
 		select {
 		case <-ctx.Done():
-			t.Fatalf("waiting for completed watch receipts: %v; watches=%+v", ctx.Err(), page.Watches)
-		case <-time.After(10 * time.Millisecond):
-		}
-	}
-	// The completing terminal can supersede the communicate event wake under
-	// the watch's coalescing contract, so the communicate wake receipt is
-	// order-dependent. The communicate frame itself was asserted on the
-	// observation stream above; the completion receipt is the wake the
-	// manager must always receive.
-	if !managerWatchReceipt(journalPath, registration.WatchID, "completed: accepted terminal done") {
-		t.Fatal("Manager has no delivered receipt for accepted child completion")
-	}
-	{
-		page, err := sess.ListActivityWatches(ctx, appwire.SessionActivityListParams{Ref: "local:" + rootID})
-		if err != nil {
-			t.Fatal(err)
-		}
-		for _, watch := range page.Watches {
-			if watch.Watch.ID == registration.WatchID && watch.State == appwire.SessionWatchStateEnded && watch.Watch.EndReason == "completed" {
-				t.Logf("Manager watch %s delivered child event and completion: child=%s instance=%s boot=%s deliveries=%d", registration.WatchID, childRef, rootID, wantBoot, watch.Watch.Deliveries)
-				return
+			dumpCtx, cancelDump := context.WithTimeout(context.Background(), time.Second)
+			page, err := sess.ListActivityWatches(dumpCtx, appwire.SessionActivityListParams{Ref: "local:" + rootID})
+			cancelDump()
+			if err != nil {
+				t.Fatalf("waiting for completed watch receipt: %v; list watches: %v", ctx.Err(), err)
 			}
+			t.Fatalf("waiting for completed watch receipt: %v; watches=%+v", ctx.Err(), page.Watches)
+		case <-ticker.C:
 		}
-		t.Fatalf("Manager did not consume child watch delivery: %+v", page)
 	}
+	page, err := sess.ListActivityWatches(ctx, appwire.SessionActivityListParams{Ref: "local:" + rootID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, watch := range page.Watches {
+		if watch.Watch.ID == registration.WatchID {
+			if watch.State != appwire.SessionWatchStateEnded || watch.Watch.EndReason != "completed" {
+				t.Fatalf("completed Manager watch state=%s reason=%q", watch.State, watch.Watch.EndReason)
+			}
+			t.Logf("Manager watch %s delivered child event and completion: child=%s instance=%s boot=%s deliveries=%d", registration.WatchID, childRef, rootID, wantBoot, watch.Watch.Deliveries)
+			return
+		}
+	}
+	t.Fatalf("Manager did not consume child watch delivery: %+v", page)
 }
 
 func managerWatchReceipt(journalPath, watchID, triggerReason string) bool {
