@@ -355,10 +355,15 @@ func isOpenAIProtocol(protocol string) bool {
 }
 
 // isOpenAIVoiceInstance reports whether inst is OpenAI itself. Other
-// OpenAI-protocol instances (a Codex login, Groq, OpenRouter) speak the chat
-// protocol but not OpenAI's Realtime endpoint.
+// OpenAI-protocol instances (a Codex login, Groq, Lunaroute, OpenRouter) speak
+// the chat protocol against an OpenAI-compatible base but not OpenAI's Realtime
+// endpoint, even when their base is named "openai".
 func isOpenAIVoiceInstance(inst registry.Instance) bool {
-	return inst.ProviderID == "openai" || inst.Base == "openai"
+	if inst.ProviderID == "openai" {
+		return true
+	}
+	u, err := url.Parse(inst.BaseURL)
+	return err == nil && strings.EqualFold(u.Hostname(), "api.openai.com")
 }
 
 // pickOpenAIVoiceProvider chooses voice's instance from the hub's default and

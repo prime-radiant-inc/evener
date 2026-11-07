@@ -40,4 +40,21 @@ func TestPickOpenAIVoiceProvider(t *testing.T) {
 	}); err == nil {
 		t.Fatal("an OpenAI-compatible instance must not be chosen as the Realtime provider")
 	}
+	// An instance whose base is named "openai" but whose endpoint is a gateway
+	// (Lunaroute, Groq's OpenAI shim) has no Realtime endpoint; first-party
+	// OpenAI wins even when the gateway is the hub's default.
+	gateway := registry.Instance{
+		Name: "lunaroute", ProviderID: "lunaroute", Base: "openai", Protocol: registry.ProtocolOpenAIResponses,
+		BaseURL: "https://gw.lunaroute.com/v1",
+	}
+	firstParty := registry.Instance{
+		Name: "openai", ProviderID: "openai", Base: "openai", Protocol: registry.ProtocolOpenAIResponses,
+		BaseURL: "https://api.openai.com/v1",
+	}
+	if got, err := pickOpenAIVoiceProvider("lunaroute", []registry.Instance{gateway, firstParty}); err != nil || got != "openai" {
+		t.Fatalf("gateway default pick = %q, %v, want openai", got, err)
+	}
+	if _, err := pickOpenAIVoiceProvider("lunaroute", []registry.Instance{gateway}); err == nil {
+		t.Fatal("an OpenAI-protocol gateway alone must not be chosen as the Realtime provider")
+	}
 }
