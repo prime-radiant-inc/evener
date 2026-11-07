@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, useSyncExternalStore } from "react";
-import { Pressable, View } from "react-native";
+import { Pressable, ScrollView, View, useWindowDimensions } from "react-native";
 import { SymbolView, type SFSymbol } from "expo-symbols";
 import { Button, Row } from "../sheet/Grouped";
 import { haptic } from "../haptics";
@@ -35,6 +35,7 @@ const TONES: Record<VoicePhase, { symbol: SFSymbol; ink: Ink }> = {
 function Controls({ client, target }: { client: VoiceClient; target: VoiceTarget }) {
 	const state = useSyncExternalStore(client.subscribe, client.getSnapshot);
 	const { palette } = useColors();
+	const { height } = useWindowDimensions();
 	const [expanded, setExpanded] = useState(false);
 	const [busy, setBusy] = useState(false);
 	const [takeover, setTakeover] = useState(false);
@@ -95,34 +96,44 @@ function Controls({ client, target }: { client: VoiceClient; target: VoiceTarget
 			/>
 			{expanded ? (
 				<View testID="voice-panel" style={{ gap: 12, borderRadius: 14, padding: 14, backgroundColor: palette.inset }}>
-					<PanelHeader
-						phase={presented.phase}
-						phrase={state.wake?.phrase ?? ""}
-						speakerOff={state.speakerConsentRequired}
-					/>
-					<PrimaryControl
-						primary={presented.primary}
-						enabled={presented.primary === "arm" ? target.manager && !busy : talkEnabled}
-						onPress={primary}
-					/>
-					<View style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: 4 }}>
-						{armed ? <Button text quiet label="Turn voice off" onPress={() => void disarm(client, setError)} /> : null}
-						{armed ? <Button text quiet label="Stop speaking" onPress={() => client.stopSpeaking()} /> : null}
-						{takeover && !armed ? (
-							<Button text quiet label="Use this iPhone instead" disabled={busy} onPress={() => void arm(true)} />
+					<ScrollView
+						style={{ maxHeight: Math.max(220, Math.round(height * 0.45)) }}
+						contentContainerStyle={{ gap: 12 }}
+						showsVerticalScrollIndicator={false}
+						keyboardShouldPersistTaps="handled"
+						nestedScrollEnabled
+					>
+						<PanelHeader
+							phase={presented.phase}
+							phrase={state.wake?.phrase ?? ""}
+							speakerOff={state.speakerConsentRequired}
+						/>
+						<PrimaryControl
+							primary={presented.primary}
+							enabled={presented.primary === "arm" ? target.manager && !busy : talkEnabled}
+							onPress={primary}
+						/>
+						<View style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: 4 }}>
+							{armed ? (
+								<Button text quiet label="Turn voice off" onPress={() => void disarm(client, setError)} />
+							) : null}
+							{armed ? <Button text quiet label="Stop speaking" onPress={() => client.stopSpeaking()} /> : null}
+							{takeover && !armed ? (
+								<Button text quiet label="Use this iPhone instead" disabled={busy} onPress={() => void arm(true)} />
+							) : null}
+						</View>
+						{!target.manager && !armed ? <Copy muted>Voice needs a manager session.</Copy> : null}
+						{state.speakerConsentRequired ? (
+							<Row label="Allow replies on the iPhone speaker" onPress={() => client.allowSpeaker()} />
 						) : null}
-					</View>
-					{!target.manager && !armed ? <Copy muted>Voice needs a manager session.</Copy> : null}
-					{state.speakerConsentRequired ? (
-						<Row label="Allow replies on the iPhone speaker" onPress={() => client.allowSpeaker()} />
-					) : null}
-					<WakeReceipt state={state} />
-					<Details state={state} />
-					<WakeTrialControls client={client} state={state} />
-					<Copy muted>{footnote(state, presented.phase)}</Copy>
-					<ErrorMessage
-						message={error || (state.error ? `Voice stopped (${state.error}). Text chat still works.` : null)}
-					/>
+						<WakeReceipt state={state} />
+						<Details state={state} />
+						<WakeTrialControls client={client} state={state} />
+						<Copy muted>{footnote(state, presented.phase)}</Copy>
+						<ErrorMessage
+							message={error || (state.error ? `Voice stopped (${state.error}). Text chat still works.` : null)}
+						/>
+					</ScrollView>
 				</View>
 			) : null}
 		</View>
