@@ -313,6 +313,18 @@ it("has Cancel, New session and Start, then the prompt, WHERE and AGENT with the
 	form.dispose();
 });
 
+it("carries the prompt's stable identifier on the working input", async () => {
+	const form = await mount({ draft: { cwd: "/home/jesse/git/evener" } });
+	const [prompt] = withTestID(form.tree, "session-prompt");
+	expect(prompt && String(prompt.type)).toBe("TextInput");
+	expect(prompt.props.autoFocus).toBe(true);
+	act(() => {
+		prompt.props.onChangeText("QUALIFICATION_draft_d0");
+	});
+	expect(form.prompt().props.value).toBe("QUALIFICATION_draft_d0");
+	form.dispose();
+});
+
 it("dismisses the keyboard when the form is dragged", async () => {
 	const form = await mount();
 	expect(form.tree.root.findByType("ScrollView" as never).props.keyboardDismissMode).toBe("on-drag");

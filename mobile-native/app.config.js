@@ -69,9 +69,6 @@ const config = {
 			[
 				"expo-build-properties",
 				{
-					ios: {
-						enableSceneSupport: true,
-					},
 					android: {
 						usesCleartextTraffic: true,
 					},
@@ -120,8 +117,12 @@ const config = {
 			// The iOS share extension target (targets/share). It is generated
 			// only when a team id is present, since the plugin refuses without
 			// one and the app's own JS checks (typecheck, bundling) load this
-			// config on machines that never prebuild iOS.
-			...(teamId ? ["@bacons/apple-targets"] : []),
+			// config on machines that never prebuild iOS. The mod before the
+			// generator restores the extension's iPhone-only device family,
+			// which the generator defaults to "1,2" and re-replaces on every
+			// repeat; same-name mods run in reverse registration order, so
+			// earlier registration means it runs after the generator.
+			...(teamId ? ["./plugins/with-share-iphone-only", "@bacons/apple-targets"] : []),
 		],
 		scheme: "evener-native",
 	},

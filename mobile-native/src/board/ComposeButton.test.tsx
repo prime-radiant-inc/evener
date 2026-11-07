@@ -1,6 +1,7 @@
 import { act } from "react-test-renderer";
 import { afterEach, expect, it, vi } from "vitest";
 import { paletteFor } from "../design/tokens";
+import { withTestID } from "../markerTestUtils";
 import { render, unmountMountedTrees } from "../renderNative.testkit";
 import { ComposeButton } from "./ComposeButton";
 
@@ -46,6 +47,15 @@ it("opens a new session when pressed", () => {
 	const onPress = vi.fn();
 	const { button } = compose({ onPress });
 	act(() => button.props.onPress());
+	expect(onPress).toHaveBeenCalledTimes(1);
+});
+
+it("marks the compose way with a stable identifier on the working control", () => {
+	const onPress = vi.fn();
+	const tree = render(<ComposeButton disabled={false} onPress={onPress} />);
+	const identified = withTestID(tree, "new-session");
+	expect(identified).toHaveLength(1);
+	act(() => identified[0].props.onPress());
 	expect(onPress).toHaveBeenCalledTimes(1);
 });
 

@@ -1,6 +1,6 @@
 # Building and distributing the iPhone checkpoint
 
-The app uses Expo SDK 57, React Native 0.86.3 and React 19.2.3. [Expo's versioned requirements](https://docs.expo.dev/versions/v57.0.0/) specify Node 22.13.x or newer, iOS 16.4 or newer and Xcode 26.4 or newer. The committed Ruby bundle pins CocoaPods 1.16.2 and Fastlane 2.228.0; use Ruby 3.3.6 and Bundler 2.7.2 for the distribution toolchain.
+The app uses Expo SDK 58, React Native 0.88.1 and React 19.3.0. [Expo's versioned requirements](https://docs.expo.dev/versions/v58.0.0/) specify Node 22.13.x or newer, iOS 16.4 or newer and Xcode 26.4 or newer. The committed Ruby bundle pins CocoaPods 1.16.2 and Fastlane 2.228.0; use Ruby 3.3.6 and Bundler 2.7.2 for the distribution toolchain.
 
 From the repository root, install the native and protocol dependencies and run the source gates:
 
@@ -38,15 +38,14 @@ extension's build number differs from the app's.
 
 ### iOS scene startup
 
-[`app.config.js`](../../../mobile-native/app.config.js) enables
-`expo-build-properties`' `ios.enableSceneSupport`. Expo 57.0.23 or newer within
-SDK 57 supplies the scene lifecycle required by iOS 27. Prebuild registers one
-`EXExpoAppSceneDelegate` and makes the generated Swift AppDelegate an
-`ExpoReactNativeFactoryProvider`. Do not patch the ignored iOS project or add a
-second window owner.
+SDK 58 ships an AppDelegate implementing `ExpoReactNativeFactoryProvider` and a
+SceneDelegate inheriting `ExpoAppSceneDelegate`. Prebuild registers that one
+scene owner. The retired `ios.enableSceneSupport` setting is absent from
+[`app.config.js`](../../../mobile-native/app.config.js). Do not patch the ignored
+iOS project or add a second window owner.
 
 AppDelegate initializes the Expo/React factory. Expo's scene delegate owns window
-startup and forwards scene links and lifecycle events through Expo's subscribers.
+startup; `SceneEventForwarder` delivers scene links and lifecycle events.
 Cold scene URLs and browsing activities become React launch options; warm delivery
 uses the existing React and Expo link handlers. UIKit's application notifications
 remain the source for React Native AppState.
@@ -78,6 +77,70 @@ for generated configuration and repeatability checks against the installed Expo
 template. `make test-native` includes this check. Native compilation, actual
 launch, link delivery and background recovery require a simulator or device build;
 a successful `simctl launch` request alone does not prove the process stayed alive.
+
+### Non-publishing pull-request build
+
+`.github/workflows/ios-qualification.yml` checks out the explicit pull-request
+head with read-only repository permissions and no persisted checkout credential.
+It uses macOS 26, Xcode 26.6, Node 22.13.1, Ruby 3.3.6, Bundler 2.7.2 and the
+locked CocoaPods 1.16.2. It is separate from TestFlight and has no release secrets
+or publishing step. Existing Linux native/API gates remain required. Its policy
+step also proves the bundle verification is real: a copied build whose share
+extension was removed fails verification while the untouched build still passes.
+The lane's green path always includes the installed-app journeys: with
+`--with-ui`, the build runner spawns `scripts/native/ios/run-ui-tests.sh`
+inside the run's own simulator lifetime. That child builds the runtime pair,
+starts the scripted loopback provider and an isolated hub under private XDG
+directories with `HOME` inherited, registers the generated-only
+`EvenerQualificationUITests` target, and injects the fixture-only connection
+data into the generated test-run configuration in place. Before the target is
+registered it first proves the red side: naming the intended tests against the
+as-generated project must fail. The result bundle must show all three intended
+journeys executed with zero failures and none skipped; a partial, unreadable or
+absent result fails, and the child's exit is the run's own result. The parent
+remains the sole simulator cleanup owner.
+
+After installing the npm trees and locked gems in a fresh Mac checkout, run:
+
+```sh
+bash scripts/native/ios/build-simulator.sh --output /absolute/new/qualification-output
+```
+
+The runner verifies actual tool versions, uses the non-secret fixture team
+`EVENERCI01` for prebuild, compares repeated generated output, and resolves from
+the committed pod lock. A changed or missing lock, failed resolver, deployment
+install or build, missing extension, or invalid identity/entitlement fails the
+run. A resolver error requires diagnosis against the lock's own local
+development pods. Never delete the input lock.
+When CocoaPods refuses the committed lock because its own local development
+pods changed version references, the runner re-resolves every local development
+pod the lock declares in a single `pod update --no-repo-update`; registry pods
+reachable only through those local pods may move with their parents, so the
+candidate diff against the committed lock is the guard. The result is still
+compared against the committed lock, and the candidate and its diff remain
+reviewable failure evidence.
+
+Review `Podfile.lock.candidate` and `Podfile.lock.diff` with `build-identity.json`.
+Match its `sourceRevision` and `npmLockSha256` to the tested branch before applying
+a candidate to `mobile-native/Podfile.lock`. Preserve unrelated pins and rerun at
+the new committed head. Only deployment-mode equality and a complete signed host
+and embedded-extension build pass. The runner never commits a lock itself.
+
+The build uses an available iPhone runtime/device type discovered through
+`simctl`, an owned disposable simulator, normal simulator signing, and Release's
+embedded Metro bundle. Simulator builds embed the entitlements in the binary's
+`__TEXT,__entitlements` section and leave the ad-hoc signature's entitlement
+blob empty, so an empty `codesign --display` on a simulator build does not mean
+the app group is missing; the runner reads both locations. Output includes
+`DerivedData`, structured build identity
+and command logs. The simulator is deleted before exit; its recorded ID and app
+path are not permission to reuse an older artifact for a later installed-app
+test. Public CI artifacts enumerate diagnostics rather than uploading all state.
+
+Build success alone does not prove SecureStore persistence, native Markdown
+rendering, draft recovery or scheme activation. Those require installed-app
+journeys. This path does not establish physical install-over preservation,
+Safari share-sheet delivery, App Store signing or production interoperability.
 
 ### Regenerating the pod lock
 

@@ -57,7 +57,13 @@ export function FirstRunScreen({ navigation }: NativeStackScreenProps<Routes, "H
 					<Row icon="doc.on.clipboard" label="Paste pairing link" chevron onPress={() => setHow("paste")} />
 				</Group>
 				<Group>
-					<Row icon="keyboard" label="Enter the address" chevron onPress={() => setHow("address")} />
+					<Row
+						icon="keyboard"
+						label="Enter the address"
+						chevron
+						testID="add-hub:address"
+						onPress={() => setHow("address")}
+					/>
 				</Group>
 				{profiles.length > 0 ? (
 					<>
