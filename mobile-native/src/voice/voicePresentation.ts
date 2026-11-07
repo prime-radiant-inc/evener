@@ -6,9 +6,8 @@ export type VoicePhase = "disarmed" | "trial" | "recovering" | "error" | "speaki
 
 export interface VoicePresentation {
 	phase: VoicePhase;
-	/** The surface's one primary control. Everything else is secondary. `none`
-	 * while the user's own turn runs: stopping the reply would not end it. */
-	primary: "arm" | "talk" | "stop" | "none";
+	/** The surface's one primary control. Everything else is secondary. */
+	primary: "arm" | "talk" | "stop";
 	/** Whether Talk can start a turn now: armed, capturing, and owned by this device. */
 	talkEnabled: boolean;
 }

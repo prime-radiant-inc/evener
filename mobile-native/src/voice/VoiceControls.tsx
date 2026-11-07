@@ -169,7 +169,7 @@ function VoiceBar({
 	onToggle,
 }: {
 	phase: VoicePhase;
-	primary: "arm" | "talk" | "stop" | "none";
+	primary: "arm" | "talk" | "stop";
 	primaryEnabled: boolean;
 	expanded: boolean;
 	phrase: string;
@@ -220,7 +220,7 @@ function VoiceBar({
 	);
 }
 
-function barAction(primary: "arm" | "talk" | "stop" | "none") {
+function barAction(primary: "arm" | "talk" | "stop") {
 	return primary === "arm" ? "Turn on" : primary === "talk" ? "Talk" : "Stop";
 }
 
@@ -300,11 +300,10 @@ function PrimaryControl({
 	enabled,
 	onPress,
 }: {
-	primary: "arm" | "talk" | "stop" | "none";
+	primary: "arm" | "talk" | "stop";
 	enabled: boolean;
 	onPress(): void;
 }) {
-	if (primary === "none") return null;
 	const label = primary === "arm" ? "Turn on voice" : primary === "talk" ? "Talk" : "Stop speaking";
 	return <Button primary label={label} disabled={!enabled} accessibilityLabel={label} onPress={onPress} />;
 }
