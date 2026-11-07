@@ -71,6 +71,7 @@ function Controls({ client, target }: { client: VoiceClient; target: VoiceTarget
 			setTakeover(false);
 			haptic("success");
 		} catch (failure) {
+			setExpanded(true);
 			if (failure instanceof VoiceError && failure.code === "binding_owned") setTakeover(true);
 			else
 				setError(
@@ -131,6 +132,7 @@ function Controls({ client, target }: { client: VoiceClient; target: VoiceTarget
 						) : null}
 						<WakeReceipt state={state} />
 						{armed ? <Details state={state} /> : null}
+						<SessionDetails state={state} boundRef={bound?.ref} same={same} />
 						<WakeTrialControls client={client} state={state} />
 						<Copy muted>{footnote(state, presented.phase)}</Copy>
 						<ErrorMessage
@@ -354,8 +356,42 @@ function Details({ state, forceOpen = false }: { state: VoiceSnapshot; forceOpen
 }
 
 function footnote(state: VoiceSnapshot, phase: VoicePhase) {
-	if (phase === "talking" || phase === "speaking") {
-		return `While you talk, audio goes to ${state.provider || "OpenAI Realtime"}.`;
-	}
-	return "Wake-word detection stays on this iPhone.";
+	if (state.cloudMicrophone) return `While you talk, audio goes to ${state.provider || "OpenAI Realtime"}.`;
+	return "While you talk, audio stays on this iPhone. Wake-word detection stays here too.";
+}
+
+/** The spec's readout: bound session, audio route, whether the microphone is
+ * local or in the cloud, and what voice heard, delivered and said. Behind one
+ * row, because the transcript already carries the conversation. */
+function SessionDetails({ state, boundRef, same }: { state: VoiceSnapshot; boundRef?: string; same: boolean }) {
+	const [open, setOpen] = useState(false);
+	const rows = [
+		boundRef ? `Session · ${shortRef(boundRef)}${same ? "" : " (not this session)"}` : "",
+		state.route ? `Audio · ${state.route}` : "",
+		state.cloudMicrophone ? "Microphone · sending cloud audio" : "Microphone · local only",
+		state.interpreted ? `Heard · ${state.interpreted}` : "",
+		state.custody ? `Delivery · ${state.custody}` : "",
+		state.canonical ? `Reply · ${state.canonical}` : "",
+	].filter(Boolean);
+	return (
+		<View style={{ gap: 8 }}>
+			<Button
+				text
+				quiet
+				label="Session & audio"
+				expanded={open}
+				onPress={() => {
+					haptic("selection");
+					setOpen(!open);
+				}}
+			/>
+			{open
+				? rows.map((row) => (
+						<Copy key={row} muted>
+							{row}
+						</Copy>
+					))
+				: null}
+		</View>
+	);
 }

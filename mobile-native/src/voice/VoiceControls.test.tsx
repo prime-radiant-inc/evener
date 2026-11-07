@@ -121,6 +121,10 @@ it("arms in one tap with a visible disclosure, keeps takeover explicit, and send
 	});
 	expect(JSON.stringify(tree.toJSON())).toContain("openai");
 	await act(async () => {
+		button("Session & audio").props.onPress();
+	});
+	expect(JSON.stringify(tree.toJSON())).toContain("iPhone speaker");
+	await act(async () => {
 		button("Talk").props.onPress();
 		button("Stop speaking").props.onPress();
 	});
