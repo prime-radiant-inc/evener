@@ -748,7 +748,7 @@ func (s *Session) armDelegateAttentionOnce(attentionID string) error {
 		// generation the wake starts presents the armed row alone and the
 		// stopped report waits a later generation. A failed arm never reaches
 		// this point; the holds stand.
-		s.releaseAutomaticDriveHolds()
+		s.releaseAutomaticDriveHolds(delegateHoldReleaseArm)
 		s.notify()
 		return nil
 	}
@@ -1007,23 +1007,45 @@ func (s *Session) holdDelegateAttentionFromAutomaticDrive(attentionID string) {
 	s.attentionMu.Unlock()
 }
 
+// delegateHoldReleaseSite names the wake a hold release serves.
+type delegateHoldReleaseSite string
+
+const (
+	// delegateHoldReleaseDelivery tags the release a committed child
+	// delivery fires.
+	delegateHoldReleaseDelivery delegateHoldReleaseSite = "delivery"
+	// delegateHoldReleaseArm tags the release a successful arm fires.
+	delegateHoldReleaseArm delegateHoldReleaseSite = "arm"
+)
+
 // releaseAutomaticDriveHolds ends every user-stop hold a new event's wake
 // supersedes: a committed child delivery or a successful arm may present a
 // row the stop held out of the automatic drives, so the holds end with the
-// event that arrived. The rows the stop never touched keep their presentation
-// either way, and a failed arm or an uncommitted delivery woke nothing, so
-// the holds stand. Callers already holding attentionMu use the locked form.
-func (s *Session) releaseAutomaticDriveHolds() {
+// event that arrived — the site names which wake. The rows the stop never
+// touched keep their presentation either way, and a failed arm or an
+// uncommitted delivery woke nothing, so the holds stand.
+func (s *Session) releaseAutomaticDriveHolds(site delegateHoldReleaseSite) {
+	// The seam is runtime-mutable through updateSessionTestConfig, so its
+	// read shares the setter's session mutex — the convention every
+	// mid-run-mutable test seam follows.
+	s.mu.Lock()
+	hook := s.cfg.testOnly.delegateAttentionHoldReleased
+	s.mu.Unlock()
+	var released []string
 	s.attentionMu.Lock()
-	s.releaseAutomaticDriveHoldsLocked()
-	s.attentionMu.Unlock()
-}
-
-func (s *Session) releaseAutomaticDriveHoldsLocked() {
 	if len(s.attentionAutomaticDriveHolds) != 0 {
 		s.moveHeldDelegateAttentionTurnsToTail()
+		released = make([]string, 0, len(s.attentionAutomaticDriveHolds))
+		for id := range s.attentionAutomaticDriveHolds {
+			released = append(released, id)
+		}
 	}
 	s.attentionAutomaticDriveHolds = nil
+	s.attentionMu.Unlock()
+	if hook != nil && released != nil {
+		sort.Strings(released)
+		hook(site, released)
+	}
 }
 
 // moveHeldDelegateAttentionTurnsToTail moves each still-pending held row's

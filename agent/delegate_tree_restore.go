@@ -616,7 +616,7 @@ func (c *delegateTreeController) wakeDeliveryReceiver(receiver delegateDeliveryR
 		// receiver synchronously: a hold still in place at the drive's
 		// list read would present the delivered row alone and leave
 		// the stopped report for a later generation.
-		receiver.releaseAutomaticDriveHolds()
+		receiver.releaseAutomaticDriveHolds(delegateHoldReleaseDelivery)
 		receiver.notify()
 		c.notifyDelegateAttention()
 	case coldDelegateDeliveryReceiver:
