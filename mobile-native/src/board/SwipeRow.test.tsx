@@ -35,6 +35,9 @@ const action = (key: string, label: string) => ({
  * let go. */
 function driver(tree: ReactTestRenderer) {
 	const swipeable = tree.root.findByType("ReanimatedSwipeable" as never);
+	// The row measures itself, as it does on device before a touch arrives.
+	const row = tree.root.findByProps({ collapsable: false });
+	act(() => row.props.onLayout({ nativeEvent: { layout: { x: 0, y: 0, width: 390, height: 60 } } }));
 	const tracker = tree.root.findAllByType("GestureDetector" as never)[0]?.props.gesture as PanGestureMock | undefined;
 	const touchStart = (pageX: number) =>
 		act(() => tree.root.findByProps({ testID: "swipe-row-content" }).props.onTouchStart({ nativeEvent: { pageX } }));

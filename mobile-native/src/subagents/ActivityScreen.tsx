@@ -12,6 +12,7 @@ import { BandHeader } from "../board/BoardRow";
 import { useConnection } from "../ConnectionProvider";
 import { ChipStrip } from "../design/ChipStrip";
 import { space } from "../design/tokens";
+import { useDetailPaneWidth } from "../duo/paneWidth";
 import { HubModels } from "../hubModels";
 import type { Routes } from "../screens";
 import { SearchField } from "../sheet/SearchField";
@@ -84,6 +85,9 @@ export function ActivityScreen({ route, navigation }: NativeStackScreenProps<Rou
 	const { palette } = useColors();
 	const scale = useTextScale();
 	const { width } = useWindowDimensions();
+	// A list opened in the Duo split's detail pane is narrower than the window;
+	// its summary strip spans the pane.
+	const paneWidth = useDetailPaneWidth() ?? width;
 	const { tree, snapshot } = useFollowedSubagentTree(hubId, ref, threadId);
 
 	const activity = useMemo(() => (snapshot.tree ? flattenActivity(snapshot.tree, title) : []), [snapshot.tree, title]);
@@ -293,7 +297,7 @@ export function ActivityScreen({ route, navigation }: NativeStackScreenProps<Rou
 		<View style={{ paddingTop: 12, gap: 12 }}>
 			<View style={{ paddingHorizontal: 16 }}>
 				{tally ? (
-					<SubagentStrip tally={tally} width={width - 32} />
+					<SubagentStrip tally={tally} width={paneWidth - 32} />
 				) : (
 					<Text accessibilityLabel={`${spec.noun} counts unknown`} style={{ color: palette.inkMid }}>
 						{`${spec.noun} …`}

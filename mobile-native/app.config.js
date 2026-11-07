@@ -22,6 +22,10 @@ const config = {
 		name: "Evener",
 		slug: "evener-native",
 		version: "0.3.18",
+		// Portrait-only for now: the Duo's outer display is wider than tall and
+		// the inner display's split works in portrait, but landscape on a
+		// regular iPhone would run content under the notch and Dynamic Island
+		// until left/right safe-area handling is qualified.
 		orientation: "portrait",
 		icon: "./assets/evener-icon.png",
 		userInterfaceStyle: "automatic",
