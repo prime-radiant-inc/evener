@@ -981,6 +981,45 @@ func untrackStopLocked[K comparable, V any](c *delegateTreeController, pick func
 	}
 }
 
+// stopHasInFlightDeliveriesLocked reports whether a delivery admission the stop
+// captured is still work in flight. A retryable admission is deferred delivery:
+// its acknowledgement append failed, so it is re-planned rather than completed,
+// and it must not hold a recovery-required generation's finish (or the stop's
+// own completion) open. An admission no longer present has settled.
+func (c *delegateTreeController) stopHasInFlightDeliveriesLocked(stop *delegateStopState) bool {
+	if stop == nil {
+		return false
+	}
+	for token := range stop.deliveries {
+		receipt := c.deliveries[token.processID]
+		if receipt != nil && receipt.token == token && !receipt.retryable {
+			return true
+		}
+	}
+	return false
+}
+
+// dropStoppedRetryableAdmissionsLocked removes retryable admissions whose
+// durable head the completing stop dropped. Nothing can complete or re-plan
+// them, and a leftover admission would refuse the owner's next attention start
+// (and block reclamation) until restart. Call with the controller lock held,
+// after the SubtreeStopCompleted append.
+func (c *delegateTreeController) dropStoppedRetryableAdmissionsLocked() {
+	for processID, receipt := range c.deliveries {
+		if receipt == nil || !receipt.retryable {
+			continue
+		}
+		if aggregate := c.durable[receipt.delegateID]; aggregate != nil && slices.ContainsFunc(aggregate.PendingDeliveries, func(p delegatestore.PendingDelivery) bool {
+			return p.DeliveryID == receipt.token.deliveryID
+		}) {
+			continue
+		}
+		delete(c.deliveries, processID)
+		untrackStopLocked(c, func(s *delegateStopState) map[delegateDeliveryToken]struct{} { return s.deliveries }, receipt.token)
+		c.evidenceVersion++
+	}
+}
+
 func waitForDelegateStopProgress(ctx context.Context, stop *delegateStopState) error {
 	select {
 	case <-stop.done:
