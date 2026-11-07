@@ -1955,6 +1955,16 @@ func TestDelegateAttentionSupersededClaimDoesNotBlockSecondPendingRow(t *testing
 		<-release
 		return agenttest.FinalResponse("done")
 	}
+	// The parked-tail pin (the failed-start test's form): the report's
+	// delivery executes at the child's finalize-tail announce, and a parked
+	// announce keeps it from classifying inside the fixture window, where a
+	// finishing run's finalization cleanup could resolve the noted row as
+	// consumed at generation zero ahead of this test's drives — the
+	// loaded-runner interleave whose stranded gate chains reopens on the
+	// second row forever. The release below lands the delivery after both
+	// notify edges are disarmed and the gate is live, so the drives own both
+	// rows.
+	holdSharedDescendantAnnounce("superseded-claim-second-row")
 	lane := spawnSharedDescendantLane(t, r, "superseded-claim-second-row", "dlg_superseded0001", "034superseded0001", wedge)
 	lane.delegateSess.SetNotifyFunc(nil)
 	// The shared child's restored notify edge can launch its own pending
@@ -2004,6 +2014,43 @@ func TestDelegateAttentionSupersededClaimDoesNotBlockSecondPendingRow(t *testing
 	// report's delivery has not classified yet — the other is the takeover.
 	if _, err := lane.delegateSess.appendDelegateNotificationDurably(secondRowID, secondRowContent); err != nil {
 		t.Fatalf("pend the second row: %v", err)
+	}
+
+	// Release the parked announce: both tails resume — the child's announce
+	// lands the report delivery, and the delegate's own tail re-arms whatever
+	// survived. The waits below cover both parked tails and the re-arm before
+	// the loop starts, so the scenario's budgets begin from the rows'
+	// arrival.
+	var announceHoldOnce sync.Once
+	releaseAnnounceHold := func() { announceHoldOnce.Do(func() { close(lane.announceHold) }) }
+	// A fatal before the release would park the held tail forever, so the
+	// cleanup mirror guarantees the parked tail can always finish.
+	t.Cleanup(releaseAnnounceHold)
+	releaseAnnounceHold()
+	lane.sharedSub.mu.Lock()
+	sharedDone := lane.sharedSub.done
+	lane.sharedSub.mu.Unlock()
+	select {
+	case <-sharedDone:
+	// TRIPWIRE: the tail finishes within a couple of drain passes of the
+	// release; 15s only fires on a genuine hang, absorbing a loaded shard's
+	// stretched finalize tails and git retries.
+	case <-time.After(15 * time.Second):
+		t.Fatalf("the retained child's finalize tail never finished after the announce release")
+	}
+	lane.delegateSub.mu.Lock()
+	delegateDone := lane.delegateSub.done
+	lane.delegateSub.mu.Unlock()
+	select {
+	case <-delegateDone:
+	// TRIPWIRE: the delegate's own tail re-arms whatever survived at its very
+	// end; 15s only fires on a genuine hang, absorbing a loaded shard's
+	// stretched finalize tails and git retries.
+	case <-time.After(15 * time.Second):
+		t.Fatalf("the delegate's finalize tail never finished after the announce release")
+	}
+	if pending, pendErr := lane.delegateSess.pendingDelegateAttentionIDs(); pendErr != nil || len(pending) == 0 {
+		t.Fatalf("the retained child's report is not pending after the announce release: pending=%v (%v)", pending, pendErr)
 	}
 
 	flushErr := lane.driveUntil(entered)
@@ -2100,6 +2147,207 @@ func TestDelegateAttentionSupersededClaimDoesNotBlockSecondPendingRow(t *testing
 	}
 	if !reopenedResolved {
 		t.Fatalf("the first-consumed row's reopen never resolved (claims=%v resolutions=%v)", fold.resumeGenerations, fold.resolutions)
+	}
+}
+
+// A successful arm fires its wake through the session's notify func, and the
+// daemon's install drives the delegate synchronously in that very call. The
+// drive reads the automatic list in the same breath, so the holds a user's
+// stop left must end BEFORE the wake fires: a hold still in place at the read
+// keeps the stopped report out of every generation the wake starts, and the
+// report waits a later wake — the exact restart-delay the hold's release
+// exists to prevent. The wired edge observes the list at its own read, so the
+// ordering is pinned at the exact point production exercises it.
+func TestDelegateAttentionArmWakeEndsHoldsBeforeTheDrive(t *testing.T) {
+	t.Parallel()
+	r := newWorktreeRepo(t)
+	const heldRowID = "delegate:held-row-owed-reply"
+	const heldRowContent = "held-row: the stopped report the arm's wake must carry"
+	const newRowID = "delegate:new-row-owed-reply"
+	const newRowContent = "new-row: the event the arm wakes"
+	lane := spawnSharedDescendantLane(t, r, "arm-wake-held-row", "dlg_armwake0001", "034armwake0001")
+	// The shared child's restored notify edge can launch its own pending
+	// notification turn, which would consume the scripted step this test's
+	// presentation parks in; disarm it so the arm's own wake is the only one.
+	lane.sharedSub.sess.SetNotifyFunc(nil)
+	// Wire the delegate's notify edge exactly the way the daemon's restore
+	// install does — the arm's notify drives the delegate synchronously — and
+	// record what the automatic list holds at the edge's own read: the exact
+	// point the wake's drive reads it.
+	var sawHeldAtWake, sawNewRowAtWake atomic.Bool
+	lane.delegateSess.SetNotifyFunc(func() {
+		ids, err := lane.delegateSess.automaticDelegateAttentionIDs()
+		if err != nil {
+			return
+		}
+		for _, id := range ids {
+			if id == heldRowID {
+				sawHeldAtWake.Store(true)
+			}
+			if id == newRowID {
+				sawNewRowAtWake.Store(true)
+			}
+		}
+		lane.root.driveChildIfNotStopGated(lane.delegateSub)
+	})
+	// The stopped report a user's stop leaves: pending, and held out of the
+	// automatic drives through the production setter the settle tail uses.
+	if _, err := lane.delegateSess.appendDelegateNotificationDurably(heldRowID, heldRowContent); err != nil {
+		t.Fatalf("pend the held row: %v", err)
+	}
+	lane.delegateSess.holdDelegateAttentionFromAutomaticDrive(heldRowID)
+	// The new event and its production arm: the arm's wake fires through the
+	// wired edge in the same call.
+	if _, err := lane.delegateSess.appendDelegateNotificationDurably(newRowID, newRowContent); err != nil {
+		t.Fatalf("pend the new row: %v", err)
+	}
+	if err := lane.delegateSess.armDelegateAttention(newRowID); err != nil {
+		t.Fatalf("arm the new row: %v", err)
+	}
+	if !sawNewRowAtWake.Load() {
+		t.Fatal("the arm's wake never read the automatic list")
+	}
+	// The holds ended before the wake fired, so the edge's own read — the one
+	// its drive reads in the same breath — carries the stopped report with
+	// the armed row. A hold still in place at that read keeps the stopped
+	// report out of every generation the wake starts: the restart-delay shape
+	// this test refuses.
+	if !sawHeldAtWake.Load() {
+		t.Fatal("the arm's wake read the automatic list with the hold still in place: the stopped report missed the wake's drive read")
+	}
+}
+
+// A hold that ends moves each still-pending held row's steering turn to the
+// resident history's tail. The reopen appended the turn where the settle left
+// it, and the exchanges of any generation that ran while the hold stood
+// append after it, so the generation that later presents the row would end
+// its request on those later exchanges — a trailing assistant message the
+// model treats as a prefill to continue instead of the report it owes. The
+// move puts the report back at the end, so the presenting request ends on it.
+func TestDelegateAttentionHeldRowPresentsFromTheHistoryTail(t *testing.T) {
+	t.Parallel()
+	r := newWorktreeRepo(t)
+	const heldRowID = "delegate:held-row-owed-reply"
+	const heldRowContent = "held-row: the stopped report that must end the request"
+	const otherRowID = "delegate:other-row-owed-reply"
+	const otherRowContent = "other-row: the row that presents while the hold stands"
+	entered := make(chan struct{})
+	g2Release := make(chan struct{})
+	var g2ReleaseOnce sync.Once
+	t.Cleanup(func() { g2ReleaseOnce.Do(func() { close(g2Release) }) })
+	var g2Once sync.Once
+	var g3Request atomic.Value
+	// G2 parks mid-run once it presents the other row; G3 captures the whole
+	// request that presents the held row.
+	g2Step := func(llm.Request) llm.Response {
+		g2Once.Do(func() { close(entered) })
+		<-g2Release
+		return agenttest.FinalResponse("done")
+	}
+	g3Step := func(req llm.Request) llm.Response {
+		g3Request.Store(req)
+		return agenttest.FinalResponse("done")
+	}
+	// The parked-tail pin: released right after the fixture, it lands the
+	// fixture's own report deterministically before any drive runs, so no
+	// fixture-window request can present ahead of this test's rows.
+	holdSharedDescendantAnnounce("held-row-tail")
+	lane := spawnSharedDescendantLane(t, r, "held-row-tail", "dlg_heldrowtail1", "034heldrowtail1", g2Step)
+	lane.fixture.adapter.appendSteps(g3Step)
+	var announceHoldOnce sync.Once
+	releaseAnnounceHold := func() { announceHoldOnce.Do(func() { close(lane.announceHold) }) }
+	// A fatal before the release would park the held tail forever, so the
+	// cleanup mirror guarantees the parked tail can always finish.
+	t.Cleanup(releaseAnnounceHold)
+	releaseAnnounceHold()
+	lane.sharedSub.mu.Lock()
+	sharedDone := lane.sharedSub.done
+	lane.sharedSub.mu.Unlock()
+	select {
+	case <-sharedDone:
+	// TRIPWIRE: the tail finishes within a couple of drain passes of the
+	// release; 15s only fires on a genuine hang, absorbing a loaded shard's
+	// stretched finalize tails and git retries.
+	case <-time.After(15 * time.Second):
+		t.Fatalf("the retained child's finalize tail never finished after the announce release")
+	}
+	lane.delegateSub.mu.Lock()
+	delegateDone := lane.delegateSub.done
+	lane.delegateSub.mu.Unlock()
+	select {
+	case <-delegateDone:
+	// TRIPWIRE: the delegate's own tail re-arms at its very end; 15s only
+	// fires on a genuine hang, absorbing a loaded shard's stretched finalize
+	// tails and git retries.
+	case <-time.After(15 * time.Second):
+		t.Fatalf("the delegate's finalize tail never finished after the announce release")
+	}
+	// The shared child's restored notify edge can launch its own pending
+	// notification turn, which would consume a scripted step; disarm it so
+	// this test's own drives are the only presenters.
+	lane.sharedSub.sess.SetNotifyFunc(nil)
+	// Wire the delegate's notify edge exactly the way the daemon's restore
+	// install does: the held row's arm wakes and drives synchronously through
+	// it.
+	lane.delegateSess.SetNotifyFunc(func() { lane.root.driveChildIfNotStopGated(lane.delegateSub) })
+	// The stopped report: pending, held, its turn resident in the history.
+	if _, err := lane.delegateSess.appendDelegateNotificationDurably(heldRowID, heldRowContent); err != nil {
+		t.Fatalf("pend the held row: %v", err)
+	}
+	lane.delegateSess.holdDelegateAttentionFromAutomaticDrive(heldRowID)
+	// The other row presents while the hold stands: the direct drive reads the
+	// list with the hold in place, so G2 presents the other row alone and its
+	// exchanges append after the held row's turn.
+	if _, err := lane.delegateSess.appendDelegateNotificationDurably(otherRowID, otherRowContent); err != nil {
+		t.Fatalf("pend the other row: %v", err)
+	}
+	_ = lane.driveUntil(entered)
+	select {
+	case <-entered:
+	// TRIPWIRE: the drive presents within a couple of loop passes; 30s only
+	// fires on a genuine hang, absorbing a loaded shard's scheduling delay.
+	case <-time.After(30 * time.Second):
+		t.Fatal("the other row never presented while the hold stood")
+	}
+	// G2 settles with the hold still up, so its exchanges land after the held
+	// row's turn in the resident history.
+	g2ReleaseOnce.Do(func() { close(g2Release) })
+	// TRIPWIRE: the released turn settles within seconds once the model call
+	// returns; the bound only fires on a genuine hang.
+	waitForCondition(t, 30*time.Second, "the other row's presentation to settle", func() bool {
+		lane.delegateSub.mu.Lock()
+		running := lane.delegateSub.running
+		lane.delegateSub.mu.Unlock()
+		return !running
+	})
+	// The hold ends — the same production release every wake fires.
+	lane.delegateSess.releaseAutomaticDriveHolds()
+	// The held row presents through the wired arm: the arm's wake drives
+	// synchronously, and the request it builds must end on the report.
+	if err := lane.delegateSess.armDelegateAttention(heldRowID); err != nil {
+		t.Fatalf("arm the held row: %v", err)
+	}
+	// TRIPWIRE: the arm's wake drives within seconds of the arm; 30s only
+	// fires on a genuine hang, absorbing a loaded shard's scheduling delay.
+	waitForCondition(t, 30*time.Second, "the held row's presentation to run", func() bool {
+		_, ok := g3Request.Load().(llm.Request)
+		return ok
+	})
+	req, _ := g3Request.Load().(llm.Request)
+	if len(req.Messages) == 0 {
+		t.Fatal("the captured request holds no messages")
+	}
+	reportAt := -1
+	for i, msg := range req.Messages {
+		if strings.Contains(msg.Text(), heldRowContent) {
+			reportAt = i
+		}
+	}
+	if reportAt == -1 {
+		t.Fatal("the held row's presentation did not carry the report at all")
+	}
+	if reportAt != len(req.Messages)-1 {
+		t.Fatalf("the held row's presentation ends its request on a later message (report at message %d of %d), want the report last", reportAt, len(req.Messages))
 	}
 }
 

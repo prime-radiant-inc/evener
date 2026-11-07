@@ -642,13 +642,17 @@ func deliverDelegatePacket(plan delegateDeliveryPlan, receiver delegateDeliveryR
 		if receiver.isRootDelegateAttentionReceiver() {
 			err = receiver.armDelegateAttention(attentionID)
 		} else {
-			receiver.notify()
-			plan.controller.notifyDelegateAttention()
 			// A committed delivery is a wake from a new event in its own
 			// right: the child's report may present a row a user's stop
 			// held out of the automatic drives, so the holds end with it
-			// exactly as a successful arm ends them.
+			// exactly as a successful arm ends them — and they end BEFORE the
+			// wake below fires, because the notify func drives the receiver
+			// synchronously: a hold still in place at the drive's list read
+			// would present the delivered row alone and leave the stopped
+			// report for a later generation.
 			receiver.releaseAutomaticDriveHolds()
+			receiver.notify()
+			plan.controller.notifyDelegateAttention()
 		}
 	case coldDelegateDeliveryReceiver:
 		plan.controller.notifyDelegateAttention()

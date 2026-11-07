@@ -689,10 +689,6 @@ func (s *Session) armDelegateAttention(attentionID string) error {
 		s.delegateAttentionArmIDs[attentionID] = struct{}{}
 		s.scheduleDelegateAttentionArmRetryLocked()
 	} else {
-		// A successful arm is a wake from a new event, and such a wake may
-		// present a row a user's stop held from the automatic drives: release
-		// the holds with it. A failed arm woke nothing; the holds stand.
-		s.releaseAutomaticDriveHoldsLocked()
 		delete(s.delegateAttentionArmIDs, attentionID)
 		if len(s.delegateAttentionArmIDs) == 0 {
 			s.resetDelegateAttentionArmRetryLocked()
@@ -740,6 +736,13 @@ func (s *Session) armDelegateAttentionOnce(attentionID string) error {
 		if emit {
 			s.delegateController.emitDelegateUpdate(plan)
 		}
+		// The wake below drives synchronously through the session's notify
+		// func, and the drive it starts reads the automatic list in that same
+		// call: the holds a user's stop left must end before it fires, or the
+		// generation the wake starts presents the armed row alone and the
+		// stopped report waits a later generation. A failed arm never reaches
+		// this point; the holds stand.
+		s.releaseAutomaticDriveHolds()
 		s.notify()
 		return nil
 	}
@@ -1011,7 +1014,49 @@ func (s *Session) releaseAutomaticDriveHolds() {
 }
 
 func (s *Session) releaseAutomaticDriveHoldsLocked() {
+	if len(s.attentionAutomaticDriveHolds) != 0 {
+		s.moveHeldDelegateAttentionTurnsToTail()
+	}
 	s.attentionAutomaticDriveHolds = nil
+}
+
+// moveHeldDelegateAttentionTurnsToTail moves each still-pending held row's
+// steering turn to the resident history's tail. The reopen appended the turn
+// where the settle left it, and the exchanges of any generation that ran while
+// the hold stood append after it, so the generation that later presents the
+// row would end its request on those later exchanges — a trailing assistant
+// message the model treats as a prefill to continue instead of the report it
+// owes. The move puts the report back at the end, so the presenting request
+// ends on it. Resolved rows keep their presented positions. The caller holds
+// attentionMu.
+func (s *Session) moveHeldDelegateAttentionTurnsToTail() {
+	fold, err := s.delegateAttentionFoldLocked()
+	if err != nil {
+		// Best-effort: the rows keep their positions, and the release still
+		// ends the quiet.
+		return
+	}
+	for attentionID := range s.attentionAutomaticDriveHolds {
+		if _, resolved := fold.resolutions[attentionID]; resolved {
+			continue
+		}
+		var held schema.Turn
+		s.mu.Lock()
+		for index := range s.history {
+			if s.history[index].AttentionID == attentionID && s.history[index].Kind == schema.TurnSteering {
+				held = s.history[index]
+				break
+			}
+		}
+		s.mu.Unlock()
+		if held.AttentionID == "" {
+			continue
+		}
+		s.dropResidentDelegateAttentionTurnLocked(attentionID)
+		if err := s.retainDelegateAttentionTurn(held); err != nil {
+			s.emit(warningDataFromError("move held delegate attention turn to the history tail", err))
+		}
+	}
 }
 
 // deriveHeldDelegateAttentionFromOutcome rebuilds, on a session reconstructed
@@ -1809,9 +1854,6 @@ func (s *Session) scheduleDelegateAttentionArmRetryLocked() {
 		for _, id := range ids {
 			if s.armDelegateAttentionOnce(id) == nil {
 				resolved = append(resolved, id)
-				// A successful retry arm is a wake from a new event like any
-				// successful arm: a user stop's holds end with it.
-				s.releaseAutomaticDriveHolds()
 			}
 		}
 		s.attentionMu.Lock()
