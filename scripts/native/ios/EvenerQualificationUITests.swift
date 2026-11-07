@@ -95,14 +95,21 @@ final class EvenerQualificationUITests: XCTestCase {
 
 		// The authenticated follow-up: the recovered credentials carry a new
 		// turn through the real hub, and its response renders. The baseline
-		// is sampled before sending, so the wait compares counts honestly.
+		// is sampled only after the restored first response is on screen:
+		// a still-loading transcript would otherwise raise the count by
+		// itself and pass a follow-up that never completed.
 		tap(recovered, "the composer never appeared")
 		typeWholeText(app, recovered, "qualify the readback", "the follow-up never landed whole") {
 			$0 == "qualify the readback"
 		}
 		let followUp = app.descendants(matching: .any)
 			.matching(NSPredicate(format: "label CONTAINS %@", "QUALIFICATION_code_c9"))
+		let firstResponseDeadline = Date().addingTimeInterval(tripwire)
+		while Date() < firstResponseDeadline && followUp.count < 1 {
+			Thread.sleep(forTimeInterval: 0.25)
+		}
 		let baseline = followUp.count
+		XCTAssertGreaterThan(baseline, 0, "the restored first response never rendered")
 		tap(app.buttons["Send"], "Send never became available")
 		let deadline = Date().addingTimeInterval(tripwire)
 		while Date() < deadline && followUp.count <= baseline {
