@@ -136,14 +136,8 @@ function Controls({ client, target }: { client: VoiceClient; target: VoiceTarget
 						{armed ? <Details state={state} /> : null}
 						<SessionDetails state={state} boundRef={bound?.ref} same={same} />
 						<WakeTrialControls client={client} state={state} />
-						<Copy muted>{footnote(state, presented.phase)}</Copy>
-						{state.error ? (
-							<Copy muted>
-								{presented.phase === "error"
-									? `Voice stopped (${state.error}). Text chat still works.`
-									: `Last turn ended (${state.error}).`}
-							</Copy>
-						) : null}
+						<Copy muted>{footnote(state)}</Copy>
+						{state.error ? <Copy muted>{errorLine(state, presented.phase)}</Copy> : null}
 						<ErrorMessage message={error} />
 					</ScrollView>
 				</View>
@@ -363,9 +357,18 @@ function Details({ state, forceOpen = false }: { state: VoiceSnapshot; forceOpen
 	);
 }
 
-function footnote(state: VoiceSnapshot, phase: VoicePhase) {
-	if (state.cloudMicrophone) return `While you talk, audio goes to ${state.provider || "OpenAI Realtime"}.`;
-	return "While you talk, audio stays on this iPhone. Wake-word detection stays here too.";
+function footnote(state: VoiceSnapshot) {
+	const provider = state.provider || "OpenAI Realtime";
+	if (state.cloudMicrophone) return `Audio is going to ${provider} now.`;
+	return `Audio stays on this iPhone until you talk. Then it goes to ${provider}. Wake-word detection stays here.`;
+}
+
+/** What the native error means right now: capture stopped, audio reconnecting,
+ * or a turn that ended while the phone kept listening. */
+function errorLine(state: VoiceSnapshot, phase: VoicePhase) {
+	if (phase === "error" || state.state === "disarmed") return `Voice stopped (${state.error}). Text chat still works.`;
+	if (state.state === "recovering") return `Audio reconnecting (${state.error}).`;
+	return `Last turn ended (${state.error}).`;
 }
 
 /** The spec's readout: bound session, audio route, whether the microphone is

@@ -336,7 +336,7 @@ it("calls a routine abort a finished turn, not a stopped voice", async () => {
 	const quietWithAbort: VoiceSnapshot = {
 		state: "quiet",
 		capturing: true,
-		cloudMicrophone: true,
+		cloudMicrophone: false,
 		route: "iPhone speaker",
 		speakerConsentRequired: false,
 		error: "input_idle",
@@ -393,6 +393,8 @@ it("calls a routine abort a finished turn, not a stopped voice", async () => {
 		.join("\n");
 	expect(text).toContain("Last turn ended (input_idle)");
 	expect(text).not.toContain("Voice stopped");
+	// The footnote describes the state, not a state that no longer holds.
+	expect(text).toContain("until you talk");
 });
 
 it("names the session voice is on for when the bar belongs to another one", async () => {
