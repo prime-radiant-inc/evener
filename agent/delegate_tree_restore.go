@@ -11,6 +11,7 @@ import (
 	"sort"
 	"strings"
 	"sync/atomic"
+	"time"
 
 	"primeradiant.com/evener/agent/internal/delegatestore"
 	"primeradiant.com/evener/agent/schema"
@@ -259,7 +260,12 @@ func (c *delegateTreeController) Reconcile(evidence delegateReconcileEvidence) (
 			cancel()
 		}
 		if wakeAfterUnlock != nil {
-			resultErr = errors.Join(resultErr, wakeAfterUnlock())
+			// A wake failure must not drop the batch's plans: they carry
+			// replayed deliveries and their claims, and the attention arm
+			// retries on its own.
+			if wakeErr := wakeAfterUnlock(); wakeErr != nil {
+				c.reportDelegateWakeError(wakeErr)
+			}
 		}
 	}()
 	if evidence.evidenceVersion != c.evidenceVersion {
@@ -504,7 +510,15 @@ func (c *delegateTreeController) acknowledgeRetryableStopDeliveriesLocked(stop *
 				continue
 			}
 			c.dropDeliveryPlanClaimsLocked(plans)
-			return plans, wakes, fmt.Errorf("acknowledge stopped delegate delivery %s: %w", token.deliveryID, err)
+			plans.deliveries = nil
+			if errors.Is(err, errDelegateNotControllable) {
+				return plans, wakes, fmt.Errorf("acknowledge stopped delegate delivery %s: %w", token.deliveryID, err)
+			}
+			// A transient append failure keeps the receipt tracked. Re-arm the
+			// stop's progress so the parked drain retries after the store
+			// returns instead of exiting with the driver.
+			c.rearmStopDeliveryRetryLocked(stop)
+			return plans, wakes, nil
 		}
 		plans.updates = append(plans.updates, ackPlans.updates...)
 		plans.deliveries = append(plans.deliveries, ackPlans.deliveries...)
@@ -520,15 +534,56 @@ func (c *delegateTreeController) acknowledgeRetryableStopDeliveriesLocked(stop *
 // between two acknowledgments; empty in production.
 var observeStopDeliveryAck atomic.Pointer[func(delegateDeliveryToken)]
 
+// delegateStopDeliveryRetryDelay spaces retries of a stop delivery
+// acknowledgment whose append failed, so a store outage does not hot-loop the
+// drain.
+const delegateStopDeliveryRetryDelay = 50 * time.Millisecond
+
+// rearmStopDeliveryRetryLocked schedules one wake for a transient stop-delivery
+// acknowledgment failure. The caller holds c.mu; the drain parks on progress
+// until that wake, so repeated failures do not stack timers.
+func (c *delegateTreeController) rearmStopDeliveryRetryLocked(stop *delegateStopState) {
+	if stop == nil || stop.retryArmed {
+		return
+	}
+	stop.retryArmed = true
+	// Take back the progress signal the failed attempt just queued: the drain
+	// must park until this retry rather than spin on the same store error.
+	select {
+	case <-stop.progress:
+	default:
+	}
+	time.AfterFunc(delegateStopDeliveryRetryDelay, func() {
+		c.mu.Lock()
+		defer c.mu.Unlock()
+		if c.stop != stop {
+			return
+		}
+		stop.retryArmed = false
+		c.signalStopProgressLocked()
+	})
+}
+
+// reportDelegateWakeError logs a best-effort delivery wake failure. The
+// attention arm retries on its own.
+func (c *delegateTreeController) reportDelegateWakeError(err error) {
+	if c == nil || err == nil {
+		return
+	}
+	c.mu.Lock()
+	root := c.rootRuntime
+	c.mu.Unlock()
+	if root != nil {
+		root.emit(warningDataFromError("delegate delivery wake failed", err))
+	}
+}
+
 // dropDeliveryPlanClaimsLocked gives back the claims the retries created before
 // a later acknowledgment failed: a claimed delivery is never re-planned, so an
 // abandoned batch must release them. The caller holds c.mu.
 func (c *delegateTreeController) dropDeliveryPlanClaimsLocked(plans delegateMutationPlans) {
 	for _, plan := range plans.deliveries {
-		if claim := c.deliveryClaims[plan.deliveryID]; claim != nil && claim.token == plan.claim {
-			delete(c.deliveryClaims, plan.deliveryID)
-			c.evidenceVersion++
-		}
+		c.dropDeliveryClaimLocked(plan)
 	}
 }
 
@@ -537,6 +592,9 @@ func (c *delegateTreeController) dropDeliveryPlanClaimsLocked(plans delegateMuta
 func (c *delegateTreeController) wakeDeliveryReceiver(receiver delegateDeliveryReceiver, attentionID string) error {
 	switch receiver := receiver.(type) {
 	case *Session:
+		if receiver == nil {
+			return nil
+		}
 		if receiver.isRootDelegateAttentionReceiver() {
 			return receiver.armDelegateAttention(attentionID)
 		}

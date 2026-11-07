@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/internal/delegatestore"
 	"primeradiant.com/evener/agent/internal/jobstore"
 	"primeradiant.com/evener/agent/provenance"
@@ -372,16 +373,12 @@ func (runtime delegateRuntime) send(ctx context.Context, delegateID, message str
 		return runtime.stableSendFailureOutcomeAfterDispatch(ctx, started, waiter, maxWaitMS, plans, err, nil)
 	}
 	// The start is committed and its input durable. Publish the snapshots
-	// first, then execute the owed-delivery replay as best effort: an
-	// acknowledgment failure there is not the start's failure and must not
-	// latch finalization recovery or leave an unlaunched runner. Requeue the
-	// parcels and warn; a covering stop still repairs any receipt left behind.
-	if execErr := s.executeDelegateMutationPlans(delegateMutationPlans{updates: plans.updates}); execErr != nil {
-		s.emit(warningDataFromError("delegate start snapshots failed to publish", execErr))
-	}
-	if execErr := s.executeDelegateMutationPlans(delegateMutationPlans{deliveries: plans.deliveries}); execErr != nil {
-		s.requeueReplayableDelegateDeliveries(nil)
-		s.emit(warningDataFromError("delegate start delivery replay failed", execErr))
+	// and replay the owed deliveries as best effort: an acknowledgment failure
+	// there is not the start's failure and must not latch finalization recovery
+	// or leave an unlaunched runner. The failure path requeues the parcels; a
+	// covering stop still repairs any receipt left behind.
+	if execErr := s.executeDelegateMutationPlans(plans); execErr != nil {
+		s.emit(warningDataFromErrorCode(events.WarningCodeDelegateStartDeliveryReplay, "delegate start delivery replay failed", execErr))
 	}
 	runCtx, runCancel := context.WithCancel(started.ctx)
 	runCtx = context.WithValue(runCtx, delegateRunLeaseContextKey{}, started.lease)

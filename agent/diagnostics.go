@@ -54,6 +54,14 @@ func warningDataFromError(label string, err error) events.WarningData {
 	return data
 }
 
+// warningDataFromErrorCode is warningDataFromError with a stable structured
+// code clients can key on instead of the human-readable label.
+func warningDataFromErrorCode(code, label string, err error) events.WarningData {
+	data := warningDataFromError(label, err)
+	data.Code = code
+	return data
+}
+
 // bareWarningDataFromError is warningDataFromError without the error's text
 // in the message, for an error from a model call: a provider's error body can
 // echo the user's own request, which would otherwise reach Notification
