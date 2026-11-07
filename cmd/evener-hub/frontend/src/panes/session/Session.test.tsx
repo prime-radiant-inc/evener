@@ -1470,21 +1470,18 @@ test("same-session pane menus open Overview from their own instance", async ({ o
   expect(activitySidebarStore.getState()).toMatchObject({ open: true, ref });
 });
 
-test("mobile omits repo location and the desktop activity footer", async ({ onTestFinished }) => {
+test("mobile keeps the session's status footer with its path and activity counts", async ({ onTestFinished }) => {
   vi.mocked(ComposerModule.Composer).mockRestore();
+  vi.mocked(StatusBarModule.StatusBar).mockRestore();
   onTestFinished(stubSessionSlots);
-  vi.stubGlobal(
-    "matchMedia",
-    vi.fn((media: string) => ({
-      media,
-      matches: media === "(max-width: 899px)",
-      addEventListener: () => {},
-      removeEventListener: () => {},
-    })),
-  );
+  onTestFinished(installMobileViewport());
   const fake = connectReadyFakeClient();
   fake.on("thread/read", () => readResponse("local:mobile", { cwd: "/work/mobile" }));
   fake.on("evener/git/head", () => ({ head: "mobile-branch", originUrl: "git@github.com:owner/repo.git" }));
+  fake.on("evener/thread/activity/read", ({ ref, scope }) => ({
+    ...activitySummary(ref, scope),
+    jobs: { known: true, active: 1, total: 3, completed: 2, failed: 0 },
+  }));
   render(
     <ClientProvider client={fake}>
       <Session params={{ ref: "local:mobile" }} paneId="mobile-pane" focused />
@@ -1492,11 +1489,16 @@ test("mobile omits repo location and the desktop activity footer", async ({ onTe
   );
 
   await screen.findByTestId("composer-input-card");
-  expect(screen.queryByTestId("composer-repo-location")).toBeNull();
-  expect(screen.queryByTestId("composer-repo-path")).toBeNull();
-  expect(screen.queryByTestId("composer-repo-link")).toBeNull();
-  expect(screen.queryByTestId("pane-edge-footer")).toBeNull();
-  expect(screen.queryByTestId("statusbar")).toBeNull();
+  // The footer stays at the pane's bottom edge on a phone: the working
+  // directory and repository, then the same activity counts as desktop.
+  const footer = within(screen.getByTestId("pane-edge-footer"));
+  expect(footer.getByTestId("statusbar")).toBeTruthy();
+  expect(footer.getByTestId("composer-repo-path").textContent).toBe("/work/mobile");
+  expect((await footer.findByTestId("composer-repo-ref")).textContent).toBe("owner/repo#mobile-branch");
+  const user = userEvent.setup();
+  // A chip is the phone's one-tap way into the full-screen Overview list.
+  await user.click(await footer.findByRole("button", { name: /Jobs, 1 of 3 running/ }));
+  expect(activitySidebarStore.getState()).toMatchObject({ open: true, tab: "jobs" });
 });
 
 test.each(["closed", "ended", "notLoaded"] as const)(

@@ -768,10 +768,11 @@ describe the executable proof and presentation contract.
 
 The [browser binding](../../cmd/evener-hub/frontend/src/stores/sessionActivity.ts)
 shares a store by actual client object, requested ref and scope. A committed view
-acquires its holder; an abandoned render starts no read. Every visible desktop
-session pane has a status footer that observes that pane's summary and its
-subtree summary (for the Agents count) by explicit ref, so side-by-side panes
-retain independent counts while duplicate consumers of one ref and scope share
+acquires its holder; an abandoned render starts no read. Every visible ordinary
+session pane has a status footer on both viewports that observes that pane's
+summary and its subtree summary (for the Agents count) by explicit ref, so
+side-by-side panes retain independent counts while duplicate consumers of one
+ref and scope share
 the same owner. Agents, Jobs and Watches tabs observe their own
 session-scoped collection. A visible page boundary supplies further demand,
 while the shared store retains and retries an interrupted continuation. The

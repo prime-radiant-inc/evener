@@ -109,15 +109,18 @@ losing the conversation that made the evidence relevant.
   but separates reading from scanning. Shared size and width preferences remain available.
   Phones reflow speaker rows, controls and evidence rather than shrinking a desktop page;
   wide evidence scrolls within its surface instead of widening the page or shrinking targets.
-- **Keep session status inside its pane.** Every visible desktop session pane ends with its own
+- **Keep session status inside its pane.** Every visible session pane ends with its own
   flush status footer, never one strip spanning sibling panes. The footer leads with that
   session's working directory and repository/branch, then its Agents, Jobs, Watches and Tasks
   counts. A count click focuses the owning pane before opening the matching Overview category.
   The shared sidebar retains its scope breadcrumb and an accessible, visually hidden
   “Overview kind” label. About is the fifth category and has no footer counter.
-  Phones omit the activity footer and the working-directory/repository row. The
-  composer ends at the pane's bottom edge with only required safe-area clearance, which
-  yields when the on-screen keyboard covers that area.
+  Phones keep the same footer at the pane's bottom edge, where it is the touch surface:
+  the working-directory line takes a row of its own, and the chips sit on a row below at
+  the 44px tap floor, scrolling sideways rather than shrinking a target when they outgrow
+  the width. Chips show their glyph and count when the width cannot also carry a name.
+  The bar owns the home-indicator band, so the composer dock above it gives that inset up;
+  the inset yields when the on-screen keyboard covers that area.
 - **Keep session inspection together.** Both session action menus offer Overview, retaining
   the intended session's category choice. `/status` selects About without toggling a
   standalone Details pane. About reuses the shared Details renderer and its accounting.

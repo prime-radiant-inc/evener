@@ -262,6 +262,11 @@ test("the footer fills to the screen's bottom edge while keeping its content cle
   expect(css).toMatch(
     /@media \(max-width: 899px\) \{[\s\S]*?\.footer \{[^}]*padding: var\(--space-3\) var\(--space-4\);[^}]*padding-bottom: max\(0px, env\(safe-area-inset-bottom\) - var\(--keyboard-inset, 0px\)\)/,
   );
+  // A flush edge footer below this one (the session status bar) is the pane's
+  // bottom edge and owns the band, so the dock must not reserve it twice.
+  expect(css).toMatch(
+    /@media \(max-width: 899px\) \{[\s\S]*?\.footerBeforeEdge \{[^}]*padding-bottom: var\(--space-3\)/,
+  );
 });
 
 // Footer-less panes (welcome, settings, spawn, doc) had their end-of-scroll

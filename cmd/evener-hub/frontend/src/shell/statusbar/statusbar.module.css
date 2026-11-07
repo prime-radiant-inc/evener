@@ -93,3 +93,62 @@
     padding-inline: 1px;
   }
 }
+
+/* Every chip is a thumb target on a phone or any coarse pointer. */
+@media (max-width: 899px), (any-pointer: coarse) {
+  .chip {
+    min-height: var(--tap-min);
+    min-width: var(--tap-min);
+  }
+}
+
+/* The phone keeps the footer at the pane's bottom edge, but one desktop line
+ * cannot carry it: four touch-floor chips and a repository reference together
+ * can consume the whole width, leaving the working directory nothing. The bar
+ * stacks instead - the path on its own row, the counts on a row below at the
+ * touch floor. A bar narrower than 600px already drops the names (the
+ * container rule above), leaving the glyph and count; when even those outgrow
+ * the row it scrolls sideways rather than shrinking a target or wrapping to a
+ * second one. The bar owns the home-indicator band because nothing docks
+ * below it; PaneScaffold drops the composer footer's own inset when this bar
+ * follows it. The inset yields while the on-screen keyboard covers that band,
+ * as the composer dock's does. */
+@media (max-width: 899px) {
+  .bar {
+    flex-wrap: wrap;
+    gap: 0;
+    padding: 0 var(--space-2) max(0px, env(safe-area-inset-bottom) - var(--keyboard-inset, 0px));
+  }
+
+  /* A full-width row forces the line break above the chips. */
+  .leading {
+    flex: 1 1 100%;
+  }
+
+  .chips {
+    display: flex;
+    flex: 1 1 100%;
+    min-width: 0;
+    justify-content: flex-start;
+    gap: var(--space-1);
+    overflow-x: auto;
+    /* A cut-off chip is the overflow cue; a scrollbar in the pane's bottom
+     * edge would cost the bar height for a control a thumb already has. */
+    scrollbar-width: none;
+  }
+
+  .chips::-webkit-scrollbar {
+    display: none;
+  }
+
+  .chip {
+    gap: 4px;
+    padding: 0 var(--space-1);
+  }
+
+  /* The scrolling row keeps the category glyph at every phone width; the
+   * 320px container rule above compacts narrow desktop panes instead. */
+  .chipGlyph {
+    display: inline-flex;
+  }
+}

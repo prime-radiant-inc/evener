@@ -210,3 +210,23 @@ test("the folded-run summary meets the phone tap floor", () => {
   expect(phone, "toolrungroup.module.css must have a max-width:899px block").not.toBeNull();
   expect(phone![1]).toMatch(/\.summary\s*\{[^}]*min-height:\s*var\(--tap-min\)/);
 });
+
+// The session status footer is the phone pane's bottom edge, so every chip is
+// a thumb target and the bar owns the home-indicator band (the composer dock
+// above it gives that inset up; panescaffold's own test pins that half). The
+// path gets a full row of its own: sharing one line with the touch-floor chips
+// left it nothing at phone width.
+test("the phone session status bar stacks the path over touch-floor chips and owns the bottom inset", () => {
+  const srcRoot = dirname(dirname(fileURLToPath(import.meta.url)));
+  const css = readFileSync(join(srcRoot, "shell/statusbar/statusbar.module.css"), "utf8");
+  const blocks = mediaBlocks(css);
+  const tapFloor = blocks.find((block) => block.prelude === TAP_FLOOR_QUERY);
+  expect(tapFloor, `statusbar.module.css must have a ${TAP_FLOOR_QUERY} block`).toBeDefined();
+  expect(tapFloor!.body).toMatch(/\.chip\s*\{[^}]*min-height:\s*var\(--tap-min\)[^}]*min-width:\s*var\(--tap-min\)/);
+  const phone = blocks.find((block) => block.prelude === "(max-width: 899px)");
+  expect(phone, "statusbar.module.css must have a max-width:899px block").toBeDefined();
+  expect(phone!.body).toMatch(/\.bar\s*\{[^}]*flex-wrap:\s*wrap/);
+  expect(phone!.body).toMatch(/\.bar\s*\{[^}]*padding:\s*0 var\(--space-2\) max\(0px,\s*env\(safe-area-inset-bottom\)/);
+  expect(phone!.body).toMatch(/\.leading\s*\{[^}]*flex:\s*1 1 100%/);
+  expect(phone!.body).toMatch(/\.chips\s*\{[^}]*flex:\s*1 1 100%[^}]*overflow-x:\s*auto/);
+});
