@@ -20,7 +20,17 @@ export function composeButtonRoom(bottomInset: number): number {
 	return DIAMETER + EDGE + bottomInset;
 }
 
-export function ComposeButton({ disabled, onPress }: { disabled: boolean; onPress: () => void }) {
+export function ComposeButton({
+	disabled,
+	onPress,
+	rightInset = 0,
+}: {
+	disabled: boolean;
+	onPress: () => void;
+	/** The safe area's right edge on a full-screen landscape phone; the split's
+	 * left pane passes 0 because its right edge is the divider. */
+	rightInset?: number;
+}) {
 	const { palette } = useColors();
 	const { bottom } = useSafeAreaInsets();
 	return (
@@ -32,7 +42,7 @@ export function ComposeButton({ disabled, onPress }: { disabled: boolean; onPres
 			onPress={disabled ? undefined : onPress}
 			style={({ pressed }) => ({
 				position: "absolute",
-				right: EDGE,
+				right: EDGE + rightInset,
 				bottom: EDGE + bottom,
 				width: DIAMETER,
 				height: DIAMETER,

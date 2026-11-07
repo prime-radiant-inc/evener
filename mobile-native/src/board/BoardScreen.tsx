@@ -224,7 +224,7 @@ function Board({
 	// The floating compose button's room over the Board's end, from the home
 	// indicator it clears. The Board is inset and padded by it, and the toast
 	// floats above it.
-	const { bottom: bottomInset } = useSafeAreaInsets();
+	const { bottom: bottomInset, left: leftInset, right: rightInset } = useSafeAreaInsets();
 	const composeRoom = composeButtonRoom(bottomInset);
 	const boardUnderBar = underBar(composeRoom);
 
@@ -1168,7 +1168,11 @@ function Board({
 				glassTop={navGlass ? headerHeight : undefined}
 				onLayout={(event) => setHeaderPanel({ height: event.nativeEvent.layout.height, onGlass: navGlass })}
 			>
-				{chips.length && !searching ? <Chips chips={chips} onGlass={navGlass} /> : null}
+				{chips.length && !searching ? (
+					<View style={{ paddingLeft: leftInset, paddingRight: duoEmbedded ? 0 : rightInset }}>
+						<Chips chips={chips} onGlass={navGlass} />
+					</View>
+				) : null}
 			</GlassHeaderPanel>
 			<View style={{ flex: 1 }}>
 				<Animated.ScrollView
@@ -1184,6 +1188,8 @@ function Board({
 					// is tall enough to keep the field hidden.
 					contentContainerStyle={{
 						paddingBottom: 24 + boardUnderBar.endPadding,
+						paddingLeft: leftInset,
+						paddingRight: duoEmbedded ? 0 : rightInset,
 						minHeight: windowHeight + searchFieldHeight,
 					}}
 					// The Board runs under its compose button, its end and its
@@ -1276,7 +1282,7 @@ function Board({
 			</View>
 			{/* The compose button floats over the Board's end, so the Board runs
 			    under it; the toast slot sits above it. */}
-			<ComposeButton disabled={!connected} onPress={newSession} />
+			<ComposeButton disabled={!connected} onPress={newSession} rightInset={duoEmbedded ? 0 : rightInset} />
 		</View>
 	);
 }
@@ -1722,6 +1728,7 @@ function DuoBoardHeader({
 		<View
 			style={{
 				paddingTop: insets.top,
+				paddingLeft: insets.left,
 				minHeight: insets.top + 44,
 				flexDirection: "row",
 				alignItems: "center",
@@ -1729,7 +1736,7 @@ function DuoBoardHeader({
 				backgroundColor: palette.page,
 			}}
 		>
-			<HubButton hubName={hubName} onOpen={onOpenHub} maxWidth={Math.max(80, width - 72)} />
+			<HubButton hubName={hubName} onOpen={onOpenHub} maxWidth={Math.max(80, width - insets.left - 72)} />
 			<Pressable
 				accessibilityRole="button"
 				accessibilityLabel="Search sessions"
