@@ -36,7 +36,7 @@ set -euo pipefail
 SCRIPT_NAME="run-ui-tests"
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd -P)"
 source "$repo_root/scripts/lib/scratch-lib.sh"
-usage() { sed -n '2,27p' "$0" | sed 's/^# \{0,1\}//'; exit 0; }
+usage() { sed -n '2,/^# END-USAGE$/p' "$0" | sed 's/^# \{0,1\}//'; exit 0; }
 
 identity=""
 output=""
@@ -143,11 +143,20 @@ cleanup() {
 	# state scratch_rm is about to reclaim. Copy this run's daemon logs out
 	# before they go; they carry round diagnostics for the fixture-only
 	# session, never credentials. This script's own --output is the parent's
-	# ui directory, so the logs land directly in the uploaded set.
+	# ui directory, so the logs land directly in the uploaded set. The path
+	# mirrors the hub's state layout (XDG_STATE_HOME/evener/run/logs, whose
+	# shape the Go hub owns): if the hub ever moves it, this copy finds
+	# nothing and the warning names it instead of failing silent.
+	daemon_logs_copied=0
 	for daemon_log in "$state_home"/evener/run/logs/daemon-*.log; do
 		[ -f "$daemon_log" ] || continue
-		cp "$daemon_log" "$output/" 2>/dev/null || true
+		if cp "$daemon_log" "$output/" 2>/dev/null; then
+			daemon_logs_copied=$((daemon_logs_copied + 1))
+		fi
 	done
+	if [ -f "$output/hub.log" ] && [ "$daemon_logs_copied" -eq 0 ]; then
+		echo "$SCRIPT_NAME: the hub ran but no daemon log was found to copy" >&2
+	fi
 	scratch_rm
 	exit "$status"
 }
@@ -343,21 +352,17 @@ inject_environment() {
 	else
 		/usr/libexec/PlistBuddy -c "Add :$ui_key:EnvironmentVariables:$1 string $2" "$private_run" >/dev/null
 	fi
-}
-inject_environment EVENER_QUALIFICATION_HUB_ORIGIN "$hub_origin"
-inject_environment EVENER_QUALIFICATION_HUB_TOKEN "$hub_token"
-# The journeys read their connection data from the test process environment:
-# each entry must round-trip through the file it was injected into, not just
-# make its Add or Set exit zero.
-verify_environment() {
+	# Every injection is verified by construction: the journeys read their
+	# connection data from the test process environment, so each entry must
+	# round-trip through the file it was injected into, not just exit zero.
 	stored="$(/usr/libexec/PlistBuddy -c "Print :$ui_key:EnvironmentVariables:$1" "$private_run" 2>/dev/null)"
 	if [ "$stored" != "$2" ]; then
 		echo "$SCRIPT_NAME: $1 did not round-trip through the test-run configuration" >&2
 		exit 1
 	fi
 }
-verify_environment EVENER_QUALIFICATION_HUB_ORIGIN "$hub_origin"
-verify_environment EVENER_QUALIFICATION_HUB_TOKEN "$hub_token"
+inject_environment EVENER_QUALIFICATION_HUB_ORIGIN "$hub_origin"
+inject_environment EVENER_QUALIFICATION_HUB_TOKEN "$hub_token"
 chmod 600 "$private_run"
 
 xcresult="$output/ui.xcresult"
