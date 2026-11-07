@@ -1519,12 +1519,12 @@ func TestWorktreePrune_OrphanArmSparesLaneWhileRetainedChildNotifies(t *testing.
 // waits out the delegate's finalize tail — the seeded window's end, re-arm
 // included — then asserts the retained child's report landed as a pending
 // row: the delivery cannot land inside a fixture-window run, so nothing
-// below races the row's landing. For the tests that hold the announce only
-// to park the spawn's tails and release the moment the fixture returns; a
-// test that seeds state between the spawn and the release keeps the inline
-// Once/Cleanup form and releases by hand — its release must wait for its
-// own seeding, and the delivered-report test's hold and arm fault are the
-// one such case.
+// below races the row's landing. It is for a test that holds the announce
+// only to park the spawn's tails, releases the moment the fixture returns,
+// and waits nothing beyond the delegate's own tail. A test whose release
+// must wait on its own seeding, or that waits or checks something the
+// helper does not cover, keeps its inline Once/Cleanup form and releases
+// by hand.
 func (l *sharedDescendantLane) settleSeededAnnounceWindow(t *testing.T) {
 	t.Helper()
 	close(l.announceHold)
@@ -1892,33 +1892,7 @@ func TestDelegateAttentionBusyCommitReopensConsumedReport(t *testing.T) {
 	// row's arrival, not the fixture's return.
 	holdSharedDescendantAnnounce("busy-commit-reopen")
 	lane := spawnSharedDescendantLane(t, r, "busy-commit-reopen", "dlg_busycommit00001", "034busycommit00001", wedge)
-	var announceHoldOnce sync.Once
-	releaseAnnounceHold := func() { announceHoldOnce.Do(func() { close(lane.announceHold) }) }
-	// A fatal before the release would park the held finalize tail forever,
-	// so the cleanup mirror guarantees the parked tail can always finish.
-	t.Cleanup(releaseAnnounceHold)
-	releaseAnnounceHold()
-	// The seeded window's end is the delegate's own finalize tail closing its
-	// run: the tail re-arms whatever attention survived the window at its
-	// very end, so the wait must cover the re-arm too. The retained child's
-	// report becomes a pending row inside this window, and waiting the tail
-	// out is what keeps the wait below from racing the row's landing — a
-	// chain still mid-flight when the wait's bound fires is the loaded-runner
-	// loss this seeding pins.
-	lane.delegateSub.mu.Lock()
-	delegateDone := lane.delegateSub.done
-	lane.delegateSub.mu.Unlock()
-	select {
-	case <-delegateDone:
-	// TRIPWIRE: the tail finishes within a couple of drain passes of the
-	// release; 15s only fires on a genuine hang, absorbing a loaded shard's
-	// stretched finalize tails and git retries.
-	case <-time.After(15 * time.Second):
-		t.Fatalf("the delegate's finalize tail never finished after the seeded announce release")
-	}
-	if pending, pendErr := lane.delegateSess.pendingDelegateAttentionIDs(); pendErr != nil || len(pending) == 0 {
-		t.Fatalf("the retained child's report is not pending after the seeded window: pending=%v (%v)", pending, pendErr)
-	}
+	lane.settleSeededAnnounceWindow(t)
 	lane.delegateSess.SetNotifyFunc(nil)
 	// The shared child's restored notify edge can launch its own pending
 	// notification turn, which would consume the scripted wedge step this
@@ -3861,32 +3835,7 @@ func TestDelegateAttentionStopAdmittedDuringReopenResolvesFreshRow(t *testing.T)
 	// runs.
 	holdSharedDescendantAnnounce("stop-during-reopen")
 	lane := spawnSharedDescendantLane(t, r, "stop-during-reopen", "dlg_stopreopen0001", "034stopreopen0001")
-	var announceHoldOnce sync.Once
-	releaseAnnounceHold := func() { announceHoldOnce.Do(func() { close(lane.announceHold) }) }
-	// A fatal before the release would park the held finalize tail forever,
-	// so the cleanup mirror guarantees the parked tail can always finish.
-	t.Cleanup(releaseAnnounceHold)
-	releaseAnnounceHold()
-	// The seeded window's end is the delegate's own finalize tail closing its
-	// run, re-arm included: the retained child's report becomes a pending
-	// row inside this window, and waiting the tail out keeps the reopen
-	// scenario below from driving before the row exists — a first drive that
-	// finds no row exits this test's only loop and strands the stop's whole
-	// premise.
-	lane.delegateSub.mu.Lock()
-	delegateDone := lane.delegateSub.done
-	lane.delegateSub.mu.Unlock()
-	select {
-	case <-delegateDone:
-	// TRIPWIRE: the tail finishes within a couple of drain passes of the
-	// release; 15s only fires on a genuine hang, absorbing a loaded shard's
-	// stretched finalize tails and git retries.
-	case <-time.After(15 * time.Second):
-		t.Fatalf("the delegate's finalize tail never finished after the seeded announce release")
-	}
-	if pending, pendErr := lane.delegateSess.pendingDelegateAttentionIDs(); pendErr != nil || len(pending) == 0 {
-		t.Fatalf("the retained child's report is not pending after the seeded window: pending=%v (%v)", pending, pendErr)
-	}
+	lane.settleSeededAnnounceWindow(t)
 	lane.delegateSess.SetNotifyFunc(nil)
 
 	// Hold the stop the seam admits in flight: its driver cannot complete
