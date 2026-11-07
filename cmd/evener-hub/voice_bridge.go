@@ -558,7 +558,7 @@ func (b *voiceBridge) control(control voiceControl) error {
 	case "interrupt":
 		return b.interruptSpeech(control)
 	case "renew":
-		read, err := b.client.ThreadRead(b.ctx, appwire.ThreadReadParams{Ref: b.binding.Ref})
+		read, err := b.client.ThreadRead(b.ctx, appwire.ThreadReadParams{Ref: b.binding.Ref, LiveOnly: true})
 		if err != nil {
 			return err
 		}

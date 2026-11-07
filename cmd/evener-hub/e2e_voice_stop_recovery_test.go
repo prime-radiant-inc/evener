@@ -8,12 +8,15 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener-hub/internal/appsource"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
@@ -26,10 +29,67 @@ func TestE2E_VoiceSessionStopRecoversRelayGap(t *testing.T) {
 	}
 }
 
+func TestE2E_VoiceSessionStopRecoversRelayGapWithSavedHistory(t *testing.T) {
+	voiceStopRelayGapOn(t, "playing", true)
+}
+
+// A renewal read that meets a retryable outage must not be answered from saved
+// history: that daemonless response fails authority validation and closes the
+// bridge, interrupting unfinished speech. The hook forces the exact read
+// failure the relay produces, with saved history present.
+func TestE2E_VoiceSessionStopRenewSurvivesRelayGapWithSavedHistory(t *testing.T) {
+	f := newVoiceCorrectionStack(t)
+	var armed, failed atomic.Bool
+	gap, _ := voiceStopRecoveryHub(t, f, nil, true, func() error {
+		if armed.Load() {
+			failed.Store(true)
+			return appwire.RetryableSessionUnavailable("relay connection ended before route publication")
+		}
+		return nil
+	})
+	_ = gap
+	const reply = "STOP-RENEW-LIVE-285"
+	f.admit(t, "STOP-RENEW-LIVE-INPUT-285", false)
+	voiceStopContinue(f.next(t), reply)
+	_ = f.next(t) // The held execution stays active.
+	start := voiceJourneyEvent(t, f.device, "speech_start")
+	peer := f.openSpeaker(t)
+	old := f.speechRequest(t, peer, start, reply)
+	voiceCorrectionAudio(peer, old, "renew-saved-response", "renew-saved-item", base64.StdEncoding.EncodeToString(make([]byte, 960)))
+	voiceJourneyEvent(t, f.device, "audio")
+
+	armed.Store(true)
+	f.device.send(`{"type":"renew"}`)
+	deadline := time.Now().Add(5 * time.Second)
+	for !failed.Load() && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if !failed.Load() {
+		t.Fatal("renewal read did not reach the outage hook")
+	}
+	deadline = time.Now().Add(500 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		if f.delivery(t, old.ID).Interrupted {
+			t.Fatal("a renewal read during an outage was served saved history and interrupted speech")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	armed.Store(false)
+	f.device.send(`{"type":"renew"}`)
+	if event := f.device.read(); event["type"] != "renewed" {
+		t.Fatalf("next renewal did not complete after the outage: %v", event)
+	}
+}
+
 func voiceStopRelayGap(t *testing.T, phase string) {
 	t.Helper()
+	voiceStopRelayGapOn(t, phase, false)
+}
+
+func voiceStopRelayGapOn(t *testing.T, phase string, savedHistory bool) {
+	t.Helper()
 	f := newVoiceCorrectionStack(t)
-	gap, observer := voiceStopRecoveryHub(t, f, nil)
+	gap, observer := voiceStopRecoveryHub(t, f, nil, savedHistory, nil)
 	const reply = "STOP-RELAY-OUTPUT-281"
 	f.admit(t, "STOP-RELAY-INPUT-281", false)
 	voiceStopContinue(f.next(t), reply)
@@ -107,7 +167,7 @@ func TestE2E_VoiceSessionStopResyncAlonePreservesSpeech(t *testing.T) {
 			}
 			<-release
 		}
-	})
+	}, false, nil)
 	const reply = "STOP-RESYNC-ONLY-OUTPUT-283"
 	f.admit(t, "STOP-RESYNC-ONLY-INPUT-283", false)
 	voiceStopContinue(f.next(t), reply)
@@ -221,7 +281,7 @@ func voiceStopWaitResync(t *testing.T, f *voiceCorrectionStack, observer *appwir
 
 // Only the TCP transport is faulted. Both hubs use the original live manager,
 // its mutation journal and transcript, and the production local source/relay.
-func voiceStopRecoveryHub(t *testing.T, f *voiceCorrectionStack, beforeRead func()) (*voiceStopTransportGap, *appwire.Client) {
+func voiceStopRecoveryHub(t *testing.T, f *voiceCorrectionStack, beforeRead func(), savedHistory bool, readFailure func() error) (*voiceStopTransportGap, *appwire.Client) {
 	t.Helper()
 	_ = f.device.conn.CloseNow()
 	root := filepath.Join(f.stack.home, "state", "evener")
@@ -236,7 +296,11 @@ func voiceStopRecoveryHub(t *testing.T, f *voiceCorrectionStack, beforeRead func
 	config := filepath.Join(f.stack.home, "config", "evener")
 	auth := newTestAuthController(t, t.TempDir(), t.TempDir(), filepath.Join(config, "providers.toml"))
 	srv := httptest.NewUnstartedServer(nil)
-	web := NewWebServer(hubcore.WebConfig{HubAddr: srv.Listener.Addr().String(), AuthToken: f.stack.token, HubStateRoot: root, Registry: auth.reg, Past: hubcore.NewPastIndex(""), RelayHooks: hubcore.RelayLifecycleHooks{BeforeReadThread: beforeRead}})
+	past := hubcore.NewPastIndex("")
+	if savedHistory {
+		past = voiceStopSavedHistory(t, f)
+	}
+	web := NewWebServer(hubcore.WebConfig{HubAddr: srv.Listener.Addr().String(), AuthToken: f.stack.token, HubStateRoot: root, Registry: auth.reg, Past: past, RelayHooks: hubcore.RelayLifecycleHooks{BeforeReadThread: beforeRead, ReadThreadFailure: readFailure}})
 	web.sources.Add(source)
 	srv.Config.Handler = web.Handler()
 	srv.Start()
@@ -254,6 +318,42 @@ func voiceStopRecoveryHub(t *testing.T, f *voiceCorrectionStack, beforeRead func
 	voiceJourneyAcknowledgeReady(t, f.device, voiceJourneyEvent(t, f.device, "ready"), 0)
 	voiceJourneyEvent(t, f.device, "stop")
 	return gap, observer
+}
+
+// voiceStopSavedHistory gives the second hub a daemonless snapshot of the
+// manager thread, so a live read defeated by the relay gap has saved history
+// to fall back to unless the voice reads require a live response.
+func voiceStopSavedHistory(t *testing.T, f *voiceCorrectionStack) *hubcore.PastIndex {
+	t.Helper()
+	ref, err := appwire.ParseRef(f.ref)
+	if err != nil {
+		t.Fatal(err)
+	}
+	root := t.TempDir()
+	state := filepath.Join(root, "projects", "project-voice-0000000000")
+	if err := os.MkdirAll(filepath.Join(state, "sessions"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := schema.SaveSessionMeta(state, schema.SessionMeta{ID: ref.ThreadID}); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(state, "sessions", ref.ThreadID+".transcript.jsonl")
+	w, err := transcript.NewWriter(path, transcript.Header{SessionID: ref.ThreadID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+	indexPastTranscriptForTest(t, state, ref.ThreadID)
+	past := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
+	if _, err := past.Rebuild(); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := past.Find(ref.ThreadID); !ok {
+		t.Fatal("saved-history fixture did not index the manager thread")
+	}
+	return past
 }
 
 type voiceStopTransportGap struct {

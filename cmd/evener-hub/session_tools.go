@@ -475,13 +475,17 @@ func (o *sessionOperations) read(ctx context.Context, params appwire.ThreadReadP
 		return appwire.ThreadReadResponse{}, err
 	}
 	var read *hubThreadReadResult
+	// LiveOnly is a hub-internal fallback decision. Never forward it to the
+	// source: older daemons and remote hubs decode thread/read params strictly.
+	sourceParams := params
+	sourceParams.LiveOnly = false
 	// A captured read hands its caller a downstream subscription, so its
 	// relay read holds the daemon-side feed. An internal snapshot read has
 	// no consumer and must not count as a subscriber.
 	if capture {
-		read, err = relays.readThread(ctx, source, params)
+		read, err = relays.readThread(ctx, source, sourceParams)
 	} else {
-		read, err = relays.readThreadSnapshot(ctx, source, params)
+		read, err = relays.readThreadSnapshot(ctx, source, sourceParams)
 	}
 	if err != nil {
 		recovered := false
@@ -521,9 +525,9 @@ func (o *sessionOperations) read(ctx context.Context, params appwire.ThreadReadP
 					_, err = daemon.ResolveSubscriptionAdmission(params)
 					if err == nil {
 						if capture {
-							read, err = relays.readThread(ctx, source, params)
+							read, err = relays.readThread(ctx, source, sourceParams)
 						} else {
-							read, err = relays.readThreadSnapshot(ctx, source, params)
+							read, err = relays.readThreadSnapshot(ctx, source, sourceParams)
 						}
 						recovered = err == nil
 					}
@@ -570,7 +574,7 @@ func (o *sessionOperations) read(ctx context.Context, params appwire.ThreadReadP
 	// making every click on a long session pay for a projection it
 	// discarded in the same request.
 	var pastPage *appwire.ThreadReadResponse
-	if params.IncludeTurns && liveItemCandidatesEmpty {
+	if !params.LiveOnly && params.IncludeTurns && liveItemCandidatesEmpty {
 		past, ok, pastErr := pastThreadItemReadResponse(ctx, cfg, params)
 		if pastErr != nil {
 			read.finish(false)
@@ -583,7 +587,7 @@ func (o *sessionOperations) read(ctx context.Context, params appwire.ThreadReadP
 	// The merge still supplies past turns when the item page could not (a
 	// live source with candidates but no turns, or no past entry at all),
 	// preserving the old includePastTurns decision exactly.
-	wantPastTurns := params.IncludeTurns && pastPage == nil && len(resp.Thread.Turns) == 0
+	wantPastTurns := !params.LiveOnly && params.IncludeTurns && pastPage == nil && len(resp.Thread.Turns) == 0
 	resp.Thread, err = mergePastThreadForRead(ctx, cfg, params, resp.Thread, wantPastTurns)
 	resp.Thread = applyThreadResumeRequirement(ctx, cfg, params.Ref, params.ThreadID, resp.Thread)
 	resp.Thread = applyHubCapabilities(cfg, resp.Thread)

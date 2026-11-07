@@ -4692,6 +4692,13 @@ export interface ThreadReadParams {
    */
   heldSnapshot?: SnapshotIdentity;
   /**
+   * LiveOnly requires the response to come from the live source. When the
+   * live read fails, the hub returns that error (retryable transport losses
+   * included) instead of serving saved history. The voice bridge sets it so
+   * an outage reaches its retry logic rather than a daemonless snapshot.
+   */
+  liveOnly?: boolean;
+  /**
    * AnswerContinuation requests only a recorded ancestry verdict and its
    * snapshot identity. It cannot subscribe or include a transcript window.
    */
