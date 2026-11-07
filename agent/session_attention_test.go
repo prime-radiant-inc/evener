@@ -4363,6 +4363,120 @@ func TestDelegateAttention_PrelaunchRecoveryDoesNotWaitForUnlaunchedRunner(t *te
 	}
 }
 
+// TestDelegateAttention_PrelaunchStopRetriesStrandedDeliveryAck pins the
+// failure behind the prelaunch recovery hang in CI. The notification delivery
+// commits its receiver-side write, then the delegate store closes before the
+// delivery's durable acknowledgment can be appended. The failed send latches
+// the finalization recovery triple and reports quiescence, leaving a retryable
+// delivery admission the stop tracks. Nothing re-presents that admission's
+// plan, so before the stop reconciled it the drain parked forever on a
+// delivery no runner would ever resolve.
+func TestDelegateAttention_PrelaunchStopRetriesStrandedDeliveryAck(t *testing.T) {
+	fixture := newColdDelegateFixture(t, "")
+	root, err := restoreDelegateResourceBootstrapSession(fixture.client, fixture.profile, fixture.workspace, fixture.meta, fixture.stateDir)
+	if err != nil {
+		t.Fatalf("restore root: %v", err)
+	}
+	defer root.Close()
+	c := root.delegateController
+	actor := rootDelegateActor(root.id)
+	seedDelegateControllerIdle(t, c, "dlg_nested_source", fixture.delegateID)
+	seedDelegateControllerDelivery(t, c, "dlg_nested_source")
+	fs := newDelegateAckCloseSyncFS()
+	root.delegateRestoreBeforeSideEffects = func(child *Session) {
+		child.mu.Lock()
+		oldWriter := child.transcript
+		child.mu.Unlock()
+		if err := oldWriter.Close(); err != nil {
+			t.Fatalf("close restored child transcript: %v", err)
+		}
+		writer, err := transcript.NewWriterWithFS(fs, transcriptPath(child.stateDir, child.id), transcript.Header{SessionID: child.id})
+		if err != nil {
+			t.Fatalf("replace child transcript: %v", err)
+		}
+		child.attachTranscript(writer)
+		child.cfg.testOnly.delegateInitialInputAppend = func(*Session) {
+			// The input write's sync succeeds. The next sync belongs to the
+			// nested delivery's notification; let that write commit and close
+			// the store there, so the acknowledgment append that follows is the
+			// step that fails and leaves a retryable receipt.
+			fs.failAfterSuccessfulSyncs(1, func() {
+				if err := c.store.Close(); err != nil {
+					t.Errorf("close delegate store at delivery acknowledgment: %v", err)
+				}
+			})
+		}
+	}
+
+	outcome := (delegateRuntime{owner: root}).send(context.Background(), fixture.delegateID, "start successor", 0)
+	if !errors.Is(outcome.result.Err, delegatestore.ErrStoreClosed) || outcome.result.Action != "recovery_required" {
+		t.Fatalf("prelaunch double failure = %#v, want a recovery-required durable store failure", outcome.result)
+	}
+	c.mu.Lock()
+	live := c.live[fixture.delegateID]
+	stranded := len(c.deliveries)
+	c.mu.Unlock()
+	if live == nil || live.binding == nil || !live.recoveryRequired || !live.finalizationRecoveryRequired || live.recoveryRunnerPending {
+		t.Fatalf("prelaunch recovery state = %#v, want the finalization triple and no pending runner", live)
+	}
+	if stranded != 1 {
+		t.Fatalf("stranded delivery admissions after the failed acknowledgment = %d, want 1", stranded)
+	}
+
+	reopened, err := delegatestore.Open(delegateResourceStorePath(fixture.stateDir, fixture.meta.ID))
+	if err != nil {
+		t.Fatalf("reopen delegate store: %v", err)
+	}
+	c.mu.Lock()
+	c.store = reopened
+	c.mu.Unlock()
+	stop, cancelPlan, stopPlans, err := c.StopSubtree(actor, fixture.delegateID)
+	if err != nil {
+		t.Fatalf("StopSubtree: %v", err)
+	}
+	if err := root.executeDelegateMutationPlans(stopPlans); err != nil {
+		t.Fatalf("execute stop plans: %v", err)
+	}
+	executeDelegateCancelPlan(cancelPlan)
+	c.mu.Lock()
+	live = c.live[fixture.delegateID]
+	pendingRecoveryRunner := live != nil && live.recoveryRunnerPending
+	trackedDeliveries := 0
+	if c.stop != nil {
+		trackedDeliveries = len(c.stop.deliveries)
+	}
+	c.mu.Unlock()
+	if pendingRecoveryRunner || trackedDeliveries != 1 {
+		t.Fatalf("stop admission = pendingRunner:%t trackedDeliveries:%d live:%#v, want no runner and the stranded delivery tracked", pendingRecoveryRunner, trackedDeliveries, live)
+	}
+	// TRIPWIRE: a stop that waits on the stranded admission never completes;
+	// 5s only fires on that hang.
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := c.drainStop(ctx, c.stopForResult(stop), root); err != nil {
+		c.mu.Lock()
+		live = c.live[fixture.delegateID]
+		aggregate := c.durable[fixture.delegateID]
+		c.mu.Unlock()
+		t.Fatalf("prelaunch stop waited for the stranded delivery acknowledgment: %v live=%#v aggregate=%#v", err, live, aggregate)
+	}
+	if !channelClosed(stop.done) {
+		t.Fatalf("prelaunch stop did not complete")
+	}
+	c.mu.Lock()
+	aggregate := c.durable[fixture.delegateID]
+	live = c.live[fixture.delegateID]
+	remainingReceipts := len(c.deliveries)
+	remainingNested := len(c.durable["dlg_nested_source"].PendingDeliveries)
+	c.mu.Unlock()
+	if aggregate == nil || aggregate.Phase != delegatestore.PhaseIdle || aggregate.CurrentRunOpen {
+		t.Fatalf("prelaunch stop aggregate = %#v, want the recovered generation closed", aggregate)
+	}
+	if remainingReceipts != 0 || remainingNested != 0 {
+		t.Fatalf("stranded delivery after the stop = receipts:%d nestedPending:%d live:%#v, want the acknowledgment committed", remainingReceipts, remainingNested, live)
+	}
+}
+
 func delegateAttentionToolCall(callID string) llm.Message {
 	return llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{{
 		Kind: llm.ContentToolCall,
@@ -4633,6 +4747,69 @@ func (fs *attentionFailNextSyncFS) failSyncAfter(successfulSyncs int, onFail fun
 	fs.failAfter = successfulSyncs
 	fs.onFail = onFail
 	fs.mu.Unlock()
+}
+
+// delegateAckCloseSyncFS lets a transcript write's own fsync succeed and
+// runs its callback on the next sync, still returning success. The callback
+// closes the delegate store between that write and the delivery
+// acknowledgment append that follows it, which is the shape that leaves a
+// retryable delivery admission behind: the receiver-side write is durable, the
+// acknowledgment is not.
+type delegateAckCloseSyncFS struct {
+	afero.Fs
+	mu       sync.Mutex
+	armed    bool
+	allow    int
+	syncs    int
+	onLater  func()
+	ranLater bool
+}
+
+type delegateAckCloseSyncFile struct {
+	afero.File
+	fs *delegateAckCloseSyncFS
+}
+
+func newDelegateAckCloseSyncFS() *delegateAckCloseSyncFS {
+	return &delegateAckCloseSyncFS{Fs: afero.NewOsFs()}
+}
+
+func (fs *delegateAckCloseSyncFS) Create(name string) (afero.File, error) {
+	file, err := fs.Fs.Create(name)
+	if err != nil {
+		return nil, err
+	}
+	return &delegateAckCloseSyncFile{File: file, fs: fs}, nil
+}
+
+func (fs *delegateAckCloseSyncFS) failAfterSuccessfulSyncs(successfulSyncs int, onLater func()) {
+	fs.mu.Lock()
+	fs.armed = true
+	fs.allow = successfulSyncs
+	fs.syncs = 0
+	fs.onLater = onLater
+	fs.ranLater = false
+	fs.mu.Unlock()
+}
+
+func (file *delegateAckCloseSyncFile) Sync() error {
+	err := file.File.Sync()
+	file.fs.mu.Lock()
+	file.fs.syncs++
+	armed := file.fs.armed
+	syncs := file.fs.syncs
+	allow := file.fs.allow
+	var onLater func()
+	if armed && syncs > allow && !file.fs.ranLater {
+		file.fs.ranLater = true
+		onLater = file.fs.onLater
+		file.fs.onLater = nil
+	}
+	file.fs.mu.Unlock()
+	if onLater != nil {
+		onLater()
+	}
+	return err
 }
 
 type attentionFailNextSyncFile struct {
