@@ -91,13 +91,11 @@ it("arms in one tap with a visible disclosure, keeps takeover explicit, and send
 	const button = (label: string) =>
 		tree.root.findAll((node) => String(node.type) === "Pressable" && node.props.accessibilityLabel === label)[0];
 	await act(async () => {
-		button("Voice").props.onPress();
-	});
-	await act(async () => {
 		button("Turn on").props.onPress();
 	});
 	// The bar's Turn on opens the panel; nothing arms until the panel's control.
 	expect(requests).toHaveLength(0);
+	expect(button("Turn on")).toBeUndefined();
 	// Arm is explained before it happens, not after.
 	expect(button("I understand · Arm voice")).toBeUndefined();
 	expect(tree.root.findByProps({ testID: "voice-arm-disclosure" })).toBeDefined();
@@ -251,6 +249,10 @@ it("shows measured wake receipts and sends trial labels to the native owner", as
 	});
 	expect(JSON.stringify(tree.toJSON())).toContain("Getting ready");
 	await act(async () => {
+		emit({ ...state, wake: { ...state.wake!, state: "paused" } });
+	});
+	expect(JSON.stringify(tree.toJSON())).toContain("Paused");
+	await act(async () => {
 		emit(state);
 	});
 	for (const label of ["Intended", "Background", "False alarm"]) {
@@ -359,6 +361,8 @@ it("keeps Stop live while Evener speaks", async () => {
 		emit({ ...armed, state: "conversing", cloudMicrophone: false });
 	});
 	expect(JSON.stringify(tree.toJSON())).toContain("Waiting for Evener");
+	// A wait that never becomes a reply must leave Talk as the way out.
+	expect(button("Talk").props.disabled).toBe(false);
 	await act(async () => {
 		emit({ ...armed, state: "speaking" });
 	});
@@ -366,6 +370,14 @@ it("keeps Stop live while Evener speaks", async () => {
 		emit({ ...armed, state: "conversing", cloudMicrophone: false });
 	});
 	expect(JSON.stringify(tree.toJSON())).toContain("Tap Talk to reply");
+	// A fresh turn that has not started streaming yet is listening, not waiting.
+	await act(async () => {
+		emit(armed);
+	});
+	await act(async () => {
+		emit({ ...armed, state: "conversing", cloudMicrophone: false });
+	});
+	expect(JSON.stringify(tree.toJSON())).toContain("Listening to you");
 });
 
 it("calls a routine abort a finished turn, not a stopped voice", async () => {

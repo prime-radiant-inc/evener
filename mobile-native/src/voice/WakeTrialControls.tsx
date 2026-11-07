@@ -72,7 +72,7 @@ export function WakeTrialControls({ client, state }: { client: VoiceClient; stat
 						False alarms: {summary.falseActivations} across {summary.negativeAttempts} background attempts
 					</Copy>
 					<Copy muted>
-						{wake.state === "warming" ? "Getting ready…" : "Listening"} · Wake:{" "}
+						{wake.state === "warming" ? "Getting ready…" : wake.state === "paused" ? "Paused" : "Listening"} · Wake:{" "}
 						{wake.phrase || "turn voice on to load the model"} ·{" "}
 						{wake.score != null
 							? `Last score: ${wake.score.toFixed(4)}`

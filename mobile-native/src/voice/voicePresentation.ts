@@ -35,7 +35,7 @@ export function voicePresentation(state: VoiceSnapshot, justHeard = false, waiti
 		return {
 			phase: "talking",
 			primary: "talk",
-			talkEnabled: state.capturing && !state.cloudMicrophone && !waitingForReply,
+			talkEnabled: state.capturing && !state.cloudMicrophone,
 		};
 	}
 	// Routine turn aborts (input_idle, input_start_timeout, recoverable provider

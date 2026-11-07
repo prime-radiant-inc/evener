@@ -64,6 +64,14 @@ function Controls({ client, target }: { client: VoiceClient; target: VoiceTarget
 	if (state.state === "conversing" && state.cloudMicrophone) streamedTurn.current = true;
 	else if (state.state !== "conversing") streamedTurn.current = false;
 	const waitingForReply = state.state === "conversing" && !state.cloudMicrophone && streamedTurn.current;
+	// A turn that just left quiet is starting, not finished: native publishes
+	// `conversing` with nothing streaming until the hub acknowledges the start.
+	const turnStarting = useRef(false);
+	const previousState = useRef(state.state);
+	if (previousState.current === "quiet" && state.state === "conversing") turnStarting.current = true;
+	if (state.state !== "conversing" || state.cloudMicrophone) turnStarting.current = false;
+	previousState.current = state.state;
+	const starting = state.state === "conversing" && !state.cloudMicrophone && turnStarting.current;
 	const presented = voicePresentation(state, justHeard, waitingForReply);
 	const talkEnabled = presented.talkEnabled && same;
 	// Playback is this device's, so Stop does not need this session's binding or
@@ -105,6 +113,7 @@ function Controls({ client, target }: { client: VoiceClient; target: VoiceTarget
 				speakerOff={state.speakerConsentRequired}
 				streaming={state.cloudMicrophone}
 				waitingForReply={waitingForReply}
+				starting={starting}
 				boundRef={armed && !same ? bound?.ref : undefined}
 				onPrimary={presented.phase === "disarmed" ? () => setExpanded(true) : primary}
 				onToggle={() => setExpanded(!expanded)}
@@ -124,6 +133,7 @@ function Controls({ client, target }: { client: VoiceClient; target: VoiceTarget
 							speakerOff={state.speakerConsentRequired}
 							streaming={state.cloudMicrophone}
 							waitingForReply={waitingForReply}
+							starting={starting}
 							boundRef={armed && !same ? bound?.ref : undefined}
 						/>
 						{armed ? null : <Details state={state} forceOpen />}
@@ -177,6 +187,7 @@ function VoiceBar({
 	speakerOff,
 	streaming,
 	waitingForReply,
+	starting,
 	boundRef,
 	onPrimary,
 	onToggle,
@@ -189,6 +200,7 @@ function VoiceBar({
 	speakerOff: boolean;
 	streaming: boolean;
 	waitingForReply: boolean;
+	starting: boolean;
 	boundRef?: string;
 	onPrimary(): void;
 	onToggle(): void;
@@ -198,8 +210,9 @@ function VoiceBar({
 	const tone = TONES[phase];
 	const headline = boundRef
 		? `Voice is on for ${shortRef(boundRef)}`
-		: barHeadline(phase, phrase, speakerOff, streaming, waitingForReply);
-	const actionVisible = phase === "disarmed" || phase === "listening" || phase === "speaking" || phase === "talking";
+		: barHeadline(phase, phrase, speakerOff, streaming, waitingForReply, starting);
+	const actionVisible =
+		(phase === "disarmed" && !expanded) || phase === "listening" || phase === "speaking" || phase === "talking";
 	return (
 		<View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
 			<Pressable
@@ -251,6 +264,7 @@ function barHeadline(
 	speakerOff: boolean,
 	streaming: boolean,
 	waitingForReply: boolean,
+	starting: boolean,
 ) {
 	const wake = phrase ? `“${phrase}”` : "the wake word";
 	switch (phase) {
@@ -263,7 +277,7 @@ function barHeadline(
 		case "talking":
 			// Native keeps `conversing` with nothing streaming after Stop or a
 			// rejected reply, so only a live cloud turn is "listening to you".
-			return waitingForReply ? "Waiting for Evener…" : streaming ? "Listening to you" : "Tap Talk to reply";
+			return waitingForReply ? "Waiting for Evener…" : streaming || starting ? "Listening to you" : "Tap Talk to reply";
 		case "speaking":
 			return "Evener is speaking";
 		case "recovering":
@@ -281,6 +295,7 @@ function PanelHeader({
 	speakerOff,
 	streaming,
 	waitingForReply,
+	starting,
 	boundRef,
 }: {
 	phase: VoicePhase;
@@ -288,6 +303,7 @@ function PanelHeader({
 	speakerOff: boolean;
 	streaming: boolean;
 	waitingForReply: boolean;
+	starting: boolean;
 	boundRef?: string;
 }) {
 	const { palette } = useColors();
@@ -310,7 +326,7 @@ function PanelHeader({
 				<Copy>
 					{boundRef
 						? `Voice is on for ${shortRef(boundRef)}`
-						: barHeadline(phase, phrase, speakerOff, streaming, waitingForReply)}
+						: barHeadline(phase, phrase, speakerOff, streaming, waitingForReply, starting)}
 				</Copy>
 				<Copy muted>
 					{boundRef
@@ -324,7 +340,11 @@ function PanelHeader({
 									: phase === "speaking"
 										? "Tap Stop to cut the reply short."
 										: phase === "talking"
-											? "Say what you need. Talk stays here if the turn ended."
+											? starting
+												? "Say what you need."
+												: waitingForReply
+													? "The reply arrives when it is ready."
+													: "Talk starts a new turn if the last one ended."
 											: phase === "heard"
 												? "The turn starts here."
 												: phase === "recovering"
