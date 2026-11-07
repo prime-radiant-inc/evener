@@ -102,34 +102,33 @@
   }
 }
 
-/* The phone keeps the footer at the pane's bottom edge, but one desktop line
- * cannot carry it: four touch-floor chips and a repository reference together
- * can consume the whole width, leaving the working directory nothing. The bar
- * stacks instead - the path on its own row, the counts on a row below at the
- * touch floor. A bar narrower than 600px already drops the names (the
- * container rule above), leaving the glyph and count; when even those outgrow
- * the row it scrolls sideways rather than shrinking a target or wrapping to a
- * second one. The bar owns the home-indicator band because nothing docks
- * below it; PaneScaffold drops the composer footer's own inset when this bar
- * follows it. The inset yields while the on-screen keyboard covers that band,
- * as the composer dock's does. */
+/* The phone keeps the footer on the pane's bottom edge as one row: the
+ * working directory flexes beside the chips, which stay at the touch floor at
+ * the end. A bar narrower than 600px already drops the names (the container
+ * rule above), and the phone shows a single count per chip (StatusBar.tsx), so
+ * the four counts leave the path real width. If a count still outgrows the
+ * line the path truncates first and the chip row scrolls sideways rather than
+ * shrinking a target or wrapping to a second row. The bar owns the
+ * home-indicator band because nothing docks below it; PaneScaffold drops the
+ * composer footer's own inset when this bar follows it. The inset yields while
+ * the on-screen keyboard covers that band, as the composer dock's does. */
 @media (max-width: 899px) {
   .bar {
-    flex-wrap: wrap;
-    gap: 0;
+    flex-wrap: nowrap;
+    gap: var(--space-2);
     padding: 0 var(--space-2) max(0px, env(safe-area-inset-bottom) - var(--keyboard-inset, 0px));
   }
 
-  /* A full-width row forces the line break above the chips. */
   .leading {
-    flex: 1 1 100%;
+    flex: 1 1 auto;
+    min-width: 48px;
   }
 
   .chips {
     display: flex;
-    flex: 1 1 100%;
+    flex: none;
     min-width: 0;
-    justify-content: flex-start;
+    justify-content: flex-end;
     gap: var(--space-1);
     overflow-x: auto;
     /* A cut-off chip is the overflow cue; a scrollbar in the pane's bottom
@@ -146,8 +145,8 @@
     padding: 0 var(--space-1);
   }
 
-  /* The scrolling row keeps the category glyph at every phone width; the
-   * 320px container rule above compacts narrow desktop panes instead. */
+  /* One line keeps the category glyph at every phone width; the 320px
+   * container rule above compacts narrow desktop panes instead. */
   .chipGlyph {
     display: inline-flex;
   }

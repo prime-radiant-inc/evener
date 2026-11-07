@@ -965,14 +965,18 @@ function assertOverview(result, viewport, theme) {
           chip.box.width < result.tapMin - 1 ||
           chip.box.height < result.tapMin - 1 ||
           chip.box.top < footer.box.top - 1 ||
-          chip.box.bottom > footer.box.bottom + 1
+          chip.box.bottom > footer.box.bottom + 1 ||
+          chip.box.left < footer.box.left - 1 ||
+          chip.box.right > footer.box.right + 1
         )
           failures.push(`phone session footer chip ${chip.tab} misses the tap floor: ${JSON.stringify(chip.box)}`);
       }
       if (!footer.path || footer.path.width <= 0 || footer.path.right > viewport.width + 1)
         failures.push(`phone session footer lost its working directory: ${JSON.stringify(footer)}`);
-      else if (footer.chips.length > 0 && footer.path.bottom > footer.chips[0].box.top + 1)
-        failures.push(`phone session footer did not stack the path above the counts: ${JSON.stringify(footer)}`);
+      else if (footer.chips.length > 0 && footer.path.bottom <= footer.chips[0].box.top + 1)
+        failures.push(`phone session footer put the path above the counts: ${JSON.stringify(footer)}`);
+      if (footer.box.height > result.tapMin + 6)
+        failures.push(`phone session footer is more than one row: ${JSON.stringify(footer.box)}`);
     }
   }
   if (result.document.width > viewport.width + 1 || result.document.height > viewport.height + 1)

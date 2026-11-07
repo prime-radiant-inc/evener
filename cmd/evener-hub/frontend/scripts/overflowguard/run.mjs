@@ -401,6 +401,14 @@ async function measureComposerFooter(cdpEndpoint, url, width, safeAreaSupported)
             const edgeFooter = pane?.querySelector('[data-testid="pane-edge-footer"]');
             const statusbar = pane?.querySelector('[data-testid="statusbar"]');
             const footerBottom = footer?.getBoundingClientRect().bottom ?? null;
+            const rect = (element) => {
+              if (!element) return null;
+              const box = element.getBoundingClientRect();
+              return {
+                top: box.top, right: box.right, bottom: box.bottom, left: box.left,
+                width: box.width, height: box.height,
+              };
+            };
             return {
               safeArea: ${safeArea}, keyboard: ${keyboard}, actualSafeArea, focus,
               mobile: matchMedia('(max-width: 899px)').matches,
@@ -411,6 +419,12 @@ async function measureComposerFooter(cdpEndpoint, url, width, safeAreaSupported)
               edgeFooterBottom: edgeFooter?.getBoundingClientRect().bottom ?? null,
               statusbarDisplay: statusbar ? getComputedStyle(statusbar).display : null,
               statusPaddingBottom: statusbar ? Number.parseFloat(getComputedStyle(statusbar).paddingBottom) : null,
+              tapMin: statusbar ? Number.parseFloat(getComputedStyle(statusbar).getPropertyValue('--tap-min')) || 44 : null,
+              statusbar: rect(statusbar),
+              pathBox: rect(path),
+              statusChips: statusbar
+                ? [...statusbar.querySelectorAll('[data-activity-tab]')].map((element) => rect(element))
+                : [],
               metadataCount: pane?.querySelectorAll('[data-testid="composer-repo-location"]').length ?? 0,
               metadataVisible: metadata?.checkVisibility({ checkOpacity: true, checkVisibilityCSS: true }) ?? false,
               pathVisible: path?.checkVisibility({ checkOpacity: true, checkVisibilityCSS: true }) ?? false,
@@ -499,6 +513,26 @@ function assertComposerFooter(measurement, width) {
       failures.push(
         `status bar bottom padding=${measurement.statusPaddingBottom}px, expected safe-area clearance=${requiredClearance}px`,
       );
+    }
+    // One row: the path sits beside the chips, not above them, and the bar is
+    // no taller than a single touch-floor row plus the safe-area band.
+    if (measurement.statusbar === null || measurement.tapMin === null || measurement.pathBox === null) {
+      failures.push("phone status bar layout is missing");
+    } else {
+      if (measurement.statusbar.height > measurement.tapMin + requiredClearance + 3) {
+        failures.push(
+          `phone status bar height=${measurement.statusbar.height}px, expected one ${measurement.tapMin}px row plus ${requiredClearance}px clearance`,
+        );
+      }
+      const firstChip = measurement.statusChips[0];
+      if (
+        firstChip &&
+        !(measurement.pathBox.bottom > firstChip.top + 1 && measurement.pathBox.top < firstChip.bottom - 1)
+      ) {
+        failures.push(
+          `phone status bar path and counts do not share a row (path ${measurement.pathBox.top}..${measurement.pathBox.bottom}, chip ${firstChip.top}..${firstChip.bottom})`,
+        );
+      }
     }
   } else {
     if (!nearlyEqual(measurement.paddingBottom, 12) || measurement.gap === null || !nearlyEqual(measurement.gap, 12)) {
