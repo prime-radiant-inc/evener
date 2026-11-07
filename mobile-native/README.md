@@ -31,6 +31,22 @@ explains why the bundle is required alongside tests and type checking. The
 [build guide](../docs/design/mobile/ios-build-distribution.md) covers locked iOS
 project generation and distribution prerequisites.
 
+## iPhone Duo
+
+The app fills both iPhone Duo displays. The outer display keeps the Board
+single-pane. The inner display puts the Board on the left and the open
+conversation on the right; the Board's search, scroll and live state keep
+running while the conversation is open. The split is chosen by window size (both
+sides at least 600 points), not by device name. The app stays portrait: both
+Duo displays are taller than wide, and landscape on a regular iPhone still needs
+left/right safe-area handling.
+
+A conversation opened from the Board uses the split. Conversations opened from a
+root route (a share, an alert, a restored root location) still open full screen;
+that entry-point work is separate. The app does not render on both displays at
+once and does not lay out around a partially folded hinge. See
+[the design](../docs/design/mobile/iphone-duo.md).
+
 ## Run on simulators
 
 Install dependencies with `npm ci`. Start Metro with:
