@@ -315,8 +315,12 @@ With `--with-ui`, the installed-app qualification journeys then run inside the
 same simulator lifetime: a private loopback provider scripts the model
 boundary, the app saves real hub credentials, renders the fixture response
 natively, keeps an unsent draft across a cold launch, answers the share scheme
-and survives gestures in a sheet. The journeys' connection data stays in
-private per-run state and never reaches uploaded artifacts.
+and survives gestures in a sheet. The journeys' connection data is
+fixture-only — a throwaway loopback hub that dies with the run — and its
+private per-run state, including the mode-0600 test-run configuration and the
+hub's state, never reaches uploaded artifacts. XCTest's own activity record
+of the real onboarding typing does appear, truncated, in the uploaded test
+log and result bundle: recording that flow is the journey's purpose.
 It discovers and deletes only its own iPhone simulator. Output must not exist;
 diagnostics include source revision, npm/pod digests, tool identities, the pod
 candidate/diff and `DerivedData`. A changed lock fails and requires review, never

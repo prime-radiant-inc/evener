@@ -19,10 +19,13 @@
 # Release app the parent built on the parent's simulator, and validates the
 # xcresult: every intended test identity executed, none skipped, zero
 # failures. The private state never reaches the output directory or any
-# uploaded artifact, except this run's own daemon logs: their round
-# diagnostics (steers, turn completions, the reason a round stopped) are
-# copied out before the state goes, they belong to the fixture-only session,
-# and they never carry credentials.
+# uploaded artifact, with two deliberate exceptions: this run's own daemon
+# logs, whose round diagnostics (steers, turn completions, the reason a round
+# stopped) are copied out before the state goes, and XCTest's own activity
+# record of the onboarding typing, which lands in the uploaded test log and
+# result bundle. Both carry only fixture-only data — the connection data
+# guards a throwaway loopback hub that dies with the run — and neither
+# carries a real credential.
 #
 # USAGE (from the build runner only, on macOS):
 #   run-ui-tests.sh --build-identity ABSOLUTE_JSON --output ABSOLUTE_DIR
