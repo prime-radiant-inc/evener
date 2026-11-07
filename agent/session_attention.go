@@ -669,6 +669,17 @@ func (s *Session) armDelegateAttention(attentionID string) error {
 	if s == nil || attentionID == "" {
 		return errors.New("delegate attention wake identity is incomplete")
 	}
+	// The seam is runtime-mutable through updateSessionTestConfig, so its
+	// read shares the setter's session mutex — the convention every
+	// mid-run-mutable test seam follows.
+	s.mu.Lock()
+	armFault := s.cfg.testOnly.delegateAttentionArmFault
+	s.mu.Unlock()
+	if armFault != nil {
+		if err := armFault(); err != nil {
+			return err
+		}
+	}
 	err := s.armDelegateAttentionOnce(attentionID)
 	s.attentionMu.Lock()
 	if err != nil {
@@ -681,7 +692,7 @@ func (s *Session) armDelegateAttention(attentionID string) error {
 		// A successful arm is a wake from a new event, and such a wake may
 		// present a row a user's stop held from the automatic drives: release
 		// the holds with it. A failed arm woke nothing; the holds stand.
-		s.attentionAutomaticDriveHolds = nil
+		s.releaseAutomaticDriveHoldsLocked()
 		delete(s.delegateAttentionArmIDs, attentionID)
 		if len(s.delegateAttentionArmIDs) == 0 {
 			s.resetDelegateAttentionArmRetryLocked()
@@ -866,10 +877,10 @@ func (s *Session) reopenConsumedDelegateAttention(attentionID string) (string, e
 
 // reopenLatchedDelegateAttention reopens the accepted trigger a failed
 // attention-triggered run latched but never presented: the presentation turn
-// died before its request could carry the report. A trigger a settled request
-// already carried — a responses-continuation delta included — was presented
-// despite the latch it keeps, and is not reopened: the model answered the
-// report, and a fresh identity would duplicate it. A receiver whose own
+// died before its request could carry the report. A settled full-history
+// request presented the report and cleared the latch, so it reopens nothing;
+// a responses-continuation delta carries no attention and clears no latch,
+// so a delta-settled round still leaves the reopen owed. A receiver whose own
 // teardown is discarding its pending attention, and a receiver a deliberate
 // stop or the tree's close owns, are left to that teardown — re-delivering
 // into either would race the discard and strand a fresh row the teardown's
@@ -985,6 +996,22 @@ func (s *Session) holdDelegateAttentionFromAutomaticDrive(attentionID string) {
 	}
 	s.attentionAutomaticDriveHolds[attentionID] = struct{}{}
 	s.attentionMu.Unlock()
+}
+
+// releaseAutomaticDriveHolds ends every user-stop hold a new event's wake
+// supersedes: a committed child delivery or a successful arm may present a
+// row the stop held out of the automatic drives, so the holds end with the
+// event that arrived. The rows the stop never touched keep their presentation
+// either way, and a failed arm or an uncommitted delivery woke nothing, so
+// the holds stand. Callers already holding attentionMu use the locked form.
+func (s *Session) releaseAutomaticDriveHolds() {
+	s.attentionMu.Lock()
+	s.releaseAutomaticDriveHoldsLocked()
+	s.attentionMu.Unlock()
+}
+
+func (s *Session) releaseAutomaticDriveHoldsLocked() {
+	s.attentionAutomaticDriveHolds = nil
 }
 
 // deriveHeldDelegateAttentionFromOutcome rebuilds, on a session reconstructed
@@ -1782,6 +1809,9 @@ func (s *Session) scheduleDelegateAttentionArmRetryLocked() {
 		for _, id := range ids {
 			if s.armDelegateAttentionOnce(id) == nil {
 				resolved = append(resolved, id)
+				// A successful retry arm is a wake from a new event like any
+				// successful arm: a user stop's holds end with it.
+				s.releaseAutomaticDriveHolds()
 			}
 		}
 		s.attentionMu.Lock()

@@ -330,6 +330,20 @@ func (s *Session) reconstructDelegateAttentionRuntime(owner *Session, started de
 		finishRestore(nil, err)
 		return nil, err
 	}
+	if restored {
+		// The idle release may have reclaimed the runtime that held a user
+		// stop's quiet in memory; a freshly built session rebuilds that
+		// quiet from the durable outcome and the fold BEFORE the candidate
+		// joins the tree, so a drive landing in the admit-to-attach window
+		// below reads the automatic list with the hold already in place
+		// instead of presenting the stopped reopen riding the stale armed
+		// wake. The candidate is disposable — a resident winner discards it,
+		// derived holds and all — so a pass that only found the runtime
+		// resident never rebuilds a hold on quiet its in-memory state never
+		// lost. The call is a no-op for every restored runtime that owes no
+		// such stop.
+		sub.sess.deriveHeldDelegateAttentionFromOutcome()
+	}
 	var installation *delegateIdleRuntimeInstallation
 	if mode == delegateRuntimeAttachIdle {
 		installation, err = s.delegateController.beginIdleRuntimeInstallation(started.lease.delegateID)
@@ -382,20 +396,6 @@ func (s *Session) reconstructDelegateAttentionRuntime(owner *Session, started de
 		if err := sub.sess.runDeferredRestoreSideEffects(); err != nil {
 			sub.sess.emit(warningDataFromError("restored delegate side effects incomplete", err))
 		}
-	}
-	if restored {
-		// The idle release may have reclaimed the runtime that held a user
-		// stop's quiet in memory; a freshly built session rebuilds that quiet
-		// from the durable outcome and the fold before any drive reads the
-		// rows, so the stop survives the cold restore the release put in its
-		// way. A pass that only found the runtime resident never lost the
-		// quiet: its in-memory holds stand exactly as the settle tail wrote
-		// them — including any a new event's arm already released — and
-		// re-deriving from the still-settled outcome would rebuild a hold
-		// the release had cleared, stranding the row behind an extra
-		// generation. The call is a no-op for every restored runtime that
-		// owes no such stop.
-		sub.sess.deriveHeldDelegateAttentionFromOutcome()
 	}
 	finishRestore(sub, nil)
 	return sub, nil

@@ -644,6 +644,11 @@ func deliverDelegatePacket(plan delegateDeliveryPlan, receiver delegateDeliveryR
 		} else {
 			receiver.notify()
 			plan.controller.notifyDelegateAttention()
+			// A committed delivery is a wake from a new event in its own
+			// right: the child's report may present a row a user's stop
+			// held out of the automatic drives, so the holds end with it
+			// exactly as a successful arm ends them.
+			receiver.releaseAutomaticDriveHolds()
 		}
 	case coldDelegateDeliveryReceiver:
 		plan.controller.notifyDelegateAttention()

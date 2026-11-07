@@ -182,6 +182,13 @@ type testConfig struct {
 	// tests can pin the busy arm's recovery deterministically without racing
 	// a real busy. Nil in production.
 	delegateAttentionCommitStartFault func() error
+	// delegateAttentionArmFault, when set, is consulted at the top of
+	// armDelegateAttention; a non-nil error stands in for an arm the
+	// controller refused, so a test can pin the hold-release paths that do
+	// not run through a successful arm. The retry timer re-arms through
+	// armDelegateAttentionOnce and bypasses the fault, mirroring a refused
+	// arm whose paced retry later succeeds. Nil in production.
+	delegateAttentionArmFault func() error
 	// delegateAttentionBeforeReopenAppend observes the instant a reopen's
 	// durable append is about to land, after every teardown guard has run.
 	// Tests pause it there so a stop admitted into the guard-to-append window
