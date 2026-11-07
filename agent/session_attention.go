@@ -19,6 +19,7 @@ import (
 
 	"primeradiant.com/evener/agent/diagnostic"
 	"primeradiant.com/evener/agent/events"
+	"primeradiant.com/evener/agent/internal/delegatestore"
 	"primeradiant.com/evener/agent/internal/foldcache"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/agent/transcript"
@@ -974,6 +975,73 @@ func (s *Session) holdDelegateAttentionFromAutomaticDrive(attentionID string) {
 	}
 	s.attentionAutomaticDriveHolds[attentionID] = struct{}{}
 	s.attentionMu.Unlock()
+}
+
+// deriveHeldDelegateAttentionFromOutcome rebuilds, on a session reconstructed
+// after an idle release, the user-stop quiet the released runtime held only in
+// memory. The idle release is transparent reclaim, not a wake from a new
+// event, so the restored session must mirror the resident quiet: the durable
+// outcome of the stopped run and the reopened rows the settle left pending are
+// enough to find the rows the stop owns. A pending row is held when it is a
+// well-formed reopen whose immediate source's resume claim sits at the
+// delegate's current durable generation — the generation the user-stopped run
+// settled — and that generation's last outcome was cancelled, and the
+// controller does not already note the row's wake: a noted wake is a new
+// event's arm (a restart reconcile or a fresh delivery), which presents the
+// row exactly as it would have presented it against the resident hold. Every
+// other reopen stays presentable on the restore: busy and refused-launch
+// reopens key to a generation the journal never reached, and a subtree stop's
+// rows keep their own sticky quiet. The derived hold writes the same map the
+// settle tail wrote, so the arm that presents any remaining pending row
+// releases it exactly as it releases the resident one.
+func (s *Session) deriveHeldDelegateAttentionFromOutcome() {
+	if s == nil || s.delegateController == nil || s.owningDelegateID == "" {
+		return
+	}
+	controller := s.delegateController
+	controller.mu.Lock()
+	generation := uint64(0)
+	stopped := false
+	if aggregate := controller.durable[s.owningDelegateID]; aggregate != nil {
+		generation = aggregate.Generation
+		stopped = !aggregate.CurrentRunOpen &&
+			aggregate.LatestOutcome != nil &&
+			aggregate.LatestOutcome.Status == delegatestore.OutcomeCancelled
+	}
+	var noted map[string]struct{}
+	if state := controller.attention[s.owningDelegateID]; state != nil {
+		noted = maps.Clone(state.wakeIDs)
+	}
+	controller.mu.Unlock()
+	if !stopped {
+		return
+	}
+	s.attentionMu.Lock()
+	fold, err := s.delegateAttentionFoldLocked()
+	s.attentionMu.Unlock()
+	if err != nil {
+		return
+	}
+	var held []string
+	for _, id := range fold.pendingIDs() {
+		at := strings.LastIndex(id, delegateAttentionReopenMarker)
+		if at < 0 {
+			continue
+		}
+		if _, err := strconv.ParseUint(id[at+len(delegateAttentionReopenMarker):], 10, 64); err != nil {
+			continue
+		}
+		if fold.resumeGenerations[id[:at]] != generation {
+			continue
+		}
+		if _, wakeNoted := noted[id]; wakeNoted {
+			continue
+		}
+		held = append(held, id)
+	}
+	for _, id := range held {
+		s.holdDelegateAttentionFromAutomaticDrive(id)
+	}
 }
 
 // automaticDelegateAttentionIDs lists the pending rows an automatic drive may

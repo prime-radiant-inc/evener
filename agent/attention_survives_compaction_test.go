@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -405,4 +406,148 @@ func acceptedTriggerSession(t *testing.T) *Session {
 		t.Fatalf("acceptDelegateAttention: %v", err)
 	}
 	return sess
+}
+
+// deriveHeldFixture builds the durable shape a user-stopped presentation
+// leaves for a cold restore: a delegate whose first generation settled with
+// the given outcome, its accepted source row consumed at that generation, and
+// a reopened row keyed to the same generation still pending. The session's
+// controller is the harness's; the derivation reads only durable state.
+func deriveHeldFixture(t *testing.T, outcome delegatestore.OutcomeStatus, reason string) (*Session, string) {
+	t.Helper()
+	sess, _ := newCompactableSession(t)
+	controller, _ := newDelegateControllerTestHarness(t, 1, 1)
+	seedDelegateControllerIdle(t, controller, "dlg_hold", "")
+	controller.mu.Lock()
+	controller.live["dlg_hold"] = &delegateLiveState{runtime: sess}
+	controller.mu.Unlock()
+	sess.delegateController = controller
+	sess.owningDelegateID = "dlg_hold"
+	// The delegate identity exists only for the derivation under test: this
+	// session is no real delegate child, and its own teardown cleanup would
+	// otherwise treat the fabricated settled outcome as a run whose result it
+	// must deliver, waiting out the delivery give-up on close. Detach the
+	// fabrication before that teardown runs (cleanups are LIFO, and the
+	// session's own close was registered first).
+	t.Cleanup(func() {
+		sess.mu.Lock()
+		sess.delegateController = nil
+		sess.owningDelegateID = ""
+		sess.mu.Unlock()
+	})
+
+	const sourceID = "delegate:dlg_worker/delivery/1"
+	if _, err := sess.appendDelegateNotificationDurably(sourceID, acceptedTriggerText); err != nil {
+		t.Fatalf("append the source row: %v", err)
+	}
+	reservation, err := controller.ReserveAttention(sess, sourceID)
+	if err != nil {
+		t.Fatalf("ReserveAttention: %v", err)
+	}
+	if err := sess.acceptDelegateAttention(reservation); err != nil {
+		t.Fatalf("acceptDelegateAttention: %v", err)
+	}
+	// The claimed generation's rest: the run settled with the fixture's
+	// outcome, leaving the aggregate at that generation. The three durable
+	// facts the derivation reads are seeded directly — the journal's own
+	// settle path is pinned end to end by the release-restore test, and a
+	// journaled finish here would queue the run's terminal delivery, which
+	// the session's teardown then waits out.
+	controller.mu.Lock()
+	aggregate := controller.durable["dlg_hold"]
+	aggregate.Generation = 1
+	aggregate.CurrentRunOpen = false
+	aggregate.LatestOutcome = &delegatestore.Outcome{
+		Status:  outcome,
+		Reason:  reason,
+		EndedAt: time.Unix(20, 0).UTC(),
+	}
+	controller.durable["dlg_hold"] = aggregate
+	controller.mu.Unlock()
+	reopenedID := delegateAttentionReopenID(sourceID, 1)
+	if _, err := sess.appendDelegateNotificationDurably(reopenedID, acceptedTriggerText); err != nil {
+		t.Fatalf("append the reopened row: %v", err)
+	}
+	return sess, reopenedID
+}
+
+// A restored session's held rows come from durable state, and the predicate
+// draws exactly the user stop's boundary: a pending reopen of the generation
+// the delegate rests at is held when that generation settled cancelled and
+// no new event has armed the row's wake; a controller-noted wake is a new
+// event's arm and presents, and reopens keyed to a generation the journal
+// never reached — the busy and failed-launch shapes — stay presentable on
+// the restore.
+func TestDeriveHeldDelegateAttentionFromOutcome(t *testing.T) {
+	t.Parallel()
+
+	t.Run("cancelled generation holds its reopened row", func(t *testing.T) {
+		t.Parallel()
+		sess, reopenedID := deriveHeldFixture(t, delegatestore.OutcomeCancelled, "cancelled")
+		sess.deriveHeldDelegateAttentionFromOutcome()
+		sess.attentionMu.Lock()
+		held := sess.delegateAttentionHeldFromAutomaticDriveLocked(reopenedID)
+		sess.attentionMu.Unlock()
+		if !held {
+			t.Fatal("the cancelled generation's reopened row was not held")
+		}
+		ids, err := sess.automaticDelegateAttentionIDs()
+		if err != nil {
+			t.Fatalf("read the drive-side rows: %v", err)
+		}
+		if slices.Contains(ids, reopenedID) {
+			t.Fatalf("the drive-side read still offers the held row: %v", ids)
+		}
+	})
+
+	t.Run("controller-noted wake presents instead", func(t *testing.T) {
+		t.Parallel()
+		sess, reopenedID := deriveHeldFixture(t, delegatestore.OutcomeCancelled, "cancelled")
+		sess.delegateController.noteDelegateAttention("dlg_hold", reopenedID)
+		sess.deriveHeldDelegateAttentionFromOutcome()
+		ids, err := sess.automaticDelegateAttentionIDs()
+		if err != nil {
+			t.Fatalf("read the drive-side rows: %v", err)
+		}
+		if !slices.Contains(ids, reopenedID) {
+			t.Fatalf("a controller-noted wake is a new event's arm and must present: %v", ids)
+		}
+	})
+
+	t.Run("busy-keyed reopen stays presentable", func(t *testing.T) {
+		t.Parallel()
+		sess, reopenedID := deriveHeldFixture(t, delegatestore.OutcomeCancelled, "cancelled")
+		// A busy-class refusal claims the recycled generation without ever
+		// journaling it, so its reopen keys past the aggregate's rest.
+		const busySourceID = "delegate:dlg_worker/delivery/2"
+		transcriptPath := sess.TranscriptPath()
+		appendColdAttentionRow(t, transcriptPath, sess.id, busySourceID, acceptedTriggerText)
+		appendColdConsumedClaim(t, transcriptPath, sess.id, busySourceID, 2)
+		busyReopenedID := delegateAttentionReopenID(busySourceID, 2)
+		appendColdAttentionRow(t, transcriptPath, sess.id, busyReopenedID, acceptedTriggerText)
+		sess.deriveHeldDelegateAttentionFromOutcome()
+		ids, err := sess.automaticDelegateAttentionIDs()
+		if err != nil {
+			t.Fatalf("read the drive-side rows: %v", err)
+		}
+		if !slices.Contains(ids, busyReopenedID) {
+			t.Fatalf("a busy-keyed reopen must stay presentable on the restore: %v", ids)
+		}
+		if slices.Contains(ids, reopenedID) {
+			t.Fatalf("the cancelled generation's reopened row lost its hold beside the busy key: %v", ids)
+		}
+	})
+
+	t.Run("failed launch stays presentable", func(t *testing.T) {
+		t.Parallel()
+		sess, reopenedID := deriveHeldFixture(t, delegatestore.OutcomeFailed, "launch_failed")
+		sess.deriveHeldDelegateAttentionFromOutcome()
+		ids, err := sess.automaticDelegateAttentionIDs()
+		if err != nil {
+			t.Fatalf("read the drive-side rows: %v", err)
+		}
+		if !slices.Contains(ids, reopenedID) {
+			t.Fatalf("a failed launch's reopened row must stay presentable on the restore: %v", ids)
+		}
+	})
 }

@@ -2212,6 +2212,407 @@ func TestDelegateAttentionUserStopHoldsReopenedRowFromStaleArmedWake(t *testing.
 	}
 }
 
+// A user's stop quiets the stopped run's reopened report from automatic
+// drives, and that quiet must survive the idle release: the release is
+// transparent reclaim, thirty seconds of idleness is not a wake from a new
+// event, and the cold-restored runtime owes the restored session the same
+// quiet the resident one held. The scenario pins the trigger end to end: the
+// user stops an attention run whose first request is parked mid-flight while
+// a second row pends; the stopped run's settle arms the idle release on a
+// short test-seam grace, so the release fires under the test's control; the
+// stale armed wake the stopped generation's commit left for the second row
+// then drives through the cold restore, and the restored session must not
+// present the stopped run's reopened report riding that drive's generation.
+// The second row's owed presentation must survive the quiet, and the
+// reopened report must stay recoverable through a wake from a new event: the
+// arm that presents the second row re-arms the remaining attention, and that
+// arm releases the derived hold exactly as it releases the resident one.
+func TestDelegateAttentionUserStopHoldSurvivesIdleReleaseRestore(t *testing.T) {
+	t.Parallel()
+	r := newWorktreeRepo(t)
+	const secondRowID = "delegate:user-stop-release-second-row"
+	const secondRowContent = "user-stop-release-second-row: which cursor holds the merge base?"
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	var releaseOnce sync.Once
+	t.Cleanup(func() { releaseOnce.Do(func() { close(release) }) })
+	var wedgeOnce sync.Once
+	var requestsMu sync.Mutex
+	var requests [][]llm.Message
+	wedge := func(req llm.Request) llm.Response {
+		requestsMu.Lock()
+		requests = append(requests, append([]llm.Message{}, req.Messages...))
+		requestsMu.Unlock()
+		wedgeOnce.Do(func() { close(entered) })
+		<-release
+		return agenttest.FinalResponse("done")
+	}
+	lane := spawnSharedDescendantLane(t, r, "user-stop-release", "dlg_userstoprel01", "034userstoprel1", wedge)
+	var warningsMu sync.Mutex
+	var warnings []string
+	go func() {
+		for ev := range lane.root.Events() {
+			if ev.Kind != events.EventWarning {
+				continue
+			}
+			warning, ok := ev.Data.(events.WarningData)
+			if !ok {
+				continue
+			}
+			warningsMu.Lock()
+			warnings = append(warnings, warning.Message)
+			warningsMu.Unlock()
+		}
+	}()
+	lane.delegateSess.SetNotifyFunc(nil)
+	// The shared child's restored notify edge can launch its own pending
+	// notification turn, which would consume the scripted wedge step this
+	// test's presentation parks in; disarm it so the stop's own wake is the
+	// only post-settle driver.
+	lane.sharedSub.sess.SetNotifyFunc(nil)
+	// No notify edge is wired on the root: the stopped run's own announce
+	// delivers its terminal packet to the parent, and a wired notify would
+	// drive the stale armed wake immediately — presenting the second row and
+	// advancing the generation before the release's timer fires, so its
+	// generation guard would decline the release forever. The test's probe
+	// loop below is the only post-settle driver, and it starts only after the
+	// release has reclaimed the runtime.
+
+	// The second row pends before any drive can claim, so whichever original
+	// the first drive consumes, the other is the rider whose wake outlives
+	// the stop.
+	if _, err := lane.delegateSess.appendDelegateNotificationDurably(secondRowID, secondRowContent); err != nil {
+		t.Fatalf("pend the second row: %v", err)
+	}
+
+	// The drive loop's flush idiom pumps a delivery the spawn deferred past
+	// its last drain cut before each pass.
+	flushErr := lane.driveUntil(entered)
+	select {
+	case <-entered:
+	// TRIPWIRE: the first drive presents within a couple of loop passes of
+	// the rows landing; the bound only fires on a genuine hang, not a
+	// loaded shard's scheduling delay.
+	case <-time.After(30 * time.Second):
+		lastFlushErr := flushErr()
+		pending, pendErr := lane.delegateSess.pendingDelegateAttentionIDs()
+		t.Fatalf("the presentation never reached its model request (pending attention=%d (%v); flush=%v)",
+			len(pending), pendErr, lastFlushErr)
+	}
+
+	// The scenario's premise is a stale armed wake for the second row: the
+	// first drive's accept captured the pending rows, and the second row was
+	// among them, so the commit that claimed the trigger left the delegate
+	// armed for it. The fixture's own armed trigger can race this test's
+	// seeding — the deferred delivery's notify edge fires the presentation
+	// before the test's disarms and the second row's append land, the accept
+	// captures no rider, and the commit leaves the delegate with no wake at
+	// all, a shape the stop then has nothing stale to leave behind. Restore
+	// the in-order flow's state through the controller's own note path when
+	// that race fired; with the wake already armed the note is skipped and
+	// the production flow is untouched. The note unions the id into the wake
+	// map and nothing else — no notify edge fires, so no drive can present
+	// the row ahead of the release below.
+	premiseTree := lane.root.delegateController
+	premiseTree.mu.Lock()
+	secondWakeArmed := false
+	if state := premiseTree.attention[lane.fixture.delegateID]; state != nil {
+		_, secondWakeArmed = state.wakeIDs[secondRowID]
+	}
+	premiseTree.mu.Unlock()
+	if !secondWakeArmed {
+		premiseTree.noteDelegateAttention(lane.fixture.delegateID, secondRowID)
+	}
+
+	// The release seam: the fixture keeps the idle release disabled so no
+	// schedule a test cannot see reclaims the tree mid-scenario. This test
+	// turns the release back on for the delegate's resident runtime alone —
+	// the config the settle tail reads when it arms the release — with a
+	// sub-second grace, so the stopped run's settle arms a release the test
+	// awaits deterministically instead of waiting out the default. The flip
+	// lands while the request is still parked, before the stop, so the
+	// stopped run's own settle tail is the arm the timer fires on; the
+	// spawn's earlier settle ran under the disabled flag and armed nothing.
+	preReleaseSess := lane.delegateSess
+	releaseSettled := make(chan struct{})
+	var releaseSettledOnce sync.Once
+	// The fixture's first send consumed the delegate's result inline, and a
+	// bare send has no tool round to acknowledge the delivery afterward —
+	// production's tool-result commit retires the receipt. That residue is
+	// inert for everything but the idle release's process-work gate, which
+	// must not read the spawn's long-settled delivery as work still in
+	// flight when it judges the stopped run's subtree; retire it the way an
+	// abandoned reply does, which claims nothing and replays nothing.
+	tree := lane.root.delegateController
+	tree.mu.Lock()
+	var staleSpawnDelivery *delegateDeliveryAdmission
+	for _, receipt := range tree.deliveries {
+		if receipt != nil && receipt.delegateID == lane.fixture.delegateID && receipt.ownerID == "" {
+			staleSpawnDelivery = receipt
+		}
+	}
+	tree.mu.Unlock()
+	if staleSpawnDelivery != nil {
+		if _, err := tree.CompleteDelivery(staleSpawnDelivery.token, false); err != nil {
+			t.Fatalf("retire the fixture send's unacknowledged delivery: %v", err)
+		}
+	}
+	updateSessionTestConfig(lane.delegateSess, func(cfg *testConfig) {
+		cfg.disableDelegateIdleRelease = false
+		short := 500 * time.Millisecond
+		cfg.delegateIdleReleaseDelay = &short
+		// The release unhooks the runtime before it settles the member
+		// teardowns, and a drive pass that lands inside that window pays a
+		// failed cold restore; enough of them and the drive hands the
+		// delegate's attention to the root instead of retrying. The probe
+		// below therefore starts only once the delegate's own member
+		// teardown has settled, observed through the release's own seam.
+		cfg.idleTeardownMemberSettled = func(runtime *Session) {
+			if runtime != preReleaseSess {
+				return
+			}
+			releaseSettledOnce.Do(func() { close(releaseSettled) })
+		}
+	})
+
+	// The user stops the run while its first model request is still parked:
+	// the trigger is latched and nothing has presented. The run's own done
+	// channel is captured before the release, because a restarted generation
+	// would reset it.
+	if got, err := lane.root.StopDelegateRun(lane.fixture.delegateID); err != nil || got != appwire.DelegateStopStopping {
+		t.Fatalf("StopDelegateRun = %q, %v; want stopping", got, err)
+	}
+	lane.delegateSub.mu.Lock()
+	runDone := lane.delegateSub.done
+	lane.delegateSub.mu.Unlock()
+	// The parked request settles through the cancel; the settle tail — the
+	// reopen and the re-arm decision included — runs before the run's done
+	// channel closes.
+	releaseOnce.Do(func() { close(release) })
+	select {
+	case <-runDone:
+	// TRIPWIRE: the cancelled run settles within seconds of the release; the
+	// bound only fires on a genuine hang.
+	case <-time.After(30 * time.Second):
+		t.Fatal("the user-stopped run never completed its settle tail")
+	}
+
+	// The scenario's own shape, read from the fold the settle left: exactly
+	// one original consumed — the claimed row, reopened under a fresh
+	// identity — the other original still pending, and the reopened row
+	// pending too. The parked request carried both originals, the proof the
+	// claim captured its rider: that capture is what left the stale armed
+	// wake behind.
+	fold, foldErr := readDelegateAttentionFold(lane.delegateSess.TranscriptPath(), lane.delegateSess.id)
+	if foldErr != nil {
+		t.Fatalf("read the delegate's attention fold after the stop: %v", foldErr)
+	}
+	var claimedID, otherID, reopenedID string
+	for _, id := range fold.order {
+		if strings.Contains(id, delegateAttentionReopenMarker) {
+			if reopenedID != "" {
+				t.Fatalf("the settle left two reopened rows (%q, %q)", reopenedID, id)
+			}
+			reopenedID = id
+			continue
+		}
+		if _, resolved := fold.resolutions[id]; resolved {
+			if claimedID != "" {
+				t.Fatalf("two original rows were consumed before the stop (%q, %q)", claimedID, id)
+			}
+			claimedID = id
+		} else {
+			if otherID != "" {
+				t.Fatalf("two original rows survived the stop pending (%q, %q)", otherID, id)
+			}
+			otherID = id
+		}
+	}
+	if claimedID == "" || otherID == "" || reopenedID == "" {
+		t.Fatalf("the stop's settle did not leave the two-row shape (claimed=%q other=%q reopened=%q resolutions=%v)",
+			claimedID, otherID, reopenedID, fold.resolutions)
+	}
+	if stripDelegateAttentionReopenSegments(reopenedID) != claimedID {
+		t.Fatalf("the reopened row %q does not reopen the claimed row %q", reopenedID, claimedID)
+	}
+	claimedText, otherText := fold.content[claimedID].Text(), fold.content[otherID].Text()
+	stateDump := func() string {
+		requestsMu.Lock()
+		summaries := make([]string, len(requests))
+		for i, msgs := range requests {
+			summaries[i] = fmt.Sprintf("%d:{claimed:%t,other:%t}",
+				i+1, requestMessagesContainText(msgs, claimedText), requestMessagesContainText(msgs, otherText))
+		}
+		requestsMu.Unlock()
+		pending, pendErr := lane.delegateSess.pendingDelegateAttentionIDs()
+		lane.delegateSub.mu.Lock()
+		delegateBusy := lane.delegateSub.running || lane.delegateSub.driving || lane.delegateSub.finalizing
+		lane.delegateSub.mu.Unlock()
+		liveFold, liveFoldErr := readDelegateAttentionFold(lane.delegateSess.TranscriptPath(), lane.delegateSess.id)
+		liveResolutions := fmt.Sprintf("%v", liveFoldErr)
+		if liveFoldErr == nil {
+			liveResolutions = fmt.Sprintf("%v order=%v gens=%v", liveFold.resolutions, liveFold.order, liveFold.resumeGenerations)
+		}
+		warningsMu.Lock()
+		warningTexts := append([]string{}, warnings...)
+		warningsMu.Unlock()
+		rootFold, rootFoldErr := readDelegateAttentionFold(lane.root.TranscriptPath(), lane.root.id)
+		rootAttention := fmt.Sprintf("%v", rootFoldErr)
+		if rootFoldErr == nil {
+			rootAttention = fmt.Sprintf("%v", rootFold.order)
+		}
+		tree := lane.root.delegateController
+		tree.mu.Lock()
+		live := tree.live[lane.fixture.delegateID]
+		liveState := "absent"
+		if live != nil {
+			liveState = fmt.Sprintf("runtime=%t", live.runtime != nil)
+		}
+		attention := tree.attention[lane.fixture.delegateID]
+		wakeIDs := ""
+		if attention != nil {
+			wakeIDs = fmt.Sprintf("%v", attention.wakeIDs)
+		}
+		tree.mu.Unlock()
+		return fmt.Sprintf("requests=%v pending=%d (%v) pendErr=%v delegateBusy=%t drainAbandoned=%t wakeIDs=%s live=%s warnings=%v rootAttention=%s live: %s",
+			summaries, len(pending), pending, pendErr, delegateBusy,
+			lane.root.childDrainAbandoned(lane.delegateSess.id),
+			wakeIDs,
+			liveState,
+			warningTexts,
+			rootAttention,
+			liveResolutions)
+	}
+	requestsMu.Lock()
+	parkedCarriedBoth := len(requests) > 0 &&
+		requestMessagesContainText(requests[0], claimedText) &&
+		requestMessagesContainText(requests[0], otherText)
+	requestsMu.Unlock()
+	if !parkedCarriedBoth {
+		t.Fatalf("the parked request did not carry both rows, so the claim captured no rider and no stale wake exists (%s)", stateDump())
+	}
+
+	// The release: the stopped run's settle armed the idle release on the
+	// flipped short grace. The reclaim is the state the cold restore rides —
+	// the live map drops the resident runtime pointer the same way the
+	// release's own tests observe it.
+	released := false
+	// TRIPWIRE: the release fires within the flipped sub-second grace of the
+	// stopped run's settle, plus whatever a loaded shard stretches the
+	// teardown and its retries; the bound only fires on a genuine hang.
+	for deadline := time.After(30 * time.Second); !released; {
+		select {
+		case <-deadline:
+			t.Fatalf("the idle release never reclaimed the stopped delegate's runtime (%s)", stateDump())
+		default:
+		}
+		tree.mu.Lock()
+		live := tree.live[lane.fixture.delegateID]
+		released = live == nil || live.runtime == nil
+		tree.mu.Unlock()
+		if !released {
+			time.Sleep(50 * time.Millisecond)
+		}
+	}
+	select {
+	case <-releaseSettled:
+	// TRIPWIRE: the member teardown settles within moments of the unhook
+	// the released-wait already observed; the bound only fires on a genuine
+	// hang, not a loaded shard's scheduling delay.
+	case <-time.After(30 * time.Second):
+		t.Fatalf("the released delegate's member teardown never settled (%s)", stateDump())
+	}
+
+	// The post-restore drive: the stale armed map entry — the second row's
+	// wake, the one the stopped generation's commit left behind — has no
+	// notify edge of its own, so the test pumps the owner's wake-path drive
+	// the way the daemon's own loop does. The released runtime forces this
+	// pass through the cold restore; the release unhooked the resident sub
+	// record the earlier drives used, so the pass is the wake-path drive
+	// that owns the restore.
+	staleWakeProbe := make(chan struct{})
+	defer close(staleWakeProbe)
+	go func() {
+		deadline := time.Now().Add(30 * time.Second)
+		for time.Now().Before(deadline) {
+			lane.root.drivePendingDelegateAttention()
+			time.Sleep(200 * time.Millisecond)
+			select {
+			case <-staleWakeProbe:
+				return
+			default:
+			}
+		}
+	}()
+	otherPresented := false
+	// TRIPWIRE: the cold-restored drive presents within a couple of probe
+	// passes of the release; the bound only fires on a genuine hang, not a
+	// loaded shard's scheduling delay.
+	for deadline := time.After(30 * time.Second); !otherPresented; {
+		select {
+		case <-deadline:
+			t.Fatalf("the released delegate's cold-restored drive never presented the other row (%s)", stateDump())
+		default:
+		}
+		live, err := readDelegateAttentionFold(lane.delegateSess.TranscriptPath(), lane.delegateSess.id)
+		otherPresented = err == nil && live.resolutions[otherID] != ""
+		if !otherPresented {
+			time.Sleep(50 * time.Millisecond)
+		}
+	}
+
+	// The proof the presentation rode the cold restore: the delegate's live
+	// runtime is a session the release did not know — the resident runtime
+	// the stop settled was reclaimed, and this one was reconstructed from
+	// the durable transcript after it.
+	tree.mu.Lock()
+	restoredRuntime := tree.live[lane.fixture.delegateID].runtime
+	tree.mu.Unlock()
+	if restoredRuntime == nil || restoredRuntime == preReleaseSess {
+		t.Fatalf("the other row presented without a cold-restored runtime (restored=%p preRelease=%p; %s)",
+			restoredRuntime, preReleaseSess, stateDump())
+	}
+	fold, foldErr = readDelegateAttentionFold(lane.delegateSess.TranscriptPath(), lane.delegateSess.id)
+	if foldErr != nil {
+		t.Fatalf("read the delegate's attention fold after the other row presented: %v", foldErr)
+	}
+	otherGen := fold.resumeGenerations[otherID]
+	// The reopened report must resolve on a LATER generation than the other
+	// row's: riding the cold-restored drive resolves at its generation, while
+	// the restored quiet keeps it out of that presentation entirely and the
+	// fresh arm — the other row's own settle tail re-arming the remaining
+	// attention — presents it on a generation of its own. The wait tolerates
+	// the recovery having fired before the other row's resolution was even
+	// observed; the generation comparison separates the two either way.
+	reopenedResolved := false
+	// TRIPWIRE: the reopened row resolves within a couple of drive passes of
+	// the other row's settle, whichever wake presents it; the bound only
+	// fires on a genuine hang, not a loaded shard's scheduling delay.
+	for deadline := time.After(30 * time.Second); !reopenedResolved; {
+		select {
+		case <-deadline:
+			t.Fatalf("the reopened report never resolved after the cold-restored presentation (%s)", stateDump())
+		default:
+		}
+		live, err := readDelegateAttentionFold(lane.delegateSess.TranscriptPath(), lane.delegateSess.id)
+		reopenedResolved = err == nil && live.resolutions[reopenedID] != ""
+		if !reopenedResolved {
+			time.Sleep(50 * time.Millisecond)
+		}
+	}
+	fold, foldErr = readDelegateAttentionFold(lane.delegateSess.TranscriptPath(), lane.delegateSess.id)
+	if foldErr != nil {
+		t.Fatalf("read the delegate's attention fold after the reopened row resolved: %v", foldErr)
+	}
+	if fold.resumeGenerations[reopenedID] <= otherGen {
+		t.Fatalf("the cold-restored drive presented the stopped run's reopened report riding the other row's generation (reopened gen %d, other row gen %d; %s)",
+			fold.resumeGenerations[reopenedID], otherGen, stateDump())
+	}
+	if fold.resolutions[reopenedID] != delegateAttentionConsumed {
+		t.Fatalf("the reopened row did not resolve as presented on the fresh arm (resolutions=%v; %s)", fold.resolutions, stateDump())
+	}
+}
+
 // A stop admitted between a reopen's teardown guards and its durable append
 // owns the row the append then lands: the stop's discard enumerated attention
 // by the ids it knew at plan time, and nothing notes the fresh identity, so
