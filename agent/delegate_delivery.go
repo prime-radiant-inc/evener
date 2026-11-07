@@ -922,6 +922,16 @@ func (c *delegateTreeController) holdDeliveryClaim(plan delegateDeliveryPlan) {
 	}
 }
 
+// holdDeferredDeliveryClaim holds plan's claim for its receiver's next round.
+// Only a held head can be carried by the owner's next inline wait to the same
+// child (#3906). A waiter-bearing plan completes the running tool instead of
+// waiting for the round.
+func holdDeferredDeliveryClaim(plan delegateDeliveryPlan) {
+	if plan.waiter == nil && plan.controller != nil {
+		plan.controller.holdDeliveryClaim(plan)
+	}
+}
+
 func (c *delegateTreeController) deliveryReceiptIsInline(token delegateDeliveryToken) bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -1133,8 +1143,9 @@ func (s *Session) requeueReplayableDelegateDeliveries(unprocessed []delegateDeli
 	// the orphan-arm wake test builds) is a lost report; the receiving session
 	// flushes its own queue at every turn boundary and drain pass.
 	for _, plan := range append(plans, unprocessed...) {
+		receiver, _ := plan.receiver.(*Session)
 		target := fallback
-		if receiver, ok := plan.receiver.(*Session); ok && receiver != nil {
+		if receiver != nil {
 			target = receiver
 		}
 		release, err := target.beginRetirementMutation("delegate_delivery")
@@ -1152,12 +1163,26 @@ func (s *Session) requeueReplayableDelegateDeliveries(unprocessed []delegateDeli
 	}
 }
 
+// turnInFlight is turnInFlightLocked for a caller that does not hold s.mu.
+func (s *Session) turnInFlight() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.turnInFlightLocked()
+}
+
 // enqueueDelegateDeliveryLocked appends plan to this session's pending
 // delivery queue and applies the pipeline's single wake/backoff rule: a wake
 // when no pump is running and no retry is armed, otherwise a paced retry. The
 // caller holds delegateDeliveryMu and notifies after unlocking when it returns
 // true.
 func (s *Session) enqueueDelegateDeliveryLocked(plan delegateDeliveryPlan) (shouldWake bool) {
+	// A plan parked on its own receiver while that receiver runs a turn takes
+	// the hold its deferred acceptance would take, so the receiver's next
+	// inline wait to the same child can carry it (#3906). Deferred acceptance,
+	// requeue, and refused retries all park plans through here.
+	if receiver, ok := plan.receiver.(*Session); ok && receiver == s && plan.waiter == nil && s.turnInFlight() {
+		holdDeferredDeliveryClaim(plan)
+	}
 	s.pendingDelegateDeliveries = append(s.pendingDelegateDeliveries, plan)
 	if s.delegateDeliveryPumping {
 		s.scheduleDelegateDeliveryRetryLocked()
@@ -1239,11 +1264,9 @@ func (s *Session) acceptDelegateDeliveryPlan(plan delegateDeliveryPlan) (delegat
 	}
 	defer release()
 	s.delegateDeliveryMu.Lock()
-	s.mu.Lock()
 	// goalInTurn remains true across a terminal communicate's Idle transition
 	// until the enclosing ProcessInput drain has made its delivery cut.
-	processing := s.state == SessionProcessing || s.goalInTurn
-	s.mu.Unlock()
+	processing := s.turnInFlight()
 	// A waiter-bearing plan completes a tool executing in this processing turn.
 	// Deferring it behind that turn would make the turn wait on its own queue.
 	deferred := processing && plan.waiter == nil
@@ -1251,9 +1274,6 @@ func (s *Session) acceptDelegateDeliveryPlan(plan delegateDeliveryPlan) (delegat
 		hook(s, deferred)
 	}
 	if deferred {
-		if plan.controller != nil {
-			plan.controller.holdDeliveryClaim(plan)
-		}
 		shouldWake := s.enqueueDelegateDeliveryLocked(plan)
 		s.delegateDeliveryMu.Unlock()
 		if shouldWake {
