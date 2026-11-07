@@ -101,7 +101,7 @@ it("arms in one tap with a visible disclosure, keeps takeover explicit, and send
 	// Arm is explained before it happens, not after.
 	expect(button("I understand · Arm voice")).toBeUndefined();
 	expect(tree.root.findByProps({ testID: "voice-arm-disclosure" })).toBeDefined();
-	expect(JSON.stringify(tree.toJSON())).toContain("Anyone nearby can talk to Evener");
+	expect(JSON.stringify(tree.toJSON())).toContain("Anyone nearby, or audio playing nearby, can talk to Evener");
 	await act(async () => {
 		button("Turn on voice").props.onPress();
 	});
@@ -335,6 +335,12 @@ it("keeps Stop live while Evener speaks", async () => {
 		emit({ ...armed, state: "conversing", cloudMicrophone: false });
 	});
 	expect(button("Talk").props.disabled).toBe(false);
+	// Nothing is streaming, so the bar must not claim to be listening.
+	expect(JSON.stringify(tree.toJSON())).toContain("Tap Talk to reply");
+	await act(async () => {
+		emit({ ...armed, state: "conversing", cloudMicrophone: true });
+	});
+	expect(JSON.stringify(tree.toJSON())).toContain("Listening to you");
 });
 
 it("calls a routine abort a finished turn, not a stopped voice", async () => {

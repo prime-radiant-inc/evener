@@ -96,6 +96,7 @@ function Controls({ client, target }: { client: VoiceClient; target: VoiceTarget
 				expanded={expanded}
 				phrase={state.wake?.phrase ?? ""}
 				speakerOff={state.speakerConsentRequired}
+				streaming={state.cloudMicrophone}
 				boundRef={armed && !same ? bound?.ref : undefined}
 				onPrimary={presented.phase === "disarmed" ? () => setExpanded(true) : primary}
 				onToggle={() => setExpanded(!expanded)}
@@ -113,6 +114,7 @@ function Controls({ client, target }: { client: VoiceClient; target: VoiceTarget
 							phase={presented.phase}
 							phrase={state.wake?.phrase ?? ""}
 							speakerOff={state.speakerConsentRequired}
+							streaming={state.cloudMicrophone}
 							boundRef={armed && !same ? bound?.ref : undefined}
 						/>
 						{armed ? null : <Details state={state} forceOpen />}
@@ -164,6 +166,7 @@ function VoiceBar({
 	expanded,
 	phrase,
 	speakerOff,
+	streaming,
 	boundRef,
 	onPrimary,
 	onToggle,
@@ -174,6 +177,7 @@ function VoiceBar({
 	expanded: boolean;
 	phrase: string;
 	speakerOff: boolean;
+	streaming: boolean;
 	boundRef?: string;
 	onPrimary(): void;
 	onToggle(): void;
@@ -181,7 +185,9 @@ function VoiceBar({
 	const { palette } = useColors();
 	const scale = useTextScale();
 	const tone = TONES[phase];
-	const headline = boundRef ? `Voice is on for ${shortRef(boundRef)}` : barHeadline(phase, phrase, speakerOff);
+	const headline = boundRef
+		? `Voice is on for ${shortRef(boundRef)}`
+		: barHeadline(phase, phrase, speakerOff, streaming);
 	const actionVisible = phase === "disarmed" || phase === "listening" || phase === "speaking" || phase === "talking";
 	return (
 		<View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
@@ -228,7 +234,7 @@ function shortRef(ref: string) {
 	return ref.replace(/^local:/, "");
 }
 
-function barHeadline(phase: VoicePhase, phrase: string, speakerOff: boolean) {
+function barHeadline(phase: VoicePhase, phrase: string, speakerOff: boolean, streaming: boolean) {
 	const wake = phrase ? `“${phrase}”` : "the wake word";
 	switch (phase) {
 		case "disarmed":
@@ -238,7 +244,9 @@ function barHeadline(phase: VoicePhase, phrase: string, speakerOff: boolean) {
 		case "heard":
 			return `Heard ${wake}`;
 		case "talking":
-			return "Listening to you";
+			// Native keeps `conversing` with nothing streaming after Stop or a
+			// rejected reply, so only a live cloud turn is "listening to you".
+			return streaming ? "Listening to you" : "Tap Talk to reply";
 		case "speaking":
 			return "Evener is speaking";
 		case "recovering":
@@ -254,11 +262,13 @@ function PanelHeader({
 	phase,
 	phrase,
 	speakerOff,
+	streaming,
 	boundRef,
 }: {
 	phase: VoicePhase;
 	phrase: string;
 	speakerOff: boolean;
+	streaming: boolean;
 	boundRef?: string;
 }) {
 	const { palette } = useColors();
@@ -278,7 +288,9 @@ function PanelHeader({
 				<SymbolView name={tone.symbol} size={20} tintColor={palette[tone.ink]} />
 			</View>
 			<View style={{ flexShrink: 1, gap: 2 }}>
-				<Copy>{boundRef ? `Voice is on for ${shortRef(boundRef)}` : barHeadline(phase, phrase, speakerOff)}</Copy>
+				<Copy>
+					{boundRef ? `Voice is on for ${shortRef(boundRef)}` : barHeadline(phase, phrase, speakerOff, streaming)}
+				</Copy>
 				<Copy muted>
 					{boundRef
 						? "Talk starts a turn there. Open that session to talk to it."
@@ -288,7 +300,15 @@ function PanelHeader({
 								? "Tap Talk, or just say the wake word."
 								: phase === "trial"
 									? "One attempt at a time, saved on this iPhone."
-									: "Tap the bar to see what voice is doing."}
+									: phase === "speaking"
+										? "Tap Stop to cut the reply short."
+										: phase === "talking"
+											? "Say what you need. Talk stays here if the turn ended."
+											: phase === "heard"
+												? "The turn starts here."
+												: phase === "recovering"
+													? "Audio comes back on its own."
+													: "Text chat still works."}
 				</Copy>
 			</View>
 		</View>
@@ -343,7 +363,7 @@ function Details({ state, forceOpen = false }: { state: VoiceSnapshot; forceOpen
 			{shown ? (
 				<>
 					<Copy muted>
-						{`Anyone nearby can talk to Evener and hear replies, even when your iPhone is locked. “${
+						{`Anyone nearby, or audio playing nearby, can talk to Evener and hear replies, even when your iPhone is locked. “${
 							state.wake?.phrase || "Hey Evener"
 						}” is a phrase, not a voiceprint.`}
 					</Copy>
