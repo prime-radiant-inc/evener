@@ -21,6 +21,16 @@ import (
 // RunFileEnv names the file holding this shard's -test.run regex.
 const RunFileEnv = "EVENER_SHARD_RUN_FILE"
 
+// LiveStackBinEnv names a directory of prebuilt live-stack binaries. A shard
+// runner that builds them once exports it to every process it starts, and the
+// receiving TestMain uses the binaries instead of building its own copy.
+const LiveStackBinEnv = "EVENER_HUB_LIVE_STACK_BIN"
+
+// LiveStackWarmEnv marks a process whose live-stack binaries are already built
+// or cannot be used by its selection. TestMain skips its warm build when it is
+// set, and sets it in its own environment so descendants inherit the decision.
+const LiveStackWarmEnv = "EVENER_HUB_LIVE_STACK_WARM"
+
 // ConfigureRunFile sets -test.run from the file RunFileEnv names, and does
 // nothing when the variable is unset. Call it from TestMain after flag.Parse,
 // so the command line's (absent) -test.run cannot clobber it when m.Run parses

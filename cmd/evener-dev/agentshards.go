@@ -40,6 +40,11 @@ package dev
 // the execve argument list: a large shard's regex can exceed Linux's
 // MAX_ARG_STRLEN (128KB per single argument string).
 //
+// hub-shards also builds ./cmd/evener once, before any child runs, and exports
+// the directory through EVENER_HUB_LIVE_STACK_BIN. cmd/evener-hub's TestMain
+// warms that same build before m.Run; without this it would build and link a
+// copy in every shard process and in the survey.
+//
 // Scratch is "<label>-test-shards.<pid>" under TMPDIR, reclaimed from dead
 // runs at startup (internal/devtool/scratch): the janitor this replaced is
 // gone, and a SIGKILLed run's debris lives exactly until the next run.
@@ -62,6 +67,7 @@ import (
 
 	"primeradiant.com/evener/internal/devtool/procgroup"
 	"primeradiant.com/evener/internal/devtool/scratch"
+	"primeradiant.com/evener/internal/devtool/shardrun"
 )
 
 // defaultSurveyParallel is the survey pass's default -parallel. The shards get
@@ -88,6 +94,15 @@ type shardsConfig struct {
 	stdout         io.Writer
 	stderr         io.Writer
 	signals        <-chan os.Signal
+	// liveStack builds ./cmd/evener once, before any child runs, and exports
+	// the directory to every process through shardrun.LiveStackBinEnv. The
+	// hub package's TestMain warms the same binaries otherwise, once per shard
+	// and once for the survey.
+	liveStack bool
+	// env is inherited by every child this run starts. prepareLiveStack fills
+	// it when liveStack is set; tests that build a config directly leave it
+	// empty.
+	env []string
 	// jsonDir, when set (EVENER_SHARD_JSON_DIR), writes each shard's run as
 	// durable `-test.v` text under it and one package-wall row at the end, so
 	// run-module-tests.sh can turn a sharded package into the timing ratchet's
@@ -104,26 +119,26 @@ type shardsConfig struct {
 // runAgentShards and runHubShards are the subcommand entries: environment in,
 // exit code out. Each package reads its own <PREFIX>_SHARD_* variables.
 func runAgentShards(args []string) int {
-	return runPackageShards("agent", "agent", "agent", "AGENT", args)
+	return runPackageShards("agent", "agent", "agent", "AGENT", false, args)
 }
 
 // runHubShards builds from the repository root, the module cmd/evener-hub
 // belongs to, so path-valued build flags resolve where the gate's root-module
 // go test resolves them; the shards still run in the package directory.
 func runHubShards(args []string) int {
-	return runPackageShards("hub", ".", filepath.Join("cmd", "evener-hub"), "HUB", args)
+	return runPackageShards("hub", ".", filepath.Join("cmd", "evener-hub"), "HUB", true, args)
 }
 
 // runCLIShards shards cmd/evener, the CLI's ~340 mostly-serial serve and run
 // lifecycle tests, the same way.
 func runCLIShards(args []string) int {
-	return runPackageShards("cli", ".", filepath.Join("cmd", "evener"), "CLI", args)
+	return runPackageShards("cli", ".", filepath.Join("cmd", "evener"), "CLI", false, args)
 }
 
 // runPackageShards shards the package in pkgDir, building it from moduleDir
 // (its module's root; both relative to the repository root), naming it label
 // in its output and reading envPrefix_SHARD_* for its settings.
-func runPackageShards(label, moduleDir, pkgDir, envPrefix string, args []string) int {
+func runPackageShards(label, moduleDir, pkgDir, envPrefix string, liveStack bool, args []string) int {
 	env := func(name string) string { return envPrefix + "_SHARD_" + name }
 	count, err := envPositiveInt(env("COUNT"), 4)
 	if err != nil {
@@ -171,6 +186,7 @@ func runPackageShards(label, moduleDir, pkgDir, envPrefix string, args []string)
 		stdout:         os.Stdout,
 		stderr:         os.Stderr,
 		signals:        signals,
+		liveStack:      liveStack,
 		jsonDir:        os.Getenv("EVENER_SHARD_JSON_DIR"),
 		jsonPackage:    os.Getenv("EVENER_SHARD_JSON_PACKAGE"),
 	})
@@ -407,6 +423,18 @@ func runShards(cfg shardsConfig) int {
 		return code
 	}
 
+	if cfg.liveStack {
+		env, err := cfg.prepareLiveStack(in, logdir)
+		if err != nil {
+			if code := in.exitCode(); code != 0 {
+				return code
+			}
+			_, _ = fmt.Fprintf(cfg.stderr, "%s-shards: %v\n", cfg.label, err)
+			return 1
+		}
+		cfg.env = env
+	}
+
 	// The test set's identity keys the survey cache; the same listing also
 	// backs the equal-weights fallback.
 	listOut, _ := cfg.captureChild(in, cfg.pkgDir, build, "-test.list", ".*")
@@ -578,7 +606,7 @@ func runShards(cfg shardsConfig) int {
 		cmd := exec.CommandContext(context.Background(), build, args...)
 		cmd.Dir = cfg.pkgDir
 		cmd.Stdout, cmd.Stderr = log, log
-		cmd.Env = append(os.Environ(), "EVENER_SHARD_RUN_FILE="+runFile)
+		cmd.Env = append(cfg.childEnv(), "EVENER_SHARD_RUN_FILE="+runFile)
 		started := time.Now()
 		err = procgroup.Start(cmd)
 		_ = log.Close()
@@ -777,6 +805,40 @@ func writeFileAtomic(path string, data []byte) error {
 	return nil
 }
 
+// prepareLiveStack builds ./cmd/evener once for the whole run and returns the
+// environment that hands the directory to every child. The hub package's
+// TestMain warms these binaries before m.Run, so without this build each shard
+// and the survey pay for their own compile. A module with no cmd/evener (the
+// shard fixtures) has no live stack to build; an outer runner's directory wins
+// over building another copy.
+func (cfg shardsConfig) prepareLiveStack(in *interrupter, logdir string) ([]string, error) {
+	if dir := os.Getenv(shardrun.LiveStackBinEnv); dir != "" {
+		return []string{shardrun.LiveStackWarmEnv + "=1"}, nil
+	}
+	if info, err := os.Stat(filepath.Join(cfg.moduleDir, "cmd", "evener")); err != nil || !info.IsDir() {
+		return nil, nil
+	}
+	dir := filepath.Join(logdir, "live-stack-bin")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return nil, fmt.Errorf("build live-stack binaries: %w", err)
+	}
+	buildLog := filepath.Join(logdir, "live-stack-build.log")
+	if err := cfg.runToLog(in, buildLog, cfg.moduleDir, "go", "build", "-o", filepath.Join(dir, "evener"), "./cmd/evener"); err != nil {
+		data, _ := os.ReadFile(buildLog)
+		return nil, fmt.Errorf("build live-stack binaries: %w\n%s", err, data)
+	}
+	return []string{
+		shardrun.LiveStackBinEnv + "=" + dir,
+		shardrun.LiveStackWarmEnv + "=1",
+	}, nil
+}
+
+// childEnv is the environment every child inherits: the caller's own plus the
+// entries a preparation step added.
+func (cfg shardsConfig) childEnv() []string {
+	return append(os.Environ(), cfg.env...)
+}
+
 // runToLog runs a child in its own process group with both output streams in
 // one log file, registered with the interrupter for signal forwarding.
 func (cfg shardsConfig) runToLog(in *interrupter, logPath, dir, name string, args ...string) error {
@@ -788,6 +850,7 @@ func (cfg shardsConfig) runToLog(in *interrupter, logPath, dir, name string, arg
 	cmd := exec.CommandContext(context.Background(), name, args...)
 	cmd.Dir = dir
 	cmd.Stdout, cmd.Stderr = log, log
+	cmd.Env = cfg.childEnv()
 	if err := procgroup.Start(cmd); err != nil {
 		return err
 	}
@@ -802,6 +865,7 @@ func (cfg shardsConfig) captureChild(in *interrupter, dir, name string, args ...
 	cmd.Dir = dir
 	var out strings.Builder
 	cmd.Stdout = &out
+	cmd.Env = cfg.childEnv()
 	if err := procgroup.Start(cmd); err != nil {
 		return "", err
 	}

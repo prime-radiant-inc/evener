@@ -575,9 +575,20 @@ func liveStackBinaries(t *testing.T, repoRoot string) string {
 	return liveStackBuild.dir
 }
 
-// liveStackBinariesBuild is the once-guarded build both entry points use.
+// liveStackBinariesBuild is the once-guarded build both entry points use. A
+// shard runner that builds the binaries for the whole run exports them through
+// liveStackBinEnv; this process then uses that directory instead of compiling
+// a second copy.
 func liveStackBinariesBuild(repoRoot string) {
 	liveStackBuild.once.Do(func() {
+		if dir := os.Getenv(liveStackBinEnv); dir != "" {
+			if _, err := os.Stat(filepath.Join(dir, "evener")); err != nil {
+				liveStackBuild.err = fmt.Errorf("%s names %q: %w", liveStackBinEnv, dir, err)
+				return
+			}
+			liveStackBuild.dir = dir
+			return
+		}
 		// Under TestMain's root, so its Discard is the only cleanup path.
 		dir := filepath.Join(testEnv.Root, "live-stack-bin")
 		if err := os.MkdirAll(dir, 0o700); err != nil {

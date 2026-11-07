@@ -8,11 +8,14 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"slices"
 	"strconv"
 	"strings"
 	"sync"
 	"testing"
+
+	"primeradiant.com/evener/execsupport/shellquote"
 )
 
 // fixtureModule returns the absolute path of the real test module the
@@ -760,6 +763,23 @@ func hubFixtureRoot(t *testing.T) string {
 	return root
 }
 
+// hubFixtureLiveStackRoot is hubFixtureRoot with a real cmd/evener package, the
+// layout hub-shards needs to build the live-stack binaries the hub package's
+// TestMain would otherwise warm per shard.
+func hubFixtureLiveStackRoot(t *testing.T) string {
+	t.Helper()
+	root := hubFixtureRoot(t)
+	dir := filepath.Join(root, "cmd", "evener")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	main := "package main\n\nimport \"fmt\"\n\nfunc main() { fmt.Println(\"fixture-live-stack\") }\n"
+	if err := os.WriteFile(filepath.Join(dir, "main.go"), []byte(main), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return root
+}
+
 // hubFixtureToolchainEnv is the child environment a hub-shards run over
 // hubFixtureRoot needs, appended after the ambient one so it wins: a private
 // TMPDIR and survey cache, and a toolchain that resolves the fixture's own
@@ -823,6 +843,83 @@ func TestHubShardsReadsItsOwnVariablesAndPackage(t *testing.T) {
 	for _, want := range []string{"PASS  hub:0", "PASS  hub:1"} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("hub-shards output lacks %q:\n%s", want, out)
+		}
+	}
+}
+
+// TestHubShardsBuildsTheLiveStackBinariesOnce pins the follow-up to #5695:
+// hub-shards builds ./cmd/evener for the whole run, and every shard inherits
+// the directory through the environment instead of letting the hub TestMain
+// warm its own copy.
+func TestHubShardsBuildsTheLiveStackBinariesOnce(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the go wrapper this test counts through is a POSIX shell script")
+	}
+	bin := buildEvenerDev(t)
+	workRoot := hubFixtureLiveStackRoot(t)
+
+	realGo, err := exec.LookPath("go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	wrapperDir := t.TempDir()
+	goLog := filepath.Join(t.TempDir(), "go.log")
+	wrapper := "#!/bin/sh\nprintf '%s\\n' \"$*\" >> " + shellquote.Literal(goLog) + "\nexec " + shellquote.Literal(realGo) + " \"$@\"\n"
+	if err := os.WriteFile(filepath.Join(wrapperDir, "go"), []byte(wrapper), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := exec.Command(bin, "dev", "hub-shards")
+	cmd.Dir = workRoot
+	cmd.Env = append(os.Environ(), append(hubFixtureToolchainEnv(t),
+		"HUB_SHARD_COUNT=2",
+		"SHARD_FIXTURE_LIVE_STACK=1",
+		"PATH="+wrapperDir+string(os.PathListSeparator)+os.Getenv("PATH"),
+	)...)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("hub-shards over the live-stack fixture failed: %v\n%s", err, out)
+	}
+	for _, want := range []string{"PASS  hub:0", "PASS  hub:1"} {
+		if !strings.Contains(string(out), want) {
+			t.Fatalf("hub-shards output lacks %q:\n%s", want, out)
+		}
+	}
+	data, err := os.ReadFile(goLog)
+	if err != nil {
+		t.Fatalf("reading the go wrapper log: %v", err)
+	}
+	builds := 0
+	for line := range strings.SplitSeq(string(data), "\n") {
+		if strings.HasPrefix(line, "build ") && strings.Contains(line, "./cmd/evener") {
+			builds++
+		}
+	}
+	if builds != 1 {
+		t.Fatalf("go build ./cmd/evener ran %d times, want once for the run:\n%s", builds, data)
+	}
+}
+
+// TestHubShardsNamesALiveStackBuildFailure keeps a broken ./cmd/evener from
+// surfacing as an opaque shard failure: the run stops at the build and names
+// it with the compiler's own diagnostic.
+func TestHubShardsNamesALiveStackBuildFailure(t *testing.T) {
+	bin := buildEvenerDev(t)
+	workRoot := hubFixtureLiveStackRoot(t)
+	broken := "package main\n\nfunc main() { thisSymbolDoesNotExist() }\n"
+	if err := os.WriteFile(filepath.Join(workRoot, "cmd", "evener", "main.go"), []byte(broken), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command(bin, "dev", "hub-shards")
+	cmd.Dir = workRoot
+	cmd.Env = append(os.Environ(), append(hubFixtureToolchainEnv(t), "HUB_SHARD_COUNT=2")...)
+	out, err := cmd.CombinedOutput()
+	if err == nil {
+		t.Fatalf("a broken cmd/evener did not fail the run:\n%s", out)
+	}
+	for _, want := range []string{"hub-shards: build live-stack binaries", "thisSymbolDoesNotExist"} {
+		if !strings.Contains(string(out), want) {
+			t.Fatalf("hub-shards build failure lacks %q:\n%s", want, out)
 		}
 	}
 }
