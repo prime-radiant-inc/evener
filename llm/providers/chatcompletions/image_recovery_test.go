@@ -52,7 +52,7 @@ func TestImageRecoveryStageZeroSerializesWithImagePart(t *testing.T) {
 			{"type": "image_url", "image_url": map[string]any{"url": "data:image/jpeg;base64,AAAA"}},
 		}}},
 	}
-	r := &imageRecovery{hasImagePart: true, sent: map[[32]byte]bool{}}
+	r := &imageRecovery{sent: map[[32]byte]bool{}}
 	if err := r.prepare(context.Background(), body); err != nil {
 		t.Fatalf("prepare: %v", err)
 	}
@@ -61,37 +61,42 @@ func TestImageRecoveryStageZeroSerializesWithImagePart(t *testing.T) {
 	}
 }
 
-// requestHasImagePart mirrors buildMultimodalParts' image arm: only a user
-// ContentImage with a URL or bytes rides the chat wire as image_url.
-func TestRequestHasImagePart(t *testing.T) {
-	cases := []struct {
-		name string
-		msgs []llm.Message
-		want bool
+// TestImageRecoveryStageZeroWalksFinalBody pins the skip's input to the final
+// wire body: provider options and RequestPreparers install typed maps, a
+// transport messages constant stays a json.RawMessage, and the marshal is
+// kept for any shape the walk cannot inspect.
+func TestImageRecoveryStageZeroWalksFinalBody(t *testing.T) {
+	t.Parallel()
+	imagePart := map[string]any{"type": "image_url", "image_url": map[string]any{"url": "data:image/jpeg;base64,AAAA"}}
+	for _, tc := range []struct {
+		name     string
+		messages any
+		wantSeed bool
 	}{
-		{"url image", []llm.Message{{Role: llm.RoleUser, Content: []llm.ContentPart{
-			{Kind: llm.ContentImage, Image: &llm.ImageData{URL: "https://example.com/i.png"}},
+		{"typed maps with typed content", []map[string]any{{"role": "user", "content": []map[string]any{imagePart}}}, true},
+		{"typed maps with any content", []map[string]any{{"role": "user", "content": []any{imagePart}}}, true},
+		{"any messages", []any{map[string]any{"role": "user", "content": []any{imagePart}}}, true},
+		{"raw message keeps the marshal", json.RawMessage(`[{"role":"user","content":[{"type":"image_url","image_url":{"url":"data:image/jpeg;base64,AAAA"}}]}]`), true},
+		{"non-string part type keeps the marshal", []map[string]any{{"role": "user", "content": []map[string]any{
+			{"type": json.RawMessage(`"image_url"`)},
 		}}}, true},
-		{"byte image", []llm.Message{{Role: llm.RoleUser, Content: []llm.ContentPart{
-			{Kind: llm.ContentImage, Image: &llm.ImageData{Data: []byte("png")}},
-		}}}, true},
-		{"nil image is dropped by the builder", []llm.Message{{Role: llm.RoleUser, Content: []llm.ContentPart{
-			{Kind: llm.ContentImage},
+		{"no image skips the marshal", []any{map[string]any{"role": "user", "content": []any{
+			map[string]any{"type": "text", "text": "hi"},
 		}}}, false},
-		{"empty image is dropped by the builder", []llm.Message{{Role: llm.RoleUser, Content: []llm.ContentPart{
-			{Kind: llm.ContentImage, Image: &llm.ImageData{}},
-		}}}, false},
-		{"assistant image never rides the wire", []llm.Message{{Role: llm.RoleAssistant, Content: []llm.ContentPart{
-			{Kind: llm.ContentImage, Image: &llm.ImageData{URL: "https://example.com/i.png"}},
-		}}}, false},
-		{"document only", []llm.Message{{Role: llm.RoleUser, Content: []llm.ContentPart{
-			{Kind: llm.ContentDocument, Document: &llm.DocumentData{Data: []byte("%PDF")}},
-		}}}, false},
-	}
-	for _, tc := range cases {
-		if got := requestHasImagePart(tc.msgs); got != tc.want {
-			t.Errorf("%s: requestHasImagePart = %v, want %v", tc.name, got, tc.want)
-		}
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			body := map[string]any{"messages": tc.messages}
+			if !tc.wantSeed {
+				body["unsupported"] = math.Inf(1) // proves the skip path does not serialize
+			}
+			r := &imageRecovery{sent: map[[32]byte]bool{}}
+			if err := r.prepare(context.Background(), body); err != nil {
+				t.Fatalf("prepare: %v", err)
+			}
+			if got := r.originalSize > 0; got != tc.wantSeed {
+				t.Fatalf("originalSize=%d, seeded=%v, want seeded=%v", r.originalSize, got, tc.wantSeed)
+			}
+		})
 	}
 }
 
@@ -366,6 +371,30 @@ func (p imageRecoveryPreparer) PrepareRequest(_ context.Context, _ *http.Request
 
 func (imageRecoveryPreparer) RequiresStreamingComplete() bool { return false }
 
+// finalWireMessages installs messages into the final wire body through one of
+// the three paths that bypass req.Messages, returning the context the call
+// needs (the preparer path overrides the authenticator).
+func finalWireMessages(t *testing.T, source string, req *llm.Request, res *registry.Resolved, messages []map[string]any) context.Context {
+	t.Helper()
+	ctx := t.Context()
+	switch source {
+	case "provider_options":
+		req.ProviderOptions = map[string]any{registry.ProtocolOpenAIChat: map[string]any{"messages": messages}}
+	case "transport_constants":
+		raw, err := json.Marshal(messages)
+		if err != nil {
+			t.Fatal(err)
+		}
+		res.Transport.Body = map[string]any{"messages": json.RawMessage(raw)}
+	case "preparer":
+		res.Transport.Auth = registry.AuthOAuthOpenAICodex
+		ctx = llm.WithAuthenticatorOverride(ctx, imageRecoveryPreparer{messages: messages})
+	default:
+		t.Fatalf("unknown final-wire source %q", source)
+	}
+	return ctx
+}
+
 func TestImageRecoveryFinalWirePreservation(t *testing.T) {
 	t.Parallel()
 	for _, source := range []string{"provider_options", "transport_constants", "preparer"} {
@@ -410,16 +439,7 @@ func TestImageRecoveryFinalWirePreservation(t *testing.T) {
 			defer srv.Close()
 			res := liveRes(srv, nil)
 			req := userReq("overridden-sentinel")
-			ctx := t.Context()
-			switch source {
-			case "provider_options":
-				req.ProviderOptions = map[string]any{registry.ProtocolOpenAIChat: map[string]any{"messages": messages}}
-			case "transport_constants":
-				res.Transport.Body = map[string]any{"messages": json.RawMessage(before)}
-			case "preparer":
-				res.Transport.Auth = registry.AuthOAuthOpenAICodex
-				ctx = llm.WithAuthenticatorOverride(ctx, imageRecoveryPreparer{messages: messages})
-			}
+			ctx := finalWireMessages(t, source, &req, &res, messages)
 			if _, err := recoveryCall(ctx, &Protocol{Client: srv.Client()}, req, res, false); err != nil {
 				t.Fatal(err)
 			}
@@ -446,6 +466,52 @@ func TestImageRecoveryFinalWirePreservation(t *testing.T) {
 			after, _ := json.Marshal(messages)
 			if !bytes.Equal(before, after) {
 				t.Fatal("overlaid caller messages changed")
+			}
+		})
+	}
+}
+
+// TestImageRecoveryFinalWireSizeBaseline covers the same three override paths
+// with a 413 after a managed stage-1 repair that shrank the body: the stage-0
+// size must come from the final wire body, so recovery returns that 413
+// instead of treating the repair as expanded and attempting a ProfileFree
+// stage that ends in the stage-0 error. A 3x2 JPEG with the p3 profile
+// repairs to a much smaller PNG.
+func TestImageRecoveryFinalWireSizeBaseline(t *testing.T) {
+	t.Parallel()
+	profile, err := os.ReadFile("../../internal/imagerepair/testdata/p3.icc")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, source := range []string{"provider_options", "transport_constants", "preparer"} {
+		t.Run(source, func(t *testing.T) {
+			jpegURI := recoveryURI(recoveryJPEG(t, profile))
+			messages := []map[string]any{{"role": "user", "content": []map[string]any{
+				{"type": "image_url", "image_url": map[string]any{"url": jpegURI}},
+			}}}
+			calls := 0
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				calls++
+				switch calls {
+				case 1:
+					w.WriteHeader(http.StatusUnprocessableEntity)
+					_, _ = io.WriteString(w, imageRejection)
+				case 2:
+					w.WriteHeader(http.StatusRequestEntityTooLarge)
+					_, _ = io.WriteString(w, imageRejection)
+				default:
+					t.Error("recovery sent a request after the managed repair shrank the body")
+					w.WriteHeader(http.StatusInternalServerError)
+				}
+			}))
+			defer srv.Close()
+			res := liveRes(srv, nil)
+			req := userReq("overridden-sentinel")
+			ctx := finalWireMessages(t, source, &req, &res, messages)
+			_, err := recoveryCall(ctx, &Protocol{Client: srv.Client()}, req, res, false)
+			var providerErr llm.Error
+			if calls != 2 || !errors.As(err, &providerErr) || providerErr.StatusCode() != http.StatusRequestEntityTooLarge {
+				t.Fatalf("requests=%d error=%v, want 2 requests and the stage-1 413", calls, err)
 			}
 		})
 	}
