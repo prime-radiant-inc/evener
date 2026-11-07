@@ -32,6 +32,7 @@ import {
   memo,
   type FocusEvent as ReactFocusEvent,
   type KeyboardEvent as ReactKeyboardEvent,
+  type PointerEvent as ReactPointerEvent,
   useCallback,
   useEffect,
   useLayoutEffect,
@@ -187,6 +188,9 @@ export function Composer({ ref, paneId, focused, mountAutofocus = true, source, 
   // Torn down by the next press or unmount, so a press whose click never
   // arrives cannot accumulate document listeners.
   const composerPressReleaseRef = useRef<(() => void) | null>(null);
+  // Identifies the press that owns the hold, so a stale release's deferred
+  // clear cannot clear a later press's hold.
+  const composerPressSeqRef = useRef(0);
   const submitButtonRef = useRef<HTMLButtonElement>(null);
   const tasksPanelRef = useRef<TasksPanelHandle>(null);
   // Set by scheduleCursorRestore below; consumed (and cleared) by the
@@ -274,8 +278,14 @@ export function Composer({ ref, paneId, focused, mountAutofocus = true, source, 
       anchor.removeAttribute("data-composer-editing");
     });
   };
-  const holdComposerPress = (): void => {
+  const holdComposerPress = (event: ReactPointerEvent<HTMLDivElement>): void => {
+    // Only the primary press can hold editing: a right or middle press fires
+    // pointerdown but no click, so a hold armed here could never be released.
+    if (event.button !== 0) return;
+    // Drop the previous press's listeners without its deferred clear: the new
+    // press owns the hold from this moment.
     composerPressReleaseRef.current?.();
+    const press = ++composerPressSeqRef.current;
     composerPointerRef.current = true;
     const doc = composerRootRef.current?.ownerDocument;
     if (!doc) return;
@@ -286,6 +296,7 @@ export function Composer({ ref, paneId, focused, mountAutofocus = true, source, 
       // A press's focus transfer can run after the click; clear on a later
       // task so the blur that follows still sees the hold.
       setTimeout(() => {
+        if (composerPressSeqRef.current !== press) return;
         composerPointerRef.current = false;
       }, 0);
     };
@@ -318,8 +329,10 @@ export function Composer({ ref, paneId, focused, mountAutofocus = true, source, 
       )
         return;
       const active = doc.activeElement;
-      if (active && (root.contains(active) || active.closest('[role="menu"], [role="listbox"], [role="dialog"]')))
-        return;
+      // Only the editor itself holds editing through an outside press. Focus on
+      // a composer button (a menu trigger FocusScope restored, Attach after the
+      // file picker) is leaving the composer too, keyboard down or not.
+      if (active && root.contains(active) && active.closest('[role="textbox"]')) return;
       anchor.removeAttribute("data-composer-editing");
     };
     doc.addEventListener("pointerdown", onPointerDown, true);
