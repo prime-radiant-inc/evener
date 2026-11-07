@@ -4,10 +4,12 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -74,6 +76,15 @@ func (p *descendantWatchProvider) Complete(ctx context.Context, req llm.Request)
 			}
 		case 3:
 			close(p.advanced)
+			// End the turn once the first wake has been observed. A manager turn
+			// that stays parked in the provider cannot drain the next job
+			// notification, so the accepted terminal's completion wake and its
+			// durable receipt wait until this turn returns.
+			return activityRelayTool("communicate", map[string]any{
+				"message":  "descendant-watch-observed",
+				"end_turn": true,
+				"output":   map[string]any{"message": "descendant-watch-observed", "data": map[string]any{}, "artifacts": []string{}},
+			}), nil
 		}
 	} else if step == 0 {
 		select {
@@ -307,7 +318,7 @@ func testManagerOwnedDescendantWatch(t *testing.T, missingGeneration bool) {
 		}
 		select {
 		case <-ctx.Done():
-			t.Fatalf("waiting for completed watch receipts: %v; watches=%+v", ctx.Err(), page.Watches)
+			t.Fatalf("waiting for completed watch receipts: %v; watches=%+v; journal=%s", ctx.Err(), page.Watches, managerWatchJournalSnapshot(journalPath, registration.WatchID))
 		case <-time.After(10 * time.Millisecond):
 		}
 	}
@@ -358,4 +369,35 @@ func managerWatchReceipt(journalPath, watchID, triggerReason string) bool {
 		}
 	}
 	return false
+}
+
+// managerWatchJournalSnapshot lists every watch-send record for watchID, so a
+// missing completion receipt names what was recorded instead.
+func managerWatchJournalSnapshot(journalPath, watchID string) string {
+	journal, err := os.ReadFile(journalPath)
+	if err != nil {
+		return "read journal: " + err.Error()
+	}
+	var rows []string
+	for line := range bytes.SplitSeq(journal, []byte{'\n'}) {
+		if len(line) == 0 {
+			continue
+		}
+		var record struct {
+			Kind      string `json:"kind"`
+			WatchSend *struct {
+				Key struct {
+					WatchID string `json:"watch_id"`
+				} `json:"key"`
+				DeliveryID    string `json:"delivery_id"`
+				TriggerReason string `json:"trigger_reason"`
+				UpdateSeq     uint64 `json:"update_seq"`
+			} `json:"watch_send"`
+		}
+		if json.Unmarshal(line, &record) != nil || record.WatchSend == nil || record.WatchSend.Key.WatchID != watchID {
+			continue
+		}
+		rows = append(rows, fmt.Sprintf("%s delivery=%s seq=%d trigger=%q", record.Kind, record.WatchSend.DeliveryID, record.WatchSend.UpdateSeq, record.WatchSend.TriggerReason))
+	}
+	return strings.Join(rows, "; ")
 }

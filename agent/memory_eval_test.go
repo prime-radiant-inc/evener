@@ -1541,7 +1541,7 @@ func TestMemoryEvalPrerequisites(t *testing.T) {
 			}
 			cmd.Env = append(cmd.Env, "MEMORY_EVAL_PREREQUISITE_MODE="+mode)
 			out, err := cmd.CombinedOutput()
-			t.Log(string(out))
+			logProbeOutput(t, out)
 			if strings.HasPrefix(mode, "live-") {
 				if err == nil || strings.Contains(string(out), "qualified-before-discovery") {
 					t.Fatal("unsupported live prerequisite did not refuse before discovery")
@@ -1556,6 +1556,18 @@ func TestMemoryEvalPrerequisites(t *testing.T) {
 				t.Fatal("offline unsupported qualification not skipped")
 			}
 		})
+	}
+}
+
+// logProbeOutput logs the fixture subprocess's output with every line
+// prefixed. A live prerequisite mode is *expected* to fail the child probe, and
+// its bare "--- FAIL: TestMemoryEvalPrerequisiteProbe" verdict otherwise reads
+// as a top-level failure of the enclosing parent in CI's test report, which
+// strips leading indentation before matching verdict lines.
+func logProbeOutput(t *testing.T, out []byte) {
+	t.Helper()
+	for line := range strings.SplitSeq(strings.TrimSuffix(string(out), "\n"), "\n") {
+		t.Logf("probe: %s", line)
 	}
 }
 

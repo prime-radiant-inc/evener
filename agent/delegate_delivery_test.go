@@ -95,6 +95,47 @@ func TestDelegateControllerPermanentRefusalIsNotRetryable(t *testing.T) {
 	}
 }
 
+// A plan whose claim was dropped while its durable head stayed pending is not a
+// delivered parcel. Delivering the stale plan must re-plan the head and deliver
+// it, not report nil success and strand the report until a restore replay.
+func TestDelegateControllerStalePlanDeliversPendingHead(t *testing.T) {
+	fixture := newColdDelegateFixture(t, "")
+	root := restoreSupervisionRoot(t, fixture, nil)
+	owner := warmDelegateUnservedRoot(t, root, fixture).sess
+	c := root.delegateController
+	seedDelegateControllerIdle(t, c, "dlg_child", fixture.delegateID)
+	seedDelegateControllerDelivery(t, c, "dlg_child")
+	plans := c.ReplayDeliveries()
+	if len(plans) != 1 {
+		t.Fatalf("nested delivery plans = %#v", plans)
+	}
+	plan := plans[0]
+	c.dropDeliveryClaim(plan)
+	c.mu.Lock()
+	_, claimed := c.deliveryClaims[plan.deliveryID]
+	c.mu.Unlock()
+	if claimed {
+		t.Fatal("test setup: the plan still holds its claim")
+	}
+	if _, err := deliverDelegatePacket(plan, plan.receiver); err != nil {
+		t.Fatalf("deliver stale plan: %v", err)
+	}
+	c.mu.Lock()
+	pending := append([]delegatestore.PendingDelivery(nil), c.durable["dlg_child"].PendingDeliveries...)
+	c.mu.Unlock()
+	if len(pending) != 0 {
+		t.Fatalf("stale plan left %d pending deliveries: %+v", len(pending), pending)
+	}
+	attention, err := owner.pendingDelegateAttentionIDs()
+	if err != nil {
+		t.Fatalf("owner attention: %v", err)
+	}
+	want := delegateAttentionID(delegateDeliveryID("dlg_child", 1))
+	if len(attention) != 1 || attention[0] != want {
+		t.Fatalf("owner pending attention = %v, want %q", attention, want)
+	}
+}
+
 // A transient refusal must move the plan in hand to the owner's live receiver
 // and keep it there until that receiver's own flush delivers it. A live nested
 // owner with no root pump is the shape the orphan-arm wake test builds: a

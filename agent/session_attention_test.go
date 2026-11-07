@@ -4352,7 +4352,7 @@ func TestDelegateAttention_PrelaunchRecoveryDoesNotWaitForUnlaunchedRunner(t *te
 		live = c.live[fixture.delegateID]
 		aggregate := c.durable[fixture.delegateID]
 		c.mu.Unlock()
-		t.Fatalf("prelaunch recovery waited for an unlaunched runner: %v live=%#v aggregate=%#v", err, live, aggregate)
+		t.Fatalf("prelaunch recovery waited for an unlaunched runner: %v live=%#v aggregate=%#v stop=%s", err, live, aggregate, delegateStopGateSnapshot(c, stop))
 	}
 	if !channelClosed(stop.done) {
 		c.mu.Lock()
@@ -4361,6 +4361,22 @@ func TestDelegateAttention_PrelaunchRecoveryDoesNotWaitForUnlaunchedRunner(t *te
 		c.mu.Unlock()
 		t.Fatalf("prelaunch recovery waited for an unlaunched runner: stop not done live=%#v aggregate=%#v", live, aggregate)
 	}
+}
+
+// delegateStopGateSnapshot names which stop-admission token still gates the
+// recovery-required finish. A stop whose only remaining token is a delivery
+// admission must not wait for a runner that never launched.
+func delegateStopGateSnapshot(c *delegateTreeController, result delegateStopResult) string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	s := c.stop
+	if s == nil || s.requestSeq != result.requestSeq {
+		return "no matching stop"
+	}
+	return fmt.Sprintf("active=%d starts=%d work=%d deliveries=%d quiet=%d steering=%d model=%d settlement=%d watchEnq=%d watchDel=%d claims=%d admissions=%d",
+		len(s.active), len(s.starts), len(s.work), len(s.deliveries), len(s.quietClaims),
+		len(s.steeringClaims), len(s.modelClaims), len(s.settlementClaims),
+		len(s.watchEnqueues), len(s.watchDeliveries), len(c.deliveryClaims), len(c.deliveries))
 }
 
 func delegateAttentionToolCall(callID string) llm.Message {
