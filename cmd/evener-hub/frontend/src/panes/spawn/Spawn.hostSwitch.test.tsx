@@ -1,4 +1,4 @@
-import { deferred } from "@evener/appwire-client/testing/deferred";
+import { type Deferred, deferred } from "@evener/appwire-client/testing/deferred";
 import "../session/testing/editorGeometry";
 import type { HostForwardedResult, HostRequestParams, ThreadStartParams } from "@evener/appwire-client";
 import { WireError } from "@evener/appwire-client";
@@ -53,6 +53,22 @@ const SCHEMA_MEMORY_AND_LOG = {
       label: "API log",
       group: "Agent",
       kind: "boolean" as const,
+      perLaunch: true,
+    },
+  ],
+};
+
+/** The offering schema plus a command-kind path field, whose stored value a host switch re-judges. */
+const SCHEMA_MEMORY_AND_PATH = {
+  options: [
+    ...SCHEMA_OFFERING_MEMORY.options,
+    {
+      field: "agent_command",
+      wireField: "agentCommand",
+      label: "Agent command",
+      group: "Agent",
+      kind: "path" as const,
+      pathKind: "command",
       perLaunch: true,
     },
   ],
@@ -497,6 +513,69 @@ test("a Memory Off kept across an unoffering host rides the submission again onc
   await user.click(screen.getByTestId("spawn-submit"));
   await waitFor(() => expect(fake.calls.some((call) => call.method === "thread/start")).toBe(true));
 
+  const params = fake.calls.find((call) => call.method === "thread/start")?.params as ThreadStartParams;
+  expect(params.launchOverrides).toMatchObject({ memoryEnabled: false });
+});
+
+// A stored path value is re-judged on every target change, and the re-judge
+// fired at a switch runs against the schema captured before the new host's
+// answer lands. When that validation settles after the returning host's schema,
+// its re-collection must not silently drop the kept Memory choice: the toggle
+// still shows Off, so the submission has to carry it or the session starts
+// with memory on.
+test("a Memory Off kept across a host switch still rides the submission when its re-judged path validation lands late", async () => {
+  const user = setupUser();
+  seedSources([
+    { id: "local", label: "Local", kind: "local", online: true },
+    { id: "buildbox", label: "buildbox", kind: "ssh", online: true },
+  ]);
+  const command = "late-validation-agent";
+  const commandValidations: Deferred<{ path: string; valid: boolean }>[] = [];
+  const fake = readyClient((f) => {
+    f.on("evener/launch/schema", () => SCHEMA_MEMORY_AND_PATH);
+    f.on("evener/path/validate", (params) => {
+      const { path } = params as { path: string };
+      if (path !== command) return { path, valid: true };
+      const validation = deferred<{ path: string; valid: boolean }>();
+      commandValidations.push(validation);
+      return validation.promise;
+    });
+    f.on("evener/host/request", (params) => {
+      const forwarded = params as HostRequestParams;
+      if (forwarded.method === "evener/launch/schema") {
+        return { options: SCHEMA_MEMORY_AND_PATH.options.filter((option) => option.wireField !== "memoryEnabled") };
+      }
+      return routedDiscoveryDefault(forwarded.method);
+    });
+  });
+  window.history.pushState({}, "", "/new?dir=/tmp/late-validation");
+  renderSpawn(fake);
+  await settled();
+
+  // Choose Memory Off and a command value on local, whose schema offers both.
+  await user.click(screen.getByRole("button", { name: "Advanced options" }));
+  await user.selectOptions(screen.getByLabelText("Memory"), "false");
+  fireEvent.change(screen.getByLabelText("Agent command"), { target: { value: command } });
+  await waitFor(() => expect(commandValidations.length).toBe(1));
+  await act(async () => commandValidations[0]!.resolve({ path: command, valid: true }));
+  await fillPrompt(user, "typed before the switch");
+  await waitFor(() => expect((screen.getByTestId("spawn-submit") as HTMLButtonElement).disabled).toBe(false));
+
+  // Away on buildbox the field is unoffered. Back on local, the stored command
+  // is re-judged for the returning target while local's schema answer is
+  // still in flight, so the validation lands after the schema settled and
+  // Start has released.
+  fireEvent.change(screen.getByLabelText("Host"), { target: { value: "buildbox" } });
+  await settled();
+  fireEvent.change(screen.getByLabelText("Host"), { target: { value: "local" } });
+  await waitFor(() => expect((screen.getByTestId("spawn-submit") as HTMLButtonElement).disabled).toBe(false));
+  await waitFor(() => expect(commandValidations.length).toBe(2));
+  await act(async () => commandValidations[1]!.resolve({ path: command, valid: true }));
+
+  // The toggle still shows the person's choice, so the submission carries it.
+  expect((screen.getByLabelText("Memory") as HTMLSelectElement).value).toBe("false");
+  await user.click(screen.getByTestId("spawn-submit"));
+  await waitFor(() => expect(fake.calls.some((call) => call.method === "thread/start")).toBe(true));
   const params = fake.calls.find((call) => call.method === "thread/start")?.params as ThreadStartParams;
   expect(params.launchOverrides).toMatchObject({ memoryEnabled: false });
 });
