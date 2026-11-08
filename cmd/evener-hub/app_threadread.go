@@ -1280,7 +1280,18 @@ func pastEntryThreadForList(ctx context.Context, cfg hubcore.WebConfig, entry hu
 }
 
 func pastEntryThread(ctx context.Context, cfg hubcore.WebConfig, entry hubcore.PastEntry, includeTurns bool) (appwire.Thread, error) {
-	return projectPastEntryThread(ctx, cfg, entry, pastEntryThreadProjection{turns: includeTurns, tasks: true, diagnostics: true})
+	thread, err := projectPastEntryThread(ctx, cfg, entry, pastEntryThreadProjection{turns: includeTurns, tasks: true, diagnostics: true})
+	if err != nil {
+		return appwire.Thread{}, err
+	}
+	// A complete past projection is a thread a client renders on its own, so it
+	// carries the hub's project identity. Only this wrapper annotates: the live
+	// merge (mergePastThreadForRead) requests a projection for missing fields
+	// and never copies ProjectID/ProjectPath, so annotating there would resolve
+	// project identity only to discard it (#4692).
+	annotated := []appwire.Thread{thread}
+	annotateThreadProjects(annotated)
+	return annotated[0], nil
 }
 
 // A live merge requests only missing fields. In particular, reconstructing
@@ -1331,9 +1342,6 @@ func projectPastEntryThread(ctx context.Context, cfg hubcore.WebConfig, entry hu
 		}
 		thread = reconcileAndEnrichPastThread(entry, thread)
 	}
-	annotated := []appwire.Thread{thread}
-	annotateThreadProjects(annotated)
-	thread = annotated[0]
 	return thread, nil
 }
 
