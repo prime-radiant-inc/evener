@@ -5,13 +5,77 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"unicode/utf8"
 
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener-hub/internal/appsource"
 	"primeradiant.com/evener/internal/appitempaging"
 )
 
-const transcriptRPCResultSoftLimit = 1 << 20
+const (
+	transcriptRPCResultSoftLimit                = 1 << 20
+	transcriptWindowDefaultPreviewBytes         = 2 << 10
+	transcriptWindowDefaultMessageBytes         = 8 << 10
+	transcriptWindowDefaultItemLimit            = 10
+	transcriptWindowCursorLineLimit             = 10
+	transcriptWindowDefaultBudgetBytes          = 192 << 10
+	transcriptWindowBudgetFloorBytes            = 16 << 10
+	transcriptWindowMeasuredEnvelopeMarginBytes = 32 << 10
+	transcriptWindowMaximumContentBudget        = managerReadMaxJSONBytes - transcriptWindowMeasuredEnvelopeMarginBytes
+)
+
+type transcriptWindowContinuationDirection string
+
+const (
+	transcriptWindowContinuationBackward transcriptWindowContinuationDirection = "backward"
+	transcriptWindowContinuationForward  transcriptWindowContinuationDirection = "forward"
+)
+
+// transcriptWindowContinuation is the cursor-minting boundary between the
+// content packer and the view owner. TurnID and Position name the first
+// withheld content in transcript order; Direction says which view cursor form
+// the owner must mint.
+type transcriptWindowContinuation struct {
+	Direction transcriptWindowContinuationDirection
+	TurnID    string
+	Position  appwire.ThreadItemPosition
+}
+
+// transcriptWindowPackOptions keeps cursor encoding and view identity outside
+// the content packer. Both read response wrappers pass this same shape into the
+// one generic packItemCandidates implementation.
+type transcriptWindowPackOptions struct {
+	Params                 appwire.ThreadWindowParams
+	ItemLimit              int
+	AppliedBy              string
+	MintFetchCursor        func(appitempaging.TranscriptItemCandidate) (string, error)
+	MintContinuationCursor func(transcriptWindowContinuation) (string, error)
+}
+
+type packItemCandidatesOptions struct {
+	requestedLimit int
+	window         *transcriptWindowPackOptions
+}
+
+type transcriptWindowCandidateTurn struct {
+	turn       appwire.Turn
+	candidates []appitempaging.TranscriptItemCandidate
+}
+
+type transcriptWindowSelectedItem struct {
+	candidate      appitempaging.TranscriptItemCandidate
+	item           appwire.ThreadItem
+	bodyBytes      int
+	boundTruncated bool
+}
+
+type transcriptWindowPreparedTurn struct {
+	turn             appwire.Turn
+	selected         []transcriptWindowSelectedItem
+	excluded         map[string]int
+	capWithheld      int
+	firstCapWithheld *appitempaging.TranscriptItemCandidate
+}
 
 // transcriptItemCandidateResult is the private boundary between a source's
 // positioned item projection and the public AppWire response. None of these
@@ -84,12 +148,35 @@ func packThreadReadItemCandidates(
 	enrich func(appwire.ThreadReadResponse) (appwire.ThreadReadResponse, error),
 	requestedLimit ...int,
 ) (appwire.ThreadReadResponse, error) {
+	options := packItemCandidatesOptions{}
+	if len(requestedLimit) > 0 {
+		options.requestedLimit = requestedLimit[0]
+	}
+	return packThreadReadItemCandidatesWithOptions(candidates, enrich, options)
+}
+
+func packThreadReadWindowItemCandidates(
+	candidates transcriptItemCandidateResult,
+	enrich func(appwire.ThreadReadResponse) (appwire.ThreadReadResponse, error),
+	window transcriptWindowPackOptions,
+) (appwire.ThreadReadResponse, error) {
+	return packThreadReadItemCandidatesWithOptions(candidates, enrich, packItemCandidatesOptions{window: &window})
+}
+
+func packThreadReadItemCandidatesWithOptions(
+	candidates transcriptItemCandidateResult,
+	enrich func(appwire.ThreadReadResponse) (appwire.ThreadReadResponse, error),
+	options packItemCandidatesOptions,
+) (appwire.ThreadReadResponse, error) {
 	response, err := packItemCandidates(candidates, enrich, func(turns []appwire.Turn, olderCursor string) appwire.ThreadReadResponse {
 		return appwire.ThreadReadResponse{
 			Thread:      appwire.Thread{Turns: turns},
 			OlderCursor: olderCursor,
 		}
-	}, func(response appwire.ThreadReadResponse) []appwire.Turn { return response.Thread.Turns }, requestedLimit...)
+	}, func(response appwire.ThreadReadResponse) []appwire.Turn { return response.Thread.Turns }, func(response appwire.ThreadReadResponse, window *appwire.ThreadWindowResult) appwire.ThreadReadResponse {
+		response.Window = window
+		return response
+	}, options)
 	if err != nil {
 		return appwire.ThreadReadResponse{}, err
 	}
@@ -104,12 +191,35 @@ func packThreadTurnsItemCandidates(
 	enrich func(appwire.ThreadTurnsListResponse) (appwire.ThreadTurnsListResponse, error),
 	requestedLimit ...int,
 ) (appwire.ThreadTurnsListResponse, error) {
+	options := packItemCandidatesOptions{}
+	if len(requestedLimit) > 0 {
+		options.requestedLimit = requestedLimit[0]
+	}
+	return packThreadTurnsItemCandidatesWithOptions(candidates, enrich, options)
+}
+
+func packThreadTurnsWindowItemCandidates(
+	candidates transcriptItemCandidateResult,
+	enrich func(appwire.ThreadTurnsListResponse) (appwire.ThreadTurnsListResponse, error),
+	window transcriptWindowPackOptions,
+) (appwire.ThreadTurnsListResponse, error) {
+	return packThreadTurnsItemCandidatesWithOptions(candidates, enrich, packItemCandidatesOptions{window: &window})
+}
+
+func packThreadTurnsItemCandidatesWithOptions(
+	candidates transcriptItemCandidateResult,
+	enrich func(appwire.ThreadTurnsListResponse) (appwire.ThreadTurnsListResponse, error),
+	options packItemCandidatesOptions,
+) (appwire.ThreadTurnsListResponse, error) {
 	response, err := packItemCandidates(candidates, enrich, func(turns []appwire.Turn, olderCursor string) appwire.ThreadTurnsListResponse {
 		return appwire.ThreadTurnsListResponse{
 			Data:       turns,
 			NextCursor: olderCursor,
 		}
-	}, func(response appwire.ThreadTurnsListResponse) []appwire.Turn { return response.Data }, requestedLimit...)
+	}, func(response appwire.ThreadTurnsListResponse) []appwire.Turn { return response.Data }, func(response appwire.ThreadTurnsListResponse, window *appwire.ThreadWindowResult) appwire.ThreadTurnsListResponse {
+		response.Window = window
+		return response
+	}, options)
 	if err != nil {
 		return appwire.ThreadTurnsListResponse{}, err
 	}
@@ -132,9 +242,11 @@ func packItemCandidates[T any](
 	// must not drive the decision, or every window of a delegate-heavy session
 	// strips to a single item.
 	contentTurns func(T) []appwire.Turn,
-	requestedLimit ...int,
+	setWindow func(T, *appwire.ThreadWindowResult) T,
+	options packItemCandidatesOptions,
 ) (T, error) {
 	var zero T
+	var err error
 	candidates := append([]appitempaging.TranscriptItemCandidate(nil), result.Candidates.Candidates...)
 	if _, err := appitempaging.RegroupTurnFragments(candidates); err != nil {
 		return zero, fmt.Errorf("invalid transcript item candidates: %w", err)
@@ -143,11 +255,306 @@ func packItemCandidates[T any](
 		return zero, err
 	}
 
-	itemLimit := appwire.TranscriptItemPageLimit
-	if len(requestedLimit) > 0 {
-		itemLimit = requestedLimit[0]
+	if options.window != nil {
+		windowOptions := *options.window
+		if err := appwire.ValidateThreadWindowParams(windowOptions.Params, windowOptions.ItemLimit); err != nil {
+			return zero, err
+		}
+		if windowOptions.Params.TurnWindow == nil {
+			return zero, appwire.InvalidParams("window packing requires turnWindow")
+		}
+		itemLimit := windowOptions.ItemLimit
+		if itemLimit == 0 {
+			itemLimit = transcriptWindowDefaultItemLimit
+		}
+		previewBytes := windowOptions.Params.PreviewBytes
+		if previewBytes == 0 {
+			previewBytes = transcriptWindowDefaultPreviewBytes
+		}
+		messageBytes := windowOptions.Params.MessageBytes
+		if messageBytes == 0 {
+			messageBytes = transcriptWindowDefaultMessageBytes
+		}
+		effectiveBudget := windowOptions.Params.WindowBudgetBytes
+		if effectiveBudget == 0 {
+			effectiveBudget = transcriptWindowDefaultBudgetBytes
+		}
+		if effectiveBudget < transcriptWindowBudgetFloorBytes {
+			effectiveBudget = transcriptWindowBudgetFloorBytes
+		}
+		if effectiveBudget > transcriptWindowMaximumContentBudget {
+			effectiveBudget = transcriptWindowMaximumContentBudget
+		}
+
+		var candidateTurns []transcriptWindowCandidateTurn
+		for _, candidate := range candidates {
+			if len(candidateTurns) == 0 || candidateTurns[len(candidateTurns)-1].turn.ID != candidate.TurnID {
+				candidateTurns = append(candidateTurns, transcriptWindowCandidateTurn{turn: candidate.Turn})
+			}
+			candidateTurns[len(candidateTurns)-1].candidates = append(candidateTurns[len(candidateTurns)-1].candidates, candidate)
+		}
+
+		prepared := make([]transcriptWindowPreparedTurn, 0, len(candidateTurns))
+		for _, candidateTurn := range candidateTurns {
+			preparedTurn := transcriptWindowPreparedTurn{turn: candidateTurn.turn}
+			var selectedCandidates []appitempaging.TranscriptItemCandidate
+			for _, candidate := range candidateTurn.candidates {
+				if !transcriptWindowIncludesItem(windowOptions.Params.ItemTypes, candidate.Item) {
+					if preparedTurn.excluded == nil {
+						preparedTurn.excluded = make(map[string]int)
+					}
+					preparedTurn.excluded[candidate.Item.Type]++
+					continue
+				}
+				selectedCandidates = append(selectedCandidates, candidate)
+			}
+			if len(selectedCandidates) > itemLimit {
+				preparedTurn.capWithheld = len(selectedCandidates) - itemLimit
+				first := selectedCandidates[itemLimit]
+				preparedTurn.firstCapWithheld = &first
+				selectedCandidates = selectedCandidates[:itemLimit]
+			}
+			for _, candidate := range selectedCandidates {
+				item, bodyBytes, truncated := transcriptWindowBoundItem(candidate.Item, previewBytes, messageBytes)
+				preparedTurn.selected = append(preparedTurn.selected, transcriptWindowSelectedItem{
+					candidate: candidate, item: item, bodyBytes: bodyBytes, boundTruncated: truncated,
+				})
+			}
+			prepared = append(prepared, preparedTurn)
+		}
+
+		windowResult := &appwire.ThreadWindowResult{EffectiveBudgetBytes: effectiveBudget, AppliedBy: windowOptions.AppliedBy}
+		if len(prepared) == 0 {
+			response := setWindow(build([]appwire.Turn{}, ""), windowResult)
+			if enrich != nil {
+				response, err = enrich(response)
+				if err != nil {
+					return zero, err
+				}
+			}
+			if sizeErr := packedResultSize(response); sizeErr != nil {
+				return zero, sizeErr
+			}
+			return response, nil
+		}
+
+		direction := transcriptWindowContinuationBackward
+		trimmedEnd := "oldest"
+		if windowOptions.Params.TurnWindow != nil && windowOptions.Params.TurnWindow.Since != "" {
+			direction = transcriptWindowContinuationForward
+			trimmedEnd = "newest"
+		}
+		start, end := 0, len(prepared)
+		for {
+			cursorLines := 0
+			turns := make([]appwire.Turn, 0, end-start)
+			for turnIndex := start; turnIndex < end; turnIndex++ {
+				preparedTurn := prepared[turnIndex]
+				turn := preparedTurn.turn
+				turn.Items = nil
+				turn.ItemsView = appwire.TurnItemsViewFragment
+				turn.Elision = nil
+				elision := &appwire.ThreadTurnElision{}
+				if len(preparedTurn.excluded) > 0 {
+					elision.ExcludedByType = preparedTurn.excluded
+					elision.TypeExcludedRecovery = appwire.ThreadElisionRecoveryWiderItemTypes
+				}
+				elision.CapWithheld = preparedTurn.capWithheld
+				if preparedTurn.capWithheld > 0 {
+					elision.CapWithheldRecovery = appwire.ThreadElisionRecoveryContinuation
+				}
+				var firstContinuation *appitempaging.TranscriptItemCandidate
+				if preparedTurn.firstCapWithheld != nil {
+					first := *preparedTurn.firstCapWithheld
+					firstContinuation = &first
+				}
+				boundTruncated := make([]bool, 0, len(preparedTurn.selected))
+				bodyBytes := make([]int, 0, len(preparedTurn.selected))
+				lineCandidates := make([]appitempaging.TranscriptItemCandidate, 0, len(preparedTurn.selected))
+				for _, selectedItem := range preparedTurn.selected {
+					item := selectedItem.item
+					if selectedItem.boundTruncated {
+						item.Truncated = true
+						item.TruncatedBytes = selectedItem.bodyBytes
+						if item.Version == 0 {
+							item.InFlight = true
+						} else if cursorLines < transcriptWindowCursorLineLimit {
+							cursor, cursorErr := mintTranscriptWindowFetchCursor(windowOptions, selectedItem.candidate)
+							if cursorErr != nil {
+								return zero, cursorErr
+							}
+							item.FetchCursor = cursor
+							cursorLines++
+						} else {
+							elision.TruncatedBeyondCursorLimit++
+							elision.TruncatedBeyondCursorLimitRecovery = appwire.ThreadElisionRecoveryWiderByteBound
+						}
+					}
+					turn.Items = append(turn.Items, item)
+					boundTruncated = append(boundTruncated, selectedItem.boundTruncated)
+					bodyBytes = append(bodyBytes, selectedItem.bodyBytes)
+					lineCandidates = append(lineCandidates, selectedItem.candidate)
+				}
+
+				continuationKey := appwire.ThreadItemPosition{}
+				continuationSet := false
+				setContinuation := func() error {
+					if firstContinuation == nil {
+						elision.ContinuationCursor = ""
+						continuationSet = false
+						return nil
+					}
+					if continuationSet && continuationKey == firstContinuation.Position {
+						return nil
+					}
+					cursor, cursorErr := mintTranscriptWindowContinuation(windowOptions, transcriptWindowContinuation{
+						Direction: transcriptWindowContinuationForward,
+						TurnID:    preparedTurn.turn.ID,
+						Position:  firstContinuation.Position,
+					})
+					if cursorErr != nil {
+						return cursorErr
+					}
+					elision.ContinuationCursor = cursor
+					continuationKey = firstContinuation.Position
+					continuationSet = true
+					return nil
+				}
+				if err := setContinuation(); err != nil {
+					return zero, err
+				}
+				attachTranscriptWindowElision(&turn, elision)
+
+				for {
+					turnSize, sizeErr := transcriptWindowTurnEncodedSize(turn)
+					if sizeErr != nil {
+						return zero, sizeErr
+					}
+					if turnSize <= effectiveBudget {
+						break
+					}
+					itemIndex := -1
+					for i := range turn.Items {
+						if !transcriptWindowItemHasBody(turn.Items[i]) {
+							continue
+						}
+						prefix := turn
+						prefix.Items = turn.Items[:i+1]
+						prefixSize, prefixErr := transcriptWindowTurnEncodedSize(prefix)
+						if prefixErr != nil {
+							return zero, prefixErr
+						}
+						if prefixSize > effectiveBudget {
+							itemIndex = i
+							break
+						}
+					}
+					if itemIndex < 0 {
+						for i := len(turn.Items) - 1; i >= 0; i-- {
+							if transcriptWindowItemHasBody(turn.Items[i]) {
+								itemIndex = i
+								break
+							}
+						}
+					}
+					if itemIndex < 0 {
+						break
+					}
+					item := transcriptWindowBodylessItem(turn.Items[itemIndex], bodyBytes[itemIndex])
+					if boundTruncated[itemIndex] {
+						turn.Items[itemIndex] = item
+						continue
+					}
+					candidate := lineCandidates[itemIndex]
+					if item.Version == 0 {
+						item.InFlight = true
+						turn.Items[itemIndex] = item
+					} else if cursorLines < transcriptWindowCursorLineLimit {
+						cursor, cursorErr := mintTranscriptWindowFetchCursor(windowOptions, candidate)
+						if cursorErr != nil {
+							return zero, cursorErr
+						}
+						item.FetchCursor = cursor
+						cursorLines++
+						turn.Items[itemIndex] = item
+					} else {
+						turn.Items = append(turn.Items[:itemIndex], turn.Items[itemIndex+1:]...)
+						boundTruncated = append(boundTruncated[:itemIndex], boundTruncated[itemIndex+1:]...)
+						bodyBytes = append(bodyBytes[:itemIndex], bodyBytes[itemIndex+1:]...)
+						lineCandidates = append(lineCandidates[:itemIndex], lineCandidates[itemIndex+1:]...)
+						elision.ElidedBeyondCursorLimit++
+						elision.ElidedBeyondCursorLimitRecovery = appwire.ThreadElisionRecoveryContinuation
+						first := candidate
+						if firstContinuation == nil || appitempaging.ComparePosition(first.Position, firstContinuation.Position) < 0 {
+							firstContinuation = &first
+						}
+						if err := setContinuation(); err != nil {
+							return zero, err
+						}
+					}
+					attachTranscriptWindowElision(&turn, elision)
+				}
+				turns = append(turns, turn)
+			}
+
+			windowResult.ServedTurns = len(turns)
+			windowResult.WithheldTurns = len(prepared) - len(turns)
+			windowResult.FirstServedTurnID = turns[0].ID
+			windowResult.LastServedTurnID = turns[len(turns)-1].ID
+			windowResult.FirstWithheldTurnID = ""
+			windowResult.LastWithheldTurnID = ""
+			windowResult.TrimmedEnd = ""
+			windowResult.ContinuationCursor = ""
+			if windowResult.WithheldTurns > 0 {
+				windowResult.TrimmedEnd = trimmedEnd
+				var firstWithheld transcriptWindowPreparedTurn
+				if start > 0 {
+					firstWithheld = prepared[0]
+					windowResult.FirstWithheldTurnID = prepared[0].turn.ID
+					windowResult.LastWithheldTurnID = prepared[start-1].turn.ID
+				} else {
+					firstWithheld = prepared[end]
+					windowResult.FirstWithheldTurnID = prepared[end].turn.ID
+					windowResult.LastWithheldTurnID = prepared[len(prepared)-1].turn.ID
+				}
+				request := transcriptWindowContinuation{Direction: direction, TurnID: firstWithheld.turn.ID}
+				if len(firstWithheld.selected) > 0 {
+					request.Position = firstWithheld.selected[0].candidate.Position
+				}
+				cursor, cursorErr := mintTranscriptWindowContinuation(windowOptions, request)
+				if cursorErr != nil {
+					return zero, cursorErr
+				}
+				windowResult.ContinuationCursor = cursor
+			}
+
+			response := setWindow(build(turns, ""), windowResult)
+			if enrich != nil {
+				response, err = enrich(response)
+				if err != nil {
+					return zero, err
+				}
+			}
+			encoded, marshalErr := json.Marshal(contentTurns(response))
+			if marshalErr != nil {
+				return zero, fmt.Errorf("marshal transcript window turns: %w", marshalErr)
+			}
+			if len(encoded) <= effectiveBudget || end-start == 1 {
+				return response, nil
+			}
+			if direction == transcriptWindowContinuationForward {
+				end--
+			} else {
+				start++
+			}
+		}
 	}
-	itemLimit, err := appwire.NormalizeTranscriptItemLimit(itemLimit)
+
+	itemLimit := appwire.TranscriptItemPageLimit
+	if options.requestedLimit != 0 {
+		itemLimit = options.requestedLimit
+	}
+	itemLimit, err = appwire.NormalizeTranscriptItemLimit(itemLimit)
 	if err != nil {
 		return zero, err
 	}
@@ -211,6 +618,134 @@ func packItemCandidates[T any](
 		}
 		selectedStart++
 	}
+}
+
+func transcriptWindowIncludesItem(itemTypes []string, item appwire.ThreadItem) bool {
+	if len(itemTypes) == 0 {
+		return true
+	}
+	for _, itemType := range itemTypes {
+		if itemType == item.Type {
+			return true
+		}
+		if itemType == "messages" {
+			switch item.Type {
+			case "agentMessage", "userMessage":
+				return true
+			case "steering":
+				if item.Source == "user" {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+
+func transcriptWindowBoundItem(item appwire.ThreadItem, previewBytes, messageBytes int) (appwire.ThreadItem, int, bool) {
+	bodyBytes := transcriptWindowItemBodyBytes(item)
+	truncated := false
+	if (item.Type == "agentMessage" || item.Type == "userMessage") && len(item.Text) > messageBytes {
+		item.Text = transcriptWindowUTF8Prefix(item.Text, messageBytes)
+		truncated = true
+	}
+	if item.Output != "" && len(item.Output) > previewBytes {
+		item.Output = transcriptWindowUTF8Prefix(item.Output, previewBytes)
+		truncated = true
+	}
+	return item, bodyBytes, truncated
+}
+
+func transcriptWindowUTF8Prefix(value string, limit int) string {
+	if limit >= len(value) {
+		return value
+	}
+	if limit <= 0 {
+		return ""
+	}
+	prefix := value[:limit]
+	for !utf8.ValidString(prefix) {
+		_, size := utf8.DecodeLastRuneInString(prefix)
+		if size == 0 {
+			return ""
+		}
+		prefix = prefix[:len(prefix)-size]
+	}
+	return prefix
+}
+
+func transcriptWindowItemBodyBytes(item appwire.ThreadItem) int {
+	size := len(item.Text) + len(item.Delta) + len(item.ArgumentsJSON) + len(item.Description) + len(item.Output) + len(item.Error) + len(item.Raw)
+	if encoded, err := json.Marshal(item.Images); err == nil && len(item.Images) > 0 {
+		size += len(encoded)
+	}
+	if encoded, err := json.Marshal(item.OutputImages); err == nil && len(item.OutputImages) > 0 {
+		size += len(encoded)
+	}
+	return size
+}
+
+func transcriptWindowItemHasBody(item appwire.ThreadItem) bool {
+	return item.Text != "" || item.Delta != "" || len(item.Images) > 0 || item.ArgumentsJSON != "" || item.Description != "" || item.Output != "" || item.Error != "" || len(item.OutputImages) > 0 || len(item.Raw) > 0
+}
+
+func transcriptWindowBodylessItem(item appwire.ThreadItem, bodyBytes int) appwire.ThreadItem {
+	item.Text = ""
+	item.Delta = ""
+	item.Images = nil
+	item.ArgumentsJSON = ""
+	item.Description = ""
+	item.Output = ""
+	item.Error = ""
+	item.OutputImages = nil
+	item.Raw = nil
+	item.Truncated = true
+	item.TruncatedBytes = bodyBytes
+	return item
+}
+
+func mintTranscriptWindowFetchCursor(options transcriptWindowPackOptions, candidate appitempaging.TranscriptItemCandidate) (string, error) {
+	if options.MintFetchCursor == nil {
+		return "", errors.New("transcript window requires a fetch cursor callback")
+	}
+	cursor, err := options.MintFetchCursor(candidate)
+	if err != nil {
+		return "", fmt.Errorf("mint transcript item fetch cursor: %w", err)
+	}
+	if cursor == "" {
+		return "", errors.New("transcript item fetch cursor callback returned an empty cursor")
+	}
+	return cursor, nil
+}
+
+func mintTranscriptWindowContinuation(options transcriptWindowPackOptions, request transcriptWindowContinuation) (string, error) {
+	if options.MintContinuationCursor == nil {
+		return "", errors.New("transcript window requires a continuation cursor callback")
+	}
+	cursor, err := options.MintContinuationCursor(request)
+	if err != nil {
+		return "", fmt.Errorf("mint transcript window continuation cursor: %w", err)
+	}
+	if cursor == "" {
+		return "", errors.New("transcript window continuation callback returned an empty cursor")
+	}
+	return cursor, nil
+}
+
+func attachTranscriptWindowElision(turn *appwire.Turn, elision *appwire.ThreadTurnElision) {
+	if len(elision.ExcludedByType) == 0 && elision.CapWithheld == 0 && elision.TruncatedBeyondCursorLimit == 0 && elision.ElidedBeyondCursorLimit == 0 {
+		turn.Elision = nil
+		return
+	}
+	turn.Elision = elision
+}
+
+func transcriptWindowTurnEncodedSize(turn appwire.Turn) (int, error) {
+	encoded, err := json.Marshal([]appwire.Turn{turn})
+	if err != nil {
+		return 0, fmt.Errorf("marshal transcript window turn: %w", err)
+	}
+	return len(encoded), nil
 }
 
 func validateSourceItemContinuation(result transcriptItemCandidateResult, candidates []appitempaging.TranscriptItemCandidate) error {

@@ -1,9 +1,11 @@
 package hub
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -347,6 +349,360 @@ func TestPackTranscriptItemPageDoesNotMarshalInternalCandidateState(t *testing.T
 			t.Fatalf("public result leaked %q: %s", forbidden, encoded)
 		}
 	}
+}
+
+func TestPackTranscriptItemWindowFiltersAndBoundsBodies(t *testing.T) {
+	candidates := testWindowTurnCandidates("turn-1", []appwire.ThreadItem{
+		{Type: "agentMessage", ID: "agent", Text: strings.Repeat("a", transcriptWindowDefaultMessageBytes+1), Version: 1},
+		{Type: "userMessage", ID: "user", Text: "user", Version: 2},
+		{Type: "steering", ID: "user-steering", Text: "visible", Source: "user", Version: 3},
+		{Type: "steering", ID: "system-steering", Text: "hidden", Version: 4},
+		{Type: "commandExecution", ID: "tool", Output: strings.Repeat("o", transcriptWindowDefaultPreviewBytes+1), Version: 5},
+		{Type: "reasoning", ID: "reasoning", Text: "hidden", Version: 6},
+	})
+	options := testWindowPackOptions(appwire.ThreadWindowParams{
+		TurnWindow: &appwire.ThreadTurnWindow{Latest: 1},
+		ItemTypes:  []string{"messages"},
+	})
+
+	read, err := packThreadReadWindowItemCandidates(testWindowCandidateResult(candidates), nil, options)
+	if err != nil {
+		t.Fatalf("pack messages window: %v", err)
+	}
+	items := flattenTestItems(read.Thread.Turns)
+	if got, want := testItemIDs(items), []string{"agent", "user", "user-steering"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("item ids = %v, want %v", got, want)
+	}
+	if got := len(items[0].Text); got != transcriptWindowDefaultMessageBytes {
+		t.Fatalf("bounded agent text bytes = %d, want %d", got, transcriptWindowDefaultMessageBytes)
+	}
+	if !items[0].Truncated || items[0].TruncatedBytes != transcriptWindowDefaultMessageBytes+1 || items[0].FetchCursor != "fetch-agent" {
+		t.Fatalf("bounded agent label = %+v", items[0])
+	}
+	elision := read.Thread.Turns[0].Elision
+	if elision == nil {
+		t.Fatal("filtered turn has no aggregate elision")
+	}
+	wantExcluded := map[string]int{"steering": 1, "commandExecution": 1, "reasoning": 1}
+	if !reflect.DeepEqual(elision.ExcludedByType, wantExcluded) {
+		t.Fatalf("excluded populations = %v, want %v", elision.ExcludedByType, wantExcluded)
+	}
+	if elision.TypeExcludedRecovery != appwire.ThreadElisionRecoveryWiderItemTypes {
+		t.Fatalf("type recovery = %q", elision.TypeExcludedRecovery)
+	}
+
+	options.Params.ItemTypes = []string{"commandExecution"}
+	list, err := packThreadTurnsWindowItemCandidates(testWindowCandidateResult(candidates), nil, options)
+	if err != nil {
+		t.Fatalf("pack tool window: %v", err)
+	}
+	toolItems := flattenTestItems(list.Data)
+	if got, want := testItemIDs(toolItems), []string{"tool"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("tool item ids = %v, want %v", got, want)
+	}
+	if got := len(toolItems[0].Output); got != transcriptWindowDefaultPreviewBytes {
+		t.Fatalf("bounded tool output bytes = %d, want %d", got, transcriptWindowDefaultPreviewBytes)
+	}
+	if !toolItems[0].Truncated || toolItems[0].TruncatedBytes != transcriptWindowDefaultPreviewBytes+1 || toolItems[0].FetchCursor != "fetch-tool" {
+		t.Fatalf("bounded tool label = %+v", toolItems[0])
+	}
+}
+
+func TestPackTranscriptItemWindowCapsFiftyItemTurnInOrder(t *testing.T) {
+	items := make([]appwire.ThreadItem, 50)
+	for i := range items {
+		items[i] = appwire.ThreadItem{Type: "agentMessage", ID: fmt.Sprintf("item-%02d", i), Text: "x", Version: uint64(i + 1)}
+	}
+	var continuations []transcriptWindowContinuation
+	options := testWindowPackOptions(appwire.ThreadWindowParams{TurnWindow: &appwire.ThreadTurnWindow{Turn: "turn-50"}})
+	options.MintContinuationCursor = func(request transcriptWindowContinuation) (string, error) {
+		continuations = append(continuations, request)
+		return "continue-turn-50", nil
+	}
+	got, err := packThreadTurnsWindowItemCandidates(testWindowCandidateResult(testWindowTurnCandidates("turn-50", items)), nil, options)
+	if err != nil {
+		t.Fatalf("pack 50-item turn: %v", err)
+	}
+	wantIDs := make([]string, transcriptWindowDefaultItemLimit)
+	for i := range wantIDs {
+		wantIDs[i] = fmt.Sprintf("item-%02d", i)
+	}
+	if ids := testItemIDs(flattenTestItems(got.Data)); !reflect.DeepEqual(ids, wantIDs) {
+		t.Fatalf("served item ids = %v, want %v", ids, wantIDs)
+	}
+	elision := got.Data[0].Elision
+	if elision == nil || elision.CapWithheld != 40 || elision.ContinuationCursor != "continue-turn-50" || elision.CapWithheldRecovery != appwire.ThreadElisionRecoveryContinuation {
+		t.Fatalf("cap elision = %+v", elision)
+	}
+	if len(continuations) != 1 || continuations[0].Direction != transcriptWindowContinuationForward || continuations[0].TurnID != "turn-50" || continuations[0].Position != (appwire.ThreadItemPosition{Entry: 10}) {
+		t.Fatalf("continuations = %+v, want first withheld item", continuations)
+	}
+}
+
+func TestPackTranscriptItemWindowRequiresTurnWindow(t *testing.T) {
+	_, err := packThreadTurnsWindowItemCandidates(
+		testWindowCandidateResult(testWindowTurnCandidates("turn-1", []appwire.ThreadItem{{Type: "agentMessage", ID: "item-1", Text: "x", Version: 1}})),
+		nil,
+		testWindowPackOptions(appwire.ThreadWindowParams{}),
+	)
+	if err == nil || !strings.Contains(err.Error(), "requires turnWindow") {
+		t.Fatalf("error = %v, want missing turnWindow refusal", err)
+	}
+}
+
+func TestPackTranscriptItemWindowSharesCursorLineLimitAcrossTruncationAndElision(t *testing.T) {
+	items := make([]appwire.ThreadItem, 0, 12)
+	for i := 0; i < 11; i++ {
+		items = append(items, appwire.ThreadItem{Type: "agentMessage", ID: fmt.Sprintf("message-%02d", i), Text: "truncate", Version: uint64(i + 1)})
+	}
+	items = append(items, appwire.ThreadItem{Type: "reasoning", ID: "elided-beyond-limit", Text: strings.Repeat("s", transcriptWindowBudgetFloorBytes*2), Version: 12})
+	options := testWindowPackOptions(appwire.ThreadWindowParams{
+		TurnWindow:        &appwire.ThreadTurnWindow{Turn: "turn-k"},
+		MessageBytes:      4,
+		WindowBudgetBytes: 1,
+	})
+	options.ItemLimit = appwire.TranscriptItemPageLimit
+	got, err := packThreadTurnsWindowItemCandidates(testWindowCandidateResult(testWindowTurnCandidates("turn-k", items)), nil, options)
+	if err != nil {
+		t.Fatalf("pack cursor-bound turn: %v", err)
+	}
+	served := flattenTestItems(got.Data)
+	if got, want := len(served), 11; got != want {
+		t.Fatalf("served lines = %d, want %d", got, want)
+	}
+	cursorLines := 0
+	for _, item := range served {
+		if item.FetchCursor != "" {
+			cursorLines++
+		}
+	}
+	if cursorLines != transcriptWindowCursorLineLimit {
+		t.Fatalf("cursor-bearing lines = %d, want %d", cursorLines, transcriptWindowCursorLineLimit)
+	}
+	if got := served[len(served)-1]; got.ID != "message-10" || !got.Truncated || got.FetchCursor != "" {
+		t.Fatalf("labeled cursorless truncation line = %+v", got)
+	}
+	elision := got.Data[0].Elision
+	if elision == nil || elision.TruncatedBeyondCursorLimit != 1 || elision.TruncatedBeyondCursorLimitRecovery != appwire.ThreadElisionRecoveryWiderByteBound || elision.ElidedBeyondCursorLimit != 1 || elision.ElidedBeyondCursorLimitRecovery != appwire.ThreadElisionRecoveryContinuation {
+		t.Fatalf("cursor overflow elision = %+v", elision)
+	}
+}
+
+func TestPackTranscriptItemWindowBudgetMeasuresEncodedTurnsAndTrimsByMode(t *testing.T) {
+	candidates := make([]appitempaging.TranscriptItemCandidate, 0, 3)
+	for i := 1; i <= 3; i++ {
+		candidates = append(candidates, testWindowTurnCandidates(fmt.Sprintf("turn-%d", i), []appwire.ThreadItem{{
+			Type: "reasoning", ID: fmt.Sprintf("item-%d", i), Text: strings.Repeat(string(rune('a'+i)), 10_000), Version: uint64(i),
+		}})...)
+	}
+	for i := range candidates {
+		position := appwire.ThreadItemPosition{Entry: uint64(i)}
+		candidates[i].Position = position
+		candidates[i].Item.Position = &position
+	}
+
+	tests := []struct {
+		name        string
+		window      *appwire.ThreadTurnWindow
+		wantIDs     []string
+		wantTrimmed string
+		wantFirst   string
+		wantLast    string
+		wantServed  string
+		wantDir     transcriptWindowContinuationDirection
+	}{
+		{name: "latest drops oldest", window: &appwire.ThreadTurnWindow{Latest: 3}, wantIDs: []string{"item-3"}, wantTrimmed: "oldest", wantFirst: "turn-1", wantLast: "turn-2", wantServed: "turn-3", wantDir: transcriptWindowContinuationBackward},
+		{name: "since drops newest", window: &appwire.ThreadTurnWindow{Since: "turn-0", Limit: 3}, wantIDs: []string{"item-1"}, wantTrimmed: "newest", wantFirst: "turn-2", wantLast: "turn-3", wantServed: "turn-1", wantDir: transcriptWindowContinuationForward},
+		{name: "before drops oldest", window: &appwire.ThreadTurnWindow{Before: &appwire.ThreadTurnBoundary{TurnID: "turn-4", Limit: 3}}, wantIDs: []string{"item-3"}, wantTrimmed: "oldest", wantFirst: "turn-1", wantLast: "turn-2", wantServed: "turn-3", wantDir: transcriptWindowContinuationBackward},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			var continuation transcriptWindowContinuation
+			options := testWindowPackOptions(appwire.ThreadWindowParams{TurnWindow: test.window, WindowBudgetBytes: 1})
+			options.MintContinuationCursor = func(request transcriptWindowContinuation) (string, error) {
+				continuation = request
+				return "window-continuation", nil
+			}
+			got, err := packThreadTurnsWindowItemCandidates(testWindowCandidateResult(candidates), nil, options)
+			if err != nil {
+				t.Fatalf("pack: %v", err)
+			}
+			if ids := testItemIDs(flattenTestItems(got.Data)); !reflect.DeepEqual(ids, test.wantIDs) {
+				t.Fatalf("served ids = %v, want %v", ids, test.wantIDs)
+			}
+			if got.Window == nil {
+				t.Fatal("window result is nil")
+			}
+			if got.Window.EffectiveBudgetBytes != transcriptWindowBudgetFloorBytes || got.Window.ServedTurns != 1 || got.Window.WithheldTurns != 2 || got.Window.FirstServedTurnID != test.wantServed || got.Window.LastServedTurnID != test.wantServed || got.Window.TrimmedEnd != test.wantTrimmed || got.Window.FirstWithheldTurnID != test.wantFirst || got.Window.LastWithheldTurnID != test.wantLast || got.Window.ContinuationCursor != "window-continuation" {
+				t.Fatalf("window result = %+v", *got.Window)
+			}
+			if continuation.Direction != test.wantDir || continuation.TurnID != test.wantFirst {
+				t.Fatalf("continuation request = %+v", continuation)
+			}
+			encodedTurns, err := json.Marshal(got.Data)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(encodedTurns) > got.Window.EffectiveBudgetBytes {
+				t.Fatalf("encoded window content = %d bytes, effective budget = %d", len(encodedTurns), got.Window.EffectiveBudgetBytes)
+			}
+			encodedResponse, err := json.Marshal(got)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(encodedResponse) > managerReadMaxJSONBytes {
+				t.Fatalf("encoded response = %d bytes, outer cap = %d", len(encodedResponse), managerReadMaxJSONBytes)
+			}
+		})
+	}
+
+	defaultBudget, err := packThreadTurnsWindowItemCandidates(testWindowCandidateResult(candidates[:1]), nil, testWindowPackOptions(appwire.ThreadWindowParams{TurnWindow: &appwire.ThreadTurnWindow{Latest: 1}}))
+	if err != nil {
+		t.Fatalf("pack default budget: %v", err)
+	}
+	if defaultBudget.Window == nil || defaultBudget.Window.EffectiveBudgetBytes != transcriptWindowDefaultBudgetBytes {
+		t.Fatalf("default window result = %+v", defaultBudget.Window)
+	}
+	maximumBudgetOptions := testWindowPackOptions(appwire.ThreadWindowParams{
+		TurnWindow:        &appwire.ThreadTurnWindow{Latest: 1},
+		WindowBudgetBytes: managerReadMaxJSONBytes,
+	})
+	maximumBudget, err := packThreadTurnsWindowItemCandidates(testWindowCandidateResult(candidates[:1]), nil, maximumBudgetOptions)
+	if err != nil {
+		t.Fatalf("pack maximum budget: %v", err)
+	}
+	if maximumBudget.Window == nil || maximumBudget.Window.EffectiveBudgetBytes != managerReadMaxJSONBytes-transcriptWindowMeasuredEnvelopeMarginBytes {
+		t.Fatalf("maximum window result = %+v", maximumBudget.Window)
+	}
+}
+
+func TestPackTranscriptItemWindowAlwaysServesOneBoundedFragment(t *testing.T) {
+	items := []appwire.ThreadItem{
+		{Type: "reasoning", ID: "settled", Text: strings.Repeat("x", transcriptWindowBudgetFloorBytes*2), Version: 1},
+		{Type: "reasoning", ID: "in-flight", Text: strings.Repeat("y", transcriptWindowBudgetFloorBytes*2)},
+	}
+	options := testWindowPackOptions(appwire.ThreadWindowParams{
+		TurnWindow:        &appwire.ThreadTurnWindow{Turn: "turn-large"},
+		WindowBudgetBytes: 1,
+	})
+	got, err := packThreadTurnsWindowItemCandidates(testWindowCandidateResult(testWindowTurnCandidates("turn-large", items)), nil, options)
+	if err != nil {
+		t.Fatalf("pack oversized turn: %v", err)
+	}
+	if len(got.Data) != 1 {
+		t.Fatalf("served turn fragments = %d, want 1", len(got.Data))
+	}
+	served := flattenTestItems(got.Data)
+	if len(served) != 2 {
+		t.Fatalf("served item lines = %d, want 2", len(served))
+	}
+	if settled := served[0]; settled.Text != "" || !settled.Truncated || settled.TruncatedBytes != transcriptWindowBudgetFloorBytes*2 || settled.FetchCursor != "fetch-settled" || settled.InFlight {
+		t.Fatalf("settled bodyless line = %+v", settled)
+	}
+	if inFlight := served[1]; inFlight.Text != "" || !inFlight.Truncated || inFlight.TruncatedBytes != transcriptWindowBudgetFloorBytes*2 || inFlight.FetchCursor != "" || !inFlight.InFlight {
+		t.Fatalf("in-flight bodyless line = %+v", inFlight)
+	}
+	encoded, err := json.Marshal(got.Data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(encoded) > got.Window.EffectiveBudgetBytes {
+		t.Fatalf("bodyless fragment = %d bytes, effective budget = %d", len(encoded), got.Window.EffectiveBudgetBytes)
+	}
+}
+
+func TestPackTranscriptItemLegacyWrappersKeepExactBytes(t *testing.T) {
+	candidates := testItemCandidates(45)
+	identity := appitempaging.CursorIdentity{ThreadRef: "local:thread", Incarnation: "legacy-parity", ProjectionVersion: 1}
+	result := transcriptItemCandidateResult{
+		Candidates: appitempaging.TranscriptItemWindow{Candidates: candidates},
+		Identity:   identity,
+		Exhausted:  true,
+	}
+	selected := append([]appitempaging.TranscriptItemCandidate(nil), candidates[5:]...)
+	selected = appitempaging.NormalizeProjectedItemCompleteness(selected)
+	wantTurns, err := appitempaging.RegroupTurnFragments(selected)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantCursor, err := appitempaging.EncodeCursor(identity, candidates[5].Position)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantRead, err := json.Marshal(appwire.ThreadReadResponse{Thread: appwire.Thread{Turns: wantTurns}, OlderCursor: wantCursor})
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantList, err := json.Marshal(appwire.ThreadTurnsListResponse{Data: wantTurns, NextCursor: wantCursor})
+	if err != nil {
+		t.Fatal(err)
+	}
+	read, err := packThreadReadItemCandidates(result, nil)
+	if err != nil {
+		t.Fatalf("pack legacy read: %v", err)
+	}
+	list, err := packThreadTurnsItemCandidates(result, nil)
+	if err != nil {
+		t.Fatalf("pack legacy list: %v", err)
+	}
+	gotRead, err := json.Marshal(read)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gotList, err := json.Marshal(list)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(gotRead, wantRead) {
+		t.Fatalf("legacy read bytes changed:\n got %s\nwant %s", gotRead, wantRead)
+	}
+	if !bytes.Equal(gotList, wantList) {
+		t.Fatalf("legacy list bytes changed:\n got %s\nwant %s", gotList, wantList)
+	}
+}
+
+func testWindowCandidateResult(candidates []appitempaging.TranscriptItemCandidate) transcriptItemCandidateResult {
+	return transcriptItemCandidateResult{
+		Candidates: appitempaging.TranscriptItemWindow{Candidates: candidates},
+		Identity:   appitempaging.CursorIdentity{ThreadRef: "local:thread", Incarnation: "window", ProjectionVersion: 1},
+		Exhausted:  true,
+	}
+}
+
+func testWindowTurnCandidates(turnID string, items []appwire.ThreadItem) []appitempaging.TranscriptItemCandidate {
+	turn := appwire.Turn{ID: turnID, Status: appwire.TurnStatusCompleted}
+	candidates := make([]appitempaging.TranscriptItemCandidate, len(items))
+	for i := range items {
+		position := appwire.ThreadItemPosition{Entry: uint64(i), Item: 0}
+		if len(items[i].TranscriptKey) == 0 {
+			items[i].TranscriptKey = "key-" + items[i].ID
+		}
+		items[i].Position = &position
+		items[i].Status = appwire.TurnStatusCompleted
+		candidates[i] = appitempaging.TranscriptItemCandidate{TurnID: turnID, Turn: turn, Item: items[i], Position: position}
+	}
+	return candidates
+}
+
+func testWindowPackOptions(params appwire.ThreadWindowParams) transcriptWindowPackOptions {
+	return transcriptWindowPackOptions{
+		Params:    params,
+		AppliedBy: "saved-index",
+		MintFetchCursor: func(candidate appitempaging.TranscriptItemCandidate) (string, error) {
+			return "fetch-" + candidate.Item.ID, nil
+		},
+		MintContinuationCursor: func(request transcriptWindowContinuation) (string, error) {
+			return "continue-" + request.TurnID, nil
+		},
+	}
+}
+
+func testItemIDs(items []appwire.ThreadItem) []string {
+	ids := make([]string, len(items))
+	for i := range items {
+		ids[i] = items[i].ID
+	}
+	return ids
 }
 
 func testItemCandidates(count int) []appitempaging.TranscriptItemCandidate {
