@@ -336,9 +336,9 @@ function StandardConversationBody({
   // The mount gate owns the control's suppression contract. While the control
   // stayed mounted through a visible-to-hidden flip, its own effect cancelled
   // the controller's deferred navigation so a late reply could not act; the
-  // flip now unmounts it, so the gate performs the cancellation. Focus loss is
-  // not suppression: the reader moved away, and the navigation they armed
-  // still lands in this conversation.
+  // flip now unmounts it, so the gate performs the cancellation. Focus loss
+  // needs none: the controller's reader guard drops a deferred navigation
+  // when the focused reader changes.
   const attentionController = useOptionalNeedsYouController();
   const wasAttentionMountedRef = useRef(attentionMounted);
   useLayoutEffect(() => {

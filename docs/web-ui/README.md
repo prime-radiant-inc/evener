@@ -312,8 +312,9 @@ control rather than leaving it mounted-but-hidden, the mounting gate owns the
 cancellation the control performed on its own visible-to-hidden transition: a
 needs-you navigation armed before suppression began is dropped, so a delayed
 reply cannot navigate the reader's pane away mid-edit. Losing focus unmounts the
-control without that cancellation — the navigation a reader armed still lands in
-the conversation they left.
+control without that cancellation — the shared controller's reader guard drops a
+deferred navigation when the focused reader changes, so nothing armed survives a
+pane the reader has left.
 
 Keyboard Next, the palette's needs-you rows and the palette's next-needs-you
 command share the shell's one needs-you controller. The palette renders each row
