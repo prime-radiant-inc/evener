@@ -78,7 +78,8 @@ func TestFreshSpawnSkillAvailabilityDerivesFromLaunchMemory(t *testing.T) {
 }
 
 // TestHubSpawnSlashCatalogHidesGardeningMemoryWhenLaunchDisables: a
-// or the composer would offer a skill the started session cannot load.
+// memory-disabled launch must hide gardening-memory, or the composer would
+// offer a skill the started session cannot load.
 func TestHubSpawnSlashCatalogHidesGardeningMemoryWhenLaunchDisables(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	cwd := t.TempDir()
@@ -90,14 +91,7 @@ func TestHubSpawnSlashCatalogHidesGardeningMemoryWhenLaunchDisables(t *testing.T
 	if err != nil {
 		t.Fatalf("hubSpawnSlashCatalog: %v", err)
 	}
-	for _, entry := range resp.Skills {
-		if entry.Name == "gardening-memory" {
-			t.Fatalf("memory-disabled launch still offers gardening-memory: %+v", resp.Skills)
-		}
-	}
-	if _, ok := skillEntryByName(resp.Skills, "project-skill"); !ok {
-		t.Fatalf("memory-disabled launch dropped the project skill: %+v", resp.Skills)
-	}
+	assertCatalogHidesGardeningMemory(t, resp)
 }
 
 // TestHubSpawnSlashCatalogHidesGardeningMemoryUnderGlobalDefault: a saved
@@ -119,21 +113,17 @@ func TestHubSpawnSlashCatalogHidesGardeningMemoryUnderGlobalDefault(t *testing.T
 	if err != nil {
 		t.Fatalf("hubSpawnSlashCatalog: %v", err)
 	}
-	for _, entry := range resp.Skills {
-		if entry.Name == "gardening-memory" {
-			t.Fatalf("globally memory-disabled catalog still offers gardening-memory: %+v", resp.Skills)
-		}
-	}
-	if _, ok := skillEntryByName(resp.Skills, "project-skill"); !ok {
-		t.Fatalf("globally memory-disabled catalog dropped the project skill: %+v", resp.Skills)
-	}
+	assertCatalogHidesGardeningMemory(t, resp)
 }
 
-func skillEntryByName(skills []appwire.EvenerSkillInfo, name string) (appwire.EvenerSkillInfo, bool) {
-	for _, entry := range skills {
-		if entry.Name == name {
-			return entry, true
-		}
+// assertCatalogHidesGardeningMemory pins both halves of the memory-off
+// catalog: the governed skill is gone, and an unrelated skill stays offered.
+func assertCatalogHidesGardeningMemory(t *testing.T, resp appwire.SpawnSlashCatalogResponse) {
+	t.Helper()
+	if hasSkill(resp.Skills, "gardening-memory") {
+		t.Fatalf("memory-disabled catalog still offers gardening-memory: %+v", resp.Skills)
 	}
-	return appwire.EvenerSkillInfo{}, false
+	if !hasSkill(resp.Skills, "project-skill") {
+		t.Fatalf("memory-disabled catalog dropped the project skill: %+v", resp.Skills)
+	}
 }
