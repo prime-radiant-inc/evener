@@ -3,15 +3,27 @@ package agent
 import (
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"testing"
 
+	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/internal/goal"
 	"primeradiant.com/evener/agent/internal/tool"
 	"primeradiant.com/evener/llm"
 )
+
+// launchFailingEnv is a local environment whose streaming executor refuses to
+// start any command, so the shell tool returns a failed/start_failed result.
+type launchFailingEnv struct {
+	*execenv.LocalExecutionEnvironment
+}
+
+func (*launchFailingEnv) StreamCommand(context.Context, string, string, map[string]string, io.Writer) (*execenv.StreamHandle, error) {
+	return nil, fmt.Errorf("executor refused to launch")
+}
 
 // toolResultsMadeProgress is the goal no-progress signal: only an executed,
 // successful, progress-eligible result counts. Unknown names, read-only tools,
@@ -222,5 +234,65 @@ func TestGoalTwoTierAllowanceSurvivesReadOnlyInvestigation(t *testing.T) {
 	snap, _ := store.Snapshot()
 	if snap.Status != goal.StatusBlocked || snap.NoProgressStreak != goal.NoProgressLimit {
 		t.Fatalf("goal after a stall past the mutation = %+v, want blocked at streak %d", snap, goal.NoProgressLimit)
+	}
+}
+
+// A shell that cannot launch comes back as a structured failed/start_failed
+// result. That failed launch is not a successful mutation and must not reset the
+// goal no-progress streak (CORE-04).
+func TestGoalNoProgressBreakerIgnoresShellLaunchFailures(t *testing.T) {
+	t.Parallel()
+	var calls int
+	responder := func(llm.Request) llm.Response {
+		calls++
+		if calls%2 == 1 {
+			return llm.Response{
+				Model: "gpt-5.2",
+				Message: llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{{
+					Kind:     llm.ContentToolCall,
+					ToolCall: &llm.ToolCallData{ID: fmt.Sprintf("call-%d", calls), Name: "shell", Arguments: []byte(`{"command":"echo hi"}`)},
+				}}},
+				Finish: llm.FinishReason{Reason: "tool_use"},
+			}
+		}
+		return agenttest.CommunicateResponse(true, "done")
+	}
+	adapter := &agenttest.ScriptedAdapter{Provider: "openai", Responder: responder}
+	client := llm.NewClient()
+	client.Register(adapter)
+	env := &launchFailingEnv{LocalExecutionEnvironment: execenv.NewLocalExecutionEnvironment(t.TempDir())}
+	sess, err := NewSession(client, withTestSessionNamer(client, NewOpenAIProfile("gpt-5.2")), env, SessionConfig{
+		MaxToolRoundsPerInput: 5,
+		clock:                 agenttest.NewFakeClock(),
+		testOnly: testConfig{
+			skipGitSnapshot:     true,
+			minimalSystemPrompt: true,
+			noSyncJobStore:      true,
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	t.Cleanup(sess.Close)
+	store := sess.getOrCreateGoalStore()
+	store.Set("ship it", sess.sclock().Now())
+
+	for turn := 0; ; turn++ {
+		_, progressed, err := sess.processOneInput(context.Background(), "continue", nil, EntryContinuation, nil)
+		if err != nil {
+			t.Fatalf("continuation turn %d: %v", turn, err)
+		}
+		if progressed {
+			t.Fatalf("continuation turn %d credited a failed shell launch as progress", turn)
+		}
+		if _, continued := sess.armGoalContinuation(progressed, true); !continued {
+			break
+		}
+		if turn > goal.NeverProgressedLimit {
+			t.Fatal("goal did not reach the no-progress breaker")
+		}
+	}
+	if snap, _ := store.Snapshot(); snap.Status != goal.StatusBlocked {
+		t.Fatalf("goal after failed shell launches = %+v, want blocked by the no-progress breaker", snap)
 	}
 }

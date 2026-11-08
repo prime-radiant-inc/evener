@@ -563,7 +563,14 @@ func marshalShellToolResult(res shellResult, maxChars int, turnEndsProcess bool)
 		out.DroppedBytes = res.DroppedBytes
 		out.OutputStatus = outputWindowStatus(res.TotalBytes, res.DroppedBytes, res.Truncated)
 	}
-	return tool.StateResult{Output: formatShellResult(out), State: out}, nil
+	return tool.StateResult{
+		Output: formatShellResult(out),
+		State:  out,
+		// A failed shell status means the machinery could not launch or
+		// finalize the command; the model and the no-progress signal must see
+		// that as a failed call, not a successful mutation.
+		IsError: res.Status == string(jobstore.StatusFailed),
+	}, nil
 }
 
 // marshalCompleteOrHandleResult implements spec §0.6 for within-bound shell
