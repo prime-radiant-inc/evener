@@ -24,6 +24,34 @@ func (h *threadHistory) answerContinuation(ctx context.Context, params appwire.T
 	return verdict, snapshot, err
 }
 
+func (h *threadHistory) fetch(encoded string) (appwire.SessionFetchResponse, error) {
+	cursor, identity, err := appitempaging.DecodeFetchCursorForRef(encoded, h.ref)
+	if err != nil || cursor.Origin != appitempaging.FetchCursorOriginServingDaemon {
+		return appwire.SessionFetchResponse{}, appwire.TranscriptItemCursorStale()
+	}
+	sourceIncarnation, ok := appwire.ThreadWindowSourceIncarnation(identity.Incarnation)
+	if !ok {
+		return appwire.SessionFetchResponse{}, appwire.TranscriptItemCursorStale()
+	}
+	var response appwire.SessionFetchResponse
+	err = h.read(func(idx *transcriptindex.Snapshot) error {
+		incarnation, err := idx.Incarnation()
+		if err != nil {
+			return err
+		}
+		if incarnation != sourceIncarnation {
+			return appwire.TranscriptItemCursorStale()
+		}
+		candidate, err := idx.CandidateAt(cursor.Position)
+		if err != nil {
+			return err
+		}
+		response, err = appitempaging.BuildFetchResponse(candidate.Item, identity, cursor)
+		return err
+	})
+	return response, err
+}
+
 // historyCapture is what a history read takes inside the subscription cut:
 // the overlay and the resync epoch the read's notifications follow. History
 // itself is projected after the cut.

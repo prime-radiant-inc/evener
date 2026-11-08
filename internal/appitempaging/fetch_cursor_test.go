@@ -39,6 +39,25 @@ func TestFetchCursorRoundTrip(t *testing.T) {
 	}
 }
 
+func TestFetchCursorDecodesIdentityFromFetchOnlyRequest(t *testing.T) {
+	wantIdentity := CursorIdentity{ThreadRef: "local:thread", Incarnation: "window-view", ProjectionVersion: TranscriptItemProjectionVersion}
+	wantCursor := FetchCursor{Position: appwire.ThreadItemPosition{Entry: 9, Item: 2}, ItemVersion: 7, Origin: FetchCursorOriginSavedIndex, Offset: 41}
+	encoded, err := EncodeFetchCursor(wantIdentity, wantCursor)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gotCursor, gotIdentity, err := DecodeFetchCursorForRef(encoded, wantIdentity.ThreadRef)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gotCursor != wantCursor || gotIdentity != wantIdentity {
+		t.Fatalf("decoded = %+v, %+v; want %+v, %+v", gotCursor, gotIdentity, wantCursor, wantIdentity)
+	}
+	if _, _, err := DecodeFetchCursorForRef(encoded, "local:other"); err == nil {
+		t.Fatal("fetch cursor accepted for another request ref")
+	}
+}
+
 func TestFetchCursorRejectsLegacyMalformedAndWrongIdentity(t *testing.T) {
 	identity := CursorIdentity{ThreadRef: "local:thread", Incarnation: "view-7", ProjectionVersion: 3}
 	legacy, err := EncodeCursor(identity, appwire.ThreadItemPosition{Entry: 17, Item: 4})

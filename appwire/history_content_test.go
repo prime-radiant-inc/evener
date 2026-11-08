@@ -147,6 +147,20 @@ func TestThreadWindowViewIncarnationFencesNormalizedView(t *testing.T) {
 	}
 }
 
+func TestThreadWindowSourceIncarnationFromFetchIdentity(t *testing.T) {
+	params := ThreadWindowParams{TurnWindow: &ThreadTurnWindow{Latest: 3}, ItemTypes: []string{"messages"}}
+	want := "source-incarnation"
+	view := params.ViewIncarnation(want, 10)
+	if got, ok := ThreadWindowSourceIncarnation(view); !ok || got != want {
+		t.Fatalf("source incarnation = %q, %v; want %q, true", got, ok, want)
+	}
+	for _, invalid := range []string{"source-incarnation", "window1.bad", "window1.bad:", "window1.bad:not-base64"} {
+		if got, ok := ThreadWindowSourceIncarnation(invalid); ok || got != "" {
+			t.Errorf("invalid view %q decoded as %q, %v", invalid, got, ok)
+		}
+	}
+}
+
 func TestThreadContentToolIntentsRetainIdentityWithoutToolPayload(t *testing.T) {
 	t.Parallel()
 	no := false

@@ -1,6 +1,9 @@
 package server
 
 import (
+	"bytes"
+	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"reflect"
@@ -8,6 +11,7 @@ import (
 
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/internal/appitempaging"
 	"primeradiant.com/evener/llm"
 )
 
@@ -78,5 +82,46 @@ func TestLiveThreadReadHonorsTurnWindows(t *testing.T) {
 	}
 	if data.EvenerErrorInfo != appwire.ErrorInfo("transcriptTurnNotFound") || data.TurnID != "missing" || data.OldestTurnID != "turn_m1" || data.NewestTurnID != "turn_m3" || data.TurnCount != 3 {
 		t.Fatalf("missing turn data = %+v", data)
+	}
+}
+
+func TestLiveThreadReadFetchesCanonicalItemRange(t *testing.T) {
+	st := newServedTranscript(t, NewServer(ServerConfig{}), "th_fetch",
+		inExecution("turn_m1", true, schema.NewTurn(schema.TurnUserInput, llm.User("fetch me"))),
+	)
+	windowParams := appwire.ThreadWindowParams{TurnWindow: &appwire.ThreadTurnWindow{Turn: "turn_m1"}}
+	read, err := st.srv.appThreadReadSnapshotChecked(appwire.ThreadReadParams{ThreadID: st.threadID, IncludeTurns: true, ThreadWindowParams: windowParams})
+	if err != nil {
+		t.Fatal(err)
+	}
+	item := read.Thread.Turns[0].Items[0]
+	want, err := json.Marshal(item)
+	if err != nil {
+		t.Fatal(err)
+	}
+	identity := appitempaging.CursorIdentity{
+		ThreadRef:         read.Thread.Evener.Ref,
+		Incarnation:       windowParams.ViewIncarnation(read.Snapshot.Incarnation, 0),
+		ProjectionVersion: appitempaging.TranscriptItemProjectionVersion,
+	}
+	cursor, err := appitempaging.EncodeFetchCursor(identity, appitempaging.FetchCursor{
+		Position: *item.Position, ItemVersion: item.Version, Origin: appitempaging.FetchCursorOriginServingDaemon,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	response, err := st.srv.handleAppThreadRead(context.Background(), appwire.ThreadReadParams{ThreadID: st.threadID, FetchCursor: cursor})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if response.Fetch == nil {
+		t.Fatal("serving daemon returned no fetch payload")
+	}
+	got, err := base64.StdEncoding.DecodeString(response.Fetch.Data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got, want) || response.Fetch.FetchCursor != "" {
+		t.Fatalf("fetched canonical bytes = %d, continuation = %q; want %d bytes and no continuation", len(got), response.Fetch.FetchCursor, len(want))
 	}
 }

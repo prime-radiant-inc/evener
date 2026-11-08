@@ -7,6 +7,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 )
 
 // ThreadContentParams selects transcript content for reads, backfill and the
@@ -118,6 +119,24 @@ func (p ThreadWindowParams) SourceIncarnation(incarnation string, itemLimit int)
 	}
 	raw, err := base64.RawURLEncoding.DecodeString(strings.TrimPrefix(incarnation, prefix))
 	if err != nil || len(raw) == 0 {
+		return "", false
+	}
+	return string(raw), true
+}
+
+// ThreadWindowSourceIncarnation recovers the source fence from a normalized
+// window identity when a fetch-only request no longer carries window options.
+func ThreadWindowSourceIncarnation(incarnation string) (string, bool) {
+	key, encoded, ok := strings.Cut(incarnation, ":")
+	if !ok || !strings.HasPrefix(key, "window1.") {
+		return "", false
+	}
+	digest, err := base64.RawURLEncoding.DecodeString(strings.TrimPrefix(key, "window1."))
+	if err != nil || len(digest) != sha256.Size {
+		return "", false
+	}
+	raw, err := base64.RawURLEncoding.DecodeString(encoded)
+	if err != nil || len(raw) == 0 || !utf8.Valid(raw) {
 		return "", false
 	}
 	return string(raw), true

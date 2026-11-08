@@ -97,12 +97,43 @@ func DecodeFetchCursor(encoded string, want CursorIdentity) (FetchCursor, error)
 	}, nil
 }
 
+// DecodeFetchCursorForRef validates a self-contained fetch cursor against the
+// fetch-only request's required ref and returns the embedded view identity.
+func DecodeFetchCursorForRef(encoded, threadRef string) (FetchCursor, CursorIdentity, error) {
+	var wire fetchCursorDecodeWire
+	if err := decodeCursorForm(encoded, &wire); err != nil || !validFetchCursorShape(wire) {
+		return FetchCursor{}, CursorIdentity{}, appwire.TranscriptItemCursorStale()
+	}
+	identity := CursorIdentity{
+		ThreadRef:         *wire.ThreadRef,
+		Incarnation:       *wire.Incarnation,
+		ProjectionVersion: *wire.ProjectionVersion,
+	}
+	if identity.ThreadRef != threadRef || identity.ProjectionVersion != TranscriptItemProjectionVersion {
+		return FetchCursor{}, CursorIdentity{}, appwire.TranscriptItemCursorStale()
+	}
+	return FetchCursor{
+		Position:    wire.Position.position(),
+		ItemVersion: *wire.ItemVersion,
+		Origin:      *wire.Origin,
+		Offset:      *wire.Offset,
+	}, identity, nil
+}
+
 func validFetchCursorWire(wire fetchCursorDecodeWire, want CursorIdentity) bool {
-	return wire.Version != nil && *wire.Version == cursorFormVersion &&
-		wire.Kind != nil && *wire.Kind == fetchCursorKind &&
+	return validFetchCursorShape(wire) &&
 		wire.ThreadRef != nil && *wire.ThreadRef == want.ThreadRef &&
 		wire.Incarnation != nil && *wire.Incarnation == want.Incarnation &&
-		wire.ProjectionVersion != nil && *wire.ProjectionVersion == want.ProjectionVersion &&
+		wire.ProjectionVersion != nil && *wire.ProjectionVersion == want.ProjectionVersion
+}
+
+func validFetchCursorShape(wire fetchCursorDecodeWire) bool {
+	if wire.ThreadRef == nil || wire.Incarnation == nil || wire.ProjectionVersion == nil {
+		return false
+	}
+	return wire.Version != nil && *wire.Version == cursorFormVersion &&
+		wire.Kind != nil && *wire.Kind == fetchCursorKind &&
+		validIdentity(CursorIdentity{ThreadRef: *wire.ThreadRef, Incarnation: *wire.Incarnation, ProjectionVersion: *wire.ProjectionVersion}) &&
 		validCursorPosition(wire.Position) &&
 		wire.ItemVersion != nil && *wire.ItemVersion != 0 &&
 		wire.Origin != nil && validFetchCursorOrigin(*wire.Origin) &&

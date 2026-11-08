@@ -123,6 +123,19 @@ func (s *Server) handleAppThreadRead(ctx context.Context, params appwire.ThreadR
 		response.AnswerContinuation, response.Snapshot = &verdict, &snapshot
 		return response, nil
 	}
+	if params.FetchCursor != "" {
+		cut := s.appThreadReadCutForTarget(params, s.appThreadIDForRead(params))
+		if !cut.found || cut.history == nil {
+			return appwire.ThreadReadResponse{}, s.readError(appwire.SessionUnavailable("thread fetch is unavailable"), s.appThreadIDForRead(params))
+		}
+		fetch, err := cut.history.fetch(params.FetchCursor)
+		if err != nil {
+			return appwire.ThreadReadResponse{}, appwire.WithHistoryReadIdentity(appserver.WireError(err), cut.response.BootGeneration, cut.response.Epoch)
+		}
+		response := cut.response
+		response.Fetch = &fetch
+		return response, nil
+	}
 	if !params.Subscribe {
 		return s.appThreadReadSnapshotChecked(params)
 	}
