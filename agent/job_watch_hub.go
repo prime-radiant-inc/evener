@@ -331,6 +331,7 @@ func (jm *jobManager) onHubRoster(id string, update appwire.SessionWatchUpdate) 
 		refs := make([]json.RawMessage, 0, len(changed))
 		for _, event := range changed {
 			entry := appwire.CloneAttentionEntry(event.AttentionEntry)
+			entry.CompositeTotal = max(entry.CompositeTotal, len(entry.CompositeList))
 			entry.CompositeList = entry.CompositeList[:min(len(entry.CompositeList), appwire.MaxPendingAskComposites)]
 			truncated := entry.CompositeTotal > len(entry.CompositeList)
 			reason := ""

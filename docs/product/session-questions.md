@@ -48,6 +48,10 @@ and replaced sources, and clamps only the wire row to ten composites.
 clamped list. A missing state means unknown. A new daemon boot changes
 `bootGeneration` even when restoring the same revision and pending calls.
 
+Roster frames also retain the received list length as a lower bound on the
+composite total. When an older daemon omits the total, clamping still sets
+`truncatedList` and `listReason:"unavailable"` for the omitted calls.
+
 The excerpt carries its displayed question's `turnId` and `callId` when known.
 Live append also supplies explicit `complete` and `truncated` flags; restore
 leaves these flags absent rather than claiming to have measured the original
