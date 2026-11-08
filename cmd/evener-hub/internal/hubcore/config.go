@@ -29,7 +29,7 @@ type RelayLifecycleHooks struct {
 	BeforeReadThread func()
 	// ReadThreadFailure is a test-only seam that fails a relay read with the
 	// returned error before it reaches the source. Production leaves it nil.
-	ReadThreadFailure          func(context.Context) error
+	ReadThreadFailure          func(context.Context, appwire.ThreadReadParams) error
 	IdleExit                   func(threadID string)
 	AfterIdleDelete            func(threadID string)
 	RetryWait                  func(context.Context, time.Duration) error

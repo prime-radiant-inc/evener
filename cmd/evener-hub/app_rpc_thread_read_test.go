@@ -366,7 +366,7 @@ func TestHubRPCThreadReadBridgeSnapshotPrepareFailureIsRetryable(t *testing.T) {
 	cfgA := hubcore.WebConfig{
 		HubStateRoot: t.TempDir(),
 		Past:         hubcore.NewPastIndex(""),
-		RelayHooks: hubcore.RelayLifecycleHooks{ReadThreadFailure: func(ctx context.Context) error {
+		RelayHooks: hubcore.RelayLifecycleHooks{ReadThreadFailure: func(ctx context.Context, _ appwire.ThreadReadParams) error {
 			if reads.Add(1) == 1 {
 				return nil
 			}

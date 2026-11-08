@@ -24,7 +24,7 @@ func (r *hubRelay) readThreadWithSubscription(ctx context.Context, source appsou
 		r.cfg.RelayHooks.BeforeReadThread()
 	}
 	if r.cfg.RelayHooks.ReadThreadFailure != nil {
-		if err := r.cfg.RelayHooks.ReadThreadFailure(ctx); err != nil {
+		if err := r.cfg.RelayHooks.ReadThreadFailure(ctx, params); err != nil {
 			return nil, err
 		}
 	}
