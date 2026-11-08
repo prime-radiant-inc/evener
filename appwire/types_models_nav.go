@@ -125,8 +125,8 @@ type UpdateCheckParams struct {
 }
 
 // UpdateCheckResponse reports the running build and what the channel points
-// at. Applicable is false for dev builds, which are never self-updated; the
-// Latest* fields are empty then and no network request was made.
+// at. Applicable is true for current hubs, including locally built ones;
+// older hubs report false for dev builds that cannot self-update.
 type UpdateCheckResponse struct {
 	Channel                    string    `json:"channel"`
 	BuildChannel               string    `json:"buildChannel"`

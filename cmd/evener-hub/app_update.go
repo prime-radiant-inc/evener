@@ -74,13 +74,14 @@ func tryLockHubUpdate() error {
 // The refusals the self-update RPCs give before installing anything.
 var (
 	errHubUpdateInProgress       = errors.New("a hub update is already in progress")
-	errDevBuildUpdate            = errors.New("this hub is a dev build; rebuild with make build-hub instead of self-updating")
 	errInPlaceRestartUnsupported = errors.New("in-place restart is not supported on this platform; use evener/upgrade and restart manually")
+	errLocalBuildInstallTarget   = errors.New("this local build's install target is not the binary it was launched from; install the managed build instead")
 )
 
 // isDevBuild reports whether this hub was built without a release channel
-// (a worktree build). Such a hub is never self-updated: replacing it with a
-// release binary would silently discard whatever the developer is running.
+// (a local build). A local build is an ordinary update client: it may install
+// the selected channel's published build into the managed installation it was
+// launched from.
 func isDevBuild() bool { return buildinfo.BuildChannel() == "dev" }
 
 // validateUpdateChannel resolves requested (defaulting to the build's own
@@ -103,7 +104,7 @@ func validateUpdateChannel(requested string) (string, error) {
 var errUnknownUpdateChannel = errors.New("unknown update channel")
 
 // hubUpdateCheck answers evener/update/check: compare the running build to
-// the channel's current commit. Dev builds answer locally.
+// the channel's current commit.
 func hubUpdateCheck(ctx context.Context, params appwire.UpdateCheckParams) (appwire.UpdateCheckResponse, error) {
 	channel, err := validateUpdateChannel(params.Channel)
 	if err != nil {
@@ -114,6 +115,7 @@ func hubUpdateCheck(ctx context.Context, params appwire.UpdateCheckParams) (appw
 		BuildChannel:   buildinfo.BuildChannel(),
 		CurrentVersion: buildinfo.Version(),
 		CurrentCommit:  buildinfo.GitSHA,
+		Applicable:     true,
 	}
 	onDiskCommit, onDiskErr := probeLaunchBuild()
 	resp.OnDiskCommit = onDiskCommit
@@ -122,9 +124,9 @@ func hubUpdateCheck(ctx context.Context, params appwire.UpdateCheckParams) (appw
 	}
 	resp.StartedAt = hubProcessStartedAt
 	resp.RestartSupported = hubRestartUsable() && onDiskErr == nil
-	resp.InstallTarget = expectedInstallTarget()
-	_, installBinDir := expectedInstallDirs()
-	resp.InstallTargetMatchesLaunch = installTargetsLaunch(resp.InstallTarget, hubLaunchEntrypoint, installBinDir)
+	installTarget, installBinDir := hubInstallTarget()
+	resp.InstallTarget = installTarget
+	resp.InstallTargetMatchesLaunch = installTargetsLaunch(installTarget, hubLaunchEntrypoint, installBinDir)
 	binaryChanged := false
 	if hubLaunchBinarySHA256 != "" {
 		if digest, err := launchBinaryDigest(hubLaunchEntrypoint); err == nil {
@@ -132,10 +134,6 @@ func hubUpdateCheck(ctx context.Context, params appwire.UpdateCheckParams) (appw
 		}
 	}
 	resp.RestartPending = onDiskCommit != "" && (onDiskCommit != resp.CurrentVersion || binaryChanged)
-	if isDevBuild() {
-		resp.InstallAvailable = false
-		return resp, nil
-	}
 	result, err := runHubUpdateCheck(ctx, selfupdate.CheckOptions{
 		Channel:    resp.Channel,
 		CurrentSHA: buildinfo.GitSHA,
@@ -145,7 +143,6 @@ func hubUpdateCheck(ctx context.Context, params appwire.UpdateCheckParams) (appw
 		// still need the on-disk build, the incarnation, and whether restart is
 		// supported. Report the channel failure beside those facts.
 		resp.CheckError = err.Error()
-		resp.Applicable = true
 		resp.UpdateAvailable = false
 		resp.InstallAvailable = false
 		return resp, nil //nolint:nilerr // the channel failure is reported in the response
@@ -153,10 +150,15 @@ func hubUpdateCheck(ctx context.Context, params appwire.UpdateCheckParams) (appw
 	resp.LatestTag = result.LatestTag
 	resp.LatestCommit = result.LatestCommit
 	resp.UpdateAvailable = result.UpdateAvailable
-	resp.Applicable = true
+	onDiskCurrent := selfupdate.CommitIsCurrent(result.LatestCommit, commitToken(onDiskCommit))
+	// A local build is not the channel's published build even when both come
+	// from the same commit, so a local binary on disk is replaceable. Once an
+	// install has replaced it (restart pending), the on-disk build is the
+	// channel's build and only a different commit needs installing.
+	localBuildOnDisk := isDevBuild() && !resp.RestartPending
 	resp.InstallAvailable = result.LatestCommit != "" &&
 		onDiskCommit != "" &&
-		!selfupdate.CommitIsCurrent(result.LatestCommit, commitToken(onDiskCommit)) &&
+		(!onDiskCurrent || localBuildOnDisk) &&
 		resp.InstallTargetMatchesLaunch
 	return resp, nil
 }
@@ -176,14 +178,15 @@ func expectedInstallDirs() (shareBinDir, binDir string) {
 	return filepath.Join(home, ".local", "share", "evener", "bin"), filepath.Join(home, ".local", "bin")
 }
 
-// expectedInstallTarget is where selfupdate.Upgrade will write the evener
-// binary for this hub's launch layout.
-func expectedInstallTarget() string {
-	shareBinDir, _ := expectedInstallDirs()
+// hubInstallTarget is where selfupdate.Upgrade will write the evener binary
+// for this hub's launch layout, and the directory that holds its entrypoint
+// symlinks.
+func hubInstallTarget() (target, binDir string) {
+	shareBinDir, binDir := expectedInstallDirs()
 	if shareBinDir == "" {
-		return ""
+		return "", binDir
 	}
-	return filepath.Join(shareBinDir, "evener")
+	return filepath.Join(shareBinDir, "evener"), binDir
 }
 
 // installTargetsLaunch reports whether Upgrade updates the binary this hub
@@ -202,6 +205,21 @@ func installTargetsLaunch(target, launch, binDir string) bool {
 		return false
 	}
 	return sameDirectory(filepath.Dir(launch), binDir)
+}
+
+// hubInstallTargetMatchesLaunch reports whether selfupdate.Upgrade would
+// replace the binary this hub was launched from. A local build may install a
+// published build, but only at its own launch installation; a worktree binary
+// started in place reports the mismatch instead.
+func hubInstallTargetMatchesLaunch() bool {
+	target, binDir := hubInstallTarget()
+	return installTargetsLaunch(target, hubLaunchEntrypoint, binDir)
+}
+
+// localBuildInstallRefused reports a local build whose install would land
+// somewhere other than the binary it was launched from.
+func localBuildInstallRefused() bool {
+	return isDevBuild() && !hubInstallTargetMatchesLaunch()
 }
 
 func sameDirectory(a, b string) bool {
@@ -260,9 +278,6 @@ func hubRestartUsable() bool {
 // hubUpdateApply answers evener/update/apply: install the channel's build,
 // then exec it in place once this response has gone out.
 func hubUpdateApply(ctx context.Context, params appwire.UpdateApplyParams) (appwire.UpdateApplyResponse, error) {
-	if isDevBuild() {
-		return appwire.UpdateApplyResponse{}, errDevBuildUpdate
-	}
 	channel, err := validateUpdateChannel(params.Channel)
 	if err != nil {
 		return appwire.UpdateApplyResponse{}, err
@@ -273,6 +288,9 @@ func hubUpdateApply(ctx context.Context, params appwire.UpdateApplyParams) (appw
 	// poll a hub that never restarts. hubUpgrade (no exec) stays allowed.
 	if !hubRestartSupported() {
 		return appwire.UpdateApplyResponse{}, errInPlaceRestartUnsupported
+	}
+	if localBuildInstallRefused() {
+		return appwire.UpdateApplyResponse{}, errLocalBuildInstallTarget
 	}
 	// Re-check server-side before installing: the store refuses stale
 	// checks, but a direct RPC (or a check that went stale in flight)
