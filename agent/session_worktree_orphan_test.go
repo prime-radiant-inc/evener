@@ -6,6 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
+	"path/filepath"
 	"slices"
 	"strings"
 	"sync"
@@ -765,9 +767,10 @@ type sharedDescendantLane struct {
 	announceHold chan struct{}
 	// announceRelease closes the taken hold exactly once, from the test body
 	// or the fixture's own cleanup, whichever runs first: the fixture
-	// registers that cleanup the moment it takes the hold, so even a fatal
-	// inside the fixture cannot leave a parked finalize tail blocked past
-	// test end.
+	// registers that cleanup after root.Close and before it installs the
+	// announce hook, so a fatal after the hook is installed cannot leave a
+	// parked finalize tail blocked past test end. Nothing parks on the hold
+	// before the hook is installed.
 	announceRelease  func()
 	root             *Session  // the fixture's root, which owns the lane-owning delegate
 	delegateSub      *subagent // the lane-owning delegate, as root sees it
@@ -779,6 +782,12 @@ type sharedDescendantLane struct {
 	// tree, so a tripwire can name whether the retained child's report reached
 	// the delivery admission path at all and with which deferral.
 	classifications *delegateDeliveryClassificationLog
+}
+
+// reportAttentionID is the retained child's first report as the attention row
+// every scripted-presentation test expects pending.
+func (l *sharedDescendantLane) reportAttentionID() string {
+	return delegateAttentionID(delegateDeliveryID(l.sharedDelegateID, 1))
 }
 
 // delegateAttentionDiagnostics is the controller-owned state a scripted
@@ -959,6 +968,31 @@ func takeSharedDescendantAnnounceHold(laneName string) chan struct{} {
 // appended after the cursor would never be served.
 func spawnSharedDescendantLane(t *testing.T, r *wtRepo, laneName, standInDlg, standInSID string, notificationTurn ...func(llm.Request) llm.Response) *sharedDescendantLane {
 	t.Helper()
+	// A registered announce hold parks every finalize tail in the tree just
+	// before its announce, until the test releases it. The retained child's
+	// announce is always the first to arrive: the delegate's own announce is
+	// sequenced behind its finalization drain, which waits for the child's
+	// run to return.
+	var takenAnnounceHold chan struct{}
+	var releaseAnnounceHold func()
+	if hold := takeSharedDescendantAnnounceHold(laneName); hold != nil {
+		takenAnnounceHold = hold
+		var releaseOnce sync.Once
+		releaseAnnounceHold = func() { releaseOnce.Do(func() { close(hold) }) }
+	}
+	// A scripted presentation step requires a registered announce hold. The
+	// delegate's spawn turn consumes the scripted steps before the
+	// presentation, and without the hold the retained child's report delivery
+	// can be classified deferred while that turn is still running, pump at the
+	// next request build, and ride the spawn turn's own tool-result request —
+	// the coverage consume then resolves the report and the scripted step the
+	// test waits on never runs. Refuse the fixture instead of leaving that to
+	// load: holdSharedDescendantAnnounce must register the hold before the
+	// spawn, and the test releases it once the spawn turn has closed.
+	if len(notificationTurn) > 0 && notificationTurn[0] != nil && takenAnnounceHold == nil {
+		signalSharedDescendantRefusal(t)
+		t.Fatalf("a scripted presentation step for lane %q requires a registered announce hold: call holdSharedDescendantAnnounce(%q) before spawning, or drop the scripted step for the bare-text fallback", laneName, laneName)
+	}
 	var lanePath string
 	fixture := newColdDelegateFixtureConfiguredInState(t, "", r.stateDir, func(d *delegatestore.Descriptor) {
 		d.Isolation = "worktree"
@@ -996,35 +1030,14 @@ func spawnSharedDescendantLane(t *testing.T, r *wtRepo, laneName, standInDlg, st
 	// admission and whether that admission was deferred.
 	classifications := &delegateDeliveryClassificationLog{}
 	root.cfg.testOnly.delegateDeliveryClassified = classifications.observe
-	// A registered announce hold parks every finalize tail in the tree just
-	// before its announce, until the test releases it. The retained child's
-	// announce is always the first to arrive: the delegate's own announce is
-	// sequenced behind its finalization drain, which waits for the child's
-	// run to return.
-	var takenAnnounceHold chan struct{}
-	var releaseAnnounceHold func()
-	if hold := takeSharedDescendantAnnounceHold(laneName); hold != nil {
-		takenAnnounceHold = hold
-		var releaseOnce sync.Once
-		releaseAnnounceHold = func() { releaseOnce.Do(func() { close(hold) }) }
-		// The cleanup is registered the moment the hold is taken — before the
-		// first send below can fatal — so the parked finalize tails can
-		// always finish, and the once makes the test's own release race the
-		// cleanup safely.
+	if takenAnnounceHold != nil {
+		// Register after root.Close, before the first send below can fatal:
+		// cleanups run last-in-first-out, so the hold releases before the
+		// root tears down and waits on the finalize tails parked on it. The
+		// once makes the test's own release race the cleanup safely. Nothing
+		// parks on the hold before the hook below is installed.
 		t.Cleanup(releaseAnnounceHold)
-		root.cfg.testOnly.subagentBeforeGenerationAnnounced = func(*subagent) { <-hold }
-	}
-	// A scripted presentation step requires a registered announce hold. The
-	// delegate's spawn turn consumes the scripted steps before the
-	// presentation, and without the hold the retained child's report delivery
-	// can be classified deferred while that turn is still running, pump at the
-	// next request build, and ride the spawn turn's own tool-result request —
-	// the coverage consume then resolves the report and the scripted step the
-	// test waits on never runs. Refuse the fixture instead of leaving that to
-	// load: holdSharedDescendantAnnounce must register the hold before the
-	// spawn, and the test releases it once the spawn turn has closed.
-	if len(notificationTurn) > 0 && notificationTurn[0] != nil && takenAnnounceHold == nil {
-		t.Fatalf("a scripted presentation step for lane %q requires a registered announce hold: call holdSharedDescendantAnnounce(%q) before spawning, or drop the scripted step for the bare-text fallback", laneName, laneName)
+		root.cfg.testOnly.subagentBeforeGenerationAnnounced = func(*subagent) { <-takenAnnounceHold }
 	}
 	wtGit(t, r.mainRoot, "worktree", "unlock", lanePath)
 	wtGit(t, r.mainRoot, "worktree", "lock", "--reason", worktree.FormatDelegateMarker(fixture.delegateID, fixture.meta.ID), lanePath)
@@ -1089,6 +1102,53 @@ func spawnSharedDescendantLane(t *testing.T, r *wtRepo, laneName, standInDlg, st
 		sharedDelegateID: sharedDelegateID,
 		finish:           finish,
 		classifications:  classifications,
+	}
+}
+
+// sharedDescendantUnheldPresentationHelperEnv marks the re-exec that exercises
+// the fixture's unheld-step refusal. sharedDescendantRefusalSignalEnv names
+// the file the fixture writes before it refuses, so the parent can assert the
+// refusal without matching diagnostic text.
+const sharedDescendantUnheldPresentationHelperEnv = "EVENER_SHARED_DESCENDANT_UNHELD_PRESENTATION_HELPER"
+const sharedDescendantRefusalSignalEnv = "EVENER_SHARED_DESCENDANT_REFUSAL_SIGNAL"
+
+// signalSharedDescendantRefusal writes the regression child's structured
+// refusal signal. It is a no-op outside that child, which is the only process
+// the signal environment is set for.
+func signalSharedDescendantRefusal(t *testing.T) {
+	t.Helper()
+	path := os.Getenv(sharedDescendantRefusalSignalEnv)
+	if path == "" {
+		return
+	}
+	if err := os.WriteFile(path, []byte("refused\n"), 0o600); err != nil {
+		t.Fatalf("write announce-hold refusal signal: %v", err)
+	}
+}
+
+// Regression for #5717: a scripted presentation step with no announce hold
+// let the retained child's report be consumed inside the delegate's spawn
+// window. The fixture refuses the step with a t.Fatalf, so assert that refusal
+// from a re-exec: the helper process must fail and write the refusal signal.
+func TestSharedDescendantLaneRefusesUnheldScriptedPresentation(t *testing.T) {
+	t.Parallel()
+	if os.Getenv(sharedDescendantUnheldPresentationHelperEnv) == "1" {
+		// The guard fires before spawn reads the repo, so the refusal path
+		// needs none; a removed guard writes no signal, so the parent fails.
+		spawnSharedDescendantLane(t, nil, "unheld-scripted-presentation", "dlg_unheldpresent01", "034unheldpresent01", func(llm.Request) llm.Response {
+			return agenttest.FinalResponse("done")
+		})
+		t.Fatal("spawnSharedDescendantLane accepted a scripted presentation step without an announce hold")
+	}
+	signalPath := filepath.Join(t.TempDir(), "announce-hold-refusal")
+	cmd := exec.Command(os.Args[0], "-test.run=^TestSharedDescendantLaneRefusesUnheldScriptedPresentation$", "-test.v")
+	cmd.Env = append(os.Environ(), sharedDescendantUnheldPresentationHelperEnv+"=1", sharedDescendantRefusalSignalEnv+"="+signalPath)
+	out, err := cmd.CombinedOutput()
+	if err == nil {
+		t.Fatalf("the unheld scripted presentation was accepted; want the fixture's announce-hold refusal\n%s", out)
+	}
+	if _, statErr := os.Stat(signalPath); statErr != nil {
+		t.Fatalf("the helper process failed without the announce-hold refusal signal (%v); want the fixture's refusal\n%s", statErr, out)
 	}
 }
 
@@ -1641,10 +1701,14 @@ func (l *sharedDescendantLane) releaseSeededAnnounceHold(t *testing.T) {
 	case <-time.After(15 * time.Second):
 		t.Fatalf("the delegate's finalize tail never finished after the seeded announce release")
 	}
-	// The delivery cannot land inside a fixture-window run, so the report
-	// must be pending here; nothing below races the row's landing.
-	if pending, pendErr := l.delegateSess.pendingDelegateAttentionIDs(); pendErr != nil || len(pending) == 0 {
-		t.Fatalf("the retained child's report is not pending after the seeded window: pending=%v (%v)", pending, pendErr)
+	// The delivery cannot land inside a fixture-window run, so the retained
+	// child's first report must be the one pending row here; nothing below
+	// races the row's landing. A different pending row, or none, would mean
+	// the report was consumed before the test's own drive — the #5717 shape.
+	reportRowID := l.reportAttentionID()
+	pending, pendErr := l.delegateSess.pendingDelegateAttentionIDs()
+	if pendErr != nil || len(pending) != 1 || pending[0] != reportRowID {
+		t.Fatalf("the retained child's report is not the one pending row after the seeded window: pending=%v want %q (%v)", pending, reportRowID, pendErr)
 	}
 }
 
@@ -2949,7 +3013,7 @@ func TestDelegateAttentionHeldUpdateDoesNotLoopTheFinalizationDrain(t *testing.T
 	}
 	// The window's shape: the retained child's report landed pending — the
 	// parked window's drain cut left it for the drives below.
-	reportID := delegateAttentionID(delegateDeliveryID(lane.sharedDelegateID, 1))
+	reportID := lane.reportAttentionID()
 	windowPending, windowPendErr := lane.delegateSess.pendingDelegateAttentionIDs()
 	if windowPendErr != nil || len(windowPending) == 0 {
 		t.Fatalf("the retained child's report is not pending after the seeded window: pending=%v (%v)", windowPending, windowPendErr)
