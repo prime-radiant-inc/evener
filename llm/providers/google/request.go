@@ -356,9 +356,6 @@ func geminiImagePart(p llm.ContentPart) (map[string]any, error) {
 				mt = llm.InferMimeTypeFromPath(path)
 			}
 		}
-		if mt == "" {
-			mt = "image/png"
-		}
 		b, mt, err = googleInlineImageBytes(b, mt)
 		if err != nil {
 			return nil, err
@@ -597,11 +594,7 @@ func toGeminiContents(model string, msgs []llm.Message, multimodalToolResults bo
 						if !multimodalToolResults {
 							return "", nil, &llm.ConfigurationError{Message: fmt.Sprintf("google model %q does not support tool-result images: multimodal function responses require a Gemini 3 series model", model)}
 						}
-						mt := p.ToolResult.ImageMediaType
-						if mediaType == "" {
-							mt = "image/png"
-						}
-						imageBytes, imageType, err := googleInlineImageBytes(p.ToolResult.ImageData, mt)
+						imageBytes, imageType, err := googleInlineImageBytes(p.ToolResult.ImageData, p.ToolResult.ImageMediaType)
 						if err != nil {
 							return "", nil, err
 						}

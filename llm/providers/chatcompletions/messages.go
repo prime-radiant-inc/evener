@@ -317,11 +317,7 @@ func buildMultimodalParts(parts []llm.ContentPart, caps registry.Caps) ([]map[st
 			}
 			imgURL := p.Image.URL
 			if imgURL == "" && len(p.Image.Data) > 0 {
-				mt := p.Image.MediaType
-				if mt == "" {
-					mt = "image/png"
-				}
-				data, normalizedType, err := chatImageBytes(p.Image.Data, mt)
+				data, normalizedType, err := chatImageBytes(p.Image.Data, p.Image.MediaType)
 				if err != nil {
 					return nil, err
 				}

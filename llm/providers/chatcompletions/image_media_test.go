@@ -70,16 +70,67 @@ func TestToChatMessagesNormalizesUnsupportedImageMediaType(t *testing.T) {
 }
 
 // TestToChatMessagesKeepsAcceptedImageMediaType pins the byte-for-byte path for
-// a media type the image block already accepts.
+// a media type the image block already accepts, gif included.
 func TestToChatMessagesKeepsAcceptedImageMediaType(t *testing.T) {
-	data := testPNG(t)
-	out, err := toChatMessages([]llm.Message{chatImageMessageWith(data, "image/png")}, registry.Caps{}, false)
-	if err != nil {
-		t.Fatal(err)
+	for _, tc := range []struct {
+		name    string
+		claimed string
+		want    string
+	}{
+		{name: "png", claimed: "image/png", want: "image/png"},
+		{name: "jpeg", claimed: "image/jpeg", want: "image/jpeg"},
+		{name: "gif", claimed: "image/gif", want: "image/gif"},
+		{name: "webp", claimed: "image/webp", want: "image/webp"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			data := []byte("claimed " + tc.name)
+			out, err := toChatMessages([]llm.Message{chatImageMessageWith(data, tc.claimed)}, registry.Caps{}, false)
+			if err != nil {
+				t.Fatal(err)
+			}
+			want := "data:" + tc.want + ";base64," + base64.StdEncoding.EncodeToString(data)
+			if got := imageURLFromChatParts(t, out[0]["content"].([]map[string]any)); got != want {
+				t.Fatalf("accepted image URL changed: %q, want %q", got, want)
+			}
+		})
 	}
-	want := "data:image/png;base64," + base64.StdEncoding.EncodeToString(data)
-	if got := imageURLFromChatParts(t, out[0]["content"].([]map[string]any)); got != want {
-		t.Fatalf("accepted image URL changed: %q, want %q", got, want)
+}
+
+// TestToChatMessagesDerivesImageMediaTypeFromBytes pins the unclaimed case: a
+// client that sends no media type must still get the bytes' real type, not a
+// fabricated image/png that bypasses normalization (#4584).
+func TestToChatMessagesDerivesImageMediaTypeFromBytes(t *testing.T) {
+	for name, tc := range map[string]struct {
+		data      []byte
+		unchanged bool
+	}{
+		"png": {data: testPNG(t), unchanged: true},
+		"bmp": {data: testBMP(t)},
+	} {
+		t.Run(name, func(t *testing.T) {
+			out, err := toChatMessages([]llm.Message{chatImageMessageWith(tc.data, "")}, registry.Caps{}, false)
+			if err != nil {
+				t.Fatal(err)
+			}
+			url := imageURLFromChatParts(t, out[0]["content"].([]map[string]any))
+			if !strings.HasPrefix(url, "data:image/png;base64,") {
+				t.Fatalf("image URL = %q, want a PNG data URI", url)
+			}
+			if tc.unchanged {
+				want := "data:image/png;base64," + base64.StdEncoding.EncodeToString(tc.data)
+				if url != want {
+					t.Fatalf("an unclaimed png must keep its bytes: %q, want %q", url, want)
+				}
+				return
+			}
+			data, err := base64.StdEncoding.DecodeString(strings.TrimPrefix(url, "data:image/png;base64,"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, format, err := image.Decode(bytes.NewReader(data)); err != nil || format != "png" {
+				t.Fatalf("data URI bytes decode as (%q, %v), want png", format, err)
+			}
+		})
 	}
 }
 

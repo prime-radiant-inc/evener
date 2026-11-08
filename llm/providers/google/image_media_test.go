@@ -85,15 +85,57 @@ func TestBuildBodyNormalizesUnsupportedInlineImageMediaType(t *testing.T) {
 
 // TestBuildBodyKeepsAcceptedInlineImageMediaType pins that a media type Gemini
 // accepts still rides through byte-for-byte, so normalization cannot re-encode
-// every image on the hot path.
+// every image on the hot path. HEIC and HEIF are accepted by the wire but not
+// readable by the local decoder, so the pass-through is their only path.
 func TestBuildBodyKeepsAcceptedInlineImageMediaType(t *testing.T) {
-	data := testPNG(t)
-	req := llm.Request{Model: "gemini-x", Messages: []llm.Message{
-		{Role: llm.RoleUser, Content: []llm.ContentPart{{Kind: llm.ContentImage, Image: &llm.ImageData{Data: data, MediaType: "image/png"}}}},
-	}}
-	inline := geminiBuild(t, req, protoRes(nil))["contents"].([]map[string]any)[0]["parts"].([]map[string]any)[0]["inlineData"].(map[string]any)
-	if inline["mimeType"] != "image/png" || inline["data"] != base64.StdEncoding.EncodeToString(data) {
-		t.Fatalf("accepted inline image changed: %#v", inline)
+	for _, tc := range []struct {
+		name    string
+		claimed string
+		want    string
+	}{
+		{name: "png", claimed: "image/png", want: "image/png"},
+		{name: "jpeg", claimed: "image/jpeg", want: "image/jpeg"},
+		{name: "webp", claimed: "image/webp", want: "image/webp"},
+		{name: "heic", claimed: "image/heic", want: "image/heic"},
+		{name: "heif", claimed: "image/heif", want: "image/heif"},
+		{name: "heic format name", claimed: "heic", want: "image/heic"},
+		{name: "heif format name", claimed: "heif", want: "image/heif"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			data := []byte("claimed " + tc.name)
+			req := llm.Request{Model: "gemini-x", Messages: []llm.Message{
+				{Role: llm.RoleUser, Content: []llm.ContentPart{{Kind: llm.ContentImage, Image: &llm.ImageData{Data: data, MediaType: tc.claimed}}}},
+			}}
+			inline := geminiBuild(t, req, protoRes(nil))["contents"].([]map[string]any)[0]["parts"].([]map[string]any)[0]["inlineData"].(map[string]any)
+			if inline["mimeType"] != tc.want || inline["data"] != base64.StdEncoding.EncodeToString(data) {
+				t.Fatalf("accepted inline image changed: %#v", inline)
+			}
+		})
+	}
+}
+
+// TestBuildBodyDerivesInlineMediaTypeFromBytes pins the unclaimed case: a
+// client that sends no media type must still get the bytes' real type, not a
+// fabricated image/png that bypasses normalization (#4584).
+func TestBuildBodyDerivesInlineMediaTypeFromBytes(t *testing.T) {
+	for name, tc := range map[string]struct {
+		data      []byte
+		unchanged bool
+	}{
+		"png": {data: testPNG(t), unchanged: true},
+		"bmp": {data: testBMP(t)},
+		"gif": {data: testGIF(t)},
+	} {
+		t.Run(name, func(t *testing.T) {
+			req := llm.Request{Model: "gemini-x", Messages: []llm.Message{
+				{Role: llm.RoleUser, Content: []llm.ContentPart{{Kind: llm.ContentImage, Image: &llm.ImageData{Data: tc.data}}}},
+			}}
+			inline := geminiBuild(t, req, protoRes(nil))["contents"].([]map[string]any)[0]["parts"].([]map[string]any)[0]["inlineData"].(map[string]any)
+			requirePNGInlineData(t, inline)
+			if tc.unchanged && inline["data"] != base64.StdEncoding.EncodeToString(tc.data) {
+				t.Fatalf("an unclaimed png must keep its bytes: %#v", inline)
+			}
+		})
 	}
 }
 
