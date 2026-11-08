@@ -75,6 +75,13 @@ test("attention phases read as attention while the run is open", () => {
   }
 });
 
+test("the wire's attention fact reads as attention while the run is open", () => {
+  const now = Date.parse(RUNNING_AT) + 5_000;
+  expect(delegateDotState({ ...silentSinceStart(), needsAttention: true }, now)).toBe("attention");
+  // A settled row reads by its outcome; a stale attention flag cannot outrank it.
+  expect(delegateDotState({ ...silentSinceStart(), terminal: true, needsAttention: true }, now)).toBe("idle");
+});
+
 test("a terminal row reads by its outcome: failed red, done idle, terminal over attention", () => {
   const now = Date.parse(RUNNING_AT) + 5_000;
   expect(delegateDotState({ ...silentSinceStart(), terminal: true, outcome: "failed" }, now)).toBe("failed");

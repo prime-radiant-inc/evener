@@ -40,7 +40,8 @@ export interface DelegateTiming {
 // timing fields delegateTiming measures the quiet age from. Either wire shape
 // - the activity tree's ActivityDelegate or the thread snapshot's
 // EvenerDelegateInfo - satisfies it.
-export type DelegateDotFields = Pick<ActivityDelegate, "outcome" | "status" | "phase"> & DelegateTimingFields;
+export type DelegateDotFields = Pick<ActivityDelegate, "outcome" | "status" | "phase" | "needsAttention"> &
+  DelegateTimingFields;
 
 /** What a subagent row's leading dot says: fresh work, work gone quiet,
  * attention owed, a failure, or a settled row that shows no dot at all. */
@@ -71,6 +72,9 @@ export function delegateDotState(delegate: DelegateDotFields, now: number): Dele
         : isFailedDelegateOutcome(delegate.outcome);
     return failed ? "failed" : "idle";
   }
+  if (delegate.needsAttention === true) return "attention";
+  // Older producers never send needsAttention; their phase-valued attention
+  // vocabulary still reads as attention when one arrives.
   if (ATTENTION_PHASES.has(delegate.phase ?? "")) return "attention";
   if (isActivityFailure(undefined, delegate.status)) return "failed";
   const { quietForMs } = delegateTiming(delegate, now);

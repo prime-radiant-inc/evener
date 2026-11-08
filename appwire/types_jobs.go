@@ -67,22 +67,26 @@ type JobActivityJob struct {
 }
 
 type JobActivityDelegate struct {
-	DelegateID          string                 `json:"delegateId"`
-	OwnerSessionID      string                 `json:"ownerSessionId,omitempty"`
-	RootSessionID       string                 `json:"rootSessionId,omitempty"`
-	ChildSessionID      string                 `json:"childSessionId"`
-	ChildRef            string                 `json:"childRef"`
-	ParentDelegateID    string                 `json:"parentDelegateId,omitempty"`
-	Type                string                 `json:"type,omitempty"`
-	Lifecycle           string                 `json:"lifecycle,omitempty"`
-	Phase               string                 `json:"phase,omitempty"`
-	Status              string                 `json:"status,omitempty"`
-	ProjectionRevision  uint64                 `json:"projectionRevision,omitempty"`
-	Outcome             string                 `json:"outcome,omitempty"`
-	Reason              string                 `json:"reason,omitempty"`
-	Error               string                 `json:"error,omitempty"`
-	Terminal            bool                   `json:"terminal,omitempty"`
-	Resumable           bool                   `json:"resumable,omitempty"`
+	DelegateID         string `json:"delegateId"`
+	OwnerSessionID     string `json:"ownerSessionId,omitempty"`
+	RootSessionID      string `json:"rootSessionId,omitempty"`
+	ChildSessionID     string `json:"childSessionId"`
+	ChildRef           string `json:"childRef"`
+	ParentDelegateID   string `json:"parentDelegateId,omitempty"`
+	Type               string `json:"type,omitempty"`
+	Lifecycle          string `json:"lifecycle,omitempty"`
+	Phase              string `json:"phase,omitempty"`
+	Status             string `json:"status,omitempty"`
+	ProjectionRevision uint64 `json:"projectionRevision,omitempty"`
+	Outcome            string `json:"outcome,omitempty"`
+	Reason             string `json:"reason,omitempty"`
+	Error              string `json:"error,omitempty"`
+	Terminal           bool   `json:"terminal,omitempty"`
+	Resumable          bool   `json:"resumable,omitempty"`
+	// NeedsAttention means the open run is waiting on a person. The shared
+	// subagent dot reads it as attention; the durable phase stays running while
+	// a question or approval blocks the run.
+	NeedsAttention      bool                   `json:"needsAttention,omitempty"`
 	NotResumableReason  string                 `json:"notResumableReason,omitempty"`
 	Mandate             string                 `json:"mandate,omitempty"`
 	Task                string                 `json:"task,omitempty"`

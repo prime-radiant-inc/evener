@@ -1,6 +1,8 @@
 // Strict client-side parser and disclosure-state helpers for recursive
 // evener/jobs/list activity trees. Wire truth: appwire-client/typescript/types.gen.ts's
 // JobActivity* interfaces and docs/appwire-protocol.md's json field catalog.
+
+import { lifecycleStateIsFailed } from "./lifecycle";
 import { isPlainObject } from "./plainObject";
 
 export interface ActivityCounts {
@@ -25,18 +27,21 @@ export function isFailedJobOutcome(outcome: string | undefined): boolean {
 }
 
 export function isFailedDelegateOutcome(outcome: string | undefined): boolean {
-  return outcome === "failed" || outcome === "exhausted";
+  return outcome !== undefined && lifecycleStateIsFailed("delegateOutcome", outcome);
 }
 
 export function isActivityFailure(outcome: string | undefined, status: string | undefined): boolean {
   if (isFailedJobOutcome(outcome) || isFailedDelegateOutcome(outcome)) return true;
   const normalized = status?.trim().toLowerCase();
+  if (!normalized) return false;
+  // "error" belongs to the transcript's failure vocabulary, not a lifecycle
+  // machine; the rest come from the declared job, delegate-run and delegate
+  // machines so this list cannot drift from the daemon's.
   return (
-    normalized === "failed" ||
-    normalized === "exhausted" ||
     normalized === "error" ||
-    normalized === "command_exited_nonzero" ||
-    normalized === "command_killed"
+    lifecycleStateIsFailed("job", normalized) ||
+    lifecycleStateIsFailed("delegateRun", normalized) ||
+    lifecycleStateIsFailed("delegate", normalized)
   );
 }
 
@@ -141,6 +146,7 @@ export interface ActivityDelegate {
   error?: string;
   terminal?: boolean;
   resumable?: boolean;
+  needsAttention?: boolean;
   notResumableReason?: string;
   mandate?: string;
   task?: string;
@@ -543,6 +549,7 @@ function parseDelegate(raw: unknown, depth: number): ParseResult<ActivityDelegat
     "reportPreviewTruncated",
     "terminal",
     "resumable",
+    "needsAttention",
     "structuredResultValid",
     "exhaustionResumable",
     "parentWatchGranted",

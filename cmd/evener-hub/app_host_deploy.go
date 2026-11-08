@@ -166,21 +166,10 @@ func validateClientOperationID(id string) error {
 
 // operationWireState maps a record's durable state onto the wire's closed set.
 func operationWireState(state hostops.State) (appwire.OperationState, error) {
-	switch state {
-	case hostops.StatePending:
-		return appwire.OperationStatePending, nil
-	case hostops.StateRunning:
-		return appwire.OperationStateRunning, nil
-	case hostops.StateComplete:
-		return appwire.OperationStateComplete, nil
-	case hostops.StateFailed:
-		return appwire.OperationStateFailed, nil
-	case hostops.StateInterrupted:
-		return appwire.OperationStateInterrupted, nil
-	case hostops.StateOrphanUnverified:
-		return appwire.OperationStateOrphanUnverified, nil
+	if !state.Valid() {
+		return "", fmt.Errorf("hub: record state %q is outside the wire's operation set", state)
 	}
-	return "", fmt.Errorf("hub: record state %q is outside the wire's operation set", state)
+	return appwire.OperationState(state), nil
 }
 
 // liveHost resolves name from the live registry.

@@ -16,7 +16,6 @@ import (
 	"unicode/utf8"
 
 	"primeradiant.com/evener/agent/activitybound"
-	"primeradiant.com/evener/agent/internal/delegatestore"
 	"primeradiant.com/evener/agent/internal/jobstore"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/appwire"
@@ -1143,6 +1142,7 @@ func projectStableActivityDelegate(snapshot activitySessionSnapshot, row delegat
 		Status:              string(row.lifecycle),
 		ProjectionRevision:  row.revision,
 		Resumable:           row.resumable,
+		NeedsAttention:      row.needsAttention,
 		NotResumableReason:  activitybound.Truncate(row.notResumableReason, activityMaxDelegateProseRunes),
 		Mandate:             task,
 		Task:                task,
@@ -1434,21 +1434,11 @@ func offenderType(typ jobstore.JobType) string {
 }
 
 func activityOutcome(status jobstore.Status) (bool, string) {
-	switch status {
-	case jobstore.StatusRunning:
-		return false, ""
-	// A command that exited nonzero or was signalled is still a FAILURE
-	// for the activity rollup, exactly like a machinery failure or an
-	// exhausted delegate: attention follows the run, whatever broke it.
-	case jobstore.StatusFailed, jobstore.StatusCommandExitedNonzero, jobstore.StatusCommandKilled, jobstore.StatusExhausted:
-		return true, "failure"
-	case jobstore.StatusCompleted:
-		return true, "success"
-	case jobstore.StatusCancelled, jobstore.StatusStopped:
-		return true, "neutral"
-	default:
-		return status.IsTerminal(), ""
-	}
+	// A command that exited nonzero or was signalled is still a FAILURE for the
+	// activity rollup, exactly like a machinery failure or an exhausted
+	// delegate: attention follows the run, whatever broke it. The declared job
+	// machine owns that split.
+	return status.IsTerminal(), appwire.JobOutcome(status)
 }
 
 func aggregateActivity(entries []appwire.JobActivityEntry, branch appwire.JobActivityBranchState) (appwire.JobActivityCounts, string) {
@@ -1506,16 +1496,7 @@ func aggregateActivity(entries []appwire.JobActivityEntry, branch appwire.JobAct
 }
 
 func activityDelegateOutcome(outcome string) string {
-	switch delegatestore.OutcomeStatus(outcome) {
-	case delegatestore.OutcomeFailed, delegatestore.OutcomeExhausted:
-		return "failure"
-	case delegatestore.OutcomeCompleted:
-		return "success"
-	case delegatestore.OutcomeCancelled, delegatestore.OutcomeStopped:
-		return "neutral"
-	default:
-		return ""
-	}
+	return appwire.DelegateOutcomeRollup(appwire.DelegateOutcome(outcome))
 }
 
 func activityBranchComplete(branch appwire.JobActivityBranchState) bool {

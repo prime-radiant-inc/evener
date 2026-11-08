@@ -1,7 +1,9 @@
 package appwire
 
+// IsActiveThreadStatus reports whether a wire thread status means a turn is
+// running.
 func IsActiveThreadStatus(status string) bool {
-	return status == ThreadStatusActive
+	return threadStatusMachine.Class(status) == LifecycleActive && threadStatusMachine.HasState(status)
 }
 
 // IsRestingThreadStatus reports a session resting between turns: idle, or
@@ -10,31 +12,22 @@ func IsActiveThreadStatus(status string) bool {
 // -- releasing a queue a Stop parked, the note-save wake warning -- apply to
 // both.
 func IsRestingThreadStatus(status string) bool {
-	return status == ThreadStatusIdle || status == ThreadStatusSystemError
+	state, ok := threadStatusMachine.State(status)
+	return ok && state.Resting
 }
 
 func IsActiveTurnStatus(status string) bool {
-	return status == TurnStatusInProgress
+	return turnMachine.Class(status) == LifecycleActive && turnMachine.HasState(status)
 }
 
 func IsTerminalTurnStatus(status string) bool {
-	switch status {
-	case TurnStatusCompleted, TurnStatusFailed, TurnStatusInterrupted:
-		return true
-	default:
-		return false
-	}
+	return turnMachine.IsTerminal(status)
 }
 
 func IsActiveItemStatus(status string) bool {
-	return status == TurnStatusInProgress
+	return IsActiveTurnStatus(status)
 }
 
 func IsTerminalItemStatus(status string) bool {
-	switch status {
-	case TurnStatusCompleted, TurnStatusFailed, TurnStatusInterrupted:
-		return true
-	default:
-		return false
-	}
+	return IsTerminalTurnStatus(status)
 }

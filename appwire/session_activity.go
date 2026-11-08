@@ -140,12 +140,16 @@ type SessionDelegate struct {
 	Error                  string `json:"error,omitempty"`
 	Terminal               bool   `json:"terminal"`
 	Resumable              bool   `json:"resumable"`
-	NotResumableReason     string `json:"notResumableReason,omitempty"`
-	Model                  string `json:"model,omitempty"`
-	ReasoningEffort        string `json:"reasoningEffort,omitempty"`
-	RunStartedAt           string `json:"runStartedAt,omitempty"`
-	RunEndedAt             string `json:"runEndedAt,omitempty"`
-	LatestActivityAt       string `json:"latestActivityAt,omitempty"`
+	// NeedsAttention means the open run is waiting on a person (a question or
+	// an approval). It is the fact the shared subagent dot renders as attention;
+	// phase alone cannot say it because the phase stays running.
+	NeedsAttention     bool   `json:"needsAttention,omitempty"`
+	NotResumableReason string `json:"notResumableReason,omitempty"`
+	Model              string `json:"model,omitempty"`
+	ReasoningEffort    string `json:"reasoningEffort,omitempty"`
+	RunStartedAt       string `json:"runStartedAt,omitempty"`
+	RunEndedAt         string `json:"runEndedAt,omitempty"`
+	LatestActivityAt   string `json:"latestActivityAt,omitempty"`
 	// LatestIntent is the open generation's newest stated tool-call intent
 	// ("Reading the board's row tests."), one line of at most MaxIntentRunes:
 	// the controller's live value when non-empty, else the folded journal

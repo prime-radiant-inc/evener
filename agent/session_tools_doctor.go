@@ -86,7 +86,7 @@ func execDoctorEvener(deps *toolDeps, args map[string]any) (any, error) {
 	// The plugin check reads the config root, not a state root, so it runs
 	// without one.
 	stateBase := ""
-	if command != "plugins" {
+	if command != "plugins" && command != "lifecycle" {
 		var err error
 		if stateBase, err = doctorStateBase(deps, stringArg(args, "state_dir")); err != nil {
 			return nil, err
@@ -99,9 +99,9 @@ func execDoctorEvener(deps *toolDeps, args map[string]any) (any, error) {
 	// session would otherwise get a state-root-wide result with no signal,
 	// and selector-taking commands must not run with an empty selector.
 	switch command {
-	case "turnids", "sessions", "audit", "plugins":
+	case "turnids", "sessions", "audit", "plugins", "lifecycle":
 		if strings.TrimSpace(selector) != "" {
-			return nil, fmt.Errorf("doctor command %q takes no selector (it is a state-root-wide sweep)", command)
+			return nil, fmt.Errorf("doctor command %q takes no selector", command)
 		}
 	default:
 		if err := doctorRequireSelector(command, selector); err != nil {
@@ -265,6 +265,12 @@ func dispatchDoctorEvener(deps *toolDeps, args map[string]any, command, stateBas
 			return nil, fmt.Errorf("plugins: %w", err)
 		}
 		return findings, nil
+
+	case "lifecycle":
+		if strings.TrimSpace(stringArg(args, "state_dir")) != "" {
+			return nil, errors.New("doctor command \"lifecycle\" takes no state_dir (the machines are compiled declarations, not session evidence)")
+		}
+		return doctor.Lifecycle(), nil
 	}
 
 	// Unreachable: execDoctorEvener's enum gate covers every command.

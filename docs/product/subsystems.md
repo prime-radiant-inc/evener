@@ -12,6 +12,12 @@ a retry, refusal, banner, or repair action.
 Version skew between hub, daemons, clients and remote hubs follows the
 direction rules in the [compatibility policy](README.md#compatibility).
 
+Session, turn, job, delegate, watch, task, goal, host operation and
+client-mutation lifecycles, their owners and their legal transitions are
+catalogued in [lifecycles](lifecycles.md). The core machines are declared once
+in [`appwire/lifecycle.go`](../../appwire/lifecycle.go), and clients read the
+generated catalog instead of keeping status lists of their own.
+
 ## How the product fits together
 
 ```mermaid
