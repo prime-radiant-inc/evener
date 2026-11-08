@@ -297,6 +297,19 @@ func annotateThreadProjects(threads []appwire.Thread) {
 	}
 }
 
+// annotateThreadProject returns thread with the hub's canonical project
+// identity applied. annotateThreadProjects updates the elements of a slice in
+// place; a response that carries one thread has no such slice to retain, so it
+// must keep the returned value. Local identity authority is the same as the
+// list projection's: a local thread's CWD resolves against this hub, and that
+// canonical identity replaces whatever the source sent. annotateThreadProjects'
+// locality gate still leaves a remote thread's identity untouched.
+func annotateThreadProject(thread appwire.Thread) appwire.Thread {
+	threads := []appwire.Thread{thread}
+	annotateThreadProjects(threads)
+	return threads[0]
+}
+
 // resolveThreadProject is annotateThreadProjects' resolution seam. A hook that
 // reconstructs a past entry's metadata for a live merge must not pay for
 // project identity the merge cannot use (#4692); tests replace this to prove

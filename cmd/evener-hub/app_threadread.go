@@ -1338,9 +1338,7 @@ func projectPastEntryThread(ctx context.Context, cfg hubcore.WebConfig, entry hu
 		thread = reconcileAndEnrichPastThread(entry, thread)
 	}
 	if projection.projects {
-		annotated := []appwire.Thread{thread}
-		annotateThreadProjects(annotated)
-		thread = annotated[0]
+		thread = annotateThreadProject(thread)
 	}
 	return thread, nil
 }

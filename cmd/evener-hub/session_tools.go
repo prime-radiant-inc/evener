@@ -769,7 +769,7 @@ func (o *sessionOperations) read(ctx context.Context, params appwire.ThreadReadP
 			resp.LatestExecutionTurnID = pastPage.LatestExecutionTurnID
 			resp = withReadHistoryIdentity(resp, fallbackHistoryIdentity(read.response, *pastPage))
 			resp.Thread = enrichSourcedThreadImages(source, resp.Thread)
-			annotateThreadProjects([]appwire.Thread{resp.Thread})
+			resp.Thread = annotateThreadProject(resp.Thread)
 		} else {
 			latestExecutionTurnID := resp.LatestExecutionTurnID
 			candidates, candidateErr := sourceItemCandidateResultForRead(ctx, source, params, resp)
@@ -783,7 +783,7 @@ func (o *sessionOperations) read(ctx context.Context, params appwire.ThreadReadP
 				// with no route on them (the daemon does not serve the bytes; this
 				// hub does), so route stamping stays inside the final packer.
 				response.Thread = enrichSourcedThreadImages(source, response.Thread)
-				annotateThreadProjects([]appwire.Thread{response.Thread})
+				response.Thread = annotateThreadProject(response.Thread)
 				return response, nil
 			}, itemLimit)
 			if packErr != nil {
@@ -800,7 +800,7 @@ func (o *sessionOperations) read(ctx context.Context, params appwire.ThreadReadP
 		// so the route is stamped here before the file-backed pass adds any
 		// /doc/image descriptors of its own.
 		resp.Thread = enrichSourcedThreadImages(source, resp.Thread)
-		annotateThreadProjects([]appwire.Thread{resp.Thread})
+		resp.Thread = annotateThreadProject(resp.Thread)
 	}
 	// Local forks copy persisted history in the hub. A live daemon's
 	// own unsupported fork flag does not describe this hub-owned action.
