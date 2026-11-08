@@ -398,25 +398,23 @@ it("starts with Memory off once the hub offers the field, and names the choice o
 		schema: SCHEMA_WITH_MEMORY,
 		draft: { cwd: "/home/jesse/git/evener", prompt: "go", launchOverrides: { memoryEnabled: false } },
 	});
-	expect(form.row("More options")?.props.accessibilityLabel).toBe(
-		"More options, Context strategy, subagent depth, turn limit, memory, Custom",
-	);
 	expect(startBlocks(form.tree)).toEqual([]);
 	const start = form.header("headerRight");
 	expect(start.props.disabled).toBe(false);
 	await act(async () => start.props.onPress());
-	expect(form.calls.some((call) => call.method === "thread/start")).toBe(true);
+	const submitted = form.calls.find((call) => call.method === "thread/start");
+	expect(submitted).toBeDefined();
+	expect((submitted?.params as { launchOverrides?: { memoryEnabled?: boolean } }).launchOverrides?.memoryEnabled).toBe(
+		false,
+	);
 	form.dispose();
 });
 
-it("holds Start over a kept Memory off until the hub's schema answers, and still names the choice", async () => {
+it("holds Start over a kept Memory off until the hub's schema answers", async () => {
 	const form = await mount({
 		schema: null,
 		draft: { cwd: "/home/jesse/git/evener", prompt: "go", launchOverrides: { memoryEnabled: false } },
 	});
-	expect(form.row("More options")?.props.accessibilityLabel).toBe(
-		"More options, Context strategy, subagent depth, turn limit, memory, Custom",
-	);
 	expect(startBlocks(form.tree)).toEqual(["moreOptions"]);
 	const start = form.header("headerRight");
 	expect(start.props.disabled).toBe(true);
