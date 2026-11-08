@@ -77,6 +77,9 @@ Results are the CLI's `--json` struct shapes. The same commands also run as
 Flag-level detail lives in the CLI's per-subcommand `--help` and in the
 `doctor_evener` tool's argument descriptions, not here.
 
+The declared states, terminality and legal transitions are catalogued in
+`docs/product/lifecycles.md`. Read it before treating a status as a bug.
+
 **apilog empties caveat:** `recorded_empty` (and `apilog --health`'s
 `errors_by_class`) reflect the compact fields recorded at call time, not a
 re-decode of the response body. Logs written before the

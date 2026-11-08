@@ -163,6 +163,12 @@ func TestDelegatePhaseTransitions(t *testing.T) {
 
 func TestSessionLifecycleEdges(t *testing.T) {
 	machine := SessionLifecycle()
+	if !machine.CanTransition(string(SessionStateIdle), string(SessionStateIdle)) {
+		t.Error("idle session cannot re-publish idle")
+	}
+	if !machine.CanTransition(string(SessionStateAwaiting), string(SessionStateAwaiting)) {
+		t.Error("awaiting session cannot re-publish awaiting")
+	}
 	if !machine.IsTerminal(string(SessionStateClosed)) {
 		t.Error("closed session is not terminal")
 	}

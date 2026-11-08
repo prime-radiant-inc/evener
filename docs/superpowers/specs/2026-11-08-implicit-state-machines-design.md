@@ -22,10 +22,12 @@ dot keyed its amber attention state on `phase` values (`awaiting_approval`,
 ## Goals
 
 - One declaration for each core machine: states, classes, terminality, legal
-  edges, initial state.
+  edges where the owner drives transitions, and an initial state where the
+  machine starts somewhere.
 - Owners use the declared type or table instead of parallel string sets.
-- Clients derive state class and failure from a generated catalog, not local
-  lists.
+- Clients derive the activity failure class and the state class they ask for
+  from a generated catalog. The thread-attention precedence rule stays its own
+  because it ranks several facts, not one state.
 - Agents can read the declaration through the doctor tool without parsing a
   transcript.
 - The delegate attention dot reads the fact the daemon actually sends.
@@ -67,17 +69,27 @@ dot keyed its amber attention state on `phase` values (`awaiting_approval`,
 
 `appwire/lifecycle.go` declares:
 
-- `MachineKind`, `LifecycleClass` (`active`, `waiting`, `settled`, `failed`,
-  `neutral`, `ended`), `LifecycleState` (name, class, terminal, resting,
-  summary), `LifecycleEdge`, `LifecycleMachine`.
+- `MachineKind`, `LifecycleClass`, `LifecycleState` (name, class, terminal,
+  resting, summary), `LifecycleEdge`, `LifecycleMachine`.
 - `LifecycleMachines()` in a stable order, with owned slices.
 - `Validate()` checking edges name declared states, the initial state exists,
   and no terminal state has an outgoing edge.
 - The twelve core machines: session, turn, thread status, job, delegate phase,
   delegate run, delegate outcome, watch, task, goal, host operation, mutation
   projection.
+- Thread status is observed: it starts at `notLoaded` and declares no owner
+  transitions. Delegate outcomes are terminal evidence: they declare no
+  initial state and no transitions.
 - Derived helpers: `JobOutcome`, `DelegateOutcomeRollup`,
   `DelegateRunTerminal`, `WatchState`.
+
+Class meanings: `active` means work is in progress or owed; `waiting` means
+the entity waits on a person; `idle` means no work is in progress and no run
+has completed in this state (resting, not started, or resumable); `settled`
+means a run finished successfully or the entity is done and may be reopened;
+`failed` means something broke; `neutral` means a run was ended deliberately;
+`ended` means there is no live entity to act on (closed, removed, or not
+loaded), without promising terminality.
 
 The session, job, delegate phase/outcome, delegate run, goal and task types are
 declared in `appwire`. Internal owners alias them:
@@ -117,14 +129,18 @@ callers compile unchanged and existing persisted bytes keep their meaning.
 `types.gen.ts`. `appwire-client/typescript/lifecycle.ts` exposes
 `lifecycleMachine`, `lifecycleState`, `lifecycleStateClass`,
 `lifecycleStateIsTerminal`, `lifecycleStateIsResting` and
-`lifecycleStateIsFailed`.
+`lifecycleStateIsFailed`. `lifecycleStateClass` returns `active` for an unknown
+state, matching Go's `Class` fallback; `lifecycleState` returns no facts for
+one. `activityData.ts` calls `lifecycleStateClass` for its failure rule and
+`isFailedDelegateOutcome` calls `lifecycleStateIsFailed`.
 
 `activityData.ts` classifies activity failures through the generated facts.
 `testdata/lifecycle/state_classes.json` pins a representative case per machine;
 a Go test and a TypeScript test both read it.
 
-`appwire.MutationProjectionState` stays out of the generator because the client
-has a local `notProjected` sentinel that is not a wire value.
+`appwire.MutationProjectionState` stays out of the generator because the
+client's receipt bookkeeping accepts a local `notProjected` value outside the
+wire set.
 
 ### Delegate attention
 
@@ -145,7 +161,8 @@ the bundled doctoring skill.
 ## Recovery and preservation
 
 - An unknown state is not terminal and classifies as active, so a newer
-  daemon's state stays visible instead of disappearing as settled.
+  daemon's state stays visible instead of disappearing as settled. Go's `Class`
+  and the client's `lifecycleStateClass` both apply that fallback.
 - `needsAttention` is `omitempty`, so a false value does not change existing
   wire JSON or fingerprint comparisons.
 - Historical states (`orphan-unverified`) keep their recorded state; the store
@@ -153,7 +170,36 @@ the bundled doctoring skill.
 - Task `done` and `cancelled` stay reopened; the machine marks them settled, not
   terminal.
 - The delegate phase compatibility strings remain accepted by the job filter.
+- The job-list filter and its model-facing schema both come from
+  `appwire.JobStatusFilterNames`, so the compatibility set cannot be accepted
+  by one and omitted by the other.
 - No persisted record is rewritten, and no client cache key changes.
+
+## Compatibility
+
+- An older daemon omits `needsAttention`; the dot falls back to the legacy
+  phase vocabulary and never reads attention from an absent fact.
+- An older client ignores the added key; the field is `omitempty`, so a false
+  value changes no existing JSON or fingerprint.
+- A newer daemon's unknown state reads active in Go and the client catalog,
+  and is not terminal; the owner's existing state map still decides what it
+  can do next.
+
+## Acceptance
+
+- Every registered machine validates, and the shared fixture matches its
+  class, terminality and resting facts in both Go and TypeScript.
+- The job, delegate, session, turn, thread-status, task, watch, goal and
+  host-operation predicates match their old results for known and unknown
+  states.
+- A delegate with `needsAttention` set produces a `SessionDelegate` and a
+  `JobActivityDelegate` carrying it; an open row reads attention and a
+  terminal row reads by outcome.
+- `job_list`'s status schema and its handler accept the same declared set.
+- `evener doctor lifecycle` returns the registry with no selector and rejects
+  one.
+- Generated output is current, TypeScript typechecks, and the touched tests
+  and lint gates pass.
 
 ## Whole-journey test plan
 
@@ -164,9 +210,10 @@ the bundled doctoring skill.
   guards.
 - Session, turn, thread-status, task, watch, goal and host-operation predicates
   match their old results, including unknown states.
-- A delegate blocked on attention carries `needsAttention` on the activity row
-  and the dot reads attention; a terminal row reads by outcome.
-- The job-status filter accepts both vocabularies.
+- Both activity producers carry `needsAttention` on their delegate rows, the
+  dot reads attention, and a terminal row reads by outcome.
+- The job-status filter and the `job_list` schema accept both vocabularies.
+- An unknown state classifies as active in Go and in the client catalog.
 - `evener doctor lifecycle` returns the machines with no selector and rejects a
   stray selector.
 - Generated output is current (`make lint-generated`); TypeScript typechecks and

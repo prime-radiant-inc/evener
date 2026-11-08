@@ -29,10 +29,14 @@ class. The registry is the shared declaration: `appwire` constants and
 predicates, the generated TypeScript unions and `LIFECYCLE_MACHINES`, and the
 doctor output all come from it.
 
-A state's **class** is one of `active`, `waiting`, `settled`, `failed`,
-`neutral`, or `ended`. **Terminal** means no legal transition leaves the state.
-Those two are independent: a failed turn rests (`threadStatus.systemError`) and
-is not terminal, while a cancelled job is neutral and terminal.
+A state's **class** is one of `active` (work is in progress or owed),
+`waiting` (waits on a person), `idle` (no work in progress and no completed run
+in this state: resting, not started, or resumable), `settled` (a run finished,
+or the entity is done and may be reopened), `failed` (something broke),
+`neutral` (ended deliberately), or `ended` (no live entity to act on: closed,
+removed, or not loaded). **Terminal** means no legal transition leaves the
+state. Those two are independent: a failed turn rests (`threadStatus.systemError`)
+and is not terminal, while a cancelled job is neutral and terminal.
 
 ## Registered machines
 

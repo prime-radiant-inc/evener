@@ -557,13 +557,7 @@ func jobListFilterFromArgs(args map[string]any) (listFilter, error) {
 func jobStatusArrayArg(args map[string]any, key string) ([]jobstore.Status, error) {
 	return stringListArg(args, key, func(s string) (jobstore.Status, error) {
 		status := jobstore.Status(s)
-		if slices.Contains(appwire.AllJobStatuses(), s) {
-			return status, nil
-		}
-		// A delegate activation job has always reported its aggregate phase as
-		// its status, so the filter accepts that vocabulary too. It is a
-		// declared delegate phase, not an invented job status.
-		if slices.Contains(appwire.AllDelegatePhases(), s) {
+		if slices.Contains(appwire.JobStatusFilterNames(), s) {
 			return status, nil
 		}
 		return "", fmt.Errorf("invalid job status %q", status)

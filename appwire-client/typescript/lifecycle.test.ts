@@ -62,6 +62,15 @@ describe("generated lifecycle catalog", () => {
     expect(lifecycleStateIsTerminal("job", "not-a-state")).toBe(false);
   });
 
+  test("resting and not-started states read idle, completed states read settled", () => {
+    expect(lifecycleStateClass("session", "idle")).toBe("idle");
+    expect(lifecycleStateClass("threadStatus", "idle")).toBe("idle");
+    expect(lifecycleStateClass("delegate", "idle")).toBe("idle");
+    expect(lifecycleStateClass("task", "open")).toBe("idle");
+    expect(lifecycleStateClass("job", "completed")).toBe("settled");
+    expect(lifecycleStateClass("task", "done")).toBe("settled");
+  });
+
   test("resting includes a failed rest and excludes working states", () => {
     expect(lifecycleStateIsResting("threadStatus", "idle")).toBe(true);
     expect(lifecycleStateIsResting("threadStatus", "systemError")).toBe(true);
@@ -81,6 +90,8 @@ describe("generated lifecycle catalog", () => {
     expect(lifecycleMachine("bogus")).toBeUndefined();
     expect(lifecycleState("bogus", "idle")).toBeUndefined();
     expect(lifecycleState("job", "bogus")).toBeUndefined();
+    // The class fallback matches Go: a newer daemon's state stays visible.
+    expect(lifecycleStateClass("job", "bogus")).toBe("active");
   });
 
   test("matches the shared cross-language classification contract", () => {

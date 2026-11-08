@@ -2,7 +2,7 @@
 // evener/jobs/list activity trees. Wire truth: appwire-client/typescript/types.gen.ts's
 // JobActivity* interfaces and docs/appwire-protocol.md's json field catalog.
 
-import { lifecycleStateIsFailed } from "./lifecycle";
+import { lifecycleStateClass, lifecycleStateIsFailed } from "./lifecycle";
 import { isPlainObject } from "./plainObject";
 
 export interface ActivityCounts {
@@ -39,9 +39,9 @@ export function isActivityFailure(outcome: string | undefined, status: string | 
   // machines so this list cannot drift from the daemon's.
   return (
     normalized === "error" ||
-    lifecycleStateIsFailed("job", normalized) ||
-    lifecycleStateIsFailed("delegateRun", normalized) ||
-    lifecycleStateIsFailed("delegate", normalized)
+    lifecycleStateClass("job", normalized) === "failed" ||
+    lifecycleStateClass("delegateRun", normalized) === "failed" ||
+    lifecycleStateClass("delegate", normalized) === "failed"
   );
 }
 

@@ -1,10 +1,10 @@
 [
-  {"machine": "session", "state": "idle", "class": "settled", "terminal": false, "resting": false},
+  {"machine": "session", "state": "idle", "class": "idle", "terminal": false, "resting": false},
   {"machine": "session", "state": "awaiting", "class": "waiting", "terminal": false, "resting": false},
   {"machine": "session", "state": "closed", "class": "ended", "terminal": true, "resting": false},
   {"machine": "turn", "state": "inProgress", "class": "active", "terminal": false, "resting": false},
   {"machine": "turn", "state": "failed", "class": "failed", "terminal": true, "resting": false},
-  {"machine": "threadStatus", "state": "idle", "class": "settled", "terminal": false, "resting": true},
+  {"machine": "threadStatus", "state": "idle", "class": "idle", "terminal": false, "resting": true},
   {"machine": "threadStatus", "state": "active", "class": "active", "terminal": false, "resting": false},
   {"machine": "threadStatus", "state": "systemError", "class": "failed", "terminal": false, "resting": true},
   {"machine": "job", "state": "running", "class": "active", "terminal": false, "resting": false},
@@ -25,5 +25,7 @@
   {"machine": "hostOperation", "state": "orphan-unverified", "class": "neutral", "terminal": false, "resting": false},
   {"machine": "mutationProjection", "state": "pending", "class": "active", "terminal": false, "resting": false},
   {"machine": "hostOperation", "state": "complete", "class": "settled", "terminal": true, "resting": false},
-  {"machine": "mutationProjection", "state": "removed", "class": "ended", "terminal": true, "resting": false}
+  {"machine": "mutationProjection", "state": "removed", "class": "ended", "terminal": true, "resting": false},
+  {"machine": "delegate", "state": "idle", "class": "idle", "terminal": false, "resting": false},
+  {"machine": "task", "state": "open", "class": "idle", "terminal": false, "resting": false}
 ]

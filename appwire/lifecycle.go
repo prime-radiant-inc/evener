@@ -11,9 +11,9 @@
 //
 // A machine may contain an observed state that no owner transitions into
 // (SessionWatchStateUnknown is retained evidence). It is still declared,
-// because a client must classify it; it simply has no edges. Other machines,
-// such as turns and thread status, are projected from recorded evidence, but
-// their legal edges are still declared.
+// because a client must classify it; it simply has no edges. Turns and thread
+// status are projected from recorded evidence: turns declare their edges, and
+// thread status is observed with no owner transitions.
 package appwire
 
 import (
@@ -49,14 +49,19 @@ const (
 	LifecycleActive LifecycleClass = "active"
 	// LifecycleWaiting means the entity waits on a person before it can move.
 	LifecycleWaiting LifecycleClass = "waiting"
-	// LifecycleSettled means a run finished without failure or cancellation.
+	// LifecycleIdle means no work is in progress and no run has completed in
+	// this state: resting between runs, not started, or resumable.
+	LifecycleIdle LifecycleClass = "idle"
+	// LifecycleSettled means a run finished successfully, or the entity is
+	// done and may only be reopened.
 	LifecycleSettled LifecycleClass = "settled"
 	// LifecycleFailed means a run finished because something broke.
 	LifecycleFailed LifecycleClass = "failed"
 	// LifecycleNeutral means a run was ended deliberately (stopped, cancelled,
 	// interrupted) rather than finishing or breaking.
 	LifecycleNeutral LifecycleClass = "neutral"
-	// LifecycleEnded means the entity itself is gone and cannot move again.
+	// LifecycleEnded means there is no live entity to act on: closed, removed,
+	// or not loaded. It does not by itself promise the state is terminal.
 	LifecycleEnded LifecycleClass = "ended"
 )
 
@@ -82,8 +87,9 @@ type LifecycleEdge struct {
 	To   string `json:"to"`
 }
 
-// LifecycleMachine is one declared lifecycle: its states, its initial state,
-// and every legal edge between them.
+// LifecycleMachine is one declared lifecycle: its states, its initial state
+// where the machine starts somewhere, and every legal edge its owner drives.
+// An observed machine such as thread status may declare no transitions.
 type LifecycleMachine struct {
 	Kind        MachineKind      `json:"kind"`
 	Initial     string           `json:"initial,omitempty"`
@@ -291,12 +297,13 @@ var (
 		Kind:    MachineSession,
 		Initial: string(SessionStateIdle),
 		States: []LifecycleState{
-			{Name: string(SessionStateIdle), Class: LifecycleSettled, Summary: "resting between turns"},
+			{Name: string(SessionStateIdle), Class: LifecycleIdle, Summary: "resting between turns"},
 			{Name: string(SessionStateActive), Class: LifecycleActive, Summary: "running a turn"},
 			{Name: string(SessionStateAwaiting), Class: LifecycleWaiting, Summary: "resting with the next move owed to the human"},
 			{Name: string(SessionStateClosed), Class: LifecycleEnded, Terminal: true, Summary: "closed and unable to move again"},
 		},
 		Transitions: edges(
+			string(SessionStateIdle), string(SessionStateIdle),
 			string(SessionStateIdle), string(SessionStateActive),
 			string(SessionStateIdle), string(SessionStateAwaiting),
 			string(SessionStateIdle), string(SessionStateClosed),
@@ -304,6 +311,7 @@ var (
 			string(SessionStateActive), string(SessionStateAwaiting),
 			string(SessionStateActive), string(SessionStateClosed),
 			string(SessionStateAwaiting), string(SessionStateIdle),
+			string(SessionStateAwaiting), string(SessionStateAwaiting),
 			string(SessionStateAwaiting), string(SessionStateActive),
 			string(SessionStateAwaiting), string(SessionStateClosed),
 		),
@@ -326,9 +334,10 @@ var (
 	}
 
 	threadStatusMachine = LifecycleMachine{
-		Kind: MachineThreadStatus,
+		Kind:    MachineThreadStatus,
+		Initial: ThreadStatusNotLoaded,
 		States: []LifecycleState{
-			{Name: ThreadStatusIdle, Class: LifecycleSettled, Resting: true, Summary: "resting between turns"},
+			{Name: ThreadStatusIdle, Class: LifecycleIdle, Resting: true, Summary: "resting between turns"},
 			{Name: ThreadStatusActive, Class: LifecycleActive, Summary: "running a turn"},
 			{Name: ThreadStatusAwaiting, Class: LifecycleWaiting, Summary: "waiting on a question or a reply"},
 			{Name: ThreadStatusWarning, Class: LifecycleWaiting, Summary: "working with a warning that needs attention"},
@@ -367,7 +376,7 @@ var (
 		Kind:    MachineDelegate,
 		Initial: string(DelegatePhaseIdle),
 		States: []LifecycleState{
-			{Name: string(DelegatePhaseIdle), Class: LifecycleSettled, Summary: "no run is open; a new run may start"},
+			{Name: string(DelegatePhaseIdle), Class: LifecycleIdle, Summary: "no run is open; a new run may start"},
 			{Name: string(DelegatePhaseRunning), Class: LifecycleActive, Summary: "a run is in progress"},
 			{Name: string(DelegatePhaseSettling), Class: LifecycleActive, Summary: "a run is preparing its terminal packet"},
 			{Name: string(DelegatePhaseStopping), Class: LifecycleActive, Summary: "a stop is draining the open run"},
@@ -438,7 +447,7 @@ var (
 		Kind:    MachineTask,
 		Initial: string(TaskOpen),
 		States: []LifecycleState{
-			{Name: string(TaskOpen), Class: LifecycleSettled, Summary: "ready to start once its dependencies settle"},
+			{Name: string(TaskOpen), Class: LifecycleIdle, Summary: "ready to start once its dependencies settle"},
 			{Name: string(TaskInProgress), Class: LifecycleActive, Summary: "the task is being worked"},
 			{Name: string(TaskDone), Class: LifecycleSettled, Summary: "the task is done and may be reopened"},
 			{Name: string(TaskCancelled), Class: LifecycleNeutral, Summary: "the task is cancelled and may be reopened"},
@@ -488,7 +497,6 @@ var (
 			string(OperationStateRunning), string(OperationStateFailed),
 			string(OperationStateRunning), string(OperationStateInterrupted),
 			string(OperationStateRunning), string(OperationStateOrphanUnverified),
-			string(OperationStateOrphanUnverified), string(OperationStateOrphanUnverified),
 			string(OperationStateOrphanUnverified), string(OperationStateInterrupted),
 		),
 	}
@@ -614,6 +622,25 @@ func AllDelegateRunStatuses() []string { return delegateRunMachine.stateNames() 
 
 // AllDelegateOutcomes returns every declared delegate outcome in table order.
 func AllDelegateOutcomes() []string { return delegateOutcomeMachine.stateNames() }
+
+// JobStatusFilterNames is the set a job-list status filter accepts: every
+// declared job status plus every declared delegate phase, because a delegate
+// activation job has historically reported its aggregate phase as its status.
+// It is deduplicated and declared in this order so the handler and the
+// model-facing schema cannot disagree.
+func JobStatusFilterNames() []string {
+	names := append(AllJobStatuses(), AllDelegatePhases()...)
+	out := make([]string, 0, len(names))
+	seen := make(map[string]bool, len(names))
+	for _, name := range names {
+		if seen[name] {
+			continue
+		}
+		seen[name] = true
+		out = append(out, name)
+	}
+	return out
+}
 
 // AllGoalStatuses returns every declared goal status in table order.
 func AllGoalStatuses() []string { return goalMachine.stateNames() }

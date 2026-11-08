@@ -5,7 +5,7 @@
 // carrying their own status lists.
 import { LIFECYCLE_MACHINES } from "./types.gen";
 
-export type LifecycleClass = "active" | "waiting" | "settled" | "failed" | "neutral" | "ended";
+export type LifecycleClass = "active" | "waiting" | "idle" | "settled" | "failed" | "neutral" | "ended";
 
 export interface LifecycleStateFacts {
   class: LifecycleClass;
@@ -33,9 +33,10 @@ export function lifecycleState(kind: string, name: string): LifecycleStateFacts 
   return MACHINES[kind]?.states[name];
 }
 
-/** The state's presentation family, or undefined when the state is unknown. */
-export function lifecycleStateClass(kind: string, name: string): LifecycleClass | undefined {
-  return lifecycleState(kind, name)?.class;
+/** The state's presentation family. An unknown state reads active, matching
+ * the Go Class fallback, so a newer daemon's state never disappears as settled. */
+export function lifecycleStateClass(kind: string, name: string): LifecycleClass {
+  return lifecycleState(kind, name)?.class ?? "active";
 }
 
 /** Whether the declared state ends the entity. An unknown state is not terminal. */

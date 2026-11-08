@@ -340,10 +340,5 @@ func SplitNonAgentJobs(jobs []appwire.EvenerJobInfo) ([]appwire.EvenerJobInfo, [
 }
 
 func terminalJobStatus(status string) bool {
-	switch strings.TrimSpace(status) {
-	case "completed", "failed", "cancelled", "stopped", "exhausted", "command_exited_nonzero", "command_killed":
-		return true
-	default:
-		return false
-	}
+	return appwire.JobStatus(strings.TrimSpace(status)).IsTerminal()
 }

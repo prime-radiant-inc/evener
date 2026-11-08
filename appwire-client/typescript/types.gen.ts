@@ -5242,7 +5242,7 @@ export const LIFECYCLE_MACHINES = {
   "session": {
     initial: "idle",
     states: {
-      "idle": { class: "settled", terminal: false, summary: "resting between turns" },
+      "idle": { class: "idle", terminal: false, summary: "resting between turns" },
       "active": { class: "active", terminal: false, summary: "running a turn" },
       "awaiting": { class: "waiting", terminal: false, summary: "resting with the next move owed to the human" },
       "closed": { class: "ended", terminal: true, summary: "closed and unable to move again" },
@@ -5258,8 +5258,9 @@ export const LIFECYCLE_MACHINES = {
     },
   },
   "threadStatus": {
+    initial: "notLoaded",
     states: {
-      "idle": { class: "settled", terminal: false, resting: true, summary: "resting between turns" },
+      "idle": { class: "idle", terminal: false, resting: true, summary: "resting between turns" },
       "active": { class: "active", terminal: false, summary: "running a turn" },
       "awaiting": { class: "waiting", terminal: false, summary: "waiting on a question or a reply" },
       "warning": { class: "waiting", terminal: false, summary: "working with a warning that needs attention" },
@@ -5285,7 +5286,7 @@ export const LIFECYCLE_MACHINES = {
   "delegate": {
     initial: "idle",
     states: {
-      "idle": { class: "settled", terminal: false, summary: "no run is open; a new run may start" },
+      "idle": { class: "idle", terminal: false, summary: "no run is open; a new run may start" },
       "running": { class: "active", terminal: false, summary: "a run is in progress" },
       "settling": { class: "active", terminal: false, summary: "a run is preparing its terminal packet" },
       "stopping": { class: "active", terminal: false, summary: "a stop is draining the open run" },
@@ -5323,7 +5324,7 @@ export const LIFECYCLE_MACHINES = {
   "task": {
     initial: "open",
     states: {
-      "open": { class: "settled", terminal: false, summary: "ready to start once its dependencies settle" },
+      "open": { class: "idle", terminal: false, summary: "ready to start once its dependencies settle" },
       "in_progress": { class: "active", terminal: false, summary: "the task is being worked" },
       "done": { class: "settled", terminal: false, summary: "the task is done and may be reopened" },
       "cancelled": { class: "neutral", terminal: false, summary: "the task is cancelled and may be reopened" },
