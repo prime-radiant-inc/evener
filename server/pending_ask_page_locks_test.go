@@ -24,7 +24,7 @@ func TestPendingAskPageSamplesOutsideProjectionLocks(t *testing.T) {
 			defer unblock()
 			var block atomic.Bool
 			state := &appwire.PendingAskState{Version: 1, InstanceID: "root", BootGeneration: "1", Revision: 1, CalllessCount: 2, Calls: []appwire.PendingAskCall{}}
-			source := &pendingAskEnvelopeSource{stubThreadEnvelopeSource: stubThreadEnvelopeSource{question: &appwire.PendingQuestion{Count: 2}}, sample: func() *appwire.PendingAskState {
+			source := &pendingAskEnvelopeSource{question: &appwire.PendingQuestion{Count: 2}, sample: func() *appwire.PendingAskState {
 				if block.Load() {
 					close(sampled)
 					<-release
@@ -46,8 +46,10 @@ func TestPendingAskPageSamplesOutsideProjectionLocks(t *testing.T) {
 			committed := make(chan struct{})
 			go func() {
 				s.appServer.CommitProjection(func() []appserver.SequencedNotification {
-					s.mu.Lock()
-					s.mu.Unlock()
+					func() {
+						s.mu.Lock()
+						defer s.mu.Unlock()
+					}()
 					if replace {
 						s.SetThreadEnvelopeSource(&stubThreadEnvelopeSource{})
 					}

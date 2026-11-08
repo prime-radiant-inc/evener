@@ -25,7 +25,7 @@ func TestAskFenceEmptyAndMalformedCaptureRefused(t *testing.T) {
 	t.Parallel()
 	s := newSession(t, withConfig(minimalTestSessionConfig(t)), withStateDir(t.TempDir()))
 	s.SetBootGeneration("current")
-	pair := s.PendingAskCalls()
+	_, pair := s.PendingAskSnapshot()
 	_, err := s.AcceptClientMutationQueue(appwire.TurnQueueParams{ClientMutationID: "empty-fence", Input: clientMutationInput("input", nil, nil), ExpectedAskRevision: &pair.Revision, ExpectedAskBootGeneration: pair.BootGeneration})
 	requireAskFenceError(t, err, appwire.ErrorAskFenceMismatch)
 	_, err = s.AcceptClientMutationSteer(appwire.TurnSteerParams{ClientMutationID: "empty-steer-fence", Input: clientMutationInput("input", nil, nil), ExpectedAskRevision: &pair.Revision, ExpectedAskBootGeneration: pair.BootGeneration})
@@ -82,7 +82,7 @@ func TestAskFenceSteerCaptureSurvivesJournalReopenAndCopy(t *testing.T) {
 	s := newDurableAdmissionAskSession(t, SessionConfig{})
 	seedDurableAdmissionAsk(t, s)
 	s.SetBootGeneration("current")
-	pair := s.PendingAskCalls()
+	_, pair := s.PendingAskSnapshot()
 	params := appwire.TurnSteerParams{ClientMutationID: "fenced-steer", Input: clientMutationInput("answer", nil, nil), ExpectedAskRevision: &pair.Revision, ExpectedAskBootGeneration: pair.BootGeneration}
 	first, err := s.AcceptClientMutationSteer(params)
 	if err != nil {
@@ -117,7 +117,7 @@ func TestAskFenceRestartRevisionCollisionRefused(t *testing.T) {
 		t.Fatal(err)
 	}
 	s.SetBootGeneration(appwire.BootGeneration(generation))
-	before := s.PendingAskCalls()
+	_, before := s.PendingAskSnapshot()
 	meta, dir := s.Meta(), s.stateDir
 	s.Close()
 	restored := restoreAskSession(t, meta, dir)
@@ -126,7 +126,7 @@ func TestAskFenceRestartRevisionCollisionRefused(t *testing.T) {
 		t.Fatal(err)
 	}
 	restored.SetBootGeneration(appwire.BootGeneration(generation))
-	after := restored.PendingAskCalls()
+	_, after := restored.PendingAskSnapshot()
 	if before.Revision != after.Revision || before.BootGeneration == after.BootGeneration || !reflect.DeepEqual(before.Calls, after.Calls) {
 		t.Fatalf("collision scenario missing: before=%+v after=%+v", before, after)
 	}

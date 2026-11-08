@@ -62,7 +62,7 @@ func TestAskFenceScopedAnswerPreservesPostAdmissionAppend(t *testing.T) {
 			s, adapter := newDurableAdmissionAskSessionWithAdapter(t, SessionConfig{})
 			ctx := seedDurableAdmissionAsk(t, s)
 			s.SetBootGeneration("boot-current")
-			pair := s.PendingAskCalls()
+			_, pair := s.PendingAskSnapshot()
 			if mode == "queue" {
 				_, err := s.AcceptClientMutationQueue(appwire.TurnQueueParams{ClientMutationID: "scoped-answer", Input: clientMutationInput("answer-sentinel", nil, nil), ExpectedAskRevision: &pair.Revision, ExpectedAskBootGeneration: pair.BootGeneration})
 				if err != nil {
@@ -75,7 +75,7 @@ func TestAskFenceScopedAnswerPreservesPostAdmissionAppend(t *testing.T) {
 				}
 			}
 			appendFenceAsk(t, s, "ask-after-admission", pair.Calls[0].TurnID)
-			if appended := s.PendingAskCalls(); len(appended.Calls) != 2 || appended.CalllessCount != 0 {
+			if _, appended := s.PendingAskSnapshot(); len(appended.Calls) != 2 || appended.CalllessCount != 0 {
 				t.Fatalf("append scenario missing exact call identity: %+v", appended)
 			}
 			adapter.appendSteps(func(llm.Request) llm.Response { return agenttest.FinalResponse("done-sentinel") })
@@ -87,7 +87,8 @@ func TestAskFenceScopedAnswerPreservesPostAdmissionAppend(t *testing.T) {
 				t.Fatalf("ran=%v error=%v", ran, err)
 			}
 			assertFenceSurvivor(t, s, "ask-after-admission")
-			liveCalls := s.PendingAskCalls().Calls
+			_, live := s.PendingAskSnapshot()
+			liveCalls := live.Calls
 			if liveCalls[0].TurnID != pair.Calls[0].TurnID {
 				t.Fatalf("surviving ask changed execution identity: %+v", liveCalls)
 			}
@@ -95,8 +96,9 @@ func TestAskFenceScopedAnswerPreservesPostAdmissionAppend(t *testing.T) {
 			s.Close()
 			restored := restoreAskSession(t, meta, dir)
 			assertFenceSurvivor(t, restored, "ask-after-admission")
-			if !reflect.DeepEqual(restored.PendingAskCalls().Calls, liveCalls) {
-				t.Fatalf("restore changed surviving composite: live=%+v restored=%+v", liveCalls, restored.PendingAskCalls().Calls)
+			_, restoredState := restored.PendingAskSnapshot()
+			if !reflect.DeepEqual(restoredState.Calls, liveCalls) {
+				t.Fatalf("restore changed surviving composite: live=%+v restored=%+v", liveCalls, restoredState.Calls)
 			}
 		})
 	}
@@ -104,7 +106,7 @@ func TestAskFenceScopedAnswerPreservesPostAdmissionAppend(t *testing.T) {
 
 func assertFenceSurvivor(t *testing.T, s *Session, callID string) {
 	t.Helper()
-	state := s.PendingAskCalls()
+	_, state := s.PendingAskSnapshot()
 	if s.askPendingCount() != 1 || len(state.Calls) != 1 || state.Calls[0].CallID != callID {
 		t.Fatalf("survivors=%+v questionCount=%d", state, s.askPendingCount())
 	}

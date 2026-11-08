@@ -23,7 +23,7 @@ func TestPendingAskPageWholeResponseMeasurement(t *testing.T) {
 			s.SetAppIdentity("local", "012345678901234567890123")
 			s.appBootGeneration = "123"
 			state := &appwire.PendingAskState{Version: 1, InstanceID: "012345678901234567890123", BootGeneration: "123", Revision: 4000, CalllessCount: 2, CompositeTotal: 4000}
-			for i := 0; i < 4000; i++ {
+			for i := range 4000 {
 				state.Calls = append(state.Calls, appwire.PendingAskCall{TurnID: turnID, CallID: fmt.Sprintf("call_%024d", i)})
 			}
 			labels := make([]string, appwire.MaxQuestionOptions)
@@ -36,7 +36,7 @@ func TestPendingAskPageWholeResponseMeasurement(t *testing.T) {
 			question.CallID = state.Calls[0].CallID
 			question.Complete = &complete
 			question.Truncated = &truncated
-			s.SetThreadEnvelopeSource(&pendingAskEnvelopeSource{stubThreadEnvelopeSource: stubThreadEnvelopeSource{question: &question}, sample: func() *appwire.PendingAskState { return state }})
+			s.SetThreadEnvelopeSource(&pendingAskEnvelopeSource{question: &question, sample: func() *appwire.PendingAskState { return state }})
 			s.RefreshThreadEnvelope()
 			huge := math.MaxInt
 			read, err := s.handleAppThreadRead(context.Background(), appwire.ThreadReadParams{Ref: "local:" + state.InstanceID, ExpectedAskRevision: &state.Revision, ExpectedAskBootGeneration: "123", Limit: &huge})

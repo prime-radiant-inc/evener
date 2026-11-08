@@ -74,10 +74,10 @@ func TestClientMutationSteerCarriesThroughTheJournalRecordNotTheQueueEntry(t *te
 	// the precondition field the pair extends; the queue entry has none, so a
 	// pair placed there is invisible to every steer and to the drain path the
 	// consumption side walks.
-	if _, ok := reflect.TypeOf(clientMutationRecord{}).FieldByName("Preconditions"); !ok {
+	if _, ok := reflect.TypeFor[clientMutationRecord]().FieldByName("Preconditions"); !ok {
 		t.Fatal("clientMutationRecord lost its Preconditions field — the pair's landing zone moved")
 	}
-	if _, ok := reflect.TypeOf(clientMutationQueueEntry{}).FieldByName("Preconditions"); ok {
+	if _, ok := reflect.TypeFor[clientMutationQueueEntry]().FieldByName("Preconditions"); ok {
 		t.Fatal("clientMutationQueueEntry gained a Preconditions field — re-evaluate the carry: the steer record must carry the pair too")
 	}
 	// And the wire shapes agree: the record serializes its preconditions, the

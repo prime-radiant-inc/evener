@@ -368,7 +368,7 @@ func (f *readinessInterruptionFixture) prepare(t *testing.T) string {
 	if _, err := f.worker.ProcessInput(f.ctx, "READINESS-WORKER", nil); err != nil {
 		t.Fatalf("question turn: %v", err)
 	}
-	if f.worker.PendingQuestion() == nil {
+	if question, _ := f.worker.PendingAskSnapshot(); question == nil {
 		t.Fatalf("real worker did not ask a question: provider steps=%d session state=%s", f.workerProvider.step, f.worker.State())
 	}
 	if _, err := f.manager.ProcessInput(f.ctx, "READINESS-WATCH", nil); err != nil {

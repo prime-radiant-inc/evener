@@ -74,7 +74,7 @@ func TestHubRosterSegmentBoundsWholeEntriesAndCoalescing(t *testing.T) {
 	makeBatch := func(prefix string) []appwire.RosterEvent {
 		rows := make([]appwire.RosterEvent, 180)
 		for i := range rows {
-			rows[i] = appwire.RosterEvent{AttentionEntry: appwire.AttentionEntry{Ref: fmt.Sprintf("remote:%s-%03d", prefix, i), ID: fmt.Sprintf("%s-%03d", prefix, i), Title: strings.Repeat("x", 500), Level: "needs_you"}, Kind: "needs_you"}
+			rows[i] = appwire.RosterEvent{Ref: fmt.Sprintf("remote:%s-%03d", prefix, i), ID: fmt.Sprintf("%s-%03d", prefix, i), Title: strings.Repeat("x", 500), Level: "needs_you", Kind: "needs_you"}
 		}
 		return rows
 	}
@@ -162,7 +162,7 @@ func TestHubRosterSegmentMeasuresCompositeEncodings(t *testing.T) {
 			for _, population := range []int{32, 256} {
 				rows := []appwire.RosterEvent{{AttentionEntry: ask, Kind: "needs_you"}}
 				for i := 1; i < population; i++ {
-					rows = append(rows, appwire.RosterEvent{AttentionEntry: appwire.AttentionEntry{Ref: fmt.Sprintf("local:%022d", i), ID: fmt.Sprintf("%022d", i), RosterInstanceID: fmt.Sprintf("%022d", i), Title: fmt.Sprintf("lane-%d", i), Project: "/home/jesse/git/prime-radiant-inc/evener", Level: "idle", PublishedAt: 1700000000123}, Kind: "idle"})
+					rows = append(rows, appwire.RosterEvent{Ref: fmt.Sprintf("local:%022d", i), ID: fmt.Sprintf("%022d", i), RosterInstanceID: fmt.Sprintf("%022d", i), Title: fmt.Sprintf("lane-%d", i), Project: "/home/jesse/git/prime-radiant-inc/evener", Level: "idle", PublishedAt: 1700000000123, Kind: "idle"})
 				}
 				if err := jm.onHubRoster(id, rosterUpdate(uint64(population), population == 32, rows...)); err != nil {
 					t.Fatal(err)
@@ -225,7 +225,7 @@ func TestHubRosterSegmentWholeEntryBoundary(t *testing.T) {
 	t.Parallel()
 	frameFor := func(title string) string {
 		jm, id := rosterTestWatch(t)
-		row := appwire.RosterEvent{AttentionEntry: appwire.AttentionEntry{Ref: "local:boundary", Title: title, Level: "needs_you"}, Kind: "needs_you"}
+		row := appwire.RosterEvent{Ref: "local:boundary", Title: title, Level: "needs_you", Kind: "needs_you"}
 		if err := jm.onHubRoster(id, rosterUpdate(1, true, row)); err != nil {
 			t.Fatal(err)
 		}
@@ -253,7 +253,7 @@ func TestHubRosterSegmentWholeEntryBoundary(t *testing.T) {
 func TestHubRosterMergePreservesCurrentBody(t *testing.T) {
 	t.Parallel()
 	jm, id := rosterTestWatch(t)
-	row := appwire.RosterEvent{AttentionEntry: appwire.AttentionEntry{Ref: "local:body-token", Level: "idle"}, Kind: "idle"}
+	row := appwire.RosterEvent{Ref: "local:body-token", Level: "idle", Kind: "idle"}
 	if err := jm.onHubRoster(id, rosterUpdate(1, false, row)); err != nil {
 		t.Fatal(err)
 	}

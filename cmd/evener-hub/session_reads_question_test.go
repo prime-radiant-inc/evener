@@ -8,7 +8,6 @@ import (
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
-	"primeradiant.com/evener/rendezvous"
 )
 
 type discoveryQuestionSource struct {
@@ -32,7 +31,7 @@ func TestManagerDiscoveryRosterPopulationAndDroppedDelivery(t *testing.T) {
 	owner.sources.Add(&discoveryQuestionSource{managerReadSource: local, threads: []appwire.Thread{root, child, disk}})
 	remote.thread.Evener.AskPending, remote.thread.Evener.PendingQuestion = true, question
 	snapshot := navigationSnapshot{metas: []schema.SessionMeta{{ID: "local-instance"}, {ID: "child", IsSubagent: true}}, live: []hubcore.LiveEntry{
-		{Entry: rendezvous.Entry{WorkspaceRef: "local:workspace-token", ThreadID: "different-token"}, SessionID: "local-instance", Status: appwire.ThreadStatusAwaiting, PendingAsk: true, PendingQuestion: question},
+		{WorkspaceRef: "local:workspace-token", ThreadID: "different-token", SessionID: "local-instance", Status: appwire.ThreadStatusAwaiting, PendingAsk: true, PendingQuestion: question},
 		{SourceID: "remote", ThreadID: "shared", SessionID: "remote:shared", Status: appwire.ThreadStatusAwaiting, PendingAsk: true, PendingQuestion: question},
 		{SessionID: "child", Status: appwire.ThreadStatusAwaiting},
 	}}

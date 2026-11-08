@@ -61,7 +61,7 @@ func TestAskFenceEmptySetArrivalAdmitsUnbranched(t *testing.T) {
 
 	// The set stays empty — the arrivals were consumed as plain input, and
 	// nothing in the admission path observed the emptiness.
-	if got := sess.PendingAskCalls(); got == nil || len(got.Calls) != 0 {
+	if _, got := sess.PendingAskSnapshot(); got == nil || len(got.Calls) != 0 {
 		t.Fatalf("pending set after empty-set arrivals = %+v, want authoritative absence", got)
 	}
 }

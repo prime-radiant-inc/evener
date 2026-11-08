@@ -19,7 +19,7 @@ import (
 func TestPendingQuestion_NamesTheFirstQuestionOfThePendingAsk(t *testing.T) {
 	t.Parallel()
 	sess := newAskTestSession(t, SessionConfig{})
-	if got := sess.PendingQuestion(); got != nil {
+	if got, _ := sess.PendingAskSnapshot(); got != nil {
 		t.Fatalf("a session with no ask reports %+v", got)
 	}
 	for _, call := range []llm.ToolCallData{askUserCall("c1", askUserArgsValid()), askUserCall("c2", askUserArgsTwoQuestions())} {
@@ -28,11 +28,11 @@ func TestPendingQuestion_NamesTheFirstQuestionOfThePendingAsk(t *testing.T) {
 		}
 	}
 	want := &appwire.PendingQuestion{Question: "Which datastore for the ingest path?", Options: []string{"Postgres", "SQLite"}, Count: 3, Complete: new(false), Truncated: new(false)}
-	if got := sess.PendingQuestion(); !reflect.DeepEqual(got, want) {
+	if got, _ := sess.PendingAskSnapshot(); !reflect.DeepEqual(got, want) {
 		t.Fatalf("PendingQuestion = %+v, want %+v", got, want)
 	}
 	sess.clearAskPending()
-	if got := sess.PendingQuestion(); got != nil {
+	if got, _ := sess.PendingAskSnapshot(); got != nil {
 		t.Fatalf("after the answer PendingQuestion = %+v, want none", got)
 	}
 }
@@ -45,7 +45,7 @@ func TestPendingQuestion_LeavesTheSessionBounded(t *testing.T) {
 	sess.mu.Lock()
 	sess.askPending = []askQuestion{{Question: "Keep or drop\nthe implied options?\n\n" + strings.Repeat("Fourteen descriptions mention flags. ", 20)}}
 	sess.mu.Unlock()
-	got := sess.PendingQuestion()
+	got, _ := sess.PendingAskSnapshot()
 	if got == nil || !strings.HasPrefix(got.Question, "Keep or drop the implied options? Fourteen") ||
 		utf8.RuneCountInString(got.Question) > appwire.MaxQuestionTextRunes {
 		t.Fatalf("PendingQuestion = %+v, want one line cut to %d runes", got, appwire.MaxQuestionTextRunes)
@@ -77,14 +77,14 @@ func TestPendingQuestion_SurvivesRestore(t *testing.T) {
 	if want.TurnID == "" || want.CallID == "" {
 		t.Fatal("ask has no recorded execution identity")
 	}
-	if got := sess.PendingQuestion(); !reflect.DeepEqual(got, want) {
+	if got, _ := sess.PendingAskSnapshot(); !reflect.DeepEqual(got, want) {
 		t.Fatalf("live PendingQuestion = %+v, want %+v", got, want)
 	}
 	meta, dir := sess.Meta(), sess.stateDir
 	sess.Close()
 
 	restored := restoreAskSession(t, meta, dir)
-	got := restored.PendingQuestion()
+	got, _ := restored.PendingAskSnapshot()
 	if got != nil && (got.Complete != nil || got.Truncated != nil) {
 		t.Errorf("restored truth fields must be absent: complete=%v truncated=%v", got.Complete, got.Truncated)
 	}
@@ -112,5 +112,14 @@ func TestQuestionsFromAskCallsOutsideHistory(t *testing.T) {
 				t.Fatalf("questions from absent result: %+v", got)
 			}
 		})
+	}
+}
+
+func TestPendingAskSnapshotReplacesSplitAccessors(t *testing.T) {
+	t.Parallel()
+	for _, name := range []string{"PendingQuestion", "PendingAskCalls"} {
+		if _, present := reflect.TypeFor[*Session]().MethodByName(name); present {
+			t.Errorf("split sampling accessor remains exported: %s", name)
+		}
 	}
 }

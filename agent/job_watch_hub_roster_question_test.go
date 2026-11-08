@@ -43,9 +43,9 @@ func TestHubRosterQuestionListUsesCompositeCountAndCapability(t *testing.T) {
 	t.Parallel()
 	jm, id := rosterTestWatch(t)
 	rows := []appwire.RosterEvent{
-		{AttentionEntry: appwire.AttentionEntry{Ref: "local:many-questions", Level: "needs_you", AskPending: true, PendingQuestion: &appwire.PendingQuestion{Question: "q-token", Count: 30}, CompositeList: []appwire.PendingAskCall{{TurnID: "turn-token", CallID: "call-token"}}, CompositeTotal: 1}, Kind: "needs_you"},
-		{AttentionEntry: appwire.AttentionEntry{Ref: "remote:old-daemon", Level: "needs_you", AskPending: true, CompositeList: []appwire.PendingAskCall{{TurnID: "other-turn", CallID: "other-call"}}, CompositeTotal: 11}, Kind: "needs_you"},
-		{AttentionEntry: appwire.AttentionEntry{Ref: "local:flags-only", Level: "needs_you", AskPending: true}, Kind: "needs_you"},
+		{Ref: "local:many-questions", Level: "needs_you", AskPending: true, PendingQuestion: &appwire.PendingQuestion{Question: "q-token", Count: 30}, CompositeList: []appwire.PendingAskCall{{TurnID: "turn-token", CallID: "call-token"}}, CompositeTotal: 1, Kind: "needs_you"},
+		{Ref: "remote:old-daemon", Level: "needs_you", AskPending: true, CompositeList: []appwire.PendingAskCall{{TurnID: "other-turn", CallID: "other-call"}}, CompositeTotal: 11, Kind: "needs_you"},
+		{Ref: "local:flags-only", Level: "needs_you", AskPending: true, Kind: "needs_you"},
 	}
 	if err := jm.onHubRoster(id, rosterUpdate(1, false, rows...)); err != nil {
 		t.Fatal(err)

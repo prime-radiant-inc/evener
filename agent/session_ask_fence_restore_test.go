@@ -147,7 +147,7 @@ func TestAskRestoreKeepsAsksPostedAfterADurableAnswer(t *testing.T) {
 	if !restored.HasPendingAsk() {
 		t.Fatal("restore dropped the ask posted after the durable answer — the restore scan is recency-scoped and must keep it")
 	}
-	got := restored.PendingAskCalls()
+	_, got := restored.PendingAskSnapshot()
 	if got == nil || len(got.Calls) != 1 || got.Calls[0].CallID != "ask-call-late" {
 		t.Fatalf("restored pending set = %+v, want exactly the late ask's call", got)
 	}

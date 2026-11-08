@@ -1,8 +1,9 @@
 package hub
 
 import (
-	"primeradiant.com/evener/appwire"
 	"testing"
+
+	"primeradiant.com/evener/appwire"
 )
 
 func TestRosterPendingSetPairChangesDeliverOnce(t *testing.T) {

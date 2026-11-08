@@ -3,7 +3,7 @@ package server
 import (
 	"context"
 	"encoding/json"
-	"fmt"
+	"strconv"
 	"testing"
 
 	"primeradiant.com/evener/appwire"
@@ -14,8 +14,8 @@ func TestPendingAskRowClampsWholeSet(t *testing.T) {
 	s := NewServer(ServerConfig{})
 	s.SetAppIdentity("local", "root")
 	state := &appwire.PendingAskState{Version: 1, InstanceID: "root", BootGeneration: "1", Revision: 1, CalllessCount: 2}
-	for i := 0; i < appwire.MaxPendingAskComposites+1; i++ {
-		state.Calls = append(state.Calls, appwire.PendingAskCall{TurnID: "turn", CallID: fmt.Sprint(i)})
+	for i := range appwire.MaxPendingAskComposites + 1 {
+		state.Calls = append(state.Calls, appwire.PendingAskCall{TurnID: "turn", CallID: strconv.Itoa(i)})
 	}
 	state.CompositeTotal = len(state.Calls)
 	s.SetThreadEnvelopeSource(&pendingAskEnvelopeSource{sample: func() *appwire.PendingAskState { return state }})

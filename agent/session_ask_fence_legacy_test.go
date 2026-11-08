@@ -41,7 +41,7 @@ func TestAskFenceLegacyAndMixedCaptureResolvesOnlyAdmissionPopulation(t *testing
 			s.setAskPendingLocked(pending)
 			s.mu.Unlock()
 			s.SetBootGeneration("current")
-			pair := s.PendingAskCalls()
+			_, pair := s.PendingAskSnapshot()
 			named := 0
 			if mixed {
 				named = 1

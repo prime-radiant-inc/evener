@@ -15,11 +15,11 @@ func TestAskFenceDrainAndPromoteCarryCapturesAndUnfencedDominates(t *testing.T) 
 			s := newDurableAdmissionAskSession(t, SessionConfig{})
 			seedDurableAdmissionAsk(t, s)
 			s.SetBootGeneration("current")
-			initial := s.PendingAskCalls()
+			_, initial := s.PendingAskSnapshot()
 			enqueue := func(id string, fenced bool) {
 				p := appwire.TurnQueueParams{ClientMutationID: id, Input: clientMutationInput(id, nil, nil)}
 				if fenced {
-					pair := s.PendingAskCalls()
+					_, pair := s.PendingAskSnapshot()
 					p.ExpectedAskRevision = &pair.Revision
 					p.ExpectedAskBootGeneration = pair.BootGeneration
 				}
@@ -33,7 +33,8 @@ func TestAskFenceDrainAndPromoteCarryCapturesAndUnfencedDominates(t *testing.T) 
 			if mode == "drain_fenced" || mode == "drain_mixed" {
 				enqueue("source2", mode == "drain_fenced")
 				if mode == "drain_fenced" {
-					want = s.PendingAskCalls().Calls
+					_, pending := s.PendingAskSnapshot()
+					want = pending.Calls
 				}
 			}
 			appendFenceAsk(t, s, "ask3", initial.Calls[0].TurnID)
@@ -81,7 +82,7 @@ func TestAskFenceDrainAndPromoteCarryCapturesAndUnfencedDominates(t *testing.T) 
 				}
 			}
 			assertPending := func(sess *Session) {
-				got := sess.PendingAskCalls()
+				_, got := sess.PendingAskSnapshot()
 				switch mode {
 				case "drain_fenced":
 					assertFenceSurvivor(t, sess, "ask3")

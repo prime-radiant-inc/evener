@@ -32,7 +32,7 @@ func TestAskFenceRefusedAnswerStaysPendingAcrossRestore(t *testing.T) {
 			s := newDurableAdmissionAskSession(t, SessionConfig{})
 			seedDurableAdmissionAsk(t, s)
 			s.SetBootGeneration("current")
-			pair := s.PendingAskCalls()
+			_, pair := s.PendingAskSnapshot()
 			appendFenceAsk(t, s, "second", pair.Calls[0].TurnID)
 			queue := appwire.TurnQueueParams{ClientMutationID: "refused", Input: clientMutationInput("answer", nil, nil), ExpectedAskRevision: &pair.Revision, ExpectedAskBootGeneration: pair.BootGeneration}
 			steer := appwire.TurnSteerParams{ClientMutationID: queue.ClientMutationID, Input: queue.Input, ExpectedAskRevision: queue.ExpectedAskRevision, ExpectedAskBootGeneration: queue.ExpectedAskBootGeneration}
@@ -49,7 +49,7 @@ func TestAskFenceRefusedAnswerStaysPendingAcrossRestore(t *testing.T) {
 			meta, dir := s.Meta(), s.stateDir
 			s.Close()
 			restored := restoreAskSession(t, meta, dir)
-			if got := restored.PendingAskCalls(); len(got.Calls) != 2 || got.CalllessCount != 0 {
+			if _, got := restored.PendingAskSnapshot(); len(got.Calls) != 2 || got.CalllessCount != 0 {
 				t.Fatalf("refusal resolved asks=%+v", got)
 			}
 			reject(restored)
@@ -72,7 +72,7 @@ func TestAskFenceAllResolvingFailureWritersKeepCapturedEvidence(t *testing.T) {
 			s := newDurableAdmissionAskSession(t, SessionConfig{})
 			ctx := seedDurableAdmissionAsk(t, s)
 			s.SetBootGeneration("current")
-			pair := s.PendingAskCalls()
+			_, pair := s.PendingAskSnapshot()
 			id := "failing-answer"
 			if mode == "recovered_before_append" || mode == "recovered_after_user_crash" {
 				_, err := s.AcceptClientMutationStart(appwire.TurnStartParams{ClientMutationID: id, Input: clientMutationInput("answer", nil, nil), ExpectedAskRevision: &pair.Revision, ExpectedAskBootGeneration: pair.BootGeneration})
@@ -145,7 +145,7 @@ func TestAskFenceIncorporatedReplayDoesNotClearLaterAsk(t *testing.T) {
 	s := newDurableAdmissionAskSession(t, SessionConfig{})
 	seedDurableAdmissionAsk(t, s)
 	s.SetBootGeneration("current")
-	pair := s.PendingAskCalls()
+	_, pair := s.PendingAskSnapshot()
 	_, err := s.AcceptClientMutationQueue(appwire.TurnQueueParams{ClientMutationID: "replay-answer", Input: clientMutationInput("answer", nil, nil), ExpectedAskRevision: &pair.Revision, ExpectedAskBootGeneration: pair.BootGeneration})
 	if err != nil {
 		t.Fatal(err)
@@ -175,7 +175,7 @@ func TestAskFenceInlineEvidenceRetainsCallsButExcludesActiveExecutionLink(t *tes
 	s.mu.Unlock()
 	appendFenceAsk(t, s, "same-execution-ask", execution)
 	s.SetBootGeneration("current")
-	pair := s.PendingAskCalls()
+	_, pair := s.PendingAskSnapshot()
 	_, err := s.AcceptClientMutationSteer(appwire.TurnSteerParams{ClientMutationID: "inline-answer", Input: clientMutationInput("answer", nil, nil), ExpectedAskRevision: &pair.Revision, ExpectedAskBootGeneration: pair.BootGeneration})
 	if err != nil {
 		t.Fatal(err)

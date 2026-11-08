@@ -99,13 +99,6 @@ func (s *Session) HasPendingAsk() bool {
 	return s.askPendingCount() > 0
 }
 
-// PendingAskCalls reads exact execution references from the pending owner once.
-// Legacy restored questions carry no call identity and remain text-only.
-func (s *Session) PendingAskCalls() *appwire.PendingAskState {
-	_, state := s.PendingAskSnapshot()
-	return state
-}
-
 // SetBootGeneration installs the durably minted generation before serving input.
 func (s *Session) SetBootGeneration(generation string) {
 	s.mu.Lock()
@@ -113,6 +106,7 @@ func (s *Session) SetBootGeneration(generation string) {
 	s.bootGeneration = generation
 }
 
+// BootGeneration returns the installed durable serving generation.
 func (s *Session) BootGeneration() string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -147,15 +141,6 @@ func (s *Session) PendingAskSnapshot() (*appwire.PendingQuestion, *appwire.Pendi
 	question.Complete = appwire.ClonePointer(first.Complete)
 	question.Truncated = appwire.ClonePointer(first.Truncated)
 	return &question, state
-}
-
-// PendingQuestion is the first question of the session's pending ask, which
-// its Needs you row names (S1b), cut to the wire's bounds; nil while no
-// question waits. It reads the pending set in one hold of s.mu, so the
-// question and its count describe the same moment.
-func (s *Session) PendingQuestion() *appwire.PendingQuestion {
-	question, _ := s.PendingAskSnapshot()
-	return question
 }
 
 // setAskPendingLocked REPLACES the pending-ask set — a clear (pending ==

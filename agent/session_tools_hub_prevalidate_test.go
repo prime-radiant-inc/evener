@@ -95,7 +95,8 @@ func TestManagerQuestionPrevalidationScope(t *testing.T) {
 		calls++
 		return priorError
 	})
-	if err := composed(map[string]any{"expected_ask_revision": json.Number("1e1000001")}); err != priorError || calls != 1 {
+	// The prior callback's exact error must survive, without wrapping.
+	if err := composed(map[string]any{"expected_ask_revision": json.Number("1e1000001")}); !reflect.ValueOf(err).Equal(reflect.ValueOf(priorError)) || calls != 1 {
 		t.Fatalf("previous prevalidator error/order changed: error=%v calls=%d", err, calls)
 	}
 	composed = managerQuestionPrevalidator(func(args map[string]any) error {
@@ -137,7 +138,7 @@ func TestManagerQuestionPrevalidationComposition(t *testing.T) {
 			t.Run(name+"/"+strconv.Itoa(round), func(t *testing.T) {
 				registered := root.reg.Get(name)
 				refused := map[string]any{"prior_refusal": true, "expected_ask_revision": json.Number("1e1000001")}
-				if err := registered.PreValidate(refused); err != priorError {
+				if err := registered.PreValidate(refused); !reflect.ValueOf(err).Equal(reflect.ValueOf(priorError)) {
 					t.Fatalf("registration replaced previous prevalidator error: %v", err)
 				}
 				calls[name] = 0
