@@ -73,7 +73,10 @@ func (o *sessionOperations) discover(ctx context.Context, params appwire.ThreadL
 
 func (o *sessionOperations) turns(ctx context.Context, p appwire.ThreadTurnsListParams) (appwire.ThreadTurnsListResponse, error) {
 	if p.Cursor == "" {
-		read, err := o.read(ctx, appwire.ThreadReadParams{Ref: p.Ref, IncludeTurns: true, ItemLimit: p.ItemLimit}, false)
+		read, err := o.read(ctx, appwire.ThreadReadParams{
+			Ref: p.Ref, IncludeTurns: true, ItemLimit: p.ItemLimit,
+			ThreadWindowParams: p.ThreadWindowParams,
+		}, false)
 		if err != nil {
 			return appwire.ThreadTurnsListResponse{}, err
 		}

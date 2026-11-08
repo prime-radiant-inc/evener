@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -49,6 +50,53 @@ func TestHubRPCThreadReadRoutesToDaemon(t *testing.T) {
 	}
 	if resp.Thread.ID != "th_1" || resp.Thread.Evener.Ref != "local:th_1" {
 		t.Fatalf("thread=%+v", resp.Thread)
+	}
+}
+
+func TestSessionOperationsTurnsPreservesWindowSelectorsOnInitialRead(t *testing.T) {
+	readParams := make(chan appwire.ThreadReadParams, 1)
+	daemon := appserver.NewServer(appserver.ServerConfig{ServerName: "daemon", SourceID: "local"})
+	appserver.HandleTyped(daemon.Router(), appwire.MethodThreadRead, func(_ context.Context, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
+		readParams <- params
+		return appwire.ThreadReadResponse{Thread: appwire.Thread{ID: "windowed", SessionID: "windowed", Evener: appwire.EvenerThread{Ref: params.Ref}}}, nil
+	})
+	daemonHTTP := httptest.NewServer(http.HandlerFunc(daemon.ServeWebSocket))
+	defer daemonHTTP.Close()
+	endpoint := "ws" + strings.TrimPrefix(daemonHTTP.URL, "http")
+	source := appsource.NewLocalDaemonSourceWithEntries("local", func() []appsource.LocalDaemonEntry {
+		return []appsource.LocalDaemonEntry{{Entry: rendezvous.Entry{
+			Protocol: appwire.ProtocolVersion, Endpoint: endpoint, SourceID: "local",
+			ThreadID: "windowed", SessionID: "windowed", WorkspaceRef: "local:windowed",
+		}}}
+	}, http.DefaultClient)
+	sources := appsource.NewRegistry()
+	sources.Add(source)
+	cfg := hubcore.WebConfig{HubStateRoot: t.TempDir(), Past: hubcore.NewPastIndex("")}
+	server := appserver.NewServer(appserver.ServerConfig{ServerName: "hub", Version: "test", SourceID: "local"})
+	operations := &sessionOperations{cfg: cfg, sources: sources, relays: newHubRelay(server, cfg, sources), server: server}
+
+	window := appwire.ThreadWindowParams{
+		TurnWindow:        &appwire.ThreadTurnWindow{Since: "turn_2", Limit: 4},
+		ItemTypes:         []string{"messages", "reasoning"},
+		PreviewBytes:      1234,
+		MessageBytes:      5678,
+		WindowBudgetBytes: 90 << 10,
+	}
+	_, err := operations.turns(t.Context(), appwire.ThreadTurnsListParams{
+		Ref: "local:windowed", ItemLimit: 7, ThreadWindowParams: window,
+	})
+	if err != nil {
+		t.Fatalf("initial windowed turns read: %v", err)
+	}
+	got := <-readParams
+	if !got.IncludeTurns || got.Ref != "local:windowed" || got.ItemLimit != 7 {
+		t.Fatalf("base read params = %+v", got)
+	}
+	if got.TurnWindow == nil || *got.TurnWindow != *window.TurnWindow ||
+		!slices.Equal(got.ItemTypes, window.ItemTypes) ||
+		got.PreviewBytes != window.PreviewBytes || got.MessageBytes != window.MessageBytes ||
+		got.WindowBudgetBytes != window.WindowBudgetBytes {
+		t.Fatalf("window selectors = %+v, want %+v", got.ThreadWindowParams, window)
 	}
 }
 
