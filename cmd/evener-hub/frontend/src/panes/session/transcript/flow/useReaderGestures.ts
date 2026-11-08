@@ -213,6 +213,13 @@ export function useReaderGestures({
   const endPointerDrag = useCallback(() => {
     pointerDraggingRef.current = false;
     middleButtonHeldRef.current = false;
+    // A touch's pointer stream ends here even when the finger lifts where the
+    // port cannot see it: the browser implicitly captures a touch pointer, so
+    // pointerup/pointercancel still reach the port. Clearing the recorded Y
+    // here is the bound touchend alone cannot give - a stale Y would let a
+    // later start-less move be marked from a touch that already ended, and
+    // over-marking is the harmful direction (see markGesture's own comment).
+    lastTouchYRef.current = null;
   }, []);
   // The autoscroll state is the only gesture state with no clock and nothing to
   // consume it, so everything that ends it has to be named. A middle press over
