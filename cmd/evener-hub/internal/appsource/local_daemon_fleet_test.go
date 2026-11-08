@@ -67,55 +67,59 @@ func TestLocalDaemonSourceListCarriesFreshActiveTurn(t *testing.T) {
 }
 
 func TestLocalDaemonSourceCrashIsDisplayOnly(t *testing.T) {
-	entry := LocalDaemonEntry{
-		Entry: rendezvous.Entry{
-			Protocol:   appwire.ProtocolVersion,
-			Endpoint:   "ws://127.0.0.1/crashed",
-			ThreadID:   "sess-crashed",
-			SessionID:  "sess-crashed",
-			InstanceID: "instance-crashed",
-		},
-		SessionID:           "sess-crashed",
-		Status:              "errored",
-		Crashed:             true,
-		ProbeState:          "retained",
-		ActiveTurnID:        "stale-turn",
-		ActiveTurnStartedAt: 1_790_000_000_123,
-		Activity:            &appwire.ThreadActivity{LastActivityAt: 1_790_000_000_000},
-		Failure:             &appwire.ThreadFailure{},
-	}
-	source := NewLocalDaemonSourceWithEntries("local", func() []LocalDaemonEntry { return []LocalDaemonEntry{entry} }, nil)
+	for _, protocol := range []string{appwire.ProtocolVersion, "evener-appwire-v3"} {
+		t.Run(protocol, func(t *testing.T) {
+			entry := LocalDaemonEntry{
+				Entry: rendezvous.Entry{
+					Protocol:   protocol,
+					Endpoint:   "ws://127.0.0.1/crashed",
+					ThreadID:   "sess-crashed",
+					SessionID:  "sess-crashed",
+					InstanceID: "instance-crashed",
+				},
+				SessionID:           "sess-crashed",
+				Status:              "errored",
+				Crashed:             true,
+				ProbeState:          "retained",
+				ActiveTurnID:        "stale-turn",
+				ActiveTurnStartedAt: 1_790_000_000_123,
+				Activity:            &appwire.ThreadActivity{LastActivityAt: 1_790_000_000_000},
+				Failure:             &appwire.ThreadFailure{},
+			}
+			source := NewLocalDaemonSourceWithEntries("local", func() []LocalDaemonEntry { return []LocalDaemonEntry{entry} }, nil)
 
-	response, err := source.ListThreads(WithThreadListBuiltAt(context.Background(), time.UnixMilli(1_790_000_010_000)), appwire.ThreadListParams{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(response.Data) != 1 {
-		t.Fatalf("crashed rows = %d, want 1", len(response.Data))
-	}
-	got := response.Data[0]
-	if got.Status.Type != appwire.ThreadStatusSystemError || !got.Evener.Crashed || got.Evener.ProbeState != "retained" {
-		t.Fatalf("crashed row = %+v", got)
-	}
-	if got.Evener.Failure == nil {
-		t.Fatal("crashed row dropped durable failure")
-	}
-	if got.Evener.ActiveTurnID != "" || got.Evener.ActiveTurnStartedAt != 0 || got.Evener.QuietForMS != nil {
-		t.Fatalf("crashed row kept volatile facts: %+v", got.Evener)
-	}
+			response, err := source.ListThreads(WithThreadListBuiltAt(context.Background(), time.UnixMilli(1_790_000_010_000)), appwire.ThreadListParams{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(response.Data) != 1 {
+				t.Fatalf("crashed rows = %d, want 1", len(response.Data))
+			}
+			got := response.Data[0]
+			if got.Status.Type != appwire.ThreadStatusSystemError || !got.Evener.Crashed || got.Evener.ProbeState != "retained" {
+				t.Fatalf("crashed row = %+v", got)
+			}
+			if got.Evener.Failure == nil {
+				t.Fatal("crashed row dropped durable failure")
+			}
+			if got.Evener.ActiveTurnID != "" || got.Evener.ActiveTurnStartedAt != 0 || got.Evener.QuietForMS != nil {
+				t.Fatalf("crashed row kept volatile facts: %+v", got.Evener)
+			}
 
-	if _, err := source.SessionToolsThread(appwire.SessionBinding{Ref: "local:sess-crashed", InstanceID: "instance-crashed"}); err == nil {
-		t.Fatal("crashed row resolved a session-tools binding")
-	}
-	if _, err := source.localEntryForRefMode("local:sess-crashed", "", true); err == nil {
-		t.Fatal("crashed row resolved a live route")
-	}
-	models, err := source.ListModels(context.Background(), appwire.ModelListParams{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(models.Data) != 0 {
-		t.Fatalf("crashed row returned models: %+v", models.Data)
+			if _, err := source.SessionToolsThread(appwire.SessionBinding{Ref: "local:sess-crashed", InstanceID: "instance-crashed"}); err == nil {
+				t.Fatal("crashed row resolved a session-tools binding")
+			}
+			if _, err := source.localEntryForRefMode("local:sess-crashed", "", true); err == nil {
+				t.Fatal("crashed row resolved a live route")
+			}
+			models, err := source.ListModels(context.Background(), appwire.ModelListParams{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(models.Data) != 0 {
+				t.Fatalf("crashed row returned models: %+v", models.Data)
+			}
+		})
 	}
 }
 

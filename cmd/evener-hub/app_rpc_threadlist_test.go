@@ -80,6 +80,33 @@ func TestHubThreadListChildAliasCarriesItsOwnWatches(t *testing.T) {
 	}
 }
 
+func TestCrashedOwnerChildAliasCannotResolveLiveRoute(t *testing.T) {
+	roster := hubcore.NewRosterWithEntries(hubcore.LiveEntry{
+		Entry: rendezvous.Entry{
+			SessionID: "sess_root",
+			Endpoint:  "ws://127.0.0.1:1/rpc",
+			Protocol:  appwire.ProtocolVersion,
+		},
+		SessionID:          "sess_root",
+		Status:             "errored",
+		Crashed:            true,
+		RunningSubagentIDs: []string{"sess_child"},
+	})
+	registry := newHubSourceRegistry(hubcore.WebConfig{Roster: roster})
+	source, ok := registry.Source("local")
+	if !ok {
+		t.Fatal("local source missing")
+	}
+	local, ok := source.(*appsource.LocalDaemonSource)
+	if !ok {
+		t.Fatalf("local source type = %T", source)
+	}
+
+	if _, err := local.ResolveRelaySession(appwire.ThreadReadParams{Ref: "local:sess_child"}); err == nil {
+		t.Fatal("retained child alias from crashed owner resolved a live route")
+	}
+}
+
 func TestHubRPCThreadListUsesAppWireRendezvous(t *testing.T) {
 	runDir := t.TempDir()
 	entry := rendezvous.Entry{

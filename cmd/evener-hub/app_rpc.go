@@ -150,6 +150,9 @@ func localDaemonEntriesFromRoster(live []hubcore.LiveEntry) []appsource.LocalDae
 			CurrentModel:        item.CurrentModel,
 		}
 		entries = append(entries, entry)
+		if item.Crashed {
+			continue
+		}
 		// In-process descendants are addressed as their own AppWire threads,
 		// served by their owner's daemon endpoint, but each alias is built
 		// from only the fields it owns rather than a copy of the root with
