@@ -41,7 +41,7 @@ const (
 	defaultMaxRefs        = 4096
 )
 
-// budget is a store's admission limit. A negative field disables that limit.
+// budget is a store's admission limit.
 type budget struct {
 	maxBytes int64
 	maxRefs  int
@@ -93,10 +93,10 @@ func (s *Store) Put(data []byte) (string, error) {
 	if s.closed {
 		return "", ErrExpired
 	}
-	if s.maxBytes >= 0 && s.usedBytes+int64(len(data)) > s.maxBytes {
+	if s.usedBytes+int64(len(data)) > s.maxBytes {
 		return "", ErrBudgetExceeded
 	}
-	if s.maxRefs >= 0 && len(s.refs) >= s.maxRefs {
+	if len(s.refs) >= s.maxRefs {
 		return "", ErrBudgetExceeded
 	}
 
