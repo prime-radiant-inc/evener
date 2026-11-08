@@ -432,7 +432,17 @@ func ensureTrustedProcessRoot(root string) error {
 // is accepted, unlike for the root itself, because the platform's temp chain
 // above a user's own directory is normally root-owned. Ancestors are resolved
 // through symlinks the way path lookup resolves them.
+//
+// A path on a read-only mount is accepted whatever its owner: no process in this
+// mount namespace can replace it, because the mount pins the inode and refuses
+// writes. A sandbox's read-only root bind is exactly that shape, and in a user
+// namespace that does not map host root it appears owned by the overflow uid,
+// which the ownership rule must otherwise refuse (issue #4226). A writable mount
+// boundary is no evidence of safety and gets no such exemption.
 func ensureTrustedAncestors(root string) error {
+	// One mount-table snapshot decides every component: a remount mid-walk would
+	// only be attempted by a process this check already does not defend against.
+	mounts := parseMountPoints(string(readMountInfo()))
 	for dir := filepath.Dir(root); ; {
 		parent := filepath.Dir(dir)
 		info, err := os.Stat(dir)
@@ -442,7 +452,7 @@ func ensureTrustedAncestors(root string) error {
 		if !info.IsDir() {
 			return fmt.Errorf("skill cache ancestor %s is not a directory", dir)
 		}
-		if !ancestorDirTrusted(info) {
+		if !ancestorDirTrusted(info) && !readOnlyMountAt(mounts, dir) {
 			return fmt.Errorf("skill cache ancestor %s can be replaced by other users", dir)
 		}
 		if parent == dir {

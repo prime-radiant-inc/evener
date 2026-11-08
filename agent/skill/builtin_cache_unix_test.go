@@ -133,6 +133,49 @@ func TestEnsureTrustedRoot_ChecksTheAncestorChain(t *testing.T) {
 	}
 }
 
+// A read-only mount pins the path it covers: no process confined to this mount
+// namespace can replace or modify it, whoever owns it. That is the sandbox's
+// read-only root bind, whose host-root owner appears as the unmapped overflow uid
+// in a user namespace and would otherwise be refused (issue #4226). A writable
+// mount boundary is no evidence of safety, and an unreadable mount table is no
+// evidence at all.
+func TestEnsureTrustedAncestors_AcceptsAReadOnlyMountAncestor(t *testing.T) {
+	outer := t.TempDir()
+	inner := filepath.Join(outer, "inner")
+	if err := os.Mkdir(inner, 0o700); err != nil {
+		t.Fatalf("create inner: %v", err)
+	}
+	// Chmod rather than Mkdir, so the ambient umask cannot hide the case.
+	if err := os.Chmod(outer, 0o777); err != nil {
+		t.Fatalf("open up ancestor: %v", err)
+	}
+	saved := readMountInfo
+	t.Cleanup(func() { readMountInfo = saved })
+
+	readMountInfo = func() []byte { return nil }
+	if err := ensureTrustedAncestors(inner); err == nil {
+		t.Fatal("accepted a world-writable ancestor with no mount evidence")
+	}
+
+	readMountInfo = func() []byte {
+		return []byte("36 25 0:32 / " + outer + " rw,relatime - tmpfs tmpfs rw\n")
+	}
+	if err := ensureTrustedAncestors(inner); err == nil {
+		t.Fatal("accepted a world-writable ancestor on a writable mount")
+	}
+
+	readMountInfo = func() []byte {
+		// A complete fake namespace, including the read-only root the sandbox's
+		// host-root bind presents. Without the root entry the walk reaches the
+		// real /, which is the unmapped overflow uid in the very user namespace
+		// this case exists to cover, and refuses before it can exercise `outer`.
+		return []byte("1 0 0:1 / / ro - tmpfs tmpfs rw\n36 25 0:32 / " + outer + " ro,relatime - tmpfs tmpfs rw\n")
+	}
+	if err := ensureTrustedAncestors(inner); err != nil {
+		t.Fatalf("refused a read-only mount ancestor: %v", err)
+	}
+}
+
 // The degraded extraction must not land in a temp root the shared cache refuses.
 func TestEmbeddedSkillsDir_RefusesAnUntrustedTempRootForTheProcessCopy(t *testing.T) {
 	root := t.TempDir()
