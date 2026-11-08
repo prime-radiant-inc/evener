@@ -36,6 +36,7 @@ func allRemoteThreadCapabilities() appwire.ThreadCapabilities {
 		StopSubagent:               true,
 		PageBefore:                 true,
 		VoiceArm:                   true,
+		WindowRead:                 true,
 	}
 }
 
@@ -83,6 +84,7 @@ func TestForwardedRemoteThreadCapabilitiesPolicy(t *testing.T) {
 			SkillInput:        true,
 			CommandInput:      true,
 			StopSubagent:      true,
+			WindowRead:        true,
 		}
 		if got != want {
 			t.Fatalf("effective capabilities = %+v, want %+v", got, want)
@@ -109,6 +111,7 @@ func TestForwardedRemoteThreadCapabilitiesPolicy(t *testing.T) {
 			SkillInput:        true,
 			CommandInput:      true,
 			StopSubagent:      true,
+			WindowRead:        true,
 		}
 		if got != want {
 			t.Fatalf("effective capabilities = %+v, want %+v", got, want)
@@ -245,6 +248,15 @@ func TestRemoteHubCapabilitiesMatchForwardedMethods(t *testing.T) {
 		{"CommandInput", map[string]func() error{
 			"StartTurn": func() error { _, err := source.StartTurn(ctx, appwire.TurnStartParams{}); return err },
 			"QueueTurn": func() error { _, err := source.QueueTurn(ctx, appwire.TurnQueueParams{}); return err },
+		}},
+		{"WindowRead", map[string]func() error{
+			"ReadThread": func() error {
+				_, err := source.ReadThread(ctx, appwire.ThreadReadParams{
+					Ref: "host:thread", IncludeTurns: true,
+					ThreadWindowParams: appwire.ThreadWindowParams{TurnWindow: &appwire.ThreadTurnWindow{Latest: 1}},
+				})
+				return err
+			},
 		}},
 		// The ordinary routes exist, but the peer's public hub input cannot
 		// accept this controller's journal-backed voice evidence. The capability

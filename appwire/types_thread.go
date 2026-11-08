@@ -654,6 +654,11 @@ type ThreadCapabilities struct {
 	// stamps it; a client talking to a hub without that feature keeps the
 	// earlier behavior.
 	VoiceArm bool `json:"voiceArm,omitempty"`
+	// WindowRead advertises that thread/read accepts bounded transcript turn
+	// windows and their item filters. Older daemons omit it, allowing the hub to
+	// choose its narrow legacy compatibility projection without sending fields
+	// their strict decoder rejects.
+	WindowRead bool `json:"windowRead,omitempty"`
 }
 
 // EvenerHookEventStatus describes a single hook event's registration state.

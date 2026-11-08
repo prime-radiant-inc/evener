@@ -496,8 +496,9 @@ func (s *Server) appCapabilitiesLocked(state string, processing bool) appwire.Th
 		// own answers; this is the live daemon-sourced projection only. Every
 		// handler's skill-input gate enforces its own seam's wiring, so an
 		// advertised true means every endpoint really consumes selections.
-		SkillInput:   s.skillInputSupportedLocked(),
-		CommandInput: s.skillInputSupportedLocked(),
+			SkillInput:   s.skillInputSupportedLocked(),
+			CommandInput: s.skillInputSupportedLocked(),
+			WindowRead:   true,
 	}
 }
 

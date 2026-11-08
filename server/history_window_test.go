@@ -85,6 +85,20 @@ func TestLiveThreadReadHonorsTurnWindows(t *testing.T) {
 	}
 }
 
+func TestLiveThreadReadAdvertisesWindowReadCapability(t *testing.T) {
+	st := newServedTranscript(t, NewServer(ServerConfig{}), "th_window_capability",
+		inExecution("turn_m1", true, schema.NewTurn(schema.TurnUserInput, llm.User("one"))),
+	)
+
+	response, err := st.srv.appThreadReadSnapshotChecked(appwire.ThreadReadParams{ThreadID: st.threadID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !response.Thread.Evener.Capabilities.WindowRead {
+		t.Fatalf("thread capabilities = %+v, want window reads advertised", response.Thread.Evener.Capabilities)
+	}
+}
+
 func TestLiveThreadReadFetchesCanonicalItemRange(t *testing.T) {
 	st := newServedTranscript(t, NewServer(ServerConfig{}), "th_fetch",
 		inExecution("turn_m1", true, schema.NewTurn(schema.TurnUserInput, llm.User("fetch me"))),

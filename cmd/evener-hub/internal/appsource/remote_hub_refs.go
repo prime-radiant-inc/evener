@@ -156,6 +156,7 @@ func forwardedRemoteThreadCapabilities(features appwire.FeatureSet) appwire.Thre
 		CommandInput:      true,
 		AskFence:          true,
 		StopSubagent:      true,
+		WindowRead:        true,
 	}
 }
 
@@ -202,6 +203,7 @@ func maskRemoteThreadCapabilities(remote, forwarded appwire.ThreadCapabilities) 
 		CommandInput:      remote.CommandInput && forwarded.CommandInput,
 		AskFence:          remote.AskFence && forwarded.AskFence,
 		StopSubagent:      remote.StopSubagent && forwarded.StopSubagent,
+		WindowRead:        remote.WindowRead && forwarded.WindowRead,
 	}
 }
 

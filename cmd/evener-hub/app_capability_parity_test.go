@@ -126,6 +126,7 @@ func TestCapabilityProjectionsMatchTheDaemonOracle(t *testing.T) {
 		"ForkFromTurn":               "the hub's own operation; applyHubForkCapability owns the bit on every path that serves it",
 		"StopSubagent":               "a session with no daemon running runs no subagents to stop",
 		"PageBefore":                 "the hub's own answer: it pages local and saved transcripts from a before position itself (hubPagesBefore)",
+		"WindowRead":                 "no daemon is running to advertise strict window decoding; saved-index reads are hub-owned and do not need this daemon bit",
 		"VoicePresentationContextV1": "no original daemon has advertised voice support; cold/resume action guarantees are not evidence of that support",
 	}
 	// The hub's own answer, false for a cold session: the daemon never answers
@@ -151,6 +152,7 @@ func TestCapabilityProjectionsMatchTheDaemonOracle(t *testing.T) {
 	unprobedDiffer := map[string]string{
 		"AskFence":                   "deliberate fail-closed projection policy: no probe has captured the original daemon's ask fencing; an older daemon could silently ignore the fence",
 		"VoicePresentationContextV1": "no probe has captured the original daemon's voice support; a current-daemon oracle cannot vouch for an unprobed daemon",
+		"WindowRead":                 "no probe has captured whether this daemon strict-decodes window parameters",
 	}
 	for _, state := range []string{appwire.ThreadStatusIdle, appwire.ThreadStatusActive, appwire.ThreadStatusClosed} {
 		daemonAt := daemonCapabilitiesAtState(t, state)
