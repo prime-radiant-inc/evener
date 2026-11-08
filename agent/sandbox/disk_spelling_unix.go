@@ -1,4 +1,4 @@
-//go:build linux
+//go:build darwin || linux
 
 package sandbox
 
@@ -14,11 +14,10 @@ import (
 // path that runs through a link is not the directory it names, so a link
 // planted at a reported path cannot pass for the directory it points to.
 //
-// The spelling comes from /proc/self/fd, which reports the opened directory's
-// path with the filesystem's own letter case and Unicode normalization — the
-// same guarantee fcntl(F_GETPATH) gives the macOS implementation. A
-// case-insensitive Linux volume (ext4 casefold, vfat) resolves "CASEHOME" to
-// the stored "casehome", and only this lookup reports the stored name.
+// FdPath reports the opened directory's path with the filesystem's own letter
+// case and Unicode normalization: fcntl(F_GETPATH) on macOS, /proc/self/fd on
+// Linux. A case-insensitive volume resolves a spelling in another case to the
+// stored one, and only this lookup reports the stored name.
 func diskSpelling(p string) (string, bool) {
 	p = filepath.Clean(p)
 	if !filepath.IsAbs(p) {

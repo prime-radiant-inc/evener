@@ -997,13 +997,13 @@ func TestEvenerContentRootsHonourAStoredSpellingConfigMaskBeforeTheDirExists(t *
 	}
 }
 
-// TestCarveOutAcceptsARootCreatedLaterUnderAnotherCase pins #4306's second
-// case: a carve-out root that did not exist at resolution is pinned with its
-// literal trailing spelling, and a directory created later under another letter
-// case on a case-insensitive volume reports the stored spelling, so the exact
-// comparison refused it for the rest of the session. The pin is re-derived only
-// for the same directory: its parent is the pinned parent and the names differ
-// only by case.
+// TestCarveOutAcceptsARootCreatedLaterUnderAnotherCase pins a carve-out root
+// that did not exist at resolution: it is pinned with its literal trailing
+// spelling, and a directory created later under another letter case on a
+// case-insensitive volume reports the stored spelling, so the exact comparison
+// refused it for the rest of the session. The pin is re-derived only for the
+// same directory: its parent is the pinned parent and the names differ only by
+// case.
 func TestCarveOutAcceptsARootCreatedLaterUnderAnotherCase(t *testing.T) {
 	root := mainRepo(t)
 	parent := clean(t.TempDir())
@@ -1045,5 +1045,33 @@ func TestCarveOutAcceptsARootCreatedLaterUnderAnotherCase(t *testing.T) {
 	}
 	if rp.CarveOutResolvesTo(skills, elsewhere) {
 		t.Errorf("a case-fold name under a different parent must not be accepted")
+	}
+}
+
+// TestCarveOutKeepsAnExistingRootsExactPin pins the boundary of the
+// re-derivation: only a root that did not exist at resolution may move to the
+// stored spelling. A root that existed keeps its exact pin, so deleting and
+// recreating it under another case is still refused.
+func TestCarveOutKeepsAnExistingRootsExactPin(t *testing.T) {
+	t.Parallel()
+	dir := clean(t.TempDir())
+	skills := filepath.Join(dir, "skills")
+	if err := os.Mkdir(skills, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	pinned := filepath.Join(dir, "SKILLS")
+	missing := ResolvedPolicy{
+		carveOutAt:      map[string]string{skills: pinned},
+		carveOutMissing: map[string]bool{skills: true},
+	}
+	if !missing.CarveOutResolvesTo(skills, skills) {
+		t.Errorf("a root missing at resolution must be re-derived to the stored spelling")
+	}
+	existing := ResolvedPolicy{
+		carveOutAt:      map[string]string{skills: pinned},
+		carveOutMissing: map[string]bool{skills: false},
+	}
+	if existing.CarveOutResolvesTo(skills, skills) {
+		t.Errorf("a root that existed at resolution must keep its exact pin")
 	}
 }
