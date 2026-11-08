@@ -44,7 +44,7 @@ const (
 	ErrorQueuedDrainPartial          ErrorInfo = "queuedDrainPartial"
 	ErrorMutationOutcomeUnknown      ErrorInfo = "mutationOutcomeUnknown"
 	ErrorTranscriptItemCursorStale   ErrorInfo = "transcriptItemCursorStale"
-	ErrorTranscriptItemChanged      ErrorInfo = "item-changed"
+	ErrorTranscriptItemChanged       ErrorInfo = "item-changed"
 	ErrorFetchUnavailableRemote      ErrorInfo = "fetch-unavailable-remote"
 	ErrorWindowUnsupportedOnDaemon   ErrorInfo = "window-unsupported-on-daemon"
 	ErrorItemUnreachableOnCompat     ErrorInfo = "item-unreachable-on-compat"

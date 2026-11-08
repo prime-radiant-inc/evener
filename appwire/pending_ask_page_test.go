@@ -73,6 +73,7 @@ func TestPendingAskPageReadValidation(t *testing.T) {
 		{"subscribe", func(p *ThreadReadParams) { p.Subscribe = true }},
 		{"replace", func(p *ThreadReadParams) { p.ReplaceSubscription = true }},
 		{"turns", func(p *ThreadReadParams) { p.IncludeTurns = true }},
+		{"window", func(p *ThreadReadParams) { p.TurnWindow = &ThreadTurnWindow{Latest: 1} }},
 		{"held", func(p *ThreadReadParams) { p.HeldSnapshot = &SnapshotIdentity{} }},
 		{"continuation", func(p *ThreadReadParams) {
 			p.AnswerContinuation = &AnswerContinuationQuery{AncestorTurnID: "a", CandidateTurnID: "b"}
