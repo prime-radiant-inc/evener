@@ -24,6 +24,7 @@ import (
 	"runtime"
 	"slices"
 	"strconv"
+	"sync/atomic"
 	"testing"
 	"time"
 	"unsafe"
@@ -278,23 +279,44 @@ func TestPrepareModelRequestHistoryAllocationBudget(t *testing.T) {
 // the control-window subtraction cancels. A measurement that counts that
 // delivered churn lands above the band or over the budget ceiling outright;
 // one that attributes away more than the background masks a real regression
-// and lands below the band.
+// and lands below the band. The churner's start is awaited and its ticks are
+// counted, so the churned phase cannot silently measure an unchurned
+// process: on multi-P hosts a liveness floor fails the test if the churner
+// went quiet, while single-P runtimes starve it by design and are exempt.
 // Serial: it measures process-global TotalAlloc, and allocations from
 // concurrently running tests would land inside every window it measures.
+
+// minimumChurnTicks is the churned phase's liveness floor on multi-P hosts.
+// A live churner delivers orders of magnitude more than this even on a
+// fully loaded machine (hundreds of ticks per churned phase were observed
+// on a host at load-average 90); only a dead one delivers fewer.
+const minimumChurnTicks = 10
+
 func TestPrepareModelRequestHistoryBudgetIgnoresConcurrentBackground(t *testing.T) {
 	s := newRequestHistoryPreparationSession(t, requestHistoryBudgetTurns)
 	quiet := measureRequestHistoryBytesPerPreparation(t, s)
 	churnCtx, cancelChurn := context.WithCancel(context.Background())
 	t.Cleanup(cancelChurn)
 	churnDone := make(chan struct{})
+	churnStarted := make(chan struct{})
+	var churnTicks atomic.Int64
 	go func() {
 		defer close(churnDone)
+		firstTick := true
 		for churnCtx.Err() == nil {
 			sink = make([]byte, 32<<10)
+			churnTicks.Add(1)
+			if firstTick {
+				firstTick = false
+				close(churnStarted)
+			}
 			time.Sleep(200 * time.Microsecond)
 		}
 	}()
+	<-churnStarted
+	ticksBeforeChurn := churnTicks.Load()
 	churned := measureRequestHistoryBytesPerPreparation(t, s)
+	ticksAfterChurn := churnTicks.Load()
 	// A preparation's attributable allocation settles downward as the
 	// session warms, so the churned phase is judged against quiet
 	// measurements that bracket it in warmth, not only the colder one
@@ -302,7 +324,7 @@ func TestPrepareModelRequestHistoryBudgetIgnoresConcurrentBackground(t *testing.
 	cancelChurn()
 	<-churnDone
 	quietAgain := measureRequestHistoryBytesPerPreparation(t, s)
-	t.Logf("attributable bytes per preparation %d quiet, %d under concurrent churn, %d quiet again, budget %d", quiet, churned, quietAgain, maxRequestHistoryBytesPerPreparation)
+	t.Logf("attributable bytes per preparation %d quiet, %d under concurrent churn (%d ticks), %d quiet again, budget %d", quiet, churned, ticksAfterChurn-ticksBeforeChurn, quietAgain, maxRequestHistoryBytesPerPreparation)
 	if churned >= maxRequestHistoryBytesPerPreparation {
 		t.Fatalf("attributable bytes per preparation %d under concurrent churn, budget %d", churned, maxRequestHistoryBytesPerPreparation)
 	}
@@ -312,6 +334,16 @@ func TestPrepareModelRequestHistoryBudgetIgnoresConcurrentBackground(t *testing.
 	lo, hi := min(quiet, quietAgain)*6/10, max(quiet, quietAgain)*14/10
 	if churned < lo || churned > hi {
 		t.Fatalf("attributable bytes per preparation %d under concurrent churn, want within [%d, %d] of the quiet measurements %d and %d", churned, lo, hi, quiet, quietAgain)
+	}
+	// A churner that stops delivering would pass every assertion above
+	// against an unchurned process, so on a multi-P host — where the busy
+	// windows cannot take every processor away from a live churner — the
+	// churned phase must have kept it allocating. Single-P runtimes are
+	// exempt: their one processor belongs to the preparation and control
+	// windows, the churner is legitimately silent there, and the hazard
+	// this test pins cannot occur at all.
+	if runtime.GOMAXPROCS(0) > 1 && ticksAfterChurn-ticksBeforeChurn < minimumChurnTicks {
+		t.Fatalf("churner delivered %d ticks during the churned phase, want at least %d: the churn measurement was taken without background", ticksAfterChurn-ticksBeforeChurn, minimumChurnTicks)
 	}
 }
 
