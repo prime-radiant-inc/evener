@@ -58,9 +58,12 @@ spelling: TOML `memory_enabled`, wire `memoryEnabled`, label "Memory", default
 On. The daemon flag (`--disable-memory`), `SessionConfig.DisableMemory` and
 saved meta (`disable_memory`) keep the negative spelling. The one negation
 lives in `launchconfig.ToArgs`: an effective `memory_enabled` of false emits
-`--disable-memory`; unset or true emits nothing (the daemon's own default is
-enabled). The alternative — `disable_memory` everywhere, matching the flag —
-lost on UI readability: every renderer would read "Disable memory: On".
+`--disable-memory=true` and true emits `--disable-memory=false`, each a single
+equals-form token (`--disable-memory` is a stdlib Bool flag, and a per-launch
+On must beat a disabling global default explicitly); unset emits nothing (the
+daemon's own default is enabled). The alternative — `disable_memory`
+everywhere, matching the flag — lost on UI readability: every renderer would
+read "Disable memory: On".
 
 ## The pieces
 
@@ -83,8 +86,9 @@ lost on UI readability: every renderer would read "Disable memory: On".
   session with no memory tools, no memory index or reminders in its context,
   and no gardening-memory skill. Stored memory files are kept; a resumed
   session keeps the state it was created with."
-- `ToArgs` in launchconfig/args.go emits `--disable-memory` only when the
-  effective value is false.
+- `ToArgs` in launchconfig/args.go renders the effective value as one
+  equals-form token in both directions — false as `--disable-memory=true`,
+  true as `--disable-memory=false` — and emits nothing when unset.
 - `freshSpawnSkillAvailability` (cmd/evener-hub/app_spawn_slashcatalog.go)
   stops returning a fixed true and derives `MemorySaveAvailable` from the
   resolved launch (`MemoryEnabled == nil || *MemoryEnabled`). The guard test
