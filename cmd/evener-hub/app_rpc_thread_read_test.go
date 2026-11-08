@@ -103,10 +103,13 @@ func TestSessionOperationsFetchesServingDaemonItem(t *testing.T) {
 	daemonHTTP := httptest.NewServer(http.HandlerFunc(daemon.ServeWebSocket))
 	defer daemonHTTP.Close()
 	source := appsource.NewLocalDaemonSourceWithEntries("local", func() []appsource.LocalDaemonEntry {
-		return []appsource.LocalDaemonEntry{{Entry: rendezvous.Entry{
-			Protocol: appwire.ProtocolVersion, Endpoint: "ws" + strings.TrimPrefix(daemonHTTP.URL, "http"), SourceID: "local",
-			ThreadID: "windowed", SessionID: "windowed", WorkspaceRef: "local:windowed",
-		}}}
+		return []appsource.LocalDaemonEntry{{
+			Entry: rendezvous.Entry{
+				Protocol: appwire.ProtocolVersion, Endpoint: "ws" + strings.TrimPrefix(daemonHTTP.URL, "http"), SourceID: "local",
+				ThreadID: "windowed", SessionID: "windowed", WorkspaceRef: "local:windowed",
+			},
+			Capabilities: appwire.ThreadCapabilities{WindowRead: true}, CapabilitiesKnown: true,
+		}}
 	}, http.DefaultClient)
 	sources := appsource.NewRegistry()
 	sources.Add(source)
@@ -633,7 +636,7 @@ func TestSessionOperationsBoundsPreBeforeHubCompatibilityFetchToNewestPage(t *te
 	defer daemonHTTP.Close()
 	source := appsource.NewLocalDaemonSourceWithEntries("local", func() []appsource.LocalDaemonEntry {
 		return []appsource.LocalDaemonEntry{{
-			Entry: rendezvous.Entry{Protocol: appwire.ProtocolVersion, Endpoint: "ws" + strings.TrimPrefix(daemonHTTP.URL, "http"), SourceID: "local", ThreadID: "compat-pre-before", SessionID: "compat-pre-before", WorkspaceRef: "local:compat-pre-before"},
+			Entry:             rendezvous.Entry{Protocol: appwire.ProtocolVersion, Endpoint: "ws" + strings.TrimPrefix(daemonHTTP.URL, "http"), SourceID: "local", ThreadID: "compat-pre-before", SessionID: "compat-pre-before", WorkspaceRef: "local:compat-pre-before"},
 			CapabilitiesKnown: true,
 		}}
 	}, http.DefaultClient)
@@ -761,6 +764,10 @@ func TestSessionOperationsFetchesTranslatedRemoteItem(t *testing.T) {
 		switch method {
 		case appwire.MethodInitialize:
 			return appwire.InitializeResponse{ProtocolVersion: appwire.ProtocolVersion, SourceID: "local"}
+		case appwire.MethodThreadList:
+			return appwire.ThreadListResponse{Data: []appwire.Thread{{
+				ID: "remote", Source: "local", Evener: appwire.EvenerThread{Ref: "local:remote", Capabilities: appwire.ThreadCapabilities{WindowRead: true}},
+			}}}
 		case appwire.MethodThreadRead:
 			var read appwire.ThreadReadParams
 			if err := json.Unmarshal(params, &read); err != nil {
@@ -770,7 +777,7 @@ func TestSessionOperationsFetchesTranslatedRemoteItem(t *testing.T) {
 				t.Fatalf("controller forwarded fetch cursor to remote hub: %+v", read)
 			}
 			return appwire.ThreadReadResponse{Thread: appwire.Thread{
-				ID: "remote", Source: "local", Evener: appwire.EvenerThread{Ref: "local:remote"},
+				ID: "remote", Source: "local", Evener: appwire.EvenerThread{Ref: "local:remote", Capabilities: appwire.ThreadCapabilities{WindowRead: true}},
 				Turns: []appwire.Turn{{ID: "turn-remote", Status: appwire.TurnStatusCompleted, ItemsView: appwire.TurnItemsViewFull, Items: []appwire.ThreadItem{item}}},
 			}}
 		default:
@@ -844,8 +851,12 @@ func TestSessionOperationsReportsRemoteItemLostBeforeFetch(t *testing.T) {
 		switch method {
 		case appwire.MethodInitialize:
 			return appwire.InitializeResponse{ProtocolVersion: appwire.ProtocolVersion, SourceID: "local"}
+		case appwire.MethodThreadList:
+			return appwire.ThreadListResponse{Data: []appwire.Thread{{
+				ID: "remote", Source: "local", Evener: appwire.EvenerThread{Ref: "local:remote", Capabilities: appwire.ThreadCapabilities{WindowRead: true}},
+			}}}
 		case appwire.MethodThreadRead:
-			thread := appwire.Thread{ID: "remote", Source: "local", Evener: appwire.EvenerThread{Ref: "local:remote"}}
+			thread := appwire.Thread{ID: "remote", Source: "local", Evener: appwire.EvenerThread{Ref: "local:remote", Capabilities: appwire.ThreadCapabilities{WindowRead: true}}}
 			if reads.Add(1) == 1 {
 				thread.Turns = []appwire.Turn{{ID: "turn-remote", Status: appwire.TurnStatusCompleted, ItemsView: appwire.TurnItemsViewFull, Items: []appwire.ThreadItem{item}}}
 			}
@@ -893,10 +904,13 @@ func TestSessionOperationsTurnsPreservesWindowSelectorsOnInitialRead(t *testing.
 	defer daemonHTTP.Close()
 	endpoint := "ws" + strings.TrimPrefix(daemonHTTP.URL, "http")
 	source := appsource.NewLocalDaemonSourceWithEntries("local", func() []appsource.LocalDaemonEntry {
-		return []appsource.LocalDaemonEntry{{Entry: rendezvous.Entry{
-			Protocol: appwire.ProtocolVersion, Endpoint: endpoint, SourceID: "local",
-			ThreadID: "windowed", SessionID: "windowed", WorkspaceRef: "local:windowed",
-		}}}
+		return []appsource.LocalDaemonEntry{{
+			Entry: rendezvous.Entry{
+				Protocol: appwire.ProtocolVersion, Endpoint: endpoint, SourceID: "local",
+				ThreadID: "windowed", SessionID: "windowed", WorkspaceRef: "local:windowed",
+			},
+			Capabilities: appwire.ThreadCapabilities{WindowRead: true}, CapabilitiesKnown: true,
+		}}
 	}, http.DefaultClient)
 	sources := appsource.NewRegistry()
 	sources.Add(source)
@@ -946,10 +960,13 @@ func TestSessionOperationsTurnsPacksWindowByExactType(t *testing.T) {
 	defer daemonHTTP.Close()
 	endpoint := "ws" + strings.TrimPrefix(daemonHTTP.URL, "http")
 	source := appsource.NewLocalDaemonSourceWithEntries("local", func() []appsource.LocalDaemonEntry {
-		return []appsource.LocalDaemonEntry{{Entry: rendezvous.Entry{
-			Protocol: appwire.ProtocolVersion, Endpoint: endpoint, SourceID: "local",
-			ThreadID: "windowed", SessionID: "windowed", WorkspaceRef: "local:windowed",
-		}}}
+		return []appsource.LocalDaemonEntry{{
+			Entry: rendezvous.Entry{
+				Protocol: appwire.ProtocolVersion, Endpoint: endpoint, SourceID: "local",
+				ThreadID: "windowed", SessionID: "windowed", WorkspaceRef: "local:windowed",
+			},
+			Capabilities: appwire.ThreadCapabilities{WindowRead: true}, CapabilitiesKnown: true,
+		}}
 	}, http.DefaultClient)
 	sources := appsource.NewRegistry()
 	sources.Add(source)
@@ -1008,10 +1025,13 @@ func TestSessionOperationsTurnsContinuesInsideWindowedTurn(t *testing.T) {
 	defer daemonHTTP.Close()
 	endpoint := "ws" + strings.TrimPrefix(daemonHTTP.URL, "http")
 	source := appsource.NewLocalDaemonSourceWithEntries("local", func() []appsource.LocalDaemonEntry {
-		return []appsource.LocalDaemonEntry{{Entry: rendezvous.Entry{
-			Protocol: appwire.ProtocolVersion, Endpoint: endpoint, SourceID: "local",
-			ThreadID: "windowed", SessionID: "windowed", WorkspaceRef: "local:windowed",
-		}}}
+		return []appsource.LocalDaemonEntry{{
+			Entry: rendezvous.Entry{
+				Protocol: appwire.ProtocolVersion, Endpoint: endpoint, SourceID: "local",
+				ThreadID: "windowed", SessionID: "windowed", WorkspaceRef: "local:windowed",
+			},
+			Capabilities: appwire.ThreadCapabilities{WindowRead: true}, CapabilitiesKnown: true,
+		}}
 	}, http.DefaultClient)
 	sources := appsource.NewRegistry()
 	sources.Add(source)
