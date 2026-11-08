@@ -251,6 +251,34 @@ func (x *Index) Before(before appwire.ThreadItemPosition, limit int) (Window, er
 	})
 }
 
+// CandidateAt returns the complete item at position from this index view.
+func (x *Index) CandidateAt(position appwire.ThreadItemPosition) (appitempaging.TranscriptItemCandidate, error) {
+	x.mu.Lock()
+	defer x.mu.Unlock()
+	window, err := x.readWindow(func(r *reader) (Window, error) {
+		flush, err := x.pendingFlush(r)
+		if err != nil {
+			return Window{}, err
+		}
+		rank, err := x.rank(position, flush)
+		if err != nil {
+			return Window{}, err
+		}
+		window, err := x.window(r, rank+1, 1, flush)
+		if err != nil {
+			return Window{}, err
+		}
+		if len(window.Candidates) != 1 || window.Candidates[0].Position != position {
+			return Window{}, appwire.TranscriptItemCursorStale()
+		}
+		return window, nil
+	})
+	if err != nil {
+		return appitempaging.TranscriptItemCandidate{}, err
+	}
+	return window.Candidates[0], nil
+}
+
 // readWindow runs compute under a shared lock, the common case for a read.
 // compute must not run when the builder is stale (adopt sets builderStale
 // without repairing x.builder — see repairBuilder), so a stale builder skips
