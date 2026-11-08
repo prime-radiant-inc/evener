@@ -901,6 +901,9 @@ func TestHubShardsBuildsTheLiveStackBinariesOnce(t *testing.T) {
 	cmd.Dir = workRoot
 	cmd.Env = append(os.Environ(), append(hubFixtureToolchainEnv(t),
 		"HUB_SHARD_COUNT=2",
+		// The live-shard announcement below needs both shards alive at once;
+		// do not inherit the gate's busy-host concurrency cap.
+		"HUB_SHARD_CONCURRENCY=2",
 		"SHARD_FIXTURE_LIVE_STACK=1",
 		"SHARD_FIXTURE_LIVE_DIR="+liveDir,
 		"SHARD_FIXTURE_LIVE_EXPECT=2",
