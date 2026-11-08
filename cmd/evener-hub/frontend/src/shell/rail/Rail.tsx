@@ -518,7 +518,7 @@ function NavigationRail({
         .catch(() => undefined);
   }, [navigationMode, manifest]);
 
-  const setExpanded = useCallback((id: string, value: boolean) => {
+  const setRowExpanded = useCallback((id: string, value: boolean) => {
     navigationStore.getState().setRowExpanded(id, value);
   }, []);
   const { rootLoadsInFlight, loadProjectRoot, projectRetryCallback } = useProjectRootLoads(
@@ -559,7 +559,7 @@ function NavigationRail({
     archivedLists,
     expansion: expanded,
     isExpanded,
-    setExpanded,
+    setRowExpanded,
     groupingMode,
     bodyRef,
   });
@@ -567,7 +567,7 @@ function NavigationRail({
   function handleToggle(node: RailNode) {
     if (isPassiveRailNode(node)) return;
     const value = !node.expanded;
-    setExpanded(node.id, value);
+    setRowExpanded(node.id, value);
     if (!value && node.kind === "project") {
       // The in-flight guard is project-wide but one project renders several
       // nodes (host-first copies): clear it only when no other copy stays
@@ -590,7 +590,7 @@ function NavigationRail({
     }
   }
   function toggleSection(key: string, defaultOpen: boolean) {
-    setExpanded(key, !isExpanded(key, defaultOpen));
+    setRowExpanded(key, !isExpanded(key, defaultOpen));
   }
   function openSession(session: RailSession) {
     openSessionByRef(session.ref);
@@ -945,21 +945,19 @@ function NavigationRail({
       seenHostFolds.current = new Set(hostFoldIds);
       return;
     }
-    // One fold per pass, the reveal idiom: this effect reads the render's
-    // expansion map, so a second call in one pass would act on one decision
-    // twice. The store change re-runs this effect and opens the rest, all
-    // before paint.
-    const next = [...hostFoldIds].find((id) => !handled.has(id) && expanded.get(id) !== false);
-    if (next) {
-      seenHostFolds.current = new Set([...handled, next]);
-      setExpanded(next, true);
+    // Open every newly seen fold in one pass: the store action reads the
+    // latest map, so successive calls accumulate rather than clobber.
+    const pending = [...hostFoldIds].filter((id) => !handled.has(id) && expanded.get(id) !== false);
+    if (pending.length > 0) {
+      seenHostFolds.current = new Set([...handled, ...pending]);
+      for (const id of pending) setRowExpanded(id, true);
       return;
     }
     // Nothing pending: every current fold is handled, and ids that left
     // the tree drop out so a fold that returns re-opens (its rows came
     // back).
     seenHostFolds.current = new Set(hostFoldIds);
-  }, [projectsSectionNodes, hostFoldIds, expanded, setExpanded]);
+  }, [projectsSectionNodes, hostFoldIds, expanded, setRowExpanded]);
   const liveNodes = [
     // Live answers "which machine" the same way in either mode: rows group
     // under host subheaders exactly while they span more than one host

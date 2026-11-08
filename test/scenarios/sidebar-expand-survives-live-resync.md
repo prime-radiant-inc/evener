@@ -7,10 +7,11 @@ expand bookkeeping doesn't carry across that render, a project you deliberately
 opened silently collapses the moment something happens somewhere else.
 
 The mechanism moved wholesale. There is no `doResync()` and no
-`window.EvenerSidebarModel` — expansion is React state in `Rail.tsx`
-(`expandedOverrides`, `:164`, seeded from `localStorage` by `loadExpansion`),
-resolved per row by `overrideLookup` (`railNodes.ts:106-108`) and persisted on
-every toggle by `setExpanded` (`Rail.tsx:197-205`). The refetch is
+`window.EvenerSidebarModel` — expansion is the navigation store's `expanded`
+map, read at store construction through the `NavigationPersistence` port
+(`stores/navigation/persistence.ts`), resolved per row by `overrideLookup`
+(`railNodes.ts:106-108`) and written on every toggle by `setRowExpanded`
+(`Rail.tsx`). The refetch is
 `navigationStore.getState().loadManifest()` (`stores/navigation/store.ts:339-352`), scheduled on a 250ms debounce
 by any of `thread/started`, `thread/closed`, `evener/attention/changed`,
 `navigation invalidation` (`navigation invalidation`, `stores/navigation/store.ts:443-450,455-467`).

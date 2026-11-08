@@ -575,10 +575,10 @@ describe("resource-backed Rail", () => {
     render(<Rail />);
     fireEvent.click(sectionDisclosure("Live"));
 
-    expect(JSON.parse(localStorage.getItem(EXPANSION_STORAGE_KEY) ?? "{}")).toEqual({
-      "section:projects": false,
-      "section:live": false,
-    });
+    expect([...loadExpansion()]).toEqual([
+      ["section:projects", false],
+      ["section:live", false],
+    ]);
     expect([...navigationStore.getState().expanded]).toEqual([
       ["section:projects", false],
       ["section:live", false],
@@ -1851,7 +1851,7 @@ describe("resource-backed Rail", () => {
     expect(loadProject).toHaveBeenCalledTimes(1);
     expect(loadProject).toHaveBeenCalledWith("p");
   });
-  test("keeps expansion persistence in the rail-local override map", () => {
+  test("persists a project row's expansion under its node key", () => {
     installState([catalogResource([{ key: "p", name: "Proj", session_count: 1 }])]);
     render(<Rail />);
     fireEvent.click(screen.getByText("Proj"));
@@ -3497,6 +3497,10 @@ describe("archived rows come from evener/archived/list", () => {
   // open, so the reveal reaches the list on the count effect's own commit
   // rather than a re-run after it.
   function installRevealIntoCountedProject() {
+    localStorage.setItem(
+      EXPANSION_STORAGE_KEY,
+      JSON.stringify({ "projectnode:p": true, "section:archived": true, "archivedgroup:p": true }),
+    );
     installState([
       archivedCatalog(1),
       projectResource("p", [summary({ ref: "local:now", title: "Now" })]),
@@ -3514,10 +3518,6 @@ describe("archived rows come from evener/archived/list", () => {
         },
       ),
     ]);
-    localStorage.setItem(
-      EXPANSION_STORAGE_KEY,
-      JSON.stringify({ "projectnode:p": true, "section:archived": true, "archivedgroup:p": true }),
-    );
   }
 
   test("a reveal of an archived session in a counted project fetches its list once", async () => {

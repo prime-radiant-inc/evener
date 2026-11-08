@@ -1,10 +1,9 @@
 // railNodes.ts is the pure tree-shaping layer between navigation resources
 // data and the widgets/tree Tree widget: it decides row identity, the
 // project/host grouping, and (given the caller's own expand-state map) each
-// branch's `expanded` flag. No React, no fetching - Rail.tsx owns the state
-// these functions are pure functions OF (the expand-override map, the
-// lazily-loaded archived project detail map, the manifest's launch sources)
-// and wires the results into <Tree>.
+// branch's `expanded` flag. No React, no fetching - the navigation store owns
+// the expand map, and Rail.tsx owns the lazily-loaded archived project detail
+// map and the manifest's launch sources. Rail wires the results into <Tree>.
 //
 // Primary navigation session rows are flat and carry compact own-session
 // counters. Archived lists separately retain fork-original conversations as
