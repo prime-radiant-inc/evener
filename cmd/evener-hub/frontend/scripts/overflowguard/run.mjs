@@ -613,6 +613,12 @@ function assertDuoCompactStates(result) {
   const question = states.get("question");
   const approval = states.get("approval");
   if (empty?.editorMinLines !== "1lh") failures.push(`empty editor=${empty?.editorMinLines}, expected one line`);
+  if (empty && (empty.cardGap !== "0px" || empty.cardPaddingBlock !== "0px 0px")) {
+    failures.push(`empty card retains gap/padding ${empty.cardGap}/${empty.cardPaddingBlock}`);
+  }
+  if (focused && focused.footerPaddingBottom !== "0px") {
+    failures.push(`focused footer clearance=${focused.footerPaddingBottom}, expected keyboard-adjusted safe-area clearance`);
+  }
   if (empty && empty.totalFooterHeight > 258.94) {
     failures.push(`empty/live footer=${empty.totalFooterHeight}px, exceeds the 258.94px budget (306.94px baseline minus 48px)`);
   }

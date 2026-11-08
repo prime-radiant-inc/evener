@@ -2017,6 +2017,9 @@ async function measureDuoCompactStates(phase: "focus" | "rest") {
     results.push({
       state,
       totalFooterHeight: (footerBox?.height ?? 0) + (edgeBox?.height ?? 0),
+      cardGap: card ? getComputedStyle(card).rowGap : null,
+      cardPaddingBlock: card ? `${getComputedStyle(card).paddingTop} ${getComputedStyle(card).paddingBottom}` : null,
+      footerPaddingBottom: footer ? getComputedStyle(footer).paddingBottom : null,
       editorMinLines: editor.style.minHeight,
       editing: editor.closest("[data-composer]")?.hasAttribute("data-composer-editing") ?? false,
       cardHidden: card instanceof HTMLElement && card.hidden,

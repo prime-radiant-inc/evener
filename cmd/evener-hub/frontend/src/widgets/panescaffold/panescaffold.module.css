@@ -186,7 +186,7 @@
     padding-bottom: max(0px, env(safe-area-inset-bottom) - var(--keyboard-inset, 0px));
   }
 
-  .pane:has(> .body[data-pane-scaffold^="session:"]) > .footerBeforeEdge {
+  .pane:has(> .body[data-pane-scaffold^="session:"]):not(:has([data-composer-editing])) > .footerBeforeEdge {
     padding-bottom: var(--space-1);
   }
 }
