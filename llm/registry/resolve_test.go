@@ -1390,9 +1390,9 @@ func TestResolve_LiveInputModalitiesReachCaps(t *testing.T) {
 }
 
 // A live listing's tools verdict reaches the resolved row, including the
-// override of a catalog fact: capabilities.tools from the gateway reader is
-// what model selection and the hub picker read, so dropping it at the live
-// layer would silently make a gateway model tool-less again.
+// override of a catalog fact. This guards the live-layer plumbing the gateway
+// reader depends on; it passes before the capabilities.tools parse because
+// liveFacts already carried Tools.
 func TestResolve_LiveToolsReachCaps(t *testing.T) {
 	r := fixtureLoad(t, nil, "")
 	if res := mustResolve(t, r, "openrouter/anthropic/claude-opus-4.6"); res.Caps.Tools == nil || !*res.Caps.Tools {

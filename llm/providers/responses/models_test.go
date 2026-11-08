@@ -149,8 +149,8 @@ func capsOf(t *testing.T, facts string) registry.Caps {
 
 // TestListModelsReadsGatewayToolsCapability pins that a gateway's per-model
 // capabilities.tools reaches the row. The Responses listing carries no
-// supported_parameters list to infer tools from, so a lunaroute model that
-// advertises tools would otherwise resolve as tool-less.
+// supported_parameters list to infer tools from, so without this read a
+// gateway's tools verdict never reaches the resolved row.
 func TestListModelsReadsGatewayToolsCapability(t *testing.T) {
 	if c := capsOf(t, `"capabilities":{"tools":true}`); c.Tools == nil || !*c.Tools {
 		t.Fatalf("capabilities.tools must advertise tool support: %+v", c.Tools)
