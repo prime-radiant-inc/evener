@@ -640,12 +640,12 @@ func registerTaskTools(reg *tool.Registry, deps *toolDeps) {
 					// and the completed update already succeeded, so leave the
 					// active task alone instead of attempting it.
 					if manuallyStartedID == 0 && summary.Current == nil {
-						if hook := deps.taskGuard.beforeAutoAdvance; hook != nil {
-							hook()
-						}
 						eligible := store.NextEligible()
 						if len(eligible) > 0 {
 							next := eligible[0]
+							if hook := deps.taskGuard.beforeAutoAdvance; hook != nil {
+								hook()
+							}
 							auto, err := store.UpdateWithSnapshot([]taskpkg.TaskUpdate{{ID: next.ID, Status: taskpkg.TaskInProgress}})
 							if err != nil {
 								postCommitErr = fmt.Errorf("post-commit auto-advance failed: %w", err)
