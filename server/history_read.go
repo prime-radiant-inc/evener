@@ -67,6 +67,40 @@ func (h *threadHistory) latest(c historyCapture, threadRef string, limit int) (t
 	return turns, olderCursor, snapshot, window.LatestExecutionTurnID, overlay, nil
 }
 
+// turnWindow projects a turn-addressed read from the same index snapshot used
+// by legacy item paging. Turn selectors never mint legacy item cursors.
+func (h *threadHistory) turnWindow(c historyCapture, threadRef string, selector appwire.ThreadTurnWindow) (turns []appwire.Turn, snapshot appwire.SnapshotIdentity, latestExecutionTurnID string, overlay []appwire.OverlayItem, err error) {
+	var resolved transcriptindex.ResolvedTurnWindow
+	var latest transcriptindex.Window
+	err = h.read(func(idx *transcriptindex.Snapshot) error {
+		var err error
+		resolved, err = idx.ResolveTurnWindow(selector)
+		if err != nil {
+			return err
+		}
+		latest, err = idx.Latest(1)
+		return err
+	})
+	if err != nil {
+		return nil, appwire.SnapshotIdentity{}, "", nil, err
+	}
+	turns, _, snapshot, err = h.page(transcriptindex.Window{
+		Candidates:  resolved.Candidates,
+		Incarnation: resolved.Incarnation,
+		Length:      resolved.Length,
+	}, threadRef)
+	if err != nil {
+		return nil, appwire.SnapshotIdentity{}, "", nil, err
+	}
+	overlay = make([]appwire.OverlayItem, 0, len(c.overlay))
+	for _, item := range c.overlay {
+		if h.overlay.Contains(item.Key) {
+			overlay = append(overlay, item)
+		}
+	}
+	return turns, snapshot, latest.LatestExecutionTurnID, overlay, nil
+}
+
 // before pages the request's ItemLimit items before its cursor from the
 // transcript, or before its Before boundary when it has no cursor, taken under
 // the current incarnation (appitempaging.Boundary). A

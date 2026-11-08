@@ -234,7 +234,17 @@ func (s *Server) finishAppThreadRead(params appwire.ThreadReadParams, cut appThr
 	}
 	response := cut.response
 	if params.IncludeTurns && cut.history != nil {
-		turns, olderCursor, snapshot, latestExecutionTurnID, overlay, err := cut.history.latest(cut.capture, cut.history.ref, params.ItemLimit)
+		var turns []appwire.Turn
+		var olderCursor string
+		var snapshot appwire.SnapshotIdentity
+		var latestExecutionTurnID string
+		var overlay []appwire.OverlayItem
+		var err error
+		if params.TurnWindow != nil {
+			turns, snapshot, latestExecutionTurnID, overlay, err = cut.history.turnWindow(cut.capture, cut.history.ref, *params.TurnWindow)
+		} else {
+			turns, olderCursor, snapshot, latestExecutionTurnID, overlay, err = cut.history.latest(cut.capture, cut.history.ref, params.ItemLimit)
+		}
 		if err != nil {
 			return appwire.ThreadReadResponse{}, appwire.WithHistoryReadIdentity(appserver.WireError(err), response.BootGeneration, response.Epoch)
 		}
