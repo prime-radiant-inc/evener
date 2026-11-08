@@ -4,11 +4,17 @@
 // settings change re-reads nothing. A page gates the fields a newer hub owns
 // on it, so a control the connected hub cannot honor never shows as a toggle
 // that silently does nothing.
-import type { AppwireClient, LaunchOptionSchemaResponse } from "@evener/appwire-client";
+// A read that FAILED is not an answer: it is asked again whenever the host's
+// reach changes, so the offline host a remembered draft opens with recovers
+// its schema once it connects, or a kept Memory Off could never start
+// there. Reach is a string, so the host rows' per-poll array churn
+// re-asks nothing; only a real change of reach does.
+import type { AppwireClient, HostRow, LaunchOptionSchemaResponse } from "@evener/appwire-client";
 import { useStore } from "zustand";
 import type { NewSessionService } from "../conversation/services/newSession";
 import type { NewSessionStore } from "./newSessionContext";
 import { useHostOnlyRead } from "./useHostRead";
+import { hostReach } from "./startGate";
 
 async function readSchema(service: NewSessionService, host: string): Promise<LaunchOptionSchemaResponse> {
 	return service.launchSchema(host);
@@ -20,7 +26,8 @@ export function useSheetLaunchSchema(
 	store: NewSessionStore,
 	client: AppwireClient | null,
 	ready: boolean,
+	rows: readonly HostRow[] | null,
 ): LaunchOptionSchemaResponse | null {
 	const source = useStore(store, (form) => form.source);
-	return useHostOnlyRead(client, ready, source, readSchema);
+	return useHostOnlyRead(client, ready, source, readSchema, hostReach(source, rows));
 }

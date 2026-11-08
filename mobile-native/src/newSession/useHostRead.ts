@@ -38,17 +38,22 @@ export function useHostRead<T>(
 }
 
 /** One read about the chosen host alone (the hub's launch schema): asked
- * while the sheet is ready, again whenever the host changes. Null before the
- * answer and after a failure; the host's last answer stays while it is asked
- * again. */
+ * while the sheet is ready, again whenever the host or `revision` changes.
+ * Null before the answer and after a failure; the host's last answer stays
+ * while it is asked again. `revision` re-runs the read exactly as
+ * useHostRead's does: the schema hook passes the host's reach, so a read
+ * that failed while the host was unreachable is asked again once it isn't. */
 export function useHostOnlyRead<T>(
 	client: ConversationClientLike | null,
 	ready: boolean,
 	host: string,
 	read: (service: NewSessionService, host: string) => Promise<T>,
+	revision: string | number = 0,
 ): T | null {
 	const [known, setKnown] = useState<{ host: string; value: T | null } | null>(null);
 	useEffect(() => {
+		// The revision re-runs this read; it isn't read inside.
+		void revision;
 		if (!client || !ready) return;
 		let current = true;
 		read(creationService(client), host).then(
@@ -58,7 +63,7 @@ export function useHostOnlyRead<T>(
 		return () => {
 			current = false;
 		};
-	}, [client, ready, host, read]);
+	}, [client, ready, host, read, revision]);
 	return known?.host === host ? known.value : null;
 }
 

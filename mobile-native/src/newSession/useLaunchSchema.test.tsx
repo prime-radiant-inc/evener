@@ -1,7 +1,8 @@
-import type { AnyNotification } from "@evener/appwire-client";
+import type { AnyNotification, HostRow } from "@evener/appwire-client";
 import { act } from "react-test-renderer";
 import { expect, it, vi } from "vitest";
 import { createNewSessionStore } from "../newSession";
+import { hostRow } from "../hosts/hostsTestUtils";
 import { render } from "../renderNative.testkit";
 import { launchSchemaOf } from "./newSessionTestUtils";
 import { useSheetLaunchSchema } from "./useLaunchSchema";
@@ -23,6 +24,7 @@ function deferred() {
 function mount(host: string, cwd: string, ready = true) {
 	const calls: { method: string; params: unknown; answer: ReturnType<typeof deferred> }[] = [];
 	let notify: (notification: AnyNotification) => void = () => {};
+	let rows: readonly HostRow[] | null = null;
 	const client = {
 		request: (method: string, params: unknown) => {
 			const answer = deferred();
@@ -39,11 +41,16 @@ function mount(host: string, cwd: string, ready = true) {
 	const seen: unknown[] = [];
 	let isReady = ready;
 	function Probe() {
-		seen.push(useSheetLaunchSchema(store, client as never, isReady));
+		seen.push(useSheetLaunchSchema(store, client as never, isReady, rows));
 		return null;
 	}
 	const tree = render(<Probe />);
 	const move = (next: { host: string; cwd: string }) => act(() => store.setState({ source: next.host, cwd: next.cwd }));
+	const setRows = (next: readonly HostRow[] | null) =>
+		act(() => {
+			rows = next;
+			tree.update(<Probe />);
+		});
 	const setReady = (next: boolean) =>
 		act(() => {
 			isReady = next;
@@ -53,6 +60,7 @@ function mount(host: string, cwd: string, ready = true) {
 		calls,
 		latest: () => seen.at(-1),
 		move,
+		setRows,
 		setReady,
 		notify: (n: AnyNotification) => act(() => notify(n)),
 	};
@@ -100,6 +108,35 @@ it("knows nothing after a failed read, and tries again when the host changes", a
 	await act(async () => probe.calls[0]?.answer.reject(new Error("hub away")));
 	expect(probe.latest()).toBeNull();
 	probe.move({ host: "paradise-park", cwd: "/Users/jesse/git/evener" });
+	await act(async () => probe.calls[1]?.answer.resolve(launchSchemaOf(["memoryEnabled"])));
+	expect(probe.latest()).toEqual(launchSchemaOf(["memoryEnabled"]));
+});
+
+it("asks a failed schema read again once the host it failed for comes online", async () => {
+	const probe = mount("paradise-park", "/Users/jesse/git/evener");
+	// The host is listed offline, so the reads asked for it fail.
+	probe.setRows([hostRow("paradise-park", { attached: false })]);
+	await act(async () => {
+		probe.calls[0]?.answer.reject(new Error("host offline"));
+		probe.calls[1]?.answer.reject(new Error("host offline"));
+	});
+	expect(probe.latest()).toBeNull();
+	// The host connects: the failed read must be asked again, or a remembered
+	// Memory Off could never start on it.
+	probe.setRows([hostRow("paradise-park")]);
+	const retry = probe.calls.at(-1);
+	expect(retry?.params).toEqual({ host: "paradise-park", method: "evener/launch/schema", params: {} });
+	await act(async () => retry?.answer.resolve(launchSchemaOf(["memoryEnabled"])));
+	expect(probe.latest()).toEqual(launchSchemaOf(["memoryEnabled"]));
+});
+
+it("re-asks nothing while the reach is unchanged: the rows' per-poll churn is not the key", async () => {
+	const probe = mount("paradise-park", "/Users/jesse/git/evener");
+	probe.setRows([hostRow("paradise-park", { attached: false })]);
+	expect(probe.calls).toHaveLength(2); // the mount's read, plus the reach change to offline
+	// A poll answers again with a fresh array at the same reach: no re-read.
+	probe.setRows([hostRow("paradise-park", { attached: false })]);
+	expect(probe.calls).toHaveLength(2);
 	await act(async () => probe.calls[1]?.answer.resolve(launchSchemaOf(["memoryEnabled"])));
 	expect(probe.latest()).toEqual(launchSchemaOf(["memoryEnabled"]));
 });

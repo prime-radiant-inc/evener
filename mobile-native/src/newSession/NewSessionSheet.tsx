@@ -13,7 +13,7 @@ import { LOCAL_HOST } from "@evener/appwire-client";
 import { hasHub } from "../connection";
 import { useConnection } from "../ConnectionProvider";
 import { isReady } from "../connectionDisplay";
-import { useHubFleet } from "../hosts/useHubFleet";
+import { useHubFleet, useOptionalSnapshot } from "../hosts/useHubFleet";
 import { nativeDrafts } from "../nativeDrafts";
 import { appGroupSharePort } from "../share/appGroupSharePort";
 import { completeShare } from "../share/sharePayload";
@@ -147,10 +147,11 @@ function NewSessionSheetBody({ route }: NativeStackScreenProps<Routes, "NewSessi
 	);
 
 	const { hosts, live } = useHubFleet(renderClient, randomUUID);
+	const hostRows = useOptionalSnapshot(hosts)?.rows ?? null;
 	const hostLabel = useCallback((host: string) => (host === LOCAL_HOST ? hubName : host), [hubName]);
 	const plugins = useSheetPlugins(store, renderClient, ready);
 	const launchDefaults = useSheetLaunchDefaults(store, renderClient, ready);
-	const launchSchema = useSheetLaunchSchema(store, renderClient, ready);
+	const launchSchema = useSheetLaunchSchema(store, renderClient, ready, hostRows);
 	const value = useMemo<NewSessionContextValue>(
 		() => ({
 			store,
