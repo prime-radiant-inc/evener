@@ -260,7 +260,7 @@ func annotateThreadProjects(threads []appwire.Thread) {
 		project, ok := projects[path]
 		if !ok {
 			var err error
-			project, err = identifier.ResolveProject(path)
+			project, err = resolveThreadProject(path)
 			if err != nil {
 				projects[path] = identifier.Project{}
 				continue
@@ -274,6 +274,12 @@ func annotateThreadProjects(threads []appwire.Thread) {
 		threads[i].ProjectPath = project.CanonicalPath
 	}
 }
+
+// resolveThreadProject is annotateThreadProjects' resolution seam. A hook that
+// reconstructs a past entry's metadata for a live merge must not pay for
+// project identity the merge cannot use (#4692); tests replace this to prove
+// the merge path never resolves.
+var resolveThreadProject = identifier.ResolveProject
 
 func threadListSourceID(defaultSourceID string, thread appwire.Thread) string {
 	if thread.Source != "" {
