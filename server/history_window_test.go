@@ -66,13 +66,7 @@ func TestLiveThreadReadHonorsTurnWindows(t *testing.T) {
 	if !errors.As(err, &wireErr) || wireErr.Code != appwire.CodeInvalidParams {
 		t.Fatalf("missing turn error = %v, want typed invalid params", err)
 	}
-	var data struct {
-		EvenerErrorInfo appwire.ErrorInfo `json:"evenerErrorInfo"`
-		TurnID          string            `json:"turnId"`
-		OldestTurnID    string            `json:"oldestTurnId"`
-		NewestTurnID    string            `json:"newestTurnId"`
-		TurnCount       int               `json:"turnCount"`
-	}
+	var data appwire.TranscriptTurnNotFoundErrorData
 	raw, marshalErr := json.Marshal(wireErr.Data)
 	if marshalErr != nil {
 		t.Fatal(marshalErr)
