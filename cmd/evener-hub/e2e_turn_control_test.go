@@ -503,7 +503,7 @@ func (s hubStack) dialRPC(ctx context.Context, t *testing.T) *appwire.Client {
 	if err != nil {
 		t.Fatalf("dial hub rpc: %v", err)
 	}
-	client := appwire.NewClient(e2eControlTransport(transport))
+	client := appwire.NewClient(withoutClientKeepalive{transport})
 	// Registered before any thread exists, so the LIFO cleanup order leaves
 	// the socket open for the thread/shutdown the test registers later.
 	t.Cleanup(func() { _ = client.Close() })
@@ -530,15 +530,11 @@ func (s hubStack) dialRPC(ctx context.Context, t *testing.T) *appwire.Client {
 // (issue #154). These e2e clients bound every request with a context, so they
 // do not need a second wall-clock detector to fail a hung hub; leaving it on
 // makes unrelated assertions fail on host load instead of on the behavior they
-// name. The keepalive itself stays covered by the appwire unit tests.
+// name. The keepalive itself stays covered by the appwire unit tests. This is
+// the opt-out internal/sshconn's lossWatchingTransport already takes, where
+// SSH's own ServerAlive keeps the link honest.
 type withoutClientKeepalive struct {
 	appwire.Transport
-}
-
-// e2eControlTransport is the transport every hubStack RPC client is built
-// over.
-func e2eControlTransport(transport appwire.Transport) appwire.Transport {
-	return withoutClientKeepalive{transport}
 }
 
 // pingingTransport is an appwire.Transport that also advertises Pinger, the
@@ -547,15 +543,11 @@ type pingingTransport struct{ appwire.Transport }
 
 func (pingingTransport) Ping(context.Context) error { return nil }
 
-// TestHubStackControlClientSkipsTheClientKeepalive pins why the e2e harness
-// wraps its transports: appwire decides whether to run its keepalive from the
-// transport's Pinger capability. If the wrapper ever advertises Ping again, a
-// hub starved past the 25s ping-plus-pong budget tears down a healthy socket
-// and the boundary test fails on host load rather than on the wire behavior it
-// asserts (issue #154).
+// TestHubStackControlClientSkipsTheClientKeepalive pins that the e2e control
+// transport does not advertise Ping; see withoutClientKeepalive for why.
 func TestHubStackControlClientSkipsTheClientKeepalive(t *testing.T) {
-	if _, ok := any(e2eControlTransport(pingingTransport{})).(appwire.Pinger); ok {
-		t.Fatal("the e2e control transport advertises Ping, so appwire.NewClient runs the production keepalive and closes a hub starved past its pong timeout")
+	if _, ok := any(withoutClientKeepalive{pingingTransport{}}).(appwire.Pinger); ok {
+		t.Fatal("the e2e control transport advertises Ping, so appwire.NewClient runs the keepalive")
 	}
 }
 
