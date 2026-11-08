@@ -125,9 +125,12 @@ func (f *continuationRecoveryFixture) start(t *testing.T) {
 		t.Fatal("subscription not installed")
 	}
 	t.Cleanup(func() { cancel(); <-f.done })
+	f.root.mu.Lock()
+	boundSignal := f.root.hubWatchSignal
+	f.root.mu.Unlock()
 	go func() {
 		defer close(f.done)
-		f.root.consumeHubWatch(ctx, f.id, appwire.SessionWatchRequest{Ref: "local:worker", Completion: true}, "local:manager", "manager-instance", f.updates, f.initial)
+		f.root.consumeHubWatch(ctx, f.id, appwire.SessionWatchRequest{Ref: "local:worker", Completion: true}, "local:manager", "manager-instance", boundSignal, f.updates, f.initial)
 	}()
 }
 func (f *continuationRecoveryFixture) wait(t *testing.T) {
