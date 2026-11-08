@@ -3,13 +3,16 @@
 Session activity describes the delegates, shell jobs and watches owned by a
 conversation. The primary navigation rail reduces each navigation summary to a
 one-line status and title; its title HoverCard exposes the summary's project,
-host, branch, running-job, subagent, watch, pin-section, tier and age context. This remains a
-navigation-domain read. Hovering the title or focusing its tree row reveals that
-context; on a hoverless device, a long press on the title reveals it, and a tap
-activates the session. The card floats beside the sidebar, aligned with the row,
-with viewport-aware above/below fallback in the sessions drawer or a narrow
-window. Scroll and resize cancel visible and pending reveals; a fresh gesture
-opens it at the new position. See the [placement contract](../web-ui/design-system.md).
+host, branch, running-job, subagent, watch, pin-section, tier and age context.
+Those context rows remain a navigation-domain read. The card's status line is
+the exception: on a working row it reads that session's pulse from the
+hub-level [`evener/activity/read`](pulse-meter.md) while the card is open.
+Hovering the title or focusing its tree row reveals that context; on a
+hoverless device, a long press on the title reveals it, and a tap activates the
+session. The card floats beside the sidebar, aligned with the row, with
+viewport-aware above/below fallback in the sessions drawer or a narrow window.
+Scroll and resize cancel visible and pending reveals; a fresh gesture opens it
+at the new position. See the [placement contract](../web-ui/design-system.md).
 Reading a session's activity is a separate operation, so
 browsing navigation does not load every session's work tree. A session's seen
 mark lives on the hub: a live navigation row carries its `seen_through`, and
@@ -127,6 +130,25 @@ state line, Board search marks, the browser's Cadence family and the
 notification level all read it. A pending approval never masks a failure, a
 restart need, an ended or not-loaded session; the hub states the same rule in
 `hubapi.AttentionState`, and both run the cases in `testdata/attention`.
+
+The rail's title card is the one navigation surface that also consumes the
+[session pulse meter](pulse-meter.md). While the card is open on a working row,
+the [rail activity hook](../../cmd/evener-hub/frontend/src/shell/rail/railActivity.ts)
+reads `evener/activity/read` for that row's ref: immediately on open, then
+every ten seconds while the tab is visible. The timer pauses while the tab is
+hidden, and the next visible moment reads at once. A read older than two poll
+intervals (twenty seconds) is treated as absent, and the read is withheld while
+the connection is not ready or after the row stops working, so a resumed card
+asks afresh. A method-not-found answer means the hub predates the read: the
+card stops asking and keeps its fallback.
+
+The card settles a working status in the phone Board's order: running
+subagents, then the shared quiet/stuck rule, then `latestIntent`, then the
+row's running job command, then the state word. Without a usable read it keeps
+the state word, or the row's running job command when it carries one. It does
+not derive a subagent line from the row's tally, which the card's own Subagents
+row already names. The non-working statuses keep their existing vocabulary
+(`Not started`, `Failed`, or the humanized state).
 
 ## APIs and ownership
 
@@ -949,7 +971,9 @@ initial collection reads. Closing it releases that demand. Transcript watch
 references use the transcript's own watch evidence. The
 [recursive activity panel](../../cmd/evener-hub/frontend/src/panes/session/chrome/ActivityPanel.tsx)
 observes subtree collections while its body is open. These view lifetimes do not
-cause an activity read for every session in the navigation rail.
+cause an `evener/thread/*` activity read for every session in the navigation
+rail; the rail's open title card makes only its own one-ref pulse read, as
+described under [Navigation session status](#navigation-session-status).
 
 Session chrome and the navigation rail expose Overview through their session
 action menus. On the phone, that action opens the full-screen shared activity
