@@ -258,6 +258,9 @@ test("a pure notes update on an open task renders its note in the window (a fres
       },
     ),
   );
+  // The folded line names the noted task with the note mark; the shared
+  // mutation summary and recap are empty for a notes-only call.
+  expect(screen.getByTestId("tool-row-summary").textContent).toBe("✎ sixth");
   openRow();
   const rows = screen.getAllByTestId("task-card-row");
   expect(rows.map((row) => row.getAttribute("data-kind"))).toEqual(["settled", "current", "next"]);
@@ -273,6 +276,7 @@ test("a status-less note outside the window gets its own row on the raw path", (
       raw: sevenTaskState(),
     }),
   );
+  expect(screen.getByTestId("tool-row-summary").textContent).toBe("✎ seventh");
   openRow();
   const rows = screen.getAllByTestId("task-card-row");
   expect(rows.map((row) => row.getAttribute("data-kind"))).toEqual(["settled", "current", "next", "note"]);
@@ -1309,7 +1313,10 @@ test("a lone status-less note still renders a card, in its own fallback row", ()
   // No sibling status change renders the card, so the note itself must be
   // enough to make the row visible - otherwise the whole call is suppressed.
   renderItem(taskItem({ action: "update", updates: [{ id: 2, notes: "fresh" }] }, "Updated 2."));
+  expect(screen.getByTestId("tool-row-summary").textContent).toBe("✎ #2");
   openRow();
+  // The expanded recap falls back to the same line instead of going blank.
+  expect(screen.getByTestId("tool-row-summary").textContent).toBe("✎ #2");
   const rows = screen.getAllByTestId("task-card-row");
   expect(rows).toHaveLength(1);
   expect(rows[0]!.getAttribute("data-kind")).toBe("note");

@@ -114,7 +114,7 @@ export function parseProgress(output: string | undefined): Progress | undefined 
 // a fresh note on a status-less task (Jesse's ruling on #2257: the note must
 // not be lost, even when it is the call's only news).
 function isTaskMutation(item: ItemModel): boolean {
-  return (mutationRows(item) ?? []).length > 0 || statuslessNoteRows(item, freshNotes(item)).length > 0;
+  return (mutationRows(item) ?? []).length > 0 || statuslessNoteRows(item).length > 0;
 }
 
 // A note THIS call added to a task without giving that task any status word.
@@ -127,7 +127,14 @@ interface NoteRow {
   note: string;
 }
 
-function statuslessNoteRows(item: ItemModel, fresh: ReadonlyMap<number, string>): NoteRow[] {
+const statuslessNoteRowsCache = new WeakMap<ItemModel, NoteRow[]>();
+
+// One derivation per item, like mutationRows: the folded summary, the recap,
+// suppress(), and the body all ask for the same rows from one
+// argumentsJSON/raw pair, and ItemModels are immutable snapshots.
+function statuslessNoteRows(item: ItemModel): NoteRow[] {
+  const cached = statuslessNoteRowsCache.get(item);
+  if (cached) return cached;
   const args = parseArgs(item.argumentsJSON);
   const action = str(args, "action") ?? "";
   const updates = action === "update" ? args.updates : action === "" ? args.update : undefined;
@@ -138,7 +145,20 @@ function statuslessNoteRows(item: ItemModel, fresh: ReadonlyMap<number, string>)
     const id = typeof record.id === "number" ? record.id : undefined;
     if (id !== undefined && str(record, "status")) statused.add(id);
   }
-  return [...fresh].filter(([id]) => !statused.has(id)).map(([id, note]) => ({ id, note }));
+  const rows = [...freshNotes(item)].filter(([id]) => !statused.has(id)).map(([id, note]) => ({ id, note }));
+  statuslessNoteRowsCache.set(item, rows);
+  return rows;
+}
+
+// The folded line for a call whose only news is a status-less note: the
+// shared summary and recap are mutation-only, so name the noted task with the
+// same label its row uses. The note mark keeps the card's mark + label
+// grammar without inventing prose. Jesse's ruling on #2257.
+const NOTE_MARK = "✎";
+
+function taskNoteSummary(item: ItemModel): string {
+  const row = statuslessNoteRows(item).at(-1);
+  return row ? `${NOTE_MARK} ${taskLabel(parseTaskListData(item.raw), row.id)}` : "";
 }
 
 // ---- the window: settled, working, next -------------------------------
@@ -307,7 +327,7 @@ function TaskCardBody({ item, sessionRef }: ToolRenderProps) {
   // must not get a second row.
   const covered = new Set<number>();
   for (const task of [win.settled, win.current, win.next]) if (task) covered.add(task.id);
-  const notes = statuslessNoteRows(item, fresh).filter((row) => !covered.has(row.id));
+  const notes = statuslessNoteRows(item).filter((row) => !covered.has(row.id));
   return (
     <div className={CLASS.card} data-testid="task-card">
       {state !== null ? (
@@ -397,8 +417,11 @@ registerToolRenderer({
   match: "task_list",
   fold: "never", // the plan card stays visible
   icon: "tasks",
-  summary: taskMutationSummary,
-  summaryWhenExpanded: taskMutationRecap,
+  // The shared summary and recap name mutation rows only. A call whose only
+  // news is a status-less note falls back to the note's task label, so the
+  // folded line is never blank and the reader has a cue to open the row.
+  summary: (item) => taskMutationSummary(item) || taskNoteSummary(item),
+  summaryWhenExpanded: (item) => taskMutationRecap(item) || taskNoteSummary(item),
   body: TaskCardBody,
   // Settle folded at EVERY verbosity level (activity/full force-expand every
   // other body through the level default): the folded line already carries

@@ -619,8 +619,9 @@ The inline card is a WINDOW onto the plan, not a changelog (2026-09 rework, Jess
 it settles folded at every verbosity level (descriptor `foldByDefault` — the level's
 expand-details default does not open it, only the reader's click does, which then persists
 through the shared disclosure store), so a run of task updates reads as quiet one-liners. The
-folded summary line names only the most recent update, mark + label (`→ Build the harness`);
-opening the row swaps that line for a recap sentence of the call's whole change
+folded summary line names only the most recent update, mark + label (`→ Build the harness`), or
+the noted task when the call's only news is a status-less note (`✎ #2`); opening the row swaps
+that line for a recap sentence of the call's whole change
 (`Completed "Decide the folded line"; started "Build the harness"` — verbs Completed, Started,
 Added, Dropped, sentence case) and the body shows at most three slots joined by a hairline
 spine: most-recently-settled (done or cancelled; timestamps order it, list position breaks
@@ -628,8 +629,12 @@ ties), in-progress, next. A note renders only when THIS call added it, set in th
 the note is the agent's own sentence. The footer keeps the aggregate sentence + meter and
 carries the whole-list affordance: an "Open task list" control that opens (and focuses) the
 session's Tasks pane and never closes it — an open operation, not the `/tasks` palette
-command's toggle — hidden where no session owns the card. An update
-that changes no task status renders nothing at all. The tasks pane keeps its grouped
+command's toggle — hidden where no session owns the card. An update that changes no task
+status renders nothing at all, except that a fresh note on a task whose batch carries no status
+word earns its own row (label + note, no state glyph) after the window or the mutation rows. A
+note on a task whose batch carries a status word still rides that status row, or stays
+suppressed when the status itself earns no row (a reopen or a suppressed reassertion). The
+tasks pane keeps its grouped
 full-list structure — settled/in-progress/open groups, timestamps, meta, prompt disclosure,
 the full notes timeline — but renders its rows on the same TaskCheck family, its live row's
 latest note bare in the prose face (the "latest" label chip is gone), and its notes timeline
