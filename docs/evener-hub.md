@@ -485,6 +485,10 @@ replaced. A local build at the channel's current commit still offers Install,
 because the local binary is not the channel's published build, unless a
 rebuilt binary is already waiting for a restart.
 
+Install is offered only on platforms with a published archive (linux/amd64 and
+darwin/arm64), so a hub on another platform reports no installable update
+instead of failing after the download starts.
+
 Running session daemons keep the binary they were spawned from (see the
 [upgrade procedure](#upgrading-and-migrating-safely) below). Shut down the
 daemon and resume the saved session to move it to the new build.

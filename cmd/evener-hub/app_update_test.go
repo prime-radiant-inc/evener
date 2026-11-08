@@ -256,6 +256,30 @@ func TestHubUpdateCheckLocalBuildOutsideInstallationReportsMismatch(t *testing.T
 	}
 }
 
+func TestHubUpdateCheckUnsupportedPlatformHasNoInstall(t *testing.T) {
+	setBuild(t, "abc1234", "")
+	setManagedRestartProbe(t, "echo 'evener abc1234 (2026-10-21T00:00:00Z)'")
+	previousGOOS, previousGOARCH := hubUpgradeGOOS, hubUpgradeGOARCH
+	hubUpgradeGOOS, hubUpgradeGOARCH = "linux", "arm64"
+	t.Cleanup(func() { hubUpgradeGOOS, hubUpgradeGOARCH = previousGOOS, previousGOARCH })
+	stubUpdateCheck(t, func(_ context.Context, opts selfupdate.CheckOptions) (selfupdate.CheckResult, error) {
+		return selfupdate.CheckResult{
+			Channel:         opts.Channel,
+			LatestTag:       "release",
+			LatestCommit:    "def5678" + strings.Repeat("f", 33),
+			UpdateAvailable: true,
+		}, nil
+	})
+
+	resp, err := hubUpdateCheck(context.Background(), appwire.UpdateCheckParams{})
+	if err != nil {
+		t.Fatalf("hubUpdateCheck: %v", err)
+	}
+	if resp.InstallAvailable {
+		t.Fatal("installAvailable = true on a platform with no published archive")
+	}
+}
+
 func TestHubUpdateCheckLocalBuildStopsOfferingInstallOnceChannelBuildIsOnDisk(t *testing.T) {
 	setBuild(t, "abc1234", "")
 	setManagedRestartProbe(t, "echo 'evener def5678 (2026-10-21T00:00:00Z)'")

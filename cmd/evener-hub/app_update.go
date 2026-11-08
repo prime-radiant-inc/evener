@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"time"
@@ -83,6 +84,14 @@ var (
 // the selected channel's published build into the managed installation it was
 // launched from.
 func isDevBuild() bool { return buildinfo.BuildChannel() == "dev" }
+
+// hubUpgradeGOOS and hubUpgradeGOARCH name the platform whose published
+// archive an install would fetch; vars so tests can model a platform with no
+// published artifact.
+var (
+	hubUpgradeGOOS   = runtime.GOOS
+	hubUpgradeGOARCH = runtime.GOARCH
+)
 
 // validateUpdateChannel resolves requested (defaulting to the build's own
 // upgrade channel) and rejects anything but "release" or "snapshot" --
@@ -159,7 +168,8 @@ func hubUpdateCheck(ctx context.Context, params appwire.UpdateCheckParams) (appw
 	resp.InstallAvailable = result.LatestCommit != "" &&
 		onDiskCommit != "" &&
 		(!onDiskCurrent || localBuildOnDisk) &&
-		resp.InstallTargetMatchesLaunch
+		resp.InstallTargetMatchesLaunch &&
+		selfupdate.SupportsPlatform(hubUpgradeGOOS, hubUpgradeGOARCH)
 	return resp, nil
 }
 
