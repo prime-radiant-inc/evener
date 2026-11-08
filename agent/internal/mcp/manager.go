@@ -292,17 +292,16 @@ func productionDialWithEnv(cfg mcpconfig.ServerConfig, wrapper *sandbox.Wrapper,
 // pass a fixed slice.
 func confineCommandUnderSandbox(cmd *exec.Cmd, cfgEnv map[string]string, w *sandbox.Wrapper, environ func() []string) {
 	base := mergeEnvInto(sandbox.ScrubSecretEnv(environ()), cfgEnv)
-	workingDir := cmd.Dir
-	if workingDir == "" {
-		workingDir = w.Policy().SessionDir
-	}
+	// The floor must judge npm's project config from the directory the server
+	// is confined to, not the session's launch dir.
+	workingDir := w.Policy().Git.WorktreeRoot
 	cmd.Env = sandbox.ApplyEnvFloorInDir(base, w.Policy(), w.SessionTmp(), workingDir)
 	// ConfineTrustedInfra wraps the argv and, for Seatbelt, sets cmd.Dir to the
 	// worktree so a macOS MCP server starts in the same directory a Linux
 	// (bwrap, via --chdir) one does — sandbox-exec has no chdir flag. Unlike
 	// Confine, it keeps network access under net=off: MCP servers are trusted
 	// infrastructure (kata 83pm), not model-directed egress.
-	w.ConfineTrustedInfra(cmd, w.Policy().Git.WorktreeRoot)
+	w.ConfineTrustedInfra(cmd, workingDir)
 	cmd.ExtraFiles = nil
 }
 

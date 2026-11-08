@@ -3,9 +3,12 @@ package hooks
 import (
 	"context"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"primeradiant.com/evener/agent/plugin"
 	"primeradiant.com/evener/agent/sandbox"
@@ -84,5 +87,85 @@ func TestHookCommandConfined(t *testing.T) {
 	}
 	if !strings.Contains(res.Stdout, "comm=bwrap") {
 		t.Errorf("a sandboxed hook must run under the kernel sandbox (PID 1 = bwrap):\n%s", res.Stdout)
+	}
+}
+
+// A session started in a nested package runs its hooks at the Git worktree
+// root, so the env floor must judge npm's project config there. A root .npmrc
+// naming an unserved external cache has to fall back to the session scratch
+// (#4542 review).
+func TestHookCommandFloorUsesTheConfinedWorktreeDir(t *testing.T) {
+	worktree := sandbox.MaterializeWorkspace(t, sandbox.MainCheckout)
+	packageDir := filepath.Join(worktree, "packages", "foo")
+	packageCache := filepath.Join(t.TempDir(), "package-npm")
+	rootCache := filepath.Join(t.TempDir(), "root-npm")
+	for _, dir := range []string{packageDir, packageCache, rootCache} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	writeFile := func(path, content string) {
+		t.Helper()
+		if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	writeFile(filepath.Join(packageDir, "package.json"), "{}\n")
+	writeFile(filepath.Join(packageDir, ".npmrc"), "cache="+packageCache+"\n")
+	writeFile(filepath.Join(worktree, ".npmrc"), "cache="+rootCache+"\n")
+
+	home := t.TempDir()
+	sessionTmp := t.TempDir()
+	net := true
+	rp, err := sandbox.Resolve(
+		sandbox.SandboxPolicy{Mode: sandbox.ModeWorkspaceWrite, Network: &net},
+		sandbox.HostFacts{
+			OS: "linux", Home: home, BwrapPath: "/usr/bin/bwrap", BwrapCapable: true,
+			OverlaySupported: true,
+		},
+		packageDir)
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if rp.CacheStrategy != sandbox.CacheOverlay {
+		t.Fatalf("test premise: cache strategy = %v, want overlay", rp.CacheStrategy)
+	}
+	if rp.SessionDir != packageDir || rp.Git.WorktreeRoot != worktree {
+		t.Fatalf("test premise: session dir = %q, worktree root = %q", rp.SessionDir, rp.Git.WorktreeRoot)
+	}
+	if !slices.Contains(rp.CacheRoots, packageCache) || slices.Contains(rp.CacheRoots, rootCache) {
+		t.Fatalf("test premise: cache roots = %v, want the package cache only", rp.CacheRoots)
+	}
+	w, err := sandbox.NewWrapper(rp, "/usr/bin/bwrap", sessionTmp)
+	if err != nil {
+		t.Fatalf("NewWrapper: %v", err)
+	}
+
+	got, workdir := "", ""
+	runtime := systemCommandHookRuntime{run: func(_ context.Context, _ commandHookInvocation, cmd *exec.Cmd) error {
+		for i := 0; i+1 < len(cmd.Args); i++ {
+			if cmd.Args[i] == "--chdir" {
+				workdir = cmd.Args[i+1]
+				break
+			}
+		}
+		for _, kv := range cmd.Env {
+			if name, val, found := strings.Cut(kv, "="); found && name == "npm_config_cache" {
+				got = val
+			}
+		}
+		return nil
+	}}
+	if _, err := runtime.Run(context.Background(), commandHookInvocation{
+		Program: "scripted-hook", Timeout: time.Second,
+		Env: []string{"HOME=" + home}, SandboxWrapper: w,
+	}); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if workdir != worktree {
+		t.Fatalf("hook workdir = %q, want the worktree root %q", workdir, worktree)
+	}
+	if want := filepath.Join(sessionTmp, "npm"); got != want {
+		t.Fatalf("npm_config_cache = %q, want the session scratch %q", got, want)
 	}
 }

@@ -53,15 +53,16 @@ var floorPrefixDrops = []string{
 //
 // It returns a fresh slice and never reads the process environment; the overlay
 // branch inspects the filesystem at the cache paths it judges (servedByOverlay).
-// Called at EVERY spawn site (shell jobs, rg, stdio MCP servers, hook commands)
-// so no spawned process escapes the floor.
+// Every spawn site calls ApplyEnvFloorInDir with the directory it confines the
+// process to, so no spawned process escapes the floor.
 func ApplyEnvFloor(env []string, policy ResolvedPolicy, sessionScratch string) []string {
 	return ApplyEnvFloorInDir(env, policy, sessionScratch, policy.SessionDir)
 }
 
 // ApplyEnvFloorInDir is ApplyEnvFloor for a spawn in workingDir: npm's project
-// config is located from that directory, which may differ from the session's
-// own (a streamed or exec command with its own working directory).
+// config is located from that directory, which must be the directory the spawn
+// is confined to (the dir passed to Confine or ConfineTrustedInfra) and may
+// differ from the session's own.
 func ApplyEnvFloorInDir(env []string, policy ResolvedPolicy, sessionScratch, workingDir string) []string {
 	out := make([]string, 0, len(env)+4)
 	redirected, pinned := redirectedCacheVars(env, policy, workingDir)
