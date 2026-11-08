@@ -75,6 +75,10 @@ func TestSetModelReportsRenderFailureWithoutSelfDeadlock(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
+	const cachedSentinel = "CACHED_VALID_PROMPT_SENTINEL"
+	sess.mu.Lock()
+	sess.cachedSystemPrompt = cachedSentinel
+	sess.mu.Unlock()
 	forceSystemPromptRenderFailure(t)
 
 	awaitOrFail(t, "SetModel with a failing prompt render", func() {
@@ -85,6 +89,9 @@ func TestSetModelReportsRenderFailureWithoutSelfDeadlock(t *testing.T) {
 
 	if !sawRenderFailureWarning(sess) {
 		t.Fatal("no warning emitted: the render failure was swallowed")
+	}
+	if sess.cachedSystemPrompt != cachedSentinel {
+		t.Fatalf("cached prompt after a failed SetModel refresh = %q, want the previous valid prompt", sess.cachedSystemPrompt)
 	}
 	// Closed here rather than in a t.Cleanup, and deliberately: the failure this
 	// test exists to catch leaves s.mu held by a parked goroutine, and Close
