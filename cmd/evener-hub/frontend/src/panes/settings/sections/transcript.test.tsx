@@ -8,6 +8,7 @@ import {
   toWireConfig,
   WireError,
 } from "@evener/appwire-client";
+import { deferred } from "@evener/appwire-client/testing/deferred";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -93,16 +94,6 @@ function renderWithToasts() {
       <Toast />
     </>,
   );
-}
-
-function deferred<T>(): { promise: Promise<T>; resolve(value: T): void; reject(error: unknown): void } {
-  let resolve!: (value: T) => void;
-  let reject!: (error: unknown) => void;
-  const promise = new Promise<T>((next, fail) => {
-    resolve = next;
-    reject = fail;
-  });
-  return { promise, resolve, reject };
 }
 
 async function mountReadySection(
@@ -356,6 +347,130 @@ test("acknowledges an ordinary same-config response after the store clears its d
   await userEvent.setup().click(screen.getAllByRole("radio", { name: "Activity" })[0]!);
   await savedOnce();
   expect(transcriptDisplayStore.getState().drafts.desktop).toBeUndefined();
+});
+
+test("acknowledges an older hub's four-field resolution of a custom save", async () => {
+  const client = new FakeClient("ready");
+  const confirmed = makeTranscriptDisplayConfig({ kind: "preset", level: "tools" });
+  client.on("evener/settings/transcriptDisplay/get", () => ({
+    desktop: { revision: 1, config: toWireConfig(confirmed) },
+    mobile: { revision: 1, config: toWireConfig(shippedDefault("mobile").config) },
+  }));
+  connectionStore.getState().connect(client);
+  connectionStore.setState({ features: { ...(await client.connect()).features, transcriptDisplaySettings: true } });
+  // The old hub stored the four-field reading: the presentation field resolves
+  // from expandByDefault. The caller must accept that acknowledgment of the
+  // divergent request it made.
+  const acknowledged = makeTranscriptDisplayConfig({
+    kind: "custom",
+    toolIntent: true,
+    toolCalls: true,
+    reasoning: false,
+    expandByDefault: false,
+    thinkingOpenByDefault: false,
+  });
+  const patched = vi
+    .spyOn(transcriptDisplayStore.getState(), "patchHubDefault")
+    .mockResolvedValue({ revision: 2, config: acknowledged });
+  renderWithToasts();
+  await waitFor(() => expect(transcriptDisplayStore.getState().hub.desktop?.revision).toBe(1));
+  await waitFor(() => expect(transcriptDisplayStore.getState().hubLoading).toBe(false));
+
+  const user = userEvent.setup();
+  await user.click(screen.getByText(/Customize & advanced/));
+  await user.click(screen.getByRole("switch", { name: "Thinking open by default" }));
+
+  await savedOnce();
+  expect(patched).toHaveBeenCalledWith(
+    "desktop",
+    expect.objectContaining({
+      content: expect.objectContaining({ kind: "custom", thinkingOpenByDefault: true, expandByDefault: false }),
+    }),
+  );
+  // The hub kept the four-field reading; the preference survives in this
+  // browser's local view instead of silently resetting.
+  expect(transcriptDisplayStore.getState().local.desktop).toMatchObject({
+    content: {
+      kind: "custom",
+      toolIntent: true,
+      toolCalls: true,
+      reasoning: false,
+      expandByDefault: false,
+      thinkingOpenByDefault: true,
+    },
+  });
+  expect(successToasts()).toHaveLength(1);
+  expect(screen.queryByRole("alert")).toBeNull();
+});
+
+test("keeps an existing browser-local choice through a downgraded hub save", async () => {
+  const client = new FakeClient("ready");
+  const confirmed = makeTranscriptDisplayConfig({ kind: "preset", level: "tools" });
+  client.on("evener/settings/transcriptDisplay/get", () => ({
+    desktop: { revision: 1, config: toWireConfig(confirmed) },
+    mobile: { revision: 1, config: toWireConfig(shippedDefault("mobile").config) },
+  }));
+  connectionStore.getState().connect(client);
+  connectionStore.setState({ features: { ...(await client.connect()).features, transcriptDisplaySettings: true } });
+  const acknowledged = makeTranscriptDisplayConfig({
+    kind: "custom",
+    toolIntent: true,
+    toolCalls: true,
+    reasoning: false,
+    expandByDefault: false,
+    thinkingOpenByDefault: false,
+  });
+  vi.spyOn(transcriptDisplayStore.getState(), "patchHubDefault").mockResolvedValue({
+    revision: 2,
+    config: acknowledged,
+  });
+  renderWithToasts();
+  await waitFor(() => expect(transcriptDisplayStore.getState().hub.desktop?.revision).toBe(1));
+  await waitFor(() => expect(transcriptDisplayStore.getState().hubLoading).toBe(false));
+  // The reader already keeps their own desktop view.
+  const localChoice = makeTranscriptDisplayConfig({ kind: "preset", level: "chat" }, { tokenCounts: true });
+  act(() => transcriptDisplayStore.getState().setLocal("desktop", localChoice));
+
+  const user = userEvent.setup();
+  await user.click(screen.getByText(/Customize & advanced/));
+  await user.click(screen.getByRole("switch", { name: "Thinking open by default" }));
+
+  await savedOnce();
+  // The downgraded hub save must not replace the reader's local choice.
+  expect(transcriptDisplayStore.getState().local.desktop).toEqual(localChoice);
+});
+
+test("does not add a local override when the hub acknowledges the request exactly", async () => {
+  const client = new FakeClient("ready");
+  const confirmed = makeTranscriptDisplayConfig({ kind: "preset", level: "tools" });
+  client.on("evener/settings/transcriptDisplay/get", () => ({
+    desktop: { revision: 1, config: toWireConfig(confirmed) },
+    mobile: { revision: 1, config: toWireConfig(shippedDefault("mobile").config) },
+  }));
+  connectionStore.getState().connect(client);
+  connectionStore.setState({ features: { ...(await client.connect()).features, transcriptDisplaySettings: true } });
+  const divergent = makeTranscriptDisplayConfig({
+    kind: "custom",
+    toolIntent: true,
+    toolCalls: true,
+    reasoning: false,
+    expandByDefault: false,
+    thinkingOpenByDefault: true,
+  });
+  vi.spyOn(transcriptDisplayStore.getState(), "patchHubDefault").mockResolvedValue({
+    revision: 2,
+    config: divergent,
+  });
+  renderWithToasts();
+  await waitFor(() => expect(transcriptDisplayStore.getState().hub.desktop?.revision).toBe(1));
+  await waitFor(() => expect(transcriptDisplayStore.getState().hubLoading).toBe(false));
+
+  const user = userEvent.setup();
+  await user.click(screen.getByText(/Customize & advanced/));
+  await user.click(screen.getByRole("switch", { name: "Thinking open by default" }));
+
+  await savedOnce();
+  expect(transcriptDisplayStore.getState().local.desktop).toBeUndefined();
 });
 
 test("allows the winner-first concurrent save to toast exactly once", async () => {

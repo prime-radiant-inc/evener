@@ -50,27 +50,6 @@ export interface HubOverviewStore extends FrameworkFreeStore<HubOverviewState> {
   dispose(): void;
 }
 
-/** Go's omitempty encodes empty slices and zero counters as absent fields;
- * this puts the [] and 0 back so readers need no per-field fallback. Sections
- * the hub did not send (storage, mcpDiscovered, pastIndex) stay absent. */
-function normalizeSettingsOverview(data: SettingsOverviewResponse): SettingsOverviewResponse {
-  const normalized: SettingsOverviewResponse = { ...data, agents: data.agents ?? [] };
-  if (data.mcpDiscovered) {
-    normalized.mcpDiscovered = { ...data.mcpDiscovered, servers: data.mcpDiscovered.servers ?? [] };
-  }
-  if (data.hub?.pastIndex) {
-    normalized.hub = {
-      ...data.hub,
-      pastIndex: {
-        ...data.hub.pastIndex,
-        count: data.hub.pastIndex.count ?? 0,
-        perPage: data.hub.pastIndex.perPage ?? 0,
-      },
-    };
-  }
-  return normalized;
-}
-
 export function createHubOverviewStore(client: HubOverviewClient): HubOverviewStore {
   let inflight: Promise<void> | null = null;
   // Bumped by reset() and dispose(); a request that started under an older
@@ -99,7 +78,7 @@ export function createHubOverviewStore(client: HubOverviewClient): HubOverviewSt
     publish({ loading: true, error: null });
     try {
       const data = await client.request("evener/settings/overview", {});
-      publish({ data: normalizeSettingsOverview(data), loading: false, error: null });
+      publish({ data, loading: false, error: null });
     } catch (err) {
       // `data` is deliberately left out: the shallow merge keeps whatever was
       // there (null, or the last successful load) through a failed request.

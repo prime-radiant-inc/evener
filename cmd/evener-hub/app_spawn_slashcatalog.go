@@ -108,7 +108,7 @@ func hubSpawnSlashCatalog(ctx context.Context, cfg hubcore.WebConfig, params app
 		ExtraDirs:     preview.resolved.Effective.SkillsDirs,
 		Plugins:       sources,
 	})
-	entries := catalog.UserEntriesForSession(freshSpawnSkillAvailability())
+	entries := catalog.UserEntriesForSession(freshSpawnSkillAvailability(preview.resolved.Effective))
 	skills := make([]appwire.EvenerSkillInfo, 0, len(entries))
 	for _, entry := range entries {
 		skills = append(skills, appwire.EvenerSkillInfo{
@@ -124,10 +124,9 @@ func hubSpawnSlashCatalog(ctx context.Context, cfg hubcore.WebConfig, params app
 }
 
 // freshSpawnSkillAvailability is the skill availability of the root session a
-// spawn catalog describes. This runs before any session exists: a fresh hub
-// launch gets the default memory state root and registers every memory save
-// tool, so gardening-memory is advertised. If launch configuration ever gains a
-// memory control, it must feed this helper instead of leaving this value fixed.
-func freshSpawnSkillAvailability() skill.SessionAvailability {
-	return skill.SessionAvailability{MemorySaveAvailable: true}
+// spawn catalog describes. This runs before any session exists, so it derives
+// from the resolved launch layer the way session init will: memory save tools
+// register unless the launch disables memory (memory_enabled unset or true).
+func freshSpawnSkillAvailability(eff launchconfig.Layer) skill.SessionAvailability {
+	return skill.SessionAvailability{MemorySaveAvailable: eff.MemoryEnabled == nil || *eff.MemoryEnabled}
 }

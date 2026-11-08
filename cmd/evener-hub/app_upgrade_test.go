@@ -30,19 +30,44 @@ func TestHubUpgradeRefusedWhileApplyHoldsTheLock(t *testing.T) {
 	}
 }
 
-func TestHubUpgradeRefusesDevBuild(t *testing.T) {
-	setBuild(t, "", "")
+func TestHubUpgradeInstallsForLocalBuild(t *testing.T) {
+	setBuild(t, "abc1234", "")
+	setManagedRestartProbe(t, "echo 'evener abc1234 (2026-10-21T00:00:00Z)'")
+	var gotOpts selfupdate.Options
+	upgrades := stubHubSelfUpgrade(t, func(_ context.Context, opts selfupdate.Options) (selfupdate.Result, error) {
+		gotOpts = opts
+		return stubInstalledResult(t, "evener"), nil
+	})
+
+	got, err := hubUpgrade(context.Background(), appwire.UpgradeParams{Requested: "snapshot"})
+	if err != nil {
+		t.Fatalf("hubUpgrade: %v", err)
+	}
+	if *upgrades != 1 {
+		t.Fatalf("upgrades = %d, want 1", *upgrades)
+	}
+	if gotOpts.Requested != "snapshot" || gotOpts.CurrentChannel != "release" {
+		t.Fatalf("opts = %+v", gotOpts)
+	}
+	if got.Channel != "snapshot" || len(got.Installed) != 1 {
+		t.Fatalf("got %+v", got)
+	}
+}
+
+func TestHubUpgradeLocalBuildOutsideInstallationRefused(t *testing.T) {
+	setBuild(t, "abc1234", "")
+	setRestartProbe(t, "echo 'evener abc1234 (2026-10-21T00:00:00Z)'")
 	upgrades := stubHubSelfUpgrade(t, func(context.Context, selfupdate.Options) (selfupdate.Result, error) {
-		t.Fatal("a dev build must not self-update")
+		t.Fatal("a local build outside its install target must not install")
 		return selfupdate.Result{}, nil
 	})
 
-	_, err := hubUpgrade(context.Background(), appwire.UpgradeParams{})
-	if !errors.Is(err, errDevBuildUpdate) {
-		t.Fatalf("hubUpgrade err = %v, want errDevBuildUpdate", err)
+	_, err := hubUpgrade(context.Background(), appwire.UpgradeParams{Requested: "release"})
+	if !errors.Is(err, errLocalBuildInstallTarget) {
+		t.Fatalf("hubUpgrade err = %v, want errLocalBuildInstallTarget", err)
 	}
 	if *upgrades != 0 {
-		t.Fatalf("upgrades = %d", *upgrades)
+		t.Fatalf("upgrades = %d, want 0", *upgrades)
 	}
 }
 

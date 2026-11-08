@@ -33,7 +33,7 @@ func TestDelegateSendRejectsTheCallerRoute(t *testing.T) {
 		child.delegateRootSessionID = "root-session"
 		child.owningDelegateID = "dlg_child"
 		child.reg = toolpkg.NewRegistry()
-		if err := registerStableDelegateTool(child.reg, child); err != nil {
+		if err := registerDelegateTool(child.reg, child); err != nil {
 			t.Fatalf("register stable delegate tool: %v", err)
 		}
 		ctx := context.WithValue(context.Background(), delegateRunLeaseContextKey{}, delegateLease{delegateID: "dlg_child", generation: 1})
@@ -69,7 +69,7 @@ func TestDelegateSendRejectsTheCallerRoute(t *testing.T) {
 		}
 		root.attachTranscript(writer)
 		c.rootRuntime = root
-		if err := registerStableDelegateTool(root.reg, root); err != nil {
+		if err := registerDelegateTool(root.reg, root); err != nil {
 			t.Fatalf("register root stable delegate tool: %v", err)
 		}
 		call := executeCallerSend(context.Background(), t, root)

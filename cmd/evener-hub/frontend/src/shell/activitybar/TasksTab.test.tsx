@@ -8,7 +8,7 @@ import userEvent from "@testing-library/user-event";
 import { lazy } from "react";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test, vi } from "vitest";
 import { MotionProvider } from "../../motion";
-import { connectionStore } from "../../stores/connection";
+import { connectionStore, resetConnectionStoreForTests } from "../../stores/connection";
 import { navigationStore } from "../../stores/navigation/store";
 import { activityClient, activityThread } from "../../stores/sessionActivityTestUtils";
 import { tasksPanelStore } from "../../stores/tasksPanel";
@@ -169,7 +169,7 @@ function expectNoSummaries(counts: { done: number; total: number; cancelled?: nu
 }
 
 beforeEach(() => {
-  connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
+  resetConnectionStoreForTests();
   resetThreadsStoreForTests();
   resetToastStoreForTests();
   resetDisclosureStoreForTests();
@@ -181,7 +181,7 @@ afterEach(() => {
   resetWorkspaceStoreForTests();
   resetFocusedActivityScopeForTests();
   resetActivitySidebarStoreForTests();
-  connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
+  resetConnectionStoreForTests();
 });
 
 describe("TasksTab", () => {

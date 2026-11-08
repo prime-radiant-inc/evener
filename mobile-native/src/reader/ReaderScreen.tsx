@@ -21,10 +21,11 @@ import {
 	View,
 	type ViewToken,
 } from "react-native";
-import { useSafeAreaInsets } from "react-native-safe-area-context";
+import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
 import { useHeldAlertCount, useHoldAlerts } from "../alerts/alertsContext";
 import { copyText } from "../clipboard";
 import { useConnection } from "../ConnectionProvider";
+import { useDetailPaneWidth } from "../duo/paneWidth";
 import { HubProfiles } from "../connection";
 import type { Routes } from "../screens";
 import { timeAgo } from "../session/format";
@@ -92,10 +93,11 @@ export function ReaderScreen({ route, navigation }: NativeStackScreenProps<Route
 				: routeReference,
 		[publication, source, routeReference],
 	);
-	// A retained artifact is a different document from a folder file of the same
-	// name, so its root is part of its identity here and in the memory store.
+	// A retained-root document (artifacts, scratch) is a different document
+	// from a folder file of the same name, so its root is part of its identity
+	// here and in the memory store.
 	const key = useMemo(
-		() => ({ sessionRef, path, ...(reference.root === "artifacts" ? { root: "artifacts" as const } : {}) }),
+		() => ({ sessionRef, path, ...(reference.root !== undefined ? { root: reference.root } : {}) }),
 		[sessionRef, path, reference.root],
 	);
 	const { document, notice: refreshNotice, imageAttempt, reload } = useDocument(hubId, sessionRef, reference, inFront);
@@ -108,6 +110,7 @@ export function ReaderScreen({ route, navigation }: NativeStackScreenProps<Route
 	const { palette } = useColors();
 	const scale = useTextScale();
 	const insets = useSafeAreaInsets();
+	const detailPaneWidth = useDetailPaneWidth();
 	const list = useRef<FlatList<Row>>(null);
 
 	// This visit's view of the past: the version you last read. A re-read
@@ -435,7 +438,7 @@ export function ReaderScreen({ route, navigation }: NativeStackScreenProps<Route
 		sessionRef,
 		path,
 		sessionTitle,
-		...(reference.root === "artifacts" ? { root: "artifacts" as const, readTarget: reference.readTarget } : {}),
+		...(reference.root !== undefined ? { root: reference.root, readTarget: reference.readTarget } : {}),
 	};
 	// The rows keep one callback; it reaches this render's values through the ref.
 	const act = useRef((_action: BlockAction, _block: DocumentBlock, _words?: string) => {});
@@ -448,7 +451,7 @@ export function ReaderScreen({ route, navigation }: NativeStackScreenProps<Route
 					hubId,
 					sessionRef,
 					path,
-					...(reference.root === "artifacts" ? { root: "artifacts" as const } : {}),
+					...(reference.root !== undefined ? { root: reference.root } : {}),
 					blockIndex: block.index,
 					blockHash: block.hash,
 					quote: selected,
@@ -522,7 +525,10 @@ export function ReaderScreen({ route, navigation }: NativeStackScreenProps<Route
 	);
 
 	return (
-		<View style={{ flex: 1, backgroundColor: palette.page }}>
+		<SafeAreaView
+			edges={detailPaneWidth === null ? ["left", "right"] : ["right"]}
+			style={{ flex: 1, backgroundColor: palette.page }}
+		>
 			<FlatList
 				ref={list}
 				data={rows}
@@ -628,7 +634,7 @@ export function ReaderScreen({ route, navigation }: NativeStackScreenProps<Route
 					</View>
 				</View>
 			) : null}
-		</View>
+		</SafeAreaView>
 	);
 }
 

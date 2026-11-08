@@ -260,3 +260,20 @@ test("sets source for a non-local choice", async () => {
     source: "buildbox",
   });
 });
+
+test("an ordinary launch omits the Manager start flag entirely", async () => {
+  const fake = new FakeClient("ready");
+  fake.on("thread/start", () => startResponse("local:plain"));
+  await startThread(fake, { cwd: "/tmp/p", prompt: "hello" });
+  const params = fake.calls[0]?.params as Record<string, unknown>;
+  expect("manager" in params).toBe(false);
+});
+
+test("choosing Manager sends manager:true on thread/start", async () => {
+  const fake = new FakeClient("ready");
+  fake.on("thread/start", () => startResponse("local:boss"));
+  const result = await startThread(fake, { cwd: "/tmp/p", prompt: "hello", manager: true });
+  const params = fake.calls[0]?.params as Record<string, unknown>;
+  expect(params.manager).toBe(true);
+  expect(result.ref).toBe("local:boss");
+});

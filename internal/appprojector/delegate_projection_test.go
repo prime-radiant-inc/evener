@@ -190,7 +190,7 @@ func TestDelegateProjection_DescendantOrdinaryEventsReachRootTransport(t *testin
 	}
 }
 
-func TestDelegateProjection_LateRootReceivesStableDelegateSnapshot(t *testing.T) {
+func TestDelegateProjection_LateRootReceivesDelegateSnapshot(t *testing.T) {
 	p := NewAppEventProjector("root", "local:root")
 	stable := delegateProjectionFixture()
 	stable.OwnerSessionID = "root"

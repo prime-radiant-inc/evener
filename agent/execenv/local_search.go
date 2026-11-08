@@ -431,9 +431,7 @@ func (e *LocalExecutionEnvironment) GrepSkipping(ctx context.Context, pattern st
 			// obtain — a failed listing is not an empty one.
 			oversized = 0
 		}
-		if oversized > 0 {
-			notes = append(notes, grepOversizeNote(oversized))
-		}
+		notes = grepOmissionNotes(notes, "", oversized, 0)
 		if err := ctx.Err(); err != nil {
 			return "", err
 		}
@@ -457,8 +455,23 @@ func (e *LocalExecutionEnvironment) GrepSkipping(ctx context.Context, pattern st
 		if err := ctx.Err(); err != nil {
 			return "", err
 		}
-		if oversized > 0 {
-			return searchresult.WithNotes("", grepOversizeNote(oversized)), nil
+		// The native walk knows how many paths the default exclusions
+		// skipped, so the rg arm asks the same engine for its own view.
+		// ripgrep's ignore rules differ (it honors .ignore and global
+		// excludes, and needs a git repository for .gitignore), so a count
+		// from rg's listings would not read the same as the fallback's.
+		ignored, ierr := e.countNativeExcluded(ctx, dir)
+		if ierr != nil {
+			if cancelErr := ctx.Err(); cancelErr != nil {
+				return "", cancelErr
+			}
+			// A walk that failed another way is no note: the disclosure is
+			// best-effort and must not assert a count it could not obtain.
+			ignored = 0
+		}
+		notes := grepOmissionNotes(nil, "", oversized, ignored)
+		if len(notes) > 0 {
+			return searchresult.WithNotes("", notes...), nil
 		}
 		return "", nil
 	}
@@ -531,6 +544,42 @@ func (e *LocalExecutionEnvironment) grepRgListFiles(ctx context.Context, rg, dir
 		}
 	}
 	return int(counter.n), nil
+}
+
+// countNativeExcluded counts the paths the default dotfile and gitignore rules
+// skip beneath dir, using the same walk and ignore engine as the native grep
+// arm so an empty rg-arm result carries the fallback's note and count exactly.
+// The walk stops at the ignore decision, so it never opens a file.
+func (e *LocalExecutionEnvironment) countNativeExcluded(ctx context.Context, dir string) (int, error) {
+	if err := ctx.Err(); err != nil {
+		return 0, err
+	}
+	info, err := os.Stat(dir)
+	if err != nil {
+		return 0, err
+	}
+	if !info.IsDir() {
+		// A named file is searched deliberately: the default exclusions never
+		// apply to it, so there is nothing to disclose.
+		return 0, nil
+	}
+	budget := newGlobBudget("grep")
+	fsys := grepAdmitFS{
+		FS:         cancelFS{ctx: ctx, fsys: boundedDirFS{FS: os.DirFS(dir), budget: budget, ctx: ctx}},
+		root:       dir,
+		ctx:        ctx,
+		rootPseudo: grepRootIsPseudo(dir),
+	}
+	walk := grepTreeWalk{
+		ctx:       ctx,
+		countOnly: true,
+		root:      dir,
+		ignoreFS:  fsys,
+		budget:    budget,
+		walk:      func(fn fs.WalkDirFunc) error { return grepWalk(fsys, ".", fn) },
+	}
+	excluded, _, err := walk.runCounts()
+	return excluded, err
 }
 
 // nulCounter counts the NUL delimiters ripgrep --null ends each path with,

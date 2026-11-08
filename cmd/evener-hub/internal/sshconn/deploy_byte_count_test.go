@@ -25,14 +25,13 @@ func TestPushVerifiesByteCount(t *testing.T) {
 	host := hostreg.Host{Name: "alpha", SSH: "alpha.example", EvenerPath: "/opt/evener/bin/evener"}
 	var pushJoined string
 	fr := &fakeRunner{runFn: func(_ context.Context, argv []string, stdin io.Reader) ([]byte, error) {
-		joined := strings.Join(argv, " ")
-		switch {
-		case strings.Contains(joined, "test -d /opt/evener/bin"):
+		switch classifyRemote(argv) {
+		case opInstallDirProbe:
 			return nil, nil
-		case strings.Contains(joined, "evener_resolve /opt/evener/bin/evener"):
+		case opResolveExec:
 			return []byte("/opt/evener/bin/evener\n"), nil
-		case strings.Contains(joined, "cat >"):
-			pushJoined = joined
+		case opBinaryInstall:
+			pushJoined = strings.Join(argv, " ")
 			if stdin != nil {
 				_, _ = io.ReadAll(stdin)
 			}
@@ -102,25 +101,28 @@ func TestPreflightDiscoversInstallerDefault(t *testing.T) {
 	const resolved = "/home/dev/.local/bin/evener"
 	host := hostreg.Host{Name: "alpha", SSH: "alpha.example"} // no evener_path
 	fr := &fakeRunner{runFn: func(_ context.Context, argv []string, _ io.Reader) ([]byte, error) {
-		joined := strings.Join(argv, " ")
-		switch {
-		case strings.HasSuffix(joined, "uname -s"):
+		switch classifyRemote(argv) {
+		case opUnameKernel:
 			return []byte("Linux\n"), nil
-		case strings.HasSuffix(joined, "uname -m"):
+		case opUnameArch:
 			return []byte("x86_64\n"), nil
-		case argv[len(argv)-1] == envProbeScript:
+		case opEnvironment:
 			return []byte("HOME=/home/dev\nXDG_STATE_HOME=\nXDG_CONFIG_HOME=\n"), nil
-		case strings.HasSuffix(joined, "id -u"):
+		case opUserID:
 			return []byte("1000\n"), nil
-		case strings.Contains(joined, resolved+" launch-check"):
-			return []byte(`{"hub_endpoint_schema":1,"protocol":"evener-appwire-v7","version":"newsha","launch_flags":["api-log"]}`), nil
-		case strings.Contains(joined, " evener launch-check"):
-			// No evener on the non-interactive PATH.
-			return []byte("sh: 1: evener: not found\n"), exitStatus(t, 127)
-		case strings.Contains(joined, executableProbeRemote("evener")):
+		case opLaunchCheck:
+			switch launchCheckTarget(argv) {
+			case resolved:
+				return []byte(`{"hub_endpoint_schema":1,"protocol":"evener-appwire-v7","version":"newsha","launch_flags":["api-log"]}`), nil
+			case "evener":
+				// No evener on the non-interactive PATH.
+				return []byte("sh: 1: evener: not found\n"), exitStatus(t, 127)
+			}
+			return nil, fmt.Errorf("unexpected launch-check target: %v", argv)
+		case opPresenceProbe:
 			// The dedicated executable probe: absent.
 			return nil, exitStatus(t, 1)
-		case strings.Contains(joined, "[ -f ") && strings.Contains(joined, ".local/bin/evener"):
+		case opDefaultInstall:
 			return []byte(resolved + "\n"), nil
 		default:
 			return nil, fmt.Errorf("unexpected remote command: %v", argv)
@@ -151,60 +153,65 @@ func TestResolvedTargetAvoidsRedeploy(t *testing.T) {
 	installed, launched := false, false
 	builds := 0
 	fr := &fakeRunner{runFn: func(_ context.Context, argv []string, stdin io.Reader) ([]byte, error) {
-		joined := strings.Join(argv, " ")
-		switch {
-		case strings.HasPrefix(argv[len(argv)-1], `if [ -n "${HOME-}" ]`):
+		switch classifyRemote(argv) {
+		case opDefaultInstall:
 			return nil, nil // no installer-default binary
-		case strings.HasSuffix(joined, "uname -s"):
+		case opUnameKernel:
 			return []byte("Linux\n"), nil
-		case strings.HasSuffix(joined, "uname -m"):
+		case opUnameArch:
 			return []byte("x86_64\n"), nil
-		case argv[len(argv)-1] == envProbeScript:
+		case opEnvironment:
 			return []byte("HOME=/home/dev\nXDG_STATE_HOME=\nXDG_CONFIG_HOME=\n"), nil
-		case strings.HasSuffix(joined, "id -u"):
+		case opUserID:
 			return []byte("1000\n"), nil
-		case strings.Contains(joined, resolved+" launch-check"):
-			if !installed {
-				return nil, exitStatus(t, 127)
+		case opLaunchCheck:
+			switch launchCheckTarget(argv) {
+			case resolved:
+				if !installed {
+					return nil, exitStatus(t, 127)
+				}
+				return []byte(`{"hub_endpoint_schema":1,"protocol":"evener-appwire-v7","version":"newsha","launch_flags":["api-log"]}`), nil
+			case "evener":
+				return []byte("sh: 1: evener: not found\n"), exitStatus(t, 127)
 			}
-			return []byte(`{"hub_endpoint_schema":1,"protocol":"evener-appwire-v7","version":"newsha","launch_flags":["api-log"]}`), nil
-		case strings.Contains(joined, " evener launch-check"):
-			return []byte("sh: 1: evener: not found\n"), exitStatus(t, 127)
-		case strings.Contains(joined, executableProbeRemote("evener")):
-			// The dedicated executable probe: absent.
-			return nil, exitStatus(t, 1)
-		case strings.Contains(joined, executableProbeRemote(resolved)):
+			return nil, fmt.Errorf("unexpected launch-check target: %v", argv)
+		case opPresenceProbe:
+			if strings.Contains(strings.Join(argv, " "), executableProbeRemote("evener")) {
+				// The dedicated executable probe: absent.
+				return nil, exitStatus(t, 1)
+			}
 			if !installed {
 				return nil, exitStatus(t, 1)
 			}
 			return nil, nil
-		case strings.Contains(joined, "[ -f ") && strings.Contains(joined, resolved):
-			if installed {
+		case opSystemdUnits:
+			return nil, nil
+		case opListenerProbe:
+			return []byte(noListenerMarker + "\n"), nil
+		case opCommandLookup:
+			return []byte(evenerPathMissingMarker + "\n"), nil
+		case opMakeDir:
+			return nil, nil
+		case opResolveExec:
+			if installed && resolveTarget(argv) == resolved {
 				return []byte(resolved + "\n"), nil
 			}
-			return nil, nil
-		case strings.Contains(joined, "list-units"):
-			return nil, nil
-		case strings.Contains(joined, "lsof -ti :9180"):
-			return []byte(noListenerMarker + "\n"), nil
-		case strings.Contains(joined, "command -v evener"):
-			return []byte(evenerPathMissingMarker + "\n"), nil
-		case strings.Contains(joined, "mkdir -p /home/dev/.local/bin"):
-			return nil, nil
-		case strings.Contains(joined, "evener_resolve"):
+			if resolveTarget(argv) == resolved {
+				return nil, nil
+			}
 			return nil, exitStatus(t, 1)
-		case strings.Contains(joined, "if [ -e "):
+		case opCreateTarget:
 			return []byte(resolved + "\n"), nil
-		case strings.Contains(joined, "cat >"):
+		case opBinaryInstall:
 			installed = true
 			if stdin != nil {
 				_, _ = io.ReadAll(stdin)
 			}
 			return nil, nil
-		case strings.Contains(joined, "nohup"):
+		case opRelaunch:
 			launched = true
 			return nil, nil
-		case strings.Contains(joined, "api/health"):
+		case opHealth:
 			if !launched {
 				return nil, errors.New("curl: (7) Failed to connect")
 			}
@@ -253,13 +260,12 @@ func TestResolvedTargetAvoidsRedeploy(t *testing.T) {
 func TestCreateTargetErrorSurfaced(t *testing.T) {
 	host := hostreg.Host{Name: "alpha", SSH: "alpha.example", EvenerPath: "/opt/evener/bin/evener"}
 	fr := &fakeRunner{runFn: func(_ context.Context, argv []string, _ io.Reader) ([]byte, error) {
-		joined := strings.Join(argv, " ")
-		switch {
-		case strings.Contains(joined, "test -d /opt/evener/bin"):
+		switch classifyRemote(argv) {
+		case opInstallDirProbe:
 			return nil, nil
-		case strings.Contains(joined, "evener_resolve /opt/evener/bin/evener"):
+		case opResolveExec:
 			return nil, exitStatus(t, 1)
-		case strings.Contains(joined, "if [ -e "):
+		case opCreateTarget:
 			return []byte("mkdir: cannot create directory '/opt/evener/bin': Permission denied\n"), exitStatus(t, 1)
 		default:
 			return nil, fmt.Errorf("unexpected remote command: %v", argv)

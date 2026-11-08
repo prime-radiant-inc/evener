@@ -573,6 +573,7 @@ it("renders a missing-description tool call in full rather than second-guessing 
 			toolCalls: false,
 			reasoning: false,
 			expandByDefault: false,
+			thinkingOpenByDefault: false,
 		}),
 	);
 	expect(result.activityPresentation.get("missing")).toEqual({ mode: "full" });
@@ -673,6 +674,7 @@ it("keeps each member attachment adjacent while messages and unkeyed warnings re
 			toolIntent: false,
 			reasoning: false,
 			expandByDefault: false,
+			thinkingOpenByDefault: false,
 		}),
 	);
 	// D24-6: the members survive whatever the config — a custom vector that

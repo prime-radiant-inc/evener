@@ -184,7 +184,7 @@ func TestFoldTail_CanceledAskPairRidingTailDoesNotResurrectAfterRestore(t *testi
 	// pairs (the ask call rides with the assistant turn), but ask_user's
 	// posted ack must NOT ride -- a canceled pair whose write recorded
 	// nothing cannot re-enter the durable transcript through the rewrite.
-	data, err := readTranscriptFull(transcriptPath(sess.stateDir, sess.id), "")
+	data, err := readTranscriptFull(context.Background(), transcriptPath(sess.stateDir, sess.id), "")
 	if err != nil {
 		t.Fatalf("readTranscriptFull: %v", err)
 	}
@@ -331,7 +331,7 @@ func TestFoldTail_FailedPairTombstoneKeepsSnapshotPositions(t *testing.T) {
 		t.Fatalf("Compact: %v", err)
 	}
 
-	data, err := readTranscriptFull(transcriptPath(sess.stateDir, sess.id), "")
+	data, err := readTranscriptFull(context.Background(), transcriptPath(sess.stateDir, sess.id), "")
 	if err != nil {
 		t.Fatalf("readTranscriptFull: %v", err)
 	}

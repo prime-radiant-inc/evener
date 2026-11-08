@@ -96,7 +96,7 @@ test("formatToolDuration: shares the one duration rule with formatDurationMs (#1
   // rounded the seconds tier from the RAW millisecond value, while
   // displayFormat.ts's formatDurationMs rounds to whole milliseconds first.
   // The two names therefore disagreed about the same fractional input even
-  // though both document mirroring renderer-format.js's formatToolDuration.
+  // though both document the same duration rule.
   // Both now resolve through the one duration rule.
   expect(formatToolDuration(999.5)).toBe(formatDurationMs(999.5));
   expect(formatToolDuration(1049.5)).toBe(formatDurationMs(1049.5));

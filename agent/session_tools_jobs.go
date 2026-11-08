@@ -71,7 +71,9 @@ func registerJobToolsWith(reg *tool.Registry, register func(tool.RegisteredTool)
 		Definition: tool.DefJobStatus(), ReadOnly: true,
 		Limit: schema.ToolOutputLimit{MaxChars: jobToolResultDefaultMaxChar, Strategy: schema.TruncTail},
 		Exec: func(ctx context.Context, env execenv.ExecutionEnvironment, args map[string]any) (any, error) {
-			_ = ctx
+			if _, hub := args["hub"]; hub {
+				return s.invokeHubRead(ctx, "job_status", args)
+			}
 			_ = env
 			return jobStatusTool(s, args, jobToolResultMaxChars(reg, "job_status"))
 		},
@@ -82,7 +84,9 @@ func registerJobToolsWith(reg *tool.Registry, register func(tool.RegisteredTool)
 		Definition: tool.DefJobListNamed(s.resultToolName()), ReadOnly: true,
 		Limit: schema.ToolOutputLimit{MaxChars: jobToolResultDefaultMaxChar, Strategy: schema.TruncTail},
 		Exec: func(ctx context.Context, env execenv.ExecutionEnvironment, args map[string]any) (any, error) {
-			_ = ctx
+			if _, hub := args["hub"]; hub {
+				return s.invokeHubRead(ctx, "job_list", args)
+			}
 			_ = env
 			return jobListTool(s, args, jobListOutputMaxChars(reg))
 		},
@@ -274,7 +278,8 @@ func sessionJobManager(s *Session) (*jobManager, error) {
 
 // sessionRunningJobIDs lists this session's own running (session-launched,
 // non-nested) job ids, in job_list's default order. Used by the communicate
-// end_turn running-job warning; returns nil when the session has no job
+// end_turn running-job warning (through sessionRunningWorkIDs) and by the
+// waiting_on_work wake predicate; returns nil when the session has no job
 // manager or no running jobs.
 func sessionRunningJobIDs(s *Session) []string {
 	jm, err := sessionJobManager(s)

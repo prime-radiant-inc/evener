@@ -457,13 +457,13 @@ func underAMask(policy ResolvedPolicy, p string) bool {
 // the first entry. Where the spawned layer reads anywhere, the ambient GOPATH
 // follows, so GOPATH-mode builds still find the packages already there,
 // read-only: the spawn's own GOPATH when it has one, else what its go would
-// resolve: the host's `go env -w` setting when it reads the same env file,
-// otherwise Go's default for its HOME. A GOPATH set only in a different go
-// env file is not read here, so GOPATH-mode builds relying on one lose it
-// (#4328): uncommon friction, with nothing leaving the spawn's grants.
-// Restricted mode cannot read it, so it gets the scratch alone. Entries inside
-// the scratch are dropped from the ambient value, so flooring an already-floored
-// env does not repeat them.
+// resolve: the setting in the go env file it reads, otherwise Go's default for
+// its HOME. The file read is the one the spawn's go would read, not only the
+// probe's: a spawn with a different GOENV or HOME can
+// set a GOPATH there, and GOPATH-mode builds relying on it must still find the
+// packages (#4328). Restricted mode cannot read it, so it gets the scratch
+// alone. Entries inside the scratch are dropped from the ambient value, so
+// flooring an already-floored env does not repeat them.
 func sessionGoPath(env []string, policy ResolvedPolicy, sessionScratch string) string {
 	scratchGoPath := filepath.Join(sessionScratch, goPathDirName)
 	if policy.Spawned.Read != ReadAnywhere {
@@ -479,12 +479,14 @@ func sessionGoPath(env []string, policy ResolvedPolicy, sessionScratch string) s
 		vars[name] = val
 	}
 	if ambient == nil {
-		// What the spawned go would use for GOPATH: the host's configured value
-		// when it reads the same go env file the probe read, else Go's default
+		// What the spawned go would use for GOPATH: the env file it would read
+		// (its own GOENV or HOME, not necessarily the probe's), else Go's default
 		// for its own HOME. A clean environment (EnvPolicyNone) has neither.
+		// currentGoEnvSettings reads the file bounded and refuses one the spawn
+		// cannot see, so a cut-off or hidden file costs only its GOPATH.
 		host := policy.resolveHost
 		configured := ""
-		if file := goEnvFileFor(vars, host.OS); file != "" && file == host.GoEnvFile {
+		if file := goEnvFileFor(vars, host.OS); file != "" {
 			if settings, ok := currentGoEnvSettings(policy, file); ok {
 				configured = settings[envvars.GoPath.Name]
 			}

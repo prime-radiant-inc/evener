@@ -301,7 +301,7 @@ func TestOpenAIStateDirFromLookupUsesLaunchEnvHome(t *testing.T) {
 			// spelling resolves like cmdutil: no profile, so no state root.
 			name:    "windows homedrive and homepath are not a home",
 			goos:    "windows",
-			env:     map[string]string{envvars.HomeDrive.Name: "D:", envvars.HomePath.Name: `\Users\u`},
+			env:     map[string]string{"HOMEDRIVE": "D:", "HOMEPATH": `\Users\u`},
 			wantErr: true,
 		},
 	}

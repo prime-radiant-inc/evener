@@ -48,6 +48,7 @@ const CATEGORY_LABELS: Readonly<Record<TranscriptDisplayCategory, string>> = {
   toolCalls: "Tool calls",
   reasoning: "Reasoning",
   expandedDetails: "Expanded details",
+  openThinking: "Open thinking by default",
   informationalNotices: "Informational notices",
   daemonSteering: "System steers",
   sharedNotes: "Shared-notes snapshots",

@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"context"
 	"errors"
 	"os"
 	"strings"
@@ -68,7 +69,7 @@ func TestForkSessionAtUserTurn_CopiesPrefixWithoutAppendingInput(t *testing.T) {
 	// Child transcript must contain ONLY the prefix entries [U1, A1] — no
 	// trailing USER_INPUT turn that would auto-run on resume.
 	childTranscriptPath := schema.SessionTranscriptPath(stateDir, childID)
-	_, entries, _, err := readTranscript(childTranscriptPath, "")
+	_, entries, _, err := readTranscript(context.Background(), childTranscriptPath, "")
 	if err != nil {
 		t.Fatalf("readTranscript(child): %v", err)
 	}
@@ -105,7 +106,7 @@ func TestForkSessionAtUserTurn_FirstTurnProducesEmptyChild(t *testing.T) {
 		t.Errorf("originalInput: got %q, want %q", originalInput, "first task")
 	}
 	childTranscriptPath := schema.SessionTranscriptPath(stateDir, childID)
-	_, entries, _, err := readTranscript(childTranscriptPath, "")
+	_, entries, _, err := readTranscript(context.Background(), childTranscriptPath, "")
 	if err != nil {
 		t.Fatalf("readTranscript(child): %v", err)
 	}

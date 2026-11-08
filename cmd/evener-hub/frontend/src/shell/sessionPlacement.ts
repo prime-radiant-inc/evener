@@ -1,6 +1,12 @@
-import { parseZoomParams } from "../panes/zoom/intent";
+import { zoomIntentOf } from "../panes/zoom/intent";
 import { navigate, paneToURL, refParam } from "./routing";
-import { type OpenPaneRecord, presentedPanes, recordConversationOpenParent, workspaceStore } from "./workspace";
+import {
+  cancelCarriedComposerSeat,
+  type OpenPaneRecord,
+  presentedPanes,
+  recordConversationOpenParent,
+  workspaceStore,
+} from "./workspace";
 
 // A session pane's identity is the ref in its own params, derived here rather
 // than spelled by the caller so the type and the ref cannot diverge.
@@ -42,9 +48,8 @@ export function openSessionByRef(ref: string): void {
 // same route.
 function cascadeMainCoversRef(ref: string): boolean {
   const main = workspaceStore.getState().mainPane();
-  if (main?.type !== "sessionZoom") return false;
-  const params = parseZoomParams(main.params);
-  return !params?.inspection && params?.source.type === "session" && params.source.params.ref === ref;
+  const params = main === null ? null : zoomIntentOf(main);
+  return params !== null && !params.inspection && params.source.params.ref === ref;
 }
 
 // Reusable session-placement helpers shared by AppShell and contextual callers.
@@ -57,6 +62,9 @@ export function openTopLevelSession(ref: string): void {
     // the cascade. Closing a focused duplicate nulls focus (closePane's own
     // rule), but this branch never redirects focus, so a restored layout's
     // saved focus survives the placement.
+    // Retaining the cascade in main is the placement decision for the
+    // route's conversation: a pending carry dies with it.
+    cancelCarriedComposerSeat(ref);
     for (const pane of workspace.panes) {
       if (isSessionPaneFor(pane, ref)) workspace.closePane(pane.id);
     }

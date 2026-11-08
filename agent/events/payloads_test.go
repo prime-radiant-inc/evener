@@ -6,6 +6,21 @@ import (
 	"testing"
 )
 
+func TestSessionStartDataWorkingDirectory(t *testing.T) {
+	want := SessionStartData{WorkingDir: "/installed/child", Restored: true}
+	raw, err := json.Marshal(want)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got SessionStartData
+	if err := json.Unmarshal(raw, &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.WorkingDir != want.WorkingDir || !got.Restored {
+		t.Fatalf("start round trip = %+v", got)
+	}
+}
+
 func TestTaskUpdatedData_CurrentJSON(t *testing.T) {
 	withCurrentData := TaskUpdatedData{
 		TaskPublicationEpoch:    11,
@@ -293,6 +308,7 @@ func TestSteeringKindConstants(t *testing.T) {
 		"notification":        SteeringKindNotification,
 		"provider-failure":    SteeringKindProviderFailure,
 		"human-note":          SteeringKindHumanNote,
+		"delegate-nudge":      SteeringKindDelegateNudge,
 	}
 	for literal, got := range want {
 		if got != literal {

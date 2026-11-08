@@ -15,8 +15,8 @@ import { navigationStore, useNavigationStore } from "../../stores/navigation/sto
 import { type SidebarGroupingPref, usePrefsStore } from "../../stores/prefs";
 import { threadsStore } from "../../stores/threads";
 import {
-  Badge,
   Button,
+  Chip,
   ConfirmDialog,
   DisclosureHeading,
   EmptyState,
@@ -53,14 +53,7 @@ import {
 import styles from "./Rail.module.css";
 import { RAIL_WIDTH_PROPERTY, RailResizeHandle } from "./RailResizeHandle";
 import { RailRow, type RailRowActions } from "./RailRow";
-import {
-  ARCHIVED_SECTION_KEY,
-  LIVE_SECTION_KEY,
-  loadExpansion,
-  PROJECTS_SECTION_KEY,
-  saveExpansion,
-  TEST_RUNS_SECTION_KEY,
-} from "./railExpansion";
+import { ARCHIVED_SECTION_KEY, LIVE_SECTION_KEY, PROJECTS_SECTION_KEY, TEST_RUNS_SECTION_KEY } from "./railExpansion";
 import { GearIcon, SearchIcon, SidebarIcon, TuneIcon } from "./railIcons";
 import {
   archivedCount,
@@ -104,7 +97,9 @@ const CLASS = {
   rail: requireClass(styles.rail, "Rail.module.css", "rail"),
   header: requireClass(styles.header, "Rail.module.css", "header"),
   brand: requireClass(styles.brand, "Rail.module.css", "brand"),
+  wordmark: requireClass(styles.wordmark, "Rail.module.css", "wordmark"),
   brandIdentity: requireClass(styles.brandIdentity, "Rail.module.css", "brandIdentity"),
+  needsYou: requireClass(styles.needsYou, "Rail.module.css", "needsYou"),
   newSession: requireClass(styles.newSession, "Rail.module.css", "newSession"),
   body: requireClass(styles.body, "Rail.module.css", "body"),
   parentScrollRail: requireClass(styles.parentScrollRail, "Rail.module.css", "parentScrollRail"),
@@ -497,7 +492,6 @@ function NavigationRail({
   const selectedSessionRef = useWorkspaceStore(currentSessionRef);
   const isRowSelected = (node: RailNode): boolean | undefined =>
     node.kind === "session" ? node.session.ref === selectedSessionRef : undefined;
-  const [expandedOverrides, setExpandedOverrides] = useState<ReadonlyMap<string, boolean>>(loadExpansion);
   const [deleteTarget, setDeleteTarget] = useState<RailProject | null>(null);
   const [pending, setPending] = useState<readonly PendingOp[]>([]);
   const bodyRef = useRef<HTMLDivElement>(null);
@@ -514,7 +508,7 @@ function NavigationRail({
     () => applyPending(base, pending, { pinSources: buildPinSourceIndex(base) }),
     [base, pending],
   );
-  const isExpanded = useMemo(() => overrideLookup(expandedOverrides), [expandedOverrides]);
+  const isExpanded = useMemo(() => overrideLookup(expanded), [expanded]);
   useEffect(() => {
     if (navigationMode !== "v3") return;
     if (!manifest)
@@ -524,15 +518,9 @@ function NavigationRail({
         .catch(() => undefined);
   }, [navigationMode, manifest]);
 
-  const setExpanded = useCallback(
-    (id: string, value: boolean) => {
-      const next = new Map(expandedOverrides);
-      next.set(id, value);
-      setExpandedOverrides(next);
-      saveExpansion(next);
-    },
-    [expandedOverrides],
-  );
+  const setRowExpanded = useCallback((id: string, value: boolean) => {
+    navigationStore.getState().setRowExpanded(id, value);
+  }, []);
   const { rootLoadsInFlight, loadProjectRoot, projectRetryCallback } = useProjectRootLoads(
     resources,
     navigationMode,
@@ -569,9 +557,9 @@ function NavigationRail({
     onRevealConsumed,
     resources,
     archivedLists,
-    expandedOverrides,
+    expansion: expanded,
     isExpanded,
-    setExpanded,
+    setRowExpanded,
     groupingMode,
     bodyRef,
   });
@@ -579,7 +567,7 @@ function NavigationRail({
   function handleToggle(node: RailNode) {
     if (isPassiveRailNode(node)) return;
     const value = !node.expanded;
-    setExpanded(node.id, value);
+    setRowExpanded(node.id, value);
     if (!value && node.kind === "project") {
       // The in-flight guard is project-wide but one project renders several
       // nodes (host-first copies): clear it only when no other copy stays
@@ -602,7 +590,7 @@ function NavigationRail({
     }
   }
   function toggleSection(key: string, defaultOpen: boolean) {
-    setExpanded(key, !isExpanded(key, defaultOpen));
+    setRowExpanded(key, !isExpanded(key, defaultOpen));
   }
   function openSession(session: RailSession) {
     openSessionByRef(session.ref);
@@ -957,21 +945,19 @@ function NavigationRail({
       seenHostFolds.current = new Set(hostFoldIds);
       return;
     }
-    // One fold per pass, the reveal idiom: setExpanded closes over this
-    // render's override map, so a second call in one pass would clobber the
-    // first. The override change re-runs this effect and opens the rest,
-    // all before paint.
-    const next = [...hostFoldIds].find((id) => !handled.has(id) && expandedOverrides.get(id) !== false);
-    if (next) {
-      seenHostFolds.current = new Set([...handled, next]);
-      setExpanded(next, true);
+    // Open every newly seen fold in one pass: the store action reads the
+    // latest map, so successive calls accumulate rather than clobber.
+    const pendingFolds = [...hostFoldIds].filter((id) => !handled.has(id) && expanded.get(id) !== false);
+    if (pendingFolds.length > 0) {
+      seenHostFolds.current = new Set([...handled, ...pendingFolds]);
+      for (const id of pendingFolds) setRowExpanded(id, true);
       return;
     }
     // Nothing pending: every current fold is handled, and ids that left
     // the tree drop out so a fold that returns re-opens (its rows came
     // back).
     seenHostFolds.current = new Set(hostFoldIds);
-  }, [projectsSectionNodes, hostFoldIds, expandedOverrides, setExpanded]);
+  }, [projectsSectionNodes, hostFoldIds, expanded, setRowExpanded]);
   const liveNodes = [
     // Live answers "which machine" the same way in either mode: rows group
     // under host subheaders exactly while they span more than one host
@@ -1011,9 +997,9 @@ function NavigationRail({
         <RailResizeHandle width={width} onCommit={onWidthChange} railRef={railRef} />
       )}
       <div className={CLASS.header}>
+        <span className={CLASS.wordmark}>evener</span>
         <div data-testid="rail-brand" className={CLASS.brand}>
-          <span className={CLASS.brandIdentity}>{serverInfo?.name ?? "evener"}</span>
-          {needsYou > 0 && <Badge count={needsYou} tone="attention" />}
+          <span className={CLASS.brandIdentity}>{serverInfo?.name ?? "hub"}</span>
           <IconButton
             data-testid="rail-settings"
             label="Settings"
@@ -1043,8 +1029,15 @@ function NavigationRail({
             />
           )}
         </div>
+        {needsYou > 0 && (
+          <span className={CLASS.needsYou} data-testid="rail-needs-you">
+            <Chip tone="attention" kind="needs-you">
+              {needsYou} needs you
+            </Chip>
+          </span>
+        )}
         <div className={CLASS.newSession}>
-          <Button variant="primary" onClick={() => navigate("/new")}>
+          <Button variant="secondary" onClick={() => navigate("/new")}>
             + New session
           </Button>
         </div>

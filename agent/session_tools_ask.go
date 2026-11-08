@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"unicode/utf8"
 
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/execenv"
@@ -40,11 +41,15 @@ const (
 // (spec §5.1, §6); this struct carries the question and its option labels,
 // never the options' details.
 type askQuestion struct {
+	TurnID   string
+	CallID   string
 	Header   string
 	Question string
 	// Options are the question's option labels, in the order the call
 	// listed them.
-	Options []string
+	Options   []string
+	Complete  *bool
+	Truncated *bool
 }
 
 // isSubagentSession reports whether this session is a subagent, for the
@@ -94,19 +99,48 @@ func (s *Session) HasPendingAsk() bool {
 	return s.askPendingCount() > 0
 }
 
-// PendingQuestion is the first question of the session's pending ask, which
-// its Needs you row names (S1b), cut to the wire's bounds; nil while no
-// question waits. It reads the pending set in one hold of s.mu, so the
-// question and its count describe the same moment.
-func (s *Session) PendingQuestion() *appwire.PendingQuestion {
+// SetBootGeneration installs the durably minted generation before serving input.
+func (s *Session) SetBootGeneration(generation string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.bootGeneration = generation
+}
+
+// BootGeneration returns the installed durable serving generation.
+func (s *Session) BootGeneration() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.bootGeneration
+}
+
+// PendingAskSnapshot samples the excerpt and the complete pending-call set in
+// one lock hold. Wire projections, not this owner, clamp the returned call list.
+func (s *Session) PendingAskSnapshot() (*appwire.PendingQuestion, *appwire.PendingAskState) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	state := &appwire.PendingAskState{Version: 1, InstanceID: s.id, Revision: s.askPendingRevision, BootGeneration: s.bootGeneration, Calls: []appwire.PendingAskCall{}}
+	seen := make(map[appwire.PendingAskCall]bool)
+	for _, question := range s.askPending {
+		ref := appwire.PendingAskCall{TurnID: question.TurnID, CallID: question.CallID}
+		if ref.TurnID == "" || ref.CallID == "" {
+			state.CalllessCount++
+		} else if !seen[ref] {
+			seen[ref] = true
+			state.Calls = append(state.Calls, ref)
+		}
+	}
+	state.CompositeTotal = len(state.Calls)
 	if len(s.askPending) == 0 {
-		return nil
+		return nil, state
 	}
 	first := s.askPending[0]
 	question := appwire.BoundedPendingQuestion(first.Question, first.Options, len(s.askPending))
-	return &question
+	if first.TurnID != "" && first.CallID != "" {
+		question.TurnID, question.CallID = first.TurnID, first.CallID
+	}
+	question.Complete = appwire.ClonePointer(first.Complete)
+	question.Truncated = appwire.ClonePointer(first.Truncated)
+	return &question, state
 }
 
 // setAskPendingLocked REPLACES the pending-ask set — a clear (pending ==
@@ -124,8 +158,12 @@ func (s *Session) PendingQuestion() *appwire.PendingQuestion {
 // stale after either ran; every replacement site now calls this instead.
 // Callers hold s.mu already.
 func (s *Session) setAskPendingLocked(pending []askQuestion) {
+	if pending != nil || len(s.askPending) != 0 {
+		s.askPendingRevision++
+	}
 	s.askPending = pending
 	s.askPendingCallArgs = nil
+	s.askPendingCallIDs = nil
 }
 
 // appendAskPendingLocked is the live ask_user Exec's own mutation: it
@@ -133,9 +171,51 @@ func (s *Session) setAskPendingLocked(pending []askQuestion) {
 // (already normalized) arguments to askPendingCallArgs — one entry per
 // call, not per question, so the two slices generally differ in length.
 // Callers hold s.mu already.
-func (s *Session) appendAskPendingLocked(parsed []askQuestion, argsJSON []byte) {
+func (s *Session) appendAskPendingLocked(parsed []askQuestion, argsJSON []byte, callID string) {
+	full, err := ParseAskUserCallArguments(argsJSON)
+	for i := range parsed {
+		parsed[i].TurnID = s.execution.turnID
+		parsed[i].CallID = callID
+		if err == nil && i < len(full) {
+			q := full[i]
+			bounded := appwire.BoundedPendingQuestion(q.Question, parsed[i].Options, len(parsed))
+			truncated := bounded.Question != appwire.Excerpt(q.Question, utf8.RuneCountInString(q.Question)+1) || len(bounded.Options) != len(q.Options)
+			complete := len(full) == 1 && !q.MultiSelect && q.Why == "" && q.IfUnanswered == ""
+			for j, option := range q.Options {
+				if j < len(bounded.Options) && bounded.Options[j] != appwire.Excerpt(option.Label, utf8.RuneCountInString(option.Label)+1) {
+					truncated = true
+				}
+				complete = complete && option.Detail == "" && !option.Recommended
+			}
+			complete = complete && !truncated
+			parsed[i].Complete, parsed[i].Truncated = &complete, &truncated
+		}
+	}
 	s.askPending = append(s.askPending, parsed...)
 	s.askPendingCallArgs = append(s.askPendingCallArgs, argsJSON)
+	s.askPendingCallIDs = append(s.askPendingCallIDs, appwire.PendingAskCall{TurnID: s.execution.turnID, CallID: callID})
+	s.askPendingRevision++
+}
+
+// pendingAskTurnIDs reads the same pending set durable admission will clear.
+// A restored question without recorded execution identity supplies no link.
+func (s *Session) pendingAskTurnIDs() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var ids []string
+	for _, question := range s.askPending {
+		ids = appendAnswerTurnIDs(ids, question.TurnID)
+	}
+	return ids
+}
+
+func appendAnswerTurnIDs(ids []string, more ...string) []string {
+	for _, id := range more {
+		if id != "" && !slices.Contains(ids, id) {
+			ids = append(ids, id)
+		}
+	}
+	return ids
 }
 
 // clearAskPending empties the pending set. Callers: durable user-input
@@ -147,6 +227,57 @@ func (s *Session) clearAskPending() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.setAskPendingLocked(nil)
+}
+
+func (s *Session) clearAskPendingResolution(resolution *schema.AskResolution) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.clearAskPendingResolutionLocked(resolution)
+}
+
+// A nil resolution is deliberately unfenced. A nonnil empty resolution never
+// falls back to whole-set clearing, even if an invalid record supplied it.
+func (s *Session) clearAskPendingResolutionLocked(resolution *schema.AskResolution) {
+	if resolution == nil {
+		s.setAskPendingLocked(nil)
+		return
+	}
+	legacy := resolution.LegacyCount
+	named := make(map[appwire.PendingAskCall]bool, len(resolution.Calls))
+	for _, call := range resolution.Calls {
+		named[call] = true
+	}
+	remaining := make([]askQuestion, 0, len(s.askPending))
+	for _, question := range s.askPending {
+		call := appwire.PendingAskCall{TurnID: question.TurnID, CallID: question.CallID}
+		if call.TurnID == "" || call.CallID == "" {
+			if legacy > 0 {
+				legacy--
+				continue
+			}
+		} else if named[call] {
+			continue
+		}
+		remaining = append(remaining, question)
+	}
+	if len(remaining) == len(s.askPending) {
+		return
+	}
+	s.askPending = remaining
+	s.askPendingRevision++
+	stillPending := make(map[appwire.PendingAskCall]bool, len(remaining))
+	for _, question := range remaining {
+		stillPending[appwire.PendingAskCall{TurnID: question.TurnID, CallID: question.CallID}] = true
+	}
+	var args [][]byte
+	var ids []appwire.PendingAskCall
+	for i, call := range s.askPendingCallIDs {
+		if stillPending[call] {
+			ids = append(ids, call)
+			args = append(args, s.askPendingCallArgs[i])
+		}
+	}
+	s.askPendingCallIDs, s.askPendingCallArgs = ids, args
 }
 
 // PendingAskArguments returns each pending ask_user call's own arguments —
@@ -184,7 +315,7 @@ func (s *Session) PendingAskArguments() [][]byte {
 // appended — so this checks steeringAnswersAsk alone.
 func (s *Session) clearAskPendingForResolvingSteer(t schema.Turn) {
 	if steeringAnswersAsk(t.SteeringSource, steeringOrigin{kind: t.SteeringKind}, "") {
-		s.clearAskPending()
+		s.clearAskPendingResolution(t.AskResolution)
 	}
 }
 
@@ -391,30 +522,6 @@ func parseAskQuestions(args map[string]any) ([]askQuestion, error) {
 	return parsed, nil
 }
 
-// AskUserOption is one option of a pending ask_user question, with its full
-// detail text. askQuestion above (the session's own pending-set state, and
-// PendingQuestion's wire projection) deliberately carries only option
-// labels — this type exists for an external ask-responder
-// (`evener run --ask-responder`) that needs to see exactly what the model
-// asked, detail and recommendation included.
-type AskUserOption struct {
-	Label       string `json:"label"`
-	Detail      string `json:"detail,omitempty"`
-	Recommended bool   `json:"recommended,omitempty"`
-}
-
-// AskUserQuestion is one question from a pending ask_user call, with full
-// option detail and the call's optional fields: whether several options may
-// be chosen, why the answer matters, and the fallback the model would take.
-type AskUserQuestion struct {
-	Header       string          `json:"header,omitempty"`
-	Question     string          `json:"question"`
-	MultiSelect  bool            `json:"multi_select,omitempty"`
-	Why          string          `json:"why,omitempty"`
-	IfUnanswered string          `json:"if_unanswered,omitempty"`
-	Options      []AskUserOption `json:"options,omitempty"`
-}
-
 // ParseAskUserCallArguments parses one ask_user call's arguments, as the
 // session records them for PendingAskArguments (already normalized; parsing
 // them again is a no-op), into its full questions, including each
@@ -426,7 +533,7 @@ type AskUserQuestion struct {
 // PendingQuestion (bounded to the wire's shape, one question, labels only)
 // nor the session's own askPending (labels only, spec §5.1) carries enough
 // for a responder to answer well.
-func ParseAskUserCallArguments(argsJSON []byte) ([]AskUserQuestion, error) {
+func ParseAskUserCallArguments(argsJSON []byte) ([]schema.AskUserQuestion, error) {
 	var args map[string]any
 	if err := json.Unmarshal(argsJSON, &args); err != nil {
 		return nil, fmt.Errorf("ask_user arguments: %w", err)
@@ -439,18 +546,22 @@ func ParseAskUserCallArguments(argsJSON []byte) ([]AskUserQuestion, error) {
 	if err != nil {
 		return nil, err
 	}
-	// parseAskQuestions validated the shape and carries header, question, and
+	return projectAskUserQuestions(normalized, parsed), nil
+}
+
+func projectAskUserQuestions(normalized map[string]any, parsed []askQuestion) []schema.AskUserQuestion {
+	// parseAskQuestions checked semantics and carries header, question, and
 	// labels; the optional fields (detail, recommended, multi_select, why,
 	// if_unanswered) are read from the same normalized call.
 	raw, _ := normalized["questions"].([]any)
-	out := make([]AskUserQuestion, 0, len(parsed))
+	out := make([]schema.AskUserQuestion, 0, len(parsed))
 	for i, q := range parsed {
 		var qm map[string]any
 		if i < len(raw) {
 			qm, _ = raw[i].(map[string]any)
 		}
 		rawOpts, _ := qm["options"].([]any)
-		options := make([]AskUserOption, 0, len(q.Options))
+		options := make([]schema.AskUserOption, 0, len(q.Options))
 		for j, label := range q.Options {
 			var om map[string]any
 			if j < len(rawOpts) {
@@ -458,12 +569,12 @@ func ParseAskUserCallArguments(argsJSON []byte) ([]AskUserQuestion, error) {
 			}
 			detail, _ := om["detail"].(string)
 			recommended, _ := om["recommended"].(bool)
-			options = append(options, AskUserOption{Label: label, Detail: detail, Recommended: recommended})
+			options = append(options, schema.AskUserOption{Label: label, Detail: detail, Recommended: recommended})
 		}
 		multiSelect, _ := qm["multi_select"].(bool)
 		why, _ := qm["why"].(string)
 		ifUnanswered, _ := qm["if_unanswered"].(string)
-		out = append(out, AskUserQuestion{
+		out = append(out, schema.AskUserQuestion{
 			Header:       q.Header,
 			Question:     q.Question,
 			MultiSelect:  multiSelect,
@@ -472,7 +583,7 @@ func ParseAskUserCallArguments(argsJSON []byte) ([]AskUserQuestion, error) {
 			Options:      options,
 		})
 	}
-	return out, nil
+	return out
 }
 
 // registerAskTool registers ask_user. registerCoreTools calls this only when
@@ -510,12 +621,13 @@ func registerAskTool(reg *tool.Registry, s *Session, deps *toolDeps) {
 			if err != nil {
 				return nil, fmt.Errorf("ask_user: marshal arguments: %w", err)
 			}
+			questions := projectAskUserQuestions(args, parsed)
 
 			s.mu.Lock()
-			s.appendAskPendingLocked(parsed, argsJSON)
+			s.appendAskPendingLocked(parsed, argsJSON, callIDFromContext(ctx))
 			s.mu.Unlock()
 
-			return askUserAckText, nil
+			return tool.StateResult{Output: askUserAckText, State: schema.AskUserState{Version: 1, Questions: questions}}, nil
 		},
 	})
 }
@@ -623,12 +735,12 @@ func roundEntryResolvesAskBoundary(history []schema.Turn, idx, boundaryStart int
 			if j < boundaryStart {
 				turnOrigins = nil
 			}
-			return turnResolvesAskBoundary(history[j], turnOrigins)
+			return history[j].AskResolution == nil && turnResolvesAskBoundary(history[j], turnOrigins)
 		case schema.TurnFailure:
 			if history[j].Error == nil || !history[j].Error.SteeringCarrier {
 				continue
 			}
-			return true
+			return history[j].AskResolution == nil
 		default:
 			continue
 		}
@@ -773,10 +885,21 @@ func endedOnNeedsResponse(history []schema.Turn, toolResultsIdx int, attemptStar
 }
 
 // communicateEndReasonOf is the end reason an accepted turn-ending
-// communicate call recorded in its result's tool state, or "".
+// communicate call recorded in its result's tool state, or "". Typed state
+// rides every result path, so a rejected or nonterminal call recording its
+// own requested reason is not restorable evidence: the input settled on the
+// call it accepted. States without explicit verdict fields predate them and
+// were only ever written on the accepted terminal path, so their reason
+// still counts.
 func communicateEndReasonOf(result *llm.ToolResultData) string {
 	var state communicateEndState
 	if json.Unmarshal(result.ToolState, &state) != nil {
+		return ""
+	}
+	if state.Accepted != nil && !*state.Accepted {
+		return ""
+	}
+	if state.EndTurn != nil && !*state.EndTurn {
 		return ""
 	}
 	return state.EndReason
@@ -816,10 +939,9 @@ func communicateEndReasonOf(result *llm.ToolResultData) string {
 //     result: an ask round. Delegates to questionsFromAskCalls for exactly
 //     those calls, in call order (spec §2's "multiple ask_user calls in the
 //     round: union, in call order"), and accumulates them onto whatever a
-//     LATER (already-scanned) non-resolving round found. Decisive — stops
-//     the scan — only when THIS round's own entry resolves the boundary
-//     (roundEntryResolvesAskBoundary); otherwise the scan keeps going for a
-//     still-earlier pending ask, because ask_user's live Exec APPENDS to
+//     LATER (already-scanned) non-resolving round found. The scan keeps
+//     going to the actual resolving entry, including earlier ask rounds
+//     in the same execution, because ask_user's live Exec APPENDS to
 //     askPending (registerAskTool) rather than replacing it: a human-note
 //     carrier's own round can post a brand-new question without ever
 //     answering one already pending, so live askPending can hold questions
@@ -836,6 +958,8 @@ func communicateEndReasonOf(result *llm.ToolResultData) string {
 // exactly as deriveRestoredState does above (steeringOriginBoundary).
 func deriveRestoredAskPending(history []schema.Turn, divergenceTurn int, origins map[string]steeringOrigin) (pending []askQuestion, isAskRound bool) {
 	inherited := steeringOriginBoundary(divergenceTurn, len(history))
+	resolvedCalls := make(map[appwire.PendingAskCall]bool)
+	legacyRemaining := 0
 	// roundsNewestFirst collects each non-resolving round's own ask_user
 	// questions as one element, newest round first (the scan walks
 	// backward); finish flattens them oldest-round-first to match the live
@@ -866,12 +990,19 @@ func deriveRestoredAskPending(history []schema.Turn, divergenceTurn int, origins
 			turnOrigins = nil
 		}
 		if turnResolvesAskBoundary(turn, turnOrigins) {
-			return finish()
+			if turn.AskResolution == nil {
+				return finish()
+			}
+			for _, call := range turn.AskResolution.Calls {
+				resolvedCalls[call] = true
+			}
+			legacyRemaining = max(legacyRemaining, turn.AskResolution.LegacyCount)
+			continue
 		}
 		switch turn.Kind {
 		case schema.TurnAssistant:
 			if len(assistantToolCalls(turn.Message)) == 0 {
-				if !roundEntryResolvesAskBoundary(history, i, inherited, origins) {
+				if len(resolvedCalls) != 0 || legacyRemaining != 0 || !roundEntryResolvesAskBoundary(history, i, inherited, origins) {
 					continue // this round's entry never cleared askPending live either; not decisive
 				}
 				return finish()
@@ -894,18 +1025,35 @@ func deriveRestoredAskPending(history []schema.Turn, divergenceTurn int, origins
 				continue // error-only placeholder; not decisive, matches deriveRestoredState
 			}
 			if len(askCallIDs) == 0 {
-				if !roundEntryResolvesAskBoundary(history, i, inherited, origins) {
+				if len(resolvedCalls) != 0 || legacyRemaining != 0 || !roundEntryResolvesAskBoundary(history, i, inherited, origins) {
 					continue // this round's entry never cleared askPending live either; not decisive
 				}
 				return finish() // decisive, but a generic completion (e.g. a communicate ack)
 			}
-			roundsNewestFirst = append(roundsNewestFirst, questionsFromAskCalls(history, i, askCallIDs))
-			if roundEntryResolvesAskBoundary(history, i, inherited, origins) {
-				return finish() // this round's own entry resolved everything before it
+			questions := questionsFromAskCalls(history, i, askCallIDs)
+			remaining := make([]askQuestion, 0, len(questions))
+			matchedCalls := make(map[appwire.PendingAskCall]bool)
+			for _, question := range questions {
+				call := appwire.PendingAskCall{TurnID: question.TurnID, CallID: question.CallID}
+				if call.TurnID == "" || call.CallID == "" {
+					if legacyRemaining > 0 {
+						legacyRemaining--
+						continue
+					}
+				} else if resolvedCalls[call] {
+					matchedCalls[call] = true
+					continue
+				}
+				remaining = append(remaining, question)
 			}
-			// This round's entry did not resolve anything (a non-resolving
-			// carrier): an earlier still-pending ask may exist further back.
-			// Keep scanning, accumulating.
+			for call := range matchedCalls {
+				delete(resolvedCalls, call)
+			}
+			if len(remaining) > 0 || len(questions) == 0 {
+				roundsNewestFirst = append(roundsNewestFirst, remaining)
+			}
+			// An earlier ask round may share this execution's entry. Only
+			// reaching that entry proves every still-pending round was read.
 		}
 	}
 	return finish()
@@ -923,6 +1071,18 @@ func deriveRestoredAskPending(history []schema.Turn, divergenceTurn int, origins
 // whose arguments fail to unmarshal or fail parseAskQuestions's validation
 // is skipped, not fatal (spec §2: "rebuild what parses").
 func questionsFromAskCalls(history []schema.Turn, toolResultsIdx int, wantCallIDs map[string]bool) []askQuestion {
+	if toolResultsIdx < 0 || toolResultsIdx >= len(history) {
+		return nil
+	}
+	canonical := map[string]schema.AskUserState{}
+	for _, part := range history[toolResultsIdx].Message.Content {
+		if result := part.ToolResult; result != nil && result.Name == askUserToolName && !result.IsError {
+			var state schema.AskUserState
+			if json.Unmarshal(result.ToolState, &state) == nil && state.Version == 1 && len(state.Questions) > 0 {
+				canonical[result.ToolCallID] = state
+			}
+		}
+	}
 	for j := toolResultsIdx - 1; j >= 0; j-- {
 		if history[j].Kind != schema.TurnAssistant {
 			continue
@@ -930,6 +1090,16 @@ func questionsFromAskCalls(history []schema.Turn, toolResultsIdx int, wantCallID
 		var out []askQuestion
 		for _, call := range assistantToolCalls(history[j].Message) {
 			if call.Name != "ask_user" || !wantCallIDs[call.ID] {
+				continue
+			}
+			if state, ok := canonical[call.ID]; ok {
+				for _, q := range state.Questions {
+					pending := askQuestion{TurnID: history[j].TurnID, CallID: call.ID, Header: q.Header, Question: q.Question}
+					for _, option := range q.Options {
+						pending.Options = append(pending.Options, option.Label)
+					}
+					out = append(out, pending)
+				}
 				continue
 			}
 			var args map[string]any
@@ -944,6 +1114,9 @@ func questionsFromAskCalls(history []schema.Turn, toolResultsIdx int, wantCallID
 			parsed, err := parseAskQuestions(normalized)
 			if err != nil {
 				continue // semantic violation on a hand-edited/drifted transcript; skip
+			}
+			for i := range parsed {
+				parsed[i].TurnID = history[j].TurnID
 			}
 			out = append(out, parsed...)
 		}

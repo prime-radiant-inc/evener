@@ -16,6 +16,14 @@ test("shutdown factory builds session-scoped targets and predicate", () => {
   expect(convergence.matchesSession({ targets: [{ kind: "project", projectKey: "p1" }] } as never)).toBe(true);
   expect(convergence.matchesSession({ targets: [{ kind: "project", projectKey: "other" }] } as never)).toBe(false);
   expect(convergence.matchesSession({ targets: [{ kind: "section", section: "live" }] } as never)).toBe(true);
+  expect(convergence.matchesSession({ targets: [{ kind: "all_loaded_projects" }] } as never)).toBe(true);
+  expect(convergence.matchesSession({ targets: [{ kind: "pin_section", sectionId: "pins" }] } as never)).toBe(true);
+  expect(convergence.matchesSession({ targets: [{ kind: "pin_section", sectionId: "other" }] } as never)).toBe(false);
+  // Every scope the factory itself emits wakes its own waiter, so a new scope
+  // added to `targets` cannot silently stop reaching the predicate.
+  for (const target of convergence.targets) {
+    expect(convergence.matchesSession({ targets: [target] } as never)).toBe(true);
+  }
 });
 
 test("shutdown factory omits absent pin and project scopes", () => {
@@ -24,6 +32,24 @@ test("shutdown factory omits absent pin and project scopes", () => {
     { kind: "section", section: "live" },
     { kind: "section", section: "needs_you" },
   ]);
+});
+
+test("the shutdown predicate follows the shared target rule for every scope", () => {
+  const unscoped = buildShutdownConvergence("local:s1", {});
+  // The wildcard names every loaded project, so it converges a shutdown only
+  // when that shutdown has a project scope to reach.
+  expect(unscoped.matchesSession({ targets: [{ kind: "all_loaded_projects" }] } as never)).toBe(false);
+  // A section outside the live/needs_you tiers is not a shutdown target.
+  expect(unscoped.matchesSession({ targets: [{ kind: "section", section: "archived" }] } as never)).toBe(false);
+  expect(unscoped.matchesSession({ targets: [{ kind: "section", section: "needs_you" }] } as never)).toBe(true);
+  // Catalogs and the manifest name no scope this shutdown covers.
+  expect(unscoped.matchesSession({ targets: [{ kind: "manifest" }] } as never)).toBe(false);
+  expect(unscoped.matchesSession({ targets: [{ kind: "pin_catalog" }] } as never)).toBe(false);
+  expect(unscoped.matchesSession({ targets: [{ kind: "catalog", catalog: "projects" }] } as never)).toBe(false);
+  // Two absent selectors are not a match: the wire decoder rejects these
+  // targets, and the predicate must not treat absent scope as equal scope.
+  expect(unscoped.matchesSession({ targets: [{ kind: "pin_section" }] } as never)).toBe(false);
+  expect(unscoped.matchesSession({ targets: [{ kind: "project" }] } as never)).toBe(false);
 });
 
 test("shutdown settled is true when the ref is absent from live rows", () => {

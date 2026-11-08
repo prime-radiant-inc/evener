@@ -30,27 +30,27 @@ type ProviderConfig struct {
 // destination passed to ssh (component 04), and User overrides its user.
 // EvenerPath and Roots are advisory inputs to components 04/05.
 type HostConfig struct {
-	Name string `toml:"name"`
-	SSH  string `toml:"ssh"`
+	Name string `toml:"name" json:"name"`
+	SSH  string `toml:"ssh" json:"ssh"`
 	// User, and every field below it, is optional: omitempty is what the
 	// machine-managed hub.toml writer relies on so a rewrite never invents a
 	// key the operator (or the dialog that added the host) did not set. It has
 	// no effect on decoding.
-	User string `toml:"user,omitempty"`
+	User string `toml:"user,omitempty" json:"user,omitempty"`
 	// EvenerPath is the host binary's absolute path, when it is not on PATH.
-	EvenerPath string `toml:"evener_path,omitempty"`
+	EvenerPath string `toml:"evener_path,omitempty" json:"evener_path,omitempty"`
 	// ConfigPath is the host hub's hub.toml, when it is not at the default
 	// location, so the bridge attaches with the host's own configuration.
-	ConfigPath string `toml:"config_path,omitempty"`
+	ConfigPath string `toml:"config_path,omitempty" json:"config_path,omitempty"`
 	// Addr is a listener override only for explicitly authorized fresh bootstrap.
 	// Existing service definitions and selected connection endpoints ignore it.
-	Addr  string   `toml:"addr,omitempty"`
-	Roots []string `toml:"roots,omitempty"`
+	Addr  string   `toml:"addr,omitempty" json:"addr,omitempty"`
+	Roots []string `toml:"roots,omitempty" json:"roots,omitempty"`
 	// KeyPath is the SSH private-key file for this host, when it is not the
 	// user's ssh_config default. The machine-managed hub.toml stores it (the
 	// UI's Add/Edit dialog collects it), so a UI-added host's key path
 	// round-trips through a rewrite (registry spec 08 §6).
-	KeyPath string `toml:"key_path,omitempty"`
+	KeyPath string `toml:"key_path,omitempty" json:"key_path,omitempty"`
 }
 
 // Config is the hub's runtime configuration loaded from hub.toml (see
@@ -59,14 +59,13 @@ type Config struct {
 	Addr        string `toml:"addr"`
 	PublicURL   string `toml:"public_url"`
 	addrPresent bool   `toml:"-"`
-	// removedHostKnobs names the retired host_* retention keys the file still
-	// sets. They are ignored; runMain warns about each one at boot.
-	removedHostKnobs   []string         `toml:"-"`
+	// removedKnobs names the retired keys the file still sets. They are
+	// ignored; runMain warns about each one at boot.
+	removedKnobs       []string         `toml:"-"`
 	HubStateRoot       string           `toml:"hub_state_root"`
 	StateGlob          string           `toml:"state_glob"`
 	RunDir             string           `toml:"run_dir"`
 	PastIndexDB        string           `toml:"past_index_db"`
-	StatusPollInterval time.Duration    `toml:"status_poll_interval"`
 	PastIndexRebuild   time.Duration    `toml:"past_index_rebuild_interval"`
 	SpawnTimeout       time.Duration    `toml:"spawn_timeout"`
 	PastResultsPerPage int              `toml:"past_results_per_page"`
@@ -78,57 +77,6 @@ type Config struct {
 	// client can show the hub's own machine's roots beside a host's. Blank
 	// entries are dropped at load; an absent key means the machine has none.
 	Roots []string `toml:"roots,omitempty"`
-	// HostRecords and Generations are hub.toml's machine-managed per-host
-	// records (registry spec 08 §6's reserved-key layout). They live beside
-	// [[hosts]], never inside an entry, because they must survive a host edit:
-	// an edit rewrites the entry's configured fields and nothing here. The
-	// zero/absent value is the compatibility default for a file written before
-	// the records existed — see app_host_records.go.
-	HostRecords map[string]HostRecord     `toml:"host_records"`
-	Generations map[string]HostGeneration `toml:"generations"`
-	// MutationReceipts is hub.toml's durable mutation-receipt section (registry
-	// spec 08 §5/§6), keyed by the five-part scoped receipt key. Like the two
-	// records above it lives beside [[hosts]] and survives every host edit; the
-	// absent value is the compatibility default for a file written before
-	// receipts existed.
-	MutationReceipts map[string]HostMutationReceipt `toml:"mutation_receipts"`
-	// Tombstones is hub.toml's durable removed-host section (registry spec 08
-	// §6/§15), keyed by host name. It lives beside [[hosts]]; a tombstone and
-	// its removal are one atomic write, and the absent value is the
-	// compatibility default for a file written before tombstones existed.
-	Tombstones map[string]HostTombstone `toml:"tombstones"`
-	// PrunedReceipts is hub.toml's durable pruned-marker section (registry spec
-	// 08 §6), keyed by the full five-part scoped receipt key. Each marker is
-	// the bounded proof that a superseded receipt was compacted away.
-	PrunedReceipts map[string]PrunedReceiptMarker `toml:"pruned_receipts"`
-	// StagedReceipts is hub.toml's durable staged-receipt marker section
-	// (registry spec 08 §5), keyed by host name: the transient marker one
-	// commit's step-(2) write carries until its post-commit write replaces it
-	// with the finalized receipt. At most one marker per host.
-	StagedReceipts map[string]HostStagedReceipt `toml:"staged_receipts"`
-	// TeardownRemnants is hub.toml's durable teardown-remnant section (registry
-	// spec 08 §6), keyed by the server-generated remnantId: the open remnants a
-	// committed-with-teardown-failure left behind and the typed resolved records
-	// their clearances wrote.
-	TeardownRemnants map[string]HostTeardownRemnant `toml:"teardown_remnants"`
-	// TeardownAttempts is hub.toml's durable teardown-attempt section (registry
-	// spec 08 §6), keyed by the server-generated attempt id: the claim a retry
-	// or recover writes beside the remnant it claims.
-	TeardownAttempts map[string]HostTeardownAttempt `toml:"teardown_attempts"`
-	// PendingStoreSync is hub.toml's cross-file commit intent section
-	// (deploy-pipeline spec 08b §9), keyed by host name: the exact store rows a
-	// commit's swap is deleting or invalidating, plus the hub.toml generation
-	// the intent belongs to. The mutation's atomic write carries it, the store's
-	// purge applies it after the swap, and a follow-up atomic write clears it.
-	// At most one intent per host.
-	PendingStoreSync map[string]HostStoreSyncIntent `toml:"pending_store_sync"`
-	// MirrorCommits is hub.toml's generation-mirror commit-marker section
-	// (deploy-pipeline spec 08b §4), keyed by host name: the (hub.toml
-	// generation, store-mirror generation) pair every hub.toml commit that also
-	// advances a mirrored store-side generation writes. Boot reconciles the
-	// store mirror against the file's marks with these as the authorization
-	// evidence.
-	MirrorCommits map[string]HostMirrorCommit `toml:"mirror_commits"`
 
 	// PluginAutoUpgrade is the global on/off switch for the background plugin
 	// auto-upgrade daemon (design doc §9.1). Defaults to on: the meaningful
@@ -198,10 +146,12 @@ const (
 	DefaultHostTombstoneRetention = 7 * 24 * time.Hour
 )
 
-// removedHostKnobs are the host_* retention and pruning keys that were once
-// tunable. The hub now reads one internal default policy (defaultHostRecordPolicy)
-// for them, so a hub.toml that still sets one starts normally and warns.
-var removedHostKnobs = []string{
+// removedKnobs are the keys that were once tunable. The host_* retention and
+// pruning keys fold into one internal default policy (defaultHostRecordPolicy);
+// status_poll_interval had no reader. A hub.toml that still sets one starts
+// normally and warns.
+var removedKnobs = []string{
+	"status_poll_interval",
 	"host_tombstone_max_rows",
 	"host_tombstone_max_row_bytes",
 	"host_tombstone_max_count",
@@ -238,7 +188,6 @@ func DefaultConfig() Config {
 		HubStateRoot:              hubStateRoot,
 		StateGlob:                 "",
 		RunDir:                    "",
-		StatusPollInterval:        2 * time.Second,
 		PastIndexRebuild:          60 * time.Second,
 		SpawnTimeout:              30 * time.Second,
 		PastResultsPerPage:        50,
@@ -356,17 +305,6 @@ func decodeConfig(name, data string) (Config, error) {
 		}
 	}
 	cfg.addrPresent = metadata.IsDefined("addr")
-	// The retired crash-fencing bootstrap keys decode into HostRecord's retired
-	// fields (the type documents them) so a hub.toml the bootstrap build wrote
-	// still loads: the reserved-record rule below refuses a reserved field this
-	// build does not decode, and the removed first-contact caller persisted those
-	// keys. Drop them from the loaded document here, so no in-memory record
-	// carries them and every rewrite derived from this config re-emits the
-	// record without them — the next write drops the keys, rather than the
-	// preservation rule keeping them alive forever.
-	for hostName, record := range cfg.HostRecords {
-		cfg.HostRecords[hostName] = record.withoutRetiredFencingFields()
-	}
 	// DaemonIdleTimeout is a duration STRING. BurntSushi/toml decodes a bare
 	// integer as a nanosecond count without error, so `daemon_idle_timeout =
 	// 3600` (plausible shorthand for one hour) would silently arm a 3.6µs idle
@@ -390,9 +328,9 @@ func decodeConfig(name, data string) (Config, error) {
 	if metadata.Type("host_tombstone_retention") == "Integer" {
 		return cfg, fmt.Errorf("host_tombstone_retention %[1]w such as \"168h\" (got the integer %[2]d, which TOML decodes as %[2]d nanoseconds)", errIntegerDuration, int64(cfg.HostTombstoneRetention))
 	}
-	for _, key := range removedHostKnobs {
+	for _, key := range removedKnobs {
 		if metadata.IsDefined(key) {
-			cfg.removedHostKnobs = append(cfg.removedHostKnobs, key)
+			cfg.removedKnobs = append(cfg.removedKnobs, key)
 		}
 	}
 	applyConfigDefaults(&cfg)
@@ -402,76 +340,6 @@ func decodeConfig(name, data string) (Config, error) {
 	}
 	if err := validateHostConfigs(cfg.Hosts); err != nil {
 		return cfg, fmt.Errorf("validate hosts: %w", err)
-	}
-	// The machine records are decoded as plain tables, so a record the hub's
-	// writer never emits — an incomplete one, or a live record disagreeing with
-	// the name's high-water triple — is refused here rather than read as one of
-	// its halves (registry spec 08 §6: a reserved value whose shape this build
-	// cannot decode is refused loudly before any rewrite).
-	if err := validateHostRecords(cfg.HostRecords, cfg.Generations); err != nil {
-		return cfg, fmt.Errorf("validate host records: %w", err)
-	}
-	// The mutation receipts are the other machine-managed section this build
-	// decodes: a record whose key or shape this build cannot decode, or whose
-	// fields disagree with its key, is refused loudly before any rewrite
-	// (registry spec 08 §6's reserved-namespace rule) — never read as a
-	// half-understood record, and never dropped by the next rewrite.
-	if err := validateHostMutationReceipts(cfg.MutationReceipts); err != nil {
-		return cfg, fmt.Errorf("validate mutation receipts: %w", err)
-	}
-	// The tombstones and pruned markers are the other machine-managed sections
-	// this build decodes: a record whose shape this build cannot decode, or a
-	// tombstone whose entry/identity fails validation, is refused loudly before
-	// any rewrite (registry spec 08 §6's reserved-namespace rule) — the same
-	// hard startup-error posture the host entries take.
-	if err := validateHostTombstones(cfg.Tombstones, cfg.Generations); err != nil {
-		return cfg, fmt.Errorf("validate tombstones: %w", err)
-	}
-	if err := validatePrunedReceipts(cfg.PrunedReceipts); err != nil {
-		return cfg, fmt.Errorf("validate pruned receipts: %w", err)
-	}
-	// The teardown-repair records (registry spec 08 §5/§6) are the sections this
-	// slice adds: the staged-receipt markers a commit's step-(2) write carries,
-	// the open remnants and typed resolved records their clearances leave, and
-	// the attempt records a retry claims. Each is refused loudly when its shape
-	// is one this build cannot decode, so a marker or remnant that reached the
-	// file from a newer build is a hard startup error rather than a silently
-	// reinterpreted (or dropped) record.
-	if err := validateHostStagedReceipts(cfg.StagedReceipts); err != nil {
-		return cfg, fmt.Errorf("validate staged receipts: %w", err)
-	}
-	if err := validateHostTeardownRemnants(cfg.TeardownRemnants); err != nil {
-		return cfg, fmt.Errorf("validate teardown remnants: %w", err)
-	}
-	if err := validateHostTeardownAttempts(cfg.TeardownAttempts, cfg.TeardownRemnants); err != nil {
-		return cfg, fmt.Errorf("validate teardown attempts: %w", err)
-	}
-	// The cross-file commit intent and the generation-mirror markers are the
-	// deploy pipeline's machine-managed sections (08b §4/§9): a record whose
-	// shape this build cannot decode — an intent without rows or a generation,
-	// a marker without a generation — is refused loudly before any rewrite, the
-	// same reserved-namespace posture the sections above take.
-	if err := validateHostStoreSync(cfg.PendingStoreSync); err != nil {
-		return cfg, fmt.Errorf("validate pending store sync: %w", err)
-	}
-	if err := validateHostMirrorCommits(cfg.MirrorCommits); err != nil {
-		return cfg, fmt.Errorf("validate mirror commits: %w", err)
-	}
-	// Every field of a reserved record must decode: the two tables are decoded
-	// into typed structs and rebuilt on every rewrite, so a field this build does
-	// not know would be silently dropped by the next write. Spec 08 §6 is
-	// explicit that forward preservation is not offered — "a reserved value whose
-	// shape this build cannot decode is refused loudly before any rewrite" — and
-	// a downgrade meeting a newer record must refuse to rewrite rather than
-	// preserve or drop it. Unknown keys outside the reserved set stay the
-	// operator's data and are not this check's business.
-	for _, key := range metadata.Undecoded() {
-		if len(key) > 1 && (key[0] == "host_records" || key[0] == "generations" || key[0] == "mutation_receipts" ||
-			key[0] == "tombstones" || key[0] == "pruned_receipts" || key[0] == "staged_receipts" ||
-			key[0] == "teardown_remnants" || key[0] == "teardown_attempts" ||
-			key[0] == "pending_store_sync" || key[0] == "mirror_commits") {
-			return cfg, fmt.Errorf("config %s: reserved record %s carries a field this build does not decode; refusing rather than dropping it on the next rewrite", name, key.String())
-		}
 	}
 	if err := validatePublicURL(cfg.PublicURL); err != nil {
 		return cfg, &EndpointValidationError{Source: "config", Err: fmt.Errorf("validate public_url: %w", err)}
@@ -584,9 +452,6 @@ func validatePublicURL(raw string) error {
 }
 
 func applyConfigDefaults(cfg *Config) {
-	if cfg.StatusPollInterval == 0 {
-		cfg.StatusPollInterval = 2 * time.Second
-	}
 	if cfg.PastIndexRebuild == 0 {
 		cfg.PastIndexRebuild = 60 * time.Second
 	}

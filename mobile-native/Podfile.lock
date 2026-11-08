@@ -1,4 +1,7 @@
 PODS:
+  - EvenerVoice (0.1.0):
+    - ExpoModulesCore
+    - onnxruntime-objc (= 1.20.0)
   - EXApplication (57.0.3):
     - ExpoModulesCore
   - EXConstants (57.0.22):
@@ -127,6 +130,11 @@ PODS:
   - libwebp/sharpyuv (1.6.0)
   - libwebp/webp (1.6.0):
     - libwebp/sharpyuv
+  - onnxruntime-c (1.20.0)
+  - onnxruntime-objc (1.20.0):
+    - onnxruntime-objc/Core (= 1.20.0)
+  - onnxruntime-objc/Core (1.20.0):
+    - onnxruntime-c (= 1.20.0)
   - RCTDeprecation (0.86.3)
   - RCTRequired (0.86.3)
   - RCTSwiftUI (0.86.3)
@@ -2356,6 +2364,7 @@ PODS:
     - ZXingObjC/Core
 
 DEPENDENCIES:
+  - EvenerVoice (from `../modules/evener-voice`)
   - EXApplication (from `../node_modules/expo-application/ios`)
   - EXConstants (from `../node_modules/expo/node_modules/expo-constants/ios`)
   - Expo (from `../node_modules/expo`)
@@ -2473,11 +2482,15 @@ DEPENDENCIES:
 SPEC REPOS:
   trunk:
     - libwebp
+    - onnxruntime-c
+    - onnxruntime-objc
     - SDWebImage
     - SDWebImageWebPCoder
     - ZXingObjC
 
 EXTERNAL SOURCES:
+  EvenerVoice:
+    :path: "../modules/evener-voice"
   EXApplication:
     :path: "../node_modules/expo-application/ios"
   EXConstants:
@@ -2705,6 +2718,7 @@ EXTERNAL SOURCES:
     :path: "../node_modules/react-native/ReactCommon/yoga"
 
 SPEC CHECKSUMS:
+  EvenerVoice: a26aa140bc2766cd18227fd008bbe4ed976b0078
   EXApplication: a727f05eb8592f0bc764f6ab8d51eacc158652ec
   EXConstants: 8a0eb5e2553569c0e6710b73a8d90d1ce358c153
   Expo: d06878ab7512dbcb2deec84c4d56f07af8a8b765
@@ -2737,6 +2751,8 @@ SPEC CHECKSUMS:
   FBLazyVector: 2138c6c2ab66c31bf5754dc18097fbc498a49c7f
   hermes-engine: 63c5db7d529c36335fada6582fd293ae2a105d77
   libwebp: af5937a13536ef73f3784d69cc342b98961acf33
+  onnxruntime-c: 07cfff40dda7e1c54a4350bb2ad226c63150fce3
+  onnxruntime-objc: b22c5d4517e9804e47c66f1f122ec4a6aa923f86
   RCTDeprecation: 96f68ebf33f8762466b01d57d6e873c4f30efb07
   RCTRequired: 166eed8ad6d8440e73e56d09a9090366609823d2
   RCTSwiftUI: e818198d11928a78c2b2afe281d072171dab617f

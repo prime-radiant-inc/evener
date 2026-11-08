@@ -43,7 +43,7 @@
   background: var(--accent-bg);
   color: var(--accent-ink);
   font-weight: var(--font-weight-medium);
-  border-inline-start: 2px solid var(--accent);
+  border-inline-start: 1px solid var(--accent);
 }
 
 .linkActive .link {

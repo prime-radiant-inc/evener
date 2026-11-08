@@ -98,10 +98,10 @@ func TestSummaryFailureWarningProjection(t *testing.T) {
 	if err := json.Unmarshal(encoded, &raw); err != nil {
 		t.Fatal(err)
 	}
-	if len(raw.Warning) != 4 || raw.Warning["code"] != "summary_failure" || raw.Warning["source"] != "provider" || raw.Warning["title"] != fixture.Warning.Title || raw.Warning["hint"] != fixture.Warning.Hint {
+	if len(raw.Warning) != 4 || raw.Warning["code"] != "summary_failure" || raw.Warning["source"] != fixture.Warning.Source || raw.Warning["title"] != fixture.Warning.Title || raw.Warning["hint"] != fixture.Warning.Hint {
 		t.Fatalf("strict warning shape changed: %s", encoded)
 	}
-	for _, identifier := range []string{"openai/summary-model-8af1", "429", "rate_limit"} {
+	for _, identifier := range []string{"openai/gpt-5.2", "rejected_output", "empty_reply"} {
 		if !strings.Contains(item.Text, identifier) {
 			t.Errorf("message lost diagnostic value %s", identifier)
 		}

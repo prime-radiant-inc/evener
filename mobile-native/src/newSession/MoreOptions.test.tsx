@@ -1,10 +1,11 @@
+import type { LaunchOptionSchemaResponse } from "@evener/appwire-client";
 import { act } from "react-test-renderer";
 import { expect, it, vi } from "vitest";
 import { createNewSessionStore } from "../newSession";
 import { markedNodes, markerOf } from "../markerTestUtils";
 import { render, renderedText, settle, textOf } from "../renderNative.testkit";
 import { MoreOptions } from "./MoreOptions";
-import { sheetContext, TestSheet } from "./newSessionTestUtils";
+import { launchSchemaOf, sheetContext, TestSheet } from "./newSessionTestUtils";
 
 vi.mock("../board/connectionStatus", async (importOriginal) => ({
 	...(await importOriginal<typeof import("../board/connectionStatus")>()),
@@ -15,7 +16,17 @@ vi.mock("react-native", async () => ({
 	...(await import("../renderNative.testkit")).nativeModuleMock(),
 }));
 
-async function mount(defaults: Record<string, unknown> | null, launchOverrides: Record<string, unknown> = {}) {
+/** A hub build that knows the memory launch option. */
+const SCHEMA_WITH_MEMORY = launchSchemaOf(["contextStrategy", "memoryEnabled"]);
+
+/** An older hub build: the same schema without the memory option. */
+const SCHEMA_WITHOUT_MEMORY = launchSchemaOf(["contextStrategy"]);
+
+async function mount(
+	defaults: Record<string, unknown> | null,
+	launchOverrides: Record<string, unknown> = {},
+	schema: LaunchOptionSchemaResponse | null = SCHEMA_WITH_MEMORY,
+) {
 	const calls: { method: string; params: unknown }[] = [];
 	const client = {
 		request: async (method: string, params: unknown) => {
@@ -28,7 +39,7 @@ async function mount(defaults: Record<string, unknown> | null, launchOverrides: 
 	const store = createNewSessionStore("hub-1");
 	store.setState({ source: "paradise-park", cwd: "/Users/jesse/git/evener", launchOverrides });
 	const tree = render(
-		<TestSheet value={sheetContext(store, { client: client as never })}>
+		<TestSheet value={sheetContext(store, { client: client as never, launchSchema: schema })}>
 			<MoreOptions />
 		</TestSheet>,
 	);
@@ -67,6 +78,18 @@ it("offers the three settings, each on Default until set", async () => {
 	]);
 	expect(page.segments("Max subagent depth").map(([label]) => label)).toEqual(["Default", "1", "2", "3", "5"]);
 	expect(page.segments("Max turns").map(([label]) => label)).toEqual(["Default", "100", "500", "No limit"]);
+});
+
+it("sets the Manager role for this draft", async () => {
+	const page = await mount({});
+	const toggle = () =>
+		page.tree.root.find(
+			(node) => String(node.type) === "Switch" && node.props.accessibilityLabel === "Start as Manager",
+		);
+	expect(toggle().props.value).toBe(false);
+	act(() => toggle().props.onValueChange(true));
+	expect(page.store.getState().manager).toBe(true);
+	expect(toggle().props.value).toBe(true);
 });
 
 it("names the hub's default under each", async () => {
@@ -110,4 +133,66 @@ it("speaks of the hub's default without a value until the hub says it", async ()
 	expect(page.footer("maxRounds")).toEqual({ hubDefault: "unknown", text: expect.stringContaining("250") });
 	// A setting left to the hub still says Default follows the hub.
 	expect(page.footer("maxSubagentDepth")).toEqual({ hubDefault: "unknown", text: expect.stringMatching(/\S/) });
+});
+
+it("offers Memory when the hub's schema names it, on Default until set", async () => {
+	const page = await mount({ memoryEnabled: true });
+	expect(page.segments("Memory")).toEqual([
+		["Default", true],
+		["On", false],
+		["Off", false],
+	]);
+	expect(page.footer("memoryEnabled").hubDefault).toBe("known");
+});
+
+it("sets Memory off and on, and Default removes it", async () => {
+	const page = await mount({ memoryEnabled: true }, {});
+	page.choose("Memory", "Off");
+	expect(page.store.getState().launchOverrides.memoryEnabled).toBe(false);
+	page.choose("Memory", "On");
+	expect(page.store.getState().launchOverrides.memoryEnabled).toBe(true);
+	page.choose("Memory", "Default");
+	expect(page.store.getState().launchOverrides.memoryEnabled).toBeUndefined();
+});
+
+it("says the hub's memory default is unknown until the hub says it", async () => {
+	const page = await mount(null, {});
+	expect(page.footer("memoryEnabled")).toEqual({ hubDefault: "unknown", text: expect.stringMatching(/\S/) });
+});
+
+it("hides Memory against a hub whose schema lacks it, until a choice is set", async () => {
+	const page = await mount({}, {}, SCHEMA_WITHOUT_MEMORY);
+	const memoryRows = () =>
+		page.tree.root.findAll(
+			(node) => node.props.accessibilityRole === "radiogroup" && node.props.accessibilityLabel === "Memory",
+		);
+	expect(memoryRows()).toHaveLength(0);
+	// A choice kept from a hub that offered it stays visible against one that
+	// doesn't, so the choice Start is held over can be seen and cleared.
+	await act(async () => page.store.getState().setLaunchOverrides({ memoryEnabled: false }));
+	expect(memoryRows()).toHaveLength(1);
+	expect(page.segments("Memory")).toEqual([
+		["Default", false],
+		["On", false],
+		["Off", true],
+	]);
+	await act(async () => page.choose("Memory", "Default"));
+	expect(page.store.getState().launchOverrides.memoryEnabled).toBeUndefined();
+});
+
+it("hides Memory while the hub's schema has not answered", async () => {
+	const page = await mount({}, {}, null);
+	const groups = page.tree.root.findAll(
+		(node) => node.props.accessibilityRole === "radiogroup" && node.props.accessibilityLabel === "Memory",
+	);
+	expect(groups).toHaveLength(0);
+});
+
+it("shows a kept Memory choice even before the hub's schema answers", async () => {
+	const page = await mount({}, { memoryEnabled: false }, null);
+	expect(page.segments("Memory")).toEqual([
+		["Default", false],
+		["On", false],
+		["Off", true],
+	]);
 });

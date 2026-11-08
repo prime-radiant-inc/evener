@@ -79,6 +79,10 @@ var envelopeSamplingForbiddenLocks = []envelopeSamplingLock{
 		s.memoryMu.Lock()
 		return s.memoryMu.Unlock
 	}},
+	{owner: "Session", field: "modelSwitchPublishMu", hold: func(s *Session) func() {
+		s.modelSwitchPublishMu.Lock()
+		return s.modelSwitchPublishMu.Unlock
+	}},
 	{owner: "Session", field: "restMu", hold: func(s *Session) func() {
 		s.restMu.Lock()
 		return s.restMu.Unlock
@@ -135,6 +139,10 @@ var envelopeSamplingForbiddenLocks = []envelopeSamplingLock{
 		s.drainAbandonedMu.Lock()
 		return s.drainAbandonedMu.Unlock
 	}},
+	{owner: "Session", field: "laneEvidenceMu", hold: func(s *Session) func() {
+		s.laneEvidenceMu.Lock()
+		return s.laneEvidenceMu.Unlock
+	}},
 	{owner: "subagent", field: "mu", hold: func(s *Session) func() {
 		sub := &subagent{id: "envelope-sampling-probe", done: make(chan struct{})}
 		s.subagents.track(sub)
@@ -187,6 +195,19 @@ func TestEnvelopeSamplingNeverBlocksOnAnEmitHeldLock(t *testing.T) {
 				}
 			}
 		}()
+	}
+}
+
+func TestEnvelopeSamplingUsesAtomicPendingAskSnapshot(t *testing.T) {
+	t.Parallel()
+	iface := reflect.TypeFor[EnvelopeSampling]()
+	if _, ok := iface.MethodByName("PendingAskSnapshot"); !ok {
+		t.Fatal("EnvelopeSampling does not exercise the atomic pending-ask accessor")
+	}
+	for _, separate := range []string{"PendingQuestion", "PendingAskCalls"} {
+		if _, ok := iface.MethodByName(separate); ok {
+			t.Errorf("EnvelopeSampling exposes separate %s read instead of the atomic pair", separate)
+		}
 	}
 }
 

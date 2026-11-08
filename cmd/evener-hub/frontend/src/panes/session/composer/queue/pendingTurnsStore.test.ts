@@ -1,13 +1,13 @@
 // @vitest-environment jsdom
 
 import type { Thread, ThreadReadResponse } from "@evener/appwire-client";
-import { ownPendingTurnInput } from "@evener/appwire-client/state/mutation";
+import { ownPendingSend, ownPendingTurnInput } from "@evener/appwire-client/state/mutation";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { act, cleanup, renderHook } from "@testing-library/react";
 import { IDBFactory, IDBObjectStore } from "fake-indexeddb";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { appliedReceipt } from "../../../../mutationReceiptTestUtils";
-import { connectionStore } from "../../../../stores/connection";
+import { connectionStore, resetConnectionStoreForTests } from "../../../../stores/connection";
 import { setMutationClientIdentityForTests } from "../../../../stores/mutationClientIdentity";
 import type { MutationOutboxRecord } from "../../../../stores/mutationOutbox";
 import { MutationOutboxIndexedDB } from "../../../../stores/mutationOutboxIndexedDB";
@@ -18,8 +18,10 @@ import {
   setMutationStorageForTests,
   threadsStore,
 } from "../../../../stores/threads";
+import { mutationReceipt } from "../../../../stores/threadsSessionActionsTestUtils";
 import { useColdStartSkeleton } from "../../coldStart";
 import { readComposerDraft, writeComposerDraft } from "../draft";
+import { composerAvailability } from "../submissionAvailability";
 import {
   discardRecoveryPendingTurn,
   pendingTurnEntries,
@@ -98,7 +100,7 @@ beforeEach(() => {
   globalThis.indexedDB = new IDBFactory();
   setMutationClientIdentityForTests(undefined);
   localStorage.clear();
-  connectionStore.setState({ state: "idle", client: null, serverInfo: undefined });
+  resetConnectionStoreForTests();
   resetThreadsStoreForTests();
   resetPendingTurnsStoreForTests();
 });
@@ -311,7 +313,11 @@ test("a durable read a newer read superseded does not mark its ref loaded", asyn
     const request = getAll.apply(this, args);
     if (this.name === "recovery") {
       holds.push(holdIndexedDBEvent(request, "success"));
-      if (holds.length === 2) announceSecondHold?.();
+      // One durable read issues TWO recovery-store getAll requests on this
+      // tree - the target's own rows, then the displayed-ref half of the
+      // persistence read - so the two reads together hold four, and the
+      // fourth is the newer read's pair completing.
+      if (holds.length === 4) announceSecondHold?.();
     }
     return request;
   });
@@ -324,12 +330,15 @@ test("a durable read a newer read superseded does not mark its ref loaded", asyn
     // fails closed.
     expect(hasBlockedUnknown(ref)).toBe(true);
     // The older read resolves first, already superseded by the newer one.
+    // Both of its recovery getAlls release together.
     holds[0]?.release();
+    holds[1]?.release();
     await older;
     // The superseded read must NOT mark the ref loaded: the winning read is
     // still outstanding, and its rows are not visible yet.
     expect(hasBlockedUnknown(ref)).toBe(true);
-    holds[1]?.release();
+    holds[2]?.release();
+    holds[3]?.release();
     await newer;
     // The winning read is now the current word for the ref, so it loads.
     expect(hasBlockedUnknown(ref)).toBe(false);
@@ -793,6 +802,76 @@ test("another tab's durable send is not claimed as this client's submission", as
   const entry = pending.result.current.find((candidate) => candidate.id === foreign.clientMutationId);
   expect(entry).toBeDefined();
   expect(entry?.fromThisClient).toBe(false);
+});
+
+// A composer send whose durable write storage refused goes out as a plain
+// request: no outbox row, no optimistic row, nothing durable anywhere. The
+// daemon's authoritative projection still lists the send as pending under its
+// clientMutationId, and the pending store has no durable record to derive
+// provenance from. Without a provenance seam the row reads as another
+// client's: no ghost and ownPendingSend false, so a fast second Send routes as
+// turn/start and the daemon refuses it while the first turn runs.
+test("a storage-fallback direct send is claimed as this client's on the authoritative reread", async () => {
+  const storage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(storage);
+  const fake = await connect({ status: { type: "idle" } });
+  const sentId = new Promise<string>((resolve) => {
+    fake.on("turn/start", (params) => {
+      resolve(params.clientMutationId);
+      return {
+        turn: { id: "turn_1", status: "inProgress", itemsView: "" },
+        receipt: mutationReceipt(params.clientMutationId),
+      };
+    });
+  });
+  // A full origin refuses the durable write at once; the send still leaves as
+  // a plain RPC under an id nothing durable records.
+  vi.spyOn(IDBObjectStore.prototype, "add").mockImplementationOnce(() => {
+    throw new DOMException("storage full", "QuotaExceededError");
+  });
+  await threadsStore.getState().send("ref_a", "fallback send");
+  const clientMutationId = await sentId;
+  expect(await storage.listOutbox()).toEqual([]);
+
+  // The daemon's authoritative read lists the send as pending. The thread is
+  // idle, so absent this client's provenance the send's own entry would not
+  // count and the next Send would route as turn/start.
+  fake.on("thread/read", () => ({
+    thread: thread({
+      status: { type: "idle" },
+      evener: {
+        ...thread().evener,
+        activeTurnId: undefined,
+        pendingMutations: [
+          {
+            clientMutationId,
+            method: "turn/start",
+            input: [{ type: "text", text: "fallback send" }],
+            executionState: "claimed",
+            projectionState: "pending",
+          },
+        ],
+      },
+    }),
+  }));
+  await threadsStore.getState().refreshThread("ref_a");
+  await flushPendingTurnsProjectionForTests();
+
+  const entries = pendingTurnEntries("ref_a", "send");
+  expect(entries).toEqual([
+    expect.objectContaining({ id: clientMutationId, source: "authoritative", fromThisClient: true }),
+  ]);
+  expect(ownPendingSend(entries)).toBe(true);
+  const model = threadsStore.getState().threads.get("ref_a");
+  expect(model).toBeDefined();
+  expect(
+    composerAvailability(model!, ownPendingSend(entries), false, {
+      uncertainMessages: false,
+      stopInFlight: false,
+      queuedNonSend: false,
+      mutationStateAuthoritative: true,
+    }),
+  ).toEqual({ canSend: false, canQueue: true });
 });
 
 test("this client's own and unattributed durable sends stay claimed as its submissions", async () => {

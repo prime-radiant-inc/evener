@@ -77,7 +77,7 @@ const COMPOSER_SEND_STATES = [
 ];
 const NARROW_DESKTOP_SEND_GEOMETRY = {
   m: { width: 70.890625, height: 24 },
-  xl: { width: 82.109375, height: 24 },
+  xl: { width: 81.53125, height: 24 },
 };
 
 // The unbooted-page seam (see navigateTo in browserGuardCdp.mjs): a network
@@ -356,6 +356,10 @@ async function measureComposerFooter(cdpEndpoint, url, width, safeAreaSupported)
     await assertGuardOrigin(send, new URL(url).host);
     await evaluate(send, "window.settled");
     await waitForFonts(send);
+    // Headless Chrome's page does not have window focus, so a programmatic
+    // textbox focus would set activeElement without matching :focus (and the
+    // phone footer's focus rule would never apply in the measurement).
+    await send("Emulation.setFocusEmulationEnabled", { enabled: true });
     const viewportDiagnostic = diagnoseRealizedViewport({ width, height: 900 }, await realizedViewport(send));
     if (viewportDiagnostic) throw new Error(viewportDiagnostic);
     const measurements = [];
@@ -365,39 +369,74 @@ async function measureComposerFooter(cdpEndpoint, url, width, safeAreaSupported)
       if (safeAreaSupported) await send("Emulation.setSafeAreaInsetsOverride", { insets: { bottom: safeArea } });
       for (const keyboard of mobile ? [0, 12, 300] : [0]) {
         measurements.push(
-          await evaluate(
+          ...(await evaluate(
             send,
             `(async () => {
           document.documentElement.style.setProperty('--keyboard-inset', '${keyboard}px');
-          await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+          const frame = () => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
           const pane = document.getElementById('oh-pane');
           const footer = pane?.querySelector('[data-testid="pane-footer"]');
-          const cards = [...(footer?.querySelectorAll('[data-testid="composer-input-card"]') ?? [])]
-            .filter((card) => card.checkVisibility({ checkOpacity: true, checkVisibilityCSS: true }));
-          const lastBottom = cards.length ? Math.max(...cards.map((card) => card.getBoundingClientRect().bottom)) : null;
-          const metadata = pane?.querySelector('[data-testid="composer-repo-location"]');
-          const path = metadata?.querySelector('[data-testid="composer-repo-path"]');
+          const textbox = pane?.querySelector('[data-composer] [role="textbox"]');
           const probe = document.createElement('div');
           probe.style.cssText = 'position:fixed;visibility:hidden;pointer-events:none;height:env(safe-area-inset-bottom, 0px)';
           document.body.append(probe);
           const actualSafeArea = probe.getBoundingClientRect().height;
           probe.remove();
-          const footerBottom = footer?.getBoundingClientRect().bottom ?? null;
-          return {
-            safeArea: ${safeArea}, keyboard: ${keyboard}, actualSafeArea,
-            mobile: matchMedia('(max-width: 899px)').matches,
-            paneBottom: pane?.getBoundingClientRect().bottom ?? null,
-            cards: cards.length, footerBottom,
-            lastBottom, gap: lastBottom === null || footerBottom === null ? null : footerBottom - lastBottom,
-            paddingBottom: footer ? Number.parseFloat(getComputedStyle(footer).paddingBottom) : null,
-            metadataCount: pane?.querySelectorAll('[data-testid="composer-repo-location"]').length ?? 0,
-            metadataVisible: metadata?.checkVisibility({ checkOpacity: true, checkVisibilityCSS: true }) ?? false,
-            pathVisible: path?.checkVisibility({ checkOpacity: true, checkVisibilityCSS: true }) ?? false,
-            path: path?.getAttribute('title') ?? null,
-            metadataInEdgeFooter: Boolean(metadata?.closest('[data-testid="pane-edge-footer"]')),
+          const measure = async (focus) => {
+            if (focus === "editor") textbox?.focus();
+            else if (focus === "button") {
+              // Start from a non-editing composer, then focus a control. The
+              // editing state must not turn on for a button alone.
+              textbox?.blur();
+              await frame();
+              pane?.querySelector('[data-testid="composer-attach"]')?.focus();
+            }
+            else textbox?.blur();
+            await frame();
+            const cards = [...(footer?.querySelectorAll('[data-testid="composer-input-card"]') ?? [])]
+              .filter((card) => card.checkVisibility({ checkOpacity: true, checkVisibilityCSS: true }));
+            const lastBottom = cards.length ? Math.max(...cards.map((card) => card.getBoundingClientRect().bottom)) : null;
+            const metadata = pane?.querySelector('[data-testid="composer-repo-location"]');
+            const path = metadata?.querySelector('[data-testid="composer-repo-path"]');
+            const edgeFooter = pane?.querySelector('[data-testid="pane-edge-footer"]');
+            const statusbar = pane?.querySelector('[data-testid="statusbar"]');
+            const footerBottom = footer?.getBoundingClientRect().bottom ?? null;
+            const rect = (element) => {
+              if (!element) return null;
+              const box = element.getBoundingClientRect();
+              return {
+                top: box.top, right: box.right, bottom: box.bottom, left: box.left,
+                width: box.width, height: box.height,
+              };
+            };
+            return {
+              safeArea: ${safeArea}, keyboard: ${keyboard}, actualSafeArea, focus,
+              mobile: matchMedia('(max-width: 899px)').matches,
+              paneBottom: pane?.getBoundingClientRect().bottom ?? null,
+              cards: cards.length, footerBottom,
+              lastBottom, gap: lastBottom === null || footerBottom === null ? null : footerBottom - lastBottom,
+              paddingBottom: footer ? Number.parseFloat(getComputedStyle(footer).paddingBottom) : null,
+              edgeFooterBottom: edgeFooter?.getBoundingClientRect().bottom ?? null,
+              statusbarDisplay: statusbar ? getComputedStyle(statusbar).display : null,
+              statusPaddingBottom: statusbar ? Number.parseFloat(getComputedStyle(statusbar).paddingBottom) : null,
+              tapMin: statusbar ? Number.parseFloat(getComputedStyle(statusbar).getPropertyValue('--tap-min')) || 44 : null,
+              statusbar: rect(statusbar),
+              pathBox: rect(path),
+              statusChips: statusbar
+                ? [...statusbar.querySelectorAll('[data-activity-tab]')].map((element) => rect(element))
+                : [],
+              metadataCount: pane?.querySelectorAll('[data-testid="composer-repo-location"]').length ?? 0,
+              metadataVisible: metadata?.checkVisibility({ checkOpacity: true, checkVisibilityCSS: true }) ?? false,
+              pathVisible: path?.checkVisibility({ checkOpacity: true, checkVisibilityCSS: true }) ?? false,
+              path: path?.getAttribute('title') ?? null,
+              metadataInEdgeFooter: Boolean(metadata?.closest('[data-testid="pane-edge-footer"]')),
+            };
           };
+          return matchMedia('(max-width: 899px)').matches
+            ? [await measure("none"), await measure("editor"), await measure("button")]
+            : [await measure("none")];
         })()`,
-          ),
+          )),
         );
       }
     }
@@ -420,30 +459,82 @@ function assertComposerFooter(measurement, width) {
     failures.push(`safe-area emulation=${measurement.actualSafeArea}px, expected ${measurement.safeArea}px`);
   }
   if (measurement.cards !== 1) failures.push(`visible composer cards=${measurement.cards}, expected 1`);
-  if (mobile) {
+  // While the composer is editing the phone status bar hides, so the dock is
+  // the pane's bottom edge again and carries the safe-area clearance itself.
+  if (mobile && measurement.focus === "editor") {
+    if (measurement.statusbarDisplay !== "none")
+      failures.push(`phone status bar is still visible with the composer focused (${measurement.statusbarDisplay})`);
     if (
       measurement.paneBottom === null ||
       measurement.footerBottom === null ||
       !nearlyEqual(measurement.footerBottom, measurement.paneBottom)
     ) {
-      failures.push(`footer bottom=${measurement.footerBottom}px, pane bottom=${measurement.paneBottom}px`);
+      failures.push(
+        `focused composer dock bottom=${measurement.footerBottom}px, pane bottom=${measurement.paneBottom}px`,
+      );
     }
-    if (measurement.metadataCount !== 0)
-      failures.push(`composer-repo-location still exists (${measurement.metadataCount})`);
-    if (measurement.gap === null || !nearlyEqual(measurement.gap, requiredClearance)) {
-      failures.push(`card-to-footer gap=${measurement.gap}px, required safe-area clearance=${requiredClearance}px`);
+    if (measurement.paddingBottom === null || !nearlyEqual(measurement.paddingBottom, requiredClearance)) {
+      failures.push(
+        `focused composer dock padding=${measurement.paddingBottom}px, expected safe-area clearance=${requiredClearance}px`,
+      );
+    }
+    return failures;
+  }
+  // overflowharness-entry.tsx supplies this fixture path, independent of the checkout.
+  if (
+    measurement.metadataCount !== 1 ||
+    !measurement.metadataVisible ||
+    !measurement.pathVisible ||
+    !measurement.metadataInEdgeFooter ||
+    measurement.path !== "/Users/jesse/prime-radiant/toil-suite/evener"
+  ) {
+    failures.push(`${mobile ? "phone" : "desktop"} working-path metadata missing from the visible edge footer`);
+  }
+  if (mobile) {
+    // Focus on a composer control is not editing: pressing Attach without a
+    // focused editor must not hide the bar and move the dock under the click.
+    if (measurement.focus === "button" && measurement.statusbarDisplay === "none")
+      failures.push("phone status bar hid for a composer button focus without editing");
+    // The phone keeps the working-directory line and the activity chips in
+    // the pane's flush edge footer now, so the composer dock no longer owns
+    // the pane's bottom edge or its safe-area band. The dock keeps its normal
+    // 12px padding; the status bar below it carries the inset.
+    if (
+      measurement.paneBottom === null ||
+      measurement.edgeFooterBottom === null ||
+      !nearlyEqual(measurement.edgeFooterBottom, measurement.paneBottom)
+    ) {
+      failures.push(`edge footer bottom=${measurement.edgeFooterBottom}px, pane bottom=${measurement.paneBottom}px`);
+    }
+    if (measurement.gap === null || !nearlyEqual(measurement.gap, 12)) {
+      failures.push(`card-to-footer gap=${measurement.gap}px, expected 12px above the edge footer`);
+    }
+    if (measurement.statusPaddingBottom === null || !nearlyEqual(measurement.statusPaddingBottom, requiredClearance)) {
+      failures.push(
+        `status bar bottom padding=${measurement.statusPaddingBottom}px, expected safe-area clearance=${requiredClearance}px`,
+      );
+    }
+    // One row: the path sits beside the chips, not above them, and the bar is
+    // no taller than a single touch-floor row plus the safe-area band.
+    if (measurement.statusbar === null || measurement.tapMin === null || measurement.pathBox === null) {
+      failures.push("phone status bar layout is missing");
+    } else {
+      if (measurement.statusbar.height > measurement.tapMin + requiredClearance + 3) {
+        failures.push(
+          `phone status bar height=${measurement.statusbar.height}px, expected one ${measurement.tapMin}px row plus ${requiredClearance}px clearance`,
+        );
+      }
+      const firstChip = measurement.statusChips[0];
+      if (
+        firstChip &&
+        !(measurement.pathBox.bottom > firstChip.top + 1 && measurement.pathBox.top < firstChip.bottom - 1)
+      ) {
+        failures.push(
+          `phone status bar path and counts do not share a row (path ${measurement.pathBox.top}..${measurement.pathBox.bottom}, chip ${firstChip.top}..${firstChip.bottom})`,
+        );
+      }
     }
   } else {
-    // overflowharness-entry.tsx supplies this fixture path, independent of the checkout.
-    if (
-      measurement.metadataCount !== 1 ||
-      !measurement.metadataVisible ||
-      !measurement.pathVisible ||
-      !measurement.metadataInEdgeFooter ||
-      measurement.path !== "/Users/jesse/prime-radiant/toil-suite/evener"
-    ) {
-      failures.push("desktop working-path metadata missing from the visible edge footer");
-    }
     if (!nearlyEqual(measurement.paddingBottom, 12) || measurement.gap === null || !nearlyEqual(measurement.gap, 12)) {
       failures.push(
         `desktop bottom padding/gap=${measurement.paddingBottom}/${measurement.gap}px, expected unchanged 12px`,
@@ -932,10 +1023,14 @@ function assertDetail(result, width) {
   if (detail?.mobile !== mobile)
     failures.push(`Verbosity layout mode is ${detail?.mobile}, realized viewport mode is ${mobile}`);
   failures.push(...assertFieldsets(detail, `${width}px Verbosity`));
-  const expectedTargets = 31;
+  // The count covers every control in the Verbosity panel; a control added or
+  // lost without this update flips it, and the mismatch lists the inventory.
+  const expectedTargets = 33;
   if ((detail?.targets?.length ?? 0) !== expectedTargets) {
     failures.push(
-      `Verbosity mounted ${detail?.targets?.length ?? "unknown"} interactive targets, expected ${expectedTargets}`,
+      `Verbosity mounted ${detail?.targets?.length ?? "unknown"} interactive targets, expected ${expectedTargets}: ${JSON.stringify(
+        (detail?.targets ?? []).map((target) => ({ kind: target.kind, label: target.label })),
+      )}`,
     );
   }
   if (!(detail?.targets ?? []).some((target) => target.kind === "menuitem" && target.label === "Verbosity…")) {
@@ -949,8 +1044,8 @@ function assertDetail(result, width) {
     failures.push("Verbosity Advanced summary target measurement is missing");
   }
   const switchLabels = detail?.targets?.filter((target) => target.kind === "switch-label") ?? [];
-  if (switchLabels.length !== 9)
-    failures.push(`Verbosity mounted ${switchLabels.length} Switch label targets, expected 9`);
+  if (switchLabels.length !== 10)
+    failures.push(`Verbosity mounted ${switchLabels.length} Switch label targets, expected 10`);
   if (!detail?.dialogCentered && !mobile) {
     failures.push(
       `Desktop Verbosity Dialog is not centered in the layout viewport: ${JSON.stringify({ panel: detail?.panel, viewport: result.viewport })}`,
@@ -1352,13 +1447,13 @@ async function main() {
         );
         for (const measurement of measurements) {
           const failures = assertComposerFooter(measurement, width);
-          const label = `${width}px composer footer safe-area=${measurement.safeArea} keyboard=${measurement.keyboard}`;
+          const label = `${width}px composer footer safe-area=${measurement.safeArea} keyboard=${measurement.keyboard}${measurement.focus !== "none" ? ` ${measurement.focus}` : ""}`;
           if (failures.length > 0) {
             failed++;
             console.log(`${label} ... FAIL - ${failures.join("; ")}; ${JSON.stringify(measurement)}`);
           } else {
             console.log(
-              `${label} ... PASS - gap=${measurement.gap}px, desktop metadata=${measurement.metadataVisible}`,
+              `${label} ... PASS - gap=${measurement.gap}px, metadata visible=${measurement.metadataVisible}`,
             );
           }
         }

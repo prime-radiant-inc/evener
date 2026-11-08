@@ -304,6 +304,64 @@ func TestFileToolsReadACarveOutUnderAHomeSpelledInAnotherCase(t *testing.T) {
 	}
 }
 
+// A carve-out root missing at resolution that is created later under another
+// letter case is readable through the configured spelling, while .git inside it
+// stays masked.
+func TestFileToolsReadACarveOutCreatedLaterUnderAnotherCase(t *testing.T) {
+	parent := realTempDir(t)
+	home := filepath.Join(parent, "casehome")
+	worktree := filepath.Join(home, "project")
+	for _, dir := range []string{worktree, filepath.Join(home, ".config", "evener")} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	spelled := filepath.Join(parent, "CASEHOME")
+	if _, err := os.Stat(spelled); err != nil {
+		t.Skip("this volume is case-sensitive")
+	}
+	host := sbTestHost(spelled)
+	host.EvenerContentRoots = []string{filepath.Join(spelled, ".config", "evener", "skills")}
+	rp, err := sandbox.Resolve(sandbox.SandboxPolicy{Mode: sandbox.ModeRestricted}, host, filepath.Join(spelled, "project"))
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+
+	// The root appears after resolution under the stored spelling, and its final
+	// name is another letter case than the configured one.
+	skill := filepath.Join(home, ".config", "evener", "SKILLS", "mine", "SKILL.md")
+	if err := os.MkdirAll(filepath.Dir(skill), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(skill, []byte("user skill\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	env := NewLocalExecutionEnvironment(filepath.Join(spelled, "project"))
+	env.Sandbox = &rp
+	t.Cleanup(env.Cleanup)
+
+	path := filepath.Join(spelled, ".config", "evener", "skills", "mine", "SKILL.md")
+	if got, err := env.ReadFile(path, nil, nil); err != nil || !strings.Contains(got, "user skill") {
+		t.Errorf("read_file %s: got %q err %v", path, got, err)
+	}
+	storedPath := filepath.Join(home, ".config", "evener", "SKILLS", "mine", "SKILL.md")
+	if got, err := env.ReadFile(storedPath, nil, nil); err != nil || !strings.Contains(got, "user skill") {
+		t.Errorf("read_file %s: got %q err %v", storedPath, got, err)
+	}
+
+	gitConfig := filepath.Join(home, ".config", "evener", "SKILLS", "mine", ".git", "config")
+	if err := os.MkdirAll(filepath.Dir(gitConfig), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(gitConfig, []byte("url = https://u:token@x/p.git\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitPath := filepath.Join(spelled, ".config", "evener", "skills", "mine", ".git", "config")
+	if _, err := env.ReadFile(gitPath, nil, nil); err == nil {
+		t.Errorf("read_file %s must stay masked", gitPath)
+	}
+}
+
 // A read grant inside a carve-out never becomes an anchor of its own: reads
 // there anchor at the validated carve-out root, so redirecting the carve-out
 // after resolution cannot steer them elsewhere.

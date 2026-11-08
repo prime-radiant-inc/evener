@@ -474,7 +474,7 @@ func (l *aliasRelayLease) Read(_ context.Context, params appwire.ThreadReadParam
 		thread = configured
 	}
 	return appsource.RelayReadResult{
-		Response: appwire.ThreadReadResponse{Thread: thread},
+		Response: appwire.ThreadReadResponse{Thread: thread, TargetSessionToolsSupported: new(true)},
 		Handoff:  &recordingRelayHandoff{committed: make(chan struct{}), aborted: make(chan struct{})},
 	}, nil
 }

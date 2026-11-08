@@ -1,7 +1,6 @@
 package hub
 
 import (
-	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -23,7 +22,7 @@ import (
 // §15's remnant arm: a colliding name that holds an open teardown remnant
 // excludes the live entry from the live set as `blocked-pending-teardown`
 // instead of rebasing.
-func (m *hubHostManager) breakBootTombstoneCollision(records Config) bool {
+func (m *hubHostManager) breakBootTombstoneCollision(records hostRecordSet) bool {
 	collided := false
 	for _, entry := range m.cfg.store.snapshot() {
 		if _, collides := records.Tombstones[entry.Name]; !collides {
@@ -73,7 +72,7 @@ func (m *hubHostManager) breakBootTombstoneCollision(records Config) bool {
 // A derivation that refuses (a hand-edited file already over a global
 // tombstone cap with every candidate remnant-gated) is logged and leaves the
 // file alone; the next mutation surfaces the typed refusal to its caller.
-func (m *hubHostManager) reconcileBootRecords(hasFile bool, collided bool) bool {
+func (m *hubHostManager) reconcileBootRecords(hasFile bool, collided bool, write bootWrite) bool {
 	if !hasFile || strings.TrimSpace(m.cfg.configPath) == "" {
 		return false
 	}
@@ -90,11 +89,20 @@ func (m *hubHostManager) reconcileBootRecords(hasFile bool, collided bool) bool 
 	if !required {
 		return false
 	}
-	if err := m.persistHosts(entries, entries, hostPersistChange{}); err != nil {
+	if err := m.persistHosts(entries, entries, hostPersistChange{recordsOnly: write == bootWriteRecordsOnly}); err != nil {
 		m.logf("boot host-record prune for %s not written: %v", m.cfg.configPath, err)
 	}
 	return true
 }
+
+// bootWrite is where the boot's record maintenance writes land: with the host
+// list in hub.toml (the legacy boot) or as records alone (records in the store).
+type bootWrite int
+
+const (
+	bootWriteHostFile bootWrite = iota
+	bootWriteRecordsOnly
+)
 
 // seedHighWater seeds the store's retained high-water records plus the
 // registry's counters from the file's [generations] tables: a name with no live
@@ -102,9 +110,9 @@ func (m *hubHostManager) reconcileBootRecords(hasFile bool, collided bool) bool 
 // through instead of dropping the advance, and a re-add of it mints above the
 // marks it left (spec 08 §1) — its generation above the file's and its presence
 // epoch above the removal's advance, never back at 1.
-func (m *hubHostManager) seedHighWater(cfg Config) {
-	m.cfg.store.setHighWaterMap(cfg.Generations)
-	m.cfg.hosts.SeedHighWater(hostHighWaterMarks(cfg))
+func (m *hubHostManager) seedHighWater(records hostRecordSet) {
+	m.cfg.store.setHighWaterMap(records.Generations)
+	m.cfg.hosts.SeedHighWater(records.highWaterMarks())
 }
 
 // materializeHostRecords performs spec 08 §15's boot mint: a hub.toml host the
@@ -122,20 +130,25 @@ func (m *hubHostManager) seedHighWater(cfg Config) {
 // here. A write that cannot land is logged and retried by the next boot (or by
 // the next mutation, which records the same in-memory pair); the hub still
 // serves, because the pair is already the registry's current identity.
-func (m *hubHostManager) materializeHostRecords(cfg Config, hasFile bool) {
+func (m *hubHostManager) materializeHostRecords(records hostRecordSet, hasFile bool, write bootWrite) {
 	if !hasFile {
 		return
 	}
 	entries := m.cfg.store.snapshot()
 	for _, entry := range entries {
-		record := cfg.HostRecords[entry.Name]
-		mark := cfg.Generations[entry.Name]
+		record := records.HostRecords[entry.Name]
+		mark := records.Generations[entry.Name]
 		// Both records must be present and complete: a file carrying only one
 		// of them would leave the other's value unrecorded — the incarnation
 		// pair or the generation the next boot restores — so the boot write
 		// repairs the pair in the canonical shape instead of skipping it.
-		if !record.complete() || !mark.complete() {
-			if err := m.persistHosts(entries, entries, hostPersistChange{}); err != nil {
+		// The stored pair must also be the one the registry serves: a hub that
+		// started before its records were readable minted its own, and guarded
+		// mutations compare against what is served.
+		drifted := record.IncarnationID != entry.IncarnationID || record.PresenceEpoch != entry.PresenceEpoch ||
+			mark.Generation != entry.Generation || mark.IncarnationID != entry.IncarnationID || mark.PresenceEpoch != entry.PresenceEpoch
+		if !record.complete() || !mark.complete() || drifted {
+			if err := m.persistHosts(entries, entries, hostPersistChange{recordsOnly: write == bootWriteRecordsOnly}); err != nil {
 				m.logf("host %q records for %s not recorded yet: %v", entry.Name, m.cfg.configPath, err)
 			}
 			return
@@ -143,32 +156,9 @@ func (m *hubHostManager) materializeHostRecords(cfg Config, hasFile bool) {
 	}
 }
 
-// hostFileRecords loads the machine records the selected hub.toml carries.
-// ok is false when there is no document to read — the file is missing or empty,
-// so the boot carries no records and nothing is materialized from it — and when
-// the file cannot be read or decoded, which the boot load reports; these helpers
-// leave the file alone rather than acting on a half-read one. It deliberately
-// does not go through LoadConfig: that loader folds a missing file into
-// DefaultConfig, which cannot express "no document", and the empty/missing case
-// is exactly the one where a boot must not write.
-func (m *hubHostManager) hostFileRecords() (Config, bool) {
-	if strings.TrimSpace(m.cfg.configPath) == "" {
-		return Config{}, false
-	}
-	raw, err := configReadFile(m.cfg.configPath)
-	if err != nil || len(raw) == 0 {
-		return Config{}, false
-	}
-	cfg, err := decodeConfig(m.cfg.configPath, string(raw))
-	if err != nil {
-		return Config{}, false
-	}
-	return cfg, true
-}
-
 // hostFileAbsentOrEmpty reports whether the selected config path genuinely holds
 // no document: the file does not exist, or it exists with zero bytes. It
-// deliberately differs from hostFileRecords' ok — which is also false for a file
+// deliberately differs from the record store's load ok — which is also false for a file
 // that cannot be read or that fails to decode — because the boot compensation
 // pass may only converge over real absence: clearing an armed record on a read
 // or decode failure would discard the compensation record and its stash, the
@@ -176,15 +166,7 @@ func (m *hubHostManager) hostFileRecords() (Config, bool) {
 // to screen out (reconcilePipelineBoot returns before this for an empty path);
 // it is not "absence" here, so this helper reports false for it.
 func (m *hubHostManager) hostFileAbsentOrEmpty() bool {
-	path := strings.TrimSpace(m.cfg.configPath)
-	if path == "" {
-		return false
-	}
-	raw, err := configReadFile(path)
-	if err != nil {
-		return errors.Is(err, os.ErrNotExist)
-	}
-	return len(raw) == 0
+	return m.recordStore().absentOrEmpty()
 }
 
 // reconcilePipelineBoot runs spec 08b §7's boot passes in their fixed order,
@@ -196,12 +178,12 @@ func (m *hubHostManager) hostFileAbsentOrEmpty() bool {
 // pass writes nothing when it finds nothing to converge, so an untouched file
 // stays byte-identical.
 func (m *hubHostManager) reconcilePipelineBoot() {
-	if m.cfg.ops == nil || strings.TrimSpace(m.cfg.configPath) == "" {
+	if m.opsStore() == nil || strings.TrimSpace(m.cfg.configPath) == "" {
 		return
 	}
-	fileCfg, hasFile := m.hostFileRecords()
+	doc, hasFile := m.recordStore().load()
 	if !hasFile {
-		// hostFileRecords reports false for a genuinely absent or empty document
+		// load reports false for a genuinely absent or empty document
 		// AND for a file it could not read or decode. Only the first is a state
 		// the compensation arms may converge over: an armed record clearing
 		// through its explicit absent-file arm would delete the record and its
@@ -226,13 +208,13 @@ func (m *hubHostManager) reconcilePipelineBoot() {
 	// load, interrupted, host-removed, mirror, intents). The store-open pass
 	// already ran it as an interim; the pass is idempotent — with nothing left
 	// pending/running it moves nothing and writes nothing.
-	if moved, err := m.cfg.ops.RecoverInterrupted(); err != nil {
+	if moved, err := m.opsStore().RecoverInterrupted(); err != nil {
 		m.logf("boot interrupted transition not completed: %v", err)
 	} else if moved > 0 {
 		m.logf("boot moved %d in-flight operation(s) to interrupted", moved)
 	}
-	m.reconcileHostRemovedPass(fileCfg)
-	m.reconcileGenerationMirror(fileCfg)
+	_ = m.reconcileHostRemovedPass(doc.Records) // retried by the next pass; logged inside
+	m.reconcileGenerationMirror(doc)
 	m.reconcileCompensations()
 	m.reconcileStoreSyncIntents()
 	m.reconcileTokenRows()
@@ -258,7 +240,7 @@ func (m *hubHostManager) pruneOrphanHubTOMLStash() {
 		return
 	}
 	named := make(map[string]struct{})
-	for _, record := range m.cfg.ops.Compensations() {
+	for _, record := range m.opsStore().Compensations() {
 		named[record.Stash] = struct{}{}
 	}
 	for _, entry := range entries {
@@ -282,14 +264,15 @@ func (m *hubHostManager) pruneOrphanHubTOMLStash() {
 // cleared intent would come back and the boot after that would purge the very
 // row the compensation restored, and a stale tombstone beside a live entry
 // refuses the write outright.
-func (m *hubHostManager) installRestoredRecords(cfg Config) {
-	m.cfg.store.set(hostRegistryEntries(cfg))
-	m.cfg.store.setHighWaterMap(nonNilMap(cfg.Generations))
-	m.cfg.store.setReceipts(nonNilMap(cfg.MutationReceipts))
-	m.cfg.store.setRecordMaps(nonNilMap(cfg.Tombstones), nonNilMap(cfg.PrunedReceipts))
-	m.cfg.store.setRemnantMaps(nonNilMap(cfg.StagedReceipts), nonNilMap(cfg.TeardownRemnants), nonNilMap(cfg.TeardownAttempts))
-	m.cfg.store.setStoreSync(nonNilMap(cfg.PendingStoreSync))
-	m.cfg.hosts.SeedHighWater(hostHighWaterMarks(cfg))
+func (m *hubHostManager) installRestoredRecords(doc hostRecordDocument) {
+	records := doc.Records
+	m.cfg.store.set(doc.Hosts)
+	m.cfg.store.setHighWaterMap(nonNilMap(records.Generations))
+	m.cfg.store.setReceipts(nonNilMap(records.MutationReceipts))
+	m.cfg.store.setRecordMaps(nonNilMap(records.Tombstones), nonNilMap(records.PrunedReceipts))
+	m.cfg.store.setRemnantMaps(nonNilMap(records.StagedReceipts), nonNilMap(records.TeardownRemnants), nonNilMap(records.TeardownAttempts))
+	m.cfg.store.setStoreSync(nonNilMap(records.PendingStoreSync))
+	m.cfg.hosts.SeedHighWater(records.highWaterMarks())
 }
 
 // nonNilMap returns m, or an empty map of its type when m is nil: a machine
@@ -307,22 +290,23 @@ func nonNilMap[K comparable, V any](m map[K]V) map[K]V {
 // a remove's hub.toml commit and its live mark recovers exactly here, and a
 // tombstone colliding with a live re-add's different incarnation id matches
 // nothing.
-func (m *hubHostManager) reconcileHostRemovedPass(fileCfg Config) {
-	if len(fileCfg.Tombstones) == 0 {
-		return
+func (m *hubHostManager) reconcileHostRemovedPass(records hostRecordSet) error {
+	if len(records.Tombstones) == 0 {
+		return nil
 	}
-	marks := make(map[string]hostops.HostRemovedMark, len(fileCfg.Tombstones))
-	for name, tombstone := range fileCfg.Tombstones {
+	marks := make(map[string]hostops.HostRemovedMark, len(records.Tombstones))
+	for name, tombstone := range records.Tombstones {
 		marks[name] = hostops.HostRemovedMark{Generation: tombstone.Generation, IncarnationID: tombstone.IncarnationID}
 	}
-	marked, dropped, err := m.cfg.ops.ApplyHostRemovedPass(marks)
+	marked, dropped, err := m.opsStore().ApplyHostRemovedPass(marks)
 	if err != nil {
 		m.logf("boot host-removed pass not applied: %v", err)
-		return
+		return err
 	}
 	if marked > 0 || dropped > 0 {
 		m.logf("boot host-removed pass marked %d operation record(s) and dropped %d token row(s)", marked, dropped)
 	}
+	return nil
 }
 
 // reconcileGenerationMirror runs §4/§7's bidirectional generation-mirror
@@ -331,20 +315,20 @@ func (m *hubHostManager) reconcileHostRemovedPass(fileCfg Config) {
 // transition to interrupted, its dedup tombstones drop, and the number is
 // preserved as the name's high-water), pushed forward where the file's mark is
 // ahead, and preserved where the file carries no entry.
-func (m *hubHostManager) reconcileGenerationMirror(fileCfg Config) {
+func (m *hubHostManager) reconcileGenerationMirror(doc hostRecordDocument) {
 	view := hostops.MirrorView{
 		Marks:   map[string]hostops.Boundary{},
 		Live:    map[string]struct{}{},
 		Removed: map[string]struct{}{},
 		Commits: map[string]hostops.MirrorCommit{},
 	}
-	for name, mark := range fileCfg.Generations {
+	for name, mark := range doc.Records.Generations {
 		if !mark.complete() {
 			continue
 		}
 		view.Marks[name] = hostops.Boundary{Generation: mark.Generation, IncarnationID: mark.IncarnationID, PresenceEpoch: mark.PresenceEpoch}
 	}
-	for _, entry := range hostRegistryEntries(fileCfg) {
+	for _, entry := range doc.Hosts {
 		view.Live[entry.Name] = struct{}{}
 		if !completeIdentity(entry) {
 			continue
@@ -357,7 +341,7 @@ func (m *hubHostManager) reconcileGenerationMirror(fileCfg Config) {
 			}
 		}
 	}
-	for name, tombstone := range fileCfg.Tombstones {
+	for name, tombstone := range doc.Records.Tombstones {
 		view.Removed[name] = struct{}{}
 		if _, carried := view.Marks[name]; !carried {
 			view.Marks[name] = hostops.Boundary{
@@ -367,13 +351,13 @@ func (m *hubHostManager) reconcileGenerationMirror(fileCfg Config) {
 			}
 		}
 	}
-	for name, commit := range fileCfg.MirrorCommits {
+	for name, commit := range doc.Records.MirrorCommits {
 		view.Commits[name] = hostops.MirrorCommit{
 			HubTOMLGeneration: commit.HubTOMLGeneration,
 			StoreGeneration:   commit.StoreGeneration,
 		}
 	}
-	result, err := m.cfg.ops.ReconcileMirror(view)
+	result, err := m.opsStore().ReconcileMirror(view)
 	if err != nil {
 		m.logf("boot generation-mirror reconciliation not applied: %v", err)
 		return
@@ -450,7 +434,7 @@ func (m *hubHostManager) applyMirrorHighWater(highWater map[string]hostops.Bound
 // covering intent whose hub.toml generation already advanced past them — or
 // whose host resolves to a tombstone — are dropped, before the store serves.
 func (m *hubHostManager) reconcileTokenRows() {
-	fileCfg, hasFile := m.hostFileRecords()
+	doc, hasFile := m.recordStore().load()
 	if !hasFile {
 		return
 	}
@@ -459,10 +443,10 @@ func (m *hubHostManager) reconcileTokenRows() {
 		Removed: map[string]hostops.HostRemovedMark{},
 		Covered: map[string]map[string]struct{}{},
 	}
-	for _, entry := range hostRegistryEntries(fileCfg) {
+	for _, entry := range doc.Hosts {
 		view.Live[entry.Name] = entry.Generation
 	}
-	for name, tombstone := range fileCfg.Tombstones {
+	for name, tombstone := range doc.Records.Tombstones {
 		if _, live := view.Live[name]; live {
 			// A live re-add supersedes the tombstone: its rows belong to the new
 			// incarnation and are not the removed one's to delete.
@@ -473,7 +457,7 @@ func (m *hubHostManager) reconcileTokenRows() {
 			IncarnationID: tombstone.IncarnationID,
 		}
 	}
-	for name, intent := range fileCfg.PendingStoreSync {
+	for name, intent := range doc.Records.PendingStoreSync {
 		covered := view.Covered[name]
 		if covered == nil {
 			covered = map[string]struct{}{}
@@ -483,7 +467,7 @@ func (m *hubHostManager) reconcileTokenRows() {
 			covered[value] = struct{}{}
 		}
 	}
-	dropped, err := m.cfg.ops.ReconcileTokenRows(view)
+	dropped, err := m.opsStore().ReconcileTokenRows(view)
 	if err != nil {
 		m.logf("boot token-row reconciliation not applied: %v", err)
 		return
@@ -501,18 +485,18 @@ func (m *hubHostManager) reconcileTokenRows() {
 // converged intent survives its boot; a store failure leaves the intent for the
 // next boot or the next mutation's write.
 func (m *hubHostManager) reconcileStoreSyncIntents() {
-	fileCfg, hasFile := m.hostFileRecords()
+	doc, hasFile := m.recordStore().load()
 	if !hasFile {
 		return
 	}
-	for _, name := range sortedMapKeys(fileCfg.PendingStoreSync) {
-		intent := fileCfg.PendingStoreSync[name]
-		if _, open := m.cfg.ops.Compensation(name); open {
+	for _, name := range sortedMapKeys(doc.Records.PendingStoreSync) {
+		intent := doc.Records.PendingStoreSync[name]
+		if _, open := m.opsStore().Compensation(name); open {
 			// A live compensation record owns this name's convergence: its phase
 			// arms decide whether the purge stands or the rows come back.
 			continue
 		}
-		purged, err := m.cfg.ops.ApplyStoreSync(hostops.StoreSyncIntent{
+		purged, err := m.opsStore().ApplyStoreSync(hostops.StoreSyncIntent{
 			Host:       name,
 			Generation: intent.Generation,
 			Values:     intent.TokenValues,
@@ -521,8 +505,7 @@ func (m *hubHostManager) reconcileStoreSyncIntents() {
 			m.logf("boot store-sync intent for %q not applied: %v", name, err)
 			continue
 		}
-		entries := m.cfg.store.snapshot()
-		if err := m.persistHosts(entries, entries, hostPersistChange{dropStoreSync: name}); err != nil {
+		if err := m.persistChange(hostPersistChange{dropStoreSync: name}); err != nil {
 			m.logf("boot store-sync intent for %q not cleared: %v", name, err)
 			continue
 		}
@@ -541,8 +524,8 @@ func (m *hubHostManager) reconcileStoreSyncIntents() {
 // [host_records] record; the live registry's own pair is then the identity the
 // row must bind to, exactly what the registry's load minted for the name — a
 // zero pair would re-insert nothing.
-func (m *hubHostManager) restoredIdentity(cfg Config, name string) (uint64, string, bool) {
-	entry, present := hostEntryNamed(hostRegistryEntries(cfg), name)
+func (m *hubHostManager) restoredIdentity(doc hostRecordDocument, name string) (uint64, string, bool) {
+	entry, present := hostEntryNamed(doc.Hosts, name)
 	if !present {
 		return 0, "", false
 	}
@@ -574,12 +557,11 @@ func (m *hubHostManager) reapplyRestoredRuntime(host string) error {
 			return err
 		}
 	}
-	restored, ok := m.hostFileRecords()
+	restored, ok := m.recordStore().load()
 	if !ok {
 		return fmt.Errorf("restored %s is unreadable", m.cfg.configPath)
 	}
-	entries := hostRegistryEntries(restored)
-	entry, present := hostEntryNamed(entries, host)
+	entry, present := hostEntryNamed(restored.Hosts, host)
 	if !present {
 		m.installRestoredRecords(restored)
 		m.cfg.mu.Lock()
@@ -589,14 +571,16 @@ func (m *hubHostManager) reapplyRestoredRuntime(host string) error {
 	}
 	// §9's runtime arm re-applies the restored set to the live handles: the
 	// process must actually serve the restored entry before the record may
-	// clear. hostreg has no boot-restore setter for a persisted identity, so a
-	// name the boot registry did not register (or registered under another
-	// identity) leaves the record open — the next boot loads the restored file
-	// and converges it.
+	// clear. A name the boot registry did not register (the compensation
+	// restored it after the registry was built) is registered now, under the
+	// identity the restored file records.
 	current, registered := m.cfg.hosts.Get(host)
 	if !registered {
-		return fmt.Errorf("host %q is live in the restored %s but the boot registry did not register it; leaving the compensation open for the next boot",
-			host, m.cfg.configPath)
+		if err := m.cfg.hosts.AddRestored(entry); err != nil {
+			return fmt.Errorf("host %q is live in the restored %s but could not be registered: %w", host, m.cfg.configPath, err)
+		}
+		current, _ = m.cfg.hosts.Get(host)
+		m.registerSource(current)
 	}
 	if entry.IncarnationID != "" && current.IncarnationID != entry.IncarnationID {
 		return fmt.Errorf("host %q carries a different restored incarnation id; leaving the compensation open", host)
@@ -614,7 +598,7 @@ func (m *hubHostManager) reapplyRestoredRuntime(host string) error {
 	// (conflicting-operation-id) instead of replaying the interrupted record,
 	// and the row would render removed.
 	if entry.Generation != 0 && entry.IncarnationID != "" {
-		if cleared, err := m.cfg.ops.ClearHostRemovedMarks(host, hostops.HostRemovedMark{
+		if cleared, err := m.opsStore().ClearHostRemovedMarks(host, hostops.HostRemovedMark{
 			Generation:    entry.Generation,
 			IncarnationID: entry.IncarnationID,
 		}); err != nil {

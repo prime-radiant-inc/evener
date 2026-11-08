@@ -22,7 +22,7 @@ describe("native dependency security resolutions", () => {
 		const expected = {
 			"@react-navigation/core": "7.23.0",
 			"brace-expansion": "5.0.12",
-			dompurify: "3.4.16",
+			dompurify: "3.4.17",
 		};
 
 		expect(manifest.devDependencies?.["@react-navigation/core"]).toBe("^7.23.0");

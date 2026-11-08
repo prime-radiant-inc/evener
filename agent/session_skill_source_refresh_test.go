@@ -84,11 +84,11 @@ func TestSkillActivation_UpdatedPluginRevision(t *testing.T) {
 			pointInstalledSkill(t, store, oldRoot)
 			adapter := &fakeAdapter{name: "openai"}
 			if tc.route == "model_tool" {
-				adapter.steps = append(adapter.steps, func(llm.Request) llm.Response {
+				adapter.appendSteps(func(llm.Request) llm.Response {
 					return agenttest.ToolCallResponse(useSkillCall("skill-1", "scope:alpha"))
 				})
 			}
-			adapter.steps = append(adapter.steps, func(llm.Request) llm.Response {
+			adapter.appendSteps(func(llm.Request) llm.Response {
 				return agenttest.ToolCallResponse(communicateCall("done-1", "done"))
 			})
 			client := llm.NewClient()

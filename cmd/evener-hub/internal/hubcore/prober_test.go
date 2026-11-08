@@ -75,7 +75,7 @@ func startProbeDaemon(t *testing.T, cfg probeDaemonConfig) (*StatusProber, rende
 	}
 }
 
-func TestHubProberStableDelegateUsesDescendantSessionsNotDetailedJobs(t *testing.T) {
+func TestHubProberDelegateUsesDescendantSessionsNotDetailedJobs(t *testing.T) {
 	prober, entry := startProbeDaemon(t, probeDaemonConfig{
 		sessionID: "root",
 		state:     appwire.ThreadStatusIdle,

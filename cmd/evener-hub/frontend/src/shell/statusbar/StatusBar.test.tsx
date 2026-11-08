@@ -4,11 +4,13 @@ import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testi
 import userEvent from "@testing-library/user-event";
 import { afterEach, expect, test } from "vitest";
 import { MotionProvider } from "../../motion";
+import { installMobileViewport } from "../../panes/session/testing/mobileViewport";
 import { LivenessLine } from "../../panes/session/transcript/flow/LivenessLine";
-import { connectionStore } from "../../stores/connection";
+import { connectionStore, resetConnectionStoreForTests } from "../../stores/connection";
 import { activityClient, activityContext, activityJob, activitySummary } from "../../stores/sessionActivityTestUtils";
 import { ActivitySidebar } from "../activitybar/ActivitySidebar";
 import { activitySidebarStore, resetActivitySidebarStoreForTests } from "../activitybar/activitySidebarStore";
+import { resetMobileViewportForTests } from "../useIsMobile";
 import { resetWorkspaceStoreForTests, workspaceStore } from "../workspace";
 import { StatusBar } from "./StatusBar";
 import { installFocusedScope, summaryOf } from "./scopeTestUtils";
@@ -17,7 +19,8 @@ afterEach(() => {
   cleanup();
   resetWorkspaceStoreForTests();
   resetActivitySidebarStoreForTests();
-  connectionStore.setState({ client: null, state: "idle" });
+  resetConnectionStoreForTests();
+  resetMobileViewportForTests();
 });
 
 test("four footer categories keep their owning pane and About has no chip", async () => {
@@ -309,6 +312,26 @@ test("the Tasks chip counts cancelled tasks toward its settled count", async () 
   render(<StatusBar sessionRef={ref} paneId="selected" leading={null} />);
   const chip = await screen.findByRole("button", { name: /Tasks, 3 of 5 settled/ });
   expect(chip.textContent).toContain("3/5");
+});
+
+// A phone footer keeps the path and the chips on one line, so each chip shows
+// its single active count there. The full active/total fraction stays in the
+// accessible name (and the Overview), which is where a screen reader and the
+// chip's tooltip still get it.
+test("a phone chip shows its single count and keeps the full fraction accessible", async ({ onTestFinished }) => {
+  onTestFinished(installMobileViewport());
+  const ref = "remote:phone";
+  const client = activityClient();
+  client.on("evener/thread/activity/read", ({ ref, scope }) => ({
+    ...activitySummary(ref, scope),
+    delegates: { known: true, total: 4, active: 3, failed: 0, completed: 1 },
+  }));
+  installFocusedScope(ref);
+  connectionStore.getState().connect(client);
+  render(<StatusBar sessionRef={ref} paneId="selected" leading={null} />);
+  const chip = await screen.findByRole("button", { name: /Agents, 3 of 4 active/ });
+  expect(chip.textContent).toContain("3");
+  expect(chip.textContent).not.toContain("3/4");
 });
 
 test("footer and tabs explain summary counts through paging and activity changes", async () => {

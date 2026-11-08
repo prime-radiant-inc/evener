@@ -13,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -267,6 +268,9 @@ func TestDelegateControllerProductionIntegrationMatchesInventory(t *testing.T) {
 	if err != nil {
 		t.Fatalf("enumerate production files: %v", err)
 	}
+	production = slices.DeleteFunc(production, func(name string) bool {
+		return delegateControllerPlatformExcludedProductionFiles()[name]
+	})
 	loadedFiles := make([]string, 0, len(pkg.Syntax))
 	for _, file := range pkg.Syntax {
 		loadedFiles = append(loadedFiles, filepath.Base(pkg.Fset.Position(file.Package).Filename))
@@ -283,6 +287,15 @@ func TestDelegateControllerProductionIntegrationMatchesInventory(t *testing.T) {
 		t.Error(inventoryError)
 	}
 }
+
+// delegateControllerPlatformExcludedProductionFiles names the top-level
+// production files whose build constraints exclude the CURRENT platform, so
+// packages.Load — which loads for the host GOOS — cannot load them. The set
+// is platform-conditional (the per-GOOS files beside this one, following the
+// for other GOOS families — the process-liveness and start-time arms behind
+// the owner-liveness reporting, issue #5471. Register any new
+// build-tag-excluded top-level production file in the arm for every GOOS that
+// cannot load it, or this inventory fails on the omission.
 
 func TestDelegateControllerDormancyGuardRejectsConstructionAndAliases(t *testing.T) {
 	t.Parallel()
@@ -306,6 +319,9 @@ func TestDelegateControllerDormancyGuardRejectsConstructionAndAliases(t *testing
 		{name: "lifecycle method expression", source: `package agent; func probe() { commit := (*delegateTreeController).CommitStart; _ = commit }`, symbol: "CommitStart"},
 		{name: "bound lifecycle reference through type alias", source: `package agent; type active = delegateTreeController; func probe(controller *active) { commit := controller.CommitStart; _ = commit }`, symbol: "CommitStart"},
 		{name: "lifecycle method expression through type alias", source: `package agent; type active = delegateTreeController; func probe() { commit := (*active).CommitStart; _ = commit }`, symbol: "CommitStart"},
+		{name: "snapshot helper call", source: `package agent; func probe(controller *delegateTreeController) { controller.captureDelegateSnapshotLocked("id") }`, symbol: "captureDelegateSnapshotLocked"},
+		{name: "bound snapshot helper alias", source: `package agent; func probe(controller *delegateTreeController) { capture := controller.captureDelegateSnapshotLocked; _ = capture }`, symbol: "captureDelegateSnapshotLocked"},
+		{name: "snapshot helper method expression through type alias", source: `package agent; type active = delegateTreeController; func probe() { capture := (*active).captureDelegateSnapshotLocked; _ = capture }`, symbol: "captureDelegateSnapshotLocked"},
 		{name: "session steering call", source: `package agent; func probe(session *Session) { session.appendDelegateSteeringDurably("steer", "turn_id") }`, symbol: "appendDelegateSteeringDurably"},
 		{name: "bound session steering alias", source: `package agent; func probe(session *Session) { appendSteer := session.appendDelegateSteeringDurably; _ = appendSteer }`, symbol: "appendDelegateSteeringDurably"},
 		{name: "session steering method expression", source: `package agent; func probe() { appendSteer := (*Session).appendDelegateSteeringDurably; _ = appendSteer }`, symbol: "appendDelegateSteeringDurably"},
@@ -417,6 +433,7 @@ var delegateControllerLifecycleMethods = map[string]bool{
 	"ReportAttentionConsumed":             true,
 	"ReportAttentionStabilized":           true,
 	"AuthorizeMutation":                   true,
+	"captureDelegateSnapshotLocked":       true,
 	"Snapshot":                            true,
 }
 
@@ -438,12 +455,11 @@ var delegateControllerDormancyExpectedInventory = map[delegateControllerDormancy
 	{filename: "delegate_send.go", function: "(delegateRuntime).send", kind: "lifecycle method", symbol: "AttachRuntime"}:                                                              2,
 	{filename: "delegate_send.go", function: "(delegateRuntime).send", kind: "lifecycle method", symbol: "BeginStartInput"}:                                                            1,
 	{filename: "delegate_send.go", function: "(delegateRuntime).send", kind: "lifecycle method", symbol: "CompleteStartInput"}:                                                         2,
-	{filename: "delegate_send.go", function: "(*delegateTreeController).finishUnlaunchedGeneration", kind: "lifecycle method", symbol: "FinishGeneration"}:                             1,
-	{filename: "delegate_send.go", function: "(delegateRuntime).send", kind: "lifecycle method", symbol: "waitForDelegateInline"}:                                                      1,
-	{filename: "delegate_send.go", function: "(delegateRuntime).stableSendFailureOutcomeAfterDispatch", kind: "lifecycle method", symbol: "waitForDelegateInline"}:                     1,
-	{filename: "delegate_attention_drive.go", function: "(*Session).driveStableDelegateAttention", kind: "lifecycle method", symbol: "ReserveAttention"}:                               1,
-	{filename: "delegate_attention_drive.go", function: "(*Session).driveStableDelegateAttention", kind: "lifecycle method", symbol: "CommitStart"}:                                    1,
-	{filename: "delegate_attention_drive.go", function: "(*Session).driveStableDelegateAttention", kind: "lifecycle method", symbol: "FailCommittedRestart"}:                           1,
+	{filename: "delegate_send.go", function: "(delegateRuntime).waitInline", kind: "lifecycle method", symbol: "waitForDelegateInline"}:                                                1,
+	{filename: "delegate_attention_drive.go", function: "(*Session).driveDelegateAttention", kind: "lifecycle method", symbol: "ReserveAttention"}:                                     1,
+	{filename: "delegate_attention_drive.go", function: "(*Session).driveDelegateAttention", kind: "lifecycle method", symbol: "CommitStart"}:                                          1,
+	{filename: "delegate_attention_drive.go", function: "(*Session).driveDelegateAttention", kind: "lifecycle method", symbol: "AbortStart"}:                                           1,
+	{filename: "delegate_attention_drive.go", function: "(*Session).driveDelegateAttention", kind: "lifecycle method", symbol: "FinishGeneration"}:                                     1,
 	{filename: "delegate_attention_drive.go", function: "(*Session).reconstructDelegateAttentionRuntime", kind: "lifecycle method", symbol: "beginIdleRuntimeInstallation"}:            1,
 	{filename: "delegate_tree_attention.go", function: "(*delegateTreeController).AttachIdleRuntime", kind: "lifecycle method", symbol: "beginIdleRuntimeInstallation"}:                1,
 	{filename: "delegate_attention_drive.go", function: "(*Session).reconstructDelegateAttentionRuntime", kind: "lifecycle method", symbol: "AttachRuntime"}:                           1,
@@ -462,7 +478,7 @@ var delegateControllerDormancyExpectedInventory = map[delegateControllerDormancy
 	{filename: "session_model_call.go", function: "(*Session).prepareModelRequestWithError", kind: "lifecycle method", symbol: "BeginModelRequest"}:                                    1,
 	{filename: "session_model_call.go", function: "(*Session).prepareModelRequestWithError", kind: "lifecycle method", symbol: "CompleteModelRequest"}:                                 1,
 	{filename: "session_model_call.go", function: "(*Session).prepareModelRequestWithError", kind: "lifecycle method", symbol: "AbortModelRequest"}:                                    1,
-	{filename: "session_tools_delegate.go", function: "stableDelegateSendTool", kind: "delivery commit method", symbol: "Complete"}:                                                    1,
+	{filename: "session_tools_delegate.go", function: "delegateSendTool", kind: "delivery commit method", symbol: "Complete"}:                                                          1,
 	{filename: "session_tools.go", function: "abortDelegateToolCallDeliveryCommits", kind: "delivery commit method", symbol: "Complete"}:                                               1,
 	{filename: "session_tools.go", function: "(*Session).abortDelegateDeliveryCommits", kind: "delivery commit method", symbol: "Complete"}:                                            1,
 	{filename: "session_tools.go", function: "(*Session).queueDelegateDeliveryCommit", kind: "delivery commit method", symbol: "Complete"}:                                             1,
@@ -475,7 +491,7 @@ var delegateControllerDormancyExpectedInventory = map[delegateControllerDormancy
 	{filename: "delegate_send.go", function: "(*Session).releaseFinishedGeneration", kind: "lifecycle method", symbol: "ReportFinalizationQuiesced"}:                                   1,
 	{filename: "delegate_delivery.go", function: "prepareColdDelegateDeliveryReplay", kind: "dormant function", symbol: "deliverDelegatePacket"}:                                       1,
 	{filename: "delegate_delivery.go", function: "deliverColdDelegatePacket", kind: "dormant function", symbol: "deliverDelegatePacket"}:                                               2,
-	{filename: "delegate_delivery.go", function: "(*Session).executeDelegateMutationPlans", kind: "dormant function", symbol: "deliverDelegatePacket"}:                                 1,
+	{filename: "delegate_delivery.go", function: "(*Session).deliverDelegatedPlan", kind: "dormant function", symbol: "deliverDelegatePacket"}:                                         1,
 	{filename: "delegate_delivery.go", function: "(*Session).executeDelegateMutationPlans", kind: "lifecycle method", symbol: "RequireFinalizationRecovery"}:                           1,
 	{filename: "delegate_delivery.go", function: "(*Session).requeueReplayableDelegateDeliveries", kind: "lifecycle method", symbol: "ReplayDeliveries"}:                               1,
 	{filename: "delegate_delivery.go", function: "(*Session).acceptDelegateDeliveryPlan", kind: "dormant function", symbol: "deliverDelegatePacket"}:                                   1,
@@ -488,18 +504,22 @@ var delegateControllerDormancyExpectedInventory = map[delegateControllerDormancy
 	{filename: "delegate_tree_restore.go", function: "(*delegateTreeController).executeDelegateAttentionCleanup", kind: "lifecycle method", symbol: "ReportAttentionConsumed"}:         1,
 	{filename: "delegate_tree_restore.go", function: "(*delegateTreeController).executeDelegateAttentionCleanup", kind: "lifecycle method", symbol: "ReportAttentionStabilized"}:       1,
 	{filename: "delegate_tree_restore.go", function: "(*delegateTreeController).resolveDelegateAttentionDurably", kind: "session attention method", symbol: "resolveAttentionDurably"}: 1,
-	{filename: "job_shell.go", function: "(*jobManager).beginStableDelegateShellReceipt", kind: "lifecycle method", symbol: "BeginShellWork"}:                                          1,
-	{filename: "job_shell.go", function: "(*stableDelegateShellReceipt).commit", kind: "lifecycle method", symbol: "CommitShellWork"}:                                                  1,
-	{filename: "job_shell.go", function: "(*stableDelegateShellReceipt).abort", kind: "lifecycle method", symbol: "AbortShellWork"}:                                                    1,
-	{filename: "job_shell.go", function: "(*stableDelegateShellReceipt).finish", kind: "lifecycle method", symbol: "AbortShellWork"}:                                                   1,
-	{filename: "job_shell.go", function: "(*stableDelegateShellReceipt).finish", kind: "lifecycle method", symbol: "ReportShellFinished"}:                                              1,
+	{filename: "job_shell.go", function: "(*jobManager).beginDelegateShellReceipt", kind: "lifecycle method", symbol: "BeginShellWork"}:                                                1,
+	{filename: "job_shell.go", function: "(*delegateShellReceipt).commit", kind: "lifecycle method", symbol: "CommitShellWork"}:                                                        1,
+	{filename: "job_shell.go", function: "(*delegateShellReceipt).abort", kind: "lifecycle method", symbol: "AbortShellWork"}:                                                          1,
+	{filename: "job_shell.go", function: "(*delegateShellReceipt).finish", kind: "lifecycle method", symbol: "AbortShellWork"}:                                                         1,
+	{filename: "job_shell.go", function: "(*delegateShellReceipt).finish", kind: "lifecycle method", symbol: "ReportShellFinished"}:                                                    1,
 	{filename: "jobs_activity.go", function: "loadLiveActivityBase", kind: "lifecycle method", symbol: "Snapshot"}:                                                                     1,
 	{filename: "session_attention.go", function: "(*Session).acceptDelegateAttention", kind: "session attention method", symbol: "resolveAttentionDurablyForGeneration"}:               1,
 	{filename: "session_attention.go", function: "(*Session).resolveAttentionDurably", kind: "session attention method", symbol: "resolveAttentionDurablyForGeneration"}:               1,
+	{filename: "session_attention.go", function: "(*Session).reopenConsumedDelegateAttention", kind: "session attention method", symbol: "resolveAttentionDurably"}:                    1,
 	{filename: "session_attention.go", function: "(*Session).finishAttentionTurn", kind: "session attention method", symbol: "resolveAttentionDurably"}:                                1,
 	{filename: "session_attention.go", function: "(*Session).finishRootDelegateAttentionTurn", kind: "session attention method", symbol: "resolveAttentionDurably"}:                    1,
 	{filename: "session_events.go", function: "(*Session).SetDescendantEventFunc", kind: "lifecycle method", symbol: "Snapshot"}:                                                       1,
-	{filename: "session_tools_job_list.go", function: "stableDelegateRowsForSession", kind: "lifecycle method", symbol: "Snapshot"}:                                                    1,
+	{filename: "session_tools_job_list.go", function: "delegateRowsForSession", kind: "lifecycle method", symbol: "Snapshot"}:                                                          1,
+	{filename: "delegate_tree_controller.go", function: "(*delegateTreeController).capturedPlanLocked", kind: "lifecycle method", symbol: "captureDelegateSnapshotLocked"}:             1,
+	{filename: "delegate_tree_controller.go", function: "(*delegateTreeController).captureDelegateSnapshotsLocked", kind: "lifecycle method", symbol: "captureDelegateSnapshotLocked"}: 1,
+	{filename: "session_tools_hub_job_stop.go", function: "(*Session).StopOwnedDelegateForManager", kind: "lifecycle method", symbol: "captureDelegateSnapshotLocked"}:                 1,
 	{filename: "delegate_tree_stop.go", function: "(*delegateTreeController).drainStopAbandonable", kind: "lifecycle method", symbol: "stopReconcileRequirements"}:                     1,
 	{filename: "delegate_tree_stop.go", function: "(*delegateTreeController).drainStopAbandonable", kind: "lifecycle method", symbol: "Reconcile"}:                                     1,
 }
@@ -708,6 +728,7 @@ type delegateToolResultCommit struct{}
 func openDelegateTreeController(delegateTreeControllerConfig) (*delegateTreeController, error) { return nil, nil }
 func deliverDelegatePacket() {}
 func (*delegateTreeController) CommitStart(*delegateStartReservation) (delegateStartCommit, error) { return delegateStartCommit{}, nil }
+func (*delegateTreeController) captureDelegateSnapshotLocked(string) {}
 func (*delegateTreeController) ReconcileRequirements() delegateReconcileRequirements { return delegateReconcileRequirements{} }
 func (*delegateTreeController) stopReconcileRequirements(*delegateStopState) (delegateReconcileRequirements, bool) { return delegateReconcileRequirements{}, true }
 func (*Session) appendDelegateSteeringDurably(string, string) {}
@@ -760,9 +781,11 @@ func newDelegateControllerTestHarness(t testing.TB, turnLimit, driveLimit int) (
 
 func seedDelegateControllerIdle(t *testing.T, c *delegateTreeController, id, parentID string) {
 	t.Helper()
+	created := delegateControllerCreatedEvent(id, parentID)
+	created.Created.Descriptor.OwnerSessionID = c.rootSessionID
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	_, err := c.appendLocked(delegateControllerCreatedEvent(id, parentID))
+	_, err := c.appendLocked(created)
 	if err != nil {
 		t.Fatalf("seed delegate %s: %v", id, err)
 	}

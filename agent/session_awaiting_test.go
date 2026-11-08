@@ -116,6 +116,11 @@ func TestProcessInput_CleanCompletionRestsByEndReason(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
+			if tc.reason == "waiting_on_work" {
+				if _, err := sess.jobManager.configureWatch(watchArgs{Target: runtimeMessageAliasCaller, Source: "self", AfterSeconds: 3600}); err != nil {
+					t.Fatal(err)
+				}
+			}
 			eventsPtr, mu, doneCh := collectEvents(sess)
 			// TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
 			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -348,6 +353,11 @@ func TestRestore_RestsByEndReason(t *testing.T) {
 			_, restored := restoreAfter(t, []func(llm.Request) llm.Response{
 				func(llm.Request) llm.Response { return endReasonResponse("answer", tc.reason) },
 			}, func(ctx context.Context, sess *Session) {
+				if tc.reason == "waiting_on_work" {
+					if _, err := sess.jobManager.configureWatch(watchArgs{Target: runtimeMessageAliasCaller, Source: "self", AfterSeconds: 3600}); err != nil {
+						t.Fatal(err)
+					}
+				}
 				if _, err := sess.ProcessInput(ctx, "question", nil); err != nil {
 					t.Fatal(err)
 				}

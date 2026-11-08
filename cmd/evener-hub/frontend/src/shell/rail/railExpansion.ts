@@ -1,7 +1,8 @@
 // railExpansion.ts persists the rail's per-row expand state, so a project you
 // opened, a subagent fold you looked inside, and the Archived-sessions section
-// are all still where you left them after a reload. Rail.tsx owns the live
-// map; this module only turns it into localStorage and back.
+// are all still where you left them after a reload. The navigation store owns
+// the live map (stores/navigation/persistence.ts binds this module as its
+// port); this module only turns it into localStorage and back.
 //
 // One JSON blob under one key, following DockHost's evener.workspace.layout.v2
 // precedent rather than the htmx UI's key-per-row

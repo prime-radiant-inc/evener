@@ -175,13 +175,14 @@ func TestNewFormatCommunicateProjectsTheDeliveredMessage(t *testing.T) {
 	items, parts := ProjectEntryParts("t_1", 7, entry, nil, nil, nil)
 	ms := at.UnixMilli()
 	want := appwire.ThreadItem{
-		Type:      "agentMessage",
-		ID:        "item_assistant_7_0",
-		TurnID:    "t_1",
-		Text:      "hello there",
-		CallID:    "c1",
-		Status:    appwire.TurnStatusCompleted,
-		StartedAt: &ms,
+		Type:        "agentMessage",
+		ID:          "item_assistant_7_0",
+		TurnID:      "t_1",
+		Text:        "hello there",
+		CallID:      "c1",
+		Status:      appwire.TurnStatusCompleted,
+		StartedAt:   &ms,
+		Observation: &appwire.SessionObservationMetadata{TurnID: "t_1", EndTurn: true},
 	}
 	if len(items) != 1 || !reflect.DeepEqual(items[0], want) || !reflect.DeepEqual(parts, []int{0}) {
 		t.Fatalf("items = %+v parts = %v, want [%+v] at part 0", items, parts, want)

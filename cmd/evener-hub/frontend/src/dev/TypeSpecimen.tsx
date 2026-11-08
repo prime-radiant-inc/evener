@@ -52,9 +52,9 @@ const RAMP: { label: string; sizeClass: string }[] = [
   { label: "ui 13", sizeClass: CLASS.sizeUi },
   { label: "body 15", sizeClass: CLASS.sizeBody },
   { label: "prose 18", sizeClass: CLASS.sizeProse },
-  { label: "pane-title 18", sizeClass: CLASS.sizePaneTitle },
-  { label: "page-title 22", sizeClass: CLASS.sizePageTitle },
-  { label: "display 28", sizeClass: CLASS.sizeDisplay },
+  { label: "pane-title 20", sizeClass: CLASS.sizePaneTitle },
+  { label: "page-title 26", sizeClass: CLASS.sizePageTitle },
+  { label: "display 34", sizeClass: CLASS.sizeDisplay },
 ];
 
 const LEADING_SAMPLE =
@@ -98,7 +98,7 @@ function Specimen() {
       <section className={CLASS.section}>
         <h2 className={CLASS.sectionTitle}>Faces</h2>
         <div className={CLASS.rampRow}>
-          <p className={CLASS.rowLabel}>Inter Variable</p>
+          <p className={CLASS.rowLabel}>Schibsted Grotesk Variable</p>
           <p className={CLASS.sans}>Controls and operations · Model · 12,345 tokens · 01:24</p>
         </div>
         <div className={CLASS.rampRow}>

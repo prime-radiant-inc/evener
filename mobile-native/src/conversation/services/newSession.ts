@@ -13,6 +13,7 @@ import type {
 	InputItem,
 	LaunchConfigLayer,
 	LaunchConfigResolved,
+	LaunchOptionSchemaResponse,
 	MethodTypes,
 	ModelListParams,
 	ModelListResponse,
@@ -33,6 +34,8 @@ export interface NewSessionParams {
 	modelProvider?: string;
 	model?: string;
 	reasoningEffort?: string;
+	/** Start the session with the Manager role. False is omitted from the wire. */
+	manager?: boolean;
 	launchOverrides?: LaunchConfigLayer;
 }
 
@@ -46,6 +49,7 @@ export interface NewSessionService {
 	/** The project's current branch, or null outside a repository. */
 	branch(host: string, cwd: string): Promise<string | null>;
 	resolveLaunch(host: string, cwd: string, launchOverrides: LaunchConfigLayer): Promise<LaunchConfigResolved>;
+	launchSchema(host?: string): Promise<LaunchOptionSchemaResponse>;
 }
 
 export function createNewSessionService(client: ConversationClientLike): NewSessionService {
@@ -70,6 +74,9 @@ export function createNewSessionService(client: ConversationClientLike): NewSess
 			}
 			if (params.reasoningEffort !== undefined) {
 				wireParams.reasoningEffort = params.reasoningEffort;
+			}
+			if (params.manager) {
+				wireParams.manager = true;
 			}
 			if (params.launchOverrides !== undefined) {
 				wireParams.launchOverrides = params.launchOverrides;
@@ -106,6 +113,10 @@ export function createNewSessionService(client: ConversationClientLike): NewSess
 				cwd,
 				...(Object.keys(launchOverrides).length > 0 ? { launchOverrides } : {}),
 			});
+		},
+
+		async launchSchema(host) {
+			return hostRequest(client, host, "evener/launch/schema", {});
 		},
 	};
 }

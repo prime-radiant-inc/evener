@@ -1,0 +1,28 @@
+{
+  "name": "page-frame-alignment",
+  "description": "Single-column panes put the page title on the same left axis as the content they name: the session header joins the transcript measure, the spawn header joins the form, and the settings title stays on the nav axis rather than the content axis.",
+  "cssFiles": [
+    "styles/global.css",
+    "styles/tokens.css",
+    "widgets/panescaffold/panescaffold.module.css",
+    "panes/session/transcript/turnblock.module.css",
+    "panes/spawn/spawn.module.css",
+    "panes/settings/settings.module.css"
+  ],
+  "viewport": {
+    "width": 1440,
+    "height": 1000,
+    "deviceScaleFactor": 1,
+    "mobile": false
+  },
+  "widthMatrix": [
+    { "width": 1440 },
+    { "width": 1920 }
+  ],
+  "mutation": {
+    "declaration": "panescaffold.module.css: remove the .pane:has(> .body[data-pane-scaffold^=\"session:\"]) > .header and .pane:has(> .body[data-pane-scaffold=\"spawn\"]) > .header padding-inline rule",
+    "verified": "2026-11-06",
+    "expect": "fail",
+    "note": "Without the rule the header keeps its 24px inset and the title sits 204px left of the 704px reading column at 1440px."
+  }
+}

@@ -257,13 +257,13 @@ func stceRegistryAndHelpers(t *testing.T) {
 		t.Fatalf("canceled skipped result = %#v", got)
 	}
 	var call llm.ToolCallData
-	if err := applyUpdatedToolInput(nil, map[string]any{"x": 1}); err != nil {
+	if err := applyUpdatedToolInput(nil, tool.RegisteredTool{}, map[string]any{"x": 1}); err != nil {
 		t.Fatal(err)
 	}
-	if err := applyUpdatedToolInput(&call, nil); err != nil {
+	if err := applyUpdatedToolInput(&call, tool.RegisteredTool{}, nil); err != nil {
 		t.Fatal(err)
 	}
-	if err := applyUpdatedToolInput(&call, map[string]any{"x": func() {}}); err == nil {
+	if err := applyUpdatedToolInput(&call, tool.RegisteredTool{}, map[string]any{"x": func() {}}); err == nil {
 		t.Fatal("unmarshalable update succeeded")
 	}
 	if got := optionalIntArg(map[string]any{"n": "bad"}, "n"); got != nil {

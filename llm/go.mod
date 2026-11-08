@@ -10,7 +10,7 @@ require (
 	golang.org/x/oauth2 v0.35.0
 	golang.org/x/sys v0.43.0
 	primeradiant.com/evener v0.0.0
-	primeradiant.com/evener/auth v0.1.0
+	primeradiant.com/evener/auth v0.0.0
 	primeradiant.com/evener/envvars v0.0.0
 	primeradiant.com/evener/execsupport v0.0.0
 	primeradiant.com/evener/identifier v0.0.0

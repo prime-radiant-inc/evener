@@ -123,8 +123,11 @@ func requireBudgetExhaustion(
 		)
 	}
 	wantReason := "tool_round_budget_exhausted"
-	if wantBudget == exhaustedBudgetTurns {
+	switch wantBudget {
+	case exhaustedBudgetTurns:
 		wantReason = "turn_budget_exhausted"
+	case exhaustedBudgetServerContinuations:
+		wantReason = "server_continuation_budget_exhausted"
 	}
 	if got := exhausted.reason(); got != wantReason {
 		t.Fatalf("budget exhaustion reason = %q, want %q", got, wantReason)

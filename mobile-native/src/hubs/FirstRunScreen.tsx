@@ -26,16 +26,18 @@ export function FirstRunScreen({ navigation }: NativeStackScreenProps<Routes, "H
 
 	if (how)
 		return (
-			<SafeAreaView style={{ flex: 1, backgroundColor: palette.canvas }}>
-				<Group>
-					<Row label="Back" tone="accent" onPress={() => setHow(null)} />
-				</Group>
+			<SafeAreaView edges={["top", "bottom"]} style={{ flex: 1, backgroundColor: palette.canvas }}>
+				<SafeAreaView edges={["left", "right"]}>
+					<Group>
+						<Row label="Back" tone="accent" onPress={() => setHow(null)} />
+					</Group>
+				</SafeAreaView>
 				<AddHub how={how} onConnected={openBoard} />
 			</SafeAreaView>
 		);
 
 	return (
-		<SafeAreaView style={{ flex: 1, backgroundColor: palette.canvas }}>
+		<SafeAreaView edges={["top", "bottom"]} style={{ flex: 1, backgroundColor: palette.canvas }}>
 			<GroupedPage>
 				<View testID="first-run-intro" style={{ paddingHorizontal: 32, paddingTop: 48, paddingBottom: 12, gap: 8 }}>
 					<Text

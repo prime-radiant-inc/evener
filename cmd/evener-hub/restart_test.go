@@ -363,7 +363,7 @@ func TestHubRestartCommandRediscoversSuccessor(t *testing.T) {
 						scheduleErr = err
 						return
 					}
-					cfg, err := LoadConfig(config)
+					cfg, err := loadWithRecords(config)
 					if err != nil {
 						scheduleErr = err
 						return
@@ -573,7 +573,7 @@ func TestHubRestartCommandAbsentDefault(t *testing.T) {
 				cfg.PluginAutoUpgrade = false
 				return cfg, err
 			}
-			cfg, err := LoadConfig(DefaultConfigPath())
+			cfg, err := loadWithRecords(DefaultConfigPath())
 			if err != nil {
 				t.Fatal(err)
 			}

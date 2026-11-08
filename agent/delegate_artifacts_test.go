@@ -135,14 +135,14 @@ func TestCreateDelegate_CreationResultNamesArtifactsDir(t *testing.T) {
 	t.Parallel()
 	root, _, _ := newDelegateResourceBootstrapSession(t)
 
-	out, err := stableDelegateCreateTool(context.Background(), root, map[string]any{
+	out, err := delegateCreateTool(context.Background(), root, map[string]any{
 		"prompt":               "write your report into your artifacts directory",
 		"delegation_allowance": 0,
 	}, 30000)
 	if err != nil {
-		t.Fatalf("stableDelegateCreateTool: %v", err)
+		t.Fatalf("delegateCreateTool: %v", err)
 	}
-	var result stableDelegateCreateResult
+	var result delegateCreateResult
 	if err := json.Unmarshal([]byte(out), &result); err != nil {
 		t.Fatalf("unmarshal create result: %v\n%s", err, out)
 	}
@@ -316,13 +316,13 @@ func TestDisposeUnadoptedSubagentSession_RemovesArtifactsDir(t *testing.T) {
 	}
 }
 
-// TestMarshalStableDelegateCreateResult_KeepsArtifactsDirWithinBound pins the
+// TestMarshalDelegateCreateResult_KeepsArtifactsDirWithinBound pins the
 // bounded-result contract: artifacts_dir is the delegation's routing path, so
 // the marshaler drops every supplementary field before it and keeps the path
 // whenever the core can still fit.
-func TestMarshalStableDelegateCreateResult_KeepsArtifactsDirWithinBound(t *testing.T) {
+func TestMarshalDelegateCreateResult_KeepsArtifactsDirWithinBound(t *testing.T) {
 	t.Parallel()
-	in := stableDelegateCreateResult{
+	in := delegateCreateResult{
 		DelegateID:     "dlg_bounded",
 		ChildSessionID: "sess_child",
 		Type:           "delegate",
@@ -333,9 +333,9 @@ func TestMarshalStableDelegateCreateResult_KeepsArtifactsDirWithinBound(t *testi
 		Warnings:       []string{strings.Repeat("w", 600)},
 		Model:          "openai/gpt-5.2",
 	}
-	out, err := marshalStableDelegateCreateResult(in, jobToolResultMinJSONChars)
+	out, err := marshalDelegateCreateResult(in, jobToolResultMinJSONChars)
 	if err != nil {
-		t.Fatalf("marshalStableDelegateCreateResult: %v", err)
+		t.Fatalf("marshalDelegateCreateResult: %v", err)
 	}
 	if got := jsonCharLen([]byte(out)); got > jobToolResultMinJSONChars {
 		t.Fatalf("bounded result length = %d, want <= %d", got, jobToolResultMinJSONChars)

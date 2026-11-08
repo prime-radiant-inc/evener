@@ -5,7 +5,8 @@ import { IDBFactory, IDBKeyRange, IDBObjectStore } from "fake-indexeddb";
 import { useEffect } from "react";
 import { afterEach, beforeEach, expect, onTestFinished, test, vi } from "vitest";
 import { resetWorkspaceStoreForTests, workspaceStore } from "../shell/workspace";
-import { connectionStore } from "./connection";
+import { connectionStore, resetConnectionStoreForTests } from "./connection";
+import { setProductionEntryCacheForTests } from "./entryTranscriptRoutes";
 import {
   acknowledgeHumanNote,
   blurHumanNote,
@@ -19,18 +20,19 @@ import { SessionEntryCache } from "./sessionEntryCache";
 import { holdIndexedDBEvent } from "./testing/stalledIndexedDB";
 import {
   resetThreadsStoreForTests,
+  retryBlockedMutation,
   setMutationStorageForTests,
-  setProductionEntryCacheForTests,
   settleEntryTranscriptForTests,
   threadsStore,
 } from "./threads";
+import { flushIndexedDBUntil } from "./threadsSessionActionsTestUtils";
 
 let storage: MutationOutboxIndexedDB;
 let entryCache: SessionEntryCache;
 beforeEach(async () => {
   resetPanelStoreEvictionForTests();
   resetWorkspaceStoreForTests();
-  connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
+  resetConnectionStoreForTests();
   resetThreadsStoreForTests();
   const indexedDB = new IDBFactory();
   vi.stubGlobal("indexedDB", indexedDB);
@@ -155,8 +157,27 @@ async function advance(ms: number): Promise<void> {
 
 // Waits for the save to settle either way, so a failing assertion reports the
 // refusal itself rather than racing the debounce.
+// The save rides IndexedDB, and fake-indexeddb delivers every IDB event on
+// a real macrotask (Node's setImmediate) - while waitFor's fake-timer spin
+// advances only fake time and never yields a macrotask. A save whose enqueue
+// queues behind a wider durable transaction (the hydration's reconcile pass
+// carries the Retry mint's cross-store scope) starves inside that spin: its
+// commit event never gets a turn and the wait outlives the truth. Yield one
+// real macrotask per unsatisfied check so the storage chain always
+// progresses between checks; the assertions themselves are unchanged.
+// The save rides IndexedDB, and fake-indexeddb delivers every IDB event on a
+// real macrotask (Node's setImmediate) - while waitFor's fake-timer spin
+// advances only fake time and never yields one. A save whose enqueue queues
+// behind a wider durable transaction (the hydration's reconcile pass carries
+// the Retry mint's cross-store scope) starves inside that spin: its commit
+// event never gets a turn. Pump the storage queue directly inside act so the
+// save's commit and the React updates it drives land deterministically, then
+// assert - the assertions themselves are unchanged.
 async function settled(result: { current: { submitted?: unknown; error?: string | null } | undefined }) {
-  await waitFor(() => expect(result.current?.submitted ?? result.current?.error).toBeTruthy());
+  await act(async () => {
+    await flushIndexedDBUntil(() => Boolean(result.current?.submitted ?? result.current?.error));
+  });
+  expect(result.current?.submitted ?? result.current?.error).toBeTruthy();
 }
 
 for (const state of ["submitting", "blockedUnknown", "rejected"] as const) {
@@ -201,7 +222,17 @@ test("only a matching identity acknowledges and server text stays opaque", async
   syncHumanNote("ref-a", "A");
   const { result } = renderHook(() => useHumanNoteDraft("ref-a"));
   await waitFor(() => expect(result.current?.submitted?.id).toBe(record.clientMutationId));
-  act(() => acknowledgeHumanNote({ ...record, clientMutationId: "wrong" }, "wrong"));
+  // The acknowledgement's identity is its EFFECTIVE wire id, so a genuine
+  // mismatch must differ in the payload too: a record whose storage key alone
+  // is wronged while its payload still names the draft's wire id is the one
+  // identity a replacement's success legitimately carries (RoboRev round-1 M4
+  // rewrite - the old fixture wronged only the storage key).
+  act(() =>
+    acknowledgeHumanNote(
+      { ...record, clientMutationId: "wrong", payload: { ...record.payload, clientMutationId: "wrong" } },
+      "wrong",
+    ),
+  );
   expect(result.current?.dirty).toBe(true);
   const canonical = " \n\tcanonical\u00a0e\u0301🙂  ";
   await act(async () => acknowledgeHumanNote(record, canonical));
@@ -452,9 +483,12 @@ test("a background save whose blocked row settles elsewhere mid-retry ends in th
 });
 
 // The same mid-retry window with the row still present but no longer blocked:
-// another connection reconciled it back to submitting, so its resend belongs
-// to that connection's outbox lifecycle. The draft must take the row's actual
-// state - the stale blocked status is as wrong here as the absent row's was.
+// another connection re-queued it - a mint now, so the old row settles
+// terminal "superseded" and the save travels under a FRESH row that inherits
+// the predecessor's wire id. The draft must take the row's actual state: not
+// the stale blocked status, and not a claim that the old row is live either -
+// its status follows the in-flight save while its submitted identity KEEPS
+// the wire id, because the daemon's acknowledgement names that id.
 test("a background save whose blocked row is restored elsewhere mid-retry takes the row's actual state", async () => {
   vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
   const ref = "ref-a";
@@ -496,7 +530,22 @@ test("a background save whose blocked row is restored elsewhere mid-retry takes 
     await saving;
   });
   expect(restoredMidRetry).toBe(true);
-  expect((await storage.getOutbox(original.clientMutationId))?.state).toBe("submitting");
+  // The old row settles terminal, keeping its id and attempt evidence; the
+  // save travels under a fresh row that inherited the wire id.
+  expect(await storage.getOutbox(original.clientMutationId)).toMatchObject({
+    state: "superseded",
+    attempted: true,
+  });
+  const rows = await storage.listOutbox(ref);
+  // The fresh row is the one whose OWN id differs; its payload carries the
+  // inherited wire id.
+  const fresh = rows.find((row) => row.clientMutationId !== original.clientMutationId);
+  expect(fresh).toMatchObject({
+    state: "submitting",
+    attempted: false,
+  });
+  expect(fresh?.payload.clientMutationId).toBe(original.clientMutationId);
+  expect(rows.find((row) => row.state === "superseded")?.clientMutationId).toBe(original.clientMutationId);
   expect(result.current).toMatchObject({
     text: "retained blocked note",
     dirty: true,
@@ -505,6 +554,158 @@ test("a background save whose blocked row is restored elsewhere mid-retry takes 
     submitted: { id: original.clientMutationId, state: "submitting" },
   });
   expect(fake.calls.filter(({ method }) => method === "thread/resume" || method === "notes/human/set")).toEqual([]);
+});
+
+// RoboRev round-1 M4: reconciliation re-queues a blocked note save as a FRESH
+// replacement row under the SAME wire id. The draft's status must follow the
+// replacement (its storage key differs from the wire id the draft holds),
+// and the replacement's successful response must acknowledge the draft -
+// when the replay response is the only remaining acknowledgement, a
+// storage-key comparison strands the saved note dirty forever.
+async function seedBlockedNoteDraft(text: string): Promise<{
+  fake: FakeClient;
+  result: {
+    current: { submitted?: { id?: string; state?: string } | undefined; error?: string | null } | undefined;
+  };
+  original: Awaited<ReturnType<typeof persisted>>;
+}> {
+  vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+  const fake = new FakeClient("ready");
+  fake.on("thread/read", () => hydrationResponse("ref-a", "instance-a"));
+  connectionStore.getState().connect(fake);
+  await threadsStore.getState().ensureThread("ref-a");
+  const original = await persisted(text);
+  await storage.markUnknown(original.clientMutationId, "blockedUnknown");
+  syncHumanNote("ref-a", "");
+  const { result } = renderHook(() => useHumanNoteDraft("ref-a"));
+  await act(async () => {
+    await storage.listOutbox("ref-a");
+  });
+  expect(result.current?.submitted).toMatchObject({ id: original.clientMutationId, state: "blockedUnknown" });
+  return { fake, result, original };
+}
+
+test("a note draft follows its reconciled replacement under the same wire id", async () => {
+  const { fake, result, original } = await seedBlockedNoteDraft("replaced mid-flight");
+  // The replacement's transport never answers, so its in-flight state is the
+  // durable truth the draft must show.
+  fake.on("notes/human/set", () => new Promise<never>(() => undefined));
+  await act(async () => {
+    await retryBlockedMutation(original.clientMutationId, "backgroundNote");
+  });
+  const rows = await storage.listOutbox("ref-a");
+  const replacement = rows.find((row) => row.clientMutationId !== original.clientMutationId);
+  expect(replacement).toMatchObject({ state: "submitting" });
+  expect(replacement?.payload.clientMutationId).toBe(original.clientMutationId);
+  await act(async () => {
+    await flushIndexedDBUntil(() => result.current?.submitted?.state === "submitting");
+  });
+  expect(result.current?.submitted).toMatchObject({
+    id: original.clientMutationId,
+    state: "submitting",
+  });
+  expect(result.current?.error).toBeNull();
+});
+
+test("a reconciled replacement's response acknowledges the draft under the shared wire id", async () => {
+  // The session pane that renders the draft holds its ref, so the eviction
+  // sweep the acknowledgment schedules keeps the now-clean record (the same
+  // setup the matching-identity test uses).
+  workspaceStore.setState({
+    panes: [{ id: "p_session", type: "session", params: { ref: "ref-a" }, slot: "main" }],
+  });
+  const { fake, result, original } = await seedBlockedNoteDraft("replaced mid-flight");
+  fake.on("notes/human/set", (params) => ({
+    note: "replaced mid-flight",
+    receipt: {
+      clientMutationId: params.clientMutationId,
+      threadId: "thr",
+      disposition: "applied",
+      projectionState: "reflected",
+    },
+  }));
+  await act(async () => {
+    await retryBlockedMutation(original.clientMutationId, "backgroundNote");
+  });
+  // The background note's resend belongs to the outbox's lifecycle scan -
+  // the retry deliberately does not dispatch it - so the replacement's
+  // response arrives only once that scan runs.
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(2_100);
+  });
+  await act(async () => {
+    await flushIndexedDBUntil(() => result.current?.submitted === undefined);
+  });
+  expect(result.current).toMatchObject({
+    text: "replaced mid-flight",
+    dirty: false,
+    saved: true,
+    error: null,
+    submitted: undefined,
+  });
+});
+
+// RoboRev round-2 M4 corner: a RELOADED draft adopts its persisted save by
+// the WIRE id. A reconciled replacement carries its predecessor's id inside
+// the payload under a fresh storage key, and every status and acknowledgement
+// comparison meets the wire. Adopting the storage key strands the reloaded
+// draft: the replacement's own success can never acknowledge it again.
+test("a reloaded note draft adopts a reconciled replacement under its wire id", async () => {
+  workspaceStore.setState({
+    panes: [{ id: "p_session", type: "session", params: { ref: "ref-a" }, slot: "main" }],
+  });
+  vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+  const fake = new FakeClient("ready");
+  fake.on("thread/read", () => hydrationResponse("ref-a", "instance-a"));
+  connectionStore.getState().connect(fake);
+  await threadsStore.getState().ensureThread("ref-a");
+  const original = await persisted("reloaded and replaced");
+  await storage.markAttempted(original.clientMutationId);
+  await storage.markUnknown(original.clientMutationId, "blockedUnknown");
+  // The save reconciles into a FRESH replacement under the same wire id while
+  // no draft exists - the reload shape: the next mount rebuilds from persistence.
+  await act(async () => {
+    await retryBlockedMutation(original.clientMutationId, "backgroundNote");
+  });
+  const rows = await storage.listOutbox("ref-a");
+  const replacement = rows.find((row) => row.clientMutationId !== original.clientMutationId);
+  expect(replacement).toMatchObject({ state: "submitting" });
+  expect(replacement?.payload.clientMutationId).toBe(original.clientMutationId);
+  // Reload: the mount adopts the note's latest durable row - the replacement.
+  syncHumanNote("ref-a", "");
+  const { result } = renderHook(() => useHumanNoteDraft("ref-a"));
+  await act(async () => {
+    await storage.listOutbox("ref-a");
+  });
+  expect(result.current?.submitted).toMatchObject({
+    id: original.clientMutationId,
+    state: "submitting",
+  });
+  expect(result.current?.error).toBeNull();
+  // The replacement's successful response must acknowledge the reloaded draft:
+  // the receipt names the wire id, which the adopted identity now meets.
+  fake.on("notes/human/set", (params) => ({
+    note: "reloaded and replaced",
+    receipt: {
+      clientMutationId: params.clientMutationId,
+      threadId: "thr",
+      disposition: "applied",
+      projectionState: "reflected",
+    },
+  }));
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(2_100);
+  });
+  await act(async () => {
+    await flushIndexedDBUntil(() => result.current?.saved === true && result.current.dirty === false);
+  });
+  expect(result.current).toMatchObject({
+    text: "reloaded and replaced",
+    dirty: false,
+    saved: true,
+    error: null,
+    submitted: undefined,
+  });
 });
 
 // RoboRev finding (PR 1393 head fee4eb8): the save's post-retry lookup asked
@@ -673,6 +874,91 @@ test("a note row canceled by Stop reports the canceled status and no blur cycle 
 // save's canonical acknowledgement arrives under. The fire-time save must
 // recheck the live same-generation submitted state and refuse exactly as the
 // blur-time guard (humanNoteDrafts.ts) refuses to arm for it.
+// Round-5 review L1: the blur retry path looked its blocked save up by
+// STORAGE key and mapped a superseded row to "submitting" - so a save whose
+// row the newer-note settle-time retirement superseded WITHOUT creating a
+// successor (the newer save already settled) reported an in-flight save that
+// does not exist, and the same-generation blur guard then suppressed every
+// later save indefinitely. No live record of the wire means the save never
+// landed: an unsaved status, never an invented in-flight one.
+test("a superseded blocked save with no successor reports unsaved, never an invented in-flight save", async () => {
+  vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+  const ref = "ref-a";
+  const fake = new FakeClient("ready");
+  fake.on("thread/read", () => hydrationResponse(ref, "instance-a"));
+  connectionStore.getState().connect(fake);
+  await threadsStore.getState().ensureThread(ref);
+  await threadsStore.getState().refreshThread(ref);
+  const original = await persisted("retained blocked note");
+  await storage.markAttempted(original.clientMutationId);
+  await storage.markUnknown(original.clientMutationId, "blockedUnknown");
+  syncHumanNote(ref, "");
+  const { result } = renderHook(() => useHumanNoteDraft(ref));
+  await act(async () => {
+    await storage.listOutbox();
+  });
+  expect(result.current?.submitted?.state).toBe("blockedUnknown");
+  // A newer note save settles: the settle-time retirement supersedes the
+  // older blocked row WITHOUT minting anything - no successor exists.
+  const newer = await persisted("newer note text");
+  await storage.settleReceipt(newer.clientMutationId, "reflected");
+  expect((await storage.getOutbox(original.clientMutationId))?.state).toBe("superseded");
+  let saving: Promise<void> | undefined;
+  act(() => blurHumanNote(ref, Symbol("blur owner")));
+  act(() => {
+    saving = Promise.resolve(result.current?.flush?.());
+  });
+  await act(async () => {
+    await saving;
+  });
+  expect(result.current?.submitted?.state).not.toBe("submitting");
+  expect(result.current).toMatchObject({ text: "retained blocked note", dirty: true, saved: false });
+});
+
+// The same lookup must follow the LIVE successor by wire identity: a
+// superseded predecessor is dead work whose state must never speak for the
+// row that actually carries the composition.
+test("a blur retry follows the live successor under the same wire id, not its superseded predecessor", async () => {
+  vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+  const ref = "ref-a";
+  const fake = new FakeClient("ready");
+  fake.on("thread/read", () => hydrationResponse(ref, "instance-a"));
+  connectionStore.getState().connect(fake);
+  await threadsStore.getState().ensureThread(ref);
+  await threadsStore.getState().refreshThread(ref);
+  const original = await persisted("retained blocked note");
+  await storage.markAttempted(original.clientMutationId);
+  await storage.markUnknown(original.clientMutationId, "blockedUnknown");
+  syncHumanNote(ref, "");
+  const { result } = renderHook(() => useHumanNoteDraft(ref));
+  await act(async () => {
+    await storage.listOutbox();
+  });
+  expect(result.current?.submitted?.state).toBe("blockedUnknown");
+  // A mint replaces the blocked row: the predecessor settles superseded and
+  // the successor carries the wire id under a fresh key - and the successor's
+  // own attempt is delivery-uncertain, NOT in flight.
+  const capture = await storage.getOutboxWithStopEpoch(original.clientMutationId);
+  const minted = await storage.mintRetryFromRow(original.clientMutationId, {
+    record: capture.record,
+    stopEpoch: capture.stopEpoch,
+    displayedStopEpoch: 0,
+  });
+  if (!minted) throw new Error("mint failed");
+  await storage.markAttempted(minted.clientMutationId);
+  await storage.markUnknown(minted.clientMutationId, "blockedUnknown");
+  let saving: Promise<void> | undefined;
+  act(() => blurHumanNote(ref, Symbol("blur owner")));
+  act(() => {
+    saving = Promise.resolve(result.current?.flush?.());
+  });
+  await act(async () => {
+    await saving;
+  });
+  expect(result.current?.submitted?.state).toBe("blockedUnknown");
+  expect(result.current?.error).toBeTruthy();
+});
+
 test("a blur-save timer armed on a blocked note does not duplicate the save another connection accepted", async () => {
   const { fake, seen } = noteHarness();
   const ref = "ref-a";

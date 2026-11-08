@@ -21,26 +21,63 @@ type testCost struct {
 var surveyLine = regexp.MustCompile(`^--- (?:PASS|SKIP): (\S+) \(([0-9.]+)s\)`)
 
 // parseSurvey extracts top-level test costs from `go test -v` output: one
-// entry per "--- PASS:"/"--- SKIP:" line whose name has no subtest slash,
-// in file order, later duplicates updating the earlier entry in place.
+// entry per top-level "--- PASS:"/"--- SKIP:" line, in file order, later
+// duplicates updating the earlier entry in place.
+//
+// A top-level test's own duration already includes every subtest it waited
+// for, because a serial subtest runs inside its parent's t.Run call, so adding
+// a serial test's children would charge the same seconds twice.
+//
+// A t.Parallel subtest is the exception: it pauses until its parent's function
+// returns, and go records the parent's duration before waiting for the paused
+// subtests. A parent whose children all run in parallel therefore reports a
+// few milliseconds while each child costs seconds. Left at that number the
+// test looks free, and LPT packs the rest of the package onto its shard. For
+// such a parent the cost is the slowest child, not the sum: parallel children
+// run together, so their wall time is the slowest of them.
+//
+// Taking max(parent, slowest descendant) covers both without reading the
+// PAUSE lines. A serial parent's duration is at least each child's, so the max
+// leaves it unchanged; a parallel parent's is smaller than its slowest child,
+// so the max lifts it to that child. The max is a floor rather than the sum:
+// children beyond the survey's -test.parallel queue in waves, so a parent with
+// more slow parallel children than that costs more than its slowest child and
+// less than their sum. Nested subtests are handled the same way, by the top
+// level prefix of the subtest's name.
+//
+// Subtest lines never become entries of their own: -test.run selects
+// top-level names, so the shard filters must name tests that exist. The survey
+// is text, so a line a test logs that has a result's shape is read like one;
+// that was already true of top-level results, and this parser trusts go test's
+// output shape rather than trying to tell log lines from real ones.
 func parseSurvey(output string) []testCost {
 	var costs []testCost
 	index := map[string]int{}
 	for line := range strings.SplitSeq(output, "\n") {
 		m := surveyLine.FindStringSubmatch(strings.TrimSpace(line))
-		if len(m) < 3 || strings.Contains(m[1], "/") {
+		if len(m) < 3 {
 			continue
 		}
-		var cost float64
-		if _, err := fmt.Sscanf(m[2], "%f", &cost); err != nil {
+		cost, err := strconv.ParseFloat(m[2], 64)
+		if err != nil {
 			continue
 		}
-		if at, seen := index[m[1]]; seen {
+		top, _, subtest := strings.Cut(m[1], "/")
+		at, seen := index[top]
+		if subtest {
+			// A subtest's top-level test has already been indexed: go test
+			// prints the parent's result line first. Fold the child in.
+			if seen && cost > costs[at].cost {
+				costs[at].cost = cost
+			}
+			continue
+		}
+		if seen {
 			costs[at].cost = cost
 			continue
 		}
-		index[m[1]] = len(costs)
-		costs = append(costs, testCost{name: m[1], cost: cost})
+		index[top] = len(costs)
+		costs = append(costs, testCost{name: top, cost: cost})
 	}
 	return costs
 }
@@ -576,10 +613,17 @@ func checkGoflags(goflags, envPrefix string) error {
 	})
 }
 
-// testSetKey is the survey cache key: the identity of the sorted test list
-// together with the build the survey measured and whether it ran short. Add,
-// rename, or remove a test and the key changes; otherwise every run reuses the
-// cached survey and pays nothing.
+// surveyParserVersion is the survey cache key's parser identity. A cache entry
+// holds raw `go test -v` output and is re-read on every hit, so a parser change
+// re-prices an old entry anyway; the version is in the key so the cache names
+// the reading it was taken for, and a reading change forces one deliberate
+// re-survey. Bump it when parseSurvey's reading of a line changes.
+const surveyParserVersion = "parallel-subtest-max"
+
+// testSetKey is the survey cache key: the parser's version, the identity of
+// the sorted test list, the build the survey measured, and whether it ran
+// short. Add, rename, or remove a test and the key changes; otherwise every
+// run reuses the cached survey and pays nothing.
 //
 // The key holds the test list, the classified build flags, short mode,
 // GOFLAGS and the skip: the things that decide what was measured. The skip is
@@ -597,11 +641,21 @@ func checkGoflags(goflags, envPrefix string) error {
 // changing which tests run at all. GOFLAGS is in there for the same reason one
 // step further out: it reaches the build without appearing in anyone's
 // argument list, so `GOFLAGS=-race make test` would otherwise read a survey
-// measured without it.
+// measured without it. The parser version is in there because the key names
+// the survey this runner would take, and a cached entry read by a different
+// parser is not that survey.
 func testSetKey(listOutput string, parsed parsedFlags, goflags, skip string) string {
+	return testSetKeyForParserVersion(listOutput, parsed, goflags, skip, surveyParserVersion)
+}
+
+// testSetKeyForParserVersion is testSetKey with the parser version chosen by
+// the caller, so a test can show that the version decides the identity rather
+// than merely appearing in the source.
+func testSetKeyForParserVersion(listOutput string, parsed parsedFlags, goflags, skip, parserVersion string) string {
 	lines := strings.Split(strings.TrimRight(listOutput, "\n"), "\n")
 	sort.Strings(lines)
 	payload := strings.Join(lines, "\n") + "\n" +
+		"parser\x00" + parserVersion + "\n" +
 		"build\x00" + strings.Join(parsed.build, "\x00") + "\n" +
 		"short\x00" + strconv.FormatBool(parsed.short) + "\n" +
 		"goflags\x00" + goflags + "\n" +

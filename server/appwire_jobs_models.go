@@ -16,14 +16,14 @@ func (s *Server) handleAppTasksList(context.Context, appwire.TaskListParams) (ap
 	return appwire.TaskListResponse{Data: fn()}, nil
 }
 
-func (s *Server) handleAppJobsList(_ context.Context, params appwire.JobsListParams) (appwire.JobsListResponse, error) {
+func (s *Server) handleAppJobsList(ctx context.Context, params appwire.JobsListParams) (appwire.JobsListResponse, error) {
 	s.mu.RLock()
 	fn := s.jobsFn
 	s.mu.RUnlock()
 	if fn == nil {
 		return appwire.JobsListResponse{}, nil
 	}
-	data, err := fn(params)
+	data, err := fn(ctx, params)
 	if err != nil {
 		return appwire.JobsListResponse{}, err
 	}

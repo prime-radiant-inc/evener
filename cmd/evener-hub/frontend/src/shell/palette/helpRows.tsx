@@ -48,6 +48,15 @@ const HELP_ROWS: readonly HelpRow[] = [
   { keys: ["→"], label: "next ask-dock question" },
 ];
 
+// The chords a new person has no other way to discover from a cold pane.
+// Kept beside HELP_ROWS because that list is the source of truth for all
+// three; order matches HELP_ROWS' own listing.
+export const CHORD_HINTS: ShortcutListItem[] = [
+  { keys: ["Mod", "K"], label: "command palette" },
+  { keys: ["Mod", "I"], label: "focus the composer" },
+  { keys: ["Mod", "J"], label: "next session needing you" },
+];
+
 // A ShortcutList term is a single chord, so a multi-press override ("g g")
 // shows its first press as the term and the later presses, each its own
 // KeyHint, ahead of the label.

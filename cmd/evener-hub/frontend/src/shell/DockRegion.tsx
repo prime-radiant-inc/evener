@@ -10,12 +10,14 @@
 // banner, the toasts and the command palette all stay up.
 
 import { Component, type LazyExoticComponent, lazy, type ReactNode, Suspense, useState } from "react";
+import { cancelConversationHandoff, conversationHandoffGeneration } from "../stores/conversationClaimHandoff";
 import { Button, EmptyState, Loader } from "../widgets";
 import styles from "./DockRegion.module.css";
 import { isStaleDockHostChunkError, loadDockHost } from "./dockHostChunk";
 import { reloadPage } from "./pageReload";
 
 interface DockChunkBoundaryProps {
+  generation: number | undefined;
   // Swaps in a fresh lazy component to load the chunk again. The boundary
   // clears its own failure state alongside it - both halves are needed, and
   // neither is any use without the other.
@@ -33,6 +35,10 @@ interface DockChunkBoundaryState {
 
 class DockChunkBoundary extends Component<DockChunkBoundaryProps, DockChunkBoundaryState> {
   state: DockChunkBoundaryState = { failure: null };
+
+  componentDidCatch(): void {
+    cancelConversationHandoff(this.props.generation);
+  }
 
   static getDerivedStateFromError(error: unknown): DockChunkBoundaryState {
     return { failure: error instanceof Error ? error.message : String(error) };
@@ -97,7 +103,9 @@ export function DockRegion() {
   // error on every subsequent render, forever.
   const [Host, setHost] = useState<DockHostChunk>(dockHost);
   const [retryCount, setRetryCount] = useState(0);
+  const generation = conversationHandoffGeneration("desktop");
   const retry = () => {
+    cancelConversationHandoff(generation);
     setRetryCount((count) => count + 1);
     const nextHost = lazyDockHost(true);
     // Publish the new payload before it resolves so an unmount/remount during
@@ -108,7 +116,7 @@ export function DockRegion() {
   };
 
   return (
-    <DockChunkBoundary onRetry={retry} reloadAvailable={retryCount > 0}>
+    <DockChunkBoundary generation={generation} onRetry={retry} reloadAvailable={retryCount > 0}>
       <Suspense
         fallback={
           <div className={styles.loading} data-testid="dock-loading">

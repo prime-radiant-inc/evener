@@ -28,6 +28,14 @@ func SessionOrderLess(a, b SessionOrderKey) bool {
 	if !au.Equal(bu) {
 		return au.After(bu)
 	}
+	return ProjectSessionOrderLess(a, b)
+}
+
+// ProjectSessionOrderLess reports whether a sorts before b in a project's
+// session list: newest creation first, then title, then ID. Update time is not
+// part of the key, so a running session keeps its row instead of moving to the
+// top whenever it is touched.
+func ProjectSessionOrderLess(a, b SessionOrderKey) bool {
 	ac := OrderCreatedAt(a.Created, a.Updated)
 	bc := OrderCreatedAt(b.Created, b.Updated)
 	if !ac.Equal(bc) {
@@ -90,9 +98,9 @@ func sessionMetaLess(a, b schema.SessionMeta) bool {
 	return SessionOrderLess(sessionMetaOrderKey(a), sessionMetaOrderKey(b))
 }
 
-// sortSessionMetas orders metas by sessionMetaLess, building each meta's order
-// key once because building it allocates a truncated title.
-func sortSessionMetas(metas []schema.SessionMeta) {
+// sortSessionMetas orders metas by less, building each meta's order key once
+// because building it allocates a truncated title.
+func sortSessionMetas(metas []schema.SessionMeta, less func(a, b SessionOrderKey) bool) {
 	if len(metas) < 2 {
 		return
 	}
@@ -100,17 +108,18 @@ func sortSessionMetas(metas []schema.SessionMeta) {
 	for i, m := range metas {
 		keys[i] = sessionMetaOrderKey(m)
 	}
-	sort.Stable(keyedSessionMetas{metas: metas, keys: keys})
+	sort.Stable(keyedSessionMetas{metas: metas, keys: keys, less: less})
 }
 
 // keyedSessionMetas sorts metas and their precomputed order keys in step.
 type keyedSessionMetas struct {
 	metas []schema.SessionMeta
 	keys  []SessionOrderKey
+	less  func(a, b SessionOrderKey) bool
 }
 
 func (k keyedSessionMetas) Len() int           { return len(k.metas) }
-func (k keyedSessionMetas) Less(i, j int) bool { return SessionOrderLess(k.keys[i], k.keys[j]) }
+func (k keyedSessionMetas) Less(i, j int) bool { return k.less(k.keys[i], k.keys[j]) }
 func (k keyedSessionMetas) Swap(i, j int) {
 	k.metas[i], k.metas[j] = k.metas[j], k.metas[i]
 	k.keys[i], k.keys[j] = k.keys[j], k.keys[i]
@@ -203,4 +212,10 @@ func TreeNodeOrderKey(n TreeNode) SessionOrderKey {
 // TreeNodeLess reports whether tree row a sorts before b in the rail's order.
 func TreeNodeLess(a, b TreeNode) bool {
 	return SessionOrderLess(TreeNodeOrderKey(a), TreeNodeOrderKey(b))
+}
+
+// ProjectTreeNodeLess reports whether tree row a sorts before b in a project's
+// session list.
+func ProjectTreeNodeLess(a, b TreeNode) bool {
+	return ProjectSessionOrderLess(TreeNodeOrderKey(a), TreeNodeOrderKey(b))
 }

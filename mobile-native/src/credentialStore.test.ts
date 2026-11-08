@@ -4,7 +4,6 @@ import { expect, it, vi } from "vitest";
 import type { ConversationClientLike } from "./conversation/services/conversation";
 import { createNativeCredentialStore } from "./credentialStore";
 
-vi.mock("expo-crypto", () => ({ randomUUID: () => "fixture-uuid" }));
 vi.mock("./ConnectionProvider", () => ({ useConnection: () => ({}) }));
 
 const rows: InstanceListResponse = { instances: [], availableProviders: [], diagnostics: ["from the hub"] };

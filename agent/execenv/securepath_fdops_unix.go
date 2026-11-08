@@ -712,12 +712,12 @@ func (s *sandboxFS) listDir(tool, abs string, depth int, visibleOnly bool) ([]Di
 	if s.underMasked(abs) {
 		return nil, s.deny(tool, abs, denyReasonMasked)
 	}
-	fd, err := s.openRead(tool, abs, unix.O_RDONLY|unix.O_DIRECTORY)
+	fd, baseAbs, err := s.openReadBaseFd(tool, abs)
 	if err != nil {
 		return nil, err
 	}
 	var out []DirEntry
-	if err := s.walkDirFd(fd, "", abs, depth, visibleOnly, &out); err != nil { // walkDirFd closes fd
+	if err := s.walkDirFd(fd, "", baseAbs, depth, visibleOnly, &out); err != nil { // walkDirFd closes fd
 		return nil, err
 	}
 	return out, nil
@@ -739,7 +739,7 @@ func (s *sandboxFS) listDirBudgeted(ctx context.Context, tool, abs string, depth
 	if s.underMasked(abs) {
 		return nil, s.deny(tool, abs, denyReasonMasked)
 	}
-	fd, err := s.openRead(tool, abs, unix.O_RDONLY|unix.O_DIRECTORY)
+	fd, baseAbs, err := s.openReadBaseFd(tool, abs)
 	if err != nil {
 		// The resolver's raw errno does not say which path was wrong, and the
 		// legacy walk returns it just as bare — but this walk is the one the
@@ -757,7 +757,7 @@ func (s *sandboxFS) listDirBudgeted(ctx context.Context, tool, abs string, depth
 		return nil, &fs.PathError{Op: "open", Path: abs, Err: err}
 	}
 	var out []DirEntry
-	if err := s.walkDirFdBudgeted(ctx, fd, "", abs, depth, false, &out, budget); err != nil { // walkDirFdBudgeted closes fd
+	if err := s.walkDirFdBudgeted(ctx, fd, "", baseAbs, depth, false, &out, budget); err != nil { // walkDirFdBudgeted closes fd
 		return nil, err
 	}
 	return out, nil
@@ -889,7 +889,7 @@ func secureListDirChunked(ctx context.Context, dirFd int, dir string, budget *Di
 	return readDirChunked(ctx, df, dir, budget.glob)
 }
 
-// openReadBaseFd resolves a browse base directory (glob/grep) beneath the policy,
+// openReadBaseFd resolves a browse base directory (list_dir/glob/grep) beneath the policy,
 // returning a directory fd (caller closes) and the canonical absolute base path.
 // It applies the same read-shape check as file reads, so a base outside the
 // readable roots (restricted) or under the denylist (any mode) is refused.
@@ -899,7 +899,22 @@ func (s *sandboxFS) openReadBaseFd(tool, base string) (int, string, error) {
 	if err != nil {
 		return -1, "", err
 	}
-	return fd, base, nil
+	return fd, browseBasePath(fd, base), nil
+}
+
+// browseBasePath returns the opened directory's own path as the kernel reports
+// it, falling back to the spelled path when canonicalization is unavailable.
+// Descendants reached by a browse (list_dir, glob, grep) are judged against
+// masks by joining this path, so a caller that spelled a directory in another
+// letter case than the filesystem stores (a case-insensitive volume) cannot
+// make a mask listed in the stored spelling miss every entry beneath it. The
+// open itself already rechecked the base fd; this extends the same canonical
+// spelling to the walk.
+func browseBasePath(fd int, spelled string) string {
+	if canonical, err := canonicalPathForFd(fd); err == nil && canonical != "" {
+		return canonical
+	}
+	return spelled
 }
 
 // atomicWriteAt writes data to a temp file created in dirFd, then renameat's it

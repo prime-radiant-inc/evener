@@ -24,6 +24,7 @@ import {
 	type TranscriptDisplayConfigV1,
 } from "@evener/appwire-client";
 import { projectConversation } from "./projectedRows";
+import { displayForLevel } from "./session/detailLevels";
 import { projectNativeTranscript } from "./transcriptPresentation";
 
 const CAPS = {
@@ -151,6 +152,79 @@ describe("the seam projects the conversation at the user's content level", () =>
 		});
 	});
 
+	it("the phone's Chat level hides settled traces through the production display filter", () => {
+		// The phone reaches Chat differently from the web: displayForLevel maps
+		// Chat to the intent projection and the screen then applies
+		// conversationOnly. A healthy settled trace must be gone either way
+		// (ruling 2026-11-01: Chat stays conversation-only), while the live
+		// current thought's placeholder still rides.
+		const display = displayForLevel("chat", null);
+		expect(display.justTheConversation).toBe(true);
+		const conversation = projectConversation(
+			hydrateThread({ thread: levelsThread() }, "ref-1", 0),
+			undefined,
+			display.config ?? undefined,
+		);
+		const presentation = projectNativeTranscript(conversation, display.config, {
+			justTheConversation: display.justTheConversation,
+		});
+		const settledTrace = presentation.items.find(
+			(row) => row.kind === "activity" && row.family === "reasoning" && row.state !== "running",
+		);
+		expect(settledTrace).toBeUndefined();
+		expect(JSON.stringify(presentation.items)).not.toContain("auditing quietly");
+		// The live current thought's placeholder survives the filter.
+		expect(
+			presentation.items.some(
+				(row) => row.kind === "activity" && row.family === "reasoning" && row.state === "running",
+			),
+		).toBe(true);
+	});
+
+	it("settles superseded thoughts and stale in-progress tails instead of rendering them running", () => {
+		// The wire never completes a reasoning item mid-turn, so a superseded
+		// thought keeps status inProgress; the projector's rule (turn in
+		// progress AND active AND tail) decides liveness, and the phone must
+		// render the settled variant for the first thought: completed, with its
+		// text as the expandable detail.
+		const midTurn = thread([
+			turn(
+				"t-mid",
+				[
+					item({ id: "r2", type: "reasoning", text: "superseded thought", status: "inProgress" }),
+					item({ id: "c2", type: "commandExecution", toolName: "shell", description: "step", status: "completed" }),
+					item({ id: "r3", type: "reasoning", text: "live tail thought", status: "inProgress" }),
+				],
+				{ status: "inProgress" },
+			),
+		]);
+		const model = hydrateThread({ thread: midTurn }, "ref-1", 0);
+		const rows = projectConversation(model, undefined, tools).items;
+		expect(rowById(rows, "r2")).toMatchObject({
+			kind: "activity",
+			family: "reasoning",
+			state: "completed",
+			detail: { output: "superseded thought" },
+		});
+		// The tail thought is the live one: content-free while it runs.
+		expect(rowById(rows, "r3")).toMatchObject({ kind: "activity", state: "running" });
+		expect(JSON.stringify(rows)).not.toContain("live tail thought");
+
+		// A stale inProgress tail on a completed turn is settled too.
+		const stale = thread([
+			turn("t-stale", [item({ id: "r4", type: "reasoning", text: "stale thought", status: "inProgress" })], {
+				status: "completed",
+			}),
+		]);
+		const staleRows = projectConversation(hydrateThread({ thread: stale }, "ref-1", 0), undefined, tools).items;
+		expect(rowById(staleRows, "r4")).toMatchObject({
+			kind: "activity",
+			family: "reasoning",
+			state: "completed",
+			detail: { output: "stale thought" },
+		});
+	});
+
 	it("re-projects when the level changes", () => {
 		// The same model, two levels: the rows differ exactly where the level
 		// decides (the settled thought exists at full and not at chat).
@@ -166,8 +240,35 @@ describe("the seam projects the conversation at the user's content level", () =>
 		// project the same rows (the per-turn cache keys the config's value).
 		expect(shippedMobileConfig.content).toEqual({ kind: "preset", level: "intent" });
 		expect(rowsAt(shippedMobileConfig)).toEqual(rowsAt(intent));
-		expect(JSON.stringify(rowsAt(shippedMobileConfig))).not.toContain("auditing quietly");
+		// The settled thought is a completed trace row whose text unfolds on
+		// demand; the live current thought stays content-free while it runs.
+		expect(JSON.stringify(rowsAt(shippedMobileConfig))).toContain("auditing quietly");
 		expect(JSON.stringify(rowsAt(shippedMobileConfig))).not.toContain("secret live thought");
+	});
+
+	it("keeps a settled thought as a trace row at every level but chat", () => {
+		for (const config of [intent, tools, full]) {
+			const settled = rowById(rowsAt(config), "r1");
+			// The trace row carries its text (the reader unfolds on demand).
+			// A following live current thought rides the cluster as a member
+			// (the reasoning family clusters across the turn boundary), so the
+			// cluster's state is running while it runs.
+			expect(settled).toMatchObject({
+				kind: "activity",
+				label: "Reasoning",
+				family: "reasoning",
+				detail: { output: "auditing quietly" },
+			});
+		}
+		// The chat preset stays conversation-only: settled traces stay hidden,
+		// and the live placeholder carries no text.
+		expect(rowById(rowsAt(chat), "r1")).toBeUndefined();
+		expect(JSON.stringify(rowsAt(chat))).not.toContain("auditing quietly");
+		// The live thought stays content-free while it runs, at every level.
+		for (const config of [chat, intent, tools]) {
+			const rows = JSON.stringify(rowsAt(config));
+			expect(rows).not.toContain("secret live thought");
+		}
 	});
 
 	it("leaves the projection at show-everything when there is no config", () => {

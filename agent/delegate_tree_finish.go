@@ -596,6 +596,11 @@ func delegatePreparedFinish(packet delegatestore.TerminalPacket) delegateFinish 
 			return finish
 		}
 		finish.reason = "tool_round_budget_exhausted"
+	case delegatestore.ExhaustionBudgetServerContinuations:
+		if !resumable {
+			return finish
+		}
+		finish.reason = "server_continuation_budget_exhausted"
 	case delegatestore.ExhaustionBudgetTurns:
 		if resumable {
 			return finish

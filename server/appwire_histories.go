@@ -48,10 +48,25 @@ func (s *Server) Close() {
 // find no history for it and publish nothing.
 func (s *Server) WireTranscriptHistory(sess *agent.Session) {
 	threadID := sess.ID()
-	sess.SetTranscriptRecordedFunc(func(rec transcript.Record) { s.recordTranscriptEntry(threadID, rec) })
-	sess.SetDescendantRecordedFunc(func(childID string, rec transcript.Record) {
-		s.recordTranscriptEntry(childID, rec)
+	hooks, publication := s.transcriptPublicationHooks(threadID)
+	sess.SetTranscriptRecordedFunc(hooks.Recorded)
+	sess.SetTranscriptPublishedFunc(hooks.Published)
+	sess.SetDescendantTranscriptPublicationFunc(func(childID string) agent.TranscriptPublicationHooks {
+		if current, ok := s.appHistories.publications.Load(threadID); !ok || current != publication {
+			return agent.TranscriptPublicationHooks{}
+		}
+		hooks, _ := s.transcriptPublicationHooks(childID)
+		return hooks
 	})
+}
+
+func (s *Server) transcriptPublicationHooks(threadID string) (agent.TranscriptPublicationHooks, *historyPublication) {
+	publication := s.appHistories.publicationForProducer(threadID)
+	return agent.TranscriptPublicationHooks{Recorded: func(rec transcript.Record) {
+		if h := s.appHistories.get(threadID); h != nil && h.historyPublication == publication {
+			h.recorded(rec)
+		}
+	}, Published: publication.complete}, publication
 }
 
 // recordTranscriptEntry is the recorded-entry hook for both the root session
@@ -113,12 +128,14 @@ func (s *Server) ensureHistory(threadID, ref, path string, recordedLength int64,
 // historyPublishers are the publish and resync a history of threadID commits
 // through, at bootGeneration.
 func (s *Server) historyPublishers(threadID, ref, bootGeneration string) (func(appwire.HistoryUpdatedParams) error, func(uint64)) {
+	loaded, _ := s.appHistories.publications.Load(threadID)
+	publication, _ := loaded.(*historyPublication)
 	publish := func(params appwire.HistoryUpdatedParams) error {
-		s.commitHistoryNotification(threadID, appwire.NotifyHistoryUpdated, params)
+		s.commitHistoryNotification(threadID, publication, appwire.NotifyHistoryUpdated, params)
 		return nil
 	}
 	resync := func(epoch uint64) {
-		s.commitHistoryNotification(threadID, appwire.NotifyEvenerThreadResync, appwire.ThreadResyncParams{ThreadID: threadID, Ref: ref, BootGeneration: bootGeneration, Epoch: epoch})
+		s.commitHistoryNotification(threadID, publication, appwire.NotifyEvenerThreadResync, appwire.ThreadResyncParams{ThreadID: threadID, Ref: ref, BootGeneration: bootGeneration, Epoch: epoch})
 	}
 	return publish, resync
 }
@@ -155,15 +172,28 @@ func (s *Server) descendantBootGenerationLocked() string {
 // projection, if the thread is still served: a history detached by an
 // identity replacement may still be finishing a projection, and what it
 // publishes describes a thread nobody reads any more.
-func (s *Server) commitHistoryNotification(threadID, method string, params any) {
+func (s *Server) commitHistoryNotification(threadID string, publication *historyPublication, method string, params any) {
 	s.appServer.CommitProjection(func() []appserver.SequencedNotification {
-		s.mu.RLock()
+		s.mu.Lock()
+		defer s.mu.Unlock()
 		target, served := s.historyTargetLocked(threadID)
-		s.mu.RUnlock()
 		if !served {
 			return nil
 		}
-		return []appserver.SequencedNotification{s.appNotifier.Record(target, method, params)}
+		var notifications []appserver.SequencedNotification
+		if publication != nil {
+			h := s.appHistories.get(threadID)
+			if h == nil || h.historyPublication != publication {
+				return nil
+			}
+			next := h.conversationProvenance()
+			old := s.appEnvelope.ConversationProvenance
+			if threadID == s.appThreadID && next != nil && (old == nil || old.InstanceID != next.InstanceID || old.Revision < next.Revision) {
+				s.appEnvelope.ConversationProvenance = next
+				notifications = append(notifications, s.appNotifier.Record(target, appwire.NotifyConversationProvenanceChanged, appwire.ConversationProvenanceChangedParams{ThreadID: threadID, Ref: target, Provenance: next}))
+			}
+		}
+		return append(notifications, s.appNotifier.Record(target, method, params))
 	})
 }
 
