@@ -297,13 +297,11 @@ func annotateThreadProjects(threads []appwire.Thread) {
 	}
 }
 
-// annotateThreadProject returns thread with the hub's canonical project
-// identity applied. annotateThreadProjects updates the elements of a slice in
-// place; a response that carries one thread has no such slice to retain, so it
-// must keep the returned value. Local identity authority is the same as the
-// list projection's: a local thread's CWD resolves against this hub, and that
-// canonical identity replaces whatever the source sent. annotateThreadProjects'
-// locality gate still leaves a remote thread's identity untouched.
+// annotateThreadProject applies the hub's canonical project identity to one
+// thread and returns it. annotateThreadProjects updates a slice in place, so a
+// singleton response must keep this return value. Local authority matches the
+// list projection: a resolvable local CWD replaces the source's identity. An
+// empty or unresolvable CWD, or a remote thread, keeps what the source sent.
 func annotateThreadProject(thread appwire.Thread) appwire.Thread {
 	threads := []appwire.Thread{thread}
 	annotateThreadProjects(threads)

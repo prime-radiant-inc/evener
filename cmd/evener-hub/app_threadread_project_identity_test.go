@@ -5,12 +5,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
-	"time"
 
-	"primeradiant.com/evener/agent/schema"
-	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/appwire"
-	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 	"primeradiant.com/evener/identifier"
 )
 
@@ -24,33 +20,8 @@ func TestLiveMergeDoesNotResolveDiscardedProjectIdentity(t *testing.T) {
 	if err := os.MkdirAll(workingDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	stateDir := filepath.Join(root, "state", "projects", "project-live-merge-0000000000")
 	sessionID := "02wMz5Txv5aIxgf9yVdd0N"
-	if err := os.MkdirAll(filepath.Join(stateDir, "sessions"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	now := time.Unix(1700000000, 0).UTC()
-	if err := schema.SaveSessionMeta(stateDir, schema.SessionMeta{
-		ID:        sessionID,
-		ProfileID: "openai",
-		Model:     "gpt-5",
-		EnvInfo:   schema.EnvironmentInfo{WorkingDir: workingDir},
-		CreatedAt: now,
-		UpdatedAt: now,
-	}); err != nil {
-		t.Fatal(err)
-	}
-	writer, err := transcript.NewWriter(filepath.Join(stateDir, "sessions", sessionID+".transcript.jsonl"), transcript.Header{
-		SessionID: sessionID, CreatedAt: now, ProfileID: "openai", Model: "gpt-5",
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := writer.Close(); err != nil {
-		t.Fatal(err)
-	}
-	indexPastTranscriptForTest(t, stateDir, sessionID)
-	cfg := hubcore.WebConfig{Past: newRebuiltPastIndex(t, filepath.Join(root, "state", "projects", "*"))}
+	cfg := seedPastProjectSession(t, root, workingDir, "project-live-merge-0000000000", sessionID)
 	entry, ok := cfg.Past.Find(sessionID)
 	if !ok {
 		t.Fatal("past entry not found")

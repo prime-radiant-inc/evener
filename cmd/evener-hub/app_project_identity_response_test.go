@@ -51,6 +51,9 @@ func assertThreadProject(t *testing.T, thread appwire.Thread, want identifier.Pr
 
 func newProjectReadOperations(t *testing.T, cfg hubcore.WebConfig, source appsource.Source) *sessionOperations {
 	t.Helper()
+	if cfg.Past == nil {
+		cfg.Past = hubcore.NewPastIndex("")
+	}
 	sources := appsource.NewRegistry()
 	if source != nil {
 		sources.Add(source)
@@ -64,6 +67,54 @@ func newProjectReadOperations(t *testing.T, cfg hubcore.WebConfig, source appsou
 	}
 }
 
+// pendingAskProjectSource answers a pending-ask page with its scripted page on
+// the page read and its thread on the metadata read, as a daemon does.
+type pendingAskProjectSource struct {
+	*scriptedAppSource
+	page appwire.PendingAskPage
+}
+
+func (s *pendingAskProjectSource) ReadThread(ctx context.Context, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
+	response, err := s.scriptedAppSource.ReadThread(ctx, params)
+	if params.ExpectedAskRevision != nil {
+		response.PendingAskPage = &s.page
+	}
+	return response, err
+}
+
+// seedPastProjectSession writes the persisted session metadata and empty,
+// indexed transcript that saved thread/read fixtures need, and returns the
+// rebuilt past index over the fixture root.
+func seedPastProjectSession(t *testing.T, root, workingDir, stateProject, sessionID string) hubcore.WebConfig {
+	t.Helper()
+	stateDir := filepath.Join(root, "state", "projects", stateProject)
+	if err := os.MkdirAll(filepath.Join(stateDir, "sessions"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Unix(1700000000, 0).UTC()
+	if err := schema.SaveSessionMeta(stateDir, schema.SessionMeta{
+		ID:        sessionID,
+		ProfileID: "openai",
+		Model:     "gpt-5",
+		EnvInfo:   schema.EnvironmentInfo{WorkingDir: workingDir},
+		CreatedAt: now,
+		UpdatedAt: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	writer, err := transcript.NewWriter(filepath.Join(stateDir, "sessions", sessionID+".transcript.jsonl"), transcript.Header{
+		SessionID: sessionID, CreatedAt: now, ProfileID: "openai", Model: "gpt-5",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	indexPastTranscriptForTest(t, stateDir, sessionID)
+	return hubcore.WebConfig{Past: newRebuiltPastIndex(t, filepath.Join(root, "state", "projects", "*"))}
+}
+
 // TestLiveThreadReadReturnsProjectIdentity covers the three thread/read
 // response shapes that used to annotate a copy of the thread and discard the
 // result: the lean read, the live item-page read, and the saved item-page
@@ -72,7 +123,7 @@ func TestLiveThreadReadReturnsProjectIdentity(t *testing.T) {
 	t.Run("lean read", func(t *testing.T) {
 		workingDir := t.TempDir()
 		want := wantProject(t, workingDir)
-		operations := newProjectReadOperations(t, hubcore.WebConfig{Past: hubcore.NewPastIndex("")},
+		operations := newProjectReadOperations(t, hubcore.WebConfig{},
 			&scriptedAppSource{id: appwire.LocalSourceID, thread: liveProjectThread("th_project_lean", workingDir)})
 
 		response, err := operations.read(context.Background(), appwire.ThreadReadParams{Ref: "local:th_project_lean"}, false)
@@ -85,7 +136,7 @@ func TestLiveThreadReadReturnsProjectIdentity(t *testing.T) {
 	t.Run("live item page", func(t *testing.T) {
 		workingDir := t.TempDir()
 		want := wantProject(t, workingDir)
-		operations := newProjectReadOperations(t, hubcore.WebConfig{Past: hubcore.NewPastIndex("")},
+		operations := newProjectReadOperations(t, hubcore.WebConfig{},
 			&scriptedAppSource{id: appwire.LocalSourceID, thread: liveProjectThread("th_project_items", workingDir)})
 
 		response, err := operations.read(context.Background(), appwire.ThreadReadParams{
@@ -104,7 +155,7 @@ func TestLiveThreadReadReturnsProjectIdentity(t *testing.T) {
 		thread.Evener.Ref = "host:th_remote_project"
 		thread.ProjectID = "remote-project-id"
 		thread.ProjectPath = "/remote/repo"
-		operations := newProjectReadOperations(t, hubcore.WebConfig{Past: hubcore.NewPastIndex("")},
+		operations := newProjectReadOperations(t, hubcore.WebConfig{},
 			&scriptedAppSource{id: "host", thread: thread})
 
 		response, err := operations.read(context.Background(), appwire.ThreadReadParams{Ref: "host:th_remote_project"}, false)
@@ -123,12 +174,64 @@ func TestLiveThreadReadReturnsProjectIdentity(t *testing.T) {
 		thread := liveProjectThread("th_project_stale", workingDir)
 		thread.ProjectID = "stale-project-id"
 		thread.ProjectPath = "/stale/project"
-		operations := newProjectReadOperations(t, hubcore.WebConfig{Past: hubcore.NewPastIndex("")},
+		operations := newProjectReadOperations(t, hubcore.WebConfig{},
 			&scriptedAppSource{id: appwire.LocalSourceID, thread: thread})
 
 		response, err := operations.read(context.Background(), appwire.ThreadReadParams{Ref: "local:th_project_stale"}, false)
 		if err != nil {
 			t.Fatalf("read: %v", err)
+		}
+		assertThreadProject(t, response.Thread, want)
+	})
+
+	t.Run("local identity keeps source fields when CWD is empty or unresolvable", func(t *testing.T) {
+		for name, cwd := range map[string]string{
+			"empty":        "",
+			"unresolvable": filepath.Join(t.TempDir(), "missing"),
+		} {
+			t.Run(name, func(t *testing.T) {
+				thread := liveProjectThread("th_project_fallback", cwd)
+				thread.ProjectID = "source-project-id"
+				thread.ProjectPath = "/source/project"
+				operations := newProjectReadOperations(t, hubcore.WebConfig{},
+					&scriptedAppSource{id: appwire.LocalSourceID, thread: thread})
+
+				response, err := operations.read(context.Background(), appwire.ThreadReadParams{Ref: "local:th_project_fallback"}, false)
+				if err != nil {
+					t.Fatalf("read: %v", err)
+				}
+				if response.Thread.ProjectID != "source-project-id" || response.Thread.ProjectPath != "/source/project" {
+					t.Fatalf("project identity = (%q, %q), want the source's fields kept",
+						response.Thread.ProjectID, response.Thread.ProjectPath)
+				}
+			})
+		}
+	})
+
+	t.Run("pending ask page", func(t *testing.T) {
+		workingDir := t.TempDir()
+		want := wantProject(t, workingDir)
+		thread := liveProjectThread("th_project_ask_page", workingDir)
+		thread.Evener.Capabilities.AskFence = true
+		source := &pendingAskProjectSource{
+			scriptedAppSource: &scriptedAppSource{id: appwire.LocalSourceID, thread: thread},
+			page:              appwire.PendingAskPage{Composites: []appwire.PendingAskCall{{TurnID: "turn-1", CallID: "call-1"}}, Total: 1},
+		}
+		operations := newProjectReadOperations(t, hubcore.WebConfig{}, source)
+		revision, offset, limit := uint64(0), 0, 1
+
+		response, err := operations.read(context.Background(), appwire.ThreadReadParams{
+			Ref:                       "local:th_project_ask_page",
+			ExpectedAskRevision:       &revision,
+			ExpectedAskBootGeneration: "boot-1",
+			Offset:                    &offset,
+			Limit:                     &limit,
+		}, false)
+		if err != nil {
+			t.Fatalf("read: %v", err)
+		}
+		if response.PendingAskPage == nil {
+			t.Fatal("pending ask page missing from the read response")
 		}
 		assertThreadProject(t, response.Thread, want)
 	})
@@ -139,33 +242,8 @@ func TestLiveThreadReadReturnsProjectIdentity(t *testing.T) {
 		if err := os.MkdirAll(workingDir, 0o755); err != nil {
 			t.Fatal(err)
 		}
-		stateDir := filepath.Join(root, "state", "projects", "project-4712-saved-0000000000")
 		sessionID := "02wMz5Txv5aIxgf9yVdd0N"
-		if err := os.MkdirAll(filepath.Join(stateDir, "sessions"), 0o755); err != nil {
-			t.Fatal(err)
-		}
-		now := time.Unix(1700000000, 0).UTC()
-		if err := schema.SaveSessionMeta(stateDir, schema.SessionMeta{
-			ID:        sessionID,
-			ProfileID: "openai",
-			Model:     "gpt-5",
-			EnvInfo:   schema.EnvironmentInfo{WorkingDir: workingDir},
-			CreatedAt: now,
-			UpdatedAt: now,
-		}); err != nil {
-			t.Fatal(err)
-		}
-		writer, err := transcript.NewWriter(filepath.Join(stateDir, "sessions", sessionID+".transcript.jsonl"), transcript.Header{
-			SessionID: sessionID, CreatedAt: now, ProfileID: "openai", Model: "gpt-5",
-		})
-		if err != nil {
-			t.Fatal(err)
-		}
-		if err := writer.Close(); err != nil {
-			t.Fatal(err)
-		}
-		indexPastTranscriptForTest(t, stateDir, sessionID)
-		cfg := hubcore.WebConfig{Past: newRebuiltPastIndex(t, filepath.Join(root, "state", "projects", "*"))}
+		cfg := seedPastProjectSession(t, root, workingDir, "project-4712-saved-0000000000", sessionID)
 		operations := newProjectReadOperations(t, cfg,
 			&scriptedAppSource{id: appwire.LocalSourceID, thread: liveProjectThread(sessionID, workingDir)})
 
@@ -213,16 +291,19 @@ func TestThreadStartReturnsProjectIdentity(t *testing.T) {
 			}, nil
 		}}
 	}
+	newStartConfig := func() hubcore.WebConfig {
+		return hubcore.WebConfig{
+			HubStateRoot:     t.TempDir(),
+			LaunchConfigRoot: t.TempDir(),
+			Spawner:          newSpawner(),
+		}
+	}
 	t.Run("read back from source", func(t *testing.T) {
 		workingDir := t.TempDir()
 		want := wantProject(t, workingDir)
 		sources := appsource.NewRegistry()
 		sources.Add(&scriptedAppSource{id: appwire.LocalSourceID, thread: liveProjectThread("th_start_project", workingDir)})
-		cfg := hubcore.WebConfig{
-			HubStateRoot:     t.TempDir(),
-			LaunchConfigRoot: t.TempDir(),
-			Spawner:          newSpawner(),
-		}
+		cfg := newStartConfig()
 
 		response, err := hubThreadStart(context.Background(), cfg, sources, appwire.ThreadStartParams{
 			Model: "openai/gpt-5", CWD: workingDir,
@@ -236,11 +317,7 @@ func TestThreadStartReturnsProjectIdentity(t *testing.T) {
 	t.Run("synthesized after source resolution failure", func(t *testing.T) {
 		workingDir := t.TempDir()
 		want := wantProject(t, workingDir)
-		cfg := hubcore.WebConfig{
-			HubStateRoot:     t.TempDir(),
-			LaunchConfigRoot: t.TempDir(),
-			Spawner:          newSpawner(),
-		}
+		cfg := newStartConfig()
 
 		response, err := hubThreadStart(context.Background(), cfg, appsource.NewRegistry(), appwire.ThreadStartParams{
 			Model: "openai/gpt-5", CWD: workingDir,
@@ -264,6 +341,37 @@ func TestResumedThreadResponseReturnsProjectIdentity(t *testing.T) {
 	response, err := hubResumedThreadResponse(context.Background(), hubcore.WebConfig{}, sources, "th_resumed_project", "th_resumed_project")
 	if err != nil {
 		t.Fatalf("hubResumedThreadResponse: %v", err)
+	}
+	assertThreadProject(t, response.Thread, want)
+}
+
+// TestRestartRequiredThreadReadReturnsProjectIdentity covers the saved read
+// that answers for an incompatible restart-required daemon from its roster row
+// (#4712).
+func TestRestartRequiredThreadReadReturnsProjectIdentity(t *testing.T) {
+	workingDir := t.TempDir()
+	want := wantProject(t, workingDir)
+	sessionID := "02wMz5Txv5aIxgf9yVdd0N"
+	runDir := t.TempDir()
+	writeRendezvous(t, runDir, rendezvous.Entry{
+		PID:        107,
+		Protocol:   appwire.ProtocolVersion,
+		SourceID:   appwire.LocalSourceID,
+		ThreadID:   sessionID,
+		SessionID:  sessionID,
+		WorkingDir: workingDir,
+	})
+	roster := hubcore.NewRoster(runDir, fakeProber{sessionID: sessionID, status: appwire.ThreadStatusRestartRequired})
+	roster.Refresh()
+	thread := liveProjectThread(sessionID, workingDir)
+	thread.Status.Type = appwire.ThreadStatusRestartRequired
+	sources := appsource.NewRegistry()
+	sources.Add(&scriptedAppSource{id: appwire.LocalSourceID, thread: thread})
+	cfg := hubcore.WebConfig{RunDir: runDir, Roster: roster, Past: hubcore.NewPastIndex("")}
+
+	response, ok, err := unavailableThreadReadResponse(context.Background(), cfg, sources, appwire.ThreadReadParams{Ref: "local:" + sessionID})
+	if err != nil || !ok {
+		t.Fatalf("unavailableThreadReadResponse = (%t, %v), want the restart-required row", ok, err)
 	}
 	assertThreadProject(t, response.Thread, want)
 }
