@@ -201,49 +201,48 @@ test("scope and its clear action precede editing, while shared changes preserve 
 });
 
 // A sibling test file driving the same store is another jsdom document, not
-// another tab of this one: its local writes must not land here. Without the
-// file-scoped channel above, these two messages overwrite this file's layouts
-// and "scope and its clear action precede editing" then fails on another file's
-// preset (issue 5837).
-test("ignores a sibling test file's local writes on the shared channel", async () => {
+// another tab of this one: its local writes must not land here. The file-scoped
+// channel above renames this file's channel, which is what keeps the two apart
+// (issue 5837). This test publishes only on that private name, never on the
+// suite-wide one, so it cannot itself pollute a sibling file's store.
+test("keeps this file's cross-tab channel apart from a sibling file's", async () => {
   if (typeof unscopedBroadcastChannel !== "function") return;
-  const sibling = new unscopedBroadcastChannel("evener.transcript-display.v1");
-  // A second channel on the same (unscoped) name proves the sibling's message
-  // really went through the event loop before this test reads the store, so a
-  // slow machine cannot make the guard pass by checking too early.
-  const witness = new unscopedBroadcastChannel("evener.transcript-display.v1");
+  const name = "evener.transcript-display.v1";
+  const privateName = `${name}::${transcriptChannelFileScope}`;
+  // What the store in this file subscribes on, created through the global the
+  // file installed above.
+  const ours = new globalThis.BroadcastChannel(name);
+  // A channel on the bare production name: what an unwrapped sibling file's
+  // store listens on.
+  const sibling = new unscopedBroadcastChannel(name);
+  // A channel on this file's private name proves the message really went
+  // through the event loop, so a slow machine cannot make this pass early.
+  const witness = new unscopedBroadcastChannel(privateName);
   try {
-    const writes = [
-      { layout: "desktop", level: "full" },
-      { layout: "mobile", level: "chat" },
-    ] as const;
-    await act(async () => {
-      await new Promise<void>((resolve) => {
-        const timer = setTimeout(finish, 2_000);
-        let delivered = 0;
-        function finish(): void {
-          clearTimeout(timer);
-          witness.onmessage = null;
-          resolve();
-        }
-        witness.onmessage = () => {
-          delivered += 1;
-          if (delivered === writes.length) finish();
-        };
-        for (const { layout, level } of writes) {
-          const config = makeTranscriptDisplayConfig({ kind: "preset", level });
-          sibling.postMessage({
-            version: 1,
-            sourceId: "sibling-test-file",
-            layout,
-            config: encodeLocalConfig(config),
-            fingerprint: configFingerprint(config),
-          });
-        }
-      });
+    const config = makeTranscriptDisplayConfig({ kind: "preset", level: "full" });
+    const delivered = new Promise<void>((resolve) => {
+      witness.onmessage = () => resolve();
     });
-    expect(transcriptDisplayStore.getState().local).toEqual({});
+    let siblingHeard = 0;
+    sibling.onmessage = () => {
+      siblingHeard += 1;
+    };
+    ours.postMessage({
+      version: 1,
+      sourceId: "this-test-file",
+      layout: "desktop",
+      config: encodeLocalConfig(config),
+      fingerprint: configFingerprint(config),
+    });
+    await act(async () => {
+      await delivered;
+    });
+    // The sibling on the bare name heard nothing, while a tab of this file
+    // still reaches this store.
+    expect(siblingHeard).toBe(0);
+    expect(Object.keys(transcriptDisplayStore.getState().local)).toEqual(["desktop"]);
   } finally {
+    ours.close();
     sibling.close();
     witness.close();
   }
