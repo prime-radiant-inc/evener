@@ -139,31 +139,16 @@ const sourceAnchorRowExpr = `(() => {
 })()`;
 const sourceAnchorExpr = `((${sourceAnchorRowExpr})?.id ?? null)`;
 
-// settledSample waits until sampleExpr returns the same non-null value on two
-// consecutive polls of one settle; a null poll between them breaks the run. key scopes the samples, so a sample left by
-// an earlier settle never confirms a later one.
-let settles = 0;
-function settledSample(sampleExpr, label) {
-  const key = `${++settles}:${label}`;
-  return wait(`(() => {
-    const sample = ${sampleExpr};
-    if (sample === null || sample === undefined) {
-      window.__cascadeSettleSample = null;
-      return null;
-    }
-    const stamp = JSON.stringify({ key:${q(key)}, sample });
-    const previous = window.__cascadeSettleSample;
-    window.__cascadeSettleSample = stamp;
-    return previous === stamp ? sample : null;
-  })()`, label);
-}
-
 // A row far above the viewport can still grow, and the virtualizer compensates
 // with a scrollTop write that the rows' positions only follow on the next
 // commit. A single read can land in that frame and see every row shifted, so
 // the anchor is read only once it is stable.
 async function sourceAnchor() {
-  return (await settledSample(sourceAnchorRowExpr, "real center transcript has a stable visible semantic anchor")).id;
+  return (
+    await driver.settleExpression(sourceAnchorRowExpr, {
+      label: "real center transcript has a stable visible semantic anchor",
+    })
+  ).id;
 }
 
 function readingPointExpr(portExpr) {
@@ -252,11 +237,14 @@ function assertReadingContinuity(before, after, label) {
 }
 
 async function settledReadingPoint(portExpr, label) {
-  return settledSample(`(() => {
-    const point = ${readingPointExpr(portExpr)};
-    window.__cascadeReadingAttempt = { label:${q(label)}, point };
-    return point?.useful ? point : null;
-  })()`, `${label}, useful reading geometry is stable`);
+  return driver.settleExpression(
+    `(() => {
+      const point = ${readingPointExpr(portExpr)};
+      window.__cascadeReadingAttempt = { label:${q(label)}, point };
+      return point?.useful ? point : null;
+    })()`,
+    { label: `${label}, useful reading geometry is stable` },
+  );
 }
 
 async function settledReadingContinuity(before, portExpr, label) {
