@@ -21,7 +21,9 @@ const managerReadMaxJSONBytes = 256 << 10
 const managerTaskPageMaxJSONBytes = managerReadMaxJSONBytes - 4096
 
 func (o *sessionOperations) discover(ctx context.Context, params appwire.ThreadListParams) (appwire.SessionDiscovery, error) {
-	builtAt := time.Now().UnixMilli()
+	builtAtTime := time.Now()
+	builtAt := builtAtTime.UnixMilli()
+	ctx = appsource.WithThreadListBuiltAt(ctx, builtAtTime)
 	threads, sourceStates, err := hubThreadListWithSourceStates(ctx, o.cfg, o.sources, params)
 	if err != nil {
 		return appwire.SessionDiscovery{}, err

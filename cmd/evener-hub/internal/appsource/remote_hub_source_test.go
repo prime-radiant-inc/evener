@@ -138,6 +138,7 @@ func lastMethodCall(t *testing.T, calls []remoteCall, method string) json.RawMes
 }
 
 func TestRemoteHubSourceListThreads(t *testing.T) {
+	quiet := int64(2500)
 	source, calls := newScriptedRemote(t, "host", func(method string, _ json.RawMessage) scriptedReply {
 		if method != appwire.MethodThreadList {
 			t.Errorf("method = %q, want %q", method, appwire.MethodThreadList)
@@ -145,7 +146,15 @@ func TestRemoteHubSourceListThreads(t *testing.T) {
 		return scriptedReply{result: appwire.ThreadListResponse{Data: []appwire.Thread{{
 			ID:     "t1",
 			Source: "local",
-			Evener: appwire.EvenerThread{Ref: "local:t1", InstanceID: "inst-1"},
+			Evener: appwire.EvenerThread{
+				Ref:                 "local:t1",
+				InstanceID:          "inst-1",
+				ActiveTurnID:        "remote-local-turn",
+				ActiveTurnStartedAt: 1_790_000_000_123,
+				QuietForMS:          &quiet,
+				ProbeState:          "fresh",
+				Crashed:             true,
+			},
 		}}}}
 	})
 
@@ -169,6 +178,34 @@ func TestRemoteHubSourceListThreads(t *testing.T) {
 	}
 	if resp.Data[0].Evener.InstanceID != "inst-1" {
 		t.Fatalf("InstanceID = %q, want inst-1", resp.Data[0].Evener.InstanceID)
+	}
+	fleet := resp.Data[0].Evener
+	if fleet.ActiveTurnID != "" || fleet.ActiveTurnStartedAt != 0 || fleet.QuietForMS != nil || fleet.ProbeState != "" || fleet.Crashed {
+		t.Fatalf("remote row kept local-only fleet facts: %+v", fleet)
+	}
+}
+
+func TestRemoteHubRawThreadDropsLocalOnlyFleetFields(t *testing.T) {
+	source := NewRemoteHubSource("host", nil, nil)
+	raw := json.RawMessage(`{"source":"local","evener":{"ref":"local:t1","activeTurnId":"turn","activeTurnStartedAt":1790000000123,"quietForMs":2500,"probeState":"fresh","crashed":true,"newerField":"kept"}}`)
+
+	translated, err := source.translateThreadRaw(raw, appwire.ThreadCapabilities{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var thread struct {
+		Evener map[string]json.RawMessage `json:"evener"`
+	}
+	if err := json.Unmarshal(translated, &thread); err != nil {
+		t.Fatal(err)
+	}
+	for _, field := range []string{"activeTurnId", "activeTurnStartedAt", "quietForMs", "probeState", "crashed"} {
+		if _, ok := thread.Evener[field]; ok {
+			t.Fatalf("raw remote row kept local-only field %s: %s", field, translated)
+		}
+	}
+	if _, ok := thread.Evener["newerField"]; !ok {
+		t.Fatalf("raw remote row dropped unknown field: %s", translated)
 	}
 }
 

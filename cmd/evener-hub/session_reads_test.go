@@ -450,6 +450,7 @@ func TestManagerDiscoveryExplicitFailureFailsWhole(t *testing.T) {
 
 func TestManagerDiscoveryCarriesFreshLocalActiveTurn(t *testing.T) {
 	const sessionID = "fleet-active"
+	lastActivityAt := time.Now().Add(-8 * time.Second).UnixMilli()
 	live := hubcore.LiveEntry{
 		Entry: rendezvous.Entry{
 			PID:       501,
@@ -463,6 +464,8 @@ func TestManagerDiscoveryCarriesFreshLocalActiveTurn(t *testing.T) {
 		Status:              appwire.ThreadStatusActive,
 		ActiveTurnID:        "turn-running",
 		ActiveTurnStartedAt: 1_790_000_000_123,
+		ProbeState:          "fresh",
+		Activity:            &appwire.ThreadActivity{LastActivityAt: lastActivityAt},
 	}
 	roster := hubcore.NewRosterWithEntries(live)
 	cfg := hubcore.WebConfig{Roster: roster, Past: hubcore.NewPastIndex(""), HubStateRoot: t.TempDir()}
@@ -477,6 +480,67 @@ func TestManagerDiscoveryCarriesFreshLocalActiveTurn(t *testing.T) {
 	got := response.Discover.Threads.Data[0].Evener
 	if got.ActiveTurnID != "turn-running" || got.ActiveTurnStartedAt != 1_790_000_000_123 {
 		t.Fatalf("active turn = %q at %d, want the roster probe facts", got.ActiveTurnID, got.ActiveTurnStartedAt)
+	}
+	if got.ProbeState != "fresh" {
+		t.Fatalf("probe state = %q, want fresh", got.ProbeState)
+	}
+	wantQuiet := response.Discover.BuiltAt - lastActivityAt
+	if got.QuietForMS == nil || *got.QuietForMS != wantQuiet {
+		t.Fatalf("quiet time = %v, want %d from discovery builtAt", got.QuietForMS, wantQuiet)
+	}
+}
+
+func TestManagerDiscoveryDisplaysCrashedLocalLanes(t *testing.T) {
+	crashedEntry := func(sessionID string, failure *appwire.ThreadFailure) hubcore.LiveEntry {
+		pid := 502
+		if failure == nil {
+			pid = 503
+		}
+		return hubcore.LiveEntry{
+			Entry: rendezvous.Entry{
+				PID:       pid,
+				Protocol:  appwire.ProtocolVersion,
+				Endpoint:  "ws://127.0.0.1:502/rpc",
+				SourceID:  "local",
+				ThreadID:  sessionID,
+				SessionID: sessionID,
+			},
+			SessionID:  sessionID,
+			Status:     "errored",
+			Crashed:    true,
+			ProbeState: "retained",
+			Failure:    failure,
+		}
+	}
+	roster := hubcore.NewRosterWithEntries(
+		crashedEntry("crashed-with-failure", &appwire.ThreadFailure{}),
+		crashedEntry("crashed-mid-turn", nil),
+	)
+	cfg := hubcore.WebConfig{Roster: roster, Past: hubcore.NewPastIndex(""), HubStateRoot: t.TempDir()}
+	sources := newHubSourceRegistry(cfg)
+	server := appserver.NewServer(appserver.ServerConfig{})
+	owner := &sessionOperations{cfg: cfg, sources: sources, server: server, relays: newHubRelay(server, cfg, sources)}
+	response := managerInvoke(t, owner, appwire.ManagerView{Ref: "local:manager", Manager: true}, appwire.SessionOperationRequest{Discover: &appwire.ThreadListParams{}})
+
+	if response.Discover == nil || len(response.Discover.Threads.Data) != 2 {
+		t.Fatalf("crashed discovery rows = %+v", response.Discover)
+	}
+	rows := map[string]appwire.Thread{}
+	for _, row := range response.Discover.Threads.Data {
+		rows[row.SessionID] = row
+	}
+	withFailure := rows["crashed-with-failure"]
+	withoutFailure := rows["crashed-mid-turn"]
+	for _, row := range []appwire.Thread{withFailure, withoutFailure} {
+		if row.Status.Type != appwire.ThreadStatusSystemError || !row.Evener.Crashed || row.Evener.ProbeState != "retained" {
+			t.Fatalf("crashed row = %+v", row)
+		}
+		if row.Evener.ActiveTurnID != "" || row.Evener.ActiveTurnStartedAt != 0 || row.Evener.QuietForMS != nil {
+			t.Fatalf("crashed row kept volatile facts: %+v", row.Evener)
+		}
+	}
+	if withFailure.Evener.Failure == nil || withoutFailure.Evener.Failure != nil {
+		t.Fatalf("failure presence changed: with=%+v without=%+v", withFailure.Evener.Failure, withoutFailure.Evener.Failure)
 	}
 }
 

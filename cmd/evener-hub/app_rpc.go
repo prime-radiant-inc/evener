@@ -116,21 +116,22 @@ func newHubSourceRegistry(cfg hubcore.WebConfig) *appsource.Registry {
 	return registry
 }
 
-// localDaemonEntriesFromRoster is the local source's view of a roster's live
-// entries: crashed ones skipped, in-process descendants addressed as their own
-// AppWire threads served by their owner's endpoint.
+// localDaemonEntriesFromRoster is the local source's display view of a roster's
+// entries. Crashed roots remain visible but carry a discriminator that excludes
+// them from live routes; in-process descendants are addressed through their
+// owner's endpoint.
 func localDaemonEntriesFromRoster(live []hubcore.LiveEntry) []appsource.LocalDaemonEntry {
 	entries := make([]appsource.LocalDaemonEntry, 0, len(live))
 	for _, item := range live {
-		if item.Crashed {
-			continue
-		}
 		entry := appsource.LocalDaemonEntry{
 			Entry:               item.Entry,
 			SessionID:           item.SessionID,
 			Status:              item.Status,
 			ActiveTurnID:        item.ActiveTurnID,
 			ActiveTurnStartedAt: item.ActiveTurnStartedAt,
+			ProbeState:          item.ProbeState,
+			Activity:            item.Activity,
+			Crashed:             item.Crashed,
 			PendingAsk:          item.PendingAsk,
 			Manager:             item.Manager,
 			PendingEscalation:   item.PendingEscalation,
