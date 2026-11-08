@@ -173,10 +173,12 @@ func memHarnessAuthoredTurnOrdinal(text string) (int, bool) {
 // that input's text.
 func memHarnessRequestPosition(req llm.Request) (turn, rounds int) {
 	turn = 1
+	found := false
 	for _, m := range slices.Backward(req.Messages) {
 		if m.Role == llm.RoleUser && strings.Contains(m.Text(), memHarnessTurnMarker) {
 			if parsed, ok := memHarnessAuthoredTurnOrdinal(m.Text()); ok {
 				turn = parsed
+				found = true
 				break
 			}
 		}
@@ -184,7 +186,65 @@ func memHarnessRequestPosition(req llm.Request) (turn, rounds int) {
 			rounds++
 		}
 	}
+	if !found {
+		// A mid-turn compaction can fold the authored input out of the window it
+		// retains. The scripted call ids it keeps still name the last round that
+		// ran, so this request is that round's successor in the same turn.
+		if callTurn, lastRound, ok := memHarnessLastScriptedCall(req); ok {
+			return callTurn, lastRound + 1
+		}
+	}
 	return turn, rounds
+}
+
+// memHarnessScriptedCallID reads one of the harness's authored tool-call ids
+// back into the turn it belongs to and the round it ran.
+func memHarnessScriptedCallID(id string) (turn, round int, ok bool) {
+	rest, found := strings.CutPrefix(id, "call_t")
+	if !found {
+		return 0, 0, false
+	}
+	turnText, tail, found := strings.Cut(rest, "_")
+	if !found {
+		return 0, 0, false
+	}
+	turn, err := strconv.Atoi(turnText)
+	if err != nil || turn < 1 {
+		return 0, 0, false
+	}
+	if tail == "delegate" {
+		return turn, 0, true
+	}
+	roundText, found := strings.CutPrefix(tail, "r")
+	if !found {
+		return 0, 0, false
+	}
+	round, err = strconv.Atoi(roundText)
+	if err != nil || round < 0 {
+		return 0, 0, false
+	}
+	return turn, round, true
+}
+
+// memHarnessLastScriptedCall finds the highest scripted (turn, round) a request
+// still carries, in its assistant tool calls or its tool results.
+func memHarnessLastScriptedCall(req llm.Request) (turn, round int, ok bool) {
+	consider := func(id string) {
+		if callTurn, callRound, valid := memHarnessScriptedCallID(id); valid && (callTurn > turn || (callTurn == turn && callRound >= round)) {
+			turn, round, ok = callTurn, callRound, true
+		}
+	}
+	for _, m := range req.Messages {
+		for _, part := range m.Content {
+			if part.ToolCall != nil {
+				consider(part.ToolCall.ID)
+			}
+			if part.ToolResult != nil {
+				consider(part.ToolResult.ToolCallID)
+			}
+		}
+	}
+	return turn, round, ok
 }
 
 // memHarnessAdapter answers every model round from the request alone: a turn

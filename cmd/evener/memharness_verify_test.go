@@ -170,6 +170,12 @@ type memHarnessCompletion struct {
 
 func (v *memHarnessTranscriptView) add(entry transcript.Entry) {
 	turn := entry.Turn
+	if turn.OriginalOrdinal != nil {
+		// A compaction fold re-appends a copy of an entry the file already
+		// holds; the projection and the derived scans skip it, so it is neither
+		// another input nor another tool round.
+		return
+	}
 	switch turn.Kind {
 	case schema.TurnUserInput:
 		v.inputs = append(v.inputs, memHarnessInputRecord{Seq: entry.Seq, TurnID: turn.TurnID, ClientMutationID: turn.ClientMutationID, Text: turn.Message.Text()})
@@ -626,6 +632,25 @@ func TestMemHarnessVerifierAcceptsAuthoredTranscript(t *testing.T) {
 	}
 }
 
+// A compaction fold re-appends copies of entries the file already holds with
+// OriginalOrdinal naming the entry they copy. They are model history for
+// resume, not another input or tool round, so the verifier must ignore them.
+func TestMemHarnessVerifierIgnoresFoldReplays(t *testing.T) {
+	f := newMemHarnessFixture(t, t.TempDir())
+	f.build()
+	ordinal := func(n uint64) *uint64 { return &n }
+	inputReplay := f.entries[0]
+	inputReplay.Seq = 100
+	inputReplay.Turn.OriginalOrdinal = ordinal(1)
+	toolReplay := f.entries[2]
+	toolReplay.Seq = 101
+	toolReplay.Turn.OriginalOrdinal = ordinal(3)
+	f.entries = append(f.entries, inputReplay, toolReplay)
+	if err := f.verify(f.write()); err != nil {
+		t.Fatalf("fold replay rejected: %v", err)
+	}
+}
+
 // The queued path is chosen from the typed conflict, not its message: product
 // copy is not a protocol, and a copy-only error is not that refusal.
 func TestMemHarnessTurnActiveUsesTypedConflict(t *testing.T) {
@@ -674,6 +699,32 @@ func TestMemHarnessRequestPositionIgnoresDelegateNotification(t *testing.T) {
 	child := llm.Request{Messages: []llm.Message{llm.User("delegated unit: turn 5: please do more work context")}}
 	if turn, rounds := memHarnessRequestPosition(child); turn != 5 || rounds != 0 {
 		t.Fatalf("child position = (%d, %d), want (5, 0)", turn, rounds)
+	}
+}
+
+// A mid-turn compaction can fold the authored input out of the retained
+// window. The scripted call ids it keeps still name the last round that ran.
+func TestMemHarnessRequestPositionRecoversCompactedTurn(t *testing.T) {
+	compacted := llm.Request{Messages: []llm.Message{
+		llm.User("## Progress\n" + strings.Repeat("summary of prior work. ", 20)),
+		{Role: llm.RoleAssistant, Content: []llm.ContentPart{
+			{Kind: llm.ContentText, Text: "running a command"},
+			{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{ID: memHarnessShellCallID(3, 1), Name: "shell"}},
+		}},
+		llm.ToolResult(memHarnessShellCallID(3, 1), "output", false),
+		llm.User("please do more work"),
+	}}
+	if turn, rounds := memHarnessRequestPosition(compacted); turn != 3 || rounds != 2 {
+		t.Fatalf("compacted shell position = (%d, %d), want (3, 2)", turn, rounds)
+	}
+	delegated := llm.Request{Messages: []llm.Message{
+		llm.User("## Progress"),
+		{Role: llm.RoleAssistant, Content: []llm.ContentPart{
+			{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{ID: memHarnessDelegateCallID(4), Name: "delegate"}},
+		}},
+	}}
+	if turn, rounds := memHarnessRequestPosition(delegated); turn != 4 || rounds != 1 {
+		t.Fatalf("compacted delegate position = (%d, %d), want (4, 1)", turn, rounds)
 	}
 }
 
