@@ -253,9 +253,10 @@ describe("each tool's evidence, drawn", () => {
 	});
 
 	it("draws an unrecognized status as written, with the neutral mark", () => {
-		// An unknown status has no mark of its own: open's unfilled circle and
-		// the raw word, the same treatment the Tasks sheet gives it (#2256).
+		// An unknown status has no mark of its own: open's unfilled circle, and
+		// its raw word visible as well as in the accessibility label (#2256).
 		const tree = drawn([{ kind: "tasks", tasks: [{ id: 1, status: "blocked", description: "Wait on the review" }] }]);
+		expect(byText(tree.root, "blocked")).toBeDefined();
 		expect(byText(tree.root, "Wait on the review")?.props.accessibilityLabel).toBe("blocked: Wait on the review");
 		const marks = tree.root.findAllByType("SymbolView" as never).map((mark) => mark.props.name);
 		expect(marks).toContain("circle");

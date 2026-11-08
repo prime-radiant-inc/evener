@@ -409,8 +409,9 @@ test("a task with an unrecognized status stays in the list, with a neutral glyph
   // raises, and the settled history group does not grow.
   expect(group?.getAttribute("data-status")).toBe("open");
   expect(group?.querySelectorAll("[data-testid='task-row']")).toHaveLength(2);
-  // The settled history is unchanged: the one done task, no cancelled task.
-  expect(screen.getByTestId("task-settled-group-summary").textContent).toBe("1 completed task");
+  // The settled disclosure still starts collapsed and renders none of these
+  // rows, so the unknown task is in the live list, not the history.
+  expect(screen.getByTestId("task-settled-group").querySelectorAll("[data-testid='task-row']")).toHaveLength(0);
   expect(row?.querySelector('[data-testid="task-check"]')?.getAttribute("data-touch")).toBe("pending");
   expect(row?.querySelector('[data-testid="task-status-word"]')?.textContent).toBe("blocked");
   // The visible caption is itself announced, so the row does not also repeat

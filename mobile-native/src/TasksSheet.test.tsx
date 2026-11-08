@@ -137,12 +137,14 @@ it("keeps a task with an unrecognized status in the list, with a neutral mark an
 	const tree = render(taskList(client, true));
 	await act(async () => {});
 
-	// Remaining work, never settled history: the Remaining section grows and the
-	// collapsed settled count does not.
-	const text = renderedText(tree);
-	expect(text).toContain("Remaining · 1");
-	expect(text).toContain("Done · settled · 2");
-	expect(text).toContain("blocked");
+	// Remaining work, never settled history: the unknown row is the one task
+	// row rendered, because the settled disclosure starts collapsed. Its group
+	// membership is pinned structurally by taskListGroups.test.ts.
+	const taskRowLabels = tree.root
+		.findAll((node) => node.props.accessibilityRole === "button")
+		.map((node) => node.props.accessibilityLabel)
+		.filter((label): label is string => typeof label === "string" && label.includes(": "));
+	expect(taskRowLabels).toEqual(["blocked: Wait on the review"]);
 
 	const rowButton = tree.root
 		.findAll((node) => node.props.accessibilityRole === "button")
