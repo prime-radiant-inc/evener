@@ -22,20 +22,22 @@ func (s *Server) SetSessionTools(current func() *agent.Session) {
 		}
 		s.mu.RLock()
 		expectedRef, threadID := s.appRef, s.appThreadID
+		publishedHook := s.testOnlySessionToolsPublished
 		s.mu.RUnlock()
 		if expectedRef == "" || threadID != session.ID() || binding.Ref != expectedRef || binding.InstanceID != session.ID() {
 			return appwire.InvalidRequest("binding does not name this live runtime")
 		}
 		mu.Lock()
 		defer mu.Unlock()
-		if selectedSession != session {
+		freshSelection := selectedSession != session
+		var registry *runtimeHubClients
+		if freshSelection {
 			if clients != nil {
 				clients.close()
 			}
 			selectedSession = session
 			clients = &runtimeHubClients{clients: map[string]*runtimeHubClient{}}
-			registry := clients
-			session.SetHubClient(registry)
+			registry = clients
 			s.mu.Lock()
 			s.resolveManagerActor = func(proof appwire.SessionActorProof) (schema.SessionActor, error) {
 				registry.mu.Lock()
@@ -67,9 +69,30 @@ func (s *Server) SetSessionTools(current func() *agent.Session) {
 			return appwire.Unavailable("runtime hub binding limit reached")
 		}
 		clients.clients[binding.HubID] = &runtimeHubClient{current: current, session: session, binding: binding, client: client, ctx: lifetime, cancel: cancel}
+		if freshSelection {
+			// Publish only once the first binding is in place. A Manager tool
+			// woken by SetHubClient must find a registry it can use; an empty
+			// registry would refuse the operation in the window between the
+			// publish and the insert.
+			if publishedHook != nil {
+				publishedHook(registry)
+			}
+			session.SetHubClient(registry)
+		}
 		session.HubBindingChanged()
 		return nil
 	})
+}
+
+// SetTestOnlySessionToolsPublished installs an observer on a freshly selected
+// runtime registry, called with the registry's lock held immediately before
+// the registry is published to the session. It exists for the installation
+// ordering regression: publishing before the first binding is inserted strands
+// a Manager tool woken by SetHubClient.
+func (s *Server) SetTestOnlySessionToolsPublished(fn func(*runtimeHubClients)) {
+	s.mu.Lock()
+	s.testOnlySessionToolsPublished = fn
+	s.mu.Unlock()
 }
 
 // Selection follows the live binding, not a hub-side setting: a session

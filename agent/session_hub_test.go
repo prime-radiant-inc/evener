@@ -10,13 +10,46 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"primeradiant.com/evener/agent/internal/agenttest"
+	"primeradiant.com/evener/agent/internal/tool"
 	"primeradiant.com/evener/agent/provider"
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/llm"
 )
+
+// A thread/clear replacement is discovered by the hub asynchronously, so its
+// first turn can run before the hub installs the replacement's runtime-private
+// binding. A Manager tool invoked in that window must wait for the binding
+// rather than refuse a tool the session is about to own.
+func TestManagerWatchCreateWaitsForHubBinding(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		root := newMessagingRoot(t, newMessagingAdapter(), func(cfg *SessionConfig) { cfg.Manager = true })
+		updates := make(chan appwire.SessionWatchUpdate, 1)
+		updates <- rosterUpdate(1, true, rosterEntry("local:worker", "new"))
+		client := &managerSetupCancelClient{
+			view:     appwire.ManagerView{Ref: "local:manager", InstanceID: "manager-instance", Manager: true},
+			watchCtx: make(chan context.Context, 1),
+			updates:  updates,
+		}
+		done := make(chan tool.ExecResult, 1)
+		go func() {
+			done <- root.reg.ExecuteCall(t.Context(), root.currentEnv(), llm.ToolCallData{
+				ID: "watch", Name: "job_watch",
+				Arguments: json.RawMessage(`{"operation":"create","hub":{"scope":"top_level"},"intent":"Watching the roster"}`),
+			})
+		}()
+		// Parked on the binding, not already refused: the binding then lands.
+		synctest.Wait()
+		root.SetHubClient(client)
+		synctest.Wait()
+		if res := <-done; res.IsError {
+			t.Fatalf("Manager watch create refused while the binding was still being installed: %+v", res)
+		}
+	})
+}
 
 // The ordinary runtime must reject a forged Manager extension at execution,
 // even when a caller bypasses the advertised schema.

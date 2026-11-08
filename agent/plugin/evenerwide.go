@@ -102,7 +102,7 @@ func scanEvenerwideDir(dir, source string, out map[string]Command, warnings *[]e
 				fmt.Sprintf("skipping command file %s: names with whitespace can never be invoked", file)))
 			continue
 		}
-		data, err := os.ReadFile(file)
+		data, err := pluginReadFile(file)
 		if err != nil {
 			*warnings = append(*warnings, evenerwideWarning("unreadable command file",
 				fmt.Sprintf("skipping command file %s: %v", file, err)))

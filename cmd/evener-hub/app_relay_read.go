@@ -13,16 +13,12 @@ func (r *hubRelay) readThread(ctx context.Context, source appsource.Source, para
 	return r.readThreadWithSubscription(ctx, source, params, true)
 }
 
-// readThreadSnapshot reads through the same atomic relay path as readThread
-// but holds no daemon-side subscription. An internal snapshot read (a
-// Manager status read without a watch) has no downstream consumer: while it
-// counted as a subscriber, a curable sandbox denial in that window raised an
-// approval card nobody received, and the blocked waiter outlived relay
-// cleanup.
-func (r *hubRelay) readThreadSnapshot(ctx context.Context, source appsource.Source, params appwire.ThreadReadParams) (*hubThreadReadResult, error) {
-	return r.readThreadWithSubscription(ctx, source, params, false)
-}
-
+// readThreadWithSubscription reads through the atomic relay path, holding a
+// daemon-side subscription only when feed reports a downstream consumer. An
+// internal snapshot read (a Manager status read without a watch) passes false:
+// while it counted as a subscriber, a curable sandbox denial in that window
+// raised an approval card nobody received, and the blocked waiter outlived
+// relay cleanup.
 func (r *hubRelay) readThreadWithSubscription(ctx context.Context, source appsource.Source, params appwire.ThreadReadParams, feed bool) (*hubThreadReadResult, error) {
 	if r.cfg.RelayHooks.BeforeReadThread != nil {
 		r.cfg.RelayHooks.BeforeReadThread()

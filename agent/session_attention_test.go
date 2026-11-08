@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -4481,6 +4482,30 @@ func pendingDelivery(aggregate *delegatestore.Aggregate, deliveryID string) bool
 	return false
 }
 
+// delegateEventsAcknowledgeDelivery reports whether events include the durable
+// acknowledgment for deliveryID.
+func delegateEventsAcknowledgeDelivery(events []delegatestore.Event, deliveryID string) bool {
+	return slices.ContainsFunc(events, func(event delegatestore.Event) bool {
+		return event.Kind == delegatestore.EventDelegateDeliveryAcknowledged &&
+			event.DeliveryAcknowledged != nil &&
+			event.DeliveryAcknowledged.DeliveryID == deliveryID
+	})
+}
+
+// requireNoRetryArmed fails when the stop armed a delivery-ack retry.
+func (f *strandedStopFixture) requireNoRetryArmed(t *testing.T) {
+	t.Helper()
+	f.controller.mu.Lock()
+	stop := f.controller.stop
+	f.controller.mu.Unlock()
+	if stop == nil {
+		t.Fatal("stop state was cleared before the permanent acknowledgment failure")
+	}
+	if stop.retryArmed {
+		t.Fatal("permanent acknowledgment failure armed a retry")
+	}
+}
+
 func drainSessionWarnings(s *Session) []events.WarningData {
 	var warnings []events.WarningData
 	for {
@@ -4642,33 +4667,26 @@ func TestDelegateAttention_PrelaunchStopDropsStaleDeliveryReceipt(t *testing.T) 
 }
 
 // A transient acknowledgment append failure must park the stop drain and retry
-// once the store returns, without orphaning the earlier retry's claim or the
+// once the append succeeds, without orphaning the earlier retry's claim or the
 // inline waiter that claim took from the replay plan.
 func TestDelegateAttention_PrelaunchStopRetriesAfterTransientAckFailure(t *testing.T) {
 	f := newStrandedStopFixture(t, strandedStopOptions{
 		updates: 2, retryable: true, topLevel: true, realRoot: true, otherPending: true, otherWaiter: true,
 	})
 	c := f.controller
-	var storeClosed atomic.Bool
-	var closeOnce sync.Once
-	hook := func(token delegateDeliveryToken) {
-		if token.processID != f.deliveries[1].processID {
-			return
+	var failed atomic.Bool
+	fault := func(events []delegatestore.Event) error {
+		if !delegateEventsAcknowledgeDelivery(events, f.deliveries[1].deliveryID) {
+			return nil
 		}
-		closeOnce.Do(func() {
-			storeClosed.Store(true)
-			if err := c.store.Close(); err != nil {
-				t.Errorf("close delegate store before the second acknowledgment: %v", err)
-			}
-		})
+		failed.Store(true)
+		return errors.New("test: transient acknowledgment append failure")
 	}
-	savedAck := observeStopDeliveryAck.Load()
-	observeStopDeliveryAck.Store(&hook)
-	defer observeStopDeliveryAck.Store(savedAck)
+	c.appendFault = fault
 	parked := make(chan struct{})
 	var parkOnce sync.Once
 	waitHook := func() {
-		if storeClosed.Load() {
+		if failed.Load() {
 			parkOnce.Do(func() { close(parked) })
 		}
 	}
@@ -4685,6 +4703,8 @@ func TestDelegateAttention_PrelaunchStopRetriesAfterTransientAckFailure(t *testi
 	case <-parked:
 	case err := <-done:
 		t.Fatalf("drain exited on the transient acknowledgment failure: %v", err)
+	case <-time.After(2 * time.Second): // TRIPWIRE: the failed attempt signals the wait it then parks on; 2s only fires on a genuine hang.
+		t.Fatal("drain did not park after the transient acknowledgment failure")
 	}
 	c.mu.Lock()
 	claims := len(c.deliveryClaims)
@@ -4703,19 +4723,24 @@ func TestDelegateAttention_PrelaunchStopRetriesAfterTransientAckFailure(t *testi
 	if f.otherWaiter == nil {
 		t.Fatal("fixture did not register the replay waiter")
 	}
-	resolution := <-f.otherWaiter.resolution
+	var resolution delegateInlineResolution
+	// TRIPWIRE: dropping the failed batch's claims resolves its waiter synchronously; 2s only fires on a genuine hang.
+	awaitWithin(t, 2*time.Second, "dropped replay waiter resolution", func() {
+		resolution = <-f.otherWaiter.resolution
+	})
 	if !resolution.fallback {
 		t.Fatalf("dropped replay waiter resolution = %#v, want the fallback", resolution)
 	}
-	reopened, err := delegatestore.Open(f.storePath)
-	if err != nil {
-		t.Fatalf("reopen delegate store: %v", err)
-	}
 	c.mu.Lock()
-	c.store = reopened
+	c.appendFault = nil
 	c.mu.Unlock()
-	if err := <-done; err != nil {
-		t.Fatalf("prelaunch stop did not finish after the store returned: %v", err)
+	var drainErr error
+	// TRIPWIRE: the armed retry fires after 50ms; 5s only fires on a genuine hang.
+	awaitWithin(t, 5*time.Second, "prelaunch stop finishing after the append recovered", func() {
+		drainErr = <-done
+	})
+	if drainErr != nil {
+		t.Fatalf("prelaunch stop did not finish after the append recovered: %v", drainErr)
 	}
 	if !channelClosed(f.stop.done) {
 		t.Fatal("prelaunch stop did not complete after the retry")
@@ -4728,6 +4753,115 @@ func TestDelegateAttention_PrelaunchStopRetriesAfterTransientAckFailure(t *testi
 	}
 	if !acknowledged[delegateDeliveryID("dlg_other", 1)] {
 		t.Fatalf("replayed delivery %q has no durable acknowledgment", delegateDeliveryID("dlg_other", 1))
+	}
+}
+
+// A closed store makes the stop's acknowledgment retry permanent: production
+// never swaps c.store, so the drain must return the error rather than poll the
+// same failure until its context expires.
+func TestDelegateAttention_PrelaunchStopReturnsClosedStoreAckError(t *testing.T) {
+	f := newStrandedStopFixture(t, strandedStopOptions{updates: 2, retryable: true, topLevel: true, realRoot: true})
+	c := f.controller
+	var closeOnce sync.Once
+	c.appendFault = func(events []delegatestore.Event) error {
+		if delegateEventsAcknowledgeDelivery(events, f.deliveries[1].deliveryID) {
+			closeOnce.Do(func() {
+				if err := c.store.Close(); err != nil {
+					t.Errorf("close delegate store before the second acknowledgment: %v", err)
+				}
+			})
+		}
+		return nil
+	}
+	err := f.drain(t, 2*time.Second)
+	if !errors.Is(err, delegatestore.ErrStoreClosed) {
+		t.Fatalf("stop drain error = %v, want the permanent closed-store error", err)
+	}
+	if channelClosed(f.stop.done) {
+		t.Fatal("stop completed despite the permanent acknowledgment failure")
+	}
+	f.requireNoRetryArmed(t)
+	c.mu.Lock()
+	second := c.deliveries[f.deliveries[1].processID]
+	c.mu.Unlock()
+	if second == nil || !second.retryable {
+		t.Fatalf("second receipt = %#v, want it left retryable", second)
+	}
+}
+
+// A store latched unusable by a failed rollback reports ErrStoreUnusable just
+// as permanently as a closed one: production never swaps c.store, so the drain
+// must return the error instead of re-arming its retry. The fault injects the
+// wrapped sentinel a latched store returns; the store package pins the latch.
+func TestDelegateAttention_PrelaunchStopReturnsUnusableStoreAckError(t *testing.T) {
+	f := newStrandedStopFixture(t, strandedStopOptions{updates: 1, retryable: true, topLevel: true, realRoot: true})
+	c := f.controller
+	unusable := fmt.Errorf("test: store latched unusable: %w", delegatestore.ErrStoreUnusable)
+	c.appendFault = func(events []delegatestore.Event) error {
+		if delegateEventsAcknowledgeDelivery(events, f.deliveries[0].deliveryID) {
+			return unusable
+		}
+		return nil
+	}
+	err := f.drain(t, 2*time.Second)
+	if !errors.Is(err, delegatestore.ErrStoreUnusable) {
+		t.Fatalf("stop drain error = %v, want the permanent unusable-store error", err)
+	}
+	f.requireNoRetryArmed(t)
+}
+
+// Every failed acknowledgment attempt gives back the progress token it queued
+// before parking, even when an earlier failure already armed the retry timer.
+// A token left queued would spin the drain through a full reconcile until the
+// armed timer fired.
+func TestDelegateAttention_RearmDrainsProgressWhenRetryAlreadyArmed(t *testing.T) {
+	c, _ := newDelegateControllerTestHarness(t, 1, 1)
+	stop := &delegateStopState{progress: make(chan struct{}, 1), retryArmed: true}
+	stop.progress <- struct{}{}
+	c.rearmStopDeliveryRetryLocked(stop)
+	select {
+	case <-stop.progress:
+		t.Fatal("rearm left the failed attempt's progress token queued")
+	default:
+	}
+}
+
+// A wake failure is best effort: it must not drop the reconcile batch's plans,
+// so the stop still completes and the replayed delivery is acknowledged. Only
+// the batch's own post-ack wake fails here; the replayed delivery's wake must
+// reach the root normally.
+func TestDelegateAttention_PrelaunchStopSurvivesDeliveryWakeFailure(t *testing.T) {
+	f := newStrandedStopFixture(t, strandedStopOptions{
+		updates: 1, retryable: true, topLevel: true, realRoot: true, otherPending: true,
+	})
+	if f.root == nil {
+		t.Fatal("fixture did not create the root runtime")
+	}
+	f.root.events = make(chan events.SessionEvent, 4)
+	var armCalls atomic.Int32
+	updateSessionTestConfig(f.root, func(cfg *testConfig) {
+		cfg.delegateAttentionArmFault = func() error {
+			if armCalls.Add(1) == 1 {
+				return errors.New("test: root arm refused")
+			}
+			return nil
+		}
+	})
+	if err := f.drain(t, 3*time.Second); err != nil {
+		t.Fatalf("prelaunch stop did not survive the delivery wake failure: %v", err)
+	}
+	if !channelClosed(f.stop.done) {
+		t.Fatal("prelaunch stop did not complete after the wake failure")
+	}
+	acknowledged := f.acknowledged(t)
+	if !acknowledged[f.deliveries[0].deliveryID] {
+		t.Fatalf("delivery %q has no durable acknowledgment", f.deliveries[0].deliveryID)
+	}
+	if !acknowledged[delegateDeliveryID("dlg_other", 1)] {
+		t.Fatalf("replayed delivery %q has no durable acknowledgment", delegateDeliveryID("dlg_other", 1))
+	}
+	if len(drainSessionWarnings(f.root)) == 0 {
+		t.Fatal("wake failure produced no warning on the root")
 	}
 }
 
@@ -4823,6 +4957,88 @@ func TestDelegateAttention_FailedStopDeliveryAckSignalsStopProgress(t *testing.T
 	c.mu.Unlock()
 }
 
+// replaceChildTranscriptWithFS swaps a restored child's transcript writer for
+// one on fs, so a send test can inject a sync fault in the start-input path.
+func replaceChildTranscriptWithFS(t *testing.T, fs afero.Fs) func(*Session) {
+	t.Helper()
+	return func(child *Session) {
+		t.Helper()
+		child.mu.Lock()
+		oldWriter := child.transcript
+		child.mu.Unlock()
+		if err := oldWriter.Close(); err != nil {
+			t.Fatalf("close restored child transcript: %v", err)
+		}
+		writer, err := transcript.NewWriterWithFS(fs, transcriptPath(child.stateDir, child.id), transcript.Header{SessionID: child.id})
+		if err != nil {
+			t.Fatalf("replace child transcript: %v", err)
+		}
+		child.attachTranscript(writer)
+	}
+}
+
+// A send that fails before launchSubagentRun owns no runner, so the failed send
+// itself must not reach the provider. Releasing its committed start re-drives
+// the child, and that re-drive can launch a notification or attention turn
+// which calls the provider on its own goroutine. The total request count after
+// the send therefore does not witness the failed send: sample the count at the
+// rollback boundary, after every failed-send step and before the rollback
+// releases the claim and re-drives the child, and require zero there. The
+// re-drive's own notification turn reaches the provider after that sample, and
+// the failed send's input never appears in a request, so the test also proves
+// it distinguishes the two.
+//
+// Regression for the provider-count arm of #4844.
+func TestDelegateAttention_PrelaunchFailedSendDoesNotReachProvider(t *testing.T) {
+	fixture := newColdDelegateFixture(t, "")
+	root, err := restoreDelegateResourceBootstrapSession(fixture.client, fixture.profile, fixture.workspace, fixture.meta, fixture.stateDir)
+	if err != nil {
+		t.Fatalf("restore root: %v", err)
+	}
+	defer root.Close()
+	fs := newAttentionFailNextSyncFS()
+	var atRollback int
+	var redrivenChild string
+	root.cfg.testOnly.delegateSendRollbackBeforeRedrive = func(childSessionID string) {
+		atRollback = len(fixture.adapter.Requests())
+		redrivenChild = childSessionID
+	}
+	replaceTranscript := replaceChildTranscriptWithFS(t, fs)
+	root.delegateRestoreBeforeSideEffects = func(child *Session) {
+		replaceTranscript(child)
+		child.cfg.testOnly.delegateInitialInputAppend = func(*Session) {
+			// Fail the input write's own fsync, before launchSubagentRun. The
+			// failure batch that closes the generation appends to the store,
+			// which stays open.
+			fs.failNextSync()
+		}
+	}
+
+	const input = "start successor"
+	outcome := (delegateRuntime{owner: root}).send(context.Background(), fixture.delegateID, input, 0)
+	if outcome.result.Err == nil || !errors.Is(outcome.result.Err, errInjectedAttentionFailNextSync) {
+		t.Fatalf("prelaunch send = %#v, want the injected input-write failure", outcome.result)
+	}
+	if redrivenChild != fixture.childID {
+		t.Fatalf("failed send re-drove child %q, want %q", redrivenChild, fixture.childID)
+	}
+	if atRollback != 0 {
+		t.Fatalf("prelaunch failed send reached provider %d times before its re-drive", atRollback)
+	}
+	root.sendersWG.Wait()
+	requests := fixture.adapter.Requests()
+	if len(requests) == 0 {
+		t.Fatal("re-driven notification turn reached provider 0 times; the test cannot distinguish the failed send from the notification turn")
+	}
+	for _, request := range requests {
+		for _, message := range request.Messages {
+			if strings.Contains(message.Text(), input) {
+				t.Fatalf("failed send's input reached the provider: %q", message.Text())
+			}
+		}
+	}
+}
+
 // Once the start is committed and its input durable, an ack-only delivery
 // failure is requeued and warned about instead of failing the start or latching
 // finalization recovery. The stop repair stays the backstop for durable states.
@@ -4837,18 +5053,9 @@ func TestDelegateAttention_StartDeliveryReplayFailureDoesNotFailCommittedStart(t
 	seedDelegateControllerIdle(t, c, "dlg_nested_source", fixture.delegateID)
 	seedDelegateControllerDelivery(t, c, "dlg_nested_source")
 	fs := newAttentionFailNextSyncFS()
+	replaceTranscript := replaceChildTranscriptWithFS(t, fs)
 	root.delegateRestoreBeforeSideEffects = func(child *Session) {
-		child.mu.Lock()
-		oldWriter := child.transcript
-		child.mu.Unlock()
-		if err := oldWriter.Close(); err != nil {
-			t.Fatalf("close restored child transcript: %v", err)
-		}
-		writer, err := transcript.NewWriterWithFS(fs, transcriptPath(child.stateDir, child.id), transcript.Header{SessionID: child.id})
-		if err != nil {
-			t.Fatalf("replace child transcript: %v", err)
-		}
-		child.attachTranscript(writer)
+		replaceTranscript(child)
 		child.cfg.testOnly.delegateInitialInputAppend = func(*Session) {
 			// The input write and the notification write land; closing the store
 			// on the notification's sync leaves only the acknowledgment append to
@@ -5167,6 +5374,10 @@ func newAttentionFailNextSyncFS() *attentionFailNextSyncFS {
 	return &attentionFailNextSyncFS{Fs: afero.NewOsFs()}
 }
 
+// errInjectedAttentionFailNextSync is the sync failure attentionFailNextSyncFS
+// injects. The production path wraps it, so tests match it with errors.Is.
+var errInjectedAttentionFailNextSync = errors.New("injected attention resolution sync failure")
+
 func (fs *attentionFailNextSyncFS) Create(name string) (afero.File, error) {
 	file, err := fs.Fs.Create(name)
 	if err != nil {
@@ -5317,7 +5528,7 @@ func (file *attentionFailNextSyncFile) Sync() error {
 		if succeed {
 			return file.File.Sync()
 		}
-		return errors.New("injected attention resolution sync failure")
+		return errInjectedAttentionFailNextSync
 	}
 	return file.File.Sync()
 }

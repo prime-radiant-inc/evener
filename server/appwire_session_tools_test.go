@@ -41,6 +41,38 @@ func TestSessionToolsRealConnectionBinding(t *testing.T) {
 	}
 }
 
+// SetHubClient must only ever publish a registry that already holds the
+// binding that selected it. A Manager tool woken by the publish otherwise
+// finds an empty registry and refuses the operation the binding was meant to
+// enable.
+func TestSessionToolsPublishesRegistryWithFirstBinding(t *testing.T) {
+	t.Parallel()
+	session := newNotesTestSession(t)
+	srv := NewServer(ServerConfig{})
+	srv.SetAppIdentity("local", session.ID())
+	srv.SetSessionTools(func() *agent.Session { return session })
+	published := make(chan int, 1)
+	srv.SetTestOnlySessionToolsPublished(func(registry *runtimeHubClients) {
+		// The caller holds the registry lock; the test reads the count it
+		// observes at the publish point.
+		published <- len(registry.clients)
+	})
+	client := dialServerAppWire(t, srv)
+	binding := appwire.SessionBinding{Ref: "local:" + session.ID(), InstanceID: session.ID(), HubID: "hub-order", BindingID: "order-test"}
+	var bound appwire.SessionBinding
+	if err := client.Request(t.Context(), appwire.MethodRuntimeSessionBind, binding, &bound); err != nil {
+		t.Fatalf("bind: %v", err)
+	}
+	select {
+	case got := <-published:
+		if got != 1 {
+			t.Fatalf("registry published with %d clients, want the first binding in place", got)
+		}
+	default:
+		t.Fatal("no registry was published for the first binding")
+	}
+}
+
 func TestSessionToolsLiveBindingCannotBeDisplaced(t *testing.T) {
 	model := &bindingProbeAdapter{}
 	modelClient := llm.NewClient()

@@ -112,7 +112,11 @@ type delegateTreeController struct {
 	runStarts         map[delegateLease]delegatestore.RunTrigger
 	owedAdmission     bool
 	emitUpdate        func(delegateUpdatePlan)
-	attentionOpen     delegateAttentionWriterOpener
+	// appendFault, when set, fails appendLocked's durable append before it
+	// reaches the store. Tests inject a chosen append error; nil in
+	// production.
+	appendFault   func([]delegatestore.Event) error
+	attentionOpen delegateAttentionWriterOpener
 }
 
 type delegateActor struct {
@@ -395,6 +399,11 @@ func (c *delegateTreeController) appendLocked(events ...delegatestore.Event) ([]
 	for _, event := range events {
 		if event.ResumabilityClosed != nil && c.attentionStartBlockerLocked(event.DelegateID, true) != nil {
 			return nil, errDelegateTargetBusy
+		}
+	}
+	if c.appendFault != nil {
+		if err := c.appendFault(events); err != nil {
+			return nil, err
 		}
 	}
 	appended, next, err := c.store.AppendBatch(c.durable, events)
