@@ -60,6 +60,12 @@ const (
 	maxEmptyRetries        = 3
 	maxTotalEmptyResponses = 8 // prevent repeated burst-and-recover spirals
 	maxBareTextRetries     = 3
+	// maxServerContinuations bounds one input turn's run of consecutive
+	// pause_turn responses. A pause is a legitimate protocol continuation, so it
+	// still refunds its tool round (see TestSession_PauseTurn_*), but a provider
+	// that returns them forever must not keep a single turn alive indefinitely:
+	// the chain is a distinct budget from the tool-round cap.
+	maxServerContinuations = 8
 )
 
 // retryTracker counts the degenerate (empty / bare-text) model responses seen so
@@ -1784,6 +1790,7 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 	localAdmissionCompacted := false
 	providerContextRecovered := false
 	var tracker retryTracker
+	serverContinuations := 0
 
 	// Continuation (goal) turns clamp the per-input round cap to GoalTurnMaxRounds
 	// (spec §2b/C13); a config of <0 is "unbounded", so a bare min would be wrong.
@@ -1944,6 +1951,13 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 		rc := classifyRoundContent(txt, len(calls), resp.Message.Content)
 		noContent := rc.NoContent
 		skipHistory := rc.SkipHistory
+		// A pause_turn response is the provider's partial state. Even when it
+		// carries only server-side tool blocks (a web search still running) and
+		// no text or client tool calls, the continuation must see it again, so
+		// keep it in history instead of dropping it as a no-content round.
+		if resp.Finish.Reason == llm.FinishReasonPauseTurn && len(resp.Message.Content) > 0 {
+			skipHistory = false
+		}
 
 		if abortErr := errors.Join(s.emitAssistantResponse(ctx, resp, modelResp, txt, skipHistory, attempt), sessionLifecycleFault(ctx, "emit_assistant")); abortErr != nil {
 			return "", progressed, abortErr
@@ -1951,11 +1965,24 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 		// pause_turn: model needs another turn (e.g. server-side web search still running).
 		if resp.Finish.Reason == llm.FinishReasonPauseTurn {
 			round-- // Don't count pause_turn as a tool round.
+			serverContinuations++
 			timings.TotalRound = time.Since(roundStart)
 			timings.LoopOverhead = timings.TotalRound - timings.SystemPrompt - timings.ContextMgmt - timings.HistoryExpand - timings.ToolDefs - timings.LLMCall
 			s.emit(timings)
+			if serverContinuations >= maxServerContinuations {
+				// Stop the chain on its own budget; the pause responses
+				// already emitted stay in history, so the turn is resumable.
+				exhausted := &budgetExhaustionError{
+					Budget:    exhaustedBudgetServerContinuations,
+					Limit:     maxServerContinuations,
+					Resumable: true,
+				}
+				s.emitBudgetExhaustionFailure(exhausted)
+				return lastText, progressed, exhausted
+			}
 			continue
 		}
+		serverContinuations = 0
 
 		// Reverse-map provider-specific tool names to canonical names for registry lookup.
 		for i := range calls {

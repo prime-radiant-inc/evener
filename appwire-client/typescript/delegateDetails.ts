@@ -188,6 +188,7 @@ const ENDING_WORDS = new Map([
   ["stopped_by_parent", "stopped by its coordinator"],
   ["tool_round_budget_exhausted", "ran out of tool rounds"],
   ["turn_budget_exhausted", "ran out of turns"],
+  ["server_continuation_budget_exhausted", "ran out of server continuations"],
   ["launch_failed", "couldn't start"],
   ["construction_failed", "couldn't be set up"],
   ["artifacts_dir_failed", "couldn't create its artifacts folder"],
