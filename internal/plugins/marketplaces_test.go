@@ -134,6 +134,96 @@ func TestAddMarketplace_RefusesATakenCatalogName(t *testing.T) {
 	}
 }
 
+// The catalog-name refusal is tested again with a git source, where the fetch
+// writes a staging clone before the name is known: the refusal must remove
+// that staging clone and leave the first registration's clone alone.
+func TestAddMarketplace_RefusesATakenCatalogNameBeforeInstallingTheClone(t *testing.T) {
+	skipWithoutGit(t)
+	first := makeMarketplaceRepoWithPlugin(t, "acme", "widget")
+	second := makeMarketplaceRepoWithPlugin(t, "acme", "gadget")
+	m, ctx := newManagerCtx(t)
+	mustAddMarketplace(ctx, t, m, "", Source{Kind: SourceURL, URL: first})
+
+	_, err := m.AddMarketplace(ctx, "", Source{Kind: SourceURL, URL: second})
+	if !errors.Is(err, ErrMarketplaceExists) {
+		t.Fatalf("error = %v, want ErrMarketplaceExists", err)
+	}
+	list, err := m.ListMarketplaces(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ref := list["acme"]; ref.Source.URL != first {
+		t.Fatalf("listing after refused add = %+v, want the first source %q", ref, first)
+	}
+	if _, err := os.Stat(m.marketplaceDir(stagingCloneName)); !os.IsNotExist(err) {
+		t.Fatalf("a refused add left its staging clone behind: %v", err)
+	}
+	cat, err := m.Browse(ctx, "acme")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cat.Plugins) != 1 || cat.Plugins[0].Name != "widget" {
+		t.Fatalf("catalog after refused add = %+v, want the first source's widget", cat.Plugins)
+	}
+}
+
+// ReplaceMarketplace is the explicit re-source path; it must actually install
+// the new source and record it, not merely fail like the refusing add path.
+func TestReplaceMarketplace_ResourcesATakenName(t *testing.T) {
+	m, ctx := newManagerCtx(t)
+	first := makeDirectoryMarketplace(t, "acme", "widget")
+	second := makeDirectoryMarketplace(t, "acme", "gadget")
+	mustAddMarketplace(ctx, t, m, "acme", Source{Kind: SourceDirectory, Path: first})
+
+	ref, err := m.ReplaceMarketplace(ctx, "acme", Source{Kind: SourceDirectory, Path: second})
+	if err != nil {
+		t.Fatalf("ReplaceMarketplace: %v", err)
+	}
+	if ref.InstallLocation != second {
+		t.Fatalf("InstallLocation = %q, want the new directory %q", ref.InstallLocation, second)
+	}
+	list, err := m.ListMarketplaces(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := list["acme"].Source.Path; got != second {
+		t.Fatalf("recorded source = %q, want %q", got, second)
+	}
+}
+
+// A git-backed marketplace replaced by a directory source has no clone left
+// to serve or refresh, so the explicit replace must sweep it instead of
+// orphaning a directory nothing else removes (#1047).
+func TestReplaceMarketplace_ToDirectoryDropsTheOldClone(t *testing.T) {
+	skipWithoutGit(t)
+	repo := makeMarketplaceRepoWithPlugin(t, "acme", "widget")
+	m, ctx := newManagerCtx(t)
+	mustAddMarketplace(ctx, t, m, "", Source{Kind: SourceURL, URL: repo})
+	clone := m.marketplaceDir("acme")
+	if _, err := os.Stat(clone); err != nil {
+		t.Fatalf("the git source's clone is missing: %v", err)
+	}
+	dir := makeDirectoryMarketplace(t, "acme", "gadget")
+
+	ref, err := m.ReplaceMarketplace(ctx, "acme", Source{Kind: SourceDirectory, Path: dir})
+	if err != nil {
+		t.Fatalf("ReplaceMarketplace: %v", err)
+	}
+	if ref.InstallLocation != dir {
+		t.Fatalf("InstallLocation = %q, want the new directory %q", ref.InstallLocation, dir)
+	}
+	if _, err := os.Stat(clone); !os.IsNotExist(err) {
+		t.Fatalf("the old git clone outlived a directory re-source: %v", err)
+	}
+	cat, err := m.Browse(ctx, "acme")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cat.Plugins) != 1 || cat.Plugins[0].Name != "gadget" {
+		t.Fatalf("catalog after replace = %+v, want gadget", cat.Plugins)
+	}
+}
+
 func TestAddMarketplace_GitSubdirBrowse(t *testing.T) {
 	skipWithoutGit(t)
 	repo := filepath.Join(t.TempDir(), "monorepo")

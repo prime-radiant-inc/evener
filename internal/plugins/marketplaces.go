@@ -218,9 +218,8 @@ func (m *Manager) ensureFetched(ctx context.Context, name string) (MarketplaceRe
 //
 // A name that is already registered is refused with ErrMarketplaceExists:
 // before the fetch when name is explicit, and before the clone is installed
-// when the catalog supplies it. A same-name add used to replace the entry in
-// place, silently re-pointing every <plugin>@<marketplace> key at a different
-// catalog (#1047). ReplaceMarketplace is the explicit re-source path.
+// when the catalog supplies it. ReplaceMarketplace is the explicit re-source
+// path.
 func (m *Manager) AddMarketplace(ctx context.Context, name string, src Source) (MarketplaceRef, error) {
 	return m.addMarketplace(ctx, name, src, false)
 }
@@ -262,8 +261,10 @@ func (m *Manager) addMarketplace(ctx context.Context, name string, src Source, r
 		return MarketplaceRef{}, err
 	}
 	if !replace && name != "" {
-		if _, exists := mk[name]; exists {
-			return MarketplaceRef{}, fmt.Errorf("marketplace %q: %w", name, ErrMarketplaceExists)
+		// Only an explicit name is known before the fetch; a catalog-supplied
+		// one is checked again below, after the fetch resolves it.
+		if err := refuseRegisteredName(mk, name); err != nil {
+			return MarketplaceRef{}, err
 		}
 	}
 
@@ -292,11 +293,12 @@ func (m *Manager) addMarketplace(ctx context.Context, name string, src Source, r
 		return MarketplaceRef{}, err
 	}
 	if !replace {
-		if _, exists := mk[name]; exists {
+		if err := refuseRegisteredName(mk, name); err != nil {
 			_ = marketplaceRemoveAll(staging)
-			return MarketplaceRef{}, fmt.Errorf("marketplace %q: %w", name, ErrMarketplaceExists)
+			return MarketplaceRef{}, err
 		}
 	}
+	oldRef, hadOld := mk[name]
 
 	installLoc := src.Path // directory source: in place
 	aside := ""
@@ -331,7 +333,28 @@ func (m *Manager) addMarketplace(ctx context.Context, name string, src Source, r
 	if aside != "" {
 		_ = marketplaceRemoveAll(aside)
 	}
+	if replace && src.Kind == SourceDirectory && hadOld && oldRef.Source.Kind != SourceDirectory {
+		// The new directory source makes the old git clone redundant, but it
+		// sits under the marketplace's own directory where nothing else will
+		// remove it. Keep any source another record (or the incoming directory
+		// itself) still needs, exactly as EditMarketplace's re-source does.
+		clone := m.marketplaceDir(name)
+		sources := append(marketplaceProtectionPaths(mk, name), src.Path)
+		if present, protect := m.sweepDestroysSource(sources, clone); present && !protect {
+			_ = m.withClone(context.Background(), clone, func() error { return marketplaceRemoveAll(clone) })
+		}
+	}
 	return ref, nil
+}
+
+// refuseRegisteredName refuses a name the marketplace store already records.
+// The add paths call it before the fetch for an explicit name and after the
+// fetch for a catalog-supplied one, so both spell this rule once.
+func refuseRegisteredName(mk Marketplaces, name string) error {
+	if _, exists := mk[name]; exists {
+		return fmt.Errorf("marketplace %q: %w", name, ErrMarketplaceExists)
+	}
+	return nil
 }
 
 // saveFailed scrubs a save failure's absolute plugin-store path -
