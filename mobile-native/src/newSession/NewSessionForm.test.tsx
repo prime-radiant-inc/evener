@@ -409,7 +409,7 @@ it("starts with Memory off once the hub offers the field, and names the choice o
 	form.dispose();
 });
 
-it("waits for the hub's schema without holding Start, and still names a kept Memory choice", async () => {
+it("holds Start over a kept Memory off until the hub's schema answers, and still names the choice", async () => {
 	const form = await mount({
 		schema: null,
 		draft: { cwd: "/home/jesse/git/evener", prompt: "go", launchOverrides: { memoryEnabled: false } },
@@ -417,8 +417,11 @@ it("waits for the hub's schema without holding Start, and still names a kept Mem
 	expect(form.row("More options")?.props.accessibilityLabel).toBe(
 		"More options, Context strategy, subagent depth, turn limit, memory, Custom",
 	);
-	expect(startBlocks(form.tree)).toEqual([]);
-	expect(form.header("headerRight").props.disabled).toBe(false);
+	expect(startBlocks(form.tree)).toEqual(["moreOptions"]);
+	const start = form.header("headerRight");
+	expect(start.props.disabled).toBe(true);
+	await act(async () => start.props.onPress());
+	expect(form.calls.some((call) => call.method === "thread/start")).toBe(false);
 	form.dispose();
 });
 

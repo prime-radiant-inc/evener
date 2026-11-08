@@ -40,7 +40,8 @@ export interface StartInput {
 	 * memoryEnabled === false), which the chosen host must be able to honor. */
 	memoryOff: boolean;
 	/** Whether the chosen host's launch schema offers the memory option; null
-	 * while the hub hasn't answered, and pending never blocks. */
+	 * while the hub hasn't answered or couldn't. A Memory off waits for the
+	 * hub's confirmation rather than trusting silence. */
 	hostOffersMemory: boolean | null;
 }
 
@@ -72,9 +73,10 @@ export function startBlock(input: StartInput): StartBlock | null {
 			field: "plugins",
 			message: input.pluginIssues.map((issue) => `${issue.name}: ${issue.reason}`).join("\n"),
 		};
-	// The host would silently drop the choice, so Start is held until the
-	// choice is cleared or a host that can honor it is chosen.
-	if (input.memoryOff && input.hostOffersMemory === false)
+	// An older host would silently drop the choice, and a schema that hasn't
+	// answered can't say it won't, so Start is held until the hub confirms
+	// the host honors it — or the choice is cleared or another host chosen.
+	if (input.memoryOff && input.hostOffersMemory !== true)
 		return {
 			field: "moreOptions",
 			message: `${input.hostLabel} can't turn memory off for a session. Clear it in More options or choose another host.`,

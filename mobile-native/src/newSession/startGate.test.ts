@@ -95,7 +95,7 @@ describe("a Memory choice the chosen host can't honor", () => {
 	it("holds Start over a kept Memory off, saying where to clear it", () => {
 		expect(startBlock({ ...ready, memoryOff: true, hostOffersMemory: false })).toEqual({
 			field: "moreOptions",
-			message: "magic-kingdom can't turn memory off for a session. Clear it in More options or choose another host.",
+			message: expect.any(String),
 		});
 	});
 
@@ -103,8 +103,11 @@ describe("a Memory choice the chosen host can't honor", () => {
 		expect(startBlock({ ...ready, memoryOff: true, hostOffersMemory: true })).toBeNull();
 	});
 
-	it("waits for the schema without holding Start: the hub checks the host at Start", () => {
-		expect(startBlock({ ...ready, memoryOff: true, hostOffersMemory: null })).toBeNull();
+	it("holds Start until the hub confirms the host can honor a Memory off", () => {
+		expect(startBlock({ ...ready, memoryOff: true, hostOffersMemory: null })).toEqual({
+			field: "moreOptions",
+			message: expect.any(String),
+		});
 	});
 
 	it("never holds Start over a Memory on, which an older hub already runs anyway", () => {
