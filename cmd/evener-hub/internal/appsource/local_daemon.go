@@ -1422,7 +1422,7 @@ func (s *LocalDaemonSource) localEntryForRefMode(rawRef, threadID string, allowR
 		threadID = ref.ThreadID
 	}
 	for _, item := range s.liveEntries() {
-		if !localDaemonEntryRouteEligible(item, allowReadOnlyAlias) {
+		if item.ReadOnlyAlias && !allowReadOnlyAlias {
 			continue
 		}
 		if s.localEntryNamesRef(item, requestedRef, threadID) {

@@ -52,10 +52,10 @@ func (o *sessionOperations) discover(ctx context.Context, params appwire.ThreadL
 		}
 		state := sourceStates[host.Name]
 		if state == "" {
-			if len(params.SourceIDs) > 0 {
-				state = appwire.SessionSourceNotSelected
-			} else {
+			if sourceAllowedForList(host.Name, params) {
 				state = appwire.SessionSourceSkippedUnattached
+			} else {
+				state = appwire.SessionSourceNotSelected
 			}
 		}
 		discovery.Sources = append(discovery.Sources, appwire.SessionSource{ID: host.Name, State: state})

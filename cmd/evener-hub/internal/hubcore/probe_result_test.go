@@ -53,9 +53,7 @@ func TestRosterReadSpawnedThreadCarriesTheThreadRowsFields(t *testing.T) {
 	if !live.LastTurnEndedAt.Equal(ended) {
 		t.Errorf("published last turn ended = %v, want the read's %v", live.LastTurnEndedAt, ended)
 	}
-	activeTurnID := reflect.ValueOf(live).FieldByName("ActiveTurnID")
-	activeTurnStartedAt := reflect.ValueOf(live).FieldByName("ActiveTurnStartedAt")
-	if !activeTurnID.IsValid() || !activeTurnStartedAt.IsValid() || activeTurnID.String() != "turn-running" || activeTurnStartedAt.Int() != turnStarted {
+	if live.ActiveTurnID != "turn-running" || live.ActiveTurnStartedAt != turnStarted {
 		t.Errorf("published entry did not carry the read's running turn: %+v", live)
 	}
 	// The fields the read path already carried must keep surviving it too.
