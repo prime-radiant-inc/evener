@@ -206,8 +206,9 @@ func reexecWarmAttempt(t *testing.T, flags []string, extraEnv ...string) []byte 
 	t.Helper()
 	buildMarker := filepath.Join(t.TempDir(), "build-ran")
 	dir := fakeGo(t, buildMarker)
-	env := append(extraEnv,
-		liveStackWarmEnv+"=", liveStackBinEnv+"=",
+	env := make([]string, 0, len(extraEnv)+3)
+	env = append(env, extraEnv...)
+	env = append(env, liveStackWarmEnv+"=", liveStackBinEnv+"=",
 		"PATH="+dir+string(os.PathListSeparator)+os.Getenv("PATH"))
 	out, err := reexecSelfArgs(t, flags, env...)
 	if err == nil {
