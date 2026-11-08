@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { writeFileSync } from "node:fs";
 // overflowguard - asserts the transcript pane never scrolls sideways, at any
 // pane width, with the real React tree rendered in a real browser.
 //
@@ -43,7 +44,6 @@
 // not wired into `make lint`, because it costs a Vite boot and a Chrome
 // launch (~10s).
 import path from "node:path";
-import { writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import {
   applyViewport,
@@ -549,7 +549,7 @@ function assertComposerFooter(measurement, width) {
   return failures;
 }
 
-async function measureDuoCompactStates(cdpEndpoint, url) {
+async function measureDuoCompactStates(cdpEndpoint, url, profileDir) {
   const page = await connectOnlyPage(cdpEndpoint);
   const { send } = page;
   let phase = "viewport";
@@ -581,10 +581,13 @@ async function measureDuoCompactStates(cdpEndpoint, url) {
       selector: '#oh-pane input[type="file"]',
     });
     if (!input.result.nodeId) throw new Error("real composer file input is missing");
-    const upload = path.join(process.env.EVENER_SCRATCH_DIR ?? "/tmp", "duo-pixel.png");
+    const upload = path.join(profileDir, "duo-pixel.png");
     writeFileSync(
       upload,
-      Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=", "base64"),
+      Buffer.from(
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=",
+        "base64",
+      ),
     );
     await send("DOM.setFileInputFiles", { nodeId: input.result.nodeId, files: [upload] });
     phase = "rest-states";
@@ -619,17 +622,26 @@ function assertDuoCompactStates(result) {
     failures.push(`empty card retains gap/padding ${empty.cardGap}/${empty.cardPaddingBlock}`);
   }
   if (focused && focused.footerPaddingBottom !== "0px") {
-    failures.push(`focused footer clearance=${focused.footerPaddingBottom}, expected keyboard-adjusted safe-area clearance`);
+    failures.push(
+      `focused footer clearance=${focused.footerPaddingBottom}, expected keyboard-adjusted safe-area clearance`,
+    );
   }
   if (empty && empty.totalFooterHeight > 258.94) {
-    failures.push(`empty/live footer=${empty.totalFooterHeight}px, exceeds the 258.94px budget (306.94px baseline minus 48px)`);
+    failures.push(
+      `empty/live footer=${empty.totalFooterHeight}px, exceeds the 258.94px budget (306.94px baseline minus 48px)`,
+    );
   }
   if (!focused?.editing || focused.editorMinLines !== "2lh") failures.push("focus did not engage the two-line editor");
-  if (focused && (focused.cardGap !== "4px" && focused.cardPaddingBlock !== "4px 4px")) {
+  if (focused && focused.cardGap !== "4px" && focused.cardPaddingBlock !== "4px 4px") {
     failures.push(`focused card did not restore ordinary spacing: ${focused.cardGap}/${focused.cardPaddingBlock}`);
   }
-  if (draft?.editorMinLines !== "2lh" || draft.editing) failures.push("a blurred draft did not retain its two-line resting state");
-  if (!attachment?.attachment || attachment.attachment.height < 80 || attachment.totalFooterHeight <= empty.totalFooterHeight)
+  if (draft?.editorMinLines !== "2lh" || draft.editing)
+    failures.push("a blurred draft did not retain its two-line resting state");
+  if (
+    !attachment?.attachment ||
+    attachment.attachment.height < 80 ||
+    attachment.totalFooterHeight <= empty.totalFooterHeight
+  )
     failures.push("the real staged attachment did not retain its tile and footer space");
   if (attachment?.attachmentControls.some((control) => control.width < 44 || control.height < 44))
     failures.push("an attachment control fell below the touch floor");
@@ -650,7 +662,8 @@ function assertDuoCompactStates(result) {
       if (control.touchTarget && control.height > 0 && (control.width < 44 || control.height < 44))
         failures.push(`${state.state}: control ${control.name} fell below 44px`);
     }
-    if (state.horizontalOverflow > 0.5) failures.push(`${state.state}: horizontal overflow=${state.horizontalOverflow}px`);
+    if (state.horizontalOverflow > 0.5)
+      failures.push(`${state.state}: horizontal overflow=${state.horizontalOverflow}px`);
   }
   return failures;
 }
@@ -1469,8 +1482,12 @@ function assertSettings(result, width) {
   return failures;
 }
 
-async function runDuoCompactGuard(cdpEndpoint, vitePort, verbose = false) {
-  const result = await measureDuoCompactStates(cdpEndpoint, `http://127.0.0.1:${vitePort}/overflowharness.html?w=466&h=678`);
+async function runDuoCompactGuard(cdpEndpoint, vitePort, profileDir, verbose = false) {
+  const result = await measureDuoCompactStates(
+    cdpEndpoint,
+    `http://127.0.0.1:${vitePort}/overflowharness.html?w=466&h=678`,
+    profileDir,
+  );
   const failures = assertDuoCompactStates(result);
   if (verbose) console.log(JSON.stringify(result, null, 2));
   if (failures.length > 0) {
@@ -1478,7 +1495,9 @@ async function runDuoCompactGuard(cdpEndpoint, vitePort, verbose = false) {
     return false;
   }
   const empty = result.states.find((state) => state.state === "empty");
-  console.log(`466px Duo compact states ... PASS - empty footer=${empty.totalFooterHeight}px, real state transitions preserved`);
+  console.log(
+    `466px Duo compact states ... PASS - empty footer=${empty.totalFooterHeight}px, real state transitions preserved`,
+  );
   return true;
 }
 
@@ -1527,7 +1546,7 @@ async function main() {
     }
     cdpEndpoint = await waitForBrowserReady(guard);
 
-    if (duoOnly) return (await runDuoCompactGuard(cdpEndpoint, vitePort, true)) ? 0 : 1;
+    if (duoOnly) return (await runDuoCompactGuard(cdpEndpoint, vitePort, guard.profileDir, true)) ? 0 : 1;
 
     const delayedComposer = async () => {
       // One adversarial transport case per input type, not another theme matrix.
@@ -1554,7 +1573,7 @@ async function main() {
     }
 
     if (!composerOnly) {
-      if (!(await runDuoCompactGuard(cdpEndpoint, vitePort))) failed++;
+      if (!(await runDuoCompactGuard(cdpEndpoint, vitePort, guard.profileDir))) failed++;
       const protocolResponse = await fetch(devtoolsHttpURL(cdpEndpoint, "/json/protocol"));
       if (!protocolResponse.ok) throw new Error(`browser protocol HTTP ${protocolResponse.status}`);
       const protocol = await protocolResponse.json();

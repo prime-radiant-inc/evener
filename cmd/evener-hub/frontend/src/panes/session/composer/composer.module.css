@@ -203,15 +203,10 @@
 }
 
 /* The 466pt cover-width session dock keeps its existing controls but gives
- * more of the display back to the transcript. Only the empty, unfocused card
- * sheds its extra inset; drafts, attachments and editing keep ordinary space. */
+ * more of the display back to the transcript. PromptCard owns the matching
+ * empty, unfocused card spacing variant. */
 @media (min-width: 440px) and (max-width: 500px) and (max-aspect-ratio: 3 / 4) {
   .composer {
     gap: var(--space-1);
-  }
-
-  .formAnchor:not([data-composer-editing]) :global([data-testid="composer-input-card"]):has([role="textbox"][data-empty="true"]) {
-    gap: 0;
-    padding-block: 0;
   }
 }
