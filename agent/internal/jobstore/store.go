@@ -237,9 +237,11 @@ func (s *Store) Append(e Event) error {
 // batch complete. A surviving prefix is a valid log with its Seq values already
 // assigned, and the next append continues after it. A caller whose batch has
 // several effects must therefore be idempotent under re-run from any prefix;
-// delegate shell repair is the production caller and clears watches for a
-// terminal job whose notification already landed. A reader must fold each
-// record independently and never assume a batch's records arrive together.
+// delegate shell repair is the production caller and completes a torn terminal
+// prefix: it clears a terminal job's watches whether or not the notification
+// record landed, without inventing a notification a kept-sync job never
+// wanted. A reader must fold each record independently and never assume a
+// batch's records arrive together.
 func (s *Store) AppendBatch(events []Event) error {
 	if len(events) == 0 {
 		s.mu.Lock()
