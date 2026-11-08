@@ -128,11 +128,21 @@ func ImageBlockMediaType(v string) string {
 // (#4464). Converting rather than refusing keeps a BMP or TIFF readable on
 // every route, matching the Responses builder's existing contract.
 func NormalizeImageBlock(data []byte) ([]byte, string, error) {
+	return NormalizeImage(data, ImageBlockMediaType)
+}
+
+// NormalizeImage returns image bytes and a canonical media type accepted by
+// accept. When accept names the bytes' decoded format, the bytes are returned
+// unchanged with that media type; any other decodable raster is re-encoded as
+// PNG. Bytes that are not a decodable raster return an error. Protocols whose
+// accepted set differs from the Anthropic/OpenAI image block pass their own
+// accept function.
+func NormalizeImage(data []byte, accept func(format string) string) ([]byte, string, error) {
 	img, format, err := image.Decode(bytes.NewReader(data))
 	if err != nil {
 		return nil, "", err
 	}
-	if mt := ImageBlockMediaType(format); mt != "" {
+	if mt := accept(format); mt != "" {
 		return data, mt, nil
 	}
 	var normalized bytes.Buffer

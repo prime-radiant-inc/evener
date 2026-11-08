@@ -2,6 +2,7 @@ package chatcompletions
 
 import (
 	"encoding/json"
+	"fmt"
 	"strings"
 
 	"primeradiant.com/evener/llm"
@@ -67,9 +68,13 @@ func toChatMessages(messages []llm.Message, caps registry.Caps, useReasoningDeta
 			})
 		case llm.RoleUser:
 			if hasImageOrDocumentContent(content) {
+				parts, err := buildMultimodalParts(content, caps)
+				if err != nil {
+					return nil, err
+				}
 				out = append(out, map[string]any{
 					"role":    "user",
-					"content": buildMultimodalParts(content, caps),
+					"content": parts,
 				})
 			} else {
 				out = append(out, map[string]any{
@@ -299,7 +304,7 @@ func hasImageOrDocumentContent(parts []llm.ContentPart) bool {
 
 // buildMultimodalParts converts content parts to Chat Completions content array format
 // with {"type": "text", ...} and {"type": "image_url", ...} objects.
-func buildMultimodalParts(parts []llm.ContentPart, caps registry.Caps) []map[string]any {
+func buildMultimodalParts(parts []llm.ContentPart, caps registry.Caps) ([]map[string]any, error) {
 	var out []map[string]any
 	capDetail := registry.StringValue(caps.ImageDetail)
 	for _, p := range parts {
@@ -316,7 +321,11 @@ func buildMultimodalParts(parts []llm.ContentPart, caps registry.Caps) []map[str
 				if mt == "" {
 					mt = "image/png"
 				}
-				imgURL = llm.DataURI(mt, p.Image.Data)
+				data, normalizedType, err := chatImageBytes(p.Image.Data, mt)
+				if err != nil {
+					return nil, err
+				}
+				imgURL = llm.DataURI(normalizedType, data)
 			}
 			if imgURL == "" {
 				continue
@@ -339,7 +348,26 @@ func buildMultimodalParts(parts []llm.ContentPart, caps registry.Caps) []map[str
 			out = append(out, map[string]any{"type": "file", "file": map[string]any{"file_data": fileData}})
 		}
 	}
-	return out
+	return out, nil
+}
+
+// chatImageBytes returns bytes and a media type the Chat Completions image
+// block accepts. A claimed type already in the set keeps its bytes; any other
+// decodable raster is re-encoded as PNG (a BMP or TIFF attachment would
+// otherwise be rejected and fail the whole turn, #4584); bytes that are not a
+// decodable raster are refused loudly.
+func chatImageBytes(data []byte, claimedMediaType string) ([]byte, string, error) {
+	if mt := llm.ImageBlockMediaType(claimedMediaType); mt != "" {
+		return data, mt, nil
+	}
+	normalized, normalizedType, err := llm.NormalizeImageBlock(data)
+	if err != nil {
+		return nil, "", &llm.ConfigurationError{
+			Message: fmt.Sprintf("chat completions image %q is not a decodable raster", claimedMediaType),
+			Cause:   err,
+		}
+	}
+	return normalized, normalizedType, nil
 }
 
 // requestWithoutToolResultImages returns a request whose tool-result image
