@@ -15,6 +15,7 @@ import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterAll, afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
+import { resetMobileViewportForTests } from "../../../shell/useIsMobile";
 import { installLocalStorage, MemoryStorage } from "../../../storageTestUtils";
 import { connectionStore } from "../../../stores/connection";
 import {
@@ -152,6 +153,13 @@ test.each([false, true])("shows one layout initialized from the current viewport
 });
 
 test("clearing the selected browser override follows shared defaults without writing them", async () => {
+  // This test clears the DESKTOP card's override. The preceding viewport test
+  // leaves a shared matchMedia source behind; a mobile viewport would render
+  // the mobile card and clear that layout instead, leaving the desktop
+  // override behind. Pin the viewport so the clear always targets desktop.
+  resetMobileViewportForTests();
+  vi.stubGlobal("matchMedia", () => ({ matches: false, addEventListener() {}, removeEventListener() {} }));
+  transcriptDisplayStore.setState({ viewport: "desktop" });
   const client = new FakeClient("ready");
   await mountReadySection(client);
   const override = makeTranscriptDisplayConfig({ kind: "preset", level: "full" });
