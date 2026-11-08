@@ -1147,10 +1147,13 @@ scenario here.
 ### T01 Tool-call parking
 
 **Current behavior.** After two actual failures of the same semantic tool call
-and failure class, dispatch parks the third and subsequent attempts. The parked
-result cannot discover that a file, server or dependency has healed. Elapsed
-time and successful different calls do not clear it. Repeated successful calls
-are explicitly never parked.
+and failure class, dispatch parks the third and subsequent attempts of a tool
+that can change state. Read-only tools are never parked on repeated failures: a
+read cannot make a failed retry worse, and the call must be able to observe
+that a file, server or dependency has healed. A parked result cannot discover
+that a file, server or dependency has healed. Elapsed time and successful
+different calls do not clear a park. Repeated successful calls are explicitly
+never parked.
 
 **Evidence.** [Registry dispatch](../../agent/internal/tool/registry.go#L719) and
 [breaker state](../../agent/internal/tool/breaker.go#L280) own the fingerprint and
