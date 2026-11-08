@@ -548,6 +548,9 @@ func (pingingTransport) Ping(context.Context) error { return nil }
 // keepalive on (appwire/client.go's startWithKeepalive). See
 // withoutClientKeepalive for why the harness opts out.
 func TestHubStackControlClientSkipsTheClientKeepalive(t *testing.T) {
+	if _, ok := any(pingingTransport{}).(appwire.Pinger); !ok {
+		t.Fatal("the test transport does not implement appwire.Pinger, so the wrapper assertion would be vacuous")
+	}
 	if _, ok := any(withoutClientKeepalive{pingingTransport{}}).(appwire.Pinger); ok {
 		t.Fatal("the e2e control transport advertises Ping, so appwire.NewClient runs the keepalive")
 	}
