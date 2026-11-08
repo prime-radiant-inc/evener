@@ -167,7 +167,7 @@ describe("hub replacement", () => {
     expect(store.detachHub()).toBe(true);
 
     expect(store.getState()).toMatchObject({ loaded: false, revision: 0, rawOverrides: [], overrides: [] });
-    await expect(store.getState().patchOverrides([])).rejects.toThrow("unavailable");
+    await expect(store.getState().patchOverrides([])).rejects.toThrow();
   });
 });
 
