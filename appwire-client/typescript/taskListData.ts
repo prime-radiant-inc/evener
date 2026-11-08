@@ -15,8 +15,18 @@ export interface TaskCounts {
   remaining?: number;
 }
 
+// The status a task row carries. The Go store mints the four-value TaskStatus
+// enum today (appwire.TaskStatus, generated as TASK_STATUSES), but the wire
+// field is a bare string: a newer daemon can add a status this client has not
+// learned. Such a word stays an opaque display value - never dropped, because
+// the daemon's aggregate still counts the task as remaining (task_store.go's
+// Summarize: Remaining = Total - Done - Cancelled), and never mapped onto one
+// of the four known states, because that would fabricate what the daemon did
+// not say. Surfaces render it with a neutral mark and the word itself.
+export type TaskStatusValue = TaskStatus | (string & {});
+
 export interface TaskRow extends Pick<Task, "id" | "type" | "description" | "prompt"> {
-  status: TaskStatus;
+  status: TaskStatusValue;
   dependsOn?: number[];
   notes?: string[];
   reasoningEffort?: string;
@@ -67,19 +77,25 @@ export function taskAggregateLabel(tasks: TaskCounts): string {
   return `All ${tasks.total} ${noun} done`;
 }
 
-// The closed status enum the Go store mints (appwire.TaskStatus, generated
-// as TASK_STATUSES). A status outside it - a newer daemon's addition, or corrupt
-// data - is dropped rather than cast: groupTasks routes every unmatched
-// status into the settled group, where the web pane would render an
-// unknown-status row as a broken glyph.
+// The status vocabulary this client knows how to render with its own mark and
+// word (appwire.TaskStatus, generated as TASK_STATUSES). A status outside it
+// is still a legal row - see TaskStatusValue - and consumers use this set to
+// choose between the known vocabulary and the raw word.
 const KNOWN_STATUSES: ReadonlySet<string> = new Set(TASK_STATUSES);
+
+// Whether a wire status is one this client knows how to render with its own
+// mark and word.
+export function isKnownTaskStatus(status: string): status is TaskStatus {
+  return KNOWN_STATUSES.has(status);
+}
 
 // A row is usable once it carries the wire's non-omitempty fields with the
 // right primitive types (id/type/description/prompt/status are never
-// omitted by the Go struct's own json tags, even when zero-valued) and a
-// status the enum defines - anything else (a null entry, a stray string, a
-// shape missing `id`, an unknown status) is dropped rather than fabricated
-// or allowed to crash the whole parse.
+// omitted by the Go struct's own json tags, even when zero-valued) - anything
+// else (a null entry, a stray string, a shape missing `id`) is dropped rather
+// than fabricated or allowed to crash the whole parse. The status is any
+// string: a word outside the enum is kept as the opaque status the daemon
+// wrote, never reinterpreted.
 function parseRow(raw: unknown): TaskRow | null {
   const fields = asJsonObject(raw);
   if (!fields) return null;
@@ -100,9 +116,8 @@ function parseRow(raw: unknown): TaskRow | null {
   } = fields;
   if (typeof id !== "number" || typeof type !== "string" || typeof description !== "string") return null;
   if (typeof prompt !== "string" || typeof status !== "string") return null;
-  if (!KNOWN_STATUSES.has(status)) return null;
 
-  const row: TaskRow = { id, type, description, prompt, status: status as TaskStatus };
+  const row: TaskRow = { id, type, description, prompt, status };
   if (Array.isArray(depends_on) && depends_on.every((d) => typeof d === "number")) {
     row.dependsOn = depends_on;
   }

@@ -252,6 +252,15 @@ describe("each tool's evidence, drawn", () => {
 		expect(shown()).toHaveLength(41);
 	});
 
+	it("draws an unrecognized status as written, with the neutral mark", () => {
+		// An unknown status has no mark of its own: open's unfilled circle and
+		// the raw word, the same treatment the Tasks sheet gives it (#2256).
+		const tree = drawn([{ kind: "tasks", tasks: [{ id: 1, status: "blocked", description: "Wait on the review" }] }]);
+		expect(byText(tree.root, "Wait on the review")?.props.accessibilityLabel).toBe("blocked: Wait on the review");
+		const marks = tree.root.findAllByType("SymbolView" as never).map((mark) => mark.props.name);
+		expect(marks).toContain("circle");
+	});
+
 	it("labels a tool's arguments and result, each in Menlo", () => {
 		const tree = drawn([
 			{ kind: "json", label: "Arguments", text: '{\n  "a": 1\n}' },

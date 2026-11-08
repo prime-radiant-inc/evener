@@ -9,7 +9,7 @@ import type { AnsiLine } from "@evener/appwire-client";
 import { expandTabs, parseOutputLines } from "../ansiOutputStyles";
 import { AnsiOutputLine } from "../AnsiOutputLine";
 import { MarkdownResponse } from "../MarkdownResponse";
-import { TaskStatusMark, TASK_STATUS_LABEL } from "../taskStatus";
+import { TaskStatusMark, taskStatusLabel } from "../taskStatus";
 import { scaledType, typeRoles } from "../design/tokens";
 import { TranscriptImages } from "../TranscriptImages";
 import type { RunStep } from "../timeline";
@@ -95,7 +95,7 @@ function Checklist({ tasks }: { tasks: readonly ChecklistTask[] }) {
 						<View style={{ flex: 1, minWidth: 0 }}>
 							<Text
 								allowFontScaling={allowFontScaling}
-								accessibilityLabel={`${TASK_STATUS_LABEL[task.status]}: ${task.description}`}
+								accessibilityLabel={`${taskStatusLabel(task.status)}: ${task.description}`}
 								style={{ fontSize: 15 * scale, lineHeight: 20 * scale, color: palette.inkHi }}
 							>
 								{task.description}
