@@ -227,6 +227,29 @@ func pastThreadTurnsList(ctx context.Context, cfg hubcore.WebConfig, params appw
 	if !ok {
 		return appwire.ThreadTurnsListResponse{}, false, nil
 	}
+	if params.TurnWindow != nil {
+		page, err := pastEntryTurnWindowItems(ctx, entry, *params.TurnWindow, false)
+		if err != nil {
+			return appwire.ThreadTurnsListResponse{}, true, err
+		}
+		candidates, err := spendTranscriptWindowCursor(page.candidateResult(), params.ThreadWindowParams, itemLimit, params.Cursor)
+		if err != nil {
+			return appwire.ThreadTurnsListResponse{}, true, err
+		}
+		packed, err := packThreadTurnsWindowItemCandidates(candidates, func(response appwire.ThreadTurnsListResponse) (appwire.ThreadTurnsListResponse, error) {
+			thread := appwire.Thread{ID: entry.Meta.ID, SessionID: entry.Meta.ID, CWD: entry.Meta.EnvInfo.WorkingDir, Turns: response.Data}
+			thread = stampItemPageTurns(cfg, entry, thread)
+			response.Data = thread.Turns
+			return response, nil
+		}, transcriptWindowOptionsFor(
+			candidates, params.ThreadWindowParams, itemLimit,
+			transcriptWindowAppliedBySavedIndex, appitempaging.FetchCursorOriginSavedIndex,
+		))
+		if err != nil {
+			return appwire.ThreadTurnsListResponse{}, true, err
+		}
+		return page.history().StampPage(packed), true, nil
+	}
 	page, err := pastEntryPageItems(ctx, entry, params, itemLimit)
 	if err != nil {
 		return appwire.ThreadTurnsListResponse{}, true, err

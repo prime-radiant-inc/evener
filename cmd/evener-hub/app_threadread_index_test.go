@@ -267,6 +267,56 @@ func TestDaemonlessThreadReadHonorsTurnWindows(t *testing.T) {
 	}
 }
 
+func TestDaemonlessThreadTurnsContinuesInsideWindowedTurn(t *testing.T) {
+	entries := make([]schema.Turn, 0, 26)
+	for i := 0; i < 25; i++ {
+		entries = append(entries, execution("turn_many", schema.NewTurn(schema.TurnAssistant, llm.Assistant(fmt.Sprintf("answer-%02d", i)))))
+	}
+	entries = append(entries, completedExecution("turn_many"))
+	cfg, entry, _ := seedIndexedPastSession(t, entries...)
+	window := appwire.ThreadWindowParams{
+		TurnWindow: &appwire.ThreadTurnWindow{Turn: "turn_many"},
+		ItemTypes:  []string{"messages"},
+	}
+	initial, err := dispatchDaemonlessThreadRead(t, cfg, appwire.ThreadReadParams{
+		Ref: "local:" + entry.Meta.ID, IncludeTurns: true, ItemLimit: 10, ThreadWindowParams: window,
+	})
+	if err != nil {
+		t.Fatalf("initial daemonless window: %v", err)
+	}
+
+	got := make([]string, 0, 25)
+	for _, item := range flattenTestItems(initial.Thread.Turns) {
+		got = append(got, item.Text)
+	}
+	if len(initial.Thread.Turns) != 1 || initial.Thread.Turns[0].Elision == nil {
+		t.Fatalf("initial daemonless window = %+v, want one elided turn", initial.Thread.Turns)
+	}
+	cursor := initial.Thread.Turns[0].Elision.ContinuationCursor
+	for cursor != "" {
+		page, found, err := pastThreadTurnsList(t.Context(), cfg, appwire.ThreadTurnsListParams{
+			Ref: "local:" + entry.Meta.ID, Cursor: cursor, ItemLimit: 10, ThreadWindowParams: window,
+		})
+		if err != nil || !found {
+			t.Fatalf("daemonless continuation after %d items = (found %v, err %v)", len(got), found, err)
+		}
+		for _, item := range flattenTestItems(page.Data) {
+			got = append(got, item.Text)
+		}
+		cursor = ""
+		if len(page.Data) == 1 && page.Data[0].Elision != nil {
+			cursor = page.Data[0].Elision.ContinuationCursor
+		}
+	}
+	want := make([]string, 25)
+	for i := range want {
+		want[i] = fmt.Sprintf("answer-%02d", i)
+	}
+	if !slices.Equal(got, want) {
+		t.Fatalf("continued saved item IDs = %v, want every item once in transcript order", got)
+	}
+}
+
 // TestDaemonlessClientHoldingPageWhenToolResultsLands is the spec's daemonless
 // held-page boundary test: a client read the page holding a tool call before
 // its TOOL_RESULTS was recorded, and a later latest-window read whose window no

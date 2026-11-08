@@ -32,9 +32,9 @@ const (
 )
 
 // transcriptWindowContinuation is the cursor-minting boundary between the
-// content packer and the view owner. TurnID and Position name the first
-// withheld content in transcript order; Direction says which view cursor form
-// the owner must mint.
+// content packer and the view owner. TurnID names the first withheld turn for
+// reporting. A forward Position names the first withheld item; a backward
+// Position names the first served item as its exclusive boundary.
 type transcriptWindowContinuation struct {
 	Direction transcriptWindowContinuationDirection
 	TurnID    string
@@ -65,8 +65,7 @@ func transcriptWindowOptionsFor(
 	appliedBy string,
 	fetchOrigin appitempaging.FetchCursorOrigin,
 ) transcriptWindowPackOptions {
-	identity := result.Identity
-	identity.Incarnation = params.ViewIncarnation(identity.Incarnation, itemLimit)
+	identity := transcriptWindowCursorIdentity(result.Identity, params, itemLimit)
 	return transcriptWindowPackOptions{
 		Params: params, ItemLimit: itemLimit, AppliedBy: appliedBy,
 		MintFetchCursor: func(candidate appitempaging.TranscriptItemCandidate) (string, error) {
@@ -82,6 +81,48 @@ func transcriptWindowOptionsFor(
 			return appitempaging.EncodeWindowCursor(identity, direction, continuation.Position)
 		},
 	}
+}
+
+func transcriptWindowCursorIdentity(identity appitempaging.CursorIdentity, params appwire.ThreadWindowParams, itemLimit int) appitempaging.CursorIdentity {
+	identity.Incarnation = params.ViewIncarnation(identity.Incarnation, itemLimit)
+	return identity
+}
+
+// spendTranscriptWindowCursor selects the remaining candidates from the same
+// resolved turn window. Forward cursors name the first withheld item and are
+// inclusive. Backward cursors name the first served item and are exclusive.
+func spendTranscriptWindowCursor(result transcriptItemCandidateResult, params appwire.ThreadWindowParams, itemLimit int, encoded string) (transcriptItemCandidateResult, error) {
+	identity := transcriptWindowCursorIdentity(result.Identity, params, itemLimit)
+	candidates := result.Candidates.Candidates
+	boundary, err := appitempaging.DecodeWindowCursor(encoded, identity, appitempaging.WindowCursorDirectionForward)
+	if err == nil {
+		if err := appitempaging.ValidateCursorBoundary(candidates, boundary); err != nil {
+			return transcriptItemCandidateResult{}, err
+		}
+		first := len(candidates)
+		for i := range candidates {
+			if appitempaging.ComparePosition(candidates[i].Position, boundary) >= 0 {
+				first = i
+				break
+			}
+		}
+		result.Candidates = appitempaging.TranscriptItemWindow{Candidates: append([]appitempaging.TranscriptItemCandidate(nil), candidates[first:]...)}
+		result.Exhausted = true
+		return result, nil
+	}
+	if params.TurnWindow == nil || (params.TurnWindow.Latest == 0 && params.TurnWindow.Before == nil) {
+		return transcriptItemCandidateResult{}, err
+	}
+	boundary, err = appitempaging.DecodeWindowCursor(encoded, identity, appitempaging.WindowCursorDirectionBackward)
+	if err != nil {
+		return transcriptItemCandidateResult{}, err
+	}
+	if err := appitempaging.ValidateCursorBoundary(candidates, boundary); err != nil {
+		return transcriptItemCandidateResult{}, err
+	}
+	result.Candidates = appitempaging.TranscriptItemWindow{Candidates: appitempaging.CandidatesBefore(candidates, boundary, len(candidates))}
+	result.Exhausted = true
+	return result, nil
 }
 
 type packItemCandidatesOptions struct {
@@ -540,19 +581,19 @@ func packItemCandidates[T any](
 			if windowResult.WithheldTurns > 0 {
 				windowResult.TrimmedEnd = trimmedEnd
 				var firstWithheld transcriptWindowPreparedTurn
+				var boundary appwire.ThreadItemPosition
 				if start > 0 {
 					firstWithheld = prepared[0]
 					windowResult.FirstWithheldTurnID = prepared[0].turn.ID
 					windowResult.LastWithheldTurnID = prepared[start-1].turn.ID
+					boundary = candidateTurns[start].candidates[0].Position
 				} else {
 					firstWithheld = prepared[end]
 					windowResult.FirstWithheldTurnID = prepared[end].turn.ID
 					windowResult.LastWithheldTurnID = prepared[len(prepared)-1].turn.ID
+					boundary = candidateTurns[end].candidates[0].Position
 				}
-				request := transcriptWindowContinuation{Direction: direction, TurnID: firstWithheld.turn.ID}
-				if len(firstWithheld.selected) > 0 {
-					request.Position = firstWithheld.selected[0].candidate.Position
-				}
+				request := transcriptWindowContinuation{Direction: direction, TurnID: firstWithheld.turn.ID, Position: boundary}
 				cursor, cursorErr := mintTranscriptWindowContinuation(windowOptions, request)
 				if cursorErr != nil {
 					return zero, cursorErr

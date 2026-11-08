@@ -159,6 +159,67 @@ func TestSessionOperationsTurnsPacksWindowByExactType(t *testing.T) {
 	}
 }
 
+func TestSessionOperationsTurnsContinuesInsideWindowedTurn(t *testing.T) {
+	daemon := appserver.NewServer(appserver.ServerConfig{ServerName: "daemon", SourceID: "local"})
+	appserver.HandleTyped(daemon.Router(), appwire.MethodThreadRead, func(_ context.Context, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
+		items := make([]appwire.ThreadItem, 25)
+		for i := range items {
+			position := appwire.ThreadItemPosition{Entry: uint64(i)}
+			items[i] = appwire.ThreadItem{
+				Type: "agentMessage", ID: fmt.Sprintf("message-%02d", i), TurnID: "turn_1",
+				TranscriptKey: fmt.Sprintf("message-%02d", i), Position: &position, Text: "answer", Version: uint64(i + 1),
+			}
+		}
+		return appwire.ThreadReadResponse{Thread: appwire.Thread{
+			ID: "windowed", SessionID: "windowed", Evener: appwire.EvenerThread{Ref: params.Ref},
+			Turns: []appwire.Turn{{ID: "turn_1", Status: appwire.TurnStatusCompleted, ItemsView: appwire.TurnItemsViewFull, Items: items}},
+		}}, nil
+	})
+	daemonHTTP := httptest.NewServer(http.HandlerFunc(daemon.ServeWebSocket))
+	defer daemonHTTP.Close()
+	endpoint := "ws" + strings.TrimPrefix(daemonHTTP.URL, "http")
+	source := appsource.NewLocalDaemonSourceWithEntries("local", func() []appsource.LocalDaemonEntry {
+		return []appsource.LocalDaemonEntry{{Entry: rendezvous.Entry{
+			Protocol: appwire.ProtocolVersion, Endpoint: endpoint, SourceID: "local",
+			ThreadID: "windowed", SessionID: "windowed", WorkspaceRef: "local:windowed",
+		}}}
+	}, http.DefaultClient)
+	sources := appsource.NewRegistry()
+	sources.Add(source)
+	cfg := hubcore.WebConfig{HubStateRoot: t.TempDir(), Past: hubcore.NewPastIndex("")}
+	server := appserver.NewServer(appserver.ServerConfig{ServerName: "hub", Version: "test", SourceID: "local"})
+	operations := &sessionOperations{cfg: cfg, sources: sources, relays: newHubRelay(server, cfg, sources), server: server}
+
+	params := appwire.ThreadTurnsListParams{
+		Ref: "local:windowed", ItemLimit: 10,
+		ThreadWindowParams: appwire.ThreadWindowParams{TurnWindow: &appwire.ThreadTurnWindow{Turn: "turn_1"}, ItemTypes: []string{"messages"}},
+	}
+	var got []string
+	for {
+		page, err := operations.turns(t.Context(), params)
+		if err != nil {
+			t.Fatalf("window page %d: %v", len(got)/10+1, err)
+		}
+		if len(page.Data) != 1 {
+			t.Fatalf("window page turn count = %d, want 1", len(page.Data))
+		}
+		for _, item := range page.Data[0].Items {
+			got = append(got, item.ID)
+		}
+		if page.Data[0].Elision == nil || page.Data[0].Elision.ContinuationCursor == "" {
+			break
+		}
+		params.Cursor = page.Data[0].Elision.ContinuationCursor
+	}
+	want := make([]string, 25)
+	for i := range want {
+		want[i] = fmt.Sprintf("message-%02d", i)
+	}
+	if !slices.Equal(got, want) {
+		t.Fatalf("continued item IDs = %v, want every item once in transcript order", got)
+	}
+}
+
 func TestSessionOperationsReadPreservesHumanAndManagerSubscriptionModes(t *testing.T) {
 	daemon := appserver.NewServer(appserver.ServerConfig{ServerName: "daemon", SourceID: "local"})
 	appserver.HandleTyped(daemon.Router(), appwire.MethodThreadRead, func(ctx context.Context, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {

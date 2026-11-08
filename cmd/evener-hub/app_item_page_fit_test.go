@@ -502,18 +502,19 @@ func TestPackTranscriptItemWindowBudgetMeasuresEncodedTurnsAndTrimsByMode(t *tes
 	}
 
 	tests := []struct {
-		name        string
-		window      *appwire.ThreadTurnWindow
-		wantIDs     []string
-		wantTrimmed string
-		wantFirst   string
-		wantLast    string
-		wantServed  string
-		wantDir     transcriptWindowContinuationDirection
+		name         string
+		window       *appwire.ThreadTurnWindow
+		wantIDs      []string
+		wantTrimmed  string
+		wantFirst    string
+		wantLast     string
+		wantServed   string
+		wantDir      transcriptWindowContinuationDirection
+		wantPosition appwire.ThreadItemPosition
 	}{
-		{name: "latest drops oldest", window: &appwire.ThreadTurnWindow{Latest: 3}, wantIDs: []string{"item-3"}, wantTrimmed: "oldest", wantFirst: "turn-1", wantLast: "turn-2", wantServed: "turn-3", wantDir: transcriptWindowContinuationBackward},
-		{name: "since drops newest", window: &appwire.ThreadTurnWindow{Since: "turn-0", Limit: 3}, wantIDs: []string{"item-1"}, wantTrimmed: "newest", wantFirst: "turn-2", wantLast: "turn-3", wantServed: "turn-1", wantDir: transcriptWindowContinuationForward},
-		{name: "before drops oldest", window: &appwire.ThreadTurnWindow{Before: &appwire.ThreadTurnBoundary{TurnID: "turn-4", Limit: 3}}, wantIDs: []string{"item-3"}, wantTrimmed: "oldest", wantFirst: "turn-1", wantLast: "turn-2", wantServed: "turn-3", wantDir: transcriptWindowContinuationBackward},
+		{name: "latest drops oldest", window: &appwire.ThreadTurnWindow{Latest: 3}, wantIDs: []string{"item-3"}, wantTrimmed: "oldest", wantFirst: "turn-1", wantLast: "turn-2", wantServed: "turn-3", wantDir: transcriptWindowContinuationBackward, wantPosition: appwire.ThreadItemPosition{Entry: 2}},
+		{name: "since drops newest", window: &appwire.ThreadTurnWindow{Since: "turn-0", Limit: 3}, wantIDs: []string{"item-1"}, wantTrimmed: "newest", wantFirst: "turn-2", wantLast: "turn-3", wantServed: "turn-1", wantDir: transcriptWindowContinuationForward, wantPosition: appwire.ThreadItemPosition{Entry: 1}},
+		{name: "before drops oldest", window: &appwire.ThreadTurnWindow{Before: &appwire.ThreadTurnBoundary{TurnID: "turn-4", Limit: 3}}, wantIDs: []string{"item-3"}, wantTrimmed: "oldest", wantFirst: "turn-1", wantLast: "turn-2", wantServed: "turn-3", wantDir: transcriptWindowContinuationBackward, wantPosition: appwire.ThreadItemPosition{Entry: 2}},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -536,7 +537,7 @@ func TestPackTranscriptItemWindowBudgetMeasuresEncodedTurnsAndTrimsByMode(t *tes
 			if got.Window.EffectiveBudgetBytes != transcriptWindowBudgetFloorBytes || got.Window.ServedTurns != 1 || got.Window.WithheldTurns != 2 || got.Window.FirstServedTurnID != test.wantServed || got.Window.LastServedTurnID != test.wantServed || got.Window.TrimmedEnd != test.wantTrimmed || got.Window.FirstWithheldTurnID != test.wantFirst || got.Window.LastWithheldTurnID != test.wantLast || got.Window.ContinuationCursor != "window-continuation" {
 				t.Fatalf("window result = %+v", *got.Window)
 			}
-			if continuation.Direction != test.wantDir || continuation.TurnID != test.wantFirst {
+			if continuation.Direction != test.wantDir || continuation.TurnID != test.wantFirst || continuation.Position != test.wantPosition {
 				t.Fatalf("continuation request = %+v", continuation)
 			}
 			encodedTurns, err := json.Marshal(got.Data)
@@ -573,6 +574,48 @@ func TestPackTranscriptItemWindowBudgetMeasuresEncodedTurnsAndTrimsByMode(t *tes
 	}
 	if maximumBudget.Window == nil || maximumBudget.Window.EffectiveBudgetBytes != managerReadMaxJSONBytes-transcriptWindowMeasuredEnvelopeMarginBytes {
 		t.Fatalf("maximum window result = %+v", maximumBudget.Window)
+	}
+}
+
+func TestSpendTranscriptWindowCursorKeepsTheRequestedViewAndDirection(t *testing.T) {
+	candidates := testItemCandidates(5)
+	result := transcriptItemCandidateResult{
+		Candidates: appitempaging.TranscriptItemWindow{Candidates: candidates},
+		Identity:   appitempaging.CursorIdentity{ThreadRef: "local:thread", Incarnation: "window", ProjectionVersion: 1},
+		Exhausted:  true,
+	}
+	params := appwire.ThreadWindowParams{TurnWindow: &appwire.ThreadTurnWindow{Latest: 1}, ItemTypes: []string{"messages"}}
+	identity := result.Identity
+	identity.Incarnation = params.ViewIncarnation(identity.Incarnation, transcriptWindowDefaultItemLimit)
+
+	forward, err := appitempaging.EncodeWindowCursor(identity, appitempaging.WindowCursorDirectionForward, candidates[2].Position)
+	if err != nil {
+		t.Fatal(err)
+	}
+	forwardPage, err := spendTranscriptWindowCursor(result, params, transcriptWindowDefaultItemLimit, forward)
+	if err != nil {
+		t.Fatalf("spend forward cursor: %v", err)
+	}
+	if got := testCandidateIDs(forwardPage.Candidates.Candidates); !reflect.DeepEqual(got, []string{"item-02", "item-03", "item-04"}) {
+		t.Fatalf("forward continuation = %v, want first withheld item through newest", got)
+	}
+
+	backward, err := appitempaging.EncodeWindowCursor(identity, appitempaging.WindowCursorDirectionBackward, candidates[3].Position)
+	if err != nil {
+		t.Fatal(err)
+	}
+	backwardPage, err := spendTranscriptWindowCursor(result, params, transcriptWindowDefaultItemLimit, backward)
+	if err != nil {
+		t.Fatalf("spend backward cursor: %v", err)
+	}
+	if got := testCandidateIDs(backwardPage.Candidates.Candidates); !reflect.DeepEqual(got, []string{"item-00", "item-01", "item-02"}) {
+		t.Fatalf("backward continuation = %v, want items strictly older than served boundary", got)
+	}
+
+	otherView := params
+	otherView.ItemTypes = []string{"reasoning"}
+	if _, err := spendTranscriptWindowCursor(result, otherView, transcriptWindowDefaultItemLimit, forward); !errors.Is(err, appwire.TranscriptItemCursorStale()) {
+		t.Fatalf("cross-view cursor error = %v, want stale", err)
 	}
 }
 
@@ -701,6 +744,14 @@ func testItemIDs(items []appwire.ThreadItem) []string {
 	ids := make([]string, len(items))
 	for i := range items {
 		ids[i] = items[i].ID
+	}
+	return ids
+}
+
+func testCandidateIDs(candidates []appitempaging.TranscriptItemCandidate) []string {
+	ids := make([]string, len(candidates))
+	for i := range candidates {
+		ids[i] = candidates[i].Item.ID
 	}
 	return ids
 }

@@ -11,6 +11,7 @@ import (
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener-hub/internal/appsource"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
+	"primeradiant.com/evener/internal/appitempaging"
 )
 
 // A Manager read is deliberately below the runtime tool-result cap. This
@@ -87,17 +88,25 @@ func (o *sessionOperations) turns(ctx context.Context, p appwire.ThreadTurnsList
 	}
 	source, err := sourceForThreadWithDeletionFence(ctx, o.cfg, o.sources, p.Ref, "")
 	if err == nil {
-		// The initial Manager read mints a hub-owned cursor through the
-		// candidate machinery; the continuation must resolve it the same
-		// way. A raw ListTurns forwards that cursor to the daemon, which
-		// rejects the foreign identity as stale. The handled flag needs no
-		// inspection here: without an error it only distinguishes a packed
-		// page from a legacy source's page, and both are success.
-		page, _, listErr := listItemTurns(ctx, source, p, nil)
-		if listErr == nil {
-			return page, nil
+		if p.TurnWindow != nil {
+			page, continuationErr := continueLiveTranscriptWindow(ctx, source, p)
+			if continuationErr == nil {
+				return page, nil
+			}
+			err = continuationErr
+		} else {
+			// The initial Manager read mints a hub-owned cursor through the
+			// candidate machinery; the continuation must resolve it the same
+			// way. A raw ListTurns forwards that cursor to the daemon, which
+			// rejects the foreign identity as stale. The handled flag needs no
+			// inspection here: without an error it only distinguishes a packed
+			// page from a legacy source's page, and both are success.
+			page, _, listErr := listItemTurns(ctx, source, p, nil)
+			if listErr == nil {
+				return page, nil
+			}
+			err = listErr
 		}
-		err = listErr
 	}
 	if !isDeadSessionError(err) {
 		return appwire.ThreadTurnsListResponse{}, err
@@ -110,6 +119,43 @@ func (o *sessionOperations) turns(ctx context.Context, p appwire.ThreadTurnsList
 		return page, nil
 	}
 	return appwire.ThreadTurnsListResponse{}, err
+}
+
+func continueLiveTranscriptWindow(ctx context.Context, source appsource.Source, params appwire.ThreadTurnsListParams) (appwire.ThreadTurnsListResponse, error) {
+	itemLimit, err := appwire.NormalizeTranscriptItemLimit(params.ItemLimit)
+	if err != nil {
+		return appwire.ThreadTurnsListResponse{}, err
+	}
+	readParams := appwire.ThreadReadParams{
+		Ref: params.Ref, ThreadID: params.ThreadID, IncludeTurns: true, ItemLimit: itemLimit,
+		ThreadWindowParams: params.ThreadWindowParams,
+	}
+	read, err := source.ReadThread(ctx, readParams)
+	if err != nil {
+		return appwire.ThreadTurnsListResponse{}, err
+	}
+	candidates, err := sourceItemCandidateResultForRead(ctx, source, readParams, read)
+	if err != nil {
+		return appwire.ThreadTurnsListResponse{}, err
+	}
+	candidates, err = spendTranscriptWindowCursor(candidates, params.ThreadWindowParams, itemLimit, params.Cursor)
+	if err != nil {
+		return appwire.ThreadTurnsListResponse{}, err
+	}
+	fetchOrigin := appitempaging.FetchCursorOriginServingDaemon
+	if _, remote := source.(*appsource.RemoteHubSource); remote {
+		fetchOrigin = appitempaging.FetchCursorOriginRemoteSource
+	}
+	packed, err := packThreadTurnsWindowItemCandidates(candidates, func(response appwire.ThreadTurnsListResponse) (appwire.ThreadTurnsListResponse, error) {
+		thread := threadWithPackedTurns(read.Thread, response.Data)
+		thread = enrichSourcedThreadImages(source, thread)
+		response.Data = thread.Turns
+		return response, nil
+	}, transcriptWindowOptionsFor(candidates, params.ThreadWindowParams, itemLimit, transcriptWindowAppliedByServingDaemon, fetchOrigin))
+	if err != nil {
+		return appwire.ThreadTurnsListResponse{}, err
+	}
+	return candidates.History.StampPage(packed), nil
 }
 
 func (o *sessionOperations) activity(ctx context.Context, p appwire.SessionActivityRequest) (appwire.SessionActivityResponse, error) {
