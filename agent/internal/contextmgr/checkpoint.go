@@ -6,6 +6,7 @@ import (
 	"sort"
 	"strings"
 
+	"primeradiant.com/evener/agent/internal/runetrim"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/llm"
 )
@@ -18,6 +19,8 @@ import (
 // in the main model's context. The human partner's messages a model-written
 // compaction turn carries share the same cap. The cap yields to those
 // messages: none is ever dropped to meet it (fitCheckpointConversation).
+// Metadata that alone would exceed the budget is cut after the transcript
+// pointer, with fitCheckpointMetadata's marker disclosing the cut.
 const maxCheckpointChars = 60_000
 
 // checkpoint replaces old history with a structured state snapshot.
@@ -342,7 +345,16 @@ func formatCheckpoint(data checkpointData, meta *CompactionMeta, maxChars int) s
 	// earlier summaries, and the Markdown section headings. The variable
 	// content always gets at least minVariableBudget.
 	const minVariableBudget = 1000
-	frame := len("[CONTEXT CHECKPOINT]\n") + len(fixedStr) + len("[END CHECKPOINT]\n") + 200
+	frameOverhead := len("[CONTEXT CHECKPOINT]\n") + len("[END CHECKPOINT]\n") + 200
+	// The fixed metadata is bounded too: without this a large file list or
+	// skill set alone can exceed maxChars, since only the variable content was
+	// ever shed. Budgets at or below the frame plus the variable floor cannot
+	// honor a hard cap at all (the floor already exceeds them), so metadata is
+	// left alone there rather than manufacturing a smaller but unusable block.
+	if metadataBudget := maxChars - frameOverhead - minVariableBudget; metadataBudget > 0 {
+		fixedStr = fitCheckpointMetadata(fixedStr, meta.compactionPointer("checkpoint"), meta.hasTranscript(), metadataBudget)
+	}
+	frame := frameOverhead + len(fixedStr)
 
 	// Earlier summaries get up to half the checkpoint, and never so much that
 	// the variable content's floor would push it past maxChars. The newest are
@@ -398,6 +410,57 @@ func formatCheckpoint(data checkpointData, meta *CompactionMeta, maxChars int) s
 	}
 	b.WriteString("[END CHECKPOINT]\n")
 	return b.String()
+}
+
+// checkpointMetadataTruncated replaces fixed metadata that would push a
+// checkpoint past its cap.
+const checkpointMetadataTruncated = "[... checkpoint metadata truncated to keep this checkpoint within its size cap"
+
+// checkpointMetadataMarker closes the disclosure begun by
+// checkpointMetadataTruncated. The transcript pointer above the kept metadata
+// tells the model where the full history can be read; the marker names it only
+// when the session actually keeps a transcript to read.
+func checkpointMetadataMarker(hasPointer, transcriptKept bool) string {
+	if hasPointer && transcriptKept {
+		return checkpointMetadataTruncated + "; the full session history remains available through the transcript reference above ...]\n"
+	}
+	return checkpointMetadataTruncated + " ...]\n"
+}
+
+// fitCheckpointMetadata bounds the fixed metadata sections to budget characters.
+// pointer is the compaction pointer the caller wrote at the head of fixed ("" for
+// a non-persistent session); it is kept whole because it is the reference that
+// makes the dropped metadata recoverable. The remaining sections are cut on a
+// rune boundary and followed by the truncation marker. When even the pointer and
+// marker do not fit, they still stand: the cap yields here exactly as it does to
+// the human partner's messages, and dropping the pointer would leave nothing
+// pointing at the recoverable history.
+func fitCheckpointMetadata(fixed, pointer string, transcriptKept bool, budget int) string {
+	if len(fixed) <= budget {
+		return fixed
+	}
+	if !strings.HasPrefix(fixed, pointer) {
+		// The caller did not write this pointer at the head (or there is none):
+		// treat the whole metadata block as cuttable rather than protecting a
+		// metadata line as if it were the reference.
+		pointer = ""
+	}
+	rest := fixed[len(pointer):]
+	marker := "\n" + checkpointMetadataMarker(pointer != "", transcriptKept)
+	keep := budget - len(pointer) - len(marker)
+	if keep <= 0 {
+		return pointer + marker
+	}
+	kept := runetrim.Cut(rest, keep)
+	if len(kept) < len(rest) {
+		// Back the cut up to the last complete metadata entry: cutting inside
+		// the comma-joined file list would report a partial path as a modified
+		// file, the exact confusion this section exists to avoid.
+		if end := strings.LastIndexAny(kept, ",\n"); end >= 0 {
+			kept = strings.TrimRight(kept[:end], " \t")
+		}
+	}
+	return pointer + kept + marker
 }
 
 // truncateRendered shortens text (via truncate, which appends an ellipsis) until
