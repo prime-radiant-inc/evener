@@ -4650,6 +4650,7 @@ Underlying Go kind: `string` (no struct fields).
 | `itemLimit` | int | yes |  |
 | `requestGeneration` | uint64 | yes |  |
 | `heldSnapshot` | \*[appwire.SnapshotIdentity](#snapshotidentity) | yes |  |
+| `liveOnly` | bool | yes |  |
 | `answerContinuation` | \*[appwire.AnswerContinuationQuery](#answercontinuationquery) | yes |  |
 
 

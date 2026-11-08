@@ -36,7 +36,7 @@ func (b *voiceBridge) captureSpeechBaseline(read appwire.ThreadReadResponse) {
 // Walk back to the last selected source before choosing the next one. Pages
 // from another snapshot cannot prove there was no earlier unsaid output.
 func (b *voiceBridge) readSpeechHistory(ctx context.Context, history appwire.SnapshotIdentity, cursor *appwire.ThreadItemPosition) (appwire.ThreadReadResponse, error) {
-	read, err := b.client.ThreadRead(ctx, appwire.ThreadReadParams{Ref: b.binding.Ref, IncludeTurns: true, ItemLimit: appwire.TranscriptItemPageLimit})
+	read, err := b.client.ThreadRead(ctx, appwire.ThreadReadParams{Ref: b.binding.Ref, IncludeTurns: true, ItemLimit: appwire.TranscriptItemPageLimit, LiveOnly: true})
 	if err != nil || !b.validSpeechRead(read) || read.Snapshot.Incarnation != history.Incarnation {
 		return read, err
 	}
@@ -127,7 +127,7 @@ func (b *voiceBridge) applySpeechAuthority(read appwire.ThreadReadResponse) erro
 // Relay recovery can name only the ref, without a history epoch or thread ID.
 func (b *voiceBridge) applySpeechResync(changed appwire.ThreadResyncParams) {
 	if changed.Ref == b.binding.Ref && (changed.ThreadID == "" || changed.ThreadID == b.historyThreadID) {
-		b.reconcile = true
+		b.reconcileNow()
 	}
 }
 
@@ -139,7 +139,7 @@ func (b *voiceBridge) applySpeechHistoryUpdate(changed appwire.HistoryUpdatedPar
 		return nil
 	}
 	if changed.BootGeneration != b.historyBoot || changed.Epoch != b.historyEpoch || changed.Snapshot.Incarnation != b.history.Incarnation {
-		b.reconcile = true
+		b.reconcileNow()
 		return nil
 	}
 	return b.applyInterruptedTurns(changed.Turns)

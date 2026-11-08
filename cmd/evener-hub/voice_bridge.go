@@ -49,6 +49,11 @@ type voiceBridge struct {
 	reconcile      bool
 	reconciling    bool
 	reconciliation chan voiceWorkResult
+	renewal        chan voiceWorkResult
+	renewing       int
+	renewQueued    bool
+	reconcileAfter time.Time
+	reconcileTimer *time.Timer
 
 	generation       uint64
 	awaitingFence    bool
@@ -164,6 +169,10 @@ func (b *voiceBridge) run() {
 	b.client = client
 	b.work = make(chan voiceWorkResult)
 	b.reconciliation = make(chan voiceWorkResult)
+	b.renewal = make(chan voiceWorkResult)
+	b.reconcileTimer = time.NewTimer(0)
+	b.reconcileTimer.Stop()
+	defer b.reconcileTimer.Stop()
 	defer b.close()
 	read, err := b.client.ThreadRead(b.ctx, appwire.ThreadReadParams{Ref: b.binding.Ref, IncludeTurns: true, Subscribe: true, ItemLimit: appwire.TranscriptItemPageLimit})
 	if err != nil || !b.validSpeechRead(read) {
@@ -191,7 +200,8 @@ func (b *voiceBridge) run() {
 		return voiceWorkResult{err: b.recoverIntents(ctx)}
 	})
 	for {
-		if b.reconcile && !b.reconciling {
+		if b.reconcileDue(time.Now()) {
+			b.reconcileAfter = time.Time{}
 			b.beginSpeechReconciliation()
 		}
 		if b.retiring != nil && b.workCancel == nil && b.provider == nil {
@@ -233,9 +243,15 @@ func (b *voiceBridge) run() {
 		if b.provider != nil && (b.retiring == nil || b.workKind != "speech") {
 			events = b.provider.Events()
 		}
+		var reconcileWait <-chan time.Time
+		if b.reconcile && !b.reconciling && !b.reconcileAfter.IsZero() {
+			reconcileWait = b.reconcileTimer.C
+		}
 		select {
 		case <-b.ctx.Done():
 			return
+		case <-reconcileWait:
+			// The paced retry is due; the loop top starts the read.
 		case <-expiry.C:
 			_ = b.reportError("grant_expired")
 			return
@@ -244,9 +260,25 @@ func (b *voiceBridge) run() {
 				_ = b.reportError("input_failed")
 				return
 			}
-			if control.Type == "renew" {
-				expiry.Reset(time.Until(b.binding.ExpiresAt))
+		case result := <-b.renewal:
+			b.renewing--
+			if result.err != nil {
+				if !voiceRelayOutage(result.err) {
+					_ = b.reportError("input_failed")
+					return
+				}
+				// The renewal read met the relay cut. Keep the session and
+				// let the queued or next renewal retry; the grant has not
+				// expired.
+				b.startQueuedRenewal()
+				continue
 			}
+			if err := b.applyRenewal(); err != nil {
+				_ = b.reportError("input_failed")
+				return
+			}
+			expiry.Reset(time.Until(b.binding.ExpiresAt))
+			b.startQueuedRenewal()
 		case notification, ok := <-b.client.Notifications():
 			if !ok {
 				return
@@ -289,7 +321,14 @@ func (b *voiceBridge) run() {
 		case result := <-b.reconciliation:
 			b.reconciling = false
 			if voiceHistoryCursorStale(result.err) {
-				b.reconcile = true
+				b.reconcileNow()
+				continue
+			}
+			if voiceRelayOutage(result.err) {
+				// Retry through the authoritative reconciliation read; a real
+				// relay cut parks in recovery's redial, while a daemonless
+				// saved-history answer fails at RPC speed, so pace both.
+				b.paceReconcile()
 				continue
 			}
 			if result.err != nil || b.applySpeechAuthority(result.read) != nil {
@@ -331,6 +370,10 @@ func (b *voiceBridge) run() {
 			if result.err != nil {
 				if kind == "history" && voiceHistoryCursorStale(result.err) {
 					b.refresh = true
+					continue
+				}
+				if kind == "history" && voiceRelayOutage(result.err) {
+					b.paceReconcile()
 					continue
 				}
 				_ = b.reportError("input_failed")
@@ -443,6 +486,74 @@ func (b *voiceBridge) beginSpeechReconciliation() {
 	})
 }
 
+// voiceReconcileOutageDelay paces a reconciliation retry whose failure did not
+// park in a relay redial. A remote hub answering from saved history fails at
+// RPC speed, so an immediate re-arm would spin until the grant expires.
+const voiceReconcileOutageDelay = liveReadRetryBudget
+
+// reconcileDue reports whether the loop should start the authoritative read.
+func (b *voiceBridge) reconcileDue(now time.Time) bool {
+	if !b.reconcile || b.reconciling {
+		return false
+	}
+	return b.reconcileAfter.IsZero() || !now.Before(b.reconcileAfter)
+}
+
+// reconcileNow re-arms reconciliation for a prompt read: a resync, a history
+// identity change, or a stale cursor is evidence that a read may now succeed.
+func (b *voiceBridge) reconcileNow() {
+	b.reconcile = true
+	b.reconcileAfter = time.Time{}
+}
+
+func (b *voiceBridge) paceReconcile() {
+	b.reconcile = true
+	b.reconcileAfter = time.Now().Add(voiceReconcileOutageDelay)
+	b.reconcileTimer.Reset(voiceReconcileOutageDelay)
+}
+
+// A renewal read may block through a relay reconnection. It runs beside the run
+// loop so playback receipts keep draining; the loop alone renews the grant,
+// resets the expiry timer, and decides whether the failure closes the session.
+func (b *voiceBridge) beginRenewal() {
+	ref, instanceID := b.binding.Ref, b.binding.InstanceID
+	b.workers.Go(func() {
+		result := voiceWorkResult{}
+		read, err := b.client.ThreadRead(b.ctx, appwire.ThreadReadParams{Ref: ref, LiveOnly: true})
+		switch {
+		case err != nil:
+			result.err = err
+		case read.Thread.Evener.InstanceID != instanceID || !read.Thread.Evener.MutationStateAuthoritative || !read.Thread.Evener.Manager:
+			result.err = hubcore.ErrVoiceStale
+		}
+		select {
+		case b.renewal <- result:
+		case <-b.ctx.Done():
+		}
+	})
+}
+
+// startQueuedRenewal runs the renewal coalesced behind the one that just
+// finished. At most one renewal read is in flight: a device that resends renew
+// on its own cadence must not stack relay reads behind a slow reconnection.
+func (b *voiceBridge) startQueuedRenewal() {
+	if !b.renewQueued {
+		return
+	}
+	b.renewQueued = false
+	b.renewing++
+	b.beginRenewal()
+}
+
+func (b *voiceBridge) applyRenewal() error {
+	expires := time.Now().UTC().Add(voiceGrantLifetime)
+	if err := b.journal.RenewBinding(b.ctx, b.binding.ID, b.binding.Epoch, expires); err != nil {
+		return err
+	}
+	b.binding.ExpiresAt = expires
+	return b.send(map[string]any{"type": "renewed", "expiresAt": expires})
+}
+
 func voiceHistoryCursorStale(err error) bool {
 	var wire appwire.WireError
 	if !errors.As(err, &wire) {
@@ -450,6 +561,23 @@ func voiceHistoryCursorStale(err error) bool {
 	}
 	data, ok := appwire.DecodedErrorData(wire.Data)
 	return ok && data.EvenerErrorInfo == appwire.ErrorTranscriptItemCursorStale
+}
+
+// voiceRelayOutage reports a read the relay cut because its daemon connection
+// was replaced (the relay marks that read automatically retryable). That is an
+// outage, not a verdict on the held execution: keep presenting and let the
+// authoritative reconciliation read apply any accepted Stop once the
+// connection returns.
+func voiceRelayOutage(err error) bool {
+	if !isSessionUnavailableError(err) {
+		return false
+	}
+	var wire appwire.WireError
+	if !errors.As(err, &wire) {
+		return false
+	}
+	data, ok := appwire.DecodedErrorData(wire.Data)
+	return ok && data.RetryDisposition == appwire.RetryDispositionAutomatic
 }
 
 func (b *voiceBridge) control(control voiceControl) error {
@@ -525,19 +653,13 @@ func (b *voiceBridge) control(control voiceControl) error {
 	case "interrupt":
 		return b.interruptSpeech(control)
 	case "renew":
-		read, err := b.client.ThreadRead(b.ctx, appwire.ThreadReadParams{Ref: b.binding.Ref})
-		if err != nil {
-			return err
+		if b.renewing > 0 {
+			b.renewQueued = true
+			return nil
 		}
-		if read.Thread.Evener.InstanceID != b.binding.InstanceID || !read.Thread.Evener.MutationStateAuthoritative || !read.Thread.Evener.Manager {
-			return hubcore.ErrVoiceStale
-		}
-		expires := time.Now().UTC().Add(voiceGrantLifetime)
-		if err := b.journal.RenewBinding(b.ctx, b.binding.ID, b.binding.Epoch, expires); err != nil {
-			return err
-		}
-		b.binding.ExpiresAt = expires
-		return b.send(map[string]any{"type": "renewed", "expiresAt": expires})
+		b.renewing++
+		b.beginRenewal()
+		return nil
 	case "disarm":
 		if err := b.journal.RetireBinding(b.ctx, b.binding.ID, b.binding.Epoch); err != nil {
 			return err

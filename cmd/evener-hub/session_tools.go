@@ -442,6 +442,7 @@ func liveThreadRead(
 	source appsource.Source,
 	params appwire.ThreadReadParams,
 	capture bool,
+	liveOnly bool,
 ) (*hubThreadReadResult, error) {
 	read := func(ctx context.Context) (*hubThreadReadResult, error) {
 		return relays.readThreadWithSubscription(ctx, source, params, capture)
@@ -474,15 +475,34 @@ func liveThreadRead(
 		if readErr == nil {
 			return read, nil
 		}
-		err = readErr
 		if ctx.Err() != nil {
 			return nil, ctx.Err()
 		}
+		if liveOnly && err != nil && errors.Is(readErr, context.DeadlineExceeded) {
+			// The retry attempt died on the budget while the previous attempt's
+			// failure was retryable. Keep that failure: the caller's context is
+			// still live, and replacing it with DeadlineExceeded would turn a
+			// transient outage into a terminal one. A terminal verdict that
+			// happened to land as the deadline fired is not a budget death and
+			// is returned below.
+			return nil, err
+		}
+		err = readErr
 		if !retryableLiveReadFailure(err) {
 			return nil, readErr
 		}
 	}
 	return nil, err
+}
+
+// liveReadDaemonless reports a successful read answered from persisted history
+// rather than a live daemon. Every saved response carries the daemonless boot
+// generation; the authority fallback covers an older peer that omits it. It
+// keeps Manager so a live descendant read, which is never authoritative, is not
+// mistaken for saved history.
+func liveReadDaemonless(read appwire.ThreadReadResponse) bool {
+	return read.BootGeneration == appwire.DaemonlessBootGeneration ||
+		(!read.Thread.Evener.MutationStateAuthoritative && read.Thread.Evener.Manager)
 }
 
 // savedFallbackAnswers reports whether a failed live read here is answered from
@@ -590,8 +610,32 @@ func (o *sessionOperations) read(ctx context.Context, params appwire.ThreadReadP
 		}
 		return appwire.ThreadReadResponse{}, err
 	}
-	read, err := liveThreadRead(ctx, relays, source, params, capture)
+	// LiveOnly is a hub-internal fallback decision. Never forward it to the
+	// source: older daemons and remote hubs decode thread/read params strictly.
+	sourceParams := params
+	sourceParams.LiveOnly = false
+	read, err := liveThreadRead(ctx, relays, source, sourceParams, capture, params.LiveOnly)
+	if err == nil && params.LiveOnly && liveReadDaemonless(read.response) {
+		// A remote hub that loses its daemon answers a non-subscribing read from
+		// its saved transcript. LiveOnly is hub-internal and never crosses the
+		// bridge, so that hop cannot refuse the answer; classify the daemonless
+		// projection here, before the voice bridge's authority check treats it
+		// as a replaced manager and closes. A live-only read against a genuinely
+		// retired remote session now holds speech until resync or grant expiry
+		// instead of closing immediately.
+		err = appwire.RetryableSessionUnavailable("remote hub answered a live-only read with saved history")
+	}
 	if err != nil {
+		// A live-only read has no saved answer to recover, and its caller
+		// classifies the retryable outage. Ownership recovery would run an
+		// unbudgeted re-read and can replace that outage with a daemonless
+		// Unavailable, which aborts the voice bridge's held speech.
+		if params.LiveOnly {
+			if read != nil {
+				read.finish(false)
+			}
+			return appwire.ThreadReadResponse{}, err
+		}
 		recovered := false
 		allowPast := allowsPastFallbackAfterLiveReadFailure(source, params, err)
 		if _, local := localPastThreadID(params); local && cfg.Roster != nil && daemonOwnershipMayHaveChanged(err) {
@@ -628,7 +672,7 @@ func (o *sessionOperations) read(ctx context.Context, params appwire.ThreadReadP
 					source = refreshedSource
 					_, err = daemon.ResolveSubscriptionAdmission(params)
 					if err == nil {
-						read, err = relays.readThreadWithSubscription(ctx, source, params, capture)
+						read, err = relays.readThreadWithSubscription(ctx, source, sourceParams, capture)
 						recovered = err == nil
 					}
 					if ctx.Err() != nil {
@@ -674,7 +718,7 @@ func (o *sessionOperations) read(ctx context.Context, params appwire.ThreadReadP
 	// making every click on a long session pay for a projection it
 	// discarded in the same request.
 	var pastPage *appwire.ThreadReadResponse
-	if params.IncludeTurns && liveItemCandidatesEmpty {
+	if !params.LiveOnly && params.IncludeTurns && liveItemCandidatesEmpty {
 		past, ok, pastErr := pastThreadItemReadResponse(ctx, cfg, params)
 		if pastErr != nil {
 			read.finish(false)
@@ -687,7 +731,7 @@ func (o *sessionOperations) read(ctx context.Context, params appwire.ThreadReadP
 	// The merge still supplies past turns when the item page could not (a
 	// live source with candidates but no turns, or no past entry at all),
 	// preserving the old includePastTurns decision exactly.
-	wantPastTurns := params.IncludeTurns && pastPage == nil && len(resp.Thread.Turns) == 0
+	wantPastTurns := !params.LiveOnly && params.IncludeTurns && pastPage == nil && len(resp.Thread.Turns) == 0
 	resp.Thread, err = mergePastThreadForRead(ctx, cfg, params, resp.Thread, wantPastTurns)
 	resp.Thread = applyThreadResumeRequirement(ctx, cfg, params.Ref, params.ThreadID, resp.Thread)
 	resp.Thread = applyHubCapabilities(cfg, resp.Thread)
@@ -755,17 +799,17 @@ func (o *sessionOperations) read(ctx context.Context, params appwire.ThreadReadP
 		if read.handoff != nil {
 			if !read.handoff.Prepare() {
 				read.finish(false)
-				return appwire.ThreadReadResponse{}, appwire.SessionUnavailable("thread snapshot is unavailable")
+				return appwire.ThreadReadResponse{}, appwire.RetryableSessionUnavailable("thread snapshot is unavailable")
 			}
 			if !read.finish(true) {
-				return appwire.ThreadReadResponse{}, appwire.SessionUnavailable("thread snapshot is unavailable")
+				return appwire.ThreadReadResponse{}, appwire.RetryableSessionUnavailable("thread snapshot is unavailable")
 			}
 		}
 		return resp, nil
 	}
 	if read.handoff != nil {
 		if !relays.captureThreadRead(ctx, params, read) {
-			return appwire.ThreadReadResponse{}, appwire.SessionUnavailable("thread subscription is unavailable")
+			return appwire.ThreadReadResponse{}, appwire.RetryableSessionUnavailable("thread subscription is unavailable")
 		}
 	} else if params.AnswerContinuation == nil && sourceSupportsThreadRelay(source) && (params.Subscribe || relayOnThreadRead(source)) {
 		// A source with no relay fan-out is never relayed, even for a
@@ -774,7 +818,7 @@ func (o *sessionOperations) read(ctx context.Context, params appwire.ThreadReadP
 		// An answer-continuation read is a verdict-only query: it must never
 		// attach a relay, because SubscribeThread reissues the read with a
 		// subscription the query's own validation forbids.
-		if err := relays.startRelay(ctx, source, params, resp.Thread); err != nil {
+		if err := relays.startRelay(ctx, source, sourceParams, resp.Thread); err != nil {
 			return appwire.ThreadReadResponse{}, err
 		}
 	}

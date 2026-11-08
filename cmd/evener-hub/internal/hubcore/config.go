@@ -26,7 +26,10 @@ import (
 // WebConfig at construction (never mutated after a relay goroutine starts), so
 // each hub server instance carries its own — no shared global, no data race.
 type RelayLifecycleHooks struct {
-	BeforeReadThread           func()
+	BeforeReadThread func()
+	// ReadThreadFailure is a test-only seam that fails a relay read with the
+	// returned error before it reaches the source. Production leaves it nil.
+	ReadThreadFailure          func(context.Context) error
 	IdleExit                   func(threadID string)
 	AfterIdleDelete            func(threadID string)
 	RetryWait                  func(context.Context, time.Duration) error
