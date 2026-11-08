@@ -11,6 +11,7 @@ import (
 
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/agent/transcript"
+	"primeradiant.com/evener/execsupport/fsatomic"
 	"primeradiant.com/evener/identifier"
 	"primeradiant.com/evener/internal/apptranscript"
 	"primeradiant.com/evener/llm"
@@ -325,6 +326,11 @@ func writeForkChildWithConfig(fs afero.Fs, stateDir, parentID string, parentHead
 	}
 
 	if err := deps.saveMeta(fs, stateDir, childMeta); err != nil {
+		if errors.Is(err, fsatomic.ErrPublished) {
+			// The child meta is visible; keep the completed transcript so the
+			// child remains a usable session instead of orphaned metadata.
+			published = true
+		}
 		return "", fmt.Errorf("save child session meta: %w", err)
 	}
 	published = true

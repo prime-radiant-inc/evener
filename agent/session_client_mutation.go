@@ -1689,10 +1689,16 @@ func (s *clientMutationStore) executeAtomic(
 		next = cloneClientMutationSnapshot(next)
 		current = next.Journal[request.ClientMutationID]
 		next.ConversationRevision = s.state.ConversationRevision + 1
-		if _, err := saveClientMutationSnapshotFS(s.fs, s.stateDir, s.sessionID, next, clientMutationWriteReservation, s.faults); err != nil {
+		renamed, err := saveClientMutationSnapshotFS(s.fs, s.stateDir, s.sessionID, next, clientMutationWriteReservation, s.faults)
+		if renamed {
+			s.commitStateLocked(next)
+		}
+		if err != nil {
 			return clientMutationLookup{}, err
 		}
-		s.commitStateLocked(next)
+		if !renamed {
+			return clientMutationLookup{}, errors.New("client mutation snapshot was not committed")
+		}
 		if current.OperationState != clientMutationOperationInFlight {
 			return clientMutationLookup{
 				Disposition: clientMutationDispositionReserved,
@@ -1709,10 +1715,16 @@ func (s *clientMutationStore) executeAtomic(
 		current.AttemptGeneration++
 		next.Journal[request.ClientMutationID] = current
 		next.ConversationRevision = s.state.ConversationRevision + 1
-		if _, err := saveClientMutationSnapshotFS(s.fs, s.stateDir, s.sessionID, next, clientMutationWriteReservation, s.faults); err != nil {
+		renamed, err := saveClientMutationSnapshotFS(s.fs, s.stateDir, s.sessionID, next, clientMutationWriteReservation, s.faults)
+		if renamed {
+			s.commitStateLocked(next)
+		}
+		if err != nil {
 			return clientMutationLookup{}, err
 		}
-		s.commitStateLocked(next)
+		if !renamed {
+			return clientMutationLookup{}, errors.New("client mutation snapshot was not committed")
+		}
 		if s.faults.AfterReservation != nil {
 			if err := s.faults.AfterReservation(); err != nil {
 				return clientMutationLookup{}, err
@@ -1810,10 +1822,16 @@ func (s *clientMutationStore) reservePrepared(
 	next = cloneClientMutationSnapshot(next)
 	record = next.Journal[request.ClientMutationID]
 	next.ConversationRevision = s.state.ConversationRevision + 1
-	if _, err := saveClientMutationSnapshotFS(s.fs, s.stateDir, s.sessionID, next, clientMutationWriteReservation, s.faults); err != nil {
+	renamed, err := saveClientMutationSnapshotFS(s.fs, s.stateDir, s.sessionID, next, clientMutationWriteReservation, s.faults)
+	if renamed {
+		s.commitStateLocked(next)
+	}
+	if err != nil {
 		return clientMutationLookup{}, err
 	}
-	s.commitStateLocked(next)
+	if !renamed {
+		return clientMutationLookup{}, errors.New("client mutation snapshot was not committed")
+	}
 
 	if record.OperationState != clientMutationOperationInFlight {
 		return clientMutationLookup{

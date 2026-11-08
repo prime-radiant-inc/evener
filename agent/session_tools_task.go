@@ -15,6 +15,7 @@ import (
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/internal/tool"
 	taskpkg "primeradiant.com/evener/agent/task"
+	"primeradiant.com/evener/execsupport/fsatomic"
 	"primeradiant.com/evener/llm"
 )
 
@@ -538,6 +539,7 @@ func registerTaskTools(reg *tool.Registry, deps *toolDeps) {
 					}, nil
 				}
 				var mutation taskpkg.TaskUpdateSnapshot
+				var durabilityErr error
 				if len(adds) == 0 {
 					// Keep update-only validation order and snapshot behavior exactly
 					// as before; ApplyBatch is needed only where additions and
@@ -547,7 +549,10 @@ func registerTaskTools(reg *tool.Registry, deps *toolDeps) {
 					mutation, err = store.ApplyBatch(adds, updates)
 				}
 				if err != nil {
-					return nil, err
+					if !errors.Is(err, fsatomic.ErrPublished) {
+						return nil, err
+					}
+					durabilityErr = err
 				}
 
 				// Classify each ID from the final status the store applied, so
@@ -617,12 +622,16 @@ func registerTaskTools(reg *tool.Registry, deps *toolDeps) {
 				if !completedAny && manuallyStartedID == 0 {
 					summary := taskpkg.Summarize(mutation.After)
 					deps.emit(taskUpdatedData(summary, "", epoch, revision))
+					output := fmt.Sprintf("%s Progress: %s.", formatMutationAck(len(adds), updates), summary.ProgressText())
+					if durabilityErr != nil {
+						output += fmt.Sprintf(" Task update durability is unconfirmed: %v.", durabilityErr)
+					}
 					return tool.StateResult{
 						// Every successful mutation output carries Progress:
 						// the card's footer (aggregate, meter, and the
 						// Open-list affordance) renders from it, so a mixed
 						// add + non-terminal update must not lose the footer.
-						Output: fmt.Sprintf("%s Progress: %s.", formatMutationAck(len(adds), updates), summary.ProgressText()),
+						Output: output,
 						State:  taskToolStateSnapshot(mutation.After, started, settled),
 					}, nil
 				}
@@ -647,10 +656,13 @@ func registerTaskTools(reg *tool.Registry, deps *toolDeps) {
 								hook()
 							}
 							auto, err := store.UpdateWithSnapshot([]taskpkg.TaskUpdate{{ID: next.ID, Status: taskpkg.TaskInProgress}})
-							if err != nil {
+							if err != nil && !errors.Is(err, fsatomic.ErrPublished) {
 								postCommitErr = fmt.Errorf("post-commit auto-advance failed: %w", err)
 								postCommitAdvice = "The terminal update was committed, but the next-task update failed; inspect the committed task state and resolve the reported cause before choosing the next task update."
 							} else {
+								if err != nil {
+									durabilityErr = errors.Join(durabilityErr, err)
+								}
 								finalTasks = auto.After
 								summary = taskpkg.Summarize(finalTasks)
 								started[next.ID] = true
@@ -690,6 +702,9 @@ func registerTaskTools(reg *tool.Registry, deps *toolDeps) {
 
 				taskUpdate := taskUpdatedData(summary, "", epoch, revision)
 				deps.emit(taskUpdate)
+				if durabilityErr != nil {
+					msg.WriteString(fmt.Sprintf("Task update durability is unconfirmed: %v. ", durabilityErr))
+				}
 				if postCommitErr != nil {
 					msg.WriteString(postCommitErr.Error())
 					msg.WriteString(" ")

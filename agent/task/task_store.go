@@ -705,6 +705,9 @@ func (s *TaskStore) UpdateWithSnapshot(updates []TaskUpdate) (TaskUpdateSnapshot
 		return TaskUpdateSnapshot{}, err
 	}
 	if err := s.commitStagedLocked(staged); err != nil {
+		if errors.Is(err, fsatomic.ErrPublished) {
+			return TaskUpdateSnapshot{Before: before, After: cloneTasks(s.tasks), Settled: settled}, fmt.Errorf("save: %w", err)
+		}
 		return TaskUpdateSnapshot{}, fmt.Errorf("save: %w", err)
 	}
 	return TaskUpdateSnapshot{
@@ -878,6 +881,9 @@ func (s *TaskStore) ApplyBatch(adds []TaskInput, updates []TaskUpdate) (TaskUpda
 		return TaskUpdateSnapshot{}, err
 	}
 	if err := s.commitStagedLocked(staged); err != nil {
+		if errors.Is(err, fsatomic.ErrPublished) {
+			return TaskUpdateSnapshot{Before: before, After: cloneTasks(s.tasks), Settled: settled}, fmt.Errorf("save: %w", err)
+		}
 		return TaskUpdateSnapshot{}, fmt.Errorf("save: %w", err)
 	}
 	return TaskUpdateSnapshot{Before: before, After: cloneTasks(s.tasks), Settled: settled}, nil

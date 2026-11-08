@@ -195,6 +195,49 @@ func TestTaskTool_AutoAdvanceSaveFailureReportsCommittedMutation(t *testing.T) {
 	assertTasksPersisted(t, "durable state after failed auto-advance", committed, durable)
 }
 
+// TestTaskTool_PublishedUpdateReportsCommittedMutation covers a directory-sync
+// failure after the terminal update was renamed: the update is visible, so the
+// tool must keep its transition handling and report durability uncertainty
+// rather than discarding the committed snapshot.
+func TestTaskTool_PublishedUpdateReportsCommittedMutation(t *testing.T) {
+	t.Parallel()
+	base := afero.NewMemMapFs()
+	store := taskpkg.NewTaskStore("/state", "task-tool").SetFs(base)
+	if _, err := store.Append([]taskpkg.TaskInput{
+		{Description: "first", Prompt: "finish first"},
+		{Description: "second", Prompt: "start second"},
+	}); err != nil {
+		t.Fatalf("seed tasks: %v", err)
+	}
+
+	// The first save's directory sync is the eighth scheduled operation; fail
+	// it so the terminal update is published without a confirmed barrier. The
+	// next save wraps to the start of the plan, which injects nothing.
+	plan := make([]byte, 9)
+	for i := range plan {
+		plan[i] = 1
+	}
+	plan[7] = 0
+	store.SetFs(fault.FS(base, fault.FromBytes(plan)))
+
+	h := newTaskToolHarness(t, nil)
+	h.store = store
+	result := h.update(t, map[string]any{"id": 1, "status": "done"})
+	if result.Err != nil || result.IsError {
+		t.Fatalf("published update result = err %v, isError=%v, output=%q; want committed mutation", result.Err, result.IsError, result.Output)
+	}
+	if !strings.Contains(result.Output, fault.ErrInjected.Error()) {
+		t.Fatalf("published update output = %q, want durability cause", result.Output)
+	}
+	event := taskUpdatedEvent(t, h)
+	if event.Total != 2 || event.Done != 1 || event.Remaining != 1 || event.Current == nil || event.Current.ID != 2 {
+		t.Fatalf("published update event = %+v, want task 1 done and task 2 current", event)
+	}
+	if len(result.ToolState) == 0 {
+		t.Fatal("published update returned no committed task state")
+	}
+}
+
 func TestTaskTool_SteerFailureReportsCommittedMutation(t *testing.T) {
 	t.Parallel()
 	h := newTaskToolHarness(t, []taskpkg.TaskInput{{Description: "start me", Prompt: "begin work"}})

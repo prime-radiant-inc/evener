@@ -2,6 +2,7 @@ package agent
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"slices"
 	"strings"
@@ -9,6 +10,7 @@ import (
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/execsupport/fsatomic"
 )
 
 // Shared-notes daemon path: the hub RPCs (notes/human/set, hub-side
@@ -253,7 +255,13 @@ func (s *Session) RemoveSessionURL(outerID, id string) (bool, error) {
 	// mutation+save+rollback holds metaSaveMu so a concurrent autosave cannot
 	// snapshot the transient removal before the save or during rollback.
 	if err := s.persistNotesMetaLocked(); err != nil {
-		s.restoreSessionURLsLocked(prev)
+		if errors.Is(err, fsatomic.ErrPublished) {
+			// The removal is published on disk; keep the live list aligned with
+			// it and publish the committed cut before reporting uncertainty.
+			s.publishCommittedNotesLocked()
+		} else {
+			s.restoreSessionURLsLocked(prev)
+		}
 		s.metaSaveMu.Unlock()
 		lookup.Lease.Release()
 		return false, err
@@ -334,7 +342,11 @@ func (s *Session) mutateSessionURLAddSerialized(rawURL, label string) (entry sch
 		return schema.SessionURL{}, nil, err
 	}
 	if err = s.persistNotesMetaLocked(); err != nil {
-		s.restoreSessionURLsLocked(prev)
+		if errors.Is(err, fsatomic.ErrPublished) {
+			s.publishCommittedNotesLocked()
+		} else {
+			s.restoreSessionURLsLocked(prev)
+		}
 		s.metaSaveMu.Unlock()
 		return schema.SessionURL{}, nil, err
 	}
@@ -365,7 +377,11 @@ func (s *Session) mutateSessionURLRemoveSerialized(id string) (removed bool, url
 		return false, nil, nil
 	}
 	if err = s.persistNotesMetaLocked(); err != nil {
-		s.restoreSessionURLsLocked(prev)
+		if errors.Is(err, fsatomic.ErrPublished) {
+			s.publishCommittedNotesLocked()
+		} else {
+			s.restoreSessionURLsLocked(prev)
+		}
 		s.metaSaveMu.Unlock()
 		return false, nil, err
 	}
