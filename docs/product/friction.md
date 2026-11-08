@@ -1367,8 +1367,10 @@ explicit. A resumed attempt would need a backend-verifiable way to keep a grante
 pathname from being re-pointed, which six review rounds did not find.
 
 **Current behavior.** `restricted` grants the user's global git config FILES
-read-only (`$XDG_CONFIG_HOME/git/config`, `~/.gitconfig`) so git can run at all on a
-host that has one. It grants nothing of its own for the files those configs NAME
+read-only (`$XDG_CONFIG_HOME/git/config`, `~/.gitconfig`, or the file
+`GIT_CONFIG_GLOBAL` names instead, plus a non-default `GIT_CONFIG_SYSTEM` unless
+`GIT_CONFIG_NOSYSTEM` is set) so git can run at all on a host that has one. It
+grants nothing of its own for the files those configs NAME
 through `core.excludesFile` or `core.attributesFile`: such a file is readable only
 where it already sits under a root the mode grants — the project worktree, `/etc`,
 `/opt`, `/nix/store` and the other system read roots — and not elsewhere, typically

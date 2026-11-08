@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -114,8 +115,25 @@ type HostFacts struct {
 	// config and hook writes stay denied — and loses to the credential denylist,
 	// so a credential.helper line becomes readable while ~/.git-credentials stays
 	// masked. A path that does not exist contributes nothing and never fails
-	// session start.
+	// session start. A non-empty $GIT_CONFIG_GLOBAL replaces both FILES; a
+	// set-but-empty or unreadable value names no config git reads (git ignores
+	// it and the developer's settings are silently absent), so nothing is
+	// granted for it.
 	GitGlobalConfigPaths []string
+
+	// GitSystemConfigPaths are the SYSTEM-WIDE git config FILES git reads on
+	// this host. The built-in location lives under /etc, which restricted mode
+	// already grants as a system read root, so this names only an override:
+	// $GIT_CONFIG_SYSTEM when it is a non-empty absolute path to an existing
+	// non-directory FILE and $GIT_CONFIG_NOSYSTEM does not disable the system
+	// config. That override sits anywhere the environment says, typically under
+	// $HOME, which restricted mode otherwise grants no read of; an unreadable
+	// $GIT_CONFIG_SYSTEM is fatal to git rather than ignored (verified on git
+	// 2.43), so without the grant the environment variable could make every git
+	// command in a restricted session fail. Like GitGlobalConfigPaths it is
+	// READ-ONLY, FILE-EXACT, changes no write surface, and loses to the
+	// credential denylist.
+	GitSystemConfigPaths []string
 
 	// EvenerContentRoots are the installed plugin files in Evener's plugin store
 	// and the user's skills directory at their configured locations.
@@ -343,6 +361,7 @@ func probeHost(system probeSystem) HostFacts {
 		facts.LoginHome = login
 	}
 	facts.GitGlobalConfigPaths = probeGitGlobalConfigPaths(system)
+	facts.GitSystemConfigPaths = probeGitSystemConfigPaths(system)
 	facts.EvenerConfigRoot = probeEvenerConfigRoot(system)
 	facts.EvenerContentRoots = evenerContentRoots(facts.EvenerConfigRoot, system.getenv(envvars.EVENERNoUserSkills.Name) == "1")
 	storeRoot := userdirs.PluginStore(facts.EvenerConfigRoot)
@@ -391,10 +410,27 @@ func envValueFold(environ []string, key string) string {
 	return value
 }
 
+// gitConfigGlobalEnv, gitConfigSystemEnv and gitConfigNoSystemEnv are git's own
+// environment controls over which configuration files git reads
+// (git-config(1), ENVIRONMENT). They are not Evener variables, so they live
+// here rather than in envvars.
+const (
+	gitConfigGlobalEnv   = "GIT_CONFIG_GLOBAL"
+	gitConfigSystemEnv   = "GIT_CONFIG_SYSTEM"
+	gitConfigNoSystemEnv = "GIT_CONFIG_NOSYSTEM"
+)
+
 // probeGitGlobalConfigPaths returns the user's global git config files that
 // exist on this host, in git's own precedence order (git-config(1), FILES):
 // $XDG_CONFIG_HOME/git/config first, then ~/.gitconfig. git reads BOTH when both
 // exist, so both are probed rather than the first hit.
+//
+// A $GIT_CONFIG_GLOBAL that is SET replaces both FILES, matching git's own
+// precedence. Only an absolute path to an existing non-directory file is
+// admitted; an empty value, a relative path, or a path that names nothing git
+// can read names no config git reads (git resolves a relative value against the
+// process's working directory and ignores an unreadable global file), so
+// granting the default files instead would over-grant files git never opens.
 //
 // $XDG_CONFIG_HOME defaults to the home directory's .config when unset or empty. A NON-ABSOLUTE
 // XDG_CONFIG_HOME is ignored entirely: git would resolve it against the process's
@@ -410,6 +446,9 @@ func envValueFold(environ []string, key string) string {
 // backends grant a root under both its literal and its canonical name, and the
 // literal one is the name git actually opens.
 func probeGitGlobalConfigPaths(system probeSystem) []string {
+	if override, set := environValue(system.environ(), gitConfigGlobalEnv); set {
+		return gitConfigFileOverride(override, system)
+	}
 	home, err := system.userHomeDir()
 	if err != nil || strings.TrimSpace(home) == "" {
 		return nil
@@ -431,6 +470,76 @@ func probeGitGlobalConfigPaths(system probeSystem) []string {
 		}
 	}
 	return out
+}
+
+// probeGitSystemConfigPaths returns the system git config file git reads when
+// $GIT_CONFIG_SYSTEM overrides the built-in /etc/gitconfig location. The
+// built-in location already lies under /etc, a restricted-mode system read
+// root, so only an override needs a grant. $GIT_CONFIG_NOSYSTEM disables the
+// system config entirely; see gitConfigNoSystem for its spellings.
+func probeGitSystemConfigPaths(system probeSystem) []string {
+	files := gitConfigFileOverride(system.getenv(gitConfigSystemEnv), system)
+	if len(files) == 0 || gitConfigNoSystem(system.getenv(gitConfigNoSystemEnv)) {
+		return nil
+	}
+	return files
+}
+
+// gitConfigFileOverride returns the one config file an environment override
+// names, or nil when the value names nothing git reads as a config file. The
+// file admitted is the file granted: the value must be absolute, free of ".."
+// components (a ".." after a symlink resolves to a different object than
+// filepath.Clean reports, and the cleaned spelling is the grant), and name an
+// existing non-directory file.
+func gitConfigFileOverride(value string, system probeSystem) []string {
+	if value == "" {
+		return nil
+	}
+	cleaned := filepath.Clean(value)
+	if !filepath.IsAbs(cleaned) || hasParentComponent(value) || !system.nonDirectoryFile(cleaned) {
+		return nil
+	}
+	return []string{cleaned}
+}
+
+// hasParentComponent reports whether p has a ".." path component.
+func hasParentComponent(p string) bool {
+	for part := range strings.SplitSeq(filepath.ToSlash(p), "/") {
+		if part == ".." {
+			return true
+		}
+	}
+	return false
+}
+
+// environValue returns the last value assigned to name and whether it is present
+// at all, so an explicitly empty variable is distinguishable from an unset one.
+func environValue(environ []string, name string) (string, bool) {
+	value, set := "", false
+	for _, kv := range environ {
+		if k, v, ok := strings.Cut(kv, "="); ok && k == name {
+			value, set = v, true
+		}
+	}
+	return value, set
+}
+
+// gitConfigNoSystem reports whether $GIT_CONFIG_NOSYSTEM tells git to skip the
+// system config. It follows git's boolean spelling: true/yes/on in any case and
+// a base-prefixed integer (0 and the empty value are false). A value git
+// rejects as a boolean is treated as true here because git refuses to run and
+// never reads the system file, so a grant for it would be dead weight.
+func gitConfigNoSystem(v string) bool {
+	switch strings.ToLower(v) {
+	case "true", "yes", "on":
+		return true
+	case "false", "no", "off", "":
+		return false
+	}
+	if n, err := strconv.ParseInt(strings.TrimLeft(v, " \t\r\n"), 0, 64); err == nil {
+		return n != 0
+	}
+	return true
 }
 
 // evenerContentRoots returns the plugin store's installed plugin files and the
