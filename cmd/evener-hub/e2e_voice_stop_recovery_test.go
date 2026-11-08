@@ -138,6 +138,89 @@ func TestE2E_VoiceSessionStopRenewSurvivesRetryBudgetExpiry(t *testing.T) {
 	}
 }
 
+// A renewal read held by a reconnecting relay must not block the run loop:
+// playback receipts sent every 200ms fill the eight-entry control queue, and
+// readControls cancels the bridge, interrupting speech before the outage
+// handler can preserve it.
+func TestE2E_VoiceSessionStopRenewSurvivesReceiptBacklog(t *testing.T) {
+	f := newVoiceCorrectionStack(t)
+	var armed atomic.Bool
+	var renewCalls, inFlight, maxInFlight atomic.Int32
+	gap, _ := voiceStopRecoveryHub(t, f, nil, true, func(context.Context) error {
+		if !armed.Load() {
+			return nil
+		}
+		active := inFlight.Add(1)
+		defer inFlight.Add(-1)
+		for {
+			peak := maxInFlight.Load()
+			if active <= peak || maxInFlight.CompareAndSwap(peak, active) {
+				break
+			}
+		}
+		// Hold the first renewal like a reconnecting relay while receipts
+		// arrive; a renewal coalesced behind it runs at once.
+		if renewCalls.Add(1) == 1 {
+			time.Sleep(3 * time.Second)
+		}
+		return nil
+	})
+	_ = gap
+	const reply = "STOP-RENEW-BACKLOG-287"
+	f.admit(t, "STOP-RENEW-BACKLOG-INPUT-287", false)
+	voiceStopContinue(f.next(t), reply)
+	_ = f.next(t) // The held execution stays active.
+	start := voiceJourneyEvent(t, f.device, "speech_start")
+	peer := f.openSpeaker(t)
+	old := f.speechRequest(t, peer, start, reply)
+	const response, item = "renew-backlog-response", "renew-backlog-item"
+	voiceCorrectionAudio(peer, old, response, item, base64.StdEncoding.EncodeToString(make([]byte, 960)))
+	voiceJourneyEvent(t, f.device, "audio")
+
+	armed.Store(true)
+	f.device.send(`{"type":"renew"}`)
+	const receipts = 9 // the ninth overflows the eight-entry control queue
+	for i := int64(1); i <= receipts; i++ {
+		if i == 5 {
+			// The device resends renew on its own cadence; it must run after
+			// the held read, never beside it.
+			f.device.send(`{"type":"renew"}`)
+		}
+		f.device.send(fmt.Sprintf(`{"type":"played","deliveryId":%q,"generation":%d,"itemId":%q,"samples":%d}`, old.ID, old.PresentationGeneration, item, 200+i))
+		time.Sleep(200 * time.Millisecond)
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if f.delivery(t, old.ID).Interrupted {
+			t.Fatal("a playback-receipt backlog cancelled the bridge during a held renewal")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	armed.Store(false)
+	for i := 0; i < 2; i++ {
+		if event := f.device.read(); event["type"] != "renewed" {
+			t.Fatalf("renewal %d did not complete after the receipt backlog: %v", i+1, event)
+		}
+	}
+	if got := renewCalls.Load(); got != 2 {
+		t.Fatalf("renewal reads = %d, want the held read and its coalesced successor", got)
+	}
+	if got := maxInFlight.Load(); got != 1 {
+		t.Fatalf("renewal reads in flight = %d, want 1", got)
+	}
+	f.waitDelivery(t, old.ID, func(d hubcore.SpeechDelivery) bool {
+		for _, received := range d.Items {
+			if received.ItemID == item {
+				return received.PlayedSamples == 200+receipts
+			}
+		}
+		return false
+	})
+	if f.delivery(t, old.ID).Interrupted {
+		t.Fatal("speech was interrupted after a held renewal")
+	}
+}
+
 func voiceStopRelayGap(t *testing.T, phase string) {
 	t.Helper()
 	voiceStopRelayGapOn(t, phase, false)
