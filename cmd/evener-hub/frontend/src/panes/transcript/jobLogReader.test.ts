@@ -96,6 +96,25 @@ test("output arrives independently of failed metadata and without transcript sub
   expect(peer.sent.map((raw) => JSON.parse(raw).method).filter((method) => method.includes("subscribe"))).toEqual([]);
 });
 
+test("settleForTests joins the live output read it starts", async () => {
+  await initial();
+  reader.refresh();
+  // The previous live read paced the next one, so let the fake clock reach it.
+  await vi.advanceTimersByTimeAsync(1000);
+  const live = await peer.request(OUTPUT, 1);
+  let settled = false;
+  const joined = reader.settleForTests().then(() => {
+    settled = true;
+  });
+  await Promise.resolve();
+  // The join must not resolve before the page it is watching arrives.
+  expect(settled).toBe(false);
+  peer.reply(live, page());
+  await joined;
+  expect(settled).toBe(true);
+  expect(reader.getSnapshot().windows.live).not.toBeNull();
+});
+
 test("holds one output slot while demand and running ticks accumulate", async () => {
   await initial();
   reader.demand({ direction: "backward", boundaryBytes: 100, limitBytes: 105 }, "start");
