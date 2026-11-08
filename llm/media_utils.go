@@ -117,11 +117,8 @@ func ImageBlockMediaType(v string) string {
 }
 
 // NormalizeImageBlock returns image bytes and a media type an Anthropic or
-// OpenAI image content block accepts on the wire: image/png, image/jpeg,
-// image/gif, or image/webp. Bytes already in one of those formats are returned
-// unchanged with their canonical media type; any other decodable raster
-// (image/bmp, image/tiff) is re-encoded as PNG. Bytes that are not a decodable
-// raster return an error.
+// OpenAI image content block accepts on the wire. It is NormalizeImage bound to
+// ImageBlockMediaType; see that function for the full contract.
 //
 // Both builders enforce this set because the providers do: an image block
 // carrying image/bmp or image/tiff is rejected and fails the whole turn
@@ -150,6 +147,23 @@ func NormalizeImage(data []byte, accept func(format string) string) ([]byte, str
 		return nil, "", fmt.Errorf("re-encode %s image as PNG: %w", format, err)
 	}
 	return normalized.Bytes(), "image/png", nil
+}
+
+// NormalizeImageForWire returns image bytes and a media type accepted by
+// accept. A claimed media type accept already names passes through unchanged:
+// the wire accepts it, and the local decoder cannot read every raster the wire
+// accepts. Any other decodable raster is re-encoded as PNG. Undecodable bytes
+// return a ConfigurationError carrying refusalMessage, so every protocol's
+// builder refuses the same way.
+func NormalizeImageForWire(data []byte, claimedMediaType string, accept func(format string) string, refusalMessage string) ([]byte, string, error) {
+	if mt := accept(claimedMediaType); mt != "" {
+		return data, mt, nil
+	}
+	normalized, normalizedType, err := NormalizeImage(data, accept)
+	if err != nil {
+		return nil, "", &ConfigurationError{Message: refusalMessage, Cause: err}
+	}
+	return normalized, normalizedType, nil
 }
 
 // DataURI encodes data as a base64 data URI with the given MIME type. If

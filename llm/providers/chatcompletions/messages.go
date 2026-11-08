@@ -357,17 +357,12 @@ func buildMultimodalParts(parts []llm.ContentPart, caps registry.Caps) ([]map[st
 // otherwise be rejected and fail the whole turn, #4584); bytes that are not a
 // decodable raster are refused loudly.
 func chatImageBytes(data []byte, claimedMediaType string) ([]byte, string, error) {
-	if mt := llm.ImageBlockMediaType(claimedMediaType); mt != "" {
-		return data, mt, nil
-	}
-	normalized, normalizedType, err := llm.NormalizeImageBlock(data)
-	if err != nil {
-		return nil, "", &llm.ConfigurationError{
-			Message: fmt.Sprintf("chat completions image %q is not a decodable raster", claimedMediaType),
-			Cause:   err,
-		}
-	}
-	return normalized, normalizedType, nil
+	return llm.NormalizeImageForWire(
+		data,
+		claimedMediaType,
+		llm.ImageBlockMediaType,
+		fmt.Sprintf("chat completions image %q is not a decodable raster", claimedMediaType),
+	)
 }
 
 // requestWithoutToolResultImages returns a request whose tool-result image

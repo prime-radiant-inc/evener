@@ -389,13 +389,11 @@ func geminiImagePart(p llm.ContentPart) (map[string]any, error) {
 // png/jpeg/webp/heic/heif inline; unlike the Anthropic and OpenAI image blocks,
 // it does not accept gif.
 func googleInlineImageMediaType(v string) string {
+	switch mt := llm.ImageBlockMediaType(v); mt {
+	case "image/png", "image/jpeg", "image/webp":
+		return mt
+	}
 	switch strings.ToLower(strings.TrimSpace(v)) {
-	case "png", "image/png":
-		return "image/png"
-	case "jpeg", "image/jpeg":
-		return "image/jpeg"
-	case "webp", "image/webp":
-		return "image/webp"
 	case "heic", "image/heic":
 		return "image/heic"
 	case "heif", "image/heif":
@@ -412,17 +410,12 @@ func googleInlineImageMediaType(v string) string {
 // and GIF attachments, would otherwise be rejected and fail the whole turn,
 // #4584); bytes that are not a decodable raster are refused loudly.
 func googleInlineImageBytes(data []byte, claimedMediaType string) ([]byte, string, error) {
-	if mt := googleInlineImageMediaType(claimedMediaType); mt != "" {
-		return data, mt, nil
-	}
-	normalized, normalizedType, err := llm.NormalizeImage(data, googleInlineImageMediaType)
-	if err != nil {
-		return nil, "", &llm.ConfigurationError{
-			Message: fmt.Sprintf("google inline image %q is not a decodable raster", claimedMediaType),
-			Cause:   err,
-		}
-	}
-	return normalized, normalizedType, nil
+	return llm.NormalizeImageForWire(
+		data,
+		claimedMediaType,
+		googleInlineImageMediaType,
+		fmt.Sprintf("google inline image %q is not a decodable raster", claimedMediaType),
+	)
 }
 
 // geminiDocumentPart represents user document input without fetching or
