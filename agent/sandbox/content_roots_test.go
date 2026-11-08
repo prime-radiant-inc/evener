@@ -996,3 +996,54 @@ func TestEvenerContentRootsHonourAStoredSpellingConfigMaskBeforeTheDirExists(t *
 		t.Errorf("an explicit stored-spelling config mask must keep content masked, got %v", rp.UnmaskedRoots)
 	}
 }
+
+// TestCarveOutAcceptsARootCreatedLaterUnderAnotherCase pins #4306's second
+// case: a carve-out root that did not exist at resolution is pinned with its
+// literal trailing spelling, and a directory created later under another letter
+// case on a case-insensitive volume reports the stored spelling, so the exact
+// comparison refused it for the rest of the session. The pin is re-derived only
+// for the same directory: its parent is the pinned parent and the names differ
+// only by case.
+func TestCarveOutAcceptsARootCreatedLaterUnderAnotherCase(t *testing.T) {
+	root := mainRepo(t)
+	parent := clean(t.TempDir())
+	storedHome := filepath.Join(parent, "casehome")
+	if err := os.MkdirAll(filepath.Join(storedHome, ".config", "evener"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	spelledHome := filepath.Join(parent, "CASEHOME")
+	if _, err := os.Stat(spelledHome); err != nil {
+		t.Skip("this volume is case-sensitive")
+	}
+
+	skills := filepath.Join(spelledHome, ".config", "evener", "skills")
+	host := bwrapHost()
+	host.Home = spelledHome
+	host.EvenerContentRoots = []string{skills}
+	rp := mustResolve(t, SandboxPolicy{Mode: ModeReadOnly, Network: new(true)}, host, root)
+	if len(rp.UnmaskedRoots) == 0 {
+		t.Fatalf("fixture: the missing skills dir was not admitted as a carve-out: %v", rp.UnmaskedRoots)
+	}
+
+	// The directory appears after resolution under the stored spelling, and its
+	// final name is another letter case than the configured one.
+	storedSkills := filepath.Join(storedHome, ".config", "evener", "SKILLS")
+	if err := os.MkdirAll(storedSkills, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if !rp.CarveOutResolvesTo(skills, storedSkills) {
+		t.Errorf("a carve-out root created later under another case must be accepted: pinned %q", rp.carveOutAt[skills])
+	}
+	if !rp.CarveOutIntact(skills) {
+		t.Errorf("CarveOutIntact must accept the root the kernel now reports")
+	}
+
+	// The same case-fold name under a different parent is a different directory.
+	elsewhere := filepath.Join(parent, "elsewhere", "casehome", "SKILLS")
+	if err := os.MkdirAll(elsewhere, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if rp.CarveOutResolvesTo(skills, elsewhere) {
+		t.Errorf("a case-fold name under a different parent must not be accepted")
+	}
+}

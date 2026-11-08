@@ -726,7 +726,8 @@ func cacheRootsFor(mode Mode, host HostFacts, worktree string) []string {
 			// overlaid where the sandbox cannot see that link, not at the
 			// storage it names. Spellings are compared exactly; a worktree
 			// matched only by letter case on a case-insensitive Linux volume
-			// is the known Low tracked in #4306.
+			// is still not recognized here (the carve-out comparison was fixed,
+			// the cache overlay's spelling comparison was not).
 			return identifier.PathUnder(r, worktree) || identifier.PathUnder(rr, worktree) || linksThroughPrivateMount(r)
 		})
 		return dedupeRoots(roots)
@@ -751,9 +752,9 @@ func cacheRootsFor(mode Mode, host HostFacts, worktree string) []string {
 // is caught too.
 //
 // Containment compares resolved spellings exactly. Two spellings that differ
-// only by letter case on a case-insensitive Linux volume are not matched:
-// that friction case is tracked as a known Low in #4306, alongside the same
-// limit for carve-outs, rather than handled by identity checks here.
+// only by letter case on a case-insensitive Linux volume are not matched here
+// (the carve-out comparison was fixed; the cache overlay's was not), rather
+// than handled by identity checks.
 func dropCacheRootsSharingWriteRoots(cacheRoots, writeRoots []string) []string {
 	within := func(c, w string) bool { return c == w || identifier.PathUnder(c, w) }
 	return slices.DeleteFunc(cacheRoots, func(c string) bool {
@@ -1269,10 +1270,39 @@ func (rp ResolvedPolicy) CarveOutResolvesTo(root, resolved string) bool {
 	// macOS firmlink alias, names the same directory, while a different
 	// directory never shares its on-disk spelling.
 	at, ok := rp.carveOutAt[root]
-	if !ok || onDiskSpelling(resolved) != at {
+	if !ok || !carveOutAtSpelling(at, root, resolved) {
 		return false
 	}
 	return !rp.maskOverlapsCarveOut(root)
+}
+
+// carveOutAtSpelling reports whether resolved is still where the carve-out root
+// was pinned at resolution, in the filesystem's own spelling. A root that did
+// not exist then was pinned with its literal trailing spelling; when it is
+// created later under another letter case on a case-insensitive volume, the
+// same directory now reports the stored spelling, so the pin is re-derived.
+// Only the same directory qualifies: the root and the reported location are one
+// existing directory whose parent is the pinned parent, and only the final
+// name's case differs. A symlink at either name is refused, so a link planted
+// at a reported path still cannot pass for the directory it points to, and the
+// parent comparison re-walks both spellings without following a link, so
+// redirecting an enclosing directory still moves the grant nowhere.
+func carveOutAtSpelling(at, root, resolved string) bool {
+	if onDiskSpelling(resolved) == at {
+		return true
+	}
+	if isSymlink(root) || isSymlink(resolved) {
+		return false
+	}
+	if !strings.EqualFold(filepath.Base(at), filepath.Base(resolved)) {
+		return false
+	}
+	pinnedParent, pinnedOK := diskSpelling(filepath.Dir(at))
+	resolvedParent, resolvedOK := diskSpelling(filepath.Dir(resolved))
+	if !pinnedOK || !resolvedOK || pinnedParent != resolvedParent {
+		return false
+	}
+	return sameFile(root, resolved)
 }
 
 // maskOverlapsCarveOut reports whether a mask other than Evener's config mask
