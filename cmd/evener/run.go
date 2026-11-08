@@ -443,6 +443,12 @@ func run(ctx context.Context, cfg runConfig) error {
 			OpenAIResponsesContinuation: settings.openAIResponsesContinuation,
 			ProviderIdleTimeout:         cfg.providerIdleTimeout,
 			TurnEndsProcess:             baseSessionCfg.TurnEndsProcess,
+			// --export-atif is json:"-" on the session config, so restore cannot
+			// read it back from the saved meta. Carry this invocation's choice
+			// explicitly; without it `--resume` and `--resume-with` close without
+			// writing the trajectory (#4672).
+			ExportATIFPath:            cfg.exportATIF,
+			ExportATIFProviderHandles: cfg.exportATIFProviderHandles,
 		})
 		if err != nil {
 			// The restore reopens the session's kept scratch and can fail

@@ -843,6 +843,16 @@ type RestoreSessionConfig struct {
 	// from the parent's own toSnapshot), which is a different question.
 	TurnEndsProcess bool
 
+	// ExportATIFPath and ExportATIFProviderHandles carry the restoring
+	// invocation's --export-atif choice. They are json:"-" on SessionConfig and
+	// therefore never in the persisted snapshot, so a restored session (`evener
+	// run --resume`, `--resume-with`, or `evener serve --resume`) must be given
+	// them by the launcher or its Close exports nothing. REPLACING rather than
+	// merging matches TurnEndsProcess: the flag, not the saved session, decides
+	// whether this run writes a trajectory.
+	ExportATIFPath            string
+	ExportATIFProviderHandles string
+
 	// AgentsDocPath carries through to the restored Session's SessionConfig,
 	// REPLACING the persisted value rather than merging with it, exactly like
 	// TurnEndsProcess above. Which personal AGENTS.md a session reads belongs
@@ -995,6 +1005,8 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	}
 	cfg.testOnly = restoreCfg.testOnly
 	cfg.TurnEndsProcess = restoreCfg.TurnEndsProcess
+	cfg.ExportATIFPath = restoreCfg.ExportATIFPath
+	cfg.ExportATIFProviderHandles = restoreCfg.ExportATIFProviderHandles
 	cfg.ForceRealIO = restoreCfg.ForceRealIO
 	cfg.SessionStartKind = plugin.SessionStartKindResume
 	cfg.applyDefaults()
