@@ -1022,12 +1022,8 @@ func (s *Session) consumeSteeringMessage(msg steeringMessage) steeringConsumptio
 		t.SkillState = &schema.SkillTurnState{Input: selectionRecord}
 	}
 	if s.clientMutations != nil {
-		// ActiveTurnID is the actual logical owner at delivery time. For an
-		// inline steer it is the already-running turn; for a carrier it is the
-		// carrier's reserved mutation turn. Both identities must be durable so
-		// replay can distinguish the two boundaries. System steering uses the
-		// same active turn when it is drained by a named daemon turn.
-		t.OwningTurnID = s.clientMutations.snapshot().ActiveTurnID
+		// Own by the execution that is actually running; see activeTurnOwner.
+		t.OwningTurnID = s.activeTurnOwner()
 	}
 	if msg.ClientMutationID != "" {
 		if err := s.appendTurnAfterTranscriptWrite(
@@ -1229,9 +1225,28 @@ func (s *Session) appendSteeringTurn(text, kind string) {
 	s.emit(events.SteeringInjectedData{Text: text, Kind: kind})
 }
 
+// activeTurnOwner names the turn that owns a steering entry recorded now.
+//
+// The running execution is authoritative: a goal continuation that could not
+// mint a durable name still runs under a fresh execution id while the durable
+// slot names another mutation's accepted-but-unrun turn (#4599), and an entry
+// owned by that other turn would be grouped with a turn that is not running.
+// While an execution runs, its id is the owner both for an inline steer (the
+// already-running turn) and for a carrier (the carrier's reserved mutation
+// turn); that id is durable, so replay can distinguish the boundaries. Only
+// when no execution runs does the durable active turn answer.
 func (s *Session) activeTurnOwner() string {
+	// A session no daemon serves keeps the pre-existing ownerless steering
+	// entries: its transcript has no client-mutation opener for a fresh
+	// execution id to join, and inventing one changes cold-projection grouping.
 	if s.clientMutations == nil {
 		return ""
+	}
+	s.mu.Lock()
+	execution := s.execution
+	s.mu.Unlock()
+	if execution.running {
+		return execution.turnID
 	}
 	return s.clientMutations.snapshot().ActiveTurnID
 }
