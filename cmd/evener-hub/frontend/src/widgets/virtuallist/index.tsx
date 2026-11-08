@@ -350,19 +350,6 @@ export function VirtualList({
         // even before the DOM sizer grows enough to accept those writes.
         const offset = instance.scrollOffset ?? instance.scrollElement?.scrollTop ?? 0;
         const backward = instance.scrollDirection === "backward" || backwardMovementRef.current;
-        // A row that never measured can hold a cached size far smaller than its
-        // rendered content, so its cached end can sit above the reading offset
-        // while the live row still crosses it. Growth of that row does not move
-        // its own top, so compensating it would advance the reader instead of
-        // holding their place.
-        const row = instance.elementsCache.get(item.key);
-        const port = instance.scrollElement;
-        const reachesReader =
-          _delta > 0 &&
-          row !== undefined &&
-          port != null &&
-          row.getBoundingClientRect().bottom > port.getBoundingClientRect().top + 1;
-        if (reachesReader) return false;
         return item.start < offset && (!instance.itemSizeCache.has(item.key) || !backward || item.end <= offset);
       }
     : undefined;
