@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"sync"
 	"time"
 
 	"primeradiant.com/evener/appwire"
@@ -27,6 +28,97 @@ type sessionOperations struct {
 	resolve    topLevelSessionResolver
 	relays     *hubRelay
 	server     *appserver.Server
+
+	canonicalItemsOnce sync.Once
+	canonicalItems     *transcriptCanonicalStore
+}
+
+func (o *sessionOperations) canonicalItemStore() *transcriptCanonicalStore {
+	o.canonicalItemsOnce.Do(func() {
+		o.canonicalItems = newTranscriptCanonicalStore(transcriptCanonicalStoreMaxBytes)
+	})
+	return o.canonicalItems
+}
+
+func (o *sessionOperations) canonicalWindowOptions(
+	source appsource.Source,
+	base appwire.Thread,
+	result transcriptItemCandidateResult,
+	params appwire.ThreadWindowParams,
+	itemLimit int,
+	appliedBy string,
+	origin appitempaging.FetchCursorOrigin,
+) transcriptWindowPackOptions {
+	options := transcriptWindowOptionsFor(result, params, itemLimit, appliedBy, origin)
+	options.CanonicalizeCandidates = func(candidates []appitempaging.TranscriptItemCandidate) ([]appitempaging.TranscriptItemCandidate, error) {
+		return canonicalizeTranscriptItemCandidates(source, base, candidates)
+	}
+	options.RetainFetchItem = o.canonicalItemStore().putItem
+	return options
+}
+
+func (o *sessionOperations) retainRemoteWindowItems(
+	ctx context.Context,
+	remote *appsource.RemoteHubSource,
+	ref string,
+	window appwire.Thread,
+) error {
+	hasFetchCursor := false
+	for _, turn := range window.Turns {
+		for _, item := range turn.Items {
+			hasFetchCursor = hasFetchCursor || item.FetchCursor != ""
+		}
+	}
+	if !hasFetchCursor {
+		return nil
+	}
+	full, err := remote.ReadThread(ctx, appwire.ThreadReadParams{
+		Ref: ref, IncludeTurns: true, ItemsView: string(appwire.TurnItemsViewFragment), ItemLimit: appwire.TranscriptItemPageLimit,
+	})
+	if err != nil {
+		return err
+	}
+	full.Thread = enrichSourcedThreadImages(remote, full.Thread)
+	byPosition := make(map[appwire.ThreadItemPosition]appwire.ThreadItem)
+	for _, turn := range full.Thread.Turns {
+		for _, item := range turn.Items {
+			if item.Position != nil {
+				byPosition[*item.Position] = item
+			}
+		}
+	}
+	for _, turn := range window.Turns {
+		for _, visible := range turn.Items {
+			if visible.FetchCursor == "" {
+				continue
+			}
+			cursor, identity, err := appitempaging.DecodeFetchCursorForRef(visible.FetchCursor, ref)
+			if err != nil {
+				return err
+			}
+			item, ok := byPosition[cursor.Position]
+			if !ok {
+				// The window can address an exact older item beyond the ordinary
+				// inter-hub read's reach. Preserve that valid window; its fetch
+				// repeats this origin check and returns fetch-unavailable-remote.
+				continue
+			}
+			if item.Version != cursor.ItemVersion {
+				// A change between the window and this retention read belongs to
+				// the fetch-time version fence, not to the read that minted it.
+				continue
+			}
+			cursor.Offset = 0
+			key, err := appitempaging.EncodeFetchCursor(identity, cursor)
+			if err != nil {
+				return err
+			}
+			if err := o.canonicalItemStore().putItem(key, item); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
 type boundSessionOperations struct {
@@ -429,16 +521,21 @@ func (o *sessionOperations) fetch(ctx context.Context, request appwire.SessionFe
 	if err != nil {
 		return appwire.SessionFetchResponse{}, err
 	}
+	requestedCursor := cursor
+	cursor.Offset = 0
+	validationCursor, err := appitempaging.EncodeFetchCursor(identity, cursor)
+	if err != nil {
+		return appwire.SessionFetchResponse{}, err
+	}
 	switch cursor.Origin {
 	case appitempaging.FetchCursorOriginServingDaemon:
-		read, err := o.read(ctx, appwire.ThreadReadParams{Ref: request.Ref, FetchCursor: request.FetchCursor}, false)
+		read, err := o.read(ctx, appwire.ThreadReadParams{Ref: request.Ref, FetchCursor: validationCursor}, false)
 		if err != nil {
 			return appwire.SessionFetchResponse{}, err
 		}
 		if read.Fetch == nil {
 			return appwire.SessionFetchResponse{}, appwire.TranscriptItemCursorStale()
 		}
-		return *read.Fetch, nil
 	case appitempaging.FetchCursorOriginRemoteSource:
 		source, err := sourceForThreadWithDeletionFence(ctx, o.cfg, o.sources, request.Ref, "")
 		if err != nil {
@@ -448,14 +545,25 @@ func (o *sessionOperations) fetch(ctx context.Context, request appwire.SessionFe
 		if !ok {
 			return appwire.SessionFetchResponse{}, appwire.TranscriptItemCursorStale()
 		}
-		return remote.FetchTranscriptItem(ctx, request.Ref, identity, cursor)
+		if _, err := remote.FetchTranscriptItem(ctx, request.Ref, identity, cursor); err != nil {
+			return appwire.SessionFetchResponse{}, err
+		}
 	case appitempaging.FetchCursorOriginSavedIndex:
-		return fetchSavedTranscriptItem(ctx, o.cfg, request.Ref, identity, cursor)
+		if _, err := fetchSavedTranscriptItem(ctx, o.cfg, request.Ref, identity, cursor); err != nil {
+			return appwire.SessionFetchResponse{}, err
+		}
 	case appitempaging.FetchCursorOriginHubCompat:
-		return o.fetchHubCompatibilityTranscriptItem(ctx, request.Ref, identity, cursor)
+		if _, err := o.fetchHubCompatibilityTranscriptItem(ctx, request.Ref, identity, cursor); err != nil {
+			return appwire.SessionFetchResponse{}, err
+		}
 	default:
 		return appwire.SessionFetchResponse{}, appwire.TranscriptItemCursorStale()
 	}
+	canonical, ok := o.canonicalItemStore().get(validationCursor)
+	if !ok {
+		return appwire.SessionFetchResponse{}, appwire.TranscriptItemCursorStale()
+	}
+	return appitempaging.BuildFetchResponseBytes(canonical, identity, requestedCursor)
 }
 
 func (o *sessionOperations) fetchHubCompatibilityTranscriptItem(
@@ -809,7 +917,9 @@ func (o *sessionOperations) read(ctx context.Context, params appwire.ThreadReadP
 		if isTargetDeletedError(err) || params.IsPendingAskPage() {
 			return appwire.ThreadReadResponse{}, err
 		}
-		resp, ok, pastErr := unavailableThreadReadResponse(ctx, cfg, sources, params)
+		resp, ok, pastErr := unavailableThreadReadResponseOwned(ctx, cfg, sources, params, func(options *transcriptWindowPackOptions) {
+			options.RetainFetchItem = o.canonicalItemStore().putItem
+		})
 		if pastErr != nil {
 			return appwire.ThreadReadResponse{}, pastErr
 		}
@@ -849,6 +959,21 @@ func (o *sessionOperations) read(ctx context.Context, params appwire.ThreadReadP
 	hubCompatibility := params.TurnWindow != nil && !sourceAdvertisesWindowRead(ctx, source, params.Ref, params.ThreadID)
 	if hubCompatibility {
 		if params.TurnWindow.Latest <= 0 {
+			if daemon, ok := source.(*appsource.LocalDaemonSource); ok {
+				_, admissionErr := daemon.ResolveSubscriptionAdmission(params)
+				if isDeadSessionError(admissionErr) {
+					saved, found, savedErr := unavailableThreadReadResponseOwned(ctx, cfg, sources, params, func(options *transcriptWindowPackOptions) {
+						options.RetainFetchItem = o.canonicalItemStore().putItem
+					})
+					if savedErr != nil {
+						return appwire.ThreadReadResponse{}, savedErr
+					}
+					if found {
+						return saved, nil
+					}
+					return appwire.ThreadReadResponse{}, admissionErr
+				}
+			}
 			return appwire.ThreadReadResponse{}, appwire.WindowUnsupportedOnDaemon()
 		}
 		sourceParams.ThreadWindowParams = appwire.ThreadWindowParams{}
@@ -955,7 +1080,9 @@ func (o *sessionOperations) read(ctx context.Context, params appwire.ThreadReadP
 		// Keep the first attempt's saved-history eligibility if the
 		// discovered owner disappears before the retry lands.
 		if !recovered && allowPast {
-			saved, ok, pastErr := unavailableThreadReadResponse(ctx, cfg, sources, params)
+			saved, ok, pastErr := unavailableThreadReadResponseOwned(ctx, cfg, sources, params, func(options *transcriptWindowPackOptions) {
+				options.RetainFetchItem = o.canonicalItemStore().putItem
+			})
 			if pastErr != nil {
 				return appwire.ThreadReadResponse{}, pastErr
 			}
@@ -987,7 +1114,9 @@ func (o *sessionOperations) read(ctx context.Context, params appwire.ThreadReadP
 	// discarded in the same request.
 	var pastPage *appwire.ThreadReadResponse
 	if !params.LiveOnly && params.IncludeTurns && liveItemCandidatesEmpty {
-		past, ok, pastErr := pastThreadItemReadResponse(ctx, cfg, params)
+		past, ok, pastErr := pastThreadItemReadResponseOwned(ctx, cfg, params, func(options *transcriptWindowPackOptions) {
+			options.RetainFetchItem = o.canonicalItemStore().putItem
+		})
 		if pastErr != nil {
 			read.finish(false)
 			return appwire.ThreadReadResponse{}, daemonlessReadError(pastErr)
@@ -1013,16 +1142,22 @@ func (o *sessionOperations) read(ctx context.Context, params appwire.ThreadReadP
 			resp.OlderCursor = pastPage.OlderCursor
 			resp.LatestExecutionTurnID = pastPage.LatestExecutionTurnID
 			resp = withReadHistoryIdentity(resp, fallbackHistoryIdentity(read.response, *pastPage))
-			resp.Thread = enrichSourcedThreadImages(source, resp.Thread)
+			if params.TurnWindow == nil {
+				resp.Thread = enrichSourcedThreadImages(source, resp.Thread)
+			}
 		} else {
 			latestExecutionTurnID := resp.LatestExecutionTurnID
-			_, remoteWindow := source.(*appsource.RemoteHubSource)
+			remote, remoteWindow := source.(*appsource.RemoteHubSource)
 			if remoteWindow && params.TurnWindow != nil && resp.Window != nil && !hubCompatibility {
 				// A current remote hub already applied this exact window and
 				// RemoteHubSource re-owned every cursor in the controller namespace.
 				// Packing its bounded page again loses continuation metadata and can
 				// preserve an inner fetch cursor the controller cannot resolve.
 				resp.Thread = enrichSourcedThreadImages(source, resp.Thread)
+				if err := o.retainRemoteWindowItems(ctx, remote, params.Ref, resp.Thread); err != nil {
+					read.finish(false)
+					return appwire.ThreadReadResponse{}, err
+				}
 				resp.LatestExecutionTurnID = latestExecutionTurnID
 			} else {
 				var candidates transcriptItemCandidateResult
@@ -1039,8 +1174,8 @@ func (o *sessionOperations) read(ctx context.Context, params appwire.ThreadReadP
 				pack := func(candidates transcriptItemCandidateResult, enrich func(appwire.ThreadReadResponse) (appwire.ThreadReadResponse, error)) (appwire.ThreadReadResponse, error) {
 					if params.TurnWindow != nil {
 						if hubCompatibility {
-							return packThreadReadWindowItemCandidates(candidates, enrich, transcriptWindowOptionsFor(
-								candidates, params.ThreadWindowParams, itemLimit,
+							return packThreadReadWindowItemCandidates(candidates, enrich, o.canonicalWindowOptions(
+								source, resp.Thread, candidates, params.ThreadWindowParams, itemLimit,
 								transcriptWindowAppliedByHubCompat, appitempaging.FetchCursorOriginHubCompat,
 							))
 						}
@@ -1048,8 +1183,8 @@ func (o *sessionOperations) read(ctx context.Context, params appwire.ThreadReadP
 						if _, remote := source.(*appsource.RemoteHubSource); remote {
 							fetchOrigin = appitempaging.FetchCursorOriginRemoteSource
 						}
-						return packThreadReadWindowItemCandidates(candidates, enrich, transcriptWindowOptionsFor(
-							candidates, params.ThreadWindowParams, itemLimit,
+						return packThreadReadWindowItemCandidates(candidates, enrich, o.canonicalWindowOptions(
+							source, resp.Thread, candidates, params.ThreadWindowParams, itemLimit,
 							transcriptWindowAppliedByServingDaemon, fetchOrigin,
 						))
 					}
@@ -1057,10 +1192,9 @@ func (o *sessionOperations) read(ctx context.Context, params appwire.ThreadReadP
 				}
 				packed, packErr := pack(candidates, func(response appwire.ThreadReadResponse) (appwire.ThreadReadResponse, error) {
 					response.Thread = threadWithPackedTurns(resp.Thread, response.Thread.Turns)
-					// A live daemon's turns carry sha-addressed tool-result descriptors
-					// with no route on them (the daemon does not serve the bytes; this
-					// hub does), so route stamping stays inside the final packer.
-					response.Thread = enrichSourcedThreadImages(source, response.Thread)
+					if params.TurnWindow == nil {
+						response.Thread = enrichSourcedThreadImages(source, response.Thread)
+					}
 					return response, nil
 				})
 				if packErr != nil {

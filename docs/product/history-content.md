@@ -95,13 +95,20 @@ record names whether to continue within the same view or re-read a wider view.
 
 Window and item cursors are hub-owned and bind the requested ref, source
 incarnation and projection. Window continuations retain the original selection
-and bounds. A settled truncated item can carry a version-fenced fetch cursor;
-fetch responses return base64 ranges of that item's canonical JSON and another
-cursor until complete. Live daemons serve their own canonical ranges. Saved and
-remote reads resolve at the hub, after remote structural translation. Older
-daemons receive only a legacy latest-page read: the hub applies the same packer,
-refuses other window forms with a typed upgrade path, and pages compatibility
-fetch recovery backward only when that daemon advertises `PageBefore`.
+and bounds. A settled truncated item can carry a version-fenced fetch cursor.
+Before measuring or truncating a Manager window, the hub applies its visible image
+and file-route enrichment once and retains that exact canonical item JSON in a
+bounded least-recently-used byte store. Fetch responses slice only those retained
+bytes and return base64 ranges plus another cursor until complete, regardless of
+whether the item came from a live daemon, saved index, compatibility read or
+remote source. The source is still re-read on each fetch to enforce reachability
+and version fences. Eviction or hub restart returns the typed stale result instead
+of reconstructing bytes from mutable files or routes. A remote item beyond the
+ordinary translated read's reach returns `fetch-unavailable-remote`.
+Older daemons receive only a legacy latest-page read: the hub applies the same
+packer, refuses other window forms with a typed upgrade path, and pages
+compatibility fetch recovery backward only when that daemon advertises
+`PageBefore`.
 
 A cursor mismatch refreshes the view. A changed reachable item reports its new
 version. A remote or compatibility item outside the bounded recovery path reports

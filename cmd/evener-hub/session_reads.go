@@ -89,7 +89,7 @@ func (o *sessionOperations) turns(ctx context.Context, p appwire.ThreadTurnsList
 	source, err := sourceForThreadWithDeletionFence(ctx, o.cfg, o.sources, p.Ref, "")
 	if err == nil {
 		if p.TurnWindow != nil {
-			page, continuationErr := continueLiveTranscriptWindow(ctx, source, p)
+			page, continuationErr := continueLiveTranscriptWindowOwned(ctx, source, p, o)
 			if continuationErr == nil {
 				return page, nil
 			}
@@ -111,7 +111,9 @@ func (o *sessionOperations) turns(ctx context.Context, p appwire.ThreadTurnsList
 	if !isDeadSessionError(err) {
 		return appwire.ThreadTurnsListResponse{}, err
 	}
-	page, ok, pastErr := pastThreadTurnsList(ctx, o.cfg, p)
+	page, ok, pastErr := pastThreadTurnsListOwned(ctx, o.cfg, p, func(options *transcriptWindowPackOptions) {
+		options.RetainFetchItem = o.canonicalItemStore().putItem
+	})
 	if pastErr != nil {
 		return appwire.ThreadTurnsListResponse{}, pastErr
 	}
@@ -122,6 +124,15 @@ func (o *sessionOperations) turns(ctx context.Context, p appwire.ThreadTurnsList
 }
 
 func continueLiveTranscriptWindow(ctx context.Context, source appsource.Source, params appwire.ThreadTurnsListParams) (appwire.ThreadTurnsListResponse, error) {
+	return continueLiveTranscriptWindowOwned(ctx, source, params, nil)
+}
+
+func continueLiveTranscriptWindowOwned(
+	ctx context.Context,
+	source appsource.Source,
+	params appwire.ThreadTurnsListParams,
+	owner *sessionOperations,
+) (appwire.ThreadTurnsListResponse, error) {
 	if remote, ok := source.(*appsource.RemoteHubSource); ok && sourceAdvertisesWindowRead(ctx, source, params.Ref, params.ThreadID) {
 		page, err := remote.ListTurns(ctx, params)
 		if err != nil {
@@ -129,6 +140,11 @@ func continueLiveTranscriptWindow(ctx context.Context, source appsource.Source, 
 		}
 		thread := enrichSourcedThreadImages(source, appwire.Thread{Turns: page.Data})
 		page.Data = thread.Turns
+		if owner != nil {
+			if err := owner.retainRemoteWindowItems(ctx, remote, params.Ref, thread); err != nil {
+				return appwire.ThreadTurnsListResponse{}, err
+			}
+		}
 		return page, nil
 	}
 	itemLimit, err := appwire.NormalizeTranscriptItemLimit(params.ItemLimit)
@@ -178,12 +194,17 @@ func continueLiveTranscriptWindow(ctx context.Context, source appsource.Source, 
 	if hubCompatibility {
 		appliedBy = transcriptWindowAppliedByHubCompat
 	}
+	options := transcriptWindowOptionsFor(candidates, params.ThreadWindowParams, itemLimit, appliedBy, fetchOrigin)
+	if owner != nil {
+		options = owner.canonicalWindowOptions(source, read.Thread, candidates, params.ThreadWindowParams, itemLimit, appliedBy, fetchOrigin)
+	} else {
+		options.CanonicalizeCandidates = func(candidates []appitempaging.TranscriptItemCandidate) ([]appitempaging.TranscriptItemCandidate, error) {
+			return canonicalizeTranscriptItemCandidates(source, read.Thread, candidates)
+		}
+	}
 	packed, err := packThreadTurnsWindowItemCandidates(candidates, func(response appwire.ThreadTurnsListResponse) (appwire.ThreadTurnsListResponse, error) {
-		thread := threadWithPackedTurns(read.Thread, response.Data)
-		thread = enrichSourcedThreadImages(source, thread)
-		response.Data = thread.Turns
 		return response, nil
-	}, transcriptWindowOptionsFor(candidates, params.ThreadWindowParams, itemLimit, appliedBy, fetchOrigin))
+	}, options)
 	if err != nil {
 		return appwire.ThreadTurnsListResponse{}, err
 	}

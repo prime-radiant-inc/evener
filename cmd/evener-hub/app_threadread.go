@@ -122,6 +122,16 @@ var afterSavedSubscriptionCapture func(appwire.ThreadReadParams)
 // unavailableThreadReadResponse prefers saved turns, but a confirmed incompatible
 // owner remains readable from roster metadata even before it has a past entry.
 func unavailableThreadReadResponse(ctx context.Context, cfg hubcore.WebConfig, sources *appsource.Registry, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, bool, error) {
+	return unavailableThreadReadResponseOwned(ctx, cfg, sources, params, nil)
+}
+
+func unavailableThreadReadResponseOwned(
+	ctx context.Context,
+	cfg hubcore.WebConfig,
+	sources *appsource.Registry,
+	params appwire.ThreadReadParams,
+	configureWindow func(*transcriptWindowPackOptions),
+) (appwire.ThreadReadResponse, bool, error) {
 	if params.LiveOnly {
 		return appwire.ThreadReadResponse{}, false, nil
 	}
@@ -175,7 +185,7 @@ func unavailableThreadReadResponse(ctx context.Context, cfg hubcore.WebConfig, s
 		entry, hasPast = pastEntryForRead(cfg, params)
 	}
 	if hasPast {
-		response, ok, err := pastEntryItemReadResponse(ctx, cfg, params, entry)
+		response, ok, err := pastEntryItemReadResponseOwned(ctx, cfg, params, entry, configureWindow)
 		return response, ok, daemonlessReadError(err)
 	}
 	if _, required, err := restartRequiredDaemon(ctx, cfg, params.Ref, params.ThreadID); err != nil || !required {
@@ -218,6 +228,15 @@ func pastThreadReadResponse(ctx context.Context, cfg hubcore.WebConfig, params a
 }
 
 func pastThreadTurnsList(ctx context.Context, cfg hubcore.WebConfig, params appwire.ThreadTurnsListParams) (appwire.ThreadTurnsListResponse, bool, error) {
+	return pastThreadTurnsListOwned(ctx, cfg, params, nil)
+}
+
+func pastThreadTurnsListOwned(
+	ctx context.Context,
+	cfg hubcore.WebConfig,
+	params appwire.ThreadTurnsListParams,
+	configureWindow func(*transcriptWindowPackOptions),
+) (appwire.ThreadTurnsListResponse, bool, error) {
 	readParams := appwire.ThreadReadParams{Ref: params.Ref, ThreadID: params.ThreadID, IncludeTurns: true}
 	itemLimit, err := appwire.NormalizeTranscriptItemLimit(params.ItemLimit)
 	if err != nil {
@@ -236,15 +255,23 @@ func pastThreadTurnsList(ctx context.Context, cfg hubcore.WebConfig, params appw
 		if err != nil {
 			return appwire.ThreadTurnsListResponse{}, true, err
 		}
-		packed, err := packThreadTurnsWindowItemCandidates(candidates, func(response appwire.ThreadTurnsListResponse) (appwire.ThreadTurnsListResponse, error) {
-			thread := appwire.Thread{ID: entry.Meta.ID, SessionID: entry.Meta.ID, CWD: entry.Meta.EnvInfo.WorkingDir, Turns: response.Data}
-			thread = stampItemPageTurns(cfg, entry, thread)
-			response.Data = thread.Turns
-			return response, nil
-		}, transcriptWindowOptionsFor(
+		base := appwire.Thread{ID: entry.Meta.ID, SessionID: entry.Meta.ID, CWD: entry.Meta.EnvInfo.WorkingDir}
+		options := transcriptWindowOptionsFor(
 			candidates, params.ThreadWindowParams, itemLimit,
 			transcriptWindowAppliedBySavedIndex, appitempaging.FetchCursorOriginSavedIndex,
-		))
+		)
+		options.CanonicalizeCandidates = func(candidates []appitempaging.TranscriptItemCandidate) ([]appitempaging.TranscriptItemCandidate, error) {
+			return canonicalizeTranscriptItemCandidatesWith(base, candidates, func(thread appwire.Thread) appwire.Thread {
+				return stampItemPageTurns(cfg, entry, thread)
+			})
+		}
+		if configureWindow != nil {
+			configureWindow(&options)
+		}
+		packed, err := packThreadTurnsWindowItemCandidates(candidates, func(response appwire.ThreadTurnsListResponse) (appwire.ThreadTurnsListResponse, error) {
+			stampPastTurnCosts(pastEntryCost(cfg, entry), response.Data)
+			return response, nil
+		}, options)
 		if err != nil {
 			return appwire.ThreadTurnsListResponse{}, true, err
 		}
@@ -267,14 +294,33 @@ func pastThreadTurnsList(ctx context.Context, cfg hubcore.WebConfig, params appw
 }
 
 func pastThreadItemReadResponse(ctx context.Context, cfg hubcore.WebConfig, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, bool, error) {
+	return pastThreadItemReadResponseOwned(ctx, cfg, params, nil)
+}
+
+func pastThreadItemReadResponseOwned(
+	ctx context.Context,
+	cfg hubcore.WebConfig,
+	params appwire.ThreadReadParams,
+	configureWindow func(*transcriptWindowPackOptions),
+) (appwire.ThreadReadResponse, bool, error) {
 	entry, ok := pastEntryForRead(cfg, params)
 	if !ok {
 		return appwire.ThreadReadResponse{}, false, nil
 	}
-	return pastEntryItemReadResponse(ctx, cfg, params, entry)
+	return pastEntryItemReadResponseOwned(ctx, cfg, params, entry, configureWindow)
 }
 
 func pastEntryItemReadResponse(ctx context.Context, cfg hubcore.WebConfig, params appwire.ThreadReadParams, entry hubcore.PastEntry) (appwire.ThreadReadResponse, bool, error) {
+	return pastEntryItemReadResponseOwned(ctx, cfg, params, entry, nil)
+}
+
+func pastEntryItemReadResponseOwned(
+	ctx context.Context,
+	cfg hubcore.WebConfig,
+	params appwire.ThreadReadParams,
+	entry hubcore.PastEntry,
+	configureWindow func(*transcriptWindowPackOptions),
+) (appwire.ThreadReadResponse, bool, error) {
 	if err := params.ValidateAnswerContinuation(); err != nil {
 		return appwire.ThreadReadResponse{}, true, err
 	}
@@ -318,10 +364,26 @@ func pastEntryItemReadResponse(ctx context.Context, cfg hubcore.WebConfig, param
 	}
 	pack := func(candidates transcriptItemCandidateResult, enrich func(appwire.ThreadReadResponse) (appwire.ThreadReadResponse, error)) (appwire.ThreadReadResponse, error) {
 		if params.TurnWindow != nil {
-			return packThreadReadWindowItemCandidates(candidates, enrich, transcriptWindowOptionsFor(
+			options := transcriptWindowOptionsFor(
 				candidates, params.ThreadWindowParams, itemLimit,
 				transcriptWindowAppliedBySavedIndex, appitempaging.FetchCursorOriginSavedIndex,
-			))
+			)
+			options.CanonicalizeCandidates = func(candidates []appitempaging.TranscriptItemCandidate) ([]appitempaging.TranscriptItemCandidate, error) {
+				return canonicalizeTranscriptItemCandidatesWith(thread, candidates, func(candidateThread appwire.Thread) appwire.Thread {
+					return stampItemPageTurns(cfg, entry, candidateThread)
+				})
+			}
+			if configureWindow != nil {
+				configureWindow(&options)
+			}
+			return packThreadReadWindowItemCandidates(candidates, func(response appwire.ThreadReadResponse) (appwire.ThreadReadResponse, error) {
+				thread.Turns = response.Thread.Turns
+				stampPastTurnCosts(pastEntryCost(cfg, entry), thread.Turns)
+				thread = stampDerivedTotalsWith(cfg, entry, thread, page.Derived)
+				response.Thread = thread
+				response.LatestExecutionTurnID = page.LatestExecutionTurnID
+				return response, nil
+			}, options)
 		}
 		return packThreadReadItemCandidates(candidates, enrich, itemLimit)
 	}

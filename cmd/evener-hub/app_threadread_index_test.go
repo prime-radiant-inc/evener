@@ -270,35 +270,44 @@ func TestDaemonlessThreadReadHonorsTurnWindows(t *testing.T) {
 
 func TestSessionOperationsFetchesSavedItemCanonicalRanges(t *testing.T) {
 	text := strings.Repeat("界", 100_000)
-	cfg, entry, path := seedIndexedPastSession(t,
+	cfg, entry, _ := seedIndexedPastSession(t,
 		execution("turn_m1", schema.NewTurn(schema.TurnAssistant, llm.Assistant(text))),
 		completedExecution("turn_m1"),
 	)
 	ref := "local:" + entry.Meta.ID
-	window, err := dispatchDaemonlessThreadRead(t, cfg, appwire.ThreadReadParams{
+	operations := &sessionOperations{cfg: cfg, sources: appsource.NewRegistry()}
+	window, found, err := pastThreadItemReadResponseOwned(t.Context(), cfg, appwire.ThreadReadParams{
 		Ref: ref, IncludeTurns: true,
 		TurnWindow:   &appwire.ThreadTurnWindow{Turn: "turn_m1"},
 		ItemTypes:    []string{"agentMessage"},
 		MessageBytes: 64,
+	}, func(options *transcriptWindowPackOptions) {
+		options.RetainFetchItem = operations.canonicalItemStore().putItem
 	})
 	if err != nil {
 		t.Fatal(err)
+	}
+	if !found {
+		t.Fatal("saved session was not found")
 	}
 	items := flattenTestItems(window.Thread.Turns)
 	if len(items) != 1 || items[0].FetchCursor == "" {
 		t.Fatalf("bounded item = %+v, want one fetchable item", items)
 	}
 
-	indexed := indexLatestWindow(t, path, appwire.TranscriptItemPageLimit)
-	if len(indexed.Candidates) != 1 {
-		t.Fatalf("indexed candidates = %d, want 1", len(indexed.Candidates))
+	completeRead, err := operations.read(t.Context(), appwire.ThreadReadParams{Ref: ref, IncludeTurns: true}, false)
+	if err != nil {
+		t.Fatal(err)
 	}
-	want, err := json.Marshal(indexed.Candidates[0].Item)
+	completeItems := flattenTestItems(completeRead.Thread.Turns)
+	if len(completeItems) != 1 {
+		t.Fatalf("complete saved items = %d, want 1", len(completeItems))
+	}
+	want, err := json.Marshal(completeItems[0])
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	operations := &sessionOperations{cfg: cfg, sources: appsource.NewRegistry()}
 	cursor := items[0].FetchCursor
 	var got []byte
 	for cursor != "" {
@@ -336,37 +345,61 @@ func TestSessionOperationsFetchesSavedItemCanonicalRanges(t *testing.T) {
 func TestDaemonlessThreadTurnsContinuesInsideWindowedTurn(t *testing.T) {
 	entries := make([]schema.Turn, 0, 26)
 	for i := range 25 {
-		entries = append(entries, execution("turn_many", schema.NewTurn(schema.TurnAssistant, llm.Assistant(fmt.Sprintf("answer-%02d", i)))))
+		entries = append(entries, execution("turn_many", schema.NewTurn(schema.TurnAssistant, llm.Assistant(fmt.Sprintf("answer-%02d%s", i, strings.Repeat("x", 100))))))
 	}
 	entries = append(entries, completedExecution("turn_many"))
 	cfg, entry, _ := seedIndexedPastSession(t, entries...)
+	operations := &sessionOperations{cfg: cfg, sources: newExitedLocalRegistry()}
+	ref := "local:" + entry.Meta.ID
 	window := appwire.ThreadWindowParams{
-		TurnWindow: &appwire.ThreadTurnWindow{Turn: "turn_many"},
-		ItemTypes:  []string{"messages"},
+		TurnWindow:   &appwire.ThreadTurnWindow{Turn: "turn_many"},
+		ItemTypes:    []string{"messages"},
+		MessageBytes: len("answer-00"),
 	}
-	initial, err := dispatchDaemonlessThreadRead(t, cfg, appwire.ThreadReadParams{
-		Ref: "local:" + entry.Meta.ID, IncludeTurns: true, ItemLimit: 10, ThreadWindowParams: window,
+	initial, err := operations.turns(t.Context(), appwire.ThreadTurnsListParams{
+		Ref: ref, ItemLimit: 10, ThreadWindowParams: window,
 	})
 	if err != nil {
 		t.Fatalf("initial daemonless window: %v", err)
 	}
 
 	got := make([]string, 0, 25)
-	for _, item := range flattenTestItems(initial.Thread.Turns) {
+	assertRetained := func(items []appwire.ThreadItem) {
+		t.Helper()
+		for _, item := range items {
+			cursor, identity, err := appitempaging.DecodeFetchCursorForRef(item.FetchCursor, ref)
+			if err != nil {
+				t.Fatalf("decode saved fetch cursor: %v", err)
+			}
+			cursor.Offset = 0
+			key, err := appitempaging.EncodeFetchCursor(identity, cursor)
+			if err != nil {
+				t.Fatalf("normalize saved fetch cursor: %v", err)
+			}
+			if _, ok := operations.canonicalItemStore().get(key); !ok {
+				t.Fatalf("saved fetch cursor for %q has no retained canonical bytes", item.Text)
+			}
+		}
+	}
+	initialItems := flattenTestItems(initial.Data)
+	assertRetained(initialItems)
+	for _, item := range initialItems {
 		got = append(got, item.Text)
 	}
-	if len(initial.Thread.Turns) != 1 || initial.Thread.Turns[0].Elision == nil {
-		t.Fatalf("initial daemonless window = %+v, want one elided turn", initial.Thread.Turns)
+	if len(initial.Data) != 1 || initial.Data[0].Elision == nil {
+		t.Fatalf("initial daemonless window = %+v, want one elided turn", initial.Data)
 	}
-	cursor := initial.Thread.Turns[0].Elision.ContinuationCursor
+	cursor := initial.Data[0].Elision.ContinuationCursor
 	for cursor != "" {
-		page, found, err := pastThreadTurnsList(t.Context(), cfg, appwire.ThreadTurnsListParams{
-			Ref: "local:" + entry.Meta.ID, Cursor: cursor, ItemLimit: 10, ThreadWindowParams: window,
+		page, err := operations.turns(t.Context(), appwire.ThreadTurnsListParams{
+			Ref: ref, Cursor: cursor, ItemLimit: 10, ThreadWindowParams: window,
 		})
-		if err != nil || !found {
-			t.Fatalf("daemonless continuation after %d items = (found %v, err %v)", len(got), found, err)
+		if err != nil {
+			t.Fatalf("daemonless continuation after %d items: %v", len(got), err)
 		}
-		for _, item := range flattenTestItems(page.Data) {
+		items := flattenTestItems(page.Data)
+		assertRetained(items)
+		for _, item := range items {
 			got = append(got, item.Text)
 		}
 		cursor = ""

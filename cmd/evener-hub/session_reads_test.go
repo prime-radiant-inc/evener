@@ -52,6 +52,14 @@ type managerReadSource struct {
 	changeInstanceOnRead int
 }
 
+type windowReadCapableManagerSource struct {
+	*managerReadSource
+}
+
+func (*windowReadCapableManagerSource) CachedThreadCapabilities(string, string) (appwire.ThreadCapabilities, bool) {
+	return appwire.ThreadCapabilities{WindowRead: true}, true
+}
+
 func (s *managerReadSource) ThreadActivityRead(_ context.Context, p appwire.SessionActivityReadParams) (appwire.SessionActivitySummary, error) {
 	s.activityCalls = append(s.activityCalls, appwire.SessionActivityRequest{Ref: p.Ref, Scope: p.Scope, Resource: appwire.SessionActivityResourceSummary})
 	if s.partial {

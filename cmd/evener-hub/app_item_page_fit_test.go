@@ -643,6 +643,52 @@ func TestPackTranscriptItemWindowBudgetMeasuresEncodedTurnsAndTrimsByMode(t *tes
 	}
 }
 
+func TestPackTranscriptItemWindowBudgetsEnrichedImages(t *testing.T) {
+	candidates := testWindowCandidateResult(testWindowTurnCandidates("turn-image", []appwire.ThreadItem{{
+		Type: "commandExecution", ID: "item-image", Version: 1, Output: "created image",
+	}}))
+	options := testWindowPackOptions(appwire.ThreadWindowParams{
+		TurnWindow:        &appwire.ThreadTurnWindow{Turn: "turn-image"},
+		WindowBudgetBytes: 1,
+	})
+	options.CanonicalizeCandidates = func(candidates []appitempaging.TranscriptItemCandidate) ([]appitempaging.TranscriptItemCandidate, error) {
+		candidates[0].Item.OutputImages = []appwire.OutputImage{{URL: strings.Repeat("u", transcriptWindowBudgetFloorBytes)}}
+		return candidates, nil
+	}
+	got, err := packThreadTurnsWindowItemCandidates(candidates, nil, options)
+	if err != nil {
+		t.Fatalf("pack enriched image: %v", err)
+	}
+	encoded, err := json.Marshal(got.Data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(encoded) > got.Window.EffectiveBudgetBytes {
+		t.Fatalf("encoded enriched window content = %d bytes, effective budget = %d", len(encoded), got.Window.EffectiveBudgetBytes)
+	}
+}
+
+func TestCanonicalizeTranscriptItemCandidatesOwnsNestedImageState(t *testing.T) {
+	candidates := testWindowTurnCandidates("turn-image", []appwire.ThreadItem{{
+		Type: "commandExecution", ID: "item-image", Version: 1,
+		OutputImages: []appwire.OutputImage{{URL: "source-route"}},
+	}})
+
+	canonical, err := canonicalizeTranscriptItemCandidatesWith(appwire.Thread{}, candidates, func(thread appwire.Thread) appwire.Thread {
+		thread.Turns[0].Items[0].OutputImages[0].URL = "canonical-route"
+		return thread
+	})
+	if err != nil {
+		t.Fatalf("canonicalize candidates: %v", err)
+	}
+	if got := canonical[0].Item.OutputImages[0].URL; got != "canonical-route" {
+		t.Fatalf("canonical image route = %q", got)
+	}
+	if got := candidates[0].Item.OutputImages[0].URL; got != "source-route" {
+		t.Fatalf("source image route was mutated to %q", got)
+	}
+}
+
 func TestSpendTranscriptWindowCursorKeepsTheRequestedViewAndDirection(t *testing.T) {
 	candidates := testItemCandidates(5)
 	result := transcriptItemCandidateResult{

@@ -23,6 +23,12 @@ func BuildFetchResponse(item appwire.ThreadItem, identity CursorIdentity, cursor
 	if err != nil {
 		return appwire.SessionFetchResponse{}, err
 	}
+	return BuildFetchResponseBytes(canonical, identity, cursor)
+}
+
+// BuildFetchResponseBytes slices an item's already validated canonical wire
+// encoding. The caller owns the position and version fence against its source.
+func BuildFetchResponseBytes(canonical []byte, identity CursorIdentity, cursor FetchCursor) (appwire.SessionFetchResponse, error) {
 	if cursor.Offset >= uint64(len(canonical)) {
 		return appwire.SessionFetchResponse{}, appwire.TranscriptItemCursorStale()
 	}
@@ -36,6 +42,7 @@ func BuildFetchResponse(item appwire.ThreadItem, identity CursorIdentity, cursor
 	}
 	if end < uint64(len(canonical)) {
 		cursor.Offset = end
+		var err error
 		response.FetchCursor, err = EncodeFetchCursor(identity, cursor)
 		if err != nil {
 			return appwire.SessionFetchResponse{}, err

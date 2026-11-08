@@ -50,7 +50,9 @@ type transcriptWindowPackOptions struct {
 	Params                 appwire.ThreadWindowParams
 	ItemLimit              int
 	AppliedBy              string
+	CanonicalizeCandidates func([]appitempaging.TranscriptItemCandidate) ([]appitempaging.TranscriptItemCandidate, error)
 	MintFetchCursor        func(appitempaging.TranscriptItemCandidate) (string, error)
+	RetainFetchItem        func(string, appwire.ThreadItem) error
 	MintContinuationCursor func(transcriptWindowContinuation) (string, error)
 }
 
@@ -343,6 +345,45 @@ func threadWithPackedTurns(base appwire.Thread, turns []appwire.Turn) appwire.Th
 	return base
 }
 
+func canonicalizeTranscriptItemCandidates(
+	source appsource.Source,
+	base appwire.Thread,
+	candidates []appitempaging.TranscriptItemCandidate,
+) ([]appitempaging.TranscriptItemCandidate, error) {
+	return canonicalizeTranscriptItemCandidatesWith(base, candidates, func(thread appwire.Thread) appwire.Thread {
+		return enrichSourcedThreadImages(source, thread)
+	})
+}
+
+func canonicalizeTranscriptItemCandidatesWith(
+	base appwire.Thread,
+	candidates []appitempaging.TranscriptItemCandidate,
+	canonicalize func(appwire.Thread) appwire.Thread,
+) ([]appitempaging.TranscriptItemCandidate, error) {
+	turns, err := appitempaging.RegroupTurnFragments(candidates)
+	if err != nil {
+		return nil, err
+	}
+	canonical := canonicalize(threadWithPackedTurns(base, turns))
+	items := make(map[appwire.ThreadItemPosition]appwire.ThreadItem, len(candidates))
+	for _, turn := range canonical.Turns {
+		for _, item := range turn.Items {
+			if item.Position != nil {
+				items[*item.Position] = item
+			}
+		}
+	}
+	result := append([]appitempaging.TranscriptItemCandidate(nil), candidates...)
+	for index := range result {
+		item, ok := items[result[index].Position]
+		if !ok {
+			return nil, fmt.Errorf("canonical transcript item missing at position %+v", result[index].Position)
+		}
+		result[index].Item = item
+	}
+	return result, nil
+}
+
 func packThreadReadItemCandidates(
 	candidates transcriptItemCandidateResult,
 	enrich func(appwire.ThreadReadResponse) (appwire.ThreadReadResponse, error),
@@ -448,6 +489,12 @@ func packItemCandidates[T any](
 	var zero T
 	var err error
 	candidates := append([]appitempaging.TranscriptItemCandidate(nil), result.Candidates.Candidates...)
+	if options.window != nil && options.window.CanonicalizeCandidates != nil {
+		candidates, err = options.window.CanonicalizeCandidates(candidates)
+		if err != nil {
+			return zero, fmt.Errorf("canonicalize transcript item candidates: %w", err)
+		}
+	}
 	if _, err := appitempaging.RegroupTurnFragments(candidates); err != nil {
 		return zero, fmt.Errorf("invalid transcript item candidates: %w", err)
 	}
@@ -944,6 +991,11 @@ func mintTranscriptWindowFetchCursor(options transcriptWindowPackOptions, candid
 	}
 	if cursor == "" {
 		return "", errors.New("transcript item fetch cursor callback returned an empty cursor")
+	}
+	if options.RetainFetchItem != nil {
+		if err := options.RetainFetchItem(cursor, candidate.Item); err != nil {
+			return "", fmt.Errorf("retain transcript item fetch bytes: %w", err)
+		}
 	}
 	return cursor, nil
 }
