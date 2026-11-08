@@ -197,7 +197,7 @@ func TestE2E_VoiceSessionStopRenewSurvivesReceiptBacklog(t *testing.T) {
 		time.Sleep(10 * time.Millisecond)
 	}
 	armed.Store(false)
-	for i := 0; i < 2; i++ {
+	for i := range 2 {
 		if event := f.device.read(); event["type"] != "renewed" {
 			t.Fatalf("renewal %d did not complete after the receipt backlog: %v", i+1, event)
 		}
