@@ -1523,17 +1523,26 @@ async function runEntryProductionJourney(driver, harnessUrl) {
 
   const liveTabs = await runLiveTwoTabs(driver, harnessUrl);
   await evaluate(driver.send, `window.backgroundTranscriptEvidence.entrySettled(${JSON.stringify(SESSION_B)})`);
-  const completed = await waitForNativeEntryEvidence(
+  // The completed live turn is the fixed point the comparison is about; wait for
+  // it once, then let the comparison loop poll the store inside its own bound.
+  const liveEvidence = await waitForNativeEntryEvidence(
     driver,
     (value) =>
       value.rows.some((row) => row.item?.text?.includes(AFTER)) &&
       value.rows.some((row) => row.item?.output?.includes(TOOL_OUTPUT)),
     "completed recorded transcript in native entry storage",
   );
-  const target = await readTargetDomain(driver, SESSION_B);
+  const comparison = await waitForEntryComparison({
+    readEvidence: async () =>
+      (await evaluate(driver.send, nativeEntryEvidenceExpression(SESSION_B))) ?? liveEvidence,
+    readTarget: () => readTargetDomain(driver, SESSION_B),
+    deadline: Date.now() + driver.reactions.deadline(30000),
+  });
+  const completed = comparison.completed;
+  const target = comparison.target;
   const outputRegion = await readShellOutputRegion(driver, SESSION_B, TOOL_OUTPUT);
   const outputText = outputRegion?.outputs?.[0] ?? "";
-  const rendererItems = target?.items ?? [];
+  const rendererItems = comparison.rendererItems;
   const renderedSentinelRows = await evaluate(driver.send, renderedSentinelRowsExpr(SESSION_B));
   driver.milestone("two-tab-live", {
     tabs: [
@@ -1546,66 +1555,15 @@ async function runEntryProductionJourney(driver, harnessUrl) {
       liveTabs.sibling,
     ],
   });
-  const recordedRendererItems = rendererItems.filter((item) => item.transcriptKey && item.position);
+  const recordedRendererItems = comparison.recordedRendererItems;
   const renderedToolItems = recordedRendererItems.filter((item) => item.output.includes(TOOL_OUTPUT));
-  const nativeItems = completed.rows.map((row) => ({
-    transcriptKey: row.transcriptKey,
-    position: row.position,
-    item: row.item,
-  }));
+  const nativeItems = comparison.nativeItems;
   const nativeTurns = completed.turns;
   const nativeCoverage = completed.coverage;
-  // Identity is (transcriptKey, id, turnId). Index the native rows once so the
-  // join is linear, and keep every row per identity: a duplicate native row
-  // must still read as two matches.
-  const nativeByIdentity = new Map();
-  for (const row of nativeItems) {
-    const key = JSON.stringify([row.transcriptKey, row.item?.id, row.item?.turnId]);
-    const bucket = nativeByIdentity.get(key);
-    if (bucket) bucket.push(row);
-    else nativeByIdentity.set(key, [row]);
-  }
-  const rendererToNative = recordedRendererItems.map((item) => {
-    const matches = nativeByIdentity.get(JSON.stringify([item.transcriptKey, item.id, item.turnId])) ?? [];
-    const native = matches[0] ?? null;
-    const identityMatches =
-      native !== null &&
-      native.item.type === item.type &&
-      (native.item.text ?? "") === item.text &&
-      (native.item.output ?? "") === item.output &&
-      (native.item.argumentsJSON ?? null) === (item.arguments ?? null) &&
-      native.item.status === item.status &&
-      (native.item.callId ?? null) === item.callId &&
-      native.position.entry === item.position.entry &&
-      native.position.item === item.position.item &&
-      (native.position.sub ?? 0) === (item.position.sub ?? 0) &&
-      native.item.version === item.version;
-    return { id: item.id, turnId: item.turnId, matches: matches.length, identityMatches, native };
-  });
+  const rendererToNative = comparison.rendererToNative;
   const comparePosition = (left, right) =>
     left.entry - right.entry || left.item - right.item || (left.sub ?? 0) - (right.sub ?? 0);
-  // A renderer item with no native row is either a lost row or a row the
-  // comparison window cannot reach. Record whether the native store holds the
-  // same item id under another transcript key, and what the same key holds, so
-  // the retained audit answers that without the live browser.
-  const unmatchedRendererItems = recordedRendererItems.flatMap((item, index) => {
-    const match = rendererToNative[index];
-    if (match.matches === 1 && match.identityMatches) return [];
-    return [
-      {
-        id: item.id,
-        turnId: item.turnId,
-        transcriptKey: item.transcriptKey,
-        position: item.position,
-        nativeSameId: nativeItems
-          .filter((row) => row.item?.id === item.id)
-          .map((row) => ({ transcriptKey: row.transcriptKey, turnId: row.item?.turnId })),
-        nativeSameKey: nativeItems
-          .filter((row) => row.transcriptKey === item.transcriptKey)
-          .map((row) => ({ id: row.item?.id, turnId: row.item?.turnId })),
-      },
-    ];
-  });
+  const unmatchedRendererItems = comparison.unmatchedRendererItems;
   const nativeCoverageMatches = nativeItems.map((row) => ({
     id: row.item?.id,
     turnId: row.item?.turnId,
@@ -2093,6 +2051,101 @@ async function waitForNativeEntryEvidence(driver, predicate, label, ref = SESSIO
     await delay(100);
   }
   throw new Error(`timed out waiting for ${label}`);
+}
+
+// joinRendererToNative joins the display's recorded items to the native entry
+// rows by identity (transcriptKey, id, turnId). Index the native rows once so
+// the join is linear, and keep every row per identity: a duplicate native row
+// must still read as two matches.
+function joinRendererToNative(recordedRendererItems, nativeItems) {
+  const nativeByIdentity = new Map();
+  for (const row of nativeItems) {
+    const key = JSON.stringify([row.transcriptKey, row.item?.id, row.item?.turnId]);
+    const bucket = nativeByIdentity.get(key);
+    if (bucket) bucket.push(row);
+    else nativeByIdentity.set(key, [row]);
+  }
+  const rendererToNative = recordedRendererItems.map((item) => {
+    const matches = nativeByIdentity.get(JSON.stringify([item.transcriptKey, item.id, item.turnId])) ?? [];
+    const native = matches[0] ?? null;
+    const identityMatches =
+      native !== null &&
+      native.item.type === item.type &&
+      (native.item.text ?? "") === item.text &&
+      (native.item.output ?? "") === item.output &&
+      (native.item.argumentsJSON ?? null) === (item.arguments ?? null) &&
+      native.item.status === item.status &&
+      (native.item.callId ?? null) === item.callId &&
+      native.position.entry === item.position.entry &&
+      native.position.item === item.position.item &&
+      (native.position.sub ?? 0) === (item.position.sub ?? 0) &&
+      native.item.version === item.version;
+    return { id: item.id, turnId: item.turnId, matches: matches.length, identityMatches, native };
+  });
+  // A renderer item with no native row is either a lost row or a row the
+  // comparison window cannot reach. Record whether the native store holds the
+  // same item id under another transcript key, and what the same key holds, so
+  // the retained audit answers that without the live browser.
+  const unmatchedRendererItems = recordedRendererItems.flatMap((item, index) => {
+    const match = rendererToNative[index];
+    if (match.matches === 1 && match.identityMatches) return [];
+    return [
+      {
+        id: item.id,
+        turnId: item.turnId,
+        transcriptKey: item.transcriptKey,
+        position: item.position,
+        nativeSameId: nativeItems
+          .filter((row) => row.item?.id === item.id)
+          .map((row) => ({ transcriptKey: row.transcriptKey, turnId: row.item?.turnId })),
+        nativeSameKey: nativeItems
+          .filter((row) => row.transcriptKey === item.transcriptKey)
+          .map((row) => ({ id: row.item?.id, turnId: row.item?.turnId })),
+      },
+    ];
+  });
+  return { rendererToNative, unmatchedRendererItems };
+}
+
+// waitForEntryComparison reads the display and the durable entry store until
+// every recorded renderer item has its one-to-one native row, bounded by
+// deadline. The two views publish on different boundaries: an item reaches the
+// pane as soon as its model is published, while the entry repository commits it
+// through its own write-behind task. A single sample of each can be a few
+// writes apart under load - a throttled main thread makes that plain (#5024) -
+// so the comparison waits for the store to catch up with the display rather
+// than reading one instant of each. A row that never lands still returns the
+// unmatched item, and the journey's assertion fails exactly as before.
+async function waitForEntryComparison({
+  readEvidence,
+  readTarget,
+  deadline,
+  sleep = delay,
+}) {
+  for (;;) {
+    const completed = await readEvidence();
+    const target = await readTarget();
+    const rendererItems = target?.items ?? [];
+    const recordedRendererItems = rendererItems.filter((item) => item.transcriptKey && item.position);
+    const nativeItems = completed.rows.map((row) => ({
+      transcriptKey: row.transcriptKey,
+      position: row.position,
+      item: row.item,
+    }));
+    const { rendererToNative, unmatchedRendererItems } = joinRendererToNative(recordedRendererItems, nativeItems);
+    if (unmatchedRendererItems.length === 0 || Date.now() >= deadline) {
+      return {
+        completed,
+        nativeItems,
+        target,
+        rendererItems,
+        recordedRendererItems,
+        rendererToNative,
+        unmatchedRendererItems,
+      };
+    }
+    await sleep(100);
+  }
 }
 
 // waitForPaneText waits until the named pane's own text carries the marker.
@@ -3051,6 +3104,7 @@ export {
   furtherHistoryValidator,
   holderSnapshot,
   holderValidator,
+  joinRendererToNative,
   narrowViewportContentPreserved,
   observedConnection,
   producerOperationApplied,
@@ -3067,6 +3121,7 @@ export {
   targetPagingEvidence,
   traceBytes,
   transcriptState,
+  waitForEntryComparison,
   waitForDisconnected,
   waitForProducerOperationApplied,
   waitForReconnectApplied,

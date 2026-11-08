@@ -18,13 +18,92 @@ import {
   collectProductionPeak,
   countTargetRequestsInWindow,
   EVIDENCE_EXPR,
+  joinRendererToNative,
   narrowViewportContentPreserved,
   readTraceFrames,
   reduceProducedPeak,
   samplePeaksOnce,
   targetPagingEvidence,
   traceBytes,
+  waitForEntryComparison,
 } from "./run.mjs";
+
+describe("renderer/native entry comparison convergence (#5024)", () => {
+  const rendererItem = (overrides = {}) => ({
+    id: "item_early",
+    turnId: "turn_early",
+    transcriptKey: "item_early",
+    position: { entry: 1, item: 0, sub: 0 },
+    type: "assistant",
+    text: "early",
+    output: "",
+    arguments: null,
+    status: "complete",
+    callId: null,
+    version: 1,
+    ...overrides,
+  });
+  const nativeRow = (item) => ({
+    transcriptKey: item.transcriptKey,
+    position: item.position,
+    item: {
+      id: item.id,
+      turnId: item.turnId,
+      type: item.type,
+      text: item.text,
+      output: item.output,
+      argumentsJSON: item.arguments,
+      status: item.status,
+      callId: item.callId,
+      version: item.version,
+      position: item.position,
+    },
+  });
+
+  test("rereads a stale durable sample until every displayed row lands", async () => {
+    const early = rendererItem();
+    const late = rendererItem({ id: "item_late", turnId: "turn_late", transcriptKey: "item_late", text: "late" });
+    let durableReads = 0;
+    const comparison = await waitForEntryComparison({
+      readEvidence: async () => ({ rows: durableReads === 0 ? [nativeRow(early)] : [nativeRow(early), nativeRow(late)] }),
+      readTarget: async () => ({ items: [early, late] }),
+      deadline: Date.now() + 5000,
+      sleep: async () => {
+        durableReads += 1;
+      },
+    });
+    expect(durableReads).toBe(1);
+    expect(comparison.unmatchedRendererItems).toEqual([]);
+    expect(comparison.recordedRendererItems).toHaveLength(2);
+  });
+
+  test("a row that never lands is still reported at the deadline", async () => {
+    const early = rendererItem();
+    const late = rendererItem({ id: "item_late", turnId: "turn_late", transcriptKey: "item_late", text: "late" });
+    const comparison = await waitForEntryComparison({
+      readEvidence: async () => ({ rows: [nativeRow(early)] }),
+      readTarget: async () => ({ items: [early, late] }),
+      deadline: Date.now() - 1,
+      sleep: async () => {},
+    });
+    expect(comparison.unmatchedRendererItems.map((item) => item.id)).toEqual(["item_late"]);
+  });
+
+  test("a displayed row with changed content is unmatched, not merely present by identity", () => {
+    const displayed = rendererItem({ text: "edited after the durable write" });
+    const durable = nativeRow(rendererItem({ text: "the durable text" }));
+    const { unmatchedRendererItems } = joinRendererToNative([displayed], [durable]);
+    expect(unmatchedRendererItems.map((item) => item.id)).toEqual(["item_early"]);
+  });
+
+  test("a duplicate native row fails the one-to-one join instead of choosing one", () => {
+    const displayed = rendererItem();
+    const durable = nativeRow(displayed);
+    const { rendererToNative, unmatchedRendererItems } = joinRendererToNative([displayed], [durable, durable]);
+    expect(rendererToNative[0].matches).toBe(2);
+    expect(unmatchedRendererItems.map((item) => item.id)).toEqual(["item_early"]);
+  });
+});
 
 describe("real journey placement acceptance", () => {
   const older = () => ({
