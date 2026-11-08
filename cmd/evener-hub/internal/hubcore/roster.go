@@ -761,14 +761,28 @@ func (r *Roster) recordOwnershipError(generation uint64, err error) {
 		r.mu.Unlock()
 		return
 	}
-	changed := r.ownershipErr == nil || r.ownershipErr.Error() != err.Error()
+	// The scan confirmed none of the rows it retained. Keep their identities and
+	// routes, but do not keep presenting the previous probe's volatile facts as
+	// current. A single-entry confirmation newer than this failed scan remains
+	// fresh: it is independent evidence about that one daemon.
+	byPID, bySess := maps.Clone(r.byPID), maps.Clone(r.bySess)
+	for pid, entry := range byPID {
+		if r.entryPublishedGen[pid] <= generation {
+			byPID[pid] = retainedProbeEntry(entry)
+		}
+	}
+	for sessionID, entry := range bySess {
+		if r.entryPublishedGen[entry.PID] <= generation {
+			bySess[sessionID] = retainedProbeEntry(entry)
+		}
+	}
+	ownershipChanged := r.ownershipErr == nil || r.ownershipErr.Error() != err.Error()
 	r.publishedGen = generation
 	r.ownershipErr = err
-	onChange := r.onChange
+	publication := r.publishListingLocked(bySess, byPID, slices.Clone(r.unconfirmed))
+	publication.changed = publication.changed || ownershipChanged
 	r.mu.Unlock()
-	if changed && onChange != nil {
-		onChange()
-	}
+	publication.fire()
 }
 
 type rosterRefreshBatch struct {
