@@ -480,8 +480,8 @@ async function warmConversationOnce(): Promise<void> {
     // pays the mount owns a 60 s hook ceiling rather than the 5 s test budget.
     await screen.findByText("report-local:warm_case", undefined, { timeout: 30_000 });
   } finally {
-    view.unmount();
     threadsStore.getState().releaseThread("local:warm_case");
+    view.unmount();
     if (height) Object.defineProperty(HTMLElement.prototype, "offsetHeight", height);
     else Reflect.deleteProperty(HTMLElement.prototype, "offsetHeight");
     rangeGeometry();
@@ -654,21 +654,29 @@ test.each([
           );
       }),
     );
+    // Claim a thread for this test and pair it with a release, so an explicit
+    // acquisition can never outlive the case that made it.
+    const holdThread = async (ref: string): Promise<void> => {
+      let held = false;
+      onTestFinished(() => {
+        if (held) threadsStore.getState().releaseThread(ref);
+      });
+      await threadsStore.getState().ensureThread(ref);
+      held = true;
+    };
     try {
       step = "initial render";
       render(<AppShell client={client} />);
       await act(async () => {
-        await threadsStore.getState().ensureThread("local:owner");
+        await holdThread("local:owner");
       });
-      onTestFinished(() => threadsStore.getState().releaseThread("local:owner"));
       expect(screen.getByRole("heading", { name: "local:owner" })).toBeTruthy();
       expect(screen.getByText("report-local:owner")).toBeTruthy();
       expect(getDockviewApi()).not.toBeNull();
       if (source === "nested") {
         await act(async () => {
-          await threadsStore.getState().ensureThread("local:child");
+          await holdThread("local:child");
         });
-        onTestFinished(() => threadsStore.getState().releaseThread("local:child"));
         expect(screen.getByRole("heading", { name: "local:child" })).toBeTruthy();
       }
       step = "history pane";
@@ -755,8 +763,7 @@ test.each([
       };
       const hydrateThread = async (ref: string): Promise<void> => {
         await act(async () => {
-          await threadsStore.getState().ensureThread(ref);
-          onTestFinished(() => threadsStore.getState().releaseThread(ref));
+          await holdThread(ref);
           // ensureThread returns without waiting when a model already exists:
           // a cached shell can be published before its turn bodies arrive, and
           // the drill asserts on a rendered turn. Join the model's own publish
