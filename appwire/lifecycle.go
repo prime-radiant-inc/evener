@@ -307,6 +307,7 @@ var (
 			string(SessionStateIdle), string(SessionStateActive),
 			string(SessionStateIdle), string(SessionStateAwaiting),
 			string(SessionStateIdle), string(SessionStateClosed),
+			string(SessionStateActive), string(SessionStateActive),
 			string(SessionStateActive), string(SessionStateIdle),
 			string(SessionStateActive), string(SessionStateAwaiting),
 			string(SessionStateActive), string(SessionStateClosed),

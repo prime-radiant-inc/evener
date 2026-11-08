@@ -231,8 +231,9 @@ the bundled doctoring skill.
   `lint-generated` and `lint-biome` pass. Touched-package `golangci-lint` reports
   0 issues.
 - `go test ./agent/...` hit the agent package's 10-minute timeout under load;
-  every `agent/*` subpackage passed and `TestMemoryEvalVerifierBehavior` passed
-  alone in 249s.
+  a 20-minute full-package run hit the timeout again under the same load.
+  Every `agent/*` subpackage and the targeted agent tests passed, and
+  `TestMemoryEvalVerifierBehavior` passed alone in 249s.
 
 ## Open decision for Jesse
 

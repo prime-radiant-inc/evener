@@ -169,6 +169,9 @@ func TestSessionLifecycleEdges(t *testing.T) {
 	if !machine.CanTransition(string(SessionStateAwaiting), string(SessionStateAwaiting)) {
 		t.Error("awaiting session cannot re-publish awaiting")
 	}
+	if !machine.CanTransition(string(SessionStateActive), string(SessionStateActive)) {
+		t.Error("active session cannot re-publish active")
+	}
 	if !machine.IsTerminal(string(SessionStateClosed)) {
 		t.Error("closed session is not terminal")
 	}

@@ -1926,7 +1926,7 @@ export interface JobActivityDelegate {
   terminal?: boolean;
   resumable?: boolean;
   /**
-   * NeedsAttention means the open run is waiting on a person. The shared
+   * NeedsAttention means the delegate owes a person attention. The shared
    * subagent dot reads it as attention; the durable phase stays running while
    * a question or approval blocks the run.
    */
@@ -3464,7 +3464,7 @@ export interface SessionDelegate {
   terminal: boolean;
   resumable: boolean;
   /**
-   * NeedsAttention means the open run is waiting on a person (a question or
+   * NeedsAttention means the delegate owes a person attention (a question or
    * an approval). It is the fact the shared subagent dot renders as attention;
    * phase alone cannot say it because the phase stays running.
    */
