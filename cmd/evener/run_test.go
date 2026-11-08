@@ -340,7 +340,6 @@ func TestRunResumeWithCarriesInvocationATIFExport(t *testing.T) {
 	stateDir := t.TempDir()
 	if err := schema.SaveSessionMeta(stateDir, schema.SessionMeta{
 		ID: sourceID, ProfileID: "openai", Model: "gpt-test",
-		Config: schema.ConfigSnapshot{PluginDirs: []string{"/plugins/historical"}},
 	}); err != nil {
 		t.Fatalf("SaveSessionMeta: %v", err)
 	}
