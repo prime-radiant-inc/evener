@@ -52,6 +52,11 @@ type LocalDaemonEntry struct {
 	Entry     rendezvous.Entry
 	SessionID string
 	Status    string
+	// ActiveTurnID and ActiveTurnStartedAt are volatile facts from the latest
+	// successful local probe. Retained, crashed, remote, and alias rows leave
+	// them empty.
+	ActiveTurnID        string
+	ActiveTurnStartedAt int64
 	// ReadOnlyAlias addresses an in-process descendant through its owner's
 	// daemon. It is valid for reads/subscriptions only; mutation methods must not
 	// accidentally apply a child-targeted request to the owning root session.
@@ -1486,17 +1491,19 @@ func (s *LocalDaemonSource) threadFromEntry(item LocalDaemonEntry) appwire.Threa
 		Path:          filepath.Base(entry.WorkingDir),
 		Source:        s.sourceID,
 		Evener: appwire.EvenerThread{
-			Ref:                ref,
-			InstanceID:         instanceID,
-			Manager:            item.Manager,
-			Capabilities:       listRowCapabilities(item, status),
-			AskPending:         item.PendingAsk,
-			PendingQuestion:    appwire.ClonePendingQuestion(item.PendingQuestion),
-			Failure:            appwire.CloneThreadFailure(item.Failure),
-			PendingEscalations: append([]appwire.SandboxEscalationRequested(nil), item.PendingEscalations...),
-			LastTurnEndedAt:    item.LastTurnEndedAt,
-			LastMessage:        item.LastMessage,
-			Tasks:              appwire.CloneTaskAggregate(item.Tasks),
+			Ref:                 ref,
+			InstanceID:          instanceID,
+			ActiveTurnID:        item.ActiveTurnID,
+			ActiveTurnStartedAt: item.ActiveTurnStartedAt,
+			Manager:             item.Manager,
+			Capabilities:        listRowCapabilities(item, status),
+			AskPending:          item.PendingAsk,
+			PendingQuestion:     appwire.ClonePendingQuestion(item.PendingQuestion),
+			Failure:             appwire.CloneThreadFailure(item.Failure),
+			PendingEscalations:  append([]appwire.SandboxEscalationRequested(nil), item.PendingEscalations...),
+			LastTurnEndedAt:     item.LastTurnEndedAt,
+			LastMessage:         item.LastMessage,
+			Tasks:               appwire.CloneTaskAggregate(item.Tasks),
 		},
 		Status: appwire.ThreadStatus{Type: status},
 	}

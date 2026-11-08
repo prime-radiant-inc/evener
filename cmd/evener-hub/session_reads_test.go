@@ -448,6 +448,38 @@ func TestManagerDiscoveryExplicitFailureFailsWhole(t *testing.T) {
 	}
 }
 
+func TestManagerDiscoveryCarriesFreshLocalActiveTurn(t *testing.T) {
+	const sessionID = "fleet-active"
+	live := hubcore.LiveEntry{
+		Entry: rendezvous.Entry{
+			PID:       501,
+			Protocol:  appwire.ProtocolVersion,
+			Endpoint:  "ws://127.0.0.1:501/rpc",
+			SourceID:  "local",
+			ThreadID:  sessionID,
+			SessionID: sessionID,
+		},
+		SessionID:           sessionID,
+		Status:              appwire.ThreadStatusActive,
+		ActiveTurnID:        "turn-running",
+		ActiveTurnStartedAt: 1_790_000_000_123,
+	}
+	roster := hubcore.NewRosterWithEntries(live)
+	cfg := hubcore.WebConfig{Roster: roster, Past: hubcore.NewPastIndex(""), HubStateRoot: t.TempDir()}
+	sources := newHubSourceRegistry(cfg)
+	server := appserver.NewServer(appserver.ServerConfig{})
+	owner := &sessionOperations{cfg: cfg, sources: sources, server: server, relays: newHubRelay(server, cfg, sources)}
+	response := managerInvoke(t, owner, appwire.ManagerView{Ref: "local:manager", Manager: true}, appwire.SessionOperationRequest{Discover: &appwire.ThreadListParams{}})
+
+	if response.Discover == nil || len(response.Discover.Threads.Data) != 1 {
+		t.Fatalf("discovery rows = %+v", response.Discover)
+	}
+	got := response.Discover.Threads.Data[0].Evener
+	if got.ActiveTurnID != "turn-running" || got.ActiveTurnStartedAt != 1_790_000_000_123 {
+		t.Fatalf("active turn = %q at %d, want the roster probe facts", got.ActiveTurnID, got.ActiveTurnStartedAt)
+	}
+}
+
 func TestManagerReadActivityFollowUpPreservesScope(t *testing.T) {
 	owner, local, _, caller := managerReadFixture(t)
 	local.activityNextCursor = "older-subtree-jobs"

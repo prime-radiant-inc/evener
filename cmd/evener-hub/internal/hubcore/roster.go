@@ -34,6 +34,7 @@ type LiveEntry struct {
 	// that a previously observed turn is still running.
 	ActiveTurnID        string
 	ActiveTurnStartedAt int64
+	ProbeState          string
 	Crashed             bool // true only for a retained record whose daemon PID is confirmed gone
 	PendingAsk          bool // true while the daemon reports an unanswered ask_user question
 	PendingEscalation   bool // true while the daemon reports a blocked sandbox-exemption escalation (M7)
@@ -868,8 +869,7 @@ func classifyMissedProbe(prev LiveEntry, had bool, e rendezvous.Entry, identity 
 		// carries no fresh lifecycle observation: clear the capability and
 		// mark it stale. Stale lifecycle data must never present as current
 		// eligibility, and a stale row must not offer a retire action.
-		prev.Lifecycle = nil
-		prev.LifecycleFresh = false
+		prev = retainedProbeEntry(prev)
 		outcome.kind = missReused
 		outcome.entry = prev
 		return outcome
@@ -920,10 +920,21 @@ func classifyMissedProbe(prev LiveEntry, had bool, e rendezvous.Entry, identity 
 	}
 	crashed.Status = "errored"
 	crashed.Crashed = true
+	crashed = retainedProbeEntry(crashed)
 	outcome.kind = missCrashed
 	outcome.entry = crashed
 	outcome.sessionID = sessionID
 	return outcome
+}
+
+func retainedProbeEntry(entry LiveEntry) LiveEntry {
+	entry.ProbeState = "retained"
+	entry.ActiveTurnID = ""
+	entry.ActiveTurnStartedAt = 0
+	entry.Activity = nil
+	entry.Lifecycle = nil
+	entry.LifecycleFresh = false
+	return entry
 }
 
 func (r *Roster) refreshOwnership() {
@@ -1287,6 +1298,7 @@ func liveEntryFromProbe(e rendezvous.Entry, result ProbeResult) LiveEntry {
 		ActiveFlags:           result.ActiveFlags,
 		ActiveTurnID:          result.ActiveTurnID,
 		ActiveTurnStartedAt:   result.ActiveTurnStartedAt,
+		ProbeState:            "fresh",
 		Capabilities:          result.Capabilities,
 		CapabilitiesKnown:     result.CapabilitiesKnown,
 		RunningSubagentIDs:    result.RunningSubagentIDs,
