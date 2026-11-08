@@ -439,6 +439,7 @@ type SessionStatusTarget struct {
 	Resource    SessionActivityResource `json:"resource,omitempty"`
 	Scope       SessionActivityScope    `json:"scope,omitempty"`
 	Cursor      string                  `json:"cursor,omitempty"`
+	FetchCursor string                  `json:"fetchCursor,omitempty"`
 	Limit       int                     `json:"limit,omitempty"`
 	ItemLimit   int                     `json:"itemLimit,omitempty"`
 	Offset      int                     `json:"offset,omitempty"`

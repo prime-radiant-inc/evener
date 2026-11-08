@@ -269,6 +269,9 @@ func (o *sessionOperations) Invoke(ctx context.Context, caller appwire.ManagerVi
 			return response, err
 		}
 		response.Fetch = &fetch
+		if fetch.FetchCursor != "" {
+			response.FollowUps = []appwire.SessionStatusFollowUp{{Tool: "read_transcript", Arguments: appwire.SessionStatusArguments{Hub: appwire.SessionStatusTarget{Ref: request.Fetch.Ref, FetchCursor: fetch.FetchCursor}}}}
+		}
 	} else if request.Activity != nil {
 		page, err := o.activity(ctx, *request.Activity)
 		if err != nil {

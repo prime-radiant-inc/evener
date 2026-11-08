@@ -151,6 +151,7 @@ func TestManagerReadContract(t *testing.T) {
 		{"history_all_fields", "read_transcript", `{"hub":{"ref":"local:worker","cursor":"next","itemLimit":2}}`, true, appwire.SessionOperationRequest{Turns: &appwire.ThreadTurnsListParams{Ref: "local:worker", Cursor: "next", ItemLimit: 2}}},
 		{"history_windowed", "read_transcript", `{"hub":{"ref":"local:worker","turnWindow":{"latest":1},"itemTypes":["messages"]}}`, true, appwire.SessionOperationRequest{Turns: &appwire.ThreadTurnsListParams{Ref: "local:worker", ThreadWindowParams: appwire.ThreadWindowParams{TurnWindow: &appwire.ThreadTurnWindow{Latest: 1}, ItemTypes: []string{"messages"}}}}},
 		{"history_windowed_all_fields", "read_transcript", `{"hub":{"ref":"local:worker","turnWindow":{"before":{"turnId":"turn_m2","limit":3}},"itemTypes":["messages","reasoning","commandExecution"],"previewBytes":256,"messageBytes":512,"windowBudgetBytes":1024,"itemLimit":40}}`, true, appwire.SessionOperationRequest{Turns: &appwire.ThreadTurnsListParams{Ref: "local:worker", ItemLimit: 40, ThreadWindowParams: appwire.ThreadWindowParams{TurnWindow: &appwire.ThreadTurnWindow{Before: &appwire.ThreadTurnBoundary{TurnID: "turn_m2", Limit: 3}}, ItemTypes: []string{"messages", "reasoning", "commandExecution"}, PreviewBytes: 256, MessageBytes: 512, WindowBudgetBytes: 1024}}}},
+		{"history_fetch", "read_transcript", `{"hub":{"ref":"local:worker","fetchCursor":"fetch-next"}}`, true, appwire.SessionOperationRequest{Fetch: &appwire.SessionFetchRequest{Ref: "local:worker", FetchCursor: "fetch-next"}}},
 		{"history_zero_output_fields", "read_transcript", `{"hub":{"ref":"local:worker","jobId":"","maxBytes":0}}`, true, appwire.SessionOperationRequest{Turns: &appwire.ThreadTurnsListParams{Ref: "local:worker"}}},
 		{"output_defaults", "read_transcript", `{"hub":{"ref":"local:worker","jobId":"job-1"}}`, true, appwire.SessionOperationRequest{JobOutput: &appwire.JobsOutputParams{Ref: "local:worker", JobID: "job-1"}}},
 		{"output_all_fields", "read_transcript", `{"hub":{"ref":"remote:worker","jobId":"job-1","maxBytes":64,"beforeBytes":0}}`, true, appwire.SessionOperationRequest{JobOutput: &appwire.JobsOutputParams{Ref: "remote:worker", JobID: "job-1", MaxBytes: 64, BeforeBytes: &zero}}},
@@ -184,6 +185,8 @@ func TestManagerReadContract(t *testing.T) {
 		{"history_max_bytes", "read_transcript", `{"hub":{"ref":"local:worker","maxBytes":64}}`, false, appwire.SessionOperationRequest{}},
 		{"history_before_bytes", "read_transcript", `{"hub":{"ref":"local:worker","beforeBytes":0}}`, false, appwire.SessionOperationRequest{}},
 		{"history_empty_job_id_with_output", "read_transcript", `{"hub":{"ref":"local:worker","jobId":"","maxBytes":64}}`, false, appwire.SessionOperationRequest{}},
+		{"fetch_missing_ref", "read_transcript", `{"hub":{"fetchCursor":"fetch-next"}}`, false, appwire.SessionOperationRequest{}},
+		{"fetch_with_window", "read_transcript", `{"hub":{"ref":"local:worker","fetchCursor":"fetch-next","turnWindow":{"latest":1}}}`, false, appwire.SessionOperationRequest{}},
 		{"output_cursor", "read_transcript", `{"hub":{"ref":"local:worker","jobId":"job-1","cursor":"next"}}`, false, appwire.SessionOperationRequest{}},
 		{"output_item_limit", "read_transcript", `{"hub":{"ref":"local:worker","jobId":"job-1","itemLimit":2}}`, false, appwire.SessionOperationRequest{}},
 	}

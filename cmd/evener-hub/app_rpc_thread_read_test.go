@@ -128,6 +128,15 @@ func TestSessionOperationsFetchesServingDaemonItem(t *testing.T) {
 			t.Fatal(err)
 		}
 		got = append(got, fragment...)
+		if response.Fetch.FetchCursor != "" {
+			if len(response.FollowUps) != 1 || response.FollowUps[0].Tool != "read_transcript" ||
+				response.FollowUps[0].Arguments.Hub.Ref != "local:windowed" ||
+				response.FollowUps[0].Arguments.Hub.FetchCursor != response.Fetch.FetchCursor {
+				t.Fatalf("fetch follow-up = %+v", response.FollowUps)
+			}
+		} else if len(response.FollowUps) != 0 {
+			t.Fatalf("final fetch follow-up = %+v, want none", response.FollowUps)
+		}
 		cursor = response.Fetch.FetchCursor
 	}
 	if !slices.Equal(got, want) {

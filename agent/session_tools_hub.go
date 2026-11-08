@@ -101,6 +101,10 @@ func managerReadDefinition(def llm.ToolDefinition, ordinary bool) llm.ToolDefini
 				"messageBytes":      map[string]any{"type": "integer", "minimum": 0},
 				"windowBudgetBytes": map[string]any{"type": "integer", "minimum": 0},
 			}},
+			map[string]any{"type": "object", "additionalProperties": false, "required": []string{"ref", "fetchCursor"}, "properties": map[string]any{
+				"ref":         map[string]any{"type": "string"},
+				"fetchCursor": map[string]any{"type": "string", "minLength": 1},
+			}},
 			map[string]any{"type": "object", "additionalProperties": false, "required": []string{"ref", "jobId"}, "properties": map[string]any{
 				"ref":         map[string]any{"type": "string"},
 				"jobId":       map[string]any{"type": "string", "minLength": 1},
@@ -896,6 +900,7 @@ func (s *Session) invokeHubRead(ctx context.Context, name string, args map[strin
 			Ref         string `json:"ref"`
 			JobID       string `json:"jobId"`
 			Cursor      string `json:"cursor"`
+			FetchCursor string `json:"fetchCursor"`
 			ItemLimit   int    `json:"itemLimit"`
 			MaxBytes    int64  `json:"maxBytes"`
 			BeforeBytes *int64 `json:"beforeBytes"`
@@ -907,7 +912,12 @@ func (s *Session) invokeHubRead(ctx context.Context, name string, args map[strin
 		if _, err := appwire.ParseRef(p.Ref); err != nil {
 			return nil, appwire.InvalidParams(err.Error())
 		}
-		if p.JobID != "" {
+		if p.FetchCursor != "" {
+			if p.JobID != "" || p.Cursor != "" || p.ItemLimit != 0 || p.MaxBytes != 0 || p.BeforeBytes != nil || p.TurnWindow != nil || len(p.ItemTypes) != 0 || p.PreviewBytes != 0 || p.MessageBytes != 0 || p.WindowBudgetBytes != 0 {
+				return nil, appwire.InvalidParams("fetch cannot combine transcript read bounds")
+			}
+			request.Fetch = &appwire.SessionFetchRequest{Ref: p.Ref, FetchCursor: p.FetchCursor}
+		} else if p.JobID != "" {
 			if p.Cursor != "" || p.ItemLimit != 0 || p.TurnWindow != nil || len(p.ItemTypes) != 0 || p.PreviewBytes != 0 || p.MessageBytes != 0 || p.WindowBudgetBytes != 0 {
 				return nil, appwire.InvalidParams("job output cannot combine history cursors")
 			}
