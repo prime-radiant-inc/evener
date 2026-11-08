@@ -1,0 +1,143 @@
+<!doctype html>
+<html lang="en" data-theme="light">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=466, initial-scale=1">
+<title>Duo compact session layoutguard harness</title>
+<link rel="stylesheet" href="tokens.css">
+<link rel="stylesheet" href="resolved.css">
+<style>
+  *, *::before, *::after { transition: none !important; animation: none !important; }
+  html, body { margin: 0; width: 466px; height: 678px; overflow: hidden; }
+  body { background: var(--surface-0); font-family: var(--font-sans); color: var(--ink-hi); }
+  .pane { width: 466px; height: 678px; }
+  .transcript { flex: 1; min-height: 0; overflow-y: auto; padding: 14px 16px; background: var(--surface-inset); }
+  .goal { font: var(--font-size-ui) var(--font-sans); color: var(--ink-mid); padding: 10px 12px; border-bottom: 1px solid var(--edge); }
+  .prose { font: var(--font-size-prose)/var(--line-height-prose) var(--font-prose); margin: 0 0 16px; }
+  .task { font: var(--font-size-ui) var(--font-sans); color: var(--accent-ink); padding: 10px 16px; border-top: 1px solid var(--edge); }
+  .composerMeasure { flex: none; display: flex; flex-direction: column; gap: var(--space-1); }
+  .footerMeasure { flex: none; display: flex; flex-direction: column; }
+  .editor { min-height: 1lh; }
+  .fieldText { font-size: max(var(--font-size-control), var(--font-size-body)); line-height: var(--line-height-body); }
+  .locationPath { font: var(--font-size-caption) var(--font-mono); color: var(--ink-mid); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .locationBranch { font: var(--font-size-caption) var(--font-sans); color: var(--ink-mid); white-space: nowrap; }
+  .locationLine { display: flex; gap: 6px; min-width: 0; align-items: baseline; }
+  .chipName { display: none; }
+  .chip { min-width: var(--tap-min); min-height: var(--tap-min); }
+  .footerMeasure [data-testid="statusbar"] { min-height: 30px; }
+  .fixtureState { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
+  .sessionActionControl { min-width: var(--tap-min); min-height: var(--tap-min); border: 0; background: transparent; }
+  .submitLabel { display: none; }
+  .attachmentDemo { width: 48px; height: 48px; background: var(--surface-inset); border: 1px solid var(--edge); }
+  .questionDemo { padding: 8px 12px; }
+  .questionDemo .questionText { font-size: var(--font-size-prose); line-height: var(--line-height-prose); }
+  .questionDemo .optionRow { min-height: var(--tap-min); display: block; padding: var(--space-2) 0; }
+  .questionDemo .optionName { font-weight: var(--font-weight-semibold); }
+</style>
+</head>
+<body data-font-size="m" class="layoutguardFixture">
+<main class="pane" data-pane-scaffold="session:duo">
+  <section class="transcript" data-transcript>
+    <div class="goal">Remediating every valid finding from the hosted-service security audit</div>
+    <p class="prose">Each finding is validated against current origin/dev before touching code. The audit examined a commit that is now 34 commits behind.</p>
+    <p class="prose">Two things you should know: the writeup disagrees with itself on H-21 through H-24, and its remediation list renumbers four lane-D items.</p>
+    <p class="prose">The last line of the transcript must be able to clear the composer.</p>
+    <div class="task">TASK <u>Settle gating product decisions</u></div>
+  </section>
+  <div class="footer footerBeforeEdge" data-footer-dock>
+    <div class="composerMeasure" data-composer-measure>
+      <div class="composer" data-composer-root>
+        <div class="formAnchor" data-composer>
+          <form data-testid="composer-form">
+            <div class="card" data-testid="composer-input-card">
+              <div class="editor" data-empty="true" data-placeholder="Message the agent…" role="textbox" aria-label="Message"></div>
+              <div class="controls">
+                <div class="leading">
+                  <button class="button quiet xs squareXs attachmentControl" type="button" aria-label="Attach image">+</button>
+                  <div class="inline">
+                    <div class="body" data-status-body>
+                      <div class="row" data-status>
+                        <span class="identity">
+                          <span class="model"><button class="trigger" type="button"><span class="value">glm-5.3</span><span class="chevron">⌄</span></button></span>
+                          <span class="effortTrigger" data-effort><span class="separator">·</span><span class="effortValue">max</span><span class="effortChevron">⌄</span><select class="effortSelect" aria-label="Reasoning effort"><option>max</option></select></span>
+                        </span>
+                        <span class="visuallyHidden"><meter aria-label="Context used" min="0" value="33" max="100"></meter></span>
+                        <span class="context"><span class="contextPercent">33%</span></span>
+                      </div>
+                    </div>
+                    <div class="right"><button class="sessionActionControl" type="button" aria-label="Session actions">⋯</button></div>
+                  </div>
+                </div>
+                <div class="actions"><button class="button dangerQuiet xs" type="button" data-composer-stop>Stop</button></div>
+              </div>
+            </div>
+          </form>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="edgeFooter" data-edge-footer>
+    <div class="bar" data-testid="statusbar">
+      <div class="leading"><div class="locationLine"><span class="locationPath">/home/jesse/git/prime-radiant-inc/chao</span><span class="locationBranch">feat/iphone-duo</span></div></div>
+      <div class="chips">
+        <button class="chip" type="button" data-activity-tab="agents" aria-label="Agents - open Overview"><span class="chipGlyph">⌘</span><span class="chipName">Agents</span><span class="chipCount">1</span></button>
+        <button class="chip" type="button" data-activity-tab="jobs" aria-label="Jobs - open Overview"><span class="chipGlyph">$</span><span class="chipName">Jobs</span><span class="chipCount">0</span></button>
+        <button class="chip" type="button" data-activity-tab="watches" aria-label="Watches - open Overview"><span class="chipGlyph">◷</span><span class="chipName">Watches</span><span class="chipCount">—</span></button>
+        <button class="chip" type="button" data-activity-tab="tasks" aria-label="Tasks - open Overview"><span class="chipGlyph">☑</span><span class="chipName">Tasks</span><span class="chipCount">0</span></button>
+      </div>
+    </div>
+  </div>
+</main>
+<script>
+const rect = (el) => { const r = el.getBoundingClientRect(); return { x:r.x,y:r.y,width:r.width,height:r.height,top:r.top,bottom:r.bottom,left:r.left,right:r.right }; };
+const all = (selector) => [...document.querySelectorAll(selector)].map((el) => ({...rect(el), clientWidth:el.clientWidth, scrollWidth:el.scrollWidth, clientHeight:el.clientHeight, scrollHeight:el.scrollHeight, display:getComputedStyle(el).display, minHeight:getComputedStyle(el).minHeight, fontSize:getComputedStyle(el).fontSize, lineHeight:getComputedStyle(el).lineHeight}));
+const dock = document.querySelector('[data-footer-dock]');
+const edge = document.querySelector('[data-edge-footer]');
+const transcript = document.querySelector('[data-transcript]');
+const editor = document.querySelector('.editor');
+window.measure = () => {
+  const card = document.querySelector('[data-testid="composer-input-card"]');
+  const form = document.querySelector('[data-testid="composer-form"]');
+  const composerRoot = document.querySelector('[data-composer-root]');
+  const emptyHeight = rect(dock).height + rect(edge).height;
+  const emptyEditorHeight = rect(editor).height;
+  const states = [{state:'empty', totalFooter:emptyHeight, editorHeight:emptyEditorHeight}];
+  // Focus restores the ordinary two-line editor while retaining the same controls.
+  editor.style.minHeight = '2lh';
+  states.push({state:'focused-empty', totalFooter:rect(dock).height + rect(edge).height, editorHeight:rect(editor).height});
+  editor.dataset.empty = 'false';
+  editor.textContent = 'Validate the findings against current origin/dev before changing code.';
+  states.push({state:'filled', totalFooter:rect(dock).height + rect(edge).height, editorHeight:rect(editor).height});
+  const attachments = document.createElement('div');
+  attachments.className = 'attachments';
+  attachments.innerHTML = '<div class="imageTile attachmentDemo" aria-label="Staged image"></div>';
+  composerRoot.insertBefore(attachments, composerRoot.firstChild);
+  states.push({state:'attachment', totalFooter:rect(dock).height + rect(edge).height, attachment:rect(attachments)});
+  attachments.remove();
+  // A pending question owns the response surface; the ordinary card is inert.
+  card.hidden = true;
+  card.inert = true;
+  const question = document.createElement('section');
+  question.className = 'question questionDemo';
+  question.innerHTML = '<div class="questionText">Which findings should gate release?</div><div class="optionGroup"><label class="optionRow"><input type="checkbox"><span class="optionName">Verified critical findings</span></label><label class="optionRow"><input type="checkbox"><span class="optionName">Every reported finding</span></label></div>';
+  form.append(question);
+  states.push({state:'question', totalFooter:rect(dock).height + rect(edge).height, question:rect(question), cardHidden:card.hidden, optionTargets:all('.optionRow')});
+  transcript.scrollTop = transcript.scrollHeight;
+  return {
+    viewport: {width:innerWidth,height:innerHeight,coarse:matchMedia('(any-pointer: coarse)').matches},
+    totalFooter: emptyHeight,
+    states,
+    dock: rect(dock), edge: rect(edge),
+    composer: rect(composerRoot),
+    editor: {...rect(editor), minHeight:editor.style.minHeight, lineHeight:getComputedStyle(editor).lineHeight, fontSize:getComputedStyle(editor).fontSize, emptyEditorHeight},
+    status: rect(document.querySelector('[data-testid="statusbar"]')),
+    statusChildren: all('[data-testid="statusbar"] .leading, [data-testid="statusbar"] .chips'),
+    counters: all('[data-activity-tab]'),
+    controls: all('.attachmentControl, .sessionActionControl, [data-composer-stop], .trigger, [data-effort]'),
+    transcript: {rect:rect(transcript), scrollHeight:transcript.scrollHeight, clientHeight:transcript.clientHeight, lastBottom:transcript.lastElementChild.getBoundingClientRect().bottom, dockTop:rect(dock).top},
+    prose: [...document.querySelectorAll('.prose')].map((el) => ({fontSize:getComputedStyle(el).fontSize,lineHeight:getComputedStyle(el).lineHeight})),
+  };
+};
+</script>
+</body>
+</html>

@@ -132,7 +132,7 @@
 }
 
 .leadingBody {
-  line-height: var(--line-height-body);
+  line-height: var(--line-height-prose);
 }
 
 .leadingTitle {

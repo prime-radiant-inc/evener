@@ -167,3 +167,21 @@
     display: none;
   }
 }
+
+/* At the Duo's 466pt cover width the existing one-row status bar keeps its
+ * four activity links and their 44px targets. Compact framing, not smaller
+ * controls or a second activity model, recovers the transcript's space. */
+@media (max-width: 500px) and (max-aspect-ratio: 3 / 4) {
+  .bar {
+    gap: var(--space-1);
+    padding-inline: var(--space-1);
+  }
+
+  .leading {
+    min-width: 32px;
+  }
+
+  .chips {
+    gap: 0;
+  }
+}

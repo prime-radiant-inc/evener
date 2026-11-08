@@ -16,7 +16,7 @@ export default function assert(measurements) {
     if (!m.collapsedStatusVisible) failures.push(`${id}: collapsed status hidden`);
     if (![m.userFont, m.agentFont, m.quoteFont].every((f) => f?.includes("Source Serif 4")))
       failures.push(`${id}: prose not serif ${JSON.stringify(m)}`);
-    if (m.userSize !== (m.scale === "xl" ? "22.5px" : "18px"))
+    if (m.userSize !== (m.scale === "xl" ? "20px" : "16px"))
       failures.push(`${id}: reading preference did not scale: ${m.userSize}`);
     if (m.cardBackground !== "rgba(0, 0, 0, 0)") failures.push(`${id}: enclosing collaborator fill`);
   }

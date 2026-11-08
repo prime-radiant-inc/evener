@@ -180,6 +180,17 @@
   }
 }
 
+@media (max-width: 500px) and (max-aspect-ratio: 3 / 4) {
+  .footer {
+    padding: var(--space-1) var(--space-2);
+    padding-bottom: max(0px, env(safe-area-inset-bottom) - var(--keyboard-inset, 0px));
+  }
+
+  .footerBeforeEdge {
+    padding-bottom: var(--space-1);
+  }
+}
+
 /* squircle-proto: continuous (Apple-style) corner curvature where the engine
  * supports corner-shape; border-radius stays the fallback and supplies the
  * corner area this shapes. Mobile's border-radius: 0 makes this a no-op

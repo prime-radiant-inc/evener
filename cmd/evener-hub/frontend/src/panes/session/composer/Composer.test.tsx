@@ -87,6 +87,36 @@ class ControlledDiscardStorage extends MutationOutboxIndexedDB {
   }
 }
 
+test("the compact empty composer expands on focus and retains its two-line draft height", async () => {
+  vi.stubGlobal(
+    "ResizeObserver",
+    class implements ResizeObserver {
+      constructor(private readonly callback: ResizeObserverCallback) {}
+      observe(target: Element): void {
+        if (target.querySelector('[data-testid="composer-input-card"]')) {
+          this.callback([{ contentRect: { width: 382 } } as ResizeObserverEntry], this);
+        }
+      }
+      unobserve(): void {}
+      disconnect(): void {}
+    },
+  );
+  await mountComposerWithHandle("ref_a");
+  const editor = textarea();
+  expect(editor.style.minHeight).toBe("1lh");
+  act(() => editor.focus());
+  await waitFor(() => expect(editor.style.minHeight).toBe("2lh"));
+  await replaceEditorText(editor, "a saved draft");
+  expect(editor.style.minHeight).toBe("2lh");
+  act(() => editor.blur());
+  await waitFor(() => expect(editor.style.minHeight).toBe("2lh"));
+});
+
+test("the wide empty composer keeps its two-line resting height", async () => {
+  await mountComposerWithHandle("ref_a");
+  expect(textarea().style.minHeight).toBe("2lh");
+});
+
 test("onEditingChange follows IME composition, not editor focus or draft content", async () => {
   const fake = connectReadyFakeClient();
   fake.on("thread/read", () => readResponse("ref_a"));

@@ -201,3 +201,12 @@
     display: none;
   }
 }
+
+/* The 466pt cover-width session dock keeps its existing controls but gives
+ * more of the display back to the transcript. The empty editor's one-line
+ * height is owned by Composer; this rule only removes the dock's extra gap. */
+@media (max-width: 500px) and (max-aspect-ratio: 3 / 4) {
+  .composer {
+    gap: var(--space-1);
+  }
+}

@@ -43,12 +43,29 @@ test("the subagent card's folded quote is UI-sized, a step below prose reading s
   expect(quote).not.toMatch(/--font-size-prose/);
 });
 
-test("editorial prose has a distinct serif face and body-scaled size", () => {
+test("editorial prose has a distinct serif face and compact body-scaled size", () => {
   const palette = rule("styles/tokens.css", '[data-theme="dark"]');
   expect(palette).toMatch(/--font-prose:\s*"Source Serif 4 Variable", Georgia, "Times New Roman", serif;/);
   expect(palette).toMatch(/--font-mono:\s*"JetBrains Mono Variable"/);
   expect(palette).not.toMatch(/--font-size-prose:/);
-  expect(rule("styles/tokens.css", "body")).toMatch(/--font-size-prose:\s*calc\(18px \* var\(--font-scale\)\);/);
+  expect(rule("styles/tokens.css", "body")).toMatch(/--font-size-prose:\s*calc\(16px \* var\(--font-scale\)\);/);
+});
+
+test("reading surfaces share compact prose leading without tightening editor and UI geometry", () => {
+  const palette = rule("styles/tokens.css", '[data-theme="dark"]');
+  expect(palette).toMatch(/--line-height-prose:\s*calc\(1\.45 \* var\(--density-scale, 1\)\);/);
+  expect(palette).toMatch(/--line-height-body:\s*1\.6;/);
+  for (const [path, selector] of [
+    ["widgets/markdown/markdown.module.css", ".root"],
+    ["panes/session/transcript/streamingtext.module.css", ".root"],
+    ["panes/session/transcript/messages/usermessageitem.module.css", ".text"],
+    ["panes/session/composer/askDock/askquestioncard.module.css", ".questionText"],
+  ] as const) {
+    expect(rule(path, selector)).toMatch(/line-height:\s*var\(--line-height-prose\);/);
+  }
+  expect(rule("widgets/textarea/textarea.module.css", ".textarea")).toMatch(
+    /line-height:\s*var\(--line-height-body\);/,
+  );
 });
 
 test("Markdown reads in serif while code retains its machine face", () => {

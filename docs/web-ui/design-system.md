@@ -127,7 +127,12 @@ losing the conversation that made the evidence relevant.
   inset yields when the on-screen keyboard covers that area. The bar hides while the
   composer is editing and returns when focus or a press leaves the composer; the composer
   dock is then the pane's bottom edge and takes the band back, including when focus
-  outlives the keyboard.
+  outlives the keyboard. At the 466px Duo cover width, the same one-row footer uses tighter
+  framing and path insets, and the existing composer shrinks only its empty, unfocused field
+  to one line; focus, drafts, attachments, and question/approval docks keep their ordinary
+  writing and response space. The four activity counters stay in the app with their existing
+  Overview links. The OS-owned Duo system rail is not a public customization surface, so no
+  counters move there.
 - **Keep session inspection together.** Both session action menus offer Overview, retaining
   the intended session's category choice. `/status` selects About without toggling a
   standalone Details pane. About reuses the shared Details renderer and its accounting.
@@ -397,11 +402,12 @@ uses the package's actual exported normal CSS and `wght-italic.css` for real ita
 are served locally by Vite/the built frontend, with package Unicode-range subsetting.
 
 The `--font-size-caption/ui/body/pane-title/page-title/display` ramp is
-12/13/15/20/26/34px. **`--font-size-prose: calc(18px * var(--font-scale))` is new**, declared on
+12/13/15/20/26/34px. **`--font-size-prose: calc(16px * var(--font-scale))`**, declared on
 `body` alongside that ramp so S/M/L/XL (0.9/1/1.1/1.25) scale reading text too. Phone body remains
 16px; editable phone controls use `max(16px, var(--font-size-body))`, even under S. The serif
-reading step is 18px at M in both viewports. Weights are 400/500/600; leading body/ui/title is
-1.6/1.4/1.25; display tracking remains −0.02em.
+reading step is 16px at M in both viewports. Weights are 400/500/600; leading body/ui/title is
+1.6/1.4/1.25. Reading surfaces use `--line-height-prose`, 1.45 by default and scaled by the
+comfortable-density preference, independently of editor and general UI geometry. Display tracking remains −0.02em.
 
 Markdown keeps the prose face but composes with its host's size (the root falls back to `1em`);
 reading surfaces pin `--prose-font-size: var(--font-size-prose)` on the host that owns their

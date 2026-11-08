@@ -40,6 +40,15 @@
   }
 }
 
+/* At the Duo's cover width the empty field already uses one line. Remove the
+ * extra vertical card inset while retaining the 44px control row. */
+@media (max-width: 500px) and (max-aspect-ratio: 3 / 4) {
+  .card {
+    gap: 0;
+    padding-block: 0;
+  }
+}
+
 .controls {
   display: flex;
   align-items: center;

@@ -77,3 +77,9 @@
   outline-offset: -2px;
   border-radius: var(--radius-control);
 }
+
+@media (max-width: 500px) and (max-aspect-ratio: 3 / 4) {
+  .line {
+    padding-inline: 0;
+  }
+}
