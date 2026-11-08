@@ -52,6 +52,7 @@ import { useNavigationStore } from "../../stores/navigation/store";
 import {
   Badge,
   Button,
+  type CadenceState,
   Chevron,
   Eyebrow,
   HoverCard,
@@ -470,11 +471,10 @@ function effectiveSessionState(session: RailSession): string {
 
 function sessionStatusLabel(
   session: RailSession,
-  effectiveState: string,
+  state: CadenceState,
   notStarted: boolean,
   read: RailActivityRead | null,
 ): RailStatus {
-  const state = cadenceStateFor(effectiveState);
   if (notStarted) return { kind: "not-started", text: "Not started" };
   if (state === "failed") return { kind: "failed", text: STATUS_LABEL.failed };
   if (state === "working") return workingStatus(session, read);
@@ -523,7 +523,7 @@ function SessionContextCard({
   // Only a working row asks the hub what the session is doing: every other
   // state word is already settled by the row's own fields.
   const read = useSessionActivityRead(session.ref, state === "working");
-  const status = sessionStatusLabel(session, effectiveState, notStarted, read);
+  const status = sessionStatusLabel(session, state, notStarted, read);
   const now = useRailNow();
   return (
     <div className={CLASS.contextCard} data-state={state}>

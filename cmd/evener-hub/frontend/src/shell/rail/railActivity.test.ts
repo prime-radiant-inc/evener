@@ -80,10 +80,9 @@ describe("workingStatus", () => {
 });
 
 describe("isFreshActivityRead", () => {
-  test("a read inside two poll intervals is fresh, older or absent is not", () => {
+  test("a read inside two poll intervals is fresh, older is not", () => {
     expect(isFreshActivityRead(0)).toBe(true);
     expect(isFreshActivityRead(RAIL_ACTIVITY_STALE_AFTER_MS - 1)).toBe(true);
     expect(isFreshActivityRead(RAIL_ACTIVITY_STALE_AFTER_MS)).toBe(false);
-    expect(isFreshActivityRead(null)).toBe(false);
   });
 });

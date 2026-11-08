@@ -37,33 +37,42 @@ export interface RailActivityRead {
   msSinceRead: number;
 }
 
-/** Whether a read taken msSinceRead milliseconds ago (null: never landed) is
- * still trustworthy. */
-export function isFreshActivityRead(msSinceRead: number | null): boolean {
-  return msSinceRead !== null && msSinceRead < RAIL_ACTIVITY_STALE_AFTER_MS;
+/** Whether a read taken msSinceRead milliseconds ago is still trustworthy. */
+export function isFreshActivityRead(msSinceRead: number): boolean {
+  return msSinceRead < RAIL_ACTIVITY_STALE_AFTER_MS;
 }
 
 /** One session's latest pulse while its card is open, or null while the read
  * is absent, stale, or unsupported by this hub. */
 export function useSessionActivityRead(ref: string, active: boolean): RailActivityRead | null {
-  const [read, setRead] = useState<{ ref: string; activity: SessionActivity; at: number } | null>(null);
+  const [read, setRead] = useState<{ activity: SessionActivity; at: number } | null>(null);
 
   useEffect(() => {
     if (!active) return undefined;
-    let disposed = false;
     let requestId = 0;
+    let pending = false;
     let unsupported = false;
     let timer: ReturnType<typeof setInterval> | undefined;
 
+    const stopTimer = () => {
+      if (timer === undefined) return;
+      clearInterval(timer);
+      timer = undefined;
+    };
+
     const poll = () => {
-      if (disposed || unsupported || document.visibilityState !== "visible") return;
+      // One read in flight per card: a hub slower than the interval must not
+      // accumulate requests whose answers are all discarded.
+      if (unsupported || pending || document.visibilityState !== "visible") return;
       const { client, state } = connectionStore.getState();
       if (state !== "ready" || !client) return;
       const id = ++requestId;
+      pending = true;
       client
         .request("evener/activity/read", { refs: [ref] })
         .then((response) => {
-          if (disposed || id !== requestId) return;
+          if (id !== requestId) return;
+          pending = false;
           let sessions: SessionActivity[];
           try {
             sessions = decodeActivityRead(response);
@@ -75,34 +84,39 @@ export function useSessionActivityRead(ref: string, active: boolean): RailActivi
             setRead(null); // the hub withheld this entry: the row's own fallback applies
             return;
           }
-          setRead({ ref, activity, at: Date.now() });
+          setRead({ activity, at: Date.now() });
         })
         .catch((error: unknown) => {
-          if (disposed || id !== requestId) return;
+          if (id !== requestId) return;
+          pending = false;
           if (!isMethodNotFound(error)) return;
           unsupported = true;
-          if (timer !== undefined) {
-            clearInterval(timer);
-            timer = undefined;
-          }
+          stopTimer();
         });
     };
 
-    poll();
-    timer = setInterval(poll, RAIL_ACTIVITY_POLL_MS);
-    const onVisibilityChange = () => {
-      if (document.visibilityState === "visible") poll();
+    const start = () => {
+      if (timer !== undefined || unsupported) return;
+      poll();
+      timer = setInterval(poll, RAIL_ACTIVITY_POLL_MS);
     };
+
+    const onVisibilityChange = () => {
+      // No timer runs in a hidden tab; showing the tab reads at once.
+      if (document.visibilityState === "visible") start();
+      else stopTimer();
+    };
+
+    start();
     document.addEventListener("visibilitychange", onVisibilityChange);
     return () => {
-      disposed = true;
-      requestId++;
-      if (timer !== undefined) clearInterval(timer);
+      requestId++; // retire any answer in flight
+      stopTimer();
       document.removeEventListener("visibilitychange", onVisibilityChange);
     };
   }, [ref, active]);
 
-  if (!active || read === null || read.ref !== ref) return null;
+  if (!active || read === null || read.activity.ref !== ref) return null;
   const msSinceRead = Math.max(0, Date.now() - read.at);
   if (!isFreshActivityRead(msSinceRead)) return null;
   return { activity: read.activity, msSinceRead };
