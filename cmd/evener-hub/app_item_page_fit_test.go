@@ -445,9 +445,7 @@ func TestPackTranscriptItemWindowRequiresTurnWindow(t *testing.T) {
 		nil,
 		testWindowPackOptions(appwire.ThreadWindowParams{}),
 	)
-	if err == nil || !strings.Contains(err.Error(), "requires turnWindow") {
-		t.Fatalf("error = %v, want missing turnWindow refusal", err)
-	}
+	assertInvalidItemResponseError(t, err)
 }
 
 func TestPackTranscriptItemWindowSharesCursorLineLimitAcrossTruncationAndElision(t *testing.T) {
