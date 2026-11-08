@@ -304,6 +304,15 @@ func (m *Manager) addMarketplace(ctx context.Context, name string, src Source, r
 	aside := ""
 	if src.Kind != SourceDirectory {
 		installLoc = m.marketplaceDir(name)
+		// The swap replaces installLoc and then deletes what was there. If
+		// another record still records a directory source beneath it - a
+		// supported legacy shape - that source would go with the old clone, so
+		// refuse before touching it. The record being replaced is excluded:
+		// its own old clone is exactly what the replacement replaces.
+		if _, protect := m.sweepDestroysSource(marketplaceProtectionPaths(mk, name), installLoc); protect {
+			_ = marketplaceRemoveAll(staging)
+			return MarketplaceRef{}, fmt.Errorf("marketplace %q: the install location holds a directory source another marketplace records", name)
+		}
 		old, err := m.swapInClone(staging, installLoc)
 		if err != nil {
 			_ = marketplaceRemoveAll(staging)

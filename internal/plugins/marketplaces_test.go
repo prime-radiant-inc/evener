@@ -224,6 +224,43 @@ func TestReplaceMarketplace_ToDirectoryDropsTheOldClone(t *testing.T) {
 	}
 }
 
+// A replacement swaps the clone aside and deletes it. Another marketplace may
+// still record a legacy directory source inside that clone, which the swap
+// would destroy; the replacement must refuse before touching it.
+func TestReplaceMarketplace_RefusesToOverwriteAnotherMarketplacesSource(t *testing.T) {
+	skipWithoutGit(t)
+	m := NewManager(t.TempDir())
+	clone := m.marketplaceDir("acme")
+	if err := os.MkdirAll(clone, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	sentinel := filepath.Join(clone, "sentinel.txt")
+	if err := os.WriteFile(sentinel, []byte("beta source"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	repo := makeMarketplaceRepo(t, "acme")
+	if err := m.saveMarketplaces(Marketplaces{
+		"acme": {Source: Source{Kind: SourceURL, URL: "https://example.invalid/acme.git"}, InstallLocation: clone},
+		"beta": {Source: Source{Kind: SourceDirectory, Path: clone}, InstallLocation: clone},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := m.ReplaceMarketplace(context.Background(), "acme", Source{Kind: SourceURL, URL: repo}); err == nil {
+		t.Fatal("expected the replacement to refuse a clone another marketplace sources")
+	}
+	if _, err := os.Stat(sentinel); err != nil {
+		t.Fatalf("the replacement overwrote another marketplace's source: %v", err)
+	}
+	mk, err := m.ListMarketplaces(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ref := mk["beta"]; ref.Source.Path != clone {
+		t.Fatalf("beta's source after the refused replacement = %+v, want %q", ref.Source, clone)
+	}
+}
+
 func TestAddMarketplace_GitSubdirBrowse(t *testing.T) {
 	skipWithoutGit(t)
 	repo := filepath.Join(t.TempDir(), "monorepo")
