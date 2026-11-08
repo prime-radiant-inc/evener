@@ -388,7 +388,7 @@ func assertTaskToolMarker(t *testing.T, state []taskToolStateEntry, id int, star
 	}
 }
 
-func TestTaskTool_AutoAdvanceValidationFailurePreservesCurrentTask(t *testing.T) {
+func TestTaskTool_CompletingAnotherTaskKeepsActiveCurrentTaskAndRecovers(t *testing.T) {
 	t.Parallel()
 	wantBlockedState := map[int]taskpkg.TaskStatus{
 		1: taskpkg.TaskDone, 2: taskpkg.TaskOpen, 3: taskpkg.TaskInProgress,
@@ -404,11 +404,11 @@ func TestTaskTool_AutoAdvanceValidationFailurePreservesCurrentTask(t *testing.T)
 
 	result := h.update(t, map[string]any{"id": 1, "status": "done"})
 	if result.Err != nil || result.IsError {
-		t.Fatalf("terminal update with blocked auto-advance: err=%v isError=%v", result.Err, result.IsError)
+		t.Fatalf("terminal update with an active task: err=%v isError=%v", result.Err, result.IsError)
 	}
 	event := taskUpdatedEvent(t, h)
 	if event.Total != 3 || event.Done != 1 || event.Remaining != 2 || event.Current == nil || event.Current.ID != 3 {
-		t.Fatalf("blocked auto-advance event = %+v, want total=3 done=1 remaining=2 current=3", event)
+		t.Fatalf("terminal update event = %+v, want total=3 done=1 remaining=2 current=3", event)
 	}
 	state := decodeTaskToolState(t, result)
 	for id, want := range wantBlockedState {
@@ -418,14 +418,14 @@ func TestTaskTool_AutoAdvanceValidationFailurePreservesCurrentTask(t *testing.T)
 	}
 	blockedState := h.store.View()
 	if got := taskStatusMap(blockedState); !reflect.DeepEqual(got, wantBlockedState) {
-		t.Fatalf("state after blocked auto-advance = %#v", got)
+		t.Fatalf("state after terminal update = %#v", got)
 	}
 	if len(h.steers) != 0 || len(h.emitted) != 1 {
-		t.Fatalf("blocked auto-advance effects = steers:%d events:%d", len(h.steers), len(h.emitted))
+		t.Fatalf("terminal update effects = steers:%d events:%d", len(h.steers), len(h.emitted))
 	}
 	blockedReopened := h.reopened(t).View()
 	if got := taskStatusMap(blockedReopened); !reflect.DeepEqual(got, wantBlockedState) {
-		t.Fatalf("durable state after blocked auto-advance = %#v", got)
+		t.Fatalf("durable state after terminal update = %#v", got)
 	}
 	assertTasksPersisted(t, "durable blocked state", blockedState, blockedReopened)
 
@@ -443,8 +443,7 @@ func TestTaskTool_AutoAdvanceValidationFailurePreservesCurrentTask(t *testing.T)
 	assertTasksPersisted(t, "durable state after rejected recovery", preRejected, rejectedDurable)
 
 	// Defer the real current task through the same tool API, then start the
-	// intended next task. This is the reachable recovery path after the
-	// post-commit auto-advance validation failure.
+	// intended next task.
 	if result = h.update(t, map[string]any{"id": 3, "status": "open"}); result.Err != nil || result.IsError {
 		t.Fatalf("defer current task: err=%v isError=%v", result.Err, result.IsError)
 	}

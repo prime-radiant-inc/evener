@@ -631,6 +631,7 @@ func registerTaskTools(reg *tool.Registry, deps *toolDeps) {
 				msg.WriteString(formatMutationAck(len(adds), updates))
 				msg.WriteString(" ")
 				finalTasks := mutation.After
+				summary := taskpkg.Summarize(finalTasks)
 
 				if completedAny {
 					// Auto-advance unless the agent already picked what to do
@@ -638,7 +639,7 @@ func registerTaskTools(reg *tool.Registry, deps *toolDeps) {
 					// a second in_progress task would be refused by the store,
 					// and the completed update already succeeded, so leave the
 					// active task alone instead of attempting it.
-					if manuallyStartedID == 0 && taskpkg.Summarize(mutation.After).Current == nil {
+					if manuallyStartedID == 0 && summary.Current == nil {
 						if hook := deps.taskGuard.beforeAutoAdvance; hook != nil {
 							hook()
 						}
@@ -651,6 +652,7 @@ func registerTaskTools(reg *tool.Registry, deps *toolDeps) {
 								postCommitAdvice = "The terminal update was committed, but the next-task update failed; inspect the committed task state and resolve the reported cause before choosing the next task update."
 							} else {
 								finalTasks = auto.After
+								summary = taskpkg.Summarize(finalTasks)
 								started[next.ID] = true
 								if err := deps.steer(formatCurrentTaskSteering(next, true), events.SteeringKindCurrentTask); err != nil {
 									postCommitErr = fmt.Errorf("post-commit auto-advance steering failed: %w", err)
@@ -660,7 +662,6 @@ func registerTaskTools(reg *tool.Registry, deps *toolDeps) {
 						} else {
 							// No eligible task. If nothing remains open or in_progress,
 							// signal the agent that the list is exhausted.
-							summary := taskpkg.Summarize(finalTasks)
 							if summary.NoActionableTasks() && summary.Total > 0 {
 								var blockingDelegateIDs []string
 								if deps.blockingDelegateIDs != nil {
@@ -689,7 +690,6 @@ func registerTaskTools(reg *tool.Registry, deps *toolDeps) {
 					}
 				}
 
-				summary := taskpkg.Summarize(finalTasks)
 				taskUpdate := taskUpdatedData(summary, "", epoch, revision)
 				deps.emit(taskUpdate)
 				if postCommitErr != nil {
