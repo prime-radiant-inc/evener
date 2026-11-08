@@ -153,7 +153,7 @@ Dev tooling and test rigs declare these themselves.
 | `EVENER_SHARD_JSON_PACKAGE` | none | `cmd/evener-dev` |
 | `EVENER_SHARD_RUN_FILE` | [developing-evener/testing.md](../developing-evener/testing.md) | `internal/devtool/shardrun` |
 | `EVENER_WEB_VITEST_JSON` | none | `cmd/evener-dev` |
-| `GIT_CEILING_DIRECTORIES` | none | `agent/sandbox` |
+| `GIT_CEILING_DIRECTORIES` | none | `agent/sandbox`, `tools/tool-fluency/cmd/evener-fluency` |
 
 ## hub.toml keys
 
