@@ -352,7 +352,7 @@ func formatCheckpoint(data checkpointData, meta *CompactionMeta, maxChars int) s
 	// honor a hard cap at all (the floor already exceeds them), so metadata is
 	// left alone there rather than manufacturing a smaller but unusable block.
 	if metadataBudget := maxChars - frameOverhead - minVariableBudget; metadataBudget > 0 {
-		fixedStr = fitCheckpointMetadata(fixedStr, metadataBudget)
+		fixedStr = fitCheckpointMetadata(fixedStr, meta.compactionPointer("checkpoint"), meta.hasTranscript(), metadataBudget)
 	}
 	frame := frameOverhead + len(fixedStr)
 
@@ -418,31 +418,35 @@ const checkpointMetadataTruncated = "[... checkpoint metadata truncated to keep 
 
 // checkpointMetadataMarker closes the disclosure begun by
 // checkpointMetadataTruncated. The transcript pointer above the kept metadata
-// still tells the model where the full history can be read, so the marker
-// names it whenever there is one.
-func checkpointMetadataMarker(hasPointer bool) string {
-	if hasPointer {
+// tells the model where the full history can be read; the marker names it only
+// when the session actually keeps a transcript to read.
+func checkpointMetadataMarker(hasPointer, transcriptKept bool) string {
+	if hasPointer && transcriptKept {
 		return checkpointMetadataTruncated + "; the full session history remains available through the transcript reference above ...]\n"
 	}
 	return checkpointMetadataTruncated + " ...]\n"
 }
 
 // fitCheckpointMetadata bounds the fixed metadata sections to budget characters.
-// The transcript pointer (the first line) is kept whole: it is the reference
-// that makes the dropped metadata recoverable. The remaining sections are cut
-// on a rune boundary and followed by the truncation marker. When even the
-// pointer and marker do not fit, they still stand: the cap yields here exactly
-// as it does to the human partner's messages, and dropping the pointer would
-// leave nothing pointing at the recoverable history.
-func fitCheckpointMetadata(fixed string, budget int) string {
+// pointer is the compaction pointer the caller wrote at the head of fixed ("" for
+// a non-persistent session); it is kept whole because it is the reference that
+// makes the dropped metadata recoverable. The remaining sections are cut on a
+// rune boundary and followed by the truncation marker. When even the pointer and
+// marker do not fit, they still stand: the cap yields here exactly as it does to
+// the human partner's messages, and dropping the pointer would leave nothing
+// pointing at the recoverable history.
+func fitCheckpointMetadata(fixed, pointer string, transcriptKept bool, budget int) string {
 	if len(fixed) <= budget {
 		return fixed
 	}
-	pointer, rest := "", fixed
-	if pointerEnd := strings.IndexByte(fixed, '\n'); pointerEnd >= 0 {
-		pointer, rest = fixed[:pointerEnd+1], fixed[pointerEnd+1:]
+	if !strings.HasPrefix(fixed, pointer) {
+		// The caller did not write this pointer at the head (or there is none):
+		// treat the whole metadata block as cuttable rather than protecting a
+		// metadata line as if it were the reference.
+		pointer = ""
 	}
-	marker := "\n" + checkpointMetadataMarker(pointer != "")
+	rest := fixed[len(pointer):]
+	marker := "\n" + checkpointMetadataMarker(pointer != "", transcriptKept)
 	keep := budget - len(pointer) - len(marker)
 	if keep <= 0 {
 		return pointer + marker

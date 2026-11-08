@@ -15,31 +15,46 @@ func TestFormatCheckpoint_BoundsOversizedMetadata(t *testing.T) {
 	for i := range 5000 {
 		data.fileWrites[fmt.Sprintf("internal/some/long/package/path/file_%04d.go", i)] = writeConfirmed
 	}
-	cp := formatCheckpoint(data, persistentMeta, maxCheckpointChars)
-
-	if len(cp) > maxCheckpointChars {
-		t.Fatalf("checkpoint with oversized metadata is %d chars, want at most %d", len(cp), maxCheckpointChars)
+	metas := []struct {
+		name      string
+		meta      *CompactionMeta
+		hasRecord bool
+	}{
+		{"persistent transcript", persistentMeta, true},
+		{"persistent session without a kept transcript", &CompactionMeta{SessionID: "SESSION_ID_SENTINEL"}, true},
+		{"non-persistent session", &CompactionMeta{}, false},
+		{"nil metadata", nil, false},
 	}
-	pointer := persistentMeta.compactionPointer("checkpoint")
-	if !strings.HasPrefix(cp, "[CONTEXT CHECKPOINT]\n"+pointer) {
-		t.Fatalf("checkpoint lost its leading transcript pointer:\n%.300s", cp)
-	}
-	if !strings.Contains(cp, persistentMeta.SessionID) {
-		t.Fatalf("checkpoint lost the session id that makes the full history recoverable:\n%.300s", cp)
-	}
-	if !strings.Contains(cp, checkpointMetadataTruncated) {
-		t.Fatalf("metadata was cut without the truncation marker:\n%.300s", cp)
-	}
-	for _, line := range strings.Split(cp, "\n") {
-		entries, ok := strings.CutPrefix(line, "Files modified: ")
-		if !ok {
-			continue
-		}
-		for _, entry := range strings.Split(entries, ", ") {
-			if !strings.HasSuffix(entry, ".go") {
-				t.Fatalf("truncation left a partial path %q in the modified-files list", entry)
+	for _, tc := range metas {
+		t.Run(tc.name, func(t *testing.T) {
+			cp := formatCheckpoint(data, tc.meta, maxCheckpointChars)
+			if len(cp) > maxCheckpointChars {
+				t.Fatalf("checkpoint with oversized metadata is %d chars, want at most %d", len(cp), maxCheckpointChars)
 			}
-		}
+			if tc.hasRecord {
+				pointer := tc.meta.compactionPointer("checkpoint")
+				if !strings.HasPrefix(cp, "[CONTEXT CHECKPOINT]\n"+pointer) {
+					t.Fatalf("checkpoint lost its leading transcript pointer:\n%.300s", cp)
+				}
+				if !strings.Contains(cp, tc.meta.SessionID) {
+					t.Fatalf("checkpoint lost the session id that makes the full history recoverable:\n%.300s", cp)
+				}
+			}
+			if !strings.Contains(cp, checkpointMetadataTruncated) {
+				t.Fatalf("metadata was cut without the truncation marker:\n%.300s", cp)
+			}
+			for _, line := range strings.Split(cp, "\n") {
+				entries, ok := strings.CutPrefix(line, "Files modified: ")
+				if !ok {
+					continue
+				}
+				for _, entry := range strings.Split(entries, ", ") {
+					if !strings.HasSuffix(entry, ".go") {
+						t.Fatalf("truncation left a partial path %q in the modified-files list", entry)
+					}
+				}
+			}
+		})
 	}
 }
 
