@@ -310,10 +310,6 @@ func pastThreadItemReadResponseOwned(
 	return pastEntryItemReadResponseOwned(ctx, cfg, params, entry, configureWindow)
 }
 
-func pastEntryItemReadResponse(ctx context.Context, cfg hubcore.WebConfig, params appwire.ThreadReadParams, entry hubcore.PastEntry) (appwire.ThreadReadResponse, bool, error) {
-	return pastEntryItemReadResponseOwned(ctx, cfg, params, entry, nil)
-}
-
 func pastEntryItemReadResponseOwned(
 	ctx context.Context,
 	cfg hubcore.WebConfig,

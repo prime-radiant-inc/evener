@@ -273,7 +273,7 @@ func (s *LocalDaemonSource) ItemCandidatesFromRead(
 	}
 	cursorIncarnation := incarnation
 	if params.TurnWindow != nil && response.Snapshot != nil && response.Snapshot.Incarnation != "" {
-		if sourceIncarnation, ok := params.ThreadWindowParams.SourceIncarnation(response.Snapshot.Incarnation, params.ItemLimit); ok {
+		if sourceIncarnation, ok := params.SourceIncarnation(response.Snapshot.Incarnation, params.ItemLimit); ok {
 			cursorIncarnation = sourceIncarnation
 		} else {
 			cursorIncarnation = response.Snapshot.Incarnation
