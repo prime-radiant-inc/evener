@@ -949,7 +949,7 @@ func npmCargoCacheRoots(host HostFacts, worktree, sessionDir string) []string {
 	// The probe only records absolute values from .npmrc files.
 	roots = append(roots, host.NpmrcCaches...)
 	if projectDir := npmProjectDir(sessionDir, worktree); projectDir != "" {
-		roots = append(roots, readProjectNpmrcCacheRoots(filepath.Join(projectDir, ".npmrc"), host)...)
+		roots = append(roots, readProjectNpmrcCacheRoots(filepath.Join(projectDir, ".npmrc"), npmrcHostLookup(host))...)
 	}
 	return roots
 }

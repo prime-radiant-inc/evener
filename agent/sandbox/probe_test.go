@@ -341,10 +341,6 @@ func TestProbeReadsNpmCacheFromConfigFiles(t *testing.T) {
 	if want := []string{"/from/user/npm", "/from/global/npm"}; !slices.Equal(facts.NpmrcCaches, want) {
 		t.Errorf("probeHost NpmrcCaches = %v, want %v", facts.NpmrcCaches, want)
 	}
-	// The user file outranks the global one for the cache npm actually uses.
-	if facts.NpmrcCacheFile != "/from/user/npm" {
-		t.Errorf("probeHost NpmrcCacheFile = %q, want the user value", facts.NpmrcCacheFile)
-	}
 }
 
 func TestProbeReadsDefaultUserNpmrcAndPrefixGlobalNpmrc(t *testing.T) {
@@ -383,6 +379,21 @@ func TestProbeExpandsNpmrcVariables(t *testing.T) {
 	))
 	if want := []string{"/home/u/.npm-cache"}; !slices.Equal(facts.NpmrcCaches, want) {
 		t.Errorf("probeHost NpmrcCaches = %v, want the expanded %v", facts.NpmrcCaches, want)
+	}
+}
+
+// npm's config parser drops an unquoted inline comment. A comment left in the
+// value would make Evener overlay a directory npm never uses (#4542 review).
+func TestProbeStripsNpmrcInlineComments(t *testing.T) {
+	t.Parallel()
+	facts := probeHost(npmrcProbe(
+		map[string]string{"npm_config_userconfig": "/home/u/.npmrc"},
+		map[string][]byte{"/home/u/.npmrc": []byte(
+			"cache=/from/user/npm # shared cache\n" +
+				"cache=\"/quoted/path # not a comment\"\n")},
+	))
+	if want := []string{"/from/user/npm", "/quoted/path # not a comment"}; !slices.Equal(facts.NpmrcCaches, want) {
+		t.Errorf("probeHost NpmrcCaches = %v, want %v", facts.NpmrcCaches, want)
 	}
 }
 

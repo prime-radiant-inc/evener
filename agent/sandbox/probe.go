@@ -172,14 +172,12 @@ type HostFacts struct {
 	// move npm's and cargo's cache directories; empty when unset. Cargo keeps no
 	// file for CARGO_HOME. npm also reads a `cache=` setting from its .npmrc
 	// files; NpmrcCaches holds every absolute value this host's user and global
-	// files set, and NpmrcCacheFile is the one npm would actually use (user
-	// over global, last assignment in a file). The project file is read at
-	// resolution, where the session's package directory is known, so an overlay
-	// serves a cache moved only there (#4542).
+	// files set. The project file is read at resolution and per spawn, where the
+	// session's package directory and the spawn environment are known, so an
+	// overlay serves a cache moved only there (#4542).
 	NpmConfigCache string
 	CargoHome      string
 	NpmrcCaches    []string
-	NpmrcCacheFile string
 
 	// OverlayLowerOK reports whether bwrap can mount an unprivileged overlay
 	// with a given directory as its lower on this host. Whether overlay is
@@ -380,7 +378,7 @@ func probeHost(system probeSystem) HostFacts {
 	facts.XDGCacheHome = system.getenv(envvars.XDGCacheHome.Name)
 	facts.NpmConfigCache = envValueFold(system.environ(), npmConfigCacheEnv)
 	facts.CargoHome = system.getenv(envvars.CargoHome.Name)
-	facts.NpmrcCaches, facts.NpmrcCacheFile = probeNpmrcCaches(system, facts.Home)
+	facts.NpmrcCaches = probeNpmrcCaches(system, facts.Home)
 
 	if path, err := system.lookPath("bwrap"); err == nil {
 		facts.BwrapPath = path
@@ -428,10 +426,10 @@ const (
 )
 
 // probeNpmrcCaches returns the absolute `cache=` values npm resolves from the
-// .npmrc files whose locations do not depend on a project, and the one npm
-// would actually use: the user config ($npm_config_userconfig, else ~/.npmrc)
-// over the global config ($npm_config_globalconfig, else
-// $npm_config_prefix/etc/npmrc). npm reads a `cache=` setting in either, so a
+// .npmrc files whose locations do not depend on a project: the user config
+// ($npm_config_userconfig, else ~/.npmrc) and the global config
+// ($npm_config_globalconfig, else $npm_config_prefix/etc/npmrc). npm reads a
+// `cache=` setting in either, so a
 // host that moves its cache only there would otherwise leave it outside every
 // overlay root, read-only (#4542).
 //
@@ -440,7 +438,7 @@ const (
 // environment names it. A relative or absent file contributes nothing, and the
 // value is judged absolute later, as a relative cache resolves against npm's
 // own working directory.
-func probeNpmrcCaches(system probeSystem, home string) (roots []string, effective string) {
+func probeNpmrcCaches(system probeSystem, home string) []string {
 	environ := system.environ()
 	user := envValueFold(environ, npmConfigUserConfigEnv)
 	if user == "" && home != "" {
@@ -452,19 +450,11 @@ func probeNpmrcCaches(system probeSystem, home string) (roots []string, effectiv
 			global = filepath.Join(prefix, "etc", "npmrc")
 		}
 	}
-	userRoots := readNpmrcCacheRoots(system, user)
-	globalRoots := readNpmrcCacheRoots(system, global)
-	roots = append(append(roots, userRoots...), globalRoots...)
-	// npm's last assignment wins within a file and the user file outranks the
-	// global one, so the effective value is the last user root, else the last
-	// global root.
-	if len(userRoots) > 0 {
-		return roots, userRoots[len(userRoots)-1]
+	var roots []string
+	for _, path := range []string{user, global} {
+		roots = append(roots, readNpmrcCacheRoots(system, path)...)
 	}
-	if len(globalRoots) > 0 {
-		return roots, globalRoots[len(globalRoots)-1]
-	}
-	return roots, ""
+	return roots
 }
 
 // readNpmrcCacheRoots reads the absolute `cache=` values in the .npmrc at
@@ -485,9 +475,9 @@ func readNpmrcCacheRoots(system probeSystem, path string) []string {
 // repository content, so a final-component symlink is refused (O_NOFOLLOW) and
 // a cache it names is served only where it is already a directory: resolution
 // must never create a host directory on repository say-so.
-func readProjectNpmrcCacheRoots(path string, host HostFacts) []string {
+func readProjectNpmrcCacheRoots(path string, lookup func(string) string) []string {
 	var roots []string
-	for _, root := range readProjectNpmrc(path, host) {
+	for _, root := range readProjectNpmrc(path, lookup) {
 		if fi, err := os.Stat(root); err == nil && fi.IsDir() {
 			roots = append(roots, root)
 		}
@@ -498,8 +488,8 @@ func readProjectNpmrcCacheRoots(path string, host HostFacts) []string {
 // readProjectNpmrcCacheValue returns the cache npm would use from the project
 // file, whether or not that directory exists. The per-spawn judge needs it so a
 // cache the overlay cannot serve is redirected rather than left read-only.
-func readProjectNpmrcCacheValue(path string, host HostFacts) string {
-	values := readProjectNpmrc(path, host)
+func readProjectNpmrcCacheValue(path string, lookup func(string) string) string {
+	values := readProjectNpmrc(path, lookup)
 	if len(values) == 0 {
 		return ""
 	}
@@ -507,7 +497,7 @@ func readProjectNpmrcCacheValue(path string, host HostFacts) string {
 }
 
 // readProjectNpmrc parses the cache values of the project .npmrc at path.
-func readProjectNpmrc(path string, host HostFacts) []string {
+func readProjectNpmrc(path string, lookup func(string) string) []string {
 	if path == "" || !filepath.IsAbs(path) {
 		return nil
 	}
@@ -520,9 +510,13 @@ func readProjectNpmrc(path string, host HostFacts) []string {
 	if err != nil {
 		return nil
 	}
-	// Resolve reads no process environment, so only the host facts it already
-	// holds expand a project value. npm fills the rest from its own env.
-	lookup := func(name string) string {
+	return parseNpmrcCacheRoots(data, lookup)
+}
+
+// npmrcHostLookup expands a project .npmrc value from host facts, for
+// resolution, which reads no process environment.
+func npmrcHostLookup(host HostFacts) func(string) string {
+	return func(name string) string {
 		switch name {
 		case envvars.Home.Name:
 			return host.Home
@@ -530,6 +524,25 @@ func readProjectNpmrc(path string, host HostFacts) []string {
 			return host.XDGCacheHome
 		}
 		return ""
+	}
+}
+
+// readNpmrcCacheRootsEnv reads a user or global .npmrc for a spawn, expanding
+// ${NAME} from the spawn's own environment. Unlike a project file it is host
+// configuration, so symlinks are followed and the bounded non-blocking reader
+// still refuses a FIFO, device, or oversized file.
+func readNpmrcCacheRootsEnv(path string, lookup func(string) string) []string {
+	if path == "" || !filepath.IsAbs(path) {
+		return nil
+	}
+	f, err := openGoEnvFile(path)
+	if err != nil {
+		return nil
+	}
+	defer func() { _ = f.Close() }()
+	data, err := readGoEnvFile(f, path)
+	if err != nil {
+		return nil
 	}
 	return parseNpmrcCacheRoots(data, lookup)
 }
@@ -556,7 +569,7 @@ func parseNpmrcCacheRoots(data []byte, lookup func(string) string) []string {
 		if !ok || !strings.EqualFold(strings.TrimSpace(key), "cache") {
 			continue
 		}
-		value = expandNpmrcVars(strings.TrimSpace(value), lookup)
+		value = expandNpmrcVars(stripNpmrcComment(value), lookup)
 		if len(value) >= 2 && (value[0] == '"' || value[0] == '\'') && value[len(value)-1] == value[0] {
 			value = value[1 : len(value)-1]
 		}
@@ -565,6 +578,34 @@ func parseNpmrcCacheRoots(data []byte, lookup func(string) string) []string {
 		}
 	}
 	return roots
+}
+
+// stripNpmrcComment removes npm's INI inline comment from value: an unquoted
+// '#' or ';' at the start or after whitespace ends the value. A quoted value
+// runs to its closing quote, so a '#' inside it is data.
+func stripNpmrcComment(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return value
+	}
+	if quote := value[0]; quote == '"' || quote == '\'' {
+		for i := 1; i < len(value); i++ {
+			if value[i] == '\\' {
+				i++
+				continue
+			}
+			if value[i] == quote {
+				return value[:i+1]
+			}
+		}
+		return value
+	}
+	for i := 0; i < len(value); i++ {
+		if (value[i] == '#' || value[i] == ';') && (i == 0 || value[i-1] == ' ' || value[i-1] == '\t') {
+			return strings.TrimSpace(value[:i])
+		}
+	}
+	return value
 }
 
 // expandNpmrcVars replaces npm's ${NAME} references with lookup(NAME). An

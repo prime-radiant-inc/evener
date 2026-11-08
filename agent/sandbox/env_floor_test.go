@@ -199,6 +199,107 @@ func assertNpmCacheRedirected(t *testing.T, policy ResolvedPolicy, env []string,
 	}
 }
 
+// npm expands a .npmrc value from the environment of the process that reads it,
+// and a spawn can name its own userconfig. The per-spawn judge must use that
+// environment, not the host probe's facts (#4542 review).
+func TestEnvFloorUsesTheSpawnNpmrcEnvironment(t *testing.T) {
+	scratch := "/tmp/evener-session-xyz"
+	home := overlayFixtureDir(t)
+	if err := os.MkdirAll(filepath.Join(home, ".npm"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	worktree := overlayFixtureDir(t)
+	policy := ResolvedPolicy{
+		Mode:          ModeWorkspaceWrite,
+		CacheStrategy: CacheOverlay,
+		CacheRoots:    []string{filepath.Join(home, ".npm")},
+		resolveHost:   HostFacts{Home: home},
+		Git:           GitLayout{WorktreeRoot: worktree},
+		SessionDir:    worktree,
+	}
+
+	t.Run("custom project variable", func(t *testing.T) {
+		base := filepath.Join(overlayFixtureDir(t), "npm-base")
+		if err := os.WriteFile(filepath.Join(worktree, ".npmrc"), []byte("cache=${NPM_CACHE_DIR}/npm\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		env := []string{"HOME=" + home, "NPM_CACHE_DIR=" + base}
+		if dirs, _ := overlayCacheDirs(env, policy, worktree); dirs[npmConfigCacheEnv] != filepath.Join(base, "npm") {
+			t.Fatalf("judged npm cache = %q, want the spawn-expanded project value", dirs[npmConfigCacheEnv])
+		}
+		assertNpmCacheRedirectedInDir(t, policy, env, worktree, scratch)
+	})
+
+	t.Run("spawn userconfig override", func(t *testing.T) {
+		// A project .npmrc outranks the user file, so this case needs a
+		// worktree with no project config of its own.
+		clean := overlayFixtureDir(t)
+		userPolicy := policy
+		userPolicy.Git = GitLayout{WorktreeRoot: clean}
+		userPolicy.SessionDir = clean
+		configFile := filepath.Join(overlayFixtureDir(t), "spawn-user-npmrc")
+		spawnCache := filepath.Join(overlayFixtureDir(t), "spawn-npm")
+		if err := os.WriteFile(configFile, []byte("cache=${SPAWN_CACHE}\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		env := []string{"HOME=" + home, "npm_config_userconfig=" + configFile, "SPAWN_CACHE=" + spawnCache}
+		if dirs, _ := overlayCacheDirs(env, userPolicy, clean); dirs[npmConfigCacheEnv] != spawnCache {
+			t.Fatalf("judged npm cache = %q, want the spawn userconfig value", dirs[npmConfigCacheEnv])
+		}
+		assertNpmCacheRedirectedInDir(t, userPolicy, env, clean, scratch)
+	})
+}
+
+// A command's own working directory can be an independent nested package even
+// when the session started at the repository root; the floor must locate that
+// package's config (#4542 review).
+func TestEnvFloorUsesTheSpawnWorkingDirectory(t *testing.T) {
+	scratch := "/tmp/evener-session-xyz"
+	home := overlayFixtureDir(t)
+	worktree := t.TempDir()
+	rootCache := filepath.Join(overlayFixtureDir(t), "root-npm")
+	packageCache := filepath.Join(overlayFixtureDir(t), "package-npm")
+	for _, dir := range []string{rootCache, packageCache} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(worktree, ".npmrc"), []byte("cache="+rootCache+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	packageDir := filepath.Join(worktree, "packages", "foo")
+	if err := os.MkdirAll(packageDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(packageDir, "package.json"), []byte("{}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(packageDir, ".npmrc"), []byte("cache="+packageCache+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	policy := ResolvedPolicy{
+		Mode:          ModeWorkspaceWrite,
+		CacheStrategy: CacheOverlay,
+		CacheRoots:    []string{rootCache},
+		resolveHost:   HostFacts{Home: home},
+		Git:           GitLayout{WorktreeRoot: worktree},
+		SessionDir:    worktree,
+	}
+	env := []string{"HOME=" + home}
+	if dirs, _ := overlayCacheDirs(env, policy, packageDir); dirs[npmConfigCacheEnv] != packageCache {
+		t.Fatalf("judged npm cache = %q, want the nested package value", dirs[npmConfigCacheEnv])
+	}
+	assertNpmCacheRedirectedInDir(t, policy, env, packageDir, scratch)
+}
+
+func assertNpmCacheRedirectedInDir(t *testing.T, policy ResolvedPolicy, env []string, workingDir, scratch string) {
+	t.Helper()
+	out := ApplyEnvFloorInDir(env, policy, scratch, workingDir)
+	if got, _ := envValue(out, npmConfigCacheEnv); got != filepath.Join(scratch, "npm") {
+		t.Fatalf("npm_config_cache = %q, want the session scratch", got)
+	}
+}
+
 func TestEnvFloorDropsExternalKubeconfigKeepsInternal(t *testing.T) {
 	policy := ResolvedPolicy{
 		Mode: ModeWorkspaceWrite, CacheStrategy: CacheNone,
