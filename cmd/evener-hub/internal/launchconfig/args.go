@@ -51,6 +51,14 @@ func ToArgs(r Resolved) []string {
 	if e.NonInteractive != nil && *e.NonInteractive {
 		out = append(out, "--non-interactive")
 	}
+	// Emitted in both directions so the spawned argv names the resolved choice
+	// and a launch layer can re-enable over a disabling default; an unset value
+	// emits nothing (evener's own default, which is enabled). The flag spells
+	// the negation, and as a Bool flag it takes only the single equals-form
+	// token.
+	if e.MemoryEnabled != nil {
+		out = append(out, "--disable-memory="+strconv.FormatBool(!*e.MemoryEnabled))
+	}
 	if e.AppReplaySize != nil {
 		add("--app-replay-size", strconv.Itoa(*e.AppReplaySize))
 	}

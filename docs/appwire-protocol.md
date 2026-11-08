@@ -2472,6 +2472,7 @@ Underlying Go kind: `struct` (no struct fields).
 | `maxConcurrentDelegateTurns` | \*int | yes |  |
 | `maxRetainedTerminal` | \*int | yes |  |
 | `nonInteractive` | \*bool | yes |  |
+| `memoryEnabled` | \*bool | yes |  |
 | `appReplaySize` | \*int | yes |  |
 | `skillsDirs` | []string | yes |  |
 | `pluginDirs` | []string | yes |  |
