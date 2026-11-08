@@ -44,6 +44,7 @@ const (
 	ErrorQueuedDrainPartial          ErrorInfo = "queuedDrainPartial"
 	ErrorMutationOutcomeUnknown      ErrorInfo = "mutationOutcomeUnknown"
 	ErrorTranscriptItemCursorStale   ErrorInfo = "transcriptItemCursorStale"
+	ErrorTranscriptItemChanged      ErrorInfo = "item-changed"
 	ErrorTranscriptTurnNotFound      ErrorInfo = "transcriptTurnNotFound"
 	ErrorSessionActivityCursorStale  ErrorInfo = "sessionActivityCursorStale"
 	ErrorJobOutputPruned             ErrorInfo = "jobOutputPruned"
@@ -693,6 +694,22 @@ func TranscriptItemCursorStale() WireError {
 		Data: ErrorData{
 			EvenerErrorInfo:  ErrorTranscriptItemCursorStale,
 			RetryDisposition: RetryDispositionAutomatic,
+		},
+	}
+}
+
+type TranscriptItemChangedErrorData struct {
+	ErrorData
+	NewVersion uint64 `json:"newVersion"`
+}
+
+func TranscriptItemChanged(newVersion uint64) WireError {
+	return WireError{
+		Code:    CodeConflict,
+		Message: "transcript item changed; re-read the window",
+		Data: TranscriptItemChangedErrorData{
+			ErrorData:  ErrorData{EvenerErrorInfo: ErrorTranscriptItemChanged},
+			NewVersion: newVersion,
 		},
 	}
 }
