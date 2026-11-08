@@ -69,7 +69,7 @@ func TestLiveOnlyReadPreservesRetryableOutagePastRetryBudget(t *testing.T) {
 	var calls atomic.Int32
 	client, _, sessionID := newLiveReadHub(t, func(string) (appsource.RelayReadResult, error) {
 		return appsource.RelayReadResult{}, appwire.RetryableSessionUnavailable("unexpected source read")
-	}, hubcore.RelayLifecycleHooks{ReadThreadFailure: func(ctx context.Context) error {
+	}, hubcore.RelayLifecycleHooks{ReadThreadFailure: func(ctx context.Context, _ appwire.ThreadReadParams) error {
 		if calls.Add(1) == 1 {
 			return appwire.RetryableSessionUnavailable("relay connection ended before route publication")
 		}
@@ -95,7 +95,7 @@ func TestLiveOnlyReadBudgetKeepsTerminalVerdict(t *testing.T) {
 	var calls atomic.Int32
 	client, _, sessionID := newLiveReadHub(t, func(string) (appsource.RelayReadResult, error) {
 		return appsource.RelayReadResult{}, appwire.RetryableSessionUnavailable("unexpected source read")
-	}, hubcore.RelayLifecycleHooks{ReadThreadFailure: func(ctx context.Context) error {
+	}, hubcore.RelayLifecycleHooks{ReadThreadFailure: func(ctx context.Context, _ appwire.ThreadReadParams) error {
 		if calls.Add(1) == 1 {
 			return appwire.RetryableSessionUnavailable("relay connection ended before route publication")
 		}
@@ -122,7 +122,7 @@ func TestLiveOnlyReadPreservesOutageBeforeOwnershipRecovery(t *testing.T) {
 	var calls atomic.Int32
 	client, _, sessionID := newDaemonLiveReadHub(t, func(string, int32) (appwire.ThreadReadResponse, error) {
 		return appwire.ThreadReadResponse{}, appwire.Unavailable("ownership recovery read")
-	}, true, hubcore.RelayLifecycleHooks{ReadThreadFailure: func(ctx context.Context) error {
+	}, true, hubcore.RelayLifecycleHooks{ReadThreadFailure: func(ctx context.Context, _ appwire.ThreadReadParams) error {
 		switch calls.Add(1) {
 		case 1:
 			return appwire.RetryableSessionUnavailable("relay connection ended before route publication")

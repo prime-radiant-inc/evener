@@ -40,7 +40,7 @@ func TestE2E_VoiceSessionStopRecoversRelayGapWithSavedHistory(t *testing.T) {
 func TestE2E_VoiceSessionStopRenewSurvivesRelayGapWithSavedHistory(t *testing.T) {
 	f := newVoiceCorrectionStack(t)
 	var armed, failed atomic.Bool
-	gap, _ := voiceStopRecoveryHub(t, f, nil, true, func(context.Context) error {
+	gap, _ := voiceStopRecoveryHub(t, f, nil, true, func(context.Context, appwire.ThreadReadParams) error {
 		if armed.Load() {
 			failed.Store(true)
 			return appwire.RetryableSessionUnavailable("relay connection ended before route publication")
@@ -88,7 +88,7 @@ func TestE2E_VoiceSessionStopRenewSurvivesRetryBudgetExpiry(t *testing.T) {
 	f := newVoiceCorrectionStack(t)
 	var armed atomic.Bool
 	entered := make(chan struct{}, 1)
-	gap, _ := voiceStopRecoveryHub(t, f, nil, true, func(ctx context.Context) error {
+	gap, _ := voiceStopRecoveryHub(t, f, nil, true, func(ctx context.Context, _ appwire.ThreadReadParams) error {
 		if !armed.Load() {
 			return nil
 		}
@@ -146,8 +146,13 @@ func TestE2E_VoiceSessionStopRenewSurvivesReceiptBacklog(t *testing.T) {
 	f := newVoiceCorrectionStack(t)
 	var armed atomic.Bool
 	var renewCalls, inFlight, maxInFlight atomic.Int32
-	gap, _ := voiceStopRecoveryHub(t, f, nil, true, func(context.Context) error {
+	gap, _ := voiceStopRecoveryHub(t, f, nil, true, func(_ context.Context, params appwire.ThreadReadParams) error {
 		if !armed.Load() {
+			return nil
+		}
+		// Only renewal reads take part in renewal single-flight; a history,
+		// reconciliation, or subscription read may run beside one.
+		if params.IncludeTurns || params.Subscribe {
 			return nil
 		}
 		active := inFlight.Add(1)
@@ -202,8 +207,11 @@ func TestE2E_VoiceSessionStopRenewSurvivesReceiptBacklog(t *testing.T) {
 			t.Fatalf("renewal %d did not complete after the receipt backlog: %v", i+1, event)
 		}
 	}
-	if got := renewCalls.Load(); got != 2 {
-		t.Fatalf("renewal reads = %d, want the held read and its coalesced successor", got)
+	// A relay retry or a later renewal may add reads, so the count is a lower
+	// bound: the held read and its coalesced successor must both have run.
+	// Single-flight, asserted next, is the coalescing guarantee.
+	if got := renewCalls.Load(); got < 2 {
+		t.Fatalf("renewal reads = %d, want at least the held read and its coalesced successor", got)
 	}
 	if got := maxInFlight.Load(); got != 1 {
 		t.Fatalf("renewal reads in flight = %d, want 1", got)
@@ -218,6 +226,95 @@ func TestE2E_VoiceSessionStopRenewSurvivesReceiptBacklog(t *testing.T) {
 	})
 	if f.delivery(t, old.ID).Interrupted {
 		t.Fatal("speech was interrupted after a held renewal")
+	}
+}
+
+// A renewal queued behind a held read must start only after that read's result
+// is applied, never beside it. The forced ordering releases the held read
+// explicitly and observes the successor's read start.
+func TestE2E_VoiceSessionStopRenewQueuedReadStaysSingleFlight(t *testing.T) {
+	f := newVoiceCorrectionStack(t)
+	var armed atomic.Bool
+	var inFlight, maxInFlight, reads atomic.Int32
+	entered := make(chan struct{}, 1)
+	second := make(chan struct{}, 1)
+	release := make(chan struct{})
+	gap, _ := voiceStopRecoveryHub(t, f, nil, true, func(_ context.Context, params appwire.ThreadReadParams) error {
+		if !armed.Load() || params.IncludeTurns || params.Subscribe {
+			return nil
+		}
+		active := inFlight.Add(1)
+		defer inFlight.Add(-1)
+		for {
+			peak := maxInFlight.Load()
+			if active <= peak || maxInFlight.CompareAndSwap(peak, active) {
+				break
+			}
+		}
+		if reads.Add(1) == 1 {
+			select {
+			case entered <- struct{}{}:
+			default:
+			}
+			<-release
+			return nil
+		}
+		select {
+		case second <- struct{}{}:
+		default:
+		}
+		return nil
+	})
+	_ = gap
+	const reply = "STOP-RENEW-QUEUE-288"
+	f.admit(t, "STOP-RENEW-QUEUE-INPUT-288", false)
+	voiceStopContinue(f.next(t), reply)
+	_ = f.next(t) // The held execution stays active.
+	start := voiceJourneyEvent(t, f.device, "speech_start")
+	peer := f.openSpeaker(t)
+	old := f.speechRequest(t, peer, start, reply)
+	const response, item = "renew-queue-response", "renew-queue-item"
+	voiceCorrectionAudio(peer, old, response, item, base64.StdEncoding.EncodeToString(make([]byte, 960)))
+	voiceJourneyEvent(t, f.device, "audio")
+
+	armed.Store(true)
+	f.device.send(`{"type":"renew"}`)
+	select {
+	case <-entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("first renewal read did not start")
+	}
+	// Let the run loop process the second renew while the first read is held.
+	f.device.send(`{"type":"renew"}`)
+	// Controls are processed in order. Once this receipt's durable update is
+	// visible, the run loop has already processed the renew sent before it and
+	// queued it behind the held read.
+	f.device.send(fmt.Sprintf(`{"type":"played","deliveryId":%q,"generation":%d,"itemId":%q,"samples":%d}`, old.ID, old.PresentationGeneration, item, 120))
+	f.waitDelivery(t, old.ID, func(d hubcore.SpeechDelivery) bool {
+		for _, received := range d.Items {
+			if received.ItemID == item {
+				return received.PlayedSamples == 120
+			}
+		}
+		return false
+	})
+	close(release)
+	select {
+	case <-second:
+	case <-time.After(5 * time.Second):
+		t.Fatal("queued renewal read did not start after the held read finished")
+	}
+	if got := maxInFlight.Load(); got != 1 {
+		t.Fatalf("renewal reads in flight = %d, want 1 through the queued read", got)
+	}
+	for i := range 2 {
+		if event := f.device.read(); event["type"] != "renewed" {
+			t.Fatalf("renewal %d did not complete: %v", i+1, event)
+		}
+	}
+	armed.Store(false)
+	if f.delivery(t, old.ID).Interrupted {
+		t.Fatal("speech was interrupted during the queued renewal")
 	}
 }
 
@@ -421,7 +518,7 @@ func voiceStopWaitResync(t *testing.T, f *voiceCorrectionStack, observer *appwir
 
 // Only the TCP transport is faulted. Both hubs use the original live manager,
 // its mutation journal and transcript, and the production local source/relay.
-func voiceStopRecoveryHub(t *testing.T, f *voiceCorrectionStack, beforeRead func(), savedHistory bool, readFailure func(context.Context) error) (*voiceStopTransportGap, *appwire.Client) {
+func voiceStopRecoveryHub(t *testing.T, f *voiceCorrectionStack, beforeRead func(), savedHistory bool, readFailure func(context.Context, appwire.ThreadReadParams) error) (*voiceStopTransportGap, *appwire.Client) {
 	t.Helper()
 	_ = f.device.conn.CloseNow()
 	root := filepath.Join(f.stack.home, "state", "evener")

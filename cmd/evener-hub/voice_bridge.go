@@ -261,8 +261,8 @@ func (b *voiceBridge) run() {
 				return
 			}
 		case result := <-b.renewal:
-			b.renewing--
 			if result.err != nil {
+				b.renewing--
 				if !voiceRelayOutage(result.err) {
 					_ = b.reportError("input_failed")
 					return
@@ -274,9 +274,11 @@ func (b *voiceBridge) run() {
 				continue
 			}
 			if err := b.applyRenewal(); err != nil {
+				b.renewing--
 				_ = b.reportError("input_failed")
 				return
 			}
+			b.renewing--
 			expiry.Reset(time.Until(b.binding.ExpiresAt))
 			b.startQueuedRenewal()
 		case notification, ok := <-b.client.Notifications():
