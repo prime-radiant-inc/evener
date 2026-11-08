@@ -135,11 +135,16 @@ it("supplies the zero defaults for a past index that omits its counters", async 
 	if (!opener) throw new Error("Missing Runtime and storage section control");
 	act(() => opener.props.onPress());
 
-	for (const label of ["Indexed sessions, 0", "Past results per page, 0"]) {
+	// The labels only locate the two details; the assertion is on each row's
+	// value Text, so rewording the copy cannot break the counter-default check.
+	for (const label of ["Indexed sessions", "Past results per page"]) {
 		const row = tree.root.find(
 			(node) =>
-				String(node.type) === "View" && node.props.accessible === true && node.props.accessibilityLabel === label,
+				String(node.type) === "View" &&
+				node.props.accessible === true &&
+				node.props.accessibilityLabel?.startsWith(label),
 		);
-		expect(row).toBeTruthy();
+		const texts = row.findAll((node) => String(node.type) === "Text").map((node) => textOf(node));
+		expect(texts.at(-1)).toBe("0");
 	}
 });
