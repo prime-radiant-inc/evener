@@ -81,7 +81,11 @@ completed work across a daemon restart, but never skip later unfinished work
 to accept an older done. The serving generation scopes the subscription, not
 the original historical execution.
 Questions, waits, rejected terminal calls, and idle state do not complete it.
-The watch removes itself before delivering a completion wake.
+For a completed watch, the terminal send and the watch's clear are persisted
+together, then the completion wake token is queued, and only then does the live
+watch read ended. A Manager that sees it ended therefore finds the completion
+frame already pending, and the separate terminal flush entry keeps the wake
+resolvable until it is delivered.
 
 An accepted answer records the question execution it resolves. Completion also
 follows those recorded links across successive questions, whether the answer
