@@ -40,7 +40,7 @@ func TestE2E_VoiceSessionStopRecoversRelayGapWithSavedHistory(t *testing.T) {
 func TestE2E_VoiceSessionStopRenewSurvivesRelayGapWithSavedHistory(t *testing.T) {
 	f := newVoiceCorrectionStack(t)
 	var armed, failed atomic.Bool
-	gap, _ := voiceStopRecoveryHub(t, f, nil, true, func() error {
+	gap, _ := voiceStopRecoveryHub(t, f, nil, true, func(context.Context) error {
 		if armed.Load() {
 			failed.Store(true)
 			return appwire.RetryableSessionUnavailable("relay connection ended before route publication")
@@ -78,6 +78,63 @@ func TestE2E_VoiceSessionStopRenewSurvivesRelayGapWithSavedHistory(t *testing.T)
 	f.device.send(`{"type":"renew"}`)
 	if event := f.device.read(); event["type"] != "renewed" {
 		t.Fatalf("next renewal did not complete after the outage: %v", event)
+	}
+}
+
+// A renewal read that loses its relay and then blocks through the hub's retry
+// budget must keep the retryable outage; the budget's DeadlineExceeded would
+// close the bridge and interrupt unfinished speech.
+func TestE2E_VoiceSessionStopRenewSurvivesRetryBudgetExpiry(t *testing.T) {
+	f := newVoiceCorrectionStack(t)
+	var armed atomic.Bool
+	entered := make(chan struct{}, 1)
+	gap, _ := voiceStopRecoveryHub(t, f, nil, true, func(ctx context.Context) error {
+		if !armed.Load() {
+			return nil
+		}
+		if _, budgeted := ctx.Deadline(); !budgeted {
+			// The first attempt carries the bridge's unbudgeted context. It must
+			// report the outage instead of blocking here: any armed read may
+			// reach this hook, and blocking the run loop's own context would
+			// hang the test instead of exercising the retry budget.
+			return appwire.RetryableSessionUnavailable("relay connection ended before route publication")
+		}
+		select {
+		case entered <- struct{}{}:
+		default:
+		}
+		<-ctx.Done()
+		return ctx.Err()
+	})
+	_ = gap
+	const reply = "STOP-RENEW-BUDGET-286"
+	f.admit(t, "STOP-RENEW-BUDGET-INPUT-286", false)
+	voiceStopContinue(f.next(t), reply)
+	_ = f.next(t) // The held execution stays active.
+	start := voiceJourneyEvent(t, f.device, "speech_start")
+	peer := f.openSpeaker(t)
+	old := f.speechRequest(t, peer, start, reply)
+	voiceCorrectionAudio(peer, old, "renew-budget-response", "renew-budget-item", base64.StdEncoding.EncodeToString(make([]byte, 960)))
+	voiceJourneyEvent(t, f.device, "audio")
+
+	armed.Store(true)
+	f.device.send(`{"type":"renew"}`)
+	select {
+	case <-entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("renewal retry did not reach the held reconnection")
+	}
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if f.delivery(t, old.ID).Interrupted {
+			t.Fatal("retry-budget expiry replaced the retryable outage and interrupted speech")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	armed.Store(false)
+	f.device.send(`{"type":"renew"}`)
+	if event := f.device.read(); event["type"] != "renewed" {
+		t.Fatalf("next renewal did not complete after the budget expiry: %v", event)
 	}
 }
 
@@ -281,7 +338,7 @@ func voiceStopWaitResync(t *testing.T, f *voiceCorrectionStack, observer *appwir
 
 // Only the TCP transport is faulted. Both hubs use the original live manager,
 // its mutation journal and transcript, and the production local source/relay.
-func voiceStopRecoveryHub(t *testing.T, f *voiceCorrectionStack, beforeRead func(), savedHistory bool, readFailure func() error) (*voiceStopTransportGap, *appwire.Client) {
+func voiceStopRecoveryHub(t *testing.T, f *voiceCorrectionStack, beforeRead func(), savedHistory bool, readFailure func(context.Context) error) (*voiceStopTransportGap, *appwire.Client) {
 	t.Helper()
 	_ = f.device.conn.CloseNow()
 	root := filepath.Join(f.stack.home, "state", "evener")

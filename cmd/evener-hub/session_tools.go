@@ -442,6 +442,7 @@ func liveThreadRead(
 	source appsource.Source,
 	params appwire.ThreadReadParams,
 	capture bool,
+	liveOnly bool,
 ) (*hubThreadReadResult, error) {
 	read := func(ctx context.Context) (*hubThreadReadResult, error) {
 		return relays.readThreadWithSubscription(ctx, source, params, capture)
@@ -474,10 +475,19 @@ func liveThreadRead(
 		if readErr == nil {
 			return read, nil
 		}
-		err = readErr
 		if ctx.Err() != nil {
 			return nil, ctx.Err()
 		}
+		if liveOnly && err != nil && errors.Is(readErr, context.DeadlineExceeded) {
+			// The retry attempt died on the budget while the previous attempt's
+			// failure was retryable. Keep that failure: the caller's context is
+			// still live, and replacing it with DeadlineExceeded would turn a
+			// transient outage into a terminal one. A terminal verdict that
+			// happened to land as the deadline fired is not a budget death and
+			// is returned below.
+			return nil, err
+		}
+		err = readErr
 		if !retryableLiveReadFailure(err) {
 			return nil, readErr
 		}
@@ -594,8 +604,15 @@ func (o *sessionOperations) read(ctx context.Context, params appwire.ThreadReadP
 	// source: older daemons and remote hubs decode thread/read params strictly.
 	sourceParams := params
 	sourceParams.LiveOnly = false
-	read, err := liveThreadRead(ctx, relays, source, sourceParams, capture)
+	read, err := liveThreadRead(ctx, relays, source, sourceParams, capture, params.LiveOnly)
 	if err != nil {
+		// A live-only read has no saved answer to recover, and its caller
+		// classifies the retryable outage. Ownership recovery would run an
+		// unbudgeted re-read and can replace that outage with a daemonless
+		// Unavailable, which aborts the voice bridge's held speech.
+		if params.LiveOnly {
+			return appwire.ThreadReadResponse{}, err
+		}
 		recovered := false
 		allowPast := allowsPastFallbackAfterLiveReadFailure(source, params, err)
 		if _, local := localPastThreadID(params); local && cfg.Roster != nil && daemonOwnershipMayHaveChanged(err) {
