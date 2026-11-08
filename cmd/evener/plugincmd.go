@@ -20,6 +20,7 @@ type pluginManager interface {
 	SeedDefaultMarketplaces(context.Context) (bool, error)
 	ListMarketplaces(context.Context) (plugins.Marketplaces, error)
 	AddMarketplace(context.Context, string, plugins.Source) (plugins.MarketplaceRef, error)
+	ReplaceMarketplace(context.Context, string, plugins.Source) (plugins.MarketplaceRef, error)
 	RemoveMarketplace(context.Context, string) error
 	RefreshMarketplace(context.Context, string) error
 	Browse(context.Context, string) (plugins.Catalog, error)
@@ -111,12 +112,13 @@ func runPluginMarketplace(args []string, stdout, stderr io.Writer) error {
 		fs.SetOutput(stderr)
 		yes := fs.Bool("yes", false, "skip the trust confirmation")
 		gitRef := fs.String("ref", "", "git branch or tag to check out")
+		replace := fs.Bool("replace", false, "replace the source of an already-registered marketplace")
 		if err := fs.Parse(args[1:]); err != nil {
 			return err
 		}
 		srcArg, err := requireSingleArg(fs,
-			"usage: evener plugin marketplace add [--ref <branch|tag>] [--yes] <url|owner/repo|path>",
-			"source", "marketplace add --ref <branch|tag> <source>")
+			"usage: evener plugin marketplace add [--ref <branch|tag>] [--replace] [--yes] <url|owner/repo|path>",
+			"source", "marketplace add --ref <branch|tag> [--replace] <source>")
 		if err != nil {
 			return err
 		}
@@ -141,7 +143,11 @@ func runPluginMarketplace(args []string, stdout, stderr io.Writer) error {
 			_, _ = fmt.Fprintf(stderr, "Add marketplace from %s? Marketplaces are arbitrary code repositories.\nPass --yes to confirm.\n", from)
 			return errors.New("confirmation required")
 		}
-		ref, err := m.AddMarketplace(context.Background(), "", src)
+		add := m.AddMarketplace
+		if *replace {
+			add = m.ReplaceMarketplace
+		}
+		ref, err := add(context.Background(), "", src)
 		if err != nil {
 			return err
 		}

@@ -66,6 +66,76 @@ func TestPluginMarketplaceAdd_RequiresConfirmation(t *testing.T) {
 	}
 }
 
+// writeCLIMarketplace writes a directory marketplace with the given catalog
+// name and no plugins.
+func writeCLIMarketplace(t *testing.T, name string) string {
+	t.Helper()
+	dir := t.TempDir()
+	metaDir := filepath.Join(dir, ".claude-plugin")
+	if err := os.MkdirAll(metaDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	manifest := `{"name":"` + name + `","owner":{"name":"o"},"plugins":[]}`
+	if err := os.WriteFile(filepath.Join(metaDir, "marketplace.json"), []byte(manifest), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return dir
+}
+
+// `evener plugin marketplace add` shares AddMarketplace's contract, so a
+// second add of an already-registered catalog name must fail rather than
+// re-point the existing key at a different directory (#1047).
+func TestPluginMarketplaceAdd_RefusesATakenName(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	m := plugins.NewManager("")
+	swapPluginManager(t, m)
+	ctx := context.Background()
+	first := writeCLIMarketplace(t, "acme")
+	if _, err := m.AddMarketplace(ctx, "", plugins.Source{Kind: plugins.SourceDirectory, Path: first}); err != nil {
+		t.Fatalf("seed AddMarketplace: %v", err)
+	}
+
+	second := writeCLIMarketplace(t, "acme")
+	var out, errb bytes.Buffer
+	err := runPlugin([]string{"marketplace", "add", "--yes", second}, nil, &out, &errb)
+	if !errors.Is(err, plugins.ErrMarketplaceExists) {
+		t.Fatalf("marketplace add of a taken name = %v, want ErrMarketplaceExists", err)
+	}
+	list, err := m.ListMarketplaces(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ref := list["acme"]; ref.InstallLocation != first {
+		t.Fatalf("listing after refused add = %+v, want the first directory %q", ref, first)
+	}
+}
+
+// --replace is the explicit re-source request: a CLI user can still point an
+// already-registered marketplace at a new source, while a plain add refuses.
+func TestPluginMarketplaceAdd_ReplaceResourcesATakenName(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	m := plugins.NewManager("")
+	swapPluginManager(t, m)
+	ctx := context.Background()
+	first := writeCLIMarketplace(t, "acme")
+	if _, err := m.AddMarketplace(ctx, "", plugins.Source{Kind: plugins.SourceDirectory, Path: first}); err != nil {
+		t.Fatalf("seed AddMarketplace: %v", err)
+	}
+
+	second := writeCLIMarketplace(t, "acme")
+	var out, errb bytes.Buffer
+	if err := runPlugin([]string{"marketplace", "add", "--replace", "--yes", second}, nil, &out, &errb); err != nil {
+		t.Fatalf("marketplace add --replace: %v\n%s", err, errb.String())
+	}
+	list, err := m.ListMarketplaces(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ref := list["acme"]; ref.InstallLocation != second {
+		t.Fatalf("listing after --replace = %+v, want the second directory %q", ref, second)
+	}
+}
+
 // marketplaceAddCapture records the source the add command hands the manager.
 // The embedded interface supplies the methods this path never calls.
 type marketplaceAddCapture struct {

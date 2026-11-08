@@ -31,6 +31,9 @@ func (m *pluginManagerReplay) ListMarketplaces(context.Context) (plugins.Marketp
 func (m *pluginManagerReplay) AddMarketplace(context.Context, string, plugins.Source) (plugins.MarketplaceRef, error) {
 	return plugins.MarketplaceRef{InstallLocation: "/tmp/market"}, m.err
 }
+func (m *pluginManagerReplay) ReplaceMarketplace(context.Context, string, plugins.Source) (plugins.MarketplaceRef, error) {
+	return plugins.MarketplaceRef{InstallLocation: "/tmp/market"}, m.err
+}
 func (m *pluginManagerReplay) RemoveMarketplace(context.Context, string) error  { return m.err }
 func (m *pluginManagerReplay) RefreshMarketplace(context.Context, string) error { return m.err }
 func (m *pluginManagerReplay) Browse(context.Context, string) (plugins.Catalog, error) {
