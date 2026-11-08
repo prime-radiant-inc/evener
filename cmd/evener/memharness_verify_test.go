@@ -376,10 +376,11 @@ func memHarnessVerifyShellOutput(want memHarnessTranscriptExpectation, turnID, m
 	if !bytes.Contains(full, middle) {
 		return memHarnessFail(memHarnessCheckToolOutputMiddle, turnID, mutationID, round, fmt.Sprintf("journal holding %q", middle), "middle absent")
 	}
-	// A windowed result's inline form is a head/tail digest that names the
-	// elision; a result that silently kept only its head fails here.
-	if !strings.Contains(content, "elided") {
-		return memHarnessFail(memHarnessCheckToolOutputMiddle, turnID, mutationID, round, "a windowed digest naming its elided middle", memHarnessClip(content))
+	// A windowed result's inline form is a head/tail digest; the journal above
+	// holds every byte. The digest must be shorter than the output it names,
+	// or the result kept the whole thing (or a copy of it) inline.
+	if len(content) >= len(expected) {
+		return memHarnessFail(memHarnessCheckToolOutputMiddle, turnID, mutationID, round, fmt.Sprintf("an inline digest shorter than %d bytes", len(expected)), fmt.Sprintf("%d inline bytes", len(content)))
 	}
 	head, tail := memHarnessDigestEdges(expected)
 	if !strings.Contains(content, head) || !strings.Contains(content, tail) {
