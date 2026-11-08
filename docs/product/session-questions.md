@@ -67,6 +67,9 @@ reads every named ask's canonical content before answering.
 ## Fenced answers and complete pending-call reads
 
 `AskFence` advertises both conditional answer admission and pending-call pages.
+Hub projections retain it from the original daemon's advertisement. Cold and
+unprobed rows omit it until a probe supplies that evidence, so a fenced answer
+cannot reach an older daemon that might silently ignore the fence.
 Start, queue and steer accept optional `expectedAskRevision` and
 `expectedAskBootGeneration` together. Revision zero is meaningful. The session
 compares the supplied pair during admission, before writing an accepted input.
