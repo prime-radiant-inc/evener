@@ -4,6 +4,7 @@
 // runs the sheet's own plugin preview and launch defaults over the context's
 // client.
 import type { SyncStringStorage } from "../syncStringStorage";
+import type { LaunchOptionSchemaResponse } from "@evener/appwire-client";
 import { LaunchMemory } from "./launchMemory";
 import type { ReactNode } from "react";
 import { type NewSessionContextValue, NewSessionProvider, type NewSessionStore } from "./newSessionContext";
@@ -16,6 +17,21 @@ export function memoryStorage(): SyncStringStorage {
 		getItemSync: (key) => items.get(key) ?? null,
 		setItemSync: (key, value) => void items.set(key, value),
 		removeItemSync: (key) => void items.delete(key),
+	};
+}
+
+/** The hub's launch schema for the chosen host, as evener/launch/schema
+ * answers: one boolean option per named wire field. */
+export function launchSchemaOf(wireFields: readonly string[]): LaunchOptionSchemaResponse {
+	return {
+		options: wireFields.map((wireField) => ({
+			field: wireField,
+			wireField,
+			label: wireField,
+			group: "Agent",
+			kind: "boolean",
+			perLaunch: true,
+		})),
 	};
 }
 

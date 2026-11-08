@@ -28,7 +28,7 @@ import { creationStore, forgetCreationForHub } from "./creations";
 import { formFront } from "./formFront";
 import { NewSessionForm } from "./NewSessionForm";
 import type { NewSessionRoutes } from "./newSessionContext";
-import { memoryStorage, sheetContext, TestSheet } from "./newSessionTestUtils";
+import { launchSchemaOf, memoryStorage, sheetContext, TestSheet } from "./newSessionTestUtils";
 
 const status = vi.hoisted(() => ({ line: null as string | null }));
 vi.mock("../board/connectionStatus", async (importOriginal) => ({
@@ -71,17 +71,6 @@ const glm: ModelDescriptor = {
 	reasoningEffortLevels: ["low", "medium", "high", "xhigh", "max"],
 };
 
-/** The hub's launch schema for the chosen host, as evener/launch/schema answers. */
-const launchSchemaOf = (wireFields: readonly string[]): LaunchOptionSchemaResponse => ({
-	options: wireFields.map((wireField) => ({
-		field: wireField,
-		wireField,
-		label: wireField,
-		group: "Agent",
-		kind: "boolean",
-		perLaunch: true,
-	})),
-});
 const SCHEMA_WITH_MEMORY = launchSchemaOf(["contextStrategy", "memoryEnabled"]);
 const SCHEMA_WITHOUT_MEMORY = launchSchemaOf(["contextStrategy"]);
 

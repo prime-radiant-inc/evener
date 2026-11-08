@@ -5,7 +5,7 @@ import { createNewSessionStore } from "../newSession";
 import { markedNodes, markerOf } from "../markerTestUtils";
 import { render, renderedText, settle, textOf } from "../renderNative.testkit";
 import { MoreOptions } from "./MoreOptions";
-import { sheetContext, TestSheet } from "./newSessionTestUtils";
+import { launchSchemaOf, sheetContext, TestSheet } from "./newSessionTestUtils";
 
 vi.mock("../board/connectionStatus", async (importOriginal) => ({
 	...(await importOriginal<typeof import("../board/connectionStatus")>()),
@@ -16,34 +16,11 @@ vi.mock("react-native", async () => ({
 	...(await import("../renderNative.testkit")).nativeModuleMock(),
 }));
 
-const memoryOption = {
-	field: "memory_enabled",
-	wireField: "memoryEnabled",
-	label: "Memory",
-	group: "Agent",
-	kind: "boolean",
-	perLaunch: true,
-};
-
 /** A hub build that knows the memory launch option. */
-const SCHEMA_WITH_MEMORY: LaunchOptionSchemaResponse = {
-	options: [
-		{
-			field: "context_strategy",
-			wireField: "contextStrategy",
-			label: "Context strategy",
-			group: "Limits",
-			kind: "select",
-			perLaunch: true,
-		},
-		memoryOption,
-	],
-};
+const SCHEMA_WITH_MEMORY = launchSchemaOf(["contextStrategy", "memoryEnabled"]);
 
 /** An older hub build: the same schema without the memory option. */
-const SCHEMA_WITHOUT_MEMORY: LaunchOptionSchemaResponse = {
-	options: [SCHEMA_WITH_MEMORY.options[0]],
-};
+const SCHEMA_WITHOUT_MEMORY = launchSchemaOf(["contextStrategy"]);
 
 async function mount(
 	defaults: Record<string, unknown> | null,
