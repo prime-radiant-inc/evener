@@ -853,14 +853,24 @@ test("the live older control loads cached bodies without a server cursor after a
     </ClientProvider>,
   );
   try {
-    expect(await screen.findByText("Loading older turns…")).toBeTruthy();
+    // The row's structured state is the observable; its loading label is copy.
+    // The auto-load is driven by a deferred render chain (Session mount ->
+    // projection -> virtualizer rows -> LoadOlderRow's own geometry check), and
+    // under a loaded gate that chain measured 52-563ms across nine runs here -
+    // one CI run expired Testing Library's 1s default (#4616). 2s leaves room
+    // for that chain and still fits this test's own 5s budget.
+    await waitFor(() => expect(screen.queryByTestId("load-older-row")?.getAttribute("data-state")).toBe("loading"), {
+      timeout: 2000,
+    });
     await act(async () => {
       gate.resolve();
       await settleEntryTranscriptForTests("ref_a");
     });
     await waitFor(() => expect(bodies()).toEqual(Array.from({ length: 225 }, (_, index) => `row-${index + 1}`)));
     expect(screen.getByText("row-1")).toBeTruthy();
-    expect(screen.queryByText("Loading older turns…")).toBeNull();
+    // ConversationBody renders the row only while older history remains, so a
+    // completed load removes it. Either absence or idle proves paging stopped.
+    expect(screen.queryByTestId("load-older-row")?.getAttribute("data-state")).not.toBe("loading");
     expect(threadsStore.getState().threads.get("ref_a")?.olderCursor).toBeUndefined();
     expect(fake.calls.filter((call) => call.method === "thread/turns/list")).toHaveLength(0);
     expect(fake.calls.filter((call) => call.method === "thread/read")).toHaveLength(reads);
@@ -871,7 +881,11 @@ test("the live older control loads cached bodies without a server cursor after a
     await lease.release();
     cache.close();
   }
-});
+  // The bounded-opening setup (background lease, entry settle, a 225-item
+  // render, the paging round trip) measured 2.0-6.6s on a loaded 16-core host,
+  // so Vitest's 5s default trips on a correct run. 15s is a hang tripwire, not
+  // the wait above.
+}, 15_000);
 
 test("older turns load with no click at all once the paging trigger fires", async () => {
   const fake = connectReadyFakeClient();
