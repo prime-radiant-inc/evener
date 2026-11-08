@@ -323,11 +323,15 @@ test("shares pointer tracking across any number of mounted consumers", () => {
       expect(tally.net("pointerdown", true)).toBe(1);
       expect(tally.net("pointerup", true)).toBe(1);
       expect(tally.net("pointercancel", true)).toBe(1);
+      expect(tally.net("pointermove", true)).toBe(1);
+      expect(tally.net("visibilitychange", true)).toBe(1);
 
       view.unmount();
       expect(tally.net("pointerdown", true)).toBe(0);
       expect(tally.net("pointerup", true)).toBe(0);
       expect(tally.net("pointercancel", true)).toBe(0);
+      expect(tally.net("pointermove", true)).toBe(0);
+      expect(tally.net("visibilitychange", true)).toBe(0);
     }
   } finally {
     tally.restore();
@@ -372,11 +376,15 @@ test("a StrictMode remount settles on one shared owner", () => {
     expect(tally.net("pointerdown", true)).toBe(1);
     expect(tally.net("pointerup", true)).toBe(1);
     expect(tally.net("pointercancel", true)).toBe(1);
+    expect(tally.net("pointermove", true)).toBe(1);
+    expect(tally.net("visibilitychange", true)).toBe(1);
 
     view.unmount();
     expect(tally.net("pointerdown", true)).toBe(0);
     expect(tally.net("pointerup", true)).toBe(0);
     expect(tally.net("pointercancel", true)).toBe(0);
+    expect(tally.net("pointermove", true)).toBe(0);
+    expect(tally.net("visibilitychange", true)).toBe(0);
   } finally {
     tally.restore();
   }
@@ -406,6 +414,27 @@ test("pointer-focus suppression follows the current hoverless mode while keyboar
   media.set(false);
   fireEvent.blur(trigger);
   fireEvent.pointerDown(trigger, { pointerId: 2, button: 0 });
+  fireEvent.focus(trigger);
+  advance(SHOW_DELAY_MS);
+  expect(screen.getByTestId("observed-label")).toBeTruthy();
+});
+
+test("a press whose release never arrives stops suppressing hoverless keyboard focus", () => {
+  vi.useFakeTimers();
+  vi.setSystemTime(1_000_000);
+  installTogglingMatchMedia(true);
+  render(<Harness />);
+  const trigger = screen.getByRole("button", { name: "Trigger" });
+
+  // The browser never delivers pointerup or pointercancel for this press.
+  fireEvent.pointerDown(trigger, { pointerId: 7, button: 0 });
+  fireEvent.focus(trigger);
+  advance(SHOW_DELAY_MS);
+  expect(screen.queryByTestId("observed-label")).toBeNull();
+
+  // Long after the press, keyboard focus is the keyboard's, not the press's.
+  fireEvent.blur(trigger);
+  advance(60_000);
   fireEvent.focus(trigger);
   advance(SHOW_DELAY_MS);
   expect(screen.getByTestId("observed-label")).toBeTruthy();
