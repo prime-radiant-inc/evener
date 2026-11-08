@@ -2037,7 +2037,7 @@ async function measureDuoCompactStates(phase: "focus" | "rest") {
       })),
       controls: Array.from(
         pane.querySelectorAll<HTMLElement>(
-          '[data-testid="composer-attach"], [data-composer-stop], [data-testid="composer-submit"], [data-sandbox-escalation-allow], [data-ask-question] input',
+          '[data-testid="composer-attach"], [data-testid="composer-stop"], [data-testid="composer-submit"], [data-sandbox-escalation-allow], [data-ask-question] input',
         ),
       ).map((control) => ({
         ...duoBox(

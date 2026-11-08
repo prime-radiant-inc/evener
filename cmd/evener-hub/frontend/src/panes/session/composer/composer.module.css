@@ -209,9 +209,4 @@
   .composer {
     gap: var(--space-1);
   }
-
-  .formAnchor:not([data-composer-editing]) :global([data-testid="composer-input-card"]):has([role="textbox"][data-empty="true"]) {
-    gap: 0;
-    padding-block: 0;
-  }
 }
