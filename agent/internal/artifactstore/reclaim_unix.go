@@ -3,9 +3,10 @@
 package artifactstore
 
 import (
-	"errors"
 	"os"
 	"syscall"
+
+	"primeradiant.com/evener/agent/internal/proclive"
 )
 
 // deadStoreDir reports whether name is a store directory this user owns and
@@ -21,5 +22,5 @@ func deadStoreDir(name string, info os.FileInfo) bool {
 	if !ok || stat.Uid != uint32(os.Getuid()) {
 		return false
 	}
-	return errors.Is(syscall.Kill(pid, 0), syscall.ESRCH)
+	return !proclive.Alive(pid)
 }
