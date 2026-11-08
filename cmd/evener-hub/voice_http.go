@@ -186,20 +186,8 @@ func (v *voiceService) arm(w http.ResponseWriter, r *http.Request) {
 		voiceHTTPError(w, http.StatusServiceUnavailable, "session_unavailable")
 		return
 	}
-	if read.Thread.Evener.InstanceID != request.ExpectedInstanceID {
-		voiceHTTPError(w, http.StatusConflict, "instance_changed")
-		return
-	}
-	if !read.Thread.Evener.MutationStateAuthoritative || !read.Thread.Evener.Manager {
-		voiceHTTPError(w, http.StatusConflict, "live_manager_required")
-		return
-	}
-	if !read.Thread.Evener.Capabilities.VoicePresentationContextV1 {
-		voiceHTTPError(w, http.StatusConflict, "voice_presentation_unsupported")
-		return
-	}
-	if !validVoiceProvenance(read.Thread.Evener.ConversationProvenance, request.ExpectedInstanceID) {
-		voiceHTTPError(w, http.StatusConflict, "voice_provenance_unavailable")
+	if reason := voiceSessionRefusal(read.Thread.Evener, request.ExpectedInstanceID); reason != "" {
+		voiceHTTPError(w, http.StatusConflict, reason)
 		return
 	}
 	if request.Provider == "" {
@@ -265,9 +253,7 @@ func (v *voiceService) status(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeStatus := func(supported bool, reason string) {
-		w.Header().Set("Content-Type", "application/json")
-		w.Header().Set("Cache-Control", "no-store")
-		_ = json.NewEncoder(w).Encode(voiceStatusResponse{Supported: supported, Reason: reason})
+		writeAPIJSON(w, http.StatusOK, voiceStatusResponse{Supported: supported, Reason: reason})
 	}
 	ref, err := appwire.ParseRef(request.Ref)
 	if err != nil || request.Ref != ref.String() || request.ExpectedInstanceID == "" {
@@ -285,23 +271,31 @@ func (v *voiceService) status(w http.ResponseWriter, r *http.Request) {
 		writeStatus(false, "session_unavailable")
 		return
 	}
-	evener := read.Thread.Evener
-	switch {
-	case evener.InstanceID != request.ExpectedInstanceID:
-		writeStatus(false, "instance_changed")
-	case !evener.Manager || !evener.MutationStateAuthoritative:
-		writeStatus(false, "live_manager_required")
-	case !evener.Capabilities.VoicePresentationContextV1:
-		writeStatus(false, "voice_presentation_unsupported")
-	case !validVoiceProvenance(evener.ConversationProvenance, request.ExpectedInstanceID):
-		writeStatus(false, "voice_provenance_unavailable")
-	default:
-		if _, err := v.web.defaultOpenAIVoiceProvider(); err != nil {
-			writeStatus(false, "voice_provider_unavailable")
-			return
-		}
-		writeStatus(true, "")
+	if reason := voiceSessionRefusal(read.Thread.Evener, request.ExpectedInstanceID); reason != "" {
+		writeStatus(false, reason)
+		return
 	}
+	if _, err := v.web.defaultOpenAIVoiceProvider(); err != nil {
+		writeStatus(false, "voice_provider_unavailable")
+		return
+	}
+	writeStatus(true, "")
+}
+
+// voiceSessionRefusal reports why Arm would refuse this session, or "" when it
+// can arm. Arm and the status preflight share it so the two cannot disagree.
+func voiceSessionRefusal(evener appwire.EvenerThread, expectedInstanceID string) string {
+	switch {
+	case evener.InstanceID != expectedInstanceID:
+		return "instance_changed"
+	case !evener.Manager || !evener.MutationStateAuthoritative:
+		return "live_manager_required"
+	case !evener.Capabilities.VoicePresentationContextV1:
+		return "voice_presentation_unsupported"
+	case !validVoiceProvenance(evener.ConversationProvenance, expectedInstanceID):
+		return "voice_provenance_unavailable"
+	}
+	return ""
 }
 
 func (v *voiceService) refreshSocket(ctx context.Context, ref string) {
@@ -426,15 +420,20 @@ func isOpenAIVoiceInstance(inst registry.Instance) bool {
 }
 
 // pickOpenAIVoiceProvider chooses voice's instance from the hub's default and
-// configured instances.
+// configured instances. An instance whose required credential is absent cannot
+// reach the Realtime endpoint, so voice skips it here rather than advertising a
+// bar that Arm would refuse.
 func pickOpenAIVoiceProvider(defaultName string, instances []registry.Instance) (string, error) {
+	usable := func(inst registry.Instance) bool {
+		return isOpenAIVoiceInstance(inst) && inst.CredentialSource != "none"
+	}
 	for _, inst := range instances {
-		if inst.Name == defaultName && isOpenAIVoiceInstance(inst) {
+		if inst.Name == defaultName && usable(inst) {
 			return inst.Name, nil
 		}
 	}
 	for _, inst := range instances {
-		if isOpenAIVoiceInstance(inst) {
+		if usable(inst) {
 			return inst.Name, nil
 		}
 	}

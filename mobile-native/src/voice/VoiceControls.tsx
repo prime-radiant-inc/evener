@@ -34,7 +34,8 @@ const TONES: Record<VoicePhase, { symbol: SFSymbol; ink: Ink }> = {
 
 function Controls({ client, target }: { client: VoiceClient; target: VoiceTarget }) {
 	const state = useSyncExternalStore(client.subscribe, client.getSnapshot);
-	const support = useVoiceSupport(client, target);
+	const armed = state.state !== "disarmed";
+	const support = useVoiceSupport(client, target, armed);
 	const { palette } = useColors();
 	const { height } = useWindowDimensions();
 	const [expanded, setExpanded] = useState(false);
@@ -56,7 +57,6 @@ function Controls({ client, target }: { client: VoiceClient; target: VoiceTarget
 		return () => clearTimeout(timer);
 	}, [state.wake?.detections]);
 	const bound = client.getTarget();
-	const armed = state.state !== "disarmed";
 	const same = bound?.ref === target.ref && bound.hub.id === target.hub.id;
 	// Between a streamed turn and its reply, native holds `conversing` with no
 	// live turn. Remember that a turn streamed here so the bar can say it is
@@ -74,18 +74,14 @@ function Controls({ client, target }: { client: VoiceClient; target: VoiceTarget
 	previousState.current = state.state;
 	// A session the hub will refuse keeps the bar hidden, but an armed binding
 	// still shows here so Talk and Stop work from any session.
-	if (!armed && support !== "supported") return null;
+	if (!armed && !support) return null;
 	const starting = state.state === "conversing" && !state.cloudMicrophone && turnStarting.current;
 	const presented = voicePresentation(state, justHeard);
 	const talkEnabled = presented.talkEnabled && same;
 	// Playback is this device's, so Stop does not need this session's binding or
 	// a live capture; everything else needs Talk's conditions.
 	const actionEnabled =
-		presented.primary === "stop"
-			? true
-			: presented.primary === "arm"
-				? target.manager && !busy && support === "supported"
-				: talkEnabled;
+		presented.primary === "stop" ? true : presented.primary === "arm" ? target.manager && !busy : talkEnabled;
 	const arm = async (replace = false) => {
 		setBusy(true);
 		setError(null);
@@ -184,30 +180,41 @@ async function disarm(client: VoiceClient, setError: (message: string) => void) 
 	}
 }
 
+/** How long a hidden bar waits before asking the hub again: a saved manager
+ * becomes armable when typed input resumes it, without changing its identity. */
+const SUPPORT_RETRY_MS = 10_000;
+
 /** The hub's answer for this session. A check that cannot complete keeps the
  * control visible, as older hubs did, so a transient failure never hides it. */
-function useVoiceSupport(client: VoiceClient, target: VoiceTarget) {
-	const [support, setSupport] = useState<"checking" | "supported" | "unsupported">("checking");
-	const identity = `${target.hub.id}\u0000${target.ref}\u0000${target.instanceId}`;
+function useVoiceSupport(client: VoiceClient, target: VoiceTarget, armed: boolean) {
+	const [supported, setSupported] = useState(false);
+	const [attempt, setAttempt] = useState(0);
 	useEffect(() => {
+		// An armed binding shows the bar everywhere, so its session's answer
+		// is not needed until voice is off.
+		if (armed) return;
 		let live = true;
-		setSupport("checking");
 		client.status(target).then(
-			(result) => {
-				if (live) setSupport(result.supported ? "supported" : "unsupported");
+			(answer) => {
+				if (live) setSupported(answer);
 			},
 			() => {
-				if (live) setSupport("supported");
+				if (live) setSupported(true);
 			},
 		);
 		return () => {
 			live = false;
 		};
-		// The session identity decides when to ask again; the target object is new
-		// on every parent render.
-		// biome-ignore lint/correctness/useExhaustiveDependencies: identity stands in for target
-	}, [client, identity]);
-	return support;
+		// target is a fresh object on every parent render; these identity fields
+		// are what decide a re-check.
+		// biome-ignore lint/correctness/useExhaustiveDependencies: target fields stand in for target
+	}, [client, target.hub.id, target.ref, target.instanceId, armed, attempt]);
+	useEffect(() => {
+		if (armed || supported) return;
+		const timer = setTimeout(() => setAttempt((value) => value + 1), SUPPORT_RETRY_MS);
+		return () => clearTimeout(timer);
+	}, [armed, supported, attempt]);
+	return supported;
 }
 
 /** The bar's one line: what voice is doing, one glyph, and at most one action.

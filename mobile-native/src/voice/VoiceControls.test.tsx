@@ -136,6 +136,8 @@ it("arms in one tap with a visible disclosure, keeps takeover explicit, and send
 		button("Turn voice off").props.onPress();
 	});
 	expect(actions).toEqual(["arm", "talk", "stop", "disarm"]);
+	// Turning voice off explains itself in place; it does not collapse the panel.
+	expect(tree.root.findByProps({ testID: "voice-panel" })).toBeDefined();
 });
 
 it("adds no controls when the hub does not advertise voice", () => {
@@ -579,4 +581,66 @@ it("hides the bar on a session the hub says cannot run voice", async () => {
 	);
 	await act(async () => {});
 	expect(tree.toJSON()).toBeNull();
+});
+
+it("offers voice once a saved manager becomes armable, without changing identity", async () => {
+	vi.useFakeTimers();
+	let armable = false;
+	const native: NativeVoicePort = {
+		deviceId: async () => "install",
+		validateTransport: async () => {},
+		authorize: async (origin) =>
+			armable
+				? { origin, status: 200, body: JSON.stringify({ supported: true, reason: "" }) }
+				: { origin, status: 200, body: JSON.stringify({ supported: false, reason: "live_manager_required" }) },
+		arm: async () => {},
+		snapshot: async () => ({
+			state: "disarmed",
+			capturing: false,
+			cloudMicrophone: false,
+			route: "",
+			speakerConsentRequired: false,
+			error: "",
+			interpreted: "",
+			custody: "",
+			canonical: "",
+			generated: "",
+			bindingId: "",
+			provider: "",
+		}),
+		addListener: () => ({ remove() {} }),
+		talk: () => {},
+		stopSpeaking: () => {},
+		disarm: () => {},
+		allowSpeaker: () => {},
+		startWakeTrial: async () => {},
+		finishWakeTrial: async () => {},
+	};
+	const client = new VoiceClient(
+		native,
+		async () => "fixture",
+		() => true,
+	);
+	const tree = render(
+		<VoiceContext.Provider value={client}>
+			<VoiceControls
+				target={{
+					hub: { id: "hub", name: "Hub", origin: "http://127.0.0.1:9180" },
+					ref: "local:saved",
+					instanceId: "instance",
+					manager: true,
+					voiceAvailable: true,
+				}}
+			/>
+		</VoiceContext.Provider>,
+	);
+	await act(async () => {});
+	expect(tree.toJSON()).toBeNull();
+	armable = true;
+	await act(async () => {
+		vi.advanceTimersByTime(10_000);
+	});
+	await act(async () => {});
+	expect(tree.root.findByProps({ testID: "voice-controls" })).toBeDefined();
+	vi.useRealTimers();
 });

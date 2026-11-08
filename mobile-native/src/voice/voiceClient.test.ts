@@ -384,16 +384,10 @@ it("reports voice support from the hub preflight and keeps older hubs visible", 
 		expect(sent).toEqual({ ref: target.ref, expectedInstanceId: target.instanceId });
 		return support;
 	};
-	expect(await ask(200, JSON.stringify({ supported: false, reason: "voice_provenance_unavailable" }))).toEqual({
-		supported: false,
-		reason: "voice_provenance_unavailable",
-	});
-	expect(await ask(200, JSON.stringify({ supported: true }))).toEqual({ supported: true, reason: "" });
+	expect(await ask(200, JSON.stringify({ supported: false, reason: "voice_provenance_unavailable" }))).toBe(false);
+	expect(await ask(200, JSON.stringify({ supported: true }))).toBe(true);
 	// A hub that predates the preflight keeps the control visible, as before.
-	expect(await ask(404, "not found")).toEqual({ supported: true, reason: "" });
-	expect(await ask(503, JSON.stringify({ code: "voice_provider_unavailable" }))).toEqual({
-		supported: false,
-		reason: "voice_provider_unavailable",
-	});
-	expect(await client.status({ ...target, instanceId: "" })).toEqual({ supported: false, reason: "manager_required" });
+	expect(await ask(404, "not found")).toBe(true);
+	expect(await ask(503, JSON.stringify({ code: "voice_provider_unavailable" }))).toBe(false);
+	expect(await client.status({ ...target, instanceId: "" })).toBe(false);
 });

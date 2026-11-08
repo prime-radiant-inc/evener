@@ -48,10 +48,6 @@ export interface VoiceOptions {
 	model: string;
 	voice: string;
 }
-export interface VoiceSupport {
-	supported: boolean;
-	reason: string;
-}
 export const defaultVoiceOptions: VoiceOptions = { provider: "", model: "gpt-realtime-2.1", voice: "marin" };
 export class VoiceError extends Error {
 	constructor(readonly code: string) {
@@ -191,8 +187,8 @@ export class VoiceClient {
 	/** Whether this session can run voice right now. The hub answers from the
 	 * admission evidence Arm uses, so a session that would refuse keeps the
 	 * control hidden. A hub that predates the preflight keeps the old behavior. */
-	async status(target: VoiceTarget): Promise<VoiceSupport> {
-		if (!target.manager || !target.instanceId) return { supported: false, reason: "manager_required" };
+	async status(target: VoiceTarget): Promise<boolean> {
+		if (!target.manager || !target.instanceId) return false;
 		const token = await this.token(target.hub.id);
 		const response = await this.native.authorize(
 			target.hub.origin,
@@ -200,16 +196,15 @@ export class VoiceClient {
 			token,
 			JSON.stringify({ ref: target.ref, expectedInstanceId: target.instanceId }),
 		);
-		if (response.status === 404) return { supported: true, reason: "" };
-		let result: { supported?: unknown; reason?: unknown; code?: unknown } = {};
+		if (response.status === 404) return true;
+		if (response.status < 200 || response.status >= 300) return false;
+		let result: { supported?: unknown } = {};
 		try {
 			result = JSON.parse(response.body);
 		} catch {
-			// An unreadable body answers the same way a missing reason does.
+			// An unreadable body reads as unsupported.
 		}
-		if (response.status < 200 || response.status >= 300)
-			return { supported: false, reason: typeof result.code === "string" ? result.code : "status_unavailable" };
-		return { supported: result.supported === true, reason: typeof result.reason === "string" ? result.reason : "" };
+		return result.supported === true;
 	}
 	private async revoke(binding: { hub: HubProfile; origin: string; bindingId: string; epoch: string }) {
 		if (!this.foreground()) return;
