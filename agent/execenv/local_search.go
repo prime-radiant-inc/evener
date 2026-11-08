@@ -457,8 +457,29 @@ func (e *LocalExecutionEnvironment) GrepSkipping(ctx context.Context, pattern st
 		if err := ctx.Err(); err != nil {
 			return "", err
 		}
+		var notes []string
 		if oversized > 0 {
-			return searchresult.WithNotes("", grepOversizeNote(oversized)), nil
+			notes = append(notes, grepOversizeNote(oversized))
+		}
+		// The native walk knows how many paths its ignore rules skipped, so
+		// the rg arm asks ripgrep for the same view: the files it lists with
+		// its ignore rules minus the ones it lists with --no-ignore. Without
+		// the note, an empty result looks identical to a genuine no-match
+		// (#4222).
+		ignored, ierr := e.grepRgIgnoredCount(ctx, rg, dir, globFilters)
+		if ierr != nil {
+			if cancelErr := ctx.Err(); cancelErr != nil {
+				return "", cancelErr
+			}
+			// A listing that failed another way is no note: the disclosure is
+			// best-effort and must not assert a count it could not obtain.
+			ignored = 0
+		}
+		if ignored > 0 {
+			notes = append(notes, grepExclusionNote(ignored))
+		}
+		if len(notes) > 0 {
+			return searchresult.WithNotes("", notes...), nil
 		}
 		return "", nil
 	}
@@ -498,6 +519,33 @@ func (e *LocalExecutionEnvironment) grepRgOversizeCount(ctx context.Context, rg,
 	return all - under, nil
 }
 
+// grepRgIgnoredCount reports how many files ripgrep's default dotfile and
+// gitignore rules leave out of a directory search, so an empty rg-arm result
+// can carry the same exclusion note the native walk composes. Both listings
+// run through the same ripgrep with the same glob filters; --no-ignore alone
+// differs. Hidden paths stay out of both listings (rg's default), matching a
+// native walk that skips dot entries without counting them.
+func (e *LocalExecutionEnvironment) grepRgIgnoredCount(ctx context.Context, rg, dir string, globFilters []string) (int, error) {
+	if err := ctx.Err(); err != nil {
+		return 0, err
+	}
+	if grepTargetsOneFile(dir) {
+		return 0, nil
+	}
+	withIgnore, err := e.grepRgListFiles(ctx, rg, dir, globFilters, false)
+	if err != nil {
+		return 0, err
+	}
+	withoutIgnore, err := e.grepRgListFilesWithIgnoreSettings(ctx, rg, dir, globFilters, false, true)
+	if err != nil {
+		return 0, err
+	}
+	if withoutIgnore < withIgnore {
+		return 0, nil
+	}
+	return withoutIgnore - withIgnore, nil
+}
+
 // grepRgListFiles counts one rg --files listing of dir: --null keeps the
 // paths separable and only their number matters — counted as they stream
 // through, so a listing of any size is never retained — and --max-filesize,
@@ -507,12 +555,22 @@ func (e *LocalExecutionEnvironment) grepRgOversizeCount(ctx context.Context, rg,
 // note rather than deriving a count from a half-failed pair of listings,
 // while a cancellation is the search's error to report.
 func (e *LocalExecutionEnvironment) grepRgListFiles(ctx context.Context, rg, dir string, globFilters []string, capped bool) (int, error) {
+	return e.grepRgListFilesWithIgnoreSettings(ctx, rg, dir, globFilters, capped, false)
+}
+
+// grepRgListFilesWithIgnoreSettings is grepRgListFiles with the ignore-rule
+// knob the exclusion count needs: noIgnore lists the files rg would search if
+// its dotfile and gitignore rules did not apply.
+func (e *LocalExecutionEnvironment) grepRgListFilesWithIgnoreSettings(ctx context.Context, rg, dir string, globFilters []string, capped, noIgnore bool) (int, error) {
 	if err := ctx.Err(); err != nil {
 		return 0, err
 	}
 	args := []string{"--files", "--null"}
 	if capped {
 		args = append(args, "--max-filesize", strconv.Itoa(grepMaxFileBytes))
+	}
+	if noIgnore {
+		args = append(args, "--no-ignore")
 	}
 	for _, globFilter := range globFilters {
 		if strings.TrimSpace(globFilter) != "" {

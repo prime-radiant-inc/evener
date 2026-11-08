@@ -577,12 +577,19 @@ func (a *grepAccum) finishWalk(excludedByIgnore, oversized int) string {
 		notes = append(notes, grepOversizeNote(oversized))
 	}
 	if out == "" && excludedByIgnore > 0 {
-		notes = append(notes, fmt.Sprintf("0 matches; %d dotfile/gitignored path(s) were excluded from the search", excludedByIgnore))
+		notes = append(notes, grepExclusionNote(excludedByIgnore))
 	}
 	if len(notes) > 0 {
 		return searchresult.WithNotes(out, notes...)
 	}
 	return out
+}
+
+// grepExclusionNote explains an empty result that the default dotfile and
+// gitignore rules could have made empty. Both grep arms compose it, so a
+// fully-filtered search reads the same with and without ripgrep (#4222).
+func grepExclusionNote(excludedByIgnore int) string {
+	return fmt.Sprintf("0 matches; %d dotfile/gitignored path(s) were excluded from the search", excludedByIgnore)
 }
 
 // grepTreeWalk is the directory walk both native grep arms run: the
