@@ -1950,6 +1950,13 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 		rc := classifyRoundContent(txt, len(calls), resp.Message.Content)
 		noContent := rc.NoContent
 		skipHistory := rc.SkipHistory
+		// A pause_turn response is the provider's partial state. Even when it
+		// carries only server-side tool blocks (a web search still running) and
+		// no text or client tool calls, the continuation must see it again, so
+		// keep it in history instead of dropping it as a no-content round.
+		if resp.Finish.Reason == llm.FinishReasonPauseTurn && len(resp.Message.Content) > 0 {
+			skipHistory = false
+		}
 
 		if abortErr := errors.Join(s.emitAssistantResponse(ctx, resp, modelResp, txt, skipHistory, attempt), sessionLifecycleFault(ctx, "emit_assistant")); abortErr != nil {
 			return "", progressed, abortErr

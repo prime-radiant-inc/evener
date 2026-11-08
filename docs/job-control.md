@@ -383,7 +383,7 @@ or `idle`; its prior generation is summarized separately in `last_outcome` with
 | `failed` | shell status or delegate `last_outcome` | For a shell, the job system's own machinery failed (launch, supervision, reaping, finalization); for a delegate `last_outcome`, the delegate's run itself failed. | `start_failed`, `wait_failed`, `finalize_failed`, `forward_failed`, `missing_terminal`, `terminal_error`, `runtime_lost` as applicable | typed terminal attention |
 | `command_exited_nonzero` | shell status | The supervised command exited nonzero. The job machinery launched, supervised, and reaped it fine — the COMMAND is what failed. | `exit_nonzero` | typed terminal attention |
 | `command_killed` | shell status | The supervised command died on a signal. | `killed_by_signal: SIGNAL` | typed terminal attention |
-| `exhausted` | delegate `last_outcome` | A delegate generation reached its turn or tool-round budget. | `turn_budget_exhausted`, `tool_round_budget_exhausted` | delegate terminal packet |
+| `exhausted` | delegate `last_outcome` | A delegate generation reached its turn, tool-round, or server-continuation budget. | `turn_budget_exhausted`, `tool_round_budget_exhausted`, `server_continuation_budget_exhausted` | delegate terminal packet |
 | `cancelled` | shell status or delegate `last_outcome` | Evener intentionally stopped work and confirmed cancellation. | `stopped_by_parent` | typed terminal attention |
 | `stopped` | shell status or delegate `last_outcome` | Work did not complete and Evener cannot attribute it to normal failure or confirmed cancellation. | `runtime_lost`, `cancelled`, `run_timeout` | typed terminal attention |
 

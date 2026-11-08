@@ -1112,6 +1112,107 @@ func TestSession_PauseTurn_ConsecutiveBudget(t *testing.T) {
 	}
 }
 
+// A pause_turn response can carry only server-side tool blocks (a web search in
+// progress) and no text or client tool calls. That response is the provider's
+// partial state, so it must stay in history for the continuation to see; the
+// generic no-content classification would otherwise drop it.
+func TestSession_PauseTurn_KeepsServerToolStateInHistory(t *testing.T) {
+	t.Parallel()
+	var calls int
+	responder := func(llm.Request) llm.Response {
+		calls++
+		if calls == 1 {
+			return llm.Response{
+				Model: "gpt-5.2",
+				Message: llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{{
+					Kind:      llm.ContentWebSearch,
+					WebSearch: &llm.WebSearchData{Query: "searching"},
+				}}},
+				Finish: llm.FinishReason{Reason: llm.FinishReasonPauseTurn, Raw: "pause_turn"},
+			}
+		}
+		return agenttest.CommunicateResponse(true, "done")
+	}
+	sess, _, _ := newBudgetSession(t, SessionConfig{MaxToolRoundsPerInput: 2}, responder)
+
+	if _, err := sess.processInputKindWithProvenance(context.Background(), "search for something", nil, EntryUserInput, nil); err != nil {
+		t.Fatalf("process input: %v", err)
+	}
+	for _, turn := range budgetHistory(sess) {
+		for _, part := range turn.Message.Content {
+			if part.Kind == llm.ContentWebSearch {
+				return
+			}
+		}
+	}
+	t.Fatal("the pause_turn response's server-tool state was dropped from history")
+}
+
+// The issue requires cancellation during a pause chain to end the turn as a
+// cancellation, not as the server-continuation budget.
+func TestSession_PauseTurn_CancellationDuringChain(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	var calls int
+	responder := func(llm.Request) llm.Response {
+		calls++
+		if calls == 3 {
+			cancel()
+		}
+		return llm.Response{
+			Model:   "gpt-5.2",
+			Message: llm.Assistant("searching..."),
+			Finish:  llm.FinishReason{Reason: llm.FinishReasonPauseTurn, Raw: "pause_turn"},
+		}
+	}
+	sess, adapter, _ := newBudgetSession(t, SessionConfig{MaxToolRoundsPerInput: 2}, responder)
+
+	_, err := sess.processInputKindWithProvenance(ctx, "search for something", nil, EntryUserInput, nil)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("pause-chain cancellation error = %v, want context.Canceled", err)
+	}
+	if _, exhausted := budgetExhaustionFromError(err); exhausted {
+		t.Fatal("cancellation during a pause chain was reported as budget exhaustion")
+	}
+	if got := len(adapter.Requests()); got >= maxServerContinuations {
+		t.Fatalf("cancellation made %d requests, want it to stop the chain before the budget", got)
+	}
+}
+
+// A non-pause round breaks the consecutive chain: two short pause chains whose
+// total exceeds the budget must not exhaust it.
+func TestSession_PauseTurn_NonPauseRoundResetsBudget(t *testing.T) {
+	t.Parallel()
+	pause := func() llm.Response {
+		return llm.Response{
+			Model:   "gpt-5.2",
+			Message: llm.Assistant("searching..."),
+			Finish:  llm.FinishReason{Reason: llm.FinishReasonPauseTurn, Raw: "pause_turn"},
+		}
+	}
+	var calls int
+	responder := func(llm.Request) llm.Response {
+		calls++
+		switch {
+		case calls <= 6, calls >= 8 && calls <= 13:
+			return pause()
+		case calls == 7:
+			return agenttest.CommunicateResponse(false, "still working")
+		default:
+			return agenttest.CommunicateResponse(true, "done")
+		}
+	}
+	sess, adapter, _ := newBudgetSession(t, SessionConfig{MaxToolRoundsPerInput: 2}, responder)
+
+	if _, err := sess.processInputKindWithProvenance(context.Background(), "search for something", nil, EntryUserInput, nil); err != nil {
+		t.Fatalf("two short pause chains: %v", err)
+	}
+	if got := len(adapter.Requests()); got != 14 {
+		t.Fatalf("model requests = %d, want 14 (12 pauses in two chains plus two rounds)", got)
+	}
+}
+
 func TestSession_RecordInputTokens_SkipsWebSearchResponse(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
