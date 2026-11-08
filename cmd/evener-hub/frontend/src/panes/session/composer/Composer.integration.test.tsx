@@ -434,7 +434,7 @@ test("held acceptance preserves a same-text command edit through source Return",
       },
     ]);
   } finally {
-    hold.release();
+    act(() => hold.release());
   }
 });
 
@@ -662,7 +662,7 @@ test.each([
     }
     expect(getToasts()).toEqual([]);
   } finally {
-    hold.release();
+    act(() => hold.release());
   }
 });
 
