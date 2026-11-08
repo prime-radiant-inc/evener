@@ -77,15 +77,7 @@ describe("useRailSummary cache", () => {
     const cache = new RailSummaryCache();
     let current = load;
     const view = renderHook(
-      (props: HarnessProps) =>
-        useRailSummary({
-          ref: REF,
-          load: (ref) => current(ref),
-          jobsUpdatedAt: props.jobsUpdatedAt,
-          jobsTreeRevision: props.jobsTreeRevision,
-          hydration: props.hydration,
-          cache,
-        }),
+      renderSummary((ref) => current(ref), cache),
       { initialProps: settled },
     );
     await waitFor(() => expect(view.result.current.summary).not.toBeNull());
@@ -262,7 +254,8 @@ describe("useRailSummary refresh", () => {
       .mockResolvedValueOnce(summary({ jobHistory: { status: "complete", revision: 5 } }))
       .mockImplementationOnce(async () => unversioned())
       .mockImplementationOnce(async () => unversioned());
-    const view = renderHook(renderSummary(load), { initialProps: settled });
+    const cache = new RailSummaryCache();
+    const view = renderHook(renderSummary(load, cache), { initialProps: settled });
     await waitFor(() => expect(view.result.current.jobHistory?.revision).toBe(5));
 
     view.rerender({ ...settled, jobsUpdatedAt: 2 });
@@ -271,6 +264,12 @@ describe("useRailSummary refresh", () => {
     expect(view.result.current.summary?.jobs[0]?.jobId).toBe("job_a");
     expect(view.result.current.jobHistory?.revision).toBe(5);
     expect(view.result.current.jobHistory?.status).toBe("degraded");
+
+    view.unmount();
+    const remount = renderHook(renderSummary(load, cache), { initialProps: { ...settled, jobsUpdatedAt: 2 } });
+    await act(async () => {});
+    expect(remount.result.current.jobHistory?.status).toBe("degraded");
+    expect(load).toHaveBeenCalledTimes(3);
   });
 
   test("a later job signal gets a fresh revision-retry budget after recovery is exhausted", async () => {
@@ -449,6 +448,36 @@ describe("useRailSummary coalescing", () => {
 });
 
 describe("useRailSummary lifecycle", () => {
+  test("a ref change to an already-terminal cached ref serves the cache without a request", async () => {
+    const cache = new RailSummaryCache();
+    cache.set("remote:ended", {
+      summary: summary({ jobs: [job({ jobId: "job_cached" })] }),
+      signal: "1:-",
+      hydration: 0,
+      terminal: true,
+    });
+    const load = vi.fn(async () => summary());
+    const view = renderHook(
+      (props: { ref: string; terminal: boolean }) =>
+        useRailSummary({
+          ref: props.ref,
+          load,
+          jobsUpdatedAt: 1,
+          jobsTreeRevision: null,
+          hydration: 0,
+          terminal: props.terminal,
+          cache,
+        }),
+      { initialProps: { ref: "remote:live", terminal: false } },
+    );
+    await waitFor(() => expect(view.result.current.summary).not.toBeNull());
+    expect(load).toHaveBeenCalledTimes(1);
+
+    view.rerender({ ref: "remote:ended", terminal: true });
+    expect(view.result.current.summary?.jobs[0]?.jobId).toBe("job_cached");
+    expect(load).toHaveBeenCalledTimes(1);
+  });
+
   test("a ref change fences the old ref's response and loads the new ref", async () => {
     const old = deferred<RailSummary>();
     const fresh = deferred<RailSummary>();
@@ -546,5 +575,43 @@ describe("useRailSummary lifecycle", () => {
 
     view.rerender({ ...settled, jobsUpdatedAt: 3, terminal: true });
     expect(load).toHaveBeenCalledTimes(3);
+  });
+
+  test("a terminal response that lands after the session is live again refreshes under the live state", async () => {
+    const terminalResponse = deferred<RailSummary>();
+    const liveResponse = deferred<RailSummary>();
+    const load = vi
+      .fn(async () => summary())
+      .mockResolvedValueOnce(summary())
+      .mockReturnValueOnce(terminalResponse.promise)
+      .mockReturnValueOnce(liveResponse.promise);
+    const cache = new RailSummaryCache();
+    const render = renderSummary(load, cache);
+    const view = renderHook(render, { initialProps: { ...settled, terminal: false } });
+    await waitFor(() => expect(view.result.current.summary).not.toBeNull());
+
+    view.rerender({ ...settled, terminal: true });
+    await waitFor(() => expect(load).toHaveBeenCalledTimes(2));
+    view.rerender({ ...settled, terminal: false });
+
+    await act(async () =>
+      terminalResponse.resolve(
+        summary({
+          jobs: [job({ jobId: "job_terminal", finishedAt: 9_000, status: "finished" })],
+          jobHistory: { status: "complete", revision: 4 },
+        }),
+      ),
+    );
+    await waitFor(() => expect(load).toHaveBeenCalledTimes(3));
+    // The terminal capture is discarded, so the live summary still stands.
+    expect(view.result.current.summary?.jobs[0]?.jobId).toBe("job_a");
+
+    await act(async () =>
+      liveResponse.resolve(
+        summary({ jobs: [job({ jobId: "job_live" })], jobHistory: { status: "complete", revision: 5 } }),
+      ),
+    );
+    await waitFor(() => expect(view.result.current.summary?.jobs[0]?.jobId).toBe("job_live"));
+    expect(cache.get(REF)?.terminal).toBe(false);
   });
 });

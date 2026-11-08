@@ -154,6 +154,18 @@ export function useRailSummary(options: UseRailSummaryOptions): RailSummaryState
       );
     };
 
+    // The session's live/ended state can move while this attempt is open. A
+    // capture from the other state must not become the cache: a terminal
+    // capture accepted for a live ref would freeze it, and a live capture
+    // accepted for an ended ref would skip its final job refresh.
+    const supersededLifecycle = () => {
+      if (inFlight.current !== controller) return;
+      cycle.current += 1;
+      retriedCycle.current = null;
+      trailing.current = true;
+      settle();
+    };
+
     setSnapshot((current) => (current.ref === target ? { ...current, loading: true } : current));
 
     // Promise.resolve().then keeps a loader that throws synchronously on the
@@ -166,6 +178,10 @@ export function useRailSummary(options: UseRailSummaryOptions): RailSummaryState
             abandon();
             return;
           }
+          if (requestedTerminal !== terminalRef.current) {
+            supersededLifecycle();
+            return;
+          }
           const previousRevision = cacheRef.current.get(target)?.summary.jobHistory.revision ?? null;
           const incomingRevision = summary.jobHistory.revision;
           if (previousRevision !== null && (incomingRevision === null || incomingRevision < previousRevision)) {
@@ -173,18 +189,23 @@ export function useRailSummary(options: UseRailSummaryOptions): RailSummaryState
             // one. Ask once more so a quiet live ref cannot stay pinned to the
             // stale copy; if the retry repeats the regression, stop asking and
             // leave the cached data with an honest not-loading state.
-            if (requestCycle !== cycle.current) {
-              // An older cycle's stale answer. The newer cycle's own queued
-              // request owns its recovery budget.
-            } else if (retriedCycle.current !== requestCycle) {
-              retriedCycle.current = requestCycle;
-              trailing.current = true;
-            } else {
-              // Recovery is exhausted: keep the rows but say the lane is no
-              // longer trustworthy, so the rail shows degraded and offers Retry.
-              const cached = cacheRef.current.get(target);
-              if (cached) recordDegradedCached(cached);
-              else setSnapshot((current) => (current.ref === target ? { ...current, loading: false } : current));
+            if (requestCycle === cycle.current) {
+              if (retriedCycle.current !== requestCycle) {
+                retriedCycle.current = requestCycle;
+                trailing.current = true;
+              } else {
+                // Recovery is exhausted: keep the rows but say the lane is no
+                // longer trustworthy, so the rail shows degraded and offers Retry.
+                const cached = cacheRef.current.get(target);
+                if (cached)
+                  recordDegradedCached({
+                    ...cached,
+                    signal: requestedSignal,
+                    hydration: requestedHydration,
+                    terminal: requestedTerminal,
+                  });
+                else setSnapshot((current) => (current.ref === target ? { ...current, loading: false } : current));
+              }
             }
             settle();
             return;
@@ -205,6 +226,10 @@ export function useRailSummary(options: UseRailSummaryOptions): RailSummaryState
         () => {
           if (gen !== generation.current) {
             abandon();
+            return;
+          }
+          if (requestedTerminal !== terminalRef.current) {
+            supersededLifecycle();
             return;
           }
           const cached = cacheRef.current.get(target);
@@ -241,11 +266,12 @@ export function useRailSummary(options: UseRailSummaryOptions): RailSummaryState
   // mount with nothing cached.
   useEffect(() => {
     const entry = cache.get(ref);
-    const becameTerminal = !previousTerminal.current && terminal;
+    const refChanged = previousRef.current !== ref;
+    const becameTerminal = !refChanged && !previousTerminal.current && terminal;
     previousTerminal.current = terminal;
-    const hydrationChanged = previousHydration.current !== hydration;
+    const hydrationChanged = !refChanged && previousHydration.current !== hydration;
     previousHydration.current = hydration;
-    if (previousRef.current !== ref) {
+    if (refChanged) {
       previousRef.current = ref;
       generation.current += 1;
       inFlight.current?.abort();

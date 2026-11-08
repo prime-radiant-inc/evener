@@ -3,12 +3,10 @@
 // The degraded-history presentation is the user-visible half of the contract:
 // a complete projection stays silent, and every incomplete one is announced
 // with a control that retries the lane it reports.
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
-import { afterEach, describe, expect, test, vi } from "vitest";
+import { fireEvent, render, screen } from "@testing-library/react";
+import { describe, expect, test, vi } from "vitest";
 import { RailJobHistoryNotice } from "./RailJobHistoryNotice";
 import type { RailJobHistoryStatus } from "./railSummary";
-
-afterEach(cleanup);
 
 describe("RailJobHistoryNotice", () => {
   test("complete job history renders no notice", () => {

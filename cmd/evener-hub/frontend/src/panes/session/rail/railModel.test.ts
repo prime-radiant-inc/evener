@@ -175,6 +175,24 @@ describe("railModelFromSummaryAndTurns", () => {
     expect(model.jobLanes).toBe(1);
   });
 
+  test("a zero-length job still occupies a lane", () => {
+    const model = railModelFromSummaryAndTurns(
+      summary({ jobs: [job({ startedAt: 1_000, finishedAt: 1_000, status: "finished" })] }),
+      [],
+      { status: "complete", revision: 3 },
+    );
+    expect(model.jobLanes).toBe(1);
+  });
+
+  test("does not alias the summary's job objects", () => {
+    const source = summary();
+    const model = railModelFromSummaryAndTurns(source, [], { status: "complete", revision: 3 });
+    const first = model.jobs[0];
+    expect(first).toBeDefined();
+    if (first) first.finishedAt = 4_000;
+    expect(source.jobs[0]?.finishedAt).toBeNull();
+  });
+
   test("the span follows the job intervals as well as the turns", () => {
     const model = railModelFromSummaryAndTurns(summary({ jobs: [job({ startedAt: 500, finishedAt: 4_000 })] }), [], {
       status: "complete",

@@ -3,26 +3,16 @@
 // and its completeness always come from the summary; live turns never
 // fabricate or refresh a job.
 import { type TurnModel, turnUsageTokens } from "@evener/appwire-client";
-import type { RailJobHistory, RailSummary } from "./railSummary";
+import type { RailJobHistory, RailJobInterval, RailSummary, RailSummaryTurn } from "./railSummary";
 
-export interface RailEvent {
-  startedAt: number;
-  userInput: boolean;
-  steering: boolean;
-  error: boolean;
+/** The summary tuple with its token fields named for the renderer's IN/OUT
+ * strata. */
+export type RailEvent = Pick<RailSummaryTurn, "startedAt" | "userInput" | "steering" | "error" | "resultBytes"> & {
   inTok: number;
   outTok: number;
-  resultBytes: number;
-}
+};
 
-export interface RailJob {
-  jobId: string;
-  startedAt: number;
-  /** null while the job is still running. */
-  finishedAt: number | null;
-  exitCode?: number;
-  status: string;
-}
+export type RailJob = RailJobInterval;
 
 export interface RailModel {
   startMs: number;
@@ -68,10 +58,10 @@ export function railModelFromSummaryAndTurns(
     const usage = turnUsageTokens(turn);
     const error = turn.error != null;
     const first = turn.items[0];
+    const startedAt = turn.startedAt ? Date.parse(turn.startedAt) : Number.NaN;
     // An id match needs no timestamp: the summary supplies the placement.
     let matched = summaryIndexById.get(turn.id);
     if (matched === undefined) {
-      const startedAt = turn.startedAt ? Date.parse(turn.startedAt) : Number.NaN;
       if (!Number.isFinite(startedAt)) continue;
       // The timestamp fallback is one-to-one: a second live turn at the same
       // instant is a distinct turn and must not overwrite the matched event.
@@ -92,7 +82,6 @@ export function railModelFromSummaryAndTurns(
       }
       continue;
     }
-    const startedAt = turn.startedAt ? Date.parse(turn.startedAt) : Number.NaN;
     if (!Number.isFinite(startedAt)) continue;
     events.push({
       startedAt,
@@ -106,22 +95,29 @@ export function railModelFromSummaryAndTurns(
   }
   events.sort((a, b) => a.startedAt - b.startedAt);
 
-  const jobs: RailJob[] = (summary?.jobs ?? [])
-    .map((entry) => ({
-      jobId: entry.jobId,
-      startedAt: entry.startedAt,
-      finishedAt: entry.finishedAt,
-      exitCode: entry.exitCode,
-      status: entry.status,
-    }))
-    .sort(compareJobs);
+  // Copy each interval: the model's jobs are the renderer's to annotate, and
+  // the summary they came from is shared by every rail mount through the cache.
+  const jobs: RailJob[] = [...(summary?.jobs ?? [])].map((entry) => ({ ...entry })).sort(compareJobs);
 
-  const times: number[] = [...events.map((event) => event.startedAt), ...jobs.map((entry) => entry.startedAt)];
-  for (const entry of jobs) if (entry.finishedAt !== null) times.push(entry.finishedAt);
+  let startMs = Number.POSITIVE_INFINITY;
+  let endMs = Number.NEGATIVE_INFINITY;
+  for (const event of events) {
+    startMs = Math.min(startMs, event.startedAt);
+    endMs = Math.max(endMs, event.startedAt);
+  }
+  for (const entry of jobs) {
+    startMs = Math.min(startMs, entry.startedAt);
+    endMs = Math.max(endMs, entry.startedAt);
+    if (entry.finishedAt !== null) endMs = Math.max(endMs, entry.finishedAt);
+  }
+  if (!Number.isFinite(startMs) || !Number.isFinite(endMs)) {
+    startMs = 0;
+    endMs = 0;
+  }
 
   return {
-    startMs: times.length > 0 ? Math.min(...times) : 0,
-    endMs: times.length > 0 ? Math.max(...times) : 0,
+    startMs,
+    endMs,
     events,
     jobs,
     jobLanes: widestOverlap(jobs),
@@ -152,5 +148,7 @@ function widestOverlap(jobs: readonly RailJob[]): number {
     live += point.delta;
     if (live > widest) widest = live;
   }
-  return widest;
+  // A zero-length interval (a job that started and finished in one
+  // millisecond) still needs a lane, even though it overlaps nothing.
+  return jobs.length > 0 ? Math.max(widest, 1) : 0;
 }
