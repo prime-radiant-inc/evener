@@ -13,6 +13,7 @@ import (
 	"github.com/spf13/afero"
 	"primeradiant.com/evener/agent/internal/durablefile"
 	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/execsupport/fsatomic"
 	"primeradiant.com/evener/llm"
 )
 
@@ -482,6 +483,7 @@ func (s *TaskStore) Append(items []TaskInput) ([]Task, error) {
 		return nil, err
 	}
 	if err := s.saveTasks(staged.tasks); err != nil {
+		s.adoptPublishedLocked(staged, err)
 		return added, fmt.Errorf("save: %w", err)
 	}
 	s.tasks = staged.tasks
@@ -677,6 +679,7 @@ func (s *TaskStore) PopulateFromTemplates(templates []TaskTemplate, parentTasks 
 	}
 
 	if err := s.saveTasks(staged.tasks); err != nil {
+		s.adoptPublishedLocked(staged, err)
 		return err
 	}
 	s.tasks = staged.tasks
@@ -708,6 +711,7 @@ func (s *TaskStore) UpdateWithSnapshot(updates []TaskUpdate) (TaskUpdateSnapshot
 		return TaskUpdateSnapshot{}, err
 	}
 	if err := s.saveTasks(staged.tasks); err != nil {
+		s.adoptPublishedLocked(staged, err)
 		return TaskUpdateSnapshot{}, fmt.Errorf("save: %w", err)
 	}
 	s.tasks = staged.tasks
@@ -882,11 +886,25 @@ func (s *TaskStore) ApplyBatch(adds []TaskInput, updates []TaskUpdate) (TaskUpda
 		return TaskUpdateSnapshot{}, err
 	}
 	if err := s.saveTasks(staged.tasks); err != nil {
+		s.adoptPublishedLocked(staged, err)
 		return TaskUpdateSnapshot{}, fmt.Errorf("save: %w", err)
 	}
 	s.tasks = staged.tasks
 	s.nextID = staged.nextID
 	return TaskUpdateSnapshot{Before: before, After: cloneTasks(s.tasks), Settled: settled}, nil
+}
+
+// adoptPublishedLocked adopts a staged mutation whose file was published but
+// whose directory sync failed. That published file is what a later save would
+// load, so keeping the older in-memory snapshot would overwrite it. Callers
+// still receive the durability error; only the state a retry would build on is
+// kept consistent with the visible file.
+func (s *TaskStore) adoptPublishedLocked(staged *TaskStore, err error) {
+	if !errors.Is(err, fsatomic.ErrPublished) {
+		return
+	}
+	s.tasks = staged.tasks
+	s.nextID = staged.nextID
 }
 
 // validateUpdateIDsLocked enforces the task_list contract that updates in a
