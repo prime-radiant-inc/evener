@@ -116,6 +116,22 @@ test("removes its change listener on unmount", () => {
   expect(list.listenerCount).toBe(0);
 });
 
+test("keeps the same media-query listener across hook rerenders", () => {
+  const { lists } = installMatchMediaStub(false);
+  const { rerender } = renderHook(() => useIsMobile());
+  const list = lists.get("(max-width: 899px)")!;
+  expect(list.listenerCount).toBe(1);
+  const add = vi.spyOn(list, "addEventListener");
+  const remove = vi.spyOn(list, "removeEventListener");
+
+  rerender();
+  rerender();
+
+  expect(add).not.toHaveBeenCalled();
+  expect(remove).not.toHaveBeenCalled();
+  expect(list.listenerCount).toBe(1);
+});
+
 test("uses one shared live media query for direct readers and React subscribers", () => {
   const { lists, matchMedia } = installMatchMediaStub(false);
   const { result } = renderHook(() => useIsMobile());

@@ -1,4 +1,4 @@
-import { useSyncExternalStore } from "react";
+import { useCallback, useSyncExternalStore } from "react";
 
 const MOBILE_QUERY = "(max-width: 899px)";
 type ViewportListener = () => void;
@@ -77,8 +77,9 @@ export function subscribeMobileViewport(listener: ViewportListener): () => void 
 }
 
 export function useMediaQuery(query: string): boolean {
+  const onSubscribe = useCallback((listener: ViewportListener) => subscribe(query, listener), [query]);
   return useSyncExternalStore(
-    (listener) => subscribe(query, listener),
+    onSubscribe,
     () => snapshot(query),
     () => false,
   );
