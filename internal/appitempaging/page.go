@@ -167,6 +167,25 @@ func ValidateCursorBoundary(candidates []TranscriptItemCandidate, before appwire
 	return appwire.TranscriptItemCursorStale()
 }
 
+// ValidateWindowCursorBoundary verifies that a continuation still names the
+// same version of the item at its exclusive boundary. A missing position is a
+// stale view; a reused position with new content is an item-changed conflict.
+func ValidateWindowCursorBoundary(candidates []TranscriptItemCandidate, cursor WindowCursor) error {
+	if err := validateCandidates(candidates); err != nil {
+		return err
+	}
+	for _, candidate := range candidates {
+		if candidate.Position != cursor.Position {
+			continue
+		}
+		if candidate.Item.Version != cursor.ItemVersion {
+			return appwire.TranscriptItemChanged(candidate.Item.Version)
+		}
+		return nil
+	}
+	return appwire.TranscriptItemCursorStale()
+}
+
 func validateCandidates(candidates []TranscriptItemCandidate) error {
 	seenKeys := make(map[string]struct{}, len(candidates))
 	for i, candidate := range candidates {

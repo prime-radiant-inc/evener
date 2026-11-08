@@ -488,6 +488,72 @@ func TestPackTranscriptItemWindowSharesCursorLineLimitAcrossTruncationAndElision
 	}
 }
 
+func TestTranscriptWindowContinuationRejectsChangedBoundaryItem(t *testing.T) {
+	for _, test := range []struct {
+		name          string
+		items         []appwire.ThreadItem
+		params        appwire.ThreadWindowParams
+		itemLimit     int
+		boundaryIndex int
+	}{
+		{
+			name: "cap withheld",
+			items: func() []appwire.ThreadItem {
+				items := make([]appwire.ThreadItem, 12)
+				for index := range items {
+					items[index] = appwire.ThreadItem{Type: "agentMessage", ID: fmt.Sprintf("cap-%02d", index), Text: "x", Version: 1}
+				}
+				return items
+			}(),
+			params:        appwire.ThreadWindowParams{TurnWindow: &appwire.ThreadTurnWindow{Turn: "turn-fence"}},
+			itemLimit:     transcriptWindowDefaultItemLimit,
+			boundaryIndex: transcriptWindowDefaultItemLimit,
+		},
+		{
+			name: "beyond cursor line limit",
+			items: func() []appwire.ThreadItem {
+				items := make([]appwire.ThreadItem, 12)
+				for index := range 11 {
+					items[index] = appwire.ThreadItem{Type: "agentMessage", ID: fmt.Sprintf("message-%02d", index), Text: "truncate", Version: 1}
+				}
+				items[11] = appwire.ThreadItem{Type: "reasoning", ID: "elided-beyond-limit", Text: strings.Repeat("s", transcriptWindowBudgetFloorBytes*2), Version: 1}
+				return items
+			}(),
+			params: appwire.ThreadWindowParams{
+				TurnWindow: &appwire.ThreadTurnWindow{Turn: "turn-fence"}, MessageBytes: 4, WindowBudgetBytes: 1,
+			},
+			itemLimit:     appwire.TranscriptItemPageLimit,
+			boundaryIndex: 11,
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			candidates := testWindowTurnCandidates("turn-fence", test.items)
+			result := testWindowCandidateResult(candidates)
+			options := transcriptWindowOptionsFor(result, test.params, test.itemLimit, transcriptWindowAppliedByServingDaemon, appitempaging.FetchCursorOriginServingDaemon)
+			packed, err := packThreadTurnsWindowItemCandidates(result, nil, options)
+			if err != nil {
+				t.Fatalf("pack version 1 window: %v", err)
+			}
+			if len(packed.Data) != 1 || packed.Data[0].Elision == nil || packed.Data[0].Elision.ContinuationCursor == "" {
+				t.Fatalf("version 1 elision = %+v, want continuation", packed.Data)
+			}
+
+			changed := append([]appitempaging.TranscriptItemCandidate(nil), candidates...)
+			changed[test.boundaryIndex].Item.Version = 2
+			result.Candidates.Candidates = changed
+			_, err = spendTranscriptWindowCursor(result, test.params, test.itemLimit, packed.Data[0].Elision.ContinuationCursor)
+			wire, ok := errors.AsType[appwire.WireError](err)
+			if !ok {
+				t.Fatalf("changed continuation error = %T %v, want typed item-changed", err, err)
+			}
+			data, ok := wire.Data.(appwire.TranscriptItemChangedErrorData)
+			if !ok || data.EvenerErrorInfo != appwire.ErrorTranscriptItemChanged || data.NewVersion != 2 {
+				t.Fatalf("changed continuation error = %+v, want item-changed version 2", wire)
+			}
+		})
+	}
+}
+
 func TestPackTranscriptItemWindowBudgetMeasuresEncodedTurnsAndTrimsByMode(t *testing.T) {
 	candidates := make([]appitempaging.TranscriptItemCandidate, 0, 3)
 	for i := 1; i <= 3; i++ {
@@ -588,7 +654,9 @@ func TestSpendTranscriptWindowCursorKeepsTheRequestedViewAndDirection(t *testing
 	identity := result.Identity
 	identity.Incarnation = params.ViewIncarnation(identity.Incarnation, transcriptWindowDefaultItemLimit)
 
-	forward, err := appitempaging.EncodeWindowCursor(identity, appitempaging.WindowCursorDirectionForward, candidates[2].Position)
+	forward, err := appitempaging.EncodeWindowCursor(identity, appitempaging.WindowCursorDirectionForward, appitempaging.WindowCursor{
+		Position: candidates[2].Position, ItemVersion: candidates[2].Item.Version,
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -600,7 +668,9 @@ func TestSpendTranscriptWindowCursorKeepsTheRequestedViewAndDirection(t *testing
 		t.Fatalf("forward continuation = %v, want first withheld item through newest", got)
 	}
 
-	backward, err := appitempaging.EncodeWindowCursor(identity, appitempaging.WindowCursorDirectionBackward, candidates[3].Position)
+	backward, err := appitempaging.EncodeWindowCursor(identity, appitempaging.WindowCursorDirectionBackward, appitempaging.WindowCursor{
+		Position: candidates[3].Position, ItemVersion: candidates[3].Item.Version,
+	})
 	if err != nil {
 		t.Fatal(err)
 	}

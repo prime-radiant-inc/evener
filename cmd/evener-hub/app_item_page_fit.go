@@ -40,6 +40,7 @@ type transcriptWindowContinuation struct {
 	Direction transcriptWindowContinuationDirection
 	TurnID    string
 	Position  appwire.ThreadItemPosition
+	Version   uint64
 }
 
 // transcriptWindowPackOptions keeps cursor encoding and view identity outside
@@ -81,7 +82,9 @@ func transcriptWindowOptionsFor(
 			if continuation.Direction == transcriptWindowContinuationForward {
 				direction = appitempaging.WindowCursorDirectionForward
 			}
-			return appitempaging.EncodeWindowCursor(identity, direction, continuation.Position)
+			return appitempaging.EncodeWindowCursor(identity, direction, appitempaging.WindowCursor{
+				Position: continuation.Position, ItemVersion: continuation.Version,
+			})
 		},
 	}
 }
@@ -97,14 +100,14 @@ func transcriptWindowCursorIdentity(identity appitempaging.CursorIdentity, param
 func spendTranscriptWindowCursor(result transcriptItemCandidateResult, params appwire.ThreadWindowParams, itemLimit int, encoded string) (transcriptItemCandidateResult, error) {
 	identity := transcriptWindowCursorIdentity(result.Identity, params, itemLimit)
 	candidates := result.Candidates.Candidates
-	boundary, err := appitempaging.DecodeWindowCursor(encoded, identity, appitempaging.WindowCursorDirectionForward)
+	cursor, err := appitempaging.DecodeWindowCursor(encoded, identity, appitempaging.WindowCursorDirectionForward)
 	if err == nil {
-		if err := appitempaging.ValidateCursorBoundary(candidates, boundary); err != nil {
+		if err := appitempaging.ValidateWindowCursorBoundary(candidates, cursor); err != nil {
 			return transcriptItemCandidateResult{}, err
 		}
 		first := len(candidates)
 		for i := range candidates {
-			if appitempaging.ComparePosition(candidates[i].Position, boundary) >= 0 {
+			if appitempaging.ComparePosition(candidates[i].Position, cursor.Position) >= 0 {
 				first = i
 				break
 			}
@@ -116,14 +119,14 @@ func spendTranscriptWindowCursor(result transcriptItemCandidateResult, params ap
 	if params.TurnWindow == nil || (params.TurnWindow.Latest == 0 && params.TurnWindow.Before == nil) {
 		return transcriptItemCandidateResult{}, err
 	}
-	boundary, err = appitempaging.DecodeWindowCursor(encoded, identity, appitempaging.WindowCursorDirectionBackward)
+	cursor, err = appitempaging.DecodeWindowCursor(encoded, identity, appitempaging.WindowCursorDirectionBackward)
 	if err != nil {
 		return transcriptItemCandidateResult{}, err
 	}
-	if err := appitempaging.ValidateCursorBoundary(candidates, boundary); err != nil {
+	if err := appitempaging.ValidateWindowCursorBoundary(candidates, cursor); err != nil {
 		return transcriptItemCandidateResult{}, err
 	}
-	result.Candidates = appitempaging.TranscriptItemWindow{Candidates: appitempaging.CandidatesBefore(candidates, boundary, len(candidates))}
+	result.Candidates = appitempaging.TranscriptItemWindow{Candidates: appitempaging.CandidatesBefore(candidates, cursor.Position, len(candidates))}
 	result.Exhausted = true
 	return result, nil
 }
@@ -548,6 +551,7 @@ func packItemCandidates[T any](
 						Direction: transcriptWindowContinuationForward,
 						TurnID:    preparedTurn.turn.ID,
 						Position:  firstContinuation.Position,
+						Version:   firstContinuation.Item.Version,
 					})
 					if cursorErr != nil {
 						return cursorErr
@@ -650,17 +654,20 @@ func packItemCandidates[T any](
 					windowResult.LastWithheldTurnID = prepared[start-1].turn.ID
 					request.TurnID = prepared[0].turn.ID
 					request.Position = candidateTurns[start].candidates[0].Position
+					request.Version = candidateTurns[start].candidates[0].Item.Version
 				} else if end < len(prepared) {
 					windowResult.FirstWithheldTurnID = prepared[end].turn.ID
 					windowResult.LastWithheldTurnID = prepared[len(prepared)-1].turn.ID
 					request.TurnID = prepared[end].turn.ID
 					request.Position = candidateTurns[end].candidates[0].Position
+					request.Version = candidateTurns[end].candidates[0].Item.Version
 				} else {
 					// An incomplete latest source page proves how many requested turns
 					// are absent but cannot name their IDs. Continue immediately before
 					// the oldest served position through the source-owned identity.
 					request.TurnID = prepared[0].turn.ID
 					request.Position = candidateTurns[0].candidates[0].Position
+					request.Version = candidateTurns[0].candidates[0].Item.Version
 				}
 				cursor, cursorErr := mintTranscriptWindowContinuation(windowOptions, request)
 				if cursorErr != nil {

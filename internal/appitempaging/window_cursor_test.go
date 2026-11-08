@@ -11,10 +11,11 @@ import (
 func TestWindowCursorRoundTripByDirection(t *testing.T) {
 	identity := CursorIdentity{ThreadRef: "local:thread", Incarnation: "messages-view", ProjectionVersion: 2}
 	position := appwire.ThreadItemPosition{Entry: 23, Item: 6, Sub: 1}
+	want := WindowCursor{Position: position, ItemVersion: 7}
 
 	for _, direction := range []WindowCursorDirection{WindowCursorDirectionBackward, WindowCursorDirectionForward} {
 		t.Run(string(direction), func(t *testing.T) {
-			encoded, err := EncodeWindowCursor(identity, direction, position)
+			encoded, err := EncodeWindowCursor(identity, direction, want)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -25,8 +26,8 @@ func TestWindowCursorRoundTripByDirection(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if got != position {
-				t.Fatalf("decoded window position = %+v, want %+v", got, position)
+			if got != want {
+				t.Fatalf("decoded window cursor = %+v, want %+v", got, want)
 			}
 		})
 	}
@@ -35,7 +36,8 @@ func TestWindowCursorRoundTripByDirection(t *testing.T) {
 func TestWindowCursorTranslatesHubNamespace(t *testing.T) {
 	remote := CursorIdentity{ThreadRef: "local:thread", Incarnation: "messages-view", ProjectionVersion: 2}
 	position := appwire.ThreadItemPosition{Entry: 23, Item: 6, Sub: 1}
-	encoded, err := EncodeWindowCursor(remote, WindowCursorDirectionBackward, position)
+	want := WindowCursor{Position: position, ItemVersion: 7}
+	encoded, err := EncodeWindowCursor(remote, WindowCursorDirectionBackward, want)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -49,8 +51,8 @@ func TestWindowCursorTranslatesHubNamespace(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got != position {
-		t.Fatalf("translated window position = %+v, want %+v", got, position)
+	if got != want {
+		t.Fatalf("translated window cursor = %+v, want %+v", got, want)
 	}
 	if _, err := DecodeWindowCursor(translated, remote, WindowCursorDirectionBackward); err == nil {
 		t.Fatal("translated window cursor retained remote hub ownership")
@@ -59,12 +61,12 @@ func TestWindowCursorTranslatesHubNamespace(t *testing.T) {
 
 func TestWindowCursorRejectsDirectionConfusion(t *testing.T) {
 	identity := CursorIdentity{ThreadRef: "local:thread", Incarnation: "messages-view", ProjectionVersion: 2}
-	position := appwire.ThreadItemPosition{Entry: 23, Item: 6}
-	backward, err := EncodeWindowCursor(identity, WindowCursorDirectionBackward, position)
+	cursor := WindowCursor{Position: appwire.ThreadItemPosition{Entry: 23, Item: 6}, ItemVersion: 7}
+	backward, err := EncodeWindowCursor(identity, WindowCursorDirectionBackward, cursor)
 	if err != nil {
 		t.Fatal(err)
 	}
-	forward, err := EncodeWindowCursor(identity, WindowCursorDirectionForward, position)
+	forward, err := EncodeWindowCursor(identity, WindowCursorDirectionForward, cursor)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -95,7 +97,9 @@ func TestWindowCursorRejectsDifferentWindowView(t *testing.T) {
 	reasoningIdentity := base
 	reasoningIdentity.Incarnation = reasoning.ViewIncarnation(base.Incarnation, 0)
 
-	encoded, err := EncodeWindowCursor(messagesIdentity, WindowCursorDirectionBackward, appwire.ThreadItemPosition{Entry: 23, Item: 6})
+	encoded, err := EncodeWindowCursor(messagesIdentity, WindowCursorDirectionBackward, WindowCursor{
+		Position: appwire.ThreadItemPosition{Entry: 23, Item: 6}, ItemVersion: 7,
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -112,7 +116,9 @@ func TestWindowCursorRejectsLegacyMalformedIdentityAndDirection(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	valid, err := EncodeWindowCursor(identity, WindowCursorDirectionForward, appwire.ThreadItemPosition{Entry: 23, Item: 6})
+	valid, err := EncodeWindowCursor(identity, WindowCursorDirectionForward, WindowCursor{
+		Position: appwire.ThreadItemPosition{Entry: 23, Item: 6}, ItemVersion: 7,
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -139,13 +145,14 @@ func TestWindowCursorRejectsLegacyMalformedIdentityAndDirection(t *testing.T) {
 		})
 	}
 
-	validRaw := `{"version":1,"kind":"window","thread_ref":"local:thread","incarnation":"messages-view","projection_version":2,"direction":"forward","position":{"entry":23,"item":6}}`
+	validRaw := `{"version":1,"kind":"window","thread_ref":"local:thread","incarnation":"messages-view","projection_version":2,"direction":"forward","position":{"entry":23,"item":6},"item_version":7}`
 	for name, raw := range map[string]string{
 		"missing codec version": strings.Replace(validRaw, `"version":1,`, "", 1),
 		"wrong codec version":   strings.Replace(validRaw, `"version":1`, `"version":2`, 1),
 		"missing direction":     strings.Replace(validRaw, `,"direction":"forward"`, "", 1),
 		"unknown direction":     strings.Replace(validRaw, `"direction":"forward"`, `"direction":"sideways"`, 1),
 		"missing position":      strings.Replace(validRaw, `,"position":{"entry":23,"item":6}`, "", 1),
+		"missing item version":  strings.Replace(validRaw, `,"item_version":7`, "", 1),
 		"fetch kind":            strings.Replace(validRaw, `"kind":"window"`, `"kind":"fetch"`, 1),
 		"malformed JSON":        `{`,
 	} {
@@ -159,7 +166,7 @@ func TestWindowCursorRejectsLegacyMalformedIdentityAndDirection(t *testing.T) {
 		})
 	}
 
-	if encoded, err := EncodeWindowCursor(identity, WindowCursorDirection("sideways"), appwire.ThreadItemPosition{Entry: 23}); err == nil {
+	if encoded, err := EncodeWindowCursor(identity, WindowCursorDirection("sideways"), WindowCursor{Position: appwire.ThreadItemPosition{Entry: 23}, ItemVersion: 7}); err == nil {
 		t.Fatalf("invalid direction encoded as %q", encoded)
 	} else {
 		assertStaleCursorError(t, err)

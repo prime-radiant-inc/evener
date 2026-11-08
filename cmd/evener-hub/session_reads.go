@@ -203,14 +203,14 @@ func continueHubCompatibilityTranscriptWindow(
 	result transcriptItemCandidateResult,
 ) (transcriptItemCandidateResult, error) {
 	identity := transcriptWindowCursorIdentity(result.Identity, params.ThreadWindowParams, itemLimit)
-	boundary, err := appitempaging.DecodeWindowCursor(params.Cursor, identity, appitempaging.WindowCursorDirectionBackward)
+	boundaryCursor, err := appitempaging.DecodeWindowCursor(params.Cursor, identity, appitempaging.WindowCursorDirectionBackward)
 	if err != nil {
 		return transcriptItemCandidateResult{}, err
 	}
-	if err := appitempaging.ValidateCursorBoundary(result.Candidates.Candidates, boundary); err != nil {
+	if err := appitempaging.ValidateWindowCursorBoundary(result.Candidates.Candidates, boundaryCursor); err != nil {
 		return transcriptItemCandidateResult{}, err
 	}
-	if selected := appitempaging.CandidatesBefore(result.Candidates.Candidates, boundary, len(result.Candidates.Candidates)); len(selected) > 0 {
+	if selected := appitempaging.CandidatesBefore(result.Candidates.Candidates, boundaryCursor.Position, len(result.Candidates.Candidates)); len(selected) > 0 {
 		result.Candidates = appitempaging.TranscriptItemWindow{Candidates: selected}
 		return result, nil
 	}
@@ -237,7 +237,7 @@ func continueHubCompatibilityTranscriptWindow(
 		if err := appitempaging.ValidateCandidates(pageCandidates); err != nil {
 			return transcriptItemCandidateResult{}, err
 		}
-		selected := appitempaging.CandidatesBefore(pageCandidates, boundary, len(pageCandidates))
+		selected := appitempaging.CandidatesBefore(pageCandidates, boundaryCursor.Position, len(pageCandidates))
 		if len(selected) > 0 {
 			result.Candidates = appitempaging.TranscriptItemWindow{Candidates: selected}
 			result.Exhausted = page.NextCursor == ""
