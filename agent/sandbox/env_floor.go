@@ -318,7 +318,7 @@ func overlayCacheDirs(env []string, policy ResolvedPolicy) (map[string]string, m
 	if out[envvars.GoCache.Name] == "" && cacheHome != "" {
 		out[envvars.GoCache.Name] = filepath.Join(cacheHome, "go-build")
 	}
-	out[npmConfigCacheEnv] = envValueFold(env, npmConfigCacheEnv)
+	out[npmConfigCacheEnv] = npmConfigCacheFor(env, policy)
 	out[envvars.CargoHome.Name] = vars[envvars.CargoHome.Name]
 	// With no HOME in the spawn's own environment (a clean EnvPolicyNone), npm
 	// and cargo fall back to the login user's home in the user database — not
@@ -330,6 +330,24 @@ func overlayCacheDirs(env []string, policy ResolvedPolicy) (map[string]string, m
 		out[envvars.CargoHome.Name] = firstOr(out[envvars.CargoHome.Name], filepath.Join(npmHome, ".cargo"))
 	}
 	return out, unknown
+}
+
+// npmConfigCacheFor returns the cache npm would use for a spawn: its own
+// npm_config_cache, else the project .npmrc of the session's package directory,
+// else the host's user/global .npmrc. An empty result falls back to $HOME/.npm
+// in the caller. This is the value the per-spawn overlay judgement must see: a
+// cache npm reaches only through .npmrc would otherwise stay unserved and
+// read-only.
+func npmConfigCacheFor(env []string, policy ResolvedPolicy) string {
+	if value := envValueFold(env, npmConfigCacheEnv); value != "" {
+		return value
+	}
+	if projectDir := npmProjectDir(policy.SessionDir, policy.Git.WorktreeRoot); projectDir != "" {
+		if value := readProjectNpmrcCacheValue(filepath.Join(projectDir, ".npmrc"), policy.resolveHost); value != "" {
+			return value
+		}
+	}
+	return policy.resolveHost.NpmrcCacheFile
 }
 
 // envVars maps an environment slice to its values by name.

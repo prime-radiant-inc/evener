@@ -341,6 +341,10 @@ func TestProbeReadsNpmCacheFromConfigFiles(t *testing.T) {
 	if want := []string{"/from/user/npm", "/from/global/npm"}; !slices.Equal(facts.NpmrcCaches, want) {
 		t.Errorf("probeHost NpmrcCaches = %v, want %v", facts.NpmrcCaches, want)
 	}
+	// The user file outranks the global one for the cache npm actually uses.
+	if facts.NpmrcCacheFile != "/from/user/npm" {
+		t.Errorf("probeHost NpmrcCacheFile = %q, want the user value", facts.NpmrcCacheFile)
+	}
 }
 
 func TestProbeReadsDefaultUserNpmrcAndPrefixGlobalNpmrc(t *testing.T) {

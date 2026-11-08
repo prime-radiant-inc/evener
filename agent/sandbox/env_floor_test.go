@@ -140,6 +140,65 @@ func TestEnvFloorKeepsRealCacheUnderOverlay(t *testing.T) {
 	}
 }
 
+// npm can reach a cache only through .npmrc. If the overlay cannot serve it
+// (a project cache that does not exist yet, or one whose overlay probe fails),
+// the per-spawn floor must redirect npm_config_cache into the session scratch;
+// otherwise npm writes into read-only storage (#4542 review).
+func TestEnvFloorRedirectsAnUnservedNpmrcCache(t *testing.T) {
+	scratch := "/tmp/evener-session-xyz"
+	home := overlayFixtureDir(t)
+	if err := os.MkdirAll(filepath.Join(home, ".npm"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	worktree := overlayFixtureDir(t)
+
+	t.Run("missing project cache", func(t *testing.T) {
+		missing := filepath.Join(overlayFixtureDir(t), "missing-npm")
+		if err := os.WriteFile(filepath.Join(worktree, ".npmrc"), []byte("cache="+missing+"\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		policy := ResolvedPolicy{
+			Mode:          ModeWorkspaceWrite,
+			CacheStrategy: CacheOverlay,
+			CacheRoots:    []string{filepath.Join(home, ".npm")},
+			resolveHost:   HostFacts{Home: home},
+			Git:           GitLayout{WorktreeRoot: worktree},
+			SessionDir:    worktree,
+		}
+		assertNpmCacheRedirected(t, policy, []string{"HOME=" + home}, scratch)
+	})
+
+	t.Run("existing cache whose overlay probe fails", func(t *testing.T) {
+		cacheDir := filepath.Join(overlayFixtureDir(t), "npm-cache")
+		if err := os.MkdirAll(cacheDir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(worktree, ".npmrc"), []byte("cache="+cacheDir+"\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		policy := ResolvedPolicy{
+			Mode:          ModeWorkspaceWrite,
+			CacheStrategy: CacheOverlay,
+			CacheRoots:    []string{filepath.Join(home, ".npm"), cacheDir},
+			resolveHost: HostFacts{
+				Home:           home,
+				OverlayLowerOK: func(root string) bool { return root != cacheDir },
+			},
+			Git:        GitLayout{WorktreeRoot: worktree},
+			SessionDir: worktree,
+		}
+		assertNpmCacheRedirected(t, policy, []string{"HOME=" + home}, scratch)
+	})
+}
+
+func assertNpmCacheRedirected(t *testing.T, policy ResolvedPolicy, env []string, scratch string) {
+	t.Helper()
+	out := ApplyEnvFloor(env, policy, scratch)
+	if got, _ := envValue(out, npmConfigCacheEnv); got != filepath.Join(scratch, "npm") {
+		t.Fatalf("npm_config_cache = %q, want the session scratch", got)
+	}
+}
+
 func TestEnvFloorDropsExternalKubeconfigKeepsInternal(t *testing.T) {
 	policy := ResolvedPolicy{
 		Mode: ModeWorkspaceWrite, CacheStrategy: CacheNone,

@@ -501,6 +501,74 @@ func TestCacheRootsFollowTheProjectNpmrc(t *testing.T) {
 	}
 }
 
+// npm uses the .npmrc of the nearest package root, not the repository root. A
+// session in an independent nested package must read that package's config
+// (#4542 review).
+func TestCacheRootsFollowANestedPackageNpmrc(t *testing.T) {
+	worktree := t.TempDir()
+	rootCache := filepath.Join(overlayFixtureDir(t), "root-npm")
+	packageCache := filepath.Join(overlayFixtureDir(t), "package-npm")
+	for _, dir := range []string{rootCache, packageCache} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(worktree, ".npmrc"), []byte("cache="+rootCache+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	packageDir := filepath.Join(worktree, "packages", "foo")
+	if err := os.MkdirAll(packageDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(packageDir, "package.json"), []byte("{}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(packageDir, ".npmrc"), []byte("cache="+packageCache+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	roots := cacheRootsForSession(ModeWorkspaceWrite, HostFacts{Home: "/home/tester"}, worktree, packageDir)
+	if !slices.Contains(roots, packageCache) {
+		t.Errorf("cache roots %v must serve the nested package npmrc cache", roots)
+	}
+	if slices.Contains(roots, rootCache) {
+		t.Errorf("cache roots %v must not serve the repository-root npmrc cache for a nested package", roots)
+	}
+}
+
+// The same nested-package choice through the real Resolve path, where the Git
+// worktree is the repository root but the session started in the package.
+func TestResolveFollowsANestedPackageNpmrc(t *testing.T) {
+	repo := mainRepo(t)
+	rootCache := filepath.Join(overlayFixtureDir(t), "root-npm")
+	packageCache := filepath.Join(overlayFixtureDir(t), "package-npm")
+	for _, dir := range []string{rootCache, packageCache} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(repo, ".npmrc"), []byte("cache="+rootCache+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	packageDir := filepath.Join(repo, "packages", "foo")
+	if err := os.MkdirAll(packageDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(packageDir, "package.json"), []byte("{}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(packageDir, ".npmrc"), []byte("cache="+packageCache+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	rp := mustResolve(t, SandboxPolicy{Mode: ModeWorkspaceWrite}, bwrapHost(), packageDir)
+	if !slices.Contains(rp.CacheRoots, packageCache) {
+		t.Errorf("resolved cache roots %v must serve the nested package npmrc cache", rp.CacheRoots)
+	}
+	if slices.Contains(rp.CacheRoots, rootCache) {
+		t.Errorf("resolved cache roots %v must not serve the repository-root npmrc cache", rp.CacheRoots)
+	}
+}
+
 // The probe's npmrc values are served alongside the environment value, since
 // npm's precedence decides which one is in effect but every candidate cache
 // directory must be writable where npm may write it.

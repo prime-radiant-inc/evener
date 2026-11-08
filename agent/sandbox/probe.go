@@ -171,12 +171,15 @@ type HostFacts struct {
 	// NpmConfigCache and CargoHome are $npm_config_cache and $CARGO_HOME, which
 	// move npm's and cargo's cache directories; empty when unset. Cargo keeps no
 	// file for CARGO_HOME. npm also reads a `cache=` setting from its .npmrc
-	// files; NpmrcCaches holds the absolute values this host's user and global
-	// files set (the project file is read at resolution, where the worktree is
-	// known), so an overlay serves a cache moved only there (#4542).
+	// files; NpmrcCaches holds every absolute value this host's user and global
+	// files set, and NpmrcCacheFile is the one npm would actually use (user
+	// over global, last assignment in a file). The project file is read at
+	// resolution, where the session's package directory is known, so an overlay
+	// serves a cache moved only there (#4542).
 	NpmConfigCache string
 	CargoHome      string
 	NpmrcCaches    []string
+	NpmrcCacheFile string
 
 	// OverlayLowerOK reports whether bwrap can mount an unprivileged overlay
 	// with a given directory as its lower on this host. Whether overlay is
@@ -377,7 +380,7 @@ func probeHost(system probeSystem) HostFacts {
 	facts.XDGCacheHome = system.getenv(envvars.XDGCacheHome.Name)
 	facts.NpmConfigCache = envValueFold(system.environ(), npmConfigCacheEnv)
 	facts.CargoHome = system.getenv(envvars.CargoHome.Name)
-	facts.NpmrcCaches = probeNpmrcCaches(system, facts.Home)
+	facts.NpmrcCaches, facts.NpmrcCacheFile = probeNpmrcCaches(system, facts.Home)
 
 	if path, err := system.lookPath("bwrap"); err == nil {
 		facts.BwrapPath = path
@@ -425,18 +428,19 @@ const (
 )
 
 // probeNpmrcCaches returns the absolute `cache=` values npm resolves from the
-// .npmrc files whose locations do not depend on a project: the user config
-// ($npm_config_userconfig, else ~/.npmrc) and the global config
-// ($npm_config_globalconfig, else $npm_config_prefix/etc/npmrc). npm reads a
-// `cache=` setting in either, so a host that moves its cache only there would
-// otherwise leave it outside every overlay root, read-only (#4542).
+// .npmrc files whose locations do not depend on a project, and the one npm
+// would actually use: the user config ($npm_config_userconfig, else ~/.npmrc)
+// over the global config ($npm_config_globalconfig, else
+// $npm_config_prefix/etc/npmrc). npm reads a `cache=` setting in either, so a
+// host that moves its cache only there would otherwise leave it outside every
+// overlay root, read-only (#4542).
 //
 // npm's default global config lives beside its Node installation, which the
 // probe cannot locate without running npm, so it is consulted only when the
 // environment names it. A relative or absent file contributes nothing, and the
 // value is judged absolute later, as a relative cache resolves against npm's
 // own working directory.
-func probeNpmrcCaches(system probeSystem, home string) []string {
+func probeNpmrcCaches(system probeSystem, home string) (roots []string, effective string) {
 	environ := system.environ()
 	user := envValueFold(environ, npmConfigUserConfigEnv)
 	if user == "" && home != "" {
@@ -448,11 +452,19 @@ func probeNpmrcCaches(system probeSystem, home string) []string {
 			global = filepath.Join(prefix, "etc", "npmrc")
 		}
 	}
-	var roots []string
-	for _, path := range []string{user, global} {
-		roots = append(roots, readNpmrcCacheRoots(system, path)...)
+	userRoots := readNpmrcCacheRoots(system, user)
+	globalRoots := readNpmrcCacheRoots(system, global)
+	roots = append(append(roots, userRoots...), globalRoots...)
+	// npm's last assignment wins within a file and the user file outranks the
+	// global one, so the effective value is the last user root, else the last
+	// global root.
+	if len(userRoots) > 0 {
+		return roots, userRoots[len(userRoots)-1]
 	}
-	return roots
+	if len(globalRoots) > 0 {
+		return roots, globalRoots[len(globalRoots)-1]
+	}
+	return roots, ""
 }
 
 // readNpmrcCacheRoots reads the absolute `cache=` values in the .npmrc at
@@ -474,6 +486,28 @@ func readNpmrcCacheRoots(system probeSystem, path string) []string {
 // a cache it names is served only where it is already a directory: resolution
 // must never create a host directory on repository say-so.
 func readProjectNpmrcCacheRoots(path string, host HostFacts) []string {
+	var roots []string
+	for _, root := range readProjectNpmrc(path, host) {
+		if fi, err := os.Stat(root); err == nil && fi.IsDir() {
+			roots = append(roots, root)
+		}
+	}
+	return roots
+}
+
+// readProjectNpmrcCacheValue returns the cache npm would use from the project
+// file, whether or not that directory exists. The per-spawn judge needs it so a
+// cache the overlay cannot serve is redirected rather than left read-only.
+func readProjectNpmrcCacheValue(path string, host HostFacts) string {
+	values := readProjectNpmrc(path, host)
+	if len(values) == 0 {
+		return ""
+	}
+	return values[len(values)-1]
+}
+
+// readProjectNpmrc parses the cache values of the project .npmrc at path.
+func readProjectNpmrc(path string, host HostFacts) []string {
 	if path == "" || !filepath.IsAbs(path) {
 		return nil
 	}
@@ -497,13 +531,7 @@ func readProjectNpmrcCacheRoots(path string, host HostFacts) []string {
 		}
 		return ""
 	}
-	var roots []string
-	for _, root := range parseNpmrcCacheRoots(data, lookup) {
-		if fi, err := os.Stat(root); err == nil && fi.IsDir() {
-			roots = append(roots, root)
-		}
-	}
-	return roots
+	return parseNpmrcCacheRoots(data, lookup)
 }
 
 // npmrcEnvLookup expands npm's ${NAME} references from the probe's environment.

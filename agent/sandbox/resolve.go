@@ -125,6 +125,11 @@ type ResolvedPolicy struct {
 	CacheStrategy CacheStrategy // how cache roots are served (never persistent-writable)
 	SessionTmp    bool          // a per-session writable tmp (TMPDIR) is provisioned
 
+	// SessionDir is the resolved directory the session started in. It locates
+	// the npm project config (the nearest package root) without weakening the
+	// Git layout's safety checks.
+	SessionDir string
+
 	// CacheRoots are the absolute language cache directories (~/.cache with
 	// $XDG_CACHE_HOME, ~/.npm with $npm_config_cache, ~/.cargo with $CARGO_HOME,
 	// and Go's, see goCacheRoots) served under the cache strategy: overlaid read-real/
@@ -522,8 +527,9 @@ func Resolve(policy SandboxPolicy, host HostFacts, cwd string) (ResolvedPolicy, 
 		Network:             netOn,
 		Backend:             backend,
 		CacheStrategy:       cacheStrategyFor(policy.Mode, backend, host),
-		CacheRoots:          cacheRootsFor(policy.Mode, host, layout.WorktreeRoot),
+		CacheRoots:          cacheRootsForSession(policy.Mode, host, layout.WorktreeRoot, cwd),
 		SessionTmp:          true,
+		SessionDir:          identifier.ResolveClean(cwd),
 		MaskedPaths:         masked,
 		Git:                 layout,
 		ManagedContentRoots: host.EvenerManagedContentRoots,
@@ -749,6 +755,13 @@ var defaultCacheRoots = []string{".npm", ".cargo"}
 // would hide the real files behind an upper layer discarded at session end, so
 // edits there would silently vanish.
 func cacheRootsFor(mode Mode, host HostFacts, worktree string) []string {
+	return cacheRootsForSession(mode, host, worktree, worktree)
+}
+
+// cacheRootsForSession is cacheRootsFor with the session's own directory, which
+// locates an independent nested package's npm config. Callers that only know the
+// worktree pass it as sessionDir.
+func cacheRootsForSession(mode Mode, host HostFacts, worktree, sessionDir string) []string {
 	switch mode {
 	case ModeWorkspaceWrite, ModeRestricted:
 		// ~/.cache stays served alongside $XDG_CACHE_HOME, for tools that
@@ -760,7 +773,7 @@ func cacheRootsFor(mode Mode, host HostFacts, worktree string) []string {
 		for _, rel := range defaultCacheRoots {
 			out = append(out, filepath.Join(host.Home, rel))
 		}
-		roots := guardedHostRoots(slices.Concat(out, npmCargoCacheRoots(host, worktree), goCacheRoots(host)), host.Home, worktree)
+		roots := guardedHostRoots(slices.Concat(out, npmCargoCacheRoots(host, worktree, sessionDir), goCacheRoots(host)), host.Home, worktree)
 		// A root that is not a directory yet (a file, a dangling link to an
 		// unmounted drive) stays: each spawn decides whether it is overlaid
 		// (liveCacheRoots), so one that becomes available is served.
@@ -931,14 +944,42 @@ func goCacheRoots(host HostFacts) []string {
 // and the project one under worktree (#4542). A relative value, which each tool
 // resolves against its own working directory, is not a stable root and
 // contributes nothing — the go command's rule for its cache settings.
-func npmCargoCacheRoots(host HostFacts, worktree string) []string {
+func npmCargoCacheRoots(host HostFacts, worktree, sessionDir string) []string {
 	roots := absRoots(host.NpmConfigCache, host.CargoHome)
 	// The probe only records absolute values from .npmrc files.
 	roots = append(roots, host.NpmrcCaches...)
-	if worktree != "" {
-		roots = append(roots, readProjectNpmrcCacheRoots(filepath.Join(worktree, ".npmrc"), host)...)
+	if projectDir := npmProjectDir(sessionDir, worktree); projectDir != "" {
+		roots = append(roots, readProjectNpmrcCacheRoots(filepath.Join(projectDir, ".npmrc"), host)...)
 	}
 	return roots
+}
+
+// npmProjectDir returns the directory whose .npmrc npm uses for a session
+// started in cwd: the nearest ancestor at or above cwd (and at or below
+// worktree) holding package.json or node_modules, else cwd. It keeps the
+// session's own package config authoritative inside a larger checkout.
+func npmProjectDir(cwd, worktree string) string {
+	cwd = identifier.ResolveClean(cwd)
+	if cwd == "" {
+		return ""
+	}
+	worktree = identifier.ResolveClean(worktree)
+	dir := cwd
+	for {
+		for _, marker := range []string{"package.json", "node_modules"} {
+			if _, err := os.Stat(filepath.Join(dir, marker)); err == nil {
+				return dir
+			}
+		}
+		if worktree == "" || dir == worktree || !identifier.PathUnder(dir, worktree) {
+			return cwd
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return cwd
+		}
+		dir = parent
+	}
 }
 
 // absRoots returns the absolute entries of dirs, in order, dropping the rest: a
