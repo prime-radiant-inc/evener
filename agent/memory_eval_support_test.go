@@ -189,6 +189,7 @@ type memoryEvalAdmission struct {
 	sensitive                                                            []string
 	boundModel                                                           bool
 	failure                                                              error
+	failingStage                                                         *memoryEvalStageEvidence
 	runContext                                                           context.Context
 	runCancel                                                            context.CancelFunc
 }
@@ -197,6 +198,27 @@ func (b *memoryEvalAdmission) terminalFailure() error {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	return b.failure
+}
+
+// retainFailingStage keeps the stage identity, failure reason and redacted
+// verifier output of the stage whose verifier stopped the run. Without it the
+// run returns only a generic wrapped error and the failing stage's Go
+// diagnostic is lost. It never retries or admits another dispatch.
+func (b *memoryEvalAdmission) retainFailingStage(t *testing.T, pair string, disabled bool, evidence memoryEvalStageEvidence) {
+	t.Helper()
+	b.mu.Lock()
+	b.failingStage = &evidence
+	b.mu.Unlock()
+	if b.evidenceRoot != "" {
+		memoryEvalWriteEvidence(t, b, filepath.Join(b.evidenceRoot, fmt.Sprintf("%s-disabled-%t-%s.failed.json", pair, disabled, evidence.Name)), evidence)
+	}
+}
+
+// failingStageEvidence reports the stage retained by retainFailingStage.
+func (b *memoryEvalAdmission) failingStageEvidence() *memoryEvalStageEvidence {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.failingStage
 }
 
 func (b *memoryEvalAdmission) fail(err error) {
@@ -567,6 +589,7 @@ type memoryEvalStageEvidence struct {
 	Counters                                                                       string
 	Elapsed                                                                        time.Duration
 	Limitation                                                                     string
+	Failure                                                                        string
 	Transcript                                                                     string
 }
 type memoryEvalEpisode struct {
@@ -1011,10 +1034,14 @@ func memoryEvalRunPairs(t *testing.T, b *memoryEvalAdmission, c *llm.Client, p *
 						hook(pair, disabled, stage, prior, workspace)
 					}
 					var verifyErr error
-					evidence.BeforeTask, _, verifyErr = memoryEvalVerify(ctx, t, home, workspace, stage.name)
+					evidence.BeforeTask, evidence.Verifier, verifyErr = memoryEvalVerify(ctx, t, home, workspace, stage.name)
 					if verifyErr != nil {
-						err := fmt.Errorf("memory eval initial verifier infrastructure failure: %w", verifyErr)
+						err := fmt.Errorf("memory eval initial verifier infrastructure failure, %s disabled=%t stage=%s: %w", pair, disabled, stage.name, verifyErr)
 						b.fail(err)
+						evidence.Failure = err.Error()
+						evidence.Counters = memoryEvalSnapshot(b)
+						evidence.Elapsed = time.Since(start)
+						b.retainFailingStage(t, pair, disabled, evidence)
 						cancel()
 						stopStage()
 						return err
@@ -1076,8 +1103,12 @@ func memoryEvalRunPairs(t *testing.T, b *memoryEvalAdmission, c *llm.Client, p *
 					evidence.Task, evidence.Verifier, verifyErr = memoryEvalVerify(verifyCtx, t, home, workspace, stage.name)
 					verifyCancel()
 					if verifyErr != nil {
-						err := fmt.Errorf("memory eval final verifier infrastructure failure: %w", verifyErr)
+						err := fmt.Errorf("memory eval final verifier infrastructure failure, %s disabled=%t stage=%s: %w", pair, disabled, stage.name, verifyErr)
 						b.fail(err)
+						evidence.Failure = err.Error()
+						evidence.Counters = memoryEvalSnapshot(b)
+						evidence.Elapsed = time.Since(start)
+						b.retainFailingStage(t, pair, disabled, evidence)
 						stopStage()
 						return err
 					}

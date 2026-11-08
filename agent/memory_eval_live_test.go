@@ -166,6 +166,9 @@ func memoryEvalLivePairsOnHost(t *testing.T, discover func() (string, string, er
 	}()
 	episodes, err := memoryEvalRunPairs(t, b, c, p, home, nil)
 	if err != nil {
+		if stage := b.failingStageEvidence(); stage != nil {
+			t.Fatalf("%v (failing stage %s retained under %s)", err, stage.Name, evidenceRoot)
+		}
 		t.Fatal(err)
 	}
 	memoryEvalWriteEvidence(t, b, filepath.Join(evidenceRoot, "episodes.json"), episodes)
