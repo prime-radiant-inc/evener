@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"primeradiant.com/evener/gittest"
 	"primeradiant.com/evener/identifier"
 )
 
@@ -56,6 +57,54 @@ func runWrapped(t *testing.T, facts HostFacts, mode Mode, netOn bool, cwd, sessi
 	cmd.ExtraFiles = nil
 	out, err := cmd.CombinedOutput()
 	return string(out), err
+}
+
+// A probe fixture inside a checkout must not make the enclosing repository its
+// writable workspace. The harness already exports GIT_CEILING_DIRECTORIES; the
+// sandbox now honors it, so an ancestor repository file stays write-denied while
+// the fixture itself remains writable (#3724 review).
+func TestBwrapGitCeilingDeniesAncestorRepoWrite(t *testing.T) {
+	facts := requireRealBwrap(t)
+	base, err := os.MkdirTemp("/var/tmp", "sbxceiling-")
+	if err != nil {
+		t.Skipf("create non-/tmp sandbox fixture: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(base) })
+
+	repo := filepath.Join(base, "repo")
+	fixture := filepath.Join(repo, "probes", "task")
+	if err := os.MkdirAll(fixture, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	gittest.Run(t, repo, "init", "-q")
+	ancestor := filepath.Join(repo, "ancestor.txt")
+	if err := os.WriteFile(ancestor, []byte("original\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("GIT_CEILING_DIRECTORIES", filepath.Dir(fixture))
+	sessionTmp := filepath.Join(base, "session-tmp")
+	if err := os.MkdirAll(sessionTmp, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	out, err := runWrapped(t, facts, ModeWorkspaceWrite, true, fixture, sessionTmp,
+		"printf changed > '"+ancestor+"'")
+	if err == nil {
+		t.Fatalf("writing an ancestor repository file succeeded in the sandbox: %s", out)
+	}
+	data, readErr := os.ReadFile(ancestor)
+	if readErr != nil || string(data) != "original\n" {
+		t.Fatalf("ancestor file changed: %q err=%v", data, readErr)
+	}
+
+	out, err = runWrapped(t, facts, ModeWorkspaceWrite, true, fixture, sessionTmp,
+		"printf ok > made.txt && cat made.txt")
+	if err != nil {
+		t.Fatalf("writing inside the fixture failed: %v: %s", err, out)
+	}
+	if !strings.Contains(out, "ok") {
+		t.Fatalf("fixture write output = %q, want ok", out)
+	}
 }
 
 // TestBwrapLinkedWorktreeStarts covers verifier finding F2 end-to-end: a linked

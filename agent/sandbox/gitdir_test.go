@@ -408,6 +408,28 @@ func TestClassifyNonGit(t *testing.T) {
 	}
 }
 
+// GIT_CEILING_DIRECTORIES is git's own bound on repository discovery. A probe
+// fixture inside a checkout must not adopt the enclosing repository as its
+// workspace: the ceiling stops the walk at the fixture's parent (#3724 review).
+func TestClassifyWorkspaceHonorsGitCeiling(t *testing.T) {
+	requireGit(t)
+	repo := clean(t.TempDir())
+	gittest.Run(t, repo, "init", "-q")
+	fixture := filepath.Join(repo, "probes", "task")
+	if err := os.MkdirAll(fixture, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("GIT_CEILING_DIRECTORIES", clean(filepath.Dir(fixture)))
+
+	layout, err := ClassifyWorkspace(fixture)
+	if err != nil {
+		t.Fatalf("ClassifyWorkspace: %v", err)
+	}
+	if layout.Kind != NonGit || layout.WorktreeRoot != clean(fixture) {
+		t.Fatalf("layout = %+v, want a NonGit workspace rooted at the fixture", layout)
+	}
+}
+
 // assertNoWritableProtected is the load-bearing security invariant: no protected
 // (write-denied) path may be reachable through a writable grant. If a protected
 // config/hook path were nested inside a writable root, a write would slip

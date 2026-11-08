@@ -414,10 +414,11 @@ func guardedHostRoots(candidates []string, home, worktree string) []string {
 
 // Resolve turns a policy request plus host facts and the session's cwd into a
 // ResolvedPolicy, or a typed *RefusalError when the host cannot enforce the
-// request (the fail-closed floor). It is a pure function of its inputs (reads no
-// process environment): the credential denylist anchors on host.Home, the git
-// layout is resolved structurally from cwd's on-disk .git entries, and the
-// project .npmrc is read from the worktree it names.
+// request (the fail-closed floor). Apart from git's own
+// GIT_CEILING_DIRECTORIES (which bounds repository discovery exactly as git
+// uses it), it reads no process environment: the credential denylist anchors
+// on host.Home, the git layout is resolved structurally from cwd's on-disk .git
+// entries, and the project .npmrc is read from the worktree it names.
 //
 // PLAIN off short-circuits before any host check, so it resolves on every host
 // (including Windows) — it is today's behavior with no containment. A WRITE-BLOCKED
