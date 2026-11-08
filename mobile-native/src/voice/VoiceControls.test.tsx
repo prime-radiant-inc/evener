@@ -58,6 +58,7 @@ it("arms in one tap with a visible disclosure, keeps takeover explicit, and send
 		instanceId: "instance",
 		manager: true,
 		voiceAvailable: true,
+		armable: true,
 	};
 	native.authorize = async (origin, _path, _token, body) => {
 		if (_path === "/api/voice/status")
@@ -90,8 +91,6 @@ it("arms in one tap with a visible disclosure, keeps takeover explicit, and send
 			<VoiceControls target={target} />
 		</VoiceContext.Provider>,
 	);
-	// The hub's support answer arrives before the bar paints.
-	await act(async () => {});
 	const button = (label: string) =>
 		tree.root.findAll((node) => String(node.type) === "Pressable" && node.props.accessibilityLabel === label)[0];
 	await act(async () => {
@@ -149,6 +148,7 @@ it("adds no controls when the hub does not advertise voice", () => {
 				instanceId: "instance",
 				manager: true,
 				voiceAvailable: false,
+				armable: false,
 			}}
 		/>,
 	);
@@ -224,12 +224,11 @@ it("shows measured wake receipts and sends trial labels to the native owner", as
 					instanceId: "instance",
 					manager: true,
 					voiceAvailable: true,
+					armable: true,
 				}}
 			/>
 		</VoiceContext.Provider>,
 	);
-	// The hub's support answer arrives before the bar paints.
-	await act(async () => {});
 	const button = (label: string) =>
 		tree.root.findAll((node) => String(node.type) === "Pressable" && node.props.accessibilityLabel === label)[0];
 	await act(async () => {
@@ -338,14 +337,13 @@ it("keeps Stop live while Evener speaks", async () => {
 		instanceId: "instance",
 		manager: true,
 		voiceAvailable: true,
+		armable: true,
 	};
 	const tree = render(
 		<VoiceContext.Provider value={client}>
 			<VoiceControls target={target} />
 		</VoiceContext.Provider>,
 	);
-	// The hub's support answer arrives before the bar paints.
-	await act(async () => {});
 	const button = (label: string) =>
 		tree.root.findAll((node) => String(node.type) === "Pressable" && node.props.accessibilityLabel === label)[0];
 	await act(async () => {
@@ -441,12 +439,11 @@ it("calls a routine abort a finished turn, not a stopped voice", async () => {
 					instanceId: "instance",
 					manager: true,
 					voiceAvailable: true,
+					armable: true,
 				}}
 			/>
 		</VoiceContext.Provider>,
 	);
-	// The hub's support answer arrives before the bar paints.
-	await act(async () => {});
 	const button = (label: string) =>
 		tree.root.findAll((node) => String(node.type) === "Pressable" && node.props.accessibilityLabel === label)[0];
 	await act(async () => {
@@ -512,6 +509,7 @@ it("names the session voice is on for when the bar belongs to another one", asyn
 		instanceId: "instance",
 		manager: true,
 		voiceAvailable: true,
+		armable: true,
 	};
 	await client.arm(first, defaultVoiceOptions, false);
 	const tree = render(
@@ -519,80 +517,19 @@ it("names the session voice is on for when the bar belongs to another one", asyn
 			<VoiceControls target={{ ...first, ref: "other" }} />
 		</VoiceContext.Provider>,
 	);
-	// The hub's support answer arrives before the bar paints.
-	await act(async () => {});
 	const button = (label: string) =>
 		tree.root.findAll((node) => String(node.type) === "Pressable" && node.props.accessibilityLabel === label)[0];
 	expect(JSON.stringify(tree.toJSON())).toContain("Voice is on for chief");
 	expect(button("Talk").props.disabled).toBe(true);
 });
 
-it("hides the bar on a session the hub says cannot run voice", async () => {
+function disarmedVoice(armable: boolean) {
 	const native: NativeVoicePort = {
 		deviceId: async () => "install",
 		validateTransport: async () => {},
-		authorize: async (origin) => ({
-			origin,
-			status: 200,
-			body: JSON.stringify({ supported: false, reason: "voice_provenance_unavailable" }),
-		}),
-		arm: async () => {
-			throw new Error("an unsupported session must not be armable");
+		authorize: async () => {
+			throw new Error("voice support comes from the thread read, never a preflight");
 		},
-		snapshot: async () => ({
-			state: "disarmed",
-			capturing: false,
-			cloudMicrophone: false,
-			route: "",
-			speakerConsentRequired: false,
-			error: "",
-			interpreted: "",
-			custody: "",
-			canonical: "",
-			generated: "",
-			bindingId: "",
-			provider: "",
-		}),
-		addListener: () => ({ remove() {} }),
-		talk: () => {},
-		stopSpeaking: () => {},
-		disarm: () => {},
-		allowSpeaker: () => {},
-		startWakeTrial: async () => {},
-		finishWakeTrial: async () => {},
-	};
-	const client = new VoiceClient(
-		native,
-		async () => "fixture",
-		() => true,
-	);
-	const tree = render(
-		<VoiceContext.Provider value={client}>
-			<VoiceControls
-				target={{
-					hub: { id: "hub", name: "Hub", origin: "http://127.0.0.1:9180" },
-					ref: "local:legacy",
-					instanceId: "instance",
-					manager: true,
-					voiceAvailable: true,
-				}}
-			/>
-		</VoiceContext.Provider>,
-	);
-	await act(async () => {});
-	expect(tree.toJSON()).toBeNull();
-});
-
-it("offers voice once a saved manager becomes armable, without changing identity", async () => {
-	vi.useFakeTimers();
-	let armable = false;
-	const native: NativeVoicePort = {
-		deviceId: async () => "install",
-		validateTransport: async () => {},
-		authorize: async (origin) =>
-			armable
-				? { origin, status: 200, body: JSON.stringify({ supported: true, reason: "" }) }
-				: { origin, status: 200, body: JSON.stringify({ supported: false, reason: "live_manager_required" }) },
 		arm: async () => {},
 		snapshot: async () => ({
 			state: "disarmed",
@@ -616,31 +553,49 @@ it("offers voice once a saved manager becomes armable, without changing identity
 		startWakeTrial: async () => {},
 		finishWakeTrial: async () => {},
 	};
-	const client = new VoiceClient(
-		native,
-		async () => "fixture",
-		() => true,
-	);
+	return {
+		client: new VoiceClient(
+			native,
+			async () => "fixture",
+			() => true,
+		),
+		target: {
+			hub: { id: "hub", name: "Hub", origin: "http://127.0.0.1:9180" },
+			ref: "local:saved",
+			instanceId: "instance",
+			manager: true,
+			voiceAvailable: true,
+			armable,
+		},
+	};
+}
+
+it("hides the bar on a session the hub says cannot arm", () => {
+	const { client, target } = disarmedVoice(false);
 	const tree = render(
 		<VoiceContext.Provider value={client}>
-			<VoiceControls
-				target={{
-					hub: { id: "hub", name: "Hub", origin: "http://127.0.0.1:9180" },
-					ref: "local:saved",
-					instanceId: "instance",
-					manager: true,
-					voiceAvailable: true,
-				}}
-			/>
+			<VoiceControls target={target} />
 		</VoiceContext.Provider>,
 	);
-	await act(async () => {});
 	expect(tree.toJSON()).toBeNull();
-	armable = true;
-	await act(async () => {
-		vi.advanceTimersByTime(10_000);
+});
+
+it("shows the bar when a later read says the same session can arm", () => {
+	const { client, target } = disarmedVoice(false);
+	const tree = render(
+		<VoiceContext.Provider value={client}>
+			<VoiceControls target={target} />
+		</VoiceContext.Provider>,
+	);
+	expect(tree.toJSON()).toBeNull();
+	// A saved manager that typed input resumes: the next read carries the
+	// capability, with the ref and instance unchanged.
+	act(() => {
+		tree.update(
+			<VoiceContext.Provider value={client}>
+				<VoiceControls target={{ ...target, armable: true }} />
+			</VoiceContext.Provider>,
+		);
 	});
-	await act(async () => {});
 	expect(tree.root.findByProps({ testID: "voice-controls" })).toBeDefined();
-	vi.useRealTimers();
 });

@@ -1250,6 +1250,12 @@ export interface FavoriteSetResponse {
 
 export interface FeatureSet {
   voicePresentationContextV1?: boolean;
+  /**
+   * VoiceArmV1 marks a hub that stamps ThreadCapabilities.VoiceArm, its
+   * per-session answer to whether the iPhone may offer voice now. A client
+   * reads the thread bit only when this feature is present.
+   */
+  voiceArmV1?: boolean;
   conversationProvenance?: boolean;
   voice?: boolean;
   sessionTools?: boolean;
@@ -4433,6 +4439,16 @@ export interface ThreadCapabilities {
    * older hub never sends it.
    */
   pageBefore?: boolean;
+  /**
+   * VoiceArm advertises that the iPhone may offer voice for this session now:
+   * it is a live manager whose conversation provenance is authoritative for
+   * this instance, and this hub has an OpenAI voice instance with a
+   * credential. The hub owns the bit, so it refreshes with every read instead
+   * of a client-side preflight. FeatureSet.VoiceArmV1 marks a hub that
+   * stamps it; a client talking to a hub without that feature keeps the
+   * earlier behavior.
+   */
+  voiceArm?: boolean;
 }
 
 export interface ThreadClearParams {

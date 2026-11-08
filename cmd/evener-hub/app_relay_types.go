@@ -256,6 +256,7 @@ func relayGaveUpCapabilities(cfg hubcore.WebConfig, relayKey string, thread appw
 	}
 	set := pastThreadCapabilities()
 	set.ForkFromTurn = applyHubForkCapability(cfg, thread).Evener.Capabilities.ForkFromTurn
+	set.VoiceArm = false
 	return &set
 }
 
@@ -315,6 +316,17 @@ func stampForkCapability(notification appwire.Notification, allowFork bool) appw
 func stampPageBeforeCapability(notification appwire.Notification, pageBefore bool) appwire.Notification {
 	return patchStatusCapabilities(notification, func(_ appwire.ThreadStatus, capabilities map[string]json.RawMessage) {
 		capabilities["pageBefore"] = json.RawMessage(strconv.FormatBool(pageBefore))
+	})
+}
+
+// stampVoiceArmCapability answers ThreadCapabilities.VoiceArm for the session
+// whose status the daemon is publishing. The daemon cannot know this hub's voice
+// instance, and a status frame replaces the capability set the client holds, so
+// the frame carries the hub's answer or the client would fall back to its
+// older-hub behavior.
+func stampVoiceArmCapability(notification appwire.Notification, voiceArm bool) appwire.Notification {
+	return patchStatusCapabilities(notification, func(_ appwire.ThreadStatus, capabilities map[string]json.RawMessage) {
+		capabilities["voiceArm"] = json.RawMessage(strconv.FormatBool(voiceArm))
 	})
 }
 

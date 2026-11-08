@@ -3752,6 +3752,12 @@ function ConversationScreenView({
 										client?.initializeResult?.features != null &&
 										"voice" in client.initializeResult.features &&
 										client.initializeResult.features.voice === true,
+									// A hub that stamps voiceArm says which sessions can arm;
+									// an older hub keeps the earlier behavior.
+									armable:
+										client?.initializeResult?.features?.voiceArmV1 === true
+											? conversation.capabilities?.voiceArm === true
+											: true,
 								}}
 							/>
 						) : null}
