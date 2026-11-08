@@ -976,6 +976,49 @@ describe("anchorToEnd", () => {
     }
   });
 
+  // While a native smooth scroll runs, a measurement commit can cancel the
+  // outstanding placement because the DOM offset has already left the
+  // virtualizer's tracked offset. That cancellation abandons a programmatic
+  // scroll; it does not mean the reader moved forward, so the reading-point
+  // protection must survive it.
+  test("a cancellation during a native backward scroll keeps the reading-point protection", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const external = installMeasuredGeometry([1600, 500, 500, 500, 500]);
+    const frames = holdReaderFrames();
+    let layout: ReaderLayout | undefined;
+    try {
+      const { root, current, ref } = await renderMeasuredList(true, true, {
+        onLayout: (value) => {
+          layout = value;
+        },
+      });
+      await act(async () => external.notify());
+      await act(async () => current().scrollToIndex(1, { align: "start" }));
+      expect(root.scrollTop).toBe(1600);
+      await act(async () => {
+        root.scrollTop = 100;
+        ref.current?.noteBackwardMovement?.();
+        // The measurement commit's own offset confirmation cancels the
+        // outstanding placement while the native scroll is still running.
+        layout?.cancelPendingScroll();
+      });
+      await act(async () => frames.release());
+      await act(async () => vi.advanceTimersByTime(current().options.isScrollingResetDelay));
+      expect(current().scrollDirection).toBeNull();
+
+      external.geometry.rowHeights[0] = 4000;
+      await act(async () => external.notify((target) => target.dataset.index === "0"));
+      await act(async () => frames.release());
+      expect(root.scrollTop).toBe(100);
+      expect(current().scrollOffset).toBe(100);
+    } finally {
+      cleanup();
+      external.restore();
+      frames.restore();
+      vi.useRealTimers();
+    }
+  });
+
   test.each([
     { command: "absolute", requested: 300, want: 0, wantTop: 0 },
     { command: "index", requested: 1100, want: 200, wantTop: -200 },

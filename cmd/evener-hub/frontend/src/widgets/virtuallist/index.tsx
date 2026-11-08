@@ -302,7 +302,10 @@ export function VirtualList({
 
   const cancelPendingScroll = () => {
     clampedScrollRef.current = null;
-    backwardMovementRef.current = false;
+    // Abandoning an outstanding placement says nothing about which way the
+    // reader moved. A measurement commit cancels it mid native smooth scroll,
+    // and clearing the movement record there lets that same batch's
+    // corrections displace the reading point.
     const port = scrollRef.current;
     if (!port) return;
     virtualizer.scrollToOffset(port.scrollTop, { align: "start", behavior: "auto" });
@@ -347,6 +350,22 @@ export function VirtualList({
         // even before the DOM sizer grows enough to accept those writes.
         const offset = instance.scrollOffset ?? instance.scrollElement?.scrollTop ?? 0;
         const backward = instance.scrollDirection === "backward" || backwardMovementRef.current;
+        const probe = window as unknown as { __cascadeMeasurements?: unknown; __cascadeWrites?: unknown[] };
+        if (probe.__cascadeMeasurements && _delta !== 0) {
+          probe.__cascadeWrites ??= [];
+          probe.__cascadeWrites.push({
+            key: item.key,
+            delta: _delta,
+            start: item.start,
+            end: item.end,
+            offset,
+            backward,
+            hasSize: instance.itemSizeCache.has(item.key),
+            scrollDirection: instance.scrollDirection,
+            backwardMovement: backwardMovementRef.current,
+            total: instance.getTotalSize(),
+          });
+        }
         return item.start < offset && (!instance.itemSizeCache.has(item.key) || !backward || item.end <= offset);
       }
     : undefined;
