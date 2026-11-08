@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"maps"
 	"os"
 	"os/exec"
@@ -117,6 +118,40 @@ func (r *wtRepo) exitOp(t *testing.T) (map[string]any, error) {
 	return m, nil
 }
 
+// newSandboxedFixtureSession roots a workspace-write sandbox at dir and returns
+// the session, its state dir, and the resolved environment.
+func newSandboxedFixtureSession(t *testing.T, dir, statePattern string) (*Session, string, *execenv.LocalExecutionEnvironment) {
+	t.Helper()
+	cfg := worktreeTestSessionConfig()
+	stateDir := packageFixtureTempDir(t, statePattern)
+	cfg.StateDir = stateDir
+	s := newSession(t, withDir(dir), withConfig(cfg))
+	env, ok := s.currentEnv().(*execenv.LocalExecutionEnvironment)
+	if !ok {
+		t.Fatal("session env is not a LocalExecutionEnvironment")
+	}
+	env.Sandbox = sbxResolve(t, sbxBwrapFacts(t.TempDir()), dir, sandbox.ModeWorkspaceWrite)
+	return s, stateDir, env
+}
+
+// requireSwitchKeptScope asserts a refused switch left the session rooted at
+// rootDir with workspace in force and no write root under any forbidden path.
+func requireSwitchKeptScope(t *testing.T, s *Session, rootDir, workspace string, forbidden ...string) {
+	t.Helper()
+	cur, ok := s.currentEnv().(*execenv.LocalExecutionEnvironment)
+	if !ok {
+		t.Fatal("session env is no longer a LocalExecutionEnvironment")
+	}
+	if cur.RootDir != rootDir || cur.Sandbox == nil || cur.Sandbox.Git.WorktreeRoot != workspace {
+		t.Fatalf("refused switch changed the session root: envRoot=%q sandbox=%+v", cur.RootDir, cur.Sandbox)
+	}
+	for _, root := range forbidden {
+		if rootGrantsAny(cur.Sandbox.FileTool.WriteRoots, root) || rootGrantsAny(cur.Sandbox.Spawned.WriteRoots, root) {
+			t.Fatalf("refused switch grants write access to %s: sandbox=%+v", root, cur.Sandbox)
+		}
+	}
+}
+
 // A non-Git probe fixture inside a checkout sets GIT_CEILING_DIRECTORIES to its
 // parent, git's own bound on repository discovery. Managed-worktree project
 // discovery has to honor that same bound before it builds a control environment:
@@ -138,15 +173,7 @@ func TestWorktreeSwitchByPath_CeilingKeepsWriteScopeAtFixture(t *testing.T) {
 	// enclosing checkout while discovering a repository for the fixture.
 	t.Setenv("GIT_CEILING_DIRECTORIES", filepath.Dir(fixture))
 
-	cfg := worktreeTestSessionConfig()
-	stateDir := packageFixtureTempDir(t, "worktree-ceiling-state-*")
-	cfg.StateDir = stateDir
-	s := newSession(t, withDir(fixture), withConfig(cfg))
-	env, ok := s.currentEnv().(*execenv.LocalExecutionEnvironment)
-	if !ok {
-		t.Fatal("session env is not a LocalExecutionEnvironment")
-	}
-	env.Sandbox = sbxResolve(t, sbxBwrapFacts(t.TempDir()), fixture, sandbox.ModeWorkspaceWrite)
+	s, stateDir, env := newSandboxedFixtureSession(t, fixture, "worktree-ceiling-state-*")
 	if env.Sandbox.Git.WorktreeRoot != fixture {
 		t.Fatalf("fixture sandbox worktree = %q, want the fixture %q", env.Sandbox.Git.WorktreeRoot, fixture)
 	}
@@ -172,18 +199,133 @@ func TestWorktreeSwitchByPath_CeilingKeepsWriteScopeAtFixture(t *testing.T) {
 	// The observable effect is the write scope: a refused switch leaves the
 	// session rooted at the fixture with the fixture as its writable worktree,
 	// never the enclosing checkout.
-	cur, ok := s.currentEnv().(*execenv.LocalExecutionEnvironment)
-	if !ok {
-		t.Fatal("session env is no longer a LocalExecutionEnvironment")
+	requireSwitchKeptScope(t, s, fixture, fixture, repo, filepath.Join(repo, ".git"))
+}
+
+// A sandbox resolved as NonGit must not adopt an external main repository named
+// by metadata the session writes later. A fixture beneath a linked checkout can
+// copy that checkout's .git pointer into its own directory; without a check,
+// project discovery accepts the pointer, and a switch to the main checkout
+// re-roots the sandbox there and grants writes outside the fixture (#3724
+// review).
+func TestWorktreeSwitchByPath_RejectsPointerCreatedAfterSandboxResolve(t *testing.T) {
+	mainRoot := packageFixtureTempDir(t, "worktree-pointer-main-*")
+	mainRoot, err := filepath.EvalSymlinks(mainRoot)
+	if err != nil {
+		t.Fatalf("EvalSymlinks main: %v", err)
 	}
-	if cur.RootDir != fixture ||
-		cur.Sandbox == nil ||
-		cur.Sandbox.Git.WorktreeRoot != fixture ||
-		rootGrantsAny(cur.Sandbox.FileTool.WriteRoots, repo) ||
-		rootGrantsAny(cur.Sandbox.Spawned.WriteRoots, filepath.Join(repo, ".git")) {
-		t.Fatalf("switching to the enclosing checkout widened write access: result=%+v err=%v envRoot=%q sandbox=%+v",
-			result, switchErr, cur.RootDir, cur.Sandbox)
+	copyWorktreeBaseRepo(t, mainRoot)
+	_, head := worktreeBaseRepo(t)
+	linkedRoot := packageFixtureTempDir(t, "worktree-pointer-linked-*")
+	linkedRoot, err = filepath.EvalSymlinks(linkedRoot)
+	if err != nil {
+		t.Fatalf("EvalSymlinks linked: %v", err)
 	}
+	wtGit(t, mainRoot, "worktree", "add", "-q", "-b", "linked", linkedRoot, head)
+	fixture := filepath.Join(linkedRoot, "probes", "task")
+	if err := os.MkdirAll(fixture, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("GIT_CEILING_DIRECTORIES", filepath.Dir(fixture))
+
+	s, stateDir, env := newSandboxedFixtureSession(t, fixture, "worktree-pointer-state-*")
+	if env.Sandbox.Git.Kind != sandbox.NonGit {
+		t.Fatalf("fixture sandbox kind = %v, want NonGit", env.Sandbox.Git.Kind)
+	}
+	if st := s.worktreeStateSnapshot(); st.mainRepoRoot != "" {
+		t.Fatalf("initial main root = %q, want none", st.mainRepoRoot)
+	}
+
+	// The fixture's own initial sandbox permits this write. The target is real:
+	// it is the enclosing linked checkout's existing worktree gitdir.
+	pointer, err := os.ReadFile(filepath.Join(linkedRoot, ".git"))
+	if err != nil {
+		t.Fatalf("read linked pointer: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(fixture, ".git"), pointer, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	st := s.worktreeStateSnapshot()
+	if st.mainRepoRoot != mainRoot {
+		t.Fatalf("project discovery main root = %q, want the external main checkout %q", st.mainRepoRoot, mainRoot)
+	}
+
+	r := &wtRepo{s: s, mainRoot: mainRoot, stateDir: stateDir}
+	result, switchErr := r.switchOp(t, map[string]any{"path": mainRoot})
+	if switchErr == nil {
+		t.Fatalf("switch to the external main checkout succeeded: %+v", result)
+	}
+	if !errors.Is(switchErr, errUntrustedWorktreeProject) {
+		t.Fatalf("switch error = %v, want the untrusted-project refusal", switchErr)
+	}
+
+	requireSwitchKeptScope(t, s, fixture, fixture, mainRoot, filepath.Join(mainRoot, ".git"))
+}
+
+// The same metadata trick works from a session launched below a checkout root:
+// the retained layout is MainCheckout, so a .git pointer written in that
+// subdirectory must not redirect managed-worktree discovery to an external
+// repository (#3724 review).
+func TestWorktreeSwitchByPath_RejectsPointerCreatedUnderCheckoutSubdir(t *testing.T) {
+	otherMain := packageFixtureTempDir(t, "worktree-subdir-other-*")
+	otherMain, err := filepath.EvalSymlinks(otherMain)
+	if err != nil {
+		t.Fatalf("EvalSymlinks other main: %v", err)
+	}
+	copyWorktreeBaseRepo(t, otherMain)
+	_, head := worktreeBaseRepo(t)
+	otherLinked := packageFixtureTempDir(t, "worktree-subdir-linked-*")
+	otherLinked, err = filepath.EvalSymlinks(otherLinked)
+	if err != nil {
+		t.Fatalf("EvalSymlinks other linked: %v", err)
+	}
+	wtGit(t, otherMain, "worktree", "add", "-q", "-b", "linked", otherLinked, head)
+
+	repo := packageFixtureTempDir(t, "worktree-subdir-repo-*")
+	repo, err = filepath.EvalSymlinks(repo)
+	if err != nil {
+		t.Fatalf("EvalSymlinks repo: %v", err)
+	}
+	copyWorktreeBaseRepo(t, repo)
+	sub := filepath.Join(repo, "sub")
+	if err := os.MkdirAll(sub, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	s, stateDir, env := newSandboxedFixtureSession(t, sub, "worktree-subdir-state-*")
+	if env.Sandbox.Git.Kind != sandbox.MainCheckout {
+		t.Fatalf("subdirectory sandbox kind = %v, want MainCheckout", env.Sandbox.Git.Kind)
+	}
+	if env.Sandbox.Git.WorktreeRoot != repo {
+		t.Fatalf("subdirectory sandbox worktree = %q, want the checkout %q", env.Sandbox.Git.WorktreeRoot, repo)
+	}
+	if st := s.worktreeStateSnapshot(); st.mainRepoRoot != repo {
+		t.Fatalf("initial main root = %q, want the checkout %q", st.mainRepoRoot, repo)
+	}
+
+	// The session's own workspace permits this write. The target is a real
+	// external repository's existing worktree gitdir.
+	pointer, err := os.ReadFile(filepath.Join(otherLinked, ".git"))
+	if err != nil {
+		t.Fatalf("read external pointer: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(sub, ".git"), pointer, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	st := s.worktreeStateSnapshot()
+	if st.mainRepoRoot != otherMain {
+		t.Fatalf("project discovery main root = %q, want the external main checkout %q", st.mainRepoRoot, otherMain)
+	}
+
+	r := &wtRepo{s: s, mainRoot: otherMain, stateDir: stateDir}
+	result, switchErr := r.switchOp(t, map[string]any{"path": otherMain})
+	if switchErr == nil {
+		t.Fatalf("switch to the external main checkout succeeded: %+v", result)
+	}
+	if !errors.Is(switchErr, errUntrustedWorktreeProject) {
+		t.Fatalf("switch error = %v, want the untrusted-project refusal", switchErr)
+	}
+	requireSwitchKeptScope(t, s, sub, repo, otherMain, filepath.Join(otherMain, ".git"))
 }
 
 // --- switch by name ---

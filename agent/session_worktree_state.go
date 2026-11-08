@@ -10,6 +10,7 @@ import (
 
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/internal/worktree"
+	"primeradiant.com/evener/agent/sandbox"
 	"primeradiant.com/evener/identifier"
 )
 
@@ -448,6 +449,9 @@ func (s *Session) worktreeControlEnv(mainRepoRoot string) (execenv.ExecutionEnvi
 	if !ok {
 		return nil, errors.New("manage_worktree requires a local execution environment")
 	}
+	if err := rejectUntrustedMainRoot(local, mainRepoRoot); err != nil {
+		return nil, err
+	}
 	control := local.WithWorkingDirectory(mainRepoRoot)
 	// Carry the CONTROL sandbox policy (main repo + .git/worktrees registry
 	// writable; config/hooks denied) rather than the current worktree's tool
@@ -460,6 +464,49 @@ func (s *Session) worktreeControlEnv(mainRepoRoot string) (execenv.ExecutionEnvi
 		return nil, err
 	}
 	return control, nil
+}
+
+// errUntrustedWorktreeProject refuses a managed-worktree control environment
+// whose main root does not match the one the retained sandbox layout names.
+var errUntrustedWorktreeProject = errors.New("managed worktree project metadata does not match the sandbox's retained layout")
+
+// rejectUntrustedMainRoot refuses a main root other than the one the retained
+// sandbox layout names. The layout was resolved before the session could write
+// any git metadata, so a different main root can only be named by metadata the
+// session wrote afterwards — for example a .git pointer into an enclosing
+// checkout's existing worktree gitdir, or into an arbitrary external
+// repository. Building a control environment there would hand the session
+// write access outside the workspace the sandbox was built for (#3724 review).
+func rejectUntrustedMainRoot(local *execenv.LocalExecutionEnvironment, mainRepoRoot string) error {
+	policy := local.Sandbox
+	if policy == nil || mainRepoRoot == "" {
+		return nil
+	}
+	root := canonicalOrClean(mainRepoRoot)
+	trusted := trustedMainRoot(local, policy)
+	if root == trusted || (policy.Git.Kind == sandbox.NonGit && identifier.PathUnder(root, trusted)) {
+		return nil
+	}
+	return fmt.Errorf("%w: main root %s does not match the retained sandbox layout (%s)", errUntrustedWorktreeProject, root, trusted)
+}
+
+// trustedMainRoot returns the main repository root the retained sandbox layout
+// names: the checkout root itself for a main checkout or submodule, the common
+// dir's parent for a linked worktree, and the workspace for a non-git layout
+// (which has no main root, so any root under it is trusted).
+func trustedMainRoot(local *execenv.LocalExecutionEnvironment, policy *sandbox.ResolvedPolicy) string {
+	switch policy.Git.Kind {
+	case sandbox.MainCheckout, sandbox.Submodule:
+		return canonicalOrClean(policy.Git.WorktreeRoot)
+	case sandbox.LinkedWorktree:
+		return canonicalOrClean(filepath.Dir(policy.Git.CommonDir))
+	default:
+		workspace := policy.Git.WorktreeRoot
+		if workspace == "" {
+			workspace = local.WorkingDirectory()
+		}
+		return canonicalOrClean(workspace)
+	}
 }
 
 // worktreeStateSnapshot implements worktreeGuard.state() (spec §7): the session
