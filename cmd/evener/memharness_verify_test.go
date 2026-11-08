@@ -21,9 +21,9 @@ import (
 
 // This file holds the memory harness's post-exit transcript verifier and the
 // always-running tests for it. The verifier is a pure function of the recorded
-// transcript plus an expectation authored independently by the harness (from
-// the same pure script the adapter answers from), so it needs no daemon and
-// can be exercised with hand-authored entries.
+// transcript, the durable job journals it names, and an expectation authored
+// independently by the harness (from the same pure script the adapter answers
+// from), so it needs no daemon and can be exercised with hand-authored entries.
 //
 // It runs after the serve daemon exits, outside every CPU/heap sample: reading
 // and decoding the whole transcript, then the full output journal of every
@@ -57,10 +57,12 @@ const (
 	memHarnessCheckModel              = "model"
 )
 
-// memHarnessInlineOutputBudget is the shell ride-whole threshold: the agent
-// keeps completed shell output at or below this size inline and journals
-// anything larger. The verifier may accept inline bytes only under that
-// budget, so an oversized scripted result must name the journal that holds it.
+// memHarnessInlineOutputBudget mirrors the agent's shell ride-whole threshold
+// (shellRideWholeBytes in agent/job_shell.go): the agent keeps completed shell
+// output at or below this size inline and journals anything larger. The
+// verifier may accept inline bytes only under that budget, so an oversized
+// scripted result must name the journal that holds it. The agent module is
+// separate, so the threshold cannot be imported here.
 const memHarnessInlineOutputBudget = 8 * 1024
 
 // memHarnessExpectedRound is one scripted model round of a turn and what the

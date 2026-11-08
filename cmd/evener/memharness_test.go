@@ -347,6 +347,17 @@ func (s *memHarnessTurnStates) note(turnID, status string) {
 	s.poke()
 }
 
+// noteTerminalTurns records every terminal turn in a push or read snapshot;
+// non-terminal turns stay unsettled.
+func (s *memHarnessTurnStates) noteTerminalTurns(turns []appwire.Turn) {
+	for _, turn := range turns {
+		switch turn.Status {
+		case appwire.TurnStatusCompleted, appwire.TurnStatusFailed, appwire.TurnStatusInterrupted:
+			s.note(turn.ID, turn.Status)
+		}
+	}
+}
+
 func (s *memHarnessTurnStates) poke() {
 	select {
 	case s.wake <- struct{}{}:
@@ -538,12 +549,7 @@ func TestMemHarness(t *testing.T) {
 				if json.Unmarshal(n.Params, &params) != nil {
 					continue
 				}
-				for _, turn := range params.Turns {
-					switch turn.Status {
-					case appwire.TurnStatusCompleted, appwire.TurnStatusFailed, appwire.TurnStatusInterrupted:
-						states.note(turn.ID, turn.Status)
-					}
-				}
+				states.noteTerminalTurns(params.Turns)
 			case appwire.NotifyThreadStatusChanged:
 				var params appwire.ThreadStatusChangedParams
 				if json.Unmarshal(n.Params, &params) == nil && params.Status.Type == appwire.ThreadStatusIdle {
@@ -610,12 +616,7 @@ func TestMemHarness(t *testing.T) {
 				// Push recovery: a missing history/updated still settles from
 				// the live daemon's authoritative snapshot.
 				resp := memHarnessAuthoritativeRead(ctx, t, client, ref, true, appwire.TranscriptItemPageLimit)
-				for _, turn := range resp.Thread.Turns {
-					switch turn.Status {
-					case appwire.TurnStatusCompleted, appwire.TurnStatusFailed, appwire.TurnStatusInterrupted:
-						states.note(turn.ID, turn.Status)
-					}
-				}
+				states.noteTerminalTurns(resp.Thread.Turns)
 				nextRead = time.Now().Add(3 * time.Second)
 				continue
 			}
