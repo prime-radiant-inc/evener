@@ -41,6 +41,7 @@ func TestDelegateShellRepairClearsTerminalWatchFromDurableBatchPrefix(t *testing
 				OwnerSessionID:   "child-dlg_target",
 				VisibleSessionID: "child-dlg_target",
 				Target:           "job-shell",
+				SendTo:           "receiver-session",
 				ConfigHash:       "hash",
 				Condition:        "terminal",
 			},
@@ -83,6 +84,14 @@ func TestDelegateShellRepairClearsTerminalWatchFromDurableBatchPrefix(t *testing
 	}
 	if watch := watches["watch-shell"]; watch == nil || watch.Active {
 		t.Fatalf("terminal watch after repair = %#v, want cleared", watch)
+	}
+	frames := watchEndNoticeFrames(t, path)
+	if len(frames) != 1 || frames[0].Key.WatchID != "watch-shell" ||
+		frames[0].Key.WatchGeneration != "watch-generation" ||
+		frames[0].Key.ResolvedWatchedIdentity != "job-shell" ||
+		frames[0].Key.ResolvedSendTo != "receiver-session" ||
+		frames[0].Frame == "" {
+		t.Fatalf("watch-end notice frames = %#v, want one for watch-shell to receiver-session", frames)
 	}
 
 	first, err := os.ReadFile(path)

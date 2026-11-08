@@ -10,12 +10,12 @@ import (
 	"primeradiant.com/evener/agent/internal/jobstore"
 )
 
-// TestDelegateShellRepairClearsTerminalWatchFromFinishOnlyPrefix covers the
+// TestDelegateShellRepairProducesWatchEndNoticeForFinishOnlyPrefix covers the
 // earliest torn-batch prefix: the terminal event survived but the batch's
-// notification and watch-clear records did not. The job is terminal with no
-// notification armed, which is also the legitimate state of a kept-sync job, so
-// the repair must clear the terminal watch without inventing a notification.
-func TestDelegateShellRepairClearsTerminalWatchFromFinishOnlyPrefix(t *testing.T) {
+// notification and watch-clear records did not. A send watch must be cleared
+// with the cross-session end notice the live terminal path would have sent, not
+// dropped silently.
+func TestDelegateShellRepairProducesWatchEndNoticeForFinishOnlyPrefix(t *testing.T) {
 	t.Parallel()
 	c, _ := newDelegateControllerTestHarness(t, 1, 1)
 	seedDelegateControllerIdle(t, c, "dlg_target", "")
@@ -41,6 +41,7 @@ func TestDelegateShellRepairClearsTerminalWatchFromFinishOnlyPrefix(t *testing.T
 				OwnerSessionID:   "child-dlg_target",
 				VisibleSessionID: "child-dlg_target",
 				Target:           "job-shell",
+				SendTo:           "receiver-session",
 				ConfigHash:       "hash",
 				Condition:        "terminal",
 			},
@@ -78,6 +79,14 @@ func TestDelegateShellRepairClearsTerminalWatchFromFinishOnlyPrefix(t *testing.T
 	if watch := watches["watch-shell"]; watch == nil || watch.Active {
 		t.Fatalf("terminal watch after repair = %#v, want cleared", watch)
 	}
+	frames := watchEndNoticeFrames(t, path)
+	if len(frames) != 1 || frames[0].Key.WatchID != "watch-shell" ||
+		frames[0].Key.WatchGeneration != "watch-generation" ||
+		frames[0].Key.ResolvedWatchedIdentity != "job-shell" ||
+		frames[0].Key.ResolvedSendTo != "receiver-session" ||
+		frames[0].Frame == "" {
+		t.Fatalf("watch-end notice frames = %#v, want one for watch-shell to receiver-session", frames)
+	}
 
 	first, err := os.ReadFile(path)
 	if err != nil {
@@ -102,6 +111,66 @@ func TestDelegateShellRepairClearsTerminalWatchFromFinishOnlyPrefix(t *testing.T
 	}
 	if !bytes.Equal(first, second) {
 		t.Fatalf("repair after a completed finish-only prefix appended again:\nfirst=%s\nsecond=%s", first, second)
+	}
+}
+
+// TestDelegateShellRepairLeavesCallbackWatchForRestoreFromFinishOnlyPrefix
+// covers a no-send callback watch on the same prefix. Its cancellation notice is
+// routed by the child's restore, so the cold repair must leave the watch active
+// rather than clear it with no notice.
+func TestDelegateShellRepairLeavesCallbackWatchForRestoreFromFinishOnlyPrefix(t *testing.T) {
+	t.Parallel()
+	c, _ := newDelegateControllerTestHarness(t, 1, 1)
+	seedDelegateControllerIdle(t, c, "dlg_target", "")
+	path := filepath.Join(jobsDir(c.stateDir, "child-dlg_target"), "jobs.jsonl")
+	started := time.Unix(10, 0).UTC()
+	ended := time.Unix(20, 0).UTC()
+	appendDelegateShellEventsAt(t, path,
+		jobstore.Event{
+			Kind:           jobstore.EventJobStarted,
+			TS:             started,
+			JobID:          "job-shell",
+			Type:           jobstore.JobShell,
+			OwnerSessionID: "child-dlg_target",
+			StartedAt:      &started,
+		},
+		jobstore.Event{
+			Kind:    jobstore.EventWatchRegistered,
+			TS:      started,
+			WatchID: "watch-shell",
+			Watch: &jobstore.WatchEvent{
+				Generation:       "watch-generation",
+				OwnerSessionID:   "child-dlg_target",
+				VisibleSessionID: "child-dlg_target",
+				Target:           "job-shell",
+				ConfigHash:       "hash",
+				Condition:        "terminal",
+			},
+		},
+		jobstore.Event{
+			Kind:        jobstore.EventJobFinished,
+			TS:          ended,
+			JobID:       "job-shell",
+			Status:      jobstore.StatusStopped,
+			Reason:      "runtime_lost",
+			EndedAt:     &ended,
+			TerminalGen: "terminal-finish-only",
+		},
+	)
+	evidence, err := collectDelegateReconcileEvidence(c.stateDir, c.ReconcileRequirements())
+	if err != nil {
+		t.Fatalf("collectDelegateReconcileEvidence: %v", err)
+	}
+	plans, err := c.Reconcile(evidence)
+	if err != nil {
+		t.Fatalf("Reconcile: %v", err)
+	}
+	if len(plans.shellRepairs) != 0 {
+		t.Fatalf("shell repair plans = %#v, want none: a callback watch is left for the child's restore", plans.shellRepairs)
+	}
+	_, watches := readDelegateShellStore(t, path)
+	if watch := watches["watch-shell"]; watch == nil || !watch.Active {
+		t.Fatalf("callback watch after cold repair = %#v, want left active for restore", watch)
 	}
 }
 
@@ -380,4 +449,19 @@ func TestDelegateShellRepairConsumesUnnotifiedBackgroundNotification(t *testing.
 	if record := records["job-background"]; record == nil || record.NotifyState != jobstore.NotifyConsumed {
 		t.Fatalf("suppressed background notification = %#v, want consumed", record)
 	}
+}
+
+func watchEndNoticeFrames(t *testing.T, path string) []jobstore.WatchSendState {
+	t.Helper()
+	events, err := jobstore.ReadEvents(path)
+	if err != nil {
+		t.Fatalf("ReadEvents: %v", err)
+	}
+	var frames []jobstore.WatchSendState
+	for _, event := range events {
+		if event.Kind == jobstore.EventWatchSendPending && event.WatchSend != nil && event.WatchSend.EndNotice {
+			frames = append(frames, *event.WatchSend)
+		}
+	}
+	return frames
 }

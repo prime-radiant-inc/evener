@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	agentevent "primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/internal/delegatestore"
 	"primeradiant.com/evener/agent/internal/jobstore"
 	"primeradiant.com/evener/agent/provenance"
@@ -218,7 +219,7 @@ func collectShellRuntimeLossEvidence(path string) (shellRuntimeLossEvidence, err
 				terminalGeneration: record.TerminalGen,
 			})
 		}
-		if record.Status.IsTerminal() && record.TerminalGen != "" && hasActiveWatchFor(watches, jobID) {
+		if record.Status.IsTerminal() && record.TerminalGen != "" && hasActiveSendWatchFor(watches, jobID) {
 			evidence.terminalWatchJobIDs = append(evidence.terminalWatchJobIDs, jobID)
 		}
 		// A background shell always arms a completion notification. A terminal
@@ -235,12 +236,15 @@ func collectShellRuntimeLossEvidence(path string) (shellRuntimeLossEvidence, err
 	return evidence, nil
 }
 
-// hasActiveWatchFor reports whether a watch that can still be cleared targets
-// jobID. A watch with no generation cannot produce a clear event, so counting
-// it would create a repair plan with nothing to write.
-func hasActiveWatchFor(watches map[string]*jobstore.WatchRecord, jobID string) bool {
+// hasActiveSendWatchFor reports whether a send watch that can still be cleared
+// targets jobID. A no-send callback watch is left for the child's restore,
+// which is the only path that can cancel it and tell its receiver; clearing it
+// here would drop that notice. A watch with no generation cannot produce a
+// clear event, so counting it would create a repair plan with nothing to write.
+func hasActiveSendWatchFor(watches map[string]*jobstore.WatchRecord, jobID string) bool {
 	for _, watch := range watches {
-		if watch != nil && watch.Active && watch.Generation != "" && watch.Target == jobID {
+		if watch != nil && watch.Active && watch.SendTo != "" && watch.Generation != "" &&
+			watch.VisibleSessionID != "" && watch.Target == jobID {
 			return true
 		}
 	}
@@ -348,9 +352,9 @@ func executeDelegateShellRepair(plan delegateShellRepairPlan, now time.Time) (er
 		if record == nil || record.Type != jobstore.JobShell || !record.Status.IsTerminal() || record.TerminalGen == "" {
 			continue
 		}
-		// The terminal event is already durable, so its terminal watches must be
-		// cleared even when this repair only observes the torn prefix.
-		clearedJobs[jobID] = struct{}{}
+		// The terminal event is already durable, so its send watches must be
+		// cleared with the same end notice the child's restore would have sent.
+		events = append(events, watchEndNoticeEvents(watches, record, now)...)
 	}
 	for _, identity := range plan.unnotifiedTerminal {
 		record := records[identity.jobID]
@@ -367,7 +371,6 @@ func executeDelegateShellRepair(plan delegateShellRepairPlan, now time.Time) (er
 			JobID:       identity.jobID,
 			TerminalGen: identity.terminalGeneration,
 		})
-		clearedJobs[identity.jobID] = struct{}{}
 	}
 	clearedIDs := make([]string, 0, len(clearedJobs))
 	for jobID := range clearedJobs {
@@ -378,4 +381,55 @@ func executeDelegateShellRepair(plan delegateShellRepairPlan, now time.Time) (er
 		events = append(events, recoveredTerminalWatchClearEvents(watches, jobID, now)...)
 	}
 	return store.AppendBatch(events)
+}
+
+// watchEndNoticeEvents builds the durable end-notice frame and the clear for
+// every active send watch targeting a terminal job. It mirrors the restart-side
+// noticeUnrestoredWatchEnds: the child's restore finds the pending frame and
+// the send rail delivers it. A watch that cannot be routed is left active for
+// that same restore path.
+func watchEndNoticeEvents(watches map[string]*jobstore.WatchRecord, record *jobstore.JobRecord, now time.Time) []jobstore.Event {
+	var watchIDs []string
+	for watchID, watch := range watches {
+		if watch == nil || !watch.Active || watch.SendTo == "" || watch.Generation == "" ||
+			watch.VisibleSessionID == "" || watch.Target != record.JobID {
+			continue
+		}
+		watchIDs = append(watchIDs, watchID)
+	}
+	sort.Strings(watchIDs)
+	var events []jobstore.Event
+	for _, watchID := range watchIDs {
+		watch := watches[watchID]
+		resolved, err := resolveWatchSendTarget(watch.SendTo, record.JobID)
+		if err != nil {
+			continue
+		}
+		cfg := &watchConfig{
+			watchID:            watch.WatchID,
+			sourcePublic:       watchPublicSource(watch.Source, watch.Target),
+			receiverSessionID:  watch.ReceiverSessionID,
+			receiverDelegateID: watch.ReceiverDelegateID,
+			target:             watch.Target,
+			send:               &watchSendArgs{To: watch.SendTo},
+			generation:         watch.Generation,
+			pending:            make(map[jobstore.WatchSendKey]*jobstore.WatchSendState),
+			sourceDelegateID:   watch.SourceDelegateID,
+			sourceGeneration:   watch.SourceDelegateGeneration,
+			stableReceiver:     watch.StableReceiver,
+		}
+		manager := &jobManager{sessionID: watch.VisibleSessionID}
+		root := agentevent.SessionEvent{SessionID: watch.VisibleSessionID, Provenance: provenance.Clone(record.Provenance)}
+		trigger := watchEndedUnfiredMessage(watch.Target, record.Status, record.Reason, record.OutputBytes)
+		delivery := manager.watchSendSnapshot(cfg, watch.Target, trigger, root)
+		delivery.allowAfterTerminalExpiry = true
+		delivery.endNotice = true
+		delivery = manager.snapshotWatchSendFrame(delivery)
+		state := manager.watchSendState(delivery, resolved)
+		events = append(events, jobstore.Event{Kind: jobstore.EventWatchSendPending, TS: now, WatchSend: &state})
+		events = append(events, watchClearEventsForRecords(watches, now, "auto_removed_terminal", func(candidate *jobstore.WatchRecord) bool {
+			return candidate == watch
+		})...)
+	}
+	return events
 }
