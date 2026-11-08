@@ -67,23 +67,23 @@ func prependSystemPromptToUserMessage(systemPrompt string, user llm.Message) llm
 // carries its own regression test, because moving the report back inside any one
 // of those critical sections leaves the whole package green otherwise.
 //
-// The empty string means the render succeeded.
-func (s *Session) refreshSystemPromptCache(env execenv.ExecutionEnvironment) string {
+// The empty warning means nothing was omitted or failed; failed reports whether
+// renderSystemPrompt returned its diagnostic text instead of a prompt.
+func (s *Session) refreshSystemPromptCache(env execenv.ExecutionEnvironment) (warning string, failed bool) {
 	if s.cfg.testOnly.minimalSystemPrompt {
 		s.cachedSystemPrompt = "test system prompt"
 		s.promptSourceLog = nil
-		s.promptRenderFailed = false
-		return ""
+		return "", false
 	}
-	prompt, warning := s.renderSystemPrompt(env)
+	prompt, warning, failed := s.renderSystemPrompt(env)
 	// A failed render returns diagnostic prose, not a prompt. Keep the last
 	// prompt that rendered so dependent work does not run on "Template rendering
 	// failed: ..." text; only a session with no earlier prompt installs that
 	// text, so the model is still told why it has none.
-	if !s.promptRenderFailed || s.cachedSystemPrompt == "" {
+	if !failed || s.cachedSystemPrompt == "" {
 		s.cachedSystemPrompt = prompt
 	}
-	return warning
+	return warning, failed
 }
 
 // reportPromptRenderFailure emits the diagnostic refreshSystemPromptCache
@@ -289,18 +289,18 @@ func sandboxPromptBoundary(rp *sandbox.ResolvedPolicy) string {
 }
 
 // renderSystemPrompt renders the system prompt from the embedded template. It
-// returns the prompt and, when the render failed, the diagnostic its caller
-// must report; see refreshSystemPromptCache for why that is returned rather
-// than emitted here, and for the env-locking contract.
-func (s *Session) renderSystemPrompt(env execenv.ExecutionEnvironment) (string, string) {
+// returns the prompt, the diagnostic its caller must report, and whether the
+// render failed (in which case the prompt is diagnostic text, not a prompt);
+// see refreshSystemPromptCache for why the diagnostic is returned rather than
+// emitted here, and for the env-locking contract.
+func (s *Session) renderSystemPrompt(env execenv.ExecutionEnvironment) (string, string, bool) {
 	data, inputSources := s.buildPromptData(env)
 	result, err := executeSystemPromptTemplate(data)
-	s.promptRenderFailed = err != nil
 	if err != nil {
 		// The template parsed at package initialization, so an execution error
 		// is a bug. Report it and hand the model a minimal prompt that says so.
 		return fmt.Sprintf("Template rendering failed: %v. Please report this bug.", err),
-			fmt.Sprintf("template render failed: %v", err)
+			fmt.Sprintf("template render failed: %v", err), true
 	}
 	sources := make([]promptSource, 0, len(inputSources)+2)
 	if data.BaseInstructionsOverride != "" {
@@ -309,7 +309,7 @@ func (s *Session) renderSystemPrompt(env execenv.ExecutionEnvironment) (string, 
 	sources = append(sources, promptSource{Label: systemPromptTemplateLabel, Size: len(result)})
 	sources = append(sources, inputSources...)
 	s.promptSourceLog = sources
-	return result, unreadableAppendWarning(data.unreadableAppends)
+	return result, unreadableAppendWarning(data.unreadableAppends), false
 }
 
 // unreadableAppendWarning discloses SystemPromptAppend files that could not be

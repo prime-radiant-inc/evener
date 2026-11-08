@@ -371,17 +371,17 @@ func wppPromptDataAndRender(t *testing.T, token string) {
 
 	sess.cfg.testOnly.minimalSystemPrompt = false
 	sess.refreshSystemPromptCache(env)
-	prompt, warning := sess.renderSystemPrompt(env)
+	prompt, warning, failed := sess.renderSystemPrompt(env)
 	// The fixture deliberately configures a missing append file: the render
 	// itself must still succeed, and the omission must be disclosed rather than
 	// silently dropped.
-	if sess.promptRenderFailed {
+	if failed {
 		t.Fatalf("render failed: %s", warning)
 	}
 	if warning == "" {
 		t.Fatal("a configured but unreadable append file was not disclosed")
 	}
-	again, _ := sess.renderSystemPrompt(env)
+	again, _, _ := sess.renderSystemPrompt(env)
 	if prompt != again || prompt != sess.cachedSystemPrompt {
 		t.Fatal("system prompt cache/render was not deterministic")
 	}

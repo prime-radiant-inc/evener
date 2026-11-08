@@ -24,7 +24,7 @@ func TestRefreshSystemPromptCacheDisclosesUnreadableAppend(t *testing.T) {
 		MaxSubagentDepth:   1,
 		SystemPromptAppend: []string{good, missing},
 	}))
-	warning := sess.refreshSystemPromptCache(sess.env)
+	warning, _ := sess.refreshSystemPromptCache(sess.env)
 	if warning == "" {
 		t.Fatal("an unreadable SystemPromptAppend file was skipped without any diagnostic")
 	}
@@ -44,7 +44,7 @@ func TestRefreshSystemPromptCacheKeepsValidPromptOnRenderFailure(t *testing.T) {
 	sess.mu.Unlock()
 
 	forceSystemPromptRenderFailure(t)
-	warning := sess.refreshSystemPromptCache(sess.env)
+	warning, _ := sess.refreshSystemPromptCache(sess.env)
 	if warning == "" {
 		t.Fatal("the render failure was not reported")
 	}

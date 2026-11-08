@@ -1212,11 +1212,6 @@ type Session struct {
 	systemPromptOverride string
 	cachedSystemPrompt   string
 	promptSourceLog      []promptSource
-	// promptRenderFailed reports whether the most recent renderSystemPrompt
-	// returned diagnostic prose instead of a prompt. refreshSystemPromptCache
-	// uses it to keep the last valid cached prompt; guarded by s.mu like the
-	// cache it describes.
-	promptRenderFailed bool
 }
 
 type sessionDetachedProcess struct {
@@ -2003,7 +1998,7 @@ func (s *Session) applyModelSwitch(model, primedInstance string, primedListing *
 	// below, or the cached prompt keeps claiming the launch model's cutoff
 	// forever (G15).
 	s.envInfo.KnowledgeCutoff = nextProfile.KnowledgeCutoff()
-	promptWarning := s.refreshSystemPromptCache(s.env) // already holding s.mu; currentEnv() would deadlock
+	promptWarning, _ := s.refreshSystemPromptCache(s.env) // already holding s.mu; currentEnv() would deadlock
 	// Post-swap fallback re-validation: cfg.ModelFallbacks entries that no
 	// longer validate against the new profile are dropped; their names are
 	// surfaced in the switch marker's warning line below.
