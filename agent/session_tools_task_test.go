@@ -145,14 +145,15 @@ func TestTaskTool_AutoAdvanceSaveFailureReportsCommittedMutation(t *testing.T) {
 		t.Fatalf("seed tasks: %v", err)
 	}
 
-	// One successful save consumes MkdirAll, OpenFile, Write, and Rename. Fail
-	// the next save at its MkdirAll so the explicit terminal update commits but
-	// its follow-up auto-advance cannot be persisted.
+	// One successful durable save consumes MkdirAll, OpenFile, Write, Chmod,
+	// the file Sync, Rename, and the directory Open and Sync. Fail the next
+	// save at its MkdirAll so the explicit terminal update commits but its
+	// follow-up auto-advance cannot be persisted.
 	plan := make([]byte, 9)
 	for i := range plan {
 		plan[i] = 1
 	}
-	plan[4] = 0
+	plan[8] = 0
 	store.SetFs(fault.FS(base, fault.FromBytes(plan)))
 
 	h := newTaskToolHarness(t, nil)

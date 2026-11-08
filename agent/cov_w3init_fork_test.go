@@ -138,8 +138,7 @@ func TestW3Init_ForkSession_NewWriterError(t *testing.T) {
 
 // TestW3Init_ForkSession_ParentMetaSaveError covers the parent-fork-label save
 // failure arm: the child is written and saved successfully, but the parent
-// meta's atomic temp write collides with a pre-planted directory at its .tmp
-// path.
+// meta's temp write fails.
 func TestW3Init_ForkSession_ParentMetaSaveError(t *testing.T) {
 	t.Parallel()
 	stateDir := t.TempDir()
@@ -148,16 +147,26 @@ func TestW3Init_ForkSession_ParentMetaSaveError(t *testing.T) {
 	s2cov_writeRawTranscript(t, stateDir, id, s2cov_headerLine(t, id), lines)
 	s2cov_saveParentMeta(t, stateDir, id)
 
-	// SaveSessionMeta writes <id>.meta.json.tmp then renames. Planting a directory
-	// there makes the parent's temp write fail while the child save (a different
-	// id) succeeds.
-	tmp := filepath.Join(stateDir, schema.SessionsSubdir, id+".meta.json.tmp")
-	if err := os.Mkdir(tmp, 0o755); err != nil {
-		t.Fatalf("mkdir tmp block: %v", err)
-	}
-
-	_, err := ForkSession(stateDir, id, 1, "x", "branch-label")
+	fs := w3init_parentMetaSaveFailFS{Fs: afero.NewOsFs(), parentMetaTempPrefix: id + ".meta.json.tmp-"}
+	_, err := forkSessionFS(fs, stateDir, id, 1, "x", "branch-label")
 	if err == nil || !strings.Contains(err.Error(), "update parent session meta with fork label") {
 		t.Fatalf("err = %v, want parent meta save error", err)
 	}
+	if !errors.Is(err, fault.ErrInjected) {
+		t.Fatalf("err = %v, want wrapped injected parent meta save error", err)
+	}
+}
+
+// w3init_parentMetaSaveFailFS fails the temp-file create for one session's meta
+// path, letting the child fork's own writes through.
+type w3init_parentMetaSaveFailFS struct {
+	afero.Fs
+	parentMetaTempPrefix string
+}
+
+func (f w3init_parentMetaSaveFailFS) OpenFile(name string, flag int, perm os.FileMode) (afero.File, error) {
+	if strings.HasPrefix(filepath.Base(name), f.parentMetaTempPrefix) {
+		return nil, &os.PathError{Op: "open", Path: name, Err: fault.ErrInjected}
+	}
+	return f.Fs.OpenFile(name, flag, perm)
 }
