@@ -47,6 +47,7 @@ const (
 	ErrorTranscriptItemChanged      ErrorInfo = "item-changed"
 	ErrorFetchUnavailableRemote      ErrorInfo = "fetch-unavailable-remote"
 	ErrorWindowUnsupportedOnDaemon   ErrorInfo = "window-unsupported-on-daemon"
+	ErrorItemUnreachableOnCompat     ErrorInfo = "item-unreachable-on-compat"
 	ErrorTranscriptTurnNotFound      ErrorInfo = "transcriptTurnNotFound"
 	ErrorSessionActivityCursorStale  ErrorInfo = "sessionActivityCursorStale"
 	ErrorJobOutputPruned             ErrorInfo = "jobOutputPruned"
@@ -729,6 +730,14 @@ func WindowUnsupportedOnDaemon() WireError {
 		Code:    CodeInvalidParams,
 		Message: "this daemon does not support the requested transcript window; upgrade it or use a latest window",
 		Data:    ErrorData{EvenerErrorInfo: ErrorWindowUnsupportedOnDaemon},
+	}
+}
+
+func ItemUnreachableOnCompat() WireError {
+	return WireError{
+		Code:    CodeUnavailable,
+		Message: "transcript item is beyond this daemon's compatibility reach; re-read the window",
+		Data:    ErrorData{EvenerErrorInfo: ErrorItemUnreachableOnCompat},
 	}
 }
 

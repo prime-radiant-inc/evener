@@ -260,8 +260,15 @@ func (o *sessionOperations) Invoke(ctx context.Context, caller appwire.ManagerVi
 			return response, err
 		}
 		response.Turns = &page
-		if page.NextCursor != "" {
-			response.FollowUps = []appwire.SessionStatusFollowUp{{Tool: "read_transcript", Arguments: appwire.SessionStatusArguments{Hub: appwire.SessionStatusTarget{Ref: request.Turns.Ref, Cursor: page.NextCursor, ItemLimit: request.Turns.ItemLimit}}}}
+		continuationCursor := page.NextCursor
+		if page.Window != nil && page.Window.ContinuationCursor != "" {
+			continuationCursor = page.Window.ContinuationCursor
+		}
+		if continuationCursor != "" {
+			response.FollowUps = []appwire.SessionStatusFollowUp{{Tool: "read_transcript", Arguments: appwire.SessionStatusArguments{Hub: appwire.SessionStatusTarget{
+				ThreadWindowParams: request.Turns.ThreadWindowParams,
+				Ref:                request.Turns.Ref, Cursor: continuationCursor, ItemLimit: request.Turns.ItemLimit,
+			}}}}
 		}
 	} else if request.Fetch != nil {
 		fetch, err := o.fetch(ctx, *request.Fetch)
@@ -444,10 +451,84 @@ func (o *sessionOperations) fetch(ctx context.Context, request appwire.SessionFe
 		return remote.FetchTranscriptItem(ctx, request.Ref, identity, cursor)
 	case appitempaging.FetchCursorOriginSavedIndex:
 		return fetchSavedTranscriptItem(ctx, o.cfg, request.Ref, identity, cursor)
+	case appitempaging.FetchCursorOriginHubCompat:
+		return o.fetchHubCompatibilityTranscriptItem(ctx, request.Ref, identity, cursor)
 	default:
 		return appwire.SessionFetchResponse{}, appwire.TranscriptItemCursorStale()
 	}
 }
+
+func (o *sessionOperations) fetchHubCompatibilityTranscriptItem(
+	ctx context.Context,
+	ref string,
+	identity appitempaging.CursorIdentity,
+	cursor appitempaging.FetchCursor,
+) (appwire.SessionFetchResponse, error) {
+	source, err := sourceForThreadWithDeletionFence(ctx, o.cfg, o.sources, ref, "")
+	if err != nil {
+		return appwire.SessionFetchResponse{}, err
+	}
+	legacy, ok := source.(appsource.LegacyPageCandidateSource)
+	if !ok {
+		return appwire.SessionFetchResponse{}, appwire.ItemUnreachableOnCompat()
+	}
+	params := appwire.ThreadReadParams{
+		Ref: ref, IncludeTurns: true, ItemsView: string(appwire.TurnItemsViewFragment), ItemLimit: appwire.TranscriptItemPageLimit,
+	}
+	read, err := source.ReadThread(ctx, params)
+	if err != nil {
+		return appwire.SessionFetchResponse{}, err
+	}
+	result, err := legacy.ItemCandidatesFromLegacyPage(ctx, params, read)
+	if err != nil {
+		return appwire.SessionFetchResponse{}, err
+	}
+	sourceIncarnation, ok := appwire.ThreadWindowSourceIncarnation(identity.Incarnation)
+	if !ok || result.Identity.ThreadRef != identity.ThreadRef || result.Identity.Incarnation != sourceIncarnation {
+		return appwire.SessionFetchResponse{}, appwire.TranscriptItemCursorStale()
+	}
+	for _, candidate := range result.Candidates.Candidates {
+		if candidate.Position == cursor.Position {
+			return appitempaging.BuildFetchResponse(candidate.Item, identity, cursor)
+		}
+	}
+	if result.Exhausted || !hubPagesBefore(o.cfg, ref) {
+		return appwire.SessionFetchResponse{}, appwire.ItemUnreachableOnCompat()
+	}
+	candidates := result.Candidates.Candidates
+	for range hubCompatFetchPageLimit {
+		if len(candidates) == 0 || appitempaging.ComparePosition(candidates[0].Position, cursor.Position) <= 0 {
+			return appwire.SessionFetchResponse{}, appwire.ItemUnreachableOnCompat()
+		}
+		before := candidates[0].Position
+		page, err := source.ListTurns(ctx, appwire.ThreadTurnsListParams{
+			Ref: ref, Before: &before, ItemsView: string(appwire.TurnItemsViewFragment), ItemLimit: appwire.TranscriptItemPageLimit,
+		})
+		if err != nil {
+			return appwire.SessionFetchResponse{}, err
+		}
+		if err := appwire.ValidateThreadTurnsListItemResponse(page); err != nil {
+			return appwire.SessionFetchResponse{}, err
+		}
+		candidates, err = appitempaging.CandidatesFromTurns(page.Data)
+		if err != nil {
+			return appwire.SessionFetchResponse{}, err
+		}
+		if len(candidates) > 0 && appitempaging.ComparePosition(candidates[len(candidates)-1].Position, before) >= 0 {
+			return appwire.SessionFetchResponse{}, appwire.TranscriptItemCursorStale()
+		}
+		for _, candidate := range candidates {
+			if candidate.Position == cursor.Position {
+				return appitempaging.BuildFetchResponse(candidate.Item, identity, cursor)
+			}
+		}
+	}
+	return appwire.SessionFetchResponse{}, appwire.ItemUnreachableOnCompat()
+}
+
+// hubCompatFetchPageLimit bounds compatibility fetch recovery against an old
+// peer after newer arrivals move the addressed item out of its legacy page.
+const hubCompatFetchPageLimit = 8
 
 func fetchSavedTranscriptItem(
 	ctx context.Context,

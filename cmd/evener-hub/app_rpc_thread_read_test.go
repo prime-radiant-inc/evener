@@ -314,15 +314,37 @@ func TestSessionOperationsLabelsIncompleteOlderDaemonLatestWindow(t *testing.T) 
 	server := appserver.NewServer(appserver.ServerConfig{ServerName: "hub", Version: "test", SourceID: "local"})
 	operations := &sessionOperations{cfg: cfg, sources: sources, relays: newHubRelay(server, cfg, sources), server: server}
 
-	response, err := operations.Invoke(t.Context(), appwire.ManagerView{Ref: "local:manager", Manager: true}, appwire.SessionOperationRequest{
-		Turns: &appwire.ThreadTurnsListParams{Ref: "local:legacy-partial", ThreadWindowParams: appwire.ThreadWindowParams{TurnWindow: &appwire.ThreadTurnWindow{Latest: 2}}},
-	})
+	request := appwire.ThreadTurnsListParams{
+		Ref: "local:legacy-partial", ItemLimit: 7,
+		ThreadWindowParams: appwire.ThreadWindowParams{
+			TurnWindow: &appwire.ThreadTurnWindow{Latest: 2}, ItemTypes: []string{"messages"},
+			PreviewBytes: 321, MessageBytes: 654, WindowBudgetBytes: 16 * 1024,
+		},
+	}
+	response, err := operations.Invoke(t.Context(), appwire.ManagerView{Ref: "local:manager", Manager: true}, appwire.SessionOperationRequest{Turns: &request})
 	if err != nil {
 		t.Fatal(err)
 	}
 	window := response.Turns.Window
 	if window == nil || window.ServedTurns != 1 || window.WithheldTurns != 1 || window.TrimmedEnd != "oldest" || window.ContinuationCursor == "" {
 		t.Fatalf("partial compatibility window = %+v", window)
+	}
+	if len(response.FollowUps) != 1 {
+		t.Fatalf("partial compatibility follow-ups = %+v, want one shaped continuation", response.FollowUps)
+	}
+	encoded, err := json.Marshal(response.FollowUps[0].Arguments.Hub)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var shaped map[string]any
+	if err := json.Unmarshal(encoded, &shaped); err != nil {
+		t.Fatal(err)
+	}
+	turnWindow, _ := shaped["turnWindow"].(map[string]any)
+	if shaped["cursor"] != window.ContinuationCursor || turnWindow["latest"] != float64(2) ||
+		!slices.Equal(shaped["itemTypes"].([]any), []any{"messages"}) || shaped["previewBytes"] != float64(321) ||
+		shaped["messageBytes"] != float64(654) || shaped["windowBudgetBytes"] != float64(16*1024) || shaped["itemLimit"] != float64(7) {
+		t.Fatalf("window continuation lost request shape: %s", encoded)
 	}
 }
 
@@ -426,6 +448,243 @@ func TestSessionOperationsKeepsWindowFailureWhenFreshProbeStillAdvertisesSupport
 	}
 	if got := prober.probes.Load(); got != 2 {
 		t.Fatalf("capability probes = %d, want initial probe and one failure re-probe", got)
+	}
+}
+
+func TestSessionOperationsFetchesHubCompatibilityItemFromNewestLegacyPage(t *testing.T) {
+	position := appwire.ThreadItemPosition{Entry: 7}
+	item := appwire.ThreadItem{
+		ID: "compat-large", Type: "agentMessage", TurnID: "turn-compat", TranscriptKey: "compat-large",
+		Position: &position, Version: 4, Text: strings.Repeat("compat-bytes", 20_000),
+	}
+	var requests atomic.Int64
+	daemon := appserver.NewServer(appserver.ServerConfig{ServerName: "old-daemon", SourceID: "local"})
+	appserver.HandleTyped(daemon.Router(), appwire.MethodThreadRead, func(_ context.Context, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
+		requests.Add(1)
+		if params.FetchCursor != "" {
+			t.Fatalf("old daemon received fetch cursor")
+		}
+		if params.ItemLimit != appwire.TranscriptItemPageLimit {
+			t.Fatalf("compat fetch item limit = %d, want %d", params.ItemLimit, appwire.TranscriptItemPageLimit)
+		}
+		return appwire.ThreadReadResponse{
+			Thread: appwire.Thread{ID: "compat-fetch", SessionID: "compat-fetch", Evener: appwire.EvenerThread{Ref: params.Ref}, Turns: []appwire.Turn{{
+				ID: "turn-compat", Status: appwire.TurnStatusCompleted, ItemsView: appwire.TurnItemsViewFull, Items: []appwire.ThreadItem{item},
+			}}},
+			Snapshot: &appwire.SnapshotIdentity{Incarnation: "compat-fetch-snapshot", Length: 8},
+		}, nil
+	})
+	daemonHTTP := httptest.NewServer(http.HandlerFunc(daemon.ServeWebSocket))
+	defer daemonHTTP.Close()
+	source := appsource.NewLocalDaemonSourceWithEntries("local", func() []appsource.LocalDaemonEntry {
+		return []appsource.LocalDaemonEntry{{
+			Entry:             rendezvous.Entry{Protocol: appwire.ProtocolVersion, Endpoint: "ws" + strings.TrimPrefix(daemonHTTP.URL, "http"), SourceID: "local", ThreadID: "compat-fetch", SessionID: "compat-fetch", WorkspaceRef: "local:compat-fetch"},
+			CapabilitiesKnown: true,
+		}}
+	}, http.DefaultClient)
+	sources := appsource.NewRegistry()
+	sources.Add(source)
+	cfg := hubcore.WebConfig{HubStateRoot: t.TempDir(), Past: hubcore.NewPastIndex("")}
+	server := appserver.NewServer(appserver.ServerConfig{ServerName: "hub", Version: "test", SourceID: "local"})
+	operations := &sessionOperations{cfg: cfg, sources: sources, relays: newHubRelay(server, cfg, sources), server: server}
+
+	windowResponse, err := operations.Invoke(t.Context(), appwire.ManagerView{Ref: "local:manager", Manager: true}, appwire.SessionOperationRequest{
+		Turns: &appwire.ThreadTurnsListParams{
+			Ref: "local:compat-fetch", ThreadWindowParams: appwire.ThreadWindowParams{TurnWindow: &appwire.ThreadTurnWindow{Latest: 1}},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if windowResponse.Turns.Window == nil || windowResponse.Turns.Window.AppliedBy != transcriptWindowAppliedByHubCompat {
+		t.Fatalf("compat window = %+v", windowResponse.Turns.Window)
+	}
+	fetchCursor := windowResponse.Turns.Data[0].Items[0].FetchCursor
+	decoded, _, err := appitempaging.DecodeFetchCursorForRef(fetchCursor, "local:compat-fetch")
+	if err != nil || decoded.Origin != appitempaging.FetchCursorOriginHubCompat {
+		t.Fatalf("compat fetch cursor origin = %q err %v", decoded.Origin, err)
+	}
+	fetched, err := operations.fetch(t.Context(), appwire.SessionFetchRequest{Ref: "local:compat-fetch", FetchCursor: fetchCursor})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want, err := json.Marshal(item)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := base64.StdEncoding.DecodeString(fetched.Data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(got, want[:len(got)]) || fetched.TotalLength != uint64(len(want)) {
+		t.Fatalf("compat fetch returned offset=%d total=%d bytes=%d, want canonical prefix of %d", fetched.Offset, fetched.TotalLength, len(got), len(want))
+	}
+	if got := requests.Load(); got != 2 {
+		t.Fatalf("old daemon reads = %d, want one window read and one cursorless fetch re-read", got)
+	}
+}
+
+func TestSessionOperationsFetchesHubCompatibilityItemOnePageBack(t *testing.T) {
+	targetPosition := appwire.ThreadItemPosition{Entry: 7}
+	target := appwire.ThreadItem{
+		ID: "compat-target", Type: "commandExecution", TurnID: "turn-target", TranscriptKey: "compat-target",
+		Position: &targetPosition, Version: 6, Output: strings.Repeat("older-output", 15_000),
+	}
+	newer := make([]appwire.ThreadItem, appwire.TranscriptItemPageLimit)
+	for i := range newer {
+		position := appwire.ThreadItemPosition{Entry: uint64(8 + i)}
+		newer[i] = appwire.ThreadItem{
+			ID: fmt.Sprintf("newer-%02d", i), Type: "agentMessage", TurnID: "turn-newer", TranscriptKey: fmt.Sprintf("newer-%02d", i),
+			Position: &position, Version: 1, Text: "newer",
+		}
+	}
+	var reads, pages atomic.Int64
+	daemon := appserver.NewServer(appserver.ServerConfig{ServerName: "old-daemon", SourceID: "local"})
+	appserver.HandleTyped(daemon.Router(), appwire.MethodThreadRead, func(_ context.Context, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
+		reads.Add(1)
+		if params.FetchCursor != "" {
+			t.Fatal("old daemon received fetch cursor")
+		}
+		return appwire.ThreadReadResponse{
+			Thread: appwire.Thread{ID: "compat-page-back", SessionID: "compat-page-back", Evener: appwire.EvenerThread{Ref: params.Ref}, Turns: []appwire.Turn{{
+				ID: "turn-newer", Status: appwire.TurnStatusCompleted, ItemsView: appwire.TurnItemsViewFragment, Items: newer, HasEarlierItems: true,
+			}}},
+			OlderCursor: "native-older", Snapshot: &appwire.SnapshotIdentity{Incarnation: "compat-page-back-snapshot", Length: 48},
+		}, nil
+	})
+	appserver.HandleTyped(daemon.Router(), appwire.MethodThreadTurnsList, func(_ context.Context, params appwire.ThreadTurnsListParams) (appwire.ThreadTurnsListResponse, error) {
+		pages.Add(1)
+		if params.Before == nil || *params.Before != *newer[0].Position || params.Cursor != "" {
+			t.Fatalf("compat page params = %+v, want exclusive before %+v without cursor", params, *newer[0].Position)
+		}
+		return appwire.ThreadTurnsListResponse{
+			Data:     []appwire.Turn{{ID: "turn-target", Status: appwire.TurnStatusCompleted, ItemsView: appwire.TurnItemsViewFragment, Items: []appwire.ThreadItem{target}}},
+			Snapshot: &appwire.SnapshotIdentity{Incarnation: "compat-page-back-snapshot", Length: 48},
+		}, nil
+	})
+	daemonHTTP := httptest.NewServer(http.HandlerFunc(daemon.ServeWebSocket))
+	defer daemonHTTP.Close()
+	source := appsource.NewLocalDaemonSourceWithEntries("local", func() []appsource.LocalDaemonEntry {
+		return []appsource.LocalDaemonEntry{{
+			Entry:             rendezvous.Entry{Protocol: appwire.ProtocolVersion, Endpoint: "ws" + strings.TrimPrefix(daemonHTTP.URL, "http"), SourceID: "local", ThreadID: "compat-page-back", SessionID: "compat-page-back", WorkspaceRef: "local:compat-page-back"},
+			CapabilitiesKnown: true,
+		}}
+	}, http.DefaultClient)
+	sources := appsource.NewRegistry()
+	sources.Add(source)
+	cfg := hubcore.WebConfig{HubStateRoot: t.TempDir(), Past: hubcore.NewPastIndex("")}
+	server := appserver.NewServer(appserver.ServerConfig{ServerName: "hub", Version: "test", SourceID: "local"})
+	operations := &sessionOperations{cfg: cfg, sources: sources, relays: newHubRelay(server, cfg, sources), server: server}
+	window := appwire.ThreadWindowParams{TurnWindow: &appwire.ThreadTurnWindow{Latest: 1}}
+	identity := appitempaging.CursorIdentity{
+		ThreadRef: "local:compat-page-back", Incarnation: window.ViewIncarnation("compat-page-back-snapshot", appwire.TranscriptItemPageLimit), ProjectionVersion: appitempaging.TranscriptItemProjectionVersion,
+	}
+	fetchCursor, err := appitempaging.EncodeFetchCursor(identity, appitempaging.FetchCursor{
+		Position: targetPosition, ItemVersion: target.Version, Origin: appitempaging.FetchCursorOriginHubCompat,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	fetched, err := operations.fetch(t.Context(), appwire.SessionFetchRequest{Ref: identity.ThreadRef, FetchCursor: fetchCursor})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want, err := json.Marshal(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := base64.StdEncoding.DecodeString(fetched.Data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(got, want[:len(got)]) || fetched.TotalLength != uint64(len(want)) {
+		t.Fatalf("page-back fetch returned total=%d bytes=%d, want canonical prefix of %d", fetched.TotalLength, len(got), len(want))
+	}
+	if reads.Load() != 1 || pages.Load() != 1 {
+		t.Fatalf("compat fetch calls = reads %d pages %d, want 1 and 1", reads.Load(), pages.Load())
+	}
+}
+
+func TestSessionOperationsBoundsUnreachableHubCompatibilityFetch(t *testing.T) {
+	targetPosition := appwire.ThreadItemPosition{Entry: 1}
+	target := appwire.ThreadItem{
+		ID: "compat-unreachable", Type: "agentMessage", TurnID: "turn-all", TranscriptKey: "compat-unreachable",
+		Position: &targetPosition, Version: 9, Text: "old target",
+	}
+	items := []appwire.ThreadItem{target}
+	newerCount := (hubCompatFetchPageLimit + 1) * appwire.TranscriptItemPageLimit
+	for i := range newerCount {
+		position := appwire.ThreadItemPosition{Entry: uint64(i + 2)}
+		items = append(items, appwire.ThreadItem{
+			ID: fmt.Sprintf("arrival-%03d", i), Type: "agentMessage", TurnID: "turn-all", TranscriptKey: fmt.Sprintf("arrival-%03d", i),
+			Position: &position, Version: 1, Text: "new",
+		})
+	}
+	newest := items[len(items)-appwire.TranscriptItemPageLimit:]
+	var reads, pages atomic.Int64
+	daemon := appserver.NewServer(appserver.ServerConfig{ServerName: "old-daemon", SourceID: "local"})
+	appserver.HandleTyped(daemon.Router(), appwire.MethodThreadRead, func(_ context.Context, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
+		reads.Add(1)
+		return appwire.ThreadReadResponse{
+			Thread: appwire.Thread{ID: "compat-unreachable", SessionID: "compat-unreachable", Evener: appwire.EvenerThread{Ref: params.Ref}, Turns: []appwire.Turn{{
+				ID: "turn-all", Status: appwire.TurnStatusCompleted, ItemsView: appwire.TurnItemsViewFragment, Items: newest, HasEarlierItems: true,
+			}}},
+			OlderCursor: "native-older", Snapshot: &appwire.SnapshotIdentity{Incarnation: "compat-unreachable-snapshot", Length: int64(len(items))},
+		}, nil
+	})
+	appserver.HandleTyped(daemon.Router(), appwire.MethodThreadTurnsList, func(_ context.Context, params appwire.ThreadTurnsListParams) (appwire.ThreadTurnsListResponse, error) {
+		pages.Add(1)
+		if params.Before == nil || params.Cursor != "" {
+			t.Fatalf("compat traversal params = %+v, want exclusive before without cursor", params)
+		}
+		eligible := make([]appwire.ThreadItem, 0, appwire.TranscriptItemPageLimit)
+		for _, item := range items {
+			if appitempaging.ComparePosition(*item.Position, *params.Before) < 0 {
+				eligible = append(eligible, item)
+			}
+		}
+		if len(eligible) > appwire.TranscriptItemPageLimit {
+			eligible = eligible[len(eligible)-appwire.TranscriptItemPageLimit:]
+		}
+		return appwire.ThreadTurnsListResponse{
+			Data:     []appwire.Turn{{ID: "turn-all", Status: appwire.TurnStatusCompleted, ItemsView: appwire.TurnItemsViewFragment, Items: eligible}},
+			Snapshot: &appwire.SnapshotIdentity{Incarnation: "compat-unreachable-snapshot", Length: int64(len(items))},
+		}, nil
+	})
+	daemonHTTP := httptest.NewServer(http.HandlerFunc(daemon.ServeWebSocket))
+	defer daemonHTTP.Close()
+	source := appsource.NewLocalDaemonSourceWithEntries("local", func() []appsource.LocalDaemonEntry {
+		return []appsource.LocalDaemonEntry{{
+			Entry:             rendezvous.Entry{Protocol: appwire.ProtocolVersion, Endpoint: "ws" + strings.TrimPrefix(daemonHTTP.URL, "http"), SourceID: "local", ThreadID: "compat-unreachable", SessionID: "compat-unreachable", WorkspaceRef: "local:compat-unreachable"},
+			CapabilitiesKnown: true,
+		}}
+	}, http.DefaultClient)
+	sources := appsource.NewRegistry()
+	sources.Add(source)
+	cfg := hubcore.WebConfig{HubStateRoot: t.TempDir(), Past: hubcore.NewPastIndex("")}
+	server := appserver.NewServer(appserver.ServerConfig{ServerName: "hub", Version: "test", SourceID: "local"})
+	operations := &sessionOperations{cfg: cfg, sources: sources, relays: newHubRelay(server, cfg, sources), server: server}
+	window := appwire.ThreadWindowParams{TurnWindow: &appwire.ThreadTurnWindow{Latest: 1}}
+	identity := appitempaging.CursorIdentity{
+		ThreadRef: "local:compat-unreachable", Incarnation: window.ViewIncarnation("compat-unreachable-snapshot", appwire.TranscriptItemPageLimit), ProjectionVersion: appitempaging.TranscriptItemProjectionVersion,
+	}
+	fetchCursor, err := appitempaging.EncodeFetchCursor(identity, appitempaging.FetchCursor{
+		Position: targetPosition, ItemVersion: target.Version - 1, Origin: appitempaging.FetchCursorOriginHubCompat,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = operations.fetch(t.Context(), appwire.SessionFetchRequest{Ref: identity.ThreadRef, FetchCursor: fetchCursor})
+	wire, ok := errors.AsType[appwire.WireError](err)
+	if !ok {
+		t.Fatalf("cap-exceeded compatibility fetch = %T %v, want typed wire error", err, err)
+	}
+	data, _ := appwire.DecodedErrorData(wire.Data)
+	if data.EvenerErrorInfo != appwire.ErrorInfo("item-unreachable-on-compat") {
+		t.Fatalf("cap-exceeded compatibility fetch info = %q", data.EvenerErrorInfo)
+	}
+	if reads.Load() != 1 || pages.Load() != int64(hubCompatFetchPageLimit) {
+		t.Fatalf("bounded compat calls = reads %d pages %d, want 1 and %d", reads.Load(), pages.Load(), hubCompatFetchPageLimit)
 	}
 }
 

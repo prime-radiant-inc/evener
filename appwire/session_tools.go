@@ -434,6 +434,7 @@ type SessionStatusArguments struct {
 	Hub SessionStatusTarget `json:"hub"`
 }
 type SessionStatusTarget struct {
+	ThreadWindowParams
 	Ref         string                  `json:"ref"`
 	Mode        string                  `json:"mode,omitempty"`
 	Resource    SessionActivityResource `json:"resource,omitempty"`
