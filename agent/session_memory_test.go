@@ -3407,7 +3407,7 @@ const memoryGuidanceHeading = "\n\n## Memory\n\n"
 func refreshModelFacingCaches(s *Session) {
 	s.mu.Lock()
 	s.rebuildToolDefsCache()
-	warning := s.refreshSystemPromptCache(s.env)
+	warning, _ := s.refreshSystemPromptCache(s.env)
 	s.mu.Unlock()
 	s.reportPromptRenderFailure(warning)
 }

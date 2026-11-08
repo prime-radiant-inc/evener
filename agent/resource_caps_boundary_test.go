@@ -86,7 +86,7 @@ func TestRenderedEnvironmentUsesTrustedStructuredResourcesWhenModelShellMasked(t
 			},
 		},
 	}))
-	prompt, warning := sess.renderSystemPrompt(sess.env)
+	prompt, warning, _ := sess.renderSystemPrompt(sess.env)
 	if warning != "" {
 		t.Fatalf("render system prompt: %s", warning)
 	}
@@ -122,7 +122,7 @@ func TestRenderedEnvironmentOmitsUnknownOrUnlimitedResources(t *testing.T) {
 					},
 				},
 			}))
-			_, warning := sess.renderSystemPrompt(sess.env)
+			_, warning, _ := sess.renderSystemPrompt(sess.env)
 			if warning != "" {
 				t.Fatalf("render system prompt: %s", warning)
 			}
@@ -158,7 +158,7 @@ func TestRenderedEnvironmentDisclosesResourceCapsAreShared(t *testing.T) {
 					},
 				},
 			}))
-			prompt, warning := sess.renderSystemPrompt(sess.env)
+			prompt, warning, _ := sess.renderSystemPrompt(sess.env)
 			if warning != "" {
 				t.Fatalf("render system prompt: %s", warning)
 			}

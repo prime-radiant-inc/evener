@@ -400,7 +400,7 @@ func TestOpenAI_PluginSkillCatalogUsesNamespacedName(t *testing.T) {
 		t.Fatalf("prompt skills = %+v, advertised the bare plugin skill name", data.Skills)
 	}
 	// The catalog must render the namespaced name: it is the key use_skill loads.
-	prompt, warning := sess.renderSystemPrompt(sess.currentEnv())
+	prompt, warning, _ := sess.renderSystemPrompt(sess.currentEnv())
 	if warning != "" {
 		t.Fatalf("renderSystemPrompt warning: %s", warning)
 	}
