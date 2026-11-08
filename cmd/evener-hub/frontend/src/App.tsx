@@ -17,6 +17,11 @@ const SurfaceGallery = import.meta.env.DEV ? lazy(() => import("./dev/SurfaceGal
 // rendered from the real tokens so a ramp change is reviewed as a picture
 // rather than a diff - see dev/TypeSpecimen.tsx's own header.
 const TypeSpecimen = import.meta.env.DEV ? lazy(() => import("./dev/TypeSpecimen")) : null;
+// PluginsMockups is the same dev-only shape again, at /dev/plugins-mockups:
+// the plugins UI redesign mockups (settings lists, plugin detail sheet with
+// contents, session launcher) rendered from the real widgets with fixture
+// data - see dev/PluginsMockups.tsx's own header.
+const PluginsMockups = import.meta.env.DEV ? lazy(() => import("./dev/PluginsMockups")) : null;
 // DevHarness is a named export (dev/DevHarness.tsx), not a default one -
 // React.lazy needs a Promise<{default}>, so this adapts the import rather
 // than changing DevHarness's own export shape (which dev/DevHarness.test.tsx
@@ -44,6 +49,13 @@ export function App() {
     return (
       <Suspense fallback={null}>
         <TypeSpecimen />
+      </Suspense>
+    );
+  }
+  if (PluginsMockups !== null && window.location.pathname === "/dev/plugins-mockups") {
+    return (
+      <Suspense fallback={null}>
+        <PluginsMockups />
       </Suspense>
     );
   }
