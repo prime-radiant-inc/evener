@@ -334,6 +334,7 @@ type ThreadReadParams struct {
 	Subscribe           bool   `json:"subscribe,omitempty"`
 	ReplaceSubscription bool   `json:"replaceSubscription,omitempty"`
 	ItemLimit           int    `json:"itemLimit,omitempty"`
+	FetchCursor         string `json:"fetchCursor,omitempty"`
 	ThreadWindowParams
 	// RequestGeneration is the client's own read-request counter, echoed back
 	// on ThreadReadResponse so a client can discard a stale reply that
@@ -391,9 +392,10 @@ func (p ThreadReadParams) ValidateAnswerContinuation() error {
 }
 
 type ThreadReadResponse struct {
-	Thread         Thread              `json:"thread"`
-	PendingAskPage *PendingAskPage     `json:"pendingAskPage,omitempty"`
-	Window         *ThreadWindowResult `json:"window,omitempty"`
+	Thread         Thread                `json:"thread"`
+	PendingAskPage *PendingAskPage       `json:"pendingAskPage,omitempty"`
+	Window         *ThreadWindowResult   `json:"window,omitempty"`
+	Fetch          *SessionFetchResponse `json:"fetch,omitempty"`
 	// TargetSessionToolsSupported reports whether the daemon serving this thread
 	// negotiated session tools. Omission means the serving hub cannot attest it.
 	TargetSessionToolsSupported *bool `json:"targetSessionToolsSupported,omitempty"`

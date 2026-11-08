@@ -85,6 +85,7 @@ type SessionOperationRequest struct {
 	Discover  *ThreadListParams       `json:"discover,omitempty"`
 	Read      *ThreadReadParams       `json:"read,omitempty"`
 	Turns     *ThreadTurnsListParams  `json:"turns,omitempty"`
+	Fetch     *SessionFetchRequest    `json:"fetch,omitempty"`
 	Activity  *SessionActivityRequest `json:"activity,omitempty"`
 	Tasks     *SessionTasksRequest    `json:"tasks,omitempty"`
 	Job       *JobsGetParams          `json:"job,omitempty"`
@@ -103,7 +104,7 @@ func (r SessionOperationRequest) Validate() error {
 		return InvalidParams("actor metadata is not a tool argument")
 	}
 	count := 0
-	for _, present := range []bool{r.Discover != nil, r.Read != nil, r.Turns != nil, r.Activity != nil, r.Tasks != nil, r.Job != nil, r.JobOutput != nil, r.Models != nil, r.Create != nil, r.Start != nil, r.Queue != nil, r.Steer != nil, r.Control != nil, r.Stop != nil} {
+	for _, present := range []bool{r.Discover != nil, r.Read != nil, r.Turns != nil, r.Fetch != nil, r.Activity != nil, r.Tasks != nil, r.Job != nil, r.JobOutput != nil, r.Models != nil, r.Create != nil, r.Start != nil, r.Queue != nil, r.Steer != nil, r.Control != nil, r.Stop != nil} {
 		if present {
 			count++
 		}
@@ -138,6 +139,9 @@ func (r SessionOperationRequest) Validate() error {
 		if err := ValidateThreadWindowParams(r.Turns.ThreadWindowParams, r.Turns.ItemLimit); err != nil {
 			return err
 		}
+	}
+	if r.Fetch != nil && (r.Fetch.Ref == "" || r.Fetch.FetchCursor == "") {
+		return InvalidParams("fetch requires a ref and fetchCursor")
 	}
 	if r.Activity != nil {
 		switch r.Activity.Resource {
@@ -208,6 +212,20 @@ type SessionTasksResponse struct {
 	NextOffset *int   `json:"nextOffset,omitempty"`
 }
 
+type SessionFetchRequest struct {
+	Ref         string `json:"ref"`
+	FetchCursor string `json:"fetchCursor"`
+}
+
+type SessionFetchResponse struct {
+	Position    ThreadItemPosition `json:"position"`
+	Version     uint64             `json:"version"`
+	TotalLength uint64             `json:"totalLength"`
+	Offset      uint64             `json:"offset"`
+	Data        string             `json:"data"`
+	FetchCursor string             `json:"fetchCursor,omitempty"`
+}
+
 // SessionTaskSnapshotChanged is a typed refusal, not an empty task page.
 // Clients restart from offset zero when the full authoritative list changed.
 func SessionTaskSnapshotChanged() WireError {
@@ -228,6 +246,7 @@ type SessionOperationResponse struct {
 	Discover  *SessionDiscovery        `json:"discover,omitempty"`
 	Read      *ThreadReadResponse      `json:"read,omitempty"`
 	Turns     *ThreadTurnsListResponse `json:"turns,omitempty"`
+	Fetch     *SessionFetchResponse    `json:"fetch,omitempty"`
 	Activity  *SessionActivityResponse `json:"activity,omitempty"`
 	Tasks     *SessionTasksResponse    `json:"tasks,omitempty"`
 	Job       *JobsGetResponse         `json:"job,omitempty"`

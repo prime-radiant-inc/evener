@@ -55,6 +55,52 @@ func TestThreadItemModeValidation(t *testing.T) {
 	}
 }
 
+func TestThreadReadFetchModeIsExclusive(t *testing.T) {
+	valid := ThreadReadParams{ThreadID: "thread", FetchCursor: "opaque"}
+	if err := ValidateThreadReadParams(valid); err != nil {
+		t.Fatalf("valid fetch read: %v", err)
+	}
+
+	includeThinking := false
+	invalid := []ThreadReadParams{
+		{FetchCursor: "opaque"},
+		{ThreadID: "thread", Ref: "local:thread", FetchCursor: "opaque"},
+		{ThreadID: "thread", FetchCursor: "opaque", IncludeTurns: true},
+		{ThreadID: "thread", FetchCursor: "opaque", ItemLimit: 1},
+		{ThreadID: "thread", FetchCursor: "opaque", Subscribe: true},
+		{ThreadID: "thread", FetchCursor: "opaque", TurnWindow: &ThreadTurnWindow{Latest: 1}},
+		{ThreadID: "thread", FetchCursor: "opaque", ThreadContentParams: ThreadContentParams{IncludeThinking: &includeThinking}},
+	}
+	for i, params := range invalid {
+		if err := ValidateThreadReadParams(params); err == nil {
+			t.Errorf("invalid fetch read %d accepted", i)
+		}
+	}
+
+	var decoded ThreadReadParams
+	if err := json.Unmarshal([]byte(`{"threadId":"thread","fetchCursor":"opaque"}`), &decoded); err != nil {
+		t.Fatalf("fetch read wire form rejected: %v", err)
+	}
+	if decoded.FetchCursor != "opaque" {
+		t.Fatalf("fetch cursor = %q", decoded.FetchCursor)
+	}
+}
+
+func TestThreadReadFetchResponseReusesSessionPayload(t *testing.T) {
+	fetch := &SessionFetchResponse{Position: ThreadItemPosition{Entry: 3, Item: 1}, Version: 2, TotalLength: 9, Data: "Ynl0ZXM="}
+	encoded, err := json.Marshal(ThreadReadResponse{Fetch: fetch})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got ThreadReadResponse
+	if err := json.Unmarshal(encoded, &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Fetch == nil || *got.Fetch != *fetch {
+		t.Fatalf("fetch response = %+v, want %+v", got.Fetch, fetch)
+	}
+}
+
 func TestThreadTurnsListItemModeRequiresCursor(t *testing.T) {
 	const wantCursorMessage = "cursor or before is required for thread/turns/list"
 	err := ValidateThreadTurnsListParams(ThreadTurnsListParams{ItemLimit: 4})

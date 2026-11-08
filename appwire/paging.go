@@ -34,6 +34,12 @@ func (p ThreadReadParams) IsPendingAskPage() bool {
 // ValidateThreadReadParams validates transcript limits and the separate ask page
 // grammar. A page never establishes a history window or subscription.
 func ValidateThreadReadParams(params ThreadReadParams) error {
+	if params.FetchCursor != "" {
+		if (params.ThreadID == "") == (params.Ref == "") || params.ThreadContentParams != (ThreadContentParams{}) || params.IncludeTurns || params.ItemsView != "" || params.Subscribe || params.ReplaceSubscription || params.ItemLimit != 0 || params.TurnWindow != nil || len(params.ItemTypes) != 0 || params.PreviewBytes != 0 || params.MessageBytes != 0 || params.WindowBudgetBytes != 0 || params.RequestGeneration != 0 || params.HeldSnapshot != nil || params.LiveOnly || params.AnswerContinuation != nil {
+			return InvalidParams("fetchCursor requires one target and no read options")
+		}
+		return nil
+	}
 	if err := ValidateThreadWindowParams(params.ThreadWindowParams, params.ItemLimit); err != nil {
 		return err
 	}
