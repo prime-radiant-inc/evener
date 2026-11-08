@@ -166,6 +166,7 @@ into the registry.
 | Notification delivery (`jobstore.NotifyState`) | `not_armed`, `pending`, `delivered`, `consumed` | jobstore owner notification ledger |
 | Persisted turn completion (`schema.TurnCompletionStatus`) | `completed`, `failed`, `interrupted` | execution turn record written by the session; the persisted subset of the turn machine |
 | Task completion gate (`events.TaskCompletionState`) | `ready_for_final_output`, `waiting_for_blocking_delegates` | session goal/task completion decision |
+| Transcript index turn window | `open`, `closed` (`Open` and `Started` markers) | [`internal/transcriptindex`](../../internal/transcriptindex), [`internal/apptranscript`](../../internal/apptranscript) |
 | Client mutation operation | `inFlight`, `applied`, `rejected`, `terminal`; disposition `reserved`, `replayed`, `joined` | [`agent/session_client_mutation`](../../agent/session_client_mutation.go) |
 | SSH connection | `disconnected`, `preflighting`, `deploying`, `restarting`, `attaching`, `attached`, `reconnecting` | [`cmd/evener-hub/internal/sshconn`](../../cmd/evener-hub/internal/sshconn) |
 | Launch configuration trust | `absent`, `untrusted`, `trusted`, `changed`, `rejected` | [`launchconfig`](../../cmd/evener-hub/internal/launchconfig) |

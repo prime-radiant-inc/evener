@@ -1,5 +1,5 @@
-// Package appwire's lifecycle registry declares the closed state sets and
-// legal transitions of the durable things an evener session owns: the session
+// The lifecycle registry declares the closed state sets and legal transitions
+// of the durable things an evener session owns: the session
 // itself, its turns, jobs, delegates, watches, tasks, goals, host operations
 // and client-mutation projections.
 //
