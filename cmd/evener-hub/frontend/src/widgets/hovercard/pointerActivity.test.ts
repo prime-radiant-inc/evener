@@ -117,15 +117,50 @@ test("a press whose release never arrives stops counting as focus", () => {
   try {
     // The browser never sends pointerup or pointercancel for this id.
     dispatchPointer(owner, "pointerdown", 31);
-    clock.advance(POINTER_PRESS_MAX_MS);
+    // A recently started press still counts, as it always has.
+    clock.advance(POINTER_CLICK_WINDOW_MS * 4);
     expect(handle.isPointerFocus(POINTER_CLICK_WINDOW_MS)).toBe(true);
-    clock.advance(1);
+    // An independently chosen minute is far past any press whose focus event
+    // belongs to it, so a lost release must not suppress focus by then. This
+    // fails for any bound too large to recover in useful time.
+    clock.advance(60_000);
     expect(handle.isPointerFocus(POINTER_CLICK_WINDOW_MS)).toBe(false);
-    // The stale id is gone rather than merely ignored, so a reused id cannot
-    // resurrect the press.
-    dispatchPointer(owner, "pointerdown", 31);
-    dispatchPointer(owner, "pointerup", 31);
-    clock.advance(POINTER_CLICK_WINDOW_MS + 1);
+  } finally {
+    handle.release();
+  }
+});
+
+test("bounds the stale press between the existing guarantee and a minute", () => {
+  // The multi-touch test holds a press for four compatibility windows, so the
+  // bound must exceed that; recovery a minute after a lost release is the
+  // independent limit the lost-release test measures.
+  expect(POINTER_PRESS_MAX_MS).toBeGreaterThan(POINTER_CLICK_WINDOW_MS * 4);
+  expect(POINTER_PRESS_MAX_MS).toBeLessThan(60_000);
+});
+
+test("a hidden document releases a press whose up never arrived", () => {
+  const owner = secondDocument();
+  const handle = acquirePointerActivity(owner);
+  try {
+    dispatchPointer(owner, "pointerdown", 41);
+    expect(handle.isPointerFocus(POINTER_CLICK_WINDOW_MS)).toBe(true);
+    Object.defineProperty(owner, "visibilityState", { configurable: true, value: "hidden" });
+    owner.dispatchEvent(new Event("visibilitychange"));
+    expect(handle.isPointerFocus(POINTER_CLICK_WINDOW_MS)).toBe(false);
+  } finally {
+    handle.release();
+  }
+});
+
+test("a move with no button down ends a press whose up never arrived", () => {
+  const owner = secondDocument();
+  const handle = acquirePointerActivity(owner);
+  try {
+    dispatchPointer(owner, "pointerdown", 51);
+    // A move with the button still held keeps the press.
+    owner.dispatchEvent(new PointerEvent("pointermove", { pointerId: 51, buttons: 1, bubbles: true }));
+    expect(handle.isPointerFocus(POINTER_CLICK_WINDOW_MS)).toBe(true);
+    owner.dispatchEvent(new PointerEvent("pointermove", { pointerId: 51, buttons: 0, bubbles: true }));
     expect(handle.isPointerFocus(POINTER_CLICK_WINDOW_MS)).toBe(false);
   } finally {
     handle.release();

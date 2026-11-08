@@ -411,6 +411,27 @@ test("pointer-focus suppression follows the current hoverless mode while keyboar
   expect(screen.getByTestId("observed-label")).toBeTruthy();
 });
 
+test("a press whose release never arrives stops suppressing hoverless keyboard focus", () => {
+  vi.useFakeTimers();
+  vi.setSystemTime(1_000_000);
+  installTogglingMatchMedia(true);
+  render(<Harness />);
+  const trigger = screen.getByRole("button", { name: "Trigger" });
+
+  // The browser never delivers pointerup or pointercancel for this press.
+  fireEvent.pointerDown(trigger, { pointerId: 7, button: 0 });
+  fireEvent.focus(trigger);
+  advance(SHOW_DELAY_MS);
+  expect(screen.queryByTestId("observed-label")).toBeNull();
+
+  // Long after the press, keyboard focus is the keyboard's, not the press's.
+  fireEvent.blur(trigger);
+  advance(60_000);
+  fireEvent.focus(trigger);
+  advance(SHOW_DELAY_MS);
+  expect(screen.getByTestId("observed-label")).toBeTruthy();
+});
+
 // The resize observer belongs to the window of the element it watches: the
 // opener's constructor cannot observe a popout's node, and delivery would
 // follow the opener's lifecycle.
