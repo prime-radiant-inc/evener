@@ -138,6 +138,8 @@ func (v *voiceService) handler() http.Handler {
 			v.arm(w, r)
 		case "/api/voice/disarm":
 			v.disarm(w, r)
+		case "/api/voice/status":
+			v.status(w, r)
 		default:
 			voiceHTTPError(w, http.StatusNotFound, "not_found")
 		}
@@ -243,6 +245,63 @@ func (v *voiceService) arm(w http.ResponseWriter, r *http.Request) {
 	v.refreshSocket(r.Context(), binding.Ref)
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(voiceArmResponse{BindingID: bindingID, Epoch: epoch, Grant: grant, ExpiresAt: expires, SocketPath: "/api/voice/socket", SampleRate: 24000, Policy: currentVoicePolicy(), Provider: request.Provider})
+}
+
+type voiceStatusRequest struct {
+	Ref                string `json:"ref"`
+	ExpectedInstanceID string `json:"expectedInstanceId"`
+}
+
+type voiceStatusResponse struct {
+	Supported bool   `json:"supported"`
+	Reason    string `json:"reason,omitempty"`
+}
+
+// status answers whether arm would succeed for a session, so a client can hide
+// voice where it cannot work instead of offering a button that always refuses.
+func (v *voiceService) status(w http.ResponseWriter, r *http.Request) {
+	var request voiceStatusRequest
+	if !decodeVoiceHTTP(w, r, &request) {
+		return
+	}
+	writeStatus := func(supported bool, reason string) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Cache-Control", "no-store")
+		_ = json.NewEncoder(w).Encode(voiceStatusResponse{Supported: supported, Reason: reason})
+	}
+	ref, err := appwire.ParseRef(request.Ref)
+	if err != nil || request.Ref != ref.String() || request.ExpectedInstanceID == "" {
+		voiceHTTPError(w, http.StatusBadRequest, "invalid_binding")
+		return
+	}
+	client, err := v.web.voiceClient(r.Context())
+	if err != nil {
+		writeStatus(false, "session_unavailable")
+		return
+	}
+	defer func() { _ = client.Close() }()
+	read, err := client.ThreadRead(r.Context(), appwire.ThreadReadParams{Ref: request.Ref})
+	if err != nil {
+		writeStatus(false, "session_unavailable")
+		return
+	}
+	evener := read.Thread.Evener
+	switch {
+	case evener.InstanceID != request.ExpectedInstanceID:
+		writeStatus(false, "instance_changed")
+	case !evener.Manager || !evener.MutationStateAuthoritative:
+		writeStatus(false, "live_manager_required")
+	case !evener.Capabilities.VoicePresentationContextV1:
+		writeStatus(false, "voice_presentation_unsupported")
+	case !validVoiceProvenance(evener.ConversationProvenance, request.ExpectedInstanceID):
+		writeStatus(false, "voice_provenance_unavailable")
+	default:
+		if _, err := v.web.defaultOpenAIVoiceProvider(); err != nil {
+			writeStatus(false, "voice_provider_unavailable")
+			return
+		}
+		writeStatus(true, "")
+	}
 }
 
 func (v *voiceService) refreshSocket(ctx context.Context, ref string) {

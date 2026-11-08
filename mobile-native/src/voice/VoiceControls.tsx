@@ -34,6 +34,7 @@ const TONES: Record<VoicePhase, { symbol: SFSymbol; ink: Ink }> = {
 
 function Controls({ client, target }: { client: VoiceClient; target: VoiceTarget }) {
 	const state = useSyncExternalStore(client.subscribe, client.getSnapshot);
+	const support = useVoiceSupport(client, target);
 	const { palette } = useColors();
 	const { height } = useWindowDimensions();
 	const [expanded, setExpanded] = useState(false);
@@ -71,13 +72,20 @@ function Controls({ client, target }: { client: VoiceClient; target: VoiceTarget
 	if (previousState.current === "quiet" && state.state === "conversing") turnStarting.current = true;
 	if (state.state !== "conversing" || state.cloudMicrophone) turnStarting.current = false;
 	previousState.current = state.state;
+	// A session the hub will refuse keeps the bar hidden, but an armed binding
+	// still shows here so Talk and Stop work from any session.
+	if (!armed && support !== "supported") return null;
 	const starting = state.state === "conversing" && !state.cloudMicrophone && turnStarting.current;
 	const presented = voicePresentation(state, justHeard);
 	const talkEnabled = presented.talkEnabled && same;
 	// Playback is this device's, so Stop does not need this session's binding or
 	// a live capture; everything else needs Talk's conditions.
 	const actionEnabled =
-		presented.primary === "stop" ? true : presented.primary === "arm" ? target.manager && !busy : talkEnabled;
+		presented.primary === "stop"
+			? true
+			: presented.primary === "arm"
+				? target.manager && !busy && support === "supported"
+				: talkEnabled;
 	const arm = async (replace = false) => {
 		setBusy(true);
 		setError(null);
@@ -174,6 +182,32 @@ async function disarm(client: VoiceClient, setError: (message: string) => void) 
 	} catch {
 		setError("Microphone stopped; hub revocation could not be confirmed.");
 	}
+}
+
+/** The hub's answer for this session. A check that cannot complete keeps the
+ * control visible, as older hubs did, so a transient failure never hides it. */
+function useVoiceSupport(client: VoiceClient, target: VoiceTarget) {
+	const [support, setSupport] = useState<"checking" | "supported" | "unsupported">("checking");
+	const identity = `${target.hub.id}\u0000${target.ref}\u0000${target.instanceId}`;
+	useEffect(() => {
+		let live = true;
+		setSupport("checking");
+		client.status(target).then(
+			(result) => {
+				if (live) setSupport(result.supported ? "supported" : "unsupported");
+			},
+			() => {
+				if (live) setSupport("supported");
+			},
+		);
+		return () => {
+			live = false;
+		};
+		// The session identity decides when to ask again; the target object is new
+		// on every parent render.
+		// biome-ignore lint/correctness/useExhaustiveDependencies: identity stands in for target
+	}, [client, identity]);
+	return support;
 }
 
 /** The bar's one line: what voice is doing, one glyph, and at most one action.

@@ -9,7 +9,7 @@ import UIKit
 /// One foreground request. Never owned by VoiceService and never stores credentials.
 final class VoiceAuthorization: NSObject, URLSessionTaskDelegate {
     static func request(origin: String, path: String, token: String, body: String) async throws -> [String: Any] {
-        guard path == "/api/voice/arm" || path == "/api/voice/disarm" else { throw VoiceFailure("authorization_path_invalid") }
+        guard path == "/api/voice/arm" || path == "/api/voice/disarm" || path == "/api/voice/status" else { throw VoiceFailure("authorization_path_invalid") }
         let pinned = try VoiceTransport.validate(origin)
         var components = URLComponents(url: pinned, resolvingAgainstBaseURL: false)!
         components.path = path

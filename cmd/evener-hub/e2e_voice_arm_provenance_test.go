@@ -88,6 +88,16 @@ api_key = "fakellm-not-a-secret"
 		t.Fatalf("legacy restore did not reach the usable-manager/non-authoritative-provenance boundary: %+v", e)
 	}
 	t.Logf("real restored manager=%s mutationAuthority=true voiceCapability=true provenanceAuthority=false", e.InstanceID)
+	statusCode, statusRaw := voiceTestPost(ctx, t, stack, "/api/voice/status", stack.token, map[string]any{
+		"ref": ref, "expectedInstanceId": e.InstanceID,
+	})
+	var availability voiceStatusResponse
+	if err := json.Unmarshal(statusRaw, &availability); err != nil {
+		t.Fatal(err)
+	}
+	if statusCode != http.StatusOK || availability.Supported || availability.Reason != "voice_provenance_unavailable" {
+		t.Fatalf("legacy restore advertised voice support: HTTP=%d supported=%t reason=%q", statusCode, availability.Supported, availability.Reason)
+	}
 	journal, err := hubcore.NewVoiceJournal(filepath.Join(home, "state", "evener"))
 	if err != nil {
 		t.Fatal(err)

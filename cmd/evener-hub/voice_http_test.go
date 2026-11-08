@@ -246,3 +246,101 @@ api_key  = "fakellm-not-a-secret"
 		t.Fatalf("binding provider = %q, err = %v, want house", binding.Provider, err)
 	}
 }
+
+// Status answers from the same evidence Arm admits on, so the app can decide
+// whether to offer voice before the user taps.
+func TestE2E_VoiceStatusReportsSupport(t *testing.T) {
+	e2ecap.RequireLoopbackBind(t)
+	e2ecap.RequireProcessInspect(t)
+	if testing.Short() {
+		t.Skip("live-stack e2e: builds binaries and runs a hub + daemon")
+	}
+	// A dev shell's keys add the curated openai instance, which would make the
+	// OpenAI-compatible-only stack support voice.
+	t.Setenv("OPENAI_API_KEY", "")
+	t.Setenv("EVENER_CREDENTIALS_CONFIG", "")
+	for _, test := range []struct {
+		name          string
+		providersTOML func(baseURL string) string
+		supported     bool
+		reason        string
+	}{
+		{
+			name: "openai transport configured",
+			providersTOML: func(baseURL string) string {
+				return fmt.Sprintf(`
+default = "fake"
+
+[providers.fake]
+base     = "openai-compatible"
+base_url = %q
+api_key  = "fakellm-not-a-secret"
+
+[providers.house]
+base     = "openai"
+base_url = %q
+api_key  = "fakellm-not-a-secret"
+`, baseURL, baseURL)
+			},
+			supported: true,
+		},
+		{
+			name: "openai-compatible only",
+			providersTOML: func(baseURL string) string {
+				return fmt.Sprintf(`
+default = "fake"
+
+[providers.fake]
+base     = "openai-compatible"
+base_url = %q
+api_key  = "fakellm-not-a-secret"
+`, baseURL)
+			},
+			reason: "voice_provider_unavailable",
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			provider := newFakeLLMProvider(t)
+			stack := startHubStackOnProvider(t, test.providersTOML(provider.BaseURL()), "fake/"+fakellm.ModelID)
+			ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+			defer cancel()
+			client := stack.dialRPC(ctx, t)
+			ref := startManagerThread(ctx, t, client, stack, "VOICE-STATUS-OPENING")
+			request, err := provider.Next(ctx.Done())
+			if err != nil {
+				t.Fatal(err)
+			}
+			request.RespondToolCall("communicate", communicateArgs("VOICE-STATUS-READY"))
+			awaitThread(ctx, t, client, ref, "manager settled", func(thread appwire.Thread) bool {
+				return thread.Evener.ActiveTurnID == ""
+			})
+			read, err := client.ThreadRead(ctx, appwire.ThreadReadParams{Ref: ref})
+			if err != nil {
+				t.Fatal(err)
+			}
+			instance := read.Thread.Evener.InstanceID
+			if instance == "" {
+				t.Fatal("manager thread has no instance")
+			}
+			code, raw := voiceTestPost(ctx, t, stack, "/api/voice/status", stack.token, map[string]any{
+				"ref": ref, "expectedInstanceId": instance,
+			})
+			var availability voiceStatusResponse
+			if err := json.Unmarshal(raw, &availability); err != nil {
+				t.Fatal(err)
+			}
+			if code != http.StatusOK || availability.Supported != test.supported || availability.Reason != test.reason {
+				t.Fatalf("status = HTTP %d supported=%t reason=%q, want supported=%t reason=%q", code, availability.Supported, availability.Reason, test.supported, test.reason)
+			}
+			code, raw = voiceTestPost(ctx, t, stack, "/api/voice/status", stack.token, map[string]any{
+				"ref": ref, "expectedInstanceId": "replaced-instance",
+			})
+			if err := json.Unmarshal(raw, &availability); err != nil {
+				t.Fatal(err)
+			}
+			if code != http.StatusOK || availability.Supported || availability.Reason != "instance_changed" {
+				t.Fatalf("replaced-instance status = HTTP %d supported=%t reason=%q", code, availability.Supported, availability.Reason)
+			}
+		})
+	}
+}

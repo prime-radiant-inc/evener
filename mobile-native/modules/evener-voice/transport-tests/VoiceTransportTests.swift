@@ -62,6 +62,10 @@ server.serve_forever()
         queue.sync { socket.close() }
         let response = try await VoiceAuthorization.request(origin: origin, path: "/api/voice/disarm", token: "fixture-only", body: "{}")
         XCTAssertEqual(response["status"] as? Int, 200)
+        // The app asks the hub whether this session can run voice before it
+        // shows the bar, over the same foreground authorization.
+        let status = try await VoiceAuthorization.request(origin: origin, path: "/api/voice/status", token: "fixture-only", body: #"{"ref":"local:chief","expectedInstanceId":"instance"}"#)
+        XCTAssertEqual(status["status"] as? Int, 200)
         XCTAssertEqual(response["origin"] as? String, origin)
         let body = try JSONSerialization.jsonObject(with: Data((response["body"] as! String).utf8)) as! [String: Int]
         XCTAssertEqual(body["redirectedRequests"], 0)
