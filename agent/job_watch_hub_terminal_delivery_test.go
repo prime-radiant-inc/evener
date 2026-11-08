@@ -270,7 +270,7 @@ func TestHubWatchCompletionWakeQueuedBeforeEndedPublished(t *testing.T) {
 		t.Fatalf("completion wake = %#v", completion)
 	}
 	releaseBoundary()
-	awaitWithin(t, 10*time.Second, "completion watch end", func() {
+	awaitWithin(t, hubWatchTestHangGuard, "completion watch end", func() {
 		if err := <-finished; err != nil {
 			t.Errorf("onHubObservation: %v", err)
 		}
@@ -280,15 +280,18 @@ func TestHubWatchCompletionWakeQueuedBeforeEndedPublished(t *testing.T) {
 	if !ok {
 		t.Fatal("queued completion token did not resolve after the watch ended")
 	}
-	if state.TriggerReason != "completed: accepted terminal done" {
-		t.Fatalf("completion token trigger = %q", state.TriggerReason)
+	// The terminal observation's own identity, not the model-facing reason
+	// copy, is what the token must carry.
+	identity := hubObservationIdentity(terminal.Metadata) + ":communicate:completed"
+	if state.TriggerIdentity != identity {
+		t.Fatalf("completion token identity = %q, want %q", state.TriggerIdentity, identity)
 	}
 	if err := owner.settleWatchSendDelivered(cfg, state); err != nil {
 		t.Fatalf("settle completion wake: %v", err)
 	}
 	receipts := 0
 	for _, event := range loadJobStoreEvents(t, jm) {
-		if event.Kind == jobstore.EventWatchSendDelivered && event.WatchSend != nil && event.WatchSend.Key.WatchID == watch.WatchID && event.WatchSend.TriggerReason == "completed: accepted terminal done" {
+		if event.Kind == jobstore.EventWatchSendDelivered && event.WatchSend != nil && event.WatchSend.DeliveryID == state.DeliveryID {
 			receipts++
 		}
 	}
