@@ -1,8 +1,8 @@
 import type { NavigationInvalidatedPayload, NavigationInvalidationTarget } from "@evener/appwire-client";
 import {
   matchesTarget,
-  NAVIGATION_SECTION_LIMIT,
   type NavigationInvalidationWaiter,
+  navigationParamsToResourceKey,
   type ResourceKey,
 } from "@evener/appwire-client/state/navigation";
 import { selectLiveRows, selectNeedsYouRows } from "./selectors";
@@ -24,8 +24,8 @@ export interface ShutdownConvergence {
 /** The resource scopes every shutdown changes: the two session tiers a live
  * session can leave. */
 const SESSION_SECTION_KEYS: readonly ResourceKey[] = [
-  { kind: "section", section: "live", offset: 0, limit: NAVIGATION_SECTION_LIMIT },
-  { kind: "section", section: "needs_you", offset: 0, limit: NAVIGATION_SECTION_LIMIT },
+  navigationParamsToResourceKey({ resource: "section", section: "live", representationVersion: 3 }),
+  navigationParamsToResourceKey({ resource: "section", section: "needs_you", representationVersion: 3 }),
 ];
 
 /** Shared shutdown-convergence ritual for the rail and session-chrome
@@ -44,15 +44,22 @@ export function buildShutdownConvergence(ref: string, ctx: ShutdownTargetContext
     ...SESSION_SECTION_KEYS,
     ...(ctx.pinSectionId
       ? [
-          {
-            kind: "pin_section",
+          navigationParamsToResourceKey({
+            resource: "pin_section",
             sectionId: ctx.pinSectionId,
-            offset: 0,
-            limit: NAVIGATION_SECTION_LIMIT,
-          } as const,
+            representationVersion: 3,
+          }),
         ]
       : []),
-    ...(ctx.projectKey ? [{ kind: "project", projectKey: ctx.projectKey } as const] : []),
+    ...(ctx.projectKey
+      ? [
+          navigationParamsToResourceKey({
+            resource: "project",
+            projectKey: ctx.projectKey,
+            representationVersion: 3,
+          }),
+        ]
+      : []),
   ];
   // One target rule for every consumer. A receipt wakes this waiter only when
   // it names a scope the shutdown covers. The all_loaded_projects wildcard
