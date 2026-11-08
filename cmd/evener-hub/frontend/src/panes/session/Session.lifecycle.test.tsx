@@ -17,6 +17,7 @@ import { connectionStore, resetConnectionStoreForTests } from "../../stores/conn
 import { setProductionEntryCacheForTests } from "../../stores/entryTranscriptRoutes";
 import { MutationOutboxIndexedDB } from "../../stores/mutationOutboxIndexedDB";
 import { resetNavigationStoreForTests } from "../../stores/navigation/store";
+import { setSessionCacheLookupDeadlineForTests } from "../../stores/sessionCacheSchema";
 import { SessionEntryCache } from "../../stores/sessionEntryCache";
 import {
   acquireBackgroundThread,
@@ -129,6 +130,7 @@ afterEach(() => {
   window.history.pushState({}, "", "/");
   vi.useRealTimers();
   vi.unstubAllGlobals();
+  setSessionCacheLookupDeadlineForTests(250);
   if (offsetHeightDescriptor) {
     Object.defineProperty(HTMLElement.prototype, "offsetHeight", offsetHeightDescriptor);
   }
@@ -847,6 +849,12 @@ test("the live older control loads cached bodies without a server cursor after a
     await gate.promise;
     return getBefore(...args);
   });
+  // This gate holds the paging decision's LOCAL read until the test observes
+  // the loading row and releases it. On a loaded worker that hold can exceed
+  // the product's 250ms lookup deadline, which makes the paging decision
+  // reconcile through a source read and fails the no-re-read assertion
+  // (#4616 follow-up). Widen only this test's deadline; production keeps 250ms.
+  setSessionCacheLookupDeadlineForTests(30_000);
   const mounted = render(
     <ClientProvider client={fake}>
       <Session params={{ ref: "ref_a" }} paneId="p1" focused={true} />
@@ -866,7 +874,13 @@ test("the live older control loads cached bodies without a server cursor after a
       gate.resolve();
       await settleEntryTranscriptForTests("ref_a");
     });
-    await waitFor(() => expect(bodies()).toEqual(Array.from({ length: 225 }, (_, index) => `row-${index + 1}`)));
+    // The released local page publishes through a deferred store/render round
+    // trip; Testing Library's 1s default expired on one of ten loaded runs
+    // (#4616 follow-up). The assertion is unchanged; only the bound covers the
+    // work it waits for.
+    await waitFor(() => expect(bodies()).toEqual(Array.from({ length: 225 }, (_, index) => `row-${index + 1}`)), {
+      timeout: 5000,
+    });
     expect(screen.getByText("row-1")).toBeTruthy();
     // ConversationBody renders the row only while older history remains, so a
     // completed load removes it. Either absence or idle proves paging stopped.
