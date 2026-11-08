@@ -133,12 +133,12 @@ func (s *Session) ConsumeEventsLossless(consume func(events.SessionEvent), onDra
 // not audit every call site reachable before this function runs. Kata 57j8
 // found and fixed the rest: resumeWorktreeReentry's re-entry-failure notice
 // (resume only, called from RestoreSessionFromMetaWithConfig before
-// initSessionState) AND applyInitInsideWorktreeLock's four warnings (called
+// initSessionState) AND applyInitInsideWorktreeLock's five warnings (called
 // from initSessionState, so reachable on BOTH NewSession and
 // RestoreSessionFromMetaWithConfig — a fresh session launched inside an
-// existing managed worktree lane hits this too, not only a resume). All five
+// existing managed worktree lane hits this too, not only a resume). All six
 // now buffer into pendingTranscriptWarnings, same as the two et0x fixed.
-// Consequence worth knowing: these five sites run before s.hookRunner is
+// Consequence worth knowing: these six sites run before s.hookRunner is
 // assigned, so a direct s.emit there never fired the Notification hook;
 // buffering them here means they now fire it, for the first time, once
 // hookRunner exists.
