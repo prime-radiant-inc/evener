@@ -169,7 +169,7 @@ func operationWireState(state hostops.State) (appwire.OperationState, error) {
 	if !state.Valid() {
 		return "", fmt.Errorf("hub: record state %q is outside the wire's operation set", state)
 	}
-	return appwire.OperationState(state), nil
+	return state, nil
 }
 
 // liveHost resolves name from the live registry.

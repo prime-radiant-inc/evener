@@ -16,7 +16,10 @@
 // their legal edges are still declared.
 package appwire
 
-import "fmt"
+import (
+	"errors"
+	"fmt"
+)
 
 // MachineKind names one declared lifecycle.
 type MachineKind string
@@ -152,7 +155,7 @@ func (m LifecycleMachine) Next(name string) []string {
 // edge.
 func (m LifecycleMachine) Validate() error {
 	if m.Kind == "" {
-		return fmt.Errorf("lifecycle machine has no kind")
+		return errors.New("lifecycle machine has no kind")
 	}
 	if len(m.States) == 0 {
 		return fmt.Errorf("lifecycle machine %q has no states", m.Kind)

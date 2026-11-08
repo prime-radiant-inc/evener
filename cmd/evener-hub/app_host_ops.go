@@ -719,7 +719,7 @@ func hostopsState(state appwire.OperationState) (hostops.State, error) {
 	if !state.Valid() {
 		return "", fmt.Errorf("operation state %q is outside the wire's set", state)
 	}
-	return hostops.State(state), nil
+	return state, nil
 }
 
 // operationsRefusal maps the store's read refusals onto §11's envelopes:
