@@ -134,6 +134,61 @@ type ItemReadCandidateSource interface {
 	ItemCandidatesFromRead(context.Context, appwire.ThreadReadParams, appwire.ThreadReadResponse) (ItemCandidateResult, error)
 }
 
+// CachedThreadCapabilitySource exposes the last capability probe attached to
+// the exact lane that will serve a read. known is false until a probe has
+// answered; callers must not substitute the source's fallback list policy.
+type CachedThreadCapabilitySource interface {
+	CachedThreadCapabilities(ref, threadID string) (capabilities appwire.ThreadCapabilities, known bool)
+}
+
+// LegacyPageCandidateSource converts one already-materialized legacy page
+// without following its native cursor or consulting a retained full snapshot.
+// Hub compatibility uses this seam because its contract is exactly one page.
+type LegacyPageCandidateSource interface {
+	ItemCandidatesFromLegacyPage(context.Context, appwire.ThreadReadParams, appwire.ThreadReadResponse) (ItemCandidateResult, error)
+}
+
+func (s *LocalDaemonSource) CachedThreadCapabilities(ref, threadID string) (appwire.ThreadCapabilities, bool) {
+	entry, err := s.localEntryForRefMode(ref, threadID, true)
+	if err != nil || !entry.CapabilitiesKnown {
+		return appwire.ThreadCapabilities{}, false
+	}
+	return entry.Capabilities, true
+}
+
+func (s *LocalDaemonSource) ItemCandidatesFromLegacyPage(
+	ctx context.Context,
+	params appwire.ThreadReadParams,
+	response appwire.ThreadReadResponse,
+) (ItemCandidateResult, error) {
+	if err := ctx.Err(); err != nil {
+		return ItemCandidateResult{}, err
+	}
+	resolved, err := s.resolveLocalDaemonItemThread(params.Ref, params.ThreadID)
+	if err != nil {
+		return ItemCandidateResult{}, err
+	}
+	candidates, err := localDaemonInitialItemCandidates(response)
+	if err != nil {
+		return ItemCandidateResult{}, err
+	}
+	if err := appitempaging.ValidateCandidates(candidates); err != nil {
+		return ItemCandidateResult{}, err
+	}
+	incarnation := localDaemonItemDaemonIdentity(resolved.entry)
+	if response.Snapshot != nil && response.Snapshot.Incarnation != "" {
+		incarnation = response.Snapshot.Incarnation
+	}
+	return ItemCandidateResult{
+		Candidates: appitempaging.TranscriptItemWindow{Candidates: candidates},
+		Identity: appitempaging.CursorIdentity{
+			ThreadRef: resolved.pagingRef, Incarnation: incarnation, ProjectionVersion: localDaemonItemCursorProjectionVersion,
+		},
+		Exhausted: response.OlderCursor == "",
+		History:   ReadHistoryIdentity(response),
+	}, nil
+}
+
 func (s *LocalDaemonSource) ItemCandidatesFromRead(
 	ctx context.Context,
 	params appwire.ThreadReadParams,

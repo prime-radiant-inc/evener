@@ -46,6 +46,7 @@ const (
 	ErrorTranscriptItemCursorStale   ErrorInfo = "transcriptItemCursorStale"
 	ErrorTranscriptItemChanged      ErrorInfo = "item-changed"
 	ErrorFetchUnavailableRemote      ErrorInfo = "fetch-unavailable-remote"
+	ErrorWindowUnsupportedOnDaemon   ErrorInfo = "window-unsupported-on-daemon"
 	ErrorTranscriptTurnNotFound      ErrorInfo = "transcriptTurnNotFound"
 	ErrorSessionActivityCursorStale  ErrorInfo = "sessionActivityCursorStale"
 	ErrorJobOutputPruned             ErrorInfo = "jobOutputPruned"
@@ -720,6 +721,14 @@ func FetchUnavailableRemote() WireError {
 		Code:    CodeUnavailable,
 		Message: "remote transcript item is unavailable; re-read the window",
 		Data:    ErrorData{EvenerErrorInfo: ErrorFetchUnavailableRemote},
+	}
+}
+
+func WindowUnsupportedOnDaemon() WireError {
+	return WireError{
+		Code:    CodeInvalidParams,
+		Message: "this daemon does not support the requested transcript window; upgrade it or use a latest window",
+		Data:    ErrorData{EvenerErrorInfo: ErrorWindowUnsupportedOnDaemon},
 	}
 }
 

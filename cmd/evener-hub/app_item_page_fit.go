@@ -419,6 +419,10 @@ func packItemCandidates[T any](
 			direction = transcriptWindowContinuationForward
 			trimmedEnd = "newest"
 		}
+		sourceWithheldTurns := 0
+		if !result.Exhausted && windowOptions.Params.TurnWindow != nil && windowOptions.Params.TurnWindow.Latest > len(prepared) {
+			sourceWithheldTurns = windowOptions.Params.TurnWindow.Latest - len(prepared)
+		}
 		start, end := 0, len(prepared)
 		for {
 			cursorLines := 0
@@ -573,7 +577,7 @@ func packItemCandidates[T any](
 			}
 
 			windowResult.ServedTurns = len(turns)
-			windowResult.WithheldTurns = len(prepared) - len(turns)
+			windowResult.WithheldTurns = len(prepared) - len(turns) + sourceWithheldTurns
 			windowResult.FirstServedTurnID = turns[0].ID
 			windowResult.LastServedTurnID = turns[len(turns)-1].ID
 			windowResult.FirstWithheldTurnID = ""
@@ -582,20 +586,24 @@ func packItemCandidates[T any](
 			windowResult.ContinuationCursor = ""
 			if windowResult.WithheldTurns > 0 {
 				windowResult.TrimmedEnd = trimmedEnd
-				var firstWithheld transcriptWindowPreparedTurn
-				var boundary appwire.ThreadItemPosition
+				request := transcriptWindowContinuation{Direction: direction}
 				if start > 0 {
-					firstWithheld = prepared[0]
 					windowResult.FirstWithheldTurnID = prepared[0].turn.ID
 					windowResult.LastWithheldTurnID = prepared[start-1].turn.ID
-					boundary = candidateTurns[start].candidates[0].Position
-				} else {
-					firstWithheld = prepared[end]
+					request.TurnID = prepared[0].turn.ID
+					request.Position = candidateTurns[start].candidates[0].Position
+				} else if end < len(prepared) {
 					windowResult.FirstWithheldTurnID = prepared[end].turn.ID
 					windowResult.LastWithheldTurnID = prepared[len(prepared)-1].turn.ID
-					boundary = candidateTurns[end].candidates[0].Position
+					request.TurnID = prepared[end].turn.ID
+					request.Position = candidateTurns[end].candidates[0].Position
+				} else {
+					// An incomplete latest source page proves how many requested turns
+					// are absent but cannot name their IDs. Continue immediately before
+					// the oldest served position through the source-owned identity.
+					request.TurnID = prepared[0].turn.ID
+					request.Position = candidateTurns[0].candidates[0].Position
 				}
-				request := transcriptWindowContinuation{Direction: direction, TurnID: firstWithheld.turn.ID, Position: boundary}
 				cursor, cursorErr := mintTranscriptWindowContinuation(windowOptions, request)
 				if cursorErr != nil {
 					return zero, cursorErr

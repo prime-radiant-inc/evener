@@ -152,6 +152,167 @@ func TestSessionOperationsFetchesServingDaemonItem(t *testing.T) {
 	}
 }
 
+func TestSessionOperationsUsesVisibleHubCompatibilityForOlderDaemon(t *testing.T) {
+	turns := make([]appwire.Turn, 0, 3)
+	for i, id := range []string{"turn_1", "turn_2", "turn_3"} {
+		position := appwire.ThreadItemPosition{Entry: uint64(i + 1)}
+		turns = append(turns, appwire.Turn{
+			ID: id, Status: appwire.TurnStatusCompleted, ItemsView: appwire.TurnItemsViewFull,
+			Items: []appwire.ThreadItem{{
+				ID: id + "-message", Type: "userMessage", TurnID: id, TranscriptKey: id + "-message",
+				Text: id, Position: &position, Version: 1,
+			}},
+		})
+	}
+
+	daemon := appserver.NewServer(appserver.ServerConfig{ServerName: "old-daemon", SourceID: "local"})
+	legacyReads := 0
+	appserver.HandleTyped(daemon.Router(), appwire.MethodThreadRead, func(_ context.Context, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
+		if params.TurnWindow != nil || len(params.ItemTypes) != 0 || params.PreviewBytes != 0 || params.MessageBytes != 0 || params.WindowBudgetBytes != 0 {
+			return appwire.ThreadReadResponse{}, appwire.InvalidParams("older daemon rejected window fields")
+		}
+		legacyReads++
+		return appwire.ThreadReadResponse{
+			Thread: appwire.Thread{
+				ID: "legacy-window", SessionID: "legacy-window",
+				Evener: appwire.EvenerThread{Ref: params.Ref}, Turns: turns,
+			},
+			Snapshot: &appwire.SnapshotIdentity{Incarnation: "legacy-window-snapshot", Length: 3},
+		}, nil
+	})
+	daemonHTTP := httptest.NewServer(http.HandlerFunc(daemon.ServeWebSocket))
+	defer daemonHTTP.Close()
+	source := appsource.NewLocalDaemonSourceWithEntries("local", func() []appsource.LocalDaemonEntry {
+		return []appsource.LocalDaemonEntry{{
+			Entry: rendezvous.Entry{
+				Protocol: appwire.ProtocolVersion, Endpoint: "ws" + strings.TrimPrefix(daemonHTTP.URL, "http"), SourceID: "local",
+				ThreadID: "legacy-window", SessionID: "legacy-window", WorkspaceRef: "local:legacy-window",
+			},
+			CapabilitiesKnown: true,
+		}}
+	}, http.DefaultClient)
+	sources := appsource.NewRegistry()
+	sources.Add(source)
+	cfg := hubcore.WebConfig{HubStateRoot: t.TempDir(), Past: hubcore.NewPastIndex("")}
+	server := appserver.NewServer(appserver.ServerConfig{ServerName: "hub", Version: "test", SourceID: "local"})
+	operations := &sessionOperations{cfg: cfg, sources: sources, relays: newHubRelay(server, cfg, sources), server: server}
+
+	response, err := operations.Invoke(t.Context(), appwire.ManagerView{Ref: "local:manager", Manager: true}, appwire.SessionOperationRequest{
+		Turns: &appwire.ThreadTurnsListParams{
+			Ref: "local:legacy-window",
+			ThreadWindowParams: appwire.ThreadWindowParams{
+				TurnWindow: &appwire.ThreadTurnWindow{Latest: 2}, ItemTypes: []string{"messages"}, MessageBytes: 64,
+			},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if legacyReads != 1 {
+		t.Fatalf("legacy reads = %d, want one compatibility page", legacyReads)
+	}
+	if response.Turns == nil || response.Turns.Window == nil {
+		t.Fatalf("compatibility response = %+v, want visible window metadata", response.Turns)
+	}
+	if got := response.Turns.Window.AppliedBy; got != transcriptWindowAppliedByHubCompat {
+		t.Fatalf("appliedBy = %q, want %q", got, transcriptWindowAppliedByHubCompat)
+	}
+	if got := []string{response.Turns.Data[0].ID, response.Turns.Data[1].ID}; !slices.Equal(got, []string{"turn_2", "turn_3"}) {
+		t.Fatalf("compatibility turn IDs = %v, want newest two in transcript order", got)
+	}
+}
+
+func TestSessionOperationsRejectsUnsupportedOlderDaemonWindows(t *testing.T) {
+	legacyReads := 0
+	daemon := appserver.NewServer(appserver.ServerConfig{ServerName: "old-daemon", SourceID: "local"})
+	appserver.HandleTyped(daemon.Router(), appwire.MethodThreadRead, func(_ context.Context, _ appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
+		legacyReads++
+		return appwire.ThreadReadResponse{}, nil
+	})
+	daemonHTTP := httptest.NewServer(http.HandlerFunc(daemon.ServeWebSocket))
+	defer daemonHTTP.Close()
+	source := appsource.NewLocalDaemonSourceWithEntries("local", func() []appsource.LocalDaemonEntry {
+		return []appsource.LocalDaemonEntry{{
+			Entry: rendezvous.Entry{
+				Protocol: appwire.ProtocolVersion, Endpoint: "ws" + strings.TrimPrefix(daemonHTTP.URL, "http"), SourceID: "local",
+				ThreadID: "legacy-window", SessionID: "legacy-window", WorkspaceRef: "local:legacy-window",
+			},
+			CapabilitiesKnown: true,
+		}}
+	}, http.DefaultClient)
+	sources := appsource.NewRegistry()
+	sources.Add(source)
+	cfg := hubcore.WebConfig{HubStateRoot: t.TempDir(), Past: hubcore.NewPastIndex("")}
+	server := appserver.NewServer(appserver.ServerConfig{ServerName: "hub", Version: "test", SourceID: "local"})
+	operations := &sessionOperations{cfg: cfg, sources: sources, relays: newHubRelay(server, cfg, sources), server: server}
+
+	for name, window := range map[string]*appwire.ThreadTurnWindow{
+		"since": {Since: "turn_1", Limit: 2},
+		"turn":  {Turn: "turn_1"},
+		"before": {Before: &appwire.ThreadTurnBoundary{
+			TurnID: "turn_2", Limit: 2,
+		}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, err := operations.Invoke(t.Context(), appwire.ManagerView{Ref: "local:manager", Manager: true}, appwire.SessionOperationRequest{
+				Turns: &appwire.ThreadTurnsListParams{Ref: "local:legacy-window", ThreadWindowParams: appwire.ThreadWindowParams{TurnWindow: window}},
+			})
+			wire, ok := errors.AsType[appwire.WireError](err)
+			if !ok {
+				t.Fatalf("unsupported window error = %T %v, want typed wire error", err, err)
+			}
+			data, _ := appwire.DecodedErrorData(wire.Data)
+			if data.EvenerErrorInfo != appwire.ErrorInfo("window-unsupported-on-daemon") {
+				t.Fatalf("unsupported window error info = %q", data.EvenerErrorInfo)
+			}
+		})
+	}
+	if legacyReads != 0 {
+		t.Fatalf("unsupported windows reached older daemon %d times", legacyReads)
+	}
+}
+
+func TestSessionOperationsLabelsIncompleteOlderDaemonLatestWindow(t *testing.T) {
+	position := appwire.ThreadItemPosition{Entry: 2}
+	daemon := appserver.NewServer(appserver.ServerConfig{ServerName: "old-daemon", SourceID: "local"})
+	appserver.HandleTyped(daemon.Router(), appwire.MethodThreadRead, func(_ context.Context, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
+		if params.TurnWindow != nil {
+			return appwire.ThreadReadResponse{}, appwire.InvalidParams("older daemon rejected window fields")
+		}
+		return appwire.ThreadReadResponse{
+			Thread: appwire.Thread{ID: "legacy-partial", SessionID: "legacy-partial", Evener: appwire.EvenerThread{Ref: params.Ref}, Turns: []appwire.Turn{{
+				ID: "turn_2", Status: appwire.TurnStatusCompleted, ItemsView: appwire.TurnItemsViewFull,
+				Items: []appwire.ThreadItem{{ID: "message_2", Type: "agentMessage", TurnID: "turn_2", TranscriptKey: "message_2", Position: &position, Version: 1, Text: "newest"}},
+			}}},
+			OlderCursor: "legacy-older-page", Snapshot: &appwire.SnapshotIdentity{Incarnation: "legacy-partial-snapshot", Length: 2},
+		}, nil
+	})
+	daemonHTTP := httptest.NewServer(http.HandlerFunc(daemon.ServeWebSocket))
+	defer daemonHTTP.Close()
+	source := appsource.NewLocalDaemonSourceWithEntries("local", func() []appsource.LocalDaemonEntry {
+		return []appsource.LocalDaemonEntry{{
+			Entry:             rendezvous.Entry{Protocol: appwire.ProtocolVersion, Endpoint: "ws" + strings.TrimPrefix(daemonHTTP.URL, "http"), SourceID: "local", ThreadID: "legacy-partial", SessionID: "legacy-partial", WorkspaceRef: "local:legacy-partial"},
+			CapabilitiesKnown: true,
+		}}
+	}, http.DefaultClient)
+	sources := appsource.NewRegistry()
+	sources.Add(source)
+	cfg := hubcore.WebConfig{HubStateRoot: t.TempDir(), Past: hubcore.NewPastIndex("")}
+	server := appserver.NewServer(appserver.ServerConfig{ServerName: "hub", Version: "test", SourceID: "local"})
+	operations := &sessionOperations{cfg: cfg, sources: sources, relays: newHubRelay(server, cfg, sources), server: server}
+
+	response, err := operations.Invoke(t.Context(), appwire.ManagerView{Ref: "local:manager", Manager: true}, appwire.SessionOperationRequest{
+		Turns: &appwire.ThreadTurnsListParams{Ref: "local:legacy-partial", ThreadWindowParams: appwire.ThreadWindowParams{TurnWindow: &appwire.ThreadTurnWindow{Latest: 2}}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	window := response.Turns.Window
+	if window == nil || window.ServedTurns != 1 || window.WithheldTurns != 1 || window.TrimmedEnd != "oldest" || window.ContinuationCursor == "" {
+		t.Fatalf("partial compatibility window = %+v", window)
+	}
+}
+
 func TestSessionOperationsFetchesTranslatedRemoteItem(t *testing.T) {
 	position := appwire.ThreadItemPosition{Entry: 11, Item: 2}
 	item := appwire.ThreadItem{

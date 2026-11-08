@@ -618,6 +618,50 @@ func retryableLiveReadFailure(err error) bool {
 	return isSessionUnavailableError(err)
 }
 
+func sourceAdvertisesWindowRead(ctx context.Context, source appsource.Source, ref, threadID string) bool {
+	if cached, ok := source.(appsource.CachedThreadCapabilitySource); ok {
+		capabilities, known := cached.CachedThreadCapabilities(ref, threadID)
+		return known && capabilities.WindowRead
+	}
+	listed, err := source.ListThreads(ctx, appwire.ThreadListParams{})
+	if err != nil {
+		return false
+	}
+	for _, thread := range listed.Data {
+		if ref != "" && thread.Evener.Ref != ref {
+			continue
+		}
+		if ref == "" && threadID != "" && thread.ID != threadID && thread.SessionID != threadID {
+			continue
+		}
+		return thread.Evener.Capabilities.WindowRead
+	}
+	return false
+}
+
+func compatibilityItemCandidateResultForRead(
+	ctx context.Context,
+	source appsource.Source,
+	params appwire.ThreadReadParams,
+	response appwire.ThreadReadResponse,
+) (transcriptItemCandidateResult, error) {
+	if legacy, ok := source.(appsource.LegacyPageCandidateSource); ok {
+		result, err := legacy.ItemCandidatesFromLegacyPage(ctx, params, response)
+		if err != nil {
+			return transcriptItemCandidateResult{}, err
+		}
+		return transcriptItemCandidateResultFromSource(result), nil
+	}
+	return sourceItemCandidateResultForRead(ctx, source, params, response)
+}
+
+func compatibilityLatestTurns(turns []appwire.Turn, latest int) []appwire.Turn {
+	if latest >= len(turns) {
+		return turns
+	}
+	return turns[len(turns)-latest:]
+}
+
 func (o *sessionOperations) Read(ctx context.Context, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
 	// An ordinary thread/read retains its default downstream subscription when
 	// the source hands off a live relay. Internal Manager snapshot reads call
@@ -712,6 +756,14 @@ func (o *sessionOperations) read(ctx context.Context, params appwire.ThreadReadP
 	// source: older daemons and remote hubs decode thread/read params strictly.
 	sourceParams := params
 	sourceParams.LiveOnly = false
+	hubCompatibility := params.TurnWindow != nil && !sourceAdvertisesWindowRead(ctx, source, params.Ref, params.ThreadID)
+	if hubCompatibility {
+		if params.TurnWindow.Latest <= 0 {
+			return appwire.ThreadReadResponse{}, appwire.WindowUnsupportedOnDaemon()
+		}
+		sourceParams.ThreadWindowParams = appwire.ThreadWindowParams{}
+		sourceParams.ItemLimit = appwire.TranscriptItemPageLimit
+	}
 	read, err := liveThreadRead(ctx, relays, source, sourceParams, capture, params.LiveOnly)
 	if err == nil && params.LiveOnly && liveReadDaemonless(read.response) {
 		// A remote hub that loses its daemon answers a non-subscribing read from
@@ -801,6 +853,9 @@ func (o *sessionOperations) read(ctx context.Context, params appwire.ThreadReadP
 		}
 	}
 	resp := read.response
+	if hubCompatibility {
+		resp.Thread.Turns = compatibilityLatestTurns(resp.Thread.Turns, params.TurnWindow.Latest)
+	}
 	liveItemCandidatesEmpty := false
 	if params.IncludeTurns {
 		if candidates, candidateErr := itemCandidateResultFromReadResponse(resp); candidateErr == nil {
@@ -846,13 +901,25 @@ func (o *sessionOperations) read(ctx context.Context, params appwire.ThreadReadP
 			resp.Thread = enrichSourcedThreadImages(source, resp.Thread)
 		} else {
 			latestExecutionTurnID := resp.LatestExecutionTurnID
-			candidates, candidateErr := sourceItemCandidateResultForRead(ctx, source, params, resp)
+			var candidates transcriptItemCandidateResult
+			var candidateErr error
+			if hubCompatibility {
+				candidates, candidateErr = compatibilityItemCandidateResultForRead(ctx, source, params, resp)
+			} else {
+				candidates, candidateErr = sourceItemCandidateResultForRead(ctx, source, params, resp)
+			}
 			if candidateErr != nil {
 				read.finish(false)
 				return appwire.ThreadReadResponse{}, candidateErr
 			}
 			pack := func(candidates transcriptItemCandidateResult, enrich func(appwire.ThreadReadResponse) (appwire.ThreadReadResponse, error)) (appwire.ThreadReadResponse, error) {
 				if params.TurnWindow != nil {
+					if hubCompatibility {
+						return packThreadReadWindowItemCandidates(candidates, enrich, transcriptWindowOptionsFor(
+							candidates, params.ThreadWindowParams, itemLimit,
+							transcriptWindowAppliedByHubCompat, appitempaging.FetchCursorOriginHubCompat,
+						))
+					}
 					fetchOrigin := appitempaging.FetchCursorOriginServingDaemon
 					if _, remote := source.(*appsource.RemoteHubSource); remote {
 						fetchOrigin = appitempaging.FetchCursorOriginRemoteSource
