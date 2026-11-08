@@ -799,10 +799,10 @@ func (o *sessionOperations) read(ctx context.Context, params appwire.ThreadReadP
 		if read.handoff != nil {
 			if !read.handoff.Prepare() {
 				read.finish(false)
-				return appwire.ThreadReadResponse{}, appwire.SessionUnavailable("thread snapshot is unavailable")
+				return appwire.ThreadReadResponse{}, appwire.RetryableSessionUnavailable("thread snapshot is unavailable")
 			}
 			if !read.finish(true) {
-				return appwire.ThreadReadResponse{}, appwire.SessionUnavailable("thread snapshot is unavailable")
+				return appwire.ThreadReadResponse{}, appwire.RetryableSessionUnavailable("thread snapshot is unavailable")
 			}
 		}
 		return resp, nil

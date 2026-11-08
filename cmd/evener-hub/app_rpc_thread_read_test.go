@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -327,6 +328,60 @@ func TestLiveReadDaemonlessPredicate(t *testing.T) {
 	unmarkedSavedManager.Thread.Evener.Manager = true
 	if !liveReadDaemonless(unmarkedSavedManager) {
 		t.Fatal("an unmarked saved manager page was not classified as daemonless")
+	}
+}
+
+// A bridge-origin snapshot read (capture=false) that loses its daemon between
+// the read and handoff Prepare must hand the controller a retryable outage.
+// Otherwise the controller's retry budget preserves an unmarked
+// SessionUnavailable, which the voice bridge treats as terminal.
+func TestHubRPCThreadReadBridgeSnapshotPrepareFailureIsRetryable(t *testing.T) {
+	root := t.TempDir()
+	stateDir := filepath.Join(root, "projects", "project-remote-snapshot-0000000001")
+	sessionID := buildRPCParentSession(t, stateDir)
+	lease := &scriptedRelaySessionLease{
+		deliveries: make(chan appsource.RelayDelivery),
+		readFunc: func(appwire.ThreadReadParams) (appsource.RelayReadResult, error) {
+			return appsource.RelayReadResult{
+				Response: appwire.ThreadReadResponse{Thread: liveRetryingThread(sessionID), BootGeneration: "7"},
+				Handoff:  &guardedRelayHandoff{prepareAllowed: false},
+			}, nil
+		},
+	}
+	past := newRebuiltPastIndex(t, filepath.Join(root, "projects", "*"))
+	sourcesB := appsource.NewRegistry()
+	sourcesB.Add(&relaySessionTestSource{thread: liveRetryingThread(sessionID), lease: lease})
+	serverB := newHubAppServer(hubcore.WebConfig{HubStateRoot: t.TempDir(), Past: past}, sourcesB)
+	hubB := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		serverB.ServeWebSocket(w, r.WithContext(withHostRoutingOrigin(r.Context(), hostRoutingOriginBridge)))
+	}))
+	t.Cleanup(hubB.Close)
+	remote := dialHubRPCInitialized(t, hubB)
+
+	var reads atomic.Int32
+	sourcesA := appsource.NewRegistry()
+	sourcesA.Add(appsource.NewRemoteHubSource("host-b", nil, func(context.Context, string) (*appwire.Client, error) {
+		return remote, nil
+	}))
+	cfgA := hubcore.WebConfig{
+		HubStateRoot: t.TempDir(),
+		Past:         hubcore.NewPastIndex(""),
+		RelayHooks: hubcore.RelayLifecycleHooks{ReadThreadFailure: func(ctx context.Context) error {
+			if reads.Add(1) == 1 {
+				return nil
+			}
+			<-ctx.Done()
+			return ctx.Err()
+		}},
+	}
+	serverA := appserver.NewServer(appserver.ServerConfig{ServerName: "hub", Version: "test", SourceID: "local"})
+	operationsA := &sessionOperations{cfg: cfgA, sources: sourcesA, relays: newHubRelay(serverA, cfgA, sourcesA), server: serverA}
+	_, err := operationsA.read(t.Context(), appwire.ThreadReadParams{
+		Ref: "host-b:" + sessionID, IncludeTurns: true,
+		ItemLimit: appwire.TranscriptItemPageLimit, LiveOnly: true,
+	}, false)
+	if err == nil || !voiceRelayOutage(err) {
+		t.Fatalf("bridge snapshot prepare failure = %v, want a retryable relay outage", err)
 	}
 }
 
