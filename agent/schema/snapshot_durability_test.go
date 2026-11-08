@@ -56,8 +56,7 @@ func (r *recordingSyncFS) Open(name string) (afero.File, error) {
 	if err != nil {
 		return nil, err
 	}
-	info, statErr := r.Fs.Stat(name)
-	return &recordingSyncFile{File: f, rec: r, isDir: statErr == nil && info.IsDir()}, nil
+	return &recordingSyncFile{File: f, rec: r}, nil
 }
 
 func (r *recordingSyncFS) OpenFile(name string, flag int, perm os.FileMode) (afero.File, error) {
@@ -75,8 +74,7 @@ func (r *recordingSyncFS) Rename(oldname, newname string) error {
 
 type recordingSyncFile struct {
 	afero.File
-	rec   *recordingSyncFS
-	isDir bool
+	rec *recordingSyncFS
 }
 
 func (f *recordingSyncFile) Sync() error {

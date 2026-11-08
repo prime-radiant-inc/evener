@@ -1,93 +1,64 @@
 // Package durablefile publishes a file's new contents atomically and durably
 // through an afero filesystem: a reader sees the old file or the complete new
 // one, and a successful Replace means the new contents survive a crash.
+//
+// It is the afero adapter over execsupport/fsatomic, which owns the write,
+// sync and rename sequence so the OS and injected filesystems take one path.
 package durablefile
 
 import (
-	"fmt"
-	"io"
 	"os"
-	"path/filepath"
-	"runtime"
 
 	"github.com/spf13/afero"
 
 	"primeradiant.com/evener/execsupport/fsatomic"
 )
 
-// Replace writes data to a uniquely named temp file in path's directory,
-// fsyncs it, sets perm outright so the process umask has no say, renames it
-// over path, and fsyncs the directory so the rename itself is durable. A
-// failure of that last step wraps fsatomic.ErrPublished: the new contents are
-// already visible at path and only their durability is unconfirmed.
+// Replace publishes data at path through fs with fsatomic.WriteFS semantics:
+// exclusive temp file, length-checked write, fsync, umask-proof permission,
+// rename, and a parent-directory fsync. A failure of that last step wraps
+// fsatomic.ErrPublished: the new contents are already visible at path and only
+// their durability is unconfirmed.
 //
 // The parent directory must exist. A failed write removes its temp file; a
 // crash between the create and the rename leaves a stray "<name>.tmp-*" file
 // behind, which is the cost of never reusing a name another process could
-// plant. Unlike fsatomic.Write, Replace works through an injected afero
-// filesystem so a store's production OS filesystem and its in-memory test
-// filesystem take the identical durable path.
+// plant.
 func Replace(fs afero.Fs, path string, data []byte, perm os.FileMode) error {
-	dir := filepath.Dir(path)
-	temp, err := afero.TempFile(fs, dir, filepath.Base(path)+".tmp-*")
-	if err != nil {
-		return fmt.Errorf("create temp file for %s: %w", path, err)
-	}
-	tempPath := temp.Name()
-	published := false
-	defer func() {
-		if !published {
-			_ = fs.Remove(tempPath)
-		}
-	}()
-	n, err := temp.Write(data)
-	if err != nil {
-		_ = temp.Close()
-		return fmt.Errorf("write temp file for %s: %w", path, err)
-	}
-	if n != len(data) {
-		_ = temp.Close()
-		return fmt.Errorf("write temp file for %s: %w", path, io.ErrShortWrite)
-	}
-	if err := fs.Chmod(tempPath, perm); err != nil {
-		_ = temp.Close()
-		return fmt.Errorf("chmod temp file for %s: %w", path, err)
-	}
-	if err := temp.Sync(); err != nil && !fsatomic.SyncUnsupported(err) {
-		_ = temp.Close()
-		return fmt.Errorf("sync temp file for %s: %w", path, err)
-	}
-	if err := temp.Close(); err != nil {
-		return fmt.Errorf("close temp file for %s: %w", path, err)
-	}
-	if err := fs.Rename(tempPath, path); err != nil {
-		return fmt.Errorf("rename temp file over %s: %w", path, err)
-	}
-	published = true
-	if err := SyncDir(fs, dir); err != nil {
-		return fmt.Errorf("%w: %w", fsatomic.ErrPublished, err)
-	}
-	return nil
+	return fsatomic.WriteFS(aferoFS{fs: fs}, path, data, perm)
 }
 
 // SyncDir flushes dir's entries so a rename or removal inside it survives a
-// crash. A filesystem that cannot sync directories at all is tolerated, as is
-// Windows, which journals the rename itself and cannot flush a directory
-// through a handle.
+// crash, with the filesystem's own Open and Sync.
 func SyncDir(fs afero.Fs, dir string) error {
-	if runtime.GOOS == "windows" {
-		return nil
-	}
-	d, err := fs.Open(dir)
-	if err != nil {
-		return fmt.Errorf("open directory %s: %w", dir, err)
-	}
-	if err := d.Sync(); err != nil && !fsatomic.SyncUnsupported(err) {
-		_ = d.Close()
-		return fmt.Errorf("sync directory %s: %w", dir, err)
-	}
-	if err := d.Close(); err != nil {
-		return fmt.Errorf("close directory %s: %w", dir, err)
-	}
-	return nil
+	return fsatomic.SyncDirFS(aferoFS{fs: fs}, dir)
 }
+
+// aferoFS adapts afero.Fs to fsatomic.FS. The per-method returns are typed
+// because a method returning (afero.File, error) does not satisfy one
+// returning (fsatomic.File, error).
+type aferoFS struct {
+	fs afero.Fs
+}
+
+func (a aferoFS) OpenFile(name string, flag int, perm os.FileMode) (fsatomic.File, error) {
+	f, err := a.fs.OpenFile(name, flag, perm)
+	if err != nil {
+		return nil, err
+	}
+	return f, nil
+}
+
+func (a aferoFS) Open(name string) (fsatomic.File, error) {
+	f, err := a.fs.Open(name)
+	if err != nil {
+		return nil, err
+	}
+	return f, nil
+}
+
+func (a aferoFS) Rename(oldname, newname string) error { return a.fs.Rename(oldname, newname) }
+
+func (a aferoFS) Chmod(name string, mode os.FileMode) error { return a.fs.Chmod(name, mode) }
+
+func (a aferoFS) Remove(name string) error { return a.fs.Remove(name) }
