@@ -5,6 +5,7 @@ import {
 	isStoredNullRecord,
 	isUnparseableDraftBytes,
 	matchesStoredBytes,
+	nativeLegacyKeybindingDraft,
 	nativeTranscriptDrafts,
 	STORED_NULL_RECORD,
 	parseDraftBytes,
@@ -371,5 +372,82 @@ describe("fakeDraftBackend", () => {
 		expect(b.store.has("k")).toBe(true);
 		expect(b.replaceIf("k", STORED_NULL_RECORD, next)).toBe(true);
 		expect(b.get("k")).toEqual(next);
+	});
+});
+
+const legacyKey = "evener.native.keybinding-draft.hub";
+const legacyCheckpoint = {
+	id: "draft-1",
+	baseRevision: 3,
+	rules: [{ action: "palette.open", chord: "Meta+P" }],
+	writeUncertain: true,
+};
+
+describe("nativeLegacyKeybindingDraft", () => {
+	it("reads the pre-ruling checkpoint without writing anything", () => {
+		const b = fakeDraftBackend();
+		b.store.set(legacyKey, legacyCheckpoint);
+
+		const storage = nativeLegacyKeybindingDraft("hub", b);
+
+		expect(storage.read()).toMatchObject({ outcome: "readable", checkpoint: legacyCheckpoint });
+		// Reading is read-only: no migration rewrite, no replay.
+		expect(b.store.get(legacyKey)).toEqual(legacyCheckpoint);
+	});
+
+	it("discards the exact record it read", () => {
+		const b = fakeDraftBackend();
+		b.store.set(legacyKey, legacyCheckpoint);
+		const storage = nativeLegacyKeybindingDraft("hub", b);
+
+		expect(storage.read().outcome).toBe("readable");
+		expect(storage.discard()).toBe("removed");
+		expect(b.store.has(legacyKey)).toBe(false);
+	});
+
+	it("classifies unparseable bytes and a stored JSON null as unreadable, and can discard them", () => {
+		for (const raw of ["{not json", null]) {
+			const b = fakeDraftBackend();
+			b.store.set(legacyKey, raw === null ? STORED_NULL_RECORD : parseDraftBytes(raw));
+			const storage = nativeLegacyKeybindingDraft("hub", b);
+
+			expect(storage.read().outcome).toBe("unreadable");
+			expect(storage.discard()).toBe("removed");
+			expect(b.store.has(legacyKey)).toBe(false);
+		}
+	});
+
+	it("refuses to discard a record a concurrent writer replaced", () => {
+		const b = fakeDraftBackend();
+		b.store.set(legacyKey, legacyCheckpoint);
+		const storage = nativeLegacyKeybindingDraft("hub", b);
+		expect(storage.read().outcome).toBe("readable");
+		const replacement = { ...legacyCheckpoint, id: "other" };
+		b.store.set(legacyKey, replacement);
+
+		expect(storage.discard()).toBe("refused");
+		expect(b.store.get(legacyKey)).toEqual(replacement);
+	});
+
+	it("reports absent and a dead port without throwing", () => {
+		const b = fakeDraftBackend();
+		expect(nativeLegacyKeybindingDraft("hub", b).read()).toEqual({ outcome: "absent" });
+		expect(nativeLegacyKeybindingDraft("hub", b).discard()).toBe("absent");
+
+		const dead = {
+			...fakeDraftBackend(),
+			get: () => {
+				throw new Error("disk unavailable");
+			},
+		};
+		expect(nativeLegacyKeybindingDraft("hub", dead).read()).toEqual({ outcome: "storageUnavailable" });
+		expect(nativeLegacyKeybindingDraft("hub", dead).discard()).toBe("storageUnavailable");
+	});
+
+	it("rejects a checkpoint whose rules cannot be read", () => {
+		const b = fakeDraftBackend();
+		b.store.set(legacyKey, { ...legacyCheckpoint, rules: [{ action: "palette.open", chord: "" }] });
+
+		expect(nativeLegacyKeybindingDraft("hub", b).read().outcome).toBe("unreadable");
 	});
 });

@@ -1,11 +1,18 @@
 import * as Crypto from "expo-crypto";
 import { Storage } from "expo-sqlite/kv-store";
-import { createContext, type ReactNode, useContext, useEffect, useState } from "react";
+import { createContext, type ReactNode, useContext, useEffect, useMemo, useState } from "react";
 import { resolveEffectiveConfig } from "@evener/appwire-client";
 import type { AppwireClient, TranscriptDisplayConfigV1 } from "@evener/appwire-client";
 import { bindNativePreferences } from "./bindNativePreferences";
 import { useConnection } from "./ConnectionProvider";
-import { nativeTranscriptDrafts, nativeTranscriptLocal, rawStringDraftBackend } from "./nativePreferenceDrafts";
+import {
+	type LegacyKeybindingDiscardResult,
+	type LegacyKeybindingDraft,
+	nativeLegacyKeybindingDraft,
+	nativeTranscriptDrafts,
+	nativeTranscriptLocal,
+	rawStringDraftBackend,
+} from "./nativePreferenceDrafts";
 import type { NativePreferences, NativePreferencesSnapshot } from "./nativePreferences";
 
 interface Preferences {
@@ -14,6 +21,14 @@ interface Preferences {
 	snapshot: NativePreferencesSnapshot | null;
 	config: TranscriptDisplayConfigV1 | null;
 	connected: boolean;
+	/** The keybinding proposal a pre-ruling build left on this phone. It is
+	 * read-only until the user applies or discards it; nothing here replays
+	 * it automatically. Null before a hub is selected. */
+	legacyKeybindingDraft: LegacyKeybindingDraft | null;
+	/** Removes the legacy record through its compare-and-swap. Works without
+	 * a live hub, because discarding touches only this phone. Null when no
+	 * hub is selected. */
+	discardLegacyKeybindingDraft(): LegacyKeybindingDiscardResult | null;
 }
 const Context = createContext<Preferences | null>(null);
 // The production draft backend: rawStringDraftBackend over the real Storage,
@@ -32,6 +47,22 @@ export function NativePreferencesProvider({ children }: { children: ReactNode })
 		snapshot: NativePreferencesSnapshot;
 		config: TranscriptDisplayConfigV1 | null;
 	} | null>(null);
+	const [legacyKeybindingDraft, setLegacyKeybindingDraft] = useState<LegacyKeybindingDraft | null>(null);
+	// One handle per selected hub: its discard() removes the exact record its
+	// read() returned, so a record replaced meanwhile is refused, not deleted.
+	const legacyKeybindingStorage = useMemo(
+		() => (hubId === null ? null : nativeLegacyKeybindingDraft(hubId, backend)),
+		[hubId],
+	);
+	useEffect(() => {
+		setLegacyKeybindingDraft(legacyKeybindingStorage?.read() ?? null);
+	}, [legacyKeybindingStorage, state]);
+	const discardLegacyKeybindingDraft = (): LegacyKeybindingDiscardResult | null => {
+		if (legacyKeybindingStorage === null) return null;
+		const outcome = legacyKeybindingStorage.discard();
+		setLegacyKeybindingDraft(legacyKeybindingStorage.read());
+		return outcome;
+	};
 	useEffect(() => {
 		if (!client || !hubId) return;
 		let unsubscribe = () => {};
@@ -75,6 +106,8 @@ export function NativePreferencesProvider({ children }: { children: ReactNode })
 				snapshot: selected?.snapshot ?? null,
 				config: selected?.config ?? null,
 				connected: !!client && state === "ready" && selected?.client === client,
+				legacyKeybindingDraft,
+				discardLegacyKeybindingDraft,
 			}}
 		>
 			{children}

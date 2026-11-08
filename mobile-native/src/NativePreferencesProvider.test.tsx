@@ -127,4 +127,58 @@ describe("NativePreferencesProvider", () => {
 		expect([...harness.values.keys()].filter((key) => key.includes("keybinding-draft"))).toEqual([]);
 		mounted.unmount();
 	});
+
+	it("surfaces a pre-ruling keybinding checkpoint for recovery without replaying it", async () => {
+		const saved = {
+			id: "draft-1",
+			baseRevision: 3,
+			rules: [{ action: "palette.open", chord: "Meta+Shift+P" }],
+			writeUncertain: true,
+		};
+		harness.values.set("evener.native.keybinding-draft.hub-a", JSON.stringify(saved));
+		const connection = clientFixture();
+		harness.connection = { activeProfile: { id: "hub-a" }, client: connection.client, state: "ready" };
+		const mounted = mountProvider();
+		await act(async () => {
+			await connection.connected;
+		});
+
+		expect(mounted.current.legacyKeybindingDraft).toMatchObject({
+			outcome: "readable",
+			checkpoint: saved,
+		});
+		// Merely finding the record must not replay it.
+		expect(
+			connection.requests.filter((request) => request.method === "evener/settings/keybindings/patch"),
+		).toHaveLength(0);
+
+		// The user applies it explicitly through the one immediate path.
+		await act(async () => {
+			await mounted.current.model?.applySavedKeybindings(saved.rules);
+		});
+		expect(
+			connection.requests.filter((request) => request.method === "evener/settings/keybindings/patch"),
+		).toHaveLength(1);
+
+		act(() => {
+			expect(mounted.current.discardLegacyKeybindingDraft()).toBe("removed");
+		});
+		expect(harness.values.has("evener.native.keybinding-draft.hub-a")).toBe(false);
+		expect(mounted.current.legacyKeybindingDraft).toEqual({ outcome: "absent" });
+		mounted.unmount();
+	});
+
+	it("discards an unreadable pre-ruling checkpoint with no hub connected", () => {
+		harness.values.set("evener.native.keybinding-draft.hub-a", "{not json");
+		harness.connection = { activeProfile: { id: "hub-a" }, client: null, state: "ready" };
+		const mounted = mountProvider();
+
+		expect(mounted.current.legacyKeybindingDraft?.outcome).toBe("unreadable");
+		act(() => {
+			expect(mounted.current.discardLegacyKeybindingDraft()).toBe("removed");
+		});
+		expect(harness.values.has("evener.native.keybinding-draft.hub-a")).toBe(false);
+		expect(mounted.current.legacyKeybindingDraft).toEqual({ outcome: "absent" });
+		mounted.unmount();
+	});
 });

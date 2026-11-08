@@ -1,5 +1,6 @@
 import { canonicalJson, isPlainObject, normalizeConfig } from "@evener/appwire-client";
 import type {
+	KeybindingsRule,
 	TranscriptDisplayConfigV1,
 	TranscriptDraftCheckpoint,
 	TranscriptDraftStorage,
@@ -161,6 +162,107 @@ export function rawStringDraftBackend(
 			if (!matches(key, expected)) return false;
 			storage.setItemSync(key, JSON.stringify(next));
 			return true;
+		},
+	};
+}
+
+/** The checkpoint a build before the one-immediate-write ruling left under
+ * `evener.native.keybinding-draft.<hubId>`. It is no longer written - the
+ * immediate PATCH is the only new-write path - but every persisted format
+ * stays readable (docs/product/README.md), so an upgrade surfaces the saved
+ * proposal for the user to apply or discard. Applying never happens on its
+ * own: a record that was never confirmed, or was composed against an older
+ * hub revision, must not silently replace the hub's current shortcuts. */
+export interface LegacyKeybindingDraftCheckpoint {
+	id: string;
+	baseRevision: number;
+	rules: KeybindingsRule[];
+	writeUncertain: boolean;
+}
+
+export type LegacyKeybindingDraft =
+	| { outcome: "absent" }
+	| { outcome: "readable"; checkpoint: LegacyKeybindingDraftCheckpoint; raw: unknown }
+	| { outcome: "unreadable"; raw: unknown }
+	| { outcome: "storageUnavailable" };
+
+export type LegacyKeybindingDiscardResult = "removed" | "absent" | "refused" | "storageUnavailable";
+
+export interface LegacyKeybindingDraftStorage {
+	/** Reads once and classifies the record; never throws. */
+	read(): LegacyKeybindingDraft;
+	/** Removes the exact record this store last read, refusing a record a
+	 * concurrent writer has replaced. Never throws. */
+	discard(): LegacyKeybindingDiscardResult;
+}
+
+function legacyKeybindingRules(value: unknown): KeybindingsRule[] | null {
+	if (!Array.isArray(value)) return null;
+	const rules: KeybindingsRule[] = [];
+	for (const item of value) {
+		if (!isPlainObject(item)) return null;
+		if (typeof item.action !== "string" || item.action.length === 0) return null;
+		if (!(item.chord === null || (typeof item.chord === "string" && item.chord.length > 0))) return null;
+		rules.push({ action: item.action, chord: item.chord });
+	}
+	return rules;
+}
+
+function decodeLegacyKeybindingDraft(value: unknown): LegacyKeybindingDraftCheckpoint | null {
+	if (!isPlainObject(value)) return null;
+	if (typeof value.id !== "string" || value.id.length === 0) return null;
+	if (!Number.isSafeInteger(value.baseRevision) || (value.baseRevision as number) < 0) return null;
+	if (typeof value.writeUncertain !== "boolean") return null;
+	const rules = legacyKeybindingRules(value.rules);
+	if (rules === null) return null;
+	return {
+		id: value.id,
+		baseRevision: value.baseRevision as number,
+		rules,
+		writeUncertain: value.writeUncertain,
+	};
+}
+
+export function nativeLegacyKeybindingDraft(
+	hubId: string,
+	backend: NativePreferenceDraftBackend,
+): LegacyKeybindingDraftStorage {
+	if (!hubId.trim()) throw new Error("A hub id is required for preference drafts.");
+	const key = `evener.native.keybinding-draft.${hubId}`;
+	/** The record the caller last saw. discard() removes THIS identity, so a
+	 * record a concurrent writer replaced after the read is refused rather
+	 * than deleted unseen. */
+	let lastRead: LegacyKeybindingDraft | null = null;
+	function read(): LegacyKeybindingDraft {
+		try {
+			const raw = backend.get(key) ?? null;
+			if (raw === null) {
+				lastRead = { outcome: "absent" };
+				return lastRead;
+			}
+			const checkpoint = decodeLegacyKeybindingDraft(raw);
+			lastRead = checkpoint === null ? { outcome: "unreadable", raw } : { outcome: "readable", checkpoint, raw };
+			return lastRead;
+		} catch {
+			lastRead = { outcome: "storageUnavailable" };
+			return lastRead;
+		}
+	}
+	return {
+		read,
+		discard(): LegacyKeybindingDiscardResult {
+			const current = lastRead ?? read();
+			if (current.outcome === "absent") return "absent";
+			if (current.outcome === "storageUnavailable") return "storageUnavailable";
+			try {
+				if (backend.deleteIf(key, current.raw)) return "removed";
+			} catch {
+				return "storageUnavailable";
+			}
+			const after = read();
+			if (after.outcome === "absent") return "absent";
+			if (after.outcome === "storageUnavailable") return "storageUnavailable";
+			return "refused";
 		},
 	};
 }
