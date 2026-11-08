@@ -70,3 +70,42 @@ test("guarded output still prints, so a failing test shows what it wrote", () =>
 
   expect(printed).toEqual([["visible", { id: 1 }], ["also visible"]]);
 });
+
+test("an act() escape warning records its caller stack when capture is enabled", () => {
+  const { target } = fakeConsole();
+  const guard = guardConsoleOutput(target, { actStackCapture: true });
+
+  function warningCaller() {
+    target.error("An update to %s inside a test was not wrapped in act(...)", "Composer");
+  }
+  warningCaller();
+
+  const report = guard.takeUnexpectedOutput();
+  expect(report).toContain("act() escape caller stack");
+  // The stack names the frame that logged the warning, which is what the
+  // capture exists to add to the component name React already supplies.
+  expect(report).toContain("warningCaller");
+});
+
+test("the act() stack capture is off unless enabled, leaving other output unchanged", () => {
+  const { target } = fakeConsole();
+  const guard = guardConsoleOutput(target, { actStackCapture: false });
+
+  target.error("An update to %s inside a test was not wrapped in act(...)", "Composer");
+
+  const report = guard.takeUnexpectedOutput();
+  expect(report).not.toContain("act() escape caller stack");
+  expect(report).toContain("console.error");
+});
+
+test("EVENER_ACT_STACK_CAPTURE=1 is the switch that turns capture on", () => {
+  vi.stubEnv("EVENER_ACT_STACK_CAPTURE", "1");
+  try {
+    const { target } = fakeConsole();
+    const guard = guardConsoleOutput(target);
+    target.error("An update to %s inside a test was not wrapped in act(...)", "Composer");
+    expect(guard.takeUnexpectedOutput()).toContain("act() escape caller stack");
+  } finally {
+    vi.unstubAllEnvs();
+  }
+});
