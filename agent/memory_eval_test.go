@@ -382,7 +382,9 @@ func TestMemoryEvalVerifierStopsRunner(t *testing.T) {
 	for _, mode := range []string{"initial-module", "initial-compile", "final-compile"} {
 		t.Run(mode, func(t *testing.T) {
 			home := memoryEvalIsolateProcess(t)
-			b := &memoryEvalAdmission{}
+			// The compiler diagnostic names this identifier, so any copy of it in
+			// the retained or published evidence proves redaction did not run.
+			b := &memoryEvalAdmission{evidenceRoot: t.TempDir(), sensitive: []string{"missingSymbol"}}
 			adapter := &memoryEvalAdapter{}
 			c, p := memoryEvalFixtureClient(t, b, adapter)
 			stages, calls := 0, 0
@@ -420,47 +422,25 @@ func TestMemoryEvalVerifierStopsRunner(t *testing.T) {
 			if !errors.Is(dispatchErr, runErr) || b.logical != before {
 				t.Fatalf("verifier terminal error lost before another dispatch: returned=%v cause=%v logical=%d want=%d", dispatchErr, runErr, b.logical, before)
 			}
-		})
-	}
-}
-
-// A verifier infrastructure stop must keep the failing stage's identity,
-// reason and redacted Go diagnostic, both on the admission and in the published
-// evidence. Before this, both paths returned before appending or writing the
-// failing stage, so only the generic wrapped error survived.
-func TestMemoryEvalVerifierFailureEvidence(t *testing.T) {
-	for _, mode := range []string{"initial-compile", "final-compile"} {
-		t.Run(mode, func(t *testing.T) {
-			// Serial: fixture HOME and Responses client are process-global.
-			home := memoryEvalIsolateProcess(t)
-			// The compiler diagnostic names this identifier, so any copy of it
-			// in the published evidence proves redaction did not run.
-			b := &memoryEvalAdmission{evidenceRoot: t.TempDir(), sensitive: []string{"missingSymbol"}}
-			adapter := &memoryEvalAdapter{}
-			c, p := memoryEvalFixtureClient(t, b, adapter)
-			calls := 0
-			_, runErr := memoryEvalRunPairs(t, b, c, p, home, func(_ string, _ bool, _ memoryEvalStage, _ string, workspace string) {
-				broken := "package main\nfunc normalize(v string) string { return missingSymbol }\n"
-				if mode == "initial-compile" {
-					memoryEvalWrite(t, filepath.Join(workspace, "main.go"), broken)
-				}
-				adapter.complete = func(context.Context, llm.Request) (llm.Response, error) {
-					calls++
-					if mode == "final-compile" && calls == 1 {
-						return memoryEvalCall("write_file", map[string]any{"file_path": "main.go", "content": broken}), nil
-					}
-					return agenttest.FinalResponse("opaque-verifier-evidence-710"), nil
-				}
-			})
-			if runErr == nil {
-				t.Fatal("verifier infrastructure failure did not stop the run")
+			// The failing stage's identity, reason and Go diagnostic must survive
+			// the stop, rather than dying with the stage value that was dropped.
+			var stop *memoryEvalVerifierStop
+			if !errors.As(runErr, &stop) {
+				t.Fatalf("verifier stop did not carry its stage: %v", runErr)
 			}
-			retained := b.failingStageEvidence()
-			if retained == nil {
-				t.Fatal("failing stage evidence not retained")
+			phase := "final"
+			if strings.HasPrefix(mode, "initial-") {
+				phase = "initial"
 			}
+			if stop.Phase != phase || stop.Pair != "recall" || stop.Disabled || stop.Stage != "A" || stop.Cause == nil {
+				t.Fatalf("stop lost its identity: phase=%q pair=%q disabled=%t stage=%q cause=%v", stop.Phase, stop.Pair, stop.Disabled, stop.Stage, stop.Cause)
+			}
+			retained := stop.Evidence
 			if retained.Name != "A" || retained.Failure == "" || retained.Verifier == "" {
 				t.Fatalf("retained evidence lost identity, reason or output: name=%q failure=%q verifier=%q", retained.Name, retained.Failure, retained.Verifier)
+			}
+			if retained.Counters == "" || retained.Elapsed <= 0 {
+				t.Fatalf("retained evidence lost its chronology: counters=%q elapsed=%s", retained.Counters, retained.Elapsed)
 			}
 			raw, err := os.ReadFile(filepath.Join(b.evidenceRoot, "recall-disabled-false-A.failed.json"))
 			if err != nil {
@@ -473,8 +453,11 @@ func TestMemoryEvalVerifierFailureEvidence(t *testing.T) {
 			if published.Name != "A" || published.Failure == "" || published.Verifier == "" {
 				t.Fatalf("published evidence lost identity, reason or output: name=%q failure=%q verifier=%q", published.Name, published.Failure, published.Verifier)
 			}
-			if strings.Contains(string(raw), "missingSymbol") || !strings.Contains(string(raw), "[redacted]") {
-				t.Fatal("published evidence exposed the verifier diagnostic unredacted")
+			if mode != "initial-module" {
+				// Both copies of the compiler diagnostic are redacted.
+				if strings.Contains(retained.Verifier, "missingSymbol") || strings.Contains(string(raw), "missingSymbol") || !strings.Contains(string(raw), "[redacted]") {
+					t.Fatal("retained or published evidence exposed the verifier diagnostic unredacted")
+				}
 			}
 		})
 	}
