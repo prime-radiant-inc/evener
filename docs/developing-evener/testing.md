@@ -532,12 +532,12 @@ slowness comes from.
 package's wall time multiplies by N while Go's default ten-minute
 `-test.timeout` covers the whole process. `cmd/evener-hub` takes about four
 minutes per iteration under `-race` (205-234s in the #1326 report), so a
-`-count=2` run needs an explicit budget such as `-timeout 20m`. Without one it
-dies at the default with a goroutine dump and no assertion failure, which
-reads as a hang (#1326) even though both iterations were progressing.
-Repeated runs under host load are slower still. Pass `-timeout` whenever you
-ask for repeats; no gate runs `-count` above 1 (the `-count=1` rule above is
-why).
+`-count=2` run is a 7-8 minute run before any host load, and it dies at the
+default with a goroutine dump and no assertion failure when the addition or
+the load pushes it over. That dump reads as a hang (#1326) even though the
+package was still executing tests: each dump taken for #1326 listed a test
+only seconds old as the running test. Pass `-timeout` whenever you ask for
+repeats; no gate runs `-count` above 1 (the `-count=1` rule above is why).
 
 CI runs the web check as two lanes on separate runners, web-unit (`make
 test-web`) and web-browser (`make test-web-browser`), and the required `web` job
