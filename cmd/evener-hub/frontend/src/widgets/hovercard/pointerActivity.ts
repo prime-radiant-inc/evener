@@ -28,7 +28,7 @@ interface PointerActivityState {
   lastReleaseAt: number;
   readonly press: (event: PointerEvent) => void;
   readonly releasePointer: (event: PointerEvent) => void;
-  readonly releaseWithoutButton: (event: PointerEvent) => void;
+  readonly observeMove: (event: PointerEvent) => void;
   readonly releaseHidden: (event: Event) => void;
 }
 
@@ -60,10 +60,14 @@ function createState(): PointerActivityState {
       pressed.delete(event.pointerId);
       state.lastReleaseAt = Date.now();
     },
-    // A move reporting no button down is the pointer's own evidence that the
-    // press ended: its release was lost, but it is no longer held.
-    releaseWithoutButton: (event) => {
+    // A move is the pointer's own evidence about the press: no button down
+    // means the release was lost, and a held button means the press is still
+    // down, so it stays fresh past the elapsed bound.
+    observeMove: (event) => {
+      const pressedAt = pressed.get(event.pointerId);
+      if (pressedAt === undefined) return;
       if (event.buttons === 0) pressed.delete(event.pointerId);
+      else pressed.set(event.pointerId, Date.now());
     },
     // A hidden page cannot keep a pointer down, so every press ended. This
     // also bounds ids on documents that never read isPointerFocus.
@@ -84,7 +88,7 @@ function install(owner: Document, state: PointerActivityState): void {
   owner.addEventListener("pointerdown", state.press, true);
   owner.addEventListener("pointerup", state.releasePointer, true);
   owner.addEventListener("pointercancel", state.releasePointer, true);
-  owner.addEventListener("pointermove", state.releaseWithoutButton, true);
+  owner.addEventListener("pointermove", state.observeMove, true);
   owner.addEventListener("visibilitychange", state.releaseHidden, true);
 }
 
@@ -92,7 +96,7 @@ function uninstall(owner: Document, state: PointerActivityState): void {
   owner.removeEventListener("pointerdown", state.press, true);
   owner.removeEventListener("pointerup", state.releasePointer, true);
   owner.removeEventListener("pointercancel", state.releasePointer, true);
-  owner.removeEventListener("pointermove", state.releaseWithoutButton, true);
+  owner.removeEventListener("pointermove", state.observeMove, true);
   owner.removeEventListener("visibilitychange", state.releaseHidden, true);
 }
 

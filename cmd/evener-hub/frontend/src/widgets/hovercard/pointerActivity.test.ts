@@ -167,6 +167,21 @@ test("a move with no button down ends a press whose up never arrived", () => {
   }
 });
 
+test("a press a move proves is still held stays pressed past the bound", () => {
+  const clock = startClock();
+  const owner = secondDocument();
+  const handle = acquirePointerActivity(owner);
+  try {
+    dispatchPointer(owner, "pointerdown", 61);
+    clock.advance(POINTER_PRESS_MAX_MS);
+    owner.dispatchEvent(new PointerEvent("pointermove", { pointerId: 61, buttons: 1, bubbles: true }));
+    clock.advance(POINTER_PRESS_MAX_MS);
+    expect(handle.isPointerFocus(POINTER_CLICK_WINDOW_MS)).toBe(true);
+  } finally {
+    handle.release();
+  }
+});
+
 test("releases the last reference once and only once", () => {
   const owner = secondDocument();
   const first = acquirePointerActivity(owner);
