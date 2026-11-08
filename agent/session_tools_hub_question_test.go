@@ -53,7 +53,15 @@ func checkManagerQuestionCall(t *testing.T, root *Session, client *managerQuesti
 				t.Errorf("invalid call reached hub: %+v", got)
 			}
 		} else if len(got) != 1 || !reflect.DeepEqual(got[0], want) {
-			t.Errorf("hub requests=%+v, want %+v", got, want)
+			gotJSON, err := json.Marshal(got)
+			if err != nil {
+				t.Fatal(err)
+			}
+			wantJSON, err := json.Marshal(want)
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Errorf("hub requests=%s, want %s", gotJSON, wantJSON)
 		}
 	}
 	check()
@@ -73,6 +81,19 @@ func checkManagerQuestionCall(t *testing.T, root *Session, client *managerQuesti
 		}
 	}
 	check()
+	if valid {
+		before = len(client.requests)
+		prepared := prepareToolCall(llm.ToolCallData{ID: "question-prepared-contract", Name: name, Arguments: raw}, registered, []string{name}, name, "communicate", "")
+		if prepared.PrevalErr != "" {
+			t.Errorf("preparation refused a valid call: %s", prepared.PrevalErr)
+		} else {
+			result := root.reg.ExecutePreparedCall(t.Context(), root.currentEnv(), prepared.Call)
+			if result.IsError {
+				t.Errorf("prepared registry refused a valid call: %+v", result)
+			}
+		}
+		check()
+	}
 }
 
 func TestManagerAskFenceSendContract(t *testing.T) {
@@ -82,7 +103,7 @@ func TestManagerAskFenceSendContract(t *testing.T) {
 	root.SetHubClient(client)
 	for _, mode := range []string{"start", "queue", "steer"} {
 		for _, typed := range []bool{false, true} {
-			for _, revision := range []*uint64{nil, new(uint64(0)), new(uint64(23))} {
+			for _, revision := range []*uint64{nil, new(uint64(0)), new(uint64(23)), new(uint64(1<<53 + 1)), new(^uint64(0))} {
 				fence := "unfenced"
 				if revision != nil {
 					fence = "revision_" + strconv.FormatUint(*revision, 10)
@@ -169,6 +190,9 @@ func TestManagerPendingAskPageContract(t *testing.T) {
 		{"page_bounds", map[string]any{"ref": "remote:worker", "expected_ask_revision": 23, "expected_ask_boot_generation": "boot-sentinel", "offset": 2, "limit": 3}, appwire.SessionOperationRequest{Read: &appwire.ThreadReadParams{Ref: "remote:worker", ExpectedAskRevision: new(uint64(23)), ExpectedAskBootGeneration: "boot-sentinel", Offset: new(2), Limit: new(3)}}},
 		{"page_zero_bounds", map[string]any{"ref": "local:worker", "expected_ask_revision": 0, "expected_ask_boot_generation": "boot-sentinel", "offset": 0, "limit": 0}, appwire.SessionOperationRequest{Read: &appwire.ThreadReadParams{Ref: "local:worker", ExpectedAskRevision: new(uint64(0)), ExpectedAskBootGeneration: "boot-sentinel", Offset: new(0), Limit: new(0)}}},
 		{"page_negative_bounds_for_server_normalization", map[string]any{"ref": "local:worker", "expected_ask_revision": 0, "expected_ask_boot_generation": "boot-sentinel", "offset": -1, "limit": -2}, appwire.SessionOperationRequest{Read: &appwire.ThreadReadParams{Ref: "local:worker", ExpectedAskRevision: new(uint64(0)), ExpectedAskBootGeneration: "boot-sentinel", Offset: new(-1), Limit: new(-2)}}},
+		{"page_exact_large_revision", map[string]any{"ref": "local:worker", "expected_ask_revision": uint64(1<<53 + 1), "expected_ask_boot_generation": "boot-sentinel"}, appwire.SessionOperationRequest{Read: &appwire.ThreadReadParams{Ref: "local:worker", ExpectedAskRevision: new(uint64(1<<53 + 1)), ExpectedAskBootGeneration: "boot-sentinel"}}},
+		{"page_maximum_revision", map[string]any{"ref": "local:worker", "expected_ask_revision": ^uint64(0), "expected_ask_boot_generation": "boot-sentinel"}, appwire.SessionOperationRequest{Read: &appwire.ThreadReadParams{Ref: "local:worker", ExpectedAskRevision: new(^uint64(0)), ExpectedAskBootGeneration: "boot-sentinel"}}},
+		{"page_exact_integer_bounds", map[string]any{"ref": "local:worker", "expected_ask_revision": 0, "expected_ask_boot_generation": "boot-sentinel", "offset": int(^uint(0) >> 1), "limit": -int(^uint(0)>>1) - 1}, appwire.SessionOperationRequest{Read: &appwire.ThreadReadParams{Ref: "local:worker", ExpectedAskRevision: new(uint64(0)), ExpectedAskBootGeneration: "boot-sentinel", Offset: new(int(^uint(0) >> 1)), Limit: new(-int(^uint(0)>>1) - 1)}}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			checkManagerQuestionCall(t, root, client, "job_status", map[string]any{"hub": tc.hub}, true, tc.want)
