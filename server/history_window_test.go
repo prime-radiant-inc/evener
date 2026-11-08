@@ -32,9 +32,7 @@ func TestLiveThreadReadHonorsTurnWindows(t *testing.T) {
 			response, err := st.srv.appThreadReadSnapshotChecked(appwire.ThreadReadParams{
 				ThreadID:     st.threadID,
 				IncludeTurns: true,
-				ThreadWindowParams: appwire.ThreadWindowParams{
-					TurnWindow: window,
-				},
+				TurnWindow:   window,
 			})
 			if err != nil {
 				t.Fatal(err)
@@ -58,9 +56,7 @@ func TestLiveThreadReadHonorsTurnWindows(t *testing.T) {
 	_, err := st.srv.appThreadReadSnapshotChecked(appwire.ThreadReadParams{
 		ThreadID:     st.threadID,
 		IncludeTurns: true,
-		ThreadWindowParams: appwire.ThreadWindowParams{
-			TurnWindow: &appwire.ThreadTurnWindow{Since: "missing", Limit: 2},
-		},
+		TurnWindow:   &appwire.ThreadTurnWindow{Since: "missing", Limit: 2},
 	})
 	var wireErr appwire.WireError
 	if !errors.As(err, &wireErr) || wireErr.Code != appwire.CodeInvalidParams {

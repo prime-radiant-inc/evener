@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"unicode/utf8"
 
 	"primeradiant.com/evener/appwire"
@@ -529,8 +530,8 @@ func packItemCandidates[T any](
 						}
 					}
 					if itemIndex < 0 {
-						for i := len(turn.Items) - 1; i >= 0; i-- {
-							if transcriptWindowItemHasBody(turn.Items[i]) {
+						for i, v := range slices.Backward(turn.Items) {
+							if transcriptWindowItemHasBody(v) {
 								itemIndex = i
 								break
 							}

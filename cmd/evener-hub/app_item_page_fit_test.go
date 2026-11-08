@@ -452,7 +452,7 @@ func TestPackTranscriptItemWindowRequiresTurnWindow(t *testing.T) {
 
 func TestPackTranscriptItemWindowSharesCursorLineLimitAcrossTruncationAndElision(t *testing.T) {
 	items := make([]appwire.ThreadItem, 0, 12)
-	for i := 0; i < 11; i++ {
+	for i := range 11 {
 		items = append(items, appwire.ThreadItem{Type: "agentMessage", ID: fmt.Sprintf("message-%02d", i), Text: "truncate", Version: uint64(i + 1)})
 	}
 	items = append(items, appwire.ThreadItem{Type: "reasoning", ID: "elided-beyond-limit", Text: strings.Repeat("s", transcriptWindowBudgetFloorBytes*2), Version: 12})

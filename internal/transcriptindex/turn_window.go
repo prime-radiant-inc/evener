@@ -2,6 +2,7 @@ package transcriptindex
 
 import (
 	"fmt"
+	"slices"
 
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/internal/appitempaging"
@@ -171,8 +172,8 @@ func selectTurnRange(turns []indexedTurn, frontier TurnFrontier, selector appwir
 		boundary = selector.Before.TurnID
 	}
 	at := -1
-	for i := len(turns) - 1; i >= 0; i-- {
-		if turns[i].id == boundary {
+	for i, turn := range slices.Backward(turns) {
+		if turn.id == boundary {
 			at = i
 			break
 		}

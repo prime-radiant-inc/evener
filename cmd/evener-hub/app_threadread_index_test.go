@@ -229,7 +229,7 @@ func TestDaemonlessThreadReadHonorsTurnWindows(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			response, err := dispatchDaemonlessThreadRead(t, cfg, appwire.ThreadReadParams{
 				Ref: "local:" + entry.Meta.ID, IncludeTurns: true,
-				ThreadWindowParams: appwire.ThreadWindowParams{TurnWindow: &tc.window, ItemTypes: []string{"messages"}},
+				TurnWindow: &tc.window, ItemTypes: []string{"messages"},
 			})
 			if err != nil {
 				t.Fatalf("daemonless windowed read: %v", err)
@@ -243,7 +243,7 @@ func TestDaemonlessThreadReadHonorsTurnWindows(t *testing.T) {
 			}
 			for _, turn := range response.Thread.Turns {
 				for _, item := range turn.Items {
-					if item.Type != "agentMessage" && item.Type != "userMessage" && !(item.Type == "steering" && item.Source == "user") {
+					if item.Type != "agentMessage" && item.Type != "userMessage" && (item.Type != "steering" || item.Source != "user") {
 						t.Fatalf("windowed message read returned %q item", item.Type)
 					}
 				}
@@ -256,7 +256,7 @@ func TestDaemonlessThreadReadHonorsTurnWindows(t *testing.T) {
 
 	_, err := dispatchDaemonlessThreadRead(t, cfg, appwire.ThreadReadParams{
 		Ref: "local:" + entry.Meta.ID, IncludeTurns: true,
-		ThreadWindowParams: appwire.ThreadWindowParams{TurnWindow: &appwire.ThreadTurnWindow{Turn: "missing"}},
+		TurnWindow: &appwire.ThreadTurnWindow{Turn: "missing"},
 	})
 	var wireErr appwire.WireError
 	if !errors.As(err, &wireErr) || wireErr.Code != appwire.CodeInvalidParams {
@@ -277,11 +277,9 @@ func TestSessionOperationsFetchesSavedItemCanonicalRanges(t *testing.T) {
 	ref := "local:" + entry.Meta.ID
 	window, err := dispatchDaemonlessThreadRead(t, cfg, appwire.ThreadReadParams{
 		Ref: ref, IncludeTurns: true,
-		ThreadWindowParams: appwire.ThreadWindowParams{
-			TurnWindow:   &appwire.ThreadTurnWindow{Turn: "turn_m1"},
-			ItemTypes:    []string{"agentMessage"},
-			MessageBytes: 64,
-		},
+		TurnWindow:   &appwire.ThreadTurnWindow{Turn: "turn_m1"},
+		ItemTypes:    []string{"agentMessage"},
+		MessageBytes: 64,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -337,7 +335,7 @@ func TestSessionOperationsFetchesSavedItemCanonicalRanges(t *testing.T) {
 
 func TestDaemonlessThreadTurnsContinuesInsideWindowedTurn(t *testing.T) {
 	entries := make([]schema.Turn, 0, 26)
-	for i := 0; i < 25; i++ {
+	for i := range 25 {
 		entries = append(entries, execution("turn_many", schema.NewTurn(schema.TurnAssistant, llm.Assistant(fmt.Sprintf("answer-%02d", i)))))
 	}
 	entries = append(entries, completedExecution("turn_many"))

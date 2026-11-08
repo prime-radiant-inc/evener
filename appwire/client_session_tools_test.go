@@ -127,10 +127,10 @@ func TestSessionFetchResponseCarriesRangedCanonicalItem(t *testing.T) {
 func TestSessionOperationRequestAcceptsWindowedContentSelection(t *testing.T) {
 	includeThinking := false
 	request := SessionOperationRequest{Turns: &ThreadTurnsListParams{
-		ThreadContentParams: ThreadContentParams{IncludeThinking: &includeThinking},
-		Ref:                 "local:session",
-		ItemLimit:           10,
-		TurnWindow:          &ThreadTurnWindow{Latest: 2},
+		IncludeThinking: &includeThinking,
+		Ref:             "local:session",
+		ItemLimit:       10,
+		TurnWindow:      &ThreadTurnWindow{Latest: 2},
 	}}
 	if err := request.Validate(); err != nil {
 		t.Fatalf("Validate rejected windowed content selection: %v", err)

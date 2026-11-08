@@ -119,10 +119,8 @@ func TestSessionOperationsFetchesServingDaemonItem(t *testing.T) {
 	caller := appwire.ManagerView{Ref: "local:manager", Manager: true}
 
 	window, err := operations.Invoke(t.Context(), caller, appwire.SessionOperationRequest{Turns: &appwire.ThreadTurnsListParams{
-		Ref: "local:windowed",
-		ThreadWindowParams: appwire.ThreadWindowParams{
-			TurnWindow: &appwire.ThreadTurnWindow{Turn: "turn_1"}, ItemTypes: []string{"commandExecution"}, PreviewBytes: 64,
-		},
+		Ref:        "local:windowed",
+		TurnWindow: &appwire.ThreadTurnWindow{Turn: "turn_1"}, ItemTypes: []string{"commandExecution"}, PreviewBytes: 64,
 	}})
 	if err != nil {
 		t.Fatal(err)
@@ -215,10 +213,8 @@ func TestSessionOperationsUsesVisibleHubCompatibilityForOlderDaemon(t *testing.T
 
 	response, err := operations.Invoke(t.Context(), appwire.ManagerView{Ref: "local:manager", Manager: true}, appwire.SessionOperationRequest{
 		Turns: &appwire.ThreadTurnsListParams{
-			Ref: "local:legacy-window",
-			ThreadWindowParams: appwire.ThreadWindowParams{
-				TurnWindow: &appwire.ThreadTurnWindow{Latest: 2}, ItemTypes: []string{"messages"}, MessageBytes: 64,
-			},
+			Ref:        "local:legacy-window",
+			TurnWindow: &appwire.ThreadTurnWindow{Latest: 2}, ItemTypes: []string{"messages"}, MessageBytes: 64,
 		},
 	})
 	if err != nil {
@@ -271,7 +267,7 @@ func TestSessionOperationsRejectsUnsupportedOlderDaemonWindows(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			_, err := operations.Invoke(t.Context(), appwire.ManagerView{Ref: "local:manager", Manager: true}, appwire.SessionOperationRequest{
-				Turns: &appwire.ThreadTurnsListParams{Ref: "local:legacy-window", ThreadWindowParams: appwire.ThreadWindowParams{TurnWindow: window}},
+				Turns: &appwire.ThreadTurnsListParams{Ref: "local:legacy-window", TurnWindow: window},
 			})
 			wire, ok := errors.AsType[appwire.WireError](err)
 			if !ok {
@@ -319,10 +315,8 @@ func TestSessionOperationsLabelsIncompleteOlderDaemonLatestWindow(t *testing.T) 
 
 	request := appwire.ThreadTurnsListParams{
 		Ref: "local:legacy-partial", ItemLimit: 7,
-		ThreadWindowParams: appwire.ThreadWindowParams{
-			TurnWindow: &appwire.ThreadTurnWindow{Latest: 2}, ItemTypes: []string{"messages"},
-			PreviewBytes: 321, MessageBytes: 654, WindowBudgetBytes: 16 * 1024,
-		},
+		TurnWindow: &appwire.ThreadTurnWindow{Latest: 2}, ItemTypes: []string{"messages"},
+		PreviewBytes: 321, MessageBytes: 654, WindowBudgetBytes: 16 * 1024,
 	}
 	response, err := operations.Invoke(t.Context(), appwire.ManagerView{Ref: "local:manager", Manager: true}, appwire.SessionOperationRequest{Turns: &request})
 	if err != nil {
@@ -391,7 +385,7 @@ func TestSessionOperationsRetriesStalePositiveWindowProbeAsHubCompatibility(t *t
 	operations := &sessionOperations{cfg: cfg, sources: sources, relays: newHubRelay(server, cfg, sources), server: server}
 
 	response, err := operations.Invoke(t.Context(), appwire.ManagerView{Ref: "local:manager", Manager: true}, appwire.SessionOperationRequest{
-		Turns: &appwire.ThreadTurnsListParams{Ref: "local:stale-positive", ThreadWindowParams: appwire.ThreadWindowParams{TurnWindow: &appwire.ThreadTurnWindow{Latest: 1}}},
+		Turns: &appwire.ThreadTurnsListParams{Ref: "local:stale-positive", TurnWindow: &appwire.ThreadTurnWindow{Latest: 1}},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -436,7 +430,7 @@ func TestSessionOperationsKeepsWindowFailureWhenFreshProbeStillAdvertisesSupport
 	operations := &sessionOperations{cfg: cfg, sources: sources, relays: newHubRelay(server, cfg, sources), server: server}
 
 	_, err := operations.Invoke(t.Context(), appwire.ManagerView{Ref: "local:manager", Manager: true}, appwire.SessionOperationRequest{
-		Turns: &appwire.ThreadTurnsListParams{Ref: "local:window-failure", ThreadWindowParams: appwire.ThreadWindowParams{TurnWindow: &appwire.ThreadTurnWindow{Latest: 1}}},
+		Turns: &appwire.ThreadTurnsListParams{Ref: "local:window-failure", TurnWindow: &appwire.ThreadTurnWindow{Latest: 1}},
 	})
 	wire, ok := errors.AsType[appwire.WireError](err)
 	if !ok {
@@ -493,7 +487,7 @@ func TestSessionOperationsFetchesHubCompatibilityItemFromNewestLegacyPage(t *tes
 
 	windowResponse, err := operations.Invoke(t.Context(), appwire.ManagerView{Ref: "local:manager", Manager: true}, appwire.SessionOperationRequest{
 		Turns: &appwire.ThreadTurnsListParams{
-			Ref: "local:compat-fetch", ThreadWindowParams: appwire.ThreadWindowParams{TurnWindow: &appwire.ThreadTurnWindow{Latest: 1}},
+			Ref: "local:compat-fetch", TurnWindow: &appwire.ThreadTurnWindow{Latest: 1},
 		},
 	})
 	if err != nil {
@@ -793,9 +787,8 @@ func TestSessionOperationsFetchesTranslatedRemoteItem(t *testing.T) {
 	caller := appwire.ManagerView{Ref: "local:manager", Manager: true}
 
 	window, err := operations.Invoke(t.Context(), caller, appwire.SessionOperationRequest{Turns: &appwire.ThreadTurnsListParams{
-		Ref: "host-b:remote", ThreadWindowParams: appwire.ThreadWindowParams{
-			TurnWindow: &appwire.ThreadTurnWindow{Turn: "turn-remote"}, ItemTypes: []string{"commandExecution"}, PreviewBytes: 64,
-		},
+		Ref:        "host-b:remote",
+		TurnWindow: &appwire.ThreadTurnWindow{Turn: "turn-remote"}, ItemTypes: []string{"commandExecution"}, PreviewBytes: 64,
 	}})
 	if err != nil {
 		t.Fatal(err)
@@ -874,9 +867,8 @@ func TestSessionOperationsReportsRemoteItemLostBeforeFetch(t *testing.T) {
 	caller := appwire.ManagerView{Ref: "local:manager", Manager: true}
 
 	window, err := operations.Invoke(t.Context(), caller, appwire.SessionOperationRequest{Turns: &appwire.ThreadTurnsListParams{
-		Ref: "host-b:remote", ThreadWindowParams: appwire.ThreadWindowParams{
-			TurnWindow: &appwire.ThreadTurnWindow{Turn: "turn-remote"}, ItemTypes: []string{"commandExecution"}, PreviewBytes: 8,
-		},
+		Ref:        "host-b:remote",
+		TurnWindow: &appwire.ThreadTurnWindow{Turn: "turn-remote"}, ItemTypes: []string{"commandExecution"}, PreviewBytes: 8,
 	}})
 	if err != nil {
 		t.Fatal(err)
@@ -975,11 +967,9 @@ func TestSessionOperationsTurnsPacksWindowByExactType(t *testing.T) {
 	operations := &sessionOperations{cfg: cfg, sources: sources, relays: newHubRelay(server, cfg, sources), server: server}
 
 	page, err := operations.turns(t.Context(), appwire.ThreadTurnsListParams{
-		Ref: "local:windowed",
-		ThreadWindowParams: appwire.ThreadWindowParams{
-			TurnWindow: &appwire.ThreadTurnWindow{Latest: 1},
-			ItemTypes:  []string{"messages"},
-		},
+		Ref:        "local:windowed",
+		TurnWindow: &appwire.ThreadTurnWindow{Latest: 1},
+		ItemTypes:  []string{"messages"},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -1041,7 +1031,7 @@ func TestSessionOperationsTurnsContinuesInsideWindowedTurn(t *testing.T) {
 
 	params := appwire.ThreadTurnsListParams{
 		Ref: "local:windowed", ItemLimit: 10,
-		ThreadWindowParams: appwire.ThreadWindowParams{TurnWindow: &appwire.ThreadTurnWindow{Turn: "turn_1"}, ItemTypes: []string{"messages"}},
+		TurnWindow: &appwire.ThreadTurnWindow{Turn: "turn_1"}, ItemTypes: []string{"messages"},
 	}
 	var got []string
 	for {

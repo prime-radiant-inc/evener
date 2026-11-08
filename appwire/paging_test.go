@@ -69,7 +69,7 @@ func TestThreadReadFetchModeIsExclusive(t *testing.T) {
 		{ThreadID: "thread", FetchCursor: "opaque", ItemLimit: 1},
 		{ThreadID: "thread", FetchCursor: "opaque", Subscribe: true},
 		{ThreadID: "thread", FetchCursor: "opaque", TurnWindow: &ThreadTurnWindow{Latest: 1}},
-		{ThreadID: "thread", FetchCursor: "opaque", ThreadContentParams: ThreadContentParams{IncludeThinking: &includeThinking}},
+		{ThreadID: "thread", FetchCursor: "opaque", IncludeThinking: &includeThinking},
 	}
 	for i, params := range invalid {
 		if err := ValidateThreadReadParams(params); err == nil {

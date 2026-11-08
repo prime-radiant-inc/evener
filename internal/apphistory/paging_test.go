@@ -176,10 +176,8 @@ func TestWindowedHistoryViewFencesHeldSnapshot(t *testing.T) {
 	f := fixtureHistory()
 	p := appwire.ThreadReadParams{
 		Ref: "local:thread", IncludeTurns: true, ItemLimit: 2,
-		ThreadWindowParams: appwire.ThreadWindowParams{
-			TurnWindow: &appwire.ThreadTurnWindow{Latest: 1},
-			ItemTypes:  []string{"messages"},
-		},
+		TurnWindow: &appwire.ThreadTurnWindow{Latest: 1},
+		ItemTypes:  []string{"messages"},
 	}
 	r, err := Read(t.Context(), p, f.read, f.list)
 	if err != nil {

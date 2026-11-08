@@ -253,7 +253,7 @@ func TestRemoteHubCapabilitiesMatchForwardedMethods(t *testing.T) {
 			"ReadThread": func() error {
 				_, err := source.ReadThread(ctx, appwire.ThreadReadParams{
 					Ref: "host:thread", IncludeTurns: true,
-					ThreadWindowParams: appwire.ThreadWindowParams{TurnWindow: &appwire.ThreadTurnWindow{Latest: 1}},
+					TurnWindow: &appwire.ThreadTurnWindow{Latest: 1},
 				})
 				return err
 			},

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
@@ -100,9 +101,7 @@ func TestManagerWindowedReadSchemasAcceptSelectors(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			hub := map[string]any{"ref": "local:worker", "turnWindow": tc.window}
-			for key, value := range tc.extra {
-				hub[key] = value
-			}
+			maps.Copy(hub, tc.extra)
 			args := map[string]any{"hub": hub, "intent": "contract sentinel"}
 			for name, schema := range map[string]*jsonschema.Schema{
 				"registered":           root.reg.Get("read_transcript").Schema,
@@ -149,8 +148,8 @@ func TestManagerReadContract(t *testing.T) {
 		{"job_metadata", "job_status", `{"hub":{"ref":"local:worker","jobId":"job-1"}}`, true, appwire.SessionOperationRequest{Job: &appwire.JobsGetParams{Ref: "local:worker", JobID: "job-1"}}},
 		{"history_defaults", "read_transcript", `{"hub":{"ref":"local:worker"}}`, true, appwire.SessionOperationRequest{Turns: &appwire.ThreadTurnsListParams{Ref: "local:worker"}}},
 		{"history_all_fields", "read_transcript", `{"hub":{"ref":"local:worker","cursor":"next","itemLimit":2}}`, true, appwire.SessionOperationRequest{Turns: &appwire.ThreadTurnsListParams{Ref: "local:worker", Cursor: "next", ItemLimit: 2}}},
-		{"history_windowed", "read_transcript", `{"hub":{"ref":"local:worker","turnWindow":{"latest":1},"itemTypes":["messages"]}}`, true, appwire.SessionOperationRequest{Turns: &appwire.ThreadTurnsListParams{Ref: "local:worker", ThreadWindowParams: appwire.ThreadWindowParams{TurnWindow: &appwire.ThreadTurnWindow{Latest: 1}, ItemTypes: []string{"messages"}}}}},
-		{"history_windowed_all_fields", "read_transcript", `{"hub":{"ref":"local:worker","turnWindow":{"before":{"turnId":"turn_m2","limit":3}},"itemTypes":["messages","reasoning","commandExecution"],"previewBytes":256,"messageBytes":512,"windowBudgetBytes":1024,"itemLimit":40}}`, true, appwire.SessionOperationRequest{Turns: &appwire.ThreadTurnsListParams{Ref: "local:worker", ItemLimit: 40, ThreadWindowParams: appwire.ThreadWindowParams{TurnWindow: &appwire.ThreadTurnWindow{Before: &appwire.ThreadTurnBoundary{TurnID: "turn_m2", Limit: 3}}, ItemTypes: []string{"messages", "reasoning", "commandExecution"}, PreviewBytes: 256, MessageBytes: 512, WindowBudgetBytes: 1024}}}},
+		{"history_windowed", "read_transcript", `{"hub":{"ref":"local:worker","turnWindow":{"latest":1},"itemTypes":["messages"]}}`, true, appwire.SessionOperationRequest{Turns: &appwire.ThreadTurnsListParams{Ref: "local:worker", TurnWindow: &appwire.ThreadTurnWindow{Latest: 1}, ItemTypes: []string{"messages"}}}},
+		{"history_windowed_all_fields", "read_transcript", `{"hub":{"ref":"local:worker","turnWindow":{"before":{"turnId":"turn_m2","limit":3}},"itemTypes":["messages","reasoning","commandExecution"],"previewBytes":256,"messageBytes":512,"windowBudgetBytes":1024,"itemLimit":40}}`, true, appwire.SessionOperationRequest{Turns: &appwire.ThreadTurnsListParams{Ref: "local:worker", ItemLimit: 40, TurnWindow: &appwire.ThreadTurnWindow{Before: &appwire.ThreadTurnBoundary{TurnID: "turn_m2", Limit: 3}}, ItemTypes: []string{"messages", "reasoning", "commandExecution"}, PreviewBytes: 256, MessageBytes: 512, WindowBudgetBytes: 1024}}},
 		{"history_fetch", "read_transcript", `{"hub":{"ref":"local:worker","fetchCursor":"fetch-next"}}`, true, appwire.SessionOperationRequest{Fetch: &appwire.SessionFetchRequest{Ref: "local:worker", FetchCursor: "fetch-next"}}},
 		{"history_zero_output_fields", "read_transcript", `{"hub":{"ref":"local:worker","jobId":"","maxBytes":0}}`, true, appwire.SessionOperationRequest{Turns: &appwire.ThreadTurnsListParams{Ref: "local:worker"}}},
 		{"output_defaults", "read_transcript", `{"hub":{"ref":"local:worker","jobId":"job-1"}}`, true, appwire.SessionOperationRequest{JobOutput: &appwire.JobsOutputParams{Ref: "local:worker", JobID: "job-1"}}},
