@@ -1637,6 +1637,59 @@ func communicateNudge(toolName string) string {
 		"it cannot see anything else you did. Report your results now."
 }
 
+// communicateUpdateNudge is the reminder for a subagent that sent its parent a
+// non-terminal update (end_turn=false) and then ended its turn without a
+// result. It must not repeat communicateNudge's false premise that the delegate
+// never called communicate, and it must not read as a new caller instruction to
+// report and stop: the bounded run's work is still allowed to execute, and an
+// automatic retry authorizes no new work (#3734).
+func communicateUpdateNudge(toolName string) string {
+	return "You ended your turn after sending the parent an update with " + toolName + " end_turn=false. " +
+		"The parent received that update; it is not a result. " +
+		delegateContinueAuthorized + ", then call " + toolName + " with end_turn=true and your complete findings. " +
+		"If you are genuinely blocked, report that blocker. " +
+		"This is an automatic runtime reminder, not a new instruction from the parent, and it authorizes no new work."
+}
+
+// delegateContinueAuthorized is the one statement of the reminder's authority
+// boundary, shared by both strings the delegate sees in the recovery turn.
+const delegateContinueAuthorized = "Continue the work you were already authorized to do"
+
+// delegateNudgeContinuation is the neutral input that runs after the
+// missing-report reminder is queued as a runtime steering turn. It carries no
+// new authorization: the reminder names what the run may still do.
+const delegateNudgeContinuation = delegateContinueAuthorized + ", then report with the result tool."
+
+// delegateNudgeText selects the reminder for a delegate that ended its turn
+// without a terminal result: the update-aware one when it already sent its
+// parent an end_turn=false update, else the one for a delegate that never
+// called the result tool.
+func delegateNudgeText(toolName string, updated bool) string {
+	if updated {
+		return communicateUpdateNudge(toolName)
+	}
+	return communicateNudge(toolName)
+}
+
+// deliverCommunicateNudge sends the missing-report reminder. It is queued as a
+// daemon steering turn, not as fresh user input, so the delegate's transcript
+// and request identify it as runtime-authored rather than as something its
+// caller said (#3734); the neutral continuation then starts the turn that reads
+// it. If the session refuses the steer, the reminder is delivered directly so a
+// missing report is still addressed.
+func (a *subagent) deliverCommunicateNudge(ctx context.Context, inputProvenance *provenance.Causal) (string, error) {
+	updated := a.sess.CommunicateUpdate()
+	if hook := a.sess.cfg.testOnly.subagentNudgeSelected; hook != nil {
+		hook(updated)
+	}
+	nudge := delegateNudgeText(a.sess.resultToolName(), updated)
+	accepted, err := a.sess.trySteerEnqueue(wrapHookContext(nudge), nil, nil, "", events.SteeringKindDelegateNudge)
+	if err != nil || !accepted {
+		return a.sess.processInputWithProvenance(ctx, nudge, nil, a.followUpProvenance(inputProvenance))
+	}
+	return a.sess.processInputWithProvenance(ctx, delegateNudgeContinuation, nil, a.followUpProvenance(inputProvenance))
+}
+
 func (a *subagent) run(ctx context.Context, input string, inputProvenance *provenance.Causal) {
 	kind := EntryUserInput
 	_, attentionRun := ctx.Value(delegateAttentionRunContextKey{}).(struct{})
@@ -1696,7 +1749,7 @@ func (a *subagent) run(ctx context.Context, input string, inputProvenance *prove
 			(err == nil || errors.Is(err, errBareTextWithoutResultTool) || errors.Is(err, errEmptyResponseExhausted))
 		if shouldNudge {
 			nudgeAvailable = false
-			res, err = a.sess.processInputWithProvenance(ctx, communicateNudge(a.sess.resultToolName()), nil, a.followUpProvenance(inputProvenance))
+			res, err = a.deliverCommunicateNudge(ctx, inputProvenance)
 			_, budgetExhausted = budgetExhaustionFromError(err)
 		}
 		if hookAvailable && !cancelRequested && !budgetExhausted {
@@ -1721,7 +1774,7 @@ func (a *subagent) run(ctx context.Context, input string, inputProvenance *prove
 				a.mu.Lock()
 				a.finalizing = false
 				a.mu.Unlock()
-				res, err = a.sess.processInputWithProvenance(ctx, communicateNudge(a.sess.resultToolName()), nil, a.followUpProvenance(inputProvenance))
+				res, err = a.deliverCommunicateNudge(ctx, inputProvenance)
 				a.mu.Lock()
 				cancelRequested = a.cancelRequested
 				a.mu.Unlock()

@@ -376,6 +376,10 @@ const (
 	SteeringKindNotification       = "notification"
 	SteeringKindProviderFailure    = "provider-failure"
 	SteeringKindHumanNote          = "human-note"
+	// SteeringKindDelegateNudge is a subagent's missing-result reminder. It is
+	// a runtime reminder, not the caller speaking, so it must not arrive as
+	// fresh user input (#3734).
+	SteeringKindDelegateNudge = "delegate-nudge"
 )
 
 // AllSteeringKinds is every kind a call site may emit. Task 3's coverage test
@@ -401,6 +405,7 @@ var AllSteeringKinds = []string{
 	SteeringKindNotification,
 	SteeringKindProviderFailure,
 	SteeringKindHumanNote,
+	SteeringKindDelegateNudge,
 }
 
 // SteeringInjectedData is the payload for an EventSteeringInjected event.

@@ -39,6 +39,10 @@ type testConfig struct {
 	// afterCommunicateBoundary observes the state transition at a completed
 	// communicate boundary. Nil in production.
 	afterCommunicateBoundary func(*Session)
+	// subagentNudgeSelected observes the missing-report reminder's selection
+	// before delivery: updated reports whether the delegate had sent a
+	// non-terminal update. Nil in production.
+	subagentNudgeSelected func(updated bool)
 	// beforeModelSwitchPublish observes a committed switch's publication
 	// phase at its start - after the profile swap released s.mu, before the
 	// marker record and the EventModelChanged emit. It is the window a

@@ -4410,9 +4410,12 @@ func assertSingleRecoveryNudge(t *testing.T, adapter *fakeAdapter) {
 	if len(requests) == 0 {
 		t.Fatal("provider received no requests")
 	}
-	nudge := communicateNudge("communicate")
 	last := requests[len(requests)-1]
-	if got := countMessageText(last.Messages, nudge); got != 1 {
+	// The reminder text depends on whether the delegate already sent a
+	// non-terminal update; either way exactly one reminder must land.
+	got := countMessageText(last.Messages, wrapHookContext(communicateNudge("communicate"))) +
+		countMessageText(last.Messages, wrapHookContext(communicateUpdateNudge("communicate")))
+	if got != 1 {
 		t.Fatalf("recovery nudge count in final request = %d, want exactly one: %#v", got, last.Messages)
 	}
 }
