@@ -100,6 +100,65 @@ func TestSessionOperationsTurnsPreservesWindowSelectorsOnInitialRead(t *testing.
 	}
 }
 
+func TestSessionOperationsTurnsPacksWindowByExactType(t *testing.T) {
+	daemon := appserver.NewServer(appserver.ServerConfig{ServerName: "daemon", SourceID: "local"})
+	appserver.HandleTyped(daemon.Router(), appwire.MethodThreadRead, func(_ context.Context, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
+		turnID := "turn_1"
+		items := []appwire.ThreadItem{
+			{Type: "agentMessage", ID: "message", TurnID: turnID, TranscriptKey: "message", Position: &appwire.ThreadItemPosition{Entry: 1}, Text: strings.Repeat("answer", 2_000), Version: 1},
+			{Type: "commandExecution", ID: "tool", TurnID: turnID, TranscriptKey: "tool", Position: &appwire.ThreadItemPosition{Entry: 2}, Output: strings.Repeat("tool output", 20_000), Version: 2},
+		}
+		return appwire.ThreadReadResponse{Thread: appwire.Thread{
+			ID: "windowed", SessionID: "windowed", Evener: appwire.EvenerThread{Ref: params.Ref},
+			Turns: []appwire.Turn{{ID: turnID, Status: appwire.TurnStatusCompleted, ItemsView: appwire.TurnItemsViewFull, Items: items}},
+		}}, nil
+	})
+	daemonHTTP := httptest.NewServer(http.HandlerFunc(daemon.ServeWebSocket))
+	defer daemonHTTP.Close()
+	endpoint := "ws" + strings.TrimPrefix(daemonHTTP.URL, "http")
+	source := appsource.NewLocalDaemonSourceWithEntries("local", func() []appsource.LocalDaemonEntry {
+		return []appsource.LocalDaemonEntry{{Entry: rendezvous.Entry{
+			Protocol: appwire.ProtocolVersion, Endpoint: endpoint, SourceID: "local",
+			ThreadID: "windowed", SessionID: "windowed", WorkspaceRef: "local:windowed",
+		}}}
+	}, http.DefaultClient)
+	sources := appsource.NewRegistry()
+	sources.Add(source)
+	cfg := hubcore.WebConfig{HubStateRoot: t.TempDir(), Past: hubcore.NewPastIndex("")}
+	server := appserver.NewServer(appserver.ServerConfig{ServerName: "hub", Version: "test", SourceID: "local"})
+	operations := &sessionOperations{cfg: cfg, sources: sources, relays: newHubRelay(server, cfg, sources), server: server}
+
+	page, err := operations.turns(t.Context(), appwire.ThreadTurnsListParams{
+		Ref: "local:windowed",
+		ThreadWindowParams: appwire.ThreadWindowParams{
+			TurnWindow: &appwire.ThreadTurnWindow{Latest: 1},
+			ItemTypes:  []string{"messages"},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(page.Data) != 1 {
+		t.Fatalf("turn count = %d, want 1", len(page.Data))
+	}
+	ids := make([]string, len(page.Data[0].Items))
+	for i := range page.Data[0].Items {
+		ids[i] = page.Data[0].Items[i].ID
+	}
+	if !slices.Equal(ids, []string{"message"}) {
+		t.Fatalf("packed item IDs = %v, want [message]", ids)
+	}
+	if page.Data[0].Elision == nil || page.Data[0].Elision.ExcludedByType["commandExecution"] != 1 {
+		t.Fatalf("turn elision = %+v, want one excluded commandExecution", page.Data[0].Elision)
+	}
+	if item := page.Data[0].Items[0]; !item.Truncated || item.FetchCursor == "" {
+		t.Fatalf("bounded message = %+v, want labeled truncation with fetch cursor", item)
+	}
+	if page.Window == nil || page.Window.AppliedBy != "serving-daemon" {
+		t.Fatalf("window result = %+v, want serving-daemon", page.Window)
+	}
+}
+
 func TestSessionOperationsReadPreservesHumanAndManagerSubscriptionModes(t *testing.T) {
 	daemon := appserver.NewServer(appserver.ServerConfig{ServerName: "daemon", SourceID: "local"})
 	appserver.HandleTyped(daemon.Router(), appwire.MethodThreadRead, func(ctx context.Context, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {

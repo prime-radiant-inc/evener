@@ -61,6 +61,26 @@ func TestWindowCursorRejectsDirectionConfusion(t *testing.T) {
 	}
 }
 
+func TestWindowCursorRejectsDifferentWindowView(t *testing.T) {
+	base := CursorIdentity{ThreadRef: "local:thread", Incarnation: "index-incarnation", ProjectionVersion: 2}
+	messages := appwire.ThreadWindowParams{TurnWindow: &appwire.ThreadTurnWindow{Latest: 2}, ItemTypes: []string{"messages"}}
+	reasoning := appwire.ThreadWindowParams{TurnWindow: &appwire.ThreadTurnWindow{Latest: 2}, ItemTypes: []string{"reasoning"}}
+	messagesIdentity := base
+	messagesIdentity.Incarnation = messages.ViewIncarnation(base.Incarnation, 0)
+	reasoningIdentity := base
+	reasoningIdentity.Incarnation = reasoning.ViewIncarnation(base.Incarnation, 0)
+
+	encoded, err := EncodeWindowCursor(messagesIdentity, WindowCursorDirectionBackward, appwire.ThreadItemPosition{Entry: 23, Item: 6})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := DecodeWindowCursor(encoded, reasoningIdentity, WindowCursorDirectionBackward); err == nil {
+		t.Fatal("window cursor crossed item-type views")
+	} else {
+		assertStaleCursorError(t, err)
+	}
+}
+
 func TestWindowCursorRejectsLegacyMalformedIdentityAndDirection(t *testing.T) {
 	identity := CursorIdentity{ThreadRef: "local:thread", Incarnation: "messages-view", ProjectionVersion: 2}
 	legacy, err := EncodeCursor(identity, appwire.ThreadItemPosition{Entry: 23, Item: 6})

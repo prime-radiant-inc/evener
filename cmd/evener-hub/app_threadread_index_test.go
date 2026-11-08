@@ -240,6 +240,16 @@ func TestDaemonlessThreadReadHonorsTurnWindows(t *testing.T) {
 			if !slices.Equal(got, tc.want) {
 				t.Fatalf("turn ids = %v, want %v", got, tc.want)
 			}
+			for _, turn := range response.Thread.Turns {
+				for _, item := range turn.Items {
+					if item.Type != "agentMessage" && item.Type != "userMessage" && !(item.Type == "steering" && item.Source == "user") {
+						t.Fatalf("windowed message read returned %q item", item.Type)
+					}
+				}
+			}
+			if response.Window == nil || response.Window.AppliedBy != "saved-index" {
+				t.Fatalf("window result = %+v, want saved-index", response.Window)
+			}
 		})
 	}
 

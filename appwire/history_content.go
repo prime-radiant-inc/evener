@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"slices"
 	"strconv"
+	"strings"
 )
 
 // ThreadContentParams selects transcript content for reads, backfill and the
@@ -91,6 +92,35 @@ func (p ThreadWindowParams) ViewKey(itemLimit int) string {
 	encoded, _ := json.Marshal(normalized)
 	digest := sha256.Sum256(encoded)
 	return "window1." + base64.RawURLEncoding.EncodeToString(digest[:])
+}
+
+// ViewIncarnation binds a source incarnation to the normalized window view.
+// The legacy view remains byte-for-byte unchanged.
+func (p ThreadWindowParams) ViewIncarnation(incarnation string, itemLimit int) string {
+	key := p.ViewKey(itemLimit)
+	if key == "" {
+		return incarnation
+	}
+	return key + ":" + base64.RawURLEncoding.EncodeToString([]byte(incarnation))
+}
+
+// SourceIncarnation removes this normalized window's view fence. A fence from
+// another view is refused so callers can mint a fresh latest read instead of
+// spending a held snapshot under changed parameters.
+func (p ThreadWindowParams) SourceIncarnation(incarnation string, itemLimit int) (string, bool) {
+	key := p.ViewKey(itemLimit)
+	if key == "" {
+		return incarnation, !strings.HasPrefix(incarnation, "window1.")
+	}
+	prefix := key + ":"
+	if !strings.HasPrefix(incarnation, prefix) {
+		return "", false
+	}
+	raw, err := base64.RawURLEncoding.DecodeString(strings.TrimPrefix(incarnation, prefix))
+	if err != nil || len(raw) == 0 {
+		return "", false
+	}
+	return string(raw), true
 }
 
 func (s ThreadContentSelection) Diagnostics() bool { return s&excludeDiagnostics == 0 }

@@ -120,6 +120,33 @@ func TestThreadWindowViewKeyNormalizesEquivalentRequests(t *testing.T) {
 	}
 }
 
+func TestThreadWindowViewIncarnationFencesNormalizedView(t *testing.T) {
+	base := "index-incarnation"
+	params := ThreadWindowParams{
+		TurnWindow: &ThreadTurnWindow{Since: "turn_2", Limit: 3},
+		ItemTypes:  []string{"reasoning", "messages", "reasoning"},
+	}
+	equivalent := ThreadWindowParams{
+		TurnWindow:   &ThreadTurnWindow{Since: "turn_2", Limit: 3},
+		ItemTypes:    []string{"messages", "reasoning"},
+		PreviewBytes: ThreadWindowPreviewBytesDefault,
+		MessageBytes: ThreadWindowMessageBytesDefault,
+	}
+	got := params.ViewIncarnation(base, 0)
+	if got == base || equivalent.ViewIncarnation(base, ThreadWindowItemLimitDefault) != got {
+		t.Fatalf("normalized view incarnations differ or reused base: %q", got)
+	}
+	if changed := (ThreadWindowParams{TurnWindow: &ThreadTurnWindow{Latest: 3}, ItemTypes: params.ItemTypes}).ViewIncarnation(base, 0); changed == got {
+		t.Fatalf("changed window reused incarnation %q", got)
+	}
+	if source, ok := params.SourceIncarnation(got, 0); !ok || source != base {
+		t.Fatalf("source incarnation = %q, %v, want %q, true", source, ok, base)
+	}
+	if got := (ThreadWindowParams{}).ViewIncarnation(base, 0); got != base {
+		t.Fatalf("legacy incarnation = %q, want %q", got, base)
+	}
+}
+
 func TestThreadContentToolIntentsRetainIdentityWithoutToolPayload(t *testing.T) {
 	t.Parallel()
 	no := false

@@ -293,14 +293,23 @@ func pastEntryItemReadResponse(ctx context.Context, cfg hubcore.WebConfig, param
 	if err != nil {
 		return appwire.ThreadReadResponse{}, true, err
 	}
-	packed, packErr := packThreadReadItemCandidates(page.candidateResult(), func(response appwire.ThreadReadResponse) (appwire.ThreadReadResponse, error) {
+	pack := func(candidates transcriptItemCandidateResult, enrich func(appwire.ThreadReadResponse) (appwire.ThreadReadResponse, error)) (appwire.ThreadReadResponse, error) {
+		if params.TurnWindow != nil {
+			return packThreadReadWindowItemCandidates(candidates, enrich, transcriptWindowOptionsFor(
+				candidates, params.ThreadWindowParams, itemLimit,
+				transcriptWindowAppliedBySavedIndex, appitempaging.FetchCursorOriginSavedIndex,
+			))
+		}
+		return packThreadReadItemCandidates(candidates, enrich, itemLimit)
+	}
+	packed, packErr := pack(page.candidateResult(), func(response appwire.ThreadReadResponse) (appwire.ThreadReadResponse, error) {
 		thread.Turns = response.Thread.Turns
 		thread = stampItemPageTurns(cfg, entry, thread)
 		thread = stampDerivedTotalsWith(cfg, entry, thread, page.Derived)
 		response.Thread = thread
 		response.LatestExecutionTurnID = page.LatestExecutionTurnID
 		return response, nil
-	}, itemLimit)
+	})
 	if packErr != nil {
 		return appwire.ThreadReadResponse{}, true, packErr
 	}

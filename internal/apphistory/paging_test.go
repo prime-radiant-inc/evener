@@ -171,6 +171,39 @@ func TestSelectedHistoryViewChangesFenceCursorAndHeldSnapshot(t *testing.T) {
 	}
 }
 
+func TestWindowedHistoryViewFencesHeldSnapshot(t *testing.T) {
+	t.Parallel()
+	f := fixtureHistory()
+	p := appwire.ThreadReadParams{
+		Ref: "local:thread", IncludeTurns: true, ItemLimit: 2,
+		ThreadWindowParams: appwire.ThreadWindowParams{
+			TurnWindow: &appwire.ThreadTurnWindow{Latest: 1},
+			ItemTypes:  []string{"messages"},
+		},
+	}
+	r, err := Read(t.Context(), p, f.read, f.list)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.Snapshot == nil || r.Snapshot.Incarnation == "inc" {
+		t.Fatalf("windowed snapshot = %+v, want view-fenced incarnation", r.Snapshot)
+	}
+	p.HeldSnapshot = r.Snapshot
+	if _, err := Read(t.Context(), p, f.read, f.list); err != nil {
+		t.Fatal(err)
+	}
+	if f.held == nil || f.held.Incarnation != "inc" {
+		t.Fatalf("compatible held snapshot sent as %+v, want source incarnation", f.held)
+	}
+	p.ItemTypes = []string{"reasoning"}
+	if _, err := Read(t.Context(), p, f.read, f.list); err != nil {
+		t.Fatal(err)
+	}
+	if f.held != nil {
+		t.Fatal("incompatible window held snapshot sent to source")
+	}
+}
+
 func TestSelectedHistoryDefaultAndMetadataReadsDoNoExtraPaging(t *testing.T) {
 	t.Parallel()
 	f := fixtureHistory()

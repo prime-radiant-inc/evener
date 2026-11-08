@@ -52,6 +52,38 @@ type transcriptWindowPackOptions struct {
 	MintContinuationCursor func(transcriptWindowContinuation) (string, error)
 }
 
+const (
+	transcriptWindowAppliedByServingDaemon = "serving-daemon"
+	transcriptWindowAppliedByHubCompat     = "hub-compat"
+	transcriptWindowAppliedBySavedIndex    = "saved-index"
+)
+
+func transcriptWindowOptionsFor(
+	result transcriptItemCandidateResult,
+	params appwire.ThreadWindowParams,
+	itemLimit int,
+	appliedBy string,
+	fetchOrigin appitempaging.FetchCursorOrigin,
+) transcriptWindowPackOptions {
+	identity := result.Identity
+	identity.Incarnation = params.ViewIncarnation(identity.Incarnation, itemLimit)
+	return transcriptWindowPackOptions{
+		Params: params, ItemLimit: itemLimit, AppliedBy: appliedBy,
+		MintFetchCursor: func(candidate appitempaging.TranscriptItemCandidate) (string, error) {
+			return appitempaging.EncodeFetchCursor(identity, appitempaging.FetchCursor{
+				Position: candidate.Position, ItemVersion: candidate.Item.Version, Origin: fetchOrigin,
+			})
+		},
+		MintContinuationCursor: func(continuation transcriptWindowContinuation) (string, error) {
+			direction := appitempaging.WindowCursorDirectionBackward
+			if continuation.Direction == transcriptWindowContinuationForward {
+				direction = appitempaging.WindowCursorDirectionForward
+			}
+			return appitempaging.EncodeWindowCursor(identity, direction, continuation.Position)
+		},
+	}
+}
+
 type packItemCandidatesOptions struct {
 	requestedLimit int
 	window         *transcriptWindowPackOptions

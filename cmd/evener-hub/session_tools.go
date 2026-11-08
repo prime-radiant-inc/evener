@@ -10,6 +10,7 @@ import (
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener-hub/internal/appsource"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
+	"primeradiant.com/evener/internal/appitempaging"
 	"primeradiant.com/evener/internal/appserver"
 )
 
@@ -777,14 +778,27 @@ func (o *sessionOperations) read(ctx context.Context, params appwire.ThreadReadP
 				read.finish(false)
 				return appwire.ThreadReadResponse{}, candidateErr
 			}
-			packed, packErr := packThreadReadItemCandidates(candidates, func(response appwire.ThreadReadResponse) (appwire.ThreadReadResponse, error) {
+			pack := func(candidates transcriptItemCandidateResult, enrich func(appwire.ThreadReadResponse) (appwire.ThreadReadResponse, error)) (appwire.ThreadReadResponse, error) {
+				if params.TurnWindow != nil {
+					fetchOrigin := appitempaging.FetchCursorOriginServingDaemon
+					if _, remote := source.(*appsource.RemoteHubSource); remote {
+						fetchOrigin = appitempaging.FetchCursorOriginRemoteSource
+					}
+					return packThreadReadWindowItemCandidates(candidates, enrich, transcriptWindowOptionsFor(
+						candidates, params.ThreadWindowParams, itemLimit,
+						transcriptWindowAppliedByServingDaemon, fetchOrigin,
+					))
+				}
+				return packThreadReadItemCandidates(candidates, enrich, itemLimit)
+			}
+			packed, packErr := pack(candidates, func(response appwire.ThreadReadResponse) (appwire.ThreadReadResponse, error) {
 				response.Thread = threadWithPackedTurns(resp.Thread, response.Thread.Turns)
 				// A live daemon's turns carry sha-addressed tool-result descriptors
 				// with no route on them (the daemon does not serve the bytes; this
 				// hub does), so route stamping stays inside the final packer.
 				response.Thread = enrichSourcedThreadImages(source, response.Thread)
 				return response, nil
-			}, itemLimit)
+			})
 			if packErr != nil {
 				read.finish(false)
 				return appwire.ThreadReadResponse{}, packErr

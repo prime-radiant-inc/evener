@@ -80,7 +80,7 @@ func (o *sessionOperations) turns(ctx context.Context, p appwire.ThreadTurnsList
 		if err != nil {
 			return appwire.ThreadTurnsListResponse{}, err
 		}
-		return appwire.ThreadTurnsListResponse{Data: read.Thread.Turns, NextCursor: read.OlderCursor, BootGeneration: read.BootGeneration, Epoch: read.Epoch, Snapshot: read.Snapshot, Authoritative: read.Authoritative}, nil
+		return appwire.ThreadTurnsListResponse{Data: read.Thread.Turns, NextCursor: read.OlderCursor, BootGeneration: read.BootGeneration, Epoch: read.Epoch, Snapshot: read.Snapshot, Authoritative: read.Authoritative, Window: read.Window}, nil
 	}
 	if err := appwire.ValidateThreadTurnsListParams(p); err != nil {
 		return appwire.ThreadTurnsListResponse{}, err
