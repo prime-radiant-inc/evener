@@ -398,10 +398,7 @@ export type {
 } from "./keybindingRegistry";
 export { createKeybindingsRegistry, GLOBAL_SCOPE } from "./keybindingRegistry";
 export type {
-  KeybindingDraftCheckpoint,
-  KeybindingDraftStorage,
   KeybindingsClient,
-  KeybindingsDraft,
   KeybindingsStore,
   KeybindingsStoreActions,
   KeybindingsStoreDeps,
@@ -411,11 +408,7 @@ export type {
 } from "./keybindingsStore";
 export {
   createKeybindingsStore,
-  DRAFT_RESTORE_FAILED_MESSAGE,
-  decodeKeybindingDraftFields,
-  discardStoredKeybindingDraft,
   fromWireOverrides,
-  isReadableKeybindingDraft,
   keybindingsSupport,
 } from "./keybindingsStore";
 export type {

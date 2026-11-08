@@ -3,6 +3,7 @@ import { createReadyGenerationFence } from "./readyGenerationFence";
 import {
   createSettingsHubGeneration,
   retireSettingsHubPayload,
+  retireSettingsHubPayloadCore,
   settleUnsettleableWrite,
 } from "./settingsHubGeneration";
 
@@ -31,6 +32,26 @@ function fieldsStore(initial: Fields) {
     },
   };
 }
+
+describe("retireSettingsHubPayloadCore", () => {
+  test("clears loaded/hubLoading and applies extra, leaving write flags to the caller", () => {
+    const { fence } = fenceOver();
+    const generation = fence.begin();
+    const read = fence.claimRead();
+    const store = fieldsStore({ loaded: true, saving: true, hubLoading: true, writeUncertain: true, revision: 3 });
+
+    retireSettingsHubPayloadCore(fence, store.setState, { revision: 0 });
+
+    expect(store.getState()).toMatchObject({
+      loaded: false,
+      hubLoading: false,
+      revision: 0,
+      saving: true,
+      writeUncertain: true,
+    });
+    expect(fence.readStillMine(generation, read)).toBe(false);
+  });
+});
 
 describe("retireSettingsHubPayload", () => {
   test("clears loaded/saving/hubLoading and marks writeUncertain when a write was in flight", () => {
@@ -117,7 +138,7 @@ describe("settleUnsettleableWrite", () => {
     expect(store.getState()).toMatchObject({ saving: false, writeUncertain: false });
   });
 
-  test("extra lands in the same publish, alongside the generic settle - keybindingsStore's own draftConflict", () => {
+  test("extra lands in the same publish, alongside the generic settle - a store's own conflict flag", () => {
     const { fence, drop } = fenceOver();
     const generation = fence.begin();
     const token = fence.claimWrite();

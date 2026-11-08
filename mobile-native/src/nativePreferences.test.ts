@@ -154,7 +154,7 @@ describe("NativePreferences", () => {
 				localStore.value = value;
 			},
 		};
-		const model = new NativePreferences(client as never, features, undefined, undefined, localStore as never);
+		const model = new NativePreferences(client as never, features, undefined, localStore as never);
 		await model.refresh();
 		const divergent = makeTranscriptDisplayConfig({
 			kind: "custom",
@@ -174,7 +174,7 @@ describe("NativePreferences", () => {
 
 		// A reconnect builds a new model over the same storage: the local
 		// preference is still there, and refresh does not erase it.
-		const again = new NativePreferences(client as never, features, undefined, undefined, localStore as never);
+		const again = new NativePreferences(client as never, features, undefined, localStore as never);
 		await again.refresh();
 		expect(again.getSnapshot().transcriptMobile.local?.content).toMatchObject({
 			kind: "custom",
@@ -211,7 +211,7 @@ describe("NativePreferences", () => {
 				localStore.value = value;
 			},
 		};
-		const model = new NativePreferences(client as never, features, undefined, undefined, localStore as never);
+		const model = new NativePreferences(client as never, features, undefined, localStore as never);
 		await model.refresh();
 		expect(model.getSnapshot().transcriptMobile.local?.content).toMatchObject({ thinkingOpenByDefault: true });
 
@@ -221,45 +221,6 @@ describe("NativePreferences", () => {
 
 		expect(model.getSnapshot().transcriptMobile.local).toBeNull();
 		expect(localStore.value).toBeNull();
-	});
-
-	it("uses the confirmed revision and retains the draft after an uncertain write", async () => {
-		const client = fakeClient();
-		client.handlers.set("evener/settings/keybindings/get", () => keybindings);
-		client.handlers.set("evener/settings/transcriptDisplay/get", () => transcript);
-		client.handlers.set("evener/settings/keybindings/patch", () => {
-			throw new Error("connection lost after dispatch");
-		});
-		const model = new NativePreferences(client, features);
-		await model.refresh();
-		const rules = [{ action: "composer.focus", chord: "Meta+P" }];
-		await expect(model.saveKeybindings(rules)).rejects.toThrow();
-		expect(client.requests.at(-1)).toEqual({
-			method: "evener/settings/keybindings/patch",
-			params: { expectedRevision: 3, config: { version: 1, rules } },
-		});
-		expect(model.getSnapshot().keybindings.draft?.rules).toEqual(rules);
-		expect(model.getSnapshot().keybindings.writeUncertain).toBe(true);
-		await model.refresh();
-		expect(model.getSnapshot().keybindings.writeUncertain).toBe(false);
-		expect(client.requests.filter((request) => request.method === "evener/settings/keybindings/patch")).toHaveLength(1);
-	});
-
-	it("projects the keybindings draft without the store's internal generation stamp", async () => {
-		const client = fakeClient();
-		client.handlers.set("evener/settings/keybindings/get", () => keybindings);
-		client.handlers.set("evener/settings/transcriptDisplay/get", () => transcript);
-		const model = new NativePreferences(client, features);
-		await model.refresh();
-		const rules = [{ action: "composer.focus", chord: "Meta+P" }];
-		await model.editKeybindings(rules);
-		const draft = model.getSnapshot().keybindings.draft;
-		expect(draft).toMatchObject({ version: 1, revision: 3, rules });
-		// The store's own KeybindingsDraft carries a `generation` stamp
-		// (staleness bookkeeping - see readyGenerationFence); the projected
-		// PreferenceState<ConfirmedKeybindings> type has no such field, and
-		// the projection must not leak it through structurally.
-		expect(draft).not.toHaveProperty("generation");
 	});
 
 	it("ignores stale reads and notifications after disposal", async () => {
@@ -284,35 +245,103 @@ describe("NativePreferences", () => {
 		expect(model.getSnapshot().keybindings.confirmed).toBeNull();
 	});
 
-	it("preserves the draft when a newer notification arrives during a pending save", async () => {
+	it("applies a host edit through the one PATCH path with no draft or save step", async () => {
 		const client = fakeClient();
 		client.handlers.set("evener/settings/keybindings/get", () => keybindings);
-		let resolve!: (value: KeybindingsOverrides) => void;
-		client.handlers.set(
-			"evener/settings/keybindings/patch",
-			() =>
-				new Promise<KeybindingsOverrides>((done) => {
-					resolve = done;
-				}),
+		const rules = [{ action: "composer.focus", chord: "Meta+P" }];
+		client.handlers.set("evener/settings/keybindings/patch", () => ({ version: 1, revision: 4, rules }));
+		const model = new NativePreferences(client, features);
+		await model.refresh();
+		// The projection is the store's confirmed state and nothing else: no
+		// draft, no save flag, no write-uncertain flag for a second step.
+		expect(Object.keys(model.getSnapshot().keybindings).sort()).toEqual([
+			"confirmed",
+			"conflict",
+			"error",
+			"hubError",
+			"loadError",
+			"loading",
+			"support",
+		]);
+
+		await model.editKeybinding("composer.focus", "Meta+P");
+
+		expect(client.requests.filter((request) => request.method.startsWith("evener/settings/keybindings/"))).toEqual([
+			{ method: "evener/settings/keybindings/get", params: {} },
+			{ method: "evener/settings/keybindings/patch", params: { expectedRevision: 3, config: { version: 1, rules } } },
+		]);
+		expect(model.getSnapshot().keybindings).toEqual({
+			support: "supported",
+			loading: false,
+			confirmed: { version: 1, revision: 4, rules },
+			error: null,
+			conflict: false,
+			hubError: null,
+			loadError: null,
+		});
+		expect("saveKeybindings" in model).toBe(false);
+		expect("discardKeybindingsDraft" in model).toBe(false);
+		expect("rebaseKeybindingsDraft" in model).toBe(false);
+	});
+
+	it("surfaces a failed edit on the one path without holding a draft", async () => {
+		const client = fakeClient();
+		client.handlers.set("evener/settings/keybindings/get", () => keybindings);
+		client.handlers.set("evener/settings/keybindings/patch", () => {
+			throw new WireError("hub request failed", -32000);
+		});
+		const model = new NativePreferences(client, features);
+		await model.refresh();
+
+		await expect(model.editKeybinding("composer.focus", "Meta+P")).rejects.toThrow();
+
+		expect(model.getSnapshot().keybindings).toMatchObject({
+			confirmed: keybindings,
+			hubError: "hub request failed",
+			loadError: null,
+			error: "The hub request could not be confirmed.",
+		});
+		expect(model.getSnapshot().keybindings).not.toHaveProperty("draft");
+		expect(client.requests.filter((request) => request.method === "evener/settings/keybindings/patch")).toHaveLength(1);
+	});
+
+	it("composes a queued edit from the acknowledged rules instead of a stale snapshot", async () => {
+		const client = fakeClient();
+		client.handlers.set("evener/settings/keybindings/get", () => keybindings);
+		const first = deferred<unknown>();
+		let calls = 0;
+		client.handlers.set("evener/settings/keybindings/patch", () =>
+			++calls === 1
+				? first.promise
+				: {
+						version: 1,
+						revision: 5,
+						rules: [
+							{ action: "palette.open", chord: "Meta+P" },
+							{ action: "rail.toggle", chord: "Meta+R" },
+						],
+					},
 		);
 		const model = new NativePreferences(client, features);
 		await model.refresh();
-		const rules = [{ action: "composer.focus", chord: "Meta+P" }];
-		const save = model.saveKeybindings(rules);
+		const one = model.editKeybinding("palette.open", "Meta+P");
 		await Promise.resolve();
-		client.emit({
-			method: "evener/settings/keybindings/changed",
-			params: { ...keybindings, revision: 4, rules: [] },
-		});
-		expect(model.getSnapshot().keybindings.draft?.rules).toEqual(rules);
-		expect(model.getSnapshot().keybindings.confirmed?.revision).toBe(4);
-		resolve({ ...keybindings, revision: 5, rules });
-		await save;
-		expect(model.getSnapshot().keybindings).toMatchObject({
-			saving: false,
-			writeUncertain: false,
-			draft: null,
-			confirmed: { revision: 5, rules },
+		// The second edit is issued while the first PATCH is in flight: the
+		// store must compose it from the first edit's acknowledged rules, not
+		// from the snapshot the screen saw when it pressed.
+		const two = model.editKeybinding("rail.toggle", "Meta+R");
+		first.resolve({ version: 1, revision: 4, rules: [{ action: "palette.open", chord: "Meta+P" }] });
+		await one;
+		await two;
+
+		const patches = client.requests.filter((request) => request.method === "evener/settings/keybindings/patch");
+		expect(patches[1]?.params).toMatchObject({
+			config: {
+				rules: [
+					{ action: "palette.open", chord: "Meta+P" },
+					{ action: "rail.toggle", chord: "Meta+R" },
+				],
+			},
 		});
 	});
 });
@@ -326,88 +355,153 @@ function deferred<T>() {
 	});
 	return { promise, resolve };
 }
-function setupDomain(domain: "keybindings" | "transcript") {
+
+function setupTranscriptDomain() {
 	const client = fakeClient();
 	client.handlers.set("evener/settings/keybindings/get", () => keybindings);
 	client.handlers.set("evener/settings/transcriptDisplay/get", () => transcript);
 	const model = new NativePreferences(client, features);
-	const isKeys = domain === "keybindings";
-	const get = isKeys ? "evener/settings/keybindings/get" : "evener/settings/transcriptDisplay/get";
-	const patch = isKeys ? "evener/settings/keybindings/patch" : "evener/settings/transcriptDisplay/patch";
-	const old = isKeys ? keybindings : transcript;
-	const result = isKeys
-		? { ...keybindings, revision: 4, rules: [] }
-		: { layout: "mobile" as const, revision: 5, config: toWireConfig(config) };
-	const snapshot = () => (isKeys ? model.getSnapshot().keybindings : model.getSnapshot().transcriptMobile);
-	const save = () => (isKeys ? model.saveKeybindings([]) : model.saveTranscript(config));
+	const get = "evener/settings/transcriptDisplay/get";
+	const patch = "evener/settings/transcriptDisplay/patch";
+	const result = { layout: "mobile" as const, revision: 5, config: toWireConfig(config) };
+	const snapshot = () => model.getSnapshot().transcriptMobile;
 	client.handlers.set(patch, () => result);
-	return { client, model, get, patch, old, result, snapshot, save };
+	return { client, model, get, patch, old: transcript, result, snapshot, save: () => model.saveTranscript(config) };
 }
-for (const domain of ["keybindings", "transcript"] as const) {
-	it(`${domain}: an older GET cannot replace an acknowledged write`, async () => {
-		const f = setupDomain(domain);
-		await f.model.refresh();
-		const held = deferred<unknown>();
-		f.client.handlers.set(f.get, () => held.promise);
-		const read = f.model.refresh();
-		await f.save();
-		held.resolve(f.old);
-		await read;
-		expect(f.snapshot().confirmed?.revision).toBe(f.result.revision);
-		expect(f.snapshot().loading).toBe(false);
+
+it("transcript: an older GET cannot replace an acknowledged write", async () => {
+	const f = setupTranscriptDomain();
+	await f.model.refresh();
+	const held = deferred<unknown>();
+	f.client.handlers.set(f.get, () => held.promise);
+	const read = f.model.refresh();
+	await f.save();
+	held.resolve(f.old);
+	await read;
+	expect(f.snapshot().confirmed?.revision).toBe(f.result.revision);
+	expect(f.snapshot().loading).toBe(false);
+});
+
+it("transcript: refresh during a pending write preserves its draft and settles the reply", async () => {
+	const f = setupTranscriptDomain();
+	await f.model.refresh();
+	const held = deferred<unknown>();
+	f.client.handlers.set(f.patch, () => held.promise);
+	const save = f.save();
+	await f.model.refresh();
+	expect(f.snapshot().saving).toBe(true);
+	expect(f.snapshot().draft).not.toBeNull();
+	held.resolve(f.result);
+	await save;
+	expect(f.snapshot().saving).toBe(false);
+	expect(f.snapshot().confirmed?.revision).toBe(f.result.revision);
+});
+
+it("transcript: refuses duplicate, uncertain and disposed writes", async () => {
+	const f = setupTranscriptDomain();
+	await f.model.refresh();
+	const held = deferred<unknown>();
+	f.client.handlers.set(f.patch, () => held.promise);
+	const first = f.save();
+	await expect(f.save()).rejects.toThrow();
+	held.resolve(f.result);
+	await first;
+	f.client.handlers.set(f.patch, () => {
+		throw new Error("lost reply");
 	});
-	it(`${domain}: refresh during a pending write preserves its draft and settles the reply`, async () => {
-		const f = setupDomain(domain);
-		await f.model.refresh();
-		const held = deferred<unknown>();
-		f.client.handlers.set(f.patch, () => held.promise);
-		const save = f.save();
-		await f.model.refresh();
-		expect(f.snapshot().saving).toBe(true);
-		expect(f.snapshot().draft).not.toBeNull();
-		held.resolve(f.result);
-		await save;
-		expect(f.snapshot().saving).toBe(false);
-		expect(f.snapshot().confirmed?.revision).toBe(f.result.revision);
+	await expect(f.save()).rejects.toThrow();
+	await expect(f.save()).rejects.toThrow();
+	expect(f.client.requests.filter((x) => x.method === f.patch)).toHaveLength(2);
+	f.model.dispose();
+	await expect(f.save()).rejects.toThrow();
+	expect(f.client.requests.filter((x) => x.method === f.patch)).toHaveLength(2);
+});
+
+it("transcript: late hub A events cannot alter hub B", async () => {
+	const a = setupTranscriptDomain();
+	const b = setupTranscriptDomain();
+	const held = deferred<unknown>();
+	a.client.handlers.set(a.get, () => held.promise);
+	const read = a.model.refresh();
+	a.model.dispose();
+	await b.model.refresh();
+	const before = b.model.getSnapshot();
+	a.client.emit({
+		method: "evener/settings/keybindings/changed",
+		params: { ...keybindings, revision: 99 },
 	});
-	it(`${domain}: refuses duplicate, uncertain and disposed writes`, async () => {
-		const f = setupDomain(domain);
-		await f.model.refresh();
-		const held = deferred<unknown>();
-		f.client.handlers.set(f.patch, () => held.promise);
-		const first = f.save();
-		await expect(f.save()).rejects.toThrow();
-		held.resolve(f.result);
-		await first;
-		f.client.handlers.set(f.patch, () => {
-			throw new Error("lost reply");
-		});
-		await expect(f.save()).rejects.toThrow();
-		await expect(f.save()).rejects.toThrow();
-		expect(f.client.requests.filter((x) => x.method === f.patch)).toHaveLength(2);
-		f.model.dispose();
-		await expect(f.save()).rejects.toThrow();
-		expect(f.client.requests.filter((x) => x.method === f.patch)).toHaveLength(2);
-	});
-	it(`${domain}: late hub A events cannot alter hub B`, async () => {
-		const a = setupDomain(domain);
-		const b = setupDomain(domain);
-		const held = deferred<unknown>();
-		a.client.handlers.set(a.get, () => held.promise);
-		const read = a.model.refresh();
-		a.model.dispose();
-		await b.model.refresh();
-		const before = b.model.getSnapshot();
-		a.client.emit({
-			method: "evener/settings/keybindings/changed",
-			params: { ...keybindings, revision: 99 },
-		});
-		held.resolve(a.old);
-		await read;
-		expect(b.model.getSnapshot()).toBe(before);
-		expect(b.client.requests.filter((x) => x.method === b.patch)).toHaveLength(0);
-	});
+	held.resolve(a.old);
+	await read;
+	expect(b.model.getSnapshot()).toBe(before);
+	expect(b.client.requests.filter((x) => x.method === b.patch)).toHaveLength(0);
+});
+
+function setupKeybindingDomain() {
+	const client = fakeClient();
+	client.handlers.set("evener/settings/keybindings/get", () => keybindings);
+	client.handlers.set("evener/settings/transcriptDisplay/get", () => transcript);
+	const model = new NativePreferences(client, features);
+	const result = { ...keybindings, revision: 4, rules: [] };
+	client.handlers.set("evener/settings/keybindings/patch", () => result);
+	return { client, model, result, snapshot: () => model.getSnapshot().keybindings };
 }
+
+it("keybindings: an older GET cannot replace an acknowledged edit", async () => {
+	const f = setupKeybindingDomain();
+	await f.model.refresh();
+	const edit = f.model.editKeybinding("composer.focus", "Meta+P");
+	await Promise.resolve();
+	const held = deferred<unknown>();
+	f.client.handlers.set("evener/settings/keybindings/get", () => held.promise);
+	const read = f.model.refresh();
+	await edit;
+	held.resolve(keybindings);
+	await read;
+	expect(f.snapshot().confirmed?.revision).toBe(f.result.revision);
+	expect(f.snapshot().loading).toBe(false);
+});
+
+it("keybindings: a refresh during a pending edit settles on the acknowledged revision", async () => {
+	const f = setupKeybindingDomain();
+	await f.model.refresh();
+	const held = deferred<unknown>();
+	f.client.handlers.set("evener/settings/keybindings/patch", () => held.promise);
+	const edit = f.model.editKeybinding("composer.focus", "Meta+P");
+	await Promise.resolve();
+	expect(f.client.requests.filter((x) => x.method === "evener/settings/keybindings/patch")).toHaveLength(1);
+	await f.model.refresh();
+	held.resolve(f.result);
+	await edit;
+	expect(f.snapshot().loading).toBe(false);
+	expect(f.snapshot().confirmed?.revision).toBe(f.result.revision);
+});
+
+it("keybindings: a disposed model refuses further edits", async () => {
+	const f = setupKeybindingDomain();
+	await f.model.refresh();
+	f.model.dispose();
+	await expect(f.model.editKeybinding("composer.focus", "Meta+P")).rejects.toThrow();
+	expect(f.client.requests.filter((x) => x.method === "evener/settings/keybindings/patch")).toHaveLength(0);
+});
+
+it("keybindings: late hub A events cannot alter hub B", async () => {
+	const a = setupKeybindingDomain();
+	const b = setupKeybindingDomain();
+	const held = deferred<unknown>();
+	a.client.handlers.set("evener/settings/keybindings/get", () => held.promise);
+	const read = a.model.refresh();
+	a.model.dispose();
+	await b.model.refresh();
+	const before = b.model.getSnapshot();
+	a.client.emit({
+		method: "evener/settings/keybindings/changed",
+		params: { ...keybindings, revision: 99 },
+	});
+	held.resolve(keybindings);
+	await read;
+	expect(b.model.getSnapshot()).toBe(before);
+	expect(b.client.requests.filter((x) => x.method === "evener/settings/keybindings/patch")).toHaveLength(0);
+});
 
 it("does not overwrite the fallback rules when hub settings failed to load", async () => {
 	const client = fakeClient();
@@ -420,9 +514,8 @@ it("does not overwrite the fallback rules when hub settings failed to load", asy
 		transcriptDisplaySettings: false,
 	});
 	await model.refresh();
-	await expect(model.saveKeybindings([])).rejects.toThrow();
+	await expect(model.editKeybinding("composer.focus", "Meta+P")).rejects.toThrow();
 	expect(model.getSnapshot().keybindings).toMatchObject({
-		draftError: null,
 		hubError: "unreadable settings",
 		loadError: "unreadable settings",
 		error: "The hub could not load its saved shortcuts. Repair the hub settings file before editing.",
@@ -431,44 +524,8 @@ it("does not overwrite the fallback rules when hub settings failed to load", asy
 	expect(model.getSnapshot().keybindings.confirmed?.rules).toEqual(keybindings.rules);
 });
 
-it("preserves the hub diagnostic when draft recovery clears its own error", async () => {
-	const client = fakeClient();
-	client.handlers.set("evener/settings/keybindings/get", () => {
-		throw new WireError("hub request failed", -32000);
-	});
-	const backend = fakeDraftBackend();
-	backend.store.set("evener.native.keybinding-draft.hub", "{not json");
-	const model = new NativePreferences(
-		client,
-		{ keybindingsSettings: true, transcriptDisplaySettings: false },
-		undefined,
-		nativeKeybindingDrafts("hub", backend),
-	);
-	await model.refresh();
-	expect(model.getSnapshot().keybindings).toMatchObject({
-		draftError: expect.any(String),
-		hubError: "hub request failed",
-		loadError: null,
-		error: expect.any(String),
-	});
-
-	await model.discardKeybindingsDraft();
-	expect(model.getSnapshot().keybindings).toMatchObject({
-		draft: null,
-		draftError: null,
-		hubError: "hub request failed",
-		loadError: null,
-		error: "The hub request could not be confirmed.",
-	});
-	model.dispose();
-});
-
 import { fakeDraftBackend } from "./draftBackend.testkit";
-import {
-	nativeKeybindingDrafts,
-	type NativePreferenceDraftBackend,
-	nativeTranscriptDrafts,
-} from "./nativePreferenceDrafts";
+import { type NativePreferenceDraftBackend, nativeTranscriptDrafts } from "./nativePreferenceDrafts";
 
 function draftStorage() {
 	const backend = fakeDraftBackend();

@@ -67,9 +67,6 @@ const harness = vi.hoisted(() => ({
 		snapshot: null,
 		config: null,
 		connected: false,
-		offlineDraftUnreadable: false,
-		offlineStorageUnavailable: false,
-		discardUnreadableKeybindingsDraft: () => null,
 	},
 }));
 

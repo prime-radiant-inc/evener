@@ -1,11 +1,11 @@
 // The ready-generation wiring and payload-retirement primitives every
-// settings-hub store built on a ReadyGenerationFence shares. Verified
-// against both real implementations: keybindingsStore.ts here, and PR
-// #1549's transcriptDisplayStore.ts as the design oracle for a second store
-// not yet built. beginReadyGeneration/endReadyGeneration's fence-begin/end
-// plus notification wire/unwire is byte-identical between the two, and so
-// is the in-flight-flags half of retirePayload (loaded/saving/hubLoading/
-// writeUncertain) and of a lost-hub write's own settle.
+// settings-hub store built on a ReadyGenerationFence shares.
+// beginReadyGeneration/endReadyGeneration's fence-begin/end plus notification
+// wire/unwire is byte-identical between keybindingsStore.ts and
+// transcriptDisplayStore.ts. The latter also carries the in-flight write flags
+// (saving/writeUncertain), so it uses the full retireSettingsHubPayload below;
+// a store without them (the keybindings store, whose one write path publishes
+// no draft state) uses retireSettingsHubPayloadCore.
 //
 // What does NOT generalize stays store-owned: setSupport (the oracle's
 // unsupported branch runs a keybinding reconciler's un-apply/rollback that a
@@ -25,6 +25,23 @@ export interface SettingsHubIdleFields {
   writeUncertain: boolean;
 }
 
+/** The half of payload retirement every settings-hub store shares: supersede
+ * every reply still in flight and stop presenting the payload as current.
+ * `extra` is the caller's own payload-shaped reset (a revision back to 0, a
+ * per-layout map cleared) in the SAME publish. */
+export function retireSettingsHubPayloadCore<Fields extends { loaded: boolean; hubLoading: boolean }>(
+  fence: ReadyGenerationFence,
+  setState: (partial: Partial<Fields>) => void,
+  extra: Partial<Fields> = {},
+): void {
+  fence.supersede();
+  setState({
+    loaded: false,
+    hubLoading: false,
+    ...extra,
+  } as Partial<Fields>);
+}
+
 /** The confirmed payload can no longer be acted on (the generation ended,
  * support dropped, the hub was replaced): it stops presenting as current,
  * every reply still in flight is superseded so it lands nothing, and the
@@ -39,12 +56,9 @@ export function retireSettingsHubPayload<Fields extends SettingsHubIdleFields>(
   setState: (partial: Partial<Fields>) => void,
   extra: Partial<Fields> = {},
 ): void {
-  fence.supersede();
   const state = getState();
-  setState({
-    loaded: false,
+  retireSettingsHubPayloadCore(fence, setState, {
     saving: false,
-    hubLoading: false,
     writeUncertain: state.writeUncertain || state.saving,
     ...extra,
   } as Partial<Fields>);
@@ -62,10 +76,10 @@ export interface SettingsHubWriteFields {
  * reply (a later write, or a payload retirement, took over) does nothing
  * here - its successor owns the flags. `stillClaimed` is the caller's own
  * check (a store-wide write token, or one per row) - the fence knows only
- * whether the generation itself is still current. `extra` is the caller's
- * own payload-shaped addition (keybindingsStore.ts's own draftConflict, a
- * field this generic Fields type does not carry) in the SAME publish, the
- * same pattern retireSettingsHubPayload above takes. */
+ * whether the generation itself is still current. `extra` is the caller's own
+ * payload-shaped addition (a store's own conflict flag, a field this generic
+ * Fields type does not carry) in the SAME publish, the same pattern
+ * retireSettingsHubPayload above takes. */
 export function settleUnsettleableWrite<Fields extends SettingsHubWriteFields>(
   fence: ReadyGenerationFence,
   generation: number,

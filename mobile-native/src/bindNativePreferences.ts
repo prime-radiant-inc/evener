@@ -1,9 +1,4 @@
-import type {
-	AppwireClient,
-	InitializeResponse,
-	KeybindingDraftStorage,
-	TranscriptDraftStorage,
-} from "@evener/appwire-client";
+import type { AppwireClient, InitializeResponse, TranscriptDraftStorage } from "@evener/appwire-client";
 import { NativePreferences } from "./nativePreferences";
 import type { NativeTranscriptLocalStorage } from "./nativePreferenceDrafts";
 
@@ -14,7 +9,6 @@ export function bindNativePreferences(
 	client: PreferencesClient,
 	storage: TranscriptDraftStorage,
 	publish: (model: NativePreferences) => void,
-	keybindingStorage?: KeybindingDraftStorage,
 	transcriptLocalStorage?: NativeTranscriptLocalStorage,
 ): () => void {
 	let disposed = false;
@@ -22,7 +16,7 @@ export function bindNativePreferences(
 	const ready = (hello: InitializeResponse) => {
 		if (disposed) return;
 		model?.dispose();
-		model = new NativePreferences(client, hello.features, storage, keybindingStorage, transcriptLocalStorage);
+		model = new NativePreferences(client, hello.features, storage, transcriptLocalStorage);
 		publish(model);
 		void model.refresh();
 	};
