@@ -3,9 +3,9 @@
 // beginReadyGeneration/endReadyGeneration's fence-begin/end plus notification
 // wire/unwire is byte-identical between keybindingsStore.ts and
 // transcriptDisplayStore.ts. The latter also carries the in-flight write flags
-// (saving/writeUncertain), so it uses the full retireSettingsHubPayload below;
-// a store without them (the keybindings store, whose one write path publishes
-// no draft state) uses retireSettingsHubPayloadCore.
+// (saving/writeUncertain), so it keeps retireSettingsHubPayload's original
+// contract below; a store without them (the keybindings store, whose one write
+// path publishes no draft state) uses retireSettingsHubPayloadCore.
 //
 // What does NOT generalize stays store-owned: setSupport (the oracle's
 // unsupported branch runs a keybinding reconciler's un-apply/rollback that a
@@ -56,9 +56,12 @@ export function retireSettingsHubPayload<Fields extends SettingsHubIdleFields>(
   setState: (partial: Partial<Fields>) => void,
   extra: Partial<Fields> = {},
 ): void {
+  fence.supersede();
   const state = getState();
-  retireSettingsHubPayloadCore(fence, setState, {
+  setState({
+    loaded: false,
     saving: false,
+    hubLoading: false,
     writeUncertain: state.writeUncertain || state.saving,
     ...extra,
   } as Partial<Fields>);
