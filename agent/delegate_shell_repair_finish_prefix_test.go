@@ -244,7 +244,7 @@ func TestDelegateStopCompletesWithUnrelatedPendingNotification(t *testing.T) {
 	if err != nil {
 		t.Fatalf("StopSubtree: %v", err)
 	}
-	for pass := 0; pass < 5; pass++ {
+	for pass := range 5 {
 		select {
 		case <-result.done:
 			return
