@@ -947,10 +947,10 @@ function NavigationRail({
     }
     // Open every newly seen fold in one pass: the store action reads the
     // latest map, so successive calls accumulate rather than clobber.
-    const pending = [...hostFoldIds].filter((id) => !handled.has(id) && expanded.get(id) !== false);
-    if (pending.length > 0) {
-      seenHostFolds.current = new Set([...handled, ...pending]);
-      for (const id of pending) setRowExpanded(id, true);
+    const pendingFolds = [...hostFoldIds].filter((id) => !handled.has(id) && expanded.get(id) !== false);
+    if (pendingFolds.length > 0) {
+      seenHostFolds.current = new Set([...handled, ...pendingFolds]);
+      for (const id of pendingFolds) setRowExpanded(id, true);
       return;
     }
     // Nothing pending: every current fold is handled, and ids that left

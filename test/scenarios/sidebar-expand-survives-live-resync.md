@@ -12,7 +12,7 @@ map, read at store construction through the `NavigationPersistence` port
 (`stores/navigation/persistence.ts`), resolved per row by `overrideLookup`
 (`railNodes.ts:106-108`) and written on every toggle by `setRowExpanded`
 (`Rail.tsx`). The refetch is
-`navigationStore.getState().loadManifest()` (`stores/navigation/store.ts:339-352`), scheduled on a 250ms debounce
+`navigationStore.getState().loadManifest()` (`stores/navigation/store.ts:622`), scheduled on a 250ms debounce
 by any of `thread/started`, `thread/closed`, `evener/attention/changed`,
 `navigation invalidation` (`navigation invalidation`, `stores/navigation/store.ts:443-450,455-467`).
 Those two live in different stores and never touch each other, which is exactly
