@@ -607,6 +607,15 @@ type ThreadWindowParams struct {
 	WindowBudgetBytes int               `json:"windowBudgetBytes,omitempty"`
 }
 
+const (
+	ThreadWindowPreviewBytesDefault = 2048
+	ThreadWindowMessageBytesDefault = 8192
+	ThreadWindowItemLimitDefault    = 10
+	ThreadWindowBudgetBytesDefault  = 192 << 10
+	ThreadWindowBudgetBytesFloor    = 16 << 10
+	ThreadWindowCursorLineLimit     = 10
+)
+
 type ThreadTurnsListParams struct {
 	ThreadContentParams
 	ThreadID  string `json:"threadId,omitempty"`

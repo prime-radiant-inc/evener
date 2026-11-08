@@ -83,6 +83,43 @@ func TestThreadContentIndependentCategories(t *testing.T) {
 	}
 }
 
+func TestThreadWindowViewKeyNormalizesEquivalentRequests(t *testing.T) {
+	base := ThreadWindowParams{
+		TurnWindow: &ThreadTurnWindow{Since: "turn_2", Limit: 3},
+		ItemTypes:  []string{"reasoning", "messages", "reasoning"},
+	}
+	equivalent := ThreadWindowParams{
+		TurnWindow:   &ThreadTurnWindow{Since: "turn_2", Limit: 3},
+		ItemTypes:    []string{"messages", "reasoning"},
+		PreviewBytes: ThreadWindowPreviewBytesDefault,
+		MessageBytes: ThreadWindowMessageBytesDefault,
+	}
+	baseKey := base.ViewKey(0)
+	if baseKey == "" || equivalent.ViewKey(ThreadWindowItemLimitDefault) != baseKey {
+		t.Fatalf("equivalent normalized window keys differ: %q / %q", baseKey, equivalent.ViewKey(ThreadWindowItemLimitDefault))
+	}
+	for name, changed := range map[string]struct {
+		params    ThreadWindowParams
+		itemLimit int
+	}{
+		"window form": {params: ThreadWindowParams{TurnWindow: &ThreadTurnWindow{Before: &ThreadTurnBoundary{TurnID: "turn_2", Limit: 3}}, ItemTypes: base.ItemTypes}},
+		"boundary":    {params: ThreadWindowParams{TurnWindow: &ThreadTurnWindow{Since: "turn_1", Limit: 3}, ItemTypes: base.ItemTypes}},
+		"types":       {params: ThreadWindowParams{TurnWindow: base.TurnWindow, ItemTypes: []string{"messages"}}},
+		"preview":     {params: ThreadWindowParams{TurnWindow: base.TurnWindow, ItemTypes: base.ItemTypes, PreviewBytes: ThreadWindowPreviewBytesDefault + 1}},
+		"message":     {params: ThreadWindowParams{TurnWindow: base.TurnWindow, ItemTypes: base.ItemTypes, MessageBytes: ThreadWindowMessageBytesDefault + 1}},
+		"item limit":  {params: base, itemLimit: ThreadWindowItemLimitDefault + 1},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if got := changed.params.ViewKey(changed.itemLimit); got == baseKey {
+				t.Fatalf("changed view reused key %q", got)
+			}
+		})
+	}
+	if got := (ThreadWindowParams{}).ViewKey(0); got != "" {
+		t.Fatalf("legacy window key = %q, want empty", got)
+	}
+}
+
 func TestThreadContentToolIntentsRetainIdentityWithoutToolPayload(t *testing.T) {
 	t.Parallel()
 	no := false

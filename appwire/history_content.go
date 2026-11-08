@@ -1,6 +1,12 @@
 package appwire
 
-import "strconv"
+import (
+	"crypto/sha256"
+	"encoding/base64"
+	"encoding/json"
+	"slices"
+	"strconv"
+)
 
 // ThreadContentParams selects transcript content for reads, backfill and the
 // subscription established by a read. Omitted fields include their category.
@@ -49,6 +55,42 @@ func (s ThreadContentSelection) Key() string {
 		return ""
 	}
 	return strconv.FormatUint(uint64(s), 16)
+}
+
+// ViewKey names the candidate-shaping parts of a windowed transcript read.
+// Budget only changes how much of that view fits in one response, so it is not
+// part of the identity. A zero window is the legacy view and keeps its empty key.
+func (p ThreadWindowParams) ViewKey(itemLimit int) string {
+	if p.TurnWindow == nil {
+		return ""
+	}
+	itemTypes := slices.Clone(p.ItemTypes)
+	slices.Sort(itemTypes)
+	itemTypes = slices.Compact(itemTypes)
+	previewBytes := p.PreviewBytes
+	if previewBytes == 0 {
+		previewBytes = ThreadWindowPreviewBytesDefault
+	}
+	messageBytes := p.MessageBytes
+	if messageBytes == 0 {
+		messageBytes = ThreadWindowMessageBytesDefault
+	}
+	if itemLimit == 0 {
+		itemLimit = ThreadWindowItemLimitDefault
+	}
+	normalized := struct {
+		Window       ThreadTurnWindow `json:"window"`
+		ItemTypes    []string         `json:"itemTypes,omitempty"`
+		Preview      int              `json:"previewBytes"`
+		Message      int              `json:"messageBytes"`
+		PerTurnItems int              `json:"itemLimit"`
+	}{
+		Window: *p.TurnWindow, ItemTypes: itemTypes,
+		Preview: previewBytes, Message: messageBytes, PerTurnItems: itemLimit,
+	}
+	encoded, _ := json.Marshal(normalized)
+	digest := sha256.Sum256(encoded)
+	return "window1." + base64.RawURLEncoding.EncodeToString(digest[:])
 }
 
 func (s ThreadContentSelection) Diagnostics() bool { return s&excludeDiagnostics == 0 }
