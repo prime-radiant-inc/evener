@@ -494,7 +494,7 @@ var (
 		Kind:    MachineMutationProjection,
 		Initial: string(MutationProjectionPending),
 		States: []LifecycleState{
-			{Name: string(MutationProjectionPending), Class: LifecycleWaiting, Summary: "accepted, not yet in the transcript projection"},
+			{Name: string(MutationProjectionPending), Class: LifecycleActive, Summary: "accepted, not yet in the transcript projection"},
 			{Name: string(MutationProjectionReflected), Class: LifecycleSettled, Summary: "visible in the transcript projection"},
 			{Name: string(MutationProjectionRemoved), Class: LifecycleEnded, Terminal: true, Summary: "removed from the transcript projection"},
 		},

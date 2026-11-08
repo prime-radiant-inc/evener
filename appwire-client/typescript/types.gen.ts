@@ -5351,7 +5351,7 @@ export const LIFECYCLE_MACHINES = {
   "mutationProjection": {
     initial: "pending",
     states: {
-      "pending": { class: "waiting", terminal: false, summary: "accepted, not yet in the transcript projection" },
+      "pending": { class: "active", terminal: false, summary: "accepted, not yet in the transcript projection" },
       "reflected": { class: "settled", terminal: false, summary: "visible in the transcript projection" },
       "removed": { class: "ended", terminal: true, summary: "removed from the transcript projection" },
     },

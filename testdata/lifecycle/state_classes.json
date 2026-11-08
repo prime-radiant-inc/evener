@@ -23,6 +23,7 @@
   {"machine": "task", "state": "cancelled", "class": "neutral", "terminal": false, "resting": false},
   {"machine": "goal", "state": "blocked", "class": "failed", "terminal": true, "resting": false},
   {"machine": "hostOperation", "state": "orphan-unverified", "class": "neutral", "terminal": false, "resting": false},
+  {"machine": "mutationProjection", "state": "pending", "class": "active", "terminal": false, "resting": false},
   {"machine": "hostOperation", "state": "complete", "class": "settled", "terminal": true, "resting": false},
   {"machine": "mutationProjection", "state": "removed", "class": "ended", "terminal": true, "resting": false}
 ]
