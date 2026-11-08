@@ -1802,6 +1802,9 @@ func registerInstanceHandlers(server *appserver.Server, instancesController *hub
 		})
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerInstanceEdit, func(_ context.Context, params appwire.InstanceEditParams) (appwire.InstanceListResponse, error) {
+		if err := refuseEditSetClearPair(params); err != nil {
+			return appwire.InstanceListResponse{}, err
+		}
 		return instanceWrite(params.OriginClientId, func() (appwire.InstanceListResponse, error) {
 			var list appwire.InstanceListResponse
 			err := instancesController.edit(params, &list)

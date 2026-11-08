@@ -1273,6 +1273,33 @@ type editRequest struct {
 	credentialHeaders map[string]string
 }
 
+// refuseEditSetClearPair refuses an evener/instance/edit request that carries
+// both a setter and its clear flag for the same field. The controller keeps
+// its long-standing clear-wins behavior for in-process callers (a stale value
+// riding beside the clear a user just chose must not block the clear), but the
+// wire contract says each pair is never both meaningful in one request: the
+// setter would be dropped silently, so a client that sends both has a bug
+// worth failing loudly (#1025).
+func refuseEditSetClearPair(params appwire.InstanceEditParams) error {
+	pairs := []struct {
+		field string
+		set   string
+		clear bool
+	}{
+		{"baseUrl", params.BaseURL, params.ClearBaseURL},
+		{"protocol", params.Protocol, params.ClearProtocol},
+		{"surface", params.Surface, params.ClearSurface},
+		{"apiKeyEnv", params.APIKeyEnv, params.ClearAPIKeyEnv},
+		{"credentialHeader", params.CredentialHeader, params.ClearCredentialHeader},
+	}
+	for _, pair := range pairs {
+		if pair.clear && strings.TrimSpace(pair.set) != "" {
+			return appwire.InvalidParams(pair.field + " and its clear flag are never both meaningful in one request")
+		}
+	}
+	return nil
+}
+
 // parseEditRequest validates the fields of params that need no registry
 // state. The refusals blame what the caller sent, so they are InvalidParams.
 func parseEditRequest(params appwire.InstanceEditParams) (editRequest, error) {
