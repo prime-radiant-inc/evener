@@ -632,7 +632,7 @@ function assertDuoCompactStates(result) {
     );
   }
   if (!focused?.editing || focused.editorMinLines !== "2lh") failures.push("focus did not engage the two-line editor");
-  if (focused && focused.cardGap !== "4px" && focused.cardPaddingBlock !== "4px 4px") {
+  if (focused && (focused.cardGap !== "4px" || focused.cardPaddingBlock !== "4px 4px")) {
     failures.push(`focused card did not restore ordinary spacing: ${focused.cardGap}/${focused.cardPaddingBlock}`);
   }
   if (draft?.editorMinLines !== "2lh" || draft.editing)
