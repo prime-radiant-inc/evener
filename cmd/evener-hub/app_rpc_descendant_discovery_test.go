@@ -37,6 +37,36 @@ type childDiscoveryProvider struct {
 	release chan struct{}
 }
 
+// childDiscoveryWait bounds each wait the real runtime must satisfy. A delivery
+// regression fails at the wait that never completed, not at the whole-suite
+// timeout, and the test context still cancels the wait first when the test ends.
+const childDiscoveryWait = 15 * time.Second
+
+func awaitChildReady(ctx context.Context, t *testing.T, ready <-chan string) string {
+	t.Helper()
+	select {
+	case childID := <-ready:
+		return childID
+	case <-ctx.Done():
+		t.Fatalf("child readiness: %v", ctx.Err())
+		return ""
+	}
+}
+
+func awaitChildDiscoveryNotice(ctx context.Context, t *testing.T, notes <-chan appwire.Notification) appwire.Notification {
+	t.Helper()
+	select {
+	case note, ok := <-notes:
+		if !ok {
+			t.Fatal("notification connection closed before the child output")
+		}
+		return note
+	case <-ctx.Done():
+		t.Fatalf("no child output notice: %v", ctx.Err())
+		return appwire.Notification{}
+	}
+}
+
 func (*childDiscoveryProvider) Name() string { return "openai" }
 func (*childDiscoveryProvider) Stream(context.Context, llm.Request) (llm.Stream, error) {
 	return nil, llm.ErrStreamUnsupported
@@ -176,7 +206,9 @@ func testHubChildDiscovery(t *testing.T, scenario string) {
 	done := make(chan error, 1)
 	go func() { _, err := sess.ProcessInput(ctx, "child-discovery-root", nil); done <- err }()
 	t.Cleanup(func() { cancel(); <-done; sess.Close() })
-	childID := <-providerScript.ready
+	readyCtx, cancelReady := context.WithTimeout(ctx, childDiscoveryWait)
+	childID := awaitChildReady(readyCtx, t, providerScript.ready)
+	cancelReady()
 	for _, row := range roster.List() {
 		if slices.Contains(row.RunningSubagentIDs, childID) {
 			t.Fatal("child already in initial roster")
@@ -285,7 +317,10 @@ func testHubChildDiscovery(t *testing.T, scenario string) {
 		t.Fatalf("discovery found=%v refreshes=%d reads=%d", found, refreshes.Load(), reads.Load())
 	}
 	close(providerScript.release)
-	for note := range client.Notifications() {
+	notesCtx, cancelNotes := context.WithTimeout(ctx, childDiscoveryWait)
+	defer cancelNotes()
+	for {
+		note := awaitChildDiscoveryNotice(notesCtx, t, client.Notifications())
 		if note.Method != appwire.NotifyHistoryUpdated {
 			continue
 		}
@@ -315,5 +350,4 @@ func testHubChildDiscovery(t *testing.T, scenario string) {
 		}
 		return
 	}
-	t.Fatal("subscription closed without the child output")
 }
