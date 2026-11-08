@@ -1,5 +1,5 @@
-// A shared in-memory NativeKeybindingDraftBackend fake for every test that
-// needs one: a Map-backed store whose reads and writes clone the stored value
+// A shared in-memory native draft backend fake for every test that needs one:
+// a Map-backed store whose reads and writes clone the stored value
 // (so a caller mutating what it read cannot corrupt the store) and whose
 // deleteIf/replaceIf compare through the shared marker-aware identity helper
 // (sameDraftIdentity) - the same comparison the real Storage-backed backend
@@ -7,9 +7,7 @@
 // matchesStoredBytes: an unreadable-record marker (StoredNullRecord,
 // UnparseableDraftBytes) matches by its own tag, never by the ordinary shape
 // its unique-symbol brand leaves in canonicalJson.
-// NativeKeybindingDraftBackend is a superset of NativePreferenceDraftBackend
-// (the transcript draft port's narrower backend shape), so this fake serves
-// both. In-repo test support, not shipped.
+// In-repo test support, not shipped.
 
 import {
 	isStoredNullRecord,
@@ -17,9 +15,9 @@ import {
 	parseDraftBytes,
 	sameDraftIdentity,
 } from "./nativePreferenceDrafts";
-import type { NativeKeybindingDraftBackend } from "./nativePreferenceDrafts";
+import type { NativePreferenceDraftBackend } from "./nativePreferenceDrafts";
 
-export interface FakeDraftBackend extends NativeKeybindingDraftBackend {
+export interface FakeDraftBackend extends NativePreferenceDraftBackend {
 	store: Map<string, unknown>;
 }
 

@@ -1,7 +1,5 @@
 import { canonicalJson, isPlainObject, normalizeConfig } from "@evener/appwire-client";
 import type {
-	KeybindingDraftCheckpoint,
-	KeybindingDraftStorage,
 	TranscriptDisplayConfigV1,
 	TranscriptDraftCheckpoint,
 	TranscriptDraftStorage,
@@ -127,27 +125,13 @@ export interface NativePreferenceDraftBackend extends NavigationActionBackend {
 	replaceIf(key: string, expected: unknown, next: unknown): boolean;
 }
 
-/** The keybindings port's own narrower view of the shared backend: its
- * checkpoint shape is known, so its compare-and-swap signatures name it.
- * Both native ports drive the shared DraftPort contract now - the transcript
- * projection settles atomically through the same store machinery - so this
- * interface only narrows the base, it does not add a method the transcript
- * port lacks. */
-export interface NativeKeybindingDraftBackend extends NativePreferenceDraftBackend {
-	/** Inserts `checkpoint` at `key` only if nothing is stored there; reports
-	 * whether it did. The atomic twin of replaceIf for a record that does not
-	 * exist yet - see DraftPort.insertIfAbsent's own comment. */
-	insertIfAbsent(key: string, checkpoint: KeybindingDraftCheckpoint): boolean;
-	replaceIf(key: string, expected: unknown, next: KeybindingDraftCheckpoint): boolean;
-}
-
-/** One native keybinding backend over any raw string storage. Keeping parsing
+/** One native draft backend over any raw string storage. Keeping parsing
  * and identity comparison here lets tests exercise the same code production
  * uses, including malformed bytes, stored JSON null, and key-order changes. */
 export function rawStringDraftBackend(
 	storage: SyncStringStorage,
 	createId: () => string,
-): NativeKeybindingDraftBackend {
+): NativePreferenceDraftBackend {
 	function matches(key: string, value: unknown): boolean {
 		return matchesStoredBytes(storage.getItemSync(key), value);
 	}
@@ -178,69 +162,6 @@ export function rawStringDraftBackend(
 			storage.setItemSync(key, JSON.stringify(next));
 			return true;
 		},
-	};
-}
-
-/** What a draft read named, once decoded: no record, a record this build can
- * read, or a record present but unreadable. Absent and unreadable used to be
- * told apart by a single boolean (readable or not), which cannot distinguish
- * "nothing is there" from "something unreadable replaced it" - the store-free
- * discard action needs that distinction (see draftUnreadableAfterDiscard). */
-export type DraftReadOutcome = "absent" | "readable" | "unreadable";
-
-export function classifyDraftRead(loaded: unknown, isReadable: (value: unknown) => boolean): DraftReadOutcome {
-	if (loaded === null || loaded === undefined) return "absent";
-	return isReadable(loaded) ? "readable" : "unreadable";
-}
-
-/** Reads a draft port ONCE and reports both its classification and the raw
- * value load() returned, so a caller that also needs to decode a readable
- * record never re-reads the port outside this same guard. Every DraftPort
- * method may throw a genuine storage failure; that says nothing about what
- * is stored, so `value` is undefined for that outcome. */
-export function readDraftOutcomeWithValue(
-	storage: Pick<KeybindingDraftStorage, "load">,
-	isReadable: (value: unknown) => boolean,
-): { outcome: DraftReadOutcome | "storageUnavailable"; value: unknown } {
-	try {
-		const value = storage.load();
-		return { outcome: classifyDraftRead(value, isReadable), value };
-	} catch {
-		return { outcome: "storageUnavailable", value: undefined };
-	}
-}
-
-/** Reads a draft port and classifies the outcome the way a cold-offline probe
- * or a store-free discard's re-read must. The value-returning helper owns the
- * try/catch so callers that need both pieces cannot accidentally read twice. */
-export function readDraftOutcome(
-	storage: Pick<KeybindingDraftStorage, "load">,
-	isReadable: (value: unknown) => boolean,
-): DraftReadOutcome | "storageUnavailable" {
-	return readDraftOutcomeWithValue(storage, isReadable).outcome;
-}
-
-/** Whether the store-free discard action should still present the record as
- * unreadable, given the CURRENT record a follow-up read just found -
- * `outcome` (discardStoredKeybindingDraft's own result) plays no part: a
- * "removed" or "absent" outcome does not mean the record is gone NOW, since
- * a concurrent writer can insert a fresh unreadable record between
- * draftCheckpointPort's own re-read and this caller's - only the follow-up
- * read's own classification of what is there right now can say that. */
-export function draftUnreadableAfterDiscard(current: DraftReadOutcome): boolean {
-	return current === "unreadable";
-}
-
-export function nativeKeybindingDrafts(hubId: string, backend: NativeKeybindingDraftBackend): KeybindingDraftStorage {
-	if (!hubId.trim()) throw new Error("A hub id is required for preference drafts.");
-	const key = `evener.native.keybinding-draft.${hubId}`;
-	return {
-		createId: () => backend.createId(),
-		load: () => backend.get(key) ?? null,
-		save: (checkpoint) => backend.set(key, checkpoint),
-		insertIfAbsent: (checkpoint) => backend.insertIfAbsent(key, checkpoint),
-		removeIf: (checkpoint) => backend.deleteIf(key, checkpoint),
-		replaceIf: (expected, next) => backend.replaceIf(key, expected, next),
 	};
 }
 
@@ -337,9 +258,7 @@ export function nativeTranscriptDrafts(hubId: string, backend: NativePreferenceD
 		// checkpoint is read as one, and a present-but-unreadable record (a
 		// stored JSON null, unparseable bytes, or a checkpoint a build before
 		// layouts did not write) is tagged by parseDraftBytes and surfaces as
-		// draftUnreadable rather than silently reading as no draft - the same
-		// contract nativeKeybindingDrafts runs, and the one discardDraft's
-		// recovery needs.
+		// draftUnreadable rather than silently reading as no draft.
 		load: () => {
 			const value = backend.get(key) ?? null;
 			const migrated = migrateLegacyTranscriptCheckpoint(value);

@@ -99,9 +99,6 @@ vi.mock("./NativePreferencesProvider", () => ({
 		snapshot: null,
 		config: displayPrefs.config,
 		connected: false,
-		offlineDraftUnreadable: false,
-		offlineStorageUnavailable: false,
-		discardUnreadableKeybindingsDraft: () => null,
 	}),
 }));
 

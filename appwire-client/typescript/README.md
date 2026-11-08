@@ -81,10 +81,11 @@ disclosure store both transcripts keep a row's open/closed choice in across a
 remount (`createDisclosureStore()`, the triple plus store-bound actions, read
 reactively through the `isDisclosureOpenIn` selector); the keybindings
 overrides store both apps' shortcut settings run on
-(`createKeybindingsStore({ client, registry?, characterKeyTriggers?, drafts? })`:
+(`createKeybindingsStore({ client, registry?, characterKeyTriggers? })`:
 one hub's `evener/settings/keybindings` get/patch/changed posture, reconciled
-into the host's registry as a delta when it has one, with a checkpointed draft
-editor over an injected storage port for a host that edits offline; the host
+into the host's registry as a delta when it has one. A host edit applies and
+saves through the store's one `patchOverrides` write, with no draft or second
+save step on any host; the host
 drives the connection lifecycle through `setSupport`, `beginReadyGeneration`,
 `endReadyGeneration` and `detachHub`); the ready-generation fence that store
 fences every await on (`createReadyGenerationFence(isSupported)`: the

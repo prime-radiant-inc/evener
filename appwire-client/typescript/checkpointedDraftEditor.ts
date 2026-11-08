@@ -1,19 +1,15 @@
-// The checkpointed draft editor's primitives that generalize across every
-// settings-hub store, verified against both keybindingsStore.ts here and PR
-// #1549's transcriptDisplayStore.ts as the design oracle for a second store
-// not yet built. discardDraft's whole body - the gate, the discardClassified
-// call, the restoreDraft-on-refusal adoption, and the final published fields
-// - is byte-identical between the two once each store's own message text and
-// restoreDraft are pulled out as parameters; so is persistDraft's own
+// The checkpointed draft editor's primitives transcriptDisplayStore.ts uses
+// for its per-layout drafts. discardDraft's whole body - the gate, the
+// discardClassified call, the restoreDraft-on-refusal adoption, and the final
+// published fields - is factored out of that store with the store's own
+// message text and restoreDraft as parameters; so is persistDraft's own
 // mint-id/save/catch shape.
 //
 // editDraft, saveDraft, rebaseDraft and their settle machinery stay
-// store-owned: transcript's draft carries a `layout` a single-payload store
-// has no equivalent of (one draft field can propose either layout, so
-// "does this edit continue the existing draft" is a per-layout identity
-// check keybindings never needs), and its checkpoint/proposal shapes differ
-// in ways a Payload type parameter would have to reconcile - the same class
-// of decision piece 8 deferred for setSupport, not one to guess at here.
+// store-owned: transcript's draft carries a `layout` (one draft field can
+// propose either layout, so "does this edit continue the existing draft" is a
+// per-layout identity check), and its checkpoint/proposal shapes differ in
+// ways a Payload type parameter would have to reconcile.
 
 import type { DraftRepository } from "./draftCheckpointPort";
 
