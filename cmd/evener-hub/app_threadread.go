@@ -1280,18 +1280,7 @@ func pastEntryThreadForList(ctx context.Context, cfg hubcore.WebConfig, entry hu
 }
 
 func pastEntryThread(ctx context.Context, cfg hubcore.WebConfig, entry hubcore.PastEntry, includeTurns bool) (appwire.Thread, error) {
-	thread, err := projectPastEntryThread(ctx, cfg, entry, pastEntryThreadProjection{turns: includeTurns, tasks: true, diagnostics: true})
-	if err != nil {
-		return appwire.Thread{}, err
-	}
-	// A complete past projection is a thread a client renders on its own, so it
-	// carries the hub's project identity. Only this wrapper annotates: the live
-	// merge (mergePastThreadForRead) requests a projection for missing fields
-	// and never copies ProjectID/ProjectPath, so annotating there would resolve
-	// project identity only to discard it (#4692).
-	annotated := []appwire.Thread{thread}
-	annotateThreadProjects(annotated)
-	return annotated[0], nil
+	return projectPastEntryThread(ctx, cfg, entry, pastEntryThreadProjection{turns: includeTurns, tasks: true, diagnostics: true, projects: true})
 }
 
 // A live merge requests only missing fields. In particular, reconstructing
@@ -1301,6 +1290,12 @@ type pastEntryThreadProjection struct {
 	turns       bool
 	tasks       bool
 	diagnostics bool
+	// projects asks for the hub's canonical project identity. It is an axis
+	// beside the others because only a caller that hands the thread to a client
+	// can use it: the live merge (mergePastThreadForRead) never copies
+	// ProjectID/ProjectPath, so resolving it there was work whose answer was
+	// discarded (#4692).
+	projects bool
 }
 
 func projectPastEntryThread(ctx context.Context, cfg hubcore.WebConfig, entry hubcore.PastEntry, projection pastEntryThreadProjection) (appwire.Thread, error) {
@@ -1341,6 +1336,11 @@ func projectPastEntryThread(ctx context.Context, cfg hubcore.WebConfig, entry hu
 			return appwire.Thread{}, err
 		}
 		thread = reconcileAndEnrichPastThread(entry, thread)
+	}
+	if projection.projects {
+		annotated := []appwire.Thread{thread}
+		annotateThreadProjects(annotated)
+		thread = annotated[0]
 	}
 	return thread, nil
 }
