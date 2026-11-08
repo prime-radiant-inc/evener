@@ -1294,7 +1294,7 @@ func refuseEditSetClearPair(params appwire.InstanceEditParams) error {
 	}
 	for _, pair := range pairs {
 		if pair.clear && strings.TrimSpace(pair.set) != "" {
-			return appwire.InvalidParams(fmt.Sprintf("%s and its clear flag are never both meaningful in one request", pair.field))
+			return appwire.InvalidParams(pair.field + " and its clear flag are never both meaningful in one request")
 		}
 	}
 	return nil
