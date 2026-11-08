@@ -381,31 +381,18 @@ func TestManagerDiscoveryReportsSourceOutcomes(t *testing.T) {
 	remote.unavailable = true
 
 	response := managerInvoke(t, owner, caller, appwire.SessionOperationRequest{Discover: &appwire.ThreadListParams{}})
-	raw, err := json.Marshal(response.Discover)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var snapshot struct {
-		BuiltAt int64 `json:"builtAt"`
-		Sources []struct {
-			ID    string `json:"id"`
-			State string `json:"state"`
-		} `json:"sources"`
-	}
-	if err := json.Unmarshal(raw, &snapshot); err != nil {
-		t.Fatal(err)
-	}
+	snapshot := response.Discover
 	if snapshot.BuiltAt <= 0 {
-		t.Fatalf("discovery has no build moment: %s", raw)
+		t.Fatalf("discovery has no build moment: %+v", snapshot)
 	}
-	got := make(map[string]string, len(snapshot.Sources))
+	got := make(map[string]appwire.SessionSourceState, len(snapshot.Sources))
 	for _, source := range snapshot.Sources {
 		got[source.ID] = source.State
 	}
-	want := map[string]string{
-		"empty":  "skipped-unattached",
-		"local":  "answered",
-		"remote": "attempted-failed",
+	want := map[string]appwire.SessionSourceState{
+		"empty":  appwire.SessionSourceSkippedUnattached,
+		"local":  appwire.SessionSourceAnswered,
+		"remote": appwire.SessionSourceAttemptedFailed,
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("source outcomes = %v, want %v", got, want)
