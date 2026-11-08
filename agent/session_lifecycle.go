@@ -60,6 +60,12 @@ const (
 	maxEmptyRetries        = 3
 	maxTotalEmptyResponses = 8 // prevent repeated burst-and-recover spirals
 	maxBareTextRetries     = 3
+	// maxServerContinuations bounds one input turn's run of consecutive
+	// pause_turn responses. A pause is a legitimate protocol continuation, so it
+	// still refunds its tool round (see TestSession_PauseTurn_*), but a provider
+	// that returns them forever must not keep a single turn alive indefinitely:
+	// the chain is a distinct budget from the tool-round cap.
+	maxServerContinuations = 8
 )
 
 // retryTracker counts the degenerate (empty / bare-text) model responses seen so
@@ -1783,6 +1789,7 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 	localAdmissionCompacted := false
 	providerContextRecovered := false
 	var tracker retryTracker
+	serverContinuations := 0
 
 	// Continuation (goal) turns clamp the per-input round cap to GoalTurnMaxRounds
 	// (spec §2b/C13); a config of <0 is "unbounded", so a bare min would be wrong.
@@ -1950,11 +1957,24 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 		// pause_turn: model needs another turn (e.g. server-side web search still running).
 		if resp.Finish.Reason == llm.FinishReasonPauseTurn {
 			round-- // Don't count pause_turn as a tool round.
+			serverContinuations++
 			timings.TotalRound = time.Since(roundStart)
 			timings.LoopOverhead = timings.TotalRound - timings.SystemPrompt - timings.ContextMgmt - timings.HistoryExpand - timings.ToolDefs - timings.LLMCall
 			s.emit(timings)
+			if serverContinuations >= maxServerContinuations {
+				// The provider kept asking for another turn without ever
+				// producing one. Stop the chain on its own budget rather than
+				// letting it outlive every per-turn cap; the pause responses
+				// already emitted stay in history, so the turn is resumable.
+				return lastText, progressed, &budgetExhaustionError{
+					Budget:    exhaustedBudgetServerContinuations,
+					Limit:     maxServerContinuations,
+					Resumable: true,
+				}
+			}
 			continue
 		}
+		serverContinuations = 0
 
 		// Reverse-map provider-specific tool names to canonical names for registry lookup.
 		for i := range calls {

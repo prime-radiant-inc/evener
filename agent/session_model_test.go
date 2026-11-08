@@ -1085,6 +1085,33 @@ func TestSession_PauseTurn_DoesNotCountAsToolRound(t *testing.T) {
 	}
 }
 
+// A provider that answers pause_turn every time must not keep one input turn
+// alive forever. Pauses still refund their tool round, but a consecutive chain
+// is bounded by its own budget and surfaces as resumable exhaustion. The script
+// outlasts the budget, so the budget is what ends the turn.
+func TestSession_PauseTurn_ConsecutiveBudget(t *testing.T) {
+	t.Parallel()
+	var calls int
+	responder := func(llm.Request) llm.Response {
+		calls++
+		if calls > 2*maxServerContinuations {
+			return agenttest.CommunicateResponse(true, "done")
+		}
+		return llm.Response{
+			Model:   "gpt-5.2",
+			Message: llm.Assistant("still searching..."),
+			Finish:  llm.FinishReason{Reason: llm.FinishReasonPauseTurn, Raw: "pause_turn"},
+		}
+	}
+	sess, adapter, _ := newBudgetSession(t, SessionConfig{MaxToolRoundsPerInput: 2}, responder)
+
+	_, err := sess.processInputKindWithProvenance(context.Background(), "search for something", nil, EntryUserInput, nil)
+	requireBudgetExhaustion(t, err, exhaustedBudgetServerContinuations, maxServerContinuations, true)
+	if got := len(adapter.Requests()); got != maxServerContinuations {
+		t.Fatalf("model requests = %d, want the %d-call consecutive-pause budget", got, maxServerContinuations)
+	}
+}
+
 func TestSession_RecordInputTokens_SkipsWebSearchResponse(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
