@@ -69,11 +69,21 @@ func hubThreadList(ctx context.Context, cfg hubcore.WebConfig, sources *appsourc
 	return hubThreadListWithSourceTimeout(ctx, cfg, sources, params, threadListSourceTimeout)
 }
 
+func hubThreadListWithSourceStates(ctx context.Context, cfg hubcore.WebConfig, sources *appsource.Registry, params appwire.ThreadListParams) (appwire.ThreadListResponse, map[string]appwire.SessionSourceState, error) {
+	states := make(map[string]appwire.SessionSourceState)
+	response, err := hubThreadListWithSourceTimeoutAndStates(ctx, cfg, sources, params, threadListSourceTimeout, states)
+	return response, states, err
+}
+
 // hubThreadListWithSourceTimeout fans one list out across every allowed source.
 // sourceTimeout is the budget for a source that reports none of its own (the
 // local-daemon default in production); a threadListBudgetSource is given the
 // deadline it reports instead.
 func hubThreadListWithSourceTimeout(ctx context.Context, cfg hubcore.WebConfig, sources *appsource.Registry, params appwire.ThreadListParams, sourceTimeout time.Duration) (appwire.ThreadListResponse, error) {
+	return hubThreadListWithSourceTimeoutAndStates(ctx, cfg, sources, params, sourceTimeout, nil)
+}
+
+func hubThreadListWithSourceTimeoutAndStates(ctx context.Context, cfg hubcore.WebConfig, sources *appsource.Registry, params appwire.ThreadListParams, sourceTimeout time.Duration, states map[string]appwire.SessionSourceState) (appwire.ThreadListResponse, error) {
 	threads := make([]appwire.Thread, 0)
 	liveIDs := map[string]struct{}{}
 	allSources := sources.All()
@@ -87,6 +97,9 @@ func hubThreadListWithSourceTimeout(ctx context.Context, cfg hubcore.WebConfig, 
 	allowed := make([]int, 0, len(allSources))
 	for index, source := range allSources {
 		if !sourceAllowedForList(source.ID(), params) {
+			if states != nil {
+				states[source.ID()] = appwire.SessionSourceNotSelected
+			}
 			continue
 		}
 		// A non-explicit (empty-filter) fan-out must not force attachment: a
@@ -96,6 +109,9 @@ func hubThreadListWithSourceTimeout(ctx context.Context, cfg hubcore.WebConfig, 
 		// fan-out"). A source named explicitly in SourceIDs is a deliberate,
 		// host-targeted request and may attach (below).
 		if !explicit && !remoteSourceAttached(cfg, remoteHosts, source.ID()) {
+			if states != nil {
+				states[source.ID()] = appwire.SessionSourceSkippedUnattached
+			}
 			continue
 		}
 		allowed = append(allowed, index)
@@ -187,7 +203,13 @@ func hubThreadListWithSourceTimeout(ctx context.Context, cfg hubcore.WebConfig, 
 			if sourceExplicitlyRequestedForList(source.ID(), params) {
 				return appwire.ThreadListResponse{}, err
 			}
+			if states != nil {
+				states[source.ID()] = appwire.SessionSourceAttemptedFailed
+			}
 			continue
+		}
+		if states != nil {
+			states[source.ID()] = appwire.SessionSourceAnswered
 		}
 		for _, thread := range resp.Data {
 			sourceID := threadListSourceID(source.ID(), thread)

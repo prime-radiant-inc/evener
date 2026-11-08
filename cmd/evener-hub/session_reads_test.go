@@ -376,6 +376,78 @@ func TestManagerReadContracts(t *testing.T) {
 	}
 }
 
+func TestManagerDiscoveryReportsSourceOutcomes(t *testing.T) {
+	owner, _, remote, caller := managerReadFixture(t)
+	remote.unavailable = true
+
+	response := managerInvoke(t, owner, caller, appwire.SessionOperationRequest{Discover: &appwire.ThreadListParams{}})
+	raw, err := json.Marshal(response.Discover)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var snapshot struct {
+		BuiltAt int64 `json:"builtAt"`
+		Sources []struct {
+			ID    string `json:"id"`
+			State string `json:"state"`
+		} `json:"sources"`
+	}
+	if err := json.Unmarshal(raw, &snapshot); err != nil {
+		t.Fatal(err)
+	}
+	if snapshot.BuiltAt <= 0 {
+		t.Fatalf("discovery has no build moment: %s", raw)
+	}
+	got := make(map[string]string, len(snapshot.Sources))
+	for _, source := range snapshot.Sources {
+		got[source.ID] = source.State
+	}
+	want := map[string]string{
+		"empty":  "skipped-unattached",
+		"local":  "answered",
+		"remote": "attempted-failed",
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("source outcomes = %v, want %v", got, want)
+	}
+}
+
+func TestManagerDiscoveryReportsNotSelectedSources(t *testing.T) {
+	owner, _, _, caller := managerReadFixture(t)
+
+	response := managerInvoke(t, owner, caller, appwire.SessionOperationRequest{Discover: &appwire.ThreadListParams{SourceIDs: []string{"local"}}})
+	got := make(map[string]appwire.SessionSourceState, len(response.Discover.Sources))
+	for _, source := range response.Discover.Sources {
+		got[source.ID] = source.State
+	}
+	want := map[string]appwire.SessionSourceState{
+		"empty":  "not-selected",
+		"local":  appwire.SessionSourceAnswered,
+		"remote": "not-selected",
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("explicit source outcomes = %v, want %v", got, want)
+	}
+}
+
+func TestManagerDiscoveryExplicitFailureFailsWhole(t *testing.T) {
+	owner, _, remote, caller := managerReadFixture(t)
+	remote.unavailable = true
+
+	response, err := owner.Invoke(t.Context(), caller, appwire.SessionOperationRequest{Discover: &appwire.ThreadListParams{SourceIDs: []string{"local", "remote"}}})
+	if err == nil {
+		t.Fatalf("mixed explicit discovery served partial response: %+v", response.Discover)
+	}
+	var wire appwire.WireError
+	if !errors.As(err, &wire) {
+		t.Fatalf("mixed explicit discovery error = %v, want wire error", err)
+	}
+	data, _ := appwire.DecodedErrorData(wire.Data)
+	if data.EvenerErrorInfo != appwire.ErrorSessionUnavailable {
+		t.Fatalf("mixed explicit discovery data = %+v, want session unavailable", data)
+	}
+}
+
 func TestManagerReadActivityFollowUpPreservesScope(t *testing.T) {
 	owner, local, _, caller := managerReadFixture(t)
 	local.activityNextCursor = "older-subtree-jobs"

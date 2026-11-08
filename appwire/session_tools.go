@@ -152,8 +152,18 @@ func (r *SessionOperationRequest) UnmarshalJSON(data []byte) error {
 }
 
 type SessionSource struct {
-	ID string `json:"id"`
+	ID    string             `json:"id"`
+	State SessionSourceState `json:"state"`
 }
+
+type SessionSourceState string
+
+const (
+	SessionSourceAnswered          SessionSourceState = "answered"
+	SessionSourceAttemptedFailed   SessionSourceState = "attempted-failed"
+	SessionSourceNotSelected       SessionSourceState = "not-selected"
+	SessionSourceSkippedUnattached SessionSourceState = "skipped-unattached"
+)
 
 // SessionActivityRequest selects one existing activity owner; cursor and scope
 // pass unchanged to the owner's bounded list method.
@@ -197,6 +207,7 @@ func SessionTaskSnapshotChanged() WireError {
 type SessionDiscovery struct {
 	Threads ThreadListResponse `json:"threads"`
 	Sources []SessionSource    `json:"sources"`
+	BuiltAt int64              `json:"builtAt"`
 }
 
 type SessionOperationResponse struct {

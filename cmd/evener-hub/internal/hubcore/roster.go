@@ -26,12 +26,17 @@ type LiveEntry struct {
 	SessionID string
 	// RosterInstanceID preserves a remote session's identity when SessionID
 	// is its stable, source-qualified tree key. Local entries use SessionID.
-	RosterInstanceID  string
-	Status            string   // most-recent daemon state ("active", "idle", "awaiting", etc.)
-	ActiveFlags       []string // the status flags the daemon reported alongside Status
-	Crashed           bool     // true only for a retained record whose daemon PID is confirmed gone
-	PendingAsk        bool     // true while the daemon reports an unanswered ask_user question
-	PendingEscalation bool     // true while the daemon reports a blocked sandbox-exemption escalation (M7)
+	RosterInstanceID string
+	Status           string   // most-recent daemon state ("active", "idle", "awaiting", etc.)
+	ActiveFlags      []string // the status flags the daemon reported alongside Status
+	// ActiveTurnID and ActiveTurnStartedAt are volatile facts from the latest
+	// successful local probe. A retained record clears both rather than claiming
+	// that a previously observed turn is still running.
+	ActiveTurnID        string
+	ActiveTurnStartedAt int64
+	Crashed             bool // true only for a retained record whose daemon PID is confirmed gone
+	PendingAsk          bool // true while the daemon reports an unanswered ask_user question
+	PendingEscalation   bool // true while the daemon reports a blocked sandbox-exemption escalation (M7)
 	// Manager is the session's own start-time Manager property, as its daemon
 	// projects it. It is fixed for the session's life, so one probe answer
 	// stays current for the entry's lifetime.
@@ -138,11 +143,13 @@ type LiveEntry struct {
 
 // ProbeResult is the dynamic session state returned by a daemon liveness probe.
 type ProbeResult struct {
-	SessionID         string
-	Status            string
-	ActiveFlags       []string
-	PendingAsk        bool
-	PendingEscalation bool
+	SessionID           string
+	Status              string
+	ActiveFlags         []string
+	ActiveTurnID        string
+	ActiveTurnStartedAt int64
+	PendingAsk          bool
+	PendingEscalation   bool
 	// Manager mirrors LiveEntry.Manager: the session's own start-time Manager
 	// property, as its daemon projects it on the root row.
 	Manager bool
@@ -1278,6 +1285,8 @@ func liveEntryFromProbe(e rendezvous.Entry, result ProbeResult) LiveEntry {
 		Entry:                 e,
 		SessionID:             result.SessionID,
 		ActiveFlags:           result.ActiveFlags,
+		ActiveTurnID:          result.ActiveTurnID,
+		ActiveTurnStartedAt:   result.ActiveTurnStartedAt,
 		Capabilities:          result.Capabilities,
 		CapabilitiesKnown:     result.CapabilitiesKnown,
 		RunningSubagentIDs:    result.RunningSubagentIDs,
