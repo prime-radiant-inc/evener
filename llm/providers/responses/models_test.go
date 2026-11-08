@@ -144,3 +144,31 @@ func TestListModelsPlatformVisionCapability(t *testing.T) {
 		t.Fatalf("architecture.input_modalities must win over capabilities.vision: %+v", c.InputModalities)
 	}
 }
+
+// TestListModelsReadsGatewayToolsCapability pins that a gateway's per-model
+// capabilities.tools reaches the row. The Responses listing carries no
+// supported_parameters list to infer tools from, so a lunaroute model that
+// advertises tools would otherwise resolve as tool-less.
+func TestListModelsReadsGatewayToolsCapability(t *testing.T) {
+	capsOf := func(facts string) registry.Caps {
+		t.Helper()
+		srv, _ := server(t, 200, `{"data":[{"id":"gateway-model",`+facts+`}]}`)
+		rows, err := (&Protocol{Client: srv.Client()}).ListModels(context.Background(), liveRes(srv, nil))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(rows) != 1 || rows[0].ID != "gateway-model" {
+			t.Fatalf("rows = %+v", rows)
+		}
+		return rows[0].Caps
+	}
+	if c := capsOf(`"capabilities":{"tools":true}`); c.Tools == nil || !*c.Tools {
+		t.Fatalf("capabilities.tools must advertise tool support: %+v", c.Tools)
+	}
+	if c := capsOf(`"capabilities":{"tools":false}`); c.Tools == nil || *c.Tools {
+		t.Fatalf("tools:false must advertise no tool support: %+v", c.Tools)
+	}
+	if c := capsOf(`"context_window":8192`); c.Tools != nil {
+		t.Fatalf("a row with no tool facts must leave Tools unset: %+v", c.Tools)
+	}
+}

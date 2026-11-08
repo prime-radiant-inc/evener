@@ -55,6 +55,34 @@ func TestDedupStrings(t *testing.T) {
 	}
 }
 
+// TestApplyGatewayFacts_Tools pins the per-model tools verdict: it is the
+// gateway's own fact, so it overrides a provider-wide inference in both
+// directions, and silence leaves what the caller inferred in place.
+func TestApplyGatewayFacts_Tools(t *testing.T) {
+	yes, no := true, false
+	cases := []struct {
+		name   string
+		before *bool
+		facts  GatewayCapabilities
+		want   *bool
+	}{
+		{"advertised true fills an unstated row", nil, GatewayCapabilities{Tools: &yes}, &yes},
+		{"advertised true raises an inferred false", &no, GatewayCapabilities{Tools: &yes}, &yes},
+		{"advertised false clears an inferred true", &yes, GatewayCapabilities{Tools: &no}, &no},
+		{"silence keeps an inferred true", &yes, GatewayCapabilities{}, &yes},
+		{"silence leaves an unstated row unset", nil, GatewayCapabilities{}, nil},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			caps := registry.Caps{Tools: tc.before}
+			ApplyGatewayFacts(&caps, GatewayArchitecture{}, tc.facts, GatewayClientCompat{})
+			if (caps.Tools == nil) != (tc.want == nil) || (caps.Tools != nil && *caps.Tools != *tc.want) {
+				t.Fatalf("Tools = %v, want %v", caps.Tools, tc.want)
+			}
+		})
+	}
+}
+
 func TestGatewayEffortLadder(t *testing.T) {
 	levels := func(m map[string]string) GatewayClientCompat {
 		return GatewayClientCompat{Pi: &GatewayPiCompat{ThinkingLevelMap: m}}

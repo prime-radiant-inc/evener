@@ -18,6 +18,7 @@ type GatewayArchitecture struct {
 type GatewayCapabilities struct {
 	Vision    *bool `json:"vision"`
 	Reasoning *bool `json:"reasoning"`
+	Tools     *bool `json:"tools"`
 }
 
 // GatewayClientCompat is the per-model compatibility block some gateways
@@ -49,6 +50,13 @@ type GatewayPiCompat struct {
 // fact it does not state leaves what the caller inferred in place.
 func ApplyGatewayFacts(caps *registry.Caps, arch GatewayArchitecture, capsFacts GatewayCapabilities, compat GatewayClientCompat) {
 	applyGatewayReasoning(caps, capsFacts, compat)
+	// The row's own tools verdict is the narrower fact: a provider-wide
+	// supported_parameters list only infers tool support, so an explicit
+	// capabilities.tools value wins in both directions. Silence leaves the
+	// caller's inference alone.
+	if capsFacts.Tools != nil {
+		caps.Tools = capsFacts.Tools
+	}
 	if pi := compat.Pi; pi != nil {
 		// A value outside the registry's vocabulary is dropped rather than
 		// carried: an unknown dialect writes no reasoning control at all, and

@@ -167,6 +167,19 @@ func TestListModelsGatewayReasoningFollowsTheCapability(t *testing.T) {
 	}
 }
 
+// TestListModelsGatewayToolsFollowsTheCapability pins the per-model tool
+// verdict's precedence over the provider-wide parameter list. A row that lists
+// tools in supported_parameters but states capabilities.tools false must
+// resolve tool-less: the gateway's own verdict is the narrower fact.
+func TestListModelsGatewayToolsFollowsTheCapability(t *testing.T) {
+	if c := listRow(t, `{"id":"tools-gateway","supported_parameters":["tools"],"capabilities":{"tools":false}}`); c.Tools == nil || *c.Tools {
+		t.Fatalf("Tools = %v, want an explicit false from capabilities.tools", c.Tools)
+	}
+	if c := listRow(t, `{"id":"tools-gateway","capabilities":{"tools":true}}`); c.Tools == nil || !*c.Tools {
+		t.Fatalf("Tools = %v, want true from capabilities.tools", c.Tools)
+	}
+}
+
 // TestListModelsGatewayWithoutPiKeepsOtherFacts pins that a gateway which
 // publishes no Pi compat block still contributes its capabilities and limits;
 // the absence of a ladder must stay nil, not become an empty one.
