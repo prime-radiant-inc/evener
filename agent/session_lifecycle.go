@@ -2031,7 +2031,7 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 		// result. Credited from the executed results, not the proposed calls,
 		// so an unknown name or a rejected write never resets the no-progress
 		// streak. Accumulated as a turn-level OR across the turn's rounds.
-		progressed = progressed || s.toolResultsMadeProgress(calls, results)
+		progressed = progressed || s.toolResultsMadeProgress(results)
 
 		timings.ToolExec = time.Since(tPhaseStart)
 

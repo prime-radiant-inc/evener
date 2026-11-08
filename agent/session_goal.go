@@ -165,27 +165,27 @@ func goalControlsRoundCap(cfg int, kind EntryKind) bool {
 }
 
 // toolResultsMadeProgress reports whether any executed tool result in a round is
-// a real mutating action for the goal no-progress signal: a call that is
-// !ReadOnly AND is neither the result/communicate tool nor task_list, and whose
+// a real mutating action for the goal no-progress signal: a result whose tool is
+// !ReadOnly, is neither the result/communicate tool nor task_list, and whose
 // execution actually succeeded. Read-only tools, the result tool, and plan
 // updates all register ReadOnly==false or are otherwise excluded, so the
 // ReadOnly flag alone is insufficient (spec §2). An unknown tool name (Get==nil)
 // never counts, and neither does a failed call — including a prevalidation-only
 // rejection or an invalid-argument failure — because it did no work. Crediting
 // only executed successes keeps the breaker a signal of progress rather than of
-// attempted mutation (CORE-04).
-func (s *Session) toolResultsMadeProgress(calls []llm.ToolCallData, results []tool.ExecResult) bool {
+// attempted mutation (CORE-04). The result carries its tool name, so the
+// executed batch alone is the input.
+func (s *Session) toolResultsMadeProgress(results []tool.ExecResult) bool {
 	resultName := s.resultToolName()
-	for i := range calls {
-		name := calls[i].Name
-		if name == resultName || name == "task_list" {
+	for _, r := range results {
+		if r.ToolName == resultName || r.ToolName == "task_list" {
 			continue
 		}
-		t := s.reg.Get(name)
+		t := s.reg.Get(r.ToolName)
 		if t == nil || t.ReadOnly {
 			continue
 		}
-		if results[i].IsError {
+		if r.IsError {
 			continue
 		}
 		return true

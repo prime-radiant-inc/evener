@@ -19,33 +19,30 @@ import (
 func TestToolResultsMadeProgressEligibility(t *testing.T) {
 	t.Parallel()
 	sess, _, _ := newBudgetSession(t, SessionConfig{}, nil)
-	call := func(name string) llm.ToolCallData { return llm.ToolCallData{Name: name} }
-	ok := tool.ExecResult{}
+	result := func(name string) tool.ExecResult { return tool.ExecResult{ToolName: name} }
 
 	tests := []struct {
 		name    string
-		calls   []llm.ToolCallData
 		results []tool.ExecResult
 		want    bool
 	}{
-		{"successful mutation", []llm.ToolCallData{call("write_file")}, []tool.ExecResult{ok}, true},
-		{"read-only", []llm.ToolCallData{call("read_file")}, []tool.ExecResult{ok}, false},
-		{"failed mutation", []llm.ToolCallData{call("write_file")}, []tool.ExecResult{{IsError: true}}, false},
-		{"prevalidation-only rejection", []llm.ToolCallData{call("write_file")}, []tool.ExecResult{{IsError: true, PrevalOnly: true}}, false},
-		{"unknown tool", []llm.ToolCallData{call("no_such_tool")}, []tool.ExecResult{ok}, false},
-		{"result tool", []llm.ToolCallData{call(sess.resultToolName())}, []tool.ExecResult{ok}, false},
-		{"task list", []llm.ToolCallData{call("task_list")}, []tool.ExecResult{ok}, false},
+		{"successful mutation", []tool.ExecResult{result("write_file")}, true},
+		{"read-only", []tool.ExecResult{result("read_file")}, false},
+		{"failed mutation", []tool.ExecResult{{ToolName: "write_file", IsError: true}}, false},
+		{"prevalidation-only rejection", []tool.ExecResult{{ToolName: "write_file", IsError: true, PrevalOnly: true}}, false},
+		{"unknown tool", []tool.ExecResult{result("no_such_tool")}, false},
+		{"result tool", []tool.ExecResult{result(sess.resultToolName())}, false},
+		{"task list", []tool.ExecResult{result("task_list")}, false},
 		{
 			"one success among failures",
-			[]llm.ToolCallData{call("write_file"), call("write_file")},
-			[]tool.ExecResult{{IsError: true}, ok},
+			[]tool.ExecResult{{ToolName: "write_file", IsError: true}, result("write_file")},
 			true,
 		},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := sess.toolResultsMadeProgress(tc.calls, tc.results); got != tc.want {
-				t.Fatalf("toolResultsMadeProgress(%v) = %t, want %t", tc.calls, got, tc.want)
+			if got := sess.toolResultsMadeProgress(tc.results); got != tc.want {
+				t.Fatalf("toolResultsMadeProgress(%v) = %t, want %t", tc.results, got, tc.want)
 			}
 		})
 	}
