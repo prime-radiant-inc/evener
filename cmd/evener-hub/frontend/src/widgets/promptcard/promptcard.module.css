@@ -31,15 +31,6 @@
   display: none;
 }
 
-/* The Duo's empty, unfocused session card sheds its extra inset while the
- * composer owns the one-line field. Spawn and engaged cards keep their space. */
-@media (min-width: 440px) and (max-width: 500px) and (max-aspect-ratio: 3 / 4) {
-  :global([data-composer]:not([data-composer-editing])) .card[data-testid="composer-input-card"]:has([role="textbox"][data-empty="true"]) {
-    gap: 0;
-    padding-block: 0;
-  }
-}
-
 /* squircle-proto: continuous (Apple-style) corner curvature where the engine
  * supports corner-shape; border-radius stays the fallback and supplies the
  * corner area this shapes. */
