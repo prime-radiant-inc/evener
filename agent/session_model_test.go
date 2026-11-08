@@ -1112,6 +1112,37 @@ func TestSession_PauseTurn_ConsecutiveBudget(t *testing.T) {
 	}
 }
 
+// Pause-budget exhaustion is a terminal turn failure a returning client can see,
+// so it must be persisted as a TURN_FAILURE whose structured cause carries the
+// typed exhaustion reason, not only returned to the in-process caller.
+func TestSession_PauseTurn_ExhaustionPersistsTurnFailure(t *testing.T) {
+	t.Parallel()
+	var calls int
+	responder := func(llm.Request) llm.Response {
+		calls++
+		if calls > 2*maxServerContinuations {
+			return agenttest.CommunicateResponse(true, "done")
+		}
+		return llm.Response{
+			Model:   "gpt-5.2",
+			Message: llm.Assistant("searching..."),
+			Finish:  llm.FinishReason{Reason: llm.FinishReasonPauseTurn, Raw: "pause_turn"},
+		}
+	}
+	sess, _, _ := newBudgetSession(t, SessionConfig{MaxToolRoundsPerInput: 2}, responder)
+
+	_, err := sess.processInputKindWithProvenance(context.Background(), "search for something", nil, EntryUserInput, nil)
+	exhausted := requireBudgetExhaustion(t, err, exhaustedBudgetServerContinuations, maxServerContinuations, true)
+
+	for _, turn := range budgetHistory(sess) {
+		if turn.Kind == schema.TurnFailure && turn.Error != nil &&
+			turn.Error.Cause != nil && turn.Error.Cause.Kind == exhausted.reason() {
+			return
+		}
+	}
+	t.Fatalf("pause-budget exhaustion persisted no %s carrying cause kind %q", schema.TurnFailure, exhausted.reason())
+}
+
 // A pause_turn response can carry only server-side tool blocks (a web search in
 // progress) and no text or client tool calls. That response is the provider's
 // partial state, so it must stay in history for the continuation to see; the

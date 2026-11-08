@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 
+	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/schema"
 )
 
@@ -46,6 +47,16 @@ func budgetExhaustionFromError(err error) (*budgetExhaustionError, bool) {
 		return nil, false
 	}
 	return exhausted, true
+}
+
+// emitBudgetExhaustionFailure persists and emits a mid-turn budget exhaustion as
+// a terminal TurnFailure, so a returning client sees why the turn ended and can
+// offer retry instead of only learning it from a daemon log. Cause.Kind carries
+// the typed reason so consumers can branch on it rather than the message.
+func (s *Session) emitBudgetExhaustionFailure(exhausted *budgetExhaustionError) {
+	data := errorDataFromError(exhausted)
+	data.Cause = &events.ErrorCause{Kind: exhausted.reason()}
+	s.emitTurnFailure(data)
 }
 
 func turnBudgetWarningInHistory(history []schema.Turn) bool {

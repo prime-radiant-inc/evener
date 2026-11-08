@@ -1971,11 +1971,13 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 			if serverContinuations >= maxServerContinuations {
 				// Stop the chain on its own budget; the pause responses
 				// already emitted stay in history, so the turn is resumable.
-				return lastText, progressed, &budgetExhaustionError{
+				exhausted := &budgetExhaustionError{
 					Budget:    exhaustedBudgetServerContinuations,
 					Limit:     maxServerContinuations,
 					Resumable: true,
 				}
+				s.emitBudgetExhaustionFailure(exhausted)
+				return lastText, progressed, exhausted
 			}
 			continue
 		}
