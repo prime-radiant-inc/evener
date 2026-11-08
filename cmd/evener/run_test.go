@@ -331,9 +331,10 @@ func TestRunResumeWithCarriesInvocationATIFExport(t *testing.T) {
 		return func(string) error { return nil }, func() error { return nil }, nil
 	}
 	var restoreCfg agent.RestoreSessionConfig
+	stopRestore := errors.New("stop after resume-with restore")
 	runRestoreSession = func(_ *llm.Client, _ *provider.Profile, _ execenv.ExecutionEnvironment, _ schema.SessionMeta, cfg agent.RestoreSessionConfig) (*agent.Session, error) {
 		restoreCfg = cfg
-		return nil, errors.New("stop after resume-with restore")
+		return nil, stopRestore
 	}
 
 	const sourceID = "02wMz5Txv1C3Hut0M8GCeB"
@@ -362,8 +363,8 @@ func TestRunResumeWithCarriesInvocationATIFExport(t *testing.T) {
 		exportATIF: exportPath, exportATIFProviderHandles: "raw-local",
 		noDefaultMarketplaces: true, stdout: &bytes.Buffer{}, stderr: &bytes.Buffer{},
 	})
-	if err == nil || !strings.Contains(err.Error(), "stop after resume-with restore") {
-		t.Fatalf("run error = %v", err)
+	if !errors.Is(err, stopRestore) {
+		t.Fatalf("run error = %v, want %v", err, stopRestore)
 	}
 	if restoreCfg.ExportATIFPath != exportPath || restoreCfg.ExportATIFProviderHandles != "raw-local" {
 		t.Fatalf("resume-with restore export = %q %q, want %q %q",
