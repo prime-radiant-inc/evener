@@ -712,11 +712,10 @@ func (s *sandboxFS) listDir(tool, abs string, depth int, visibleOnly bool) ([]Di
 	if s.underMasked(abs) {
 		return nil, s.deny(tool, abs, denyReasonMasked)
 	}
-	fd, err := s.openRead(tool, abs, unix.O_RDONLY|unix.O_DIRECTORY)
+	fd, baseAbs, err := s.openReadBaseFd(tool, abs)
 	if err != nil {
 		return nil, err
 	}
-	baseAbs := browseBasePath(fd, abs)
 	var out []DirEntry
 	if err := s.walkDirFd(fd, "", baseAbs, depth, visibleOnly, &out); err != nil { // walkDirFd closes fd
 		return nil, err
@@ -740,7 +739,7 @@ func (s *sandboxFS) listDirBudgeted(ctx context.Context, tool, abs string, depth
 	if s.underMasked(abs) {
 		return nil, s.deny(tool, abs, denyReasonMasked)
 	}
-	fd, err := s.openRead(tool, abs, unix.O_RDONLY|unix.O_DIRECTORY)
+	fd, baseAbs, err := s.openReadBaseFd(tool, abs)
 	if err != nil {
 		// The resolver's raw errno does not say which path was wrong, and the
 		// legacy walk returns it just as bare — but this walk is the one the
@@ -757,7 +756,6 @@ func (s *sandboxFS) listDirBudgeted(ctx context.Context, tool, abs string, depth
 		}
 		return nil, &fs.PathError{Op: "open", Path: abs, Err: err}
 	}
-	baseAbs := browseBasePath(fd, abs)
 	var out []DirEntry
 	if err := s.walkDirFdBudgeted(ctx, fd, "", baseAbs, depth, false, &out, budget); err != nil { // walkDirFdBudgeted closes fd
 		return nil, err
@@ -891,7 +889,7 @@ func secureListDirChunked(ctx context.Context, dirFd int, dir string, budget *Di
 	return readDirChunked(ctx, df, dir, budget.glob)
 }
 
-// openReadBaseFd resolves a browse base directory (glob/grep) beneath the policy,
+// openReadBaseFd resolves a browse base directory (list_dir/glob/grep) beneath the policy,
 // returning a directory fd (caller closes) and the canonical absolute base path.
 // It applies the same read-shape check as file reads, so a base outside the
 // readable roots (restricted) or under the denylist (any mode) is refused.

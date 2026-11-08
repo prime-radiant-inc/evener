@@ -9,6 +9,8 @@ import (
 	"strings"
 	"testing"
 
+	"golang.org/x/sys/unix"
+
 	"primeradiant.com/evener/agent/sandbox"
 )
 
@@ -68,5 +70,37 @@ func TestBrowseJudgesDescendantsAgainstTheOpenedDirectorysSpelling(t *testing.T)
 	}
 	if strings.Contains(out, secret) {
 		t.Errorf("a masked subtree was searched through a case-variant base:\n%s", out)
+	}
+
+	// A base inside the mask, named in another case, is still the masked
+	// directory: the open rechecks the fd's canonical path.
+	maskedBase := filepath.Join(parent, "CaseHome", ".Config", "EVENER")
+	if _, err := s.listDir("list_dir", maskedBase, 1, false); err == nil {
+		t.Errorf("a browse base inside the mask must be denied, however it is spelled")
+	}
+}
+
+// TestBrowseBasePathUsesTheOpenedDirectorysKernelPath pins the spelling seam
+// itself on every platform: the path handed to the walk is the directory the
+// descriptor refers to, not the spelled path used to open it. It runs on a
+// case-sensitive volume too, where the difference is a symlinked ancestor.
+func TestBrowseBasePathUsesTheOpenedDirectorysKernelPath(t *testing.T) {
+	t.Parallel()
+	base := realTempDir(t)
+	target := filepath.Join(base, "target")
+	if err := os.Mkdir(target, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(base, "link")
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatal(err)
+	}
+	fd, err := unix.Open(link, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC, 0)
+	if err != nil {
+		t.Fatalf("open %s: %v", link, err)
+	}
+	defer func() { _ = unix.Close(fd) }()
+	if got := browseBasePath(fd, link); got != target {
+		t.Errorf("browseBasePath(%q) = %q, want the opened directory %q", link, got, target)
 	}
 }
