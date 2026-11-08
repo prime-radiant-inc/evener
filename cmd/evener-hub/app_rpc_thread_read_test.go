@@ -81,7 +81,7 @@ func TestSessionOperationsFetchesServingDaemonItem(t *testing.T) {
 	const nativeIncarnation = "daemon-index-incarnation"
 
 	daemon := appserver.NewServer(appserver.ServerConfig{ServerName: "daemon", SourceID: "local"})
-	appserver.HandleTyped(daemon.Router(), appwire.MethodThreadRead, func(_ context.Context, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
+	appserver.HandleThreadHistory(daemon.Router(), func(_ context.Context, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
 		thread := appwire.Thread{ID: "windowed", SessionID: "windowed", Evener: appwire.EvenerThread{Ref: params.Ref}}
 		snapshot := &appwire.SnapshotIdentity{Incarnation: nativeIncarnation, Length: 10}
 		if params.FetchCursor == "" {
@@ -101,6 +101,9 @@ func TestSessionOperationsFetchesServingDaemonItem(t *testing.T) {
 		}
 		fetch, err := appitempaging.BuildFetchResponse(item, identity, cursor)
 		return appwire.ThreadReadResponse{Thread: thread, Snapshot: snapshot, Fetch: &fetch}, err
+	}, func(_ context.Context, _ appwire.ThreadTurnsListParams) (appwire.ThreadTurnsListResponse, error) {
+		t.Fatal("exact turn window unexpectedly paged daemon history")
+		return appwire.ThreadTurnsListResponse{}, nil
 	})
 	daemonHTTP := httptest.NewServer(http.HandlerFunc(daemon.ServeWebSocket))
 	defer daemonHTTP.Close()

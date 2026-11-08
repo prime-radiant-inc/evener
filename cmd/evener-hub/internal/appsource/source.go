@@ -273,7 +273,11 @@ func (s *LocalDaemonSource) ItemCandidatesFromRead(
 	}
 	cursorIncarnation := incarnation
 	if params.TurnWindow != nil && response.Snapshot != nil && response.Snapshot.Incarnation != "" {
-		cursorIncarnation = response.Snapshot.Incarnation
+		if sourceIncarnation, ok := params.ThreadWindowParams.SourceIncarnation(response.Snapshot.Incarnation, params.ItemLimit); ok {
+			cursorIncarnation = sourceIncarnation
+		} else {
+			cursorIncarnation = response.Snapshot.Incarnation
+		}
 	}
 	return ItemCandidateResult{
 		// The daemon cursor has its own identity. Exhausted retains its truth, but
