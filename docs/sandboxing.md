@@ -311,6 +311,8 @@ An individual filesystem call already in progress may still block until it retur
     nonexistent `GIT_CONFIG_GLOBAL`/`GIT_CONFIG_SYSTEM` contributes no grant:
     git resolves a relative value against its working directory, which is not a
     stable file to grant, and an empty or missing one names no config git reads.
+    A value with a `..` component is refused too: after a symlink it resolves to
+    a different object than the cleaned path the grant would carry.
   - It reaches the **spawned layer only**. The model's file tools stay confined to
     the worktree and cannot browse the config.
 

@@ -396,6 +396,48 @@ func TestProbeGitSystemConfigPaths(t *testing.T) {
 	}
 }
 
+// TestGitConfigFileOverrideRejectsAParentAfterASymlink pins that the file an
+// override admits is the file it grants: a ".." after a symlink resolves to a
+// different object than filepath.Clean reports, so the spelling is refused
+// rather than granting a directory the admission check never saw. A plain
+// symlink, which names the file that was checked, is still admitted.
+func TestGitConfigFileOverrideRejectsAParentAfterASymlink(t *testing.T) {
+	t.Parallel()
+	base := t.TempDir()
+	repo := filepath.Join(base, "repo")
+	if err := os.MkdirAll(filepath.Join(repo, "a", "b"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(repo, "a", "b"), filepath.Join(repo, "link")); err != nil {
+		t.Skipf("cannot create a symlink on this volume: %v", err)
+	}
+	config := filepath.Join(repo, ".config")
+	if err := os.WriteFile(config, []byte("[user]\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// The cleaned spelling is a directory; the kernel resolves the symlink first
+	// and reaches the regular file above.
+	if err := os.MkdirAll(filepath.Join(base, ".config"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	system := gitConfigProbeSystem{home: base}
+	attack := filepath.Join(repo, "link") + "/../.." + "/.config"
+	if !system.nonDirectoryFile(attack) {
+		t.Fatalf("fixture: %s must stat as a file", attack)
+	}
+	if got := gitConfigFileOverride(attack, system); len(got) != 0 {
+		t.Errorf("a parent component after a symlink must not be granted: %v", got)
+	}
+
+	linkFile := filepath.Join(repo, "config-link")
+	if err := os.Symlink(config, linkFile); err != nil {
+		t.Fatal(err)
+	}
+	if got := gitConfigFileOverride(linkFile, system); !slices.Equal(got, []string{linkFile}) {
+		t.Errorf("a plain symlink to the checked file must be granted as %q, got %v", linkFile, got)
+	}
+}
+
 // TestRestrictedGrantsGitConfigOverridesToSpawnedOnly pins the resolver half of
 // the GIT_CONFIG_GLOBAL/GIT_CONFIG_SYSTEM fix: both overrides reach the spawned
 // layer (git must read the file the environment names) and neither reaches the

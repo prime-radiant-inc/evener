@@ -486,13 +486,30 @@ func probeGitSystemConfigPaths(system probeSystem) []string {
 }
 
 // gitConfigFileOverride returns the one config file an environment override
-// names, or nil when the value names nothing git reads as a config file. Only
-// an absolute path to an existing non-directory file is admitted.
+// names, or nil when the value names nothing git reads as a config file. The
+// file admitted is the file granted: the value must be absolute, free of ".."
+// components (a ".." after a symlink resolves to a different object than
+// filepath.Clean reports, and the cleaned spelling is the grant), and name an
+// existing non-directory file.
 func gitConfigFileOverride(value string, system probeSystem) []string {
-	if value == "" || !filepath.IsAbs(value) || !system.nonDirectoryFile(value) {
+	if value == "" {
 		return nil
 	}
-	return []string{filepath.Clean(value)}
+	cleaned := filepath.Clean(value)
+	if !filepath.IsAbs(cleaned) || hasParentComponent(value) || !system.nonDirectoryFile(cleaned) {
+		return nil
+	}
+	return []string{cleaned}
+}
+
+// hasParentComponent reports whether p has a ".." path component.
+func hasParentComponent(p string) bool {
+	for part := range strings.SplitSeq(filepath.ToSlash(p), "/") {
+		if part == ".." {
+			return true
+		}
+	}
+	return false
 }
 
 // environValue returns the last value assigned to name and whether it is present
