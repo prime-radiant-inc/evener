@@ -492,7 +492,7 @@ func (o *sessionOperations) fetchHubCompatibilityTranscriptItem(
 			return appitempaging.BuildFetchResponse(candidate.Item, identity, cursor)
 		}
 	}
-	if result.Exhausted || !hubPagesBefore(o.cfg, ref) {
+	if result.Exhausted || !sourceAdvertisesPageBefore(source, ref) {
 		return appwire.SessionFetchResponse{}, appwire.ItemUnreachableOnCompat()
 	}
 	candidates := result.Candidates.Candidates
@@ -529,6 +529,15 @@ func (o *sessionOperations) fetchHubCompatibilityTranscriptItem(
 // hubCompatFetchPageLimit bounds compatibility fetch recovery against an old
 // peer after newer arrivals move the addressed item out of its legacy page.
 const hubCompatFetchPageLimit = 8
+
+func sourceAdvertisesPageBefore(source appsource.Source, ref string) bool {
+	cached, ok := source.(appsource.CachedThreadCapabilitySource)
+	if !ok {
+		return false
+	}
+	capabilities, known := cached.CachedThreadCapabilities(ref, "")
+	return known && capabilities.PageBefore
+}
 
 func fetchSavedTranscriptItem(
 	ctx context.Context,

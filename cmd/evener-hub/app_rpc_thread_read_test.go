@@ -567,6 +567,7 @@ func TestSessionOperationsFetchesHubCompatibilityItemOnePageBack(t *testing.T) {
 	source := appsource.NewLocalDaemonSourceWithEntries("local", func() []appsource.LocalDaemonEntry {
 		return []appsource.LocalDaemonEntry{{
 			Entry:             rendezvous.Entry{Protocol: appwire.ProtocolVersion, Endpoint: "ws" + strings.TrimPrefix(daemonHTTP.URL, "http"), SourceID: "local", ThreadID: "compat-page-back", SessionID: "compat-page-back", WorkspaceRef: "local:compat-page-back"},
+			Capabilities:      appwire.ThreadCapabilities{PageBefore: true},
 			CapabilitiesKnown: true,
 		}}
 	}, http.DefaultClient)
@@ -602,6 +603,66 @@ func TestSessionOperationsFetchesHubCompatibilityItemOnePageBack(t *testing.T) {
 	}
 	if reads.Load() != 1 || pages.Load() != 1 {
 		t.Fatalf("compat fetch calls = reads %d pages %d, want 1 and 1", reads.Load(), pages.Load())
+	}
+}
+
+func TestSessionOperationsBoundsPreBeforeHubCompatibilityFetchToNewestPage(t *testing.T) {
+	targetPosition := appwire.ThreadItemPosition{Entry: 1}
+	newestPosition := appwire.ThreadItemPosition{Entry: 41}
+	var reads, pages atomic.Int64
+	daemon := appserver.NewServer(appserver.ServerConfig{ServerName: "old-daemon", SourceID: "local"})
+	appserver.HandleTyped(daemon.Router(), appwire.MethodThreadRead, func(_ context.Context, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
+		reads.Add(1)
+		if params.FetchCursor != "" {
+			t.Fatal("old daemon received fetch cursor")
+		}
+		return appwire.ThreadReadResponse{
+			Thread: appwire.Thread{ID: "compat-pre-before", SessionID: "compat-pre-before", Evener: appwire.EvenerThread{Ref: params.Ref}, Turns: []appwire.Turn{{
+				ID: "turn-newest", Status: appwire.TurnStatusCompleted, ItemsView: appwire.TurnItemsViewFragment, Items: []appwire.ThreadItem{{
+					ID: "newest", Type: "agentMessage", TurnID: "turn-newest", TranscriptKey: "newest", Position: &newestPosition, Version: 1, Text: "newest",
+				}}, HasEarlierItems: true,
+			}}},
+			OlderCursor: "native-older", Snapshot: &appwire.SnapshotIdentity{Incarnation: "compat-pre-before-snapshot", Length: 41},
+		}, nil
+	})
+	appserver.HandleTyped(daemon.Router(), appwire.MethodThreadTurnsList, func(_ context.Context, _ appwire.ThreadTurnsListParams) (appwire.ThreadTurnsListResponse, error) {
+		pages.Add(1)
+		return appwire.ThreadTurnsListResponse{}, nil
+	})
+	daemonHTTP := httptest.NewServer(http.HandlerFunc(daemon.ServeWebSocket))
+	defer daemonHTTP.Close()
+	source := appsource.NewLocalDaemonSourceWithEntries("local", func() []appsource.LocalDaemonEntry {
+		return []appsource.LocalDaemonEntry{{
+			Entry: rendezvous.Entry{Protocol: appwire.ProtocolVersion, Endpoint: "ws" + strings.TrimPrefix(daemonHTTP.URL, "http"), SourceID: "local", ThreadID: "compat-pre-before", SessionID: "compat-pre-before", WorkspaceRef: "local:compat-pre-before"},
+			CapabilitiesKnown: true,
+		}}
+	}, http.DefaultClient)
+	sources := appsource.NewRegistry()
+	sources.Add(source)
+	cfg := hubcore.WebConfig{HubStateRoot: t.TempDir(), Past: hubcore.NewPastIndex("")}
+	server := appserver.NewServer(appserver.ServerConfig{ServerName: "hub", Version: "test", SourceID: "local"})
+	operations := &sessionOperations{cfg: cfg, sources: sources, relays: newHubRelay(server, cfg, sources), server: server}
+	window := appwire.ThreadWindowParams{TurnWindow: &appwire.ThreadTurnWindow{Latest: 1}}
+	identity := appitempaging.CursorIdentity{
+		ThreadRef: "local:compat-pre-before", Incarnation: window.ViewIncarnation("compat-pre-before-snapshot", appwire.TranscriptItemPageLimit), ProjectionVersion: appitempaging.TranscriptItemProjectionVersion,
+	}
+	fetchCursor, err := appitempaging.EncodeFetchCursor(identity, appitempaging.FetchCursor{
+		Position: targetPosition, ItemVersion: 1, Origin: appitempaging.FetchCursorOriginHubCompat,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = operations.fetch(t.Context(), appwire.SessionFetchRequest{Ref: identity.ThreadRef, FetchCursor: fetchCursor})
+	wire, ok := errors.AsType[appwire.WireError](err)
+	if !ok {
+		t.Fatalf("pre-Before compatibility fetch = %T %v, want typed wire error", err, err)
+	}
+	data, _ := appwire.DecodedErrorData(wire.Data)
+	if data.EvenerErrorInfo != appwire.ErrorItemUnreachableOnCompat {
+		t.Fatalf("pre-Before compatibility fetch info = %q", data.EvenerErrorInfo)
+	}
+	if reads.Load() != 1 || pages.Load() != 0 {
+		t.Fatalf("pre-Before compatibility fetch calls = reads %d pages %d, want 1 and 0", reads.Load(), pages.Load())
 	}
 }
 
@@ -656,6 +717,7 @@ func TestSessionOperationsBoundsUnreachableHubCompatibilityFetch(t *testing.T) {
 	source := appsource.NewLocalDaemonSourceWithEntries("local", func() []appsource.LocalDaemonEntry {
 		return []appsource.LocalDaemonEntry{{
 			Entry:             rendezvous.Entry{Protocol: appwire.ProtocolVersion, Endpoint: "ws" + strings.TrimPrefix(daemonHTTP.URL, "http"), SourceID: "local", ThreadID: "compat-unreachable", SessionID: "compat-unreachable", WorkspaceRef: "local:compat-unreachable"},
+			Capabilities:      appwire.ThreadCapabilities{PageBefore: true},
 			CapabilitiesKnown: true,
 		}}
 	}, http.DefaultClient)
