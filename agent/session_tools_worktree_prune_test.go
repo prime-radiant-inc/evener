@@ -260,10 +260,11 @@ func TestWorktreePrune_NotInGitRepo(t *testing.T) {
 }
 
 // TestWorktreePrune_Sweep1ErrorPropagatesWhenGitUnavailable covers
-// worktreePrune's own error-propagation from collectRegisteredLanes (the FIRST
-// sweep it calls): with every git call failing, sweep 1's own `worktree list
-// --porcelain` call fails and worktreePrune must surface that error rather
-// than continuing to sweep 2/3.
+// error-propagation from worktreePrune's own first `worktree list --porcelain`
+// call: with every git call failing, that listing fails and worktreePrune must
+// surface it rather than continuing to sweep 2/3. The name predates this
+// coverage: the listing fails before collectRegisteredLanes, the first sweep,
+// is called, so the sweep-1 error path is not what this test exercises.
 func TestWorktreePrune_Sweep1ErrorPropagatesWhenGitUnavailable(t *testing.T) {
 	t.Parallel()
 	r := newWorktreeRepo(t)
