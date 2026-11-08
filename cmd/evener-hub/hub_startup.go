@@ -579,13 +579,10 @@ func (r *hubRuntime) onSSHEvent(ev sshconn.Event) {
 		// attached-only), so its threads stay absent from the navigation tree
 		// until the next ~30s tick. Poke the remote-thread refresher on the
 		// same transition so an explicit evener/host/attach populates the tree
-		// immediately. remotePoke is buffered 1 and this send is non-blocking,
-		// so the sshconn event loop never blocks on a refresh already pending.
+		// immediately. The poke is non-blocking, so the sshconn event loop
+		// never blocks on a refresh already pending.
 		func(host string) {
-			select {
-			case r.remotePoke <- struct{}{}:
-			default:
-			}
+			r.pokeRemoteRefresher()
 			// The same transition wakes the host-notification fan-out: a
 			// fan-out sleeping in backoff would otherwise wait up to 30s
 			// before subscribing while the new client's notification buffer

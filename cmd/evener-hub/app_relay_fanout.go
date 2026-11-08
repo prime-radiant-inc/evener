@@ -238,11 +238,24 @@ func (r *hubRelay) startAcknowledgedFanout(
 				if pending.served[target.relayKey] {
 					continue
 				}
-				// A route published but not yet subscribed to has nobody
-				// to hear this yet; it is served once its read releases.
+				// A route published but not yet subscribed to has nobody to
+				// hear this yet. With no read in flight it is closed or was
+				// only touched by snapshot reads and nobody is coming, so
+				// skipping it must not defer: the delivery would otherwise sit
+				// pending until an unrelated route change handed a later first
+				// subscriber a stale resync. A read in flight still reaches the
+				// ready check below, which defers until its subscription lands.
 				if r.server.SubscriberCount(target.relayKey) == 0 {
-					deferred = true
-					continue
+					r.mu.Lock()
+					commands := target.state.commands
+					r.mu.Unlock()
+					// release() drops the command count only after the
+					// subscription is installed, so once it is 0 a positive
+					// SubscriberCount re-read means the first subscriber
+					// landed while this pass was deciding.
+					if commands == 0 && r.server.SubscriberCount(target.relayKey) == 0 {
+						continue
+					}
 				}
 				// A read in flight on this route is about to install its
 				// downstream subscription. Counting the route served now
