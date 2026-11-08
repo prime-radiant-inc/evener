@@ -1,7 +1,13 @@
 import type { ComponentProps } from "react";
 import { act } from "react-test-renderer";
 import { beforeEach, expect, it, vi } from "vitest";
-import type { AnyNotification, AppwireClient, InitializeResponse, KeybindingsRule } from "@evener/appwire-client";
+import {
+	type AnyNotification,
+	type AppwireClient,
+	type InitializeResponse,
+	type KeybindingsRule,
+	RequestTimeoutError,
+} from "@evener/appwire-client";
 import { KeybindingPreferencesScreen } from "./KeybindingPreferencesScreen";
 import { textContrast } from "./design/contrast.testkit";
 import { palettes } from "./design/tokens";
@@ -213,6 +219,54 @@ it("shows a failed immediate edit without closing the editor", async () => {
 	expect(markers(tree, "keybinding-error")).toEqual(["action"]);
 	expect(tree.root.findByType("TextInput" as never).props.value).toBe("Meta+P");
 	expect(navigation.setParams).not.toHaveBeenCalledWith({ editor: undefined });
+	act(() => tree.unmount());
+});
+
+it("shows the model's sanitized failure for a request timeout, not the internal method", async () => {
+	const connection = clientFixture();
+	connection.handlers.set(patchMethod, () => {
+		throw new RequestTimeoutError('AppwireClient: "evener/settings/keybindings/patch" timed out after 1ms');
+	});
+	const tree = await openReader(connection, { actionId: "palette.open", chord: "Meta+P" });
+
+	await act(async () => {
+		tree.root.findByProps({ accessibilityLabel: "Use shortcut" }).props.onPress();
+	});
+
+	const alerts = alertNodes(tree);
+	expect(alerts.length).toBeGreaterThan(0);
+	const shown = alerts
+		.flatMap((node) => node.findAllByType("Text" as never).map((text) => String(text.props.children)))
+		.join(" ");
+	expect(shown.length).toBeGreaterThan(0);
+	expect(shown).not.toContain("evener/settings/keybindings/patch");
+	expect(shown).not.toContain("timed out");
+	act(() => tree.unmount());
+});
+
+it("reveals a repeated identical refusal when the batched update keeps the same words", async () => {
+	const connection = clientFixture();
+	harness.connection = screenConnection(connection.client, "ready");
+	const initial = connection.nextRequest();
+	const scrollTo = vi.fn();
+	const tree = render(app({ actionId: "palette.open", chord: "Meta+" }), {
+		createNodeMock: (element) => (element.type === "ScrollView" ? { scrollTo } : null),
+	});
+	await act(async () => {
+		await connection.connected;
+		await initial;
+	});
+
+	await act(async () => tree.root.findByProps({ accessibilityLabel: "Use shortcut" }).props.onPress());
+	scrollTo.mockClear();
+	// Two presses in one batch: the error clear and both identical rejections
+	// coalesce, so only a fresh report identity can reveal the refusal again.
+	await act(async () => {
+		tree.root.findByProps({ accessibilityLabel: "Use shortcut" }).props.onPress();
+		tree.root.findByProps({ accessibilityLabel: "Use shortcut" }).props.onPress();
+	});
+
+	expect(scrollTo).toHaveBeenCalledWith({ y: 0, animated: true });
 	act(() => tree.unmount());
 });
 

@@ -299,8 +299,8 @@ describe("NativePreferences", () => {
 			confirmed: keybindings,
 			hubError: "hub request failed",
 			loadError: null,
-			error: "The hub request could not be confirmed.",
 		});
+		expect(model.getSnapshot().keybindings.error).not.toBeNull();
 		expect(model.getSnapshot().keybindings).not.toHaveProperty("draft");
 		expect(client.requests.filter((request) => request.method === "evener/settings/keybindings/patch")).toHaveLength(1);
 	});

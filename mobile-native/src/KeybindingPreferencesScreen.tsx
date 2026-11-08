@@ -5,7 +5,7 @@ import { View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import type { KeybindingsRule } from "@evener/appwire-client";
 import { useConnection } from "./ConnectionProvider";
-import { keybindingPreview } from "./keybindingRules";
+import { KeybindingInputError, keybindingPreview } from "./keybindingRules";
 import { useNativePreferences } from "./NativePreferencesProvider";
 import type { HubRoutes } from "./hub/hubSheetContext";
 import { Copy, ErrorMessage, styles, useColors } from "./ui";
@@ -87,21 +87,26 @@ export function KeybindingPreferencesScreen({
 	const model = preferences.model;
 	const available = !!model && preferences.connected && domain?.support === "supported" && !!domain.confirmed;
 	const busy = !available || !!domain?.loading || !!domain?.confirmed?.loadError;
-	const run = (operation: () => Promise<unknown>, success?: () => void) => {
+	const run = (operation: () => Promise<unknown>, success?: (value: unknown) => void) => {
 		if (!scope.connected || !model || scope.hubId !== route.params.hubId) return;
 		const active = () => mounted.current && currentScope.current === scope;
 		setError(null);
 		void operation()
-			.then(() => {
-				if (active()) success?.();
+			.then((value) => {
+				if (active()) success?.(value);
 			})
 			.catch((failure: unknown) => {
-				if (active())
-					setError(
-						failure instanceof Error
-							? failure.message
-							: "The change could not be completed. Check current shortcuts and review your changes.",
-					);
+				if (!active()) return;
+				if (failure instanceof KeybindingInputError) {
+					setError(failure.message);
+					return;
+				}
+				// A request failure's raw message can name the RPC method or a
+				// token. Show the model's sanitized projection instead.
+				setError(
+					model.getSnapshot().keybindings.error ??
+						"The change could not be completed. Check current shortcuts and review your changes.",
+				);
 			});
 	};
 	const closeEditor = () => navigation.setParams({ editor: undefined });
@@ -120,12 +125,16 @@ export function KeybindingPreferencesScreen({
 	const legacy = preferences.legacyKeybindingDraft;
 	const applySaved = (saved: readonly KeybindingsRule[]) => {
 		if (!model) return;
-		run(async () => {
-			await model.applySavedKeybindings(saved);
-			const outcome = preferences.discardLegacyKeybindingDraft();
-			if (outcome !== "removed" && outcome !== "absent" && outcome !== null)
-				throw new Error("The saved changes were applied, but this phone could not remove its old copy.");
-		});
+		run(
+			async () => {
+				await model.applySavedKeybindings(saved);
+				return preferences.discardLegacyKeybindingDraft();
+			},
+			(outcome) => {
+				if (outcome !== "removed" && outcome !== "absent" && outcome !== null)
+					setError("The saved changes were applied, but this phone could not remove its old copy.");
+			},
+		);
 	};
 	const discardSaved = () => {
 		try {
@@ -143,7 +152,10 @@ export function KeybindingPreferencesScreen({
 			? { source: "store", message: domain.error }
 			: null;
 	const errorMessage = shownError?.message;
-	const errorReport = useMemo(() => (errorMessage ? { message: errorMessage } : null), [errorMessage]);
+	// Keep the local report's identity in the dependency list: a repeated
+	// refusal with the same words is still a fresh report, and useErrorInView
+	// must reveal and announce it again.
+	const errorReport = useMemo(() => error ?? (errorMessage ? { message: errorMessage } : null), [error, errorMessage]);
 	const scrollRef = useErrorInView(errorReport);
 	if (connection.activeProfile?.id !== route.params.hubId) return <Copy>{HUB_NO_LONGER_SELECTED}</Copy>;
 	return (
