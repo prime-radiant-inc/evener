@@ -1575,7 +1575,17 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 	s.restGeneration++
 	s.restMu.Unlock()
 	s.turnStartedAt = s.sclock().Now()
+	// A housekeeping input — a job notification, a goal continuation, or the
+	// runtime recovery — runs inside the same delegate generation as the
+	// non-terminal update it follows. Preserve that evidence so a later
+	// missing-report reminder still knows the delegate reached its parent; a new
+	// caller input or attention generation starts fresh.
+	preserveUpdate := kind != EntryUserInput && kind != EntryDelegateAttention
+	updated := s.comm.updated
 	s.comm = communicateResult{}
+	if preserveUpdate {
+		s.comm.updated = updated
+	}
 	// A claimed answering steering carrier has already crossed its durable
 	// admission boundary before this carrier turn runs, so preserve its
 	// established entry-clear behavior. Ordinary user input clears only after
