@@ -273,6 +273,172 @@ func TestEnvFloorRedirectsATildeProjectNpmrcCache(t *testing.T) {
 	assertNpmCacheRedirected(t, policy, []string{"HOME=" + home}, scratch)
 }
 
+// npm resolves a relative npm_config_userconfig against its own confined
+// working directory, which the floor does not resolve. The effective cache is
+// therefore unknown, not absent: with ~/.npm served, judging the served default
+// would leave npm writing to whatever cache that relative file names
+// (#4542 review).
+func TestEnvFloorRedirectsARelativeUserNpmrcCache(t *testing.T) {
+	scratch := "/tmp/evener-session-xyz"
+	home := servedHome(t)
+	worktree := overlayFixtureDir(t)
+	external := filepath.Join(overlayFixtureDir(t), "relative-npm")
+	if err := os.WriteFile(filepath.Join(worktree, "ci.npmrc"), []byte("cache="+external+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	policy := ResolvedPolicy{
+		Mode:          ModeWorkspaceWrite,
+		CacheStrategy: CacheOverlay,
+		CacheRoots:    []string{filepath.Join(home, ".npm")},
+		resolveHost:   HostFacts{Home: home},
+		Git:           GitLayout{WorktreeRoot: worktree},
+		SessionDir:    worktree,
+	}
+	env := []string{"HOME=" + home, "npm_config_userconfig=./ci.npmrc"}
+	assertNpmCacheRedirectedInDir(t, policy, env, worktree, scratch)
+}
+
+// npm expands ${NAME} and a leading ~ in a configured user/global config
+// filename before reading it. The floor must follow the same path: a literal
+// ~/.npmrc naming a served cache is not unknown, and an absolute filename whose
+// ${NAME} segment resolves to an unserved cache must still redirect.
+func TestEnvFloorResolvesConfiguredNpmrcPaths(t *testing.T) {
+	scratch := "/tmp/evener-session-xyz"
+	home := servedHome(t)
+	served := filepath.Join(home, ".npm")
+	worktree := overlayFixtureDir(t)
+	policy := ResolvedPolicy{
+		Mode:          ModeWorkspaceWrite,
+		CacheStrategy: CacheOverlay,
+		CacheRoots:    []string{served},
+		resolveHost:   HostFacts{Home: home},
+		Git:           GitLayout{WorktreeRoot: worktree},
+		SessionDir:    worktree,
+	}
+
+	t.Run("tilde filename naming a served cache", func(t *testing.T) {
+		if err := os.WriteFile(filepath.Join(home, ".npmrc"), []byte("cache="+served+"\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		env := []string{"HOME=" + home, "npm_config_userconfig=~/.npmrc"}
+		out := ApplyEnvFloorInDir(env, policy, scratch, worktree)
+		if v, ok := envValue(out, npmConfigCacheEnv); ok {
+			t.Fatalf("a served cache through an expanded filename was redirected: %q", v)
+		}
+	})
+
+	t.Run("variable filename naming an unserved cache", func(t *testing.T) {
+		base := overlayFixtureDir(t)
+		external := filepath.Join(overlayFixtureDir(t), "var-npm")
+		if err := os.MkdirAll(filepath.Join(base, "cfg"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(base, "cfg", "npmrc"), []byte("cache="+external+"\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		env := []string{
+			"HOME=" + home,
+			"NPM_CFG=cfg",
+			"npm_config_userconfig=" + filepath.Join(base, "${NPM_CFG}", "npmrc"),
+		}
+		assertNpmCacheRedirectedInDir(t, policy, env, worktree, scratch)
+	})
+}
+
+// A spawn with no HOME in its environment still expands ~ from the login
+// user's home, the same home the floor already uses for npm's default cache. A
+// ~ cache that is not served must be judged at that absolute location, not
+// dropped as a relative value and replaced by the served default (#4542
+// review).
+func TestEnvFloorRedirectsATildeProjectNpmrcCacheWithNoHome(t *testing.T) {
+	scratch := "/tmp/evener-session-xyz"
+	login := servedHome(t)
+	worktree := overlayFixtureDir(t)
+	projectDir := filepath.Join(worktree, "pkg")
+	if err := os.MkdirAll(projectDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(projectDir, "package.json"), []byte("{}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(projectDir, ".npmrc"), []byte("cache=~/no-such-npm\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	policy := ResolvedPolicy{
+		Mode:          ModeWorkspaceWrite,
+		CacheStrategy: CacheOverlay,
+		CacheRoots:    []string{filepath.Join(login, ".npm")},
+		resolveHost:   HostFacts{Home: login, LoginHome: login},
+		Git:           GitLayout{WorktreeRoot: worktree},
+		SessionDir:    projectDir,
+	}
+	assertNpmCacheRedirectedInDir(t, policy, nil, projectDir, scratch)
+}
+
+// A spawn can name its own cache instead of a config file. With no HOME, npm
+// still expands a leading ~ from the login user's home, so an unserved
+// ~-rooted npm_config_cache must be redirected like any other unknown effective
+// cache (#4542 review).
+func TestEnvFloorRedirectsATildeNpmConfigCacheWithNoHome(t *testing.T) {
+	scratch := "/tmp/evener-session-xyz"
+	login := servedHome(t)
+	worktree := overlayFixtureDir(t)
+	policy := ResolvedPolicy{
+		Mode:          ModeWorkspaceWrite,
+		CacheStrategy: CacheOverlay,
+		CacheRoots:    []string{filepath.Join(login, ".npm")},
+		resolveHost:   HostFacts{Home: login, LoginHome: login},
+		Git:           GitLayout{WorktreeRoot: worktree},
+		SessionDir:    worktree,
+	}
+	assertNpmCacheRedirectedInDir(t, policy, []string{"npm_config_cache=~/no-such-npm"}, worktree, scratch)
+}
+
+// npm expands ${NAME} in an environment-provided cache value too. An unserved
+// cache named that way must be judged at its expanded path, not left as a
+// relative-looking value the floor cannot place (#4542 review).
+func TestEnvFloorResolvesANpmConfigCacheValue(t *testing.T) {
+	scratch := "/tmp/evener-session-xyz"
+	home := servedHome(t)
+	worktree := overlayFixtureDir(t)
+	external := filepath.Join(overlayFixtureDir(t), "env-var-npm")
+	policy := ResolvedPolicy{
+		Mode:          ModeWorkspaceWrite,
+		CacheStrategy: CacheOverlay,
+		CacheRoots:    []string{filepath.Join(home, ".npm")},
+		resolveHost:   HostFacts{Home: home},
+		Git:           GitLayout{WorktreeRoot: worktree},
+		SessionDir:    worktree,
+	}
+	env := []string{"HOME=" + home, "NPM_CACHE=" + external, "npm_config_cache=${NPM_CACHE}"}
+	assertNpmCacheRedirectedInDir(t, policy, env, worktree, scratch)
+}
+
+// npm's last cache setting wins. An earlier unresolvable ~ value must not mark
+// the whole file unknown when a later value names a served cache.
+func TestEnvFloorJudgesTheLastNpmrcCacheValue(t *testing.T) {
+	scratch := "/tmp/evener-session-xyz"
+	home := servedHome(t)
+	served := filepath.Join(home, ".npm")
+	config := filepath.Join(overlayFixtureDir(t), "multi-cache-npmrc")
+	if err := os.WriteFile(config, []byte("cache=~\ncache="+served+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	worktree := overlayFixtureDir(t)
+	policy := ResolvedPolicy{
+		Mode:          ModeWorkspaceWrite,
+		CacheStrategy: CacheOverlay,
+		CacheRoots:    []string{served},
+		resolveHost:   HostFacts{},
+		Git:           GitLayout{WorktreeRoot: worktree},
+		SessionDir:    worktree,
+	}
+	out := ApplyEnvFloor([]string{"npm_config_userconfig=" + config}, policy, scratch)
+	if v, ok := envValue(out, npmConfigCacheEnv); ok {
+		t.Fatalf("the last cache value is served, got redirect %q", v)
+	}
+}
+
 // A global .npmrc the bounded reader refuses is unknown, not absent: npm may
 // read a cache from it, so the floor must redirect rather than judge the
 // served default.

@@ -435,9 +435,10 @@ const (
 //
 // npm's default global config lives beside its Node installation, which the
 // probe cannot locate without running npm, so it is consulted only when the
-// environment names it. A relative or absent file contributes nothing, and the
-// value is judged absolute later, as a relative cache resolves against npm's
-// own working directory.
+// environment names it. An absent file contributes nothing; a relative
+// filename cannot be located as npm will (it resolves against npm's own
+// working directory), so it contributes nothing here and the spawn floor
+// treats it as unknown. The cache value is judged absolute later.
 func probeNpmrcCaches(system probeSystem, home string) []string {
 	environ := system.environ()
 	user := envValueFold(environ, npmConfigUserConfigEnv)
@@ -452,7 +453,7 @@ func probeNpmrcCaches(system probeSystem, home string) []string {
 	}
 	var roots []string
 	for _, path := range []string{user, global} {
-		roots = append(roots, readNpmrcCacheRoots(system, path)...)
+		roots = append(roots, readNpmrcCacheRoots(system, path, home)...)
 	}
 	return roots
 }
@@ -460,24 +461,27 @@ func probeNpmrcCaches(system probeSystem, home string) []string {
 // readNpmrcCacheRoots reads the absolute `cache=` values in the .npmrc at
 // path. The probe's bounded, non-blocking read refuses a FIFO, a device or an
 // oversized file, so a hostile file costs only its setting (#4542).
-func readNpmrcCacheRoots(system probeSystem, path string) []string {
-	if path == "" || !filepath.IsAbs(path) {
+func readNpmrcCacheRoots(system probeSystem, path, home string) []string {
+	lookup := npmrcEnvLookup(system.environ())
+	resolved, readable, _ := npmConfigFilePath(path, lookup, home)
+	if !readable {
 		return nil
 	}
-	data, err := system.readFile(path)
+	data, err := system.readFile(resolved)
 	if err != nil {
 		return nil
 	}
-	return parseNpmrcCacheRoots(data, npmrcEnvLookup(system.environ()))
+	roots, _ := parseNpmrcCacheRoots(data, lookup, home)
+	return roots
 }
 
 // readProjectNpmrcCacheRoots reads the worktree's .npmrc. It is untrusted
 // repository content, so a final-component symlink is refused (O_NOFOLLOW) and
 // a cache it names is served only where it is already a directory: resolution
 // must never create a host directory on repository say-so.
-func readProjectNpmrcCacheRoots(path string, lookup func(string) string) []string {
+func readProjectNpmrcCacheRoots(path string, lookup func(string) string, home string) []string {
 	var roots []string
-	values, _ := readProjectNpmrc(path, lookup)
+	values, _ := readProjectNpmrc(path, lookup, home)
 	for _, root := range values {
 		if fi, err := os.Stat(root); err == nil && fi.IsDir() {
 			roots = append(roots, root)
@@ -488,8 +492,8 @@ func readProjectNpmrcCacheRoots(path string, lookup func(string) string) []strin
 
 // readProjectNpmrcCacheValue returns the last cache value from the project
 // file, whether or not that directory exists.
-func readProjectNpmrcCacheValue(path string, lookup func(string) string) (string, bool) {
-	values, ok := readProjectNpmrc(path, lookup)
+func readProjectNpmrcCacheValue(path string, lookup func(string) string, home string) (string, bool) {
+	values, ok := readProjectNpmrc(path, lookup, home)
 	if !ok {
 		return "", false
 	}
@@ -502,11 +506,13 @@ func readProjectNpmrcCacheValue(path string, lookup func(string) string) (string
 // readProjectNpmrc parses the cache values of the project .npmrc at path. An
 // absent file is (nil, true): npm falls through to its user/global config. A
 // file that exists but cannot be read safely — a final-component symlink, a
-// device, an unreadable or oversized file — is (nil, false): npm may still
-// read a cache from it, so the caller must not treat it as absent.
-func readProjectNpmrc(path string, lookup func(string) string) ([]string, bool) {
-	if path == "" || !filepath.IsAbs(path) {
-		return nil, true
+// device, an unreadable or oversized file — or whose path cannot be located as
+// npm will is (nil, false): npm may still read a cache from it, so the caller
+// must not treat it as absent.
+func readProjectNpmrc(path string, lookup func(string) string, home string) ([]string, bool) {
+	readable, absent := projectNpmrcFileState(path)
+	if !readable {
+		return nil, absent
 	}
 	f, err := os.OpenFile(path, os.O_RDONLY|openNonblock|openNoFollow, 0)
 	if err != nil {
@@ -517,7 +523,7 @@ func readProjectNpmrc(path string, lookup func(string) string) ([]string, bool) 
 	if err != nil {
 		return nil, false
 	}
-	return parseNpmrcCacheRoots(data, lookup), true
+	return parseNpmrcCacheRoots(data, lookup, home)
 }
 
 // npmrcHostLookup expands a project .npmrc value from host facts, for
@@ -535,24 +541,58 @@ func npmrcHostLookup(host HostFacts) func(string) string {
 }
 
 // readNpmrcCacheRootsEnv reads a user or global .npmrc for a spawn, expanding
-// ${NAME} from the spawn's own environment. Unlike a project file it is host
-// configuration, so symlinks are followed and the bounded non-blocking reader
-// still refuses a FIFO, device, or oversized file. ok is false for that
-// refusal: npm may read a cache from the file, so it is unknown, not absent.
-func readNpmrcCacheRootsEnv(path string, lookup func(string) string) ([]string, bool) {
-	if path == "" || !filepath.IsAbs(path) {
-		return nil, true
+// ${NAME} from the spawn's own environment and ~ from home. Unlike a project
+// file it is host configuration, so symlinks are followed and the bounded
+// non-blocking reader still refuses a FIFO, device, or oversized file. ok is
+// false when the effective cache cannot be resolved safely: a refusal, a
+// nonempty relative filename (npm resolves it against its own working
+// directory), or an unresolvable ~. npm may still read a cache from the file,
+// so it is unknown, not absent.
+func readNpmrcCacheRootsEnv(path string, lookup func(string) string, home string) ([]string, bool) {
+	resolved, readable, absent := npmConfigFilePath(path, lookup, home)
+	if !readable {
+		return nil, absent
 	}
-	f, err := openGoEnvFile(path)
+	f, err := openGoEnvFile(resolved)
 	if err != nil {
 		return nil, os.IsNotExist(err)
 	}
 	defer func() { _ = f.Close() }()
-	data, err := readGoEnvFile(f, path)
+	data, err := readGoEnvFile(f, resolved)
 	if err != nil {
 		return nil, false
 	}
-	return parseNpmrcCacheRoots(data, lookup), true
+	return parseNpmrcCacheRoots(data, lookup, home)
+}
+
+// npmConfigFilePath resolves a configured npm config filename the way npm
+// does: ${NAME} from lookup and a leading ~ from home. Empty is absent; a
+// nonempty path that remains relative after expansion, or a ~ it cannot
+// resolve, is unknown.
+func npmConfigFilePath(path string, lookup func(string) string, home string) (resolved string, readable, absent bool) {
+	if path == "" {
+		return "", false, true
+	}
+	path = expandNpmrcVars(path, lookup)
+	path, ok := expandNpmCacheHome(path, home)
+	if !ok || !filepath.IsAbs(path) {
+		return "", false, false
+	}
+	return path, true, false
+}
+
+// projectNpmrcFileState classifies the project config path, which the floor
+// constructs from the working directory rather than reading from npm's
+// configuration. Empty is absent; a nonempty relative name is unknown.
+func projectNpmrcFileState(path string) (readable, absent bool) {
+	switch {
+	case path == "":
+		return false, true
+	case !filepath.IsAbs(path):
+		return false, false
+	default:
+		return true, false
+	}
 }
 
 // npmrcEnvLookup expands npm's ${NAME} references from the probe's environment.
@@ -561,13 +601,17 @@ func npmrcEnvLookup(environ []string) func(string) string {
 }
 
 // parseNpmrcCacheRoots returns the absolute values of `cache=` lines in an npm
-// config file, with npm's ${NAME} references expanded by lookup. npm's file
-// format is INI-like: blank lines, `#`/`;` comments and `[section]` headers
-// carry no setting, and a quoted value is unquoted. Only an absolute value
-// names a stable directory; a relative one resolves against npm's own working
-// directory, which is not the overlay's.
-func parseNpmrcCacheRoots(data []byte, lookup func(string) string) []string {
+// config file, with npm's ${NAME} references expanded by lookup and a leading ~
+// expanded from home (falling back to lookup's HOME). npm's file format is
+// INI-like: blank lines, `#`/`;` comments and `[section]` headers carry no
+// setting, and a quoted value is unquoted. Only an absolute value names a
+// stable directory; a relative one resolves against npm's own working
+// directory, which is not the overlay's. ok is false when a ~ value cannot be
+// resolved to an absolute home: npm may still write the cache it names, so the
+// effective cache is unknown.
+func parseNpmrcCacheRoots(data []byte, lookup func(string) string, home string) ([]string, bool) {
 	var roots []string
+	known := true
 	for line := range strings.SplitSeq(string(data), "\n") {
 		line = strings.TrimSpace(line)
 		if line == "" || strings.HasPrefix(line, "#") || strings.HasPrefix(line, ";") || strings.HasPrefix(line, "[") {
@@ -581,21 +625,40 @@ func parseNpmrcCacheRoots(data []byte, lookup func(string) string) []string {
 		if len(value) >= 2 && (value[0] == '"' || value[0] == '\'') && value[len(value)-1] == value[0] {
 			value = value[1 : len(value)-1]
 		}
-		// npm expands a leading ~ from HOME; a value it would resolve to an
-		// absolute cache must be judged there, not dropped as relative.
-		if home := lookup(envvars.Home.Name); home != "" {
-			switch {
-			case value == "~":
-				value = home
-			case strings.HasPrefix(value, "~/"):
-				value = filepath.Join(home, strings.TrimPrefix(value, "~/"))
-			}
+		// npm expands a leading ~ from its own home; a value it would resolve to
+		// an absolute cache must be judged there, not dropped as relative. Only
+		// the last value in the file is effective, so knownness rides that line.
+		tildeHome := home
+		if tildeHome == "" {
+			tildeHome = lookup(envvars.Home.Name)
 		}
+		expanded, resolvable := expandNpmCacheHome(value, tildeHome)
+		if !resolvable {
+			known = false
+			continue
+		}
+		value, known = expanded, true
 		if filepath.IsAbs(value) {
 			roots = append(roots, value)
 		}
 	}
-	return roots
+	return roots, known
+}
+
+// expandNpmCacheHome expands npm's leading ~ in a cache value from home. ok is
+// false when the value is ~-rooted and home is not absolute: npm resolves it
+// from a home the floor cannot locate, so the effective cache is unknown.
+func expandNpmCacheHome(value, home string) (string, bool) {
+	if value != "~" && !strings.HasPrefix(value, "~/") {
+		return value, true
+	}
+	if !filepath.IsAbs(home) {
+		return "", false
+	}
+	if value == "~" {
+		return home, true
+	}
+	return filepath.Join(home, strings.TrimPrefix(value, "~/")), true
 }
 
 // stripNpmrcComment removes npm's INI inline comment from value: an unquoted

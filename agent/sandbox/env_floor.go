@@ -329,7 +329,10 @@ func overlayCacheDirs(env []string, policy ResolvedPolicy, workingDir string) (m
 	if out[envvars.GoCache.Name] == "" && cacheHome != "" {
 		out[envvars.GoCache.Name] = filepath.Join(cacheHome, "go-build")
 	}
-	cache, known := npmConfigCacheFor(env, policy, workingDir)
+	// npm resolves "~" and its default user config from the spawn's HOME,
+	// falling back to the login user's home, not this process's own HOME.
+	npmHome := firstOr(home, host.LoginHome, host.Home)
+	cache, known := npmConfigCacheFor(env, policy, workingDir, npmHome)
 	out[npmConfigCacheEnv] = cache
 	if !known {
 		unknown[npmConfigCacheEnv] = true
@@ -339,7 +342,6 @@ func overlayCacheDirs(env []string, policy ResolvedPolicy, workingDir string) (m
 	// and cargo fall back to the login user's home in the user database — not
 	// this process's own HOME, which a deployment may override — so their default
 	// caches are judged where the tools will really write.
-	npmHome := firstOr(home, host.LoginHome, host.Home)
 	if npmHome != "" {
 		out[npmConfigCacheEnv] = firstOr(out[npmConfigCacheEnv], filepath.Join(npmHome, ".npm"))
 		out[envvars.CargoHome.Name] = firstOr(out[envvars.CargoHome.Name], filepath.Join(npmHome, ".cargo"))
@@ -350,36 +352,32 @@ func overlayCacheDirs(env []string, policy ResolvedPolicy, workingDir string) (m
 // npmConfigCacheFor returns the cache npm would use for a spawn in workingDir:
 // its own npm_config_cache, else the project .npmrc of the nearest package to
 // workingDir, else the user/global .npmrc its own environment names, with
-// ${NAME} expanded from that environment. An empty result falls back to
-// $HOME/.npm in the caller. known is false when a config file exists but
-// cannot be read safely, so the effective cache is unknown and must be
-// redirected rather than judged from a config npm may not read.
-func npmConfigCacheFor(env []string, policy ResolvedPolicy, workingDir string) (string, bool) {
-	if value := envValueFold(env, npmConfigCacheEnv); value != "" {
-		return value, true
-	}
+// ${NAME} expanded from that environment and ~ from the same resolved npm home
+// the caller uses for npm's default. An empty result falls back to that home's
+// .npm in the caller. known is false when the effective path cannot be
+// resolved safely — a config file that cannot be read, a nonempty relative
+// config filename, or a ~ value with no home — so the cache is unknown and
+// must be redirected rather than judged from a config npm may read.
+func npmConfigCacheFor(env []string, policy ResolvedPolicy, workingDir, home string) (string, bool) {
 	lookup := npmrcEnvLookup(env)
+	if value := envValueFold(env, npmConfigCacheEnv); value != "" {
+		return expandNpmCacheHome(expandNpmrcVars(value, lookup), home)
+	}
 	if workingDir == "" {
 		workingDir = policy.SessionDir
 	}
-	if projectDir := npmProjectDir(workingDir, policy.Git.WorktreeRoot); projectDir != "" {
-		value, ok := readProjectNpmrcCacheValue(filepath.Join(projectDir, ".npmrc"), lookup)
-		if !ok {
-			return "", false
+	// npmProjectDir treats an empty cwd as "."; with no working directory known,
+	// there is no project file to consult.
+	if workingDir != "" {
+		if projectDir := npmProjectDir(workingDir, policy.Git.WorktreeRoot); projectDir != "" {
+			value, ok := readProjectNpmrcCacheValue(filepath.Join(projectDir, ".npmrc"), lookup, home)
+			if !ok {
+				return "", false
+			}
+			if value != "" {
+				return value, true
+			}
 		}
-		if value != "" {
-			return value, true
-		}
-	}
-	// npm resolves "~" from the spawn's HOME, falling back to the login user's
-	// home, so use the same home for the default user config.
-	vars := envVars(env)
-	home := vars[envvars.Home.Name]
-	if home == "" {
-		home = policy.resolveHost.LoginHome
-	}
-	if home == "" {
-		home = policy.resolveHost.Home
 	}
 	user := envValueFold(env, npmConfigUserConfigEnv)
 	if user == "" && home != "" {
@@ -391,14 +389,14 @@ func npmConfigCacheFor(env []string, policy ResolvedPolicy, workingDir string) (
 			global = filepath.Join(prefix, "etc", "npmrc")
 		}
 	}
-	roots, ok := readNpmrcCacheRootsEnv(user, lookup)
+	roots, ok := readNpmrcCacheRootsEnv(user, lookup, home)
 	if !ok {
 		return "", false
 	}
 	if len(roots) > 0 {
 		return roots[len(roots)-1], true
 	}
-	roots, ok = readNpmrcCacheRootsEnv(global, lookup)
+	roots, ok = readNpmrcCacheRootsEnv(global, lookup, home)
 	if !ok {
 		return "", false
 	}
