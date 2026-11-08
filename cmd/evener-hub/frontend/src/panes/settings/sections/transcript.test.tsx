@@ -223,13 +223,17 @@ test("keeps this file's cross-tab channel apart from a sibling file's", async ()
     const delivered = new Promise<void>((resolve) => {
       witness.onmessage = () => resolve();
     });
+    // Only this test's own frame counts: the bare name also carries any other
+    // parallel file's writes, and those are not this test's business.
+    const sourceId = makeSourceId();
     let siblingHeard = 0;
-    sibling.onmessage = () => {
-      siblingHeard += 1;
+    sibling.onmessage = (event) => {
+      const data = event.data as { sourceId?: string };
+      if (data?.sourceId === sourceId) siblingHeard += 1;
     };
     ours.postMessage({
       version: 1,
-      sourceId: "this-test-file",
+      sourceId,
       layout: "desktop",
       config: encodeLocalConfig(config),
       fingerprint: configFingerprint(config),
