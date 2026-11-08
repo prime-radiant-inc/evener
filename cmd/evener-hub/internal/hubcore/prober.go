@@ -169,15 +169,17 @@ func ProbeResultFromThread(root appwire.Thread) ProbeResult {
 	}
 	runningJobs, completedJobs := splitNonAgentJobs(root.Evener.Diagnostics)
 	return ProbeResult{
-		SessionID:          statusThreadID(root),
-		Status:             root.Status.Type,
-		ActiveFlags:        append([]string(nil), root.Status.ActiveFlags...),
-		PendingAsk:         root.Evener.AskPending,
-		Manager:            root.Evener.Manager,
-		PendingEscalation:  len(root.Evener.PendingEscalations) > 0,
-		PendingEscalations: root.Evener.PendingEscalations,
-		PendingQuestion:    root.Evener.PendingQuestion,
-		Failure:            root.Evener.Failure,
+		SessionID:           statusThreadID(root),
+		Status:              root.Status.Type,
+		ActiveFlags:         append([]string(nil), root.Status.ActiveFlags...),
+		ActiveTurnID:        root.Evener.ActiveTurnID,
+		ActiveTurnStartedAt: root.Evener.ActiveTurnStartedAt,
+		PendingAsk:          root.Evener.AskPending,
+		Manager:             root.Evener.Manager,
+		PendingEscalation:   len(root.Evener.PendingEscalations) > 0,
+		PendingEscalations:  root.Evener.PendingEscalations,
+		PendingQuestion:     root.Evener.PendingQuestion,
+		Failure:             root.Evener.Failure,
 		// Both callers read a current-protocol daemon's own thread projection,
 		// which stamps the capability set beside the status, so the caps are the
 		// daemon's answer — not an approximation.

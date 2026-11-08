@@ -26,12 +26,18 @@ type LiveEntry struct {
 	SessionID string
 	// RosterInstanceID preserves a remote session's identity when SessionID
 	// is its stable, source-qualified tree key. Local entries use SessionID.
-	RosterInstanceID  string
-	Status            string   // most-recent daemon state ("active", "idle", "awaiting", etc.)
-	ActiveFlags       []string // the status flags the daemon reported alongside Status
-	Crashed           bool     // true only for a retained record whose daemon PID is confirmed gone
-	PendingAsk        bool     // true while the daemon reports an unanswered ask_user question
-	PendingEscalation bool     // true while the daemon reports a blocked sandbox-exemption escalation (M7)
+	RosterInstanceID string
+	Status           string   // most-recent daemon state ("active", "idle", "awaiting", etc.)
+	ActiveFlags      []string // the status flags the daemon reported alongside Status
+	// ActiveTurnID and ActiveTurnStartedAt are volatile facts from the latest
+	// successful local probe. A retained record clears both rather than claiming
+	// that a previously observed turn is still running.
+	ActiveTurnID        string
+	ActiveTurnStartedAt int64
+	ProbeState          appwire.ThreadProbeState
+	Crashed             bool // true only for a retained record whose daemon PID is confirmed gone
+	PendingAsk          bool // true while the daemon reports an unanswered ask_user question
+	PendingEscalation   bool // true while the daemon reports a blocked sandbox-exemption escalation (M7)
 	// Manager is the session's own start-time Manager property, as its daemon
 	// projects it. It is fixed for the session's life, so one probe answer
 	// stays current for the entry's lifetime.
@@ -138,11 +144,13 @@ type LiveEntry struct {
 
 // ProbeResult is the dynamic session state returned by a daemon liveness probe.
 type ProbeResult struct {
-	SessionID         string
-	Status            string
-	ActiveFlags       []string
-	PendingAsk        bool
-	PendingEscalation bool
+	SessionID           string
+	Status              string
+	ActiveFlags         []string
+	ActiveTurnID        string
+	ActiveTurnStartedAt int64
+	PendingAsk          bool
+	PendingEscalation   bool
 	// Manager mirrors LiveEntry.Manager: the session's own start-time Manager
 	// property, as its daemon projects it on the root row.
 	Manager bool
@@ -753,14 +761,28 @@ func (r *Roster) recordOwnershipError(generation uint64, err error) {
 		r.mu.Unlock()
 		return
 	}
-	changed := r.ownershipErr == nil || r.ownershipErr.Error() != err.Error()
+	// The scan confirmed none of the rows it retained. Keep their identities and
+	// routes, but do not keep presenting the previous probe's volatile facts as
+	// current. A single-entry confirmation newer than this failed scan remains
+	// fresh: it is independent evidence about that one daemon.
+	byPID, bySess := maps.Clone(r.byPID), maps.Clone(r.bySess)
+	for pid, entry := range byPID {
+		if r.entryPublishedGen[pid] <= generation {
+			byPID[pid] = retainedProbeEntry(entry)
+		}
+	}
+	for sessionID, entry := range bySess {
+		if r.entryPublishedGen[entry.PID] <= generation {
+			bySess[sessionID] = retainedProbeEntry(entry)
+		}
+	}
+	ownershipChanged := r.ownershipErr == nil || r.ownershipErr.Error() != err.Error()
 	r.publishedGen = generation
 	r.ownershipErr = err
-	onChange := r.onChange
+	publication := r.publishListingLocked(bySess, byPID, slices.Clone(r.unconfirmed))
+	publication.changed = publication.changed || ownershipChanged
 	r.mu.Unlock()
-	if changed && onChange != nil {
-		onChange()
-	}
+	publication.fire()
 }
 
 type rosterRefreshBatch struct {
@@ -861,8 +883,7 @@ func classifyMissedProbe(prev LiveEntry, had bool, e rendezvous.Entry, identity 
 		// carries no fresh lifecycle observation: clear the capability and
 		// mark it stale. Stale lifecycle data must never present as current
 		// eligibility, and a stale row must not offer a retire action.
-		prev.Lifecycle = nil
-		prev.LifecycleFresh = false
+		prev = retainedProbeEntry(prev)
 		outcome.kind = missReused
 		outcome.entry = prev
 		return outcome
@@ -913,10 +934,21 @@ func classifyMissedProbe(prev LiveEntry, had bool, e rendezvous.Entry, identity 
 	}
 	crashed.Status = "errored"
 	crashed.Crashed = true
+	crashed = retainedProbeEntry(crashed)
 	outcome.kind = missCrashed
 	outcome.entry = crashed
 	outcome.sessionID = sessionID
 	return outcome
+}
+
+func retainedProbeEntry(entry LiveEntry) LiveEntry {
+	entry.ProbeState = appwire.ThreadProbeStateRetained
+	entry.ActiveTurnID = ""
+	entry.ActiveTurnStartedAt = 0
+	entry.Activity = nil
+	entry.Lifecycle = nil
+	entry.LifecycleFresh = false
+	return entry
 }
 
 func (r *Roster) refreshOwnership() {
@@ -1278,6 +1310,9 @@ func liveEntryFromProbe(e rendezvous.Entry, result ProbeResult) LiveEntry {
 		Entry:                 e,
 		SessionID:             result.SessionID,
 		ActiveFlags:           result.ActiveFlags,
+		ActiveTurnID:          result.ActiveTurnID,
+		ActiveTurnStartedAt:   result.ActiveTurnStartedAt,
+		ProbeState:            appwire.ThreadProbeStateFresh,
 		Capabilities:          result.Capabilities,
 		CapabilitiesKnown:     result.CapabilitiesKnown,
 		RunningSubagentIDs:    result.RunningSubagentIDs,

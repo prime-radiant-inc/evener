@@ -913,6 +913,9 @@ export interface EvenerThread {
    */
   turnCount?: number;
   activeTurnId?: string;
+  quietForMs?: number;
+  probeState?: ThreadProbeState;
+  crashed?: boolean;
   contextPressure?: number;
   contextUsed?: number;
   contextWindow?: number;
@@ -3724,6 +3727,7 @@ export interface SessionDeleteResponse {
 export interface SessionDiscovery {
   threads: ThreadListResponse;
   sources: SessionSource[];
+  builtAt: number;
 }
 
 export interface SessionDocumentParams {
@@ -3904,6 +3908,7 @@ export interface SessionSeenSetResponse {
 
 export interface SessionSource {
   id: string;
+  state: SessionSourceState;
 }
 
 export interface SessionStatusArguments {
@@ -5618,6 +5623,15 @@ export const SESSION_ACTIVITY_RESOURCES = [
 
 export type SessionActivityResource = (typeof SESSION_ACTIVITY_RESOURCES)[number];
 
+export const SESSION_SOURCE_STATES = [
+  "answered",
+  "attempted-failed",
+  "not-selected",
+  "skipped-unattached",
+] as const;
+
+export type SessionSourceState = (typeof SESSION_SOURCE_STATES)[number];
+
 export const SESSION_WATCH_STATES = [
   "armed",
   "ended",
@@ -5625,6 +5639,13 @@ export const SESSION_WATCH_STATES = [
 ] as const;
 
 export type SessionWatchState = (typeof SESSION_WATCH_STATES)[number];
+
+export const THREAD_PROBE_STATES = [
+  "fresh",
+  "retained",
+] as const;
+
+export type ThreadProbeState = (typeof THREAD_PROBE_STATES)[number];
 
 export const THREAD_ITEM_EVENT_KINDS = [
   "system_prompt",

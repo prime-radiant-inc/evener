@@ -376,6 +376,190 @@ func TestManagerReadContracts(t *testing.T) {
 	}
 }
 
+func TestManagerDiscoveryReportsSourceOutcomes(t *testing.T) {
+	owner, _, remote, caller := managerReadFixture(t)
+	remote.unavailable = true
+
+	response := managerInvoke(t, owner, caller, appwire.SessionOperationRequest{Discover: &appwire.ThreadListParams{}})
+	snapshot := response.Discover
+	if snapshot.BuiltAt <= 0 {
+		t.Fatalf("discovery has no build moment: %+v", snapshot)
+	}
+	got := make(map[string]appwire.SessionSourceState, len(snapshot.Sources))
+	for _, source := range snapshot.Sources {
+		got[source.ID] = source.State
+	}
+	want := map[string]appwire.SessionSourceState{
+		"empty":  appwire.SessionSourceSkippedUnattached,
+		"local":  appwire.SessionSourceAnswered,
+		"remote": appwire.SessionSourceAttemptedFailed,
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("source outcomes = %v, want %v", got, want)
+	}
+}
+
+func TestManagerDiscoveryReportsNotSelectedSources(t *testing.T) {
+	owner, _, _, caller := managerReadFixture(t)
+
+	response := managerInvoke(t, owner, caller, appwire.SessionOperationRequest{Discover: &appwire.ThreadListParams{SourceIDs: []string{"local"}}})
+	got := make(map[string]appwire.SessionSourceState, len(response.Discover.Sources))
+	for _, source := range response.Discover.Sources {
+		got[source.ID] = source.State
+	}
+	want := map[string]appwire.SessionSourceState{
+		"empty":  "not-selected",
+		"local":  appwire.SessionSourceAnswered,
+		"remote": "not-selected",
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("explicit source outcomes = %v, want %v", got, want)
+	}
+}
+
+func TestManagerDiscoveryExplicitFailureFailsWhole(t *testing.T) {
+	owner, _, remote, caller := managerReadFixture(t)
+	remote.unavailable = true
+
+	response, err := owner.Invoke(t.Context(), caller, appwire.SessionOperationRequest{Discover: &appwire.ThreadListParams{SourceIDs: []string{"local", "remote"}}})
+	if err == nil {
+		t.Fatalf("mixed explicit discovery served partial response: %+v", response.Discover)
+	}
+	var wire appwire.WireError
+	if !errors.As(err, &wire) {
+		t.Fatalf("mixed explicit discovery error = %v, want wire error", err)
+	}
+	data, _ := appwire.DecodedErrorData(wire.Data)
+	if data.EvenerErrorInfo != appwire.ErrorSessionUnavailable {
+		t.Fatalf("mixed explicit discovery data = %+v, want session unavailable", data)
+	}
+}
+
+func TestManagerDiscoveryExplicitUnattachedSourceFailsWhole(t *testing.T) {
+	owner, _, _, _ := managerReadFixture(t)
+
+	response, err := owner.discover(t.Context(), appwire.ThreadListParams{SourceIDs: []string{"empty"}})
+	if err == nil {
+		t.Fatalf("explicit unattached discovery served a response: %+v", response)
+	}
+	var wire appwire.WireError
+	if !errors.As(err, &wire) {
+		t.Fatalf("explicit unattached discovery error = %v, want wire error", err)
+	}
+	data, _ := appwire.DecodedErrorData(wire.Data)
+	if data.EvenerErrorInfo != appwire.ErrorSessionUnavailable {
+		t.Fatalf("explicit unattached discovery data = %+v, want session unavailable", data)
+	}
+}
+
+func TestManagerDiscoveryCarriesFreshLocalActiveTurn(t *testing.T) {
+	const sessionID = "fleet-active"
+	lastActivityAt := time.Now().Add(-8 * time.Second).UnixMilli()
+	live := hubcore.LiveEntry{
+		Entry: rendezvous.Entry{
+			PID:       501,
+			Protocol:  appwire.ProtocolVersion,
+			Endpoint:  "ws://127.0.0.1:501/rpc",
+			SourceID:  "local",
+			ThreadID:  sessionID,
+			SessionID: sessionID,
+		},
+		SessionID:           sessionID,
+		Status:              appwire.ThreadStatusActive,
+		PendingAsk:          true,
+		PendingQuestion:     &appwire.PendingQuestion{Question: "Choose the safe path", Options: []string{"keep", "stop"}, Count: 1},
+		ActiveTurnID:        "turn-running",
+		ActiveTurnStartedAt: 1_790_000_000_123,
+		ProbeState:          "fresh",
+		Activity:            &appwire.ThreadActivity{LastActivityAt: lastActivityAt},
+	}
+	roster := hubcore.NewRosterWithEntries(live)
+	cfg := hubcore.WebConfig{Roster: roster, Past: hubcore.NewPastIndex(""), HubStateRoot: t.TempDir()}
+	sources := newHubSourceRegistry(cfg)
+	server := appserver.NewServer(appserver.ServerConfig{})
+	owner := &sessionOperations{cfg: cfg, sources: sources, server: server, relays: newHubRelay(server, cfg, sources)}
+	response := managerInvoke(t, owner, appwire.ManagerView{Ref: "local:manager", Manager: true}, appwire.SessionOperationRequest{Discover: &appwire.ThreadListParams{}})
+
+	if response.Discover == nil || len(response.Discover.Threads.Data) != 1 {
+		t.Fatalf("discovery rows = %+v", response.Discover)
+	}
+	got := response.Discover.Threads.Data[0].Evener
+	if got.ActiveTurnID != "turn-running" || got.ActiveTurnStartedAt != 1_790_000_000_123 {
+		t.Fatalf("active turn = %q at %d, want the roster probe facts", got.ActiveTurnID, got.ActiveTurnStartedAt)
+	}
+	if got.ProbeState != "fresh" {
+		t.Fatalf("probe state = %q, want fresh", got.ProbeState)
+	}
+	if !got.AskPending || got.PendingQuestion == nil || got.PendingQuestion.Count != 1 || len(got.PendingQuestion.Options) != 2 {
+		t.Fatalf("existing question facts did not survive fleet enrichment: %+v", got)
+	}
+	wantQuiet := response.Discover.BuiltAt - lastActivityAt
+	if got.QuietForMS == nil || *got.QuietForMS != wantQuiet {
+		t.Fatalf("quiet time = %v, want %d from discovery builtAt", got.QuietForMS, wantQuiet)
+	}
+	encoded, err := json.Marshal(response)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(encoded) > managerReadMaxJSONBytes {
+		t.Fatalf("fleet discovery encoded to %d bytes, limit %d", len(encoded), managerReadMaxJSONBytes)
+	}
+}
+
+func TestManagerDiscoveryDisplaysCrashedLocalLanes(t *testing.T) {
+	crashedEntry := func(sessionID string, failure *appwire.ThreadFailure) hubcore.LiveEntry {
+		pid := 502
+		if failure == nil {
+			pid = 503
+		}
+		return hubcore.LiveEntry{
+			Entry: rendezvous.Entry{
+				PID:       pid,
+				Protocol:  appwire.ProtocolVersion,
+				Endpoint:  "ws://127.0.0.1:502/rpc",
+				SourceID:  "local",
+				ThreadID:  sessionID,
+				SessionID: sessionID,
+			},
+			SessionID:  sessionID,
+			Status:     "errored",
+			Crashed:    true,
+			ProbeState: "retained",
+			Failure:    failure,
+		}
+	}
+	roster := hubcore.NewRosterWithEntries(
+		crashedEntry("crashed-with-failure", &appwire.ThreadFailure{}),
+		crashedEntry("crashed-mid-turn", nil),
+	)
+	cfg := hubcore.WebConfig{Roster: roster, Past: hubcore.NewPastIndex(""), HubStateRoot: t.TempDir()}
+	sources := newHubSourceRegistry(cfg)
+	server := appserver.NewServer(appserver.ServerConfig{})
+	owner := &sessionOperations{cfg: cfg, sources: sources, server: server, relays: newHubRelay(server, cfg, sources)}
+	response := managerInvoke(t, owner, appwire.ManagerView{Ref: "local:manager", Manager: true}, appwire.SessionOperationRequest{Discover: &appwire.ThreadListParams{}})
+
+	if response.Discover == nil || len(response.Discover.Threads.Data) != 2 {
+		t.Fatalf("crashed discovery rows = %+v", response.Discover)
+	}
+	rows := map[string]appwire.Thread{}
+	for _, row := range response.Discover.Threads.Data {
+		rows[row.SessionID] = row
+	}
+	withFailure := rows["crashed-with-failure"]
+	withoutFailure := rows["crashed-mid-turn"]
+	for _, row := range []appwire.Thread{withFailure, withoutFailure} {
+		if row.Status.Type != appwire.ThreadStatusSystemError || !row.Evener.Crashed || row.Evener.ProbeState != "retained" {
+			t.Fatalf("crashed row = %+v", row)
+		}
+		if row.Evener.ActiveTurnID != "" || row.Evener.ActiveTurnStartedAt != 0 || row.Evener.QuietForMS != nil {
+			t.Fatalf("crashed row kept volatile facts: %+v", row.Evener)
+		}
+	}
+	if withFailure.Evener.Failure == nil || withoutFailure.Evener.Failure != nil {
+		t.Fatalf("failure presence changed: with=%+v without=%+v", withFailure.Evener.Failure, withoutFailure.Evener.Failure)
+	}
+}
+
 func TestManagerReadActivityFollowUpPreservesScope(t *testing.T) {
 	owner, local, _, caller := managerReadFixture(t)
 	local.activityNextCursor = "older-subtree-jobs"

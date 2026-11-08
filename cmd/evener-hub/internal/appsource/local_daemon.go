@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/coder/websocket"
 	"primeradiant.com/evener/appwire"
@@ -52,6 +53,14 @@ type LocalDaemonEntry struct {
 	Entry     rendezvous.Entry
 	SessionID string
 	Status    string
+	// ActiveTurnID and ActiveTurnStartedAt are volatile facts from the latest
+	// successful local probe. Retained, crashed, remote, and alias rows leave
+	// them empty.
+	ActiveTurnID        string
+	ActiveTurnStartedAt int64
+	ProbeState          appwire.ThreadProbeState
+	Activity            *appwire.ThreadActivity
+	Crashed             bool
 	// ReadOnlyAlias addresses an in-process descendant through its owner's
 	// daemon. It is valid for reads/subscriptions only; mutation methods must not
 	// accidentally apply a child-targeted request to the owning root session.
@@ -217,7 +226,7 @@ func (s *LocalDaemonSource) SetSessionTools(factory func(appwire.SessionBinding)
 
 func (s *LocalDaemonSource) SessionToolsThread(binding appwire.SessionBinding) (appwire.Thread, error) {
 	for _, entry := range s.entries() {
-		if entry.ReadOnlyAlias {
+		if !localDaemonEntryRouteEligible(entry, false) {
 			continue
 		}
 		thread := s.threadFromEntry(entry)
@@ -277,13 +286,7 @@ func (s *LocalDaemonSource) RunSessionTools(ctx context.Context) {
 			return
 		case <-s.sessionToolsPoke:
 		}
-		wanted := map[string]appwire.Thread{}
-		for _, entry := range s.entries() {
-			if !entry.ReadOnlyAlias {
-				thread := s.threadFromEntry(entry)
-				wanted[thread.Evener.Ref] = thread
-			}
-		}
+		wanted := s.sessionToolsWanted()
 		s.sessionToolsMu.Lock()
 		var stale []appwire.Transport
 		hubID, _ := s.sessionToolsHubID()
@@ -357,6 +360,17 @@ func (s *LocalDaemonSource) RunSessionTools(ctx context.Context) {
 			})
 		}
 	}
+}
+
+func (s *LocalDaemonSource) sessionToolsWanted() map[string]appwire.Thread {
+	wanted := map[string]appwire.Thread{}
+	for _, entry := range s.entries() {
+		if localDaemonEntryRouteEligible(entry, false) {
+			thread := s.threadFromEntry(entry)
+			wanted[thread.Evener.Ref] = thread
+		}
+	}
+	return wanted
 }
 
 func (s *LocalDaemonSource) ResolveRelaySession(params appwire.ThreadReadParams) (appwire.Ref, error) {
@@ -574,7 +588,7 @@ func (s *LocalDaemonSource) ListThreads(ctx context.Context, _ appwire.ThreadLis
 		if err := ctx.Err(); err != nil {
 			return appwire.ThreadListResponse{}, err
 		}
-		out.Data = append(out.Data, s.threadFromEntry(entry))
+		out.Data = append(out.Data, s.threadFromEntryAt(entry, threadListBuiltAt(ctx)))
 	}
 	if err := ctx.Err(); err != nil {
 		return appwire.ThreadListResponse{}, err
@@ -1433,11 +1447,15 @@ func (s *LocalDaemonSource) liveEntries() []LocalDaemonEntry {
 	entries := s.listedEntries()
 	out := make([]LocalDaemonEntry, 0, len(entries))
 	for _, item := range entries {
-		if item.Entry.Protocol == appwire.ProtocolVersion && item.Status != appwire.ThreadStatusRestartRequired {
+		if localDaemonEntryRouteEligible(item, true) && item.Entry.Protocol == appwire.ProtocolVersion && item.Status != appwire.ThreadStatusRestartRequired {
 			out = append(out, item)
 		}
 	}
 	return out
+}
+
+func localDaemonEntryRouteEligible(item LocalDaemonEntry, allowReadOnlyAlias bool) bool {
+	return !item.Crashed && (allowReadOnlyAlias || !item.ReadOnlyAlias)
 }
 
 // listedEntries preserves confirmed incompatible owners for display, without
@@ -1450,7 +1468,7 @@ func (s *LocalDaemonSource) listedEntries() []LocalDaemonEntry {
 	out := make([]LocalDaemonEntry, 0, len(entries))
 	for _, item := range entries {
 		entry := item.Entry
-		if entry.Endpoint == "" || localDaemonThreadID(item) == "" || (entry.Protocol != appwire.ProtocolVersion && item.Status != appwire.ThreadStatusRestartRequired) {
+		if entry.Endpoint == "" || localDaemonThreadID(item) == "" || (entry.Protocol != appwire.ProtocolVersion && item.Status != appwire.ThreadStatusRestartRequired && !item.Crashed) {
 			continue
 		}
 		sourceID := entry.SourceID
@@ -1466,11 +1484,21 @@ func (s *LocalDaemonSource) listedEntries() []LocalDaemonEntry {
 }
 
 func (s *LocalDaemonSource) threadFromEntry(item LocalDaemonEntry) appwire.Thread {
+	return s.threadFromEntryAt(item, time.Time{})
+}
+
+func (s *LocalDaemonSource) threadFromEntryAt(item LocalDaemonEntry, builtAt time.Time) appwire.Thread {
 	entry := localDaemonRendezvousEntry(item)
 	threadID := localDaemonThreadID(item)
 	ref := localDaemonWorkspaceRef(s.sourceID, entry, threadID)
 	instanceID := firstLocalNonEmpty(entry.InstanceID, threadID)
 	status := localDaemonThreadStatus(item.Status)
+	if item.Crashed {
+		status = appwire.ThreadStatusSystemError
+		item.ActiveTurnID = ""
+		item.ActiveTurnStartedAt = 0
+		item.Activity = nil
+	}
 	startedAt := int64(0)
 	if !entry.StartedAt.IsZero() {
 		startedAt = entry.StartedAt.Unix()
@@ -1486,17 +1514,22 @@ func (s *LocalDaemonSource) threadFromEntry(item LocalDaemonEntry) appwire.Threa
 		Path:          filepath.Base(entry.WorkingDir),
 		Source:        s.sourceID,
 		Evener: appwire.EvenerThread{
-			Ref:                ref,
-			InstanceID:         instanceID,
-			Manager:            item.Manager,
-			Capabilities:       listRowCapabilities(item, status),
-			AskPending:         item.PendingAsk,
-			PendingQuestion:    appwire.ClonePendingQuestion(item.PendingQuestion),
-			Failure:            appwire.CloneThreadFailure(item.Failure),
-			PendingEscalations: append([]appwire.SandboxEscalationRequested(nil), item.PendingEscalations...),
-			LastTurnEndedAt:    item.LastTurnEndedAt,
-			LastMessage:        item.LastMessage,
-			Tasks:              appwire.CloneTaskAggregate(item.Tasks),
+			Ref:                 ref,
+			InstanceID:          instanceID,
+			ActiveTurnID:        item.ActiveTurnID,
+			ActiveTurnStartedAt: item.ActiveTurnStartedAt,
+			QuietForMS:          FleetQuietForMS(status == appwire.ThreadStatusActive, item.Subagents.Running, item.Activity, builtAt),
+			ProbeState:          item.ProbeState,
+			Crashed:             item.Crashed,
+			Manager:             item.Manager,
+			Capabilities:        listRowCapabilities(item, status),
+			AskPending:          item.PendingAsk,
+			PendingQuestion:     appwire.ClonePendingQuestion(item.PendingQuestion),
+			Failure:             appwire.CloneThreadFailure(item.Failure),
+			PendingEscalations:  append([]appwire.SandboxEscalationRequested(nil), item.PendingEscalations...),
+			LastTurnEndedAt:     item.LastTurnEndedAt,
+			LastMessage:         item.LastMessage,
+			Tasks:               appwire.CloneTaskAggregate(item.Tasks),
 		},
 		Status: appwire.ThreadStatus{Type: status},
 	}
@@ -1541,6 +1574,29 @@ func (s *LocalDaemonSource) threadFromEntry(item LocalDaemonEntry) appwire.Threa
 		}
 	}
 	return thread
+}
+
+type threadListBuiltAtContextKey struct{}
+
+// WithThreadListBuiltAt gives every local discovery row the response's one
+// sampled build moment. Other list callers omit fleet quiet time.
+func WithThreadListBuiltAt(ctx context.Context, builtAt time.Time) context.Context {
+	return context.WithValue(ctx, threadListBuiltAtContextKey{}, builtAt)
+}
+
+func threadListBuiltAt(ctx context.Context) time.Time {
+	builtAt, _ := ctx.Value(threadListBuiltAtContextKey{}).(time.Time)
+	return builtAt
+}
+
+// FleetQuietForMS applies the roster activity meter's quiet-time rule at one
+// caller-owned moment. A retained or absent activity sample supplies nil.
+func FleetQuietForMS(working bool, runningSubagents int, activity *appwire.ThreadActivity, builtAt time.Time) *int64 {
+	if !working || runningSubagents != 0 || activity == nil || builtAt.IsZero() {
+		return nil
+	}
+	quiet := max(builtAt.Sub(time.UnixMilli(activity.LastActivityAt)).Milliseconds(), 0)
+	return &quiet
 }
 
 // listRowCapabilities projects a local list row's capability set. A probed

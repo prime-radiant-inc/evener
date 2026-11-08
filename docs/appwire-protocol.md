@@ -1283,6 +1283,9 @@ Underlying Go kind: `string` (no struct fields).
 | `profile` | string | yes |  |
 | `turnCount` | int | yes |  |
 | `activeTurnId` | string | yes |  |
+| `quietForMs` | \*int64 | yes |  |
+| `probeState` | [appwire.ThreadProbeState](#threadprobestate) | yes |  |
+| `crashed` | bool | yes |  |
 | `contextPressure` | float64 | yes |  |
 | `contextUsed` | int | yes |  |
 | `contextWindow` | int | yes |  |
@@ -3747,6 +3750,7 @@ Underlying Go kind: `string` (no struct fields).
 |-------|---------|-----------|----------|
 | `threads` | [appwire.ThreadListResponse](#threadlistresponse) |  |  |
 | `sources` | [][appwire.SessionSource](#sessionsource) |  |  |
+| `builtAt` | int64 |  |  |
 
 
 ### `SessionDocumentParams`
@@ -4002,6 +4006,12 @@ Underlying Go kind: `string` (no struct fields).
 | Field | Go type | Omitempty | Embedded |
 |-------|---------|-----------|----------|
 | `id` | string |  |  |
+| `state` | [appwire.SessionSourceState](#sessionsourcestate) |  |  |
+
+
+### `SessionSourceState`
+
+Underlying Go kind: `string` (no struct fields).
 
 
 ### `SessionStatusArguments`
@@ -4624,6 +4634,11 @@ Underlying Go kind: `string` (no struct fields).
 |-------|---------|-----------|----------|
 | `ref` | string |  |  |
 | `name` | string |  |  |
+
+
+### `ThreadProbeState`
+
+Underlying Go kind: `string` (no struct fields).
 
 
 ### `ThreadQueueChangedParams`

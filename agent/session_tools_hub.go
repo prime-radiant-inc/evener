@@ -64,7 +64,7 @@ func managerReadDefinition(def llm.ToolDefinition, ordinary bool) llm.ToolDefini
 				"limit":    map[string]any{"type": "integer"},
 			}},
 		}}
-		def.Description += " Manager hub discovery lists source-qualified sessions and sources, including empty hosts. Set hub.mode to discovery. Do not combine hub with ordinary job filters."
+		def.Description += " Manager hub discovery returns source-qualified sessions and every configured source, including empty hosts, at one builtAt moment. Local roster rows may carry activeTurnId, activeTurnStartedAt, quietForMs, and probeState (fresh or retained); crashed rows remain listed with status.type systemError and crashed true but cannot route live work. Sources reports answered, attempted-failed, skipped-unattached, or not-selected. Disk-index, alias, and remote rows omit local probe facts. Set hub.mode to discovery. Do not combine hub with ordinary job filters."
 	case "model_list":
 		hub["properties"] = map[string]any{"host": map[string]any{"type": "string"}, "cwd": map[string]any{"type": "string"}, "refresh": map[string]any{"type": "boolean"}}
 		hub["required"] = []string{"host"}

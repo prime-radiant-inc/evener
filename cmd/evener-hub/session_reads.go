@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"time"
 
 	"primeradiant.com/evener/agent"
 	"primeradiant.com/evener/appwire"
@@ -20,11 +21,19 @@ const managerReadMaxJSONBytes = 256 << 10
 const managerTaskPageMaxJSONBytes = managerReadMaxJSONBytes - 4096
 
 func (o *sessionOperations) discover(ctx context.Context, params appwire.ThreadListParams) (appwire.SessionDiscovery, error) {
-	threads, err := hubThreadList(ctx, o.cfg, o.sources, params)
+	builtAtTime := time.Now()
+	builtAt := builtAtTime.UnixMilli()
+	ctx = appsource.WithThreadListBuiltAt(ctx, builtAtTime)
+	threads, sourceStates, err := hubThreadListWithSourceStates(ctx, o.cfg, o.sources, params)
 	if err != nil {
 		return appwire.SessionDiscovery{}, err
 	}
-	discovery := appwire.SessionDiscovery{Threads: threads, Sources: []appwire.SessionSource{{ID: "local"}}}
+	for _, sourceID := range params.SourceIDs {
+		if sourceStates[sourceID] == "" {
+			return appwire.SessionDiscovery{}, appwire.SessionUnavailable("source unavailable: " + sourceID)
+		}
+	}
+	discovery := appwire.SessionDiscovery{Threads: threads, Sources: []appwire.SessionSource{{ID: "local", State: sourceStates["local"]}}, BuiltAt: builtAt}
 	seen := map[string]bool{"local": true}
 	hosts := o.cfg.RemoteHostRegistry
 	if hosts == nil {
@@ -41,12 +50,20 @@ func (o *sessionOperations) discover(ctx context.Context, params appwire.ThreadL
 		if host.Removed || seen[host.Name] {
 			continue
 		}
-		discovery.Sources = append(discovery.Sources, appwire.SessionSource{ID: host.Name})
+		state := sourceStates[host.Name]
+		if state == "" {
+			if sourceAllowedForList(host.Name, params) {
+				state = appwire.SessionSourceSkippedUnattached
+			} else {
+				state = appwire.SessionSourceNotSelected
+			}
+		}
+		discovery.Sources = append(discovery.Sources, appwire.SessionSource{ID: host.Name, State: state})
 		seen[host.Name] = true
 	}
 	for _, source := range o.sources.All() {
 		if !seen[source.ID()] {
-			discovery.Sources = append(discovery.Sources, appwire.SessionSource{ID: source.ID()})
+			discovery.Sources = append(discovery.Sources, appwire.SessionSource{ID: source.ID(), State: sourceStates[source.ID()]})
 			seen[source.ID()] = true
 		}
 	}

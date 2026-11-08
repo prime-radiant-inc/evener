@@ -31,9 +31,11 @@ import (
 // the row, a child's watches on the child's row; Lifecycle and LifecycleFresh
 // change what resident UI surfaces; Subagents tallies the last line;
 // LastTurnEndedAt turns a row Finished when a turn starts and ends between two
-// probes; CurrentModel is what a model switch moves.
+// probes; ActiveTurnID and ActiveTurnStartedAt move when a turn starts or
+// settles; ProbeState moves when a local probe is retained or recovers;
+// CurrentModel is what a model switch moves.
 var rosterShownFields = []string{
-	"Status", "ActiveFlags", "Crashed", "PendingAsk", "PendingEscalation",
+	"Status", "ActiveFlags", "ActiveTurnID", "ActiveTurnStartedAt", "ProbeState", "Crashed", "PendingAsk", "PendingEscalation",
 	"PendingEscalations.EscalationID",
 	"PendingQuestion", "Failure",
 	"Capabilities", "CapabilitiesKnown",

@@ -60,6 +60,13 @@ type TaskAggregate struct {
 	Current   *TaskSummary `json:"current,omitempty"`
 }
 
+type ThreadProbeState string
+
+const (
+	ThreadProbeStateFresh    ThreadProbeState = "fresh"
+	ThreadProbeStateRetained ThreadProbeState = "retained"
+)
+
 type EvenerThread struct {
 	ConversationProvenance *ConversationProvenanceState `json:"conversationProvenance,omitempty"`
 	PendingAsk             *PendingAskState             `json:"pendingAsk,omitempty"`
@@ -89,6 +96,9 @@ type EvenerThread struct {
 	// independent of Turns so a bounded metadata read never loads the transcript.
 	TurnCount        int                `json:"turnCount,omitempty"`
 	ActiveTurnID     string             `json:"activeTurnId,omitempty"`
+	QuietForMS       *int64             `json:"quietForMs,omitempty"`
+	ProbeState       ThreadProbeState   `json:"probeState,omitempty"`
+	Crashed          bool               `json:"crashed,omitempty"`
 	ContextPressure  float64            `json:"contextPressure,omitempty"`
 	ContextUsed      int                `json:"contextUsed,omitempty"`
 	ContextWindow    int                `json:"contextWindow,omitempty"`

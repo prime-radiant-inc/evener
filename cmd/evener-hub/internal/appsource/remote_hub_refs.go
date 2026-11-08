@@ -535,7 +535,10 @@ func (s *RemoteHubSource) translateRawTurnActors(raw json.RawMessage) json.RawMe
 // masked to the actions this source can forward, exactly as fromRemoteThread
 // masks the snapshot's, so a subscribed client cannot re-enable a mutation from
 // a thread-bearing notification that the read path answered as unavailable.
-// InstanceID and everything else pass through byte-for-byte. Nested session
+// InstanceID and unknown fields pass through byte-for-byte. The new probe-state
+// and crash classification fields are local to the hub that sampled them and
+// are removed; the existing running-turn fields keep their established
+// notification semantics. Nested session
 // handles under Evener (diagnostics job/delegate transcriptRefs, and each
 // pendingEscalations entry's ref) are rewritten as well.
 func (s *RemoteHubSource) translateThreadRaw(raw json.RawMessage, forwarded appwire.ThreadCapabilities) (json.RawMessage, error) {
@@ -560,6 +563,9 @@ func (s *RemoteHubSource) translateThreadRaw(raw json.RawMessage, forwarded appw
 		var evenerFields map[string]json.RawMessage
 		if err := json.Unmarshal(evener, &evenerFields); err != nil {
 			return nil, err
+		}
+		for _, key := range []string{"quietForMs", "probeState", "crashed"} {
+			delete(evenerFields, key)
 		}
 		for _, key := range []string{"ref", "parentRef"} {
 			field, ok := evenerFields[key]
@@ -681,6 +687,11 @@ func (s *RemoteHubSource) translateOutWithCapabilities(out any, forwarded func()
 			if err != nil {
 				continue
 			}
+			thread.Evener.ActiveTurnID = ""
+			thread.Evener.ActiveTurnStartedAt = 0
+			thread.Evener.QuietForMS = nil
+			thread.Evener.ProbeState = ""
+			thread.Evener.Crashed = false
 			translated = append(translated, thread)
 		}
 		response.Data = translated
