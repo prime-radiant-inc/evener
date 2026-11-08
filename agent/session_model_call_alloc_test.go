@@ -286,10 +286,19 @@ func TestPrepareModelRequestHistoryAllocationBudget(t *testing.T) {
 // Serial: it measures process-global TotalAlloc, and allocations from
 // concurrently running tests would land inside every window it measures.
 
-// minimumChurnTicks is the churned phase's liveness floor on multi-P hosts.
-// A live churner delivers orders of magnitude more than this even on a
-// fully loaded machine (hundreds of ticks per churned phase were observed
-// on a host at load-average 90); only a dead one delivers fewer.
+// minimumChurnTicks is the churned phase's liveness floor on multi-P
+// hosts. A live churner delivers orders of magnitude more than this even
+// on a fully loaded machine (hundreds of ticks per churned phase were
+// observed on a host at load-average 90); only a dead one delivers fewer.
+// The floor bounds liveness, not sufficiency: the scheduler decides how
+// many of those ticks land inside the preparation windows, no
+// process-wide count can bound that share (under extreme contention it
+// can fall toward zero), so a passing phase total does not prove the
+// churn was meaningfully exercised. The sufficiency teeth live where
+// delivery is guaranteed: CI's own ambient background (at least 950KB
+// per window in the failure this file's budget test was recalibrated
+// from) puts any bare-window measurement over the ceiling on the lane
+// that matters.
 const minimumChurnTicks = 10
 
 func TestPrepareModelRequestHistoryBudgetIgnoresConcurrentBackground(t *testing.T) {
