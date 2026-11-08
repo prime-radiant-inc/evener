@@ -284,7 +284,12 @@ func pastEntryItemReadResponse(ctx context.Context, cfg hubcore.WebConfig, param
 	if err != nil {
 		return appwire.ThreadReadResponse{}, true, err
 	}
-	page, err := pastEntryLatestItems(ctx, entry, itemLimit, params.HeldSnapshot, true)
+	var page pastItemPage
+	if params.TurnWindow != nil {
+		page, err = pastEntryTurnWindowItems(ctx, entry, *params.TurnWindow, true)
+	} else {
+		page, err = pastEntryLatestItems(ctx, entry, itemLimit, params.HeldSnapshot, true)
+	}
 	if err != nil {
 		return appwire.ThreadReadResponse{}, true, err
 	}
@@ -489,6 +494,32 @@ func pastEntryLatestItems(ctx context.Context, entry hubcore.PastEntry, limit in
 			page.Derived = pastIndexDerivedTotals(index, entry)
 		}
 		page.Changes = changes
+		return nil
+	})
+	return page, err
+}
+
+func pastEntryTurnWindowItems(ctx context.Context, entry hubcore.PastEntry, selector appwire.ThreadTurnWindow, includeTotals bool) (pastItemPage, error) {
+	var page pastItemPage
+	err := withPastTranscriptIndex(ctx, entry, func(index *transcriptindex.Index) error {
+		resolved, err := index.ResolveTurnWindow(selector)
+		if err != nil {
+			return err
+		}
+		latest, err := index.Latest(1)
+		if err != nil {
+			return err
+		}
+		page = pastItemPage{
+			Candidates:            resolved.Candidates,
+			LatestExecutionTurnID: latest.LatestExecutionTurnID,
+			Identity:              pastCursorIdentity(entry, resolved.Incarnation),
+			Exhausted:             true,
+			Snapshot:              appwire.SnapshotIdentity{Incarnation: resolved.Incarnation, Length: resolved.Length},
+		}
+		if includeTotals {
+			page.Derived = pastIndexDerivedTotals(index, entry)
+		}
 		return nil
 	})
 	return page, err

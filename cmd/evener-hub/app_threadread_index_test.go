@@ -203,6 +203,47 @@ func TestDaemonlessThreadReadIsTheIndexLatestWindow(t *testing.T) {
 	}
 }
 
+func TestDaemonlessThreadReadHonorsTurnWindows(t *testing.T) {
+	cfg, entry, _ := seedIndexedPastSession(t,
+		execution("turn_m1", schema.NewTurn(schema.TurnUserInput, llm.User("first question"))),
+		execution("turn_m1", schema.NewTurn(schema.TurnAssistant, llm.Assistant("first answer"))),
+		completedExecution("turn_m1"),
+		execution("turn_m2", schema.NewTurn(schema.TurnUserInput, llm.User("second question"))),
+		execution("turn_m2", schema.NewTurn(schema.TurnAssistant, llm.Assistant("second answer"))),
+		completedExecution("turn_m2"),
+		execution("turn_m3", schema.NewTurn(schema.TurnUserInput, llm.User("third question"))),
+		execution("turn_m3", schema.NewTurn(schema.TurnAssistant, llm.Assistant("third answer"))),
+		completedExecution("turn_m3"),
+	)
+	for _, tc := range []struct {
+		name   string
+		window appwire.ThreadTurnWindow
+		want   []string
+	}{
+		{name: "latest", window: appwire.ThreadTurnWindow{Latest: 2}, want: []string{"turn_m2", "turn_m3"}},
+		{name: "exact", window: appwire.ThreadTurnWindow{Turn: "turn_m2"}, want: []string{"turn_m2"}},
+		{name: "since", window: appwire.ThreadTurnWindow{Since: "turn_m1", Limit: 1}, want: []string{"turn_m2"}},
+		{name: "before", window: appwire.ThreadTurnWindow{Before: &appwire.ThreadTurnBoundary{TurnID: "turn_m3", Limit: 1}}, want: []string{"turn_m2"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			response, err := dispatchDaemonlessThreadRead(t, cfg, appwire.ThreadReadParams{
+				Ref: "local:" + entry.Meta.ID, IncludeTurns: true,
+				ThreadWindowParams: appwire.ThreadWindowParams{TurnWindow: &tc.window, ItemTypes: []string{"messages"}},
+			})
+			if err != nil {
+				t.Fatalf("daemonless windowed read: %v", err)
+			}
+			got := make([]string, 0, len(response.Thread.Turns))
+			for _, turn := range response.Thread.Turns {
+				got = append(got, turn.ID)
+			}
+			if !slices.Equal(got, tc.want) {
+				t.Fatalf("turn ids = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
 // TestDaemonlessClientHoldingPageWhenToolResultsLands is the spec's daemonless
 // held-page boundary test: a client read the page holding a tool call before
 // its TOOL_RESULTS was recorded, and a later latest-window read whose window no
