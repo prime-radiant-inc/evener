@@ -739,6 +739,9 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 			OpenAIResponsesContinuation: settings.openAIResponsesContinuation,
 			ProviderIdleTimeout:         *lf.providerIdleTimeout,
 			AgentsDocPath:               *agentsDoc,
+			// See RestoreSessionConfig.ExportATIFPath.
+			ExportATIFPath:            sessionCfg.ExportATIFPath,
+			ExportATIFProviderHandles: sessionCfg.ExportATIFProviderHandles,
 		})
 		if err != nil {
 			// The restore reopens the session's kept scratch and can fail
