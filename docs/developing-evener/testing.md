@@ -537,7 +537,8 @@ default with a goroutine dump and no assertion failure when the addition or
 the load pushes it over. That dump reads as a hang (#1326) even though the
 package was still executing tests: each dump taken for #1326 listed a test
 only seconds old as the running test. Pass `-timeout` whenever you ask for
-repeats; no gate runs `-count` above 1 (the `-count=1` rule above is why).
+repeats; no gate runs `-count` above 1, and gates use `-count=1` for fresh
+evidence (above).
 
 CI runs the web check as two lanes on separate runners, web-unit (`make
 test-web`) and web-browser (`make test-web-browser`), and the required `web` job
