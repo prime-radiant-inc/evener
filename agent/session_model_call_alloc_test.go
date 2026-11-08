@@ -25,6 +25,7 @@ import (
 	"slices"
 	"strconv"
 	"testing"
+	"time"
 	"unsafe"
 
 	"primeradiant.com/evener/agent/events"
@@ -152,23 +153,67 @@ func assertPreparedRequestHistory(t *testing.T, s *Session, history []llm.Messag
 	}
 }
 
-// measureRequestHistoryBytesPerPreparation returns the smallest total-allocated
-// delta observed across repetitions of one preparation. The minimum discards
-// one-off background allocations; the deleted copy is present in every
-// repetition, so it cannot be mistaken for noise.
+// measureRequestHistoryBytesPerPreparation returns the median attributable
+// allocation observed across repetitions of one preparation. TotalAlloc is a
+// process-global counter, so in a full test binary on a loaded runner any
+// concurrent background allocation lands in every measured window — the shape
+// of the CI overshoot this budget test once failed on — and neither a minimum
+// nor a median of bare window deltas can discard it. Each round therefore
+// subtracts a control window of the same wall-clock length that runs no
+// preparation: a stationary background rate lands in adjacent windows alike
+// and cancels, while the preparation's own allocation is present in every
+// round and never cancels. The control window busy-waits rather than sleeps:
+// it must hold its processor exactly as the preparation window does, or the
+// two windows stop observing the same background. On a single-P runtime a
+// sleeping control window lends its processor to background allocators that
+// the preparation window starves, and the subtraction would strip real
+// preparation bytes along with the background. A round whose control window
+// out-allocates its preparation measures garbage (a burst landing in the
+// control window only) and is discarded. The median, not the minimum,
+// summarizes the remaining rounds: window-local background arrives in coarse
+// ticks, so round values scatter around the true preparation allocation, and
+// a minimum would systematically understate it — a bias that under load
+// would eat the very margin this budget guards. On a quiet process the
+// rounds agree to within a few kilobytes, so the median equals the minimum
+// there.
 func measureRequestHistoryBytesPerPreparation(t *testing.T, s *Session, repetitions int) int64 {
 	t.Helper()
-	best := int64(math.MaxInt64)
+	var rounds []int64
 	for range repetitions {
 		var before, after runtime.MemStats
+		started := time.Now()
 		runtime.ReadMemStats(&before)
 		prepareRequestHistoryRound(t, s)
 		runtime.ReadMemStats(&after)
-		if used := int64(after.TotalAlloc - before.TotalAlloc); used < best {
-			best = used
+		elapsed := time.Since(started)
+		var idleBefore, idleAfter runtime.MemStats
+		runtime.ReadMemStats(&idleBefore)
+		// Busy-wait rather than sleep so the window holds its processor
+		// the way the preparation window does; the two windows must starve
+		// or free background goroutines identically for the subtraction to
+		// cancel them.
+		deadline := time.Now().Add(elapsed)
+		for time.Now().Before(deadline) {
 		}
+		runtime.ReadMemStats(&idleAfter)
+		used := int64(after.TotalAlloc-before.TotalAlloc) - int64(idleAfter.TotalAlloc-idleBefore.TotalAlloc)
+		if used < 0 {
+			continue
+		}
+		rounds = append(rounds, used)
 	}
-	return best
+	if len(rounds) == 0 {
+		// Every round's control window out-allocated its preparation: the
+		// process is too loud to measure. Say so through the budget check
+		// rather than reporting an attributable zero.
+		return math.MaxInt64
+	}
+	slices.Sort(rounds)
+	if len(rounds)%2 == 1 {
+		return rounds[len(rounds)/2]
+	}
+	mid := len(rounds) / 2
+	return (rounds[mid-1] + rounds[mid]) / 2
 }
 
 // TestPrepareModelRequestHistoryAllocationBudget pins that a preparation
@@ -196,13 +241,68 @@ func TestPrepareModelRequestHistoryAllocationBudget(t *testing.T) {
 			}
 			bytesPerPreparation := measureRequestHistoryBytesPerPreparation(t, s, 5)
 			removable := int64(requestHistoryBudgetTurns) * int64(unsafe.Sizeof(schema.Turn{}))
-			t.Logf("bytes per preparation %d, removable dead copy %d, budget %d", bytesPerPreparation, removable, maxRequestHistoryBytesPerPreparation)
+			t.Logf("attributable bytes per preparation %d, removable dead copy %d, budget %d", bytesPerPreparation, removable, maxRequestHistoryBytesPerPreparation)
 			if bytesPerPreparation >= maxRequestHistoryBytesPerPreparation {
 				t.Fatalf("bytes per preparation %d, budget %d", bytesPerPreparation, maxRequestHistoryBytesPerPreparation)
 			}
 		})
 	}
 }
+
+// TestPrepareModelRequestHistoryBudgetIgnoresConcurrentBackground pins the
+// measurement's attribution: a process that keeps allocating in the
+// background during the measured windows must not move the attributable
+// value. This is the CI failure's shape — a continuous concurrent
+// allocation landing in every window once carried the budget test over its
+// ceiling on a loaded runner. The churner below reproduces it: each tick
+// allocates a fresh buffer and sleeps a fixed slice of wall clock, so the
+// background it injects into a window depends only on the window's duration
+// — the preparation and control windows see the same rate however loaded
+// the host is. A bare-window measurement counts the churn and fails this
+// test's band from above; attributing away more than the background masks
+// a real regression and fails the band from below.
+func TestPrepareModelRequestHistoryBudgetIgnoresConcurrentBackground(t *testing.T) {
+	s := newRequestHistoryPreparationSession(t, requestHistoryBudgetTurns)
+	prepareRequestHistoryRound(t, s) // settle the projection as the budget test does
+	quiet := measureRequestHistoryBytesPerPreparation(t, s, 5)
+	stop := make(chan struct{})
+	churnDone := make(chan struct{})
+	go func() {
+		defer close(churnDone)
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			sink = make([]byte, 64<<10)
+			time.Sleep(200 * time.Microsecond)
+		}
+	}()
+	t.Cleanup(func() {
+		close(stop)
+		<-churnDone
+	})
+	churned := measureRequestHistoryBytesPerPreparation(t, s, 5)
+	t.Logf("attributable bytes per preparation %d quiet, %d under concurrent churn, budget %d", quiet, churned, maxRequestHistoryBytesPerPreparation)
+	if churned >= maxRequestHistoryBytesPerPreparation {
+		t.Fatalf("attributable bytes per preparation %d under concurrent churn, budget %d", churned, maxRequestHistoryBytesPerPreparation)
+	}
+	// The churned measurement must not just pass the ceiling: it must measure
+	// the same preparation. Attributing away MORE than the background masks
+	// a real regression just as counting it invents one. The band is wide
+	// because two honest spreads live inside it: the churner's background
+	// arrives in coarse ticks, and the session's own per-preparation
+	// allocation drifts as its projections warm. Counting the background
+	// failed this band by an order of magnitude; masking it lands far below.
+	lo, hi := quiet*6/10, quiet*14/10
+	if churned < lo || churned > hi {
+		t.Fatalf("attributable bytes per preparation %d under concurrent churn, want within [%d, %d] of the quiet measurement %d", churned, lo, hi, quiet)
+	}
+}
+
+// sink keeps the churner's buffer live across the race detector's checks.
+var sink []byte
 
 // BenchmarkPrepareModelRequestHistory measures one real preparation for both
 // fixture sizes, including expansion, request construction, continuation
