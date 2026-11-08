@@ -406,11 +406,6 @@ func (s *RemoteHubSource) translateNestedRefs(raw json.RawMessage) json.RawMessa
 // route an escalation card by) are translated too; see translateNestedRef.
 func (s *RemoteHubSource) fromRemoteThread(thread appwire.Thread, forwarded appwire.ThreadCapabilities) (appwire.Thread, error) {
 	thread.Source = s.id
-	thread.Evener.ActiveTurnID = ""
-	thread.Evener.ActiveTurnStartedAt = 0
-	thread.Evener.QuietForMS = nil
-	thread.Evener.ProbeState = ""
-	thread.Evener.Crashed = false
 	thread.Evener.Capabilities = maskRemoteThreadCapabilities(thread.Evener.Capabilities, forwarded)
 	ref, err := s.fromRemoteRefString(thread.Evener.Ref)
 	if err != nil {
@@ -540,9 +535,10 @@ func (s *RemoteHubSource) translateRawTurnActors(raw json.RawMessage) json.RawMe
 // masked to the actions this source can forward, exactly as fromRemoteThread
 // masks the snapshot's, so a subscribed client cannot re-enable a mutation from
 // a thread-bearing notification that the read path answered as unavailable.
-// InstanceID and unknown fields pass through byte-for-byte. Probe-derived
-// fleet fields are local to the hub that sampled them and are removed.
-// Nested session
+// InstanceID and unknown fields pass through byte-for-byte. The new probe-state
+// and crash classification fields are local to the hub that sampled them and
+// are removed; the existing running-turn fields keep their established
+// notification semantics. Nested session
 // handles under Evener (diagnostics job/delegate transcriptRefs, and each
 // pendingEscalations entry's ref) are rewritten as well.
 func (s *RemoteHubSource) translateThreadRaw(raw json.RawMessage, forwarded appwire.ThreadCapabilities) (json.RawMessage, error) {
@@ -568,7 +564,7 @@ func (s *RemoteHubSource) translateThreadRaw(raw json.RawMessage, forwarded appw
 		if err := json.Unmarshal(evener, &evenerFields); err != nil {
 			return nil, err
 		}
-		for _, key := range []string{"activeTurnId", "activeTurnStartedAt", "quietForMs", "probeState", "crashed"} {
+		for _, key := range []string{"quietForMs", "probeState", "crashed"} {
 			delete(evenerFields, key)
 		}
 		for _, key := range []string{"ref", "parentRef"} {
@@ -691,6 +687,11 @@ func (s *RemoteHubSource) translateOutWithCapabilities(out any, forwarded func()
 			if err != nil {
 				continue
 			}
+			thread.Evener.ActiveTurnID = ""
+			thread.Evener.ActiveTurnStartedAt = 0
+			thread.Evener.QuietForMS = nil
+			thread.Evener.ProbeState = ""
+			thread.Evener.Crashed = false
 			translated = append(translated, thread)
 		}
 		response.Data = translated

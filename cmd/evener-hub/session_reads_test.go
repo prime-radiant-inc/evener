@@ -448,6 +448,23 @@ func TestManagerDiscoveryExplicitFailureFailsWhole(t *testing.T) {
 	}
 }
 
+func TestManagerDiscoveryExplicitUnattachedSourceFailsWhole(t *testing.T) {
+	owner, _, _, _ := managerReadFixture(t)
+
+	response, err := owner.discover(t.Context(), appwire.ThreadListParams{SourceIDs: []string{"empty"}})
+	if err == nil {
+		t.Fatalf("explicit unattached discovery served a response: %+v", response)
+	}
+	var wire appwire.WireError
+	if !errors.As(err, &wire) {
+		t.Fatalf("explicit unattached discovery error = %v, want wire error", err)
+	}
+	data, _ := appwire.DecodedErrorData(wire.Data)
+	if data.EvenerErrorInfo != appwire.ErrorSessionUnavailable {
+		t.Fatalf("explicit unattached discovery data = %+v, want session unavailable", data)
+	}
+}
+
 func TestManagerDiscoveryCarriesFreshLocalActiveTurn(t *testing.T) {
 	const sessionID = "fleet-active"
 	lastActivityAt := time.Now().Add(-8 * time.Second).UnixMilli()

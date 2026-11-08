@@ -185,9 +185,24 @@ func TestRemoteHubSourceListThreads(t *testing.T) {
 	}
 }
 
-func TestRemoteHubRawThreadDropsLocalOnlyFleetFields(t *testing.T) {
+func TestRemoteHubNonDiscoveryThreadsPreserveRunningTurnFacts(t *testing.T) {
 	source := NewRemoteHubSource("host", nil, nil)
 	raw := json.RawMessage(`{"source":"local","evener":{"ref":"local:t1","activeTurnId":"turn","activeTurnStartedAt":1790000000123,"quietForMs":2500,"probeState":"fresh","crashed":true,"newerField":"kept"}}`)
+
+	response := appwire.ThreadReadResponse{Thread: appwire.Thread{
+		Source: "local",
+		Evener: appwire.EvenerThread{
+			Ref:                 "local:t1",
+			ActiveTurnID:        "turn",
+			ActiveTurnStartedAt: 1_790_000_000_123,
+		},
+	}}
+	if err := source.translateOutWithForwarded(&response, appwire.ThreadCapabilities{}); err != nil {
+		t.Fatal(err)
+	}
+	if response.Thread.Evener.ActiveTurnID != "turn" || response.Thread.Evener.ActiveTurnStartedAt != 1_790_000_000_123 {
+		t.Fatalf("remote thread/read dropped running turn facts: %+v", response.Thread.Evener)
+	}
 
 	translated, err := source.translateThreadRaw(raw, appwire.ThreadCapabilities{})
 	if err != nil {
@@ -199,7 +214,12 @@ func TestRemoteHubRawThreadDropsLocalOnlyFleetFields(t *testing.T) {
 	if err := json.Unmarshal(translated, &thread); err != nil {
 		t.Fatal(err)
 	}
-	for _, field := range []string{"activeTurnId", "activeTurnStartedAt", "quietForMs", "probeState", "crashed"} {
+	for _, field := range []string{"activeTurnId", "activeTurnStartedAt"} {
+		if _, ok := thread.Evener[field]; !ok {
+			t.Fatalf("raw remote thread dropped existing field %s: %s", field, translated)
+		}
+	}
+	for _, field := range []string{"quietForMs", "probeState", "crashed"} {
 		if _, ok := thread.Evener[field]; ok {
 			t.Fatalf("raw remote row kept local-only field %s: %s", field, translated)
 		}

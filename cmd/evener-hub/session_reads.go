@@ -28,6 +28,11 @@ func (o *sessionOperations) discover(ctx context.Context, params appwire.ThreadL
 	if err != nil {
 		return appwire.SessionDiscovery{}, err
 	}
+	for _, sourceID := range params.SourceIDs {
+		if sourceStates[sourceID] == "" {
+			return appwire.SessionDiscovery{}, appwire.SessionUnavailable("source unavailable: " + sourceID)
+		}
+	}
 	discovery := appwire.SessionDiscovery{Threads: threads, Sources: []appwire.SessionSource{{ID: "local", State: sourceStates["local"]}}, BuiltAt: builtAt}
 	seen := map[string]bool{"local": true}
 	hosts := o.cfg.RemoteHostRegistry
