@@ -246,6 +246,9 @@ type taskGuard struct {
 	// afterFailedTaskReload is a test-only scheduling seam after a failed retry
 	// Load has released the store lock. Production leaves it nil.
 	afterFailedTaskReload func()
+	// beforeAutoAdvance is a test-only seam immediately before a post-commit
+	// auto-advance update. Production leaves it nil.
+	beforeAutoAdvance func()
 }
 
 func (g taskGuard) Store() *taskpkg.TaskStore { return g.getOrCreateTaskStore() }

@@ -1283,7 +1283,7 @@ func localDaemonDialError(err error) error {
 	// handshake: the daemon answered the HTTP upgrade but the connection died
 	// before Initialize completed.
 	if _, closed := errors.AsType[websocket.CloseError](err); closed || isTransportLoss(err) {
-		return appwire.SessionUnavailable("local daemon unavailable: " + err.Error())
+		return appwire.RetryableSessionUnavailable("local daemon unavailable: " + err.Error())
 	}
 	return err
 }
@@ -1309,7 +1309,7 @@ func localDaemonCallError(err error) error {
 	if !appwire.IsTransportFailure(err) {
 		return err
 	}
-	return appwire.SessionUnavailable("local daemon unavailable: " + wire.Message)
+	return appwire.RetryableSessionUnavailable("local daemon unavailable: " + wire.Message)
 }
 
 func localDaemonMutationCallError(clientMutationID string, err error) error {

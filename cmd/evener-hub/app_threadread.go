@@ -122,6 +122,9 @@ var afterSavedSubscriptionCapture func(appwire.ThreadReadParams)
 // unavailableThreadReadResponse prefers saved turns, but a confirmed incompatible
 // owner remains readable from roster metadata even before it has a past entry.
 func unavailableThreadReadResponse(ctx context.Context, cfg hubcore.WebConfig, sources *appsource.Registry, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, bool, error) {
+	if params.LiveOnly {
+		return appwire.ThreadReadResponse{}, false, nil
+	}
 	if err := params.ValidateAnswerContinuation(); err != nil {
 		return appwire.ThreadReadResponse{}, false, err
 	}

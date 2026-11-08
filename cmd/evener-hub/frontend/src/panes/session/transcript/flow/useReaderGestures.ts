@@ -213,6 +213,14 @@ export function useReaderGestures({
   const endPointerDrag = useCallback(() => {
     pointerDraggingRef.current = false;
     middleButtonHeldRef.current = false;
+    // A touch's recorded start must not outlive its touch. Its start target can
+    // leave the tree mid-gesture (VirtualList unmounts rows as they scroll
+    // away), and touchend then bubbles only through that detached subtree,
+    // never reaching this port - while the pointer end still can, since losing
+    // its capture target hands the event back to hit-testing. A stale Y would
+    // let a later start-less move be marked from a touch that already ended,
+    // and over-marking is the harmful direction (see markGesture's comment).
+    lastTouchYRef.current = null;
   }, []);
   // The autoscroll state is the only gesture state with no clock and nothing to
   // consume it, so everything that ends it has to be named. A middle press over
@@ -235,6 +243,9 @@ export function useReaderGestures({
   const forgetGesturesWhenHidden = useCallback(() => {
     if (document.visibilityState !== "hidden") return;
     middleButtonHeldRef.current = false;
+    // Hiding can end a touch whose end events never come back to this port, so
+    // the recorded start is a gesture record this path has to bound too.
+    lastTouchYRef.current = null;
     forgetPendingMarker();
   }, [forgetPendingMarker]);
   // biome-ignore lint/correctness/useExhaustiveDependencies: the ref arguments are stable useRef objects owned by useTranscriptScroll

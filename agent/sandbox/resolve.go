@@ -169,6 +169,11 @@ type ResolvedPolicy struct {
 	// resolution resolved to (CarveOutResolvesTo holds it to that location).
 	carveOutAt map[string]string
 
+	// carveOutMissing records which UnmaskedRoots did not exist at resolution,
+	// so only a root created later may have its pin re-derived to the
+	// filesystem's own spelling. A root that existed keeps its exact pin.
+	carveOutMissing map[string]bool
+
 	// configMasks are the masked entries that stand for Evener's config mask,
 	// the only ones a carve-out may sit under.
 	configMasks []string
@@ -285,6 +290,33 @@ func (rp ResolvedPolicy) masks(path string, live bool) bool {
 		if identifier.PathUnder(path, root) {
 			return insideGitDir(path, root) || (live && rp.maskOverlapsCarveOut(root))
 		}
+	}
+	// A root that did not exist at resolution was pinned with its literal
+	// trailing spelling; a directory created later may be stored under another
+	// letter case, which is the spelling a layer's canonical path carries. Only
+	// the same existing directory qualifies, and only while neither spelling is
+	// a symlink, so a different case-fold name stays masked.
+	for _, root := range rp.UnmaskedRoots {
+		if !rp.carveOutMissing[root] {
+			continue
+		}
+		parent := filepath.Dir(root)
+		if !identifier.PathUnder(path, parent) {
+			continue
+		}
+		rel, err := filepath.Rel(parent, path)
+		if err != nil {
+			continue
+		}
+		first, _, _ := strings.Cut(rel, string(filepath.Separator))
+		if !strings.EqualFold(first, filepath.Base(root)) {
+			continue
+		}
+		actual := filepath.Join(parent, first)
+		if isSymlink(root) || isSymlink(actual) || !sameFile(root, actual) {
+			continue
+		}
+		return insideGitDir(path, actual) || (live && rp.maskOverlapsCarveOut(root))
 	}
 	return true
 }
@@ -510,7 +542,7 @@ func Resolve(policy SandboxPolicy, host HostFacts, cwd string) (ResolvedPolicy, 
 		_, err := os.Lstat(m)
 		rp.maskExistedAt[m] = err == nil
 	}
-	rp.UnmaskedRoots, rp.carveOutAt = unmaskedContentRoots(host.EvenerContentRoots, masked, configMasks,
+	rp.UnmaskedRoots, rp.carveOutAt, rp.carveOutMissing = unmaskedContentRoots(host.EvenerContentRoots, masked, configMasks,
 		slices.Concat(rp.FileTool.WriteRoots, rp.Spawned.WriteRoots), host.Home, worktree, host.OS == "darwin")
 	rp.managedContentRootsResolved = resolveRootSpellings(rp.ManagedContentRoots)
 	rp.managedContentRootsOnDisk = onDiskRootSpellings(rp.ManagedContentRoots)
@@ -726,7 +758,7 @@ func cacheRootsFor(mode Mode, host HostFacts, worktree string) []string {
 			// overlaid where the sandbox cannot see that link, not at the
 			// storage it names. Spellings are compared exactly; a worktree
 			// matched only by letter case on a case-insensitive Linux volume
-			// is the known Low tracked in #4306.
+			// is not recognized by this cache-overlay check.
 			return identifier.PathUnder(r, worktree) || identifier.PathUnder(rr, worktree) || linksThroughPrivateMount(r)
 		})
 		return dedupeRoots(roots)
@@ -750,10 +782,9 @@ func cacheRootsFor(mode Mode, host HostFacts, worktree string) []string {
 // again at each spawn (servableCacheRoot), so a granted root retargeted since
 // is caught too.
 //
-// Containment compares resolved spellings exactly. Two spellings that differ
-// only by letter case on a case-insensitive Linux volume are not matched:
-// that friction case is tracked as a known Low in #4306, alongside the same
-// limit for carve-outs, rather than handled by identity checks here.
+// Containment compares resolved spellings exactly, so two spellings that differ
+// only by letter case on a case-insensitive Linux volume are not matched by
+// this cache-overlay check.
 func dropCacheRootsSharingWriteRoots(cacheRoots, writeRoots []string) []string {
 	within := func(c, w string) bool { return c == w || identifier.PathUnder(c, w) }
 	return slices.DeleteFunc(cacheRoots, func(c string) bool {
@@ -973,7 +1004,7 @@ func scopesFor(policy SandboxPolicy, host HostFacts, layout GitLayout, worktree 
 		// anywhere-minus-the-denylist, which covers any hook/MCP/toolchain path that
 		// is not masked — and a masked one must stay masked in every mode.
 		devRoots := guardedHostRoots(host.DeveloperToolRoots, host.Home, worktree)
-		gitConfig := guardedHostRoots(host.GitGlobalConfigPaths, host.Home, worktree)
+		gitConfig := guardedHostRoots(slices.Concat(host.GitGlobalConfigPaths, host.GitSystemConfigPaths), host.Home, worktree)
 		readSpawn := dedupeRoots(slices.Concat(readFile, layout.ReadGrantPaths, defaultSystemReadRoots, devRoots, gitConfig, policy.InfraReadRoots))
 		writeSpawn := dedupeRoots(slices.Concat(writeFile, layout.WritablePaths))
 		fileTool = AccessScope{Read: ReadWorktreeOnly, ReadRoots: readFile, WriteRoots: writeFile}
@@ -1182,7 +1213,7 @@ func onDiskSpelling(p string) string {
 // through it, the same documented residual as a hard link in the worktree
 // (docs/sandboxing.md, "Known residuals"); the sandboxed session cannot create
 // one, since it can neither write the carve-out nor see the masked file.
-func unmaskedContentRoots(candidates, masked, configMasks, writeRoots []string, home, worktree string, darwin bool) ([]string, map[string]string) {
+func unmaskedContentRoots(candidates, masked, configMasks, writeRoots []string, home, worktree string, darwin bool) ([]string, map[string]string, map[string]bool) {
 	// A writable root can alias a content root through a symlink, so overlap is
 	// judged by resolved location as well as by spelling.
 	for _, w := range slices.Clone(writeRoots) {
@@ -1192,6 +1223,7 @@ func unmaskedContentRoots(candidates, masked, configMasks, writeRoots []string, 
 	}
 	var out []string
 	at := map[string]string{}
+	missing := map[string]bool{}
 	for _, root := range guardedHostRoots(candidates, home, worktree) {
 		switch {
 		case isUnderAnyRoot(root, defaultPseudoFSPaths),
@@ -1230,8 +1262,13 @@ func unmaskedContentRoots(candidates, masked, configMasks, writeRoots []string, 
 		// that on-disk spelling (CarveOutResolvesTo compares exactly), even for
 		// a root not created yet.
 		disk := onDiskSpelling(resolved)
+		// Only a root that did not exist at resolution may have its pin
+		// re-derived later; an existing root keeps its exact location.
+		_, statErr := os.Lstat(root)
+		rootMissing := statErr != nil
 		out = append(out, root, resolved, disk)
 		at[root], at[resolved], at[disk] = disk, disk, disk
+		missing[root], missing[resolved], missing[disk] = rootMissing, rootMissing, rootMissing
 		// guardedHostRoots strips the macOS data-volume firmlink spelling
 		// (/System/Volumes/Data/Users/...), which names the same directory and
 		// which a configured XDG_CONFIG_HOME, and so a skill's path, may carry.
@@ -1239,9 +1276,10 @@ func unmaskedContentRoots(candidates, masked, configMasks, writeRoots []string, 
 			alias := firmlinkAlias(root)
 			out = append(out, alias)
 			at[alias] = disk
+			missing[alias] = rootMissing
 		}
 	}
-	return dedupeRoots(out), at
+	return dedupeRoots(out), at, missing
 }
 
 // CarveOutIntact reports whether root, one of the UnmaskedRoots, still resolves
@@ -1269,10 +1307,43 @@ func (rp ResolvedPolicy) CarveOutResolvesTo(root, resolved string) bool {
 	// macOS firmlink alias, names the same directory, while a different
 	// directory never shares its on-disk spelling.
 	at, ok := rp.carveOutAt[root]
-	if !ok || onDiskSpelling(resolved) != at {
+	if !ok {
 		return false
 	}
+	if onDiskSpelling(resolved) != at {
+		// Only a root that did not exist at resolution was pinned with its
+		// literal trailing spelling, so only it may be re-derived to the
+		// spelling the filesystem stores now.
+		if !rp.carveOutMissing[root] || !carveOutAtSpelling(at, root, resolved) {
+			return false
+		}
+	}
 	return !rp.maskOverlapsCarveOut(root)
+}
+
+// carveOutAtSpelling reports whether a carve-out root that did not exist at
+// resolution now sits at resolved under the spelling the filesystem stores: the
+// root is one existing directory whose parent is the pinned parent, and only
+// the final name's case differs. A symlink at either name is refused, so a link
+// planted at a reported path cannot pass for the directory it points to, and
+// the parent comparison re-walks both spellings without following a link, so
+// redirecting an enclosing directory still moves the grant nowhere.
+func carveOutAtSpelling(at, root, resolved string) bool {
+	if isSymlink(root) || isSymlink(resolved) {
+		return false
+	}
+	if !strings.EqualFold(filepath.Base(at), filepath.Base(resolved)) {
+		return false
+	}
+	if parent := filepath.Dir(at); parent != filepath.Dir(resolved) {
+		pinnedParent, pinnedOK := diskSpelling(parent)
+		resolvedParent, resolvedOK := diskSpelling(filepath.Dir(resolved))
+		if !pinnedOK || !resolvedOK ||
+			StripDataVolumeAlias(pinnedParent) != StripDataVolumeAlias(resolvedParent) {
+			return false
+		}
+	}
+	return sameFile(root, resolved)
 }
 
 // maskOverlapsCarveOut reports whether a mask other than Evener's config mask

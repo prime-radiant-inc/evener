@@ -901,6 +901,9 @@ func nameTargetDeletedFailure(clientMutationID string, err error) error {
 // relay is available. A subscribed local read with no rendezvous entry never
 // acquired a relay, so it may still hydrate the persisted transcript.
 func allowsPastFallbackAfterLiveReadFailure(source appsource.Source, params appwire.ThreadReadParams, err error) bool {
+	if params.LiveOnly {
+		return false
+	}
 	if !params.Subscribe {
 		return true
 	}

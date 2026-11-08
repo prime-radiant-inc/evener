@@ -92,6 +92,9 @@ func TestEnvFloorPutsScratchFirstOnGoPathWhenSessionPrivate(t *testing.T) {
 		return ResolvedPolicy{Mode: ModeWorkspaceWrite, CacheStrategy: CacheSessionPrivate, Spawned: AccessScope{Read: ReadAnywhere}, resolveHost: host}
 	}
 	goEnv := writeGoEnvFile(t, "GOPATH=/from/go/env\n")
+	// A spawn with its own GOENV reads a file the probe never saw. Its GOPATH
+	// must follow the scratch entry, or GOPATH-mode builds lose it (#4328).
+	alternateGoEnv := writeGoEnvFile(t, "GOPATH=/from/alternate/env\n")
 	host := HostFacts{OS: "linux", Home: "/home/u", GoPath: "/from/go/env", GoEnvFile: goEnv}
 	restricted := ResolvedPolicy{Mode: ModeRestricted, CacheStrategy: CacheSessionPrivate, Spawned: AccessScope{Read: ReadWorktreeOnly}, resolveHost: host}
 	for _, tc := range []struct {
@@ -103,7 +106,9 @@ func TestEnvFloorPutsScratchFirstOnGoPathWhenSessionPrivate(t *testing.T) {
 		{"spawn env", readAnywhere(host), []string{"GOPATH=/custom/a" + sep + "relative" + sep + "/custom/b"}, scratchGoPath + sep + "/custom/a" + sep + "/custom/b"},
 		{"go env -w", readAnywhere(host), []string{"HOME=/home/u", "GOENV=" + goEnv}, scratchGoPath + sep + "/from/go/env"},
 		// A command run with its own HOME or GOENV would read a different env
-		// file, so it gets Go's default for its own HOME, not the host's setting.
+		// file, so it gets that file's setting, or Go's default for its own HOME
+		// when there is none.
+		{"alternate GOENV", readAnywhere(host), []string{"HOME=/home/u", "GOENV=" + alternateGoEnv}, scratchGoPath + sep + "/from/alternate/env"},
 		{"overridden HOME", readAnywhere(host), []string{"HOME=/tmp/isolated"}, scratchGoPath + sep + "/tmp/isolated/go"},
 		{"overridden GOENV", readAnywhere(host), []string{"HOME=/home/u", "GOENV=/other/env"}, scratchGoPath + sep + "/home/u/go"},
 		{"default", readAnywhere(HostFacts{OS: "linux", Home: "/home/u", GoEnvFile: "/home/u/.config/go/env"}), []string{"HOME=/home/u"}, scratchGoPath + sep + "/home/u/go"},

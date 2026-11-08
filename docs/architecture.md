@@ -277,8 +277,10 @@ so a call that changes only those is the same failing operation; the tool's own
 removes before dispatch fingerprints as the omitted call — while arguments
 that are not a single well-formed JSON value fall back to the raw bytes. Its second
 failure appends a nudge to the result, and the third is **not executed at
-all** — the tool is resolved to compute the key, and the call is refused before
-any validation or execution. The **repetition trigger**
+all** for a tool that can change state — the tool is resolved to compute the key,
+and the call is refused before any validation or execution. A tool registered
+`ReadOnly` is never refused this way: the state it reads may have changed, so
+its repeat dispatches and only receives the nudge. The **repetition trigger**
 counts consecutive byte-identical result bodies regardless of error status, keyed on
 tool name + a hash of the raw argument bytes, and only ever nudges, from the second
 onward; a tool observing mutable state may yet return

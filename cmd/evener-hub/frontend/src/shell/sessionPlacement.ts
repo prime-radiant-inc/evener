@@ -1,4 +1,4 @@
-import { parseZoomParams } from "../panes/zoom/intent";
+import { zoomIntentOf } from "../panes/zoom/intent";
 import { navigate, paneToURL, refParam } from "./routing";
 import {
   cancelCarriedComposerSeat,
@@ -48,9 +48,8 @@ export function openSessionByRef(ref: string): void {
 // same route.
 function cascadeMainCoversRef(ref: string): boolean {
   const main = workspaceStore.getState().mainPane();
-  if (main?.type !== "sessionZoom") return false;
-  const params = parseZoomParams(main.params);
-  return !params?.inspection && params?.source.type === "session" && params.source.params.ref === ref;
+  const params = main === null ? null : zoomIntentOf(main);
+  return params !== null && !params.inspection && params.source.params.ref === ref;
 }
 
 // Reusable session-placement helpers shared by AppShell and contextual callers.

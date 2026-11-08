@@ -725,6 +725,9 @@ func (r *Registry) executeCall(ctx context.Context, env execenv.ExecutionEnviron
 	// release the next identical call. Only failures park — a repeated
 	// identical *success* may still be the call that finally sees the world
 	// change, and refusing it would strand a session repeating its result tool.
+	// A read-only call is never parked either: the file, job, session, or
+	// memory page it reads may have appeared since the last failure, so its
+	// repeat must re-check the world (it still gets the failure nudge).
 	// model_list is an exact JSON continuation protocol. Repeating a page is a
 	// valid retry, and appending breaker text would corrupt its bounded envelope.
 	judged := !breakerBypassed(ctx) && name != "model_list"
@@ -739,8 +742,10 @@ func (r *Registry) executeCall(ctx context.Context, env execenv.ExecutionEnviron
 	// still judged on its raw arguments.
 	key := newDispatchKey(name, call.Arguments, t.NormalizeArgs)
 	if judged {
-		if failStreak, _, snippets := r.breaker.check(key); failStreak >= breakerThreshold {
-			return truncateResult(name, callID, failureParkText(name, snippets), true, defaultToolLimit(name))
+		if !t.ReadOnly {
+			if failStreak, _, snippets := r.breaker.check(key); failStreak >= breakerThreshold {
+				return truncateResult(name, callID, failureParkText(name, snippets), true, defaultToolLimit(name))
+			}
 		}
 	} else {
 		// A human authorized this dispatch, which retires the refusals that

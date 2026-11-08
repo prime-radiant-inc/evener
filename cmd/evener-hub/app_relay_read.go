@@ -23,6 +23,11 @@ func (r *hubRelay) readThreadWithSubscription(ctx context.Context, source appsou
 	if r.cfg.RelayHooks.BeforeReadThread != nil {
 		r.cfg.RelayHooks.BeforeReadThread()
 	}
+	if r.cfg.RelayHooks.ReadThreadFailure != nil {
+		if err := r.cfg.RelayHooks.ReadThreadFailure(ctx, params); err != nil {
+			return nil, err
+		}
+	}
 	needsRelay := params.AnswerContinuation == nil && (params.Subscribe || relayOnThreadRead(source))
 	relaySource, atomic := source.(appsource.RelaySessionSource)
 	if !atomic || !needsRelay {

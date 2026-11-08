@@ -239,6 +239,18 @@ func retirementIdleDelegate(t *testing.T, root *Session) delegateResult {
 	return result
 }
 
+// retirementRunnerCompletionTripwire bounds retirementSettleDelegate's wait for
+// a created delegate runner's first generation to finish: sub.done, closed at
+// the end of the stable-run finalize tail (subagents.go). That is the same close
+// point idleReleaseFirstGenerationTripwire documents, so the bound is shared
+// rather than duplicated. The retirement fixture does not set ForceRealIO, so
+// that comment's fsync detail does not apply here, but the span (model turn,
+// settlement, announcement, attention re-arm) and the bound do. No fixture
+// channel closes `done` and no production deadline precedes it: the launch adds
+// only cancellation over the caller's context and the fixture passes
+// context.Background().
+const retirementRunnerCompletionTripwire = idleReleaseFirstGenerationTripwire
+
 func retirementSettleDelegate(t *testing.T, root *Session, result delegateResult) {
 	t.Helper()
 	sub := root.subagents.get(result.ChildSessionID)
@@ -252,7 +264,7 @@ func retirementSettleDelegate(t *testing.T, root *Session, result delegateResult
 	// bound only prevents a broken fixture from hanging the package indefinitely.
 	select {
 	case <-done:
-	case <-time.After(10 * time.Second): // TRIPWIRE: fixture rendezvous normally takes milliseconds; this only bounds a deadlock.
+	case <-time.After(retirementRunnerCompletionTripwire):
 		t.Fatal("delegate runner did not finish")
 	}
 	if _, err := root.ProcessInput(context.Background(), "settle-root-sentinel", nil); err != nil {
@@ -1025,6 +1037,19 @@ func TestRetirementDelegateDescendantSendAdmittedFirst(t *testing.T) {
 	c.Abort(claim, "")
 }
 
+// retirementColdReconstructionTripwire bounds the two concurrent cold-restore
+// goroutines' completion in TestRetirementDelegateColdReconstructionAdmittedFirst.
+// The fixture's rendezvous is `entered`: it closes while the original manager's
+// claim is still parked inside its first model listing. After `resume`, the
+// restore still constructs the child Session, installs it and adopts it, none
+// of which is gated by a fixture channel or bounded by a production deadline;
+// the old 10s was sized as if the wait were the rendezvous it follows. A
+// correct restore finishes in well under a second at rest, so 30s is a hang
+// guard and matches this package's standing whole-operation tripwire for
+// in-process work (stallHandshakeTimeout, retirementCreateBarrierTripwire,
+// retirementColdClaimTripwire, stalledRefreshTripwire).
+const retirementColdReconstructionTripwire = 30 * time.Second
+
 func TestRetirementDelegateColdReconstructionAdmittedFirst(t *testing.T) {
 	t.Parallel()
 	root, tree, c := newRetirementDelegateController(t)
@@ -1082,7 +1107,7 @@ func TestRetirementDelegateColdReconstructionAdmittedFirst(t *testing.T) {
 			} else if exact != got.sub.sess {
 				t.Fatal("concurrent restore duplicated runtime")
 			}
-		case <-time.After(10 * time.Second): // TRIPWIRE: fixture rendezvous normally takes milliseconds; this only bounds a deadlock.
+		case <-time.After(retirementColdReconstructionTripwire):
 			t.Fatal("cold reconstruction did not finish")
 		}
 	}
@@ -1466,6 +1491,20 @@ func TestRetirementNonBlockingEvidenceWakeScope(t *testing.T) {
 	})
 }
 
+// retirementFileBarrierTripwire bounds the two waits in retirementPauseFileRead.
+// Neither is the fixture's rendezvous: reaching the FIFO open spans the
+// operation's own path to its read — locks, evidence assembly and the open
+// itself — while the writer goroutine only pairs with that read, and joining
+// the resumed operation after the original bytes are restored spans the rest of
+// the operation. No fixture channel bounds either wait past its own observation,
+// and no production deadline bounds either. A correct operation crosses both in
+// milliseconds at rest, so 30s is a hang guard and matches this package's
+// standing whole-operation tripwire for in-process work (stallHandshakeTimeout,
+// retirementCreateBarrierTripwire, retirementColdClaimTripwire,
+// stalledRefreshTripwire). The inline 10s that each replaces was sized as if
+// the wait were the rendezvous it follows, not the operation around it.
+const retirementFileBarrierTripwire = 30 * time.Second
+
 // Pause an actual read of fixture-owned persisted bytes. The original inode is
 // restored before releasing the reader, so subsequent durable writes/readback
 // use the real original writer and file, not a synthetic persistence result.
@@ -1500,7 +1539,7 @@ func retirementPauseFileRead(t *testing.T, path string, run func() error) func()
 		writer = got.file
 	case err := <-done:
 		t.Fatalf("operation failed before read barrier: %v", err)
-	case <-time.After(10 * time.Second): // TRIPWIRE: actual FIFO-open rendezvous, not elapsed-time synchronization.
+	case <-time.After(retirementFileBarrierTripwire):
 		t.Fatal("operation did not reach read barrier")
 	}
 	var once sync.Once
@@ -1523,7 +1562,7 @@ func retirementPauseFileRead(t *testing.T, path string, run func() error) func()
 				if err != nil {
 					t.Error(err)
 				}
-			case <-time.After(10 * time.Second): // TRIPWIRE: joins the exact resumed source operation; no sleep-based assertion.
+			case <-time.After(retirementFileBarrierTripwire):
 				t.Error("resumed source did not finish")
 			}
 		})

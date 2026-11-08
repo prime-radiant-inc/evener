@@ -375,7 +375,7 @@ func (s *relaySession) readWithRoutePublication(
 		s.mu.Unlock()
 		if !valid {
 			s.cancelCapture(capture)
-			return RelayReadResult{}, appwire.SessionUnavailable("relay connection ended before route publication")
+			return RelayReadResult{}, appwire.RetryableSessionUnavailable("relay connection ended before route publication")
 		}
 		publicationErr := routes.Publish(ctx, response.Thread)
 		if publicationErr != nil {
@@ -399,7 +399,7 @@ func (s *relaySession) readWithRoutePublication(
 	s.mu.Unlock()
 	if !valid {
 		s.cancelCapture(capture)
-		return RelayReadResult{}, appwire.SessionUnavailable("relay connection ended during thread rejoin")
+		return RelayReadResult{}, appwire.RetryableSessionUnavailable("relay connection ended during thread rejoin")
 	}
 
 	return RelayReadResult{
@@ -445,7 +445,7 @@ func (s *relaySession) ensureConnection(ctx context.Context) (*relayConnection, 
 	if s.closed || s.epoch != epoch || s.connection != nil {
 		s.mu.Unlock()
 		_ = transport.Close()
-		return nil, appwire.SessionUnavailable("relay connection was superseded")
+		return nil, appwire.RetryableSessionUnavailable("relay connection was superseded")
 	}
 	s.connection = connection
 	s.mu.Unlock()

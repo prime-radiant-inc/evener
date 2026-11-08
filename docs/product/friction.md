@@ -1147,10 +1147,13 @@ scenario here.
 ### T01 Tool-call parking
 
 **Current behavior.** After two actual failures of the same semantic tool call
-and failure class, dispatch parks the third and subsequent attempts. The parked
-result cannot discover that a file, server or dependency has healed. Elapsed
-time and successful different calls do not clear it. Repeated successful calls
-are explicitly never parked.
+and failure class, dispatch parks the third and subsequent attempts of a tool
+that can change state. Read-only tools are never parked on repeated failures: a
+read cannot make a failed retry worse, and the call must be able to observe
+that a file, server or dependency has healed. A parked result cannot discover
+that a file, server or dependency has healed. Elapsed time and successful
+different calls do not clear a park. Repeated successful calls are explicitly
+never parked.
 
 **Evidence.** [Registry dispatch](../../agent/internal/tool/registry.go#L719) and
 [breaker state](../../agent/internal/tool/breaker.go#L280) own the fingerprint and
@@ -1367,8 +1370,10 @@ explicit. A resumed attempt would need a backend-verifiable way to keep a grante
 pathname from being re-pointed, which six review rounds did not find.
 
 **Current behavior.** `restricted` grants the user's global git config FILES
-read-only (`$XDG_CONFIG_HOME/git/config`, `~/.gitconfig`) so git can run at all on a
-host that has one. It grants nothing of its own for the files those configs NAME
+read-only (`$XDG_CONFIG_HOME/git/config`, `~/.gitconfig`, or the file
+`GIT_CONFIG_GLOBAL` names instead, plus a non-default `GIT_CONFIG_SYSTEM` unless
+`GIT_CONFIG_NOSYSTEM` is set) so git can run at all on a host that has one. It
+grants nothing of its own for the files those configs NAME
 through `core.excludesFile` or `core.attributesFile`: such a file is readable only
 where it already sits under a root the mode grants — the project worktree, `/etc`,
 `/opt`, `/nix/store` and the other system read roots — and not elsewhere, typically

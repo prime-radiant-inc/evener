@@ -4,7 +4,7 @@ package execenv
 
 import (
 	"context"
-	"fmt"
+	"errors"
 	"os"
 )
 
@@ -26,24 +26,16 @@ func openBeneathRoot(rootFd int, rel string, flags int, mode uint32) (int, error
 	return -1, errSandboxUnsupported()
 }
 
-func openAbsNoSymlinks(abs string, flags int, mode uint32) (int, error) {
-	return -1, errSandboxUnsupported()
-}
-
-func openRootDir(path string) (int, error) {
-	return -1, errSandboxUnsupported()
-}
-
-// canonicalRecheckRequired / canonicalPathOfFd exist only to satisfy the shared
-// callers; this platform never builds a sandboxFS.
-const canonicalRecheckRequired = false
-
-func canonicalPathOfFd(fd int) (string, error) {
-	return "", errSandboxUnsupported()
-}
+// errSandboxUnsupportedPlatform is the single failure value every stub returns.
+// Returning the sentinel through errSandboxUnsupported, rather than allocating a
+// fresh error in each stub, keeps one errors.Is-able value for the platform and
+// leaves the always-fails property a runtime fact that staticcheck's SA4023
+// analysis cannot use to call the shared callers' error checks unreachable
+// (#3731).
+var errSandboxUnsupportedPlatform = errors.New("sandbox file-tool enforcement is unsupported on this platform")
 
 func errSandboxUnsupported() error {
-	return fmt.Errorf("sandbox file-tool enforcement is unsupported on this platform")
+	return errSandboxUnsupportedPlatform
 }
 
 // The fd-anchored sandboxFS operations live in securepath_fdops_unix.go /

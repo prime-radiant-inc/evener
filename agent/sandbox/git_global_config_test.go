@@ -233,6 +233,11 @@ func TestProbeGitGlobalConfigPaths(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(dirHome, ".gitconfig"), 0o755); err != nil {
 		t.Fatal(err)
 	}
+	envGlobal := filepath.Join(t.TempDir(), "env-global")
+	if err := os.WriteFile(envGlobal, []byte("[user]\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	envDir := t.TempDir()
 
 	for _, tc := range []struct {
 		name   string
@@ -269,6 +274,31 @@ func TestProbeGitGlobalConfigPaths(t *testing.T) {
 			system: gitConfigProbeSystem{homeErr: errors.New("no home")},
 			want:   nil,
 		},
+		{
+			name:   "GIT_CONFIG_GLOBAL names the global config in place of the FILES",
+			system: gitConfigProbeSystem{stubProbeSystem: stubProbeSystem{env: map[string]string{"GIT_CONFIG_GLOBAL": envGlobal}}, home: home},
+			want:   []string{envGlobal},
+		},
+		{
+			name:   "an explicit empty GIT_CONFIG_GLOBAL names no config",
+			system: gitConfigProbeSystem{stubProbeSystem: stubProbeSystem{env: map[string]string{"GIT_CONFIG_GLOBAL": ""}}, home: home},
+			want:   nil,
+		},
+		{
+			name:   "a relative GIT_CONFIG_GLOBAL contributes nothing",
+			system: gitConfigProbeSystem{stubProbeSystem: stubProbeSystem{env: map[string]string{"GIT_CONFIG_GLOBAL": "config"}}, home: home},
+			want:   nil,
+		},
+		{
+			name:   "a missing GIT_CONFIG_GLOBAL contributes nothing",
+			system: gitConfigProbeSystem{stubProbeSystem: stubProbeSystem{env: map[string]string{"GIT_CONFIG_GLOBAL": filepath.Join(home, "absent")}}, home: home},
+			want:   nil,
+		},
+		{
+			name:   "a directory GIT_CONFIG_GLOBAL contributes nothing",
+			system: gitConfigProbeSystem{stubProbeSystem: stubProbeSystem{env: map[string]string{"GIT_CONFIG_GLOBAL": envDir}}, home: home},
+			want:   nil,
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
@@ -276,5 +306,187 @@ func TestProbeGitGlobalConfigPaths(t *testing.T) {
 				t.Errorf("probeGitGlobalConfigPaths = %v, want %v", got, tc.want)
 			}
 		})
+	}
+}
+
+// TestProbeGitSystemConfigPaths pins that only an actual override that git will
+// read is granted: a non-empty absolute existing FILE, with GIT_CONFIG_NOSYSTEM
+// not enabled. The built-in /etc/gitconfig already sits under a restricted
+// system read root.
+func TestProbeGitSystemConfigPaths(t *testing.T) {
+	t.Parallel()
+	home := t.TempDir()
+	systemConfig := filepath.Join(home, "gitconfig-system")
+	if err := os.WriteFile(systemConfig, []byte("[user]\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, tc := range []struct {
+		name   string
+		system gitConfigProbeSystem
+		want   []string
+	}{
+		{
+			name:   "an absolute existing override is granted",
+			system: gitConfigProbeSystem{stubProbeSystem: stubProbeSystem{env: map[string]string{"GIT_CONFIG_SYSTEM": systemConfig}}, home: home},
+			want:   []string{systemConfig},
+		},
+		{
+			name:   "GIT_CONFIG_NOSYSTEM=1 disables the override",
+			system: gitConfigProbeSystem{stubProbeSystem: stubProbeSystem{env: map[string]string{"GIT_CONFIG_SYSTEM": systemConfig, "GIT_CONFIG_NOSYSTEM": "1"}}, home: home},
+			want:   nil,
+		},
+		{
+			name:   "GIT_CONFIG_NOSYSTEM=true disables the override",
+			system: gitConfigProbeSystem{stubProbeSystem: stubProbeSystem{env: map[string]string{"GIT_CONFIG_SYSTEM": systemConfig, "GIT_CONFIG_NOSYSTEM": "true"}}, home: home},
+			want:   nil,
+		},
+		{
+			name:   "GIT_CONFIG_NOSYSTEM=0 leaves the override",
+			system: gitConfigProbeSystem{stubProbeSystem: stubProbeSystem{env: map[string]string{"GIT_CONFIG_SYSTEM": systemConfig, "GIT_CONFIG_NOSYSTEM": "0"}}, home: home},
+			want:   []string{systemConfig},
+		},
+		{
+			name:   "GIT_CONFIG_NOSYSTEM=0x0 leaves the override",
+			system: gitConfigProbeSystem{stubProbeSystem: stubProbeSystem{env: map[string]string{"GIT_CONFIG_SYSTEM": systemConfig, "GIT_CONFIG_NOSYSTEM": "0x0"}}, home: home},
+			want:   []string{systemConfig},
+		},
+		{
+			name:   "GIT_CONFIG_NOSYSTEM=0x1 disables the override",
+			system: gitConfigProbeSystem{stubProbeSystem: stubProbeSystem{env: map[string]string{"GIT_CONFIG_SYSTEM": systemConfig, "GIT_CONFIG_NOSYSTEM": "0x1"}}, home: home},
+			want:   nil,
+		},
+		{
+			name:   "GIT_CONFIG_NOSYSTEM=010 disables the override",
+			system: gitConfigProbeSystem{stubProbeSystem: stubProbeSystem{env: map[string]string{"GIT_CONFIG_SYSTEM": systemConfig, "GIT_CONFIG_NOSYSTEM": "010"}}, home: home},
+			want:   nil,
+		},
+		{
+			name:   "GIT_CONFIG_NOSYSTEM with a leading space and 0 leaves the override",
+			system: gitConfigProbeSystem{stubProbeSystem: stubProbeSystem{env: map[string]string{"GIT_CONFIG_SYSTEM": systemConfig, "GIT_CONFIG_NOSYSTEM": " 0"}}, home: home},
+			want:   []string{systemConfig},
+		},
+		{
+			name:   "a value git rejects as a boolean grants nothing because git will not run",
+			system: gitConfigProbeSystem{stubProbeSystem: stubProbeSystem{env: map[string]string{"GIT_CONFIG_SYSTEM": systemConfig, "GIT_CONFIG_NOSYSTEM": "maybe"}}, home: home},
+			want:   nil,
+		},
+		{
+			name:   "a relative override contributes nothing",
+			system: gitConfigProbeSystem{stubProbeSystem: stubProbeSystem{env: map[string]string{"GIT_CONFIG_SYSTEM": "gitconfig-system"}}, home: home},
+			want:   nil,
+		},
+		{
+			name:   "a missing override contributes nothing",
+			system: gitConfigProbeSystem{stubProbeSystem: stubProbeSystem{env: map[string]string{"GIT_CONFIG_SYSTEM": filepath.Join(home, "absent")}}, home: home},
+			want:   nil,
+		},
+		{
+			name:   "an empty override contributes nothing",
+			system: gitConfigProbeSystem{stubProbeSystem: stubProbeSystem{env: map[string]string{"GIT_CONFIG_SYSTEM": ""}}, home: home},
+			want:   nil,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if got := probeGitSystemConfigPaths(tc.system); !slices.Equal(got, tc.want) {
+				t.Errorf("probeGitSystemConfigPaths = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestGitConfigFileOverrideRejectsAParentAfterASymlink pins that the file an
+// override admits is the file it grants: a ".." after a symlink resolves to a
+// different object than filepath.Clean reports, so the spelling is refused
+// rather than granting a directory the admission check never saw. A plain
+// symlink, which names the file that was checked, is still admitted.
+func TestGitConfigFileOverrideRejectsAParentAfterASymlink(t *testing.T) {
+	t.Parallel()
+	base := t.TempDir()
+	repo := filepath.Join(base, "repo")
+	if err := os.MkdirAll(filepath.Join(repo, "a", "b"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(repo, "a", "b"), filepath.Join(repo, "link")); err != nil {
+		t.Skipf("cannot create a symlink on this volume: %v", err)
+	}
+	config := filepath.Join(repo, ".config")
+	if err := os.WriteFile(config, []byte("[user]\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// The cleaned spelling is a directory; the kernel resolves the symlink first
+	// and reaches the regular file above.
+	if err := os.MkdirAll(filepath.Join(base, ".config"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	system := gitConfigProbeSystem{home: base}
+	attack := filepath.Join(repo, "link") + "/../.." + "/.config"
+	if !system.nonDirectoryFile(attack) {
+		t.Fatalf("fixture: %s must stat as a file", attack)
+	}
+	if got := gitConfigFileOverride(attack, system); len(got) != 0 {
+		t.Errorf("a parent component after a symlink must not be granted: %v", got)
+	}
+
+	linkFile := filepath.Join(repo, "config-link")
+	if err := os.Symlink(config, linkFile); err != nil {
+		t.Fatal(err)
+	}
+	if got := gitConfigFileOverride(linkFile, system); !slices.Equal(got, []string{linkFile}) {
+		t.Errorf("a plain symlink to the checked file must be granted as %q, got %v", linkFile, got)
+	}
+}
+
+// TestRestrictedGrantsGitConfigOverridesToSpawnedOnly pins the resolver half of
+// the GIT_CONFIG_GLOBAL/GIT_CONFIG_SYSTEM fix: both overrides reach the spawned
+// layer (git must read the file the environment names) and neither reaches the
+// file tools, which stay confined to the worktree.
+func TestRestrictedGrantsGitConfigOverridesToSpawnedOnly(t *testing.T) {
+	t.Parallel()
+	home, dotfile, _ := gitGlobalConfigFiles(t)
+	systemConfig := filepath.Join(home, "gitconfig-system")
+	if err := os.WriteFile(systemConfig, []byte("[user]\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cwd := mainRepo(t)
+	host := darwinHostWithGitGlobalConfig(dotfile)
+	host.Home = home
+	host.GitSystemConfigPaths = []string{systemConfig}
+
+	rp, err := Resolve(SandboxPolicy{Mode: ModeRestricted}, host, cwd)
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	for _, f := range []string{dotfile, systemConfig} {
+		if !slices.Contains(rp.Spawned.ReadRoots, f) {
+			t.Errorf("restricted spawned read roots must include git config %q, got %v", f, rp.Spawned.ReadRoots)
+		}
+		if slices.Contains(rp.FileTool.ReadRoots, f) {
+			t.Errorf("git config %q must NOT reach the file-tool layer: %v", f, rp.FileTool.ReadRoots)
+		}
+	}
+}
+
+// TestGitSystemConfigOverrideLosesToTheDenylist pins that the env-named system
+// file is subject to the same denylist precedence as the global files: a
+// denylisted entry never survives as a spawned read root.
+func TestGitSystemConfigOverrideLosesToTheDenylist(t *testing.T) {
+	t.Parallel()
+	home, dotfile, _ := gitGlobalConfigFiles(t)
+	systemConfig := filepath.Join(home, "gitconfig-system")
+	if err := os.WriteFile(systemConfig, []byte("[user]\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	host := darwinHostWithGitGlobalConfig(dotfile)
+	host.Home = home
+	host.GitSystemConfigPaths = []string{systemConfig}
+
+	rp, err := Resolve(SandboxPolicy{Mode: ModeRestricted, DenylistAdd: []string{systemConfig}}, host, mainRepo(t))
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if slices.Contains(rp.Spawned.ReadRoots, systemConfig) {
+		t.Errorf("a denylisted system git config must never survive as a read root: %v", rp.Spawned.ReadRoots)
 	}
 }

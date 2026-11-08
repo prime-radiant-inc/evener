@@ -14,7 +14,7 @@ import { requestComposerFocus } from "../panes/session/composer/composerFocus";
 import { conversationContextIncludes } from "../panes/session/transcript/openTranscript";
 import { isKnownSettingsSection, resolveSettingsSection } from "../panes/settings/sections";
 import { zoomParamsCoverConversation } from "../panes/zoom/cascadeCoverage";
-import { parseZoomParams, type SessionZoomParams } from "../panes/zoom/intent";
+import { type SessionZoomParams, zoomIntentOf } from "../panes/zoom/intent";
 import { startBackgroundTranscripts } from "../stores/backgroundTranscripts";
 import { useConnectionStore } from "../stores/connection";
 import { cancelConversationHandoff, conversationHandoffGeneration } from "../stores/conversationClaimHandoff";
@@ -197,10 +197,7 @@ function routePlacementIsApplied(
   // Startup restoration and contextual drill retain the source's route role.
   // Later pathname changes must still place their ordinary session.
   const routeRole = (pane: OpenPaneRecord): OpenPaneRecord => {
-    const params =
-      (allowFocusedCompanion || allowInitialCascade) && pane.type === "sessionZoom"
-        ? parseZoomParams(pane.params)
-        : null;
+    const params = allowFocusedCompanion || allowInitialCascade ? zoomIntentOf(pane) : null;
     const source = params && !params.inspection ? params.source : null;
     return source ? { ...pane, ...source } : pane;
   };
@@ -255,7 +252,7 @@ function routePlacementIsApplied(
     return parentRef !== undefined && conversationContextIncludes(parentRef, ref);
   };
   const rawFocused = workspace.panes.find((pane) => pane.id === workspace.focusedPaneId);
-  const focusedIntent = rawFocused?.type === "sessionZoom" ? parseZoomParams(rawFocused.params) : null;
+  const focusedIntent = rawFocused === undefined ? null : zoomIntentOf(rawFocused);
   const focusedSeparatedInspection =
     (allowFocusedCompanion || allowRestoredInspection) &&
     rawFocused?.slot === "secondary" &&
@@ -274,8 +271,7 @@ function routePlacementIsApplied(
     allowFocusedCompanion &&
     conversationRef !== null &&
     workspace.panes.some((pane) => {
-      if (pane.type !== "sessionZoom") return false;
-      const params = parseZoomParams(pane.params);
+      const params = zoomIntentOf(pane);
       if (!params || !zoomCoversRouteSource(pane, params)) return false;
       return zoomParamsCoverConversation(params, conversationRef);
     });
@@ -299,9 +295,9 @@ function routePlacementIsApplied(
       return true;
     }
   }
-  if (allowFocusedCompanion && documentState?.origin?.type === "sessionZoom") {
+  if (allowFocusedCompanion && documentState?.origin) {
     const origin = documentState.origin;
-    const params = parseZoomParams(origin.params);
+    const params = zoomIntentOf(origin);
     // A cascade column's filename open binds its document to the hosting
     // zoom: that pane's cascade covers the routed conversation, so the
     // focused document is the route's companion, like the column

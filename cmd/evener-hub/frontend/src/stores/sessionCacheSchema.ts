@@ -28,7 +28,17 @@ export const CLEAR_EPOCH_KEY = "__clearEpoch";
 // outstanding, runs quietly (no consumer hold) and, when it establishes the
 // display, takes exclusive opening ownership: it retires the superseded
 // published opening's consumer hold and notifies that open's parked wait.
-export const SESSION_CACHE_LOOKUP_DEADLINE_MS = 250;
+export let SESSION_CACHE_LOOKUP_DEADLINE_MS = 250;
+
+/**
+ * @internal Lets a test that deliberately holds a local read widen this bound.
+ * The deadline exists to fail closed when storage stops answering; a test
+ * holding the read on purpose to observe an in-flight state must not make the
+ * product's load-sensitive deadline expire underneath it.
+ */
+export function setSessionCacheLookupDeadlineForTests(ms: number): void {
+  SESSION_CACHE_LOOKUP_DEADLINE_MS = ms;
+}
 // The legacy stores dropped at the 6d schema bump. Named here only so the
 // upgrade can discard them.
 const LEGACY_STORE_NAMES = ["records", "meta", "current", "currentMeta"] as const;

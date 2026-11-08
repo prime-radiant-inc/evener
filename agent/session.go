@@ -1521,6 +1521,7 @@ func (s *Session) resetJobNotificationRetry() {
 // CommunicateOutput, and the turn loop's deliver step. Guarded by s.mu.
 type communicateResult struct {
 	called     bool // terminal communicate/result was invoked this turn
+	updated    bool // non-terminal communicate (end_turn=false) was invoked this turn
 	text       string
 	reply      string
 	output     string // canonical structured output (CommunicateOutput)
@@ -2282,6 +2283,16 @@ func (s *Session) Communicated() bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.comm.called
+}
+
+// CommunicateUpdate reports whether a NON-terminal communicate (end_turn=false)
+// was called during the most recent ProcessInput invocation. A delegate's
+// missing-report reminder can then acknowledge the update instead of claiming
+// the delegate never called the result tool (#3734).
+func (s *Session) CommunicateUpdate() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.comm.updated
 }
 
 // CommunicateOutput returns the canonical structured output from the most recent

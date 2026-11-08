@@ -736,15 +736,18 @@ function composeReconnectWindow(newConnectionReads) {
 }
 
 // Owning reconnect validator (finding 4): the reconnect's authoritative read
-// must arrive on a connection NOT seen before, and the applied model window
-// (cursor) must match that read's response. A same-connection refresh is not a
-// reconnect.
+// must arrive on a connection NOT seen before, and the applied model must hold
+// that read's window and cursor — or, when a same-connection follow-up
+// replaced it, the follow-up read's window and cursor (see below). A
+// same-connection refresh alone is not a reconnect.
 function reconnectValidator(before, evidence, applied = {}) {
   const beforeConnections = new Set(before?.connections ?? []);
   const reads = (evidence?.readConnections ?? []).map((connection, index) => ({
     connection,
     olderCursor: (evidence?.readResponseCursors ?? [])[index] ?? "",
     window: (evidence?.readResponseWindows ?? [])[index] ?? null,
+    snapshotLength: (evidence?.readResponseSnapshotLengths ?? [])[index] ?? null,
+    generation: (evidence?.readResponseGenerations ?? [])[index] ?? null,
   }));
   const newConnectionReads = reads.filter((r) => !beforeConnections.has(r.connection));
   const newReads = (evidence?.readResponses ?? 0) - (before?.readResponses ?? 0);
@@ -772,6 +775,24 @@ function reconnectValidator(before, evidence, applied = {}) {
   // and compare the applied model against it turn by turn.
   const recordedItems = (items) => (items ?? []).filter((item) => item.type !== "systemMessage");
   const { turns: expectedWindow, reads: composedReads } = composeReconnectWindow(newConnectionReads);
+  // Per returned turn, require the read's RECORDED items, in order, to be
+  // exactly the applied model's items for that turn. The model may also carry
+  // held turns outside the read's window (the reader's older pages, or the
+  // replayed tail of a replacement); extra recorded items INSIDE a returned
+  // turn are still a mismatch.
+  const windowMatchesRead = (window) => {
+    if (!Array.isArray(appliedWindow)) return false;
+    let lastIndex = -1;
+    return window.every((expectedTurn) => {
+      const appliedIndex = appliedWindow.findIndex((turn) => turn.turnId === expectedTurn.turnId);
+      if (appliedIndex === -1 || appliedIndex <= lastIndex) return false;
+      lastIndex = appliedIndex;
+      return orderedHistoryEqual(
+        recordedItems(expectedTurn.items),
+        recordedItems(appliedWindow[appliedIndex].items),
+      );
+    });
+  };
   const edgeRead =
     expectedWindow.length === 0
       ? undefined
@@ -782,20 +803,60 @@ function reconnectValidator(before, evidence, applied = {}) {
             (read.window[0].turnId ?? "") === (expectedWindow[0].turnId ?? "") &&
             read.olderCursor === appliedCursor,
         );
-  let lastAppliedIndex = -1;
-  const windowMatches =
-    Array.isArray(appliedWindow) &&
-    expectedWindow.every((expectedTurn) => {
-      const appliedIndex = appliedWindow.findIndex((turn) => turn.turnId === expectedTurn.turnId);
-      if (appliedIndex === -1 || appliedIndex <= lastAppliedIndex) return false;
-      lastAppliedIndex = appliedIndex;
-      return orderedHistoryEqual(
-        recordedItems(expectedTurn.items),
-        recordedItems(appliedWindow[appliedIndex].items),
-      );
-    });
-  const appliedMatches = edgeRead !== undefined && windowMatches;
-  const reported = appliedMatches ? edgeRead : newConnectionReads[newConnectionReads.length - 1];
+  const windowMatches = edgeRead !== undefined && windowMatchesRead(expectedWindow);
+  // A same-connection follow-up does not always MERGE. applyCacheGapRule
+  // (stores/cacheLifetime.ts) replaces the loaded pages when a reconciling
+  // read's window starts above the cached shell's captured anchor, and
+  // readDisposition replaces on an invalidated history. The model then carries
+  // THAT read's cursor and exactly its (narrower, newest-edge-capped) window,
+  // and the composed union is not what the product applied. Identify that read
+  // by the product's own ordering: readDisposition DISCARDS a response whose
+  // request generation is older than the newest issued one, and within one
+  // incarnation it discards a response with a SHORTER snapshot length. So the
+  // applied read is the window-bearing read with the greatest request
+  // generation, and the greatest snapshot length within that generation (the
+  // later read wins a tie; synthetic evidence with neither falls back to the
+  // last read). Accept the model when that read's cursor is the model's and the
+  // model holds its window; the exact per-turn comparison still rejects a model
+  // that lost, changed, or reordered the read's recorded content, and the union
+  // above still covers the merge case. This cannot tell a cache-gap replace
+  // from a merge that dropped the older edge; the later paged-back-sentinel
+  // phase re-fetches and proves that retained range. An incarnation/epoch
+  // change at the same request generation would still need those identity
+  // fields; this journey does not recreate the target's history, so the
+  // reconnect connection keeps one incarnation.
+  let replacementCandidate;
+  if (!windowMatches) {
+    let maxGeneration = -1;
+    const generationReads = [];
+    for (const read of composedReads) {
+      if (!Array.isArray(read.window) || read.window.length === 0) continue;
+      const generation = typeof read.generation === "number" ? read.generation : -1;
+      if (generation > maxGeneration) {
+        maxGeneration = generation;
+        generationReads.length = 0;
+      }
+      if (generation === maxGeneration) generationReads.push(read);
+    }
+    for (const read of generationReads) {
+      if (
+        replacementCandidate === undefined ||
+        (read.snapshotLength ?? -1) >= (replacementCandidate.snapshotLength ?? -1)
+      ) {
+        replacementCandidate = read;
+      }
+    }
+  }
+  const replacementRead =
+    replacementCandidate !== undefined &&
+    replacementCandidate.olderCursor === appliedCursor &&
+    windowMatchesRead(replacementCandidate.window)
+      ? replacementCandidate
+      : undefined;
+  const appliedMatches = windowMatches || replacementRead !== undefined;
+  const reported = appliedMatches
+    ? replacementRead ?? edgeRead
+    : newConnectionReads[newConnectionReads.length - 1];
   return {
     reconnected,
     newReads,
@@ -1523,17 +1584,26 @@ async function runEntryProductionJourney(driver, harnessUrl) {
 
   const liveTabs = await runLiveTwoTabs(driver, harnessUrl);
   await evaluate(driver.send, `window.backgroundTranscriptEvidence.entrySettled(${JSON.stringify(SESSION_B)})`);
-  const completed = await waitForNativeEntryEvidence(
+  // The completed live turn is the fixed point the comparison is about; wait for
+  // it once, then let the comparison loop poll the store inside its own bound.
+  const liveEvidence = await waitForNativeEntryEvidence(
     driver,
     (value) =>
       value.rows.some((row) => row.item?.text?.includes(AFTER)) &&
       value.rows.some((row) => row.item?.output?.includes(TOOL_OUTPUT)),
     "completed recorded transcript in native entry storage",
   );
-  const target = await readTargetDomain(driver, SESSION_B);
+  const comparison = await waitForEntryComparison({
+    readEvidence: async () =>
+      (await evaluate(driver.send, nativeEntryEvidenceExpression(SESSION_B))) ?? liveEvidence,
+    readTarget: () => readTargetDomain(driver, SESSION_B),
+    deadline: Date.now() + driver.reactions.deadline(30000),
+  });
+  const completed = comparison.completed;
+  const target = comparison.target;
   const outputRegion = await readShellOutputRegion(driver, SESSION_B, TOOL_OUTPUT);
   const outputText = outputRegion?.outputs?.[0] ?? "";
-  const rendererItems = target?.items ?? [];
+  const rendererItems = comparison.rendererItems;
   const renderedSentinelRows = await evaluate(driver.send, renderedSentinelRowsExpr(SESSION_B));
   driver.milestone("two-tab-live", {
     tabs: [
@@ -1546,66 +1616,15 @@ async function runEntryProductionJourney(driver, harnessUrl) {
       liveTabs.sibling,
     ],
   });
-  const recordedRendererItems = rendererItems.filter((item) => item.transcriptKey && item.position);
+  const recordedRendererItems = comparison.recordedRendererItems;
   const renderedToolItems = recordedRendererItems.filter((item) => item.output.includes(TOOL_OUTPUT));
-  const nativeItems = completed.rows.map((row) => ({
-    transcriptKey: row.transcriptKey,
-    position: row.position,
-    item: row.item,
-  }));
+  const nativeItems = comparison.nativeItems;
   const nativeTurns = completed.turns;
   const nativeCoverage = completed.coverage;
-  // Identity is (transcriptKey, id, turnId). Index the native rows once so the
-  // join is linear, and keep every row per identity: a duplicate native row
-  // must still read as two matches.
-  const nativeByIdentity = new Map();
-  for (const row of nativeItems) {
-    const key = JSON.stringify([row.transcriptKey, row.item?.id, row.item?.turnId]);
-    const bucket = nativeByIdentity.get(key);
-    if (bucket) bucket.push(row);
-    else nativeByIdentity.set(key, [row]);
-  }
-  const rendererToNative = recordedRendererItems.map((item) => {
-    const matches = nativeByIdentity.get(JSON.stringify([item.transcriptKey, item.id, item.turnId])) ?? [];
-    const native = matches[0] ?? null;
-    const identityMatches =
-      native !== null &&
-      native.item.type === item.type &&
-      (native.item.text ?? "") === item.text &&
-      (native.item.output ?? "") === item.output &&
-      (native.item.argumentsJSON ?? null) === (item.arguments ?? null) &&
-      native.item.status === item.status &&
-      (native.item.callId ?? null) === item.callId &&
-      native.position.entry === item.position.entry &&
-      native.position.item === item.position.item &&
-      (native.position.sub ?? 0) === (item.position.sub ?? 0) &&
-      native.item.version === item.version;
-    return { id: item.id, turnId: item.turnId, matches: matches.length, identityMatches, native };
-  });
+  const rendererToNative = comparison.rendererToNative;
   const comparePosition = (left, right) =>
     left.entry - right.entry || left.item - right.item || (left.sub ?? 0) - (right.sub ?? 0);
-  // A renderer item with no native row is either a lost row or a row the
-  // comparison window cannot reach. Record whether the native store holds the
-  // same item id under another transcript key, and what the same key holds, so
-  // the retained audit answers that without the live browser.
-  const unmatchedRendererItems = recordedRendererItems.flatMap((item, index) => {
-    const match = rendererToNative[index];
-    if (match.matches === 1 && match.identityMatches) return [];
-    return [
-      {
-        id: item.id,
-        turnId: item.turnId,
-        transcriptKey: item.transcriptKey,
-        position: item.position,
-        nativeSameId: nativeItems
-          .filter((row) => row.item?.id === item.id)
-          .map((row) => ({ transcriptKey: row.transcriptKey, turnId: row.item?.turnId })),
-        nativeSameKey: nativeItems
-          .filter((row) => row.transcriptKey === item.transcriptKey)
-          .map((row) => ({ id: row.item?.id, turnId: row.item?.turnId })),
-      },
-    ];
-  });
+  const unmatchedRendererItems = comparison.unmatchedRendererItems;
   const nativeCoverageMatches = nativeItems.map((row) => ({
     id: row.item?.id,
     turnId: row.item?.turnId,
@@ -2041,7 +2060,34 @@ async function runEntryProductionJourney(driver, harnessUrl) {
   driver.milestone("done", { mode: "entry-production" });
 }
 
-function nativeEntryEvidenceExpression(ref = SESSION_B) {
+// selectTranscriptMeta is embedded in nativeEntryEvidenceExpression via
+// toString(), so it must close over nothing. transcriptMeta is keyed by
+// historyKey: a ref can own more than one metadata row (an earlier history
+// after a Clear, or a new incarnation), and the guard must read the rows of the
+// history the renderer's route currently uses. Exported for the unit test.
+export function selectTranscriptMeta(rows, ref, clientId, historyKey) {
+  const matching = (rows ?? []).filter((row) =>
+    row.resolvedIdentity?.clientId === clientId &&
+    row.requestedRefs?.some((binding) => binding.ref === ref && binding.clientId === clientId),
+  );
+  // The route's own key is the history the renderer is showing. When it is not
+  // exposed yet, fall back to the closest matching row by savedAt (production's
+  // getSessionForRequestedRef also applies its cache TTL; the guard has no TTL
+  // contract, and this branch only runs before the route exposes a key). When
+  // the key is exposed but its row is not written yet, return nothing so the
+  // caller's wait keeps polling instead of joining the renderer against a stale
+  // history.
+  if (historyKey) {
+    return matching.find((row) => row.historyKey === historyKey);
+  }
+  let selected;
+  for (const row of matching) {
+    if (selected === undefined || (row.savedAt ?? 0) > (selected.savedAt ?? 0)) selected = row;
+  }
+  return selected;
+}
+
+export function nativeEntryEvidenceExpression(ref = SESSION_B) {
   return `(async () => {
     const evidence = window.backgroundTranscriptEvidence;
     const databaseName = evidence.entryCacheDatabase;
@@ -2065,7 +2111,9 @@ function nativeEntryEvidenceExpression(ref = SESSION_B) {
       request.onsuccess = () => resolve(request.result);
       request.onerror = () => reject(request.error);
     })));
-    const metadata = values[3].find((row) => row.requestedRefs?.some((binding) => binding.ref === ref && binding.clientId === location.origin));
+    ${selectTranscriptMeta.toString()}
+    const route = evidence.entryRoute?.(ref);
+    const metadata = selectTranscriptMeta(values[3], ref, location.origin, route?.historyKey ?? null);
     if (!metadata) { db.close(); return null; }
     const historyKey = metadata.historyKey;
     const rows = values[0].filter((row) => row.historyKey === historyKey);
@@ -2093,6 +2141,101 @@ async function waitForNativeEntryEvidence(driver, predicate, label, ref = SESSIO
     await delay(100);
   }
   throw new Error(`timed out waiting for ${label}`);
+}
+
+// joinRendererToNative joins the display's recorded items to the native entry
+// rows by identity (transcriptKey, id, turnId). Index the native rows once so
+// the join is linear, and keep every row per identity: a duplicate native row
+// must still read as two matches.
+function joinRendererToNative(recordedRendererItems, nativeItems) {
+  const nativeByIdentity = new Map();
+  for (const row of nativeItems) {
+    const key = JSON.stringify([row.transcriptKey, row.item?.id, row.item?.turnId]);
+    const bucket = nativeByIdentity.get(key);
+    if (bucket) bucket.push(row);
+    else nativeByIdentity.set(key, [row]);
+  }
+  const rendererToNative = recordedRendererItems.map((item) => {
+    const matches = nativeByIdentity.get(JSON.stringify([item.transcriptKey, item.id, item.turnId])) ?? [];
+    const native = matches[0] ?? null;
+    const identityMatches =
+      native !== null &&
+      native.item.type === item.type &&
+      (native.item.text ?? "") === item.text &&
+      (native.item.output ?? "") === item.output &&
+      (native.item.argumentsJSON ?? null) === (item.arguments ?? null) &&
+      native.item.status === item.status &&
+      (native.item.callId ?? null) === item.callId &&
+      native.position.entry === item.position.entry &&
+      native.position.item === item.position.item &&
+      (native.position.sub ?? 0) === (item.position.sub ?? 0) &&
+      native.item.version === item.version;
+    return { id: item.id, turnId: item.turnId, matches: matches.length, identityMatches, native };
+  });
+  // A renderer item with no native row is either a lost row or a row the
+  // comparison window cannot reach. Record whether the native store holds the
+  // same item id under another transcript key, and what the same key holds, so
+  // the retained audit answers that without the live browser.
+  const unmatchedRendererItems = recordedRendererItems.flatMap((item, index) => {
+    const match = rendererToNative[index];
+    if (match.matches === 1 && match.identityMatches) return [];
+    return [
+      {
+        id: item.id,
+        turnId: item.turnId,
+        transcriptKey: item.transcriptKey,
+        position: item.position,
+        nativeSameId: nativeItems
+          .filter((row) => row.item?.id === item.id)
+          .map((row) => ({ transcriptKey: row.transcriptKey, turnId: row.item?.turnId })),
+        nativeSameKey: nativeItems
+          .filter((row) => row.transcriptKey === item.transcriptKey)
+          .map((row) => ({ id: row.item?.id, turnId: row.item?.turnId })),
+      },
+    ];
+  });
+  return { rendererToNative, unmatchedRendererItems };
+}
+
+// waitForEntryComparison reads the display and the durable entry store until
+// every recorded renderer item has its one-to-one native row, bounded by
+// deadline. The two views publish on different boundaries: an item reaches the
+// pane as soon as its model is published, while the entry repository commits it
+// through its own write-behind task. A single sample of each can be a few
+// writes apart under load - a throttled main thread makes that plain (#5024) -
+// so the comparison waits for the store to catch up with the display rather
+// than reading one instant of each. A row that never lands still returns the
+// unmatched item, and the journey's assertion fails exactly as before.
+async function waitForEntryComparison({
+  readEvidence,
+  readTarget,
+  deadline,
+  sleep = delay,
+}) {
+  for (;;) {
+    const completed = await readEvidence();
+    const target = await readTarget();
+    const rendererItems = target?.items ?? [];
+    const recordedRendererItems = rendererItems.filter((item) => item.transcriptKey && item.position);
+    const nativeItems = completed.rows.map((row) => ({
+      transcriptKey: row.transcriptKey,
+      position: row.position,
+      item: row.item,
+    }));
+    const { rendererToNative, unmatchedRendererItems } = joinRendererToNative(recordedRendererItems, nativeItems);
+    if (unmatchedRendererItems.length === 0 || Date.now() >= deadline) {
+      return {
+        completed,
+        nativeItems,
+        target,
+        rendererItems,
+        recordedRendererItems,
+        rendererToNative,
+        unmatchedRendererItems,
+      };
+    }
+    await sleep(100);
+  }
 }
 
 // waitForPaneText waits until the named pane's own text carries the marker.
@@ -2585,6 +2728,8 @@ function targetPagingEvidence(ref, tracePath = TRACE_PATH) {
   const readConnections = [];
   const readResponseCursors = [];
   const readResponseWindows = [];
+  const readResponseSnapshotLengths = [];
+  const readResponseGenerations = [];
   const pending = new Map();
   for (const { connection, direction, frame } of frames) {
     if (frame?.method && frame.id !== undefined) {
@@ -2613,6 +2758,8 @@ function targetPagingEvidence(ref, tracePath = TRACE_PATH) {
       readConnections.push(connection);
       readResponseCursors.push(cursor);
       readResponseWindows.push(normalizeWindowFromWire(frame.result.thread?.turns));
+      readResponseSnapshotLengths.push(frame.result.snapshot?.length ?? null);
+      readResponseGenerations.push(frame.result.requestGeneration ?? null);
     } else if (held.frame.method === "thread/turns/list") {
       pageCursors.push(frame.result.nextCursor ?? "");
     }
@@ -2625,6 +2772,8 @@ function targetPagingEvidence(ref, tracePath = TRACE_PATH) {
     readConnections,
     readResponseCursors,
     readResponseWindows,
+    readResponseSnapshotLengths,
+    readResponseGenerations,
     pageCursors,
     pages: pageCursors.length,
     lastCursor: pageCursors.length > 0 ? pageCursors[pageCursors.length - 1] : "",
@@ -3051,6 +3200,7 @@ export {
   furtherHistoryValidator,
   holderSnapshot,
   holderValidator,
+  joinRendererToNative,
   narrowViewportContentPreserved,
   observedConnection,
   producerOperationApplied,
@@ -3067,6 +3217,7 @@ export {
   targetPagingEvidence,
   traceBytes,
   transcriptState,
+  waitForEntryComparison,
   waitForDisconnected,
   waitForProducerOperationApplied,
   waitForReconnectApplied,
