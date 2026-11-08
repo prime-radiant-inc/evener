@@ -495,6 +495,16 @@ func liveThreadRead(
 	return nil, err
 }
 
+// liveReadDaemonless reports a successful read answered from persisted history
+// rather than a live daemon. Every saved response carries the daemonless boot
+// generation; the authority fallback covers an older peer that omits it. It
+// keeps Manager so a live descendant read, which is never authoritative, is not
+// mistaken for saved history.
+func liveReadDaemonless(read appwire.ThreadReadResponse) bool {
+	return read.BootGeneration == appwire.DaemonlessBootGeneration ||
+		(!read.Thread.Evener.MutationStateAuthoritative && read.Thread.Evener.Manager)
+}
+
 // savedFallbackAnswers reports whether a failed live read here is answered from
 // the persisted transcript instead of surfacing its error: every
 // non-subscribing read, and a subscribing read from a source without an atomic
@@ -605,12 +615,25 @@ func (o *sessionOperations) read(ctx context.Context, params appwire.ThreadReadP
 	sourceParams := params
 	sourceParams.LiveOnly = false
 	read, err := liveThreadRead(ctx, relays, source, sourceParams, capture, params.LiveOnly)
+	if err == nil && params.LiveOnly && liveReadDaemonless(read.response) {
+		// A remote hub that loses its daemon answers a non-subscribing read from
+		// its saved transcript. LiveOnly is hub-internal and never crosses the
+		// bridge, so that hop cannot refuse the answer; classify the daemonless
+		// projection here, before the voice bridge's authority check treats it
+		// as a replaced manager and closes. A live-only read against a genuinely
+		// retired remote session now holds speech until resync or grant expiry
+		// instead of closing immediately.
+		err = appwire.RetryableSessionUnavailable("remote hub answered a live-only read with saved history")
+	}
 	if err != nil {
 		// A live-only read has no saved answer to recover, and its caller
 		// classifies the retryable outage. Ownership recovery would run an
 		// unbudgeted re-read and can replace that outage with a daemonless
 		// Unavailable, which aborts the voice bridge's held speech.
 		if params.LiveOnly {
+			if read != nil {
+				read.finish(false)
+			}
 			return appwire.ThreadReadResponse{}, err
 		}
 		recovered := false

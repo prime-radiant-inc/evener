@@ -52,6 +52,8 @@ type voiceBridge struct {
 	renewal        chan voiceWorkResult
 	renewing       int
 	renewQueued    bool
+	reconcileAfter time.Time
+	reconcileTimer *time.Timer
 
 	generation       uint64
 	awaitingFence    bool
@@ -168,6 +170,9 @@ func (b *voiceBridge) run() {
 	b.work = make(chan voiceWorkResult)
 	b.reconciliation = make(chan voiceWorkResult)
 	b.renewal = make(chan voiceWorkResult)
+	b.reconcileTimer = time.NewTimer(0)
+	b.reconcileTimer.Stop()
+	defer b.reconcileTimer.Stop()
 	defer b.close()
 	read, err := b.client.ThreadRead(b.ctx, appwire.ThreadReadParams{Ref: b.binding.Ref, IncludeTurns: true, Subscribe: true, ItemLimit: appwire.TranscriptItemPageLimit})
 	if err != nil || !b.validSpeechRead(read) {
@@ -195,7 +200,8 @@ func (b *voiceBridge) run() {
 		return voiceWorkResult{err: b.recoverIntents(ctx)}
 	})
 	for {
-		if b.reconcile && !b.reconciling {
+		if b.reconcileDue(time.Now()) {
+			b.reconcileAfter = time.Time{}
 			b.beginSpeechReconciliation()
 		}
 		if b.retiring != nil && b.workCancel == nil && b.provider == nil {
@@ -237,9 +243,15 @@ func (b *voiceBridge) run() {
 		if b.provider != nil && (b.retiring == nil || b.workKind != "speech") {
 			events = b.provider.Events()
 		}
+		var reconcileWait <-chan time.Time
+		if b.reconcile && !b.reconciling && !b.reconcileAfter.IsZero() {
+			reconcileWait = b.reconcileTimer.C
+		}
 		select {
 		case <-b.ctx.Done():
 			return
+		case <-reconcileWait:
+			// The paced retry is due; the loop top starts the read.
 		case <-expiry.C:
 			_ = b.reportError("grant_expired")
 			return
@@ -309,14 +321,14 @@ func (b *voiceBridge) run() {
 		case result := <-b.reconciliation:
 			b.reconciling = false
 			if voiceHistoryCursorStale(result.err) {
-				b.reconcile = true
+				b.reconcileNow()
 				continue
 			}
 			if voiceRelayOutage(result.err) {
-				// Retry through the authoritative reconciliation read; while
-				// the relay is down that read parks in recovery's redial and
-				// applies any accepted Stop once the connection returns.
-				b.reconcile = true
+				// Retry through the authoritative reconciliation read; a real
+				// relay cut parks in recovery's redial, while a daemonless
+				// saved-history answer fails at RPC speed, so pace both.
+				b.paceReconcile()
 				continue
 			}
 			if result.err != nil || b.applySpeechAuthority(result.read) != nil {
@@ -361,7 +373,7 @@ func (b *voiceBridge) run() {
 					continue
 				}
 				if kind == "history" && voiceRelayOutage(result.err) {
-					b.reconcile = true
+					b.paceReconcile()
 					continue
 				}
 				_ = b.reportError("input_failed")
@@ -472,6 +484,32 @@ func (b *voiceBridge) beginSpeechReconciliation() {
 		case <-b.ctx.Done():
 		}
 	})
+}
+
+// voiceReconcileOutageDelay paces a reconciliation retry whose failure did not
+// park in a relay redial. A remote hub answering from saved history fails at
+// RPC speed, so an immediate re-arm would spin until the grant expires.
+const voiceReconcileOutageDelay = liveReadRetryBudget
+
+// reconcileDue reports whether the loop should start the authoritative read.
+func (b *voiceBridge) reconcileDue(now time.Time) bool {
+	if !b.reconcile || b.reconciling {
+		return false
+	}
+	return b.reconcileAfter.IsZero() || !now.Before(b.reconcileAfter)
+}
+
+// reconcileNow re-arms reconciliation for a prompt read: a resync, a history
+// identity change, or a stale cursor is evidence that a read may now succeed.
+func (b *voiceBridge) reconcileNow() {
+	b.reconcile = true
+	b.reconcileAfter = time.Time{}
+}
+
+func (b *voiceBridge) paceReconcile() {
+	b.reconcile = true
+	b.reconcileAfter = time.Now().Add(voiceReconcileOutageDelay)
+	b.reconcileTimer.Reset(voiceReconcileOutageDelay)
 }
 
 // A renewal read may block through a relay reconnection. It runs beside the run

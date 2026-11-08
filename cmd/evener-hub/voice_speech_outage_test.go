@@ -3,6 +3,7 @@ package hub
 import (
 	"errors"
 	"testing"
+	"time"
 
 	"primeradiant.com/evener/appwire"
 )
@@ -33,5 +34,24 @@ func TestVoiceRelayOutageRecognizesReplacedConnection(t *testing.T) {
 	}
 	if voiceRelayOutage(appwire.InvalidParams("bad cursor")) {
 		t.Fatal("an invalid-params refusal was classified as a relay outage")
+	}
+}
+
+func TestVoiceReconcileOutagePacing(t *testing.T) {
+	b := &voiceBridge{reconcileTimer: time.NewTimer(time.Hour)}
+	b.reconcileTimer.Stop()
+	b.paceReconcile()
+	if !b.reconcile {
+		t.Fatal("a paced outage did not re-arm reconciliation")
+	}
+	if b.reconcileDue(time.Now()) {
+		t.Fatal("a paced outage retry was due immediately")
+	}
+	if !b.reconcileDue(time.Now().Add(voiceReconcileOutageDelay)) {
+		t.Fatal("a paced outage retry never became due")
+	}
+	b.reconcileNow()
+	if !b.reconcileDue(time.Now()) {
+		t.Fatal("a resync re-arm did not read promptly")
 	}
 }

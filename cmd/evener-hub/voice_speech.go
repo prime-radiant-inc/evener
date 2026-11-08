@@ -127,7 +127,7 @@ func (b *voiceBridge) applySpeechAuthority(read appwire.ThreadReadResponse) erro
 // Relay recovery can name only the ref, without a history epoch or thread ID.
 func (b *voiceBridge) applySpeechResync(changed appwire.ThreadResyncParams) {
 	if changed.Ref == b.binding.Ref && (changed.ThreadID == "" || changed.ThreadID == b.historyThreadID) {
-		b.reconcile = true
+		b.reconcileNow()
 	}
 }
 
@@ -139,7 +139,7 @@ func (b *voiceBridge) applySpeechHistoryUpdate(changed appwire.HistoryUpdatedPar
 		return nil
 	}
 	if changed.BootGeneration != b.historyBoot || changed.Epoch != b.historyEpoch || changed.Snapshot.Incarnation != b.history.Incarnation {
-		b.reconcile = true
+		b.reconcileNow()
 		return nil
 	}
 	return b.applyInterruptedTurns(changed.Turns)

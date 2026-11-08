@@ -265,6 +265,71 @@ func TestManagerRemoteSnapshotReadLeavesTargetDaemonUnsubscribed(t *testing.T) {
 	}
 }
 
+// A remote hub that loses its daemon answers a non-subscribing thread/read from
+// saved history. LiveOnly is hub-internal and never crosses the bridge, so the
+// controller must classify that daemonless answer as a retryable outage itself;
+// otherwise the voice bridge accepts it as a replaced manager and closes.
+func TestHubRPCThreadReadLiveOnlyRejectsRemoteDaemonlessHistory(t *testing.T) {
+	root := t.TempDir()
+	stateDir := filepath.Join(root, "projects", "project-remote-live-only-0000000001")
+	sessionID := buildRPCParentSession(t, stateDir)
+	past := newRebuiltPastIndex(t, filepath.Join(root, "projects", "*"))
+	lease := &scriptedRelaySessionLease{
+		deliveries: make(chan appsource.RelayDelivery),
+		readFunc: func(appwire.ThreadReadParams) (appsource.RelayReadResult, error) {
+			return appsource.RelayReadResult{}, appwire.RetryableSessionUnavailable("relay connection ended before route publication")
+		},
+	}
+	sourcesB := appsource.NewRegistry()
+	sourcesB.Add(&relaySessionTestSource{thread: liveRetryingThread(sessionID), lease: lease})
+	serverB := newHubAppServer(hubcore.WebConfig{HubStateRoot: t.TempDir(), Past: past}, sourcesB)
+	hubB := httptest.NewServer(http.HandlerFunc(serverB.ServeWebSocket))
+	t.Cleanup(hubB.Close)
+	remote := dialHubRPCInitialized(t, hubB)
+
+	sourcesA := appsource.NewRegistry()
+	sourcesA.Add(appsource.NewRemoteHubSource("host-b", nil, func(context.Context, string) (*appwire.Client, error) {
+		return remote, nil
+	}))
+	cfgA := hubcore.WebConfig{HubStateRoot: t.TempDir(), Past: hubcore.NewPastIndex("")}
+	serverA := appserver.NewServer(appserver.ServerConfig{ServerName: "hub", Version: "test", SourceID: "local"})
+	operationsA := &sessionOperations{cfg: cfgA, sources: sourcesA, relays: newHubRelay(serverA, cfgA, sourcesA), server: serverA}
+	params := appwire.ThreadReadParams{Ref: "host-b:" + sessionID, IncludeTurns: true, ItemLimit: appwire.TranscriptItemPageLimit}
+
+	saved, err := operationsA.read(t.Context(), params, false)
+	if err != nil || saved.BootGeneration != appwire.DaemonlessBootGeneration {
+		t.Fatalf("plain remote read = boot %q err %v, want the saved daemonless page", saved.BootGeneration, err)
+	}
+	params.LiveOnly = true
+	if _, err := operationsA.read(t.Context(), params, false); err == nil || !voiceRelayOutage(err) {
+		t.Fatalf("live-only remote read = %v, want a retryable relay outage", err)
+	}
+}
+
+// The daemonless marker is the primary predicate; the authority fallback covers
+// an older peer that serves saved history without the marker.
+func TestLiveReadDaemonlessPredicate(t *testing.T) {
+	live := appwire.ThreadReadResponse{Thread: appwire.Thread{Evener: appwire.EvenerThread{MutationStateAuthoritative: true}}}
+	if liveReadDaemonless(live) {
+		t.Fatal("an authoritative live read was classified as daemonless")
+	}
+	descendant := appwire.ThreadReadResponse{Thread: appwire.Thread{Evener: appwire.EvenerThread{MutationStateAuthoritative: false}}}
+	if liveReadDaemonless(descendant) {
+		t.Fatal("a live descendant read was classified as daemonless")
+	}
+	marked := live
+	marked.BootGeneration = appwire.DaemonlessBootGeneration
+	if !liveReadDaemonless(marked) {
+		t.Fatal("a daemonless read with the marker was not classified")
+	}
+	unmarkedSavedManager := live
+	unmarkedSavedManager.Thread.Evener.MutationStateAuthoritative = false
+	unmarkedSavedManager.Thread.Evener.Manager = true
+	if !liveReadDaemonless(unmarkedSavedManager) {
+		t.Fatal("an unmarked saved manager page was not classified as daemonless")
+	}
+}
+
 func TestHubRPCThreadReadRoutesReachableErroredDaemon(t *testing.T) {
 	const sessionID = "02wMz5Txv9yYdSRJat13MZ"
 	daemon := appserver.NewServer(appserver.ServerConfig{ServerName: "daemon", SourceID: "local"})
