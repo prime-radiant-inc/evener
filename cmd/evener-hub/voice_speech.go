@@ -40,7 +40,11 @@ func (b *voiceBridge) readSpeechHistory(ctx context.Context, history appwire.Sna
 	if err != nil || !b.validSpeechRead(read) || read.Snapshot.Incarnation != history.Incarnation {
 		return read, err
 	}
-	return b.backfillSpeechHistory(ctx, read, cursor)
+	read, err = b.backfillSpeechHistory(ctx, read, cursor)
+	if err != nil {
+		return read, err
+	}
+	return b.resolveSpeechQuestions(ctx, read, cursor)
 }
 
 func (b *voiceBridge) backfillSpeechHistory(ctx context.Context, read appwire.ThreadReadResponse, cursor *appwire.ThreadItemPosition) (appwire.ThreadReadResponse, error) {
@@ -58,6 +62,62 @@ func (b *voiceBridge) backfillSpeechHistory(ctx context.Context, read appwire.Th
 		page, older = next.Data, next.NextCursor
 		read.Thread.Turns = append(page, read.Thread.Turns...)
 	}
+	return read, nil
+}
+
+// The row is a bounded prefix. Resolve omitted candidates before selection,
+// keeping network reads in the history worker and its observed pending-set pair.
+func (b *voiceBridge) resolveSpeechQuestions(ctx context.Context, read appwire.ThreadReadResponse, cursor *appwire.ThreadItemPosition) (appwire.ThreadReadResponse, error) {
+	pending := read.Thread.Evener.PendingAsk
+	if pending == nil || !pending.CallsTruncated {
+		return read, nil
+	}
+	known := make(map[appwire.PendingAskCall]bool, len(pending.Calls))
+	for _, call := range pending.Calls {
+		known[call] = true
+	}
+	wanted := make(map[appwire.PendingAskCall]bool)
+	for _, turn := range read.Thread.Turns {
+		for _, item := range turn.Items {
+			provenance := item.ConversationProvenance
+			if item.Type != "commandExecution" || item.ToolName != "ask_user" || item.Status != appwire.TurnStatusCompleted || item.Position == nil || cursor != nil && appitempaging.ComparePosition(*item.Position, *cursor) <= 0 || provenance == nil || provenance.SourceItemID != item.ID || !appwire.ConversationOutputEligible(read.Thread.Evener.ConversationProvenance, provenance) {
+				continue
+			}
+			call := appwire.PendingAskCall{TurnID: item.TurnID, CallID: item.CallID}
+			if !known[call] {
+				wanted[call] = true
+			}
+		}
+	}
+	if len(wanted) == 0 {
+		return read, nil
+	}
+	pending = appwire.ClonePendingAsk(pending)
+	for offset := 0; ; {
+		page, err := b.client.ThreadRead(ctx, appwire.ThreadReadParams{Ref: b.binding.Ref, ExpectedAskRevision: &pending.Revision, ExpectedAskBootGeneration: pending.BootGeneration, Offset: &offset, LiveOnly: true})
+		if err != nil {
+			return appwire.ThreadReadResponse{}, err
+		}
+		state := page.Thread.Evener.PendingAsk
+		if state == nil || state.InstanceID != pending.InstanceID || state.BootGeneration != pending.BootGeneration || state.Revision != pending.Revision || page.PendingAskPage == nil {
+			return appwire.ThreadReadResponse{}, appwire.TranscriptItemCursorStale()
+		}
+		for _, call := range page.PendingAskPage.Composites {
+			if !known[call] {
+				known[call] = true
+				pending.Calls = append(pending.Calls, call)
+			}
+			delete(wanted, call)
+		}
+		if len(wanted) == 0 || page.PendingAskPage.NextOffset == nil {
+			break
+		}
+		if *page.PendingAskPage.NextOffset <= offset {
+			return appwire.ThreadReadResponse{}, appwire.TranscriptItemCursorStale()
+		}
+		offset = *page.PendingAskPage.NextOffset
+	}
+	read.Thread.Evener.PendingAsk = pending
 	return read, nil
 }
 

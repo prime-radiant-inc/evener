@@ -33,6 +33,7 @@ func (o *sessionOperations) discover(ctx context.Context, params appwire.ThreadL
 			return appwire.SessionDiscovery{}, appwire.SessionUnavailable("source unavailable: " + sourceID)
 		}
 	}
+	o.rosterBroker().enrichDiscovery(threads.Data)
 	discovery := appwire.SessionDiscovery{Threads: threads, Sources: []appwire.SessionSource{{ID: "local", State: sourceStates["local"]}}, BuiltAt: builtAt}
 	seen := map[string]bool{"local": true}
 	hosts := o.cfg.RemoteHostRegistry

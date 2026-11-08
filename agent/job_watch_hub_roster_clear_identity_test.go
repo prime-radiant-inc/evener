@@ -68,7 +68,7 @@ func testHubRosterWatchRebindClearSameRef(t *testing.T, before, after appwire.Ro
 	}
 	jm.mu.Lock()
 	_, cfg, ok := jm.watchConfigByIDLocked(result.WatchID)
-	retained := ok && len(cfg.rosterBaseline) == 1 && cfg.rosterBaseline[after.Ref] == after.AttentionEntry
+	retained := ok && len(cfg.rosterBaseline) == 1 && appwire.EqualAttentionEntry(cfg.rosterBaseline[after.Ref], after.AttentionEntry)
 	jm.mu.Unlock()
 	if !retained {
 		t.Error("rebind baseline did not retain the replacement session identity")

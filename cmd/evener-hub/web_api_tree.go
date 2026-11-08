@@ -1016,10 +1016,11 @@ func appThreadTreeEntries(thread appwire.Thread) (schema.SessionMeta, hubcore.Li
 		SessionID:        refText,
 		RosterInstanceID: envvars.FirstNonEmpty(thread.Evener.InstanceID, thread.SessionID),
 		Project:          project,
+		Capabilities:     appwire.ThreadCapabilities{AskFence: thread.Evener.Capabilities.AskFence},
 	}
 	// The remote row reads its thread-row facts through the one shared reader,
-	// so it cannot drift from the local probe (#2638). Capabilities and
-	// ActiveFlags stay absent on a remote row; only a local probe answers them.
+	// including ask pageability. Local probe authority and activity flags remain
+	// absent; a remote ask capability does not confer local mutation authority.
 	entry = hubcore.LiveEntryThreadFacts(entry, hubcore.ProbeResultFromThread(thread))
 	return meta, entry, true
 }

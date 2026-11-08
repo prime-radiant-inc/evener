@@ -99,6 +99,9 @@ func (s *Server) handleAppThreadRead(ctx context.Context, params appwire.ThreadR
 	if err := appwire.ValidateThreadReadParams(params); err != nil {
 		return appwire.ThreadReadResponse{}, s.readError(err, s.appThreadIDForRead(params))
 	}
+	if params.IsPendingAskPage() {
+		return s.appPendingAskPage(params)
+	}
 	if err := params.ValidateAnswerContinuation(); err != nil {
 		return appwire.ThreadReadResponse{}, err
 	}
@@ -199,8 +202,8 @@ func (s *Server) appThreadReadSnapshotChecked(params appwire.ThreadReadParams) (
 // lock another component holds across disk I/O. That is now structural rather
 // than a rule to remember: the envelope is materialized (server/thread_envelope.go),
 // this is a struct copy, the overlay capture copies in-memory state under a
-// leaf lock, and the Server holds no callback that could reach a session from
-// a read path.
+// leaf lock, and this capture never calls the session. Explicit pending-ask
+// pages sample their owner separately, outside the read cut and projection locks.
 func (s *Server) appThreadReadCutForTarget(params appwire.ThreadReadParams, threadID string) appThreadReadCut {
 	thread, ok := s.appThreadForID(threadID)
 	if !ok {

@@ -217,6 +217,11 @@ type EvenerThread struct {
 	// absent on old daemons and source-backed threads that omit the field,
 	// decoding as false.
 	AskPending bool `json:"askPending,omitempty"`
+	// AttentionLevel and AttentionAsOf are the Manager roster's derived level
+	// and its Unix-millisecond observation moment. Discovery alone populates
+	// them, and rows outside the live top-level roster leave them absent.
+	AttentionLevel string `json:"attentionLevel,omitempty"`
+	AttentionAsOf  int64  `json:"attentionAsOf,omitempty"`
 	// PendingQuestion is the first question of the session's pending ask and
 	// how many the ask holds (S1b). The daemon reads both from one sample of
 	// the pending set, so it is present exactly when AskPending is true; it is
@@ -344,6 +349,13 @@ type PendingQuestion struct {
 	Question string   `json:"question"`
 	Options  []string `json:"options,omitempty"`
 	Count    int      `json:"count"`
+	// The displayed question's composite identity is absent for call-less asks.
+	TurnID string `json:"turnId,omitempty"`
+	CallID string `json:"callId,omitempty"`
+	// Live append computes these flags from the full ask. Restore cannot
+	// reconstruct that evidence, so unknown stays absent rather than false.
+	Complete  *bool `json:"complete,omitempty"`
+	Truncated *bool `json:"truncated,omitempty"`
 }
 
 // GoalState is the wire representation of a session's /goal. Status is the
@@ -575,6 +587,8 @@ type SandboxEscalationResolveParams struct {
 }
 
 type ThreadCapabilities struct {
+	// AskFence supports pair-fenced answers and paged pending-ask reads.
+	AskFence                   bool `json:"askFence,omitempty"`
 	VoicePresentationContextV1 bool `json:"voicePresentationContextV1,omitempty"`
 	Send                       bool `json:"send"`
 	Steer                      bool `json:"steer"`

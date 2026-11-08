@@ -1003,20 +1003,24 @@ func (s *Session) consumeSteeringMessage(msg steeringMessage) steeringConsumptio
 	t.Actor = msg.Actor
 	t.StableTurnID = msg.StableTurnID
 	if steeringAnswersAsk(msg.Source, steeringOrigin{kind: msg.Kind}, "") {
-		answerToTurnIDs := s.pendingAskTurnIDs()
-		if s.clientMutations != nil && msg.ClientMutationID != "" {
-			record := s.clientMutations.snapshot().Journal[msg.ClientMutationID]
-			answerToTurnIDs = appendAnswerTurnIDs(answerToTurnIDs, record.AnswerToTurnIDs...)
-		}
+		t.AskResolution = s.clientMutationAskResolution(msg.ClientMutationID)
 		// PlaceSession joins this steering entry to the current execution when
 		// one is active. That execution cannot be its own predecessor.
 		s.mu.Lock()
 		activeExecution := s.execution.turnID
 		s.mu.Unlock()
-		if activeExecution != "" {
-			answerToTurnIDs = slices.DeleteFunc(answerToTurnIDs, func(id string) bool { return id == activeExecution })
+		if t.AskResolution != nil {
+			t.AnswerToTurnIDs = askResolutionTurnIDs(t.AskResolution, activeExecution)
+		} else {
+			t.AnswerToTurnIDs = s.pendingAskTurnIDs()
+			if s.clientMutations != nil && msg.ClientMutationID != "" {
+				record := s.clientMutations.snapshot().Journal[msg.ClientMutationID]
+				t.AnswerToTurnIDs = appendAnswerTurnIDs(t.AnswerToTurnIDs, record.AnswerToTurnIDs...)
+			}
+			if activeExecution != "" {
+				t.AnswerToTurnIDs = slices.DeleteFunc(t.AnswerToTurnIDs, func(id string) bool { return id == activeExecution })
+			}
 		}
-		t.AnswerToTurnIDs = answerToTurnIDs
 	}
 	if len(msg.SkillNames) > 0 {
 		t.SkillState = &schema.SkillTurnState{Input: selectionRecord}
@@ -1154,6 +1158,15 @@ func (s *Session) recordFailedSteeringSelection(msg steeringMessage, cause error
 	turn.Error = &schema.TurnFailureInfo{
 		Message:         cause.Error(),
 		SteeringCarrier: steeringCarrier,
+	}
+	if steeringCarrier {
+		turn.AskResolution = s.clientMutationAskResolution(msg.ClientMutationID)
+		if turn.AskResolution != nil {
+			s.mu.Lock()
+			activeExecution := s.execution.turnID
+			s.mu.Unlock()
+			turn.AnswerToTurnIDs = askResolutionTurnIDs(turn.AskResolution, activeExecution)
+		}
 	}
 	if len(input.SkillNames) > 0 {
 		turn.SkillState = &schema.SkillTurnState{Input: skillInputRecordFromQueued(input)}

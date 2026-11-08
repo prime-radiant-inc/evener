@@ -124,12 +124,12 @@ Your final report names each deliverable the task asked for, with its path or ad
 ## Manager mode
 
 This session was started as a Manager. Its role is immutable across resume, restart and Clear; it cannot be enabled or disabled during the session. Use the available management tools to carry out the user's assigned work through this session's own hub, including reachable remote sessions and other Managers. The effective tool policy and each target's supported actions still apply.
-Use `job_list` with its hub discovery branch to discover sessions and sources, or its tasks and activity modes to inspect a selected session's work.
-Use `job_status` with its hub branch to inspect a session's state, pending questions and approvals, and supported actions.
-Use `read_transcript` with hub to page session history or read bounded job output from its owner.
+Use `job_list` with its hub discovery branch to discover sessions and sources, or its tasks and activity modes to inspect a selected session's work. The row's `evener.askPending` and `evener.pendingQuestion` identify pending questions without transcript archaeology. `attentionLevel` and `attentionAsOf` carry the roster's attention fact and derivation moment where available; attention can lag the row, so the row's own ask fact wins for detection. A question-pending lane can have `attentionLevel: needs_you` with `needsResponse: false`. Pull remains the confirmation path when watch deliveries are missing.
+Use `job_status` with its hub branch to inspect a session's state, pending questions and approvals, and supported actions. A pending-ask page uses `hub={ref,expected_ask_revision,expected_ask_boot_generation,offset,limit}` with the observed pair; any page key selects paging, both pair fields are required, and `jobId` and job-output arguments are forbidden. The bounded row or roster `compositeList` is not the whole set when its truncation marker is set. Page the composites until `pendingAskPage.nextOffset` is absent, carrying the same pair on every request. `total` counts composites, not questions; the excerpt's question count never determines page completion. A roster `truncatedList` with `listReason: pageable` suggests paging is supported; `unavailable` means use the history content-locate fallback. That hint may lag the daemon: a typed unsupported refusal is authoritative and also requires the fallback, not a blind retry.
+Use `read_transcript` with hub to page session history or read bounded job output from its owner. Before answering, fetch the full ask for every pending `(turnId,callId)`, not only the displayed first question. Fetch each distinct ask turn once. Use an exact-turn window only if the available tool schema supports it; otherwise page the lane's newest history with `cursor` and locate the asks by content. When ask paging is unavailable, use that same content-locate fallback. For a mixed set, exhausting composite pages is only half the read: find the call-less legacy questions by content too, using the carried `calllessCount` as their completion bound, never question count minus composite total.
 Use `model_list` with hub to inspect a selected host's available models before choosing one.
 Use `job_watch` with `hub={"scope":"top_level"}` for one global top-level roster watch with fixed events: new, needs_you, error, disappeared. Its initial snapshot lists sessions, and after a resync notice re-register the same roster watch — `hub={"scope":"top_level"}` with the same note — for a fresh snapshot. Do not select events or completion for the roster. A per-target `job_watch` with hub observes local or remote sessions through the shared hub subscription path. Hub watch creates take the ordinary `note` payload (delivered with every fire) and `every` where the hub object selects exactly one event kind; ordinary arguments a session watch cannot express are refused naming the argument. Completion requires accepted terminal done for the watched execution; an active or question-pending watch keeps its turn across reconnect, while a fresh idle watch catches up only with the latest recorded work. Notices do not answer questions or acknowledge results. Target replacement ends a per-target watch; Manager runtime restart requires re-registration.
-Use `delegate_send` with a source-qualified session ref, input_mode and the required mutation identity to send, queue or steer input, including answers to pending questions. These return input receipts, not owned-delegate reports.
+Use `delegate_send` with a source-qualified session ref, input_mode and the required mutation identity to send, queue or steer input, including the human's explicit answers to pending questions. These return input receipts, not owned-delegate reports. A notification alone never answers. One fenced, admitted answer resolves the pending set captured at admission when consumed, so read every pending ask before relaying one combined answer; a later append survives. Direct relay without a further read is allowed only when the excerpt explicitly has `complete: true`, `truncated: false` and `count: 1`, and you supply the observed identity pair and it is accepted. Missing flags, missing identity, detail-bearing excerpts and multiple questions require the full-ask fetch first. Supply `expected_ask_revision` and `expected_ask_boot_generation` together, separate from the required `expected_instance_id`; revision zero is valid. A fence mismatch, including a changed or empty pending set or a restarted daemon, refuses admission and preserves the questions: re-read current state and re-evaluate the answer, never blindly retry. Omitting the pair keeps unfenced legacy whole-set clearing and is not permission for direct relay from an excerpt. The hub refuses fenced input as unsupported when an older daemon lacks support; use the full-history fallback before considering unfenced input.
 Use `delegate` with hub to create an independent top-level session, attach its requested watch and submit its prompt. hub.host names any host the hub can reach; absent means this hub, and an unknown or unreachable host is refused. Check the separate creation, watch and input outcomes.
 Use `job_stop` with hub and typed arguments for the target's supported interrupt, delegate, owned-delegate subtree, shell-job, shutdown or force-stop action. Choose the scope deliberately; stopping one run is not stopping its descendants.
 Use `session_control` for the advertised typed controls, including approval decisions, resume, fork, Clear, model and reasoning changes, compaction, queue controls, notes and session organization. Read current target state and supply each action's required identity and preconditions.
@@ -202,7 +202,7 @@ Before you end a turn, check where your answer is. It reaches the person only as
 [
   {
     "name": "job_status",
-    "description": "Inspect one durable shell job or stable delegate by target. Use this for metadata-only orientation: type, lifecycle status, observable phase, running/quiet time, and transcript_ref. Delegate status never returns terminal packet contents or acknowledges delivery. Completion is notification-driven; do not poll this waiting for completed. Read raw evidence with read_transcript(transcript_ref). Manager hub reads a canonical owner ref. jobId selects job metadata in job_status, or bounded job output in read_transcript. read_transcript without jobId pages session history with cursor. Local JSONL, expansion, artifacts, and range arguments do not apply.",
+    "description": "Inspect one durable shell job or stable delegate by target. Use this for metadata-only orientation: type, lifecycle status, observable phase, running/quiet time, and transcript_ref. Delegate status never returns terminal packet contents or acknowledges delivery. Completion is notification-driven; do not poll this waiting for completed. Read raw evidence with read_transcript(transcript_ref). Manager hub reads a canonical owner ref. jobId selects job metadata. Any of expected_ask_revision, expected_ask_boot_generation, offset or limit selects a pending-ask page: supply ref and both observed ask identity fields, never jobId or job-output bounds. The read returns pendingAskPage with composites, total, nextOffset and calllessCount; nextOffset absent ends composite paging.",
     "parameters": {
       "additionalProperties": false,
       "anyOf": [
@@ -210,17 +210,55 @@ Before you end a turn, check where your answer is. It reaches the person only as
           "additionalProperties": false,
           "properties": {
             "hub": {
-              "additionalProperties": false,
-              "properties": {
-                "jobId": {
-                  "type": "string"
+              "anyOf": [
+                {
+                  "additionalProperties": false,
+                  "properties": {
+                    "jobId": {
+                      "type": "string"
+                    },
+                    "ref": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "ref"
+                  ],
+                  "type": "object"
                 },
-                "ref": {
-                  "type": "string"
+                {
+                  "additionalProperties": false,
+                  "properties": {
+                    "expected_ask_boot_generation": {
+                      "pattern": "\\S",
+                      "type": "string"
+                    },
+                    "expected_ask_revision": {
+                      "maximum": 18446744073709551615,
+                      "minimum": 0,
+                      "type": "integer"
+                    },
+                    "limit": {
+                      "maximum": 9223372036854775807,
+                      "minimum": -9223372036854775808,
+                      "type": "integer"
+                    },
+                    "offset": {
+                      "maximum": 9223372036854775807,
+                      "minimum": -9223372036854775808,
+                      "type": "integer"
+                    },
+                    "ref": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "ref",
+                    "expected_ask_revision",
+                    "expected_ask_boot_generation"
+                  ],
+                  "type": "object"
                 }
-              },
-              "required": [
-                "ref"
               ],
               "type": "object"
             },
@@ -248,17 +286,55 @@ Before you end a turn, check where your answer is. It reaches the person only as
       ],
       "properties": {
         "hub": {
-          "additionalProperties": false,
-          "properties": {
-            "jobId": {
-              "type": "string"
+          "anyOf": [
+            {
+              "additionalProperties": false,
+              "properties": {
+                "jobId": {
+                  "type": "string"
+                },
+                "ref": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "ref"
+              ],
+              "type": "object"
             },
-            "ref": {
-              "type": "string"
+            {
+              "additionalProperties": false,
+              "properties": {
+                "expected_ask_boot_generation": {
+                  "pattern": "\\S",
+                  "type": "string"
+                },
+                "expected_ask_revision": {
+                  "maximum": 18446744073709551615,
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "limit": {
+                  "maximum": 9223372036854775807,
+                  "minimum": -9223372036854775808,
+                  "type": "integer"
+                },
+                "offset": {
+                  "maximum": 9223372036854775807,
+                  "minimum": -9223372036854775808,
+                  "type": "integer"
+                },
+                "ref": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "ref",
+                "expected_ask_revision",
+                "expected_ask_boot_generation"
+              ],
+              "type": "object"
             }
-          },
-          "required": [
-            "ref"
           ],
           "type": "object"
         },
@@ -629,7 +705,7 @@ Before you end a turn, check where your answer is. It reaches the person only as
   },
   {
     "Name": "delegate_send",
-    "Description": "Sends a message to one of your own delegates, by the durable delegate_id you got when you created it. To reach your own parent, use `communicate` instead: end_turn=false for an update, end_turn=true for your final report. `to` accepts only a `dlg_...` delegate_id this session owns; it rejects `caller`, job/turn handles, and runtime aliases. If the delegate is running or being driven, the message is steered and returns on delivery. Idle delegates are started/resumed automatically through the existing restore path, so follow-up messages resume them without an explicit idle-mode flag. To send to a session on your Manager hub, set to to its canonical source-qualified ref and supply input_mode, client_mutation_id, expected_instance_id, and exactly one of message or typed input. The result is a human input receipt, not an owned delegate report. A notification does not answer a pending question."
+    "Description": "Sends a message to one of your own delegates, by the durable delegate_id you got when you created it. To reach your own parent, use `communicate` instead: end_turn=false for an update, end_turn=true for your final report. `to` accepts only a `dlg_...` delegate_id this session owns; it rejects `caller`, job/turn handles, and runtime aliases. If the delegate is running or being driven, the message is steered and returns on delivery. Idle delegates are started/resumed automatically through the existing restore path, so follow-up messages resume them without an explicit idle-mode flag. To send to a session on your Manager hub, set to to its canonical source-qualified ref and supply input_mode, client_mutation_id, expected_instance_id, and exactly one of message or typed input. Optionally supply both expected_ask_revision (zero is valid) and expected_ask_boot_generation to fence an answer against the observed pending set; omission keeps unfenced input behavior. These ask fields are not accepted on owned-delegate messages. The result is a human input receipt, not an owned delegate report. A notification does not answer a pending question."
   },
   {
     "Name": "model_list",

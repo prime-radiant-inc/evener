@@ -143,6 +143,17 @@ export interface AttentionChanged {
    * older hub omits it, decoding as false.
    */
   needsResponse?: boolean;
+  pendingQuestion?: PendingQuestion;
+  askBootGeneration?: string;
+  askRevision?: number;
+  compositeList?: PendingAskCall[];
+  compositeTotal?: number;
+  calllessCount?: number;
+  askPageable?: boolean;
+  /**
+   * PublishedAt is the derivation moment, in Unix milliseconds.
+   */
+  publishedAt?: number;
   prevLevel: string;
 }
 
@@ -1060,6 +1071,13 @@ export interface EvenerThread {
    * decoding as false.
    */
   askPending?: boolean;
+  /**
+   * AttentionLevel and AttentionAsOf are the Manager roster's derived level
+   * and its Unix-millisecond observation moment. Discovery alone populates
+   * them, and rows outside the live top-level roster leave them absent.
+   */
+  attentionLevel?: string;
+  attentionAsOf?: number;
   /**
    * PendingQuestion is the first question of the session's pending ask and
    * how many the ask holds (S1b). The daemon reads both from one sample of
@@ -2990,11 +3008,22 @@ export interface PendingAskCall {
   callId: string;
 }
 
+export interface PendingAskPage {
+  composites: PendingAskCall[];
+  total: number;
+  nextOffset?: number;
+  calllessCount: number;
+}
+
 export interface PendingAskState {
   version: number;
   instanceId: string;
   revision: number;
   calls: PendingAskCall[];
+  bootGeneration?: string;
+  calllessCount?: number;
+  compositeTotal?: number;
+  callsTruncated?: boolean;
 }
 
 export interface PendingMutation {
@@ -3012,6 +3041,17 @@ export interface PendingQuestion {
   question: string;
   options?: string[];
   count: number;
+  /**
+   * The displayed question's composite identity is absent for call-less asks.
+   */
+  turnId?: string;
+  callId?: string;
+  /**
+   * Live append computes these flags from the full ask. Restore cannot
+   * reconstruct that evidence, so unknown stays absent rather than false.
+   */
+  complete?: boolean;
+  truncated?: boolean;
 }
 
 export interface PinSection {
@@ -3283,6 +3323,17 @@ export interface RosterEvent {
    * older hub omits it, decoding as false.
    */
   needsResponse?: boolean;
+  pendingQuestion?: PendingQuestion;
+  askBootGeneration?: string;
+  askRevision?: number;
+  compositeList?: PendingAskCall[];
+  compositeTotal?: number;
+  calllessCount?: number;
+  askPageable?: boolean;
+  /**
+   * PublishedAt is the derivation moment, in Unix milliseconds.
+   */
+  publishedAt?: number;
   kind: string;
 }
 
@@ -4303,6 +4354,10 @@ export interface ThreadActivity {
 }
 
 export interface ThreadCapabilities {
+  /**
+   * AskFence supports pair-fenced answers and paged pending-ask reads.
+   */
+  askFence?: boolean;
   voicePresentationContextV1?: boolean;
   send: boolean;
   steer: boolean;
@@ -4709,10 +4764,18 @@ export interface ThreadReadParams {
    * snapshot identity. It cannot subscribe or include a transcript window.
    */
   answerContinuation?: AnswerContinuationQuery;
+  /**
+   * A pending-ask page requires the observed pair and an explicit root ref.
+   */
+  expectedAskRevision?: number;
+  expectedAskBootGeneration?: string;
+  offset?: number;
+  limit?: number;
 }
 
 export interface ThreadReadResponse {
   thread: Thread;
+  pendingAskPage?: PendingAskPage;
   /**
    * TargetSessionToolsSupported reports whether the daemon serving this thread
    * negotiated session tools. Omission means the serving hub cannot attest it.
@@ -5208,6 +5271,8 @@ export interface TurnQueueParams {
   clientMutationId: string;
   expectedInstanceId: string;
   input?: InputItem[];
+  expectedAskRevision?: number;
+  expectedAskBootGeneration?: string;
 }
 
 export interface TurnQueueResponse {
@@ -5221,6 +5286,8 @@ export interface TurnStartParams {
   clientMutationId: string;
   expectedInstanceId: string;
   input?: InputItem[];
+  expectedAskRevision?: number;
+  expectedAskBootGeneration?: string;
 }
 
 export interface TurnStartResponse {
@@ -5235,6 +5302,8 @@ export interface TurnSteerParams {
   clientMutationId: string;
   expectedInstanceId: string;
   input?: InputItem[];
+  expectedAskRevision?: number;
+  expectedAskBootGeneration?: string;
 }
 
 export interface TurnSteerResponse {

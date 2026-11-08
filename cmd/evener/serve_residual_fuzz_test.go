@@ -159,7 +159,7 @@ func exerciseResidualCallbacks(t *testing.T, s *residualServeServer, sessionID s
 	_ = s.envelopeSource.TaskAggregate()
 	_, _, _ = s.envelopeSource.WorkMetrics()
 	_, _ = s.envelopeSource.FailedToolCalls()
-	_ = s.envelopeSource.PendingQuestion()
+	_, _ = s.envelopeSource.PendingAskSnapshot()
 	_ = s.envelopeSource.RestingFailure()
 	_ = s.envelopeSource.PendingEscalations()
 	_, _, _ = s.envelopeSource.ReasoningInfo()

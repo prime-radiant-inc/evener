@@ -179,6 +179,7 @@ func ProbeResultFromThread(root appwire.Thread) ProbeResult {
 		PendingEscalation:   len(root.Evener.PendingEscalations) > 0,
 		PendingEscalations:  root.Evener.PendingEscalations,
 		PendingQuestion:     root.Evener.PendingQuestion,
+		PendingAskState:     appwire.ClonePendingAsk(root.Evener.PendingAsk),
 		Failure:             root.Evener.Failure,
 		// Both callers read a current-protocol daemon's own thread projection,
 		// which stamps the capability set beside the status, so the caps are the
@@ -212,6 +213,7 @@ func LiveEntryThreadFacts(in LiveEntry, r ProbeResult) LiveEntry {
 	in.PendingEscalation = r.PendingEscalation
 	in.PendingEscalations = r.PendingEscalations
 	in.PendingQuestion = r.PendingQuestion
+	in.PendingAskState = r.PendingAskState
 	in.Failure = r.Failure
 	in.RunningJobs = r.RunningJobs
 	in.CompletedJobs = r.CompletedJobs

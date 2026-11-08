@@ -9,8 +9,10 @@ import (
 	"fmt"
 	"maps"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/internal/jobstore"
@@ -44,6 +46,92 @@ const hubRosterWatchKey = "hub:roster"
 
 const rosterRecoveryFrame = "roster_resync: true\nrecovery: re-register the same roster watch — job_watch with hub={\"scope\":\"top_level\"} and the same note — for a fresh snapshot\n"
 
+// Roster JSON is a separate segment from the ordinary 4096-rune watch body.
+// Drop whole entries, never JSON fragments, and leave a bounded recovery trail.
+const hubRosterSegmentRunes = 57344
+const hubRosterDroppedRefs = 64
+
+type hubRosterDropped struct {
+	count int
+	refs  []string
+}
+
+func hubRosterEntryRef(entry json.RawMessage) string {
+	var identity struct {
+		Ref string `json:"ref"`
+	}
+	_ = json.Unmarshal(entry, &identity)
+	return identity.Ref
+}
+
+func hubRosterDroppedFields(dropped hubRosterDropped) string {
+	if dropped.count == 0 {
+		return ""
+	}
+	refs, _ := json.Marshal(dropped.refs)
+	recovery, _ := json.Marshal(struct {
+		PerRef     []string `json:"perRef"`     //nolint:tagliatelle // Model-visible roster recovery field.
+		SmallFleet string   `json:"smallFleet"` //nolint:tagliatelle // Model-visible roster recovery field.
+		Unlisted   int      `json:"unlisted"`
+	}{[]string{"job_status", "read_transcript"}, "job_list", dropped.count - len(dropped.refs)})
+	return fmt.Sprintf("roster_dropped: %d\nroster_dropped_refs: %s\nroster_recovery: %s\n", dropped.count, refs, recovery)
+}
+
+func boundHubRosterSegment(entries []json.RawMessage, inherited hubRosterDropped, markers string) string {
+	const envelope = "roster_events: []\n"
+	prefix := make([]int, len(entries)+1)
+	for i, entry := range entries {
+		prefix[i+1] = prefix[i] + utf8.RuneCount(entry)
+		if i > 0 {
+			prefix[i+1]++ // JSON array comma.
+		}
+	}
+	base := utf8.RuneCountInString(markers + envelope)
+	keep := len(entries)
+	for base+prefix[keep] > hubRosterSegmentRunes {
+		keep--
+	}
+	for {
+		dropped := hubRosterDropped{count: inherited.count + len(entries) - keep, refs: make([]string, 0, hubRosterDroppedRefs)}
+		dropped.refs = append(dropped.refs, inherited.refs[:min(len(inherited.refs), hubRosterDroppedRefs)]...)
+		for _, entry := range entries[keep:] {
+			if len(dropped.refs) == hubRosterDroppedRefs {
+				break
+			}
+			dropped.refs = append(dropped.refs, hubRosterEntryRef(entry))
+		}
+		fields := hubRosterDroppedFields(dropped)
+		// An oversized ref is untrusted data too. Omit whole named refs rather
+		// than clipping their JSON, and account for them through unlisted.
+		for base+utf8.RuneCountInString(fields) > hubRosterSegmentRunes && len(dropped.refs) > 0 {
+			dropped.refs = dropped.refs[:len(dropped.refs)-1]
+			fields = hubRosterDroppedFields(dropped)
+		}
+		if base+prefix[keep]+utf8.RuneCountInString(fields) <= hubRosterSegmentRunes {
+			var out strings.Builder
+			out.WriteString(markers)
+			out.WriteString("roster_events: [")
+			for i, entry := range entries[:keep] {
+				if i > 0 {
+					out.WriteByte(',')
+				}
+				out.Write(entry)
+			}
+			out.WriteString("]\n")
+			out.WriteString(fields)
+			return out.String()
+		}
+		keep--
+	}
+}
+
+func hubRosterFrameDropped(frame string) hubRosterDropped {
+	count, _ := strconv.Atoi(rosterFrameField(frame, "roster_dropped: "))
+	var refs []string
+	_ = json.Unmarshal([]byte(rosterFrameField(frame, "roster_dropped_refs: ")), &refs)
+	return hubRosterDropped{count: count, refs: refs}
+}
+
 // The pending send rail replaces earlier frames for the same watch key.
 // Merge only roster frames there, after it finds the actual undelivered state.
 // Resync and authoritative initials replace earlier pending entries. Deltas,
@@ -53,38 +141,45 @@ func mergeHubRosterFrames(previous, current string) string {
 		strings.Contains(current, "\nroster_initial: true\n") {
 		return current
 	}
+	var old, next []json.RawMessage
 	oldPayload := rosterFrameField(previous, "roster_events: ")
-	newPayload := rosterFrameField(current, "roster_events: ")
-	if oldPayload != "" && newPayload != "" {
-		var old, next []json.RawMessage
-		if json.Unmarshal([]byte(oldPayload), &old) == nil && json.Unmarshal([]byte(newPayload), &next) == nil {
-			positions := make(map[string]int, len(old))
-			merged := make([]json.RawMessage, 0, len(old)+len(next))
-			for _, entry := range append(old, next...) {
-				var ref struct {
-					Ref string `json:"ref"`
-				}
-				if json.Unmarshal(entry, &ref) != nil || ref.Ref == "" {
-					continue
-				}
-				if at, found := positions[ref.Ref]; found {
-					merged[at] = entry
-				} else {
-					positions[ref.Ref] = len(merged)
-					merged = append(merged, entry)
-				}
-			}
-			if encoded, err := json.Marshal(merged); err == nil {
-				current = strings.Replace(current, "roster_events: "+newPayload+"\n", "roster_events: "+string(encoded)+"\n", 1)
-			}
+	if oldPayload != "" && json.Unmarshal([]byte(oldPayload), &old) != nil {
+		return current
+	}
+	if json.Unmarshal([]byte(rosterFrameField(current, "roster_events: ")), &next) != nil {
+		return current
+	}
+	positions := make(map[string]int, len(old))
+	merged := make([]json.RawMessage, 0, len(old)+len(next))
+	for _, entry := range append(old, next...) {
+		ref := hubRosterEntryRef(entry)
+		if ref == "" {
+			continue
+		}
+		if at, found := positions[ref]; found {
+			merged[at] = entry
+		} else {
+			positions[ref] = len(merged)
+			merged = append(merged, entry)
 		}
 	}
-	if strings.Contains(previous, "\nroster_resync: true\n") && !strings.Contains(current, "\nroster_resync: true\n") {
-		current += rosterRecoveryFrame
+	dropped, newDropped := hubRosterFrameDropped(previous), hubRosterFrameDropped(current)
+	dropped.count += newDropped.count
+	dropped.refs = append(dropped.refs, newDropped.refs...)
+	markers := ""
+	if strings.Contains(previous, "\nroster_resync: true\n") {
+		markers = rosterRecoveryFrame
 	} else if strings.Contains(previous, "\nroster_initial: true\n") {
-		current += "roster_initial: true\n"
+		markers = "roster_initial: true\n"
 	}
-	return current
+	var out strings.Builder
+	for line := range strings.SplitAfterSeq(current, "\n") {
+		if !strings.HasPrefix(line, "roster_") {
+			out.WriteString(line)
+		}
+	}
+	out.WriteString(boundHubRosterSegment(merged, dropped, markers))
+	return out.String()
 }
 
 func rosterFrameField(frame, field string) string {
@@ -180,8 +275,11 @@ func (jm *jobManager) onHubRoster(id string, update appwire.SessionWatchUpdate) 
 			if event.Ref == "" {
 				continue
 			}
-			next[event.Ref] = event.AttentionEntry
-			if old, known := cfg.rosterBaseline[event.Ref]; !known || old != event.AttentionEntry {
+			next[event.Ref] = appwire.CloneAttentionEntry(event.AttentionEntry)
+			old, known := cfg.rosterBaseline[event.Ref]
+			// Fresh observation time alone is not a new roster fact on rebind.
+			old.PublishedAt = event.PublishedAt
+			if !known || !appwire.EqualAttentionEntry(old, event.AttentionEntry) {
 				if !deliverInitial && (!known || old.ID != event.ID || old.RosterInstanceID != event.RosterInstanceID) {
 					event.Kind = "new"
 				}
@@ -208,7 +306,7 @@ func (jm *jobManager) onHubRoster(id string, update appwire.SessionWatchUpdate) 
 				if event.Kind == "disappeared" {
 					delete(cfg.rosterBaseline, event.Ref)
 				} else {
-					cfg.rosterBaseline[event.Ref] = event.AttentionEntry
+					cfg.rosterBaseline[event.Ref] = appwire.CloneAttentionEntry(event.AttentionEntry)
 				}
 			}
 			changed = append(changed, event)
@@ -222,24 +320,39 @@ func (jm *jobManager) onHubRoster(id string, update appwire.SessionWatchUpdate) 
 	var payload string
 	if !r.Resync {
 		type rosterChange struct {
-			Ref             string `json:"ref"`
-			Title           string `json:"title"`
-			Level           string `json:"level"`
+			appwire.AttentionEntry
 			Kind            string `json:"kind"`
-			AskPending      bool   `json:"askPending"`      //nolint:tagliatelle // The model-visible roster contract uses askPending.
-			ApprovalPending bool   `json:"approvalPending"` //nolint:tagliatelle // The model-visible roster contract uses approvalPending.
-			NeedsResponse   bool   `json:"needsResponse"`   //nolint:tagliatelle // The model-visible roster contract uses needsResponse.
+			AskPending      bool   `json:"askPending"`              //nolint:tagliatelle // The model-visible roster contract uses askPending.
+			ApprovalPending bool   `json:"approvalPending"`         //nolint:tagliatelle // The model-visible roster contract uses approvalPending.
+			NeedsResponse   bool   `json:"needsResponse"`           //nolint:tagliatelle // The model-visible roster contract uses needsResponse.
+			TruncatedList   bool   `json:"truncatedList,omitempty"` //nolint:tagliatelle // Model-visible roster field.
+			ListReason      string `json:"listReason,omitempty"`    //nolint:tagliatelle // Model-visible roster field.
 		}
-		refs := make([]rosterChange, 0, len(changed))
+		refs := make([]json.RawMessage, 0, len(changed))
 		for _, event := range changed {
-			refs = append(refs, rosterChange{event.Ref, event.Title, event.Level, event.Kind, event.AskPending, event.ApprovalPending, event.NeedsResponse})
+			entry := appwire.CloneAttentionEntry(event.AttentionEntry)
+			entry.CompositeTotal = max(entry.CompositeTotal, len(entry.CompositeList))
+			entry.CompositeList = entry.CompositeList[:min(len(entry.CompositeList), appwire.MaxPendingAskComposites)]
+			truncated := entry.CompositeTotal > len(entry.CompositeList)
+			reason := ""
+			if truncated {
+				reason = "unavailable"
+				if entry.AskPageable {
+					reason = "pageable"
+				}
+			}
+			encoded, err := json.Marshal(rosterChange{AttentionEntry: entry, Kind: event.Kind, AskPending: event.AskPending, ApprovalPending: event.ApprovalPending, NeedsResponse: event.NeedsResponse, TruncatedList: truncated, ListReason: reason})
+			if err != nil {
+				jm.mu.Unlock()
+				return err
+			}
+			refs = append(refs, encoded)
 		}
-		encoded, err := json.Marshal(refs)
-		if err != nil {
-			jm.mu.Unlock()
-			return err
+		markers := ""
+		if deliverInitial {
+			markers = "roster_initial: true\n"
 		}
-		payload = string(encoded)
+		payload = boundHubRosterSegment(refs, hubRosterDropped{}, markers)
 		trigger = fmt.Sprintf("roster revision %d, %d changes", r.Revision, len(changed))
 	}
 	delivery := jm.watchSendSnapshot(cfg, hubRosterWatchKey, trigger, events.SessionEvent{SessionID: jm.sessionID})

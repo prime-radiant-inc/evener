@@ -1207,7 +1207,8 @@ func (s *Session) flushSteeringTurnRecords(records []steeringTurnRecord) {
 // buildCompactionMeta gathers session-level metadata for enriching compaction summaries.
 func (s *Session) buildCompactionMeta() contextmgr.CompactionMeta {
 	meta := contextmgr.CompactionMeta{PendingAskTurnIDs: s.pendingAskTurnIDs()}
-	for _, call := range s.PendingAskCalls().Calls {
+	_, pending := s.PendingAskSnapshot()
+	for _, call := range pending.Calls {
 		meta.PendingAskCallIDs = append(meta.PendingAskCallIDs, call.CallID)
 	}
 

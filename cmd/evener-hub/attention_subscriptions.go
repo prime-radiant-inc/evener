@@ -19,6 +19,30 @@ func (o *sessionOperations) rosterBroker() *attentionBroker {
 
 type rosterIdentity struct{ Ref, InstanceID string }
 
+// enrichDiscovery joins through the identities used by roster publication,
+// never through a reconstructed thread/session fallback. Only the derived
+// level and its observation moment cross, so fresher row ask facts win skew.
+func (b *attentionBroker) enrichDiscovery(threads []appwire.Thread) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	byRef := make(map[string]appwire.AttentionEntry, len(b.identities))
+	for id, identity := range b.identities {
+		if entry, ok := b.latest[id]; ok {
+			byRef[identity.Ref] = entry
+		}
+	}
+	for i := range threads {
+		row := &threads[i].Evener
+		row.AttentionLevel, row.AttentionAsOf = "", 0
+		if row.Kind == "subagent" {
+			continue
+		}
+		if entry, ok := byRef[row.Ref]; ok {
+			row.AttentionLevel, row.AttentionAsOf = entry.Level, entry.PublishedAt
+		}
+	}
+}
+
 type attentionBroker struct {
 	mu          sync.Mutex
 	latest      map[string]appwire.AttentionEntry
@@ -87,7 +111,7 @@ func (b *attentionBroker) filtered(sub *rosterSubscription) map[string]appwire.A
 	for id, entry := range b.latest {
 		identity, ok := b.identities[id]
 		if ok && identity.Ref != "" && identity.Ref != sub.callerRef {
-			current[id] = entry
+			current[id] = appwire.CloneAttentionEntry(entry)
 		}
 	}
 	return current
@@ -107,7 +131,7 @@ func (b *attentionBroker) Publish(entries map[string]appwire.AttentionEntry, ide
 		}
 		entry.Ref = ident.Ref
 		entry.RosterInstanceID = ident.InstanceID
-		b.latest[id], b.identities[id] = entry, ident
+		b.latest[id], b.identities[id] = appwire.CloneAttentionEntry(entry), ident
 	}
 	b.revision++
 	for sub := range b.subscribers {
@@ -123,7 +147,7 @@ func (b *attentionBroker) Publish(entries map[string]appwire.AttentionEntry, ide
 			switch {
 			case !existed || previous.RosterInstanceID != entry.RosterInstanceID:
 				kind = "new"
-			case entry.Level == "needs_you" && (previous.Level != entry.Level || previous.AskPending != entry.AskPending || previous.ApprovalPending != entry.ApprovalPending || previous.NeedsResponse != entry.NeedsResponse):
+			case entry.Level == "needs_you" && (previous.Level != entry.Level || previous.AskPending != entry.AskPending || previous.ApprovalPending != entry.ApprovalPending || previous.NeedsResponse != entry.NeedsResponse || previous.AskBootGeneration != entry.AskBootGeneration || previous.AskRevision != entry.AskRevision):
 				kind = "needs_you"
 			case entry.Level == "error" && previous.Level != entry.Level:
 				kind = "error"
@@ -147,7 +171,11 @@ func (b *attentionBroker) Publish(entries map[string]appwire.AttentionEntry, ide
 				update.Events = append(update.Events, appwire.RosterEvent{AttentionEntry: sub.baseline[id], Kind: "disappeared"})
 			}
 		}
-		changed := !maps.Equal(sub.baseline, current)
+		changed := !maps.EqualFunc(sub.baseline, current, func(a, b appwire.AttentionEntry) bool {
+			// A refreshed derivation moment does not invalidate pending deltas.
+			a.PublishedAt = b.PublishedAt
+			return appwire.EqualAttentionEntry(a, b)
+		})
 		sub.baseline = current
 		if len(update.Events) == 0 {
 			if changed {

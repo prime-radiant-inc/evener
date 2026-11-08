@@ -43,14 +43,15 @@ func (jm *jobManager) snapshotWatchSendFrame(d watchSendDelivery) watchSendDeliv
 		Data:       d.eventData,
 		Provenance: provenance.Clone(d.triggerProvenance),
 	}, d.triggerProvenance)
-	if d.rosterInitial {
-		d.frame += "roster_initial: true\n"
-	}
-	if d.rosterResync {
-		d.frame += rosterRecoveryFrame
-	}
 	if d.rosterPayload != "" {
-		d.frame += "roster_events: " + d.rosterPayload + "\n"
+		d.frame += d.rosterPayload
+	} else {
+		if d.rosterInitial {
+			d.frame += "roster_initial: true\n"
+		}
+		if d.rosterResync {
+			d.frame += rosterRecoveryFrame
+		}
 	}
 	if notice := selfInfluenceNotice(d.selfInfluence, d.gradientDepth, d.truncated); notice != "" {
 		d.frame = notice + "\n" + d.frame

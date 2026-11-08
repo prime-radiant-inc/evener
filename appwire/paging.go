@@ -7,6 +7,10 @@ import (
 
 const TranscriptItemPageLimit = 40
 
+// MaxPendingAskPageLimit bounds a pending-ask page. Its whole Manager response,
+// including the clamped row, is measured against the 256 KiB read cap.
+const MaxPendingAskPageLimit = 3244
+
 // NormalizeTranscriptItemLimit applies the item-mode default and maximum. A
 // non-positive request means the protocol default; positive values are bounded
 // by the public page maximum. The returned limit is valid only when the error
@@ -21,8 +25,26 @@ func NormalizeTranscriptItemLimit(limit int) (int, error) {
 	return limit, nil
 }
 
-// ValidateThreadReadParams validates the item-only transcript read limit.
+// IsPendingAskPage distinguishes a page from an ordinary metadata read. Zero
+// revisions, offsets and limits remain present through their pointer fields.
+func (p ThreadReadParams) IsPendingAskPage() bool {
+	return p.ExpectedAskRevision != nil || p.ExpectedAskBootGeneration != "" || p.Offset != nil || p.Limit != nil
+}
+
+// ValidateThreadReadParams validates transcript limits and the separate ask page
+// grammar. A page never establishes a history window or subscription.
 func ValidateThreadReadParams(params ThreadReadParams) error {
+	if params.IsPendingAskPage() {
+		if err := ValidateAskFence(params.ExpectedAskRevision, params.ExpectedAskBootGeneration); err != nil {
+			return err
+		}
+		if strings.TrimSpace(params.Ref) == "" || params.ExpectedAskRevision == nil {
+			return InvalidParams("pending ask pages require a ref and an observed ask pair")
+		}
+		if params.Subscribe || params.ReplaceSubscription || params.IncludeTurns || params.HeldSnapshot != nil || params.AnswerContinuation != nil {
+			return InvalidParams("pending ask pages cannot subscribe or request history")
+		}
+	}
 	_, err := NormalizeTranscriptItemLimit(params.ItemLimit)
 	return err
 }

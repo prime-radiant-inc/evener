@@ -27,6 +27,26 @@ each collection's cursor. Each row retains its qualified owner, so a child
 read cannot confer the parent's writable identity. Partial and unknown counts
 keep their existing meanings; they are not inferred from navigation.
 
+Manager discovery joins `attentionLevel` and `attentionAsOf` through the same
+workspace-ref map as the roster broker. These fields describe the roster's
+published observation, which can lag the row's newer status; they are absent
+for subagents and disk-only rows outside that population. Archived and remote
+roster lanes retain their facts. `AskPending` remains the session's own question
+fact, and `needsResponse` means awaiting without a pending question.
+
+Roster question notices carry the bounded excerpt, exact composite identities,
+the boot/revision pair, instance identity, composite total and call-less count.
+Appending an ask or restarting the same pending set can deliver another
+`needs_you` event even when the attention level stays unchanged. The roster
+segment is bounded to 57,344 runes, separate from the frame body. Whole-entry
+drops carry a count, up to 64 named references and pull-recovery instructions;
+coalescing reapplies that bound and preserves earlier drop evidence. The
+300-entry ASCII recovery fixture remains complete in a 49,267-byte frame,
+below 64 KiB. Discovery and
+lane-scoped status/history reads remain the detection and recovery path when
+every push delivery is lost. See [session questions](session-questions.md) and
+[Manager automation](../automation.md#manager-questions-and-fenced-answers).
+
 The Manager role is fixed at session start and persists across resume, process
 restart and Clear. Its `job_watch` belongs to its receiving session's watch
 activity, even while it observes an independent worker. A hub watch create

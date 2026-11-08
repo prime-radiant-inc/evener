@@ -25,9 +25,11 @@ import (
 // (a card's ID names it for its whole life) move the Clear bit and the card a
 // row names; PendingQuestion, Failure and LastMessage are the row's why line (a
 // question answered and another asked, or a turn retried and failed again,
-// between two probes); Capabilities folds daemon state the status string does
-// not, and walking the whole set means a new bit moves the fingerprint with no
-// one remembering this site; the subagent, job, watch and task fields render on
+// between two probes). PendingAskState binds that question to its serving boot
+// and revision even when the excerpt and status hold still. Capabilities folds
+// daemon state the status string does not. Walking the whole set means a new bit
+// moves the fingerprint with no one remembering this site; the subagent, job,
+// watch and task fields render on
 // the row, a child's watches on the child's row; Lifecycle and LifecycleFresh
 // change what resident UI surfaces; Subagents tallies the last line;
 // LastTurnEndedAt turns a row Finished when a turn starts and ends between two
@@ -37,7 +39,7 @@ import (
 var rosterShownFields = []string{
 	"Status", "ActiveFlags", "ActiveTurnID", "ActiveTurnStartedAt", "ProbeState", "Crashed", "PendingAsk", "PendingEscalation",
 	"PendingEscalations.EscalationID",
-	"PendingQuestion", "Failure",
+	"PendingQuestion", "PendingAskState", "Failure",
 	"Capabilities", "CapabilitiesKnown",
 	"RunningSubagentIDs", "RunningSubagentStates", "ChildWatches",
 	"RunningJobs.JobID", "RunningJobs.JobType", "RunningJobs.Status",

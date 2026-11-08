@@ -12,6 +12,7 @@ import (
 	"net/url"
 	"os/exec"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 
@@ -138,6 +139,49 @@ func TestE2E_VoiceQuestionCompletionKeepsSpeechOrder(t *testing.T) {
 	next := voiceJourneyEvent(t, device, "speech_start")
 	if next["sourceItemId"] != committed.ID {
 		t.Fatal("deferring the unfinished question lost the subsequent communicate")
+	}
+}
+
+func TestE2E_VoicePendingQuestionBeyondRowPrefixIsSpoken(t *testing.T) {
+	batches := make(chan []map[string]any, 1)
+	f := newVoiceCorrectionStackOnProvider(t, func(upstream string) string {
+		return voiceQuestionBatchProvider(t, upstream, batches)
+	})
+	_ = f.device.conn.CloseNow()
+	baseline := f.read(t)
+	bridge, device, _ := voiceQuestionSelector(t, f, baseline)
+	var batch []map[string]any
+	for i := range appwire.MaxPendingAskComposites + 1 {
+		batch = append(batch, voiceQuestionTool(fmt.Sprintf("page-ask-%d", i), "ask_user", map[string]any{
+			"question": fmt.Sprintf("QUESTION_TOKEN_%d", i),
+			"options":  []any{map[string]any{"label": "OPTION_TOKEN_A", "detail": ""}, map[string]any{"label": "OPTION_TOKEN_B", "detail": ""}},
+		}))
+	}
+	batches <- batch
+	f.admit(t, "VOICE_PAGE_INPUT_TOKEN", false)
+	completed := f.waitRead(t, "question set committed", func(read appwire.ThreadReadResponse) bool {
+		pending := read.Thread.Evener.PendingAsk
+		return pending != nil && pending.CompositeTotal == appwire.MaxPendingAskComposites+1 && read.Thread.Evener.ActiveTurnID == ""
+	})
+	pending := completed.Thread.Evener.PendingAsk
+	target := voiceQuestionCall(completed, fmt.Sprintf("page-ask-%d", appwire.MaxPendingAskComposites))
+	previous := voiceQuestionCall(completed, fmt.Sprintf("page-ask-%d", appwire.MaxPendingAskComposites-1))
+	if len(pending.Calls) != appwire.MaxPendingAskComposites || !pending.CallsTruncated || target.Position == nil || previous.Position == nil || slices.Contains(pending.Calls, appwire.PendingAskCall{TurnID: target.TurnID, CallID: target.CallID}) {
+		t.Fatalf("fixture did not place a real pending question beyond the clamped row: pending=%+v target=%+v", pending, target)
+	}
+	bridge.speechCursor = appwire.ClonePointer(previous.Position)
+	read, err := bridge.readSpeechHistory(f.ctx, bridge.history, bridge.speechCursor)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := bridge.selectSpeech(read); err != nil {
+		t.Fatal(err)
+	}
+	if bridge.delivery == nil || bridge.delivery.CanonicalSourceItemID != target.ID {
+		t.Fatalf("still-pending beyond-prefix question was skipped: target=%s delivery=%+v", target.ID, bridge.delivery)
+	}
+	if event := voiceJourneyEvent(t, device, "speech_start"); event["sourceItemId"] != target.ID {
+		t.Fatalf("speech selected another source: %+v", event)
 	}
 }
 

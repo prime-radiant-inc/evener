@@ -14,6 +14,7 @@ import (
 	"primeradiant.com/evener/agent/sandbox"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/agent/task"
+	"primeradiant.com/evener/appwire"
 )
 
 func (runtime delegateRuntime) restoreIdle(started delegateStartCommit) (*subagent, bool, error) {
@@ -164,6 +165,12 @@ func (runtime delegateRuntime) restoreIdle(started delegateStartCommit) (*subage
 	}
 	child.recordEnvironmentOwnership(childEnv, ownsFresh)
 	discardEnv = false
+	bootGeneration, err := schema.NextBootGeneration(child.stateDir, child.ID(), 0)
+	if err != nil {
+		child.discardRestoredCandidate()
+		return nil, false, fmt.Errorf("child boot generation: %w", err)
+	}
+	child.SetBootGeneration(appwire.BootGeneration(bootGeneration))
 	if child.delegateController != s.delegateController || child.owningDelegateID != started.lease.delegateID {
 		child.discardRestoredCandidate()
 		return nil, false, errors.New("restored delegate did not inherit the exact controller binding")

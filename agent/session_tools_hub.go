@@ -91,9 +91,19 @@ func managerReadDefinition(def llm.ToolDefinition, ordinary bool) llm.ToolDefini
 		}}
 		def.Description += " Manager hub reads a canonical owner ref. jobId selects job metadata in job_status, or bounded job output in read_transcript. read_transcript without jobId pages session history with cursor. Local JSONL, expansion, artifacts, and range arguments do not apply."
 	default:
-		hub["properties"] = map[string]any{"ref": map[string]any{"type": "string"}, "jobId": map[string]any{"type": "string"}}
-		hub["required"] = []string{"ref"}
-		def.Description += " Manager hub reads a canonical owner ref. jobId selects job metadata in job_status, or bounded job output in read_transcript. read_transcript without jobId pages session history with cursor. Local JSONL, expansion, artifacts, and range arguments do not apply."
+		hub = map[string]any{"type": "object", "anyOf": []any{
+			map[string]any{"type": "object", "additionalProperties": false, "required": []string{"ref"}, "properties": map[string]any{
+				"ref": map[string]any{"type": "string"}, "jobId": map[string]any{"type": "string"},
+			}},
+			map[string]any{"type": "object", "additionalProperties": false, "required": []string{"ref", "expected_ask_revision", "expected_ask_boot_generation"}, "properties": map[string]any{
+				"ref":                          map[string]any{"type": "string"},
+				"expected_ask_revision":        map[string]any{"type": "integer", "minimum": 0, "maximum": ^uint64(0)},
+				"expected_ask_boot_generation": map[string]any{"type": "string", "pattern": `\S`},
+				"offset":                       map[string]any{"type": "integer", "minimum": -int(^uint(0)>>1) - 1, "maximum": int(^uint(0) >> 1)},
+				"limit":                        map[string]any{"type": "integer", "minimum": -int(^uint(0)>>1) - 1, "maximum": int(^uint(0) >> 1)},
+			}},
+		}}
+		def.Description += " Manager hub reads a canonical owner ref. jobId selects job metadata. Any of expected_ask_revision, expected_ask_boot_generation, offset or limit selects a pending-ask page: supply ref and both observed ask identity fields, never jobId or job-output bounds. The read returns pendingAskPage with composites, total, nextOffset and calllessCount; nextOffset absent ends composite paging."
 	}
 	props["hub"] = hub
 	required := params["required"]
@@ -169,6 +179,10 @@ func (s *Session) composeHubRegistry() {
 		registered.Limit = schema.ToolOutputLimit{MaxChars: transcriptToolMaxChars}
 		registered.ReadOnly = true
 		registered.Execute = nil
+		if name == "job_status" {
+			registered.UnmarshalArgs = unmarshalManagerQuestionArguments
+			registered.PreValidate = managerQuestionPrevalidator(registered.PreValidate)
+		}
 		registered.Exec = func(ctx context.Context, env execenv.ExecutionEnvironment, args map[string]any) (any, error) {
 			if _, ok := args["hub"]; ok {
 				return s.invokeHubRead(ctx, name, args)
@@ -560,13 +574,22 @@ func managerSendDefinition(def llm.ToolDefinition, ordinary bool) llm.ToolDefini
 				"path": map[string]any{"type": "string"}, "metadata": map[string]any{"type": "object", "additionalProperties": map[string]any{"type": "string"}},
 				"mentions": map[string]any{"type": "array", "items": map[string]any{"type": "object", "additionalProperties": false, "properties": map[string]any{"kind": map[string]any{"type": "string"}, "name": map[string]any{"type": "string"}, "offset": map[string]any{"type": "integer"}}, "required": []string{"kind", "name", "offset"}}},
 			}, "required": []string{"type"}}},
-			"client_mutation_id":   map[string]any{"type": "string"},
-			"expected_instance_id": map[string]any{"type": "string"},
+			"client_mutation_id":           map[string]any{"type": "string"},
+			"expected_instance_id":         map[string]any{"type": "string"},
+			"expected_ask_revision":        map[string]any{"type": "integer", "minimum": 0, "maximum": ^uint64(0)},
+			"expected_ask_boot_generation": map[string]any{"type": "string", "pattern": `\S`},
 		},
 		"required": []string{"to", "input_mode", "client_mutation_id", "expected_instance_id"},
 		"oneOf":    []any{map[string]any{"type": "object", "required": []string{"message"}}, map[string]any{"type": "object", "required": []string{"input"}}},
+		"anyOf": []any{
+			map[string]any{"type": "object", "required": []string{"expected_ask_revision", "expected_ask_boot_generation"}},
+			map[string]any{"type": "object", "not": map[string]any{"type": "object", "anyOf": []any{
+				map[string]any{"type": "object", "required": []string{"expected_ask_revision"}},
+				map[string]any{"type": "object", "required": []string{"expected_ask_boot_generation"}},
+			}}},
+		},
 	}
-	def.Description += " To send to a session on your Manager hub, set to to its canonical source-qualified ref and supply input_mode, client_mutation_id, expected_instance_id, and exactly one of message or typed input. The result is a human input receipt, not an owned delegate report. A notification does not answer a pending question."
+	def.Description += " To send to a session on your Manager hub, set to to its canonical source-qualified ref and supply input_mode, client_mutation_id, expected_instance_id, and exactly one of message or typed input. Optionally supply both expected_ask_revision (zero is valid) and expected_ask_boot_generation to fence an answer against the observed pending set; omission keeps unfenced input behavior. These ask fields are not accepted on owned-delegate messages. The result is a human input receipt, not an owned delegate report. A notification does not answer a pending question."
 	if ordinary {
 		var ordinarySchema map[string]any
 		encoded, _ := json.Marshal(def.Parameters)
@@ -580,8 +603,8 @@ func managerSendDefinition(def llm.ToolDefinition, ordinary bool) llm.ToolDefini
 		properties["to"] = map[string]any{"type": "string", "description": "An owned delegate_id (`dlg_...`) for ordinary messages, or a canonical source-qualified session ref with input_mode for Manager input."}
 		ordinarySchema["required"] = []string{"to"}
 		ordinarySchema["anyOf"] = []any{
-			map[string]any{"type": "object", "required": []string{"message"}, "not": map[string]any{"type": "object", "anyOf": []any{map[string]any{"type": "object", "required": []string{"input_mode"}}, map[string]any{"type": "object", "required": []string{"input"}}, map[string]any{"type": "object", "required": []string{"client_mutation_id"}}, map[string]any{"type": "object", "required": []string{"expected_instance_id"}}}}},
-			map[string]any{"type": "object", "required": manager["required"], "oneOf": manager["oneOf"], "not": map[string]any{"type": "object", "required": []string{"max_wait_ms"}}},
+			map[string]any{"type": "object", "required": []string{"message"}, "not": map[string]any{"type": "object", "anyOf": []any{map[string]any{"type": "object", "required": []string{"input_mode"}}, map[string]any{"type": "object", "required": []string{"input"}}, map[string]any{"type": "object", "required": []string{"client_mutation_id"}}, map[string]any{"type": "object", "required": []string{"expected_instance_id"}}, map[string]any{"type": "object", "required": []string{"expected_ask_revision"}}, map[string]any{"type": "object", "required": []string{"expected_ask_boot_generation"}}}}},
+			map[string]any{"type": "object", "required": manager["required"], "oneOf": manager["oneOf"], "anyOf": manager["anyOf"], "not": map[string]any{"type": "object", "required": []string{"max_wait_ms"}}},
 		}
 		def.Parameters = ordinarySchema
 	} else {
@@ -606,6 +629,8 @@ func (s *Session) composeHubInputTools() {
 		registered.Definition = managerSendDefinition(registered.Definition, ordinary)
 		registered.Schema = nil
 		registered.Execute = nil
+		registered.UnmarshalArgs = unmarshalManagerQuestionArguments
+		registered.PreValidate = managerQuestionPrevalidator(registered.PreValidate)
 		registered.Exec = func(ctx context.Context, env execenv.ExecutionEnvironment, args map[string]any) (any, error) {
 			to, _ := args["to"].(string)
 			if _, err := appwire.ParseRef(to); err == nil {
@@ -613,6 +638,12 @@ func (s *Session) composeHubInputTools() {
 			}
 			if !ordinary || strings.Contains(to, ":") {
 				return nil, appwire.InvalidParams("a canonical session ref is required for Manager input")
+			}
+			if _, present := args["expected_ask_revision"]; present {
+				return nil, appwire.InvalidParams("ask identity requires a Manager session ref")
+			}
+			if _, present := args["expected_ask_boot_generation"]; present {
+				return nil, appwire.InvalidParams("ask identity requires a Manager session ref")
 			}
 			return base.Exec(ctx, env, args)
 		}
@@ -666,7 +697,7 @@ func (s *Session) composeHubInputTools() {
 func (s *Session) invokeHubInput(ctx context.Context, args map[string]any) (any, error) {
 	for key := range args {
 		switch key {
-		case "to", "input_mode", "message", "input", "client_mutation_id", "expected_instance_id", "intent":
+		case "to", "input_mode", "message", "input", "client_mutation_id", "expected_instance_id", "expected_ask_revision", "expected_ask_boot_generation", "intent":
 		default:
 			return nil, appwire.InvalidParams("ordinary delegate arguments cannot be combined with Manager input")
 		}
@@ -679,6 +710,20 @@ func (s *Session) invokeHubInput(ctx context.Context, args map[string]any) (any,
 	_, hasInput := args["input"]
 	if hasText == hasInput {
 		return nil, appwire.InvalidParams("provide exactly one of message or typed input")
+	}
+	var fence struct {
+		Revision       *uint64 `json:"expected_ask_revision"`
+		BootGeneration string  `json:"expected_ask_boot_generation"`
+	}
+	raw, err := json.Marshal(map[string]any{"expected_ask_revision": args["expected_ask_revision"], "expected_ask_boot_generation": args["expected_ask_boot_generation"]})
+	if err != nil {
+		return nil, appwire.InvalidParams(err.Error())
+	}
+	if err := json.Unmarshal(raw, &fence); err != nil {
+		return nil, appwire.InvalidParams(err.Error())
+	}
+	if err := validateManagerAskFence(args, fence.Revision, fence.BootGeneration); err != nil {
+		return nil, err
 	}
 	var input []appwire.InputItem
 	if hasText {
@@ -703,11 +748,11 @@ func (s *Session) invokeHubInput(ctx context.Context, args map[string]any) (any,
 	var request appwire.SessionOperationRequest
 	switch args["input_mode"] {
 	case "start":
-		request.Start = &appwire.TurnStartParams{Ref: to, Input: input, ClientMutationID: id, ExpectedInstanceID: instance}
+		request.Start = &appwire.TurnStartParams{Ref: to, Input: input, ClientMutationID: id, ExpectedInstanceID: instance, ExpectedAskRevision: fence.Revision, ExpectedAskBootGeneration: fence.BootGeneration}
 	case "queue":
-		request.Queue = &appwire.TurnQueueParams{Ref: to, Input: input, ClientMutationID: id, ExpectedInstanceID: instance}
+		request.Queue = &appwire.TurnQueueParams{Ref: to, Input: input, ClientMutationID: id, ExpectedInstanceID: instance, ExpectedAskRevision: fence.Revision, ExpectedAskBootGeneration: fence.BootGeneration}
 	case "steer":
-		request.Steer = &appwire.TurnSteerParams{Ref: to, Input: input, ClientMutationID: id, ExpectedInstanceID: instance}
+		request.Steer = &appwire.TurnSteerParams{Ref: to, Input: input, ClientMutationID: id, ExpectedInstanceID: instance, ExpectedAskRevision: fence.Revision, ExpectedAskBootGeneration: fence.BootGeneration}
 	default:
 		return nil, appwire.InvalidParams("input_mode must be start, queue or steer")
 	}
@@ -721,6 +766,15 @@ func (s *Session) invokeHubInput(ctx context.Context, args map[string]any) (any,
 		return nil, appwire.InvalidRequest("Manager tool unavailable")
 	}
 	return client.Invoke(ctx, request)
+}
+
+func validateManagerAskFence(fields map[string]any, revision *uint64, bootGeneration string) error {
+	_, hasRevision := fields["expected_ask_revision"]
+	_, hasBootGeneration := fields["expected_ask_boot_generation"]
+	if hasRevision != hasBootGeneration || (hasRevision && revision == nil) {
+		return appwire.InvalidParams("provide both observed ask identity fields")
+	}
+	return appwire.ValidateAskFence(revision, bootGeneration)
 }
 
 func (s *Session) hubOrdinaryAvailable(name string) bool {
@@ -844,8 +898,12 @@ func (s *Session) invokeHubRead(ctx context.Context, name string, args map[strin
 		}
 	default:
 		var p struct {
-			Ref   string `json:"ref"`
-			JobID string `json:"jobId"`
+			Ref                       string  `json:"ref"`
+			JobID                     string  `json:"jobId"`
+			ExpectedAskRevision       *uint64 `json:"expected_ask_revision"`
+			ExpectedAskBootGeneration string  `json:"expected_ask_boot_generation"`
+			Offset                    *int    `json:"offset"`
+			Limit                     *int    `json:"limit"`
 		}
 		if err := decoder.Decode(&p); err != nil {
 			return nil, appwire.InvalidParams(err.Error())
@@ -853,7 +911,31 @@ func (s *Session) invokeHubRead(ctx context.Context, name string, args map[strin
 		if _, err := appwire.ParseRef(p.Ref); err != nil {
 			return nil, appwire.InvalidParams(err.Error())
 		}
-		if p.JobID != "" {
+		var fields map[string]any
+		if err := json.Unmarshal(raw, &fields); err != nil {
+			return nil, appwire.InvalidParams(err.Error())
+		}
+		page := false
+		for _, key := range []string{"expected_ask_revision", "expected_ask_boot_generation", "offset", "limit"} {
+			if value, present := fields[key]; present {
+				page = true
+				if value == nil {
+					return nil, appwire.InvalidParams("pending ask page fields cannot be null")
+				}
+			}
+		}
+		if page {
+			if _, present := fields["jobId"]; present {
+				return nil, appwire.InvalidParams("pending ask pages cannot combine job arguments")
+			}
+			if p.ExpectedAskRevision == nil {
+				return nil, appwire.InvalidParams("pending ask pages require the observed ask pair")
+			}
+			if err := validateManagerAskFence(fields, p.ExpectedAskRevision, p.ExpectedAskBootGeneration); err != nil {
+				return nil, err
+			}
+			request.Read = &appwire.ThreadReadParams{Ref: p.Ref, ExpectedAskRevision: p.ExpectedAskRevision, ExpectedAskBootGeneration: p.ExpectedAskBootGeneration, Offset: p.Offset, Limit: p.Limit}
+		} else if p.JobID != "" {
 			request.Job = &appwire.JobsGetParams{Ref: p.Ref, JobID: p.JobID}
 		} else {
 			request.Read = &appwire.ThreadReadParams{Ref: p.Ref}

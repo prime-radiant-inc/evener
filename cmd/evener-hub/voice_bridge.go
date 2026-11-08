@@ -562,7 +562,7 @@ func voiceHistoryCursorStale(err error) bool {
 		return false
 	}
 	data, ok := appwire.DecodedErrorData(wire.Data)
-	return ok && data.EvenerErrorInfo == appwire.ErrorTranscriptItemCursorStale
+	return ok && (data.EvenerErrorInfo == appwire.ErrorTranscriptItemCursorStale || data.EvenerErrorInfo == appwire.ErrorAskFenceMismatch)
 }
 
 // voiceRelayOutage reports a read the relay cut because its daemon connection

@@ -558,6 +558,14 @@ Underlying Go kind: `string` (no struct fields).
 | `askPending` | bool | yes |  |
 | `approvalPending` | bool | yes |  |
 | `needsResponse` | bool | yes |  |
+| `pendingQuestion` | \*[appwire.PendingQuestion](#pendingquestion) | yes |  |
+| `askBootGeneration` | string | yes |  |
+| `askRevision` | uint64 | yes |  |
+| `compositeList` | [][appwire.PendingAskCall](#pendingaskcall) | yes |  |
+| `compositeTotal` | int | yes |  |
+| `calllessCount` | int | yes |  |
+| `askPageable` | bool | yes |  |
+| `publishedAt` | int64 | yes |  |
 
 
 ### `AttentionSummary`
@@ -1309,6 +1317,8 @@ Underlying Go kind: `string` (no struct fields).
 | `cost` | string | yes |  |
 | `failedToolCalls` | \*int | yes |  |
 | `askPending` | bool | yes |  |
+| `attentionLevel` | string | yes |  |
+| `attentionAsOf` | int64 | yes |  |
 | `pendingQuestion` | \*[appwire.PendingQuestion](#pendingquestion) | yes |  |
 | `failure` | \*[appwire.ThreadFailure](#threadfailure) | yes |  |
 | `pendingEscalations` | [][appwire.SandboxEscalationRequested](#sandboxescalationrequested) | yes |  |
@@ -3059,6 +3069,16 @@ Underlying Go kind: `string` (no struct fields).
 | `callId` | string |  |  |
 
 
+### `PendingAskPage`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `composites` | [][appwire.PendingAskCall](#pendingaskcall) |  |  |
+| `total` | int |  |  |
+| `nextOffset` | \*int | yes |  |
+| `calllessCount` | int |  |  |
+
+
 ### `PendingAskState`
 
 | Field | Go type | Omitempty | Embedded |
@@ -3067,6 +3087,10 @@ Underlying Go kind: `string` (no struct fields).
 | `instanceId` | string |  |  |
 | `revision` | uint64 |  |  |
 | `calls` | [][appwire.PendingAskCall](#pendingaskcall) |  |  |
+| `bootGeneration` | string | yes |  |
+| `calllessCount` | int | yes |  |
+| `compositeTotal` | int | yes |  |
+| `callsTruncated` | bool | yes |  |
 
 
 ### `PendingMutation`
@@ -3090,6 +3114,10 @@ Underlying Go kind: `string` (no struct fields).
 | `question` | string |  |  |
 | `options` | []string | yes |  |
 | `count` | int |  |  |
+| `turnId` | string | yes |  |
+| `callId` | string | yes |  |
+| `complete` | \*bool | yes |  |
+| `truncated` | \*bool | yes |  |
 
 
 ### `PinSection`
@@ -4398,6 +4426,7 @@ Underlying Go kind: `string` (no struct fields).
 
 | Field | Go type | Omitempty | Embedded |
 |-------|---------|-----------|----------|
+| `askFence` | bool | yes |  |
 | `voicePresentationContextV1` | bool | yes |  |
 | `send` | bool |  |  |
 | `steer` | bool |  |  |
@@ -4668,6 +4697,10 @@ Underlying Go kind: `string` (no struct fields).
 | `heldSnapshot` | \*[appwire.SnapshotIdentity](#snapshotidentity) | yes |  |
 | `liveOnly` | bool | yes |  |
 | `answerContinuation` | \*[appwire.AnswerContinuationQuery](#answercontinuationquery) | yes |  |
+| `expectedAskRevision` | \*uint64 | yes |  |
+| `expectedAskBootGeneration` | string | yes |  |
+| `offset` | \*int | yes |  |
+| `limit` | \*int | yes |  |
 
 
 ### `ThreadReadResponse`
@@ -4675,6 +4708,7 @@ Underlying Go kind: `string` (no struct fields).
 | Field | Go type | Omitempty | Embedded |
 |-------|---------|-----------|----------|
 | `thread` | [appwire.Thread](#thread) |  |  |
+| `pendingAskPage` | \*[appwire.PendingAskPage](#pendingaskpage) | yes |  |
 | `targetSessionToolsSupported` | \*bool | yes |  |
 | `latestExecutionTurnId` | string | yes |  |
 | `answerContinuation` | \*[appwire.AnswerContinuationVerdict](#answercontinuationverdict) | yes |  |
@@ -5137,6 +5171,8 @@ Underlying Go kind: `string` (no struct fields).
 | `clientMutationId` | string |  |  |
 | `expectedInstanceId` | string |  |  |
 | `input` | [][appwire.InputItem](#inputitem) | yes |  |
+| `expectedAskRevision` | \*uint64 | yes |  |
+| `expectedAskBootGeneration` | string | yes |  |
 
 
 ### `TurnQueueResponse`
@@ -5156,6 +5192,8 @@ Underlying Go kind: `string` (no struct fields).
 | `clientMutationId` | string |  |  |
 | `expectedInstanceId` | string |  |  |
 | `input` | [][appwire.InputItem](#inputitem) | yes |  |
+| `expectedAskRevision` | \*uint64 | yes |  |
+| `expectedAskBootGeneration` | string | yes |  |
 
 
 ### `TurnStartResponse`
@@ -5176,6 +5214,8 @@ Underlying Go kind: `string` (no struct fields).
 | `clientMutationId` | string |  |  |
 | `expectedInstanceId` | string |  |  |
 | `input` | [][appwire.InputItem](#inputitem) | yes |  |
+| `expectedAskRevision` | \*uint64 | yes |  |
+| `expectedAskBootGeneration` | string | yes |  |
 
 
 ### `TurnSteerResponse`

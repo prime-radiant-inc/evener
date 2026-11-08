@@ -110,8 +110,11 @@ const (
 // control is session-scoped: it applies to whatever the session is running, and
 // the only preconditions left name a real object rather than a moment in time.
 type clientMutationPreconditions struct {
-	ExpectedEntryID       string  `json:"expected_entry_id,omitempty"`
-	ExpectedQueueRevision *uint64 `json:"expected_queue_revision,omitempty"`
+	ExpectedEntryID           string                     `json:"expected_entry_id,omitempty"`
+	ExpectedQueueRevision     *uint64                    `json:"expected_queue_revision,omitempty"`
+	ExpectedAskRevision       *uint64                    `json:"expected_ask_revision,omitempty"`
+	ExpectedAskBootGeneration string                     `json:"expected_ask_boot_generation,omitempty"`
+	AskCaptures               []clientMutationAskCapture `json:"ask_captures,omitempty"`
 }
 
 type clientMutationRejection struct {
@@ -349,7 +352,23 @@ func (s *Session) acceptClientMutation(spec clientMutationSpec, prepare, effect 
 		request.Actor = spec.actor
 	}
 	request.Preconditions = spec.preconditions
+	// Capture before the serializer: its callbacks must never wait on s.mu.
+	// The transaction compares this immutable set, and consumption uses the
+	// same captured names even if another ask appends after this lock hold.
+	var askQuestion *appwire.PendingQuestion
+	var askState *appwire.PendingAskState
+	if spec.preconditions.ExpectedAskRevision != nil || spec.preconditions.ExpectedAskBootGeneration != "" {
+		askQuestion, askState = s.PendingAskSnapshot()
+	}
 	lookup, err := s.clientMutations.executeAtomic(request, func(snapshot *clientMutationSnapshot, record *clientMutationRecord) error {
+		askCapture, askErr := captureAskFence(askQuestion, askState, spec.preconditions.ExpectedAskRevision, spec.preconditions.ExpectedAskBootGeneration)
+		if askErr != nil {
+			rejectClientMutation(record, askErr)
+			return nil
+		}
+		if spec.preconditions.ExpectedAskRevision != nil {
+			record.Preconditions.AskCaptures = []clientMutationAskCapture{askCapture}
+		}
 		if snapshot.InterruptFence != nil && !spec.allowDuringInterrupt {
 			rejectClientMutation(record, appwire.Conflict("turn interrupt is pending"))
 			return nil
@@ -397,11 +416,12 @@ func (s *Session) AcceptClientMutationStartAs(params appwire.TurnStartParams, ac
 	}
 	var response appwire.TurnStartResponse
 	lookup, err := s.acceptClientMutation(clientMutationSpec{
-		actor:   actor,
-		method:  clientMutationMethodStart,
-		id:      params.ClientMutationID,
-		payload: &params,
-		input:   &params.Input,
+		actor:         actor,
+		method:        clientMutationMethodStart,
+		id:            params.ClientMutationID,
+		payload:       &params,
+		input:         &params.Input,
+		preconditions: clientMutationPreconditions{ExpectedAskRevision: params.ExpectedAskRevision, ExpectedAskBootGeneration: params.ExpectedAskBootGeneration},
 	}, func(snapshot *clientMutationSnapshot, record *clientMutationRecord) error {
 		if len(params.Input) == 0 {
 			rejectClientMutation(record, appwire.InvalidParams("input is required"))
@@ -2149,6 +2169,8 @@ func cloneClientMutationPreconditions(src clientMutationPreconditions) clientMut
 		revision := *src.ExpectedQueueRevision
 		dst.ExpectedQueueRevision = &revision
 	}
+	dst.ExpectedAskRevision = appwire.ClonePointer(src.ExpectedAskRevision)
+	dst.AskCaptures = cloneAskCaptures(src.AskCaptures)
 	return dst
 }
 

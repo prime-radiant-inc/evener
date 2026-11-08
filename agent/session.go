@@ -751,6 +751,7 @@ type Session struct {
 	// part of persisted SessionMeta.
 	askPending         []askQuestion
 	askPendingRevision uint64
+	bootGeneration     string
 
 	// askPendingCallArgs holds each pending ask_user call's own arguments
 	// (already normalized, spec §5.1's shape), one entry per call, in call
@@ -766,6 +767,7 @@ type Session struct {
 	// session's pending questions are read back from askPending/the
 	// transcript, and this feature does not (yet) support --resume.
 	askPendingCallArgs [][]byte
+	askPendingCallIDs  []appwire.PendingAskCall
 
 	// steeringCarrierClaimClientMutationID is the client mutation id of the
 	// steer a claimed steering-carrier turn (acceptSteeringCarrierInput) is

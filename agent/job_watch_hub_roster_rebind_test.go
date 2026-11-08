@@ -178,7 +178,7 @@ func TestHubRosterWatchSupersededRebindKeepsWatch(t *testing.T) {
 		}
 		jm.mu.Lock()
 		_, cfg, live := jm.watchConfigByIDLocked(id)
-		retained := live && len(cfg.rosterBaseline) == 1 && cfg.rosterBaseline[a.Ref] == a.AttentionEntry
+		retained := live && len(cfg.rosterBaseline) == 1 && appwire.EqualAttentionEntry(cfg.rosterBaseline[a.Ref], a.AttentionEntry)
 		jm.mu.Unlock()
 		if !retained {
 			t.Fatal("a superseded consumer ended the durable roster watch")
@@ -232,7 +232,7 @@ func TestHubRosterWatchLateConsumerKeepsWatch(t *testing.T) {
 		synctest.Wait()
 		jm.mu.Lock()
 		_, cfg, live := jm.watchConfigByIDLocked(id)
-		retained := live && len(cfg.rosterBaseline) == 2 && cfg.rosterBaseline[b.Ref] == b.AttentionEntry
+		retained := live && len(cfg.rosterBaseline) == 2 && appwire.EqualAttentionEntry(cfg.rosterBaseline[b.Ref], b.AttentionEntry)
 		jm.mu.Unlock()
 		if !retained {
 			t.Fatal("a late-starting consumer ended the durable roster watch")
@@ -282,7 +282,7 @@ func TestHubRosterWatchSupersededStateEndKeepsWatch(t *testing.T) {
 		}
 		jm.mu.Lock()
 		_, cfg, live := jm.watchConfigByIDLocked(id)
-		retained := live && len(cfg.rosterBaseline) == 1 && cfg.rosterBaseline[a.Ref] == a.AttentionEntry
+		retained := live && len(cfg.rosterBaseline) == 1 && appwire.EqualAttentionEntry(cfg.rosterBaseline[a.Ref], a.AttentionEntry)
 		jm.mu.Unlock()
 		if !retained {
 			t.Fatal("a superseded consumer ended the durable roster watch after its state read answered")
@@ -331,7 +331,7 @@ func TestHubRosterWatchReconnectDuringStateKeepsWatch(t *testing.T) {
 		}
 		jm.mu.Lock()
 		_, cfg, live := jm.watchConfigByIDLocked(id)
-		retained := live && len(cfg.rosterBaseline) == 2 && cfg.rosterBaseline[b.Ref] == b.AttentionEntry
+		retained := live && len(cfg.rosterBaseline) == 2 && appwire.EqualAttentionEntry(cfg.rosterBaseline[b.Ref], b.AttentionEntry)
 		jm.mu.Unlock()
 		if !retained {
 			t.Fatal("a reconnect during the state check ended the durable roster watch instead of recovering")

@@ -412,6 +412,13 @@ type GoalContinuationInfo struct {
 	Text string `json:"text"`
 }
 
+// AskResolution is the admission-time pending set consumed by a fenced answer.
+// A nil carrier on a turn preserves legacy whole-set resolution semantics.
+type AskResolution struct {
+	Calls       []appwire.PendingAskCall `json:"calls"`
+	LegacyCount int                      `json:"legacy_count"`
+}
+
 // Turn is the Session's typed history item. Steering turns are kept distinct for observability,
 // but are converted to user-role messages when building the LLM request.
 // Fields MUST stay declared in alphabetical JSON-key order: the public
@@ -428,8 +435,9 @@ type Turn struct {
 	Actor SessionActor `json:"actor,omitzero"`
 	// AnswerToTurnIDs names the pending question executions resolved by this
 	// accepted input. Missing evidence never establishes continuation.
-	AnswerToTurnIDs []string `json:"answer_to_turn_ids,omitempty"`
-	AttemptGroupID  string   `json:"attempt_group_id,omitempty"`
+	AnswerToTurnIDs []string       `json:"answer_to_turn_ids,omitempty"`
+	AskResolution   *AskResolution `json:"ask_resolution,omitempty"`
+	AttemptGroupID  string         `json:"attempt_group_id,omitempty"`
 	// AttentionID identifies steering that requires durable terminal cleanup.
 	// It is empty for ordinary steering and all non-steering turns.
 	AttentionID string `json:"attention_id,omitempty"`

@@ -293,8 +293,8 @@ func (s *Session) emitTurnFailure(data events.ErrorData) {
 // carrier-claim's own steer selection failure, is set directly by
 // recordFailedSteeringSelection (session_queue.go) without going through
 // this function, gated by the same answering check.
-func (s *Session) emitSteeringCarrierTurnFailure(data events.ErrorData) {
-	data.Recorded = s.recordTurnFailure(data, true).Recorded
+func (s *Session) emitSteeringCarrierTurnFailure(data events.ErrorData, clientMutationID string) {
+	data.Recorded = s.recordTurnFailureWithAsk(data, true, s.clientMutationAskResolution(clientMutationID)).Recorded
 	s.emit(data)
 }
 
@@ -303,6 +303,10 @@ func (s *Session) emitSteeringCarrierTurnFailure(data events.ErrorData) {
 // stored source/title/hint match what the live event carried. It reports the
 // entry's record.
 func (s *Session) recordTurnFailure(data events.ErrorData, steeringCarrier bool) transcript.Record {
+	return s.recordTurnFailureWithAsk(data, steeringCarrier, nil)
+}
+
+func (s *Session) recordTurnFailureWithAsk(data events.ErrorData, steeringCarrier bool, resolution *schema.AskResolution) transcript.Record {
 	enriched := enrichErrorData(data)
 	info := schema.TurnFailureInfo{
 		Message:         strings.TrimSpace(enriched.Error),
@@ -323,6 +327,13 @@ func (s *Session) recordTurnFailure(data events.ErrorData, steeringCarrier bool)
 	// turn text still show the failure.
 	turn := schema.NewTurn(schema.TurnFailure, llm.System(info.Message))
 	turn.Error = &info
+	turn.AskResolution = resolution
+	if resolution != nil {
+		s.mu.Lock()
+		activeExecution := s.execution.turnID
+		s.mu.Unlock()
+		turn.AnswerToTurnIDs = askResolutionTurnIDs(resolution, activeExecution)
+	}
 	return s.recordTurn(turn, turn)
 }
 

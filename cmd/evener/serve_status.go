@@ -135,11 +135,11 @@ func cloneServeWatches(watches []agent.WatchStatusInfo) []agent.WatchStatusInfo 
 
 // liveThreadEnvelopeSource is the daemon's one sampling window onto live session
 // state for the materialized root envelope. The server uses it for the
-// pre-bridge seed and retained checkpoint/legacy facets, never on a read. Typed
+// pre-bridge seed and retained checkpoint/legacy facets. Explicit pending-ask
+// pages sample the ask snapshot outside projection locks. Typed
 // task and goal carriers bypass this adapter and patch cached root/descendant
 // state inside CommitProjection. Every method here can take the session's mutex,
-// the task store's, or read jobs.jsonl, and a read path that could reach them
-// would hold the projection gate across that work.
+// the task store's, or read jobs.jsonl, so ordinary read cuts never call them.
 //
 // It resolves the session per call rather than capturing one, so it follows
 // thread/clear onto the replacement session exactly as the sixteen closures it
@@ -205,12 +205,8 @@ func (l liveThreadEnvelopeSource) FailedToolCalls() (int, bool) {
 	return l.session().FailedToolCallsSnapshot()
 }
 
-func (l liveThreadEnvelopeSource) PendingQuestion() *appwire.PendingQuestion {
-	return l.session().PendingQuestion()
-}
-
-func (l liveThreadEnvelopeSource) PendingAskCalls() *appwire.PendingAskState {
-	return l.session().PendingAskCalls()
+func (l liveThreadEnvelopeSource) PendingAskSnapshot() (*appwire.PendingQuestion, *appwire.PendingAskState) {
+	return l.session().PendingAskSnapshot()
 }
 
 func (l liveThreadEnvelopeSource) RestingFailure() *appwire.ThreadFailure {

@@ -56,7 +56,7 @@ func TestVoicePendingAsk_ExecutedCanonicalState(t *testing.T) {
 		{Header: "header-719", Question: first["question"].(string), MultiSelect: true, Why: "why-719", IfUnanswered: "fallback-719", Options: []schema.AskUserOption{{Label: "choice-2", Detail: "detail-2", Recommended: true}, {Label: "choice-1", Detail: "detail-1"}}},
 		{Question: "question-2", Options: []schema.AskUserOption{{Label: "choice-2", Detail: "detail-2", Recommended: true}, {Label: "choice-1", Detail: "detail-1"}}},
 	}
-	refs := s.PendingAskCalls()
+	_, refs := s.PendingAskSnapshot()
 	if refs.Version != 1 || refs.InstanceID != s.ID() || refs.Revision == 0 || len(refs.Calls) != 2 || refs.Calls[0].CallID != "canonical-call" || refs.Calls[1].CallID != "canonical-call-2" {
 		t.Fatalf("live refs=%+v", refs)
 	}
@@ -108,14 +108,15 @@ func TestVoicePendingAsk_ExecutedCanonicalState(t *testing.T) {
 	dir := s.stateDir
 	s.Close()
 	restored := restoreAskSession(t, meta, dir)
-	if got := restored.PendingQuestion(); got == nil || got.Count != 2*len(want) {
+	if got, _ := restored.PendingAskSnapshot(); got == nil || got.Count != 2*len(want) {
 		t.Fatalf("restore lost executed batch: %+v", got)
 	}
 	restored.mu.Lock()
 	pending := append([]askQuestion(nil), restored.askPending...)
 	restored.mu.Unlock()
-	if !reflect.DeepEqual(restored.PendingAskCalls().Calls, refs.Calls) {
-		t.Fatalf("restored refs=%+v want %+v", restored.PendingAskCalls(), refs)
+	_, restoredState := restored.PendingAskSnapshot()
+	if !reflect.DeepEqual(restoredState.Calls, refs.Calls) {
+		t.Fatalf("restored refs=%+v want %+v", restoredState, refs)
 	}
 	for _, entry := range readPersistedTranscriptEntries(t, dir, restored.ID()) {
 		if entry.Turn.Kind == schema.TurnAssistant && !reflect.DeepEqual(entry.Turn.ConversationProvenance, origin) {
@@ -133,7 +134,7 @@ func TestVoicePendingAsk_FreeTextRetryClearsOnce(t *testing.T) {
 	t.Parallel()
 	s, adapter := newDurableAdmissionAskSessionWithAdapter(t, SessionConfig{})
 	seedDurableAdmissionAsk(t, s)
-	before := s.PendingAskCalls()
+	_, before := s.PendingAskSnapshot()
 	if len(before.Calls) != 1 {
 		t.Fatalf("ask not owned: %+v", before)
 	}
@@ -154,7 +155,7 @@ func TestVoicePendingAsk_FreeTextRetryClearsOnce(t *testing.T) {
 	if _, err := s.ProcessInput(withQueuedClientMutation(tripwireCtx(t), claimed), params.Input[0].Text, nil); err != nil {
 		t.Fatal(err)
 	}
-	after := s.PendingAskCalls()
+	_, after := s.PendingAskSnapshot()
 	if after == nil || len(after.Calls) != 0 || after.Revision <= before.Revision {
 		t.Fatalf("answer did not clear owned calls: %+v", after)
 	}
@@ -164,7 +165,7 @@ func TestVoicePendingAsk_FreeTextRetryClearsOnce(t *testing.T) {
 	if _, ok, err := s.claimClientMutationStart(); err != nil || ok {
 		t.Fatalf("completed retry became runnable again: claimed=%v err=%v", ok, err)
 	}
-	if got := s.PendingAskCalls(); got.Revision != after.Revision {
+	if _, got := s.PendingAskSnapshot(); got.Revision != after.Revision {
 		t.Fatalf("retry cleared twice: before=%+v after=%+v", after, got)
 	}
 	answers := 0
@@ -182,7 +183,7 @@ func TestVoicePendingAsk_FreeTextRetryClearsOnce(t *testing.T) {
 	meta, dir := s.Meta(), s.stateDir
 	s.Close()
 	restored := restoreAskSession(t, meta, dir)
-	if got := restored.PendingAskCalls(); got == nil || len(got.Calls) != 0 || restored.HasPendingAsk() {
+	if _, got := restored.PendingAskSnapshot(); got == nil || len(got.Calls) != 0 || restored.HasPendingAsk() {
 		t.Fatalf("resolved ask resurrected: %+v", got)
 	}
 }
@@ -208,7 +209,7 @@ func TestVoicePendingAsk_RejectedCallsHaveNoCanonicalState(t *testing.T) {
 			if !ok || !result.IsError || len(result.ToolState) != 0 {
 				t.Fatalf("rejected call exposed canonical state: %+v", result)
 			}
-			if s.HasPendingAsk() || len(s.PendingAskCalls().Calls) != 0 {
+			if _, pending := s.PendingAskSnapshot(); s.HasPendingAsk() || len(pending.Calls) != 0 {
 				t.Fatal("rejected ask acquired pending ownership")
 			}
 		})
@@ -230,7 +231,7 @@ func TestVoicePendingAsk_InternalFoldDuringHumanNote(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	refs := s.PendingAskCalls()
+	_, refs := s.PendingAskSnapshot()
 	if len(refs.Calls) != 1 {
 		t.Fatal("pending ask setup failed")
 	}
@@ -273,8 +274,8 @@ func TestVoicePendingAsk_InternalFoldDuringHumanNote(t *testing.T) {
 	if !folded {
 		t.Fatal("scenario never triggered real internal fold")
 	}
-	if !reflect.DeepEqual(s.PendingAskCalls().Calls, refs.Calls) {
-		t.Fatalf("live fold lost pending refs: %+v", s.PendingAskCalls())
+	if _, pending := s.PendingAskSnapshot(); !reflect.DeepEqual(pending.Calls, refs.Calls) {
+		t.Fatalf("live fold lost pending refs: %+v", pending)
 	}
 	if !reflect.DeepEqual(originFor(s.history), origin) {
 		t.Fatal("live fold changed pending source provenance")
@@ -289,8 +290,8 @@ func TestVoicePendingAsk_InternalFoldDuringHumanNote(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(restored.Close)
-	if !reflect.DeepEqual(restored.PendingAskCalls().Calls, refs.Calls) {
-		t.Fatalf("internal fold lost pending source across restore: got=%+v want=%+v", restored.PendingAskCalls(), refs)
+	if _, pending := restored.PendingAskSnapshot(); !reflect.DeepEqual(pending.Calls, refs.Calls) {
+		t.Fatalf("internal fold lost pending source across restore: got=%+v want=%+v", pending, refs)
 	}
 	result, ok := findToolResultInHistory(restored.history, "before-fold")
 	if !ok || string(result.ToolState) != string(original.ToolState) {
@@ -302,7 +303,7 @@ func TestVoicePendingAsk_InternalFoldDuringHumanNote(t *testing.T) {
 	if _, err := restored.ProcessInput(tripwireCtx(t), "answer-73 outside the listed options", nil); err != nil {
 		t.Fatal(err)
 	}
-	if restored.HasPendingAsk() || len(restored.PendingAskCalls().Calls) != 0 {
+	if _, pending := restored.PendingAskSnapshot(); restored.HasPendingAsk() || len(pending.Calls) != 0 {
 		t.Fatal("ordinary answer did not release pending tail")
 	}
 	countSummaries := func() int {
@@ -326,7 +327,7 @@ func TestVoicePendingAsk_InternalFoldDuringHumanNote(t *testing.T) {
 	meta = restored.Meta()
 	restored.Close()
 	final := restoreAskSession(t, meta, dir)
-	if final.HasPendingAsk() || len(final.PendingAskCalls().Calls) != 0 {
+	if _, pending := final.PendingAskSnapshot(); final.HasPendingAsk() || len(pending.Calls) != 0 {
 		t.Fatal("post-answer fold resurrected resolved source")
 	}
 }
@@ -342,10 +343,10 @@ func TestVoicePendingAsk_LegacyRestoreStaysTextOnly(t *testing.T) {
 	meta, dir := s.Meta(), s.stateDir
 	s.Close()
 	restored := restoreAskSession(t, meta, dir)
-	if !restored.HasPendingAsk() || restored.PendingQuestion() == nil {
+	if question, _ := restored.PendingAskSnapshot(); !restored.HasPendingAsk() || question == nil {
 		t.Fatal("legacy ordinary question was lost")
 	}
-	if got := restored.PendingAskCalls(); got == nil || len(got.Calls) != 0 {
+	if _, got := restored.PendingAskSnapshot(); got == nil || len(got.Calls) != 0 {
 		t.Fatalf("legacy restore synthesized canonical identity: %+v", got)
 	}
 	for _, entry := range readPersistedTranscriptEntries(t, dir, restored.ID()) {

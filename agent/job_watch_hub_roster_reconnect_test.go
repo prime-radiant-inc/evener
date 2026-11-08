@@ -24,7 +24,7 @@ func TestHubRosterWatchRebindDiscoversWorkingWorker(t *testing.T) {
 	if len(initial) != 1 {
 		t.Fatalf("initial delivered=%d, want one", len(initial))
 	}
-	if entries := rosterFrameEntries(t, initial[0].notification.watchSendFrame); len(entries) != 1 || entries[0] != a {
+	if entries := rosterFrameEntries(t, initial[0].notification.watchSendFrame); len(entries) != 1 || !equalRosterEvent(entries[0], a) {
 		t.Fatalf("first snapshot changed broker event kind: %+v", entries)
 	}
 	if err := jm.settleWatchSendDelivered(initial[0].watchCfg, initial[0].watchState); err != nil {
@@ -48,7 +48,7 @@ func TestHubRosterWatchRebindDiscoversWorkingWorker(t *testing.T) {
 	}
 	jm.mu.Lock()
 	_, cfg, ok := jm.watchConfigByIDLocked(result.WatchID)
-	retained := ok && len(cfg.rosterBaseline) == 2 && cfg.rosterBaseline[a.Ref] == a.AttentionEntry && cfg.rosterBaseline[b.Ref] == b.AttentionEntry
+	retained := ok && len(cfg.rosterBaseline) == 2 && appwire.EqualAttentionEntry(cfg.rosterBaseline[a.Ref], a.AttentionEntry) && appwire.EqualAttentionEntry(cfg.rosterBaseline[b.Ref], b.AttentionEntry)
 	jm.mu.Unlock()
 	if !retained {
 		t.Error("rebind baseline lost A or newly discovered B")

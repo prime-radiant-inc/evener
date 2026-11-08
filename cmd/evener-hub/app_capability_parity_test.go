@@ -109,6 +109,9 @@ func assertCapabilityParity(t *testing.T, projection string, daemon, got appwire
 
 func TestCapabilityProjectionsMatchTheDaemonOracle(t *testing.T) {
 	daemon := daemonCapabilitiesAtState(t, appwire.ThreadStatusIdle)
+	if !daemon.AskFence {
+		t.Fatal("current daemon fixture does not advertise ask fencing")
+	}
 
 	// The cold set a session with no daemon reads through: send and queue resume
 	// it, and the hub's mutation gates re-verify every action against the daemon
@@ -117,6 +120,7 @@ func TestCapabilityProjectionsMatchTheDaemonOracle(t *testing.T) {
 	// it is the hub's own operation. Voice requires the original daemon's explicit
 	// advertisement, which neither this hub nor a future resume can supply.
 	pastDiffer := map[string]string{
+		"AskFence":                   "deliberate fail-closed projection policy: no original daemon has advertised ask fencing; an older daemon could silently ignore the fence",
 		"Steer":                      "no daemon is running to carry out a steer",
 		"Interrupt":                  "no daemon is running to interrupt",
 		"ForkFromTurn":               "the hub's own operation; applyHubForkCapability owns the bit on every path that serves it",
@@ -125,6 +129,9 @@ func TestCapabilityProjectionsMatchTheDaemonOracle(t *testing.T) {
 		"VoicePresentationContextV1": "no original daemon has advertised voice support; cold/resume action guarantees are not evidence of that support",
 	}
 	cold := pastThreadCapabilities()
+	if cold.AskFence {
+		t.Fatal("cold capabilities invent ask fencing without original-daemon evidence")
+	}
 	if cold.VoicePresentationContextV1 {
 		t.Fatal("cold capabilities invent voice support without an original-daemon advertisement")
 	}
@@ -137,10 +144,14 @@ func TestCapabilityProjectionsMatchTheDaemonOracle(t *testing.T) {
 	// rows mirror that, and applyHubForkCapability is the single owner that turns
 	// it on. These assertions pin the pre-#1375 Queue-folding regression too.
 	unprobedDiffer := map[string]string{
+		"AskFence":                   "deliberate fail-closed projection policy: no probe has captured the original daemon's ask fencing; an older daemon could silently ignore the fence",
 		"VoicePresentationContextV1": "no probe has captured the original daemon's voice support; a current-daemon oracle cannot vouch for an unprobed daemon",
 	}
 	for _, state := range []string{appwire.ThreadStatusIdle, appwire.ThreadStatusActive, appwire.ThreadStatusClosed} {
 		daemonAt := daemonCapabilitiesAtState(t, state)
+		if !daemonAt.AskFence {
+			t.Fatalf("%s daemon fixture does not advertise ask fencing", state)
+		}
 		// Guard the fixture, not the projection: the mirror assertions below
 		// compare against whatever the daemon answered, so a state that did
 		// not take effect would leave them comparing idle against idle.
@@ -181,6 +192,9 @@ func TestCapabilityProjectionsMatchTheDaemonOracle(t *testing.T) {
 			}
 			if caps.VoicePresentationContextV1 != projection.probed {
 				t.Errorf("%s at %s: voice support = %v, want %v from original-daemon evidence", projection.name, state, caps.VoicePresentationContextV1, projection.probed)
+			}
+			if caps.AskFence != projection.probed {
+				t.Errorf("%s at %s: ask fencing = %v, want %v from original-daemon evidence", projection.name, state, caps.AskFence, projection.probed)
 			}
 			var differ map[string]string
 			if !projection.probed {
