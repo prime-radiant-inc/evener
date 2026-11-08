@@ -3,6 +3,7 @@ package hub
 import (
 	"context"
 	"slices"
+	"strings"
 	"testing"
 
 	"primeradiant.com/evener/agent/schema"
@@ -114,8 +115,24 @@ func TestThreadStart_MemoryEnabledOverGlobalDefault(t *testing.T) {
 // session's memory state stays whatever its saved meta says. Carrying
 // memory_enabled here would silently re-decide a settled choice.
 func TestResumeRequestCarriesNoMemoryLaunchLayer(t *testing.T) {
-	past := hubcore.NewPastIndex("")
+	// The launch root holds a global layer that disables memory and turns on
+	// api_log: a resume that consulted memory_enabled the way it consults
+	// api_log would carry the disable into a session whose saved meta already
+	// settled the choice.
+	launchRoot := t.TempDir()
 	cwd := t.TempDir()
+	c := newHubLaunchController(launchRoot, false)
+	if _, err := c.SetLayer(context.Background(), appwire.LaunchConfigSetLayerParams{
+		CWD:   cwd,
+		Layer: "global",
+		Config: appwire.LaunchConfigLayer{
+			MemoryEnabled: new(false),
+			APILog:        new(true),
+		},
+	}); err != nil {
+		t.Fatalf("SetLayer: %v", err)
+	}
+	past := hubcore.NewPastIndex("")
 	id := identifier.MustNewSessionID()
 	past.SeedForTest([]schema.SessionMeta{{
 		ID:        id,
@@ -123,14 +140,20 @@ func TestResumeRequestCarriesNoMemoryLaunchLayer(t *testing.T) {
 		Model:     "gpt-test",
 		EnvInfo:   schema.EnvironmentInfo{WorkingDir: cwd},
 	}})
-	req, err := resumeRequestForConfig(hubcore.WebConfig{Past: past}, id)
+	req, err := resumeRequestForConfig(hubcore.WebConfig{Past: past, LaunchConfigRoot: launchRoot}, id)
 	if err != nil {
 		t.Fatalf("resumeRequestForConfig: %v", err)
 	}
 	if req.Resolved.Effective.Model == "" {
 		t.Fatal("resume request carries no model; the meta-driven branch did not run")
 	}
+	if req.Resolved.Effective.APILog == nil || !*req.Resolved.Effective.APILog {
+		t.Fatal("resume request carries no api_log; the launch layer resolution did not run")
+	}
 	if req.Resolved.Effective.MemoryEnabled != nil {
 		t.Fatalf("resume Resolved.MemoryEnabled = %v, want nil: resume leaves memory to the session's saved meta", req.Resolved.Effective.MemoryEnabled)
+	}
+	if args := buildResumeArgs(req); slices.ContainsFunc(args, func(arg string) bool { return strings.Contains(arg, "disable-memory") }) {
+		t.Fatalf("resume argv %v, want no memory token: the session's saved meta keeps the choice", args)
 	}
 }
