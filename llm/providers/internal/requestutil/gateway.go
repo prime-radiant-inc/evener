@@ -43,17 +43,16 @@ type GatewayPiCompat struct {
 }
 
 // ApplyGatewayFacts folds a row's own per-model facts (lunaroute's shape) into
-// caps: the reasoning verdict and effort ladder, then the wire-shaping dialect
-// and output-limit spelling the gateway states for that model. Both /models
+// caps: the reasoning verdict and effort ladder, the tools verdict, then the
+// wire-shaping dialect and output-limit spelling the gateway states for that
+// model. Both /models
 // readers share it so they cannot disagree about the precedence — the gateway
 // knows per model what a listing's provider-wide parameters only infer, and a
 // fact it does not state leaves what the caller inferred in place.
 func ApplyGatewayFacts(caps *registry.Caps, arch GatewayArchitecture, capsFacts GatewayCapabilities, compat GatewayClientCompat) {
 	applyGatewayReasoning(caps, capsFacts, compat)
-	// The row's own tools verdict is the narrower fact: a provider-wide
-	// supported_parameters list only infers tool support, so an explicit
-	// capabilities.tools value wins in both directions. Silence leaves the
-	// caller's inference alone.
+	// The per-model verdict wins over the provider-wide inference; silence
+	// leaves it alone.
 	if capsFacts.Tools != nil {
 		caps.Tools = capsFacts.Tools
 	}

@@ -227,7 +227,9 @@ and, from a gateway's per-model compat block, `ReasoningControls`,
 `InputModalities` comes from OpenRouter's `architecture.input_modalities`, or,
 when that list carries no entry, from a gateway's `capabilities.vision` (an
 advertised vision capability is `["text", "image"]`); the Codex backend states
-the list itself. `Reasoning` and `EffortValues` come from OpenRouter's
+the list itself. `Tools` comes from OpenRouter's `supported_parameters` or a
+gateway's per-model `capabilities.tools` verdict; an explicit verdict wins
+over the parameter-list inference in both directions. `Reasoning` and `EffortValues` come from OpenRouter's
 `supported_parameters` / `reasoning.supported_efforts`, the Codex backend's
 `supported_reasoning_levels`, or a gateway's own per-model facts: a
 `capabilities.reasoning` verdict, and the `client_compat.pi.thinkingLevelMap`

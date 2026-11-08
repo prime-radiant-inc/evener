@@ -70,6 +70,7 @@ func TestApplyGatewayFacts_Tools(t *testing.T) {
 		{"advertised true raises an inferred false", &no, GatewayCapabilities{Tools: &yes}, &yes},
 		{"advertised false clears an inferred true", &yes, GatewayCapabilities{Tools: &no}, &no},
 		{"silence keeps an inferred true", &yes, GatewayCapabilities{}, &yes},
+		{"silence keeps an inferred false", &no, GatewayCapabilities{}, &no},
 		{"silence leaves an unstated row unset", nil, GatewayCapabilities{}, nil},
 	}
 	for _, tc := range cases {
