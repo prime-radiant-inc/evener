@@ -1,6 +1,9 @@
 package hub
 
 import (
+	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"primeradiant.com/evener/agent/schema"
@@ -16,6 +19,38 @@ func TestLocalSpawnWorkspaceRefSharesDiscoveryFallback(t *testing.T) {
 	want := appsource.LocalDaemonWorkspaceRef(appwire.LocalSourceID, entry, entry.ThreadID)
 	if got := localSpawnWorkspaceRef(entry); got != want || got != "local:thread-token" {
 		t.Fatalf("spawn workspace=%q discovery=%q", got, want)
+	}
+}
+
+func TestSessionOnlyUnconfirmedDaemonScopesOwnership(t *testing.T) {
+	t.Parallel()
+	peer := httptest.NewServer(http.NotFoundHandler())
+	defer peer.Close()
+	for _, threadID := range []string{"", " \t "} {
+		t.Run(threadID, func(t *testing.T) {
+			runDir := t.TempDir()
+			entry := rendezvous.Entry{PID: 4101, Protocol: appwire.ProtocolVersion,
+				Endpoint:  "ws" + strings.TrimPrefix(peer.URL, "http"),
+				SessionID: " owner-token \t", ThreadID: threadID}
+			writeRendezvous(t, runDir, entry)
+			roster := liveClaimRoster(runDir, &hubcore.StatusProber{})
+			roster.Refresh()
+			if err := roster.OwnershipError(); err != nil {
+				t.Fatal(err)
+			}
+			if entries := roster.UnconfirmedEntries(); len(entries) != 1 || entries[0].SessionID != entry.SessionID {
+				t.Fatalf("unconfirmed entries=%+v", entries)
+			}
+			if got := localSpawnWorkspaceRef(entry); got != "local:owner-token" {
+				t.Errorf("workspace ref=%q", got)
+			}
+			if !unconfirmedDaemonForThread(roster, "owner-token") {
+				t.Error("unconfirmed owner was admitted")
+			}
+			if unconfirmedDaemonForThread(roster, "unrelated-token") {
+				t.Error("unrelated target acquired the owner's restriction")
+			}
+		})
 	}
 }
 

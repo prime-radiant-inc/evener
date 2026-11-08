@@ -393,7 +393,11 @@ func prepareLocalSpawn(ctx context.Context, cfg hubcore.WebConfig, params appwir
 }
 
 func localSpawnWorkspaceRef(entry rendezvous.Entry) string {
-	return appsource.LocalDaemonWorkspaceRef(appwire.LocalSourceID, entry, entry.ThreadID)
+	threadID := strings.TrimSpace(entry.ThreadID)
+	if threadID == "" {
+		threadID = strings.TrimSpace(entry.SessionID)
+	}
+	return appsource.LocalDaemonWorkspaceRef(appwire.LocalSourceID, entry, threadID)
 }
 
 func localSpawnInstanceID(entry rendezvous.Entry, thread appwire.Thread) string {

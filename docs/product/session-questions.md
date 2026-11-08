@@ -54,8 +54,10 @@ composite total. When an older daemon omits the total, clamping still sets
 
 Roster, discovery and spawn share one workspace-reference builder. An explicit
 `WorkspaceRef` remains authoritative; without it, the reference uses the projected
-thread ID. The pending set carries its own `instanceId` independently of that
-workspace reference.
+thread ID. Spawn trims its thread ID and falls back to the trimmed session ID
+when no thread ID exists, keeping an unconfirmed session-only claim scoped to its
+owner. The pending set carries its own `instanceId` independently of that workspace
+reference.
 
 The excerpt carries its displayed question's `turnId` and `callId` when known.
 Live append also supplies explicit `complete` and `truncated` flags; restore
