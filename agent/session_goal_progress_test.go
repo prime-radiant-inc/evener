@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"fmt"
+	"os"
 	"path/filepath"
 	"testing"
 
@@ -157,5 +158,69 @@ func TestGoalProgressCreditsAnExecutedSuccessfulMutation(t *testing.T) {
 	}
 	if snap, _ := store.Snapshot(); snap.NoProgressStreak != 0 {
 		t.Fatalf("NoProgressStreak after a successful mutation = %d, want 0", snap.NoProgressStreak)
+	}
+}
+
+// Long legitimate read-only investigation keeps the larger never-progressed
+// allowance; once a real mutation lands, a short stall reaches the stricter
+// limit. This pins the two-tier breaker the stricter signal must not skew.
+func TestGoalTwoTierAllowanceSurvivesReadOnlyInvestigation(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	readPath := filepath.Join(dir, "readme.txt")
+	if err := os.WriteFile(readPath, []byte("read-only fixture"), 0o644); err != nil {
+		t.Fatalf("write read fixture: %v", err)
+	}
+	writePath := filepath.Join(dir, "out.txt")
+	var calls int
+	responder := func(llm.Request) llm.Response {
+		calls++
+		turn := (calls - 1) / 2
+		if calls%2 == 1 {
+			name, args := "read_file", []byte(fmt.Sprintf(`{"file_path":%q}`, readPath))
+			if turn == 4 {
+				name, args = "write_file", []byte(fmt.Sprintf(`{"file_path":%q,"content":"done"}`, writePath))
+			}
+			return llm.Response{
+				Model: "gpt-5.2",
+				Message: llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{{
+					Kind:     llm.ContentToolCall,
+					ToolCall: &llm.ToolCallData{ID: fmt.Sprintf("call-%d", calls), Name: name, Arguments: args},
+				}}},
+				Finish: llm.FinishReason{Reason: "tool_use"},
+			}
+		}
+		return agenttest.CommunicateResponse(true, "done")
+	}
+	sess, _, _ := newBudgetSession(t, SessionConfig{MaxToolRoundsPerInput: 5}, responder)
+	store := sess.getOrCreateGoalStore()
+	store.Set("ship it", sess.sclock().Now())
+
+	for i := range 8 {
+		_, progressed, err := sess.processOneInput(context.Background(), "continue", nil, EntryContinuation, nil)
+		if err != nil {
+			t.Fatalf("continuation turn %d: %v", i, err)
+		}
+		_, continued := sess.armGoalContinuation(progressed, true)
+		switch i {
+		case 3:
+			snap, _ := store.Snapshot()
+			if progressed || snap.Status != goal.StatusActive || snap.NoProgressStreak != 4 {
+				t.Fatalf("after 4 read-only turns: progressed=%t snapshot=%+v, want active streak 4 under NeverProgressedLimit=%d", progressed, snap, goal.NeverProgressedLimit)
+			}
+		case 4:
+			snap, _ := store.Snapshot()
+			if !progressed || snap.NoProgressStreak != 0 {
+				t.Fatalf("successful mutation: progressed=%t streak=%d, want progress and streak reset", progressed, snap.NoProgressStreak)
+			}
+		case 7:
+			if continued {
+				t.Fatal("goal continued past the stricter no-progress limit")
+			}
+		}
+	}
+	snap, _ := store.Snapshot()
+	if snap.Status != goal.StatusBlocked || snap.NoProgressStreak != goal.NoProgressLimit {
+		t.Fatalf("goal after a stall past the mutation = %+v, want blocked at streak %d", snap, goal.NoProgressLimit)
 	}
 }
