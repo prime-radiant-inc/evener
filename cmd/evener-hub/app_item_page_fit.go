@@ -196,9 +196,66 @@ func sourceItemCandidateResultForRead(ctx context.Context, source appsource.Sour
 		if err != nil {
 			return transcriptItemCandidateResult{}, err
 		}
-		return transcriptItemCandidateResultFromSource(result), nil
+		return appendReadOverlayCandidates(transcriptItemCandidateResultFromSource(result), response)
 	}
-	return itemCandidateResultFromReadResponse(response)
+	result, err := itemCandidateResultFromReadResponse(response)
+	if err != nil {
+		return transcriptItemCandidateResult{}, err
+	}
+	return appendReadOverlayCandidates(result, response)
+}
+
+// appendReadOverlayCandidates gives the existing window packer the selected
+// live overlay beside the settled source snapshot. Overlay items have no
+// history position or version, so their positions are ephemeral and sort after
+// the selected settled window; they can be displayed and bounded but never
+// acquire a fetch cursor.
+func appendReadOverlayCandidates(result transcriptItemCandidateResult, response appwire.ThreadReadResponse) (transcriptItemCandidateResult, error) {
+	if len(response.Overlay) == 0 {
+		return result, nil
+	}
+	turns := make(map[string]appwire.Turn, len(response.Thread.Turns))
+	for _, turn := range response.Thread.Turns {
+		turns[turn.ID] = turn
+	}
+	candidates := append([]appitempaging.TranscriptItemCandidate(nil), result.Candidates.Candidates...)
+	position := appwire.ThreadItemPosition{Item: appwire.NoticeAnchorItem}
+	if len(candidates) > 0 {
+		last := candidates[len(candidates)-1].Position
+		position.Entry = last.Entry
+		if last.Item >= appwire.NoticeAnchorItem {
+			position.Item = last.Item
+			position.Sub = last.Sub
+		}
+	}
+	for _, overlay := range response.Overlay {
+		turnID := overlay.TurnID
+		if turnID == "" {
+			turnID = overlay.Item.TurnID
+		}
+		turn, selected := turns[turnID]
+		if !selected {
+			continue
+		}
+		position.Sub++
+		item := appwire.CloneThreadItem(overlay.Item)
+		item.TurnID = turnID
+		if item.TranscriptKey == "" {
+			item.TranscriptKey = overlay.Key
+		}
+		item.Position = new(appwire.ThreadItemPosition)
+		*item.Position = position
+		item.Version = 0
+		item.FetchCursor = ""
+		candidates = append(candidates, appitempaging.TranscriptItemCandidate{
+			TurnID: turnID, Turn: turn, Item: item, Position: position, HasEarlierItems: true,
+		})
+	}
+	if err := appitempaging.ValidateCandidates(candidates); err != nil {
+		return transcriptItemCandidateResult{}, err
+	}
+	result.Candidates.Candidates = candidates
+	return result, nil
 }
 
 func sourceItemCandidateResultForList(ctx context.Context, source appsource.Source, params appwire.ThreadTurnsListParams, response appwire.ThreadTurnsListResponse) (transcriptItemCandidateResult, error) {

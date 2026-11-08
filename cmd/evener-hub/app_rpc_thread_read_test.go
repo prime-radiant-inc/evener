@@ -74,10 +74,9 @@ func TestSessionOperationsFetchesServingDaemonItem(t *testing.T) {
 		ID: "tool-large", Type: "commandExecution", TurnID: "turn_1", TranscriptKey: "tool-large", ToolName: "shell", Output: strings.Repeat("output", 50_000),
 		Position: &position, Version: 4,
 	}
-	inFlightPosition := appwire.ThreadItemPosition{Entry: 8}
 	inFlight := appwire.ThreadItem{
-		ID: "tool-running", Type: "commandExecution", TurnID: "turn_1", TranscriptKey: "tool-running", ToolName: "shell",
-		Output: strings.Repeat("running", 20_000), Position: &inFlightPosition,
+		ID: "tool-running", Type: "commandExecution", TurnID: "turn_1", ToolName: "shell",
+		Output: strings.Repeat("running", 20_000),
 	}
 	const nativeIncarnation = "daemon-index-incarnation"
 
@@ -86,8 +85,11 @@ func TestSessionOperationsFetchesServingDaemonItem(t *testing.T) {
 		thread := appwire.Thread{ID: "windowed", SessionID: "windowed", Evener: appwire.EvenerThread{Ref: params.Ref}}
 		snapshot := &appwire.SnapshotIdentity{Incarnation: nativeIncarnation, Length: 10}
 		if params.FetchCursor == "" {
-			thread.Turns = []appwire.Turn{{ID: "turn_1", Status: appwire.TurnStatusCompleted, ItemsView: appwire.TurnItemsViewFull, Items: []appwire.ThreadItem{item, inFlight}}}
-			return appwire.ThreadReadResponse{Thread: thread, Snapshot: snapshot}, nil
+			thread.Turns = []appwire.Turn{{ID: "turn_1", Status: appwire.TurnStatusInProgress, ItemsView: appwire.TurnItemsViewFull, Items: []appwire.ThreadItem{item}}}
+			return appwire.ThreadReadResponse{
+				Thread: thread, Snapshot: snapshot,
+				Overlay: []appwire.OverlayItem{{Key: "tool:tool-running", Kind: appwire.OverlayTool, TurnID: "turn_1", Item: inFlight}},
+			}, nil
 		}
 		cursor, identity, err := appitempaging.DecodeFetchCursorForRef(params.FetchCursor, params.Ref)
 		if err != nil {
@@ -754,6 +756,10 @@ func TestSessionOperationsFetchesTranslatedRemoteItem(t *testing.T) {
 		ArgumentsJSON: `{"emoji":"🌒"}`, Output: strings.Repeat("remote-output", 30_000), Raw: json.RawMessage(`{"nested":"remote"}`),
 		Actor: &appwire.SessionActor{Kind: "manager", ManagerRef: "local:manager-on-remote"}, Position: &position, Version: 9,
 	}
+	inFlight := appwire.ThreadItem{
+		ID: "remote-tool-running", Type: "commandExecution", TurnID: "turn-remote", ToolName: "shell",
+		Output: strings.Repeat("remote-running", 20_000),
+	}
 	remote, calls := newScriptedRemoteHub(t, func(method string, params json.RawMessage) any {
 		switch method {
 		case appwire.MethodInitialize:
@@ -772,8 +778,8 @@ func TestSessionOperationsFetchesTranslatedRemoteItem(t *testing.T) {
 			}
 			return appwire.ThreadReadResponse{Thread: appwire.Thread{
 				ID: "remote", Source: "local", Evener: appwire.EvenerThread{Ref: "local:remote", Capabilities: appwire.ThreadCapabilities{WindowRead: true}},
-				Turns: []appwire.Turn{{ID: "turn-remote", Status: appwire.TurnStatusCompleted, ItemsView: appwire.TurnItemsViewFull, Items: []appwire.ThreadItem{item}}},
-			}}
+				Turns: []appwire.Turn{{ID: "turn-remote", Status: appwire.TurnStatusInProgress, ItemsView: appwire.TurnItemsViewFull, Items: []appwire.ThreadItem{item}}},
+			}, Overlay: []appwire.OverlayItem{{Key: "tool:remote-tool-running", Kind: appwire.OverlayTool, TurnID: "turn-remote", Item: inFlight}}}
 		default:
 			return appwire.EmptyResponse{}
 		}
@@ -793,8 +799,11 @@ func TestSessionOperationsFetchesTranslatedRemoteItem(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if window.Turns == nil || len(window.Turns.Data) != 1 || len(window.Turns.Data[0].Items) != 1 || window.Turns.Data[0].Items[0].FetchCursor == "" {
-		t.Fatalf("bounded remote window = %+v, want one fetchable tool item", window.Turns)
+	if window.Turns == nil || len(window.Turns.Data) != 1 || len(window.Turns.Data[0].Items) != 2 || window.Turns.Data[0].Items[0].FetchCursor == "" {
+		t.Fatalf("bounded remote window = %+v, want fetchable settled and labeled in-flight tool items", window.Turns)
+	}
+	if got := window.Turns.Data[0].Items[1]; !got.InFlight || got.FetchCursor != "" {
+		t.Fatalf("remote in-flight bounded item = %+v, want label without fetch cursor", got)
 	}
 
 	wantItem := item
