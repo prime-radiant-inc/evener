@@ -1253,6 +1253,7 @@ func pastEntryThreadForList(ctx context.Context, cfg hubcore.WebConfig, entry hu
 			Manager:               entry.Meta.Manager,
 			ParentRef:             parentRef,
 			Kind:                  kind,
+			ForkLabel:             entry.Meta.ForkLabel,
 			Profile:               entry.Meta.ProfileID,
 			Goal:                  persistedGoalState(entry.Meta.Goal),
 			HumanNote:             entry.Meta.HumanNote,
