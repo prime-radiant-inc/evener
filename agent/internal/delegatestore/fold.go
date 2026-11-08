@@ -905,6 +905,13 @@ func validateOutcome(outcome Outcome) error {
 		if !*outcome.Resumable {
 			return errors.New("tool-round exhaustion is not resumable")
 		}
+	case ExhaustionBudgetServerContinuations:
+		if outcome.Reason != "server_continuation_budget_exhausted" {
+			return fmt.Errorf("server-continuation exhaustion reason is %q", outcome.Reason)
+		}
+		if !*outcome.Resumable {
+			return errors.New("server-continuation exhaustion is not resumable")
+		}
 	case ExhaustionBudgetTurns:
 		if outcome.Reason != "turn_budget_exhausted" {
 			return fmt.Errorf("turn exhaustion reason is %q", outcome.Reason)

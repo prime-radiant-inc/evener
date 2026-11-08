@@ -462,6 +462,30 @@ func TestDelegatePreparedFinishCancelled(t *testing.T) {
 	}
 }
 
+func TestDelegatePreparedFinishServerContinuationExhaustion(t *testing.T) {
+	t.Parallel()
+	resumable := true
+	metadata := delegateTerminalPacketMetadata{
+		Outcome:             delegatestore.OutcomeExhausted,
+		ExhaustionBudget:    delegatestore.ExhaustionBudgetServerContinuations,
+		ExhaustionLimit:     8,
+		ExhaustionResumable: &resumable,
+	}
+	raw, _ := json.Marshal(metadata)
+	packet := delegatestore.TerminalPacket{Kind: delegatestore.PacketTerminalError, Metadata: raw}
+	finish := delegatePreparedFinish(packet)
+	if finish.outcome != delegatestore.OutcomeExhausted {
+		t.Fatalf("expected exhausted, got %v", finish.outcome)
+	}
+	if finish.reason != "server_continuation_budget_exhausted" {
+		t.Fatalf("expected server-continuation reason, got %q", finish.reason)
+	}
+	if finish.exhaustionBudget != delegatestore.ExhaustionBudgetServerContinuations || finish.exhaustionLimit != 8 ||
+		finish.exhaustionResumable == nil || !*finish.exhaustionResumable {
+		t.Fatalf("restored exhaustion = budget %q limit %d resumable %v", finish.exhaustionBudget, finish.exhaustionLimit, finish.exhaustionResumable)
+	}
+}
+
 func TestDelegatePreparedFinishCancelledWrongReason(t *testing.T) {
 	t.Parallel()
 	metadata := delegateTerminalPacketMetadata{

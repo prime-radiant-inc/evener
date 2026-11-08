@@ -1962,9 +1962,7 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 			timings.LoopOverhead = timings.TotalRound - timings.SystemPrompt - timings.ContextMgmt - timings.HistoryExpand - timings.ToolDefs - timings.LLMCall
 			s.emit(timings)
 			if serverContinuations >= maxServerContinuations {
-				// The provider kept asking for another turn without ever
-				// producing one. Stop the chain on its own budget rather than
-				// letting it outlive every per-turn cap; the pause responses
+				// Stop the chain on its own budget; the pause responses
 				// already emitted stay in history, so the turn is resumable.
 				return lastText, progressed, &budgetExhaustionError{
 					Budget:    exhaustedBudgetServerContinuations,
