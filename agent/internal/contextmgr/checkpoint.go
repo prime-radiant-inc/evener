@@ -447,7 +447,16 @@ func fitCheckpointMetadata(fixed string, budget int) string {
 	if keep <= 0 {
 		return pointer + marker
 	}
-	return pointer + runetrim.Cut(rest, keep) + marker
+	kept := runetrim.Cut(rest, keep)
+	if len(kept) < len(rest) {
+		// Back the cut up to the last complete metadata entry: cutting inside
+		// the comma-joined file list would report a partial path as a modified
+		// file, the exact confusion this section exists to avoid.
+		if end := strings.LastIndexAny(kept, ",\n"); end >= 0 {
+			kept = strings.TrimRight(kept[:end], " \t")
+		}
+	}
+	return pointer + kept + marker
 }
 
 // truncateRendered shortens text (via truncate, which appends an ellipsis) until

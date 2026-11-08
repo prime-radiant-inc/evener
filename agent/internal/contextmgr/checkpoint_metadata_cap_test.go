@@ -30,6 +30,17 @@ func TestFormatCheckpoint_BoundsOversizedMetadata(t *testing.T) {
 	if !strings.Contains(cp, checkpointMetadataTruncated) {
 		t.Fatalf("metadata was cut without the truncation marker:\n%.300s", cp)
 	}
+	for _, line := range strings.Split(cp, "\n") {
+		entries, ok := strings.CutPrefix(line, "Files modified: ")
+		if !ok {
+			continue
+		}
+		for _, entry := range strings.Split(entries, ", ") {
+			if !strings.HasSuffix(entry, ".go") {
+				t.Fatalf("truncation left a partial path %q in the modified-files list", entry)
+			}
+		}
+	}
 }
 
 // Metadata that fits must survive verbatim: the new bound only engages when the
