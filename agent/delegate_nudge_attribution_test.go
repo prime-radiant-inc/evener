@@ -60,16 +60,24 @@ func TestDelegateMissingReportNudgeIsRuntimeSteeringAfterUpdate(t *testing.T) {
 
 	runtime := sub.sess
 	runtime.mu.Lock()
-	nudges := 0
+	nudges, userInputs := 0, 0
 	for _, turn := range runtime.history {
 		if turn.Kind == schema.TurnSteering && turn.SteeringKind == events.SteeringKindDelegateNudge {
 			nudges++
+		}
+		if turn.Kind == schema.TurnUserInput {
+			userInputs++
 		}
 	}
 	runtime.mu.Unlock()
 
 	if nudges != 1 {
 		t.Fatalf("runtime steering turns of kind %q = %d, want exactly one automatic reminder", events.SteeringKindDelegateNudge, nudges)
+	}
+	// Warm input plus the authorized diagnosis; the automatic recovery must add
+	// no third USER_INPUT record (and so no user-input event or prompt hook).
+	if userInputs != 2 {
+		t.Fatalf("USER_INPUT records = %d, want warm plus diagnosis only; the runtime recovery added caller-shaped input", userInputs)
 	}
 	if !updatedAtRecovery {
 		t.Fatal("the non-terminal update was not visible when the reminder was chosen")

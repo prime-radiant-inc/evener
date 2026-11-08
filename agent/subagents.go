@@ -1655,11 +1655,6 @@ func communicateUpdateNudge(toolName string) string {
 // boundary, shared by both strings the delegate sees in the recovery turn.
 const delegateContinueAuthorized = "Continue the work you were already authorized to do"
 
-// delegateNudgeContinuation is the neutral input that runs after the
-// missing-report reminder is queued as a runtime steering turn. It carries no
-// new authorization: the reminder names what the run may still do.
-const delegateNudgeContinuation = delegateContinueAuthorized + ", then report with the result tool."
-
 // delegateNudgeText selects the reminder for a delegate that ended its turn
 // without a terminal result: the update-aware one when it already sent its
 // parent an end_turn=false update, else the one for a delegate that never
@@ -1685,9 +1680,11 @@ func (a *subagent) deliverCommunicateNudge(ctx context.Context, inputProvenance 
 	nudge := delegateNudgeText(a.sess.resultToolName(), updated)
 	accepted, err := a.sess.trySteerEnqueue(wrapHookContext(nudge), nil, nil, "", events.SteeringKindDelegateNudge)
 	if err != nil || !accepted {
-		return a.sess.processInputWithProvenance(ctx, nudge, nil, a.followUpProvenance(inputProvenance))
+		// The queue refused the steer. Record the reminder directly so recovery
+		// still runs as a runtime entry, never as caller input.
+		a.sess.appendSteeringTurn(wrapHookContext(nudge), events.SteeringKindDelegateNudge)
 	}
-	return a.sess.processInputWithProvenance(ctx, delegateNudgeContinuation, nil, a.followUpProvenance(inputProvenance))
+	return a.sess.processRuntimeInput(ctx, a.followUpProvenance(inputProvenance))
 }
 
 func (a *subagent) run(ctx context.Context, input string, inputProvenance *provenance.Causal) {
