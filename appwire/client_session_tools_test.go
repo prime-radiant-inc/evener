@@ -89,11 +89,62 @@ func TestSessionToolsClosedOperationUnion(t *testing.T) {
 			}
 		})
 	}
-	for _, raw := range []string{`{"discover":{"sourceIds":["local"],"limit":5}}`, `{"read":{"ref":"local:a"}}`} {
+	for _, raw := range []string{
+		`{"discover":{"sourceIds":["local"],"limit":5}}`,
+		`{"read":{"ref":"local:a"}}`,
+		`{"turns":{"ref":"local:a","turnWindow":{"latest":1},"itemTypes":["messages"]}}`,
+	} {
 		var request SessionOperationRequest
 		if err := json.Unmarshal([]byte(raw), &request); err != nil {
 			t.Fatalf("rejected %s: %v", raw, err)
 		}
+	}
+}
+
+func TestSessionOperationRequestAcceptsWindowedContentSelection(t *testing.T) {
+	includeThinking := false
+	request := SessionOperationRequest{Turns: &ThreadTurnsListParams{
+		ThreadContentParams: ThreadContentParams{IncludeThinking: &includeThinking},
+		Ref:                 "local:session",
+		ItemLimit:           10,
+		TurnWindow:          &ThreadTurnWindow{Latest: 2},
+	}}
+	if err := request.Validate(); err != nil {
+		t.Fatalf("Validate rejected windowed content selection: %v", err)
+	}
+}
+
+func TestSessionOperationRequestWindowGrammar(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		raw   string
+		valid bool
+	}{
+		{"legacy", `{"turns":{"ref":"local:a"}}`, true},
+		{"latest", `{"turns":{"ref":"local:a","turnWindow":{"latest":2}}}`, true},
+		{"turn", `{"turns":{"ref":"local:a","turnWindow":{"turn":"turn_m2"}}}`, true},
+		{"since", `{"turns":{"ref":"local:a","turnWindow":{"since":"turn_m2","limit":3}}}`, true},
+		{"before", `{"turns":{"ref":"local:a","turnWindow":{"before":{"turnId":"turn_m2","limit":3}}}}`, true},
+		{"selectors", `{"turns":{"ref":"local:a","turnWindow":{"latest":1},"itemTypes":["messages","reasoning","commandExecution"],"previewBytes":256,"messageBytes":512,"windowBudgetBytes":1024,"itemLimit":40}}`, true},
+		{"empty_window", `{"turns":{"ref":"local:a","turnWindow":{}}}`, false},
+		{"zero_latest", `{"turns":{"ref":"local:a","turnWindow":{"latest":0}}}`, false},
+		{"mixed_window", `{"turns":{"ref":"local:a","turnWindow":{"latest":1,"turn":"turn_m2"}}}`, false},
+		{"since_without_limit", `{"turns":{"ref":"local:a","turnWindow":{"since":"turn_m2"}}}`, false},
+		{"before_without_turn", `{"turns":{"ref":"local:a","turnWindow":{"before":{"limit":3}}}}`, false},
+		{"before_without_limit", `{"turns":{"ref":"local:a","turnWindow":{"before":{"turnId":"turn_m2"}}}}`, false},
+		{"types_without_window", `{"turns":{"ref":"local:a","itemTypes":["messages"]}}`, false},
+		{"bounds_without_window", `{"turns":{"ref":"local:a","previewBytes":256}}`, false},
+		{"negative_bound", `{"turns":{"ref":"local:a","turnWindow":{"latest":1},"messageBytes":-1}}`, false},
+		{"item_limit_over_max", `{"turns":{"ref":"local:a","turnWindow":{"latest":1},"itemLimit":41}}`, false},
+		{"unknown_item_type", `{"turns":{"ref":"local:a","turnWindow":{"latest":1},"itemTypes":["unknown"]}}`, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var request SessionOperationRequest
+			err := json.Unmarshal([]byte(tc.raw), &request)
+			if (err == nil) != tc.valid {
+				t.Fatalf("valid=%v, want %v: %v", err == nil, tc.valid, err)
+			}
+		})
 	}
 }
 

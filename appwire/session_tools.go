@@ -128,8 +128,16 @@ func (r SessionOperationRequest) Validate() error {
 			return err
 		}
 	}
-	if r.Turns != nil && (r.Turns.Ref == "" || r.Turns.ThreadID != "" || r.Turns.Before != nil || r.Turns.ItemsView != "" || r.Turns.ThreadContentParams != (ThreadContentParams{})) {
-		return InvalidParams("Manager history requires a ref and cursor; local ranges and content filters are unsupported")
+	if r.Turns != nil {
+		if r.Turns.Ref == "" || r.Turns.ThreadID != "" || r.Turns.Before != nil || r.Turns.ItemsView != "" {
+			return InvalidParams("Manager history requires a ref and cursor; local ranges are unsupported")
+		}
+		if r.Turns.TurnWindow == nil && r.Turns.ThreadContentParams != (ThreadContentParams{}) {
+			return InvalidParams("legacy Manager history does not support content filters")
+		}
+		if err := ValidateThreadWindowParams(r.Turns.ThreadWindowParams, r.Turns.ItemLimit); err != nil {
+			return err
+		}
 	}
 	if r.Activity != nil {
 		switch r.Activity.Resource {

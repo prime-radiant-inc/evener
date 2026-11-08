@@ -72,6 +72,50 @@ func managerReadContractTransport(t *testing.T, root *Session) <-chan appwire.Se
 	return peer.requests
 }
 
+func TestManagerWindowedReadSchemasAcceptSelectors(t *testing.T) {
+	t.Parallel()
+	root, wire := managerProviderSchemas(t)
+	raw, err := json.Marshal(wire["read_transcript"])
+	if err != nil {
+		t.Fatal(err)
+	}
+	serialized, err := jsonschema.CompileString("https://manager.test/windowed-read.json", string(raw))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name   string
+		window map[string]any
+		extra  map[string]any
+		valid  bool
+	}{
+		{name: "latest", window: map[string]any{"latest": float64(1)}, valid: true},
+		{name: "turn", window: map[string]any{"turn": "turn_m2"}, valid: true},
+		{name: "since", window: map[string]any{"since": "turn_m2", "limit": float64(3)}, valid: true},
+		{name: "before_with_selectors", window: map[string]any{"before": map[string]any{"turnId": "turn_m2", "limit": float64(3)}}, extra: map[string]any{
+			"itemTypes": []any{"messages", "reasoning", "commandExecution"}, "previewBytes": float64(256),
+			"messageBytes": float64(512), "windowBudgetBytes": float64(1024), "itemLimit": float64(40),
+		}, valid: true},
+		{name: "mixed", window: map[string]any{"latest": float64(1), "turn": "turn_m2"}, valid: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			hub := map[string]any{"ref": "local:worker", "turnWindow": tc.window}
+			for key, value := range tc.extra {
+				hub[key] = value
+			}
+			args := map[string]any{"hub": hub, "intent": "contract sentinel"}
+			for name, schema := range map[string]*jsonschema.Schema{
+				"registered":           root.reg.Get("read_transcript").Schema,
+				"serialized Responses": serialized,
+			} {
+				if err := schema.Validate(args); (err == nil) != tc.valid {
+					t.Errorf("%s schema valid=%v, want %v: %v", name, err == nil, tc.valid, err)
+				}
+			}
+		})
+	}
+}
+
 func TestManagerReadContract(t *testing.T) {
 	t.Parallel()
 	root, wire := managerProviderSchemas(t)
@@ -105,6 +149,8 @@ func TestManagerReadContract(t *testing.T) {
 		{"job_metadata", "job_status", `{"hub":{"ref":"local:worker","jobId":"job-1"}}`, true, appwire.SessionOperationRequest{Job: &appwire.JobsGetParams{Ref: "local:worker", JobID: "job-1"}}},
 		{"history_defaults", "read_transcript", `{"hub":{"ref":"local:worker"}}`, true, appwire.SessionOperationRequest{Turns: &appwire.ThreadTurnsListParams{Ref: "local:worker"}}},
 		{"history_all_fields", "read_transcript", `{"hub":{"ref":"local:worker","cursor":"next","itemLimit":2}}`, true, appwire.SessionOperationRequest{Turns: &appwire.ThreadTurnsListParams{Ref: "local:worker", Cursor: "next", ItemLimit: 2}}},
+		{"history_windowed", "read_transcript", `{"hub":{"ref":"local:worker","turnWindow":{"latest":1},"itemTypes":["messages"]}}`, true, appwire.SessionOperationRequest{Turns: &appwire.ThreadTurnsListParams{Ref: "local:worker", ThreadWindowParams: appwire.ThreadWindowParams{TurnWindow: &appwire.ThreadTurnWindow{Latest: 1}, ItemTypes: []string{"messages"}}}}},
+		{"history_windowed_all_fields", "read_transcript", `{"hub":{"ref":"local:worker","turnWindow":{"before":{"turnId":"turn_m2","limit":3}},"itemTypes":["messages","reasoning","commandExecution"],"previewBytes":256,"messageBytes":512,"windowBudgetBytes":1024,"itemLimit":40}}`, true, appwire.SessionOperationRequest{Turns: &appwire.ThreadTurnsListParams{Ref: "local:worker", ItemLimit: 40, ThreadWindowParams: appwire.ThreadWindowParams{TurnWindow: &appwire.ThreadTurnWindow{Before: &appwire.ThreadTurnBoundary{TurnID: "turn_m2", Limit: 3}}, ItemTypes: []string{"messages", "reasoning", "commandExecution"}, PreviewBytes: 256, MessageBytes: 512, WindowBudgetBytes: 1024}}}},
 		{"history_zero_output_fields", "read_transcript", `{"hub":{"ref":"local:worker","jobId":"","maxBytes":0}}`, true, appwire.SessionOperationRequest{Turns: &appwire.ThreadTurnsListParams{Ref: "local:worker"}}},
 		{"output_defaults", "read_transcript", `{"hub":{"ref":"local:worker","jobId":"job-1"}}`, true, appwire.SessionOperationRequest{JobOutput: &appwire.JobsOutputParams{Ref: "local:worker", JobID: "job-1"}}},
 		{"output_all_fields", "read_transcript", `{"hub":{"ref":"remote:worker","jobId":"job-1","maxBytes":64,"beforeBytes":0}}`, true, appwire.SessionOperationRequest{JobOutput: &appwire.JobsOutputParams{Ref: "remote:worker", JobID: "job-1", MaxBytes: 64, BeforeBytes: &zero}}},

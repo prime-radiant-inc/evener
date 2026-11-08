@@ -329,6 +329,7 @@ type ThreadReadParams struct {
 	Subscribe           bool   `json:"subscribe,omitempty"`
 	ReplaceSubscription bool   `json:"replaceSubscription,omitempty"`
 	ItemLimit           int    `json:"itemLimit,omitempty"`
+	ThreadWindowParams
 	// RequestGeneration is the client's own read-request counter, echoed back
 	// on ThreadReadResponse so a client can discard a stale reply that
 	// resolves after a newer request it already issued.
@@ -579,6 +580,27 @@ type ThreadUnsubscribeParams struct {
 	Ref      string `json:"ref,omitempty"`
 }
 
+type ThreadTurnBoundary struct {
+	TurnID string `json:"turnId"`
+	Limit  int    `json:"limit"`
+}
+
+type ThreadTurnWindow struct {
+	Latest int                 `json:"latest,omitempty"`
+	Turn   string              `json:"turn,omitempty"`
+	Since  string              `json:"since,omitempty"`
+	Limit  int                 `json:"limit,omitempty"`
+	Before *ThreadTurnBoundary `json:"before,omitempty"`
+}
+
+type ThreadWindowParams struct {
+	TurnWindow        *ThreadTurnWindow `json:"turnWindow,omitempty"`
+	ItemTypes         []string          `json:"itemTypes,omitempty"`
+	PreviewBytes      int               `json:"previewBytes,omitempty"`
+	MessageBytes      int               `json:"messageBytes,omitempty"`
+	WindowBudgetBytes int               `json:"windowBudgetBytes,omitempty"`
+}
+
 type ThreadTurnsListParams struct {
 	ThreadContentParams
 	ThreadID  string `json:"threadId,omitempty"`
@@ -586,6 +608,7 @@ type ThreadTurnsListParams struct {
 	Cursor    string `json:"cursor,omitempty"`
 	ItemsView string `json:"itemsView,omitempty"`
 	ItemLimit int    `json:"itemLimit,omitempty"`
+	ThreadWindowParams
 	// Before, when set, ends the page just before this position. With a
 	// Cursor it moves the cursor's boundary, keeping the cursor's identity
 	// fence; with none the source mints a cursor there under the thread's

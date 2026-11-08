@@ -72,13 +72,34 @@ func managerReadDefinition(def llm.ToolDefinition, ordinary bool) llm.ToolDefini
 	case "read_transcript":
 		// The decoder treats these explicit zero values like omitted fields.
 		// Keep those calls valid without allowing nonzero cross-branch bounds.
+		turnWindow := map[string]any{"type": "object", "oneOf": []any{
+			map[string]any{"type": "object", "additionalProperties": false, "required": []string{"latest"}, "properties": map[string]any{
+				"latest": map[string]any{"type": "integer", "minimum": 1},
+			}},
+			map[string]any{"type": "object", "additionalProperties": false, "required": []string{"turn"}, "properties": map[string]any{
+				"turn": map[string]any{"type": "string", "minLength": 1},
+			}},
+			map[string]any{"type": "object", "additionalProperties": false, "required": []string{"since", "limit"}, "properties": map[string]any{
+				"since": map[string]any{"type": "string", "minLength": 1}, "limit": map[string]any{"type": "integer", "minimum": 1},
+			}},
+			map[string]any{"type": "object", "additionalProperties": false, "required": []string{"before"}, "properties": map[string]any{
+				"before": map[string]any{"type": "object", "additionalProperties": false, "required": []string{"turnId", "limit"}, "properties": map[string]any{
+					"turnId": map[string]any{"type": "string", "minLength": 1}, "limit": map[string]any{"type": "integer", "minimum": 1},
+				}},
+			}},
+		}}
 		hub = map[string]any{"type": "object", "anyOf": []any{
 			map[string]any{"type": "object", "additionalProperties": false, "required": []string{"ref"}, "properties": map[string]any{
-				"ref":       map[string]any{"type": "string"},
-				"jobId":     map[string]any{"type": "string", "enum": []string{""}},
-				"cursor":    map[string]any{"type": "string"},
-				"itemLimit": map[string]any{"type": "integer"},
-				"maxBytes":  map[string]any{"type": "integer", "enum": []int{0}},
+				"ref":               map[string]any{"type": "string"},
+				"jobId":             map[string]any{"type": "string", "enum": []string{""}},
+				"cursor":            map[string]any{"type": "string"},
+				"itemLimit":         map[string]any{"type": "integer"},
+				"maxBytes":          map[string]any{"type": "integer", "enum": []int{0}},
+				"turnWindow":        turnWindow,
+				"itemTypes":         map[string]any{"type": "array", "items": map[string]any{"type": "string", "enum": []string{"messages", "agentMessage", "userMessage", "steering", "reasoning", "systemMessage", "commandExecution"}}},
+				"previewBytes":      map[string]any{"type": "integer", "minimum": 0},
+				"messageBytes":      map[string]any{"type": "integer", "minimum": 0},
+				"windowBudgetBytes": map[string]any{"type": "integer", "minimum": 0},
 			}},
 			map[string]any{"type": "object", "additionalProperties": false, "required": []string{"ref", "jobId"}, "properties": map[string]any{
 				"ref":         map[string]any{"type": "string"},
@@ -878,6 +899,7 @@ func (s *Session) invokeHubRead(ctx context.Context, name string, args map[strin
 			ItemLimit   int    `json:"itemLimit"`
 			MaxBytes    int64  `json:"maxBytes"`
 			BeforeBytes *int64 `json:"beforeBytes"`
+			appwire.ThreadWindowParams
 		}
 		if err := decoder.Decode(&p); err != nil {
 			return nil, appwire.InvalidParams(err.Error())
@@ -886,7 +908,7 @@ func (s *Session) invokeHubRead(ctx context.Context, name string, args map[strin
 			return nil, appwire.InvalidParams(err.Error())
 		}
 		if p.JobID != "" {
-			if p.Cursor != "" || p.ItemLimit != 0 {
+			if p.Cursor != "" || p.ItemLimit != 0 || p.TurnWindow != nil || len(p.ItemTypes) != 0 || p.PreviewBytes != 0 || p.MessageBytes != 0 || p.WindowBudgetBytes != 0 {
 				return nil, appwire.InvalidParams("job output cannot combine history cursors")
 			}
 			request.JobOutput = &appwire.JobsOutputParams{Ref: p.Ref, JobID: p.JobID, MaxBytes: p.MaxBytes, BeforeBytes: p.BeforeBytes}
@@ -894,7 +916,10 @@ func (s *Session) invokeHubRead(ctx context.Context, name string, args map[strin
 			if p.MaxBytes != 0 || p.BeforeBytes != nil {
 				return nil, appwire.InvalidParams("history cannot combine job output bounds")
 			}
-			request.Turns = &appwire.ThreadTurnsListParams{Ref: p.Ref, Cursor: p.Cursor, ItemLimit: p.ItemLimit}
+			request.Turns = &appwire.ThreadTurnsListParams{
+				Ref: p.Ref, Cursor: p.Cursor, ItemLimit: p.ItemLimit,
+				ThreadWindowParams: p.ThreadWindowParams,
+			}
 		}
 	default:
 		var p struct {
