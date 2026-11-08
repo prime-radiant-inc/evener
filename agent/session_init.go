@@ -1816,6 +1816,16 @@ func (s *Session) initSessionState(sessionStartKind plugin.SessionStartKind, run
 
 	// Cache instruction docs once; reused every round for system prompt rebuilds.
 	s.projectDocs, s.projectDocsTruncated = LoadInstructionDocs(s.currentEnv(), personalDocPath(s.cfg.AgentsDocPath), s.profile.ProjectDocFiles()...)
+	if s.projectDocsTruncated {
+		// A truncated doc silently drops the tail of the user's standing
+		// instructions from the prompt. Buffer the diagnostic here and let
+		// emitSessionStartEnvelope release it after SESSION_START (#1048).
+		s.pendingInstructionWarnings = append(s.pendingInstructionWarnings, events.WarningData{
+			Source:  "instructions",
+			Code:    "instruction_docs_truncated",
+			Message: "instruction docs exceeded the 32KB budget and were truncated; the prompt carries only the beginning of the oversized file",
+		})
+	}
 
 	// Cache tool definitions and the rendered prompt. A render failure here is a
 	// construction-time diagnostic, so it BUFFERS rather than emitting: nothing

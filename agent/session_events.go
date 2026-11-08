@@ -199,6 +199,12 @@ func (s *Session) emitSessionStartEnvelope(start events.SessionStartData, prompt
 		s.emitDiagnosticWarning(w)
 	}
 	s.pendingMCPWarnings = nil
+	// Instruction-doc truncation is a construction-time config diagnostic too:
+	// visible on the stream, no Notification hook (#1048).
+	for _, w := range s.pendingInstructionWarnings {
+		s.emitDiagnosticWarning(w)
+	}
+	s.pendingInstructionWarnings = nil
 	for _, src := range promptSources {
 		s.emit(events.PromptLoadedData{Label: src.Label, Size: src.Size})
 	}
