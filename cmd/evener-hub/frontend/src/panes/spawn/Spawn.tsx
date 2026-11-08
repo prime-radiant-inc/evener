@@ -1603,13 +1603,18 @@ function SpawnForm({
     // them.
     if (schemaHostSettled !== submittedSource) return;
     const offered = new Set(schemaOptions.map((option) => option.wireField));
+    // An explicit Memory choice is consent, not preference: silently dropping
+    // it on a host that never heard of the field would re-enable what the
+    // person turned off, so it survives the switch and Start is held over it
+    // instead (the memory hold by the submit button).
+    const keeps = (field: string) => offered.has(field) || field === "memoryEnabled";
     const overrides = draft.fields.getState().advancedOverrides;
-    const keptOverrides = Object.fromEntries(Object.entries(overrides).filter(([field]) => offered.has(field)));
+    const keptOverrides = Object.fromEntries(Object.entries(overrides).filter(([field]) => keeps(field)));
     if (Object.keys(keptOverrides).length !== Object.keys(overrides).length) {
       setAdvancedOverrides(keptOverrides);
     }
     const values = draft.fields.getState().advancedValues;
-    const keptValues = Object.fromEntries(Object.entries(values).filter(([field]) => offered.has(field)));
+    const keptValues = Object.fromEntries(Object.entries(values).filter(([field]) => keeps(field)));
     if (Object.keys(keptValues).length !== Object.keys(values).length) {
       setAdvancedValues(keptValues);
     }
@@ -2461,13 +2466,26 @@ function SpawnForm({
       ? harnesses.map((h) => ({ value: h.id, label: h.label }))
       : [{ value: "evener", label: "evener" }];
   const hasSession = useHasSessionPane();
+  const memoryChoiceOff = advancedOverrides.memoryEnabled === false || advancedValues.memoryEnabled?.value === "false";
+  const memoryOfferConfirmed =
+    schemaHostSettled === submittedSource && schemaOptions.some((option) => option.wireField === "memoryEnabled");
+  // A Memory Off is consent the chosen host must be able to honor: an older
+  // host silently drops the unknown field and starts the session with memory
+  // on, so Start waits for the host's schema to confirm the field rather than
+  // trusting silence - a pending or failed answer holds, and an answer that
+  // does not name the field holds until the choice is cleared. The values half
+  // keeps the choice live after a later edit re-collects overrides against the
+  // unoffering host's schema.
+  const memoryOffHeld = memoryChoiceOff && !memoryOfferConfirmed;
+  const memoryOffUnoffered = memoryOffHeld && schemaHostSettled === submittedSource;
   const startBlocked =
     busy ||
     (modelRequired && slashModelBootstrap === null) ||
     providerRequired ||
     pluginSelectionBlocked ||
     hostCatalogPending ||
-    modelHostPending;
+    modelHostPending ||
+    memoryOffHeld;
   const startBlockedReason =
     !startBlocked || busy
       ? undefined
@@ -2479,9 +2497,13 @@ function SpawnForm({
             ? "Waiting for the host to answer; Start is available when it does."
             : pluginSelectionBlocked
               ? "Resolve the plugin selection to start."
-              : hostCatalogPending || modelHostPending
-                ? "Waiting for the host to answer; Start is available when it does."
-                : undefined;
+              : memoryOffHeld
+                ? memoryOffUnoffered
+                  ? "The chosen host can't turn memory off for this session. Clear the Memory choice to start."
+                  : "Waiting for the host to answer; Start is available when it does."
+                : hostCatalogPending || modelHostPending
+                  ? "Waiting for the host to answer; Start is available when it does."
+                  : undefined;
   return (
     <PaneScaffold title="New session" mobileTitle="New session" scaffoldMarker="spawn">
       <div className={CLASS.form}>
@@ -2498,6 +2520,36 @@ function SpawnForm({
             }
           >
             Discarded last-used model {staleNotice} — no longer offered by this hub.
+          </InlineNotice>
+        )}
+        {memoryOffUnoffered && (
+          <InlineNotice
+            action={
+              <Button
+                variant="quiet"
+                size="sm"
+                type="button"
+                data-testid="spawn-memory-clear"
+                onClick={() => {
+                  setAdvancedValues((prev) => {
+                    if (prev.memoryEnabled === undefined) return prev;
+                    const next = { ...prev };
+                    delete next.memoryEnabled;
+                    return next;
+                  });
+                  setAdvancedOverrides((prev) => {
+                    if (prev.memoryEnabled === undefined) return prev;
+                    const next = { ...prev };
+                    delete next.memoryEnabled;
+                    return next;
+                  });
+                }}
+              >
+                Clear the Memory choice
+              </Button>
+            }
+          >
+            The chosen host can't turn memory off for this session.
           </InlineNotice>
         )}
 

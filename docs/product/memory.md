@@ -505,8 +505,12 @@ layers, the wire and both clients spell it positively; the launch renderer
 turns a false into the `--disable-memory` flag, which the daemon and session
 config keep. The web sets it from Launch settings and the spawn pane's Advanced
 options; the native app from Launch defaults and the new-session More options
-row, which appears only when the connected hub's launch schema offers the
-field, so an older hub gets no toggle that silently does nothing. The
+row. Both clients gate the control on the chosen host's launch schema, so a
+host that never offered the field shows no toggle that silently does nothing.
+An explicit Off kept from a host that offered it survives a host change
+anyway: it stays visible, and Start is held until the chosen host's schema
+confirms it honors the choice — clearing it, or choosing a host that does,
+is the way through — so no session silently launches with memory on. The
 pre-session skill catalog a composer reads derives `gardening-memory` from the
 resolved launch too, so the composer never offers a skill the started session
 cannot load.
