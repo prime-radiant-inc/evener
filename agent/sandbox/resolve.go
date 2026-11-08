@@ -291,6 +291,33 @@ func (rp ResolvedPolicy) masks(path string, live bool) bool {
 			return insideGitDir(path, root) || (live && rp.maskOverlapsCarveOut(root))
 		}
 	}
+	// A root that did not exist at resolution was pinned with its literal
+	// trailing spelling; a directory created later may be stored under another
+	// letter case, which is the spelling a layer's canonical path carries. Only
+	// the same existing directory qualifies, and only while neither spelling is
+	// a symlink, so a different case-fold name stays masked.
+	for _, root := range rp.UnmaskedRoots {
+		if !rp.carveOutMissing[root] {
+			continue
+		}
+		parent := filepath.Dir(root)
+		if !identifier.PathUnder(path, parent) {
+			continue
+		}
+		rel, err := filepath.Rel(parent, path)
+		if err != nil {
+			continue
+		}
+		first, _, _ := strings.Cut(rel, string(filepath.Separator))
+		if !strings.EqualFold(first, filepath.Base(root)) {
+			continue
+		}
+		actual := filepath.Join(parent, first)
+		if isSymlink(root) || isSymlink(actual) || !sameFile(root, actual) {
+			continue
+		}
+		return insideGitDir(path, actual) || (live && rp.maskOverlapsCarveOut(root))
+	}
 	return true
 }
 

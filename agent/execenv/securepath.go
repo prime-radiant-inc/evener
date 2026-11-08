@@ -445,7 +445,7 @@ func relUnderRealAncestor(root, abs string) (rel string, ok bool) {
 	found := false
 	rel = ""
 	for {
-		if curReal, rerr := filepath.EvalSymlinks(cur); rerr == nil && curReal == realRoot {
+		if curReal, rerr := filepath.EvalSymlinks(cur); rerr == nil && (curReal == realRoot || sameExistingFile(curReal, realRoot)) {
 			found = true
 			if len(tail) == 0 {
 				rel = "."
@@ -461,6 +461,16 @@ func relUnderRealAncestor(root, abs string) (rel string, ok bool) {
 		cur = parent
 	}
 	return rel, found
+}
+
+// sameExistingFile reports whether a and b both exist and are the same file. It
+// asks the filesystem rather than comparing spellings, so a path in another
+// letter case on a case-insensitive volume names the same directory while a
+// different entry never matches.
+func sameExistingFile(a, b string) bool {
+	fa, aerr := os.Stat(a)
+	fb, berr := os.Stat(b)
+	return aerr == nil && berr == nil && os.SameFile(fa, fb)
 }
 
 // splitLeaf splits a slash-relative path into its parent directory and leaf. The

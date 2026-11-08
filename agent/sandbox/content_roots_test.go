@@ -1037,6 +1037,18 @@ func TestCarveOutAcceptsARootCreatedLaterUnderAnotherCase(t *testing.T) {
 	if !rp.CarveOutIntact(skills) {
 		t.Errorf("CarveOutIntact must accept the root the kernel now reports")
 	}
+	skill := filepath.Join(storedSkills, "SKILL.md")
+	if err := os.WriteFile(skill, []byte("skill\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range []string{skill, filepath.Join(skills, "SKILL.md")} {
+		if rp.Masks(p) {
+			t.Errorf("content under the re-derived carve-out must stay readable: %s is masked", p)
+		}
+	}
+	if !rp.Masks(filepath.Join(storedSkills, ".git", "config")) {
+		t.Errorf(".git inside the re-derived carve-out must stay masked")
+	}
 
 	// The same case-fold name under a different parent is a different directory.
 	elsewhere := filepath.Join(parent, "elsewhere", "casehome", "SKILLS")
